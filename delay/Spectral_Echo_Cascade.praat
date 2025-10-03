@@ -1,9 +1,25 @@
-Copy... soundObj
-a = Get number of samples
-cascadeLevels = 6
-decayRate = 0.75
+form Fibonacci Cascade Delay Processing
+    comment Cascade parameters:
+    natural cascade_levels 6
+    positive decay_rate 0.75
+    comment Delay shift parameters:
+    positive delay_base 5
+    comment Spectral coloring modulation:
+    positive coloring_center 0.5
+    positive coloring_depth 0.5
+    comment Output options:
+    positive scale_peak 0.88
+    boolean play_after_processing 1
+endform
 
-for level from 1 to cascadeLevels
+# Copy the sound object
+Copy... soundObj
+
+# Get the number of samples
+a = Get number of samples
+
+# Main cascade processing loop
+for level from 1 to cascade_levels
     # Fibonacci-based delay progression
     if level = 1
         fibPrev = 1
@@ -14,11 +30,17 @@ for level from 1 to cascadeLevels
         fibCurrent = fibNext
     endif
     
-    delayShift = a / (5 + fibCurrent)
-    currentDecay = decayRate ^ level
+    delayShift = a / (delay_base + fibCurrent)
+    currentDecay = decay_rate ^ level
     
     # Multi-tap delay with spectral coloring
-    Formula: "self + self [col - round(delayShift)] * currentDecay * (0.5 + 0.5 * cos(level * 2 * pi * col / a))"
+    Formula: "self + self [col - round(delayShift)] * currentDecay * ('coloring_center' + 'coloring_depth' * cos(level * 2 * pi * col / a))"
 endfor
-Scale peak: 0.88
-Play
+
+# Scale to peak
+Scale peak: scale_peak
+
+# Play if requested
+if play_after_processing
+    Play
+endif
