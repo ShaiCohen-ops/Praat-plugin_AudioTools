@@ -1,15 +1,57 @@
-# VARIATION 2: Intensity Early Arrival
-# Move intensity curve to start earlier
+form Intensity Early Arrival
+    comment This script shifts the intensity envelope earlier in time
+    comment Intensity extraction parameters:
+    positive minimum_pitch 100
+    positive time_step 0.1
+    boolean subtract_mean yes
+    comment Time shift parameters:
+    real shift_amount_seconds -0.3
+    comment (negative = earlier, positive = later)
+    comment Multiply parameters:
+    boolean scale_intensities yes
+    comment Output options:
+    boolean play_after_processing 1
+    boolean keep_intermediate_objects 0
+endform
+
+# Check if a Sound is selected
+if not selected("Sound")
+    exitScript: "Please select a Sound object first."
+endif
+
+# Store original sound
 a = selected("Sound")
-b = Copy...
-To Intensity: 100, 0, "yes"
-Shift times to: "start time", -0.3
+originalName$ = selected$("Sound")
+
+# Copy the sound
+b = Copy: originalName$ + "_intensity_shifted"
+
+# Extract intensity
+To Intensity: minimum_pitch, time_step, subtract_mean
+
+# Shift intensity curve in time
+Shift times to: "start time", shift_amount_seconds
+
+# Convert to IntensityTier
 c = Down to IntensityTier
+
+# Select sound and intensity tier, then multiply
 select a
 plus c
-Multiply: "yes"
-Play
-select b
-Remove
-select c
-Remove
+Multiply: scale_intensities
+
+# Rename result
+Rename: originalName$ + "_result"
+
+# Play if requested
+if play_after_processing
+    Play
+endif
+
+# Clean up intermediate objects unless requested to keep
+if not keep_intermediate_objects
+    select b
+    Remove
+    select c
+    Remove
+endif

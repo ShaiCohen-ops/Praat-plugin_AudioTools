@@ -1,14 +1,38 @@
 form Compressor
-natural Compression_(1-100_%) 25
+    natural compression_percentage_(1-100) 25
+    comment Compression parameters:
+    positive compression_multiplier 10
+    comment Output options:
+    positive scale_peak 0.99
+    boolean play_after_processing 1
 endform
 
-if compression > 100
-    compression = 100
+# Check if a Sound is selected
+if not selected("Sound")
+    exitScript: "Please select a Sound object first."
 endif
-comp = compression/100
 
+# Limit compression to 100%
+if compression_percentage > 100
+    compression_percentage = 100
+endif
+
+# Calculate compression factor
+comp = compression_percentage / 100
+
+# Get the name of the original sound
 s$ = selected$("Sound")
-wrk = Copy... compressed
-Formula... self / (1 + abs(self) * 'comp' * 10)
-Scale peak... 0.99
-Play
+
+# Copy and compress
+wrk = Copy: s$ + "_compressed"
+
+# Apply compression formula
+Formula: "self / (1 + abs(self) * 'comp' * 'compression_multiplier')"
+
+# Scale to peak
+Scale peak: scale_peak
+
+# Play if requested
+if play_after_processing
+    Play
+endif
