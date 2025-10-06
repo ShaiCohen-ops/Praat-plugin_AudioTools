@@ -1,0 +1,813 @@
+Adaptive Grain Cloud Synthesis: A Technical Overview
+
+This Praat script performs spectral-morphological granular synthesis with intelligent grain sorting, transforming speech into compositionally organized sonic textures.
+
+Core Process
+
+The script fragments your input speech into discrete grains (micro-samples), analyzes their spectral content, then reconstructs them in a perceptually ordered sequence—creating a journey from dark (bass-heavy) to bright (treble-rich) timbres, or vice versa.
+
+Technical Operations
+
+1. Grain Extraction & Duration Control
+
+Grains are extracted using user-defined envelope shapes (rectangular, triangular, or parabolic windows)
+
+Duration modes:
+- Fixed: uniform grain length
+- Random: stochastic variation within specified bounds (±50ms default), bounded to 30-200% of base duration
+
+2. Spectral Analysis & Classification
+
+Each grain undergoes FFT analysis to calculate its spectral centroid (center of gravity in Hz)
+
+This centroid value becomes the grain's "brightness" metric:
+- Dark grains: centroid < 800 Hz (vowels, low formants, bass resonances)
+- Bright grains: centroid > 1500 Hz (fricatives, sibilants, high harmonics)
+
+3. Spectral Exaggeration (Optional)
+
+The script can amplify timbral differences through frequency-selective filtering:
+- Bright grains: high-pass emphasis above 1000 Hz, centroid multiplied by 1.3
+- Dark grains: low-pass emphasis below 800 Hz, centroid multiplied by 0.7
+- Intensity levels: Subtle (1.2×), Moderate (1.5×), Strong (2.0×) spectral boost
+
+4. Adaptive Pitch Shifting
+
+Grains receive content-aware transposition:
+- High-centroid grains: +0.5 semitones ± scatter
+- Low-centroid grains: -0.3 semitones ± scatter
+- Enhances the perceptual separation between timbral categories
+
+5. Bubble Sort by Brightness
+
+A simple comparison algorithm reorganizes grains by ascending or descending centroid values, creating a timbral gradient rather than temporal sequence.
+
+6. Concatenation with Temporal Gaps
+
+Sorted grains are reassembled with optional silence intervals (default 50ms), allowing each grain's timbre to be perceived discretely rather than masked by overlap.
+
+7. Dynamic Amplitude Scaling
+
+- Bright grains: 0.35 amplitude (naturally more perceptually prominent)
+- Dark grains: 0.25 amplitude (preventing muddiness)
+- Duration-based compensation: short grains boosted 1.1×, long grains reduced 0.9×
+- Final limiting at 0.9 peak to preserve dynamic range
+
+Compositional Implications
+
+From speech, this process:
+- Deconstructs phonemic identity: vowels and consonants become timbral gestures divorced from linguistic meaning
+- Creates spectral narratives: the sorted sequence forms an arc from guttural to whispered, or vice versa
+- Reveals hidden formants: spectral exaggeration makes subtle resonances sculptural
+- Generates rhythmic-timbral counterpoint: gap insertion creates pulsed textures where rhythm is timbre-dependent
+
+The result oscillates between acousmatic abstraction (unrecognizable source) and phonetic residue (ghostly speech fragments), with the spectral journey providing formal coherence independent of the original speech's temporal structure.
+
+Duration statistics and brightness range are logged, providing compositional metadata for multi-layer workflows or algorithmic post-processing.
+
+-------------------------
+
+=== Generating Grains ===
+Grain size mode: Fixed
+Grain 1: 150ms, original=1128Hz, processed=1466Hz
+Grain 2: 150ms, original=1548Hz, processed=2012Hz
+Grain 3: 150ms, original=283Hz, processed=198Hz
+Grain 4: 150ms, original=454Hz, processed=318Hz
+Grain 5: 150ms, original=1693Hz, processed=2200Hz
+Grain 6: 150ms, original=316Hz, processed=221Hz
+Grain 7: 150ms, original=335Hz, processed=234Hz
+Grain 8: 150ms, original=7211Hz, processed=9375Hz
+Grain 9: 150ms, original=257Hz, processed=180Hz
+Grain 10: 150ms, original=8693Hz, processed=11301Hz
+Grain 11: 150ms, original=377Hz, processed=264Hz
+Grain 12: 150ms, original=806Hz, processed=565Hz
+Grain 13: 150ms, original=639Hz, processed=447Hz
+Grain 14: 150ms, original=425Hz, processed=298Hz
+Grain 15: 150ms, original=791Hz, processed=553Hz
+Grain 16: 150ms, original=624Hz, processed=437Hz
+Grain 17: 150ms, original=321Hz, processed=225Hz
+Grain 18: 150ms, original=819Hz, processed=573Hz
+Grain 19: 150ms, original=812Hz, processed=569Hz
+Grain 20: 150ms, original=1867Hz, processed=2427Hz
+Grain 21: 150ms, original=803Hz, processed=562Hz
+Grain 22: 150ms, original=774Hz, processed=542Hz
+Grain 23: 150ms, original=479Hz, processed=335Hz
+Grain 24: 150ms, original=280Hz, processed=196Hz
+Grain 25: 150ms, original=3069Hz, processed=3990Hz
+Grain 26: 150ms, original=642Hz, processed=449Hz
+Grain 27: 150ms, original=649Hz, processed=454Hz
+Grain 28: 150ms, original=4957Hz, processed=6443Hz
+Grain 29: 150ms, original=8649Hz, processed=11244Hz
+Grain 30: 150ms, original=8587Hz, processed=11163Hz
+Grain 31: 150ms, original=291Hz, processed=203Hz
+Grain 32: 150ms, original=2362Hz, processed=3070Hz
+Grain 33: 150ms, original=8763Hz, processed=11391Hz
+Grain 34: 150ms, original=623Hz, processed=436Hz
+Grain 35: 150ms, original=841Hz, processed=589Hz
+Grain 36: 150ms, original=329Hz, processed=230Hz
+Grain 37: 150ms, original=770Hz, processed=539Hz
+Grain 38: 150ms, original=8623Hz, processed=11210Hz
+Grain 39: 150ms, original=2949Hz, processed=3834Hz
+Grain 40: 150ms, original=815Hz, processed=570Hz
+Grain 41: 150ms, original=267Hz, processed=187Hz
+Grain 42: 150ms, original=262Hz, processed=184Hz
+Grain 43: 150ms, original=8565Hz, processed=11134Hz
+Grain 44: 150ms, original=6442Hz, processed=8375Hz
+Grain 45: 150ms, original=315Hz, processed=220Hz
+Grain 46: 150ms, original=845Hz, processed=592Hz
+Grain 47: 150ms, original=4053Hz, processed=5269Hz
+Grain 48: 150ms, original=327Hz, processed=229Hz
+Grain 49: 150ms, original=7241Hz, processed=9413Hz
+Grain 50: 150ms, original=384Hz, processed=269Hz
+Grain 51: 150ms, original=788Hz, processed=552Hz
+Grain 52: 150ms, original=378Hz, processed=265Hz
+Grain 53: 150ms, original=714Hz, processed=499Hz
+Grain 54: 150ms, original=477Hz, processed=334Hz
+Grain 55: 150ms, original=2698Hz, processed=3507Hz
+Grain 56: 150ms, original=259Hz, processed=181Hz
+Grain 57: 150ms, original=8855Hz, processed=11512Hz
+Grain 58: 150ms, original=672Hz, processed=470Hz
+Grain 59: 150ms, original=256Hz, processed=180Hz
+Grain 60: 150ms, original=8895Hz, processed=11563Hz
+Grain 61: 150ms, original=483Hz, processed=338Hz
+Grain 62: 150ms, original=379Hz, processed=265Hz
+Grain 63: 150ms, original=322Hz, processed=226Hz
+Grain 64: 150ms, original=225Hz, processed=158Hz
+Grain 65: 150ms, original=378Hz, processed=264Hz
+Grain 66: 150ms, original=812Hz, processed=569Hz
+Grain 67: 150ms, original=970Hz, processed=679Hz
+Grain 68: 150ms, original=8535Hz, processed=11095Hz
+Grain 69: 150ms, original=1044Hz, processed=1357Hz
+Grain 70: 150ms, original=8368Hz, processed=10878Hz
+Grain 71: 150ms, original=819Hz, processed=573Hz
+Grain 72: 150ms, original=1056Hz, processed=1373Hz
+Grain 73: 150ms, original=390Hz, processed=273Hz
+Grain 74: 150ms, original=719Hz, processed=503Hz
+Grain 75: 150ms, original=830Hz, processed=581Hz
+Grain 76: 150ms, original=230Hz, processed=161Hz
+Grain 77: 150ms, original=695Hz, processed=486Hz
+Grain 78: 150ms, original=995Hz, processed=697Hz
+Grain 79: 150ms, original=812Hz, processed=568Hz
+Grain 80: 150ms, original=947Hz, processed=663Hz
+Grain 81: 150ms, original=823Hz, processed=576Hz
+Grain 82: 150ms, original=758Hz, processed=531Hz
+Grain 83: 150ms, original=8173Hz, processed=10625Hz
+Grain 84: 150ms, original=258Hz, processed=181Hz
+Grain 85: 150ms, original=266Hz, processed=186Hz
+Grain 86: 150ms, original=610Hz, processed=427Hz
+Grain 87: 150ms, original=980Hz, processed=686Hz
+Grain 88: 150ms, original=995Hz, processed=697Hz
+Grain 89: 150ms, original=663Hz, processed=464Hz
+Grain 90: 150ms, original=1136Hz, processed=1477Hz
+Grain 91: 150ms, original=362Hz, processed=254Hz
+Grain 92: 150ms, original=7915Hz, processed=10290Hz
+Grain 93: 150ms, original=236Hz, processed=165Hz
+Grain 94: 150ms, original=631Hz, processed=442Hz
+Grain 95: 150ms, original=600Hz, processed=420Hz
+Grain 96: 150ms, original=3708Hz, processed=4820Hz
+Grain 97: 150ms, original=933Hz, processed=653Hz
+Grain 98: 150ms, original=577Hz, processed=404Hz
+Grain 99: 150ms, original=252Hz, processed=176Hz
+Grain 100: 150ms, original=3897Hz, processed=5066Hz
+Grain 101: 150ms, original=802Hz, processed=561Hz
+Grain 102: 150ms, original=283Hz, processed=198Hz
+Grain 103: 150ms, original=6741Hz, processed=8763Hz
+=== Sorting Grains by Brightness ===
+Final sort order:
+1. vocal2_mono_grain_64_158Hz_150ms (150ms, brightness=158Hz, original=225Hz)
+2. vocal2_mono_grain_76_161Hz_150ms (150ms, brightness=161Hz, original=230Hz)
+3. vocal2_mono_grain_93_165Hz_150ms (150ms, brightness=165Hz, original=236Hz)
+4. vocal2_mono_grain_99_176Hz_150ms (150ms, brightness=176Hz, original=252Hz)
+5. vocal2_mono_grain_59_180Hz_150ms (150ms, brightness=180Hz, original=256Hz)
+6. vocal2_mono_grain_9_180Hz_150ms (150ms, brightness=180Hz, original=257Hz)
+7. vocal2_mono_grain_84_181Hz_150ms (150ms, brightness=181Hz, original=258Hz)
+8. vocal2_mono_grain_56_181Hz_150ms (150ms, brightness=181Hz, original=259Hz)
+9. vocal2_mono_grain_42_184Hz_150ms (150ms, brightness=184Hz, original=262Hz)
+10. vocal2_mono_grain_85_186Hz_150ms (150ms, brightness=186Hz, original=266Hz)
+11. vocal2_mono_grain_41_187Hz_150ms (150ms, brightness=187Hz, original=267Hz)
+12. vocal2_mono_grain_24_196Hz_150ms (150ms, brightness=196Hz, original=280Hz)
+13. vocal2_mono_grain_102_198Hz_150ms (150ms, brightness=198Hz, original=283Hz)
+14. vocal2_mono_grain_3_198Hz_150ms (150ms, brightness=198Hz, original=283Hz)
+15. vocal2_mono_grain_31_203Hz_150ms (150ms, brightness=203Hz, original=291Hz)
+16. vocal2_mono_grain_45_220Hz_150ms (150ms, brightness=220Hz, original=315Hz)
+17. vocal2_mono_grain_6_221Hz_150ms (150ms, brightness=221Hz, original=316Hz)
+18. vocal2_mono_grain_17_225Hz_150ms (150ms, brightness=225Hz, original=321Hz)
+19. vocal2_mono_grain_63_226Hz_150ms (150ms, brightness=226Hz, original=322Hz)
+20. vocal2_mono_grain_48_229Hz_150ms (150ms, brightness=229Hz, original=327Hz)
+21. vocal2_mono_grain_36_230Hz_150ms (150ms, brightness=230Hz, original=329Hz)
+22. vocal2_mono_grain_7_234Hz_150ms (150ms, brightness=234Hz, original=335Hz)
+23. vocal2_mono_grain_91_254Hz_150ms (150ms, brightness=254Hz, original=362Hz)
+24. vocal2_mono_grain_11_264Hz_150ms (150ms, brightness=264Hz, original=377Hz)
+25. vocal2_mono_grain_65_264Hz_150ms (150ms, brightness=264Hz, original=378Hz)
+26. vocal2_mono_grain_52_265Hz_150ms (150ms, brightness=265Hz, original=378Hz)
+27. vocal2_mono_grain_62_265Hz_150ms (150ms, brightness=265Hz, original=379Hz)
+28. vocal2_mono_grain_50_269Hz_150ms (150ms, brightness=269Hz, original=384Hz)
+29. vocal2_mono_grain_73_273Hz_150ms (150ms, brightness=273Hz, original=390Hz)
+30. vocal2_mono_grain_14_298Hz_150ms (150ms, brightness=298Hz, original=425Hz)
+31. vocal2_mono_grain_4_318Hz_150ms (150ms, brightness=318Hz, original=454Hz)
+32. vocal2_mono_grain_54_334Hz_150ms (150ms, brightness=334Hz, original=477Hz)
+33. vocal2_mono_grain_23_335Hz_150ms (150ms, brightness=335Hz, original=479Hz)
+34. vocal2_mono_grain_61_338Hz_150ms (150ms, brightness=338Hz, original=483Hz)
+35. vocal2_mono_grain_98_404Hz_150ms (150ms, brightness=404Hz, original=577Hz)
+36. vocal2_mono_grain_95_420Hz_150ms (150ms, brightness=420Hz, original=600Hz)
+37. vocal2_mono_grain_86_427Hz_150ms (150ms, brightness=427Hz, original=610Hz)
+38. vocal2_mono_grain_34_436Hz_150ms (150ms, brightness=436Hz, original=623Hz)
+39. vocal2_mono_grain_16_437Hz_150ms (150ms, brightness=437Hz, original=624Hz)
+40. vocal2_mono_grain_94_442Hz_150ms (150ms, brightness=442Hz, original=631Hz)
+41. vocal2_mono_grain_13_447Hz_150ms (150ms, brightness=447Hz, original=639Hz)
+42. vocal2_mono_grain_26_449Hz_150ms (150ms, brightness=449Hz, original=642Hz)
+43. vocal2_mono_grain_27_454Hz_150ms (150ms, brightness=454Hz, original=649Hz)
+44. vocal2_mono_grain_89_464Hz_150ms (150ms, brightness=464Hz, original=663Hz)
+45. vocal2_mono_grain_58_470Hz_150ms (150ms, brightness=470Hz, original=672Hz)
+46. vocal2_mono_grain_77_486Hz_150ms (150ms, brightness=486Hz, original=695Hz)
+47. vocal2_mono_grain_53_499Hz_150ms (150ms, brightness=499Hz, original=714Hz)
+48. vocal2_mono_grain_74_503Hz_150ms (150ms, brightness=503Hz, original=719Hz)
+49. vocal2_mono_grain_82_531Hz_150ms (150ms, brightness=531Hz, original=758Hz)
+50. vocal2_mono_grain_37_539Hz_150ms (150ms, brightness=539Hz, original=770Hz)
+51. vocal2_mono_grain_22_542Hz_150ms (150ms, brightness=542Hz, original=774Hz)
+52. vocal2_mono_grain_51_552Hz_150ms (150ms, brightness=552Hz, original=788Hz)
+53. vocal2_mono_grain_15_553Hz_150ms (150ms, brightness=553Hz, original=791Hz)
+54. vocal2_mono_grain_101_561Hz_150ms (150ms, brightness=561Hz, original=802Hz)
+55. vocal2_mono_grain_21_562Hz_150ms (150ms, brightness=562Hz, original=803Hz)
+56. vocal2_mono_grain_12_565Hz_150ms (150ms, brightness=565Hz, original=806Hz)
+57. vocal2_mono_grain_79_568Hz_150ms (150ms, brightness=568Hz, original=812Hz)
+58. vocal2_mono_grain_19_569Hz_150ms (150ms, brightness=569Hz, original=812Hz)
+59. vocal2_mono_grain_66_569Hz_150ms (150ms, brightness=569Hz, original=812Hz)
+60. vocal2_mono_grain_40_570Hz_150ms (150ms, brightness=570Hz, original=815Hz)
+61. vocal2_mono_grain_71_573Hz_150ms (150ms, brightness=573Hz, original=819Hz)
+62. vocal2_mono_grain_18_573Hz_150ms (150ms, brightness=573Hz, original=819Hz)
+63. vocal2_mono_grain_81_576Hz_150ms (150ms, brightness=576Hz, original=823Hz)
+64. vocal2_mono_grain_75_581Hz_150ms (150ms, brightness=581Hz, original=830Hz)
+65. vocal2_mono_grain_35_589Hz_150ms (150ms, brightness=589Hz, original=841Hz)
+66. vocal2_mono_grain_46_592Hz_150ms (150ms, brightness=592Hz, original=845Hz)
+67. vocal2_mono_grain_97_653Hz_150ms (150ms, brightness=653Hz, original=933Hz)
+68. vocal2_mono_grain_80_663Hz_150ms (150ms, brightness=663Hz, original=947Hz)
+69. vocal2_mono_grain_67_679Hz_150ms (150ms, brightness=679Hz, original=970Hz)
+70. vocal2_mono_grain_87_686Hz_150ms (150ms, brightness=686Hz, original=980Hz)
+71. vocal2_mono_grain_78_697Hz_150ms (150ms, brightness=697Hz, original=995Hz)
+72. vocal2_mono_grain_88_697Hz_150ms (150ms, brightness=697Hz, original=995Hz)
+73. vocal2_mono_grain_69_1357Hz_150ms (150ms, brightness=1357Hz, original=1044Hz)
+74. vocal2_mono_grain_72_1373Hz_150ms (150ms, brightness=1373Hz, original=1056Hz)
+75. vocal2_mono_grain_1_1466Hz_150ms (150ms, brightness=1466Hz, original=1128Hz)
+76. vocal2_mono_grain_90_1477Hz_150ms (150ms, brightness=1477Hz, original=1136Hz)
+77. vocal2_mono_grain_2_2012Hz_150ms (150ms, brightness=2012Hz, original=1548Hz)
+78. vocal2_mono_grain_5_2200Hz_150ms (150ms, brightness=2200Hz, original=1693Hz)
+79. vocal2_mono_grain_20_2427Hz_150ms (150ms, brightness=2427Hz, original=1867Hz)
+80. vocal2_mono_grain_32_3070Hz_150ms (150ms, brightness=3070Hz, original=2362Hz)
+81. vocal2_mono_grain_55_3507Hz_150ms (150ms, brightness=3507Hz, original=2698Hz)
+82. vocal2_mono_grain_39_3834Hz_150ms (150ms, brightness=3834Hz, original=2949Hz)
+83. vocal2_mono_grain_25_3990Hz_150ms (150ms, brightness=3990Hz, original=3069Hz)
+84. vocal2_mono_grain_96_4820Hz_150ms (150ms, brightness=4820Hz, original=3708Hz)
+85. vocal2_mono_grain_100_5066Hz_150ms (150ms, brightness=5066Hz, original=3897Hz)
+86. vocal2_mono_grain_47_5269Hz_150ms (150ms, brightness=5269Hz, original=4053Hz)
+87. vocal2_mono_grain_28_6443Hz_150ms (150ms, brightness=6443Hz, original=4957Hz)
+88. vocal2_mono_grain_44_8375Hz_150ms (150ms, brightness=8375Hz, original=6442Hz)
+89. vocal2_mono_grain_103_8763Hz_150ms (150ms, brightness=8763Hz, original=6741Hz)
+90. vocal2_mono_grain_8_9375Hz_150ms (150ms, brightness=9375Hz, original=7211Hz)
+91. vocal2_mono_grain_49_9413Hz_150ms (150ms, brightness=9413Hz, original=7241Hz)
+92. vocal2_mono_grain_92_10290Hz_150ms (150ms, brightness=10290Hz, original=7915Hz)
+93. vocal2_mono_grain_83_10625Hz_150ms (150ms, brightness=10625Hz, original=8173Hz)
+94. vocal2_mono_grain_70_10878Hz_150ms (150ms, brightness=10878Hz, original=8368Hz)
+95. vocal2_mono_grain_68_11095Hz_150ms (150ms, brightness=11095Hz, original=8535Hz)
+96. vocal2_mono_grain_43_11134Hz_150ms (150ms, brightness=11134Hz, original=8565Hz)
+97. vocal2_mono_grain_30_11163Hz_150ms (150ms, brightness=11163Hz, original=8587Hz)
+98. vocal2_mono_grain_38_11210Hz_150ms (150ms, brightness=11210Hz, original=8623Hz)
+99. vocal2_mono_grain_29_11244Hz_150ms (150ms, brightness=11244Hz, original=8649Hz)
+100. vocal2_mono_grain_10_11301Hz_150ms (150ms, brightness=11301Hz, original=8693Hz)
+101. vocal2_mono_grain_33_11391Hz_150ms (150ms, brightness=11391Hz, original=8763Hz)
+102. vocal2_mono_grain_57_11512Hz_150ms (150ms, brightness=11512Hz, original=8855Hz)
+103. vocal2_mono_grain_60_11563Hz_150ms (150ms, brightness=11563Hz, original=8895Hz)
+=== Concatenating Grains with Gaps ===
+=== Adaptive Grain Cloud Synthesis Complete ===
+Created and sorted 103 grains from 'vocal2_mono'
+Grain size mode: Fixed
+Sort direction: Dark to bright
+Spectral exaggeration: ON
+Gap between grains: 50ms
+Brightness range: 158-11563Hz
+Total output duration: 24.23s
+Result: 'vocal2_mono_granular_sorted'
+=== Generating Grains ===
+Grain size mode: Fixed
+Grain 1: 150ms, original=275Hz, processed=193Hz
+Grain 2: 150ms, original=229Hz, processed=160Hz
+Grain 3: 150ms, original=328Hz, processed=230Hz
+Grain 4: 150ms, original=2591Hz, processed=3368Hz
+Grain 5: 150ms, original=1072Hz, processed=1394Hz
+Grain 6: 150ms, original=2612Hz, processed=3396Hz
+Grain 7: 150ms, original=1499Hz, processed=1949Hz
+Grain 8: 150ms, original=127Hz, processed=89Hz
+Grain 9: 150ms, original=2013Hz, processed=2616Hz
+Grain 10: 150ms, original=1805Hz, processed=2346Hz
+Grain 11: 150ms, original=329Hz, processed=230Hz
+Grain 12: 150ms, original=5240Hz, processed=6813Hz
+Grain 13: 150ms, original=1437Hz, processed=1868Hz
+Grain 14: 150ms, original=286Hz, processed=200Hz
+Grain 15: 150ms, original=272Hz, processed=190Hz
+Grain 16: 150ms, original=198Hz, processed=139Hz
+Grain 17: 150ms, original=1989Hz, processed=2586Hz
+Grain 18: 150ms, original=313Hz, processed=219Hz
+Grain 19: 150ms, original=5890Hz, processed=7657Hz
+Grain 20: 150ms, original=327Hz, processed=229Hz
+Grain 21: 150ms, original=328Hz, processed=230Hz
+Grain 22: 150ms, original=2679Hz, processed=3483Hz
+Grain 23: 150ms, original=5226Hz, processed=6794Hz
+Grain 24: 150ms, original=358Hz, processed=251Hz
+Grain 25: 150ms, original=1107Hz, processed=1439Hz
+Grain 26: 150ms, original=2567Hz, processed=3337Hz
+Grain 27: 150ms, original=158Hz, processed=111Hz
+Grain 28: 150ms, original=5572Hz, processed=7244Hz
+Grain 29: 150ms, original=365Hz, processed=256Hz
+Grain 30: 150ms, original=1236Hz, processed=1607Hz
+Grain 31: 150ms, original=311Hz, processed=218Hz
+Grain 32: 150ms, original=399Hz, processed=279Hz
+Grain 33: 150ms, original=3517Hz, processed=4572Hz
+Grain 34: 150ms, original=1247Hz, processed=1621Hz
+Grain 35: 150ms, original=410Hz, processed=287Hz
+Grain 36: 150ms, original=1256Hz, processed=1632Hz
+Grain 37: 150ms, original=1799Hz, processed=2339Hz
+Grain 38: 150ms, original=1993Hz, processed=2590Hz
+Grain 39: 150ms, original=880Hz, processed=616Hz
+Grain 40: 150ms, original=160Hz, processed=112Hz
+Grain 41: 150ms, original=377Hz, processed=264Hz
+Grain 42: 150ms, original=921Hz, processed=645Hz
+Grain 43: 150ms, original=249Hz, processed=174Hz
+Grain 44: 150ms, original=255Hz, processed=178Hz
+Grain 45: 150ms, original=1395Hz, processed=1813Hz
+Grain 46: 150ms, original=378Hz, processed=265Hz
+Grain 47: 150ms, original=185Hz, processed=130Hz
+Grain 48: 150ms, original=1224Hz, processed=1591Hz
+Grain 49: 150ms, original=265Hz, processed=185Hz
+Grain 50: 150ms, original=1471Hz, processed=1912Hz
+Grain 51: 150ms, original=915Hz, processed=641Hz
+Grain 52: 150ms, original=1204Hz, processed=1565Hz
+Grain 53: 150ms, original=2932Hz, processed=3812Hz
+Grain 54: 150ms, original=1233Hz, processed=1602Hz
+Grain 55: 150ms, original=206Hz, processed=144Hz
+Grain 56: 150ms, original=4523Hz, processed=5880Hz
+Grain 57: 150ms, original=347Hz, processed=243Hz
+Grain 58: 150ms, original=1316Hz, processed=1711Hz
+Grain 59: 150ms, original=1534Hz, processed=1994Hz
+Grain 60: 150ms, original=858Hz, processed=601Hz
+Grain 61: 150ms, original=318Hz, processed=223Hz
+Grain 62: 150ms, original=264Hz, processed=185Hz
+Grain 63: 150ms, original=1620Hz, processed=2106Hz
+Grain 64: 150ms, original=1325Hz, processed=1723Hz
+Grain 65: 150ms, original=216Hz, processed=151Hz
+Grain 66: 150ms, original=4245Hz, processed=5518Hz
+Grain 67: 150ms, original=365Hz, processed=256Hz
+Grain 68: 150ms, original=153Hz, processed=107Hz
+Grain 69: 150ms, original=180Hz, processed=126Hz
+Grain 70: 150ms, original=601Hz, processed=421Hz
+Grain 71: 150ms, original=1494Hz, processed=1942Hz
+Grain 72: 150ms, original=1069Hz, processed=1390Hz
+Grain 73: 150ms, original=225Hz, processed=158Hz
+Grain 74: 150ms, original=291Hz, processed=204Hz
+Grain 75: 150ms, original=202Hz, processed=142Hz
+Grain 76: 150ms, original=333Hz, processed=233Hz
+Grain 77: 150ms, original=300Hz, processed=210Hz
+Grain 78: 150ms, original=750Hz, processed=525Hz
+Grain 79: 150ms, original=3096Hz, processed=4024Hz
+Grain 80: 150ms, original=2542Hz, processed=3305Hz
+Grain 81: 150ms, original=598Hz, processed=419Hz
+Grain 82: 150ms, original=2550Hz, processed=3315Hz
+Grain 83: 150ms, original=176Hz, processed=123Hz
+Grain 84: 150ms, original=299Hz, processed=209Hz
+Grain 85: 150ms, original=169Hz, processed=118Hz
+Grain 86: 150ms, original=1912Hz, processed=2485Hz
+Grain 87: 150ms, original=156Hz, processed=110Hz
+Grain 88: 150ms, original=367Hz, processed=257Hz
+Grain 89: 150ms, original=1018Hz, processed=1323Hz
+Grain 90: 150ms, original=195Hz, processed=137Hz
+Grain 91: 150ms, original=200Hz, processed=140Hz
+Grain 92: 150ms, original=4616Hz, processed=6001Hz
+Grain 93: 150ms, original=377Hz, processed=264Hz
+Grain 94: 150ms, original=292Hz, processed=204Hz
+Grain 95: 150ms, original=184Hz, processed=129Hz
+Grain 96: 150ms, original=1143Hz, processed=1486Hz
+Grain 97: 150ms, original=291Hz, processed=204Hz
+Grain 98: 150ms, original=4605Hz, processed=5986Hz
+Grain 99: 150ms, original=2719Hz, processed=3535Hz
+Grain 100: 150ms, original=861Hz, processed=603Hz
+Grain 101: 150ms, original=1032Hz, processed=1341Hz
+Grain 102: 150ms, original=3571Hz, processed=4642Hz
+Grain 103: 150ms, original=359Hz, processed=251Hz
+Grain 104: 150ms, original=3425Hz, processed=4452Hz
+Grain 105: 150ms, original=154Hz, processed=107Hz
+Grain 106: 150ms, original=4908Hz, processed=6380Hz
+Grain 107: 150ms, original=265Hz, processed=185Hz
+Grain 108: 150ms, original=4216Hz, processed=5481Hz
+Grain 109: 150ms, original=1663Hz, processed=2161Hz
+Grain 110: 150ms, original=2230Hz, processed=2900Hz
+Grain 111: 150ms, original=236Hz, processed=165Hz
+Grain 112: 150ms, original=334Hz, processed=234Hz
+Grain 113: 150ms, original=269Hz, processed=189Hz
+Grain 114: 150ms, original=377Hz, processed=264Hz
+Grain 115: 150ms, original=1028Hz, processed=1337Hz
+Grain 116: 150ms, original=2219Hz, processed=2885Hz
+Grain 117: 150ms, original=2675Hz, processed=3478Hz
+Grain 118: 150ms, original=178Hz, processed=125Hz
+Grain 119: 150ms, original=166Hz, processed=116Hz
+Grain 120: 150ms, original=798Hz, processed=559Hz
+Grain 121: 150ms, original=245Hz, processed=172Hz
+Grain 122: 150ms, original=245Hz, processed=172Hz
+Grain 123: 150ms, original=4036Hz, processed=5247Hz
+Grain 124: 150ms, original=301Hz, processed=211Hz
+Grain 125: 150ms, original=285Hz, processed=200Hz
+Grain 126: 150ms, original=252Hz, processed=177Hz
+Grain 127: 150ms, original=1829Hz, processed=2378Hz
+Grain 128: 150ms, original=275Hz, processed=193Hz
+Grain 129: 150ms, original=1048Hz, processed=1363Hz
+Grain 130: 150ms, original=695Hz, processed=486Hz
+Grain 131: 150ms, original=406Hz, processed=284Hz
+Grain 132: 150ms, original=148Hz, processed=104Hz
+Grain 133: 150ms, original=176Hz, processed=123Hz
+Grain 134: 150ms, original=201Hz, processed=141Hz
+Grain 135: 150ms, original=2587Hz, processed=3363Hz
+Grain 136: 150ms, original=1187Hz, processed=1543Hz
+Grain 137: 150ms, original=205Hz, processed=143Hz
+Grain 138: 150ms, original=860Hz, processed=602Hz
+Grain 139: 150ms, original=194Hz, processed=136Hz
+Grain 140: 150ms, original=1871Hz, processed=2432Hz
+Grain 141: 150ms, original=11439Hz, processed=14871Hz
+Grain 142: 150ms, original=370Hz, processed=259Hz
+Grain 143: 150ms, original=4178Hz, processed=5431Hz
+Grain 144: 150ms, original=264Hz, processed=185Hz
+Grain 145: 150ms, original=230Hz, processed=161Hz
+Grain 146: 150ms, original=238Hz, processed=167Hz
+Grain 147: 150ms, original=230Hz, processed=161Hz
+Grain 148: 150ms, original=1925Hz, processed=2503Hz
+Grain 149: 150ms, original=212Hz, processed=148Hz
+Grain 150: 150ms, original=416Hz, processed=292Hz
+Grain 151: 150ms, original=3099Hz, processed=4029Hz
+Grain 152: 150ms, original=746Hz, processed=522Hz
+Grain 153: 150ms, original=775Hz, processed=542Hz
+Grain 154: 150ms, original=174Hz, processed=122Hz
+Grain 155: 150ms, original=1766Hz, processed=2296Hz
+Grain 156: 150ms, original=140Hz, processed=98Hz
+Grain 157: 150ms, original=1994Hz, processed=2592Hz
+Grain 158: 150ms, original=178Hz, processed=125Hz
+Grain 159: 150ms, original=325Hz, processed=227Hz
+Grain 160: 150ms, original=5025Hz, processed=6533Hz
+Grain 161: 150ms, original=1307Hz, processed=1700Hz
+Grain 162: 150ms, original=1882Hz, processed=2446Hz
+Grain 163: 150ms, original=730Hz, processed=511Hz
+Grain 164: 150ms, original=2333Hz, processed=3033Hz
+Grain 165: 150ms, original=263Hz, processed=184Hz
+Grain 166: 150ms, original=1059Hz, processed=1377Hz
+Grain 167: 150ms, original=198Hz, processed=138Hz
+Grain 168: 150ms, original=3139Hz, processed=4081Hz
+Grain 169: 150ms, original=4127Hz, processed=5364Hz
+Grain 170: 150ms, original=2814Hz, processed=3658Hz
+Grain 171: 150ms, original=1913Hz, processed=2487Hz
+Grain 172: 150ms, original=214Hz, processed=150Hz
+Grain 173: 150ms, original=246Hz, processed=172Hz
+Grain 174: 150ms, original=1319Hz, processed=1715Hz
+Grain 175: 150ms, original=786Hz, processed=550Hz
+Grain 176: 150ms, original=2868Hz, processed=3728Hz
+Grain 177: 150ms, original=2170Hz, processed=2820Hz
+Grain 178: 150ms, original=972Hz, processed=680Hz
+Grain 179: 150ms, original=445Hz, processed=312Hz
+Grain 180: 150ms, original=1294Hz, processed=1683Hz
+Grain 181: 150ms, original=2797Hz, processed=3636Hz
+Grain 182: 150ms, original=1038Hz, processed=1350Hz
+Grain 183: 150ms, original=1061Hz, processed=1380Hz
+Grain 184: 150ms, original=281Hz, processed=196Hz
+Grain 185: 150ms, original=1149Hz, processed=1494Hz
+Grain 186: 150ms, original=1678Hz, processed=2181Hz
+Grain 187: 150ms, original=538Hz, processed=377Hz
+Grain 188: 150ms, original=951Hz, processed=666Hz
+Grain 189: 150ms, original=272Hz, processed=190Hz
+Grain 190: 150ms, original=561Hz, processed=393Hz
+Grain 191: 150ms, original=281Hz, processed=197Hz
+Grain 192: 150ms, original=392Hz, processed=275Hz
+Grain 193: 150ms, original=205Hz, processed=144Hz
+Grain 194: 150ms, original=145Hz, processed=101Hz
+Grain 195: 150ms, original=3065Hz, processed=3984Hz
+Grain 196: 150ms, original=296Hz, processed=207Hz
+Grain 197: 150ms, original=2172Hz, processed=2824Hz
+Grain 198: 150ms, original=1281Hz, processed=1665Hz
+Grain 199: 150ms, original=2209Hz, processed=2872Hz
+Grain 200: 150ms, original=1621Hz, processed=2107Hz
+Grain 201: 150ms, original=1440Hz, processed=1873Hz
+Grain 202: 150ms, original=2254Hz, processed=2931Hz
+Grain 203: 150ms, original=294Hz, processed=206Hz
+Grain 204: 150ms, original=212Hz, processed=148Hz
+Grain 205: 150ms, original=2214Hz, processed=2878Hz
+Grain 206: 150ms, original=1646Hz, processed=2140Hz
+Grain 207: 150ms, original=869Hz, processed=608Hz
+Grain 208: 150ms, original=196Hz, processed=137Hz
+Grain 209: 150ms, original=950Hz, processed=665Hz
+Grain 210: 150ms, original=546Hz, processed=382Hz
+Grain 211: 150ms, original=4204Hz, processed=5465Hz
+Grain 212: 150ms, original=1178Hz, processed=1531Hz
+Grain 213: 150ms, original=198Hz, processed=139Hz
+Grain 214: 150ms, original=328Hz, processed=229Hz
+Grain 215: 150ms, original=3525Hz, processed=4582Hz
+Grain 216: 150ms, original=207Hz, processed=145Hz
+Grain 217: 150ms, original=5607Hz, processed=7289Hz
+Grain 218: 150ms, original=256Hz, processed=179Hz
+Grain 219: 150ms, original=321Hz, processed=225Hz
+Grain 220: 150ms, original=360Hz, processed=252Hz
+Grain 221: 150ms, original=563Hz, processed=394Hz
+Grain 222: 150ms, original=1900Hz, processed=2470Hz
+Grain 223: 150ms, original=1628Hz, processed=2117Hz
+Grain 224: 150ms, original=161Hz, processed=112Hz
+Grain 225: 150ms, original=4470Hz, processed=5811Hz
+Grain 226: 150ms, original=3543Hz, processed=4605Hz
+Grain 227: 150ms, original=629Hz, processed=440Hz
+Grain 228: 150ms, original=300Hz, processed=210Hz
+Grain 229: 150ms, original=224Hz, processed=157Hz
+Grain 230: 150ms, original=1167Hz, processed=1517Hz
+Grain 231: 150ms, original=1059Hz, processed=1376Hz
+Grain 232: 150ms, original=166Hz, processed=116Hz
+Grain 233: 150ms, original=2231Hz, processed=2901Hz
+Grain 234: 150ms, original=159Hz, processed=111Hz
+Grain 235: 150ms, original=213Hz, processed=149Hz
+Grain 236: 150ms, original=3268Hz, processed=4249Hz
+Grain 237: 150ms, original=1748Hz, processed=2272Hz
+Grain 238: 150ms, original=2202Hz, processed=2862Hz
+Grain 239: 150ms, original=4949Hz, processed=6434Hz
+Grain 240: 150ms, original=276Hz, processed=193Hz
+Grain 241: 150ms, original=162Hz, processed=113Hz
+Grain 242: 150ms, original=210Hz, processed=147Hz
+Grain 243: 150ms, original=277Hz, processed=194Hz
+Grain 244: 150ms, original=217Hz, processed=152Hz
+Grain 245: 150ms, original=196Hz, processed=137Hz
+Grain 246: 150ms, original=1023Hz, processed=1330Hz
+Grain 247: 150ms, original=3303Hz, processed=4294Hz
+Grain 248: 150ms, original=348Hz, processed=243Hz
+Grain 249: 150ms, original=298Hz, processed=209Hz
+Grain 250: 150ms, original=264Hz, processed=185Hz
+Grain 251: 150ms, original=3515Hz, processed=4569Hz
+Grain 252: 150ms, original=176Hz, processed=123Hz
+Grain 253: 150ms, original=143Hz, processed=100Hz
+Grain 254: 150ms, original=205Hz, processed=144Hz
+Grain 255: 150ms, original=273Hz, processed=191Hz
+=== Sorting Grains by Brightness ===
+Final sort order:
+1. hebrew_mono_grain_8_89Hz_150ms (150ms, brightness=89Hz, original=127Hz)
+2. hebrew_mono_grain_156_98Hz_150ms (150ms, brightness=98Hz, original=140Hz)
+3. hebrew_mono_grain_253_100Hz_150ms (150ms, brightness=100Hz, original=143Hz)
+4. hebrew_mono_grain_194_101Hz_150ms (150ms, brightness=101Hz, original=145Hz)
+5. hebrew_mono_grain_132_104Hz_150ms (150ms, brightness=104Hz, original=148Hz)
+6. hebrew_mono_grain_68_107Hz_150ms (150ms, brightness=107Hz, original=153Hz)
+7. hebrew_mono_grain_105_107Hz_150ms (150ms, brightness=107Hz, original=154Hz)
+8. hebrew_mono_grain_87_110Hz_150ms (150ms, brightness=110Hz, original=156Hz)
+9. hebrew_mono_grain_27_111Hz_150ms (150ms, brightness=111Hz, original=158Hz)
+10. hebrew_mono_grain_234_111Hz_150ms (150ms, brightness=111Hz, original=159Hz)
+11. hebrew_mono_grain_40_112Hz_150ms (150ms, brightness=112Hz, original=160Hz)
+12. hebrew_mono_grain_224_112Hz_150ms (150ms, brightness=112Hz, original=161Hz)
+13. hebrew_mono_grain_241_113Hz_150ms (150ms, brightness=113Hz, original=162Hz)
+14. hebrew_mono_grain_232_116Hz_150ms (150ms, brightness=116Hz, original=166Hz)
+15. hebrew_mono_grain_119_116Hz_150ms (150ms, brightness=116Hz, original=166Hz)
+16. hebrew_mono_grain_85_118Hz_150ms (150ms, brightness=118Hz, original=169Hz)
+17. hebrew_mono_grain_154_122Hz_150ms (150ms, brightness=122Hz, original=174Hz)
+18. hebrew_mono_grain_252_123Hz_150ms (150ms, brightness=123Hz, original=176Hz)
+19. hebrew_mono_grain_83_123Hz_150ms (150ms, brightness=123Hz, original=176Hz)
+20. hebrew_mono_grain_133_123Hz_150ms (150ms, brightness=123Hz, original=176Hz)
+21. hebrew_mono_grain_158_125Hz_150ms (150ms, brightness=125Hz, original=178Hz)
+22. hebrew_mono_grain_118_125Hz_150ms (150ms, brightness=125Hz, original=178Hz)
+23. hebrew_mono_grain_69_126Hz_150ms (150ms, brightness=126Hz, original=180Hz)
+24. hebrew_mono_grain_95_129Hz_150ms (150ms, brightness=129Hz, original=184Hz)
+25. hebrew_mono_grain_47_130Hz_150ms (150ms, brightness=130Hz, original=185Hz)
+26. hebrew_mono_grain_139_136Hz_150ms (150ms, brightness=136Hz, original=194Hz)
+27. hebrew_mono_grain_90_137Hz_150ms (150ms, brightness=137Hz, original=195Hz)
+28. hebrew_mono_grain_245_137Hz_150ms (150ms, brightness=137Hz, original=196Hz)
+29. hebrew_mono_grain_208_137Hz_150ms (150ms, brightness=137Hz, original=196Hz)
+30. hebrew_mono_grain_167_138Hz_150ms (150ms, brightness=138Hz, original=198Hz)
+31. hebrew_mono_grain_16_139Hz_150ms (150ms, brightness=139Hz, original=198Hz)
+32. hebrew_mono_grain_213_139Hz_150ms (150ms, brightness=139Hz, original=198Hz)
+33. hebrew_mono_grain_91_140Hz_150ms (150ms, brightness=140Hz, original=200Hz)
+34. hebrew_mono_grain_134_141Hz_150ms (150ms, brightness=141Hz, original=201Hz)
+35. hebrew_mono_grain_75_142Hz_150ms (150ms, brightness=142Hz, original=202Hz)
+36. hebrew_mono_grain_137_143Hz_150ms (150ms, brightness=143Hz, original=205Hz)
+37. hebrew_mono_grain_193_144Hz_150ms (150ms, brightness=144Hz, original=205Hz)
+38. hebrew_mono_grain_254_144Hz_150ms (150ms, brightness=144Hz, original=205Hz)
+39. hebrew_mono_grain_55_144Hz_150ms (150ms, brightness=144Hz, original=206Hz)
+40. hebrew_mono_grain_216_145Hz_150ms (150ms, brightness=145Hz, original=207Hz)
+41. hebrew_mono_grain_242_147Hz_150ms (150ms, brightness=147Hz, original=210Hz)
+42. hebrew_mono_grain_149_148Hz_150ms (150ms, brightness=148Hz, original=212Hz)
+43. hebrew_mono_grain_204_148Hz_150ms (150ms, brightness=148Hz, original=212Hz)
+44. hebrew_mono_grain_235_149Hz_150ms (150ms, brightness=149Hz, original=213Hz)
+45. hebrew_mono_grain_172_150Hz_150ms (150ms, brightness=150Hz, original=214Hz)
+46. hebrew_mono_grain_65_151Hz_150ms (150ms, brightness=151Hz, original=216Hz)
+47. hebrew_mono_grain_244_152Hz_150ms (150ms, brightness=152Hz, original=217Hz)
+48. hebrew_mono_grain_229_157Hz_150ms (150ms, brightness=157Hz, original=224Hz)
+49. hebrew_mono_grain_73_158Hz_150ms (150ms, brightness=158Hz, original=225Hz)
+50. hebrew_mono_grain_2_160Hz_150ms (150ms, brightness=160Hz, original=229Hz)
+51. hebrew_mono_grain_145_161Hz_150ms (150ms, brightness=161Hz, original=230Hz)
+52. hebrew_mono_grain_147_161Hz_150ms (150ms, brightness=161Hz, original=230Hz)
+53. hebrew_mono_grain_111_165Hz_150ms (150ms, brightness=165Hz, original=236Hz)
+54. hebrew_mono_grain_146_167Hz_150ms (150ms, brightness=167Hz, original=238Hz)
+55. hebrew_mono_grain_122_172Hz_150ms (150ms, brightness=172Hz, original=245Hz)
+56. hebrew_mono_grain_121_172Hz_150ms (150ms, brightness=172Hz, original=245Hz)
+57. hebrew_mono_grain_173_172Hz_150ms (150ms, brightness=172Hz, original=246Hz)
+58. hebrew_mono_grain_43_174Hz_150ms (150ms, brightness=174Hz, original=249Hz)
+59. hebrew_mono_grain_126_177Hz_150ms (150ms, brightness=177Hz, original=252Hz)
+60. hebrew_mono_grain_44_178Hz_150ms (150ms, brightness=178Hz, original=255Hz)
+61. hebrew_mono_grain_218_179Hz_150ms (150ms, brightness=179Hz, original=256Hz)
+62. hebrew_mono_grain_165_184Hz_150ms (150ms, brightness=184Hz, original=263Hz)
+63. hebrew_mono_grain_144_185Hz_150ms (150ms, brightness=185Hz, original=264Hz)
+64. hebrew_mono_grain_250_185Hz_150ms (150ms, brightness=185Hz, original=264Hz)
+65. hebrew_mono_grain_62_185Hz_150ms (150ms, brightness=185Hz, original=264Hz)
+66. hebrew_mono_grain_49_185Hz_150ms (150ms, brightness=185Hz, original=265Hz)
+67. hebrew_mono_grain_107_185Hz_150ms (150ms, brightness=185Hz, original=265Hz)
+68. hebrew_mono_grain_113_189Hz_150ms (150ms, brightness=189Hz, original=269Hz)
+69. hebrew_mono_grain_189_190Hz_150ms (150ms, brightness=190Hz, original=272Hz)
+70. hebrew_mono_grain_15_190Hz_150ms (150ms, brightness=190Hz, original=272Hz)
+71. hebrew_mono_grain_255_191Hz_150ms (150ms, brightness=191Hz, original=273Hz)
+72. hebrew_mono_grain_1_193Hz_150ms (150ms, brightness=193Hz, original=275Hz)
+73. hebrew_mono_grain_128_193Hz_150ms (150ms, brightness=193Hz, original=275Hz)
+74. hebrew_mono_grain_240_193Hz_150ms (150ms, brightness=193Hz, original=276Hz)
+75. hebrew_mono_grain_243_194Hz_150ms (150ms, brightness=194Hz, original=277Hz)
+76. hebrew_mono_grain_184_196Hz_150ms (150ms, brightness=196Hz, original=281Hz)
+77. hebrew_mono_grain_191_197Hz_150ms (150ms, brightness=197Hz, original=281Hz)
+78. hebrew_mono_grain_125_200Hz_150ms (150ms, brightness=200Hz, original=285Hz)
+79. hebrew_mono_grain_14_200Hz_150ms (150ms, brightness=200Hz, original=286Hz)
+80. hebrew_mono_grain_97_204Hz_150ms (150ms, brightness=204Hz, original=291Hz)
+81. hebrew_mono_grain_74_204Hz_150ms (150ms, brightness=204Hz, original=291Hz)
+82. hebrew_mono_grain_94_204Hz_150ms (150ms, brightness=204Hz, original=292Hz)
+83. hebrew_mono_grain_203_206Hz_150ms (150ms, brightness=206Hz, original=294Hz)
+84. hebrew_mono_grain_196_207Hz_150ms (150ms, brightness=207Hz, original=296Hz)
+85. hebrew_mono_grain_249_209Hz_150ms (150ms, brightness=209Hz, original=298Hz)
+86. hebrew_mono_grain_84_209Hz_150ms (150ms, brightness=209Hz, original=299Hz)
+87. hebrew_mono_grain_77_210Hz_150ms (150ms, brightness=210Hz, original=300Hz)
+88. hebrew_mono_grain_228_210Hz_150ms (150ms, brightness=210Hz, original=300Hz)
+89. hebrew_mono_grain_124_211Hz_150ms (150ms, brightness=211Hz, original=301Hz)
+90. hebrew_mono_grain_31_218Hz_150ms (150ms, brightness=218Hz, original=311Hz)
+91. hebrew_mono_grain_18_219Hz_150ms (150ms, brightness=219Hz, original=313Hz)
+92. hebrew_mono_grain_61_223Hz_150ms (150ms, brightness=223Hz, original=318Hz)
+93. hebrew_mono_grain_219_225Hz_150ms (150ms, brightness=225Hz, original=321Hz)
+94. hebrew_mono_grain_159_227Hz_150ms (150ms, brightness=227Hz, original=325Hz)
+95. hebrew_mono_grain_20_229Hz_150ms (150ms, brightness=229Hz, original=327Hz)
+96. hebrew_mono_grain_214_229Hz_150ms (150ms, brightness=229Hz, original=328Hz)
+97. hebrew_mono_grain_21_230Hz_150ms (150ms, brightness=230Hz, original=328Hz)
+98. hebrew_mono_grain_3_230Hz_150ms (150ms, brightness=230Hz, original=328Hz)
+99. hebrew_mono_grain_11_230Hz_150ms (150ms, brightness=230Hz, original=329Hz)
+100. hebrew_mono_grain_76_233Hz_150ms (150ms, brightness=233Hz, original=333Hz)
+101. hebrew_mono_grain_112_234Hz_150ms (150ms, brightness=234Hz, original=334Hz)
+102. hebrew_mono_grain_57_243Hz_150ms (150ms, brightness=243Hz, original=347Hz)
+103. hebrew_mono_grain_248_243Hz_150ms (150ms, brightness=243Hz, original=348Hz)
+104. hebrew_mono_grain_24_251Hz_150ms (150ms, brightness=251Hz, original=358Hz)
+105. hebrew_mono_grain_103_251Hz_150ms (150ms, brightness=251Hz, original=359Hz)
+106. hebrew_mono_grain_220_252Hz_150ms (150ms, brightness=252Hz, original=360Hz)
+107. hebrew_mono_grain_67_256Hz_150ms (150ms, brightness=256Hz, original=365Hz)
+108. hebrew_mono_grain_29_256Hz_150ms (150ms, brightness=256Hz, original=365Hz)
+109. hebrew_mono_grain_88_257Hz_150ms (150ms, brightness=257Hz, original=367Hz)
+110. hebrew_mono_grain_142_259Hz_150ms (150ms, brightness=259Hz, original=370Hz)
+111. hebrew_mono_grain_114_264Hz_150ms (150ms, brightness=264Hz, original=377Hz)
+112. hebrew_mono_grain_41_264Hz_150ms (150ms, brightness=264Hz, original=377Hz)
+113. hebrew_mono_grain_93_264Hz_150ms (150ms, brightness=264Hz, original=377Hz)
+114. hebrew_mono_grain_46_265Hz_150ms (150ms, brightness=265Hz, original=378Hz)
+115. hebrew_mono_grain_192_275Hz_150ms (150ms, brightness=275Hz, original=392Hz)
+116. hebrew_mono_grain_32_279Hz_150ms (150ms, brightness=279Hz, original=399Hz)
+117. hebrew_mono_grain_131_284Hz_150ms (150ms, brightness=284Hz, original=406Hz)
+118. hebrew_mono_grain_35_287Hz_150ms (150ms, brightness=287Hz, original=410Hz)
+119. hebrew_mono_grain_150_292Hz_150ms (150ms, brightness=292Hz, original=416Hz)
+120. hebrew_mono_grain_179_312Hz_150ms (150ms, brightness=312Hz, original=445Hz)
+121. hebrew_mono_grain_187_377Hz_150ms (150ms, brightness=377Hz, original=538Hz)
+122. hebrew_mono_grain_210_382Hz_150ms (150ms, brightness=382Hz, original=546Hz)
+123. hebrew_mono_grain_190_393Hz_150ms (150ms, brightness=393Hz, original=561Hz)
+124. hebrew_mono_grain_221_394Hz_150ms (150ms, brightness=394Hz, original=563Hz)
+125. hebrew_mono_grain_81_419Hz_150ms (150ms, brightness=419Hz, original=598Hz)
+126. hebrew_mono_grain_70_421Hz_150ms (150ms, brightness=421Hz, original=601Hz)
+127. hebrew_mono_grain_227_440Hz_150ms (150ms, brightness=440Hz, original=629Hz)
+128. hebrew_mono_grain_130_486Hz_150ms (150ms, brightness=486Hz, original=695Hz)
+129. hebrew_mono_grain_163_511Hz_150ms (150ms, brightness=511Hz, original=730Hz)
+130. hebrew_mono_grain_152_522Hz_150ms (150ms, brightness=522Hz, original=746Hz)
+131. hebrew_mono_grain_78_525Hz_150ms (150ms, brightness=525Hz, original=750Hz)
+132. hebrew_mono_grain_153_542Hz_150ms (150ms, brightness=542Hz, original=775Hz)
+133. hebrew_mono_grain_175_550Hz_150ms (150ms, brightness=550Hz, original=786Hz)
+134. hebrew_mono_grain_120_559Hz_150ms (150ms, brightness=559Hz, original=798Hz)
+135. hebrew_mono_grain_60_601Hz_150ms (150ms, brightness=601Hz, original=858Hz)
+136. hebrew_mono_grain_138_602Hz_150ms (150ms, brightness=602Hz, original=860Hz)
+137. hebrew_mono_grain_100_603Hz_150ms (150ms, brightness=603Hz, original=861Hz)
+138. hebrew_mono_grain_207_608Hz_150ms (150ms, brightness=608Hz, original=869Hz)
+139. hebrew_mono_grain_39_616Hz_150ms (150ms, brightness=616Hz, original=880Hz)
+140. hebrew_mono_grain_51_641Hz_150ms (150ms, brightness=641Hz, original=915Hz)
+141. hebrew_mono_grain_42_645Hz_150ms (150ms, brightness=645Hz, original=921Hz)
+142. hebrew_mono_grain_209_665Hz_150ms (150ms, brightness=665Hz, original=950Hz)
+143. hebrew_mono_grain_188_666Hz_150ms (150ms, brightness=666Hz, original=951Hz)
+144. hebrew_mono_grain_178_680Hz_150ms (150ms, brightness=680Hz, original=972Hz)
+145. hebrew_mono_grain_89_1323Hz_150ms (150ms, brightness=1323Hz, original=1018Hz)
+146. hebrew_mono_grain_246_1330Hz_150ms (150ms, brightness=1330Hz, original=1023Hz)
+147. hebrew_mono_grain_115_1337Hz_150ms (150ms, brightness=1337Hz, original=1028Hz)
+148. hebrew_mono_grain_101_1341Hz_150ms (150ms, brightness=1341Hz, original=1032Hz)
+149. hebrew_mono_grain_182_1350Hz_150ms (150ms, brightness=1350Hz, original=1038Hz)
+150. hebrew_mono_grain_129_1363Hz_150ms (150ms, brightness=1363Hz, original=1048Hz)
+151. hebrew_mono_grain_231_1376Hz_150ms (150ms, brightness=1376Hz, original=1059Hz)
+152. hebrew_mono_grain_166_1377Hz_150ms (150ms, brightness=1377Hz, original=1059Hz)
+153. hebrew_mono_grain_183_1380Hz_150ms (150ms, brightness=1380Hz, original=1061Hz)
+154. hebrew_mono_grain_72_1390Hz_150ms (150ms, brightness=1390Hz, original=1069Hz)
+155. hebrew_mono_grain_5_1394Hz_150ms (150ms, brightness=1394Hz, original=1072Hz)
+156. hebrew_mono_grain_25_1439Hz_150ms (150ms, brightness=1439Hz, original=1107Hz)
+157. hebrew_mono_grain_96_1486Hz_150ms (150ms, brightness=1486Hz, original=1143Hz)
+158. hebrew_mono_grain_185_1494Hz_150ms (150ms, brightness=1494Hz, original=1149Hz)
+159. hebrew_mono_grain_230_1517Hz_150ms (150ms, brightness=1517Hz, original=1167Hz)
+160. hebrew_mono_grain_212_1531Hz_150ms (150ms, brightness=1531Hz, original=1178Hz)
+161. hebrew_mono_grain_136_1543Hz_150ms (150ms, brightness=1543Hz, original=1187Hz)
+162. hebrew_mono_grain_52_1565Hz_150ms (150ms, brightness=1565Hz, original=1204Hz)
+163. hebrew_mono_grain_48_1591Hz_150ms (150ms, brightness=1591Hz, original=1224Hz)
+164. hebrew_mono_grain_54_1602Hz_150ms (150ms, brightness=1602Hz, original=1233Hz)
+165. hebrew_mono_grain_30_1607Hz_150ms (150ms, brightness=1607Hz, original=1236Hz)
+166. hebrew_mono_grain_34_1621Hz_150ms (150ms, brightness=1621Hz, original=1247Hz)
+167. hebrew_mono_grain_36_1632Hz_150ms (150ms, brightness=1632Hz, original=1256Hz)
+168. hebrew_mono_grain_198_1665Hz_150ms (150ms, brightness=1665Hz, original=1281Hz)
+169. hebrew_mono_grain_180_1683Hz_150ms (150ms, brightness=1683Hz, original=1294Hz)
+170. hebrew_mono_grain_161_1700Hz_150ms (150ms, brightness=1700Hz, original=1307Hz)
+171. hebrew_mono_grain_58_1711Hz_150ms (150ms, brightness=1711Hz, original=1316Hz)
+172. hebrew_mono_grain_174_1715Hz_150ms (150ms, brightness=1715Hz, original=1319Hz)
+173. hebrew_mono_grain_64_1723Hz_150ms (150ms, brightness=1723Hz, original=1325Hz)
+174. hebrew_mono_grain_45_1813Hz_150ms (150ms, brightness=1813Hz, original=1395Hz)
+175. hebrew_mono_grain_13_1868Hz_150ms (150ms, brightness=1868Hz, original=1437Hz)
+176. hebrew_mono_grain_201_1873Hz_150ms (150ms, brightness=1873Hz, original=1440Hz)
+177. hebrew_mono_grain_50_1912Hz_150ms (150ms, brightness=1912Hz, original=1471Hz)
+178. hebrew_mono_grain_71_1942Hz_150ms (150ms, brightness=1942Hz, original=1494Hz)
+179. hebrew_mono_grain_7_1949Hz_150ms (150ms, brightness=1949Hz, original=1499Hz)
+180. hebrew_mono_grain_59_1994Hz_150ms (150ms, brightness=1994Hz, original=1534Hz)
+181. hebrew_mono_grain_63_2106Hz_150ms (150ms, brightness=2106Hz, original=1620Hz)
+182. hebrew_mono_grain_200_2107Hz_150ms (150ms, brightness=2107Hz, original=1621Hz)
+183. hebrew_mono_grain_223_2117Hz_150ms (150ms, brightness=2117Hz, original=1628Hz)
+184. hebrew_mono_grain_206_2140Hz_150ms (150ms, brightness=2140Hz, original=1646Hz)
+185. hebrew_mono_grain_109_2161Hz_150ms (150ms, brightness=2161Hz, original=1663Hz)
+186. hebrew_mono_grain_186_2181Hz_150ms (150ms, brightness=2181Hz, original=1678Hz)
+187. hebrew_mono_grain_237_2272Hz_150ms (150ms, brightness=2272Hz, original=1748Hz)
+188. hebrew_mono_grain_155_2296Hz_150ms (150ms, brightness=2296Hz, original=1766Hz)
+189. hebrew_mono_grain_37_2339Hz_150ms (150ms, brightness=2339Hz, original=1799Hz)
+190. hebrew_mono_grain_10_2346Hz_150ms (150ms, brightness=2346Hz, original=1805Hz)
+191. hebrew_mono_grain_127_2378Hz_150ms (150ms, brightness=2378Hz, original=1829Hz)
+192. hebrew_mono_grain_140_2432Hz_150ms (150ms, brightness=2432Hz, original=1871Hz)
+193. hebrew_mono_grain_162_2446Hz_150ms (150ms, brightness=2446Hz, original=1882Hz)
+194. hebrew_mono_grain_222_2470Hz_150ms (150ms, brightness=2470Hz, original=1900Hz)
+195. hebrew_mono_grain_86_2485Hz_150ms (150ms, brightness=2485Hz, original=1912Hz)
+196. hebrew_mono_grain_171_2487Hz_150ms (150ms, brightness=2487Hz, original=1913Hz)
+197. hebrew_mono_grain_148_2503Hz_150ms (150ms, brightness=2503Hz, original=1925Hz)
+198. hebrew_mono_grain_17_2586Hz_150ms (150ms, brightness=2586Hz, original=1989Hz)
+199. hebrew_mono_grain_38_2590Hz_150ms (150ms, brightness=2590Hz, original=1993Hz)
+200. hebrew_mono_grain_157_2592Hz_150ms (150ms, brightness=2592Hz, original=1994Hz)
+201. hebrew_mono_grain_9_2616Hz_150ms (150ms, brightness=2616Hz, original=2013Hz)
+202. hebrew_mono_grain_177_2820Hz_150ms (150ms, brightness=2820Hz, original=2170Hz)
+203. hebrew_mono_grain_197_2824Hz_150ms (150ms, brightness=2824Hz, original=2172Hz)
+204. hebrew_mono_grain_238_2862Hz_150ms (150ms, brightness=2862Hz, original=2202Hz)
+205. hebrew_mono_grain_199_2872Hz_150ms (150ms, brightness=2872Hz, original=2209Hz)
+206. hebrew_mono_grain_205_2878Hz_150ms (150ms, brightness=2878Hz, original=2214Hz)
+207. hebrew_mono_grain_116_2885Hz_150ms (150ms, brightness=2885Hz, original=2219Hz)
+208. hebrew_mono_grain_110_2900Hz_150ms (150ms, brightness=2900Hz, original=2230Hz)
+209. hebrew_mono_grain_233_2901Hz_150ms (150ms, brightness=2901Hz, original=2231Hz)
+210. hebrew_mono_grain_202_2931Hz_150ms (150ms, brightness=2931Hz, original=2254Hz)
+211. hebrew_mono_grain_164_3033Hz_150ms (150ms, brightness=3033Hz, original=2333Hz)
+212. hebrew_mono_grain_80_3305Hz_150ms (150ms, brightness=3305Hz, original=2542Hz)
+213. hebrew_mono_grain_82_3315Hz_150ms (150ms, brightness=3315Hz, original=2550Hz)
+214. hebrew_mono_grain_26_3337Hz_150ms (150ms, brightness=3337Hz, original=2567Hz)
+215. hebrew_mono_grain_135_3363Hz_150ms (150ms, brightness=3363Hz, original=2587Hz)
+216. hebrew_mono_grain_4_3368Hz_150ms (150ms, brightness=3368Hz, original=2591Hz)
+217. hebrew_mono_grain_6_3396Hz_150ms (150ms, brightness=3396Hz, original=2612Hz)
+218. hebrew_mono_grain_117_3478Hz_150ms (150ms, brightness=3478Hz, original=2675Hz)
+219. hebrew_mono_grain_22_3483Hz_150ms (150ms, brightness=3483Hz, original=2679Hz)
+220. hebrew_mono_grain_99_3535Hz_150ms (150ms, brightness=3535Hz, original=2719Hz)
+221. hebrew_mono_grain_181_3636Hz_150ms (150ms, brightness=3636Hz, original=2797Hz)
+222. hebrew_mono_grain_170_3658Hz_150ms (150ms, brightness=3658Hz, original=2814Hz)
+223. hebrew_mono_grain_176_3728Hz_150ms (150ms, brightness=3728Hz, original=2868Hz)
+224. hebrew_mono_grain_53_3812Hz_150ms (150ms, brightness=3812Hz, original=2932Hz)
+225. hebrew_mono_grain_195_3984Hz_150ms (150ms, brightness=3984Hz, original=3065Hz)
+226. hebrew_mono_grain_79_4024Hz_150ms (150ms, brightness=4024Hz, original=3096Hz)
+227. hebrew_mono_grain_151_4029Hz_150ms (150ms, brightness=4029Hz, original=3099Hz)
+228. hebrew_mono_grain_168_4081Hz_150ms (150ms, brightness=4081Hz, original=3139Hz)
+229. hebrew_mono_grain_236_4249Hz_150ms (150ms, brightness=4249Hz, original=3268Hz)
+230. hebrew_mono_grain_247_4294Hz_150ms (150ms, brightness=4294Hz, original=3303Hz)
+231. hebrew_mono_grain_104_4452Hz_150ms (150ms, brightness=4452Hz, original=3425Hz)
+232. hebrew_mono_grain_251_4569Hz_150ms (150ms, brightness=4569Hz, original=3515Hz)
+233. hebrew_mono_grain_33_4572Hz_150ms (150ms, brightness=4572Hz, original=3517Hz)
+234. hebrew_mono_grain_215_4582Hz_150ms (150ms, brightness=4582Hz, original=3525Hz)
+235. hebrew_mono_grain_226_4605Hz_150ms (150ms, brightness=4605Hz, original=3543Hz)
+236. hebrew_mono_grain_102_4642Hz_150ms (150ms, brightness=4642Hz, original=3571Hz)
+237. hebrew_mono_grain_123_5247Hz_150ms (150ms, brightness=5247Hz, original=4036Hz)
+238. hebrew_mono_grain_169_5364Hz_150ms (150ms, brightness=5364Hz, original=4127Hz)
+239. hebrew_mono_grain_143_5431Hz_150ms (150ms, brightness=5431Hz, original=4178Hz)
+240. hebrew_mono_grain_211_5465Hz_150ms (150ms, brightness=5465Hz, original=4204Hz)
+241. hebrew_mono_grain_108_5481Hz_150ms (150ms, brightness=5481Hz, original=4216Hz)
+242. hebrew_mono_grain_66_5518Hz_150ms (150ms, brightness=5518Hz, original=4245Hz)
+243. hebrew_mono_grain_225_5811Hz_150ms (150ms, brightness=5811Hz, original=4470Hz)
+244. hebrew_mono_grain_56_5880Hz_150ms (150ms, brightness=5880Hz, original=4523Hz)
+245. hebrew_mono_grain_98_5986Hz_150ms (150ms, brightness=5986Hz, original=4605Hz)
+246. hebrew_mono_grain_92_6001Hz_150ms (150ms, brightness=6001Hz, original=4616Hz)
+247. hebrew_mono_grain_106_6380Hz_150ms (150ms, brightness=6380Hz, original=4908Hz)
+248. hebrew_mono_grain_239_6434Hz_150ms (150ms, brightness=6434Hz, original=4949Hz)
+249. hebrew_mono_grain_160_6533Hz_150ms (150ms, brightness=6533Hz, original=5025Hz)
+250. hebrew_mono_grain_23_6794Hz_150ms (150ms, brightness=6794Hz, original=5226Hz)
+251. hebrew_mono_grain_12_6813Hz_150ms (150ms, brightness=6813Hz, original=5240Hz)
+252. hebrew_mono_grain_28_7244Hz_150ms (150ms, brightness=7244Hz, original=5572Hz)
+253. hebrew_mono_grain_217_7289Hz_150ms (150ms, brightness=7289Hz, original=5607Hz)
+254. hebrew_mono_grain_19_7657Hz_150ms (150ms, brightness=7657Hz, original=5890Hz)
+255. hebrew_mono_grain_141_14871Hz_150ms (150ms, brightness=14871Hz, original=11439Hz)
+=== Concatenating Grains with Gaps ===
+=== Adaptive Grain Cloud Synthesis Complete ===
+Created and sorted 255 grains from 'hebrew_mono'
+Grain size mode: Fixed
+Sort direction: Dark to bright
+Spectral exaggeration: ON
+Gap between grains: 50ms
+Brightness range: 89-14871Hz
+Total output duration: 60.07s
+Result: 'hebrew_mono_granular_sorted'

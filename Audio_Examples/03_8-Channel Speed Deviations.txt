@@ -1,0 +1,73 @@
+8-Channel Speed Deviations: A Technical Overview
+
+This Praat script creates an 8-channel spatial diffusion effect by generating independent time-stretched versions of a mono source, each played at slightly different speeds. The result produces a chorusing, phase-cancellation texture suitable for multichannel speaker arrays or immersive audio environments.
+
+Core Process
+
+The script takes a single mono audio file and creates eight parallel versions with incrementally varying playback speeds. These versions maintain pitch through overlap-add resynthesis, resulting in synchronized yet temporally detuned copies that create spatial width and spectral interference patterns when played simultaneously.
+
+Technical Operations
+
+1. Speed Factor Calculation Modes
+
+The script offers three approaches to determining the speed variation across channels:
+
+Automatic Mode: Generates a linear spread of speed factors based on a single deviation parameter (default 0.15). Channel speeds range from 1-deviation (0.85×) to 1+deviation (1.15×), evenly distributed across 8 channels. This creates a symmetrical spread around normal playback speed.
+
+Manual Mode: Accepts explicit speed values for each channel, allowing asymmetric or non-linear distributions. Useful for custom spatial mappings or irregular phasing patterns.
+
+Random Mode: Uses pseudo-random generation seeded for reproducibility. Speed factors are distributed randomly within a min-max range (default 0.80× to 1.20×), creating unpredictable spatial motion.
+
+2. Mono Conversion and Sampling Rate Override
+
+If the source is stereo, it is summed to mono to ensure identical source material across all channels. This prevents left-right channel content from causing additional phasing beyond the intended speed variations.
+
+Sampling rate can be overridden to a target frequency (default 44100 Hz) for compatibility with specific playback systems or to ensure all channels share identical sample rates after processing.
+
+3. Overlap-Add Time Stretching
+
+Each channel copy undergoes independent time stretching using phase vocoder principles (overlap-add method).
+
+Pitch range parameters (75-600 Hz) define the analysis window for maintaining harmonic structure during stretching.
+
+Duration is scaled inversely to the speed factor: a 0.85× speed requires 1/0.85 = 1.176× duration, while 1.15× speed requires 0.869× duration.
+
+This preserves pitch: slower playback does not lower pitch, faster playback does not raise pitch—critical for maintaining timbral consistency across channels.
+
+4. Resampling to Target Frequency
+
+After time stretching, each channel is resampled to the target sampling frequency with 50-sample precision.
+
+Resampling ensures synchronization when channels are combined, preventing drift or misalignment in multichannel playback.
+
+5. Multichannel Combination
+
+The eight processed mono channels are combined into a single 8-channel interleaved audio file using stereo combination (recursively applied to accommodate more than 2 channels).
+
+The resulting file contains 8 independent tracks, each carrying the same source material at different temporal rates.
+
+6. Cleanup and Object Management
+
+Intermediate processing objects (copied sounds, stretched versions) are systematically removed to prevent memory clutter.
+
+Only the original input and final 8-channel output remain in the Praat object list.
+
+Compositional Implications
+
+From speech or any source material, this process:
+
+Spatializes through temporal desynchronization: When routed to an 8-speaker array (e.g., octophonic setup), each speaker's slightly different playback speed creates motion through phase relationships. Transients (consonants, attacks) arrive at slightly different times, producing a sweeping, cloud-like spatialization.
+
+Generates interference beating: Channels with speed ratios of 0.85× and 1.15× create a 0.30× difference, causing periodic phase cancellation and reinforcement. This produces comb filtering effects that move through the frequency spectrum as the signals drift in and out of phase.
+
+Maintains pitch center while distributing time: Unlike traditional pitch-shifting chorus effects, all channels preserve the original pitch. The spatial effect arises purely from temporal smearing—phonemes elongate or compress while retaining their formant structure.
+
+Creates evolutionary textures: Over time, the channels progressively desynchronize. What begins as a unified sound gradually separates into eight distinct temporal layers, with the gap between fastest and slowest channels widening linearly with duration.
+
+Reveals micro-temporal structure: Slight speed variations emphasize rhythmic details. A consonant cluster heard on one channel will be preceded or followed by the same cluster on adjacent channels, creating echo-like cascades without adding discrete delays.
+
+Enables gestural spatialization: In Automatic mode, the linear speed distribution creates a smooth spatial gradient—e.g., slowest channels on left speakers, fastest on right. In Random mode, the spatial field becomes chaotic and unpredictable.
+
+The effect is particularly dramatic with speech, where intelligibility persists on the central-speed channels while faster versions sound compressed and urgent, and slower versions elongate into drone-like sustain. The eight layers together form a temporally thick texture where the source material is heard from multiple temporal perspectives simultaneously.
+
+When played through a ring of speakers, the listener perceives the sound as spatially diffuse, with motion arising from interference patterns rather than discrete panning. The temporal detuning creates an acoustic beating that appears to rotate or shimmer around the listening position.
