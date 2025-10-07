@@ -21,12 +21,15 @@ Developed for composers, sound designers, and researchers, the toolkit extends P
    ```bash
    git clone https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools.git
 
-Locate your Praat plugins folder.
+2. Locate your Praat plugins folder.
 Depending on your operating system, Praat looks for plugins here:
 
 Windows:   C:\Users\<YourName>\Praat\plugins\
-macOS:     ~/Library/Preferences/Praat/plugins/
+
+macOS:     ~/Library/Preferences/Praat/plugins/ 
+
 Linux:     ~/.praat-dir/plugins/
+
 
 Copy the folder plugin_AudioTools into the plugins directory.
 Restart Praat.
