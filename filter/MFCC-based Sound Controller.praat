@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - compare loudness.praat
+# Praat AudioTools - MFCC-based Sound Controller.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
@@ -214,6 +214,7 @@ else
     appendInfoLine: ""
     appendInfoLine: "Intermediate objects kept in object list."
 endif
+Play
 
 # Select the new sound for listening
 selectObject: manipulatedSound

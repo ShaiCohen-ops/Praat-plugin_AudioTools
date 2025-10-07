@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - compare loudness.praat
+# Praat AudioTools - MFCC Temporal Manipulations.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
