@@ -23,6 +23,7 @@ Developed for composers, sound designers, and researchers, the toolkit extends P
 
 Locate your Praat plugins folder.
 Depending on your operating system, Praat looks for plugins here:
+
 Windows:   C:\Users\<YourName>\Praat\plugins\
 macOS:     ~/Library/Preferences/Praat/plugins/
 Linux:     ~/.praat-dir/plugins/
