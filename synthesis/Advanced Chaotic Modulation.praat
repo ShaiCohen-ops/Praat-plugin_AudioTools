@@ -19,181 +19,256 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Advanced Chaotic Modulation
-    real Duration 12.0
-    real Sampling_frequency 44100
-    real Base_frequency 150
-    integer Number_voices 3
-    boolean Use_logistic_freq yes
-    boolean Use_lorenz_amp yes
-    boolean Use_henon_filter yes
+form Advanced Chaotic Modulation System
+    positive Duration_(sec) 12
+    positive Base_frequency_(Hz) 150
+    positive Number_of_layers 3
     real Chaos_intensity 0.7
-    real Filter_smoothing 0.3
-    boolean Randomize_parameters yes
-    real Fade_out_duration 0.2
+    real Modulation_rate 2.0
+    boolean Use_logistic_freq 1
+    boolean Use_lorenz_amp 1
+    boolean Use_henon_filter 1
+    boolean Randomize_parameters 1
+    positive Fade_time_(sec) 2
+    optionmenu Synthesis_mode: 1
+        option Chaotic Modulation
+        option Logistic Frequencies
+        option Lorenz Amplitudes
+        option Hénon Filtering
+        option Combined Chaos
+    optionmenu Spatial_mode: 1
+        option Mono
+        option Stereo Wide
+        option Rotating
+        option Binaural
+    boolean Normalize_output 1
 endform
 
-echo Creating Advanced Chaotic Modulation with 'number_voices' voices...
+if number_of_layers > 8
+    number_of_layers = 8
+endif
 
-control_rate = 150
-time_step = 1/control_rate
-total_points = round(duration * control_rate)
-formula$ = "0"
+sample_rate = 44100
 
-; Low-pass filter buffers for smoothing chaotic modulation
-freq_filter_buf = 0
-amp_filter_buf = 0
-filter_filter_buf = 0
-smoothing = max(0.01, min(0.99, filter_smoothing))
+Create Sound from formula: "gen_output", 1, 0, duration, sample_rate, "0"
 
-for voice to number_voices
-    echo Building voice 'voice'...
-    
-    ; Parameter randomization for each voice
-    if randomize_parameters = 1
-        ; Randomize base frequency slightly
-        voice_base_freq = base_frequency * (0.8 + 0.4 * randomUniform(0, 1))
-        
-        ; Randomize chaos parameters
-        voice_logistic_r = 3.6 + randomUniform(0, 1) * 0.4
-        voice_logistic_x = randomUniform(0, 1)
-        
-        voice_lorenz_x = randomUniform(-1, 1)
-        voice_lorenz_y = randomUniform(-1, 1)
-        voice_lorenz_z = 20 + randomUniform(0, 1) * 10
-        
-        voice_henon_x = randomUniform(-0.5, 0.5)
-        voice_henon_y = randomUniform(-0.5, 0.5)
-        voice_henon_a = 1.3 + randomUniform(0, 1) * 0.2
-        voice_henon_b = 0.2 + randomUniform(0, 1) * 0.2
-        
-        ; Randomize chaos intensity slightly
-        voice_chaos_intensity = chaos_intensity * (0.7 + 0.6 * randomUniform(0, 1))
-    else
-        voice_base_freq = base_frequency
-        voice_logistic_r = 3.7
-        voice_logistic_x = 0.5
-        voice_lorenz_x = 0.1
-        voice_lorenz_y = 0.1
-        voice_lorenz_z = 25.0
-        voice_henon_x = 0.1
-        voice_henon_y = 0.1
-        voice_henon_a = 1.4
-        voice_henon_b = 0.3
-        voice_chaos_intensity = chaos_intensity
-    endif
-    
-    ; Voice-specific parameters
-    lorenz_sigma = 10.0
-    lorenz_rho = 28.0
-    lorenz_beta = 2.666
-    
-    ; Initialize phase for continuous waveform
-    phase = 2 * pi * randomUniform(0, 1)  ; Random initial phase
-    
-    ; Reset filter buffers for this voice
-    freq_filter_buf = voice_base_freq
-    amp_filter_buf = 0.6
-    filter_filter_buf = 1.0
-    
-    voice_formula$ = "0"
-    
-    for i to total_points
-        current_time = (i-1) * time_step
-        
-        ; Frequency modulation using Logistic map
-        if use_logistic_freq = 1
-            voice_logistic_x = voice_logistic_r * voice_logistic_x * (1 - voice_logistic_x)
-            raw_freq_mod = voice_base_freq * (1 + 0.8 * voice_chaos_intensity * (voice_logistic_x - 0.5))
-            raw_freq_mod = max(20, min(5000, raw_freq_mod))
-            
-            ; Apply low-pass filtering to smooth frequency changes
-            freq_filter_buf = smoothing * freq_filter_buf + (1 - smoothing) * raw_freq_mod
-            freq_mod = freq_filter_buf
+if synthesis_mode = 1
+    for layer from 1 to number_of_layers
+        if randomize_parameters
+            base_freq = base_frequency * (0.7 + 0.6 * randomUniform(0, 1))
+            chaos_strength = chaos_intensity * (0.8 + 0.4 * randomUniform(0, 1))
         else
-            freq_mod = voice_base_freq
+            base_freq = base_frequency
+            chaos_strength = chaos_intensity
         endif
         
-        ; Amplitude modulation using Lorenz system
-        if use_lorenz_amp = 1
-            lorenz_dx = lorenz_sigma * (voice_lorenz_y - voice_lorenz_x)
-            lorenz_dy = voice_lorenz_x * (lorenz_rho - voice_lorenz_z) - voice_lorenz_y
-            lorenz_dz = voice_lorenz_x * voice_lorenz_y - lorenz_beta * voice_lorenz_z
-            
-            voice_lorenz_x = voice_lorenz_x + lorenz_dx * 0.01
-            voice_lorenz_y = voice_lorenz_y + lorenz_dy * 0.01
-            voice_lorenz_z = voice_lorenz_z + lorenz_dz * 0.01
-            
-            ; Safe amplitude modulation (0.1 to 0.9)
-            raw_amp_mod = 0.5 + 0.4 * tanh(voice_lorenz_z / 30)
-            
-            ; Apply low-pass filtering to smooth amplitude changes
-            amp_filter_buf = smoothing * amp_filter_buf + (1 - smoothing) * raw_amp_mod
-            amp_mod = amp_filter_buf
-        else
-            amp_mod = 0.6
+        layer_amp = 0.6 / number_of_layers
+        
+        formula$ = "'layer_amp' * sin(2*pi*'base_freq'*x"
+        
+        if use_logistic_freq
+            formula$ = formula$ + " + 'chaos_strength'*sin(2*pi*'modulation_rate'*3.7*x)"
         endif
         
-        ; Filter modulation using Hénon map
-        if use_henon_filter = 1
-            henon_x_new = 1 - voice_henon_a * voice_henon_x * voice_henon_x + voice_henon_y
-            henon_y_new = voice_henon_b * voice_henon_x
-            voice_henon_x = henon_x_new
-            voice_henon_y = henon_y_new
-            
-            ; Constrain Hénon output and use as low-pass filter coefficient
-            raw_filter_mod = 0.3 + 0.7 * (0.5 + 0.5 * sin(voice_henon_x))
-            
-            ; Apply low-pass filtering to smooth filter changes
-            filter_filter_buf = smoothing * filter_filter_buf + (1 - smoothing) * raw_filter_mod
-            filter_mod = filter_filter_buf
-        else
-            filter_mod = 1.0
+        formula$ = formula$ + ")"
+        
+        if use_lorenz_amp
+            formula$ = formula$ + " * (0.5 + 0.3*sin(2*pi*'modulation_rate'*0.5*x) + 0.2*sin(2*pi*'modulation_rate'*1.3*x))"
         endif
         
-        if current_time + time_step > duration
-            current_dur = duration - current_time
-        else
-            current_dur = time_step
+        if use_henon_filter
+            formula$ = formula$ + " * (0.7 + 0.3*sin(2*pi*'modulation_rate'*2.1*x))"
         endif
         
-        ; Apply fade-out envelope
-        fade_start = duration - fade_out_duration
-        if current_time >= fade_start
-            fade_factor = 1 - ((current_time - fade_start) / fade_out_duration)
-            final_amp = amp_mod * fade_factor / number_voices
-        else
-            final_amp = amp_mod / number_voices
-        endif
-        
-        if current_dur > 0.001
-            ; Use phase-continuous formula
-            segment_formula$ = "if x >= " + string$(current_time) + " and x < " + string$(current_time + current_dur)
-            segment_formula$ = segment_formula$ + " then " + string$(final_amp)
-            segment_formula$ = segment_formula$ + " * sin(" + string$(phase) + " + 2*pi*" + string$(freq_mod) + "*(x - " + string$(current_time) + "))"
-            segment_formula$ = segment_formula$ + " * " + string$(filter_mod)
-            segment_formula$ = segment_formula$ + " else 0 fi"
-            
-            if voice_formula$ = "0"
-                voice_formula$ = segment_formula$
-            else
-                voice_formula$ = voice_formula$ + " + " + segment_formula$
-            endif
-            
-            ; Update phase for next segment
-            phase = phase + 2 * pi * freq_mod * current_dur
-        endif
+        Create Sound from formula: "layer_'layer'", 1, 0, duration, sample_rate, formula$
+        call applyFadeEnvelope
+        call addToOutput
     endfor
     
-    if formula$ = "0"
-        formula$ = voice_formula$
-    else
-        formula$ = formula$ + " + " + voice_formula$
-    endif
-endfor
+elsif synthesis_mode = 2
+    for layer from 1 to number_of_layers
+        if randomize_parameters
+            base_freq = base_frequency * (0.6 + 0.8 * randomUniform(0, 1))
+            chaos_strength = chaos_intensity * (0.7 + 0.6 * randomUniform(0, 1))
+        else
+            base_freq = base_frequency
+            chaos_strength = chaos_intensity
+        endif
+        
+        layer_amp = 0.6 / number_of_layers
+        
+        formula$ = "'layer_amp' * sin(2*pi*'base_freq'*x + 'chaos_strength'*1.5*sin(2*pi*'modulation_rate'*3.7*x) + 'chaos_strength'*0.8*sin(2*pi*'modulation_rate'*4.1*x))"
+        
+        Create Sound from formula: "layer_'layer'", 1, 0, duration, sample_rate, formula$
+        call applyFadeEnvelope
+        call addToOutput
+    endfor
+    
+elsif synthesis_mode = 3
+    for layer from 1 to number_of_layers
+        voice_freq = base_frequency * (0.8 + layer * 0.3)
+        layer_amp = 0.6 / number_of_layers
+        
+        formula$ = "'layer_amp' * (0.4 + 0.4*sin(2*pi*'modulation_rate'*0.3*x) + 0.2*sin(2*pi*'modulation_rate'*1.7*x)) * sin(2*pi*'voice_freq'*x)"
+        
+        Create Sound from formula: "layer_'layer'", 1, 0, duration, sample_rate, formula$
+        call applyFadeEnvelope
+        call addToOutput
+    endfor
+    
+elsif synthesis_mode = 4
+    for layer from 1 to number_of_layers
+        voice_freq = base_frequency * (0.9 + layer * 0.2)
+        layer_amp = 0.6 / number_of_layers
+        
+        formula$ = "'layer_amp' * (0.3 + 0.7*(0.5 + 0.5*sin(2*pi*'modulation_rate'*2.1*x))) * sin(2*pi*'voice_freq'*x)"
+        
+        Create Sound from formula: "layer_'layer'", 1, 0, duration, sample_rate, formula$
+        call applyFadeEnvelope
+        call addToOutput
+    endfor
+    
+elsif synthesis_mode = 5
+    for layer from 1 to number_of_layers
+        if randomize_parameters
+            base_freq = base_frequency * (0.5 + randomUniform(0, 1))
+            chaos_strength = chaos_intensity * (0.6 + 0.8 * randomUniform(0, 1))
+        else
+            base_freq = base_frequency
+            chaos_strength = chaos_intensity
+        endif
+        
+        layer_amp = 0.7 / number_of_layers
+        
+        formula$ = "'layer_amp' * (0.3 + 0.5*sin(2*pi*'modulation_rate'*0.7*x) + 0.2*sin(2*pi*'modulation_rate'*1.9*x)) * sin(2*pi*'base_freq'*x + 'chaos_strength'*2.0*sin(2*pi*'modulation_rate'*3.7*x)) * (0.4 + 0.6*(0.5 + 0.5*sin(2*pi*'modulation_rate'*2.3*x)))"
+        
+        Create Sound from formula: "layer_'layer'", 1, 0, duration, sample_rate, formula$
+        call applyFadeEnvelope
+        call addToOutput
+    endfor
+endif
 
-Create Sound from formula... advanced_chaos 1 0 duration sampling_frequency 'formula$'
-Scale peak... 0.9
+# Select gen_output for spatial processing - use simple approach
+select Sound gen_output
+
+if spatial_mode = 1
+    Rename: "chaotic_modulation"
+    final_sound = selected("Sound")
+    
+elsif spatial_mode = 2
+    Copy: "chaotic_left"
+    left_sound = selected("Sound")
+    
+    select Sound gen_output
+    Copy: "chaotic_right"
+    right_sound = selected("Sound")
+    
+    select left_sound
+    Formula: "self * 0.8"
+    Filter (pass Hann band): 0, 4000, 100
+    
+    select right_sound
+    Formula: "self * 0.8"
+    Filter (pass Hann band): 200, 8000, 100
+    
+    select left_sound
+    plus right_sound
+    Combine to stereo
+    Rename: "chaotic_modulation"
+    final_sound = selected("Sound")
+    
+    select left_sound
+    plus right_sound
+    Remove
+    
+elsif spatial_mode = 3
+    Copy: "chaotic_left"
+    left_sound = selected("Sound")
+    
+    select Sound gen_output
+    Copy: "chaotic_right"
+    right_sound = selected("Sound")
+    
+    rotation_rate = 0.15
+    select left_sound
+    Formula: "self * (0.6 + cos(2*pi*'rotation_rate'*x) * 0.4)"
+    
+    select right_sound
+    Formula: "self * (0.6 + sin(2*pi*'rotation_rate'*x) * 0.4)"
+    
+    select left_sound
+    plus right_sound
+    Combine to stereo
+    Rename: "chaotic_modulation"
+    final_sound = selected("Sound")
+    
+    select left_sound
+    plus right_sound
+    Remove
+    
+elsif spatial_mode = 4
+    Copy: "chaotic_left"
+    left_sound = selected("Sound")
+    
+    select Sound gen_output
+    Copy: "chaotic_right"
+    right_sound = selected("Sound")
+    
+    select left_sound
+    Filter (pass Hann band): 50, 3000, 80
+    
+    select right_sound
+    Formula: "if col > 30 then self[col - 30] else 0 fi"
+    Filter (pass Hann band): 200, 6000, 80
+    
+    select left_sound
+    plus right_sound
+    Combine to stereo
+    Rename: "chaotic_modulation"
+    final_sound = selected("Sound")
+    
+    select left_sound
+    plus right_sound
+    Remove
+endif
+
+# Clean up gen_output if it still exists (not renamed in Mono mode)
+if spatial_mode <> 1
+    select Sound gen_output
+    Remove
+endif
+
+select final_sound
+
+if normalize_output
+    Scale peak: 0.9
+endif
+
+call applyFinalFade
+
 Play
 
 echo Advanced Chaotic Modulation complete!
+
+procedure applyFadeEnvelope
+    if fade_time > 0
+        fade_samples = fade_time * sample_rate
+        total_samples = duration * sample_rate
+        Formula: "if col < 'fade_samples' then self * (col/'fade_samples') else if col > ('total_samples' - 'fade_samples') then self * (('total_samples' - col)/'fade_samples') else self fi fi"
+    endif
+endproc
+
+procedure addToOutput
+    select Sound gen_output
+    Formula: "self + Sound_layer_'layer'[]"
+    select Sound layer_'layer'
+    Remove
+endproc
+
+procedure applyFinalFade
+    if fade_time > 0
+        fade_samples = fade_time * sample_rate
+        total_samples = duration * sample_rate
+        Formula: "if col < 'fade_samples' then self * (col/'fade_samples') else if col > ('total_samples' - 'fade_samples') then self * (('total_samples' - col)/'fade_samples') else self fi fi"
+    endif
+endproc
