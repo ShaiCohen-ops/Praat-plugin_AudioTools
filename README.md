@@ -34,6 +34,10 @@ Linux:     ~/.praat-dir/plugins/
 Copy the folder plugin_AudioTools into the plugins directory.
 Restart Praat.
 
+## Documents
+
+https://mashav.com/sha/praat/scripts/index.html
+
 ## Citation
 
 If you use this toolkit in academic work, please cite:
