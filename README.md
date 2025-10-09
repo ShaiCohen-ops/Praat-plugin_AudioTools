@@ -36,7 +36,7 @@ Restart Praat.
 
 ## Documents
 
-https://mashav.com/sha/praat/scripts/index.html
+(https://mashav.com/sha/praat/scripts/index.html)
 
 ## Citation
 
