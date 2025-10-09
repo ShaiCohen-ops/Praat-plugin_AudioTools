@@ -36,7 +36,7 @@ Restart Praat.
 
 ## Documents
 
-<a href="[https://example.com](https://mashav.com/sha/praat/scripts/index.html)" target="_blank">My Link</a>
+href="(https://mashav.com/sha/praat/scripts/index.html)" target="_blank"
 
 ## Citation
 
