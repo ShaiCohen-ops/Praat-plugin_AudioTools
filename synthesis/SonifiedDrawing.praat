@@ -1,5 +1,6 @@
-form SonifiedDrawingFast
-    optionmenu shape 1
+form SonifiedDrawingMorph
+    comment Shapes
+    optionmenu shape1 1
         option Spiral
         option Circle
         option Square
@@ -7,6 +8,15 @@ form SonifiedDrawingFast
         option Lissajous
         option Rose
         option Figure8
+    optionmenu shape2 1
+        option Spiral
+        option Circle
+        option Square
+        option Triangle
+        option Lissajous
+        option Rose
+        option Figure8
+    comment Scales
     optionmenu scale 1
         option Original (Unquantized)
         option PentatonicMinor
@@ -14,9 +24,13 @@ form SonifiedDrawingFast
         option NaturalMinor
         option Dorian
         option PentatonicMajor
+    comment Tones
     optionmenu tone 1
         option OneSine_Fast
         option TwoSines_Richer
+    comment Morphing
+    real morphSpeed 0.01
+    comment Drawing
     integer steps 200
     real dur 0.04
     real speed 0.25
@@ -32,44 +46,50 @@ form SonifiedDrawingFast
 endform
 
 Erase all
-
 prevx = centerx
 prevy = centery
 prevsx = prevx / 100
 prevsy = prevy / 100
+morphProgress = 0
 
 for t from 1 to steps
-    angle = t * speed
-    px = centerx
-    py = centery
+    morphProgress = morphProgress + morphSpeed
+    if morphProgress > 1
+        morphProgress = 0
+    endif
 
-    if shape = 1
+    angle = t * speed
+
+    # --- Shape 1 ---
+    px1 = centerx
+    py1 = centery
+    if shape1 = 1
         radius = t * radiusstep
-        px = centerx + radius * cos(angle)
-        py = centery + radius * sin(angle)
-    elsif shape = 2
+        px1 = centerx + radius * cos(angle)
+        py1 = centery + radius * sin(angle)
+    elsif shape1 = 2
         r0 = 30
-        px = centerx + r0 * cos(angle)
-        py = centery + r0 * sin(angle)
-    elsif shape = 3
+        px1 = centerx + r0 * cos(angle)
+        py1 = centery + r0 * sin(angle)
+    elsif shape1 = 3
         s = 60
         half = s / 2
         p = t / steps
         p4 = p * 4
         if p4 < 1
-            px = centerx - half + p4 * s
-            py = centery - half
+            px1 = centerx - half + p4 * s
+            py1 = centery - half
         elsif p4 < 2
-            px = centerx + half
-            py = centery - half + (p4 - 1) * s
+            px1 = centerx + half
+            py1 = centery - half + (p4 - 1) * s
         elsif p4 < 3
-            px = centerx + half - (p4 - 2) * s
-            py = centery + half
+            px1 = centerx + half - (p4 - 2) * s
+            py1 = centery + half
         else
-            px = centerx - half
-            py = centery + half - (p4 - 3) * s
+            px1 = centerx - half
+            py1 = centery + half - (p4 - 3) * s
         endif
-    elsif shape = 4
+    elsif shape1 = 4
         s = 60
         h = s * sqrt(3) / 2
         ax = centerx
@@ -81,43 +101,122 @@ for t from 1 to steps
         p = t / steps
         p3 = p * 3
         if p3 < 1
-            px = ax + (bx - ax) * p3
-            py = ay + (by - ay) * p3
+            px1 = ax + (bx - ax) * p3
+            py1 = ay + (by - ay) * p3
         elsif p3 < 2
             u = p3 - 1
-            px = bx + (cxv - bx) * u
-            py = by + (cyv - by) * u
+            px1 = bx + (cxv - bx) * u
+            py1 = by + (cyv - by) * u
         else
             u = p3 - 2
-            px = cxv + (ax - cxv) * u
-            py = cyv + (ay - cyv) * u
+            px1 = cxv + (ax - cxv) * u
+            py1 = cyv + (ay - cyv) * u
         endif
-    elsif shape = 5
+    elsif shape1 = 5
         aamp = 30
         bamp = 30
         a = lissajousa
         b = lissajousb
-        px = centerx + aamp * sin(a * angle)
-        py = centery + bamp * sin(b * angle + pi/2)
-    elsif shape = 6
+        px1 = centerx + aamp * sin(a * angle)
+        py1 = centery + bamp * sin(b * angle + pi/2)
+    elsif shape1 = 6
         rmax = 35
         k = rosek
         r = rmax * cos(k * angle)
-        px = centerx + r * cos(angle)
-        py = centery + r * sin(angle)
+        px1 = centerx + r * cos(angle)
+        py1 = centery + r * sin(angle)
     else
         a8 = 35
         denom = 1 + sin(angle) * sin(angle)
-        px = centerx + a8 * cos(angle) / denom
-        py = centery + a8 * sin(angle) * cos(angle) / denom
+        px1 = centerx + a8 * cos(angle) / denom
+        py1 = centery + a8 * sin(angle) * cos(angle) / denom
     endif
 
+    # --- Shape 2 ---
+    px2 = centerx
+    py2 = centery
+    if shape2 = 1
+        radius = t * radiusstep
+        px2 = centerx + radius * cos(angle)
+        py2 = centery + radius * sin(angle)
+    elsif shape2 = 2
+        r0 = 30
+        px2 = centerx + r0 * cos(angle)
+        py2 = centery + r0 * sin(angle)
+    elsif shape2 = 3
+        s = 60
+        half = s / 2
+        p = t / steps
+        p4 = p * 4
+        if p4 < 1
+            px2 = centerx - half + p4 * s
+            py2 = centery - half
+        elsif p4 < 2
+            px2 = centerx + half
+            py2 = centery - half + (p4 - 1) * s
+        elsif p4 < 3
+            px2 = centerx + half - (p4 - 2) * s
+            py2 = centery + half
+        else
+            px2 = centerx - half
+            py2 = centery + half - (p4 - 3) * s
+        endif
+    elsif shape2 = 4
+        s = 60
+        h = s * sqrt(3) / 2
+        ax = centerx
+        ay = centery - h / 2
+        bx = centerx + s / 2
+        by = centery + h / 2
+        cxv = centerx - s / 2
+        cyv = centery + h / 2
+        p = t / steps
+        p3 = p * 3
+        if p3 < 1
+            px2 = ax + (bx - ax) * p3
+            py2 = ay + (by - ay) * p3
+        elsif p3 < 2
+            u = p3 - 1
+            px2 = bx + (cxv - bx) * u
+            py2 = by + (cyv - by) * u
+        else
+            u = p3 - 2
+            px2 = cxv + (ax - cxv) * u
+            py2 = cyv + (ay - cyv) * u
+        endif
+    elsif shape2 = 5
+        aamp = 30
+        bamp = 30
+        a = lissajousa
+        b = lissajousb
+        px2 = centerx + aamp * sin(a * angle)
+        py2 = centery + bamp * sin(b * angle + pi/2)
+    elsif shape2 = 6
+        rmax = 35
+        k = rosek
+        r = rmax * cos(k * angle)
+        px2 = centerx + r * cos(angle)
+        py2 = centery + r * sin(angle)
+    else
+        a8 = 35
+        denom = 1 + sin(angle) * sin(angle)
+        px2 = centerx + a8 * cos(angle) / denom
+        py2 = centery + a8 * sin(angle) * cos(angle) / denom
+    endif
+
+    # --- Morph between shapes ---
+    px = px1 * (1 - morphProgress) + px2 * morphProgress
+    py = py1 * (1 - morphProgress) + py2 * morphProgress
+
+    # --- Draw the line ---
     sx = px / 100
     sy = py / 100
     Draw line: prevsx, prevsy, sx, sy
 
+    # --- Calculate distance from center ---
     dist = sqrt((px - centerx)^2 + (py - centery)^2)
 
+    # --- Calculate frequency based on scale ---
     if scale = 1
         base_freq = 140 + 3 * dist
     else
@@ -209,6 +308,7 @@ for t from 1 to steps
         base_freq = tonichz * exp(ln(2) * (semitotal / 12))
     endif
 
+    # --- Panning and amplitude ---
     pan = (px - centerx) / 50
     if pan > 1
         pan = 1
@@ -223,20 +323,23 @@ for t from 1 to steps
     if amp > 1
         amp = 1
     endif
-
     panangle = (pan + 1) * (pi / 4)
     leftgain = cos(panangle)
     rightgain = sin(panangle)
 
+    # --- Envelope ---
     env$ = "(sin(pi*x/'dur')*sin(pi*x/'dur'))"
+
+    # --- Tone ---
     if tone = 1
         tone$ = "sin(2*pi*'base_freq'*x)"
     else
         tone$ = "sin(2*pi*'base_freq'*x)+0.3*sin(2*pi*'base_freq'*2*x)"
     endif
+
+    # --- Create sound ---
     leftFormula$  = "('leftgain'*'amp')*("  + env$ + ")*(" + tone$ + ")"
     rightFormula$ = "('rightgain'*'amp')*(" + env$ + ")*(" + tone$ + ")"
-
     Create Sound from formula: "L" + string$(t), 1, 0, dur, samplerate, leftFormula$
     Create Sound from formula: "R" + string$(t), 1, 0, dur, samplerate, rightFormula$
     select Sound L't'
@@ -244,14 +347,17 @@ for t from 1 to steps
     Combine to stereo
     Rename: "N" + string$(t)
 
+    # --- Play sound ---
     if ((t - 1) mod playEvery) = 0
         select Sound N't'
         Play
     endif
 
+    # --- Clean up ---
     select all
     Remove
 
+    # --- Update previous coordinates ---
     prevx = px
     prevy = py
     prevsx = sx
