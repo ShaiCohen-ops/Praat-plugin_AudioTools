@@ -308,10 +308,11 @@ https://mashav.com/sha/praat/scripts/index.html
 * `SpectralPanningMapper`
 </details>
 
-### <a id="synthesis"></a> Synthesis (42 Scripts)
+### <a id="synthesis"></a> Synthesis (45 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
+* `accelerating-polyrhythm`
 * `Advanced Brownian Synthesis`
 * `Advanced Chaotic Modulation`
 * `Advanced Formula Synthesis`
@@ -343,6 +344,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Photo Sonification`
 * `Poisson Point Process Synthesis`
 * `Poisson Rhythm Synthesis`
+* `polyrhythms-from-dots`
 * `Random Walk Melody`
 * `Random Walk Rhythm`
 * `Rich Formant Grains`
