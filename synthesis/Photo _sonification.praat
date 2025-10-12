@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - Layered Markov Texture.praat
+# Praat AudioTools - Photo _sonification.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
@@ -8,7 +8,7 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Sound synthesis or generative algorithm script
+#   Photo _sonification
 #
 # Usage:
 #   Adjust parameters via the form dialog.
