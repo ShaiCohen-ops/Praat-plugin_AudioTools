@@ -288,7 +288,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Temporal_Warpping`
 </details>
 
-### <a id="spatial"></a> Spatial (14 Scripts)
+### <a id="spatial"></a> Spatial (15 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
@@ -306,6 +306,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Panning variations`
 * `Simple Rate Panning`
 * `SpectralPanningMapper`
+* `Time Polyphony - 8 Channels`
 </details>
 
 ### <a id="synthesis"></a> Synthesis (45 Scripts)
