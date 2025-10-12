@@ -1,3 +1,23 @@
+# ============================================================
+# Praat AudioTools - Time Polyphony - 8 Channels.praat
+# Author: Shai Cohen
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 0.1 (2025)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Time Polyphony - 8 Channels
+#
+# Usage:
+#   Select a Sound object in Praat and run this script.
+#   Adjust parameters via the form dialog.
+#
+# Citation:
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# ============================================================
 # Time Polyphony - 8 Channels
 # Creates 8 copies with different time-stretching and combines to 8-channel output
 form Phase Vocoder Polyphony 8 Channels
