@@ -1,3 +1,24 @@
+# ============================================================
+# Praat AudioTools - Sound to Grain.praat
+# Author: Shai Cohen
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 0.1 (2025)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Create Stereo Mosaic from selected files
+#
+# Usage:
+#   Select a Sound object in Praat and run this script.
+#   Adjust parameters via the form dialog.
+#
+# Citation:
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# ============================================================
+
 # PRAAT Script: Create stereo composite from selected files
 # - Extracts MULTIPLE non-overlapping regions from each file
 # - LEFT and RIGHT channels use different regions
