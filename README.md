@@ -294,7 +294,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Temporal_Warpping`
 </details>
 
-### <a id="spatial"></a> Spatial (15 Scripts)
+### <a id="spatial"></a> Spatial (16 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
@@ -307,6 +307,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Add signals`
 * `BPM_Panning`
 * `BPM_SURROUND _Panning`
+* `Distance-Based Amplitude Panning (DBAP)`
 * `Fast Spectral Swirl Multi-Channel`
 * `Mix selected multi-channel Sound into stereo`
 * `Panning variations`
