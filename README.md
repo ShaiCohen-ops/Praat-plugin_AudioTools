@@ -40,10 +40,12 @@ https://mashav.com/sha/praat/scripts/index.html
 
 ## Script Categories
 
-### <a id="analysis"></a> Analysis (23 Scripts)
+### <a id="analysis"></a> Analysis (25 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
+* `BrightnessClassifier`
+* * `BrightnessClassifier based on spectral centroid`
 * `compare loudness`
 * `compare pitch`
 * `descriptions`
@@ -69,7 +71,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `voice report`
 </details>
 
-### <a id="delay"></a> Delay (16 Scripts)
+### <a id="delay"></a> Delay (18 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
@@ -81,6 +83,8 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Magnetic_Tape_Degradation`
 * `Phase_Modulation_Matrix`
 * `Quantum_State_Superposition`
+* `Segment_mixer`
+* `Stereo Mosaic`
 * `Sorts grains from dark to bright`
 * `Sound to Grain`
 * `Sound to Grain (Stereo with Independent Reversal)`
@@ -165,7 +169,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Wobbling frequency shift`
 </details>
 
-### <a id="filter"></a> Filter (27 Scripts)
+### <a id="filter"></a> Filter (28 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
@@ -191,6 +195,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Resonant`
 * `SINUSOIDAL FREQUENCY MODULATION`
 * `SPIRAL FREQUENCY MODULATION`
+* `Spectral Filtering Effect`
 * `Time varying Ring Modulation`
 * `Time-based jitter-shimmer to formant mapping`
 * `TREMBLING RING MOD`
