@@ -71,11 +71,12 @@ https://mashav.com/sha/praat/scripts/index.html
 * `voice report`
 </details>
 
-### <a id="delay"></a> Delay (18 Scripts)
+### <a id="delay"></a> Delay (19 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
 * `ADAPTIVE GRAIN CLOUD SYNTHESIS`
+* `Beat Repeat`
 * `delay_array`
 * `Evolving Granular`
 * `Fractal_Convolution_Matrix`
