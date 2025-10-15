@@ -302,20 +302,20 @@ elsif numChannels = 3
     selectObject: tempSound1
     plusObject: tempSound2
     plusObject: tempSound3
-    combinedSound = Combine to multichannel
+    combinedSound = Combine to stereo
 elsif numChannels = 4
     selectObject: tempSound1
     plusObject: tempSound2
     plusObject: tempSound3
     plusObject: tempSound4
-    combinedSound = Combine to multichannel
+    combinedSound = Combine to stereo
 elsif numChannels = 5
     selectObject: tempSound1
     plusObject: tempSound2
     plusObject: tempSound3
     plusObject: tempSound4
     plusObject: tempSound5
-    combinedSound = Combine to multichannel
+    combinedSound = Combine to stereo
 elsif numChannels = 6
     selectObject: tempSound1
     plusObject: tempSound2
@@ -323,7 +323,7 @@ elsif numChannels = 6
     plusObject: tempSound4
     plusObject: tempSound5
     plusObject: tempSound6
-    combinedSound = Combine to multichannel
+    combinedSound = Combine to stereo
 endif
 
 preset_name_1$ = "Default_Midpoint"
