@@ -71,7 +71,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `voice report`
 </details>
 
-### <a id="delay"></a> Delay (19 Scripts)
+### <a id="delay"></a> Delay (20 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
@@ -82,6 +82,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Fractal_Convolution_Matrix`
 * `Harmonic_Resonance`
 * `Magnetic_Tape_Degradation`
+* `Particle Field Renderer`
 * `Phase_Modulation_Matrix`
 * `Quantum_State_Superposition`
 * `Segment_mixer`
