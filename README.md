@@ -40,7 +40,7 @@ https://mashav.com/sha/praat/scripts/index.html
 
 ## Script Categories
 
-### <a id="analysis"></a> Analysis (25 Scripts)
+### <a id="analysis"></a> Analysis (26 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
@@ -52,6 +52,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `DTW for 2 files`
 * `duration_all_files`
 * `extract portion`
+* `Formant to MIDI Chord Converter`
 * `Extraction`
 * `HarmonicityS_all_files`
 * `Intensity_all_files`
