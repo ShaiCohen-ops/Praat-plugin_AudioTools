@@ -172,7 +172,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Wobbling frequency shift`
 </details>
 
-### <a id="filter"></a> Filter (28 Scripts)
+### <a id="filter"></a> Filter (29 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
@@ -193,6 +193,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `MFCC Temporal Manipulations`
 * `MFCC-based Sound Controller`
 * `Panning filter`
+* `Onset-Based Oscillator Bank`
 * `QUADRATIC PHASE MODULATION`
 * `Raised-cosine band boost`
 * `Resonant`
