@@ -45,7 +45,7 @@ https://mashav.com/sha/praat/scripts/index.html
 <summary>Expand to view all scripts</summary>
 
 * `BrightnessClassifier`
-* * `BrightnessClassifier based on spectral centroid`
+* `BrightnessClassifier based on spectral centroid`
 * `compare loudness`
 * `compare pitch`
 * `descriptions`
