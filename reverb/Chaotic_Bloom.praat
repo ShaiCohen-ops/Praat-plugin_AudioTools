@@ -20,6 +20,12 @@
 # ============================================================
 
 form Chaotic Bloom Stereo
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Dense Bloom"
+        option "Sparse Bloom"
+        option "Wide Stereo Shimmer"
+        option "Custom"
     comment This script creates chaotic blooming textures with stereo imaging
     positive tail_duration_seconds 2
     comment Poisson process parameters:
@@ -34,6 +40,49 @@ form Chaotic Bloom Stereo
     positive scale_peak 0.85
     boolean play_after_processing 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (balanced)
+    tail_duration_seconds = 2
+    poisson_density = 3000
+    pulse_train_amplitude = 1
+    pulse_train_width = 0.04
+    pulse_train_period = 2500
+    mix_amplitude = 0.4
+    scale_peak = 0.85
+    play_after_processing = 1
+elsif preset = 2
+    # Dense Bloom (more events, thicker tail)
+    tail_duration_seconds = 3
+    poisson_density = 4500
+    pulse_train_amplitude = 1.1
+    pulse_train_width = 0.05
+    pulse_train_period = 2200
+    mix_amplitude = 0.5
+    scale_peak = 0.85
+    play_after_processing = 1
+elsif preset = 3
+    # Sparse Bloom (fewer, cleaner events)
+    tail_duration_seconds = 1.5
+    poisson_density = 1800
+    pulse_train_amplitude = 0.9
+    pulse_train_width = 0.03
+    pulse_train_period = 2800
+    mix_amplitude = 0.3
+    scale_peak = 0.85
+    play_after_processing = 1
+elsif preset = 4
+    # Wide Stereo Shimmer (longer tail, lighter mix)
+    tail_duration_seconds = 2.5
+    poisson_density = 3200
+    pulse_train_amplitude = 1.0
+    pulse_train_width = 0.035
+    pulse_train_period = 2600
+    mix_amplitude = 0.35
+    scale_peak = 0.85
+    play_after_processing = 1
+endif
 
 if not selected("Sound")
     exitScript: "Please select a Sound object first."

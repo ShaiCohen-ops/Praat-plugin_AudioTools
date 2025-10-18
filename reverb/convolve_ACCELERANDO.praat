@@ -19,79 +19,124 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Minimal Convolution with Tail
-    comment This script convolves sound with fixed-time impulses
-    positive tail_duration_seconds 1
-    comment Impulse times (in seconds within 1s window):
-    positive impulse_time_1 0.10
-    positive impulse_time_2 0.20
-    positive impulse_time_3 0.50
+form Accelerando Convolution
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Fast Accel (quick ramp)"
+        option "Slow Accel (gentle)"
+        option "Sparse Hits"
+        option "Dense Finale"
+        option "Custom"
+    comment This script creates accelerating impulse train convolution
+    positive duration_seconds 2.0
+    positive first_hit_time 0.10
+    natural number_of_pulses 24
+    positive gap_shrink_ratio 0.85
+    comment (0 < ratio < 1, lower = faster acceleration)
     comment Pulse train parameters:
     positive sampling_frequency 44100
     positive pulse_amplitude 1
-    positive pulse_width 0.05
+    positive pulse_width 0.02
     positive pulse_period 2000
     comment Output:
     boolean play_after_processing 1
 endform
 
-if not selected("Sound")
-    exitScript: "Please select a Sound object first."
+# Apply preset values if not Custom
+if preset = 1
+    ; Default (balanced) -> keep form defaults
+elsif preset = 2
+    # Fast Accel (quick ramp)
+    first_hit_time = 0.08
+    number_of_pulses = 28
+    gap_shrink_ratio = 0.7
+    pulse_width = 0.018
+elsif preset = 3
+    # Slow Accel (gentle)
+    first_hit_time = 0.12
+    number_of_pulses = 20
+    gap_shrink_ratio = 0.92
+    pulse_width = 0.024
+elsif preset = 4
+    # Sparse Hits
+    first_hit_time = 0.15
+    number_of_pulses = 12
+    gap_shrink_ratio = 0.8
+    pulse_width = 0.02
+elsif preset = 5
+    # Dense Finale
+    first_hit_time = 0.06
+    number_of_pulses = 36
+    gap_shrink_ratio = 0.78
+    pulse_width = 0.018
 endif
 
-original_sound$ = selected$("Sound")
-select Sound 'original_sound$'
-
-original_duration = Get total duration
-sampling_rate = Get sample rate
-channels = Get number of channels
-
-# Create silent tail
-if channels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_seconds, sampling_rate, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_seconds, sampling_rate, "0"
+# --- Safety: need a selected Sound ---
+if numberOfSelected("Sound") < 1
+    exitScript: "Select a Sound in the Objects window first."
 endif
 
-# Concatenate
-select Sound 'original_sound$'
-plus Sound silent_tail
-Concatenate
-Rename: "extended_sound"
+# --- Prep source (keep original untouched) ---
+selectObject: selected("Sound", 1)
+originalName$ = selected$("Sound")
 
-# Process
-select Sound extended_sound
-Copy: "XXXX"
-selectObject: "Sound XXXX"
+# Working copies with explicit names to avoid *_44100 leftovers
+Copy: "XXXX_src"
+selectObject: "Sound XXXX_src"
 Resample: sampling_frequency, 50
+Rename: "XXXX_resampled"
 
-# Create impulses at fixed times
-Create empty PointProcess: "IMPPOINTS", 0, 1
-selectObject: "PointProcess IMPPOINTS"
-Add point: impulse_time_1
-Add point: impulse_time_2
-Add point: impulse_time_3
+# --- Parameter sanity checks ---
+if (gap_shrink_ratio <= 0) or (gap_shrink_ratio >= 1)
+    exitScript: "gap_shrink_ratio must be between 0 and 1 (exclusive)."
+endif
 
-# Convert to impulse sound
+# Calculate initial gap
+remain = duration_seconds - first_hit_time
+if remain <= 0
+    exitScript: "Duration must be greater than first hit time."
+endif
+
+den = 1 - gap_shrink_ratio^number_of_pulses
+if den = 0
+    exitScript: "Choose ratio so that 1 - ratio^npulse ≠ 0."
+endif
+
+g0 = remain * (1 - gap_shrink_ratio) / den
+
+# --- Create accelerating point process ---
+Create empty PointProcess: "pp_accel", 0, duration_seconds
+selectObject: "PointProcess pp_accel"
+t = first_hit_time
+i = 1
+while i <= number_of_pulses and t < duration_seconds
+    Add point: t
+    gap = g0 * gap_shrink_ratio^(i - 1)
+    t = t + gap
+    i = i + 1
+endwhile
+
+# --- Convert to pulse train ---
 To Sound (pulse train): sampling_frequency, pulse_amplitude, pulse_width, pulse_period
-Rename: "IMPULSE"
+Rename: "impulse_accel"
+Scale peak: 0.99
 
-# Convolve
-selectObject: "Sound XXXX"
-plusObject: "Sound IMPULSE"
+# --- Convolve ---
+selectObject: "Sound XXXX_resampled"
+plusObject: "Sound impulse_accel"
 Convolve: "peak 0.99", "zero"
-Rename: original_sound$ + "_convolved"
-
-# Cleanup
-selectObject: "Sound XXXX"
-plusObject: "PointProcess IMPPOINTS"
-plusObject: "Sound IMPULSE"
-plusObject: "Sound extended_sound"
-plusObject: "Sound silent_tail"
-Remove
-
-select Sound 'original_sound$'_convolved
+Rename: originalName$ + "_accelerando"
 
 if play_after_processing
     Play
 endif
+
+# --- Cleanup (keep original + result) ---
+selectObject: "Sound XXXX_src"
+plusObject: "Sound XXXX_resampled"
+plusObject: "PointProcess pp_accel"
+plusObject: "Sound impulse_accel"
+Remove
+
+# Reselect final result (original remains)
+selectObject: "Sound " + originalName$ + "_accelerando"

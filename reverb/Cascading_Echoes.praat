@@ -20,6 +20,12 @@
 # ============================================================
 
 form Cascading Echoes
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Short & Tight"
+        option "Long Ambient Tail"
+        option "Wide Stereo Delay"
+        option "Custom"
     comment This script creates cascading echo effects with random delays
     positive tail_duration_seconds 1
     natural iterations 5
@@ -34,6 +40,53 @@ form Cascading Echoes
     positive decay_right 0.75
     boolean play_after_processing 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (balanced)
+    tail_duration_seconds = 1
+    iterations = 5
+    delay_min = 50
+    delay_max = 500
+    stereo_delay_min = 60
+    stereo_delay_max = 550
+    decay_left = 0.8
+    decay_right = 0.75
+    play_after_processing = 1
+elsif preset = 2
+    # Short & Tight
+    tail_duration_seconds = 0.5
+    iterations = 3
+    delay_min = 30
+    delay_max = 180
+    stereo_delay_min = 35
+    stereo_delay_max = 220
+    decay_left = 0.9
+    decay_right = 0.88
+    play_after_processing = 1
+elsif preset = 3
+    # Long Ambient Tail
+    tail_duration_seconds = 2.5
+    iterations = 7
+    delay_min = 120
+    delay_max = 1200
+    stereo_delay_min = 150
+    stereo_delay_max = 1500
+    decay_left = 0.85
+    decay_right = 0.82
+    play_after_processing = 1
+elsif preset = 4
+    # Wide Stereo Delay
+    tail_duration_seconds = 1.5
+    iterations = 6
+    delay_min = 60
+    delay_max = 600
+    stereo_delay_min = 200
+    stereo_delay_max = 1800
+    decay_left = 0.78
+    decay_right = 0.72
+    play_after_processing = 1
+endif
 
 if not selected("Sound")
     exitScript: "Please select a Sound object first."
