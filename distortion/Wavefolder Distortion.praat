@@ -22,6 +22,12 @@
 # Wavefolder Distortion 
 
 form Wavefolder Distortion
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Gentle Fold"
+        option "Aggressive Fold"
+        option "Lo-Fi Harsh"
+        option "Custom"
     positive Number_of_folds 4
     positive Drive 2.5
     positive Symmetry 0.7
@@ -29,6 +35,41 @@ form Wavefolder Distortion
     positive High_pass_filter 100
     boolean Normalize 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (balanced)
+    number_of_folds = 4
+    drive = 2.5
+    symmetry = 0.7
+    bit_reduction = 8
+    high_pass_filter = 100
+    normalize = 1
+elsif preset = 2
+    # Gentle Fold
+    number_of_folds = 2
+    drive = 1.6
+    symmetry = 0.8
+    bit_reduction = 12
+    high_pass_filter = 80
+    normalize = 1
+elsif preset = 3
+    # Aggressive Fold
+    number_of_folds = 6
+    drive = 4.0
+    symmetry = 0.6
+    bit_reduction = 6
+    high_pass_filter = 120
+    normalize = 1
+elsif preset = 4
+    # Lo-Fi Harsh
+    number_of_folds = 5
+    drive = 3.0
+    symmetry = 0.65
+    bit_reduction = 4
+    high_pass_filter = 150
+    normalize = 1
+endif
 
 # Check if a sound is selected
 if !selected("Sound")

@@ -20,6 +20,12 @@
 # ============================================================
 
 form Harsh Distortion Effect
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Light Drive"
+        option "Heavy Industrial"
+        option "Stutter Gate"
+        option "Custom"
     comment This script applies extreme distortion with gating
     comment Distortion parameters:
     positive base_amplitude 0.5
@@ -32,6 +38,45 @@ form Harsh Distortion Effect
     positive scale_peak 0.99
     boolean play_after_processing 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (balanced)
+    base_amplitude = 0.5
+    modulation_amplitude = 0.3
+    modulation_frequency = 100
+    gate_period = 0.05
+    gate_duty_cycle = 0.025
+    scale_peak = 0.99
+    play_after_processing = 1
+elsif preset = 2
+    # Light Drive
+    base_amplitude = 0.4
+    modulation_amplitude = 0.2
+    modulation_frequency = 80
+    gate_period = 0.07
+    gate_duty_cycle = 0.035
+    scale_peak = 0.99
+    play_after_processing = 1
+elsif preset = 3
+    # Heavy Industrial
+    base_amplitude = 0.7
+    modulation_amplitude = 0.4
+    modulation_frequency = 150
+    gate_period = 0.03
+    gate_duty_cycle = 0.015
+    scale_peak = 0.99
+    play_after_processing = 1
+elsif preset = 4
+    # Stutter Gate
+    base_amplitude = 0.6
+    modulation_amplitude = 0.25
+    modulation_frequency = 90
+    gate_period = 0.02
+    gate_duty_cycle = 0.01
+    scale_peak = 0.99
+    play_after_processing = 1
+endif
 
 # Check if a Sound is selected
 if not selected("Sound")

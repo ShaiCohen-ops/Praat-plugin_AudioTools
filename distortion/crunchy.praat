@@ -20,6 +20,12 @@
 # ============================================================
 
 form Bit Crushing Effect
+    optionmenu Preset: 1
+        option "Default (4 levels)"
+        option "Mild Crunch (8 levels)"
+        option "Heavy Crunch (2 levels)"
+        option "Lo-Fi Digital (3 levels)"
+        option "Custom"
     comment This script applies bit crushing (quantization) to a sound
     comment Bit crushing parameters:
     positive quantization_levels 4
@@ -27,6 +33,28 @@ form Bit Crushing Effect
     positive scale_peak 0.99
     boolean play_after_processing 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    quantization_levels = 4
+    scale_peak = 0.99
+    play_after_processing = 1
+elsif preset = 2
+    # Mild Crunch
+    quantization_levels = 8
+    scale_peak = 0.99
+    play_after_processing = 1
+elsif preset = 3
+    # Heavy Crunch
+    quantization_levels = 2
+    scale_peak = 0.95
+    play_after_processing = 1
+elsif preset = 4
+    # Lo-Fi Digital
+    quantization_levels = 3
+    scale_peak = 0.9
+    play_after_processing = 1
+endif
 
 # Check if a Sound is selected
 if not selected("Sound")

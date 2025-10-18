@@ -22,11 +22,43 @@
 # Adaptive Wave Shaper - Jitter/Shimmer Controlled
 
 form Adaptive Wave Shaper
+    optionmenu Preset: 1
+        option "Default (drive 2.0)"
+        option "Gentle Saturation"
+        option "Aggressive Drive/Folds"
+        option "Fold Emphasis"
+        option "Custom"
     positive Base_drive 2.0
     positive Jitter_sensitivity 1.5
     positive Shimmer_sensitivity 1.2
     boolean Normalize 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    base_drive = 2.0
+    jitter_sensitivity = 1.5
+    shimmer_sensitivity = 1.2
+    normalize = 1
+elsif preset = 2
+    # Gentle Saturation
+    base_drive = 1.2
+    jitter_sensitivity = 1.0
+    shimmer_sensitivity = 0.8
+    normalize = 1
+elsif preset = 3
+    # Aggressive Drive/Folds
+    base_drive = 4.0
+    jitter_sensitivity = 2.0
+    shimmer_sensitivity = 1.8
+    normalize = 1
+elsif preset = 4
+    # Fold Emphasis
+    base_drive = 2.5
+    jitter_sensitivity = 1.2
+    shimmer_sensitivity = 2.5
+    normalize = 1
+endif
 
 if !selected("Sound")
     exitScript: "Please select a sound object first."

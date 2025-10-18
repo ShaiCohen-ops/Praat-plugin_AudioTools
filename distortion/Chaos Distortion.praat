@@ -22,6 +22,13 @@
 # Chaos Distortion - Multiple distortion effects combined
 
 form Chaos Distortion
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Gentle Grit"
+        option "Heavy Crush"
+        option "Lo-Fi Glitch"
+        option "Clean Boost"
+        option "Custom"
     positive Drive 3.0
     positive Fold_count 3
     positive Bit_crush 6
@@ -29,6 +36,49 @@ form Chaos Distortion
     boolean Add_noise 1
     boolean Normalize 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (balanced)
+    drive = 3.0
+    fold_count = 3
+    bit_crush = 6
+    sample_rate_reduction = 30
+    add_noise = 1
+    normalize = 1
+elsif preset = 2
+    # Gentle Grit
+    drive = 1.6
+    fold_count = 1
+    bit_crush = 8
+    sample_rate_reduction = 85
+    add_noise = 0
+    normalize = 1
+elsif preset = 3
+    # Heavy Crush
+    drive = 4.5
+    fold_count = 5
+    bit_crush = 4
+    sample_rate_reduction = 40
+    add_noise = 1
+    normalize = 1
+elsif preset = 4
+    # Lo-Fi Glitch
+    drive = 2.2
+    fold_count = 2
+    bit_crush = 3
+    sample_rate_reduction = 20
+    add_noise = 1
+    normalize = 1
+elsif preset = 5
+    # Clean Boost
+    drive = 1.25
+    fold_count = 0
+    bit_crush = 12
+    sample_rate_reduction = 100
+    add_noise = 0
+    normalize = 1
+endif
 
 if !selected("Sound")
     beginPause("No sound selected")
