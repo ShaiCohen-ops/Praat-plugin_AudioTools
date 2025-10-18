@@ -40,7 +40,7 @@ https://mashav.com/sha/praat/scripts/index.html
 
 ## Script Categories
 
-### <a id="analysis"></a> Analysis (26 Scripts)
+### <a id="analysis"></a> Analysis (27 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
@@ -67,6 +67,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `shimmer_local`
 * `Spectral Flatness and Roughness`
 * `spectral roll-off frequency`
+* `SpectraScore - Orchestration Matcher`
 * `speech activity`
 * `SPR_all_files_new`
 * `voice report`
