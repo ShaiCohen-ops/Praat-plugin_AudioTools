@@ -300,7 +300,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `Temporal_Warpping`
 </details>
 
-### <a id="spatial"></a> Spatial (17 Scripts)
+### <a id="spatial"></a> Spatial (18 Scripts)
 <details>
 <summary>Expand to view all scripts</summary>
 
@@ -310,6 +310,7 @@ https://mashav.com/sha/praat/scripts/index.html
 * `8-Channel Delay`
 * `8-Channel movments`
 * `8-channel speed deviations`
+* `8-Channel Speech-Driven Spatialization`
 * `Add signals`
 * `BPM_Panning`
 * `BPM_SURROUND _Panning`
