@@ -20,6 +20,12 @@
 # ============================================================
 
 form Harmonic Sound Processing
+    optionmenu Preset: 1
+        option "Default (2.5 base, 0.6 decay)"
+        option "Soft Harmonics (1.8 base, 0.4 decay)"
+        option "Strong Harmonics (3.5 base, 0.8 decay)"
+        option "Wide Random (1.2–5.0 range)"
+        option "Custom"
     comment Harmonic processing parameters:
     natural num_iterations 7
     comment Harmonic base range (for randomization):
@@ -34,6 +40,27 @@ form Harmonic Sound Processing
     positive scale_peak 0.95
     boolean play_after_processing 1
 endform
+
+# Apply preset if not Custom
+if preset = 1
+    fixed_harmonic_base = 2.5
+    harmonic_base_min = 1.5
+    harmonic_base_max = 4.0
+    decay_factor = 0.6
+elsif preset = 2
+    fixed_harmonic_base = 1.8
+    harmonic_base_min = 1.2
+    harmonic_base_max = 2.5
+    decay_factor = 0.4
+elsif preset = 3
+    fixed_harmonic_base = 3.5
+    harmonic_base_min = 2.5
+    harmonic_base_max = 4.5
+    decay_factor = 0.8
+elsif preset = 4
+    harmonic_base_min = 1.2
+    harmonic_base_max = 5.0
+endif
 
 # Copy the sound object
 Copy... soundObj

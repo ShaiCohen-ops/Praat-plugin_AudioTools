@@ -20,6 +20,12 @@
 # ============================================================
 
 form Stereo Channel Processing
+    optionmenu Preset: 1
+        option "Default (L:2,4 | R:8,10)"
+        option "Narrow Stereo (L:3,5 | R:6,8)"
+        option "Wide Stereo (L:2,6 | R:12,18)"
+        option "Alt Divisors (L:2,3 | R:9,15)"
+        option "Custom"
     comment Left channel divisors (iterations 1-2):
     positive divisor_1 2
     positive divisor_2 4
@@ -36,6 +42,49 @@ form Stereo Channel Processing
     positive scale_peak 0.99
     boolean play_after_processing 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (L:2,4 | R:8,10)
+    divisor_1 = 2
+    divisor_2 = 4
+    divisor_3 = 8
+    divisor_4 = 10
+    left_start = 1
+    left_end   = 2
+    right_start = 3
+    right_end   = 4
+elsif preset = 2
+    # Narrow Stereo (L:3,5 | R:6,8)
+    divisor_1 = 3
+    divisor_2 = 5
+    divisor_3 = 6
+    divisor_4 = 8
+    left_start = 1
+    left_end   = 2
+    right_start = 3
+    right_end   = 4
+elsif preset = 3
+    # Wide Stereo (L:2,6 | R:12,18)
+    divisor_1 = 2
+    divisor_2 = 6
+    divisor_3 = 12
+    divisor_4 = 18
+    left_start = 1
+    left_end   = 2
+    right_start = 3
+    right_end   = 4
+elsif preset = 4
+    # Alt Divisors (L:2,3 | R:9,15)
+    divisor_1 = 2
+    divisor_2 = 3
+    divisor_3 = 9
+    divisor_4 = 15
+    left_start = 1
+    left_end   = 2
+    right_start = 3
+    right_end   = 4
+endif
 
 # Copy the sound object
 Copy... soundObj

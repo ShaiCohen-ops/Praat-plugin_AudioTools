@@ -20,6 +20,12 @@
 # ============================================================
 
 form Process Sound Object
+    optionmenu Preset: 1
+        option "Default (2, 4, 8, 10)"
+        option "Fine (2, 3, 5, 7)"
+        option "Coarse (4, 8, 12, 16)"
+        option "Extreme (2, 6, 12, 24)"
+        option "Custom"
     comment Enter the divisor values for processing:
     positive divisor_1 2
     positive divisor_2 4
@@ -30,6 +36,29 @@ form Process Sound Object
     comment Number of iterations:
     natural number_of_iterations 4
 endform
+
+# Apply preset if not Custom
+if preset = 1
+    divisor_1 = 2
+    divisor_2 = 4
+    divisor_3 = 8
+    divisor_4 = 10
+elsif preset = 2
+    divisor_1 = 2
+    divisor_2 = 3
+    divisor_3 = 5
+    divisor_4 = 7
+elsif preset = 3
+    divisor_1 = 4
+    divisor_2 = 8
+    divisor_3 = 12
+    divisor_4 = 16
+elsif preset = 4
+    divisor_1 = 2
+    divisor_2 = 6
+    divisor_3 = 12
+    divisor_4 = 24
+endif
 
 # Copy the sound object
 Copy... soundObj
@@ -58,4 +87,3 @@ endfor
 # Scale to peak
 Scale peak: scale_peak
 Play
-

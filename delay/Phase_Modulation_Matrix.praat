@@ -20,6 +20,12 @@
 # ============================================================
 
 form Phase Modulation Processing
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Subtle Chorus"
+        option "Deep Phase Sweep"
+        option "Vibrato / Whirl"
+        option "Custom"
     comment Modulation layer parameters:
     natural modulation_layers 5
     comment Carrier frequency range (for randomization):
@@ -40,6 +46,57 @@ form Phase Modulation Processing
     positive scale_peak 0.93
     boolean play_after_processing 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (balanced)
+    modulation_layers = 5
+    carrier_freq_min = 0.1
+    carrier_freq_max = 0.5
+    fixed_carrier_freq = 0.3
+    mod_depth_base = 8
+    mod_depth_increment = 2
+    feedback_base = 0.7
+    spectral_tilt_base = 1.1
+    spectral_tilt_rate = 0.1
+    scale_peak = 0.93
+elsif preset = 2
+    # Subtle Chorus
+    modulation_layers = 3
+    carrier_freq_min = 0.05
+    carrier_freq_max = 0.2
+    fixed_carrier_freq = 0.15
+    mod_depth_base = 10
+    mod_depth_increment = 1
+    feedback_base = 0.4
+    spectral_tilt_base = 1.05
+    spectral_tilt_rate = 0.05
+    scale_peak = 0.93
+elsif preset = 3
+    # Deep Phase Sweep
+    modulation_layers = 6
+    carrier_freq_min = 0.1
+    carrier_freq_max = 0.4
+    fixed_carrier_freq = 0.28
+    mod_depth_base = 6
+    mod_depth_increment = 2
+    feedback_base = 0.8
+    spectral_tilt_base = 1.15
+    spectral_tilt_rate = 0.12
+    scale_peak = 0.93
+elsif preset = 4
+    # Vibrato / Whirl
+    modulation_layers = 7
+    carrier_freq_min = 0.2
+    carrier_freq_max = 0.8
+    fixed_carrier_freq = 0.45
+    mod_depth_base = 5
+    mod_depth_increment = 3
+    feedback_base = 0.9
+    spectral_tilt_base = 1.2
+    spectral_tilt_rate = 0.15
+    scale_peak = 0.93
+endif
 
 # Copy the sound object
 Copy... soundObj

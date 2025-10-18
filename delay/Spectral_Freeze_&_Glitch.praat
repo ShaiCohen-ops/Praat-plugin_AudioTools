@@ -20,6 +20,12 @@
 # ============================================================
 
 form Time Freeze Effect Processing
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Short Bursts"
+        option "Long Freeze"
+        option "Artifact Storm"
+        option "Custom"
     comment Freeze parameters:
     natural freeze_points 12
     positive freeze_duration_divisor 25
@@ -36,6 +42,45 @@ form Time Freeze Effect Processing
     boolean use_random_seed 0
     positive random_seed 12345
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (balanced)
+    freeze_points = 12
+    freeze_duration_divisor = 25
+    freeze_length_min_factor = 0.5
+    freeze_length_max_factor = 1.5
+    freeze_repeat_divisor = 3
+    artifact_amplitude = 0.1
+    scale_peak = 0.91
+elsif preset = 2
+    # Short Bursts
+    freeze_points = 8
+    freeze_duration_divisor = 15
+    freeze_length_min_factor = 0.3
+    freeze_length_max_factor = 1.0
+    freeze_repeat_divisor = 2
+    artifact_amplitude = 0.05
+    scale_peak = 0.91
+elsif preset = 3
+    # Long Freeze
+    freeze_points = 16
+    freeze_duration_divisor = 40
+    freeze_length_min_factor = 0.8
+    freeze_length_max_factor = 2.0
+    freeze_repeat_divisor = 4
+    artifact_amplitude = 0.12
+    scale_peak = 0.91
+elsif preset = 4
+    # Artifact Storm
+    freeze_points = 20
+    freeze_duration_divisor = 20
+    freeze_length_min_factor = 0.4
+    freeze_length_max_factor = 1.6
+    freeze_repeat_divisor = 2
+    artifact_amplitude = 0.25
+    scale_peak = 0.91
+endif
 
 # Copy the sound object
 Copy... soundObj

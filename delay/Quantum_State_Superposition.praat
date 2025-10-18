@@ -20,6 +20,12 @@
 # ============================================================
 
 form Quantum-Inspired Sound Processing
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Gentle Quantum Drift"
+        option "Intense Superposition"
+        option "Phase Entanglement"
+        option "Custom"
     comment Quantum state parameters:
     natural states 5
     comment Superposition strength range (for randomization):
@@ -43,6 +49,61 @@ form Quantum-Inspired Sound Processing
     positive scale_peak 0.96
     boolean play_after_processing 1
 endform
+
+# Apply preset if not Custom
+if preset = 1
+    # Default (balanced)
+    states = 5
+    superposition_min = 0.3
+    superposition_max = 0.8
+    fixed_superposition = 0.55
+    phase_shift_min = 0.1
+    phase_shift_max = 6.283185307
+    fixed_phase_shift = 3.14159
+    state_offset_base = 10
+    state_offset_increment = 2
+    superposition_decay = 0.75
+    scale_peak = 0.96
+elsif preset = 2
+    # Gentle Quantum Drift
+    states = 4
+    superposition_min = 0.2
+    superposition_max = 0.5
+    fixed_superposition = 0.35
+    phase_shift_min = 0.1
+    phase_shift_max = 3.14
+    fixed_phase_shift = 1.57
+    state_offset_base = 12
+    state_offset_increment = 3
+    superposition_decay = 0.85
+    scale_peak = 0.96
+elsif preset = 3
+    # Intense Superposition
+    states = 6
+    superposition_min = 0.6
+    superposition_max = 0.9
+    fixed_superposition = 0.75
+    phase_shift_min = 0.2
+    phase_shift_max = 6.0
+    fixed_phase_shift = 3.14159
+    state_offset_base = 8
+    state_offset_increment = 2
+    superposition_decay = 0.7
+    scale_peak = 0.96
+elsif preset = 4
+    # Phase Entanglement
+    states = 7
+    superposition_min = 0.4
+    superposition_max = 0.9
+    fixed_superposition = 0.65
+    phase_shift_min = 0.5
+    phase_shift_max = 5.5
+    fixed_phase_shift = 2.618
+    state_offset_base = 9
+    state_offset_increment = 1.5
+    superposition_decay = 0.8
+    scale_peak = 0.96
+endif
 
 # Copy the sound object
 Copy... soundObj

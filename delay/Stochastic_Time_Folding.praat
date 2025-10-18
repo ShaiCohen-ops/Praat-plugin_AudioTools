@@ -20,6 +20,12 @@
 # ============================================================
 
 form Adaptive Time-Folding Processing
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Gentle Folds"
+        option "Aggressive Folds"
+        option "Micro Glitch"
+        option "Custom"
     comment Folding parameters:
     natural fold_iterations 6
     positive initial_adaptive_threshold 0.5
@@ -41,6 +47,69 @@ form Adaptive Time-Folding Processing
     positive scale_peak 0.96
     boolean play_after_processing 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (balanced)
+    fold_iterations = 6
+    initial_adaptive_threshold = 0.5
+    threshold_variation_min = 0.2
+    threshold_variation_max = 0.2
+    threshold_min_limit = 0.1
+    threshold_max_limit = 0.9
+    fold_distance_min = 3
+    fold_distance_max = 12
+    amplitude_min = 0.7
+    amplitude_max = 1.2
+    fold_average_divisor = 3
+    fold_backward_divisor = 2
+    scale_peak = 0.96
+elsif preset = 2
+    # Gentle Folds
+    fold_iterations = 4
+    initial_adaptive_threshold = 0.4
+    threshold_variation_min = 0.10
+    threshold_variation_max = 0.15
+    threshold_min_limit = 0.15
+    threshold_max_limit = 0.85
+    fold_distance_min = 5
+    fold_distance_max = 15
+    amplitude_min = 0.9
+    amplitude_max = 1.1
+    fold_average_divisor = 3
+    fold_backward_divisor = 2
+    scale_peak = 0.96
+elsif preset = 3
+    # Aggressive Folds
+    fold_iterations = 9
+    initial_adaptive_threshold = 0.6
+    threshold_variation_min = 0.25
+    threshold_variation_max = 0.35
+    threshold_min_limit = 0.05
+    threshold_max_limit = 0.95
+    fold_distance_min = 2
+    fold_distance_max = 10
+    amplitude_min = 0.5
+    amplitude_max = 1.5
+    fold_average_divisor = 2
+    fold_backward_divisor = 2
+    scale_peak = 0.96
+elsif preset = 4
+    # Micro Glitch
+    fold_iterations = 12
+    initial_adaptive_threshold = 0.55
+    threshold_variation_min = 0.15
+    threshold_variation_max = 0.25
+    threshold_min_limit = 0.10
+    threshold_max_limit = 0.90
+    fold_distance_min = 2
+    fold_distance_max = 6
+    amplitude_min = 0.6
+    amplitude_max = 1.4
+    fold_average_divisor = 2
+    fold_backward_divisor = 3
+    scale_peak = 0.96
+endif
 
 # Copy the sound object
 Copy... soundObj

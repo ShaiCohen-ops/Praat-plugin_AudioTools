@@ -20,6 +20,12 @@
 # ============================================================
 
 form Fibonacci Cascade Delay Processing
+    optionmenu Preset: 1
+        option "Default (balanced)"
+        option "Gentle Echoes"
+        option "Dense Cluster"
+        option "Long Tails"
+        option "Custom"
     comment Cascade parameters:
     natural cascade_levels 6
     positive decay_rate 0.75
@@ -32,6 +38,41 @@ form Fibonacci Cascade Delay Processing
     positive scale_peak 0.88
     boolean play_after_processing 1
 endform
+
+# Apply preset values if not Custom
+if preset = 1
+    # Default (balanced)
+    cascade_levels = 6
+    decay_rate = 0.75
+    delay_base = 5
+    coloring_center = 0.5
+    coloring_depth = 0.5
+    scale_peak = 0.88
+elsif preset = 2
+    # Gentle Echoes
+    cascade_levels = 4
+    decay_rate = 0.85
+    delay_base = 7
+    coloring_center = 0.45
+    coloring_depth = 0.35
+    scale_peak = 0.88
+elsif preset = 3
+    # Dense Cluster
+    cascade_levels = 8
+    decay_rate = 0.7
+    delay_base = 4
+    coloring_center = 0.55
+    coloring_depth = 0.65
+    scale_peak = 0.88
+elsif preset = 4
+    # Long Tails
+    cascade_levels = 7
+    decay_rate = 0.9
+    delay_base = 9
+    coloring_center = 0.5
+    coloring_depth = 0.4
+    scale_peak = 0.88
+endif
 
 # Copy the sound object
 Copy... soundObj

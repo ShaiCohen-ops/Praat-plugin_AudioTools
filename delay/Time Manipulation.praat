@@ -20,9 +20,28 @@
 # ============================================================
 
 form Sound Manipulation
+    optionmenu Preset: 1
+        option "Normal (1.0)"
+        option "Slow (0.75)"
+        option "Fast (1.25)"
+        option "Double speed (2.0)"
+        option "Half speed (0.5)"
     real Duration_factor 1.0
     boolean Play_result 1
 endform
+
+# Apply preset value to duration_factor
+if preset = 1
+    duration_factor = 1.0
+elsif preset = 2
+    duration_factor = 0.75
+elsif preset = 3
+    duration_factor = 1.25
+elsif preset = 4
+    duration_factor = 2.0
+elsif preset = 5
+    duration_factor = 0.5
+endif
 
 # Check if a sound object is selected
 if numberOfSelected("Sound") = 0
