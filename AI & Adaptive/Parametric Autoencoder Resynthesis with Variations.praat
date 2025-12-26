@@ -3,34 +3,50 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.6 (2025) - True Latent Space + KlattGrid + Dynamic Voicing
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Parametric Autoencoder Resynthesis with Variations
+#   True autoencoder with latent space perturbation for novel variations.
+#   Uses KlattGrid source-filter synthesis to render independent F0 and
+#   F1-F4 trajectories. Dynamic voicing amplitude for natural silence.
+#   Preset system for clean vs. glitch modes.
+#
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-## Parametric Autoencoder with PSOLA + Simple Network Visualization
-
-form Parametric Autoencoder PSOLA
+form Parametric Autoencoder Hybrid
+    choice preset_selection 1
+        button Clean - Dynamic Amplitude - 6 Params
+        button Glitch - Constant Drone - 5 Params
     positive time_step 0.01
-    positive bottleneck_size 2
-    positive epochs 100
-    positive num_variations 3
+    positive bottleneck_size 3
+    positive epochs 150
+    positive num_variations 7
     positive pitch_floor 60
     positive pitch_ceiling 500
     positive voicing_threshold 0.4
+    positive latent_noise 0.15
+    positive bandwidth_fraction 0.1
+    positive aspiration_during_unvoiced 20
     boolean draw_network 1
 endform
 
-clearinfo
-appendInfoLine: "--- Parametric Autoencoder with PSOLA ---"
+# ===== PRESET LOGIC =====
+if preset_selection = 1
+    presetName$ = "v0.6 (Clean)"
+    nparams = 6
+else
+    presetName$ = "v0.4 (Glitch)"
+    nparams = 5
+endif
 
-# Check selection
+clearinfo
+appendInfoLine: "--- Parametric Autoencoder: ", presetName$, " ---"
+
 if numberOfSelected() <> 1
     exitScript: "Please select exactly one Sound object."
 endif
@@ -39,84 +55,61 @@ sound_orig = selected()
 sound_name$ = selected$("Sound")
 
 selectObject: sound_orig
-
-# Resample to 44100 Hz if necessary for stability
 Resample: 44100, 50
 sound = selected()
-fs = Get sampling frequency
 
-# Check if sound has sufficient energy
 selectObject: sound
 intensity_check = Get intensity (dB)
-appendInfoLine: "Sound intensity: " + fixed$(intensity_check, 2) + " dB"
-
+appendInfoLine: "Sound intensity: ", fixed$(intensity_check, 2), " dB"
 if intensity_check < 30
     appendInfoLine: "WARNING: Sound is very quiet. Amplifying..."
     Scale peak: 0.99
 endif
 
-# 1. Extract pitch and formant trajectories
-appendInfoLine: "Extracting pitch and formant trajectories…"
+# ===== 1. ANALYSIS =====
+appendInfoLine: "Extracting features..."
 
-# Create Pitch object
 selectObject: sound
 To Pitch (ac): 0.0, pitch_floor, 15, "no", 0.03, voicing_threshold, 0.01, 0.35, 0.14, pitch_ceiling
 pitch_obj = selected()
 
-# Check if pitch was detected
 selectObject: pitch_obj
 num_voiced = Count voiced frames
-appendInfoLine: "Voiced frames detected: " + string$(num_voiced)
+appendInfoLine: "Voiced frames detected: ", num_voiced
 
-if num_voiced < 5
-    appendInfoLine: "WARNING: Very few voiced frames detected!"
-endif
-
-# Create Formant object (Burg)
 selectObject: sound
 To Formant (burg): 0.0, 5, 5500, 0.025, 50.0
 formant_obj = selected()
 
-# Create Manipulation object for PSOLA
 selectObject: sound
-To Manipulation: 0.01, pitch_floor, pitch_ceiling
-manipulation_orig = selected()
+To Intensity: 75, 0, "yes"
+intensity_obj = selected()
 
-# Extract original pitch tier
-Extract pitch tier
-pitch_tier_orig = selected()
-
-# Prepare time grid
 selectObject: sound
 start_time = Get start time
 end_time = Get end time
 dt = time_step
-num_frames = round ((end_time - start_time) / dt) + 1
+num_frames = floor((end_time - start_time) / dt) + 1
 
-# Number of parameters: F0, F1, F2, F3, F4 (5 parameters)
-nparams = 5
+# ===== 2. FILL MATRIX =====
+Create simple Matrix: "ParamMatrix", nparams, num_frames, "0"
+param_matrix = selected()
 
-# Create matrix to hold parameter values
-Create simple Matrix: "tmpParamMatrix", nparams, num_frames, "0"
-Rename: "ParamMatrix"
-
-# 2. Extract Data into Matrix
-for col from 1 to num_frames
-    t = start_time + (col - 1) * dt
+for frameIdx from 1 to num_frames
+    t = start_time + (frameIdx - 1) * dt
     
-    # Get F0
     selectObject: pitch_obj
     f0 = Get value at time: t, "Hertz", "Linear"
     if f0 = undefined
         f0 = 0
     endif
     
-    # Get F1, F2, F3, F4
     selectObject: formant_obj
     f1 = Get value at time: 1, t, "Hertz", "Linear"
     f2 = Get value at time: 2, t, "Hertz", "Linear"
     f3 = Get value at time: 3, t, "Hertz", "Linear"
     f4 = Get value at time: 4, t, "Hertz", "Linear"
+    
     if f1 = undefined
         f1 = 500
     endif
@@ -130,307 +123,537 @@ for col from 1 to num_frames
         f4 = 3500
     endif
     
-    # Fill Matrix
-    selectObject: "Matrix ParamMatrix"
-    Set value: 1, col, f0
-    Set value: 2, col, f1
-    Set value: 3, col, f2
-    Set value: 4, col, f3
-    Set value: 5, col, f4
+    selectObject: param_matrix
+    Set value: 1, frameIdx, f0
+    Set value: 2, frameIdx, f1
+    Set value: 3, frameIdx, f2
+    Set value: 4, frameIdx, f3
+    Set value: 5, frameIdx, f4
+    
+    # Only v0.6 uses Intensity
+    if preset_selection = 1
+        selectObject: intensity_obj
+        int_val = Get value at time: t, "cubic"
+        if int_val = undefined
+            int_val = 0
+        endif
+        
+        selectObject: param_matrix
+        Set value: 6, frameIdx, int_val
+    endif
 endfor
 
-# 3. Normalise
-appendInfoLine: "Normalising parameters…"
-selectObject: "Matrix ParamMatrix"
-min_val = Get minimum
-max_val = Get maximum
-range_val = max_val - min_val
-if range_val = 0
-    range_val = 1
-endif
+# ===== 3. NORMALIZE =====
+appendInfoLine: "Normalizing..."
+Create simple Matrix: "ParamMins", nparams, 1, "0"
+mins_mat = selected()
+Create simple Matrix: "ParamMaxs", nparams, 1, "0"
+maxs_mat = selected()
 
-Copy: "NormMat"
-norm_mat = selected()
-Formula: "(self - min_val) / range_val"
-Formula: "if self < 0 then 0 else if self > 1 then 1 else self fi fi"
+for p from 1 to nparams
+    selectObject: param_matrix
+    pmin = 1e30
+    pmax = -1e30
+    for frameIdx from 1 to num_frames
+        val = Get value in cell: p, frameIdx
+        if val < pmin
+            pmin = val
+        endif
+        if val > pmax
+            pmax = val
+        endif
+    endfor
+    if pmax = pmin
+        pmax = pmin + 1
+    endif
+    selectObject: mins_mat
+    Set value: p, 1, pmin
+    selectObject: maxs_mat
+    Set value: p, 1, pmax
+endfor
 
-# Transpose for training (Rows=Frames, Cols=Params)
-selectObject: norm_mat
+selectObject: param_matrix
+Copy: "NormMatrix"
+norm_matrix = selected()
+
+for p from 1 to nparams
+    selectObject: mins_mat
+    pmin = Get value in cell: p, 1
+    selectObject: maxs_mat
+    pmax = Get value in cell: p, 1
+    prange = pmax - pmin
+    selectObject: norm_matrix
+    for frameIdx from 1 to num_frames
+        val = Get value in cell: p, frameIdx
+        norm_val = (val - pmin) / prange
+        Set value: p, frameIdx, norm_val
+    endfor
+endfor
+
+selectObject: norm_matrix
 Transpose
-Rename: "NormMat_transposed"
-train_mat = selected()
+train_matrix = selected()
 
-# 4. Neural Network Training
-selectObject: train_mat
+# ===== 4. TRAIN AUTOENCODER =====
+selectObject: train_matrix
 To Pattern: 1
 pattern_in = selected()
-selectObject: train_mat
+selectObject: train_matrix
 To ActivationList
-activ_out = selected()
+activ_target = selected()
 
-# Create Network
-Create FFNet: "ParamAutoencoder", nparams, nparams, bottleneck_size, 0
-net = selected()
+Create FFNet: "Autoencoder", nparams, nparams, bottleneck_size, 0
+autoencoder = selected()
 
-appendInfoLine: "Training autoencoder (Bottleneck=" + string$(bottleneck_size) + ")…"
-selectObject: net
+appendInfoLine: "Training autoencoder (", nparams, " -> ", bottleneck_size, " -> ", nparams, ")..."
+selectObject: autoencoder
 plusObject: pattern_in
-plusObject: activ_out
+plusObject: activ_target
 Learn: epochs, 0.001, "Minimum-squared-error"
 
-# ===== DRAW NETWORK VISUALIZATION =====
+# ===== 5. EXTRACT LATENT SPACE =====
+appendInfoLine: "Extracting latent representations..."
+selectObject: autoencoder
+plusObject: pattern_in
+To ActivationList: 1
+hidden_activ = selected()
+selectObject: hidden_activ
+To Matrix
+hidden_matrix = selected()
+
+selectObject: hidden_matrix
+latent_min = Get minimum
+latent_max = Get maximum
+latent_range = latent_max - latent_min
+if latent_range = 0
+    latent_range = 1
+endif
+appendInfoLine: "Latent range: [", fixed$(latent_min, 3), ", ", fixed$(latent_max, 3), "]"
+
+# ===== 6. TRAIN DECODER =====
+appendInfoLine: "Training decoder..."
+selectObject: hidden_matrix
+To Pattern: 1
+hidden_pattern = selected()
+
+Create FFNet: "Decoder", bottleneck_size, nparams, 0, 0
+decoder = selected()
+
+selectObject: decoder
+plusObject: hidden_pattern
+plusObject: activ_target
+Learn: epochs, 0.001, "Minimum-squared-error"
+
+# ===== DRAW NETWORK =====
 if draw_network = 1
-    appendInfoLine: "Drawing network visualization…"
-    
-    selectObject: net
-    
-    # Clear picture
+    appendInfoLine: "Drawing network visualization..."
     Erase all
     
-    # === TOPOLOGY (top) ===
-    Select outer viewport: 1, 9, 1, 4
+    # Topology
+    Select outer viewport: 0.5, 5, 0.5, 3
+    selectObject: autoencoder
     Draw topology
-    
-    # Title
-    Select outer viewport: 1, 9, 0.2, 0.8
-    Text top: "yes", "Autoencoder: 5 inputs -> " + string$(bottleneck_size) + " hidden -> 5 outputs"
-    
-    # === WEIGHTS (bottom) ===
-    # Input to Hidden
-    Select outer viewport: 1, 4.5, 5, 8.5
+    Select outer viewport: 0.5, 5, 0.2, 0.7
+    Text top: "no", "Encoder: " + string$(nparams) + " -> " + string$(bottleneck_size)
+
+    Select outer viewport: 5.5, 10, 0.5, 3
+    selectObject: decoder
+    Draw topology
+    Select outer viewport: 5.5, 10, 0.2, 0.7
+    Text top: "no", "Decoder: " + string$(bottleneck_size) + " -> " + string$(nparams)
+
+    # Weights
+    Select outer viewport: 0.5, 5, 4.5, 7.5
+    selectObject: autoencoder
     Draw weights: 1, "yes"
-    Text top: "no", "Input to Hidden"
-    
-    # Hidden to Output
-    Select outer viewport: 5.5, 9, 5, 8.5
-    Draw weights: 2, "yes"
-    Text top: "no", "Hidden to Output"
-    
+    Select outer viewport: 0.5, 5, 4, 4.5
+    Text top: "no", "Encoder weights (Input->Latent)"
+
+    Select outer viewport: 5.5, 10, 4.5, 7.5
+    selectObject: decoder
+    Draw weights: 1, "yes"
+    Select outer viewport: 5.5, 10, 4, 4.5
+    Text top: "no", "Decoder weights (Latent->Output)"
+
     # Info
-    Select outer viewport: 1, 9, 8.7, 9.2
-    Text top: "no", "Epochs: " + string$(epochs) + " | Darker = stronger weight"
-    
-    appendInfoLine: "  Network drawn to Picture window"
-    appendInfoLine: "  Save: Picture -> Save as PDF"
+    Select outer viewport: 0.5, 10, 8, 8.5
+    Text top: "no", "Preset: " + presetName$ + " | Params: " + string$(nparams) + " | Latent: " + string$(bottleneck_size)
 endif
 
-# 5. Reconstruction (get base reconstruction once)
-appendInfoLine: "Getting base reconstruction…"
-selectObject: train_mat
-To Pattern: 1
-pattern_in2 = selected()
+# ===== 7. GENERATE VARIATIONS =====
+appendInfoLine: ""
+appendInfoLine: "Generating variations via latent space exploration..."
 
-# Get Output Activations (Layer 2)
-selectObject: net
-plusObject: pattern_in2
-To ActivationList: 2
-activ_recon = selected()
-
-# Convert back to Matrix and Transpose
-To Matrix
-matrix_from_activ = selected()
-Transpose
-Rename: "ReconFull"
-recon_mat_full = selected()
-
-# Extract parameters
-Create simple Matrix: "ReconParams", nparams, num_frames, "0"
-recon_params_base = selected()
-
-for param_row from 1 to nparams
-    for col from 1 to num_frames
-        selectObject: recon_mat_full
-        val = Get value in cell: param_row, col 
-        selectObject: recon_params_base
-        Set value: param_row, col, val
-    endfor
-endfor
-
-# Denormalise
-selectObject: recon_params_base
-Formula: "self * range_val + min_val"
-
-# 6. CREATE VARIATIONS using PSOLA
 for var_num from 0 to num_variations
+    selectObject: hidden_matrix
+    Copy: "Latent_Var" + string$(var_num)
+    latent_var = selected()
+    nLatentRows = Get number of rows
+    nLatentCols = Get number of columns
     
+    # === VARIATION TYPES ===
     if var_num = 0
-        appendInfoLine: "Creating original reconstruction (PSOLA)…"
         var_name$ = "Original"
-        selectObject: recon_params_base
-        Copy: "ReconParams_Var0"
-        recon_params = selected()
-    else
-        appendInfoLine: "Creating variation " + string$(var_num) + " (PSOLA)…"
-        var_name$ = "Var" + string$(var_num)
-        selectObject: recon_params_base
-        Copy: "ReconParams_Var" + string$(var_num)
-        recon_params = selected()
+        appendInfoLine: "  Var0: Original reconstruction (no perturbation)"
         
-        # DRAMATIC TRANSFORMATIONS
-        if var_num = 1
-            # EXTREME pitch shift up (chipmunk)
-            Formula: "if row = 1 then self * 1.8 else self fi"
-        elsif var_num = 2
-            # EXTREME pitch down + formant shift (monster voice)
-            Formula: "if row = 1 then self * 0.6 else if row >= 2 then self * 0.75 else self fi fi"
-        elsif var_num = 3
-            # RADICAL gender change
-            Formula: "if row = 1 then self * 0.7 else if row >= 2 then self * 1.35 else self fi fi"
-        elsif var_num = 4
-            # Formant SCRAMBLE
-            Formula: "if row = 2 then self[3, col] * 1.2 else if row = 3 then self[2, col] * 0.85 else self fi fi"
-        elsif var_num = 5
-            # Extreme VIBRATO
-            Formula: "if row = 1 then self * (1 + 0.2 * sin(2 * pi * 5.5 * col * 'dt')) else self fi"
-        elsif var_num = 6
-            # CRUSH formants
-            Formula: "if row >= 2 then 1200 + (self - 1200) * 0.4 else self fi"
-        elsif var_num = 7
-            # Pitch GLITCH
-            Formula: "if row = 1 then self * (2 ^ floor(randomUniform(-1, 1.5))) else self fi"
+    elsif var_num = 1
+        var_name$ = "Noise"
+        appendInfoLine: "  Var1: Random noise injection in latent space"
+        noise_amt = latent_noise * latent_range * 0.3
+        selectObject: latent_var
+        for ri from 1 to nLatentRows
+            for ci from 1 to nLatentCols
+                val = Get value in cell: ri, ci
+                val = val + randomGauss(0, noise_amt)
+                Set value: ri, ci, val
+            endfor
+        endfor
+        
+    elsif var_num = 2
+        var_name$ = "Scale"
+        appendInfoLine: "  Var2: Scale first latent dimension"
+        selectObject: latent_var
+        for ri from 1 to nLatentRows
+            val = Get value in cell: ri, 1
+            val = val * 1.3 + 0.1
+            Set value: ri, 1, val
+        endfor
+        
+    elsif var_num = 3
+        var_name$ = "Invert"
+        appendInfoLine: "  Var3: Mirror second latent dimension around mean"
+        if bottleneck_size >= 2
+            selectObject: latent_var
+            dmean = 0
+            for ri from 1 to nLatentRows
+                val = Get value in cell: ri, 2
+                dmean = dmean + val
+            endfor
+            dmean = dmean / nLatentRows
+            for ri from 1 to nLatentRows
+                val = Get value in cell: ri, 2
+                new_val = 2 * dmean - val
+                Set value: ri, 2, new_val
+            endfor
         endif
+        
+    elsif var_num = 4
+        var_name$ = "Smooth"
+        appendInfoLine: "  Var4: Temporal smoothing in latent space"
+        selectObject: latent_var
+        for ci from 1 to nLatentCols
+            for ri from 2 to nLatentRows - 1
+                prev_val = Get value in cell: ri - 1, ci
+                curr_val = Get value in cell: ri, ci
+                next_val = Get value in cell: ri + 1, ci
+                smoothed = (prev_val + curr_val + next_val) / 3
+                Set value: ri, ci, smoothed
+            endfor
+        endfor
+        
+    elsif var_num = 5
+        var_name$ = "Warp"
+        appendInfoLine: "  Var5: Time-warping in latent space"
+        selectObject: latent_var
+        Copy: "LatentWarpTemp"
+        warp_temp = selected()
+        
+        selectObject: latent_var
+        for ri from 1 to nLatentRows
+            warp_idx = round(1 + (nLatentRows - 1) * ((ri - 1) / max(1, nLatentRows - 1))^1.5)
+            if warp_idx < 1
+                warp_idx = 1
+            endif
+            if warp_idx > nLatentRows
+                warp_idx = nLatentRows
+            endif
+            for ci from 1 to nLatentCols
+                selectObject: warp_temp
+                val = Get value in cell: warp_idx, ci
+                selectObject: latent_var
+                Set value: ri, ci, val
+            endfor
+        endfor
+        
+        selectObject: warp_temp
+        Remove
+        
+    elsif var_num = 6
+        var_name$ = "Swap"
+        appendInfoLine: "  Var6: Swap latent dimensions"
+        if bottleneck_size >= 2
+            selectObject: latent_var
+            for ri from 1 to nLatentRows
+                d1 = Get value in cell: ri, 1
+                d2 = Get value in cell: ri, 2
+                Set value: ri, 1, d2
+                Set value: ri, 2, d1
+            endfor
+        endif
+        
+    elsif var_num = 7
+        var_name$ = "Interp"
+        appendInfoLine: "  Var7: Interpolate toward mean latent"
+        selectObject: latent_var
+        for ci from 1 to nLatentCols
+            dmean = 0
+            for ri from 1 to nLatentRows
+                val = Get value in cell: ri, ci
+                dmean = dmean + val
+            endfor
+            dmean = dmean / nLatentRows
+            for ri from 1 to nLatentRows
+                val = Get value in cell: ri, ci
+                new_val = 0.6 * val + 0.4 * dmean
+                Set value: ri, ci, new_val
+            endfor
+        endfor
+        
+    else
+        var_name$ = "Var" + string$(var_num)
+        appendInfoLine: "  Var", var_num, ": Extra variation (noise)"
+        noise_amt = latent_noise * latent_range * 0.2 * var_num
+        selectObject: latent_var
+        for ri from 1 to nLatentRows
+            for ci from 1 to nLatentCols
+                val = Get value in cell: ri, ci
+                val = val + randomGauss(0, noise_amt)
+                Set value: ri, ci, val
+            endfor
+        endfor
+    endif
+
+    # === CLAMP TO [0, 1] ===
+    selectObject: latent_var
+    for ri from 1 to nLatentRows
+        for ci from 1 to nLatentCols
+            val = Get value in cell: ri, ci
+            if val < 0
+                val = 0
+            endif
+            if val > 1
+                val = 1
+            endif
+            Set value: ri, ci, val
+        endfor
+    endfor
+
+    # === DECODE ===
+    selectObject: latent_var
+    To Pattern: 1
+    latent_pattern = selected()
+    
+    selectObject: decoder
+    plusObject: latent_pattern
+    To ActivationList: 1
+    decoded_activ = selected()
+    
+    selectObject: decoded_activ
+    To Matrix
+    decoded_matrix = selected()
+    
+    selectObject: decoded_matrix
+    Transpose
+    recon_matrix = selected()
+    Rename: "ReconParams_" + var_name$
+    
+    # === DENORMALIZE ===
+    nReconCols = Get number of columns
+    for p from 1 to nparams
+        selectObject: mins_mat
+        pmin = Get value in cell: p, 1
+        selectObject: maxs_mat
+        pmax = Get value in cell: p, 1
+        prange = pmax - pmin
+        selectObject: recon_matrix
+        for frameIdx from 1 to nReconCols
+            val = Get value in cell: p, frameIdx
+            denorm_val = val * prange + pmin
+            Set value: p, frameIdx, denorm_val
+        endfor
+    endfor
+    
+    # ===== KLATTGRID SYNTHESIS =====
+    Create KlattGrid: "Synth_" + var_name$, start_time, end_time, 4, 0, 0, 0, 0, 0, 0
+    klatt = selected()
+    
+    # --- PITCH ---
+    selectObject: klatt
+    Remove pitch points between: start_time, end_time
+    voiced_count = 0
+    for frameIdx from 1 to num_frames
+        t = start_time + (frameIdx - 1) * dt
+        selectObject: recon_matrix
+        f0_val = Get value in cell: 1, frameIdx
+        if f0_val > pitch_floor and f0_val < pitch_ceiling * 1.5
+            selectObject: klatt
+            Add pitch point: t, f0_val
+            voiced_count = voiced_count + 1
+        endif
+    endfor
+    if voiced_count = 0
+        selectObject: klatt
+        Add pitch point: start_time, 120
+        Add pitch point: end_time, 120
     endif
     
-    # 7. Apply PSOLA with modified pitch
-    appendInfoLine: "  Applying PSOLA for " + var_name$ + "…"
-    
-    # A. Create new PitchTier from reconstructed parameters
-    Create PitchTier: "ModifiedPitch_" + var_name$, start_time, end_time
-    new_pitch_tier = selected()
-    
-    num_points_added = 0
-    for col from 1 to num_frames
-        time_t = start_time + (col - 1) * dt
-        selectObject: recon_params
-        f0_val = Get value in cell: 1, col 
+    # --- FORMANTS (with per-formant clamping) ---
+    for f_num from 1 to 4
+        selectObject: klatt
+        Remove oral formant frequency points: f_num, start_time, end_time
+        Remove oral formant bandwidth points: f_num, start_time, end_time
         
-        # Only add points for voiced regions
-        if f0_val > 0
-            # Ensure valid pitch
-            if f0_val < pitch_floor
-               f0_val = pitch_floor
-            endif
-            if f0_val > pitch_ceiling * 1.5
-               f0_val = pitch_ceiling * 1.5
+        for frameIdx from 1 to num_frames
+            t = start_time + (frameIdx - 1) * dt
+            selectObject: recon_matrix
+            f_val = Get value in cell: f_num + 1, frameIdx
+            
+            # Per-formant clamping to avoid crossovers
+            if f_num = 1
+                if f_val < 200
+                    f_val = 200
+                endif
+                if f_val > 1000
+                    f_val = 1000
+                endif
+            elsif f_num = 2
+                if f_val < 500
+                    f_val = 500
+                endif
+                if f_val > 3000
+                    f_val = 3000
+                endif
+            elsif f_num = 3
+                if f_val < 1500
+                    f_val = 1500
+                endif
+                if f_val > 4000
+                    f_val = 4000
+                endif
+            elsif f_num = 4
+                if f_val < 2500
+                    f_val = 2500
+                endif
+                if f_val > 5000
+                    f_val = 5000
+                endif
             endif
             
-            selectObject: new_pitch_tier
-            Add point: time_t, f0_val
-            num_points_added = num_points_added + 1
-        endif
+            bw = f_val * bandwidth_fraction
+            if bw < 50
+                bw = 50
+            endif
+            
+            selectObject: klatt
+            Add oral formant frequency point: f_num, t, f_val
+            Add oral formant bandwidth point: f_num, t, bw
+        endfor
     endfor
     
-    appendInfoLine: "    Added " + string$(num_points_added) + " pitch points"
-    
-    # B. Create Manipulation with modified pitch (PSOLA happens here)
-    selectObject: sound
-    To Manipulation: 0.01, pitch_floor, pitch_ceiling
-    manip_var = selected()
-    
-    # Replace pitch tier only if we have points
-    if num_points_added > 0
-        plusObject: new_pitch_tier
-        Replace pitch tier
-    endif
-    
-    # Get PSOLA resynthesis
-    selectObject: manip_var
-    Get resynthesis (overlap-add)
-    Rename: "PSOLA_" + var_name$
-    psola_sound = selected()
-    
-    # C. Apply smooth formant shifting
-    selectObject: recon_params
-    
-    avg_f1_orig = 0
-    avg_f2_orig = 0
-    avg_f1_new = 0
-    avg_f2_new = 0
-    count = 0
-    
-    for col from 1 to min(50, num_frames)
-        selectObject: "Matrix ParamMatrix"
-        f1_o = Get value in cell: 2, col
-        f2_o = Get value in cell: 3, col
-        f0_check = Get value in cell: 1, col
-        selectObject: recon_params
-        f1_n = Get value in cell: 2, col
-        f2_n = Get value in cell: 3, col
-        
-        # Only use voiced frames with valid formants
-        if f0_check > 0 and f1_o > 200 and f2_o > 500
-            avg_f1_orig = avg_f1_orig + f1_o
-            avg_f2_orig = avg_f2_orig + f2_o
-            avg_f1_new = avg_f1_new + f1_n
-            avg_f2_new = avg_f2_new + f2_n
-            count = count + 1
+    # --- AMPLITUDE LOGIC ---
+    selectObject: klatt
+    Remove voicing amplitude points: start_time, end_time
+    Remove aspiration amplitude points: start_time, end_time
+
+    if preset_selection = 1
+        # === v0.6 CLEAN (Dynamic Amplitude) ===
+        selectObject: mins_mat
+        int_min = Get value in cell: 6, 1
+        selectObject: maxs_mat
+        int_max = Get value in cell: 6, 1
+        int_range = int_max - int_min
+        if int_range < 1
+            int_range = 1
         endif
-    endfor
-    
-    if count > 5
-        avg_f1_orig = avg_f1_orig / count
-        avg_f2_orig = avg_f2_orig / count
-        avg_f1_new = avg_f1_new / count
-        avg_f2_new = avg_f2_new / count
         
-        # Calculate formant shift ratio (geometric mean)
-        formant_shift_ratio = sqrt((avg_f1_new / avg_f1_orig) * (avg_f2_new / avg_f2_orig))
+        for frameIdx from 1 to num_frames
+            t = start_time + (frameIdx - 1) * dt
+            selectObject: recon_matrix
+            f0_val = Get value in cell: 1, frameIdx
+            int_val = Get value in cell: 6, frameIdx
+            
+            amp = 90 * (int_val - int_min) / int_range
+            if amp < 0
+                amp = 0
+            endif
+            if amp > 90
+                amp = 90
+            endif
+            
+            selectObject: klatt
+            if f0_val > pitch_floor
+                Add voicing amplitude point: t, amp
+                Add aspiration amplitude point: t, 0
+            else
+                Add voicing amplitude point: t, 0
+                Add aspiration amplitude point: t, aspiration_during_unvoiced
+            endif
+        endfor
+        
     else
-        formant_shift_ratio = 1.0
+        # === v0.4 GLITCH (Constant Drone) ===
+        selectObject: klatt
+        Add voicing amplitude point: start_time, 90
+        Add voicing amplitude point: end_time, 90
+        Add aspiration amplitude point: start_time, 0
+        Add aspiration amplitude point: end_time, 0
     endif
     
-    # Apply formant shifting if significant
-    if abs(formant_shift_ratio - 1.0) > 0.05
-        appendInfoLine: "    Applying formant shift: " + fixed$(formant_shift_ratio, 3)
-        selectObject: psola_sound
-        Change gender: pitch_floor, pitch_ceiling, formant_shift_ratio, 0, 1.0, 1.0
-        Rename: "Resynth_" + sound_name$ + "_" + var_name$
-        final_sound = selected()
-        
-        # Cleanup
-        selectObject: psola_sound
-        Remove
-    else
-        selectObject: psola_sound
-        Rename: "Resynth_" + sound_name$ + "_" + var_name$
-        final_sound = selected()
-    endif
-    
-    # Normalize
-    selectObject: final_sound
+    # --- SYNTHESIZE ---
+    selectObject: klatt
+    To Sound
+    klatt_sound = selected()
+    Rename: "Resynth_" + sound_name$ + "_" + var_name$
     Scale peak: 0.95
     
-    # Cleanup temporary objects for this variation
-    selectObject: recon_params
-    plusObject: new_pitch_tier
-    plusObject: manip_var
+    # --- CLEANUP VARIATION TEMPS ---
+    selectObject: latent_var
+    plusObject: latent_pattern
+    plusObject: decoded_activ
+    plusObject: decoded_matrix
+    plusObject: recon_matrix
+    plusObject: klatt
     Remove
 endfor
 
-# 8. Cleanup main objects
+# ===== 8. CLEANUP =====
 selectObject: sound
 plusObject: pitch_obj
 plusObject: formant_obj
-plusObject: manipulation_orig
-plusObject: pitch_tier_orig
-plusObject: "Matrix ParamMatrix"
-plusObject: norm_mat
-plusObject: train_mat
+plusObject: intensity_obj
+plusObject: param_matrix
+plusObject: mins_mat
+plusObject: maxs_mat
+plusObject: norm_matrix
+plusObject: train_matrix
 plusObject: pattern_in
-plusObject: activ_out
-plusObject: net
-plusObject: pattern_in2
-plusObject: activ_recon
-plusObject: matrix_from_activ
-plusObject: recon_mat_full
-plusObject: recon_params_base
+plusObject: activ_target
+plusObject: autoencoder
+plusObject: hidden_activ
+plusObject: hidden_matrix
+plusObject: hidden_pattern
+plusObject: decoder
 Remove
 
-# 9. Select all created sounds
+# ===== 9. SELECT OUTPUTS =====
 selectObject: sound_orig
 for var_num from 0 to num_variations
     if var_num = 0
         var_name$ = "Original"
+    elsif var_num = 1
+        var_name$ = "Noise"
+    elsif var_num = 2
+        var_name$ = "Scale"
+    elsif var_num = 3
+        var_name$ = "Invert"
+    elsif var_num = 4
+        var_name$ = "Smooth"
+    elsif var_num = 5
+        var_name$ = "Warp"
+    elsif var_num = 6
+        var_name$ = "Swap"
+    elsif var_num = 7
+        var_name$ = "Interp"
     else
         var_name$ = "Var" + string$(var_num)
     endif
@@ -438,13 +661,27 @@ for var_num from 0 to num_variations
 endfor
 
 appendInfoLine: ""
-appendInfoLine: "=== DONE! ==="
-appendInfoLine: "Created " + string$(num_variations + 1) + " PSOLA variations"
-if draw_network = 1
-    appendInfoLine: "Network visualization in Picture window"
+appendInfoLine: "=== DONE ==="
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Created ", num_variations + 1, " latent-space variations"
+appendInfoLine: ""
+appendInfoLine: "SYNTHESIS: KlattGrid source-filter"
+if preset_selection = 1
+    appendInfoLine: "  - Dynamic voicing amplitude (gated by F0)"
+    appendInfoLine: "  - Aspiration: ", fixed$(aspiration_during_unvoiced, 0), " dB during unvoiced"
+else
+    appendInfoLine: "  - Constant 90 dB voicing (drone mode)"
 endif
 appendInfoLine: ""
-appendInfoLine: "Original = exact autoencoder reconstruction"
-appendInfoLine: "Var1 = CHIPMUNK"
-appendInfoLine: "Var2 = MONSTER"
-appendInfoLine: "Var3 = GENDER MORPH"
+appendInfoLine: "LATENT SPACE OPERATIONS:"
+appendInfoLine: "  Var0 Original : Baseline reconstruction"
+appendInfoLine: "  Var1 Noise    : Gaussian noise injection"
+appendInfoLine: "  Var2 Scale    : Scale 1st latent dim"
+appendInfoLine: "  Var3 Invert   : Mirror 2nd latent dim"
+appendInfoLine: "  Var4 Smooth   : Temporal smoothing -> legato"
+appendInfoLine: "  Var5 Warp     : Time-warp in latent space"
+appendInfoLine: "  Var6 Swap     : Swap latent dimensions"
+appendInfoLine: "  Var7 Interp   : Move toward latent centroid"
+appendInfoLine: ""
+appendInfoLine: "Parameters: ", nparams, " | Bottleneck: ", bottleneck_size
+appendInfoLine: "Bandwidth fraction: ", fixed$(bandwidth_fraction, 2)
