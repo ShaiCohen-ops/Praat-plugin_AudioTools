@@ -1,7 +1,21 @@
 # ============================================================
-# Praat AudioTools - Time-domain RMS Envelope Follower.praat
+# Praat AudioTools - Time-domain RMS Envelope Follower
 # Author: Shai Cohen
-# Version: 2.5 (2025 - Presets & Green UI)
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 1.0 (2025)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Time-domain RMS Envelope Follower
+#
+# Usage:
+#   Select a Sound object in Praat and run this script.
+#
+# Citation:
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
 form Time-domain RMS Envelope Follower
