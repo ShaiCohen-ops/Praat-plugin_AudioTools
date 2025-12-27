@@ -3,197 +3,334 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Frequency Shifter
+#   Bode-style frequency shifter using Single Sideband Modulation.
+#   Shifts all frequencies by a constant Hz amount (not pitch scaling).
+#   This creates inharmonic spectra - harmonic relationships are destroyed.
+#
+# Theory:
+#   Frequency shifting multiplies the signal by a complex exponential:
+#   y(t) = Re{x(t) · e^(j·2π·f_shift·t)}
+#   Using Hilbert transform for the imaginary part:
+#   y(t) = x(t)·cos(2π·f·t) - H{x(t)}·sin(2π·f·t)  [upper sideband]
+#   y(t) = x(t)·cos(2π·f·t) + H{x(t)}·sin(2π·f·t)  [lower sideband]
+#
+# Musical effects:
+#   - Small shifts (5-20 Hz): Chorus-like thickening
+#   - Medium shifts (50-300 Hz): Metallic, bell-like, robotic
+#   - Large shifts (>500 Hz): Alien, unintelligible speech
+#   - Negative shifts: Darker, subharmonic content
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2025). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-# Frequency Shifter (v7.1 - Safe & Presets)
-# A professional Bode-style Frequency Shifter with Presets.
-# Handles long files via chunking and uses fast Matrix math.
-
-form Frequency Shifter (Presets)
-    comment Preset Selection:
-    optionmenu Preset 1
+form Frequency Shifter
+    optionmenu Preset: 1
         option Custom
-        option Subtle Detune (Thicken)
-        option Metallic Ring (Dissonant)
-        option Horror Radio (Alien)
-        option Deep Sub (Heavy Downshift)
-        option High Bell (Sparkle)
-    
-    comment --- Custom Parameters ---
-    integer Frequency_shift_hz 200
-    comment (Positive = Up, Negative = Down)
-    
-    comment --- Optimization ---
-    positive Chunk_size_seconds 3.0
-    positive Overlap_seconds 0.1
-    
-    comment --- Output ---
-    positive Scale_peak 0.99
-    boolean Play_result 1
-    
-    comment --- Safety ---
-    boolean Keep_original 1
+        option Subtle Detune (15 Hz)
+        option Chorus Thick (8 Hz)
+        option Metallic Ring (200 Hz)
+        option Robot Voice (150 Hz)
+        option Horror Alien (666 Hz)
+        option Deep Sub (-100 Hz)
+        option Bell Shimmer (1200 Hz)
+    real shift_hz 100
+    optionmenu Direction: 1
+        option Up (positive shift)
+        option Down (negative shift)
+    real dry_wet_mix 1.0
+    positive scale_peak 0.95
+    boolean draw_visualization 1
+    boolean play_after_processing 1
 endform
 
-# --- 1. APPLY PRESETS ---
-if preset = 2
-    # Subtle Detune (Chorus-like thickening)
-    frequency_shift_hz = 15
-elsif preset = 3
-    # Metallic Ring (Classic Inharmonic)
-    frequency_shift_hz = 250
-elsif preset = 4
-    # Horror Radio (Speech becomes unintelligible)
-    frequency_shift_hz = 666
-elsif preset = 5
-    # Deep Sub (Adds weight)
-    frequency_shift_hz = -100
-elsif preset = 6
-    # High Bell (Glassy texture)
-    frequency_shift_hz = 1200
+# ============================================================
+# Apply presets
+# ============================================================
+if preset$ = "Subtle Detune (15 Hz)"
+    shift_hz = 15
+    direction = 1
+elif preset$ = "Chorus Thick (8 Hz)"
+    shift_hz = 8
+    direction = 1
+elif preset$ = "Metallic Ring (200 Hz)"
+    shift_hz = 200
+    direction = 1
+elif preset$ = "Robot Voice (150 Hz)"
+    shift_hz = 150
+    direction = 1
+elif preset$ = "Horror Alien (666 Hz)"
+    shift_hz = 666
+    direction = 1
+elif preset$ = "Deep Sub (-100 Hz)"
+    shift_hz = 100
+    direction = 2
+elif preset$ = "Bell Shimmer (1200 Hz)"
+    shift_hz = 1200
+    direction = 1
 endif
 
-# --- 2. SETUP ---
-if numberOfSelected("Sound") <> 1
+# Apply direction
+if direction = 2
+    shift_hz = -shift_hz
+endif
+
+# ============================================================
+# Validate input
+# ============================================================
+nSelected = numberOfSelected("Sound")
+if nSelected <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
 sound = selected("Sound")
-original_name$ = selected$("Sound")
-original_sr = Get sampling frequency
-total_dur = Get total duration
+selectObject: sound
+originalName$ = selected$("Sound")
+sampleRate = Get sampling frequency
+duration = Get total duration
+numChannels = Get number of channels
 
-# We determine the preset name for the file output
-if preset = 1
-    preset_name$ = "Custom"
-elsif preset = 2
-    preset_name$ = "Detune"
-elsif preset = 3
-    preset_name$ = "Metallic"
-elsif preset = 4
-    preset_name$ = "Alien"
-elsif preset = 5
-    preset_name$ = "Sub"
-elsif preset = 6
-    preset_name$ = "Bell"
+# Clamp dry/wet
+if dry_wet_mix < 0
+    dry_wet_mix = 0
+endif
+if dry_wet_mix > 1
+    dry_wet_mix = 1
 endif
 
-writeInfoLine: "Frequency Shifter (v7.1)"
-appendInfoLine: "Preset: ", preset_name$
-appendInfoLine: "Shift: ", frequency_shift_hz, " Hz"
+uniqueID$ = string$(randomInteger(10000, 99999))
 
-# --- 3. PREPARE CHUNK LOOP ---
-# Split file into overlapping blocks to handle long files safely
-num_chunks = floor(total_dur / chunk_size_seconds) + 1
-current_time = 0
+# ============================================================
+# Report
+# ============================================================
+writeInfoLine: "Frequency Shifter"
+appendInfoLine: "================="
+appendInfoLine: "Input: ", originalName$
+appendInfoLine: "Shift: ", shift_hz, " Hz"
+appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
+appendInfoLine: "Channels: ", numChannels
+appendInfoLine: ""
 
-appendInfoLine: "Processing ", num_chunks, " chunks..."
+# ============================================================
+# Process using Hilbert transform + SSB modulation
+# ============================================================
+appendInfoLine: "Processing..."
 
-for i from 1 to num_chunks
+# Angular frequency
+omega = 2 * pi * shift_hz
+
+if numChannels = 1
+    # --- MONO PROCESSING ---
+    
+    # Create Hilbert transform (90° phase shift)
     selectObject: sound
+    hilbert = Copy: "hilbert_" + uniqueID$
     
-    # Calculate timings
-    start_t = current_time
-    end_t = current_time + chunk_size_seconds + overlap_seconds
+    # Convert to spectrum, shift phase by -90°, convert back
+    selectObject: hilbert
+    To Spectrum: "yes"
+    specHilbert = selected("Spectrum")
     
-    # Check bounds
-    if end_t > total_dur
-        end_t = total_dur
+    # Hilbert transform in frequency domain:
+    # H(f) = -j·sign(f)·X(f)
+    # For positive frequencies: multiply by -j (rotate -90°)
+    # For negative frequencies: multiply by +j (rotate +90°)
+    # In Praat Spectrum (which stores only positive frequencies):
+    # Real part becomes Imaginary, Imaginary becomes -Real
+    Formula: "if row = 1 then self[2, col] else -self[1, col] fi"
+    
+    To Sound
+    hilbertSound = selected("Sound")
+    removeObject: specHilbert
+    
+    selectObject: hilbert
+    removeObject: hilbert
+    hilbert = hilbertSound
+    Rename: "hilbert_" + uniqueID$
+    
+    # Create output
+    selectObject: sound
+    result = Copy: "shifted_" + uniqueID$
+    
+    # SSB modulation:
+    # Upper sideband (shift up): x·cos(ωt) - H{x}·sin(ωt)
+    # Lower sideband (shift down): x·cos(ωt) + H{x}·sin(ωt)
+    selectObject: result
+    if shift_hz >= 0
+        Formula: "Sound_'originalName$'(x) * cos('omega' * x) - Sound_hilbert_'uniqueID$'(x) * sin('omega' * x)"
+    else
+        Formula: "Sound_'originalName$'(x) * cos('omega' * x) + Sound_hilbert_'uniqueID$'(x) * sin('omega' * x)"
     endif
     
-    # A. EXTRACT CHUNK
-    chunk = Extract part: start_t, end_t, "rectangular", 1, "no"
-    chunk_name$ = "Chunk_" + string$(i)
-    Rename: chunk_name$
-    
-    # B. PROCESS CHUNK (Matrix Shift)
-    # 1. To Spectrum (Fast FFT)
-    spectrum = To Spectrum: "yes"
-    
-    # 2. Calculate Bins
-    bin_width = Get bin width
-    shift_bins = round(frequency_shift_hz / bin_width)
-    shift_str$ = fixed$(shift_bins, 0)
-    
-    # 3. To Matrix
-    mat_src = To Matrix
-    
-    # 4. Create Target Matrix
-    mat_tgt = Copy: "TargetMat"
-    Formula: "0"
-    
-    # 5. Shift Formula
-    # Target[col] = Source[col - shift]
-    selectObject: mat_tgt
-    Formula: "if (col - " + shift_str$ + ") >= 1 and (col - " + shift_str$ + ") <= ncol then Matrix_" + chunk_name$ + "[row, col - " + shift_str$ + "] else 0 fi"
-    
-    # 6. Convert Back
-    # Matrix -> Spectrum -> Sound
-    spec_out = To Spectrum
-    sound_tmp = To Sound
-    
-    # 7. Fix Pitch (Restore Sample Rate)
-    # Matrix conversion resets Hz to defaults. We override it to original.
-    Override sampling frequency: original_sr
-    
-    # 8. Trim to exact length (remove FFT padding)
-    exact_len = end_t - start_t
-    Extract part: 0, exact_len, "rectangular", 1, "no"
-    processed_chunk = selected("Sound")
-    Rename: "Proc_" + string$(i)
-    
-    # Store ID
-    chunks[i] = processed_chunk
-    
-    # Cleanup loop objects
-    removeObject: chunk, spectrum, mat_src, mat_tgt, spec_out, sound_tmp
-    
-    # Advance time
-    current_time = current_time + chunk_size_seconds
-endfor
+    removeObject: hilbert
 
-# --- 4. RECONSTRUCT ---
-appendInfoLine: "Merging..."
-
-selectObject: chunks[1]
-for i from 2 to num_chunks
-    plusObject: chunks[i]
-endfor
-
-# Simple Concatenation works best for frequency shifting
-Concatenate
-result_id = selected("Sound")
-Rename: original_name$ + "_FreqShift_" + preset_name$
-Scale peak: scale_peak
-
-# --- 5. CLEANUP ---
-for i from 1 to num_chunks
-    removeObject: chunks[i]
-endfor
-
-# Only remove original if explicitly requested
-if keep_original = 0
+else
+    # --- STEREO PROCESSING ---
+    
     selectObject: sound
-    Remove
+    Extract one channel: 1
+    left = selected("Sound")
+    Rename: "left_" + uniqueID$
+    
+    selectObject: sound
+    Extract one channel: 2
+    right = selected("Sound")
+    Rename: "right_" + uniqueID$
+    
+    # Process left channel
+    selectObject: left
+    To Spectrum: "yes"
+    specL = selected("Spectrum")
+    Formula: "if row = 1 then self[2, col] else -self[1, col] fi"
+    To Sound
+    hilbertL = selected("Sound")
+    Rename: "hilbertL_" + uniqueID$
+    removeObject: specL
+    
+    selectObject: left
+    shiftedL = Copy: "shiftedL_" + uniqueID$
+    if shift_hz >= 0
+        Formula: "Sound_left_'uniqueID$'(x) * cos('omega' * x) - Sound_hilbertL_'uniqueID$'(x) * sin('omega' * x)"
+    else
+        Formula: "Sound_left_'uniqueID$'(x) * cos('omega' * x) + Sound_hilbertL_'uniqueID$'(x) * sin('omega' * x)"
+    endif
+    
+    # Process right channel
+    selectObject: right
+    To Spectrum: "yes"
+    specR = selected("Spectrum")
+    Formula: "if row = 1 then self[2, col] else -self[1, col] fi"
+    To Sound
+    hilbertR = selected("Sound")
+    Rename: "hilbertR_" + uniqueID$
+    removeObject: specR
+    
+    selectObject: right
+    shiftedR = Copy: "shiftedR_" + uniqueID$
+    if shift_hz >= 0
+        Formula: "Sound_right_'uniqueID$'(x) * cos('omega' * x) - Sound_hilbertR_'uniqueID$'(x) * sin('omega' * x)"
+    else
+        Formula: "Sound_right_'uniqueID$'(x) * cos('omega' * x) + Sound_hilbertR_'uniqueID$'(x) * sin('omega' * x)"
+    endif
+    
+    # Combine to stereo
+    selectObject: shiftedL, shiftedR
+    Combine to stereo
+    result = selected("Sound")
+    
+    removeObject: left, right, hilbertL, hilbertR, shiftedL, shiftedR
 endif
 
-appendInfoLine: "Done!"
+# ============================================================
+# Dry/wet mix
+# ============================================================
+if dry_wet_mix < 1
+    selectObject: result
+    Formula: "'dry_wet_mix' * self + (1 - 'dry_wet_mix') * Sound_'originalName$'(x)"
+endif
 
-if play_result
-    selectObject: result_id
+selectObject: result
+Scale peak: scale_peak
+
+if shift_hz >= 0
+    Rename: originalName$ + "_shift+" + string$(abs(shift_hz)) + "Hz"
+else
+    Rename: originalName$ + "_shift" + string$(shift_hz) + "Hz"
+endif
+
+finalOutput = selected("Sound")
+
+# ============================================================
+# Visualization
+# ============================================================
+if draw_visualization
+    Erase all
+    
+    # Create spectrograms
+    selectObject: sound
+    if numChannels > 1
+        origMono = Convert to mono
+    else
+        origMono = Copy: "origMono_" + uniqueID$
+    endif
+    
+    selectObject: origMono
+    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    origSpec = selected("Spectrogram")
+    
+    selectObject: finalOutput
+    if numChannels > 1
+        resultMono = Convert to mono
+    else
+        resultMono = Copy: "resultMono_" + uniqueID$
+    endif
+    
+    selectObject: resultMono
+    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    resultSpec = selected("Spectrogram")
+    
+    # Determine time ticks
+    if duration > 10
+        timeTick = 2
+    elsif duration > 5
+        timeTick = 1
+    elsif duration > 2
+        timeTick = 0.5
+    else
+        timeTick = 0.25
+    endif
+    
+    # PANEL 1: Original spectrogram
+    Select outer viewport: 0, 6, 0, 3
+    Select inner viewport: 0.7, 5.8, 0.4, 2.7
+    
+    selectObject: origSpec
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    
+    Black
+    Draw inner box
+    Text left: "yes", "Freq (Hz)"
+    Text top: "no", "##Original##"
+    Marks left every: 1, 1000, "yes", "yes", "no"
+    
+    # PANEL 2: Shifted spectrogram
+    Select outer viewport: 0, 6, 3, 6
+    Select inner viewport: 0.7, 5.8, 3.4, 5.7
+    
+    selectObject: resultSpec
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    
+    Black
+    Draw inner box
+    Text bottom: "yes", "Time (s)"
+    Text left: "yes", "Freq (Hz)"
+    if shift_hz >= 0
+        Text top: "no", "##Shifted +" + string$(abs(shift_hz)) + " Hz##"
+    else
+        Text top: "no", "##Shifted " + string$(shift_hz) + " Hz##"
+    endif
+    Marks bottom every: 1, timeTick, "yes", "yes", "no"
+    Marks left every: 1, 1000, "yes", "yes", "no"
+    
+    removeObject: origMono, resultMono, origSpec, resultSpec
+endif
+
+selectObject: finalOutput
+
+appendInfoLine: ""
+appendInfoLine: "================="
+appendInfoLine: "Complete!"
+appendInfoLine: "Output: ", selected$("Sound")
+
+if play_after_processing
     Play
 endif
