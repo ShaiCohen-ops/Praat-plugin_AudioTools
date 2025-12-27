@@ -1,182 +1,250 @@
 # ============================================================
 # Praat AudioTools - Jitter-Shimmer Formant Mapping.praat
 # Author: Shai Cohen
-# Affiliation: Department of Music, Bar-Ilan University, Israel
-# Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 1.2 (2025) - Safe Logic (No Unit Assumptions)
 # License: MIT License
-# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Filtering or timbral modification script
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#   Maps voice perturbation (jitter/shimmer) to timbral transformation.
+#   
+#   v1.2 Fix:
+#   - Removed "magic number" unit conversion. 
+#   - Treats all inputs as raw percentages from Voice Report.
+#   - Preserves dynamic range: Low jitter = Low effect.
 # ============================================================
 
 form Jitter Shimmer to Formant Mapping
-    comment Select sounds to analyze and modify...
-    choice preset 1
-        option modal low perturbation
-        option breathy high shimmer
-        option creaky high jitter
-        option custom
-    positive f1base 500
-    positive f2base 1500
-    positive jitterfactor 0.1
-    positive shimmerfactor 0.08
+    comment === PRESETS ===
+    optionmenu Preset 1
+        option Modal (Subtle)
+        option Breathy (Brighter, Higher Pitch)
+        option Creaky (Darker, Lower Pitch)
+        option Robot (Monotone, Extreme)
+        option Custom
+    
+    comment --- Intensity (Global Multiplier) ---
+    positive intensity_multiplier 1.0
+    
+    comment --- Mapping Sensitivity (Weight per 1% perturbation) ---
+    # Meaning: A value of 0.1 means 1% jitter adds 0.1 to the formant ratio.
+    real jitter_Weight 0.1
+    real shimmer_Weight 0.1
+    
+    comment --- Output Options ---
+    boolean play_result 1
+    boolean keep_intermediates 0
 endform
 
-appendInfoLine: "=== JITTER/SHIMMER TO FORMANT MAPPING ==="
+# ============================================================
+# INITIALIZATION
+# ============================================================
 
-# Check if sounds are selected
-if not selected("Sound")
-    exitScript: "Please select Sound objects first."
+clearinfo
+appendInfoLine: "╔══════════════════════════════════════════════════════════════╗"
+appendInfoLine: "║      JITTER/SHIMMER MAPPING v1.2 (Dynamic Range Fix)         ║"
+appendInfoLine: "╚══════════════════════════════════════════════════════════════╝"
+
+if numberOfSelected("Sound") = 0
+    exitScript: "ERROR: Please select one or more Sound objects first."
 endif
 
-number_of_selected_sounds = numberOfSelected("Sound")
-appendInfoLine: "Number of sounds selected: ", number_of_selected_sounds
-
-# Store selected sounds in array
-for i from 1 to number_of_selected_sounds
-    sound'i' = selected("Sound", i)
+number_of_sounds = numberOfSelected("Sound")
+for i from 1 to number_of_sounds
+    sound[i] = selected("Sound", i)
 endfor
 
-# Preset configurations
+# ============================================================
+# PRESET CONFIGURATION
+# ============================================================
+
+# Default Base values
+pitch_multiplier = 1.0
+pitch_range_factor = 1.0
+
+# Load params from form into local variables
+j_weight = jitter_Weight
+s_weight = shimmer_Weight
+
 if preset = 1
-    # Modal preset
-    f1base = 500
-    f2base = 1500
-    jitterfactor = 0.1
-    shimmerfactor = 0.08
-    presetname$ = "modal"
+    # Modal: Very subtle enhancement
+    j_weight = 0.05
+    s_weight = 0.05
+    pitch_multiplier = 1.0
+    preset_name$ = "Modal"
 elsif preset = 2
-    # Breathy preset
-    f1base = 500
-    f2base = 1700
-    jitterfactor = 0.08
-    shimmerfactor = 0.12
-    presetname$ = "breathy"
+    # Breathy: Needs high sensitivity to catch subtle breathiness
+    j_weight = 0.3
+    s_weight = 0.2
+    pitch_multiplier = 1.15
+    preset_name$ = "Breathy"
 elsif preset = 3
-    # Creaky preset
-    f1base = 460
-    f2base = 1400
-    jitterfactor = 0.15
-    shimmerfactor = 0.06
-    presetname$ = "creaky"
+    # Creaky: Negative weights to darken the sound
+    j_weight = -0.3
+    s_weight = -0.1
+    pitch_multiplier = 0.85
+    preset_name$ = "Creaky"
+elsif preset = 4
+    # Robot: Extreme sensitivity, flattens pitch
+    j_weight = 1.0
+    s_weight = 0.5
+    pitch_multiplier = 1.0
+    pitch_range_factor = 0.0
+    preset_name$ = "Robot"
 else
-    # Custom - use user input values
-    presetname$ = "custom"
+    preset_name$ = "Custom"
 endif
 
-appendInfoLine: "Using preset: ", presetname$
-appendInfoLine: "F1 base: ", f1base, " Hz, F2 base: ", f2base, " Hz"
-appendInfoLine: "Jitter factor: ", jitterfactor, ", Shimmer factor: ", shimmerfactor
+appendInfoLine: "Preset: ", preset_name$
+appendInfoLine: "Intensity: ", intensity_multiplier, "x"
 
-appendInfoLine: newline$, "=== ANALYZING JITTER AND SHIMMER ==="
+# ============================================================
+# MAIN LOOP
+# ============================================================
 
-# Analyze each sound and store jitter/shimmer values
-for current_sound from 1 to number_of_selected_sounds
-    select sound'current_sound'
-    name$ = selected$("Sound")
+for current from 1 to number_of_sounds
     
-    # Analyze jitter and shimmer in one go
-    select sound'current_sound'
-    pitch = To Pitch (raw cc): 0, 75, 600, 15, "no", 0.03, 0.45, 0.01, 0.35, 0.14
-    select sound'current_sound'
-    plus pitch
-    pointprocess = To PointProcess (cc)
-    select sound'current_sound'
-    plus pitch
-    plus pointprocess
-    voiceReport$ = Voice report: 0, 0, 75, 600, 1.3, 1.6, 0.03, 0.45
+    selectObject: sound[current]
     
-    jitter = (extractNumber(voiceReport$, "Jitter (local): ")) * 100
-    shimmer = (extractNumber(voiceReport$, "Shimmer (local): ")) * 100
+    # 1. CAPTURE ORIGINAL NAME & HANDLE MONO
+    original_name$ = selected$("Sound")
+    num_channels = Get number of channels
     
-    appendInfoLine: "Sound: ", name$, " - Jitter: ", fixed$(jitter, 2), "%, Shimmer: ", fixed$(shimmer, 2), "%"
+    is_temp_mono = 0
+    if num_channels > 1
+        Convert to mono
+        working_sound = selected("Sound")
+        Rename: original_name$ + "_temp_mono"
+        is_temp_mono = 1
+    else
+        working_sound = sound[current]
+    endif
     
-    # Store values for later use
-    jitter'current_sound' = jitter
-    shimmer'current_sound' = shimmer
+    # ------------------------------------------------
+    # 2. ANALYSIS
+    # ------------------------------------------------
+    selectObject: working_sound
     
-    # Clean up analysis objects
-    select pitch
-    plus pointprocess
-    Remove
+    # Pitch analysis (needed for median pitch)
+    pitch = To Pitch (cc): 0, 75, 15, "no", 0.03, 0.45, 0.01, 0.35, 0.14, 600
+    original_median_pitch = Get quantile: 0, 0, 0.5, "Hertz"
+    if original_median_pitch = undefined
+        original_median_pitch = 150
+    endif
+    
+    # Voice Report (Jitter/Shimmer)
+    selectObject: working_sound
+    plusObject: pitch
+    point_process = To PointProcess (cc)
+    
+    selectObject: working_sound
+    plusObject: pitch
+    plusObject: point_process
+    voice_report$ = Voice report: 0, 0, 75, 600, 1.3, 1.6, 0.03, 0.45
+    
+    # Extract Raw Numbers (Praat standardly returns %)
+    # Example: "Jitter (local): 0.234%" -> returns 0.234
+    jitter_val = extractNumber(voice_report$, "Jitter (local): ")
+    shimmer_val = extractNumber(voice_report$, "Shimmer (local): ")
+    
+    # Defaults/Safety for silence/errors
+    if jitter_val = undefined
+        jitter_val = 0.0
+    endif
+    if shimmer_val = undefined
+        shimmer_val = 0.0
+    endif
+    
+    # NOTE: REMOVED THE "IF < 0.5 THEN *100" BLOCK
+    # We now trust the values are correct relative to each other.
+    # Clean voice = 0.2, Rough voice = 2.0.
+
+    # ------------------------------------------------
+    # 3. COMPOSITE SCALING LOGIC
+    # ------------------------------------------------
+    
+    # Apply Intensity (User control)
+    eff_jitter = jitter_val * intensity_multiplier
+    eff_shimmer = shimmer_val * intensity_multiplier
+    
+    # Calculate Influences (Linear Mapping)
+    # Formula: 1.0 + (Percent_Value * Sensitivity_Weight)
+    # Example Clean: 1.0 + (0.2 * 0.3) = 1.06 (Subtle)
+    # Example Rough: 1.0 + (2.0 * 0.3) = 1.60 (Extreme)
+    
+    jitter_influence = 1.0 + (eff_jitter * j_weight)
+    shimmer_influence = 1.0 + (eff_shimmer * s_weight)
+    
+    # Average into Global Ratio
+    composite_ratio = (jitter_influence + shimmer_influence) / 2
+    
+    # Clamp (Safety limits)
+    composite_ratio = max(0.6, min(2.0, composite_ratio))
+    
+    # Target Pitch
+    target_pitch = original_median_pitch * pitch_multiplier
+    
+    appendInfoLine: "------------------------------------------------"
+    appendInfoLine: "Sound: ", original_name$
+    appendInfoLine: "  Input Jitter: ", fixed$(jitter_val, 3), "% | Shimmer: ", fixed$(shimmer_val, 3), "%"
+    appendInfoLine: "  => Calculated Scale: x", fixed$(composite_ratio, 3)
+    appendInfoLine: "  => Pitch Shift: ", fixed$(original_median_pitch, 0), "Hz -> ", fixed$(target_pitch, 0), "Hz"
+
+    # ------------------------------------------------
+    # 4. RESYNTHESIS
+    # ------------------------------------------------
+    selectObject: working_sound
+    
+    # Change gender (PSOLA global scaling)
+    result_sound = Change gender: 75, 600, composite_ratio, target_pitch, pitch_range_factor, 1
+    
+    selectObject: result_sound
+    Scale peak: 0.95
+    Rename: original_name$ + "_" + preset_name$
+    result_id = selected("Sound")
+    
+    # ------------------------------------------------
+    # 5. CLEANUP & PLAYBACK
+    # ------------------------------------------------
+    
+    if not keep_intermediates
+        removeObject: pitch, point_process
+    endif
+    
+    if is_temp_mono
+        removeObject: working_sound
+    endif
+    
+    if play_result
+        selectObject: result_id
+        Play
+    endif
+
 endfor
 
-appendInfoLine: newline$, "=== APPLYING FORMANT MODIFICATIONS ==="
+appendInfoLine: "Done."
 
-# Apply formant modifications based on jitter/shimmer
-for current_sound from 1 to number_of_selected_sounds
-    select sound'current_sound'
-    originalName$ = selected$("Sound")
-    
-    jitter = jitter'current_sound'
-    shimmer = shimmer'current_sound'
-    
-    appendInfoLine: "Processing: ", originalName$, " (Jitter: ", fixed$(jitter, 2), "%, Shimmer: ", fixed$(shimmer, 2), "%)"
-    
-    # Map jitter to F1 modification and shimmer to F2 modification using preset factors
-    f1shiftfactor = 1.0 + (jitter * jitterfactor)
-    f2shiftfactor = 1.0 + (shimmer * shimmerfactor)
-    
-    appendInfoLine: "  F1 shift factor: ", fixed$(f1shiftfactor, 3)
-    appendInfoLine: "  F2 shift factor: ", fixed$(f2shiftfactor, 3)
-    
-    # SIMPLE APPROACH: Use band-pass filtering to emphasize modified formant regions
-    select sound'current_sound'
-    
-    # Create band-pass filters around modified F1 and F2 regions
-    # F1 region (typically 300-900 Hz)
-    f1low = f1base * f1shiftfactor
-    f1high = (f1base + 400) * f1shiftfactor
-    
-    # F2 region (typically 900-2500 Hz)  
-    f2low = f2base * f2shiftfactor
-    f2high = (f2base + 600) * f2shiftfactor
-    
-    # Apply band-pass filtering for F1 region
-    select sound'current_sound'
-    f1filtered = Filter (pass Hann band): f1low, f1high, 100
-    
-    # Apply band-pass filtering for F2 region
-    select sound'current_sound'
-    f2filtered = Filter (pass Hann band): f2low, f2high, 100
-    
-    # Combine the filtered sounds
-    select f1filtered
-    plus f2filtered
-    combined = Combine to stereo
-    
-    # Convert to mono if needed
-    select combined
-    finalSound = Convert to mono
-    Rename: "formantmod" + originalName$ + presetname$
-    Scale peak: 0.99
+# ============================================================
+# HELPER
+# ============================================================
 
-    # Play original and modified
-    appendInfoLine: "  Playing modified sound..."
-    select finalSound
-    Play
-    
-    # Clean up temporary objects
-    select f1filtered
-    plus f2filtered
-    plus combined
-    Remove
-    
-    appendInfoLine: "  Completed: ", originalName$
-endfor
-
-appendInfoLine: newline$, "=== MAPPING SUMMARY ==="
-appendInfoLine: "Preset: ", presetname$
-appendInfoLine: "Jitter → Formant 1 region: Higher jitter = higher F1 frequencies"
-appendInfoLine: "Shimmer → Formant 2 region: Higher shimmer = higher F2 frequencies"
-appendInfoLine: "Method: Band-pass filtering around modified formant regions"
+procedure extractNumber: .text$, .label$
+    .index = index(.text$, .label$)
+    if .index = 0
+        .return = undefined
+    else
+        .length = length(.label$)
+        .start = .index + .length
+        .rest$ = mid$(.text$, .start, 30)
+        .return = extractNumber(.rest$, "")
+        if .return = undefined
+             .end = index(.rest$, " ")
+             if .end = 0
+                 .end = index(.rest$, newline$)
+             endif
+             if .end > 0
+                 .val$ = left$(.rest$, .end - 1)
+                 .return = number(.val$)
+             endif
+        endif
+    endif
+endproc
