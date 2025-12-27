@@ -3,423 +3,547 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 1.5 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Dynamic range or envelope control script
+#   Fast waveset-inspired audio distortion with stereo processing.
+#   Processes L/R differently for wide stereo image.
+#   Applies windowing to eliminate clicks.
 #
 # Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#   Select a Sound object and run this script.
 # ============================================================
 
-# Fast Waveset Distortion Script
-# Fixed version with proper procedure calls and error handling
-
-form Waveset Distortion
-    optionmenu Type 1
-        option Repeat
-        option Skip
-        option Reverse
-        option Stretch
-        option Compress
-        option Randomize
-        option Amplitude
-    positive Amount 2.0
-    boolean Preserve_length 0
-    positive Chunk_size_seconds 0.5
+form Fast Waveset Distortion
+    optionmenu mode 1
+        option 1. Stutter (repeat chunks)
+        option 2. Gaps (silence chunks)
+        option 3. Reverse chunks
+        option 4. Shuffle order
+        option 5. Time stretch
+        option 6. Time compress
+        option 7. Pumping (alt. volume)
+        option 8. Ring modulator
+        option 9. Bitcrush
+        option 10. Tremolo
+    real amount 3.0
+    positive chunk_ms 40
+    real fade_ms 5
+    real stereo_spread 0.2
+    real mix 1.0
+    boolean normalize_output 1
+    boolean draw_result 1
 endform
 
-if numberOfSelected("Sound") = 0
-    exitScript: "Please select a Sound object first."
+# === VALIDATION ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Select a Sound object."
 endif
 
-sound = selected("Sound")
-soundName$ = selected$("Sound")
-original_duration = Get total duration
-sampling_rate = Get sampling frequency
-total_samples = Get number of samples
-channels = Get number of channels
+original = selected("Sound")
+name$ = selected$("Sound")
+sr = Get sampling frequency
+dur = Get total duration
+n_channels = Get number of channels
 
-writeInfoLine: "Starting fast waveset distortion..."
-appendInfoLine: "Original duration: ", fixed$(original_duration, 3), " seconds"
-appendInfoLine: "Distortion type: ", type$
-appendInfoLine: "Amount: ", amount
-appendInfoLine: "Chunk size: ", chunk_size_seconds, " seconds"
+# Ensure fade doesn't exceed half chunk
+fade_ms = min(fade_ms, chunk_ms / 2 - 1)
+fade_sec = fade_ms / 1000
 
-chunk_size_samples = round(chunk_size_seconds * sampling_rate)
-num_chunks = ceiling(total_samples / chunk_size_samples)
+writeInfoLine: "Fast Waveset Distortion v1.5 (Stereo + Windowed)"
+appendInfoLine: "================================================"
+appendInfoLine: "Input: ", name$, " | ", fixed$(dur, 2), "s"
+appendInfoLine: "Mode: ", mode$
+appendInfoLine: "Amount: ", amount, " | Chunk: ", chunk_ms, "ms | Fade: ", fade_ms, "ms"
+appendInfoLine: "Stereo spread: ", stereo_spread
+appendInfoLine: ""
 
-appendInfoLine: "Processing ", num_chunks, " chunks"
+# === CONVERT TO MONO FOR PROCESSING ===
+selectObject: original
+mono = Convert to mono
+Rename: "mono_source"
 
-# Create empty sound to start with
-select sound
-results = Create Sound from formula: "temp_results", channels, 0, 0.001, sampling_rate, "0"
+# === PROCESS LEFT CHANNEL ===
+appendInfoLine: "Processing LEFT channel..."
+selectObject: mono
+left_source = Copy: "left_source"
 
-for chunk from 1 to num_chunks
-    start_sample = (chunk - 1) * chunk_size_samples + 1
-    end_sample = min(start_sample + chunk_size_samples - 1, total_samples)
-    
-    if start_sample > total_samples
-        goto end_chunks
-    endif
-    
-    appendInfoLine: "Chunk ", chunk, "/", num_chunks, " (samples ", start_sample, " to ", end_sample, ")"
-    
-    select sound
-    start_time = (start_sample - 1) / sampling_rate
-    end_time = (end_sample - 1) / sampling_rate
-    
-    if end_time > start_time
-        chunk_sound = Extract part: start_time, end_time, "rectangular", 1, "no"
-        
-        select chunk_sound
-        # Call the appropriate procedure based on type
-        if type = 1
-            @repeatWavesets: chunk_sound, amount
-        elsif type = 2
-            @skipWavesets: chunk_sound, amount
-        elsif type = 3
-            @reverseSound: chunk_sound
-        elsif type = 4
-            @stretchSound: chunk_sound, amount
-        elsif type = 5
-            @compressSound: chunk_sound, amount
-        elsif type = 6
-            @randomizeWavesets: chunk_sound, amount
-        elsif type = 7
-            @amplitudeScale: chunk_sound, amount
-        else
-            processed = Copy: "processed"
-        endif
-        
-        # Combine with previous results
-        select results
-        current_duration = Get total duration
-        
-        if chunk = 1
-            # First chunk - replace the empty sound
-            select results
-            Remove
-            select processed
-            results = Copy: "temp_results"
-        else
-            # Subsequent chunks - concatenate
-            select results
-            plus processed
-            concatenated = Concatenate
-            select results
-            Remove
-            results = concatenated
-        endif
-        
-        # Clean up
-        select chunk_sound
-        Remove
-        select processed
-        Remove
-    endif
-endfor
+amount_L = amount
+chunk_ms_L = chunk_ms
+tag$ = "L"
 
-label end_chunks
+@processAudio: left_source, mode, amount_L, chunk_ms_L, fade_sec, tag$
+left_result = selected("Sound")
 
-# Final processing
-select results
-if preserve_length = 1
-    current_duration = Get total duration
-    duration_ratio = current_duration / original_duration
-    
-    appendInfoLine: "Current duration: ", fixed$(current_duration, 3), " seconds"
-    appendInfoLine: "Target duration: ", fixed$(original_duration, 3), " seconds"
-    appendInfoLine: "Duration ratio: ", fixed$(duration_ratio, 3)
-    
-    if abs(duration_ratio - 1) > 0.01
-        appendInfoLine: "Adjusting duration to preserve length..."
-        
-        # Use manipulation for large duration changes
-        if duration_ratio > 1.5 or duration_ratio < 0.67
-            manipulation = To Manipulation: 0.01, 75, 600
-            select manipulation
-            
-            duration_tier = Extract duration tier
-            select duration_tier
-            # Scale factor is inverse of duration ratio
-            scale_factor = 1 / duration_ratio
-            Add point: 0, scale_factor
-            Add point: current_duration, scale_factor
-            
-            select manipulation
-            plus duration_tier
-            Replace duration tier
-            
-            select manipulation
-            adjusted = Get resynthesis (overlap-add)
-            
-            # Clean up manipulation objects
-            select manipulation
-            Remove
-            select duration_tier
-            Remove
-            
-            select results
-            Remove
-            results = adjusted
-        else
-            # Use resampling for small duration changes
-            new_sampling_rate = sampling_rate * duration_ratio
-            resampled = Resample: new_sampling_rate, 50
-            select results
-            Remove
-            results = resampled
-        endif
-    endif
+# === PROCESS RIGHT CHANNEL ===
+appendInfoLine: ""
+appendInfoLine: "Processing RIGHT channel..."
+selectObject: mono
+right_source = Copy: "right_source"
+
+amount_R = amount * (1 + stereo_spread * 0.5)
+chunk_ms_R = chunk_ms * (1 + stereo_spread)
+tag$ = "R"
+
+@processAudio: right_source, mode, amount_R, chunk_ms_R, fade_sec, tag$
+right_result = selected("Sound")
+
+# === MATCH DURATIONS ===
+selectObject: left_result
+dur_L = Get total duration
+selectObject: right_result
+dur_R = Get total duration
+
+min_dur = min(dur_L, dur_R)
+
+if dur_L > min_dur
+    selectObject: left_result
+    left_trimmed = Extract part: 0, min_dur, "rectangular", 1, "no"
+    removeObject: left_result
+    left_result = left_trimmed
 endif
 
-select results
-Scale: 0.99
-Rename: soundName$ + "_WavesetDistorted"
+if dur_R > min_dur
+    selectObject: right_result
+    right_trimmed = Extract part: 0, min_dur, "rectangular", 1, "no"
+    removeObject: right_result
+    right_result = right_trimmed
+endif
 
-result_duration = Get total duration
-appendInfoLine: "Fast waveset distortion complete!"
-appendInfoLine: "New duration: ", fixed$(result_duration, 3), " seconds"
+# === COMBINE TO STEREO ===
+selectObject: left_result
+plusObject: right_result
+stereo_result = Combine to stereo
+Rename: name$ + "_WSD"
 
-select results
+removeObject: left_result, right_result, mono
 
-# Procedure definitions
-procedure repeatWavesets: .sound, .amount
-    select .sound
-    .samples = Get number of samples
-    .original_duration = Get total duration
+# === MIX WITH ORIGINAL ===
+if mix < 1
+    selectObject: stereo_result
+    result_dur = Get total duration
     
-    if .samples < 100
-        processed = Copy: "processed"
+    selectObject: original
+    if n_channels = 1
+        orig_stereo = Convert to stereo
     else
-        .repetitions = round(.amount)
-        if .repetitions > 4
-            .repetitions = 4
-        endif
-        
-        # For preserve_length mode, we need to fit repetitions into original duration
-        if preserve_length = 1
-            # Calculate how long each repetition should be
-            .target_duration = .original_duration / .repetitions
-            
-            # Create first copy
-            processed = Copy: "processed"
-            
-            # If we need to compress each repetition to fit
-            if .target_duration < .original_duration * 0.9
-                select processed
-                manipulation = To Manipulation: 0.01, 75, 600
-                select manipulation
-                
-                duration_tier = Extract duration tier
-                select duration_tier
-                .scale_factor = .target_duration / .original_duration
-                Add point: 0, .scale_factor
-                Add point: .original_duration, .scale_factor
-                
-                select manipulation
-                plus duration_tier
-                Replace duration tier
-                
-                select manipulation
-                compressed_rep = Get resynthesis (overlap-add)
-                
-                select manipulation
-                Remove
-                select duration_tier
-                Remove
-                select processed
-                Remove
-                
-                processed = compressed_rep
-            endif
-            
-            # Create additional repetitions
-            for .rep from 2 to .repetitions
-                select processed
-                temp_copy = Copy: "temp"
-                select temp_copy
-                .decay = 0.8^(.rep-1)
-                Formula: "self * .decay"
-                
-                select processed
-                plus temp_copy
-                new_processed = Concatenate
-                select processed
-                Remove
-                select temp_copy
-                Remove
-                processed = new_processed
-            endfor
-        else
-            # Original behavior for non-preserve length mode
-            processed = Copy: "processed"
-            
-            for .rep from 2 to .repetitions
-                select .sound
-                temp_copy = Copy: "temp"
-                select temp_copy
-                .decay = 0.8^(.rep-1)
-                Formula: "self * .decay"
-                
-                select processed
-                plus temp_copy
-                new_processed = Concatenate
-                select processed
-                Remove
-                select temp_copy
-                Remove
-                processed = new_processed
-            endfor
-        endif
+        orig_stereo = Copy: "orig_stereo"
     endif
-endproc
+    
+    orig_dur = Get total duration
+    use_dur = min(result_dur, orig_dur)
+    
+    if orig_dur > use_dur
+        orig_part = Extract part: 0, use_dur, "rectangular", 1, "no"
+        removeObject: orig_stereo
+        orig_stereo = orig_part
+    endif
+    
+    selectObject: stereo_result
+    Formula: "self * mix + Sound_orig_stereo(x, y) * (1 - mix)"
+    
+    removeObject: orig_stereo
+endif
 
-procedure skipWavesets: .sound, .amount
-    select .sound
-    .samples = Get number of samples
-    .channels = Get number of channels
-    .sampling_rate = Get sampling frequency
-    .duration = Get total duration
-    
-    # Skip this chunk with probability based on amount
-    if randomUniform(0, 1) < (1/.amount)
-        processed = Copy: "processed"
-    else
-        # Create silent sound with same duration as original chunk
-        processed = Create Sound from formula: "processed", .channels, 0, .duration, .sampling_rate, "0"
-    endif
-endproc
+# === NORMALIZE ===
+selectObject: stereo_result
+if normalize_output
+    Scale peak: 0.95
+endif
 
-procedure reverseSound: .sound
-    select .sound
-    processed = Copy: "processed"
-    select processed
-    Reverse
-endproc
+output = stereo_result
+final_dur = Get total duration
 
-procedure stretchSound: .sound, .amount
-    select .sound
-    .original_duration = Get total duration
-    .sampling_rate = Get sampling frequency
-    .channels = Get number of channels
+# === DRAW ===
+if draw_result
+    Erase all
     
-    # For proper time stretching without pitch change, use PSOLA
-    if .amount > 1.05 or .amount < 0.95
-        # Create manipulation object for time stretching
-        manipulation = To Manipulation: 0.01, 75, 600
-        select manipulation
-        
-        # Get the duration tier and scale it
-        duration_tier = Extract duration tier
-        select duration_tier
-        Add point: 0, .amount
-        Add point: .original_duration, .amount
-        
-        # Apply the duration changes
-        select manipulation
-        plus duration_tier
-        Replace duration tier
-        
-        # Synthesize the result
-        select manipulation
-        processed = Get resynthesis (overlap-add)
-        
-        # Clean up
-        select manipulation
-        Remove
-        select duration_tier
-        Remove
-    else
-        processed = Copy: "processed"
-    endif
-endproc
+    Select outer viewport: 0, 7, 0, 1.5
+    selectObject: original
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Text top: "yes", "Original: " + name$
+    
+    Select outer viewport: 0, 7, 1.5, 3
+    selectObject: output
+    Extract one channel: 1
+    left_draw = selected("Sound")
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Text top: "yes", "Left: amt=" + fixed$(amount_L, 1) + ", chunk=" + string$(round(chunk_ms_L)) + "ms"
+    removeObject: left_draw
+    
+    Select outer viewport: 0, 7, 3, 4.5
+    selectObject: output
+    Extract one channel: 2
+    right_draw = selected("Sound")
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Text top: "yes", "Right: amt=" + fixed$(amount_R, 1) + ", chunk=" + string$(round(chunk_ms_R)) + "ms"
+    Text bottom: "yes", "Time (s)"
+    removeObject: right_draw
+    
+    Select outer viewport: 0, 7, 0, 4.5
+endif
 
-procedure compressSound: .sound, .amount
-    select .sound
-    .original_duration = Get total duration
-    .sampling_rate = Get sampling frequency
-    .channels = Get number of channels
-    
-    # For proper time compression without pitch change, use PSOLA
-    if .amount > 1.05 or .amount < 0.95
-        # Create manipulation object for time compression
-        manipulation = To Manipulation: 0.01, 75, 600
-        select manipulation
-        
-        # Get the duration tier and scale it
-        duration_tier = Extract duration tier
-        select duration_tier
-        Add point: 0, 1 / .amount
-        Add point: .original_duration, 1 / .amount
-        
-        # Apply the duration changes
-        select manipulation
-        plus duration_tier
-        Replace duration tier
-        
-        # Synthesize the result
-        select manipulation
-        processed = Get resynthesis (overlap-add)
-        
-        # Clean up
-        select manipulation
-        Remove
-        select duration_tier
-        Remove
-    else
-        processed = Copy: "processed"
-    endif
-endproc
+selectObject: output
 
-procedure randomizeWavesets: .sound, .amount
-    select .sound
-    .duration = Get total duration
-    
-    # Simple randomization: either keep original or reverse
-    if randomUniform(0, 1) < .amount/5
-        # Reverse
-        processed = Copy: "processed"
-        select processed
-        Reverse
-    elsif randomUniform(0, 1) < .amount/5
-        # Apply some other transformation
-        processed = Copy: "processed"
-        select processed
-        Formula: "if randomUniform(0,1) < 0.3 then 0 else self fi"
-    else
-        # Keep original
-        processed = Copy: "processed"
-    endif
-endproc
+appendInfoLine: ""
+appendInfoLine: "Original: ", fixed$(dur, 2), "s (", n_channels, " ch)"
+appendInfoLine: "Output: ", fixed$(final_dur, 2), "s (stereo)"
+appendInfoLine: ""
+appendInfoLine: "Done! -> ", name$, "_WSD"
 
-procedure amplitudeScale: .sound, .amount
-    select .sound
-    processed = Copy: "processed"
-    select processed
-    
-    # Apply amplitude scaling
-    if randomUniform(0, 1) > 0.5
-        .scale = .amount
-    else
-        .scale = 1 / .amount
-    endif
-    
-    Formula: "self * .scale"
-    
-    # Prevent clipping
-    if .scale > 1.5
-        Scale: 0.8
-    elsif .scale > 1
-        Scale: 0.9
-    endif
-endproc
 Play
+
+# ============================================================
+# APPLY HANN WINDOW FADES TO CHUNK
+# ============================================================
+procedure applyWindow: .snd, .fade_sec
+    selectObject: .snd
+    .chunk_dur = Get total duration
+    
+    if .fade_sec > 0 and .fade_sec < .chunk_dur / 2
+        # Fade in: Hann window rise (0 to 1)
+        Formula (part): 0, .fade_sec, 1, 1, "self * (0.5 - 0.5 * cos(pi * x / .fade_sec))"
+        
+        # Fade out: Hann window fall (1 to 0)
+        .fade_start = .chunk_dur - .fade_sec
+        Formula (part): .fade_start, .chunk_dur, 1, 1, "self * (0.5 + 0.5 * cos(pi * (x - .fade_start) / .fade_sec))"
+    endif
+endproc
+
+# ============================================================
+# MAIN PROCESSING PROCEDURE
+# ============================================================
+procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$
+    selectObject: .source
+    .sr = Get sampling frequency
+    .dur = Get total duration
+    
+    .chunk_sec = .chunk_ms / 1000
+    .n_chunks = ceiling(.dur / .chunk_sec)
+    
+    # Extract chunks into GLOBAL array
+    for c from 1 to .n_chunks
+        .t1 = (c - 1) * .chunk_sec
+        .t2 = min(c * .chunk_sec, .dur)
+        
+        if .t2 > .t1
+            selectObject: .source
+            chunk[c] = Extract part: .t1, .t2, "rectangular", 1, "no"
+            Rename: "chunk_" + .tag$ + "_" + string$(c)
+        else
+            chunk[c] = 0
+        endif
+    endfor
+    
+    n_chunks = .n_chunks
+    
+    # Process by mode
+    if .mode = 1
+        # STUTTER
+        .reps = max(2, min(8, round(.amount)))
+        
+        selectObject: chunk[1]
+        @applyWindow: chunk[1], .fade_sec
+        result = Copy: "result_" + .tag$
+        
+        for .r from 2 to .reps
+            selectObject: chunk[1]
+            .temp = Copy: "temp"
+            .decay = 0.85 ^ (.r - 1)
+            Formula: "self * .decay"
+            @applyWindow: .temp, .fade_sec
+            selectObject: result
+            plusObject: .temp
+            .new_result = Concatenate
+            removeObject: result, .temp
+            result = .new_result
+        endfor
+        
+        for c from 2 to n_chunks
+            if chunk[c] <> 0
+                @applyWindow: chunk[c], .fade_sec
+                for .r from 1 to .reps
+                    selectObject: chunk[c]
+                    .temp = Copy: "temp"
+                    if .r > 1
+                        .decay = 0.85 ^ (.r - 1)
+                        Formula: "self * .decay"
+                    endif
+                    selectObject: result
+                    plusObject: .temp
+                    .new_result = Concatenate
+                    removeObject: result, .temp
+                    result = .new_result
+                endfor
+            endif
+        endfor
+        
+    elsif .mode = 2
+        # GAPS
+        .skip_n = max(2, round(.amount))
+        
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                if c mod .skip_n = 0
+                    selectObject: chunk[c]
+                    Formula: "0"
+                else
+                    @applyWindow: chunk[c], .fade_sec
+                endif
+            endif
+        endfor
+        
+        selectObject: chunk[1]
+        result = Copy: "result_" + .tag$
+        for c from 2 to n_chunks
+            if chunk[c] <> 0
+                selectObject: result
+                plusObject: chunk[c]
+                .new_result = Concatenate
+                removeObject: result
+                result = .new_result
+            endif
+        endfor
+        
+    elsif .mode = 3
+        # REVERSE
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                selectObject: chunk[c]
+                Reverse
+                @applyWindow: chunk[c], .fade_sec
+            endif
+        endfor
+        
+        selectObject: chunk[1]
+        result = Copy: "result_" + .tag$
+        for c from 2 to n_chunks
+            if chunk[c] <> 0
+                selectObject: result
+                plusObject: chunk[c]
+                .new_result = Concatenate
+                removeObject: result
+                result = .new_result
+            endif
+        endfor
+        
+    elsif .mode = 4
+        # SHUFFLE
+        for c from 1 to n_chunks
+            order[c] = c
+        endfor
+        for c from n_chunks to 2
+            .j = randomInteger(1, c)
+            .tmp = order[c]
+            order[c] = order[.j]
+            order[.j] = .tmp
+        endfor
+        
+        # Apply windows to all chunks
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                @applyWindow: chunk[c], .fade_sec
+            endif
+        endfor
+        
+        .first_idx = order[1]
+        if chunk[.first_idx] <> 0
+            selectObject: chunk[.first_idx]
+            result = Copy: "result_" + .tag$
+        endif
+        
+        for c from 2 to n_chunks
+            .idx = order[c]
+            if chunk[.idx] <> 0
+                selectObject: result
+                plusObject: chunk[.idx]
+                .new_result = Concatenate
+                removeObject: result
+                result = .new_result
+            endif
+        endfor
+        
+    elsif .mode = 5
+        # STRETCH
+        .factor = max(1.1, .amount / 2)
+        
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                selectObject: chunk[c]
+                .chunk_sr = Get sampling frequency
+                .new_sr = .chunk_sr / .factor
+                if .new_sr >= 100
+                    Resample: .new_sr, 50
+                    .new_chunk = selected("Sound")
+                    removeObject: chunk[c]
+                    selectObject: .new_chunk
+                    Override sampling frequency: .chunk_sr
+                    chunk[c] = .new_chunk
+                    Rename: "chunk_" + .tag$ + "_" + string$(c)
+                endif
+                @applyWindow: chunk[c], .fade_sec
+            endif
+        endfor
+        
+        selectObject: chunk[1]
+        result = Copy: "result_" + .tag$
+        for c from 2 to n_chunks
+            if chunk[c] <> 0
+                selectObject: result
+                plusObject: chunk[c]
+                .new_result = Concatenate
+                removeObject: result
+                result = .new_result
+            endif
+        endfor
+        
+    elsif .mode = 6
+        # COMPRESS
+        .factor = max(1.1, .amount / 2)
+        
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                selectObject: chunk[c]
+                .chunk_sr = Get sampling frequency
+                .new_sr = .chunk_sr * .factor
+                if .new_sr <= 96000
+                    Resample: .new_sr, 50
+                    .new_chunk = selected("Sound")
+                    removeObject: chunk[c]
+                    selectObject: .new_chunk
+                    Override sampling frequency: .chunk_sr
+                    chunk[c] = .new_chunk
+                    Rename: "chunk_" + .tag$ + "_" + string$(c)
+                endif
+                @applyWindow: chunk[c], .fade_sec
+            endif
+        endfor
+        
+        selectObject: chunk[1]
+        result = Copy: "result_" + .tag$
+        for c from 2 to n_chunks
+            if chunk[c] <> 0
+                selectObject: result
+                plusObject: chunk[c]
+                .new_result = Concatenate
+                removeObject: result
+                result = .new_result
+            endif
+        endfor
+        
+    elsif .mode = 7
+        # PUMPING
+        .gain_hi = 1 + (.amount - 1) * 0.5
+        .gain_lo = 1 / .gain_hi
+        
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                selectObject: chunk[c]
+                if c mod 2 = 1
+                    Formula: "self * .gain_hi"
+                else
+                    Formula: "self * .gain_lo"
+                endif
+                @applyWindow: chunk[c], .fade_sec
+            endif
+        endfor
+        
+        selectObject: chunk[1]
+        result = Copy: "result_" + .tag$
+        for c from 2 to n_chunks
+            if chunk[c] <> 0
+                selectObject: result
+                plusObject: chunk[c]
+                .new_result = Concatenate
+                removeObject: result
+                result = .new_result
+            endif
+        endfor
+        
+    elsif .mode = 8
+        # RING MOD
+        .ring_freq = 50 + .amount * 80
+        
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                selectObject: chunk[c]
+                Formula: "self * sin(2 * pi * .ring_freq * x)"
+                @applyWindow: chunk[c], .fade_sec
+            endif
+        endfor
+        
+        selectObject: chunk[1]
+        result = Copy: "result_" + .tag$
+        for c from 2 to n_chunks
+            if chunk[c] <> 0
+                selectObject: result
+                plusObject: chunk[c]
+                .new_result = Concatenate
+                removeObject: result
+                result = .new_result
+            endif
+        endfor
+        
+    elsif .mode = 9
+        # BITCRUSH
+        .levels = max(2, round(16 / .amount))
+        
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                selectObject: chunk[c]
+                Formula: "round(self * .levels) / .levels"
+                @applyWindow: chunk[c], .fade_sec
+            endif
+        endfor
+        
+        selectObject: chunk[1]
+        result = Copy: "result_" + .tag$
+        for c from 2 to n_chunks
+            if chunk[c] <> 0
+                selectObject: result
+                plusObject: chunk[c]
+                .new_result = Concatenate
+                removeObject: result
+                result = .new_result
+            endif
+        endfor
+        
+    elsif .mode = 10
+        # TREMOLO
+        .trem_freq = 2 + .amount * 3
+        .trem_depth = min(0.9, .amount * 0.15)
+        
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                selectObject: chunk[c]
+                Formula: "self * (1 - .trem_depth * (0.5 + 0.5 * sin(2 * pi * .trem_freq * x)))"
+                @applyWindow: chunk[c], .fade_sec
+            endif
+        endfor
+        
+        selectObject: chunk[1]
+        result = Copy: "result_" + .tag$
+        for c from 2 to n_chunks
+            if chunk[c] <> 0
+                selectObject: result
+                plusObject: chunk[c]
+                .new_result = Concatenate
+                removeObject: result
+                result = .new_result
+            endif
+        endfor
+    endif
+    
+    # Cleanup chunks
+    for c from 1 to n_chunks
+        if chunk[c] <> 0
+            removeObject: chunk[c]
+        endif
+    endfor
+    
+    removeObject: .source
+    
+    selectObject: result
+endproc
