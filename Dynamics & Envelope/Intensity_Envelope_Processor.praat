@@ -1,482 +1,237 @@
 # ============================================================
 # Praat AudioTools - Intensity_Envelope_Processor.praat
 # Author: Shai Cohen
-# Affiliation: Department of Music, Bar-Ilan University, Israel
-# Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
-# License: MIT License
-# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Description:
-#   Unified intensity envelope manipulation tool combining 8 transformation types
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Version: 2.4 (2025 - Crash Fix & Logic Stabilization)
 # ============================================================
 
-# ============================================================
-# STAGE 1: Select Processing Type
-# ============================================================
-
-form Intensity Envelope Processor - Select Type
-    comment Choose transformation type:
-    optionmenu Processing_type 1
-        option Power Shaping
-        option Sine Modulation
-        option Rhythmic Gating
-        option Time Shift (Early/Late)
-        option Time Scaling (Compress/Stretch)
+form Intensity Envelope Processor
+    comment Select the Mode you want to use:
+    optionmenu mode 3
+        option Power Shaping (Exp/Comp)
+        option Sine Modulation (Tremolo)
+        option Rhythmic Gating (Chopper)
+        option Time Shift
+        option Time Scaling (Tape Speed)
         option Wave Inversion
+    
+    comment ---------------------------------------------------------------
+    comment [1] Power Shaping Params:
+    real exponent 3.0
+    
+    comment [2] Tremolo Params:
+    positive tremolo_rate 5.0
+    positive tremolo_depth 0.5
+    real tremolo_center 0.5
+    
+    comment [3] Gating Params:
+    positive gate_rate 4.0
+    real gate_max 1.0
+    real gate_min 0.0
+    
+    comment [4] Time Shift Params:
+    real shift_seconds 0.1
+    
+    comment [5] Time Scale Params (0.5=Double Speed, 2.0=Half Speed):
+    positive scale_factor 1.5
+    
+    comment ---------------------------------------------------------------
+    boolean scale_output_peak 1
+    boolean show_visualization 1
+    boolean play_after_processing 1
 endform
 
 # ============================================================
-# STAGE 2: Type-Specific Parameters (using beginPause/endPause)
+# 1. SETUP
 # ============================================================
 
-if processing_type = 1
+# Check selection
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+source_id = selected("Sound")
+source_name$ = selected$("Sound")
+selectObject: source_id
+dur = Get total duration
+orig_sr = Get sampling frequency
+
+# Create working copies
+# We generate an Intensity object to get the time grid
+To Intensity: 100, 0, "yes"
+intensity_id = selected("Intensity")
+
+# Create a "Canvas" for our modulator (Linear 0-1)
+# We start with a flat line of 1.0 (Full volume)
+Formula: "1"
+Rename: "modulator_linear"
+modulator_id = selected("Intensity")
+
+# ============================================================
+# 2. CALCULATE ENVELOPE SHAPE (LINEAR 0-1 MATH)
+# ============================================================
+
+selectObject: modulator_id
+
+if mode = 1
     # Power Shaping
-    beginPause: "Power Shaping Parameters"
-        comment: "Preset:"
-        optionMenu: "preset", 1
-            option: "Custom"
-            option: "Subtle Shaping"
-            option: "Medium Shaping"
-            option: "Heavy Shaping"
-            option: "Extreme Shaping"
-        comment: "Intensity extraction:"
-        positive: "minimum_pitch", 100
-        positive: "time_step", 0.1
-        boolean: "subtract_mean", 1
-        comment: "Power parameters:"
-        positive: "exponent", 2.0
-        positive: "intensity_scale", 100
-        comment: "Output:"
-        boolean: "scale_intensities", 1
-        boolean: "play_after_processing", 1
-        boolean: "keep_intermediate_objects", 0
-    clicked = endPause: "Cancel", "OK", 2, 1
-    if clicked = 1
-        exitScript: ""
-    endif
+    # 1. Get info from source
+    selectObject: source_id
+    To Intensity: 100, 0, "yes"
+    temp_int_id = selected("Intensity")
+    max_db = Get maximum: 0, 0, "Parabolic"
     
-    # Apply presets
-    if preset = 2
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        exponent = 1.3
-        intensity_scale = 100
-        scale_intensities = 1
-    elsif preset = 3
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        exponent = 2.0
-        intensity_scale = 100
-        scale_intensities = 1
-    elsif preset = 4
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        exponent = 3.0
-        intensity_scale = 100
-        scale_intensities = 1
-    elsif preset = 5
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        exponent = 4.0
-        intensity_scale = 100
-        scale_intensities = 1
-    endif
+    # 2. Apply formula directly to modulator using object reference
+    # (Avoids creating new objects with 'Add')
+    selectObject: modulator_id
     
-elsif processing_type = 2
-    # Sine Modulation
-    beginPause: "Sine Modulation Parameters"
-        comment: "Preset:"
-        optionMenu: "preset", 1
-            option: "Custom"
-            option: "Subtle Modulation"
-            option: "Medium Modulation"
-            option: "Heavy Modulation"
-            option: "Extreme Modulation"
-        comment: "Intensity extraction:"
-        positive: "minimum_pitch", 100
-        positive: "time_step", 0.1
-        boolean: "subtract_mean", 1
-        comment: "Modulation parameters:"
-        positive: "modulation_frequency", 10
-        positive: "modulation_center", 0.5
-        positive: "modulation_depth", 0.5
-        comment: "Output:"
-        boolean: "scale_intensities", 1
-        boolean: "play_after_processing", 1
-        boolean: "keep_intermediate_objects", 0
-    clicked = endPause: "Cancel", "OK", 2, 1
-    if clicked = 1
-        exitScript: ""
-    endif
+    # First, copy the normalized shape from temp
+    # Formula logic: 10^((dB - max)/20)
+    Formula: "10 ^ ((object(" + string$(temp_int_id) + ", x) - " + string$(max_db) + ") / 20)"
     
-    # Apply presets
-    if preset = 2
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        modulation_frequency = 5
-        modulation_center = 0.7
-        modulation_depth = 0.2
-        scale_intensities = 1
-    elsif preset = 3
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        modulation_frequency = 10
-        modulation_center = 0.5
-        modulation_depth = 0.5
-        scale_intensities = 1
-    elsif preset = 4
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        modulation_frequency = 15
-        modulation_center = 0.5
-        modulation_depth = 0.45
-        scale_intensities = 1
-    elsif preset = 5
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        modulation_frequency = 25
-        modulation_center = 0.5
-        modulation_depth = 0.48
-        scale_intensities = 1
-    endif
+    # Second, apply exponent
+    Formula: "self ^ " + string$(exponent)
     
-elsif processing_type = 3
+    removeObject: temp_int_id
+    selectObject: modulator_id
+
+elsif mode = 2
+    # Sine Modulation (Tremolo)
+    Formula: string$(tremolo_center) + " + (" + string$(tremolo_depth) + " * sin(2 * pi * x * " + string$(tremolo_rate) + "))"
+    Formula: "min(max(self, 0), 1)"
+
+elsif mode = 3
     # Rhythmic Gating
-    beginPause: "Rhythmic Gating Parameters"
-        comment: "Preset:"
-        optionMenu: "preset", 1
-            option: "Custom"
-            option: "Subtle Gate"
-            option: "Medium Gate"
-            option: "Heavy Gate"
-            option: "Extreme Gate"
-        comment: "Intensity extraction:"
-        positive: "minimum_pitch", 100
-        positive: "time_step", 0.1
-        boolean: "subtract_mean", 1
-        comment: "Gating parameters:"
-        positive: "gate_frequency", 8
-        positive: "minimum_level", 0.3
-        positive: "maximum_level", 1.0
-        comment: "Output:"
-        boolean: "scale_intensities", 1
-        boolean: "play_after_processing", 1
-        boolean: "keep_intermediate_objects", 0
-    clicked = endPause: "Cancel", "OK", 2, 1
-    if clicked = 1
-        exitScript: ""
-    endif
+    Formula: "if sin(2 * pi * x * " + string$(gate_rate) + ") > 0 then " + string$(gate_max) + " else " + string$(gate_min) + " fi"
+
+elsif mode = 6
+    # Inversion
+    selectObject: source_id
+    To Intensity: 100, 0, "yes"
+    temp_int_id = selected("Intensity")
+    max_db = Get maximum: 0, 0, "Parabolic"
     
-    # Apply presets
-    if preset = 2
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        gate_frequency = 4
-        minimum_level = 0.5
-        maximum_level = 1.0
-        scale_intensities = 1
-    elsif preset = 3
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        gate_frequency = 8
-        minimum_level = 0.3
-        maximum_level = 1.0
-        scale_intensities = 1
-    elsif preset = 4
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        gate_frequency = 12
-        minimum_level = 0.15
-        maximum_level = 1.0
-        scale_intensities = 1
-    elsif preset = 5
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        gate_frequency = 16
-        minimum_level = 0.05
-        maximum_level = 1.0
-        scale_intensities = 1
-    endif
+    selectObject: modulator_id
+    # Copy normalized shape
+    Formula: "10 ^ ((object(" + string$(temp_int_id) + ", x) - " + string$(max_db) + ") / 20)"
+    # Invert
+    Formula: "1 - self"
     
-elsif processing_type = 4
-    # Time Shift
-    beginPause: "Time Shift Parameters"
-        comment: "Preset:"
-        optionMenu: "preset", 1
-            option: "Custom"
-            option: "Subtle Early"
-            option: "Medium Early"
-            option: "Heavy Early"
-            option: "Extreme Early"
-        comment: "Intensity extraction:"
-        positive: "minimum_pitch", 100
-        positive: "time_step", 0.1
-        boolean: "subtract_mean", 1
-        comment: "Time shift (negative = earlier):"
-        real: "shift_amount_seconds", -0.3
-        comment: "Output:"
-        boolean: "scale_intensities", 1
-        boolean: "play_after_processing", 1
-        boolean: "keep_intermediate_objects", 0
-    clicked = endPause: "Cancel", "OK", 2, 1
-    if clicked = 1
-        exitScript: ""
-    endif
-    
-    # Apply presets
-    if preset = 2
-        minimum_pitch = 100
-        time_step = 0.08
-        subtract_mean = 1
-        shift_amount_seconds = -0.15
-        scale_intensities = 1
-    elsif preset = 3
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        shift_amount_seconds = -0.3
-        scale_intensities = 1
-    elsif preset = 4
-        minimum_pitch = 100
-        time_step = 0.12
-        subtract_mean = 1
-        shift_amount_seconds = -0.5
-        scale_intensities = 1
-    elsif preset = 5
-        minimum_pitch = 100
-        time_step = 0.15
-        subtract_mean = 1
-        shift_amount_seconds = -0.8
-        scale_intensities = 1
-    endif
-    
-elsif processing_type = 5
-    # Time Scaling
-    beginPause: "Time Scaling Parameters"
-        comment: "Preset:"
-        optionMenu: "preset", 1
-            option: "Custom"
-            option: "Subtle Stretch"
-            option: "Medium Stretch"
-            option: "Heavy Stretch"
-            option: "Extreme Stretch"
-        comment: "Intensity extraction:"
-        positive: "minimum_pitch", 100
-        positive: "time_step", 0.1
-        boolean: "subtract_mean", 1
-        comment: "Time scaling (>1 = stretch, <1 = compress):"
-        positive: "time_scale_factor", 2.0
-        comment: "Output:"
-        boolean: "scale_intensities", 1
-        boolean: "play_after_processing", 1
-        boolean: "keep_intermediate_objects", 0
-    clicked = endPause: "Cancel", "OK", 2, 1
-    if clicked = 1
-        exitScript: ""
-    endif
-    
-    # Apply presets
-    if preset = 2
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        time_scale_factor = 1.3
-        scale_intensities = 1
-    elsif preset = 3
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        time_scale_factor = 2.0
-        scale_intensities = 1
-    elsif preset = 4
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        time_scale_factor = 3.0
-        scale_intensities = 1
-    elsif preset = 5
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        time_scale_factor = 4.0
-        scale_intensities = 1
-    endif
-    
-elsif processing_type = 6
-    # Wave Inversion
-    beginPause: "Wave Inversion Parameters"
-        comment: "Preset:"
-        optionMenu: "preset", 1
-            option: "Custom"
-            option: "Subtle Inversion"
-            option: "Medium Inversion"
-            option: "Heavy Inversion"
-            option: "Extreme Inversion"
-        comment: "Intensity extraction:"
-        positive: "minimum_pitch", 100
-        positive: "time_step", 0.1
-        boolean: "subtract_mean", 1
-        comment: "Inversion midpoint:"
-        positive: "inversion_midpoint", 100
-        comment: "Output:"
-        boolean: "scale_intensities", 1
-        boolean: "play_after_processing", 1
-        boolean: "keep_intermediate_objects", 0
-    clicked = endPause: "Cancel", "OK", 2, 1
-    if clicked = 1
-        exitScript: ""
-    endif
-    
-    # Apply presets
-    if preset = 2
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        inversion_midpoint = 90
-        scale_intensities = 1
-    elsif preset = 3
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        inversion_midpoint = 80
-        scale_intensities = 1
-    elsif preset = 4
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        inversion_midpoint = 70
-        scale_intensities = 1
-    elsif preset = 5
-        minimum_pitch = 100
-        time_step = 0.1
-        subtract_mean = 1
-        inversion_midpoint = 60
-        scale_intensities = 1
-    endif
+    removeObject: temp_int_id
+    selectObject: modulator_id
+
 endif
 
 # ============================================================
-# MAIN PROCESSING
+# 3. APPLY PROCESSING (CONVERT TO dB FOR TIER)
 # ============================================================
 
-# Check if a Sound is selected
-if not selected("Sound")
-    exitScript: "Please select a Sound object first."
+if mode = 4
+    # --- Time Shift ---
+    selectObject: source_id
+    result_id = Copy: source_name$ + "_shifted"
+    Shift times to: "start time", shift_seconds
+
+elsif mode = 5
+    # --- Time Scaling (Tape Speed) ---
+    selectObject: source_id
+    temp_id = Copy: source_name$ + "_temp"
+    Override sampling frequency: orig_sr / scale_factor
+    Resample: orig_sr, 50
+    Rename: source_name$ + "_scaled"
+    result_id = selected("Sound")
+    removeObject: temp_id
+
+else
+    # --- Envelope Modes (Multiplication) ---
+    
+    # 1. Visualization Copy (Linear)
+    selectObject: modulator_id
+    vis_modulator_id = Copy: "vis_mod"
+    
+    # 2. Convert Modulator to dB (for IntensityTier)
+    selectObject: modulator_id
+    Formula: "max(self, 0.00001)"
+    Formula: "20 * log10(self)"
+    
+    # 3. Create Tier and Multiply
+    mod_tier_id = Down to IntensityTier
+    selectObject: source_id
+    plusObject: mod_tier_id
+    Multiply
+    Rename: source_name$ + "_processed"
+    result_id = selected("Sound")
+    
+    # Cleanup Tier
+    removeObject: mod_tier_id
 endif
 
-# Store original sound
-original_sound = selected("Sound")
-originalName$ = selected$("Sound")
-
-# Determine suffix based on processing type
-if processing_type = 1
-    suffix$ = "_power_shaped"
-elsif processing_type = 2
-    suffix$ = "_sine_modulated"
-elsif processing_type = 3
-    suffix$ = "_rhythmic_gated"
-elsif processing_type = 4
-    suffix$ = "_time_shifted"
-elsif processing_type = 5
-    suffix$ = "_time_scaled"
-elsif processing_type = 6
-    suffix$ = "_wave_inverted"
+# Output Scaling
+if scale_output_peak
+    selectObject: result_id
+    Scale peak: 0.99
 endif
 
-# Copy the sound
-copy_sound = Copy: originalName$ + suffix$
-
-# Get sound duration (needed for time scaling)
-sound_duration = Get total duration
-
-# Extract intensity
-intensity_obj = To Intensity: minimum_pitch, time_step, subtract_mean
-
 # ============================================================
-# APPLY TRANSFORMATION
+# 4. VISUALIZATION
 # ============================================================
 
-if processing_type = 1
-    # Power Shaping
-    Formula: "(self/'intensity_scale')^'exponent' * 'intensity_scale'"
+if show_visualization
+    Erase all
+    Font size: 10
     
-elsif processing_type = 2
-    # Sine Modulation
-    Formula: "self * ('modulation_center' + 'modulation_depth' * sin(x * 'modulation_frequency'))"
+    # --- TOP PANEL: MODULATOR (LINEAR VIEW) ---
+    Select outer viewport: 0, 6, 0, 4
     
-elsif processing_type = 3
-    # Rhythmic Gating
-    gate_depth = maximum_level - minimum_level
-    Formula: "self * ('minimum_level' + 'gate_depth' * (sin(x * 'gate_frequency') > 0))"
-    
-elsif processing_type = 4
-    # Time Shift
-    Shift times to: "start time", shift_amount_seconds
-    
-elsif processing_type = 5
-    # Time Scaling
-    if time_scale_factor >= 1
-        # Stretch (slower)
-        Scale times by: time_scale_factor
+    if mode = 4 or mode = 5
+        selectObject: source_id
+        Black
+        Draw: 0, 0, 0, 0, "no", "Curve"
+        Text top: "no", "Original Sound (Time Manipulation)"
     else
-        # Compress (faster)
-        new_duration = sound_duration / time_scale_factor
-        Scale times to: 0, new_duration
+        # Draw the Linear Modulator
+        selectObject: vis_modulator_id
+        Colour: "{0, 0.8, 0}"
+        Line width: 2
+        Draw: 0, 0, 0, 1, "no"
+        Line width: 1
+        
+        Colour: "Silver"
+        Draw inner box
+        Axes: 0, dur, 0, 1
+        Marks left every: 1, 0.2, "yes", "yes", "no"
+        Text left: "yes", "Linear Gain (0-1)"
+        
+        Black
+        Text top: "no", "Applied Envelope Shape (0=Silence, 1=Full)"
+        
+        removeObject: vis_modulator_id
     endif
+
+    # --- BOTTOM PANEL: RESULT ---
+    Select outer viewport: 0, 6, 4.5, 8.5
     
-elsif processing_type = 6
-    # Wave Inversion
-    Formula: "'inversion_midpoint' - self"
+    # Draw Result Sound
+    selectObject: result_id
+    Black
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw inner box
+    Text top: "no", "Resulting Waveform"
+    
 endif
 
 # ============================================================
-# CONVERT AND APPLY
+# 5. CLEANUP
 # ============================================================
 
-# Convert to IntensityTier
-intensity_tier = Down to IntensityTier
-
-# Select sound and intensity tier, then multiply
-select original_sound
-plus intensity_tier
-Multiply: scale_intensities
-
-# Rename result
-Rename: originalName$ + "_result"
-result_sound = selected("Sound")
-
-# ============================================================
-# OUTPUT AND CLEANUP
-# ============================================================
-
-# Play if requested
+# Play result
 if play_after_processing
+    selectObject: result_id
     Play
 endif
 
-# Clean up intermediate objects unless requested to keep
-if not keep_intermediate_objects
-    select copy_sound
-    plus intensity_obj
-    plus intensity_tier
-    Remove
-else
-    select result_sound
-endif
+# Safe Removal (nocheck prevents crash if objects are missing)
+nocheck removeObject: intensity_id
+nocheck removeObject: modulator_id
+
+# Ensure only the final result is selected
+selectObject: result_id
