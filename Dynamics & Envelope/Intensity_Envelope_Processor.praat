@@ -1,7 +1,21 @@
 # ============================================================
-# Praat AudioTools - Intensity_Envelope_Processor.praat
+# Praat AudioTools - Intensity_Envelope_Processor
 # Author: Shai Cohen
-# Version: 2.4 (2025 - Crash Fix & Logic Stabilization)
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 1.0 (2025)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Intensity_Envelope_Processor
+#
+# Usage:
+#   Select a Sound object in Praat and run this script.
+#
+# Citation:
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
 form Intensity Envelope Processor
