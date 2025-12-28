@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025) - Optimized
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,11 @@
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.2:
+#   - Replaced O(n²) bubble sort with built-in sort#() for major performance improvement
+#   - Added zero-phase smoothing option for offline analysis
+#   - Fixed naming: local_mean (was incorrectly called local_median)
 # ============================================================
 
 # Tempo Curve (IOI) Estimator 
@@ -34,6 +39,7 @@ form Tempo Curve Estimator
     positive Sensitivity 1.5
     comment Tempo Curve Settings
     positive Smoothing_(Hz) 0.5
+    boolean Zero_phase_smoothing 1
 endform
 
 # Auto-calculate dependent parameters
@@ -52,6 +58,50 @@ appendInfoLine: "Refractory period: ", fixed$(refractory_period, 3), " s"
 appendInfoLine: "Window size: ", fixed$(window_size, 2), " s"
 appendInfoLine: "Hop size: ", fixed$(hop_size, 2), " s"
 appendInfoLine: ""
+
+# === Helper procedure: calculate median from array ===
+procedure getMedian: .data#
+    .n = size(.data#)
+    if .n = 0
+        .result = 0
+    elsif .n = 1
+        .result = .data#[1]
+    else
+        .sorted# = sort#(.data#)
+        if .n mod 2 = 1
+            .result = .sorted#[floor(.n / 2) + 1]
+        else
+            .result = (.sorted#[.n / 2] + .sorted#[.n / 2 + 1]) / 2
+        endif
+    endif
+endproc
+
+# === Helper procedure: calculate MAD (Median Absolute Deviation) ===
+procedure getMAD: .data#, .median
+    .n = size(.data#)
+    if .n = 0
+        .result = 0
+    else
+        .deviations# = zero#(.n)
+        for .i to .n
+            .deviations#[.i] = abs(.data#[.i] - .median)
+        endfor
+        @getMedian: .deviations#
+        .result = getMedian.result
+    endif
+endproc
+
+# === Helper procedure: trim array to size ===
+procedure trimArray: .data#, .newSize
+    if .newSize <= 0
+        .result# = zero#(0)
+    else
+        .result# = zero#(.newSize)
+        for .i to .newSize
+            .result#[.i] = .data#[.i]
+        endfor
+    endif
+endproc
 
 # === OPTIMIZATION: Resample if needed ===
 target_sr = 11025
@@ -122,54 +172,13 @@ if method = 1
         flux#[col] = diff
     endfor
     
-    # Normalize flux to median + MAD for consistent sensitivity
-    flux_median = 0
-    flux_sorted# = zero#(nCols)
-    for i to nCols
-        flux_sorted#[i] = flux#[i]
-    endfor
+    # Calculate median and MAD using optimized procedures
+    @getMedian: flux#
+    flux_median = getMedian.result
+    @getMAD: flux#, flux_median
+    flux_mad = getMAD.result
     
-    # Sort for median (bubble sort)
-    for i to nCols - 1
-        for j from i + 1 to nCols
-            if flux_sorted#[j] < flux_sorted#[i]
-                temp = flux_sorted#[i]
-                flux_sorted#[i] = flux_sorted#[j]
-                flux_sorted#[j] = temp
-            endif
-        endfor
-    endfor
-    
-    if nCols mod 2 = 1
-        flux_median = flux_sorted#[floor(nCols/2) + 1]
-    else
-        flux_median = (flux_sorted#[nCols/2] + flux_sorted#[nCols/2 + 1]) / 2
-    endif
-    
-    # Calculate MAD (Median Absolute Deviation)
-    mad# = zero#(nCols)
-    for i to nCols
-        mad#[i] = abs(flux#[i] - flux_median)
-    endfor
-    
-    # Sort MAD
-    for i to nCols - 1
-        for j from i + 1 to nCols
-            if mad#[j] < mad#[i]
-                temp = mad#[i]
-                mad#[i] = mad#[j]
-                mad#[j] = temp
-            endif
-        endfor
-    endfor
-    
-    if nCols mod 2 = 1
-        flux_mad = mad#[floor(nCols/2) + 1]
-    else
-        flux_mad = (mad#[nCols/2] + mad#[nCols/2 + 1]) / 2
-    endif
-    
-    # Adaptive threshold per frame (local median in ~0.5s window)
+    # Adaptive threshold per frame (local mean in ~0.5s window)
     window_frames = round(0.5 / tStep)
     
     # Peak picking with adaptive threshold + refractory period
@@ -178,7 +187,7 @@ if method = 1
     last_onset_time = -999
     
     for col from 3 to nCols - 2
-        # Calculate local median
+        # Calculate local mean (for computational efficiency)
         local_sum = 0
         local_count = 0
         for offset from -window_frames to window_frames
@@ -188,10 +197,10 @@ if method = 1
                 local_count += 1
             endif
         endfor
-        local_median = local_sum / local_count
+        local_mean = local_sum / local_count
         
-        # Adaptive threshold: local median + sensitivity * MAD
-        threshold = local_median + sensitivity * flux_mad
+        # Adaptive threshold: local mean + sensitivity * MAD
+        threshold = local_mean + sensitivity * flux_mad
         
         # Check if local maximum above threshold
         isMax = 1
@@ -219,15 +228,8 @@ if method = 1
     endfor
     
     # Trim to actual size
-    if nOnsets > 0
-        onsets_temp# = zero#(nOnsets)
-        for i to nOnsets
-            onsets_temp#[i] = onsets#[i]
-        endfor
-        onsets# = onsets_temp#
-    else
-        onsets# = zero#(0)
-    endif
+    @trimArray: onsets#, nOnsets
+    onsets# = trimArray.result#
     
     removeObject: spectrum, matrix
 
@@ -258,22 +260,7 @@ else
     int_filt# = zero#(nFrames)
     for i from 2 to nFrames - 1
         vals# = {int_raw#[i-1], int_raw#[i], int_raw#[i+1]}
-        # Sort 3 values
-        if vals#[2] < vals#[1]
-            temp = vals#[1]
-            vals#[1] = vals#[2]
-            vals#[2] = temp
-        endif
-        if vals#[3] < vals#[2]
-            temp = vals#[2]
-            vals#[2] = vals#[3]
-            vals#[3] = temp
-        endif
-        if vals#[2] < vals#[1]
-            temp = vals#[1]
-            vals#[1] = vals#[2]
-            vals#[2] = temp
-        endif
+        vals# = sort#(vals#)
         int_filt#[i] = vals#[2]
     endfor
     int_filt#[1] = int_raw#[1]
@@ -285,48 +272,11 @@ else
         slope#[i] = int_filt#[i] - int_filt#[i-1]
     endfor
     
-    # Normalize to median + MAD
-    slope_sorted# = zero#(nFrames)
-    for i to nFrames
-        slope_sorted#[i] = slope#[i]
-    endfor
-    
-    for i to nFrames - 1
-        for j from i + 1 to nFrames
-            if slope_sorted#[j] < slope_sorted#[i]
-                temp = slope_sorted#[i]
-                slope_sorted#[i] = slope_sorted#[j]
-                slope_sorted#[j] = temp
-            endif
-        endfor
-    endfor
-    
-    if nFrames mod 2 = 1
-        slope_median = slope_sorted#[floor(nFrames/2) + 1]
-    else
-        slope_median = (slope_sorted#[nFrames/2] + slope_sorted#[nFrames/2 + 1]) / 2
-    endif
-    
-    mad# = zero#(nFrames)
-    for i to nFrames
-        mad#[i] = abs(slope#[i] - slope_median)
-    endfor
-    
-    for i to nFrames - 1
-        for j from i + 1 to nFrames
-            if mad#[j] < mad#[i]
-                temp = mad#[i]
-                mad#[i] = mad#[j]
-                mad#[j] = temp
-            endif
-        endfor
-    endfor
-    
-    if nFrames mod 2 = 1
-        slope_mad = mad#[floor(nFrames/2) + 1]
-    else
-        slope_mad = (mad#[nFrames/2] + mad#[nFrames/2 + 1]) / 2
-    endif
+    # Calculate median and MAD using optimized procedures
+    @getMedian: slope#
+    slope_median = getMedian.result
+    @getMAD: slope#, slope_median
+    slope_mad = getMAD.result
     
     # Adaptive peak picking with refractory period
     window_frames = round(0.5 / tStep)
@@ -336,7 +286,7 @@ else
     last_onset_time = -999
     
     for i from 3 to nFrames - 2
-        # Local median
+        # Local mean (for computational efficiency)
         local_sum = 0
         local_count = 0
         for offset from -window_frames to window_frames
@@ -346,9 +296,9 @@ else
                 local_count += 1
             endif
         endfor
-        local_median = local_sum / local_count
+        local_mean = local_sum / local_count
         
-        threshold = local_median + sensitivity * slope_mad
+        threshold = local_mean + sensitivity * slope_mad
         
         # Check if local maximum
         isMax = 1
@@ -375,15 +325,8 @@ else
     endfor
     
     # Trim to actual size
-    if nOnsets > 0
-        onsets_temp# = zero#(nOnsets)
-        for i to nOnsets
-            onsets_temp#[i] = onsets#[i]
-        endfor
-        onsets# = onsets_temp#
-    else
-        onsets# = zero#(0)
-    endif
+    @trimArray: onsets#, nOnsets
+    onsets# = trimArray.result#
     
     removeObject: intensity
 endif
@@ -453,30 +396,11 @@ if nOnsets > 1
         confidence#[step] = n_window
         
         if n_window > 0
-            # Trim to actual size
-            window_ioi_temp# = zero#(n_window)
-            for i to n_window
-                window_ioi_temp#[i] = window_ioi#[i]
-            endfor
-            window_ioi# = window_ioi_temp#
-            
-            # Sort for median
-            for i to n_window - 1
-                for j from i + 1 to n_window
-                    if window_ioi#[j] < window_ioi#[i]
-                        temp = window_ioi#[i]
-                        window_ioi#[i] = window_ioi#[j]
-                        window_ioi#[j] = temp
-                    endif
-                endfor
-            endfor
-            
-            # Calculate median IOI
-            if n_window mod 2 = 1
-                median_ioi = window_ioi#[floor(n_window/2) + 1]
-            else
-                median_ioi = (window_ioi#[n_window/2] + window_ioi#[n_window/2 + 1]) / 2
-            endif
+            # Trim and calculate median using optimized procedure
+            @trimArray: window_ioi#, n_window
+            window_ioi# = trimArray.result#
+            @getMedian: window_ioi#
+            median_ioi = getMedian.result
             
             # Convert to BPM
             raw_bpm = 60 / median_ioi
@@ -509,11 +433,11 @@ if nOnsets > 1
         endif
     endfor
     
-    # === 4. SMOOTH BPM CURVE (Causal one-pole filter) ===
+    # === 4. SMOOTH BPM CURVE ===
     if smoothing > 0
         appendInfoLine: "Smoothing tempo curve..."
         
-        # One-pole low-pass: y[n] = y[n-1] + alpha * (x[n] - y[n-1])
+        # One-pole low-pass coefficient
         alpha = 1 - exp(-2 * pi * smoothing * hop_size)
         if alpha > 1
             alpha = 1
@@ -523,11 +447,26 @@ if nOnsets > 1
         endif
         
         smoothed# = zero#(nSteps)
-        smoothed#[1] = bpm#[1]
         
-        for i from 2 to nSteps
-            smoothed#[i] = smoothed#[i-1] + alpha * (bpm#[i] - smoothed#[i-1])
-        endfor
+        if zero_phase_smoothing
+            # Zero-phase filtering (forward-backward) for offline analysis
+            # Forward pass
+            smoothed#[1] = bpm#[1]
+            for i from 2 to nSteps
+                smoothed#[i] = smoothed#[i-1] + alpha * (bpm#[i] - smoothed#[i-1])
+            endfor
+            
+            # Backward pass
+            for i from nSteps - 1 to 1
+                smoothed#[i] = smoothed#[i+1] + alpha * (smoothed#[i] - smoothed#[i+1])
+            endfor
+        else
+            # Causal one-pole filter
+            smoothed#[1] = bpm#[1]
+            for i from 2 to nSteps
+                smoothed#[i] = smoothed#[i-1] + alpha * (bpm#[i] - smoothed#[i-1])
+            endfor
+        endif
         
         bpm# = smoothed#
     endif
