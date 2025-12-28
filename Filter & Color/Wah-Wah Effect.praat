@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - Wah-Wah Effect.praat
+# Praat AudioTools - Wah-Wah Effect
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
@@ -19,140 +19,386 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Advanced Wah-Wah Effect
-    natural Number_of_segments 20
-    real Frequency_min 300
-    real Frequency_max 1500
-    real Wah_speed 1.6
-    real Bandwidth_min 300
-    real Bandwidth_max 600
-    real Stereo_width 1.2
-    real Intensity_modulation 1.0
+form Wah-Wah Effect
+    optionmenu Preset: 1
+        option Custom
+        option Classic Wah (slow)
+        option Funky Wah (fast)
+        option Auto-Wah (envelope)
+        option Crying Baby
+        option Talk Box Style
+        option Subtle Sweep
+    comment === Wah Parameters ===
+    positive Wah_rate_(Hz) 1.5
+    positive Min_frequency_(Hz) 300
+    positive Max_frequency_(Hz) 2000
+    positive Bandwidth_(Hz) 400
+    positive Resonance 2.0
+    comment (1=flat, higher=more resonant peak)
+    comment === Stereo ===
+    real Stereo_offset 0.1
+    comment (phase offset between L/R, 0-0.5)
+    comment === Output ===
+    boolean Draw_response 1
+    boolean Play_result 1
 endform
 
-soundName$ = selected$("Sound")
+# ============================================================
+# PRESETS
+# ============================================================
+if preset = 2
+    # Classic Wah (slow)
+    wah_rate = 0.8
+    min_frequency = 400
+    max_frequency = 1800
+    bandwidth = 350
+    resonance = 2.5
+    stereo_offset = 0.1
+elsif preset = 3
+    # Funky Wah (fast)
+    wah_rate = 3.5
+    min_frequency = 350
+    max_frequency = 2500
+    bandwidth = 300
+    resonance = 3.0
+    stereo_offset = 0.15
+elsif preset = 4
+    # Auto-Wah (envelope follower style - we simulate with faster rate)
+    wah_rate = 2.0
+    min_frequency = 250
+    max_frequency = 2200
+    bandwidth = 400
+    resonance = 2.0
+    stereo_offset = 0.05
+elsif preset = 5
+    # Crying Baby
+    wah_rate = 1.2
+    min_frequency = 500
+    max_frequency = 2800
+    bandwidth = 250
+    resonance = 4.0
+    stereo_offset = 0.08
+elsif preset = 6
+    # Talk Box Style
+    wah_rate = 0.6
+    min_frequency = 300
+    max_frequency = 3500
+    bandwidth = 500
+    resonance = 1.8
+    stereo_offset = 0.2
+elsif preset = 7
+    # Subtle Sweep
+    wah_rate = 0.4
+    min_frequency = 500
+    max_frequency = 1500
+    bandwidth = 600
+    resonance = 1.5
+    stereo_offset = 0.05
+endif
 
-# Convert input to mono for processing
-select Sound 'soundName$'
-Convert to mono
-Rename... 'soundName$'_mono
+# ============================================================
+# INPUT VALIDATION
+# ============================================================
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
-# Store original RMS for normalization
-select Sound 'soundName$'_mono
-originalRMS = Get root-mean-square... 0 0
+originalID = selected("Sound")
+originalName$ = selected$("Sound")
+selectObject: originalID
 totalDuration = Get total duration
-segmentDuration = totalDuration / 'Number_of_segments'
-fs = Get sampling frequency
-nyq = fs / 2
+sampleRate = Get sampling frequency
+numChannels = Get number of channels
+nyquist = sampleRate / 2
 
-# Process left and right channels
-for i from 1 to 'Number_of_segments'
-    time = i / 'Number_of_segments'
+if max_frequency >= nyquist * 0.9
+    max_frequency = nyquist * 0.8
+endif
+
+if totalDuration < 0.1
+    exitScript: "Sound too short (min 0.1s)."
+endif
+
+# Calculate number of segments based on wah rate
+# At least 20 segments per wah cycle for smooth sweep
+segmentsPerCycle = 24
+totalCycles = totalDuration * wah_rate
+numSegments = max(10, round(totalCycles * segmentsPerCycle))
+numSegments = min(numSegments, 500)
+segmentDur = totalDuration / numSegments
+
+writeInfoLine: "=== Wah-Wah Effect ==="
+appendInfoLine: "Rate: ", fixed$(wah_rate, 2), " Hz"
+appendInfoLine: "Frequency range: ", round(min_frequency), " - ", round(max_frequency), " Hz"
+appendInfoLine: "Segments: ", numSegments
+appendInfoLine: ""
+
+# ============================================================
+# DRAW WAH RESPONSE
+# ============================================================
+if draw_response
+    Erase all
+    Select outer viewport: 0, 6, 0, 4.5
     
-    # Core modulation
-    intensity = 0.5 + 'Intensity_modulation' * 0.5 * sin(2 * pi * 'Wah_speed' * time)
-    base_freq = 'Frequency_min' + ('Frequency_max' - 'Frequency_min') * intensity
-    base_bw = 'Bandwidth_min' + ('Bandwidth_max' - 'Bandwidth_min') * (0.5 + 0.5 * sin(2 * pi * 1.5 * time))
+    # Show frequency sweep over time
+    Axes: 0, totalDuration, 0, nyquist * 0.5
     
-    # Left channel parameters
-    freq_L = base_freq
-    bw_L = base_bw
-    gain_L = 0.8 * (0.7 + 0.3 * sin(2 * pi * 3 * time))
+    Colour: "Black"
+    Draw inner box
     
-    # Right channel with stereo variations
-    freq_R = base_freq * 'Stereo_width'
-    bw_R = base_bw * (2.0 - 'Stereo_width')
-    gain_R = 0.8 * (0.7 + 0.3 * cos(2 * pi * 3 * time))
+    # Grid
+    Colour: "{0.8,0.8,0.8}"
     
-    # Additional effect parameters
-    envelope = 0.3 + 0.7 * (1 - abs(time - 0.5) * 2)
+    # Horizontal grid (frequency)
+    gridF = 500
+    while gridF < nyquist * 0.5
+        Draw line: 0, gridF, totalDuration, gridF
+        gridF = gridF + 500
+    endwhile
     
-    # Extract segment
-    select Sound 'soundName$'_mono
-    startTime = (i-1) * segmentDuration
-    endTime = i * segmentDuration
-    Extract part... startTime endTime Hanning 1 yes
-    segmentRMS = Get root-mean-square... 0 0
-    Rename... segment_'i'
+    # Draw wah sweep - Left channel (Blue)
+    Colour: "Blue"
+    Line width: 2
     
-    # Make copy for right channel
-    select Sound segment_'i'
-    Copy... segment_'i'_copy
+    step = totalDuration / 200
+    plotTime = 0
     
-    # Left channel processing
-    low_L = max(20, freq_L - bw_L/2)
-    high_L = min(nyq - 50, freq_L + bw_L/2)
-    if high_L <= low_L
-        high_L = low_L + 50
+    # First point
+    phase = 0
+    wahPos = 0.5 + 0.5 * sin(2 * pi * phase)
+    centerFreq = min_frequency + wahPos * (max_frequency - min_frequency)
+    prevTime = 0
+    prevFreq = centerFreq
+    
+    plotTime = step
+    while plotTime <= totalDuration
+        phase = wah_rate * plotTime
+        wahPos = 0.5 + 0.5 * sin(2 * pi * phase)
+        centerFreq = min_frequency + wahPos * (max_frequency - min_frequency)
+        
+        Draw line: prevTime, prevFreq, plotTime, centerFreq
+        prevTime = plotTime
+        prevFreq = centerFreq
+        plotTime = plotTime + step
+    endwhile
+    
+    # Draw wah sweep - Right channel (Red) with offset
+    Colour: "Red"
+    
+    plotTime = 0
+    phase = stereo_offset
+    wahPos = 0.5 + 0.5 * sin(2 * pi * phase)
+    centerFreq = min_frequency + wahPos * (max_frequency - min_frequency)
+    prevTime = 0
+    prevFreq = centerFreq
+    
+    plotTime = step
+    while plotTime <= totalDuration
+        phase = wah_rate * plotTime + stereo_offset
+        wahPos = 0.5 + 0.5 * sin(2 * pi * phase)
+        centerFreq = min_frequency + wahPos * (max_frequency - min_frequency)
+        
+        Draw line: prevTime, prevFreq, plotTime, centerFreq
+        prevTime = plotTime
+        prevFreq = centerFreq
+        plotTime = plotTime + step
+    endwhile
+    
+    # Draw bandwidth region (shaded)
+    Colour: "{0.9,0.9,1.0}"
+    # Just indicate with dashed lines at min/max
+    Colour: "{0.6,0.6,0.6}"
+    Line width: 1
+    Dotted line
+    Draw line: 0, min_frequency, totalDuration, min_frequency
+    Draw line: 0, max_frequency, totalDuration, max_frequency
+    Solid line
+    
+    # Labels
+    Colour: "Black"
+    Font size: 12
+    Text: totalDuration / 2, "Centre", nyquist * 0.5 + 300, "Half", "Wah-Wah Frequency Sweep"
+    
+    Font size: 10
+    Text: totalDuration / 2, "Centre", -200, "Half", "Time (s)"
+    
+    # Legend
+    Font size: 9
+    Colour: "Blue"
+    Text: totalDuration * 0.85, "Centre", nyquist * 0.45, "Half", "Left"
+    Colour: "Red"
+    Text: totalDuration * 0.85, "Centre", nyquist * 0.40, "Half", "Right"
+    
+    Colour: "{0.4,0.4,0.4}"
+    Text: totalDuration * 0.15, "Centre", nyquist * 0.45, "Half", "Rate: " + fixed$(wah_rate, 1) + " Hz"
+    Text: totalDuration * 0.15, "Centre", nyquist * 0.40, "Half", "BW: " + string$(round(bandwidth)) + " Hz"
+    
+    # Axis marks
+    Colour: "Black"
+    Marks bottom every: 1, 0.5, "yes", "yes", "no"
+    Marks left every: 1, 500, "yes", "yes", "no"
+    
+    Line width: 1
+endif
+
+# ============================================================
+# PREPARE SOURCE
+# ============================================================
+selectObject: originalID
+if numChannels > 1
+    monoSource = Convert to mono
+else
+    monoSource = Copy: "mono"
+endif
+
+# ============================================================
+# PROCESS WAH-WAH
+# ============================================================
+appendInfoLine: "Processing..."
+
+# Create output channels
+leftOut = Create Sound from formula: "leftOut", 1, 0, totalDuration, sampleRate, "0"
+rightOut = Create Sound from formula: "rightOut", 1, 0, totalDuration, sampleRate, "0"
+
+for seg from 1 to numSegments
+    # Segment time boundaries
+    segStart = (seg - 1) * segmentDur
+    segEnd = seg * segmentDur
+    segMid = (segStart + segEnd) / 2
+    
+    # Calculate wah position (0-1) based on sine wave
+    phaseL = wah_rate * segMid
+    phaseR = wah_rate * segMid + stereo_offset
+    
+    wahPosL = 0.5 + 0.5 * sin(2 * pi * phaseL)
+    wahPosR = 0.5 + 0.5 * sin(2 * pi * phaseR)
+    
+    # Calculate center frequencies
+    centerL = min_frequency + wahPosL * (max_frequency - min_frequency)
+    centerR = min_frequency + wahPosR * (max_frequency - min_frequency)
+    
+    # Calculate filter bounds
+    lowL = max(20, centerL - bandwidth / 2)
+    highL = min(nyquist - 100, centerL + bandwidth / 2)
+    lowR = max(20, centerR - bandwidth / 2)
+    highR = min(nyquist - 100, centerR + bandwidth / 2)
+    
+    # Ensure valid range
+    if highL <= lowL
+        highL = lowL + 100
+    endif
+    if highR <= lowR
+        highR = lowR + 100
     endif
     
-    select Sound segment_'i'
-    Filter (pass Hann band)... low_L high_L 50
-    # Apply gain and envelope
-    currentRMS = Get root-mean-square... 0 0
-    if currentRMS < 1e-9
-        scaleFactor = 1
-    else
-        scaleFactor = (segmentRMS / currentRMS) * gain_L * envelope
-    endif
-    Formula... self * scaleFactor
-    Rename... left_seg_'i'
+    # Extract segment with small overlap for crossfade
+    overlapDur = min(0.01, segmentDur * 0.1)
+    extractStart = max(0, segStart - overlapDur)
+    extractEnd = min(totalDuration, segEnd + overlapDur)
     
-    # Right channel processing
-    low_R = max(20, freq_R - bw_R/2)
-    high_R = min(nyq - 50, freq_R + bw_R/2)
-    if high_R <= low_R
-        high_R = low_R + 50
+    selectObject: monoSource
+    segSound = Extract part: extractStart, extractEnd, "Hanning", 1, "no"
+    
+    # Process Left channel
+    selectObject: segSound
+    segLeft = Filter (pass Hann band): lowL, highL, bandwidth * 0.25
+    
+    # Apply resonance boost at center frequency
+    if resonance > 1
+        selectObject: segLeft
+        To Spectrum: "yes"
+        specL = selected("Spectrum")
+        
+        # Boost around center frequency
+        boostWidth = bandwidth * 0.3
+        centerLStr$ = fixed$(centerL, 2)
+        boostWidthStr$ = fixed$(boostWidth, 2)
+        resStr$ = fixed$(resonance, 3)
+        
+        selectObject: specL
+        Formula: "self * (1 + (" + resStr$ + " - 1) * exp(-((x - " + centerLStr$ + ")/" + boostWidthStr$ + ")^2))"
+        
+        resynthL = To Sound
+        removeObject: specL
+        
+        # Replace segLeft with resonant version
+        removeObject: segLeft
+        segLeft = resynthL
     endif
     
-    select Sound segment_'i'_copy
-    Filter (pass Hann band)... low_R high_R 50
-    # Apply gain and envelope
-    currentRMS = Get root-mean-square... 0 0
-    if currentRMS < 1e-9
-        scaleFactor = 1
-    else
-        scaleFactor = (segmentRMS / currentRMS) * gain_R * envelope
+    # Process Right channel
+    selectObject: segSound
+    segRight = Filter (pass Hann band): lowR, highR, bandwidth * 0.25
+    
+    if resonance > 1
+        selectObject: segRight
+        To Spectrum: "yes"
+        specR = selected("Spectrum")
+        
+        centerRStr$ = fixed$(centerR, 2)
+        
+        selectObject: specR
+        Formula: "self * (1 + (" + resStr$ + " - 1) * exp(-((x - " + centerRStr$ + ")/" + boostWidthStr$ + ")^2))"
+        
+        resynthR = To Sound
+        removeObject: specR
+        
+        removeObject: segRight
+        segRight = resynthR
     endif
-    Formula... self * scaleFactor
-    Rename... right_seg_'i'
+    
+    # Crop to actual segment duration (remove overlap tails)
+    offsetInExtract = segStart - extractStart
+    
+    selectObject: segLeft
+    Rename: "segL"
+    selectObject: segRight
+    Rename: "segR"
+    
+    # Add to output channels
+    segStartStr$ = fixed$(segStart, 8)
+    offsetStr$ = fixed$(offsetInExtract, 8)
+    
+    selectObject: leftOut
+    Formula (part): segStart, segEnd, 1, 1, "self + Sound_segL(x - " + segStartStr$ + " + " + offsetStr$ + ")"
+    
+    selectObject: rightOut
+    Formula (part): segStart, segEnd, 1, 1, "self + Sound_segR(x - " + segStartStr$ + " + " + offsetStr$ + ")"
+    
+    # Cleanup segment objects
+    removeObject: segSound, segLeft, segRight
+    
+    # Progress
+    if seg mod 20 = 0
+        appendInfoLine: "  ", seg, "/", numSegments
+    endif
 endfor
 
-# Create left channel
-select Sound left_seg_1
-for i from 2 to 'Number_of_segments'
-    plus Sound left_seg_'i'
-endfor
-Concatenate
-Rename... left_channel
+# ============================================================
+# COMBINE TO STEREO
+# ============================================================
+appendInfoLine: "Finalizing..."
 
-# Create right channel  
-select Sound right_seg_1
-for i from 2 to 'Number_of_segments'
-    plus Sound right_seg_'i'
-endfor
-Concatenate
-Rename... right_channel
+selectObject: leftOut
+plusObject: rightOut
+stereoOut = Combine to stereo
+Rename: originalName$ + "_wahwah"
 
-# Combine to stereo
-select Sound left_channel
-plus Sound right_channel
-Combine to stereo
-Rename... 'soundName$'_wahwah_advanced
+# Normalize
+selectObject: stereoOut
+Scale peak: 0.95
 
-# Play result
-select Sound 'soundName$'_wahwah_advanced
-Scale peak: 0.99
-Play
+# Cleanup
+removeObject: monoSource, leftOut, rightOut
 
-# Cleanup - remove all intermediate objects
-select Sound 'soundName$'_mono
-for i from 1 to 'Number_of_segments'
-    plus Sound segment_'i'
-    plus Sound segment_'i'_copy
-    plus Sound left_seg_'i'
-    plus Sound right_seg_'i'
-endfor
-plus Sound left_channel
-plus Sound right_channel
-Remove
+# ============================================================
+# OUTPUT
+# ============================================================
+appendInfoLine: ""
+appendInfoLine: "Complete!"
+appendInfoLine: "Output: ", originalName$, "_wahwah"
+
+if play_result
+    selectObject: stereoOut
+    Play
+endif
