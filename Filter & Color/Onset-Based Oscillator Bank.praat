@@ -1,355 +1,300 @@
 # ============================================================
-# Praat AudioTools - Onset-Based Oscillator Bank.praat
+# Praat AudioTools - Onset-Based Oscillator Bank
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
-# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Description:
-#   Onset-Based Oscillator Bank
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
 form Onset-Based Oscillator Bank
-    comment ==== Presets ====
     optionmenu Preset: 1
         option Custom
-        option Gentle Resonance (soft, musical)
-        option Percussive Bells (bright, sharp)
-        option Ethereal Pad (long decay, many partials)
-        option Metallic Shimmer (bright, complex)
-        option Natural Pluck (quick decay, few partials)
-        option Dense Cluster (many partials, random)
-    comment ==== Onset Detection ====
-    positive onset_threshold 1.5
-    comment (dB change threshold for detecting onsets)
-    positive onset_silence_threshold 35.0
-    comment (minimum intensity in dB to consider)
-    positive onset_min_interval 0.1
-    comment (minimum time between onsets in seconds)
-    comment ==== Oscillator Settings ====
-    integer num_partials 12
-    comment (number of harmonics per onset)
-    positive partial_spread 0.5
-    comment (randomization of partial frequencies 0-1)
-    comment ==== Envelope Randomization ====
-    positive attack_base 0.005
-    comment (base attack time in seconds)
-    positive attack_random 0.01
-    comment (random variation in attack)
-    positive decay_base 1.5
-    comment (base decay time in seconds)
-    positive decay_random 0.8
-    comment (random variation in decay)
-    positive amplitude_random 0.3
-    comment (amplitude randomization 0-1)
-    comment ==== Waveshaper ====
-    real brightness 0.7
-    comment (brightness/harmonic content 0-1)
-    positive waveshape_amount 0.2
-    comment (amount of waveshaping distortion)
-    comment ==== Mix ====
-    real dry_wet 1.0
-    comment (0=dry original, 1=wet processed)
-    comment ==== Output ====
-    boolean play_after_processing 1
+        option Gentle Resonance
+        option Percussive Bells
+        option Ethereal Pad
+        option Metallic Shimmer
+        option Natural Pluck
+        option Dense Cluster
+    comment === Onset Detection ===
+    positive Onset_threshold_(dB) 1.5
+    positive Min_intensity_(dB) 35.0
+    positive Min_interval_(s) 0.1
+    comment === Oscillators (Custom only) ===
+    integer Num_partials 12
+    positive Partial_spread 0.5
+    positive Decay_(s) 1.5
+    real Brightness 0.7
+    comment === Output ===
+    real Dry_wet_mix 1.0
+    boolean Play_result 1
 endform
 
-# Apply preset values if not Custom
+# ============================================================
+# PRESET DEFINITIONS
+# ============================================================
+attackBase = 0.005
+attackRandom = 0.01
+decayRandom = 0.5
+ampRandom = 0.3
+waveshapeAmt = 0.2
+decayTime = decay
+
 if preset = 2
-    # Gentle Resonance
     onset_threshold = 2.0
-    onset_silence_threshold = 35.0
-    onset_min_interval = 0.15
+    min_intensity = 35.0
+    min_interval = 0.15
     num_partials = 8
     partial_spread = 0.3
-    attack_base = 0.01
-    attack_random = 0.015
-    decay_base = 2.0
-    decay_random = 0.5
-    amplitude_random = 0.2
+    decayTime = 2.0
     brightness = 0.5
-    waveshape_amount = 0.1
-    dry_wet = 0.7
+    dry_wet_mix = 0.7
+    attackBase = 0.01
+    waveshapeAmt = 0.1
 elsif preset = 3
-    # Percussive Bells
     onset_threshold = 1.5
-    onset_silence_threshold = 40.0
-    onset_min_interval = 0.08
+    min_intensity = 40.0
+    min_interval = 0.08
     num_partials = 15
     partial_spread = 0.8
-    attack_base = 0.002
-    attack_random = 0.003
-    decay_base = 1.0
-    decay_random = 0.4
-    amplitude_random = 0.4
+    decayTime = 1.0
     brightness = 0.9
-    waveshape_amount = 0.3
-    dry_wet = 1.0
+    dry_wet_mix = 1.0
+    attackBase = 0.002
+    waveshapeAmt = 0.3
 elsif preset = 4
-    # Ethereal Pad
     onset_threshold = 2.5
-    onset_silence_threshold = 30.0
-    onset_min_interval = 0.2
+    min_intensity = 30.0
+    min_interval = 0.2
     num_partials = 20
     partial_spread = 0.2
-    attack_base = 0.05
-    attack_random = 0.03
-    decay_base = 3.5
-    decay_random = 1.0
-    amplitude_random = 0.15
+    decayTime = 3.5
     brightness = 0.6
-    waveshape_amount = 0.15
-    dry_wet = 0.8
+    dry_wet_mix = 0.8
+    attackBase = 0.05
+    waveshapeAmt = 0.15
 elsif preset = 5
-    # Metallic Shimmer
     onset_threshold = 1.2
-    onset_silence_threshold = 35.0
-    onset_min_interval = 0.1
+    min_intensity = 35.0
+    min_interval = 0.1
     num_partials = 18
     partial_spread = 1.0
-    attack_base = 0.003
-    attack_random = 0.005
-    decay_base = 1.2
-    decay_random = 0.6
-    amplitude_random = 0.5
+    decayTime = 1.2
     brightness = 1.0
-    waveshape_amount = 0.4
-    dry_wet = 1.0
+    dry_wet_mix = 1.0
+    attackBase = 0.003
+    waveshapeAmt = 0.4
 elsif preset = 6
-    # Natural Pluck
     onset_threshold = 1.5
-    onset_silence_threshold = 35.0
-    onset_min_interval = 0.12
+    min_intensity = 35.0
+    min_interval = 0.12
     num_partials = 6
     partial_spread = 0.4
-    attack_base = 0.001
-    attack_random = 0.002
-    decay_base = 0.8
-    decay_random = 0.3
-    amplitude_random = 0.25
+    decayTime = 0.8
     brightness = 0.7
-    waveshape_amount = 0.15
-    dry_wet = 0.9
+    dry_wet_mix = 0.9
+    attackBase = 0.001
+    waveshapeAmt = 0.15
 elsif preset = 7
-    # Dense Cluster
     onset_threshold = 1.0
-    onset_silence_threshold = 32.0
-    onset_min_interval = 0.05
+    min_intensity = 32.0
+    min_interval = 0.05
     num_partials = 25
     partial_spread = 1.2
-    attack_base = 0.008
-    attack_random = 0.02
-    decay_base = 1.8
-    decay_random = 1.2
-    amplitude_random = 0.6
+    decayTime = 1.8
     brightness = 0.8
-    waveshape_amount = 0.25
-    dry_wet = 1.0
+    dry_wet_mix = 1.0
+    attackBase = 0.008
+    waveshapeAmt = 0.25
 endif
 
-# Check if a Sound is selected
-if not selected("Sound")
-    exitScript: "Please select a Sound object first."
+# ============================================================
+# INPUT VALIDATION
+# ============================================================
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
 
-# Get selected sound
 sound = selected("Sound")
 selectObject: sound
 name$ = selected$("Sound")
-duration = Get total duration
-sampling_rate = Get sampling frequency
-num_channels = Get number of channels
+totalDur = Get total duration
+sampleRate = Get sampling frequency
+numChan = Get number of channels
+nyquistFreq = sampleRate / 2
 
-# Create intensity object for onset detection
-selectObject: sound
-intensity = To Intensity: 50, 0, "yes"
-
-# Detect onsets based on intensity changes
-selectObject: intensity
-num_frames = Get number of frames
-onset_times# = zero#(num_frames)
-num_onsets = 0
-last_onset_time = -1
-
-# First, check the intensity range
-min_intensity = Get minimum: 0, 0, "Parabolic"
-max_intensity = Get maximum: 0, 0, "Parabolic"
-mean_intensity = Get mean: 0, 0, "energy"
-
-writeInfoLine: "=== Intensity Analysis ==="
-appendInfoLine: "Min intensity: ", fixed$(min_intensity, 2), " dB"
-appendInfoLine: "Max intensity: ", fixed$(max_intensity, 2), " dB"
-appendInfoLine: "Mean intensity: ", fixed$(mean_intensity, 2), " dB"
-appendInfoLine: "Number of frames: ", num_frames
-appendInfoLine: ""
-appendInfoLine: "Searching for onsets..."
-appendInfoLine: "Threshold: ", onset_threshold, " dB change"
-appendInfoLine: "Silence threshold: ", onset_silence_threshold, " dB"
-appendInfoLine: ""
-
-# Calculate intensity derivative for onset detection
-max_diff = 0
-for i from 3 to num_frames - 1
-    time = Get time from frame number: i
-    current_intensity = Get value in frame: i
-    prev_intensity = Get value in frame: i-1
-    prev2_intensity = Get value in frame: i-2
-    
-    if current_intensity != undefined and prev_intensity != undefined and prev2_intensity != undefined
-        # Calculate smoothed derivative
-        intensity_diff = (current_intensity - prev_intensity + current_intensity - prev2_intensity) / 2
-        
-        # Track maximum difference for debugging
-        if intensity_diff > max_diff
-            max_diff = intensity_diff
-        endif
-        
-        # Detect onset: significant intensity increase above silence threshold
-        if intensity_diff > onset_threshold and current_intensity > onset_silence_threshold
-            if time - last_onset_time > onset_min_interval
-                num_onsets += 1
-                onset_times#[num_onsets] = time
-                last_onset_time = time
-                appendInfoLine: "  Found onset at ", fixed$(time, 3), "s (intensity: ", fixed$(current_intensity, 1), " dB, diff: ", fixed$(intensity_diff, 2), " dB)"
-            endif
-        endif
-    endif
-endfor
-
-appendInfoLine: ""
-appendInfoLine: "Maximum intensity difference found: ", fixed$(max_diff, 2), " dB"
-writeInfoLine: "Detected ", num_onsets, " onsets"
-
-# Create output sound (start with silence)
-selectObject: sound
-output = Create Sound from formula: name$ + "_resonated", num_channels, 0, duration, sampling_rate, "0"
-
-# Process each onset
-successful_onsets = 0
-for onset_idx from 1 to num_onsets
-    onset_time = onset_times#[onset_idx]
-    
-    # Get pitch at onset - use a larger window for better detection
-    selectObject: sound
-    extract_start = max(0, onset_time - 0.02)
-    extract_end = min(onset_time + 0.15, duration)
-    
-    if extract_end - extract_start > 0.03
-        Extract part: extract_start, extract_end, "rectangular", 1, "no"
-        part = selected("Sound")
-        
-        # Use autocorrelation method with wider range
-        pitch_obj = To Pitch (ac): 0.0, 50, 15, "no", 0.01, 0.50, 0.01, 0.20, 0.10, 2500
-        
-        # Try to get pitch at onset time
-        pitch = Get value at time: onset_time, "Hertz", "Linear"
-        
-        # If undefined, try getting mean pitch
-        if pitch == undefined or pitch <= 0
-            pitch = Get mean: 0, 0, "Hertz"
-        endif
-        
-        # If still no pitch, try standard deviation weighted mean
-        if pitch == undefined or pitch <= 0
-            pitch = Get quantile: 0, 0, 0.5, "Hertz"
-        endif
-        
-        # Last resort: get maximum pitch
-        if pitch == undefined or pitch <= 0
-            pitch = Get maximum: 0, 0, "Hertz", "Parabolic"
-        endif
-        
-        removeObject: part, pitch_obj
-        
-        # Only proceed if pitch was detected - be very permissive
-        if pitch != undefined and pitch >= 50 and pitch < 5000
-            successful_onsets += 1
-            if successful_onsets <= 5
-                appendInfoLine: "Onset ", onset_idx, " at ", fixed$(onset_time, 3), "s - Pitch: ", fixed$(pitch, 1), " Hz"
-            endif
-        
-            # Create oscillator bank for this onset
-            for partial from 1 to num_partials
-                # Calculate partial frequency with slight randomization
-                freq = pitch * partial * (1 + randomUniform(-0.01, 0.01) * partial_spread)
-                
-                # Randomize envelope parameters
-                attack = attack_base + randomUniform(0, attack_random)
-                decay = decay_base + randomUniform(-decay_random, decay_random)
-                decay = max(decay, 0.05)
-                
-                # Randomize amplitude (decreasing with partial number)
-                base_amp = 0.15 / sqrt(partial)
-                amp = base_amp * (1 + randomUniform(-amplitude_random, amplitude_random))
-                
-                # Calculate envelope duration
-                env_duration = attack + decay
-                end_time = min(onset_time + env_duration, duration)
-                
-                # Create sine wave for full duration, positioned at onset time
-                selectObject: output
-                Formula (part): onset_time, end_time, 1, num_channels,
-                    ... "self + " + string$(amp) + " * sin(2*pi*" + string$(freq) + "*(x-" + string$(onset_time) + "))" +
-                    ... " * if (x-" + string$(onset_time) + ") < " + string$(attack) + 
-                    ... " then (x-" + string$(onset_time) + ")/" + string$(attack) + 
-                    ... " else exp(-((x-" + string$(onset_time) + ")-" + string$(attack) + ")/" + string$(decay) + ") fi"
-                
-                # Apply waveshaping if enabled
-                if waveshape_amount > 0
-                    waveshape_factor = 1 + waveshape_amount * brightness
-                    
-                    selectObject: output
-                    Formula (part): onset_time, end_time, 1, num_channels,
-                        ... "self + " + string$(waveshape_amount * amp * waveshape_factor) + 
-                        ... " * (sin(2*pi*" + string$(freq) + "*(x-" + string$(onset_time) + ")))^3" +
-                        ... " * if (x-" + string$(onset_time) + ") < " + string$(attack) + 
-                        ... " then (x-" + string$(onset_time) + ")/" + string$(attack) + 
-                        ... " else exp(-((x-" + string$(onset_time) + ")-" + string$(attack) + ")/" + string$(decay) + ") fi"
-                endif
-            endfor
-        endif
-    endif
-endfor
-
-appendInfoLine: ""
-appendInfoLine: "Pitch detection successful for ", successful_onsets, " out of ", num_onsets, " onsets"
-
-# Apply dry/wet mix
-if dry_wet < 1.0
-    selectObject: output
-    Formula: "(1-" + string$(dry_wet) + ") * object[sound, x] + " + string$(dry_wet) + " * self"
+if totalDur < 0.1
+    exitScript: "Sound too short (min 0.1s)."
 endif
 
-# Normalize output
+# ============================================================
+# ONSET DETECTION
+# ============================================================
+selectObject: sound
+intensityObj = To Intensity: 50, 0, "yes"
+
+selectObject: intensityObj
+numFrames = Get number of frames
+onset_times# = zero#(500)
+numOnsets = 0
+lastOnset = -1
+
+for iFrame from 3 to numFrames - 1
+    frameTime = Get time from frame number: iFrame
+    currInt = Get value in frame: iFrame
+    prev2Int = Get value in frame: iFrame - 2
+    
+    if currInt <> undefined and prev2Int <> undefined
+        intDiff = (currInt - prev2Int) / 2
+        if intDiff > onset_threshold and currInt > min_intensity
+            if frameTime - lastOnset > min_interval
+                numOnsets += 1
+                onset_times#[numOnsets] = frameTime
+                lastOnset = frameTime
+            endif
+        endif
+    endif
+endfor
+
+removeObject: intensityObj
+
+if numOnsets = 0
+    exitScript: "No onsets found. Try lowering threshold."
+endif
+
+writeInfoLine: "Found ", numOnsets, " onsets"
+
+# ============================================================
+# CREATE OUTPUT
+# ============================================================
+wetSignal = Create Sound from formula: "wet", numChan, 0, totalDur, sampleRate, "0"
+
+maxBurstDur = attackBase + attackRandom + (decayTime + decayRandom) * 4
+maxBurstDur = min(maxBurstDur, 5)
+
+# ============================================================
+# PROCESS ONSETS
+# ============================================================
+appendInfoLine: "Processing..."
+
+for onsetIdx from 1 to numOnsets
+    onsetTime = onset_times#[onsetIdx]
+    
+    selectObject: sound
+    segStart = max(0, onsetTime - 0.02)
+    segEnd = min(onsetTime + 0.12, totalDur)
+    
+    if segEnd - segStart > 0.03
+        Extract part: segStart, segEnd, "rectangular", 1, "no"
+        segment = selected("Sound")
+        
+        pitchObj = To Pitch (ac): 0, 50, 15, "no", 0.01, 0.5, 0.01, 0.2, 0.1, 2500
+        
+        relTime = onsetTime - segStart
+        detectedPitch = Get value at time: relTime, "Hertz", "Linear"
+        if detectedPitch = undefined or detectedPitch <= 0
+            detectedPitch = Get mean: 0, 0, "Hertz"
+        endif
+        if detectedPitch = undefined or detectedPitch <= 0
+            detectedPitch = Get quantile: 0, 0, 0.5, "Hertz"
+        endif
+        
+        removeObject: segment, pitchObj
+        
+        if detectedPitch <> undefined and detectedPitch >= 50 and detectedPitch < 4000
+            burstEnd = min(onsetTime + maxBurstDur, totalDur)
+            burstDur = burstEnd - onsetTime
+            
+            if burstDur > 0.01
+                maxPartial = min(num_partials, floor(nyquistFreq * 0.9 / detectedPitch))
+                
+                # Create burst accumulator
+                burstSound = Create Sound from formula: "burst", 1, 0, burstDur, sampleRate, "0"
+                
+                for partialNum from 1 to maxPartial
+                    partialFreq = detectedPitch * partialNum * (1 + randomUniform(-0.01, 0.01) * partial_spread)
+                    
+                    if partialFreq < nyquistFreq * 0.95
+                        attackTime = attackBase + randomUniform(0, attackRandom)
+                        decayVal = decayTime + randomUniform(-decayRandom, decayRandom)
+                        decayVal = max(decayVal, 0.05)
+                        
+                        ampVal = (0.1 / sqrt(partialNum)) * (brightness ^ (partialNum - 1))
+                        ampVal = ampVal * (1 + randomUniform(-ampRandom, ampRandom))
+                        
+                        wsBlend = waveshapeAmt * brightness
+                        ampClean = ampVal * (1 - wsBlend)
+                        ampWS = ampVal * wsBlend
+                        
+                        # Build formula strings
+                        attStr$ = fixed$(attackTime, 8)
+                        decStr$ = fixed$(decayVal, 8)
+                        freqStr$ = fixed$(partialFreq, 4)
+                        
+                        if ampClean > 0.001
+                            ampStr$ = fixed$(ampClean, 8)
+                            toneClean = Create Sound from formula: "tclean", 1, 0, burstDur, sampleRate,
+                            ... ampStr$ + "*sin(2*pi*" + freqStr$ + "*x)*(if x<" + attStr$ + " then x/" + attStr$ + " else exp(-(x-" + attStr$ + ")/" + decStr$ + ") fi)"
+                            
+                            selectObject: burstSound
+                            Formula: "self + Sound_tclean[]"
+                            removeObject: toneClean
+                        endif
+                        
+                        if ampWS > 0.001
+                            ampWSStr$ = fixed$(ampWS, 8)
+                            toneWS = Create Sound from formula: "tws", 1, 0, burstDur, sampleRate,
+                            ... ampWSStr$ + "*sin(2*pi*" + freqStr$ + "*x)^3*(if x<" + attStr$ + " then x/" + attStr$ + " else exp(-(x-" + attStr$ + ")/" + decStr$ + ") fi)"
+                            
+                            selectObject: burstSound
+                            Formula: "self + Sound_tws[]"
+                            removeObject: toneWS
+                        endif
+                    endif
+                endfor
+                
+                # Add burst to wet output at onset time
+                onsetStr$ = fixed$(onsetTime, 8)
+                selectObject: wetSignal
+                Formula (part): onsetTime, burstEnd, 1, numChan, "self + Sound_burst(x - " + onsetStr$ + ")"
+                
+                removeObject: burstSound
+            endif
+        endif
+    endif
+    
+    if onsetIdx mod 10 = 0
+        appendInfoLine: "  ", onsetIdx, "/", numOnsets
+    endif
+endfor
+
+# ============================================================
+# MIX AND FINALIZE
+# ============================================================
+appendInfoLine: "Mixing..."
+
+selectObject: sound
+output = Copy: name$ + "_resonated"
+
 selectObject: output
-Scale peak: 0.99
+if dry_wet_mix >= 0.99
+    Formula: "Sound_wet[]"
+elsif dry_wet_mix <= 0.01
+    # Keep original
+else
+    wetStr$ = fixed$(dry_wet_mix, 4)
+    dryStr$ = fixed$(1 - dry_wet_mix, 4)
+    Formula: "self * " + dryStr$ + " + Sound_wet[] * " + wetStr$
+endif
 
-# Cleanup
-removeObject: intensity
-
-# Final statistics
-writeInfoLine: "Processing complete!"
-appendInfoLine: "Created oscillator bank with ", num_partials, " partials per onset"
-appendInfoLine: "Total onsets detected: ", num_onsets
-appendInfoLine: "Successful pitch detections: ", successful_onsets
+removeObject: wetSignal
 selectObject: output
-max_amplitude = Get maximum: 0, 0, "None"
-appendInfoLine: "Output maximum amplitude: ", fixed$(max_amplitude, 6)
+Scale peak: 0.95
 
-# Play if requested
-if play_after_processing
+appendInfoLine: "Done!"
+
+if play_result
     Play
 endif
 
-# Select final output and original for comparison
-plus sound
+selectObject: output
+plusObject: sound
