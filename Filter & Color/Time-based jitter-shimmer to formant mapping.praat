@@ -19,179 +19,368 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-# Time-based jitter/shimmer to formant mapping script
+form Jitter-Shimmer Formant Mapper
+    optionmenu Preset: 1
+        option Custom
+        option Subtle Variation
+        option Moderate Effect
+        option Extreme Mapping
+        option Reverse Mapping
+    comment === Analysis ===
+    integer Num_windows 8
+    positive Window_size_(s) 0.2
+    comment === Formant Mapping ===
+    real Jitter_to_F1_scale 0.15
+    real Shimmer_to_F2_scale 0.12
+    comment (higher = more effect from jitter/shimmer)
+    comment === Formant Ranges ===
+    positive F1_low_(Hz) 280
+    positive F1_high_(Hz) 900
+    positive F2_low_(Hz) 900
+    positive F2_high_(Hz) 2500
+    comment === Output ===
+    boolean Draw_analysis 1
+    boolean Play_result 1
+endform
 
-clearinfo
-appendInfoLine: "=== TIME-BASED JITTER/SHIMMER TO FORMANT MAPPING ==="
-
-if not selected("Sound")
-    exitScript: "Please select Sound objects first."
+# ============================================================
+# PRESETS
+# ============================================================
+if preset = 2
+    # Subtle Variation
+    num_windows = 6
+    window_size = 0.25
+    jitter_to_F1_scale = 0.08
+    shimmer_to_F2_scale = 0.06
+elsif preset = 3
+    # Moderate Effect
+    num_windows = 8
+    window_size = 0.2
+    jitter_to_F1_scale = 0.15
+    shimmer_to_F2_scale = 0.12
+elsif preset = 4
+    # Extreme Mapping
+    num_windows = 12
+    window_size = 0.15
+    jitter_to_F1_scale = 0.3
+    shimmer_to_F2_scale = 0.25
+elsif preset = 5
+    # Reverse Mapping (shimmer->F1, jitter->F2)
+    num_windows = 8
+    window_size = 0.2
+    jitter_to_F1_scale = -0.15
+    shimmer_to_F2_scale = -0.12
 endif
 
-number_of_selected_sounds = numberOfSelected("Sound")
-appendInfoLine: "Number of sounds selected: ", number_of_selected_sounds
+# ============================================================
+# INPUT VALIDATION
+# ============================================================
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
-for i from 1 to number_of_selected_sounds
-    sound'i' = selected("Sound", i)
+originalID = selected("Sound")
+originalName$ = selected$("Sound")
+selectObject: originalID
+duration = Get total duration
+sampleRate = Get sampling frequency
+
+if duration < window_size * 2
+    exitScript: "Sound is too short for analysis (min " + fixed$(window_size * 2, 2) + "s)."
+endif
+
+# Adjust num_windows if sound is short
+maxWindows = floor(duration / (window_size * 0.5))
+if num_windows > maxWindows
+    num_windows = max(2, maxWindows)
+endif
+
+writeInfoLine: "=== Jitter-Shimmer Formant Mapper ==="
+appendInfoLine: "Sound: ", originalName$
+appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
+appendInfoLine: "Windows: ", num_windows
+appendInfoLine: ""
+
+# ============================================================
+# ANALYZE JITTER/SHIMMER IN WINDOWS
+# ============================================================
+# Arrays for analysis results
+for w to num_windows
+    analysisTime[w] = 0
+    jitterVal[w] = 0
+    shimmerVal[w] = 0
 endfor
 
-for current_sound from 1 to number_of_selected_sounds
-    select sound'current_sound'
-    originalName$ = selected$("Sound")
-    duration = Get total duration
+appendInfoLine: "Analyzing voice quality..."
 
-    # Analysis settings
-    num_windows = 6
-    window_size = 0.2
-    analysis_times# = zero#(num_windows)
-    jitter_values# = zero#(num_windows)
-    shimmer_values# = zero#(num_windows)
-
-    # Analyze each window
-    for window from 1 to num_windows
-        analysis_time = (window - 1) * (duration - window_size) / (num_windows - 1)
-        if analysis_time < 0.1
-            analysis_time = 0.1
-        endif
-        if analysis_time > duration - window_size - 0.1
-            analysis_time = duration - window_size - 0.1
-        endif
-
-        analysis_times#[window] = analysis_time
-        window_start = analysis_time
-        window_end = analysis_time + window_size
-
-        select sound'current_sound'
-        window_sound = Extract part: window_start, window_end, "Hamming", 1, "no"
-
-        select window_sound
-        To Pitch (cc): 0, 75, 15, "no", 0.03, 0.45, 0.01, 0.35, 0.14, 600
-        pitch = selected("Pitch")
-        
-        select window_sound
-        plus pitch
-        To PointProcess (cc)
-        pointprocess = selected("PointProcess")
-
-        select pointprocess
-        numPulses = Get number of points
-
-        if numPulses < 3
-            jitter_values#[window] = 0.5
-            shimmer_values#[window] = 3.0
-        else
-            select window_sound
-            plus pitch
-            plus pointprocess
-            voiceReport$ = Voice report: 0, 0, 75, 600, 1.3, 1.6, 0.03, 0.45
-
-            jitter_values#[window] = extractNumber(extractLine$(voiceReport$, "Jitter (local)"), "")
-            shimmer_values#[window] = extractNumber(extractLine$(voiceReport$, "Shimmer (local)"), "")
-
-            if jitter_values#[window] = undefined
-                jitter_values#[window] = 0.5
-            endif
-            if shimmer_values#[window] = undefined
-                shimmer_values#[window] = 3.0
-            endif
-        endif
-
-        select window_sound
-        plus pitch
-        plus pointprocess
-        Remove
-    endfor
-
-    # Process segments
-    select sound'current_sound'
-    finalSound = Copy: "temp_base"
-
-    for window from 1 to num_windows
-        if window = 1
-            segment_start = 0
-        else
-            segment_start = (analysis_times#[window-1] + analysis_times#[window]) / 2
-        endif
-
-        if window = num_windows
-            segment_end = duration
-        else
-            segment_end = (analysis_times#[window] + analysis_times#[window+1]) / 2
-        endif
-
-        select sound'current_sound'
-        segment_sound = Extract part: segment_start, segment_end, "Rectangular", 1, "no"
-
-        # Filter settings based on jitter/shimmer (convert from % to ratio)
-        f1_shift = 1.0 + (jitter_values#[window] / 100 * 0.1)
-        f2_shift = 1.0 + (shimmer_values#[window] / 100 * 0.08)
-        
-        select segment_sound
-        f1_filtered = Filter (pass Hann band): 300 * f1_shift, 900 * f1_shift, 100
-        
-        select segment_sound
-        f2_filtered = Filter (pass Hann band): 900 * f2_shift, 2500 * f2_shift, 100
-
-        select f1_filtered
-        plus f2_filtered
-        Combine to stereo
-        segment_final = selected("Sound")
-        
-        select segment_final
-        Convert to mono
-        segment_mono = selected("Sound")
-
-        if window = 1
-            select segment_mono
-            finalSound = Copy: "time_formant_mod_" + originalName$
-        else
-            select finalSound
-            plus segment_mono
-            Concatenate
-            temp = selected("Sound")
-            select finalSound
-            Remove
-            select temp
-            Rename: "time_formant_mod_" + originalName$
-            finalSound = selected("Sound")
-        endif
-
-        # Cleanup
-        select segment_sound
-        plus f1_filtered
-        plus f2_filtered
-        plus segment_final
-        plus segment_mono
-        Remove
-    endfor
-
-    select finalSound
-    Scale peak: 0.99
-endfor
-
-# Helper procedures
-procedure extractLine$ (.report$, .key$)
-    line$ = ""
-    for i from 1 to numberOfLines(.report$)
-        if index(line$(.report$, i), .key$) > 0
-            line$ = line$(.report$, i)
-        endif
-    endfor
-    .extractLine$ = line$
-endproc
-
-procedure extractNumber (.line$, .after$)
-    number = undefined
-    if length(.line$) > 0
-        p = index(.line$, ":")
-        if p > 0
-            value$ = trim$(mid$(.line$, p + 1))
-            value$ = replace$(value$, "%", "")
-            value$ = replace$(value$, "seconds", "")
-            value$ = replace$(value$, .after$, "")
-            number = number$(value$)
-        endif
+for window from 1 to num_windows
+    # Calculate window position
+    if num_windows > 1
+        windowStart = (window - 1) * (duration - window_size) / (num_windows - 1)
+    else
+        windowStart = (duration - window_size) / 2
     endif
-    .extractNumber = number
-endproc
-Play
+    
+    # Clamp to valid range
+    windowStart = max(0.01, windowStart)
+    windowStart = min(duration - window_size - 0.01, windowStart)
+    windowEnd = windowStart + window_size
+    
+    analysisTime[window] = windowStart + window_size / 2
+    
+    # Extract window
+    selectObject: originalID
+    windowSound = Extract part: windowStart, windowEnd, "Hamming", 1, "no"
+    
+    # Create pitch object
+    selectObject: windowSound
+    pitchObj = To Pitch (cc): 0, 75, 15, "no", 0.03, 0.45, 0.01, 0.35, 0.14, 600
+    
+    # Create point process
+    selectObject: windowSound
+    plusObject: pitchObj
+    pointProc = To PointProcess (cc)
+    
+    # Check if we have enough pulses
+    selectObject: pointProc
+    numPulses = Get number of points
+    
+    if numPulses >= 3
+        # Get voice report
+        selectObject: windowSound
+        plusObject: pitchObj
+        plusObject: pointProc
+        voiceReport$ = Voice report: 0, 0, 75, 600, 1.3, 1.6, 0.03, 0.45
+        
+        # Parse jitter (local) - look for the line and extract number
+        jitterPos = index(voiceReport$, "Jitter (local):")
+        if jitterPos > 0
+            afterJitter$ = mid$(voiceReport$, jitterPos + 16, 20)
+            pctPos = index(afterJitter$, "%")
+            if pctPos > 0
+                numStr$ = left$(afterJitter$, pctPos - 1)
+                jitterVal[window] = number(numStr$)
+            endif
+        endif
+        
+        # Find shimmer line
+        shimmerPos = index(voiceReport$, "Shimmer (local):")
+        if shimmerPos > 0
+            afterShimmer$ = mid$(voiceReport$, shimmerPos + 17, 20)
+            pctPos = index(afterShimmer$, "%")
+            if pctPos > 0
+                numStr$ = left$(afterShimmer$, pctPos - 1)
+                shimmerVal[window] = number(numStr$)
+            endif
+        endif
+        
+        # Handle undefined values
+        if jitterVal[window] = undefined or jitterVal[window] < 0
+            jitterVal[window] = 0.5
+        endif
+        if shimmerVal[window] = undefined or shimmerVal[window] < 0
+            shimmerVal[window] = 3.0
+        endif
+    else
+        # Default values for unvoiced/sparse regions
+        jitterVal[window] = 0.5
+        shimmerVal[window] = 3.0
+    endif
+    
+    appendInfoLine: "  Window ", window, ": t=", fixed$(analysisTime[window], 2), 
+    ... "s, jitter=", fixed$(jitterVal[window], 2), "%, shimmer=", fixed$(shimmerVal[window], 2), "%"
+    
+    # Cleanup window objects
+    removeObject: windowSound, pitchObj, pointProc
+endfor
+
+# ============================================================
+# NORMALIZE JITTER/SHIMMER VALUES
+# ============================================================
+minJitter = jitterVal[1]
+maxJitter = jitterVal[1]
+minShimmer = shimmerVal[1]
+maxShimmer = shimmerVal[1]
+
+for w from 2 to num_windows
+    if jitterVal[w] < minJitter
+        minJitter = jitterVal[w]
+    endif
+    if jitterVal[w] > maxJitter
+        maxJitter = jitterVal[w]
+    endif
+    if shimmerVal[w] < minShimmer
+        minShimmer = shimmerVal[w]
+    endif
+    if shimmerVal[w] > maxShimmer
+        maxShimmer = shimmerVal[w]
+    endif
+endfor
+
+# Normalize to 0-1 range
+for w to num_windows
+    if maxJitter > minJitter
+        jitterNorm[w] = (jitterVal[w] - minJitter) / (maxJitter - minJitter)
+    else
+        jitterNorm[w] = 0.5
+    endif
+    if maxShimmer > minShimmer
+        shimmerNorm[w] = (shimmerVal[w] - minShimmer) / (maxShimmer - minShimmer)
+    else
+        shimmerNorm[w] = 0.5
+    endif
+endfor
+
+# ============================================================
+# DRAW ANALYSIS
+# ============================================================
+if draw_analysis
+    Erase all
+    Select outer viewport: 0, 6, 0, 4.5
+    Axes: 0, duration, -0.1, 1.2
+    
+    Colour: "Black"
+    Draw inner box
+    
+    # Grid
+    Colour: "{0.8,0.8,0.8}"
+    Draw line: 0, 0.5, duration, 0.5
+    
+    # Draw jitter curve (Blue)
+    Colour: "Blue"
+    Line width: 2
+    
+    for w from 1 to num_windows - 1
+        Draw line: analysisTime[w], jitterNorm[w], analysisTime[w+1], jitterNorm[w+1]
+    endfor
+    
+    # Draw jitter points
+    for w to num_windows
+        Draw circle: analysisTime[w], jitterNorm[w], 0.015 * duration
+    endfor
+    
+    # Draw shimmer curve (Red)
+    Colour: "Red"
+    
+    for w from 1 to num_windows - 1
+        Draw line: analysisTime[w], shimmerNorm[w], analysisTime[w+1], shimmerNorm[w+1]
+    endfor
+    
+    # Draw shimmer points
+    for w to num_windows
+        Draw circle: analysisTime[w], shimmerNorm[w], 0.015 * duration
+    endfor
+    
+    # Labels
+    Colour: "Black"
+    Font size: 12
+    Text: duration / 2, "Centre", 1.15, "Half", "Jitter/Shimmer Analysis -> Formant Mapping"
+    
+    Font size: 10
+    Text: duration / 2, "Centre", -0.07, "Half", "Time (s)"
+    
+    # Legend
+    Font size: 9
+    Colour: "Blue"
+    Text: duration * 0.85, "Centre", 1.05, "Half", "Jitter -> F1"
+    Colour: "Red"
+    Text: duration * 0.85, "Centre", 0.95, "Half", "Shimmer -> F2"
+    
+    # Axis marks
+    Colour: "Black"
+    Marks bottom every: 1, 0.5, "yes", "yes", "no"
+    Marks left every: 1, 0.5, "yes", "yes", "no"
+    
+    Line width: 1
+endif
+
+# ============================================================
+# PROCESS SEGMENTS WITH FORMANT MAPPING
+# ============================================================
+appendInfoLine: ""
+appendInfoLine: "Processing segments..."
+
+# Create output sound (silence)
+outputSound = Create Sound from formula: "output", 1, 0, duration, sampleRate, "0"
+
+for window from 1 to num_windows
+    # Calculate segment boundaries (midpoints between analysis times)
+    if window = 1
+        segStart = 0
+    else
+        segStart = (analysisTime[window-1] + analysisTime[window]) / 2
+    endif
+    
+    if window = num_windows
+        segEnd = duration
+    else
+        segEnd = (analysisTime[window] + analysisTime[window+1]) / 2
+    endif
+    
+    # Calculate formant shifts based on jitter/shimmer
+    f1Shift = 1.0 + (jitterNorm[window] - 0.5) * jitter_to_F1_scale * 2
+    f2Shift = 1.0 + (shimmerNorm[window] - 0.5) * shimmer_to_F2_scale * 2
+    
+    # Calculate filter frequencies
+    f1Low = f1_low * f1Shift
+    f1High = f1_high * f1Shift
+    f2Low = f2_low * f2Shift
+    f2High = f2_high * f2Shift
+    
+    # Extract segment
+    selectObject: originalID
+    segSound = Extract part: segStart, segEnd, "Rectangular", 1, "no"
+    
+    # Apply F1 filter
+    selectObject: segSound
+    f1Filtered = Filter (pass Hann band): f1Low, f1High, 100
+    
+    # Apply F2 filter to original segment
+    selectObject: segSound
+    f2Filtered = Filter (pass Hann band): f2Low, f2High, 100
+    
+    # Mix F1 and F2 bands
+    selectObject: f1Filtered
+    plusObject: f2Filtered
+    stereoMix = Combine to stereo
+    
+    selectObject: stereoMix
+    monoMix = Convert to mono
+    
+    # Rename to predictable name for Formula reference
+    selectObject: monoMix
+    Rename: "seg"
+    
+    # Scale segment
+    Scale peak: 0.9
+    
+    # Add to output using Formula
+    segStartStr$ = fixed$(segStart, 8)
+    selectObject: outputSound
+    Formula (part): segStart, segEnd, 1, 1, "self + Sound_seg(x - " + segStartStr$ + ")"
+    
+    # Cleanup segment objects
+    removeObject: segSound, f1Filtered, f2Filtered, stereoMix, monoMix
+endfor
+
+# ============================================================
+# FINALIZE
+# ============================================================
+selectObject: outputSound
+Rename: originalName$ + "_jitshim"
+
+# Normalize
+Scale peak: 0.95
+
+# ============================================================
+# INFO OUTPUT
+# ============================================================
+appendInfoLine: ""
+appendInfoLine: "Complete!"
+appendInfoLine: "Jitter range: ", fixed$(minJitter, 2), " - ", fixed$(maxJitter, 2), "%"
+appendInfoLine: "Shimmer range: ", fixed$(minShimmer, 2), " - ", fixed$(maxShimmer, 2), "%"
+
+if play_result
+    selectObject: outputSound
+    Play
+endif
