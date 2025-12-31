@@ -19,16 +19,6 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-################################################################
-# Harmonic Reich Generator [PRO] - FIXED v16
-# 
-# Features:
-# 1. Cycle-Based Drifting (Mathematical Precision)
-# 2. 3-Voice Architecture (Static, Drifting, Anchor/Shadow)
-# 3. Analog Tape Flutter (Micro-wobble)
-# 4. Zero Junk Left Behind (Improved Cleanup)
-################################################################
-
 form Harmonic Reich Generator [PRO]
     comment --- Presets ---
     optionmenu Preset 1
@@ -66,6 +56,9 @@ form Harmonic Reich Generator [PRO]
     
     real Flutter_Amount_st 0.05
     positive Total_Duration_min 3.0
+    
+    comment --- Visualizations ---
+    boolean Create_polar_phase_wheel 1
 endform
 
 # ============================================
@@ -130,11 +123,9 @@ while found = 0 and attempts < 40
     Extract part: st, st + ldur, "rectangular", 1, "no"
     temp_part_id = selected("Sound")
     
-    # Convert to Mono (Creates NEW object)
     Convert to mono
     check_id = selected("Sound")
     
-    # Cleanup the stereo extraction immediately
     selectObject: temp_part_id
     Remove
     
@@ -211,13 +202,10 @@ if pitch_ratio <> 1.0 or p_flut > 0
     Rename: "V2_Processed"
     
     v2_new = selected("Sound")
-    
-    # Cleanup V2 Temp objects
     selectObject: v2_id
     plusObject: manip_id
     plusObject: pitch_id
     Remove
-    
     v2_id = v2_new
 endif
 
@@ -267,7 +255,6 @@ if p_v3$ <> "None"
         Rename: "V3_Final"
         v3_id = selected("Sound")
         
-        # Cleanup
         selectObject: manip_id
         plusObject: v3_pitch_id
         plusObject: v3_temp
@@ -341,7 +328,6 @@ elsif p_off$ = "Random"
 endif
 
 if offset_sec > 0
-    # Trim T2 (Start later)
     selectObject: t2
     Extract part: offset_sec, total_sec, "rectangular", 1, "no"
     Rename: "T2_Trim"
@@ -350,7 +336,6 @@ if offset_sec > 0
     Remove
     t2 = t2_new
     
-    # Trim others (Cut end to match length)
     final_len = total_sec - offset_sec
     
     selectObject: t1
@@ -371,7 +356,188 @@ if offset_sec > 0
 endif
 
 # ============================================
-# 8. MIXING & CLEANUP (Robust)
+# 8. POLAR PHASE WHEEL (Visual)
+# ============================================
+
+if create_polar_phase_wheel
+
+    appendInfoLine: ""
+    appendInfoLine: "=== GENERATING PROCESS MONITOR ==="
+
+    actual_duration = total_sec
+    if offset_sec > 0
+        actual_duration = final_len
+    endif
+
+    num_samples = 1200
+    sample_interval = actual_duration / num_samples
+    
+    # --- VIEWPORT ---
+    Erase all
+    Select outer viewport: 0, 7, 0, 7
+    # 6x6 area inside the viewport
+    Axes: 0, 100, 0, 100
+    
+    # 1. Background / Zones
+    Colour: {0.85, 0.85, 0.85}
+    Line width: 1
+    # Outer Ring
+    for i from 1 to 360
+        ang = i * pi / 180
+        x1 = 50 + 35 * sin(ang)
+        y1 = 50 + 35 * cos(ang)
+        x2 = 50 + 40 * sin(ang)
+        y2 = 50 + 40 * cos(ang)
+        Draw line: x1, y1, x2, y2
+    endfor
+    
+    # Inner Ring
+    Colour: {1.0, 0.3, 0.3}
+    for i from 1 to 360
+        ang = i * pi / 180
+        x1 = 50 + 2 * sin(ang)
+        y1 = 50 + 2 * cos(ang)
+        x2 = 50 + 8 * sin(ang)
+        y2 = 50 + 8 * cos(ang)
+        Draw line: x1, y1, x2, y2
+    endfor
+    
+    # 2. Grid & Labels
+    Colour: "Black"
+    Line width: 1
+    Dotted line
+    
+    Draw line: 50, 50, 50, 90   ; 0 deg
+    Draw line: 50, 50, 90, 50   ; 90 deg
+    Draw line: 50, 50, 50, 10   ; 180 deg
+    Draw line: 50, 50, 10, 50   ; 270 deg
+    
+    Solid line
+    Text special: 50, "centre", 94, "bottom", "Helvetica", 11, "0", "0° Unison"
+    Text special: 94, "left", 50, "half", "Helvetica", 9, "0", "90°"
+    Text special: 50, "centre", 6, "top", "Helvetica", 11, "0", "180° Anti"
+    Text special: 6, "right", 50, "half", "Helvetica", 9, "0", "270°"
+    
+    # 3. Draw Process Line
+    prev_x = 0
+    prev_y = 0
+    final_x = 0
+    final_y = 0
+    cycle_count = 0
+    prev_phase_norm = 0
+    
+    for i from 1 to num_samples
+        t = (i - 1) * sample_interval
+        
+        v1_loops = t / dur_base
+        v2_loops = t / (dur_base / drift_ratio)
+        phase_raw = v2_loops - v1_loops
+        phase_norm = phase_raw - floor(phase_raw)
+        
+        if offset_sec > 0
+             offset_ratio = offset_sec / dur_base
+             phase_norm = phase_norm + offset_ratio
+             # Expanded to prevent syntax error
+             if phase_norm > 1.0
+                 phase_norm = phase_norm - 1.0
+             endif
+        endif
+        
+        # Cycle check
+        if i > 1 and prev_phase_norm > 0.9 and phase_norm < 0.1
+            cycle_count = cycle_count + 1
+        endif
+        prev_phase_norm = phase_norm
+        
+        # Drawing
+        angle_rad = phase_norm * 2 * pi
+        beat_amp = 0.5 + 0.5 * cos(angle_rad)
+        
+        r = 5 + (beat_amp * 35)
+        x = 50 + r * sin(angle_rad)
+        y = 50 + r * cos(angle_rad)
+        
+        # Gradient
+        red_val = 1.0 - beat_amp
+        blue_val = beat_amp
+        Colour: {red_val, 0, blue_val}
+        Line width: 2
+        
+        if i > 1
+             dist = sqrt((x-prev_x)^2 + (y-prev_y)^2)
+             if dist < 20
+                 Draw line: prev_x, prev_y, x, y
+             endif
+        endif
+        
+        # Time markers
+        if t mod 30 < sample_interval and t > 0
+            Colour: "Black"
+            Paint circle (mm): "Black", x, y, 0.8
+            time_label$ = fixed$(t, 0) + "s"
+            Text special: x+2, "left", y, "half", "Helvetica", 7, "0", time_label$
+            Colour: {red_val, 0, blue_val}
+        endif
+        
+        # Cycle markers
+        if i > 1 and prev_phase_norm > 0.9 and phase_norm < 0.1
+            Colour: "Black"
+            Paint circle (mm): "White", x, y, 1.2
+            Draw circle (mm): x, y, 1.2
+            cycle_label$ = "C" + string$(cycle_count)
+            Text special: x, "centre", y-3, "top", "Helvetica", 8, "0", cycle_label$
+            Colour: {red_val, 0, blue_val}
+        endif
+        
+        prev_x = x
+        prev_y = y
+        
+        if i = num_samples
+            final_x = x
+            final_y = y
+        endif
+    endfor
+    
+    # 4. End State
+    Paint circle (mm): "Red", final_x, final_y, 2
+    Draw circle (mm): final_x, final_y, 2
+    
+    # End Label
+    t_final_val = actual_duration
+    v1_calc_final = t_final_val / dur_base
+    v2_calc_final = t_final_val / (dur_base / drift_ratio)
+    
+    phase_final = v2_calc_final - v1_calc_final
+    phase_norm_final = phase_final - floor(phase_final)
+    if offset_sec > 0
+        phase_norm_final = phase_norm_final + offset_sec / dur_base
+        if phase_norm_final > 1.0
+             phase_norm_final = phase_norm_final - 1.0
+        endif
+    endif
+    
+    final_degrees = phase_norm_final * 360
+    final_label$ = "End: " + fixed$(final_degrees, 0) + "°"
+    Text special: final_x-3, "right", final_y-3, "top", "Helvetica", 9, "0", final_label$
+    
+    # 5. Bottom Legend
+    Colour: "Black"
+    Text special: 50, "centre", 0, "bottom", "Helvetica", 10, "0", "Total Cycles: " + string$(cycle_count) + " | Duration: " + fixed$(actual_duration/60, 1) + " min"
+    
+    Colour: "Blue"
+    Draw line: 2, 96, 8, 96
+    Colour: "Black"
+    Text special: 10, "left", 96, "half", "Helvetica", 8, "0", "= Unison"
+    
+    Colour: "Red"
+    Draw line: 2, 92, 8, 92
+    Colour: "Black"
+    Text special: 10, "left", 92, "half", "Helvetica", 8, "0", "= Anti-Phase"
+
+endif
+
+# ============================================
+# 9. MIXING & CLEANUP
 # ============================================
 
 selectObject: t1
@@ -381,7 +547,6 @@ selectObject: t2
 Rename: "Right"
 
 if has_v3
-    # Mix V3 into Left
     selectObject: t1
     plusObject: t3
     Combine to stereo
@@ -389,13 +554,11 @@ if has_v3
     Convert to mono
     Rename: "Left_Final"
     t1_final = selected("Sound")
-    
     selectObject: temp_st
     plusObject: t1
     Remove
     t1 = t1_final
 
-    # Mix V3 into Right
     selectObject: t2
     plusObject: t3
     Combine to stereo
@@ -403,7 +566,6 @@ if has_v3
     Convert to mono
     Rename: "Right_Final"
     t2_final = selected("Sound")
-    
     selectObject: temp_st
     plusObject: t2
     Remove
@@ -431,4 +593,3 @@ Remove
 
 selectObject: final_id
 Play
-
