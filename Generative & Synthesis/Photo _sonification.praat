@@ -1,430 +1,429 @@
 # ============================================================
-# Praat AudioTools - Photo _sonification.praat
+# Praat AudioTools - Photo_Sonification.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.3 (2025) - Optimized
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Photo _sonification
+#   Sonifies an image by mapping RGB channels to frequency bands:
+#   - Red → Low frequencies (warm = bass)
+#   - Green → Mid frequencies
+#   - Blue → High frequencies (cool = treble)
+#   - Brightness → Amplitude
+#   - Red-Blue balance → Stereo pan
 #
 # Usage:
-#   Adjust parameters via the form dialog.
+#   Select a Photo object in Praat, then run this script.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.3:
+#   - Added image downsampling for fast processing
+#   - Fixed object cleanup bug
 # ============================================================
 
-# Select a Photo in the Objects list, then run.
-# Builds a stereo noise whose color (low/mid/high), amplitude, and pan
-# follow the image's RGB column averages across time.
-
-# WARNING: This process can have long runtime on long files or high sampling frequencies.
-
-############################
-# FORM CONTROLS
-############################
-
-form Image Sonification Settings
-    comment WARNING: This process can have long runtime on long files or high sampling frequencies.
-    real duration(seconds) 3.0 
-    integer fs(Hz) 44100  
+form Photo Sonification (RGB to Frequency)
+    comment === Timing ===
+    positive Duration_s 3.0
+    integer Sample_rate_Hz 44100
     
-    comment Low-frequency band (Red channel)
-    integer lowF1(Hz) 100 
-    integer lowF2(Hz) 800 
+    comment === Analysis Resolution ===
+    integer Analysis_columns 200 (= time slices, 50-500)
+    integer Analysis_rows 100 (= vertical samples, 20-200)
     
-    comment Mid-frequency band (Green channel)
-    integer midF1(Hz) 800 
-    integer midF2(Hz) 3000 
+    comment === Frequency Bands ===
+    integer Low_band_min_Hz 100
+    integer Low_band_max_Hz 800
+    integer Mid_band_min_Hz 800
+    integer Mid_band_max_Hz 3000
+    integer High_band_min_Hz 3000
+    integer High_band_max_Hz 9000
     
-    comment High-frequency band (Blue channel)
-    integer highF1(Hz) 3000 
-    integer highF2(Hz) 9000 
+    comment === Output ===
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-############################
-# USER SETTINGS (from form)
-############################
-# duration = 3.0      ; seconds
-# fs = 44100          ; Hz
-
-# ; Frequency bands for the three colorized noises
-# lowF1  = 100
-# lowF2  = 800
-# midF1  = 800
-# midF2  = 3000
-# highF1 = 3000
-# highF2 = 9000
-
-############################
-# 0) Get the selected Photo
-############################
-photoID = selected("Photo")
-if photoID = 0
-    exitScript: "Select a Photo object first (Objects window)."
+# === Check for Photo selection ===
+nPhotos = numberOfSelected("Photo")
+if nPhotos = 0
+    exitScript: "Please select a Photo object first."
 endif
 
-############################################
-# 1) Extract R/G/B matrices
-############################################
+photoID = selected("Photo")
+
+# === Constants ===
+uid$ = string$(randomInteger(10000, 99999))
+twoPi = 2 * pi
+
+# === Extract RGB Channels ===
+selectObject: photoID
+photoName$ = selected$("Photo")
+
 selectObject: photoID
 Extract red
 redID = selected("Matrix")
-if redID = 0
-    exitScript: "Failed to extract red channel as Matrix."
-endif
 
 selectObject: photoID
 Extract green
 greenID = selected("Matrix")
-if greenID = 0
-    exitScript: "Failed to extract green channel as Matrix."
-endif
 
 selectObject: photoID
 Extract blue
 blueID = selected("Matrix")
-if blueID = 0
-    exitScript: "Failed to extract blue channel as Matrix."
+
+# === Get Image Dimensions ===
+selectObject: redID
+imgRows = Get number of rows
+imgCols = Get number of columns
+
+if imgCols <= 0 or imgRows <= 0
+    removeObject: redID, greenID, blueID
+    exitScript: "Invalid image dimensions."
 endif
 
-# Get matrix dimensions
-selectObject: redID
-nrows = Get number of rows
-ncols = Get number of columns
-
-if ncols <= 0
-    exitScript: "Invalid number of columns in image (ncols <= 0)."
+# === Clamp analysis resolution to image size ===
+if analysis_columns > imgCols
+    analysis_columns = imgCols
+endif
+if analysis_rows > imgRows
+    analysis_rows = imgRows
 endif
 
-# Compute global min for red
-selectObject: redID
-minRed = 1e9
-for irow from 1 to nrows
-    for icol from 1 to ncols
-        val = Get value in cell: irow, icol
-        if val < minRed
-            minRed = val
-        endif
-    endfor
-endfor
+colStep = imgCols / analysis_columns
+rowStep = imgRows / analysis_rows
 
-# Compute global max for red
-selectObject: redID
-maxRed = -1e9
-for irow from 1 to nrows
-    for icol from 1 to ncols
-        val = Get value in cell: irow, icol
-        if val > maxRed
-            maxRed = val
-        endif
-    endfor
-endfor
+# === Info ===
+writeInfoLine: "=== Photo Sonification (RGB → Frequency) ==="
+appendInfoLine: "Image: ", photoName$
+appendInfoLine: "Original size: ", imgCols, " x ", imgRows, " pixels"
+appendInfoLine: "Analysis resolution: ", analysis_columns, " x ", analysis_rows
+appendInfoLine: "Duration: ", duration_s, " s"
+appendInfoLine: ""
 
-# Compute global min for green
+# === Get Min/Max ===
+selectObject: redID
+minRed = Get minimum
+maxRed = Get maximum
+
 selectObject: greenID
-minGreen = 1e9
-for irow from 1 to nrows
-    for icol from 1 to ncols
-        val = Get value in cell: irow, icol
-        if val < minGreen
-            minGreen = val
-        endif
-    endfor
-endfor
+minGreen = Get minimum
+maxGreen = Get maximum
 
-# Compute global max for green
-selectObject: greenID
-maxGreen = -1e9
-for irow from 1 to nrows
-    for icol from 1 to ncols
-        val = Get value in cell: irow, icol
-        if val > maxGreen
-            maxGreen = val
-        endif
-    endfor
-endfor
-
-# Compute global min for blue
 selectObject: blueID
-minBlue = 1e9
-for irow from 1 to nrows
-    for icol from 1 to ncols
-        val = Get value in cell: irow, icol
-        if val < minBlue
-            minBlue = val
-        endif
-    endfor
+minBlue = Get minimum
+maxBlue = Get maximum
+
+overallMin = min(minRed, min(minGreen, minBlue))
+overallMax = max(maxRed, max(maxGreen, maxBlue))
+valueRange = overallMax - overallMin
+if valueRange = 0
+    valueRange = 1
+endif
+
+# === Compute Downsampled Column Statistics ===
+appendInfoLine: "Computing column statistics..."
+
+for aCol to analysis_columns
+    imgCol = round((aCol - 0.5) * colStep)
+    if imgCol < 1
+        imgCol = 1
+    endif
+    if imgCol > imgCols
+        imgCol = imgCols
+    endif
+    
+    rSum = 0
+    gSum = 0
+    bSum = 0
+    
+    for aRow to analysis_rows
+        imgRow = round((aRow - 0.5) * rowStep)
+        if imgRow < 1
+            imgRow = 1
+        endif
+        if imgRow > imgRows
+            imgRow = imgRows
+        endif
+        
+        selectObject: redID
+        .rVal = Get value in cell: imgRow, imgCol
+        rSum = rSum + .rVal
+        
+        selectObject: greenID
+        .gVal = Get value in cell: imgRow, imgCol
+        gSum = gSum + .gVal
+        
+        selectObject: blueID
+        .bVal = Get value in cell: imgRow, imgCol
+        bSum = bSum + .bVal
+    endfor
+    
+    rAvg = rSum / analysis_rows
+    gAvg = gSum / analysis_rows
+    bAvg = bSum / analysis_rows
+    
+    rNorm[aCol] = (rAvg - overallMin) / valueRange
+    rNorm[aCol] = max(0, min(1, rNorm[aCol]))
+    
+    gNorm[aCol] = (gAvg - overallMin) / valueRange
+    gNorm[aCol] = max(0, min(1, gNorm[aCol]))
+    
+    bNorm[aCol] = (bAvg - overallMin) / valueRange
+    bNorm[aCol] = max(0, min(1, bNorm[aCol]))
+    
+    ampCol[aCol] = (rNorm[aCol] + gNorm[aCol] + bNorm[aCol]) / 3
+    
+    panCol[aCol] = 0.5 + 0.5 * (rNorm[aCol] - bNorm[aCol])
+    panCol[aCol] = max(0, min(1, panCol[aCol]))
+    
+    if aCol mod 50 = 0
+        appendInfoLine: "  Column ", aCol, "/", analysis_columns
+    endif
 endfor
 
-# Compute global max for blue
-selectObject: blueID
-maxBlue = -1e9
-for irow from 1 to nrows
-    for icol from 1 to ncols
-        val = Get value in cell: irow, icol
-        if val > maxBlue
-            maxBlue = val
-        endif
-    endfor
+# === Create Base Noise ===
+appendInfoLine: "Creating filtered noise bands..."
+
+baseNoise = Create Sound from formula: "base_" + uid$, 1, 0, duration_s, sample_rate_Hz, "randomUniform(-1, 1)"
+
+# === Create Filtered Noise Bands ===
+selectObject: baseNoise
+Filter (pass Hann band): low_band_min_Hz, low_band_max_Hz, 100
+lowNoise = selected("Sound")
+Rename: "low_" + uid$
+
+selectObject: baseNoise
+Filter (pass Hann band): mid_band_min_Hz, mid_band_max_Hz, 100
+midNoise = selected("Sound")
+Rename: "mid_" + uid$
+
+selectObject: baseNoise
+Filter (pass Hann band): high_band_min_Hz, high_band_max_Hz, 100
+highNoise = selected("Sound")
+Rename: "high_" + uid$
+
+removeObject: baseNoise
+
+# === Create Envelope Sounds ===
+appendInfoLine: "Creating modulation envelopes..."
+
+redEnv = Create Sound from formula: "redEnv_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
+greenEnv = Create Sound from formula: "greenEnv_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
+blueEnv = Create Sound from formula: "blueEnv_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
+ampEnv = Create Sound from formula: "ampEnv_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
+panEnv = Create Sound from formula: "panEnv_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
+
+chunkDuration = duration_s / analysis_columns
+
+for aCol to analysis_columns
+    tStart = (aCol - 1) * chunkDuration
+    tEnd = aCol * chunkDuration
+    if aCol = analysis_columns
+        tEnd = duration_s
+    endif
+    
+    sStart$ = fixed$(tStart, 6)
+    sEnd$ = fixed$(tEnd, 6)
+    
+    rVal$ = fixed$(rNorm[aCol], 4)
+    selectObject: redEnv
+    Formula: "if x >= " + sStart$ + " and x < " + sEnd$ + " then " + rVal$ + " else self fi"
+    
+    gVal$ = fixed$(gNorm[aCol], 4)
+    selectObject: greenEnv
+    Formula: "if x >= " + sStart$ + " and x < " + sEnd$ + " then " + gVal$ + " else self fi"
+    
+    bVal$ = fixed$(bNorm[aCol], 4)
+    selectObject: blueEnv
+    Formula: "if x >= " + sStart$ + " and x < " + sEnd$ + " then " + bVal$ + " else self fi"
+    
+    aVal$ = fixed$(ampCol[aCol], 4)
+    selectObject: ampEnv
+    Formula: "if x >= " + sStart$ + " and x < " + sEnd$ + " then " + aVal$ + " else self fi"
+    
+    pVal$ = fixed$(panCol[aCol], 4)
+    selectObject: panEnv
+    Formula: "if x >= " + sStart$ + " and x < " + sEnd$ + " then " + pVal$ + " else self fi"
 endfor
 
-# Global overall min and max across all channels
-overallMin = minRed
-if minGreen < overallMin
-    overallMin = minGreen
+# === Modulate Noise Bands ===
+appendInfoLine: "Modulating noise bands..."
+
+redEnvName$ = "Sound_redEnv_" + uid$
+greenEnvName$ = "Sound_greenEnv_" + uid$
+blueEnvName$ = "Sound_blueEnv_" + uid$
+ampEnvName$ = "Sound_ampEnv_" + uid$
+panEnvName$ = "Sound_panEnv_" + uid$
+
+selectObject: lowNoise
+Formula: "self * " + redEnvName$ + "[]"
+
+selectObject: midNoise
+Formula: "self * " + greenEnvName$ + "[]"
+
+selectObject: highNoise
+Formula: "self * " + blueEnvName$ + "[]"
+
+# === Combine Bands ===
+appendInfoLine: "Combining frequency bands..."
+
+lowName$ = "Sound_low_" + uid$
+midName$ = "Sound_mid_" + uid$
+highName$ = "Sound_high_" + uid$
+
+combinedMono = Create Sound from formula: "combined_" + uid$, 1, 0, duration_s, sample_rate_Hz, lowName$ + "[] + " + midName$ + "[] + " + highName$ + "[]"
+
+combinedName$ = "Sound_combined_" + uid$
+selectObject: combinedMono
+Formula: "self * " + ampEnvName$ + "[]"
+
+# === Create Stereo with Panning ===
+appendInfoLine: "Applying stereo panning..."
+
+leftCh = Create Sound from formula: "left_" + uid$, 1, 0, duration_s, sample_rate_Hz, "sqrt(max(0, 1 - " + panEnvName$ + "[])) * " + combinedName$ + "[]"
+
+rightCh = Create Sound from formula: "right_" + uid$, 1, 0, duration_s, sample_rate_Hz, "sqrt(max(0, " + panEnvName$ + "[])) * " + combinedName$ + "[]"
+
+selectObject: leftCh
+plusObject: rightCh
+outputSound = Combine to stereo
+Rename: "sonification_" + photoName$
+
+# === Fade In/Out ===
+selectObject: outputSound
+Formula: "if x < 0.02 then self * (x / 0.02) else self fi"
+Formula: "if x > duration_s - 0.05 then self * ((duration_s - x) / 0.05) else self fi"
+
+# === Normalize ===
+selectObject: outputSound
+Scale peak: 0.95
+
+# === Visualization ===
+if draw_visualization
+    appendInfoLine: ""
+    appendInfoLine: "Drawing visualization..."
+    @drawVisualization
 endif
-if minBlue < overallMin
-    overallMin = minBlue
+
+# === Cleanup ===
+appendInfoLine: "Cleaning up..."
+
+removeObject: redID, greenID, blueID
+removeObject: lowNoise, midNoise, highNoise
+removeObject: redEnv, greenEnv, blueEnv, ampEnv, panEnv
+removeObject: combinedMono, leftCh, rightCh
+
+# === Play ===
+if play_result
+    selectObject: outputSound
+    Play
 endif
 
-overallMax = maxRed
-if maxGreen > overallMax
-    overallMax = maxGreen
-endif
-if maxBlue > overallMax
-    overallMax = maxBlue
-endif
+# === Final Selection ===
+selectObject: outputSound
 
-range = overallMax - overallMin
-if range = 0
-    range = 1
-endif
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Created: ", selected$("Sound")
 
-# Precompute normalized column averages as matrix variables
-rNorms## = zero##(1, ncols)
-gNorms## = zero##(1, ncols)
-bNorms## = zero##(1, ncols)
-ampPerCol## = zero##(1, ncols)
-panPerCol## = zero##(1, ncols)
-
-for col from 1 to ncols
-    selectObject: redID
-    rSum = 0
-    for row from 1 to nrows
-        val = Get value in cell: row, col
-        rSum = rSum + val
-    endfor
-    rAvg = rSum / nrows
-    rNorm = (rAvg - overallMin) / range
-    rNorm = max(0, min(1, rNorm))
-    rNorms##[1, col] = rNorm
-    
-    selectObject: greenID
-    gSum = 0
-    for row from 1 to nrows
-        val = Get value in cell: row, col
-        gSum = gSum + val
-    endfor
-    gAvg = gSum / nrows
-    gNorm = (gAvg - overallMin) / range
-    gNorm = max(0, min(1, gNorm))
-    gNorms##[1, col] = gNorm
-    
-    selectObject: blueID
-    bSum = 0
-    for row from 1 to nrows
-        val = Get value in cell: row, col
-        bSum = bSum + val
-    endfor
-    bAvg = bSum / nrows
-    bNorm = (bAvg - overallMin) / range
-    bNorm = max(0, min(1, bNorm))
-    bNorms##[1, col] = bNorm
-    
-    amp = (rNorm + gNorm + bNorm) / 3
-    pan = 0.5 + 0.5 * (rNorm - bNorm)
-    pan = max(0, min(1, pan))
-    ampPerCol##[1, col] = amp
-    panPerCol##[1, col] = pan
-endfor
-
-############################################
-# 2) Create separate sounds and combine
-############################################
-nsamples = round(duration * fs)
-
-# Create base noise
-Create Sound from formula: "baseNoise", 1, 0, duration, fs, "randomUniform(-1, 1)"
-
-selectObject: "Sound baseNoise"
-Copy: "noiseLowBase"
-Filter (pass Hann band): lowF1, lowF2, 100
-Rename: "noiseLow"
-
-selectObject: "Sound baseNoise"
-Copy: "noiseMidBase"
-Filter (pass Hann band): midF1, midF2, 100
-Rename: "noiseMid"
-
-selectObject: "Sound baseNoise"
-Copy: "noiseHighBase"
-Filter (pass Hann band): highF1, highF2, 100
-Rename: "noiseHigh"
-
-# Create empty envelope Sounds
-Create Sound from formula: "redEnv", 1, 0, duration, fs, "0"
-Create Sound from formula: "greenEnv", 1, 0, duration, fs, "0"
-Create Sound from formula: "blueEnv", 1, 0, duration, fs, "0"
-Create Sound from formula: "ampEnv", 1, 0, duration, fs, "0"
-Create Sound from formula: "panEnv", 1, 0, duration, fs, "0"
-
-# Populate envelopes in chunks
-chunkDuration = duration / ncols
-for col from 1 to ncols
-    colIndex = col
-    tStart = (col - 1) * chunkDuration
-    tEnd = col * chunkDuration
-    if col = ncols
-        tEnd = duration
-    endif
-    rNorm = rNorms##[1, colIndex]
-    selectObject: "Sound redEnv"
-    Formula: "if x >= tStart and x <= tEnd then rNorm else self fi"
-    
-    gNorm = gNorms##[1, colIndex]
-    selectObject: "Sound greenEnv"
-    Formula: "if x >= tStart and x <= tEnd then gNorm else self fi"
-    
-    bNorm = bNorms##[1, colIndex]
-    selectObject: "Sound blueEnv"
-    Formula: "if x >= tStart and x <= tEnd then bNorm else self fi"
-    
-    amp = ampPerCol##[1, colIndex]
-    selectObject: "Sound ampEnv"
-    Formula: "if x >= tStart and x <= tEnd then amp else self fi"
-    
-    pan = panPerCol##[1, colIndex]
-    selectObject: "Sound panEnv"
-    Formula: "if x >= tStart and x <= tEnd then pan else self fi"
-endfor
-
-# Modulate noises with color envelopes
-selectObject: "Sound noiseLow"
-Copy: "lowModulated"
-lowModID = selected("Sound")
-plusObject: "Sound redEnv"
-Formula: "self * Sound_redEnv[]"
-
-selectObject: "Sound noiseMid"
-Copy: "midModulated"
-midModID = selected("Sound")
-plusObject: "Sound greenEnv"
-Formula: "self * Sound_greenEnv[]"
-
-selectObject: "Sound noiseHigh"
-Copy: "highModulated"
-highModID = selected("Sound")
-plusObject: "Sound blueEnv"
-Formula: "self * Sound_blueEnv[]"
-
-# Combine modulated bands to mono
-selectObject: lowModID
-plusObject: midModID
-Combine to stereo
-stereo1ID = selected("Sound")
-Convert to mono
-combinedTempID = selected("Sound")
-Rename: "combinedTemp"
-
-selectObject: combinedTempID
-plusObject: highModID
-Combine to stereo
-stereo2ID = selected("Sound")
-Convert to mono
-combinedBandsID = selected("Sound")
-Rename: "combinedBands"
-
-# Apply amplitude envelope
-selectObject: combinedBandsID
-Copy: "amplifiedMono"
-amplifiedMonoID = selected("Sound")
-plusObject: "Sound ampEnv"
-Formula: "self * Sound_ampEnv[]"
-
-# Create gain envelopes for panning (constant power)
-selectObject: "Sound panEnv"
-Copy: "gainRightEnv"
-gainRightID = selected("Sound")
-Formula: "sqrt(self)"
-
-selectObject: "Sound panEnv"
-Copy: "gainLeftEnv"
-gainLeftID = selected("Sound")
-Formula: "sqrt(1 - self)"
-
-# Apply panning
-selectObject: amplifiedMonoID
-Copy: "pannedLeft"
-pannedLeftID = selected("Sound")
-plusObject: gainLeftID
-Formula: "self * Sound_gainLeftEnv[]"
-
-selectObject: amplifiedMonoID
-Copy: "pannedRight"
-pannedRightID = selected("Sound")
-plusObject: gainRightID
-Formula: "self * Sound_gainRightEnv[]"
-
-# Combine to stereo
-selectObject: pannedLeftID
-plusObject: pannedRightID
-Combine to stereo
-finalStereoID = selected("Sound")
-Rename: "finalStereo"
-
-selectObject: finalStereoID
-Scale peak: 0.99
-Play
-
-############################################
-# 3) Clean up
-############################################
-# Remove matrix objects
-removeObject: redID
-removeObject: greenID
-removeObject: blueID
-
-# Remove base and filtered noises
-removeObject: "Sound baseNoise"
-removeObject: "Sound noiseLowBase"
-removeObject: "Sound noiseMidBase"
-removeObject: "Sound noiseHighBase"
-removeObject: "Sound noiseLow"
-removeObject: "Sound noiseMid"
-removeObject: "Sound noiseHigh"
-
-# Remove envelope sounds
-removeObject: "Sound redEnv"
-removeObject: "Sound greenEnv"
-removeObject: "Sound blueEnv"
-removeObject: "Sound ampEnv"
-removeObject: "Sound panEnv"
-
-# Remove modulated sounds
-removeObject: lowModID
-removeObject: midModID
-removeObject: highModID
-
-# Remove stereo intermediate objects
-removeObject: stereo1ID
-removeObject: combinedTempID
-removeObject: stereo2ID
-removeObject: combinedBandsID
-
-# Remove amplitude and panning objects
-removeObject: amplifiedMonoID
-removeObject: gainLeftID
-removeObject: gainRightID
-removeObject: pannedLeftID
-removeObject: pannedRightID
-
-# Rename final output
-selectObject: finalStereoID
-Rename: "imageSonification"
-echo Sonification complete! Play "imageSonification" to hear the result.
-echo Low freq ~ Red, Mid ~ Green, High ~ Blue; Amp = avg RGB; Pan = Red-Blue diff.
+# ==============================================================================
+# Procedure: drawVisualization
+# ==============================================================================
+procedure drawVisualization
+    
+    Erase all
+    
+    # === Title ===
+    Select outer viewport: 0, 7, 0.2, 0.7
+    Select inner viewport: 0, 7, 0.2, 0.7
+    Axes: 0, 1, 0, 1
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.7, "half", "Photo Sonification — " + photoName$
+    Font size: 10
+    Colour: "{0.4, 0.4, 0.4}"
+    Text: 0.5, "centre", 0.2, "half", string$(imgCols) + "x" + string$(imgRows) + " -> " + string$(analysis_columns) + " time slices"
+    
+    # === RGB Profiles ===
+    Select outer viewport: 0, 7, 0.8, 2.5
+    Colour: "{0.95, 0.95, 0.95}"
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    
+    Select inner viewport: 0.5, 6.5, 0.9, 2.4
+    Axes: 0, analysis_columns, 0, 1
+    
+    Line width: 1
+    
+    Colour: "{0.9, 0.2, 0.2}"
+    for .c from 2 to analysis_columns
+        Draw line: .c - 1, rNorm[.c - 1], .c, rNorm[.c]
+    endfor
+    
+    Colour: "{0.2, 0.8, 0.2}"
+    for .c from 2 to analysis_columns
+        Draw line: .c - 1, gNorm[.c - 1], .c, gNorm[.c]
+    endfor
+    
+    Colour: "{0.2, 0.2, 0.9}"
+    for .c from 2 to analysis_columns
+        Draw line: .c - 1, bNorm[.c - 1], .c, bNorm[.c]
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Marks left: 3, "yes", "yes", "no"
+    Text left: "yes", "RGB"
+    Text bottom: "yes", "Column (R=low, G=mid, B=high)"
+    
+    # === Spectrogram ===
+    Select outer viewport: 0, 7, 2.7, 5.2
+    Colour: "{0.85, 0.85, 0.85}"
+    Draw inner box
+    
+    Select inner viewport: 0.5, 6.5, 2.8, 5.1
+    
+    selectObject: outputSound
+    Extract one channel: 1
+    .monoSpec = selected("Sound")
+    
+    selectObject: .monoSpec
+    .maxFreq = high_band_max_Hz + 1000
+    To Spectrogram: 0.02, .maxFreq, 0.005, 20, "Gaussian"
+    .spec = selected("Spectrogram")
+    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
+    
+    removeObject: .monoSpec, .spec
+    
+    Select inner viewport: 0.5, 6.5, 2.8, 5.1
+    Axes: 0, duration_s, 0, .maxFreq
+    
+    Colour: "{1, 0.5, 0.5}"
+    Dotted line
+    Draw line: 0, low_band_max_Hz, duration_s, low_band_max_Hz
+    
+    Colour: "{0.5, 1, 0.5}"
+    Draw line: 0, mid_band_max_Hz, duration_s, mid_band_max_Hz
+    Solid line
+    
+    Colour: "White"
+    Marks left: 5, "yes", "yes", "no"
+    Marks bottom every: 1, 0.5, "yes", "yes", "no"
+    Font size: 8
+    Text bottom: "yes", "Time (s)"
+    Text left: "yes", "Freq (Hz)"
+    
+    # === Footer ===
+    Select outer viewport: 0, 7, 5.3, 5.7
+    Select inner viewport: 0, 7, 5.3, 5.7
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "{0.4, 0.4, 0.4}"
+    Text: 0.5, "centre", 0.5, "half", "R->Low | G->Mid | B->High | Brightness->Volume | R-B->Pan"
+    
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+endproc
