@@ -19,9 +19,6 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-# Praat Script: Acoustic Pedagogy 
-# Comprehensive demonstrations of acoustic phenomena
-
 form Acoustic Lab - Enhanced
     comment === SELECT PHENOMENON ===
     optionmenu Phenomenon: 1
@@ -40,16 +37,42 @@ form Acoustic Lab - Enhanced
         option 13. Formant Synthesis (Vowels)
         option 14. AM vs FM Modulation
         option 15. Phase Cancellation
-    comment 
+    
     comment === PLAYBACK CONTROLS ===
     real Duration_(s) 2.0
     real Base_Frequency_(Hz) 220
     positive Amplitude_0_to_1 0.5
-    comment 
+    
     comment === OPTIONS ===
     boolean Show_info_window 1
     boolean Save_sounds_to_list 0
+    
+    comment === HELP ===
+    boolean Show_Help_Manual 0
 endform
+
+# --- HELP LOGIC (Runs first) ---
+if show_Help_Manual
+    beginPause: "Acoustic Pedagogy Guide"
+        comment: "This script provides 15 interactive acoustic demonstrations."
+        comment: "Select a phenomenon from the dropdown menu and click 'Run'."
+        comment: ""
+        comment: "--- TEACHING TIPS ---"
+        comment: "• Start with Just Intonation (1) for basic interval hearing"
+        comment: "• Use Missing Fundamental (7) to demonstrate perceptual completion"
+        comment: "• Binaural Beats (8) require headphones for proper effect"
+        comment: "• Shepard Tone (10) creates compelling auditory illusions"
+        comment: "• Compare AM vs FM (14) to hear modulation differences"
+        comment: ""
+        comment: "Uncheck 'Show Help Manual' and run again to use the tool."
+    endPause: "Close", 1
+    
+    # Stops the script here so you can read the manual. 
+    # To run the tool, run the script again and UNCHECK the Help box.
+    exit
+endif
+
+# --- MAIN SCRIPT STARTS HERE ---
 
 # Clear workspace
 Erase all
@@ -118,7 +141,7 @@ elsif phenomenon = 6
     f_diff = f2 - f1
     call show_info "Tartini Tones (Difference: 'f_diff'Hz)" f1 f2
     call create_and_play f1 f2 dur amp
-    Text top: "no", "Tartini: 440Hz + 660Hz → Hear difference tone at 220Hz"
+    Text top: "no", "Tartini: 440Hz + 660Hz -> Hear difference tone at 220Hz"
 
 elsif phenomenon = 7
     # === Missing Fundamental ===
@@ -327,7 +350,7 @@ elsif phenomenon = 12
     endif
     
     call create_and_play f1 f2 dur amp
-    Text top: "no", "Combination Tones: 'f1'Hz + 'f2'Hz → hear 'f_diff'Hz"
+    Text top: "no", "Combination Tones: 'f1'Hz + 'f2'Hz -> hear 'f_diff'Hz"
 
 elsif phenomenon = 13
     # === Formant Synthesis (Vowels) ===
@@ -443,7 +466,7 @@ elsif phenomenon = 15
         appendInfoLine: "=== Phase Cancellation ==="
         appendInfoLine: "Frequency: ", f1, " Hz"
         appendInfoLine: "Signal 1: Normal phase"
-        appendInfoLine: "Signal 2: Inverted (180° phase)"
+        appendInfoLine: "Signal 2: Inverted (180 deg phase)"
         appendInfoLine: ""
         appendInfoLine: "When added together: Complete cancellation"
         appendInfoLine: "Result: Silence (theoretically)"
@@ -455,7 +478,7 @@ elsif phenomenon = 15
     To ParamCurve
     Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
     id_param = selected("ParamCurve")
-    Text top: "no", "Phase Cancellation - Normal (X) vs Inverted 180° (Y)"
+    Text top: "no", "Phase Cancellation - Normal (X) vs Inverted 180 (Y)"
     
     # Create the sum (cancellation)
     selectObject: id_in, id_out
@@ -484,7 +507,7 @@ elsif phenomenon = 15
 
 else
     printline ERROR: Invalid selection.
-    exitScript: "Invalid phenomenon selection."
+    exit "Invalid phenomenon selection."
 endif
 
 printline 
@@ -514,7 +537,7 @@ procedure create_and_play: .f1, .f2, .dur, .amp
     Create Sound from formula: "Sound_A", 1, 0, .dur, srate,
         ... ".amp * sin(2*pi*"+string$(.f1)+"*x)"
     id_A = selected("Sound")
-    
+     
     Create Sound from formula: "Sound_B", 1, 0, .dur, srate,
         ... ".amp * sin(2*pi*"+string$(.f2)+"*x)"
     id_B = selected("Sound")
