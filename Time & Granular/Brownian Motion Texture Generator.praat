@@ -1,29 +1,28 @@
 # ============================================================
-# Praat AudioTools - Brownian Motion Texture Generator.praat
+# Praat AudioTools - Brownian_Motion_Texture_Generator.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025) - Optimized
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Brownian Motion Texture Generator
+#   Brownian Motion Texture Generator - creates granular textures
+#   using random walk (Brownian motion) for both temporal placement
+#   and stereo panning. Unlike simple random scatter, Brownian motion
+#   creates cumulative drift patterns.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.2:
+#   - Optimized using sorted concatenation
+#   - Added visualization showing Brownian paths
+#   - Added play option
 # ============================================================
 
-# Brownian Motion Texture Generator
-# Generates texture from short sampled elements using Brownian motion
-
 form Brownian Motion Texture
-    comment Preset Selection
+    comment Select a Sound object first
+    
+    comment === Preset ===
     optionmenu Preset 1
         option Custom
         option Dense Cloud
@@ -32,163 +31,171 @@ form Brownian Motion Texture
         option Subtle Shimmer
         option Rhythmic Pulse
         option Frozen Moment
-    comment Input sound should be selected
-    positive Grain_duration_(s) 0.05
-    positive Output_duration_(s) 10.0
-    positive Density_(grains_per_second) 20
-    comment Temporal Brownian Motion
-    positive Time_step_size_(s) 0.1
+    
+    comment === Grain Parameters ===
+    positive Grain_duration_s 0.05
+    positive Output_duration_s 10.0
+    positive Density_grains_per_sec 20
+    
+    comment === Temporal Brownian Motion ===
+    positive Time_step_size_s 0.1
     real Time_drift 0.0
-    comment Spatial Brownian Motion (Stereo Field)
+    
+    comment === Spatial Brownian Motion (Stereo) ===
     boolean Enable_spatial_brownian 1
     positive Spatial_step_size 0.15
     real Spatial_drift 0.0
-    comment General
+    
+    comment === Options ===
     positive Amplitude_scaling 0.7
     boolean Random_grain_positions 1
-    positive Fade_duration_(s) 0.005
-    positive Fade_out_time_(s) 2.0
+    positive Fade_duration_s 0.005
+    positive Fade_out_s 2.0
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# ====== APPLY PRESET ======
-if preset = 2 ; Dense Cloud
-    grain_duration = 0.03
-    output_duration = 8.0
-    density = 40
-    time_step_size = 0.08
+# === Apply Presets ===
+if preset = 2
+    grain_duration_s = 0.03
+    output_duration_s = 8.0
+    density_grains_per_sec = 40
+    time_step_size_s = 0.08
     time_drift = 0.0
     enable_spatial_brownian = 1
     spatial_step_size = 0.2
     spatial_drift = 0.0
     amplitude_scaling = 0.5
     random_grain_positions = 1
-    fade_duration = 0.003
-    fade_out_time = 2.0
-    
-elsif preset = 3 ; Sparse Field
-    grain_duration = 0.15
-    output_duration = 15.0
-    density = 8
-    time_step_size = 0.2
+    fade_duration_s = 0.003
+    fade_out_s = 2.0
+elsif preset = 3
+    grain_duration_s = 0.15
+    output_duration_s = 15.0
+    density_grains_per_sec = 8
+    time_step_size_s = 0.2
     time_drift = 0.0
     enable_spatial_brownian = 1
     spatial_step_size = 0.1
     spatial_drift = 0.0
     amplitude_scaling = 0.8
     random_grain_positions = 1
-    fade_duration = 0.01
-    fade_out_time = 3.0
-    
-elsif preset = 4 ; Wild Drift
-    grain_duration = 0.06
-    output_duration = 12.0
-    density = 25
-    time_step_size = 0.25
+    fade_duration_s = 0.01
+    fade_out_s = 3.0
+elsif preset = 4
+    grain_duration_s = 0.06
+    output_duration_s = 12.0
+    density_grains_per_sec = 25
+    time_step_size_s = 0.25
     time_drift = 0.02
     enable_spatial_brownian = 1
     spatial_step_size = 0.3
     spatial_drift = 0.01
     amplitude_scaling = 0.6
     random_grain_positions = 1
-    fade_duration = 0.005
-    fade_out_time = 2.5
-    
-elsif preset = 5 ; Subtle Shimmer
-    grain_duration = 0.04
-    output_duration = 10.0
-    density = 30
-    time_step_size = 0.05
+    fade_duration_s = 0.005
+    fade_out_s = 2.5
+elsif preset = 5
+    grain_duration_s = 0.04
+    output_duration_s = 10.0
+    density_grains_per_sec = 30
+    time_step_size_s = 0.05
     time_drift = 0.0
     enable_spatial_brownian = 1
     spatial_step_size = 0.08
     spatial_drift = 0.0
     amplitude_scaling = 0.6
     random_grain_positions = 1
-    fade_duration = 0.004
-    fade_out_time = 2.0
-    
-elsif preset = 6 ; Rhythmic Pulse
-    grain_duration = 0.08
-    output_duration = 10.0
-    density = 15
-    time_step_size = 0.02
+    fade_duration_s = 0.004
+    fade_out_s = 2.0
+elsif preset = 6
+    grain_duration_s = 0.08
+    output_duration_s = 10.0
+    density_grains_per_sec = 15
+    time_step_size_s = 0.02
     time_drift = 0.0
     enable_spatial_brownian = 1
     spatial_step_size = 0.25
     spatial_drift = 0.0
     amplitude_scaling = 0.75
     random_grain_positions = 0
-    fade_duration = 0.006
-    fade_out_time = 1.5
-    
-elsif preset = 7 ; Frozen Moment
-    grain_duration = 0.4
-    output_duration = 20.0
-    density = 6
-    time_step_size = 0.15
+    fade_duration_s = 0.006
+    fade_out_s = 1.5
+elsif preset = 7
+    grain_duration_s = 0.4
+    output_duration_s = 20.0
+    density_grains_per_sec = 6
+    time_step_size_s = 0.15
     time_drift = 0.0
     enable_spatial_brownian = 1
     spatial_step_size = 0.12
     spatial_drift = 0.0
     amplitude_scaling = 0.85
     random_grain_positions = 1
-    fade_duration = 0.015
-    fade_out_time = 4.0
+    fade_duration_s = 0.015
+    fade_out_s = 4.0
 endif
 
-# Get input sound
-input_sound = selected("Sound")
+# === Check Input ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object"
+endif
+
+original = selected("Sound")
 input_name$ = selected$("Sound")
+
+# === Convert to Mono (ensures consistent channel count) ===
+selectObject: original
+Convert to mono
+source = selected("Sound")
+
+selectObject: source
 input_duration = Get total duration
-sample_rate = Get sampling frequency
+sampleRate = Get sampling frequency
 
-# Initialize
-total_grains = round(density * output_duration)
+# === Validate ===
+if input_duration < grain_duration_s
+    removeObject: source
+    exitScript: "Input sound shorter than grain duration"
+endif
 
-# Create output sound (STEREO)
-Create Sound from formula: "brownian_mix", 2, 0, output_duration, sample_rate, "0"
-mixed_sound = selected("Sound")
+# === Calculate Parameters ===
+totalGrains = round(density_grains_per_sec * output_duration_s)
+if totalGrains > 500
+    totalGrains = 500
+endif
 
-# Initialize Brownian displacements
+# === Info ===
+writeInfoLine: "=== Brownian Motion Texture Generator ==="
+appendInfoLine: "Source: ", input_name$, " (", fixed$(input_duration, 2), " s)"
+appendInfoLine: "Output: ", output_duration_s, " s | Grains: ", totalGrains
+appendInfoLine: "Temporal step: ", time_step_size_s, " | Spatial step: ", spatial_step_size
+appendInfoLine: ""
+
+# === Calculate Brownian Paths ===
+appendInfoLine: "Calculating Brownian paths..."
+
 time_offset = 0
 pan_position = 0.5
 
-writeInfoLine: "Generating ", total_grains, " grains with Brownian motion"
-appendInfoLine: "Temporal Brownian: enabled"
-if enable_spatial_brownian
-    appendInfoLine: "Spatial Brownian: enabled"
-else
-    appendInfoLine: "Spatial Brownian: disabled (center pan)"
-endif
-appendInfoLine: ""
-
-# Generate grains with Brownian motion
-for i from 1 to total_grains
-    
-    # ====== TEMPORAL BROWNIAN MOTION ======
-    base_time = (i - 1) / density
-    
-    # Add Brownian displacement to time
-    time_step = randomGauss(time_drift, time_step_size)
+for i to totalGrains
+    # Temporal Brownian
+    base_time = (i - 1) / density_grains_per_sec
+    time_step = randomGauss(time_drift, time_step_size_s)
     time_offset = time_offset + time_step
     
-    # Calculate actual grain position
-    grain_time = base_time + time_offset
-    
-    # Clamp to valid range
-    if grain_time < 0
-        grain_time = 0
+    grainOutTime[i] = base_time + time_offset
+    if grainOutTime[i] < 0
+        grainOutTime[i] = 0
     endif
-    if grain_time > output_duration - grain_duration
-        grain_time = output_duration - grain_duration
+    if grainOutTime[i] > output_duration_s - grain_duration_s
+        grainOutTime[i] = output_duration_s - grain_duration_s
     endif
     
-    # ====== SPATIAL BROWNIAN MOTION ======
+    # Spatial Brownian
     if enable_spatial_brownian
         spatial_step = randomGauss(spatial_drift, spatial_step_size)
         pan_position = pan_position + spatial_step
-        
-        # Clamp pan to [0, 1]
         if pan_position < 0
             pan_position = 0
         endif
@@ -198,188 +205,251 @@ for i from 1 to total_grains
     else
         pan_position = 0.5
     endif
+    grainPan[i] = pan_position
     
-    # Calculate stereo gains (sqrt panning law)
-    gain_left = sqrt(1 - pan_position)
-    gain_right = sqrt(pan_position)
-    
-    # ====== GRAIN EXTRACTION ======
-    selectObject: input_sound
+    # Source position
     if random_grain_positions
-        grain_start = randomUniform(0, input_duration - grain_duration)
+        grainSrcTime[i] = randomUniform(0, input_duration - grain_duration_s)
     else
-        grain_start = (i / total_grains) * (input_duration - grain_duration)
-    endif
-    
-    Extract part: grain_start, grain_start + grain_duration, "rectangular", 1, "no"
-    grain_mono = selected("Sound")
-    grain_dur = Get total duration
-    
-    # Apply fade in/out
-    if fade_duration > 0 and fade_duration < grain_dur / 2
-        Fade in: 0, 0, fade_duration, "yes"
-        Fade out: 0, grain_dur, -fade_duration, "yes"
-    endif
-    
-    # Scale amplitude
-    Formula: "self * amplitude_scaling"
-    
-    # ====== CONVERT TO STEREO WITH PANNING ======
-    Copy: "grain_left"
-    grain_L_temp = selected("Sound")
-    Formula: "self * gain_left"
-    
-    selectObject: grain_mono
-    Copy: "grain_right"
-    grain_R_temp = selected("Sound")
-    Formula: "self * gain_right"
-    
-    # Combine to stereo
-    selectObject: grain_L_temp
-    plusObject: grain_R_temp
-    Combine to stereo
-    grain_stereo = selected("Sound")
-    
-    # Cleanup temp objects
-    removeObject: grain_mono
-    removeObject: grain_L_temp
-    removeObject: grain_R_temp
-    
-    # Rename grain for formula reference
-    Rename: "Grain_'i'"
-    
-    # Calculate grain end time
-    grain_end = grain_time + grain_dur
-    if grain_end > output_duration
-        grain_end = output_duration
-        grain_dur = grain_end - grain_time
-    endif
-    
-    # ====== MIX GRAIN INTO OUTPUT ======
-    if grain_dur > 0 and grain_time >= 0
-        # Extract the portion of mix where grain will be added
-        selectObject: mixed_sound
-        Extract part: grain_time, grain_end, "rectangular", 1, "no"
-        mix_part = selected("Sound")
-        
-        # Extract matching portion from grain
-        selectObject: grain_stereo
-        Extract part: 0, grain_dur, "rectangular", 1, "no"
-        grain_part = selected("Sound")
-        
-        # Extract and add channels separately
-        selectObject: mix_part
-        Extract one channel: 1
-        Rename: "MixL"
-        mix_L = selected("Sound")
-        
-        selectObject: mix_part
-        Extract one channel: 2
-        Rename: "MixR"
-        mix_R = selected("Sound")
-        
-        selectObject: grain_part
-        Extract one channel: 1
-        Rename: "GrainL"
-        grain_L = selected("Sound")
-        
-        selectObject: grain_part
-        Extract one channel: 2
-        Rename: "GrainR"
-        grain_R = selected("Sound")
-        
-        # Add left channel
-        selectObject: mix_L
-        Formula: "self + Sound_GrainL[]"
-        
-        # Add right channel
-        selectObject: mix_R
-        Formula: "self + Sound_GrainR[]"
-        
-        # Combine back to stereo
-        selectObject: mix_L
-        plusObject: mix_R
-        Combine to stereo
-        summed_part = selected("Sound")
-        
-        # Reconstruct the mix: before + summed + after
-        if grain_time > 0
-            selectObject: mixed_sound
-            Extract part: 0, grain_time, "rectangular", 1, "no"
-            before_part = selected("Sound")
-        endif
-        
-        if grain_end < output_duration
-            selectObject: mixed_sound
-            Extract part: grain_end, output_duration, "rectangular", 1, "no"
-            after_part = selected("Sound")
-        endif
-        
-        # Concatenate parts
-        if grain_time > 0
-            selectObject: before_part
-            plusObject: summed_part
-            if grain_end < output_duration
-                plusObject: after_part
-            endif
-            Concatenate
-        elsif grain_end < output_duration
-            selectObject: summed_part
-            plusObject: after_part
-            Concatenate
-        else
-            selectObject: summed_part
-            Copy: "NewMix"
-        endif
-        new_mix = selected("Sound")
-        Rename: "brownian_mix"
-        
-        # Remove old mix and update reference
-        selectObject: mixed_sound
-        Remove
-        mixed_sound = new_mix
-        
-        # Cleanup
-        removeObject: mix_part
-        removeObject: grain_part
-        removeObject: mix_L
-        removeObject: mix_R
-        removeObject: grain_L
-        removeObject: grain_R
-        removeObject: summed_part
-        if grain_time > 0
-            removeObject: before_part
-        endif
-        if grain_end < output_duration
-            removeObject: after_part
-        endif
-    endif
-    
-    # Cleanup grain
-    removeObject: grain_stereo
-    
-    if i mod 10 = 0
-        appendInfoLine: "Processed ", i, " of ", total_grains, " grains..."
+        grainSrcTime[i] = (i / totalGrains) * (input_duration - grain_duration_s)
     endif
 endfor
 
-# Final processing
-selectObject: mixed_sound
-Rename: input_name$ + "_brownian"
+# === Sort Grains by Output Time ===
+appendInfoLine: "Sorting grains..."
 
-# Apply fade out
-if fade_out_time > 0
-    selectObject: mixed_sound
-    total_duration = Get total duration
-    Fade out: 0, total_duration, -fade_out_time, "yes"
+for i to totalGrains - 1
+    for j from i + 1 to totalGrains
+        if grainOutTime[j] < grainOutTime[i]
+            tempTime = grainOutTime[i]
+            grainOutTime[i] = grainOutTime[j]
+            grainOutTime[j] = tempTime
+            
+            tempPan = grainPan[i]
+            grainPan[i] = grainPan[j]
+            grainPan[j] = tempPan
+            
+            tempSrc = grainSrcTime[i]
+            grainSrcTime[i] = grainSrcTime[j]
+            grainSrcTime[j] = tempSrc
+        endif
+    endfor
+endfor
+
+# === Generate Grains with Silence Gaps ===
+appendInfoLine: "Generating grain sequence..."
+
+currentTime = 0
+grainObjects# = zero#(totalGrains * 2 + 1)
+objCount = 0
+
+for i to totalGrains
+    # Add silence gap if needed (STEREO)
+    gapDur = grainOutTime[i] - currentTime
+    if gapDur > 0.001
+        silenceL = Create Sound from formula: "gapL", 1, 0, gapDur, sampleRate, "0"
+        silenceR = Create Sound from formula: "gapR", 1, 0, gapDur, sampleRate, "0"
+        selectObject: silenceL, silenceR
+        Combine to stereo
+        silence = selected("Sound")
+        removeObject: silenceL, silenceR
+        
+        objCount += 1
+        grainObjects#[objCount] = silence
+        currentTime = currentTime + gapDur
+    endif
+    
+    # Extract grain from mono source
+    selectObject: source
+    Extract part: grainSrcTime[i], grainSrcTime[i] + grain_duration_s, "Hanning", 1, 0
+    grainMono = selected("Sound")
+    
+    # Apply fade and scaling
+    grainDur = Get total duration
+    if fade_duration_s > 0 and fade_duration_s < grainDur / 2
+        Fade in: 0, 0, fade_duration_s, "yes"
+        Fade out: 0, grainDur - fade_duration_s, fade_duration_s, "yes"
+    endif
+    Formula: "self * amplitude_scaling"
+    
+    # Calculate stereo gains
+    pan = grainPan[i]
+    gainL = sqrt(1 - pan)
+    gainR = sqrt(pan)
+    
+    # Create left channel
+    selectObject: grainMono
+    Copy: "grainL"
+    grainL = selected("Sound")
+    Formula: "self * " + string$(gainL)
+    
+    # Create right channel
+    selectObject: grainMono
+    Copy: "grainR"
+    grainR = selected("Sound")
+    Formula: "self * " + string$(gainR)
+    
+    # Combine to stereo
+    selectObject: grainL, grainR
+    Combine to stereo
+    grainStereo = selected("Sound")
+    
+    removeObject: grainMono, grainL, grainR
+    
+    objCount += 1
+    grainObjects#[objCount] = grainStereo
+    currentTime = grainOutTime[i] + grainDur
+    
+    if i mod 50 = 0
+        appendInfoLine: "  ", i, "/", totalGrains
+    endif
+endfor
+
+# Add final silence if needed (STEREO)
+if currentTime < output_duration_s
+    finalGap = output_duration_s - currentTime
+    if finalGap > 0.001
+        silenceL = Create Sound from formula: "gapL", 1, 0, finalGap, sampleRate, "0"
+        silenceR = Create Sound from formula: "gapR", 1, 0, finalGap, sampleRate, "0"
+        selectObject: silenceL, silenceR
+        Combine to stereo
+        silence = selected("Sound")
+        removeObject: silenceL, silenceR
+        
+        objCount += 1
+        grainObjects#[objCount] = silence
+    endif
 endif
 
-# Scale peak
-selectObject: mixed_sound
-Scale peak: 0.99
+# === Concatenate All ===
+appendInfoLine: "Concatenating ", objCount, " objects..."
 
-# PLAY!
-selectObject: mixed_sound
-Play
+if objCount > 0
+    selectObject: grainObjects#[1]
+    for i from 2 to objCount
+        plusObject: grainObjects#[i]
+    endfor
+    Concatenate
+    output = selected("Sound")
+    
+    for i to objCount
+        removeObject: grainObjects#[i]
+    endfor
+else
+    silenceL = Create Sound from formula: "emptyL", 1, 0, output_duration_s, sampleRate, "0"
+    silenceR = Create Sound from formula: "emptyR", 1, 0, output_duration_s, sampleRate, "0"
+    selectObject: silenceL, silenceR
+    Combine to stereo
+    output = selected("Sound")
+    removeObject: silenceL, silenceR
+endif
 
-appendInfoLine: newline$, "Done! Brownian motion texture created with spatial movement."
+Rename: input_name$ + "_brownian"
+
+# === Apply Fade Out ===
+if fade_out_s > 0
+    selectObject: output
+    outDur = Get total duration
+    if fade_out_s < outDur
+        Fade out: 0, outDur - fade_out_s, fade_out_s, "yes"
+    endif
+endif
+
+# === Normalize ===
+selectObject: output
+Scale peak: 0.95
+
+# === Cleanup source ===
+removeObject: source
+
+# === Visualization ===
+if draw_visualization
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.2, 0.7
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Brownian Motion: " + input_name$
+    
+    # Output waveform
+    Select outer viewport: 0, 8, 0.9, 2.5
+    Select inner viewport: 0.6, 7.6, 1.0, 2.4
+    selectObject: output
+    Colour: "{0.2, 0.5, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Output"
+    Text bottom: "yes", "Time (s)"
+    
+    # Temporal Brownian path
+    Select outer viewport: 0, 4, 2.7, 4.3
+    Select inner viewport: 0.6, 3.8, 2.9, 4.2
+    Axes: 1, totalGrains, 0, output_duration_s
+    
+    Colour: "{0.95, 0.95, 0.95}"
+    Paint rectangle: "{0.95, 0.95, 0.95}", 1, totalGrains, 0, output_duration_s
+    
+    Colour: "{0.7, 0.7, 0.7}"
+    Dotted line
+    Draw line: 1, 0, totalGrains, output_duration_s
+    Solid line
+    
+    Colour: "{0.8, 0.3, 0.3}"
+    for i from 2 to totalGrains
+        Draw line: i-1, grainOutTime[i-1], i, grainOutTime[i]
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Time"
+    Text bottom: "yes", "Grain #"
+    
+    # Spatial Brownian path
+    Select outer viewport: 4, 8, 2.7, 4.3
+    Select inner viewport: 4.4, 7.6, 2.9, 4.2
+    Axes: 1, totalGrains, 0, 1
+    
+    Colour: "{0.95, 0.95, 0.95}"
+    Paint rectangle: "{0.95, 0.95, 0.95}", 1, totalGrains, 0, 1
+    
+    Colour: "{0.7, 0.7, 0.7}"
+    Dotted line
+    Draw line: 1, 0.5, totalGrains, 0.5
+    Solid line
+    
+    Colour: "{0.3, 0.6, 0.3}"
+    for i from 2 to totalGrains
+        Draw line: i-1, grainPan[i-1], i, grainPan[i]
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Pan L-R"
+    Text bottom: "yes", "Grain #"
+    
+    # Legend
+    Select outer viewport: 0, 8, 4.4, 4.7
+    Font size: 8
+    Colour: "{0.4, 0.4, 0.4}"
+    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(totalGrains) + " | Time step: " + fixed$(time_step_size_s, 2) + "s | Pan step: " + fixed$(spatial_step_size, 2)
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# === Final ===
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Created: ", selected$("Sound")
+
+if play_result
+    selectObject: output
+    Play
+endif
+
+selectObject: output
