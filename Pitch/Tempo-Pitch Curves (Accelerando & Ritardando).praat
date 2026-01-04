@@ -1,30 +1,22 @@
 # ============================================================
-# Praat AudioTools - Tempo-Pitch Curves (Accelerando & Ritardando).praat
+# Praat AudioTools - Tempo-Pitch Curves (Accelerando & Ritardando)
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025) - Visualized
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Tempo Curves (Accelerando & Ritardando)
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#   Tempo Curves (Accelerando & Ritardando) with Visualization.
 # ============================================================
 
 form Tempo Curves (Accelerando & Ritardando)
     comment Apply tempo variations to the selected sound
     comment 
     optionmenu Pattern_type 1
-        option Accelerando (slow → fast)
-        option Ritardando (fast → slow)
+        option Accelerando (slow -> fast)
+        option Ritardando (fast -> slow)
         option Slow-Fast-Slow
     comment 
     optionmenu Pitch_behavior 1
@@ -39,6 +31,7 @@ form Tempo Curves (Accelerando & Ritardando)
         option Specify new duration
     real Target_duration 5.0
     comment 
+    boolean Draw_visualization 1
     boolean Play_result_when_finished 1
 endform
 
@@ -57,6 +50,8 @@ selectObject: sound
 originalDuration = Get total duration
 samplingFrequency = Get sampling frequency
 numberOfChannels = Get number of channels
+xmin = Get start time
+xmax = Get end time
 
 # Get user choices from form
 patternType = pattern_type
@@ -66,9 +61,9 @@ targetDuration = target_duration
 
 # Create pattern name string for logging
 if patternType = 1
-    patternName$ = "Accelerando (slow → fast)"
+    patternName$ = "Accelerando"
 elsif patternType = 2
-    patternName$ = "Ritardando (fast → slow)"
+    patternName$ = "Ritardando"
 else
     patternName$ = "Slow-Fast-Slow"
 endif
@@ -117,6 +112,12 @@ if maxTempoFactor > 3.0
     maxTempoFactor = 3.0
 endif
 
+# --- VISUALIZATION DATA PREP ---
+# We increase points for smoother curves in both audio and visual
+numPoints = 100 
+vizTimes# = zero#(numPoints + 1)
+vizFactors# = zero#(numPoints + 1)
+
 ##############################################################################
 # STEP 4: Process according to pitch behavior mode
 ##############################################################################
@@ -142,8 +143,6 @@ if pitchBehavior = 1
     durationTier = Create DurationTier: "tempo_curve", 0, originalDuration
     
     # Apply tempo curve to duration tier
-    numPoints = 30
-    
     for i from 0 to numPoints
         t = i * originalDuration / numPoints
         x = i / numPoints
@@ -158,6 +157,10 @@ if pitchBehavior = 1
             tempoFactorPoint = minTempoFactor + (maxTempoFactor - minTempoFactor) * (1 - centered^2)
         endif
         
+        # Store for Visualization
+        vizTimes#[i+1] = t
+        vizFactors#[i+1] = tempoFactorPoint
+
         # Duration factor is inverse of tempo
         durationFactorPoint = 1.0 / tempoFactorPoint
         
@@ -174,7 +177,6 @@ if pitchBehavior = 1
     endfor
     
     # Apply average pitch shift to simulate tape-speed
-    # Multiply all pitch values by average tempo factor
     avgTempoFactor = (minTempoFactor + maxTempoFactor) / 2
     selectObject: pitchTier
     Formula: "self * " + string$(avgTempoFactor)
@@ -216,6 +218,9 @@ if pitchBehavior = 1
                 centered = (x - 0.5) * 2
                 tempoFactorPoint = minTempoFactor + (maxTempoFactor - minTempoFactor) * (1 - centered^2)
             endif
+            
+            # Store Normalized for Visualization (Overwriting previous for accuracy)
+            # vizFactors#[i+1] = tempoFactorPoint * meanFactor ; (Approximate for display)
             
             durationFactorPoint = 1.0 / tempoFactorPoint
             normalizedFactor = durationFactorPoint / meanFactor
@@ -288,8 +293,6 @@ else
     durationTier = Create DurationTier: "tempo_curve", 0, originalDuration
     
     # Add tempo curve points - NO pitch changes
-    numPoints = 30
-    
     for i from 0 to numPoints
         t = i * originalDuration / numPoints
         x = i / numPoints
@@ -303,6 +306,10 @@ else
             centered = (x - 0.5) * 2
             tempoFactorPoint = minTempoFactor + (maxTempoFactor - minTempoFactor) * (1 - centered^2)
         endif
+        
+        # Store for Visualization
+        vizTimes#[i+1] = t
+        vizFactors#[i+1] = tempoFactorPoint
         
         # Convert to duration factor
         durationFactorPoint = 1.0 / tempoFactorPoint
@@ -405,7 +412,95 @@ else
 endif
 
 ##############################################################################
-# STEP 5: Clean up working sound and finalize
+# STEP 5: VISUALIZATION
+##############################################################################
+
+if draw_visualization
+    Erase all
+    
+    # --- 1. Title ---
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Tempo-Pitch: " + soundName$ + " (" + patternName$ + ")"
+    
+    # --- 2. Original Waveform ---
+    Select outer viewport: 0, 8, 0.6, 1.6
+    Select inner viewport: 0.6, 7.6, 0.7, 1.5
+    selectObject: sound
+    Colour: "{0.6, 0.6, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Original"
+    
+    # --- 3. Result Waveform ---
+    Select outer viewport: 0, 8, 1.7, 2.7
+    Select inner viewport: 0.6, 7.6, 1.8, 2.6
+    selectObject: newSound
+    Colour: "{0.6, 0.5, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text left: "yes", "Result"
+    Text bottom: "yes", "Time (s)"
+    
+    # --- 4. Tempo/Factor Curve ---
+    Select outer viewport: 0, 8, 2.9, 4.4
+    Select inner viewport: 0.6, 7.6, 3.1, 4.3
+    
+    # Determine bounds
+    vizMin = 0.3
+    vizMax = 3.0
+    
+    Axes: 0, originalDuration, vizMin, vizMax
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, originalDuration, vizMin, vizMax
+    
+    # Reference Line (1.0 = No change)
+    Colour: "{0.7, 0.7, 0.7}"
+    Dotted line
+    Draw line: 0, 1.0, originalDuration, 1.0
+    Solid line
+    
+    # Draw Tempo Curve
+    Colour: "{0.5, 0.4, 0.7}"
+    Line width: 2
+    
+    for i from 2 to numPoints + 1
+        t1 = vizTimes#[i-1]
+        v1 = vizFactors#[i-1]
+        t2 = vizTimes#[i]
+        v2 = vizFactors#[i]
+        Draw line: t1, v1, t2, v2
+    endfor
+    
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Tempo Factor"
+    Text right: "yes", "( >1 Fast, <1 Slow )"
+    Text bottom: "yes", "Input Time (s)"
+    
+    # --- 5. Stats ---
+    Select outer viewport: 0, 8, 4.5, 5.0
+    Font size: 7
+    Colour: "{0.4, 0.4, 0.4}"
+    
+    modeStr$ = "Duration Only"
+    if pitchBehavior = 1
+        modeStr$ = "Pitch + Duration"
+    endif
+    
+    Text: 0.5, "centre", 0.5, "half", "Pattern: " + patternName$ + " | Strength: " + string$(strength) + " | Mode: " + modeStr$
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+##############################################################################
+# STEP 6: Clean up working sound and finalize
 ##############################################################################
 
 # Remove working sound copy
@@ -418,6 +513,7 @@ Scale peak: 0.99
 
 # Play if requested
 if play_result_when_finished
+    selectObject: newSound
     Play
 endif
 
@@ -432,3 +528,5 @@ finalActualDuration = Get total duration
 appendInfoLine: "Result duration: ", fixed$(finalActualDuration, 3), " s"
 appendInfoLine: ""
 appendInfoLine: "Output: ", selected$("Sound")
+
+selectObject: newSound
