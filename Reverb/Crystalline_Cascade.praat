@@ -3,50 +3,81 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Reverberation or diffusion script
+#   Crystalline Cascade - reverse-exponential flutter reverb.
+#   Instead of decaying, the reverb BUILDS UP over time,
+#   creating ethereal, crystalline textures. Amplitude flutter
+#   adds shimmer via FM-modulated amplitude modulation.
+#   Triple-layer processing blends dry, scaled, and convolved
+#   signals. Stereo mode uses decorrelated L/R parameters.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.2:
+#   - Fixed selection syntax (object IDs)
+#   - Fixed formula syntax (string building)
+#   - Added wet/dry mix control
+#   - Added visualization
+#   - Renamed form to match filename
 # ============================================================
 
-form Quantum Flutter Stereo
-    comment This script creates reverse exponential flutter with triple-layer texture
+form Crystalline Cascade
+    comment Select a Sound object first
+    
+    comment === Preset ===
     optionmenu Preset 1
-        option Custom
+        option Custom (use settings below)
         option Subtle Flutter
         option Medium Flutter
         option Heavy Flutter
         option Extreme Flutter
-    positive tail_duration_seconds 2
-    comment Poisson process:
-    positive poisson_density 800
-    positive pulse_width 0.08
-    positive pulse_period 1200
-    comment Modulation:
-    positive exponential_base 120
-    positive modulation_depth 0.6
-    positive modulation_frequency 60
-    comment Mix:
-    positive convolution_mix 0.35
-    positive layer2_amplitude 0.7
-    positive scale_peak 0.88
-    boolean play_after_processing 1
+    
+    comment === Duration ===
+    positive Tail_duration_s 2.0
+    
+    comment === Poisson Process ===
+    positive Poisson_density 800
+    positive Pulse_width 0.08
+    positive Pulse_period 1200
+    
+    comment === Modulation ===
+    positive Exponential_base 120
+    positive Modulation_depth 0.6
+    positive Modulation_frequency 60
+    
+    comment === Layer Mix ===
+    positive Convolution_mix 0.35
+    positive Layer2_amplitude 0.7
+    
+    comment === Output Mix ===
+    real Wet_dry_percent 50
+    comment (0 = dry only, 100 = wet only)
+    positive Scale_peak 0.88
+    
+    comment === Output ===
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# Apply preset values if not Custom
+# === Check Input ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+original = selected("Sound")
+originalName$ = selected$("Sound")
+
+selectObject: original
+originalDur = Get total duration
+sr = Get sampling frequency
+numChannels = Get number of channels
+
+# === Apply Presets ===
 if preset = 2
     # Subtle Flutter
-    tail_duration_seconds = 1.5
+    tail_duration_s = 1.5
     poisson_density = 500
     pulse_width = 0.06
     pulse_period = 1400
@@ -56,9 +87,10 @@ if preset = 2
     convolution_mix = 0.22
     layer2_amplitude = 0.65
     scale_peak = 0.9
+    presetName$ = "Subtle"
 elsif preset = 3
     # Medium Flutter
-    tail_duration_seconds = 2
+    tail_duration_s = 2.0
     poisson_density = 800
     pulse_width = 0.08
     pulse_period = 1200
@@ -68,9 +100,10 @@ elsif preset = 3
     convolution_mix = 0.35
     layer2_amplitude = 0.7
     scale_peak = 0.88
+    presetName$ = "Medium"
 elsif preset = 4
     # Heavy Flutter
-    tail_duration_seconds = 2.8
+    tail_duration_s = 2.8
     poisson_density = 1100
     pulse_width = 0.1
     pulse_period = 1000
@@ -80,9 +113,10 @@ elsif preset = 4
     convolution_mix = 0.45
     layer2_amplitude = 0.75
     scale_peak = 0.86
+    presetName$ = "Heavy"
 elsif preset = 5
     # Extreme Flutter
-    tail_duration_seconds = 4.0
+    tail_duration_s = 4.0
     poisson_density = 1500
     pulse_width = 0.12
     pulse_period = 850
@@ -92,136 +126,394 @@ elsif preset = 5
     convolution_mix = 0.55
     layer2_amplitude = 0.8
     scale_peak = 0.84
+    presetName$ = "Extreme"
+else
+    presetName$ = "Custom"
 endif
 
-if not selected("Sound")
-    exitScript: "Please select a Sound object first."
+# Clamp wet/dry
+if wet_dry_percent < 0
+    wet_dry_percent = 0
+elsif wet_dry_percent > 100
+    wet_dry_percent = 100
 endif
 
-original_sound$ = selected$("Sound")
-select Sound 'original_sound$'
-original_duration = Get total duration
-sampling_rate = Get sample rate
-channels = Get number of channels
+wet_level = wet_dry_percent / 100
+dry_level = 1 - wet_level
+
+# IR duration for Poisson process
+irDuration = 4
+
+# === Info ===
+writeInfoLine: "=== Crystalline Cascade ==="
+appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "Poisson density: ", poisson_density, " impulses/s"
+appendInfoLine: "Exponential base: ", exponential_base, " (reverse growth)"
+appendInfoLine: "Modulation: depth=", modulation_depth, " freq=", modulation_frequency, "Hz"
+appendInfoLine: "Layer2 amplitude: ", layer2_amplitude
+appendInfoLine: "Convolution mix: ", convolution_mix
+appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
+appendInfoLine: ""
+
+# ============================================================
+# PROCESSING
+# ============================================================
+
+appendInfoLine: "Processing..."
+
+# Build formula strings
+base_str$ = string$(exponential_base)
+depth_str$ = string$(modulation_depth)
+freq_str$ = string$(modulation_frequency)
+layer2_str$ = string$(layer2_amplitude)
+mix_str$ = string$(convolution_mix)
 
 # Create silent tail
-if channels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_seconds, sampling_rate, "0"
+if numChannels = 2
+    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
 else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_seconds, sampling_rate, "0"
+    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
 endif
+silentTail = selected("Sound")
 
 # Concatenate
-select Sound 'original_sound$'
-plus Sound silent_tail
+selectObject: original, silentTail
 Concatenate
-Rename: "extended_sound"
+extendedSound = selected("Sound")
+removeObject: silentTail
 
-select Sound extended_sound
-
-if channels = 2
+if numChannels = 2
+    # === STEREO PROCESSING ===
+    appendInfoLine: "  Processing stereo..."
+    
+    # Extract channels
+    selectObject: extendedSound
     Extract one channel: 1
-    Rename: "left_channel"
-    select Sound extended_sound
+    leftChannel = selected("Sound")
+    
+    selectObject: extendedSound
     Extract one channel: 2
-    Rename: "right_channel"
+    rightChannel = selected("Sound")
     
-    # Process left channel
-    select Sound left_channel
-    a_left = Copy: "soundObj_left"
-    Create Poisson process: "quantum_poisson_left", 0, 4, poisson_density
-    To Sound (pulse train): sampling_rate, 1, pulse_width, pulse_period
-    Formula: "self * 'exponential_base'^((x-xmin)/(xmax-xmin)-1) * (1 + 'modulation_depth'*cos(2*pi*x*'modulation_frequency' + 10*sin(2*pi*x*3)))"
-    select a_left
-    plusObject: "Sound quantum_poisson_left"
-    b_left = Convolve
-    Multiply: convolution_mix
+    # === LEFT CHANNEL ===
+    appendInfoLine: "  Creating left IR..."
     
-    # Process right channel
-    select Sound right_channel
-    a_right = Copy: "soundObj_right"
-    Create Poisson process: "quantum_poisson_right", 0, 4, 850
-    To Sound (pulse train): sampling_rate, 1, 0.075, 1250
-    Formula: "self * 115^((x-xmin)/(xmax-xmin)-1) * (1 + 0.55*cos(2*pi*x*65 + 12*sin(2*pi*x*2.8)))"
-    select a_right
-    plusObject: "Sound quantum_poisson_right"
-    b_right = Convolve
-    Multiply: convolution_mix
+    selectObject: leftChannel
+    Copy: "sound_left"
+    aLeft = selected("Sound")
     
-    # Triple-layer left channel
-    select a_left
-    Copy: "a_layer2_left"
-    Formula: "self * 'layer2_amplitude'"
-    select a_left
-    plusObject: "Sound a_layer2_left"
-    plus b_left
-    Combine to stereo
-    Convert to mono
-    Rename: "result_left"
+    Create Poisson process: "poisson_L", 0, irDuration, poisson_density
+    poissonL = selected("PointProcess")
+    
+    To Sound (pulse train): sr, 1, pulse_width, pulse_period
+    irLeftRaw = selected("Sound")
+    
+    # Apply reverse exponential + flutter envelope
+    Formula: "self * " + base_str$ + "^((x-xmin)/(xmax-xmin)-1) * (1 + " + depth_str$ + "*cos(2*pi*x*" + freq_str$ + " + 10*sin(2*pi*x*3)))"
+    irLeft = irLeftRaw
+    
+    # Convolve left
+    selectObject: aLeft, irLeft
+    Convolve: "sum", "zero"
+    bLeft = selected("Sound")
+    Formula: "self * " + mix_str$
+    
+    # === RIGHT CHANNEL (different parameters for decorrelation) ===
+    appendInfoLine: "  Creating right IR..."
+    
+    selectObject: rightChannel
+    Copy: "sound_right"
+    aRight = selected("Sound")
+    
+    # Slightly different Poisson density
+    densityR = poisson_density * 1.0625
+    Create Poisson process: "poisson_R", 0, irDuration, densityR
+    poissonR = selected("PointProcess")
+    
+    To Sound (pulse train): sr, 1, pulse_width * 0.9375, pulse_period * 1.04
+    irRightRaw = selected("Sound")
+    
+    # Slightly different modulation
+    baseR_str$ = string$(exponential_base * 0.958)
+    depthR_str$ = string$(modulation_depth * 0.917)
+    freqR_str$ = string$(modulation_frequency * 1.083)
+    
+    Formula: "self * " + baseR_str$ + "^((x-xmin)/(xmax-xmin)-1) * (1 + " + depthR_str$ + "*cos(2*pi*x*" + freqR_str$ + " + 12*sin(2*pi*x*2.8)))"
+    irRight = irRightRaw
+    
+    # Convolve right
+    selectObject: aRight, irRight
+    Convolve: "sum", "zero"
+    bRight = selected("Sound")
+    Formula: "self * " + mix_str$
+    
+    # === TRIPLE-LAYER LEFT ===
+    appendInfoLine: "  Building triple-layer left..."
+    
+    # Layer 2 (scaled copy)
+    selectObject: aLeft
+    Copy: "layer2_L"
+    layer2L = selected("Sound")
+    Formula: "self * " + layer2_str$
+    
+    # Combine layers: original + layer2 + convolved
+    aLeft_str$ = string$(aLeft)
+    layer2L_str$ = string$(layer2L)
+    bLeft_str$ = string$(bLeft)
+    
+    selectObject: aLeft
+    Copy: "result_left"
+    resultLeft = selected("Sound")
+    Formula: "self + object[" + layer2L_str$ + "] + object[" + bLeft_str$ + "]"
+    
+    # === TRIPLE-LAYER RIGHT ===
+    appendInfoLine: "  Building triple-layer right..."
+    
+    selectObject: aRight
+    Copy: "layer2_R"
+    layer2R = selected("Sound")
+    Formula: "self * " + layer2_str$
+    
+    aRight_str$ = string$(aRight)
+    layer2R_str$ = string$(layer2R)
+    bRight_str$ = string$(bRight)
+    
+    selectObject: aRight
+    Copy: "result_right"
+    resultRight = selected("Sound")
+    Formula: "self + object[" + layer2R_str$ + "] + object[" + bRight_str$ + "]"
+    
+    # === APPLY WET/DRY ===
+    if dry_level > 0
+        wet_str$ = string$(wet_level)
+        dry_str$ = string$(dry_level)
+        left_str$ = string$(leftChannel)
+        right_str$ = string$(rightChannel)
+        
+        selectObject: resultLeft
+        Formula: "self * " + wet_str$ + " + object[" + left_str$ + "] * " + dry_str$
+        
+        selectObject: resultRight
+        Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
+    endif
+    
+    # Normalize
+    selectObject: resultLeft
     Scale peak: scale_peak
     
-    # Triple-layer right channel
-    select a_right
-    Copy: "a_layer2_right"
-    Formula: "self * 'layer2_amplitude'"
-    select a_right
-    plusObject: "Sound a_layer2_right"
-    plus b_right
-    Combine to stereo
-    Convert to mono
-    Rename: "result_right"
+    selectObject: resultRight
     Scale peak: scale_peak
     
-    # Combine stereo channels
-    selectObject: "Sound result_left"
-    plusObject: "Sound result_right"
+    # === COMBINE TO STEREO ===
+    selectObject: resultLeft, resultRight
     Combine to stereo
-    Rename: original_sound$ + "_quantum_flutter"
+    result = selected("Sound")
+    Rename: originalName$ + "_cascade_" + presetName$
     
-    # Cleanup temporary objects
-    removeObject: "PointProcess quantum_poisson_left", "Sound quantum_poisson_left"
-    removeObject: "PointProcess quantum_poisson_right", "Sound quantum_poisson_right"
-    removeObject: "Sound a_layer2_left", "Sound a_layer2_right"
-    removeObject: b_left, b_right, a_left, a_right
-    removeObject: "Sound result_left", "Sound result_right"
+    # Store IR for visualization
+    irForViz = irLeft
     
+    # Cleanup
+    removeObject: poissonL, poissonR
+    removeObject: irRight
+    removeObject: leftChannel, rightChannel
+    removeObject: aLeft, aRight
+    removeObject: bLeft, bRight
+    removeObject: layer2L, layer2R
+    removeObject: resultLeft, resultRight
+    removeObject: extendedSound
+
 else
-    # Mono processing
-    a = Copy: "soundObj"
-    Create Poisson process: "quantum_poisson", 0, 4, poisson_density
-    To Sound (pulse train): sampling_rate, 1, pulse_width, pulse_period
-    Formula: "self * 'exponential_base'^((x-xmin)/(xmax-xmin)-1) * (1 + 'modulation_depth'*cos(2*pi*x*'modulation_frequency' + 10*sin(2*pi*x*3)))"
-    select a
-    plusObject: "Sound quantum_poisson"
-    b = Convolve
-    Multiply: convolution_mix
+    # === MONO PROCESSING ===
+    appendInfoLine: "  Processing mono..."
     
-    select a
-    Copy: "a_layer2"
-    Formula: "self * 'layer2_amplitude'"
-    select a
-    plusObject: "Sound a_layer2"
-    plus b
-    Combine to stereo
-    Convert to mono
-    Rename: original_sound$ + "_quantum_flutter"
+    selectObject: extendedSound
+    Copy: "sound_mono"
+    aMono = selected("Sound")
+    
+    Create Poisson process: "poisson_mono", 0, irDuration, poisson_density
+    poissonMono = selected("PointProcess")
+    
+    To Sound (pulse train): sr, 1, pulse_width, pulse_period
+    irMono = selected("Sound")
+    
+    Formula: "self * " + base_str$ + "^((x-xmin)/(xmax-xmin)-1) * (1 + " + depth_str$ + "*cos(2*pi*x*" + freq_str$ + " + 10*sin(2*pi*x*3)))"
+    
+    # Convolve
+    selectObject: aMono, irMono
+    Convolve: "sum", "zero"
+    bMono = selected("Sound")
+    Formula: "self * " + mix_str$
+    
+    # Layer 2
+    selectObject: aMono
+    Copy: "layer2_mono"
+    layer2Mono = selected("Sound")
+    Formula: "self * " + layer2_str$
+    
+    # Combine layers
+    aMono_str$ = string$(aMono)
+    layer2Mono_str$ = string$(layer2Mono)
+    bMono_str$ = string$(bMono)
+    
+    selectObject: aMono
+    Copy: "result_mono"
+    resultMono = selected("Sound")
+    Formula: "self + object[" + layer2Mono_str$ + "] + object[" + bMono_str$ + "]"
+    
+    # Apply wet/dry
+    if dry_level > 0
+        wet_str$ = string$(wet_level)
+        dry_str$ = string$(dry_level)
+        ext_str$ = string$(extendedSound)
+        
+        selectObject: resultMono
+        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + "] * " + dry_str$
+    endif
+    
+    selectObject: resultMono
     Scale peak: scale_peak
+    Rename: originalName$ + "_cascade_" + presetName$
+    result = resultMono
     
-    removeObject: "PointProcess quantum_poisson", "Sound quantum_poisson"
-    removeObject: "Sound a_layer2", b, a
+    # Store IR for visualization
+    irForViz = irMono
+    
+    # Cleanup
+    removeObject: poissonMono, aMono, bMono, layer2Mono, extendedSound
 endif
 
-# Cleanup temporary sounds
-select Sound silent_tail
-plus Sound extended_sound
-if channels = 2
-    plus Sound left_channel
-    plus Sound right_channel
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+if draw_visualization
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Crystalline Cascade: " + originalName$ + " (" + presetName$ + ")"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.4
+    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    selectObject: original
+    Colour: "{0.6, 0.6, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Dry"
+    
+    # Result waveform
+    Select outer viewport: 0, 8, 1.5, 2.3
+    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    selectObject: result
+    Colour: "{0.6, 0.5, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Cascade " + fixed$(wet_dry_percent, 0) + "%"
+    Text bottom: "yes", "Time (s)"
+    
+    # IR envelope (reverse exponential)
+    Select outer viewport: 0, 4, 2.5, 3.8
+    Select inner viewport: 0.6, 3.8, 2.6, 3.7
+    
+    Axes: 0, irDuration, 0, 1.2
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, irDuration, 0, 1.2
+    
+    # Draw reverse exponential envelope
+    Colour: "{0.6, 0.5, 0.7}"
+    Line width: 2
+    nPoints = 200
+    for p from 2 to nPoints
+        t1 = (p - 2) / nPoints * irDuration
+        t2 = (p - 1) / nPoints * irDuration
+        
+        # Reverse exponential: base^(t-1)
+        norm1 = t1 / irDuration
+        norm2 = t2 / irDuration
+        y1 = exponential_base ^ (norm1 - 1)
+        y2 = exponential_base ^ (norm2 - 1)
+        
+        Draw line: t1, y1, t2, y2
+    endfor
+    Line width: 1
+    
+    # Draw normal decay for comparison
+    Colour: "{0.7, 0.7, 0.7}"
+    Dotted line
+    for p from 2 to nPoints
+        t1 = (p - 2) / nPoints * irDuration
+        t2 = (p - 1) / nPoints * irDuration
+        norm1 = t1 / irDuration
+        norm2 = t2 / irDuration
+        y1 = exponential_base ^ (-norm1)
+        y2 = exponential_base ^ (-norm2)
+        Draw line: t1, y1, t2, y2
+    endfor
+    Solid line
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Envelope"
+    Text bottom: "yes", "Time (s)"
+    
+    # Legend
+    Font size: 5
+    Colour: "{0.6, 0.5, 0.7}"
+    Text: irDuration * 0.75, "centre", 1.1, "half", "Reverse (builds up)"
+    Colour: "{0.7, 0.7, 0.7}"
+    Text: irDuration * 0.75, "centre", 1.0, "half", "Normal (decays)"
+    
+    # IR waveform
+    Select outer viewport: 4, 8, 2.5, 3.8
+    Select inner viewport: 4.4, 7.6, 2.6, 3.7
+    selectObject: irForViz
+    Colour: "{0.5, 0.7, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "IR"
+    Text bottom: "yes", "Time (s)"
+    
+    # Parameters
+    Select outer viewport: 0, 8, 3.9, 4.3
+    Font size: 6
+    Colour: "{0.4, 0.4, 0.4}"
+    Text: 0.5, "centre", 0.5, "half", "Base: " + string$(exponential_base) + " | Mod: " + fixed$(modulation_depth, 2) + " @ " + string$(modulation_frequency) + "Hz | Layer2: " + fixed$(layer2_amplitude, 2) + " | Conv: " + fixed$(convolution_mix, 2)
+    
+    Font size: 10
+    Colour: "Black"
+    
+    # Cleanup IR
+    removeObject: irForViz
 endif
-Remove
 
-select Sound 'original_sound$'_quantum_flutter
+# If no visualization, still cleanup IR
+if draw_visualization = 0
+    removeObject: irForViz
+endif
 
-if play_after_processing
+# === Final Info ===
+selectObject: result
+
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Created: ", selected$("Sound")
+
+# === Play ===
+if play_result
+    selectObject: result
     Play
 endif
+
+selectObject: result

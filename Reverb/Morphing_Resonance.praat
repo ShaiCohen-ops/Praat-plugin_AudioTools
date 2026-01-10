@@ -3,239 +3,537 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Reverberation or diffusion script
+#   Morphing Resonance - creates reverb with frequency-sweeping
+#   (chirp) modulation. The impulse response has a frequency
+#   that increases over time, creating shimmering, evolving
+#   reverb tails. Includes chorus layer for added thickness.
+#   Stereo processing uses decorrelated parameters.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.2:
+#   - Fixed selection and formula syntax
+#   - Fixed chorus delay formula
+#   - Added wet/dry mix control
+#   - Added visualization
 # ============================================================
 
-form Morphing Resonance Stereo
-    comment This script creates frequency-morphing resonance with chorus
+form Morphing Resonance
+    comment Select a Sound object first
+    
+    comment === Preset ===
     optionmenu Preset 1
-        option Custom
+        option Custom (use settings below)
         option Subtle Morphing
         option Medium Morphing
         option Heavy Morphing
         option Extreme Morphing
-    positive tail_duration_seconds 2
-    positive poisson_density 1800
-    positive pulse_width 0.055
-    positive pulse_period 2200
-    positive exponential_base 85
-    positive modulation_depth 0.5
-    positive frequency_start 220
-    positive frequency_range 880
-    positive convolution_mix 0.32
-    positive chorus_mix 0.3
-    positive chorus_delay_seconds 0.01
-    positive fadeout_duration 1.0
-    positive scale_peak 0.9
-    boolean play_after_processing 1
+    
+    comment === Reverb Parameters ===
+    positive Tail_duration_s 2.0
+    positive Poisson_density 1800
+    positive Exponential_base 85
+    
+    comment === Chirp Modulation ===
+    positive Frequency_start_Hz 220
+    positive Frequency_range_Hz 880
+    positive Modulation_depth 0.5
+    
+    comment === Chorus ===
+    positive Chorus_mix 0.3
+    positive Chorus_delay_ms 10
+    
+    comment === Mix ===
+    positive Convolution_mix 0.32
+    real Wet_dry_percent 60
+    comment (0 = dry only, 100 = wet only)
+    
+    comment === Output ===
+    positive Fadeout_duration_s 1.0
+    positive Scale_peak 0.9
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# Apply preset values if not Custom
+# === Check Input ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+original = selected("Sound")
+originalName$ = selected$("Sound")
+
+selectObject: original
+originalDur = Get total duration
+sr = Get sampling frequency
+numChannels = Get number of channels
+
+# === Apply Presets ===
 if preset = 2
     # Subtle Morphing
-    tail_duration_seconds = 1.5
+    tail_duration_s = 1.5
     poisson_density = 1200
-    pulse_width = 0.045
-    pulse_period = 2600
     exponential_base = 95
+    frequency_start_Hz = 180
+    frequency_range_Hz = 600
     modulation_depth = 0.35
-    frequency_start = 180
-    frequency_range = 600
     convolution_mix = 0.22
     chorus_mix = 0.2
-    chorus_delay_seconds = 0.008
-    fadeout_duration = 0.8
-    scale_peak = 0.92
+    chorus_delay_ms = 8
+    fadeout_duration_s = 0.8
+    presetName$ = "Subtle"
 elsif preset = 3
     # Medium Morphing
-    tail_duration_seconds = 2
+    tail_duration_s = 2.0
     poisson_density = 1800
-    pulse_width = 0.055
-    pulse_period = 2200
     exponential_base = 85
+    frequency_start_Hz = 220
+    frequency_range_Hz = 880
     modulation_depth = 0.5
-    frequency_start = 220
-    frequency_range = 880
     convolution_mix = 0.32
     chorus_mix = 0.3
-    chorus_delay_seconds = 0.01
-    fadeout_duration = 1.0
-    scale_peak = 0.9
+    chorus_delay_ms = 10
+    fadeout_duration_s = 1.0
+    presetName$ = "Medium"
 elsif preset = 4
     # Heavy Morphing
-    tail_duration_seconds = 2.5
+    tail_duration_s = 2.5
     poisson_density = 2400
-    pulse_width = 0.065
-    pulse_period = 1900
     exponential_base = 75
+    frequency_start_Hz = 260
+    frequency_range_Hz = 1150
     modulation_depth = 0.65
-    frequency_start = 260
-    frequency_range = 1150
     convolution_mix = 0.42
     chorus_mix = 0.4
-    chorus_delay_seconds = 0.012
-    fadeout_duration = 1.4
-    scale_peak = 0.88
+    chorus_delay_ms = 12
+    fadeout_duration_s = 1.4
+    presetName$ = "Heavy"
 elsif preset = 5
     # Extreme Morphing
-    tail_duration_seconds = 3.5
+    tail_duration_s = 3.5
     poisson_density = 3200
-    pulse_width = 0.08
-    pulse_period = 1600
     exponential_base = 65
+    frequency_start_Hz = 300
+    frequency_range_Hz = 1500
     modulation_depth = 0.8
-    frequency_start = 300
-    frequency_range = 1500
     convolution_mix = 0.52
     chorus_mix = 0.5
-    chorus_delay_seconds = 0.015
-    fadeout_duration = 1.8
-    scale_peak = 0.86
+    chorus_delay_ms = 15
+    fadeout_duration_s = 1.8
+    presetName$ = "Extreme"
+else
+    presetName$ = "Custom"
 endif
 
-if not selected("Sound")
-    exitScript: "Please select a Sound object first."
+# Clamp wet/dry
+if wet_dry_percent < 0
+    wet_dry_percent = 0
+elsif wet_dry_percent > 100
+    wet_dry_percent = 100
 endif
 
-original_sound$ = selected$("Sound")
-select Sound 'original_sound$'
-sampling_rate = Get sample rate
-channels = Get number of channels
+wet_level = wet_dry_percent / 100
+dry_level = 1 - wet_level
+
+# Convert chorus delay to seconds
+chorus_delay_s = chorus_delay_ms / 1000
+
+# IR duration
+irDuration = 4.5
+
+# === Info ===
+writeInfoLine: "=== Morphing Resonance ==="
+appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "Poisson density: ", poisson_density, " impulses/s"
+appendInfoLine: "Exponential base: ", exponential_base
+appendInfoLine: "Chirp: ", frequency_start_Hz, " → ", frequency_start_Hz + frequency_range_Hz, " Hz"
+appendInfoLine: "Modulation depth: ", modulation_depth
+appendInfoLine: "Chorus: ", chorus_mix, " @ ", chorus_delay_ms, " ms"
+appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
+appendInfoLine: ""
+
+# ============================================================
+# PROCESSING
+# ============================================================
+
+appendInfoLine: "Processing..."
 
 # Create silent tail
-if channels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_seconds, sampling_rate, "0"
+if numChannels = 2
+    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
 else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_seconds, sampling_rate, "0"
+    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
 endif
+silentTail = selected("Sound")
 
 # Concatenate
-select Sound 'original_sound$'
-plus Sound silent_tail
+selectObject: original, silentTail
 Concatenate
-Rename: "extended_sound"
+extendedSound = selected("Sound")
+removeObject: silentTail
 
-select Sound extended_sound
+totalDur = originalDur + tail_duration_s
 
-if channels = 2
+# Build formula strings
+base_str$ = string$(exponential_base)
+depth_str$ = string$(modulation_depth)
+fstart_str$ = string$(frequency_start_Hz)
+frange_str$ = string$(frequency_range_Hz)
+mix_str$ = string$(convolution_mix)
+chorus_str$ = string$(chorus_mix)
+
+if numChannels = 2
+    # === STEREO PROCESSING ===
+    appendInfoLine: "  Processing stereo..."
+    
+    # Extract channels
+    selectObject: extendedSound
     Extract one channel: 1
-    Rename: "left_channel"
-    select Sound extended_sound
+    leftChannel = selected("Sound")
+    
+    selectObject: extendedSound
     Extract one channel: 2
-    Rename: "right_channel"
+    rightChannel = selected("Sound")
     
-    # Process left
-    select Sound left_channel
-    a_left = Copy: "soundObj_left"
-    Create Poisson process: "morph_poisson_left", 0, 4.5, poisson_density
-    To Sound (pulse train): sampling_rate, 1, pulse_width, pulse_period
-    Formula: "self * 'exponential_base'^(-(x-xmin)/(xmax-xmin)) * (1 + 'modulation_depth'*sin(2*pi*x*('frequency_start' + 'frequency_range'*(x-xmin)/(xmax-xmin))) * exp(-3*(x-xmin)/(xmax-xmin)))"
-    select a_left
-    plusObject: "Sound morph_poisson_left"
-    b_left = Convolve
-    Multiply: convolution_mix
+    # === LEFT CHANNEL ===
+    appendInfoLine: "  Creating left IR..."
     
-    select b_left
-    Copy: "b_chorus_left"
-    Formula: "0.7*(self + 'chorus_mix'*self[col, 1-'chorus_delay_seconds'*sampling_rate])"
+    selectObject: leftChannel
+    Copy: "sound_left"
+    aLeft = selected("Sound")
     
-    select a_left
-    plusObject: "Sound b_chorus_left"
-    Combine to stereo
-    Convert to mono
-    Rename: "result_left"
-    Scale peak: scale_peak
+    Create Poisson process: "poisson_L", 0, irDuration, poisson_density
+    poissonL = selected("PointProcess")
     
-    # Process right (slightly different)
-    select Sound right_channel
-    a_right = Copy: "soundObj_right"
-    Create Poisson process: "morph_poisson_right", 0, 4.3, 1750
-    To Sound (pulse train): sampling_rate, 1, 0.05, 2100
-    Formula: "self * 80^(-(x-xmin)/(xmax-xmin)) * (1 + 0.45*sin(2*pi*x*(240 + 800*(x-xmin)/(xmax-xmin))) * exp(-2.8*(x-xmin)/(xmax-xmin)))"
-    select a_right
-    plusObject: "Sound morph_poisson_right"
-    b_right = Convolve
-    Multiply: 0.30
+    To Sound (pulse train): sr, 1, 0.055, 2200
+    irLeftRaw = selected("Sound")
     
-    select b_right
-    Copy: "b_chorus_right"
-    Formula: "0.7*(self + 0.25*self[col, 1-0.008*sampling_rate])"
+    # Apply chirp modulation envelope
+    Formula: "self * " + base_str$ + "^(-(x-xmin)/(xmax-xmin)) * (1 + " + depth_str$ + "*sin(2*pi*x*(" + fstart_str$ + " + " + frange_str$ + "*(x-xmin)/(xmax-xmin))) * exp(-3*(x-xmin)/(xmax-xmin)))"
+    irLeft = irLeftRaw
     
-    select a_right
-    plusObject: "Sound b_chorus_right"
-    Combine to stereo
-    Convert to mono
-    Rename: "result_right"
-    Scale peak: scale_peak
+    # Convolve
+    selectObject: aLeft, irLeft
+    Convolve: "sum", "zero"
+    bLeft = selected("Sound")
+    Formula: "self * " + mix_str$
+    
+    # Add chorus (delayed copy)
+    selectObject: bLeft
+    Copy: "chorus_left"
+    chorusLeft = selected("Sound")
+    
+    delay_samp = round(chorus_delay_s * sr)
+    delay_str$ = string$(delay_samp)
+    
+    Formula: "if col > " + delay_str$ + " then 0.7 * (self + " + chorus_str$ + " * self[col - " + delay_str$ + "]) else self * 0.7 fi"
+    
+    # Combine: dry + chorus
+    aLeft_str$ = string$(aLeft)
+    chorusLeft_str$ = string$(chorusLeft)
+    
+    selectObject: aLeft
+    Copy: "result_left"
+    resultLeft = selected("Sound")
+    Formula: "self + object[" + chorusLeft_str$ + "]"
+    
+    # === RIGHT CHANNEL (decorrelated) ===
+    appendInfoLine: "  Creating right IR..."
+    
+    selectObject: rightChannel
+    Copy: "sound_right"
+    aRight = selected("Sound")
+    
+    # Slightly different parameters
+    densityR = poisson_density * 0.97
+    Create Poisson process: "poisson_R", 0, irDuration * 0.96, densityR
+    poissonR = selected("PointProcess")
+    
+    To Sound (pulse train): sr, 1, 0.05, 2100
+    irRightRaw = selected("Sound")
+    
+    # Different chirp parameters
+    baseR_str$ = string$(exponential_base * 0.94)
+    depthR_str$ = string$(modulation_depth * 0.9)
+    fstartR_str$ = string$(frequency_start_Hz * 1.09)
+    frangeR_str$ = string$(frequency_range_Hz * 0.91)
+    
+    Formula: "self * " + baseR_str$ + "^(-(x-xmin)/(xmax-xmin)) * (1 + " + depthR_str$ + "*sin(2*pi*x*(" + fstartR_str$ + " + " + frangeR_str$ + "*(x-xmin)/(xmax-xmin))) * exp(-2.8*(x-xmin)/(xmax-xmin)))"
+    irRight = irRightRaw
+    
+    # Convolve
+    selectObject: aRight, irRight
+    Convolve: "sum", "zero"
+    bRight = selected("Sound")
+    mixR_str$ = string$(convolution_mix * 0.94)
+    Formula: "self * " + mixR_str$
+    
+    # Add chorus
+    selectObject: bRight
+    Copy: "chorus_right"
+    chorusRight = selected("Sound")
+    
+    delayR_samp = round(chorus_delay_s * 0.8 * sr)
+    delayR_str$ = string$(delayR_samp)
+    chorusR_str$ = string$(chorus_mix * 0.83)
+    
+    Formula: "if col > " + delayR_str$ + " then 0.7 * (self + " + chorusR_str$ + " * self[col - " + delayR_str$ + "]) else self * 0.7 fi"
     
     # Combine
-    selectObject: "Sound result_left"
-    plusObject: "Sound result_right"
-    Combine to stereo
-    Rename: original_sound$ + "_morphing"
+    chorusRight_str$ = string$(chorusRight)
     
-    # Cleanup
-    removeObject: "PointProcess morph_poisson_left", "Sound morph_poisson_left"
-    removeObject: "PointProcess morph_poisson_right", "Sound morph_poisson_right"
-    removeObject: "Sound b_chorus_left", "Sound b_chorus_right"
-    removeObject: b_left, b_right, a_left, a_right
-    removeObject: "Sound result_left", "Sound result_right"
+    selectObject: aRight
+    Copy: "result_right"
+    resultRight = selected("Sound")
+    Formula: "self + object[" + chorusRight_str$ + "]"
     
-else
-    a = Copy: "soundObj"
-    Create Poisson process: "morph_poisson", 0, 4.5, poisson_density
-    To Sound (pulse train): sampling_rate, 1, pulse_width, pulse_period
-    Formula: "self * 'exponential_base'^(-(x-xmin)/(xmax-xmin)) * (1 + 'modulation_depth'*sin(2*pi*x*('frequency_start' + 'frequency_range'*(x-xmin)/(xmax-xmin))) * exp(-3*(x-xmin)/(xmax-xmin)))"
-    select a
-    plusObject: "Sound morph_poisson"
-    b = Convolve
-    Multiply: convolution_mix
+    # === APPLY WET/DRY ===
+    if dry_level > 0
+        wet_str$ = string$(wet_level)
+        dry_str$ = string$(dry_level)
+        left_str$ = string$(leftChannel)
+        right_str$ = string$(rightChannel)
+        
+        selectObject: resultLeft
+        Formula: "self * " + wet_str$ + " + object[" + left_str$ + "] * " + dry_str$
+        
+        selectObject: resultRight
+        Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
+    endif
     
-    select b
-    Copy: "b_chorus"
-    Formula: "0.7*(self + 'chorus_mix'*self[col, 1-'chorus_delay_seconds'*sampling_rate])"
+    # Apply fadeout
+    fade_start = totalDur - fadeout_duration_s
+    fade_str$ = string$(fadeout_duration_s)
+    start_str$ = string$(fade_start)
     
-    select a
-    plusObject: "Sound b_chorus"
-    Combine to stereo
-    Convert to mono
-    Rename: original_sound$ + "_morphing"
+    selectObject: resultLeft
+    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
     Scale peak: scale_peak
     
-    removeObject: "PointProcess morph_poisson", "Sound morph_poisson"
-    removeObject: "Sound b_chorus", b, a
+    selectObject: resultRight
+    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+    Scale peak: scale_peak
+    
+    # Combine to stereo
+    selectObject: resultLeft, resultRight
+    Combine to stereo
+    result = selected("Sound")
+    Rename: originalName$ + "_morphing_" + presetName$
+    
+    # Store IR for visualization
+    irForViz = irLeft
+    
+    # Cleanup
+    removeObject: poissonL, poissonR
+    removeObject: irRight
+    removeObject: leftChannel, rightChannel
+    removeObject: aLeft, aRight
+    removeObject: bLeft, bRight
+    removeObject: chorusLeft, chorusRight
+    removeObject: resultLeft, resultRight
+    removeObject: extendedSound
+
+else
+    # === MONO PROCESSING ===
+    appendInfoLine: "  Processing mono..."
+    
+    selectObject: extendedSound
+    Copy: "sound_mono"
+    aMono = selected("Sound")
+    
+    Create Poisson process: "poisson_mono", 0, irDuration, poisson_density
+    poissonMono = selected("PointProcess")
+    
+    To Sound (pulse train): sr, 1, 0.055, 2200
+    irMono = selected("Sound")
+    
+    Formula: "self * " + base_str$ + "^(-(x-xmin)/(xmax-xmin)) * (1 + " + depth_str$ + "*sin(2*pi*x*(" + fstart_str$ + " + " + frange_str$ + "*(x-xmin)/(xmax-xmin))) * exp(-3*(x-xmin)/(xmax-xmin)))"
+    
+    # Convolve
+    selectObject: aMono, irMono
+    Convolve: "sum", "zero"
+    bMono = selected("Sound")
+    Formula: "self * " + mix_str$
+    
+    # Add chorus
+    selectObject: bMono
+    Copy: "chorus_mono"
+    chorusMono = selected("Sound")
+    
+    delay_samp = round(chorus_delay_s * sr)
+    delay_str$ = string$(delay_samp)
+    
+    Formula: "if col > " + delay_str$ + " then 0.7 * (self + " + chorus_str$ + " * self[col - " + delay_str$ + "]) else self * 0.7 fi"
+    
+    # Combine
+    chorusMono_str$ = string$(chorusMono)
+    
+    selectObject: aMono
+    Copy: "result_mono"
+    resultMono = selected("Sound")
+    Formula: "self + object[" + chorusMono_str$ + "]"
+    
+    # Apply wet/dry
+    if dry_level > 0
+        wet_str$ = string$(wet_level)
+        dry_str$ = string$(dry_level)
+        ext_str$ = string$(extendedSound)
+        
+        selectObject: resultMono
+        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + "] * " + dry_str$
+    endif
+    
+    # Apply fadeout
+    fade_start = totalDur - fadeout_duration_s
+    fade_str$ = string$(fadeout_duration_s)
+    start_str$ = string$(fade_start)
+    
+    selectObject: resultMono
+    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+    
+    Scale peak: scale_peak
+    Rename: originalName$ + "_morphing_" + presetName$
+    result = resultMono
+    
+    # Store IR for visualization
+    irForViz = irMono
+    
+    # Cleanup
+    removeObject: poissonMono, aMono, bMono, chorusMono, extendedSound
 endif
 
-# Apply fadeout
-select Sound 'original_sound$'_morphing
-total_duration = Get total duration
-fade_start = total_duration - fadeout_duration
-Formula: "if x > fade_start then self * (0.5 + 0.5 * cos(pi * (x - fade_start) / 'fadeout_duration')) else self fi"
+# ============================================================
+# VISUALIZATION
+# ============================================================
 
-# Cleanup
-select Sound silent_tail
-plus Sound extended_sound
-if channels = 2
-    plus Sound left_channel
-    plus Sound right_channel
+if draw_visualization
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Morphing Resonance: " + originalName$ + " (" + presetName$ + ")"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.4
+    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    selectObject: original
+    Colour: "{0.6, 0.6, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Dry"
+    
+    # Result waveform
+    Select outer viewport: 0, 8, 1.5, 2.3
+    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    selectObject: result
+    Colour: "{0.6, 0.5, 0.7}"
+    Draw: 0, originalDur, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Morph " + fixed$(wet_dry_percent, 0) + "%"
+    Text bottom: "yes", "Time (s)"
+    
+    # IR waveform
+    Select outer viewport: 0, 4, 2.5, 3.6
+    Select inner viewport: 0.6, 3.8, 2.6, 3.5
+    selectObject: irForViz
+    Colour: "{0.5, 0.6, 0.7}"
+    Draw: 0, min(2, irDuration), 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "IR"
+    Text bottom: "yes", "Time (s)"
+    
+    # Chirp frequency diagram
+    Select outer viewport: 4, 8, 2.5, 3.6
+    Select inner viewport: 4.4, 7.6, 2.6, 3.5
+    
+    fEnd = frequency_start_Hz + frequency_range_Hz
+    Axes: 0, irDuration, 0, fEnd * 1.1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, irDuration, 0, fEnd * 1.1
+    
+    # Draw frequency sweep
+    Colour: "{0.6, 0.5, 0.7}"
+    Line width: 2
+    nPoints = 100
+    for p from 2 to nPoints
+        t1 = (p - 2) / nPoints * irDuration
+        t2 = (p - 1) / nPoints * irDuration
+        
+        f1 = frequency_start_Hz + frequency_range_Hz * (t1 / irDuration)
+        f2 = frequency_start_Hz + frequency_range_Hz * (t2 / irDuration)
+        
+        Draw line: t1, f1, t2, f2
+    endfor
+    Line width: 1
+    
+    # Draw modulation envelope
+    Colour: "{0.7, 0.6, 0.5}"
+    Dotted line
+    for p from 2 to nPoints
+        t1 = (p - 2) / nPoints * irDuration
+        t2 = (p - 1) / nPoints * irDuration
+        
+        env1 = exp(-3 * t1 / irDuration) * fEnd * 0.3 + frequency_start_Hz
+        env2 = exp(-3 * t2 / irDuration) * fEnd * 0.3 + frequency_start_Hz
+        
+        Draw line: t1, env1, t2, env2
+    endfor
+    Solid line
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Freq (Hz)"
+    Text bottom: "yes", "Time (s)"
+    
+    # Legend
+    Font size: 5
+    Colour: "{0.6, 0.5, 0.7}"
+    Text: irDuration * 0.75, "centre", fEnd * 1.0, "half", "Chirp freq"
+    Colour: "{0.7, 0.6, 0.5}"
+    Text: irDuration * 0.75, "centre", fEnd * 0.9, "half", "Mod envelope"
+    
+    # Parameters
+    Select outer viewport: 0, 8, 3.7, 4.1
+    Font size: 6
+    Colour: "{0.4, 0.4, 0.4}"
+    Text: 0.5, "centre", 0.5, "half", "Chirp: " + string$(frequency_start_Hz) + "→" + string$(frequency_start_Hz + frequency_range_Hz) + "Hz | Mod: " + fixed$(modulation_depth, 2) + " | Chorus: " + fixed$(chorus_mix, 2) + " @ " + string$(chorus_delay_ms) + "ms"
+    
+    Font size: 10
+    Colour: "Black"
+    
+    # Cleanup IR
+    removeObject: irForViz
 endif
-Remove
 
-select Sound 'original_sound$'_morphing
+# If no visualization, still cleanup IR
+if draw_visualization = 0
+    removeObject: irForViz
+endif
 
-if play_after_processing
+# === Final Info ===
+selectObject: result
+
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Created: ", selected$("Sound")
+
+# === Play ===
+if play_result
+    selectObject: result
     Play
 endif
+
+selectObject: result
