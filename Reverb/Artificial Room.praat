@@ -1,53 +1,53 @@
 # ============================================================
-# Praat AudioTools - Artificial Room.praat  
+# Praat AudioTools - Artificial_Room.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Spectral analysis or frequency-domain processing script
+#   Artificial Room - physically-modeled convolution reverb.
+#   Simulates room acoustics using real material absorption
+#   coefficients, calculates RT60 per frequency band using
+#   Eyring formula, generates synthetic impulse response with
+#   early reflections and frequency-dependent decay tail.
+#   Includes 20 acoustic materials and 4 room presets.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.2:
+#   - Added wet/dry mix control
+#   - Fixed exit syntax
+#   - Fixed procedure call syntax
+#   - Fixed name-based object references
+#   - Added visualization (RT60 bars, IR waveform)
+#   - Option to keep or remove IR
 # ============================================================
 
-# Artificial Room (Preset → IR → Convolution)
-# 1) Select exactly one dry Sound (mono/stereo) in the Objects window.
-# 2) Run this script, choose a room preset and IR options.
-# 3) It will create Sound "IR" (synthetic impulse response) and
-#    Sound "Reverb_<yourSound>" (the reverberated result).
-
-
-# Safety check: ensure exactly one Sound is selected
-if numberOfSelected ("Sound") <> 1
-    exit ("Select exactly one Sound before running.")
+# === Check Input ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
-inputID = selected ("Sound")
+
+inputID = selected("Sound")
 selectObject: inputID
-inputName$ = selected$ ("Sound")
+inputName$ = selected$("Sound")
 fs = Get sampling frequency
+inputDur = Get total duration
 
-# ------------------------------------------------------------------------------
+# ==============================================================================
 # 1) Materials and absorption data
-# ------------------------------------------------------------------------------
+# ==============================================================================
 
-materials$[1]  = "BrickPainted"
-materials$[2]  = "Concrete"
-materials$[3]  = "WoodFloor"
-materials$[4]  = "CarpetConcrete"
-materials$[5]  = "CurtainLight"
-materials$[6]  = "CurtainHeavy"
-materials$[7]  = "GypsumBoard"
-materials$[8]  = "GlassWindow"
-materials$[9]  = "AcousticFoam25mm"
+materials$[1] = "BrickPainted"
+materials$[2] = "Concrete"
+materials$[3] = "WoodFloor"
+materials$[4] = "CarpetConcrete"
+materials$[5] = "CurtainLight"
+materials$[6] = "CurtainHeavy"
+materials$[7] = "GypsumBoard"
+materials$[8] = "GlassWindow"
+materials$[9] = "AcousticFoam25mm"
 materials$[10] = "AcousticFoam50mm"
 materials$[11] = "Audience"
 materials$[12] = "WoodPanel"
@@ -60,75 +60,188 @@ materials$[18] = "Linoleum"
 materials$[19] = "OpenWindow"
 materials$[20] = "AcousticCeilingTile"
 
-# Correct absorption coefficients per octave band (indices 1..20)
-alpha125[1] = 0.01  ; alpha125[2] = 0.01  ; alpha125[3] = 0.15  ; alpha125[4] = 0.08  ; alpha125[5] = 0.05
-alpha125[6] = 0.14  ; alpha125[7] = 0.10  ; alpha125[8] = 0.35  ; alpha125[9] = 0.15  ; alpha125[10] = 0.30
-alpha125[11] = 0.30 ; alpha125[12] = 0.15 ; alpha125[13] = 0.02 ; alpha125[14] = 0.10 ; alpha125[15] = 0.25
-alpha125[16] = 0.45 ; alpha125[17] = 0.10 ; alpha125[18] = 0.02 ; alpha125[19] = 1.00 ; alpha125[20] = 0.70
+# Absorption coefficients per octave band
+# 125 Hz
+alpha125[1] = 0.01
+alpha125[2] = 0.01
+alpha125[3] = 0.15
+alpha125[4] = 0.08
+alpha125[5] = 0.05
+alpha125[6] = 0.14
+alpha125[7] = 0.10
+alpha125[8] = 0.35
+alpha125[9] = 0.15
+alpha125[10] = 0.30
+alpha125[11] = 0.30
+alpha125[12] = 0.15
+alpha125[13] = 0.02
+alpha125[14] = 0.10
+alpha125[15] = 0.25
+alpha125[16] = 0.45
+alpha125[17] = 0.10
+alpha125[18] = 0.02
+alpha125[19] = 1.00
+alpha125[20] = 0.70
 
-alpha250[1] = 0.01  ; alpha250[2] = 0.01  ; alpha250[3] = 0.11  ; alpha250[4] = 0.24  ; alpha250[5] = 0.15
-alpha250[6] = 0.35  ; alpha250[7] = 0.08  ; alpha250[8] = 0.25  ; alpha250[9] = 0.40  ; alpha250[10] = 0.60
-alpha250[11] = 0.45 ; alpha250[12] = 0.10 ; alpha250[13] = 0.02 ; alpha250[14] = 0.08 ; alpha250[15] = 0.55
-alpha250[16] = 0.80 ; alpha250[17] = 0.35 ; alpha250[18] = 0.03 ; alpha250[19] = 1.00 ; alpha250[20] = 0.75
+# 250 Hz
+alpha250[1] = 0.01
+alpha250[2] = 0.01
+alpha250[3] = 0.11
+alpha250[4] = 0.24
+alpha250[5] = 0.15
+alpha250[6] = 0.35
+alpha250[7] = 0.08
+alpha250[8] = 0.25
+alpha250[9] = 0.40
+alpha250[10] = 0.60
+alpha250[11] = 0.45
+alpha250[12] = 0.10
+alpha250[13] = 0.02
+alpha250[14] = 0.08
+alpha250[15] = 0.55
+alpha250[16] = 0.80
+alpha250[17] = 0.35
+alpha250[18] = 0.03
+alpha250[19] = 1.00
+alpha250[20] = 0.75
 
-alpha500[1] = 0.02  ; alpha500[2]  = 0.02  ; alpha500[3]  = 0.10  ; alpha500[4]  = 0.57  ; alpha500[5]  = 0.35
-alpha500[6] = 0.55  ; alpha500[7]  = 0.05  ; alpha500[8]  = 0.18  ; alpha500[9]  = 0.70  ; alpha500[10] = 0.90
-alpha500[11] = 0.55 ; alpha500[12] = 0.08 ; alpha500[13] = 0.03 ; alpha500[14] = 0.06 ; alpha500[15] = 0.85
-alpha500[16] = 0.95 ; alpha500[17] = 0.55 ; alpha500[18] = 0.04 ; alpha500[19] = 1.00 ; alpha500[20] = 0.85
+# 500 Hz
+alpha500[1] = 0.02
+alpha500[2] = 0.02
+alpha500[3] = 0.10
+alpha500[4] = 0.57
+alpha500[5] = 0.35
+alpha500[6] = 0.55
+alpha500[7] = 0.05
+alpha500[8] = 0.18
+alpha500[9] = 0.70
+alpha500[10] = 0.90
+alpha500[11] = 0.55
+alpha500[12] = 0.08
+alpha500[13] = 0.03
+alpha500[14] = 0.06
+alpha500[15] = 0.85
+alpha500[16] = 0.95
+alpha500[17] = 0.55
+alpha500[18] = 0.04
+alpha500[19] = 1.00
+alpha500[20] = 0.85
 
-alpha1000[1] = 0.02  ; alpha1000[2]  = 0.02  ; alpha1000[3]  = 0.07  ; alpha1000[4]  = 0.69  ; alpha1000[5]  = 0.55
-alpha1000[6] = 0.72  ; alpha1000[7]  = 0.03  ; alpha1000[8]  = 0.12  ; alpha1000[9]  = 0.85  ; alpha1000[10] = 0.95
-alpha1000[11] = 0.60 ; alpha1000[12] = 0.07 ; alpha1000[13] = 0.03 ; alpha1000[14] = 0.05 ; alpha1000[15] = 0.95
-alpha1000[16] = 0.95 ; alpha1000[17] = 0.65 ; alpha1000[18] = 0.05 ; alpha1000[19] = 1.00 ; alpha1000[20] = 0.90
+# 1000 Hz
+alpha1000[1] = 0.02
+alpha1000[2] = 0.02
+alpha1000[3] = 0.07
+alpha1000[4] = 0.69
+alpha1000[5] = 0.55
+alpha1000[6] = 0.72
+alpha1000[7] = 0.03
+alpha1000[8] = 0.12
+alpha1000[9] = 0.85
+alpha1000[10] = 0.95
+alpha1000[11] = 0.60
+alpha1000[12] = 0.07
+alpha1000[13] = 0.03
+alpha1000[14] = 0.05
+alpha1000[15] = 0.95
+alpha1000[16] = 0.95
+alpha1000[17] = 0.65
+alpha1000[18] = 0.05
+alpha1000[19] = 1.00
+alpha1000[20] = 0.90
 
-alpha2000[1] = 0.02  ; alpha2000[2]  = 0.02  ; alpha2000[3]  = 0.06  ; alpha2000[4]  = 0.71  ; alpha2000[5]  = 0.60
-alpha2000[6] = 0.70  ; alpha2000[7]  = 0.03  ; alpha2000[8]  = 0.07  ; alpha2000[9]  = 0.90  ; alpha2000[10] = 0.95
-alpha2000[11] = 0.60 ; alpha2000[12] = 0.06 ; alpha2000[13] = 0.03 ; alpha2000[14] = 0.05 ; alpha2000[15] = 0.95
-alpha2000[16] = 0.95 ; alpha2000[17] = 0.70 ; alpha2000[18] = 0.05 ; alpha2000[19] = 1.00 ; alpha2000[20] = 0.90
+# 2000 Hz
+alpha2000[1] = 0.02
+alpha2000[2] = 0.02
+alpha2000[3] = 0.06
+alpha2000[4] = 0.71
+alpha2000[5] = 0.60
+alpha2000[6] = 0.70
+alpha2000[7] = 0.03
+alpha2000[8] = 0.07
+alpha2000[9] = 0.90
+alpha2000[10] = 0.95
+alpha2000[11] = 0.60
+alpha2000[12] = 0.06
+alpha2000[13] = 0.03
+alpha2000[14] = 0.05
+alpha2000[15] = 0.95
+alpha2000[16] = 0.95
+alpha2000[17] = 0.70
+alpha2000[18] = 0.05
+alpha2000[19] = 1.00
+alpha2000[20] = 0.90
 
-alpha4000[1] = 0.02  ; alpha4000[2]  = 0.02  ; alpha4000[3]  = 0.07  ; alpha4000[4]  = 0.73  ; alpha4000[5]  = 0.55
-alpha4000[6] = 0.65  ; alpha4000[7]  = 0.03  ; alpha4000[8]  = 0.05  ; alpha4000[9]  = 0.90  ; alpha4000[10] = 0.90
-alpha4000[11] = 0.55 ; alpha4000[12] = 0.07 ; alpha4000[13] = 0.03 ; alpha4000[14] = 0.05 ; alpha4000[15] = 0.90
-alpha4000[16] = 0.90 ; alpha4000[17] = 0.75 ; alpha4000[18] = 0.05 ; alpha4000[19] = 1.00 ; alpha4000[20] = 0.85
+# 4000 Hz
+alpha4000[1] = 0.02
+alpha4000[2] = 0.02
+alpha4000[3] = 0.07
+alpha4000[4] = 0.73
+alpha4000[5] = 0.55
+alpha4000[6] = 0.65
+alpha4000[7] = 0.03
+alpha4000[8] = 0.05
+alpha4000[9] = 0.90
+alpha4000[10] = 0.90
+alpha4000[11] = 0.55
+alpha4000[12] = 0.07
+alpha4000[13] = 0.03
+alpha4000[14] = 0.05
+alpha4000[15] = 0.90
+alpha4000[16] = 0.90
+alpha4000[17] = 0.75
+alpha4000[18] = 0.05
+alpha4000[19] = 1.00
+alpha4000[20] = 0.85
 
-# Octave centres and band edges
+# Octave band centers and edges
 sqrtTwo = sqrt(2)
-cen[1]=125
-low[1]=125/sqrtTwo
-high[1]=125*sqrtTwo
-cen[2]=250
-low[2]=250/sqrtTwo
-high[2]=250*sqrtTwo
-cen[3]=500
-low[3]=500/sqrtTwo
-high[3]=500*sqrtTwo
-cen[4]=1000
-low[4]=1000/sqrtTwo
-high[4]=1000*sqrtTwo
-cen[5]=2000
-low[5]=2000/sqrtTwo
-high[5]=2000*sqrtTwo
-cen[6]=4000
-low[6]=4000/sqrtTwo
-high[6]=4000*sqrtTwo
 
-# ------------------------------------------------------------------------------
-# 2) Choose preset and IR options
-# ------------------------------------------------------------------------------
-form Choose preset & IR options
-    comment Room Preset (or customize dimensions below)
-    choice roomPreset: 1
-        option SmallBooth
-        option Office
-        option Classroom
-        option LiveRoom
-        option Custom
-    comment Custom Room Dimensions (used only if Custom selected)
-    positive custom_length_m: 5.0
-    positive custom_width_m: 4.0
-    positive custom_height_m: 2.8
-    comment Materials (used only if Custom selected)
-    optionmenu floor_material: 4
+cen[1] = 125
+low[1] = 125 / sqrtTwo
+high[1] = 125 * sqrtTwo
+
+cen[2] = 250
+low[2] = 250 / sqrtTwo
+high[2] = 250 * sqrtTwo
+
+cen[3] = 500
+low[3] = 500 / sqrtTwo
+high[3] = 500 * sqrtTwo
+
+cen[4] = 1000
+low[4] = 1000 / sqrtTwo
+high[4] = 1000 * sqrtTwo
+
+cen[5] = 2000
+low[5] = 2000 / sqrtTwo
+high[5] = 2000 * sqrtTwo
+
+cen[6] = 4000
+low[6] = 4000 / sqrtTwo
+high[6] = 4000 * sqrtTwo
+
+# ==============================================================================
+# 2) User Interface
+# ==============================================================================
+
+form Artificial Room Reverb
+    comment Select a Sound object first
+    
+    comment === Room Preset ===
+    choice Room_preset 1
+        option SmallBooth (very dry)
+        option Office (medium)
+        option Classroom (larger)
+        option LiveRoom (wood floor)
+        option Custom (use settings below)
+    
+    comment === Custom Dimensions (only if Custom) ===
+    positive Custom_length_m 5.0
+    positive Custom_width_m 4.0
+    positive Custom_height_m 2.8
+    
+    comment === Custom Materials (only if Custom) ===
+    optionmenu Floor_material 4
         option BrickPainted
         option Concrete
         option WoodFloor
@@ -149,7 +262,7 @@ form Choose preset & IR options
         option Linoleum
         option OpenWindow
         option AcousticCeilingTile
-    optionmenu ceiling_material: 20
+    optionmenu Ceiling_material 20
         option BrickPainted
         option Concrete
         option WoodFloor
@@ -170,7 +283,7 @@ form Choose preset & IR options
         option Linoleum
         option OpenWindow
         option AcousticCeilingTile
-    optionmenu wall_material: 7
+    optionmenu Wall_material 7
         option BrickPainted
         option Concrete
         option WoodFloor
@@ -191,40 +304,46 @@ form Choose preset & IR options
         option Linoleum
         option OpenWindow
         option AcousticCeilingTile
-    positive audience_area_m2: 0.1
-    comment Impulse Response Settings
-    positive ir_predelay_ms: 12.0
-    real ir_early_gain_dB: -6.0
-    positive ir_length_factor: 2.0
-    positive early_reflections_count: 8
+    positive Audience_area_m2 0.1
+    
+    comment === IR Settings ===
+    positive IR_predelay_ms 12.0
+    real IR_early_gain_dB -6.0
+    positive IR_length_factor 2.0
+    natural Early_reflections_count 8
+    
+    comment === Mix Control ===
+    real Wet_dry_percent 70
+    comment (0 = dry only, 100 = wet only)
+    
+    comment === Output ===
+    boolean Keep_IR 0
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# Initialize
-roomL = 0
-roomW = 0
-roomH = 0
-mFloor$ = ""
-cFloor = 0
-mCeil$ = ""
-cCeil = 0
-mW1$ = ""
-cW1 = 0
-mW2$ = ""
-cW2 = 0
-mW3$ = ""
-cW3 = 0
-mW4$ = ""
-cW4 = 0
-audience_m2 = 0
+# Clamp wet/dry
+if wet_dry_percent < 0
+    wet_dry_percent = 0
+elsif wet_dry_percent > 100
+    wet_dry_percent = 100
+endif
 
-# Assign preset values
-if roomPreset = 1
+wet_level = wet_dry_percent / 100
+dry_level = 1 - wet_level
+
+# ==============================================================================
+# 3) Apply Room Presets
+# ==============================================================================
+
+if room_preset = 1
+    # SmallBooth
     roomL = 2.2
     roomW = 1.6
     roomH = 2.2
     mFloor$ = "CarpetConcrete"
     cFloor = 1.0
-    mCeil$  = "MineralWool50mm"
+    mCeil$ = "MineralWool50mm"
     cCeil = 0.7
     mW1$ = "MineralWool50mm"
     cW1 = 0.6
@@ -235,13 +354,15 @@ if roomPreset = 1
     mW4$ = "MineralWool50mm"
     cW4 = 0.6
     audience_m2 = 0.0
-elsif roomPreset = 2
+    presetName$ = "SmallBooth"
+elsif room_preset = 2
+    # Office
     roomL = 4.5
     roomW = 3.5
     roomH = 2.7
     mFloor$ = "CarpetOnFelt"
     cFloor = 1.0
-    mCeil$  = "AcousticCeilingTile"
+    mCeil$ = "AcousticCeilingTile"
     cCeil = 1.0
     mW1$ = "GypsumBoard"
     cW1 = 0.9
@@ -252,13 +373,15 @@ elsif roomPreset = 2
     mW4$ = "CurtainLight"
     cW4 = 0.6
     audience_m2 = 1.5
-elsif roomPreset = 3
+    presetName$ = "Office"
+elsif room_preset = 3
+    # Classroom
     roomL = 8.0
     roomW = 6.0
     roomH = 3.2
     mFloor$ = "Linoleum"
     cFloor = 1.0
-    mCeil$  = "AcousticCeilingTile"
+    mCeil$ = "AcousticCeilingTile"
     cCeil = 1.0
     mW1$ = "GypsumBoard"
     cW1 = 1.0
@@ -269,13 +392,15 @@ elsif roomPreset = 3
     mW4$ = "GypsumBoard"
     cW4 = 1.0
     audience_m2 = 8.0
-elsif roomPreset = 4
+    presetName$ = "Classroom"
+elsif room_preset = 4
+    # LiveRoom
     roomL = 7.0
     roomW = 5.0
     roomH = 3.0
     mFloor$ = "WoodFloor"
     cFloor = 1.0
-    mCeil$  = "GypsumBoard"
+    mCeil$ = "GypsumBoard"
     cCeil = 1.0
     mW1$ = "GypsumBoard"
     cW1 = 1.0
@@ -286,7 +411,9 @@ elsif roomPreset = 4
     mW4$ = "MineralWool50mm"
     cW4 = 0.4
     audience_m2 = 0.0
-elsif roomPreset = 5
+    presetName$ = "LiveRoom"
+else
+    # Custom
     roomL = custom_length_m
     roomW = custom_width_m
     roomH = custom_height_m
@@ -303,453 +430,435 @@ elsif roomPreset = 5
     mW4$ = materials$[wall_material]
     cW4 = 1.0
     audience_m2 = audience_area_m2
+    presetName$ = "Custom"
 endif
 
-# Compute surfaces step by step
-lengthTemp = roomL
-widthTemp = roomW
-heightTemp = roomH
-temp1 = lengthTemp * widthTemp
-sfloor = temp1
-sceiling = sfloor
-temp2 = lengthTemp * heightTemp
-sw1 = temp2
-sw2 = temp2
-temp3 = widthTemp * heightTemp
-sw3 = temp3
-sw4 = temp3
-temp4 = sfloor + sceiling
-temp5 = sw1 + sw2
-temp6 = sw3 + sw4
-temp7 = temp4 + temp5
-stotal = temp7 + temp6
-temp8 = lengthTemp * widthTemp
-v = temp8 * heightTemp
+# ==============================================================================
+# 4) Calculate Room Geometry
+# ==============================================================================
 
-# ------------------------------------------------------------------------------
-# 3) Get material indices - build lookup function
-# ------------------------------------------------------------------------------
-procedure findMaterialIndex: mat$
+sfloor = roomL * roomW
+sceiling = sfloor
+sw1 = roomL * roomH
+sw2 = roomL * roomH
+sw3 = roomW * roomH
+sw4 = roomW * roomH
+stotal = sfloor + sceiling + sw1 + sw2 + sw3 + sw4
+v = roomL * roomW * roomH
+
+# ==============================================================================
+# 5) Find Material Indices
+# ==============================================================================
+
+procedure findMaterialIndex: .mat$
     .result = 1
-    .found = 0
     for .jj from 1 to 20
-        if .found = 0
-            if materials$[.jj] = mat$
-                .result = .jj
-                .found = 1
-            endif
+        if materials$[.jj] = .mat$
+            .result = .jj
         endif
     endfor
 endproc
 
-# Floor
-call findMaterialIndex: mFloor$
+@findMaterialIndex: mFloor$
 iFloor = findMaterialIndex.result
 
-# Ceiling
-call findMaterialIndex: mCeil$
+@findMaterialIndex: mCeil$
 iCeil = findMaterialIndex.result
 
-# Wall1
-call findMaterialIndex: mW1$
+@findMaterialIndex: mW1$
 iW1 = findMaterialIndex.result
 
-# Wall2
-call findMaterialIndex: mW2$
+@findMaterialIndex: mW2$
 iW2 = findMaterialIndex.result
 
-# Wall3
-call findMaterialIndex: mW3$
+@findMaterialIndex: mW3$
 iW3 = findMaterialIndex.result
 
-# Wall4
-call findMaterialIndex: mW4$
+@findMaterialIndex: mW4$
 iW4 = findMaterialIndex.result
 
-# ------------------------------------------------------------------------------
-# 4) Compute absorption area and T60 per band (Eyring)
-# ------------------------------------------------------------------------------
-# Band 1: 125 Hz
-aF = alpha125[iFloor] * cFloor
-aC = alpha125[iCeil] * cCeil
-a1 = alpha125[iW1] * cW1
-a2 = alpha125[iW2] * cW2
-a3 = alpha125[iW3] * cW3
-a4 = alpha125[iW4] * cW4
-aAud = alpha125[11] * audience_m2
-temp_a1 = aF * sfloor
-temp_a2 = aC * sceiling
-temp_a3 = a1 * sw1
-temp_a4 = a2 * sw2
-temp_a5 = a3 * sw3
-temp_a6 = a4 * sw4
-temp_sum1 = temp_a1 + temp_a2
-temp_sum2 = temp_a3 + temp_a4
-temp_sum3 = temp_a5 + temp_a6
-temp_sum4 = temp_sum1 + temp_sum2
-temp_sum5 = temp_sum4 + temp_sum3
-abs_area_1 = temp_sum5 + aAud
-alphaBar1 = abs_area_1 / stotal
-if alphaBar1 > 0.98
-    alphaBar1 = 0.98
-endif
-temp_diff = 1 - alphaBar1
-temp_ln = ln(temp_diff)
-temp_neg = 0 - temp_ln
-temp_prod = stotal * temp_neg
-temp_ratio = v / temp_prod
-t60_1 = 0.161 * temp_ratio
-if t60_1 < 0.12
-    t60_1 = 0.12
-endif
-if t60_1 > 5.0
-    t60_1 = 5.0
-endif
+# ==============================================================================
+# 6) Calculate RT60 per Band (Eyring Formula)
+# ==============================================================================
 
-# Band 2: 250 Hz
-aF = alpha250[iFloor] * cFloor
-aC = alpha250[iCeil] * cCeil
-a1 = alpha250[iW1] * cW1
-a2 = alpha250[iW2] * cW2
-a3 = alpha250[iW3] * cW3
-a4 = alpha250[iW4] * cW4
-aAud = alpha250[11] * audience_m2
-temp_a1 = aF * sfloor
-temp_a2 = aC * sceiling
-temp_a3 = a1 * sw1
-temp_a4 = a2 * sw2
-temp_a5 = a3 * sw3
-temp_a6 = a4 * sw4
-temp_sum1 = temp_a1 + temp_a2
-temp_sum2 = temp_a3 + temp_a4
-temp_sum3 = temp_a5 + temp_a6
-temp_sum4 = temp_sum1 + temp_sum2
-temp_sum5 = temp_sum4 + temp_sum3
-abs_area_2 = temp_sum5 + aAud
-alphaBar2 = abs_area_2 / stotal
-if alphaBar2 > 0.98
-    alphaBar2 = 0.98
-endif
-temp_diff = 1 - alphaBar2
-temp_ln = ln(temp_diff)
-temp_neg = 0 - temp_ln
-temp_prod = stotal * temp_neg
-temp_ratio = v / temp_prod
-t60_2 = 0.161 * temp_ratio
-if t60_2 < 0.12
-    t60_2 = 0.12
-endif
-if t60_2 > 5.0
-    t60_2 = 5.0
-endif
+procedure calculateRT60: .band
+    # Get alpha values based on band
+    if .band = 1
+        .aF = alpha125[iFloor]
+        .aC = alpha125[iCeil]
+        .a1 = alpha125[iW1]
+        .a2 = alpha125[iW2]
+        .a3 = alpha125[iW3]
+        .a4 = alpha125[iW4]
+        .aAud = alpha125[11]
+    elsif .band = 2
+        .aF = alpha250[iFloor]
+        .aC = alpha250[iCeil]
+        .a1 = alpha250[iW1]
+        .a2 = alpha250[iW2]
+        .a3 = alpha250[iW3]
+        .a4 = alpha250[iW4]
+        .aAud = alpha250[11]
+    elsif .band = 3
+        .aF = alpha500[iFloor]
+        .aC = alpha500[iCeil]
+        .a1 = alpha500[iW1]
+        .a2 = alpha500[iW2]
+        .a3 = alpha500[iW3]
+        .a4 = alpha500[iW4]
+        .aAud = alpha500[11]
+    elsif .band = 4
+        .aF = alpha1000[iFloor]
+        .aC = alpha1000[iCeil]
+        .a1 = alpha1000[iW1]
+        .a2 = alpha1000[iW2]
+        .a3 = alpha1000[iW3]
+        .a4 = alpha1000[iW4]
+        .aAud = alpha1000[11]
+    elsif .band = 5
+        .aF = alpha2000[iFloor]
+        .aC = alpha2000[iCeil]
+        .a1 = alpha2000[iW1]
+        .a2 = alpha2000[iW2]
+        .a3 = alpha2000[iW3]
+        .a4 = alpha2000[iW4]
+        .aAud = alpha2000[11]
+    else
+        .aF = alpha4000[iFloor]
+        .aC = alpha4000[iCeil]
+        .a1 = alpha4000[iW1]
+        .a2 = alpha4000[iW2]
+        .a3 = alpha4000[iW3]
+        .a4 = alpha4000[iW4]
+        .aAud = alpha4000[11]
+    endif
+    
+    # Apply coverage factors
+    .aF = .aF * cFloor
+    .aC = .aC * cCeil
+    .a1 = .a1 * cW1
+    .a2 = .a2 * cW2
+    .a3 = .a3 * cW3
+    .a4 = .a4 * cW4
+    .aAud = .aAud * audience_m2
+    
+    # Total absorption
+    .absArea = .aF * sfloor + .aC * sceiling + .a1 * sw1 + .a2 * sw2 + .a3 * sw3 + .a4 * sw4 + .aAud
+    .alphaBar = .absArea / stotal
+    
+    if .alphaBar > 0.98
+        .alphaBar = 0.98
+    endif
+    
+    # Eyring formula: RT60 = 0.161 * V / (-S * ln(1 - alpha))
+    .rt60 = 0.161 * v / (stotal * (-ln(1 - .alphaBar)))
+    
+    # Clamp
+    if .rt60 < 0.12
+        .rt60 = 0.12
+    elsif .rt60 > 5.0
+        .rt60 = 5.0
+    endif
+    
+    result_rt60 = .rt60
+endproc
 
-# Band 3: 500 Hz
-aF = alpha500[iFloor] * cFloor
-aC = alpha500[iCeil] * cCeil
-a1 = alpha500[iW1] * cW1
-a2 = alpha500[iW2] * cW2
-a3 = alpha500[iW3] * cW3
-a4 = alpha500[iW4] * cW4
-aAud = alpha500[11] * audience_m2
-temp_a1 = aF * sfloor
-temp_a2 = aC * sceiling
-temp_a3 = a1 * sw1
-temp_a4 = a2 * sw2
-temp_a5 = a3 * sw3
-temp_a6 = a4 * sw4
-temp_sum1 = temp_a1 + temp_a2
-temp_sum2 = temp_a3 + temp_a4
-temp_sum3 = temp_a5 + temp_a6
-temp_sum4 = temp_sum1 + temp_sum2
-temp_sum5 = temp_sum4 + temp_sum3
-abs_area_3 = temp_sum5 + aAud
-alphaBar3 = abs_area_3 / stotal
-if alphaBar3 > 0.98
-    alphaBar3 = 0.98
-endif
-temp_diff = 1 - alphaBar3
-temp_ln = ln(temp_diff)
-temp_neg = 0 - temp_ln
-temp_prod = stotal * temp_neg
-temp_ratio = v / temp_prod
-t60_3 = 0.161 * temp_ratio
-if t60_3 < 0.12
-    t60_3 = 0.12
-endif
-if t60_3 > 5.0
-    t60_3 = 5.0
-endif
+# Calculate for all bands
+@calculateRT60: 1
+t60_1 = result_rt60
 
-# Band 4: 1000 Hz
-aF = alpha1000[iFloor] * cFloor
-aC = alpha1000[iCeil] * cCeil
-a1 = alpha1000[iW1] * cW1
-a2 = alpha1000[iW2] * cW2
-a3 = alpha1000[iW3] * cW3
-a4 = alpha1000[iW4] * cW4
-aAud = alpha1000[11] * audience_m2
-temp_a1 = aF * sfloor
-temp_a2 = aC * sceiling
-temp_a3 = a1 * sw1
-temp_a4 = a2 * sw2
-temp_a5 = a3 * sw3
-temp_a6 = a4 * sw4
-temp_sum1 = temp_a1 + temp_a2
-temp_sum2 = temp_a3 + temp_a4
-temp_sum3 = temp_a5 + temp_a6
-temp_sum4 = temp_sum1 + temp_sum2
-temp_sum5 = temp_sum4 + temp_sum3
-abs_area_4 = temp_sum5 + aAud
-alphaBar4 = abs_area_4 / stotal
-if alphaBar4 > 0.98
-    alphaBar4 = 0.98
-endif
-temp_diff = 1 - alphaBar4
-temp_ln = ln(temp_diff)
-temp_neg = 0 - temp_ln
-temp_prod = stotal * temp_neg
-temp_ratio = v / temp_prod
-t60_4 = 0.161 * temp_ratio
-if t60_4 < 0.12
-    t60_4 = 0.12
-endif
-if t60_4 > 5.0
-    t60_4 = 5.0
-endif
+@calculateRT60: 2
+t60_2 = result_rt60
 
-# Band 5: 2000 Hz
-aF = alpha2000[iFloor] * cFloor
-aC = alpha2000[iCeil] * cCeil
-a1 = alpha2000[iW1] * cW1
-a2 = alpha2000[iW2] * cW2
-a3 = alpha2000[iW3] * cW3
-a4 = alpha2000[iW4] * cW4
-aAud = alpha2000[11] * audience_m2
-temp_a1 = aF * sfloor
-temp_a2 = aC * sceiling
-temp_a3 = a1 * sw1
-temp_a4 = a2 * sw2
-temp_a5 = a3 * sw3
-temp_a6 = a4 * sw4
-temp_sum1 = temp_a1 + temp_a2
-temp_sum2 = temp_a3 + temp_a4
-temp_sum3 = temp_a5 + temp_a6
-temp_sum4 = temp_sum1 + temp_sum2
-temp_sum5 = temp_sum4 + temp_sum3
-abs_area_5 = temp_sum5 + aAud
-alphaBar5 = abs_area_5 / stotal
-if alphaBar5 > 0.98
-    alphaBar5 = 0.98
-endif
-temp_diff = 1 - alphaBar5
-temp_ln = ln(temp_diff)
-temp_neg = 0 - temp_ln
-temp_prod = stotal * temp_neg
-temp_ratio = v / temp_prod
-t60_5 = 0.161 * temp_ratio
-if t60_5 < 0.12
-    t60_5 = 0.12
-endif
-if t60_5 > 5.0
-    t60_5 = 5.0
-endif
+@calculateRT60: 3
+t60_3 = result_rt60
 
-# Band 6: 4000 Hz
-aF = alpha4000[iFloor] * cFloor
-aC = alpha4000[iCeil] * cCeil
-a1 = alpha4000[iW1] * cW1
-a2 = alpha4000[iW2] * cW2
-a3 = alpha4000[iW3] * cW3
-a4 = alpha4000[iW4] * cW4
-aAud = alpha4000[11] * audience_m2
-temp_a1 = aF * sfloor
-temp_a2 = aC * sceiling
-temp_a3 = a1 * sw1
-temp_a4 = a2 * sw2
-temp_a5 = a3 * sw3
-temp_a6 = a4 * sw4
-temp_sum1 = temp_a1 + temp_a2
-temp_sum2 = temp_a3 + temp_a4
-temp_sum3 = temp_a5 + temp_a6
-temp_sum4 = temp_sum1 + temp_sum2
-temp_sum5 = temp_sum4 + temp_sum3
-abs_area_6 = temp_sum5 + aAud
-alphaBar6 = abs_area_6 / stotal
-if alphaBar6 > 0.98
-    alphaBar6 = 0.98
-endif
-temp_diff = 1 - alphaBar6
-temp_ln = ln(temp_diff)
-temp_neg = 0 - temp_ln
-temp_prod = stotal * temp_neg
-temp_ratio = v / temp_prod
-t60_6 = 0.161 * temp_ratio
-if t60_6 < 0.12
-    t60_6 = 0.12
-endif
-if t60_6 > 5.0
-    t60_6 = 5.0
-endif
+@calculateRT60: 4
+t60_4 = result_rt60
 
-# Determine IR length
+@calculateRT60: 5
+t60_5 = result_rt60
+
+@calculateRT60: 6
+t60_6 = result_rt60
+
+# Store in array for convenience
+t60[1] = t60_1
+t60[2] = t60_2
+t60[3] = t60_3
+t60[4] = t60_4
+t60[5] = t60_5
+t60[6] = t60_6
+
+# Find max RT60 for IR length
 maxT = t60_1
-if t60_2 > maxT
-    maxT = t60_2
-endif
-if t60_3 > maxT
-    maxT = t60_3
-endif
-if t60_4 > maxT
-    maxT = t60_4
-endif
-if t60_5 > maxT
-    maxT = t60_5
-endif
-if t60_6 > maxT
-    maxT = t60_6
-endif
-if ir_length_factor < 0.8
-    ir_length_factor = 0.8
-endif
-if ir_length_factor > 4.0
-    ir_length_factor = 4.0
-endif
-ir_length = maxT * ir_length_factor
-pre_delay = ir_predelay_ms / 1000
-
-# ------------------------------------------------------------------------------
-# 5) Build synthetic IR
-# ------------------------------------------------------------------------------
-Create Sound from formula: "IR_base", 1, 0, ir_length, fs, "0"
-
-nTaps = early_reflections_count
-pulse_dur = 0.0007
-for k from 1 to nTaps
-    t0 = pre_delay + randomUniform(0.004, 0.050)
-    k_minus = k - 1
-    gain_db = ir_early_gain_dB - (k_minus * 2.5)
-    gain_factor = 10^(gain_db / 20)
-    rand_var = randomUniform(0.9, 1.1)
-    g = gain_factor * rand_var
-    tapName$ = "IR_tap" + string$(k)
-    
-    t0_str$ = string$(t0)
-    t0_plus_dur = t0 + pulse_dur
-    t0_plus_str$ = string$(t0_plus_dur)
-    g_str$ = string$(g)
-    dur_str$ = string$(pulse_dur)
-    pi_val = 2 * pi
-    pi_str$ = string$(pi_val)
-    
-    expr$ = "if x >= " + t0_str$ + " and x <= " + t0_plus_str$ + " then " + g_str$ + " * 0.5 * (1 - cos(" + pi_str$ + " * (x - " + t0_str$ + ") / " + dur_str$ + ")) else 0 fi"
-    
-    Create Sound from formula: tapName$, 1, 0, ir_length, fs, expr$
-    selectObject: "Sound IR_base"
-    plusObject: "Sound " + tapName$
-    Formula: "self + Sound_" + tapName$ + "[]"
-    selectObject: "Sound " + tapName$
-    Remove
+for b from 2 to 6
+    if t60[b] > maxT
+        maxT = t60[b]
+    endif
 endfor
 
-for b from 1 to 6
-    tau = t60_1 / 6
-    if b = 2
-        tau = t60_2 / 6
-    elsif b = 3
-        tau = t60_3 / 6
-    elsif b = 4
-        tau = t60_4 / 6
-    elsif b = 5
-        tau = t60_5 / 6
-    elsif b = 6
-        tau = t60_6 / 6
-    endif
-    
-    low_freq = low[b]
-    high_freq = high[b]
-    cen_freq = cen[b]
-    
-    tau_str$ = string$(tau)
-    noiseName$ = "IR_noise" + string$(b)
-    expr_noise$ = "randomGauss(0, 1) * exp(0 - x / " + tau_str$ + ")"
-    Create Sound from formula: noiseName$, 1, 0, ir_length, fs, expr_noise$
-    Filter (pass Hann band): low_freq, high_freq, 100
-    filteredName$ = noiseName$ + "_band"
-    
-    if cen_freq >= 2000
-        fac = 10^(-0.75 / 20)
-        fac_str$ = string$(fac)
-        Formula: "self * " + fac_str$
-    endif
-    
-    selectObject: "Sound IR_base"
-    plusObject: "Sound " + filteredName$
-    Formula: "self + Sound_" + filteredName$ + "[]"
-    
-    selectObject: "Sound " + noiseName$
-    Remove
-    selectObject: "Sound " + filteredName$
-    Remove
-endfor
-
-selectObject: "Sound IR_base"
-Scale peak: 0.6
-Rename: "IR"
-
-# ------------------------------------------------------------------------------
-# 6) Convolve dry sound with IR
-# ------------------------------------------------------------------------------
-selectObject: inputID
-plusObject: "Sound IR"
-Convolve: "sum", "zero"
-Rename: "Reverb_" + inputName$
-Scale peak: 0.99
-Play
-
-# ------------------------------------------------------------------------------
-# 7) Cleanup - Remove IR, keep original and result
-# ------------------------------------------------------------------------------
-selectObject: "Sound IR"
-Remove
-
-# ------------------------------------------------------------------------------
-# 8) Report T60 values
-# ------------------------------------------------------------------------------
-clearinfo
-if roomPreset = 1
-    presetName$ = "SmallBooth"
-elsif roomPreset = 2
-    presetName$ = "Office"
-elsif roomPreset = 3
-    presetName$ = "Classroom"
-elsif roomPreset = 4
-    presetName$ = "LiveRoom"
-else
-    presetName$ = "Custom"
+# IR length
+if iR_length_factor < 0.8
+    iR_length_factor = 0.8
+elsif iR_length_factor > 4.0
+    iR_length_factor = 4.0
 endif
 
+ir_length = maxT * iR_length_factor
+pre_delay = iR_predelay_ms / 1000
+
+# ==============================================================================
+# 7) Info Output
+# ==============================================================================
+
+writeInfoLine: "=== Artificial Room Reverb ==="
+appendInfoLine: "Source: ", inputName$, " (", fixed$(inputDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Room dimensions (m): ", fixed$(lengthTemp, 2), " × ", fixed$(widthTemp, 2), " × ", fixed$(heightTemp, 2)
-appendInfoLine: "Volume (m³): ", fixed$(v, 2)
-appendInfoLine: "Floor: ", mFloor$
-appendInfoLine: "Ceiling: ", mCeil$
-appendInfoLine: "Walls: ", mW1$
-if audience_m2 > 0
-    appendInfoLine: "Audience area (m²): ", fixed$(audience_m2, 1)
-endif
 appendInfoLine: ""
-appendInfoLine: "RT60 per octave (s):"
-appendInfoLine: "  125 Hz: ", fixed$(t60_1, 3)
-appendInfoLine: "  250 Hz: ", fixed$(t60_2, 3)
-appendInfoLine: "  500 Hz: ", fixed$(t60_3, 3)
+appendInfoLine: "Room: ", fixed$(roomL, 1), " x ", fixed$(roomW, 1), " x ", fixed$(roomH, 1), " m"
+appendInfoLine: "Volume: ", fixed$(v, 1), " m3"
+appendInfoLine: "Total surface: ", fixed$(stotal, 1), " m2"
+appendInfoLine: ""
+appendInfoLine: "Materials:"
+appendInfoLine: "  Floor: ", mFloor$
+appendInfoLine: "  Ceiling: ", mCeil$
+appendInfoLine: "  Walls: ", mW1$
+appendInfoLine: ""
+appendInfoLine: "RT60 (s):"
+appendInfoLine: "  125 Hz:  ", fixed$(t60_1, 3)
+appendInfoLine: "  250 Hz:  ", fixed$(t60_2, 3)
+appendInfoLine: "  500 Hz:  ", fixed$(t60_3, 3)
 appendInfoLine: "  1000 Hz: ", fixed$(t60_4, 3)
 appendInfoLine: "  2000 Hz: ", fixed$(t60_5, 3)
 appendInfoLine: "  4000 Hz: ", fixed$(t60_6, 3)
 appendInfoLine: ""
-appendInfoLine: "IR Settings:"
-appendInfoLine: "  Pre-delay: ", fixed$(ir_predelay_ms, 1), " ms"
-appendInfoLine: "  Early reflections: ", early_reflections_count
-appendInfoLine: "  IR length factor: ", fixed$(ir_length_factor, 1)
+appendInfoLine: "IR length: ", fixed$(ir_length, 2), " s"
+appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
 appendInfoLine: ""
-appendInfoLine: "Created:"
-appendInfoLine: "- Sound 'Reverb_", inputName$, "' (reverberated result)"
+
+# ==============================================================================
+# 8) Build Synthetic IR
+# ==============================================================================
+
+appendInfoLine: "Building impulse response..."
+
+Create Sound from formula: "IR_base", 1, 0, ir_length, fs, "0"
+irBase = selected("Sound")
+
+# Early reflections (Hann-windowed pulses)
+nTaps = early_reflections_count
+pulse_dur = 0.0007
+
+for k from 1 to nTaps
+    t0 = pre_delay + randomUniform(0.004, 0.050)
+    gain_db = iR_early_gain_dB - ((k - 1) * 2.5)
+    g = 10^(gain_db / 20) * randomUniform(0.9, 1.1)
+    
+    t0_str$ = string$(t0)
+    t0_plus_str$ = string$(t0 + pulse_dur)
+    g_str$ = string$(g)
+    dur_str$ = string$(pulse_dur)
+    pi2_str$ = string$(2 * pi)
+    
+    expr$ = "if x >= " + t0_str$ + " and x <= " + t0_plus_str$ + " then " + g_str$ + " * 0.5 * (1 - cos(" + pi2_str$ + " * (x - " + t0_str$ + ") / " + dur_str$ + ")) else 0 fi"
+    
+    Create Sound from formula: "IR_tap", 1, 0, ir_length, fs, expr$
+    tapSound = selected("Sound")
+    
+    # Add to base
+    tap_str$ = string$(tapSound)
+    selectObject: irBase
+    Formula: "self + object[" + tap_str$ + "]"
+    
+    removeObject: tapSound
+endfor
+
+# Late reverb (filtered noise with exponential decay per band)
+for b from 1 to 6
+    tau = t60[b] / 6
+    tau_str$ = string$(tau)
+    
+    Create Sound from formula: "IR_noise", 1, 0, ir_length, fs, "randomGauss(0, 1) * exp(-x / " + tau_str$ + ")"
+    noiseSound = selected("Sound")
+    
+    # Filter to band
+    Filter (pass Hann band): low[b], high[b], 100
+    filteredNoise = selected("Sound")
+    
+    # Attenuate high frequencies
+    if cen[b] >= 2000
+        fac_str$ = string$(10^(-0.75 / 20))
+        Formula: "self * " + fac_str$
+    endif
+    
+    # Add to base
+    filt_str$ = string$(filteredNoise)
+    selectObject: irBase
+    Formula: "self + object[" + filt_str$ + "]"
+    
+    removeObject: noiseSound, filteredNoise
+endfor
+
+selectObject: irBase
+Scale peak: 0.6
+Rename: "IR_" + presetName$
+irFinal = selected("Sound")
+
+# ==============================================================================
+# 9) Convolve and Mix Wet/Dry
+# ==============================================================================
+
+appendInfoLine: "Convolving..."
+
+selectObject: inputID, irFinal
+Convolve: "sum", "zero"
+wetSound = selected("Sound")
+
+# Trim to original length (convolution extends duration)
+selectObject: wetSound
+Extract part: 0, inputDur, "rectangular", 1, "no"
+wetTrimmed = selected("Sound")
+removeObject: wetSound
+
+# Mix wet/dry
+if wet_level < 1.0
+    # Need to mix with dry
+    dry_str$ = string$(dry_level)
+    wet_str$ = string$(wet_level)
+    input_str$ = string$(inputID)
+    
+    selectObject: wetTrimmed
+    Formula: "self * " + wet_str$ + " + object[" + input_str$ + "] * " + dry_str$
+endif
+
+selectObject: wetTrimmed
+Scale peak: 0.95
+Rename: inputName$ + "_room_" + presetName$
+result = selected("Sound")
+
+# ==============================================================================
+# 10) Visualization
+# ==============================================================================
+
+if draw_visualization
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Artificial Room: " + presetName$ + " (" + fixed$(roomL, 1) + "x" + fixed$(roomW, 1) + "x" + fixed$(roomH, 1) + "m)"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.4
+    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    selectObject: inputID
+    Colour: "{0.6, 0.6, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Dry"
+    
+    # Result waveform
+    Select outer viewport: 0, 8, 1.5, 2.3
+    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    selectObject: result
+    Colour: "{0.5, 0.6, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Wet " + fixed$(wet_dry_percent, 0) + "%"
+    Text bottom: "yes", "Time (s)"
+    
+    # RT60 bar chart
+    Select outer viewport: 0, 4, 2.5, 4.0
+    Select inner viewport: 0.6, 3.8, 2.6, 3.9
+    
+    maxRT = 0
+    for b from 1 to 6
+        if t60[b] > maxRT
+            maxRT = t60[b]
+        endif
+    endfor
+    maxRT = maxRT * 1.1
+    
+    Axes: 0, 7, 0, maxRT
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 7, 0, maxRT
+    
+    # Draw bars
+    bandLabels$[1] = "125"
+    bandLabels$[2] = "250"
+    bandLabels$[3] = "500"
+    bandLabels$[4] = "1k"
+    bandLabels$[5] = "2k"
+    bandLabels$[6] = "4k"
+    
+    for b from 1 to 6
+        xLeft = b - 0.4
+        xRight = b + 0.4
+        
+        # Color gradient (low freq = warm, high = cool)
+        r = 0.8 - b * 0.05
+        g = 0.5 + b * 0.03
+        bCol = 0.4 + b * 0.08
+        Colour: "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(bCol, 2) + "}"
+        Paint rectangle: "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(bCol, 2) + "}", xLeft, xRight, 0, t60[b]
+        
+        Colour: "Black"
+        Font size: 5
+        Text: b, "centre", -maxRT * 0.08, "half", bandLabels$[b]
+        Text: b, "centre", t60[b] + maxRT * 0.05, "half", fixed$(t60[b], 2)
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "RT60 (s)"
+    Text bottom: "yes", "Hz"
+    
+    # IR waveform
+    Select outer viewport: 4, 8, 2.5, 4.0
+    Select inner viewport: 4.4, 7.6, 2.6, 3.9
+    selectObject: irFinal
+    Colour: "{0.6, 0.7, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "IR"
+    Text bottom: "yes", "Time (s)"
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# ==============================================================================
+# 11) Cleanup
+# ==============================================================================
+
+if keep_IR = 0
+    removeObject: irFinal
+endif
+
+# ==============================================================================
+# 12) Final
+# ==============================================================================
+
+selectObject: result
+
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Created: ", selected$("Sound")
+if keep_IR
+    appendInfoLine: "IR kept: IR_", presetName$
+endif
+
+if play_result
+    selectObject: result
+    Play
+endif
+
+selectObject: result
