@@ -1,44 +1,48 @@
 # ============================================================
-# Praat AudioTools - Hysteresis Distortion
+# Praat AudioTools - Hysteresis_Distortion.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Applies nonlinear distortion with state memory (Hysteresis).
-#   Simulates magnetic tape saturation, transformer core lag, 
-#   and analog circuit inertia.
-#   Math: y[n] = (1-mem) * tanh(drive * x[n]) + mem * y[n-1]
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
+#   Hysteresis Distortion - applies nonlinear distortion with
+#   state memory. Simulates magnetic tape saturation, transformer
+#   core lag, and analog circuit inertia.
+#   
+#   Formula: y[n] = (1-mem) * tanh(drive * (x[n]+bias)) + mem * y[n-1]
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.2:
+#   - Added transfer function visualization
+#   - Improved info output
+#   - Minor code cleanup
 # ============================================================
 
 # === Form ===
 form Hysteresis Distortion
-    comment Select a Preset
+    comment Select a Sound object first
+    
+    comment === Preset ===
     optionmenu Preset 1
-        option Manual
+        option Manual (use settings below)
         option Warm Tape Saturation
         option Dark Transformer
         option Offset Magnetics
         option Sluggish Fuzz
         option Infinite Sustain (Limiter)
 
-    comment Parameters
+    comment === Parameters ===
     real Drive 2.0
+    comment (1=subtle, 5=moderate, 10+=heavy)
     real Hysteresis_Memory 0.3
+    comment (0=no memory, 0.9=heavy lag)
     real Asymmetry_Bias 0.0
+    comment (0=symmetric, ±0.3=asymmetric)
     real Output_Gain 0.9
 
-    comment Visualization
+    comment === Output ===
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -48,89 +52,108 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-# === Handle Presets ===
-presetName$ = "Manual"
+original = selected("Sound")
+origName$ = selected$("Sound")
 
-if preset = 2
-    presetName$ = "Warm Tape Saturation"
+selectObject: original
+xmin = Get start time
+xmax = Get end time
+duration = Get total duration
+sr = Get sampling frequency
+
+# === Handle Presets ===
+if preset = 1
+    presetName$ = "Manual"
+elsif preset = 2
+    presetName$ = "WarmTape"
     drive = 1.5
     hysteresis_Memory = 0.25
     asymmetry_Bias = 0.0
     output_Gain = 0.95
 elsif preset = 3
-    presetName$ = "Dark Transformer"
+    presetName$ = "DarkTransformer"
     drive = 2.5
     hysteresis_Memory = 0.75
     asymmetry_Bias = 0.0
     output_Gain = 0.8
 elsif preset = 4
-    presetName$ = "Offset Magnetics"
+    presetName$ = "OffsetMagnetics"
     drive = 3.0
     hysteresis_Memory = 0.4
     asymmetry_Bias = 0.2
     output_Gain = 0.8
 elsif preset = 5
-    presetName$ = "Sluggish Fuzz"
+    presetName$ = "SluggishFuzz"
     drive = 10.0
     hysteresis_Memory = 0.5
     asymmetry_Bias = 0.05
     output_Gain = 0.5
 elsif preset = 6
-    presetName$ = "Infinite Sustain"
+    presetName$ = "InfiniteSustain"
     drive = 20.0
     hysteresis_Memory = 0.1
     asymmetry_Bias = 0.0
     output_Gain = 0.4
 endif
 
-# Safety Check
+# Safety Check - memory must be < 1 for stability
 if hysteresis_Memory >= 1.0
     hysteresis_Memory = 0.99
 endif
+if hysteresis_Memory < 0
+    hysteresis_Memory = 0
+endif
 
-# === Setup ===
-original = selected("Sound")
-origName$ = selected$("Sound")
-selectObject: original
-xmin = Get start time
-xmax = Get end time
-sr = Get sampling frequency
+# === Info ===
+writeInfoLine: "=== Hysteresis Distortion ==="
+appendInfoLine: "Source: ", origName$, " (", fixed$(duration, 2), " s)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "Drive: ", drive
+appendInfoLine: "Memory: ", hysteresis_Memory
+appendInfoLine: "Bias: ", asymmetry_Bias
+appendInfoLine: "Output gain: ", output_Gain
+appendInfoLine: ""
 
 # ============================================================
 # PROCESSING: Hysteresis Loop
 # ============================================================
 
+appendInfoLine: "Applying hysteresis distortion..."
+
 selectObject: original
-Copy: origName$ + "_Hyst_" + replace$(presetName$, " ", "", 0)
+Copy: origName$ + "_Hyst_" + presetName$
 result = selected("Sound")
 
-# Variables for formula
+# Build formula strings for the recursive processing
+# The Math:
+#   Nonlinear Input = tanh((Input + Bias) * Drive)
+#   Output = (Nonlinear * (1-Mem)) + (PreviousOutput * Mem)
+
 d_str$ = string$(drive)
 m_str$ = string$(hysteresis_Memory)
 inv_m_str$ = string$(1.0 - hysteresis_Memory)
 b_str$ = string$(asymmetry_Bias)
 
-# The Math:
-# Nonlinear Input = tanh((Input + Bias) * Drive)
-# Output = (Nonlinear * (1-Mem)) + (PreviousOutput * Mem)
-
-# 1. Define the Nonlinear component (Current Input Shaping)
+# Define the nonlinear component
 nonlin$ = "tanh((self + " + b_str$ + ") * " + d_str$ + ")"
 
-# 2. Define the Recursive component (Previous Output)
-# "if col = 1" handles the edge case of the first sample (where col-1 doesn't exist)
-# For col > 1, we blend the nonlinear input with the previous output (self[col-1])
+# Define the recursive formula
+# col=1 has no previous sample, so just use nonlinear
 formula$ = "if col = 1 then " + nonlin$ + " else (" + nonlin$ + " * " + inv_m_str$ + ") + (self[col-1] * " + m_str$ + ") fi"
 
 # Apply Hysteresis
 Formula: formula$
 
-# 3. Post-Processing
+# Post-Processing
 Subtract mean
-Formula: "self * " + string$(output_Gain)
+Formula: ~ self * output_Gain
+
+# Scale to prevent clipping
+Scale peak: 0.95
 
 # ============================================================
-# VISUALIZATION (Clean Style from Multiband v2.1)
+# VISUALIZATION
 # ============================================================
 if draw_visualization
     Erase all
@@ -139,36 +162,128 @@ if draw_visualization
     Select outer viewport: 0, 8, 0, 0.5
     Font size: 11
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Hysteresis Distortion - " + origName$
+    Text: 0.5, "centre", 0.5, "half", "Hysteresis Distortion: " + origName$ + " (" + presetName$ + ")"
     
     # === Original Waveform ===
-    Select outer viewport: 0, 8, 0.6, 1.6
-    Select inner viewport: 0.6, 7.6, 0.7, 1.5
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.6, 0.7, 1.4
     
     selectObject: original
-    Colour: "{0.5, 0.5, 0.5}"
+    Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
-    Draw inner box
     Colour: "Black"
-    Font size: 9
+    Draw inner box
+    Font size: 8
     Text left: "yes", "Original"
     
     # === Result Waveform ===
-    Select outer viewport: 0, 8, 1.7, 2.7
-    Select inner viewport: 0.6, 7.6, 1.8, 2.6
+    Select outer viewport: 0, 8, 1.6, 2.5
+    Select inner viewport: 0.6, 7.6, 1.7, 2.4
     
     selectObject: result
-    Colour: "{0.8, 0.3, 0.3}"
+    Colour: "{0.8, 0.4, 0.4}"
     Draw: 0, 0, 0, 0, "no", "Curve"
-    Draw inner box
     Colour: "Black"
-    Text left: "yes", "Processed"
-    Marks bottom every: 1, 0.5, "yes", "yes", "no"
+    Draw inner box
+    Text left: "yes", "Distorted"
     Text bottom: "yes", "Time (s)"
     
+    # === Transfer Function (tanh curve) ===
+    Select outer viewport: 0, 4, 2.7, 4.2
+    Select inner viewport: 0.6, 3.8, 2.8, 4.1
+    
+    Axes: -1.2, 1.2, -1.2, 1.2
+    Paint rectangle: "{0.95, 0.95, 0.95}", -1.2, 1.2, -1.2, 1.2
+    
+    # Grid
+    Colour: "{0.85, 0.85, 0.85}"
+    Draw line: -1.2, 0, 1.2, 0
+    Draw line: 0, -1.2, 0, 1.2
+    Dotted line
+    Draw line: -1, -1, 1, 1
+    Solid line
+    
+    # Draw tanh transfer curve
+    Colour: "{0.8, 0.4, 0.4}"
+    Line width: 2
+    nPoints = 100
+    for p from 2 to nPoints
+        x1 = -1.0 + (p - 2) / nPoints * 2.0
+        x2 = -1.0 + (p - 1) / nPoints * 2.0
+        y1 = tanh((x1 + asymmetry_Bias) * drive)
+        y2 = tanh((x2 + asymmetry_Bias) * drive)
+        Draw line: x1, y1, x2, y2
+    endfor
+    Line width: 1
+    
+    # Show saturation limits
+    Colour: "{0.7, 0.7, 0.7}"
+    Dotted line
+    Draw line: -1.2, 1, 1.2, 1
+    Draw line: -1.2, -1, 1.2, -1
+    Solid line
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Output"
+    Text bottom: "yes", "Input"
+    Text: 0, "centre", 1.35, "half", "Transfer: tanh(drive×x)"
+    
+    # === Hysteresis Loop Visualization ===
+    Select outer viewport: 4, 8, 2.7, 4.2
+    Select inner viewport: 4.4, 7.6, 2.8, 4.1
+    
+    Axes: -1.2, 1.2, -1.2, 1.2
+    Paint rectangle: "{0.95, 0.95, 0.95}", -1.2, 1.2, -1.2, 1.2
+    
+    # Grid
+    Colour: "{0.85, 0.85, 0.85}"
+    Draw line: -1.2, 0, 1.2, 0
+    Draw line: 0, -1.2, 0, 1.2
+    
+    # Simulate hysteresis loop (ascending and descending paths differ)
+    # This is a simplified visualization showing the lag effect
+    Colour: "{0.4, 0.4, 0.8}"
+    Line width: 1.5
+    
+    # Ascending path
+    prevY = 0
+    for p from 1 to nPoints
+        x = -1.0 + (p - 1) / nPoints * 2.0
+        newInput = tanh((x + asymmetry_Bias) * drive)
+        y = (1 - hysteresis_Memory) * newInput + hysteresis_Memory * prevY
+        if p > 1
+            prevX = -1.0 + (p - 2) / nPoints * 2.0
+            Draw line: prevX, prevY, x, y
+        endif
+        prevY = y
+    endfor
+    
+    # Descending path (different due to memory)
+    Colour: "{0.8, 0.4, 0.4}"
+    for p from 1 to nPoints
+        x = 1.0 - (p - 1) / nPoints * 2.0
+        newInput = tanh((x + asymmetry_Bias) * drive)
+        y = (1 - hysteresis_Memory) * newInput + hysteresis_Memory * prevY
+        if p > 1
+            prevX = 1.0 - (p - 2) / nPoints * 2.0
+            Draw line: prevX, prevY, x, y
+        endif
+        prevY = y
+    endfor
+    Line width: 1
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Output"
+    Text bottom: "yes", "Input"
+    Text: 0, "centre", 1.35, "half", "Hysteresis Loop (mem=" + fixed$(hysteresis_Memory, 2) + ")"
+    
     # === Spectral Analysis ===
-    Select outer viewport: 0, 8, 2.9, 4.8
-    Select inner viewport: 0.6, 7.6, 3.1, 4.6
+    Select outer viewport: 0, 8, 4.4, 5.6
+    Select inner viewport: 0.6, 7.6, 4.5, 5.5
     
     # Get spectra
     selectObject: original
@@ -184,13 +299,12 @@ if draw_visualization
     maxFreq = sr / 2
     if maxFreq > 8000
         freqMax = 8000
-        freqStep = 2000
     else
         freqMax = maxFreq
-        freqStep = 1000
     endif
     
     Axes: 0, freqMax, minDB, maxDB
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, freqMax, minDB, maxDB
     
     # Draw Original (Grey)
     selectObject: spec_Orig
@@ -200,7 +314,7 @@ if draw_visualization
     
     # Draw Result (Red)
     selectObject: spec_Res
-    Colour: "{0.8, 0.3, 0.3}"
+    Colour: "{0.8, 0.4, 0.4}"
     Line width: 1.5
     Draw: 0, freqMax, minDB, maxDB, "no"
     Line width: 1
@@ -208,24 +322,19 @@ if draw_visualization
     # Box and labels
     Colour: "Black"
     Draw inner box
-    Font size: 9
-    Text left: "yes", "Power (dB)"
-    Marks left every: 1, 20, "yes", "yes", "no"
-    Marks bottom every: 1, freqStep, "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "dB"
     Text bottom: "yes", "Frequency (Hz)"
     
     # Cleanup Spectra
-    selectObject: spec_Orig
-    plusObject: spec_Res
-    Remove
+    removeObject: spec_Orig, spec_Res
     
     # === Parameter Info ===
-    Select outer viewport: 0, 8, 5.0, 5.4
-    Font size: 8
+    Select outer viewport: 0, 8, 5.7, 6.1
+    Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     
-    Text: 0.5, "centre", 0.6, "half", "Preset: " + presetName$
-    Text: 0.5, "centre", 0.2, "half", "Drive: " + string$(drive) + " | Memory: " + string$(hysteresis_Memory) + " | Bias: " + string$(asymmetry_Bias)
+    Text: 0.5, "centre", 0.5, "half", "Drive: " + fixed$(drive, 1) + " | Memory: " + fixed$(hysteresis_Memory, 2) + " | Bias: " + fixed$(asymmetry_Bias, 2) + " | Gain: " + fixed$(output_Gain, 2)
     
     Font size: 10
     Colour: "Black"
@@ -233,13 +342,14 @@ endif
 
 # === Finalize ===
 selectObject: result
+
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Created: ", selected$("Sound")
+
 if play_result
+    selectObject: result
     Play
 endif
 
-writeInfoLine: "Applied Hysteresis Distortion to: ", origName$
-appendInfoLine: "Preset: ", presetName$
-
-# === Final Cleanup ===
-# Since we only created 'result' and spectrum helpers (which are deleted),
-# we just need to select the right objects at the end.
+selectObject: result

@@ -1,30 +1,32 @@
 # ============================================================
-# Praat AudioTools - Foldback and Wavefolding.praat
+# Praat AudioTools - Wavefolder_Foldback.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Foldback and Wavefolding
+#   Wavefolder (Foldback) - dedicated wavefolding distortion with
+#   advanced controls. Signal folds back on itself when exceeding
+#   threshold, creating rich harmonics. Features asymmetric
+#   thresholds, multiple iterations, bipolar/unipolar modes,
+#   and smoothing. Classic Buchla/Serge synthesizer effect.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.2:
+#   - Added input check
+#   - Fixed formula syntax (string interpolation)
+#   - Added visualization
+#   - Added info output
 # ============================================================
 
-# Nonlinear distortion through signal folding - Vectorized version
-
-form Foldback and Wavefolding
-    comment === Preset Selection ===
-    optionmenu Preset: 1
-        option Custom
+form Wavefolder (Foldback)
+    comment Select a Sound object first
+    
+    comment === Preset ===
+    optionmenu Preset 1
+        option Custom (use settings below)
         option Soft Fold (Subtle)
         option Hard Fold (Aggressive)
         option Bipolar Fold
@@ -33,105 +35,134 @@ form Foldback and Wavefolding
         option Tape Saturation Style
         option Digital Crush
         option Oscillating Fold
+    
     comment === Foldback Parameters ===
     real Threshold_(0-1) 0.5
-    real Input_gain_(dB) 0.0
+    real Input_gain_dB 0.0
     real Fold_depth_(0-1) 1.0
     real Asymmetry_(-1_to_1) 0.0
+    
     comment === Waveshaping ===
-    integer Fold_iterations 1
+    natural Fold_iterations 1
     boolean Bipolar_folding 1
     real Smoothing_(0-1) 0.0
+    
     comment === Output ===
-    real Output_gain_(dB) 0.0
+    real Output_gain_dB 0.0
     boolean DC_offset_removal 1
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# Apply preset values
+# === Check Input ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+original = selected("Sound")
+name$ = selected$("Sound")
+
+selectObject: original
+duration = Get total duration
+sr = Get sampling frequency
+numChannels = Get number of channels
+
+# === Apply Presets ===
 if preset = 2
+    # Soft Fold (Subtle)
     threshold = 0.7
-    input_gain = 3.0
+    input_gain_dB = 3.0
     fold_depth = 0.6
     asymmetry = 0.0
     fold_iterations = 1
     bipolar_folding = 1
     smoothing = 0.3
-    output_gain = -3.0
+    output_gain_dB = -3.0
+    presetName$ = "SoftFold"
 elsif preset = 3
+    # Hard Fold (Aggressive)
     threshold = 0.3
-    input_gain = 12.0
+    input_gain_dB = 12.0
     fold_depth = 1.0
     asymmetry = 0.0
     fold_iterations = 1
     bipolar_folding = 1
     smoothing = 0.0
-    output_gain = -6.0
+    output_gain_dB = -6.0
+    presetName$ = "HardFold"
 elsif preset = 4
+    # Bipolar Fold
     threshold = 0.5
-    input_gain = 6.0
+    input_gain_dB = 6.0
     fold_depth = 1.0
     asymmetry = 0.0
     fold_iterations = 2
     bipolar_folding = 1
     smoothing = 0.1
-    output_gain = -4.0
+    output_gain_dB = -4.0
+    presetName$ = "Bipolar"
 elsif preset = 5
+    # Asymmetric Fold
     threshold = 0.6
-    input_gain = 8.0
+    input_gain_dB = 8.0
     fold_depth = 0.85
     asymmetry = 0.6
     fold_iterations = 1
     bipolar_folding = 0
     smoothing = 0.15
-    output_gain = -5.0
+    output_gain_dB = -5.0
+    presetName$ = "Asymmetric"
 elsif preset = 6
+    # Multi-Fold (Harmonics)
     threshold = 0.4
-    input_gain = 10.0
+    input_gain_dB = 10.0
     fold_depth = 1.0
     asymmetry = 0.0
     fold_iterations = 3
     bipolar_folding = 1
     smoothing = 0.0
-    output_gain = -8.0
+    output_gain_dB = -8.0
+    presetName$ = "MultiFold"
 elsif preset = 7
+    # Tape Saturation Style
     threshold = 0.65
-    input_gain = 4.0
+    input_gain_dB = 4.0
     fold_depth = 0.5
     asymmetry = 0.2
     fold_iterations = 1
     bipolar_folding = 1
     smoothing = 0.5
-    output_gain = -2.0
+    output_gain_dB = -2.0
+    presetName$ = "TapeSat"
 elsif preset = 8
+    # Digital Crush
     threshold = 0.25
-    input_gain = 15.0
+    input_gain_dB = 15.0
     fold_depth = 1.0
     asymmetry = 0.0
     fold_iterations = 2
     bipolar_folding = 0
     smoothing = 0.0
-    output_gain = -10.0
+    output_gain_dB = -10.0
+    presetName$ = "DigitalCrush"
 elsif preset = 9
+    # Oscillating Fold
     threshold = 0.55
-    input_gain = 7.0
+    input_gain_dB = 7.0
     fold_depth = 0.9
     asymmetry = -0.3
     fold_iterations = 2
     bipolar_folding = 1
     smoothing = 0.2
-    output_gain = -5.0
+    output_gain_dB = -5.0
+    presetName$ = "Oscillating"
+else
+    presetName$ = "Custom"
 endif
 
-# Get selected sound
-sound = selected("Sound")
-name$ = selected$("Sound")
-duration = Get total duration
-sampling_rate = Get sampling frequency
-num_channels = Get number of channels
-
 # Convert gains to linear
-input_gain_linear = 10^(input_gain/20)
-output_gain_linear = 10^(output_gain/20)
+input_gain_linear = 10^(input_gain_dB/20)
+output_gain_linear = 10^(output_gain_dB/20)
 
 # Calculate asymmetric thresholds
 if asymmetry >= 0
@@ -142,55 +173,272 @@ else
     threshold_neg = threshold * (1 + asymmetry)
 endif
 
-# Copy sound for processing
-selectObject: sound
-Copy: name$ + "_fold"
+# === Info ===
+writeInfoLine: "=== Wavefolder (Foldback) ==="
+appendInfoLine: "Source: ", name$, " (", fixed$(duration, 2), " s)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "Threshold: ", threshold, " (pos: ", fixed$(threshold_pos, 2), ", neg: ", fixed$(threshold_neg, 2), ")"
+appendInfoLine: "Input gain: ", input_gain_dB, " dB"
+appendInfoLine: "Fold depth: ", fold_depth
+appendInfoLine: "Asymmetry: ", asymmetry
+appendInfoLine: "Iterations: ", fold_iterations
+appendInfoLine: "Bipolar: ", if bipolar_folding then "yes" else "no" fi
+appendInfoLine: "Smoothing: ", smoothing
+appendInfoLine: "Output gain: ", output_gain_dB, " dB"
+appendInfoLine: ""
+
+# ============================================================
+# PROCESSING
+# ============================================================
+
+appendInfoLine: "Processing..."
+
+selectObject: original
+Copy: name$ + "_fold_" + presetName$
 result = selected("Sound")
 
-# Apply input gain (vectorized)
-Formula: "self * input_gain_linear"
+# Build formula strings
+inGain_str$ = string$(input_gain_linear)
+outGain_str$ = string$(output_gain_linear)
+threshPos_str$ = string$(threshold_pos)
+threshNeg_str$ = string$(threshold_neg)
+thresh_str$ = string$(threshold)
+depth_str$ = string$(fold_depth)
+
+# Apply input gain
+appendInfoLine: "  Applying input gain (", fixed$(input_gain_dB, 1), " dB)..."
+Formula: "self * " + inGain_str$
 
 # Apply foldback iterations
 for iteration from 1 to fold_iterations
+    appendInfoLine: "  Fold iteration ", iteration, "/", fold_iterations, "..."
     selectObject: result
     
     if bipolar_folding
-        # Bipolar folding (vectorized with Formula)
+        # Bipolar folding: fold positive and negative independently
         # Positive folding
-        Formula: "if self > threshold_pos then threshold_pos - (self - threshold_pos) * fold_depth else self fi"
+        Formula: "if self > " + threshPos_str$ + " then " + threshPos_str$ + " - (self - " + threshPos_str$ + ") * " + depth_str$ + " else self fi"
         # Negative folding
-        Formula: "if self < -threshold_neg then -threshold_neg + (abs(self) - threshold_neg) * fold_depth else self fi"
+        Formula: "if self < -" + threshNeg_str$ + " then -" + threshNeg_str$ + " + (abs(self) - " + threshNeg_str$ + ") * " + depth_str$ + " else self fi"
     else
-        # Unipolar folding (vectorized)
-        Formula: "if abs(self) > threshold then (if self > 0 then threshold - (self - threshold) * fold_depth else -threshold + (abs(self) - threshold) * fold_depth fi) else self fi"
+        # Unipolar folding
+        Formula: "if abs(self) > " + thresh_str$ + " then (if self > 0 then " + thresh_str$ + " - (self - " + thresh_str$ + ") * " + depth_str$ + " else -" + thresh_str$ + " + (abs(self) - " + thresh_str$ + ") * " + depth_str$ + " fi) else self fi"
     endif
 endfor
 
-# Apply smoothing (vectorized soft clipping)
+# Apply smoothing (soft clipping)
 if smoothing > 0
-    selectObject: result
+    appendInfoLine: "  Applying smoothing..."
     smooth_amount = smoothing * 2
-    Formula: "if abs(self) > (1 - smooth_amount) then self / (1 + abs(self) * smooth_amount) else self fi"
+    smooth_str$ = string$(smooth_amount)
+    selectObject: result
+    Formula: "if abs(self) > (1 - " + smooth_str$ + ") then self / (1 + abs(self) * " + smooth_str$ + ") else self fi"
 endif
 
-# Apply output gain (vectorized)
+# Apply output gain
+appendInfoLine: "  Applying output gain (", fixed$(output_gain_dB, 1), " dB)..."
 selectObject: result
-Formula: "self * output_gain_linear"
+Formula: "self * " + outGain_str$
 
 # DC offset removal
 if dC_offset_removal
+    appendInfoLine: "  Removing DC offset..."
     Subtract mean
 endif
 
-# Final normalization check (prevent clipping)
+# Final normalization check
+selectObject: result
 max_amp = Get maximum: 0, 0, "Sinc70"
 min_amp = Get minimum: 0, 0, "Sinc70"
 peak = max(abs(max_amp), abs(min_amp))
 
 if peak > 0.99
-    Formula: "self * 0.99 / peak"
+    appendInfoLine: "  Normalizing (peak was ", fixed$(peak, 2), ")..."
+    peak_str$ = string$(peak)
+    Formula: "self * 0.99 / " + peak_str$
 endif
 
-# Select result
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+if draw_visualization
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Wavefolder: " + name$ + " (" + presetName$ + ")"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    selectObject: original
+    Colour: "{0.6, 0.6, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Original"
+    
+    # Result waveform
+    Select outer viewport: 0, 8, 1.6, 2.5
+    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    selectObject: result
+    Colour: "{0.7, 0.5, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text left: "yes", "Folded"
+    Text bottom: "yes", "Time (s)"
+    
+    # Zoomed comparison
+    zoomDur = min(0.02, duration)
+    
+    Select outer viewport: 0, 4, 2.7, 3.8
+    Select inner viewport: 0.6, 3.8, 2.8, 3.7
+    selectObject: original
+    Colour: "{0.6, 0.6, 0.6}"
+    Draw: 0, zoomDur, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Orig (zoom)"
+    
+    Select outer viewport: 4, 8, 2.7, 3.8
+    Select inner viewport: 4.4, 7.6, 2.8, 3.7
+    selectObject: result
+    Colour: "{0.7, 0.5, 0.6}"
+    Draw: 0, zoomDur, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Folded (zoom)"
+    Text bottom: "yes", "Time (s)"
+    
+    # Transfer function (folding curve)
+    Select outer viewport: 0, 4, 4.0, 5.5
+    Select inner viewport: 0.6, 3.8, 4.1, 5.4
+    
+    Axes: -1.5, 1.5, -1.5, 1.5
+    Paint rectangle: "{0.95, 0.95, 0.95}", -1.5, 1.5, -1.5, 1.5
+    
+    # Grid
+    Colour: "{0.85, 0.85, 0.85}"
+    Draw line: -1.5, 0, 1.5, 0
+    Draw line: 0, -1.5, 0, 1.5
+    Dotted line
+    Draw line: -1.2, -1.2, 1.2, 1.2
+    Solid line
+    
+    # Threshold lines
+    Colour: "{0.8, 0.7, 0.7}"
+    Dotted line
+    Draw line: threshold_pos, -1.5, threshold_pos, 1.5
+    Draw line: -threshold_neg, -1.5, -threshold_neg, 1.5
+    Solid line
+    
+    # Draw folding transfer function
+    Colour: "{0.7, 0.5, 0.6}"
+    Line width: 2
+    nPoints = 300
+    
+    for p from 2 to nPoints
+        x1 = -1.2 + (p - 2) / nPoints * 2.4
+        x2 = -1.2 + (p - 1) / nPoints * 2.4
+        
+        # Apply input gain
+        in1 = x1 * input_gain_linear
+        in2 = x2 * input_gain_linear
+        
+        # Apply folding (simulate iterations)
+        y1 = in1
+        y2 = in2
+        
+        for iter from 1 to fold_iterations
+            # Positive fold
+            if y1 > threshold_pos
+                y1 = threshold_pos - (y1 - threshold_pos) * fold_depth
+            endif
+            if y1 < -threshold_neg
+                y1 = -threshold_neg + (abs(y1) - threshold_neg) * fold_depth
+            endif
+            
+            if y2 > threshold_pos
+                y2 = threshold_pos - (y2 - threshold_pos) * fold_depth
+            endif
+            if y2 < -threshold_neg
+                y2 = -threshold_neg + (abs(y2) - threshold_neg) * fold_depth
+            endif
+        endfor
+        
+        # Apply output gain
+        y1 = y1 * output_gain_linear
+        y2 = y2 * output_gain_linear
+        
+        # Clamp for display
+        if y1 > 1.4
+            y1 = 1.4
+        elsif y1 < -1.4
+            y1 = -1.4
+        endif
+        if y2 > 1.4
+            y2 = 1.4
+        elsif y2 < -1.4
+            y2 = -1.4
+        endif
+        
+        Draw line: x1, y1, x2, y2
+    endfor
+    Line width: 1
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 5
+    Text left: "yes", "Output"
+    Text bottom: "yes", "Input"
+    Text: 0, "centre", 1.6, "half", "Fold Transfer (" + string$(fold_iterations) + " iter)"
+    
+    # Parameters
+    Select outer viewport: 4, 8, 4.0, 5.5
+    Select inner viewport: 4.4, 7.6, 4.1, 5.4
+    
+    Axes: 0, 4, 0, 8
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 4, 0, 8
+    
+    Font size: 6
+    Colour: "{0.4, 0.4, 0.4}"
+    
+    Text: 0.2, "left", 7.5, "half", "Threshold: " + fixed$(threshold, 2)
+    Text: 0.2, "left", 6.7, "half", "  Pos: " + fixed$(threshold_pos, 2) + " / Neg: " + fixed$(threshold_neg, 2)
+    Text: 0.2, "left", 5.9, "half", "Input gain: " + fixed$(input_gain_dB, 1) + " dB"
+    Text: 0.2, "left", 5.1, "half", "Fold depth: " + fixed$(fold_depth, 2)
+    Text: 0.2, "left", 4.3, "half", "Asymmetry: " + fixed$(asymmetry, 2)
+    Text: 0.2, "left", 3.5, "half", "Iterations: " + string$(fold_iterations)
+    Text: 0.2, "left", 2.7, "half", "Bipolar: " + if bipolar_folding then "yes" else "no" fi
+    Text: 0.2, "left", 1.9, "half", "Smoothing: " + fixed$(smoothing, 2)
+    Text: 0.2, "left", 1.1, "half", "Output gain: " + fixed$(output_gain_dB, 1) + " dB"
+    
+    Colour: "Black"
+    Draw inner box
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# === Final Info ===
 selectObject: result
-Play
+
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Created: ", selected$("Sound")
+
+# === Play ===
+if play_result
+    selectObject: result
+    Play
+endif
+
+selectObject: result
