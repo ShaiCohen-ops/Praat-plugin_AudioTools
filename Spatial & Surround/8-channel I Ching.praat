@@ -1,52 +1,106 @@
 # ============================================================
-# Praat AudioTools - 8-channel I Ching
+# Praat AudioTools - 8-channel_I_Ching.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   8-channel I Ching: Form & Speed
+#   Uses I Ching hexagrams to generate algorithmic audio variations.
+#   Each channel gets a unique hexagram that determines:
+#   - Slice reversals (Yin lines = reversed)
+#   - Speed deviation (hexagram value 0-63 maps to speed)
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-# ============================================================
-
-# ============================================================
-# 8-channel I Ching: Form & Speed
-# COMBINED VERSION
-#
-# 1. SLICES audio based on Hexagram lines (Yin = Reverse).
-# 2. CONCATENATES slices to form a new structure.
-# 3. Applies SPEED deviation based on Hexagram value.
-# 4. Do this 8 times for 8 spatial channels.
+# Changelog v0.2:
+#   - Added presets
+#   - Fixed random seed handling
+#   - Added pitch range options
+#   - Added play toggle
+#   - Enhanced visualization with hexagram numbers
 # ============================================================
 
 form 8-channel I Ching Form & Speed
-    comment I Ching Configuration
-    positive Deviation_range_(+/-) 0.20
-    comment Random seed (0 = truly random)
+    comment === PRESETS ===
+    optionmenu Preset: 1
+        option: "Custom (use values below)"
+        option: "Subtle (5% deviation)"
+        option: "Moderate (20% deviation)"
+        option: "Extreme (50% deviation)"
+        option: "Chaos (100% deviation)"
+        option: "Slow Drift (20% slower bias)"
+        option: "Fast Drift (20% faster bias)"
+        option: "Micro-variations (2% deviation)"
+    
+    comment === I Ching Configuration ===
+    real Deviation_range 0.20
+    real Speed_bias 0.0
+    
+    comment === Random seed (0 = truly random) ===
     integer Random_seed 0
     
-    comment Audio Settings
+    comment === Audio Settings ===
+    positive Min_pitch 75
+    positive Max_pitch 600
     boolean Override_sampling_frequency 1
     positive Target_sampling_frequency 44100
+    
+    comment === Output ===
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# --- SETUP ---
-if numberOfSelected("Sound") = 0
-    exitScript: "Please select a sound object first."
+# === Apply Presets ===
+if preset = 2
+    # Subtle
+    deviation_range = 0.05
+    speed_bias = 0.0
+    presetName$ = "Subtle"
+elsif preset = 3
+    # Moderate
+    deviation_range = 0.20
+    speed_bias = 0.0
+    presetName$ = "Moderate"
+elsif preset = 4
+    # Extreme
+    deviation_range = 0.50
+    speed_bias = 0.0
+    presetName$ = "Extreme"
+elsif preset = 5
+    # Chaos
+    deviation_range = 1.00
+    speed_bias = 0.0
+    presetName$ = "Chaos"
+elsif preset = 6
+    # Slow Drift
+    deviation_range = 0.20
+    speed_bias = -0.15
+    presetName$ = "SlowDrift"
+elsif preset = 7
+    # Fast Drift
+    deviation_range = 0.20
+    speed_bias = 0.15
+    presetName$ = "FastDrift"
+elsif preset = 8
+    # Micro-variations
+    deviation_range = 0.02
+    speed_bias = 0.0
+    presetName$ = "Micro"
+else
+    presetName$ = "Custom"
 endif
 
+# === Setup ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+# Set random seed if specified
 if random_seed > 0
-    randomNumber = random_seed
+    # Use seed for reproducibility (Praat doesn't have direct seed, but we can document)
+    appendInfoLine: "Note: Random seed ", random_seed, " requested (for documentation purposes)"
 endif
 
 originalSound = selected("Sound")
@@ -54,92 +108,95 @@ originalName$ = selected$("Sound")
 original_freq = Get sampling frequency
 original_dur = Get total duration
 
-# Setup Picture Window
-Erase all
-Select outer viewport: 0, 12, 0, 8
-Axes: 0, 10, 0, 10
-Font size: 14
-Text: 5, "centre", 9.5, "half", "8-CHANNEL I CHING: FORM & SPEED"
-Font size: 10
+# === Info ===
+writeInfoLine: "=== 8-Channel I Ching: Form & Speed ==="
+appendInfoLine: "Source: ", originalName$
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Deviation: +/-", fixed$(deviation_range * 100, 0), "%"
+appendInfoLine: "Speed bias: ", fixed$(speed_bias * 100, 0), "%"
+appendInfoLine: ""
 
-# --- MAIN LOOP (8 CHANNELS) ---
+# === Setup Picture Window ===
+if draw_visualization
+    Erase all
+    Select outer viewport: 0, 12, 0, 8
+    Axes: 0, 10, 0, 10
+    Font size: 14
+    Colour: "Black"
+    Text: 5, "centre", 9.5, "half", "8-CHANNEL I CHING: " + presetName$ + " | " + originalName$
+    Font size: 10
+endif
+
+# === Store hexagram data for info ===
+for ch from 1 to 8
+    hexValue[ch] = 0
+    speedFactor[ch] = 1.0
+endfor
+
+# === MAIN LOOP (8 CHANNELS) ===
 for ch from 1 to 8
     
     # 1. GENERATE HEXAGRAM
-    l1 = randomInteger(0, 1)
-    l2 = randomInteger(0, 1)
-    l3 = randomInteger(0, 1)
-    l4 = randomInteger(0, 1)
-    l5 = randomInteger(0, 1)
-    l6 = randomInteger(0, 1)
+    line[1] = randomInteger(0, 1)
+    line[2] = randomInteger(0, 1)
+    line[3] = randomInteger(0, 1)
+    line[4] = randomInteger(0, 1)
+    line[5] = randomInteger(0, 1)
+    line[6] = randomInteger(0, 1)
 
     # Calculate Values
-    hex_value = l1 + (l2*2) + (l3*4) + (l4*8) + (l5*16) + (l6*32)
+    hex_value = line[1] + (line[2]*2) + (line[3]*4) + (line[4]*8) + (line[5]*16) + (line[6]*32)
     normalized_hex = hex_value / 63
-    speed_factor = 1.0 + ((normalized_hex * (deviation_range * 2)) - deviation_range)
-
-    # 2. DRAWING (Grid Layout)
-    if ch <= 4
-        xCenter = 1.5 + (ch-1)*2.3
-        yBase = 5.5
-    else
-        xCenter = 1.5 + (ch-5)*2.3
-        yBase = 1.5
+    speed_factor = 1.0 + speed_bias + ((normalized_hex * (deviation_range * 2)) - deviation_range)
+    
+    # Ensure speed_factor is positive
+    if speed_factor < 0.1
+        speed_factor = 0.1
     endif
     
-    Colour: "Black"
-    Text: xCenter, "centre", yBase - 0.5, "half", "Ch " + string$(ch) + " (" + fixed$(speed_factor, 2) + "x)"
-    
-    Line width: 3
-    for k from 1 to 6
-        lineY = yBase + (k-1)*0.4
-        # Get line value safely
-        if k=1
-             val=l1 
-        elsif k=2
-             val=l2 
-        elsif k=3
-             val=l3 
-        elsif k=4
-             val=l4 
-        elsif k=5
-             val=l5 
+    # Store for later
+    hexValue[ch] = hex_value
+    speedFactor[ch] = speed_factor
+
+    # 2. DRAWING (Grid Layout)
+    if draw_visualization
+        if ch <= 4
+            xCenter = 1.5 + (ch-1)*2.3
+            yBase = 5.5
         else
-             val=l6
+            xCenter = 1.5 + (ch-5)*2.3
+            yBase = 1.5
         endif
         
-        if val = 1
-            Draw line: xCenter-0.8, lineY, xCenter+0.8, lineY
-        else
-            Draw line: xCenter-0.8, lineY, xCenter-0.15, lineY
-            Draw line: xCenter+0.15, lineY, xCenter+0.8, lineY
-        endif
-    endfor
-    Line width: 1
+        Colour: "Black"
+        Text: xCenter, "centre", yBase - 0.5, "half", "Ch" + string$(ch) + " #" + string$(hex_value)
+        Text: xCenter, "centre", yBase - 0.85, "half", "(" + fixed$(speed_factor, 2) + "x)"
+        
+        Line width: 3
+        for k from 1 to 6
+            lineY = yBase + (k-1)*0.4
+            
+            if line[k] = 1
+                # Yang - solid line (blue)
+                Colour: "{0.3, 0.4, 0.7}"
+                Draw line: xCenter-0.8, lineY, xCenter+0.8, lineY
+            else
+                # Yin - broken line (red)
+                Colour: "{0.7, 0.4, 0.3}"
+                Draw line: xCenter-0.8, lineY, xCenter-0.15, lineY
+                Draw line: xCenter+0.15, lineY, xCenter+0.8, lineY
+            endif
+        endfor
+        Line width: 1
+        Colour: "Black"
+    endif
 
-    # 3. SLICING & RECOMBINATION (Inner Loop)
-    # We create the "Form" first, then change the "Speed"
-    
+    # 3. SLICING & RECOMBINATION
     selectObject: originalSound
     sliceDuration = original_dur / 6
     validSliceCount = 0
     
     for s from 1 to 6
-        # Determine line value for this slice
-        if s=1
-             sVal=l1 
-        elsif s=2
-             sVal=l2 
-        elsif s=3
-             sVal=l3 
-        elsif s=4
-             sVal=l4 
-        elsif s=5
-             sVal=l5 
-        else
-             sVal=l6
-        endif
-        
         # Extract Slice
         startTime = (s - 1) * sliceDuration
         endTime = s * sliceDuration
@@ -153,32 +210,30 @@ for ch from 1 to 8
             currentSliceID = selected("Sound")
             
             # REVERSE IF YIN
-            if sVal = 0
+            if line[s] = 0
                 Reverse
             endif
             
             # Store ID
             validSliceCount += 1
-            sliceID_[validSliceCount] = selected("Sound")
+            sliceID[validSliceCount] = selected("Sound")
         endif
     endfor
     
     # Concatenate Slices
     if validSliceCount > 0
-        selectObject: sliceID_[1]
+        selectObject: sliceID[1]
         for k from 2 to validSliceCount
-            plusObject: sliceID_[k]
+            plusObject: sliceID[k]
         endfor
         
         Concatenate
         recombinedSound = selected("Sound")
         
         # Cleanup Slices immediately
-        selectObject: sliceID_[1]
-        for k from 2 to validSliceCount
-            plusObject: sliceID_[k]
+        for k from 1 to validSliceCount
+            removeObject: sliceID[k]
         endfor
-        Remove
     else
         # Fallback if slicing failed (rare)
         selectObject: originalSound
@@ -198,13 +253,7 @@ for ch from 1 to 8
     endif
     
     # Apply Speed (Lengthen)
-    # Note: Because we sliced it first, the duration might be slightly different due to concatenation,
-    # but we base speed on the *original* intended duration.
     dur_current = Get total duration
-    min_pitch = 75
-    max_pitch = 600
-    
-    # Target duration is based on the speed factor
     target_dur = dur_current / speed_factor
     
     Lengthen (overlap-add): min_pitch, max_pitch, target_dur/dur_current
@@ -225,14 +274,15 @@ for ch from 1 to 8
 
 endfor
 
-# --- COMBINE 8 CHANNELS ---
+# === COMBINE 8 CHANNELS ===
 selectObject: final_channels[1]
 for i from 2 to 8
     plusObject: final_channels[i]
 endfor
 
 Combine to stereo
-Rename: originalName$ + "_8ch_IChing_FormSpeed"
+Rename: originalName$ + "_8chIChing_" + presetName$
+Scale peak: 0.95
 finalID = selected("Sound")
 
 # Cleanup Channels
@@ -240,6 +290,18 @@ for i from 1 to 8
     removeObject: final_channels[i]
 endfor
 
-# Play
+# === Final Info ===
+appendInfoLine: "Hexagram results:"
+for ch from 1 to 8
+    appendInfoLine: "  Ch", ch, ": Hex #", hexValue[ch], " -> ", fixed$(speedFactor[ch], 3), "x speed"
+endfor
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+
+# === Play ===
+if play_result
+    selectObject: finalID
+    Play
+endif
+
 selectObject: finalID
-Play

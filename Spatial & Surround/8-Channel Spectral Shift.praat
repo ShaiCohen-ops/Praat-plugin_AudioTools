@@ -1,306 +1,370 @@
 # ============================================================
-# Praat AudioTools - 8-Channel Spectral Shift.praat
+# Praat AudioTools - 8-Channel_Spectral_Shift.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Creates 8-voice frequency shift canons via FFT frequency bin shifting.
-#   Includes presets for Audio Figure B comparative studies.
+#   Creates 8-voice frequency shift canons via FFT bin shifting.
+#   Shifts spectrum up or down by specified number of bins.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Choose preset or enter custom shift amounts.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.3:
+#   - Refactored to use loops
+#   - Fixed cleanup
+#   - Added negative shifts (down)
+#   - Added visualization
+#   - Modern syntax
 # ============================================================
-clearinfo
-form 8-Channel Frequency Shift Canon
-    comment === PRESET SELECTION ===
-    choice preset_choice 1
-        option Custom (manual entry)
-        option V1: Gentle shifts (100-300 Hz)
-        option V2: Moderate shifts (400-800 Hz)
-        option V3: Extreme shifts (1000-2000 Hz)
-        option V4: Symmetrical shifts (mirror pattern)
-        option V5: Microtonal shifts (50-150 Hz)
+
+form 8-Channel Spectral Shift
+    comment === PRESETS ===
+    optionmenu Preset: 1
+        option: "Custom (use values below)"
+        option: "Gentle Up (50-200 bins)"
+        option: "Moderate Up (200-500 bins)"
+        option: "Extreme Up (500-1500 bins)"
+        option: "Symmetrical (up/down mirror)"
+        option: "All Down (-100 to -400 bins)"
+        option: "Spread (down to up)"
+        option: "Cluster Up (small spread)"
+        option: "Octave-like (doubling pattern)"
     
-    comment === FREQUENCY SHIFT AMOUNTS (Hz) - POSITIVE ONLY ===
-    positive shift_amount_1 100
-    positive shift_amount_2 200
-    positive shift_amount_3 300
-    positive shift_amount_4 400
-    positive shift_amount_5 500
-    positive shift_amount_6 600
-    positive shift_amount_7 700
-    positive shift_amount_8 800
+    comment === Bin shift amounts (positive=up, negative=down) ===
+    integer Shift_1 100
+    integer Shift_2 200
+    integer Shift_3 300
+    integer Shift_4 400
+    integer Shift_5 -100
+    integer Shift_6 -200
+    integer Shift_7 -300
+    integer Shift_8 -400
     
-    comment === OUTPUT OPTIONS ===
-    positive scale_peak 0.99
-    boolean keep_intermediate_files 0
-    boolean play_result 1
+    comment === Output ===
+    real Scale_peak 0.99
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# Apply preset values if selected
-if preset_choice = 2
-    # V1: Gentle shifts
-    shift_amount_1 = 100
-    shift_amount_2 = 150
-    shift_amount_3 = 200
-    shift_amount_4 = 250
-    shift_amount_5 = 300
-    shift_amount_6 = 250
-    shift_amount_7 = 200
-    shift_amount_8 = 150
-    preset_name$ = "V1_gentle_shifts"
-elsif preset_choice = 3
-    # V2: Moderate shifts
-    shift_amount_1 = 400
-    shift_amount_2 = 500
-    shift_amount_3 = 600
-    shift_amount_4 = 700
-    shift_amount_5 = 800
-    shift_amount_6 = 700
-    shift_amount_7 = 600
-    shift_amount_8 = 500
-    preset_name$ = "V2_moderate_shifts"
-elsif preset_choice = 4
-    # V3: Extreme shifts
-    shift_amount_1 = 1000
-    shift_amount_2 = 1200
-    shift_amount_3 = 1400
-    shift_amount_4 = 1600
-    shift_amount_5 = 1800
-    shift_amount_6 = 2000
-    shift_amount_7 = 1800
-    shift_amount_8 = 1600
-    preset_name$ = "V3_extreme_shifts"
-elsif preset_choice = 5
-    # V4: Symmetrical shifts
-    shift_amount_1 = 800
-    shift_amount_2 = 600
-    shift_amount_3 = 400
-    shift_amount_4 = 200
-    shift_amount_5 = 200
-    shift_amount_6 = 400
-    shift_amount_7 = 600
-    shift_amount_8 = 800
-    preset_name$ = "V4_symmetrical"
-elsif preset_choice = 6
-    # V5: Microtonal shifts
-    shift_amount_1 = 50
-    shift_amount_2 = 75
-    shift_amount_3 = 100
-    shift_amount_4 = 125
-    shift_amount_5 = 150
-    shift_amount_6 = 125
-    shift_amount_7 = 100
-    shift_amount_8 = 75
-    preset_name$ = "V5_microtonal"
+# === Apply Presets ===
+if preset = 2
+    # Gentle Up
+    shift_1 = 50
+    shift_2 = 75
+    shift_3 = 100
+    shift_4 = 125
+    shift_5 = 150
+    shift_6 = 175
+    shift_7 = 200
+    shift_8 = 225
+    presetName$ = "GentleUp"
+elsif preset = 3
+    # Moderate Up
+    shift_1 = 200
+    shift_2 = 250
+    shift_3 = 300
+    shift_4 = 350
+    shift_5 = 400
+    shift_6 = 450
+    shift_7 = 500
+    shift_8 = 550
+    presetName$ = "ModerateUp"
+elsif preset = 4
+    # Extreme Up
+    shift_1 = 500
+    shift_2 = 650
+    shift_3 = 800
+    shift_4 = 950
+    shift_5 = 1100
+    shift_6 = 1250
+    shift_7 = 1400
+    shift_8 = 1550
+    presetName$ = "ExtremeUp"
+elsif preset = 5
+    # Symmetrical
+    shift_1 = 400
+    shift_2 = 300
+    shift_3 = 200
+    shift_4 = 100
+    shift_5 = -100
+    shift_6 = -200
+    shift_7 = -300
+    shift_8 = -400
+    presetName$ = "Symmetrical"
+elsif preset = 6
+    # All Down
+    shift_1 = -100
+    shift_2 = -150
+    shift_3 = -200
+    shift_4 = -250
+    shift_5 = -300
+    shift_6 = -350
+    shift_7 = -400
+    shift_8 = -450
+    presetName$ = "AllDown"
+elsif preset = 7
+    # Spread (down to up)
+    shift_1 = -400
+    shift_2 = -250
+    shift_3 = -100
+    shift_4 = 0
+    shift_5 = 0
+    shift_6 = 100
+    shift_7 = 250
+    shift_8 = 400
+    presetName$ = "Spread"
+elsif preset = 8
+    # Cluster Up
+    shift_1 = 100
+    shift_2 = 110
+    shift_3 = 120
+    shift_4 = 130
+    shift_5 = 140
+    shift_6 = 150
+    shift_7 = 160
+    shift_8 = 170
+    presetName$ = "ClusterUp"
+elsif preset = 9
+    # Octave-like
+    shift_1 = 50
+    shift_2 = 100
+    shift_3 = 200
+    shift_4 = 400
+    shift_5 = -50
+    shift_6 = -100
+    shift_7 = -200
+    shift_8 = -400
+    presetName$ = "OctaveLike"
 else
-    # Custom - use manual values
-    preset_name$ = "custom"
+    presetName$ = "Custom"
 endif
 
-# Must have a Sound selected
-if not selected("Sound")
-    exitScript: "Please select a Sound object first."
+# === Check Input ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
 
-# Get original name
-originalSound = selected("Sound")
+originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-# Create base copies for processing
-select originalSound
-Copy: "base_original"
-base_original_mono = Convert to mono
+selectObject: originalID
+originalDur = Get total duration
+sr = Get sampling frequency
 
-# Create 8 base copies
-for i from 1 to 8
-    select base_original_mono
-    Copy: "base_'i'"
+# === Store shifts in array ===
+shiftAmt[1] = shift_1
+shiftAmt[2] = shift_2
+shiftAmt[3] = shift_3
+shiftAmt[4] = shift_4
+shiftAmt[5] = shift_5
+shiftAmt[6] = shift_6
+shiftAmt[7] = shift_7
+shiftAmt[8] = shift_8
+
+# === Create mono base ===
+selectObject: originalID
+Copy: "base_work"
+baseWorkID = selected("Sound")
+Convert to mono
+monoID = selected("Sound")
+
+# === Info ===
+writeInfoLine: "=== 8-Channel Spectral Shift ==="
+appendInfoLine: "Source: ", originalName$
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+
+# === Process each channel ===
+for ch from 1 to 8
+    selectObject: monoID
+    Copy: "ch_temp"
+    tempID = selected("Sound")
+    
+    # Convert to spectrum
+    To Spectrum: "yes"
+    specID = selected("Spectrum")
+    
+    # Get shift amount
+    s = shiftAmt[ch]
+    
+    # Apply shift formula
+    if s >= 0
+        # Shift UP: take from higher bins
+        Formula: "if col + 's' <= ncol then self[col + 's'] else 0 fi"
+        dir$ = "+"
+    else
+        # Shift DOWN: take from lower bins
+        sAbs = abs(s)
+        Formula: "if col - 'sAbs' >= 1 then self[col - 'sAbs'] else 0 fi"
+        dir$ = ""
+    endif
+    
+    # Convert back to sound
+    To Sound
+    shifted[ch] = selected("Sound")
+    Scale peak: scale_peak
+    
+    # Cleanup temp
+    removeObject: tempID, specID
+    
+    appendInfoLine: "  Ch", ch, ": ", dir$, s, " bins"
 endfor
 
-# Apply frequency shifts to each channel
-select Sound base_1
-spectrum1 = To Spectrum: "yes"
-Formula: "if col + shift_amount_1 <= ncol then self[col + shift_amount_1] else 0 fi"
-shift1 = To Sound
-select spectrum1
-Remove
-select shift1
-Scale peak: scale_peak
-Rename: "'originalName$'_shifted_1"
-
-select Sound base_2
-spectrum2 = To Spectrum: "yes"
-Formula: "if col + shift_amount_2 <= ncol then self[col + shift_amount_2] else 0 fi"
-shift2 = To Sound
-select spectrum2
-Remove
-select shift2
-Scale peak: scale_peak
-Rename: "'originalName$'_shifted_2"
-
-select Sound base_3
-spectrum3 = To Spectrum: "yes"
-Formula: "if col + shift_amount_3 <= ncol then self[col + shift_amount_3] else 0 fi"
-shift3 = To Sound
-select spectrum3
-Remove
-select shift3
-Scale peak: scale_peak
-Rename: "'originalName$'_shifted_3"
-
-select Sound base_4
-spectrum4 = To Spectrum: "yes"
-Formula: "if col + shift_amount_4 <= ncol then self[col + shift_amount_4] else 0 fi"
-shift4 = To Sound
-select spectrum4
-Remove
-select shift4
-Scale peak: scale_peak
-Rename: "'originalName$'_shifted_4"
-
-select Sound base_5
-spectrum5 = To Spectrum: "yes"
-Formula: "if col + shift_amount_5 <= ncol then self[col + shift_amount_5] else 0 fi"
-shift5 = To Sound
-select spectrum5
-Remove
-select shift5
-Scale peak: scale_peak
-Rename: "'originalName$'_shifted_5"
-
-select Sound base_6
-spectrum6 = To Spectrum: "yes"
-Formula: "if col + shift_amount_6 <= ncol then self[col + shift_amount_6] else 0 fi"
-shift6 = To Sound
-select spectrum6
-Remove
-select shift6
-Scale peak: scale_peak
-Rename: "'originalName$'_shifted_6"
-
-select Sound base_7
-spectrum7 = To Spectrum: "yes"
-Formula: "if col + shift_amount_7 <= ncol then self[col + shift_amount_7] else 0 fi"
-shift7 = To Sound
-select spectrum7
-Remove
-select shift7
-Scale peak: scale_peak
-Rename: "'originalName$'_shifted_7"
-
-select Sound base_8
-spectrum8 = To Spectrum: "yes"
-Formula: "if col + shift_amount_8 <= ncol then self[col + shift_amount_8] else 0 fi"
-shift8 = To Sound
-select spectrum8
-Remove
-select shift8
-Scale peak: scale_peak
-Rename: "'originalName$'_shifted_8"
-
-# Create 4 stereo pairs
-select shift1
-plus shift2
+# === Combine all 8 channels ===
+selectObject: shifted[1], shifted[2]
 Combine to stereo
-Rename: "pair_1_2"
+pair12 = selected("Sound")
 
-select shift3
-plus shift4
+selectObject: shifted[3], shifted[4]
 Combine to stereo
-Rename: "pair_3_4"
+pair34 = selected("Sound")
 
-select shift5
-plus shift6
+selectObject: shifted[5], shifted[6]
 Combine to stereo
-Rename: "pair_5_6"
+pair56 = selected("Sound")
 
-select shift7
-plus shift8
+selectObject: shifted[7], shifted[8]
 Combine to stereo
-Rename: "pair_7_8"
+pair78 = selected("Sound")
 
-# Combine pairs into larger groups
-select Sound pair_1_2
-plus Sound pair_3_4
+selectObject: pair12, pair34
 Combine to stereo
-Rename: "channels_1234_mixed"
+quad1234 = selected("Sound")
 
-select Sound pair_5_6
-plus Sound pair_7_8
+selectObject: pair56, pair78
 Combine to stereo
-Rename: "channels_5678_mixed"
+quad5678 = selected("Sound")
 
-# Final combination
-select Sound channels_1234_mixed
-plus Sound channels_5678_mixed
+selectObject: quad1234, quad5678
 Combine to stereo
-Rename: "canon_8ch_freq_shift_final"
+result = selected("Sound")
+Scale peak: scale_peak
+Rename: originalName$ + "_8chSpectral_" + presetName$
 
-# Rename with preset name
-select Sound canon_8ch_freq_shift_final
-if preset_choice > 1
-    Rename: "'originalName$'_freq_canon_'preset_name$'"
-else
-    Rename: "'originalName$'_freq_canon_custom"
+# === Cleanup ===
+removeObject: baseWorkID, monoID
+for ch from 1 to 8
+    removeObject: shifted[ch]
+endfor
+removeObject: pair12, pair34, pair56, pair78, quad1234, quad5678
+
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+if draw_visualization
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 10, 0, 0.6
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "8-Channel Spectral Shift: " + presetName$ + " | " + originalName$
+    
+    # Find min/max for scaling
+    minShift = shiftAmt[1]
+    maxShift = shiftAmt[1]
+    for ch from 2 to 8
+        if shiftAmt[ch] < minShift
+            minShift = shiftAmt[ch]
+        endif
+        if shiftAmt[ch] > maxShift
+            maxShift = shiftAmt[ch]
+        endif
+    endfor
+    
+    # Add margin
+    range = maxShift - minShift
+    if range < 100
+        range = 100
+    endif
+    plotMin = minShift - range * 0.15
+    plotMax = maxShift + range * 0.15
+    
+    # Bar chart of shifts
+    Select outer viewport: 0.5, 9.5, 0.8, 4.0
+    Select inner viewport: 1.0, 9.0, 1.2, 3.7
+    
+    Axes: 0, 9, plotMin, plotMax
+    
+    # Background
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 9, plotMin, plotMax
+    
+    # Zero line
+    if plotMin < 0 and plotMax > 0
+        Colour: "{0.5, 0.5, 0.5}"
+        Dotted line
+        Draw line: 0, 0, 9, 0
+        Solid line
+    endif
+    
+    # Draw bars for each channel
+    for ch from 1 to 8
+        s = shiftAmt[ch]
+        xL = ch - 0.4
+        xR = ch + 0.4
+        
+        if s >= 0
+            # Positive = blue (shift up)
+            Paint rectangle: "{0.3, 0.5, 0.8}", xL, xR, 0, s
+            Colour: "Black"
+            Draw rectangle: xL, xR, 0, s
+        else
+            # Negative = red (shift down)
+            Paint rectangle: "{0.8, 0.4, 0.3}", xL, xR, s, 0
+            Colour: "Black"
+            Draw rectangle: xL, xR, s, 0
+        endif
+        
+        # Label
+        Font size: 7
+        Colour: "Black"
+        lblY = plotMin + range * 0.05
+        Text: ch, "centre", lblY, "half", "Ch" + string$(ch)
+    endfor
+    
+    # Axes
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, 100, "yes", "yes", "no"
+    Font size: 8
+    Text left: "yes", "Bin shift"
+    
+    # Legend
+    Font size: 7
+    legTop = plotMax - range * 0.05
+    legMid = plotMax - range * 0.125
+    legBot = plotMax - range * 0.175
+    Paint rectangle: "{0.3, 0.5, 0.8}", 7.5, 7.8, legMid, legTop
+    Text: 7.9, "left", legTop - range * 0.0375, "half", "Up"
+    Paint rectangle: "{0.8, 0.4, 0.3}", 7.5, 7.8, legBot, legMid
+    Text: 7.9, "left", legMid - range * 0.025, "half", "Down"
+    
+    # Output waveform
+    Select outer viewport: 0.5, 9.5, 4.2, 6.0
+    Select inner viewport: 1.0, 9.0, 4.4, 5.8
+    selectObject: result
+    Colour: "{0.4, 0.5, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Output (8ch)"
+    
+    Font size: 10
+    Colour: "Black"
 endif
 
-final_name$ = selected$("Sound")
+# === Done ===
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Output: 8-channel spectral shift"
 
-# Print processing info
-appendInfoLine: "=== 8-Channel Frequency Shift Canon Complete ==="
-appendInfoLine: "Source: '", originalName$, "'"
-if preset_choice > 1
-    appendInfoLine: "Preset: ", preset_name$
-else
-    appendInfoLine: "Mode: Custom frequency shifts"
-endif
-appendInfoLine: "Shift amounts (Hz): ", shift_amount_1, ", ", shift_amount_2, ", ", shift_amount_3, ", ", shift_amount_4, ", ", shift_amount_5, ", ", shift_amount_6, ", ", shift_amount_7, ", ", shift_amount_8
-appendInfoLine: "Result: '", final_name$, "'"
-
-# Play if requested
 if play_result
-    select Sound 'final_name$'
+    selectObject: result
     Play
 endif
 
-# Clean up if not keeping intermediate files
-if not keep_intermediate_files
-    select Sound base_original
-    plus base_original_mono
-    plus Sound base_1
-    plus Sound base_2
-    plus Sound base_3
-    plus Sound base_4
-    plus Sound base_5
-    plus Sound base_6
-    plus Sound base_7
-    plus Sound base_8
-    plus shift1
-    plus shift2
-    plus shift3
-    plus shift4
-    plus shift5
-    plus shift6
-    plus shift7
-    plus shift8
-    plus Sound pair_1_2
-    plus Sound pair_3_4
-    plus Sound pair_5_6
-    plus Sound pair_7_8
-    plus Sound channels_1234_mixed
-    plus Sound channels_5678_mixed
-    Remove
-endif
-
-# Select final result
-select Sound 'final_name$'
+selectObject: result

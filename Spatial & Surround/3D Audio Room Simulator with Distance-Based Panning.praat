@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,7 +22,11 @@
 # Spatial Room Convolution with Movement - STEREO with DBAP
 # Creates artificial room reverb and moves sound source around listener
 # Listener is at center of room
-# by Sha Osenov, 2025
+
+# === Check Input ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
 # Get selected sound
 sound = selected("Sound")
@@ -35,9 +39,10 @@ numberOfChannels = Get number of channels
 if numberOfChannels > 1
     sound_mono = Convert to mono
     sound = sound_mono
-    sound_name$ = selected$("Sound")
+    wasStereo = 1
 else
     sound_mono = sound
+    wasStereo = 0
 endif
 
 # Room preset selection
@@ -437,10 +442,178 @@ Scale peak: 0.99
 
 # Clean up
 removeObject: room_ir, output_L, output_R
-if sound_mono != sound
+if wasStereo = 1
     selectObject: sound_mono
     Remove
 endif
+
+# ============================================================
+# VISUALIZATION - Movement Path in Room
+# ============================================================
+
+Erase all
+
+# === Title ===
+Select outer viewport: 0, 10, 0, 0.8
+Font size: 16
+Colour: "Black"
+Text: 0.5, "centre", 0.5, "half", "3D Room Simulator: " + movement$ + " | " + fixed$(room_length, 1) + "×" + fixed$(room_width, 1) + "×" + fixed$(room_height, 1) + "m | RT60: " + fixed$(rt60, 2) + "s"
+
+# === Room Top View with Movement Path (LARGE) ===
+Select outer viewport: 0.5, 9.5, 1.0, 7.5
+Select inner viewport: 1.0, 9.0, 1.5, 7.0
+
+# Set axes to show room with margin
+margin = max(room_length, room_width) * 0.15
+Axes: -room_length/2 - margin, room_length/2 + margin, -room_width/2 - margin, room_width/2 + margin
+
+# Room floor
+Paint rectangle: "{0.92, 0.92, 0.88}", -room_length/2, room_length/2, -room_width/2, room_width/2
+
+# Room walls (thicker border)
+Colour: "{0.3, 0.3, 0.3}"
+Line width: 4
+Draw rectangle: -room_length/2, room_length/2, -room_width/2, room_width/2
+Line width: 1
+
+# Grid lines
+Colour: "{0.82, 0.82, 0.78}"
+Line width: 1
+for gridX from -floor(room_length/2) to floor(room_length/2)
+    Draw line: gridX, -room_width/2, gridX, room_width/2
+endfor
+for gridY from -floor(room_width/2) to floor(room_width/2)
+    Draw line: -room_length/2, gridY, room_length/2, gridY
+endfor
+
+# Draw movement path with color gradient (blue to red = start to end)
+Line width: 3
+prev_x = 0
+prev_y = 0
+numDrawPoints = 100
+
+for drawPos from 1 to numDrawPoints
+    angle = (drawPos - 1) / numDrawPoints * 2 * pi
+    progress = (drawPos - 1) / (numDrawPoints - 1)
+    
+    if movement = 1
+        # Circular
+        x_pos = movement_radius * cos(angle)
+        y_pos = movement_radius * sin(angle)
+    elsif movement = 2
+        # Front to Back
+        x_pos = movement_radius * (2 * progress - 1)
+        y_pos = 0
+    elsif movement = 3
+        # Left to Right
+        x_pos = 0
+        y_pos = movement_radius * (2 * progress - 1)
+    elsif movement = 4
+        # Spiral
+        radius_spiral = movement_radius * progress
+        x_pos = radius_spiral * cos(angle * 3)
+        y_pos = radius_spiral * sin(angle * 3)
+    elsif movement = 5
+        # Up and Down (show as front-back for top view)
+        x_pos = movement_radius * 0.3 * sin(angle)
+        y_pos = 0
+    elsif movement = 6
+        # Random walk - use deterministic pattern for visualization
+        x_pos = movement_radius * sin(drawPos * 0.7) * cos(drawPos * 0.3)
+        y_pos = movement_radius * cos(drawPos * 0.5) * sin(drawPos * 0.4)
+    elsif movement = 7
+        # Figure-8
+        x_pos = movement_radius * sin(angle * 2) * cos(angle)
+        y_pos = movement_radius * sin(angle * 2) * sin(angle)
+    else
+        # Diagonal sweep
+        x_pos = movement_radius * (2 * progress - 1)
+        y_pos = movement_radius * (2 * progress - 1)
+    endif
+    
+    # Color gradient: blue (start) to red (end)
+    r = progress
+    g = 0.2
+    b = 1 - progress
+    
+    if drawPos > 1
+        Colour: "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"
+        Draw line: prev_x, prev_y, x_pos, y_pos
+    endif
+    
+    prev_x = x_pos
+    prev_y = y_pos
+endfor
+
+# Draw position markers
+for pos from 1 to num_positions
+    angle = (pos - 1) / num_positions * 2 * pi
+    progress = (pos - 1) / (num_positions - 1)
+    
+    if movement = 1
+        x_pos = movement_radius * cos(angle)
+        y_pos = movement_radius * sin(angle)
+    elsif movement = 2
+        x_pos = movement_radius * (2 * progress - 1)
+        y_pos = 0
+    elsif movement = 3
+        x_pos = 0
+        y_pos = movement_radius * (2 * progress - 1)
+    elsif movement = 4
+        radius_spiral = movement_radius * progress
+        x_pos = radius_spiral * cos(angle * 3)
+        y_pos = radius_spiral * sin(angle * 3)
+    elsif movement = 5
+        x_pos = movement_radius * 0.3 * sin(angle)
+        y_pos = 0
+    elsif movement = 6
+        x_pos = movement_radius * sin(pos * 0.7) * cos(pos * 0.3)
+        y_pos = movement_radius * cos(pos * 0.5) * sin(pos * 0.4)
+    elsif movement = 7
+        x_pos = movement_radius * sin(angle * 2) * cos(angle)
+        y_pos = movement_radius * sin(angle * 2) * sin(angle)
+    else
+        x_pos = movement_radius * (2 * progress - 1)
+        y_pos = movement_radius * (2 * progress - 1)
+    endif
+    
+    # Color gradient for markers
+    r = progress
+    b = 1 - progress
+    Paint circle (mm): "{" + fixed$(r, 2) + ", 0.3, " + fixed$(b, 2) + "}", x_pos, y_pos, 3
+endfor
+
+# Listener at center (large)
+Paint circle (mm): "White", 0, 0, 6
+Paint circle (mm): "{0.2, 0.7, 0.2}", 0, 0, 5
+Font size: 10
+Colour: "{0.1, 0.4, 0.1}"
+Text: 0, "centre", -room_width * 0.12, "half", "LISTENER"
+
+# Speaker positions
+Paint circle (mm): "{0.6, 0.4, 0.2}", speaker_L_x, speaker_L_y, 4
+Paint circle (mm): "{0.6, 0.4, 0.2}", speaker_R_x, speaker_R_y, 4
+Font size: 9
+Colour: "{0.4, 0.25, 0.1}"
+Text: speaker_L_x, "centre", speaker_L_y - 0.5, "half", "L"
+Text: speaker_R_x, "centre", speaker_R_y - 0.5, "half", "R"
+
+# Axes labels
+Colour: "{0.3, 0.3, 0.3}"
+Font size: 10
+Text: 0, "centre", room_width/2 + margin * 0.5, "half", "Front"
+Text: 0, "centre", -room_width/2 - margin * 0.5, "half", "Back"
+Text: -room_length/2 - margin * 0.4, "centre", 0, "half", "Left"
+Text: room_length/2 + margin * 0.4, "centre", 0, "half", "Right"
+
+Line width: 1
+Colour: "Black"
+Draw inner box
+
+# Reset
+Font size: 10
+Colour: "Black"
+Line width: 1
 
 # Select output for user
 selectObject: output_stereo
