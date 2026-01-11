@@ -1,175 +1,444 @@
 # ============================================================
-# Praat AudioTools - stereo_shimmer.praat
+# Praat AudioTools - Stereo_Shimmer.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Reverberation or diffusion script
+#   Stereo Shimmer - linear-spaced delays with HF enhancement.
+#   Unlike Ribbon_Shimmer (exponential spacing), this uses
+#   linear spacing for even echo density throughout. Polarity
+#   alternates in ++--++-- pattern. Different jitter and phase
+#   offsets between L/R channels create stereo width.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.2:
+#   - Fixed selection and formula syntax
+#   - Fixed hardcoded sample rate
+#   - Added wet/dry mix control
+#   - Added visualization
 # ============================================================
 
 form Stereo Shimmer
-    comment This script creates shimmering delays with high-frequency enhancement
+    comment Select a Sound object first
+    
+    comment === Preset ===
     optionmenu Preset 1
-        option Custom
+        option Custom (use settings below)
         option Subtle Shimmer
         option Medium Shimmer
         option Heavy Shimmer
         option Extreme Shimmer
-    positive tail_duration_seconds 2
-    natural number_of_echoes 80
-    positive base_amplitude 0.24
-    positive min_delay 0.02
-    positive max_delay 1.2
-    positive decay_factor 0.95
-    positive jitter_amount 0.012
-    positive hf_enhancement 0.25
-    positive scale_every_n 20
-    boolean play_after_processing 1
+    
+    comment === Shimmer Parameters ===
+    positive Tail_duration_s 2
+    natural Number_of_echoes 80
+    positive Base_amplitude 0.24
+    positive Min_delay_s 0.02
+    positive Max_delay_s 1.2
+    positive Decay_factor 0.95
+    positive Jitter_s 0.012
+    
+    comment === HF Enhancement ===
+    positive HF_enhancement 0.25
+    
+    comment === Mix ===
+    real Wet_dry_percent 60
+    comment (0 = dry only, 100 = wet only)
+    
+    comment === Output ===
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# Apply preset values if not Custom
-if preset = 2
-    # Subtle Shimmer
-    tail_duration_seconds = 1.5
-    number_of_echoes = 40
-    base_amplitude = 0.15
-    min_delay = 0.02
-    max_delay = 0.8
-    decay_factor = 0.96
-    jitter_amount = 0.008
-    hf_enhancement = 0.15
-    scale_every_n = 15
-elsif preset = 3
-    # Medium Shimmer
-    tail_duration_seconds = 2
-    number_of_echoes = 80
-    base_amplitude = 0.24
-    min_delay = 0.02
-    max_delay = 1.2
-    decay_factor = 0.95
-    jitter_amount = 0.012
-    hf_enhancement = 0.25
-    scale_every_n = 20
-elsif preset = 4
-    # Heavy Shimmer
-    tail_duration_seconds = 3
-    number_of_echoes = 120
-    base_amplitude = 0.32
-    min_delay = 0.015
-    max_delay = 1.8
-    decay_factor = 0.94
-    jitter_amount = 0.018
-    hf_enhancement = 0.35
-    scale_every_n = 25
-elsif preset = 5
-    # Extreme Shimmer
-    tail_duration_seconds = 4
-    number_of_echoes = 180
-    base_amplitude = 0.4
-    min_delay = 0.01
-    max_delay = 2.5
-    decay_factor = 0.93
-    jitter_amount = 0.025
-    hf_enhancement = 0.45
-    scale_every_n = 30
+# === Check Input ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
 
-if not selected("Sound")
-    exitScript: "Please select a Sound object first."
-endif
+original = selected("Sound")
 originalName$ = selected$("Sound")
-Copy: originalName$ + "_shimmer"
-select Sound 'originalName$'_shimmer
-sampling_rate = Get sample rate
-channels = Get number of channels
-# Create silent tail
-if channels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_seconds, sampling_rate, "0"
+
+selectObject: original
+originalDur = Get total duration
+sr = Get sampling frequency
+numChannels = Get number of channels
+
+# === Apply Presets ===
+if preset = 2
+    # Subtle Shimmer
+    tail_duration_s = 1.5
+    number_of_echoes = 40
+    base_amplitude = 0.15
+    min_delay_s = 0.02
+    max_delay_s = 0.8
+    decay_factor = 0.96
+    jitter_s = 0.008
+    hF_enhancement = 0.15
+    presetName$ = "Subtle"
+elsif preset = 3
+    # Medium Shimmer
+    tail_duration_s = 2
+    number_of_echoes = 80
+    base_amplitude = 0.24
+    min_delay_s = 0.02
+    max_delay_s = 1.2
+    decay_factor = 0.95
+    jitter_s = 0.012
+    hF_enhancement = 0.25
+    presetName$ = "Medium"
+elsif preset = 4
+    # Heavy Shimmer
+    tail_duration_s = 3
+    number_of_echoes = 120
+    base_amplitude = 0.32
+    min_delay_s = 0.015
+    max_delay_s = 1.8
+    decay_factor = 0.94
+    jitter_s = 0.018
+    hF_enhancement = 0.35
+    presetName$ = "Heavy"
+elsif preset = 5
+    # Extreme Shimmer
+    tail_duration_s = 4
+    number_of_echoes = 180
+    base_amplitude = 0.4
+    min_delay_s = 0.01
+    max_delay_s = 2.5
+    decay_factor = 0.93
+    jitter_s = 0.025
+    hF_enhancement = 0.45
+    presetName$ = "Extreme"
 else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_seconds, sampling_rate, "0"
+    presetName$ = "Custom"
 endif
-select Sound 'originalName$'_shimmer
-plus Sound silent_tail
+
+# Clamp wet/dry
+if wet_dry_percent < 0
+    wet_dry_percent = 0
+elsif wet_dry_percent > 100
+    wet_dry_percent = 100
+endif
+
+wet_level = wet_dry_percent / 100
+dry_level = 1 - wet_level
+
+# Sample period for HF
+samplePeriod = 1 / sr
+
+# Pre-calculate delays for visualization
+for k from 1 to min(number_of_echoes, 100)
+    echoDelay[k] = min_delay_s + (max_delay_s - min_delay_s) * k / number_of_echoes
+    echoAmp[k] = base_amplitude * (decay_factor ^ k)
+    if k mod 4 < 2
+        echoPol[k] = 1
+    else
+        echoPol[k] = -1
+    endif
+endfor
+
+# === Info ===
+writeInfoLine: "=== Stereo Shimmer ==="
+appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "Echoes: ", number_of_echoes
+appendInfoLine: "Delay range: ", min_delay_s * 1000, " - ", max_delay_s * 1000, " ms (linear)"
+appendInfoLine: "Decay factor: ", decay_factor
+appendInfoLine: "Jitter: ±", jitter_s * 1000, " ms"
+appendInfoLine: "HF enhancement: ", hF_enhancement
+appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
+appendInfoLine: ""
+
+# ============================================================
+# PROCESSING
+# ============================================================
+
+appendInfoLine: "Processing..."
+
+totalDur = originalDur + tail_duration_s
+
+# Create silent tail
+if numChannels = 2
+    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
+else
+    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
+endif
+silentTail = selected("Sound")
+
+# Concatenate
+selectObject: original, silentTail
 Concatenate
-Rename: "extended_sound"
-select Sound extended_sound
-if channels = 2
+extendedSound = selected("Sound")
+removeObject: silentTail
+
+sp_str$ = string$(samplePeriod)
+hf_str$ = string$(hF_enhancement)
+
+if numChannels = 2
+    # === STEREO PROCESSING ===
+    appendInfoLine: "  Processing stereo..."
+    
+    # Extract channels
+    selectObject: extendedSound
     Extract one channel: 1
-    Rename: "left_channel"
-    select Sound extended_sound
+    leftChannel = selected("Sound")
+    
+    selectObject: extendedSound
     Extract one channel: 2
-    Rename: "right_channel"
+    rightChannel = selected("Sound")
     
-    # Process left
-    select Sound left_channel
+    # Process left channel
+    selectObject: leftChannel
+    Copy: "shimmer_left"
+    shimmerLeft = selected("Sound")
+    
     for k from 1 to number_of_echoes
-        delay = min_delay + (max_delay - min_delay) * k/number_of_echoes + randomUniform(-jitter_amount, jitter_amount)
-        sgn = if (k mod 4 < 2) then 1 else -1 fi
+        delay = min_delay_s + (max_delay_s - min_delay_s) * k / number_of_echoes + randomUniform(-jitter_s, jitter_s)
+        
+        if k mod 4 < 2
+            sgn = 1
+        else
+            sgn = -1
+        endif
+        
         a = base_amplitude * (decay_factor ^ k) * sgn
-        Formula: "if x > delay then self + a * self(x - delay) else self fi"
-        if k mod scale_every_n = 0
+        
+        delay_str$ = string$(delay)
+        a_str$ = string$(a)
+        
+        selectObject: shimmerLeft
+        Formula: "if x > " + delay_str$ + " then self + " + a_str$ + " * self(x - " + delay_str$ + ") else self fi"
+        
+        if k mod 20 = 0
             Scale peak: 0.98
         endif
     endfor
-    Formula: "self + 'hf_enhancement'*(self - self(x - 1/44100))"
+    
+    # HF enhancement
+    Formula: "self + " + hf_str$ + " * (self - self(x - " + sp_str$ + "))"
     Scale peak: 0.98
     
-    # Process right (different jitter and phase)
-    select Sound right_channel
+    # Process right channel (different parameters)
+    selectObject: rightChannel
+    Copy: "shimmer_right"
+    shimmerRight = selected("Sound")
+    
+    jitter_R = jitter_s * 1.25
+    decay_R = decay_factor - 0.01
+    hf_R = hF_enhancement * 0.92
+    hf_R_str$ = string$(hf_R)
+    
     for k from 1 to number_of_echoes
-        delay = min_delay + (max_delay - min_delay) * k/number_of_echoes + randomUniform(-0.015, 0.015)
-        sgn = if ((k + 2) mod 4 < 2) then 1 else -1 fi
-        a = base_amplitude * (0.94 ^ k) * sgn
-        Formula: "if x > delay then self + a * self(x - delay) else self fi"
-        if k mod scale_every_n = 0
+        delay = min_delay_s + (max_delay_s - min_delay_s) * k / number_of_echoes + randomUniform(-jitter_R, jitter_R)
+        
+        # Offset polarity pattern by 2
+        if (k + 2) mod 4 < 2
+            sgn = 1
+        else
+            sgn = -1
+        endif
+        
+        a = base_amplitude * (decay_R ^ k) * sgn
+        
+        delay_str$ = string$(delay)
+        a_str$ = string$(a)
+        
+        selectObject: shimmerRight
+        Formula: "if x > " + delay_str$ + " then self + " + a_str$ + " * self(x - " + delay_str$ + ") else self fi"
+        
+        if k mod 20 = 0
             Scale peak: 0.98
         endif
     endfor
-    Formula: "self + 0.23*(self - self(x - 1/44100))"
+    
+    # HF enhancement
+    Formula: "self + " + hf_R_str$ + " * (self - self(x - " + sp_str$ + "))"
     Scale peak: 0.98
+    
+    # Apply wet/dry
+    if dry_level > 0
+        wet_str$ = string$(wet_level)
+        dry_str$ = string$(dry_level)
+        left_str$ = string$(leftChannel)
+        right_str$ = string$(rightChannel)
+        
+        selectObject: shimmerLeft
+        Formula: "self * " + wet_str$ + " + object[" + left_str$ + "] * " + dry_str$
+        
+        selectObject: shimmerRight
+        Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
+    endif
     
     # Combine
-    select Sound left_channel
-    plus Sound right_channel
+    selectObject: shimmerLeft, shimmerRight
     Combine to stereo
-    Rename: originalName$ + "_shimmer_result"
+    result = selected("Sound")
+    Rename: originalName$ + "_shimmer_" + presetName$
     
     # Cleanup
-    select Sound left_channel
-    plus Sound right_channel
-    plus Sound silent_tail
-    Remove
-    
+    removeObject: leftChannel, rightChannel, shimmerLeft, shimmerRight, extendedSound
+
 else
+    # === MONO PROCESSING ===
+    appendInfoLine: "  Processing mono..."
+    
+    selectObject: extendedSound
+    Copy: "shimmer_mono"
+    shimmerMono = selected("Sound")
+    
     for k from 1 to number_of_echoes
-        delay = min_delay + (max_delay - min_delay) * k/number_of_echoes + randomUniform(-jitter_amount, jitter_amount)
-        sgn = if (k mod 4 < 2) then 1 else -1 fi
+        delay = min_delay_s + (max_delay_s - min_delay_s) * k / number_of_echoes + randomUniform(-jitter_s, jitter_s)
+        
+        if k mod 4 < 2
+            sgn = 1
+        else
+            sgn = -1
+        endif
+        
         a = base_amplitude * (decay_factor ^ k) * sgn
-        Formula: "if x > delay then self + a * self(x - delay) else self fi"
-        if k mod scale_every_n = 0
+        
+        delay_str$ = string$(delay)
+        a_str$ = string$(a)
+        
+        selectObject: shimmerMono
+        Formula: "if x > " + delay_str$ + " then self + " + a_str$ + " * self(x - " + delay_str$ + ") else self fi"
+        
+        if k mod 20 = 0
             Scale peak: 0.98
         endif
     endfor
-    Formula: "self + 'hf_enhancement'*(self - self(x - 1/44100))"
-    Scale peak: 0.98
-    Rename: originalName$ + "_shimmer_result"
     
-    select Sound silent_tail
-    Remove
+    # HF enhancement
+    Formula: "self + " + hf_str$ + " * (self - self(x - " + sp_str$ + "))"
+    Scale peak: 0.98
+    
+    # Apply wet/dry
+    if dry_level > 0
+        wet_str$ = string$(wet_level)
+        dry_str$ = string$(dry_level)
+        ext_str$ = string$(extendedSound)
+        
+        selectObject: shimmerMono
+        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + "] * " + dry_str$
+    endif
+    
+    Rename: originalName$ + "_shimmer_" + presetName$
+    result = shimmerMono
+    
+    removeObject: extendedSound
 endif
-select Sound 'originalName$'_shimmer_result
-if play_after_processing
+
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+if draw_visualization
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Stereo Shimmer: " + originalName$ + " (" + presetName$ + ")"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.4
+    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    selectObject: original
+    Colour: "{0.6, 0.6, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Dry"
+    
+    # Result waveform
+    Select outer viewport: 0, 8, 1.5, 2.3
+    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    selectObject: result
+    Colour: "{0.6, 0.5, 0.7}"
+    Draw: 0, originalDur, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Shimmer " + fixed$(wet_dry_percent, 0) + "%"
+    Text bottom: "yes", "Time (s)"
+    
+    # Linear delay pattern
+    Select outer viewport: 0, 8, 2.5, 4.0
+    Select inner viewport: 0.6, 7.6, 2.6, 3.9
+    
+    maxDelayMs = max_delay_s * 1000 * 1.1
+    maxAmp = base_amplitude * 1.2
+    
+    Axes: 0, maxDelayMs, -maxAmp, maxAmp
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, maxDelayMs, -maxAmp, maxAmp
+    
+    # Zero line
+    Colour: "{0.85, 0.85, 0.85}"
+    Draw line: 0, 0, maxDelayMs, 0
+    
+    # Draw linear reference line
+    Colour: "{0.8, 0.8, 0.8}"
+    Dotted line
+    Draw line: min_delay_s * 1000, base_amplitude, max_delay_s * 1000, base_amplitude * (decay_factor ^ number_of_echoes)
+    Solid line
+    
+    # Draw delay impulses
+    numShow = min(number_of_echoes, 100)
+    for k from 1 to numShow
+        delayMs = echoDelay[k] * 1000
+        amp = echoAmp[k] * echoPol[k]
+        
+        # Color by polarity
+        if echoPol[k] > 0
+            col$ = "{0.5, 0.6, 0.8}"
+        else
+            col$ = "{0.8, 0.5, 0.5}"
+        endif
+        
+        Colour: col$
+        Draw line: delayMs, 0, delayMs, amp
+        Paint circle (mm): col$, delayMs, amp, 0.8
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Delay (ms) — linear spacing"
+    
+    # Legend for polarity pattern
+    Font size: 5
+    Colour: "{0.5, 0.6, 0.8}"
+    Text: maxDelayMs * 0.85, "centre", maxAmp * 0.85, "half", "+ polarity (k mod 4 < 2)"
+    Colour: "{0.8, 0.5, 0.5}"
+    Text: maxDelayMs * 0.85, "centre", -maxAmp * 0.85, "half", "- polarity (k mod 4 >= 2)"
+    
+    # Parameters
+    Select outer viewport: 0, 8, 4.1, 4.5
+    Font size: 6
+    Colour: "{0.4, 0.4, 0.4}"
+    Text: 0.5, "centre", 0.5, "half", "Echoes: " + string$(number_of_echoes) + " | Range: " + fixed$(min_delay_s * 1000, 0) + "-" + fixed$(max_delay_s * 1000, 0) + "ms | Decay: " + fixed$(decay_factor, 3) + " | HF: " + fixed$(hF_enhancement, 2)
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# === Final Info ===
+selectObject: result
+
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Created: ", selected$("Sound")
+
+# === Play ===
+if play_result
+    selectObject: result
     Play
 endif
+
+selectObject: result
