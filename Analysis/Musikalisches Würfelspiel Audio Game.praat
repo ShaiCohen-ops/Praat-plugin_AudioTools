@@ -1,63 +1,150 @@
 # ============================================================
-# Praat AudioTools - Musikalisches Würfelspiel Audio Game  
+# Praat AudioTools - Musikalisches_Wuerfelspiel_Audio_Game.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025) 
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#  Musikalisches Würfelspiel Audio Game
+#   Musikalisches Würfelspiel (Musical Dice Game) - An 18th-century
+#   composition technique where segments are randomly reordered
+#   according to functional harmonic patterns (T-P-D-C).
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.2:
+#   - Fixed select -> selectObject syntax
+#   - Fixed == -> = operator
+#   - Fixed array syntax for Praat compatibility
+#   - Fixed plus -> plusObject syntax
+#   - Fixed string interpolation in Text commands
+#   - Fixed Formula variable scope
+#   - Added input validation
+#   - Added presets
 # ============================================================
 
-# Musikalisches Würfelspiel Audio Game
-
-form Musikalisches Würfelspiel Settings
-    comment Phrase Structure
-    positive numberOfSegments 16
-    comment Feature Weighting for Classification
-    positive intensityWeight 1.0
-    positive spectralWeight 1.0
-    positive pitchWeight 0.5
-    comment Musical Expression
-    boolean applyRitardando 1
-    positive ritardandoModerate 1.15
-    positive ritardandoFinal 1.3
-    boolean applyDiminuendo 1
-    positive diminuendoModerate 0.6
-    positive diminuendoFinal 0.4
-    comment Playback Options
-    boolean playDuringProcessing 1
-    boolean playFinalResult 0
-    positive visualizationDelay 0.05
-endform
-
-# Validate number of segments
-if numberOfSegments < 4
-    numberOfSegments = 4
-endif
-if numberOfSegments > 64
-    numberOfSegments = 64
+# Input validation
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
 
-# Get the selected Sound
 soundID = selected("Sound")
 soundName$ = selected$("Sound")
 
+form Musikalisches Wuerfelspiel v0.2
+    comment === Presets ===
+    optionmenu Preset: 1
+        option Custom
+        option Classical (16 segments balanced)
+        option Baroque (8 segments pitch-focused)
+        option Romantic (16 segments expressive)
+        option Minimal (4 segments simple)
+        option Dense (32 segments complex)
+    comment === Phrase Structure ===
+    positive Number_of_segments 16
+    comment === Feature Weighting ===
+    positive Intensity_weight 1.0
+    positive Spectral_weight 1.0
+    positive Pitch_weight 0.5
+    comment === Musical Expression ===
+    boolean Apply_ritardando 1
+    positive Ritardando_moderate 1.15
+    positive Ritardando_final 1.3
+    boolean Apply_diminuendo 1
+    positive Diminuendo_moderate 0.6
+    positive Diminuendo_final 0.4
+    comment === Playback ===
+    boolean Play_during_processing 1
+    boolean Play_final_result 1
+    positive Visualization_delay 0.05
+endform
+
+# Apply presets
+if preset = 2
+    # Classical
+    number_of_segments = 16
+    intensity_weight = 1.0
+    spectral_weight = 1.0
+    pitch_weight = 0.5
+    apply_ritardando = 1
+    ritardando_moderate = 1.15
+    ritardando_final = 1.3
+    apply_diminuendo = 1
+    diminuendo_moderate = 0.6
+    diminuendo_final = 0.4
+    presetName$ = "Classical"
+elsif preset = 3
+    # Baroque
+    number_of_segments = 8
+    intensity_weight = 0.5
+    spectral_weight = 0.8
+    pitch_weight = 1.5
+    apply_ritardando = 1
+    ritardando_moderate = 1.1
+    ritardando_final = 1.2
+    apply_diminuendo = 0
+    presetName$ = "Baroque"
+elsif preset = 4
+    # Romantic
+    number_of_segments = 16
+    intensity_weight = 1.5
+    spectral_weight = 1.2
+    pitch_weight = 0.8
+    apply_ritardando = 1
+    ritardando_moderate = 1.25
+    ritardando_final = 1.5
+    apply_diminuendo = 1
+    diminuendo_moderate = 0.5
+    diminuendo_final = 0.3
+    presetName$ = "Romantic"
+elsif preset = 5
+    # Minimal
+    number_of_segments = 4
+    intensity_weight = 1.0
+    spectral_weight = 1.0
+    pitch_weight = 1.0
+    apply_ritardando = 0
+    apply_diminuendo = 0
+    presetName$ = "Minimal"
+elsif preset = 6
+    # Dense
+    number_of_segments = 32
+    intensity_weight = 1.0
+    spectral_weight = 1.5
+    pitch_weight = 0.5
+    apply_ritardando = 1
+    ritardando_moderate = 1.1
+    ritardando_final = 1.2
+    apply_diminuendo = 1
+    diminuendo_moderate = 0.7
+    diminuendo_final = 0.5
+    presetName$ = "Dense"
+else
+    presetName$ = "Custom"
+endif
+
+# Validate number of segments
+if number_of_segments < 4
+    number_of_segments = 4
+endif
+if number_of_segments > 64
+    number_of_segments = 64
+endif
+
+numberOfSegments = number_of_segments
+
 # Convert to mono if needed
-select soundID
+selectObject: soundID
 numberOfChannels = Get number of channels
 if numberOfChannels > 1
-    select soundID
+    selectObject: soundID
     Convert to mono
     monoSound = selected("Sound")
     soundName$ = selected$("Sound")
@@ -68,12 +155,12 @@ else
 endif
 
 # Get total duration and calculate segment duration
-select monoSound
+selectObject: monoSound
 duration = Get total duration
 sampleRate = Get sampling frequency
 segmentDuration = duration / numberOfSegments
 
-# Create TableOfReal to store features and classifications
+# Create TableOfReal to store features
 Create TableOfReal: "features", numberOfSegments, 4
 featuresID = selected("TableOfReal")
 Set column label (index): 1, "intensity"
@@ -81,48 +168,50 @@ Set column label (index): 2, "pitch"
 Set column label (index): 3, "spectral_cog"
 Set column label (index): 4, "function"
 
+clearinfo
+writeInfoLine: "========================================="
+appendInfoLine: "Musikalisches Würfelspiel v0.2"
 appendInfoLine: "========================================="
-appendInfoLine: "Musikalisches Würfelspiel Audio Game"
-appendInfoLine: "========================================="
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Analyzing ", numberOfSegments, " segments..."
 
-# Extract segments and compute features for each
+# Extract segments and compute features
 for i from 1 to numberOfSegments
     startTime = (i - 1) * segmentDuration
     endTime = i * segmentDuration
     
     # Extract segment
-    select monoSound
+    selectObject: monoSound
     Extract part: startTime, endTime, "rectangular", 1, "no"
-    segmentID[i] = selected("Sound")
+    segmentID_'i' = selected("Sound")
     Rename: "segment_" + string$(i)
     
     # Compute mean intensity
-    select segmentID[i]
+    selectObject: segmentID_'i'
     To Intensity: 75, 0, "yes"
     intensityID = selected("Intensity")
     meanIntensity = Get mean: 0, 0, "energy"
-    Remove
+    removeObject: intensityID
     
     # Compute mean pitch
-    select segmentID[i]
+    selectObject: segmentID_'i'
     To Pitch: 0, 75, 600
     pitchID = selected("Pitch")
     meanPitch = Get mean: 0, 0, "Hertz"
     if meanPitch = undefined
         meanPitch = 200
     endif
-    Remove
+    removeObject: pitchID
     
     # Compute spectral centre of gravity
-    select segmentID[i]
+    selectObject: segmentID_'i'
     To Spectrum: "yes"
     spectrumID = selected("Spectrum")
     spectralCOG = Get centre of gravity: 2
-    Remove
+    removeObject: spectrumID
     
-    # Store features in TableOfReal
-    select featuresID
+    # Store features
+    selectObject: featuresID
     Set value: i, 1, meanIntensity
     Set value: i, 2, meanPitch
     Set value: i, 3, spectralCOG
@@ -134,10 +223,10 @@ for i from 1 to numberOfSegments
 endfor
 
 appendInfoLine: ""
-appendInfoLine: "Classifying segments with weighted features..."
+appendInfoLine: "Classifying segments..."
 
-# Compute global means and standard deviations for z-score normalization
-select featuresID
+# Compute global means for z-score normalization
+selectObject: featuresID
 totalIntensity = 0
 totalPitch = 0
 totalCOG = 0
@@ -155,13 +244,13 @@ sumSqIntensity = 0
 sumSqPitch = 0
 sumSqCOG = 0
 for i from 1 to numberOfSegments
-    select featuresID
-    intensity = Get value: i, 1
-    pitch = Get value: i, 2
-    cog = Get value: i, 3
-    sumSqIntensity += (intensity - meanIntensityGlobal) ^ 2
-    sumSqPitch += (pitch - meanPitchGlobal) ^ 2
-    sumSqCOG += (cog - meanCOGGlobal) ^ 2
+    selectObject: featuresID
+    intensityVal = Get value: i, 1
+    pitchVal = Get value: i, 2
+    cogVal = Get value: i, 3
+    sumSqIntensity += (intensityVal - meanIntensityGlobal) ^ 2
+    sumSqPitch += (pitchVal - meanPitchGlobal) ^ 2
+    sumSqCOG += (cogVal - meanCOGGlobal) ^ 2
 endfor
 sdIntensity = sqrt(sumSqIntensity / numberOfSegments)
 sdPitch = sqrt(sumSqPitch / numberOfSegments)
@@ -178,32 +267,25 @@ if sdCOG = 0
     sdCOG = 1
 endif
 
-# Classify each segment into functional roles using weighted z-scores
-# 1 = T (tonic/stable), 2 = P (predominant), 3 = D (dominant/tension), 4 = C (cadence/release)
+# Classify segments into functional roles
+# 1=T (tonic), 2=P (predominant), 3=D (dominant), 4=C (cadence)
 for i from 1 to numberOfSegments
-    select featuresID
-    intensity = Get value: i, 1
-    pitch = Get value: i, 2
-    cog = Get value: i, 3
+    selectObject: featuresID
+    intensityVal = Get value: i, 1
+    pitchVal = Get value: i, 2
+    cogVal = Get value: i, 3
     
     # Calculate z-scores
-    zIntensity = (intensity - meanIntensityGlobal) / sdIntensity
-    zPitch = (pitch - meanPitchGlobal) / sdPitch
-    zCOG = (cog - meanCOGGlobal) / sdCOG
+    zIntensity = (intensityVal - meanIntensityGlobal) / sdIntensity
+    zPitch = (pitchVal - meanPitchGlobal) / sdPitch
+    zCOG = (cogVal - meanCOGGlobal) / sdCOG
     
     # Compute weighted tension score
-    # Higher intensity, higher pitch, brighter spectrum = more tension
-    tensionScore = (zIntensity * intensityWeight) + (zPitch * pitchWeight) + (zCOG * spectralWeight)
-    
-    # Normalize by total weight
-    totalWeight = intensityWeight + pitchWeight + spectralWeight
+    tensionScore = (zIntensity * intensity_weight) + (zPitch * pitch_weight) + (zCOG * spectral_weight)
+    totalWeight = intensity_weight + pitch_weight + spectral_weight
     tensionScore = tensionScore / totalWeight
     
     # Map tension to functional roles
-    # High tension (z > 0.5) = Dominant
-    # Medium-high tension (0 < z < 0.5) = Predominant  
-    # Medium-low tension (-0.5 < z < 0) = Tonic
-    # Low tension (z < -0.5) = Cadence
     if tensionScore > 0.5
         functionType = 3
     elsif tensionScore > 0
@@ -217,58 +299,58 @@ for i from 1 to numberOfSegments
     Set value: i, 4, functionType
 endfor
 
-# Define output functional pattern (T-P-D-C repeating)
+# Define output pattern (T-P-D-C repeating)
 for i from 1 to numberOfSegments
     remainder = (i - 1) mod 4
-    if remainder == 0
-        outputPattern[i] = 1
-    elsif remainder == 1
-        outputPattern[i] = 2
-    elsif remainder == 2
-        outputPattern[i] = 3
+    if remainder = 0
+        outputPattern_'i' = 1
+    elsif remainder = 1
+        outputPattern_'i' = 2
+    elsif remainder = 2
+        outputPattern_'i' = 3
     else
-        outputPattern[i] = 4
+        outputPattern_'i' = 4
     endif
 endfor
 
-# Pre-select segments for each output position
+# Pre-select segments for each position
 for position from 1 to numberOfSegments
-    requiredFunction = outputPattern[position]
+    requiredFunction = outputPattern_'position'
     
-    # Find all segments matching the required function
-    select featuresID
+    # Find all segments matching required function
+    selectObject: featuresID
     matchCount = 0
     for seg from 1 to numberOfSegments
         segFunction = Get value: seg, 4
-        if segFunction == requiredFunction
+        if segFunction = requiredFunction
             matchCount += 1
-            matches[matchCount] = seg
+            matches_'matchCount' = seg
         endif
     endfor
     
     # Select random matching segment (or random fallback)
     if matchCount > 0
         randomIndex = randomInteger(1, matchCount)
-        chosenSegment[position] = matches[randomIndex]
+        chosenSegment_'position' = matches_'randomIndex'
     else
-        chosenSegment[position] = randomInteger(1, numberOfSegments)
+        chosenSegment_'position' = randomInteger(1, numberOfSegments)
     endif
     
     # Store function label
-    if requiredFunction == 1
-        requiredLabel$[position] = "T"
-    elsif requiredFunction == 2
-        requiredLabel$[position] = "P"
-    elsif requiredFunction == 3
-        requiredLabel$[position] = "D"
+    if requiredFunction = 1
+        requiredLabel_'position'$ = "T"
+    elsif requiredFunction = 2
+        requiredLabel_'position'$ = "P"
+    elsif requiredFunction = 3
+        requiredLabel_'position'$ = "D"
     else
-        requiredLabel$[position] = "C"
+        requiredLabel_'position'$ = "C"
     endif
 endfor
 
 appendInfoLine: "Processing with expression..."
 
-# Calculate grid dimensions for visualization
+# Calculate grid dimensions
 gridSize = ceiling(sqrt(numberOfSegments))
 if gridSize * (gridSize - 1) >= numberOfSegments
     gridRows = gridSize - 1
@@ -278,23 +360,23 @@ else
     gridCols = gridSize
 endif
 
-# ===== PROGRESSIVE PROCESSING WITH VISUALIZATION =====
+# Progressive processing with visualization
 for k from 1 to numberOfSegments
     # Draw visualization
     Erase all
     Select inner viewport: 0.5, 7.5, 0.5, 7.5
     
     Axes: 0, gridCols, 0, gridRows
-    Black
+    Colour: "Black"
     Line width: 1
     
     # Title
-    Text top: "yes", "Würfelspiel Reordering - Step 'k'/'numberOfSegments'"
+    Text top: "yes", "Würfelspiel Reordering - Step " + string$(k) + "/" + string$(numberOfSegments)
     Text left: "yes", "Row"
     Text bottom: "yes", "Column"
     
     # Draw grid
-    Grey
+    Colour: "Grey"
     for i from 0 to gridCols
         Draw line: i, 0, i, gridRows
     endfor
@@ -315,130 +397,123 @@ for k from 1 to numberOfSegments
         yCenter = (y1 + y2) / 2
         
         if position <= k
-            # Already processed - show with color
-            selectedSeg = chosenSegment[position]
-            funcLabel$ = requiredLabel$[position]
+            # Already processed
+            selectedSeg = chosenSegment_'position'
+            funcLabel$ = requiredLabel_'position'$
             
-            # Color by function (NEW COLORS)
-            if funcLabel$ == "T"
-                Paint circle: "purple", xCenter, yCenter, 0.35
-            elsif funcLabel$ == "P"
-                Paint circle: "cyan", xCenter, yCenter, 0.35
-            elsif funcLabel$ == "D"
-                Paint circle: "magenta", xCenter, yCenter, 0.35
+            # Color by function
+            if funcLabel$ = "T"
+                Paint circle: "Purple", xCenter, yCenter, 0.35
+            elsif funcLabel$ = "P"
+                Paint circle: "Cyan", xCenter, yCenter, 0.35
+            elsif funcLabel$ = "D"
+                Paint circle: "Magenta", xCenter, yCenter, 0.35
             else
-                Paint circle: "pink", xCenter, yCenter, 0.35
+                Paint circle: "Pink", xCenter, yCenter, 0.35
             endif
             
-            # Draw text in WHITE
-            White
-            if position == k
+            # Draw text
+            Colour: "White"
+            if position = k
                 Line width: 3
-                Text: xCenter, "centre", yCenter + 0.15, "half", "##→ 'selectedSeg'##"
-                Text: xCenter, "centre", yCenter - 0.15, "half", "##'funcLabel$'##"
+                Text: xCenter, "centre", yCenter + 0.15, "half", ">" + string$(selectedSeg)
+                Text: xCenter, "centre", yCenter - 0.15, "half", funcLabel$
             else
                 Line width: 1
-                Text: xCenter, "centre", yCenter + 0.1, "half", "→'selectedSeg'"
-                Text: xCenter, "centre", yCenter - 0.1, "half", "'funcLabel$'"
+                Text: xCenter, "centre", yCenter + 0.1, "half", string$(selectedSeg)
+                Text: xCenter, "centre", yCenter - 0.1, "half", funcLabel$
             endif
         else
-            # Not yet processed - show empty
-            Grey
+            # Not yet processed
+            Colour: "Grey"
             Draw circle: xCenter, yCenter, 0.35
         endif
     endfor
     
-    # Legend (NEW COLORS)
+    # Legend
     Select inner viewport: 0.5, 7.5, 7.8, 8.5
     Axes: 0, 1, 0, 1
-    Black
+    Colour: "Black"
     Line width: 1
-    Paint circle: "purple", 0.05, 0.7, 0.015
-    Text: 0.08, "left", 0.7, "half", "T=Tonic (stable)"
-    Paint circle: "cyan", 0.3, 0.7, 0.015
+    Paint circle: "Purple", 0.05, 0.7, 0.015
+    Text: 0.08, "left", 0.7, "half", "T=Tonic"
+    Paint circle: "Cyan", 0.3, 0.7, 0.015
     Text: 0.33, "left", 0.7, "half", "P=Predominant"
-    Paint circle: "magenta", 0.6, 0.7, 0.015
-    Text: 0.63, "left", 0.7, "half", "D=Dominant (tension)"
-    Paint circle: "pink", 0.05, 0.3, 0.015
-    Text: 0.08, "left", 0.3, "half", "C=Cadence (release)"
+    Paint circle: "Magenta", 0.6, 0.7, 0.015
+    Text: 0.63, "left", 0.7, "half", "D=Dominant"
+    Paint circle: "Pink", 0.05, 0.3, 0.015
+    Text: 0.08, "left", 0.3, "half", "C=Cadence"
     
-    # Process current segment - COPY from original segment
-    select segmentID[chosenSegment[k]]
+    # Process current segment
+    chosenSeg = chosenSegment_'k'
+    selectObject: segmentID_'chosenSeg'
     Copy: "piece_" + string$(k)
-    pieceID[k] = selected("Sound")
+    pieceID_'k' = selected("Sound")
     
-    # Apply ritardando and diminuendo at phrase endings ONLY
-    # Every 4th segment (phrase ending), especially last segment
-    if k mod 4 == 0
-        select pieceID[k]
+    # Apply ritardando and diminuendo at phrase endings
+    if k mod 4 = 0
+        selectObject: pieceID_'k'
         pieceDur = Get total duration
         
-        # Determine effect strength based on position
-        if k == numberOfSegments
-            # Final cadence - strongest effect
-            ritFactor = ritardandoFinal
-            dimAmount = diminuendoFinal
+        # Determine effect strength
+        if k = numberOfSegments
+            ritFactor = ritardando_final
+            dimAmount = diminuendo_final
         else
-            # Phrase endings - moderate effect
-            ritFactor = ritardandoModerate
-            dimAmount = diminuendoModerate
+            ritFactor = ritardando_moderate
+            dimAmount = diminuendo_moderate
         endif
         
-        # Apply diminuendo FIRST (before ritardando)
-        if applyDiminuendo == 1
-            select pieceID[k]
+        # Apply diminuendo
+        if apply_diminuendo = 1
+            selectObject: pieceID_'k'
             fadeStart = pieceDur * 0.7
-            Formula: "if x < fadeStart then self else self * (1 - (x - fadeStart)/(pieceDur - fadeStart) * (1 - dimAmount)) fi"
+            fadeStartStr$ = string$(fadeStart)
+            pieceDurStr$ = string$(pieceDur)
+            dimAmountStr$ = string$(dimAmount)
+            Formula: "if x < " + fadeStartStr$ + " then self else self * (1 - (x - " + fadeStartStr$ + ")/(" + pieceDurStr$ + " - " + fadeStartStr$ + ") * (1 - " + dimAmountStr$ + ")) fi"
         endif
         
-        # Apply ritardando (slow down) to last 30% of segment
-        if applyRitardando == 1
-            select pieceID[k]
+        # Apply ritardando
+        if apply_ritardando = 1
+            selectObject: pieceID_'k'
             pieceDur = Get total duration
             fadeStart = pieceDur * 0.7
             
-            # Use higher quality PSOLA settings
             To Manipulation: 0.01, 75, 600
             manipID = selected("Manipulation")
             Extract duration tier
             durTierID = selected("DurationTier")
             
-            # Add points for gradual slowdown
             Add point: 0, 1.0
             Add point: fadeStart, 1.0
             Add point: pieceDur, ritFactor
             
-            # Apply the duration tier
-            select manipID
-            plus durTierID
+            selectObject: manipID
+            plusObject: durTierID
             Replace duration tier
-            select manipID
+            selectObject: manipID
             Get resynthesis (overlap-add)
             ritSound = selected("Sound")
             
-            # Clean up manipulation objects
-            select manipID
-            plus durTierID
-            Remove
+            removeObject: manipID, durTierID
             
-            # Replace piece with ritardando version
-            select pieceID[k]
+            selectObject: pieceID_'k'
             Remove
-            select ritSound
+            selectObject: ritSound
             Rename: "piece_" + string$(k)
-            pieceID[k] = selected("Sound")
+            pieceID_'k' = selected("Sound")
         endif
     endif
     
-    # Play current segment if requested
-    if playDuringProcessing == 1
-        select pieceID[k]
+    # Play current segment
+    if play_during_processing = 1
+        selectObject: pieceID_'k'
         Play
     endif
     
-    # Visualization delay (only if not playing)
-    if playDuringProcessing == 0
-        sleep: visualizationDelay
+    if play_during_processing = 0
+        sleep: visualization_delay
     endif
     
     appendInfo: "."
@@ -448,33 +523,31 @@ for k from 1 to numberOfSegments
 endfor
 
 appendInfoLine: ""
-appendInfoLine: "Concatenating all segments..."
+appendInfoLine: "Concatenating..."
 
-# ===== EFFICIENT CONCATENATION (ALL AT ONCE) =====
-# Select all piece segments
-select pieceID[1]
+# Concatenate all pieces
+selectObject: pieceID_1
 for i from 2 to numberOfSegments
-    plus pieceID[i]
+    plusObject: pieceID_'i'
 endfor
 Concatenate
 outputSound = selected("Sound")
-Rename: "reordered_output"
+Rename: "wuerfelspiel_" + presetName$
 
-# ===== FINAL VISUALIZATION =====
+# Final visualization
 Erase all
 Select inner viewport: 0.5, 7.5, 0.5, 7.5
 
 Axes: 0, gridCols, 0, gridRows
-Black
+Colour: "Black"
 Line width: 1
 
-# Title
-Text top: "yes", "Würfelspiel Reordering - COMPLETE"
+Text top: "yes", "Würfelspiel Complete - " + presetName$
 Text left: "yes", "Row"
 Text bottom: "yes", "Column"
 
 # Draw grid
-Grey
+Colour: "Grey"
 for i from 0 to gridCols
     Draw line: i, 0, i, gridRows
 endfor
@@ -494,92 +567,73 @@ for position from 1 to numberOfSegments
     xCenter = (x1 + x2) / 2
     yCenter = (y1 + y2) / 2
     
-    selectedSeg = chosenSegment[position]
-    funcLabel$ = requiredLabel$[position]
+    selectedSeg = chosenSegment_'position'
+    funcLabel$ = requiredLabel_'position'$
     
-    # Color by function (NEW COLORS)
-    if funcLabel$ == "T"
-        Paint circle: "purple", xCenter, yCenter, 0.35
-    elsif funcLabel$ == "P"
-        Paint circle: "cyan", xCenter, yCenter, 0.35
-    elsif funcLabel$ == "D"
-        Paint circle: "magenta", xCenter, yCenter, 0.35
+    if funcLabel$ = "T"
+        Paint circle: "Purple", xCenter, yCenter, 0.35
+    elsif funcLabel$ = "P"
+        Paint circle: "Cyan", xCenter, yCenter, 0.35
+    elsif funcLabel$ = "D"
+        Paint circle: "Magenta", xCenter, yCenter, 0.35
     else
-        Paint circle: "pink", xCenter, yCenter, 0.35
+        Paint circle: "Pink", xCenter, yCenter, 0.35
     endif
     
-    # Draw text in WHITE
-    White
+    Colour: "White"
     Line width: 2
-    Text: xCenter, "centre", yCenter + 0.1, "half", "→ 'selectedSeg'"
-    Text: xCenter, "centre", yCenter - 0.1, "half", "'funcLabel$'"
+    Text: xCenter, "centre", yCenter + 0.1, "half", string$(selectedSeg)
+    Text: xCenter, "centre", yCenter - 0.1, "half", funcLabel$
 endfor
 
-# Legend (NEW COLORS)
+# Legend
 Select inner viewport: 0.5, 7.5, 7.8, 8.5
 Axes: 0, 1, 0, 1
-Black
+Colour: "Black"
 Line width: 1
-Paint circle: "purple", 0.05, 0.7, 0.015
-Text: 0.08, "left", 0.7, "half", "T=Tonic (stable)"
-Paint circle: "cyan", 0.3, 0.7, 0.015
+Paint circle: "Purple", 0.05, 0.7, 0.015
+Text: 0.08, "left", 0.7, "half", "T=Tonic"
+Paint circle: "Cyan", 0.3, 0.7, 0.015
 Text: 0.33, "left", 0.7, "half", "P=Predominant"
-Paint circle: "magenta", 0.6, 0.7, 0.015
-Text: 0.63, "left", 0.7, "half", "D=Dominant (tension)"
-Paint circle: "pink", 0.05, 0.3, 0.015
-Text: 0.08, "left", 0.3, "half", "C=Cadence (release)"
+Paint circle: "Magenta", 0.6, 0.7, 0.015
+Text: 0.63, "left", 0.7, "half", "D=Dominant"
+Paint circle: "Pink", 0.05, 0.3, 0.015
+Text: 0.08, "left", 0.3, "half", "C=Cadence"
 
-# Summary text
+# Summary
 expressionText$ = ""
-if applyRitardando == 1 and applyDiminuendo == 1
-    expressionText$ = " | With ritardando & diminuendo"
-elsif applyRitardando == 1
-    expressionText$ = " | With ritardando"
-elsif applyDiminuendo == 1
-    expressionText$ = " | With diminuendo"
+if apply_ritardando = 1 and apply_diminuendo = 1
+    expressionText$ = " + rit. & dim."
+elsif apply_ritardando = 1
+    expressionText$ = " + rit."
+elsif apply_diminuendo = 1
+    expressionText$ = " + dim."
 endif
-Text: 0.5, "centre", 0.5, "half", "Pattern: T-P-D-C | 'soundName$''expressionText$'"
+Text: 0.5, "centre", 0.5, "half", "T-P-D-C | " + soundName$ + expressionText$
 
-# Clean up temporary objects
-select featuresID
-Remove
+# Cleanup
+removeObject: featuresID
 for i from 1 to numberOfSegments
-    select segmentID[i]
-    Remove
-    select pieceID[i]
-    Remove
+    removeObject: segmentID_'i', pieceID_'i'
 endfor
 
-# Clean up mono sound if it was created
-if convertedToMono == 1
-    select monoSound
-    Remove
+if convertedToMono = 1
+    removeObject: monoSound
 endif
 
-# Select final result
-select outputSound
+selectObject: outputSound
 
 appendInfoLine: ""
 appendInfoLine: "========================================="
 appendInfoLine: "COMPLETE!"
 appendInfoLine: "========================================="
-appendInfoLine: "Output: reordered_output"
+appendInfoLine: "Output: wuerfelspiel_", presetName$
 appendInfoLine: "Segments: ", numberOfSegments
-appendInfoLine: "Feature weights: I=", intensityWeight, " P=", pitchWeight, " S=", spectralWeight
-if applyRitardando == 1
-    appendInfoLine: "Ritardando: moderate=", ritardandoModerate, " final=", ritardandoFinal
-endif
-if applyDiminuendo == 1
-    appendInfoLine: "Diminuendo: moderate=", diminuendoModerate, " final=", diminuendoFinal
-endif
-appendInfoLine: ""
+appendInfoLine: "Weights: I=", intensity_weight, " P=", pitch_weight, " S=", spectral_weight
 
-# Play the complete output if requested
-if playFinalResult == 1
-    appendInfoLine: "Now playing complete result..."
+if play_final_result = 1
+    appendInfoLine: "Playing result..."
     Play
-else
-    appendInfoLine: "Playback disabled. Select 'reordered_output' and press Play to listen."
 endif
 
 appendInfoLine: ""

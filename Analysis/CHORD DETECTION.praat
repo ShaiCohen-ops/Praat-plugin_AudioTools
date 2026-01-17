@@ -1,67 +1,152 @@
 # ============================================================
-# Praat AudioTools - CHORD DETECTION
+# Praat AudioTools - CHORD_DETECTION.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Fixed and enhanced
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   CHORD DETECTION
+#   Chord Detection - Analyzes audio to detect chords using
+#   spectral peak analysis and pattern matching against a
+#   comprehensive chord dictionary.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
-#   Choose preset or enter custom shift amounts.
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.3:
+#   - Fixed procedure call syntax (call -> @)
+#   - Fixed != to <> operator
+#   - Fixed negative pitch class handling
+#   - Added input validation
+#   - Added presets
+#   - Added visualization
+#   - Fixed plus syntax
 # ============================================================
 
-# ============================================================================
-# CHORD DETECTION - COMPLETE WITH PEAK LIMITING
-# ============================================================================
-
-form Chord Detection Parameters
-    comment === Time Analysis ===
-    positive Window_size_(ms) 100
-    positive Time_step_(ms) 50
-    positive Skip_initial_transient_(ms) 10
-    
-    comment === Frequency Analysis ===
-    positive Min_frequency_(Hz) 80
-    positive Max_frequency_(Hz) 2000
-    
-    comment === Peak Detection ===
-    positive Min_peak_separation_(Hz) 40
-    positive Harmonic_tolerance_(cents) 75
-    boolean Remove_harmonic_duplicates 1
-    positive Max_peaks_to_keep 4
-    
-    comment === Output ===
-    natural Diagnostic_frames_to_analyze 10
-    positive Minimum_chord_duration_(ms) 200
-    boolean Show_all_detections 0
-endform
-
-window_size = window_size / 1000
-time_step = time_step / 1000
-skip_transient = skip_initial_transient / 1000
-min_chord_duration = minimum_chord_duration / 1000
+# Input validation
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
 sound = selected("Sound")
 sound_name$ = selected$("Sound")
+
+form Chord Detection v0.3
+    comment === Presets ===
+    optionmenu Preset: 1
+        option Custom
+        option Quick Scan (fast rough detection)
+        option Standard Analysis (balanced)
+        option Fine Detail (slow precise)
+        option Polyphonic Dense (many notes)
+        option Monophonic Melody (single line)
+    comment === Time Analysis ===
+    positive Window_size_ms 100
+    positive Time_step_ms 50
+    positive Skip_transient_ms 10
+    comment === Frequency Analysis ===
+    positive Min_frequency_Hz 80
+    positive Max_frequency_Hz 2000
+    comment === Peak Detection ===
+    positive Min_peak_separation_Hz 40
+    positive Harmonic_tolerance_cents 75
+    boolean Remove_harmonic_duplicates 1
+    positive Max_peaks_to_keep 4
+    comment === Output ===
+    positive Min_chord_duration_ms 200
+    boolean Show_all_detections 0
+    boolean Draw_visualization 1
+endform
+
+# Apply presets
+if preset = 2
+    # Quick Scan
+    window_size_ms = 150
+    time_step_ms = 100
+    skip_transient_ms = 20
+    min_frequency_Hz = 100
+    max_frequency_Hz = 1500
+    min_peak_separation_Hz = 50
+    harmonic_tolerance_cents = 100
+    max_peaks_to_keep = 3
+    min_chord_duration_ms = 300
+    presetName$ = "QuickScan"
+elsif preset = 3
+    # Standard Analysis
+    window_size_ms = 100
+    time_step_ms = 50
+    skip_transient_ms = 10
+    min_frequency_Hz = 80
+    max_frequency_Hz = 2000
+    min_peak_separation_Hz = 40
+    harmonic_tolerance_cents = 75
+    max_peaks_to_keep = 4
+    min_chord_duration_ms = 200
+    presetName$ = "Standard"
+elsif preset = 4
+    # Fine Detail
+    window_size_ms = 80
+    time_step_ms = 25
+    skip_transient_ms = 5
+    min_frequency_Hz = 60
+    max_frequency_Hz = 3000
+    min_peak_separation_Hz = 30
+    harmonic_tolerance_cents = 50
+    max_peaks_to_keep = 6
+    min_chord_duration_ms = 100
+    presetName$ = "FineDetail"
+elsif preset = 5
+    # Polyphonic Dense
+    window_size_ms = 120
+    time_step_ms = 60
+    skip_transient_ms = 10
+    min_frequency_Hz = 60
+    max_frequency_Hz = 2500
+    min_peak_separation_Hz = 25
+    harmonic_tolerance_cents = 60
+    max_peaks_to_keep = 8
+    min_chord_duration_ms = 150
+    presetName$ = "Polyphonic"
+elsif preset = 6
+    # Monophonic Melody
+    window_size_ms = 50
+    time_step_ms = 25
+    skip_transient_ms = 5
+    min_frequency_Hz = 80
+    max_frequency_Hz = 1000
+    min_peak_separation_Hz = 80
+    harmonic_tolerance_cents = 100
+    max_peaks_to_keep = 1
+    min_chord_duration_ms = 50
+    presetName$ = "Monophonic"
+else
+    presetName$ = "Custom"
+endif
+
+# Convert to seconds
+window_size = window_size_ms / 1000
+time_step = time_step_ms / 1000
+skip_transient = skip_transient_ms / 1000
+min_chord_duration = min_chord_duration_ms / 1000
+
 selectObject: sound
 duration = Get total duration
 sampling_rate = Get sampling frequency
 
 clearinfo
-appendInfoLine: "=== CHORD DETECTION ANALYSIS ==="
+writeInfoLine: "=== CHORD DETECTION v0.3 ==="
 appendInfoLine: "Sound: ", sound_name$
-appendInfoLine: "Duration: ", fixed$(duration, 3), " seconds"
+appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 
+# Create TextGrid
 selectObject: sound
 textgrid = To TextGrid: "chords notes", ""
 
@@ -71,6 +156,12 @@ frame_number = 0
 previous_chord$ = ""
 current_chord_start = 0
 current_chord$ = ""
+
+# Store chord history for visualization
+max_history = 100
+n_chord_history = 0
+
+appendInfoLine: "Analyzing..."
 
 while analysis_time < (duration - window_size)
     frame_number += 1
@@ -88,14 +179,14 @@ while analysis_time < (duration - window_size)
     n_peaks = 0
     max_power_db = -999
     
-    # Find maximum power
+    # Find maximum power in range
     for i_bin from 1 to n_bins
         freq = Get frequency from bin number: i_bin
         
-        if freq >= min_frequency and freq <= max_frequency
-            real = Get real value in bin: i_bin
-            imag = Get imaginary value in bin: i_bin
-            power = sqrt(real^2 + imag^2)
+        if freq >= min_frequency_Hz and freq <= max_frequency_Hz
+            real_val = Get real value in bin: i_bin
+            imag_val = Get imaginary value in bin: i_bin
+            power = sqrt(real_val^2 + imag_val^2)
             
             if power > 0
                 power_db = 20 * log10(power)
@@ -116,10 +207,10 @@ while analysis_time < (duration - window_size)
     for i_bin from 2 to n_bins - 1
         freq = Get frequency from bin number: i_bin
         
-        if freq >= min_frequency and freq <= max_frequency
-            real = Get real value in bin: i_bin
-            imag = Get imaginary value in bin: i_bin
-            power = sqrt(real^2 + imag^2)
+        if freq >= min_frequency_Hz and freq <= max_frequency_Hz
+            real_val = Get real value in bin: i_bin
+            imag_val = Get imaginary value in bin: i_bin
+            power = sqrt(real_val^2 + imag_val^2)
             
             power_db = -999
             if power > 0
@@ -146,17 +237,15 @@ while analysis_time < (duration - window_size)
                 endif
                 
                 is_peak = 0
-                if power_db > power_prev_db
-                    if power_db > power_next_db
-                        is_peak = 1
-                    endif
+                if power_db > power_prev_db and power_db > power_next_db
+                    is_peak = 1
                 endif
                 
                 if is_peak
                     too_close = 0
                     for i_check from 1 to n_peaks
                         freq_diff = abs(freq - peak_freq_'i_check')
-                        if freq_diff < min_peak_separation
+                        if freq_diff < min_peak_separation_Hz
                             if power_db > peak_power_'i_check'
                                 peak_freq_'i_check' = freq
                                 peak_power_'i_check' = power_db
@@ -175,9 +264,8 @@ while analysis_time < (duration - window_size)
         endif
     endfor
     
-    # KEEP ONLY THE STRONGEST PEAKS
+    # Keep only strongest peaks (bubble sort descending)
     if n_peaks > max_peaks_to_keep
-        # Sort peaks by power (descending)
         for i from 1 to n_peaks - 1
             for j from 1 to n_peaks - i
                 j_plus_1 = j + 1
@@ -195,8 +283,6 @@ while analysis_time < (duration - window_size)
                 endif
             endfor
         endfor
-        
-        # Keep only top N peaks
         n_peaks = max_peaks_to_keep
     endif
     
@@ -211,6 +297,10 @@ while analysis_time < (duration - window_size)
         midi_note = 69 + 12 * (ln(freq/440) / ln(2))
         midi_rounded = round(midi_note)
         pitch_class = midi_rounded mod 12
+        # Fix negative pitch class
+        if pitch_class < 0
+            pitch_class = pitch_class + 12
+        endif
         
         n_notes += 1
         note_freq_'n_notes' = freq
@@ -218,7 +308,7 @@ while analysis_time < (duration - window_size)
         note_power_'n_notes' = power
         note_pitch_class_'n_notes' = pitch_class
         
-        call pitchClassToName: pitch_class
+        @pitchClassToName: pitch_class
         if i_peak > 1
             notes_list$ = notes_list$ + " "
         endif
@@ -226,60 +316,58 @@ while analysis_time < (duration - window_size)
     endfor
     
     # Harmonic removal
-    if remove_harmonic_duplicates
-        if n_notes > 1
-            for i from 1 to n_notes
-                note_keep_'i' = 1
-            endfor
+    if remove_harmonic_duplicates and n_notes > 1
+        for i from 1 to n_notes
+            note_keep_'i' = 1
+        endfor
+        
+        for i from 1 to n_notes
+            current_freq = note_freq_'i'
+            current_power = note_power_'i'
             
-            for i from 1 to n_notes
-                current_freq = note_freq_'i'
-                current_power = note_power_'i'
-                
-                for j from 1 to n_notes
-                    if j != i
-                        if note_power_'j' > current_power
-                            fundamental_freq = note_freq_'j'
+            for j from 1 to n_notes
+                if j <> i
+                    if note_power_'j' > current_power
+                        fundamental_freq = note_freq_'j'
+                        
+                        for harmonic from 2 to 6
+                            expected_harmonic = fundamental_freq * harmonic
+                            freq_ratio = current_freq / expected_harmonic
+                            cents_diff = 1200 * abs(ln(freq_ratio) / ln(2))
                             
-                            for harmonic from 2 to 6
-                                expected_harmonic = fundamental_freq * harmonic
-                                freq_ratio = current_freq / expected_harmonic
-                                cents_diff = 1200 * abs(ln(freq_ratio) / ln(2))
-                                
-                                if cents_diff < harmonic_tolerance
-                                    note_keep_'i' = 0
-                                endif
-                            endfor
-                        endif
+                            if cents_diff < harmonic_tolerance_cents
+                                note_keep_'i' = 0
+                            endif
+                        endfor
                     endif
-                endfor
-            endfor
-            
-            n_notes_filtered = 0
-            for i from 1 to n_notes
-                if note_keep_'i' = 1
-                    n_notes_filtered += 1
-                    note_pitch_class_filtered_'n_notes_filtered' = note_pitch_class_'i'
                 endif
             endfor
-            
-            n_notes = n_notes_filtered
-            for i from 1 to n_notes
-                note_pitch_class_'i' = note_pitch_class_filtered_'i'
-            endfor
-        endif
+        endfor
+        
+        n_notes_filtered = 0
+        for i from 1 to n_notes
+            if note_keep_'i' = 1
+                n_notes_filtered += 1
+                note_pitch_class_filtered_'n_notes_filtered' = note_pitch_class_'i'
+            endif
+        endfor
+        
+        n_notes = n_notes_filtered
+        for i from 1 to n_notes
+            note_pitch_class_'i' = note_pitch_class_filtered_'i'
+        endfor
     endif
     
     # Build chord name
     chord_name$ = ""
     
     if n_notes >= 2
-        call createPitchClassSet: n_notes
-        pc_set_size = pitchClassSet.n
-        call matchChord: pc_set_size
+        @createPitchClassSet: n_notes
+        pc_set_size = createPitchClassSet.n
+        @matchChord: pc_set_size
         chord_name$ = matchChord.result$
     elsif n_notes = 1
-        call pitchClassToName: note_pitch_class_1
+        @pitchClassToName: note_pitch_class_1
         chord_name$ = pitchClassToName.result$
     else
         chord_name$ = "Silence"
@@ -291,7 +379,7 @@ while analysis_time < (duration - window_size)
         endif
     endif
     
-    # CHORD CHANGE DETECTION
+    # Chord change detection
     if chord_name$ <> previous_chord$
         if previous_chord$ <> ""
             chord_duration = analysis_time - current_chord_start
@@ -306,7 +394,15 @@ while analysis_time < (duration - window_size)
                 Set interval text: 1, interval_num, current_chord$
                 
                 if not show_all_detections
-                    appendInfoLine: "SEGMENT: ", fixed$(current_chord_start, 3), " - ", fixed$(analysis_time, 3), " s: ", current_chord$
+                    appendInfoLine: "CHORD: ", fixed$(current_chord_start, 3), " - ", fixed$(analysis_time, 3), " s: ", current_chord$
+                endif
+                
+                # Store for visualization
+                if n_chord_history < max_history
+                    n_chord_history += 1
+                    chord_start_'n_chord_history' = current_chord_start
+                    chord_end_'n_chord_history' = analysis_time
+                    chord_label_'n_chord_history'$ = current_chord$
                 endif
             endif
         endif
@@ -339,7 +435,14 @@ if current_chord$ <> ""
     n_intervals = Get number of intervals: 1
     Set interval text: 1, n_intervals, current_chord$
     if not show_all_detections
-        appendInfoLine: "SEGMENT: ", fixed$(current_chord_start, 3), " - ", fixed$(duration, 3), " s: ", current_chord$
+        appendInfoLine: "CHORD: ", fixed$(current_chord_start, 3), " - ", fixed$(duration, 3), " s: ", current_chord$
+    endif
+    
+    if n_chord_history < max_history
+        n_chord_history += 1
+        chord_start_'n_chord_history' = current_chord_start
+        chord_end_'n_chord_history' = duration
+        chord_label_'n_chord_history'$ = current_chord$
     endif
 endif
 
@@ -351,15 +454,105 @@ selectObject: textgrid
 n_chord_intervals = Get number of intervals: 1
 appendInfoLine: "Detected ", n_chord_intervals, " chord segments"
 
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+if draw_visualization
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0, 0.6
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Chord Detection: " + sound_name$ + " (" + presetName$ + ")"
+    
+    # Waveform
+    Select outer viewport: 0, 8, 0.8, 2.5
+    Select inner viewport: 0.6, 7.6, 1.0, 2.3
+    selectObject: sound
+    Colour: "{0.4, 0.5, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Waveform"
+    
+    # Chord timeline
+    Select outer viewport: 0, 8, 2.7, 4.2
+    Select inner viewport: 0.6, 7.6, 2.9, 4.0
+    
+    Axes: 0, duration, 0, 1
+    Colour: "{0.95, 0.95, 0.95}"
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, 1
+    
+    # Draw chord blocks
+    for i from 1 to n_chord_history
+        start_t = chord_start_'i'
+        end_t = chord_end_'i'
+        label$ = chord_label_'i'$
+        
+        # Color by chord type
+        if index(label$, "Major") > 0
+            col$ = "{0.4, 0.7, 0.4}"
+        elsif index(label$, "Minor") > 0
+            col$ = "{0.5, 0.5, 0.8}"
+        elsif index(label$, "Diminished") > 0
+            col$ = "{0.7, 0.4, 0.4}"
+        elsif index(label$, "7th") > 0 or index(label$, "7") > 0
+            col$ = "{0.7, 0.6, 0.3}"
+        elsif index(label$, "Sus") > 0
+            col$ = "{0.6, 0.7, 0.7}"
+        else
+            col$ = "{0.6, 0.6, 0.6}"
+        endif
+        
+        Paint rectangle: col$, start_t, end_t, 0.1, 0.9
+        
+        # Label (if wide enough)
+        mid_t = (start_t + end_t) / 2
+        width = end_t - start_t
+        if width > duration / 15
+            Colour: "Black"
+            Font size: 7
+            Text: mid_t, "centre", 0.5, "half", label$
+        endif
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Chords"
+    Text bottom: "yes", "Time (s)"
+    
+    # Legend
+    Select outer viewport: 0, 8, 4.4, 5.0
+    Font size: 7
+    Colour: "{0.4, 0.7, 0.4}"
+    Text: 0.1, "left", 0.7, "half", "Major"
+    Colour: "{0.5, 0.5, 0.8}"
+    Text: 0.2, "left", 0.7, "half", "Minor"
+    Colour: "{0.7, 0.6, 0.3}"
+    Text: 0.3, "left", 0.7, "half", "7th"
+    Colour: "{0.7, 0.4, 0.4}"
+    Text: 0.4, "left", 0.7, "half", "Dim"
+    Colour: "{0.6, 0.7, 0.7}"
+    Text: 0.5, "left", 0.7, "half", "Sus"
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# Open TextGrid editor
 selectObject: textgrid
-plus sound
+plusObject: sound
 View & Edit
 
 selectObject: sound
 
-# ============================================================================
+# ============================================================
 # PROCEDURES
-# ============================================================================
+# ============================================================
 
 procedure pitchClassToName: .pitch_class
     if .pitch_class = 0
@@ -386,6 +579,8 @@ procedure pitchClassToName: .pitch_class
         .result$ = "A#"
     elsif .pitch_class = 11
         .result$ = "B"
+    else
+        .result$ = "?"
     endif
 endproc
 
@@ -395,49 +590,52 @@ procedure createPitchClassSet: .n_notes
         .pc = note_pitch_class_'.i'
         .already_exists = 0
         for .j from 1 to .n
-            .existing_pc = pitchClassSet.class_'.j'
+            .existing_pc = pitchClassSet_class_'.j'
             if .pc = .existing_pc
                 .already_exists = 1
             endif
         endfor
         if not .already_exists
             .n += 1
-            pitchClassSet.class_'.n' = .pc
+            pitchClassSet_class_'.n' = .pc
         endif
     endfor
     
-    # Sort the pitch class set
+    # Sort the pitch class set (bubble sort)
     for .i from 1 to .n - 1
         for .j from 1 to .n - .i
             .j_plus_1 = .j + 1
-            .val_j = pitchClassSet.class_'.j'
-            .val_j_plus_1 = pitchClassSet.class_'.j_plus_1'
+            .val_j = pitchClassSet_class_'.j'
+            .val_j_plus_1 = pitchClassSet_class_'.j_plus_1'
             
             if .val_j > .val_j_plus_1
                 temp_val = .val_j
-                pitchClassSet.class_'.j' = .val_j_plus_1
-                pitchClassSet.class_'.j_plus_1' = temp_val
+                pitchClassSet_class_'.j' = .val_j_plus_1
+                pitchClassSet_class_'.j_plus_1' = temp_val
             endif
         endfor
     endfor
     
-    pitchClassSet.n = .n
-    pitchClassSet.root = pitchClassSet.class_1
+    createPitchClassSet.n = .n
+    if .n > 0
+        createPitchClassSet.root = pitchClassSet_class_1
+    else
+        createPitchClassSet.root = 0
+    endif
 endproc
 
 procedure matchChord: .n_classes
     .result$ = "Unknown"
     
-    # Try all possible roots (transpositions)
+    # Try all possible roots
     for .try_root from 0 to 11
-        
         # Calculate intervals from this root
         for .i from 1 to .n_classes
-            .pc_val = pitchClassSet.class_'.i'
+            .pc_val = pitchClassSet_class_'.i'
             .interval_'.i' = (.pc_val - .try_root + 12) mod 12
         endfor
         
-        # SORT the intervals
+        # Sort intervals
         for .i from 1 to .n_classes - 1
             for .j from 1 to .n_classes - .i
                 .j_plus_1 = .j + 1
@@ -461,117 +659,116 @@ procedure matchChord: .n_classes
             .pattern$ = .pattern$ + string$(.interval_'.i')
         endfor
         
-        # COMPREHENSIVE CHORD DICTIONARY
-        # 2-note chords (dyads & power chords)
+        # CHORD DICTIONARY
+        # 2-note (dyads)
         if .pattern$ = "0,7"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + "5"
         elsif .pattern$ = "0,5"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + "4"
         elsif .pattern$ = "0,3"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " min3"
         elsif .pattern$ = "0,4"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " maj3"
         
         # 3-note triads
         elsif .pattern$ = "0,4,7"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " Major"
         elsif .pattern$ = "0,3,7"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " Minor"
         elsif .pattern$ = "0,3,6"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " Diminished"
         elsif .pattern$ = "0,4,8"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " Augmented"
         elsif .pattern$ = "0,5,7"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " Sus4"
         elsif .pattern$ = "0,2,7"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " Sus2"
         
         # 4-note 7th chords
         elsif .pattern$ = "0,4,7,10"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Dominant 7th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " Dom7"
         elsif .pattern$ = "0,4,7,11"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Major 7th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " Maj7"
         elsif .pattern$ = "0,3,7,10"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Minor 7th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " Min7"
         elsif .pattern$ = "0,3,6,10"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Half-Diminished 7th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " m7b5"
         elsif .pattern$ = "0,3,6,9"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Diminished 7th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " Dim7"
         elsif .pattern$ = "0,4,8,10"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Augmented 7th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " Aug7"
         elsif .pattern$ = "0,3,7,11"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Minor-Major 7th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " mMaj7"
         
-        # 9th chords (5 notes)
+        # 9th chords
         elsif .pattern$ = "0,2,4,7,10"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " 9th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + "9"
         elsif .pattern$ = "0,2,4,7,11"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Major 9th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " Maj9"
         elsif .pattern$ = "0,2,3,7,10"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Minor 9th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " Min9"
         
         # 6th chords
         elsif .pattern$ = "0,4,7,9"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Major 6th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + "6"
         elsif .pattern$ = "0,3,7,9"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Minor 6th"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " m6"
         
-        # Sus7 variations
+        # Sus7
         elsif .pattern$ = "0,5,7,10"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " 7sus4"
         elsif .pattern$ = "0,2,7,10"
-            call pitchClassToName: .try_root
+            @pitchClassToName: .try_root
             .result$ = pitchClassToName.result$ + " 7sus2"
         
-        # Add9/Add11
+        # Add chords
         elsif .pattern$ = "0,2,4,7"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Add9"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " add9"
         elsif .pattern$ = "0,2,3,7"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Minor Add9"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " m(add9)"
         elsif .pattern$ = "0,4,5,7"
-            call pitchClassToName: .try_root
-            .result$ = pitchClassToName.result$ + " Add11"
+            @pitchClassToName: .try_root
+            .result$ = pitchClassToName.result$ + " add11"
         
         endif
         
-        # If we found a match, stop searching
+        # Stop if found
         if .result$ <> "Unknown"
-            .i = .n_classes
             .try_root = 12
         endif
     endfor
     
-    # If no match found, just list the notes
+    # If no match, list notes
     if .result$ = "Unknown"
         .result$ = ""
         for .i from 1 to .n_classes
-            .pc_val = pitchClassSet.class_'.i'
-            call pitchClassToName: .pc_val
+            .pc_val = pitchClassSet_class_'.i'
+            @pitchClassToName: .pc_val
             if .i > 1
                 .result$ = .result$ + "+"
             endif

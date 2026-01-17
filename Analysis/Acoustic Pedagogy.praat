@@ -1,25 +1,33 @@
 # ============================================================
-# Praat AudioTools - Acoustic Pedagogy
+# Praat AudioTools - Acoustic Pedagogy.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025) - Fixed and enhanced
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Acoustic Pedagogy
+#   Acoustic Pedagogy - 15 interactive acoustic demonstrations
+#   for teaching psychoacoustics and musical acoustics.
 #
 # Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
+#   Run this script and select a phenomenon from the menu.
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.2:
+#   - Fixed procedure call syntax (call -> @)
+#   - Fixed string interpolation issues
+#   - Fixed procedure variable scope
+#   - Replaced printline with appendInfoLine
+#   - Improved visualization labels
+#   - Added phenomenon descriptions to form
 # ============================================================
 
-form Acoustic Lab - Enhanced
+form Acoustic Pedagogy v0.2
     comment === SELECT PHENOMENON ===
     optionmenu Phenomenon: 1
         option 1. Just Intonation (Perfect Fifth)
@@ -37,52 +45,63 @@ form Acoustic Lab - Enhanced
         option 13. Formant Synthesis (Vowels)
         option 14. AM vs FM Modulation
         option 15. Phase Cancellation
-    
     comment === PLAYBACK CONTROLS ===
-    real Duration_(s) 2.0
-    real Base_Frequency_(Hz) 220
-    positive Amplitude_0_to_1 0.5
-    
+    real Duration_s 2.0
+    real Base_frequency_Hz 220
+    positive Amplitude 0.5
     comment === OPTIONS ===
     boolean Show_info_window 1
     boolean Save_sounds_to_list 0
-    
-    comment === HELP ===
-    boolean Show_Help_Manual 0
+    boolean Show_help 0
 endform
 
-# --- HELP LOGIC (Runs first) ---
-if show_Help_Manual
-    beginPause: "Acoustic Pedagogy Guide"
-        comment: "This script provides 15 interactive acoustic demonstrations."
-        comment: "Select a phenomenon from the dropdown menu and click 'Run'."
-        comment: ""
-        comment: "--- TEACHING TIPS ---"
-        comment: "• Start with Just Intonation (1) for basic interval hearing"
-        comment: "• Use Missing Fundamental (7) to demonstrate perceptual completion"
-        comment: "• Binaural Beats (8) require headphones for proper effect"
-        comment: "• Shepard Tone (10) creates compelling auditory illusions"
-        comment: "• Compare AM vs FM (14) to hear modulation differences"
-        comment: ""
-        comment: "Uncheck 'Show Help Manual' and run again to use the tool."
-    endPause: "Close", 1
-    
-    # Stops the script here so you can read the manual. 
-    # To run the tool, run the script again and UNCHECK the Help box.
-    exit
+# --- Help Logic ---
+if show_help
+    clearinfo
+    appendInfoLine: "========================================"
+    appendInfoLine: "   ACOUSTIC PEDAGOGY - HELP MANUAL"
+    appendInfoLine: "========================================"
+    appendInfoLine: ""
+    appendInfoLine: "This script provides 15 interactive acoustic demonstrations."
+    appendInfoLine: ""
+    appendInfoLine: "--- TUNING & INTERVALS ---"
+    appendInfoLine: "1. Just Intonation: Pure 3:2 ratio perfect fifth"
+    appendInfoLine: "2. Pythagorean Comma: 12 fifths vs 7 octaves (~23.5 cents)"
+    appendInfoLine: "3. Syntonic Comma: Just vs Pythagorean major third"
+    appendInfoLine: "4. Wolf Fifth: Impure fifth that 'howls'"
+    appendInfoLine: ""
+    appendInfoLine: "--- PSYCHOACOUSTICS ---"
+    appendInfoLine: "5. Critical Bands: Maximum roughness demo"
+    appendInfoLine: "6. Tartini Tones: Difference tone perception"
+    appendInfoLine: "7. Missing Fundamental: Phantom pitch"
+    appendInfoLine: "8. Binaural Beats: REQUIRES HEADPHONES"
+    appendInfoLine: ""
+    appendInfoLine: "--- SYNTHESIS & TIMBRE ---"
+    appendInfoLine: "9. Fourier Square Wave: Odd harmonic synthesis"
+    appendInfoLine: "10. Shepard Tone: Infinite pitch ascent illusion"
+    appendInfoLine: "11. Harmonic Series: Natural overtone series"
+    appendInfoLine: "12. Combination Tones: Sum/difference tones"
+    appendInfoLine: "13. Formant Synthesis: Vowel /a/ simulation"
+    appendInfoLine: ""
+    appendInfoLine: "--- MODULATION ---"
+    appendInfoLine: "14. AM vs FM: Tremolo vs Vibrato"
+    appendInfoLine: "15. Phase Cancellation: Destructive interference"
+    appendInfoLine: ""
+    appendInfoLine: "Uncheck 'Show help' and run again to use."
+    exitScript: ""
 endif
 
-# --- MAIN SCRIPT STARTS HERE ---
-
-# Clear workspace
+# --- Setup ---
 Erase all
 clearinfo
 
-# --- Global Configuration ---
 srate = 44100
-f_base = base_Frequency
-amp = amplitude_0_to_1
-dur = duration
+f_base = base_frequency_Hz
+amp = amplitude
+dur = duration_s
+
+writeInfoLine: "=== Acoustic Pedagogy v0.2 ==="
+appendInfoLine: ""
 
 # ==========================================
 # MAIN LOGIC - PHENOMENON SELECTION
@@ -90,72 +109,74 @@ dur = duration
 
 if phenomenon = 1
     # === Just Intonation (Perfect Fifth) ===
-    printline [1] Just Intonation - Perfect Fifth
+    appendInfoLine: "[1] Just Intonation - Perfect Fifth"
     f1 = f_base
     f2 = f_base * 3/2
-    call show_info "Just Intonation (Perfect Fifth)" f1 f2
-    call create_and_play f1 f2 dur amp
+    @show_info: "Just Intonation (Perfect Fifth)", f1, f2
+    @create_and_play: f1, f2, dur, amp
     Text top: "no", "Just Fifth (3:2 ratio) - Perfect Consonance"
 
 elsif phenomenon = 2
     # === Pythagorean Comma ===
-    printline [2] Pythagorean Comma
+    appendInfoLine: "[2] Pythagorean Comma"
     f1 = f_base
-    f2 = f_base * (1.5 ^ 12) / (2 ^ 7)
-    call show_info "Pythagorean Comma" f1 f2
-    call create_and_play f1 f2 dur amp
+    f2 = f_base * ((1.5 ^ 12) / (2 ^ 7))
+    @show_info: "Pythagorean Comma", f1, f2
+    @create_and_play: f1, f2, dur, amp
     Text top: "no", "Pythagorean Comma - 12 fifths vs 7 octaves (~23.5 cents)"
 
 elsif phenomenon = 3
     # === Syntonic Comma ===
-    printline [3] Syntonic Comma
+    appendInfoLine: "[3] Syntonic Comma"
     f1 = f_base * 5/4
     f2 = f_base * 81/64
-    call show_info "Syntonic Comma (Didymus)" f1 f2
-    call create_and_play f1 f2 dur amp
+    @show_info: "Syntonic Comma (Didymus)", f1, f2
+    @create_and_play: f1, f2, dur, amp
     Text top: "no", "Syntonic Comma - Just M3 vs Pythagorean M3 (~21.5 cents)"
 
 elsif phenomenon = 4
     # === Wolf Fifth ===
-    printline [4] The Wolf Fifth
+    appendInfoLine: "[4] The Wolf Fifth"
     f1 = f_base * 1.5
     f2 = f_base * 1.5 / (81/80)
-    call show_info "Wolf Fifth" f1 f2
-    call create_and_play f1 f2 dur amp
-    Text top: "no", "Wolf Fifth - Impure fifth that 'howls' with beats"
+    @show_info: "Wolf Fifth", f1, f2
+    @create_and_play: f1, f2, dur, amp
+    Text top: "no", "Wolf Fifth - Impure fifth that howls with beats"
 
 elsif phenomenon = 5
     # === Critical Bands ===
-    printline [5] Critical Bands - Roughness
+    appendInfoLine: "[5] Critical Bands - Roughness"
     f1 = f_base
     f2 = f_base + 25
-    call show_info "Critical Band Roughness" f1 f2
-    call create_and_play f1 f2 dur amp
+    @show_info: "Critical Band Roughness", f1, f2
+    @create_and_play: f1, f2, dur, amp
     Text top: "no", "Critical Band - Maximum roughness at ~25Hz separation"
 
 elsif phenomenon = 6
     # === Tartini Tones (Difference Tones) ===
-    printline [6] Tartini Tones
+    appendInfoLine: "[6] Tartini Tones"
     f1 = 440
     f2 = 660
     f_diff = f2 - f1
-    call show_info "Tartini Tones (Difference: 'f_diff'Hz)" f1 f2
-    call create_and_play f1 f2 dur amp
-    Text top: "no", "Tartini: 440Hz + 660Hz -> Hear difference tone at 220Hz"
+    @show_info: "Tartini Tones (Difference: " + string$(f_diff) + "Hz)", f1, f2
+    @create_and_play: f1, f2, dur, amp
+    Text top: "no", "Tartini: " + string$(f1) + "Hz + " + string$(f2) + "Hz -> Hear " + string$(f_diff) + "Hz"
 
 elsif phenomenon = 7
     # === Missing Fundamental ===
-    printline [7] Missing Fundamental
+    appendInfoLine: "[7] Missing Fundamental"
+    
+    ampStr$ = string$(amp)
     Create Sound from formula: "Complex", 1, 0, dur, srate,
-        ... "amp * (sin(2*pi*660*x) + sin(2*pi*880*x) + sin(2*pi*1100*x))/3"
+        ... ampStr$ + " * (sin(2*pi*660*x) + sin(2*pi*880*x) + sin(2*pi*1100*x))/3"
     id_complex = selected("Sound")
     
     Create Sound from formula: "Ghost", 1, 0, dur, srate,
-        ... "amp * sin(2*pi*220*x)/2"
+        ... ampStr$ + " * sin(2*pi*220*x)/2"
     id_ghost = selected("Sound")
     
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== Missing Fundamental (Phantom Pitch) ==="
         appendInfoLine: "Harmonics present: 660, 880, 1100 Hz"
         appendInfoLine: "These are harmonics 3, 4, 5 of 220Hz"
@@ -179,12 +200,12 @@ elsif phenomenon = 7
 
 elsif phenomenon = 8
     # === Binaural Beats ===
-    printline [8] Binaural Beats (USE HEADPHONES!)
+    appendInfoLine: "[8] Binaural Beats (USE HEADPHONES!)"
     f_left = f_base
     f_right = f_base + 4
     
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== Binaural Beats (STEREO - USE HEADPHONES) ==="
         appendInfoLine: "Left ear: ", fixed$(f_left, 2), " Hz"
         appendInfoLine: "Right ear: ", fixed$(f_right, 2), " Hz"
@@ -193,33 +214,39 @@ elsif phenomenon = 8
         appendInfoLine: ""
     endif
     
-    call create_and_play f_left f_right dur amp
-    Text top: "no", "Binaural Beats - L='f_left'Hz, R='f_right'Hz (Wear headphones!)"
+    @create_and_play: f_left, f_right, dur, amp
+    Text top: "no", "Binaural Beats - L=" + string$(f_left) + "Hz, R=" + string$(f_right) + "Hz (Headphones!)"
 
 elsif phenomenon = 9
     # === Fourier Square Wave ===
-    printline [9] Fourier Synthesis - Square Wave
+    appendInfoLine: "[9] Fourier Synthesis - Square Wave"
     n_harmonics = 7
-    formula$ = "amp * ("
-    for i to n_harmonics
+    
+    ampStr$ = string$(amp)
+    f_baseStr$ = string$(f_base)
+    
+    formula$ = ampStr$ + " * ("
+    firstTerm = 1
+    for i from 1 to n_harmonics
         if i mod 2 = 1
-            if i > 1
+            if firstTerm = 0
                 formula$ = formula$ + " + "
             endif
-            formula$ = formula$ + "(1/"+string$(i)+")*sin(2*pi*"+string$(i*f_base)+"*x)"
+            firstTerm = 0
+            formula$ = formula$ + "(1/" + string$(i) + ")*sin(2*pi*" + string$(i * f_base) + "*x)"
         endif
     endfor
     formula$ = formula$ + ")"
     
     Create Sound from formula: "Sine", 1, 0, dur, srate,
-        ... "amp * sin(2*pi*"+string$(f_base)+"*x)/2"
+        ... ampStr$ + " * sin(2*pi*" + f_baseStr$ + "*x)/2"
     id_sine = selected("Sound")
     
     Create Sound from formula: "Square_Approx", 1, 0, dur, srate, formula$
     id_square = selected("Sound")
     
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== Fourier Synthesis - Square Wave ==="
         appendInfoLine: "Fundamental: ", f_base, " Hz"
         appendInfoLine: "Harmonics: Odd only (1, 3, 5, 7...)"
@@ -244,11 +271,11 @@ elsif phenomenon = 9
 
 elsif phenomenon = 10
     # === Shepard Tone (Infinite Ascent) ===
-    printline [10] Shepard Tone - Infinite Ascent
+    appendInfoLine: "[10] Shepard Tone - Infinite Ascent"
     n_octaves = 6
-    formula$ = "0"
     
-    for octave to n_octaves
+    formula$ = "0"
+    for octave from 1 to n_octaves
         freq = f_base * (2 ^ (octave - 3))
         octave_center = (n_octaves + 1) / 2
         envelope = exp(-((octave - octave_center)^2) / 2)
@@ -259,15 +286,17 @@ elsif phenomenon = 10
     Create Sound from formula: "Shepard", 1, 0, dur, srate, formula$
     id_shepard = selected("Sound")
     
+    ampStr$ = string$(amp)
+    f_baseStr$ = string$(f_base)
     Create Sound from formula: "Reference", 1, 0, dur, srate,
-        ... "amp * sin(2*pi*"+string$(f_base)+"*x)/2"
+        ... ampStr$ + " * sin(2*pi*" + f_baseStr$ + "*x)/2"
     id_ref = selected("Sound")
     
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== Shepard Tone - Auditory Illusion ==="
         appendInfoLine: "Multiple octaves rising simultaneously"
-        appendInfoLine: "Fading in/out creates endless ascent"
+        appendInfoLine: "Gaussian envelope fades in/out each octave"
         appendInfoLine: "Pitch seems to rise forever!"
         appendInfoLine: ""
     endif
@@ -288,12 +317,12 @@ elsif phenomenon = 10
 
 elsif phenomenon = 11
     # === Harmonic Series ===
-    printline [11] Harmonic Series
+    appendInfoLine: "[11] Harmonic Series"
     n_harmonics = 16
-    formula$ = "0"
     
-    for i to n_harmonics
-        formula$ = formula$ + " + (amp/" + string$(i) + ")*sin(2*pi*" + 
+    formula$ = "0"
+    for i from 1 to n_harmonics
+        formula$ = formula$ + " + (" + string$(amp) + "/" + string$(i) + ")*sin(2*pi*" + 
             ... string$(f_base * i) + "*x)"
     endfor
     
@@ -301,12 +330,14 @@ elsif phenomenon = 11
     id_harm = selected("Sound")
     Scale intensity: 70
     
+    ampStr$ = string$(amp)
+    f_baseStr$ = string$(f_base)
     Create Sound from formula: "Fundamental", 1, 0, dur, srate,
-        ... "amp * sin(2*pi*"+string$(f_base)+"*x)/2"
+        ... ampStr$ + " * sin(2*pi*" + f_baseStr$ + "*x)/2"
     id_fund = selected("Sound")
     
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== Harmonic Series ==="
         appendInfoLine: "Fundamental: ", f_base, " Hz"
         appendInfoLine: "Harmonics: f, 2f, 3f, 4f, 5f..."
@@ -314,7 +345,7 @@ elsif phenomenon = 11
         appendInfoLine: "This creates a sawtooth-like timbre"
         appendInfoLine: ""
         appendInfoLine: "Frequencies present:"
-        for i to 8
+        for i from 1 to 8
             appendInfoLine: "  H", i, ": ", fixed$(f_base * i, 1), " Hz"
         endfor
     endif
@@ -335,13 +366,13 @@ elsif phenomenon = 11
 
 elsif phenomenon = 12
     # === Combination Tones (Sum and Difference) ===
-    printline [12] Combination Tones
+    appendInfoLine: "[12] Combination Tones"
     f1 = 400
     f2 = 600
     f_diff = f2 - f1
     
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== Combination Tones ==="
         appendInfoLine: "Primary tones: ", f1, "Hz + ", f2, "Hz"
         appendInfoLine: "Difference tone: ", f_diff, "Hz (you may hear this)"
@@ -349,12 +380,12 @@ elsif phenomenon = 12
         appendInfoLine: ""
     endif
     
-    call create_and_play f1 f2 dur amp
-    Text top: "no", "Combination Tones: 'f1'Hz + 'f2'Hz -> hear 'f_diff'Hz"
+    @create_and_play: f1, f2, dur, amp
+    Text top: "no", "Combination Tones: " + string$(f1) + "Hz + " + string$(f2) + "Hz -> hear " + string$(f_diff) + "Hz"
 
 elsif phenomenon = 13
     # === Formant Synthesis (Vowels) ===
-    printline [13] Formant Synthesis - Vowel /a/
+    appendInfoLine: "[13] Formant Synthesis - Vowel /a/"
     f0 = f_base
     f1_formant = 700
     f2_formant = 1220
@@ -362,7 +393,7 @@ elsif phenomenon = 13
     
     n_harmonics = 40
     formula$ = "0"
-    for i to n_harmonics
+    for i from 1 to n_harmonics
         freq = f0 * i
         amp1 = exp(-((freq - f1_formant)^2) / (2 * 100^2))
         amp2 = exp(-((freq - f2_formant)^2) / (2 * 200^2))
@@ -376,12 +407,14 @@ elsif phenomenon = 13
     id_vowel = selected("Sound")
     Scale intensity: 70
     
+    ampStr$ = string$(amp)
+    f0Str$ = string$(f0)
     Create Sound from formula: "Buzz", 1, 0, dur, srate,
-        ... "amp * sin(2*pi*"+string$(f0)+"*x)/2"
+        ... ampStr$ + " * sin(2*pi*" + f0Str$ + "*x)/2"
     id_buzz = selected("Sound")
     
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== Formant Synthesis - Vowel /a/ ==="
         appendInfoLine: "Fundamental (F0): ", f0, " Hz"
         appendInfoLine: "Formant 1: ", f1_formant, " Hz"
@@ -407,21 +440,26 @@ elsif phenomenon = 13
 
 elsif phenomenon = 14
     # === AM vs FM Modulation ===
-    printline [14] AM vs FM Modulation
+    appendInfoLine: "[14] AM vs FM Modulation"
     f_carrier = f_base * 2
     f_mod = 5
     mod_index = 50
     
+    ampStr$ = string$(amp)
+    f_carrierStr$ = string$(f_carrier)
+    f_modStr$ = string$(f_mod)
+    modIndexStr$ = string$(mod_index)
+    
     Create Sound from formula: "AM", 1, 0, dur, srate,
-        ... "amp * (1 + 0.8*sin(2*pi*"+string$(f_mod)+"*x)) * sin(2*pi*"+string$(f_carrier)+"*x)"
+        ... ampStr$ + " * (1 + 0.8*sin(2*pi*" + f_modStr$ + "*x)) * sin(2*pi*" + f_carrierStr$ + "*x)"
     id_am = selected("Sound")
     
     Create Sound from formula: "FM", 1, 0, dur, srate,
-        ... "amp * sin(2*pi*"+string$(f_carrier)+"*x + "+string$(mod_index)+"*sin(2*pi*"+string$(f_mod)+"*x))"
+        ... ampStr$ + " * sin(2*pi*" + f_carrierStr$ + "*x + " + modIndexStr$ + "*sin(2*pi*" + f_modStr$ + "*x))"
     id_fm = selected("Sound")
     
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== AM vs FM Modulation ==="
         appendInfoLine: "Carrier: ", f_carrier, " Hz"
         appendInfoLine: "Modulator: ", f_mod, " Hz"
@@ -450,19 +488,22 @@ elsif phenomenon = 14
 
 elsif phenomenon = 15
     # === Phase Cancellation ===
-    printline [15] Phase Cancellation
+    appendInfoLine: "[15] Phase Cancellation"
     f1 = f_base
     
+    ampStr$ = string$(amp)
+    f1Str$ = string$(f1)
+    
     Create Sound from formula: "InPhase", 1, 0, dur, srate,
-        ... "amp * sin(2*pi*"+string$(f1)+"*x)"
+        ... ampStr$ + " * sin(2*pi*" + f1Str$ + "*x)"
     id_in = selected("Sound")
     
     Create Sound from formula: "OutPhase", 1, 0, dur, srate,
-        ... "-amp * sin(2*pi*"+string$(f1)+"*x)"
+        ... "-" + ampStr$ + " * sin(2*pi*" + f1Str$ + "*x)"
     id_out = selected("Sound")
     
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== Phase Cancellation ==="
         appendInfoLine: "Frequency: ", f1, " Hz"
         appendInfoLine: "Signal 1: Normal phase"
@@ -473,12 +514,11 @@ elsif phenomenon = 15
         appendInfoLine: ""
     endif
     
-    # Draw ParamCurve showing the two opposite phases
     selectObject: id_in, id_out
     To ParamCurve
     Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
     id_param = selected("ParamCurve")
-    Text top: "no", "Phase Cancellation - Normal (X) vs Inverted 180 (Y)"
+    Text top: "no", "Phase Cancellation - Normal (X) vs Inverted (Y)"
     
     # Create the sum (cancellation)
     selectObject: id_in, id_out
@@ -487,16 +527,15 @@ elsif phenomenon = 15
     Convert to mono
     id_cancelled = selected("Sound")
     
-    # Play sequence: normal, inverted, then cancelled (silence)
-    printline Playing: Normal phase...
+    appendInfoLine: "Playing: Normal phase..."
     selectObject: id_in
     Play
     
-    printline Playing: Inverted phase...
+    appendInfoLine: "Playing: Inverted phase..."
     selectObject: id_out
     Play
     
-    printline Playing: Sum (should be silent)...
+    appendInfoLine: "Playing: Sum (should be silent)..."
     selectObject: id_cancelled
     Play
     
@@ -506,12 +545,11 @@ elsif phenomenon = 15
     endif
 
 else
-    printline ERROR: Invalid selection.
-    exit "Invalid phenomenon selection."
+    exitScript: "Invalid phenomenon selection."
 endif
 
-printline 
-printline === Demonstration Complete ===
+appendInfoLine: ""
+appendInfoLine: "=== Demonstration Complete ==="
 
 # ==========================================
 # PROCEDURES
@@ -519,7 +557,7 @@ printline === Demonstration Complete ===
 
 procedure show_info: .title$, .f1, .f2
     if show_info_window
-        clearinfo
+        appendInfoLine: ""
         appendInfoLine: "=== ", .title$, " ==="
         appendInfoLine: "Frequency 1: ", fixed$(.f1, 2), " Hz"
         appendInfoLine: "Frequency 2: ", fixed$(.f2, 2), " Hz"
@@ -534,26 +572,30 @@ procedure show_info: .title$, .f1, .f2
 endproc
 
 procedure create_and_play: .f1, .f2, .dur, .amp
+    .ampStr$ = string$(.amp)
+    .f1Str$ = string$(.f1)
+    .f2Str$ = string$(.f2)
+    
     Create Sound from formula: "Sound_A", 1, 0, .dur, srate,
-        ... ".amp * sin(2*pi*"+string$(.f1)+"*x)"
-    id_A = selected("Sound")
+        ... .ampStr$ + " * sin(2*pi*" + .f1Str$ + "*x)"
+    .id_A = selected("Sound")
      
     Create Sound from formula: "Sound_B", 1, 0, .dur, srate,
-        ... ".amp * sin(2*pi*"+string$(.f2)+"*x)"
-    id_B = selected("Sound")
+        ... .ampStr$ + " * sin(2*pi*" + .f2Str$ + "*x)"
+    .id_B = selected("Sound")
     
-    selectObject: id_A, id_B
+    selectObject: .id_A, .id_B
     To ParamCurve
     Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
-    id_param = selected("ParamCurve")
+    .id_param = selected("ParamCurve")
     
-    selectObject: id_A, id_B
+    selectObject: .id_A, .id_B
     Combine to stereo
-    id_stereo = selected("Sound")
+    .id_stereo = selected("Sound")
     Play
     
     if not save_sounds_to_list
-        selectObject: id_A, id_B, id_param, id_stereo
+        selectObject: .id_A, .id_B, .id_param, .id_stereo
         Remove
     endif
 endproc
