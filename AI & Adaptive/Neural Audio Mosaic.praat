@@ -1,60 +1,54 @@
 # ============================================================
-# Praat AudioTools - Neural Audio Mosaic
+# Praat AudioTools - Neural_Audio_Mosaic.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Optimized + Stereo
+# Version: 0.4 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Neural Audio Mosaic
-#   Reconstructs 'Target' using 'Source' grains via feature matching.
-#   Optimizations:
-#   - Proper overlap-add synthesis with Hanning windows
-#   - Joint feature normalization
-#   - Balanced feature weighting
-#   - Native arrays
-#   - Exhaustive/stochastic search modes
-#   - Stereo output
+#   Neural Audio Mosaic - Reconstructs 'Target' using 'Source' grains
+#   via feature matching (concatenative synthesis / musaicing).
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.4:
+#   - Fixed preset comparison (number not string)
+#   - Fixed Formula object references
+#   - Added preset name to output
 # ============================================================
 
-# Neural Audio Mosaic 
-# - Reconstructs 'Target' using 'Source' grains.
+# === Input Validation ===
+nSelected = numberOfSelected("Sound")
+if nSelected <> 2
+    exitScript: "Please select exactly TWO Sound objects. (1=Target, 2=Source)"
+endif
 
-form Neural Audio Mosaic
-    comment Select 2 Sounds: #1 = Target (Structure), #2 = Source (Texture)
-    
+id1 = selected("Sound", 1)
+id2 = selected("Sound", 2)
+
+form Neural Audio Mosaic v0.4
+    comment Select 2 Sounds: #1 = Target, #2 = Source
     comment === Preset ===
-    optionmenu Preset 1
-        option Manual (Use Settings Below)
+    optionmenu Preset: 1
+        option Manual
         option Tight Match
         option Creative Loose
         option Rhythmic
         option Spectral Only
         option Pitch Priority
         option Hybrid Texture
-    
     comment === Grain Parameters ===
     positive Grain_size_ms 50
     real Overlap_ratio 0.5
-    
-    comment === Search Parameters ===
-    optionmenu Search_mode 1
+    comment === Search ===
+    optionmenu Search_mode: 1
         option Stochastic (fast)
         option Exhaustive (accurate)
     integer Search_probes 50
-    comment (Only used for stochastic mode)
-    
     comment === Feature Weights ===
     positive Pitch_weight 1.0
     positive Spectral_weight 1.0
     positive Energy_weight 0.5
-    
     comment === Output ===
     boolean Stereo_output 1
     real Stereo_variation 0.3
@@ -66,7 +60,8 @@ endform
 # PRESET LOGIC
 # ============================================
 
-if preset$ = "Tight Match"
+if preset = 2
+    # Tight Match
     grain_size_ms = 40
     overlap_ratio = 0.5
     search_mode = 2
@@ -74,8 +69,9 @@ if preset$ = "Tight Match"
     spectral_weight = 1.5
     energy_weight = 0.8
     stereo_variation = 0.15
-
-elsif preset$ = "Creative Loose"
+    presetName$ = "TightMatch"
+elsif preset = 3
+    # Creative Loose
     grain_size_ms = 80
     overlap_ratio = 0.6
     search_mode = 1
@@ -84,8 +80,9 @@ elsif preset$ = "Creative Loose"
     spectral_weight = 0.5
     energy_weight = 0.2
     stereo_variation = 0.5
-
-elsif preset$ = "Rhythmic"
+    presetName$ = "CreativeLoose"
+elsif preset = 4
+    # Rhythmic
     grain_size_ms = 30
     overlap_ratio = 0.25
     search_mode = 1
@@ -94,8 +91,9 @@ elsif preset$ = "Rhythmic"
     spectral_weight = 1.0
     energy_weight = 1.5
     stereo_variation = 0.25
-
-elsif preset$ = "Spectral Only"
+    presetName$ = "Rhythmic"
+elsif preset = 5
+    # Spectral Only
     grain_size_ms = 60
     overlap_ratio = 0.5
     search_mode = 2
@@ -103,8 +101,9 @@ elsif preset$ = "Spectral Only"
     spectral_weight = 2.0
     energy_weight = 0.3
     stereo_variation = 0.3
-
-elsif preset$ = "Pitch Priority"
+    presetName$ = "SpectralOnly"
+elsif preset = 6
+    # Pitch Priority
     grain_size_ms = 50
     overlap_ratio = 0.5
     search_mode = 2
@@ -112,8 +111,9 @@ elsif preset$ = "Pitch Priority"
     spectral_weight = 0.5
     energy_weight = 0.5
     stereo_variation = 0.2
-
-elsif preset$ = "Hybrid Texture"
+    presetName$ = "PitchPriority"
+elsif preset = 7
+    # Hybrid Texture
     grain_size_ms = 70
     overlap_ratio = 0.65
     search_mode = 1
@@ -122,19 +122,14 @@ elsif preset$ = "Hybrid Texture"
     spectral_weight = 1.0
     energy_weight = 1.0
     stereo_variation = 0.4
+    presetName$ = "HybridTexture"
+else
+    presetName$ = "Manual"
 endif
 
 # ============================================
-# SETUP & VALIDATION
+# SETUP
 # ============================================
-
-nSelected = numberOfSelected("Sound")
-if nSelected <> 2
-    exitScript: "Please select exactly TWO Sound objects. (1=Target, 2=Source)"
-endif
-
-id1 = selected("Sound", 1)
-id2 = selected("Sound", 2)
 
 selectObject: id1
 targetName$ = selected$("Sound")
@@ -162,8 +157,9 @@ if durTarget < grainSec or durSource < grainSec
     exitScript: "Sounds are too short for this grain size."
 endif
 
-writeInfoLine: "=== NEURAL AUDIO MOSAIC ==="
-appendInfoLine: "Preset: ", preset$
+clearinfo
+writeInfoLine: "=== Neural Audio Mosaic v0.4 ==="
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Target: ", targetName$, " (", fixed$(durTarget, 2), " s)"
 appendInfoLine: "Source: ", sourceName$, " (", fixed$(durSource, 2), " s)"
 appendInfoLine: "Grain: ", grain_size_ms, " ms | Overlap: ", fixed$(overlap_ratio * 100, 0), "%"
@@ -173,11 +169,10 @@ else
     appendInfoLine: "Search: Exhaustive"
 endif
 if stereo_output
-    appendInfoLine: "Output: Stereo (variation: ", fixed$(stereo_variation * 100, 0), "%)"
+    appendInfoLine: "Output: Stereo (variation ", fixed$(stereo_variation * 100, 0), "%)"
 else
     appendInfoLine: "Output: Mono"
 endif
-appendInfoLine: "================================"
 appendInfoLine: ""
 
 # Make mono working copies
@@ -190,12 +185,11 @@ sourceSnd = Convert to mono
 Rename: "Work_Source"
 
 # ============================================
-# FEATURE EXTRACTION (Native Arrays)
+# FEATURE EXTRACTION
 # ============================================
 
 appendInfoLine: "Extracting features..."
 
-# Calculate frame counts
 nTarget = floor((durTarget - grainSec) / stepSec)
 nSource = floor((durSource - grainSec) / stepSec)
 
@@ -209,16 +203,15 @@ endif
 appendInfoLine: "  Target frames: ", nTarget
 appendInfoLine: "  Source frames: ", nSource
 
-# Feature dimensions: 12 MFCCs + 1 pitch + 1 energy = 14
 nFeatures = 14
 
-# Allocate arrays for target features
+# Allocate target feature arrays
 for f from 1 to nFeatures
     tFeat_'f'# = zero#(nTarget)
 endfor
 tTime# = zero#(nTarget)
 
-# Allocate arrays for source features
+# Allocate source feature arrays
 for f from 1 to nFeatures
     sFeat_'f'# = zero#(nSource)
 endfor
@@ -238,7 +231,6 @@ for i from 1 to nTarget
     t = (i - 0.5) * stepSec
     tTime#[i] = t
     
-    # MFCCs
     selectObject: tMfcc
     for c from 1 to 12
         val = Get value in frame: i, c
@@ -248,7 +240,6 @@ for i from 1 to nTarget
         tFeat_'c'#[i] = val
     endfor
     
-    # Pitch (log scale)
     selectObject: tPitch
     f0 = Get value at time: t, "Hertz", "Linear"
     if f0 = undefined or f0 <= 0
@@ -258,7 +249,6 @@ for i from 1 to nTarget
     endif
     tFeat_13#[i] = logF0
     
-    # Energy
     selectObject: tIntensity
     energy = Get value at time: t, "cubic"
     if energy = undefined
@@ -283,7 +273,6 @@ for i from 1 to nSource
     t = (i - 0.5) * stepSec
     sTime#[i] = t
     
-    # MFCCs
     selectObject: sMfcc
     for c from 1 to 12
         val = Get value in frame: i, c
@@ -293,7 +282,6 @@ for i from 1 to nSource
         sFeat_'c'#[i] = val
     endfor
     
-    # Pitch (log scale)
     selectObject: sPitch
     f0 = Get value at time: t, "Hertz", "Linear"
     if f0 = undefined or f0 <= 0
@@ -303,7 +291,6 @@ for i from 1 to nSource
     endif
     sFeat_13#[i] = logF0
     
-    # Energy
     selectObject: sIntensity
     energy = Get value at time: t, "cubic"
     if energy = undefined
@@ -320,11 +307,9 @@ appendInfoLine: "  Features extracted"
 # JOINT FEATURE NORMALIZATION
 # ============================================
 
-appendInfoLine: "Normalizing features (joint)..."
+appendInfoLine: "Normalizing features..."
 
-# For each feature, compute stats across BOTH target and source
 for f from 1 to nFeatures
-    # Find min/max across both
     minV = 1e9
     maxV = -1e9
     
@@ -353,7 +338,6 @@ for f from 1 to nFeatures
         range = 1
     endif
     
-    # Normalize both using same stats
     for i from 1 to nTarget
         tFeat_'f'#[i] = (tFeat_'f'#[i] - minV) / range
     endfor
@@ -363,19 +347,15 @@ for f from 1 to nFeatures
     endfor
 endfor
 
-appendInfoLine: "  Normalization complete"
-
 # ============================================
-# BUILD FEATURE WEIGHT ARRAY
+# FEATURE WEIGHTS
 # ============================================
 
-# Normalize weights so they sum to nFeatures (balanced contribution)
 totalWeight = spectral_weight * 12 + pitch_weight + energy_weight
 if totalWeight < 0.001
     totalWeight = 1
 endif
 
-# Per-dimension weights
 for c from 1 to 12
     w_'c' = spectral_weight * nFeatures / totalWeight
 endfor
@@ -383,15 +363,13 @@ w_13 = pitch_weight * nFeatures / totalWeight
 w_14 = energy_weight * nFeatures / totalWeight
 
 # ============================================
-# NEURAL SEARCH (Matching)
+# NEURAL SEARCH
 # ============================================
 
 appendInfoLine: "Running neural search..."
 
-# Output: best source index for each target frame
 matchIdx# = zero#(nTarget)
 
-# For stereo: second match with slight variation
 if stereo_output
     matchIdx_R# = zero#(nTarget)
 endif
@@ -399,13 +377,11 @@ endif
 for i from 1 to nTarget
     best_dist = 1e9
     best_idx = 1
-    
-    # For stereo right channel
     second_best_dist = 1e9
     second_best_idx = 1
     
     if search_mode = 2
-        # Exhaustive search
+        # Exhaustive
         for j from 1 to nSource
             dist = 0
             for f from 1 to nFeatures
@@ -424,7 +400,7 @@ for i from 1 to nTarget
             endif
         endfor
     else
-        # Stochastic search
+        # Stochastic
         for probe from 1 to search_probes
             j = randomInteger(1, nSource)
             
@@ -448,7 +424,6 @@ for i from 1 to nTarget
     
     matchIdx#[i] = best_idx
     
-    # For stereo: use second best or add variation
     if stereo_output
         if randomUniform(0, 1) < stereo_variation
             matchIdx_R#[i] = second_best_idx
@@ -469,7 +444,7 @@ appendInfoLine: "  Search complete"
 # OVERLAP-ADD SYNTHESIS
 # ============================================
 
-appendInfoLine: "Synthesizing mosaic (overlap-add)..."
+appendInfoLine: "Synthesizing mosaic..."
 
 outputDur = nTarget * stepSec + grainSec
 
@@ -488,24 +463,19 @@ for pass from 1 to n_passes
         endif
     endif
     
-    # Create output buffer
     outputSnd = Create Sound from formula: "Output_" + string$(pass), 1, 0, outputDur, fs, "0"
     
-    # Overlap-add each grain
     for i from 1 to nTarget
-        # Get source index for this pass
         if pass = 1
             srcIdx = matchIdx#[i]
         else
             srcIdx = matchIdx_R#[i]
         endif
         
-        # Source grain time
         t_src = sTime#[srcIdx]
         t1 = t_src - (grainSec / 2)
         t2 = t_src + (grainSec / 2)
         
-        # Clamp to valid range
         if t1 < 0
             t1 = 0
             t2 = grainSec
@@ -518,34 +488,31 @@ for pass from 1 to n_passes
             endif
         endif
         
-        # Extract grain with Hanning window
         selectObject: sourceSnd
         grain = Extract part: t1, t2, "Hanning", 1, "no"
         
-        # Destination time
         destTime = (i - 1) * stepSec
         
-        # Add to output buffer
         selectObject: grain
-        grainName$ = selected$("Sound")
         grainDur = Get total duration
+        grainIdStr$ = string$(grain)
+        destTimeStr$ = string$(destTime)
         
         selectObject: outputSnd
         Formula (part): destTime, destTime + grainDur, 1, 1,
-            ... "self + Sound_'grainName$'(x - " + string$(destTime) + ")"
+            ... "self + Object_" + grainIdStr$ + "(x - " + destTimeStr$ + ")"
         
         removeObject: grain
     endfor
     
-    # Compensate for overlap-add gain
+    # OLA gain compensation
     selectObject: outputSnd
     if overlap_ratio > 0
-        # OLA gain compensation (approximate)
         gain_comp = 1 / (1 + overlap_ratio)
-        Formula: "self * " + string$(gain_comp)
+        gainStr$ = string$(gain_comp)
+        Formula: "self * " + gainStr$
     endif
     
-    # Store channel
     if pass = 1
         channel_left = outputSnd
         selectObject: channel_left
@@ -564,7 +531,6 @@ endfor
 if stereo_output
     appendInfoLine: "Combining to stereo..."
     
-    # Match durations
     selectObject: channel_left
     dur_L = Get total duration
     selectObject: channel_right
@@ -582,14 +548,15 @@ if stereo_output
         channel_left = tmp
     endif
     
-    selectObject: channel_left, channel_right
+    selectObject: channel_left
+    plusObject: channel_right
     finalOut = Combine to stereo
-    Rename: targetName$ + "_Mosaic_stereo"
+    Rename: targetName$ + "_Mosaic_" + presetName$
     
     removeObject: channel_left, channel_right
 else
     finalOut = channel_left
-    Rename: targetName$ + "_Mosaic"
+    Rename: targetName$ + "_Mosaic_" + presetName$
 endif
 
 if normalize_volume

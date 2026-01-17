@@ -1,67 +1,64 @@
 # ============================================================
-# Praat AudioTools - NMF Spectral Resynthesizer 
+# Praat AudioTools - NMF_Spectral_Resynthesizer.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Optimized + Stereo
+# Version: 0.4 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   NMF Spectral Resynthesizer
-#   Optimizations:
-#   - Reusable temporary matrices (reduced object churn)
-#   - Complete presets with all parameters
-#   - Stereo support (shared W, independent H)
-#   - Fast preview mode
+#   NMF Spectral Resynthesizer - Decomposes spectrogram via
+#   Non-negative Matrix Factorization for creative resynthesis.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.4:
+#   - Fixed preset comparison (number not string)
+#   - Added preset name to output
+#   - Added visualization
 # ============================================================
 
-# ENGINE: Dual-Mode NMF + Pitch-Locked Resynthesis.
-# PRESETS: Fast Preview, Smooth Gliss, Clicks, Micro-Texture, High Definition.
-# CONTROL: Manual mode uses settings below.
+# === Input Validation ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object"
+endif
 
-form NMF Spectral Resynthesizer
-    optionmenu Preset 1
-        option Manual (Use Settings Below)
+id_original = selected("Sound")
+name_original$ = selected$("Sound")
+
+form NMF Spectral Resynthesizer v0.4
+    optionmenu Preset: 1
+        option Manual
         option Fast Preview
         option Smooth Gliss
         option Clicks
         option Texture
         option High Definition
-    
     comment === Analysis Window ===
     positive Window_ms 10
     positive Step_ms 4.0
-    
     comment === Smoothing ===
     positive Trans_decay 0.6
     integer Texture_blur_passes 4
-    
     comment === Pitch Tracking ===
     positive Min_pitch 75
     positive Max_pitch 600
     positive Pitch_smoothing_hz 10
-    
     comment === NMF Engine ===
     natural Max_freq_hz 4000
     integer N_components 4
     integer N_iterations 8
-    
     comment === Output ===
     boolean Stereo_output 1
+    boolean Draw_visualization 1
     boolean Play_output 1
 endform
 
 # ============================================
-# PRESET LOGIC (Complete parameter sets)
+# PRESET LOGIC
 # ============================================
 
-if preset$ = "Fast Preview"
-    # Quick preview - low quality but fast
+if preset = 2
+    # Fast Preview
     window_ms = 15
     step_ms = 8.0
     trans_decay = 0.5
@@ -69,9 +66,9 @@ if preset$ = "Fast Preview"
     max_freq_hz = 3000
     n_components = 2
     n_iterations = 4
-    
-elsif preset$ = "Smooth Gliss"
-    # Long windows, high smoothing for glissando effects
+    presetName$ = "FastPreview"
+elsif preset = 3
+    # Smooth Gliss
     window_ms = 2.0
     step_ms = 50.0
     trans_decay = 0.9
@@ -79,9 +76,9 @@ elsif preset$ = "Smooth Gliss"
     max_freq_hz = 4000
     n_components = 3
     n_iterations = 10
-    
-elsif preset$ = "Clicks"
-    # Short transients, percussive textures
+    presetName$ = "SmoothGliss"
+elsif preset = 4
+    # Clicks
     window_ms = 60.0
     step_ms = 15.0
     trans_decay = 0.4
@@ -89,9 +86,9 @@ elsif preset$ = "Clicks"
     max_freq_hz = 5000
     n_components = 5
     n_iterations = 8
-
-elsif preset$ = "Texture"
-    # Micro-granular, dense evolving textures
+    presetName$ = "Clicks"
+elsif preset = 5
+    # Texture
     window_ms = 1.0
     step_ms = 2.0
     trans_decay = 0.5
@@ -99,9 +96,9 @@ elsif preset$ = "Texture"
     max_freq_hz = 4000
     n_components = 4
     n_iterations = 8
-    
-elsif preset$ = "High Definition"
-    # Maximum quality, slow processing
+    presetName$ = "Texture"
+elsif preset = 6
+    # High Definition
     window_ms = 8
     step_ms = 3.0
     trans_decay = 0.6
@@ -109,19 +106,18 @@ elsif preset$ = "High Definition"
     max_freq_hz = 6000
     n_components = 6
     n_iterations = 15
+    presetName$ = "HighDefinition"
+else
+    presetName$ = "Manual"
 endif
 
 # ============================================
-# SETUP & VALIDATION
+# SETUP
 # ============================================
-
-if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object"
-endif
 
 clearinfo
-writeInfoLine: "=== NMF SPECTRAL RESYNTHESIZER (Optimized) ==="
-appendInfoLine: "Preset: ", preset$
+writeInfoLine: "=== NMF Spectral Resynthesizer v0.4 ==="
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Window: ", window_ms, " ms | Step: ", step_ms, " ms"
 appendInfoLine: "Components: ", n_components, " | Iterations: ", n_iterations
 appendInfoLine: "Decay: ", trans_decay, " | Blur passes: ", texture_blur_passes
@@ -130,17 +126,13 @@ if stereo_output
 else
     appendInfoLine: "Output: Mono"
 endif
-appendInfoLine: "=============================================="
 appendInfoLine: ""
 
-id_original = selected("Sound")
-name_original$ = selected$("Sound")
 selectObject: id_original
 sampling_rate = Get sampling frequency
 duration = Get total duration
 original_channels = Get number of channels
 
-# Convert to mono for analysis
 if original_channels > 1
     id_mono = Convert to mono
     Rename: name_original$ + "_mono"
@@ -149,7 +141,7 @@ else
 endif
 
 # ============================================
-# 1. SPECTROGRAM & INIT
+# SPECTROGRAM & INIT
 # ============================================
 
 appendInfoLine: "Creating spectrogram..."
@@ -165,15 +157,18 @@ nCols = Get number of columns
 
 appendInfoLine: "  Matrix size: ", nRows, " x ", nCols
 
-# Initialize W and H matrices
 matW = Create simple Matrix: "NMF_W", nRows, n_components, "randomUniform(0.1, 1)"
 matH = Create simple Matrix: "NMF_H", n_components, nCols, "randomUniform(0.1, 1)"
 
+# Store IDs for Formula references
+matV_id$ = string$(matV)
+matW_id$ = string$(matW)
+matH_id$ = string$(matH)
+
 # ============================================
-# 2. PRE-ALLOCATE TEMPORARY MATRICES (OPTIMIZATION)
+# PRE-ALLOCATE TEMPORARY MATRICES
 # ============================================
 
-# These are reused every iteration instead of create/delete
 matNum_H = Create simple Matrix: "Num_H", n_components, nCols, "0"
 matWtW = Create simple Matrix: "WtW", n_components, n_components, "0"
 matDenom_H = Create simple Matrix: "Denom_H", n_components, nCols, "0"
@@ -182,8 +177,15 @@ matNum_W = Create simple Matrix: "Num_W", nRows, n_components, "0"
 matHHt = Create simple Matrix: "HHt", n_components, n_components, "0"
 matDenom_W = Create simple Matrix: "Denom_W", nRows, n_components, "0"
 
+matNum_H_id$ = string$(matNum_H)
+matWtW_id$ = string$(matWtW)
+matDenom_H_id$ = string$(matDenom_H)
+matNum_W_id$ = string$(matNum_W)
+matHHt_id$ = string$(matHHt)
+matDenom_W_id$ = string$(matDenom_W)
+
 # ============================================
-# 3. NMF LOOP (Optimized with reusable matrices)
+# NMF LOOP
 # ============================================
 
 appendInfoLine: "Decomposing (", n_iterations, " iterations)..."
@@ -198,7 +200,7 @@ for iter from 1 to n_iterations
     for k from 1 to nRows
         k_str$ = fixed$(k, 0)
         selectObject: matNum_H
-        Formula: "self + Matrix_NMF_W[" + k_str$ + ", row] * Matrix_NMF_V[" + k_str$ + ", col]"
+        Formula: "self + Object_" + matW_id$ + "[" + k_str$ + ", row] * Object_" + matV_id$ + "[" + k_str$ + ", col]"
     endfor
     
     # Compute WtW = W' * W
@@ -207,7 +209,7 @@ for iter from 1 to n_iterations
     for k from 1 to nRows
         k_str$ = fixed$(k, 0)
         selectObject: matWtW
-        Formula: "self + Matrix_NMF_W[" + k_str$ + ", row] * Matrix_NMF_W[" + k_str$ + ", col]"
+        Formula: "self + Object_" + matW_id$ + "[" + k_str$ + ", row] * Object_" + matW_id$ + "[" + k_str$ + ", col]"
     endfor
     
     # Compute Denom_H = WtW * H
@@ -216,12 +218,12 @@ for iter from 1 to n_iterations
     for k from 1 to n_components
         k_str$ = fixed$(k, 0)
         selectObject: matDenom_H
-        Formula: "self + Matrix_WtW[row, " + k_str$ + "] * Matrix_NMF_H[" + k_str$ + ", col]"
+        Formula: "self + Object_" + matWtW_id$ + "[row, " + k_str$ + "] * Object_" + matH_id$ + "[" + k_str$ + ", col]"
     endfor
     
     # Update H
     selectObject: matH
-    Formula: "self * Matrix_Num_H[row,col] / (Matrix_Denom_H[row,col] + 1e-9)"
+    Formula: "self * Object_" + matNum_H_id$ + "[row,col] / (Object_" + matDenom_H_id$ + "[row,col] + 1e-9)"
 
     # --- UPDATE W ---
     # Compute Num_W = V * H'
@@ -230,7 +232,7 @@ for iter from 1 to n_iterations
     for k from 1 to nCols
         k_str$ = fixed$(k, 0)
         selectObject: matNum_W
-        Formula: "self + Matrix_NMF_V[row, " + k_str$ + "] * Matrix_NMF_H[col, " + k_str$ + "]"
+        Formula: "self + Object_" + matV_id$ + "[row, " + k_str$ + "] * Object_" + matH_id$ + "[col, " + k_str$ + "]"
     endfor
     
     # Compute HHt = H * H'
@@ -239,7 +241,7 @@ for iter from 1 to n_iterations
     for k from 1 to nCols
         k_str$ = fixed$(k, 0)
         selectObject: matHHt
-        Formula: "self + Matrix_NMF_H[row, " + k_str$ + "] * Matrix_NMF_H[col, " + k_str$ + "]"
+        Formula: "self + Object_" + matH_id$ + "[row, " + k_str$ + "] * Object_" + matH_id$ + "[col, " + k_str$ + "]"
     endfor
     
     # Compute Denom_W = W * HHt
@@ -248,56 +250,53 @@ for iter from 1 to n_iterations
     for k from 1 to n_components
         k_str$ = fixed$(k, 0)
         selectObject: matDenom_W
-        Formula: "self + Matrix_NMF_W[row, " + k_str$ + "] * Matrix_HHt[" + k_str$ + ", col]"
+        Formula: "self + Object_" + matW_id$ + "[row, " + k_str$ + "] * Object_" + matHHt_id$ + "[" + k_str$ + ", col]"
     endfor
     
     # Update W
     selectObject: matW
-    Formula: "self * Matrix_Num_W[row,col] / (Matrix_Denom_W[row,col] + 1e-9)"
+    Formula: "self * Object_" + matNum_W_id$ + "[row,col] / (Object_" + matDenom_W_id$ + "[row,col] + 1e-9)"
 endfor
 
 appendInfoLine: " done"
 
-# Clean up temp matrices
 removeObject: matNum_H, matWtW, matDenom_H, matNum_W, matHHt, matDenom_W
 
 # ============================================
-# 4. DUAL-MODE SMOOTHING
+# DUAL-MODE SMOOTHING
 # ============================================
 
 appendInfoLine: "Applying smoothing..."
 
 selectObject: matH
 
-# Transient smoothing for low components (1-2)
 if trans_decay > 0
     Formula: "if row <= 2 and col > 1 then (self * (1-trans_decay)) + (self[row, col-1] * trans_decay) else self fi"
 endif
 
-# Texture blur for higher components (3+)
 for i from 1 to texture_blur_passes
     Formula: "if row > 2 and col > 1 and col < ncol then (self[row, col-1]*0.25 + self*0.5 + self[row, col+1]*0.25) else self fi"
 endfor
 
 # ============================================
-# 5. RECONSTRUCT SPECTROGRAM
+# RECONSTRUCT SPECTROGRAM
 # ============================================
 
 appendInfoLine: "Reconstructing spectrogram..."
 
 selectObject: matV
 matRecon = Copy: "V_Recon"
+matRecon_id$ = string$(matRecon)
 Formula: "0"
 
-# Reconstruct: V_recon = W * H
 for k from 1 to n_components
     k_str$ = fixed$(k, 0)
     selectObject: matRecon
-    Formula: "self + Matrix_NMF_W[row, " + k_str$ + "] * Matrix_NMF_H[" + k_str$ + ", col]"
+    Formula: "self + Object_" + matW_id$ + "[row, " + k_str$ + "] * Object_" + matH_id$ + "[" + k_str$ + ", col]"
 endfor
 
 # ============================================
-# 6. RESYNTHESIS (with stereo support)
+# RESYNTHESIS
 # ============================================
 
 if stereo_output
@@ -306,7 +305,6 @@ else
     n_passes = 1
 endif
 
-# Extract original pitch for locking
 appendInfoLine: "Extracting pitch contour..."
 selectObject: id_mono
 pitchOrig = To Pitch: 0.0, min_pitch, max_pitch
@@ -321,11 +319,9 @@ for pass from 1 to n_passes
         else
             appendInfoLine: "Synthesizing RIGHT channel..."
             
-            # For right channel, re-randomize H slightly for variation
             selectObject: matH
             Formula: "self * randomUniform(0.85, 1.15)"
             
-            # Re-apply smoothing
             if trans_decay > 0
                 Formula: "if row <= 2 and col > 1 then (self * (1-trans_decay)) + (self[row, col-1] * trans_decay) else self fi"
             endif
@@ -333,27 +329,24 @@ for pass from 1 to n_passes
                 Formula: "if row > 2 and col > 1 and col < ncol then (self[row, col-1]*0.25 + self*0.5 + self[row, col+1]*0.25) else self fi"
             endfor
             
-            # Reconstruct with varied H
             selectObject: matRecon
             Formula: "0"
             for k from 1 to n_components
                 k_str$ = fixed$(k, 0)
                 selectObject: matRecon
-                Formula: "self + Matrix_NMF_W[row, " + k_str$ + "] * Matrix_NMF_H[" + k_str$ + ", col]"
+                Formula: "self + Object_" + matW_id$ + "[row, " + k_str$ + "] * Object_" + matH_id$ + "[" + k_str$ + ", col]"
             endfor
         endif
     else
         appendInfoLine: "Synthesizing..."
     endif
     
-    # Convert matrix to spectrogram then to sound
     selectObject: matRecon
     specRecon = To Spectrogram
     selectObject: specRecon
     soundRecon = To Sound: sampling_rate
     Rename: "NMF_Raw_" + string$(pass)
     
-    # Pitch locking
     selectObject: soundRecon
     manipulation = To Manipulation: 0.01, min_pitch, max_pitch
     selectObject: manipulation
@@ -365,7 +358,6 @@ for pass from 1 to n_passes
     
     removeObject: manipulation, soundRecon, specRecon
     
-    # Store channel
     if pass = 1
         channel_left = soundPitched
         selectObject: channel_left
@@ -380,13 +372,12 @@ endfor
 removeObject: pitchTier
 
 # ============================================
-# 7. COMBINE STEREO / FINALIZE
+# COMBINE STEREO / FINALIZE
 # ============================================
 
 if stereo_output
     appendInfoLine: "Combining to stereo..."
     
-    # Match durations
     selectObject: channel_left
     dur_left = Get total duration
     
@@ -405,24 +396,176 @@ if stereo_output
         channel_left = channel_left_trim
     endif
     
-    selectObject: channel_left, channel_right
+    selectObject: channel_left
+    plusObject: channel_right
     soundFinal = Combine to stereo
-    Rename: name_original$ + "_NMF_" + preset$ + "_stereo"
+    Rename: name_original$ + "_NMF_" + presetName$
     
     removeObject: channel_left, channel_right
 else
     soundFinal = channel_left
-    Rename: name_original$ + "_NMF_" + preset$
+    Rename: name_original$ + "_NMF_" + presetName$
 endif
 
 selectObject: soundFinal
 Scale peak: 0.99
 
 # ============================================
-# 8. CLEANUP
+# VISUALIZATION
+# ============================================
+
+if draw_visualization
+    appendInfoLine: "Drawing visualization..."
+    
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "NMF Spectral Resynthesizer: " + name_original$ + " [" + presetName$ + "]"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    selectObject: id_original
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Original"
+    
+    # Output waveform
+    Select outer viewport: 0, 8, 1.6, 2.5
+    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    selectObject: soundFinal
+    Colour: "{0.4, 0.5, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text left: "yes", "Output"
+    Text bottom: "yes", "Time (s)"
+    
+    # W matrix (basis vectors) - as heatmap
+    Select outer viewport: 0, 4, 2.7, 4.2
+    Select inner viewport: 0.6, 3.6, 2.9, 4.1
+    
+    selectObject: matW
+    wRows = Get number of rows
+    wCols = Get number of columns
+    
+    # Find max for normalization
+    wMax = 0
+    for r from 1 to wRows
+        for c from 1 to wCols
+            selectObject: matW
+            val = Get value in cell: r, c
+            if val > wMax
+                wMax = val
+            endif
+        endfor
+    endfor
+    if wMax < 0.001
+        wMax = 1
+    endif
+    
+    Axes: 0, wCols, 0, wRows
+    
+    # Draw W heatmap (downsample if too large)
+    step_r = max(1, floor(wRows / 50))
+    r = 1
+    while r <= wRows
+        for c from 1 to wCols
+            selectObject: matW
+            val = Get value in cell: r, c
+            intensity = val / wMax
+            rVal$ = fixed$(1 - intensity * 0.8, 2)
+            gVal$ = fixed$(1 - intensity * 0.5, 2)
+            bVal$ = fixed$(1 - intensity * 0.2, 2)
+            Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", c - 1, c, wRows - r, wRows - r + step_r
+        endfor
+        r += step_r
+    endwhile
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "W (Basis)"
+    Text bottom: "yes", "Component"
+    
+    # H matrix (activations) - as lines over time
+    Select outer viewport: 4, 8, 2.7, 4.2
+    Select inner viewport: 4.4, 7.6, 2.9, 4.1
+    
+    selectObject: matH
+    hRows = Get number of rows
+    hCols = Get number of columns
+    
+    # Find max
+    hMax = 0
+    for r from 1 to hRows
+        for c from 1 to hCols
+            selectObject: matH
+            val = Get value in cell: r, c
+            if val > hMax
+                hMax = val
+            endif
+        endfor
+    endfor
+    if hMax < 0.001
+        hMax = 1
+    endif
+    
+    Axes: 0, duration, 0, hMax * 1.1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, hMax * 1.1
+    
+    # Draw each component as a line
+    for comp from 1 to hRows
+        colorVal = comp / hRows
+        rVal$ = fixed$(0.2 + colorVal * 0.6, 2)
+        gVal$ = fixed$(0.6 - colorVal * 0.3, 2)
+        bVal$ = fixed$(0.8 - colorVal * 0.5, 2)
+        Colour: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}"
+        
+        for c from 2 to hCols
+            t1 = (c - 2) * step_ms / 1000
+            t2 = (c - 1) * step_ms / 1000
+            selectObject: matH
+            v1 = Get value in cell: comp, c - 1
+            v2 = Get value in cell: comp, c
+            Draw line: t1, v1, t2, v2
+        endfor
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "H (Activ)"
+    Text bottom: "yes", "Time (s)"
+    
+    # Stats box
+    Select outer viewport: 0, 8, 4.4, 5.0
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    Text: 0.2, "centre", 0.5, "half", "Window: " + string$(window_ms) + " ms"
+    Text: 0.4, "centre", 0.5, "half", "Step: " + string$(step_ms) + " ms"
+    Text: 0.6, "centre", 0.5, "half", "Components: " + string$(n_components)
+    Text: 0.8, "centre", 0.5, "half", "Iterations: " + string$(n_iterations)
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# ============================================
+# CLEANUP
 # ============================================
 
 removeObject: spectrogram, matV, matW, matH, matRecon, id_mono
+
+# ============================================
+# OUTPUT
+# ============================================
 
 selectObject: id_original
 plusObject: soundFinal

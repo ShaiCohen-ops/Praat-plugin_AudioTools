@@ -1,24 +1,36 @@
 # ============================================================
-# Praat AudioTools - Neural Phonetic Harmonizer
+# Praat AudioTools - Neural_Phonetic_Harmonizer.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Optimized + Stereo
+# Version: 0.4 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Neural Phonetic Harmonizer with adaptive pitch shifting per phonetic class
+#   Neural Phonetic Harmonizer - Adaptive pitch shifting per
+#   phonetic class using FFNet classification.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.4:
+#   - Fixed preset comparison (number not string)
+#   - Fixed Formula object references
+#   - Added preset name to output
+#   - Added visualization
 # ============================================================
 
-form Neural Phonetic Harmonizer
+# === Input Validation ===
+nSelected = numberOfSelected("Sound")
+if nSelected <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+sound = selected("Sound")
+sound_name$ = selected$("Sound")
+
+form Neural Phonetic Harmonizer v0.4
     comment === Preset ===
-    optionmenu Preset 1
-        option Manual (Use Settings Below)
+    optionmenu Preset: 1
+        option Manual
         option Octave Chorus
         option Fifth Harmony
         option Vowel Choir
@@ -27,26 +39,23 @@ form Neural Phonetic Harmonizer
         option Detuned Unison
         option Major Chord
         option Minor Chord
-    
     comment === Harmony Intervals (semitones) ===
     real Vowel_interval_1 7.0
     real Vowel_interval_2 0.0
     real Consonant_interval -5.0
     real Other_interval 4.0
-    
     comment === Mix Levels (0-1) ===
     positive Vowel_level 0.7
     positive Consonant_level 0.5
     positive Other_level 0.6
     positive Wet_dry_mix 0.5
-    
     comment === Processing ===
     positive Smoothing_ms 20
     positive Temperature 0.3
-    
     comment === Output ===
     boolean Stereo_output 1
     real Stereo_width 0.5
+    boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
@@ -54,7 +63,8 @@ endform
 # PRESET LOGIC
 # ============================================
 
-if preset$ = "Octave Chorus"
+if preset = 2
+    # Octave Chorus
     vowel_interval_1 = 12.0
     vowel_interval_2 = 0.0
     consonant_interval = 12.0
@@ -65,8 +75,9 @@ if preset$ = "Octave Chorus"
     wet_dry_mix = 0.4
     temperature = 0.3
     stereo_width = 0.6
-
-elsif preset$ = "Fifth Harmony"
+    presetName$ = "OctaveChorus"
+elsif preset = 3
+    # Fifth Harmony
     vowel_interval_1 = 7.0
     vowel_interval_2 = 0.0
     consonant_interval = 7.0
@@ -77,8 +88,9 @@ elsif preset$ = "Fifth Harmony"
     wet_dry_mix = 0.5
     temperature = 0.25
     stereo_width = 0.5
-
-elsif preset$ = "Vowel Choir"
+    presetName$ = "FifthHarmony"
+elsif preset = 4
+    # Vowel Choir
     vowel_interval_1 = 7.0
     vowel_interval_2 = 12.0
     consonant_interval = 0.0
@@ -89,8 +101,9 @@ elsif preset$ = "Vowel Choir"
     wet_dry_mix = 0.6
     temperature = 0.2
     stereo_width = 0.7
-
-elsif preset$ = "Dark Consonants"
+    presetName$ = "VowelChoir"
+elsif preset = 5
+    # Dark Consonants
     vowel_interval_1 = 0.0
     vowel_interval_2 = 0.0
     consonant_interval = -12.0
@@ -101,8 +114,9 @@ elsif preset$ = "Dark Consonants"
     wet_dry_mix = 0.5
     temperature = 0.35
     stereo_width = 0.4
-
-elsif preset$ = "Shimmer"
+    presetName$ = "DarkConsonants"
+elsif preset = 6
+    # Shimmer
     vowel_interval_1 = 12.0
     vowel_interval_2 = 19.0
     consonant_interval = 12.0
@@ -113,8 +127,9 @@ elsif preset$ = "Shimmer"
     wet_dry_mix = 0.4
     temperature = 0.2
     stereo_width = 0.8
-
-elsif preset$ = "Detuned Unison"
+    presetName$ = "Shimmer"
+elsif preset = 7
+    # Detuned Unison
     vowel_interval_1 = 0.15
     vowel_interval_2 = -0.15
     consonant_interval = 0.1
@@ -125,8 +140,9 @@ elsif preset$ = "Detuned Unison"
     wet_dry_mix = 0.5
     temperature = 0.3
     stereo_width = 0.9
-
-elsif preset$ = "Major Chord"
+    presetName$ = "DetunedUnison"
+elsif preset = 8
+    # Major Chord
     vowel_interval_1 = 4.0
     vowel_interval_2 = 7.0
     consonant_interval = 4.0
@@ -137,8 +153,9 @@ elsif preset$ = "Major Chord"
     wet_dry_mix = 0.5
     temperature = 0.25
     stereo_width = 0.6
-
-elsif preset$ = "Minor Chord"
+    presetName$ = "MajorChord"
+elsif preset = 9
+    # Minor Chord
     vowel_interval_1 = 3.0
     vowel_interval_2 = 7.0
     consonant_interval = 3.0
@@ -149,6 +166,9 @@ elsif preset$ = "Minor Chord"
     wet_dry_mix = 0.5
     temperature = 0.25
     stereo_width = 0.6
+    presetName$ = "MinorChord"
+else
+    presetName$ = "Manual"
 endif
 
 # Hidden parameters
@@ -164,42 +184,33 @@ silence_threshold = 45
 # SETUP
 # ============================================
 
-nSelected = numberOfSelected("Sound")
-if nSelected <> 1
-    exitScript: "Please select exactly one Sound object."
-endif
-
-sound = selected("Sound")
-sound_name$ = selected$("Sound")
-
 selectObject: sound
 duration = Get total duration
 fs = Get sampling frequency
 
 if duration < 0.1
-    exitScript: "Sound is too short (minimum 0.1 seconds)."
+    exitScript: "Sound too short (minimum 0.1 seconds)."
 endif
 
-writeInfoLine: "=== NEURAL PHONETIC HARMONIZER ==="
-appendInfoLine: "Preset: ", preset$
-appendInfoLine: "Vowel intervals: ", vowel_interval_1, " / ", vowel_interval_2, " st"
+clearinfo
+writeInfoLine: "=== Neural Phonetic Harmonizer v0.4 ==="
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Vowel: ", vowel_interval_1, " / ", vowel_interval_2, " st"
 appendInfoLine: "Consonant: ", consonant_interval, " st | Other: ", other_interval, " st"
 appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_mix * 100, 0), "%"
 if stereo_output
-    appendInfoLine: "Output: Stereo (width: ", fixed$(stereo_width * 100, 0), "%)"
+    appendInfoLine: "Output: Stereo (width ", fixed$(stereo_width * 100, 0), "%)"
 else
     appendInfoLine: "Output: Mono"
 endif
-appendInfoLine: "===================================="
 appendInfoLine: ""
 
-# Work on mono for analysis
 selectObject: sound
 workSnd = Convert to mono
 Rename: "Work"
 
 # ============================================
-# FEATURE EXTRACTION (Native Arrays)
+# FEATURE EXTRACTION
 # ============================================
 
 appendInfoLine: "Analyzing phonetic features..."
@@ -209,7 +220,6 @@ if nFrames < 10
     nFrames = 10
 endif
 
-# Feature arrays
 feat_mfcc_1# = zero#(nFrames)
 feat_mfcc_2# = zero#(nFrames)
 feat_mfcc_3# = zero#(nFrames)
@@ -220,13 +230,11 @@ feat_hnr# = zero#(nFrames)
 feat_pitch# = zero#(nFrames)
 frame_time# = zero#(nFrames)
 
-# Category arrays
 cat_vowel# = zero#(nFrames)
 cat_consonant# = zero#(nFrames)
 cat_other# = zero#(nFrames)
 cat_silence# = zero#(nFrames)
 
-# Create analysis objects
 selectObject: workSnd
 pitch_obj = To Pitch: 0, 75, 600
 
@@ -245,12 +253,10 @@ hnr_obj = To Harmonicity (cc): frame_step_sec, 75, 0.1, 1.0
 selectObject: mfcc_obj
 nFrames_mfcc = Get number of frames
 
-# Extract RAW features
 for i from 1 to nFrames
     t = (i - 0.5) * frame_step_sec
     frame_time#[i] = t
     
-    # MFCCs
     iM = min(i, nFrames_mfcc)
     selectObject: mfcc_obj
     for c from 1 to 3
@@ -267,7 +273,6 @@ for i from 1 to nFrames
         endif
     endfor
     
-    # Formants
     selectObject: formant_obj
     f1 = Get value at time: 1, t, "Hertz", "Linear"
     f2 = Get value at time: 2, t, "Hertz", "Linear"
@@ -280,7 +285,6 @@ for i from 1 to nFrames
     feat_f1#[i] = f1
     feat_f2#[i] = f2
     
-    # Intensity
     selectObject: intensity_obj
     iv = Get value at time: t, "cubic"
     if iv = undefined
@@ -288,7 +292,6 @@ for i from 1 to nFrames
     endif
     feat_intensity#[i] = iv
     
-    # HNR
     selectObject: hnr_obj
     hnr = Get value at time: t, "cubic"
     if hnr = undefined
@@ -296,7 +299,6 @@ for i from 1 to nFrames
     endif
     feat_hnr#[i] = hnr
     
-    # Pitch
     selectObject: pitch_obj
     f0 = Get value at time: t, "Hertz", "Linear"
     if f0 = undefined or f0 <= 0
@@ -305,7 +307,7 @@ for i from 1 to nFrames
         feat_pitch#[i] = f0
     endif
     
-    # Classify frame
+    # Classify
     if iv < silence_threshold
         cat_silence#[i] = 1
     elsif hnr > vowel_hnr_threshold and f0 > 0 and f1 > 300
@@ -322,11 +324,12 @@ removeObject: pitch_obj, intensity_obj, formant_obj, mfcc_obj, hnr_obj
 appendInfoLine: "  ", nFrames, " frames analyzed"
 
 # ============================================
-# NORMALIZE ALL FEATURES TO [0, 1]
+# NORMALIZE FEATURES
 # ============================================
 
 appendInfoLine: "Normalizing features..."
 
+# Helper procedure-like normalization
 # MFCC 1
 min_v = feat_mfcc_1#[1]
 max_v = feat_mfcc_1#[1]
@@ -553,6 +556,9 @@ while iter < training_iterations
     plusObject: categories
     Learn: chunk, learning_rate, "Minimum-squared-error"
     
+    selectObject: ffnet
+    plusObject: pattern
+    plusObject: categories
     current_cost = Get total costs: "Minimum-squared-error"
     
     if abs(prev_cost - current_cost) < prev_cost * 0.001
@@ -579,7 +585,6 @@ activations = selected("Activation")
 To Matrix
 activation_matrix = selected("Matrix")
 
-# Extract weights
 weight_vowel# = zero#(nFrames)
 weight_consonant# = zero#(nFrames)
 weight_other# = zero#(nFrames)
@@ -659,7 +664,8 @@ if vowel_interval_1 <> 0
     pt1 = Create PitchTier: "shift1", 0, duration
     Add point: 0, 100
     Add point: duration, 100
-    Formula: "self * 2^(" + string$(vowel_interval_1) + "/12)"
+    int1Str$ = string$(vowel_interval_1)
+    Formula: "self * 2^(" + int1Str$ + "/12)"
     selectObject: manip1
     plusObject: pt1
     Replace pitch tier
@@ -680,7 +686,8 @@ if vowel_interval_2 <> 0
     pt2 = Create PitchTier: "shift2", 0, duration
     Add point: 0, 100
     Add point: duration, 100
-    Formula: "self * 2^(" + string$(vowel_interval_2) + "/12)"
+    int2Str$ = string$(vowel_interval_2)
+    Formula: "self * 2^(" + int2Str$ + "/12)"
     selectObject: manip2
     plusObject: pt2
     Replace pitch tier
@@ -702,7 +709,8 @@ if consonant_interval <> 0
     pt3 = Create PitchTier: "shift3", 0, duration
     Add point: 0, 100
     Add point: duration, 100
-    Formula: "self * 2^(" + string$(consonant_interval) + "/12)"
+    int3Str$ = string$(consonant_interval)
+    Formula: "self * 2^(" + int3Str$ + "/12)"
     selectObject: manip3
     plusObject: pt3
     Replace pitch tier
@@ -723,7 +731,8 @@ if other_interval <> 0
     pt4 = Create PitchTier: "shift4", 0, duration
     Add point: 0, 100
     Add point: duration, 100
-    Formula: "self * 2^(" + string$(other_interval) + "/12)"
+    int4Str$ = string$(other_interval)
+    Formula: "self * 2^(" + int4Str$ + "/12)"
     selectObject: manip4
     plusObject: pt4
     Replace pitch tier
@@ -738,15 +747,17 @@ selectObject: voice4
 Rename: "HarmVoice4"
 
 # ============================================
-# MIX VOICES WITH ENVELOPE (Frame-by-frame)
+# MIX VOICES
 # ============================================
 
 appendInfoLine: "Mixing voices..."
 
-# Create output buffer
 wet_mix = Create Sound from formula: "Wet", 1, 0, duration, fs, "0"
 
-# Mix voices frame by frame using Formula (part)
+voice1Str$ = string$(voice1)
+voice3Str$ = string$(voice3)
+voice4Str$ = string$(voice4)
+
 for i from 1 to nFrames
     t_start = (i - 1) * frame_step_sec
     t_end = i * frame_step_sec
@@ -757,21 +768,23 @@ for i from 1 to nFrames
         t_start = t_end - 0.001
     endif
     
-    # Calculate mix weights for this frame
     v_gain = weight_vowel_smooth#[i] * vowel_level
     c_gain = weight_consonant_smooth#[i] * consonant_level
     o_gain = weight_other_smooth#[i] * other_level
     
-    # Build formula string
+    vGainStr$ = string$(v_gain)
+    cGainStr$ = string$(c_gain)
+    oGainStr$ = string$(o_gain)
+    
     selectObject: wet_mix
     Formula (part): t_start, t_end, 1, 1,
-        ... "Sound_HarmVoice1(x) * " + string$(v_gain) + 
-        ... " + Sound_HarmVoice3(x) * " + string$(c_gain) +
-        ... " + Sound_HarmVoice4(x) * " + string$(o_gain)
+        ... "Object_" + voice1Str$ + "(x) * " + vGainStr$ + 
+        ... " + Object_" + voice3Str$ + "(x) * " + cGainStr$ +
+        ... " + Object_" + voice4Str$ + "(x) * " + oGainStr$
 endfor
 
-# Add voice2 if exists
 if has_voice2
+    voice2Str$ = string$(voice2)
     for i from 1 to nFrames
         t_start = (i - 1) * frame_step_sec
         t_end = i * frame_step_sec
@@ -783,21 +796,21 @@ if has_voice2
         endif
         
         v2_gain = weight_vowel_smooth#[i] * vowel_level * 0.7
+        v2GainStr$ = string$(v2_gain)
         
         selectObject: wet_mix
         Formula (part): t_start, t_end, 1, 1,
-            ... "self + Sound_HarmVoice2(x) * " + string$(v2_gain)
+            ... "self + Object_" + voice2Str$ + "(x) * " + v2GainStr$
     endfor
 endif
 
-# Cleanup voices
 removeObject: voice1, voice3, voice4
 if has_voice2
     removeObject: voice2
 endif
 
 # ============================================
-# FINAL MIX (Wet/Dry)
+# FINAL MIX
 # ============================================
 
 appendInfoLine: "Creating final mix..."
@@ -805,6 +818,9 @@ appendInfoLine: "Creating final mix..."
 selectObject: wet_mix
 Scale peak: 0.9
 Rename: "WetMix"
+wetMixId = selected("Sound")
+wetMixStr$ = string$(wetMixId)
+workSndStr$ = string$(workSnd)
 
 if stereo_output
     dry_gain = 1 - wet_dry_mix
@@ -815,30 +831,38 @@ if stereo_output
     right_dry = dry_gain * (1 + stereo_width * 0.5)
     right_wet = wet_gain * (1 - stereo_width * 0.5)
     
+    ldStr$ = string$(left_dry)
+    lwStr$ = string$(left_wet)
+    rdStr$ = string$(right_dry)
+    rwStr$ = string$(right_wet)
+    
     selectObject: workSnd
     left_ch = Copy: "Left"
     selectObject: left_ch
-    Formula: "self * " + string$(left_dry) + " + Sound_WetMix(x) * " + string$(left_wet)
+    Formula: "self * " + ldStr$ + " + Object_" + wetMixStr$ + "(x) * " + lwStr$
     
     selectObject: workSnd
     right_ch = Copy: "Right"
     selectObject: right_ch
-    Formula: "self * " + string$(right_dry) + " + Sound_WetMix(x) * " + string$(right_wet)
+    Formula: "self * " + rdStr$ + " + Object_" + wetMixStr$ + "(x) * " + rwStr$
     
-    selectObject: left_ch, right_ch
+    selectObject: left_ch
+    plusObject: right_ch
     finalOut = Combine to stereo
-    Rename: sound_name$ + "_harmonized_stereo"
+    Rename: sound_name$ + "_harmonized_" + presetName$
     
     removeObject: left_ch, right_ch
 else
     dry_gain = 1 - wet_dry_mix
     wet_gain = wet_dry_mix
+    dgStr$ = string$(dry_gain)
+    wgStr$ = string$(wet_gain)
     
     selectObject: workSnd
     finalOut = Copy: "Final"
     selectObject: finalOut
-    Formula: "self * " + string$(dry_gain) + " + Sound_WetMix(x) * " + string$(wet_gain)
-    Rename: sound_name$ + "_harmonized"
+    Formula: "self * " + dgStr$ + " + Object_" + wetMixStr$ + "(x) * " + wgStr$
+    Rename: sound_name$ + "_harmonized_" + presetName$
 endif
 
 selectObject: finalOut
@@ -849,6 +873,98 @@ Scale peak: 0.99
 # ============================================
 
 removeObject: workSnd, wet_mix
+
+# ============================================
+# VISUALIZATION
+# ============================================
+
+if draw_visualization
+    appendInfoLine: "Drawing visualization..."
+    
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Neural Phonetic Harmonizer: " + sound_name$ + " [" + presetName$ + "]"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    selectObject: sound
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Original"
+    
+    # Output waveform
+    Select outer viewport: 0, 8, 1.6, 2.5
+    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    selectObject: finalOut
+    Colour: "{0.4, 0.6, 0.3}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text left: "yes", "Output"
+    Text bottom: "yes", "Time (s)"
+    
+    # Phonetic weights
+    Select outer viewport: 0, 8, 2.7, 4.2
+    Select inner viewport: 0.6, 7.6, 2.9, 4.1
+    
+    Axes: 0, duration, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1
+    
+    # Vowel weights
+    Colour: "{0.8, 0.3, 0.3}"
+    for i from 2 to nFrames
+        t1 = (i - 2) * frame_step_sec
+        t2 = (i - 1) * frame_step_sec
+        Draw line: t1, weight_vowel_smooth#[i-1], t2, weight_vowel_smooth#[i]
+    endfor
+    
+    # Consonant weights
+    Colour: "{0.3, 0.5, 0.8}"
+    for i from 2 to nFrames
+        t1 = (i - 2) * frame_step_sec
+        t2 = (i - 1) * frame_step_sec
+        Draw line: t1, weight_consonant_smooth#[i-1], t2, weight_consonant_smooth#[i]
+    endfor
+    
+    # Other weights
+    Colour: "{0.5, 0.7, 0.3}"
+    for i from 2 to nFrames
+        t1 = (i - 2) * frame_step_sec
+        t2 = (i - 1) * frame_step_sec
+        Draw line: t1, weight_other_smooth#[i-1], t2, weight_other_smooth#[i]
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Weight"
+    Text bottom: "yes", "Time (s)"
+    
+    # Legend
+    Select outer viewport: 0, 8, 4.3, 4.7
+    Font size: 8
+    Colour: "{0.8, 0.3, 0.3}"
+    Text: 0.2, "centre", 0.5, "half", "— Vowel (" + fixed$(vowel_interval_1, 1) + "/" + fixed$(vowel_interval_2, 1) + " st)"
+    Colour: "{0.3, 0.5, 0.8}"
+    Text: 0.5, "centre", 0.5, "half", "— Consonant (" + fixed$(consonant_interval, 1) + " st)"
+    Colour: "{0.5, 0.7, 0.3}"
+    Text: 0.8, "centre", 0.5, "half", "— Other (" + fixed$(other_interval, 1) + " st)"
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# ============================================
+# OUTPUT
+# ============================================
 
 selectObject: sound
 plusObject: finalOut

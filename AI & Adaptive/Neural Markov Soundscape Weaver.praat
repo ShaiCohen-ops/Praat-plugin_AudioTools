@@ -1,63 +1,64 @@
 # ============================================================
-# Praat AudioTools - Neural Markov Soundscape Weaver
+# Praat AudioTools - Neural_Markov_Soundscape_Weaver.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Optimized + Stereo
+# Version: 0.4 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Neural Markov Soundscape Weaver
-#   Optimizations:
-#   - Proper overlap-add synthesis
-#   - Overlapping analysis for better transitions
-#   - Native arrays with state index
-#   - Stereo output (independent Markov walks)
-#   - Higher-order Markov option
-#   - Grain variation controls
+#   Neural Markov Soundscape Weaver - Learns audio grammar via
+#   k-means clustering and Markov chains for generative synthesis.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.4:
+#   - Fixed preset comparison (number not string)
+#   - Fixed Formula object references
+#   - Added preset name to output
+#   - Added markov order name
+#   - Added visualization
 # ============================================================
 
-form Neural Markov Soundscape Weaver
+# === Input Validation ===
+nSelected = numberOfSelected("Sound")
+if nSelected <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+snd = selected("Sound")
+sndName$ = selected$("Sound")
+
+form Neural Markov Soundscape Weaver v0.4
     comment === Preset ===
-    optionmenu Preset 1
-        option Manual (Use Settings Below)
+    optionmenu Preset: 1
+        option Manual
         option Ambient Flow
         option Rhythmic Pulse
         option Dense Texture
         option Sparse Minimal
         option Evolving Landscape
         option Chaotic Transitions
-    
     comment === Analysis ===
     positive Grain_size_ms 80
     positive Analysis_overlap 0.5
     integer Number_of_states 5
-    
     comment === Markov Chain ===
-    optionmenu Markov_order 1
-        option First Order (state to state)
-        option Second Order (pair to state)
+    optionmenu Markov_order: 1
+        option First Order
+        option Second Order
     real Randomness 0.0
-    comment (0 = follow learned probabilities, 1 = fully random)
-    
     comment === Synthesis ===
     positive Output_duration_sec 15.0
     positive Synthesis_overlap 0.5
     positive Crossfade_ms 10
-    
     comment === Grain Variation ===
     real Pitch_scatter_semitones 0.0
     real Position_jitter 0.1
     real Density_variation 0.0
-    
     comment === Output ===
     boolean Stereo_output 1
     real Stereo_decorrelation 0.3
+    boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
@@ -65,7 +66,8 @@ endform
 # PRESET LOGIC
 # ============================================
 
-if preset$ = "Ambient Flow"
+if preset = 2
+    # Ambient Flow
     grain_size_ms = 100
     analysis_overlap = 0.6
     number_of_states = 4
@@ -78,8 +80,9 @@ if preset$ = "Ambient Flow"
     position_jitter = 0.1
     density_variation = 0.05
     stereo_decorrelation = 0.4
-
-elsif preset$ = "Rhythmic Pulse"
+    presetName$ = "AmbientFlow"
+elsif preset = 3
+    # Rhythmic Pulse
     grain_size_ms = 50
     analysis_overlap = 0.3
     number_of_states = 6
@@ -92,8 +95,9 @@ elsif preset$ = "Rhythmic Pulse"
     position_jitter = 0.0
     density_variation = 0.0
     stereo_decorrelation = 0.2
-
-elsif preset$ = "Dense Texture"
+    presetName$ = "RhythmicPulse"
+elsif preset = 4
+    # Dense Texture
     grain_size_ms = 40
     analysis_overlap = 0.7
     number_of_states = 8
@@ -106,8 +110,9 @@ elsif preset$ = "Dense Texture"
     position_jitter = 0.2
     density_variation = 0.1
     stereo_decorrelation = 0.5
-
-elsif preset$ = "Sparse Minimal"
+    presetName$ = "DenseTexture"
+elsif preset = 5
+    # Sparse Minimal
     grain_size_ms = 150
     analysis_overlap = 0.4
     number_of_states = 3
@@ -120,8 +125,9 @@ elsif preset$ = "Sparse Minimal"
     position_jitter = 0.15
     density_variation = 0.1
     stereo_decorrelation = 0.3
-
-elsif preset$ = "Evolving Landscape"
+    presetName$ = "SparseMinimal"
+elsif preset = 6
+    # Evolving Landscape
     grain_size_ms = 120
     analysis_overlap = 0.5
     number_of_states = 5
@@ -134,8 +140,9 @@ elsif preset$ = "Evolving Landscape"
     position_jitter = 0.1
     density_variation = 0.08
     stereo_decorrelation = 0.6
-
-elsif preset$ = "Chaotic Transitions"
+    presetName$ = "EvolvingLandscape"
+elsif preset = 7
+    # Chaotic Transitions
     grain_size_ms = 60
     analysis_overlap = 0.5
     number_of_states = 10
@@ -148,38 +155,39 @@ elsif preset$ = "Chaotic Transitions"
     position_jitter = 0.3
     density_variation = 0.15
     stereo_decorrelation = 0.7
+    presetName$ = "ChaoticTransitions"
+else
+    presetName$ = "Manual"
+endif
+
+# Get markov order name
+if markov_order = 1
+    markovOrderName$ = "First-Order"
+else
+    markovOrderName$ = "Second-Order"
 endif
 
 # ============================================
 # SETUP
 # ============================================
 
-nSelected = numberOfSelected("Sound")
-if nSelected <> 1
-    exitScript: "Please select exactly one Sound object."
-endif
-
-snd = selected("Sound")
-sndName$ = selected$("Sound")
-
 selectObject: snd
 dur = Get total duration
 fs = Get sampling frequency
 
-writeInfoLine: "=== NEURAL MARKOV SOUNDSCAPE WEAVER ==="
-appendInfoLine: "Preset: ", preset$
+clearinfo
+writeInfoLine: "=== Neural Markov Soundscape Weaver v0.4 ==="
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Grain: ", grain_size_ms, " ms | States: ", number_of_states
-appendInfoLine: "Markov Order: ", markov_order
+appendInfoLine: "Markov: ", markovOrderName$
 appendInfoLine: "Randomness: ", fixed$(randomness * 100, 0), "%"
 if stereo_output
-    appendInfoLine: "Output: Stereo (decorrelation: ", fixed$(stereo_decorrelation * 100, 0), "%)"
+    appendInfoLine: "Output: Stereo (decorrelation ", fixed$(stereo_decorrelation * 100, 0), "%)"
 else
     appendInfoLine: "Output: Mono"
 endif
-appendInfoLine: "========================================="
 appendInfoLine: ""
 
-# Work on mono copy
 selectObject: snd
 workSnd = Convert to mono
 Rename: "Analysis_Work"
@@ -190,13 +198,13 @@ crossfadeSec = crossfade_ms / 1000
 
 if dur < grainSec * 4
     removeObject: workSnd
-    exitScript: "Sound is too short for analysis."
+    exitScript: "Sound too short for analysis."
 endif
 
 k = number_of_states
 
 # ============================================
-# FEATURE EXTRACTION (Native Arrays)
+# FEATURE EXTRACTION
 # ============================================
 
 appendInfoLine: "Analyzing audio structure..."
@@ -207,14 +215,12 @@ if nGrains < k * 2
     exitScript: "Not enough grains for ", k, " states."
 endif
 
-# Feature arrays
 feat_centroid# = zero#(nGrains)
 feat_bandwidth# = zero#(nGrains)
 feat_pitch# = zero#(nGrains)
 feat_hnr# = zero#(nGrains)
 grain_time# = zero#(nGrains)
 
-# Analysis objects
 selectObject: workSnd
 spec = To Spectrogram: grainSec, 8000, stepSec, 20, "Gaussian"
 
@@ -228,7 +234,6 @@ for i from 1 to nGrains
     t = (i - 0.5) * stepSec
     grain_time#[i] = t
     
-    # Spectral features
     selectObject: spec
     slice = To Spectrum (slice): t
     selectObject: slice
@@ -236,7 +241,6 @@ for i from 1 to nGrains
     feat_bandwidth#[i] = Get standard deviation: 2
     removeObject: slice
     
-    # Pitch
     selectObject: pit
     f0 = Get value at time: t, "Hertz", "Linear"
     if f0 = undefined or f0 <= 0
@@ -245,7 +249,6 @@ for i from 1 to nGrains
         feat_pitch#[i] = f0
     endif
     
-    # HNR
     selectObject: hnr_obj
     h = Get value at time: t, "cubic"
     if h = undefined
@@ -260,7 +263,7 @@ removeObject: spec, pit, hnr_obj
 appendInfoLine: "  ", nGrains, " grains analyzed"
 
 # ============================================
-# NORMALIZE FEATURES (Z-Score)
+# NORMALIZE FEATURES
 # ============================================
 
 # Centroid
@@ -340,18 +343,16 @@ for i to nGrains
 endfor
 
 # ============================================
-# K-MEANS CLUSTERING (Array-based)
+# K-MEANS CLUSTERING
 # ============================================
 
-appendInfoLine: "Learning states (Clustering)..."
+appendInfoLine: "Learning states..."
 
-# Centroid arrays
 cent_1# = zero#(k)
 cent_2# = zero#(k)
 cent_3# = zero#(k)
 cent_4# = zero#(k)
 
-# Initialize from random grains
 for c from 1 to k
     r = randomInteger(1, nGrains)
     cent_1#[c] = norm_centroid#[r]
@@ -360,14 +361,12 @@ for c from 1 to k
     cent_4#[c] = norm_hnr#[r]
 endfor
 
-# Assignments (state sequence)
 state_seq# = zero#(nGrains)
 
 max_iter = 15
 for iter from 1 to max_iter
     changes = 0
     
-    # E-step
     for i from 1 to nGrains
         minDist = 1e9
         bestK = 1
@@ -390,7 +389,6 @@ for iter from 1 to max_iter
         endif
     endfor
     
-    # M-step
     for c from 1 to k
         sum_1 = 0
         sum_2 = 0
@@ -454,10 +452,9 @@ endfor
 # BUILD MARKOV TRANSITION MATRIX
 # ============================================
 
-appendInfoLine: "Learning grammar (Markov Chain)..."
+appendInfoLine: "Learning grammar..."
 
 if markov_order = 1
-    # First-order: k x k matrix
     trans# = zero#(k * k)
     
     for i from 1 to nGrains - 1
@@ -467,7 +464,6 @@ if markov_order = 1
         trans#[idx] += 1
     endfor
     
-    # Normalize rows
     for r from 1 to k
         row_sum = 0
         for c from 1 to k
@@ -489,9 +485,7 @@ if markov_order = 1
     endfor
     
     appendInfoLine: "  First-order matrix built"
-    
 else
-    # Second-order: k*k x k matrix (pairs to next state)
     n_pairs = k * k
     trans2# = zero#(n_pairs * k)
     
@@ -504,7 +498,6 @@ else
         trans2#[idx] += 1
     endfor
     
-    # Normalize
     for pair from 1 to n_pairs
         row_sum = 0
         for c from 1 to k
@@ -529,9 +522,10 @@ else
 endif
 
 # ============================================
-# GENERATIVE SYNTHESIS (Overlap-Add)
+# GENERATIVE SYNTHESIS
 # ============================================
 
+appendInfoLine: ""
 appendInfoLine: "Weaving soundscape..."
 
 synth_step = grainSec * (1 - synthesis_overlap)
@@ -544,6 +538,9 @@ else
     n_passes = 1
 endif
 
+# Track state history for visualization
+state_history# = zero#(grains_needed)
+
 for pass from 1 to n_passes
     if stereo_output
         if pass = 1
@@ -555,24 +552,18 @@ for pass from 1 to n_passes
         appendInfoLine: "  Generating..."
     endif
     
-    # Create output buffer
     output_buf = Create Sound from formula: "Output_" + string$(pass), 1, 0, output_dur, fs, "0"
     
-    # Initialize Markov state
     current_state = randomInteger(1, k)
     prev_state = randomInteger(1, k)
     
-    # For stereo decorrelation
     if pass = 2 and stereo_decorrelation > 0
-        # Start at different state for R channel
         current_state = ((current_state + floor(k * stereo_decorrelation)) mod k) + 1
     endif
     
     for g from 1 to grains_needed
-        # Output time
         t_out = (g - 1) * synth_step
         
-        # Apply density variation
         if density_variation > 0
             t_out = t_out + randomUniform(-1, 1) * density_variation * synth_step
             if t_out < 0
@@ -580,7 +571,11 @@ for pass from 1 to n_passes
             endif
         endif
         
-        # Select grain from current state
+        # Store state for visualization (first pass only)
+        if pass = 1
+            state_history#[g] = current_state
+        endif
+        
         if state_count#[current_state] > 0
             r_idx = randomInteger(1, state_count#[current_state])
             idx_pos = state_offset#[current_state] + r_idx
@@ -589,7 +584,6 @@ for pass from 1 to n_passes
             grain_idx = randomInteger(1, nGrains)
         endif
         
-        # Get grain time with jitter
         t_grain = grain_time#[grain_idx]
         if position_jitter > 0
             t_grain = t_grain + randomUniform(-1, 1) * position_jitter * grainSec
@@ -611,11 +605,9 @@ for pass from 1 to n_passes
             endif
         endif
         
-        # Extract grain with Hanning window
         selectObject: workSnd
         grain = Extract part: t_start, t_end, "Hanning", 1, "no"
         
-        # Apply pitch scatter
         if pitch_scatter_semitones > 0
             selectObject: grain
             scatter = randomUniform(-pitch_scatter_semitones, pitch_scatter_semitones)
@@ -631,33 +623,33 @@ for pass from 1 to n_passes
             endif
         endif
         
-        # Apply crossfade envelope
         if crossfadeSec > 0
             selectObject: grain
             grain_dur = Get total duration
             fade = min(crossfadeSec, grain_dur * 0.4)
-            Formula: "self * (if x < " + string$(fade) + " then x/" + string$(fade) +
-                ... " else if x > " + string$(grain_dur - fade) + " then (" + string$(grain_dur) + "-x)/" + string$(fade) +
+            fadeStr$ = string$(fade)
+            durMinusFade$ = string$(grain_dur - fade)
+            durStr$ = string$(grain_dur)
+            Formula: "self * (if x < " + fadeStr$ + " then x/" + fadeStr$ +
+                ... " else if x > " + durMinusFade$ + " then (" + durStr$ + "-x)/" + fadeStr$ +
                 ... " else 1 fi fi)"
         endif
         
-        # Add to output (overlap-add)
         selectObject: grain
-        grain_name$ = selected$("Sound")
         grain_dur = Get total duration
+        grainIdStr$ = string$(grain)
+        tOutStr$ = string$(t_out)
         
         selectObject: output_buf
         Formula (part): t_out, t_out + grain_dur, 1, 1,
-            ... "self + Sound_'grain_name$'(x - " + string$(t_out) + ")"
+            ... "self + Object_" + grainIdStr$ + "(x - " + tOutStr$ + ")"
         
         removeObject: grain
         
-        # Determine next state using Markov chain
+        # Markov transition
         if randomUniform(0, 1) < randomness
-            # Random jump
             next_state = randomInteger(1, k)
         else
-            # Follow transition probabilities
             roll = randomUniform(0, 1)
             cumSum = 0
             next_state = 1
@@ -684,7 +676,6 @@ for pass from 1 to n_passes
             endif
         endif
         
-        # For stereo: occasional decorrelation
         if pass = 2 and stereo_decorrelation > 0
             if randomUniform(0, 1) < stereo_decorrelation * 0.3
                 next_state = randomInteger(1, k)
@@ -695,11 +686,11 @@ for pass from 1 to n_passes
         current_state = next_state
     endfor
     
-    # Normalize for overlap-add gain
     selectObject: output_buf
     if synthesis_overlap > 0.3
         gain_comp = 1 / (1 + synthesis_overlap * 0.7)
-        Formula: "self * " + string$(gain_comp)
+        gainStr$ = string$(gain_comp)
+        Formula: "self * " + gainStr$
     endif
     
     if pass = 1
@@ -736,14 +727,15 @@ if stereo_output
         channel_right = tmp
     endif
     
-    selectObject: channel_left, channel_right
+    selectObject: channel_left
+    plusObject: channel_right
     finalOut = Combine to stereo
-    Rename: sndName$ + "_MarkovWeave_stereo"
+    Rename: sndName$ + "_MarkovWeave_" + presetName$
     
     removeObject: channel_left, channel_right
 else
     finalOut = channel_left
-    Rename: sndName$ + "_MarkovWeave"
+    Rename: sndName$ + "_MarkovWeave_" + presetName$
 endif
 
 selectObject: finalOut
@@ -754,6 +746,132 @@ Scale peak: 0.99
 # ============================================
 
 removeObject: workSnd
+
+# ============================================
+# VISUALIZATION
+# ============================================
+
+if draw_visualization
+    appendInfoLine: "Drawing visualization..."
+    
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Neural Markov Soundscape Weaver: " + sndName$ + " [" + presetName$ + "]"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    selectObject: snd
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Original"
+    
+    # Output waveform
+    Select outer viewport: 0, 8, 1.6, 2.5
+    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    selectObject: finalOut
+    Colour: "{0.3, 0.5, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text left: "yes", "Output"
+    Text bottom: "yes", "Time (s)"
+    
+    # State trajectory
+    Select outer viewport: 0, 8, 2.7, 3.9
+    Select inner viewport: 0.6, 7.6, 2.9, 3.8
+    
+    Axes: 0, output_duration_sec, 0, k + 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, output_duration_sec, 0, k + 1
+    
+    for g from 2 to grains_needed
+        t1 = (g - 2) * synth_step
+        t2 = (g - 1) * synth_step
+        s1 = state_history#[g-1]
+        s2 = state_history#[g]
+        
+        colorVal = s2 / k
+        rVal$ = fixed$(0.3 + colorVal * 0.5, 2)
+        gVal$ = fixed$(0.5 - colorVal * 0.2, 2)
+        bVal$ = fixed$(0.7 - colorVal * 0.4, 2)
+        Colour: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}"
+        Draw line: t1, s1, t2, s2
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "State"
+    Text bottom: "yes", "Time (s)"
+    
+    # Transition matrix heatmap (first-order only)
+    if markov_order = 1
+        Select outer viewport: 0, 4, 4.1, 5.8
+        Select inner viewport: 0.6, 3.6, 4.3, 5.6
+        
+        Axes: 0, k, 0, k
+        
+        for r from 1 to k
+            for c from 1 to k
+                idx = (r - 1) * k + c
+                prob = trans#[idx]
+                intensity = prob
+                rVal$ = fixed$(1 - intensity * 0.7, 2)
+                gVal$ = fixed$(1 - intensity * 0.3, 2)
+                bVal$ = fixed$(1 - intensity * 0.8, 2)
+                Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", c - 1, c, k - r, k - r + 1
+            endfor
+        endfor
+        
+        Colour: "Black"
+        Draw inner box
+        Font size: 8
+        Text left: "yes", "From"
+        Text bottom: "yes", "To State"
+    endif
+    
+    # State distribution
+    Select outer viewport: 4, 8, 4.1, 5.8
+    Select inner viewport: 4.4, 7.6, 4.3, 5.6
+    
+    maxCount = 1
+    for s from 1 to k
+        if state_count#[s] > maxCount
+            maxCount = state_count#[s]
+        endif
+    endfor
+    
+    Axes: 0, k + 1, 0, maxCount * 1.1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, k + 1, 0, maxCount * 1.1
+    
+    for s from 1 to k
+        colorVal = s / k
+        rVal$ = fixed$(0.3 + colorVal * 0.5, 2)
+        gVal$ = fixed$(0.5 - colorVal * 0.2, 2)
+        bVal$ = fixed$(0.7 - colorVal * 0.4, 2)
+        Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", s - 0.4, s + 0.4, 0, state_count#[s]
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Grains"
+    Text bottom: "yes", "State"
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# ============================================
+# OUTPUT
+# ============================================
 
 selectObject: snd
 plusObject: finalOut

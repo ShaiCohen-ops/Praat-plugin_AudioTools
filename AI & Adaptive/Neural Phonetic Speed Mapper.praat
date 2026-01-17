@@ -1,25 +1,36 @@
 # ============================================================
-# Praat AudioTools - Neural Phonetic Speed Mapper
+# Praat AudioTools - Neural_Phonetic_Speed_Mapper.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Optimized
+# Version: 0.3 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Neural Phonetic Speed Mapper - Applies different time stretch
-#   factors to different phonetic categories (vowels, consonants, etc.)
+#   factors to different phonetic categories using FFNet classification.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.3:
+#   - Fixed preset comparison (number not string)
+#   - Fixed Get total costs selection
+#   - Added preset name to output
+#   - Added visualization
 # ============================================================
 
-form Neural Phonetic Speed Mapper
+# === Input Validation ===
+nSelected = numberOfSelected("Sound")
+if nSelected <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+sound = selected("Sound")
+sound_name$ = selected$("Sound")
+
+form Neural Phonetic Speed Mapper v0.3
     comment === Preset ===
-    optionmenu Preset 1
-        option Manual (Use Settings Below)
+    optionmenu Preset: 1
+        option Manual
         option Speech Clarity
         option Vowel Stretch
         option Consonant Emphasis
@@ -27,18 +38,16 @@ form Neural Phonetic Speed Mapper
         option Dreamy Slow
         option Rhythmic Stutter
         option Fast Forward
-    
     comment === Stretch Factors (>1 = longer, <1 = shorter) ===
     positive Vowel_stretch 0.5
     positive Consonant_stretch 2.0
     positive Other_stretch 0.8
     positive Silence_stretch 1.0
-    
     comment === Processing ===
     positive Smoothing_ms 20
     positive Temperature 0.4
-    
     comment === Output ===
+    boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
@@ -46,61 +55,71 @@ endform
 # PRESET LOGIC
 # ============================================
 
-if preset$ = "Speech Clarity"
+if preset = 2
+    # Speech Clarity
     vowel_stretch = 1.3
     consonant_stretch = 1.8
     other_stretch = 1.2
     silence_stretch = 0.8
     smoothing_ms = 25
     temperature = 0.35
-
-elsif preset$ = "Vowel Stretch"
+    presetName$ = "SpeechClarity"
+elsif preset = 3
+    # Vowel Stretch
     vowel_stretch = 2.0
     consonant_stretch = 1.0
     other_stretch = 1.2
     silence_stretch = 1.0
     smoothing_ms = 30
     temperature = 0.3
-
-elsif preset$ = "Consonant Emphasis"
+    presetName$ = "VowelStretch"
+elsif preset = 4
+    # Consonant Emphasis
     vowel_stretch = 0.8
     consonant_stretch = 2.5
     other_stretch = 1.5
     silence_stretch = 0.7
     smoothing_ms = 15
     temperature = 0.4
-
-elsif preset$ = "Time Compress"
+    presetName$ = "ConsonantEmphasis"
+elsif preset = 5
+    # Time Compress
     vowel_stretch = 0.6
     consonant_stretch = 0.7
     other_stretch = 0.65
     silence_stretch = 0.3
     smoothing_ms = 20
     temperature = 0.5
-
-elsif preset$ = "Dreamy Slow"
+    presetName$ = "TimeCompress"
+elsif preset = 6
+    # Dreamy Slow
     vowel_stretch = 2.5
     consonant_stretch = 1.5
     other_stretch = 2.0
     silence_stretch = 1.8
     smoothing_ms = 40
     temperature = 0.25
-
-elsif preset$ = "Rhythmic Stutter"
+    presetName$ = "DreamySlow"
+elsif preset = 7
+    # Rhythmic Stutter
     vowel_stretch = 0.4
     consonant_stretch = 3.0
     other_stretch = 0.5
     silence_stretch = 2.0
     smoothing_ms = 10
     temperature = 0.5
-
-elsif preset$ = "Fast Forward"
+    presetName$ = "RhythmicStutter"
+elsif preset = 8
+    # Fast Forward
     vowel_stretch = 0.5
     consonant_stretch = 0.5
     other_stretch = 0.5
     silence_stretch = 0.2
     smoothing_ms = 15
     temperature = 0.4
+    presetName$ = "FastForward"
+else
+    presetName$ = "Manual"
 endif
 
 # Hidden parameters
@@ -116,36 +135,27 @@ silence_threshold = 45
 # SETUP
 # ============================================
 
-nSelected = numberOfSelected("Sound")
-if nSelected <> 1
-    exitScript: "Please select exactly one Sound object."
-endif
-
-sound = selected("Sound")
-sound_name$ = selected$("Sound")
-
 selectObject: sound
 duration = Get total duration
 fs = Get sampling frequency
 
 if duration < 0.1
-    exitScript: "Sound is too short (minimum 0.1 seconds)."
+    exitScript: "Sound too short (minimum 0.1 seconds)."
 endif
 
-writeInfoLine: "=== NEURAL PHONETIC SPEED MAPPER ==="
-appendInfoLine: "Preset: ", preset$
+clearinfo
+writeInfoLine: "=== Neural Phonetic Speed Mapper v0.3 ==="
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Vowel: ", vowel_stretch, "x | Consonant: ", consonant_stretch, "x"
 appendInfoLine: "Other: ", other_stretch, "x | Silence: ", silence_stretch, "x"
-appendInfoLine: "======================================"
 appendInfoLine: ""
 
-# Work on mono copy
 selectObject: sound
 workSnd = Convert to mono
 Rename: "Work"
 
 # ============================================
-# FEATURE EXTRACTION (Native Arrays)
+# FEATURE EXTRACTION
 # ============================================
 
 appendInfoLine: "Analyzing phonetic features..."
@@ -155,7 +165,6 @@ if nFrames < 10
     nFrames = 10
 endif
 
-# Feature arrays
 feat_mfcc_1# = zero#(nFrames)
 feat_mfcc_2# = zero#(nFrames)
 feat_mfcc_3# = zero#(nFrames)
@@ -166,13 +175,11 @@ feat_hnr# = zero#(nFrames)
 feat_pitch# = zero#(nFrames)
 frame_time# = zero#(nFrames)
 
-# Category arrays
 cat_vowel# = zero#(nFrames)
 cat_consonant# = zero#(nFrames)
 cat_other# = zero#(nFrames)
 cat_silence# = zero#(nFrames)
 
-# Create analysis objects
 selectObject: workSnd
 pitch_obj = To Pitch: 0, 75, 600
 
@@ -191,12 +198,10 @@ hnr_obj = To Harmonicity (cc): frame_step_sec, 75, 0.1, 1.0
 selectObject: mfcc_obj
 nFrames_mfcc = Get number of frames
 
-# Extract RAW features
 for i from 1 to nFrames
     t = (i - 0.5) * frame_step_sec
     frame_time#[i] = t
     
-    # MFCCs
     iM = min(i, nFrames_mfcc)
     selectObject: mfcc_obj
     for c from 1 to 3
@@ -213,7 +218,6 @@ for i from 1 to nFrames
         endif
     endfor
     
-    # Formants
     selectObject: formant_obj
     f1 = Get value at time: 1, t, "Hertz", "Linear"
     f2 = Get value at time: 2, t, "Hertz", "Linear"
@@ -226,7 +230,6 @@ for i from 1 to nFrames
     feat_f1#[i] = f1
     feat_f2#[i] = f2
     
-    # Intensity
     selectObject: intensity_obj
     iv = Get value at time: t, "cubic"
     if iv = undefined
@@ -234,7 +237,6 @@ for i from 1 to nFrames
     endif
     feat_intensity#[i] = iv
     
-    # HNR
     selectObject: hnr_obj
     hnr = Get value at time: t, "cubic"
     if hnr = undefined
@@ -242,7 +244,6 @@ for i from 1 to nFrames
     endif
     feat_hnr#[i] = hnr
     
-    # Pitch
     selectObject: pitch_obj
     f0 = Get value at time: t, "Hertz", "Linear"
     if f0 = undefined or f0 <= 0
@@ -251,7 +252,7 @@ for i from 1 to nFrames
         feat_pitch#[i] = f0
     endif
     
-    # Classify frame
+    # Classify
     if iv < silence_threshold
         cat_silence#[i] = 1
     elsif hnr > vowel_hnr_threshold and f0 > 0 and f1 > 300
@@ -268,7 +269,7 @@ removeObject: pitch_obj, intensity_obj, formant_obj, mfcc_obj, hnr_obj
 appendInfoLine: "  ", nFrames, " frames analyzed"
 
 # ============================================
-# NORMALIZE ALL FEATURES TO [0, 1]
+# NORMALIZE FEATURES
 # ============================================
 
 appendInfoLine: "Normalizing features..."
@@ -425,7 +426,7 @@ for i from 1 to nFrames
     endif
 endfor
 
-# Final clamp to [0, 1]
+# Final clamp
 for i from 1 to nFrames
     feat_mfcc_1#[i] = max(0, min(1, feat_mfcc_1#[i]))
     feat_mfcc_2#[i] = max(0, min(1, feat_mfcc_2#[i]))
@@ -499,6 +500,9 @@ while iter < training_iterations
     plusObject: categories
     Learn: chunk, learning_rate, "Minimum-squared-error"
     
+    selectObject: ffnet
+    plusObject: pattern
+    plusObject: categories
     current_cost = Get total costs: "Minimum-squared-error"
     
     if abs(prev_cost - current_cost) < prev_cost * 0.001
@@ -525,7 +529,6 @@ activations = selected("Activation")
 To Matrix
 activation_matrix = selected("Matrix")
 
-# Extract weights to arrays
 weight_vowel# = zero#(nFrames)
 weight_consonant# = zero#(nFrames)
 weight_other# = zero#(nFrames)
@@ -568,15 +571,12 @@ appendInfoLine: "Calculating stretch factors..."
 stretch_factor# = zero#(nFrames)
 
 for i from 1 to nFrames
-    # Weighted combination of stretch factors
     factor = weight_vowel#[i] * vowel_stretch +
         ... weight_consonant#[i] * consonant_stretch +
         ... weight_other#[i] * other_stretch +
         ... weight_silence#[i] * silence_stretch
     
-    # Clamp to reasonable range
     factor = max(0.1, min(10, factor))
-    
     stretch_factor#[i] = factor
 endfor
 
@@ -612,8 +612,7 @@ appendInfoLine: "Building duration tier..."
 
 durationTier = Create DurationTier: "stretch", 0, duration
 
-# Add points at regular intervals with smoothed values
-point_interval = 0.02  ; 20ms between points
+point_interval = 0.02
 last_t = -1
 
 selectObject: durationTier
@@ -623,11 +622,6 @@ for i from 1 to nFrames
     t = frame_time#[i]
     
     if t - last_t >= point_interval
-        # Convert stretch factor to duration factor
-        # DurationTier: >1 means output is longer (stretched)
-        # Our stretch_factor: >1 means we want it longer
-        # So they match directly
-        
         dur_factor = stretch_smooth#[i]
         
         selectObject: durationTier
@@ -654,7 +648,7 @@ Replace duration tier
 
 selectObject: manip
 finalOut = Get resynthesis (overlap-add)
-Rename: sound_name$ + "_speed_mapped"
+Rename: sound_name$ + "_speedmap_" + presetName$
 Scale peak: 0.99
 
 # ============================================
@@ -662,6 +656,153 @@ Scale peak: 0.99
 # ============================================
 
 removeObject: workSnd, manip, durationTier
+
+# ============================================
+# VISUALIZATION
+# ============================================
+
+if draw_visualization
+    appendInfoLine: "Drawing visualization..."
+    
+    selectObject: finalOut
+    out_dur = Get total duration
+    
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Neural Phonetic Speed Mapper: " + sound_name$ + " [" + presetName$ + "]"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    selectObject: sound
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Original"
+    Text top: "no", fixed$(duration, 2) + " s"
+    
+    # Output waveform
+    Select outer viewport: 0, 8, 1.6, 2.5
+    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    selectObject: finalOut
+    Colour: "{0.3, 0.6, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text left: "yes", "Output"
+    Text top: "no", fixed$(out_dur, 2) + " s (" + fixed$(out_dur/duration, 2) + "x)"
+    
+    # Phonetic weights
+    Select outer viewport: 0, 8, 2.7, 4.0
+    Select inner viewport: 0.6, 7.6, 2.9, 3.9
+    
+    Axes: 0, duration, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1
+    
+    # Vowel (red)
+    Colour: "{0.8, 0.3, 0.3}"
+    for i from 2 to nFrames
+        t1 = (i - 2) * frame_step_sec
+        t2 = (i - 1) * frame_step_sec
+        Draw line: t1, weight_vowel#[i-1], t2, weight_vowel#[i]
+    endfor
+    
+    # Consonant (blue)
+    Colour: "{0.3, 0.4, 0.8}"
+    for i from 2 to nFrames
+        t1 = (i - 2) * frame_step_sec
+        t2 = (i - 1) * frame_step_sec
+        Draw line: t1, weight_consonant#[i-1], t2, weight_consonant#[i]
+    endfor
+    
+    # Other (green)
+    Colour: "{0.4, 0.7, 0.4}"
+    for i from 2 to nFrames
+        t1 = (i - 2) * frame_step_sec
+        t2 = (i - 1) * frame_step_sec
+        Draw line: t1, weight_other#[i-1], t2, weight_other#[i]
+    endfor
+    
+    # Silence (gray)
+    Colour: "{0.6, 0.6, 0.6}"
+    for i from 2 to nFrames
+        t1 = (i - 2) * frame_step_sec
+        t2 = (i - 1) * frame_step_sec
+        Draw line: t1, weight_silence#[i-1], t2, weight_silence#[i]
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Weight"
+    
+    # Stretch factor
+    Select outer viewport: 0, 8, 4.2, 5.4
+    Select inner viewport: 0.6, 7.6, 4.4, 5.3
+    
+    maxStretch = 1
+    minStretch = 1
+    for i from 1 to nFrames
+        if stretch_smooth#[i] > maxStretch
+            maxStretch = stretch_smooth#[i]
+        endif
+        if stretch_smooth#[i] < minStretch
+            minStretch = stretch_smooth#[i]
+        endif
+    endfor
+    
+    Axes: 0, duration, minStretch * 0.9, maxStretch * 1.1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, minStretch * 0.9, maxStretch * 1.1
+    
+    # Reference line at 1.0
+    Colour: "{0.7, 0.7, 0.7}"
+    Dotted line
+    Draw line: 0, 1, duration, 1
+    Solid line
+    
+    # Stretch curve
+    Colour: "{0.6, 0.3, 0.6}"
+    Line width: 2
+    for i from 2 to nFrames
+        t1 = (i - 2) * frame_step_sec
+        t2 = (i - 1) * frame_step_sec
+        Draw line: t1, stretch_smooth#[i-1], t2, stretch_smooth#[i]
+    endfor
+    Line width: 1
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Stretch"
+    Text bottom: "yes", "Time (s)"
+    
+    # Legend
+    Select outer viewport: 0, 8, 5.5, 6.0
+    Font size: 8
+    Colour: "{0.8, 0.3, 0.3}"
+    Text: 0.12, "centre", 0.5, "half", "— Vowel (" + fixed$(vowel_stretch, 1) + "x)"
+    Colour: "{0.3, 0.4, 0.8}"
+    Text: 0.32, "centre", 0.5, "half", "— Cons (" + fixed$(consonant_stretch, 1) + "x)"
+    Colour: "{0.4, 0.7, 0.4}"
+    Text: 0.52, "centre", 0.5, "half", "— Other (" + fixed$(other_stretch, 1) + "x)"
+    Colour: "{0.6, 0.6, 0.6}"
+    Text: 0.72, "centre", 0.5, "half", "— Silence (" + fixed$(silence_stretch, 1) + "x)"
+    Colour: "{0.6, 0.3, 0.6}"
+    Text: 0.9, "centre", 0.5, "half", "— Stretch"
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# ============================================
+# OUTPUT
+# ============================================
 
 selectObject: sound
 plusObject: finalOut
@@ -671,8 +812,8 @@ appendInfoLine: "=== COMPLETE ==="
 selectObject: finalOut
 out_dur = Get total duration
 appendInfoLine: "Output: ", selected$("Sound")
-appendInfoLine: "Original duration: ", fixed$(duration, 2), " s"
-appendInfoLine: "New duration: ", fixed$(out_dur, 2), " s"
+appendInfoLine: "Original: ", fixed$(duration, 2), " s"
+appendInfoLine: "New: ", fixed$(out_dur, 2), " s"
 appendInfoLine: "Ratio: ", fixed$(out_dur / duration, 2), "x"
 
 if play_result
