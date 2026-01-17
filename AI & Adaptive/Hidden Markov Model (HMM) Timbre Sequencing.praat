@@ -1,99 +1,28 @@
 # ============================================================
-# Praat AudioTools - Hidden Markov Model (HMM) Timbre Sequencing
+# Praat AudioTools - Hidden_Markov_Model_HMM_Timbre_Sequencing.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025) - Stereo + Presets
+# Version: 0.5 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Hidden Markov Model (HMM) Timbre Sequencing
-#   Features:
-#   - Stereo output (independent L/R Markov chains)
-#   - Presets for common use cases
-#   - Band energy optimization
-#   - Pre-built state index (O(1) lookup)
+#   Hidden Markov Model (HMM) Timbre Sequencing with stereo output.
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5:
+#   - Fixed == to = operators
+#   - Fixed preset$ undefined variable
+#   - Fixed object() to Object_ID syntax
+#   - Renamed ms/s variables for clarity
 # ============================================================
 
 ################################################################################
-# Hidden Markov Model (HMM) Timbre Sequencing - Stereo + Presets
-################################################################################
-
-form Markov Chain Timbre Sequencer
-    comment === Preset Selection ===
-    optionmenu Preset: 1
-        option Custom (use settings below)
-        option Fine Grain (subtle, smooth)
-        option Coarse Grain (bold, dramatic)
-        option Textural (dense, evolving)
-        option Rhythmic (pulse-aligned)
-        option Experimental (glitchy, chaotic)
-    
-    comment === Feature Extraction Parameters ===
-    positive Frame_size_(ms) 20
-    positive Frame_hop_(ms) 10
-    
-    comment === Timbre State Clustering ===
-    positive Number_of_timbre_states_(K) 8
-    positive Max_kmeans_iterations 50
-    
-    comment === Sequence Generation ===
-    positive Output_sequence_length_(frames) 200
-    
-    comment === Output Options ===
-    positive Crossfade_duration_(ms) 5
-    boolean Stereo_output 1
-    boolean Show_detailed_info 1
-endform
-
-################################################################################
-# APPLY PRESETS
-################################################################################
-
-if preset = 2
-    # Fine Grain (subtle, smooth)
-    frame_size = 10
-    frame_hop = 5
-    number_of_timbre_states = 12
-    output_sequence_length = 400
-    crossfade_duration = 3
-elsif preset = 3
-    # Coarse Grain (bold, dramatic)
-    frame_size = 100
-    frame_hop = 50
-    number_of_timbre_states = 5
-    output_sequence_length = 80
-    crossfade_duration = 10
-elsif preset = 4
-    # Textural (dense, evolving)
-    frame_size = 20
-    frame_hop = 10
-    number_of_timbre_states = 16
-    output_sequence_length = 600
-    crossfade_duration = 4
-elsif preset = 5
-    # Rhythmic (pulse-aligned ~120 BPM sixteenths)
-    frame_size = 30
-    frame_hop = 15
-    number_of_timbre_states = 8
-    output_sequence_length = 128
-    crossfade_duration = 5
-elsif preset = 6
-    # Experimental (glitchy, chaotic)
-    frame_size = 8
-    frame_hop = 4
-    number_of_timbre_states = 24
-    output_sequence_length = 500
-    crossfade_duration = 1
-endif
-
-################################################################################
-# INITIALIZATION AND VALIDATION
+# INPUT VALIDATION
 ################################################################################
 
 numberOfSelectedSounds = numberOfSelected("Sound")
@@ -103,6 +32,86 @@ endif
 
 sound_original = selected("Sound")
 sound_name$ = selected$("Sound")
+
+################################################################################
+# FORM
+################################################################################
+
+form Markov Chain Timbre Sequencer v0.5
+    comment === Preset Selection ===
+    optionmenu Preset: 1
+        option Custom
+        option Fine Grain (subtle)
+        option Coarse Grain (bold)
+        option Textural (dense)
+        option Rhythmic (pulse)
+        option Experimental (glitchy)
+    comment === Feature Extraction ===
+    positive Frame_size_ms 20
+    positive Frame_hop_ms 10
+    comment === Timbre Clustering ===
+    positive Number_of_states_K 8
+    positive Max_kmeans_iterations 50
+    comment === Sequence Generation ===
+    positive Output_length_frames 200
+    comment === Output ===
+    positive Crossfade_ms 5
+    boolean Stereo_output 1
+    boolean Show_info 1
+endform
+
+################################################################################
+# APPLY PRESETS
+################################################################################
+
+if preset = 2
+    # Fine Grain
+    frame_size_ms = 10
+    frame_hop_ms = 5
+    number_of_states_K = 12
+    output_length_frames = 400
+    crossfade_ms = 3
+    presetName$ = "FineGrain"
+elsif preset = 3
+    # Coarse Grain
+    frame_size_ms = 100
+    frame_hop_ms = 50
+    number_of_states_K = 5
+    output_length_frames = 80
+    crossfade_ms = 10
+    presetName$ = "CoarseGrain"
+elsif preset = 4
+    # Textural
+    frame_size_ms = 20
+    frame_hop_ms = 10
+    number_of_states_K = 16
+    output_length_frames = 600
+    crossfade_ms = 4
+    presetName$ = "Textural"
+elsif preset = 5
+    # Rhythmic
+    frame_size_ms = 30
+    frame_hop_ms = 15
+    number_of_states_K = 8
+    output_length_frames = 128
+    crossfade_ms = 5
+    presetName$ = "Rhythmic"
+elsif preset = 6
+    # Experimental
+    frame_size_ms = 8
+    frame_hop_ms = 4
+    number_of_states_K = 24
+    output_length_frames = 500
+    crossfade_ms = 1
+    presetName$ = "Experimental"
+else
+    presetName$ = "Custom"
+endif
+
+################################################################################
+# INITIALIZATION
+################################################################################
+
 selectObject: sound_original
 duration = Get total duration
 sampling_rate = Get sampling frequency
@@ -120,30 +129,30 @@ endif
 selectObject: sound_mono
 sound = sound_mono
 
-frame_size = frame_size / 1000
-frame_hop = frame_hop / 1000
-crossfade = crossfade_duration / 1000
+# Convert ms to seconds
+frame_size = frame_size_ms / 1000
+frame_hop = frame_hop_ms / 1000
+crossfade = crossfade_ms / 1000
 
 num_frames = floor((duration - frame_size) / frame_hop) + 1
+k = number_of_states_K
+output_sequence_length = output_length_frames
 
-if num_frames < number_of_timbre_states
+if num_frames < k
     removeObject: sound_mono
-    exitScript: "Sound is too short for ", number_of_timbre_states, " states. Reduce K or use longer sound."
+    exitScript: "Sound too short for " + string$(k) + " states. Reduce K or use longer sound."
 endif
 
-k = number_of_timbre_states
-
-if show_detailed_info
-    writeInfoLine: "=== Markov Chain Timbre Sequencer (Stereo + Presets) ==="
+if show_info
+    clearinfo
+    writeInfoLine: "=== HMM Timbre Sequencer v0.5 ==="
     appendInfoLine: "Sound: ", sound_name$
     appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
     appendInfoLine: "Frames: ", num_frames
-    appendInfoLine: "States (K): ", k
-    if preset > 1
-        appendInfoLine: "Preset: ", preset$
-    endif
+    appendInfoLine: "States: ", k
+    appendInfoLine: "Preset: ", presetName$
     if stereo_output
-        appendInfoLine: "Output: Stereo (independent L/R chains)"
+        appendInfoLine: "Output: Stereo"
     else
         appendInfoLine: "Output: Mono"
     endif
@@ -151,31 +160,28 @@ if show_detailed_info
 endif
 
 ################################################################################
-# STEP 1: FEATURE EXTRACTION (OPTIMIZED - Band Energy)
+# STEP 1: FEATURE EXTRACTION
 ################################################################################
 
-if show_detailed_info
+if show_info
     appendInfoLine: "Step 1: Extracting features..."
 endif
 
-# Create global pitch object once
 selectObject: sound
 pitch_global = To Pitch: 0, 150, 600
 
-# Pre-allocate feature arrays
+# Pre-allocate arrays
 time# = zero#(num_frames)
 intensity# = zero#(num_frames)
 pitch# = zero#(num_frames)
 centroid# = zero#(num_frames)
 slope# = zero#(num_frames)
 
-# Frequency bands for slope calculation
 low_freq_start = 100
 low_freq_end = 1000
 high_freq_start = 4000
 high_freq_end = 8000
 
-# Single-pass feature extraction with running statistics
 sum_int = 0
 sum_pitch = 0
 sum_cent = 0
@@ -233,16 +239,16 @@ endfor
 
 removeObject: pitch_global
 
-if show_detailed_info
-    appendInfoLine: "  Extracted 4 features per frame"
+if show_info
+    appendInfoLine: "  4 features extracted"
 endif
 
 ################################################################################
-# STEP 2: FEATURE NORMALIZATION
+# STEP 2: NORMALIZATION
 ################################################################################
 
-if show_detailed_info
-    appendInfoLine: "Step 2: Normalizing features..."
+if show_info
+    appendInfoLine: "Step 2: Normalizing..."
 endif
 
 mean_int = sum_int / num_frames
@@ -280,16 +286,12 @@ for i from 1 to num_frames
     norm_slope#[i] = (slope#[i] - mean_slope) / std_slope
 endfor
 
-if show_detailed_info
-    appendInfoLine: "  Normalization complete"
-endif
-
 ################################################################################
 # STEP 3: K-MEANS CLUSTERING
 ################################################################################
 
-if show_detailed_info
-    appendInfoLine: "Step 3: Clustering into ", k, " timbre states..."
+if show_info
+    appendInfoLine: "Step 3: K-means clustering (K=", k, ")..."
 endif
 
 cent_int# = zero#(k)
@@ -358,24 +360,16 @@ for iteration from 1 to max_kmeans_iterations
     endfor
     
     if assignments_changed = 0
-        if show_detailed_info
-            appendInfoLine: "  K-means converged at iteration ", iteration
+        if show_info
+            appendInfoLine: "  Converged at iteration ", iteration
         endif
         iteration = max_kmeans_iterations + 1
     endif
 endfor
 
-if show_detailed_info
-    appendInfoLine: "  Clustering complete"
-endif
-
 ################################################################################
 # STEP 3.5: BUILD STATE INDEX
 ################################################################################
-
-if show_detailed_info
-    appendInfoLine: "  Building state index..."
-endif
 
 state_count# = zero#(k)
 for i from 1 to num_frames
@@ -399,16 +393,12 @@ for i from 1 to num_frames
     state_fill#[s] += 1
 endfor
 
-if show_detailed_info
-    appendInfoLine: "  State index built"
-endif
-
 ################################################################################
-# STEP 4: MARKOV CHAIN TRANSITION MATRIX
+# STEP 4: TRANSITION MATRIX
 ################################################################################
 
-if show_detailed_info
-    appendInfoLine: "Step 4: Learning transition probabilities..."
+if show_info
+    appendInfoLine: "Step 4: Learning transitions..."
 endif
 
 trans# = zero#(k * k)
@@ -441,13 +431,8 @@ for i from 1 to k
     endif
 endfor
 
-if show_detailed_info
-    appendInfoLine: "  Transition matrix learned"
-endif
-
 ################################################################################
-# STEP 5 & 6: GENERATE SEQUENCES AND SYNTHESIZE
-# Run once for mono, twice for stereo (independent chains)
+# STEP 5-6: GENERATE AND SYNTHESIZE
 ################################################################################
 
 if stereo_output
@@ -457,15 +442,15 @@ else
 endif
 
 for pass from 1 to n_passes
-    if show_detailed_info
+    if show_info
         if stereo_output
             if pass = 1
-                appendInfoLine: "Step 5-6: Generating LEFT channel..."
+                appendInfoLine: "Step 5-6: Generating LEFT..."
             else
-                appendInfoLine: "Step 5-6: Generating RIGHT channel..."
+                appendInfoLine: "Step 5-6: Generating RIGHT..."
             endif
         else
-            appendInfoLine: "Step 5-6: Generating sequence and synthesizing..."
+            appendInfoLine: "Step 5-6: Generating sequence..."
         endif
     endif
     
@@ -494,7 +479,7 @@ for pass from 1 to n_passes
         current_state = next_state
     endfor
     
-    # Select frames using index
+    # Select frames
     for t from 1 to output_sequence_length
         target_state = out_state#[t]
         n_matching = state_count#[target_state]
@@ -508,7 +493,7 @@ for pass from 1 to n_passes
         endif
     endfor
     
-    # Synthesize audio
+    # Synthesize
     if frame_size > 2 * frame_hop
         removeObject: sound_mono
         exitScript: "Frame Size must be <= 2x Frame Hop."
@@ -522,10 +507,9 @@ for pass from 1 to n_passes
     odd_cursor = 0
     even_cursor = 0
     
+    use_crossfade = 0
     if crossfade > 0
         use_crossfade = 1
-    else
-        use_crossfade = 0
     endif
     
     for t from 1 to output_sequence_length
@@ -539,14 +523,17 @@ for pass from 1 to n_passes
         
         if use_crossfade
             dur = Get total duration
-            Formula: "self * (if x < " + string$(crossfade) + " then x/" + string$(crossfade) + 
-            ... " else if x > " + string$(dur-crossfade) + " then (" + string$(dur) + "-x)/" + string$(crossfade) + 
-            ... " else 1 fi fi)"
+            xfStr$ = string$(crossfade)
+            durMinusXf$ = string$(dur - crossfade)
+            durStr$ = string$(dur)
+            Formula: "self * (if x < " + xfStr$ + " then x/" + xfStr$ + 
+                ... " else if x > " + durMinusXf$ + " then (" + durStr$ + "-x)/" + xfStr$ + 
+                ... " else 1 fi fi)"
         endif
         
         dest_time = (t - 1) * frame_hop
         
-        if t mod 2 == 1
+        if t mod 2 = 1
             gap = dest_time - odd_cursor
             if gap > 0.00002
                 silence = Create Sound from formula: "silence", 1, 0, gap, sampling_rate, "0"
@@ -613,9 +600,10 @@ for pass from 1 to n_passes
         Remove
     endif
     
-    # Mix streams
+    # Mix streams using Object_ reference
+    streamOddStr$ = string$(stream_odd)
     selectObject: stream_even
-    Formula: "self + object(stream_odd)"
+    Formula: "self + Object_" + streamOddStr$ + "[col]"
     removeObject: stream_odd
     
     selectObject: stream_even
@@ -631,22 +619,20 @@ for pass from 1 to n_passes
 endfor
 
 ################################################################################
-# STEP 7: COMBINE TO STEREO (if applicable)
+# STEP 7: COMBINE TO STEREO
 ################################################################################
 
 if stereo_output
-    if show_detailed_info
+    if show_info
         appendInfoLine: "Step 7: Combining to stereo..."
     endif
     
-    # Get durations and match lengths
     selectObject: channel_left
     dur_left = Get total duration
     
     selectObject: channel_right
     dur_right = Get total duration
     
-    # Use the shorter duration
     if dur_left < dur_right
         final_dur = dur_left
         selectObject: channel_right
@@ -661,36 +647,34 @@ if stereo_output
         channel_left = channel_left_trimmed
     endif
     
-    # Combine to stereo
-    selectObject: channel_left, channel_right
+    selectObject: channel_left
+    plusObject: channel_right
     output_sound = Combine to stereo
-    Rename: "Markov_Timbre_Sequence_Stereo"
+    Rename: "HMM_Timbre_" + presetName$
     
     removeObject: channel_left, channel_right
 else
     output_sound = channel_left
-    Rename: "Markov_Timbre_Sequence"
+    Rename: "HMM_Timbre_" + presetName$
 endif
 
 ################################################################################
-# CLEANUP AND FINALIZATION
+# CLEANUP
 ################################################################################
 
 removeObject: sound_mono
 
 selectObject: output_sound
 
-if show_detailed_info
+if show_info
     selectObject: output_sound
     dur = Get total duration
     n_ch = Get number of channels
     appendInfoLine: ""
-    appendInfoLine: "=== Markov Chain Timbre Sequencer Complete ==="
+    appendInfoLine: "=== Complete ==="
     appendInfoLine: "Output: ", selected$("Sound")
     appendInfoLine: "Duration: ", fixed$(dur, 3), " s"
     appendInfoLine: "Channels: ", n_ch
-    appendInfoLine: ""
-    appendInfoLine: "Generated sound is now selected."
-    appendInfoLine: "Original sound: ", sound_name$
 endif
+
 Play

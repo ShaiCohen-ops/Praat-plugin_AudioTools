@@ -1,50 +1,49 @@
 # ============================================================
-# Praat AudioTools - Neural Phonetic Vibrato
+# Praat AudioTools - Neural_Adaptive_Phonetic_Vibrato.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-# - Vowels = Lush Stereo Vibrato.
-# - Consonants = 100% Dry & Clean (Perfect intelligibility).
+#   Neural Phonetic Vibrato - Applies stereo vibrato to vowels
+#   while keeping consonants clean for intelligibility.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.3:
+#   - Fixed preset comparison (number not string)
+#   - Fixed == to = operator
+#   - Fixed call to @ procedure syntax
+#   - Fixed inline if statements
+#   - Added preset names
 # ============================================================
 
-# ============================================================
-# Neural Phonetic Vibrato 
-# ============================================================
+# === Input Validation ===
+nSelected = numberOfSelected("Sound")
+if nSelected <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
-form Neural Phonetic Vibrato (Pure)
+original = selected("Sound")
+sound_name$ = selected$("Sound")
+
+form Neural Phonetic Vibrato v0.3
     comment === PRESETS ===
-    optionmenu Preset 1
-        option Manual (Use Settings Below)
-        option Lush Chorus (Default)
+    optionmenu Preset: 1
+        option Manual
+        option Lush Chorus
         option Wide & Slow
         option Nervous Shimmer
         option Subtle Thickener
         option Dreamy Wash
-
     comment === Vowel Effect (Stereo Vibrato) ===
     positive Vibrato_rate_hz 6.0
     positive Vibrato_depth_ms 2.5
-    
     comment === Neural Mixing ===
-    # How easily it switches to Vibrato (Lower = More Vibrato)
     positive Confidence_threshold 0.15
     positive Temperature 0.45
-    # Boost vibrato intensity on strongly voiced segments
     positive Voiced_boost 0.4
-    
     comment === Output ===
     real Stereo_width 0.9
     boolean Play_result 1
@@ -53,40 +52,48 @@ endform
 # ============================================
 # PRESET LOGIC
 # ============================================
-if preset$ = "Lush Chorus (Default)"
+if preset = 2
+    # Lush Chorus
     vibrato_rate_hz = 6.0
     vibrato_depth_ms = 2.5
     confidence_threshold = 0.15
     temperature = 0.45
     stereo_width = 0.9
-
-elsif preset$ = "Wide & Slow"
+    presetName$ = "LushChorus"
+elsif preset = 3
+    # Wide & Slow
     vibrato_rate_hz = 2.5
     vibrato_depth_ms = 5.0
     confidence_threshold = 0.10
     temperature = 0.5
     stereo_width = 1.0
-
-elsif preset$ = "Nervous Shimmer"
+    presetName$ = "WideSlow"
+elsif preset = 4
+    # Nervous Shimmer
     vibrato_rate_hz = 8.5
     vibrato_depth_ms = 1.5
     confidence_threshold = 0.15
     temperature = 0.4
     stereo_width = 0.7
-    
-elsif preset$ = "Subtle Thickener"
+    presetName$ = "NervousShimmer"
+elsif preset = 5
+    # Subtle Thickener
     vibrato_rate_hz = 5.0
     vibrato_depth_ms = 1.2
     confidence_threshold = 0.25
     temperature = 0.6
     stereo_width = 0.5
-
-elsif preset$ = "Dreamy Wash"
+    presetName$ = "SubtleThickener"
+elsif preset = 6
+    # Dreamy Wash
     vibrato_rate_hz = 4.0
     vibrato_depth_ms = 4.0
     confidence_threshold = 0.05
     temperature = 0.8
     stereo_width = 1.0
+    presetName$ = "DreamyWash"
+else
+    presetName$ = "Manual"
 endif
 
 # ============================================
@@ -106,15 +113,6 @@ silence_intensity_threshold = 45
 # ============================================
 # INIT & MONO CONVERSION
 # ============================================
-
-nSelected = numberOfSelected("Sound")
-if nSelected <> 1
-    exitScript: "Please select exactly one Sound object."
-endif
-
-original = selected("Sound")
-sound_name$ = selected$("Sound")
-
 selectObject: original
 duration = Get total duration
 
@@ -122,16 +120,21 @@ if duration < frame_step_seconds
     exitScript: "Error: Sound duration too short."
 endif
 
-# FORCE MONO for Analysis & Source
 selectObject: original
 sound = Convert to mono
 Rename: "Analysis_Copy"
 sound_work = selected("Sound")
 
+clearinfo
+writeInfoLine: "=== Neural Phonetic Vibrato v0.3 ==="
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Sound: ", sound_name$
+appendInfoLine: ""
+
 # ============================================
 # ANALYSIS (BATCH)
 # ============================================
-writeInfoLine: "Analyzing audio features..."
+appendInfoLine: "Analyzing audio features..."
 
 selectObject: sound_work
 To Pitch: 0, 75, 600
@@ -172,7 +175,12 @@ for i from 1 to rows_target
         if v = undefined
             v = 0
         endif
-        col_idx = if c <= 3 then c else 9 + c - 3 fi
+        # Calculate column index
+        if c <= 3
+            col_idx = c
+        else
+            col_idx = 9 + c - 3
+        endif
         selectObject: feature_matrix
         Set value: i, col_idx, v
         selectObject: mfcc
@@ -255,7 +263,6 @@ output_categories = selected("Categories")
 Create TableOfReal: "RawData", rows_target, 4
 raw_data = selected("TableOfReal")
 
-# Fill Temp Table
 selectObject: intensity
 for i from 1 to rows_target
     t = frame_step_seconds * (i - 0.5)
@@ -323,8 +330,7 @@ for i from 1 to rows_target
     endif
     selectObject: raw_data
 endfor
-selectObject: raw_data
-Remove
+removeObject: raw_data
 
 # ============================================
 # NORMALIZE
@@ -363,7 +369,7 @@ endfor
 # ============================================
 # TRAINING
 # ============================================
-writeInfoLine: "Training Neural Network (1000 Iterations)..."
+appendInfoLine: "Training Neural Network..."
 
 selectObject: feature_matrix
 To Matrix
@@ -384,13 +390,13 @@ while total_trained < training_iterations
     plusObject: output_categories
     Learn: train_chunk, learning_rate, "Minimum-squared-error"
     total_trained = total_trained + train_chunk
-    if total_trained mod 200 == 0
-        appendInfoLine: "Iter: ", total_trained
+    if total_trained mod 200 = 0
+        appendInfoLine: "  Iter: ", total_trained
     endif
 endwhile
 
 # ============================================
-# INFERENCE & MASKS (LIQUID MIX)
+# INFERENCE & MASKS
 # ============================================
 selectObject: ffnet
 plusObject: pattern
@@ -404,20 +410,16 @@ mask_vib = selected("IntensityTier")
 Create IntensityTier: "Mask_Dry", 0, duration
 mask_dry = selected("IntensityTier")
 
-writeInfoLine: "Generating Liquid Masks..."
+appendInfoLine: "Generating mixing masks..."
 
 for i from 1 to rows_target
     t = frame_step_seconds * (i - 0.5)
     
     selectObject: activation_matrix
-    a1 = Get value in cell: i, 1 
-# Vowel
-    a2 = Get value in cell: i, 2 
-# Fricative
-    a3 = Get value in cell: i, 3 
-# Other
-    a4 = Get value in cell: i, 4 
-# Silence
+    a1 = Get value in cell: i, 1
+    a2 = Get value in cell: i, 2
+    a3 = Get value in cell: i, 3
+    a4 = Get value in cell: i, 4
     
     # Softmax
     tdiv = temperature
@@ -437,7 +439,7 @@ for i from 1 to rows_target
     w_vowel = e1 / denom
     w_rest  = (e2 + e3 + e4) / denom
 
-    # Adaptive boost for Vowel
+    # Adaptive boost
     selectObject: feature_matrix
     norm_hnr = Get value: i, 8
     norm_f0 = Get value: i, 9
@@ -446,18 +448,22 @@ for i from 1 to rows_target
     
     w_vowel = w_vowel * adapt_weight
     
-    # MIXING LOGIC:
-    # Vowels get Vibrato. Everything else gets DRY.
-    # We ensure they sum to 1.0 (roughly) for volume consistency
-    
     total = w_vowel + w_rest
     w_vowel = w_vowel / total
     w_dry = 1.0 - w_vowel
     
     # Prob to dB
     floor_w = 0.001
-    db_vib = if w_vowel < floor_w then -100 else 20 * log10(w_vowel) fi
-    db_dry = if w_dry < floor_w then -100 else 20 * log10(w_dry) fi
+    if w_vowel < floor_w
+        db_vib = -100
+    else
+        db_vib = 20 * log10(w_vowel)
+    endif
+    if w_dry < floor_w
+        db_dry = -100
+    else
+        db_dry = 20 * log10(w_dry)
+    endif
 
     selectObject: mask_vib
     Add point: t, db_vib
@@ -466,38 +472,37 @@ for i from 1 to rows_target
 endfor
 
 # ============================================
-# PARALLEL DSP (PURE STEREO VIBRATO)
+# PARALLEL DSP (STEREO VIBRATO)
 # ============================================
 selectObject: sound_work
 
-# PREPARE VARIABLES
 vib_depth_sec = vibrato_depth_ms / 1000
 vib_rate = vibrato_rate_hz
+depthStr$ = string$(vib_depth_sec)
+rateStr$ = string$(vib_rate)
+soundWorkStr$ = string$(sound_work)
 
-# 1. Stereo Vibrato Tracks (Pitch ONLY)
 # LEFT CHANNEL (Phase 0)
 selectObject: sound_work
 Copy: "Vib_Left"
 s_vib_L = selected("Sound")
-Formula: "Sound_Analysis_Copy(x + " + string$(vib_depth_sec) + " * sin(2*pi*" + string$(vib_rate) + "*x))"
+Formula: "Object_" + soundWorkStr$ + "(x + " + depthStr$ + " * sin(2*pi*" + rateStr$ + "*x))"
 
-# RIGHT CHANNEL (Phase 180 / Inverted)
+# RIGHT CHANNEL (Phase 180)
 selectObject: sound_work
 Copy: "Vib_Right"
 s_vib_R = selected("Sound")
-Formula: "Sound_Analysis_Copy(x + " + string$(vib_depth_sec) + " * sin(2*pi*" + string$(vib_rate) + "*x + 3.14159))"
+Formula: "Object_" + soundWorkStr$ + "(x + " + depthStr$ + " * sin(2*pi*" + rateStr$ + "*x + 3.14159))"
 
-# 2. Dry Track (Clean Mono)
+# Dry Track
 selectObject: sound_work
 Copy: "Dry_Track"
 s_dry = selected("Sound")
-# No processing, just the original
 
 # ============================================
 # APPLY MASKS
 # ============================================
 
-# Apply Vibrato Mask
 selectObject: s_vib_L
 plusObject: mask_vib
 Multiply
@@ -510,7 +515,6 @@ Multiply
 s_vib_R_masked = selected("Sound")
 Rename: "Mix_Vib_R"
 
-# Apply Dry Mask
 selectObject: s_dry
 plusObject: mask_dry
 Multiply
@@ -521,36 +525,35 @@ Rename: "Mix_Dry"
 # STEREO MIX
 # ============================================
 
-# Create base channels
+vibLStr$ = string$(s_vib_L_masked)
+vibRStr$ = string$(s_vib_R_masked)
+dryStr$ = string$(s_dry_masked)
+
 selectObject: sound_work
 Copy: "Ch_Left"
 ch_L = selected("Sound")
-Formula: "0"
+Formula: "Object_" + vibLStr$ + "[col] + Object_" + dryStr$ + "[col]"
 
 selectObject: sound_work
 Copy: "Ch_Right"
 ch_R = selected("Sound")
-Formula: "0"
-
-# Sum Left (Vib L + Dry)
-selectObject: ch_L
-Formula: "Sound_Mix_Vib_L[] + Sound_Mix_Dry[]"
-
-# Sum Right (Vib R + Dry)
-selectObject: ch_R
-Formula: "Sound_Mix_Vib_R[] + Sound_Mix_Dry[]"
+Formula: "Object_" + vibRStr$ + "[col] + Object_" + dryStr$ + "[col]"
 
 # Stereo Combine
 selectObject: ch_L
 plusObject: ch_R
 Combine to stereo
 final_stereo = selected("Sound")
-Rename: sound_name$ + "_neural_vibrato_pure"
+Rename: sound_name$ + "_neuralVib_" + presetName$
 
+# Width control
 if stereo_width <> 1
-    # Width control
+    chLStr$ = string$(ch_L)
+    chRStr$ = string$(ch_R)
+    widthStr$ = string$(stereo_width)
+    monoStr$ = string$(1 - stereo_width)
     selectObject: final_stereo
-    Formula: "self * " + string$(stereo_width) + " + (Sound_Ch_Left[] + Sound_Ch_Right[])/2 * " + string$(1 - stereo_width)
+    Formula: "self * " + widthStr$ + " + (Object_" + chLStr$ + "[col] + Object_" + chRStr$ + "[col])/2 * " + monoStr$
 endif
 
 selectObject: final_stereo
@@ -559,38 +562,43 @@ Scale peak: 0.99
 # ============================================
 # CLEANUP
 # ============================================
-procedure safeRemove .id
+procedure safeRemove: .id
     if .id > 0
         selectObject: .id
         Remove
     endif
 endproc
 
-call safeRemove: sound_work
-call safeRemove: pitch
-call safeRemove: intensity
-call safeRemove: formant
-call safeRemove: mfcc
-call safeRemove: harmonicity
-call safeRemove: feature_matrix
-call safeRemove: feature_matrix_m
-call safeRemove: pattern
-call safeRemove: output_categories
-call safeRemove: ffnet
-call safeRemove: activations
-call safeRemove: activation_matrix
-call safeRemove: mask_vib
-call safeRemove: mask_dry
-call safeRemove: s_vib_L
-call safeRemove: s_vib_R
-call safeRemove: s_dry
-call safeRemove: s_vib_L_masked
-call safeRemove: s_vib_R_masked
-call safeRemove: s_dry_masked
-call safeRemove: ch_L
-call safeRemove: ch_R
+@safeRemove: sound_work
+@safeRemove: pitch
+@safeRemove: intensity
+@safeRemove: formant
+@safeRemove: mfcc
+@safeRemove: harmonicity
+@safeRemove: feature_matrix
+@safeRemove: feature_matrix_m
+@safeRemove: pattern
+@safeRemove: output_categories
+@safeRemove: ffnet
+@safeRemove: activations
+@safeRemove: activation_matrix
+@safeRemove: mask_vib
+@safeRemove: mask_dry
+@safeRemove: s_vib_L
+@safeRemove: s_vib_R
+@safeRemove: s_dry
+@safeRemove: s_vib_L_masked
+@safeRemove: s_vib_R_masked
+@safeRemove: s_dry_masked
+@safeRemove: ch_L
+@safeRemove: ch_R
+
+appendInfoLine: ""
+appendInfoLine: "=== Complete ==="
+appendInfoLine: "Output: ", sound_name$, "_neuralVib_", presetName$
+
+selectObject: final_stereo
 
 if play_result
-    selectObject: final_stereo
     Play
 endif

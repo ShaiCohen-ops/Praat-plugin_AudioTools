@@ -1,48 +1,47 @@
 # ============================================================
-# Praat AudioTools - Gesture-Based Hard Quantization
+# Praat AudioTools - Gesture-Based_Hard_Quantization.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Gesture-Based Hard Quantization
+#   Gesture-Based Hard Quantization - Segments a reference sound
+#   and replaces each segment with the best-matching gesture from
+#   a dictionary of sounds using k-best selection with repetition penalty.
+#
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.3:
+#   - Fixed array syntax for Praat compatibility
+#   - Fixed != to <> operator
+#   - Fixed string array syntax
+#   - Fixed variable scope issues
 # ============================================================
 
-form Gesture Quantization Parameters
-    comment ═══════════════════════════════════════
-    comment PRESETS (select one, or choose Custom)
-    comment ═══════════════════════════════════════
-    optionmenu Preset 2
-        option Maximum Variety (k=10, pen=0.8, seg=30)
-        option Balanced (k=7, pen=0.7, seg=20)
-        option Coherent (k=3, pen=0.3, seg=12)
-        option Minimal (k=1, pen=0.0, seg=8)
-        option Custom (use values below)
-    comment ═══════════════════════════════════════
-    comment CUSTOM SETTINGS (only used if Preset = Custom)
-    comment ═══════════════════════════════════════
+form Gesture Quantization v0.3
+    comment === PRESETS ===
+    optionmenu Preset: 2
+        option Maximum Variety (k=10)
+        option Balanced (k=7)
+        option Coherent (k=3)
+        option Minimal (k=1)
+        option Custom
+    comment === CUSTOM SETTINGS ===
     positive Number_of_segments 20
     positive K_best_matches 7
     positive Repetition_penalty 0.5
-    comment ═══════════════════════════════════════
-    comment FEATURE EXTRACTION
-    comment ═══════════════════════════════════════
+    comment === FEATURE EXTRACTION ===
     positive N_time_samples 50
     positive Pitch_floor 75
     positive Pitch_ceiling 600
-    comment ═══════════════════════════════════════
-    comment AUDIO PROCESSING
-    comment ═══════════════════════════════════════
+    comment === AUDIO ===
     positive Target_sample_rate 44100
-    comment ═══════════════════════════════════════
-    comment OUTPUT
-    comment ═══════════════════════════════════════
+    comment === OUTPUT ===
     boolean Verbose_output 1
     boolean Play_result 1
 endform
@@ -55,24 +54,24 @@ if preset = 1
     number_of_segments = 30
     k_best_matches = 10
     repetition_penalty = 0.8
-    preset$ = "Maximum Variety"
+    presetName$ = "MaxVariety"
 elsif preset = 2
     number_of_segments = 20
     k_best_matches = 7
     repetition_penalty = 0.7
-    preset$ = "Balanced"
+    presetName$ = "Balanced"
 elsif preset = 3
     number_of_segments = 12
     k_best_matches = 3
     repetition_penalty = 0.3
-    preset$ = "Coherent"
+    presetName$ = "Coherent"
 elsif preset = 4
     number_of_segments = 8
     k_best_matches = 1
     repetition_penalty = 0.0
-    preset$ = "Minimal"
+    presetName$ = "Minimal"
 else
-    preset$ = "Custom"
+    presetName$ = "Custom"
 endif
 
 ################################################################################
@@ -81,18 +80,14 @@ endif
 
 clearinfo
 
-folder_path$ = chooseDirectory$("Select folder containing sound files (first file = reference)")
+folder_path$ = chooseDirectory$: "Select folder containing sound files (first file = reference)"
 
 if folder_path$ = ""
-    exitScript: "No folder selected. Script cancelled."
+    exitScript: "No folder selected."
 endif
 
 if right$(folder_path$, 1) <> "/" and right$(folder_path$, 1) <> "\"
-    if environment$("os") = "windows"
-        folder_path$ = folder_path$ + "\"
-    else
-        folder_path$ = folder_path$ + "/"
-    endif
+    folder_path$ = folder_path$ + "/"
 endif
 
 ################################################################################
@@ -118,18 +113,18 @@ procedure convertToMono: .soundID
         removeObject: .soundID
         .soundID = .mono
     endif
-    .result = .soundID
+    convertToMono.result = .soundID
 endproc
 
 procedure resampleIfNeeded: .soundID, .targetRate
     selectObject: .soundID
     .currentRate = Get sampling frequency
-    if .currentRate != .targetRate
+    if .currentRate <> .targetRate
         .resampled = Resample: .targetRate, 50
         removeObject: .soundID
         .soundID = .resampled
     endif
-    .result = .soundID
+    resampleIfNeeded.result = .soundID
 endproc
 
 procedure extractFeatureVector: .soundID, .nSamples
@@ -138,29 +133,51 @@ procedure extractFeatureVector: .soundID, .nSamples
     .start = Get start time
     .end = Get end time
     
+    # Pitch analysis
     .pitch = To Pitch: 0.01, pitch_floor, pitch_ceiling
     
     selectObject: .soundID
-    .intensity = To Intensity: 100, 0, "yes"
+    
+    # Intensity analysis - adjust pitch floor for short sounds
+    # Minimum duration = 6.4 / pitchFloor, so pitchFloor = 6.4 / duration
+    .intensityPitchFloor = 100
+    .minDurForIntensity = 6.4 / .intensityPitchFloor
+    
+    if .dur < .minDurForIntensity
+        # Adjust pitch floor for short sounds (with safety margin)
+        .intensityPitchFloor = ceiling(6.4 / .dur) + 10
+        if .intensityPitchFloor > 500
+            .intensityPitchFloor = 500
+        endif
+    endif
+    
+    .intensity = To Intensity: .intensityPitchFloor, 0, "yes"
     
     .timeStep = .dur / (.nSamples - 1)
+    if .timeStep <= 0
+        .timeStep = .dur / 2
+    endif
     
     for .i to .nSamples
         .time = .start + (.i - 1) * .timeStep
+        if .time > .end
+            .time = .end
+        endif
         
         selectObject: .pitch
         .f0 = Get value at time: .time, "Hertz", "Linear"
         if .f0 = undefined
             .f0 = 0
         endif
-        feature_vector[.i] = .f0
+        feature_vector_'.i' = .f0
         
         selectObject: .intensity
         .db = Get value at time: .time, "Cubic"
         if .db = undefined
             .db = 0
         endif
-        feature_vector[.nSamples + .i] = .db
+        .idx2 = .nSamples + .i
+        feature_vector_'.idx2' = .db
     endfor
     
     removeObject: .pitch, .intensity
@@ -168,18 +185,20 @@ endproc
 
 procedure normalizeFeatures: .vectorLength, .minPitch, .maxPitch, .minDB, .maxDB
     for .i to n_time_samples
+        .val = feature_vector_'.i'
         if .maxPitch > .minPitch
-            feature_vector[.i] = (feature_vector[.i] - .minPitch) / (.maxPitch - .minPitch)
+            feature_vector_'.i' = (.val - .minPitch) / (.maxPitch - .minPitch)
         else
-            feature_vector[.i] = 0
+            feature_vector_'.i' = 0
         endif
     endfor
     
     for .i from n_time_samples + 1 to .vectorLength
+        .val = feature_vector_'.i'
         if .maxDB > .minDB
-            feature_vector[.i] = (feature_vector[.i] - .minDB) / (.maxDB - .minDB)
+            feature_vector_'.i' = (.val - .minDB) / (.maxDB - .minDB)
         else
-            feature_vector[.i] = 0
+            feature_vector_'.i' = 0
         endif
     endfor
 endproc
@@ -187,65 +206,70 @@ endproc
 procedure euclideanDistance: .vectorLength
     .distance = 0
     for .i to .vectorLength
-        .diff = feature_vector[.i] - dict_vector[.i]
+        .fv = feature_vector_'.i'
+        .dv = dict_vector_'.i'
+        .diff = .fv - .dv
         .distance += .diff * .diff
     endfor
-    .distance = sqrt(.distance)
+    euclideanDistance.distance = sqrt(.distance)
 endproc
 
 procedure findKBestMatches: .nPatterns, .k, .lastChoice
+    # Initialize candidates
     for .i to .nPatterns
-        candidate_dist[.i] = 10000
-        candidate_idx[.i] = .i
+        candidate_dist_'.i' = 10000
+        candidate_idx_'.i' = .i
     endfor
     
+    # Calculate distances
     for .dictIdx to .nPatterns
         for .j to vectorLength
-            dict_vector[.j] = dict_features[.dictIdx, .j]
+            dict_vector_'.j' = dict_features_'.dictIdx'_'.j'
         endfor
         
         @euclideanDistance: vectorLength
         .dist = euclideanDistance.distance
         
+        # Apply repetition penalty
         if .dictIdx = .lastChoice and repetition_penalty > 0
             .dist = .dist * (1 + repetition_penalty)
         endif
         
-        candidate_dist[.dictIdx] = .dist
+        candidate_dist_'.dictIdx' = .dist
     endfor
     
+    # Partial sort to find k-best
     for .i to .k
         .minIdx = .i
-        .minDist = candidate_dist[.i]
+        .minDist = candidate_dist_'.i'
         
         for .j from .i + 1 to .nPatterns
-            if candidate_dist[.j] < .minDist
-                .minDist = candidate_dist[.j]
+            .testDist = candidate_dist_'.j'
+            if .testDist < .minDist
+                .minDist = .testDist
                 .minIdx = .j
             endif
         endfor
         
         if .minIdx <> .i
-            .tempDist = candidate_dist[.i]
-            .tempIdx = candidate_idx[.i]
-            candidate_dist[.i] = candidate_dist[.minIdx]
-            candidate_idx[.i] = candidate_idx[.minIdx]
-            candidate_dist[.minIdx] = .tempDist
-            candidate_idx[.minIdx] = .tempIdx
+            .tempDist = candidate_dist_'.i'
+            .tempIdx = candidate_idx_'.i'
+            candidate_dist_'.i' = candidate_dist_'.minIdx'
+            candidate_idx_'.i' = candidate_idx_'.minIdx'
+            candidate_dist_'.minIdx' = .tempDist
+            candidate_idx_'.minIdx' = .tempIdx
         endif
     endfor
     
+    # Select from k-best
     if .k = 1
-        .chosenIdx = candidate_idx[1]
-        .chosenDist = candidate_dist[1]
+        findKBestMatches.selectedIndex = candidate_idx_1
+        findKBestMatches.selectedDistance = candidate_dist_1
     else
         .randomChoice = randomInteger(1, .k)
-        .chosenIdx = candidate_idx[.randomChoice]
-        .chosenDist = candidate_dist[.randomChoice]
+        findKBestMatches.selectedIndex = candidate_idx_'.randomChoice'
+        findKBestMatches.selectedDistance = candidate_dist_'.randomChoice'
     endif
-    
-    .selectedIndex = .chosenIdx
-    .selectedDistance = .chosenDist
 endproc
 
 ################################################################################
@@ -254,10 +278,10 @@ endproc
 
 if verbose_output
     appendInfoLine: "═══════════════════════════════════════════════════════"
-    appendInfoLine: "  Gesture-Based Hard Quantization"
+    appendInfoLine: "  Gesture-Based Hard Quantization v0.3"
     appendInfoLine: "═══════════════════════════════════════════════════════"
     appendInfoLine: ""
-    appendInfoLine: "Preset: ", preset$
+    appendInfoLine: "Preset: ", presetName$
     appendInfoLine: "  • Segments: ", number_of_segments
     appendInfoLine: "  • K-best: ", k_best_matches
     appendInfoLine: "  • Repetition penalty: ", fixed$(repetition_penalty, 2)
@@ -265,24 +289,24 @@ if verbose_output
 endif
 
 @log: "Reading folder: " + folder_path$
-.fileList = Create Strings as file list: "fileList", folder_path$ + "*.wav"
-.nFiles = Get number of strings
+fileList = Create Strings as file list: "fileList", folder_path$ + "*.wav"
+nFiles = Get number of strings
 
-if .nFiles < 2
-    selectObject: .fileList
-    Remove
-    exitScript: "Error: Need at least 2 sound files (1 reference + 1 dictionary sound)"
+if nFiles < 2
+    removeObject: fileList
+    exitScript: "Error: Need at least 2 sound files (1 reference + 1 dictionary)"
 endif
 
-@log: "Found " + string$(.nFiles) + " sound files"
+@log: "Found " + string$(nFiles) + " sound files"
 @log: ""
 
 vectorLength = 2 * n_time_samples
-nDictSounds = .nFiles - 1
+nDictSounds = nFiles - 1
 
+# Initialize dictionary features array
 for .i to nDictSounds
     for .j to vectorLength
-        dict_features[.i, .j] = 0
+        dict_features_'.i'_'.j' = 0
     endfor
 endfor
 
@@ -298,29 +322,29 @@ maxPitch = 0
 minDB = 10000
 maxDB = -10000
 
-for .fileIdx to .nFiles
-    selectObject: .fileList
-    .filename$ = Get string: .fileIdx
-    .filepath$ = folder_path$ + .filename$
+for fileIdx to nFiles
+    selectObject: fileList
+    filename$ = Get string: fileIdx
+    filepath$ = folder_path$ + filename$
     
-    @log: "Loading: " + .filename$
+    @log: "Loading: " + filename$
     
-    .sound = Read from file: .filepath$
+    sound = Read from file: filepath$
     
-    @convertToMono: .sound
-    .sound = convertToMono.result
+    @convertToMono: sound
+    sound = convertToMono.result
     
-    @resampleIfNeeded: .sound, target_sample_rate
-    .sound = resampleIfNeeded.result
+    @resampleIfNeeded: sound, target_sample_rate
+    sound = resampleIfNeeded.result
     
-    @normalizeIntensity: .sound
+    @normalizeIntensity: sound
     
-    soundID[.fileIdx] = .sound
+    soundID_'fileIdx' = sound
     
-    selectObject: .sound
-    soundName$[.fileIdx] = selected$("Sound")
+    selectObject: sound
+    soundName_'fileIdx'$ = selected$("Sound")
     
-    @log: "  Preprocessed: " + soundName$[.fileIdx]
+    @log: "  Preprocessed: " + soundName_'fileIdx'$
 endfor
 
 @log: ""
@@ -332,32 +356,33 @@ endfor
 @log: "Building gesture dictionary (" + string$(nDictSounds) + " gestures)..."
 @log: ""
 
-for .dictIdx to nDictSounds
-    .soundIdx = .dictIdx + 1
-    .sound = soundID[.soundIdx]
+for dictIdx to nDictSounds
+    soundIdx = dictIdx + 1
+    sound = soundID_'soundIdx'
     
-    @log: "  Dictionary " + string$(.dictIdx) + ": " + soundName$[.soundIdx]
+    @log: "  Dictionary " + string$(dictIdx) + ": " + soundName_'soundIdx'$
     
-    @extractFeatureVector: .sound, n_time_samples
+    @extractFeatureVector: sound, n_time_samples
     
-    for .j to vectorLength
-        dict_features[.dictIdx, .j] = feature_vector[.j]
+    for j to vectorLength
+        fv = feature_vector_'j'
+        dict_features_'dictIdx'_'j' = fv
         
-        if .j <= n_time_samples
-            if feature_vector[.j] > 0
-                if feature_vector[.j] < minPitch
-                    minPitch = feature_vector[.j]
+        if j <= n_time_samples
+            if fv > 0
+                if fv < minPitch
+                    minPitch = fv
                 endif
-                if feature_vector[.j] > maxPitch
-                    maxPitch = feature_vector[.j]
+                if fv > maxPitch
+                    maxPitch = fv
                 endif
             endif
         else
-            if feature_vector[.j] < minDB
-                minDB = feature_vector[.j]
+            if fv < minDB
+                minDB = fv
             endif
-            if feature_vector[.j] > maxDB
-                maxDB = feature_vector[.j]
+            if fv > maxDB
+                maxDB = fv
             endif
         endif
     endfor
@@ -370,15 +395,15 @@ endfor
 @log: ""
 
 @log: "Normalizing dictionary features..."
-for .dictIdx to nDictSounds
-    for .j to vectorLength
-        feature_vector[.j] = dict_features[.dictIdx, .j]
+for dictIdx to nDictSounds
+    for j to vectorLength
+        feature_vector_'j' = dict_features_'dictIdx'_'j'
     endfor
     
     @normalizeFeatures: vectorLength, minPitch, maxPitch, minDB, maxDB
     
-    for .j to vectorLength
-        dict_features[.dictIdx, .j] = feature_vector[.j]
+    for j to vectorLength
+        dict_features_'dictIdx'_'j' = feature_vector_'j'
     endfor
 endfor
 
@@ -389,11 +414,11 @@ endfor
 # SEGMENT REFERENCE SOUND
 ################################################################################
 
-@log: "Processing reference sound: " + soundName$[1]
+@log: "Processing reference sound: " + soundName_1$
 @log: "Segmenting into " + string$(number_of_segments) + " equal parts..."
 @log: ""
 
-refSound = soundID[1]
+refSound = soundID_1
 selectObject: refSound
 refDur = Get total duration
 refStart = Get start time
@@ -402,9 +427,9 @@ segmentDur = refDur / number_of_segments
 @log: "Segment duration: " + fixed$(segmentDur, 3) + " seconds"
 @log: ""
 
-for .segIdx to number_of_segments
-    bestMatch[.segIdx] = 0
-    bestDistance[.segIdx] = 10000
+for segIdx to number_of_segments
+    bestMatch_'segIdx' = 0
+    bestDistance_'segIdx' = 10000
 endfor
 
 lastChoice = 0
@@ -416,35 +441,35 @@ lastChoice = 0
 @log: "Finding closest dictionary matches..."
 @log: ""
 
-for .segIdx to number_of_segments
-    .segStart = refStart + (.segIdx - 1) * segmentDur
-    .segEnd = .segStart + segmentDur
+for segIdx to number_of_segments
+    segStart = refStart + (segIdx - 1) * segmentDur
+    segEnd = segStart + segmentDur
     
     selectObject: refSound
-    .segment = Extract part: .segStart, .segEnd, "rectangular", 1, "no"
+    segment = Extract part: segStart, segEnd, "rectangular", 1, "no"
     
-    @extractFeatureVector: .segment, n_time_samples
+    @extractFeatureVector: segment, n_time_samples
     @normalizeFeatures: vectorLength, minPitch, maxPitch, minDB, maxDB
     
     @findKBestMatches: nDictSounds, k_best_matches, lastChoice
     
-    .bestIdx = findKBestMatches.selectedIndex
-    .minDist = findKBestMatches.selectedDistance
+    bestIdx = findKBestMatches.selectedIndex
+    minDist = findKBestMatches.selectedDistance
     
-    bestMatch[.segIdx] = .bestIdx
-    bestDistance[.segIdx] = .minDist
+    bestMatch_'segIdx' = bestIdx
+    bestDistance_'segIdx' = minDist
     
-    lastChoice = .bestIdx
+    lastChoice = bestIdx
     
-    .matchSoundIdx = .bestIdx + 1
+    matchSoundIdx = bestIdx + 1
     
     if k_best_matches > 1
-        @log: "  Segment " + string$(.segIdx) + " → " + soundName$[.matchSoundIdx] + " (dist: " + fixed$(.minDist, 4) + ")"
+        @log: "  Segment " + string$(segIdx) + " → " + soundName_'matchSoundIdx'$ + " (dist: " + fixed$(minDist, 4) + ")"
     else
-        @log: "  Segment " + string$(.segIdx) + " → " + soundName$[.matchSoundIdx] + " (dist: " + fixed$(.minDist, 4) + ", deterministic)"
+        @log: "  Segment " + string$(segIdx) + " → " + soundName_'matchSoundIdx'$ + " (deterministic)"
     endif
     
-    removeObject: .segment
+    removeObject: segment
 endfor
 
 @log: ""
@@ -454,51 +479,46 @@ endfor
 ################################################################################
 
 @log: "Building quantized output sound..."
-@log: "Trimming dictionary sounds to segment duration..."
 @log: ""
 
-for .segIdx to number_of_segments
-    .dictIdx = bestMatch[.segIdx]
-    .soundIdx = .dictIdx + 1
-    .sound = soundID[.soundIdx]
+for segIdx to number_of_segments
+    dictIdx = bestMatch_'segIdx'
+    soundIdx = dictIdx + 1
+    sound = soundID_'soundIdx'
     
-    selectObject: .sound
-    .dictDur = Get total duration
-    .dictStart = Get start time
+    selectObject: sound
+    dictDur = Get total duration
+    dictStart = Get start time
     
-    if .dictDur >= segmentDur
-        .extractedPart = Extract part: .dictStart, .dictStart + segmentDur, "rectangular", 1, "no"
+    if dictDur >= segmentDur
+        extractedPart = Extract part: dictStart, dictStart + segmentDur, "rectangular", 1, "no"
     else
-        .extractedPart = Copy: "temp_segment"
+        extractedPart = Copy: "temp_segment"
     endif
     
-    if .segIdx = 1
-        selectObject: .extractedPart
+    if segIdx = 1
+        selectObject: extractedPart
         output = Copy: "quantized"
-        removeObject: .extractedPart
+        removeObject: extractedPart
     else
-        selectObject: output, .extractedPart
-        .temp = Concatenate
-        removeObject: output, .extractedPart
-        output = .temp
+        selectObject: output
+        plusObject: extractedPart
+        temp = Concatenate
+        removeObject: output, extractedPart
+        output = temp
     endif
 endfor
 
 selectObject: output
-if preset = 5
-    .outputName$ = "gesture_quantized_Custom_" + soundName$[1]
-else
-    .outputName$ = "gesture_quantized_" + preset$ + "_" + soundName$[1]
-endif
-.outputName$ = replace$(.outputName$, " ", "_", 0)
-Rename: .outputName$
+outputName$ = "gesture_quantized_" + presetName$ + "_" + soundName_1$
+outputName$ = replace$(outputName$, " ", "_", 0)
+Rename: outputName$
 
 selectObject: output
-.outputDur = Get total duration
+outputDur = Get total duration
 
-@log: "Output sound created: " + .outputName$
-@log: "Output duration: " + fixed$(.outputDur, 3) + " seconds"
-@log: "Reference duration: " + fixed$(refDur, 3) + " seconds"
+@log: "Output sound created: " + outputName$
+@log: "Output duration: " + fixed$(outputDur, 3) + " seconds"
 @log: ""
 
 ################################################################################
@@ -510,89 +530,70 @@ if verbose_output
     appendInfoLine: "  SUMMARY STATISTICS"
     appendInfoLine: "════════════════════════════════════════════════════════"
     appendInfoLine: ""
-    appendInfoLine: "Preset: ", preset$
-    appendInfoLine: "Reference sound: ", soundName$[1]
+    appendInfoLine: "Preset: ", presetName$
+    appendInfoLine: "Reference sound: ", soundName_1$
     appendInfoLine: "Dictionary size: ", nDictSounds, " gestures"
     appendInfoLine: ""
     appendInfoLine: "Parameters:"
     appendInfoLine: "  • Segments: ", number_of_segments
-    appendInfoLine: "  • Segment duration: ", fixed$(segmentDur, 3), " seconds"
+    appendInfoLine: "  • Segment duration: ", fixed$(segmentDur, 3), " s"
     appendInfoLine: "  • K-best matches: ", k_best_matches
     appendInfoLine: "  • Repetition penalty: ", fixed$(repetition_penalty, 2)
-    appendInfoLine: "  • Feature dimension: ", vectorLength
     appendInfoLine: ""
-    appendInfoLine: "Duration comparison:"
-    appendInfoLine: "  Reference: ", fixed$(refDur, 3), " seconds"
-    appendInfoLine: "  Output:    ", fixed$(.outputDur, 3), " seconds"
-    appendInfoLine: ""
-    appendInfoLine: "------------------------------------------------------------"
-    appendInfoLine: "DISTANCE STATISTICS:"
-    appendInfoLine: "------------------------------------------------------------"
     
-    .sumDist = 0
-    .minDist = bestDistance[1]
-    .maxDist = bestDistance[1]
+    # Distance statistics
+    sumDist = 0
+    statMinDist = bestDistance_1
+    statMaxDist = bestDistance_1
     
-    for .segIdx to number_of_segments
-        .sumDist += bestDistance[.segIdx]
-        if bestDistance[.segIdx] < .minDist
-            .minDist = bestDistance[.segIdx]
+    for segIdx to number_of_segments
+        dist = bestDistance_'segIdx'
+        sumDist += dist
+        if dist < statMinDist
+            statMinDist = dist
         endif
-        if bestDistance[.segIdx] > .maxDist
-            .maxDist = bestDistance[.segIdx]
+        if dist > statMaxDist
+            statMaxDist = dist
         endif
     endfor
-    .meanDist = .sumDist / number_of_segments
+    meanDist = sumDist / number_of_segments
     
-    .sumSqDiff = 0
-    for .segIdx to number_of_segments
-        .diff = bestDistance[.segIdx] - .meanDist
-        .sumSqDiff += .diff * .diff
+    sumSqDiff = 0
+    for segIdx to number_of_segments
+        dist = bestDistance_'segIdx'
+        diff = dist - meanDist
+        sumSqDiff += diff * diff
     endfor
-    .stdDist = sqrt(.sumSqDiff / number_of_segments)
+    stdDist = sqrt(sumSqDiff / number_of_segments)
     
-    appendInfoLine: "  Mean distance:    ", fixed$(.meanDist, 4)
-    appendInfoLine: "  Std deviation:    ", fixed$(.stdDist, 4)
-    appendInfoLine: "  Min distance:     ", fixed$(.minDist, 4)
-    appendInfoLine: "  Max distance:     ", fixed$(.maxDist, 4)
+    appendInfoLine: "Distance Statistics:"
+    appendInfoLine: "  Mean: ", fixed$(meanDist, 4)
+    appendInfoLine: "  Std:  ", fixed$(stdDist, 4)
+    appendInfoLine: "  Min:  ", fixed$(statMinDist, 4)
+    appendInfoLine: "  Max:  ", fixed$(statMaxDist, 4)
     appendInfoLine: ""
-    appendInfoLine: "------------------------------------------------------------"
-    appendInfoLine: "GESTURE USAGE:"
-    appendInfoLine: "------------------------------------------------------------"
     
-    .uniqueCount = 0
-    for .dictIdx to nDictSounds
-        .count = 0
-        for .segIdx to number_of_segments
-            if bestMatch[.segIdx] = .dictIdx
-                .count += 1
+    # Gesture usage
+    appendInfoLine: "Gesture Usage:"
+    uniqueCount = 0
+    for dictIdx to nDictSounds
+        count = 0
+        for segIdx to number_of_segments
+            if bestMatch_'segIdx' = dictIdx
+                count += 1
             endif
         endfor
-        if .count > 0
-            .uniqueCount += 1
-            .soundIdx = .dictIdx + 1
-            appendInfoLine: "  ", soundName$[.soundIdx], ": ", .count, " times"
+        if count > 0
+            uniqueCount += 1
+            soundIdx = dictIdx + 1
+            appendInfoLine: "  ", soundName_'soundIdx'$, ": ", count, "x"
         endif
     endfor
     
-    .diversityPercent = (.uniqueCount / nDictSounds) * 100
-    
+    diversityPercent = (uniqueCount / nDictSounds) * 100
     appendInfoLine: ""
-    appendInfoLine: "Diversity: ", .uniqueCount, " / ", nDictSounds, " gestures used (", fixed$(.diversityPercent, 1), "%)"
+    appendInfoLine: "Diversity: ", uniqueCount, "/", nDictSounds, " gestures (", fixed$(diversityPercent, 1), "%)"
     appendInfoLine: ""
-    
-    appendInfoLine: "════════════════════════════════════════════════════════"
-    appendInfoLine: "PRESET GUIDE:"
-    appendInfoLine: "════════════════════════════════════════════════════════"
-    appendInfoLine: "• Maximum Variety: Explore full dictionary, high diversity"
-    appendInfoLine: "• Balanced: Good mix of variety and coherence (recommended)"
-    appendInfoLine: "• Coherent: More repetition, thematic blocks"
-    appendInfoLine: "• Minimal: Simple quantization, clear gesture blocks"
-    appendInfoLine: "• Custom: Full control over all parameters"
-    appendInfoLine: ""
-    appendInfoLine: "════════════════════════════════════════════════════════"
-    appendInfoLine: "  SUCCESS!"
-    appendInfoLine: "  Created: ", .outputName$
     appendInfoLine: "════════════════════════════════════════════════════════"
 endif
 
@@ -600,27 +601,16 @@ endif
 # CLEANUP
 ################################################################################
 
-@log: "Cleaning up temporary objects..."
+@log: "Cleaning up..."
 
-for .i to .nFiles
-    selectObject: soundID[.i]
-    Remove
+for i to nFiles
+    removeObject: soundID_'i'
 endfor
 
-removeObject: .fileList
+removeObject: fileList
 
-@log: "Cleanup complete."
+@log: "Done."
 @log: ""
-
-if verbose_output
-    appendInfoLine: "------------------------------------------------------------"
-    appendInfoLine: "Only the result remains in Praat:"
-    selectObject: output
-    .finalName$ = selected$("Sound")
-    appendInfoLine: "  ", .finalName$
-    appendInfoLine: "------------------------------------------------------------"
-    appendInfoLine: ""
-endif
 
 ################################################################################
 # SELECT OUTPUT AND PLAY
@@ -628,6 +618,9 @@ endif
 
 selectObject: output
 
+appendInfoLine: "Output: ", outputName$
+
 if play_result
+    appendInfoLine: "Playing..."
     Play
 endif

@@ -1,58 +1,55 @@
 # ============================================================
-# Praat AudioTools - Neural Ambient Drone Designer
+# Praat AudioTools - Neural_Ambient_Drone_Designer.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Optimized + Stereo
+# Version: 0.4 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Neural Ambient Drone Designer
-#   Optimizations:
-#   - Proper layer mixing (Formula addition)
-#   - Native arrays instead of TableOfReal
-#   - Presets for different drone characters
-#   - Stereo output with layer panning
-#   - Controllable shimmer intervals
-#   - Crossfade between grains
+#   Neural Ambient Drone Designer - Generates lush evolving
+#   drones from source material using k-means clustering.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.4:
+#   - Fixed preset comparison (number not string)
+#   - Fixed Formula object references
+#   - Added preset name to output
 # ============================================================
 
-# Neural Ambient Drone Designer 
-# - Generates lush evolving drones from source material
+# === Input Validation ===
+nSelected = numberOfSelected("Sound")
+if nSelected <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
-form Neural Ambient Drone Designer
+snd = selected("Sound")
+sndName$ = selected$("Sound")
+
+form Neural Ambient Drone Designer v0.4
     comment === Preset ===
-    optionmenu Preset 1
-        option Manual (Use Settings Below)
+    optionmenu Preset: 1
+        option Manual
         option Dark Ambient
         option Bright Shimmer
         option Dense Texture
         option Sparse Minimal
         option Evolving Pad
-    
-    comment === Synthesis Parameters ===
+    comment === Synthesis ===
     positive Output_duration_sec 20.0
     positive Layer_density 3
     positive Grain_crossfade_ms 20
-    
     comment === Shimmer Control ===
     boolean Add_octave_shimmer 1
     positive Shimmer_probability 0.15
-    optionmenu Shimmer_intervals 1
+    optionmenu Shimmer_intervals: 1
         option Octaves only
         option Octaves and fifths
         option Full harmonic series
-    
     comment === AI Analysis ===
     positive Grain_size_ms 100
     integer Number_of_clusters 3
     integer Kmeans_iterations 10
-    
     comment === Output ===
     boolean Stereo_output 1
     real Stereo_width 0.7
@@ -63,7 +60,8 @@ endform
 # PRESET LOGIC
 # ============================================
 
-if preset$ = "Dark Ambient"
+if preset = 2
+    # Dark Ambient
     output_duration_sec = 30.0
     layer_density = 4
     grain_crossfade_ms = 40
@@ -73,8 +71,9 @@ if preset$ = "Dark Ambient"
     grain_size_ms = 150
     number_of_clusters = 3
     stereo_width = 0.8
-
-elsif preset$ = "Bright Shimmer"
+    presetName$ = "DarkAmbient"
+elsif preset = 3
+    # Bright Shimmer
     output_duration_sec = 20.0
     layer_density = 5
     grain_crossfade_ms = 15
@@ -84,8 +83,9 @@ elsif preset$ = "Bright Shimmer"
     grain_size_ms = 80
     number_of_clusters = 4
     stereo_width = 0.9
-
-elsif preset$ = "Dense Texture"
+    presetName$ = "BrightShimmer"
+elsif preset = 4
+    # Dense Texture
     output_duration_sec = 25.0
     layer_density = 6
     grain_crossfade_ms = 10
@@ -95,8 +95,9 @@ elsif preset$ = "Dense Texture"
     grain_size_ms = 50
     number_of_clusters = 5
     stereo_width = 0.6
-
-elsif preset$ = "Sparse Minimal"
+    presetName$ = "DenseTexture"
+elsif preset = 5
+    # Sparse Minimal
     output_duration_sec = 40.0
     layer_density = 2
     grain_crossfade_ms = 60
@@ -106,8 +107,9 @@ elsif preset$ = "Sparse Minimal"
     grain_size_ms = 200
     number_of_clusters = 2
     stereo_width = 0.5
-
-elsif preset$ = "Evolving Pad"
+    presetName$ = "SparseMinimal"
+elsif preset = 6
+    # Evolving Pad
     output_duration_sec = 30.0
     layer_density = 4
     grain_crossfade_ms = 30
@@ -117,26 +119,20 @@ elsif preset$ = "Evolving Pad"
     grain_size_ms = 120
     number_of_clusters = 4
     stereo_width = 0.75
+    presetName$ = "EvolvingPad"
+else
+    presetName$ = "Manual"
 endif
 
 # ============================================
-# SETUP & VALIDATION
+# SETUP
 # ============================================
-
-nSelected = numberOfSelected("Sound")
-if nSelected <> 1
-    exitScript: "Please select exactly one Sound object."
-endif
-
-snd = selected("Sound")
-sndName$ = selected$("Sound")
 
 selectObject: snd
 dur = Get total duration
 fs = Get sampling frequency
 nch = Get number of channels
 
-# Work on Mono Copy
 selectObject: snd
 workSnd = Convert to mono
 Rename: "Analysis_Work"
@@ -147,26 +143,26 @@ crossfadeSec = grain_crossfade_ms / 1000
 
 if dur < grainSec * 2
     removeObject: workSnd
-    exitScript: "Sound is too short. Need at least " + fixed$(grainSec * 2, 2) + " seconds."
+    exitScript: "Sound too short. Need at least " + fixed$(grainSec * 2, 2) + " s."
 endif
 
-writeInfoLine: "=== NEURAL AMBIENT DRONE DESIGNER ==="
-appendInfoLine: "Preset: ", preset$
+clearinfo
+writeInfoLine: "=== Neural Ambient Drone Designer v0.4 ==="
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Duration: ", output_duration_sec, " s | Layers: ", layer_density
 appendInfoLine: "Grain: ", grain_size_ms, " ms | Clusters: ", number_of_clusters
 if add_octave_shimmer
-    appendInfoLine: "Shimmer: ", fixed$(shimmer_probability * 100, 0), "% probability"
+    appendInfoLine: "Shimmer: ", fixed$(shimmer_probability * 100, 0), "%"
 endif
 if stereo_output
-    appendInfoLine: "Output: Stereo (width: ", fixed$(stereo_width * 100, 0), "%)"
+    appendInfoLine: "Output: Stereo (width ", fixed$(stereo_width * 100, 0), "%)"
 else
     appendInfoLine: "Output: Mono"
 endif
-appendInfoLine: "========================================"
 appendInfoLine: ""
 
 # ============================================
-# FEATURE EXTRACTION (Optimized with arrays)
+# FEATURE EXTRACTION
 # ============================================
 
 appendInfoLine: "Analyzing spectral stability..."
@@ -174,14 +170,12 @@ appendInfoLine: "Analyzing spectral stability..."
 nGrains = floor((dur - grainSec) / stepSec)
 nFeatures = 4
 
-# Feature arrays: 1=Centroid, 2=Bandwidth, 3=HNR, 4=Pitch
 feat_centroid# = zero#(nGrains)
 feat_bandwidth# = zero#(nGrains)
 feat_hnr# = zero#(nGrains)
 feat_pitch# = zero#(nGrains)
 grain_time# = zero#(nGrains)
 
-# Create analysis objects once
 selectObject: workSnd
 spec = To Spectrogram: grainSec, 8000, stepSec, 20, "Gaussian"
 
@@ -191,12 +185,10 @@ hnr = To Harmonicity (cc): stepSec, 75, 0.1, 1.0
 selectObject: workSnd
 pit = To Pitch: stepSec, 75, 600
 
-# Extract features
 for i from 1 to nGrains
     t = (i - 0.5) * stepSec
     grain_time#[i] = t
     
-    # Spectrum slice
     selectObject: spec
     slice = To Spectrum (slice): t
     selectObject: slice
@@ -204,7 +196,6 @@ for i from 1 to nGrains
     feat_bandwidth#[i] = Get standard deviation: 2
     removeObject: slice
     
-    # HNR
     selectObject: hnr
     h = Get value at time: t, "cubic"
     if h = undefined
@@ -213,7 +204,6 @@ for i from 1 to nGrains
         feat_hnr#[i] = h
     endif
     
-    # Pitch
     selectObject: pit
     f0 = Get value at time: t, "Hertz", "Linear"
     if f0 = undefined
@@ -291,7 +281,7 @@ if std_pitch = 0
     std_pitch = 1
 endif
 
-# Normalize in-place
+# Normalize
 norm_cent# = zero#(nGrains)
 norm_band# = zero#(nGrains)
 norm_hnr# = zero#(nGrains)
@@ -305,20 +295,18 @@ for i to nGrains
 endfor
 
 # ============================================
-# K-MEANS CLUSTERING (Array-based)
+# K-MEANS CLUSTERING
 # ============================================
 
 appendInfoLine: "Clustering textures..."
 
 k = number_of_clusters
 
-# Centroid arrays
 cent_c# = zero#(k)
 cent_b# = zero#(k)
 cent_h# = zero#(k)
 cent_p# = zero#(k)
 
-# Initialize centroids from random grains
 for c from 1 to k
     randRow = randomInteger(1, nGrains)
     cent_c#[c] = norm_cent#[randRow]
@@ -327,13 +315,11 @@ for c from 1 to k
     cent_p#[c] = norm_pitch#[randRow]
 endfor
 
-# Cluster assignments
 assigns# = zero#(nGrains)
 
 for iter from 1 to kmeans_iterations
     changes = 0
     
-    # E-Step: Assign grains to nearest centroid
     for i from 1 to nGrains
         minDist = 1e9
         bestK = 1
@@ -356,7 +342,6 @@ for iter from 1 to kmeans_iterations
         endif
     endfor
     
-    # M-Step: Update centroids
     for c from 1 to k
         sum_c = 0
         sum_b = 0
@@ -383,13 +368,13 @@ for iter from 1 to kmeans_iterations
     endfor
     
     if changes = 0
-        appendInfoLine: "  K-means converged at iteration ", iter
+        appendInfoLine: "  Converged at iteration ", iter
         iter = kmeans_iterations + 1
     endif
 endfor
 
 # ============================================
-# IDENTIFY "BEST" CLUSTER (Highest HNR = most tonal)
+# IDENTIFY BEST CLUSTER (Highest HNR)
 # ============================================
 
 best_cluster = 1
@@ -404,7 +389,6 @@ endfor
 
 appendInfoLine: "  Selected Cluster ", best_cluster, " (Most Tonal)"
 
-# Collect indices of tonal grains
 tonal_indices# = zero#(nGrains)
 tonal_count = 0
 
@@ -417,36 +401,33 @@ endfor
 
 if tonal_count = 0
     removeObject: workSnd
-    exitScript: "Failed to find tonal segments. Try increasing number of clusters."
+    exitScript: "No tonal segments found. Try more clusters."
 endif
 
 appendInfoLine: "  Found ", tonal_count, " tonal grains"
 
 # ============================================
-# BUILD SHIMMER INTERVAL TABLE
+# SHIMMER INTERVALS
 # ============================================
 
 if shimmer_intervals = 1
-    # Octaves only
     n_intervals = 2
-    interval_1 = 0.5    ; octave down
-    interval_2 = 2.0    ; octave up
+    interval_1 = 0.5
+    interval_2 = 2.0
 elsif shimmer_intervals = 2
-    # Octaves and fifths
     n_intervals = 4
-    interval_1 = 0.5    ; octave down
-    interval_2 = 0.667  ; fifth down
-    interval_3 = 1.5    ; fifth up
-    interval_4 = 2.0    ; octave up
+    interval_1 = 0.5
+    interval_2 = 0.667
+    interval_3 = 1.5
+    interval_4 = 2.0
 else
-    # Full harmonic series
     n_intervals = 6
-    interval_1 = 0.5    ; octave down
-    interval_2 = 0.667  ; fifth down
-    interval_3 = 1.25   ; major third up
-    interval_4 = 1.5    ; fifth up
-    interval_5 = 2.0    ; octave up
-    interval_6 = 3.0    ; octave + fifth up
+    interval_1 = 0.5
+    interval_2 = 0.667
+    interval_3 = 1.25
+    interval_4 = 1.5
+    interval_5 = 2.0
+    interval_6 = 3.0
 endif
 
 # ============================================
@@ -459,16 +440,14 @@ appendInfoLine: "Generating drone layers..."
 nLayers = layer_density
 layer_dur = output_duration_sec
 
-# Store layer sound IDs
 layer_ids# = zero#(nLayers)
 
-# Calculate pan positions for stereo
+# Calculate pan positions
 for layer_idx from 1 to nLayers
     if nLayers = 1
         pan_'layer_idx' = 0.5
     else
         pan_'layer_idx' = (layer_idx - 1) / (nLayers - 1)
-        # Apply stereo width
         pan_'layer_idx' = 0.5 + (pan_'layer_idx' - 0.5) * stereo_width
     endif
 endfor
@@ -477,12 +456,9 @@ for layer_idx from 1 to nLayers
     appendInfoLine: "  Layer ", layer_idx, "/", nLayers, "..."
     
     grains_needed = ceiling(layer_dur / (grainSec * 0.5))
-    
-    # Collect grains for this layer
     grain_sounds# = zero#(grains_needed)
     
     for g from 1 to grains_needed
-        # Random selection from tonal grains
         rand_idx = randomInteger(1, tonal_count)
         g_idx = tonal_indices#[rand_idx]
         
@@ -490,7 +466,6 @@ for layer_idx from 1 to nLayers
         t1 = t_center - (grainSec / 2)
         t2 = t_center + (grainSec / 2)
         
-        # Clamp to valid range
         if t1 < 0
             t1 = 0
             t2 = grainSec
@@ -504,15 +479,13 @@ for layer_idx from 1 to nLayers
         Extract part: t1, t2, "Hanning", 1, "no"
         gid = selected("Sound")
         
-        # Apply shimmer transposition
+        # Shimmer transposition
         if add_octave_shimmer and randomUniform(0, 1) < shimmer_probability
             sr_orig = Get sampling frequency
             
-            # Pick random interval
             int_choice = randomInteger(1, n_intervals)
             ratio = interval_'int_choice'
             
-            # Resample to transpose
             new_sr = sr_orig * ratio
             if new_sr > 8000 and new_sr < 96000
                 Resample: new_sr, 50
@@ -523,20 +496,23 @@ for layer_idx from 1 to nLayers
             endif
         endif
         
-        # Apply crossfade envelope
+        # Crossfade envelope
         if crossfadeSec > 0
             selectObject: gid
             grain_dur = Get total duration
             fade = min(crossfadeSec, grain_dur * 0.4)
-            Formula: "self * (if x < " + string$(fade) + " then x/" + string$(fade) + 
-                ... " else if x > " + string$(grain_dur - fade) + " then (" + string$(grain_dur) + "-x)/" + string$(fade) + 
+            fadeStr$ = string$(fade)
+            durMinusFade$ = string$(grain_dur - fade)
+            durStr$ = string$(grain_dur)
+            Formula: "self * (if x < " + fadeStr$ + " then x/" + fadeStr$ + 
+                ... " else if x > " + durMinusFade$ + " then (" + durStr$ + "-x)/" + fadeStr$ + 
                 ... " else 1 fi fi)"
         endif
         
         grain_sounds#[g] = gid
     endfor
     
-    # Concatenate all grains for this layer
+    # Concatenate grains
     selectObject: grain_sounds#[1]
     for g from 2 to grains_needed
         plusObject: grain_sounds#[g]
@@ -544,7 +520,7 @@ for layer_idx from 1 to nLayers
     Concatenate
     layerSnd = selected("Sound")
     
-    # Trim to exact duration
+    # Trim to duration
     selectObject: layerSnd
     current_dur = Get total duration
     if current_dur > layer_dur
@@ -557,7 +533,7 @@ for layer_idx from 1 to nLayers
     selectObject: layerSnd
     Rename: "Layer_" + string$(layer_idx)
     
-    # Cleanup grain sounds
+    # Cleanup grains
     for g from 1 to grains_needed
         removeObject: grain_sounds#[g]
     endfor
@@ -566,13 +542,12 @@ for layer_idx from 1 to nLayers
 endfor
 
 # ============================================
-# MIX LAYERS (FIXED - Proper mixing with Formula)
+# MIX LAYERS
 # ============================================
 
 appendInfoLine: ""
 appendInfoLine: "Mixing layers..."
 
-# Get the shortest duration among layers
 min_dur = 1e9
 for layer_idx from 1 to nLayers
     selectObject: layer_ids#[layer_idx]
@@ -583,51 +558,48 @@ for layer_idx from 1 to nLayers
 endfor
 
 if stereo_output
-    # Create stereo output
     output_left = Create Sound from formula: "Mix_L", 1, 0, min_dur, fs, "0"
     output_right = Create Sound from formula: "Mix_R", 1, 0, min_dur, fs, "0"
     
-    # Mix each layer with panning
     for layer_idx from 1 to nLayers
-        selectObject: layer_ids#[layer_idx]
-        layer_name$ = selected$("Sound")
+        layerId = layer_ids#[layer_idx]
+        layerIdStr$ = string$(layerId)
         
         pan = pan_'layer_idx'
         left_gain = cos(pan * pi / 2)
         right_gain = sin(pan * pi / 2)
+        leftGainStr$ = string$(left_gain)
+        rightGainStr$ = string$(right_gain)
         
         selectObject: output_left
-        Formula: "self + Sound_'layer_name$'[col] * " + string$(left_gain)
+        Formula: "self + Object_" + layerIdStr$ + "[col] * " + leftGainStr$
         
         selectObject: output_right
-        Formula: "self + Sound_'layer_name$'[col] * " + string$(right_gain)
+        Formula: "self + Object_" + layerIdStr$ + "[col] * " + rightGainStr$
     endfor
     
-    # Combine to stereo
-    selectObject: output_left, output_right
+    selectObject: output_left
+    plusObject: output_right
     finalOut = Combine to stereo
-    Rename: sndName$ + "_NeuralDrone_stereo"
+    Rename: sndName$ + "_NeuralDrone_" + presetName$
     
     removeObject: output_left, output_right
-    
 else
-    # Mono output - sum all layers
     selectObject: layer_ids#[1]
     finalOut = Copy: "Mix"
     
     for layer_idx from 2 to nLayers
-        selectObject: layer_ids#[layer_idx]
-        layer_name$ = selected$("Sound")
+        layerId = layer_ids#[layer_idx]
+        layerIdStr$ = string$(layerId)
         
         selectObject: finalOut
-        Formula: "self + Sound_'layer_name$'[col]"
+        Formula: "self + Object_" + layerIdStr$ + "[col]"
     endfor
     
     selectObject: finalOut
-    Rename: sndName$ + "_NeuralDrone"
+    Rename: sndName$ + "_NeuralDrone_" + presetName$
 endif
 
-# Normalize output
 selectObject: finalOut
 Scale peak: 0.99
 
@@ -637,7 +609,7 @@ for layer_idx from 1 to nLayers
 endfor
 
 # ============================================
-# CLEANUP
+# CLEANUP & FINISH
 # ============================================
 
 removeObject: workSnd

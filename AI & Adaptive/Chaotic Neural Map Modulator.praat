@@ -1,74 +1,74 @@
 # ============================================================
-# Praat AudioTools - Chaotic Neural Map Modulator
+# Praat AudioTools - Chaotic_Neural_Map_Modulator.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Optimized + Stereo
+# Version: 0.4 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Chaotic Neural Map Modulator
-#   Optimizations:
-#   - Single spectrogram pass for all spectral features
-#   - Fast ring modulation (single Formula)
-#   - Stereo output with independent L/R chaos
-#   - Streamlined HQ pitch processing
+#   Chaotic Neural Map Modulator - Uses a trained neural network
+#   and chaotic dynamics to generate organic audio modulation.
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4:
+#   - Fixed array syntax for Praat compatibility
+#   - Fixed != to <> operator
+#   - Fixed preset comparison (number not string)
+#   - Fixed Formula variable scope issues
+#   - Added input validation
 # ============================================================
 
-# Chaotic Neural Map Modulator 
-# Each run produces significantly different chaos
+# Input validation
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
-form Chaotic Neural Map Modulator
-    comment === PRESETS (override settings below) ===
-    optionmenu Preset 2
-        option Custom (use settings below)
+input_sound_original = selected("Sound")
+input_name$ = selected$("Sound")
+
+form Chaotic Neural Map Modulator v0.4
+    comment === PRESETS ===
+    optionmenu Preset: 2
+        option Custom
         option Subtle Organic
         option Balanced Chaos
         option Wild Unstable
         option Tightly Controlled
         option Maximum Variation
         option Glitch Machine
-    
     comment === Features & Network ===
     real Analysis_step_ms 60
     integer Hidden_neurons 10
     integer Training_iterations 200
-    
     comment === Chaos Behavior ===
     real Autonomy 0.85
-    comment (0 = follows features, 1 = pure chaos)
     real Chaos_volatility 2.5
-    comment (1 = subtle, 4 = extreme swings)
     real Kick_interval_ms 200
-    comment (How often chaos realigns with sound)
     real Chaos_mutation 0.3
-    comment (0 = deterministic, 1 = max randomness)
-    
     comment === Modulation ===
     real Pitch_semitones 12
     real Amplitude_mod 0.8
     real Ring_mod 0.4
     boolean HQ_pitch 0
-    
     comment === Output ===
     real Dry_wet 0.8
     real HF_boost_dB 3
     boolean Stereo_output 1
     boolean Play_output 1
     integer Random_seed 0
-    comment (0 = always different)
 endform
 
 #=============================================================================
 # APPLY PRESET OVERRIDES
 #=============================================================================
 
-if preset$ = "Subtle Organic"
+if preset = 2
+    # Subtle Organic
     autonomy = 0.7
     chaos_volatility = 1.2
     kick_interval_ms = 100
@@ -77,8 +77,9 @@ if preset$ = "Subtle Organic"
     amplitude_mod = 0.5
     ring_mod = 0.2
     dry_wet = 0.5
-    
-elsif preset$ = "Balanced Chaos"
+    presetName$ = "SubtleOrganic"
+elsif preset = 3
+    # Balanced Chaos
     autonomy = 0.85
     chaos_volatility = 2.5
     kick_interval_ms = 200
@@ -87,8 +88,9 @@ elsif preset$ = "Balanced Chaos"
     amplitude_mod = 0.8
     ring_mod = 0.4
     dry_wet = 0.8
-    
-elsif preset$ = "Wild Unstable"
+    presetName$ = "BalancedChaos"
+elsif preset = 4
+    # Wild Unstable
     autonomy = 0.95
     chaos_volatility = 4.0
     kick_interval_ms = 500
@@ -97,8 +99,9 @@ elsif preset$ = "Wild Unstable"
     amplitude_mod = 0.9
     ring_mod = 0.6
     dry_wet = 1.0
-    
-elsif preset$ = "Tightly Controlled"
+    presetName$ = "WildUnstable"
+elsif preset = 5
+    # Tightly Controlled
     autonomy = 0.5
     chaos_volatility = 1.0
     kick_interval_ms = 50
@@ -107,8 +110,9 @@ elsif preset$ = "Tightly Controlled"
     amplitude_mod = 0.6
     ring_mod = 0.3
     dry_wet = 0.6
-    
-elsif preset$ = "Maximum Variation"
+    presetName$ = "TightlyControlled"
+elsif preset = 6
+    # Maximum Variation
     autonomy = 0.9
     chaos_volatility = 3.5
     kick_interval_ms = 300
@@ -117,8 +121,9 @@ elsif preset$ = "Maximum Variation"
     amplitude_mod = 0.85
     ring_mod = 0.5
     dry_wet = 0.9
-    
-elsif preset$ = "Glitch Machine"
+    presetName$ = "MaxVariation"
+elsif preset = 7
+    # Glitch Machine
     autonomy = 0.98
     chaos_volatility = 5.0
     kick_interval_ms = 800
@@ -127,14 +132,14 @@ elsif preset$ = "Glitch Machine"
     amplitude_mod = 1.0
     ring_mod = 0.8
     dry_wet = 1.0
+    presetName$ = "GlitchMachine"
+else
+    presetName$ = "Custom"
 endif
 
 #=============================================================================
 # INITIALIZATION
 #=============================================================================
-
-input_sound_original = selected("Sound")
-input_name$ = selected$("Sound")
 
 selectObject: input_sound_original
 duration = Get total duration
@@ -149,8 +154,9 @@ else
     input_sound = Copy: input_name$ + "_mono"
 endif
 
-writeInfoLine: "CHAOTIC MODULATOR - ", preset$
-appendInfoLine: "=========================================="
+clearinfo
+writeInfoLine: "=== CHAOTIC NEURAL MAP MODULATOR v0.4 ==="
+appendInfoLine: "Preset: ", presetName$
 if stereo_output
     appendInfoLine: "Output: Stereo (independent L/R chaos)"
 else
@@ -168,26 +174,24 @@ if random_seed = 0
     for i to seed
         dummy = randomUniform(0, 1)
     endfor
-    appendInfoLine: "Random seed: ", seed
+    appendInfoLine: "Seed: ", seed, " (random)"
 else
     for i to random_seed
         dummy = randomUniform(0, 1)
     endfor
-    appendInfoLine: "Random seed: ", random_seed, " (fixed)"
+    appendInfoLine: "Seed: ", random_seed, " (fixed)"
 endif
 
 appendInfoLine: ""
-appendInfoLine: "Settings:"
-appendInfoLine: "  Autonomy: ", round(autonomy * 100), "%"
-appendInfoLine: "  Volatility: ", chaos_volatility
-appendInfoLine: "  Kick interval: ", kick_interval_ms, " ms"
-appendInfoLine: "  Mutation: ", round(chaos_mutation * 100), "%"
+appendInfoLine: "Autonomy: ", round(autonomy * 100), "% | Volatility: ", chaos_volatility
+appendInfoLine: "Kick: ", kick_interval_ms, "ms | Mutation: ", round(chaos_mutation * 100), "%"
 appendInfoLine: ""
-appendInfoLine: "Processing..."
 
 #=============================================================================
-# EXTRACT FEATURES (OPTIMIZED - Single Spectrogram Pass)
+# EXTRACT FEATURES
 #=============================================================================
+
+appendInfoLine: "Extracting features..."
 
 time_step = analysis_step_ms / 1000
 num_frames = floor(duration / time_step)
@@ -202,7 +206,7 @@ for i to num_frames
     time#[i] = (i - 1) * time_step
 endfor
 
-# Amplitude from Intensity object
+# Amplitude from Intensity
 selectObject: input_sound
 intensity = To Intensity: 75, time_step, "yes"
 for i to num_frames
@@ -226,19 +230,18 @@ for i to num_frames
     
     selectObject: slice
     
-    # Centroid (built-in)
+    # Centroid
     cog = Get centre of gravity: 2
-    if cog != undefined and cog > 0
+    if cog <> undefined and cog > 0
         feat_centroid#[i] = cog
     else
         feat_centroid#[i] = 2000
     endif
     
-    # Rolloff - single pass (OPTIMIZED)
+    # Rolloff (85% energy threshold)
     n_bins = Get number of bins
     total_energy = 0
     
-    # First accumulate total energy
     for bin to n_bins
         freq = Get frequency from bin number: bin
         if freq > 100 and freq < 5000
@@ -247,7 +250,6 @@ for i to num_frames
         endif
     endfor
     
-    # Find 85% threshold in same conceptual pass (we need the total first)
     target = total_energy * 0.85
     cumulative = 0
     rolloff_freq = 2500
@@ -270,8 +272,8 @@ endfor
 
 removeObject: spectrogram
 
-# Normalize features using procedure-like inline code
-# Amplitude normalization
+# Normalize features
+# Amplitude
 min_v = feat_amp#[1]
 max_v = feat_amp#[1]
 for i from 2 to num_frames
@@ -287,7 +289,7 @@ for i to num_frames
     feat_amp#[i] = (feat_amp#[i] - min_v) / range
 endfor
 
-# Centroid normalization
+# Centroid
 min_v = feat_centroid#[1]
 max_v = feat_centroid#[1]
 for i from 2 to num_frames
@@ -303,7 +305,7 @@ for i to num_frames
     feat_centroid#[i] = (feat_centroid#[i] - min_v) / range
 endfor
 
-# Rolloff normalization
+# Rolloff
 min_v = feat_rolloff#[1]
 max_v = feat_rolloff#[1]
 for i from 2 to num_frames
@@ -319,27 +321,27 @@ for i to num_frames
     feat_rolloff#[i] = (feat_rolloff#[i] - min_v) / range
 endfor
 
-appendInfoLine: "  Features: ", num_frames, " frames"
+appendInfoLine: "  ", num_frames, " frames extracted"
 
 #=============================================================================
 # TRAIN NETWORK
 #=============================================================================
 
-appendInfoLine: "  Training network..."
+appendInfoLine: "Training neural network..."
 
-# Initialize weights
+# Initialize weights (using indexed variables for 2D arrays)
 for h to hidden_neurons
-    w_in[h, 1] = randomUniform(-0.5, 0.5)
-    w_in[h, 2] = randomUniform(-0.5, 0.5)
-    w_in[h, 3] = randomUniform(-0.5, 0.5)
-    b_h[h] = randomUniform(-0.5, 0.5)
+    w_in_'h'_1 = randomUniform(-0.5, 0.5)
+    w_in_'h'_2 = randomUniform(-0.5, 0.5)
+    w_in_'h'_3 = randomUniform(-0.5, 0.5)
+    b_h_'h' = randomUniform(-0.5, 0.5)
 endfor
 
 for d to 3
     for h to hidden_neurons
-        w_out[d, h] = randomUniform(-0.5, 0.5)
+        w_out_'d'_'h' = randomUniform(-0.5, 0.5)
     endfor
-    b_o[d] = randomUniform(-0.5, 0.5)
+    b_o_'d' = randomUniform(-0.5, 0.5)
 endfor
 
 # Training loop
@@ -347,75 +349,93 @@ learning_rate = 0.12
 
 for iter to training_iterations
     for frame from 2 to num_frames - 1
-        inp[1] = feat_amp#[frame]
-        inp[2] = feat_centroid#[frame]
-        inp[3] = feat_rolloff#[frame]
+        inp_1 = feat_amp#[frame]
+        inp_2 = feat_centroid#[frame]
+        inp_3 = feat_rolloff#[frame]
         
-        targ[1] = feat_amp#[frame + 1]
-        targ[2] = feat_centroid#[frame + 1]
-        targ[3] = feat_rolloff#[frame + 1]
+        targ_1 = feat_amp#[frame + 1]
+        targ_2 = feat_centroid#[frame + 1]
+        targ_3 = feat_rolloff#[frame + 1]
         
         # Forward pass - hidden layer
         for h to hidden_neurons
-            sum = b_h[h]
-            for f to 3
-                sum += inp[f] * w_in[h, f]
-            endfor
+            sum = b_h_'h'
+            sum += inp_1 * w_in_'h'_1
+            sum += inp_2 * w_in_'h'_2
+            sum += inp_3 * w_in_'h'_3
+            
             # Tanh activation
             if sum > 20
-                hid[h] = 1
+                hid_'h' = 1
             elsif sum < -20
-                hid[h] = -1
+                hid_'h' = -1
             else
-                hid[h] = (exp(sum) - exp(-sum)) / (exp(sum) + exp(-sum))
+                hid_'h' = (exp(sum) - exp(-sum)) / (exp(sum) + exp(-sum))
             endif
         endfor
         
         # Forward pass - output layer
         for d to 3
-            sum = b_o[d]
+            sum = b_o_'d'
             for h to hidden_neurons
-                sum += hid[h] * w_out[d, h]
+                hidVal = hid_'h'
+                wVal = w_out_'d'_'h'
+                sum += hidVal * wVal
             endfor
             if sum > 20
-                out[d] = 1
+                out_'d' = 1
             elsif sum < -20
-                out[d] = -1
+                out_'d' = -1
             else
-                out[d] = (exp(sum) - exp(-sum)) / (exp(sum) + exp(-sum))
+                out_'d' = (exp(sum) - exp(-sum)) / (exp(sum) + exp(-sum))
             endif
         endfor
         
         # Backprop - output layer
         for d to 3
-            err = targ[d] - out[d]
-            delta_o[d] = err * (1 - out[d]^2)
+            if d = 1
+                targVal = targ_1
+            elsif d = 2
+                targVal = targ_2
+            else
+                targVal = targ_3
+            endif
+            outVal = out_'d'
+            err = targVal - outVal
+            delta_o_'d' = err * (1 - outVal^2)
+            deltaVal = delta_o_'d'
             for h to hidden_neurons
-                w_out[d, h] += learning_rate * delta_o[d] * hid[h]
+                hidVal = hid_'h'
+                w_out_'d'_'h' += learning_rate * deltaVal * hidVal
             endfor
-            b_o[d] += learning_rate * delta_o[d]
+            b_o_'d' += learning_rate * deltaVal
         endfor
         
         # Backprop - hidden layer
         for h to hidden_neurons
             delta_h = 0
             for d to 3
-                delta_h += delta_o[d] * w_out[d, h]
+                deltaO = delta_o_'d'
+                wOut = w_out_'d'_'h'
+                delta_h += deltaO * wOut
             endfor
-            delta_h *= (1 - hid[h]^2)
-            for f to 3
-                w_in[h, f] += learning_rate * delta_h * inp[f]
-            endfor
-            b_h[h] += learning_rate * delta_h
+            hidVal = hid_'h'
+            delta_h *= (1 - hidVal^2)
+            w_in_'h'_1 += learning_rate * delta_h * inp_1
+            w_in_'h'_2 += learning_rate * delta_h * inp_2
+            w_in_'h'_3 += learning_rate * delta_h * inp_3
+            b_h_'h' += learning_rate * delta_h
         endfor
     endfor
 endfor
 
+appendInfoLine: "  ", training_iterations, " iterations complete"
+
 #=============================================================================
-# GENERATE CHAOS (with stereo support)
+# GENERATE CHAOS
 #=============================================================================
 
-appendInfoLine: "  Generating chaos..."
+appendInfoLine: "Generating chaos trajectories..."
 
 if stereo_output
     n_passes = 2
@@ -426,11 +446,21 @@ endif
 kick_interval = kick_interval_ms / 1000
 injection_rate = 1 - autonomy
 
+# Pre-allocate chaos arrays
+for frame to num_frames
+    chaos_L_'frame'_1 = 0
+    chaos_L_'frame'_2 = 0
+    chaos_L_'frame'_3 = 0
+    chaos_R_'frame'_1 = 0
+    chaos_R_'frame'_2 = 0
+    chaos_R_'frame'_3 = 0
+endfor
+
 for pass from 1 to n_passes
-    # Initialize state for this pass
-    for d to 3
-        state[d] = randomUniform(0.2, 0.8)
-    endfor
+    # Initialize state
+    state_1 = randomUniform(0.2, 0.8)
+    state_2 = randomUniform(0.2, 0.8)
+    state_3 = randomUniform(0.2, 0.8)
     
     last_kick = 0
     phase_offset = randomUniform(0, 1)
@@ -447,42 +477,46 @@ for pass from 1 to n_passes
         endif
         
         if inject = 1
-            inp[1] = feat_amp#[frame] * injection_rate + state[1] * (1 - injection_rate)
-            inp[2] = feat_centroid#[frame] * injection_rate + state[2] * (1 - injection_rate)
-            inp[3] = feat_rolloff#[frame] * injection_rate + state[3] * (1 - injection_rate)
+            inp_1 = feat_amp#[frame] * injection_rate + state_1 * (1 - injection_rate)
+            inp_2 = feat_centroid#[frame] * injection_rate + state_2 * (1 - injection_rate)
+            inp_3 = feat_rolloff#[frame] * injection_rate + state_3 * (1 - injection_rate)
         else
-            inp[1] = state[1]
-            inp[2] = state[2]
-            inp[3] = state[3]
+            inp_1 = state_1
+            inp_2 = state_2
+            inp_3 = state_3
         endif
         
+        # Add mutation
         if chaos_mutation > 0
-            for f to 3
-                mutation = randomUniform(-1, 1) * chaos_mutation * 0.2
-                inp[f] += mutation
-                inp[f] = max(0, min(1, inp[f]))
-            endfor
+            inp_1 += randomUniform(-1, 1) * chaos_mutation * 0.2
+            inp_2 += randomUniform(-1, 1) * chaos_mutation * 0.2
+            inp_3 += randomUniform(-1, 1) * chaos_mutation * 0.2
+            inp_1 = max(0, min(1, inp_1))
+            inp_2 = max(0, min(1, inp_2))
+            inp_3 = max(0, min(1, inp_3))
         endif
         
         # Forward through network
         for h to hidden_neurons
-            sum = b_h[h]
-            for f to 3
-                sum += inp[f] * w_in[h, f]
-            endfor
+            sum = b_h_'h'
+            sum += inp_1 * w_in_'h'_1
+            sum += inp_2 * w_in_'h'_2
+            sum += inp_3 * w_in_'h'_3
             if sum > 20
-                hid[h] = 1
+                hid_'h' = 1
             elsif sum < -20
-                hid[h] = -1
+                hid_'h' = -1
             else
-                hid[h] = (exp(sum) - exp(-sum)) / (exp(sum) + exp(-sum))
+                hid_'h' = (exp(sum) - exp(-sum)) / (exp(sum) + exp(-sum))
             endif
         endfor
         
         for d to 3
-            sum = b_o[d]
+            sum = b_o_'d'
             for h to hidden_neurons
-                sum += hid[h] * w_out[d, h]
+                hidVal = hid_'h'
+                wVal = w_out_'d'_'h'
+                sum += hidVal * wVal
             endfor
             if sum > 20
                 new_state = 1
@@ -496,8 +530,7 @@ for pass from 1 to n_passes
             new_state = (new_state - 0.5) * volatility_factor + 0.5
             
             if chaos_mutation > 0 and randomUniform(0, 1) < chaos_mutation * 0.1
-                perturbation = randomUniform(-0.3, 0.3) * chaos_mutation
-                new_state += perturbation
+                new_state += randomUniform(-0.3, 0.3) * chaos_mutation
             endif
             
             new_state = max(0, min(1, new_state))
@@ -508,23 +541,35 @@ for pass from 1 to n_passes
             
             # Store in pass-specific arrays
             if pass = 1
-                chaos_L[frame, d] = chaos_val
+                chaos_L_'frame'_'d' = chaos_val
+                if d = 1
+                    state_1 = new_state
+                elsif d = 2
+                    state_2 = new_state
+                else
+                    state_3 = new_state
+                endif
             else
-                chaos_R[frame, d] = chaos_val
+                chaos_R_'frame'_'d' = chaos_val
+                if d = 1
+                    state_1 = new_state
+                elsif d = 2
+                    state_2 = new_state
+                else
+                    state_3 = new_state
+                endif
             endif
-            
-            state[d] = new_state
         endfor
     endfor
 endfor
 
 #=============================================================================
-# APPLY MODULATION (per channel for stereo)
+# APPLY MODULATION
 #=============================================================================
 
-appendInfoLine: "  Modulating..."
+appendInfoLine: "Applying modulation..."
 
-# Get median pitch for reference
+# Get median pitch
 selectObject: input_sound
 pitch_obj = To Pitch: time_step, 75, 600
 median_f0 = Get quantile: 0, 0, 0.5, "Hertz"
@@ -536,23 +581,23 @@ removeObject: pitch_obj
 for pass from 1 to n_passes
     if stereo_output
         if pass = 1
-            appendInfoLine: "    Processing LEFT channel..."
+            appendInfoLine: "  Processing LEFT..."
         else
-            appendInfoLine: "    Processing RIGHT channel..."
+            appendInfoLine: "  Processing RIGHT..."
         endif
     endif
     
     selectObject: input_sound
     work = Copy: input_name$ + "_work"
     
-    # Build pitch tier from chaos
+    # Build pitch tier
     pitch_tier = Create PitchTier: "chaos", 0, duration
     
     for i to num_frames
         if pass = 1
-            chaos_pitch = chaos_L[i, 1]
+            chaos_pitch = chaos_L_'i'_1
         else
-            chaos_pitch = chaos_R[i, 1]
+            chaos_pitch = chaos_R_'i'_1
         endif
         
         selectObject: pitch_tier
@@ -564,35 +609,21 @@ for pass from 1 to n_passes
     
     # Apply pitch modification
     selectObject: work
-    if hQ_pitch
-        # High quality: use Change gender for formant preservation
-        manip = To Manipulation: 0.01, 75, 600
-        selectObject: manip
-        plusObject: pitch_tier
-        Replace pitch tier
-        selectObject: manip
-        work_pitched = Get resynthesis (overlap-add)
-        removeObject: manip
-    else
-        # Standard quality
-        manip = To Manipulation: 0.01, 75, 600
-        selectObject: manip
-        plusObject: pitch_tier
-        Replace pitch tier
-        selectObject: manip
-        work_pitched = Get resynthesis (overlap-add)
-        removeObject: manip
-    endif
+    manip = To Manipulation: 0.01, 75, 600
+    selectObject: manip
+    plusObject: pitch_tier
+    Replace pitch tier
+    selectObject: manip
+    work_pitched = Get resynthesis (overlap-add)
+    removeObject: manip, pitch_tier, work
     
-    removeObject: pitch_tier, work
-    
-    # Build amplitude tier from chaos
+    # Build amplitude tier
     amp_tier = Create IntensityTier: "chaos_amp", 0, duration
     for i to num_frames
         if pass = 1
-            chaos_amp = chaos_L[i, 2]
+            chaos_amp = chaos_L_'i'_2
         else
-            chaos_amp = chaos_R[i, 2]
+            chaos_amp = chaos_R_'i'_2
         endif
         
         selectObject: amp_tier
@@ -605,19 +636,16 @@ for pass from 1 to n_passes
     work_amp = Multiply: "yes"
     removeObject: amp_tier, work_pitched
     
-    # Ring modulation (OPTIMIZED - single Formula with pre-built modulator)
+    # Ring modulation
     if ring_mod > 0
-        # Create ring modulator sound
         selectObject: work_amp
-        ring_sound = Create Sound from formula: "ring_mod", 1, 0, duration, sr,
-            ... "0"
+        ring_sound = Create Sound from formula: "ring_mod", 1, 0, duration, sr, "0"
         
-        # Build the ring modulator waveform
         for i to num_frames
             if pass = 1
-                chaos_ring = chaos_L[i, 3]
+                chaos_ring = chaos_L_'i'_3
             else
-                chaos_ring = chaos_R[i, 3]
+                chaos_ring = chaos_R_'i'_3
             endif
             
             t_start = time#[i]
@@ -628,15 +656,18 @@ for pass from 1 to n_passes
             endif
             
             ring_freq = 300 + chaos_ring * 600
+            ringFreqStr$ = string$(ring_freq)
+            ringModStr$ = string$(ring_mod)
             
             selectObject: ring_sound
             Formula (part): t_start, t_end, 1, 1,
-                ... "(1 - ring_mod) + ring_mod * sin(2 * pi * " + string$(ring_freq) + " * x)"
+                ... "(1 - " + ringModStr$ + ") + " + ringModStr$ + " * sin(2 * pi * " + ringFreqStr$ + " * x)"
         endfor
         
-        # Apply ring mod in one multiply
+        # Apply ring mod
+        ringIdStr$ = string$(ring_sound)
         selectObject: work_amp
-        Formula: "self * Sound_ring_mod[col]"
+        Formula: "self * Object_" + ringIdStr$ + "[col]"
         removeObject: ring_sound
     endif
     
@@ -646,12 +677,13 @@ for pass from 1 to n_passes
         work_boosted = Filter (de-emphasis): 50
         selectObject: work_boosted
         boost_factor = 10 ^ (hF_boost_dB / 20)
-        Formula: "self * boost_factor"
+        boostStr$ = string$(boost_factor)
+        Formula: "self * " + boostStr$
         removeObject: work_amp
         work_amp = work_boosted
     endif
     
-    # Store channel result
+    # Store channel
     if pass = 1
         channel_left = work_amp
         selectObject: channel_left
@@ -667,39 +699,43 @@ endfor
 # MIX AND COMBINE
 #=============================================================================
 
-appendInfoLine: "  Mixing..."
+appendInfoLine: "Mixing..."
+
+dryWetStr$ = string$(dry_wet)
+dryAmtStr$ = string$(1 - dry_wet)
 
 if stereo_output
     # Apply dry/wet to both channels
     selectObject: channel_left
-    Formula: "self * dry_wet"
+    Formula: "self * " + dryWetStr$
     
     selectObject: channel_right
-    Formula: "self * dry_wet"
+    Formula: "self * " + dryWetStr$
     
-    # Create dry stereo from original
+    # Create dry stereo
     selectObject: input_sound_original
     if original_channels > 1
         dry_sound = Copy: "dry"
     else
-        # If original was mono, duplicate to stereo
         dry_left = Copy: "dry_L"
         dry_right = Copy: "dry_R"
-        selectObject: dry_left, dry_right
+        selectObject: dry_left
+        plusObject: dry_right
         dry_sound = Combine to stereo
         removeObject: dry_left, dry_right
     endif
     
     selectObject: dry_sound
-    Formula: "self * (1 - dry_wet)"
+    Formula: "self * " + dryAmtStr$
     
-    # Combine wet channels to stereo
-    selectObject: channel_left, channel_right
+    # Combine wet channels
+    selectObject: channel_left
+    plusObject: channel_right
     wet_stereo = Combine to stereo
     Rename: "wet_stereo"
     removeObject: channel_left, channel_right
     
-    # Match durations if needed
+    # Match durations
     selectObject: wet_stereo
     wet_dur = Get total duration
     selectObject: dry_sound
@@ -718,29 +754,23 @@ if stereo_output
     endif
     
     # Final mix
-    selectObject: wet_stereo
-    wet_name$ = selected$("Sound")
-    
+    wetIdStr$ = string$(wet_stereo)
     selectObject: dry_sound
-    Formula: "self + Sound_'wet_name$'[col]"
+    Formula: "self + Object_" + wetIdStr$ + "[row, col]"
     
     output_sound = dry_sound
     selectObject: output_sound
-    Rename: input_name$ + "_chaotic_stereo"
+    Rename: input_name$ + "_chaotic_" + presetName$
     
     removeObject: wet_stereo
-    
 else
     # Mono output
     selectObject: channel_left
-    Formula: "self * dry_wet"
+    Formula: "self * " + dryWetStr$
     
     selectObject: input_sound
     dry_mono = Copy: "dry_mono"
-    Formula: "self * (1 - dry_wet)"
-    
-    selectObject: channel_left
-    left_name$ = selected$("Sound")
+    Formula: "self * " + dryAmtStr$
     
     # Match durations
     selectObject: channel_left
@@ -758,15 +788,15 @@ else
         wet_trimmed = Extract part: 0, dry_dur, "rectangular", 1.0, "no"
         removeObject: channel_left
         channel_left = wet_trimmed
-        left_name$ = selected$("Sound")
     endif
     
+    wetIdStr$ = string$(channel_left)
     selectObject: dry_mono
-    Formula: "self + Sound_'left_name$'[col]"
+    Formula: "self + Object_" + wetIdStr$ + "[col]"
     
     output_sound = dry_mono
     selectObject: output_sound
-    Rename: input_name$ + "_chaotic"
+    Rename: input_name$ + "_chaotic_" + presetName$
     
     removeObject: channel_left
 endif
@@ -781,14 +811,12 @@ selectObject: output_sound
 Scale peak: 0.99
 
 appendInfoLine: ""
-appendInfoLine: "✓ COMPLETE!"
-appendInfoLine: "Preset: ", preset$
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Output: ", selected$("Sound")
 selectObject: output_sound
 n_ch = Get number of channels
 dur = Get total duration
-appendInfoLine: "Output: ", selected$("Sound")
-appendInfoLine: "Duration: ", fixed$(dur, 3), " s"
-appendInfoLine: "Channels: ", n_ch
+appendInfoLine: "Duration: ", fixed$(dur, 3), " s | Channels: ", n_ch
 
 if play_output
     appendInfoLine: "Playing..."
