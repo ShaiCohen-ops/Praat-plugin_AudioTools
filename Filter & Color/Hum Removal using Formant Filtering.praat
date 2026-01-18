@@ -1,67 +1,112 @@
 # ============================================================
-# Praat AudioTools - Hum Removal using Formant Filtering.praat
+# Praat AudioTools - Hum_Removal_using_Formant_Filtering.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025) - Fixed filter chain bug
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Filtering or timbral modification script
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#   Removes electrical hum (50Hz or 60Hz) and harmonics
+#   using cascaded band-stop filters.
 # ============================================================
 
-# Hum Removal using Formant Filtering
+# === Input Validation ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
-form Hum Removal (Formant Method)
-    choice Base_frequency: 2
-        option 50 Hz
-        option 60 Hz
-    integer Max_harmonic: 8
-    positive Bandwidth: 1.5
-endform
-
-sound = selected("Sound")
+soundID = selected("Sound")
 name$ = selected$("Sound")
 
-base_freq = if base_frequency = 1 then 50 else 60 fi
+form Hum Removal v0.2
+    comment === Hum Frequency ===
+    choice Base_frequency: 2
+        option 50 Hz (Europe/Asia)
+        option 60 Hz (Americas)
+    comment === Filter Settings ===
+    integer Max_harmonic 8
+    positive Bandwidth 1.5
+    comment (Width of notch in Hz, each side)
+    comment === Output ===
+    boolean Normalize_output 1
+    real Peak_level 0.99
+endform
 
-# Create working copy
-select sound
-processed = Copy: "hum_free"
-
-# Get sampling frequency once before the loop
-select processed
+# === Setup ===
+selectObject: soundID
 sampling_freq = Get sampling frequency
+duration = Get total duration
+nyquist = sampling_freq / 2
 
-# Apply series of band-stop filters for each harmonic
-for harmonic to max_harmonic
+# Determine base frequency
+if base_frequency = 1
+    base_freq = 50
+else
+    base_freq = 60
+endif
+
+clearinfo
+writeInfoLine: "=== Hum Removal v0.2 ==="
+appendInfoLine: "Input: ", name$
+appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
+appendInfoLine: "Sample rate: ", sampling_freq, " Hz"
+appendInfoLine: ""
+appendInfoLine: "Base frequency: ", base_freq, " Hz"
+appendInfoLine: "Harmonics: ", max_harmonic
+appendInfoLine: "Bandwidth: ±", bandwidth, " Hz per notch"
+appendInfoLine: ""
+
+# === Create Working Copy ===
+selectObject: soundID
+processedID = Copy: name$ + "_hum_removed"
+
+# === Apply Band-Stop Filters ===
+appendInfoLine: "Applying notch filters:"
+
+for harmonic from 1 to max_harmonic
     freq = base_freq * harmonic
     
-    if freq < sampling_freq / 2 * 0.8
-        # Use band-stop filtering
-        select processed
-        Filter (stop Hann band): freq - bandwidth, freq + bandwidth, 100
+    # Only filter if below Nyquist (with margin)
+    if freq < nyquist * 0.9
+        lowCut = freq - bandwidth
+        highCut = freq + bandwidth
         
-        # Remove the temporary band object that was created
-        temp_band = selected("Sound")
-        removeObject: temp_band
+        # Ensure valid range
+        if lowCut < 1
+            lowCut = 1
+        endif
+        
+        selectObject: processedID
+        filteredID = Filter (stop Hann band): lowCut, highCut, bandwidth * 2
+        
+        # Replace processed with filtered result
+        removeObject: processedID
+        processedID = filteredID
+        Rename: name$ + "_hum_removed"
+        
+        appendInfoLine: "  Notch ", harmonic, ": ", freq, " Hz (", fixed$(lowCut, 1), "-", fixed$(highCut, 1), " Hz)"
+    else
+        appendInfoLine: "  Skipped ", harmonic, ": ", freq, " Hz (above Nyquist)"
     endif
 endfor
 
-# Finalize - rename the processed sound
-select processed
-Rename: name$ + "_hum_removed"
+# === Normalize if requested ===
+if normalize_output
+    selectObject: processedID
+    Scale peak: peak_level
+    appendInfoLine: ""
+    appendInfoLine: "Normalized to ", peak_level
+endif
 
-echo Hum removal completed using formant filtering
-echo Original sound: 'name$'
-echo Processed sound: 'name$'_hum_removed
-echo Both sounds remain in the Objects list
+# === Output ===
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: ""
+appendInfoLine: "Created: ", name$, "_hum_removed"
+appendInfoLine: ""
+appendInfoLine: "Removed ", max_harmonic, " harmonics of ", base_freq, " Hz hum"
+
+selectObject: soundID
+Play
