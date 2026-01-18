@@ -1,169 +1,136 @@
 # ============================================================
-# Praat AudioTools - Kick detector and bass adder.praat
+# Praat AudioTools - Kick_Detector_and_Bass_Adder.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.4 (2025) - Fixed bass mixing
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Kick detector and bass adder
+#   Detects kicks in a drum loop using multi-band analysis,
+#   then places a bass sample at each kick position.
 #
 # Usage:
-#   Select a Sound object in Praat and run this script.
-#   
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#   Select TWO Sound objects: 1) Drum loop, 2) Bass sample
 # ============================================================
 
-################################################################################
-# Kick detector and bass adder                                                 #
-# Select TWO Sounds: 1) Full drum loop, 2) Bass sample, then run              #
-################################################################################
-
-# ----------------------- User parameters --------------------------------------
-lowBandMin    = 25      ; Hz (kick body)
-lowBandMax    = 120     ; Hz
-lowMidMin     = 120     ; Hz (helps reject toms/snares)
-lowMidMax     = 250     ; Hz
-smoothHz      = 100     ; Hz smoothing for Hann band filters
-
-hop_default   = 0.01    ; s (target analysis hop)
-
-mark$         = "kick"
-tierName$     = "Kicks"
-
-# ----------------------- Preconditions ----------------------------------------
-if numberOfSelected ("Sound") <> 2
-    exitScript: "Please select exactly TWO Sounds: 1) Full drum loop, 2) Bass sample, then run"
+# === Input Validation ===
+if numberOfSelected("Sound") <> 2
+    exitScript: "Please select exactly TWO Sounds: 1) Drum loop, 2) Bass sample"
 endif
 
-# Get the two selected sounds
-sound1$ = selected$ ("Sound", 1)
-sound2$ = selected$ ("Sound", 2)
+drumID = selected("Sound", 1)
+bassID = selected("Sound", 2)
+drum$ = selected$("Sound", 1)
+bass$ = selected$("Sound", 2)
 
-# Ask user which is which and get detection parameters
-beginPause: "Kick Detector and Bass Adder"
-    comment: "Select TWO Sounds: 1) Full drum loop, 2) Bass sample, then run"
-    comment: ""
-    comment: "You selected: '" + sound1$ + "' and '" + sound2$ + "'"
-    comment: ""
-    choice: "drumLoop", 1
-        option: sound1$
-        option: sound2$
-    choice: "bassSample", 2
-        option: sound1$
-        option: sound2$
-    comment: ""
-    comment: "Detection parameters:"
-    real: "scoreThresh", 0.80
-    comment: "  (Lower = more sensitive, detect more kicks. Range: 0.5-1.5)"
-    real: "dLowThresh", 0.60
-    comment: "  (Lower = more sensitive. Range: 0.3-1.0)"
-    real: "refractory", 0.09
-    comment: "  (Minimum time between kicks in seconds)"
-    comment: ""
-    comment: "Timing adjustment:"
-    real: "timeOffset", 0.052
-    comment: "  (Shift detection forward in seconds, positive = later)"
-    real: "kickWindowBefore", 0.01
-    comment: "  (Not used in bass adding mode)"
-    real: "kickWindowAfter", 0.11
-    comment: "  (Not used in bass adding mode)"
-    comment: ""
-    comment: "Score weights:"
-    real: "wLow", 1.0
-    real: "wFlux", 0.5
-    real: "wLowMidPen", 0.5
-endPause: "Detect and Add Bass", 1
+form Kick Detector and Bass Adder v0.4
+    comment === Sound Assignment ===
+    comment First selected = Drum loop, Second = Bass sample
+    comment === Detection Parameters ===
+    real Score_threshold 0.80
+    real Derivative_threshold 0.60
+    real Refractory_period 0.09
+    comment === Timing Adjustment ===
+    real Time_offset 0.052
+    comment === Score Weights ===
+    real Weight_low 1.0
+    real Weight_flux 0.5
+    real Weight_lowmid_penalty 0.5
+    comment === Mix ===
+    real Bass_gain 1.0
+    boolean Play_result 1
+endform
 
-if drumLoop = bassSample
-    exitScript: "Please select different sounds for drum loop and bass sample!"
-endif
+# === Band Parameters ===
+lowBandMin = 25
+lowBandMax = 120
+lowMidMin = 120
+lowMidMax = 250
+smoothHz = 100
+hop_default = 0.01
 
-if drumLoop = 1
-    orig$ = sound1$
-    sample$ = sound2$
-else
-    orig$ = sound2$
-    sample$ = sound1$
-endif
-
-selectObject: "Sound " + orig$
+# === Setup ===
+selectObject: drumID
 xmin = Get start time
 xmax = Get end time
-dur  = xmax - xmin
+dur = xmax - xmin
+drumRate = Get sampling frequency
+drumChannels = Get number of channels
+
 if dur <= 0.008
-    exitScript: "Drum loop is too short (" + string$(dur) + " s) for analysis."
+    exitScript: "Drum loop is too short (" + fixed$(dur, 3) + " s) for analysis."
 endif
 
-# Get kick sample properties
-selectObject: "Sound " + sample$
-sampleDur = Get total duration
-sampleChannels = Get number of channels
+selectObject: bassID
+bassDur = Get total duration
+bassXmin = Get start time
+bassXmax = Get end time
+bassChannels = Get number of channels
+bassRate = Get sampling frequency
 
-writeInfoLine: "Drum loop: '", orig$, "'"
-appendInfoLine: "Bass sample: '", sample$, "' (", string$(sampleDur), " s)"
+clearinfo
+writeInfoLine: "=== Kick Detector and Bass Adder v0.4 ==="
+appendInfoLine: "Drum loop: ", drum$, " (", fixed$(dur, 2), " s)"
+appendInfoLine: "Bass sample: ", bass$, " (", fixed$(bassDur, 3), " s)"
+appendInfoLine: ""
 
-# ----------------------- Make a safe working copy ------------------------------
-selectObject: "Sound " + orig$
-Extract part: xmin, xmax, "rectangular", 1, "yes"
-work$ = "KD_work_" + orig$
-Rename: work$
+# === Create Working Copy ===
+selectObject: drumID
+workID = Extract part: xmin, xmax, "rectangular", 1, "yes"
+Rename: "KD_work"
 
-# ----------------------- Adaptive Intensity window & hop ----------------------
-safeWindow = min (0.5 * dur, 0.04)
-safeWindow = max (safeWindow, 0.005)
+# === Adaptive Window and Hop ===
+safeWindow = min(0.5 * dur, 0.04)
+safeWindow = max(safeWindow, 0.005)
 minPitchForIntensity = 0.8 / safeWindow
-hop = min (hop_default, safeWindow / 2)
+hop = min(hop_default, safeWindow / 2)
 
-# ----------------------- Bandpass filtering ------------------------------------
-selectObject: "Sound " + work$
-Filter (pass Hann band): lowBandMin, lowBandMax, smoothHz
+# === Bandpass Filtering ===
+appendInfoLine: "Filtering bands..."
+
+selectObject: workID
+lowID = Filter (pass Hann band): lowBandMin, lowBandMax, smoothHz
 Rename: "KD_low"
 
-selectObject: "Sound " + work$
-Filter (pass Hann band): lowMidMin, lowMidMax, smoothHz
+selectObject: workID
+lowmidID = Filter (pass Hann band): lowMidMin, lowMidMax, smoothHz
 Rename: "KD_lowmid"
 
-# ----------------------- Intensities -------------------------------------------
-selectObject: "Sound " + work$
-To Intensity: minPitchForIntensity, hop, "yes"
+# === Intensity Analysis ===
+appendInfoLine: "Computing intensity..."
+
+selectObject: workID
+intBroadID = To Intensity: minPitchForIntensity, hop, "yes"
 Rename: "KD_I_broad"
 
-selectObject: "Sound KD_low"
-To Intensity: minPitchForIntensity, hop, "yes"
+selectObject: lowID
+intLowID = To Intensity: minPitchForIntensity, hop, "yes"
 Rename: "KD_I_low"
 
-selectObject: "Sound KD_lowmid"
-To Intensity: minPitchForIntensity, hop, "yes"
+selectObject: lowmidID
+intLowmidID = To Intensity: minPitchForIntensity, hop, "yes"
 Rename: "KD_I_lowmid"
 
-# ----------------------- Read intensities into arrays --------------------------
-selectObject: "Intensity KD_I_low"
+# === Read Intensities into Vectors ===
+selectObject: intLowID
 n = Get number of frames
+
 if n < 3
+    removeObject: workID, lowID, lowmidID, intBroadID, intLowID, intLowmidID
     exitScript: "Too few frames (" + string$(n) + ") for detection."
 endif
 
-time#     = zero# (n)
-low#      = zero# (n)
-lowmid#   = zero# (n)
-broad#    = zero# (n)
-dlow#     = zero# (n)
-dbroad#   = zero# (n)
-zLow#     = zero# (n)
-zLowMid#  = zero# (n)
-zDLow#    = zero# (n)
-zDBroad#  = zero# (n)
-zDBroadPos# = zero# (n)
-score#    = zero# (n)
+appendInfoLine: "Analyzing ", n, " frames..."
+
+time# = zero#(n)
+low# = zero#(n)
+lowmid# = zero#(n)
+broad# = zero#(n)
 
 for i from 1 to n
-    selectObject: "Intensity KD_I_low"
+    selectObject: intLowID
     time#[i] = Get time from frame: i
     lv = Get value in frame: i
     if lv = undefined
@@ -171,14 +138,14 @@ for i from 1 to n
     endif
     low#[i] = lv
 
-    selectObject: "Intensity KD_I_lowmid"
+    selectObject: intLowmidID
     lmv = Get value in frame: i
     if lmv = undefined
         lmv = 0
     endif
     lowmid#[i] = lmv
 
-    selectObject: "Intensity KD_I_broad"
+    selectObject: intBroadID
     bv = Get value in frame: i
     if bv = undefined
         bv = 0
@@ -186,31 +153,31 @@ for i from 1 to n
     broad#[i] = bv
 endfor
 
-# ----------------------- First differences -------------------------------------
-for i from 1 to n
-    if i = 1
-        dlow#[i]   = 0
-        dbroad#[i] = 0
-    else
-        dlow#[i]   = low#[i]   - low#[i-1]
-        dbroad#[i] = broad#[i] - broad#[i-1]
-    endif
+# === First Differences ===
+dlow# = zero#(n)
+dbroad# = zero#(n)
+
+for i from 2 to n
+    dlow#[i] = low#[i] - low#[i-1]
+    dbroad#[i] = broad#[i] - broad#[i-1]
 endfor
 
-# ----------------------- Z-score normalization ---------------------------------
+# === Z-Score Normalization ===
+appendInfoLine: "Normalizing..."
+
 muLow = 0
 muLowMid = 0
 muDLow = 0
 muDBroad = 0
 for i from 1 to n
-    muLow    = muLow    + low#[i]
+    muLow = muLow + low#[i]
     muLowMid = muLowMid + lowmid#[i]
-    muDLow   = muDLow   + dlow#[i]
+    muDLow = muDLow + dlow#[i]
     muDBroad = muDBroad + dbroad#[i]
 endfor
-muLow    = muLow    / n
+muLow = muLow / n
 muLowMid = muLowMid / n
-muDLow   = muDLow   / n
+muDLow = muDLow / n
 muDBroad = muDBroad / n
 
 varLow = 0
@@ -218,144 +185,205 @@ varLowMid = 0
 varDLow = 0
 varDBroad = 0
 for i from 1 to n
-    d = low#[i]      - muLow
-    varLow    = varLow    + d*d
-    d = lowmid#[i]   - muLowMid
-    varLowMid = varLowMid + d*d
-    d = dlow#[i]     - muDLow
-    varDLow   = varDLow   + d*d
-    d = dbroad#[i]   - muDBroad
-    varDBroad = varDBroad + d*d
+    d = low#[i] - muLow
+    varLow = varLow + d * d
+    d = lowmid#[i] - muLowMid
+    varLowMid = varLowMid + d * d
+    d = dlow#[i] - muDLow
+    varDLow = varDLow + d * d
+    d = dbroad#[i] - muDBroad
+    varDBroad = varDBroad + d * d
 endfor
-varLow    = varLow    / n
+varLow = varLow / n
 varLowMid = varLowMid / n
-varDLow   = varDLow   / n
+varDLow = varDLow / n
 varDBroad = varDBroad / n
 
-if varLow    <= 1e-12
-    varLow    = 1e-12
+if varLow <= 1e-12
+    varLow = 1e-12
 endif
 if varLowMid <= 1e-12
     varLowMid = 1e-12
 endif
-if varDLow   <= 1e-12
-    varDLow   = 1e-12
+if varDLow <= 1e-12
+    varDLow = 1e-12
 endif
 if varDBroad <= 1e-12
     varDBroad = 1e-12
 endif
 
-sdLow    = varLow    ^ 0.5
-sdLowMid = varLowMid ^ 0.5
-sdDLow   = varDLow   ^ 0.5
-sdDBroad = varDBroad ^ 0.5
+sdLow = sqrt(varLow)
+sdLowMid = sqrt(varLowMid)
+sdDLow = sqrt(varDLow)
+sdDBroad = sqrt(varDBroad)
+
+zLow# = zero#(n)
+zLowMid# = zero#(n)
+zDLow# = zero#(n)
+zDBroadPos# = zero#(n)
+score# = zero#(n)
 
 for i from 1 to n
-    zLow#[i]    = (low#[i]    - muLow)    / sdLow
+    zLow#[i] = (low#[i] - muLow) / sdLow
     zLowMid#[i] = (lowmid#[i] - muLowMid) / sdLowMid
-    zDLow#[i]   = (dlow#[i]   - muDLow)   / sdDLow
-    zDBroad#[i] = (dbroad#[i] - muDBroad) / sdDBroad
-    if zDBroad#[i] > 0
-        zDBroadPos#[i] = zDBroad#[i]
+    zDLow#[i] = (dlow#[i] - muDLow) / sdDLow
+    zDBroad = (dbroad#[i] - muDBroad) / sdDBroad
+    if zDBroad > 0
+        zDBroadPos#[i] = zDBroad
     else
         zDBroadPos#[i] = 0
     endif
 endfor
 
-# ----------------------- Scoring & detection -----------------------------------
+# === Scoring ===
+appendInfoLine: "Scoring frames..."
+
 for i from 1 to n
-    score#[i] = wLow * zLow#[i] + wFlux * zDBroadPos#[i] - wLowMidPen * zLowMid#[i]
+    score#[i] = weight_low * zLow#[i] + weight_flux * zDBroadPos#[i] - weight_lowmid_penalty * zLowMid#[i]
 endfor
 
-Create TextGrid: xmin, xmax, "dummy", ""
-Rename: "KD_TextGrid"
-Insert point tier: 1, tierName$
-Remove tier: 2
+# === Peak Detection ===
+appendInfoLine: "Detecting kicks..."
 
-lastHitTime = xmin - refractory
+tgID = Create TextGrid: xmin, xmax, "Kicks", "Kicks"
+Rename: "KD_Kicks"
 
-for i from 2 to n-1
+lastHitTime = xmin - refractory_period
+numKicks = 0
+
+# Store kick times in array
+kickTimes# = zero#(1000)
+
+for i from 2 to n - 1
     t = time#[i]
-    if (score#[i] > scoreThresh) and (zDLow#[i] > dLowThresh) and (t - lastHitTime >= refractory)
+    if score#[i] > score_threshold and zDLow#[i] > derivative_threshold and t - lastHitTime >= refractory_period
         imax = i
         smax = score#[i]
         if score#[i-1] > smax
-            imax = i-1
+            imax = i - 1
             smax = score#[i-1]
         endif
         if score#[i+1] > smax
-            imax = i+1
-            smax = score#[i+1]
+            imax = i + 1
         endif
-        thit = time#[imax]
-        thit = thit + timeOffset
-        selectObject: "TextGrid KD_TextGrid"
-        Insert point: 1, thit, mark$
-        lastHitTime = thit
+        
+        thit = time#[imax] + time_offset
+        
+        if thit >= xmin and thit <= xmax
+            selectObject: tgID
+            Insert point: 1, thit, "kick"
+            lastHitTime = thit
+            numKicks = numKicks + 1
+            kickTimes#[numKicks] = thit
+        endif
     endif
 endfor
 
-# ----------------------- Place bass sample at kick positions ------------------
-selectObject: "TextGrid KD_TextGrid"
-numKicks = Get number of points: 1
+appendInfoLine: "Detected ", numKicks, " kicks"
 
-appendInfoLine: "Detected ", string$(numKicks), " kicks"
-appendInfoLine: "Placing bass sample at kick positions..."
-
-# Create copy of original and add bass samples to it
-selectObject: "Sound " + orig$
-Copy: orig$ + "_with_bass"
-withBass$ = orig$ + "_with_bass"
-
+# === Mix Bass Sample at Kick Positions ===
 if numKicks > 0
-    selectObject: "Sound " + sample$
-    sampleSamps = Get number of samples
-    sampleChannels = Get number of channels
+    appendInfoLine: "Mixing bass at kick positions..."
     
-    selectObject: "Sound " + withBass$
-    totalSamps = Get number of samples
-    nChannels = Get number of channels
-    srate = Get sampling frequency
+    # Prepare bass sample (resample and channel-match)
+    if bassRate <> drumRate
+        selectObject: bassID
+        bassResamp = Resample: drumRate, 50
+    else
+        selectObject: bassID
+        bassResamp = Copy: "bass_temp"
+    endif
     
-    # Add bass sample at each kick position (mix with original)
+    selectObject: bassResamp
+    bassChNow = Get number of channels
+    if bassChNow = 1 and drumChannels = 2
+        bassReady = Convert to stereo
+        removeObject: bassResamp
+        bassResamp = bassReady
+    elsif bassChNow = 2 and drumChannels = 1
+        bassReady = Convert to mono
+        removeObject: bassResamp
+        bassResamp = bassReady
+    endif
+    
+    # Apply gain
+    if bass_gain <> 1
+        selectObject: bassResamp
+        gain$ = string$(bass_gain)
+        Formula: "self * " + gain$
+    endif
+    
+    # Get bass timing info
+    selectObject: bassResamp
+    bassStart = Get start time
+    bassEnd = Get end time
+    bassDurNow = bassEnd - bassStart
+    
+    # Create output
+    selectObject: drumID
+    resultID = Copy: drum$ + "_with_bass"
+    
+    # Mix bass at each kick using time-shifted Formula
+    bassId$ = string$(bassResamp)
+    bassStart$ = string$(bassStart)
+    bassDur$ = string$(bassDurNow)
+    
     for k from 1 to numKicks
-        selectObject: "TextGrid KD_TextGrid"
-        kickTime = Get time of point: 1, k
+        kickTime = kickTimes#[k]
+        kickT$ = string$(kickTime)
+        kickEnd = kickTime + bassDurNow
+        kickEnd$ = string$(kickEnd)
         
-        # Calculate insertion position
-        insertSamp = round(kickTime * srate) + 1
+        selectObject: resultID
+        # Add bass sample shifted to kick position
+        # Formula: if x is within kick's bass region, add bass value at (x - kickTime + bassStart)
+        Formula: "self + (if x >= " + kickT$ + " and x < " + kickEnd$ + " then Object_" + bassId$ + "(x - " + kickT$ + " + " + bassStart$ + ") else 0 endif)"
         
-        # Add the bass sample at this position
-        for s from 1 to sampleSamps
-            if insertSamp + s - 1 <= totalSamps and insertSamp + s - 1 >= 1
-                selectObject: "Sound " + sample$
-                for ch from 1 to min(sampleChannels, nChannels)
-                    val = Get value at sample number: ch, s
-                    selectObject: "Sound " + withBass$
-                    existingVal = Get value at sample number: ch, insertSamp + s - 1
-                    Set value at sample number: ch, insertSamp + s - 1, existingVal + val
-                endfor
-            endif
-        endfor
+        appendInfoLine: "  Kick ", k, " at ", fixed$(kickTime, 3), " s"
     endfor
+    
+    removeObject: bassResamp
+    
+    # Normalize if clipping
+    selectObject: resultID
+    maxAmp = Get maximum: 0, 0, "Sinc70"
+    minAmp = Get minimum: 0, 0, "Sinc70"
+    peak = max(abs(maxAmp), abs(minAmp))
+    if peak > 0.99
+        appendInfoLine: "Normalizing output (peak was ", fixed$(peak, 2), ")"
+        Scale peak: 0.99
+    endif
+else
+    appendInfoLine: "No kicks detected - copying original"
+    selectObject: drumID
+    resultID = Copy: drum$ + "_with_bass"
 endif
 
-# ----------------------- Cleanup -----------------------------------------------
-removeObject: "Sound " + work$
-removeObject: "Sound KD_low"
-removeObject: "Sound KD_lowmid"
-removeObject: "Intensity KD_I_broad"
-removeObject: "Intensity KD_I_low"
-removeObject: "Intensity KD_I_lowmid"
-
-# ----------------------- Finish ------------------------------------------------
-plusObject: "Sound " + withBass$
-Play
-
+# === Cleanup ===
 appendInfoLine: ""
-appendInfoLine: "=== Results ==="
-appendInfoLine: "Original loop: '", orig$, "' (untouched)"
-appendInfoLine: "Bass sample: '", sample$, "'"
-appendInfoLine: "TextGrid: 'KD_TextGrid' (", string$(numKicks), " kick positions)"
-appendInfoLine: "Mixed: '", withBass$, "'"
-appendInfoLine: "  = Original loop + bass sample at each kick position"
+appendInfoLine: "Cleaning up..."
+
+removeObject: workID
+removeObject: lowID
+removeObject: lowmidID
+removeObject: intBroadID
+removeObject: intLowID
+removeObject: intLowmidID
+
+# === Output ===
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: ""
+appendInfoLine: "Detected: ", numKicks, " kicks"
+appendInfoLine: ""
+appendInfoLine: "Created:"
+appendInfoLine: "  - TextGrid: KD_Kicks (kick markers)"
+appendInfoLine: "  - Sound: ", drum$, "_with_bass"
+
+if play_result
+    selectObject: resultID
+    Play
+endif
+
+selectObject: resultID
+plusObject: tgID

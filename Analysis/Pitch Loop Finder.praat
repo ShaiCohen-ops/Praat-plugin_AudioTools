@@ -1,50 +1,17 @@
 # ============================================================
-# Praat AudioTools - Pitch-Only Loop Finder
+# Praat AudioTools - Pitch_Loop_Finder.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Pitch-Only Loop Finder
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#   Finds repeating pitch patterns using self-similarity matrix
 # ============================================================
 
-# ============================================================
-# Pitch Loop Finder 
-# ============================================================
-
-form Turbo Pitch Loop Finder
-    comment === SPEED SETTINGS ===
-    positive time_step 0.05
-    comment (0.05 = Fast, 0.02 = High Precision)
-    
-    comment === PITCH SETTINGS ===
-    positive pitch_floor 75
-    positive pitch_ceiling 600
-    positive tolerance_hz 50
-    
-    comment === LOOP TIMING ===
-    positive min_loop_duration 0.4
-    positive max_loop_duration 10.0
-    
-    comment === OUTPUT ===
-    positive num_loops_to_find 5
-endform
-
-# ===================================================================
-# 1. SETUP
-# ===================================================================
-
+# === Input Validation ===
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly ONE Sound object."
 endif
@@ -52,28 +19,53 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-# 1. Extract Pitch
+form Pitch Loop Finder v0.2
+    comment === Speed Settings ===
+    positive Time_step 0.05
+    comment (0.05 = Fast, 0.02 = High Precision)
+    comment === Pitch Settings ===
+    positive Pitch_floor 75
+    positive Pitch_ceiling 600
+    positive Tolerance_hz 50
+    comment === Loop Timing ===
+    positive Min_loop_duration 0.4
+    positive Max_loop_duration 10.0
+    comment === Output ===
+    positive Num_loops_to_find 5
+endform
+
+# ===================================================================
+# 1. SETUP
+# ===================================================================
+
 selectObject: originalID
-To Pitch: time_step, pitch_floor, pitch_ceiling
-pitchID = selected("Pitch")
+duration = Get total duration
+
+clearinfo
+writeInfoLine: "=== Pitch Loop Finder v0.2 ==="
+appendInfoLine: "Sound: ", originalName$
+appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
+appendInfoLine: "Time step: ", time_step, " s"
+appendInfoLine: ""
+
+# Extract Pitch
+selectObject: originalID
+pitchID = To Pitch: time_step, pitch_floor, pitch_ceiling
 num_frames = Get number of frames
 
-writeInfoLine: "Extracted ", num_frames, " frames."
-appendInfoLine: "Time Step: ", time_step, "s"
+appendInfoLine: "Extracted ", num_frames, " frames"
 
 # ===================================================================
-# 2. THE SPEED HACK (Formula Calculation)
+# 2. BUILD SELF-SIMILARITY MATRIX
 # ===================================================================
 
-# Convert Pitch to Matrix
-# We name it "ThePitchData" so the Formula command can find it by name
+# Convert Pitch to Matrix for fast Formula access
 Create simple Matrix: "ThePitchData", num_frames, 1, "0"
 dataID = selected("Matrix")
 
 selectObject: pitchID
-# Using Vector method to fill data quickly
-pitch_vals# = zero# (num_frames)
-for i to num_frames
+pitch_vals# = zero#(num_frames)
+for i from 1 to num_frames
     val = Get value in frame: i, "Hertz"
     if val = undefined
         val = 0
@@ -83,7 +75,7 @@ endfor
 removeObject: pitchID
 
 selectObject: dataID
-for i to num_frames
+for i from 1 to num_frames
     Set value: i, 1, pitch_vals#[i]
 endfor
 
@@ -91,23 +83,21 @@ endfor
 Create simple Matrix: "SSM", num_frames, num_frames, "0"
 ssmID = selected("Matrix")
 
-appendInfo: "Calculating Matrix (Turbo Mode)..."
+appendInfo: "Calculating similarity matrix..."
 
-# THIS IS THE MAGIC LINE
-# Instead of a slow loop, we run a C++ formula.
-# Logic: If both pitches > 0 and difference < tolerance, calculate score. Else 0.
-Formula: "if Matrix_ThePitchData[row, 1] > 0 and Matrix_ThePitchData[col, 1] > 0 and abs(Matrix_ThePitchData[row, 1] - Matrix_ThePitchData[col, 1]) < " + string$(tolerance_hz) + " then 1 - (abs(Matrix_ThePitchData[row, 1] - Matrix_ThePitchData[col, 1]) / " + string$(tolerance_hz) + ") else 0 fi"
+# Fast Formula-based SSM calculation
+tol$ = string$(tolerance_hz)
+Formula: "if Matrix_ThePitchData[row, 1] > 0 and Matrix_ThePitchData[col, 1] > 0 and abs(Matrix_ThePitchData[row, 1] - Matrix_ThePitchData[col, 1]) < " + tol$ + " then 1 - (abs(Matrix_ThePitchData[row, 1] - Matrix_ThePitchData[col, 1]) / " + tol$ + ") else 0 endif"
 
 appendInfoLine: " done!"
 
 # ===================================================================
-# 3. FIND LOOPS
+# 3. FIND LOOPS (scan diagonals)
 # ===================================================================
 
 # Create TextGrid for output
 selectObject: originalID
-To TextGrid: "Loops Repeats", ""
-textgridID = selected("TextGrid")
+textgridID = To TextGrid: "Loops Repeats", ""
 
 Create Table with column names: "candidates", 0, "start_frame length_frames gap_frames score"
 tableID = selected("Table")
@@ -115,12 +105,13 @@ tableID = selected("Table")
 selectObject: ssmID
 frame_rate = 1 / time_step
 min_len = round(min_loop_duration * frame_rate)
+max_len = round(max_loop_duration * frame_rate)
 max_gap = num_frames - min_len
 
 gap = min_len
 step = 1
 
-# Speed up search: larger steps for long files
+# Speed up for long files
 if num_frames > 2000
     step = 2
 endif
@@ -130,11 +121,12 @@ appendInfo: "Scanning diagonals..."
 while gap <= max_gap
     path_len = 0
     path_start = 0
+    path_score = 0
     search_limit = num_frames - gap
     
-    # We still loop here, but it's much lighter than the matrix build
-    for i to search_limit
+    for i from 1 to search_limit
         j = i + gap
+        selectObject: ssmID
         val = Get value in cell: i, j
         
         if val > 0.5
@@ -142,20 +134,33 @@ while gap <= max_gap
                 path_start = i
             endif
             path_len = path_len + 1
+            path_score = path_score + val
         else
-            if path_len >= min_len
+            if path_len >= min_len and path_len <= max_len
                 selectObject: tableID
                 Append row
                 row = Get number of rows
                 Set numeric value: row, "start_frame", path_start
                 Set numeric value: row, "length_frames", path_len
                 Set numeric value: row, "gap_frames", gap
-                Set numeric value: row, "score", path_len * val
-                selectObject: ssmID
+                Set numeric value: row, "score", path_score
             endif
             path_len = 0
+            path_score = 0
         endif
     endfor
+    
+    # Check final segment
+    if path_len >= min_len and path_len <= max_len
+        selectObject: tableID
+        Append row
+        row = Get number of rows
+        Set numeric value: row, "start_frame", path_start
+        Set numeric value: row, "length_frames", path_len
+        Set numeric value: row, "gap_frames", gap
+        Set numeric value: row, "score", path_score
+    endif
+    
     gap = gap + step
 endwhile
 
@@ -170,15 +175,21 @@ nRows = Get number of rows
 
 if nRows = 0
     removeObject: dataID, ssmID, tableID
+    appendInfoLine: ""
+    appendInfoLine: "No loops found. Try adjusting tolerance or duration."
+    selectObject: originalID
+    plusObject: textgridID
     exitScript: "No loops found."
 endif
 
+appendInfoLine: "Found ", nRows, " candidates, selecting best ", num_loops_to_find
+
 Sort rows: "score"
 
-# De-duplication logic
-for k to num_loops_to_find
-    saved_t1[k] = -1
-    saved_t2[k] = -1
+# Initialize saved regions (for overlap checking)
+for k from 1 to num_loops_to_find
+    saved_t1_'k' = -1
+    saved_t2_'k' = -1
 endfor
 
 loops_found = 0
@@ -196,45 +207,71 @@ while loops_found < num_loops_to_find and row_index > 0
     rep_t1 = (start_f + gap_f - 1) * time_step
     rep_t2 = rep_t1 + dur
     
-    # Overlap Check
+    # Clamp to valid range
+    if t1 < 0
+        t1 = 0
+    endif
+    if t2 > duration
+        t2 = duration
+    endif
+    if rep_t1 < 0
+        rep_t1 = 0
+    endif
+    if rep_t2 > duration
+        rep_t2 = duration
+    endif
+    
+    # Overlap Check with previously saved loops
     is_overlap = 0
-    for k to loops_found
-        if t1 < saved_t2[k] and t2 > saved_t1[k]
+    for k from 1 to loops_found
+        st1 = saved_t1_'k'
+        st2 = saved_t2_'k'
+        if t1 < st2 and t2 > st1
             is_overlap = 1
         endif
     endfor
     
-    if is_overlap = 0
+    if is_overlap = 0 and t2 > t1 and rep_t2 > rep_t1
         loops_found = loops_found + 1
-        saved_t1[loops_found] = t1
-        saved_t2[loops_found] = t2
+        saved_t1_'loops_found' = t1
+        saved_t2_'loops_found' = t2
         
         # Annotate TextGrid
         selectObject: textgridID
         
-        # Tier 1: Source
-        Insert boundary: 1, t1
-        Insert boundary: 1, t2
+        # Tier 1: Source loop
+        nocheck Insert boundary: 1, t1
+        nocheck Insert boundary: 1, t2
         int_idx = Get interval at time: 1, t1 + 0.001
         Set interval text: 1, int_idx, "Loop " + string$(loops_found)
         
-        # Tier 2: Repeat
-        Insert boundary: 2, rep_t1
-        Insert boundary: 2, rep_t2
+        # Tier 2: Repeat location
+        nocheck Insert boundary: 2, rep_t1
+        nocheck Insert boundary: 2, rep_t2
         int_idx = Get interval at time: 2, rep_t1 + 0.001
         Set interval text: 2, int_idx, "Repeat " + string$(loops_found)
         
-        appendInfoLine: "Found Loop ", loops_found, ": ", fixed$(t1, 2), "s -> ", fixed$(rep_t1, 2), "s"
+        appendInfoLine: "Loop ", loops_found, ": ", fixed$(t1, 2), "-", fixed$(t2, 2), " s -> ", fixed$(rep_t1, 2), "-", fixed$(rep_t2, 2), " s (", fixed$(dur, 2), " s)"
     endif
+    
     row_index = row_index - 1
 endwhile
 
-# Cleanup
-selectObject: dataID
-plusObject: ssmID
-plusObject: tableID
-Remove
+# ===================================================================
+# 5. CLEANUP & OUTPUT
+# ===================================================================
+
+removeObject: dataID, ssmID, tableID
+
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Found ", loops_found, " loop(s)"
+appendInfoLine: ""
+appendInfoLine: "TextGrid shows:"
+appendInfoLine: "  Tier 1 (Loops): Original loop regions"
+appendInfoLine: "  Tier 2 (Repeats): Where they repeat"
 
 selectObject: originalID
 plusObject: textgridID
 View & Edit
+
