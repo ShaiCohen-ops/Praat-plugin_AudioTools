@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - Parametric Autoencoder Resynthesis with Variations
+# Praat AudioTools - Parametric_Autoencoder_Resynthesis_with_Variations.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2025) - True Latent Space + KlattGrid + Dynamic Voicing
+# Version: 0.7 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,48 +11,53 @@
 #   True autoencoder with latent space perturbation for novel variations.
 #   Uses KlattGrid source-filter synthesis to render independent F0 and
 #   F1-F4 trajectories. Dynamic voicing amplitude for natural silence.
-#   Preset system for clean vs. glitch modes.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.7:
+#   - Fixed output selection (use ID array instead of name)
+#   - Added visualization option
+#   - Code cleanup
 # ============================================================
 
-form Parametric Autoencoder Hybrid
-    choice preset_selection 1
-        button Clean - Dynamic Amplitude - 6 Params
-        button Glitch - Constant Drone - 5 Params
-    positive time_step 0.01
-    positive bottleneck_size 3
-    positive epochs 150
-    positive num_variations 7
-    positive pitch_floor 60
-    positive pitch_ceiling 500
-    positive voicing_threshold 0.4
-    positive latent_noise 0.15
-    positive bandwidth_fraction 0.1
-    positive aspiration_during_unvoiced 20
-    boolean draw_network 1
-endform
-
-# ===== PRESET LOGIC =====
-if preset_selection = 1
-    presetName$ = "v0.6 (Clean)"
-    nparams = 6
-else
-    presetName$ = "v0.4 (Glitch)"
-    nparams = 5
-endif
-
-clearinfo
-appendInfoLine: "--- Parametric Autoencoder: ", presetName$, " ---"
-
+# === Input Validation ===
 if numberOfSelected() <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
 sound_orig = selected()
 sound_name$ = selected$("Sound")
+
+form Parametric Autoencoder v0.7
+    choice Preset_selection: 1
+        button Clean - Dynamic Amplitude - 6 Params
+        button Glitch - Constant Drone - 5 Params
+    positive Time_step 0.01
+    positive Bottleneck_size 3
+    positive Epochs 150
+    positive Num_variations 7
+    positive Pitch_floor 60
+    positive Pitch_ceiling 500
+    positive Voicing_threshold 0.4
+    positive Latent_noise 0.15
+    positive Bandwidth_fraction 0.1
+    positive Aspiration_during_unvoiced 20
+    boolean Draw_network 1
+    boolean Draw_visualization 1
+endform
+
+# ===== PRESET LOGIC =====
+if preset_selection = 1
+    presetName$ = "Clean"
+    nparams = 6
+else
+    presetName$ = "Glitch"
+    nparams = 5
+endif
+
+clearinfo
+writeInfoLine: "=== Parametric Autoencoder v0.7 ==="
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Parameters: ", nparams, " | Bottleneck: ", bottleneck_size
+appendInfoLine: ""
 
 selectObject: sound_orig
 Resample: 44100, 50
@@ -130,7 +135,6 @@ for frameIdx from 1 to num_frames
     Set value: 4, frameIdx, f3
     Set value: 5, frameIdx, f4
     
-    # Only v0.6 uses Intensity
     if preset_selection = 1
         selectObject: intensity_obj
         int_val = Get value at time: t, "cubic"
@@ -249,7 +253,6 @@ if draw_network = 1
     appendInfoLine: "Drawing network visualization..."
     Erase all
     
-    # Topology
     Select outer viewport: 0.5, 5, 0.5, 3
     selectObject: autoencoder
     Draw topology
@@ -262,7 +265,6 @@ if draw_network = 1
     Select outer viewport: 5.5, 10, 0.2, 0.7
     Text top: "no", "Decoder: " + string$(bottleneck_size) + " -> " + string$(nparams)
 
-    # Weights
     Select outer viewport: 0.5, 5, 4.5, 7.5
     selectObject: autoencoder
     Draw weights: 1, "yes"
@@ -275,7 +277,6 @@ if draw_network = 1
     Select outer viewport: 5.5, 10, 4, 4.5
     Text top: "no", "Decoder weights (Latent->Output)"
 
-    # Info
     Select outer viewport: 0.5, 10, 8, 8.5
     Text top: "no", "Preset: " + presetName$ + " | Params: " + string$(nparams) + " | Latent: " + string$(bottleneck_size)
 endif
@@ -283,6 +284,10 @@ endif
 # ===== 7. GENERATE VARIATIONS =====
 appendInfoLine: ""
 appendInfoLine: "Generating variations via latent space exploration..."
+
+# Array to store output sound IDs
+n_outputs = num_variations + 1
+outputIDs# = zero#(n_outputs)
 
 for var_num from 0 to num_variations
     selectObject: hidden_matrix
@@ -497,7 +502,7 @@ for var_num from 0 to num_variations
         Add pitch point: end_time, 120
     endif
     
-    # --- FORMANTS (with per-formant clamping) ---
+    # --- FORMANTS ---
     for f_num from 1 to 4
         selectObject: klatt
         Remove oral formant frequency points: f_num, start_time, end_time
@@ -508,7 +513,7 @@ for var_num from 0 to num_variations
             selectObject: recon_matrix
             f_val = Get value in cell: f_num + 1, frameIdx
             
-            # Per-formant clamping to avoid crossovers
+            # Per-formant clamping
             if f_num = 1
                 if f_val < 200
                     f_val = 200
@@ -556,7 +561,7 @@ for var_num from 0 to num_variations
     Remove aspiration amplitude points: start_time, end_time
 
     if preset_selection = 1
-        # === v0.6 CLEAN (Dynamic Amplitude) ===
+        # === CLEAN (Dynamic Amplitude) ===
         selectObject: mins_mat
         int_min = Get value in cell: 6, 1
         selectObject: maxs_mat
@@ -591,7 +596,7 @@ for var_num from 0 to num_variations
         endfor
         
     else
-        # === v0.4 GLITCH (Constant Drone) ===
+        # === GLITCH (Constant Drone) ===
         selectObject: klatt
         Add voicing amplitude point: start_time, 90
         Add voicing amplitude point: end_time, 90
@@ -606,6 +611,9 @@ for var_num from 0 to num_variations
     Rename: "Resynth_" + sound_name$ + "_" + var_name$
     Scale peak: 0.95
     
+    # Store the ID
+    outputIDs#[var_num + 1] = klatt_sound
+    
     # --- CLEANUP VARIATION TEMPS ---
     selectObject: latent_var
     plusObject: latent_pattern
@@ -616,7 +624,54 @@ for var_num from 0 to num_variations
     Remove
 endfor
 
-# ===== 8. CLEANUP =====
+# ===== 8. VISUALIZATION =====
+if draw_visualization = 1 and draw_network = 0
+    appendInfoLine: "Drawing visualization..."
+    
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0.1, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Parametric Autoencoder: " + sound_name$ + " [" + presetName$ + "]"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 1.6
+    Select inner viewport: 0.6, 7.6, 0.7, 1.5
+    selectObject: sound_orig
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Original"
+    
+    # First variation waveform
+    Select outer viewport: 0, 8, 1.7, 2.7
+    Select inner viewport: 0.6, 7.6, 1.8, 2.6
+    selectObject: outputIDs#[1]
+    Colour: "{0.3, 0.5, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text left: "yes", "Var0"
+    Text bottom: "yes", "Time (s)"
+    
+    # Stats
+    Select outer viewport: 0, 8, 2.9, 3.5
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    Text: 0.2, "centre", 0.5, "half", "Params: " + string$(nparams)
+    Text: 0.4, "centre", 0.5, "half", "Bottleneck: " + string$(bottleneck_size)
+    Text: 0.6, "centre", 0.5, "half", "Epochs: " + string$(epochs)
+    Text: 0.8, "centre", 0.5, "half", "Variations: " + string$(num_variations + 1)
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+# ===== 9. CLEANUP =====
 selectObject: sound
 plusObject: pitch_obj
 plusObject: formant_obj
@@ -635,29 +690,10 @@ plusObject: hidden_pattern
 plusObject: decoder
 Remove
 
-# ===== 9. SELECT OUTPUTS =====
+# ===== 10. SELECT OUTPUTS =====
 selectObject: sound_orig
-for var_num from 0 to num_variations
-    if var_num = 0
-        var_name$ = "Original"
-    elsif var_num = 1
-        var_name$ = "Noise"
-    elsif var_num = 2
-        var_name$ = "Scale"
-    elsif var_num = 3
-        var_name$ = "Invert"
-    elsif var_num = 4
-        var_name$ = "Smooth"
-    elsif var_num = 5
-        var_name$ = "Warp"
-    elsif var_num = 6
-        var_name$ = "Swap"
-    elsif var_num = 7
-        var_name$ = "Interp"
-    else
-        var_name$ = "Var" + string$(var_num)
-    endif
-    plusObject: "Sound Resynth_" + sound_name$ + "_" + var_name$
+for var_num from 1 to n_outputs
+    plusObject: outputIDs#[var_num]
 endfor
 
 appendInfoLine: ""
