@@ -1,102 +1,26 @@
 # ============================================================
-# Praat AudioTools - Cross Synthesis.praat
+# Praat AudioTools - Cross_Synthesis.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Cross-synthesis using LPC source-filter decomposition.
-#   Combines the excitation (source) from one sound with the
-#   spectral envelope (filter) from another, creating hybrid
-#   timbres. Classic vocoder-like effect used in electronic
-#   music and sound design.
+#   Combines the excitation from one sound with the spectral
+#   envelope from another.
 #
-# Technical approach:
-#   - Extracts excitation via LPC inverse filtering (Sound 1)
-#   - Extracts spectral envelope via LPC analysis (Sound 2)
-#   - Applies envelope to excitation via LPC filtering
-#   - Pre/de-emphasis improves high-frequency transfer
-#   - Smoothed LPC order reduces envelope artifacts
-#   - True stereo processing preserves spatial image
-#
-# Usage:
-#   Select TWO Sound objects: Source (1) and Filter (2)
-#   Source provides the excitation (rhythm, pitch)
-#   Filter provides the spectral envelope (timbre, formants)
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit
-#   for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.3:
+#   - Fixed preset comparison (number not string)
+#   - Fixed all Formula variable interpolation
+#   - Fixed object selection (ID-based)
+#   - Fixed inline conditionals
+#   - Added preset name to output
 # ============================================================
 
-form Cross Synthesis
-    comment Select Source (1) and Filter (2) before running.
-    comment Source = excitation, Filter = spectral envelope.
-    optionmenu Preset: 1
-        option Custom
-        option Speech
-        option Sustained Tones
-        option Percussive
-        option Vocal Formants
-        option Extreme Smooth
-    positive window_ms 50
-    positive step_ms 5
-    positive lpc_order 16
-    real envelope_smoothing 0.8
-    real transfer_amount 0.8
-    optionmenu Duration_match: 3
-        option Source length
-        option Filter length
-        option Shorter
-        option No matching
-    real dry_wet_mix 1.0
-    positive scale_peak 0.95
-    boolean play_after_processing 1
-    boolean draw_visualization 1
-endform
-
-# ============================================================
-# Apply preset values
-# ============================================================
-if preset$ = "Speech"
-    window_ms = 40
-    step_ms = 5
-    lpc_order = 16
-    envelope_smoothing = 0.8
-    transfer_amount = 0.8
-elif preset$ = "Sustained Tones"
-    window_ms = 70
-    step_ms = 8
-    lpc_order = 18
-    envelope_smoothing = 0.85
-    transfer_amount = 0.9
-elif preset$ = "Percussive"
-    window_ms = 30
-    step_ms = 3
-    lpc_order = 14
-    envelope_smoothing = 0.65
-    transfer_amount = 0.7
-elif preset$ = "Vocal Formants"
-    window_ms = 45
-    step_ms = 5
-    lpc_order = 20
-    envelope_smoothing = 0.75
-    transfer_amount = 0.85
-elif preset$ = "Extreme Smooth"
-    window_ms = 60
-    step_ms = 7
-    lpc_order = 12
-    envelope_smoothing = 0.9
-    transfer_amount = 0.95
-endif
-
-# ============================================================
-# Validate input
-# ============================================================
+# === Input Validation ===
 nSelected = numberOfSelected("Sound")
 if nSelected <> 2
     exitScript: "Please select exactly 2 Sound objects: Source (1) and Filter (2)"
@@ -105,6 +29,80 @@ endif
 sourceSound = selected("Sound", 1)
 filterSound = selected("Sound", 2)
 
+form Cross Synthesis v0.3
+    optionmenu Preset: 1
+        option Manual
+        option Speech
+        option Sustained Tones
+        option Percussive
+        option Vocal Formants
+        option Extreme Smooth
+    positive Window_ms 50
+    positive Step_ms 5
+    positive Lpc_order 16
+    real Envelope_smoothing 0.8
+    real Transfer_amount 0.8
+    optionmenu Duration_match: 3
+        option Source length
+        option Filter length
+        option Shorter
+        option No matching
+    real Dry_wet_mix 1.0
+    positive Scale_peak 0.95
+    boolean Play_after_processing 1
+    boolean Draw_visualization 1
+endform
+
+# ============================================================
+# Presets (fixed: use number not string)
+# ============================================================
+if preset = 2
+    # Speech
+    window_ms = 40
+    step_ms = 5
+    lpc_order = 16
+    envelope_smoothing = 0.8
+    transfer_amount = 0.8
+    presetName$ = "Speech"
+elsif preset = 3
+    # Sustained Tones
+    window_ms = 70
+    step_ms = 8
+    lpc_order = 18
+    envelope_smoothing = 0.85
+    transfer_amount = 0.9
+    presetName$ = "SustainedTones"
+elsif preset = 4
+    # Percussive
+    window_ms = 30
+    step_ms = 3
+    lpc_order = 14
+    envelope_smoothing = 0.65
+    transfer_amount = 0.7
+    presetName$ = "Percussive"
+elsif preset = 5
+    # Vocal Formants
+    window_ms = 45
+    step_ms = 5
+    lpc_order = 20
+    envelope_smoothing = 0.75
+    transfer_amount = 0.85
+    presetName$ = "VocalFormants"
+elsif preset = 6
+    # Extreme Smooth
+    window_ms = 60
+    step_ms = 7
+    lpc_order = 12
+    envelope_smoothing = 0.9
+    transfer_amount = 0.95
+    presetName$ = "ExtremeSmooth"
+else
+    presetName$ = "Manual"
+endif
+
+# ============================================================
+# Setup
+# ============================================================
 selectObject: sourceSound
 sourceName$ = selected$("Sound")
 sourceDur = Get total duration
@@ -117,18 +115,16 @@ filterDur = Get total duration
 filterSR = Get sampling frequency
 filterChannels = Get number of channels
 
-# ============================================================
 # Constrain parameters
-# ============================================================
 if transfer_amount < 0
     transfer_amount = 0
-elif transfer_amount > 1
+elsif transfer_amount > 1
     transfer_amount = 1
 endif
 
 if envelope_smoothing < 0.3
     envelope_smoothing = 0.3
-elif envelope_smoothing > 0.95
+elsif envelope_smoothing > 0.95
     envelope_smoothing = 0.95
 endif
 
@@ -142,26 +138,27 @@ if smoothOrder < 8
     smoothOrder = 8
 endif
 
-# Generate unique ID
-uniqueID$ = string$(randomInteger(10000, 99999))
-
 # ============================================================
-# Preprocessing: Create working copies (non-destructive!)
+# Info
 # ============================================================
-writeInfoLine: "Cross Synthesis"
-appendInfoLine: "=============="
+clearinfo
+writeInfoLine: "=== Cross Synthesis v0.3 ==="
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Source: ", sourceName$, " (excitation)"
 appendInfoLine: "Filter: ", filterName$, " (envelope)"
 appendInfoLine: ""
 appendInfoLine: "[1/5] Preprocessing..."
 
+# ============================================================
+# Preprocessing
+# ============================================================
 # Convert to mono for analysis
 if sourceChannels > 1
     selectObject: sourceSound
     sourceMono = Convert to mono
 else
     selectObject: sourceSound
-    sourceMono = Copy: "source_mono_" + uniqueID$
+    sourceMono = Copy: "source_mono"
 endif
 
 if filterChannels > 1
@@ -169,7 +166,7 @@ if filterChannels > 1
     filterMono = Convert to mono
 else
     selectObject: filterSound
-    filterMono = Copy: "filter_mono_" + uniqueID$
+    filterMono = Copy: "filter_mono"
 endif
 
 # Resample to match if needed
@@ -202,9 +199,9 @@ dur2 = Get total duration
 
 if duration_match = 1
     targetDur = dur1
-elif duration_match = 2
+elsif duration_match = 2
     targetDur = dur2
-elif duration_match = 3
+elsif duration_match = 3
     targetDur = min(dur1, dur2)
 else
     targetDur = dur1
@@ -216,7 +213,7 @@ if duration_match <> 4
         sourceExtract = Extract part: 0, targetDur, "rectangular", 1.0, "no"
         removeObject: sourceMono
         sourceMono = sourceExtract
-    elif dur1 < targetDur
+    elsif dur1 < targetDur
         selectObject: sourceMono
         sourceLengthen = Lengthen (overlap-add): 75, 600, targetDur / dur1
         removeObject: sourceMono
@@ -228,7 +225,7 @@ if duration_match <> 4
         filterExtract = Extract part: 0, targetDur, "rectangular", 1.0, "no"
         removeObject: filterMono
         filterMono = filterExtract
-    elif dur2 < targetDur
+    elsif dur2 < targetDur
         selectObject: filterMono
         filterLengthen = Lengthen (overlap-add): 75, 600, targetDur / dur2
         removeObject: filterMono
@@ -248,43 +245,50 @@ sourceRMS = Get root-mean-square: 0, 0
 # Procedure: Cross-synthesize mono channel
 # ============================================================
 procedure crossSynthesize: .sourceIn, .filterIn, .outputName$
-    # Pre-emphasis on source
+    # Pre-emphasis on source (fixed Formula syntax)
+    preEmph$ = string$(preEmphasis)
+    
     selectObject: .sourceIn
-    .sourcePre = Copy: "src_pre_" + uniqueID$
-    Formula: "self - 'preEmphasis' * self[col-1]"
+    .sourcePre = Copy: "src_pre"
+    Formula: "self - " + preEmph$ + " * self[col-1]"
     
     # Pre-emphasis on filter
     selectObject: .filterIn
-    .filterPre = Copy: "flt_pre_" + uniqueID$
-    Formula: "self - 'preEmphasis' * self[col-1]"
+    .filterPre = Copy: "flt_pre"
+    Formula: "self - " + preEmph$ + " * self[col-1]"
     
     # Extract excitation from source via LPC inverse filtering
     selectObject: .sourcePre
     .lpcSource = To LPC (autocorrelation): lpc_order, windowSize, timeStep, 50
     
-    selectObject: .sourcePre, .lpcSource
+    selectObject: .sourcePre
+    plusObject: .lpcSource
     .excitation = Filter (inverse)
-    Rename: "excitation_" + uniqueID$
     
     # Extract smoothed envelope from filter
     selectObject: .filterPre
     .lpcFilter = To LPC (autocorrelation): smoothOrder, windowSize, timeStep, 50
     
     # Apply filter envelope to source excitation
-    selectObject: .excitation, .lpcFilter
+    selectObject: .excitation
+    plusObject: .lpcFilter
     .filtered = Filter: "no"
     
     # De-emphasis
     selectObject: .filtered
-    Formula: "self + 'preEmphasis' * self[col-1]"
+    Formula: "self + " + preEmph$ + " * self[col-1]"
     
     # Blend with transfer amount
     if transfer_amount < 1.0
         selectObject: .sourceIn
-        .drySignal = Copy: "dry_" + uniqueID$
+        .drySignal = Copy: "dry_signal"
+        .dryId$ = string$(.drySignal)
+        
+        transfer$ = string$(transfer_amount)
+        dryAmount$ = string$(1 - transfer_amount)
         
         selectObject: .filtered
-        Formula: "'transfer_amount' * self + (1 - 'transfer_amount') * Sound_dry_'uniqueID$'(x)"
+        Formula: transfer$ + " * self + " + dryAmount$ + " * Object_" + .dryId$ + "(x)"
         
         removeObject: .drySignal
     endif
@@ -311,17 +315,17 @@ maxChannels = max(sourceChannels, filterChannels)
 
 if maxChannels = 1
     # Mono processing
-    @crossSynthesize: sourceMono, filterMono, "cross_mono_" + uniqueID$
+    @crossSynthesize: sourceMono, filterMono, "cross_mono"
     crossMono = selected("Sound")
     
     # Apply dry/wet mix
     if dry_wet_mix < 1
-        selectObject: sourceMono
-        Rename: "orig_" + uniqueID$
+        sourceMonoId$ = string$(sourceMono)
+        dryWet$ = string$(dry_wet_mix)
+        dryAmount$ = string$(1 - dry_wet_mix)
+        
         selectObject: crossMono
-        Formula: "'dry_wet_mix' * self + (1 - 'dry_wet_mix') * Sound_orig_'uniqueID$'(x)"
-        selectObject: "Sound orig_" + uniqueID$
-        Rename: "source_mono_" + uniqueID$
+        Formula: dryWet$ + " * self + " + dryAmount$ + " * Object_" + sourceMonoId$ + "(x)"
     endif
     
     selectObject: crossMono
@@ -338,9 +342,9 @@ else
         sourceR = selected("Sound")
     else
         selectObject: sourceSound
-        sourceL = Copy: "srcL_" + uniqueID$
+        sourceL = Copy: "srcL"
         selectObject: sourceSound
-        sourceR = Copy: "srcR_" + uniqueID$
+        sourceR = Copy: "srcR"
     endif
     
     # Extract channels from filter
@@ -353,12 +357,12 @@ else
         filterR = selected("Sound")
     else
         selectObject: filterSound
-        filterL = Copy: "fltL_" + uniqueID$
+        filterL = Copy: "fltL"
         selectObject: filterSound
-        filterR = Copy: "fltR_" + uniqueID$
+        filterR = Copy: "fltR"
     endif
     
-    # Match sample rates and durations for stereo channels
+    # Match sample rates for stereo channels
     selectObject: sourceL
     srL = Get sampling frequency
     if srL <> targetSR
@@ -399,7 +403,7 @@ else
             sourceLext = Extract part: 0, targetDur, "rectangular", 1.0, "no"
             removeObject: sourceL
             sourceL = sourceLext
-        elif durL < targetDur
+        elsif durL < targetDur
             sourceLlen = Lengthen (overlap-add): 75, 600, targetDur / durL
             removeObject: sourceL
             sourceL = sourceLlen
@@ -411,7 +415,7 @@ else
             sourceRext = Extract part: 0, targetDur, "rectangular", 1.0, "no"
             removeObject: sourceR
             sourceR = sourceRext
-        elif durR < targetDur
+        elsif durR < targetDur
             sourceRlen = Lengthen (overlap-add): 75, 600, targetDur / durR
             removeObject: sourceR
             sourceR = sourceRlen
@@ -423,7 +427,7 @@ else
             filterLext = Extract part: 0, targetDur, "rectangular", 1.0, "no"
             removeObject: filterL
             filterL = filterLext
-        elif durL < targetDur
+        elsif durL < targetDur
             filterLlen = Lengthen (overlap-add): 75, 600, targetDur / durL
             removeObject: filterL
             filterL = filterLlen
@@ -435,7 +439,7 @@ else
             filterRext = Extract part: 0, targetDur, "rectangular", 1.0, "no"
             removeObject: filterR
             filterR = filterRext
-        elif durR < targetDur
+        elsif durR < targetDur
             filterRlen = Lengthen (overlap-add): 75, 600, targetDur / durR
             removeObject: filterR
             filterR = filterRlen
@@ -443,31 +447,31 @@ else
     endif
     
     # Cross-synthesize each channel
-    @crossSynthesize: sourceL, filterL, "crossL_" + uniqueID$
+    @crossSynthesize: sourceL, filterL, "crossL"
     crossL = selected("Sound")
     
-    @crossSynthesize: sourceR, filterR, "crossR_" + uniqueID$
+    @crossSynthesize: sourceR, filterR, "crossR"
     crossR = selected("Sound")
     
     # Apply dry/wet to stereo
     if dry_wet_mix < 1
-        selectObject: sourceL
-        Rename: "origL_" + uniqueID$
-        selectObject: crossL
-        Formula: "'dry_wet_mix' * self + (1 - 'dry_wet_mix') * Sound_origL_'uniqueID$'(x)"
-        removeObject: "Sound origL_" + uniqueID$
+        sourceLid$ = string$(sourceL)
+        sourceRid$ = string$(sourceR)
+        dryWet$ = string$(dry_wet_mix)
+        dryAmount$ = string$(1 - dry_wet_mix)
         
-        selectObject: sourceR
-        Rename: "origR_" + uniqueID$
+        selectObject: crossL
+        Formula: dryWet$ + " * self + " + dryAmount$ + " * Object_" + sourceLid$ + "(x)"
+        
         selectObject: crossR
-        Formula: "'dry_wet_mix' * self + (1 - 'dry_wet_mix') * Sound_origR_'uniqueID$'(x)"
-        removeObject: "Sound origR_" + uniqueID$
-    else
-        removeObject: sourceL, sourceR
+        Formula: dryWet$ + " * self + " + dryAmount$ + " * Object_" + sourceRid$ + "(x)"
     endif
     
+    removeObject: sourceL, sourceR
+    
     # Combine to stereo
-    selectObject: crossL, crossR
+    selectObject: crossL
+    plusObject: crossR
     Combine to stereo
     finalOutput = selected("Sound")
     
@@ -483,11 +487,12 @@ selectObject: finalOutput
 currentRMS = Get root-mean-square: 0, 0
 if currentRMS > 0.000001 and sourceRMS > 0.000001
     energyFactor = sourceRMS / currentRMS
-    Formula: "self * 'energyFactor'"
+    energyFactor$ = string$(energyFactor)
+    Formula: "self * " + energyFactor$
 endif
 
 Scale peak: scale_peak
-Rename: sourceName$ + "_x_" + filterName$
+Rename: sourceName$ + "_x_" + filterName$ + "_" + presetName$
 
 # Cleanup mono working copies
 removeObject: sourceMono, filterMono
@@ -495,7 +500,7 @@ removeObject: sourceMono, filterMono
 # ============================================================
 # Visualization
 # ============================================================
-procedure drawVisualization
+if draw_visualization
     Erase all
     
     if finalDur > 10
@@ -508,9 +513,7 @@ procedure drawVisualization
         timeTickInterval = 0.25
     endif
     
-    # ========================================================
-    # PANEL 1: Source spectrogram (top)
-    # ========================================================
+    # PANEL 1: Source spectrogram
     Select outer viewport: 0, 6, 0, 2
     Select inner viewport: 0.5, 5.8, 0.3, 1.8
     
@@ -519,17 +522,15 @@ procedure drawVisualization
     sourceSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     
-    Black
+    Colour: "Black"
     Draw inner box
     Text left: "yes", "Freq (Hz)"
-    Text top: "no", "##Source## - " + sourceName$ + " (excitation)"
+    Text top: "no", "Source - " + sourceName$ + " (excitation)"
     Marks left every: 1, 1000, "yes", "yes", "no"
     
     removeObject: sourceSpec
     
-    # ========================================================
-    # PANEL 2: Filter spectrogram (middle)
-    # ========================================================
+    # PANEL 2: Filter spectrogram
     Select outer viewport: 0, 6, 2, 4
     Select inner viewport: 0.5, 5.8, 2.3, 3.8
     
@@ -538,17 +539,15 @@ procedure drawVisualization
     filterSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     
-    Black
+    Colour: "Black"
     Draw inner box
     Text left: "yes", "Freq (Hz)"
-    Text top: "no", "##Filter## - " + filterName$ + " (envelope)"
+    Text top: "no", "Filter - " + filterName$ + " (envelope)"
     Marks left every: 1, 1000, "yes", "yes", "no"
     
     removeObject: filterSpec
     
-    # ========================================================
-    # PANEL 3: Result spectrogram (bottom)
-    # ========================================================
+    # PANEL 3: Result spectrogram
     Select outer viewport: 0, 6, 4, 6
     Select inner viewport: 0.5, 5.8, 4.3, 5.8
     
@@ -556,7 +555,7 @@ procedure drawVisualization
     if maxChannels > 1
         resultMono = Convert to mono
     else
-        resultMono = Copy: "result_viz_" + uniqueID$
+        resultMono = Copy: "result_viz"
     endif
     
     selectObject: resultMono
@@ -564,53 +563,43 @@ procedure drawVisualization
     resultSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     
-    Black
+    Colour: "Black"
     Draw inner box
     Text bottom: "yes", "Time (s)"
     Text left: "yes", "Freq (Hz)"
-    Text top: "no", "##Result## - Cross-synthesis (transfer: " + fixed$(transfer_amount * 100, 0) + "%)"
+    Text top: "no", "Result [" + presetName$ + "] (transfer: " + fixed$(transfer_amount * 100, 0) + "%)"
     Marks bottom every: 1, timeTickInterval, "yes", "yes", "no"
     Marks left every: 1, 1000, "yes", "yes", "no"
     
     removeObject: resultSpec, resultMono
-endproc
-
-if draw_visualization
-    @drawVisualization
 endif
 
 # ============================================================
-# Select final output
+# Output
 # ============================================================
-selectObject: finalOutput
+selectObject: sourceSound
+plusObject: filterSound
+plusObject: finalOutput
 
-# ============================================================
-# Play if requested
-# ============================================================
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Output: ", selected$("Sound")
+appendInfoLine: "Channels: ", maxChannels
+
+if maxChannels > 1
+    appendInfoLine: "  (true stereo processing)"
+endif
+
+appendInfoLine: ""
+appendInfoLine: "Parameters:"
+appendInfoLine: "  Window: ", window_ms, " ms"
+appendInfoLine: "  LPC order: ", lpc_order, " -> smoothed: ", smoothOrder
+appendInfoLine: "  Transfer: ", fixed$(transfer_amount * 100, 0), "%"
+appendInfoLine: "  Dry/wet: ", fixed$(dry_wet_mix * 100, 0), "%"
+
 if play_after_processing
+    selectObject: finalOutput
     Play
 endif
 
-# ============================================================
-# Report
-# ============================================================
-appendInfoLine: ""
-appendInfoLine: "=============="
-appendInfoLine: "Complete!"
-appendInfoLine: ""
-appendInfoLine: "Output: ", sourceName$, "_x_", filterName$
-appendInfoLine: "Channels: ", maxChannels, if maxChannels > 1 then " (true stereo)" else "" fi
-appendInfoLine: "Duration: ", fixed$(finalDur, 3), " s"
-appendInfoLine: ""
-appendInfoLine: "Parameters:"
-appendInfoLine: "  Preset: ", preset$
-appendInfoLine: "  Window: ", window_ms, " ms"
-appendInfoLine: "  Step: ", step_ms, " ms"
-appendInfoLine: "  LPC order: ", lpc_order, " -> smoothed: ", smoothOrder
-appendInfoLine: "  Envelope smoothing: ", fixed$(envelope_smoothing, 2)
-appendInfoLine: "  Transfer: ", fixed$(transfer_amount * 100, 0), "%"
-appendInfoLine: "  Dry/wet: ", fixed$(dry_wet_mix * 100, 0), "%"
-if draw_visualization
-    appendInfoLine: ""
-    appendInfoLine: "Visualization in Picture window."
-endif
+selectObject: finalOutput

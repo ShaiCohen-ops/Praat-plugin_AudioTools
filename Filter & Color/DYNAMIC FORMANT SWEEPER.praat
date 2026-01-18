@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Corrected
+# Version: 0.3 (2025) - Fixed Formula syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,26 +12,22 @@
 #   through the audio. Creates vowel morphing, robot voices,
 #   talking synth effects, and other spectral animations.
 #
-#   Pipeline:
-#   1. Extract source signal via inverse LPC filtering
-#   2. Create formant filter with F1 modulated by LFO
-#   3. Apply filter to source (resynthesis)
-#   4. Mix with original (dry/wet)
-#
-# Usage:
-#   Select a Sound object in Praat, then run this script.
-#
-# Changelog v0.2:
-#   - Fixed dry/wet mixing (was halving output)
-#   - Modern syntax throughout
-#   - Added fade in/out
-#   - Improved visualization
+# Changelog v0.3:
+#   - Fixed Formula variable interpolation
+#   - Fixed object reference in dry/wet mix
 # ============================================================
 
-form Dynamic Formant Sweeper
-    comment === Preset ===
-    optionmenu Preset 1
-        option Custom (use settings below)
+# === Check for Sound selection ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object first."
+endif
+
+inputSound = selected("Sound")
+originalName$ = selected$("Sound")
+
+form Dynamic Formant Sweeper v0.3
+    optionmenu Preset: 1
+        option Manual
         option Gentle Vowel Morph
         option Robot Voice
         option Talking Synth
@@ -39,38 +35,27 @@ form Dynamic Formant Sweeper
         option Alien Speech
         option Fast Wobble
         option Slow Sweep
-    
     comment === LFO Parameters ===
     real Rate_Hz 1.0
     positive Min_freq_Hz 500
     positive Max_freq_Hz 3500
-    
     comment === Filter Shape ===
     positive Bandwidth_Hz 100
-    optionmenu Lfo_shape 1
+    optionmenu Lfo_shape: 1
         option Sine
         option Triangle
         option Square (Chopper)
         option Sawtooth
         option Reverse Sawtooth
-    
     comment === Processing ===
     positive Frame_duration_ms 25
-    real Dry_wet_mix 1.0 (= 0=dry, 1=wet)
-    
+    real Dry_wet_mix 1.0
     comment === Output ===
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
-# === Check for Sound selection ===
-if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object first."
-endif
-
 # === Apply Presets ===
-preset_name$ = "Custom"
-
 if preset = 2
     rate_Hz = 0.3
     min_freq_Hz = 700
@@ -79,7 +64,7 @@ if preset = 2
     lfo_shape = 1
     frame_duration_ms = 40
     dry_wet_mix = 0.6
-    preset_name$ = "GentleVowelMorph"
+    presetName$ = "GentleVowelMorph"
 elsif preset = 3
     rate_Hz = 2.0
     min_freq_Hz = 400
@@ -88,7 +73,7 @@ elsif preset = 3
     lfo_shape = 3
     frame_duration_ms = 15
     dry_wet_mix = 0.85
-    preset_name$ = "RobotVoice"
+    presetName$ = "RobotVoice"
 elsif preset = 4
     rate_Hz = 0.5
     min_freq_Hz = 600
@@ -97,7 +82,7 @@ elsif preset = 4
     lfo_shape = 2
     frame_duration_ms = 30
     dry_wet_mix = 0.75
-    preset_name$ = "TalkingSynth"
+    presetName$ = "TalkingSynth"
 elsif preset = 5
     rate_Hz = 0.2
     min_freq_Hz = 300
@@ -106,7 +91,7 @@ elsif preset = 5
     lfo_shape = 1
     frame_duration_ms = 50
     dry_wet_mix = 0.9
-    preset_name$ = "Underwater"
+    presetName$ = "Underwater"
 elsif preset = 6
     rate_Hz = 1.5
     min_freq_Hz = 800
@@ -115,7 +100,7 @@ elsif preset = 6
     lfo_shape = 4
     frame_duration_ms = 20
     dry_wet_mix = 0.8
-    preset_name$ = "AlienSpeech"
+    presetName$ = "AlienSpeech"
 elsif preset = 7
     rate_Hz = 4.0
     min_freq_Hz = 500
@@ -124,7 +109,7 @@ elsif preset = 7
     lfo_shape = 1
     frame_duration_ms = 10
     dry_wet_mix = 0.7
-    preset_name$ = "FastWobble"
+    presetName$ = "FastWobble"
 elsif preset = 8
     rate_Hz = 0.1
     min_freq_Hz = 400
@@ -133,13 +118,12 @@ elsif preset = 8
     lfo_shape = 4
     frame_duration_ms = 35
     dry_wet_mix = 1.0
-    preset_name$ = "SlowSweep"
+    presetName$ = "SlowSweep"
+else
+    presetName$ = "Manual"
 endif
 
 # === Get Input Sound Info ===
-inputSound = selected("Sound")
-originalName$ = selected$("Sound")
-uid$ = string$(randomInteger(10000, 99999))
 twoPi = 2 * pi
 
 selectObject: inputSound
@@ -151,8 +135,9 @@ nPoles = round(sampleRate / 1000) + 2
 frameDurSec = frame_duration_ms / 1000
 
 # === Info ===
-writeInfoLine: "=== Dynamic Formant Sweeper ==="
-appendInfoLine: "Preset: ", preset_name$
+clearinfo
+writeInfoLine: "=== Dynamic Formant Sweeper v0.3 ==="
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
 appendInfoLine: "LFO: ", rate_Hz, " Hz | Range: ", min_freq_Hz, "-", max_freq_Hz, " Hz"
@@ -165,7 +150,6 @@ if nChannels = 2
     appendInfoLine: "Converting stereo to mono for processing..."
     selectObject: inputSound
     monoSound = Convert to mono
-    Rename: "mono_" + uid$
     processingSound = monoSound
     isStereo = 1
 else
@@ -181,34 +165,39 @@ lpcObject = To LPC (burg): nPoles, 0.025, 0.005, 50
 selectObject: lpcObject
 plusObject: processingSound
 sourceSignal = Filter (inverse)
-Rename: "source_" + uid$
 
 # === Step 2: Create LFO-Modulated Formant Filter ===
 appendInfoLine: "[2/4] Creating LFO-modulated filter..."
 
 selectObject: processingSound
 filterObject = To Formant (burg): frameDurSec, 5, 5500, 0.025, 50
-Rename: "filter_" + uid$
 
 freqRange = max_freq_Hz - min_freq_Hz
 freqMid = min_freq_Hz + freqRange / 2
 
 # Generate F1 frequency formula based on LFO shape
+minF$ = string$(min_freq_Hz)
+maxF$ = string$(max_freq_Hz)
+range$ = string$(freqRange)
+mid$ = string$(freqMid)
+rate$ = string$(rate_Hz)
+halfRange$ = string$(freqRange / 2)
+
 if lfo_shape = 1
     # Sine
-    freqFormula$ = string$(min_freq_Hz) + " + " + string$(freqRange) + " * 0.5 * (1 + sin(2*pi*" + string$(rate_Hz) + "*x))"
+    freqFormula$ = minF$ + " + " + range$ + " * 0.5 * (1 + sin(2*pi*" + rate$ + "*x))"
 elsif lfo_shape = 2
     # Triangle
-    freqFormula$ = string$(freqMid) + " + " + string$(freqRange/2) + " * (2/pi) * arcsin(sin(2*pi*" + string$(rate_Hz) + "*x))"
+    freqFormula$ = mid$ + " + " + halfRange$ + " * (2/pi) * arcsin(sin(2*pi*" + rate$ + "*x))"
 elsif lfo_shape = 3
     # Square (Chopper)
-    freqFormula$ = "if sin(2*pi*" + string$(rate_Hz) + "*x) > 0 then " + string$(max_freq_Hz) + " else " + string$(min_freq_Hz) + " endif"
+    freqFormula$ = "if sin(2*pi*" + rate$ + "*x) > 0 then " + maxF$ + " else " + minF$ + " endif"
 elsif lfo_shape = 4
     # Sawtooth
-    freqFormula$ = string$(min_freq_Hz) + " + " + string$(freqRange) + " * ((" + string$(rate_Hz) + "*x) mod 1)"
+    freqFormula$ = minF$ + " + " + range$ + " * ((" + rate$ + "*x) mod 1)"
 elsif lfo_shape = 5
     # Reverse Sawtooth
-    freqFormula$ = string$(max_freq_Hz) + " - " + string$(freqRange) + " * ((" + string$(rate_Hz) + "*x) mod 1)"
+    freqFormula$ = maxF$ + " - " + range$ + " * ((" + rate$ + "*x) mod 1)"
 endif
 
 selectObject: filterObject
@@ -221,12 +210,10 @@ appendInfoLine: "[3/4] Resynthesizing..."
 selectObject: sourceSignal
 plusObject: filterObject
 outputRaw = Filter
-Rename: "output_raw_" + uid$
 
 # Apply gentle lowpass to smooth artifacts
 selectObject: outputRaw
 outputFiltered = Filter (pass Hann band): 0, 8000, 100
-Rename: "output_filtered_" + uid$
 
 removeObject: outputRaw
 
@@ -234,30 +221,32 @@ removeObject: outputRaw
 if dry_wet_mix < 1.0
     appendInfoLine: "Mixing: ", fixed$(dry_wet_mix * 100, 0), "% wet / ", fixed$((1 - dry_wet_mix) * 100, 0), "% dry"
     
-    wetAmount = dry_wet_mix
-    dryAmount = 1 - dry_wet_mix
+    wetAmount$ = string$(dry_wet_mix)
+    dryAmount$ = string$(1 - dry_wet_mix)
     
     # Make a copy of dry signal
     selectObject: processingSound
-    Copy: "dry_" + uid$
-    drySound = selected("Sound")
+    drySound = Copy: "dry_signal"
+    dryId$ = string$(drySound)
     
     # Mix: output = wet * filtered + dry * original
     selectObject: outputFiltered
-    dryName$ = "Sound_dry_" + uid$
-    Formula: "self * " + string$(wetAmount) + " + " + dryName$ + "[] * " + string$(dryAmount)
+    Formula: "self * " + wetAmount$ + " + Object_" + dryId$ + "(x) * " + dryAmount$
     
     removeObject: drySound
 endif
 
 selectObject: outputFiltered
-Rename: "swept_" + preset_name$
+Rename: originalName$ + "_swept_" + presetName$
 outputSound = selected("Sound")
 
-# === Fade In/Out ===
+# === Fade In/Out (fixed Formula syntax) ===
+dur$ = string$(duration)
+fadeOut$ = string$(duration - 0.02)
+
 selectObject: outputSound
-Formula: "if x < 0.01 then self * (x / 0.01) else self fi"
-Formula: "if x > duration - 0.02 then self * ((duration - x) / 0.02) else self fi"
+Formula: "if x < 0.01 then self * (x / 0.01) else self endif"
+Formula: "if x > " + fadeOut$ + " then self * ((" + dur$ + " - x) / 0.02) else self endif"
 
 # === Normalize ===
 selectObject: outputSound
@@ -268,16 +257,9 @@ if isStereo = 1
     appendInfoLine: "Converting back to stereo..."
     selectObject: outputSound
     stereoOutput = Convert to stereo
-    Rename: "swept_" + preset_name$
+    Rename: originalName$ + "_swept_" + presetName$
     removeObject: outputSound
     outputSound = stereoOutput
-endif
-
-# === Visualization ===
-if draw_visualization
-    appendInfoLine: ""
-    appendInfoLine: "Drawing visualization..."
-    @drawVisualization
 endif
 
 # === Cleanup ===
@@ -286,23 +268,10 @@ if isStereo = 1
     removeObject: monoSound
 endif
 
-# === Play ===
-if play_result
-    selectObject: outputSound
-    Play
-endif
-
-# === Final Selection ===
-selectObject: outputSound
-
-appendInfoLine: ""
-appendInfoLine: "=== Done ==="
-appendInfoLine: "Created: ", selected$("Sound")
-
-# ==============================================================================
-# Procedure: drawVisualization
-# ==============================================================================
-procedure drawVisualization
+# === Visualization ===
+if draw_visualization
+    appendInfoLine: ""
+    appendInfoLine: "Drawing visualization..."
     
     Erase all
     
@@ -312,7 +281,7 @@ procedure drawVisualization
     Axes: 0, 1, 0, 1
     Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.7, "half", "Dynamic Formant Sweeper — " + preset_name$
+    Text: 0.5, "centre", 0.7, "half", "Dynamic Formant Sweeper - " + presetName$
     Font size: 10
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.2, "half", "LFO: " + fixed$(rate_Hz, 1) + " Hz | Range: " + string$(min_freq_Hz) + "-" + string$(max_freq_Hz) + " Hz | Mix: " + fixed$(dry_wet_mix * 100, 0) + "%"
@@ -328,30 +297,38 @@ procedure drawVisualization
     # Draw LFO curve
     Colour: "{0.8, 0.5, 0.2}"
     Line width: 2
-    .nPoints = 200
-    for .i from 2 to .nPoints
-        .t1 = (.i - 2) / (.nPoints - 1) * duration
-        .t2 = (.i - 1) / (.nPoints - 1) * duration
+    nPoints = 200
+    for i from 2 to nPoints
+        t1 = (i - 2) / (nPoints - 1) * duration
+        t2 = (i - 1) / (nPoints - 1) * duration
         
         # Calculate LFO value
         if lfo_shape = 1
-            .y1 = min_freq_Hz + freqRange * 0.5 * (1 + sin(twoPi * rate_Hz * .t1))
-            .y2 = min_freq_Hz + freqRange * 0.5 * (1 + sin(twoPi * rate_Hz * .t2))
+            y1 = min_freq_Hz + freqRange * 0.5 * (1 + sin(twoPi * rate_Hz * t1))
+            y2 = min_freq_Hz + freqRange * 0.5 * (1 + sin(twoPi * rate_Hz * t2))
         elsif lfo_shape = 2
-            .y1 = freqMid + (freqRange/2) * (2/pi) * arcsin(sin(twoPi * rate_Hz * .t1))
-            .y2 = freqMid + (freqRange/2) * (2/pi) * arcsin(sin(twoPi * rate_Hz * .t2))
+            y1 = freqMid + (freqRange/2) * (2/pi) * arcsin(sin(twoPi * rate_Hz * t1))
+            y2 = freqMid + (freqRange/2) * (2/pi) * arcsin(sin(twoPi * rate_Hz * t2))
         elsif lfo_shape = 3
-            .y1 = if sin(twoPi * rate_Hz * .t1) > 0 then max_freq_Hz else min_freq_Hz fi
-            .y2 = if sin(twoPi * rate_Hz * .t2) > 0 then max_freq_Hz else min_freq_Hz fi
+            if sin(twoPi * rate_Hz * t1) > 0
+                y1 = max_freq_Hz
+            else
+                y1 = min_freq_Hz
+            endif
+            if sin(twoPi * rate_Hz * t2) > 0
+                y2 = max_freq_Hz
+            else
+                y2 = min_freq_Hz
+            endif
         elsif lfo_shape = 4
-            .y1 = min_freq_Hz + freqRange * ((rate_Hz * .t1) mod 1)
-            .y2 = min_freq_Hz + freqRange * ((rate_Hz * .t2) mod 1)
+            y1 = min_freq_Hz + freqRange * ((rate_Hz * t1) mod 1)
+            y2 = min_freq_Hz + freqRange * ((rate_Hz * t2) mod 1)
         elsif lfo_shape = 5
-            .y1 = max_freq_Hz - freqRange * ((rate_Hz * .t1) mod 1)
-            .y2 = max_freq_Hz - freqRange * ((rate_Hz * .t2) mod 1)
+            y1 = max_freq_Hz - freqRange * ((rate_Hz * t1) mod 1)
+            y2 = max_freq_Hz - freqRange * ((rate_Hz * t2) mod 1)
         endif
         
-        Draw line: .t1, .y1, .t2, .y2
+        Draw line: t1, y1, t2, y2
     endfor
     Line width: 1
     
@@ -360,7 +337,7 @@ procedure drawVisualization
     Font size: 8
     Marks left: 3, "yes", "yes", "no"
     Text left: "yes", "F1 (Hz)"
-    Text bottom: "yes", "Time (s) — LFO Trajectory"
+    Text bottom: "yes", "Time (s) - LFO Trajectory"
     
     # === Spectrogram with F1 Overlay ===
     Select outer viewport: 0, 7, 2.2, 5.0
@@ -373,18 +350,18 @@ procedure drawVisualization
     if isStereo = 1
         selectObject: outputSound
         Extract one channel: 1
-        .specSound = selected("Sound")
+        specSound = selected("Sound")
     else
         selectObject: outputSound
         Copy: "temp_spec"
-        .specSound = selected("Sound")
+        specSound = selected("Sound")
     endif
     
-    selectObject: .specSound
-    .spec = To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    selectObject: specSound
+    spec = To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     
-    removeObject: .specSound, .spec
+    removeObject: specSound, spec
     
     # Overlay F1 trajectory on spectrogram
     Select inner viewport: 0.5, 6.5, 2.3, 4.9
@@ -392,28 +369,36 @@ procedure drawVisualization
     
     Colour: "Yellow"
     Line width: 3
-    for .i from 2 to .nPoints
-        .t1 = (.i - 2) / (.nPoints - 1) * duration
-        .t2 = (.i - 1) / (.nPoints - 1) * duration
+    for i from 2 to nPoints
+        t1 = (i - 2) / (nPoints - 1) * duration
+        t2 = (i - 1) / (nPoints - 1) * duration
         
         if lfo_shape = 1
-            .y1 = min_freq_Hz + freqRange * 0.5 * (1 + sin(twoPi * rate_Hz * .t1))
-            .y2 = min_freq_Hz + freqRange * 0.5 * (1 + sin(twoPi * rate_Hz * .t2))
+            y1 = min_freq_Hz + freqRange * 0.5 * (1 + sin(twoPi * rate_Hz * t1))
+            y2 = min_freq_Hz + freqRange * 0.5 * (1 + sin(twoPi * rate_Hz * t2))
         elsif lfo_shape = 2
-            .y1 = freqMid + (freqRange/2) * (2/pi) * arcsin(sin(twoPi * rate_Hz * .t1))
-            .y2 = freqMid + (freqRange/2) * (2/pi) * arcsin(sin(twoPi * rate_Hz * .t2))
+            y1 = freqMid + (freqRange/2) * (2/pi) * arcsin(sin(twoPi * rate_Hz * t1))
+            y2 = freqMid + (freqRange/2) * (2/pi) * arcsin(sin(twoPi * rate_Hz * t2))
         elsif lfo_shape = 3
-            .y1 = if sin(twoPi * rate_Hz * .t1) > 0 then max_freq_Hz else min_freq_Hz fi
-            .y2 = if sin(twoPi * rate_Hz * .t2) > 0 then max_freq_Hz else min_freq_Hz fi
+            if sin(twoPi * rate_Hz * t1) > 0
+                y1 = max_freq_Hz
+            else
+                y1 = min_freq_Hz
+            endif
+            if sin(twoPi * rate_Hz * t2) > 0
+                y2 = max_freq_Hz
+            else
+                y2 = min_freq_Hz
+            endif
         elsif lfo_shape = 4
-            .y1 = min_freq_Hz + freqRange * ((rate_Hz * .t1) mod 1)
-            .y2 = min_freq_Hz + freqRange * ((rate_Hz * .t2) mod 1)
+            y1 = min_freq_Hz + freqRange * ((rate_Hz * t1) mod 1)
+            y2 = min_freq_Hz + freqRange * ((rate_Hz * t2) mod 1)
         elsif lfo_shape = 5
-            .y1 = max_freq_Hz - freqRange * ((rate_Hz * .t1) mod 1)
-            .y2 = max_freq_Hz - freqRange * ((rate_Hz * .t2) mod 1)
+            y1 = max_freq_Hz - freqRange * ((rate_Hz * t1) mod 1)
+            y2 = max_freq_Hz - freqRange * ((rate_Hz * t2) mod 1)
         endif
         
-        Draw line: .t1, .y1, .t2, .y2
+        Draw line: t1, y1, t2, y2
     endfor
     Line width: 1
     
@@ -435,4 +420,20 @@ procedure drawVisualization
     Font size: 10
     Colour: "Black"
     Line width: 1
-endproc
+endif
+
+# === Output ===
+selectObject: inputSound
+plusObject: outputSound
+
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Output: ", selected$("Sound")
+
+# === Play ===
+if play_result
+    selectObject: outputSound
+    Play
+endif
+
+selectObject: outputSound

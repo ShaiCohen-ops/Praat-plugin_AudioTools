@@ -1,169 +1,341 @@
 # ============================================================
-# Praat AudioTools - Bit Crusher (8-Bit Arcade).praat
+# Praat AudioTools - Bit_Crusher__8-Bit_Arcade_.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Filtering or timbral modification script
+#   Bit crusher effect for 8-bit arcade sound.
+#   Reduces bit depth and sample rate for lo-fi retro effects.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.2:
+#   - Fixed preset/mode comparison (number not string)
+#   - Fixed Formula variable syntax
+#   - Added visualization
+#   - Added preset name to output
+#   - True stereo processing
 # ============================================================
 
-form Bit Crusher (Time Domain)
-    comment This script applies bit-depth reduction for 8-bit arcade sound
+# === Input Validation ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+originalSound = selected("Sound")
+originalName$ = selected$("Sound")
+
+form Bit Crusher v0.2
     optionmenu Preset: 1
-        option Default (8-bit)
+        option Manual
+        option Classic 8-bit
         option Subtle (12-bit)
         option Heavy (4-bit)
         option Extreme (2-bit)
-    comment Processing mode:
+        option Telephone
+        option Radio Static
+    comment === Processing Mode ===
     optionmenu Mode: 1
-        option Time Domain (Fast - Classic Bit Crusher)
-        option Spectral (Slow - Experimental Metallic Sound)
-    comment ==========================================
-    comment TIME DOMAIN PARAMETERS (Fast Mode):
-    comment ==========================================
-    positive bit_depth 8
-    comment (bit depth: 1-16, lower = more crushed)
-    positive sample_rate_reduction 1
-    comment (1 = no reduction, 2 = half rate, 4 = quarter rate, etc.)
-    comment ==========================================
-    comment SPECTRAL PARAMETERS (Slow Mode Only):
-    comment ==========================================
-    boolean fast_fourier yes
-    comment (use "yes" for faster FFT processing)
-    positive lower_frequency 200
-    positive upper_frequency 3000
-    positive quantization_steps 2
-    positive outside_range_multiplier 0.5
-    comment ==========================================
-    comment OUTPUT OPTIONS:
-    comment ==========================================
-    positive scale_peak 0.99
-    boolean play_after_processing 1
-    boolean keep_intermediate_objects 0
+        option Time Domain (Fast)
+        option Spectral (Experimental)
+    comment === Time Domain Parameters ===
+    positive Bit_depth 8
+    positive Sample_rate_reduction 1
+    comment === Spectral Parameters ===
+    positive Lower_frequency 200
+    positive Upper_frequency 3000
+    positive Quantization_steps 2
+    real Outside_range_multiplier 0.5
+    comment === Output ===
+    positive Scale_peak 0.99
+    boolean Draw_visualization 1
+    boolean Play_after_processing 1
 endform
 
-# Apply preset values
-if preset$ = "Subtle (12-bit)"
+# ============================================================
+# Presets (fixed: use number not string)
+# ============================================================
+if preset = 2
+    # Classic 8-bit
+    bit_depth = 8
+    sample_rate_reduction = 1
+    quantization_steps = 2
+    presetName$ = "8bit"
+elsif preset = 3
+    # Subtle (12-bit)
     bit_depth = 12
     sample_rate_reduction = 1
     quantization_steps = 4
-elif preset$ = "Heavy (4-bit)"
+    presetName$ = "12bit"
+elsif preset = 4
+    # Heavy (4-bit)
     bit_depth = 4
     sample_rate_reduction = 2
     quantization_steps = 1
-elif preset$ = "Extreme (2-bit)"
+    presetName$ = "4bit"
+elsif preset = 5
+    # Extreme (2-bit)
     bit_depth = 2
     sample_rate_reduction = 4
     quantization_steps = 1
+    presetName$ = "2bit"
+elsif preset = 6
+    # Telephone
+    bit_depth = 8
+    sample_rate_reduction = 4
+    lower_frequency = 300
+    upper_frequency = 3400
+    presetName$ = "Telephone"
+elsif preset = 7
+    # Radio Static
+    bit_depth = 6
+    sample_rate_reduction = 3
+    presetName$ = "RadioStatic"
+else
+    presetName$ = "Manual"
 endif
 
-# Check if a Sound is selected
-if not selected("Sound")
-    exitScript: "Please select a Sound object first."
+# ============================================================
+# Setup
+# ============================================================
+clearinfo
+writeInfoLine: "=== Bit Crusher v0.2 ==="
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Input: ", originalName$
+appendInfoLine: ""
+
+selectObject: originalSound
+duration = Get total duration
+sampleRate = Get sampling frequency
+numChannels = Get number of channels
+
+# Calculate quantization levels
+quant_steps = 2 ^ bit_depth
+
+if mode = 1
+    appendInfoLine: "Mode: Time Domain (Fast)"
+    appendInfoLine: "Bit depth: ", bit_depth, " (", quant_steps, " levels)"
+    appendInfoLine: "Sample rate reduction: ", sample_rate_reduction, "x"
+else
+    appendInfoLine: "Mode: Spectral (Experimental)"
+    appendInfoLine: "Frequency range: ", lower_frequency, " - ", upper_frequency, " Hz"
+    appendInfoLine: "Quantization steps: ", quantization_steps
 endif
-
-# Get the original sound name
-originalName$ = selected$("Sound")
-originalSound = selected("Sound")
+appendInfoLine: ""
 
 # ============================================================
-# PROCESSING MODE SELECTION
+# Processing procedure for single channel
+# Returns the processed sound ID via processedSound variable
 # ============================================================
-
-if mode$ = "Time Domain (Fast - Classic Bit Crusher)"
-    # ========================================
-    # TIME DOMAIN BIT CRUSHING (FAST)
-    # ========================================
+procedure processChannel: .inputSound
+    selectObject: .inputSound
+    .sr = Get sampling frequency
     
-    # Calculate quantization levels
-    quant_steps = 2 ^ bit_depth
-    
-    # Create a copy to work with
-    selectObject: originalSound
-    result = Copy: originalName$ + "_bitcrushed"
-    
-    # Apply bit depth reduction (amplitude quantization)
-    Formula: "round(self * quant_steps) / quant_steps"
-    
-    # Apply sample rate reduction if requested
-    if sample_rate_reduction > 1
-        # Get current sample rate
-        original_sr = Get sampling frequency
+    if mode = 1
+        # ========================================
+        # TIME DOMAIN BIT CRUSHING
+        # ========================================
         
-        # Resample down
-        reduced_sr = original_sr / sample_rate_reduction
-        Resample: reduced_sr, 50
+        # Apply bit depth reduction
+        quant_steps$ = string$(quant_steps)
+        Formula: "round(self * " + quant_steps$ + ") / " + quant_steps$
         
-        # Resample back up (creates stair-step effect)
-        Resample: original_sr, 50
+        # Apply sample rate reduction if requested
+        if sample_rate_reduction > 1
+            reduced_sr = .sr / sample_rate_reduction
+            Resample: reduced_sr, 50
+            .resampled = selected("Sound")
+            
+            # Resample back up (creates stair-step effect)
+            Resample: .sr, 50
+            .result = selected("Sound")
+            
+            # Remove intermediate and original
+            removeObject: .resampled, .inputSound
+            
+            # Return result
+            processedSound = .result
+        else
+            # No resampling, input was modified in place
+            processedSound = .inputSound
+        endif
+        
+    else
+        # ========================================
+        # SPECTRAL QUANTIZATION
+        # ========================================
+        
+        To Spectrum: "yes"
+        .spectrum = selected("Spectrum")
+        
+        # Build formula with modern syntax
+        lowF$ = string$(lower_frequency)
+        highF$ = string$(upper_frequency)
+        qSteps$ = string$(quantization_steps)
+        outMult$ = string$(outside_range_multiplier)
+        
+        Formula: "if x >= " + lowF$ + " and x <= " + highF$ + " then self * (round(" + qSteps$ + " * (x - " + lowF$ + ") / (" + highF$ + " - " + lowF$ + ")) / " + qSteps$ + ") else self * " + outMult$ + " endif"
+        
+        To Sound
+        .result = selected("Sound")
+        
+        removeObject: .spectrum, .inputSound
+        
+        processedSound = .result
     endif
+    
+    selectObject: processedSound
+endproc
+
+# ============================================================
+# Main processing
+# ============================================================
+appendInfoLine: "Processing..."
+
+if numChannels = 1
+    selectObject: originalSound
+    workCopy = Copy: "work_mono"
+    @processChannel: workCopy
+    finalOutput = processedSound
+    
+    selectObject: finalOutput
+    Rename: originalName$ + "_crushed_" + presetName$
     
 else
-    # ========================================
-    # SPECTRAL QUANTIZATION (SLOW)
-    # ========================================
-    
-    writeInfoLine: "WARNING: Spectral mode selected. This may take longer to process."
-    appendInfoLine: "For faster processing, use Time Domain mode."
-    
-    # Convert to spectrum
+    # True stereo processing
     selectObject: originalSound
-    spectrum = To Spectrum: fast_fourier
+    Extract one channel: 1
+    left = selected("Sound")
     
-    # Apply spectral quantization
-    Formula: "if x >= 'lower_frequency' and x <= 'upper_frequency' then self * (round('quantization_steps' * (x - 'lower_frequency') / ('upper_frequency' - 'lower_frequency')) / 'quantization_steps') else self * 'outside_range_multiplier' fi"
+    selectObject: originalSound
+    Extract one channel: 2
+    right = selected("Sound")
     
-    # Convert back to sound
-    result = To Sound
+    @processChannel: left
+    outputLeft = processedSound
     
-    # Rename result
-    Rename: originalName$ + "_spectral_quantized"
+    @processChannel: right
+    outputRight = processedSound
     
-    # Clean up spectrum if not keeping intermediate objects
-    if not keep_intermediate_objects
-        selectObject: spectrum
-        Remove
+    selectObject: outputLeft
+    plusObject: outputRight
+    Combine to stereo
+    finalOutput = selected("Sound")
+    Rename: originalName$ + "_crushed_" + presetName$
+    
+    removeObject: outputLeft, outputRight
+endif
+
+selectObject: finalOutput
+Scale peak: scale_peak
+
+# ============================================================
+# Visualization
+# ============================================================
+if draw_visualization
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Bit Crusher: " + originalName$ + " [" + presetName$ + "]"
+    
+    # Original waveform
+    Select outer viewport: 0, 8, 0.6, 2.0
+    Select inner viewport: 0.6, 7.6, 0.75, 1.9
+    selectObject: originalSound
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Original"
+    
+    # Crushed waveform
+    Select outer viewport: 0, 8, 2.1, 3.5
+    Select inner viewport: 0.6, 7.6, 2.25, 3.4
+    selectObject: finalOutput
+    Colour: "{0.2, 0.5, 0.8}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Crushed"
+    Text bottom: "yes", "Time (s)"
+    
+    # Zoomed comparison (first 50ms)
+    zoomEnd = min(0.05, duration)
+    
+    # Original zoomed
+    Select outer viewport: 0, 4, 3.7, 5.2
+    Select inner viewport: 0.6, 3.6, 3.9, 5.1
+    selectObject: originalSound
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, zoomEnd, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Orig"
+    Text top: "no", "Zoomed (first 50ms)"
+    
+    # Crushed zoomed
+    Select outer viewport: 4, 8, 3.7, 5.2
+    Select inner viewport: 4.4, 7.6, 3.9, 5.1
+    selectObject: finalOutput
+    Colour: "{0.2, 0.5, 0.8}"
+    Draw: 0, zoomEnd, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Crush"
+    Text bottom: "yes", "Time (s)"
+    
+    # Stats panel
+    Select outer viewport: 0, 8, 5.4, 6.5
+    Select inner viewport: 0.6, 7.6, 5.5, 6.4
+    
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+    
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    
+    if mode = 1
+        Text: 0.05, "left", 0.7, "half", "Mode: Time Domain"
+        Text: 0.05, "left", 0.4, "half", "Bit depth: " + string$(bit_depth) + " (" + string$(quant_steps) + " levels)"
+        Text: 0.5, "left", 0.7, "half", "Sample rate reduction: " + string$(sample_rate_reduction) + "x"
+        
+        # Show effective sample rate
+        effectiveSR = round(sampleRate / sample_rate_reduction)
+        Text: 0.5, "left", 0.4, "half", "Effective SR: " + string$(effectiveSR) + " Hz"
+    else
+        Text: 0.05, "left", 0.7, "half", "Mode: Spectral"
+        Text: 0.05, "left", 0.4, "half", "Freq range: " + string$(lower_frequency) + "-" + string$(upper_frequency) + " Hz"
+        Text: 0.5, "left", 0.7, "half", "Quant steps: " + string$(quantization_steps)
     endif
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 10
 endif
 
 # ============================================================
-# POST-PROCESSING (BOTH MODES)
+# Output
 # ============================================================
+selectObject: originalSound
+plusObject: finalOutput
 
-# Select the result
-selectObject: result
+appendInfoLine: "Done!"
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Output: ", selected$("Sound")
 
-# Scale to peak
-Scale peak: scale_peak
-
-# Play if requested
 if play_after_processing
+    selectObject: finalOutput
     Play
 endif
 
-# Display processing info
-selectObject: result
-duration = Get total duration
-writeInfoLine: "Bit Crushing Complete"
-appendInfoLine: "Mode: ", mode$
-if mode$ = "Time Domain (Fast - Classic Bit Crusher)"
-    appendInfoLine: "Bit Depth: ", bit_depth, " bits (", quant_steps, " levels)"
-    appendInfoLine: "Sample Rate Reduction: ", sample_rate_reduction, "x"
-else
-    appendInfoLine: "Frequency Range: ", lower_frequency, " - ", upper_frequency, " Hz"
-    appendInfoLine: "Quantization Steps: ", quantization_steps
-endif
-appendInfoLine: "Duration: ", fixed$(duration, 2), " seconds"
-appendInfoLine: "Result: ", selected$("Sound")
+selectObject: finalOutput

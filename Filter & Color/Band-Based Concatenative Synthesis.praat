@@ -1,103 +1,24 @@
 # ============================================================
-# Praat AudioTools - Band-Based Concatenative Synthesis.praat
+# Praat AudioTools - Band-Based_Concatenative_Synthesis.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Concatenative synthesis using multi-band spectral matching.
-#   Reconstructs target audio using segments from source audio,
-#   selected based on spectral similarity across frequency bands.
-#   Includes continuity penalty for smooth temporal transitions.
+#   Reconstructs target audio using segments from source audio.
 #
-# Technical approach:
-#   - Analyzes source and target in multiple frequency bands
-#   - Computes RMS energy features with Z-score normalization
-#   - Matches target frames to source using weighted distance
-#   - Continuity penalty (lambda) encourages smooth trajectories
-#   - Reconstructs via multi-stream overlap-add synthesis
-#   - True stereo processing preserves spatial image
-#
-# Usage:
-#   Select TWO Sound objects: Source (1) and Target (2)
-#   Run this script and adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit
-#   for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.3:
+#   - Fixed preset comparison (number not string)
+#   - Fixed all array syntax for Praat compatibility
+#   - Fixed Formula variable interpolation
+#   - Added preset name to output
 # ============================================================
 
-form Band-Based Concatenative Synthesis
-    comment Select Source (1) and Target (2) before running.
-    comment Reconstructs target using spectral-matched source segments.
-    optionmenu Preset: 1
-        option Custom
-        option Subtle Morph
-        option Granular Texture
-        option Spectral Match
-        option Rhythmic Mosaic
-        option Smooth Blend
-    comment === Temporal Parameters ===
-    positive window_length 0.060
-    comment (grain length in seconds)
-    positive hop_size 0.030
-    comment (hop between grains - should divide window evenly)
-    comment === Frequency Bands ===
-    optionmenu Band_configuration: 2
-        option 2 bands (low/high)
-        option 4 bands (default)
-        option 6 bands (detailed)
-        option 8 bands (fine)
-    comment === Matching Parameters ===
-    real continuity_weight 0.3
-    comment (0 = ignore continuity, 1 = strong preference for smooth path)
-    positive locality_window 0.4
-    comment (search range in seconds - larger = more variation)
-    comment === Output ===
-    real dry_wet_mix 1.0
-    comment (0 = target only, 1 = full synthesis)
-    positive scale_peak 0.95
-    boolean play_after_processing 1
-    boolean draw_visualization 1
-endform
-
-# ============================================================
-# Apply preset values
-# ============================================================
-if preset$ = "Subtle Morph"
-    window_length = 0.080
-    hop_size = 0.040
-    continuity_weight = 0.5
-    locality_window = 0.6
-elif preset$ = "Granular Texture"
-    window_length = 0.040
-    hop_size = 0.020
-    continuity_weight = 0.15
-    locality_window = 0.3
-elif preset$ = "Spectral Match"
-    window_length = 0.050
-    hop_size = 0.025
-    continuity_weight = 0.35
-    locality_window = 0.4
-elif preset$ = "Rhythmic Mosaic"
-    window_length = 0.100
-    hop_size = 0.050
-    continuity_weight = 0.7
-    locality_window = 0.8
-elif preset$ = "Smooth Blend"
-    window_length = 0.120
-    hop_size = 0.060
-    continuity_weight = 0.6
-    locality_window = 1.0
-endif
-
-# ============================================================
-# Validate input
-# ============================================================
+# === Input Validation ===
 nSelected = numberOfSelected("Sound")
 if nSelected <> 2
     exitScript: "Please select exactly 2 Sound objects: Source (1) and Target (2)"
@@ -106,6 +27,73 @@ endif
 source = selected("Sound", 1)
 target = selected("Sound", 2)
 
+form Band-Based Concatenative Synthesis v0.3
+    optionmenu Preset: 1
+        option Manual
+        option Subtle Morph
+        option Granular Texture
+        option Spectral Match
+        option Rhythmic Mosaic
+        option Smooth Blend
+    comment === Temporal Parameters ===
+    positive Window_length 0.060
+    positive Hop_size 0.030
+    comment === Frequency Bands ===
+    optionmenu Band_configuration: 2
+        option 2 bands (low/high)
+        option 4 bands (default)
+        option 6 bands (detailed)
+        option 8 bands (fine)
+    comment === Matching Parameters ===
+    real Continuity_weight 0.3
+    positive Locality_window 0.4
+    comment === Output ===
+    real Dry_wet_mix 1.0
+    positive Scale_peak 0.95
+    boolean Play_after_processing 1
+    boolean Draw_visualization 1
+endform
+
+# ============================================================
+# Presets (fixed: use number not string)
+# ============================================================
+if preset = 2
+    window_length = 0.080
+    hop_size = 0.040
+    continuity_weight = 0.5
+    locality_window = 0.6
+    presetName$ = "SubtleMorph"
+elsif preset = 3
+    window_length = 0.040
+    hop_size = 0.020
+    continuity_weight = 0.15
+    locality_window = 0.3
+    presetName$ = "GranularTexture"
+elsif preset = 4
+    window_length = 0.050
+    hop_size = 0.025
+    continuity_weight = 0.35
+    locality_window = 0.4
+    presetName$ = "SpectralMatch"
+elsif preset = 5
+    window_length = 0.100
+    hop_size = 0.050
+    continuity_weight = 0.7
+    locality_window = 0.8
+    presetName$ = "RhythmicMosaic"
+elsif preset = 6
+    window_length = 0.120
+    hop_size = 0.060
+    continuity_weight = 0.6
+    locality_window = 1.0
+    presetName$ = "SmoothBlend"
+else
+    presetName$ = "Manual"
+endif
+
+# ============================================================
+# Setup
+# ============================================================
 selectObject: source
 sourceName$ = selected$("Sound")
 sourceDur = Get total duration
@@ -118,17 +106,14 @@ targetDur = Get total duration
 targetSR = Get sampling frequency
 targetChannels = Get number of channels
 
-# Validate sample rates
 if sourceSR <> targetSR
-    exitScript: "Sample rates must match (" + string$(sourceSR) + " vs " + string$(targetSR) + "). Please resample first."
+    exitScript: "Sample rates must match (" + string$(sourceSR) + " vs " + string$(targetSR) + ")"
 endif
 
 sampleRate = sourceSR
 nyquist = sampleRate / 2
 
-# ============================================================
-# OLA constraint: hop must divide window evenly
-# ============================================================
+# OLA constraint
 ratio = window_length / hop_size
 intRatio = round(ratio)
 if abs(ratio - intRatio) > 0.01
@@ -137,71 +122,69 @@ endif
 numStreams = intRatio
 
 # ============================================================
-# Set up frequency bands
+# Set up frequency bands (fixed: Praat array syntax)
 # ============================================================
 if band_configuration = 1
-    # 2 bands
     numBands = 2
-    bandLow[1] = 0
-    bandHigh[1] = 1000
-    bandLow[2] = 1000
-    bandHigh[2] = min(10000, nyquist)
-elif band_configuration = 2
-    # 4 bands (default)
+    bandLow_1 = 0
+    bandHigh_1 = 1000
+    bandLow_2 = 1000
+    bandHigh_2 = min(10000, nyquist)
+elsif band_configuration = 2
     numBands = 4
-    bandLow[1] = 0
-    bandHigh[1] = 500
-    bandLow[2] = 500
-    bandHigh[2] = 1500
-    bandLow[3] = 1500
-    bandHigh[3] = 4000
-    bandLow[4] = 4000
-    bandHigh[4] = min(10000, nyquist)
-elif band_configuration = 3
-    # 6 bands
+    bandLow_1 = 0
+    bandHigh_1 = 500
+    bandLow_2 = 500
+    bandHigh_2 = 1500
+    bandLow_3 = 1500
+    bandHigh_3 = 4000
+    bandLow_4 = 4000
+    bandHigh_4 = min(10000, nyquist)
+elsif band_configuration = 3
     numBands = 6
-    bandLow[1] = 0
-    bandHigh[1] = 300
-    bandLow[2] = 300
-    bandHigh[2] = 800
-    bandLow[3] = 800
-    bandHigh[3] = 1500
-    bandLow[4] = 1500
-    bandHigh[4] = 3000
-    bandLow[5] = 3000
-    bandHigh[5] = 6000
-    bandLow[6] = 6000
-    bandHigh[6] = min(12000, nyquist)
+    bandLow_1 = 0
+    bandHigh_1 = 300
+    bandLow_2 = 300
+    bandHigh_2 = 800
+    bandLow_3 = 800
+    bandHigh_3 = 1500
+    bandLow_4 = 1500
+    bandHigh_4 = 3000
+    bandLow_5 = 3000
+    bandHigh_5 = 6000
+    bandLow_6 = 6000
+    bandHigh_6 = min(12000, nyquist)
 else
-    # 8 bands (fine)
     numBands = 8
-    bandLow[1] = 0
-    bandHigh[1] = 200
-    bandLow[2] = 200
-    bandHigh[2] = 400
-    bandLow[3] = 400
-    bandHigh[3] = 800
-    bandLow[4] = 800
-    bandHigh[4] = 1500
-    bandLow[5] = 1500
-    bandHigh[5] = 2500
-    bandLow[6] = 2500
-    bandHigh[6] = 4000
-    bandLow[7] = 4000
-    bandHigh[7] = 7000
-    bandLow[8] = 7000
-    bandHigh[8] = min(12000, nyquist)
+    bandLow_1 = 0
+    bandHigh_1 = 200
+    bandLow_2 = 200
+    bandHigh_2 = 400
+    bandLow_3 = 400
+    bandHigh_3 = 800
+    bandLow_4 = 800
+    bandHigh_4 = 1500
+    bandLow_5 = 1500
+    bandHigh_5 = 2500
+    bandLow_6 = 2500
+    bandHigh_6 = 4000
+    bandLow_7 = 4000
+    bandHigh_7 = 7000
+    bandLow_8 = 7000
+    bandHigh_8 = min(12000, nyquist)
 endif
 
 # Clamp bands to Nyquist
 for b from 1 to numBands
-    if bandHigh[b] > nyquist
-        bandHigh[b] = nyquist
+    bHigh = bandHigh_'b'
+    bLow = bandLow_'b'
+    if bHigh > nyquist
+        bandHigh_'b' = nyquist
     endif
-    if bandLow[b] >= bandHigh[b]
-        bandLow[b] = bandHigh[b] - 50
-        if bandLow[b] < 0
-            bandLow[b] = 0
+    if bLow >= bandHigh_'b'
+        bandLow_'b' = bandHigh_'b' - 50
+        if bandLow_'b' < 0
+            bandLow_'b' = 0
         endif
     endif
 endfor
@@ -222,18 +205,22 @@ endif
 
 localityRange = max(1, round(locality_window / snippetHop))
 
-# Generate unique ID
-uniqueID$ = string$(randomInteger(10000, 99999))
+# ============================================================
+# Convert to mono for analysis
+# ============================================================
+clearinfo
+writeInfoLine: "=== Band-Based Concatenative Synthesis v0.3 ==="
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Source: ", sourceName$, " (", fixed$(sourceDur, 2), " s)"
+appendInfoLine: "Target: ", targetName$, " (", fixed$(targetDur, 2), " s)"
+appendInfoLine: ""
 
-# ============================================================
-# Convert to mono for analysis (process stereo separately for output)
-# ============================================================
 if sourceChannels > 1
     selectObject: source
     sourceMono = Convert to mono
 else
     selectObject: source
-    sourceMono = Copy: "source_mono_" + uniqueID$
+    sourceMono = Copy: "source_mono"
 endif
 
 if targetChannels > 1
@@ -241,25 +228,24 @@ if targetChannels > 1
     targetMono = Convert to mono
 else
     selectObject: target
-    targetMono = Copy: "target_mono_" + uniqueID$
+    targetMono = Copy: "target_mono"
 endif
 
 # ============================================================
 # ANALYSIS: Extract band features
 # ============================================================
-writeInfoLine: "Band-Based Concatenative Synthesis"
-appendInfoLine: "=================================="
-appendInfoLine: "Source: ", sourceName$, " (", fixed$(sourceDur, 2), " s)"
-appendInfoLine: "Target: ", targetName$, " (", fixed$(targetDur, 2), " s)"
-appendInfoLine: ""
 appendInfoLine: "Analyzing target (", targetFrames, " frames)..."
 
-# Analyze target
+# Create target band filters
 for b from 1 to numBands
+    bLow = bandLow_'b'
+    bHigh = bandHigh_'b'
     selectObject: targetMono
-    targetBand[b] = Filter (pass Hann band): bandLow[b], bandHigh[b], 100
+    Filter (pass Hann band): bLow, bHigh, 100
+    targetBand_'b' = selected("Sound")
 endfor
 
+# Extract target features
 for k from 1 to targetFrames
     tStart = (k - 1) * hop_size
     tEnd = tStart + window_length
@@ -267,29 +253,33 @@ for k from 1 to targetFrames
         tEnd = targetDur
     endif
     for b from 1 to numBands
-        selectObject: targetBand[b]
+        selectObject: targetBand_'b'
         rms = Get root-mean-square: tStart, tEnd
         if rms > 0
-            targetFeature[k, b] = ln(rms + 1e-10)
+            targetFeature_'k'_'b' = ln(rms + 1e-10)
         else
-            targetFeature[k, b] = -23
+            targetFeature_'k'_'b' = -23
         endif
     endfor
 endfor
 
 # Cleanup target band filters
 for b from 1 to numBands
-    removeObject: targetBand[b]
+    removeObject: targetBand_'b'
 endfor
 
 appendInfoLine: "Analyzing source (", sourceSnippets, " snippets)..."
 
-# Analyze source
+# Create source band filters
 for b from 1 to numBands
+    bLow = bandLow_'b'
+    bHigh = bandHigh_'b'
     selectObject: sourceMono
-    sourceBand[b] = Filter (pass Hann band): bandLow[b], bandHigh[b], 100
+    Filter (pass Hann band): bLow, bHigh, 100
+    sourceBand_'b' = selected("Sound")
 endfor
 
+# Extract source features
 for j from 1 to sourceSnippets
     sStart = (j - 1) * snippetHop
     sEnd = sStart + window_length
@@ -297,19 +287,19 @@ for j from 1 to sourceSnippets
         sEnd = sourceDur
     endif
     for b from 1 to numBands
-        selectObject: sourceBand[b]
+        selectObject: sourceBand_'b'
         rms = Get root-mean-square: sStart, sEnd
         if rms > 0
-            sourceFeature[j, b] = ln(rms + 1e-10)
+            sourceFeature_'j'_'b' = ln(rms + 1e-10)
         else
-            sourceFeature[j, b] = -23
+            sourceFeature_'j'_'b' = -23
         endif
     endfor
 endfor
 
 # Cleanup source band filters
 for b from 1 to numBands
-    removeObject: sourceBand[b]
+    removeObject: sourceBand_'b'
 endfor
 
 # ============================================================
@@ -319,38 +309,45 @@ for b from 1 to numBands
     # Compute mean
     sum = 0
     for j from 1 to sourceSnippets
-        sum += sourceFeature[j, b]
+        sum = sum + sourceFeature_'j'_'b'
     endfor
-    bandMean[b] = sum / sourceSnippets
+    bandMean_'b' = sum / sourceSnippets
     
     # Compute std
     varSum = 0
+    bMean = bandMean_'b'
     for j from 1 to sourceSnippets
-        diff = sourceFeature[j, b] - bandMean[b]
-        varSum += diff * diff
+        diff = sourceFeature_'j'_'b' - bMean
+        varSum = varSum + diff * diff
     endfor
-    bandStd[b] = sqrt(varSum / sourceSnippets)
-    if bandStd[b] < 1e-6
-        bandStd[b] = 1
+    bandStd_'b' = sqrt(varSum / sourceSnippets)
+    if bandStd_'b' < 1e-6
+        bandStd_'b' = 1
     endif
 endfor
 
 # Normalize source features
 for j from 1 to sourceSnippets
     for b from 1 to numBands
-        sourceFeature[j, b] = (sourceFeature[j, b] - bandMean[b]) / bandStd[b]
+        bMean = bandMean_'b'
+        bStd = bandStd_'b'
+        val = sourceFeature_'j'_'b'
+        sourceFeature_'j'_'b' = (val - bMean) / bStd
     endfor
 endfor
 
 # Normalize target features
 for k from 1 to targetFrames
     for b from 1 to numBands
-        targetFeature[k, b] = (targetFeature[k, b] - bandMean[b]) / bandStd[b]
+        bMean = bandMean_'b'
+        bStd = bandStd_'b'
+        val = targetFeature_'k'_'b'
+        targetFeature_'k'_'b' = (val - bMean) / bStd
     endfor
 endfor
 
 # ============================================================
-# COMPUTE LAMBDA (continuity weight scaling)
+# COMPUTE LAMBDA
 # ============================================================
 sampleSize = min(100, targetFrames * 2)
 for s from 1 to sampleSize
@@ -358,39 +355,42 @@ for s from 1 to sampleSize
     jSamp = randomInteger(1, sourceSnippets)
     distSum = 0
     for b from 1 to numBands
-        diff = targetFeature[kSamp, b] - sourceFeature[jSamp, b]
-        distSum += diff * diff
+        tFeat = targetFeature_'kSamp'_'b'
+        sFeat = sourceFeature_'jSamp'_'b'
+        diff = tFeat - sFeat
+        distSum = distSum + diff * diff
     endfor
-    sampleDist[s] = sqrt(distSum)
+    sampleDist_'s' = sqrt(distSum)
 endfor
 
-# Simple median via sorting
+# Simple sort for median
 for i from 1 to sampleSize - 1
-    for j from 1 to sampleSize - i
-        if sampleDist[j] > sampleDist[j + 1]
-            temp = sampleDist[j]
-            sampleDist[j] = sampleDist[j + 1]
-            sampleDist[j + 1] = temp
+    for jj from 1 to sampleSize - i
+        jj1 = jj + 1
+        d1 = sampleDist_'jj'
+        d2 = sampleDist_'jj1'
+        if d1 > d2
+            sampleDist_'jj' = d2
+            sampleDist_'jj1' = d1
         endif
     endfor
 endfor
-medianDist = sampleDist[floor(sampleSize / 2) + 1]
+medIdx = floor(sampleSize / 2) + 1
+medianDist = sampleDist_'medIdx'
 lambda = continuity_weight * medianDist
 
 # ============================================================
-# MATCHING: Find best source snippet for each target frame
+# MATCHING
 # ============================================================
 appendInfoLine: "Matching frames..."
 
 prevMatch = 1
 totalMatchDist = 0
-uniqueMatches = 0
 
 for k from 1 to targetFrames
     bestJ = 1
     bestCost = 1e10
     
-    # Define search range
     if k = 1
         jMin = 1
         jMax = sourceSnippets
@@ -399,17 +399,16 @@ for k from 1 to targetFrames
         jMax = min(sourceSnippets, prevMatch + localityRange)
     endif
     
-    # Search for best match
     for j from jMin to jMax
-        # Compute spectral distance
         distSum = 0
         for b from 1 to numBands
-            diff = targetFeature[k, b] - sourceFeature[j, b]
-            distSum += diff * diff
+            tFeat = targetFeature_'k'_'b'
+            sFeat = sourceFeature_'j'_'b'
+            diff = tFeat - sFeat
+            distSum = distSum + diff * diff
         endfor
         dist = sqrt(distSum)
         
-        # Add continuity penalty
         if k = 1
             cost = dist
         else
@@ -425,44 +424,48 @@ for k from 1 to targetFrames
         endif
     endfor
     
-    match[k] = bestJ
-    matchDist[k] = bestCost
-    totalMatchDist += bestCost
+    match_'k' = bestJ
+    matchDist_'k' = bestCost
+    totalMatchDist = totalMatchDist + bestCost
     prevMatch = bestJ
 endfor
 
 # Count unique matches
 for j from 1 to sourceSnippets
-    matchUsed[j] = 0
+    matchUsed_'j' = 0
 endfor
 for k from 1 to targetFrames
-    matchUsed[match[k]] = 1
+    mIdx = match_'k'
+    matchUsed_'mIdx' = 1
 endfor
+uniqueMatches = 0
 for j from 1 to sourceSnippets
-    uniqueMatches += matchUsed[j]
+    uniqueMatches = uniqueMatches + matchUsed_'j'
 endfor
 
 avgMatchDist = totalMatchDist / targetFrames
 coveragePercent = (uniqueMatches / sourceSnippets) * 100
 
 # ============================================================
-# Procedure: Synthesize one channel
+# Synthesis Procedure
 # ============================================================
 procedure synthesizeChannel: .sourceSound, .outputName$
     selectObject: .sourceSound
     .sDur = Get total duration
     
-    # Create master window
-    Create Sound from formula: "win_" + uniqueID$, 1, 0, window_length, sampleRate, "0.5 * (1 - cos(2 * pi * x / 'window_length'))"
+    # Create window
+    winLen$ = string$(window_length)
+    Create Sound from formula: "synth_window", 1, 0, window_length, sampleRate, "0.5 * (1 - cos(2 * pi * x / " + winLen$ + "))"
     .winSound = selected("Sound")
+    .winId$ = string$(.winSound)
     
-    # Create output sound matching target duration
+    # Create output
     Create Sound from formula: .outputName$, 1, 0, targetDur, sampleRate, "0"
     .outputSound = selected("Sound")
+    .outputId$ = string$(.outputSound)
     
-    # Process each target frame
     for k from 1 to targetFrames
-        j = match[k]
+        j = match_'k'
         grainStart = (j - 1) * snippetHop
         grainEnd = grainStart + window_length
         
@@ -473,36 +476,42 @@ procedure synthesizeChannel: .sourceSound, .outputName$
         actualGrainDur = grainEnd - grainStart
         
         if actualGrainDur > 0.001
-            # Extract grain from source
             selectObject: .sourceSound
             .grain = Extract part: grainStart, grainEnd, "rectangular", 1, "no"
+            .grainId$ = string$(.grain)
             
             # Pad if necessary
             selectObject: .grain
             .gDur = Get total duration
             if .gDur < window_length - 0.001
-                # Pad with silence
                 paddingDur = window_length - .gDur
-                Create Sound from formula: "pad_" + uniqueID$, 1, 0, paddingDur, sampleRate, "0"
+                Create Sound from formula: "padding", 1, 0, paddingDur, sampleRate, "0"
                 .padSound = selected("Sound")
-                selectObject: .grain, .padSound
+                selectObject: .grain
+                plusObject: .padSound
                 .paddedGrain = Concatenate
                 removeObject: .grain, .padSound
                 .grain = .paddedGrain
+                .grainId$ = string$(.grain)
             endif
             
             # Apply window
             selectObject: .grain
-            Formula: "self * Sound_win_'uniqueID$'(x)"
-            Rename: "grain_" + uniqueID$
+            Formula: "self * Object_" + .winId$ + "(x)"
             
-            # Add to output at correct position
+            # Add to output
             outputStart = (k - 1) * hop_size
+            outputStart$ = string$(outputStart)
+            winLen$ = string$(window_length)
             
             selectObject: .outputSound
-            Formula: "if x >= 'outputStart' and x < 'outputStart' + 'window_length' then self + Sound_grain_'uniqueID$'(x - 'outputStart') else self endif"
+            Formula: "if x >= " + outputStart$ + " and x < " + outputStart$ + " + " + winLen$ + " then self + Object_" + .grainId$ + "(x - " + outputStart$ + ") else self endif"
             
             removeObject: .grain
+        endif
+        
+        if k mod 50 = 0
+            appendInfo: "."
         endif
     endfor
     
@@ -513,17 +522,15 @@ endproc
 # ============================================================
 # SYNTHESIS
 # ============================================================
+appendInfoLine: ""
 appendInfoLine: "Synthesizing..."
 
-# Process based on channel configuration
 maxChannels = max(sourceChannels, targetChannels)
 
 if maxChannels = 1
-    # Mono processing
-    @synthesizeChannel: sourceMono, "output_mono_" + uniqueID$
+    @synthesizeChannel: sourceMono, "output_mono"
     finalOutput = selected("Sound")
 else
-    # Stereo processing
     if sourceChannels > 1
         selectObject: source
         Extract one channel: 1
@@ -533,65 +540,73 @@ else
         sourceR = selected("Sound")
     else
         selectObject: source
-        sourceL = Copy: "sourceL_" + uniqueID$
+        sourceL = Copy: "sourceL"
         selectObject: source
-        sourceR = Copy: "sourceR_" + uniqueID$
+        sourceR = Copy: "sourceR"
     endif
     
-    @synthesizeChannel: sourceL, "output_L_" + uniqueID$
+    appendInfo: "L"
+    @synthesizeChannel: sourceL, "output_L"
     outputL = selected("Sound")
     
-    @synthesizeChannel: sourceR, "output_R_" + uniqueID$
+    appendInfoLine: ""
+    appendInfo: "R"
+    @synthesizeChannel: sourceR, "output_R"
     outputR = selected("Sound")
     
-    selectObject: outputL, outputR
+    selectObject: outputL
+    plusObject: outputR
     Combine to stereo
     finalOutput = selected("Sound")
     
     removeObject: sourceL, sourceR, outputL, outputR
 endif
 
+appendInfoLine: " done"
+
 # ============================================================
-# Apply dry/wet mix with target
+# Dry/wet mix
 # ============================================================
 if dry_wet_mix < 1
-    # Need to mix with target
     if maxChannels = 1
         selectObject: targetMono
-        Rename: "target_mix_" + uniqueID$
+        targetMixId$ = string$(targetMono)
     else
         if targetChannels > 1
             selectObject: target
-            targetMix = Copy: "target_mix_" + uniqueID$
+            targetMix = Copy: "target_mix"
         else
-            # Duplicate mono to stereo
             selectObject: target
-            targetL = Copy: "targetL_" + uniqueID$
+            targetL = Copy: "targetL"
             selectObject: target
-            targetR = Copy: "targetR_" + uniqueID$
-            selectObject: targetL, targetR
+            targetR = Copy: "targetR"
+            selectObject: targetL
+            plusObject: targetR
             Combine to stereo
             targetMix = selected("Sound")
             removeObject: targetL, targetR
         endif
-        Rename: "target_mix_" + uniqueID$
+        targetMixId$ = string$(targetMix)
     endif
     
-    selectObject: finalOutput
-    Formula: "'dry_wet_mix' * self + (1 - 'dry_wet_mix') * Sound_target_mix_'uniqueID$'(x)"
+    dryWet$ = string$(dry_wet_mix)
+    dryAmount$ = string$(1 - dry_wet_mix)
     
-    selectObject: "Sound target_mix_" + uniqueID$
-    Remove
+    selectObject: finalOutput
+    Formula: dryWet$ + " * self + " + dryAmount$ + " * Object_" + targetMixId$ + "(x)"
+    
+    if maxChannels > 1
+        removeObject: targetMix
+    endif
 endif
 
 # ============================================================
-# Finalize output
+# Finalize
 # ============================================================
 selectObject: finalOutput
 Scale peak: scale_peak
-Rename: sourceName$ + "_concat_" + targetName$
+Rename: sourceName$ + "_concat_" + targetName$ + "_" + presetName$
 
-# Cleanup analysis mono copies
 removeObject: sourceMono, targetMono
 
 # ============================================================
@@ -600,7 +615,6 @@ removeObject: sourceMono, targetMono
 procedure drawVisualization
     Erase all
     
-    # Smart tick intervals
     if targetDur > 10
         timeTickInterval = 2
     elsif targetDur > 5
@@ -611,51 +625,52 @@ procedure drawVisualization
         timeTickInterval = 0.25
     endif
     
-    # ========================================================
-    # PANEL 1: Match trajectory (top)
-    # ========================================================
+    # PANEL 1: Match trajectory
     Select outer viewport: 0, 6, 0, 3
     Select inner viewport: 0.7, 5.8, 0.5, 2.6
     
     Axes: 0, targetDur, 0, sourceDur
     
-    # Draw diagonal reference (perfect time alignment)
+    # Diagonal reference
     Colour: "{0.85, 0.85, 0.85}"
     minDur = min(targetDur, sourceDur)
     Draw line: 0, 0, minDur, minDur
     
-    # Draw match trajectory as connected line
+    # Match trajectory
     Colour: "{0.2, 0.4, 0.8}"
     Line width: 2
     
     for k from 1 to targetFrames - 1
         tTime1 = (k - 1) * hop_size
         tTime2 = k * hop_size
-        sTime1 = (match[k] - 1) * snippetHop
-        sTime2 = (match[k + 1] - 1) * snippetHop
+        m1 = match_'k'
+        k1 = k + 1
+        m2 = match_'k1'
+        sTime1 = (m1 - 1) * snippetHop
+        sTime2 = (m2 - 1) * snippetHop
         Draw line: tTime1, sTime1, tTime2, sTime2
     endfor
     
-    # Draw match points as small crosses
+    # Match points
     Colour: "{0.8, 0.2, 0.2}"
     Line width: 1
     pointSize = min(targetDur, sourceDur) * 0.008
     
     for k from 1 to targetFrames
         tTime = (k - 1) * hop_size
-        sTime = (match[k] - 1) * snippetHop
-        # Draw small cross
+        mIdx = match_'k'
+        sTime = (mIdx - 1) * snippetHop
         Draw line: tTime - pointSize, sTime, tTime + pointSize, sTime
         Draw line: tTime, sTime - pointSize, tTime, sTime + pointSize
     endfor
     
     Line width: 1
-    Black
+    Colour: "Black"
     
     Draw inner box
     Text bottom: "yes", "Target time (s)"
     Text left: "yes", "Source time (s)"
-    Text top: "no", "##Match Trajectory## - " + sourceName$ + " -> " + targetName$
+    Text top: "no", "Match Trajectory: " + sourceName$ + " -> " + targetName$ + " [" + presetName$ + "]"
     
     Marks bottom every: 1, timeTickInterval, "yes", "yes", "no"
     
@@ -670,17 +685,15 @@ procedure drawVisualization
     endif
     Marks left every: 1, sourceTickInterval, "yes", "yes", "no"
     
-    # ========================================================
-    # PANEL 2: Match distance over time (bottom)
-    # ========================================================
+    # PANEL 2: Match distance
     Select outer viewport: 0, 6, 3, 6
     Select inner viewport: 0.7, 5.8, 3.5, 5.6
     
-    # Find max distance for scaling
     maxDist = 0
     for k from 1 to targetFrames
-        if matchDist[k] > maxDist
-            maxDist = matchDist[k]
+        d = matchDist_'k'
+        if d > maxDist
+            maxDist = d
         endif
     endfor
     if maxDist < 0.1
@@ -689,29 +702,32 @@ procedure drawVisualization
     
     Axes: 0, targetDur, 0, maxDist * 1.1
     
-    # Draw average line
+    # Average line
     Colour: "{0.7, 0.7, 0.7}"
     Dotted line
     Draw line: 0, avgMatchDist, targetDur, avgMatchDist
     Solid line
     
-    # Draw distance curve
+    # Distance curve
     Colour: "{0.2, 0.6, 0.3}"
     Line width: 2
     
     for k from 1 to targetFrames - 1
         tTime1 = (k - 1) * hop_size
         tTime2 = k * hop_size
-        Draw line: tTime1, matchDist[k], tTime2, matchDist[k + 1]
+        d1 = matchDist_'k'
+        k1 = k + 1
+        d2 = matchDist_'k1'
+        Draw line: tTime1, d1, tTime2, d2
     endfor
     
     Line width: 1
-    Black
+    Colour: "Black"
     
     Draw inner box
     Text bottom: "yes", "Target time (s)"
     Text left: "yes", "Match cost"
-    Text top: "no", "##Match Quality## (avg: " + fixed$(avgMatchDist, 2) + ", coverage: " + fixed$(coveragePercent, 0) + "%)"
+    Text top: "no", "Match Quality (avg: " + fixed$(avgMatchDist, 2) + ", coverage: " + fixed$(coveragePercent, 0) + "%)"
     
     Marks bottom every: 1, timeTickInterval, "yes", "yes", "no"
     
@@ -730,42 +746,25 @@ if draw_visualization
 endif
 
 # ============================================================
-# Select final output
+# Output
 # ============================================================
-selectObject: finalOutput
+selectObject: source
+plusObject: target
+plusObject: finalOutput
 
-# ============================================================
-# Play if requested
-# ============================================================
-if play_after_processing
-    Play
-endif
-
-# ============================================================
-# Report completion
-# ============================================================
 appendInfoLine: ""
-appendInfoLine: "=================================="
-appendInfoLine: "Synthesis complete!"
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Output: ", selected$("Sound")
 appendInfoLine: ""
-appendInfoLine: "Parameters:"
-appendInfoLine: "  Preset: ", preset$
-appendInfoLine: "  Window: ", fixed$(window_length * 1000, 1), " ms"
-appendInfoLine: "  Hop: ", fixed$(hop_size * 1000, 1), " ms"
-appendInfoLine: "  Bands: ", numBands
-appendInfoLine: "  Continuity: ", fixed$(continuity_weight, 2)
-appendInfoLine: "  Locality: ", fixed$(locality_window, 2), " s"
-appendInfoLine: "  Dry/wet: ", fixed$(dry_wet_mix * 100, 0), "%"
-appendInfoLine: ""
-appendInfoLine: "Statistics:"
+appendInfoLine: "Stats:"
 appendInfoLine: "  Target frames: ", targetFrames
 appendInfoLine: "  Source snippets: ", sourceSnippets
 appendInfoLine: "  Unique matches: ", uniqueMatches, " (", fixed$(coveragePercent, 1), "% coverage)"
 appendInfoLine: "  Avg match cost: ", fixed$(avgMatchDist, 3)
-appendInfoLine: "  Lambda: ", fixed$(lambda, 3)
-appendInfoLine: ""
-appendInfoLine: "Output: ", sourceName$, "_concat_", targetName$
-if draw_visualization
-    appendInfoLine: ""
-    appendInfoLine: "Visualization in Picture window."
+
+if play_after_processing
+    selectObject: finalOutput
+    Play
 endif
+
+selectObject: finalOutput

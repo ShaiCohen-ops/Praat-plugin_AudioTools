@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - Amplitude-Varying Ring Modulation.praat
+# Praat AudioTools - Amplitude-Varying_Ring_Modulation.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Fixed syntax
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,26 +12,25 @@
 #   The carrier frequency accelerates over time (chirp), while
 #   the modulation depth pulsates creating complex timbral motion.
 #
-# Technical approach:
-#   - Ring modulation: signal × sin(carrier)
-#   - Frequency chirp: carrier frequency accelerates via x^exponent
-#   - Amplitude tremolo: modulation depth oscillates sinusoidally
-#   - True stereo processing preserves spatial image
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit
-#   for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.3:
+#   - Fixed preset comparison (number not string)
+#   - Fixed Formula variable interpolation
+#   - Fixed inline if in appendInfoLine
+#   - Added preset name to output
 # ============================================================
 
-form Amplitude-Varying Ring Modulation
+# === Input Validation ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+sound = selected("Sound")
+originalName$ = selected$("Sound")
+
+form Amplitude-Varying Ring Modulation v0.3
     comment Ring modulation with frequency chirp and amplitude tremolo.
     optionmenu Preset: 1
-        option Default
+        option Manual
         option Subtle Modulation
         option Extreme Sweep
         option Fast Pulsing
@@ -39,75 +38,83 @@ form Amplitude-Varying Ring Modulation
         option Alien Voice
         option Underwater Transmission
     comment === Carrier parameters ===
-    positive carrier_frequency 250
-    comment (base carrier frequency in Hz)
-    positive sweep_exponent 2
-    comment (frequency acceleration: 1=linear, 2=quadratic, 3=cubic)
+    positive Carrier_frequency 250
+    positive Sweep_exponent 2
     comment === Amplitude modulation ===
-    positive amplitude_rate 3
-    comment (tremolo rate in Hz)
-    real amplitude_center 0.5
-    comment (center of amplitude oscillation, 0-1)
-    real amplitude_depth 0.5
-    comment (amplitude oscillates ± this amount around center)
+    positive Amplitude_rate 3
+    real Amplitude_center 0.5
+    real Amplitude_depth 0.5
     comment === Output options ===
-    positive scale_peak 0.99
-    boolean play_after_processing 1
-    boolean draw_modulation 1
+    positive Scale_peak 0.99
+    boolean Play_after_processing 1
+    boolean Draw_modulation 1
 endform
 
 # ============================================================
-# Apply preset values
+# Apply preset values (fixed: use number not string)
 # ============================================================
-if preset$ = "Subtle Modulation"
+if preset = 2
+    # Subtle Modulation
     carrier_frequency = 100
     sweep_exponent = 1.5
     amplitude_rate = 1
     amplitude_center = 0.7
     amplitude_depth = 0.3
-elif preset$ = "Extreme Sweep"
+    presetName$ = "Subtle"
+elsif preset = 3
+    # Extreme Sweep
     carrier_frequency = 500
     sweep_exponent = 3
     amplitude_rate = 5
     amplitude_center = 0.5
     amplitude_depth = 0.5
-elif preset$ = "Fast Pulsing"
+    presetName$ = "ExtremeSweep"
+elsif preset = 4
+    # Fast Pulsing
     carrier_frequency = 200
     sweep_exponent = 2
     amplitude_rate = 10
     amplitude_center = 0.6
     amplitude_depth = 0.4
-elif preset$ = "Metallic"
+    presetName$ = "FastPulse"
+elsif preset = 5
+    # Metallic
     carrier_frequency = 440
     sweep_exponent = 1
     amplitude_rate = 7
     amplitude_center = 0.8
     amplitude_depth = 0.2
-elif preset$ = "Alien Voice"
+    presetName$ = "Metallic"
+elsif preset = 6
+    # Alien Voice
     carrier_frequency = 150
     sweep_exponent = 2.5
     amplitude_rate = 4
     amplitude_center = 0.5
     amplitude_depth = 0.5
-elif preset$ = "Underwater Transmission"
+    presetName$ = "AlienVoice"
+elsif preset = 7
+    # Underwater Transmission
     carrier_frequency = 80
     sweep_exponent = 1.2
     amplitude_rate = 0.5
     amplitude_center = 0.6
     amplitude_depth = 0.4
+    presetName$ = "Underwater"
+else
+    presetName$ = "Manual"
 endif
 
 # ============================================================
-# Validate input
+# Setup
 # ============================================================
-nSelected = numberOfSelected("Sound")
-if nSelected <> 1
-    exitScript: "Please select exactly one Sound object."
-endif
+clearinfo
+writeInfoLine: "=== Amplitude-Varying Ring Modulation v0.3 ==="
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Input: ", originalName$
+appendInfoLine: ""
 
-sound = selected("Sound")
 selectObject: sound
-originalName$ = selected$("Sound")
 duration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
@@ -118,21 +125,16 @@ ampMin = amplitude_center - amplitude_depth
 ampMax = amplitude_center + amplitude_depth
 
 if ampMin < 0
-    # Clamp to avoid phase inversion (optional - could allow it)
     amplitude_depth = amplitude_center
     ampMin = 0
     ampMax = amplitude_center + amplitude_depth
 endif
 
 if ampMax > 1
-    # Normalize if exceeding 1
     ampMax = 1
 endif
 
-# Calculate frequency range (approximate - depends on duration)
-# The instantaneous frequency at time t is: carrier * exponent * t^(exponent-1)
-# At t=0: freq ≈ carrier (for exponent=1) or 0 (for exponent>1)
-# At t=duration: freq = carrier * exponent * duration^(exponent-1)
+# Calculate frequency range
 if sweep_exponent = 1
     startFreq = carrier_frequency
     endFreq = carrier_frequency
@@ -141,11 +143,16 @@ else
     endFreq = carrier_frequency * sweep_exponent * duration^(sweep_exponent - 1)
 endif
 
-# Warn if end frequency exceeds Nyquist
 if endFreq > nyquist
     endFreq = nyquist
-    # Could add warning here
 endif
+
+appendInfoLine: "Carrier: ", carrier_frequency, " Hz"
+appendInfoLine: "Sweep exponent: ", sweep_exponent
+appendInfoLine: "Freq range: ", fixed$(startFreq, 0), " -> ", fixed$(endFreq, 0), " Hz"
+appendInfoLine: "Amplitude rate: ", amplitude_rate, " Hz"
+appendInfoLine: "Amplitude range: ", fixed$(ampMin, 2), " - ", fixed$(ampMax, 2)
+appendInfoLine: ""
 
 # ============================================================
 # Procedure: Draw modulation visualization
@@ -170,7 +177,6 @@ procedure drawModulation
     Select outer viewport: 0, 6, 0, 3
     Select inner viewport: 0.8, 5.8, 0.5, 2.6
     
-    # Determine frequency axis range
     maxFreqDisplay = endFreq * 1.1
     if maxFreqDisplay < carrier_frequency * 2
         maxFreqDisplay = carrier_frequency * 2
@@ -200,14 +206,10 @@ procedure drawModulation
         t1 = (iPoint - 1) * duration / numDrawPoints
         t2 = iPoint * duration / numDrawPoints
         
-        # Avoid t=0 for exponent > 1
         if t1 < 0.001
             t1 = 0.001
         endif
         
-        # Instantaneous frequency = d/dt [carrier * t^exponent / exponent]
-        #                         = carrier * t^(exponent-1)
-        # But for display, we show the "effective" frequency
         if sweep_exponent = 1
             freq1 = carrier_frequency
             freq2 = carrier_frequency
@@ -216,7 +218,6 @@ procedure drawModulation
             freq2 = carrier_frequency * sweep_exponent * t2^(sweep_exponent - 1)
         endif
         
-        # Clamp to display range
         if freq1 > maxFreqDisplay
             freq1 = maxFreqDisplay
         endif
@@ -237,12 +238,12 @@ procedure drawModulation
     endif
     
     Line width: 1
-    Black
+    Colour: "Black"
     
     Draw inner box
     Text bottom: "yes", "Time (s)"
     Text left: "yes", "Frequency (Hz)"
-    Text top: "no", "##Carrier Frequency## - " + originalName$
+    Text top: "no", "Carrier Frequency - " + originalName$ + " [" + presetName$ + "]"
     
     Marks bottom every: 1, timeTickInterval, "yes", "yes", "no"
     Marks left every: 1, freqTickInterval, "yes", "yes", "no"
@@ -256,7 +257,6 @@ procedure drawModulation
     Axes: 0, duration, 0, 1.1
     
     # Draw amplitude bounds
-    Colour: "{0.9, 0.9, 0.9}"
     Paint rectangle: "{0.92, 0.95, 1}", 0, duration, ampMin, ampMax
     
     # Draw center line
@@ -276,7 +276,6 @@ procedure drawModulation
         amp1 = amplitude_center + amplitude_depth * sin(2 * pi * amplitude_rate * t1)
         amp2 = amplitude_center + amplitude_depth * sin(2 * pi * amplitude_rate * t2)
         
-        # Clamp
         if amp1 < 0
             amp1 = 0
         endif
@@ -294,12 +293,12 @@ procedure drawModulation
     endfor
     
     Line width: 1
-    Black
+    Colour: "Black"
     
     Draw inner box
     Text bottom: "yes", "Time (s)"
     Text left: "yes", "Amplitude"
-    Text top: "no", "##Modulation Envelope## (rate: " + fixed$(amplitude_rate, 1) + " Hz)"
+    Text top: "no", "Modulation Envelope (rate: " + fixed$(amplitude_rate, 1) + " Hz)"
     
     Marks bottom every: 1, timeTickInterval, "yes", "yes", "no"
     Marks left every: 1, 0.25, "yes", "yes", "no"
@@ -311,8 +310,14 @@ endproc
 procedure applyRingMod: .inputSound
     selectObject: .inputSound
     
-    # Apply the ring modulation formula
-    Formula: "self * sin(2 * pi * 'carrier_frequency' * x^'sweep_exponent' / 'sweep_exponent') * ('amplitude_center' + 'amplitude_depth' * sin(2 * pi * 'amplitude_rate' * x))"
+    # Build formula with modern syntax (no old-style interpolation)
+    carrier$ = string$(carrier_frequency)
+    exponent$ = string$(sweep_exponent)
+    ampCenter$ = string$(amplitude_center)
+    ampDepth$ = string$(amplitude_depth)
+    ampRate$ = string$(amplitude_rate)
+    
+    Formula: "self * sin(2 * pi * " + carrier$ + " * x^" + exponent$ + " / " + exponent$ + ") * (" + ampCenter$ + " + " + ampDepth$ + " * sin(2 * pi * " + ampRate$ + " * x))"
 endproc
 
 # ============================================================
@@ -325,10 +330,11 @@ endif
 # ============================================================
 # Main processing: Handle mono or stereo
 # ============================================================
+appendInfoLine: "Processing..."
+
 if numChannels = 1
-    # Mono processing
     selectObject: sound
-    processed = Copy: originalName$ + "_ringmod"
+    processed = Copy: originalName$ + "_ringmod_" + presetName$
     @applyRingMod: processed
     
     selectObject: processed
@@ -336,7 +342,6 @@ if numChannels = 1
     finalOutput = processed
 
 else
-    # True stereo processing
     selectObject: sound
     Extract one channel: 1
     left = selected("Sound")
@@ -349,46 +354,43 @@ else
     Rename: "right_temp"
     @applyRingMod: right
     
-    # Combine back to stereo
-    selectObject: left, right
+    selectObject: left
+    plusObject: right
     Combine to stereo
     finalOutput = selected("Sound")
-    Rename: originalName$ + "_ringmod"
+    Rename: originalName$ + "_ringmod_" + presetName$
     
     Scale peak: scale_peak
     
-    # Cleanup
     removeObject: left, right
 endif
 
 # ============================================================
-# Select final output
+# Output
 # ============================================================
-selectObject: finalOutput
+selectObject: sound
+plusObject: finalOutput
 
-# ============================================================
-# Play if requested
-# ============================================================
-if play_after_processing
-    Play
+appendInfoLine: "Done!"
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Output: ", selected$("Sound")
+
+# Stereo info (fixed: no inline if)
+if numChannels > 1
+    appendInfoLine: "Channels: ", numChannels, " (true stereo)"
+else
+    appendInfoLine: "Channels: ", numChannels
 endif
 
-# ============================================================
-# Report completion
-# ============================================================
-writeInfoLine: "Amplitude-Varying Ring Modulation completed."
-appendInfoLine: "Input: ", originalName$
-appendInfoLine: "Output: ", originalName$, "_ringmod"
-appendInfoLine: "Channels: ", numChannels, if numChannels > 1 then " (true stereo)" else "" fi
-appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
-appendInfoLine: ""
-appendInfoLine: "Carrier: ", fixed$(carrier_frequency, 1), " Hz"
-appendInfoLine: "Sweep exponent: ", fixed$(sweep_exponent, 2)
-appendInfoLine: "Frequency range: ", fixed$(startFreq, 0), " -> ", fixed$(endFreq, 0), " Hz"
-appendInfoLine: ""
-appendInfoLine: "Amplitude rate: ", fixed$(amplitude_rate, 1), " Hz"
-appendInfoLine: "Amplitude range: ", fixed$(ampMin, 2), " - ", fixed$(ampMax, 2)
 if draw_modulation
     appendInfoLine: ""
     appendInfoLine: "Visualization in Picture window."
 endif
+
+if play_after_processing
+    selectObject: finalOutput
+    Play
+endif
+
+selectObject: finalOutput
