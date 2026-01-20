@@ -14,16 +14,11 @@
 #   - High-frequency loss (tape loses HF over time)
 #   - Bias modulation (recorder bias oscillation)
 #
-# Changelog v0.2:
-#   - Modern syntax
-#   - Added bounds checking
-#   - Added visualization
 # ============================================================
 
-form Tape Degradation
-    comment Select a Sound object first
-    
-    comment === Preset ===
+# --- 1. COMPACT STARTUP FORM ---
+form Tape Degradation (Compact)
+    comment PRESETS:
     optionmenu Preset 1
         option Custom
         option Subtle Tape
@@ -31,41 +26,78 @@ form Tape Degradation
         option Heavy Tape
         option Extreme Tape
     
-    comment === Generations ===
-    positive Tail_duration_s 2.0
+    comment MAIN CONTROLS:
     natural Generations 6
+    positive Tail_duration_s 2.0
     
-    comment === Hysteresis ===
-    positive Hysteresis_current 0.7
-    positive Hysteresis_previous 0.3
-    
-    comment === Print-Through ===
-    positive Print_through_initial 0.25
-    positive Print_through_decay 0.8
-    natural Print_offset_divisor 100
-    
-    comment === Bias ===
-    positive Bias_min 0.8
-    positive Bias_max 1.2
-    boolean Use_fixed_bias 0
-    positive Fixed_bias 1.0
-    
-    comment === HF Loss ===
-    positive Hf_loss_rate 0.1
-    positive Hf_smoothing 0.9
-    
-    comment === Bias Modulation ===
-    positive Bias_mod_center 0.9
-    positive Bias_mod_depth 0.1
-    
-    comment === Output ===
-    positive Scale_peak 0.87
-    positive Fadeout_duration_s 1.0
+    comment OUTPUT:
     boolean Draw_visualization 1
     boolean Play_result 1
+    
+    comment ADVANCED:
+    boolean Show_advanced_settings 0
 endform
 
-# === Apply Presets ===
+# --- 2. DEFINE DEFAULT PARAMETERS ---
+# (Used for "Custom" if Advanced is not opened)
+hysteresis_current = 0.7
+hysteresis_previous = 0.3
+print_through_initial = 0.25
+print_through_decay = 0.8
+print_offset_divisor = 100
+bias_min = 0.8
+bias_max = 1.2
+use_fixed_bias = 0
+fixed_bias = 1.0
+hf_loss_rate = 0.1
+hf_smoothing = 0.9
+bias_mod_center = 0.9
+bias_mod_depth = 0.1
+scale_peak = 0.87
+fadeout_duration_s = 1.0
+
+# --- 3. SHOW ADVANCED SETTINGS (If Checked) ---
+if show_advanced_settings
+    beginPause: "Advanced Tape Physics"
+        comment: "Hysteresis (Memory Effect):"
+        positive: "Hysteresis current", hysteresis_current
+        positive: "Hysteresis previous", hysteresis_previous
+        
+        comment: "Print-Through (Ghosting):"
+        positive: "Print through initial", print_through_initial
+        positive: "Print through decay", print_through_decay
+        natural: "Print offset divisor", print_offset_divisor
+        
+        comment: "Tape Bias:"
+        positive: "Bias min", bias_min
+        positive: "Bias max", bias_max
+        boolean: "Use fixed bias", use_fixed_bias
+        positive: "Fixed bias", fixed_bias
+        
+        comment: "Signal Loss:"
+        positive: "Hf loss rate", hf_loss_rate
+        positive: "Hf smoothing", hf_smoothing
+        
+        comment: "Bias Modulation (Wow/Flutter):"
+        positive: "Bias mod center", bias_mod_center
+        positive: "Bias mod depth", bias_mod_depth
+        
+        comment: "Output Envelope:"
+        positive: "Scale peak", scale_peak
+        positive: "Fadeout duration s", fadeout_duration_s
+        
+    clicked = endPause: "Cancel", "OK", 2, 1
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+endif
+
+# ==============================================================================
+# APPLY PRESETS
+# ==============================================================================
+# Note: Presets override custom settings, except for Generations/Tail
+# which are taken from the main form unless hardcoded below.
+
 if preset = 2
     # Subtle Tape
     tail_duration_s = 1.5
@@ -86,6 +118,7 @@ if preset = 2
     fadeout_duration_s = 0.8
 elsif preset = 3
     # Medium Tape
+    # (Uses defaults mostly, but explicitly set here for clarity)
     tail_duration_s = 2.0
     generations = 6
     hysteresis_current = 0.7
@@ -139,6 +172,10 @@ elsif preset = 5
     scale_peak = 0.82
     fadeout_duration_s = 1.8
 endif
+
+# ==============================================================================
+# MAIN SCRIPT EXECUTION
+# ==============================================================================
 
 # === Check Input ===
 if numberOfSelected("Sound") <> 1

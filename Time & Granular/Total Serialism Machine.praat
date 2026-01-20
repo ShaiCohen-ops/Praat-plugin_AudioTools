@@ -13,11 +13,46 @@
 #   duration, source position, pitch, gain, and pan. Supports
 #   inversion, retrograde, and rotation transformations.
 #
-# Changelog v0.2:
-#   - Fixed Formula interpolation
-#   - Fixed undefined preset$ variable
-#   - Added visualization
-# ============================================================
+# ============================================================================
+# TOTAL SERIALISM MACHINE (Fixed Form Version)
+# ============================================================================
+
+form Total Serialism Machine
+    comment ═══════════ PRESETS ═══════════
+    optionmenu Preset 1
+        option Custom (manual settings)
+        option Pointillism (Webern-style)
+        option Moment Form (discrete blocks)
+        option Granular Texture (micro-events)
+        option Transformational (extreme ranges)
+        option Statistical Field (dense cloud)
+    
+    comment ═══════════ SERIES ═══════════
+    integer Series_length 12
+    optionmenu Series_type 3
+        option Arithmetic (1..N)
+        option Permutation (custom)
+        option 12-tone row (classic)
+    sentence Series_values 0,10,7,11,3,8,1,9,2,5,6,4
+    
+    comment ═══════════ TRANSFORMATIONS ═══════════
+    boolean Use_inversion 0
+    boolean Use_retrograde 0
+    integer Rotation 0
+    
+    comment ═══════════ STRUCTURE ═══════════
+    integer Num_events 30
+    positive Min_event_ms 200
+    positive Max_event_ms 600
+    positive Gap_between_events_ms 50
+    
+    comment ═══════════ PITCH RANGE ═══════════
+    integer Min_pitch_cents -200
+    integer Max_pitch_cents 200
+    
+    comment ═══════════ OUTPUT ═══════════
+    boolean Draw_visualization 1
+endform
 
 # ============================================================================
 # CHECK INPUT
@@ -32,62 +67,6 @@ input_name$ = selected$("Sound")
 selectObject: input_sound
 input_duration = Get total duration
 input_sr = Get sampling frequency
-
-# ============================================================================
-# FORM LOOP
-# ============================================================================
-
-continue = 1
-while continue
-
-beginPause: "Total Serialism Machine"
-    comment: "═══════════ PRESETS ═══════════"
-    optionMenu: "preset", 1
-        option: "Custom (manual settings)"
-        option: "Pointillism (Webern-style)"
-        option: "Moment Form (discrete blocks)"
-        option: "Granular Texture (micro-events)"
-        option: "Transformational (extreme ranges)"
-        option: "Statistical Field (dense cloud)"
-    comment: ""
-    comment: "═══════════ SERIES ═══════════"
-    integer: "series_length", 12
-    optionMenu: "series_type", 3
-        option: "Arithmetic (1..N)"
-        option: "Permutation (custom)"
-        option: "12-tone row (classic)"
-    sentence: "series_values", "0,10,7,11,3,8,1,9,2,5,6,4"
-    comment: ""
-    comment: "═══════════ TRANSFORMATIONS ═══════════"
-    boolean: "use_inversion", 0
-    boolean: "use_retrograde", 0
-    integer: "rotation", 0
-    comment: ""
-    comment: "═══════════ STRUCTURE ═══════════"
-    integer: "num_events", 30
-    positive: "min_event_ms", 200
-    positive: "max_event_ms", 600
-    positive: "gap_between_events_ms", 50
-    comment: ""
-    comment: "═══════════ PITCH RANGE ═══════════"
-    integer: "min_pitch_cents", -200
-    integer: "max_pitch_cents", 200
-    comment: ""
-    comment: "═══════════ OUTPUT ═══════════"
-    boolean: "draw_visualization", 1
-clicked = endPause: "Cancel", "Apply", "OK", 2
-
-if clicked = 1
-    # Cancel
-    continue = 0
-    exitScript()
-elsif clicked = 2
-    # Apply - process but keep form open
-    continue = 1
-elsif clicked = 3
-    # OK - process and close
-    continue = 0
-endif
 
 # ============================================================================
 # GET PRESET NAME
@@ -492,6 +471,7 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Dur (ms)"
     Text bottom: "yes", "Event #"
+endif
 
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
@@ -504,9 +484,6 @@ selectObject: result
 Play
 
 selectObject: result
-
-# End of while loop
-endwhile
 
 # ============================================================================
 # PROCEDURES
@@ -648,3 +625,4 @@ procedure normalizeSeries
         normalized_series[.i] = (base_series[.i] - .min) / .range
     endfor
 endproc
+
