@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - FM_Texture_Generator.praat
+# Praat AudioTools -  DX7 FM Synthesis Generator
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
@@ -11,9 +11,6 @@
 #   FM (Frequency Modulation) Synthesis texture generator.
 #   Classic Chowning/DX7-style FM sounds with various timbres.
 #
-#   FM equation: sin(2π × fc × t + I × sin(2π × fm × t))
-#   where fc = carrier, fm = modulator, I = modulation index
-#
 # Usage:
 #   Run this script (no input sound required).
 #
@@ -21,352 +18,832 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit 
 #   for Experimental Composition.
 #
-# Changelog v0.2:
-#   - Fixed ADSR nested if/fi
-#   - Fixed per-sample randomization
-#   - Smooth gate/stutter transitions
-#   - Added visualization
-#   - Added spatial modes
 # ============================================================
 
-form FM Texture Generator
-    comment === Texture Type ===
-    optionmenu Texture_type 1
-        option Classic FM Bell
-        option Brass Stack
-        option Electric Piano
-        option Organ Cluster
-        option Glass Harmonica
-        option Metallic Sweep
-        option Wobble Bass
-        option Alien Choir
-        option Harmonic Bells
-        option Inharmonic Stack
-        option Feedback Scream
-        option Sidebanded Drone
+
+form DX7 FM Synthesis Generator (v6.0)
+    comment === Demo Mode ===
+    boolean Melody_demo 0
+    comment (If checked, plays a test melody with selected preset)
     
-    comment === Basic Settings ===
-    positive Duration_s 3.0
-    integer Sample_rate_Hz 44100
-    positive Carrier_freq_Hz 440
-    
-    comment === FM Parameters ===
-    positive Modulator_ratio 2.0
-    positive Modulation_index 5.0
-    real Chaos_amount 0.3
-    
-    comment === Envelope ===
-    optionmenu Envelope_type 1
+    comment === Preset ===
+    optionmenu Preset 1
+        option Electric Piano (DX7 Epiano 1)
+        option Slap Bass (Solid/Lately)
+        option Tubular Bells
+        option Hammond Organ
+        option Warm Pad
+        option Custom (Test Tone)
+
+    comment === Timbre Controls ===
+    positive Base_Frequency 110.0
+    comment (Scales Modulation Index - Turn up for "Bite")
+    positive Brightness 1.0
+    comment (Scales Decay Times - Lower = tighter, Higher = lush)
+    positive Decay_Scale 1.0
+
+    comment === Amplitude Envelope ===
+    optionmenu Envelope 1
         option No Envelope
         option Percussive
         option Slow Fade
+        option Gate
+        option Reverse
         option Tremolo
         option Swell
         option ADSR
-    
+        option Stutter
+        option Random Bursts
+
     comment === Output ===
-    optionmenu Spatial_mode 1
-        option Mono
-        option Stereo Wide
-        option Rotating
-    boolean Normalize_output 1
-    boolean Draw_visualization 1
-    boolean Play_result 1
+    positive Duration 2.0
+    positive Master_Volume 0.8
+    boolean Show_Visualization 1
+    boolean Play_Result 1
+    
+    comment === Advanced ===
+    boolean Show_Advanced_Settings 0
 endform
 
-# === Constants ===
-uid$ = string$(randomInteger(10000, 99999))
-twoPi = 2 * pi
-modFreq = carrier_freq_Hz * modulator_ratio
+sampling_frequency = 44100
 
-# === Apply texture-specific defaults ===
-if texture_type = 1
-    preset_name$ = "FMBell"
-elsif texture_type = 2
-    preset_name$ = "Brass"
-elsif texture_type = 3
-    preset_name$ = "EPiano"
-elsif texture_type = 4
-    preset_name$ = "Organ"
-elsif texture_type = 5
-    preset_name$ = "GlassHarmonica"
-elsif texture_type = 6
-    preset_name$ = "MetallicSweep"
-elsif texture_type = 7
-    preset_name$ = "WobbleBass"
-elsif texture_type = 8
-    preset_name$ = "AlienChoir"
-elsif texture_type = 9
-    preset_name$ = "HarmonicBells"
-elsif texture_type = 10
-    preset_name$ = "InharmonicStack"
-elsif texture_type = 11
-    preset_name$ = "FeedbackScream"
-elsif texture_type = 12
-    preset_name$ = "SidebandedDrone"
+# === DEFAULT ADVANCED PARAMETERS ===
+# Operator 1
+op1_freq = 1.0
+op1_level = 1.0
+op1_envelope$ = "sus"
+
+# Operator 2
+op2_freq = 1.0
+op2_level = 1.0
+op2_envelope$ = "decay"
+
+# Operator 3
+op3_freq = 1.0
+op3_level = 0.0
+op3_envelope$ = "snap"
+
+# Operator 4
+op4_freq = 1.0
+op4_level = 0.0
+op4_envelope$ = "decay"
+
+# Operator 5
+op5_freq = 1.0
+op5_level = 0.0
+op5_envelope$ = "snap"
+
+# Operator 6
+op6_freq = 1.0
+op6_level = 0.0
+op6_envelope$ = "sus"
+op6_feedback = 0.0
+
+# Algorithm (1=Parallel, 2=Series, 3=Dual)
+algorithm = 1
+
+# Envelope times
+snap_decay_time = 0.1
+tone_decay_time = 0.8
+
+# === SHOW ADVANCED SETTINGS (If Checked) ===
+if show_Advanced_Settings
+    beginPause: "Advanced DX7 Parameters"
+        comment: "Algorithm:"
+        optionmenu: "Algorithm", algorithm
+            option: "Parallel (All ops to output)"
+            option: "Series (6->5->4->3->2->1)"
+            option: "Dual Stack (5->4 + 2->1)"
+        
+        comment: "Operator 1 (Carrier):"
+        positive: "Op1 freq", op1_freq
+        positive: "Op1 level", op1_level
+        optionmenu: "Op1 envelope", 1
+            option: "snap"
+            option: "decay"
+            option: "sus"
+            option: "slow"
+        
+        comment: "Operator 2:"
+        positive: "Op2 freq", op2_freq
+        positive: "Op2 level", op2_level
+        optionmenu: "Op2 envelope", 2
+            option: "snap"
+            option: "decay"
+            option: "sus"
+            option: "slow"
+        
+        comment: "Operator 3:"
+        positive: "Op3 freq", op3_freq
+        positive: "Op3 level", op3_level
+        optionmenu: "Op3 envelope", 1
+            option: "snap"
+            option: "decay"
+            option: "sus"
+            option: "slow"
+        
+        comment: "Operator 4:"
+        positive: "Op4 freq", op4_freq
+        positive: "Op4 level", op4_level
+        optionmenu: "Op4 envelope", 2
+            option: "snap"
+            option: "decay"
+            option: "sus"
+            option: "slow"
+        
+        comment: "Operator 5:"
+        positive: "Op5 freq", op5_freq
+        positive: "Op5 level", op5_level
+        optionmenu: "Op5 envelope", 1
+            option: "snap"
+            option: "decay"
+            option: "sus"
+            option: "slow"
+        
+        comment: "Operator 6 (Feedback):"
+        positive: "Op6 freq", op6_freq
+        positive: "Op6 level", op6_level
+        positive: "Op6 feedback", op6_feedback
+        optionmenu: "Op6 envelope", 3
+            option: "snap"
+            option: "decay"
+            option: "sus"
+            option: "slow"
+        
+        comment: "Envelope Timing:"
+        positive: "Snap decay time", snap_decay_time
+        positive: "Tone decay time", tone_decay_time
+    clicked = endPause: "Cancel", "OK", 2, 1
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+    
+    # Map envelope selections to strings
+    if op1_envelope = 1
+        op1_envelope$ = "snap"
+    elsif op1_envelope = 2
+        op1_envelope$ = "decay"
+    elsif op1_envelope = 3
+        op1_envelope$ = "sus"
+    elsif op1_envelope = 4
+        op1_envelope$ = "slow"
+    endif
+    
+    if op2_envelope = 1
+        op2_envelope$ = "snap"
+    elsif op2_envelope = 2
+        op2_envelope$ = "decay"
+    elsif op2_envelope = 3
+        op2_envelope$ = "sus"
+    elsif op2_envelope = 4
+        op2_envelope$ = "slow"
+    endif
+    
+    if op3_envelope = 1
+        op3_envelope$ = "snap"
+    elsif op3_envelope = 2
+        op3_envelope$ = "decay"
+    elsif op3_envelope = 3
+        op3_envelope$ = "sus"
+    elsif op3_envelope = 4
+        op3_envelope$ = "slow"
+    endif
+    
+    if op4_envelope = 1
+        op4_envelope$ = "snap"
+    elsif op4_envelope = 2
+        op4_envelope$ = "decay"
+    elsif op4_envelope = 3
+        op4_envelope$ = "sus"
+    elsif op4_envelope = 4
+        op4_envelope$ = "slow"
+    endif
+    
+    if op5_envelope = 1
+        op5_envelope$ = "snap"
+    elsif op5_envelope = 2
+        op5_envelope$ = "decay"
+    elsif op5_envelope = 3
+        op5_envelope$ = "sus"
+    elsif op5_envelope = 4
+        op5_envelope$ = "slow"
+    endif
+    
+    if op6_envelope = 1
+        op6_envelope$ = "snap"
+    elsif op6_envelope = 2
+        op6_envelope$ = "decay"
+    elsif op6_envelope = 3
+        op6_envelope$ = "sus"
+    elsif op6_envelope = 4
+        op6_envelope$ = "slow"
+    endif
 endif
 
-# === Info ===
-writeInfoLine: "=== FM Texture Generator ==="
-appendInfoLine: "Texture: ", preset_name$
-appendInfoLine: "Carrier: ", carrier_freq_Hz, " Hz"
-appendInfoLine: "Modulator: ", modFreq, " Hz (ratio ", modulator_ratio, ")"
-appendInfoLine: "Index: ", modulation_index
+# ============================================================
+# INFO
+# ============================================================
+writeInfoLine: "=== DX7 FM Synthesis Generator ==="
+appendInfoLine: "Preset: ", preset$
+appendInfoLine: "Base Frequency: ", base_Frequency, " Hz"
+appendInfoLine: "Brightness: ", brightness
+appendInfoLine: "Decay Scale: ", decay_Scale
+if melody_demo
+    appendInfoLine: "Mode: MELODY DEMO"
+else
+    appendInfoLine: "Mode: Single Note"
+endif
 appendInfoLine: ""
 
-# === Generate FM texture ===
-appendInfoLine: "Synthesizing..."
+# ============================================================
+# MAIN LOGIC
+# ============================================================
 
-if texture_type = 1
-    # Classic FM Bell - decaying index
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.5 * sin(twoPi * carrier_freq_Hz * x + modulation_index * exp(-x * 3) * sin(twoPi * modFreq * x)) * exp(-x * 2)"
-
-elsif texture_type = 2
-    # Brass Stack - rising index (attack brightness)
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.4 * sin(twoPi * carrier_freq_Hz * x + modulation_index * (1 - exp(-x * 8)) * sin(twoPi * modFreq * x)) * (1 - exp(-x * 10)) * exp(-x * 0.3)"
-
-elsif texture_type = 3
-    # Electric Piano - fast decay of index
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.4 * sin(twoPi * carrier_freq_Hz * x + modulation_index * exp(-x * 5) * sin(twoPi * modFreq * x)) * exp(-x * 1.5)"
-
-elsif texture_type = 4
-    # Organ Cluster - additive + FM
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.25 * (sin(twoPi * carrier_freq_Hz * x + modulation_index * 0.5 * sin(twoPi * modFreq * x)) + 0.6 * sin(twoPi * carrier_freq_Hz * 2 * x) + 0.4 * sin(twoPi * carrier_freq_Hz * 3 * x) + 0.2 * sin(twoPi * carrier_freq_Hz * 4 * x))"
-
-elsif texture_type = 5
-    # Glass Harmonica - cascaded FM (FM of FM)
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.4 * sin(twoPi * carrier_freq_Hz * x + modulation_index * sin(twoPi * modFreq * x + modulation_index * 0.5 * sin(twoPi * modFreq * 2 * x))) * exp(-x * 0.8)"
-
-elsif texture_type = 6
-    # Metallic Sweep - time-varying ratio
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.4 * sin(twoPi * carrier_freq_Hz * x + (modulation_index + chaos_amount * 3 * x) * sin(twoPi * modFreq * (1 + chaos_amount * 0.5 * x) * x)) * exp(-x * 0.4)"
-
-elsif texture_type = 7
-    # Wobble Bass - LFO on index
-    wobbleRate = 5 + chaos_amount * 10
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.5 * sin(twoPi * carrier_freq_Hz * x + modulation_index * (1 + 0.5 * sin(twoPi * wobbleRate * x)) * sin(twoPi * modFreq * x))"
-
-elsif texture_type = 8
-    # Alien Choir - slow modulation of FM
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.35 * sin(twoPi * carrier_freq_Hz * x + modulation_index * sin(twoPi * modFreq * x + chaos_amount * 2 * sin(twoPi * 0.5 * x))) * (1 + 0.2 * sin(twoPi * 3 * x))"
-
-elsif texture_type = 9
-    # Harmonic Bells - multiple FM operators
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.25 * sin(twoPi * carrier_freq_Hz * x + modulation_index * sin(twoPi * modFreq * x)) * exp(-x * 2) + 0.2 * sin(twoPi * carrier_freq_Hz * 2.76 * x + modulation_index * 0.7 * sin(twoPi * modFreq * 3.5 * x)) * exp(-x * 3) + 0.15 * sin(twoPi * carrier_freq_Hz * 5.4 * x) * exp(-x * 4)"
-
-elsif texture_type = 10
-    # Inharmonic Stack - golden ratio
-    phi = 1.618033989
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.35 * sin(twoPi * carrier_freq_Hz * x + modulation_index * sin(twoPi * carrier_freq_Hz * phi * x)) * exp(-x * 1.2) + 0.25 * sin(twoPi * carrier_freq_Hz * phi * phi * x + modulation_index * 0.5 * sin(twoPi * carrier_freq_Hz * phi * x)) * exp(-x * 1.8)"
-
-elsif texture_type = 11
-    # Feedback Scream - deep FM cascade
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.35 * sin(twoPi * carrier_freq_Hz * x + modulation_index * sin(twoPi * modFreq * x + modulation_index * 0.7 * sin(twoPi * modFreq * x + modulation_index * 0.3 * sin(twoPi * modFreq * x)))) * (1 + 0.3 * sin(twoPi * 1 * x))"
-
-elsif texture_type = 12
-    # Sidebanded Drone - explicit sidebands
-    outputSound = Create Sound from formula: "fm_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "0.25 * (sin(twoPi * carrier_freq_Hz * x) + 0.6 * sin(twoPi * (carrier_freq_Hz + modFreq) * x) + 0.6 * sin(twoPi * (carrier_freq_Hz - modFreq) * x) + 0.3 * sin(twoPi * (carrier_freq_Hz + 2 * modFreq) * x) + 0.3 * sin(twoPi * (carrier_freq_Hz - 2 * modFreq) * x))"
-endif
-
-# === Apply Envelope ===
-appendInfoLine: "Applying envelope..."
-selectObject: outputSound
-
-if envelope_type = 2
-    # Percussive
-    Formula: "self * exp(-x * 5)"
+if melody_demo
+    appendInfoLine: "Generating melody demo (C-E-G-C-G-E-C-G arpeggio)..."
     
-elsif envelope_type = 3
-    # Slow Fade
-    Formula: "self * exp(-x * 0.5)"
+    # Test melody: C4, E4, G4, C5, G4, E4, C4, G3
+    @makeFMNote: 261.63, 0.4
+    id1 = selected("Sound")
     
-elsif envelope_type = 4
-    # Tremolo (smooth)
-    tremRate = 5 + chaos_amount * 15
-    tremDepth = 0.3 + chaos_amount * 0.4
-    Formula: "self * (1 - tremDepth + tremDepth * (0.5 + 0.5 * sin(twoPi * tremRate * x)))"
+    @makeFMNote: 329.63, 0.4
+    id2 = selected("Sound")
     
-elsif envelope_type = 5
-    # Swell
-    attackTime = 0.3 + chaos_amount * 0.5
-    Formula: "self * min(1, x / attackTime)"
+    @makeFMNote: 392.00, 0.4
+    id3 = selected("Sound")
     
-elsif envelope_type = 6
-    # ADSR (split into separate passes)
-    attack = 0.02
-    decay = 0.1 + chaos_amount * 0.2
-    sustain = 0.5 + chaos_amount * 0.3
-    releaseStart = duration_s - 0.3
+    @makeFMNote: 523.25, 0.6
+    id4 = selected("Sound")
     
-    Formula: "if x < attack then self * (x / attack) else self fi"
-    Formula: "if x >= attack and x < attack + decay then self * (1 - (1 - sustain) * ((x - attack) / decay)) else self fi"
-    Formula: "if x >= attack + decay and x < releaseStart then self * sustain else self fi"
-    Formula: "if x >= releaseStart then self * sustain * (1 - (x - releaseStart) / (duration_s - releaseStart)) else self fi"
-endif
-
-# === Fade in/out ===
-selectObject: outputSound
-Formula: "if x < 0.01 then self * (x / 0.01) else self fi"
-Formula: "if x > duration_s - 0.01 then self * ((duration_s - x) / 0.01) else self fi"
-
-# === Spatial Processing ===
-if spatial_mode = 2
-    # Stereo Wide
-    appendInfoLine: "Creating stereo width..."
+    @makeFMNote: 392.00, 0.4
+    id5 = selected("Sound")
     
-    selectObject: outputSound
-    Copy: "left_" + uid$
-    leftSound = selected("Sound")
-    Filter (pass Hann band): 0, carrier_freq_Hz * 3, 100
-    leftFiltered = selected("Sound")
-    removeObject: leftSound
-    leftSound = leftFiltered
+    @makeFMNote: 329.63, 0.4
+    id6 = selected("Sound")
     
-    selectObject: outputSound
-    Copy: "right_" + uid$
-    rightSound = selected("Sound")
-    Filter (pass Hann band): carrier_freq_Hz * 0.5, carrier_freq_Hz * 6, 100
-    rightFiltered = selected("Sound")
-    removeObject: rightSound
-    rightSound = rightFiltered
+    @makeFMNote: 261.63, 0.4
+    id7 = selected("Sound")
     
-    selectObject: leftSound
-    plusObject: rightSound
-    stereoSound = Combine to stereo
-    Rename: "fm_" + preset_name$
+    @makeFMNote: 196.00, 0.8
+    id8 = selected("Sound")
     
-    removeObject: outputSound, leftSound, rightSound
-    outputSound = stereoSound
-
-elsif spatial_mode = 3
-    # Rotating
-    appendInfoLine: "Creating rotating stereo..."
+    # Combine
+    selectObject: id1, id2, id3, id4, id5, id6, id7, id8
+    Concatenate
+    sound = selected("Sound")
+    Rename: "DX7_" + preset$ + "_melody"
     
-    rotRate = 0.2 + chaos_amount * 0.3
+    removeObject: id1, id2, id3, id4, id5, id6, id7, id8
     
-    selectObject: outputSound
-    Copy: "left_" + uid$
-    leftSound = selected("Sound")
-    Formula: "self * (0.5 + 0.5 * cos(twoPi * rotRate * x))"
-    
-    selectObject: outputSound
-    Copy: "right_" + uid$
-    rightSound = selected("Sound")
-    Formula: "self * (0.5 + 0.5 * sin(twoPi * rotRate * x))"
-    
-    selectObject: leftSound
-    plusObject: rightSound
-    stereoSound = Combine to stereo
-    Rename: "fm_" + preset_name$
-    
-    removeObject: outputSound, leftSound, rightSound
-    outputSound = stereoSound
+    selectObject: sound
 else
-    selectObject: outputSound
-    Rename: "fm_" + preset_name$
+    # Single note
+    @makeFMNote: base_Frequency, duration
+    sound = selected("Sound")
+    Rename: "DX7_" + preset$
 endif
 
-# === Normalize ===
-if normalize_output
-    selectObject: outputSound
-    Scale peak: 0.9
+# ============================================================
+# APPLY AMPLITUDE ENVELOPE
+# ============================================================
+selectObject: sound
+totalDur = Get total duration
+
+if envelope = 2
+    # Percussive
+    Formula: "self * exp(-x*5)"
+elsif envelope = 3
+    # Slow Fade
+    Formula: "self * exp(-x*0.3)"
+elsif envelope = 4
+    # Gate
+    gate_period = 0.1 + (brightness - 1) * 0.1
+    if gate_period < 0.05
+        gate_period = 0.1
+    endif
+    Formula: "self * if sin(2*pi*x/" + string$(gate_period) + ") > 0 then 1 else 0 fi"
+elsif envelope = 5
+    # Reverse
+    Formula: "self * (x/" + string$(totalDur) + ")"
+elsif envelope = 6
+    # Tremolo
+    trem_rate = 5 + brightness * 5
+    trem_depth = 0.3 + (brightness - 1) * 0.2
+    if trem_depth < 0.1
+        trem_depth = 0.3
+    endif
+    Formula: "self * (1 - " + string$(trem_depth) + " + " + string$(trem_depth) + "*sin(2*pi*" + string$(trem_rate) + "*x))"
+elsif envelope = 7
+    # Swell
+    attack_time = 0.3 + (decay_Scale - 1) * 0.2
+    if attack_time < 0.1
+        attack_time = 0.3
+    endif
+    Formula: "self * if x < " + string$(attack_time) + " then x/" + string$(attack_time) + " else 1 fi"
+elsif envelope = 8
+    # ADSR
+    attack = 0.01
+    decay = 0.1 + (decay_Scale - 1) * 0.1
+    if decay < 0.05
+        decay = 0.1
+    endif
+    sustain = 0.5 + brightness * 0.2
+    if sustain < 0.3
+        sustain = 0.5
+    endif
+    if sustain > 1.0
+        sustain = 1.0
+    endif
+    release = 0.3
+    decay_end = attack + decay
+    release_start = totalDur - release
+    if release_start < decay_end
+        release_start = decay_end
+    endif
+    Formula: "self * if x < " + string$(attack) + " then x/" + string$(attack) + 
+    ... " else if x < " + string$(decay_end) + " then 1-(1-" + string$(sustain) + ")*((x-" + string$(attack) + ")/" + string$(decay) + 
+    ... ") else if x < " + string$(release_start) + " then " + string$(sustain) + 
+    ... " else " + string$(sustain) + "*(1-(x-" + string$(release_start) + ")/" + string$(release) + ") fi fi fi"
+elsif envelope = 9
+    # Stutter
+    stutter_rate = 10 + brightness * 10
+    Formula: "self * if floor(x*" + string$(stutter_rate) + ") mod 2 = 0 then 1 else 0 fi"
+elsif envelope = 10
+    # Random Bursts
+    burst_density = 5 + brightness * 10
+    Formula: "self * if randomUniform(0,1) < " + string$(burst_density) + "*0.05 then exp(-(x-floor(x*" + string$(burst_density) + ")/" + string$(burst_density) + ")*50) else 0 fi"
 endif
 
-# === Visualization ===
-if draw_visualization
-    appendInfoLine: "Drawing visualization..."
+selectObject: sound
+Scale peak: 0.95
+
+# ============================================================
+# VISUALIZATION
+# ============================================================
+if show_Visualization
     @drawVisualization
 endif
 
-# === Play ===
-if play_result
-    selectObject: outputSound
+# ============================================================
+# PLAY
+# ============================================================
+if play_Result
+    selectObject: sound
     Play
 endif
 
-# === Final Selection ===
-selectObject: outputSound
-
+# ============================================================
+# FINAL
+# ============================================================
+selectObject: sound
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+
+# ==============================================================================
+# Procedure: makeFMNote - Generate one FM note
+# ==============================================================================
+procedure makeFMNote: .freq, .dur
+    
+    # Default values
+    .algo = 1
+    
+    # Initialize Frequencies
+    .f1 = 1.0
+    .f2 = 1.0
+    .f3 = 1.0
+    .f4 = 1.0
+    .f5 = 1.0
+    .f6 = 1.0
+    
+    # Initialize Levels
+    .l1 = 0.0
+    .l2 = 0.0
+    .l3 = 0.0
+    .l4 = 0.0
+    .l5 = 0.0
+    .l6 = 0.0
+    .fb = 0.0
+    
+    # Initialize Envelopes
+    .e1$ = ""
+    .e2$ = ""
+    .e3$ = ""
+    .e4$ = ""
+    .e5$ = ""
+    .e6$ = ""
+    
+    # Macros
+    .b_fac = brightness
+    .d_fac = decay_Scale
+    
+    # Safety clamp
+    if .d_fac < 0.001
+        .d_fac = 0.001
+    endif
+    if .b_fac < 0
+        .b_fac = 0
+    endif
+    
+    # === ENVELOPE GENERATION ===
+    .raw_snap = snap_decay_time * .d_fac
+    .snap_Decay = max(0.001, .raw_snap)
+    .env_snap$ = "(if x < 0.002 then x/0.002 else exp(-(x-0.002)/" + string$(.snap_Decay) + ") fi)"
+    
+    .raw_decay = tone_decay_time * .d_fac
+    .tone_Decay = max(0.001, .raw_decay)
+    .env_decay$ = "(if x < 0.01 then x/0.01 else exp(-(x-0.01)/" + string$(.tone_Decay) + ") fi)"
+    
+    .env_sus$ = "(if x < 0.01 then x/0.01 else 0.1*exp(-(x-0.01)/0.5) + 0.9 fi)"
+    .env_slow$ = "(if x < 0.5 then x/0.5 else 1 fi)"
+    
+    # === APPLY ADVANCED SETTINGS OR PRESET ===
+    if show_Advanced_Settings
+        # Use manual operator settings
+        .algo = algorithm
+        
+        .f1 = op1_freq
+        .l1 = op1_level
+        if op1_envelope$ = "snap"
+            .e1$ = .env_snap$
+        elsif op1_envelope$ = "decay"
+            .e1$ = .env_decay$
+        elsif op1_envelope$ = "sus"
+            .e1$ = .env_sus$
+        elsif op1_envelope$ = "slow"
+            .e1$ = .env_slow$
+        endif
+        
+        .f2 = op2_freq
+        .l2 = op2_level
+        if op2_envelope$ = "snap"
+            .e2$ = .env_snap$
+        elsif op2_envelope$ = "decay"
+            .e2$ = .env_decay$
+        elsif op2_envelope$ = "sus"
+            .e2$ = .env_sus$
+        elsif op2_envelope$ = "slow"
+            .e2$ = .env_slow$
+        endif
+        
+        .f3 = op3_freq
+        .l3 = op3_level
+        if op3_envelope$ = "snap"
+            .e3$ = .env_snap$
+        elsif op3_envelope$ = "decay"
+            .e3$ = .env_decay$
+        elsif op3_envelope$ = "sus"
+            .e3$ = .env_sus$
+        elsif op3_envelope$ = "slow"
+            .e3$ = .env_slow$
+        endif
+        
+        .f4 = op4_freq
+        .l4 = op4_level
+        if op4_envelope$ = "snap"
+            .e4$ = .env_snap$
+        elsif op4_envelope$ = "decay"
+            .e4$ = .env_decay$
+        elsif op4_envelope$ = "sus"
+            .e4$ = .env_sus$
+        elsif op4_envelope$ = "slow"
+            .e4$ = .env_slow$
+        endif
+        
+        .f5 = op5_freq
+        .l5 = op5_level
+        if op5_envelope$ = "snap"
+            .e5$ = .env_snap$
+        elsif op5_envelope$ = "decay"
+            .e5$ = .env_decay$
+        elsif op5_envelope$ = "sus"
+            .e5$ = .env_sus$
+        elsif op5_envelope$ = "slow"
+            .e5$ = .env_slow$
+        endif
+        
+        .f6 = op6_freq
+        .l6 = op6_level
+        .fb = op6_feedback
+        if op6_envelope$ = "snap"
+            .e6$ = .env_snap$
+        elsif op6_envelope$ = "decay"
+            .e6$ = .env_decay$
+        elsif op6_envelope$ = "sus"
+            .e6$ = .env_sus$
+        elsif op6_envelope$ = "slow"
+            .e6$ = .env_slow$
+        endif
+        
+    elsif preset = 1
+        # Electric Piano
+        .algo = 3
+        .f5 = 14.0
+        .l5 = 3.0 * .b_fac
+        .e5$ = .env_snap$
+        .f4 = 1.0
+        .l4 = 0.7
+        .e4$ = .env_decay$
+        .f2 = 1.0
+        .l2 = 1.0 * .b_fac
+        .e2$ = .env_decay$
+        .f1 = 1.0
+        .l1 = 1.0
+        .e1$ = .env_sus$
+        
+    elsif preset = 2
+        # Slap Bass
+        .algo = 2
+        .f3 = 2.0
+        .l3 = 2.5 * .b_fac
+        .e3$ = .env_snap$
+        .f2 = 1.0
+        .l2 = 1.5 * .b_fac
+        .e2$ = .env_decay$
+        .f1 = 1.0
+        .l1 = 1.0
+        .e1$ = .env_decay$
+        .f6 = 1.0
+        .l6 = 1.0
+        .fb = 2.5 * .b_fac
+        .e6$ = .env_sus$
+        
+    elsif preset = 3
+        # Tubular Bells
+        .algo = 3
+        .f5 = 3.5
+        .l5 = 1.5 * .b_fac
+        .e5$ = .env_sus$
+        .f4 = 1.0
+        .l4 = 1.0
+        .e4$ = .env_sus$
+        .f2 = 14.0
+        .l2 = 1.0 * .b_fac
+        .e2$ = .env_decay$
+        .f1 = 1.0
+        .l1 = 1.0
+        .e1$ = .env_sus$
+        
+    elsif preset = 4
+        # Hammond Organ
+        .algo = 1
+        .f1 = 0.5
+        .l1 = 0.8
+        .e1$ = .env_sus$
+        .f2 = 1.0
+        .l2 = 1.0
+        .e2$ = .env_sus$
+        .f3 = 2.0
+        .l3 = 0.7
+        .e3$ = .env_sus$
+        .f4 = 3.0
+        .l4 = 0.5 * .b_fac
+        .e4$ = .env_sus$
+        .f5 = 4.0
+        .l5 = 0.3 * .b_fac
+        .e5$ = .env_sus$
+        .f6 = 8.0
+        .l6 = 0.2 * .b_fac
+        .e6$ = .env_sus$
+        
+    elsif preset = 5
+        # Warm Pad
+        .algo = 1
+        .f1 = 1.00
+        .l1 = 0.5
+        .e1$ = .env_slow$
+        .f2 = 1.01
+        .l2 = 0.5
+        .e2$ = .env_slow$
+        .f3 = 2.00
+        .l3 = 0.3 * .b_fac
+        .e3$ = .env_slow$
+        .f4 = 2.02
+        .l4 = 0.3 * .b_fac
+        .e4$ = .env_slow$
+        
+    elsif preset = 6
+        # Custom Test Tone
+        .algo = 2
+        .f2 = 2.0
+        .l2 = 2.0 * .b_fac
+        .e2$ = .env_decay$
+        .f1 = 1.0
+        .l1 = 1.0
+        .e1$ = .env_sus$
+    endif
+    
+    # === SYNTHESIS ENGINE ===
+    Create Sound from formula: "temp", 1, 0, .dur, sampling_frequency, "0"
+    
+    # Phase calculations
+    .p6$ = "2*pi*" + string$(.f6*.freq) + "*x"
+    .p5$ = "2*pi*" + string$(.f5*.freq) + "*x"
+    .p4$ = "2*pi*" + string$(.f4*.freq) + "*x"
+    .p3$ = "2*pi*" + string$(.f3*.freq) + "*x"
+    .p2$ = "2*pi*" + string$(.f2*.freq) + "*x"
+    .p1$ = "2*pi*" + string$(.f1*.freq) + "*x"
+    
+    # OP 6 (Feedback)
+    if .l6 > 0
+        if .e6$ = ""
+            .e6$ = .env_snap$
+        endif
+        if .fb > 0
+            .fb_safe = min(.fb, 7.0)
+            .s6$ = string$(.l6) + "*" + .e6$ + "*sin(" + .p6$ + "+" + string$(.fb_safe) + "*sin(" + .p6$ + "))"
+        else
+            .s6$ = string$(.l6) + "*" + .e6$ + "*sin(" + .p6$ + ")"
+        endif
+    else
+        .s6$ = "0"
+    endif
+    
+    # Algorithm Routing
+    if .algo = 1
+        # Parallel
+        if .l5 > 0 and .e5$ <> ""
+            .s5$ = string$(.l5) + "*" + .e5$ + "*sin(" + .p5$ + ")"
+        else
+            .s5$ = "0"
+        endif
+        if .l4 > 0 and .e4$ <> ""
+            .s4$ = string$(.l4) + "*" + .e4$ + "*sin(" + .p4$ + ")"
+        else
+            .s4$ = "0"
+        endif
+        if .l3 > 0 and .e3$ <> ""
+            .s3$ = string$(.l3) + "*" + .e3$ + "*sin(" + .p3$ + ")"
+        else
+            .s3$ = "0"
+        endif
+        if .l2 > 0 and .e2$ <> ""
+            .s2$ = string$(.l2) + "*" + .e2$ + "*sin(" + .p2$ + ")"
+        else
+            .s2$ = "0"
+        endif
+        if .l1 > 0 and .e1$ <> ""
+            .s1$ = string$(.l1) + "*" + .e1$ + "*sin(" + .p1$ + ")"
+        else
+            .s1$ = "0"
+        endif
+        .final$ = .s1$ + "+" + .s2$ + "+" + .s3$ + "+" + .s4$ + "+" + .s5$ + "+" + .s6$
+        
+    elsif .algo = 2
+        # Series Stack
+        if .l5 > 0 and .e5$ <> ""
+            .s5$ = string$(.l5) + "*" + .e5$ + "*sin(" + .p5$ + "+" + .s6$ + ")"
+        else
+            .s5$ = .s6$
+        endif
+        if .l4 > 0 and .e4$ <> ""
+            .s4$ = string$(.l4) + "*" + .e4$ + "*sin(" + .p4$ + "+" + .s5$ + ")"
+        else
+            .s4$ = .s5$
+        endif
+        if .l3 > 0 and .e3$ <> ""
+            .s3$ = string$(.l3) + "*" + .e3$ + "*sin(" + .p3$ + "+" + .s4$ + ")"
+        else
+            .s3$ = .s4$
+        endif
+        if .l2 > 0 and .e2$ <> ""
+            .s2$ = string$(.l2) + "*" + .e2$ + "*sin(" + .p2$ + "+" + .s3$ + ")"
+        else
+            .s2$ = .s3$
+        endif
+        if .l1 > 0 and .e1$ <> ""
+            .s1$ = string$(.l1) + "*" + .e1$ + "*sin(" + .p1$ + "+" + .s2$ + ")"
+        else
+            .s1$ = .s2$
+        endif
+        .final$ = .s1$
+        
+    elsif .algo = 3
+        # Dual Stack
+        if .l5 > 0 and .e5$ <> ""
+            .s5$ = string$(.l5) + "*" + .e5$ + "*sin(" + .p5$ + ")"
+        else
+            .s5$ = "0"
+        endif
+        if .l4 > 0 and .e4$ <> ""
+            .s4$ = string$(.l4) + "*" + .e4$ + "*sin(" + .p4$ + "+" + .s5$ + ")"
+        else
+            .s4$ = .s5$
+        endif
+        if .l2 > 0 and .e2$ <> ""
+            .s2$ = string$(.l2) + "*" + .e2$ + "*sin(" + .p2$ + ")"
+        else
+            .s2$ = "0"
+        endif
+        if .l1 > 0 and .e1$ <> ""
+            .s1$ = string$(.l1) + "*" + .e1$ + "*sin(" + .p1$ + "+" + .s2$ + ")"
+        else
+            .s1$ = .s2$
+        endif
+        .final$ = .s1$ + "+" + .s4$
+    endif
+    
+    # Apply synthesis
+    Formula: string$(master_Volume) + " * 0.4 * (" + .final$ + ")"
+    
+    # Validate
+    .min_check = Get minimum: 0, 0, "None"
+    .max_check = Get maximum: 0, 0, "None"
+    if .min_check = undefined or .max_check = undefined
+        Formula: "0"
+        appendInfoLine: "WARNING: Invalid synthesis at freq=" + string$(.freq)
+    endif
+    
+    # Fade in/out to prevent clicks
+    .totalDur = Get total duration
+    Formula: "self * if x < 0.005 then x/0.005 else 1 fi"
+    Formula: "self * if x > " + string$(.totalDur) + " - 0.01 then (" + string$(.totalDur) + " - x)/0.01 else 1 fi"
+    
+    Scale peak: 0.9
+    
+    .sound = selected("Sound")
+endproc
 
 # ==============================================================================
 # Procedure: drawVisualization
 # ==============================================================================
 procedure drawVisualization
     
+    selectObject: sound
+    .totalDur = Get total duration
+    
     Erase all
     
-    .leftMargin = 0.6
-    .rightMargin = 6.5
-    
     # === Title ===
-    Select outer viewport: 0, 7, 0.5, 1.2
-    Select inner viewport: 0, 7, 0.5, 1.2
-    Axes: 0, 1, 0, 1
+    Select outer viewport: 0, 8, 0.2, 0.8
     Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.8, "half", "FM Texture: " + preset_name$
-    Font size: 10
+    if melody_demo
+        Text: 0.5, "centre", 0.6, "half", "DX7 FM: " + preset$ + " (Melody Demo)"
+    else
+        Text: 0.5, "centre", 0.6, "half", "DX7 FM Synthesis: " + preset$
+    endif
+    Font size: 9
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.2, "half", "Carrier: " + fixed$(carrier_freq_Hz, 0) + " Hz | Mod: " + fixed$(modFreq, 0) + " Hz | Index: " + fixed$(modulation_index, 1)
+    Text: 0.5, "centre", 0.2, "half", "F=" + fixed$(base_Frequency, 1) + " Hz | Brightness=" + fixed$(brightness, 2) + " | Decay=" + fixed$(decay_Scale, 2) + " | Envelope=" + envelope$
+    
+    # === Waveform ===
+    Select outer viewport: 0, 8, 1.0, 2.8
+    Select inner viewport: 0.6, 7.6, 1.1, 2.7
+    
+    selectObject: sound
+    Colour: "{0.2, 0.4, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    
+    Colour: "Black"
+    Draw inner box
+    Marks left: 3, "yes", "yes", "no"
+    Font size: 8
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    
+    # === Spectrum ===
+    Select outer viewport: 0, 8, 3.0, 4.8
+    Select inner viewport: 0.6, 7.6, 3.1, 4.7
+    
+    selectObject: sound
+    .specEnd = min(0.5, .totalDur)
+    To Spectrum: "yes"
+    .spectrum = selected("Spectrum")
+    
+    Colour: "{0.6, 0.3, 0.5}"
+    Draw: 0, 5000, 0, 0, "no"
+    
+    Colour: "Black"
+    Draw inner box
+    Marks left: 3, "yes", "yes", "no"
+    Marks bottom every: 1, 1000, "yes", "yes", "no"
+    Text left: "yes", "Power (dB)"
+    Text bottom: "yes", "Frequency (Hz)"
+    
+    removeObject: .spectrum
     
     # === Spectrogram ===
-    Select outer viewport: 0, 7, 1.3, 4.8
-    Colour: "{0.85, 0.85, 0.85}"
-    Draw inner box
+    Select outer viewport: 0, 8, 5.0, 7.2
+    Select inner viewport: 0.6, 7.6, 5.1, 7.1
     
-    Select inner viewport: .leftMargin, .rightMargin, 1.4, 4.7
-    
-    if spatial_mode > 1
-        selectObject: outputSound
-        Extract one channel: 1
-        .monoSpec = selected("Sound")
-    else
-        selectObject: outputSound
-        Copy: "temp_spec"
-        .monoSpec = selected("Sound")
-    endif
-    
-    selectObject: .monoSpec
-    # Max frequency based on FM sidebands
-    .maxFreqSpec = min(8000, carrier_freq_Hz * (1 + modulation_index) * 1.5)
-    
-    To Spectrogram: 0.02, .maxFreqSpec, 0.005, 20, "Gaussian"
-    .spec = selected("Spectrogram")
+    selectObject: sound
+    .maxFreq = min(5000, base_Frequency * 12)
+    To Spectrogram: 0.03, .maxFreq, 0.01, 20, "Gaussian"
+    .spectrogram = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     
-    removeObject: .monoSpec, .spec
+    removeObject: .spectrogram
     
-    Select inner viewport: .leftMargin, .rightMargin, 1.4, 4.7
-    Axes: 0, duration_s, 0, .maxFreqSpec
+    Select inner viewport: 0.6, 7.6, 5.1, 7.1
+    Axes: 0, .totalDur, 0, .maxFreq
+    
     Colour: "White"
     Marks left: 5, "yes", "yes", "no"
     Marks bottom every: 1, 0.5, "yes", "yes", "no"
-    Text bottom: "yes", "Time (s)"
-    Text left: "yes", "Frequency (Hz)"
-    
-    # === Footer ===
-    Select outer viewport: 0, 7, 4.9, 5.4
-    Select inner viewport: 0, 7, 4.9, 5.4
-    Axes: 0, 1, 0, 1
     Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
-    .paramText$ = "Ratio: " + fixed$(modulator_ratio, 2) + " | Chaos: " + fixed$(chaos_amount, 2) + " | " + envelope_type$
-    Text: 0.5, "centre", 0.5, "half", .paramText$
+    Text left: "yes", "Freq (Hz)"
+    Text bottom: "yes", "Time (s)"
     
     Font size: 10
     Colour: "Black"
