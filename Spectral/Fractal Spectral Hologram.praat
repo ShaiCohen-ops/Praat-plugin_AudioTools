@@ -1,24 +1,27 @@
 # ============================================================
-# Praat AudioTools - Fractal Spectral Hologram
+# Praat AudioTools - Fractal_Spectral_Hologram.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Fixed syntax, added visualization
 # License: MIT License
 #
 # Description:
 #   Creates holographic/crystalline textures by processing the
 #   spectrogram as a 2D image: blur, sharpen, and fractal zoom
 #   transformations are applied, then used to modulate noise.
-#   Results in shimmering, frozen, or shattered sonic textures.
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
 # ============================================================
 
-form Fractal Spectral Hologram
-    comment === Presets ===
+# === Input Validation ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+originalID = selected("Sound")
+originalName$ = selected$("Sound")
+
+form Fractal Spectral Hologram v0.3
     optionmenu Preset: 1
-        option Custom (use settings below)
+        option Custom
         option Subtle Shimmer
         option Crystal Echo
         option Fractal Storm
@@ -27,145 +30,167 @@ form Fractal Spectral Hologram
         option Quantum Blur
         option Granular Collapse
     comment === Analysis ===
-    real Window_length_ms 40
-    real Time_step_ms 5
+    positive Window_length_ms 40
+    positive Time_step_ms 5
     comment === Texture Processing ===
     real Blur_strength 0.5
     real Sharpen_strength 0.3
-    real Fractal_zoom 1.2
+    positive Fractal_zoom 1.2
     comment === Output ===
     real Output_gain_dB 0
     real Dry_wet 1.0
     comment (0 = dry, 1 = wet)
-    positive scale_peak 0.95
-    boolean Play_output 1
+    positive Scale_peak 0.95
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# --- APPLY PRESETS ---
+# ============================================================
+# PRESETS
+# ============================================================
+
 if preset = 2
     window_length_ms = 25
     time_step_ms = 6
     blur_strength = 0.25
     sharpen_strength = 0.35
     fractal_zoom = 1.15
+    presetName$ = "SubtleShimmer"
 elsif preset = 3
     window_length_ms = 45
     time_step_ms = 4
     blur_strength = 0.4
     sharpen_strength = 0.8
     fractal_zoom = 1.5
+    presetName$ = "CrystalEcho"
 elsif preset = 4
     window_length_ms = 80
     time_step_ms = 25
     blur_strength = 0.75
     sharpen_strength = 1.2
     fractal_zoom = 2.3
+    presetName$ = "FractalStorm"
 elsif preset = 5
     window_length_ms = 35
     time_step_ms = 30
     blur_strength = 0.15
     sharpen_strength = 1.5
     fractal_zoom = 2.8
+    presetName$ = "TemporalShatter"
 elsif preset = 6
     window_length_ms = 150
     time_step_ms = 15
     blur_strength = 0.85
     sharpen_strength = 0.6
     fractal_zoom = 1.9
+    presetName$ = "HolographicFreeze"
 elsif preset = 7
     window_length_ms = 120
     time_step_ms = 40
     blur_strength = 0.95
     sharpen_strength = 0.1
     fractal_zoom = 2.6
+    presetName$ = "QuantumBlur"
 elsif preset = 8
     window_length_ms = 15
     time_step_ms = 12
     blur_strength = 0.5
     sharpen_strength = 1.8
     fractal_zoom = 2.2
+    presetName$ = "GranularCollapse"
+else
+    presetName$ = "Custom"
 endif
 
-# --- INPUT VALIDATION ---
-if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object."
-endif
+# ============================================================
+# SETUP
+# ============================================================
 
-orig_sound = selected("Sound")
-orig_name$ = selected$("Sound")
-
-selectObject: orig_sound
-n_channels = Get number of channels
+selectObject: originalID
+numChannels = Get number of channels
 duration = Get total duration
-sf = Get sampling frequency
+sampleRate = Get sampling frequency
 
-writeInfoLine: "=== Fractal Spectral Hologram ==="
+clearinfo
+writeInfoLine: "=== Fractal Spectral Hologram v0.3 ==="
+appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
+appendInfoLine: ""
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Window: ", window_length_ms, " ms"
 appendInfoLine: "Blur: ", blur_strength, " | Sharpen: ", sharpen_strength
 appendInfoLine: "Zoom: ", fractal_zoom
 appendInfoLine: ""
 
-# Force mono
-if n_channels > 1
-    input = Convert to mono
+# Convert to mono
+if numChannels > 1
+    selectObject: originalID
+    inputID = Convert to mono
 else
-    input = Copy: "mono_temp"
+    selectObject: originalID
+    inputID = Copy: "mono_temp"
 endif
 
-selectObject: input
 win_sec = window_length_ms / 1000
 step_sec = time_step_ms / 1000
 
-# --- STEP 1: ANALYSIS ---
-appendInfoLine: "Analyzing spectrum..."
+# ============================================================
+# STEP 1: ANALYSIS
+# ============================================================
 
-selectObject: input
-spectrogram = To Spectrogram: win_sec, 5000, step_sec, 20, "Gaussian"
+appendInfo: "Analyzing spectrum..."
 
-selectObject: spectrogram
-hologram = To Matrix
+selectObject: inputID
+spectrogramID = To Spectrogram: win_sec, 5000, step_sec, 20, "Gaussian"
+
+selectObject: spectrogramID
+hologramID = To Matrix
 Rename: "hologram"
-removeObject: spectrogram
+removeObject: spectrogramID
 
 # Get dimensions
-selectObject: hologram
+selectObject: hologramID
 nr = Get number of rows
 nc = Get number of columns
 
 # Logarithmic scaling (dB)
-selectObject: hologram
-Formula: "if self > 0.000001 then 10 * log10(self) + 100 else 0 fi"
+selectObject: hologramID
+Formula: "if self > 0.000001 then 10 * log10(self) + 100 else 0 endif"
 
-# --- STEP 2: TEXTURE PROCESSING ---
-appendInfoLine: "Processing texture..."
+appendInfoLine: " done (", nr, "x", nc, ")"
+
+# ============================================================
+# STEP 2: TEXTURE PROCESSING
+# ============================================================
+
+appendInfo: "Processing texture..."
 
 # 2a. Blur (with boundary protection)
-selectObject: hologram
-blurred = Copy: "blurred"
+selectObject: hologramID
+blurredID = Copy: "blurred"
 
 blur_inv = 1 - blur_strength
 blurStr$ = fixed$(blur_strength, 4)
 invStr$ = fixed$(blur_inv, 4)
 
-# Horizontal blur (protect col boundaries)
-selectObject: blurred
-Formula: "if col > 1 and col < ncol then self * " + blurStr$ + " + (self[row, col-1] * 0.25 + self * 0.5 + self[row, col+1] * 0.25) * " + invStr$ + " else self fi"
+# Horizontal blur
+selectObject: blurredID
+Formula: "if col > 1 and col < ncol then self * " + blurStr$ + " + (self[row, col-1] * 0.25 + self * 0.5 + self[row, col+1] * 0.25) * " + invStr$ + " else self endif"
 
-# Vertical blur (protect row boundaries)
-Formula: "if row > 1 and row < nrow then self * " + blurStr$ + " + (self[row-1, col] * 0.25 + self * 0.5 + self[row+1, col] * 0.25) * " + invStr$ + " else self fi"
+# Vertical blur
+Formula: "if row > 1 and row < nrow then self * " + blurStr$ + " + (self[row-1, col] * 0.25 + self * 0.5 + self[row+1, col] * 0.25) * " + invStr$ + " else self endif"
 
 # 2b. Sharpen (unsharp mask)
-selectObject: hologram
-sharpened = Copy: "sharpened"
+selectObject: hologramID
+sharpenedID = Copy: "sharpened"
 sharpStr$ = fixed$(sharpen_strength, 4)
 
-selectObject: sharpened
+selectObject: sharpenedID
 Formula: "Matrix_hologram[row, col] + " + sharpStr$ + " * (Matrix_hologram[row, col] - Matrix_blurred[row, col])"
 
 # 2c. Fractal Zoom (from center)
-selectObject: sharpened
-zoomed = Copy: "zoomed"
+selectObject: sharpenedID
+zoomedID = Copy: "zoomed"
 
 cr = nr / 2
 cc = nc / 2
@@ -180,82 +205,97 @@ ccStr$ = fixed$(cc, 2)
 izStr$ = fixed$(inv_zoom, 6)
 
 # Zoom with bounds clamping
-selectObject: zoomed
+selectObject: zoomedID
 Formula: "Matrix_sharpened[max(1, min(nrow, " + crStr$ + " + (row - " + crStr$ + ") * " + izStr$ + ")), max(1, min(ncol, " + ccStr$ + " + (col - " + ccStr$ + ") * " + izStr$ + "))] * 0.7 + self * 0.3"
 
-processed = zoomed
-removeObject: blurred, sharpened
+processedID = zoomedID
+removeObject: blurredID, sharpenedID
 
-# --- STEP 3: RECONSTRUCTION ---
-appendInfoLine: "Reconstructing audio..."
+appendInfoLine: " done"
+
+# ============================================================
+# STEP 3: RECONSTRUCTION
+# ============================================================
+
+appendInfo: "Reconstructing audio..."
 
 # Create carrier noise
-noise = Create Sound from formula: "noise", 1, 0, duration, sf, "randomGauss(0, 0.2)"
-noise_spec = To Spectrogram: win_sec, 5000, step_sec, 20, "Gaussian"
+noiseID = Create Sound from formula: "noise", 1, 0, duration, sampleRate, "randomGauss(0, 0.2)"
+noiseSpecID = To Spectrogram: win_sec, 5000, step_sec, 20, "Gaussian"
 
 # Get dimensions for mapping
-selectObject: processed
+selectObject: processedID
 nr_holo = Get number of rows
 nc_holo = Get number of columns
 
-selectObject: noise_spec
-temp_mat = To Matrix
+selectObject: noiseSpecID
+tempMatID = To Matrix
 nr_spec = Get number of rows
 nc_spec = Get number of columns
-removeObject: temp_mat
+removeObject: tempMatID
 
 # Calculate mapping ratios
 r_ratio = nr_holo / nr_spec
 c_ratio = nc_holo / nc_spec
 
 rrStr$ = fixed$(r_ratio, 6)
-crStr$ = fixed$(c_ratio, 6)
+crStr2$ = fixed$(c_ratio, 6)
+nrStr$ = string$(nr_holo)
+ncStr$ = string$(nc_holo)
 
 # Apply processed spectrum to noise
-selectObject: noise_spec
-Formula: "self * (10^((Matrix_zoomed[max(1, min(" + string$(nr_holo) + ", row * " + rrStr$ + ")), max(1, min(" + string$(nc_holo) + ", col * " + crStr$ + "))] - 100) / 10))"
+selectObject: noiseSpecID
+Formula: "self * (10^((Matrix_zoomed[max(1, min(" + nrStr$ + ", row * " + rrStr$ + ")), max(1, min(" + ncStr$ + ", col * " + crStr2$ + "))] - 100) / 10))"
 
 # Convert back to sound
-selectObject: noise_spec
-wet_sound = To Sound: sf
+selectObject: noiseSpecID
+wetID = To Sound: sampleRate
 Rename: "wet"
 
-# --- STEP 4: MIX ---
-appendInfoLine: "Mixing..."
+appendInfoLine: " done"
+
+# ============================================================
+# STEP 4: MIX
+# ============================================================
+
+appendInfo: "Mixing..."
 
 # Trim wet to match original duration
-selectObject: wet_sound
+selectObject: wetID
 dur_wet = Get total duration
 if dur_wet > duration
-    wet_trim = Extract part: 0, duration, "rectangular", 1, "no"
-    removeObject: wet_sound
-    wet_sound = wet_trim
-    selectObject: wet_sound
+    wetTrimID = Extract part: 0, duration, "rectangular", 1, "no"
+    removeObject: wetID
+    wetID = wetTrimID
+    selectObject: wetID
     Rename: "wet"
 endif
 
 # Scale wet
-selectObject: wet_sound
+selectObject: wetID
 Scale peak: 0.9
 
 # Create dry copy
-selectObject: orig_sound
-if n_channels > 1
-    dry_sound = Convert to mono
+selectObject: originalID
+if numChannels > 1
+    dryID = Convert to mono
 else
-    dry_sound = Copy: "dry"
+    dryID = Copy: "dry"
 endif
 Rename: "dry"
 
-# Mix
+# Mix dry/wet
 wetStr$ = fixed$(dry_wet, 4)
 dryStr$ = fixed$(1 - dry_wet, 4)
 
-selectObject: dry_sound
-final = Copy: orig_name$ + "_hologram"
+selectObject: dryID
+resultID = Copy: originalName$ + "_hologram_" + presetName$
 
-selectObject: final
-Formula: "self * " + dryStr$ + " + Sound_wet[] * " + wetStr$
+# Get wet sound ID string for formula
+wetIdStr$ = string$(wetID)
+
+selectObject: resultID
+Formula: "self * " + dryStr$ + " + Object_" + wetIdStr$ + "(x) * " + wetStr$
 
 # Apply gain
 gain_lin = 10^(output_gain_dB / 20)
@@ -263,16 +303,113 @@ gainStr$ = fixed$(gain_lin, 6)
 Formula: "self * " + gainStr$
 
 # Final scale
-selectObject: final
+selectObject: resultID
 Scale peak: scale_peak
 
-# --- CLEANUP ---
-removeObject: input, hologram, processed, noise, noise_spec, wet_sound, dry_sound
+appendInfoLine: " done"
+
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+if draw_visualization
+    appendInfoLine: "Drawing visualization..."
+    
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0, 0.5
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Fractal Spectral Hologram: " + originalName$ + " [" + presetName$ + "]"
+    
+    # Original waveform
+    Select outer viewport: 0, 4, 0.6, 1.8
+    Select inner viewport: 0.5, 3.7, 0.7, 1.7
+    selectObject: originalID
+    Colour: "{0.7, 0.7, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text top: "no", "Original"
+    
+    # Processed waveform
+    Select outer viewport: 4, 8, 0.6, 1.8
+    Select inner viewport: 4.5, 7.7, 0.7, 1.7
+    selectObject: resultID
+    Colour: "{0.2, 0.5, 0.8}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text top: "no", "Hologram"
+    
+    # Original spectrogram
+    Select outer viewport: 0, 4, 2.0, 3.8
+    selectObject: originalID
+    origSpecID = To Spectrogram: 0.01, 5000, 0.002, 20, "Gaussian"
+    selectObject: origSpecID
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Font size: 8
+    Text top: "no", "Original Spectrogram"
+    removeObject: origSpecID
+    
+    # Processed spectrogram
+    Select outer viewport: 4, 8, 2.0, 3.8
+    selectObject: resultID
+    resSpecID = To Spectrogram: 0.01, 5000, 0.002, 20, "Gaussian"
+    selectObject: resSpecID
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Text top: "no", "Hologram Spectrogram"
+    removeObject: resSpecID
+    
+    # Hologram matrix visualization
+    Select outer viewport: 0, 4, 4.0, 5.6
+    selectObject: processedID
+    Paint cells: 0, 0, 0, 0, 0, 0
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text top: "no", "Processed Hologram Matrix"
+    
+    # Info panel
+    Select outer viewport: 4, 8, 4.0, 5.6
+    Select inner viewport: 4.4, 7.8, 4.2, 5.4
+    
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    Text: 0.05, "left", 0.85, "half", "Window: " + fixed$(window_length_ms, 0) + " ms"
+    Text: 0.05, "left", 0.65, "half", "Blur: " + fixed$(blur_strength, 2)
+    Text: 0.05, "left", 0.45, "half", "Sharpen: " + fixed$(sharpen_strength, 2)
+    Text: 0.05, "left", 0.25, "half", "Zoom: " + fixed$(fractal_zoom, 2) + "x"
+    Text: 0.55, "left", 0.85, "half", "Dry/Wet: " + fixed$((1-dry_wet)*100, 0) + "/" + fixed$(dry_wet*100, 0) + "%"
+    Text: 0.55, "left", 0.65, "half", "Gain: " + fixed$(output_gain_dB, 1) + " dB"
+    Text: 0.55, "left", 0.45, "half", "Matrix: " + string$(nr) + "x" + string$(nc)
+    
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 10
+endif
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+removeObject: inputID, hologramID, processedID, noiseID, noiseSpecID, wetID, dryID
+
+# ============================================================
+# OUTPUT
+# ============================================================
 
 appendInfoLine: ""
-appendInfoLine: "Complete!"
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: ""
+appendInfoLine: "Created: ", originalName$, "_hologram_", presetName$
 
-selectObject: final
-if play_output
+if play_result
+    selectObject: resultID
     Play
 endif
