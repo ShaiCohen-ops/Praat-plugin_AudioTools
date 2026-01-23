@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 0.2 (2025) - Added visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,6 +26,7 @@ endif
 
 # Get the selected sound
 selectedSound$ = selected$("Sound")
+originalID = selected("Sound")
 selectObject: "Sound 'selectedSound$'"
 
 # Extract pitch information
@@ -56,8 +57,90 @@ Rename: "voice_synthesized"
 # Final processing
 selectObject: finalObj
 Scale intensity: 70
+
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+Erase all
+
+# Title
+Select outer viewport: 0, 8, 0, 0.5
+Font size: 14
+Colour: "Black"
+Text: 0.5, "centre", 0.5, "half", "LPC Voice Generator: " + selectedSound$
+
+# Original waveform
+Select outer viewport: 0, 4, 0.6, 1.8
+Select inner viewport: 0.5, 3.7, 0.7, 1.7
+selectObject: originalID
+Colour: "{0.7, 0.7, 0.7}"
+Draw: 0, 0, 0, 0, "no", "Curve"
+Colour: "Black"
+Draw inner box
+Font size: 8
+Text top: "no", "Original"
+
+# Synthesized waveform
+Select outer viewport: 4, 8, 0.6, 1.8
+Select inner viewport: 4.5, 7.7, 0.7, 1.7
+selectObject: finalObj
+Colour: "{0.2, 0.5, 0.8}"
+Draw: 0, 0, 0, 0, "no", "Curve"
+Colour: "Black"
+Draw inner box
+Text top: "no", "LPC Synthesized"
+
+# Pitch contour
+Select outer viewport: 0, 8, 2.0, 3.4
+Select inner viewport: 0.6, 7.6, 2.2, 3.2
+selectObject: smoothPitchObj
+Colour: "{0.9, 0.4, 0.2}"
+Line width: 2
+Draw: 0, 0, 75, 600, "no"
+Line width: 1
+Colour: "Black"
+Draw inner box
+Font size: 9
+Text top: "no", "Extracted Pitch Contour"
+Text left: "yes", "F0 (Hz)"
+Text bottom: "yes", "Time (s)"
+
+# Original spectrogram
+Select outer viewport: 0, 4, 3.6, 5.2
+selectObject: originalID
+origSpecID = To Spectrogram: 0.01, 4000, 0.002, 20, "Gaussian"
+selectObject: origSpecID
+Paint: 0, 0, 0, 4000, 100, "yes", 50, 6, 0, "no"
+Font size: 8
+Text top: "no", "Original Spectrogram"
+removeObject: origSpecID
+
+# Synthesized spectrogram
+Select outer viewport: 4, 8, 3.6, 5.2
+selectObject: finalObj
+resSpecID = To Spectrogram: 0.01, 4000, 0.002, 20, "Gaussian"
+selectObject: resSpecID
+Paint: 0, 0, 0, 4000, 100, "yes", 50, 6, 0, "no"
+Text top: "no", "Synthesized Spectrogram"
+removeObject: resSpecID
+
+Font size: 10
+
+# ============================================================
+# PLAY AND CLEANUP
+# ============================================================
+
+selectObject: finalObj
 Play
 
 # Clean up intermediate objects
-selectObject: pitchObj, smoothPitchObj, pitchTierObj, synthVoiceObj, lpcObj
+selectObject: pitchObj
+plusObject: smoothPitchObj
+plusObject: pitchTierObj
+plusObject: synthVoiceObj
+plusObject: lpcObj
 Remove
+
+selectObject: originalID
+plusObject: finalObj

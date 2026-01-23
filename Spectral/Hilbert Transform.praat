@@ -1,91 +1,132 @@
 # ============================================================
-# Praat AudioTools - Hilbert Transform.praat
+# Praat AudioTools - Hilbert_Transform.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Fixed syntax, added visualization
 # License: MIT License
 #
 # Description:
 #   Extracts the amplitude envelope using Hilbert transform
 #   (analytic signal), then applies it reversed in time.
-#   Creates "backwards attack" or "reverse reverb" effects
-#   where sounds swell into their transients.
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
+#   Creates "backwards attack" or "reverse reverb" effects.
 # ============================================================
 
-form Hilbert Time-Reversed Envelope
+# === Input Validation ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly ONE Sound object."
+endif
+
+originalID = selected("Sound")
+originalName$ = selected$("Sound")
+
+form Hilbert Time-Reversed Envelope v0.3
     optionmenu Preset: 1
         option Custom
         option Subtle Reverse Swell
         option Strong Reverse Attack
         option Pad-like Bloom
         option Percussive Reverse
+        option Gentle Fade-In
+        option Dramatic Swell
     comment === Processing ===
-    boolean use_downsampling 1
-    positive processing_sample_rate 32000
+    boolean Use_downsampling 1
+    positive Processing_sample_rate 32000
     comment === Envelope Shaping ===
-    boolean apply_envelope_sharpening 0
-    positive sharpening_exponent 0.8
+    boolean Apply_envelope_sharpening 0
+    positive Sharpening_exponent 0.8
     comment (< 1 = sharper, > 1 = smoother)
     comment === High-Pass Filter ===
-    positive highpass_cutoff 50
-    positive highpass_smoothing 10
-    comment (reduces low-frequency pumping)
+    positive Highpass_cutoff 50
+    positive Highpass_smoothing 10
     comment === Output ===
-    positive scale_peak 0.95
-    boolean play_after_processing 1
+    positive Scale_peak 0.95
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
-# Apply presets
+# ============================================================
+# PRESETS
+# ============================================================
+
 if preset = 2
+    # Subtle Reverse Swell
     apply_envelope_sharpening = 0
     highpass_cutoff = 30
     highpass_smoothing = 10
+    presetName$ = "SubtleSwell"
 elsif preset = 3
+    # Strong Reverse Attack
     apply_envelope_sharpening = 1
     sharpening_exponent = 0.6
     highpass_cutoff = 80
     highpass_smoothing = 20
+    presetName$ = "StrongReverse"
 elsif preset = 4
+    # Pad-like Bloom
     apply_envelope_sharpening = 1
     sharpening_exponent = 1.5
     highpass_cutoff = 20
     highpass_smoothing = 5
+    presetName$ = "PadBloom"
 elsif preset = 5
+    # Percussive Reverse
     apply_envelope_sharpening = 1
     sharpening_exponent = 0.4
     highpass_cutoff = 100
     highpass_smoothing = 30
+    presetName$ = "PercussiveReverse"
+elsif preset = 6
+    # Gentle Fade-In
+    apply_envelope_sharpening = 1
+    sharpening_exponent = 2.0
+    highpass_cutoff = 20
+    highpass_smoothing = 5
+    presetName$ = "GentleFadeIn"
+elsif preset = 7
+    # Dramatic Swell
+    apply_envelope_sharpening = 1
+    sharpening_exponent = 0.5
+    highpass_cutoff = 60
+    highpass_smoothing = 15
+    presetName$ = "DramaticSwell"
+else
+    presetName$ = "Custom"
 endif
 
-# Check selection
-if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly ONE Sound object first."
-endif
+# ============================================================
+# SETUP
+# ============================================================
 
-originalID = selected("Sound")
-sound$ = selected$("Sound")
 selectObject: originalID
 original_sr = Get sampling frequency
 original_duration = Get total duration
-num_channels = Get number of channels
+numChannels = Get number of channels
 
-writeInfoLine: "=== Hilbert Time-Reversed Envelope ==="
+clearinfo
+writeInfoLine: "=== Hilbert Time-Reversed Envelope v0.3 ==="
+appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(original_duration, 2), " s"
 appendInfoLine: "Sample rate: ", original_sr, " Hz"
 appendInfoLine: ""
+appendInfoLine: "Preset: ", presetName$
+if apply_envelope_sharpening
+    appendInfoLine: "Sharpening: ", sharpening_exponent
+endif
+appendInfoLine: "Highpass: ", highpass_cutoff, " Hz"
+appendInfoLine: ""
 
-# STEP 1: Convert to mono
+# ============================================================
+# STEP 1: PREPARE
+# ============================================================
+
 selectObject: originalID
-if num_channels > 1
+if numChannels > 1
     workingID = Convert to mono
 else
     workingID = Copy: "working"
 endif
 
-# STEP 2: Downsample if requested
+# Downsample if requested
 selectObject: workingID
 current_sr = Get sampling frequency
 
@@ -98,94 +139,237 @@ else
     processing_sample_rate = current_sr
 endif
 
-# STEP 3: Create spectrum for Hilbert transform
-appendInfoLine: "Computing Hilbert transform..."
+# ============================================================
+# STEP 2: HILBERT TRANSFORM
+# ============================================================
+
+appendInfo: "Computing Hilbert transform..."
 
 selectObject: workingID
-spectrum = To Spectrum: "no"
+spectrumID = To Spectrum: "no"
 Rename: "orig_spec"
 
-# STEP 4: Create Hilbert transform (90° phase shift)
-selectObject: spectrum
-hilbert_spectrum = Copy: "hilbert_spec"
+# Create Hilbert transform (90° phase shift)
+# Real -> Imag, Imag -> -Real
+selectObject: spectrumID
+hilbertSpecID = Copy: "hilbert_spec"
 
-selectObject: hilbert_spectrum
-Formula: "if row = 1 then Spectrum_orig_spec[2, col] else -Spectrum_orig_spec[1, col] fi"
+selectObject: hilbertSpecID
+Formula: "if row = 1 then Spectrum_orig_spec[2, col] else -Spectrum_orig_spec[1, col] endif"
 
-# STEP 5: Convert Hilbert spectrum to sound
-selectObject: hilbert_spectrum
-hilbert_sound = To Sound
+# Convert Hilbert spectrum to sound
+selectObject: hilbertSpecID
+hilbertSoundID = To Sound
 Rename: "hilbert"
 
-# STEP 6: Calculate envelope from analytic signal
-appendInfoLine: "Extracting envelope..."
+appendInfoLine: " done"
 
+# ============================================================
+# STEP 3: EXTRACT ENVELOPE
+# ============================================================
+
+appendInfo: "Extracting envelope..."
+
+# Envelope = sqrt(signal^2 + hilbert^2)
 selectObject: workingID
-env_sound = Copy: "env"
+envSoundID = Copy: "env"
 
-selectObject: env_sound
-Formula: "sqrt(self^2 + Sound_hilbert[]^2)"
+hilbertIdStr$ = string$(hilbertSoundID)
 
-# STEP 7: Scale envelope
-selectObject: env_sound
+selectObject: envSoundID
+Formula: "sqrt(self^2 + Object_" + hilbertIdStr$ + "(x)^2)"
+
+# Scale envelope
+selectObject: envSoundID
 Scale peak: 0.99
 
-# STEP 8: Optional envelope sharpening
+# Optional envelope sharpening
 if apply_envelope_sharpening
-    selectObject: env_sound
+    selectObject: envSoundID
     expStr$ = fixed$(sharpening_exponent, 4)
     Formula: "self ^ " + expStr$
-    appendInfoLine: "Envelope sharpened (exp: ", sharpening_exponent, ")"
 endif
 
-# STEP 9: High-pass filter
-selectObject: env_sound
-filtered_env = Filter (pass Hann band): highpass_cutoff, 0, highpass_smoothing
+# High-pass filter to reduce low-frequency pumping
+selectObject: envSoundID
+filteredEnvID = Filter (pass Hann band): highpass_cutoff, 0, highpass_smoothing
 Rename: "env_filt"
-removeObject: env_sound
 
-# STEP 10: Create time-reversed original
-appendInfoLine: "Applying reversed envelope..."
+# Keep a copy for visualization before removing
+selectObject: filteredEnvID
+envForVizID = Copy: "env_viz"
 
+removeObject: envSoundID
+
+appendInfoLine: " done"
+
+# ============================================================
+# STEP 4: APPLY REVERSED ENVELOPE
+# ============================================================
+
+appendInfo: "Applying reversed envelope..."
+
+# Create time-reversed original
 selectObject: workingID
-reverse_sound = Copy: "reversed"
+reverseSoundID = Copy: "reversed"
 
-selectObject: reverse_sound
+selectObject: reverseSoundID
 Formula: "self[ncol - col + 1]"
 
-# STEP 11: Apply envelope
-selectObject: reverse_sound
+# Apply envelope to reversed sound
+filteredEnvIdStr$ = string$(filteredEnvID)
+
+selectObject: reverseSoundID
 Rename: "rev_env"
-Formula: "self * Sound_env_filt[]"
+Formula: "self * Object_" + filteredEnvIdStr$ + "(x)"
 
-# STEP 12: Reverse back to normal time
-selectObject: reverse_sound
-final_sound = Copy: "final"
+# Reverse back to normal time
+selectObject: reverseSoundID
+finalSoundID = Copy: "final"
 
-selectObject: final_sound
+selectObject: finalSoundID
 Formula: "self[ncol - col + 1]"
 
-# STEP 13: Resample back if needed
+appendInfoLine: " done"
+
+# ============================================================
+# STEP 5: RESAMPLE AND FINALIZE
+# ============================================================
+
 if use_downsampling and processing_sample_rate < original_sr
-    appendInfoLine: "Resampling to ", original_sr, " Hz..."
-    selectObject: final_sound
+    appendInfo: "Resampling to ", original_sr, " Hz..."
+    selectObject: finalSoundID
     resampledID = Resample: original_sr, 50
-    removeObject: final_sound
-    final_sound = resampledID
+    removeObject: finalSoundID
+    finalSoundID = resampledID
+    appendInfoLine: " done"
 endif
 
-# STEP 14: Finalize
-selectObject: final_sound
-Rename: sound$ + "_reverse_env"
+selectObject: finalSoundID
+Rename: originalName$ + "_reverseEnv_" + presetName$
 Scale peak: scale_peak
 
-# Cleanup
-removeObject: spectrum, hilbert_spectrum, hilbert_sound, filtered_env, reverse_sound, workingID
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+if draw_visualization
+    appendInfoLine: "Drawing visualization..."
+    
+    Erase all
+    
+    # Title
+    Select outer viewport: 0, 8, 0, 0.5
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Hilbert Reverse Envelope: " + originalName$ + " [" + presetName$ + "]"
+    
+    # Original waveform
+    Select outer viewport: 0, 4, 0.6, 2.0
+    Select inner viewport: 0.5, 3.7, 0.75, 1.85
+    selectObject: originalID
+    Colour: "{0.7, 0.7, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 9
+    Text top: "no", "Original"
+    Text left: "yes", "Amp"
+    
+    # Processed waveform
+    Select outer viewport: 4, 8, 0.6, 2.0
+    Select inner viewport: 4.5, 7.7, 0.75, 1.85
+    selectObject: finalSoundID
+    Colour: "{0.2, 0.5, 0.8}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text top: "no", "Reverse Envelope Applied"
+    Text left: "yes", "Amp"
+    
+    # Extracted envelope
+    Select outer viewport: 0, 8, 2.2, 3.8
+    Select inner viewport: 0.6, 7.6, 2.4, 3.6
+    
+    selectObject: envForVizID
+    Colour: "{0.9, 0.5, 0.2}"
+    Line width: 2
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    
+    # Also draw reversed envelope
+    selectObject: envForVizID
+    envDur = Get total duration
+    envSamples = Get number of samples
+    
+    Colour: "{0.2, 0.7, 0.4}"
+    # Draw manually reversed
+    Axes: 0, envDur, -1, 1
+    
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 9
+    Text top: "no", "Hilbert Envelope (orange = original, applied reversed)"
+    Text left: "yes", "Env"
+    Text bottom: "yes", "Time (s)"
+    
+    # Hilbert signal (quadrature component)
+    Select outer viewport: 0, 4, 4.0, 5.4
+    Select inner viewport: 0.5, 3.7, 4.15, 5.25
+    selectObject: hilbertSoundID
+    Colour: "{0.6, 0.3, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text top: "no", "Hilbert Transform (90° phase shift)"
+    Text left: "yes", "Amp"
+    
+    # Info panel
+    Select outer viewport: 4, 8, 4.0, 5.4
+    Select inner viewport: 4.4, 7.8, 4.15, 5.25
+    
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    Text: 0.05, "left", 0.8, "half", "Preset: " + presetName$
+    if apply_envelope_sharpening
+        Text: 0.05, "left", 0.55, "half", "Sharpening: " + fixed$(sharpening_exponent, 2)
+    else
+        Text: 0.05, "left", 0.55, "half", "Sharpening: OFF"
+    endif
+    Text: 0.05, "left", 0.3, "half", "Highpass: " + string$(highpass_cutoff) + " Hz"
+    Text: 0.55, "left", 0.8, "half", "Sample rate: " + string$(processing_sample_rate)
+    Text: 0.55, "left", 0.55, "half", "Smoothing: " + string$(highpass_smoothing)
+    
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 10
+    
+    removeObject: envForVizID
+endif
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+removeObject: spectrumID, hilbertSpecID, hilbertSoundID, filteredEnvID, reverseSoundID, workingID
+if draw_visualization = 0
+    removeObject: envForVizID
+endif
+
+# ============================================================
+# OUTPUT
+# ============================================================
 
 appendInfoLine: ""
-appendInfoLine: "Complete!"
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: ""
+appendInfoLine: "Created: ", originalName$, "_reverseEnv_", presetName$
 
-selectObject: final_sound
-if play_after_processing
+if play_result
+    selectObject: finalSoundID
     Play
 endif

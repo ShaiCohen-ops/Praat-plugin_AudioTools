@@ -1,113 +1,111 @@
 # ============================================================
-# Praat AudioTools - Partial Editing & Resynthesis.praat
+# Praat AudioTools - Partial_Editing___Resynthesis.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Fixed syntax, added visualization
 # License: MIT License
 #
 # Description:
 #   SPEAR-like sinusoidal analysis-resynthesis. Extracts
 #   frequency peaks frame-by-frame and resynthesizes with
-#   pure sine waves. Creates clean, synthetic textures from
-#   any sound. Jitter parameters add organic variation.
-#   Can transpose pitch and shift formants independently.
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
+#   pure sine waves.
 # ============================================================
 
-form Sinusoidal Texture Resynthesis
+form Sinusoidal Texture Resynthesis v0.3
     optionmenu Preset: 1
         option Custom
-        option Clean Resynth (faithful recreation)
-        option Diffuse Texture (jittery, organic)
-        option Sparse Partials (minimal, hollow)
-        option Dense Partials (rich, full)
+        option Clean Resynth (faithful)
+        option Diffuse Texture (jittery)
+        option Sparse Partials (hollow)
+        option Dense Partials (rich)
         option Pitch Up Octave
         option Pitch Down Octave
         option Formant Shift Up (chipmunk)
         option Formant Shift Down (giant)
-        option Glassy Shimmer (high jitter)
-        option Robotic (no jitter, precise)
-        option Whisper Ghost (sparse, diffuse)
+        option Glassy Shimmer
+        option Robotic (precise)
+        option Whisper Ghost
     comment === Synthesis Parameters ===
-    positive window_length 0.060
-    positive hop_size 0.015
-    positive min_frequency 60
-    positive max_frequency 8000
-    integer max_partials_per_frame 15
+    positive Window_length 0.060
+    positive Hop_size 0.015
+    positive Min_frequency 60
+    positive Max_frequency 8000
+    integer Max_partials_per_frame 15
     comment === Diffusion & Texture ===
-    positive freq_jitter 3.0
-    real amp_jitter 0.1
+    positive Freq_jitter 3.0
+    real Amp_jitter 0.1
     comment === Pitch/Formant ===
-    real transpose_semitones 0
-    real formant_shift_ratio 1.0
+    real Transpose_semitones 0
+    real Formant_shift_ratio 1.0
     comment === Quality ===
     choice Processing_quality: 2
-        button High (original rate - slow)
-        button Medium (22050 Hz - fast)
-        button Low (11025 Hz - very fast)
-    boolean play_result 1
+        button High (original rate)
+        button Medium (22050 Hz)
+        button Low (11025 Hz)
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
 # === APPLY PRESETS ===
 if preset = 2
-    # Clean Resynth
     freq_jitter = 0.5
     amp_jitter = 0.02
     max_partials_per_frame = 20
+    presetName$ = "CleanResynth"
 elsif preset = 3
-    # Diffuse Texture
     freq_jitter = 8.0
     amp_jitter = 0.3
     max_partials_per_frame = 15
+    presetName$ = "DiffuseTexture"
 elsif preset = 4
-    # Sparse Partials
     max_partials_per_frame = 5
     freq_jitter = 2.0
     amp_jitter = 0.1
+    presetName$ = "SparsePartials"
 elsif preset = 5
-    # Dense Partials
     max_partials_per_frame = 30
     freq_jitter = 1.0
     amp_jitter = 0.05
+    presetName$ = "DensePartials"
 elsif preset = 6
-    # Pitch Up Octave
     transpose_semitones = 12
     freq_jitter = 1.0
     amp_jitter = 0.05
+    presetName$ = "PitchUpOctave"
 elsif preset = 7
-    # Pitch Down Octave
     transpose_semitones = -12
     freq_jitter = 1.0
     amp_jitter = 0.05
+    presetName$ = "PitchDownOctave"
 elsif preset = 8
-    # Formant Shift Up
     formant_shift_ratio = 1.5
     freq_jitter = 2.0
     amp_jitter = 0.1
+    presetName$ = "FormantUp"
 elsif preset = 9
-    # Formant Shift Down
     formant_shift_ratio = 0.7
     freq_jitter = 2.0
     amp_jitter = 0.1
+    presetName$ = "FormantDown"
 elsif preset = 10
-    # Glassy Shimmer
     freq_jitter = 15.0
     amp_jitter = 0.4
     max_partials_per_frame = 20
     max_frequency = 12000
+    presetName$ = "GlassyShimmer"
 elsif preset = 11
-    # Robotic
     freq_jitter = 0.0
     amp_jitter = 0.0
     max_partials_per_frame = 12
+    presetName$ = "Robotic"
 elsif preset = 12
-    # Whisper Ghost
     max_partials_per_frame = 4
     freq_jitter = 10.0
     amp_jitter = 0.5
     max_frequency = 6000
+    presetName$ = "WhisperGhost"
+else
+    presetName$ = "Custom"
 endif
 
 # === SETUP ===
@@ -123,7 +121,12 @@ t1 = Get start time
 t2 = Get end time
 dur = t2 - t1
 
-writeInfoLine: "=== Sinusoidal Texture Resynthesis ==="
+clearinfo
+writeInfoLine: "=== Sinusoidal Texture Resynthesis v0.3 ==="
+appendInfoLine: "Input: ", orig_name$
+appendInfoLine: "Duration: ", fixed$(dur, 2), " s"
+appendInfoLine: ""
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Partials: ", max_partials_per_frame
 appendInfoLine: "Freq jitter: ", freq_jitter, " Hz"
 appendInfoLine: "Amp jitter: ", amp_jitter
@@ -201,7 +204,7 @@ for i from 0 to nframes - 1
     mat_id = To Matrix
     
     # Calculate magnitude in row 1
-    Formula: "if row = 1 then sqrt(self^2 + self[2,col]^2) else 0 fi"
+    Formula: "if row = 1 then sqrt(self^2 + self[2,col]^2) else 0 endif"
     
     nc = Get number of columns
     freq_step = nyq / (nc - 1)
@@ -216,7 +219,7 @@ for i from 0 to nframes - 1
         col_max = nc
     endif
     
-    Formula: "if col < " + string$(col_min) + " or col > " + string$(col_max) + " then 0 else self fi"
+    Formula: "if col < " + string$(col_min) + " or col > " + string$(col_max) + " then 0 else self endif"
 
     # D. CREATE GRAIN
     Create Sound from formula: "grain", 1, 0, current_win_dur, work_sr, "0"
@@ -260,7 +263,7 @@ for i from 0 to nframes - 1
             selectObject: mat_id
             sup_c1 = current_max_col - suppress_bins
             sup_c2 = current_max_col + suppress_bins
-            Formula: "if col >= " + string$(sup_c1) + " and col <= " + string$(sup_c2) + " then 0 else self fi"
+            Formula: "if col >= " + string$(sup_c1) + " and col <= " + string$(sup_c2) + " then 0 else self endif"
         else
             k = max_partials_per_frame
         endif
@@ -276,14 +279,14 @@ for i from 0 to nframes - 1
     selectObject: output_id
     s_grain_id$ = string$(grain_id)
     s_end$ = fixed$(t_end, 6)
-    Formula: "if x >= " + s_start$ + " and x <= " + s_end$ + " then self + object(" + s_grain_id$ + ", x) else self fi"
+    Formula: "if x >= " + s_start$ + " and x <= " + s_end$ + " then self + object(" + s_grain_id$ + ", x) else self endif"
     
     removeObject: frame_id, spec_id, mat_id, grain_id
 endfor
 
 # === FINALIZE ===
 selectObject: output_id
-Rename: orig_name$ + "_resynth"
+Rename: orig_name$ + "_resynth_" + presetName$
 Scale intensity: 70
 
 # Restore original sample rate
@@ -293,15 +296,82 @@ if work_sr <> orig_sr
     removeObject: output_id
     output_id = resampled_id
     selectObject: output_id
-    Rename: orig_name$ + "_resynth"
+    Rename: orig_name$ + "_resynth_" + presetName$
 endif
 
 removeObject: input_id
 
-appendInfoLine: ""
-appendInfoLine: "Complete!"
+# ============================================================
+# VISUALIZATION
+# ============================================================
 
-selectObject: output_id
+if draw_visualization
+    Erase all
+    
+    Select outer viewport: 0, 8, 0, 0.5
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Sinusoidal Resynthesis: " + orig_name$ + " [" + presetName$ + "]"
+    
+    Select outer viewport: 0, 4, 0.6, 1.8
+    Select inner viewport: 0.5, 3.7, 0.7, 1.7
+    selectObject: orig_id
+    Colour: "{0.7, 0.7, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text top: "no", "Original"
+    
+    Select outer viewport: 4, 8, 0.6, 1.8
+    Select inner viewport: 4.5, 7.7, 0.7, 1.7
+    selectObject: output_id
+    Colour: "{0.2, 0.5, 0.8}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Text top: "no", "Resynthesized"
+    
+    Select outer viewport: 0, 4, 2.0, 3.8
+    selectObject: orig_id
+    origSpecID = To Spectrogram: 0.01, 5000, 0.002, 20, "Gaussian"
+    selectObject: origSpecID
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Font size: 8
+    Text top: "no", "Original Spectrogram"
+    removeObject: origSpecID
+    
+    Select outer viewport: 4, 8, 2.0, 3.8
+    selectObject: output_id
+    resSpecID = To Spectrogram: 0.01, 5000, 0.002, 20, "Gaussian"
+    selectObject: resSpecID
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Text top: "no", "Resynthesized Spectrogram"
+    removeObject: resSpecID
+    
+    Select outer viewport: 0, 8, 4.0, 4.6
+    Select inner viewport: 0.5, 7.7, 4.05, 4.55
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    Text: 0.02, "left", 0.5, "half", "Partials: " + string$(max_partials_per_frame)
+    Text: 0.18, "left", 0.5, "half", "Jitter: " + fixed$(freq_jitter, 1) + " Hz"
+    Text: 0.38, "left", 0.5, "half", "Transpose: " + fixed$(transpose_semitones, 0)
+    Text: 0.55, "left", 0.5, "half", "Formant: " + fixed$(formant_shift_ratio, 2)
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 10
+endif
+
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Created: ", orig_name$, "_resynth_", presetName$
+
+selectObject: orig_id
+plusObject: output_id
+
 if play_result
+    selectObject: output_id
     Play
 endif
