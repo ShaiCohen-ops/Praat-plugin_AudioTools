@@ -11,10 +11,6 @@
 #   additive synthesis to resynthesize frozen partials with
 #   optional decay and pitch drift (glissando).
 #
-# Changelog v0.3:
-#   - Added wet/dry mix control
-#   - Added visualization
-#
 # Usage:
 #   Select a Sound object in Praat and run this script.
 # ============================================================
@@ -37,16 +33,16 @@ form Spectral Freeze Synthesis
     comment === Analysis ===
     positive frame_step_ms 20
     positive analysis_window_ms 35
-    positive max_frequency_hz 8000
+    positive max_frequency_hz 6000
     integer top_partials 10
+    comment === Performance ===
+    positive resample_to_hz 12000
+    comment (Lower = Faster. 12000 is great for drones.)
     comment === Transformation ===
     positive decay_factor 0.2
-    comment (0.999 = infinite, 0.1 = fast decay)
     real glissando_oct_sec 0.0
-    comment (octaves per second: + = up, - = down)
     comment === Mix ===
     real wet_dry_percent 100
-    comment (0 = dry, 100 = full wet/freeze)
     comment === Output ===
     positive tail_duration_sec 2
     boolean create_stereo_output 1
@@ -60,83 +56,71 @@ endform
 presetName$ = "Custom"
 
 if preset = 2
-    # Classic Freeze
     decay_factor = 0.999
     glissando_oct_sec = 0
     top_partials = 10
     presetName$ = "Classic Freeze"
 elsif preset = 3
-    # Gentle Decay
     decay_factor = 0.5
     glissando_oct_sec = 0
     top_partials = 10
     presetName$ = "Gentle Decay"
 elsif preset = 4
-    # Rising Shimmer
     decay_factor = 0.3
     glissando_oct_sec = 0.15
     top_partials = 12
     presetName$ = "Rising Shimmer"
 elsif preset = 5
-    # Falling Shimmer
     decay_factor = 0.3
     glissando_oct_sec = -0.15
     top_partials = 12
     presetName$ = "Falling Shimmer"
 elsif preset = 6
-    # Ghostly Fade
     decay_factor = 0.15
     glissando_oct_sec = 0.02
     top_partials = 20
     tail_duration_sec = 4
     presetName$ = "Ghostly Fade"
 elsif preset = 7
-    # Metallic Drone
     decay_factor = 0.95
     glissando_oct_sec = 0
     top_partials = 6
-    max_frequency_hz = 4000
+    max_frequency_hz = 3000
     presetName$ = "Metallic Drone"
 elsif preset = 8
-    # Cosmic Drift
     decay_factor = 0.4
     glissando_oct_sec = 0.5
     top_partials = 15
     tail_duration_sec = 5
     presetName$ = "Cosmic Drift"
 elsif preset = 9
-    # Frozen Choir
     decay_factor = 0.8
     glissando_oct_sec = 0
     top_partials = 16
     stereo_delay_ms = 20
-    max_frequency_hz = 5000
+    max_frequency_hz = 4000
     presetName$ = "Frozen Choir"
 elsif preset = 10
-    # Disintegrating
     decay_factor = 0.05
     glissando_oct_sec = -0.05
     top_partials = 25
     tail_duration_sec = 1
     presetName$ = "Disintegrating"
 elsif preset = 11
-    # Ascending to Heaven
     decay_factor = 0.6
     glissando_oct_sec = 0.8
     top_partials = 10
     tail_duration_sec = 4
-    max_frequency_hz = 12000
+    max_frequency_hz = 5000
     presetName$ = "Ascending to Heaven"
 elsif preset = 12
-    # Descending to Hell
     decay_factor = 0.7
     glissando_oct_sec = -0.6
     top_partials = 8
     tail_duration_sec = 4
-    max_frequency_hz = 3000
+    max_frequency_hz = 2500
     presetName$ = "Descending to Hell"
 elsif preset = 13
-    # Spectral Dust
     decay_factor = 0.02
     glissando_oct_sec = 0.1
     top_partials = 3
@@ -150,21 +134,12 @@ if numberOfSelected("Sound") <> 1
 endif
 
 # Clamp wet/dry
-if wet_dry_percent < 0
-    wet_dry_percent = 0
-elsif wet_dry_percent > 100
-    wet_dry_percent = 100
-endif
-
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-writeInfoLine: "=== Spectral Freeze Synthesis ==="
+writeInfoLine: "=== Spectral Freeze (V3 + Resample) ==="
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Partials: ", top_partials, " | Decay: ", decay_factor
-appendInfoLine: "Glissando: ", glissando_oct_sec, " oct/sec"
-appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
-appendInfoLine: ""
+appendInfoLine: "Resampling to: ", resample_to_hz, " Hz"
 
 orig_id = selected("Sound")
 orig_name$ = selected$("Sound")
@@ -173,26 +148,28 @@ orig_sr = Get sampling frequency
 n_channels = Get number of channels
 orig_dur = Get total duration
 
-# Prepare mono input
-if n_channels > 1
-    selectObject: orig_id
-    input_id = Convert to mono
-else
-    selectObject: orig_id
-    input_id = Copy: "input"
-endif
-
-# Keep dry copy for mix
+# === 1. RESAMPLE INPUT (The Speed Trick) ===
 selectObject: orig_id
+# Resample to lower rate for processing
+input_id = Resample: resample_to_hz, 50
+Rename: "work_copy"
+work_sr = resample_to_hz
+
+# Convert to mono for analysis
 if n_channels > 1
-    dry_sound = Convert to mono
-else
-    dry_sound = Copy: "dry"
+    selectObject: input_id
+    work_mono = Convert to mono
+    removeObject: input_id
+    input_id = work_mono
 endif
 
-# Add tail for freeze to decay
+# Keep dry copy (resampled)
 selectObject: input_id
-tail_id = Create Sound from formula: "tail", 1, 0, tail_duration_sec, orig_sr, "0"
+dry_sound = Copy: "dry_work"
+
+# Add tail
+selectObject: input_id
+tail_id = Create Sound from formula: "tail", 1, 0, tail_duration_sec, work_sr, "0"
 selectObject: input_id
 plusObject: tail_id
 temp_id = Concatenate
@@ -210,15 +187,21 @@ gliss_ratio = 2 ^ (glissando_oct_sec * dt)
 stereo_delay_sec = stereo_delay_ms / 1000
 nframes = floor((tot_dur - win_dur) / dt)
 
+# Validate Nyquist
+if max_frequency_hz > work_sr / 2
+    max_frequency_hz = work_sr / 2
+    appendInfoLine: "Max Frequency capped to ", max_frequency_hz, " Hz (Nyquist)"
+endif
+
 appendInfoLine: "Processing ", nframes, " frames..."
 appendInfoLine: ""
 
-# Create output
+# Create output (at lower SR for speed)
 out_chans = 1
 if create_stereo_output
     out_chans = 2
 endif
-output_id = Create Sound from formula: "Freeze", out_chans, 0, tot_dur, orig_sr, "0"
+output_id = Create Sound from formula: "Freeze", out_chans, 0, tot_dur, work_sr, "0"
 
 # Initialize accumulators
 acc_freq# = zero#(top_partials)
@@ -231,7 +214,7 @@ if suppress_bins < 1
     suppress_bins = 1
 endif
 
-# === MAIN LOOP ===
+# === MAIN LOOP (V3 Logic) ===
 for i from 0 to nframes - 1
     if i mod 50 = 0
         perc = i / nframes * 100
@@ -243,7 +226,7 @@ for i from 0 to nframes - 1
     t_start = tc - win_dur/2
     t_end = tc + win_dur/2
     
-    # 1. ANALYZE FRAME
+    # 1. ANALYZE FRAME (V3 Style)
     selectObject: input_id
     frame_id = Extract part: t_start, t_end, "hanning", 1, "yes"
     
@@ -255,17 +238,24 @@ for i from 0 to nframes - 1
     selectObject: mat_id
     Formula: "if row = 1 then sqrt(self^2 + self[2,col]^2) else 0 fi"
     
+    # === OPTIMIZATION: THE SOUND HACK (V3) ===
+    # Convert Matrix to Sound to use fast "Time of maximum" commands
+    
+    # Get parameters
     nc = Get number of columns
-    freq_step = (orig_sr/2) / (nc - 1)
-    max_col = round(max_frequency_hz / freq_step) + 1
-    if max_col > nc
-        max_col = nc
-    endif
+    dx = Get column distance
     
-    # Limit frequency range
-    Formula: "if col > " + string$(max_col) + " then 0 else self fi"
+    # Convert entire matrix to a temporary Sound
+    tmp_sound = To Sound
     
-    # 2. UPDATE ACCUMULATORS (decay + glissando)
+    # Extract just the Magnitude (Channel 1)
+    mag_sound = Extract one channel: 1
+    Rename: "spectrum_slice"
+    
+    # Clean up the temp stereo sound
+    removeObject: tmp_sound
+    
+    # 2. UPDATE ACCUMULATORS
     for k from 1 to top_partials
         acc_amp#[k] = acc_amp#[k] * d_frame
         if acc_freq#[k] > 0
@@ -278,43 +268,44 @@ for i from 0 to nframes - 1
         endif
     endfor
     
-    # 3. FIND PEAKS
+    # 3. FAST PEAK FINDING (V3 Fixes)
     for k from 1 to top_partials
-        selectObject: mat_id
+        selectObject: mag_sound
         
-        cur_max = -1
-        cur_col = -1
+        # Use "Parabolic" (Verified)
+        cur_freq = Get time of maximum: 0, max_frequency_hz, "Parabolic"
         
-        for c from 1 to max_col
-            val = Get value in cell: 1, c
-            if val > cur_max
-                cur_max = val
-                cur_col = c
-            endif
-        endfor
+        # Use "Linear" (Verified)
+        cur_max = Get value at time: 1, cur_freq, "Linear"
         
         if cur_max > 0.000001
-            cur_freq = (cur_col - 1) * freq_step
-            
-            # Freeze: only update if new peak is louder
+            # Freeze Logic
             if cur_max > acc_amp#[k]
                 acc_amp#[k] = cur_max
                 acc_freq#[k] = cur_freq
             endif
             
-            # Suppress this peak region
-            sup_c1 = cur_col - suppress_bins
-            sup_c2 = cur_col + suppress_bins
-            Formula: "if col >= " + string$(sup_c1) + " and col <= " + string$(sup_c2) + " then 0 else self fi"
+            # SUPPRESSION: "Set value at sample number" (Verified V3)
+            cur_samp = round(cur_freq / dx) + 1
+            
+            s_low = cur_samp - suppress_bins
+            s_high = cur_samp + suppress_bins
+            if s_low < 1
+               s_low = 1
+            endif
+            if s_high > nc
+               s_high = nc
+            endif
+            
+            for s from s_low to s_high
+                Set value at sample number: 1, s, 0
+            endfor
         endif
     endfor
     
-    # 4. SYNTHESIZE GRAIN
-    Create Sound from formula: "grain", out_chans, 0, win_dur, orig_sr, "0"
-    grain_id = selected("Sound")
-    Shift times to: "start time", t_start
+    removeObject: mag_sound
     
-    # Build synthesis formula
+    # 4. SYNTHESIZE GRAIN (Resampled SR)
     left_sum$ = ""
     right_sum$ = ""
     s_delay$ = fixed$(stereo_delay_sec, 6)
@@ -326,7 +317,8 @@ for i from 0 to nframes - 1
         amp = acc_amp#[k]
         
         if freq > 20 and amp > 0.000001
-            amp_lin = amp / (win_dur * orig_sr / 4)
+            # Note: We use 'work_sr' here
+            amp_lin = amp / (win_dur * work_sr / 4)
             s_freq$ = fixed$(freq, 2)
             s_amp$ = fixed$(amp_lin, 8)
             
@@ -343,25 +335,34 @@ for i from 0 to nframes - 1
     endfor
     
     if found_partials
-        if out_chans = 1
-            Formula: "self" + left_sum$
-        else
-            Formula: "if row = 1 then self" + left_sum$ + " else self" + right_sum$ + " fi"
-        endif
-        
-        # Hanning window
         s_dur$ = fixed$(win_dur, 6)
+        window_form$ = "0.5 * (1 - cos(2*pi * x / " + s_dur$ + "))"
+        
+        if out_chans = 1
+            final_form$ = "(" + mid$(left_sum$, 4, length(left_sum$)) + ") * " + window_form$
+            Create Sound from formula: "grain", 1, 0, win_dur, work_sr, final_form$
+        else
+            Create Sound from formula: "grain", 2, 0, win_dur, work_sr, "0"
+            Formula: "if row = 1 then (" + mid$(left_sum$, 4, length(left_sum$)) + ") * " + window_form$ + " else (" + mid$(right_sum$, 4, length(right_sum$)) + ") * " + window_form$ + " fi"
+        endif
+        grain_id = selected("Sound")
+        
+        # Shift
+        Shift times to: "start time", t_start
+        
+        # 5. MIX TO OUTPUT
+        # This is faster now because output_id has fewer samples (work_sr)
+        selectObject: output_id
+        s_gid$ = string$(grain_id)
         s_start$ = fixed$(t_start, 6)
-        Formula: "self * 0.5 * (1 - cos(2*pi * (x - " + s_start$ + ") / " + s_dur$ + "))"
+        s_end$ = fixed$(t_end, 6)
+        
+        Formula: "if x >= " + s_start$ + " and x <= " + s_end$ + " then self + object(" + s_gid$ + ", x) else self fi"
+        
+        removeObject: grain_id
     endif
     
-    # 5. MIX TO OUTPUT
-    selectObject: output_id
-    s_gid$ = string$(grain_id)
-    s_end$ = fixed$(t_end, 6)
-    Formula: "if x >= " + s_start$ + " and x <= " + s_end$ + " then self + object(" + s_gid$ + ", x) else self fi"
-    
-    removeObject: frame_id, spec_id, mat_id, grain_id
+    removeObject: frame_id, spec_id, mat_id
 endfor
 
 # Store final partials for visualization
@@ -370,13 +371,12 @@ final_amp# = acc_amp#
 
 # === WET/DRY MIX ===
 if dry_level > 0
-    # Extend dry sound to match output length
     selectObject: dry_sound
     dry_dur = Get total duration
     
     if tot_dur > dry_dur
         silence_dur = tot_dur - dry_dur
-        Create Sound from formula: "silence", 1, 0, silence_dur, orig_sr, "0"
+        Create Sound from formula: "silence", 1, 0, silence_dur, work_sr, "0"
         silence_id = selected("Sound")
         selectObject: dry_sound
         plusObject: silence_id
@@ -385,7 +385,6 @@ if dry_level > 0
         dry_sound = extended_dry
     endif
     
-    # Mix
     wet_str$ = string$(wet_level)
     dry_str$ = string$(dry_level)
     dry_id_str$ = string$(dry_sound)
@@ -405,7 +404,6 @@ removeObject: input_id, dry_sound
 
 # === VISUALIZATION ===
 if draw_visualization
-    # Create spectra for display
     selectObject: orig_id
     if n_channels > 1
         orig_mono = Convert to mono
@@ -486,7 +484,6 @@ if draw_visualization
     Colour: "{0.95, 0.95, 0.95}"
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, max_frequency_hz, 0, 1.2
     
-    # Find max amplitude for scaling
     max_amp = 0.000001
     for k from 1 to top_partials
         if final_amp#[k] > max_amp
@@ -494,15 +491,12 @@ if draw_visualization
         endif
     endfor
     
-    # Draw partials
     for k from 1 to top_partials
         if final_freq#[k] > 20 and final_amp#[k] > 0.000001
             amp_norm = final_amp#[k] / max_amp
             if amp_norm > 1
                 amp_norm = 1
             endif
-            
-            # Color by glissando direction
             if glissando_oct_sec > 0
                 col$ = "{0.2, 0.7, 0.4}"
             elsif glissando_oct_sec < 0
@@ -510,7 +504,6 @@ if draw_visualization
             else
                 col$ = "{0.3, 0.5, 0.8}"
             endif
-            
             Colour: col$
             Draw line: final_freq#[k], 0, final_freq#[k], amp_norm
             Paint circle (mm): col$, final_freq#[k], amp_norm, 1.2
@@ -527,17 +520,14 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.1, 4.5
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", 
-        ... "Partials: " + string$(top_partials) +
-        ... " | Decay: " + fixed$(decay_factor, 3) +
-        ... " | Gliss: " + fixed$(glissando_oct_sec, 2) + " oct/s" +
-        ... " | Tail: " + fixed$(tail_duration_sec, 1) + "s" +
-        ... " | Wet: " + fixed$(wet_dry_percent, 0) + "%"
+    
+    # Fixed Text V3 logic
+    paramInfo$ = "Partials: " + string$(top_partials) + " | Decay: " + fixed$(decay_factor, 3) + " | Resample: " + string$(resample_to_hz) + " Hz"
+    Text: 0.5, "centre", 0.5, "half", paramInfo$
     
     Font size: 10
     Colour: "Black"
     
-    # Cleanup
     removeObject: orig_mono, orig_spectrum, result_mono, result_spectrum
 endif
 
