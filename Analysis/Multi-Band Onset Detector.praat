@@ -355,10 +355,10 @@ if show_visualization
     Erase all
     
     # --- Title ---
-    Select outer viewport: 0, 8, 0.0, 0.5
+    Select outer viewport: 1.5, 8, 0.3, 0.5
     Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Multi-Band Onset Detector: " + original_name$ + " [" + presetName$ + "]"
+    Text: 2.0, "centre", 0.1, "half", "Multi-Band Onset Detector: " + original_name$ + " [" + presetName$ + "]"
     
     # --- Original waveform ---
     Select outer viewport: 0, 8, 0.6, 1.5
