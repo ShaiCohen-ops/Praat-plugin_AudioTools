@@ -3,21 +3,40 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2025)
+# Version: 1.6 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Fast waveset-inspired audio distortion with stereo processing.
 #   Processes L/R differently for wide stereo image.
-#   Applies windowing to eliminate clicks.
+#   Applies Hann windowing to eliminate clicks.
+#
+# Changelog v1.6:
+#   - Added presets
+#   - Matched visualization style to other AudioTools scripts
+#   - Added preset name to output filename
 #
 # Usage:
 #   Select a Sound object and run this script.
 # ============================================================
 
 form Fast Waveset Distortion
-    optionmenu mode 1
+    comment === Preset ===
+    optionmenu Preset: 1
+        option Custom
+        option Glitch Stutter
+        option Rhythmic Gaps
+        option Backwards Chunks
+        option Random Shuffle
+        option Slow Motion
+        option Fast Forward
+        option Sidechain Pump
+        option Robot Voice
+        option Lo-Fi Crush
+        option Wobble Tremolo
+    comment === Mode ===
+    optionmenu Mode: 1
         option 1. Stutter (repeat chunks)
         option 2. Gaps (silence chunks)
         option 3. Reverse chunks
@@ -28,14 +47,101 @@ form Fast Waveset Distortion
         option 8. Ring modulator
         option 9. Bitcrush
         option 10. Tremolo
-    real amount 3.0
-    positive chunk_ms 40
-    real fade_ms 5
-    real stereo_spread 0.2
-    real mix 1.0
-    boolean normalize_output 1
-    boolean draw_result 1
+    comment === Parameters ===
+    real Amount 3.0
+    positive Chunk_ms 40
+    real Fade_ms 5
+    real Stereo_spread 0.2
+    real Mix 1.0
+    comment === Output ===
+    boolean Normalize_output 1
+    boolean Show_visualization 1
 endform
+
+# === APPLY PRESETS ===
+if preset = 2
+    # Glitch Stutter
+    mode = 1
+    amount = 4.0
+    chunk_ms = 30
+    fade_ms = 3
+    stereo_spread = 0.3
+    presetName$ = "GlitchStutter"
+elsif preset = 3
+    # Rhythmic Gaps
+    mode = 2
+    amount = 3.0
+    chunk_ms = 50
+    fade_ms = 5
+    stereo_spread = 0.1
+    presetName$ = "RhythmicGaps"
+elsif preset = 4
+    # Backwards Chunks
+    mode = 3
+    amount = 1.0
+    chunk_ms = 80
+    fade_ms = 8
+    stereo_spread = 0.15
+    presetName$ = "BackwardsChunks"
+elsif preset = 5
+    # Random Shuffle
+    mode = 4
+    amount = 1.0
+    chunk_ms = 60
+    fade_ms = 6
+    stereo_spread = 0.25
+    presetName$ = "RandomShuffle"
+elsif preset = 6
+    # Slow Motion
+    mode = 5
+    amount = 4.0
+    chunk_ms = 100
+    fade_ms = 10
+    stereo_spread = 0.1
+    presetName$ = "SlowMotion"
+elsif preset = 7
+    # Fast Forward
+    mode = 6
+    amount = 3.0
+    chunk_ms = 50
+    fade_ms = 5
+    stereo_spread = 0.1
+    presetName$ = "FastForward"
+elsif preset = 8
+    # Sidechain Pump
+    mode = 7
+    amount = 4.0
+    chunk_ms = 125
+    fade_ms = 10
+    stereo_spread = 0.05
+    presetName$ = "SidechainPump"
+elsif preset = 9
+    # Robot Voice
+    mode = 8
+    amount = 2.5
+    chunk_ms = 20
+    fade_ms = 2
+    stereo_spread = 0.4
+    presetName$ = "RobotVoice"
+elsif preset = 10
+    # Lo-Fi Crush
+    mode = 9
+    amount = 4.0
+    chunk_ms = 30
+    fade_ms = 3
+    stereo_spread = 0.2
+    presetName$ = "LoFiCrush"
+elsif preset = 11
+    # Wobble Tremolo
+    mode = 10
+    amount = 5.0
+    chunk_ms = 40
+    fade_ms = 5
+    stereo_spread = 0.3
+    presetName$ = "WobbleTremolo"
+else
+    presetName$ = "Custom"
+endif
 
 # === VALIDATION ===
 if numberOfSelected("Sound") <> 1
@@ -52,12 +158,12 @@ n_channels = Get number of channels
 fade_ms = min(fade_ms, chunk_ms / 2 - 1)
 fade_sec = fade_ms / 1000
 
-writeInfoLine: "Fast Waveset Distortion v1.5 (Stereo + Windowed)"
-appendInfoLine: "================================================"
-appendInfoLine: "Input: ", name$, " | ", fixed$(dur, 2), "s"
+writeInfoLine: "=== Fast Waveset Distortion v1.6 ==="
+appendInfoLine: "Input: ", name$, " | ", fixed$(dur, 2), "s | ", n_channels, " ch"
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode: ", mode$
 appendInfoLine: "Amount: ", amount, " | Chunk: ", chunk_ms, "ms | Fade: ", fade_ms, "ms"
-appendInfoLine: "Stereo spread: ", stereo_spread
+appendInfoLine: "Stereo spread: ", stereo_spread, " | Mix: ", fixed$(mix, 2)
 appendInfoLine: ""
 
 # === CONVERT TO MONO FOR PROCESSING ===
@@ -78,7 +184,6 @@ tag$ = "L"
 left_result = selected("Sound")
 
 # === PROCESS RIGHT CHANNEL ===
-appendInfoLine: ""
 appendInfoLine: "Processing RIGHT channel..."
 selectObject: mono
 right_source = Copy: "right_source"
@@ -116,7 +221,7 @@ endif
 selectObject: left_result
 plusObject: right_result
 stereo_result = Combine to stereo
-Rename: name$ + "_WSD"
+Rename: name$ + "_WSD_" + presetName$
 
 removeObject: left_result, right_result, mono
 
@@ -142,7 +247,8 @@ if mix < 1
     endif
     
     selectObject: stereo_result
-    Formula: "self * mix + Sound_orig_stereo(x, y) * (1 - mix)"
+    orig_str$ = string$(orig_stereo)
+    Formula: "self * mix + object[" + orig_str$ + ", x, y] * (1 - mix)"
     
     removeObject: orig_stereo
 endif
@@ -156,33 +262,64 @@ endif
 output = stereo_result
 final_dur = Get total duration
 
-# === DRAW ===
-if draw_result
+# === VISUALIZATION ===
+if show_visualization
     Erase all
     
-    Select outer viewport: 0, 7, 0, 1.5
-    selectObject: original
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Text top: "yes", "Original: " + name$
+    # --- Title ---
+    Select outer viewport: 0, 8, 0.0, 0.5
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Waveset Distortion: " + presetName$ + " [" + mode$ + "]"
     
-    Select outer viewport: 0, 7, 1.5, 3
+    # --- Original waveform ---
+    Select outer viewport: 0, 8, 0.6, 1.6
+    Select inner viewport: 0.4, 7.6, 0.7, 1.5
+    selectObject: original
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Original"
+    
+    # --- Left channel ---
+    Select outer viewport: 0, 8, 1.8, 2.8
+    Select inner viewport: 0.4, 7.6, 1.9, 2.7
     selectObject: output
     Extract one channel: 1
     left_draw = selected("Sound")
+    Colour: "{0.3, 0.5, 0.8}"
     Draw: 0, 0, 0, 0, "no", "Curve"
-    Text top: "yes", "Left: amt=" + fixed$(amount_L, 1) + ", chunk=" + string$(round(chunk_ms_L)) + "ms"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Left"
     removeObject: left_draw
     
-    Select outer viewport: 0, 7, 3, 4.5
+    # --- Right channel ---
+    Select outer viewport: 0, 8, 3.0, 4.0
+    Select inner viewport: 0.4, 7.6, 3.1, 3.9
     selectObject: output
     Extract one channel: 2
     right_draw = selected("Sound")
+    Colour: "{0.8, 0.4, 0.3}"
     Draw: 0, 0, 0, 0, "no", "Curve"
-    Text top: "yes", "Right: amt=" + fixed$(amount_R, 1) + ", chunk=" + string$(round(chunk_ms_R)) + "ms"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Right"
     Text bottom: "yes", "Time (s)"
     removeObject: right_draw
     
-    Select outer viewport: 0, 7, 0, 4.5
+    # --- Parameters ---
+    Select outer viewport: 0, 8, 4.1, 4.5
+    Font size: 6
+    Colour: "{0.4, 0.4, 0.4}"
+    Text: 0.5, "centre", 0.5, "half", "Amount: " + fixed$(amount, 1) + " | Chunk: " + string$(round(chunk_ms)) + "ms | Fade: " + string$(round(fade_ms)) + "ms | Spread: " + fixed$(stereo_spread, 2) + " | Mix: " + fixed$(mix, 2)
+    
+    Font size: 10
+    Colour: "Black"
 endif
 
 selectObject: output
@@ -191,9 +328,7 @@ appendInfoLine: ""
 appendInfoLine: "Original: ", fixed$(dur, 2), "s (", n_channels, " ch)"
 appendInfoLine: "Output: ", fixed$(final_dur, 2), "s (stereo)"
 appendInfoLine: ""
-appendInfoLine: "Done! -> ", name$, "_WSD"
-
-Play
+appendInfoLine: "Done! -> ", name$, "_WSD_", presetName$
 
 # ============================================================
 # APPLY HANN WINDOW FADES TO CHUNK
@@ -547,3 +682,4 @@ procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$
     
     selectObject: result
 endproc
+Play
