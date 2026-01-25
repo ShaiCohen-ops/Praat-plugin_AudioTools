@@ -117,7 +117,7 @@ if show_Advanced_Settings
         
         comment: "Operator 1 (Carrier):"
         positive: "Op1 freq", op1_freq
-        positive: "Op1 level", op1_level
+        real: "Op1 level", op1_level
         optionmenu: "Op1 envelope", 1
             option: "snap"
             option: "decay"
@@ -126,7 +126,7 @@ if show_Advanced_Settings
         
         comment: "Operator 2:"
         positive: "Op2 freq", op2_freq
-        positive: "Op2 level", op2_level
+        real: "Op2 level", op2_level
         optionmenu: "Op2 envelope", 2
             option: "snap"
             option: "decay"
@@ -135,7 +135,7 @@ if show_Advanced_Settings
         
         comment: "Operator 3:"
         positive: "Op3 freq", op3_freq
-        positive: "Op3 level", op3_level
+        real: "Op3 level", op3_level
         optionmenu: "Op3 envelope", 1
             option: "snap"
             option: "decay"
@@ -144,7 +144,7 @@ if show_Advanced_Settings
         
         comment: "Operator 4:"
         positive: "Op4 freq", op4_freq
-        positive: "Op4 level", op4_level
+        real: "Op4 level", op4_level
         optionmenu: "Op4 envelope", 2
             option: "snap"
             option: "decay"
@@ -153,7 +153,7 @@ if show_Advanced_Settings
         
         comment: "Operator 5:"
         positive: "Op5 freq", op5_freq
-        positive: "Op5 level", op5_level
+        real: "Op5 level", op5_level
         optionmenu: "Op5 envelope", 1
             option: "snap"
             option: "decay"
@@ -162,8 +162,8 @@ if show_Advanced_Settings
         
         comment: "Operator 6 (Feedback):"
         positive: "Op6 freq", op6_freq
-        positive: "Op6 level", op6_level
-        positive: "Op6 feedback", op6_feedback
+        real: "Op6 level", op6_level
+        real: "Op6 feedback", op6_feedback
         optionmenu: "Op6 envelope", 3
             option: "snap"
             option: "decay"
