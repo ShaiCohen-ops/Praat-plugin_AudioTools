@@ -521,6 +521,397 @@ if create_textgrid_output
     @createRhythmTextGrid
 endif
 
+# ============================================================
+# VISUALIZATION
+# ============================================================
+
+appendInfoLine: ""
+appendInfoLine: "Creating rhythm visualization..."
+
+Erase all
+
+# --- Calculate layout ---
+viz_duration = duration
+if viz_duration > 30
+    viz_duration = 30
+    appendInfoLine: "  (Showing first 30 seconds)"
+endif
+
+# --- TITLE ---
+Select outer viewport: 0, 8, 0, 0.45
+Font size: 10
+Colour: "Black"
+Text: 0.5, "centre", 0.5, "half", "##Speech to Rhythm## | " + sound_name$ + " | " + string$(tempo) + " BPM | " + string$(time_sig_beats) + "/" + string$(time_sig_type)
+
+# --- WAVEFORM WITH ONSETS ---
+Select outer viewport: 0, 8, 0.5, 1.7
+Select inner viewport: 0.8, 7.8, 0.6, 1.6
+
+selectObject: sound
+Colour: "{0.5, 0.6, 0.75}"
+Draw: 0, viz_duration, 0, 0, "no", "Curve"
+
+# Draw onset markers
+Colour: "{0.9, 0.25, 0.25}"
+Line width: 1.5
+for i from 1 to onset_count
+    if onset_time[i] <= viz_duration
+        Draw line: onset_time[i], -0.9, onset_time[i], 0.9
+    endif
+endfor
+
+Colour: "Black"
+Line width: 0.5
+Draw inner box
+
+Font size: 7
+Select outer viewport: 0, 0.8, 0.5, 1.7
+Axes: 0, 1, 0, 1
+Colour: "{0.3, 0.4, 0.55}"
+Text: 0.95, "right", 0.6, "half", "Waveform"
+Font size: 5
+Colour: "{0.5, 0.5, 0.55}"
+Text: 0.95, "right", 0.3, "half", string$(onset_count) + " onsets"
+
+# --- INTENSITY WITH PEAKS ---
+Select outer viewport: 0, 8, 1.8, 2.8
+Select inner viewport: 0.8, 7.8, 1.9, 2.7
+
+Axes: 0, viz_duration, intensity_min - 5, intensity_max + 5
+
+# Background
+Paint rectangle: "{0.97, 0.98, 1.0}", 0, viz_duration, intensity_min - 5, intensity_max + 5
+
+# Draw intensity contour
+selectObject: intensity
+Colour: "{0.4, 0.6, 0.8}"
+Line width: 1.5
+Draw: 0, viz_duration, 0, 0, "no"
+
+# Mark onset peaks
+for i from 1 to onset_count
+    if onset_time[i] <= viz_duration
+        # Peak marker
+        Paint rectangle: "{0.9, 0.4, 0.4}", onset_time[i] - 0.008, onset_time[i] + 0.008, onset_intensity[i] - 1.5, onset_intensity[i] + 1.5
+    endif
+endfor
+
+Colour: "Black"
+Line width: 0.5
+Draw inner box
+
+Font size: 7
+Select outer viewport: 0, 0.8, 1.8, 2.8
+Axes: 0, 1, 0, 1
+Colour: "{0.3, 0.5, 0.7}"
+Text: 0.95, "right", 0.6, "half", "Intensity"
+Font size: 5
+Colour: "{0.5, 0.5, 0.55}"
+Text: 0.95, "right", 0.3, "half", "dB"
+
+# --- RHYTHMIC NOTATION ---
+Select outer viewport: 0, 8, 2.9, 4.3
+Select inner viewport: 0.8, 7.8, 3.0, 4.2
+
+Axes: 0, viz_duration, 0, 2
+
+# Background with measure grid
+Paint rectangle: "{0.99, 0.99, 0.98}", 0, viz_duration, 0, 2
+
+# Draw measure lines
+Colour: "{0.75, 0.75, 0.8}"
+Line width: 1
+measure_time = 0
+measure_num = 1
+while measure_time < viz_duration
+    Draw line: measure_time, 0, measure_time, 2
+    
+    # Measure number
+    Font size: 5
+    Colour: "{0.5, 0.5, 0.6}"
+    Text: measure_time + 0.02, "left", 1.9, "half", string$(measure_num)
+    
+    measure_time = measure_time + measure_dur
+    measure_num = measure_num + 1
+endwhile
+
+# Draw beat lines (lighter)
+Colour: "{0.88, 0.88, 0.9}"
+Line width: 0.5
+Dotted line
+beat_time = 0
+while beat_time < viz_duration
+    Draw line: beat_time, 0.3, beat_time, 1.7
+    beat_time = beat_time + beat_dur
+endwhile
+Solid line
+
+# Draw notes and rests
+current_time = 0
+for n from 1 to note_list_count
+    note_dur_sec = note_duration[n] * division_dur
+    end_time = current_time + note_dur_sec
+    
+    if current_time < viz_duration
+        if end_time > viz_duration
+            end_time = viz_duration
+        endif
+        
+        if note_type[n] = 1
+            # Note - filled rectangle
+            # Height based on dynamics
+            if extract_dynamics
+                height = 0.4 + note_dynamics[n] * 0.8
+            else
+                height = 0.8
+            endif
+            
+            y_center = 1.0
+            y_bottom = y_center - height/2
+            y_top = y_center + height/2
+            
+            # Color by note value
+            if note_value_type$[n] = "whole"
+                colour$ = "{0.3, 0.5, 0.8}"
+            elsif note_value_type$[n] = "half"
+                colour$ = "{0.4, 0.6, 0.75}"
+            elsif note_value_type$[n] = "quarter"
+                colour$ = "{0.5, 0.7, 0.6}"
+            elsif note_value_type$[n] = "eighth"
+                colour$ = "{0.7, 0.65, 0.5}"
+            elsif note_value_type$[n] = "16th"
+                colour$ = "{0.8, 0.55, 0.45}"
+            else
+                colour$ = "{0.85, 0.45, 0.4}"
+            endif
+            
+            Paint rectangle: colour$, current_time + 0.002, end_time - 0.002, y_bottom, y_top
+            
+            # Dotted note marker
+            if note_dotted[n]
+                Colour: "White"
+                Font size: 6
+                midX = (current_time + end_time) / 2
+                Text: midX, "centre", y_center, "half", "•"
+            endif
+            
+            # Outline
+            Colour: "{0.3, 0.3, 0.4}"
+            Line width: 0.5
+            Draw rectangle: current_time + 0.002, end_time - 0.002, y_bottom, y_top
+            
+        else
+            # Rest - outlined rectangle with diagonal
+            Colour: "{0.8, 0.8, 0.85}"
+            Line width: 0.5
+            y_bottom = 0.6
+            y_top = 1.4
+            
+            Draw rectangle: current_time + 0.005, end_time - 0.005, y_bottom, y_top
+            
+            # Diagonal line for rest
+            Colour: "{0.75, 0.75, 0.8}"
+            Draw line: current_time + 0.005, y_bottom, end_time - 0.005, y_top
+        endif
+    endif
+    
+    current_time = end_time
+endfor
+
+Colour: "Black"
+Line width: 0.5
+Draw inner box
+
+Font size: 7
+Select outer viewport: 0, 0.8, 2.9, 4.3
+Axes: 0, 1, 0, 1
+Colour: "{0.3, 0.4, 0.5}"
+Text: 0.95, "right", 0.6, "half", "Rhythm"
+Font size: 5
+Colour: "{0.5, 0.5, 0.55}"
+Text: 0.95, "right", 0.3, "half", string$(note_list_count) + " events"
+
+# --- DYNAMICS CONTOUR ---
+if extract_dynamics
+    Select outer viewport: 0, 8, 4.4, 5.2
+    Select inner viewport: 0.8, 7.8, 4.5, 5.1
+    
+    Axes: 0, viz_duration, 0, 1
+    
+    Paint rectangle: "{0.98, 0.97, 0.99}", 0, viz_duration, 0, 1
+    
+    # Draw dynamics as stepped line based on notes
+    Colour: "{0.6, 0.4, 0.7}"
+    Line width: 2
+    
+    current_time = 0
+    for n from 1 to note_list_count
+        note_dur_sec = note_duration[n] * division_dur
+        end_time = current_time + note_dur_sec
+        
+        if current_time < viz_duration and note_type[n] = 1
+            if end_time > viz_duration
+                end_time = viz_duration
+            endif
+            
+            dyn_val = note_dynamics[n]
+            Draw line: current_time, dyn_val, end_time, dyn_val
+        endif
+        
+        current_time = end_time
+    endfor
+    
+    # Dynamic level markers
+    Font size: 4
+    Colour: "{0.6, 0.6, 0.65}"
+    Text: viz_duration + 0.05, "left", 0.92, "half", "ff"
+    Text: viz_duration + 0.05, "left", 0.75, "half", "f"
+    Text: viz_duration + 0.05, "left", 0.55, "half", "mf"
+    Text: viz_duration + 0.05, "left", 0.40, "half", "mp"
+    Text: viz_duration + 0.05, "left", 0.25, "half", "p"
+    Text: viz_duration + 0.05, "left", 0.08, "half", "pp"
+    
+    Colour: "Black"
+    Line width: 0.5
+    Draw inner box
+    
+    Font size: 7
+    Select outer viewport: 0, 0.8, 4.4, 5.2
+    Axes: 0, 1, 0, 1
+    Colour: "{0.5, 0.35, 0.6}"
+    Text: 0.95, "right", 0.5, "half", "Dynamics"
+endif
+
+# --- BEAT GRID / METRICAL STRUCTURE ---
+if extract_dynamics
+    viz_bottom = 5.3
+    viz_top = 5.9
+else
+    viz_bottom = 4.4
+    viz_top = 5.0
+endif
+
+Select outer viewport: 0, 8, viz_bottom, viz_top
+Select inner viewport: 0.8, 7.8, viz_bottom + 0.1, viz_top - 0.1
+
+Axes: 0, viz_duration, 0, 1
+
+# Beat markers
+beat_time = 0
+beat_num = 1
+while beat_time < viz_duration
+    beat_in_measure = ((beat_num - 1) mod time_sig_beats) + 1
+    
+    if beat_in_measure = 1
+        # Downbeat - strong
+        Paint rectangle: "{0.4, 0.6, 0.8}", beat_time - 0.015, beat_time + 0.015, 0.1, 0.9
+    else
+        # Other beats
+        Paint rectangle: "{0.7, 0.8, 0.9}", beat_time - 0.008, beat_time + 0.008, 0.25, 0.75
+    endif
+    
+    beat_time = beat_time + beat_dur
+    beat_num = beat_num + 1
+endwhile
+
+Colour: "Black"
+Line width: 0.5
+Draw inner box
+
+Font size: 7
+Select outer viewport: 0, 0.8, viz_bottom, viz_top
+Axes: 0, 1, 0, 1
+Colour: "{0.4, 0.5, 0.7}"
+Text: 0.95, "right", 0.5, "half", "Beats"
+
+# --- LEGEND ---
+if extract_dynamics
+    legend_top = 6.0
+else
+    legend_top = 5.1
+endif
+
+Select outer viewport: 0, 8, legend_top, legend_top + 0.8
+Axes: 0, 1, 0, 1
+
+Font size: 6
+
+# Note value legend
+Paint rectangle: "{0.3, 0.5, 0.8}", 0.02, 0.05, 0.55, 0.85
+Colour: "Black"
+Text: 0.06, "left", 0.7, "half", "Whole"
+
+Paint rectangle: "{0.4, 0.6, 0.75}", 0.14, 0.17, 0.55, 0.85
+Text: 0.18, "left", 0.7, "half", "Half"
+
+Paint rectangle: "{0.5, 0.7, 0.6}", 0.25, 0.28, 0.55, 0.85
+Text: 0.29, "left", 0.7, "half", "Quarter"
+
+Paint rectangle: "{0.7, 0.65, 0.5}", 0.38, 0.41, 0.55, 0.85
+Text: 0.42, "left", 0.7, "half", "8th"
+
+Paint rectangle: "{0.8, 0.55, 0.45}", 0.49, 0.52, 0.55, 0.85
+Text: 0.53, "left", 0.7, "half", "16th"
+
+Paint rectangle: "{0.85, 0.45, 0.4}", 0.60, 0.63, 0.55, 0.85
+Text: 0.64, "left", 0.7, "half", "32nd"
+
+# Rest indicator
+Colour: "{0.8, 0.8, 0.85}"
+Draw rectangle: 0.73, 0.76, 0.55, 0.85
+Draw line: 0.73, 0.55, 0.76, 0.85
+Colour: "Black"
+Text: 0.77, "left", 0.7, "half", "Rest"
+
+# Info
+Font size: 5
+Colour: "{0.4, 0.4, 0.5}"
+Text: 0.02, "left", 0.25, "half", "Tempo: " + string$(tempo) + " BPM"
+if auto_tempo
+    Text: 0.18, "left", 0.25, "half", "(auto, " + fixed$(tempo_confidence * 100, 0) + "% conf)"
+endif
+Text: 0.38, "left", 0.25, "half", "Meter: " + string$(time_sig_beats) + "/" + string$(time_sig_type)
+if compound_meter
+    Text: 0.52, "left", 0.25, "half", "(compound)"
+endif
+Text: 0.65, "left", 0.25, "half", "Divisions: " + string$(divisions) + "/quarter"
+Text: 0.82, "left", 0.25, "half", "Dotted: " + if allow_dotted then "yes" else "no" fi
+
+# --- TIME AXIS ---
+Select outer viewport: 0, 8, legend_top + 0.8, legend_top + 1.1
+Select inner viewport: 0.8, 7.8, legend_top + 0.85, legend_top + 1.05
+
+Axes: 0, viz_duration, 0, 1
+
+Colour: "{0.3, 0.3, 0.4}"
+Line width: 1
+Draw line: 0, 0.7, viz_duration, 0.7
+
+Font size: 5
+tickStep = 1
+if viz_duration > 10
+    tickStep = 2
+endif
+if viz_duration > 20
+    tickStep = 5
+endif
+
+t = 0
+while t <= viz_duration
+    Draw line: t, 0.7, t, 0.3
+    Text: t, "centre", 0.1, "half", string$(t)
+    t = t + tickStep
+endwhile
+
+Font size: 6
+Text: viz_duration / 2, "centre", -0.5, "half", "Time (s)"
+
+Font size: 10
+Line width: 1
+Colour: "Black"
+
+appendInfoLine: "  Visualization complete"
+
 # ===== CLEANUP =====
 removeObject: intensity, intensity_smooth, textgrid
 if detection_method = 2
