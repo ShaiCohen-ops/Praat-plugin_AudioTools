@@ -1,6 +1,22 @@
 # ============================================================
-# ALL_FEATURES_6in1_FIXED_NO_BREAK.praat
-# Same as previous, but WITHOUT using "break" (some Praat versions don't support it)
+# Praat AudioTools - Acoustic_Features_Batch_Extraction
+# Author: Shai Cohen
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 0.1 (2025)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Acoustic_Features_Batch_Extraction
+#
+# Usage:
+#   Select a Sound object in Praat and run this script.
+#   Adjust parameters via the form dialog.
+#
+# Citation:
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
 clearinfo
@@ -209,7 +225,109 @@ for i from 2 to number_of_selected_sounds
     plusObject: sound'i'
 endfor
 
+# ============================================================
+# TABLE VISUALIZATION SECTION
+# ============================================================
+
+selectObject: "Table AudioTools_Results"
+tableID = selected("Table")
+nRows = Get number of rows
+
+# Erase the Picture window
+Erase all
+
+# Set viewport - using proper Praat Picture window coordinates (wider for more columns)
+Select inner viewport: 0.3, 7.7, 0.5, 4
+
+# Set up axes for the table (wider X range for 10 columns)
+Axes: 0, 14, 0, nRows + 1
+
+# Title
+Text top: "yes", "Acoustic Features Analysis - Complete Results Table"
+
+# Draw table header with background
+Colour: "{0.8, 0.8, 0.8}"
+Paint rectangle: "{0.8, 0.8, 0.8}", 0, 14, nRows + 0.5, nRows + 1
+
+# Header text
+Colour: "Black"
+Line width: 2
+Draw line: 0, nRows + 0.5, 14, nRows + 0.5
+Line width: 1
+
+Text: 1.2, "centre", nRows + 0.75, "half", "File"
+Text: 2.4, "centre", nRows + 0.75, "half", "Intensity"
+Text: 3.6, "centre", nRows + 0.75, "half", "Harmonicity"
+Text: 4.8, "centre", nRows + 0.75, "half", "Jitter"
+Text: 6, "centre", nRows + 0.75, "half", "RollOff85"
+Text: 7.2, "centre", nRows + 0.75, "half", "Flatness"
+Text: 8.4, "centre", nRows + 0.75, "half", "Roughness"
+Text: 9.6, "centre", nRows + 0.75, "half", "SPR"
+Text: 10.8, "centre", nRows + 0.75, "half", "LowBand"
+Text: 12, "centre", nRows + 0.75, "half", "HighBand"
+
+# Draw data rows
+for row from 1 to nRows
+    yPos = nRows - row + 0.75
+    
+    selectObject: tableID
+    filename$ = Get value: row, "Filename"
+    intensity = Get value: row, "IntensityMean_dB"
+    harmonicity = Get value: row, "HarmonicityMean_dB"
+    jitter = Get value: row, "JitterLocal"
+    rolloff = Get value: row, "RollOff85_Hz"
+    flatness = Get value: row, "Flatness"
+    roughness = Get value: row, "Roughness"
+    spr = Get value: row, "SPR_dB"
+    lowband = Get value: row, "SPR_LowBandMax_dBHz"
+    highband = Get value: row, "SPR_HighBandMax_dBHz"
+    
+    # Alternate row shading
+    if row mod 2 = 0
+        Colour: "{0.95, 0.95, 0.95}"
+        Paint rectangle: "{0.95, 0.95, 0.95}", 0, 14, yPos - 0.45, yPos + 0.45
+    endif
+    
+    # Draw values
+    Colour: "Black"
+    Text: 1.2, "centre", yPos, "half", filename$
+    Text: 2.4, "centre", yPos, "half", fixed$(intensity, 1)
+    Text: 3.6, "centre", yPos, "half", fixed$(harmonicity, 1)
+    Text: 4.8, "centre", yPos, "half", fixed$(jitter, 4)
+    Text: 6, "centre", yPos, "half", fixed$(rolloff, 0)
+    Text: 7.2, "centre", yPos, "half", fixed$(flatness, 4)
+    Text: 8.4, "centre", yPos, "half", fixed$(roughness, 4)
+    Text: 9.6, "centre", yPos, "half", fixed$(spr, 1)
+    Text: 10.8, "centre", yPos, "half", fixed$(lowband, 1)
+    Text: 12, "centre", yPos, "half", fixed$(highband, 1)
+endfor
+
+# Draw grid lines
+Colour: "{0.7, 0.7, 0.7}"
+for row from 0 to nRows
+    Draw line: 0, row + 0.5, 14, row + 0.5
+endfor
+
+# Draw vertical column lines
+Draw line: 0, 0.5, 0, nRows + 1
+Draw line: 1.8, 0.5, 1.8, nRows + 1
+Draw line: 3, 0.5, 3, nRows + 1
+Draw line: 4.2, 0.5, 4.2, nRows + 1
+Draw line: 5.4, 0.5, 5.4, nRows + 1
+Draw line: 6.6, 0.5, 6.6, nRows + 1
+Draw line: 7.8, 0.5, 7.8, nRows + 1
+Draw line: 9, 0.5, 9, nRows + 1
+Draw line: 10.2, 0.5, 10.2, nRows + 1
+Draw line: 11.4, 0.5, 11.4, nRows + 1
+Draw line: 14, 0.5, 14, nRows + 1
+
+# Draw outer border
+Colour: "Black"
+Line width: 2
+Draw rectangle: 0, 14, 0.5, nRows + 1
+Line width: 1
+
 appendInfoLine: ""
-appendInfoLine: "Done."
-appendInfoLine: "Created: Table AudioTools_Results"
-appendInfoLine: "Export: select the Table -> Save -> Save as comma-separated file..."
+appendInfoLine: "✓ TABLE VISUALIZATION COMPLETE!"
+appendInfoLine: "✓ Check the PICTURE WINDOW to see your table"
+appendInfoLine: "  (Menu: Windows → Picture)"
