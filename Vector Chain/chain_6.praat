@@ -4,7 +4,7 @@
 # ============================================================
 
 Erase all
-
+Convert to stereo
 # 1. Preparation
 numSelected = numberOfSelected("Sound")
 if numSelected <> 1
