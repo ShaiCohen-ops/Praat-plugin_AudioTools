@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Fixed and enhanced
+# Version: 0.4 (2025) - Safe Lissajous for Praat 6.4.45+
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,23 +11,14 @@
 #   Acoustic Pedagogy - 15 interactive acoustic demonstrations
 #   for teaching psychoacoustics and musical acoustics.
 #
-# Usage:
-#   Run this script and select a phenomenon from the menu.
+# Changelog v0.4:
+#   - Restored Lissajous figures with safe drawing
+#   - Uses short excerpts to prevent freeze
+#   - Viewport constrained for 60x60 canvas
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Changelog v0.2:
-#   - Fixed procedure call syntax (call -> @)
-#   - Fixed string interpolation issues
-#   - Fixed procedure variable scope
-#   - Replaced printline with appendInfoLine
-#   - Improved visualization labels
-#   - Added phenomenon descriptions to form
 # ============================================================
 
-form Acoustic Pedagogy v0.2
+form Acoustic Pedagogy 
     comment === SELECT PHENOMENON ===
     optionmenu Phenomenon: 1
         option 1. Just Intonation (Perfect Fifth)
@@ -52,6 +43,7 @@ form Acoustic Pedagogy v0.2
     comment === OPTIONS ===
     boolean Show_info_window 1
     boolean Save_sounds_to_list 0
+    boolean Show_visualization 1
     boolean Show_help 0
 endform
 
@@ -93,6 +85,8 @@ endif
 
 # --- Setup ---
 Erase all
+Select outer viewport: 0, 8, 0, 6
+
 clearinfo
 
 srate = 44100
@@ -100,7 +94,10 @@ f_base = base_frequency_Hz
 amp = amplitude
 dur = duration_s
 
-writeInfoLine: "=== Acoustic Pedagogy v0.2 ==="
+# Lissajous excerpt duration (short to prevent freeze)
+lissajous_dur = 0.05
+
+writeInfoLine: "=== Acoustic Pedagogy v0.4 ==="
 appendInfoLine: ""
 
 # ==========================================
@@ -113,8 +110,7 @@ if phenomenon = 1
     f1 = f_base
     f2 = f_base * 3/2
     @show_info: "Just Intonation (Perfect Fifth)", f1, f2
-    @create_and_play: f1, f2, dur, amp
-    Text top: "no", "Just Fifth (3:2 ratio) - Perfect Consonance"
+    @create_and_play: f1, f2, dur, amp, "Just Fifth (3:2 ratio) - Perfect Consonance"
 
 elsif phenomenon = 2
     # === Pythagorean Comma ===
@@ -122,8 +118,7 @@ elsif phenomenon = 2
     f1 = f_base
     f2 = f_base * ((1.5 ^ 12) / (2 ^ 7))
     @show_info: "Pythagorean Comma", f1, f2
-    @create_and_play: f1, f2, dur, amp
-    Text top: "no", "Pythagorean Comma - 12 fifths vs 7 octaves (~23.5 cents)"
+    @create_and_play: f1, f2, dur, amp, "Pythagorean Comma - 12 fifths vs 7 octaves (~23.5 cents)"
 
 elsif phenomenon = 3
     # === Syntonic Comma ===
@@ -131,8 +126,7 @@ elsif phenomenon = 3
     f1 = f_base * 5/4
     f2 = f_base * 81/64
     @show_info: "Syntonic Comma (Didymus)", f1, f2
-    @create_and_play: f1, f2, dur, amp
-    Text top: "no", "Syntonic Comma - Just M3 vs Pythagorean M3 (~21.5 cents)"
+    @create_and_play: f1, f2, dur, amp, "Syntonic Comma - Just M3 vs Pythagorean M3 (~21.5 cents)"
 
 elsif phenomenon = 4
     # === Wolf Fifth ===
@@ -140,8 +134,7 @@ elsif phenomenon = 4
     f1 = f_base * 1.5
     f2 = f_base * 1.5 / (81/80)
     @show_info: "Wolf Fifth", f1, f2
-    @create_and_play: f1, f2, dur, amp
-    Text top: "no", "Wolf Fifth - Impure fifth that howls with beats"
+    @create_and_play: f1, f2, dur, amp, "Wolf Fifth - Impure fifth that howls with beats"
 
 elsif phenomenon = 5
     # === Critical Bands ===
@@ -149,8 +142,7 @@ elsif phenomenon = 5
     f1 = f_base
     f2 = f_base + 25
     @show_info: "Critical Band Roughness", f1, f2
-    @create_and_play: f1, f2, dur, amp
-    Text top: "no", "Critical Band - Maximum roughness at ~25Hz separation"
+    @create_and_play: f1, f2, dur, amp, "Critical Band - Maximum roughness at ~25Hz separation"
 
 elsif phenomenon = 6
     # === Tartini Tones (Difference Tones) ===
@@ -159,8 +151,7 @@ elsif phenomenon = 6
     f2 = 660
     f_diff = f2 - f1
     @show_info: "Tartini Tones (Difference: " + string$(f_diff) + "Hz)", f1, f2
-    @create_and_play: f1, f2, dur, amp
-    Text top: "no", "Tartini: " + string$(f1) + "Hz + " + string$(f2) + "Hz -> Hear " + string$(f_diff) + "Hz"
+    @create_and_play: f1, f2, dur, amp, "Tartini: " + string$(f1) + "Hz + " + string$(f2) + "Hz -> Hear " + string$(f_diff) + "Hz"
 
 elsif phenomenon = 7
     # === Missing Fundamental ===
@@ -184,17 +175,15 @@ elsif phenomenon = 7
         appendInfoLine: ""
     endif
     
-    selectObject: id_complex, id_ghost
-    To ParamCurve
-    Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
-    id_param = selected("ParamCurve")
-    Text top: "no", "Missing Fundamental - Complex vs Ghost 220Hz"
+    if show_visualization
+        @draw_comparison: id_complex, id_ghost, "Missing Fundamental - Complex vs Ghost 220Hz"
+    endif
     
     selectObject: id_complex
     Play
     
     if not save_sounds_to_list
-        selectObject: id_complex, id_ghost, id_param
+        selectObject: id_complex, id_ghost
         Remove
     endif
 
@@ -214,8 +203,7 @@ elsif phenomenon = 8
         appendInfoLine: ""
     endif
     
-    @create_and_play: f_left, f_right, dur, amp
-    Text top: "no", "Binaural Beats - L=" + string$(f_left) + "Hz, R=" + string$(f_right) + "Hz (Headphones!)"
+    @create_and_play: f_left, f_right, dur, amp, "Binaural Beats - L=" + string$(f_left) + "Hz, R=" + string$(f_right) + "Hz (Headphones!)"
 
 elsif phenomenon = 9
     # === Fourier Square Wave ===
@@ -255,17 +243,15 @@ elsif phenomenon = 9
         appendInfoLine: ""
     endif
     
-    selectObject: id_sine, id_square
-    To ParamCurve
-    Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
-    id_param = selected("ParamCurve")
-    Text top: "no", "Timbre: Pure Sine vs Square Wave Approximation"
+    if show_visualization
+        @draw_comparison: id_sine, id_square, "Timbre: Pure Sine vs Square Wave Approximation"
+    endif
     
     selectObject: id_square
     Play
     
     if not save_sounds_to_list
-        selectObject: id_sine, id_square, id_param
+        selectObject: id_sine, id_square
         Remove
     endif
 
@@ -301,17 +287,15 @@ elsif phenomenon = 10
         appendInfoLine: ""
     endif
     
-    selectObject: id_shepard, id_ref
-    To ParamCurve
-    Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
-    id_param = selected("ParamCurve")
-    Text top: "no", "Shepard Tone - Endless Rising Pitch Illusion"
+    if show_visualization
+        @draw_comparison: id_shepard, id_ref, "Shepard Tone - Endless Rising Pitch Illusion"
+    endif
     
     selectObject: id_shepard
     Play
     
     if not save_sounds_to_list
-        selectObject: id_shepard, id_ref, id_param
+        selectObject: id_shepard, id_ref
         Remove
     endif
 
@@ -350,17 +334,15 @@ elsif phenomenon = 11
         endfor
     endif
     
-    selectObject: id_harm, id_fund
-    To ParamCurve
-    Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
-    id_param = selected("ParamCurve")
-    Text top: "no", "Harmonic Series vs Pure Fundamental"
+    if show_visualization
+        @draw_comparison: id_harm, id_fund, "Harmonic Series vs Pure Fundamental"
+    endif
     
     selectObject: id_harm
     Play
     
     if not save_sounds_to_list
-        selectObject: id_harm, id_fund, id_param
+        selectObject: id_harm, id_fund
         Remove
     endif
 
@@ -380,8 +362,7 @@ elsif phenomenon = 12
         appendInfoLine: ""
     endif
     
-    @create_and_play: f1, f2, dur, amp
-    Text top: "no", "Combination Tones: " + string$(f1) + "Hz + " + string$(f2) + "Hz -> hear " + string$(f_diff) + "Hz"
+    @create_and_play: f1, f2, dur, amp, "Combination Tones: " + string$(f1) + "Hz + " + string$(f2) + "Hz -> hear " + string$(f_diff) + "Hz"
 
 elsif phenomenon = 13
     # === Formant Synthesis (Vowels) ===
@@ -391,7 +372,8 @@ elsif phenomenon = 13
     f2_formant = 1220
     f3_formant = 2600
     
-    n_harmonics = 40
+    n_harmonics = 15
+    
     formula$ = "0"
     for i from 1 to n_harmonics
         freq = f0 * i
@@ -424,17 +406,15 @@ elsif phenomenon = 13
         appendInfoLine: ""
     endif
     
-    selectObject: id_vowel, id_buzz
-    To ParamCurve
-    Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
-    id_param = selected("ParamCurve")
-    Text top: "no", "Vowel /a/ vs Simple Buzz"
+    if show_visualization
+        @draw_comparison: id_vowel, id_buzz, "Vowel /a/ vs Simple Buzz"
+    endif
     
     selectObject: id_vowel
     Play
     
     if not save_sounds_to_list
-        selectObject: id_vowel, id_buzz, id_param
+        selectObject: id_vowel, id_buzz
         Remove
     endif
 
@@ -470,11 +450,9 @@ elsif phenomenon = 14
         appendInfoLine: "Playing AM first, then FM..."
     endif
     
-    selectObject: id_am, id_fm
-    To ParamCurve
-    Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
-    id_param = selected("ParamCurve")
-    Text top: "no", "AM (tremolo) vs FM (vibrato)"
+    if show_visualization
+        @draw_comparison: id_am, id_fm, "AM (tremolo) vs FM (vibrato)"
+    endif
     
     selectObject: id_am
     Play
@@ -482,7 +460,7 @@ elsif phenomenon = 14
     Play
     
     if not save_sounds_to_list
-        selectObject: id_am, id_fm, id_param
+        selectObject: id_am, id_fm
         Remove
     endif
 
@@ -514,11 +492,9 @@ elsif phenomenon = 15
         appendInfoLine: ""
     endif
     
-    selectObject: id_in, id_out
-    To ParamCurve
-    Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
-    id_param = selected("ParamCurve")
-    Text top: "no", "Phase Cancellation - Normal (X) vs Inverted (Y)"
+    if show_visualization
+        @draw_comparison: id_in, id_out, "Phase Cancellation - Normal vs Inverted"
+    endif
     
     # Create the sum (cancellation)
     selectObject: id_in, id_out
@@ -540,7 +516,7 @@ elsif phenomenon = 15
     Play
     
     if not save_sounds_to_list
-        selectObject: id_in, id_out, id_param, id_stereo, id_cancelled
+        selectObject: id_in, id_out, id_stereo, id_cancelled
         Remove
     endif
 
@@ -571,7 +547,7 @@ procedure show_info: .title$, .f1, .f2
     endif
 endproc
 
-procedure create_and_play: .f1, .f2, .dur, .amp
+procedure create_and_play: .f1, .f2, .dur, .amp, .title$
     .ampStr$ = string$(.amp)
     .f1Str$ = string$(.f1)
     .f2Str$ = string$(.f2)
@@ -584,10 +560,9 @@ procedure create_and_play: .f1, .f2, .dur, .amp
         ... .ampStr$ + " * sin(2*pi*" + .f2Str$ + "*x)"
     .id_B = selected("Sound")
     
-    selectObject: .id_A, .id_B
-    To ParamCurve
-    Draw: 0, 0, 0, 0, 0, 0, 0, "yes"
-    .id_param = selected("ParamCurve")
+    if show_visualization
+        @draw_comparison: .id_A, .id_B, .title$
+    endif
     
     selectObject: .id_A, .id_B
     Combine to stereo
@@ -595,7 +570,147 @@ procedure create_and_play: .f1, .f2, .dur, .amp
     Play
     
     if not save_sounds_to_list
-        selectObject: .id_A, .id_B, .id_param, .id_stereo
+        selectObject: .id_A, .id_B, .id_stereo
         Remove
     endif
+endproc
+
+procedure draw_comparison: .id1, .id2, .title$
+    # Visualization with waveforms, spectra, AND Lissajous figure
+    
+    Erase all
+    
+    # Get sound names
+    selectObject: .id1
+    .name1$ = selected$("Sound")
+    selectObject: .id2
+    .name2$ = selected$("Sound")
+    
+    # === Title ===
+    Select outer viewport: 0, 8, 0, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 11
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", .title$
+    
+    # === Waveform 1 ===
+    Select outer viewport: 0, 5, 0.6, 1.8
+    Select inner viewport: 0.5, 4.8, 0.7, 1.7
+    
+    selectObject: .id1
+    .totalDur = Get total duration
+    .drawEnd = 0.03
+    if .drawEnd > .totalDur
+        .drawEnd = .totalDur
+    endif
+    
+    Colour: "{0.3, 0.5, 0.8}"
+    Draw: 0, .drawEnd, 0, 0, "no", "Curve"
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", .name1$
+    
+    # === Waveform 2 ===
+    Select outer viewport: 0, 5, 1.9, 3.1
+    Select inner viewport: 0.5, 4.8, 2.0, 3.0
+    
+    selectObject: .id2
+    Colour: "{0.8, 0.4, 0.3}"
+    Draw: 0, .drawEnd, 0, 0, "no", "Curve"
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", .name2$
+    Text bottom: "yes", "Time (s)"
+    
+    # === LISSAJOUS FIGURE (Safe version) ===
+    Select outer viewport: 5, 8, 0.6, 3.1
+    Select inner viewport: 5.3, 7.8, 0.7, 3.0
+    
+    # Create SHORT excerpts for Lissajous (prevents freeze!)
+    selectObject: .id1
+    Extract part: 0, lissajous_dur, "rectangular", 1, "no"
+    .excerpt1 = selected("Sound")
+    
+    selectObject: .id2
+    Extract part: 0, lissajous_dur, "rectangular", 1, "no"
+    .excerpt2 = selected("Sound")
+    
+    # Create and draw ParamCurve
+    selectObject: .excerpt1, .excerpt2
+    To ParamCurve
+    .paramID = selected("ParamCurve")
+    
+    Colour: "{0.4, 0.6, 0.5}"
+    Line width: 1
+    Draw: 0, 0, 0, 0, 0, 0, 0, "no"
+    
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 8
+    Text top: "no", "Lissajous"
+    Font size: 6
+    Text left: "yes", .name2$
+    Text bottom: "yes", .name1$
+    
+    # Cleanup ParamCurve and excerpts
+    selectObject: .excerpt1, .excerpt2, .paramID
+    Remove
+    
+    # === Spectrum 1 ===
+    Select outer viewport: 0, 4, 3.3, 4.8
+    Select inner viewport: 0.5, 3.8, 3.4, 4.7
+    
+    selectObject: .id1
+    To Spectrum: "yes"
+    .spec1 = selected("Spectrum")
+    Colour: "{0.3, 0.5, 0.8}"
+    Draw: 0, 2000, 0, 80, "no"
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "dB"
+    Text bottom: "yes", "Frequency (Hz)"
+    Text top: "no", .name1$ + " spectrum"
+    
+    # === Spectrum 2 ===
+    Select outer viewport: 4, 8, 3.3, 4.8
+    Select inner viewport: 4.4, 7.8, 3.4, 4.7
+    
+    selectObject: .id2
+    To Spectrum: "yes"
+    .spec2 = selected("Spectrum")
+    Colour: "{0.8, 0.4, 0.3}"
+    Draw: 0, 2000, 0, 80, "no"
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text bottom: "yes", "Frequency (Hz)"
+    Text top: "no", .name2$ + " spectrum"
+    
+    # === Legend ===
+    Select outer viewport: 0, 8, 4.9, 5.3
+    Axes: 0, 1, 0, 1
+    
+    Font size: 7
+    Paint rectangle: "{0.3, 0.5, 0.8}", 0.15, 0.18, 0.3, 0.7
+    Colour: "Black"
+    Text: 0.2, "left", 0.5, "half", .name1$
+    
+    Paint rectangle: "{0.8, 0.4, 0.3}", 0.55, 0.58, 0.3, 0.7
+    Colour: "Black"
+    Text: 0.6, "left", 0.5, "half", .name2$
+    
+    # Cleanup spectra
+    selectObject: .spec1, .spec2
+    Remove
+    
+    Font size: 10
+    Colour: "Black"
 endproc
