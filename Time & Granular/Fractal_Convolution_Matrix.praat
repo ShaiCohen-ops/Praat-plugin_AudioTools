@@ -180,7 +180,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.2, 0.6
+    Select outer viewport: 2, 8, 0.2, 0.6
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Fractal Convolution: " + original_name$

@@ -281,7 +281,7 @@ if part_count > 0
         Select outer viewport: 0, 8, 0.1, 0.6
         Font size: 14
         Colour: "Black"
-        Text: 0.5, "centre", 0.5, "half", "Fractal Granulator: " + source_name$
+        Text: 0.8, "centre", 0.5, "half", "Fractal Granulator: " + source_name$
         
         # === Source Waveform ===
         Select outer viewport: 0, 8, 0.7, 1.8
@@ -404,7 +404,7 @@ if part_count > 0
             read_name$ = "Sequential"
         endif
         
-        Text: 0.5, "centre", 0.5, "half", 
+        Text: 0.8, "centre", 0.5, "half", 
             ... "Events: " + string$(num_events) + " | " 
             ... + "Grain: " + fixed$(grain_duration * 1000, 0) + "ms | "
             ... + "Window: " + window_name$ + " | "

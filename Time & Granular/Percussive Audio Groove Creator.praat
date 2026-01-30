@@ -565,7 +565,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 2, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Percussive Groove: " + soundName$ + " (" + string$(bars) + " bar, " + string$(tempo_BPM) + " BPM)"
@@ -681,7 +681,7 @@ if draw_visualization
     Text bottom: "yes", "16th notes"
     
     # Pattern name
-    Select outer viewport: 0, 8, 5.3, 5.6
+    Select outer viewport: 1, 8, 5.3, 5.6
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     
@@ -699,7 +699,7 @@ if draw_visualization
         patternName$ = "Sparse Minimal"
     endif
     
-    Text: 0.5, "centre", 0.5, "half", "Pattern: " + patternName$ + " | Density: " + fixed$(groove_density, 2) + " | Hits: " + string$(hitsPlacedL) + if create_stereo then "/" + string$(hitsPlacedR) else "" fi
+    Text: 1.5, "centre", 0.5, "half", "Pattern: " + patternName$ + " | Density: " + fixed$(groove_density, 2) + " | Hits: " + string$(hitsPlacedL) + if create_stereo then "/" + string$(hitsPlacedR) else "" fi
     
     Font size: 10
     Colour: "Black"

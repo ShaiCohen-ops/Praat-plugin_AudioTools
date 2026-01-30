@@ -452,7 +452,7 @@ if draw_visualization and grainCount > 0
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     if sort_direction = 1
@@ -560,7 +560,7 @@ if draw_visualization and grainCount > 0
     Text bottom: "yes", "Sorted (note spectral sweep)"
     
     # Stats
-    Select outer viewport: 0, 8, 6.4, 6.7
+    Select outer viewport: 1, 8, 6.4, 6.7
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(grainCount) + " | Brightness: " + fixed$(minB, 0) + "-" + fixed$(maxB, 0) + " Hz | Duration: " + fixed$(output_duration, 2) + "s | Gap: " + string$(gap_between_grains_ms) + "ms"

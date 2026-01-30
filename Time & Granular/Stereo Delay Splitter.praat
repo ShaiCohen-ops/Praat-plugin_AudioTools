@@ -109,17 +109,19 @@ appendInfoLine: "Right divisors: ", divisor_R1, ", ", divisor_R2
 appendInfoLine: ""
 
 # === Prepare Source ===
-selectObject: original
 if numChannels = 1
-    # Mono: duplicate to stereo
-    Copy: "stereo_temp"
-    mono = selected("Sound")
-    selectObject: mono, mono
+    selectObject: original
+    Copy: "left_tmp"
+    selectObject: original
+    Copy: "right_tmp"
+    selectObject: "Sound left_tmp", "Sound right_tmp"
     Combine to stereo
     sourceSound = selected("Sound")
-    removeObject: mono
-    appendInfoLine: "Converted mono to stereo"
+    # Clean up the temporary mono copies
+    removeObject: "Sound left_tmp", "Sound right_tmp"
+    appendInfoLine: "Converted mono to stereo for processing"
 else
+    selectObject: original
     Copy: "stereo_temp"
     sourceSound = selected("Sound")
 endif
@@ -180,7 +182,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Stereo Delay Splitter: " + original_name$ + " (" + presetName$ + ")"
@@ -215,7 +217,7 @@ if draw_visualization
     origSpec = selected("Spectrum")
     Draw: 0, 5000, 0, 80, "no"
     removeObject: origSpec
-    Colour: "Black"
+    Colour: "{0.8, 0.5, 0.6}"
     Draw inner box
     Font size: 7
     Text left: "yes", "dB"
@@ -239,7 +241,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.4, 5.7
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "L: ÷" + string$(divisor_L1) + ", ÷" + string$(divisor_L2) + " | R: ÷" + string$(divisor_R1) + ", ÷" + string$(divisor_R2) + " | Effect: High-pass comb filter with stereo separation"
+    Text: 4.5, "centre", 0.5, "half", "L: ÷" + string$(divisor_L1) + ", ÷" + string$(divisor_L2) + " | R: ÷" + string$(divisor_R1) + ", ÷" + string$(divisor_R2) + " | Effect: High-pass comb filter with stereo separation"
     
     Font size: 10
     Colour: "Black"

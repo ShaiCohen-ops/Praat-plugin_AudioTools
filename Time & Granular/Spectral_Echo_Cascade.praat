@@ -202,7 +202,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Spectral Echo Cascade: " + original_name$ + " (" + presetName$ + ")"
@@ -299,7 +299,7 @@ if draw_visualization
     Text bottom: "yes", "Level"
     
     # Legend
-    Select outer viewport: 0, 8, 5.4, 5.7
+    Select outer viewport: 1, 8, 5.3, 5.7
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Levels: " + string$(cascade_levels) + " | Decay: " + fixed$(decay_rate, 2) + " | Fibonacci: 1→" + string$(fibValues#[cascade_levels]) + " | Tail: " + fixed$(tail_duration_s, 1) + "s"

@@ -278,7 +278,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 2, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Paulstretch: " + original_name$ + " (" + preset_name$ + " " + string$(stretch_factor) + "x)"
@@ -340,7 +340,7 @@ if draw_visualization
     Text bottom: "yes", "Stretched (s)"
     
     # Legend
-    Select outer viewport: 0, 8, 5.4, 5.7
+    Select outer viewport: 2, 8, 5.4, 5.7
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     if create_stereo

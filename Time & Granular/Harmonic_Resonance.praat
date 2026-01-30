@@ -197,7 +197,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.2, 0.6
+    Select outer viewport: 2, 8, 0.2, 0.6
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Harmonic Resonance: " + original_name$
@@ -255,7 +255,7 @@ if draw_visualization
     removeObject: resSpec
     
     # Legend
-    Select outer viewport: 0, 8, 5.6, 5.9
+    Select outer viewport: 2, 8, 5.6, 5.9
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Base: " + fixed$(harmonicBase, 2) + " | Iterations: " + string$(num_iterations) + " | Decay: " + fixed$(decay_factor, 2)

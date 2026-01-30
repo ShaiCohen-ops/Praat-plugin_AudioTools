@@ -542,7 +542,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "HFD Time Warping: " + original_name$ + " (" + presetName$ + ")"
