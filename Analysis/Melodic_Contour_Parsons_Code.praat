@@ -3,22 +3,21 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 2.0 (2025) - Enhanced visualization & analysis
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Melodic Contour Extraction using Parsons Code.
-#   Analyzes monophonic audio (singing/speech) and outputs
-#   a string representing pitch movement:
-#     * = First note
-#     U = Up (pitch rises)
-#     D = Down (pitch falls)
-#     R = Repeat (pitch stays within threshold)
+#   Melodic Contour Extraction using Parsons Code with enhanced
+#   visualization including graphical contour diagram, contour
+#   shape classification, and interval histogram.
 #
-# Usage:
-#   Select a Sound object and run this script.
-#   Works best with monophonic melodic content.
+# Features v2.0:
+#   - Parsons Code extraction (* U D R)
+#   - Graphical step contour diagram
+#   - Contour shape classification (arch, ascending, etc.)
+#   - Interval size histogram
+#   - Melodic complexity metrics
 #
 # Reference:
 #   Parsons, D. (1975). The Directory of Tunes and Musical Themes.
@@ -35,7 +34,7 @@ sound = selected("Sound")
 name$ = selected$("Sound")
 
 # === USER PARAMETERS ===
-form Melodic Contour - Parsons Code Extraction
+form Melodic Contour - Parsons Code v2.0
     comment === Preset ===
     optionmenu Preset 1
         option Custom (manual settings)
@@ -62,8 +61,8 @@ form Melodic Contour - Parsons Code Extraction
         option Mode (most frequent)
     
     comment === Output ===
-    boolean Show_detailed_analysis 1
     boolean Show_visualization 1
+    boolean Show_detailed_analysis 1
     boolean Create_TextGrid_output 1
     boolean Show_pitch_values 1
 endform
@@ -118,7 +117,7 @@ endif
 # === SETUP ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  MELODIC CONTOUR - PARSONS CODE"
+writeInfoLine: "  MELODIC CONTOUR - PARSONS CODE v2.0"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Sound: ", name$
@@ -207,6 +206,7 @@ for n from 1 to maxNotes
     note_pitch_hz[n] = 0
     note_pitch_st[n] = 0
     note_code$[n] = ""
+    note_interval_st[n] = 0
 endfor
 
 noteCount = 0
@@ -227,36 +227,31 @@ for i from 1 to numIntervals
         selectObject: pitch
         
         if pitch_summary = 1
-            # Median
             pitchHz = Get quantile: tStart, tEnd, 0.5, "Hertz"
         elsif pitch_summary = 2
-            # Mean
             pitchHz = Get mean: tStart, tEnd, "Hertz"
         else
-            # Mode (approximated by getting value at intensity peak)
             pitchHz = Get quantile: tStart, tEnd, 0.5, "Hertz"
         endif
         
-        # Skip if pitch is undefined (unvoiced segment)
         if pitchHz <> undefined and pitchHz > 0
             noteCount += 1
             
-            # Store timing
             note_start[noteCount] = tStart
             note_end[noteCount] = tEnd
             note_pitch_hz[noteCount] = pitchHz
             
-            # Convert Hz to semitones (MIDI-like scale)
-            # Formula: semitones = 69 + 12 * log2(Hz / 440)
+            # Convert Hz to semitones
             pitchST = 69 + 12 * ln(pitchHz / refA4) / ln(2)
             note_pitch_st[noteCount] = pitchST
             
-            # Determine Parsons code
+            # Determine Parsons code and interval
             if previousPitchST = undefined
-                # First note
                 note_code$[noteCount] = "*"
+                note_interval_st[noteCount] = 0
             else
                 diff = pitchST - previousPitchST
+                note_interval_st[noteCount] = diff
                 
                 if diff > threshold_semitones
                     note_code$[noteCount] = "U"
@@ -294,6 +289,227 @@ for n from 1 to noteCount
 endfor
 
 # ============================================================
+# STEP 5: PARSONS CODE STATISTICS
+# ============================================================
+
+countU = 0
+countD = 0
+countR = 0
+
+for n from 1 to noteCount
+    if note_code$[n] = "U"
+        countU += 1
+    elsif note_code$[n] = "D"
+        countD += 1
+    elsif note_code$[n] = "R"
+        countR += 1
+    endif
+endfor
+
+# ============================================================
+# STEP 6: INTERVAL HISTOGRAM ANALYSIS
+# ============================================================
+
+appendInfoLine: "STEP 5: Analyzing intervals..."
+
+# Interval bins: -12 to +12 semitones (and beyond)
+maxBins = 25
+for b from 1 to maxBins
+    intervalBins[b] = 0
+endfor
+
+# Bin mapping: bin 13 = unison (0 st), bin 14 = +1 st, bin 12 = -1 st, etc.
+centerBin = 13
+
+# Count intervals
+for n from 2 to noteCount
+    intST = round(note_interval_st[n])
+    binIndex = centerBin + intST
+    
+    if binIndex < 1
+        binIndex = 1
+    elsif binIndex > maxBins
+        binIndex = maxBins
+    endif
+    
+    intervalBins[binIndex] += 1
+endfor
+
+# Find max bin count for scaling
+maxBinCount = 0
+for b from 1 to maxBins
+    if intervalBins[b] > maxBinCount
+        maxBinCount = intervalBins[b]
+    endif
+endfor
+
+# Calculate interval statistics
+totalIntervalMagnitude = 0
+leapCount = 0
+stepCount = 0
+directionChanges = 0
+prevDirection = 0
+
+for n from 2 to noteCount
+    absDiff = abs(note_interval_st[n])
+    totalIntervalMagnitude += absDiff
+    
+    if absDiff > 2
+        leapCount += 1
+    else
+        stepCount += 1
+    endif
+    
+    # Track direction changes
+    if note_interval_st[n] > threshold_semitones
+        currentDirection = 1
+    elsif note_interval_st[n] < -threshold_semitones
+        currentDirection = -1
+    else
+        currentDirection = 0
+    endif
+    
+    if prevDirection <> 0 and currentDirection <> 0 and currentDirection <> prevDirection
+        directionChanges += 1
+    endif
+    
+    if currentDirection <> 0
+        prevDirection = currentDirection
+    endif
+endfor
+
+avgIntervalSize = totalIntervalMagnitude / (noteCount - 1)
+
+appendInfoLine: "  Leaps (>2 st): ", leapCount
+appendInfoLine: "  Steps (≤2 st): ", stepCount
+appendInfoLine: "  Direction changes: ", directionChanges
+appendInfoLine: "  Average interval: ", fixed$(avgIntervalSize, 2), " st"
+appendInfoLine: ""
+
+# ============================================================
+# STEP 7: CONTOUR SHAPE CLASSIFICATION
+# ============================================================
+
+appendInfoLine: "STEP 6: Classifying contour shape..."
+
+# Calculate contour features
+firstPitch = note_pitch_st[1]
+lastPitch = note_pitch_st[noteCount]
+pitchRange = 0
+
+# Find highest and lowest points
+highestPitch = note_pitch_st[1]
+lowestPitch = note_pitch_st[1]
+highestIndex = 1
+lowestIndex = 1
+
+for n from 1 to noteCount
+    if note_pitch_st[n] > highestPitch
+        highestPitch = note_pitch_st[n]
+        highestIndex = n
+    endif
+    if note_pitch_st[n] < lowestPitch
+        lowestPitch = note_pitch_st[n]
+        lowestIndex = n
+    endif
+endfor
+
+pitchRange = highestPitch - lowestPitch
+
+# Calculate first half and second half averages
+halfPoint = floor(noteCount / 2)
+if halfPoint < 1
+    halfPoint = 1
+endif
+
+sumFirstHalf = 0
+sumSecondHalf = 0
+
+for n from 1 to halfPoint
+    sumFirstHalf += note_pitch_st[n]
+endfor
+avgFirstHalf = sumFirstHalf / halfPoint
+
+for n from halfPoint + 1 to noteCount
+    sumSecondHalf += note_pitch_st[n]
+endfor
+if noteCount - halfPoint > 0
+    avgSecondHalf = sumSecondHalf / (noteCount - halfPoint)
+else
+    avgSecondHalf = avgFirstHalf
+endif
+
+# Overall direction
+overallDirection = lastPitch - firstPitch
+
+# Classify shape
+contourShape$ = "Undefined"
+contourDescription$ = ""
+
+# Static (very small range)
+if pitchRange < 3
+    contourShape$ = "STATIC"
+    contourDescription$ = "Little melodic movement, monotone"
+
+# Ascending
+elsif overallDirection > pitchRange * 0.5 and countU > countD * 1.5
+    contourShape$ = "ASCENDING"
+    contourDescription$ = "Overall upward movement"
+
+# Descending
+elsif overallDirection < -pitchRange * 0.5 and countD > countU * 1.5
+    contourShape$ = "DESCENDING"
+    contourDescription$ = "Overall downward movement"
+
+# Arch (convex) - rises then falls, peak in middle
+elsif highestIndex > noteCount * 0.25 and highestIndex < noteCount * 0.75 and avgFirstHalf < highestPitch - pitchRange * 0.3 and avgSecondHalf < highestPitch - pitchRange * 0.3
+    contourShape$ = "ARCH"
+    contourDescription$ = "Rise to peak, then fall (convex)"
+
+# Inverted Arch (concave) - falls then rises, trough in middle  
+elsif lowestIndex > noteCount * 0.25 and lowestIndex < noteCount * 0.75 and avgFirstHalf > lowestPitch + pitchRange * 0.3 and avgSecondHalf > lowestPitch + pitchRange * 0.3
+    contourShape$ = "INVERTED ARCH"
+    contourDescription$ = "Fall to trough, then rise (concave)"
+
+# Wave/Oscillating - many direction changes
+elsif directionChanges >= (noteCount - 1) * 0.4
+    contourShape$ = "WAVE"
+    contourDescription$ = "Oscillating, many direction changes"
+
+# Terraced ascending
+elsif countU > countD and countR > (noteCount - 1) * 0.3
+    contourShape$ = "TERRACED ASCENDING"
+    contourDescription$ = "Stepwise rise with plateaus"
+
+# Terraced descending
+elsif countD > countU and countR > (noteCount - 1) * 0.3
+    contourShape$ = "TERRACED DESCENDING"
+    contourDescription$ = "Stepwise fall with plateaus"
+
+# Balanced
+else
+    contourShape$ = "BALANCED"
+    contourDescription$ = "Mixed movement, no dominant pattern"
+endif
+
+# Melodic tendency (simpler)
+if countU > countD + 2
+    tendency$ = "Generally ASCENDING"
+elsif countD > countU + 2
+    tendency$ = "Generally DESCENDING"
+elsif countR > countU and countR > countD
+    tendency$ = "Relatively STATIC"
+else
+    tendency$ = "BALANCED"
+endif
+
+appendInfoLine: "  Shape: ", contourShape$
+appendInfoLine: "  Description: ", contourDescription$
+appendInfoLine: "  Tendency: ", tendency$
+appendInfoLine: "  Range: ", fixed$(pitchRange, 1), " semitones"
+appendInfoLine: ""
+
+# ============================================================
 # DETAILED ANALYSIS OUTPUT
 # ============================================================
 
@@ -310,9 +526,8 @@ if show_detailed_analysis
         pitchStr$ = fixed$(note_pitch_hz[n], 1)
         midiStr$ = fixed$(note_pitch_st[n], 1)
         
-        # Calculate interval from previous note
         if n > 1
-            intervalST = note_pitch_st[n] - note_pitch_st[n-1]
+            intervalST = note_interval_st[n]
             if intervalST >= 0
                 intervalStr$ = "+" + fixed$(intervalST, 1) + " st"
             else
@@ -329,23 +544,8 @@ if show_detailed_analysis
 endif
 
 # ============================================================
-# PARSONS CODE STATISTICS
+# PARSONS CODE RESULT
 # ============================================================
-
-# Count U, D, R
-countU = 0
-countD = 0
-countR = 0
-
-for n from 1 to noteCount
-    if note_code$[n] = "U"
-        countU += 1
-    elsif note_code$[n] = "D"
-        countD += 1
-    elsif note_code$[n] = "R"
-        countR += 1
-    endif
-endfor
 
 appendInfoLine: "----------------------------------------------"
 appendInfoLine: "  PARSONS CODE RESULT"
@@ -354,23 +554,14 @@ appendInfoLine: ""
 appendInfoLine: "  ##", parsonsCode$, "##"
 appendInfoLine: ""
 appendInfoLine: "  Length: ", noteCount, " symbols"
-appendInfoLine: "  Up (U): ", countU, " (", fixed$(countU / (noteCount - 1) * 100, 1), "%)"
-appendInfoLine: "  Down (D): ", countD, " (", fixed$(countD / (noteCount - 1) * 100, 1), "%)"
-appendInfoLine: "  Repeat (R): ", countR, " (", fixed$(countR / (noteCount - 1) * 100, 1), "%)"
-appendInfoLine: ""
-
-# Melodic direction tendency
-if countU > countD + 2
-    tendency$ = "Generally ASCENDING"
-elsif countD > countU + 2
-    tendency$ = "Generally DESCENDING"
-elsif countR > countU and countR > countD
-    tendency$ = "Relatively STATIC"
-else
-    tendency$ = "BALANCED / WAVE-LIKE"
+if noteCount > 1
+    appendInfoLine: "  Up (U): ", countU, " (", fixed$(countU / (noteCount - 1) * 100, 1), "%)"
+    appendInfoLine: "  Down (D): ", countD, " (", fixed$(countD / (noteCount - 1) * 100, 1), "%)"
+    appendInfoLine: "  Repeat (R): ", countR, " (", fixed$(countR / (noteCount - 1) * 100, 1), "%)"
 endif
-
-appendInfoLine: "  Melodic tendency: ", tendency$
+appendInfoLine: ""
+appendInfoLine: "  Contour Shape: ", contourShape$
+appendInfoLine: "  Melodic Tendency: ", tendency$
 appendInfoLine: ""
 
 # ============================================================
@@ -387,7 +578,6 @@ if create_TextGrid_output
     for n from 1 to noteCount
         selectObject: outputTG
         
-        # Add boundaries
         if note_start[n] > currentTime and note_start[n] < duration
             nocheck Insert boundary: 1, note_start[n]
             nocheck Insert boundary: 2, note_start[n]
@@ -399,18 +589,14 @@ if create_TextGrid_output
             nocheck Insert boundary: 3, note_end[n]
         endif
         
-        # Label intervals
         midTime = (note_start[n] + note_end[n]) / 2
         
-        # Tier 1: Note numbers
         interval1 = Get interval at time: 1, midTime
         nocheck Set interval text: 1, interval1, "N" + string$(n)
         
-        # Tier 2: Parsons code
         interval2 = Get interval at time: 2, midTime
         nocheck Set interval text: 2, interval2, note_code$[n]
         
-        # Tier 3: Pitch values
         if show_pitch_values
             interval3 = Get interval at time: 3, midTime
             nocheck Set interval text: 3, interval3, fixed$(note_pitch_hz[n], 0) + "Hz"
@@ -435,67 +621,50 @@ if show_visualization
     
     Erase all
     
-    # --- TITLE ---
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 11
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Melodic Contour - Parsons Code## | " + name$ + " | " + presetName$
-    
-    # --- WAVEFORM WITH NOTE BOUNDARIES ---
-    Select outer viewport: 0, 8, 0.6, 1.8
-    Select inner viewport: 0.8, 7.8, 0.7, 1.7
-    
-    selectObject: sound
-    Colour: "{0.5, 0.6, 0.75}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    # Draw note boundaries
-    Colour: "{0.8, 0.3, 0.3}"
-    Line width: 1
-    Dotted line
-    for n from 1 to noteCount
-        Draw line: note_start[n], -0.95, note_start[n], 0.95
-    endfor
-    Solid line
-    
-    Colour: "Black"
-    Line width: 0.5
-    Draw inner box
-    
-    Font size: 7
-    Select outer viewport: 0, 0.8, 0.6, 1.8
+    # === TITLE ===
+    Select outer viewport: 0, 8, 0, 0.7
     Axes: 0, 1, 0, 1
-    Colour: "{0.3, 0.4, 0.6}"
-    Text: 0.95, "right", 0.5, "half", "Waveform"
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.75, "half", "##Melodic Contour - Parsons Code## | " + name$
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.2, "centre", -1., "half", presetName$ + " | Threshold: " + fixed$(threshold_semitones, 1) + " st | Shape: " + contourShape$
     
-    # --- PITCH CONTOUR WITH PARSONS CODES ---
-    Select outer viewport: 0, 8, 1.9, 3.5
-    Select inner viewport: 0.8, 7.8, 2.0, 3.4
+    # === PANEL 1: GRAPHICAL CONTOUR DIAGRAM (Parsons style) ===
+    Select outer viewport: 0, 8, 0.8, 2.8
+    Select inner viewport: 0.7, 7.7, 0.9, 2.7
     
-    # Get pitch range for axes
-    minPlotPitch = minPitch * 0.9
-    maxPlotPitch = maxPitch * 1.1
-    
-    Axes: 0, duration, minPlotPitch, maxPlotPitch
+    # Axes: note index vs relative pitch level
+    Axes: 0, noteCount + 1, -1, 1
     
     # Background
-    Paint rectangle: "{0.97, 0.98, 1.0}", 0, duration, minPlotPitch, maxPlotPitch
+    Paint rectangle: "{0.98, 0.98, 0.99}", 0, noteCount + 1, -1, 1
     
-    # Draw pitch contour
-    selectObject: pitch
-    Colour: "{0.3, 0.5, 0.8}"
-    Line width: 1.5
-    Draw: 0, 0, minPlotPitch, maxPlotPitch, "no"
+    # Center line (reference)
+    Colour: "{0.85, 0.85, 0.88}"
+    Line width: 1
+    Draw line: 0, 0, noteCount + 1, 0
     
-    # Draw note medians and Parsons codes
+    # Normalize pitches to -1 to +1 range
+    midPitch = (highestPitch + lowestPitch) / 2
+    if pitchRange > 0
+        scaleFactor = 1.8 / pitchRange
+    else
+        scaleFactor = 1
+    endif
+    
+    # Draw step contour
+    Line width: 3
+    
     for n from 1 to noteCount
-        midTime = (note_start[n] + note_end[n]) / 2
-        pitchHz = note_pitch_hz[n]
+        normalizedPitch = (note_pitch_st[n] - midPitch) * scaleFactor
         
-        # Note median marker
-        markerSize = (note_end[n] - note_start[n]) / 2
-        if markerSize > 0.05
-            markerSize = 0.05
+        # Clamp to range
+        if normalizedPitch > 0.9
+            normalizedPitch = 0.9
+        elsif normalizedPitch < -0.9
+            normalizedPitch = -0.9
         endif
         
         # Color by direction
@@ -509,81 +678,75 @@ if show_visualization
             colour$ = "{0.4, 0.4, 0.8}"
         endif
         
-        # Draw marker
-        Paint rectangle: colour$, note_start[n] + 0.005, note_end[n] - 0.005, pitchHz - (maxPlotPitch - minPlotPitch) * 0.02, pitchHz + (maxPlotPitch - minPlotPitch) * 0.02
+        # Draw horizontal bar for this note
+        Paint rectangle: colour$, n - 0.4, n + 0.4, normalizedPitch - 0.06, normalizedPitch + 0.06
         
-        # Draw Parsons code above
-        Font size: 10
-        Colour: colour$
-        labelY = pitchHz + (maxPlotPitch - minPlotPitch) * 0.08
-        if labelY > maxPlotPitch * 0.95
-            labelY = pitchHz - (maxPlotPitch - minPlotPitch) * 0.08
-        endif
-        Text: midTime, "centre", labelY, "half", note_code$[n]
-        
-        # Draw connecting line to previous note
+        # Draw vertical connection to previous note
         if n > 1
-            prevMidTime = (note_start[n-1] + note_end[n-1]) / 2
-            prevPitchHz = note_pitch_hz[n-1]
+            prevNormalized = (note_pitch_st[n-1] - midPitch) * scaleFactor
+            if prevNormalized > 0.9
+                prevNormalized = 0.9
+            elsif prevNormalized < -0.9
+                prevNormalized = -0.9
+            endif
             
-            Colour: "{0.6, 0.6, 0.7}"
-            Line width: 1
-            Dotted line
-            Draw line: prevMidTime, prevPitchHz, midTime, pitchHz
-            Solid line
+            Colour: "{0.5, 0.5, 0.6}"
+            Line width: 2
+            Draw line: n - 0.4, normalizedPitch, n - 0.4, prevNormalized
         endif
+        
+        # Draw Parsons code below
+        Font size: 10
+        if note_code$[n] = "U"
+            Colour: "{0.2, 0.7, 0.3}"
+        elsif note_code$[n] = "D"
+            Colour: "{0.8, 0.3, 0.3}"
+        elsif note_code$[n] = "R"
+            Colour: "{0.6, 0.6, 0.2}"
+        else
+            Colour: "{0.4, 0.4, 0.8}"
+        endif
+        Text: n, "centre", -0.85, "half", note_code$[n]
     endfor
     
+    Line width: 1
     Colour: "Black"
-    Line width: 0.5
     Draw inner box
     
-    # Y-axis labels (Hz)
-    Font size: 6
-    Marks left: 5, "yes", "yes", "no"
-    
     Font size: 7
-    Select outer viewport: 0, 0.8, 1.9, 3.5
+    Text bottom: "yes", "Note number"
+    
+    # Label
+    Font size: 8
+    Select outer viewport: 0, 0.7, 0.8, 2.8
     Axes: 0, 1, 0, 1
-    Colour: "{0.3, 0.5, 0.7}"
-    Text: 0.95, "right", 0.6, "half", "Pitch"
-    Font size: 5
+    Colour: "{0.3, 0.4, 0.6}"
+    Text: 0.9, "right", 0.6, "half", "Contour"
+    Font size: 6
     Colour: "{0.5, 0.5, 0.55}"
-    Text: 0.95, "right", 0.35, "half", "(Hz)"
+    Text: 0.9, "right", 0.4, "half", "(step)"
     
-    # --- SEMITONE PLOT (Piano Roll Style) ---
-    Select outer viewport: 0, 8, 3.6, 5.0
-    Select inner viewport: 0.8, 7.8, 3.7, 4.9
+    # === PANEL 2: PITCH TIMELINE ===
+    Select outer viewport: 0, 8, 2.9, 4.3
+    Select inner viewport: 0.7, 7.7, 3.0, 4.2
     
-    # Get semitone range
-    minST = note_pitch_st[1]
-    maxST = note_pitch_st[1]
-    for n from 2 to noteCount
-        if note_pitch_st[n] < minST
-            minST = note_pitch_st[n]
-        endif
-        if note_pitch_st[n] > maxST
-            maxST = note_pitch_st[n]
-        endif
-    endfor
+    # Get pitch range for axes
+    minPlotPitch = lowestPitch - 2
+    maxPlotPitch = highestPitch + 2
     
-    # Expand range slightly
-    minST = floor(minST) - 1
-    maxST = ceiling(maxST) + 1
+    Axes: 0, duration, minPlotPitch, maxPlotPitch
     
-    Axes: 0, duration, minST, maxST
+    # Background
+    Paint rectangle: "{0.97, 0.98, 1.0}", 0, duration, minPlotPitch, maxPlotPitch
     
-    # Background with semitone grid
-    Paint rectangle: "{0.98, 0.98, 0.99}", 0, duration, minST, maxST
-    
-    # Draw semitone lines
-    Colour: "{0.9, 0.9, 0.92}"
+    # Grid lines at semitones
+    Colour: "{0.92, 0.92, 0.94}"
     Line width: 0.5
-    for st from floor(minST) to ceiling(maxST)
+    for st from floor(minPlotPitch) to ceiling(maxPlotPitch)
         Draw line: 0, st, duration, st
     endfor
     
-    # Draw notes as boxes
+    # Draw note boxes (piano roll style)
     for n from 1 to noteCount
         pitchST = note_pitch_st[n]
         
@@ -603,6 +766,17 @@ if show_visualization
         Colour: "{0.3, 0.3, 0.4}"
         Line width: 0.5
         Draw rectangle: note_start[n], note_end[n], pitchST - 0.4, pitchST + 0.4
+        
+        # Connect to previous
+        if n > 1
+            prevMid = (note_start[n-1] + note_end[n-1]) / 2
+            currMid = (note_start[n] + note_end[n]) / 2
+            Colour: "{0.6, 0.6, 0.7}"
+            Line width: 1
+            Dotted line
+            Draw line: prevMid, note_pitch_st[n-1], currMid, pitchST
+            Solid line
+        endif
     endfor
     
     Colour: "Black"
@@ -613,124 +787,228 @@ if show_visualization
     Marks left: 5, "yes", "yes", "no"
     
     Font size: 7
-    Select outer viewport: 0, 0.8, 3.6, 5.0
+    Select outer viewport: 0, 0.7, 2.9, 4.3
     Axes: 0, 1, 0, 1
-    Colour: "{0.4, 0.4, 0.6}"
-    Text: 0.95, "right", 0.6, "half", "MIDI"
+    Colour: "{0.3, 0.5, 0.7}"
+    Text: 0.9, "right", 0.6, "half", "Pitch"
     Font size: 5
     Colour: "{0.5, 0.5, 0.55}"
-    Text: 0.95, "right", 0.35, "half", "(semitones)"
+    Text: 0.9, "right", 0.35, "half", "(MIDI)"
     
-    # --- PARSONS CODE DISPLAY ---
-    Select outer viewport: 0, 8, 5.1, 5.8
-    Select inner viewport: 0.8, 7.8, 5.2, 5.7
+    # === PANEL 3: INTERVAL HISTOGRAM ===
+    Select outer viewport: 0, 4, 4.4, 6.2
+    Select inner viewport: 0.7, 3.8, 4.5, 6.1
     
-    Axes: 0, noteCount + 1, 0, 1
+    # Show bins from -12 to +12
+    histMin = -12
+    histMax = 12
     
-    Paint rectangle: "{0.99, 0.99, 0.98}", 0, noteCount + 1, 0, 1
+    if maxBinCount > 0
+        Axes: histMin - 0.5, histMax + 0.5, 0, maxBinCount * 1.15
+    else
+        Axes: histMin - 0.5, histMax + 0.5, 0, 1
+    endif
     
-    for n from 1 to noteCount
-        if note_code$[n] = "U"
-            colour$ = "{0.2, 0.7, 0.3}"
-        elsif note_code$[n] = "D"
-            colour$ = "{0.8, 0.3, 0.3}"
-        elsif note_code$[n] = "R"
-            colour$ = "{0.6, 0.6, 0.2}"
-        else
-            colour$ = "{0.4, 0.4, 0.8}"
+    # Background
+    Paint rectangle: "{0.98, 0.97, 0.97}", histMin - 0.5, histMax + 0.5, 0, maxBinCount * 1.15
+    
+    # Zero line
+    Colour: "{0.7, 0.7, 0.75}"
+    Line width: 1
+    Draw line: 0, 0, 0, maxBinCount * 1.1
+    
+    # Draw bars
+    for st from histMin to histMax
+        binIndex = centerBin + st
+        if binIndex >= 1 and binIndex <= maxBins
+            binCount = intervalBins[binIndex]
+            
+            if binCount > 0
+                # Color: green for up, red for down, yellow for unison
+                if st > 0
+                    colour$ = "{0.3, 0.65, 0.4}"
+                elsif st < 0
+                    colour$ = "{0.75, 0.4, 0.4}"
+                else
+                    colour$ = "{0.6, 0.6, 0.3}"
+                endif
+                
+                Paint rectangle: colour$, st - 0.4, st + 0.4, 0, binCount
+                
+                # Outline
+                Colour: "{0.3, 0.3, 0.4}"
+                Line width: 0.5
+                Draw rectangle: st - 0.4, st + 0.4, 0, binCount
+                
+                # Count label
+                if binCount > 0
+                    Font size: 5
+                    Colour: "{0.3, 0.3, 0.4}"
+                    Text: st, "centre", binCount + maxBinCount * 0.05, "half", string$(binCount)
+                endif
+            endif
         endif
-        
-        Font size: 12
-        Colour: colour$
-        Text: n, "centre", 0.5, "half", note_code$[n]
     endfor
     
     Colour: "Black"
     Line width: 0.5
     Draw inner box
     
-    Font size: 7
-    Select outer viewport: 0, 0.8, 5.1, 5.8
-    Axes: 0, 1, 0, 1
-    Colour: "{0.3, 0.3, 0.4}"
-    Text: 0.95, "right", 0.5, "half", "Code"
-    
-    # --- LEGEND & STATISTICS ---
-    Select outer viewport: 0, 8, 5.9, 6.7
-    Axes: 0, 1, 0, 1
+    Font size: 5
+    Marks bottom every: 1, 3, "yes", "yes", "no"
     
     Font size: 7
+    Text bottom: "yes", "Interval (semitones)"
     
-    # Legend
+    Font size: 7
+    Select outer viewport: 0, 0.7, 4.4, 6.2
+    Axes: 0, 1, 0, 1
+    Colour: "{0.5, 0.4, 0.5}"
+    Text: 0.9, "right", 0.6, "half", "Interval"
+    Font size: 5
+    Colour: "{0.5, 0.5, 0.55}"
+    Text: 0.9, "right", 0.35, "half", "histogram"
+    
+    # === PANEL 4: CONTOUR SHAPE CLASSIFICATION ===
+    Select outer viewport: 4, 8, 4.4, 6.2
+    Select inner viewport: 4.3, 7.8, 4.5, 6.1
+    
+    Axes: 0, 1, 0, 1
+    
+    # Background with shape color
+    if contourShape$ = "ASCENDING"
+        bgColor$ = "{0.9, 0.95, 0.9}"
+        shapeColor$ = "{0.3, 0.7, 0.4}"
+    elsif contourShape$ = "DESCENDING"
+        bgColor$ = "{0.95, 0.9, 0.9}"
+        shapeColor$ = "{0.7, 0.3, 0.3}"
+    elsif contourShape$ = "ARCH"
+        bgColor$ = "{0.9, 0.92, 0.95}"
+        shapeColor$ = "{0.4, 0.5, 0.7}"
+    elsif contourShape$ = "INVERTED ARCH"
+        bgColor$ = "{0.95, 0.92, 0.9}"
+        shapeColor$ = "{0.7, 0.5, 0.4}"
+    elsif contourShape$ = "WAVE"
+        bgColor$ = "{0.92, 0.92, 0.95}"
+        shapeColor$ = "{0.5, 0.5, 0.7}"
+    elsif contourShape$ = "STATIC"
+        bgColor$ = "{0.94, 0.94, 0.92}"
+        shapeColor$ = "{0.6, 0.6, 0.4}"
+    else
+        bgColor$ = "{0.94, 0.94, 0.94}"
+        shapeColor$ = "{0.5, 0.5, 0.5}"
+    endif
+    
+    Paint rectangle: bgColor$, 0, 1, 0, 1
+    
+    # Draw shape icon
+    Colour: shapeColor$
+    Line width: 3
+    
+    if contourShape$ = "ASCENDING"
+        Draw line: 0.15, 0.3, 0.85, 0.7
+    elsif contourShape$ = "DESCENDING"
+        Draw line: 0.15, 0.7, 0.85, 0.3
+    elsif contourShape$ = "ARCH"
+        # Draw arch curve
+        for i from 0 to 20
+            x1 = 0.15 + (i / 20) * 0.7
+            x2 = 0.15 + ((i + 1) / 20) * 0.7
+            y1 = 0.3 + 0.4 * sin((i / 20) * pi)
+            y2 = 0.3 + 0.4 * sin(((i + 1) / 20) * pi)
+            Draw line: x1, y1, x2, y2
+        endfor
+    elsif contourShape$ = "INVERTED ARCH"
+        for i from 0 to 20
+            x1 = 0.15 + (i / 20) * 0.7
+            x2 = 0.15 + ((i + 1) / 20) * 0.7
+            y1 = 0.7 - 0.4 * sin((i / 20) * pi)
+            y2 = 0.7 - 0.4 * sin(((i + 1) / 20) * pi)
+            Draw line: x1, y1, x2, y2
+        endfor
+    elsif contourShape$ = "WAVE"
+        for i from 0 to 20
+            x1 = 0.15 + (i / 20) * 0.7
+            x2 = 0.15 + ((i + 1) / 20) * 0.7
+            y1 = 0.5 + 0.2 * sin((i / 20) * 3 * pi)
+            y2 = 0.5 + 0.2 * sin(((i + 1) / 20) * 3 * pi)
+            Draw line: x1, y1, x2, y2
+        endfor
+    elsif contourShape$ = "STATIC"
+        Draw line: 0.15, 0.5, 0.85, 0.5
+    elsif contourShape$ = "TERRACED ASCENDING"
+        Draw line: 0.15, 0.35, 0.35, 0.35
+        Draw line: 0.35, 0.35, 0.35, 0.5
+        Draw line: 0.35, 0.5, 0.55, 0.5
+        Draw line: 0.55, 0.5, 0.55, 0.65
+        Draw line: 0.55, 0.65, 0.85, 0.65
+    elsif contourShape$ = "TERRACED DESCENDING"
+        Draw line: 0.15, 0.65, 0.35, 0.65
+        Draw line: 0.35, 0.65, 0.35, 0.5
+        Draw line: 0.35, 0.5, 0.55, 0.5
+        Draw line: 0.55, 0.5, 0.55, 0.35
+        Draw line: 0.55, 0.35, 0.85, 0.35
+    else
+        # Balanced - zigzag
+        Draw line: 0.15, 0.5, 0.35, 0.65
+        Draw line: 0.35, 0.65, 0.5, 0.4
+        Draw line: 0.5, 0.4, 0.65, 0.6
+        Draw line: 0.65, 0.6, 0.85, 0.5
+    endif
+    
+    Line width: 1
+    
+    # Shape name
+    Font size: 10
+    Colour: shapeColor$
+    Text: 0.5, "centre", 0.12, "half", contourShape$
+    
+    Colour: "Black"
+    Line width: 0.5
+    Draw inner box
+    
+    # === PANEL 5: LEGEND & STATISTICS ===
+    Select outer viewport: 0, 8, 6.3, 7.2
+    Axes: 0, 1, 0, 1
+    
+    Font size: 7
+    
+    # Parsons code legend
     Colour: "{0.4, 0.4, 0.8}"
-    Text: 0.02, "left", 0.75, "half", "* = First"
+    Text: 0.02, "left", 0.75, "half", "* First"
     
-    Colour: "{0.2, 0.7, 0.3}"
-    Paint rectangle: "{0.2, 0.7, 0.3}", 0.12, 0.14, 0.65, 0.85
+    Paint rectangle: "{0.2, 0.7, 0.3}", 0.09, 0.11, 0.65, 0.85
     Colour: "Black"
-    Text: 0.15, "left", 0.75, "half", "U = Up (" + string$(countU) + ")"
+    Text: 0.12, "left", 0.75, "half", "U Up (" + string$(countU) + ")"
     
-    Colour: "{0.8, 0.3, 0.3}"
-    Paint rectangle: "{0.8, 0.3, 0.3}", 0.28, 0.30, 0.65, 0.85
+    Paint rectangle: "{0.8, 0.3, 0.3}", 0.22, 0.24, 0.65, 0.85
     Colour: "Black"
-    Text: 0.31, "left", 0.75, "half", "D = Down (" + string$(countD) + ")"
+    Text: 0.25, "left", 0.75, "half", "D Down (" + string$(countD) + ")"
     
-    Colour: "{0.6, 0.6, 0.2}"
-    Paint rectangle: "{0.6, 0.6, 0.2}", 0.46, 0.48, 0.65, 0.85
+    Paint rectangle: "{0.6, 0.6, 0.2}", 0.36, 0.38, 0.65, 0.85
     Colour: "Black"
-    Text: 0.49, "left", 0.75, "half", "R = Repeat (" + string$(countR) + ")"
+    Text: 0.39, "left", 0.75, "half", "R Repeat (" + string$(countR) + ")"
     
     # Statistics
-    Font size: 5
+    Font size: 6
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.02, "left", 0.25, "half", "Notes: " + string$(noteCount)
-    Text: 0.15, "left", 0.25, "half", "Threshold: " + fixed$(threshold_semitones, 1) + " st"
-    Text: 0.32, "left", 0.25, "half", "Range: " + fixed$(minPitch, 0) + "-" + fixed$(maxPitch, 0) + " Hz"
-    Text: 0.52, "left", 0.25, "half", "Tendency: " + tendency$
+    Text: 0.02, "left", 0.35, "half", "Notes: " + string$(noteCount)
+    Text: 0.12, "left", 0.35, "half", "Range: " + fixed$(pitchRange, 1) + " st"
+    Text: 0.26, "left", 0.35, "half", "Leaps: " + string$(leapCount)
+    Text: 0.36, "left", 0.35, "half", "Steps: " + string$(stepCount)
+    Text: 0.46, "left", 0.35, "half", "Dir.chg: " + string$(directionChanges)
+    Text: 0.58, "left", 0.35, "half", "Avg.int: " + fixed$(avgIntervalSize, 1) + " st"
     
-    # Full code display
+    # Parsons code (truncated if long)
     Font size: 6
     Colour: "{0.2, 0.2, 0.3}"
-    if length(parsonsCode$) <= 40
-        Text: 0.75, "left", 0.75, "half", parsonsCode$
+    if length(parsonsCode$) <= 30
+        Text: 0.55, "left", 0.75, "half", "Code: " + parsonsCode$
     else
-        Text: 0.75, "left", 0.75, "half", left$(parsonsCode$, 37) + "..."
+        Text: 0.55, "left", 0.75, "half", "Code: " + left$(parsonsCode$, 27) + "..."
     endif
-    
-    # --- TIME AXIS ---
-    Select outer viewport: 0, 8, 6.7, 7.0
-    Select inner viewport: 0.8, 7.8, 6.75, 6.95
-    
-    Axes: 0, duration, 0, 1
-    
-    Colour: "{0.3, 0.3, 0.4}"
-    Line width: 1
-    Draw line: 0, 0.7, duration, 0.7
-    
-    Font size: 5
-    tickStep = 0.5
-    if duration > 5
-        tickStep = 1
-    endif
-    if duration > 15
-        tickStep = 2
-    endif
-    if duration > 30
-        tickStep = 5
-    endif
-    
-    t = 0
-    while t <= duration
-        Draw line: t, 0.7, t, 0.3
-        Text: t, "centre", 0.1, "half", fixed$(t, 1)
-        t = t + tickStep
-    endwhile
-    
-    Font size: 6
-    Text: duration / 2, "centre", -0.5, "half", "Time (s)"
     
     Font size: 10
-    Line width: 1
     Colour: "Black"
     
     appendInfoLine: "  Visualization complete"
@@ -753,11 +1031,13 @@ appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "  PARSONS CODE: ", parsonsCode$
 appendInfoLine: ""
+appendInfoLine: "  CONTOUR SHAPE: ", contourShape$
+appendInfoLine: "  ", contourDescription$
+appendInfoLine: ""
 appendInfoLine: "  Use this code to search melodic databases"
 appendInfoLine: "  or compare with other melodies."
 appendInfoLine: ""
 
-# Select output TextGrid if created
 if create_TextGrid_output
     selectObject: outputTG
 endif
