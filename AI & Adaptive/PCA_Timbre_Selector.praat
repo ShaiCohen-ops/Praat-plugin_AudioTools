@@ -3,20 +3,19 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Fixed syntax
+# Version: 1.2 (2025) - Direct selection + PCA visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   PCA Timbre Selector - Analyzes timbre via PCA and selects
-#   segments matching target timbre characteristics.
+#   PCA Timbre Selector - Analyzes timbre and selects segments
+#   using direct feature selection for presets, with PCA
+#   visualization for understanding the timbre space.
 #
-# Changelog v0.3:
-#   - Fixed array access syntax (chunk_id_1 not chunk_id_[1])
-#   - Added preset name to output
-#   - Added visualization
-#   - Added selectivity control for stronger effect
-#   - Made presets more extreme (2.5 SD instead of 1.5)
+# Changelog v1.2:
+#   - Restored PCA scatter plots and eigenvector loadings
+#   - Kept direct feature selection (presets sound different)
+#   - Combined best of v1.0 and v1.1
 # ============================================================
 
 # === Input Validation ===
@@ -28,25 +27,27 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form PCA Timbre Selector v0.3
+form PCA Timbre Selector v1.2
     comment === Timbre Presets ===
     optionmenu Preset: 1
-        option Custom
-        option Bright/Clear (High Centroid)
-        option Dark/Mellow (Low Centroid)
-        option Noisy/Breathy (Low HNR)
-        option Tonal/Focused (High HNR)
+        option Custom (PCA targeting)
+        option Bright (high spectral centroid)
+        option Dark (low spectral centroid)
+        option Noisy (low HNR)
+        option Tonal (high HNR)
         option High Pitch
         option Low Pitch
-        option Center (Average)
+        option Loud (high intensity)
+        option Quiet (low intensity)
     comment === Analysis Parameters ===
     positive Segment_ms 25
     positive Frame_step_seconds 0.01
     positive F0_min 75
     positive F0_max 600
     comment === Selection Strength ===
-    positive Selectivity 0.2
-    comment === Custom Target (Standard Deviations) ===
+    comment (Percentile: 20 = top/bottom 20%)
+    positive Selection_percentile 25
+    comment === Custom PCA Target (only for Custom preset) ===
     real Target_pc1 0.0
     real Target_pc2 0.0
     real Target_pc3 0.0
@@ -55,30 +56,65 @@ form PCA Timbre Selector v0.3
     boolean Play_result 1
 endform
 
-# ===== PRESET NAME =====
+# ===== PRESET CONFIGURATION =====
 if preset = 1
     presetName$ = "Custom"
+    selectionFeature$ = "PCA"
+    selectionDirection = 0
 elsif preset = 2
     presetName$ = "Bright"
+    selectionFeature$ = "centroid"
+    selectionDirection = 1
 elsif preset = 3
     presetName$ = "Dark"
+    selectionFeature$ = "centroid"
+    selectionDirection = -1
 elsif preset = 4
     presetName$ = "Noisy"
+    selectionFeature$ = "hnr"
+    selectionDirection = -1
 elsif preset = 5
     presetName$ = "Tonal"
+    selectionFeature$ = "hnr"
+    selectionDirection = 1
 elsif preset = 6
     presetName$ = "HighPitch"
+    selectionFeature$ = "pitch"
+    selectionDirection = 1
 elsif preset = 7
     presetName$ = "LowPitch"
-else
-    presetName$ = "Center"
+    selectionFeature$ = "pitch"
+    selectionDirection = -1
+elsif preset = 8
+    presetName$ = "Loud"
+    selectionFeature$ = "intensity"
+    selectionDirection = 1
+elsif preset = 9
+    presetName$ = "Quiet"
+    selectionFeature$ = "intensity"
+    selectionDirection = -1
 endif
 
 # ===== 1. SETUP =====
 clearinfo
-writeInfoLine: "=== PCA Timbre Selector v0.3 ==="
+writeInfoLine: "=============================================="
+writeInfoLine: "  PCA TIMBRE SELECTOR v1.2"
+writeInfoLine: "=============================================="
+appendInfoLine: ""
+appendInfoLine: "Source: ", sndName$
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Selectivity: ", selectivity, " (lower = more selective)"
+if selectionFeature$ <> "PCA"
+    appendInfoLine: "Mode: Direct feature selection"
+    appendInfoLine: "Feature: ", selectionFeature$
+    if selectionDirection = 1
+        appendInfoLine: "Direction: HIGH values (top ", selection_percentile, "%)"
+    else
+        appendInfoLine: "Direction: LOW values (bottom ", selection_percentile, "%)"
+    endif
+else
+    appendInfoLine: "Mode: PCA targeting"
+    appendInfoLine: "Target: (", target_pc1, ", ", target_pc2, ", ", target_pc3, ")"
+endif
 appendInfoLine: ""
 
 selectObject: snd
@@ -101,12 +137,8 @@ if nch > 1
     Rename: "Analysis_Work"
 endif
 
-if workSnd = 0
-    exitScript: "Error: Failed to create analysis copy."
-endif
-
-# ===== 2. BATCH FEATURE EXTRACTION =====
-appendInfoLine: "Extracting features..."
+# ===== 2. FEATURE EXTRACTION =====
+appendInfoLine: "STEP 1: Extracting features..."
 
 selectObject: workSnd
 To Pitch: frame_step_seconds, f0_min, f0_max
@@ -134,31 +166,45 @@ if nF < 10
     exitScript: "Sound too short for analysis."
 endif
 
-Create TableOfReal: "raw_features", nF, 5
-feat = selected("TableOfReal")
+# Feature names
+feature$[1] = "Pitch"
+feature$[2] = "Intensity"
+feature$[3] = "Centroid"
+feature$[4] = "Spread"
+feature$[5] = "HNR"
 
-# Store feature values for visualization
+# Feature arrays
 pitch_vals# = zero#(nF)
 intensity_vals# = zero#(nF)
 centroid_vals# = zero#(nF)
+spread_vals# = zero#(nF)
 hnr_vals# = zero#(nF)
+time_vals# = zero#(nF)
 
-# 1. Pitch
-selectObject: pit
+# Create TableOfReal for PCA
+Create TableOfReal: "raw_features", nF, 5
+feat = selected("TableOfReal")
+
+for c from 1 to 5
+    Set column label (index): c, feature$[c]
+endfor
+
+# Extract all features
 for i from 1 to nF
+    time_vals#[i] = t0 + (i-1)*dt
+    
+    # Pitch
+    selectObject: pit
     v = Get value in frame: i, "Hertz"
-    if v = undefined
+    if v = undefined or v <= 0
         v = 0
     endif
     pitch_vals#[i] = v
     selectObject: feat
     Set value: i, 1, v
-    selectObject: pit
-endfor
-
-# 2. Intensity
-selectObject: inten
-for i from 1 to nF
+    
+    # Intensity
+    selectObject: inten
     v = Get value in frame: i
     if v = undefined
         v = -100
@@ -166,13 +212,9 @@ for i from 1 to nF
     intensity_vals#[i] = v
     selectObject: feat
     Set value: i, 2, v
-    selectObject: inten
-endfor
-
-# 3. Spectral Features
-selectObject: specg
-for i from 1 to nF
-    t = t0 + (i-1)*dt
+    
+    # Centroid & Spread
+    t = time_vals#[i]
     selectObject: specg
     To Spectrum (slice): t
     spec = selected("Spectrum")
@@ -187,15 +229,13 @@ for i from 1 to nF
         spread = 0
     endif
     centroid_vals#[i] = cent
-    
+    spread_vals#[i] = spread
     selectObject: feat
     Set value: i, 3, cent
     Set value: i, 4, spread
-endfor
-
-# 4. Harmonicity
-selectObject: harmo
-for i from 1 to nF
+    
+    # HNR
+    selectObject: harmo
     v = Get value in frame: i
     if v = undefined
         v = -50
@@ -203,57 +243,37 @@ for i from 1 to nF
     hnr_vals#[i] = v
     selectObject: feat
     Set value: i, 5, v
-    selectObject: harmo
 endfor
 
 removeObject: pit, inten, specg, harmo
 
 appendInfoLine: "  ", nF, " frames analyzed"
 
-# ===== 3. PCA & STANDARDIZATION =====
-appendInfoLine: "Running PCA..."
+# ===== 3. PCA (for visualization) =====
+appendInfoLine: ""
+appendInfoLine: "STEP 2: Running PCA..."
 
 selectObject: feat
 To PCA
 pca = selected("PCA")
 
-# Smart Axis Detection
+# Store eigenvector loadings
+for pc from 1 to 3
+    for f from 1 to 5
+        selectObject: pca
+        loading[pc, f] = Get eigenvector element: pc, f
+    endfor
+endfor
+
+# Variance explained
 selectObject: pca
-eig_f0 = Get eigenvector element: 1, 1
-eig_int = Get eigenvector element: 1, 2
-eig_cent = Get eigenvector element: 1, 3
-eig_hnr = Get eigenvector element: 1, 5
+var1 = Get fraction variance accounted for: 1, 1
+var2 = Get fraction variance accounted for: 2, 2
+var3 = Get fraction variance accounted for: 3, 3
 
-idx_bright = 1
-sign_bright = 1
-idx_hnr = 2
-sign_hnr = 1
-idx_pitch = 3
-sign_pitch = 1
+appendInfoLine: "  Variance explained: PC1=", fixed$(var1 * 100, 1), "%, PC2=", fixed$(var2 * 100, 1), "%, PC3=", fixed$(var3 * 100, 1), "%"
 
-if abs(eig_cent) > 0.5
-    idx_bright = 1
-    if eig_cent < 0
-        sign_bright = -1
-    else
-        sign_bright = 1
-    endif
-elsif abs(eig_hnr) > 0.5
-    idx_hnr = 1
-    if eig_hnr < 0
-        sign_hnr = -1
-    else
-        sign_hnr = 1
-    endif
-elsif abs(eig_f0) > 0.5
-    idx_pitch = 1
-    if eig_f0 < 0
-        sign_pitch = -1
-    else
-        sign_pitch = 1
-    endif
-endif
-
+# Project to PC space
 selectObject: feat
 plusObject: pca
 To Configuration: 3
@@ -262,7 +282,7 @@ To TableOfReal
 scoresTbl = selected("TableOfReal")
 removeObject: scores
 
-# Store PCA scores for visualization
+# Store PCA scores
 pc1_vals# = zero#(nF)
 pc2_vals# = zero#(nF)
 pc3_vals# = zero#(nF)
@@ -274,126 +294,235 @@ for i from 1 to nF
     pc3_vals#[i] = Get value: i, 3
 endfor
 
-# ===== 4. APPLY PRESETS =====
-t1 = target_pc1
-t2 = target_pc2
-t3 = target_pc3
+# ===== 4. COMPUTE FEATURE STATISTICS =====
+appendInfoLine: ""
+appendInfoLine: "STEP 3: Computing statistics..."
 
-# Use stronger target values (2.5 SD instead of 1.5) for more audible effect
-if preset = 2
-    # Bright
-    if idx_bright = 1
-        t1 = 2.5 * sign_bright
-    elsif idx_bright = 2
-        t2 = 2.5 * sign_bright
-    else
-        t3 = 2.5 * sign_bright
+# Centroid stats
+sumCent = 0
+countCent = 0
+for i from 1 to nF
+    if centroid_vals#[i] > 0
+        sumCent += centroid_vals#[i]
+        countCent += 1
     endif
-elsif preset = 3
-    # Dark
-    if idx_bright = 1
-        t1 = -2.5 * sign_bright
-    elsif idx_bright = 2
-        t2 = -2.5 * sign_bright
-    else
-        t3 = -2.5 * sign_bright
+endfor
+meanCent = if countCent > 0 then sumCent / countCent else 1000 fi
+
+sumSqCent = 0
+for i from 1 to nF
+    if centroid_vals#[i] > 0
+        sumSqCent += (centroid_vals#[i] - meanCent)^2
     endif
-elsif preset = 4
-    # Noisy
-    if idx_hnr = 1
-        t1 = -2.5 * sign_hnr
-    elsif idx_hnr = 2
-        t2 = -2.5 * sign_hnr
-    else
-        t3 = -2.5 * sign_hnr
+endfor
+sdCent = if countCent > 1 then sqrt(sumSqCent / (countCent - 1)) else 1 fi
+
+# HNR stats
+sumHNR = 0
+countHNR = 0
+for i from 1 to nF
+    if hnr_vals#[i] > -40
+        sumHNR += hnr_vals#[i]
+        countHNR += 1
     endif
-elsif preset = 5
-    # Tonal
-    if idx_hnr = 1
-        t1 = 2.5 * sign_hnr
-    elsif idx_hnr = 2
-        t2 = 2.5 * sign_hnr
-    else
-        t3 = 2.5 * sign_hnr
+endfor
+meanHNR = if countHNR > 0 then sumHNR / countHNR else 0 fi
+
+sumSqHNR = 0
+for i from 1 to nF
+    if hnr_vals#[i] > -40
+        sumSqHNR += (hnr_vals#[i] - meanHNR)^2
     endif
-elsif preset = 6
-    # High Pitch
-    if idx_pitch = 1
-        t1 = 2.5 * sign_pitch
-    elsif idx_pitch = 2
-        t2 = 2.5 * sign_pitch
-    else
-        t3 = 2.5 * sign_pitch
+endfor
+sdHNR = if countHNR > 1 then sqrt(sumSqHNR / (countHNR - 1)) else 1 fi
+
+# Pitch stats
+sumPitch = 0
+countPitch = 0
+for i from 1 to nF
+    if pitch_vals#[i] > 0
+        sumPitch += pitch_vals#[i]
+        countPitch += 1
     endif
-elsif preset = 7
-    # Low Pitch
-    if idx_pitch = 1
-        t1 = -2.5 * sign_pitch
-    elsif idx_pitch = 2
-        t2 = -2.5 * sign_pitch
-    else
-        t3 = -2.5 * sign_pitch
+endfor
+meanPitch = if countPitch > 0 then sumPitch / countPitch else 200 fi
+
+sumSqPitch = 0
+for i from 1 to nF
+    if pitch_vals#[i] > 0
+        sumSqPitch += (pitch_vals#[i] - meanPitch)^2
     endif
+endfor
+sdPitch = if countPitch > 1 then sqrt(sumSqPitch / (countPitch - 1)) else 50 fi
+
+# Intensity stats
+sumInt = 0
+countInt = 0
+for i from 1 to nF
+    if intensity_vals#[i] > -90
+        sumInt += intensity_vals#[i]
+        countInt += 1
+    endif
+endfor
+meanInt = if countInt > 0 then sumInt / countInt else 60 fi
+
+sumSqInt = 0
+for i from 1 to nF
+    if intensity_vals#[i] > -90
+        sumSqInt += (intensity_vals#[i] - meanInt)^2
+    endif
+endfor
+sdInt = if countInt > 1 then sqrt(sumSqInt / (countInt - 1)) else 10 fi
+
+appendInfoLine: "  Centroid: ", fixed$(meanCent, 0), " ± ", fixed$(sdCent, 0), " Hz"
+appendInfoLine: "  HNR: ", fixed$(meanHNR, 1), " ± ", fixed$(sdHNR, 1), " dB"
+appendInfoLine: "  Pitch: ", fixed$(meanPitch, 0), " ± ", fixed$(sdPitch, 0), " Hz"
+appendInfoLine: "  Intensity: ", fixed$(meanInt, 1), " ± ", fixed$(sdInt, 1), " dB"
+
+# ===== 5. SELECTION =====
+appendInfoLine: ""
+appendInfoLine: "STEP 4: Selecting frames..."
+
+selected_mask# = zero#(nF)
+dist_vals# = zero#(nF)
+
+# Percentile to z-score
+if selection_percentile <= 10
+    zThresh = 1.28
+elsif selection_percentile <= 20
+    zThresh = 0.84
+elsif selection_percentile <= 25
+    zThresh = 0.67
+elsif selection_percentile <= 30
+    zThresh = 0.52
+elsif selection_percentile <= 40
+    zThresh = 0.25
+else
+    zThresh = 0
 endif
 
-appendInfoLine: "Target PCA: ", fixed$(t1, 2), " / ", fixed$(t2, 2), " / ", fixed$(t3, 2)
+if selectionFeature$ = "centroid"
+    for i from 1 to nF
+        if centroid_vals#[i] > 0
+            zScore = (centroid_vals#[i] - meanCent) / sdCent
+            dist_vals#[i] = abs(zScore)
+            if selectionDirection = 1
+                if zScore >= zThresh
+                    selected_mask#[i] = 1
+                endif
+            else
+                if zScore <= -zThresh
+                    selected_mask#[i] = 1
+                endif
+            endif
+        endif
+    endfor
 
-# ===== 5. SELECTION & RECONSTRUCTION =====
+elsif selectionFeature$ = "hnr"
+    for i from 1 to nF
+        if hnr_vals#[i] > -40
+            zScore = (hnr_vals#[i] - meanHNR) / sdHNR
+            dist_vals#[i] = abs(zScore)
+            if selectionDirection = 1
+                if zScore >= zThresh
+                    selected_mask#[i] = 1
+                endif
+            else
+                if zScore <= -zThresh
+                    selected_mask#[i] = 1
+                endif
+            endif
+        endif
+    endfor
 
-Create TableOfReal: "Distance", nF, 1
-distTbl = selected("TableOfReal")
+elsif selectionFeature$ = "pitch"
+    for i from 1 to nF
+        if pitch_vals#[i] > 0
+            zScore = (pitch_vals#[i] - meanPitch) / sdPitch
+            dist_vals#[i] = abs(zScore)
+            if selectionDirection = 1
+                if zScore >= zThresh
+                    selected_mask#[i] = 1
+                endif
+            else
+                if zScore <= -zThresh
+                    selected_mask#[i] = 1
+                endif
+            endif
+        endif
+    endfor
 
-# Store distances and selection mask for visualization
-dist_vals# = zero#(nF)
-selected_mask# = zero#(nF)
+elsif selectionFeature$ = "intensity"
+    for i from 1 to nF
+        if intensity_vals#[i] > -90
+            zScore = (intensity_vals#[i] - meanInt) / sdInt
+            dist_vals#[i] = abs(zScore)
+            if selectionDirection = 1
+                if zScore >= zThresh
+                    selected_mask#[i] = 1
+                endif
+            else
+                if zScore <= -zThresh
+                    selected_mask#[i] = 1
+                endif
+            endif
+        endif
+    endfor
 
+else
+    # PCA mode (Custom)
+    t1 = target_pc1
+    t2 = target_pc2
+    t3 = target_pc3
+    
+    for i from 1 to nF
+        d = sqrt((pc1_vals#[i] - t1)^2 + (pc2_vals#[i] - t2)^2 + (pc3_vals#[i] - t3)^2)
+        dist_vals#[i] = d
+    endfor
+    
+    # Find threshold
+    sumDist = 0
+    for i from 1 to nF
+        sumDist += dist_vals#[i]
+    endfor
+    meanDist = sumDist / nF
+    distThresh = meanDist * (selection_percentile / 50)
+    
+    for i from 1 to nF
+        if dist_vals#[i] < distThresh
+            selected_mask#[i] = 1
+        endif
+    endfor
+endif
+
+# Count selected
+selected_frame_count = 0
 for i from 1 to nF
-    selectObject: scoresTbl
-    v1 = Get value: i, 1
-    v2 = Get value: i, 2
-    v3 = Get value: i, 3
-    d2 = (v1-t1)^2 + (v2-t2)^2 + (v3-t3)^2
-    dist_vals#[i] = sqrt(d2)
-    selectObject: distTbl
-    Set value: i, 1, d2
+    if selected_mask#[i] = 1
+        selected_frame_count += 1
+    endif
 endfor
 
-# Threshold Logic - use selectivity parameter for stronger effect
-selectObject: distTbl
-meanD = Get column mean (index): 1
-thresh = meanD * selectivity
+appendInfoLine: "  Selected: ", selected_frame_count, " of ", nF, " frames (", fixed$(100 * selected_frame_count / nF, 1), "%)"
 
-appendInfoLine: "Threshold: ", fixed$(sqrt(thresh), 2), " (mean distance: ", fixed$(sqrt(meanD), 2), ")"
+# ===== 6. BUILD OUTPUT =====
+appendInfoLine: ""
+appendInfoLine: "STEP 5: Building output..."
 
-# Create a Table to store Chunk IDs
-Create TableOfReal: "ChunkIDs", nF, 1
-chunkTable = selected("TableOfReal")
+if selected_frame_count < 2
+    removeObject: feat, pca, scoresTbl, workSnd
+    exitScript: "Too few frames selected. Try increasing Selection percentile."
+endif
+
 chunk_count = 0
-
-selectObject: workSnd
 chunk_start = -1
 chunk_end = -1
 
-# Count selected frames for info
-selected_frame_count = 0
-
-# Scan frames and build Chunks
 for i from 1 to nF
-    selectObject: distTbl
-    d = Get value: i, 1
+    t_s = time_vals#[i]
+    t_e = t_s + dt
     
-    is_selected = 0
-    if d < thresh
-        is_selected = 1
-        selected_mask#[i] = 1
-        selected_frame_count = selected_frame_count + 1
-    endif
-    
-    t_frame = t0 + (i-1)*dt
-    t_s = t_frame
-    t_e = t_frame + dt
-    
-    if is_selected
+    if selected_mask#[i] = 1
         if chunk_start = -1
             chunk_start = t_s
         endif
@@ -401,237 +530,302 @@ for i from 1 to nF
     else
         if chunk_start <> -1
             selectObject: workSnd
-            Extract part: chunk_start, chunk_end, "rectangular", 1, "no"
+            Extract part: chunk_start, chunk_end, "Hanning", 1, "no"
             chunkID = selected("Sound")
-            
-            chunk_count = chunk_count + 1
-            selectObject: chunkTable
-            Set value: chunk_count, 1, chunkID
-            
-            # Store in indexed variable
+            chunk_count += 1
             chunk_id_'chunk_count' = chunkID
-            
             chunk_start = -1
         endif
     endif
 endfor
 
-# Handle final chunk
 if chunk_start <> -1
     selectObject: workSnd
-    Extract part: chunk_start, chunk_end, "rectangular", 1, "no"
+    Extract part: chunk_start, chunk_end, "Hanning", 1, "no"
     chunkID = selected("Sound")
-    
-    chunk_count = chunk_count + 1
-    selectObject: chunkTable
-    Set value: chunk_count, 1, chunkID
-    
+    chunk_count += 1
     chunk_id_'chunk_count' = chunkID
 endif
 
-appendInfoLine: "Selected ", selected_frame_count, " of ", nF, " frames (", fixed$(100 * selected_frame_count / nF, 1), "%)"
+appendInfoLine: "  Segments: ", chunk_count
 
-# Concatenate Chunks
 if chunk_count > 0
-    # Select first chunk
-    first = chunk_id_1
-    selectObject: first
-    
-    # Select rest
+    selectObject: chunk_id_1
     for i from 2 to chunk_count
-        nxt = chunk_id_'i'
-        plusObject: nxt
+        plusObject: chunk_id_'i'
     endfor
     
-    Concatenate
-    Rename: sndName$ + "_Timbre_" + presetName$
+    Concatenate with overlap: 0.01
+    Rename: sndName$ + "_" + presetName$
     finalSnd = selected("Sound")
-    
-    # Scale output
     Scale peak: 0.99
     
-    # Get output duration
     selectObject: finalSnd
     finalDur = Get total duration
     
-    # Remove chunks
     for i from 1 to chunk_count
-        del = chunk_id_'i'
-        removeObject: del
+        removeObject: chunk_id_'i'
     endfor
     
-    appendInfoLine: "Success: Combined ", chunk_count, " segments"
-    appendInfoLine: "Output duration: ", fixed$(finalDur, 2), " s (", fixed$(100 * finalDur / dur, 1), "% of original)"
+    appendInfoLine: "  Output: ", fixed$(finalDur, 2), " s (", fixed$(100 * finalDur / dur, 1), "%)"
 else
-    removeObject: feat, pca, scoresTbl, distTbl, workSnd, chunkTable
-    exitScript: "No segments matched the target timbre criteria. Try increasing Selectivity value."
+    removeObject: feat, pca, scoresTbl, workSnd
+    exitScript: "No segments created."
 endif
 
-# ===== VISUALIZATION =====
+# ===== 7. VISUALIZATION (Restored from v1.0) =====
 if draw_visualization
-    appendInfoLine: "Drawing visualization..."
+    appendInfoLine: ""
+    appendInfoLine: "STEP 6: Visualization..."
     
     Erase all
+    Select outer viewport: 0, 8, 0, 8
     
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    # === Title ===
+    Select outer viewport: 0, 8, 0, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "PCA Timbre Selector: " + sndName$ + " [" + presetName$ + "]"
+    Text: 0.5, "centre", 0.6, "half", "##PCA Timbre Selector## | " + sndName$
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.2, "centre", 0.15, "half", presetName$ + " | " + fixed$(100 * selected_frame_count / nF, 0) + "% selected | " + string$(chunk_count) + " segments"
     
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.6
-    Select inner viewport: 0.6, 7.6, 0.7, 1.5
+    # === Waveforms ===
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.7, 0.65, 1.45
     selectObject: snd
-    Colour: "{0.5, 0.5, 0.5}"
+    Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
-    Text top: "no", fixed$(dur, 2) + " s"
     
-    # Output waveform
-    Select outer viewport: 0, 8, 1.7, 2.7
-    Select inner viewport: 0.6, 7.6, 1.8, 2.6
+    Select outer viewport: 0, 8, 1.5, 2.4
+    Select inner viewport: 0.6, 7.7, 1.55, 2.35
     selectObject: finalSnd
-    Colour: "{0.3, 0.6, 0.4}"
+    Colour: "{0.3, 0.65, 0.4}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Selected"
+    Font size: 7
+    Text left: "yes", presetName$
     Text bottom: "yes", "Time (s)"
-    Text top: "no", fixed$(finalDur, 2) + " s (" + string$(chunk_count) + " segments, " + fixed$(100 * finalDur / dur, 0) + "%)"
     
-    # PCA scatter (PC1 vs PC2)
-    Select outer viewport: 0, 4, 2.9, 4.5
-    Select inner viewport: 0.6, 3.6, 3.1, 4.4
-    
-    # Find ranges
-    minPC1 = pc1_vals#[1]
-    maxPC1 = pc1_vals#[1]
-    minPC2 = pc2_vals#[1]
-    maxPC2 = pc2_vals#[1]
-    
-    for i from 2 to nF
-        if pc1_vals#[i] < minPC1
-            minPC1 = pc1_vals#[i]
-        endif
-        if pc1_vals#[i] > maxPC1
-            maxPC1 = pc1_vals#[i]
-        endif
-        if pc2_vals#[i] < minPC2
-            minPC2 = pc2_vals#[i]
-        endif
-        if pc2_vals#[i] > maxPC2
-            maxPC2 = pc2_vals#[i]
-        endif
-    endfor
-    
-    pc1Range = maxPC1 - minPC1
-    pc2Range = maxPC2 - minPC2
-    if pc1Range < 0.1
-        pc1Range = 1
-    endif
-    if pc2Range < 0.1
-        pc2Range = 1
-    endif
-    
-    Axes: minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1
-    Paint rectangle: "{0.97, 0.97, 0.97}", minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1
-    
-    # Draw points - compute size based on range
-    pointSize = pc1Range * 0.015
-    pointSizeY = pc2Range * 0.015
+    # === Selection Timeline ===
+    Select outer viewport: 0, 8, 2.5, 3.0
+    Select inner viewport: 0.6, 7.7, 2.55, 2.95
+    Axes: 0, dur, 0, 1
     
     for i from 1 to nF
-        x = pc1_vals#[i]
-        y = pc2_vals#[i]
+        t_s = time_vals#[i]
+        t_e = t_s + dt
         if selected_mask#[i] = 1
-            # Selected points in green
-            Paint rectangle: "{0.3, 0.7, 0.4}", x - pointSize, x + pointSize, y - pointSizeY, y + pointSizeY
+            Paint rectangle: "{0.3, 0.75, 0.45}", t_s, t_e, 0, 1
         else
-            # Unselected points in gray
-            Paint rectangle: "{0.75, 0.75, 0.75}", x - pointSize, x + pointSize, y - pointSizeY, y + pointSizeY
+            Paint rectangle: "{0.88, 0.88, 0.88}", t_s, t_e, 0, 1
         endif
     endfor
-    
-    # Draw target point in red
-    targetSize = pointSize * 3
-    targetSizeY = pointSizeY * 3
-    Paint rectangle: "{0.9, 0.2, 0.2}", t1 - targetSize, t1 + targetSize, t2 - targetSizeY, t2 + targetSizeY
     
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "PC2"
-    Text bottom: "yes", "PC1"
+    Font size: 7
+    Text left: "yes", "Mask"
     
-    # Distance over time
-    Select outer viewport: 4, 8, 2.9, 4.5
-    Select inner viewport: 4.4, 7.6, 3.1, 4.4
+    # === PCA Scatter Plots ===
+    minPC1 = min(pc1_vals#)
+    maxPC1 = max(pc1_vals#)
+    minPC2 = min(pc2_vals#)
+    maxPC2 = max(pc2_vals#)
+    minPC3 = min(pc3_vals#)
+    maxPC3 = max(pc3_vals#)
     
-    maxDist = dist_vals#[1]
-    for i from 2 to nF
-        if dist_vals#[i] > maxDist
-            maxDist = dist_vals#[i]
+    pc1Range = max(maxPC1 - minPC1, 0.1)
+    pc2Range = max(maxPC2 - minPC2, 0.1)
+    pc3Range = max(maxPC3 - minPC3, 0.1)
+    
+    # PC1 vs PC2
+    Select outer viewport: 0, 2.7, 3.1, 5.0
+    Select inner viewport: 0.5, 2.5, 3.3, 4.9
+    
+    Axes: minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1
+    Paint rectangle: "{0.97, 0.97, 0.98}", minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1
+    
+    for i from 1 to nF
+        if selected_mask#[i] = 1
+            Paint circle: "{0.3, 0.7, 0.4}", pc1_vals#[i], pc2_vals#[i], pc1Range * 0.015
+        else
+            Paint circle: "{0.8, 0.8, 0.8}", pc1_vals#[i], pc2_vals#[i], pc1Range * 0.012
         endif
     endfor
+    
+    if selectionFeature$ = "PCA"
+        Paint circle: "{0.9, 0.2, 0.2}", t1, t2, pc1Range * 0.04
+    endif
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "PC2"
+    Text bottom: "yes", "PC1"
+    Text top: "no", "PC1 vs PC2"
+    
+    # PC1 vs PC3
+    Select outer viewport: 2.7, 5.4, 3.1, 5.0
+    Select inner viewport: 3.1, 5.2, 3.3, 4.9
+    
+    Axes: minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
+    Paint rectangle: "{0.97, 0.97, 0.98}", minPC1 - pc1Range * 0.1, maxPC1 + pc1Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
+    
+    for i from 1 to nF
+        if selected_mask#[i] = 1
+            Paint circle: "{0.3, 0.7, 0.4}", pc1_vals#[i], pc3_vals#[i], pc1Range * 0.015
+        else
+            Paint circle: "{0.8, 0.8, 0.8}", pc1_vals#[i], pc3_vals#[i], pc1Range * 0.012
+        endif
+    endfor
+    
+    if selectionFeature$ = "PCA"
+        Paint circle: "{0.9, 0.2, 0.2}", t1, t3, pc1Range * 0.04
+    endif
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "PC3"
+    Text bottom: "yes", "PC1"
+    Text top: "no", "PC1 vs PC3"
+    
+    # PC2 vs PC3
+    Select outer viewport: 5.4, 8, 3.1, 5.0
+    Select inner viewport: 5.7, 7.8, 3.3, 4.9
+    
+    Axes: minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
+    Paint rectangle: "{0.97, 0.97, 0.98}", minPC2 - pc2Range * 0.1, maxPC2 + pc2Range * 0.1, minPC3 - pc3Range * 0.1, maxPC3 + pc3Range * 0.1
+    
+    for i from 1 to nF
+        if selected_mask#[i] = 1
+            Paint circle: "{0.3, 0.7, 0.4}", pc2_vals#[i], pc3_vals#[i], pc2Range * 0.015
+        else
+            Paint circle: "{0.8, 0.8, 0.8}", pc2_vals#[i], pc3_vals#[i], pc2Range * 0.012
+        endif
+    endfor
+    
+    if selectionFeature$ = "PCA"
+        Paint circle: "{0.9, 0.2, 0.2}", t2, t3, pc2Range * 0.04
+    endif
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "PC3"
+    Text bottom: "yes", "PC2"
+    Text top: "no", "PC2 vs PC3"
+    
+    # === Eigenvector Loadings ===
+    Select outer viewport: 0, 4, 5.1, 6.5
+    Select inner viewport: 0.6, 3.8, 5.3, 6.4
+    
+    Axes: 0, 6, -1, 1
+    Paint rectangle: "{0.98, 0.98, 0.98}", 0, 6, -1, 1
+    
+    Colour: "{0.7, 0.7, 0.7}"
+    Draw line: 0, 0, 6, 0
+    
+    barWidth = 0.25
+    colours$[1] = "{0.8, 0.4, 0.4}"
+    colours$[2] = "{0.4, 0.6, 0.8}"
+    colours$[3] = "{0.5, 0.8, 0.5}"
+    
+    for f from 1 to 5
+        baseX = f - 0.3
+        for pc from 1 to 3
+            x1 = baseX + (pc - 1) * barWidth
+            x2 = x1 + barWidth * 0.8
+            val = loading[pc, f]
+            Paint rectangle: colours$[pc], x1, x2, 0, val
+        endfor
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 5
+    
+    for f from 1 to 5
+        Text: f, "centre", -1.15, "top", feature$[f]
+    endfor
+    
+    Text left: "yes", "Loading"
+    Text top: "no", "PCA Loadings"
+    
+    # Loadings legend
+    Font size: 5
+    Paint rectangle: colours$[1], 0.3, 0.5, 0.8, 0.95
+    Text: 0.55, "left", 0.875, "half", "PC1"
+    Paint rectangle: colours$[2], 1.3, 1.5, 0.8, 0.95
+    Text: 1.55, "left", 0.875, "half", "PC2"
+    Paint rectangle: colours$[3], 2.3, 2.5, 0.8, 0.95
+    Text: 2.55, "left", 0.875, "half", "PC3"
+    
+    # === Distance Over Time ===
+    Select outer viewport: 4, 8, 5.1, 6.5
+    Select inner viewport: 4.5, 7.8, 5.3, 6.4
+    
+    maxDist = max(dist_vals#)
     if maxDist < 0.1
         maxDist = 1
     endif
     
     Axes: 0, dur, 0, maxDist * 1.1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, 0, maxDist * 1.1
+    Paint rectangle: "{0.98, 0.98, 0.98}", 0, dur, 0, maxDist * 1.1
     
-    # Threshold line
-    Colour: "{0.8, 0.3, 0.3}"
-    Dotted line
-    Draw line: 0, sqrt(thresh), dur, sqrt(thresh)
-    Solid line
-    
-    # Distance curve
     Colour: "{0.4, 0.5, 0.7}"
     for i from 2 to nF
-        t1_pt = t0 + (i - 2) * dt
-        t2_pt = t0 + (i - 1) * dt
-        Draw line: t1_pt, dist_vals#[i-1], t2_pt, dist_vals#[i]
+        Draw line: time_vals#[i-1], dist_vals#[i-1], time_vals#[i], dist_vals#[i]
     endfor
     
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Distance"
+    Font size: 6
+    Text left: "yes", "|z-score|"
     Text bottom: "yes", "Time (s)"
+    Text top: "no", "Selection Score"
     
-    # Legend / stats
-    Select outer viewport: 0, 8, 4.6, 5.1
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.15, "centre", 0.5, "half", "Target: (" + fixed$(t1, 1) + ", " + fixed$(t2, 1) + ", " + fixed$(t3, 1) + ")"
-    Text: 0.4, "centre", 0.5, "half", "Selectivity: " + fixed$(selectivity, 2)
-    Text: 0.65, "centre", 0.5, "half", "Selected: " + fixed$(100 * selected_frame_count / nF, 0) + "%"
-    Text: 0.85, "centre", 0.5, "half", "Segments: " + string$(chunk_count)
+    # === Legend ===
+    Select outer viewport: 0, 8, 6.6, 7.0
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    
+    Paint circle: "{0.3, 0.7, 0.4}", 0.1, 0.5, 0.015
+    Text: 0.13, "left", 0.5, "half", "Selected"
+    
+    Paint circle: "{0.8, 0.8, 0.8}", 0.35, 0.5, 0.012
+    Text: 0.38, "left", 0.5, "half", "Rejected"
+    
+    if selectionFeature$ = "PCA"
+        Paint circle: "{0.9, 0.2, 0.2}", 0.58, 0.5, 0.02
+        Text: 0.61, "left", 0.5, "half", "Target"
+    endif
+    
+    Colour: "{0.5, 0.5, 0.5}"
+    Text: 0.85, "centre", 0.5, "half", "Var: " + fixed$(var1*100,0) + "/" + fixed$(var2*100,0) + "/" + fixed$(var3*100,0) + "%"
     
     Font size: 10
     Colour: "Black"
 endif
 
 # ===== CLEANUP =====
-selectObject: feat
-plusObject: pca
-plusObject: scoresTbl
-plusObject: distTbl
-plusObject: workSnd
-plusObject: chunkTable
-Remove
+removeObject: feat, pca, scoresTbl, workSnd
 
 # ===== OUTPUT =====
 selectObject: snd
 plusObject: finalSnd
 
 appendInfoLine: ""
-appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "=============================================="
+appendInfoLine: "  COMPLETE"
+appendInfoLine: "=============================================="
 
 if play_result
     selectObject: finalSnd
