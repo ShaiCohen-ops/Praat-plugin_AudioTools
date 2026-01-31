@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2025)
+# Version: 2.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,13 +13,13 @@
 #   frequency sweeps, Sinusoidal FM, Spiral FM, Time-varying
 #   ring modulation, and Trembling ring modulation.
 #
-# Changelog v2.1:
-#   - Modern formula syntax
-#   - Added visualization
-#   - Fixed xmax variable name conflict
+# Changelog v2.2:
+#   - Enhanced visualization with spectrograms
+#   - Added carrier signal preview
+#   - Added zoomed waveform detail
 # ============================================================
 
-form Advanced Ring Modulator
+form Advanced Ring Modulator v2.2
     comment ========================================
     comment           PRESETS
     comment ========================================
@@ -83,20 +83,12 @@ form Advanced Ring Modulator
     
     comment --- Frequency Parameters ---
     positive Carrier_Frequency_Hz 200
-    comment (base frequency for modulation)
-    
     positive Start_Frequency_Hz 100
-    comment (for sweep algorithms 2 and 3)
-    
     positive End_Frequency_Hz 800
-    comment (for sweep algorithms 2 and 3)
     
     comment --- Modulation/Distortion Parameters ---
     real Modulation_Factor 2.0
-    comment (depth/amount: cubic_factor, phase_curve, mod_depth, etc.)
-    
     positive Modulation_Rate_Hz 5.0
-    comment (LFO rate for algorithms 5, 6, 8)
     
     comment --- Output Control ---
     positive Scale_peak 0.95
@@ -119,7 +111,7 @@ duration = Get total duration
 sr = Get sampling frequency
 
 # ============================================================
-# PRESET LOGIC - Initialize with Manual Settings
+# PRESET LOGIC
 # ============================================================
 algo = manual_Algorithm
 f0 = carrier_Frequency_Hz
@@ -128,7 +120,6 @@ f_end = end_Frequency_Hz
 mod_factor = modulation_Factor
 mod_rate = modulation_Rate_Hz
 
-# Override if preset is selected
 if preset$ = "Cubic: Mild Distortion"
     algo = 1
     f0 = 100
@@ -268,7 +259,7 @@ elsif preset$ = "Tremble: Alien Voice"
 endif
 
 # ============================================================
-# Generate Suffix based on Algorithm
+# Algorithm Names
 # ============================================================
 if algo = 1
     algo_name$ = "Cubic"
@@ -289,7 +280,8 @@ elsif algo = 8
 endif
 
 # === Info ===
-writeInfoLine: "=== Metamodulator ==="
+clearinfo
+writeInfoLine: "=== Metamodulator v2.2 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Algorithm: ", algo, " - ", algo_name$
 appendInfoLine: ""
@@ -319,91 +311,172 @@ selectObject: sound
 Copy: name$ + "_" + algo_name$
 result = selected("Sound")
 
-# Get total duration for formulas (avoid xmax conflict)
 selectObject: result
 totalDuration = Get end time
 
 # ============================================================
-# ALGORITHM IMPLEMENTATION (Modern Syntax)
+# ALGORITHM IMPLEMENTATION
 # ============================================================
 
 appendInfoLine: "Applying ", algo_name$, " modulation..."
 
 if algo = 1
-    # 1. CUBIC PHASE DISTORTION
     Formula: ~ self * sin(2 * pi * f0 * x + mod_factor * (x^3))
-
 elsif algo = 2
-    # 2. EXPONENTIAL FREQUENCY SWEEP
     Formula: ~ self * sin(2 * pi * f_start * exp(ln(f_end/f_start) * x/totalDuration) * x)
-
 elsif algo = 3
-    # 3. LOGARITHMIC FREQUENCY SWEEP
     Formula: ~ self * sin(2 * pi * f_start * exp(-ln(f_start/f_end) * x/totalDuration) * x)
-
 elsif algo = 4
-    # 4. QUADRATIC PHASE MODULATION
     Formula: ~ self * sin(2 * pi * f0 * x + mod_factor * (x^2))
-
 elsif algo = 5
-    # 5. SINUSOIDAL FM
     Formula: ~ self * sin(2 * pi * (f0 + mod_factor * sin(2 * pi * mod_rate * x)) * x)
-
 elsif algo = 6
-    # 6. SPIRAL FM
     Formula: ~ self * sin(2 * pi * (f0 + mod_factor * sin(mod_rate * x) * x/totalDuration) * x)
-
 elsif algo = 7
-    # 7. TIME-VARYING RING MOD (chirp)
     Formula: ~ self * sin(2 * pi * f0 * x * x / 2)
-
 elsif algo = 8
-    # 8. TREMBLING RING MOD
     Formula: ~ self * sin(2 * pi * f0 * (1 + mod_factor * sin(2 * pi * mod_rate * x)) * x * x / 2)
-
 endif
 
-# ============================================================
-# Finalize Output
-# ============================================================
 selectObject: result
 Scale peak: scale_peak
 
-# === Visualization ===
+# ============================================================
+# ENHANCED VISUALIZATION
+# ============================================================
 if draw_visualization
-    Erase all
+    appendInfoLine: "Creating visualization..."
     
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Erase all
+    Select outer viewport: 0, 8, 0, 8
+    
+    # === Title ===
+    Select outer viewport: 0, 8, 0, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Metamodulator: " + name$ + " (" + algo_name$ + ")"
+    Text: 0.5, "centre", 0.6, "half", "##Metamodulator: " + algo_name$ + "##"
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.2, "centre", -1.0, "half", name$ + " | " + fixed$(duration, 2) + " s"
     
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    # === Original Waveform ===
+    Select outer viewport: 0, 8, 0.6, 1.4
+    Select inner viewport: 0.6, 7.7, 0.7, 1.35
     selectObject: sound
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
-    # Result waveform
-    Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    # === Result Waveform ===
+    Select outer viewport: 0, 8, 1.4, 2.2
+    Select inner viewport: 0.6, 7.7, 1.5, 2.15
     selectObject: result
     Colour: "{0.6, 0.5, 0.7}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
+    Font size: 7
     Text left: "yes", algo_name$
     Text bottom: "yes", "Time (s)"
     
-    # Modulation visualization
-    Select outer viewport: 0, 8, 2.7, 4.0
-    Select inner viewport: 0.6, 7.6, 2.8, 3.9
+    # === Zoomed Detail (first 50ms) ===
+    Select outer viewport: 0, 4, 2.3, 3.4
+    Select inner viewport: 0.6, 3.7, 2.45, 3.3
+    
+    zoomEnd = min(0.05, duration)
+    
+    selectObject: sound
+    Colour: "{0.7, 0.7, 0.7}"
+    Draw: 0, zoomEnd, 0, 0, "no", "Curve"
+    
+    selectObject: result
+    Colour: "{0.6, 0.4, 0.7}"
+    Draw: 0, zoomEnd, 0, 0, "no", "Curve"
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Amplitude"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Zoom: 0-50ms (gray=orig, purple=mod)"
+    
+    # === Carrier Signal Preview ===
+    Select outer viewport: 4, 8, 2.3, 3.4
+    Select inner viewport: 4.4, 7.7, 2.45, 3.3
+    
+    # Show 3 cycles of the carrier at t=0
+    if algo = 1 or algo = 4 or algo = 5 or algo = 6
+        carrierFreq = f0
+    elsif algo = 2
+        carrierFreq = f_start
+    elsif algo = 3
+        carrierFreq = f_start
+    elsif algo = 7 or algo = 8
+        carrierFreq = f0
+    endif
+    
+    carrierPeriod = 1 / carrierFreq
+    carrierPreviewDur = carrierPeriod * 3
+    nCarrierPts = 200
+    
+    Axes: 0, carrierPreviewDur * 1000, -1.1, 1.1
+    Paint rectangle: "{0.97, 0.97, 0.98}", 0, carrierPreviewDur * 1000, -1.1, 1.1
+    
+    # Zero line
+    Colour: "{0.85, 0.85, 0.85}"
+    Draw line: 0, 0, carrierPreviewDur * 1000, 0
+    
+    # Draw carrier
+    Colour: "{0.6, 0.5, 0.7}"
+    Line width: 1.5
+    for cp from 2 to nCarrierPts
+        t1 = (cp - 2) / nCarrierPts * carrierPreviewDur
+        t2 = (cp - 1) / nCarrierPts * carrierPreviewDur
+        
+        if algo = 1
+            y1 = sin(2 * pi * f0 * t1 + mod_factor * (t1^3))
+            y2 = sin(2 * pi * f0 * t2 + mod_factor * (t2^3))
+        elsif algo = 2
+            y1 = sin(2 * pi * f_start * exp(ln(f_end/f_start) * t1/totalDuration) * t1)
+            y2 = sin(2 * pi * f_start * exp(ln(f_end/f_start) * t2/totalDuration) * t2)
+        elsif algo = 3
+            y1 = sin(2 * pi * f_start * exp(-ln(f_start/f_end) * t1/totalDuration) * t1)
+            y2 = sin(2 * pi * f_start * exp(-ln(f_start/f_end) * t2/totalDuration) * t2)
+        elsif algo = 4
+            y1 = sin(2 * pi * f0 * t1 + mod_factor * (t1^2))
+            y2 = sin(2 * pi * f0 * t2 + mod_factor * (t2^2))
+        elsif algo = 5
+            y1 = sin(2 * pi * (f0 + mod_factor * sin(2 * pi * mod_rate * t1)) * t1)
+            y2 = sin(2 * pi * (f0 + mod_factor * sin(2 * pi * mod_rate * t2)) * t2)
+        elsif algo = 6
+            y1 = sin(2 * pi * (f0 + mod_factor * sin(mod_rate * t1) * t1/totalDuration) * t1)
+            y2 = sin(2 * pi * (f0 + mod_factor * sin(mod_rate * t2) * t2/totalDuration) * t2)
+        elsif algo = 7
+            y1 = sin(2 * pi * f0 * t1 * t1 / 2)
+            y2 = sin(2 * pi * f0 * t2 * t2 / 2)
+        elsif algo = 8
+            y1 = sin(2 * pi * f0 * (1 + mod_factor * sin(2 * pi * mod_rate * t1)) * t1 * t1 / 2)
+            y2 = sin(2 * pi * f0 * (1 + mod_factor * sin(2 * pi * mod_rate * t2)) * t2 * t2 / 2)
+        endif
+        
+        Draw line: t1 * 1000, y1, t2 * 1000, y2
+    endfor
+    Line width: 1
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Carrier"
+    Text bottom: "yes", "Time (ms)"
+    Text top: "no", "Modulator Signal (3 cycles @ " + fixed$(carrierFreq, 0) + " Hz)"
+    
+    # === Modulation Curve ===
+    Select outer viewport: 0, 4, 3.5, 4.8
+    Select inner viewport: 0.6, 3.7, 3.65, 4.7
     
     modDisplayDur = min(1, duration)
     nModPoints = 300
@@ -411,22 +484,19 @@ if draw_visualization
     if algo = 1 or algo = 4
         # Phase distortion visualization
         if algo = 1
-            maxPhase = mod_factor * (modDisplayDur^3)
+            maxPhase = abs(mod_factor * (modDisplayDur^3))
         else
-            maxPhase = mod_factor * (modDisplayDur^2)
+            maxPhase = abs(mod_factor * (modDisplayDur^2))
         endif
-        
-        if maxPhase = 0
+        if maxPhase < 0.1
             maxPhase = 1
         endif
         
-        Axes: 0, modDisplayDur, -abs(maxPhase) * 1.2, abs(maxPhase) * 1.2
-        Paint rectangle: "{0.95, 0.95, 0.95}", 0, modDisplayDur, -abs(maxPhase) * 1.2, abs(maxPhase) * 1.2
+        Axes: 0, modDisplayDur, -maxPhase * 1.2, maxPhase * 1.2
+        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, -maxPhase * 1.2, maxPhase * 1.2
         
-        Colour: "{0.7, 0.7, 0.7}"
-        Dotted line
+        Colour: "{0.85, 0.85, 0.85}"
         Draw line: 0, 0, modDisplayDur, 0
-        Solid line
         
         Colour: "{0.6, 0.5, 0.7}"
         Line width: 1.5
@@ -444,23 +514,20 @@ if draw_visualization
         endfor
         Line width: 1
         
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text left: "yes", "Phase (rad)"
+        yLabel$ = "Phase (rad)"
+        plotTitle$ = "Phase Distortion"
         
     elsif algo = 2 or algo = 3
-        # Frequency sweep visualization
+        # Frequency sweep
         minF = min(f_start, f_end)
         maxF = max(f_start, f_end)
-        
-        fMargin = (maxF - minF) * 0.1
-        if fMargin < 10
-            fMargin = 10
+        fMargin = (maxF - minF) * 0.15
+        if fMargin < 20
+            fMargin = 20
         endif
         
         Axes: 0, modDisplayDur, minF - fMargin, maxF + fMargin
-        Paint rectangle: "{0.95, 0.95, 0.95}", 0, modDisplayDur, minF - fMargin, maxF + fMargin
+        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, minF - fMargin, maxF + fMargin
         
         Colour: "{0.6, 0.5, 0.7}"
         Line width: 1.5
@@ -478,28 +545,23 @@ if draw_visualization
         endfor
         Line width: 1
         
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text left: "yes", "Freq (Hz)"
+        yLabel$ = "Freq (Hz)"
+        if algo = 2
+            plotTitle$ = "Exponential Sweep"
+        else
+            plotTitle$ = "Logarithmic Sweep"
+        endif
         
     elsif algo = 5 or algo = 6
         # FM visualization
-        minF = f0 - abs(mod_factor)
-        maxF = f0 + abs(mod_factor)
+        minF = f0 - abs(mod_factor) * 1.2
+        maxF = f0 + abs(mod_factor) * 1.2
         
-        fMargin = (maxF - minF) * 0.1
-        if fMargin < 10
-            fMargin = 10
-        endif
+        Axes: 0, modDisplayDur, minF, maxF
+        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, minF, maxF
         
-        Axes: 0, modDisplayDur, minF - fMargin, maxF + fMargin
-        Paint rectangle: "{0.95, 0.95, 0.95}", 0, modDisplayDur, minF - fMargin, maxF + fMargin
-        
-        Colour: "{0.7, 0.7, 0.7}"
-        Dotted line
+        Colour: "{0.85, 0.85, 0.85}"
         Draw line: 0, f0, modDisplayDur, f0
-        Solid line
         
         Colour: "{0.6, 0.5, 0.7}"
         Line width: 1.5
@@ -517,24 +579,25 @@ if draw_visualization
         endfor
         Line width: 1
         
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text left: "yes", "Freq (Hz)"
+        yLabel$ = "Freq (Hz)"
+        if algo = 5
+            plotTitle$ = "Sinusoidal FM"
+        else
+            plotTitle$ = "Spiral FM"
+        endif
         
     elsif algo = 7 or algo = 8
-        # Chirp visualization (instantaneous frequency)
+        # Chirp visualization
         maxInstF = f0 * modDisplayDur
         if algo = 8
             maxInstF = f0 * (1 + abs(mod_factor)) * modDisplayDur
         endif
-        
-        if maxInstF < 10
+        if maxInstF < 50
             maxInstF = 100
         endif
         
-        Axes: 0, modDisplayDur, 0, maxInstF * 1.1
-        Paint rectangle: "{0.95, 0.95, 0.95}", 0, modDisplayDur, 0, maxInstF * 1.1
+        Axes: 0, modDisplayDur, 0, maxInstF * 1.15
+        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, 0, maxInstF * 1.15
         
         Colour: "{0.6, 0.5, 0.7}"
         Line width: 1.5
@@ -552,66 +615,103 @@ if draw_visualization
         endfor
         Line width: 1
         
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text left: "yes", "Inst. Freq"
+        yLabel$ = "Inst. Freq"
+        if algo = 7
+            plotTitle$ = "Time-Varying Chirp"
+        else
+            plotTitle$ = "Trembling Chirp"
+        endif
     endif
     
-    Text bottom: "yes", "Time (s)"
-    
-    # Algorithm info box
-    Select outer viewport: 0, 8, 4.2, 5.0
-    Select inner viewport: 0.6, 7.6, 4.3, 4.9
-    
-    Axes: 0, 8, 0, 2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 8, 0, 2
-    
+    Colour: "Black"
+    Draw inner box
     Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
+    Text left: "yes", yLabel$
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", plotTitle$
+    
+    # === Spectrogram Comparison ===
+    Select outer viewport: 4, 8, 3.5, 4.8
+    Select inner viewport: 4.4, 7.7, 3.65, 4.7
+    
+    # Create spectrograms
+    selectObject: sound
+    To Spectrogram: 0.01, 4000, 0.002, 20, "Gaussian"
+    spec_orig = selected("Spectrogram")
+    
+    selectObject: result
+    To Spectrogram: 0.01, 4000, 0.002, 20, "Gaussian"
+    spec_result = selected("Spectrogram")
+    
+    # Draw result spectrogram
+    selectObject: spec_result
+    Paint: 0, 0, 0, 4000, 100, "yes", 50, 6, 0, "no"
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Freq (Hz)"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Output Spectrogram"
+    
+    removeObject: spec_orig, spec_result
+    
+    # === Algorithm Formula Box ===
+    Select outer viewport: 0, 8, 4.9, 5.6
+    Select inner viewport: 0.6, 7.7, 5.0, 5.5
+    
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.97}", 0, 1, 0, 1
+    
+    Font size: 7
+    Colour: "{0.3, 0.3, 0.4}"
     
     if algo = 1
-        Text: 4, "centre", 1.5, "half", "CUBIC: sin(2*pi*f0*t + factor*t^3)"
-        Text: 4, "centre", 0.5, "half", "Harsh, edgy phase distortion"
+        Text: 0.5, "centre", 0.65, "half", "CUBIC: y = x · sin(2π·f₀·t + k·t³)"
+        Text: 0.5, "centre", 0.25, "half", "Harsh, metallic phase distortion"
     elsif algo = 2
-        Text: 4, "centre", 1.5, "half", "EXP SWEEP: sin(2*pi*f_start*e^(ln(f_end/f_start)*t/T)*t)"
-        Text: 4, "centre", 0.5, "half", "Exponentially rising frequency"
+        Text: 0.5, "centre", 0.65, "half", "EXP SWEEP: y = x · sin(2π·f₀·e^(ln(f₁/f₀)·t/T)·t)"
+        Text: 0.5, "centre", 0.25, "half", "Rising frequency sweep"
     elsif algo = 3
-        Text: 4, "centre", 1.5, "half", "LOG SWEEP: sin(2*pi*f_start*e^(-ln(f_start/f_end)*t/T)*t)"
-        Text: 4, "centre", 0.5, "half", "Logarithmically falling frequency"
+        Text: 0.5, "centre", 0.65, "half", "LOG SWEEP: y = x · sin(2π·f₀·e^(-ln(f₀/f₁)·t/T)·t)"
+        Text: 0.5, "centre", 0.25, "half", "Falling frequency sweep"
     elsif algo = 4
-        Text: 4, "centre", 1.5, "half", "QUADRATIC: sin(2*pi*f0*t + factor*t^2)"
-        Text: 4, "centre", 0.5, "half", "Softer, tube-like distortion"
+        Text: 0.5, "centre", 0.65, "half", "QUADRATIC: y = x · sin(2π·f₀·t + k·t²)"
+        Text: 0.5, "centre", 0.25, "half", "Softer, tube-like distortion"
     elsif algo = 5
-        Text: 4, "centre", 1.5, "half", "SIN FM: sin(2*pi*(f0 + depth*sin(2*pi*rate*t))*t)"
-        Text: 4, "centre", 0.5, "half", "Classic FM synthesis"
+        Text: 0.5, "centre", 0.65, "half", "SIN FM: y = x · sin(2π·(f₀ + d·sin(2π·r·t))·t)"
+        Text: 0.5, "centre", 0.25, "half", "Classic frequency modulation"
     elsif algo = 6
-        Text: 4, "centre", 1.5, "half", "SPIRAL: sin(2*pi*(f0 + depth*sin(rate*t)*t/T)*t)"
-        Text: 4, "centre", 0.5, "half", "Evolving vortex modulation"
+        Text: 0.5, "centre", 0.65, "half", "SPIRAL: y = x · sin(2π·(f₀ + d·sin(r·t)·t/T)·t)"
+        Text: 0.5, "centre", 0.25, "half", "Evolving vortex modulation"
     elsif algo = 7
-        Text: 4, "centre", 1.5, "half", "TIME-VAR: sin(2*pi*f0*t^2/2)"
-        Text: 4, "centre", 0.5, "half", "Quadratic chirp"
+        Text: 0.5, "centre", 0.65, "half", "TIME-VAR: y = x · sin(π·f₀·t²)"
+        Text: 0.5, "centre", 0.25, "half", "Linear chirp"
     elsif algo = 8
-        Text: 4, "centre", 1.5, "half", "TREMBLE: sin(2*pi*f0*(1 + d*sin(2*pi*r*t))*t^2/2)"
-        Text: 4, "centre", 0.5, "half", "Chirp with vibrato"
+        Text: 0.5, "centre", 0.65, "half", "TREMBLE: y = x · sin(π·f₀·(1 + d·sin(2π·r·t))·t²)"
+        Text: 0.5, "centre", 0.25, "half", "Chirp with vibrato"
     endif
     
     Colour: "Black"
     Draw inner box
     
-    # Stats
-    Select outer viewport: 0, 8, 5.1, 5.4
+    # === Parameter Summary ===
+    Select outer viewport: 0, 8, 5.7, 6.2
+    Axes: 0, 1, 0, 1
+    
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+    
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     
     if algo = 1 or algo = 4
         Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Factor: " + fixed$(mod_factor, 2)
     elsif algo = 2 or algo = 3
-        Text: 0.5, "centre", 0.5, "half", "Start: " + fixed$(f_start, 0) + " Hz | End: " + fixed$(f_end, 0) + " Hz"
+        Text: 0.5, "centre", 0.5, "half", "Start: " + fixed$(f_start, 0) + " Hz → End: " + fixed$(f_end, 0) + " Hz"
     elsif algo = 5 or algo = 6
-        Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Rate: " + fixed$(mod_rate, 1) + " Hz | Depth: " + fixed$(mod_factor, 0)
+        Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Rate: " + fixed$(mod_rate, 1) + " Hz | Depth: " + fixed$(mod_factor, 0) + " Hz"
     elsif algo = 7
-        Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Chirp rate: quadratic"
+        Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Chirp: quadratic"
     elsif algo = 8
         Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Vibrato: " + fixed$(mod_rate, 0) + " Hz @ " + fixed$(mod_factor * 100, 1) + "%"
     endif
@@ -627,7 +727,6 @@ appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 
-# === Play ===
 if play_result
     selectObject: result
     Play
