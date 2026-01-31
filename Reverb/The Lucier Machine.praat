@@ -260,7 +260,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.6
+    Select outer viewport: 1, 8, 0.1, 0.6
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "The Lucier Machine: " + originalName$ + " (" + presetName$ + ")"
@@ -345,12 +345,12 @@ if draw_visualization
     Select outer viewport: 0, 8, 3.6, 4.3
     Font size: 7
     Colour: "Black"
-    Text: 0.5, "centre", 0.8, "half", "Room: RT60=" + fixed$(rT60_s, 1) + "s, " + string$(number_of_reflections) + " reflections | Mic proximity: " + fixed$(mic_proximity_gain, 2) + " | Iterations: " + string$(number_of_iterations)
+    Text: 5.5, "centre", 0.8, "half", "Room: RT60=" + fixed$(rT60_s, 1) + "s, " + string$(number_of_reflections) + " reflections | Mic proximity: " + fixed$(mic_proximity_gain, 2) + " | Iterations: " + string$(number_of_iterations)
     
     # Lucier quote
     Font size: 6
     Colour: "{0.5, 0.5, 0.5}"
-    Text: 0.5, "centre", 0.3, "half", """I am sitting in a room different from the one you are in now..."""
+    Text: 12.5, "centre", 0.3, "half", """I am sitting in a room different from the one you are in now..."""
     
     Font size: 10
     Colour: "Black"
