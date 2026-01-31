@@ -450,7 +450,7 @@ if show_visualization
     Select outer viewport: 0, 8, 5.4, 5.8
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Threshold: " + string$(transient_threshold) + " dB | Attack: " + string$(attack_window) + " ms | Release: " + string$(release_window) + " ms | Bands: " + string$(number_of_bands) + " (" + string$(low_frequency) + "-" + string$(high_frequency) + " Hz)"
+    Text: 1.5, "centre", 0.5, "half", "Threshold: " + string$(transient_threshold) + " dB | Attack: " + string$(attack_window) + " ms | Release: " + string$(release_window) + " ms | Bands: " + string$(number_of_bands) + " (" + string$(low_frequency) + "-" + string$(high_frequency) + " Hz)"
     
     Font size: 10
     Colour: "Black"

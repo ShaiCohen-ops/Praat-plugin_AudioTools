@@ -344,7 +344,7 @@ if show_visualization
     Erase all
     
     # --- Title ---
-    Select outer viewport: 0, 8, 0.0, 0.5
+    Select outer viewport: 1, 8, 0.0, 0.5
     Font size: 14
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Pitch Loop Finder: " + originalName$ + " [" + presetName$ + "]"
@@ -530,7 +530,7 @@ if show_visualization
     Select outer viewport: 0, 8, 5.6, 6.0
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Tolerance: " + string$(tolerance_hz) + " Hz | Loop duration: " + fixed$(min_loop_duration, 1) + "-" + fixed$(max_loop_duration, 1) + "s | Candidates: " + string$(nRows) + " | Found: " + string$(loops_found)
+    Text: 1.5, "centre", 0.5, "half", "Tolerance: " + string$(tolerance_hz) + " Hz | Loop duration: " + fixed$(min_loop_duration, 1) + "-" + fixed$(max_loop_duration, 1) + "s | Candidates: " + string$(nRows) + " | Found: " + string$(loops_found)
     
     Font size: 10
     Colour: "Black"
