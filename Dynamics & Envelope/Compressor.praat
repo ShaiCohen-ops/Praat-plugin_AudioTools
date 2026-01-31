@@ -19,7 +19,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Studio Dynamic Compressor
+form Studio Dynamic Compressor (Hybrid)
     optionmenu Preset 1
         option Custom
         option Vocal Leveler (Smooth)
@@ -42,7 +42,7 @@ form Studio Dynamic Compressor
         option Highpass 150Hz (vocal focus)
         option Lowpass 8kHz (de-ess)
     comment === Output ===
-    real Makeup_Gain_dB 0.0
+    real Makeup_gain_dB 0.0
     boolean Auto_makeup 1
     positive Scale_peak 0.99
     comment === Options ===
@@ -62,7 +62,7 @@ if preset = 2
     knee_dB = 8.0
     attack_ms = 15
     release_ms = 150
-    makeup_Gain_dB = 4.0
+    makeup_gain_dB = 4.0
     auto_makeup = 0
     sidechain_filter = 3
     suf$ = "_Vocal"
@@ -73,7 +73,7 @@ elsif preset = 3
     knee_dB = 3.0
     attack_ms = 1
     release_ms = 50
-    makeup_Gain_dB = 3.0
+    makeup_gain_dB = 3.0
     auto_makeup = 0
     sidechain_filter = 1
     suf$ = "_Drum"
@@ -84,7 +84,7 @@ elsif preset = 4
     knee_dB = 10.0
     attack_ms = 30
     release_ms = 200
-    makeup_Gain_dB = 2.0
+    makeup_gain_dB = 2.0
     auto_makeup = 0
     sidechain_filter = 1
     suf$ = "_Bus"
@@ -95,7 +95,7 @@ elsif preset = 5
     knee_dB = 0.0
     attack_ms = 0.5
     release_ms = 50
-    makeup_Gain_dB = 0.0
+    makeup_gain_dB = 0.0
     auto_makeup = 0
     sidechain_filter = 1
     suf$ = "_Lim"
@@ -106,7 +106,7 @@ elsif preset = 6
     knee_dB = 6.0
     attack_ms = 5
     release_ms = 80
-    makeup_Gain_dB = 8.0
+    makeup_gain_dB = 8.0
     auto_makeup = 0
     sidechain_filter = 1
     suf$ = "_Squash"
@@ -117,7 +117,7 @@ elsif preset = 7
     knee_dB = 0.0
     attack_ms = 0.5
     release_ms = 30
-    makeup_Gain_dB = 15.0
+    makeup_gain_dB = 15.0
     auto_makeup = 0
     sidechain_filter = 1
     suf$ = "_NUKE"
@@ -143,24 +143,16 @@ in_rms_dB = 20 * log10(in_rms + 1e-10)
 
 # === INFO HEADER ===
 writeInfoLine: "============================================"
-appendInfoLine: "STUDIO DYNAMIC COMPRESSOR v1.0"
+appendInfoLine: "STUDIO COMPRESSOR HYBRID"
 appendInfoLine: "============================================"
 appendInfoLine: ""
 appendInfoLine: "Input: ", original_name$
-appendInfoLine: "Duration: ", fixed$(dur, 2), "s | SR: ", sr, " Hz | Ch: ", n_channels
-appendInfoLine: ""
 appendInfoLine: "Input Peak: ", fixed$(in_peak_dB, 1), " dBFS"
-appendInfoLine: "Input RMS:  ", fixed$(in_rms_dB, 1), " dBFS"
 appendInfoLine: ""
 appendInfoLine: "--- Settings ---"
 appendInfoLine: "Threshold: ", fixed$(threshold_dB, 1), " dB"
 appendInfoLine: "Ratio: ", ratio, ":1"
-appendInfoLine: "Knee: ", fixed$(knee_dB, 1), " dB"
-appendInfoLine: "Attack: ", attack_ms, " ms"
-appendInfoLine: "Release: ", release_ms, " ms"
-if sidechain_filter > 1
-    appendInfoLine: "Sidechain: ", sidechain_filter$
-endif
+appendInfoLine: "Attack: ", attack_ms, " ms | Release: ", release_ms, " ms"
 appendInfoLine: ""
 
 # === CONVERT TO MONO FOR SIDECHAIN ===
@@ -195,13 +187,12 @@ elsif sidechain_filter = 4
     Rename: "sidechain"
 endif
 
-# === ENVELOPE DETECTION ===
+# === ENVELOPE DETECTION (THE FIX) ===
 attack_sec = attack_ms / 1000
 release_sec = release_ms / 1000
 
-avg_time = (attack_sec + release_sec) / 2
-detect_freq = 3.2 / avg_time
-detect_freq = max(10, min(1000, detect_freq))
+# FIXED: High Resolution Detection
+detect_freq = 400
 
 selectObject: sidechain
 intensity = To Intensity: detect_freq, 0, "yes"
@@ -221,6 +212,7 @@ env_dx = Get column distance
 selectObject: env_matrix
 env_smoothed = Copy: "env_smoothed"
 
+# Recalculate samples based on the new fixed high resolution
 attack_samples = max(1, round(attack_sec / env_dx))
 release_samples = max(1, round(release_sec / env_dx))
 
@@ -280,29 +272,23 @@ for col from 1 to env_nx
     endif
     
     gain_linear = 10 ^ (gain_reduction_dB / 20)
-    
     Set value: 1, col, gain_linear
 endfor
 
 # === CALCULATE AUTO MAKEUP GAIN ===
 if auto_makeup
-    typical_over = 10
-    typical_gr = typical_over * (1 - 1/r)
-    makeup_Gain_dB = typical_gr * 0.5
-    appendInfoLine: "Auto Makeup: +", fixed$(makeup_Gain_dB, 1), " dB"
+    headroom = abs(t)
+    if headroom > 20
+        headroom = 20
+    endif
+    makeup_gain_dB = (headroom / 2) * (1 - 1/r)
+    appendInfoLine: "Auto Makeup: +", fixed$(makeup_gain_dB, 1), " dB"
 endif
 
 # Apply makeup gain
 selectObject: gain_matrix
-makeup_linear = 10 ^ (makeup_Gain_dB / 20)
+makeup_linear = 10 ^ (makeup_gain_dB / 20)
 Formula: "self * makeup_linear"
-
-# === GAIN REDUCTION STATS (before converting) ===
-selectObject: gain_matrix
-gr_min = Get minimum
-gr_max = Get maximum
-gr_min_dB = 20 * log10(gr_min + 1e-10) - makeup_Gain_dB
-gr_max_dB = 20 * log10(gr_max + 1e-10) - makeup_Gain_dB
 
 # === CONVERT GAIN CURVE TO SOUND ===
 selectObject: gain_matrix
@@ -335,6 +321,11 @@ selectObject: sound
 compressed = Copy: original_name$ + "_Comp"
 Formula: "self * Sound_GainCurve(x)"
 
+# === GAIN REDUCTION STATS ===
+selectObject: gain_sound
+gr_min = Get minimum: 0, 0, "Sinc70"
+gr_min_dB = 20 * log10(gr_min + 1e-10) - makeup_gain_dB
+
 # === FINAL SCALING ===
 selectObject: compressed
 Scale peak: scale_peak
@@ -352,28 +343,37 @@ if show_stats
     appendInfoLine: "--- Results ---"
     appendInfoLine: "Output Peak: ", fixed$(out_peak_dB, 1), " dBFS"
     appendInfoLine: "Output RMS:  ", fixed$(out_rms_dB, 1), " dBFS"
-    appendInfoLine: ""
-    appendInfoLine: "Peak Change: ", fixed$(out_peak_dB - in_peak_dB, 1), " dB"
-    appendInfoLine: "RMS Change:  ", fixed$(out_rms_dB - in_rms_dB, 1), " dB"
-    appendInfoLine: ""
     appendInfoLine: "Max Gain Reduction: ", fixed$(gr_min_dB, 1), " dB"
-    appendInfoLine: ""
-    appendInfoLine: "Crest Factor (Peak/RMS):"
-    appendInfoLine: "  Input:  ", fixed$(in_peak_dB - in_rms_dB, 1), " dB"
-    appendInfoLine: "  Output: ", fixed$(out_peak_dB - out_rms_dB, 1), " dB"
 endif
 
-# === VISUALIZATION ===
+# ============================================================
+# FULL VISUALIZATION (RESTORED FROM V1.1)
+# ============================================================
+
 if draw_result
-    Erase all
-    Font size: 12
+    appendInfoLine: ""
+    appendInfoLine: "Creating visualization..."
     
-    # === TOP: Transfer Curve (larger, square) ===
-    Select outer viewport: 0, 6, 0, 4.5
+    Erase all
+    Font size: 10
+    
+    # === TITLE ===
+    Select outer viewport: 0, 10, 0, 0.5
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Hybrid Compressor## | " + original_name$ + " | Ratio: " + fixed$(ratio, 1) + ":1 | Thresh: " + fixed$(threshold_dB, 0) + "dB"
+    
+    # === TRANSFER CURVE (left panel) ===
+    Select outer viewport: 0, 5, 0.6, 4.0
+    Select inner viewport: 0.6, 4.6, 1.0, 3.8
+    
     Axes: -60, 0, -60, 0
     
+    # Background
+    Paint rectangle: "{0.98, 0.98, 0.98}", -60, 0, -60, 0
+    
     # Draw grid
-    Colour: "Silver"
+    Colour: "{0.85, 0.85, 0.85}"
     Line width: 1
     grid_line = -50
     while grid_line <= -10
@@ -382,62 +382,56 @@ if draw_result
         grid_line = grid_line + 10
     endwhile
     
-    # Draw 1:1 reference line (unity)
-    Colour: "{0.6,0.6,0.6}"
+    # Draw 1:1 reference line
+    Colour: "{0.6, 0.6, 0.6}"
     Line width: 1
     Dashed line
     Draw line: -60, -60, 0, 0
     Solid line
     
     # Draw threshold lines
-    Colour: "{0.3,0.3,0.8}"
+    Colour: "{0.3, 0.3, 0.8}"
     Line width: 1
     Dashed line
-    Draw line: t, -60, t, 0
-    Draw line: -60, t, 0, t
+    Draw line: threshold_dB, -60, threshold_dB, 0
+    Draw line: -60, threshold_dB, 0, threshold_dB
     Solid line
     
-    # Draw knee region if soft knee
-    if k > 0
-        Colour: "{0.8,0.8,1}"
-        Paint rectangle: "{0.9,0.9,1}", t - half_k, t + half_k, -60, 0
+    # Draw knee region
+    if knee_dB > 0
+        Colour: "{0.9, 0.9, 1}"
+        Paint rectangle: "{0.9, 0.9, 1}", threshold_dB - knee_dB/2, threshold_dB + knee_dB/2, -60, 0
     endif
     
     # Draw compression curve
-    Colour: "{0.8,0.2,0.2}"
+    Colour: "{0.8, 0.2, 0.2}"
     Line width: 3
     
-    in_lev = -60
-    while in_lev <= 0
-        if k <= 0
-            # Hard knee
-            if in_lev > t
-                out_lev = t + (in_lev - t) / r
+    prev_out = -60
+    for in_lev from -60 to 0
+        if knee_dB <= 0
+            if in_lev > threshold_dB
+                out_lev = threshold_dB + (in_lev - threshold_dB) / ratio
             else
                 out_lev = in_lev
             endif
         else
-            # Soft knee
-            if in_lev < (t - half_k)
+            if in_lev < (threshold_dB - knee_dB/2)
                 out_lev = in_lev
-            elsif in_lev > (t + half_k)
-                out_lev = t + (in_lev - t) / r
+            elsif in_lev > (threshold_dB + knee_dB/2)
+                out_lev = threshold_dB + (in_lev - threshold_dB) / ratio
             else
-                knee_factor = (in_lev - t + half_k) / k
+                knee_factor = (in_lev - threshold_dB + knee_dB/2) / knee_dB
                 knee_factor = knee_factor * knee_factor / 2
-                out_lev = in_lev - knee_factor * (in_lev - t + half_k) * (1 - 1/r)
+                out_lev = in_lev - knee_factor * (in_lev - threshold_dB + knee_dB/2) * (1 - 1/ratio)
             endif
         endif
         
-        if in_lev = -60
-            prev_out = out_lev
-        else
+        if in_lev > -60
             Draw line: in_lev - 1, prev_out, in_lev, out_lev
-            prev_out = out_lev
         endif
-        
-        in_lev = in_lev + 1
-    endwhile
+        prev_out = out_lev
+    endfor
     
     Line width: 1
     Colour: "Black"
@@ -446,43 +440,83 @@ if draw_result
     # Axis labels
     Marks bottom every: 1, 10, "yes", "yes", "no"
     Marks left every: 1, 10, "yes", "yes", "no"
-    Text bottom: "yes", "Input Level (dB)"
-    Text left: "yes", "Output Level (dB)"
+    Font size: 8
+    Text bottom: "yes", "Input (dB)"
+    Text left: "yes", "Output (dB)"
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    Text top: "no", "Transfer Curve"
     
-    # Title with settings
-    Font size: 14
-    Text top: "yes", "##Transfer Curve## — Threshold: " + fixed$(t, 0) + "dB | Ratio: " + fixed$(ratio, 1) + ":1 | Knee: " + fixed$(knee_dB, 0) + "dB"
-    Font size: 12
+    # === WAVEFORM COMPARISON (right panel) ===
+    Select outer viewport: 5, 10, 0.6, 2.3
+    Select inner viewport: 5.4, 9.6, 0.9, 2.1
     
-    # === BOTTOM: Gain Reduction Over Time ===
-    Select outer viewport: 0, 6, 4.5, 7.5
+    # Get amplitude range
+    selectObject: sound
+    wave_max = Get maximum: 0, 0, "Sinc70"
+    wave_min = Get minimum: 0, 0, "Sinc70"
+    wave_range = max(abs(wave_max), abs(wave_min)) * 1.1
+    
+    Axes: 0, dur, -wave_range, wave_range
+    
+    # Background
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, -wave_range, wave_range
+    
+    # Zero line
+    Colour: "{0.8, 0.8, 0.8}"
+    Draw line: 0, 0, dur, 0
+    
+    # Draw input waveform (Gray)
+    selectObject: sound
+    Colour: "{0.6, 0.6, 0.6}"
+    Line width: 1
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    
+    # Draw output waveform (Green)
+    selectObject: compressed
+    Colour: "{0.2, 0.6, 0.3}"
+    Line width: 1.5
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 8
+    Text bottom: "yes", "Time (s)"
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    Text top: "no", "Waveform (Gray=In, Green=Out)"
+    
+    # === GAIN REDUCTION TIMELINE (bottom panel) ===
+    Select outer viewport: 0, 10, 4.1, 6.0
+    Select inner viewport: 0.6, 9.6, 4.4, 5.8
     
     # Create GR display in dB
     selectObject: gain_sound
     gr_display = Copy: "gr_display"
-    Formula: "20 * log10(self + 1e-10) - makeup_Gain_dB"
+    Formula: "20 * log10(self + 1e-10) - makeup_gain_dB"
     
     gr_disp_min = Get minimum: 0, 0, "Sinc70"
     gr_disp_min = min(-6, floor(gr_disp_min / 3) * 3 - 3)
     
-    # Set axes
     Axes: 0, dur, gr_disp_min, 3
     
     # Background for GR area
-    Paint rectangle: "{1,0.95,0.95}", 0, dur, gr_disp_min, 0
+    Paint rectangle: "{1, 0.95, 0.95}", 0, dur, gr_disp_min, 0
+    Paint rectangle: "{0.95, 1, 0.95}", 0, dur, 0, 3
     
     # Draw zero line
-    Colour: "{0.5,0.5,0.5}"
+    Colour: "{0.5, 0.5, 0.5}"
     Line width: 1
     Draw line: 0, 0, dur, 0
     
     # Fill gain reduction area
-    Colour: "{0.9,0.3,0.3}"
-    selectObject: gr_display
-    n_draw_points = 400
+    Colour: "{0.9, 0.3, 0.3}"
+    n_draw_points = 500
     draw_step = dur / n_draw_points
     t_pos = 0
     while t_pos <= dur
+        selectObject: gr_display
         val = Get value at time: 1, t_pos, "Sinc70"
         if val < 0
             Draw line: t_pos, 0, t_pos, val
@@ -491,7 +525,7 @@ if draw_result
     endwhile
     
     # Draw GR curve on top
-    Colour: "{0.6,0,0}"
+    Colour: "{0.6, 0, 0}"
     Line width: 2
     selectObject: gr_display
     Draw: 0, dur, gr_disp_min, 3, "no", "Curve"
@@ -505,18 +539,62 @@ if draw_result
     Marks left every: 1, 3, "yes", "yes", "no"
     One mark left: 0, "no", "yes", "yes", "0"
     
-    Text bottom: "yes", "Time (seconds)"
-    Text left: "yes", "Gain Reduction (dB)"
+    Font size: 8
+    Text bottom: "yes", "Time (s)"
+    Text left: "yes", "GR (dB)"
     
-    # Title
-    Font size: 14
-    Text top: "yes", "##Gain Reduction## — Max: " + fixed$(gr_min_dB, 1) + " dB | Attack: " + fixed$(attack_ms, 0) + "ms | Release: " + fixed$(release_ms, 0) + "ms"
-    Font size: 12
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    Text top: "no", "Gain Reduction Timeline"
     
     removeObject: gr_display
     
-    # Reset viewport
-    Select outer viewport: 0, 6, 0, 7.5
+    # === GR METER (vertical bar) ===
+    Select outer viewport: 9.3, 10, 4.1, 6.0
+    Select inner viewport: 9.4, 9.9, 4.4, 5.8
+    
+    Axes: 0, 1, gr_disp_min, 3
+    
+    # Meter background
+    Paint rectangle: "{0.9, 0.9, 0.9}", 0, 1, gr_disp_min, 0
+    Paint rectangle: "{0.85, 0.95, 0.85}", 0, 1, 0, 3
+    
+    # Current GR level (max)
+    if gr_min_dB < 0
+        Colour: "{0.9, 0.3, 0.3}"
+        Paint rectangle: "{0.9, 0.3, 0.3}", 0.15, 0.85, gr_min_dB, 0
+    endif
+    
+    # Scale marks
+    Colour: "{0.4, 0.4, 0.4}"
+    Line width: 1
+    Font size: 6
+    db = 0
+    while db >= -24
+        if db >= gr_disp_min
+            Draw line: 0, db, 0.2, db
+            Draw line: 0.8, db, 1, db
+        endif
+        db = db - 6
+    endwhile
+    
+    Colour: "Black"
+    Draw inner box
+    
+    # === STATS BOX ===
+    Select outer viewport: 5, 10, 2.4, 4.0
+    Axes: 0, 1, 0, 1
+    
+    Font size: 9
+    Colour: "{0.3, 0.3, 0.3}"
+    
+    Text: 0.05, "left", 0.9, "half", "##Input Peak:## " + fixed$(in_peak_dB, 1) + " dB"
+    Text: 0.05, "left", 0.7, "half", "##Output Peak:## " + fixed$(out_peak_dB, 1) + " dB"
+    Text: 0.05, "left", 0.5, "half", "##Max GR:## " + fixed$(gr_min_dB, 1) + " dB"
+    Text: 0.05, "left", 0.3, "half", "##Auto Makeup:## +" + fixed$(makeup_gain_dB, 1) + " dB"
+    
+    Font size: 10
+    Colour: "Black"
 endif
 
 # === CLEANUP ===
@@ -529,9 +607,7 @@ endif
 selectObject: compressed
 
 appendInfoLine: ""
-appendInfoLine: "============================================"
-appendInfoLine: "Done! Output: ", original_name$, suf$
-appendInfoLine: "============================================"
+appendInfoLine: "Complete."
 
 if play_result
     Play
