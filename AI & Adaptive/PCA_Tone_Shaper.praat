@@ -52,7 +52,7 @@ form PCA Tone Shaper v0.3
     comment === Output ===
     positive Headroom 0.97
     boolean Draw_visualization 1
-    boolean Play_result 0
+    boolean Play_result 1
 endform
 
 # ===== PRESET LOGIC =====
@@ -543,7 +543,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "PCA Tone Shaper: " + origName$ + " [" + presetName$ + "]"
@@ -617,11 +617,11 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.3, 4.7
     Font size: 8
     Colour: "{0.8, 0.3, 0.3}"
-    Text: 0.2, "centre", 0.5, "half", "— Low (0-" + string$(low_hi_crossover1_hz) + " Hz)"
+    Text: 1.2, "centre", 0.5, "half", "— Low (0-" + string$(low_hi_crossover1_hz) + " Hz)"
     Colour: "{0.3, 0.7, 0.3}"
-    Text: 0.5, "centre", 0.5, "half", "— Mid (" + string$(low_hi_crossover1_hz) + "-" + string$(low_hi_crossover2_hz) + " Hz)"
+    Text: 1.2, "centre", 2.5, "half", "— Mid (" + string$(low_hi_crossover1_hz) + "-" + string$(low_hi_crossover2_hz) + " Hz)"
     Colour: "{0.3, 0.4, 0.8}"
-    Text: 0.8, "centre", 0.5, "half", "— High (" + string$(low_hi_crossover2_hz) + "-" + string$(high_band_top_hz) + " Hz)"
+    Text: 1.2, "centre", 4.5, "half", "— High (" + string$(low_hi_crossover2_hz) + "-" + string$(high_band_top_hz) + " Hz)"
     
     Font size: 10
     Colour: "Black"
@@ -646,6 +646,3 @@ if play_result <> 0
     selectObject: outS
     Play
 endif
-
-selectObject: outS
-Play

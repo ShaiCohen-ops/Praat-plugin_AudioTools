@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Fixed syntax
+# Version: 1.0 (2025) - Added visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,18 +12,14 @@
 #   and replaces each segment with the best-matching gesture from
 #   a dictionary of sounds using k-best selection with repetition penalty.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Changelog v0.3:
-#   - Fixed array syntax for Praat compatibility
-#   - Fixed != to <> operator
-#   - Fixed string array syntax
-#   - Fixed variable scope issues
+# Changelog v1.0:
+#   - Added comprehensive visualization
+#   - Segment mapping timeline
+#   - Gesture usage histogram
+#   - Distance statistics display
 # ============================================================
 
-form Gesture Quantization v0.3
+form Gesture Quantization v1.0
     comment === PRESETS ===
     optionmenu Preset: 2
         option Maximum Variety (k=10)
@@ -42,6 +38,7 @@ form Gesture Quantization v0.3
     comment === AUDIO ===
     positive Target_sample_rate 44100
     comment === OUTPUT ===
+    boolean Draw_visualization 1
     boolean Verbose_output 1
     boolean Play_result 1
 endform
@@ -133,18 +130,14 @@ procedure extractFeatureVector: .soundID, .nSamples
     .start = Get start time
     .end = Get end time
     
-    # Pitch analysis
     .pitch = To Pitch: 0.01, pitch_floor, pitch_ceiling
     
     selectObject: .soundID
     
-    # Intensity analysis - adjust pitch floor for short sounds
-    # Minimum duration = 6.4 / pitchFloor, so pitchFloor = 6.4 / duration
     .intensityPitchFloor = 100
     .minDurForIntensity = 6.4 / .intensityPitchFloor
     
     if .dur < .minDurForIntensity
-        # Adjust pitch floor for short sounds (with safety margin)
         .intensityPitchFloor = ceiling(6.4 / .dur) + 10
         if .intensityPitchFloor > 500
             .intensityPitchFloor = 500
@@ -209,19 +202,17 @@ procedure euclideanDistance: .vectorLength
         .fv = feature_vector_'.i'
         .dv = dict_vector_'.i'
         .diff = .fv - .dv
-        .distance += .diff * .diff
+        .distance = .distance + .diff * .diff
     endfor
     euclideanDistance.distance = sqrt(.distance)
 endproc
 
 procedure findKBestMatches: .nPatterns, .k, .lastChoice
-    # Initialize candidates
     for .i to .nPatterns
         candidate_dist_'.i' = 10000
         candidate_idx_'.i' = .i
     endfor
     
-    # Calculate distances
     for .dictIdx to .nPatterns
         for .j to vectorLength
             dict_vector_'.j' = dict_features_'.dictIdx'_'.j'
@@ -230,7 +221,6 @@ procedure findKBestMatches: .nPatterns, .k, .lastChoice
         @euclideanDistance: vectorLength
         .dist = euclideanDistance.distance
         
-        # Apply repetition penalty
         if .dictIdx = .lastChoice and repetition_penalty > 0
             .dist = .dist * (1 + repetition_penalty)
         endif
@@ -238,7 +228,6 @@ procedure findKBestMatches: .nPatterns, .k, .lastChoice
         candidate_dist_'.dictIdx' = .dist
     endfor
     
-    # Partial sort to find k-best
     for .i to .k
         .minIdx = .i
         .minDist = candidate_dist_'.i'
@@ -261,7 +250,6 @@ procedure findKBestMatches: .nPatterns, .k, .lastChoice
         endif
     endfor
     
-    # Select from k-best
     if .k = 1
         findKBestMatches.selectedIndex = candidate_idx_1
         findKBestMatches.selectedDistance = candidate_dist_1
@@ -278,7 +266,7 @@ endproc
 
 if verbose_output
     appendInfoLine: "═══════════════════════════════════════════════════════"
-    appendInfoLine: "  Gesture-Based Hard Quantization v0.3"
+    appendInfoLine: "  Gesture-Based Hard Quantization v1.0"
     appendInfoLine: "═══════════════════════════════════════════════════════"
     appendInfoLine: ""
     appendInfoLine: "Preset: ", presetName$
@@ -303,7 +291,6 @@ endif
 vectorLength = 2 * n_time_samples
 nDictSounds = nFiles - 1
 
-# Initialize dictionary features array
 for .i to nDictSounds
     for .j to vectorLength
         dict_features_'.i'_'.j' = 0
@@ -525,6 +512,231 @@ outputDur = Get total duration
 # STATISTICS
 ################################################################################
 
+# Calculate statistics for visualization
+sumDist = 0
+statMinDist = bestDistance_1
+statMaxDist = bestDistance_1
+
+for segIdx to number_of_segments
+    dist = bestDistance_'segIdx'
+    sumDist = sumDist + dist
+    if dist < statMinDist
+        statMinDist = dist
+    endif
+    if dist > statMaxDist
+        statMaxDist = dist
+    endif
+endfor
+meanDist = sumDist / number_of_segments
+
+sumSqDiff = 0
+for segIdx to number_of_segments
+    dist = bestDistance_'segIdx'
+    diff = dist - meanDist
+    sumSqDiff = sumSqDiff + diff * diff
+endfor
+stdDist = sqrt(sumSqDiff / number_of_segments)
+
+# Count gesture usage
+for dictIdx to nDictSounds
+    gestureCount_'dictIdx' = 0
+endfor
+
+uniqueCount = 0
+maxUsage = 0
+for dictIdx to nDictSounds
+    count = 0
+    for segIdx to number_of_segments
+        if bestMatch_'segIdx' = dictIdx
+            count = count + 1
+        endif
+    endfor
+    gestureCount_'dictIdx' = count
+    if count > 0
+        uniqueCount = uniqueCount + 1
+    endif
+    if count > maxUsage
+        maxUsage = count
+    endif
+endfor
+
+diversityPercent = (uniqueCount / nDictSounds) * 100
+
+################################################################################
+# VISUALIZATION
+################################################################################
+
+if draw_visualization
+    @log: "Creating visualization..."
+    
+    Erase all
+    Select outer viewport: 0, 8, 0, 8
+    
+    # === Title ===
+    Select outer viewport: 0, 8, 0, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.6, "half", "##Gesture-Based Hard Quantization##"
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.2, "centre", -1., "half", presetName$ + " | k=" + string$(k_best_matches) + " | " + string$(nDictSounds) + " gestures"
+    
+    # === Reference Waveform ===
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.7, 0.7, 1.45
+    selectObject: refSound
+    Colour: "{0.6, 0.6, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Reference"
+    Text top: "no", soundName_1$
+    
+    # === Output Waveform ===
+    Select outer viewport: 0, 8, 1.5, 2.4
+    Select inner viewport: 0.6, 7.7, 1.6, 2.35
+    selectObject: output
+    Colour: "{0.4, 0.6, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Axes: 0, 1, 0, 1
+    Text: 0.5, "centre", -0.08, "top", "Time (s)"
+        
+    # === Segment Mapping Timeline ===
+    Select outer viewport: 0, 8, 2.5, 3.8
+    Select inner viewport: 0.6, 7.7, 2.7, 3.7
+    
+    Axes: 0, number_of_segments, 0, nDictSounds + 1
+    Paint rectangle: "{0.97, 0.97, 0.98}", 0, number_of_segments, 0, nDictSounds + 1
+    
+    # Draw mapping bars
+    for segIdx to number_of_segments
+        dictIdx = bestMatch_'segIdx'
+        dist = bestDistance_'segIdx'
+        
+        # Color by distance (green=good, red=poor)
+        distNorm = (dist - statMinDist) / (statMaxDist - statMinDist + 0.001)
+        r = 0.4 + distNorm * 0.4
+        g = 0.7 - distNorm * 0.3
+        b = 0.4
+        
+        Paint rectangle: "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}", segIdx - 1, segIdx, dictIdx - 0.4, dictIdx + 0.4
+    endfor
+    
+    # Draw grid lines
+    Colour: "{0.85, 0.85, 0.85}"
+    for dictIdx to nDictSounds
+        Draw line: 0, dictIdx, number_of_segments, dictIdx
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Gesture #"
+    Text bottom: "yes", "Segment"
+    Text top: "no", "Segment → Gesture Mapping (green=close, orange=far)"
+    
+    # === Gesture Usage Histogram ===
+    Select outer viewport: 0, 4, 3.9, 5.4
+    Select inner viewport: 0.6, 3.7, 4.1, 5.3
+    
+    if maxUsage < 1
+        maxUsage = 1
+    endif
+    
+    Axes: 0, nDictSounds + 1, 0, maxUsage + 1
+    Paint rectangle: "{0.98, 0.98, 0.97}", 0, nDictSounds + 1, 0, maxUsage + 1
+    
+    # Draw bars
+    barW = 0.7
+    for dictIdx to nDictSounds
+        count = gestureCount_'dictIdx'
+        if count > 0
+            Paint rectangle: "{0.5, 0.65, 0.7}", dictIdx - barW/2, dictIdx + barW/2, 0, count
+        endif
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Usage"
+    Text bottom: "yes", "Gesture #"
+    Text top: "no", "Gesture Usage (" + string$(uniqueCount) + "/" + string$(nDictSounds) + " used)"
+    
+    # === Distance Distribution ===
+    Select outer viewport: 4, 8, 3.9, 5.4
+    Select inner viewport: 4.4, 7.7, 4.1, 5.3
+    
+    Axes: 0, number_of_segments + 1, 0, statMaxDist * 1.15
+    Paint rectangle: "{0.97, 0.98, 0.97}", 0, number_of_segments + 1, 0, statMaxDist * 1.15
+    
+    # Mean line
+    Colour: "{0.8, 0.8, 0.8}"
+    Dashed line
+    Draw line: 0, meanDist, number_of_segments + 1, meanDist
+    Solid line
+    
+    # Distance points
+    Colour: "{0.5, 0.6, 0.7}"
+    for segIdx to number_of_segments
+        dist = bestDistance_'segIdx'
+        Paint circle: "{0.5, 0.6, 0.7}", segIdx, dist, 0.2
+    endfor
+    
+    # Connect points
+    Line width: 1
+    for segIdx from 2 to number_of_segments
+        prevDist = bestDistance_'segIdx' - bestDistance_1
+        prevDist = bestDistance_'segIdx' - 1
+        
+        # Get previous distance
+        prevIdx = segIdx - 1
+        d1 = bestDistance_'prevIdx'
+        d2 = bestDistance_'segIdx'
+        Draw line: prevIdx, d1, segIdx, d2
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Distance"
+    Text bottom: "yes", "Segment"
+    Text top: "no", "Match Distance (mean=" + fixed$(meanDist, 3) + ")"
+    
+    # === Summary Panel ===
+    Select outer viewport: 0, 8, 5.5, 6.4
+    Axes: 0, 1, 0, 1
+    
+    Paint rectangle: "{0.95, 0.97, 0.95}", 0, 1, 0, 1
+    
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.8, "half", "##Statistics##"
+    
+    Font size: 6
+    Colour: "{0.3, 0.3, 0.4}"
+    
+    Text: 0.12, "centre", 0.45, "half", "Segments: " + string$(number_of_segments)
+    Text: 0.32, "centre", 0.45, "half", "Seg dur: " + fixed$(segmentDur * 1000, 0) + "ms"
+    Text: 0.52, "centre", 0.45, "half", "K-best: " + string$(k_best_matches)
+    Text: 0.72, "centre", 0.45, "half", "Penalty: " + fixed$(repetition_penalty, 2)
+    Text: 0.92, "centre", 0.45, "half", "Diversity: " + fixed$(diversityPercent, 0) + "%"
+    
+    Text: 0.20, "centre", 0.15, "half", "Dist mean: " + fixed$(meanDist, 3)
+    Text: 0.45, "centre", 0.15, "half", "Dist std: " + fixed$(stdDist, 3)
+    Text: 0.70, "centre", 0.15, "half", "Range: " + fixed$(statMinDist, 3) + "-" + fixed$(statMaxDist, 3)
+    
+    Font size: 10
+    Colour: "Black"
+endif
+
+################################################################################
+# VERBOSE STATISTICS
+################################################################################
+
 if verbose_output
     appendInfoLine: "════════════════════════════════════════════════════════"
     appendInfoLine: "  SUMMARY STATISTICS"
@@ -540,32 +752,6 @@ if verbose_output
     appendInfoLine: "  • K-best matches: ", k_best_matches
     appendInfoLine: "  • Repetition penalty: ", fixed$(repetition_penalty, 2)
     appendInfoLine: ""
-    
-    # Distance statistics
-    sumDist = 0
-    statMinDist = bestDistance_1
-    statMaxDist = bestDistance_1
-    
-    for segIdx to number_of_segments
-        dist = bestDistance_'segIdx'
-        sumDist += dist
-        if dist < statMinDist
-            statMinDist = dist
-        endif
-        if dist > statMaxDist
-            statMaxDist = dist
-        endif
-    endfor
-    meanDist = sumDist / number_of_segments
-    
-    sumSqDiff = 0
-    for segIdx to number_of_segments
-        dist = bestDistance_'segIdx'
-        diff = dist - meanDist
-        sumSqDiff += diff * diff
-    endfor
-    stdDist = sqrt(sumSqDiff / number_of_segments)
-    
     appendInfoLine: "Distance Statistics:"
     appendInfoLine: "  Mean: ", fixed$(meanDist, 4)
     appendInfoLine: "  Std:  ", fixed$(stdDist, 4)
@@ -573,24 +759,15 @@ if verbose_output
     appendInfoLine: "  Max:  ", fixed$(statMaxDist, 4)
     appendInfoLine: ""
     
-    # Gesture usage
     appendInfoLine: "Gesture Usage:"
-    uniqueCount = 0
     for dictIdx to nDictSounds
-        count = 0
-        for segIdx to number_of_segments
-            if bestMatch_'segIdx' = dictIdx
-                count += 1
-            endif
-        endfor
+        count = gestureCount_'dictIdx'
         if count > 0
-            uniqueCount += 1
             soundIdx = dictIdx + 1
             appendInfoLine: "  ", soundName_'soundIdx'$, ": ", count, "x"
         endif
     endfor
     
-    diversityPercent = (uniqueCount / nDictSounds) * 100
     appendInfoLine: ""
     appendInfoLine: "Diversity: ", uniqueCount, "/", nDictSounds, " gestures (", fixed$(diversityPercent, 1), "%)"
     appendInfoLine: ""
