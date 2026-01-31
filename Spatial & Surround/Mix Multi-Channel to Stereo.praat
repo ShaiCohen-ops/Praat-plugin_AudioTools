@@ -409,7 +409,7 @@ if draw_visualization
     Erase all
     
     # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0.5, 8, 0, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Multi-Channel to Stereo: " + originalName$ + " (" + modeName$ + ")"
