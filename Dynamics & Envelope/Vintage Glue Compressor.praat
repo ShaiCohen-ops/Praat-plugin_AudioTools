@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - Vintage Glue Compressor.praat
+# Praat AudioTools - Vintage_Glue_Compressor.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
@@ -56,6 +56,19 @@ form Vintage Glue Compressor
     boolean Keep_original 1
 endform
 
+# === GET SATURATION TYPE NAME ===
+if saturation_type = 1
+    saturation_type$ = "Clean"
+elsif saturation_type = 2
+    saturation_type$ = "Tube"
+elsif saturation_type = 3
+    saturation_type$ = "Tape"
+elsif saturation_type = 4
+    saturation_type$ = "Transistor"
+else
+    saturation_type$ = "FET"
+endif
+
 # === APPLY PRESETS ===
 suf$ = ""
 
@@ -67,6 +80,7 @@ if preset = 2
     attack_ms = 10
     release_ms = 500
     saturation_type = 2
+    saturation_type$ = "Tube"
     drive = 0.25
     harmonics_mix = 0.4
     makeup_Gain_dB = 4.0
@@ -80,6 +94,7 @@ elsif preset = 3
     attack_ms = 1
     release_ms = 50
     saturation_type = 4
+    saturation_type$ = "Transistor"
     drive = 0.4
     harmonics_mix = 0.5
     makeup_Gain_dB = 4.0
@@ -93,6 +108,7 @@ elsif preset = 4
     attack_ms = 30
     release_ms = 200
     saturation_type = 2
+    saturation_type$ = "Tube"
     drive = 0.15
     harmonics_mix = 0.3
     makeup_Gain_dB = 2.0
@@ -106,6 +122,7 @@ elsif preset = 5
     attack_ms = 5
     release_ms = 100
     saturation_type = 3
+    saturation_type$ = "Tape"
     drive = 0.6
     harmonics_mix = 0.7
     makeup_Gain_dB = 3.0
@@ -119,6 +136,7 @@ elsif preset = 6
     attack_ms = 20
     release_ms = 300
     saturation_type = 2
+    saturation_type$ = "Tube"
     drive = 0.35
     harmonics_mix = 0.5
     makeup_Gain_dB = 3.0
@@ -132,6 +150,7 @@ elsif preset = 7
     attack_ms = 0.5
     release_ms = 50
     saturation_type = 5
+    saturation_type$ = "FET"
     drive = 0.5
     harmonics_mix = 0.6
     makeup_Gain_dB = 6.0
@@ -337,19 +356,16 @@ if saturation_type > 1
     elsif saturation_type = 3
         # TAPE - Asymmetric soft clipping
         # Rich, adds even harmonics, slight compression
-        # Formula: combination of soft clip + asymmetry
         Formula: "if self >= 0 then tanh(self * drive_amt * 1.2) / tanh(drive_amt * 1.2) else tanh(self * drive_amt * 0.9) / tanh(drive_amt * 0.9) fi"
         sat_name$ = "Tape"
         
     elsif saturation_type = 4
         # TRANSISTOR - Harder knee, more aggressive
-        # Sharper saturation onset
         Formula: "if abs(self * drive_amt) < 0.5 then self else (if self >= 0 then (3 * self * drive_amt - (self * drive_amt)^3) / (2 * drive_amt) else (3 * self * drive_amt + (self * drive_amt)^3) / (2 * drive_amt) fi) fi"
         sat_name$ = "Transistor"
         
     elsif saturation_type = 5
         # FET - Very fast, punchy, slight asymmetry
-        # 1176-style coloration
         asym = 0.1
         Formula: "tanh((self + self * asym * abs(self)) * drive_amt) / tanh(drive_amt * (1 + asym))"
         sat_name$ = "FET"
@@ -373,7 +389,8 @@ endif
 # === DRY/WET MIX ===
 if dry_wet_mix < 1
     selectObject: compressed
-    Formula: "self * dry_wet_mix + Sound_'original_name$'(x) * (1 - dry_wet_mix)"
+    sound_str$ = string$(sound)
+    Formula: "self * dry_wet_mix + object(" + sound_str$ + ", x) * (1 - dry_wet_mix)"
     appendInfoLine: "Dry/Wet: ", fixed$(dry_wet_mix * 100, 0), "% wet"
 endif
 
@@ -389,9 +406,7 @@ out_rms = Get root-mean-square: 0, 0
 out_rms_dB = 20 * log10(out_rms + 1e-10)
 
 # === THD ESTIMATION ===
-# Simple estimation based on saturation type and drive
 if saturation_type > 1
-    # Approximate THD based on drive level
     if saturation_type = 2
         thd_estimate = drive * 3.0
     elsif saturation_type = 3
@@ -433,7 +448,7 @@ if draw_result
     Font size: 12
     
     # === TOP: Saturation Transfer Curve ===
-    Select outer viewport: 0, 6, 0, 3.5
+    Select outer viewport: 0, 8, 0, 2.8
     Axes: -1.5, 1.5, -1.5, 1.5
     
     # Draw grid
@@ -524,7 +539,7 @@ if draw_result
     Font size: 12
     
     # === MIDDLE: Compression Transfer Curve ===
-    Select outer viewport: 0, 6, 3.5, 7
+    Select outer viewport: 0, 8, 2.9, 5.2
     Axes: -60, 0, -60, 0
     
     # Draw grid
@@ -601,7 +616,7 @@ if draw_result
     Font size: 12
     
     # === BOTTOM: Gain Reduction Over Time ===
-    Select outer viewport: 0, 6, 7, 9.5
+    Select outer viewport: 0, 8, 5.3, 7.3
     
     selectObject: gain_sound
     gr_display = Copy: "gr_display"
@@ -653,7 +668,7 @@ if draw_result
     
     removeObject: gr_display
     
-    Select outer viewport: 0, 6, 0, 9.5
+    Select outer viewport: 0, 8, 0, 7.3
 endif
 
 # === CLEANUP ===
