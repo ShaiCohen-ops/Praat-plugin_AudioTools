@@ -565,6 +565,73 @@ if normalize_volume
 endif
 
 # ============================================
+# VISUALIZATION
+# ============================================
+
+appendInfoLine: ""
+appendInfoLine: "Creating visualization..."
+
+Erase all
+
+# === TITLE ===
+Select outer viewport: 1, 8, 0, 0.5
+Font size: 12
+Colour: "Black"
+Text: 0.5, "centre", 0.5, "half", "##Neural Audio Mosaic## | " + presetName$
+
+# === TARGET WAVEFORM ===
+Select outer viewport: 0, 8, 0.6, 2.0
+Select inner viewport: 0.8, 7.6, 0.8, 1.8
+
+selectObject: id1
+Colour: "{0.5, 0.5, 0.5}"
+Draw: 0, 0, 0, 0, "no", "Curve"
+
+Colour: "Black"
+Draw inner box
+Font size: 7
+Select outer viewport: 0.15, 8, 0.6, 2.0
+Text left: "yes", "Target"
+
+# === SOURCE WAVEFORM ===
+Select outer viewport: 0, 8, 2.1, 3.5
+Select inner viewport: 0.8, 7.6, 2.3, 3.3
+
+selectObject: id2
+Colour: "{0.6, 0.5, 0.4}"
+Draw: 0, 0, 0, 0, "no", "Curve"
+
+Colour: "Black"
+Draw inner box
+Font size: 7
+Select outer viewport: 0.15, 8, 2.1, 3.5
+Text left: "yes", "Source"
+
+# === OUTPUT WAVEFORM ===
+Select outer viewport: 0, 8, 3.6, 5.2
+Select inner viewport: 0.8, 7.6, 3.8, 5.0
+
+selectObject: finalOut
+Colour: "{0.3, 0.6, 0.5}"
+Draw: 0, 0, 0, 0, "no", "Curve"
+
+Colour: "Black"
+Draw inner box
+Font size: 7
+Select outer viewport: 0.15, 8, 3.6, 5.2
+Text left: "yes", "Mosaic"
+Text bottom: "yes", "Time (s)"
+
+# === INFO ===
+Select outer viewport: 0, 8, 5.3, 5.8
+Font size: 6
+Colour: "{0.4, 0.4, 0.4}"
+Text: 0.5, "centre", 0.5, "half", "Grain: " + string$(grain_size_ms) + "ms | Overlap: " + fixed$(overlap_ratio * 100, 0) + "% | Weights - Pitch: " + fixed$(pitch_weight, 1) + " Spectral: " + fixed$(spectral_weight, 1) + " Energy: " + fixed$(energy_weight, 1)
+
+Font size: 10
+Colour: "Black"
+
+# ============================================
 # CLEANUP
 # ============================================
 
