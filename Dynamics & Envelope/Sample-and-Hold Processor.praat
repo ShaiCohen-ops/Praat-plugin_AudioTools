@@ -1,119 +1,191 @@
 # ============================================================
-# Praat AudioTools - Sample-and-Hold Processor.praat  
+# Praat AudioTools - Sample-and-Hold_Processor.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 1.0 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Sample-and-Hold Audio Processor
+#   Sample-and-hold processor with multiple control modes
+#   including binary gating, intensity-based, AM, pitch-gated,
+#   custom patterns, and spectral centroid gating.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v1.0:
+#   - Added presets
+#   - Added smoothing option to prevent clicks
+#   - Fixed viewport width
+#   - Added play option
+#   - Improved info output
 # ============================================================
 
-# ============================================================
-# Praat AudioTools - Sample-and-Hold Processor.praat  
-# Author: Shai Cohen
-# Affiliation: Department of Music, Bar-Ilan University, Israel
-# Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Modified
-# License: MIT License
-# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Description:
-#   Sample-and-Hold Audio Processor
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Modifications (v0.3):
-#   - Fixed pitch-gated mode: analyzes full sound once, queries per segment
-#   - Optimized median calculation: uses TableOfReal instead of bubble sort
-#   - Added visual output: gate pattern overlaid on amplitude envelope
-#   - Compact form layout
-# ============================================================
-
-form Sample-and-Hold Processor
-    optionmenu control_type 1
+form Sample-and-Hold Processor v1.0
+    optionmenu Preset 1
+        option Custom
+        option Rhythmic Chop (binary)
+        option Dynamics Gate (intensity)
+        option Tremolo (AM slow)
+        option Flutter (AM fast)
+        option Voiced Only (pitch-gate)
+        option Bright Only (centroid)
+        option Morse Code (pattern)
+    optionmenu Control_mode 1
         option Binary (alternating)
         option Intensity-based
         option Amplitude Modulation
         option Pitch-gated
         option Custom Pattern
         option Spectral Centroid Gate
-    positive sample_period 0.02
-    real gate_threshold 0.5
-    comment Mode parameters: intensity(dB,0=auto) / mod(Hz,depth) / pitch(Hz) / centroid(Hz)
-    real intensity_threshold 50
-    real mod_frequency 2
-    real mod_depth 1.0
-    real pitch_threshold 100
-    real centroid_threshold 1000
-    sentence pattern 1 0 1 1 0 1 0 1
-    real mute_amplitude 0.0
-    boolean draw_visualization 1
-    boolean show_info 1
+    comment === Timing ===
+    positive Sample_period_s 0.02
+    real Gate_threshold 0.5
+    comment === Mode Parameters ===
+    real Intensity_threshold_dB 0
+    comment (0 = auto from median)
+    real AM_frequency_Hz 4
+    real AM_depth 1.0
+    real Pitch_threshold_Hz 100
+    real Centroid_threshold_Hz 1000
+    sentence Pattern 1 0 1 1 0 1 0 1
+    comment === Gate Character ===
+    real Mute_level 0.0
+    positive Smoothing_ms 2
+    comment (smoothing prevents clicks)
+    comment === Output ===
+    boolean Visualize 1
+    boolean Play 1
 endform
 
-# === VALIDATION ===
+# === INPUT VALIDATION ===
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
 sound = selected("Sound")
 sound_name$ = selected$("Sound")
-duration = Get total duration
-sample_rate = Get sampling frequency
-num_channels = Get number of channels
-num_intervals = ceiling(duration / sample_period)
+
+selectObject: sound
+dur = Get total duration
+sr = Get sampling frequency
+nChannels = Get number of channels
+
+# === USE WORKING VARIABLES (so presets can override) ===
+workingMode = control_mode
+workingPeriod = sample_period_s
+workingIntensityThresh = intensity_threshold_dB
+workingAMFreq = aM_frequency_Hz
+workingAMDepth = aM_depth
+workingPitchThresh = pitch_threshold_Hz
+workingCentroidThresh = centroid_threshold_Hz
+workingPattern$ = pattern$
+
+# === APPLY PRESETS ===
+if preset = 2
+    # Rhythmic Chop
+    workingMode = 1
+    workingPeriod = 0.05
+    presetName$ = "RhythmicChop"
+elsif preset = 3
+    # Dynamics Gate
+    workingMode = 2
+    workingIntensityThresh = 0
+    workingPeriod = 0.02
+    presetName$ = "DynamicsGate"
+elsif preset = 4
+    # Tremolo (slow AM)
+    workingMode = 3
+    workingAMFreq = 4
+    workingAMDepth = 0.8
+    workingPeriod = 0.01
+    presetName$ = "Tremolo"
+elsif preset = 5
+    # Flutter (fast AM)
+    workingMode = 3
+    workingAMFreq = 12
+    workingAMDepth = 1.0
+    workingPeriod = 0.005
+    presetName$ = "Flutter"
+elsif preset = 6
+    # Voiced Only
+    workingMode = 4
+    workingPitchThresh = 80
+    workingPeriod = 0.02
+    presetName$ = "VoicedOnly"
+elsif preset = 7
+    # Bright Only
+    workingMode = 6
+    workingCentroidThresh = 2000
+    workingPeriod = 0.03
+    presetName$ = "BrightOnly"
+elsif preset = 8
+    # Morse Code
+    workingMode = 5
+    workingPattern$ = "1 1 1 0 1 0 1 0 0"
+    workingPeriod = 0.1
+    presetName$ = "MorseCode"
+else
+    presetName$ = "Custom"
+endif
+
+numIntervals = ceiling(dur / workingPeriod)
+
+# === GET MODE NAME ===
+if workingMode = 1
+    modeName$ = "Binary"
+elsif workingMode = 2
+    modeName$ = "Intensity"
+elsif workingMode = 3
+    modeName$ = "AM"
+elsif workingMode = 4
+    modeName$ = "Pitch-Gate"
+elsif workingMode = 5
+    modeName$ = "Pattern"
+else
+    modeName$ = "Centroid"
+endif
 
 # === INFO HEADER ===
-if show_info
-    writeInfoLine: "Sample-and-Hold Processor v0.3"
-    appendInfoLine: "=============================="
-    appendInfoLine: "Input: ", sound_name$, " (", fixed$(duration, 3), "s, ", num_intervals, " intervals)"
-    appendInfoLine: ""
-endif
+clearinfo
+writeInfoLine: "=============================================="
+writeInfoLine: "  SAMPLE-AND-HOLD PROCESSOR v1.0"
+writeInfoLine: "=============================================="
+writeInfoLine: ""
+writeInfoLine: "Input: ", sound_name$, " (", fixed$(dur, 2), "s)"
+writeInfoLine: "Preset: ", presetName$
+writeInfoLine: "Mode: ", modeName$
+writeInfoLine: "Sample period: ", fixed$(workingPeriod * 1000, 1), " ms (", numIntervals, " intervals)"
+writeInfoLine: ""
 
 # === PARSE CUSTOM PATTERN ===
-pattern_length = 0
-if control_type = 5
-    pattern$ = replace_regex$(pattern$, "^[ \t]+|[ \t]+$", "", 0)
-    if length(pattern$) = 0
-        exitScript: "ERROR: Custom pattern is empty."
+patternLength = 0
+if workingMode = 5
+    workingPattern$ = replace_regex$(workingPattern$, "^[ \t]+|[ \t]+$", "", 0)
+    if length(workingPattern$) = 0
+        exitScript: "Custom pattern is empty."
     endif
-    pattern$ = pattern$ + " "
-    @countPatternValues: pattern$
-    pattern_length = countPatternValues.count
-    if pattern_length = 0
-        exitScript: "ERROR: No valid pattern values found."
+    workingPattern$ = workingPattern$ + " "
+    @countPatternValues: workingPattern$
+    patternLength = countPatternValues.count
+    if patternLength = 0
+        exitScript: "No valid pattern values found."
     endif
+    writeInfoLine: "Pattern length: ", patternLength, " steps"
 endif
 
-# === PRE-ANALYSIS FOR INTENSIVE MODES ===
+# === PRE-ANALYSIS ===
 
-# Intensity: auto-threshold via TableOfReal
-if control_type = 2 and intensity_threshold = 0
+# Intensity: auto-threshold via median
+if workingMode = 2 and workingIntensityThresh = 0
+    appendInfoLine: "Calculating auto-threshold..."
+    
     selectObject: sound
-    Create TableOfReal: "int_vals", num_intervals, 1
+    Create TableOfReal: "int_vals", numIntervals, 1
     table_id = selected("TableOfReal")
     
-    for i from 1 to num_intervals
-        t_start = (i - 1) * sample_period
-        t_end = min(t_start + sample_period, duration)
+    for i from 1 to numIntervals
+        t_start = (i - 1) * workingPeriod
+        t_end = min(t_start + workingPeriod, dur)
         selectObject: sound
         Extract part: t_start, t_end, "rectangular", 1, "no"
         temp_seg = selected("Sound")
@@ -128,50 +200,54 @@ if control_type = 2 and intensity_threshold = 0
     
     selectObject: table_id
     Sort by column: 1, 0
-    median_idx = max(1, floor(num_intervals / 2))
-    intensity_threshold = Get value: median_idx, 1
+    median_idx = max(1, floor(numIntervals / 2))
+    workingIntensityThresh = Get value: median_idx, 1
     
-    if show_info
-        appendInfoLine: "Auto intensity threshold: ", fixed$(intensity_threshold, 1), " dB (median)"
-    endif
+    appendInfoLine: "  Auto threshold: ", fixed$(workingIntensityThresh, 1), " dB (median)"
     removeObject: table_id
 endif
 
-# Pitch: analyze FULL sound once (avoids short-segment pitch floor issue)
-if control_type = 4
+# Pitch: analyze full sound once
+if workingMode = 4
+    appendInfoLine: "Analyzing pitch..."
     selectObject: sound
     To Pitch: 0.01, 75, 600
     pitch_object = selected("Pitch")
-    if show_info
-        appendInfoLine: "Pitch analysis: floor=75Hz, ceiling=600Hz, threshold=", pitch_threshold, "Hz"
-    endif
+    appendInfoLine: "  Threshold: ", workingPitchThresh, " Hz"
 endif
 
-# === COPY OUTPUT SOUND ===
+# === CREATE OUTPUT ===
 selectObject: sound
-output_sound = Copy: sound_name$ + "_SH"
+result = Copy: sound_name$ + "_SH"
 
 # === STORAGE FOR VISUALIZATION ===
-for i from 0 to num_intervals - 1
-    control_values[i] = 0
+for i from 0 to numIntervals - 1
+    controlVal[i] = 0
 endfor
 
-pass_count = 0
-mute_count = 0
+passCount = 0
+muteCount = 0
 
 # === MAIN PROCESSING LOOP ===
-for i from 0 to num_intervals - 1
-    t_start = i * sample_period
-    t_end = min(t_start + sample_period, duration)
+appendInfoLine: ""
+appendInfoLine: "Processing ", numIntervals, " intervals..."
+
+for i from 0 to numIntervals - 1
+    t_start = i * workingPeriod
+    t_end = min(t_start + workingPeriod, dur)
     t_mid = (t_start + t_end) / 2
     
     selectObject: sound
     
-    if control_type = 1
+    if workingMode = 1
         # Binary alternating
-        control_value = if i mod 2 = 0 then 1 else 0 fi
+        if i mod 2 = 0
+            ctrl = 1
+        else
+            ctrl = 0
+        endif
         
-    elsif control_type = 2
+    elsif workingMode = 2
         # Intensity-based
         Extract part: t_start, t_end, "rectangular", 1, "no"
         temp_seg = selected("Sound")
@@ -179,127 +255,236 @@ for i from 0 to num_intervals - 1
         if int_val = undefined
             int_val = -100
         endif
-        control_value = if int_val > intensity_threshold then 1 else 0 fi
+        if int_val > workingIntensityThresh
+            ctrl = 1
+        else
+            ctrl = 0
+        endif
         removeObject: temp_seg
         
-    elsif control_type = 3
+    elsif workingMode = 3
         # Amplitude modulation
-        phase = 2 * pi * mod_frequency * t_start
-        sine_val = (sin(phase) + 1) / 2
-        control_value = 1 - (mod_depth * (1 - sine_val))
+        phase = 2 * pi * workingAMFreq * t_start
+        sineVal = (sin(phase) + 1) / 2
+        ctrl = 1 - (workingAMDepth * (1 - sineVal))
         
-    elsif control_type = 4
-        # Pitch-gated (query pre-computed pitch object)
+    elsif workingMode = 4
+        # Pitch-gated
         selectObject: pitch_object
-        pitch_val = Get value at time: t_mid, "Hertz", "linear"
-        control_value = if pitch_val <> undefined and pitch_val > pitch_threshold then 1 else 0 fi
+        pitchVal = Get value at time: t_mid, "Hertz", "linear"
+        if pitchVal <> undefined and pitchVal > workingPitchThresh
+            ctrl = 1
+        else
+            ctrl = 0
+        endif
         
-    elsif control_type = 5
+    elsif workingMode = 5
         # Custom pattern
-        pattern_idx = (i mod pattern_length) + 1
-        @getPatternValue: pattern$, pattern_idx
-        control_value = getPatternValue.value
+        patIdx = (i mod patternLength) + 1
+        @getPatternValue: workingPattern$, patIdx
+        ctrl = getPatternValue.value
         
-    elsif control_type = 6
+    elsif workingMode = 6
         # Spectral centroid
         Extract part: t_start, t_end, "rectangular", 1, "no"
         temp_seg = selected("Sound")
         To Spectrum: "yes"
         spectrum = selected("Spectrum")
         centroid = Get centre of gravity: 2
-        control_value = if centroid <> undefined and centroid > centroid_threshold then 1 else 0 fi
+        if centroid <> undefined and centroid > workingCentroidThresh
+            ctrl = 1
+        else
+            ctrl = 0
+        endif
         removeObject: spectrum, temp_seg
     endif
     
-    control_values[i] = control_value
+    controlVal[i] = ctrl
     
     # Statistics (skip for continuous AM)
-    if control_type <> 3
-        if control_value >= gate_threshold
-            pass_count += 1
+    if workingMode <> 3
+        if ctrl >= gate_threshold
+            passCount = passCount + 1
         else
-            mute_count += 1
+            muteCount = muteCount + 1
+        endif
+    endif
+    
+    # Determine amplitude multiplier
+    if workingMode = 3
+        ampMult = ctrl
+    else
+        if ctrl >= gate_threshold
+            ampMult = 1
+        else
+            ampMult = mute_level
         endif
     endif
     
     # Apply to output
-    selectObject: output_sound
-    if control_type = 3
-        amp_mult = control_value
-    else
-        amp_mult = if control_value >= gate_threshold then 1 else mute_amplitude fi
-    endif
-    Formula (part): t_start, t_end, 1, num_channels, "self * " + string$(amp_mult)
+    selectObject: result
+    Formula (part): t_start, t_end, 1, nChannels, "self * " + string$(ampMult)
 endfor
 
-# === CLEANUP PRE-ANALYSIS OBJECTS ===
-if control_type = 4
+# === APPLY SMOOTHING ===
+if smoothing_ms > 0
+    appendInfoLine: "Applying smoothing (", fixed$(smoothing_ms, 1), " ms)..."
+    
+    smoothSamples = round(smoothing_ms * sr / 1000)
+    if smoothSamples > 1
+        selectObject: result
+        for pass to 2
+            Formula: "if col > 1 and col < ncol then (self[col-1] + self + self[col+1]) / 3 else self fi"
+        endfor
+    endif
+endif
+
+# === CLEANUP PRE-ANALYSIS ===
+if workingMode = 4
     removeObject: pitch_object
 endif
 
+# === NORMALIZE ===
+selectObject: result
+Scale peak: 0.95
+
 # === STATISTICS ===
-if show_info and control_type <> 3
+if workingMode <> 3
     appendInfoLine: ""
-    appendInfoLine: "Results: ", pass_count, " passed (", fixed$(100*pass_count/num_intervals, 1), "%), ",
-    ... mute_count, " muted (", fixed$(100*mute_count/num_intervals, 1), "%)"
+    appendInfoLine: "Results:"
+    appendInfoLine: "  Passed: ", passCount, " (", fixed$(100 * passCount / numIntervals, 1), "%)"
+    appendInfoLine: "  Muted: ", muteCount, " (", fixed$(100 * muteCount / numIntervals, 1), "%)"
     
-    if pass_count = num_intervals
-        appendInfoLine: "WARNING: All segments passed - try adjusting threshold"
-    elsif mute_count = num_intervals
-        appendInfoLine: "WARNING: All segments muted - try adjusting threshold"
+    if passCount = numIntervals
+        appendInfoLine: "  WARNING: All segments passed"
+    elsif muteCount = numIntervals
+        appendInfoLine: "  WARNING: All segments muted"
     endif
 endif
 
 # === VISUALIZATION ===
-if draw_visualization
+if visualize
+    appendInfoLine: ""
+    appendInfoLine: "Creating visualization..."
+    
     Erase all
     
-    # TOP: Original
-    Select outer viewport: 0, 7, 0, 2.2
+    # === TITLE ===
+    Select outer viewport: 1, 8, 0, 0.4
+    Font size: 11
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Sample-and-Hold## | " + presetName$ + " | " + modeName$
+    
+    # === ORIGINAL ===
+    Select outer viewport: 0, 8, 0.5, 2.0
+    Select inner viewport: 0.8, 7.6, 0.6, 1.8
+    
     selectObject: sound
+    Colour: "{0.5, 0.5, 0.5}"
     Draw: 0, 0, 0, 0, "no", "Curve"
-    Text top: "yes", "Original: " + sound_name$
     
-    # MIDDLE: Gate signal
-    Select outer viewport: 0, 7, 2.2, 4
-    Create Sound from formula: "gate", 1, 0, duration, 1000, "0"
-    gate_sound = selected("Sound")
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Select outer viewport: 0.15, 8, 0.5, 2.0
+    Text left: "yes", "Input"
     
-    for i from 0 to num_intervals - 1
-        t_start = i * sample_period
-        t_end = min(t_start + sample_period, duration)
-        if control_type = 3
-            gate_val = control_values[i]
+    # === GATE SIGNAL ===
+    Select outer viewport: 0, 8, 2.1, 3.4
+    Select inner viewport: 0.8, 7.6, 2.2, 3.2
+    
+    # Create gate display
+    Create Sound from formula: "gate_display", 1, 0, dur, 1000, "0"
+    gate_display = selected("Sound")
+    
+    for i from 0 to numIntervals - 1
+        t_start = i * workingPeriod
+        t_end = min(t_start + workingPeriod, dur)
+        if workingMode = 3
+            gateVal = controlVal[i]
         else
-            gate_val = if control_values[i] >= gate_threshold then 1 else 0 fi
+            if controlVal[i] >= gate_threshold
+                gateVal = 1
+            else
+                gateVal = 0
+            endif
         endif
-        Formula (part): t_start, t_end, 1, 1, string$(gate_val)
+        selectObject: gate_display
+        Formula (part): t_start, t_end, 1, 1, string$(gateVal)
     endfor
     
-    Draw: 0, 0, -0.1, 1.1, "no", "Curve"
-    Text top: "yes", "Gate Signal"
-    Marks left every: 1, 1, "yes", "yes", "no"
-    removeObject: gate_sound
+    # Background
+    Axes: 0, dur, -0.1, 1.1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, dur, -0.1, 1.1
     
-    # BOTTOM: Output
-    Select outer viewport: 0, 7, 4, 6.2
-    selectObject: output_sound
+    # Gate curve
+    selectObject: gate_display
+    Colour: "{0.8, 0.4, 0.3}"
+    Line width: 2
+    Draw: 0, dur, -0.1, 1.1, "no", "Curve"
+    Line width: 1
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Select outer viewport: 0.15, 8, 2.1, 3.4
+    Text left: "yes", "Gate"
+    
+    removeObject: gate_display
+    
+    # === OUTPUT ===
+    Select outer viewport: 0, 8, 3.5, 5.0
+    Select inner viewport: 0.8, 7.6, 3.6, 4.8
+    
+    selectObject: result
+    Colour: "{0.3, 0.6, 0.5}"
     Draw: 0, 0, 0, 0, "no", "Curve"
-    Text top: "yes", "Output: " + sound_name$ + "_SH"
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Select outer viewport: 0.15, 8, 3.5, 5.0
+    Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
     
-    Select outer viewport: 0, 7, 0, 6.2
+    # === PARAMETERS ===
+    Select outer viewport: 0, 8, 5.1, 5.5
+    Font size: 6
+    Colour: "{0.4, 0.4, 0.4}"
+    
+    if workingMode = 2
+        paramText$ = "Threshold: " + fixed$(workingIntensityThresh, 0) + " dB"
+    elsif workingMode = 3
+        paramText$ = "Freq: " + fixed$(workingAMFreq, 1) + " Hz | Depth: " + fixed$(workingAMDepth, 2)
+    elsif workingMode = 4
+        paramText$ = "Pitch threshold: " + fixed$(workingPitchThresh, 0) + " Hz"
+    elsif workingMode = 6
+        paramText$ = "Centroid threshold: " + fixed$(workingCentroidThresh, 0) + " Hz"
+    else
+        paramText$ = "Period: " + fixed$(workingPeriod * 1000, 1) + " ms"
+    endif
+    
+    Text: 0.5, "centre", 0.5, "half", paramText$ + " | Smoothing: " + fixed$(smoothing_ms, 0) + " ms"
+    
+    Font size: 10
+    Colour: "Black"
 endif
 
-# === FINALIZE ===
-selectObject: output_sound
+# === OUTPUT ===
+selectObject: result
 
-if show_info
+appendInfoLine: ""
+appendInfoLine: "=============================================="
+appendInfoLine: "  COMPLETE: ", selected$("Sound")
+appendInfoLine: "=============================================="
+
+if play
     appendInfoLine: ""
-    appendInfoLine: "Done! Output: ", sound_name$, "_SH"
+    appendInfoLine: "Playing..."
+    Play
 endif
 
-Play
+selectObject: result
 
 # ============================================================
 # PROCEDURES
@@ -311,7 +496,7 @@ procedure countPatternValues: .pattern$
     repeat
         .space_pos = index_regex(.temp$, "[ \t]+")
         if .space_pos > 0
-            .count += 1
+            .count = .count + 1
             .temp$ = right$(.temp$, length(.temp$) - .space_pos)
             .temp$ = replace_regex$(.temp$, "^[ \t]+", "", 0)
         endif
@@ -324,7 +509,7 @@ procedure getPatternValue: .pattern$, .index
     repeat
         .space_pos = index_regex(.temp$, "[ \t]+")
         if .space_pos > 0
-            .current += 1
+            .current = .current + 1
             .val_str$ = left$(.temp$, .space_pos - 1)
             if .current = .index
                 .value = number(.val_str$)

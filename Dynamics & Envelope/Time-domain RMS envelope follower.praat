@@ -129,14 +129,32 @@ duration = Get total duration
 # Mode suffix for output naming
 if mode = 1
     suffix$ = "_Envelope"
+    mode$ = "Extract"
 elsif mode = 2
     suffix$ = "_Gated"
+    mode$ = "Gate/Expand"
 elsif mode = 3
     suffix$ = "_Reverse"
+    mode$ = "Reverse"
 elsif mode = 4
     suffix$ = "_Ducked"
+    mode$ = "Duck"
 else
     suffix$ = "_Transfer"
+    mode$ = "Transfer"
+endif
+
+# Preset name for display
+if preset = 1
+    preset$ = "Custom"
+elsif preset = 2
+    preset$ = "Snappy"
+elsif preset = 3
+    preset$ = "Smooth"
+elsif preset = 4
+    preset$ = "Sustain"
+else
+    preset$ = "Crunch"
 endif
 
 # ============================================================
@@ -333,7 +351,7 @@ if show_visualization
     Font size: 10
     
     # === PANEL 1: TRANSFER CURVE (TOP) ===
-    Select outer viewport: 0, 5, 0, 4.5
+    Select outer viewport: 0, 4, 0, 4.5
     Axes: -60, 0, -60, 0
     
     Colour: "Silver"
@@ -419,7 +437,7 @@ if show_visualization
     Marks left every: 1, 20, "yes", "yes", "no"
     
     # === PANEL 2: SOURCE + ENVELOPE (MIDDLE) ===
-    Select outer viewport: 0, 10, 5, 7.5
+    Select outer viewport: 0, 8, 4.6, 6.5
     
     selectObject: vis_source_id
     Black
@@ -440,7 +458,7 @@ if show_visualization
     Draw inner box
     
     # === PANEL 3: RESULT (BOTTOM) ===
-    Select outer viewport: 0, 10, 8, 10.5
+    Select outer viewport: 0, 8, 6.6, 8.5
     selectObject: result_id
     Black
     Draw: 0, 0, 0, 0, "no", "Curve"

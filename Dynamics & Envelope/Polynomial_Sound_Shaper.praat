@@ -1,329 +1,395 @@
 # ============================================================
-# Praat AudioTools - Polynomial Sound Shaper.praat
+# Praat AudioTools - Polynomial_Sound_Shaper.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 1.0 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Polynomial Envelope Visualizer and Sound Shaper
+#   Polynomial envelope shaper with perceptual weighting
+#   and dynamic range control. Uses polynomial curves to
+#   create complex amplitude envelopes.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-# ============================================================
-# ============================================================
-# Polynomial Sound Shaper (v6.3)
-# Optimization: Fully Vectorized (Instant Processing)
-# Features: Perceptual Weighting + Dynamic Range Control
+# Changelog v1.0:
+#   - Renamed presets to musical terms
+#   - Added more intuitive presets
+#   - Fixed viewport width
+#   - Added Polynomial cleanup
+#   - Improved info output
+#   - Added normalize option
 # ============================================================
 
-form Apply Polynomial Envelope
+form Polynomial Sound Shaper v1.0
+    optionmenu Preset 1
+        option Custom
+        option Fade In (linear)
+        option Fade Out (linear)
+        option Swell (peak center)
+        option Attack-Decay
+        option Slow Attack
+        option Double Pulse
+        option Asymmetric Rise
+        option Exponential In
+        option Exponential Out
+    comment === Envelope Type ===
+    optionmenu Envelope_type 1
+        option Polynomial coefficients
+        option Polynomial from roots
+    comment === Domain ===
+    real Start_x -1
+    real End_x 1
+    comment === Polynomial Coefficients (ax³+bx²+cx+d) ===
+    real Coef_a 0
+    real Coef_b 0
+    real Coef_c 1
+    real Coef_d 0
+    comment === Product Terms (x-r1)(x-r2)(x-r3) ===
+    real Root_1 -1
+    real Root_2 1
+    real Root_3 0
+    comment (set Root_3 to 0 for quadratic)
     comment === Perceptual Tuning ===
-    real perceptual_weight 3.0
-    comment (1.0 = Linear, 3.0-4.0 = Natural Loudness)
-    
-    comment === Dynamic Range Control ===
-    real min_gain 0.0
-    real max_gain 1.0
-    comment (e.g., 0.1 to 1.0 = -20dB to 0dB range)
-    
-    optionmenu envelope_type 1
-        option Polynomial (standard)
-        option Polynomial from product terms
-    
-    comment === Polynomial Presets (overrides manual coeffs) ===
-    optionmenu poly_preset 1
-        option custom
-        option cubic_1
-        option cubic_2
-        option cubic_3
-        option cubic_4
-        option cubic_5
-    
-    comment === Manual Polynomial Coefficients ===
-    real startx -3
-    real endx 4
-    real coefa 2
-    real coefb -1
-    real coefc -2
-    real coefd 1
-    
-    comment === Product Terms Presets (overrides manual params) ===
-    optionmenu product_preset 1
-        option custom
-        option fade in (0, 1)
-        option fade out (-1, 0)
-        option center peak (-1, 1)
-        option double dip (-2, 0, 2)
-        option asymmetric (0, 2)
-        option steep rise (0, 0.5)
-        option gentle (0, 3)
-    
-    comment === Manual Product Terms ===
-    real param1 1
-    real param2 2
-    real param3 0
-    
-    real scalepeak 0.99
-    real min_threshold 0.000001
-    boolean draw_envelope 1
-    boolean play_result 1
+    positive Perceptual_weight 1.0
+    comment (1=linear, 2-3=perceived loudness)
+    comment === Dynamic Range ===
+    real Min_gain 0.0
+    real Max_gain 1.0
+    comment === Output ===
+    boolean Normalize 1
+    boolean Visualize 1
+    boolean Play 1
 endform
 
-# --- 1. APPLY PRESETS (These OVERRIDE manual values) ---
-preset_used$ = ""
-
-if envelope_type = 1
-    if poly_preset = 2
-        coefa = 2
-        coefb = -1
-        coefc = -2
-        coefd = 1
-        preset_used$ = "cubic_1"
-    elsif poly_preset = 3
-        coefa = -1
-        coefb = 3
-        coefc = -1
-        coefd = 0.5
-        preset_used$ = "cubic_2"
-    elsif poly_preset = 4
-        coefa = 1
-        coefb = 0
-        coefc = -3
-        coefd = 1
-        preset_used$ = "cubic_3"
-    elsif poly_preset = 5
-        coefa = 3
-        coefb = -2
-        coefc = 0
-        coefd = 1
-        preset_used$ = "cubic_4"
-    elsif poly_preset = 6
-        coefa = -2
-        coefb = 1
-        coefc = 1
-        coefd = 0
-        preset_used$ = "cubic_5"
-    else
-        preset_used$ = "custom"
-    endif
-endif
-
-if envelope_type = 2
-    if product_preset = 2
-        param1 = 0
-        param2 = 1
-        param3 = 0
-        preset_used$ = "fade in (0, 1)"
-    elsif product_preset = 3
-        param1 = -1
-        param2 = 0
-        param3 = 0
-        preset_used$ = "fade out (-1, 0)"
-    elsif product_preset = 4
-        param1 = -1
-        param2 = 1
-        param3 = 0
-        preset_used$ = "center peak (-1, 1)"
-    elsif product_preset = 5
-        param1 = -2
-        param2 = 0
-        param3 = 2
-        preset_used$ = "double dip (-2, 0, 2)"
-    elsif product_preset = 6
-        param1 = 0
-        param2 = 2
-        param3 = 0
-        preset_used$ = "asymmetric (0, 2)"
-    elsif product_preset = 7
-        param1 = 0
-        param2 = 0.5
-        param3 = 0
-        preset_used$ = "steep rise (0, 0.5)"
-    elsif product_preset = 8
-        param1 = 0
-        param2 = 3
-        param3 = 0
-        preset_used$ = "gentle (0, 3)"
-    else
-        preset_used$ = "custom"
-    endif
-endif
-
-# --- 2. SETUP ---
+# === INPUT VALIDATION ===
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-orig_id = selected("Sound")
-orig_name$ = selected$("Sound")
-dur = Get total duration
+sound = selected("Sound")
+sound_name$ = selected$("Sound")
 
-# --- 3. CREATE POLYNOMIAL OBJECT (for drawing) ---
-# Force recreation each time to ensure preset changes are visible
+selectObject: sound
+dur = Get total duration
+sr = Get sampling frequency
+
+# === APPLY PRESETS ===
+if preset = 2
+    # Fade In (linear)
+    envelope_type = 2
+    root_1 = 0
+    root_2 = 1
+    root_3 = 0
+    start_x = 0
+    end_x = 1
+    presetName$ = "FadeIn"
+elsif preset = 3
+    # Fade Out (linear)
+    envelope_type = 2
+    root_1 = -1
+    root_2 = 0
+    root_3 = 0
+    start_x = -1
+    end_x = 0
+    presetName$ = "FadeOut"
+elsif preset = 4
+    # Swell (peak center)
+    envelope_type = 2
+    root_1 = -1
+    root_2 = 1
+    root_3 = 0
+    start_x = -1
+    end_x = 1
+    presetName$ = "Swell"
+elsif preset = 5
+    # Attack-Decay
+    envelope_type = 1
+    coef_a = -4
+    coef_b = 0
+    coef_c = 4
+    coef_d = 0
+    start_x = 0
+    end_x = 1
+    presetName$ = "AttackDecay"
+elsif preset = 6
+    # Slow Attack
+    envelope_type = 1
+    coef_a = 1
+    coef_b = 0
+    coef_c = 0
+    coef_d = 0
+    start_x = 0
+    end_x = 1
+    presetName$ = "SlowAttack"
+elsif preset = 7
+    # Double Pulse
+    envelope_type = 2
+    root_1 = -1
+    root_2 = 0
+    root_3 = 1
+    start_x = -1
+    end_x = 1
+    presetName$ = "DoublePulse"
+elsif preset = 8
+    # Asymmetric Rise
+    envelope_type = 2
+    root_1 = 0
+    root_2 = 2
+    root_3 = 0
+    start_x = 0
+    end_x = 1
+    presetName$ = "AsymRise"
+elsif preset = 9
+    # Exponential In
+    envelope_type = 1
+    coef_a = 0
+    coef_b = 1
+    coef_c = 0
+    coef_d = 0
+    start_x = 0
+    end_x = 1
+    perceptual_weight = 2.0
+    presetName$ = "ExpIn"
+elsif preset = 10
+    # Exponential Out
+    envelope_type = 1
+    coef_a = 0
+    coef_b = -1
+    coef_c = 2
+    coef_d = 0
+    start_x = 0
+    end_x = 1
+    perceptual_weight = 2.0
+    presetName$ = "ExpOut"
+else
+    presetName$ = "Custom"
+endif
+
+# === INFO HEADER ===
+clearinfo
+writeInfoLine: "=============================================="
+writeInfoLine: "  POLYNOMIAL SOUND SHAPER v1.0"
+writeInfoLine: "=============================================="
+writeInfoLine: ""
+writeInfoLine: "Input: ", sound_name$, " (", fixed$(dur, 2), "s)"
+writeInfoLine: "Preset: ", presetName$
+writeInfoLine: ""
+
+# === CREATE POLYNOMIAL OBJECT ===
 if envelope_type = 1
-    Create Polynomial: "envelope_poly", startx, endx, { coefa, coefb, coefc, coefd }
-elsif envelope_type = 2
-    if param3 = 0
-        Create Polynomial from product terms: "envelope_poly", startx, endx, { param1, param2 }
+    Create Polynomial: "envelope_poly", start_x, end_x, { coef_a, coef_b, coef_c, coef_d }
+    writeInfoLine: "Type: Polynomial coefficients"
+    writeInfoLine: "  ", coef_a, "x³ + ", coef_b, "x² + ", coef_c, "x + ", coef_d
+else
+    if root_3 = 0
+        Create Polynomial from product terms: "envelope_poly", start_x, end_x, { root_1, root_2 }
+        writeInfoLine: "Type: Polynomial from roots"
+        writeInfoLine: "  (x - ", root_1, ")(x - ", root_2, ")"
     else
-        Create Polynomial from product terms: "envelope_poly", startx, endx, { param1, param2, param3 }
+        Create Polynomial from product terms: "envelope_poly", start_x, end_x, { root_1, root_2, root_3 }
+        writeInfoLine: "Type: Polynomial from roots"
+        writeInfoLine: "  (x - ", root_1, ")(x - ", root_2, ")(x - ", root_3, ")"
     endif
 endif
 
 poly_id = selected("Polynomial")
 
-# --- 4. CONSTRUCT PROCESSING FORMULA ---
-# A. Normalized time variable (for processing)
-norm_x_proc$ = "((x/" + string$(dur) + ") * (" + string$(endx) + " - " + string$(startx) + ") + " + string$(startx) + ")"
+writeInfoLine: "Domain: [", start_x, ", ", end_x, "]"
+writeInfoLine: ""
 
-# B. Build the Core Polynomial String
+# === BUILD PROCESSING FORMULA ===
+# Normalized time: maps [0, dur] to [start_x, end_x]
+norm_x$ = "((x/" + string$(dur) + ") * (" + string$(end_x) + " - " + string$(start_x) + ") + " + string$(start_x) + ")"
+
+# Build polynomial string
 if envelope_type = 1
-    # Standard: a*x^3 + b*x^2...
-    poly_proc$ = "(" + string$(coefa) + "*(" + norm_x_proc$ + "^3)) + (" + string$(coefb) + "*(" + norm_x_proc$ + "^2)) + (" + string$(coefc) + "*(" + norm_x_proc$ + ")) + " + string$(coefd)
+    poly$ = "(" + string$(coef_a) + "*(" + norm_x$ + "^3)) + (" + string$(coef_b) + "*(" + norm_x$ + "^2)) + (" + string$(coef_c) + "*(" + norm_x$ + ")) + " + string$(coef_d)
 else
-    # Product: (x-p1)*(x-p2)...
-    if param3 = 0
-        poly_proc$ = "(" + norm_x_proc$ + " - " + string$(param1) + ") * (" + norm_x_proc$ + " - " + string$(param2) + ")"
+    if root_3 = 0
+        poly$ = "(" + norm_x$ + " - " + string$(root_1) + ") * (" + norm_x$ + " - " + string$(root_2) + ")"
     else
-        poly_proc$ = "(" + norm_x_proc$ + " - " + string$(param1) + ") * (" + norm_x_proc$ + " - " + string$(param2) + ") * (" + norm_x_proc$ + " - " + string$(param3) + ")"
+        poly$ = "(" + norm_x$ + " - " + string$(root_1) + ") * (" + norm_x$ + " - " + string$(root_2) + ") * (" + norm_x$ + " - " + string$(root_3) + ")"
     endif
 endif
 
-# C. Apply Perceptual Weighting with Sign Preservation
-s_weight$ = string$(perceptual_weight)
-s_thresh$ = string$(min_threshold)
+# Apply perceptual weighting with sign preservation
+weight$ = string$(perceptual_weight)
+thresh$ = "0.000001"
 
-weighted_poly$ = "if (" + poly_proc$ + ") < 0 then -1 * (max(" + s_thresh$ + ", abs(" + poly_proc$ + "))^" + s_weight$ + ") else (max(" + s_thresh$ + ", abs(" + poly_proc$ + "))^" + s_weight$ + ") fi"
+weighted$ = "if (" + poly$ + ") < 0 then -1 * (max(" + thresh$ + ", abs(" + poly$ + "))^" + weight$ + ") else (max(" + thresh$ + ", abs(" + poly$ + "))^" + weight$ + ") fi"
 
-# D. Apply Dynamic Range Limiting (Sign-Aware)
-s_min_gain$ = string$(min_gain)
-s_max_gain$ = string$(max_gain)
+# Apply dynamic range clamping
+minG$ = string$(min_gain)
+maxG$ = string$(max_gain)
 
-clamped_envelope$ = "if (" + weighted_poly$ + ") < 0 then -1 * (max(" + s_min_gain$ + ", min(" + s_max_gain$ + ", abs(" + weighted_poly$ + ")))) else (max(" + s_min_gain$ + ", min(" + s_max_gain$ + ", abs(" + weighted_poly$ + ")))) fi"
+clamped$ = "if (" + weighted$ + ") < 0 then -1 * (max(" + minG$ + ", min(" + maxG$ + ", abs(" + weighted$ + ")))) else (max(" + minG$ + ", min(" + maxG$ + ", abs(" + weighted$ + ")))) fi"
 
-final_proc_formula$ = "self * (" + clamped_envelope$ + ")"
+# Final formula
+formula$ = "self * (" + clamped$ + ")"
 
-# --- 5. DRAWING (Two graphs: Polynomial + Time-domain Intensity) ---
-if draw_envelope
+# === VISUALIZATION ===
+if visualize
+    appendInfoLine: "Creating visualization..."
+    
     Erase all
     
-    # === TOP GRAPH: Raw Polynomial (Mathematical Function) ===
+    # === TITLE ===
+    Select outer viewport: 1, 8, 0, 0.4
+    Font size: 11
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Polynomial Shaper## | " + presetName$ + " | Weight: " + fixed$(perceptual_weight, 1)
+    
+    # === TOP: POLYNOMIAL CURVE ===
+    Select outer viewport: 0, 8, 0.5, 2.5
+    Select inner viewport: 0.8, 7.6, 0.7, 2.3
+    
     selectObject: poly_id
-    Select outer viewport: 0, 6, 0, 3
-    Draw: 0, 0, 0, 0, "no", "yes"
+    Colour: "{0.3, 0.5, 0.8}"
+    Line width: 2
+    Draw: start_x, end_x, 0, 0, "no", "yes"
+    Line width: 1
     
-    # Title with preset info
-    if preset_used$ = "custom"
-        Text top: "yes", "Polynomial Function (CUSTOM)"
-    else
-        Text top: "yes", "Polynomial Function (Preset: ##preset_used$#)"
+    # Get actual y range for proper axes
+    yMin = Get minimum: start_x, end_x
+    yMax = Get maximum: start_x, end_x
+    yRange = yMax - yMin
+    if yRange < 0.1
+        yRange = 1
     endif
     
-    Marks bottom every: 1, 1, "yes", "yes", "no"
-    Text bottom: "yes", "Domain"
+    # Zero line
+    Axes: start_x, end_x, yMin - yRange * 0.1, yMax + yRange * 0.1
+    Colour: "{0.7, 0.7, 0.7}"
+    Dashed line
+    Draw line: start_x, 0, end_x, 0
+    Solid line
     
-    # === BOTTOM GRAPH: Actual Intensity Envelope Over Time ===
-    Select outer viewport: 0, 6, 3.5, 6.5
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Select outer viewport: 0.15, 8, 0.5, 2.5
+    Text left: "yes", "Polynomial"
+    Text bottom: "yes", "Domain [" + fixed$(start_x, 1) + ", " + fixed$(end_x, 1) + "]"
     
-    # Create a silent sound with the same duration as the original
-    selectObject: orig_id
-    Create Sound from formula: "envelope_preview", 1, 0, dur, 10000, clamped_envelope$
-    env_id = selected("Sound")
+    # === MIDDLE: ENVELOPE OVER TIME ===
+    Select outer viewport: 0, 8, 2.6, 4.3
+    Select inner viewport: 0.8, 7.6, 2.8, 4.1
     
-    # Draw with FIXED Y-axis to show dynamic range limits
-    # Y-axis from -max_gain to +max_gain to show symmetric range
-    Draw: 0, dur, -max_gain, max_gain, "no", "Curve"
+    # Create preview envelope
+    Create Sound from formula: "env_preview", 1, 0, dur, 1000, clamped$
+    env_preview = selected("Sound")
     
-    # Draw horizontal lines showing the dynamic range boundaries
+    # Background
+    Axes: 0, dur, -max_gain - 0.1, max_gain + 0.1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, -max_gain - 0.1, max_gain + 0.1
+    
+    # Range lines
+    Colour: "{0.8, 0.8, 0.8}"
+    Dashed line
     Draw line: 0, max_gain, dur, max_gain
-    Draw line: 0, min_gain, dur, min_gain
-    Draw line: 0, 0, dur, 0
+    Draw line: 0, -max_gain, dur, -max_gain
     if min_gain > 0
+        Draw line: 0, min_gain, dur, min_gain
         Draw line: 0, -min_gain, dur, -min_gain
-        Draw line: 0, -max_gain, dur, -max_gain
+    endif
+    Draw line: 0, 0, dur, 0
+    Solid line
+    
+    # Envelope curve
+    selectObject: env_preview
+    Colour: "{0.3, 0.7, 0.3}"
+    Line width: 2
+    Draw: 0, dur, -max_gain - 0.1, max_gain + 0.1, "no", "Curve"
+    Line width: 1
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Select outer viewport: 0.15, 8, 2.6, 4.3
+    Text left: "yes", "Envelope"
+    
+    removeObject: env_preview
+    
+    # === BOTTOM: RESULT PREVIEW ===
+    Select outer viewport: 0, 8, 4.4, 5.8
+    Select inner viewport: 0.8, 7.6, 4.5, 5.6
+    
+    # Create processed preview
+    selectObject: sound
+    result_preview = Copy: "preview"
+    Formula: formula$
+    if normalize
+        Scale peak: 0.95
     endif
     
-    # Add markers for dynamic range
-    One mark left: min_gain, "yes", "yes", "no", string$(min_gain)
-    One mark left: max_gain, "yes", "yes", "no", string$(max_gain)
-    if min_gain > 0
-        One mark left: -min_gain, "yes", "yes", "no", string$(-min_gain)
-    endif
-    One mark left: -max_gain, "yes", "yes", "no", string$(-max_gain)
-    One mark left: 0, "yes", "yes", "yes", "0"
+    Colour: "{0.5, 0.4, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
     
-    Marks bottom every: 1, 0.1, "yes", "yes", "no"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Select outer viewport: 0.15, 8, 4.4, 5.8
+    Text left: "yes", "Result"
     Text bottom: "yes", "Time (s)"
-    Text top: "yes", "Intensity Envelope (Weight=" + string$(perceptual_weight) + ", Range=±" + s_min_gain$ + " to ±" + s_max_gain$ + ")"
     
-    removeObject: env_id
+    removeObject: result_preview
     
-    # Reset viewport
-    Select outer viewport: 0, 6, 0, 6.5
+    # === INFO BAR ===
+    Select outer viewport: 0, 8, 5.9, 6.3
+    Font size: 6
+    Colour: "{0.4, 0.4, 0.4}"
+    Text: 0.5, "centre", 0.5, "half", "Range: " + fixed$(min_gain, 2) + " to " + fixed$(max_gain, 2) + " | Perceptual weight: " + fixed$(perceptual_weight, 1)
+    
+    Font size: 10
+    Colour: "Black"
 endif
 
-# --- 6. PROCESSING (VECTORIZED) ---
-selectObject: orig_id
-Copy: orig_name$ + "_shaped"
-
-# Apply the weighted polynomial envelope with dynamic range limiting
-Formula: final_proc_formula$
-
-# --- 7. FINALIZE ---
-Scale peak: scalepeak
-
-if play_result
-    Play
-endif
-
-
-writeInfoLine: "Envelope applied successfully!"
-appendInfoLine: "Preset used: ", preset_used$
+# === PROCESS AUDIO ===
 appendInfoLine: ""
-if envelope_type = 1
-    appendInfoLine: "Type: Polynomial (standard)"
-    appendInfoLine: "Coeffs: a=", coefa, ", b=", coefb, ", c=", coefc, ", d=", coefd
-else
-    appendInfoLine: "Type: Product Terms"
-    if param3 = 0
-        appendInfoLine: "Roots: ", param1, ", ", param2
-    else
-        appendInfoLine: "Roots: ", param1, ", ", param2, ", ", param3
-    endif
+appendInfoLine: "Processing..."
+
+selectObject: sound
+result = Copy: sound_name$ + "_shaped"
+
+Formula: formula$
+
+if normalize
+    Scale peak: 0.95
 endif
-appendInfoLine: "Domain: [", startx, ", ", endx, "]"
+
+# === CLEANUP ===
+removeObject: poly_id
+
+# === OUTPUT ===
+selectObject: result
+
 appendInfoLine: ""
-appendInfoLine: "Perceptual Weight: ", perceptual_weight
+appendInfoLine: "=============================================="
+appendInfoLine: "  COMPLETE: ", selected$("Sound")
+writeInfoLine: "=============================================="
+appendInfoLine: ""
+appendInfoLine: "Perceptual weight: ", perceptual_weight
 if perceptual_weight = 1.0
-    appendInfoLine: "  → Linear amplitude (raw math)"
-elsif perceptual_weight >= 3.0 and perceptual_weight <= 4.0
-    appendInfoLine: "  → Perceptual loudness (logarithmic)"
+    appendInfoLine: "  → Linear amplitude"
+elsif perceptual_weight >= 2.0 and perceptual_weight <= 3.0
+    appendInfoLine: "  → Perceived loudness"
 else
     appendInfoLine: "  → Custom power law"
 endif
 appendInfoLine: ""
-appendInfoLine: "Dynamic Range: ±", min_gain, " to ±", max_gain
+appendInfoLine: "Dynamic range: ", min_gain, " to ", max_gain
 if min_gain > 0
-    min_db = 20 * log10(min_gain)
-    appendInfoLine: "  → Floor: ", fixed$(min_db, 1), " dB"
-else
-    appendInfoLine: "  → Floor: -∞ dB (silence allowed)"
+    appendInfoLine: "  Floor: ", fixed$(20 * log10(min_gain), 1), " dB"
 endif
 if max_gain < 1
-    max_db = 20 * log10(max_gain)
-    appendInfoLine: "  → Ceiling: ", fixed$(max_db, 1), " dB"
-else
-    appendInfoLine: "  → Ceiling: 0 dB (full scale)"
+    appendInfoLine: "  Ceiling: ", fixed$(20 * log10(max_gain), 1), " dB"
 endif
-appendInfoLine: ""
-appendInfoLine: "Original: Sound ", orig_name$
-appendInfoLine: "Result: Sound ", orig_name$, "_shaped"
 
+if play
+    appendInfoLine: ""
+    appendInfoLine: "Playing..."
+    Play
+endif
+
+selectObject: result
