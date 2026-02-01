@@ -500,7 +500,7 @@ for pass from 1 to n_passes
         
         selectObject: outputSnd
         Formula (part): destTime, destTime + grainDur, 1, 1,
-            ... "self + Object_" + grainIdStr$ + "(x - " + destTimeStr$ + ")"
+    ... "self + object(" + grainIdStr$ + ", x - " + destTimeStr$ + ")"
         
         removeObject: grain
     endfor
