@@ -394,7 +394,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Evolving Granular: " + sound_name$ + " (" + preset_name$ + " - " + evolution_name$ + ")"
@@ -408,6 +408,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
+    Select outer viewport: 0.2, 8, 0.5, 1.8
     Text left: "yes", "Original"
     
     # Result waveform
@@ -651,10 +652,10 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     
     # Legend
-    Select outer viewport: 0, 8, 6.3, 6.6
+    Select outer viewport: 0.5, 8, 6.3, 6.6
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(valid_grains) + "/" + string$(total_grains) + " | Density: " + fixed$(initial_density, 0) + " -> " + fixed$(final_density, 0) + "/s | Pitch: " + fixed$(minPitch, 1) + " to " + fixed$(maxPitch, 1) + " st"
+    Text: 1.5, "centre", 0.5, "half", "Grains: " + string$(valid_grains) + "/" + string$(total_grains) + " | Density: " + fixed$(initial_density, 0) + " -> " + fixed$(final_density, 0) + "/s | Pitch: " + fixed$(minPitch, 1) + " to " + fixed$(maxPitch, 1) + " st"
     
     Font size: 10
     Colour: "Black"

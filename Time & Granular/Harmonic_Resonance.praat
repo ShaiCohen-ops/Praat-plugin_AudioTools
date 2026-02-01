@@ -197,7 +197,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 2, 8, 0.2, 0.6
+    Select outer viewport: 1, 8, 0.2, 0.6
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Harmonic Resonance: " + original_name$
@@ -211,6 +211,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Select outer viewport: 0.1, 8, 0.5, 2.5
     Text left: "yes", "Original"
     
     # Result waveform

@@ -367,7 +367,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.2, 0.7
+    Select outer viewport: 1, 8, 0.2, 0.7
     Font size: 14
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Brownian Motion: " + input_name$
@@ -381,6 +381,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Select outer viewport: 0.1, 8, 0.5, 2.8
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
     
@@ -436,7 +437,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.4, 4.7
     Font size: 8
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(totalGrains) + " | Time step: " + fixed$(time_step_size_s, 2) + "s | Pan step: " + fixed$(spatial_step_size, 2)
+    Text: 2.5, "centre", 0.5, "half", "Grains: " + string$(totalGrains) + " | Time step: " + fixed$(time_step_size_s, 2) + "s | Pan step: " + fixed$(spatial_step_size, 2)
     
     Font size: 10
     Colour: "Black"

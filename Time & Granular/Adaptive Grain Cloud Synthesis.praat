@@ -390,7 +390,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.2, 0.7
+    Select outer viewport: 1, 8, 0.2, 0.7
     Font size: 14
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Grain Cloud: " + original_name$
@@ -404,6 +404,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Select outer viewport: 0.1, 8, 1.5, 1.8
     Text left: "yes", "Source"
     
     # Output
@@ -436,7 +437,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 6.3, 6.6
     Font size: 8
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(totalGrains) + " | Tracks: " + string$(numTracks) + " | Size: " + string$(grain_size_ms) + "ms"
+    Text: 1.5, "centre", 0.5, "half", "Grains: " + string$(totalGrains) + " | Tracks: " + string$(numTracks) + " | Size: " + string$(grain_size_ms) + "ms"
     
     Font size: 10
     Colour: "Black"

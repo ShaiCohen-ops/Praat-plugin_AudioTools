@@ -296,6 +296,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Select outer viewport: 0.1, 8, 0.5, 2.5
     Text left: "yes", "Original"
     
     # Result waveform
@@ -343,8 +344,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.6, 5.9
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Generations: " + string$(generations) + " | Hysteresis: " + fixed$(hysteresis_current, 2) + "/" + fixed$(hysteresis_previous, 2) + " | HF loss: " + fixed$(hf_loss_rate, 2)
-    
+    Text: 2.5, "centre", 0.5, "half", "Generations: " + string$(generations) + " | Hysteresis: " + fixed$(hysteresis_current, 2) + "/" + fixed$(hysteresis_previous, 2) + " | HF loss: " + fixed$(hf_loss_rate, 2)
     Font size: 10
     Colour: "Black"
 endif

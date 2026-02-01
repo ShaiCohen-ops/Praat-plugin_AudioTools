@@ -247,7 +247,7 @@ if draw_visualization and intervals_processed > 0
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.2, 0.7
+    Select outer viewport: 1, 8, 0.2, 0.7
     Font size: 14
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "OT Duration Control: " + sound_name$
@@ -261,6 +261,7 @@ if draw_visualization and intervals_processed > 0
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Select outer viewport: 0.1, 8, 0.5, 2.8
     Text left: "yes", "Original"
     
     # Result waveform
@@ -333,7 +334,7 @@ if draw_visualization and intervals_processed > 0
     Text bottom: "yes", "Interval"
     
     # Legend
-    Select outer viewport: 0, 8, 6.1, 6.5
+    Select outer viewport: 0, 18, 6.1, 6.5
     Font size: 8
     Colour: "{0.6, 0.6, 0.6}"
     Text: 0.15, "centre", 0.5, "half", "## Original"

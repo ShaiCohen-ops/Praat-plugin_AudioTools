@@ -349,7 +349,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Particle Field: " + original_name$
@@ -363,6 +363,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Select outer viewport: 0.1, 8, 0.5, 1.8
     Text left: "yes", "Original"
     
     # Result waveform
@@ -408,7 +409,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.1, 5.4
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(number_of_grains) + " | Duration: " + fixed$(grain_duration_s * 1000, 0) + "ms | Envelope: " + string$(envelope_shape)
+    Text: 1.5, "centre", 0.5, "half", "Grains: " + string$(number_of_grains) + " | Duration: " + fixed$(grain_duration_s * 1000, 0) + "ms | Envelope: " + string$(envelope_shape)
     
     Font size: 10
     Colour: "Black"

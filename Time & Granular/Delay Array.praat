@@ -150,7 +150,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.2, 0.7
+    Select outer viewport: 1, 8, 0.2, 0.7
     Font size: 14
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Delay Array: " + original_name$
@@ -164,6 +164,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Select outer viewport: 0.1, 8, 0.5, 2.8
     Text left: "yes", "Original"
     
     # Result waveform
@@ -208,14 +209,14 @@ if draw_visualization
     removeObject: resSpectrum
     
     # Legend
-    Select outer viewport: 0, 8, 5.7, 6.1
+    Select outer viewport: 0.5, 8, 5.7, 6.1
     Font size: 8
     Colour: "{0.4, 0.4, 0.4}"
     divList$ = string$(divisor[1])
     for k from 2 to number_of_iterations
         divList$ = divList$ + ", " + string$(divisor[k])
     endfor
-    Text: 0.5, "centre", 0.5, "half", "Divisors: " + divList$ + " | Iterations: " + string$(number_of_iterations)
+    Text: 1.5, "centre", 0.5, "half", "Divisors: " + divList$ + " | Iterations: " + string$(number_of_iterations)
     
     Font size: 10
     Colour: "Black"

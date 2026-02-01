@@ -556,6 +556,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Select outer viewport: 0.1, 8, 0.5, 1.5
     Text left: "yes", "Original"
     
     # Warped waveform

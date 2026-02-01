@@ -345,7 +345,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.2, 0.7
+    Select outer viewport: 1, 8, 0.2, 0.7
     Font size: 14
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Beat Repeat: " + sound_name$
@@ -394,7 +394,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.4, 4.8
     Font size: 8
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "BPM: " + string$(bpm) + " | Note: " + note_name$ + " | Repeats: " + string$(num_repeats) + " | Decay: " + fixed$(amplitude_decay, 2)
+    Text: 2.5, "centre", 0.5, "half", "BPM: " + string$(bpm) + " | Note: " + note_name$ + " | Repeats: " + string$(num_repeats) + " | Decay: " + fixed$(amplitude_decay, 2)
     
     Font size: 10
     Colour: "Black"
