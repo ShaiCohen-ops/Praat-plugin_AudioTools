@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - Live 1
+# Praat AudioTools - Live 3
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
@@ -8,15 +8,15 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Live recording + Composition 1 processing chain
-#   Flow: Record → Neural Drone → Percussive Groove → Crystalline Reverb
+#   Live recording + Composition 3 processing chain
+#   Flow: Record → Whisper Morph → Bimodal Contour → Percussive Groove
 # ============================================================
 
 # ============================================================
 # USER FORM
 # ============================================================
 
-form Live Recording - Composition 1 Settings
+form Live Recording - Composition 3 Settings
     positive Recording_time_seconds 5.0
 endform
 
@@ -46,8 +46,8 @@ Remove
 selectObject: trimmed
 
 # ============================================================
-# PART 2: COMPOSITION 1 (AudioTools)
-# Flow: Neural Drone → Percussive Groove → Crystalline Reverb
+# PART 2: COMPOSITION 3 (AudioTools)
+# Flow: Whisper Morph → Bimodal Contour → Percussive Groove
 # ============================================================
 
 # === INPUT SETUP ===
@@ -63,14 +63,14 @@ overlap_sec = 0.1
 final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
-path_intro$ = pluginPath$ + "AI & Adaptive/Neural Ambient Drone Designer.praat"
-path_body$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
-path_outro$ = pluginPath$ + "Reverb/Crystalline_Cascade.praat"
+path_intro$ = pluginPath$ + "Filter & Color/Whisper Morph.praat"
+path_body$ = pluginPath$ + "Pitch/Bimodal Contour Grammar.praat"
+path_outro$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
 
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  LIVE 1 - Drone → Groove → Crystalline"
+writeInfoLine: "  LIVE 3 - Whisper → Contour → Groove"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Recording time: ", recording_time_seconds, " seconds"
@@ -79,23 +79,31 @@ writeInfoLine: "Plugin path: ", pluginPath$
 writeInfoLine: ""
 
 # ==============================================================================
-# PART 1: INTRO (Atmospheric Drone)
+# PART 1: INTRO (Whisper Morph)
 # ==============================================================================
 selectObject: initial_sound
-appendInfoLine: "=== Part 1: Intro (Neural Drone) ==="
+appendInfoLine: "=== Part 1: Intro (Whisper Morph) ==="
 appendInfoLine: "  Generating..."
 
-# Neural Ambient Drone Designer parameters
-runScript: path_intro$, "Manual", 15.0, 3, 20, 1, 0.15, "Octaves only", 100, 3, 10, 1, 0.7, 0
+# Whisper Morph parameters:
+# Preset, Direction, Mix, Breathiness, Transition_sec, Curve, Visualize, Play
+runScript: path_intro$, "Gentle Whisper", "Dry to Wet (original -> whisper)", 1.0, 0.8, 6.0, "Smooth (cosine)", 0, 0
+
+# Get the output
+sound_intro = selected("Sound")
+Rename: initial_name$ + "_Part1_Whisper"
 
 # Ensure stereo
-selectObject: selected("Sound")
+selectObject: sound_intro
 nch = Get number of channels
 if nch = 1
     Convert to stereo
+    tmp = selected("Sound")
+    removeObject: sound_intro
+    sound_intro = tmp
+    Rename: initial_name$ + "_Part1_Whisper"
 endif
-sound_intro = selected("Sound")
-Rename: initial_name$ + "_Part1_Intro"
+
 dur_intro = Get total duration
 appendInfoLine: "  Duration: ", fixed$(dur_intro, 2), " s"
 
@@ -104,24 +112,33 @@ selectObject: sound_intro
 Formula: "if x > (xmax - " + string$(overlap_sec) + ") then self * ((xmax - x) / " + string$(overlap_sec) + ") else self fi"
 
 # ==============================================================================
-# PART 2: BODY (Rhythmic Groove)
+# PART 2: BODY (Bimodal Contour Grammar)
 # ==============================================================================
 selectObject: initial_sound
 appendInfoLine: ""
-appendInfoLine: "=== Part 2: Body (Percussive Groove) ==="
+appendInfoLine: "=== Part 2: Body (Bimodal Contour Grammar) ==="
 appendInfoLine: "  Generating..."
 
-# Percussive Audio Groove Creator parameters
-runScript: path_body$, "4 bars", "Breakbeat", 110, -20, 0.05, 0.15, 0.6, 0.12, 0.002, 0.05, 1.2, 1, 0, 0
+# Bimodal Contour Grammar parameters:
+# Start_time, End_time, Step_ms, Visualization, Line_type, Time_step, Max_formant, 
+# N_formants, Dynamic_range, Visualize, Play, Save_textgrid
+runScript: path_body$, 0, 1000, 500, "Pitch+Loudness Rainbow", "Thin continuous line", 1.0, 4.0, 70, 10, 0, 0, 0
+
+# Get the output
+sound_body = selected("Sound")
+Rename: initial_name$ + "_Part2_Contour"
 
 # Ensure stereo
-selectObject: selected("Sound")
+selectObject: sound_body
 nch = Get number of channels
 if nch = 1
     Convert to stereo
+    tmp = selected("Sound")
+    removeObject: sound_body
+    sound_body = tmp
+    Rename: initial_name$ + "_Part2_Contour"
 endif
-sound_body = selected("Sound")
-Rename: initial_name$ + "_Part2_Body"
+
 dur_body = Get total duration
 appendInfoLine: "  Duration: ", fixed$(dur_body, 2), " s"
 
@@ -131,42 +148,50 @@ Formula: "if x < " + string$(overlap_sec) + " then self * (x / " + string$(overl
 Formula: "if x > (xmax - " + string$(overlap_sec) + ") then self * ((xmax - x) / " + string$(overlap_sec) + ") else self fi"
 
 # ==============================================================================
-# PART 3: OUTRO (Crystalline Wash)
+# PART 3: OUTRO (Percussive Audio Groove Creator)
 # ==============================================================================
 selectObject: initial_sound
 appendInfoLine: ""
-appendInfoLine: "=== Part 3: Outro (Crystalline Reverb) ==="
+appendInfoLine: "=== Part 3: Outro (Percussive Groove) ==="
 appendInfoLine: "  Generating..."
 
-# Crystalline Cascade parameters
-runScript: path_outro$, "Subtle Flutter", 3.0, 800, 0.08, 1200, 120, 0.6, 60, 0.35, 0.7, 50, 0.88, 0, 0
+# Percussive Audio Groove Creator parameters:
+# Length, Pattern, BPM, Threshold, Attack, Sustain, Density, Swing, Fade_in, Fade_out,
+# Velocity_var, Stereo, Reverb, Play
+runScript: path_outro$, "4 bars", "Breakbeat", 120, -20, 0.05, 0.15, 0.6, 0.12, 0.002, 0.05, 1.2, 1, 0, 0
 
-# Ensure stereo
-selectObject: selected("Sound")
-nch = Get number of channels
-if nch = 1
-    Convert to stereo
-endif
+# Get the output
 sound_outro_raw = selected("Sound")
 Rename: initial_name$ + "_Part3_Raw"
 
-# --- Trim trailing silence ---
+# --- Trim trailing silence (stereo-safe method) ---
 selectObject: sound_outro_raw
 Convert to mono
 sound_outro_mono = selected("Sound")
 
-# Trim (Extended Syntax)
 Trim silences: 0.1, "yes", 100, 0, -40, 0.1, 0.05, "no", "Trim"
 
 mono_trimmed_outro = selected("Sound")
 trimmed_dur = Get total duration
 removeObject: sound_outro_mono, mono_trimmed_outro
 
-# Crop original stereo
+# Crop original to trimmed duration
 selectObject: sound_outro_raw
 Extract part: 0, trimmed_dur, "rectangular", 1, "no"
 sound_outro = selected("Sound")
-Rename: initial_name$ + "_Part3_Outro"
+Rename: initial_name$ + "_Part3_Groove"
+
+# Ensure stereo
+selectObject: sound_outro
+nch = Get number of channels
+if nch = 1
+    Convert to stereo
+    tmp = selected("Sound")
+    removeObject: sound_outro
+    sound_outro = tmp
+    Rename: initial_name$ + "_Part3_Groove"
+endif
+
 dur_outro = Get total duration
 appendInfoLine: "  Duration: ", fixed$(dur_outro, 2), " s"
 
@@ -253,7 +278,7 @@ track2_str$ = string$(track2)
 track3_str$ = string$(track3)
 Formula: "self + object(" + track2_str$ + ", x) + object(" + track3_str$ + ", x)"
 
-final_name$ = initial_name$ + "_Composition1"
+final_name$ = initial_name$ + "_Composition3"
 Rename: final_name$
 final_sound = selected("Sound")
 
@@ -270,7 +295,6 @@ selectObject: final_sound
 Convert to mono
 mono_for_trim = selected("Sound")
 
-# Trim (Extended Syntax)
 Trim silences: 0.1, "yes", 100, 0, -40, 0.1, 0.05, "no", "Trim"
 
 mono_trimmed_final = selected("Sound")
@@ -330,10 +354,28 @@ if numberOfSelected("Sound") > 0
         # Check if name contains artifact patterns and it's not our final sound
         if tempName$ <> final_name$
             isArtifact = 0
-            if index(tempName$, "cascade") > 0
+            if index(tempName$, "whisper") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "Cascade") > 0
+            if index(tempName$, "Whisper") > 0
+                isArtifact = 1
+            endif
+            if index(tempName$, "morph") > 0
+                isArtifact = 1
+            endif
+            if index(tempName$, "Morph") > 0
+                isArtifact = 1
+            endif
+            if index(tempName$, "grammar") > 0
+                isArtifact = 1
+            endif
+            if index(tempName$, "Grammar") > 0
+                isArtifact = 1
+            endif
+            if index(tempName$, "Contour") > 0
+                isArtifact = 1
+            endif
+            if index(tempName$, "Groove") > 0
                 isArtifact = 1
             endif
             if index(tempName$, "Recording") > 0
@@ -345,18 +387,6 @@ if numberOfSelected("Sound") > 0
             if index(tempName$, "Track_") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "Drone") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "NeuralDrone") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Groove") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Crystalline") > 0
-                isArtifact = 1
-            endif
             if index(tempName$, "Intro") > 0
                 isArtifact = 1
             endif
@@ -364,6 +394,12 @@ if numberOfSelected("Sound") > 0
                 isArtifact = 1
             endif
             if index(tempName$, "Outro") > 0
+                isArtifact = 1
+            endif
+            if index(tempName$, "Bimodal") > 0
+                isArtifact = 1
+            endif
+            if index(tempName$, "Percussive") > 0
                 isArtifact = 1
             endif
             
@@ -385,7 +421,7 @@ final_nch = Get number of channels
 
 appendInfoLine: ""
 appendInfoLine: "=============================================="
-appendInfoLine: "  LIVE 1 COMPOSITION COMPLETE"
+appendInfoLine: "  LIVE 3 COMPOSITION COMPLETE"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Output: ", final_name$

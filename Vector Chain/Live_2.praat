@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - Live 1
+# Praat AudioTools - Live 2
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
@@ -8,15 +8,15 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Live recording + Composition 1 processing chain
-#   Flow: Record → Neural Drone → Percussive Groove → Crystalline Reverb
+#   Live recording + Composition 2 processing chain
+#   Flow: Record → Spiral Pitch → Neural Drone → 8-Channel Spatial
 # ============================================================
 
 # ============================================================
 # USER FORM
 # ============================================================
 
-form Live Recording - Composition 1 Settings
+form Live Recording - Composition 2 Settings
     positive Recording_time_seconds 5.0
 endform
 
@@ -46,8 +46,8 @@ Remove
 selectObject: trimmed
 
 # ============================================================
-# PART 2: COMPOSITION 1 (AudioTools)
-# Flow: Neural Drone → Percussive Groove → Crystalline Reverb
+# PART 2: COMPOSITION 2 (AudioTools)
+# Flow: Spiral Pitch → Neural Drone → 8-Channel Deviations
 # ============================================================
 
 # === INPUT SETUP ===
@@ -59,18 +59,18 @@ preferencesDir$ = preferencesDirectory$
 pluginPath$ = preferencesDir$ + "/plugin_AudioTools/"
 
 # === CONFIGURATION ===
-overlap_sec = 0.1
-final_fade_sec = 3.0
+overlap_sec = 0.15
+final_fade_sec = 4.0
 
 # === DEFINE SCRIPT PATHS ===
-path_intro$ = pluginPath$ + "AI & Adaptive/Neural Ambient Drone Designer.praat"
-path_body$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
-path_outro$ = pluginPath$ + "Reverb/Crystalline_Cascade.praat"
+path_intro$ = pluginPath$ + "Pitch/Spiral_Pitch_Dance.praat"
+path_body$ = pluginPath$ + "AI & Adaptive/Neural Ambient Drone Designer.praat"
+path_outro$ = pluginPath$ + "Spatial & Surround/8-channel speed deviations.praat"
 
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  LIVE 1 - Drone → Groove → Crystalline"
+writeInfoLine: "  LIVE 2 - Spiral → Drone → Spatial"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Recording time: ", recording_time_seconds, " seconds"
@@ -79,23 +79,31 @@ writeInfoLine: "Plugin path: ", pluginPath$
 writeInfoLine: ""
 
 # ==============================================================================
-# PART 1: INTRO (Atmospheric Drone)
+# PART 1: INTRO (Spiral Pitch Dance)
 # ==============================================================================
 selectObject: initial_sound
-appendInfoLine: "=== Part 1: Intro (Neural Drone) ==="
+appendInfoLine: "=== Part 1: Intro (Spiral Pitch Dance) ==="
 appendInfoLine: "  Generating..."
 
-# Neural Ambient Drone Designer parameters
-runScript: path_intro$, "Manual", 15.0, 3, 20, 1, 0.15, "Octaves only", 100, 3, 10, 1, 0.7, 0
+# Spiral Pitch Dance parameters:
+# Preset, Num_bands, Start_freq, Ratio, Jitter, Speed_Hz, Range_cents, Feedback, Play
+runScript: path_intro$, "Manual (configure below)", 2, 24, 1.5, 0.005, 50, 1200, 0, 0
+
+# Get the output
+sound_intro = selected("Sound")
+Rename: initial_name$ + "_Part1_Spiral"
 
 # Ensure stereo
-selectObject: selected("Sound")
+selectObject: sound_intro
 nch = Get number of channels
 if nch = 1
     Convert to stereo
+    tmp = selected("Sound")
+    removeObject: sound_intro
+    sound_intro = tmp
+    Rename: initial_name$ + "_Part1_Spiral"
 endif
-sound_intro = selected("Sound")
-Rename: initial_name$ + "_Part1_Intro"
+
 dur_intro = Get total duration
 appendInfoLine: "  Duration: ", fixed$(dur_intro, 2), " s"
 
@@ -104,69 +112,101 @@ selectObject: sound_intro
 Formula: "if x > (xmax - " + string$(overlap_sec) + ") then self * ((xmax - x) / " + string$(overlap_sec) + ") else self fi"
 
 # ==============================================================================
-# PART 2: BODY (Rhythmic Groove)
+# PART 2: BODY (Neural Ambient Drone)
 # ==============================================================================
 selectObject: initial_sound
 appendInfoLine: ""
-appendInfoLine: "=== Part 2: Body (Percussive Groove) ==="
+appendInfoLine: "=== Part 2: Body (Neural Ambient Drone) ==="
 appendInfoLine: "  Generating..."
 
-# Percussive Audio Groove Creator parameters
-runScript: path_body$, "4 bars", "Breakbeat", 110, -20, 0.05, 0.15, 0.6, 0.12, 0.002, 0.05, 1.2, 1, 0, 0
+# Neural Ambient Drone Designer parameters:
+# Preset, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
+# Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
+runScript: path_body$, "Evolving Pad", 20.0, 4, 30, 1, 0.18, "Octaves and fifths", 120, 4, 10, 1, 0.75, 0
+
+# Get the output
+sound_body = selected("Sound")
+Rename: initial_name$ + "_Part2_Drone"
 
 # Ensure stereo
-selectObject: selected("Sound")
+selectObject: sound_body
 nch = Get number of channels
 if nch = 1
     Convert to stereo
+    tmp = selected("Sound")
+    removeObject: sound_body
+    sound_body = tmp
+    Rename: initial_name$ + "_Part2_Drone"
 endif
-sound_body = selected("Sound")
-Rename: initial_name$ + "_Part2_Body"
+
 dur_body = Get total duration
 appendInfoLine: "  Duration: ", fixed$(dur_body, 2), " s"
 
-# Fade In and Fade Out for crossfade
+# Fade In for crossfade
 selectObject: sound_body
 Formula: "if x < " + string$(overlap_sec) + " then self * (x / " + string$(overlap_sec) + ") else self fi"
+
+# Fade Out for crossfade
 Formula: "if x > (xmax - " + string$(overlap_sec) + ") then self * ((xmax - x) / " + string$(overlap_sec) + ") else self fi"
 
 # ==============================================================================
-# PART 3: OUTRO (Crystalline Wash)
+# PART 3: OUTRO (8-Channel Speed Deviations)
 # ==============================================================================
 selectObject: initial_sound
 appendInfoLine: ""
-appendInfoLine: "=== Part 3: Outro (Crystalline Reverb) ==="
+appendInfoLine: "=== Part 3: Outro (8-Channel Deviations) ==="
 appendInfoLine: "  Generating..."
 
-# Crystalline Cascade parameters
-runScript: path_outro$, "Subtle Flutter", 3.0, 800, 0.08, 1200, 120, 0.6, 60, 0.35, 0.7, 50, 0.88, 0, 0
+# 8-Channel Speed Deviations parameters:
+# Preset, Mode, Factor, ch1-8 speeds, min, max, seed, pitch_floor, pitch_ceil, 
+# use_original_sr, target_sr, visualize, play
+runScript: path_outro$, "Custom (use mode below)", "Automatic (using factor)", 0.15, 0.85, 0.88, 0.91, 0.94, 1.06, 1.09, 1.12, 1.15, 0.80, 1.20, 42, 75, 600, 1, 44100, 0, 0
 
-# Ensure stereo
-selectObject: selected("Sound")
-nch = Get number of channels
-if nch = 1
-    Convert to stereo
-endif
+# Get the output
 sound_outro_raw = selected("Sound")
 Rename: initial_name$ + "_Part3_Raw"
 
-# --- Trim trailing silence ---
+# --- Trim trailing silence (stereo-safe method) ---
 selectObject: sound_outro_raw
 Convert to mono
 sound_outro_mono = selected("Sound")
 
-# Trim (Extended Syntax)
 Trim silences: 0.1, "yes", 100, 0, -40, 0.1, 0.05, "no", "Trim"
-
 mono_trimmed_outro = selected("Sound")
 trimmed_dur = Get total duration
 removeObject: sound_outro_mono, mono_trimmed_outro
 
-# Crop original stereo
+# Crop original to trimmed duration
 selectObject: sound_outro_raw
 Extract part: 0, trimmed_dur, "rectangular", 1, "no"
 sound_outro = selected("Sound")
-Rename: initial_name$ + "_Part3_Outro"
+Rename: initial_name$ + "_Part3_Spatial"
+
+# Ensure stereo (8-channel may output multichannel - convert to stereo)
+selectObject: sound_outro
+nch = Get number of channels
+if nch > 2
+    # Extract first two channels as stereo
+    Extract one channel: 1
+    ch1 = selected("Sound")
+    selectObject: sound_outro
+    Extract one channel: 2
+    ch2 = selected("Sound")
+    selectObject: ch1
+    plusObject: ch2
+    Combine to stereo
+    tmp = selected("Sound")
+    removeObject: sound_outro, ch1, ch2
+    sound_outro = tmp
+    Rename: initial_name$ + "_Part3_Spatial"
+elsif nch = 1
+    Convert to stereo
+    tmp = selected("Sound")
+    removeObject: sound_outro
+    sound_outro = tmp
+    Rename: initial_name$ + "_Part3_Spatial"
+endif
+
 dur_outro = Get total duration
 appendInfoLine: "  Duration: ", fixed$(dur_outro, 2), " s"
 
@@ -253,7 +293,7 @@ track2_str$ = string$(track2)
 track3_str$ = string$(track3)
 Formula: "self + object(" + track2_str$ + ", x) + object(" + track3_str$ + ", x)"
 
-final_name$ = initial_name$ + "_Composition1"
+final_name$ = initial_name$ + "_Composition2"
 Rename: final_name$
 final_sound = selected("Sound")
 
@@ -270,7 +310,6 @@ selectObject: final_sound
 Convert to mono
 mono_for_trim = selected("Sound")
 
-# Trim (Extended Syntax)
 Trim silences: 0.1, "yes", 100, 0, -40, 0.1, 0.05, "no", "Trim"
 
 mono_trimmed_final = selected("Sound")
@@ -324,25 +363,16 @@ if numberOfSelected("Sound") > 0
     for j to n
         name'j'$ = selected$("Sound", j)
     endfor
-    # Now remove artifacts
+    # Now remove artifacts (spiral, drone, deviations leftovers)
     for j to n
         tempName$ = name'j'$
         # Check if name contains artifact patterns and it's not our final sound
         if tempName$ <> final_name$
             isArtifact = 0
-            if index(tempName$, "cascade") > 0
+            if index(tempName$, "spiral") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "Cascade") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Recording") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "_Part") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Track_") > 0
+            if index(tempName$, "Spiral") > 0
                 isArtifact = 1
             endif
             if index(tempName$, "Drone") > 0
@@ -351,19 +381,19 @@ if numberOfSelected("Sound") > 0
             if index(tempName$, "NeuralDrone") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "Groove") > 0
+            if index(tempName$, "deviations") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "Crystalline") > 0
+            if index(tempName$, "Deviations") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "Intro") > 0
+            if index(tempName$, "_Part") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "Body") > 0
+            if index(tempName$, "Track_") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "Outro") > 0
+            if index(tempName$, "Recording") > 0 and tempName$ <> final_name$
                 isArtifact = 1
             endif
             
@@ -385,7 +415,7 @@ final_nch = Get number of channels
 
 appendInfoLine: ""
 appendInfoLine: "=============================================="
-appendInfoLine: "  LIVE 1 COMPOSITION COMPLETE"
+appendInfoLine: "  LIVE 2 COMPOSITION COMPLETE"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Output: ", final_name$
