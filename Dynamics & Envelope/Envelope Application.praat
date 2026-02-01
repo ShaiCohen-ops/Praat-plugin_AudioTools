@@ -1,373 +1,597 @@
 # ============================================================
-# Praat AudioTools - Envelope Application.praat
+# Praat AudioTools - Envelope_Application.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.1 (2025)
+# Version: 1.0 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Envelope Application
+#   Advanced Envelope Application with multiple envelope types,
+#   curve shapes, modifiers, and comprehensive visualization.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v1.0:
+#   - Unified single-form interface (compact)
+#   - Added presets
+#   - Added envelope modifiers (invert, mirror, smooth)
+#   - Added more envelope types
+#   - Added normalization option
+#   - Reduced code duplication with procedures
+#   - Enhanced visualization with stage labels
 # ============================================================
-# Envelope Application
-# Applies various envelope shapes to selected sound
-# Displays result in Picture window
 
-# Get selected sound
+form Envelope Application v1.0
+    optionmenu Preset 1
+        option Custom
+        option Fade In
+        option Fade Out
+        option Swell (triangle)
+        option Percussive
+        option ADSR Pad
+        option Plucked
+        option Tremolo
+        option Gate
+    optionmenu Envelope_type 1
+        option Linear
+        option Exponential
+        option Sine (S-curve)
+        option Triangle
+        option Trapezoid
+        option Gaussian
+        option Step
+        option ASR
+        option Percussive
+        option ADSR
+        option Tremolo
+    comment === Levels (0-1) ===
+    real Start_level 0.0
+    real End_level 1.0
+    real Peak_level 1.0
+    real Sustain_level 0.7
+    comment === Times (seconds, 0=auto) ===
+    real Attack 0.02
+    real Decay 0.1
+    real Sustain 0
+    real Release 0.2
+    comment === Shape & Modulation ===
+    optionmenu Curve 1
+        option Linear
+        option Exponential
+        option Sine
+    real Curve_amount 4
+    real Tremolo_rate_Hz 5
+    real Tremolo_depth 0.5
+    comment === Modifiers ===
+    boolean Invert 0
+    boolean Mirror 0
+    integer Smoothing 0
+    comment === Output ===
+    boolean Normalize 1
+    boolean Visualize 1
+    boolean Play 1
+endform
+
+# === INPUT VALIDATION ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
 sound = selected("Sound")
 sound_name$ = selected$("Sound")
+
+selectObject: sound
 duration = Get total duration
-sampling_frequency = Get sampling frequency
+sr = Get sampling frequency
 
-# Envelope type selection
-beginPause: "Envelope Type"
-    comment: "Select envelope type:"
-    optionMenu: "Envelope type", 1
-        option: "Linear"
-        option: "Exponential"
-        option: "Sine"
-        option: "Welch"
-        option: "Step"
-        option: "Linen (ADSR simplified)"
-        option: "Perc (Percussive)"
-        option: "ADSR (full)"
-clicked = endPause: "Cancel", "Apply", 2, 1
-
-if clicked = 1
-    exitScript()
+# === APPLY PRESETS ===
+if preset = 2
+    # Fade In
+    envelope_type = 1
+    start_level = 0
+    end_level = 1
+    presetName$ = "FadeIn"
+elsif preset = 3
+    # Fade Out
+    envelope_type = 1
+    start_level = 1
+    end_level = 0
+    presetName$ = "FadeOut"
+elsif preset = 4
+    # Swell
+    envelope_type = 4
+    peak_level = 1
+    presetName$ = "Swell"
+elsif preset = 5
+    # Percussive
+    envelope_type = 9
+    attack = 0.005
+    release = 0.3
+    peak_level = 1
+    curve = 2
+    curve_amount = 4
+    presetName$ = "Percussive"
+elsif preset = 6
+    # ADSR Pad
+    envelope_type = 10
+    attack = 0.3
+    decay = 0.2
+    sustain_level = 0.7
+    sustain = 0
+    release = 0.5
+    peak_level = 1
+    presetName$ = "Pad"
+elsif preset = 7
+    # Plucked
+    envelope_type = 9
+    attack = 0.001
+    release = duration * 0.8
+    peak_level = 1
+    curve = 2
+    curve_amount = 3
+    presetName$ = "Plucked"
+elsif preset = 8
+    # Tremolo
+    envelope_type = 11
+    tremolo_rate_Hz = 6
+    tremolo_depth = 0.4
+    presetName$ = "Tremolo"
+elsif preset = 9
+    # Gate
+    envelope_type = 5
+    peak_level = 1
+    attack = 0.05
+    release = 0.05
+    presetName$ = "Gate"
+else
+    presetName$ = "Custom"
 endif
 
-# Get parameters based on envelope type
+# === GET ENVELOPE TYPE NAME ===
 if envelope_type = 1
-    # Linear
-    beginPause: "Linear Envelope Parameters"
-        real: "Start level", 0.1
-        real: "End level", 1.0
-    endPause: "Cancel", "OK", 2, 1
-    
-elif envelope_type = 2
-    # Exponential
-    beginPause: "Exponential Envelope Parameters"
-        real: "Start level", 0.1
-        real: "End level", 1.0
-    endPause: "Cancel", "OK", 2, 1
-    
-elif envelope_type = 3
-    # Sine
-    beginPause: "Sine Envelope Parameters"
-        real: "Start level", 0.1
-        real: "End level", 1.0
-    endPause: "Cancel", "OK", 2, 1
-    
-elif envelope_type = 4
-    # Welch
-    beginPause: "Welch Envelope Parameters"
-        real: "Start level", 0.1
-        real: "End level", 1.0
-    endPause: "Cancel", "OK", 2, 1
-    
-elif envelope_type = 5
-    # Step
-    beginPause: "Step Envelope Parameters"
-        real: "Step time (s)", duration/2
-        real: "Level before", 0.1
-        real: "Level after", 1.0
-    endPause: "Cancel", "OK", 2, 1
-    
-elif envelope_type = 6
-    # Linen
-    beginPause: "Linen Envelope Parameters"
-        real: "Attack time (s)", 0.1
-        real: "Sustain time (s)", duration - 0.3
-        real: "Release time (s)", 0.2
-        real: "Peak level", 1.0
-        optionMenu: "Curve", 1
-            option: "linear"
-            option: "exponential"
-            option: "sine"
-    endPause: "Cancel", "OK", 2, 1
-    
-elif envelope_type = 7
-    # Perc
-    beginPause: "Percussive Envelope Parameters"
-        real: "Attack time (s)", 0.01
-        real: "Release time (s)", 0.5
-        real: "Peak level", 1.0
-        real: "Curve", -4
-    endPause: "Cancel", "OK", 2, 1
-    
-elif envelope_type = 8
-    # ADSR
-    beginPause: "ADSR Envelope Parameters"
-        real: "Attack time (s)", 0.02
-        real: "Decay time (s)", 0.2
-        real: "Sustain level", 0.7
-        real: "Sustain time (s)", duration - 0.5
-        real: "Release time (s)", 0.28
-        real: "Peak level", 1.0
-        real: "Curve", -4
-    endPause: "Cancel", "OK", 2, 1
+    envName$ = "Linear"
+elsif envelope_type = 2
+    envName$ = "Exponential"
+elsif envelope_type = 3
+    envName$ = "Sine"
+elsif envelope_type = 4
+    envName$ = "Triangle"
+elsif envelope_type = 5
+    envName$ = "Trapezoid"
+elsif envelope_type = 6
+    envName$ = "Gaussian"
+elsif envelope_type = 7
+    envName$ = "Step"
+elsif envelope_type = 8
+    envName$ = "ASR"
+elsif envelope_type = 9
+    envName$ = "Percussive"
+elsif envelope_type = 10
+    envName$ = "ADSR"
+else
+    envName$ = "Tremolo"
 endif
 
-# Build formula string for envelope visualization
-if envelope_type = 1
-    # Linear
-    formula$ = "start_level + (end_level - start_level) * (x / duration)"
-    formula$ = replace$(formula$, "start_level", string$(start_level), 0)
-    formula$ = replace$(formula$, "end_level", string$(end_level), 0)
-    formula$ = replace$(formula$, "duration", string$(duration), 0)
-    
-elif envelope_type = 2
-    # Exponential
-    formula$ = "start_level * (end_level / start_level) ^ (x / duration)"
-    formula$ = replace$(formula$, "start_level", string$(start_level), 0)
-    formula$ = replace$(formula$, "end_level", string$(end_level), 0)
-    formula$ = replace$(formula$, "duration", string$(duration), 0)
-    
-elif envelope_type = 3
-    # Sine
-    formula$ = "start_level + (end_level - start_level) * (1 - cos((x/duration) * pi)) / 2"
-    formula$ = replace$(formula$, "start_level", string$(start_level), 0)
-    formula$ = replace$(formula$, "end_level", string$(end_level), 0)
-    formula$ = replace$(formula$, "duration", string$(duration), 0)
-    
-elif envelope_type = 4
-    # Welch
-    formula$ = "if x/duration < 0.5 then start_level + (end_level - start_level) * (1 - (1 - 2*x/duration)^2) else end_level - (end_level - start_level) * (1 - (2*x/duration - 1)^2) endif"
-    formula$ = replace$(formula$, "start_level", string$(start_level), 0)
-    formula$ = replace$(formula$, "end_level", string$(end_level), 0)
-    formula$ = replace$(formula$, "duration", string$(duration), 0)
-    
-elif envelope_type = 5
-    # Step
-    formula$ = "if x < step_time then level_before else level_after endif"
-    formula$ = replace$(formula$, "step_time", string$(step_time), 0)
-    formula$ = replace$(formula$, "level_before", string$(level_before), 0)
-    formula$ = replace$(formula$, "level_after", string$(level_after), 0)
-    
-elif envelope_type = 6
-    # Linen
-    total_time = attack_time + sustain_time + release_time
+# === INFO HEADER ===
+clearinfo
+writeInfoLine: "=============================================="
+writeInfoLine: "  ENVELOPE APPLICATION v1.0"
+writeInfoLine: "=============================================="
+writeInfoLine: ""
+writeInfoLine: "Input: ", sound_name$, " (", fixed$(duration, 3), "s)"
+writeInfoLine: "Preset: ", presetName$
+writeInfoLine: "Envelope: ", envName$
+writeInfoLine: ""
+
+# ============================================================
+# PROCEDURE: Apply curve shape to linear phase (0-1)
+# ============================================================
+
+procedure applyCurve: .phase
     if curve = 1
         # Linear
-        formula$ = "if x < attack_time then peak_level * (x / attack_time) else if x < attack_time + sustain_time then peak_level else if x < total_time then peak_level * (1 - (x - attack_time - sustain_time) / release_time) else 0 endif endif endif"
-    elif curve = 2
+        applyCurve.result = .phase
+    elsif curve = 2
         # Exponential
-        formula$ = "if x < attack_time then peak_level * (1 - exp(-5 * x / attack_time)) else if x < attack_time + sustain_time then peak_level else if x < total_time then peak_level * exp(-5 * (x - attack_time - sustain_time) / release_time) else 0 endif endif endif"
+        if curve_amount > 0
+            applyCurve.result = 1 - exp(-curve_amount * .phase)
+            .maxVal = 1 - exp(-curve_amount)
+            if .maxVal > 0.001
+                applyCurve.result = applyCurve.result / .maxVal
+            endif
+        else
+            applyCurve.result = .phase
+        endif
     else
         # Sine
-        formula$ = "if x < attack_time then peak_level * (1 - cos((x/attack_time) * pi)) / 2 else if x < attack_time + sustain_time then peak_level else if x < total_time then peak_level * (1 + cos(((x - attack_time - sustain_time)/release_time) * pi)) / 2 else 0 endif endif endif"
+        applyCurve.result = (1 - cos(.phase * pi)) / 2
     endif
-    formula$ = replace$(formula$, "attack_time", string$(attack_time), 0)
-    formula$ = replace$(formula$, "sustain_time", string$(sustain_time), 0)
-    formula$ = replace$(formula$, "release_time", string$(release_time), 0)
-    formula$ = replace$(formula$, "peak_level", string$(peak_level), 0)
-    formula$ = replace$(formula$, "total_time", string$(total_time), 0)
+endproc
+
+# ============================================================
+# PROCEDURE: Calculate envelope amplitude at time t
+# ============================================================
+
+procedure getEnvelopeValue: .t, .dur
+    .progress = .t / .dur
     
-elif envelope_type = 7
-    # Perc
-    total_time = attack_time + release_time
-    if curve < 0
-        curve_inv = -1 / curve
-        formula$ = "if x < attack_time then peak_level * (x / attack_time) ^ curve_inv else if x < total_time then peak_level * (1 - (x - attack_time) / release_time) ^ curve_inv else 0 endif endif"
-        formula$ = replace$(formula$, "curve_inv", string$(curve_inv), 0)
+    if envelope_type = 1
+        # Linear
+        .amp = start_level + (end_level - start_level) * .progress
+        
+    elsif envelope_type = 2
+        # Exponential
+        if start_level > 0.001 and end_level > 0.001
+            .amp = start_level * (end_level / start_level) ^ .progress
+        else
+            .amp = start_level + (end_level - start_level) * .progress
+        endif
+        
+    elsif envelope_type = 3
+        # Sine (S-curve)
+        .amp = start_level + (end_level - start_level) * (1 - cos(.progress * pi)) / 2
+        
+    elsif envelope_type = 4
+        # Triangle (peak in middle)
+        if .progress < 0.5
+            .amp = peak_level * (.progress / 0.5)
+        else
+            .amp = peak_level * (1 - (.progress - 0.5) / 0.5)
+        endif
+        
+    elsif envelope_type = 5
+        # Trapezoid
+        .flatDur = .dur - attack - release
+        if .flatDur < 0
+            .flatDur = 0
+        endif
+        
+        if .t < attack
+            .phase = .t / attack
+            @applyCurve: .phase
+            .amp = peak_level * applyCurve.result
+        elsif .t < attack + .flatDur
+            .amp = peak_level
+        elsif .t < attack + .flatDur + release
+            .phase = (.t - attack - .flatDur) / release
+            @applyCurve: .phase
+            .amp = peak_level * (1 - applyCurve.result)
+        else
+            .amp = 0
+        endif
+        
+    elsif envelope_type = 6
+        # Gaussian
+        .center = .dur / 2
+        .sigma = .dur / 4
+        .amp = peak_level * exp(-0.5 * ((.t - .center) / .sigma) ^ 2)
+        
+    elsif envelope_type = 7
+        # Step
+        .stepTime = .dur / 2
+        if .t < .stepTime
+            .amp = start_level
+        else
+            .amp = end_level
+        endif
+        
+    elsif envelope_type = 8
+        # ASR
+        .sus = sustain
+        if .sus = 0
+            .sus = .dur - attack - release
+            if .sus < 0
+                .sus = 0
+            endif
+        endif
+        
+        if .t < attack
+            .phase = .t / attack
+            @applyCurve: .phase
+            .amp = peak_level * applyCurve.result
+        elsif .t < attack + .sus
+            .amp = peak_level
+        elsif .t < attack + .sus + release
+            .phase = (.t - attack - .sus) / release
+            @applyCurve: .phase
+            .amp = peak_level * (1 - applyCurve.result)
+        else
+            .amp = 0
+        endif
+        
+    elsif envelope_type = 9
+        # Percussive
+        .total = attack + release
+        
+        if .t < attack
+            .phase = .t / attack
+            @applyCurve: .phase
+            .amp = peak_level * applyCurve.result
+        elsif .t < .total
+            .phase = (.t - attack) / release
+            .amp = peak_level * (1 - .phase) ^ (abs(curve_amount) / 2)
+        else
+            .amp = 0
+        endif
+        
+    elsif envelope_type = 10
+        # ADSR
+        .sus = sustain
+        if .sus = 0
+            .sus = .dur - attack - decay - release
+            if .sus < 0
+                .sus = 0
+            endif
+        endif
+        .susAmp = sustain_level * peak_level
+        
+        if .t < attack
+            .phase = .t / attack
+            @applyCurve: .phase
+            .amp = peak_level * applyCurve.result
+        elsif .t < attack + decay
+            .phase = (.t - attack) / decay
+            @applyCurve: .phase
+            .amp = peak_level - (peak_level - .susAmp) * applyCurve.result
+        elsif .t < attack + decay + .sus
+            .amp = .susAmp
+        elsif .t < attack + decay + .sus + release
+            .phase = (.t - attack - decay - .sus) / release
+            @applyCurve: .phase
+            .amp = .susAmp * (1 - applyCurve.result)
+        else
+            .amp = 0
+        endif
+        
     else
-        curve_plus = curve + 1
-        formula$ = "if x < attack_time then peak_level * (1 - (1 - x / attack_time) ^ curve_plus) else if x < total_time then peak_level * (1 - (x - attack_time) / release_time) ^ curve_plus else 0 endif endif"
-        formula$ = replace$(formula$, "curve_plus", string$(curve_plus), 0)
+        # Tremolo
+        .base = (start_level + end_level) / 2
+        if .base < 0.1
+            .base = 0.5
+        endif
+        .mod = tremolo_depth * .base
+        .amp = .base + .mod * sin(2 * pi * tremolo_rate_Hz * .t)
+        if .amp < 0
+            .amp = 0
+        endif
     endif
-    formula$ = replace$(formula$, "attack_time", string$(attack_time), 0)
-    formula$ = replace$(formula$, "release_time", string$(release_time), 0)
-    formula$ = replace$(formula$, "peak_level", string$(peak_level), 0)
-    formula$ = replace$(formula$, "total_time", string$(total_time), 0)
     
-elif envelope_type = 8
-    # ADSR
-    total_time = attack_time + decay_time + sustain_time + release_time
-    sustain_amp = sustain_level * peak_level
-    if curve < 0
-        curve_inv = -1 / curve
-        formula$ = "if x < attack_time then peak_level * (x / attack_time) ^ curve_inv else if x < attack_time + decay_time then peak_level - (peak_level - sustain_amp) * ((x - attack_time) / decay_time) ^ curve_inv else if x < attack_time + decay_time + sustain_time then sustain_amp else if x < total_time then sustain_amp * (1 - (x - attack_time - decay_time - sustain_time) / release_time) ^ curve_inv else 0 endif endif endif endif"
-        formula$ = replace$(formula$, "curve_inv", string$(curve_inv), 0)
-    else
-        curve_plus = curve + 1
-        formula$ = "if x < attack_time then peak_level * (1 - (1 - x / attack_time) ^ curve_plus) else if x < attack_time + decay_time then peak_level - (peak_level - sustain_amp) * (1 - (1 - (x - attack_time) / decay_time) ^ curve_plus) else if x < attack_time + decay_time + sustain_time then sustain_amp else if x < total_time then sustain_amp * (1 - (x - attack_time - decay_time - sustain_time) / release_time) ^ curve_plus else 0 endif endif endif endif"
-        formula$ = replace$(formula$, "curve_plus", string$(curve_plus), 0)
+    # Apply modifiers
+    if invert
+        .amp = peak_level - .amp
+        if .amp < 0
+            .amp = 0
+        endif
     endif
-    formula$ = replace$(formula$, "attack_time", string$(attack_time), 0)
-    formula$ = replace$(formula$, "decay_time", string$(decay_time), 0)
-    formula$ = replace$(formula$, "sustain_time", string$(sustain_time), 0)
-    formula$ = replace$(formula$, "release_time", string$(release_time), 0)
-    formula$ = replace$(formula$, "peak_level", string$(peak_level), 0)
-    formula$ = replace$(formula$, "sustain_amp", string$(sustain_amp), 0)
-    formula$ = replace$(formula$, "total_time", string$(total_time), 0)
-endif
+    
+    getEnvelopeValue.result = .amp
+endproc
 
-# Create Sound for envelope visualization using the formula
-envelope_viz = Create Sound from formula: "envelope", 1, 0, duration, 1000, formula$
+# ============================================================
+# CREATE ENVELOPE
+# ============================================================
 
-# Create IntensityTier for envelope application
-tier = Create IntensityTier: "envelope", 0, duration
+appendInfoLine: "Creating envelope..."
 
-# Number of points for smooth IntensityTier
-numPoints = 200
-timeStep = duration / (numPoints - 1)
+# Create envelope sound
+numPoints = min(10000, max(200, round(duration * 500)))
+timeStep = duration / numPoints
 
-# Build IntensityTier with points
-for i from 0 to numPoints - 1
+Create Sound from formula: "envelope_temp", 1, 0, duration, sr, "0"
+envelope_sound = selected("Sound")
+
+# Fill with envelope values
+for i from 0 to numPoints
     t = i * timeStep
     if t > duration
         t = duration
     endif
-    progress = t / duration
     
-    if envelope_type = 1
-        amp = start_level + (end_level - start_level) * progress
-    elif envelope_type = 2
-        amp = start_level * (end_level / start_level) ^ progress
-    elif envelope_type = 3
-        amp = start_level + (end_level - start_level) * (1 - cos(progress * pi)) / 2
-    elif envelope_type = 4
-        if progress < 0.5
-            amp = start_level + (end_level - start_level) * (1 - (1 - 2*progress)^2)
-        else
-            amp = end_level - (end_level - start_level) * (1 - (2*progress - 1)^2)
-        endif
-    elif envelope_type = 5
-        amp = if t < step_time then level_before else level_after endif
-    elif envelope_type = 6
-        total_time = attack_time + sustain_time + release_time
-        if t < attack_time
-            phase = t / attack_time
-            if curve = 1
-                amp = peak_level * phase
-            elif curve = 2
-                amp = peak_level * (1 - exp(-5 * phase))
-            else
-                amp = peak_level * (1 - cos(phase * pi)) / 2
-            endif
-        elif t < attack_time + sustain_time
-            amp = peak_level
-        elif t < total_time
-            phase = (t - attack_time - sustain_time) / release_time
-            if curve = 1
-                amp = peak_level * (1 - phase)
-            elif curve = 2
-                amp = peak_level * exp(-5 * phase)
-            else
-                amp = peak_level * (1 + cos(phase * pi)) / 2
-            endif
-        else
-            amp = 0
-        endif
-    elif envelope_type = 7
-        total_time = attack_time + release_time
-        if t < attack_time
-            phase = t / attack_time
-            if curve < 0
-                amp = peak_level * phase ^ (-1/curve)
-            else
-                amp = peak_level * (1 - (1 - phase) ^ (curve + 1))
-            endif
-        elif t < total_time
-            phase = (t - attack_time) / release_time
-            if curve < 0
-                amp = peak_level * (1 - phase) ^ (-1/curve)
-            else
-                amp = peak_level * (1 - phase) ^ (curve + 1)
-            endif
-        else
-            amp = 0
-        endif
-    elif envelope_type = 8
-        total_time = attack_time + decay_time + sustain_time + release_time
-        if t < attack_time
-            phase = t / attack_time
-            if curve < 0
-                amp = peak_level * phase ^ (-1/curve)
-            else
-                amp = peak_level * (1 - (1 - phase) ^ (curve + 1))
-            endif
-        elif t < attack_time + decay_time
-            phase = (t - attack_time) / decay_time
-            if curve < 0
-                amp = peak_level - (peak_level - sustain_level * peak_level) * phase ^ (-1/curve)
-            else
-                amp = peak_level - (peak_level - sustain_level * peak_level) * (1 - (1 - phase) ^ (curve + 1))
-            endif
-        elif t < attack_time + decay_time + sustain_time
-            amp = sustain_level * peak_level
-        elif t < total_time
-            phase = (t - attack_time - decay_time - sustain_time) / release_time
-            if curve < 0
-                amp = sustain_level * peak_level * (1 - phase) ^ (-1/curve)
-            else
-                amp = sustain_level * peak_level * (1 - phase) ^ (curve + 1)
-            endif
-        else
-            amp = 0
-        endif
+    # Handle mirror
+    if mirror
+        t_lookup = duration - t
+    else
+        t_lookup = t
     endif
     
-    # Add to IntensityTier (in dB)
-    if amp > 0
+    @getEnvelopeValue: t_lookup, duration
+    envAmp[i] = getEnvelopeValue.result
+    envTime[i] = i * timeStep
+endfor
+
+# Apply to envelope sound
+selectObject: envelope_sound
+for i from 0 to numPoints
+    t = envTime[i]
+    amp = envAmp[i]
+    
+    if t <= duration
+        tStart = t - timeStep/2
+        tEnd = t + timeStep/2
+        if tStart < 0
+            tStart = 0
+        endif
+        if tEnd > duration
+            tEnd = duration
+        endif
+        Formula (part): tStart, tEnd, 1, 1, ~ amp
+    endif
+endfor
+
+# Apply smoothing
+if smoothing > 0
+    appendInfoLine: "  Smoothing (", smoothing, " passes)..."
+    smoothSamples = max(2, round(sr * 0.005))
+    
+    for pass to smoothing
+        selectObject: envelope_sound
+        Formula: ~ if col > smoothSamples and col < ncol - smoothSamples then (self[col - smoothSamples] + self[col] + self[col + smoothSamples]) / 3 else self fi
+    endfor
+endif
+
+# ============================================================
+# APPLY ENVELOPE VIA INTENSITY TIER
+# ============================================================
+
+appendInfoLine: "Applying envelope..."
+
+tier = Create IntensityTier: "env", 0, duration
+
+for i from 0 to numPoints
+    t = envTime[i]
+    
+    selectObject: envelope_sound
+    amp = Get value at time: 1, t, "Cubic"
+    if amp = undefined
+        amp = 0
+    endif
+    
+    # Convert to dB
+    if amp > 0.0001
         db = 20 * log10(amp)
     else
-        db = -100
+        db = -80
+    endif
+    
+    if db < -80
+        db = -80
+    endif
+    if db > 0
+        db = 0
     endif
     
     selectObject: tier
     Add point: t, db
 endfor
 
-# Apply envelope to sound
+# Apply
 selectObject: sound, tier
 result = Multiply
-Rename: sound_name$ + "_enveloped"
+Rename: sound_name$ + "_" + envName$
 
-# Plot in Picture window
-Erase all
-Black
+if normalize
+    selectObject: result
+    Scale peak: 0.95
+endif
 
-# Plot original sound
-selectObject: sound
-Select outer viewport: 0, 6, 0, 2
-Draw: 0, 0, 0, 0, "no", "Curve"
-Draw inner box
-Marks left every: 1, 0.5, "yes", "yes", "no"
-Text left: "yes", "Original"
+# ============================================================
+# VISUALIZATION
+# ============================================================
 
-# Plot envelope (as Sound)
-selectObject: envelope_viz
-Select outer viewport: 0, 6, 2, 4
-Draw: 0, 0, 0, 0, "no", "Curve"
-Draw inner box
-Marks left every: 1, 0.5, "yes", "yes", "no"
-Text left: "yes", "Envelope"
+if visualize
+    appendInfoLine: "Creating visualization..."
+    
+    Erase all
+    
+    # Title
+    Select outer viewport: 1, 8, 0, 0.4
+    Font size: 11
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Envelope Application## | " + envName$ + " | " + presetName$
+    
+    # Original
+    Select outer viewport: 0, 8, 0.5, 1.8
+    Select inner viewport: 0.6, 7.6, 0.6, 1.6
+    selectObject: sound
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Select outer viewport: 0.2, 8, 0.5, 1.8
+    Text left: "yes", "Input"
+    
+    # Envelope with ADSR stage colors
+    Select outer viewport: 0, 8, 1.9, 3.2
+    Select inner viewport: 0.6, 7.6, 2.0, 3.0
+    
+    Axes: 0, duration, 0, 1.1
+    
+    if envelope_type = 10
+        # ADSR stage markers
+        .sus = sustain
+        if .sus = 0
+            .sus = duration - attack - decay - release
+            if .sus < 0
+                .sus = 0
+            endif
+        endif
+        
+        Paint rectangle: "{0.85, 0.95, 0.85}", 0, attack, 0, 1.1
+        Paint rectangle: "{0.95, 0.95, 0.85}", attack, attack + decay, 0, 1.1
+        Paint rectangle: "{0.85, 0.85, 0.95}", attack + decay, attack + decay + .sus, 0, 1.1
+        Paint rectangle: "{0.95, 0.85, 0.85}", attack + decay + .sus, duration, 0, 1.1
+        
+        Font size: 6
+        Colour: "{0.3, 0.6, 0.3}"
+        Text: attack / 2, "centre", 1.05, "half", "A"
+        Colour: "{0.6, 0.6, 0.3}"
+        Text: attack + decay / 2, "centre", 1.05, "half", "D"
+        Colour: "{0.3, 0.3, 0.6}"
+        Text: attack + decay + .sus / 2, "centre", 1.05, "half", "S"
+        Colour: "{0.6, 0.3, 0.3}"
+        Text: attack + decay + .sus + release / 2, "centre", 1.05, "half", "R"
+    else
+        Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, 1.1
+    endif
+    
+    selectObject: envelope_sound
+    Colour: "{0.8, 0.3, 0.2}"
+    Line width: 2
+    Draw: 0, 0, 0, 1.1, "no", "Curve"
+    
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Envelope"
+    
+    # Result
+    Select outer viewport: 0, 8, 3.3, 4.6
+    Select inner viewport: 0.6, 7.6, 3.4, 4.4
+    selectObject: result
+    Colour: "{0.3, 0.5, 0.7}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Result"
+    Text bottom: "yes", "Time (s)"
+    
+    # Parameters
+    Select outer viewport: 0, 8, 4.7, 5.1
+    Font size: 6
+    Colour: "{0.4, 0.4, 0.4}"
+    
+    if envelope_type = 10
+        Text: 0.5, "centre", 0.5, "half", "A:" + fixed$(attack*1000, 0) + "ms D:" + fixed$(decay*1000, 0) + "ms S:" + fixed$(sustain_level*100, 0) + "% R:" + fixed$(release*1000, 0) + "ms"
+    elsif envelope_type = 9 or envelope_type = 8
+        Text: 0.5, "centre", 0.5, "half", "Attack:" + fixed$(attack*1000, 0) + "ms Release:" + fixed$(release*1000, 0) + "ms Curve:" + fixed$(curve_amount, 1)
+    elsif envelope_type = 11
+        Text: 0.5, "centre", 0.5, "half", "Rate:" + fixed$(tremolo_rate_Hz, 1) + "Hz Depth:" + fixed$(tremolo_depth*100, 0) + "%"
+    else
+        Text: 0.5, "centre", 0.5, "half", "Start:" + fixed$(start_level, 2) + " End:" + fixed$(end_level, 2) + " Peak:" + fixed$(peak_level, 2)
+    endif
+    
+    Font size: 10
+    Colour: "Black"
+endif
 
-# Plot result
+# ============================================================
+# CLEANUP & OUTPUT
+# ============================================================
+
+removeObject: tier, envelope_sound
 selectObject: result
-Select outer viewport: 0, 6, 4, 6
-Draw: 0, 0, 0, 0, "no", "Curve"
-Draw inner box
-Marks left every: 1, 0.5, "yes", "yes", "no"
-Marks bottom every: 1, 0.5, "yes", "yes", "no"
-Text left: "yes", "Result"
-Text bottom: "yes", "Time (s)"
 
-# Clean up
-removeObject: tier, envelope_viz
+appendInfoLine: ""
+appendInfoLine: "=============================================="
+appendInfoLine: "  COMPLETE: ", selected$("Sound")
+appendInfoLine: "=============================================="
+
+if play
+    appendInfoLine: "Playing..."
+    Play
+endif
+
 selectObject: result
-
-writeInfoLine: "Envelope applied successfully!"
-appendInfoLine: "Result displayed in Picture window"
-Play
