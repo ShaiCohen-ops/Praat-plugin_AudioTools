@@ -609,6 +609,122 @@ for layer_idx from 1 to nLayers
 endfor
 
 # ============================================
+# VISUALIZATION
+# ============================================
+
+appendInfoLine: ""
+appendInfoLine: "Creating visualization..."
+
+Erase all
+
+# === TITLE ===
+Select outer viewport: 1, 8, 0, 0.5
+Font size: 12
+Colour: "Black"
+Text: 0.5, "centre", 0.5, "half", "##Neural Ambient Drone## | " + presetName$ + " | " + string$(nLayers) + " layers"
+
+# === SOURCE WAVEFORM ===
+Select outer viewport: 0, 8, 0.6, 2.0
+Select inner viewport: 0.8, 7.6, 0.8, 1.8
+
+selectObject: snd
+Colour: "{0.5, 0.5, 0.5}"
+Draw: 0, 0, 0, 0, "no", "Curve"
+
+Colour: "Black"
+Draw inner box
+Font size: 7
+Select outer viewport: 0.15, 8, 0.6, 2.0
+Text left: "yes", "Source"
+
+# === CLUSTER ANALYSIS (HNR over time with cluster coloring) ===
+Select outer viewport: 0, 8, 2.1, 3.8
+Select inner viewport: 0.8, 7.6, 2.3, 3.6
+
+# Find HNR range
+hnr_min = 1e9
+hnr_max = -1e9
+for i from 1 to nGrains
+    if feat_hnr#[i] < hnr_min
+        hnr_min = feat_hnr#[i]
+    endif
+    if feat_hnr#[i] > hnr_max
+        hnr_max = feat_hnr#[i]
+    endif
+endfor
+
+hnr_range = hnr_max - hnr_min
+if hnr_range < 1
+    hnr_range = 1
+endif
+
+Axes: 0, dur, hnr_min - 2, hnr_max + 2
+
+# Background
+Paint rectangle: "{0.95, 0.95, 0.95}", 0, dur, hnr_min - 2, hnr_max + 2
+
+# Draw grains colored by cluster
+for i from 1 to nGrains
+    t = grain_time#[i]
+    h = feat_hnr#[i]
+    cluster = assigns#[i]
+    
+    # Color by cluster - put color directly in Paint command
+    if cluster = best_cluster
+        Paint circle (mm): "{0.2, 0.7, 0.3}", t, h, 1.0
+    elsif cluster = 1
+        Paint circle (mm): "{0.7, 0.3, 0.3}", t, h, 1.0
+    elsif cluster = 2
+        Paint circle (mm): "{0.3, 0.3, 0.7}", t, h, 1.0
+    elsif cluster = 3
+        Paint circle (mm): "{0.7, 0.5, 0.2}", t, h, 1.0
+    else
+        Paint circle (mm): "{0.5, 0.5, 0.5}", t, h, 1.0
+    endif
+endfor
+
+# Mark selected cluster
+Colour: "Black"
+Font size: 6
+Text: dur * 0.02, "left", hnr_max, "top", "Green = Selected (Cluster " + string$(best_cluster) + ")"
+
+Colour: "Black"
+Draw inner box
+Font size: 7
+Select outer viewport: 0.15, 8, 2.1, 3.8
+Text left: "yes", "HNR (dB)"
+
+# === OUTPUT WAVEFORM ===
+Select outer viewport: 0, 8, 3.9, 5.5
+Select inner viewport: 0.8, 7.6, 4.1, 5.3
+
+selectObject: finalOut
+Colour: "{0.3, 0.5, 0.7}"
+Draw: 0, 0, 0, 0, "no", "Curve"
+
+Colour: "Black"
+Draw inner box
+Font size: 7
+Select outer viewport: 0.15, 8, 3.9, 5.5
+Text left: "yes", "Output"
+Text bottom: "yes", "Time (s)"
+
+# === INFO BOX ===
+Select outer viewport: 0, 8, 5.6, 6.1
+Font size: 6
+Colour: "{0.4, 0.4, 0.4}"
+
+shimmerText$ = ""
+if add_octave_shimmer
+    shimmerText$ = " | Shimmer: " + fixed$(shimmer_probability * 100, 0) + "%"
+endif
+
+Text: 0.5, "centre", 0.5, "half", "Grain: " + string$(grain_size_ms) + "ms | Clusters: " + string$(number_of_clusters) + " | Tonal grains: " + string$(tonal_count) + "/" + string$(nGrains) + shimmerText$
+
+Font size: 10
+Colour: "Black"
+
+# ============================================
 # CLEANUP & FINISH
 # ============================================
 
