@@ -17,7 +17,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-form Compositional Canon (v10 Bulletproof)
+form Compositional Canon
     comment Preset / Style:
     optionmenu Preset 1
         option Custom
