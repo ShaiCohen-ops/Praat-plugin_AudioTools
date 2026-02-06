@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Fixed and enhanced
+# Version: 0.3 (2025) - Fixed presets, resampling, compact form
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,19 +13,18 @@
 #
 # Usage:
 #   Select 1-8 Sound objects and run this script.
-#   Adjust gains via the form dialog.
+#   Sounds are mixed in selection order (first selected = Sound 1).
 #
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.2:
-#   - Fixed form option syntax
-#   - Fixed array variable syntax for Praat compatibility
-#   - Added input validation before form
-#   - Added more presets
-#   - Improved visualization with gain bars
-#   - Better object reference handling
+# Changelog v0.3:
+#   - Fixed preset calculations to work with any number of sounds
+#   - Added automatic sample rate matching with resampling
+#   - Compact form (fits on screen)
+#   - Improved formula syntax
+#   - Better duration mismatch warnings
 # ============================================================
 
 # === Input Validation (before form) ===
@@ -37,12 +36,12 @@ if numSounds > 8
     exitScript: "Too many sounds selected! Maximum is 8."
 endif
 
-# Store sound IDs before form (form clears selection in some cases)
+# Store sound IDs before form
 for i from 1 to numSounds
     tempSoundID_'i' = selected("Sound", i)
 endfor
 
-form Stereo Mixer v0.2
+form Stereo Mixer v0.3
     comment === PRESET PANNING ===
     optionmenu Preset: 1
         option Custom (use gains below)
@@ -54,30 +53,16 @@ form Stereo Mixer v0.2
         option Fade L to R
         option Fade R to L
         option V Shape (outside in)
-    comment === SOUND 1 ===
+    comment === CUSTOM GAINS (Sound 1-4 shown, edit script for 5-8) ===
+    comment Sounds mixed in selection order
     real Gain_1_L 1.0
     real Gain_1_R 1.0
-    comment === SOUND 2 ===
     real Gain_2_L 1.0
     real Gain_2_R 1.0
-    comment === SOUND 3 ===
     real Gain_3_L 1.0
     real Gain_3_R 1.0
-    comment === SOUND 4 ===
     real Gain_4_L 1.0
     real Gain_4_R 1.0
-    comment === SOUND 5 ===
-    real Gain_5_L 1.0
-    real Gain_5_R 1.0
-    comment === SOUND 6 ===
-    real Gain_6_L 1.0
-    real Gain_6_R 1.0
-    comment === SOUND 7 ===
-    real Gain_7_L 1.0
-    real Gain_7_R 1.0
-    comment === SOUND 8 ===
-    real Gain_8_L 1.0
-    real Gain_8_R 1.0
     comment === OUTPUT ===
     boolean Normalize_output 1
     real Target_peak 0.95
@@ -89,6 +74,7 @@ endform
 gainL# = zero#(8)
 gainR# = zero#(8)
 
+# Load form values
 gainL#[1] = gain_1_L
 gainR#[1] = gain_1_R
 gainL#[2] = gain_2_L
@@ -97,26 +83,28 @@ gainL#[3] = gain_3_L
 gainR#[3] = gain_3_R
 gainL#[4] = gain_4_L
 gainR#[4] = gain_4_R
-gainL#[5] = gain_5_L
-gainR#[5] = gain_5_R
-gainL#[6] = gain_6_L
-gainR#[6] = gain_6_R
-gainL#[7] = gain_7_L
-gainR#[7] = gain_7_R
-gainL#[8] = gain_8_L
-gainR#[8] = gain_8_R
 
-# === Apply Presets ===
+# Default gains for sounds 5-8 (edit here if needed)
+gainL#[5] = 1.0
+gainR#[5] = 1.0
+gainL#[6] = 1.0
+gainR#[6] = 1.0
+gainL#[7] = 1.0
+gainR#[7] = 1.0
+gainL#[8] = 1.0
+gainR#[8] = 1.0
+
+# === Apply Presets (FIXED for any numSounds) ===
 if preset = 2
     # All Center
-    for i from 1 to 8
+    for i from 1 to numSounds
         gainL#[i] = 1.0
         gainR#[i] = 1.0
     endfor
     presetName$ = "Center"
 elsif preset = 3
     # Stereo Spread (Alternate)
-    for i from 1 to 8
+    for i from 1 to numSounds
         if (i mod 2) = 1
             gainL#[i] = 1.0
             gainR#[i] = 0.3
@@ -128,7 +116,7 @@ elsif preset = 3
     presetName$ = "Spread"
 elsif preset = 4
     # Wide Spread (hard L/R)
-    for i from 1 to 8
+    for i from 1 to numSounds
         if (i mod 2) = 1
             gainL#[i] = 1.0
             gainR#[i] = 0.0
@@ -140,43 +128,63 @@ elsif preset = 4
     presetName$ = "WideSpread"
 elsif preset = 5
     # Left Heavy
-    for i from 1 to 8
+    for i from 1 to numSounds
         gainL#[i] = 1.0
         gainR#[i] = 0.3
     endfor
     presetName$ = "LeftHeavy"
 elsif preset = 6
     # Right Heavy
-    for i from 1 to 8
+    for i from 1 to numSounds
         gainL#[i] = 0.3
         gainR#[i] = 1.0
     endfor
     presetName$ = "RightHeavy"
 elsif preset = 7
-    # Fade L to R
-    for i from 1 to 8
-        progress = (i - 1) / 7
+    # Fade L to R (FIXED)
+    for i from 1 to numSounds
+        if numSounds > 1
+            progress = (i - 1) / (numSounds - 1)
+        else
+            progress = 0
+        endif
         gainL#[i] = 1.0 - progress
         gainR#[i] = progress
     endfor
     presetName$ = "FadeLR"
 elsif preset = 8
-    # Fade R to L
-    for i from 1 to 8
-        progress = (i - 1) / 7
+    # Fade R to L (FIXED)
+    for i from 1 to numSounds
+        if numSounds > 1
+            progress = (i - 1) / (numSounds - 1)
+        else
+            progress = 0
+        endif
         gainL#[i] = progress
         gainR#[i] = 1.0 - progress
     endfor
     presetName$ = "FadeRL"
 elsif preset = 9
-    # V Shape (outside to center)
-    for i from 1 to 8
-        if i <= 4
-            progress = (i - 1) / 3
+    # V Shape (FIXED - outside to center)
+    midpoint = (numSounds + 1) / 2
+    for i from 1 to numSounds
+        if i <= midpoint
+            # First half: L->C
+            if midpoint > 1
+                progress = (i - 1) / (midpoint - 1)
+            else
+                progress = 0
+            endif
             gainL#[i] = 1.0 - progress * 0.7
             gainR#[i] = 0.3 + progress * 0.7
         else
-            progress = (i - 5) / 3
+            # Second half: C->R
+            remaining = numSounds - midpoint
+            if remaining > 0
+                progress = (i - midpoint) / remaining
+            else
+                progress = 0
+            endif
             gainL#[i] = 0.3 + progress * 0.7
             gainR#[i] = 1.0 - progress * 0.7
         endif
@@ -186,13 +194,14 @@ else
     presetName$ = "Custom"
 endif
 
-writeInfoLine: "=== Stereo Mixer v0.2 ==="
+writeInfoLine: "=== Stereo Mixer v0.3 ==="
 appendInfoLine: "Mixing ", numSounds, " sounds"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 
 # === Restore Sound IDs and Get Properties ===
 maxDur = 0
+minDur = 1e10
 maxSR = 0
 
 for i from 1 to numSounds
@@ -206,16 +215,25 @@ for i from 1 to numSounds
     if dur > maxDur
         maxDur = dur
     endif
+    if dur < minDur
+        minDur = dur
+    endif
     if sr > maxSR
         maxSR = sr
     endif
     
-    appendInfoLine: "Sound ", i, ": ", soundName_'i'$, " (", fixed$(dur, 2), "s)"
+    appendInfoLine: "Sound ", i, ": ", soundName_'i'$, " (", fixed$(dur, 2), "s, ", sr, " Hz)"
 endfor
 
 appendInfoLine: ""
 appendInfoLine: "Output duration: ", fixed$(maxDur, 3), " s"
 appendInfoLine: "Sample rate: ", maxSR, " Hz"
+
+# Warn about duration mismatches
+if maxDur - minDur > 0.1
+    appendInfoLine: "⚠ Duration mismatch: ", fixed$(minDur, 2), "-", fixed$(maxDur, 2), "s (shorter sounds end early)"
+endif
+
 appendInfoLine: ""
 
 # === Create Output Buffer ===
@@ -231,10 +249,19 @@ for i from 1 to numSounds
     
     selectObject: thisID
     nCh = Get number of channels
+    thisSR = Get sampling frequency
     
     # Create temporary copy
     Copy: "temp_mix_layer"
     tempID = selected("Sound")
+    
+    # RESAMPLE if needed (CRITICAL FIX)
+    if thisSR <> maxSR
+        appendInfoLine: "  Resampling Sound ", i, " from ", thisSR, " to ", maxSR, " Hz"
+        Resample: maxSR, 50
+        removeObject: tempID
+        tempID = selected("Sound")
+    endif
     
     # Convert mono to stereo
     if nCh = 1
@@ -248,24 +275,25 @@ for i from 1 to numSounds
     valL = gainL#[i]
     valR = gainR#[i]
     
-    # Apply gains
+    # Apply gains with modern syntax
     selectObject: tempID
     valLstr$ = string$(valL)
     valRstr$ = string$(valR)
     Formula (part): 0, 0, 1, 1, "self * " + valLstr$
     Formula (part): 0, 0, 2, 2, "self * " + valRstr$
     
-    # Add to result
-    tempIDstr$ = string$(tempID)
+    # Add to result (modern object reference)
+    plusObj = tempID
     selectObject: resultID
-    Formula: "self + Object_" + tempIDstr$ + "[row, col]"
+    Formula: "self + object[plusObj, col]"
     
     # Cleanup
     removeObject: tempID
     
     # Calculate pan position for display
-    if valL + valR > 0
-        pan = (valR - valL) / (valL + valR)
+    totalGain = valL + valR
+    if totalGain > 1e-6
+        pan = (valR - valL) / totalGain
     else
         pan = 0
     endif
@@ -301,7 +329,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 10, 0, 0.6
+    Select outer viewport: 1, 10, 0, 0.6
     Font size: 14
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Stereo Mixer: " + resultName$
@@ -334,15 +362,16 @@ if draw_visualization
         r = gainR#[i]
         
         # Calculate pan position (-1 to +1)
-        if l + r > 0
-            pan = (r - l) / (l + r)
+        totalGain = l + r
+        if totalGain > 1e-6
+            pan = (r - l) / totalGain
         else
             pan = 0
         endif
         
         # Size based on total gain
-        totalGain = (l + r) / 2
-        circleSize = 2 + totalGain * 2
+        avgGain = totalGain / 2
+        circleSize = 2 + avgGain * 2
         if circleSize < 1
             circleSize = 1
         endif
