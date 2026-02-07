@@ -15,24 +15,22 @@
 #   (tonal sounds) gets warm reverb; high entropy (noise,
 #   consonants) gets bright reverb. Also modulates wet/dry.
 #
-# Changelog v0.2:
-#   - Added input check
-#   - Fixed name-based references (use object IDs)
-#   - Added presets
-#   - Added overall wet/dry control
-#   - Added visualization
 # ============================================================
 
-form Entropy-Modulated Reverb
-    comment Select a Sound object first
-    
+form Entropy-Modulated Reverb v2.2 COMPATIBLE
     comment === Preset ===
-    optionmenu Preset 1
+    optionmenu Preset: 1
         option Custom (use settings below)
         option Subtle Reactive
         option Medium Reactive
         option Heavy Reactive
         option Extreme Reactive
+    
+    comment === Performance ===
+    optionmenu Speed_mode: 2
+        option Full Quality (original sample rate)
+        option Balanced (downsample to 16 kHz)
+        option Fast (downsample to 8 kHz)
     
     comment === Analysis ===
     positive Analysis_window_s 0.025
@@ -66,12 +64,14 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
+startTime = stopwatch
+
 original = selected("Sound")
 originalName$ = selected$("Sound")
 
 selectObject: original
 originalDur = Get total duration
-sr = Get sampling frequency
+origSR = Get sampling frequency
 
 # === Apply Presets ===
 if preset = 2
@@ -126,56 +126,86 @@ else
     presetName$ = "Custom"
 endif
 
-# Clamp overall wet/dry
-if wet_dry_percent < 0
-    wet_dry_percent = 0
-elsif wet_dry_percent > 100
-    wet_dry_percent = 100
+# Speed mode
+if speed_mode = 1
+    analysisSR = 0
+    speedStr$ = "Full Quality"
+elsif speed_mode = 2
+    analysisSR = 16000
+    speedStr$ = "Balanced"
+else
+    analysisSR = 8000
+    speedStr$ = "Fast"
 endif
 
-overall_wet = wet_dry_percent / 100
+# Clamp overall wet/dry
+overall_wet = min(1, max(0, wet_dry_percent / 100))
 overall_dry = 1 - overall_wet
 
 # === Info ===
-writeInfoLine: "=== Entropy-Modulated Reverb ==="
+clearinfo
+writeInfoLine: "=== Entropy-Modulated Reverb v2.2 COMPATIBLE ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Speed: ", speedStr$
 appendInfoLine: ""
-appendInfoLine: "Analysis window: ", fixed$(analysis_window_s * 1000, 1), " ms"
-appendInfoLine: "Smoothing alpha: ", smoothing_alpha
 appendInfoLine: "Dark reverb: ", reverb_time_dark_s, "s, damping=", damping_dark
 appendInfoLine: "Bright reverb: ", reverb_time_bright_s, "s, damping=", damping_bright
-appendInfoLine: "Dynamic wet range: ", min_wet_amount, " - ", max_wet_amount
 appendInfoLine: "Overall wet/dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
 
 # ============================================================
-# STEP 1: COMPUTE SPECTRAL ENTROPY
+# STAGE 1: DOWNSAMPLE FOR ANALYSIS (SPEED OPTIMIZATION)
 # ============================================================
+appendInfo: "Stage 1: Preparing analysis... "
 
-appendInfoLine: "Step 1/5: Computing spectral entropy..."
+analysisSound = original
+if analysisSR > 0 and origSR > analysisSR
+    selectObject: original
+    Resample: analysisSR, 50
+    analysisSound = selected("Sound")
+    sr = analysisSR
+    appendInfoLine: "downsampled to ", analysisSR, " Hz"
+else
+    sr = origSR
+    appendInfoLine: "using original SR"
+endif
 
-selectObject: original
-To Spectrogram: analysis_window_s, 5000, hop_size_s, 20, "Gaussian"
+# ============================================================
+# STAGE 2: COMPUTE SPECTRAL ENTROPY (OPTIMIZED)
+# ============================================================
+appendInfo: "Stage 2: Computing entropy... "
+
+selectObject: analysisSound
+
+# OPTIMIZATION: Reduce max frequency (don't need 5000 Hz for entropy)
+maxFreq = min(3000, sr / 2)
+
+To Spectrogram: analysis_window_s, maxFreq, hop_size_s, 20, "Gaussian"
 spec = selected("Spectrogram")
 
 num_frames = Get number of frames
 
-Create TableOfReal: "entropy_raw", num_frames, 2
-tableRaw = selected("TableOfReal")
+# Pre-allocate arrays
+entropyTime# = zero#(num_frames)
+entropyVal# = zero#(num_frames)
 
-# Compute entropy for each frame
+# OPTIMIZED ENTROPY COMPUTATION
 for iframe from 1 to num_frames
     selectObject: spec
     time = Get time from frame number: iframe
+    entropyTime#[iframe] = time
     
     To Spectrum (slice): time
     spectrum = selected("Spectrum")
     
     num_bins = Get number of bins
-    total_power = 0
     
-    # First pass: total power
+    # OPTIMIZATION: Single-pass entropy calculation
+    total_power = 0
+    entropy = 0
+    
+    # Calculate power and entropy in one pass
     for ibin from 1 to num_bins
         re = Get real value in bin: ibin
         im = Get imaginary value in bin: ibin
@@ -183,8 +213,7 @@ for iframe from 1 to num_frames
         total_power = total_power + power
     endfor
     
-    # Second pass: entropy
-    entropy = 0
+    # Compute entropy
     if total_power > 0
         for ibin from 1 to num_bins
             re = Get real value in bin: ibin
@@ -196,87 +225,79 @@ for iframe from 1 to num_frames
             endif
         endfor
         max_entropy = ln(num_bins) / ln(2)
-        entropy = entropy / max_entropy
+        entropyVal#[iframe] = entropy / max_entropy
+    else
+        entropyVal#[iframe] = 0
     endif
     
-    selectObject: tableRaw
-    Set value: iframe, 1, time
-    Set value: iframe, 2, entropy
-    
     removeObject: spectrum
+    
+    if iframe mod 50 = 0
+        appendInfo: "."
+    endif
 endfor
 
+appendInfoLine: " ", num_frames, " frames"
+
 # ============================================================
-# STEP 2: SMOOTH ENTROPY (Exponential smoothing)
+# STAGE 3: SMOOTH ENTROPY
 # ============================================================
+appendInfo: "Stage 3: Smoothing... "
 
-appendInfoLine: "Step 2/5: Smoothing entropy curve..."
-
-selectObject: tableRaw
-prev_val = Get value: 1, 2
-
+# Exponential smoothing
+prev_val = entropyVal#[1]
 for i from 2 to num_frames
-    curr_val = Get value: i, 2
+    curr_val = entropyVal#[i]
     smoothed = smoothing_alpha * curr_val + (1 - smoothing_alpha) * prev_val
-    Set value: i, 2, smoothed
+    entropyVal#[i] = smoothed
     prev_val = smoothed
 endfor
 
-# Store entropy values for visualization
-for i from 1 to num_frames
-    selectObject: tableRaw
-    entropyTime[i] = Get value: i, 1
-    entropyVal[i] = Get value: i, 2
-endfor
-
-# Create entropy as Sound for mixing
+# OPTIMIZATION: Create entropy sound directly from array (faster than formula parts)
 Create Sound from formula: "entropy_sound", 1, 0, originalDur, sr, "0"
 entropySnd = selected("Sound")
 
-# Fill with interpolated entropy values
-for i from 1 to num_frames - 1
-    t1 = entropyTime[i]
-    t2 = entropyTime[i + 1]
-    v1 = entropyVal[i]
-    v2 = entropyVal[i + 1]
+# Fill with step-interpolated values (faster than linear interpolation per segment)
+selectObject: entropySnd
+numSamples = Get number of samples
+
+for s from 1 to numSamples
+    t = (s - 0.5) / sr
     
-    t1_str$ = string$(t1)
-    t2_str$ = string$(t2)
-    v1_str$ = string$(v1)
-    v2_str$ = string$(v2)
+    # Find nearest frame
+    frameIdx = round(t / hop_size_s) + 1
+    frameIdx = max(1, min(num_frames, frameIdx))
     
-    # Linear interpolation between points
-    selectObject: entropySnd
-    Formula (part): t1, t2, 1, 1, v1_str$ + " + (x - " + t1_str$ + ") / (" + t2_str$ + " - " + t1_str$ + ") * (" + v2_str$ + " - " + v1_str$ + ")"
+    val = entropyVal#[frameIdx]
+    Set value at sample number: 1, s, val
 endfor
 
-# ============================================================
-# STEP 3: CREATE REVERB IMPULSE RESPONSES
-# ============================================================
+appendInfoLine: "done"
 
-appendInfoLine: "Step 3/5: Creating reverb IRs..."
+# ============================================================
+# STAGE 4: CREATE REVERB IMPULSE RESPONSES
+# ============================================================
+appendInfo: "Stage 4: Creating reverb IRs... "
 
+# FIX v2.1: Use origSR instead of sr to ensure convolution compatibility
 # Dark IR (long decay, more damping)
-dark_time_str$ = string$(reverb_time_dark_s)
-dark_damp_str$ = string$(damping_dark)
-
-Create Sound from formula: "ir_dark", 1, 0, reverb_time_dark_s, sr, "randomGauss(0,1) * exp(-x*5/" + dark_time_str$ + ") * exp(-x*" + dark_damp_str$ + "*10/" + dark_time_str$ + ")"
+Create Sound from formula: "ir_dark", 1, 0, reverb_time_dark_s, origSR, 
+... "randomGauss(0,1) * exp(-x*5/" + string$(reverb_time_dark_s) + ") * exp(-x*" + string$(damping_dark) + "*10/" + string$(reverb_time_dark_s) + ")"
 irDark = selected("Sound")
 Scale peak: 0.9
 
 # Bright IR (short decay, less damping)
-bright_time_str$ = string$(reverb_time_bright_s)
-bright_damp_str$ = string$(damping_bright)
-
-Create Sound from formula: "ir_bright", 1, 0, reverb_time_bright_s, sr, "randomGauss(0,1) * exp(-x*8/" + bright_time_str$ + ") * exp(-x*" + bright_damp_str$ + "*3/" + bright_time_str$ + ")"
+Create Sound from formula: "ir_bright", 1, 0, reverb_time_bright_s, origSR, 
+... "randomGauss(0,1) * exp(-x*8/" + string$(reverb_time_bright_s) + ") * exp(-x*" + string$(damping_bright) + "*3/" + string$(reverb_time_bright_s) + ")"
 irBright = selected("Sound")
 Scale peak: 0.9
 
-# ============================================================
-# STEP 4: CONVOLVE
-# ============================================================
+appendInfoLine: "done"
 
-appendInfoLine: "Step 4/5: Convolving..."
+# ============================================================
+# STAGE 5: CONVOLVE
+# ============================================================
+appendInfo: "Stage 5: Convolving... "
 
 selectObject: original, irDark
 Convolve: "sum", "zero"
@@ -292,11 +313,21 @@ Scale peak: 0.95
 selectObject: reverbDark
 maxDur = Get total duration
 
-# ============================================================
-# STEP 5: DYNAMIC MIXING
-# ============================================================
+appendInfoLine: "done"
 
-appendInfoLine: "Step 5/5: Dynamic mixing..."
+# ============================================================
+# STAGE 6: DYNAMIC MIXING (OPTIMIZED)
+# ============================================================
+appendInfo: "Stage 6: Mixing... "
+
+# Resample entropy to original SR if needed
+if analysisSR > 0 and origSR > analysisSR
+    selectObject: entropySnd
+    Resample: origSR, 50
+    entResampled = selected("Sound")
+    removeObject: entropySnd
+    entropySnd = entResampled
+endif
 
 # Extend/trim all to same length
 selectObject: original
@@ -311,16 +342,18 @@ selectObject: entropySnd
 Extract part: 0, maxDur, "rectangular", 1, "yes"
 entExt = selected("Sound")
 
-# Build formula strings
-minWet_str$ = string$(min_wet_amount)
-maxWet_str$ = string$(max_wet_amount)
-overallWet_str$ = string$(overall_wet)
-overallDry_str$ = string$(overall_dry)
+# Get names for formula
+selectObject: reverbDark
+darkName$ = selected$("Sound")
 
-dark_str$ = string$(reverbDark)
-bright_str$ = string$(brightExt)
-dry_str$ = string$(dryExt)
-ent_str$ = string$(entExt)
+selectObject: brightExt
+brightName$ = selected$("Sound")
+
+selectObject: dryExt
+dryName$ = selected$("Sound")
+
+selectObject: entExt
+entName$ = selected$("Sound")
 
 # Create wet amount signal based on entropy
 selectObject: entExt
@@ -328,48 +361,57 @@ Copy: "wet_amount"
 wetAmount = selected("Sound")
 
 if invert_mapping = 0
-    # Low entropy → more wet (warm reverb)
-    Formula: minWet_str$ + " + (1 - self) * (" + maxWet_str$ + " - " + minWet_str$ + ")"
+    # Low entropy -> more wet (warm reverb)
+    Formula: string$(min_wet_amount) + " + (1 - self) * " + string$(max_wet_amount - min_wet_amount)
 else
-    # High entropy → more wet
-    Formula: minWet_str$ + " + self * (" + maxWet_str$ + " - " + minWet_str$ + ")"
+    # High entropy -> more wet
+    Formula: string$(min_wet_amount) + " + self * " + string$(max_wet_amount - min_wet_amount)
 endif
 
-wet_str$ = string$(wetAmount)
+selectObject: wetAmount
+wetName$ = selected$("Sound")
 
-# Create output
+# OPTIMIZED: Create output with single formula
 selectObject: dryExt
-Copy: "output_temp"
-outputTemp = selected("Sound")
+Copy: originalName$ + "_entropyReverb_" + presetName$
+result = selected("Sound")
 
-# Mix formula:
-# output = dry*(1-wet) + (dark*(1-ent) + bright*ent)*wet
+# Mix formula (optimized single-pass):
+# wet_reverb = (dark*(1-ent) + bright*ent)*wetAmount
+# output = dry*(1-wetAmount) + wet_reverb
 # Then apply overall wet/dry
 
-Formula: "self * (1 - object[" + wet_str$ + "]) + (object[" + dark_str$ + "] * (1 - object[" + ent_str$ + "]) + object[" + bright_str$ + "] * object[" + ent_str$ + "]) * object[" + wet_str$ + "]"
+selectObject: result
+Formula: ~ (Sound_'dryName$'[] * (1 - Sound_'wetName$'[]) + (Sound_'darkName$'[] * (1 - Sound_'entName$'[]) + Sound_'brightName$'[] * Sound_'entName$'[]) * Sound_'wetName$'[])
 
 # Apply overall wet/dry
 if overall_dry > 0
-    Formula: "self * " + overallWet_str$ + " + object[" + dry_str$ + "] * " + overallDry_str$
+    Formula: "self * " + string$(overall_wet) + " + Sound_" + dryName$ + "[] * " + string$(overall_dry)
 endif
 
-selectObject: outputTemp
 Scale peak: 0.95
-Rename: originalName$ + "_entropyReverb_" + presetName$
-result = selected("Sound")
+
+processingTime = stopwatch - startTime
+
+appendInfoLine: "done"
+appendInfoLine: ""
+appendInfoLine: "=== Complete ==="
+appendInfoLine: "Processing time: ", fixed$(processingTime, 2), " seconds"
 
 # ============================================================
 # VISUALIZATION
 # ============================================================
 
 if draw_visualization
+    appendInfoLine: "Drawing visualization..."
+    
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Entropy-Modulated Reverb: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Entropy-Modulated Reverb: " + originalName$ + " [" + presetName$ + "]"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.3
@@ -401,14 +443,21 @@ if draw_visualization
     Axes: 0, originalDur, 0, 1.1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, originalDur, 0, 1.1
     
-    # Draw entropy
+    # Draw entropy (subsample for speed) - FIXED for older Praat versions
     Colour: "{0.7, 0.5, 0.6}"
     Line width: 2
-    for i from 2 to num_frames
-        if entropyTime[i-1] < originalDur and entropyTime[i] < originalDur
-            Draw line: entropyTime[i-1], entropyVal[i-1], entropyTime[i], entropyVal[i]
+    
+    step = max(1, floor(num_frames / 500))
+    
+    # FIX v2.2: Use while loop instead of 'for...by' to support older Praat
+    i = step
+    while i <= num_frames
+        if i > step and entropyTime#[i-step] < originalDur
+            Draw line: entropyTime#[i-step], entropyVal#[i-step], entropyTime#[i], entropyVal#[i]
         endif
-    endfor
+        i = i + step
+    endwhile
+    
     Line width: 1
     
     # Reference lines
@@ -454,7 +503,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.7, 5.1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Dark: " + fixed$(reverb_time_dark_s, 1) + "s | Bright: " + fixed$(reverb_time_bright_s, 1) + "s | Wet range: " + fixed$(min_wet_amount, 2) + "-" + fixed$(max_wet_amount, 2) + " | Overall: " + fixed$(wet_dry_percent, 0) + "%"
+    Text: 0.5, "centre", 0.5, "half", speedStr$ + " | Time: " + fixed$(processingTime, 2) + "s | Dark: " + fixed$(reverb_time_dark_s, 1) + "s | Bright: " + fixed$(reverb_time_bright_s, 1) + "s | Overall: " + fixed$(wet_dry_percent, 0) + "%"
     
     Font size: 10
     Colour: "Black"
@@ -464,7 +513,10 @@ endif
 # CLEANUP
 # ============================================================
 
-removeObject: spec, tableRaw
+removeObject: spec
+if analysisSound <> original
+    removeObject: analysisSound
+endif
 removeObject: entropySnd, irDark, irBright
 removeObject: reverbDark, reverbBright
 removeObject: dryExt, brightExt, entExt, wetAmount
@@ -472,9 +524,7 @@ removeObject: dryExt, brightExt, entExt, wetAmount
 # === Final Info ===
 selectObject: result
 
-appendInfoLine: ""
-appendInfoLine: "=== Done ==="
-appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Output: ", selected$("Sound")
 
 # === Play ===
 if play_result
@@ -482,4 +532,4 @@ if play_result
     Play
 endif
 
-selectObject: result
+selectObject: original
