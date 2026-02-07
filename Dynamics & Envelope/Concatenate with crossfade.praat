@@ -383,9 +383,10 @@ endproc
 
 
 # ============================================================
-# EXTRACT ALL CHUNKS
+# EXTRACT CHUNKS WITH CHANNEL STANDARDIZATION
 # ============================================================
 
+appendInfoLine: ""
 appendInfoLine: "Extracting chunks..."
 
 totalChunks = 0
@@ -393,29 +394,60 @@ totalChunks = 0
 for i to n
     selectObject: sound[i]
     soundName$[i] = selected$("Sound")
-    soundDur[i] = Get total duration
     
-    for c to chunks_per_file
-        totalChunks = totalChunks + 1
+    for j to chunks_per_file
+        totalChunks += 1
         
+        # Extract chunk
         @extractChunk: sound[i], chunk_mode, fixed_chunk_duration_s, min_chunk_duration_s, max_chunk_duration_s
-        
         chunk[totalChunks] = extractChunk.result
-        chunkDur[totalChunks] = extractChunk.duration
-        chunkSource[totalChunks] = i
-        chunkStart[totalChunks] = extractChunk.start
-        chunkEnd[totalChunks] = extractChunk.end
         
-        appendInfoLine: "  Chunk ", totalChunks, ": ", soundName$[i], " [", fixed$(chunkStart[totalChunks], 2), "-", fixed$(chunkEnd[totalChunks], 2), "s] (", fixed$(chunkDur[totalChunks], 2), "s)"
+        # Store metadata
+        chunkSource[totalChunks] = i
+        
+        selectObject: chunk[totalChunks]
+        chunkDur[totalChunks] = Get total duration
+        chunkChan[totalChunks] = Get number of channels
+        
+        appendInfoLine: "  Chunk ", totalChunks, " from ", soundName$[i], " (", fixed$(chunkDur[totalChunks], 2), "s, ", chunkChan[totalChunks], "ch)"
     endfor
 endfor
 
-appendInfoLine: ""
-appendInfoLine: "Total chunks: ", totalChunks
+# STANDARDIZE CHANNELS - Convert all to match first chunk
+selectObject: chunk[1]
+targetChannels = Get number of channels
 
-if totalChunks < 2
-    exitScript: "Need at least 2 chunks to concatenate"
-endif
+appendInfoLine: ""
+appendInfoLine: "Standardizing channels to ", targetChannels, "..."
+
+for i from 2 to totalChunks
+    selectObject: chunk[i]
+    currentChannels = Get number of channels
+    
+    if currentChannels <> targetChannels
+        if targetChannels = 1
+            # Convert to mono
+            Convert to mono
+            monoChunk = selected("Sound")
+            removeObject: chunk[i]
+            chunk[i] = monoChunk
+            appendInfoLine: "  Converted chunk ", i, " to mono"
+        elsif currentChannels = 1
+            # Convert mono to stereo by duplicating
+            Copy: "temp"
+            tempChunk = selected("Sound")
+            selectObject: chunk[i]
+            plusObject: tempChunk
+            Combine to stereo
+            stereoChunk = selected("Sound")
+            removeObject: chunk[i], tempChunk
+            chunk[i] = stereoChunk
+            appendInfoLine: "  Converted chunk ", i, " to stereo"
+        endif
+    endif
+endfor
+
+appendInfoLine: "  All chunks standardized to ", targetChannels, " channel(s)"
 
 # ============================================================
 # RANDOMIZE ORDER
