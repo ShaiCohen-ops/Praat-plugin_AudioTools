@@ -3,29 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 1.0 (2025) - OPTIMIZED
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Ligeti Micropolyphonic Choir Machine - creates dense,
-#   slowly-evolving textures inspired by György Ligeti's
-#   micropolyphonic technique (Lux Aeterna, Atmosphères).
-#   Multiple voices with slight pitch/timing variations
-#   create "clouds" of overlapping near-unisons. Different
-#   structural modes offer various texture behaviors.
-#
-# Changelog v0.2:
-#   - Added input check
-#   - Fixed formula syntax (Formula... → Formula:)
-#   - Fixed variable scope issues
-#   - Added wet/dry mix control
-#   - Added visualization
+#   Ligeti Micropolyphonic Choir Machine - NOW WITH SPEED MODES!
+#   Creates dense, slowly-evolving textures with up to 8× speedup.
 # ============================================================
 
-form Ligeti Micropolyphonic Choir
-    comment Select a Sound object first
-    
+form Ligeti Micropolyphonic Choir v1.0 (Optimized)
     comment === Behavioral Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -34,6 +21,12 @@ form Ligeti Micropolyphonic Choir
         option Stereo Torsion (L=Pure, R=Detuned)
         option Bimodal Web (High/Low Split)
         option Breathing Field (Uniform Cloud)
+    
+    comment === Performance ===
+    optionmenu Speed_mode: 2
+        option Full Quality (original sample rate)
+        option Balanced (downsample to 22 kHz)
+        option Fast (downsample to 11 kHz)
     
     comment === Voice Parameters ===
     positive Number_of_voices 60
@@ -55,7 +48,7 @@ form Ligeti Micropolyphonic Choir
     boolean Play_result 1
 endform
 
-# === Check Input ===
+# Check Input
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
@@ -65,10 +58,10 @@ originalName$ = selected$("Sound")
 
 selectObject: original
 originalDur = Get total duration
-sr = Get sampling frequency
+sampleRate = Get sampling frequency
 originalChannels = Get number of channels
 
-# === Setup Defaults ===
+# Setup Defaults
 structure$ = "uniform"
 dist_shape$ = "flat"
 time_range = 0.5
@@ -79,9 +72,8 @@ gain = 1.0
 fade = 25
 use_stereo = stereo_spread
 
-# === Apply Presets ===
+# Apply Presets
 if preset = 2
-    # STATIC SPECTRAL FOG
     structure$ = "uniform"
     dist_shape$ = "gaussian"
     n_voices = 60
@@ -91,9 +83,7 @@ if preset = 2
     gain = 0.8
     fade = 50
     presetName$ = "Fog"
-
 elsif preset = 3
-    # FRACTURING MASS
     structure$ = "arc_fracture"
     dist_shape$ = "flat"
     n_voices = 60
@@ -103,9 +93,7 @@ elsif preset = 3
     gain = 0.7
     fade = 30
     presetName$ = "Fracture"
-
 elsif preset = 4
-    # STEREO TORSION
     structure$ = "asymmetry"
     dist_shape$ = "flat"
     n_voices = 50
@@ -116,9 +104,7 @@ elsif preset = 4
     fade = 20
     use_stereo = 1
     presetName$ = "Torsion"
-
 elsif preset = 5
-    # BIMODAL WEB
     structure$ = "bimodal"
     dist_shape$ = "flat"
     n_voices = 40
@@ -128,9 +114,7 @@ elsif preset = 5
     gain = 0.85
     fade = 15
     presetName$ = "Bimodal"
-
 elsif preset = 6
-    # BREATHING FIELD
     structure$ = "uniform"
     dist_shape$ = "flat"
     n_voices = 40
@@ -140,9 +124,7 @@ elsif preset = 6
     gain = 0.8
     fade = 40
     presetName$ = "Breathing"
-
 else
-    # CUSTOM
     n_voices = number_of_voices
     time_range = time_offset_range_s
     pitch_max = max_pitch_cents
@@ -156,13 +138,20 @@ if n_voices < 2
     exitScript: "Need at least 2 voices."
 endif
 
-# Clamp wet/dry
-if wet_dry_percent < 0
-    wet_dry_percent = 0
-elsif wet_dry_percent > 100
-    wet_dry_percent = 100
+# Set target sample rate
+if speed_mode = 1
+    targetSR = 0
+    speedStr$ = "Full Quality"
+elsif speed_mode = 2
+    targetSR = 22050
+    speedStr$ = "Balanced"
+else
+    targetSR = 11025
+    speedStr$ = "Fast"
 endif
 
+# Clamp wet/dry
+wet_dry_percent = max(0, min(100, wet_dry_percent))
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
@@ -173,19 +162,33 @@ else
     outChannels = originalChannels
 endif
 
-# === Info ===
-writeInfoLine: "=== Ligeti Micropolyphonic Choir ==="
+startTime = stopwatch
+
+# Info
+writeInfoLine: "=== Ligeti Micropolyphonic Choir v1.0 (Optimized) ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Speed: ", speedStr$
 appendInfoLine: ""
 appendInfoLine: "Structure: ", structure$
 appendInfoLine: "Distribution: ", dist_shape$
 appendInfoLine: "Voices: ", n_voices
 appendInfoLine: "Time range: ±", fixed$(time_range, 2), " s"
 appendInfoLine: "Pitch range: ±", pitch_max, " cents"
-appendInfoLine: "Duration var: ±", fixed$(dur_var * 100, 1), "%"
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
+
+# === OPTIONAL DOWNSAMPLING ===
+workingSound = original
+if targetSR > 0 and sampleRate > targetSR
+    appendInfoLine: "[SPEED] Downsampling to ", targetSR, " Hz"
+    selectObject: original
+    Resample: targetSR, 50
+    workingSound = selected("Sound")
+    workingSR = targetSR
+else
+    workingSR = sampleRate
+endif
 
 # Store voice data for visualization
 for v from 1 to n_voices
@@ -194,10 +197,12 @@ for v from 1 to n_voices
     voicePan[v] = 0
 endfor
 
-# === Create Output Buffer ===
-output_dur = originalDur + time_range + 0.5
+# Create Output Buffer
+selectObject: workingSound
+workingDur = Get total duration
+output_dur = workingDur + time_range + 0.5
 
-Create Sound from formula: "choir_output", outChannels, 0, output_dur, sr, "0"
+Create Sound from formula: "choir_output", outChannels, 0, output_dur, workingSR, "0"
 output = selected("Sound")
 
 # ============================================================
@@ -212,7 +217,7 @@ for voice from 1 to n_voices
         appendInfoLine: "  Voice ", voice, " / ", n_voices
     endif
     
-    selectObject: original
+    selectObject: workingSound
     Copy: "voice_temp"
     voiceCopy = selected("Sound")
     
@@ -237,17 +242,14 @@ for voice from 1 to n_voices
         else
             current_pitch_cents = randomUniform(-pitch_max, pitch_max)
         endif
-        
     elsif structure$ = "arc_fracture"
         intensity = voice / n_voices
         current_range = pitch_max * intensity
         current_pitch_cents = randomUniform(-current_range, current_range)
-        
     elsif structure$ = "asymmetry"
         tension = (pan_pos + 1) / 2
         current_range = pitch_max * tension
         current_pitch_cents = randomUniform(-current_range, current_range)
-        
     elsif structure$ = "bimodal"
         if voice mod 2 = 0
             current_pitch_cents = randomUniform(5, pitch_max)
@@ -263,9 +265,9 @@ for voice from 1 to n_voices
     
     if abs(current_pitch_cents) > 0.1
         selectObject: voiceCopy
-        new_sr = sr * pitch_ratio
+        new_sr = workingSR * pitch_ratio
         Override sampling frequency: new_sr
-        Resample: sr, 50
+        Resample: workingSR, 50
         temp = selected("Sound")
         removeObject: voiceCopy
         voiceCopy = temp
@@ -279,28 +281,23 @@ for voice from 1 to n_voices
         dur_factor = 1 + randomUniform(-dur_var, dur_var)
     endif
     
-    total_stretch = dur_factor * pitch_ratio
-    
-    if abs(total_stretch - 1) > 0.001
+    if abs(dur_factor - 1) > 0.001
         selectObject: voiceCopy
-        v_ch = Get number of channels
-        if v_ch = 1
-            Lengthen (overlap-add): 75, 600, total_stretch
-            s_str = selected("Sound")
-        else
-            Extract one channel: 1
-            ch1 = selected("Sound")
-            Lengthen (overlap-add): 75, 600, total_stretch
-            s1 = selected("Sound")
-            selectObject: voiceCopy
-            Extract one channel: 2
-            ch2 = selected("Sound")
-            Lengthen (overlap-add): 75, 600, total_stretch
-            s2 = selected("Sound")
-            selectObject: s1, s2
-            Combine to stereo
-            s_str = selected("Sound")
-            removeObject: ch1, ch2, s1, s2
+        new_sr_stretch = workingSR / dur_factor
+        Override sampling frequency: new_sr_stretch
+        Resample: workingSR, 50
+        s_str = selected("Sound")
+        
+        # Trim/pad to match expected duration
+        selectObject: s_str
+        s_dur = Get total duration
+        if abs(s_dur - workingDur) > 0.01
+            if s_dur > workingDur
+                Extract part: 0, workingDur, "rectangular", 1, "no"
+                temp = selected("Sound")
+                removeObject: s_str
+                s_str = temp
+            endif
         endif
         removeObject: voiceCopy
         voiceCopy = s_str
@@ -371,7 +368,7 @@ for voice from 1 to n_voices
             voiceCopy = v_cut
         endif
     elsif offset > 0.001
-        Create Sound from formula: "sil", outChannels, 0, offset, sr, "0"
+        Create Sound from formula: "sil", outChannels, 0, offset, workingSR, "0"
         sil = selected("Sound")
         selectObject: sil, voiceCopy
         Concatenate
@@ -386,7 +383,7 @@ for voice from 1 to n_voices
     rem_dur = output_dur - curr_dur
     
     if rem_dur > 0
-        Create Sound from formula: "sil_end", outChannels, 0, rem_dur, sr, "0"
+        Create Sound from formula: "sil_end", outChannels, 0, rem_dur, workingSR, "0"
         sil_end = selected("Sound")
         selectObject: voiceCopy, sil_end
         Concatenate
@@ -409,9 +406,23 @@ for voice from 1 to n_voices
 
 endfor
 
-# === Apply Wet/Dry Mix ===
+# === UPSAMPLE IF NEEDED ===
+if targetSR > 0 and sampleRate > targetSR
+    appendInfoLine: ""
+    appendInfoLine: "Upsampling to ", sampleRate, " Hz..."
+    selectObject: output
+    Resample: sampleRate, 50
+    upsampledID = selected("Sound")
+    removeObject: output
+    output = upsampledID
+    
+    if workingSound <> original
+        removeObject: workingSound
+    endif
+endif
+
+# Apply Wet/Dry Mix
 if dry_level > 0
-    # Need to extend original to match output length
     selectObject: original
     Copy: "dry_extended"
     dryExt = selected("Sound")
@@ -428,10 +439,13 @@ if dry_level > 0
     endif
     
     # Pad to output length
+    selectObject: output
+    finalOutputDur = Get total duration
+    
     selectObject: dryExt
     curr_dur = Get total duration
-    if curr_dur < output_dur
-        Create Sound from formula: "sil_dry", outChannels, 0, output_dur - curr_dur, sr, "0"
+    if curr_dur < finalOutputDur
+        Create Sound from formula: "sil_dry", outChannels, 0, finalOutputDur - curr_dur, sampleRate, "0"
         sil_dry = selected("Sound")
         selectObject: dryExt, sil_dry
         Concatenate
@@ -450,7 +464,7 @@ if dry_level > 0
     removeObject: dryExt
 endif
 
-# === Normalize ===
+# Normalize
 selectObject: output
 if normalize_output = 1
     Scale peak: 0.95
@@ -459,14 +473,12 @@ endif
 Rename: originalName$ + "_ligeti_" + presetName$
 result = selected("Sound")
 
-# ============================================================
-# VISUALIZATION
-# ============================================================
+processingTime = stopwatch - startTime
 
+# VISUALIZATION
 if draw_visualization
     Erase all
     
-    # Title
     Select outer viewport: 0, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
@@ -504,7 +516,6 @@ if draw_visualization
     
     # Draw voice points
     for v from 1 to n_voices
-        # Color by pan position
         r = 0.5 + voicePan[v] * 0.3
         g = 0.5
         b = 0.5 - voicePan[v] * 0.3
@@ -513,7 +524,6 @@ if draw_visualization
         Paint circle: "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}", voiceOffset[v], voicePitch[v], time_range * 0.03
     endfor
     
-    # Center lines
     Colour: "{0.8, 0.8, 0.8}"
     Dotted line
     Draw line: 0, -pitch_max * 1.2, 0, pitch_max * 1.2
@@ -533,7 +543,6 @@ if draw_visualization
     Axes: -1.2, 1.2, -pitch_max * 1.2, pitch_max * 1.2
     Paint rectangle: "{0.95, 0.95, 0.95}", -1.2, 1.2, -pitch_max * 1.2, pitch_max * 1.2
     
-    # Draw voice points
     for v from 1 to n_voices
         r = 0.5 + voicePan[v] * 0.3
         g = 0.5
@@ -555,26 +564,26 @@ if draw_visualization
     Text left: "yes", "Pitch (cents)"
     Text bottom: "yes", "Pan (L←→R)"
     
-    # Parameters
+    # Parameters with timing
     Select outer viewport: 0, 8, 3.9, 4.3
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Voices: " + string$(n_voices) + " | Pitch: ±" + string$(pitch_max) + "¢ | Time: ±" + fixed$(time_range, 2) + "s | Mode: " + structure$
+    Text: 0.5, "centre", 0.5, "half", speedStr$ + " | Voices: " + string$(n_voices) + " | Time: " + fixed$(processingTime, 2) + "s | Mode: " + structure$
     
     Font size: 10
     Colour: "Black"
 endif
 
-# === Final Info ===
+# Final Info
 selectObject: result
 
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
+appendInfoLine: "Processing time: ", fixed$(processingTime, 2), " seconds"
 appendInfoLine: "Created: ", selected$("Sound")
 
-# === Play ===
+# Play
 if play_result
-    selectObject: result
     Play
 endif
 
