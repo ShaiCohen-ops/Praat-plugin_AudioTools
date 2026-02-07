@@ -3,13 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Fixed syntax, added visualization
+# Version: 0.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Frequency-dependent tremolo - applies spectral modulation
-#   with different rates/depths across the frequency spectrum.
+#   Frequency-dependent tremolo
+#
+# Usage:
+#   Select a Sound object in Praat and run this script.
+#   Adjust parameters via the form dialog.
 # ============================================================
 
 # === Input Validation ===
@@ -20,7 +23,7 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Dynamic Tremolo Effect v0.2
+form Dynamic Tremolo Effect v1.0 (Optimized)
     optionmenu Preset: 1
         option Custom
         option Classic Tremolo
@@ -31,6 +34,11 @@ form Dynamic Tremolo Effect v0.2
         option High Cut Tremolo
         option Bass Wobble
         option Spectral Sweep
+    comment === Performance ===
+    optionmenu Speed_mode: 2
+        option Full Quality (original sample rate)
+        option Balanced (downsample to 22 kHz)
+        option Fast (downsample to 11 kHz)
     comment === Tremolo Parameters ===
     positive Low_freq_cutoff 8000
     comment (Frequencies below this get tremolo)
@@ -53,7 +61,6 @@ endform
 # ============================================================
 
 if preset = 2
-    # Classic Tremolo
     low_freq_cutoff = 8000
     tremolo_depth_min = 0.3
     tremolo_depth_max = 0.7
@@ -61,7 +68,6 @@ if preset = 2
     high_freq_gain = 0.8
     presetName$ = "ClassicTremolo"
 elsif preset = 3
-    # Deep Tremolo
     low_freq_cutoff = 8000
     tremolo_depth_min = 0.2
     tremolo_depth_max = 0.9
@@ -69,7 +75,6 @@ elsif preset = 3
     high_freq_gain = 0.7
     presetName$ = "DeepTremolo"
 elsif preset = 4
-    # Subtle Shimmer
     low_freq_cutoff = 10000
     tremolo_depth_min = 0.5
     tremolo_depth_max = 0.3
@@ -77,7 +82,6 @@ elsif preset = 4
     high_freq_gain = 0.9
     presetName$ = "SubtleShimmer"
 elsif preset = 5
-    # Fast Flutter
     low_freq_cutoff = 6000
     tremolo_depth_min = 0.3
     tremolo_depth_max = 0.6
@@ -85,7 +89,6 @@ elsif preset = 5
     high_freq_gain = 0.8
     presetName$ = "FastFlutter"
 elsif preset = 6
-    # Slow Pulse
     low_freq_cutoff = 8000
     tremolo_depth_min = 0.2
     tremolo_depth_max = 0.8
@@ -93,7 +96,6 @@ elsif preset = 6
     high_freq_gain = 0.85
     presetName$ = "SlowPulse"
 elsif preset = 7
-    # High Cut Tremolo
     low_freq_cutoff = 4000
     tremolo_depth_min = 0.4
     tremolo_depth_max = 0.5
@@ -101,7 +103,6 @@ elsif preset = 7
     high_freq_gain = 0.4
     presetName$ = "HighCutTremolo"
 elsif preset = 8
-    # Bass Wobble
     low_freq_cutoff = 2000
     tremolo_depth_min = 0.2
     tremolo_depth_max = 0.8
@@ -109,7 +110,6 @@ elsif preset = 8
     high_freq_gain = 1.0
     presetName$ = "BassWobble"
 elsif preset = 9
-    # Spectral Sweep
     low_freq_cutoff = 12000
     tremolo_depth_min = 0.1
     tremolo_depth_max = 0.9
@@ -118,6 +118,18 @@ elsif preset = 9
     presetName$ = "SpectralSweep"
 else
     presetName$ = "Custom"
+endif
+
+# Set target sample rate
+if speed_mode = 1
+    targetSR = 0
+    speedStr$ = "Full Quality"
+elsif speed_mode = 2
+    targetSR = 22050
+    speedStr$ = "Balanced"
+else
+    targetSR = 11025
+    speedStr$ = "Fast"
 endif
 
 # ============================================================
@@ -134,9 +146,14 @@ if low_freq_cutoff > nyquist
     low_freq_cutoff = nyquist * 0.9
 endif
 
+startTime = stopwatch
+
 clearinfo
-writeInfoLine: "=== Dynamic Tremolo Effect v0.2 ==="
+writeInfoLine: "╔══════════════════════════════════════════════════════════════╗"
+writeInfoLine: "║        DYNAMIC TREMOLO v1.0 (Optimized)                     ║"
+writeInfoLine: "╚══════════════════════════════════════════════════════════════╝"
 appendInfoLine: "Input: ", originalName$
+appendInfoLine: "Speed: ", speedStr$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
 appendInfoLine: "Sample rate: ", sampleRate, " Hz"
 appendInfoLine: ""
@@ -151,11 +168,36 @@ appendInfoLine: ""
 # PROCESS
 # ============================================================
 
-appendInfo: "Processing..."
+# Copy for processing
+selectObject: originalID
+Copy: "working"
+workingID = selected("Sound")
+
+# === OPTIONAL DOWNSAMPLING ===
+if targetSR > 0 and sampleRate > targetSR
+    appendInfoLine: "[SPEED] Downsampling to ", targetSR, " Hz..."
+    selectObject: workingID
+    Resample: targetSR, 50
+    resampledID = selected("Sound")
+    removeObject: workingID
+    workingID = resampledID
+    workingSR = targetSR
+    workingNyquist = workingSR / 2
+    
+    # Adjust cutoff if needed
+    if low_freq_cutoff > workingNyquist
+        low_freq_cutoff = workingNyquist * 0.9
+    endif
+else
+    workingSR = sampleRate
+endif
+
+appendInfo: "Processing tremolo..."
 
 # Convert to spectrum
-selectObject: originalID
-spectrumID = To Spectrum: "yes"
+selectObject: workingID
+To Spectrum: "yes"
+spectrumID = selected("Spectrum")
 
 # Build formula strings
 cutoffStr$ = string$(low_freq_cutoff)
@@ -164,15 +206,24 @@ maxStr$ = fixed$(tremolo_depth_max, 6)
 rateStr$ = fixed$(tremolo_rate, 6)
 highStr$ = fixed$(high_freq_gain, 6)
 
-# Apply dynamic tremolo in frequency domain
-# Below cutoff: modulate with cos^2 function
-# Above cutoff: apply flat gain
+# Apply dynamic tremolo
 selectObject: spectrumID
 Formula: "if col < " + cutoffStr$ + " then self[1, col] * (" + minStr$ + " + " + maxStr$ + " * cos(col / " + rateStr$ + ")^2) else self[1, col] * " + highStr$ + " endif"
 
 # Convert back to sound
 selectObject: spectrumID
-resultID = To Sound
+To Sound
+resultID = selected("Sound")
+
+# === UPSAMPLE IF NEEDED ===
+if targetSR > 0 and sampleRate > targetSR
+    appendInfoLine: " upsampling..."
+    selectObject: resultID
+    Resample: sampleRate, 50
+    upsampledID = selected("Sound")
+    removeObject: resultID
+    resultID = upsampledID
+endif
 
 # Rename and scale
 selectObject: resultID
@@ -181,8 +232,10 @@ Scale peak: scale_peak
 
 appendInfoLine: " done"
 
+processingTime = stopwatch - startTime
+
 # ============================================================
-# VISUALIZATION
+# VISUALIZATION (OPTIMIZED)
 # ============================================================
 
 if draw_visualization
@@ -190,15 +243,17 @@ if draw_visualization
     
     # Get spectra for comparison
     selectObject: originalID
-    origSpecID = To Spectrum: "yes"
+    To Spectrum: "yes"
+    origSpecID = selected("Spectrum")
     
     selectObject: resultID
-    resSpecID = To Spectrum: "yes"
+    To Spectrum: "yes"
+    resSpecID = selected("Spectrum")
     
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 1, 8, 0, 0.5
     Font size: 14
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Dynamic Tremolo: " + originalName$ + " [" + presetName$ + "]"
@@ -213,6 +268,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
+    Select outer viewport: 0.1, 8, 1.5, 1.8
     Text top: "no", "Original"
     Text left: "yes", "Amp"
     
@@ -258,18 +314,18 @@ if draw_visualization
     Text left: "yes", "dB"
     Text bottom: "yes", "Frequency (Hz)"
     
-    # Tremolo modulation curve
+    # Tremolo modulation curve (OPTIMIZED: 200 points instead of 500)
     Select outer viewport: 0, 8, 4.2, 5.8
     Select inner viewport: 0.6, 7.6, 4.4, 5.6
     
     maxFreq = low_freq_cutoff * 1.2
     Axes: 0, maxFreq, 0, 1.2
     
-    # Draw tremolo curve (below cutoff)
+    # Draw tremolo curve
     Colour: "{0.9, 0.5, 0.2}"
     Line width: 2
     
-    numPoints = 500
+    numPoints = 200
     for i from 0 to numPoints - 1
         f1 = maxFreq * i / numPoints
         f2 = maxFreq * (i + 1) / numPoints
@@ -319,9 +375,10 @@ if draw_visualization
     Font size: 9
     Colour: "{0.3, 0.3, 0.3}"
     Text: 0.02, "left", 0.5, "half", "Cutoff: " + string$(low_freq_cutoff) + " Hz"
-    Text: 0.22, "left", 0.5, "half", "Depth: " + fixed$(tremolo_depth_min, 2) + "-" + fixed$(tremolo_depth_min + tremolo_depth_max, 2)
+    Text: 0.25, "left", 0.5, "half", "Depth: " + fixed$(tremolo_depth_min, 2) + "-" + fixed$(tremolo_depth_min + tremolo_depth_max, 2)
     Text: 0.48, "left", 0.5, "half", "Rate: " + fixed$(tremolo_rate, 0)
-    Text: 0.68, "left", 0.5, "half", "High gain: " + fixed$(high_freq_gain, 2)
+    Text: 0.65, "left", 0.5, "half", speedStr$
+    Text: 0.82, "left", 0.5, "half", "Time: " + fixed$(processingTime, 2) + "s"
     
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -335,21 +392,23 @@ endif
 # CLEANUP
 # ============================================================
 
-removeObject: spectrumID
+removeObject: spectrumID, workingID
 
 # ============================================================
 # OUTPUT
 # ============================================================
 
 appendInfoLine: ""
-appendInfoLine: "=== COMPLETE ==="
-appendInfoLine: ""
-appendInfoLine: "Created: ", originalName$, "_tremolo_", presetName$
+appendInfoLine: "╔══════════════════════════════════════════════════════════════╗"
+appendInfoLine: "║                      COMPLETE                                ║"
+appendInfoLine: "╚══════════════════════════════════════════════════════════════╝"
+appendInfoLine: "Processing time: ", fixed$(processingTime, 2), " seconds"
+appendInfoLine: "Output: ", originalName$, "_tremolo_", presetName$
 
 if play_result
     selectObject: resultID
     Play
 endif
 
-selectObject: originalID
-plusObject: resultID
+selectObject: resultID
+ 

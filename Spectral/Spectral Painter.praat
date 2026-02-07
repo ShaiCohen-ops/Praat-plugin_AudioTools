@@ -1,14 +1,18 @@
 # ============================================================
 # Praat AudioTools - Spectral Painter.praat
 # Author: Shai Cohen
-# Version: 1.0 (2025) - OPTIMIZED
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 0.2 (2025)
 # License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Comprehensive spectral gain modulation - OPTIMIZED with:
-#   - Speed modes (2-10× faster)
-#   - Timing display
-#   - Reduced visualization overhead
+#   Comprehensive spectral gain modulation
+#
+# Usage:
+#   Select a Sound object in Praat and run this script.
+#   Adjust parameters via the form dialog.
 # ============================================================
 
 form Spectral Painter v1.0 (Optimized)

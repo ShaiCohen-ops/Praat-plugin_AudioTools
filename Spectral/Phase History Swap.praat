@@ -1,12 +1,18 @@
 # ============================================================
 # Praat AudioTools - Phase_History_Swap.praat
 # Author: Shai Cohen
-# Version: 1.0 (2025) - OPTIMIZED for extreme splits
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 0.2 (2025)
 # License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Phase vocoder effect - NOW FAST even at extreme splits!
-#   Speed modes: 2-10× faster for 10%/90% splits
+#   Poly-carrier vocoder with multiple carrier types, Bark-scale
+#
+# Usage:
+#   Select a Sound object in Praat and run this script.
+#   Adjust parameters via the form dialog.
 # ============================================================
 
 form Phase History Swap v1.0 (Optimized)
