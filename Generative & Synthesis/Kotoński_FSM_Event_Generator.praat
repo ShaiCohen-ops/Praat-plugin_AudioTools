@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - FIXED AND ENHANCED
+# Version: 1.1 (2025) - TIMING FIX
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,12 +12,10 @@
 # Inspired by Włodzimierz Kotoński: Aela (1967)
 # Fully deterministic finite-state machine with compositional presets
 #
-# FIXES in v1.0:
-#   - Fixed formula mixing bug (line 619)
-#   - Real noise generation (not pseudo-noise)
-#   - Enhanced compositional info output
-#   - Processing time tracking
-#   - FIXED: Removed duplicate state transition logic
+# FIXES in v1.1:
+#   - Fixed timing: gaps now scale to fill requested duration
+#   - Fixed stopwatch timing calculation
+#   - All previous fixes maintained
 # ============================================================
 
 form FSM Generator - Kotoński Edition
@@ -81,8 +79,6 @@ form FSM Generator - Kotoński Edition
     boolean Draw_score 1
     boolean Play_result 1
 endform
-
-startTime = stopwatch
 
 # Apply preset overrides
 if preset = 1
@@ -159,9 +155,12 @@ appendInfoLine: "=== COMPOSITIONAL PARAMETERS ==="
 appendInfoLine: "Duration: ", fixed$(duration_s, 1), " seconds"
 appendInfoLine: "Total events: ", num_events
 appendInfoLine: "Average density: ", fixed$(num_events / duration_s, 2), " events/second"
-appendInfoLine: "Attack: ", fixed$(attack_ms, 1), " ms | Release: ", fixed$(release_ms, 1), " ms"
+appendInfoLine: "Attack: ", fixed$(attack_ms, 1), " ms - Release: ", fixed$(release_ms, 1), " ms"
 appendInfoLine: "Global amplitude: ", fixed$(global_amplitude, 2)
 appendInfoLine: ""
+
+# START TIMING AFTER CLEARINFO
+startTime = stopwatch
 
 # Event data arrays
 startTime# = zero# (n_events)
@@ -280,14 +279,13 @@ procedure getEventType: .state, .event_index, .preference
 endproc
 
 # ============================================================
-# EVENT GENERATION LOOP - FIXED STATE TRANSITIONS
+# EVENT GENERATION LOOP
 # ============================================================
 
 for i to n_events
-    # === STATE TRANSITION LOGIC (AT BEGINNING OF LOOP) ===
+    # === STATE TRANSITION LOGIC ===
     if custom_mode = 1
         if transition_mode = 1
-            # Event-based
             if i > 1 and ((i - 1) mod transition_every_N) = 0
                 sequence_index = sequence_index + 1
                 if sequence_index > sequence_length
@@ -296,7 +294,6 @@ for i to n_events
                 current_state = sequence#[sequence_index]
             endif
         elsif transition_mode = 2
-            # Time-based
             progress = current_time / total_dur
             state_index = floor(progress * sequence_length) + 1
             if state_index > sequence_length
@@ -306,7 +303,6 @@ for i to n_events
                 current_state = sequence#[state_index]
             endif
         else
-            # Hybrid
             if i > 1 and ((i - 1) mod transition_every_N) = 0
                 sequence_index = sequence_index + 1
                 if sequence_index > sequence_length
@@ -316,7 +312,6 @@ for i to n_events
             endif
         endif
     else
-        # Preset mode: 4 equal states
         events_per_state = floor(n_events / 4)
         if i <= events_per_state
             current_state = 1
@@ -329,7 +324,6 @@ for i to n_events
         endif
     endif
     
-    # NOW assign the state AFTER transition logic
     state#[i] = current_state
     
     # CUSTOM MODE
@@ -375,7 +369,7 @@ for i to n_events
         max_f = frequency_max_Hz
         f0_or_center#[i] = min_f + (max_f - min_f) * (freq_pos + freq_range * sin(2 * pi * i / 19))
         bandwidth#[i] = noise_bandwidth_Hz * (0.7 + 0.6 * cos(2 * pi * i / 23))
-                
+        
     # PRESET MODE
     elsif preset = 1
         min_f = 800
@@ -543,7 +537,7 @@ for i to n_events
         endif
     endif
     
-    # Assign timing
+    # Assign timing (temporary - will be rescaled)
     startTime#[i] = current_time
     current_time = current_time + dur#[i] + gap#[i]
     
@@ -553,6 +547,56 @@ for i to n_events
         appendInfoLine: "  ", percentDone, "% complete (", i, "/", n_events, " events)"
     endif
 endfor
+
+# ============================================================
+# TIMING ADJUSTMENT - SCALE TO FIT DURATION
+# ============================================================
+
+# Calculate total event duration
+total_event_dur = 0
+total_gap_dur = 0
+for i to n_events
+    total_event_dur = total_event_dur + dur#[i]
+    total_gap_dur = total_gap_dur + gap#[i]
+endfor
+
+actual_duration = current_time
+
+appendInfoLine: ""
+appendInfoLine: "Adjusting timing to fit ", total_dur, " seconds..."
+appendInfoLine: "  Generated duration: ", fixed$(actual_duration, 2), " s"
+
+if actual_duration < total_dur
+    # Scale gaps to fill remaining time
+    target_gap_total = total_dur - total_event_dur
+    gap_scaling = target_gap_total / total_gap_dur
+    
+    appendInfoLine: "  Gap scaling: ", fixed$(gap_scaling, 3), "×"
+    
+    # Recalculate start times with scaled gaps
+    current_time = 0
+    for i to n_events
+        startTime#[i] = current_time
+        current_time = current_time + dur#[i] + (gap#[i] * gap_scaling)
+    endfor
+    
+    appendInfoLine: "  Final duration: ", fixed$(current_time, 2), " s"
+elsif actual_duration > total_dur
+    # Scale everything down proportionally
+    time_scaling = total_dur / actual_duration
+    
+    appendInfoLine: "  Time scaling: ", fixed$(time_scaling, 3), "×"
+    
+    current_time = 0
+    for i to n_events
+        startTime#[i] = current_time
+        dur#[i] = dur#[i] * time_scaling
+        gap#[i] = gap#[i] * time_scaling
+        current_time = current_time + dur#[i] + gap#[i]
+    endfor
+    
+    appendInfoLine: "  Final duration: ", fixed$(current_time, 2), " s"
+endif
 
 # ============================================================
 # EVENT GENERATION STATISTICS
@@ -603,7 +647,7 @@ appendInfoLine: "  Tones: ", tone_count, " events (", fixed$(100 * tone_count / 
 appendInfoLine: "  Noise: ", noise_count, " events (", fixed$(100 * noise_count / n_events, 1), "%)"
 appendInfoLine: ""
 
-# Calculate average duration and gap
+# Recalculate average duration and gap after scaling
 total_event_dur = 0
 total_gap_dur = 0
 for i to n_events
@@ -681,7 +725,7 @@ for i to n_events
             # TONE
             event = Create Sound from formula: event_name$, 1, 0, t_end, sr, "if x < t_start then 0 else amplitude * sin(2 * pi * freq * (x - t_start)) * (if (x - t_start) < attack_t then (1 - cos(pi * (x - t_start) / attack_t)) / 2 else (if (x - t_start) > (t_dur - release_t) then (1 - cos(pi * (t_end - x) / release_t)) / 2 else 1 endif) endif) fi"
         else
-            # REAL NOISE (FIXED!)
+            # REAL NOISE
             event = Create Sound from formula: event_name$, 1, 0, t_end, sr, "if x < t_start then 0 else amplitude * randomGauss(0, 1) * (if (x - t_start) < attack_t then (1 - cos(pi * (x - t_start) / attack_t)) / 2 else (if (x - t_start) > (t_dur - release_t) then (1 - cos(pi * (t_end - x) / release_t)) / 2 else 1 endif) endif) fi"
         endif
         
@@ -876,15 +920,14 @@ if draw_score
     Select outer viewport: 0, 12, 8.2, 9
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-
+    
     Font size: 9
     Colour: "Black"
-
-    # Build legend string to avoid pipe parsing issues
+    
     legend$ = "Tone = line - Noise = band - Colors: State 1 (cyan) to State 2 (green) to State 3 (yellow) to State 4 (orange) - Brightness = amplitude"
-
+    
     Text: 0.5, "centre", 0.5, "half", legend$
-
+    
     Colour: "Black"
     Line width: 1
     Draw rectangle: 0, 1, 0, 1
@@ -893,19 +936,18 @@ if draw_score
     Select outer viewport: 0, 12, 9.2, 10
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.1, 0.1, 0.1}", 0, 1, 0, 1
-
+    
     Font size: 8
     Colour: "White"
-
-    # Build info string piece by piece to avoid parsing issues
+    
     info$ = "Events: " + string$(n_events)
     info$ = info$ + " - Duration: " + fixed$(total_dur, 1) + "s"
     info$ = info$ + " - Range: " + fixed$(min_freq_viz, 0) + "-" + fixed$(max_freq_viz, 0) + "Hz"
     info$ = info$ + " - Attack: " + fixed$(attack_ms, 1) + "ms"
     info$ = info$ + " - Release: " + fixed$(release_ms, 1) + "ms"
-
+    
     Text: 0.5, "centre", 0.5, "half", info$
-
+    
     Draw rectangle: 0, 1, 0, 1
     
     Font size: 10

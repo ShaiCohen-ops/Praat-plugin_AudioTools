@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Optimized
+# Version: 0.3 (2025) - TIMING FIX
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,11 +21,9 @@
 # Reference:
 #   Stockhausen, K. (1954). Studie II. Universal Edition.
 #
-# Changelog v0.2:
-#   - Optimized mixture generation
-#   - Modern syntax
-#   - Improved score visualization
-#   - Fixed 'col' variable conflict
+# Changelog v0.3:
+#   - FIXED: Events now scale to fill requested duration
+#   - Improved timing accuracy
 # ============================================================
 
 form Studie II Generator
@@ -90,7 +88,6 @@ if generation_mode = 2
     seed[5] = 2
     
     # Generate 5x5 Latin square
-    # NOTE: Use 'colNum' not 'col' to avoid conflict with Formula's built-in col
     for rowNum to 5
         for colNum to 5
             srcCol = ((colNum - 1 + rowNum - 1) mod 5) + 1
@@ -117,11 +114,24 @@ if generation_mode = 2
     sectionType[5] = 2
 endif
 
-# === Create Master Sound ===
-master = Create Sound from formula: "master_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
+# === Create Temporary Master Sound (will be recreated after timing adjustment) ===
+master = Create Sound from formula: "master_temp_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
 
-# === Event Storage for Score ===
+# === Event Storage ===
 numEvents = 0
+maxStoredEvents = 500
+
+# Pre-allocate arrays
+for i to maxStoredEvents
+    evStart[i] = 0
+    evEnd[i] = 0
+    evDur[i] = 0
+    evAmp[i] = 0
+    evEnv[i] = 0
+    for c to 5
+        evIdx[i, c] = 0
+    endfor
+endfor
 
 # === Main Generation ===
 appendInfoLine: "Generating..."
@@ -150,18 +160,18 @@ if generation_mode = 1
                 
                 spreadFactor = randomInteger(1, 5)
                 startIdx = randomInteger(10, 65 - 4 * spreadFactor)
-                evDur = randomUniform(0.08, 0.45)
+                evDuration = randomUniform(0.08, 0.45)
                 
-                if currentTime + evDur > duration_s
-                    evDur = duration_s - currentTime
+                if currentTime + evDuration > duration_s
+                    evDuration = duration_s - currentTime
                 endif
                 
-                evAmp = randomUniform(min_amplitude, max_amplitude)
+                evAmplitude = randomUniform(min_amplitude, max_amplitude)
                 envType = randomInteger(1, 5)
                 
-                @generateMixture: currentTime, startIdx, spreadFactor, evDur, evAmp, envType
+                @storeEvent: currentTime, evDuration, startIdx, spreadFactor, evAmplitude, envType
                 
-                currentTime = currentTime + evDur + randomUniform(0.005, 0.06)
+                currentTime = currentTime + evDuration + randomUniform(0.005, 0.06)
             endfor
             
             if randomUniform(0, 1) > 0.4
@@ -179,17 +189,17 @@ if generation_mode = 1
                 
                 spreadFactor = randomInteger(1, 5)
                 startIdx = randomInteger(10, 65 - 4 * spreadFactor)
-                evDur = randomUniform(groupLen * 0.6, groupLen * 1.3)
+                evDuration = randomUniform(groupLen * 0.6, groupLen * 1.3)
                 evStart = groupStart + randomUniform(0, groupLen * 0.25)
                 
-                if evStart + evDur > duration_s
-                    evDur = duration_s - evStart
+                if evStart + evDuration > duration_s
+                    evDuration = duration_s - evStart
                 endif
                 
-                if evDur >= 0.03
-                    evAmp = randomUniform(min_amplitude, max_amplitude)
+                if evDuration >= 0.03
+                    evAmplitude = randomUniform(min_amplitude, max_amplitude)
                     envType = randomInteger(1, 5)
-                    @generateMixture: evStart, startIdx, spreadFactor, evDur, evAmp, envType
+                    @storeEvent: evStart, evDuration, startIdx, spreadFactor, evAmplitude, envType
                 endif
             endfor
             
@@ -225,8 +235,8 @@ else
                         goto doneGeneration
                     endif
                     
-                    @generateMixtureSerial: currentTime
-                    currentTime = currentTime + generateMixtureSerial.duration
+                    @storeEventSerial: currentTime
+                    currentTime = currentTime + storeEventSerial.duration
                 endfor
                 
             elsif secType = 2
@@ -236,8 +246,8 @@ else
                         goto doneGeneration
                     endif
                     
-                    @generateMixtureSerial: currentTime
-                    currentTime = currentTime + generateMixtureSerial.duration
+                    @storeEventSerial: currentTime
+                    currentTime = currentTime + storeEventSerial.duration
                     
                     @getNextToken
                     gapUnits = getNextToken.value
@@ -258,10 +268,10 @@ else
                     staggerUnits = getNextToken.value
                     mixStartTime = groupStartTime + staggerUnits * baseTimeUnit * 0.3
                     
-                    @generateMixtureSerial: mixStartTime
+                    @storeEventSerial: mixStartTime
                     
-                    if generateMixtureSerial.duration > maxDuration
-                        maxDuration = generateMixtureSerial.duration
+                    if storeEventSerial.duration > maxDuration
+                        maxDuration = storeEventSerial.duration
                     endif
                 endfor
                 
@@ -279,6 +289,74 @@ endif
 label doneGeneration
 
 appendInfoLine: "Generated ", numEvents, " mixture events"
+
+# ============================================================
+# TIMING ADJUSTMENT - SCALE TO FIT DURATION
+# ============================================================
+
+# Find actual span of events
+actualEndTime = 0
+for i to numEvents
+    if evEnd[i] > actualEndTime
+        actualEndTime = evEnd[i]
+    endif
+endfor
+
+appendInfoLine: ""
+appendInfoLine: "Adjusting timing to fit ", duration_s, " seconds..."
+appendInfoLine: "  Generated span: ", fixed$(actualEndTime, 2), " s"
+
+if actualEndTime > 0 and actualEndTime < duration_s
+    # Scale all times to fill the duration
+    timeScale = (duration_s * 0.98) / actualEndTime
+    
+    appendInfoLine: "  Time scaling: ", fixed$(timeScale, 3), "×"
+    
+    for i to numEvents
+        evStart[i] = evStart[i] * timeScale
+        evEnd[i] = evEnd[i] * timeScale
+        evDur[i] = evDur[i] * timeScale
+    endfor
+    
+    actualEndTime = actualEndTime * timeScale
+    appendInfoLine: "  Adjusted span: ", fixed$(actualEndTime, 2), " s"
+elsif actualEndTime > duration_s
+    # Scale down if exceeded
+    timeScale = (duration_s * 0.98) / actualEndTime
+    
+    appendInfoLine: "  Time scaling: ", fixed$(timeScale, 3), "×"
+    
+    for i to numEvents
+        evStart[i] = evStart[i] * timeScale
+        evEnd[i] = evEnd[i] * timeScale
+        evDur[i] = evDur[i] * timeScale
+    endfor
+    
+    actualEndTime = actualEndTime * timeScale
+    appendInfoLine: "  Adjusted span: ", fixed$(actualEndTime, 2), " s"
+endif
+
+# ============================================================
+# RENDER AUDIO WITH SCALED TIMES
+# ============================================================
+
+appendInfoLine: ""
+appendInfoLine: "Rendering audio..."
+
+# Remove temporary master and create final one
+removeObject: master
+master = Create Sound from formula: "master_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
+
+# Render all events with scaled times
+for i to numEvents
+    @renderMixture: i
+    
+    if (i mod 20) = 0
+        appendInfoLine: "  Rendered ", i, "/", numEvents
+    endif
+endfor
+
+appendInfoLine: "Rendering complete"
 
 # === Apply Light Reverb ===
 appendInfoLine: "Applying reverb..."
@@ -357,14 +435,18 @@ procedure getNextToken
 endproc
 
 # ==============================================================================
-# Procedure: generateMixture (Random Mode)
+# Procedure: storeEvent (Random Mode)
 # ==============================================================================
-procedure generateMixture: .startTime, .startIdx, .spreadFactor, .duration, .amplitude, .envType
+procedure storeEvent: .startTime, .duration, .startIdx, .spreadFactor, .amplitude, .envType
     
-    # Store event for score
     numEvents = numEvents + 1
+    
     evStart[numEvents] = .startTime
     evEnd[numEvents] = .startTime + .duration
+    evDur[numEvents] = .duration
+    evAmp[numEvents] = .amplitude
+    evEnv[numEvents] = .envType
+    
     for .c to 5
         evIdx[numEvents, .c] = .startIdx + (.c - 1) * .spreadFactor
         if evIdx[numEvents, .c] < 1
@@ -374,73 +456,12 @@ procedure generateMixture: .startTime, .startIdx, .spreadFactor, .duration, .amp
             evIdx[numEvents, .c] = 81
         endif
     endfor
-    
-    # Create mixture sound
-    .mixSound = Create Sound from formula: "mix_" + uid$, 1, 0, .duration, sample_rate_Hz, "0"
-    
-    # Add 5 frequency components
-    for .comp to 5
-        .idx = .startIdx + (.comp - 1) * .spreadFactor
-        if .idx < 1
-            .idx = 1
-        endif
-        if .idx > 81
-            .idx = 81
-        endif
-        
-        .frequency = freq[.idx]
-        # Center-weighted amplitude (middle component loudest)
-        .centerWeight = 1.0 - abs(.comp - 3) * 0.12
-        .compAmp = .amplitude * .centerWeight
-        
-        .compAmp$ = fixed$(.compAmp, 5)
-        .freq$ = fixed$(.frequency, 2)
-        
-        selectObject: .mixSound
-        Formula: "self + " + .compAmp$ + " * sin(twoPi * " + .freq$ + " * x)"
-    endfor
-    
-    # Apply envelope
-    selectObject: .mixSound
-    if .envType = 1
-        # Attack-decay
-        .att = min(0.025, .duration * 0.2)
-        .rel = min(0.018, .duration * 0.15)
-        Fade in: 0, 0, .att, "yes"
-        Fade out: 0, .duration - .rel, .rel, "yes"
-    elsif .envType = 2
-        # Ramp up
-        .rampEnd = .duration * 0.72
-        Formula: "self * min(1, x / " + fixed$(.rampEnd, 4) + ")"
-        Fade out: 0, .duration - 0.01, 0.01, "yes"
-    elsif .envType = 3
-        # Exponential decay
-        .tau = .duration / 2.8
-        Formula: "self * exp(-x / " + fixed$(.tau, 4) + ")"
-        Fade in: 0, 0, 0.004, "yes"
-    elsif .envType = 4
-        # Triangle
-        .peak = .duration / 2
-        Formula: "self * (1 - abs(x - " + fixed$(.peak, 4) + ") / " + fixed$(.peak, 4) + ")"
-    else
-        # Short attack-release
-        Fade in: 0, 0, 0.003, "yes"
-        Fade out: 0, .duration - 0.006, 0.006, "yes"
-    endif
-    
-    # Add to master at correct time position
-    .sampleOffset = round(.startTime * sample_rate_Hz)
-    
-    selectObject: master
-    Formula: "self + Sound_mix_" + uid$ + "[col - " + string$(.sampleOffset) + "]"
-    
-    removeObject: .mixSound
 endproc
 
 # ==============================================================================
-# Procedure: generateMixtureSerial (Serial Mode)
+# Procedure: storeEventSerial (Serial Mode)
 # ==============================================================================
-procedure generateMixtureSerial: .startTime
+procedure storeEventSerial: .startTime
     
     # Get spread factor from token stream
     @getNextToken
@@ -468,50 +489,59 @@ procedure generateMixtureSerial: .startTime
     .idx[4] = .centerIdx + 1 * .spreadFactor
     .idx[5] = .centerIdx + 2 * .spreadFactor
     
-    for .c to 5
-        if .idx[.c] < 1
-            .idx[.c] = 1
-        endif
-        if .idx[.c] > 81
-            .idx[.c] = 81
-        endif
-    endfor
-    
     # Get duration
     @getNextToken
     .durToken = getNextToken.value
     .duration = durMult[.durToken] * baseTimeUnit
     
-    if .startTime + .duration > duration_s
-        .duration = duration_s - .startTime
-    endif
+    # Get amplitude
+    @getNextToken
+    .ampToken = getNextToken.value
+    .amplitude = min_amplitude + (.ampToken - 1) / 4 * (max_amplitude - min_amplitude)
     
-    # Get envelope type
+    # Get envelope
     @getNextToken
     .envType = getNextToken.value
     
-    # Calculate amplitude (pitch-dependent loudness)
-    .centerPitchIdx = 41
-    .distFromCenter = abs(.centerIdx - .centerPitchIdx)
-    .maxDist = 40
-    .loudnessDB = -30 + (.distFromCenter / .maxDist) * 30
-    .amplitude = 10 ^ (.loudnessDB / 20) * 0.25
-    
     # Store event
     numEvents = numEvents + 1
+    
     evStart[numEvents] = .startTime
     evEnd[numEvents] = .startTime + .duration
+    evDur[numEvents] = .duration
+    evAmp[numEvents] = .amplitude
+    evEnv[numEvents] = .envType
+    
     for .c to 5
         evIdx[numEvents, .c] = .idx[.c]
+        if evIdx[numEvents, .c] < 1
+            evIdx[numEvents, .c] = 1
+        endif
+        if evIdx[numEvents, .c] > 81
+            evIdx[numEvents, .c] = 81
+        endif
     endfor
+endproc
+
+# ==============================================================================
+# Procedure: renderMixture
+# ==============================================================================
+procedure renderMixture: .eventNum
+    
+    .startTime = evStart[.eventNum]
+    .duration = evDur[.eventNum]
+    .amplitude = evAmp[.eventNum]
+    .envType = evEnv[.eventNum]
     
     # Create mixture sound
     .mixSound = Create Sound from formula: "mix_" + uid$, 1, 0, .duration, sample_rate_Hz, "0"
     
-    # Add 5 components
+    # Add 5 frequency components
     for .comp to 5
-        .frequency = freq[.idx[.comp]]
-        .centerWeight = 1.0 - abs(.comp - 3) * 0.08
+        .idx = evIdx[.eventNum, .comp]
+        
+        .frequency = freq[.idx]
+        .centerWeight = 1.0 - abs(.comp - 3) * 0.12
         .compAmp = .amplitude * .centerWeight
         
         .compAmp$ = fixed$(.compAmp, 5)
@@ -524,29 +554,27 @@ procedure generateMixtureSerial: .startTime
     # Apply envelope
     selectObject: .mixSound
     if .envType = 1
-        .att = min(0.02, .duration * 0.2)
-        .rel = min(0.015, .duration * 0.15)
+        .att = min(0.025, .duration * 0.2)
+        .rel = min(0.018, .duration * 0.15)
         Fade in: 0, 0, .att, "yes"
         Fade out: 0, .duration - .rel, .rel, "yes"
     elsif .envType = 2
-        .rampEnd = .duration * 0.7
+        .rampEnd = .duration * 0.72
         Formula: "self * min(1, x / " + fixed$(.rampEnd, 4) + ")"
         Fade out: 0, .duration - 0.01, 0.01, "yes"
     elsif .envType = 3
-        .tau = .duration / 3
+        .tau = .duration / 2.8
         Formula: "self * exp(-x / " + fixed$(.tau, 4) + ")"
-        Fade in: 0, 0, 0.003, "yes"
+        Fade in: 0, 0, 0.004, "yes"
     elsif .envType = 4
         .peak = .duration / 2
         Formula: "self * (1 - abs(x - " + fixed$(.peak, 4) + ") / " + fixed$(.peak, 4) + ")"
     else
-        .att = .duration * 0.15
-        .rel = .duration * 0.2
-        Fade in: 0, 0, .att, "yes"
-        Fade out: 0, .duration - .rel, .rel, "yes"
+        Fade in: 0, 0, 0.003, "yes"
+        Fade out: 0, .duration - 0.006, 0.006, "yes"
     endif
     
-    # Add to master
+    # Add to master at correct time position
     .sampleOffset = round(.startTime * sample_rate_Hz)
     
     selectObject: master
@@ -563,9 +591,10 @@ procedure drawScore
     Erase all
     
     # === Title ===
-    Select outer viewport: 0, 10, 0, 0.6
+    Select outer viewport: 0, 10, 0, 0.7
     Font size: 12
     Colour: "Black"
+    
     if generation_mode = 1
         Text: 0.5, "centre", 0.5, "half", "STUDIE II (quasi) — Random Mode"
     else
@@ -582,16 +611,20 @@ procedure drawScore
     Colour: "{0.85, 0.85, 0.85}"
     Line width: 0.5
     
-    # Time grid
-    for .t to floor(duration_s)
+    # Time grid - FIXED SYNTAX
+    .t = 1
+    while .t <= floor(duration_s)
         Draw line: .t, 1, .t, 81
-    endfor
+        .t = .t + 1
+    endwhile
     
-    # Pitch grid (every 10 indices)
-    for .p to 8
+    # Pitch grid (every 10 indices) - FIXED SYNTAX
+    .p = 1
+    while .p <= 8
         .pitchLine = .p * 10
         Draw line: 0, .pitchLine, duration_s, .pitchLine
-    endfor
+        .p = .p + 1
+    endwhile
     
     # Draw events
     for .ev to numEvents
