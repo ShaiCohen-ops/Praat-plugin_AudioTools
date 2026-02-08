@@ -1,33 +1,28 @@
 # ============================================================
-# Praat AudioTools - Musikalisches_Wuerfelspiel_Audio_Game.praat
-# Author: Shai Cohen
+# Praat AudioTools - Musikalisches Würfelspiel (Musical Dice Game)
+# Author: Shai Cohen (improved by Praat AudioTools)
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) 
+# Version: 1.0 (2025) - Enhanced Edition
 # License: MIT License
-# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Musikalisches Würfelspiel (Musical Dice Game) - An 18th-century
-#   composition technique where segments are randomly reordered
-#   according to functional harmonic patterns (T-P-D-C).
+#   Inspired by 18th-century Musikalisches Würfelspiel, this script
+#   reorders audio segments according to a functional pattern.
+#   
+#   IMPORTANT: This script uses TIMBRAL FEATURES (intensity, pitch,
+#   spectral brightness) as an ANALOGY to harmonic function, not actual
+#   harmonic analysis. Segments are classified by acoustic character:
+#   - T (Tonic-like): Dark, low, quiet
+#   - P (Predominant-like): Moderate
+#   - D (Dominant-like): Bright, high, loud
+#   - C (Cadence-like): Very dark/resolved
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Changelog v0.2:
-#   - Fixed select -> selectObject syntax
-#   - Fixed == -> = operator
-#   - Fixed array syntax for Praat compatibility
-#   - Fixed plus -> plusObject syntax
-#   - Fixed string interpolation in Text commands
-#   - Fixed Formula variable scope
-#   - Added input validation
-#   - Added presets
+# Improvements in v1.0:
+#   - No segment repetition (each used once max)
+#   - Optimized visualization with modes
+#   - Clearer conceptual explanation
+#   - Better presets
+#   - Performance optimizations
 # ============================================================
 
 # Input validation
@@ -38,32 +33,45 @@ endif
 soundID = selected("Sound")
 soundName$ = selected$("Sound")
 
-form Musikalisches Wuerfelspiel v0.2
-    comment === Presets ===
-    optionmenu Preset: 1
+form Musikalisches Würfelspiel v1.0 (Enhanced)
+    comment === PRESETS ===
+    optionmenu Preset 1
         option Custom
-        option Classical (16 segments balanced)
-        option Baroque (8 segments pitch-focused)
-        option Romantic (16 segments expressive)
-        option Minimal (4 segments simple)
-        option Dense (32 segments complex)
-    comment === Phrase Structure ===
+        option Classical (16 segments, balanced)
+        option Baroque (8 segments, pitch-focused)
+        option Romantic (16 segments, expressive)
+        option Minimal (4 segments, simple)
+        option Dense (32 segments, complex)
+    
+    comment === PHRASE STRUCTURE ===
     positive Number_of_segments 16
-    comment === Feature Weighting ===
+    
+    comment === FEATURE WEIGHTING ===
     positive Intensity_weight 1.0
     positive Spectral_weight 1.0
     positive Pitch_weight 0.5
-    comment === Musical Expression ===
+    
+    comment === SEGMENT SELECTION ===
+    boolean Allow_segment_reuse 0
+    comment (If unchecked, each segment used max once)
+    
+    comment === MUSICAL EXPRESSION ===
     boolean Apply_ritardando 1
     positive Ritardando_moderate 1.15
     positive Ritardando_final 1.3
     boolean Apply_diminuendo 1
     positive Diminuendo_moderate 0.6
     positive Diminuendo_final 0.4
-    comment === Playback ===
-    boolean Play_during_processing 1
+    
+    comment === VISUALIZATION ===
+    optionmenu Visualization_mode 1
+        option Progressive (animate each step)
+        option Final only (show result)
+        option None (fastest)
+    
+    comment === PLAYBACK ===
+    boolean Play_during_processing 0
     boolean Play_final_result 1
-    positive Visualization_delay 0.05
 endform
 
 # Apply presets
@@ -170,9 +178,15 @@ Set column label (index): 4, "function"
 
 clearinfo
 writeInfoLine: "========================================="
-appendInfoLine: "Musikalisches Würfelspiel v0.2"
-appendInfoLine: "========================================="
+writeInfoLine: "Musikalisches Würfelspiel v1.0 Enhanced"
+writeInfoLine: "========================================="
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "NOTE: This script uses timbral features"
+appendInfoLine: "(intensity, pitch, brightness) as an"
+appendInfoLine: "ANALOGY to functional harmony (T-P-D-C)."
+appendInfoLine: "It does NOT perform harmonic analysis."
+appendInfoLine: ""
 appendInfoLine: "Analyzing ", numberOfSegments, " segments..."
 
 # Extract segments and compute features
@@ -217,13 +231,13 @@ for i from 1 to numberOfSegments
     Set value: i, 3, spectralCOG
     
     appendInfo: "."
-    if i mod 4 = 0
+    if i mod 8 = 0
         appendInfo: " ", i
     endif
 endfor
 
 appendInfoLine: ""
-appendInfoLine: "Classifying segments..."
+appendInfoLine: "Classifying segments by timbre..."
 
 # Compute global means for z-score normalization
 selectObject: featuresID
@@ -268,7 +282,7 @@ if sdCOG = 0
 endif
 
 # Classify segments into functional roles
-# 1=T (tonic), 2=P (predominant), 3=D (dominant), 4=C (cadence)
+# 1=T (tonic-like: dark/low), 2=P (predominant-like), 3=D (dominant-like: bright/high), 4=C (cadence-like: very dark)
 for i from 1 to numberOfSegments
     selectObject: featuresID
     intensityVal = Get value: i, 1
@@ -299,6 +313,30 @@ for i from 1 to numberOfSegments
     Set value: i, 4, functionType
 endfor
 
+# Count segments in each function
+selectObject: featuresID
+count_T = 0
+count_P = 0
+count_D = 0
+count_C = 0
+for i from 1 to numberOfSegments
+    func = Get value: i, 4
+    if func = 1
+        count_T += 1
+    elsif func = 2
+        count_P += 1
+    elsif func = 3
+        count_D += 1
+    else
+        count_C += 1
+    endif
+endfor
+
+appendInfoLine: "  T (Tonic-like): ", count_T, " segments"
+appendInfoLine: "  P (Predominant-like): ", count_P, " segments"
+appendInfoLine: "  D (Dominant-like): ", count_D, " segments"
+appendInfoLine: "  C (Cadence-like): ", count_C, " segments"
+
 # Define output pattern (T-P-D-C repeating)
 for i from 1 to numberOfSegments
     remainder = (i - 1) mod 4
@@ -313,7 +351,14 @@ for i from 1 to numberOfSegments
     endif
 endfor
 
+# Initialize segment usage tracking
+if allow_segment_reuse = 0
+    used# = zero#(numberOfSegments)
+endif
+
 # Pre-select segments for each position
+appendInfoLine: "Selecting segments (dice roll)..."
+
 for position from 1 to numberOfSegments
     requiredFunction = outputPattern_'position'
     
@@ -322,18 +367,49 @@ for position from 1 to numberOfSegments
     matchCount = 0
     for seg from 1 to numberOfSegments
         segFunction = Get value: seg, 4
+        
+        # Check if segment matches function
         if segFunction = requiredFunction
-            matchCount += 1
-            matches_'matchCount' = seg
+            # If not allowing reuse, also check if already used
+            if allow_segment_reuse = 1
+                matchCount += 1
+                matches_'matchCount' = seg
+            else
+                if used#[seg] = 0
+                    matchCount += 1
+                    matches_'matchCount' = seg
+                endif
+            endif
         endif
     endfor
     
-    # Select random matching segment (or random fallback)
+    # Select random matching segment
     if matchCount > 0
         randomIndex = randomInteger(1, matchCount)
         chosenSegment_'position' = matches_'randomIndex'
+        if allow_segment_reuse = 0
+            used#[chosenSegment_'position'] = 1
+        endif
     else
-        chosenSegment_'position' = randomInteger(1, numberOfSegments)
+        # Fallback: find any unused segment (or random if allowing reuse)
+        if allow_segment_reuse = 0
+            # Find first unused
+            found = 0
+            for seg from 1 to numberOfSegments
+                if used#[seg] = 0
+                    chosenSegment_'position' = seg
+                    used#[seg] = 1
+                    found = 1
+                    seg = numberOfSegments + 1
+                endif
+            endfor
+            # If all used, allow reuse
+            if found = 0
+                chosenSegment_'position' = randomInteger(1, numberOfSegments)
+            endif
+        else
+            chosenSegment_'position' = randomInteger(1, numberOfSegments)
+        endif
     endif
     
     # Store function label
@@ -360,9 +436,8 @@ else
     gridCols = gridSize
 endif
 
-# Progressive processing with visualization
-for k from 1 to numberOfSegments
-    # Draw visualization
+# Procedure to draw visualization
+procedure drawVisualization: .currentStep, .total, .isComplete
     Erase all
     Select inner viewport: 0.5, 7.5, 0.5, 7.5
     
@@ -371,7 +446,11 @@ for k from 1 to numberOfSegments
     Line width: 1
     
     # Title
-    Text top: "yes", "Würfelspiel Reordering - Step " + string$(k) + "/" + string$(numberOfSegments)
+    if .isComplete = 1
+        Text top: "yes", "Würfelspiel Complete - " + presetName$
+    else
+        Text top: "yes", "Würfelspiel Reordering - Step " + string$(.currentStep) + "/" + string$(.total)
+    endif
     Text left: "yes", "Row"
     Text bottom: "yes", "Column"
     
@@ -396,7 +475,7 @@ for k from 1 to numberOfSegments
         xCenter = (x1 + x2) / 2
         yCenter = (y1 + y2) / 2
         
-        if position <= k
+        if .isComplete = 1 or position <= .currentStep
             # Already processed
             selectedSeg = chosenSegment_'position'
             funcLabel$ = requiredLabel_'position'$
@@ -414,7 +493,7 @@ for k from 1 to numberOfSegments
             
             # Draw text
             Colour: "White"
-            if position = k
+            if .isComplete = 0 and position = .currentStep
                 Line width: 3
                 Text: xCenter, "centre", yCenter + 0.15, "half", ">" + string$(selectedSeg)
                 Text: xCenter, "centre", yCenter - 0.15, "half", funcLabel$
@@ -436,13 +515,34 @@ for k from 1 to numberOfSegments
     Colour: "Black"
     Line width: 1
     Paint circle: "Purple", 0.05, 0.7, 0.015
-    Text: 0.08, "left", 0.7, "half", "T=Tonic"
-    Paint circle: "Cyan", 0.3, 0.7, 0.015
-    Text: 0.33, "left", 0.7, "half", "P=Predominant"
-    Paint circle: "Magenta", 0.6, 0.7, 0.015
-    Text: 0.63, "left", 0.7, "half", "D=Dominant"
-    Paint circle: "Pink", 0.05, 0.3, 0.015
-    Text: 0.08, "left", 0.3, "half", "C=Cadence"
+    Text: 0.08, "left", 0.7, "half", "T=Tonic-like (dark)"
+    Paint circle: "Cyan", 0.38, 0.7, 0.015
+    Text: 0.41, "left", 0.7, "half", "P=Predominant-like"
+    Paint circle: "Magenta", 0.05, 0.3, 0.015
+    Text: 0.08, "left", 0.3, "half", "D=Dominant-like (bright)"
+    Paint circle: "Pink", 0.38, 0.3, 0.015
+    Text: 0.41, "left", 0.3, "half", "C=Cadence-like (very dark)"
+    
+    if .isComplete = 1
+        expressionText$ = ""
+        if apply_ritardando = 1 and apply_diminuendo = 1
+            expressionText$ = " + rit. & dim."
+        elsif apply_ritardando = 1
+            expressionText$ = " + rit."
+        elsif apply_diminuendo = 1
+            expressionText$ = " + dim."
+        endif
+        Text: 0.5, "centre", 0.1, "half", "Pattern: T-P-D-C | " + soundName$ + expressionText$
+    endif
+endproc
+
+# Progressive processing
+for k from 1 to numberOfSegments
+    # Visualization
+    if visualization_mode = 1
+        # Progressive
+        @drawVisualization: k, numberOfSegments, 0
+    endif
     
     # Process current segment
     chosenSeg = chosenSegment_'k'
@@ -468,10 +568,7 @@ for k from 1 to numberOfSegments
         if apply_diminuendo = 1
             selectObject: pieceID_'k'
             fadeStart = pieceDur * 0.7
-            fadeStartStr$ = string$(fadeStart)
-            pieceDurStr$ = string$(pieceDur)
-            dimAmountStr$ = string$(dimAmount)
-            Formula: "if x < " + fadeStartStr$ + " then self else self * (1 - (x - " + fadeStartStr$ + ")/(" + pieceDurStr$ + " - " + fadeStartStr$ + ") * (1 - " + dimAmountStr$ + ")) fi"
+            Formula: "if x < fadeStart then self else self * (1 - (x - fadeStart) / (pieceDur - fadeStart) * (1 - dimAmount)) fi"
         endif
         
         # Apply ritardando
@@ -512,12 +609,8 @@ for k from 1 to numberOfSegments
         Play
     endif
     
-    if play_during_processing = 0
-        sleep: visualization_delay
-    endif
-    
     appendInfo: "."
-    if k mod 4 = 0
+    if k mod 8 = 0
         appendInfo: " ", k
     endif
 endfor
@@ -535,81 +628,9 @@ outputSound = selected("Sound")
 Rename: "wuerfelspiel_" + presetName$
 
 # Final visualization
-Erase all
-Select inner viewport: 0.5, 7.5, 0.5, 7.5
-
-Axes: 0, gridCols, 0, gridRows
-Colour: "Black"
-Line width: 1
-
-Text top: "yes", "Würfelspiel Complete - " + presetName$
-Text left: "yes", "Row"
-Text bottom: "yes", "Column"
-
-# Draw grid
-Colour: "Grey"
-for i from 0 to gridCols
-    Draw line: i, 0, i, gridRows
-endfor
-for i from 0 to gridRows
-    Draw line: 0, i, gridCols, i
-endfor
-
-# Draw all cells
-for position from 1 to numberOfSegments
-    row = floor((position - 1) / gridCols)
-    col = (position - 1) mod gridCols
-    
-    x1 = col
-    x2 = col + 1
-    y1 = gridRows - row - 1
-    y2 = gridRows - row
-    xCenter = (x1 + x2) / 2
-    yCenter = (y1 + y2) / 2
-    
-    selectedSeg = chosenSegment_'position'
-    funcLabel$ = requiredLabel_'position'$
-    
-    if funcLabel$ = "T"
-        Paint circle: "Purple", xCenter, yCenter, 0.35
-    elsif funcLabel$ = "P"
-        Paint circle: "Cyan", xCenter, yCenter, 0.35
-    elsif funcLabel$ = "D"
-        Paint circle: "Magenta", xCenter, yCenter, 0.35
-    else
-        Paint circle: "Pink", xCenter, yCenter, 0.35
-    endif
-    
-    Colour: "White"
-    Line width: 2
-    Text: xCenter, "centre", yCenter + 0.1, "half", string$(selectedSeg)
-    Text: xCenter, "centre", yCenter - 0.1, "half", funcLabel$
-endfor
-
-# Legend
-Select inner viewport: 0.5, 7.5, 7.8, 8.5
-Axes: 0, 1, 0, 1
-Colour: "Black"
-Line width: 1
-Paint circle: "Purple", 0.05, 0.7, 0.015
-Text: 0.08, "left", 0.7, "half", "T=Tonic"
-Paint circle: "Cyan", 0.3, 0.7, 0.015
-Text: 0.33, "left", 0.7, "half", "P=Predominant"
-Paint circle: "Magenta", 0.6, 0.7, 0.015
-Text: 0.63, "left", 0.7, "half", "D=Dominant"
-Paint circle: "Pink", 0.05, 0.3, 0.015
-Text: 0.08, "left", 0.3, "half", "C=Cadence"
-
-# Summary
-expressionText$ = ""
-if apply_ritardando = 1 and apply_diminuendo = 1
-    expressionText$ = " + rit. & dim."
-elsif apply_ritardando = 1
-    expressionText$ = " + rit."
-elsif apply_diminuendo = 1
-    expressionText$ = " + dim."
+if visualization_mode = 1 or visualization_mode = 2
+    @drawVisualization: numberOfSegments, numberOfSegments, 1
 endif
-Text: 0.5, "centre", 0.5, "half", "T-P-D-C | " + soundName$ + expressionText$
 
 # Cleanup
 removeObject: featuresID
@@ -630,6 +651,11 @@ appendInfoLine: "========================================="
 appendInfoLine: "Output: wuerfelspiel_", presetName$
 appendInfoLine: "Segments: ", numberOfSegments
 appendInfoLine: "Weights: I=", intensity_weight, " P=", pitch_weight, " S=", spectral_weight
+if allow_segment_reuse = 0
+    appendInfoLine: "Each segment used max once"
+else
+    appendInfoLine: "Segment reuse allowed"
+endif
 
 if play_final_result = 1
     appendInfoLine: "Playing result..."
