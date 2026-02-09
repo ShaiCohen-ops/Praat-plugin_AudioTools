@@ -1,6 +1,6 @@
 # ============================================================
 # Praat AudioTools - Visual_Game_of_Life_Synthesis.praat
-# Author: Shai Cohen (Enhanced by Praat AudioTools)
+# Author: Shai Cohen 
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Version: 1.0 (2025) - Enhanced Edition
 # License: MIT License

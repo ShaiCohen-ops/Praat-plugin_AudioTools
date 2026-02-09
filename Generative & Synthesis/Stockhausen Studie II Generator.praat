@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - TIMING FIX
+# Version: 0.3 (2025) 
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -591,7 +591,7 @@ procedure drawScore
     Erase all
     
     # === Title ===
-    Select outer viewport: 0, 10, 0, 0.7
+    Select outer viewport: 1, 10, 0, 0.7
     Font size: 12
     Colour: "Black"
     
@@ -667,7 +667,7 @@ procedure drawScore
     Select outer viewport: 0, 10, 6, 6.5
     Font size: 8
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Scale: 5^(1/25) ratio | Range: " + fixed$(freq[1], 0) + " - " + fixed$(freq[81], 0) + " Hz | Events: " + string$(numEvents)
+    Text: 1.5, "centre", 0.5, "half", "Scale: 5^(1/25) ratio | Range: " + fixed$(freq[1], 0) + " - " + fixed$(freq[81], 0) + " Hz | Events: " + string$(numEvents)
     
     Font size: 10
     Colour: "Black"
