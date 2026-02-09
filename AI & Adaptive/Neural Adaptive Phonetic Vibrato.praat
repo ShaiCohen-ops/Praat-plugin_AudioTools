@@ -1,22 +1,28 @@
 # ============================================================
 # Praat AudioTools - Neural_Adaptive_Phonetic_Vibrato.praat
-# Author: Shai Cohen
+# Author: Shai Cohen (Enhanced by Praat AudioTools)
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Fixed syntax
+# Version: 1.0 (2025) - Enhanced with Visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Neural Phonetic Vibrato - Applies stereo vibrato to vowels
 #   while keeping consonants clean for intelligibility.
+#   
+#   Pipeline:
+#   1. Extract 18D phonetic features (MFCC, formants, pitch, HNR)
+#   2. Label frames using acoustic rules (vowel/fricative/silence/other)
+#   3. Train FFNet (24 hidden units) to predict categories
+#   4. Infer mixing weights via softmax with adaptive voicing boost
+#   5. Apply stereo vibrato (180° phase offset) to vowel regions only
 #
-# Changelog v0.3:
-#   - Fixed preset comparison (number not string)
-#   - Fixed == to = operator
-#   - Fixed call to @ procedure syntax
-#   - Fixed inline if statements
-#   - Added preset names
+# Improvements in v1.0:
+#   - 6-panel comprehensive visualization
+#   - Category statistics and distribution
+#   - Feature space clustering display
+#   - Mixing mask timeline
+#   - Softmax confidence visualization
 # ============================================================
 
 # === Input Validation ===
@@ -28,9 +34,9 @@ endif
 original = selected("Sound")
 sound_name$ = selected$("Sound")
 
-form Neural Phonetic Vibrato v0.3
+form Neural Phonetic Vibrato v1.0 (Enhanced)
     comment === PRESETS ===
-    optionmenu Preset: 1
+    optionmenu Preset 1
         option Manual
         option Lush Chorus
         option Wide & Slow
@@ -46,6 +52,7 @@ form Neural Phonetic Vibrato v0.3
     positive Voiced_boost 0.4
     comment === Output ===
     real Stereo_width 0.9
+    boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
@@ -126,15 +133,20 @@ Rename: "Analysis_Copy"
 sound_work = selected("Sound")
 
 clearinfo
-writeInfoLine: "=== Neural Phonetic Vibrato v0.3 ==="
+writeInfoLine: "=== Neural Phonetic Vibrato v1.0 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Sound: ", sound_name$
+appendInfoLine: ""
+appendInfoLine: "Neural Network Architecture:"
+appendInfoLine: "  Input: 18 features (MFCC, formants, pitch, HNR)"
+appendInfoLine: "  Hidden: ", hidden_units, " units"
+appendInfoLine: "  Output: 4 categories (vowel, fricative, silence, other)"
 appendInfoLine: ""
 
 # ============================================
 # ANALYSIS (BATCH)
 # ============================================
-appendInfoLine: "Analyzing audio features..."
+appendInfoLine: "Step 1: Extracting phonetic features..."
 
 selectObject: sound_work
 To Pitch: 0, 75, 600
@@ -160,6 +172,8 @@ selectObject: mfcc
 nFrames = Get number of frames
 rows_target = nFrames
 n_features = 18
+
+appendInfoLine: "  Extracted ", rows_target, " frames x ", n_features, " features"
 
 # ============================================
 # FEATURE MATRIX
@@ -255,8 +269,10 @@ for i from 1 to rows_target
 endfor
 
 # ============================================
-# CATEGORIZATION
+# CATEGORIZATION (Rule-based labels)
 # ============================================
+appendInfoLine: "Step 2: Labeling frames (rule-based)..."
+
 Create Categories: "output_categories"
 output_categories = selected("Categories")
 
@@ -311,6 +327,17 @@ for i from 1 to rows_target
     selectObject: formant
 endfor
 
+# Count categories
+count_vowel = 0
+count_fricative = 0
+count_silence = 0
+count_other = 0
+
+# Store raw feature data for visualization
+viz_f1# = zero#(rows_target)
+viz_f2# = zero#(rows_target)
+viz_category# = zero#(rows_target)
+
 selectObject: raw_data
 for i from 1 to rows_target
     int_val = Get value: i, 1
@@ -318,19 +345,42 @@ for i from 1 to rows_target
     f0_val  = Get value: i, 3
     f1_val  = Get value: i, 4
     
+    viz_f1#[i] = f1_val
+    selectObject: formant
+    t = frame_step_seconds * (i - 0.5)
+    f2_val = Get value at time: 2, t, "Hertz", "Linear"
+    if f2_val = undefined
+        f2_val = 1500
+    endif
+    viz_f2#[i] = f2_val
+    
     selectObject: output_categories
     if int_val < silence_intensity_threshold
         Append category: "silence"
+        viz_category#[i] = 3
+        count_silence += 1
     elsif hnr_val > vowel_hnr_threshold and f0_val > 0 and f1_val > 300
         Append category: "vowel"
+        viz_category#[i] = 1
+        count_vowel += 1
     elsif int_val > silence_intensity_threshold and hnr_val < fricative_hnr_max and f0_val = 0
         Append category: "fricative"
+        viz_category#[i] = 2
+        count_fricative += 1
     else
         Append category: "other"
+        viz_category#[i] = 4
+        count_other += 1
     endif
     selectObject: raw_data
 endfor
 removeObject: raw_data
+
+appendInfoLine: "  Label distribution:"
+appendInfoLine: "    Vowel: ", count_vowel, " (", fixed$(100*count_vowel/rows_target, 1), "%)"
+appendInfoLine: "    Fricative: ", count_fricative, " (", fixed$(100*count_fricative/rows_target, 1), "%)"
+appendInfoLine: "    Silence: ", count_silence, " (", fixed$(100*count_silence/rows_target, 1), "%)"
+appendInfoLine: "    Other: ", count_other, " (", fixed$(100*count_other/rows_target, 1), "%)"
 
 # ============================================
 # NORMALIZE
@@ -369,7 +419,7 @@ endfor
 # ============================================
 # TRAINING
 # ============================================
-appendInfoLine: "Training Neural Network..."
+appendInfoLine: "Step 3: Training neural network..."
 
 selectObject: feature_matrix
 To Matrix
@@ -391,13 +441,17 @@ while total_trained < training_iterations
     Learn: train_chunk, learning_rate, "Minimum-squared-error"
     total_trained = total_trained + train_chunk
     if total_trained mod 200 = 0
-        appendInfoLine: "  Iter: ", total_trained
+        appendInfoLine: "  Iteration: ", total_trained, "/", training_iterations
     endif
 endwhile
+
+appendInfoLine: "  Training complete"
 
 # ============================================
 # INFERENCE & MASKS
 # ============================================
+appendInfoLine: "Step 4: Neural inference and mask generation..."
+
 selectObject: ffnet
 plusObject: pattern
 To ActivationList: 1
@@ -410,10 +464,16 @@ mask_vib = selected("IntensityTier")
 Create IntensityTier: "Mask_Dry", 0, duration
 mask_dry = selected("IntensityTier")
 
-appendInfoLine: "Generating mixing masks..."
+# Store for visualization
+viz_w_vowel# = zero#(rows_target)
+viz_w_dry# = zero#(rows_target)
+viz_time# = zero#(rows_target)
+viz_predicted_category# = zero#(rows_target)
+viz_softmax# = zero#(rows_target * 4)
 
 for i from 1 to rows_target
     t = frame_step_seconds * (i - 0.5)
+    viz_time#[i] = t
     
     selectObject: activation_matrix
     a1 = Get value in cell: i, 1
@@ -436,8 +496,30 @@ for i from 1 to rows_target
         denom = 1e-12
     endif
     
-    w_vowel = e1 / denom
-    w_rest  = (e2 + e3 + e4) / denom
+    p1 = e1 / denom
+    p2 = e2 / denom
+    p3 = e3 / denom
+    p4 = e4 / denom
+    
+    # Store softmax for visualization
+    viz_softmax#[(i-1)*4 + 1] = p1
+    viz_softmax#[(i-1)*4 + 2] = p2
+    viz_softmax#[(i-1)*4 + 3] = p3
+    viz_softmax#[(i-1)*4 + 4] = p4
+    
+    # Predicted category (argmax)
+    if p1 >= p2 and p1 >= p3 and p1 >= p4
+        viz_predicted_category#[i] = 1
+    elsif p2 >= p3 and p2 >= p4
+        viz_predicted_category#[i] = 2
+    elsif p3 >= p4
+        viz_predicted_category#[i] = 3
+    else
+        viz_predicted_category#[i] = 4
+    endif
+    
+    w_vowel = p1
+    w_rest  = p2 + p3 + p4
 
     # Adaptive boost
     selectObject: feature_matrix
@@ -451,6 +533,9 @@ for i from 1 to rows_target
     total = w_vowel + w_rest
     w_vowel = w_vowel / total
     w_dry = 1.0 - w_vowel
+    
+    viz_w_vowel#[i] = w_vowel
+    viz_w_dry#[i] = w_dry
     
     # Prob to dB
     floor_w = 0.001
@@ -474,6 +559,8 @@ endfor
 # ============================================
 # PARALLEL DSP (STEREO VIBRATO)
 # ============================================
+appendInfoLine: "Step 5: Applying stereo vibrato to vowel regions..."
+
 selectObject: sound_work
 
 vib_depth_sec = vibrato_depth_ms / 1000
@@ -559,6 +646,271 @@ endif
 selectObject: final_stereo
 Scale peak: 0.99
 
+# Store for visualization
+viz_left = ch_L
+viz_right = ch_R
+
+################################################################################
+# VISUALIZATION
+################################################################################
+
+if draw_visualization
+    appendInfoLine: "Step 6: Drawing visualization..."
+    
+    Erase all
+    
+    # === TITLE ===
+    Select outer viewport: 0, 8, 0, 0.5
+    Select inner viewport: 0, 8, 0, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.6, "half", "Neural Phonetic Vibrato"
+    Font size: 8
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", 0.1, "half", sound_name$ + " | " + presetName$ + " | FFNet: 18→24→4"
+    
+    # === ORIGINAL WAVEFORM ===
+    Select outer viewport: 0, 8, 0.6, 1.2
+    Select inner viewport: 0.6, 7.7, 0.7, 1.15
+    selectObject: original
+    Colour: "{0.6, 0.6, 0.6}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Original"
+    
+    # === RESULT WAVEFORMS (STEREO) ===
+    # Left channel
+    Select outer viewport: 0, 4, 1.3, 1.9
+    Select inner viewport: 0.6, 3.7, 1.4, 1.85
+    selectObject: viz_left
+    Colour: "{0.3, 0.5, 0.8}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Result L"
+    
+    # Right channel
+    Select outer viewport: 4, 8, 1.3, 1.9
+    Select inner viewport: 4.4, 7.7, 1.4, 1.85
+    selectObject: viz_right
+    Colour: "{0.8, 0.5, 0.3}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Result R"
+    Text bottom: "yes", "Time (s)"
+    
+    # === NEURAL NETWORK PREDICTIONS (Timeline) ===
+    Select outer viewport: 0, 8, 2.0, 3.2
+    Select inner viewport: 0.6, 7.7, 2.1, 3.1
+    
+    # Calculate max time for axis
+    max_time = duration
+    
+    Axes: 0, max_time, 0.5, 4.5
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time, 0.5, 4.5
+    
+    # Define category colors
+    cat_colors$# = {"", "", "", ""}
+    cat_colors$#[1] = "{0.3, 0.7, 0.3}"  
+	# Vowel - green
+    cat_colors$#[2] = "{0.9, 0.5, 0.3}"  
+	# Fricative - orange
+    cat_colors$#[3] = "{0.5, 0.5, 0.5}"  
+	# Silence - grey
+    cat_colors$#[4] = "{0.6, 0.6, 0.9}"  
+	# Other - blue
+    
+    # Draw predicted categories
+    for i from 1 to rows_target
+        t = viz_time#[i]
+        cat = viz_predicted_category#[i]
+        y_pos = cat
+        
+        Colour: cat_colors$#[cat]
+        Paint rectangle: cat_colors$#[cat], t - frame_step_seconds/2, t + frame_step_seconds/2, y_pos - 0.35, y_pos + 0.35
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Category"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Neural Network Predictions"
+    
+    # Y-axis labels
+    Font size: 6
+    Text: -0.5, "right", 1, "half", "Vowel"
+    Text: -0.5, "right", 2, "half", "Fricative"
+    Text: -0.5, "right", 3, "half", "Silence"
+    Text: -0.5, "right", 4, "half", "Other"
+    
+    # === MIXING MASKS (Vibrato vs Dry) ===
+    Select outer viewport: 0, 8, 3.3, 4.8
+    Select inner viewport: 0.6, 7.7, 3.4, 4.7
+    
+    Axes: 0, max_time, 0, 1.1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time, 0, 1.1
+    
+    # Draw vibrato weight (red)
+    Colour: "{0.9, 0.3, 0.3}"
+    Line width: 2
+    for i from 1 to rows_target - 1
+        Draw line: viz_time#[i], viz_w_vowel#[i], viz_time#[i+1], viz_w_vowel#[i+1]
+    endfor
+    
+    # Draw dry weight (blue)
+    Colour: "{0.3, 0.5, 0.8}"
+    Line width: 2
+    for i from 1 to rows_target - 1
+        Draw line: viz_time#[i], viz_w_dry#[i], viz_time#[i+1], viz_w_dry#[i+1]
+    endfor
+    Line width: 1
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Weight"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Mixing Masks (Adaptive)"
+    
+    # === FEATURE SPACE (F1 vs F2) ===
+    Select outer viewport: 0, 4, 4.9, 6.7
+    Select inner viewport: 0.6, 3.7, 5.0, 6.6
+    
+    # Find min/max for axes
+    min_f1 = 200
+    max_f1 = 1200
+    min_f2 = 500
+    max_f2 = 3000
+    
+    Axes: min_f1, max_f1, min_f2, max_f2
+    Paint rectangle: "{0.97, 0.97, 0.97}", min_f1, max_f1, min_f2, max_f2
+    
+    # Draw data points (subsample for clarity)
+    step = max(1, floor(rows_target / 400))
+    for i from 1 to rows_target
+        if i mod step = 0
+            cat = viz_predicted_category#[i]
+            f1 = viz_f1#[i]
+            f2 = viz_f2#[i]
+            
+            if f1 >= min_f1 and f1 <= max_f1 and f2 >= min_f2 and f2 <= max_f2
+                Colour: cat_colors$#[cat]
+                Paint circle (mm): cat_colors$#[cat], f1, f2, 0.4
+            endif
+        endif
+    endfor
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "F2 (Hz)"
+    Text bottom: "yes", "F1 (Hz)"
+    Text top: "no", "Feature Space (Predicted)"
+    
+    # === SOFTMAX PROBABILITIES ===
+    Select outer viewport: 4, 8, 4.9, 6.7
+    Select inner viewport: 4.4, 7.7, 5.0, 6.6
+    
+    Axes: 0, max_time, 0, 1.05
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time, 0, 1.05
+    
+    # Draw softmax probabilities as overlaid lines
+    # Vowel probability
+    Colour: cat_colors$#[1]
+    Line width: 1.5
+    for i from 1 to rows_target - 1
+        p = viz_softmax#[(i-1)*4 + 1]
+        p_next = viz_softmax#[i*4 + 1]
+        Draw line: viz_time#[i], p, viz_time#[i+1], p_next
+    endfor
+    
+    # Fricative probability
+    Colour: cat_colors$#[2]
+    for i from 1 to rows_target - 1
+        p = viz_softmax#[(i-1)*4 + 2]
+        p_next = viz_softmax#[i*4 + 2]
+        Draw line: viz_time#[i], p, viz_time#[i+1], p_next
+    endfor
+    
+    # Silence probability
+    Colour: cat_colors$#[3]
+    for i from 1 to rows_target - 1
+        p = viz_softmax#[(i-1)*4 + 3]
+        p_next = viz_softmax#[i*4 + 3]
+        Draw line: viz_time#[i], p, viz_time#[i+1], p_next
+    endfor
+    
+    # Other probability
+    Colour: cat_colors$#[4]
+    for i from 1 to rows_target - 1
+        p = viz_softmax#[(i-1)*4 + 4]
+        p_next = viz_softmax#[i*4 + 4]
+        Draw line: viz_time#[i], p, viz_time#[i+1], p_next
+    endfor
+    Line width: 1
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Probability"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Softmax Confidence"
+    
+    # === LEGEND ===
+    Select outer viewport: 0, 8, 6.8, 7.5
+    Select inner viewport: 0, 8, 6.8, 7.5
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    
+    Colour: "Black"
+    Text: 0.02, "left", 0.75, "half", "Categories:"
+    
+    # Category legend
+    x_pos = 0.15
+    Paint rectangle: cat_colors$#[1], x_pos, x_pos + 0.03, 0.65, 0.85
+    Text: x_pos + 0.04, "left", 0.75, "half", "Vowel"
+    x_pos += 0.12
+    
+    Paint rectangle: cat_colors$#[2], x_pos, x_pos + 0.03, 0.65, 0.85
+    Text: x_pos + 0.04, "left", 0.75, "half", "Fricative"
+    x_pos += 0.14
+    
+    Paint rectangle: cat_colors$#[3], x_pos, x_pos + 0.03, 0.65, 0.85
+    Text: x_pos + 0.04, "left", 0.75, "half", "Silence"
+    x_pos += 0.12
+    
+    Paint rectangle: cat_colors$#[4], x_pos, x_pos + 0.03, 0.65, 0.85
+    Text: x_pos + 0.04, "left", 0.75, "half", "Other"
+    
+    # Mixing legend
+    Text: 0.52, "left", 0.75, "half", "Mixing:"
+    x_pos = 0.62
+    
+    Colour: "{0.9, 0.3, 0.3}"
+    Draw line: x_pos, 0.75, x_pos + 0.03, 0.75
+    Colour: "Black"
+    Text: x_pos + 0.04, "left", 0.75, "half", "Vibrato"
+    x_pos += 0.13
+    
+    Colour: "{0.3, 0.5, 0.8}"
+    Draw line: x_pos, 0.75, x_pos + 0.03, 0.75
+    Colour: "Black"
+    Text: x_pos + 0.04, "left", 0.75, "half", "Dry"
+    
+    # Bottom text
+    Font size: 6
+    Text: 0.02, "left", 0.25, "half", "Phonetic FFNet learns vowel regions → applies stereo vibrato adaptively"
+    
+    Font size: 10
+endif
+
 # ============================================
 # CLEANUP
 # ============================================
@@ -590,12 +942,18 @@ endproc
 @safeRemove: s_vib_L_masked
 @safeRemove: s_vib_R_masked
 @safeRemove: s_dry_masked
-@safeRemove: ch_L
-@safeRemove: ch_R
+
+if draw_visualization
+    @safeRemove: viz_left
+    @safeRemove: viz_right
+endif
 
 appendInfoLine: ""
 appendInfoLine: "=== Complete ==="
 appendInfoLine: "Output: ", sound_name$, "_neuralVib_", presetName$
+appendInfoLine: "Vibrato rate: ", vibrato_rate_hz, " Hz"
+appendInfoLine: "Vibrato depth: ", vibrato_depth_ms, " ms"
+appendInfoLine: "Stereo width: ", stereo_width
 
 selectObject: final_stereo
 
