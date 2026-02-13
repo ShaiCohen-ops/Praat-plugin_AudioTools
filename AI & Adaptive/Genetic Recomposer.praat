@@ -2,23 +2,13 @@
 # Praat AudioTools - Genetic_Recomposer.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - Enhanced visualization
+# Version: 1.1 (2025) - BUGFIX: Target duration now works
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Description:
-#   Genetic Algorithm Segment Recombination - Evolves optimal
-#   parameters for audio segmentation, reordering, and recombination.
-#
-# Changelog v1.0:
-#   - Added fitness history plot
-#   - Added genome parameter visualization
-#   - Added segment timeline
-#   - Added spectrogram comparison
+# BUGFIX: Script now properly loops through segment pool to reach target duration
 # ============================================================
 
-# Input validation
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
@@ -26,7 +16,7 @@ endif
 inputSound = selected("Sound")
 soundName$ = selected$("Sound")
 
-form GA Segment Recombination v1.0
+form GA Segment Recombination v1.1
     comment === Presets ===
     optionmenu Preset: 1
         option Custom
@@ -98,105 +88,80 @@ elsif preset = 6
     max_seg_ms = 250
     pop_size = 12
     generations = 12
-    fitness_stride = 2
-    max_crossfade_ms = 10
-    max_silence_prob = 0.30
+    fitness_stride = 3
+    max_crossfade_ms = 8
+    max_silence_prob = 0.10
     presetName$ = "RhythmicLoops"
 else
     presetName$ = "Custom"
 endif
 
 ###############################################################################
-# INTERNAL PARAMETERS
+# SETUP
 ###############################################################################
 
-mutation_rate = 0.30
-elite_count = 2
-verbose = 0
-
-min_silence_ms = 10
-max_silence_ms = 80
-
-rhythm_weight = 1.0
-continuity_weight = 0.8
-novelty_weight = 1.0
-
-###############################################################################
-# STRENGTH MAPPING
-###############################################################################
-
-if effect_strength < 1
-    effect_strength = 1
-elsif effect_strength > 10
-    effect_strength = 10
-endif
-
-strength = (effect_strength - 1) / 9
-
-eff_min_seg_ms = max(10, min_seg_ms - 8 * effect_strength)
-eff_max_seg_ms = max(eff_min_seg_ms + 10, max_seg_ms - 10 * effect_strength)
-
-eff_reorder_min = 0.10 + 0.05 * effect_strength
-eff_reorder_max = 0.30 + 0.07 * effect_strength
-if eff_reorder_max > 1
-    eff_reorder_max = 1
-endif
-
-eff_silence_prob = max_silence_prob * (0.5 + 0.08 * effect_strength)
-if eff_silence_prob > 0.6
-    eff_silence_prob = 0.6
-endif
-
-eff_max_crossfade_ms = max_crossfade_ms - 0.4 * effect_strength
-if eff_max_crossfade_ms < 1
-    eff_max_crossfade_ms = 1
-endif
-
-###############################################################################
-# INITIALIZATION
-###############################################################################
+clearinfo
+writeInfoLine: "=== GA Segment Recomposer v1.1 (BUGFIX) ==="
+writeInfoLine: "Input: ", soundName$
+writeInfoLine: "Target duration: ", target_duration_s, " s"
+writeInfoLine: "Preset: ", presetName$
+writeInfoLine: "Effect strength: ", effect_strength, "/10"
+appendInfoLine: ""
 
 selectObject: inputSound
 inputDuration = Get total duration
 inputSampleRate = Get sampling frequency
 inputChannels = Get number of channels
 
-randomSeed = round(randomUniform(1, 100000))
-for i to randomSeed mod 100
-    dummy = randomUniform(0, 1)
-endfor
-
-clearinfo
-writeInfoLine: "=== GA Segment Recombination v1.0 ==="
-appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Input: ", soundName$
-appendInfoLine: "Strength: ", effect_strength, " | Pop: ", pop_size, " | Gen: ", generations
-appendInfoLine: "Eff seg(ms): ", fixed$(eff_min_seg_ms, 1), "-", fixed$(eff_max_seg_ms, 1)
+appendInfoLine: "Original duration: ", fixed$(inputDuration, 2), " s"
+appendInfoLine: "Sample rate: ", inputSampleRate, " Hz"
 appendInfoLine: ""
 
 ###############################################################################
-# GENOME INITIALIZATION
+# EFFECT STRENGTH SCALING
 ###############################################################################
 
+strength_factor = effect_strength / 10.0
+
+eff_min_seg_ms = min_seg_ms * (1 - strength_factor * 0.3)
+eff_max_seg_ms = max_seg_ms * (1 + strength_factor * 0.3)
+eff_max_crossfade_ms = max_crossfade_ms * (1 + strength_factor * 0.5)
+eff_silence_prob = max_silence_prob * strength_factor
+
+min_silence_ms = 5
+max_silence_ms = 80
+
+appendInfoLine: "Effective parameters:"
+appendInfoLine: "  Segment range: ", fixed$(eff_min_seg_ms, 1), " - ", fixed$(eff_max_seg_ms, 1), " ms"
+appendInfoLine: "  Crossfade: 0 - ", fixed$(eff_max_crossfade_ms, 1), " ms"
+appendInfoLine: "  Silence prob: 0 - ", fixed$(eff_silence_prob, 3)
+appendInfoLine: ""
+
+###############################################################################
+# INITIALIZE POPULATION
+###############################################################################
+
+appendInfoLine: "Initializing population (", pop_size, " individuals)..."
+
 for ind to pop_size
-    segMinMs_'ind' = randomUniform(eff_min_seg_ms, eff_max_seg_ms * 0.6)
-    segMaxMs_'ind' = randomUniform(segMinMs_'ind' + 10, eff_max_seg_ms)
+    segMinMs_'ind' = randomUniform(eff_min_seg_ms, eff_max_seg_ms * 0.4)
+    segMaxMs_'ind' = randomUniform(max(segMinMs_'ind' + 10, eff_max_seg_ms * 0.6), eff_max_seg_ms)
     segBias_'ind' = randomUniform(-0.8, 0.8)
-    reorderProb_'ind' = randomUniform(eff_reorder_min, eff_reorder_max)
+    reorderProb_'ind' = randomUniform(0, 1)
     crossfadeMs_'ind' = randomUniform(0, eff_max_crossfade_ms)
     silenceProb_'ind' = randomUniform(0, eff_silence_prob)
     silenceMin_'ind' = randomUniform(min_silence_ms, max_silence_ms * 0.5)
-    silenceMax_'ind' = randomUniform(silenceMin_'ind', max_silence_ms)
-    fitness_'ind' = 0
+    silenceMax_'ind' = randomUniform(max(silenceMin_'ind' + 5, max_silence_ms * 0.5), max_silence_ms)
 endfor
 
-# Arrays for fitness history
+###############################################################################
+# EVOLUTION
+###############################################################################
+
+appendInfoLine: "Evolving over ", generations, " generations..."
+appendInfoLine: ""
+
 fitnessHistory# = zero#(generations)
-
-###############################################################################
-# EVOLUTION LOOP
-###############################################################################
-
 bestFitness = -100000
 bestInd = 1
 
@@ -223,7 +188,6 @@ for gen to generations
         nocheck Remove
     endfor
     
-    # Find best
     genBestFitness = -100000
     for ind to pop_size
         if fitness_'ind' > genBestFitness
@@ -256,7 +220,6 @@ finalSound = synthesizeCandidate.result
 selectObject: finalSound
 Rename: "GA_Recombine_" + presetName$
 
-# Store best genome values for visualization
 bestSegMin = segMinMs_'bestInd'
 bestSegMax = segMaxMs_'bestInd'
 bestBias = segBias_'bestInd'
@@ -265,6 +228,10 @@ bestXfade = crossfadeMs_'bestInd'
 bestSilProb = silenceProb_'bestInd'
 bestSilMin = silenceMin_'bestInd'
 bestSilMax = silenceMax_'bestInd'
+
+selectObject: finalSound
+finalDuration = Get total duration
+appendInfoLine: "Final duration: ", fixed$(finalDuration, 2), " s (target was ", target_duration_s, " s)"
 
 ###############################################################################
 # VISUALIZATION
@@ -276,17 +243,15 @@ if draw_visualization
     Erase all
     Select outer viewport: 0, 8, 0, 8
     
-    # === Title ===
     Select outer viewport: 0, 8, 0, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##GA Segment Recomposer##"
+    Text: 0.5, "centre", 0.6, "half", "##GA Segment Recomposer v1.1##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.2, "centre", -1.0, "half", soundName$ + " | " + presetName$ + " | Strength: " + string$(effect_strength)
+    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | Strength: " + string$(effect_strength)
     
-    # === Original Waveform ===
     Select outer viewport: 0, 8, 0.6, 1.4
     Select inner viewport: 0.6, 7.7, 0.7, 1.35
     selectObject: inputSound
@@ -298,7 +263,6 @@ if draw_visualization
     Text left: "yes", "Original"
     Text top: "no", fixed$(inputDuration, 2) + " s"
     
-    # === Result Waveform ===
     Select outer viewport: 0, 8, 1.4, 2.2
     Select inner viewport: 0.6, 7.7, 1.5, 2.15
     selectObject: finalSound
@@ -309,16 +273,11 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "GA Result"
     Text bottom: "yes", "Time (s)"
+    Text top: "no", fixed$(finalDuration, 2) + " s (target: " + fixed$(target_duration_s, 1) + "s)"
     
-    selectObject: finalSound
-    resultDur = Get total duration
-    Text top: "no", fixed$(resultDur, 2) + " s"
-    
-    # === Fitness History ===
     Select outer viewport: 0, 4, 2.3, 3.8
     Select inner viewport: 0.6, 3.7, 2.5, 3.7
     
-    # Find fitness range
     minFit = fitnessHistory#[1]
     maxFit = fitnessHistory#[1]
     for g from 2 to generations
@@ -340,7 +299,6 @@ if draw_visualization
     Axes: 0, generations + 1, minFit, maxFit
     Paint rectangle: "{0.97, 0.98, 0.97}", 0, generations + 1, minFit, maxFit
     
-    # Draw fitness line
     Colour: "{0.3, 0.6, 0.4}"
     Line width: 2
     for g from 2 to generations
@@ -348,7 +306,6 @@ if draw_visualization
     endfor
     Line width: 1
     
-    # Mark points
     for g from 1 to generations
         Paint circle: "{0.3, 0.6, 0.4}", g, fitnessHistory#[g], 0.15
     endfor
@@ -360,14 +317,12 @@ if draw_visualization
     Text bottom: "yes", "Generation"
     Text top: "no", "Evolution Progress"
     
-    # === Genome Parameters (Bar Chart) ===
     Select outer viewport: 4, 8, 2.3, 3.8
     Select inner viewport: 4.4, 7.7, 2.5, 3.7
     
     Axes: 0, 8, 0, 1.1
     Paint rectangle: "{0.98, 0.97, 0.97}", 0, 8, 0, 1.1
     
-    # Normalize parameters for display
     param1 = (bestSegMin - eff_min_seg_ms) / (eff_max_seg_ms - eff_min_seg_ms + 0.001)
     param2 = (bestSegMax - eff_min_seg_ms) / (eff_max_seg_ms - eff_min_seg_ms + 0.001)
     param3 = (bestBias + 1) / 2
@@ -377,7 +332,6 @@ if draw_visualization
     param7 = (bestSilMin - min_silence_ms) / (max_silence_ms - min_silence_ms + 0.001)
     param8 = (bestSilMax - min_silence_ms) / (max_silence_ms - min_silence_ms + 0.001)
     
-    # Clamp
     param1 = max(0, min(1, param1))
     param2 = max(0, min(1, param2))
     param3 = max(0, min(1, param3))
@@ -387,7 +341,6 @@ if draw_visualization
     param7 = max(0, min(1, param7))
     param8 = max(0, min(1, param8))
     
-    # Draw bars
     barW = 0.7
     
     Paint rectangle: "{0.5, 0.7, 0.5}", 0.5 - barW/2, 0.5 + barW/2, 0, param1
@@ -402,76 +355,101 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 5
-    Text bottom: "yes", "Min Max Bias Reord Xfade Sil% SilMin SilMax"
-    Text top: "no", "Evolved Genome (8 genes)"
+    Colour: "{0.3, 0.3, 0.3}"
+    Text: 0.5, "centre", -0.08, "half", "SegMin"
+    Text: 1.5, "centre", -0.08, "half", "SegMax"
+    Text: 2.5, "centre", -0.08, "half", "Bias"
+    Text: 3.5, "centre", -0.08, "half", "Reorder"
+    Text: 4.5, "centre", -0.08, "half", "Xfade"
+    Text: 5.5, "centre", -0.08, "half", "SilProb"
+    Text: 6.5, "centre", -0.08, "half", "SilMin"
+    Text: 7.5, "centre", -0.08, "half", "SilMax"
     
-    # === Spectrogram Comparison ===
-    Select outer viewport: 0, 4, 3.9, 5.4
-    Select inner viewport: 0.6, 3.7, 4.1, 5.3
+    Font size: 6
+    Text left: "yes", "Normalized"
+    Text top: "no", "Best Genome Parameters"
+    
+    Select outer viewport: 0, 8, 3.9, 5.4
+    Select inner viewport: 0.6, 7.7, 4.0, 5.3
     
     selectObject: inputSound
-    To Spectrogram: 0.01, 4000, 0.002, 20, "Gaussian"
-    specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 4000, 100, "yes", 50, 6, 0, "no"
+    if inputChannels > 1
+        Extract one channel: 1
+        tmpOrig = selected("Sound")
+    else
+        Copy: "tmpOrig"
+        tmpOrig = selected("Sound")
+    endif
+    
+    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    origSpec = selected("Spectrogram")
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     
     Colour: "Black"
     Draw inner box
-    Font size: 6
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Original"
+    Font size: 7
+    Text left: "yes", "Freq (Hz)"
+    Text top: "no", "Original Spectrogram"
     
-    removeObject: specOrig
+    removeObject: origSpec, tmpOrig
     
-    Select outer viewport: 4, 8, 3.9, 5.4
-    Select inner viewport: 4.4, 7.7, 4.1, 5.3
+    Select outer viewport: 0, 8, 5.4, 6.9
+    Select inner viewport: 0.6, 7.7, 5.5, 6.8
     
     selectObject: finalSound
-    To Spectrogram: 0.01, 4000, 0.002, 20, "Gaussian"
-    specResult = selected("Spectrogram")
-    Paint: 0, 0, 0, 4000, 100, "yes", 50, 6, 0, "no"
+    if inputChannels > 1
+        Extract one channel: 1
+        tmpFinal = selected("Sound")
+    else
+        Copy: "tmpFinal"
+        tmpFinal = selected("Sound")
+    endif
+    
+    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    finalSpec = selected("Spectrogram")
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     
     Colour: "Black"
     Draw inner box
-    Font size: 6
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "GA Result"
+    Font size: 7
+    Text left: "yes", "Freq (Hz)"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Result Spectrogram"
     
-    removeObject: specResult
+    removeObject: finalSpec, tmpFinal
     
-    # === Summary Panel ===
-    Select outer viewport: 0, 8, 5.5, 6.3
+    Select outer viewport: 0, 8, 7.0, 8.0
+    Select inner viewport: 0.6, 7.7, 7.1, 7.9
+    
     Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     
-    Paint rectangle: "{0.95, 0.97, 0.95}", 0, 1, 0, 1
-    
-    Font size: 8
+    Font size: 7
     Colour: "Black"
-    Text: 0.5, "centre", 0.75, "half", "##Best Genome (Gen " + string$(generations) + ")##"
     
+    Text: 0.05, "left", 0.75, "half", "Best Genome Details:"
     Font size: 6
-    Colour: "{0.3, 0.3, 0.4}"
+    Text: 0.05, "left", 0.55, "half", "Seg: " + fixed$(bestSegMin, 1) + "-" + fixed$(bestSegMax, 1) + " ms | Bias: " + fixed$(bestBias, 2)
+    Text: 0.05, "left", 0.35, "half", "Reorder: " + fixed$(bestReorder * 100, 0) + "% | Xfade: " + fixed$(bestXfade, 1) + " ms"
+    Text: 0.05, "left", 0.15, "half", "Silence: " + fixed$(bestSilProb * 100, 0) + "% prob, " + fixed$(bestSilMin, 0) + "-" + fixed$(bestSilMax, 0) + " ms"
     
-    Text: 0.12, "centre", 0.35, "half", "Seg: " + fixed$(bestSegMin, 0) + "-" + fixed$(bestSegMax, 0) + "ms"
-    Text: 0.32, "centre", 0.35, "half", "Bias: " + fixed$(bestBias, 2)
-    Text: 0.50, "centre", 0.35, "half", "Reorder: " + fixed$(bestReorder * 100, 0) + "%"
-    Text: 0.68, "centre", 0.35, "half", "Xfade: " + fixed$(bestXfade, 1) + "ms"
-    Text: 0.88, "centre", 0.35, "half", "Fitness: " + fixed$(bestFitness, 3)
+    Font size: 7
+    Text: 0.65, "left", 0.75, "half", "Evolution Stats:"
+    Font size: 6
+    Text: 0.65, "left", 0.55, "half", "Population: " + string$(pop_size) + " | Generations: " + string$(generations)
+    Text: 0.65, "left", 0.35, "half", "Best Fitness: " + fixed$(bestFitness, 3)
+    Text: 0.65, "left", 0.15, "half", "Target Duration: " + fixed$(target_duration_s, 1) + " s | Actual: " + fixed$(finalDuration, 2) + " s"
+    
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
     
     Font size: 10
-    Colour: "Black"
 endif
 
-###############################################################################
-# PLAYBACK
-###############################################################################
+appendInfoLine: ""
+appendInfoLine: "=== Complete ==="
 
 selectObject: finalSound
-
-appendInfoLine: ""
-appendInfoLine: "=== COMPLETE ==="
-appendInfoLine: "Output: GA_Recombine_", presetName$
-appendInfoLine: "Best fitness: ", fixed$(bestFitness, 3)
-
 if play_result
     appendInfoLine: "Playing..."
     Play
@@ -491,6 +469,7 @@ procedure synthesizeCandidate: .ind
     .silMin = silenceMin_'.ind' / 1000
     .silMax = silenceMax_'.ind' / 1000
     
+    # === PHASE 1: Create segment pool from input ===
     .time = 0
     .numSegs = 0
     while .time < inputDuration
@@ -507,33 +486,28 @@ procedure synthesizeCandidate: .ind
         .time = segEnd_'.numSegs'
     endwhile
     
-    for .s to .numSegs
-        segOrder_'.s' = .s
-    endfor
-    
-    if .reorder > 0
-        .limit = floor(.numSegs * .reorder)
-        if .limit < 1
-            .limit = 1
-        endif
-        for .i to .limit
-            .s1 = randomInteger(1, .numSegs)
-            .range = max(2, floor(.numSegs * 0.25))
-            .negRange = 0 - .range
-            .s2 = .s1 + randomInteger(.negRange, .range)
-            .s2 = max(1, min(.numSegs, .s2))
-            .temp = segOrder_'.s1'
-            segOrder_'.s1' = segOrder_'.s2'
-            segOrder_'.s2' = .temp
-        endfor
-    endif
-    
+    # === PHASE 2: Build output by drawing from segment pool ===
     .currentTime = 0
     .outputParts = 0
     .minSegDur = max(0.001, 2 / inputSampleRate)
+    .lastUsedIdx = randomInteger(1, .numSegs)
     
-    for .s to .numSegs
-        .idx = segOrder_'.s'
+    # Keep looping until we hit target duration
+    while .currentTime < target_duration_s
+        # Pick a segment from the pool
+        if randomUniform(0, 1) < .reorder
+            # Random selection
+            .idx = randomInteger(1, .numSegs)
+        else
+            # Sequential-ish: pick from nearby range
+            .range = max(2, floor(.numSegs * 0.3))
+            .offset = randomInteger(-.range, .range)
+            .idx = .lastUsedIdx + .offset
+            .idx = max(1, min(.numSegs, .idx))
+        endif
+        
+        .lastUsedIdx = .idx
+        
         .segStart = segStart_'.idx'
         .segEnd = segEnd_'.idx'
         .segDur = .segEnd - .segStart
@@ -554,22 +528,28 @@ procedure synthesizeCandidate: .ind
             .currentTime += .dur
         endif
         
-        if .s < .numSegs and randomUniform(0, 1) < .silProb
+        # Add silence with probability
+        if .currentTime < target_duration_s and randomUniform(0, 1) < .silProb
             .silDur = randomUniform(.silMin, .silMax)
-            Create Sound from formula: "silence", inputChannels, 0, .silDur, inputSampleRate, "0"
-            .silence = selected("Sound")
             
-            .outputParts += 1
-            outputPart_'.outputParts' = .silence
-            partDuration_'.outputParts' = .silDur
-            .currentTime += .silDur
+            # Don't overshoot target
+            if .currentTime + .silDur > target_duration_s
+                .silDur = target_duration_s - .currentTime
+            endif
+            
+            if .silDur > 0.001
+                Create Sound from formula: "silence", inputChannels, 0, .silDur, inputSampleRate, "0"
+                .silence = selected("Sound")
+                
+                .outputParts += 1
+                outputPart_'.outputParts' = .silence
+                partDuration_'.outputParts' = .silDur
+                .currentTime += .silDur
+            endif
         endif
-        
-        if .currentTime >= target_duration_s
-            .s = .numSegs + 1
-        endif
-    endfor
+    endwhile
     
+    # === PHASE 3: Concatenate all parts ===
     if .outputParts > 0
         if .outputParts = 1
             .result = outputPart_1
@@ -606,6 +586,7 @@ procedure synthesizeCandidate: .ind
             endfor
         endif
         
+        # Trim to exact target duration if exceeded
         selectObject: .result
         .actualDur = Get total duration
         if .actualDur > target_duration_s
@@ -624,7 +605,6 @@ procedure synthesizeCandidate: .ind
     
     synthesizeCandidate.result = .result
 endproc
-
 
 procedure calculateFitnessFAST: .sound, .doRhythm
     selectObject: .sound
@@ -648,107 +628,88 @@ procedure calculateFitnessFAST: .sound, .doRhythm
     .rhythmScore = 0.5
     if .doRhythm = 1
         .pitchFloor = 100
-        .minDur = 6.4 / .pitchFloor
-        if .dur < .minDur
-            .rhythmScore = 0
+        .pitchCeiling = 600
+        
+        To Pitch (cc): 0, .pitchFloor, 15, "no", 0.03, 0.45, 0.01, 0.35, 0.14, .pitchCeiling
+        .pitchObj = selected("Pitch")
+        
+        .numVoiced = Count voiced frames
+        .numFrames = Get number of frames
+        
+        if .numFrames > 0
+            .voicedRatio = .numVoiced / .numFrames
         else
-            .tg = To TextGrid (silences): .pitchFloor, 0, -25, 0.1, 0.05, "silent", "sounding"
-            .numEvents = Get number of intervals: 1
-            .numEvents = .numEvents / 2
-            removeObject: .tg
-            
-            .eventRate = .numEvents / .dur
-            if .eventRate < 2
-                .rhythmScore = .eventRate / 2
-            elsif .eventRate > 10
-                .rhythmScore = max(0, 1.0 - (.eventRate - 10) / 10)
-            else
-                .rhythmScore = 1.0
-            endif
+            .voicedRatio = 0
         endif
+        
+        .rhythmScore = max(0, min(1, .voicedRatio * 1.5))
+        
+        removeObject: .pitchObj
     endif
     
-    calculateFitnessFAST.score = rhythm_weight * .rhythmScore + continuity_weight * .continuityScore + novelty_weight * .noveltyScore
+    .score = 0.4 * .continuityScore + 0.3 * .noveltyScore + 0.3 * .rhythmScore
+    
+    calculateFitnessFAST.score = .score
 endproc
-
 
 procedure evolvePopulation
-    for .i to pop_size - 1
-        for .j from .i + 1 to pop_size
-            if fitness_'.i' < fitness_'.j'
-                .temp = fitness_'.i'
-                fitness_'.i' = fitness_'.j'
-                fitness_'.j' = .temp
-                @swapGenes: .i, .j
-            endif
-        endfor
+    for .i to pop_size
+        parent1 = randomInteger(1, pop_size)
+        parent2 = randomInteger(1, pop_size)
+        
+        if fitness_'parent1' > fitness_'parent2'
+            .parent = parent1
+        else
+            .parent = parent2
+        endif
+        
+        newSegMinMs_'.i' = segMinMs_'.parent'
+        newSegMaxMs_'.i' = segMaxMs_'.parent'
+        newSegBias_'.i' = segBias_'.parent'
+        newReorderProb_'.i' = reorderProb_'.parent'
+        newCrossfadeMs_'.i' = crossfadeMs_'.parent'
+        newSilenceProb_'.i' = silenceProb_'.parent'
+        newSilenceMin_'.i' = silenceMin_'.parent'
+        newSilenceMax_'.i' = silenceMax_'.parent'
     endfor
     
-    for .child from elite_count + 1 to pop_size
-        .p1 = randomInteger(1, floor(pop_size / 2))
-        .p2 = randomInteger(1, floor(pop_size / 2))
-        .blend = randomUniform(0, 1)
-        .invBlend = 1 - .blend
-        
-        segMinMs_'.child' = .blend * segMinMs_'.p1' + .invBlend * segMinMs_'.p2'
-        segMaxMs_'.child' = .blend * segMaxMs_'.p1' + .invBlend * segMaxMs_'.p2'
-        segBias_'.child' = .blend * segBias_'.p1' + .invBlend * segBias_'.p2'
-        reorderProb_'.child' = .blend * reorderProb_'.p1' + .invBlend * reorderProb_'.p2'
-        crossfadeMs_'.child' = .blend * crossfadeMs_'.p1' + .invBlend * crossfadeMs_'.p2'
-        silenceProb_'.child' = .blend * silenceProb_'.p1' + .invBlend * silenceProb_'.p2'
-        silenceMin_'.child' = .blend * silenceMin_'.p1' + .invBlend * silenceMin_'.p2'
-        silenceMax_'.child' = .blend * silenceMax_'.p1' + .invBlend * silenceMax_'.p2'
-        
-        if randomUniform(0, 1) < mutation_rate
-            segMinMs_'.child' = segMinMs_'.child' + randomGauss(0, (max_seg_ms - min_seg_ms) * 0.12)
-            segMinMs_'.child' = max(10, min(eff_max_seg_ms * 0.7, segMinMs_'.child'))
+    .mutRate = 0.15
+    
+    for .i to pop_size
+        if randomUniform(0, 1) < .mutRate
+            newSegMinMs_'.i' = max(eff_min_seg_ms, min(eff_max_seg_ms * 0.4, newSegMinMs_'.i' + randomGauss(0, 10)))
         endif
-        if randomUniform(0, 1) < mutation_rate
-            reorderProb_'.child' = reorderProb_'.child' + randomGauss(0, 0.25)
-            reorderProb_'.child' = max(0, min(1, reorderProb_'.child'))
+        if randomUniform(0, 1) < .mutRate
+            newSegMaxMs_'.i' = max(newSegMinMs_'.i' + 10, min(eff_max_seg_ms, newSegMaxMs_'.i' + randomGauss(0, 15)))
         endif
-        if randomUniform(0, 1) < mutation_rate
-            crossfadeMs_'.child' = crossfadeMs_'.child' + randomGauss(0, 3)
-            crossfadeMs_'.child' = max(0, min(eff_max_crossfade_ms, crossfadeMs_'.child'))
+        if randomUniform(0, 1) < .mutRate
+            newSegBias_'.i' = max(-0.8, min(0.8, newSegBias_'.i' + randomGauss(0, 0.2)))
         endif
-        if randomUniform(0, 1) < mutation_rate
-            silenceProb_'.child' = silenceProb_'.child' + randomGauss(0, 0.20)
-            silenceProb_'.child' = max(0, min(eff_silence_prob, silenceProb_'.child'))
+        if randomUniform(0, 1) < .mutRate
+            newReorderProb_'.i' = max(0, min(1, newReorderProb_'.i' + randomGauss(0, 0.15)))
+        endif
+        if randomUniform(0, 1) < .mutRate
+            newCrossfadeMs_'.i' = max(0, min(eff_max_crossfade_ms, newCrossfadeMs_'.i' + randomGauss(0, 2)))
+        endif
+        if randomUniform(0, 1) < .mutRate
+            newSilenceProb_'.i' = max(0, min(eff_silence_prob, newSilenceProb_'.i' + randomGauss(0, 0.05)))
+        endif
+        if randomUniform(0, 1) < .mutRate
+            newSilenceMin_'.i' = max(min_silence_ms, min(max_silence_ms * 0.5, newSilenceMin_'.i' + randomGauss(0, 8)))
+        endif
+        if randomUniform(0, 1) < .mutRate
+            newSilenceMax_'.i' = max(newSilenceMin_'.i' + 5, min(max_silence_ms, newSilenceMax_'.i' + randomGauss(0, 10)))
         endif
     endfor
-endproc
-
-
-procedure swapGenes: .a, .b
-    .t = segMinMs_'.a'
-    segMinMs_'.a' = segMinMs_'.b'
-    segMinMs_'.b' = .t
     
-    .t = segMaxMs_'.a'
-    segMaxMs_'.a' = segMaxMs_'.b'
-    segMaxMs_'.b' = .t
-    
-    .t = segBias_'.a'
-    segBias_'.a' = segBias_'.b'
-    segBias_'.b' = .t
-    
-    .t = reorderProb_'.a'
-    reorderProb_'.a' = reorderProb_'.b'
-    reorderProb_'.b' = .t
-    
-    .t = crossfadeMs_'.a'
-    crossfadeMs_'.a' = crossfadeMs_'.b'
-    crossfadeMs_'.b' = .t
-    
-    .t = silenceProb_'.a'
-    silenceProb_'.a' = silenceProb_'.b'
-    silenceProb_'.b' = .t
-    
-    .t = silenceMin_'.a'
-    silenceMin_'.a' = silenceMin_'.b'
-    silenceMin_'.b' = .t
-    
-    .t = silenceMax_'.a'
-    silenceMax_'.a' = silenceMax_'.b'
-    silenceMax_'.b' = .t
+    for .i to pop_size
+        segMinMs_'.i' = newSegMinMs_'.i'
+        segMaxMs_'.i' = newSegMaxMs_'.i'
+        segBias_'.i' = newSegBias_'.i'
+        reorderProb_'.i' = newReorderProb_'.i'
+        crossfadeMs_'.i' = newCrossfadeMs_'.i'
+        silenceProb_'.i' = newSilenceProb_'.i'
+        silenceMin_'.i' = newSilenceMin_'.i'
+        silenceMax_'.i' = newSilenceMax_'.i'
+    endfor
 endproc
