@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.2 (2025) - FIXED
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -121,121 +121,194 @@ appendInfoLine: "Channels: ", numChannels
 appendInfoLine: ""
 
 # ============================================================
-# Process using Hilbert transform + SSB modulation
+# Process using GRANULAR Hilbert transform + SSB modulation
 # ============================================================
-appendInfoLine: "Processing..."
+appendInfoLine: "Processing with granular method..."
 
 # Angular frequency
 omega = 2 * pi * shift_hz
 
+# Granular parameters
+grainSize = 0.1
+hopSize = 0.05
+numGrains = floor((duration - grainSize) / hopSize) + 1
+
 if numChannels = 1
     # --- MONO PROCESSING ---
     
-    # Create Hilbert transform (90° phase shift)
-    selectObject: sound
-    hilbert = Copy: "hilbert_" + uniqueID$
+    # Create output sound
+    Create Sound from formula: "output", 1, 0, duration, sampleRate, "0"
+    result = selected("Sound")
+    resultId$ = string$(result)
     
-    # Convert to spectrum, shift phase by -90°, convert back
-    selectObject: hilbert
-    To Spectrum: "yes"
-    specHilbert = selected("Spectrum")
+    # Process each grain
+    for grainNum from 1 to numGrains
+        grainStart = (grainNum - 1) * hopSize
+        grainEnd = grainStart + grainSize
+        
+        if grainEnd > duration
+            grainEnd = duration
+        endif
+        
+        # Extract grain
+        selectObject: sound
+        grain = Extract part: grainStart, grainEnd, "rectangular", 1, "no"
+        
+        # Apply Hann window
+        selectObject: grain
+        grainDur = Get total duration
+        Formula: "self * 0.5 * (1 - cos(2 * pi * x / 'grainDur'))"
+        
+        # Hilbert transform of grain
+        selectObject: grain
+        To Spectrum: "yes"
+        specGrain = selected("Spectrum")
+        Formula: "if row = 1 then self[2, col] else -self[1, col] fi"
+        To Sound
+        hilbertGrain = selected("Sound")
+        removeObject: specGrain
+        
+        # SSB modulate grain
+        grainId$ = string$(grain)
+        hilbertGrainId$ = string$(hilbertGrain)
+        
+        selectObject: grain
+        shiftedGrain = Copy: "shifted_grain"
+        if shift_hz >= 0
+            Formula: "Object_'grainId$'(x) * cos('omega' * x) - Object_'hilbertGrainId$'(x) * sin('omega' * x)"
+        else
+            Formula: "Object_'grainId$'(x) * cos('omega' * x) + Object_'hilbertGrainId$'(x) * sin('omega' * x)"
+        endif
+        
+        # Overlap-add to output
+        shiftedId$ = string$(shiftedGrain)
+        selectObject: result
+        Formula: "if x >= 'grainStart' and x < 'grainEnd' then self + Object_'shiftedId$'(x - 'grainStart') else self endif"
+        
+        # Cleanup grain
+        removeObject: grain, hilbertGrain, shiftedGrain
+        
+        selectObject: sound
+    endfor
     
-    # Hilbert transform in frequency domain:
-    # H(f) = -j·sign(f)·X(f)
-    # For positive frequencies: multiply by -j (rotate -90°)
-    # For negative frequencies: multiply by +j (rotate +90°)
-    # In Praat Spectrum (which stores only positive frequencies):
-    # Real part becomes Imaginary, Imaginary becomes -Real
-    Formula: "if row = 1 then self[2, col] else -self[1, col] fi"
-    
-    To Sound
-    hilbertSound = selected("Sound")
-    removeObject: specHilbert
-    
-    selectObject: hilbert
-    removeObject: hilbert
-    hilbert = hilbertSound
-    Rename: "hilbert_" + uniqueID$
-    
-    # Create output
-    selectObject: sound
-    result = Copy: "shifted_" + uniqueID$
-    
-    # SSB modulation:
-    # Upper sideband (shift up): x·cos(ωt) - H{x}·sin(ωt)
-    # Lower sideband (shift down): x·cos(ωt) + H{x}·sin(ωt)
     selectObject: result
-    if shift_hz >= 0
-        Formula: "Sound_'originalName$'(x) * cos('omega' * x) - Sound_hilbert_'uniqueID$'(x) * sin('omega' * x)"
-    else
-        Formula: "Sound_'originalName$'(x) * cos('omega' * x) + Sound_hilbert_'uniqueID$'(x) * sin('omega' * x)"
-    endif
-    
-    removeObject: hilbert
 
 else
     # --- STEREO PROCESSING ---
     
     selectObject: sound
     Extract one channel: 1
-    left = selected("Sound")
-    Rename: "left_" + uniqueID$
+    leftOrig = selected("Sound")
     
     selectObject: sound
     Extract one channel: 2
-    right = selected("Sound")
-    Rename: "right_" + uniqueID$
+    rightOrig = selected("Sound")
     
-    # Process left channel
-    selectObject: left
-    To Spectrum: "yes"
-    specL = selected("Spectrum")
-    Formula: "if row = 1 then self[2, col] else -self[1, col] fi"
-    To Sound
-    hilbertL = selected("Sound")
-    Rename: "hilbertL_" + uniqueID$
-    removeObject: specL
+    # Create left output
+    Create Sound from formula: "output_L", 1, 0, duration, sampleRate, "0"
+    resultL = selected("Sound")
+    resultLId$ = string$(resultL)
     
-    selectObject: left
-    shiftedL = Copy: "shiftedL_" + uniqueID$
-    if shift_hz >= 0
-        Formula: "Sound_left_'uniqueID$'(x) * cos('omega' * x) - Sound_hilbertL_'uniqueID$'(x) * sin('omega' * x)"
-    else
-        Formula: "Sound_left_'uniqueID$'(x) * cos('omega' * x) + Sound_hilbertL_'uniqueID$'(x) * sin('omega' * x)"
-    endif
+    # Process left channel grains
+    for grainNum from 1 to numGrains
+        grainStart = (grainNum - 1) * hopSize
+        grainEnd = grainStart + grainSize
+        if grainEnd > duration
+            grainEnd = duration
+        endif
+        
+        selectObject: leftOrig
+        grain = Extract part: grainStart, grainEnd, "rectangular", 1, "no"
+        grainDur = Get total duration
+        Formula: "self * 0.5 * (1 - cos(2 * pi * x / 'grainDur'))"
+        
+        selectObject: grain
+        To Spectrum: "yes"
+        specGrain = selected("Spectrum")
+        Formula: "if row = 1 then self[2, col] else -self[1, col] fi"
+        To Sound
+        hilbertGrain = selected("Sound")
+        removeObject: specGrain
+        
+        grainId$ = string$(grain)
+        hilbertGrainId$ = string$(hilbertGrain)
+        
+        selectObject: grain
+        shiftedGrain = Copy: "shifted_grain"
+        if shift_hz >= 0
+            Formula: "Object_'grainId$'(x) * cos('omega' * x) - Object_'hilbertGrainId$'(x) * sin('omega' * x)"
+        else
+            Formula: "Object_'grainId$'(x) * cos('omega' * x) + Object_'hilbertGrainId$'(x) * sin('omega' * x)"
+        endif
+        
+        shiftedId$ = string$(shiftedGrain)
+        selectObject: resultL
+        Formula: "if x >= 'grainStart' and x < 'grainEnd' then self + Object_'shiftedId$'(x - 'grainStart') else self endif"
+        
+        removeObject: grain, hilbertGrain, shiftedGrain
+        selectObject: leftOrig
+    endfor
     
-    # Process right channel
-    selectObject: right
-    To Spectrum: "yes"
-    specR = selected("Spectrum")
-    Formula: "if row = 1 then self[2, col] else -self[1, col] fi"
-    To Sound
-    hilbertR = selected("Sound")
-    Rename: "hilbertR_" + uniqueID$
-    removeObject: specR
+    # Create right output
+    Create Sound from formula: "output_R", 1, 0, duration, sampleRate, "0"
+    resultR = selected("Sound")
+    resultRId$ = string$(resultR)
     
-    selectObject: right
-    shiftedR = Copy: "shiftedR_" + uniqueID$
-    if shift_hz >= 0
-        Formula: "Sound_right_'uniqueID$'(x) * cos('omega' * x) - Sound_hilbertR_'uniqueID$'(x) * sin('omega' * x)"
-    else
-        Formula: "Sound_right_'uniqueID$'(x) * cos('omega' * x) + Sound_hilbertR_'uniqueID$'(x) * sin('omega' * x)"
-    endif
+    # Process right channel grains
+    for grainNum from 1 to numGrains
+        grainStart = (grainNum - 1) * hopSize
+        grainEnd = grainStart + grainSize
+        if grainEnd > duration
+            grainEnd = duration
+        endif
+        
+        selectObject: rightOrig
+        grain = Extract part: grainStart, grainEnd, "rectangular", 1, "no"
+        grainDur = Get total duration
+        Formula: "self * 0.5 * (1 - cos(2 * pi * x / 'grainDur'))"
+        
+        selectObject: grain
+        To Spectrum: "yes"
+        specGrain = selected("Spectrum")
+        Formula: "if row = 1 then self[2, col] else -self[1, col] fi"
+        To Sound
+        hilbertGrain = selected("Sound")
+        removeObject: specGrain
+        
+        grainId$ = string$(grain)
+        hilbertGrainId$ = string$(hilbertGrain)
+        
+        selectObject: grain
+        shiftedGrain = Copy: "shifted_grain"
+        if shift_hz >= 0
+            Formula: "Object_'grainId$'(x) * cos('omega' * x) - Object_'hilbertGrainId$'(x) * sin('omega' * x)"
+        else
+            Formula: "Object_'grainId$'(x) * cos('omega' * x) + Object_'hilbertGrainId$'(x) * sin('omega' * x)"
+        endif
+        
+        shiftedId$ = string$(shiftedGrain)
+        selectObject: resultR
+        Formula: "if x >= 'grainStart' and x < 'grainEnd' then self + Object_'shiftedId$'(x - 'grainStart') else self endif"
+        
+        removeObject: grain, hilbertGrain, shiftedGrain
+        selectObject: rightOrig
+    endfor
     
     # Combine to stereo
-    selectObject: shiftedL, shiftedR
+    selectObject: resultL, resultR
     Combine to stereo
     result = selected("Sound")
     
-    removeObject: left, right, hilbertL, hilbertR, shiftedL, shiftedR
+    removeObject: leftOrig, rightOrig, resultL, resultR
 endif
 
 # ============================================================
 # Dry/wet mix
 # ============================================================
 if dry_wet_mix < 1
+    soundId$ = string$(sound)
     selectObject: result
-    Formula: "'dry_wet_mix' * self + (1 - 'dry_wet_mix') * Sound_'originalName$'(x)"
+    Formula: "'dry_wet_mix' * self + (1 - 'dry_wet_mix') * Object_'soundId$'(x)"
 endif
 
 selectObject: result
