@@ -314,6 +314,7 @@ if (numBursts < 2 or numSlowRegions < 2) and allow_fallback_if_insufficient_segm
                     numBursts = numBursts + 1
                     burstStart_'numBursts' = t
                     burstEnd_'numBursts' = t + dur
+                    burstPeak_'numBursts' = intVal
                     t = t + dur
                 else
                     t = inputDuration
