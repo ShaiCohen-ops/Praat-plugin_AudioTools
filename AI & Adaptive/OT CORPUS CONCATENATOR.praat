@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Fixed syntax
+# Version: 0.3.2 (2025) - Fixed Syntax Error
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,14 +11,12 @@
 #   OT Corpus Concatenator - Optimality Theory-inspired audio
 #   selection and concatenation based on weighted constraint violations.
 #
-# Changelog v0.3:
-#   - Fixed consecutive ID assumption (use array storage)
-#   - Added presets for common OT constraint weightings
-#   - Added visualization
-#   - Improved error handling
+# Changelog v0.3.2:
+#   - FIXED: "Unknown symbol Get" error. Moved 'Get sampling frequency'
+#            outside the 'if' statement.
 # ============================================================
 
-form OT Corpus Concatenator v0.3
+form OT Corpus Concatenator v0.3.2
     comment === Preset ===
     optionmenu Preset: 1
         option Manual
@@ -87,7 +85,7 @@ endif
 # ============================================
 
 clearinfo
-writeInfoLine: "=== OT Corpus Concatenator v0.3 ==="
+writeInfoLine: "=== OT Corpus Concatenator v0.3.2 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 
@@ -261,22 +259,22 @@ for i to n_target
     energy_vals#[i] = c0
     tilt_vals#[i] = c1
     
-    appendInfoLine: i, ". ", name$, " → Harmony: ", fixed$(score, 2)
+    appendInfoLine: i, ". ", name$, " -> Harmony: ", fixed$(score, 2)
     appendInfoLine: "   Features: Energy=", fixed$(c0, 1), " | Tilt=", fixed$(c1, 2)
     
     if v_dark > 0 or v_bright > 0 or v_energy > 0 or v_stable > 0
         appendInfoLine: "   Violations:"
         if v_dark > 0
-            appendInfoLine: "      *DARKNESS    = ", fixed$(v_dark, 2), " × ", weight_darkness, " = ", fixed$(v_dark * weight_darkness, 2)
+            appendInfoLine: "      *DARKNESS    = ", fixed$(v_dark, 2), " x ", weight_darkness, " = ", fixed$(v_dark * weight_darkness, 2)
         endif
         if v_bright > 0
-            appendInfoLine: "      *BRIGHTNESS  = ", fixed$(v_bright, 2), " × ", weight_brightness, " = ", fixed$(v_bright * weight_brightness, 2)
+            appendInfoLine: "      *BRIGHTNESS  = ", fixed$(v_bright, 2), " x ", weight_brightness, " = ", fixed$(v_bright * weight_brightness, 2)
         endif
         if v_energy > 0
-            appendInfoLine: "      *LOW-ENERGY  = ", fixed$(v_energy, 2), " × ", weight_energy, " = ", fixed$(v_energy * weight_energy, 2)
+            appendInfoLine: "      *LOW-ENERGY  = ", fixed$(v_energy, 2), " x ", weight_energy, " = ", fixed$(v_energy * weight_energy, 2)
         endif
         if v_stable > 0
-            appendInfoLine: "      *UNSTABLE    = ", fixed$(v_stable, 2), " × ", weight_stability, " = ", fixed$(v_stable * weight_stability, 2)
+            appendInfoLine: "      *UNSTABLE    = ", fixed$(v_stable, 2), " x ", weight_stability, " = ", fixed$(v_stable * weight_stability, 2)
         endif
     endif
     
@@ -286,7 +284,7 @@ endfor
 appendInfoLine: "--------------------------------------------"
 
 # ============================================
-# CONCATENATION (Fixed: use array for IDs)
+# CONCATENATION (FIXED FOR SAMPLING RATES)
 # ============================================
 
 appendInfoLine: "Loading and concatenating files..."
@@ -294,10 +292,28 @@ appendInfoLine: "Loading and concatenating files..."
 # Create array to store sound IDs
 soundIDs# = zero#(n_target)
 
+# We set a standard sample rate to prevent "Unequal sampling frequencies" error
+target_sample_rate = 44100
+
 for i to n_target
     selectObject: tableID
     fileName$ = Get value: i, "Filename"
-    soundID = Read from file: directory$ + fileName$
+    
+    # Read the file
+    readID = Read from file: directory$ + fileName$
+    
+    # Check frequency and resample if necessary
+    # FIX: Get frequency first, then check variable in IF statement
+    current_fs = Get sampling frequency
+    
+    if current_fs <> target_sample_rate
+        soundID = Resample: target_sample_rate, 50
+        selectObject: readID
+        Remove
+    else
+        soundID = readID
+    endif
+    
     soundIDs#[i] = soundID
 endfor
 
@@ -330,7 +346,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "OT Corpus Concatenator [" + presetName$ + "]"
@@ -426,7 +442,7 @@ if draw_visualization
         rVal$ = fixed$(rVal, 2)
         gVal$ = fixed$(gVal, 2)
         bVal$ = fixed$(bVal, 2)
-        Colour: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}"
+        
         # Use Paint rectangle instead of Paint circle
         x = energy_vals#[i]
         y = tilt_vals#[i]
