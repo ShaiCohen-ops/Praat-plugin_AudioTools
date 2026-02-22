@@ -67,8 +67,7 @@ originalSound = selected("Sound")
 soundName$ = selected$("Sound")
 
 # ── 1. FORM ─────────────────────────────────────────────────
-form Llogic System v4.0
-    comment === Preset ===
+form Llogic Symbolic Granular Recomposition v4.0
     optionmenu Preset: 1
         option Custom
         option Breath to Tone
@@ -79,18 +78,14 @@ form Llogic System v4.0
         option Void Meditation
         option Full Llogic Arc
     sentence Proposition psi, phi, theta
-    comment === Analysis ===
     positive Win_len 0.030
     positive Win_step 0.030
     positive Min_pitch 100
-    comment === Classification Thresholds ===
     positive Hnr_psi 5.0
     positive Hnr_theta 18.0
     positive Int_null 25.0
     positive Int_chi 8.0
-    comment === Synthesis ===
     positive Crossfade 0.030
-    comment === Arrangement ===
     positive Cycles 3
     optionmenu Selection_mode: 2
         option Longest only
@@ -103,7 +98,6 @@ form Llogic System v4.0
         option Accumulation (1, 12, 123...)
         option Stutter (each atom x3 before next)
         option Scatter (random permutation each cycle)
-    comment === Separation ===
     optionmenu Gap_mode: 1
         option None
         option Fixed silence
@@ -111,11 +105,9 @@ form Llogic System v4.0
         option Shrinking silence
         option Random silence
     positive Gap_base 0.300
-    comment === Envelope ===
     boolean Shape_atoms 1
     positive Fade_in 0.020
     positive Fade_out 0.040
-    comment === Output ===
     boolean Draw_visualization 1
 endform
 
