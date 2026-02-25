@@ -723,6 +723,12 @@ endfor
 
 @log: "Mixing " + string$(num_voices) + " voice(s) to output..."
 
+# Pan positions — always defined for all 4 slots so viz never hits unknown variable
+panPos_1 = 0.0
+panPos_2 = 0.0
+panPos_3 = 0.0
+panPos_4 = 0.0
+
 if num_voices = 1
     # Mono output - just rename voice 1
     selectObject: voiceSound_1
@@ -763,11 +769,6 @@ else
         endif
     endfor
 
-    # Pan positions for stereo mix
-    # 1 voice:  center
-    # 2 voices: -0.55 / +0.55
-    # 3 voices: -0.70 / 0 / +0.70
-    # 4 voices: -0.75 / -0.25 / +0.25 / +0.75
     if num_voices = 2
         panPos_1 = -0.55
         panPos_2 =  0.55
@@ -1058,6 +1059,7 @@ if draw_visualization
     endif
 
     # === PANEL 5: Pan positions (if >1 voice) ===
+    if num_voices > 1
     Select outer viewport: 4, 8, 3.40, 4.45
     Select inner viewport: 4.20, 7.65, 3.45, 4.40
     Axes: 0, num_voices + 1, -1.1, 1.1
@@ -1095,6 +1097,7 @@ if draw_visualization
     Text left: "yes", "Pan"
     Text bottom: "yes", "Voice"
     Text top: "no", "Voice pan positions (L=-1  R=+1)"
+    endif
 
     # === PANEL 6: Statistics ===
     Select outer viewport: 0, 8, 4.52, 5.20
