@@ -1,0 +1,145 @@
+============================================================
+  Praat AudioTools - Python Scripts Installation Guide
+  Author: Shai Cohen, Bar-Ilan University
+============================================================
+
+These scripts require Python to be installed on your computer.
+Follow the steps for your operating system below.
+You only need to do this ONCE.
+
+Supported scripts:
+  - Paulstretch          (paulstretch.py)
+  - Spectral Morph       (spectral_morph.py)
+  - Waveset Distortion   (waveset_distortion.py)
+
+
+============================================================
+  WINDOWS
+============================================================
+
+STEP 1 - Install Python
+------------------------------------------------------------
+1. Go to:  https://www.python.org/downloads/
+2. Click the big yellow "Download Python" button
+3. Run the installer
+4. IMPORTANT: On the first screen, check the box that says
+   "Add Python to PATH"  <-- do not skip this!
+5. Click "Install Now"
+6. When done, click "Close"
+
+STEP 2 - Install the required packages
+------------------------------------------------------------
+1. Press the Windows key on your keyboard
+2. Type:  cmd
+3. Click "Command Prompt" to open it
+4. Type the following line and press Enter:
+
+   pip install numpy soundfile scipy
+
+5. Wait for it to finish, then close the window.
+
+TROUBLESHOOTING (Windows)
+------------------------------------------------------------
+"py is not recognized":
+  Reinstall Python and make sure to check "Add Python to PATH"
+
+"No module named soundfile":
+  Open Command Prompt and run:  pip install numpy soundfile scipy
+
+
+============================================================
+  MAC
+============================================================
+
+STEP 1 - Install Python
+------------------------------------------------------------
+Mac may already have Python but it is often outdated.
+Install a fresh copy:
+
+1. Go to:  https://www.python.org/downloads/
+2. Click the big yellow "Download Python" button
+3. Open the downloaded .pkg file and follow the installer
+
+STEP 2 - Install the required packages
+------------------------------------------------------------
+1. Open Terminal
+   (Finder → Applications → Utilities → Terminal)
+2. Type the following line and press Enter:
+
+   pip3 install numpy soundfile scipy
+
+3. Wait for it to finish, then close the Terminal.
+
+STEP 3 - Important: update the Praat scripts
+------------------------------------------------------------
+On Mac, Praat calls Python differently. In each .praat script,
+find the line that starts with:
+
+   runSystem: "py " ...
+
+And change  "py "  to  "python3 "
+
+For example:
+   runSystem: "python3 " + pythonScript$ + ...
+
+TROUBLESHOOTING (Mac)
+------------------------------------------------------------
+"command not found: python3":
+  Try installing Python again from python.org
+
+"No module named soundfile":
+  Run in Terminal:  pip3 install numpy soundfile scipy
+
+
+============================================================
+  LINUX
+============================================================
+
+STEP 1 - Install Python
+------------------------------------------------------------
+Python is usually already installed on Linux.
+To check, open a Terminal and type:
+
+   python3 --version
+
+If you see a version number (e.g. Python 3.10.x) you are good.
+If not, install it with your package manager:
+
+   Ubuntu / Debian:   sudo apt install python3 python3-pip
+   Fedora:            sudo dnf install python3 python3-pip
+   Arch:              sudo pacman -S python python-pip
+
+STEP 2 - Install the required packages
+------------------------------------------------------------
+In Terminal, type:
+
+   pip3 install numpy soundfile scipy
+
+STEP 3 - Important: update the Praat scripts
+------------------------------------------------------------
+Same as Mac above. In each .praat script find:
+
+   runSystem: "py " ...
+
+And change  "py "  to  "python3 "
+
+TROUBLESHOOTING (Linux)
+------------------------------------------------------------
+"pip3 not found":
+  Run:  sudo apt install python3-pip   (Ubuntu/Debian)
+
+"No module named soundfile":
+  Run:  pip3 install numpy soundfile scipy
+
+
+============================================================
+  FOR ALL PLATFORMS - required packages summary
+============================================================
+
+  numpy       - math and signal processing
+  soundfile   - reading and writing WAV files
+  scipy       - sample rate conversion (optional but recommended)
+
+For help contact: shai.cohen@biu.ac.il
+
+============================================================
