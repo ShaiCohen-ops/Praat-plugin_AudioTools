@@ -2,7 +2,7 @@
 # Praat AudioTools – Multitrack_Router.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 2.0 (2025)
+# Version: 3.2 (2025)
 # License: MIT License
 #
 # Description:
@@ -14,23 +14,29 @@
 #     Stereo        – tracks panned L/R via equal-power law
 #     Multichannel  – one channel per track
 #
-#   ASSIGNMENT MODES (how sounds map to tracks):
+#   ASSIGNMENT MODES:
 #     1  All on track 1       2  One track per sound
-#     3  Round-robin           4  Manual  (Assignments field)
-#     5  Sequence per track   (Sequences field, | separates tracks,
-#        tokens: sound indices + SILx silence markers)
-#
-#   ORDER MODES (within each track, modes 1-4):
-#     1  Selection order   2  Alphabetical   3  Manual
+#     3  Round-robin           4  Manual (Assignments)
+#     5  Sequence per track   (Sequences field, | separates
+#        tracks, tokens: indices + SILx silence markers)
 #
 #   TIMING:
 #     All-at-0   – layered from t=0
 #     Sequential – butt-join / gap / overlap with crossfade
-#       Gap > 0 → silence;  Gap = 0 → butt;  Gap < 0 → overlap
 #
-#   PER-SOUND OVERRIDES:
-#     Gains, fades, order, pan — space-separated in sentence
-#     fields.  Blank = use default.
+#   OVERRIDES FIELD (tag syntax, space-separated values):
+#     g:-3 0 -6       per-sound gain dB
+#     ch:0 2 1        channel select (0=mono 1=L 2=R)
+#     pan:-1 0 1      pan position per track (-1..+1)
+#     ord:3 1 2       manual order per sound
+#     xf:lin          crossfade shape (lin or ep)
+#     sched           print schedule to Info
+#     Example: "g:-3 0 -6 ch:0 2 pan:-1 1 xf:ep sched"
+#
+#   PRESETS:
+#     1 Custom  2 Sequential Chain  3 Crossfade Montage
+#     4 Stereo Spread  5 Layered Stack  6 Dialogue Assembly
+#     7 Multichannel Split
 #
 # Requires: Praat ≥ 6.0
 # Category: Routing / Mixing / Composition
@@ -63,91 +69,26 @@ for i from 2 to nSounds
 endfor
 
 # ============================================================
-# STEP 1 – COMPACT FORM
+# STEP 1 – COMPACT FORM WITH APPLY LOOP
 # ============================================================
 
-beginPause: "Multitrack Router v2.0  (" + string$(nSounds) + " sounds)"
+v_preset     = 1
+v_tracks     = 2
+v_assign     = 1
+v_sequences$ = ""
+v_time       = 2
+v_gap        = 0.0
+v_xfade      = 0.0
+v_gain       = 0.0
+v_fadein     = 0.01
+v_fadeout    = 0.01
+v_output     = 1
+v_over$      = ""
+v_norm       = 1
+v_draw       = 1
+prevResultID = 0
 
-    comment: "── ROUTING ──"
-    natural: "Number of tracks", 2
-    optionMenu: "Assignment mode", 1
-        option: "All on track 1"
-        option: "One track per sound"
-        option: "Round-robin"
-        option: "Manual  (→ Assignments)"
-        option: "Sequence per track  (→ Sequences)"
-    sentence: "Assignments", ""
-    sentence: "Sequences", ""
-    comment: "  Seq: indices + SILx, tracks separated by |"
-
-    comment: "── ORDER  (modes 1-4) ──"
-    optionMenu: "Order mode", 1
-        option: "Selection order"
-        option: "Alphabetical"
-        option: "Manual  (→ Order field)"
-    sentence: "Order", ""
-
-    comment: "── TIMING ──"
-    optionMenu: "Time mode", 2
-        option: "All start at 0"
-        option: "Sequential"
-    real: "Gap seconds", 0.0
-    real: "Crossfade seconds", 0.0
-    optionMenu: "Crossfade shape", 1
-        option: "Linear"
-        option: "Equal power"
-
-    comment: "── GAIN & FADES ──  (per-sound: space-sep, blank=default)"
-    real: "Default gain dB", 0.0
-    sentence: "Gains dB", ""
-    real: "Fade in seconds", 0.01
-    real: "Fade out seconds", 0.01
-    sentence: "Fades in", ""
-    sentence: "Fades out", ""
-
-    comment: "── OUTPUT ──"
-    optionMenu: "Output channels", 1
-        option: "Mono  (sum all tracks)"
-        option: "Stereo  (pan per track)"
-        option: "Multichannel  (track per channel)"
-    sentence: "Pan positions", ""
-    comment: "  Pan: -1=L  0=center  1=R  (space-sep per track)"
-    boolean: "Normalize output", 1
-    boolean: "Print schedule", 1
-
-clicked = endPause: "Cancel", "Run", 2, 1
-if clicked = 1
-    exitScript: "Cancelled."
-endif
-
-# ============================================================
-# STEP 2 – PARSE & VALIDATE
-# ============================================================
-
-if number_of_tracks < 1
-    number_of_tracks = 1
-endif
-if assignment_mode = 2
-    number_of_tracks = nSounds
-endif
-if number_of_tracks > nSounds and assignment_mode <> 5
-    number_of_tracks = nSounds
-endif
-if crossfade_seconds < 0
-    crossfade_seconds = 0
-endif
-if fade_in_seconds < 0
-    fade_in_seconds = 0
-endif
-if fade_out_seconds < 0
-    fade_out_seconds = 0
-endif
-
-# Hardcoded thresholds
-minDurForFade = 0.03
-
-# --- Token splitter procedure ---
-
+# ---- Token splitter (used throughout) ----
 procedure splitTokens: .str$
     .n = 0
     .rem$ = .str$
@@ -176,268 +117,526 @@ procedure splitTokens: .str$
     endwhile
 endproc
 
-# --- Per-sound gains ---
-for i from 1 to nSounds
-    sndGain[i] = default_gain_dB
-endfor
-if gains_dB$ <> ""
-    @splitTokens: gains_dB$
-    nP = splitTokens.n
-    if nP > nSounds
-        nP = nSounds
-    endif
-    for i from 1 to nP
-        sndGain[i] = number(splitTokens.tok$[i])
-    endfor
-endif
+repeat
 
-# --- Per-sound fades ---
-for i from 1 to nSounds
-    sndFadeIn[i]  = fade_in_seconds
-    sndFadeOut[i] = fade_out_seconds
-endfor
-if fades_in$ <> ""
-    @splitTokens: fades_in$
-    nP = splitTokens.n
-    if nP > nSounds
-        nP = nSounds
-    endif
-    for i from 1 to nP
-        sndFadeIn[i] = number(splitTokens.tok$[i])
-        if sndFadeIn[i] < 0
-            sndFadeIn[i] = 0
-        endif
-    endfor
-endif
-if fades_out$ <> ""
-    @splitTokens: fades_out$
-    nP = splitTokens.n
-    if nP > nSounds
-        nP = nSounds
-    endif
-    for i from 1 to nP
-        sndFadeOut[i] = number(splitTokens.tok$[i])
-        if sndFadeOut[i] < 0
-            sndFadeOut[i] = 0
-        endif
-    endfor
-endif
+    beginPause: "Multitrack Router  (" + string$(nSounds) + " sounds)"
+        optionMenu: "Preset", v_preset
+            option: "Custom"
+            option: "Sequential Chain"
+            option: "Crossfade Montage"
+            option: "Stereo Spread"
+            option: "Layered Stack"
+            option: "Dialogue Assembly"
+            option: "Multichannel Split"
+        natural: "Tracks", v_tracks
+        optionMenu: "Assignment", v_assign
+            option: "All on track 1"
+            option: "One track per sound"
+            option: "Round-robin"
+            option: "Manual  (→ Seq field)"
+            option: "Sequence  (→ Seq field)"
+        sentence: "Seq", v_sequences$
+        optionMenu: "Timing", v_time
+            option: "All at 0  (layer)"
+            option: "Sequential"
+        real: "Gap s", v_gap
+        real: "Crossfade s", v_xfade
+        real: "Gain dB", v_gain
+        real: "Fade in s", v_fadein
+        real: "Fade out s", v_fadeout
+        optionMenu: "Output", v_output
+            option: "Mono"
+            option: "Stereo"
+            option: "Multichannel"
+        sentence: "Overrides", v_over$
+        boolean: "Normalize", v_norm
+        boolean: "Visualize", v_draw
+    clicked = endPause: "Close", "Apply", 2, 1
 
-# --- Manual assignments (mode 4) ---
-for i from 1 to nSounds
-    sndTrackAssign[i] = 1
-endfor
-if assignment_mode = 4
-    if assignments$ = ""
-        exitScript: "Manual assignment mode requires the Assignments field "
-            ... + "(space-separated track numbers, one per sound)."
+    v_preset     = preset
+    v_tracks     = tracks
+    v_assign     = assignment
+    v_sequences$ = seq$
+    v_time       = timing
+    v_gap        = gap_s
+    v_xfade      = crossfade_s
+    v_gain       = gain_dB
+    v_fadein     = fade_in_s
+    v_fadeout    = fade_out_s
+    v_output     = output
+    v_over$      = overrides$
+    v_norm       = normalize
+    v_draw       = visualize
+
+    if clicked = 1
+        exitScript: "Closed."
     endif
-    @splitTokens: assignments$
-    if splitTokens.n < nSounds
-        exitScript: "Assignments has " + string$(splitTokens.n)
-            ... + " values, need " + string$(nSounds) + "."
+
+    # Remove previous result before building new one
+    if prevResultID > 0
+        removeObject: prevResultID
+        prevResultID = 0
     endif
+
+    # ========================================================
+    # APPLY: PROCESS
+    # ========================================================
+
+    # --- Map form names to internal names ---
+    number_of_tracks  = tracks
+    assignment_mode   = assignment
+    sequences$        = seq$
+    time_mode         = timing
+    gap_seconds       = gap_s
+    crossfade_seconds = crossfade_s
+    default_gain_dB   = gain_dB
+    fade_in_seconds   = fade_in_s
+    fade_out_seconds  = fade_out_s
+    output_channels   = output
+    normalize_output  = normalize
+    draw_visualization = visualize
+
+    # Defaults for override-only params
+    crossfade_shape   = 2
+    print_schedule    = 0
+    order_mode        = 1
+    gains_dB$         = ""
+    channel_select$   = ""
+    pan_positions$    = ""
+    order$            = ""
+
+    # ---- Parse Overrides field ----
+    # Tags: g: ch: pan: ord: xf: sched
+    ovr$ = overrides$
+    # Append space sentinel
+    ovr$ = ovr$ + " "
+
+    # g: per-sound gains
+    gPos = index(ovr$, "g:")
+    if gPos > 0
+        gSub$ = mid$(ovr$, gPos + 2)
+        gEnd = index(gSub$, ":")
+        if gEnd > 0
+            # walk back to find tag start
+            gEnd2 = gEnd - 1
+            while gEnd2 > 1 and mid$(gSub$, gEnd2, 1) <> " "
+                gEnd2 = gEnd2 - 1
+            endwhile
+            gains_dB$ = left$(gSub$, gEnd2)
+        else
+            gains_dB$ = gSub$
+        endif
+        # Trim trailing spaces
+        while length(gains_dB$) > 0 and right$(gains_dB$, 1) = " "
+            gains_dB$ = left$(gains_dB$, length(gains_dB$) - 1)
+        endwhile
+    endif
+
+    # ch: channel select
+    chPos = index(ovr$, "ch:")
+    if chPos > 0
+        chSub$ = mid$(ovr$, chPos + 3)
+        chEnd = index(chSub$, ":")
+        if chEnd > 0
+            chEnd2 = chEnd - 1
+            while chEnd2 > 1 and mid$(chSub$, chEnd2, 1) <> " "
+                chEnd2 = chEnd2 - 1
+            endwhile
+            channel_select$ = left$(chSub$, chEnd2)
+        else
+            channel_select$ = chSub$
+        endif
+        while length(channel_select$) > 0 and right$(channel_select$, 1) = " "
+            channel_select$ = left$(channel_select$, length(channel_select$) - 1)
+        endwhile
+    endif
+
+    # pan: positions
+    pPos = index(ovr$, "pan:")
+    if pPos > 0
+        pSub$ = mid$(ovr$, pPos + 4)
+        pEnd = index(pSub$, ":")
+        if pEnd > 0
+            pEnd2 = pEnd - 1
+            while pEnd2 > 1 and mid$(pSub$, pEnd2, 1) <> " "
+                pEnd2 = pEnd2 - 1
+            endwhile
+            pan_positions$ = left$(pSub$, pEnd2)
+        else
+            pan_positions$ = pSub$
+        endif
+        while length(pan_positions$) > 0 and right$(pan_positions$, 1) = " "
+            pan_positions$ = left$(pan_positions$, length(pan_positions$) - 1)
+        endwhile
+    endif
+
+    # ord: manual order
+    oPos = index(ovr$, "ord:")
+    if oPos > 0
+        order_mode = 3
+        oSub$ = mid$(ovr$, oPos + 4)
+        oEnd = index(oSub$, ":")
+        if oEnd > 0
+            oEnd2 = oEnd - 1
+            while oEnd2 > 1 and mid$(oSub$, oEnd2, 1) <> " "
+                oEnd2 = oEnd2 - 1
+            endwhile
+            order$ = left$(oSub$, oEnd2)
+        else
+            order$ = oSub$
+        endif
+        while length(order$) > 0 and right$(order$, 1) = " "
+            order$ = left$(order$, length(order$) - 1)
+        endwhile
+    endif
+
+    # xf: crossfade shape
+    xfPos = index(ovr$, "xf:")
+    if xfPos > 0
+        xfSub$ = mid$(ovr$, xfPos + 3, 3)
+        if left$(xfSub$, 3) = "lin"
+            crossfade_shape = 1
+        else
+            crossfade_shape = 2
+        endif
+    endif
+
+    # sched flag
+    scPos = index(ovr$, "sched")
+    if scPos > 0
+        print_schedule = 1
+    endif
+
+    # ---- Preset overrides ----
+    if preset = 2
+        number_of_tracks = 1
+        assignment_mode  = 1
+        time_mode        = 2
+        gap_seconds      = 0.0
+        crossfade_seconds = 0.0
+        fade_in_seconds  = 0.005
+        fade_out_seconds = 0.005
+        output_channels  = 1
+    elsif preset = 3
+        number_of_tracks = 1
+        assignment_mode  = 1
+        time_mode        = 2
+        gap_seconds      = -0.05
+        crossfade_seconds = 0.05
+        crossfade_shape  = 2
+        fade_in_seconds  = 0.0
+        fade_out_seconds = 0.0
+        output_channels  = 1
+    elsif preset = 4
+        number_of_tracks = 2
+        assignment_mode  = 3
+        time_mode        = 2
+        gap_seconds      = 0.0
+        crossfade_seconds = 0.0
+        fade_in_seconds  = 0.01
+        fade_out_seconds = 0.01
+        output_channels  = 2
+    elsif preset = 5
+        number_of_tracks = nSounds
+        assignment_mode  = 2
+        time_mode        = 1
+        gap_seconds      = 0.0
+        crossfade_seconds = 0.0
+        fade_in_seconds  = 0.02
+        fade_out_seconds = 0.02
+        output_channels  = 1
+    elsif preset = 6
+        number_of_tracks = 1
+        assignment_mode  = 1
+        time_mode        = 2
+        gap_seconds      = 0.3
+        crossfade_seconds = 0.0
+        fade_in_seconds  = 0.01
+        fade_out_seconds = 0.01
+        output_channels  = 1
+    elsif preset = 7
+        number_of_tracks = nSounds
+        assignment_mode  = 2
+        time_mode        = 2
+        gap_seconds      = 0.0
+        crossfade_seconds = 0.0
+        fade_in_seconds  = 0.005
+        fade_out_seconds = 0.005
+        output_channels  = 3
+    endif
+
+    # ---- Validate & clamp ----
+    if number_of_tracks < 1
+        number_of_tracks = 1
+    endif
+    if assignment_mode = 2
+        number_of_tracks = nSounds
+    endif
+    if number_of_tracks > nSounds and assignment_mode <> 5
+        number_of_tracks = nSounds
+    endif
+    if crossfade_seconds < 0
+        crossfade_seconds = 0
+    endif
+    if fade_in_seconds < 0
+        fade_in_seconds = 0
+    endif
+    if fade_out_seconds < 0
+        fade_out_seconds = 0
+    endif
+    minDurForFade = 0.03
+
+    # Labels
+    presetName$[1] = "Custom"
+    presetName$[2] = "Sequential Chain"
+    presetName$[3] = "Crossfade Montage"
+    presetName$[4] = "Stereo Spread"
+    presetName$[5] = "Layered Stack"
+    presetName$[6] = "Dialogue Assembly"
+    presetName$[7] = "Multichannel Split"
+    assignName$[1] = "All→1"
+    assignName$[2] = "1/snd"
+    assignName$[3] = "RndRbn"
+    assignName$[4] = "Manual"
+    assignName$[5] = "Seq"
+    if output_channels = 1
+        outModeName$ = "Mono"
+    elsif output_channels = 2
+        outModeName$ = "Stereo"
+    else
+        outModeName$ = "Multi(" + string$(number_of_tracks) + "ch)"
+    endif
+
+    # ---- Per-sound parameters ----
     for i from 1 to nSounds
-        sndTrackAssign[i] = number(splitTokens.tok$[i])
-        if sndTrackAssign[i] < 1 or sndTrackAssign[i] > number_of_tracks
-            exitScript: "Assignment for sound " + string$(i) + " = "
-                ... + string$(sndTrackAssign[i])
-                ... + "; must be 1.." + string$(number_of_tracks) + "."
-        endif
+        sndGain[i]    = default_gain_dB
+        sndFadeIn[i]  = fade_in_seconds
+        sndFadeOut[i] = fade_out_seconds
+        sndChSel[i]   = 0
     endfor
-endif
 
-# --- Manual order (order mode 3) ---
-for i from 1 to nSounds
-    sndOrderPos[i] = i
-endfor
-if order_mode = 3
-    if order$ = ""
-        exitScript: "Manual order mode requires the Order field "
-            ... + "(space-separated position numbers)."
-    endif
-    @splitTokens: order$
-    if splitTokens.n < nSounds
-        exitScript: "Order has " + string$(splitTokens.n)
-            ... + " values, need " + string$(nSounds) + "."
-    endif
-    for i from 1 to nSounds
-        sndOrderPos[i] = number(splitTokens.tok$[i])
-    endfor
-endif
-
-# --- Pan positions (for stereo output) ---
-for t from 1 to 128
-    trkPan[t] = 0.0
-endfor
-if output_channels = 2
-    if pan_positions$ <> ""
-        @splitTokens: pan_positions$
+    if gains_dB$ <> ""
+        @splitTokens: gains_dB$
         nP = splitTokens.n
-        if nP > number_of_tracks
-            nP = number_of_tracks
+        if nP > nSounds
+            nP = nSounds
         endif
         for i from 1 to nP
-            trkPan[i] = number(splitTokens.tok$[i])
-            if trkPan[i] < -1
-                trkPan[i] = -1
-            endif
-            if trkPan[i] > 1
-                trkPan[i] = 1
+            sndGain[i] = number(splitTokens.tok$[i])
+        endfor
+    endif
+
+    if channel_select$ <> ""
+        @splitTokens: channel_select$
+        nP = splitTokens.n
+        if nP > nSounds
+            nP = nSounds
+        endif
+        for i from 1 to nP
+            sndChSel[i] = number(splitTokens.tok$[i])
+            if sndChSel[i] < 0 or sndChSel[i] > 2
+                sndChSel[i] = 0
             endif
         endfor
-    else
-        # Auto-spread: if >1 track, spread L to R evenly
-        if number_of_tracks > 1
-            for t from 1 to number_of_tracks
-                trkPan[t] = -1.0 + 2.0 * (t - 1) / (number_of_tracks - 1)
+    endif
+
+    # Manual assignments (mode 4) — read from Seq field
+    for i from 1 to nSounds
+        sndTrackAssign[i] = 1
+    endfor
+    if assignment_mode = 4
+        if seq$ = ""
+            exitScript: "Manual assignment: put track numbers in Seq field."
+        endif
+        @splitTokens: seq$
+        if splitTokens.n < nSounds
+            exitScript: "Seq: need " + string$(nSounds) + " track numbers."
+        endif
+        for i from 1 to nSounds
+            sndTrackAssign[i] = number(splitTokens.tok$[i])
+            if sndTrackAssign[i] < 1 or sndTrackAssign[i] > number_of_tracks
+                exitScript: "Seq value " + string$(i) + " out of range."
+            endif
+        endfor
+    endif
+
+    # Manual order
+    for i from 1 to nSounds
+        sndOrderPos[i] = i
+    endfor
+    if order_mode = 3
+        if order$ = ""
+            exitScript: "ord: tag needs " + string$(nSounds) + " values."
+        endif
+        @splitTokens: order$
+        if splitTokens.n < nSounds
+            exitScript: "ord: need " + string$(nSounds) + " values."
+        endif
+        for i from 1 to nSounds
+            sndOrderPos[i] = number(splitTokens.tok$[i])
+        endfor
+    endif
+
+    # Pan (manual parse; auto-spread deferred)
+    for t from 1 to 128
+        trkPan[t] = 0.0
+    endfor
+    panIsManual = 0
+    if output_channels = 2
+        if pan_positions$ <> ""
+            panIsManual = 1
+            @splitTokens: pan_positions$
+            nP = splitTokens.n
+            if nP > number_of_tracks
+                nP = number_of_tracks
+            endif
+            for i from 1 to nP
+                trkPan[i] = number(splitTokens.tok$[i])
+                if trkPan[i] < -1
+                    trkPan[i] = -1
+                endif
+                if trkPan[i] > 1
+                    trkPan[i] = 1
+                endif
             endfor
         endif
     endif
-endif
 
-# ============================================================
-# STEP 3 – BUILD SEGMENT LISTS PER TRACK
-# ============================================================
-
-maxSegs = nSounds * 4 + 200
-for s from 1 to maxSegs
-    segType[s]    = 0
-    segSrc[s]     = 0
-    segDur[s]     = 0.0
-    segGainDB[s]  = 0.0
-    segFdIn[s]    = 0.0
-    segFdOut[s]   = 0.0
-    segStart[s]   = 0.0
-    segTrack[s]   = 0
-endfor
-totalSegs = 0
-
-for t from 1 to number_of_tracks
-    trkSegS[t] = 0
-    trkSegN[t] = 0
-endfor
-
-clearinfo
-writeInfoLine:  "=================================================="
-writeInfoLine:  "  Multitrack Router v2.0"
-writeInfoLine:  "=================================================="
-appendInfoLine: ""
-appendInfoLine: "Sounds : ", nSounds, "   Tracks : ", number_of_tracks,
-    ... "   Fs : ", refFs, " Hz"
-appendInfoLine: ""
-
-# ............................................................
-# MODE 5: Sequence per track  (pipe-separated token lists)
-# ............................................................
-
-if assignment_mode = 5
-
-    # Split Sequences field by | into per-track strings
-    seqFull$ = sequences$
-    for t from 1 to number_of_tracks
-        pipePos = index(seqFull$, "|")
-        if pipePos > 0
-            trkSeq$[t] = left$(seqFull$, pipePos - 1)
-            seqFull$ = mid$(seqFull$, pipePos + 1)
-        else
-            trkSeq$[t] = seqFull$
-            seqFull$ = ""
-        endif
+    # ---- Build segment lists ----
+    maxSegs = nSounds * 4 + 200
+    for s from 1 to maxSegs
+        segType[s]   = 0
+        segSrc[s]    = 0
+        segDur[s]    = 0.0
+        segGainDB[s] = 0.0
+        segFdIn[s]   = 0.0
+        segFdOut[s]  = 0.0
+        segStart[s]  = 0.0
+        segTrack[s]  = 0
     endfor
-
+    totalSegs = 0
     for t from 1 to number_of_tracks
-        trkSegS[t] = totalSegs + 1
+        trkSegS[t] = 0
         trkSegN[t] = 0
-        # Trim
-        while length(trkSeq$[t]) > 0 and left$(trkSeq$[t], 1) = " "
-            trkSeq$[t] = mid$(trkSeq$[t], 2)
-        endwhile
-        if trkSeq$[t] <> ""
-            @splitTokens: trkSeq$[t]
-            for tok from 1 to splitTokens.n
-                token$ = splitTokens.tok$[tok]
-                isSil = 0
-                if length(token$) > 3
-                    pfx$ = left$(token$, 3)
-                    if pfx$ = "SIL" or pfx$ = "sil" or pfx$ = "Sil"
-                        isSil = 1
-                    endif
-                endif
-                totalSegs += 1
-                trkSegN[t] += 1
-                segTrack[totalSegs] = t
-                if isSil = 1
-                    sd = number(mid$(token$, 4))
-                    if sd = undefined or sd <= 0
-                        exitScript: "Bad silence token '" + token$
-                            ... + "' on track " + string$(t) + "."
-                    endif
-                    segType[totalSegs]   = 0
-                    segDur[totalSegs]    = sd
-                    segGainDB[totalSegs] = 0
-                    segFdIn[totalSegs]   = 0
-                    segFdOut[totalSegs]  = 0
-                else
-                    ix = number(token$)
-                    if ix = undefined or ix < 1 or ix > nSounds
-                        exitScript: "Bad index '" + token$ + "' on track "
-                            ... + string$(t) + ". Need 1.." + string$(nSounds) + "."
-                    endif
-                    ix = round(ix)
-                    segType[totalSegs]   = 1
-                    segSrc[totalSegs]    = ix
-                    segDur[totalSegs]    = sndDur[ix]
-                    segGainDB[totalSegs] = sndGain[ix]
-                    segFdIn[totalSegs]   = sndFadeIn[ix]
-                    segFdOut[totalSegs]  = sndFadeOut[ix]
-                endif
+    endfor
+
+    clearinfo
+    writeInfoLine:  "=================================================="
+    writeInfoLine:  "  Multitrack Router v3.2  ·  ", presetName$[preset]
+    writeInfoLine:  "=================================================="
+    appendInfoLine: ""
+    appendInfoLine: nSounds, " sounds → ", number_of_tracks, " tracks  ",
+        ... refFs, " Hz  ", outModeName$
+    appendInfoLine: ""
+
+    # ---- MODE 5: Sequence per track ----
+    if assignment_mode = 5
+        if sequences$ = ""
+            sequences$ = ""
+            for t from 1 to number_of_tracks
+                trkAuto$[t] = ""
             endfor
+            for i from 1 to nSounds
+                t = ((i - 1) mod number_of_tracks) + 1
+                if trkAuto$[t] <> ""
+                    trkAuto$[t] = trkAuto$[t] + " "
+                endif
+                trkAuto$[t] = trkAuto$[t] + string$(i)
+            endfor
+            for t from 1 to number_of_tracks
+                if t > 1
+                    sequences$ = sequences$ + " | "
+                endif
+                sequences$ = sequences$ + trkAuto$[t]
+            endfor
+            appendInfoLine: "  (auto: ", sequences$, ")"
+            appendInfoLine: ""
         endif
-    endfor
 
-# ............................................................
-# MODES 1–4
-# ............................................................
+        seqFull$ = sequences$
+        for t from 1 to number_of_tracks
+            pipePos = index(seqFull$, "|")
+            if pipePos > 0
+                trkSeq$[t] = left$(seqFull$, pipePos - 1)
+                seqFull$ = mid$(seqFull$, pipePos + 1)
+            else
+                trkSeq$[t] = seqFull$
+                seqFull$ = ""
+            endif
+        endfor
 
-else
-
-    for i from 1 to nSounds
-        if assignment_mode = 1
-            sndTrack[i] = 1
-        elsif assignment_mode = 2
-            sndTrack[i] = i
-        elsif assignment_mode = 3
-            sndTrack[i] = ((i - 1) mod number_of_tracks) + 1
-        else
-            sndTrack[i] = sndTrackAssign[i]
-        endif
-    endfor
-
-    for t from 1 to number_of_tracks
-        trkN[t] = 0
-    endfor
-    for i from 1 to nSounds
-        t = sndTrack[i]
-        trkN[t] += 1
-        trkSnd[t, trkN[t]] = i
-    endfor
-
-    # Sort within each track
-    for t from 1 to number_of_tracks
-        n = trkN[t]
-        if n > 1
-            if order_mode = 2
-                for pass from 1 to n - 1
-                    for j from 1 to n - pass
-                        if sndName$[trkSnd[t, j]] > sndName$[trkSnd[t, j + 1]]
-                            swp = trkSnd[t, j]
-                            trkSnd[t, j] = trkSnd[t, j + 1]
-                            trkSnd[t, j + 1] = swp
+        for t from 1 to number_of_tracks
+            trkSegS[t] = totalSegs + 1
+            trkSegN[t] = 0
+            while length(trkSeq$[t]) > 0 and left$(trkSeq$[t], 1) = " "
+                trkSeq$[t] = mid$(trkSeq$[t], 2)
+            endwhile
+            if trkSeq$[t] <> ""
+                @splitTokens: trkSeq$[t]
+                for tok from 1 to splitTokens.n
+                    token$ = splitTokens.tok$[tok]
+                    isSil = 0
+                    if length(token$) > 3
+                        pfx$ = left$(token$, 3)
+                        if pfx$ = "SIL" or pfx$ = "sil" or pfx$ = "Sil"
+                            isSil = 1
                         endif
-                    endfor
+                    endif
+                    totalSegs += 1
+                    trkSegN[t] += 1
+                    segTrack[totalSegs] = t
+                    if isSil = 1
+                        sd = number(mid$(token$, 4))
+                        if sd = undefined or sd <= 0
+                            exitScript: "Bad SIL '" + token$ + "' trk " + string$(t)
+                        endif
+                        segType[totalSegs] = 0
+                        segDur[totalSegs]  = sd
+                    else
+                        ix = number(token$)
+                        if ix = undefined or ix < 1 or ix > nSounds
+                            exitScript: "Bad '" + token$ + "' trk "
+                                ... + string$(t) + " (1.." + string$(nSounds) + ")"
+                        endif
+                        ix = round(ix)
+                        segType[totalSegs]   = 1
+                        segSrc[totalSegs]    = ix
+                        segDur[totalSegs]    = sndDur[ix]
+                        segGainDB[totalSegs] = sndGain[ix]
+                        segFdIn[totalSegs]   = sndFadeIn[ix]
+                        segFdOut[totalSegs]  = sndFadeOut[ix]
+                    endif
                 endfor
-            elsif order_mode = 3
+            endif
+        endfor
+
+    # ---- MODES 1–4 ----
+    else
+        for i from 1 to nSounds
+            if assignment_mode = 1
+                sndTrack[i] = 1
+            elsif assignment_mode = 2
+                sndTrack[i] = i
+            elsif assignment_mode = 3
+                sndTrack[i] = ((i - 1) mod number_of_tracks) + 1
+            else
+                sndTrack[i] = sndTrackAssign[i]
+            endif
+        endfor
+
+        for t from 1 to number_of_tracks
+            trkN[t] = 0
+        endfor
+        for i from 1 to nSounds
+            t = sndTrack[i]
+            trkN[t] += 1
+            trkSnd[t, trkN[t]] = i
+        endfor
+
+        # Sort
+        for t from 1 to number_of_tracks
+            n = trkN[t]
+            if n > 1 and order_mode = 3
                 for pass from 1 to n - 1
                     for j from 1 to n - pass
                         if sndOrderPos[trkSnd[t, j]] > sndOrderPos[trkSnd[t, j + 1]]
@@ -448,367 +647,495 @@ else
                     endfor
                 endfor
             endif
+        endfor
+
+        for t from 1 to number_of_tracks
+            trkSegS[t] = totalSegs + 1
+            trkSegN[t] = trkN[t]
+            for j from 1 to trkN[t]
+                ix = trkSnd[t, j]
+                totalSegs += 1
+                segType[totalSegs]   = 1
+                segSrc[totalSegs]    = ix
+                segDur[totalSegs]    = sndDur[ix]
+                segGainDB[totalSegs] = sndGain[ix]
+                segFdIn[totalSegs]   = sndFadeIn[ix]
+                segFdOut[totalSegs]  = sndFadeOut[ix]
+                segTrack[totalSegs]  = t
+            endfor
+        endfor
+    endif
+
+    appendInfoLine: "Segments: ", totalSegs
+
+    # ---- Auto-pan (deferred) ----
+    if output_channels = 2 and panIsManual = 0
+        nActive = 0
+        for t from 1 to number_of_tracks
+            if trkSegN[t] > 0
+                nActive += 1
+            endif
+        endfor
+        if nActive <= 1
+            for t from 1 to number_of_tracks
+                trkPan[t] = 0.0
+            endfor
+        else
+            aIdx = 0
+            for t from 1 to number_of_tracks
+                if trkSegN[t] > 0
+                    aIdx += 1
+                    trkPan[t] = -1.0 + 2.0 * (aIdx - 1) / (nActive - 1)
+                else
+                    trkPan[t] = 0.0
+                endif
+            endfor
+        endif
+    endif
+
+    # ---- Compute timing ----
+    appendInfoLine: "[1/3] Timing..."
+    for t from 1 to number_of_tracks
+        s0 = trkSegS[t]
+        nS = trkSegN[t]
+        if nS > 0
+            if time_mode = 1
+                for j from 0 to nS - 1
+                    segStart[s0 + j] = 0.0
+                endfor
+            else
+                segStart[s0] = 0.0
+                for j from 1 to nS - 1
+                    cur  = s0 + j
+                    prev = s0 + j - 1
+                    pEnd = segStart[prev] + segDur[prev]
+                    prop = pEnd + gap_seconds
+                    if gap_seconds < 0
+                        ovl = abs(gap_seconds)
+                        if crossfade_seconds > 0
+                            ovl = crossfade_seconds
+                        endif
+                        prop = pEnd - ovl
+                        if prop < 0
+                            prop = 0
+                        endif
+                        if crossfade_seconds > 0
+                            if segType[prev] = 1
+                                segFdOut[prev] = crossfade_seconds
+                            endif
+                            if segType[cur] = 1
+                                segFdIn[cur] = crossfade_seconds
+                            endif
+                        endif
+                    endif
+                    segStart[cur] = prop
+                endfor
+            endif
         endif
     endfor
 
+    # ---- Render mono track stems ----
+    appendInfoLine: "[2/3] Rendering..."
     for t from 1 to number_of_tracks
-        trkSegS[t] = totalSegs + 1
-        trkSegN[t] = trkN[t]
-        for j from 1 to trkN[t]
-            ix = trkSnd[t, j]
-            totalSegs += 1
-            segType[totalSegs]   = 1
-            segSrc[totalSegs]    = ix
-            segDur[totalSegs]    = sndDur[ix]
-            segGainDB[totalSegs] = sndGain[ix]
-            segFdIn[totalSegs]   = sndFadeIn[ix]
-            segFdOut[totalSegs]  = sndFadeOut[ix]
-            segTrack[totalSegs]  = t
-        endfor
-    endfor
-
-endif
-
-appendInfoLine: "Segments: ", totalSegs
-
-# ============================================================
-# STEP 4 – COMPUTE TIMING
-# ============================================================
-
-appendInfoLine: "[1/3] Timing..."
-
-for t from 1 to number_of_tracks
-    s0 = trkSegS[t]
-    nS = trkSegN[t]
-    if nS > 0
-        if time_mode = 1
+        s0 = trkSegS[t]
+        nS = trkSegN[t]
+        if nS = 0
+            trkDur[t] = 0.001
+            trkID[t] = Create Sound from formula: "mrt_trk_" + string$(t),
+                ... 1, 0, 0.001, refFs, "0"
+        else
+            trkDur[t] = 0.0
             for j from 0 to nS - 1
-                segStart[s0 + j] = 0.0
+                eT = segStart[s0 + j] + segDur[s0 + j]
+                if eT > trkDur[t]
+                    trkDur[t] = eT
+                endif
             endfor
-        else
-            segStart[s0] = 0.0
-            for j from 1 to nS - 1
-                cur  = s0 + j
-                prev = s0 + j - 1
-                pEnd = segStart[prev] + segDur[prev]
-                prop = pEnd + gap_seconds
+            trkDur[t] = trkDur[t] + 0.0005
 
-                if gap_seconds < 0
-                    ovl = abs(gap_seconds)
-                    if crossfade_seconds > 0
-                        ovl = crossfade_seconds
-                    endif
-                    prop = pEnd - ovl
-                    if prop < 0
-                        prop = 0
-                    endif
-                    # Set crossfade envelopes at overlap boundary
-                    if crossfade_seconds > 0
-                        if segType[prev] = 1
-                            segFdOut[prev] = crossfade_seconds
-                        endif
-                        if segType[cur] = 1
-                            segFdIn[cur] = crossfade_seconds
-                        endif
-                    endif
-                endif
-                segStart[cur] = prop
-            endfor
-        endif
-    endif
-endfor
+            trkID[t] = Create Sound from formula: "mrt_trk_" + string$(t),
+                ... 1, 0, trkDur[t], refFs, "0"
 
-# ============================================================
-# STEP 5 – RENDER MONO TRACK STEMS
-# ============================================================
+            for j from 0 to nS - 1
+                sIdx = s0 + j
+                if segType[sIdx] = 1
+                    srcI = segSrc[sIdx]
+                    selectObject: sndID[srcI]
+                    sc = Copy: "mrt_sc"
 
-appendInfoLine: "[2/3] Rendering..."
-appendInfoLine: ""
-
-for t from 1 to number_of_tracks
-    s0 = trkSegS[t]
-    nS = trkSegN[t]
-
-    if nS = 0
-        trkDur[t] = 0.001
-        trkID[t] = Create Sound from formula: "mrt_trk_" + string$(t),
-            ... 1, 0, 0.001, refFs, "0"
-    else
-        # Track total duration
-        trkDur[t] = 0.0
-        for j from 0 to nS - 1
-            eT = segStart[s0 + j] + segDur[s0 + j]
-            if eT > trkDur[t]
-                trkDur[t] = eT
-            endif
-        endfor
-        trkDur[t] = trkDur[t] + 0.0005
-
-        appendInfoLine: "  Track ", t, ": ", nS, " segs  ",
-            ... fixed$(trkDur[t], 3), " s"
-
-        trkID[t] = Create Sound from formula: "mrt_trk_" + string$(t),
-            ... 1, 0, trkDur[t], refFs, "0"
-
-        for j from 0 to nS - 1
-            sIdx = s0 + j
-            if segType[sIdx] = 1
-                srcI = segSrc[sIdx]
-
-                # Copy + force mono + resample
-                selectObject: sndID[srcI]
-                sc = Copy: "mrt_sc"
-                selectObject: sc
-                nCh = Get number of channels
-                if nCh > 1
-                    scM = Extract one channel: 1
-                    removeObject: sc
-                    sc = scM
-                endif
-                selectObject: sc
-                scFs = Get sampling frequency
-                if scFs <> refFs
-                    scR = Resample: refFs, 50
-                    removeObject: sc
-                    sc = scR
-                endif
-
-                # Gain
-                gdb = segGainDB[sIdx]
-                if gdb <> 0
                     selectObject: sc
-                    glin = 10.0 ^ (gdb / 20.0)
-                    Formula: "self * " + fixed$(glin, 8)
-                endif
-
-                # Fades (skip if segment too short)
-                selectObject: sc
-                sDur = Get total duration
-                if sDur >= minDurForFade
-                    fdI = segFdIn[sIdx]
-                    fdO = segFdOut[sIdx]
-                    if fdI > sDur * 0.45
-                        fdI = sDur * 0.45
-                    endif
-                    if fdO > sDur * 0.45
-                        fdO = sDur * 0.45
-                    endif
-                    if fdI > 0.0001
-                        selectObject: sc
-                        fiS$ = fixed$(fdI, 8)
-                        if crossfade_shape = 1
-                            Formula: "if x < " + fiS$
-                                ... + " then self * (x / " + fiS$ + ")"
-                                ... + " else self fi"
+                    nCh = Get number of channels
+                    if nCh > 1
+                        chSel = sndChSel[srcI]
+                        if chSel = 1
+                            scM = Extract one channel: 1
+                        elsif chSel = 2
+                            if nCh >= 2
+                                scM = Extract one channel: 2
+                            else
+                                scM = Extract one channel: 1
+                            endif
                         else
-                            Formula: "if x < " + fiS$
-                                ... + " then self * sin(pi/2 * x / " + fiS$ + ")"
-                                ... + " else self fi"
+                            selectObject: sc
+                            scM = Convert to mono
+                        endif
+                        removeObject: sc
+                        sc = scM
+                    endif
+
+                    selectObject: sc
+                    scFs = Get sampling frequency
+                    if scFs <> refFs
+                        scR = Resample: refFs, 50
+                        removeObject: sc
+                        sc = scR
+                    endif
+
+                    gdb = segGainDB[sIdx]
+                    if gdb <> 0
+                        selectObject: sc
+                        glin = 10.0 ^ (gdb / 20.0)
+                        Formula: "self * " + fixed$(glin, 8)
+                    endif
+
+                    selectObject: sc
+                    sDur = Get total duration
+                    if sDur >= minDurForFade
+                        fdI = segFdIn[sIdx]
+                        fdO = segFdOut[sIdx]
+                        if fdI > sDur * 0.45
+                            fdI = sDur * 0.45
+                        endif
+                        if fdO > sDur * 0.45
+                            fdO = sDur * 0.45
+                        endif
+                        if fdI > 0.0001
+                            selectObject: sc
+                            fiS$ = fixed$(fdI, 8)
+                            if crossfade_shape = 1
+                                Formula: "if x < " + fiS$
+                                    ... + " then self * (x / " + fiS$ + ")"
+                                    ... + " else self fi"
+                            else
+                                Formula: "if x < " + fiS$
+                                    ... + " then self * sin(pi/2 * x / " + fiS$ + ")"
+                                    ... + " else self fi"
+                            endif
+                        endif
+                        if fdO > 0.0001
+                            selectObject: sc
+                            foS$ = fixed$(fdO, 8)
+                            dS$  = fixed$(sDur, 8)
+                            foB$ = fixed$(sDur - fdO, 8)
+                            if crossfade_shape = 1
+                                Formula: "if x > " + foB$
+                                    ... + " then self * ((" + dS$ + " - x) / " + foS$ + ")"
+                                    ... + " else self fi"
+                            else
+                                Formula: "if x > " + foB$
+                                    ... + " then self * cos(pi/2 * (x - " + foB$
+                                    ... + ") / " + foS$ + ")"
+                                    ... + " else self fi"
+                            endif
                         endif
                     endif
-                    if fdO > 0.0001
-                        selectObject: sc
-                        foS$  = fixed$(fdO, 8)
-                        dS$   = fixed$(sDur, 8)
-                        foB$  = fixed$(sDur - fdO, 8)
-                        if crossfade_shape = 1
-                            Formula: "if x > " + foB$
-                                ... + " then self * ((" + dS$ + " - x) / " + foS$ + ")"
-                                ... + " else self fi"
-                        else
-                            Formula: "if x > " + foB$
-                                ... + " then self * cos(pi/2 * (x - " + foB$
-                                ... + ") / " + foS$ + ")"
-                                ... + " else self fi"
-                        endif
+
+                    selectObject: sc
+                    scNS = Get number of samples
+                    selectObject: trkID[t]
+                    s1 = Get sample number from time: segStart[sIdx]
+                    if s1 < 1
+                        s1 = 1
                     endif
+                    s2 = s1 + scNS - 1
+                    tNS = Get number of samples
+                    if s2 > tNS
+                        s2 = tNS
+                    endif
+                    off = s1 - 1
+                    selectObject: trkID[t]
+                    Formula: "if col >= " + string$(s1)
+                        ... + " and col <= " + string$(s2)
+                        ... + " then self + object[" + string$(sc)
+                        ... + ", col - " + string$(off) + "]"
+                        ... + " else self fi"
+                    removeObject: sc
                 endif
+            endfor
+        endif
+    endfor
 
-                # Overlay onto track canvas
-                selectObject: sc
-                scNS = Get number of samples
-                selectObject: trkID[t]
-                s1 = Get sample number from time: segStart[sIdx]
-                if s1 < 1
-                    s1 = 1
-                endif
-                s2 = s1 + scNS - 1
-                tNS = Get number of samples
-                if s2 > tNS
-                    s2 = tNS
-                endif
-                off = s1 - 1
-                selectObject: trkID[t]
-                Formula: "if col >= " + string$(s1)
-                    ... + " and col <= " + string$(s2)
-                    ... + " then self + Object_" + string$(sc)
-                    ... + "[col - " + string$(off) + "]"
-                    ... + " else self fi"
+    # ---- Combine into single output ----
+    appendInfoLine: "[3/3] Mixing..."
+    masterDur = 0.0
+    for t from 1 to number_of_tracks
+        if trkDur[t] > masterDur
+            masterDur = trkDur[t]
+        endif
+    endfor
 
-                removeObject: sc
-            endif
+    if output_channels = 1
+        outID = Create Sound from formula: "Routed_mono",
+            ... 1, 0, masterDur, refFs, "0"
+        for t from 1 to number_of_tracks
+            selectObject: trkID[t]
+            tNS = Get number of samples
+            selectObject: outID
+            Formula: "if col <= " + string$(tNS)
+                ... + " then self + object[" + string$(trkID[t]) + ", col]"
+                ... + " else self fi"
+        endfor
+
+    elsif output_channels = 2
+        outID = Create Sound from formula: "Routed_stereo",
+            ... 2, 0, masterDur, refFs, "0"
+        for t from 1 to number_of_tracks
+            panAngle = (trkPan[t] + 1.0) / 2.0 * (pi / 2.0)
+            gainL$ = fixed$(cos(panAngle), 8)
+            gainR$ = fixed$(sin(panAngle), 8)
+            selectObject: trkID[t]
+            tNS = Get number of samples
+            selectObject: outID
+            Formula: "if row = 1 and col <= " + string$(tNS)
+                ... + " then self + " + gainL$
+                ... + " * object[" + string$(trkID[t]) + ", col]"
+                ... + " else self fi"
+            selectObject: outID
+            Formula: "if row = 2 and col <= " + string$(tNS)
+                ... + " then self + " + gainR$
+                ... + " * object[" + string$(trkID[t]) + ", col]"
+                ... + " else self fi"
+        endfor
+
+    else
+        outID = Create Sound from formula: "Routed_multi",
+            ... number_of_tracks, 0, masterDur, refFs, "0"
+        for t from 1 to number_of_tracks
+            selectObject: trkID[t]
+            tNS = Get number of samples
+            selectObject: outID
+            Formula: "if row = " + string$(t) + " and col <= " + string$(tNS)
+                ... + " then self + object[" + string$(trkID[t]) + ", col]"
+                ... + " else self fi"
         endfor
     endif
-endfor
 
-# ============================================================
-# STEP 6 – COMBINE INTO SINGLE OUTPUT OBJECT
-# ============================================================
-
-appendInfoLine: ""
-appendInfoLine: "[3/3] Building output..."
-
-# Master duration = longest track
-masterDur = 0.0
-for t from 1 to number_of_tracks
-    if trkDur[t] > masterDur
-        masterDur = trkDur[t]
-    endif
-endfor
-
-# --- OUTPUT MODE 1: MONO ---
-
-if output_channels = 1
-    outID = Create Sound from formula: "Routed_mono",
-        ... 1, 0, masterDur, refFs, "0"
-    for t from 1 to number_of_tracks
-        selectObject: trkID[t]
-        tNS = Get number of samples
+    if normalize_output = 1
         selectObject: outID
-        Formula: "if col <= " + string$(tNS)
-            ... + " then self + Object_" + string$(trkID[t]) + "[col]"
-            ... + " else self fi"
-    endfor
-    appendInfoLine: "  Mono output: ", fixed$(masterDur, 3), " s"
-
-# --- OUTPUT MODE 2: STEREO (equal-power pan) ---
-
-elsif output_channels = 2
-    outID = Create Sound from formula: "Routed_stereo",
-        ... 2, 0, masterDur, refFs, "0"
-    for t from 1 to number_of_tracks
-        # Equal-power pan:  angle = (pan+1)/2 * pi/2
-        # Left gain  = cos(angle)
-        # Right gain = sin(angle)
-        panAngle = (trkPan[t] + 1.0) / 2.0 * (pi / 2.0)
-        gainL = cos(panAngle)
-        gainR = sin(panAngle)
-        gainL$ = fixed$(gainL, 8)
-        gainR$ = fixed$(gainR, 8)
-
-        selectObject: trkID[t]
-        tNS = Get number of samples
-
-        # Left channel (row = 1)
-        selectObject: outID
-        Formula: "if row = 1 and col <= " + string$(tNS)
-            ... + " then self + " + gainL$
-            ... + " * Object_" + string$(trkID[t]) + "[col]"
-            ... + " else self fi"
-        # Right channel (row = 2)
-        selectObject: outID
-        Formula: "if row = 2 and col <= " + string$(tNS)
-            ... + " then self + " + gainR$
-            ... + " * Object_" + string$(trkID[t]) + "[col]"
-            ... + " else self fi"
-    endfor
-    appendInfoLine: "  Stereo output: ", fixed$(masterDur, 3), " s"
-    for t from 1 to number_of_tracks
-        appendInfoLine: "    Track ", t, "  pan=",
-            ... fixed$(trkPan[t], 2), "  (L=",
-            ... fixed$(cos((trkPan[t]+1)/2*(pi/2)), 3), " R=",
-            ... fixed$(sin((trkPan[t]+1)/2*(pi/2)), 3), ")"
-    endfor
-
-# --- OUTPUT MODE 3: MULTICHANNEL (one channel per track) ---
-
-else
-    outID = Create Sound from formula: "Routed_multi",
-        ... number_of_tracks, 0, masterDur, refFs, "0"
-    for t from 1 to number_of_tracks
-        selectObject: trkID[t]
-        tNS = Get number of samples
-        selectObject: outID
-        Formula: "if row = " + string$(t) + " and col <= " + string$(tNS)
-            ... + " then self + Object_" + string$(trkID[t]) + "[col]"
-            ... + " else self fi"
-    endfor
-    appendInfoLine: "  Multichannel output: ", number_of_tracks,
-        ... " ch, ", fixed$(masterDur, 3), " s"
-endif
-
-# --- Normalize ---
-if normalize_output = 1
-    selectObject: outID
-    pk = Get absolute extremum: 0, 0, "None"
-    if pk > 0.001
-        Scale peak: 0.99
-    endif
-    appendInfoLine: "  Normalized (peak was ", fixed$(pk, 4), ")"
-endif
-
-# --- Clipping report ---
-selectObject: outID
-pkFinal = Get absolute extremum: 0, 0, "None"
-appendInfoLine: "  Final peak: ", fixed$(pkFinal, 4)
-
-# ============================================================
-# STEP 7 – CLEANUP TRACK STEMS
-# ============================================================
-
-for t from 1 to number_of_tracks
-    removeObject: trkID[t]
-endfor
-
-# ============================================================
-# STEP 8 – SCHEDULE
-# ============================================================
-
-if print_schedule = 1
-    appendInfoLine: ""
-    appendInfoLine: "=================================================="
-    appendInfoLine: "  SCHEDULE"
-    appendInfoLine: "=================================================="
-    appendInfoLine: ""
-    appendInfoLine: "Seg | Trk | Type    | Src | Start     | End       | Gain  | FdIn   | FdOut"
-    appendInfoLine: "--- | --- | ------- | --- | --------- | --------- | ----- | ------ | ------"
-    for s from 1 to totalSegs
-        eT = segStart[s] + segDur[s]
-        if segType[s] = 1
-            tp$ = "AUDIO  "
-            sr$ = left$(string$(segSrc[s]) + "   ", 3)
-            nm$ = "  (" + sndName$[segSrc[s]] + ")"
-        else
-            tp$ = "SILENCE"
-            sr$ = " - "
-            nm$ = ""
+        pk = Get absolute extremum: 0, 0, "None"
+        if pk > 0.001
+            Scale peak: 0.99
         endif
-        appendInfoLine:
-            ... left$(string$(s) + "   ", 3),
-            ... " | ",
-            ... left$(string$(segTrack[s]) + "   ", 3),
-            ... " | ", tp$,
-            ... " | ", sr$,
-            ... " | ", left$(fixed$(segStart[s], 4) + "         ", 9),
-            ... " | ", left$(fixed$(eT, 4) + "         ", 9),
-            ... " | ", left$(fixed$(segGainDB[s], 1) + "     ", 5),
-            ... " | ", left$(fixed$(segFdIn[s], 3) + "      ", 6),
-            ... " | ", fixed$(segFdOut[s], 3),
-            ... nm$
+        appendInfoLine: "  Normalized (peak was ", fixed$(pk, 4), ")"
+    endif
+    selectObject: outID
+    pkFinal = Get absolute extremum: 0, 0, "None"
+    appendInfoLine: "  Peak: ", fixed$(pkFinal, 4),
+        ... "  Dur: ", fixed$(masterDur, 3), " s"
+
+    resultID  = outID
+    selectObject: resultID
+    resultDur = Get total duration
+    outputName$ = selected$("Sound")
+
+    for t from 1 to number_of_tracks
+        removeObject: trkID[t]
     endfor
-endif
 
-# ============================================================
-# SELECT OUTPUT & DONE
-# ============================================================
+    # ---- Visualization ----
+    if draw_visualization = 1
+        Erase all
 
-selectObject: outID
+        # Title
+        Select outer viewport: 0, 8, 0, 0.38
+        Axes: 0, 1, 0, 1
+        Font size: 10
+        Colour: "Black"
+        Text: 0.5, "centre", 0.7, "half", "##Multitrack Router##"
+        Font size: 7
+        Colour: "{0.35, 0.35, 0.45}"
+        Text: 0.5, "centre", -0.1, "half",
+            ... presetName$[preset] + "  |  "
+            ... + string$(nSounds) + " snd → "
+            ... + string$(number_of_tracks) + " trk  " + outModeName$
 
-appendInfoLine: ""
-appendInfoLine: "=================================================="
-appendInfoLine: "  COMPLETE"
-appendInfoLine: "=================================================="
-selectObject: outID
-outName$ = selected$("Sound")
-appendInfoLine: "Output: ", outName$
-appendInfoLine: ""
+        # Panel 1: Track timeline
+        nTrkVis = number_of_tracks
+        if nTrkVis > 8
+            nTrkVis = 8
+        endif
+        panelH = 0.25 * nTrkVis + 0.30
+        if panelH < 0.80
+            panelH = 0.80
+        endif
+        if panelH > 2.50
+            panelH = 2.50
+        endif
+        p1top = 0.42
+        p1bot = p1top + panelH
+
+        Select outer viewport: 0, 8, p1top, p1bot
+        Select inner viewport: 0.55, 7.65, p1top + 0.06, p1bot - 0.06
+        yTop = nTrkVis + 1
+
+        globalEnd = 0.001
+        for s from 1 to totalSegs
+            eT = segStart[s] + segDur[s]
+            if eT > globalEnd
+                globalEnd = eT
+            endif
+        endfor
+        globalEnd = globalEnd * 1.02
+
+        Axes: 0, globalEnd, 0, yTop
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, globalEnd, 0, yTop
+        Colour: "{0.85, 0.85, 0.85}"
+        for t from 1 to nTrkVis
+            yLane = nTrkVis + 1 - t
+            Draw line: 0, yLane, globalEnd, yLane
+        endfor
+        Font size: 6
+        Colour: "{0.45, 0.45, 0.55}"
+        for t from 1 to nTrkVis
+            yMid = nTrkVis + 1 - t + 0.5
+            Text: -globalEnd * 0.005, "right", yMid, "half", "T" + string$(t)
+        endfor
+
+        nSndM1 = nSounds - 1
+        if nSndM1 < 1
+            nSndM1 = 1
+        endif
+        for s from 1 to totalSegs
+            t = segTrack[s]
+            if t <= nTrkVis
+                yB = nTrkVis + 1 - t + 0.08
+                yT = nTrkVis + 1 - t + 0.92
+                x1 = segStart[s]
+                x2 = segStart[s] + segDur[s]
+                if segType[s] = 1
+                    srcI = segSrc[s]
+                    frac = (srcI - 1) / nSndM1
+                    cR = 0.28 + frac * 0.55
+                    cG = 0.52 - frac * 0.18
+                    cB = 0.72 - frac * 0.50
+                    clr$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
+                    Paint rectangle: clr$, x1, x2, yB, yT
+                    if (x2 - x1) > globalEnd * 0.03
+                        Font size: 5
+                        Colour: "White"
+                        Text: (x1 + x2) / 2, "centre", (yB + yT) / 2, "half", string$(srcI)
+                    endif
+                else
+                    Paint rectangle: "{0.92, 0.90, 0.85}", x1, x2, yB, yT
+                    Colour: "{0.70, 0.68, 0.60}"
+                    Draw rectangle: x1, x2, yB, yT
+                endif
+            endif
+        endfor
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Track timeline"
+        Text bottom: "yes", "Time (s)"
+
+        # Panel 2: Output waveform
+        p2top = p1bot + 0.08
+        p2bot = p2top + 0.80
+        Select outer viewport: 0, 8, p2top, p2bot
+        Select inner viewport: 0.55, 7.65, p2top + 0.05, p2bot - 0.05
+        selectObject: resultID
+        resPeak = Get absolute extremum: 0, 0, "None"
+        if resPeak < 0.001
+            resPeak = 0.001
+        endif
+        ampMax = resPeak * 1.15
+        Axes: 0, resultDur, -ampMax, ampMax
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -ampMax, ampMax
+        Colour: "{0.80, 0.80, 0.80}"
+        Draw line: 0, 0, resultDur, 0
+        selectObject: resultID
+        Colour: "{0.20, 0.72, 0.48}"
+        Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text left: "yes", "Out"
+        Text top: "no", outputName$
+        Text bottom: "yes", "Time (s)"
+
+        # Panel 3: Summary bar
+        p3top = p2bot + 0.06
+        p3bot = p3top + 0.44
+        Select outer viewport: 0, 8, p3top, p3bot
+        Select inner viewport: 0.55, 7.65, p3top + 0.03, p3bot - 0.03
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+        Font size: 6
+        Colour: "{0.30, 0.30, 0.40}"
+        if time_mode = 1
+            tLbl$ = "Layer"
+        else
+            tLbl$ = "Seq"
+        endif
+        if crossfade_shape = 1
+            xLbl$ = "lin"
+        else
+            xLbl$ = "ep"
+        endif
+        Text: 0.02, "left", 0.72, "half",
+            ... "##" + presetName$[preset] + "##  "
+            ... + assignName$[assignment_mode] + "  "
+            ... + tLbl$ + "  gap=" + fixed$(gap_seconds, 3)
+            ... + " xf=" + fixed$(crossfade_seconds, 3)
+            ... + "(" + xLbl$ + ")"
+        Text: 0.02, "left", 0.25, "half",
+            ... outModeName$ + "  "
+            ... + fixed$(resultDur, 3) + "s  "
+            ... + "pk=" + fixed$(pkFinal, 4) + "  "
+            ... + "gain=" + fixed$(default_gain_dB, 1)
+            ... + " fade=" + fixed$(fade_in_seconds, 3) + "/" + fixed$(fade_out_seconds, 3)
+        Colour: "Black"
+        Draw rectangle: 0, 1, 0, 1
+
+        Font size: 10
+        Line width: 1
+    endif
+
+    # ---- Schedule ----
+    if print_schedule = 1
+        appendInfoLine: ""
+        appendInfoLine: "== SCHEDULE =="
+        appendInfoLine: "Seg|Trk|Type   |Src|Start   |End     |Gain|FdIn |FdOut"
+        for s from 1 to totalSegs
+            eT = segStart[s] + segDur[s]
+            if segType[s] = 1
+                tp$ = "AUDIO  "
+                sr$ = left$(string$(segSrc[s]) + "  ", 3)
+                nm$ = " " + sndName$[segSrc[s]]
+            else
+                tp$ = "SILENCE"
+                sr$ = " - "
+                nm$ = ""
+            endif
+            appendInfoLine:
+                ... left$(string$(s) + "  ", 3),
+                ... "|", left$(string$(segTrack[s]) + "  ", 3),
+                ... "|", tp$,
+                ... "|", sr$,
+                ... "|", left$(fixed$(segStart[s], 3) + "       ", 8),
+                ... "|", left$(fixed$(eT, 3) + "       ", 8),
+                ... "|", left$(fixed$(segGainDB[s], 1) + "   ", 4),
+                ... "|", left$(fixed$(segFdIn[s], 3) + "    ", 5),
+                ... "|", fixed$(segFdOut[s], 3),
+                ... nm$
+        endfor
+    endif
+
+    selectObject: resultID
+    appendInfoLine: ""
+    appendInfoLine: "== DONE: ", outputName$, " =="
+    appendInfoLine: ""
+
+    prevResultID = resultID
+
+until 0
