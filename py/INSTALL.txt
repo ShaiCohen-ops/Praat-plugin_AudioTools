@@ -12,6 +12,7 @@ Supported scripts:
   - Spectral Morph            (spectral_morph.py)
   - Waveset Distortion        (waveset_distortion.py)
   - Thermodynamic Transform   (thermodynamic_transform.py)
+  - Identity Separation       (identity_separation.py)
 
 
 ============================================================
