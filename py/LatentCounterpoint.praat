@@ -1,5 +1,5 @@
 # ============================================================
-# Praat AudioTools - LatentNavigation.praat
+# Praat AudioTools - LatentCounterpoint.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
@@ -8,21 +8,18 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Latent Space Navigation (Audio → Audio)
+#   The Latent Counterpoint
 #
-#   Learns a latent space from event-level audio patches (on-the-fly
-#   autoencoder), then navigates that space to generate a new timeline
-#   by selecting/morphing events along a deterministic latent trajectory.
-#   The result sounds like traveling through hidden acoustic identities.
+#   Trains an autoencoder on-the-fly to learn a latent space from
+#   event-level audio patches, then deploys multiple agents that
+#   navigate the latent space simultaneously with counterpoint forces
+#   (attraction, repulsion, inertia, jitter) to produce polyphonic
+#   recombination of the input material.
 #
-#   Navigation modes:
-#   - Trajectory: follows a path through latent space
-#     (ThermoDrift / Attractor / Convection)
-#   - Mixer: sweeps a 2D latent plane
-#
-#   Output modes:
-#   - Selector: picks nearest event at each path step
-#   - Morph: crossfades between nearest events
+#   Agent profiles:
+#   - Cantus:  heavy, slow, gravitates to center of gravity
+#   - Florid:  light, fast, attracted to rare/peripheral sounds
+#   - Shadow:  mirrors Cantus with temporal lag + inverted coordinates
 #
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
@@ -41,11 +38,11 @@ soundName$ = selected$("Sound")
 
 # ---- PATHS ----
 pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/latent_navigation.py"
-tempInput$   = pluginDir$ + "temp_latnav_input.wav"
-tempCSV$     = pluginDir$ + "temp_latnav_events.csv"
-tempOutput$  = pluginDir$ + "temp_latnav_output.wav"
-tempStats$   = pluginDir$ + "temp_latnav_stats.txt"
+pythonScript$ = pluginDir$ + "py/latent_counterpoint.py"
+tempInput$   = pluginDir$ + "temp_latcp_input.wav"
+tempCSV$     = pluginDir$ + "temp_latcp_events.csv"
+tempOutput$  = pluginDir$ + "temp_latcp_output.wav"
+tempStats$   = pluginDir$ + "temp_latcp_stats.txt"
 
 if not fileReadable(pythonScript$)
     exitScript: "Cannot find Python script: " + pythonScript$ + newline$
@@ -53,123 +50,72 @@ if not fileReadable(pythonScript$)
 endif
 
 # ---- FORM ----
-form Latent Space Navigation v1.0
+form The Latent Counterpoint v1.0
     optionmenu Preset: 1
         option Custom
-        option Gentle drift
-        option Deep attractors
-        option Convection flow
-        option Fast scatter
-        option Slow morph
-        option Dense mixer
-    integer Learning_steps 100
+        option Duo (2 voices)
+        option Trio (3 voices)
+        option Quartet (4 voices)
+        option Dense ensemble (5 voices)
+        option Tight counterpoint
+        option Free scatter
+    integer Number_of_agents 3
     integer Latent_size 8
+    real Counterpoint_rigidity 0.5
+    real Speed 0.5
+    real Duration_(0_=_original) 0
     integer Seed 42
-    optionmenu Navigation_mode: 1
-        option Trajectory
-        option Mixer
-    optionmenu Path_type: 1
-        option ThermoDrift
-        option Attractor
-        option Convection
-    real Travel_speed 0.5
-    real Dwell_amount 0.3
-    real Smoothing 0.4
-    optionmenu Output_mode: 1
-        option Selector
-        option Morph
-    optionmenu Target_duration: 1
-        option Preserve
-        option Expand
-        option Compress
-    real Density_(events_per_s) 3.0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
 # ---- PRESETS ----
 if preset = 2
-    learning_steps = 80
+    number_of_agents = 2
     latent_size = 6
-    navigation_mode = 1
-    path_type = 1
-    travel_speed = 0.3
-    dwell_amount = 0.5
-    smoothing = 0.5
-    output_mode = 1
-    target_duration = 1
-    density = 2.5
-    presetName$ = "GentleDrift"
+    counterpoint_rigidity = 0.4
+    speed = 0.4
+    presetName$ = "Duo"
 elsif preset = 3
-    learning_steps = 150
-    latent_size = 12
-    navigation_mode = 1
-    path_type = 2
-    travel_speed = 0.4
-    dwell_amount = 0.7
-    smoothing = 0.3
-    output_mode = 1
-    target_duration = 1
-    density = 3.0
-    presetName$ = "DeepAttractors"
+    number_of_agents = 3
+    latent_size = 8
+    counterpoint_rigidity = 0.5
+    speed = 0.5
+    presetName$ = "Trio"
 elsif preset = 4
-    learning_steps = 120
+    number_of_agents = 4
     latent_size = 10
-    navigation_mode = 1
-    path_type = 3
-    travel_speed = 0.6
-    dwell_amount = 0.3
-    smoothing = 0.4
-    output_mode = 1
-    target_duration = 1
-    density = 3.5
-    presetName$ = "ConvectionFlow"
+    counterpoint_rigidity = 0.6
+    speed = 0.5
+    presetName$ = "Quartet"
 elsif preset = 5
-    learning_steps = 100
-    latent_size = 8
-    navigation_mode = 1
-    path_type = 1
-    travel_speed = 1.2
-    dwell_amount = 0.1
-    smoothing = 0.2
-    output_mode = 1
-    target_duration = 2
-    density = 5.0
-    presetName$ = "FastScatter"
+    number_of_agents = 5
+    latent_size = 12
+    counterpoint_rigidity = 0.7
+    speed = 0.6
+    presetName$ = "DenseEnsemble"
 elsif preset = 6
-    learning_steps = 150
-    latent_size = 10
-    navigation_mode = 1
-    path_type = 2
-    travel_speed = 0.3
-    dwell_amount = 0.6
-    smoothing = 0.8
-    output_mode = 2
-    target_duration = 1
-    density = 2.0
-    presetName$ = "SlowMorph"
-elsif preset = 7
-    learning_steps = 100
+    number_of_agents = 3
     latent_size = 8
-    navigation_mode = 2
-    path_type = 1
-    travel_speed = 0.5
-    dwell_amount = 0.3
-    smoothing = 0.5
-    output_mode = 1
-    target_duration = 1
-    density = 4.0
-    presetName$ = "DenseMixer"
+    counterpoint_rigidity = 1.5
+    speed = 0.3
+    presetName$ = "TightCP"
+elsif preset = 7
+    number_of_agents = 3
+    latent_size = 10
+    counterpoint_rigidity = 0.1
+    speed = 1.2
+    presetName$ = "FreeScatter"
 else
     presetName$ = "Custom"
 endif
 
 # Clamp
-if learning_steps < 10
-    learning_steps = 10
+if number_of_agents < 2
+    number_of_agents = 2
 endif
-if learning_steps > 500
-    learning_steps = 500
+if number_of_agents > 6
+    number_of_agents = 6
 endif
 if latent_size < 2
     latent_size = 2
@@ -178,31 +124,18 @@ if latent_size > 32
     latent_size = 32
 endif
 
-# Map menu indices to Python integers (0-based)
-navModeInt = navigation_mode - 1
-pathTypeInt = path_type - 1
-outModeInt = output_mode - 1
-durModeInt = target_duration - 1
-
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Space Navigation v1.0 ==="
+writeInfoLine:  "=== The Latent Counterpoint v1.0 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "Learning steps: ", learning_steps
-appendInfoLine: "Latent size:    ", latent_size
-appendInfoLine: "Seed:           ", seed
-appendInfoLine: ""
-appendInfoLine: "Navigation:     ", navigation_mode$
-appendInfoLine: "Path type:      ", path_type$
-appendInfoLine: "Travel speed:   ", fixed$(travel_speed, 2)
-appendInfoLine: "Dwell:          ", fixed$(dwell_amount, 2)
-appendInfoLine: "Smoothing:      ", fixed$(smoothing, 2)
-appendInfoLine: ""
-appendInfoLine: "Output mode:    ", output_mode$
-appendInfoLine: "Duration:       ", target_duration$
-appendInfoLine: "Density:        ", fixed$(density, 1), " events/s"
+appendInfoLine: "Agents:     ", number_of_agents
+appendInfoLine: "Latent:     ", latent_size
+appendInfoLine: "Rigidity:   ", fixed$(counterpoint_rigidity, 2)
+appendInfoLine: "Speed:      ", fixed$(speed, 2)
+appendInfoLine: "Duration:   ", if duration > 0 then fixed$(duration, 1) else "original" fi
+appendInfoLine: "Seed:       ", seed
 appendInfoLine: ""
 
 # ---- CAPTURE ORIGINAL STATS ----
@@ -211,6 +144,10 @@ dur = Get total duration
 sr  = Get sampling frequency
 nChannels = Get number of channels
 rms_orig = Get root-mean-square: 0, 0
+
+if duration <= 0
+    duration = dur
+endif
 
 appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: ", nChannels
 appendInfoLine: ""
@@ -242,7 +179,6 @@ harmObj = To Harmonicity (cc): 0.01, 75, 0.1, 1.0
 selectObject: analysisMono
 intObj = To Intensity: 100, 0.01, "yes"
 
-# Find intensity peaks as candidate boundaries
 selectObject: intObj
 intMatrix = Down to Matrix
 intSound = To Sound (slice): 1
@@ -263,7 +199,6 @@ for iPeak from 1 to nPeaks
 endfor
 nBounds = iBound - 1
 
-# Sort
 for i from 1 to nBounds
     for j from i + 1 to nBounds
         if bound_'j' < bound_'i'
@@ -274,7 +209,6 @@ for i from 1 to nBounds
     endfor
 endfor
 
-# Remove duplicates + enforce min duration
 nFinal = 0
 prevT = -1
 for i from 1 to nBounds
@@ -300,7 +234,6 @@ else
     final_2 = dur
 endif
 
-# Enforce max duration
 nEvents = 0
 for i from 1 to nFinal - 1
     evStart = final_'i'
@@ -336,13 +269,13 @@ endif
 appendInfoLine: "  Found ", nEvents, " events"
 
 # ===========================================================================
-# Stage 2 — Extract Per-Event Features
+# Stage 2 — Extract Features + Export
 # ===========================================================================
 
-appendInfoLine: "[2/5] Extracting per-event features..."
+appendInfoLine: "[2/5] Extracting features..."
 
 Create Table with column names: "eventFeatures", nEvents,
-    ... "start_time end_time pitch_stability intensity_mean attack_slope hnr_mean"
+    ... "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
@@ -353,8 +286,8 @@ for iEv from 1 to nEvents
     selectObject: eventTable
     Set numeric value: iEv, "start_time", t1
     Set numeric value: iEv, "end_time", t2
+    Set string value: iEv, "label", "ev" + string$(iEv)
 
-    # Pitch stability
     selectObject: pitchObj
     pMean = Get mean: t1, t2, "Hertz"
     pStd = Get standard deviation: t1, t2, "Hertz"
@@ -373,7 +306,6 @@ for iEv from 1 to nEvents
     selectObject: eventTable
     Set numeric value: iEv, "pitch_stability", pitchStab
 
-    # Intensity + attack slope
     selectObject: intObj
     iMean = Get mean: t1, t2, "energy"
     if iMean = undefined
@@ -401,7 +333,6 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "intensity_mean", iMean
     Set numeric value: iEv, "attack_slope", attackSlope
 
-    # HNR
     selectObject: harmObj
     hMean = Get mean: t1, t2
     if hMean = undefined
@@ -411,14 +342,12 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
-# ---- Export ----
 appendInfoLine: "[3/5] Exporting temp files..."
 selectObject: sound
 Save as WAV file: tempInput$
 selectObject: eventTable
 Save as comma-separated file: tempCSV$
 
-# Cleanup analysis objects
 removeObject: analysisMono, pitchObj, harmObj, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
@@ -427,7 +356,7 @@ removeObject: intMatrix, intSound, ppObj, eventTable
 # ===========================================================================
 
 appendInfoLine: "[4/5] Running Python engine..."
-appendInfoLine: "  (Training AE + navigating latent space)"
+appendInfoLine: "  (Training AE + running ", number_of_agents, "-voice counterpoint)"
 
 # ---- Python detection ----
 probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
@@ -470,7 +399,6 @@ for iCand from 1 to nCandidates
         deleteFile: probeMarker$
         appendInfoLine: "  Python found: ", pythonCmd$
     endif
-
     if pythonCmd$ <> ""
         iCand = nCandidates + 1
     endif
@@ -480,13 +408,7 @@ if pythonCmd$ = ""
     deleteFile: tempInput$
     deleteFile: tempCSV$
     exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "" + newline$
-        ... + "Tried: python, py, py -3, python3" + newline$
-        ... + "" + newline$
-        ... + "Please install the packages and ensure Python is in PATH:" + newline$
-        ... + "  pip install numpy soundfile scipy" + newline$
-        ... + "" + newline$
-        ... + "Note: scikit-learn is NOT required for this script."
+        ... + "  pip install numpy soundfile scipy"
 endif
 
 runSystem: pythonCmd$ + " """ + pythonScript$ + """"
@@ -494,29 +416,19 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempCSV$ + """"
     ... + " """ + tempOutput$ + """"
     ... + " """ + tempStats$ + """"
-    ... + " " + string$(learning_steps)
+    ... + " " + string$(number_of_agents)
     ... + " " + string$(latent_size)
-    ... + " " + string$(seed)
-    ... + " " + string$(navModeInt)
-    ... + " " + string$(pathTypeInt)
-    ... + " " + fixed$(travel_speed, 4)
-    ... + " " + fixed$(dwell_amount, 4)
-    ... + " " + fixed$(smoothing, 4)
-    ... + " " + string$(outModeInt)
-    ... + " " + string$(durModeInt)
-    ... + " " + fixed$(density, 4)
+    ... + " " + fixed$(counterpoint_rigidity, 4)
+    ... + " " + fixed$(speed, 4)
+    ... + " " + fixed$(duration, 4)
 
-# ---- Verify ----
 if not fileReadable(tempOutput$)
     deleteFile: tempInput$
     deleteFile: tempCSV$
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
-    exitScript: "Python latent navigation engine failed." + newline$
-        ... + "" + newline$
-        ... + "Python command used: " + pythonCmd$ + newline$
-        ... + "" + newline$
+    exitScript: "Python counterpoint engine failed." + newline$
         ... + "Run in terminal to see error:" + newline$
         ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
 endif
@@ -528,7 +440,7 @@ endif
 appendInfoLine: "[5/5] Importing result..."
 
 Read from file: tempOutput$
-Rename: soundName$ + "_nav"
+Rename: soundName$ + "_cp"
 resultSound = selected("Sound")
 
 selectObject: resultSound
@@ -540,59 +452,76 @@ durOut = Get total duration
 # ===========================================================================
 
 nEvStat$ = "?"
-nOutputSteps$ = "?"
-uniqueUsed$ = "?"
-repRate$ = "?"
-avgTravel$ = "?"
-meanTempStat$ = "?"
+nAgentsStat$ = "?"
 outDurStat$ = "?"
-navModeStat$ = "?"
-pathTypeStat$ = "?"
-outModeStat$ = "?"
 finalLoss$ = "?"
 initialLoss$ = "?"
 meanEvDur$ = "?"
-top0$ = "?"
-top1$ = "?"
-top2$ = "?"
+totalUnique$ = "?"
 warningStat$ = ""
+
+# Per-agent stats arrays (up to 6 agents)
+for iA from 0 to 5
+    agProfile_'iA'$ = "?"
+    agSteps_'iA'$ = "?"
+    agUnique_'iA'$ = "?"
+    agRepRate_'iA'$ = "?"
+    agTravel_'iA'$ = "?"
+    agPeriph_'iA'$ = "?"
+    agTop_'iA'$ = "?"
+endfor
+
+# Unison rates (up to 15 pairs for 6 agents)
+nUnisonPairs = 0
+for iA from 0 to 5
+    for iB from iA + 1 to 5
+        unisonRate_'iA'_'iB'$ = "?"
+    endfor
+endfor
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
+
     @parseStatLine: statsText$, "n_events="
     nEvStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "n_output_steps="
-    nOutputSteps$ = parseStatLine.result$
-    @parseStatLine: statsText$, "unique_events_used="
-    uniqueUsed$ = parseStatLine.result$
-    @parseStatLine: statsText$, "repetition_rate="
-    repRate$ = parseStatLine.result$
-    @parseStatLine: statsText$, "avg_latent_travel="
-    avgTravel$ = parseStatLine.result$
-    @parseStatLine: statsText$, "mean_temperature="
-    meanTempStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "n_agents="
+    nAgentsStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "output_duration="
     outDurStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "nav_mode="
-    navModeStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "path_type="
-    pathTypeStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "output_mode="
-    outModeStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "final_loss="
     finalLoss$ = parseStatLine.result$
     @parseStatLine: statsText$, "initial_loss="
     initialLoss$ = parseStatLine.result$
     @parseStatLine: statsText$, "mean_event_dur="
     meanEvDur$ = parseStatLine.result$
-    @parseStatLine: statsText$, "top_event_0="
-    top0$ = parseStatLine.result$
-    @parseStatLine: statsText$, "top_event_1="
-    top1$ = parseStatLine.result$
-    @parseStatLine: statsText$, "top_event_2="
-    top2$ = parseStatLine.result$
+    @parseStatLine: statsText$, "total_unique_events="
+    totalUnique$ = parseStatLine.result$
     @parseStatLine: statsText$, "warning="
     warningStat$ = parseStatLine.result$
+
+    for iA from 0 to number_of_agents - 1
+        @parseStatLine: statsText$, "agent_" + string$(iA) + "_profile="
+        agProfile_'iA'$ = parseStatLine.result$
+        @parseStatLine: statsText$, "agent_" + string$(iA) + "_steps="
+        agSteps_'iA'$ = parseStatLine.result$
+        @parseStatLine: statsText$, "agent_" + string$(iA) + "_unique="
+        agUnique_'iA'$ = parseStatLine.result$
+        @parseStatLine: statsText$, "agent_" + string$(iA) + "_rep_rate="
+        agRepRate_'iA'$ = parseStatLine.result$
+        @parseStatLine: statsText$, "agent_" + string$(iA) + "_avg_travel="
+        agTravel_'iA'$ = parseStatLine.result$
+        @parseStatLine: statsText$, "agent_" + string$(iA) + "_mean_periphery="
+        agPeriph_'iA'$ = parseStatLine.result$
+        @parseStatLine: statsText$, "agent_" + string$(iA) + "_top_event="
+        agTop_'iA'$ = parseStatLine.result$
+    endfor
+
+    for iA from 0 to number_of_agents - 2
+        for iB from iA + 1 to number_of_agents - 1
+            @parseStatLine: statsText$, "unison_rate_" + string$(iA) + "_" + string$(iB) + "="
+            unisonRate_'iA'_'iB'$ = parseStatLine.result$
+        endfor
+    endfor
 endif
 
 ###############################################################################
@@ -611,10 +540,10 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Latent Space Navigation##"
+    Text: 0.5, "centre", 0.6, "half", "##The Latent Counterpoint##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + navModeStat$ + "/" + pathTypeStat$ + "/" + outModeStat$
+    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + string$(number_of_agents) + " voices | Rigidity=" + fixed$(counterpoint_rigidity, 2)
 
     # === Input Waveform ===
     Select outer viewport: 0, 8, 0.6, 1.5
@@ -626,8 +555,6 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "Original"
-
-    # Event boundaries
     Colour: "{0.8, 0.3, 0.3}"
     Line width: 1
     Axes: 0, dur, -1, 1
@@ -639,22 +566,21 @@ if draw_visualization
     endfor
     Text top: "no", string$(nEvents) + " events | " + fixed$(dur, 2) + " s"
 
-    # === Output Waveform ===
+    # === Output Waveform (stereo → L channel) ===
     Select outer viewport: 0, 8, 1.5, 2.4
     Select inner viewport: 0.6, 7.7, 1.55, 2.35
     selectObject: resultSound
-    Colour: "{0.2, 0.5, 0.7}"
+    Colour: "{0.4, 0.2, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Navigated"
+    Text left: "yes", "Counterpoint"
     Text bottom: "yes", "Time (s)"
 
     # === Original Spectrogram ===
     Select outer viewport: 0, 8, 2.5, 3.7
     Select inner viewport: 0.6, 7.7, 2.6, 3.6
-
     selectObject: sound
     if nChannels > 1
         Extract one channel: 1
@@ -676,15 +602,9 @@ if draw_visualization
     # === Output Spectrogram ===
     Select outer viewport: 0, 8, 3.7, 4.9
     Select inner viewport: 0.6, 7.7, 3.8, 4.8
-
     selectObject: resultSound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOut = selected("Sound")
-    else
-        Copy: "tmpOut"
-        tmpOut = selected("Sound")
-    endif
+    Extract one channel: 1
+    tmpOut = selected("Sound")
     To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
     specOut = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
@@ -693,74 +613,69 @@ if draw_visualization
     Font size: 6
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Navigated spectrogram"
+    Text top: "no", "Counterpoint spectrogram (L channel)"
     removeObject: specOut, tmpOut
 
-    # === Navigation Stats Panel ===
-    Select outer viewport: 0, 8, 5.0, 5.8
-    Select inner viewport: 0.6, 7.7, 5.1, 5.7
+    # === Agent Profiles Panel ===
+    Select outer viewport: 0, 8, 5.0, 6.0
+    Select inner viewport: 0.6, 7.7, 5.1, 5.9
 
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.95, 0.97}", 0, 1, 0, 1
+    Paint rectangle: "{0.93, 0.93, 0.96}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.85, "half", "Navigation:"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.55, "half", "Steps=" + nOutputSteps$ + " | Unique=" + uniqueUsed$ + "/" + nEvStat$ + " | Rep.rate=" + repRate$ + " | Avg travel=" + avgTravel$
-    Text: 0.02, "left", 0.20, "half", "Most used: [" + top0$ + "] [" + top1$ + "] [" + top2$ + "]"
+    Text: 0.02, "left", 0.92, "half", "Agent Profiles:"
+
+    # Agent colors
+    agCol_0$ = "{0.2, 0.4, 0.7}"
+    agCol_1$ = "{0.7, 0.3, 0.2}"
+    agCol_2$ = "{0.3, 0.6, 0.3}"
+    agCol_3$ = "{0.6, 0.4, 0.6}"
+    agCol_4$ = "{0.7, 0.6, 0.2}"
+    agCol_5$ = "{0.4, 0.6, 0.7}"
+
+    yStep = 0.75 / max(1, number_of_agents)
+    for iA from 0 to number_of_agents - 1
+        yPos = 0.78 - iA * yStep
+        thisCol$ = agCol_'iA'$
+        Colour: thisCol$
+        Font size: 6
+        agLine$ = agProfile_'iA'$ + " | Steps=" + agSteps_'iA'$
+            ... + " Uniq=" + agUnique_'iA'$
+            ... + " Rep=" + agRepRate_'iA'$
+            ... + " Travel=" + agTravel_'iA'$
+        Text: 0.02, "left", yPos, "half", "Agent " + string$(iA) + ": " + agLine$
+    endfor
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # === Intensity Comparison ===
-    Select outer viewport: 0, 8, 5.9, 6.7
-    Select inner viewport: 0.6, 7.7, 6.0, 6.6
+    # === Unison / Counterpoint Panel ===
+    Select outer viewport: 0, 8, 6.1, 6.7
+    Select inner viewport: 0.6, 7.7, 6.2, 6.6
 
-    maxDur = max(dur, durOut)
-    Axes: 0, maxDur, 30, 90
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, maxDur, 30, 90
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.96, 0.93, 0.93}", 0, 1, 0, 1
 
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrigI = selected("Sound")
-    else
-        Copy: "tmpOrigI"
-        tmpOrigI = selected("Sound")
-    endif
-    To Intensity: 100, 0, "yes"
-    intOrig2 = selected("Intensity")
-    selectObject: intOrig2
-    Colour: "{0.6, 0.6, 0.6}"
-    Line width: 2
-    Draw: 0, 0, 0, 0, "no"
-    removeObject: intOrig2, tmpOrigI
-
-    selectObject: resultSound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOutI = selected("Sound")
-    else
-        Copy: "tmpOutI"
-        tmpOutI = selected("Sound")
-    endif
-    To Intensity: 100, 0, "yes"
-    intOut2 = selected("Intensity")
-    selectObject: intOut2
-    Colour: "{0.2, 0.5, 0.7}"
-    Line width: 2
-    Draw: 0, 0, 0, 0, "no"
-    removeObject: intOut2, tmpOutI
-
-    Line width: 1
+    Font size: 7
     Colour: "Black"
-    Draw inner box
+    Text: 0.02, "left", 0.82, "half", "Counterpoint (unison rates — lower = more independent):"
+
     Font size: 6
-    Text left: "yes", "dB"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Intensity: Grey = original | Blue = navigated"
+    Colour: "{0.3, 0.3, 0.3}"
+    unisonLine$ = ""
+    for iA from 0 to number_of_agents - 2
+        for iB from iA + 1 to number_of_agents - 1
+            thisRate$ = unisonRate_'iA'_'iB'$
+            if thisRate$ <> "?"
+                unisonLine$ = unisonLine$ + string$(iA) + "↔" + string$(iB) + "=" + thisRate$ + "  "
+            endif
+        endfor
+    endfor
+    Text: 0.02, "left", 0.30, "half", unisonLine$
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
 
     # === Summary Panel ===
     Select outer viewport: 0, 8, 6.9, 8.0
@@ -774,20 +689,9 @@ if draw_visualization
     Text: 0.02, "left", 0.88, "half", "Summary:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.68, "half", "Mode: " + navModeStat$ + "/" + pathTypeStat$ + "/" + outModeStat$ + " | Mean temp: " + meanTempStat$
-    Text: 0.02, "left", 0.48, "half", "AE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Steps=" + string$(learning_steps) + " Lat=" + string$(latent_size)
-    Text: 0.02, "left", 0.28, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | Density=" + fixed$(density, 1) + "/s | Seed=" + string$(seed)
-
-    Font size: 7
-    Colour: "Black"
-    Text: 0.60, "left", 0.88, "half", "Audio:"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.60, "left", 0.68, "half", "RMS: " + fixed$(rms_orig, 4) + " -> " + fixed$(rms_out, 4)
-    if rms_orig > 0
-        Text: 0.60, "left", 0.48, "half", "Ratio: " + fixed$(rms_out / rms_orig, 3) + "x"
-    endif
-    Text: 0.60, "left", 0.28, "half", "Mean event: " + meanEvDur$ + " s"
+    Text: 0.02, "left", 0.68, "half", "Events: " + nEvStat$ + " | Total unique used: " + totalUnique$ + " | Mean dur: " + meanEvDur$ + " s"
+    Text: 0.02, "left", 0.48, "half", "AE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
+    Text: 0.02, "left", 0.28, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + " -> " + fixed$(rms_out, 4)
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
@@ -821,35 +725,35 @@ endif
 
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
-appendInfoLine: "Output: ", soundName$, "_nav"
+appendInfoLine: "Output: ", soundName$, "_cp (stereo)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "Navigation:"
-appendInfoLine: "  Mode: ", navModeStat$, " | Path: ", pathTypeStat$, " | Output: ", outModeStat$
-appendInfoLine: "  Steps: ", nOutputSteps$, " | Unique events: ", uniqueUsed$, "/", nEvStat$
-appendInfoLine: "  Repetition rate: ", repRate$
-appendInfoLine: "  Avg latent travel: ", avgTravel$
+appendInfoLine: "Agents:"
+for iA from 0 to number_of_agents - 1
+    appendInfoLine: "  ", string$(iA), ": ", agProfile_'iA'$,
+        ... " | Steps=", agSteps_'iA'$,
+        ... " | Unique=", agUnique_'iA'$,
+        ... " | Rep=", agRepRate_'iA'$,
+        ... " | Travel=", agTravel_'iA'$,
+        ... " | Periphery=", agPeriph_'iA'$
+endfor
+
 appendInfoLine: ""
-appendInfoLine: "Autoencoder:"
-appendInfoLine: "  Loss: ", initialLoss$, " -> ", finalLoss$
-appendInfoLine: "  Mean temperature: ", meanTempStat$
+appendInfoLine: "Counterpoint (unison rates):"
+for iA from 0 to number_of_agents - 2
+    for iB from iA + 1 to number_of_agents - 1
+        appendInfoLine: "  ", string$(iA), " ↔ ", string$(iB), ": ", unisonRate_'iA'_'iB'$
+    endfor
+endfor
+
 appendInfoLine: ""
 appendInfoLine: "Duration: ", fixed$(dur, 2), " s -> ", outDurStat$, " s"
 appendInfoLine: "RMS: ", fixed$(rms_orig, 4), " -> ", fixed$(rms_out, 4)
-if rms_orig > 0
-    appendInfoLine: "RMS ratio: ", fixed$(rms_out / rms_orig, 3), "x"
-endif
 
 if warningStat$ <> "?" and warningStat$ <> ""
     appendInfoLine: ""
     appendInfoLine: "WARNING: ", warningStat$
 endif
-
-appendInfoLine: ""
-appendInfoLine: "Most used events:"
-appendInfoLine: "  #1: ", top0$
-appendInfoLine: "  #2: ", top1$
-appendInfoLine: "  #3: ", top2$
 
 selectObject: resultSound
 
