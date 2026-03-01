@@ -8,9 +8,10 @@ Follow the steps for your operating system below.
 You only need to do this ONCE.
 
 Supported scripts:
-  - Paulstretch          (paulstretch.py)
-  - Spectral Morph       (spectral_morph.py)
-  - Waveset Distortion   (waveset_distortion.py)
+  - Paulstretch               (paulstretch.py)
+  - Spectral Morph            (spectral_morph.py)
+  - Waveset Distortion        (waveset_distortion.py)
+  - Thermodynamic Transform   (thermodynamic_transform.py)
 
 
 ============================================================
@@ -34,7 +35,7 @@ STEP 2 - Install the required packages
 3. Click "Command Prompt" to open it
 4. Type the following line and press Enter:
 
-   pip install numpy soundfile scipy
+   pip install numpy soundfile scipy scikit-learn
 
 5. Wait for it to finish, then close the window.
 
@@ -43,8 +44,19 @@ TROUBLESHOOTING (Windows)
 "py is not recognized":
   Reinstall Python and make sure to check "Add Python to PATH"
 
-"No module named soundfile":
-  Open Command Prompt and run:  pip install numpy soundfile scipy
+"No module named soundfile" or "No module named sklearn":
+  Open Command Prompt and run:
+  pip install numpy soundfile scipy scikit-learn
+
+"pip installed packages but Praat says they are missing":
+  You may have multiple Python installations. The Praat scripts
+  auto-detect which Python has the right packages. To check
+  which Python pip is using, run:
+    pip --version
+  Then verify that same Python works:
+    python -c "import numpy, soundfile, scipy, sklearn; print('OK')"
+  If that fails, try:
+    py -c "import numpy, soundfile, scipy, sklearn; print('OK')"
 
 
 ============================================================
@@ -66,29 +78,21 @@ STEP 2 - Install the required packages
    (Finder → Applications → Utilities → Terminal)
 2. Type the following line and press Enter:
 
-   pip3 install numpy soundfile scipy
+   pip3 install numpy soundfile scipy scikit-learn
 
 3. Wait for it to finish, then close the Terminal.
 
-STEP 3 - Important: update the Praat scripts
-------------------------------------------------------------
-On Mac, Praat calls Python differently. In each .praat script,
-find the line that starts with:
-
-   runSystem: "py " ...
-
-And change  "py "  to  "python3 "
-
-For example:
-   runSystem: "python3 " + pythonScript$ + ...
+NOTE: You do NOT need to edit the Praat scripts. The scripts
+automatically detect whether to use "python3" or "python".
 
 TROUBLESHOOTING (Mac)
 ------------------------------------------------------------
 "command not found: python3":
   Try installing Python again from python.org
 
-"No module named soundfile":
-  Run in Terminal:  pip3 install numpy soundfile scipy
+"No module named soundfile" or "No module named sklearn":
+  Run in Terminal:
+  pip3 install numpy soundfile scipy scikit-learn
 
 
 ============================================================
@@ -113,32 +117,31 @@ STEP 2 - Install the required packages
 ------------------------------------------------------------
 In Terminal, type:
 
-   pip3 install numpy soundfile scipy
+   pip3 install numpy soundfile scipy scikit-learn
 
-STEP 3 - Important: update the Praat scripts
-------------------------------------------------------------
-Same as Mac above. In each .praat script find:
-
-   runSystem: "py " ...
-
-And change  "py "  to  "python3 "
+NOTE: You do NOT need to edit the Praat scripts. The scripts
+automatically detect whether to use "python3" or "python".
 
 TROUBLESHOOTING (Linux)
 ------------------------------------------------------------
 "pip3 not found":
   Run:  sudo apt install python3-pip   (Ubuntu/Debian)
 
-"No module named soundfile":
-  Run:  pip3 install numpy soundfile scipy
+"No module named soundfile" or "No module named sklearn":
+  Run:  pip3 install numpy soundfile scipy scikit-learn
 
 
 ============================================================
   FOR ALL PLATFORMS - required packages summary
 ============================================================
 
-  numpy       - math and signal processing
-  soundfile   - reading and writing WAV files
-  scipy       - sample rate conversion (optional but recommended)
+  numpy         - math and signal processing
+  soundfile     - reading and writing WAV files
+  scipy         - signal analysis and filtering
+  scikit-learn  - machine learning (used by Thermodynamic Transform)
+
+The Praat scripts automatically detect the correct Python
+command for your system. No manual editing is required.
 
 For help contact: shai.cohen@biu.ac.il
 
