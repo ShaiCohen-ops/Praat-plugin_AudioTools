@@ -13,6 +13,7 @@ Supported scripts:
   - Waveset Distortion        (waveset_distortion.py)
   - Thermodynamic Transform   (thermodynamic_transform.py)
   - Identity Separation       (identity_separation.py)
+  - Latent Relocation         (latent_relocation.py)
 
 
 ============================================================
