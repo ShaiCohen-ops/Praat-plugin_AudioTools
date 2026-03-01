@@ -14,6 +14,7 @@ Supported scripts:
   - Thermodynamic Transform   (thermodynamic_transform.py)
   - Identity Separation       (identity_separation.py)
   - Latent Relocation         (latent_relocation.py)
+  - Latent Navigation         (latent_navigation.py)
 
 
 ============================================================
