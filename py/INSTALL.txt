@@ -17,6 +17,7 @@ Supported scripts:
   - Latent Navigation         (latent_navigation.py)
   - Latent Counterpoint       (latent_counterpoint.py)
   - Latent Spat               (latent_spat.py)
+  - Latent Folding            (latent_folding.py)
 
 
 ============================================================

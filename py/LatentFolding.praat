@@ -1,0 +1,817 @@
+# ============================================================
+# Praat AudioTools - LatentFolding.praat
+# Author: Shai Cohen
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 1.0 (2025)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Latent Folding — Topological Manifold Navigation
+#
+#   Treats the learned latent audio space as a deformable manifold.
+#   Three topologies: Mirror (reflection), Möbius (twist/inversion),
+#   Torus (seamless wrap). As the observer traverses the space,
+#   boundaries fold or invert acoustic identity — not time-reversal,
+#   but identity-reversal. Creates "Recursive Spectralism."
+#
+# Citation:
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Toolkit for Experimental Composition.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# ============================================================
+
+# ---- INPUT CHECK ----
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+sound = selected("Sound")
+soundName$ = selected$("Sound")
+
+# ---- PATHS ----
+pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pythonScript$ = pluginDir$ + "py/latent_folding.py"
+tempInput$   = pluginDir$ + "temp_latfold_input.wav"
+tempCSV$     = pluginDir$ + "temp_latfold_events.csv"
+tempOutput$  = pluginDir$ + "temp_latfold_output.wav"
+tempStats$   = pluginDir$ + "temp_latfold_stats.txt"
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
+        ... + "Please verify AudioTools installation."
+endif
+
+# ---- FORM ----
+form Latent Folding v1.0 — Topological Manifold
+    optionmenu Preset: 1
+        option Custom
+        option Gentle mirror
+        option Sharp mirror
+        option Möbius twist
+        option Torus loop
+        option Palindromic mirror
+        option Palindromic Möbius
+    integer Latent_size 8
+    integer Learning_steps 100
+    optionmenu Manifold_type: 1
+        option Mirror (Reflection)
+        option Möbius (Twist)
+        option Torus (Infinite wrap)
+    integer Fold_density 3
+    real Curvature 0.5
+    real Permutation_intensity 0.5
+    real Symmetry_(0_off_1_palindrome) 0.0
+    real Speed 0.5
+    integer Seed 42
+    boolean Draw_visualization 1
+    boolean Play_result 1
+endform
+
+# ---- PRESETS ----
+if preset = 2
+    latent_size = 8
+    learning_steps = 100
+    manifold_type = 1
+    fold_density = 2
+    curvature = 0.3
+    permutation_intensity = 0.3
+    symmetry = 0.0
+    speed = 0.4
+    presetName$ = "GentleMirror"
+elsif preset = 3
+    latent_size = 8
+    learning_steps = 100
+    manifold_type = 1
+    fold_density = 5
+    curvature = 0.9
+    permutation_intensity = 0.7
+    symmetry = 0.0
+    speed = 0.6
+    presetName$ = "SharpMirror"
+elsif preset = 4
+    latent_size = 10
+    learning_steps = 120
+    manifold_type = 2
+    fold_density = 3
+    curvature = 0.6
+    permutation_intensity = 0.5
+    symmetry = 0.0
+    speed = 0.5
+    presetName$ = "MöbiusTwist"
+elsif preset = 5
+    latent_size = 8
+    learning_steps = 100
+    manifold_type = 3
+    fold_density = 2
+    curvature = 0.4
+    permutation_intensity = 0.4
+    symmetry = 0.0
+    speed = 0.5
+    presetName$ = "TorusLoop"
+elsif preset = 6
+    latent_size = 10
+    learning_steps = 120
+    manifold_type = 1
+    fold_density = 3
+    curvature = 0.5
+    permutation_intensity = 0.5
+    symmetry = 1.0
+    speed = 0.5
+    presetName$ = "PalindromicMirror"
+elsif preset = 7
+    latent_size = 12
+    learning_steps = 150
+    manifold_type = 2
+    fold_density = 4
+    curvature = 0.7
+    permutation_intensity = 0.6
+    symmetry = 1.0
+    speed = 0.6
+    presetName$ = "PalindromicMöbius"
+else
+    presetName$ = "Custom"
+endif
+
+# Clamp
+if latent_size < 2
+    latent_size = 2
+endif
+if latent_size > 32
+    latent_size = 32
+endif
+if learning_steps < 10
+    learning_steps = 10
+endif
+if learning_steps > 500
+    learning_steps = 500
+endif
+if fold_density < 1
+    fold_density = 1
+endif
+if fold_density > 12
+    fold_density = 12
+endif
+if curvature < 0
+    curvature = 0
+endif
+if curvature > 1
+    curvature = 1
+endif
+if permutation_intensity < 0
+    permutation_intensity = 0
+endif
+if permutation_intensity > 1
+    permutation_intensity = 1
+endif
+if symmetry < 0
+    symmetry = 0
+endif
+if symmetry > 1
+    symmetry = 1
+endif
+
+# Map menu to 0-based
+manifoldInt = manifold_type - 1
+
+if manifold_type = 1
+    manifoldName$ = "Mirror"
+elsif manifold_type = 2
+    manifoldName$ = "Möbius"
+else
+    manifoldName$ = "Torus"
+endif
+
+# ---- INFO ----
+clearinfo
+writeInfoLine:  "=== Latent Folding v1.0 — Topological Manifold ==="
+appendInfoLine: "Input: ", soundName$
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "Manifold:      ", manifoldName$
+appendInfoLine: "Fold density:  ", fold_density
+appendInfoLine: "Curvature:     ", fixed$(curvature, 2)
+appendInfoLine: "Permutation:   ", fixed$(permutation_intensity, 2)
+appendInfoLine: "Symmetry:      ", fixed$(symmetry, 2)
+appendInfoLine: "Speed:         ", fixed$(speed, 2)
+appendInfoLine: "Latent:        ", latent_size
+appendInfoLine: ""
+
+# ---- ORIGINAL STATS ----
+selectObject: sound
+dur = Get total duration
+sr  = Get sampling frequency
+nChannels = Get number of channels
+rms_orig = Get root-mean-square: 0, 0
+
+appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: ", nChannels
+appendInfoLine: ""
+
+# ===========================================================================
+# Stage 1 — Event Segmentation
+# ===========================================================================
+
+appendInfoLine: "[1/5] Segmenting events..."
+
+minEventDur = 0.200
+maxEventDur = 3.000
+
+selectObject: sound
+if nChannels > 1
+    Extract one channel: 1
+    analysisMono = selected("Sound")
+else
+    Copy: "analysisMono"
+    analysisMono = selected("Sound")
+endif
+
+selectObject: analysisMono
+pitchObj = To Pitch: 0.01, 75, 600
+
+selectObject: analysisMono
+harmObj = To Harmonicity (cc): 0.01, 75, 0.1, 1.0
+
+selectObject: analysisMono
+intObj = To Intensity: 100, 0.01, "yes"
+
+selectObject: intObj
+intMatrix = Down to Matrix
+intSound = To Sound (slice): 1
+selectObject: intSound
+ppObj = To PointProcess (extrema): 1, "yes", "no", "Sinc70"
+
+selectObject: ppObj
+nPeaks = Get number of points
+
+bound_1 = 0
+bound_2 = dur
+iBound = 3
+for iPeak from 1 to nPeaks
+    selectObject: ppObj
+    peakT = Get time from index: iPeak
+    bound_'iBound' = peakT
+    iBound = iBound + 1
+endfor
+nBounds = iBound - 1
+
+for i from 1 to nBounds
+    for j from i + 1 to nBounds
+        if bound_'j' < bound_'i'
+            tmpVal = bound_'i'
+            bound_'i' = bound_'j'
+            bound_'j' = tmpVal
+        endif
+    endfor
+endfor
+
+nFinal = 0
+prevT = -1
+for i from 1 to nBounds
+    thisT = bound_'i'
+    if thisT - prevT >= minEventDur
+        nFinal = nFinal + 1
+        final_'nFinal' = thisT
+        prevT = thisT
+    endif
+endfor
+
+if nFinal > 0
+    lastFinal = final_'nFinal'
+    if dur - lastFinal > 0.050
+        nFinal = nFinal + 1
+        final_'nFinal' = dur
+    else
+        final_'nFinal' = dur
+    endif
+else
+    nFinal = 2
+    final_1 = 0
+    final_2 = dur
+endif
+
+nEvents = 0
+for i from 1 to nFinal - 1
+    evStart = final_'i'
+    iNext = i + 1
+    evEnd = final_'iNext'
+    evDur = evEnd - evStart
+
+    if evDur > maxEventDur
+        nChunks = ceiling(evDur / maxEventDur)
+        chunkDur = evDur / nChunks
+        for iChunk from 0 to nChunks - 1
+            nEvents = nEvents + 1
+            evS_'nEvents' = evStart + iChunk * chunkDur
+            if iChunk = nChunks - 1
+                evE_'nEvents' = evEnd
+            else
+                evE_'nEvents' = evStart + (iChunk + 1) * chunkDur
+            endif
+        endfor
+    elsif evDur >= minEventDur
+        nEvents = nEvents + 1
+        evS_'nEvents' = evStart
+        evE_'nEvents' = evEnd
+    endif
+endfor
+
+if nEvents < 2
+    nEvents = 1
+    evS_1 = 0
+    evE_1 = dur
+endif
+
+appendInfoLine: "  Found ", nEvents, " events"
+
+# ===========================================================================
+# Stage 2 — Feature Extraction + Export
+# ===========================================================================
+
+appendInfoLine: "[2/5] Extracting features..."
+
+Create Table with column names: "eventFeatures", nEvents,
+    ... "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
+eventTable = selected("Table")
+
+for iEv from 1 to nEvents
+    t1 = evS_'iEv'
+    t2 = evE_'iEv'
+    tMid = (t1 + t2) / 2
+
+    selectObject: eventTable
+    Set numeric value: iEv, "start_time", t1
+    Set numeric value: iEv, "end_time", t2
+    Set string value: iEv, "label", "ev" + string$(iEv)
+
+    selectObject: pitchObj
+    pMean = Get mean: t1, t2, "Hertz"
+    pStd = Get standard deviation: t1, t2, "Hertz"
+    if pMean = undefined or pMean = 0
+        pitchStab = 0
+    else
+        if pStd = undefined
+            pStd = 0
+        endif
+        pitchCV = pStd / (pMean + 0.001)
+        pitchStab = 1 - min(1, pitchCV)
+        if pitchStab < 0
+            pitchStab = 0
+        endif
+    endif
+    selectObject: eventTable
+    Set numeric value: iEv, "pitch_stability", pitchStab
+
+    selectObject: intObj
+    iMean = Get mean: t1, t2, "energy"
+    if iMean = undefined
+        iMean = 0
+    endif
+    iStart = Get value at time: t1, "Cubic"
+    if iStart = undefined
+        iStart = 0
+    endif
+    iPeak = Get maximum: t1, t2, "Parabolic"
+    if iPeak = undefined
+        iPeak = iStart
+    endif
+    tPeak = Get time of maximum: t1, t2, "Parabolic"
+    if tPeak = undefined
+        tPeak = tMid
+    endif
+    attackTime = tPeak - t1
+    if attackTime > 0.001
+        attackSlope = (iPeak - iStart) / attackTime
+    else
+        attackSlope = 0
+    endif
+    selectObject: eventTable
+    Set numeric value: iEv, "intensity_mean", iMean
+    Set numeric value: iEv, "attack_slope", attackSlope
+
+    selectObject: harmObj
+    hMean = Get mean: t1, t2
+    if hMean = undefined
+        hMean = 0
+    endif
+    selectObject: eventTable
+    Set numeric value: iEv, "hnr_mean", hMean
+endfor
+
+appendInfoLine: "[3/5] Exporting temp files..."
+selectObject: sound
+Save as WAV file: tempInput$
+selectObject: eventTable
+Save as comma-separated file: tempCSV$
+
+removeObject: analysisMono, pitchObj, harmObj, intObj
+removeObject: intMatrix, intSound, ppObj, eventTable
+
+# ===========================================================================
+# Stage 3 — Call Python
+# ===========================================================================
+
+appendInfoLine: "[4/5] Running Python engine..."
+appendInfoLine: "  (Training AE + ", manifoldName$, " folding, density=", fold_density, ")"
+
+# ---- Python detection ----
+probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
+
+if windows
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
+endif
+
+pythonCmd$ = ""
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
+    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        appendInfoLine: "  Python found: ", pythonCmd$
+    endif
+    if pythonCmd$ <> ""
+        iCand = nCandidates + 1
+    endif
+endfor
+
+if pythonCmd$ = ""
+    deleteFile: tempInput$
+    deleteFile: tempCSV$
+    exitScript: "Cannot find a Python installation with the required packages." + newline$
+        ... + "  pip install numpy soundfile scipy"
+endif
+
+runSystem: pythonCmd$ + " """ + pythonScript$ + """"
+    ... + " """ + tempInput$ + """"
+    ... + " """ + tempCSV$ + """"
+    ... + " """ + tempOutput$ + """"
+    ... + " """ + tempStats$ + """"
+    ... + " " + string$(latent_size)
+    ... + " " + string$(learning_steps)
+    ... + " " + string$(manifoldInt)
+    ... + " " + string$(fold_density)
+    ... + " " + fixed$(curvature, 4)
+    ... + " " + fixed$(permutation_intensity, 4)
+    ... + " " + fixed$(symmetry, 4)
+    ... + " " + fixed$(speed, 4)
+    ... + " " + string$(seed)
+
+if not fileReadable(tempOutput$)
+    deleteFile: tempInput$
+    deleteFile: tempCSV$
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+    exitScript: "Python folding engine failed." + newline$
+        ... + "Run in terminal to see error:" + newline$
+        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+endif
+
+# ===========================================================================
+# Import Result
+# ===========================================================================
+
+appendInfoLine: "[5/5] Importing result..."
+
+Read from file: tempOutput$
+Rename: soundName$ + "_fold"
+resultSound = selected("Sound")
+
+selectObject: resultSound
+rms_out = Get root-mean-square: 0, 0
+durOut = Get total duration
+
+# ===========================================================================
+# Read Stats
+# ===========================================================================
+
+nEvStat$ = "?"
+nStepsStat$ = "?"
+uniqueStat$ = "?"
+repRateStat$ = "?"
+avgTravelStat$ = "?"
+outDurStat$ = "?"
+manifoldStat$ = "?"
+foldDensStat$ = "?"
+curvatureStat$ = "?"
+permStat$ = "?"
+symStat$ = "?"
+nFoldEvents$ = "?"
+nMirrorsStat$ = "?"
+nTwistsStat$ = "?"
+nWrapsStat$ = "?"
+hasSymStat$ = "?"
+palindromicStat$ = "?"
+finalLoss$ = "?"
+initialLoss$ = "?"
+meanEvDur$ = "?"
+warningStat$ = ""
+topEv_0$ = "?"
+topEv_1$ = "?"
+topEv_2$ = "?"
+
+if fileReadable(tempStats$)
+    statsText$ = readFile$(tempStats$)
+
+    @parseStatLine: statsText$, "n_events="
+    nEvStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "n_output_steps="
+    nStepsStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "unique_events="
+    uniqueStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "repetition_rate="
+    repRateStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "avg_latent_travel="
+    avgTravelStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "output_duration="
+    outDurStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "manifold="
+    manifoldStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "fold_density="
+    foldDensStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "curvature="
+    curvatureStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "permutation="
+    permStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "symmetry="
+    symStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "n_fold_events="
+    nFoldEvents$ = parseStatLine.result$
+    @parseStatLine: statsText$, "n_mirrors="
+    nMirrorsStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "n_twists="
+    nTwistsStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "n_wraps="
+    nWrapsStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "has_symmetry="
+    hasSymStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "palindromic_score="
+    palindromicStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "final_loss="
+    finalLoss$ = parseStatLine.result$
+    @parseStatLine: statsText$, "initial_loss="
+    initialLoss$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_event_dur="
+    meanEvDur$ = parseStatLine.result$
+    @parseStatLine: statsText$, "warning="
+    warningStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "top_event_0="
+    topEv_0$ = parseStatLine.result$
+    @parseStatLine: statsText$, "top_event_1="
+    topEv_1$ = parseStatLine.result$
+    @parseStatLine: statsText$, "top_event_2="
+    topEv_2$ = parseStatLine.result$
+endif
+
+###############################################################################
+# VISUALIZATION
+###############################################################################
+
+if draw_visualization
+    appendInfoLine: ""
+    appendInfoLine: "Drawing visualization..."
+
+    Erase all
+    Select outer viewport: 0, 8, 0, 8
+
+    # === Title ===
+    Select outer viewport: 0, 8, 0, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.6, "half", "##Latent Folding — Topological Manifold##"
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + manifoldStat$ + " | Folds=" + nFoldEvents$
+
+    # === Input Waveform ===
+    Select outer viewport: 0, 8, 0.6, 1.7
+    Select inner viewport: 0.6, 7.7, 0.65, 1.65
+    selectObject: sound
+    Colour: "{0.5, 0.5, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Original"
+    Colour: "{0.8, 0.3, 0.3}"
+    Axes: 0, dur, -1, 1
+    for iEv from 1 to nEvents
+        evBound = evS_'iEv'
+        if evBound > 0 and evBound < dur
+            Draw line: evBound, -0.9, evBound, 0.9
+        endif
+    endfor
+    Text top: "no", string$(nEvents) + " events | " + fixed$(dur, 2) + " s"
+
+    # === Output Waveform ===
+    Select outer viewport: 0, 8, 1.7, 2.8
+    Select inner viewport: 0.6, 7.7, 1.75, 2.75
+    selectObject: resultSound
+    Colour: "{0.5, 0.2, 0.5}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Folded"
+    Text bottom: "yes", "Time (s)"
+
+    # === Original Spectrogram ===
+    Select outer viewport: 0, 8, 2.9, 4.1
+    Select inner viewport: 0.6, 7.7, 3.0, 4.0
+    selectObject: sound
+    if nChannels > 1
+        Extract one channel: 1
+        tmpOrig = selected("Sound")
+    else
+        Copy: "tmpOrig"
+        tmpOrig = selected("Sound")
+    endif
+    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
+    specOrig = selected("Spectrogram")
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Hz"
+    Text top: "no", "Original spectrogram"
+    removeObject: specOrig, tmpOrig
+
+    # === Output Spectrogram ===
+    Select outer viewport: 0, 8, 4.1, 5.3
+    Select inner viewport: 0.6, 7.7, 4.2, 5.2
+    selectObject: resultSound
+    if nChannels > 1
+        Extract one channel: 1
+        tmpFold = selected("Sound")
+    else
+        selectObject: resultSound
+        Copy: "tmpFold"
+        tmpFold = selected("Sound")
+    endif
+    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
+    specFold = selected("Spectrogram")
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Hz"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Folded spectrogram"
+    removeObject: specFold, tmpFold
+
+    # === Topology Stats Panel ===
+    Select outer viewport: 0, 8, 5.4, 6.4
+    Select inner viewport: 0.6, 7.7, 5.5, 6.3
+
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.93, 0.93, 0.96}", 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.88, "half", "Topology:"
+
+    Font size: 6
+    Colour: "{0.3, 0.3, 0.3}"
+    Text: 0.02, "left", 0.65, "half", "Manifold: " + manifoldStat$ + " | Fold density=" + foldDensStat$ + " | Curvature=" + curvatureStat$
+    Text: 0.02, "left", 0.40, "half", "Fold events: " + nFoldEvents$ + " (mirrors=" + nMirrorsStat$ + " twists=" + nTwistsStat$ + " wraps=" + nWrapsStat$ + ")"
+
+    if hasSymStat$ = "1"
+        Colour: "{0.4, 0.2, 0.6}"
+        Text: 0.02, "left", 0.15, "half", "Palindromic symmetry: ON | Score=" + palindromicStat$ + " (higher=more identity-inverted)"
+    else
+        Colour: "{0.5, 0.5, 0.5}"
+        Text: 0.02, "left", 0.15, "half", "Palindromic symmetry: OFF"
+    endif
+
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    # === Summary Panel ===
+    Select outer viewport: 0, 8, 6.6, 8.0
+    Select inner viewport: 0.6, 7.7, 6.7, 7.9
+
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.92, "half", "Summary:"
+    Font size: 6
+    Colour: "{0.3, 0.3, 0.3}"
+    Text: 0.02, "left", 0.73, "half", "Steps=" + nStepsStat$ + " | Unique=" + uniqueStat$ + "/" + nEvStat$ + " | Rep=" + repRateStat$ + " | Travel=" + avgTravelStat$
+    Text: 0.02, "left", 0.52, "half", "AE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size)
+    Text: 0.02, "left", 0.32, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + " -> " + fixed$(rms_out, 4)
+    Text: 0.02, "left", 0.12, "half", "Top events: " + topEv_0$ + " | " + topEv_1$ + " | " + topEv_2$
+
+    if warningStat$ <> "?" and warningStat$ <> ""
+        Colour: "{0.8, 0.2, 0.2}"
+        Text: 0.02, "left", -0.05, "half", "Warning: " + warningStat$
+    endif
+
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    Font size: 10
+    Colour: "Black"
+endif
+
+# ===========================================================================
+# Cleanup
+# ===========================================================================
+
+deleteFile: tempInput$
+deleteFile: tempCSV$
+deleteFile: tempOutput$
+if fileReadable(tempStats$)
+    deleteFile: tempStats$
+endif
+if fileReadable(probeMarker$)
+    deleteFile: probeMarker$
+endif
+
+# ===========================================================================
+# Summary
+# ===========================================================================
+
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Output: ", soundName$, "_fold"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "Manifold:  ", manifoldStat$
+appendInfoLine: "Density:   ", foldDensStat$
+appendInfoLine: "Curvature: ", curvatureStat$
+appendInfoLine: "Permutation: ", permStat$
+appendInfoLine: "Symmetry:  ", symStat$
+appendInfoLine: ""
+appendInfoLine: "Steps:     ", nStepsStat$
+appendInfoLine: "Unique:    ", uniqueStat$, "/", nEvStat$
+appendInfoLine: "Folds:     ", nFoldEvents$, " (mirrors=", nMirrorsStat$, " twists=", nTwistsStat$, " wraps=", nWrapsStat$, ")"
+
+if hasSymStat$ = "1"
+    appendInfoLine: "Palindromic score: ", palindromicStat$
+endif
+
+appendInfoLine: ""
+appendInfoLine: "Duration:  ", fixed$(dur, 2), " s -> ", outDurStat$, " s"
+appendInfoLine: "RMS:       ", fixed$(rms_orig, 4), " -> ", fixed$(rms_out, 4)
+appendInfoLine: "AE loss:   ", initialLoss$, " -> ", finalLoss$
+appendInfoLine: "Top events: ", topEv_0$, " | ", topEv_1$, " | ", topEv_2$
+
+if warningStat$ <> "?" and warningStat$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "WARNING: ", warningStat$
+endif
+
+selectObject: resultSound
+
+if play_result
+    Play
+endif
+
+# ===========================================================================
+# Procedures
+# ===========================================================================
+
+procedure parseStatLine: .text$, .key$
+    .result$ = "?"
+    .pos = index(.text$, .key$)
+    if .pos > 0
+        .start = .pos + length(.key$)
+        .rest$ = mid$(.text$, .start, length(.text$) - .start + 1)
+        .nlPos = index(.rest$, newline$)
+        if .nlPos > 0
+            .result$ = left$(.rest$, .nlPos - 1)
+        else
+            .result$ = .rest$
+        endif
+    endif
+endproc
