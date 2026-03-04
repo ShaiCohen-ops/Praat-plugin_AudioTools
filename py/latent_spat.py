@@ -359,25 +359,25 @@ class Agent(object):
         self.history = []
         self.position_history = []  # NEW: track latent positions per step
         self.recent_memory = []
-        self.memory_size = 5
+        self.memory_size = 15    # how many recent events to avoid
 
         if profile == AGENT_CANTUS:
-            self.mass = 3.0
-            self.max_speed = 0.3
-            self.jitter_scale = 0.05
+            self.mass = 1.2         # REDUCED: Allows more movement
+            self.max_speed = 0.8    # INCREASED: Faster exploration
+            self.jitter_scale = 0.25 # INCREASED: Breaks local loops
             self.attraction_weight = 1.0
         elif profile == AGENT_FLORID:
             self.mass = 0.5
             self.max_speed = 1.5
-            self.jitter_scale = 0.2
+            self.jitter_scale = 0.50 # INCREASED: Maximizes variety
             self.attraction_weight = 0.6
         elif profile == AGENT_SHADOW:
-            self.mass = 2.0
-            self.max_speed = 0.4
-            self.jitter_scale = 0.08
+            self.mass = 1.5         # REDUCED: More responsive
+            self.max_speed = 0.6    # INCREASED: Matches new Cantus speed
+            self.jitter_scale = 0.30 # INCREASED: Randomizes the lag path
             self.attraction_weight = 0.3
             self.lag_buffer = []
-            self.lag_steps = 3
+            self.lag_steps = 20     # INCREASED: Forces Shadow away from Cantus
 
     def init_position(self, Z, center, periphery):
         import numpy as np
@@ -484,7 +484,7 @@ def run_physics(agents, Z, center, periphery, dists, median_dist,
 
         for ai, a in enumerate(agents):
             acceleration = forces[ai] / a.mass
-            a.velocity = 0.85 * a.velocity + acceleration
+            a.velocity = 0.985 * a.velocity + acceleration
             spd = np.linalg.norm(a.velocity)
             max_v = a.max_speed * speed * median_dist
             if spd > max_v:
@@ -499,7 +499,7 @@ def run_physics(agents, Z, center, periphery, dists, median_dist,
             for mem_idx, ev_idx in enumerate(reversed(a.recent_memory)):
                 recency = mem_idx + 1
                 penalties[ev_idx] += ((a.memory_size - recency + 1)
-                                      * median_dist * 0.3)
+                                      * median_dist * 5.0)
             scores = d_to_events + penalties
             chosen = int(np.argmin(scores))
             a.history.append(chosen)
