@@ -426,6 +426,7 @@ def _path_thermodrift(Z, temperature, dists, events,
     current_z = Z[start].copy()
 
     path = []
+    path_positions = []
     usage_count = np.zeros(n, dtype=int)
     last_used = np.full(n, -100)  # step when last used
 
@@ -443,6 +444,7 @@ def _path_thermodrift(Z, temperature, dists, events,
 
         chosen = np.argmin(scores)
         path.append(chosen)
+        path_positions.append(current_z.copy())
         usage_count[chosen] += 1
         last_used[chosen] = step
 
@@ -474,7 +476,7 @@ def _path_thermodrift(Z, temperature, dists, events,
         median_dist = np.median(dists[dists < np.inf])
         current_z = current_z + direction * step_scale * median_dist * 0.5
 
-    return path
+    return path, path_positions
 
 
 def _path_attractor(Z, temperature, dists, events,
@@ -494,6 +496,7 @@ def _path_attractor(Z, temperature, dists, events,
     current_pole = 0
 
     path = []
+    path_positions = []
     usage_count = np.zeros(n, dtype=int)
     last_used = np.full(n, -100)
     dwell_counter = 0
@@ -511,6 +514,7 @@ def _path_attractor(Z, temperature, dists, events,
 
         chosen = np.argmin(scores)
         path.append(chosen)
+        path_positions.append(current_z.copy())
         usage_count[chosen] += 1
         last_used[chosen] = step
 
@@ -533,7 +537,7 @@ def _path_attractor(Z, temperature, dists, events,
             direction = direction / d_norm
         current_z = current_z + direction * travel_speed * median_dist * 0.4
 
-    return path
+    return path, path_positions
 
 
 def _path_convection(Z, temperature, dists, events,
@@ -557,6 +561,7 @@ def _path_convection(Z, temperature, dists, events,
     flow_direction = 1.0  # rising
 
     path = []
+    path_positions = []
     usage_count = np.zeros(n, dtype=int)
     last_used = np.full(n, -100)
     median_dist = np.median(dists[dists < np.inf])
@@ -573,6 +578,7 @@ def _path_convection(Z, temperature, dists, events,
 
         chosen = np.argmin(scores)
         path.append(chosen)
+        path_positions.append(current_z.copy())
         usage_count[chosen] += 1
         last_used[chosen] = step
 
@@ -603,7 +609,7 @@ def _path_convection(Z, temperature, dists, events,
                     * temp_modulation * median_dist * 0.4 + lateral)
         current_z = current_z + step_vec
 
-    return path
+    return path, path_positions
 
 
 def navigate_mixer(Z, temperature, dists, events,
@@ -638,6 +644,7 @@ def navigate_mixer(Z, temperature, dists, events,
 
     # Select events by proximity to path points
     path_result = []
+    path_positions = []
     usage_count = np.zeros(n, dtype=int)
     last_used = np.full(n, -100)
 
@@ -651,10 +658,11 @@ def navigate_mixer(Z, temperature, dists, events,
         scores = d + lru_penalty
         chosen = np.argmin(scores)
         path_result.append(chosen)
+        path_positions.append(Z[chosen].copy())
         usage_count[chosen] += 1
         last_used[chosen] = step
 
-    return path_result
+    return path_result, path_positions
 
 
 def _find_poles(Z, n_poles, rng):
@@ -857,14 +865,28 @@ def _concatenate_clips(sequence, xfade, target_length):
 
     output = output[:wp]
 
-    # Post-splice click smoothing
-    smooth_r = max(4, xfade // 4)
-    for i in range(1, len(output) - 1):
+    # Post-splice click smoothing (vectorized)
+    if len(output) > 4:
+        local_rms = max(0.001,
+                        np.sqrt(np.mean(output.flatten() ** 2)))
+        threshold = local_rms * 4.0
         if multichannel:
             for ch in range(n_ch):
-                _smooth_region(output, i, smooth_r, ch)
+                diffs = np.abs(np.diff(output[:, ch]))
+                click_idx = np.where(diffs > threshold)[0]
+                for i in click_idx:
+                    if 0 < i < len(output) - 1:
+                        lo = max(0, i - 2)
+                        hi = min(len(output), i + 3)
+                        output[i, ch] = np.median(output[lo:hi, ch])
         else:
-            _smooth_region_mono(output, i, smooth_r)
+            diffs = np.abs(np.diff(output))
+            click_idx = np.where(diffs > threshold)[0]
+            for i in click_idx:
+                if 0 < i < len(output) - 1:
+                    lo = max(0, i - 2)
+                    hi = min(len(output), i + 3)
+                    output[i] = np.median(output[lo:hi])
 
     # Duration enforcement
     if target_length > 0:
@@ -884,39 +906,13 @@ def _concatenate_clips(sequence, xfade, target_length):
     return output
 
 
-def _smooth_region(output, i, r, ch):
-    """Detect and smooth clicks at position i for multichannel."""
-    import numpy as np
-    if i < 1 or i >= len(output) - 1:
-        return
-    jump = abs(output[i, ch] - output[i - 1, ch])
-    local_rms = max(0.001, np.sqrt(np.mean(output[max(0, i - r):i + r, ch] ** 2)))
-    if jump > local_rms * 4.0:
-        lo = max(0, i - 2)
-        hi = min(len(output), i + 3)
-        output[i, ch] = np.median(output[lo:hi, ch])
-
-
-def _smooth_region_mono(output, i, r):
-    """Detect and smooth clicks at position i for mono."""
-    import numpy as np
-    if i < 1 or i >= len(output) - 1:
-        return
-    jump = abs(output[i] - output[i - 1])
-    local_rms = max(0.001, np.sqrt(np.mean(output[max(0, i - r):i + r] ** 2)))
-    if jump > local_rms * 4.0:
-        lo = max(0, i - 2)
-        hi = min(len(output), i + 3)
-        output[i] = np.median(output[lo:hi])
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 7 — Stats Output
 # ═══════════════════════════════════════════════════════════════════════════
 
 def write_stats(path, events, path_sequence, Z, temperature,
                 losses, sr, out_duration, nav_mode, path_type,
-                out_mode, warnings):
+                out_mode, warnings, path_positions=None):
     """Write stats report for Praat."""
     import numpy as np
 
@@ -944,6 +940,25 @@ def write_stats(path, events, path_sequence, Z, temperature,
     path_names = ["ThermoDrift", "Attractor", "Convection"]
     out_names = ["Selector", "Morph"]
 
+    # ── PCA projection for visualization ──────────────────────────────
+    ev_x, ev_y, traj_x, traj_y = [], [], [], []
+    if path_positions is not None and len(path_positions) > 0:
+        traj_arr = np.array(path_positions)
+        all_points = np.vstack([Z, traj_arr])
+        mean_pt = np.mean(all_points, axis=0)
+        centered = all_points - mean_pt
+        if centered.shape[1] >= 2:
+            U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+            proj = centered.dot(Vt[:2].T)
+        else:
+            proj = np.column_stack(
+                [centered[:, 0], np.zeros(len(centered))])
+        n_ev = len(Z)
+        ev_x = proj[:n_ev, 0].tolist()
+        ev_y = proj[:n_ev, 1].tolist()
+        traj_x = proj[n_ev:, 0].tolist()
+        traj_y = proj[n_ev:, 1].tolist()
+
     with open(path, "w") as f:
         f.write("n_events=%d\n" % n)
         f.write("n_output_steps=%d\n" % total_steps)
@@ -966,8 +981,23 @@ def write_stats(path, events, path_sequence, Z, temperature,
                 rank, idx, usage[idx],
                 events[idx]["end_time"] - events[idx]["start_time"]))
 
-        for w in warnings:
-            f.write("warning=%s\n" % w)
+        # ── Trajectory data ───────────────────────────────────────────
+        f.write("n_ev_pts=%d\n" % len(ev_x))
+        for ei in range(len(ev_x)):
+            f.write("nev_%d=%.4f,%.4f\n" % (ei, ev_x[ei], ev_y[ei]))
+
+        n_traj = len(traj_x)
+        stride = max(1, n_traj // 150)
+        sampled = list(range(0, n_traj, stride))
+        if n_traj > 0 and n_traj - 1 not in sampled:
+            sampled.append(n_traj - 1)
+        n_out = len(sampled)
+        f.write("n_traj_pts=%d\n" % n_out)
+        for ti, si in enumerate(sampled):
+            f.write("ntr_%d=%.4f,%.4f\n" % (ti, traj_x[si], traj_y[si]))
+
+        if warnings:
+            f.write("warning=%s\n" % "; ".join(warnings))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1080,11 +1110,11 @@ def main():
         nav_names[nav_mode], path_names[path_type]))
 
     if nav_mode == MODE_TRAJECTORY:
-        path_sequence = navigate_trajectory(
+        path_sequence, path_positions = navigate_trajectory(
             Z, temperature, dists, knn_graph, events,
             path_type, travel_speed, dwell_amount, n_output_events, seed)
     else:
-        path_sequence = navigate_mixer(
+        path_sequence, path_positions = navigate_mixer(
             Z, temperature, dists, events,
             travel_speed, dwell_amount, n_output_events, seed)
 
@@ -1109,7 +1139,7 @@ def main():
 
     write_stats(stats_file, events, path_sequence, Z, temperature,
                 losses, sr, out_dur, nav_mode, path_type, out_mode,
-                warnings)
+                warnings, path_positions=path_positions)
 
     print("    Output: %.2fs | Peak: %.4f" % (
         out_dur, np.max(np.abs(output))))

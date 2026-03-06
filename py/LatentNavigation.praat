@@ -557,6 +557,10 @@ top1$ = "?"
 top2$ = "?"
 warningStat$ = ""
 
+# Trajectory data
+nNEvPts = 0
+nNTrajPts = 0
+
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
     @parseStatLine: statsText$, "n_events="
@@ -593,6 +597,51 @@ if fileReadable(tempStats$)
     top2$ = parseStatLine.result$
     @parseStatLine: statsText$, "warning="
     warningStat$ = parseStatLine.result$
+
+    # ── Parse trajectory data ──
+    @parseStatLine: statsText$, "n_ev_pts="
+    nNEvPts$ = parseStatLine.result$
+    if nNEvPts$ <> "?"
+        nNEvPts = number(nNEvPts$)
+    endif
+    if nNEvPts > 200
+        nNEvPts = 200
+    endif
+    for iEP from 0 to nNEvPts - 1
+        @parseStatLine: statsText$, "nev_" + string$(iEP) + "="
+        epRaw$ = parseStatLine.result$
+        nep_'iEP'_x = 0
+        nep_'iEP'_y = 0
+        if epRaw$ <> "?"
+            comma = index(epRaw$, ",")
+            if comma > 0
+                nep_'iEP'_x = number(left$(epRaw$, comma - 1))
+                nep_'iEP'_y = number(mid$(epRaw$, comma + 1, length(epRaw$) - comma))
+            endif
+        endif
+    endfor
+
+    @parseStatLine: statsText$, "n_traj_pts="
+    nNTrajPts$ = parseStatLine.result$
+    if nNTrajPts$ <> "?"
+        nNTrajPts = number(nNTrajPts$)
+    endif
+    if nNTrajPts > 200
+        nNTrajPts = 200
+    endif
+    for iTP from 0 to nNTrajPts - 1
+        @parseStatLine: statsText$, "ntr_" + string$(iTP) + "="
+        tpRaw$ = parseStatLine.result$
+        ntp_'iTP'_x = 0
+        ntp_'iTP'_y = 0
+        if tpRaw$ <> "?"
+            comma = index(tpRaw$, ",")
+            if comma > 0
+                ntp_'iTP'_x = number(left$(tpRaw$, comma - 1))
+                ntp_'iTP'_y = number(mid$(tpRaw$, comma + 1, length(tpRaw$) - comma))
+            endif
+        endif
+    endfor
 endif
 
 ###############################################################################
@@ -714,57 +763,122 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # === Intensity Comparison ===
-    Select outer viewport: 0, 8, 5.9, 6.7
-    Select inner viewport: 0.6, 7.7, 6.0, 6.6
+    # === Latent Navigation Trajectory ===
+    Select outer viewport: 0, 8, 5.9, 7.1
+    Select inner viewport: 0.6, 7.7, 6.0, 7.0
 
-    maxDur = max(dur, durOut)
-    Axes: 0, maxDur, 30, 90
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, maxDur, 30, 90
+    if nNTrajPts > 1 or nNEvPts > 0
+        # Compute axis bounds
+        axMinX = 0
+        axMaxX = 1
+        axMinY = 0
+        axMaxY = 1
+        gotBounds = 0
+        for iB from 0 to nNEvPts - 1
+            bx = nep_'iB'_x
+            by = nep_'iB'_y
+            if gotBounds = 0
+                axMinX = bx
+                axMaxX = bx
+                axMinY = by
+                axMaxY = by
+                gotBounds = 1
+            else
+                if bx < axMinX
+                    axMinX = bx
+                endif
+                if bx > axMaxX
+                    axMaxX = bx
+                endif
+                if by < axMinY
+                    axMinY = by
+                endif
+                if by > axMaxY
+                    axMaxY = by
+                endif
+            endif
+        endfor
+        for iB from 0 to nNTrajPts - 1
+            bx = ntp_'iB'_x
+            by = ntp_'iB'_y
+            if gotBounds = 0
+                axMinX = bx
+                axMaxX = bx
+                axMinY = by
+                axMaxY = by
+                gotBounds = 1
+            else
+                if bx < axMinX
+                    axMinX = bx
+                endif
+                if bx > axMaxX
+                    axMaxX = bx
+                endif
+                if by < axMinY
+                    axMinY = by
+                endif
+                if by > axMaxY
+                    axMaxY = by
+                endif
+            endif
+        endfor
 
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrigI = selected("Sound")
+        rangeX = axMaxX - axMinX
+        rangeY = axMaxY - axMinY
+        if rangeX < 0.01
+            rangeX = 1
+        endif
+        if rangeY < 0.01
+            rangeY = 1
+        endif
+        axMinX = axMinX - rangeX * 0.1
+        axMaxX = axMaxX + rangeX * 0.1
+        axMinY = axMinY - rangeY * 0.1
+        axMaxY = axMaxY + rangeY * 0.1
+
+        Axes: axMinX, axMaxX, axMinY, axMaxY
+        Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
+
+        # Event positions as grey circles
+        for iEP from 0 to nNEvPts - 1
+            Paint circle (mm): "{0.75, 0.75, 0.75}", nep_'iEP'_x, nep_'iEP'_y, 1.2
+        endfor
+
+        # Trajectory path
+        Colour: "{0.2, 0.5, 0.7}"
+        Line width: 2
+        for iTP from 1 to nNTrajPts - 1
+            iPrev = iTP - 1
+            Draw line: ntp_'iPrev'_x, ntp_'iPrev'_y, ntp_'iTP'_x, ntp_'iTP'_y
+        endfor
+        Line width: 1
+
+        # Start/end markers
+        if nNTrajPts > 0
+            Paint circle (mm): "{0.2, 0.7, 0.3}", ntp_0_x, ntp_0_y, 2.0
+            iLast = nNTrajPts - 1
+            Paint circle (mm): "{0.8, 0.2, 0.2}", ntp_'iLast'_x, ntp_'iLast'_y, 2.0
+        endif
+
+        Colour: "Black"
+        Draw inner box
+        Font size: 6
+        Text left: "yes", "PC2"
+        Text bottom: "yes", "PC1"
+        Text top: "no", "Latent trajectory (" + navModeStat$ + "/" + pathTypeStat$ + ") — ##S##=start ##E##=end"
     else
-        Copy: "tmpOrigI"
-        tmpOrigI = selected("Sound")
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
+        Font size: 7
+        Colour: "{0.5, 0.5, 0.5}"
+        Text: 0.5, "centre", 0.5, "half", "(trajectory data not available)"
+        Colour: "Black"
+        Draw rectangle: 0, 1, 0, 1
     endif
-    To Intensity: 100, 0, "yes"
-    intOrig2 = selected("Intensity")
-    selectObject: intOrig2
-    Colour: "{0.6, 0.6, 0.6}"
-    Line width: 2
-    Draw: 0, 0, 0, 0, "no"
-    removeObject: intOrig2, tmpOrigI
-
-    selectObject: resultSound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOutI = selected("Sound")
-    else
-        Copy: "tmpOutI"
-        tmpOutI = selected("Sound")
-    endif
-    To Intensity: 100, 0, "yes"
-    intOut2 = selected("Intensity")
-    selectObject: intOut2
-    Colour: "{0.2, 0.5, 0.7}"
-    Line width: 2
-    Draw: 0, 0, 0, 0, "no"
-    removeObject: intOut2, tmpOutI
-
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "dB"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Intensity: Grey = original | Blue = navigated"
 
     # === Summary Panel ===
-    Select outer viewport: 0, 8, 6.9, 8.0
-    Select inner viewport: 0.6, 7.7, 7.0, 7.9
+    Select outer viewport: 0, 8, 7.2, 8.0
+    Select inner viewport: 0.6, 7.7, 7.25, 7.95
 
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
@@ -774,24 +888,14 @@ if draw_visualization
     Text: 0.02, "left", 0.88, "half", "Summary:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.68, "half", "Mode: " + navModeStat$ + "/" + pathTypeStat$ + "/" + outModeStat$ + " | Mean temp: " + meanTempStat$
-    Text: 0.02, "left", 0.48, "half", "AE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Steps=" + string$(learning_steps) + " Lat=" + string$(latent_size)
-    Text: 0.02, "left", 0.28, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | Density=" + fixed$(density, 1) + "/s | Seed=" + string$(seed)
-
-    Font size: 7
-    Colour: "Black"
-    Text: 0.60, "left", 0.88, "half", "Audio:"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.60, "left", 0.68, "half", "RMS: " + fixed$(rms_orig, 4) + " -> " + fixed$(rms_out, 4)
-    if rms_orig > 0
-        Text: 0.60, "left", 0.48, "half", "Ratio: " + fixed$(rms_out / rms_orig, 3) + "x"
-    endif
-    Text: 0.60, "left", 0.28, "half", "Mean event: " + meanEvDur$ + " s"
+    Text: 0.02, "left", 0.68, "half", navModeStat$ + "/" + pathTypeStat$ + "/" + outModeStat$ + " | Steps=" + nOutputSteps$ + " Uniq=" + uniqueUsed$ + "/" + nEvStat$ + " Rep=" + repRate$ + " Trav=" + avgTravel$
+    Text: 0.02, "left", 0.44, "half", "AE: " + initialLoss$ + "->" + finalLoss$ + " Lat=" + string$(latent_size) + " | Dur: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4)
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.02, "left", 0.20, "half", "Top: [" + top0$ + "] [" + top1$ + "] [" + top2$ + "] | Temp=" + meanTempStat$ + " Dens=" + fixed$(density, 1) + "/s Seed=" + string$(seed)
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.02, "left", 0.08, "half", "Warning: " + warningStat$
+        Text: 0.60, "left", 0.20, "half", "Warn: " + warningStat$
     endif
 
     Colour: "Black"
