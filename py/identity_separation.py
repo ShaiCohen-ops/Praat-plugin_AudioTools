@@ -82,36 +82,69 @@ def compute_spectral_features(audio, sr, times):
     """
     Compute spectral descriptors aligned to Praat time grid:
     flatness, flux, centroid, bandwidth, rolloff, ZCR, 8-band energy.
+
+    Vectorized via scipy.signal.stft — the full spectrogram is computed
+    once, features are derived from the 2D magnitude matrix, then
+    interpolated to the Praat time grid.
     """
     import numpy as np
+    from scipy.signal import stft as sp_stft
 
     n_fft = 2048
     half = n_fft // 2 + 1
-    freqs = np.linspace(0, sr / 2, half)
-    window = np.hanning(n_fft)
-
     n_frames = len(times)
-    flatness = np.zeros(n_frames)
-    flux = np.zeros(n_frames)
-    centroid = np.zeros(n_frames)
-    bandwidth = np.zeros(n_frames)
-    rolloff = np.zeros(n_frames)
-    zcr = np.zeros(n_frames)
+    n_samples = len(audio)
+    hop_samples = int((times[1] - times[0]) * sr) if n_frames > 1 else 512
 
+    # ---- Full STFT in one call ----
+    stft_f, stft_t, Zxx = sp_stft(
+        audio, fs=sr, window="hann", nperseg=n_fft,
+        noverlap=n_fft - hop_samples, boundary="zeros")
+
+    mag = np.abs(Zxx) + 1e-12                       # (half, n_stft)
+    freqs = stft_f                                   # (half,)
+    n_stft = mag.shape[1]
+
+    # ---- Spectral flatness (vectorized) ----
+    log_mag = np.log(mag)
+    geo_mean = np.exp(np.mean(log_mag, axis=0))      # (n_stft,)
+    arith_mean = np.mean(mag, axis=0) + 1e-12
+    flat_stft = geo_mean / arith_mean
+
+    # ---- Spectral flux ----
+    flux_stft = np.zeros(n_stft)
+    flux_stft[1:] = np.sqrt(np.mean((mag[:, 1:] - mag[:, :-1]) ** 2,
+                                     axis=0))
+
+    # ---- Centroid + bandwidth ----
+    total = np.sum(mag, axis=0) + 1e-12              # (n_stft,)
+    cent_stft = np.dot(freqs, mag) / total            # (n_stft,)
+    deviation = freqs[:, None] - cent_stft[None, :]   # (half, n_stft)
+    bw_stft = np.sqrt(np.sum(mag * deviation ** 2, axis=0) / total)
+
+    # ---- Rolloff (85%) ----
+    cumsum = np.cumsum(mag, axis=0)                   # (half, n_stft)
+    thresholds = 0.85 * cumsum[-1, :]                 # (n_stft,)
+    # Per-frame searchsorted: find first bin exceeding threshold
+    rolloff_stft = np.zeros(n_stft)
+    for j in range(n_stft):
+        idx = np.searchsorted(cumsum[:, j], thresholds[j])
+        rolloff_stft[j] = freqs[min(idx, len(freqs) - 1)]
+
+    # ---- Band energies (8 bands, vectorized slice) ----
     n_bands = 8
     band_edges = np.linspace(0, half, n_bands + 1, dtype=int)
-    band_energy = np.zeros((n_frames, n_bands))
+    be_stft = np.zeros((n_stft, n_bands))
+    for b in range(n_bands):
+        be_stft[:, b] = np.mean(
+            mag[band_edges[b]:band_edges[b + 1], :] ** 2, axis=0)
 
-    prev_mag = None
-    n_samples = len(audio)
-    hop_samples = int((times[1] - times[0]) * sr) if len(times) > 1 else 512
-
+    # ---- ZCR (vectorized, on raw unwindowed frames) ----
+    zcr_out = np.zeros(n_frames)
     for i, t in enumerate(times):
         center = int(t * sr)
         start = center - n_fft // 2
         end = start + n_fft
-
-        # Extract frame with boundary handling
         if start < 0 or end > n_samples:
             frame = np.zeros(n_fft, dtype=np.float64)
             src_s = max(0, start)
@@ -120,45 +153,25 @@ def compute_spectral_features(audio, sr, times):
             dst_e = dst_s + (src_e - src_s)
             frame[dst_s:dst_e] = audio[src_s:src_e]
         else:
-            frame = audio[start:end].copy()
-
-        # Zero-crossing rate (on raw frame before windowing)
+            frame = audio[start:end]
         signs = np.sign(frame)
-        zcr[i] = np.sum(np.abs(np.diff(signs)) > 0) / (n_fft - 1)
+        zcr_out[i] = np.sum(np.abs(np.diff(signs)) > 0) / (n_fft - 1)
 
-        frame *= window
-        spec = np.fft.rfft(frame)
-        mag = np.abs(spec) + 1e-12
+    # ---- Interpolate STFT-grid features to Praat time grid ----
+    def _interp(stft_vals):
+        return np.interp(times, stft_t, stft_vals)
 
-        # Spectral flatness
-        log_mag = np.log(mag)
-        flatness[i] = np.exp(np.mean(log_mag)) / (np.mean(mag) + 1e-12)
-
-        # Spectral flux
-        if prev_mag is not None:
-            flux[i] = np.sqrt(np.mean((mag - prev_mag) ** 2))
-        prev_mag = mag.copy()
-
-        # Centroid + bandwidth
-        total = np.sum(mag)
-        centroid[i] = np.sum(freqs * mag) / (total + 1e-12)
-        c = centroid[i]
-        bandwidth[i] = np.sqrt(
-            np.sum(mag * (freqs - c) ** 2) / (total + 1e-12))
-
-        # Rolloff (85%)
-        cumsum = np.cumsum(mag)
-        idx = np.searchsorted(cumsum, 0.85 * cumsum[-1])
-        rolloff[i] = freqs[min(idx, len(freqs) - 1)]
-
-        # Band energies
-        for b in range(n_bands):
-            band_energy[i, b] = np.mean(
-                mag[band_edges[b]:band_edges[b + 1]] ** 2)
+    flatness   = _interp(flat_stft)
+    flux       = _interp(flux_stft)
+    centroid   = _interp(cent_stft)
+    bandwidth  = _interp(bw_stft)
+    rolloff    = _interp(rolloff_stft)
+    band_energy = np.column_stack(
+        [_interp(be_stft[:, b]) for b in range(n_bands)])
 
     return {
         "flatness": flatness, "flux": flux, "centroid": centroid,
-        "bandwidth": bandwidth, "rolloff": rolloff, "zcr": zcr,
+        "bandwidth": bandwidth, "rolloff": rolloff, "zcr": zcr_out,
         "band_energy": band_energy,
     }
 
@@ -491,7 +504,7 @@ def extract_event_audio(audio, events):
 
 
 def build_identity_layers(events, clips, n_identities, n_samples,
-                          n_channels):
+                          n_channels, sr=44100):
     """
     Build per-identity audio layers: each layer contains only
     events belonging to that identity, placed at original time positions,
@@ -506,7 +519,7 @@ def build_identity_layers(events, clips, n_identities, n_samples,
         layers = [np.zeros((n_samples, n_channels), dtype=np.float32)
                   for _ in range(n_identities)]
 
-    xfade = max(4, int(XFADE_SEC * 44100))  # use default sr for sizing
+    xfade = max(4, int(XFADE_SEC * sr))
 
     for ev, clip in zip(events, clips):
         ident = ev["identity"]
@@ -538,7 +551,8 @@ def build_identity_layers(events, clips, n_identities, n_samples,
 # ═══════════════════════════════════════════════════════════════════════════
 
 def resynthesize(mode, events, clips, layers, identities,
-                 probs, sr, n_samples, n_channels, n_identities):
+                 probs, sr, n_samples, n_channels, n_identities,
+                 Z=None, hop_sec=0.01):
     """
     Dispatch to the selected resynthesis mode.
     Returns output audio array.
@@ -548,7 +562,7 @@ def resynthesize(mode, events, clips, layers, identities,
         return _mode_a_layered(layers, n_samples, n_channels,
                                n_identities)
     elif mode == "B":
-        return _mode_b_alternation(events, clips, sr, n_samples,
+        return _mode_b_alternation(layers, Z, sr, hop_sec, n_samples,
                                    n_channels, n_identities)
     elif mode == "C":
         return _mode_c_recomposition(events, clips, identities, sr,
@@ -589,48 +603,53 @@ def _mode_a_layered(layers, n_samples, n_channels, n_id):
     return output
 
 
-def _mode_b_alternation(events, clips, sr, n_samples, n_channels, n_id):
+def _mode_b_alternation(layers, Z, sr, hop_sec, n_samples,
+                        n_channels, n_id):
     """
     Mode B — Identity Alternation.
-    Only one identity audible at a time. On each identity change,
-    crossfade between layers. Events maintain original timing but
-    only the active identity's events are heard.
+    Only one identity is audible at any moment — the identity assigned
+    by the GMM for that time region.  At identity transitions, a short
+    equal-power crossfade is applied between the outgoing and incoming
+    layers so that only the active identity's audio is heard cleanly.
     """
     import numpy as np
+    from scipy.ndimage import gaussian_filter1d
 
-    xfade = max(4, int(XFADE_SEC * sr))
+    # Build per-identity gate envelopes at frame rate
+    n_frames = len(Z)
+    gates = np.zeros((n_frames, n_id), dtype=np.float32)
+    for k in range(n_id):
+        gates[:, k] = (Z == k).astype(np.float32)
+
+    # Smooth gates to create crossfades at transitions
+    sigma_frames = max(1.0, XFADE_SEC / hop_sec)
+    for k in range(n_id):
+        gates[:, k] = gaussian_filter1d(gates[:, k], sigma=sigma_frames,
+                                        mode="nearest")
+
+    # Renormalize so gates sum to 1 at every frame (equal-power xfade)
+    row_sums = gates.sum(axis=1, keepdims=True) + 1e-12
+    gates /= row_sums
+
+    # Upsample gate envelopes from frame rate to sample rate
+    frame_times = np.linspace(0, n_samples - 1, n_frames)
+    sample_idx = np.arange(n_samples, dtype=np.float64)
 
     if n_channels == 1:
         output = np.zeros(n_samples, dtype=np.float32)
     else:
         output = np.zeros((n_samples, n_channels), dtype=np.float32)
 
-    for ev, clip in zip(events, clips):
-        s = ev["start_sample"]
-        e = ev["end_sample"]
-        clip_f = clip.astype(np.float32)
-
-        # Fade edges
-        fade_len = min(xfade, len(clip_f) // 4)
-        if fade_len > 1:
-            fi = np.linspace(0, 1, fade_len, dtype=np.float32)
-            fo = np.linspace(1, 0, fade_len, dtype=np.float32)
-            if clip_f.ndim == 1:
-                clip_f[:fade_len] *= fi
-                clip_f[-fade_len:] *= fo
-            else:
-                for ch in range(n_channels):
-                    clip_f[:fade_len, ch] *= fi
-                    clip_f[-fade_len:, ch] *= fo
-
-        if e <= n_samples:
-            output[s:e] += clip_f
-
-    # The key difference from original: silence between same-identity
-    # events is preserved. Since events are non-overlapping and
-    # only one identity plays at each time, the result naturally
-    # alternates between identities with silence where the current
-    # identity has no events.
+    for k in range(n_id):
+        w = np.interp(sample_idx, frame_times,
+                       gates[:, k]).astype(np.float32)
+        layer = layers[k]
+        n_l = min(len(layer), n_samples)
+        if layer.ndim == 1:
+            output[:n_l] += layer[:n_l] * w[:n_l]
+        else:
+            for ch in range(n_channels):
+                output[:n_l, ch] += layer[:n_l, ch] * w[:n_l]
 
     _normalize_output(output)
     return output
@@ -707,7 +726,7 @@ def _mode_d_morphing(layers, probs, n_samples, n_channels, n_id):
         # Upsample weights from frame rate to sample rate
         w_upsampled = np.interp(
             np.arange(n_samples),
-            np.linspace(0, n_samples, len(weights)),
+            np.linspace(0, n_samples - 1, len(weights)),
             weights
         ).astype(np.float32)
 
@@ -894,7 +913,8 @@ def _normalize_output(output):
 # Stage 7 — Output
 # ═══════════════════════════════════════════════════════════════════════════
 
-def write_stats_file(path, identities, events, Z, n_identities, mode):
+def write_stats_file(path, identities, events, Z, n_identities, mode,
+                     hop_sec=0.01):
     """Write summary statistics for Praat info panel."""
     import numpy as np
 
@@ -910,6 +930,19 @@ def write_stats_file(path, identities, events, Z, n_identities, mode):
         id_durations[k].append(ev["duration"])
 
     transitions = int(np.sum(np.diff(Z) != 0))
+
+    # Build run-length encoded identity timeline (for Praat drawing)
+    runs = []
+    run_start = 0
+    for i in range(1, n_frames):
+        if Z[i] != Z[run_start]:
+            runs.append((int(Z[run_start]),
+                          run_start * hop_sec,
+                          i * hop_sec))
+            run_start = i
+    runs.append((int(Z[run_start]),
+                  run_start * hop_sec,
+                  n_frames * hop_sec))
 
     with open(path, "w") as f:
         f.write("mode=%s\n" % mode)
@@ -927,6 +960,12 @@ def write_stats_file(path, identities, events, Z, n_identities, mode):
             f.write("id_%d_flatness=%.3f\n" % (k, ident["mean_flatness"]))
             durs = id_durations.get(k, [0])
             f.write("id_%d_mean_dur=%.3f\n" % (k, float(np.mean(durs))))
+
+        # Identity timeline as run-length encoding
+        # Format: "id,start_sec,end_sec" per run, one per line
+        f.write("n_timeline_runs=%d\n" % len(runs))
+        for ri, (rid, rstart, rend) in enumerate(runs):
+            f.write("tl_%d=%d,%.4f,%.4f\n" % (ri, rid, rstart, rend))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1016,12 +1055,13 @@ def main():
 
     clips = extract_event_audio(audio, events)
     layers = build_identity_layers(events, clips, n_identities,
-                                   n_samples, n_channels)
+                                   n_samples, n_channels, sr)
 
     # ---- Resynthesis ----
     print("  [Py 6/6] Resynthesizing (mode %s)..." % mode)
     output = resynthesize(mode, events, clips, layers, identities,
-                          probs, sr, n_samples, n_channels, n_identities)
+                          probs, sr, n_samples, n_channels, n_identities,
+                          Z=Z, hop_sec=hop_sec)
 
     # ---- Multi-channel output ----
     if out_format == "multi" and n_identities > 1:
@@ -1045,7 +1085,7 @@ def main():
 
     # ---- Stats ----
     write_stats_file(stats_file, identities, events, Z,
-                     n_identities, mode)
+                     n_identities, mode, hop_sec)
 
     # ---- Console summary ----
     transitions = int(np.sum(np.diff(Z) != 0))

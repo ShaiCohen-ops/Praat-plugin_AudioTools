@@ -114,17 +114,7 @@ else
 endif
 
 # Resolve mode letter
-if mode = 1
-    modeLetter$ = "A"
-elsif mode = 2
-    modeLetter$ = "B"
-elsif mode = 3
-    modeLetter$ = "C"
-elsif mode = 4
-    modeLetter$ = "D"
-else
-    modeLetter$ = "E"
-endif
+modeLetter$ = mid$("ABCDE", mode, 1)
 
 # Resolve output format string
 if output_format = 1
@@ -406,6 +396,8 @@ for idxStat from 0 to 7
     id_'idxStat'_mean_dur$ = ""
 endfor
 
+nTimelineRuns = 0
+
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
 
@@ -433,6 +425,38 @@ if fileReadable(tempStats$)
         id_'idxStat'_flatness$ = parseStatLine.result$
         @parseStatLine: statsText$, prefix$ + "mean_dur="
         id_'idxStat'_mean_dur$ = parseStatLine.result$
+    endfor
+
+    # Parse identity timeline runs
+    @parseStatLine: statsText$, "n_timeline_runs="
+    nTimelineRuns$ = parseStatLine.result$
+    nTimelineRuns = 0
+    if nTimelineRuns$ <> "?"
+        nTimelineRuns = number(nTimelineRuns$)
+    endif
+    if nTimelineRuns > 2000
+        nTimelineRuns = 2000
+    endif
+
+    for tlIdx from 0 to nTimelineRuns - 1
+        @parseStatLine: statsText$, "tl_" + string$(tlIdx) + "="
+        tlRaw$ = parseStatLine.result$
+        # Format: "identity,start_sec,end_sec"
+        tl_'tlIdx'_id = 0
+        tl_'tlIdx'_start = 0
+        tl_'tlIdx'_end = 0
+        if tlRaw$ <> "?"
+            comma1 = index(tlRaw$, ",")
+            if comma1 > 0
+                tl_'tlIdx'_id = number(left$(tlRaw$, comma1 - 1))
+                rest$ = mid$(tlRaw$, comma1 + 1, length(tlRaw$) - comma1)
+                comma2 = index(rest$, ",")
+                if comma2 > 0
+                    tl_'tlIdx'_start = number(left$(rest$, comma2 - 1))
+                    tl_'tlIdx'_end = number(mid$(rest$, comma2 + 1, length(rest$) - comma2))
+                endif
+            endif
+        endif
     endfor
 endif
 
@@ -616,54 +640,50 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # === Intensity Comparison ===
+    # === Identity Timeline ===
     Select outer viewport: 0, 8, 6.0, 6.8
     Select inner viewport: 0.6, 7.7, 6.1, 6.7
 
-    Axes: 0, dur, 30, 90
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, dur, 30, 90
+    Axes: 0, dur, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.98}", 0, dur, 0, 1
 
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrigI = selected("Sound")
+    # Draw color-coded runs from the parsed timeline
+    if nTimelineRuns > 0
+        for tlDraw from 0 to nTimelineRuns - 1
+            thisId = tl_'tlDraw'_id
+            thisStart = tl_'tlDraw'_start
+            thisEnd = tl_'tlDraw'_end
+            if thisId >= 0 and thisId <= 7
+                Paint rectangle: idCol_'thisId'$, thisStart, thisEnd, 0.05, 0.95
+            endif
+        endfor
     else
-        Copy: "tmpOrigI"
-        tmpOrigI = selected("Sound")
+        # Fallback if no timeline data
+        Font size: 6
+        Colour: "{0.5, 0.5, 0.5}"
+        Text: dur / 2, "centre", 0.5, "half", "(timeline data not available)"
     endif
 
-    To Intensity: 100, 0, "yes"
-    intOrig = selected("Intensity")
-    selectObject: intOrig
-    Colour: "{0.6, 0.6, 0.6}"
-    Line width: 2
-    Draw: 0, 0, 0, 0, "no"
-    removeObject: intOrig, tmpOrigI
-
-    selectObject: resultSound
-    if outChans > 1
-        Extract one channel: 1
-        tmpOutI = selected("Sound")
-    else
-        Copy: "tmpOutI"
-        tmpOutI = selected("Sound")
+    # Draw thin identity-number labels for long runs
+    Font size: 5
+    Colour: "White"
+    if nTimelineRuns > 0
+        for tlLabel from 0 to nTimelineRuns - 1
+            runDur = tl_'tlLabel'_end - tl_'tlLabel'_start
+            if runDur > dur * 0.03
+                midT = (tl_'tlLabel'_start + tl_'tlLabel'_end) / 2
+                Text: midT, "centre", 0.5, "half",
+                    ... string$(tl_'tlLabel'_id)
+            endif
+        endfor
     endif
 
-    To Intensity: 100, 0, "yes"
-    intOut = selected("Intensity")
-    selectObject: intOut
-    Colour: "{0.2, 0.5, 0.7}"
-    Line width: 2
-    Draw: 0, 0, 0, 0, "no"
-    removeObject: intOut, tmpOutI
-
-    Line width: 1
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "dB"
+    Text left: "yes", "ID"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Intensity: Grey = original | Blue = output"
+    Text top: "no", "Identity Timeline (colour = identity)"
 
     # === Summary Panel ===
     Select outer viewport: 0, 8, 7.0, 8.0
