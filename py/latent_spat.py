@@ -645,11 +645,11 @@ def distance_attenuation(distance):
 
 def distance_lowpass(signal, distance, sr):
     """
-    Simple first-order IIR low-pass filter.
-    Cutoff frequency decreases with distance (proximity effect inverted:
-    far = more muffled).
+    First-order IIR low-pass filter via scipy.signal.lfilter.
+    Cutoff frequency decreases with distance (far = more muffled).
     """
     import numpy as np
+    from scipy.signal import lfilter
 
     # Cutoff: close=20kHz (no filtering), far=2kHz
     cutoff = 20000.0 * (1.0 - 0.9 * distance)
@@ -660,45 +660,48 @@ def distance_lowpass(signal, distance, sr):
     dt = 1.0 / sr
     alpha = dt / (rc + dt)
 
-    # Apply filter
-    out = np.zeros_like(signal)
-    out[0] = signal[0]
-    for i in range(1, len(signal)):
-        out[i] = out[i - 1] + alpha * (signal[i] - out[i - 1])
-
-    return out
+    # First-order IIR: y[n] = (1-alpha)*y[n-1] + alpha*x[n]
+    b = np.array([alpha], dtype=np.float64)
+    a = np.array([1.0, -(1.0 - alpha)], dtype=np.float64)
+    return lfilter(b, a, signal).astype(signal.dtype)
 
 
 def distance_reverb(signal, distance, sr, reverb_amount):
     """
-    Simple distance-dependent reverb tail using comb filter.
+    Distance-dependent reverb tail using comb filters via lfilter.
     More reverb for distant sources.
     """
     import numpy as np
+    from scipy.signal import lfilter
 
     if reverb_amount < 0.01:
         return signal
 
-    # Reverb strength scales with distance and user control
     strength = distance * reverb_amount * 0.4
     strength = min(0.5, strength)
-
     if strength < 0.01:
         return signal
 
-    # Short comb filter (simulates early reflections)
-    delay_ms = 30 + 40 * distance  # 30-70 ms
-    delay_samples = int(delay_ms * sr / 1000)
+    # First comb tap
+    delay_ms = 30 + 40 * distance
+    D1 = int(delay_ms * sr / 1000)
+    if D1 < 1:
+        D1 = 1
 
-    out = signal.copy()
-    for i in range(delay_samples, len(out)):
-        out[i] += strength * out[i - delay_samples]
+    # IIR comb: y[n] = x[n] + g * y[n-D]  →  b=[1], a=[1, 0...0, -g]
+    a1 = np.zeros(D1 + 1, dtype=np.float64)
+    a1[0] = 1.0
+    a1[D1] = -strength
+    out = lfilter([1.0], a1, signal).astype(signal.dtype)
 
-    # Second tap for density
-    delay2 = int(delay_samples * 1.37)
-    if delay2 < len(out):
-        for i in range(delay2, len(out)):
-            out[i] += strength * 0.5 * out[i - delay2]
+    # Second comb tap for density
+    D2 = int(D1 * 1.37)
+    if D2 < 1:
+        D2 = 1
+    a2 = np.zeros(D2 + 1, dtype=np.float64)
+    a2[0] = 1.0
+    a2[D2] = -(strength * 0.5)
+    out = lfilter([1.0], a2, out).astype(signal.dtype)
 
     return out
 
@@ -907,6 +910,9 @@ def write_stats(path, events, agents, agent_histories,
             f.write("agent_%d_az_range=%.1f\n" % (ai, az_range))
             f.write("agent_%d_az_travel=%.1f\n" % (ai, az_travel))
             f.write("agent_%d_mean_dist=%.3f\n" % (ai, mean_dist))
+            # Mean azimuth for Praat spatial field visualization
+            mean_az = np.mean(azimuths) if azimuths else 180.0
+            f.write("agent_%d_mean_az=%.1f\n" % (ai, mean_az))
 
         f.write("total_unique_events=%d\n" % len(all_used))
 
@@ -945,8 +951,8 @@ def write_stats(path, events, agents, agent_histories,
         labels = SPEAKER_LABELS[spatial_format]
         f.write("speaker_labels=%s\n" % "|".join(labels))
 
-        for w in warnings:
-            f.write("warning=%s\n" % w)
+        if warnings:
+            f.write("warning=%s\n" % "; ".join(warnings))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -954,11 +960,11 @@ def write_stats(path, events, agents, agent_histories,
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    if len(sys.argv) != 13:
+    if len(sys.argv) != 14:
         print("Usage: python latent_spat.py "
               "input.wav events.csv output.wav stats.txt "
               "num_agents latent_size counterpoint_rigidity speed "
-              "duration spatial_format distance_model reverb_amount",
+              "duration spatial_format distance_model reverb_amount seed",
               file=sys.stderr)
         sys.exit(1)
 
@@ -979,6 +985,7 @@ def main():
     spat_format  = int(sys.argv[10])
     dist_model   = int(sys.argv[11])
     reverb_amt   = float(sys.argv[12])
+    seed         = int(sys.argv[13])
 
     # Clamp
     num_agents   = max(2, min(6, num_agents))
@@ -990,7 +997,6 @@ def main():
     reverb_amt   = max(0.0, min(1.0, reverb_amt))
 
     learning_steps = max(50, min(300, 80 + num_agents * 20))
-    seed = 42
 
     np.random.seed(seed)
     warnings = []

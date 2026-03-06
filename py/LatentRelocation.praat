@@ -522,6 +522,9 @@ meanTempStat$ = "?"
 meanEvDur$ = "?"
 warningStat$ = ""
 
+# Displacement map data
+nDispPts = 0
+
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
 
@@ -551,6 +554,54 @@ if fileReadable(tempStats$)
     meanEvDur$ = parseStatLine.result$
     @parseStatLine: statsText$, "warning="
     warningStat$ = parseStatLine.result$
+
+    # ── Parse displacement map data ──
+    @parseStatLine: statsText$, "n_disp_pts="
+    nDP$ = parseStatLine.result$
+    if nDP$ <> "?"
+        nDispPts = number(nDP$)
+    endif
+    if nDispPts > 100
+        nDispPts = 100
+    endif
+    for iDP from 0 to nDispPts - 1
+        @parseStatLine: statsText$, "dp_" + string$(iDP) + "="
+        dpRaw$ = parseStatLine.result$
+        dp_'iDP'_ox = 0
+        dp_'iDP'_oy = 0
+        dp_'iDP'_rx = 0
+        dp_'iDP'_ry = 0
+        dp_'iDP'_reg = 0
+        if dpRaw$ <> "?"
+            # Parse: ox,oy,rx,ry,regime
+            remaining$ = dpRaw$
+            # ox
+            comma = index(remaining$, ",")
+            if comma > 0
+                dp_'iDP'_ox = number(left$(remaining$, comma - 1))
+                remaining$ = mid$(remaining$, comma + 1, length(remaining$) - comma)
+            endif
+            # oy
+            comma = index(remaining$, ",")
+            if comma > 0
+                dp_'iDP'_oy = number(left$(remaining$, comma - 1))
+                remaining$ = mid$(remaining$, comma + 1, length(remaining$) - comma)
+            endif
+            # rx
+            comma = index(remaining$, ",")
+            if comma > 0
+                dp_'iDP'_rx = number(left$(remaining$, comma - 1))
+                remaining$ = mid$(remaining$, comma + 1, length(remaining$) - comma)
+            endif
+            # ry
+            comma = index(remaining$, ",")
+            if comma > 0
+                dp_'iDP'_ry = number(left$(remaining$, comma - 1))
+                remaining$ = mid$(remaining$, comma + 1, length(remaining$) - comma)
+                dp_'iDP'_reg = number(remaining$)
+            endif
+        endif
+    endfor
 endif
 
 ###############################################################################
@@ -711,81 +762,122 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # === Intensity Comparison ===
-    Select outer viewport: 0, 8, 5.7, 6.6
-    Select inner viewport: 0.6, 7.7, 5.8, 6.5
+    # === Latent Displacement Map ===
+    Select outer viewport: 0, 8, 5.7, 7.0
+    Select inner viewport: 0.6, 7.7, 5.8, 6.9
 
-    Axes: 0, dur, 30, 90
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, dur, 30, 90
+    if nDispPts > 0
+        # Compute axis bounds from all displacement points
+        axMinX = 0
+        axMaxX = 1
+        axMinY = 0
+        axMaxY = 1
+        gotBounds = 0
+        for iDP from 0 to nDispPts - 1
+            for iCoord from 1 to 2
+                if iCoord = 1
+                    bx = dp_'iDP'_ox
+                    by = dp_'iDP'_oy
+                else
+                    bx = dp_'iDP'_rx
+                    by = dp_'iDP'_ry
+                endif
+                if gotBounds = 0
+                    axMinX = bx
+                    axMaxX = bx
+                    axMinY = by
+                    axMaxY = by
+                    gotBounds = 1
+                else
+                    if bx < axMinX
+                        axMinX = bx
+                    endif
+                    if bx > axMaxX
+                        axMaxX = bx
+                    endif
+                    if by < axMinY
+                        axMinY = by
+                    endif
+                    if by > axMaxY
+                        axMaxY = by
+                    endif
+                endif
+            endfor
+        endfor
 
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrigI = selected("Sound")
+        rangeX = axMaxX - axMinX
+        rangeY = axMaxY - axMinY
+        if rangeX < 0.01
+            rangeX = 1
+        endif
+        if rangeY < 0.01
+            rangeY = 1
+        endif
+        axMinX = axMinX - rangeX * 0.12
+        axMaxX = axMaxX + rangeX * 0.12
+        axMinY = axMinY - rangeY * 0.12
+        axMaxY = axMaxY + rangeY * 0.12
+
+        Axes: axMinX, axMaxX, axMinY, axMaxY
+        Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
+
+        # Draw displacement arrows (grey) then regime-colored dots
+        Line width: 1
+        Colour: "{0.75, 0.75, 0.75}"
+        for iDP from 0 to nDispPts - 1
+            Draw arrow: dp_'iDP'_ox, dp_'iDP'_oy, dp_'iDP'_rx, dp_'iDP'_ry
+        endfor
+
+        # Draw original positions as regime-colored circles
+        for iDP from 0 to nDispPts - 1
+            reg = dp_'iDP'_reg
+            if reg = 0
+                Paint circle (mm): "{0.3, 0.5, 0.9}", dp_'iDP'_ox, dp_'iDP'_oy, 1.4
+            elsif reg = 1
+                Paint circle (mm): "{0.3, 0.7, 0.4}", dp_'iDP'_ox, dp_'iDP'_oy, 1.4
+            elsif reg = 2
+                Paint circle (mm): "{0.9, 0.6, 0.2}", dp_'iDP'_ox, dp_'iDP'_oy, 1.4
+            else
+                Paint circle (mm): "{0.85, 0.25, 0.25}", dp_'iDP'_ox, dp_'iDP'_oy, 1.4
+            endif
+        endfor
+
+        Colour: "Black"
+        Draw inner box
+        Font size: 6
+        Text left: "yes", "PC2"
+        Text bottom: "yes", "PC1"
+        Text top: "no", "Latent Displacement Map (arrows: original -> relocated | colour: regime)"
     else
-        Copy: "tmpOrigI"
-        tmpOrigI = selected("Sound")
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
+        Font size: 7
+        Colour: "{0.5, 0.5, 0.5}"
+        Text: 0.5, "centre", 0.5, "half", "(displacement data not available)"
+        Colour: "Black"
+        Draw rectangle: 0, 1, 0, 1
     endif
-    To Intensity: 100, 0, "yes"
-    intOrig = selected("Intensity")
-    selectObject: intOrig
-    Colour: "{0.6, 0.6, 0.6}"
-    Line width: 2
-    Draw: 0, 0, 0, 0, "no"
-    removeObject: intOrig, tmpOrigI
-
-    selectObject: resultSound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOutI = selected("Sound")
-    else
-        Copy: "tmpOutI"
-        tmpOutI = selected("Sound")
-    endif
-    To Intensity: 100, 0, "yes"
-    intOut = selected("Intensity")
-    selectObject: intOut
-    Colour: "{0.3, 0.6, 0.5}"
-    Line width: 2
-    Draw: 0, 0, 0, 0, "no"
-    removeObject: intOut, tmpOutI
-
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "dB"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Intensity: Grey = original | Green = relocated"
 
     # === Summary Panel ===
-    Select outer viewport: 0, 8, 6.8, 8.0
-    Select inner viewport: 0.6, 7.7, 6.9, 7.9
+    Select outer viewport: 0, 8, 7.1, 8.0
+    Select inner viewport: 0.6, 7.7, 7.15, 7.95
 
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "Relocation Summary:"
+    Text: 0.02, "left", 0.90, "half", "Summary:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.68, "half", "Events: " + nEvStat$ + " | Moved: " + nMovedStat$ + " | Avg disp: " + avgDispStat$ + " ms | Max: " + maxDispStat$ + " ms"
-    Text: 0.02, "left", 0.48, "half", "Regimes: Crys=" + crystalPct$ + "% Fluid=" + fluidPct$ + "% Gas=" + gasPct$ + "% Plasma=" + plasmaPct$ + "% | Mean T: " + meanTempStat$
-    Text: 0.02, "left", 0.28, "half", "AE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Mean dur: " + meanEvDur$ + " s"
-
-    Font size: 7
-    Colour: "Black"
-    Text: 0.62, "left", 0.88, "half", "Parameters:"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.62, "left", 0.68, "half", "Steps=" + string$(learning_steps) + " Lat=" + string$(latent_size) + " Int=" + fixed$(relocation_intensity, 2)
-    Text: 0.62, "left", 0.48, "half", "Stab=" + fixed$(stability_bias, 2) + " Nov=" + fixed$(novelty_bias, 2) + " Seed=" + string$(seed)
-    Text: 0.62, "left", 0.28, "half", "RMS: " + fixed$(rms_orig, 4) + " -> " + fixed$(rms_out, 4) + " (" + fixed$(rms_out / rms_orig, 3) + "x)"
+    Text: 0.02, "left", 0.70, "half", "Events=" + nEvStat$ + " Moved=" + nMovedStat$ + " AvgDisp=" + avgDispStat$ + "ms MaxDisp=" + maxDispStat$ + "ms | AE: " + initialLoss$ + "->" + finalLoss$
+    Text: 0.02, "left", 0.46, "half", "Regimes: C=" + crystalPct$ + "% F=" + fluidPct$ + "% G=" + gasPct$ + "% P=" + plasmaPct$ + "% | T=" + meanTempStat$ + " | RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4)
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.02, "left", 0.22, "half", "Steps=" + string$(learning_steps) + " Lat=" + string$(latent_size) + " Int=" + fixed$(relocation_intensity, 2) + " Stab=" + fixed$(stability_bias, 2) + " Nov=" + fixed$(novelty_bias, 2) + " Seed=" + string$(seed)
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.02, "left", 0.08, "half", "Warning: " + warningStat$
+        Text: 0.60, "left", 0.22, "half", "Warn: " + warningStat$
     endif
 
     Colour: "Black"

@@ -492,6 +492,7 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + string$(spatFormatInt)
     ... + " " + string$(distModelInt)
     ... + " " + fixed$(reverb_amount, 4)
+    ... + " " + string$(seed)
 
 if not fileReadable(tempOutput$)
     deleteFile: tempInput$
@@ -545,6 +546,7 @@ for iA from 0 to 5
     agAzRange_'iA'$ = "?"
     agAzTravel_'iA'$ = "?"
     agMeanDist_'iA'$ = "?"
+    agMeanAz_'iA'$ = "?"
 endfor
 
 for iA from 0 to 5
@@ -599,6 +601,8 @@ if fileReadable(tempStats$)
         agAzTravel_'iA'$ = parseStatLine.result$
         @parseStatLine: statsText$, "agent_" + string$(iA) + "_mean_dist="
         agMeanDist_'iA'$ = parseStatLine.result$
+        @parseStatLine: statsText$, "agent_" + string$(iA) + "_mean_az="
+        agMeanAz_'iA'$ = parseStatLine.result$
     endfor
 
     for iA from 0 to number_of_agents - 2
@@ -758,17 +762,19 @@ if draw_visualization
             agDist = 0.5
         endif
 
-        # Estimate mean azimuth from travel (approximate)
-        # We'll use agent profile to determine typical position
-        if iA mod 3 = 0
-            # Cantus: center-ish
-            estAz = 150
-        elsif iA mod 3 = 1
-            # Florid: periphery
-            estAz = 300
+        # Use actual mean azimuth from Python spatial trajectories
+        azStr$ = agMeanAz_'iA'$
+        if azStr$ <> "?"
+            estAz = number(azStr$)
         else
-            # Shadow: opposite cantus
-            estAz = 30
+            # Fallback to profile-based estimate
+            if iA mod 3 = 0
+                estAz = 150
+            elsif iA mod 3 = 1
+                estAz = 300
+            else
+                estAz = 30
+            endif
         endif
 
         azRad = (90 - estAz) * pi / 180

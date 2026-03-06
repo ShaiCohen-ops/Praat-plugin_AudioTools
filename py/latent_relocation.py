@@ -750,15 +750,16 @@ def reconstruct(clips, order, sr, original_length, preserve_duration):
 
 
 def _smooth_clicks(seg, radius):
-    """Detect and smooth sample-level clicks via median filter."""
+    """Detect and smooth sample-level clicks via median filter (vectorized)."""
     import numpy as np
     if len(seg) < 3:
         return
     local_rms = max(0.001, np.sqrt(np.mean(seg ** 2)))
     threshold = local_rms * 4.0
     diffs = np.abs(np.diff(seg))
-    for i in range(len(diffs)):
-        if diffs[i] > threshold:
+    click_idx = np.where(diffs > threshold)[0]
+    for i in click_idx:
+        if 0 < i < len(seg) - 1:
             lo = max(0, i - 2)
             hi = min(len(seg), i + 3)
             seg[i] = np.median(seg[lo:hi])
@@ -792,7 +793,7 @@ def compute_displacement_stats(events, order, sr):
 
 
 def write_stats_file(path, events, order, regimes, temperature,
-                     losses, sr, warnings):
+                     losses, sr, warnings, Z_latent=None):
     """Write text report for Praat."""
     import numpy as np
 
@@ -802,6 +803,39 @@ def write_stats_file(path, events, order, regimes, temperature,
 
     regime_counts = [int(np.sum(regimes == r)) for r in range(4)]
     regime_pcts = [100.0 * c / max(1, n) for c in regime_counts]
+
+    # ── PCA projection for displacement visualization ─────────────────
+    ev_x = []
+    ev_y = []
+    ev_regime = []
+    reloc_x = []
+    reloc_y = []
+
+    if Z_latent is not None and len(Z_latent) > 0:
+        mean_pt = np.mean(Z_latent, axis=0)
+        centered = Z_latent - mean_pt
+        if centered.shape[1] >= 2:
+            U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+            proj = centered.dot(Vt[:2].T)
+        else:
+            proj = np.column_stack(
+                [centered[:, 0], np.zeros(len(centered))])
+
+        ev_x = proj[:, 0].tolist()
+        ev_y = proj[:, 1].tolist()
+        ev_regime = regimes.tolist()
+
+        # Relocated positions: event at original index i moves to
+        # position order[i] in the output. Map relocated ordering to
+        # latent coordinates by looking up Z of the event at each slot.
+        for new_pos in range(min(len(order), n)):
+            orig_idx = order[new_pos]
+            if orig_idx < n:
+                reloc_x.append(proj[orig_idx, 0])
+                reloc_y.append(proj[orig_idx, 1])
+            else:
+                reloc_x.append(0.0)
+                reloc_y.append(0.0)
 
     with open(path, "w") as f:
         f.write("n_events=%d\n" % n)
@@ -823,8 +857,19 @@ def write_stats_file(path, events, order, regimes, temperature,
         f.write("min_event_dur=%.3f\n" % np.min(durations))
         f.write("max_event_dur=%.3f\n" % np.max(durations))
 
-        for w in warnings:
-            f.write("warning=%s\n" % w)
+        # ── Latent displacement map data ──────────────────────────────
+        n_pts = min(len(ev_x), 100)
+        f.write("n_disp_pts=%d\n" % n_pts)
+        for i in range(n_pts):
+            rx = reloc_x[i] if i < len(reloc_x) else ev_x[i]
+            ry = reloc_y[i] if i < len(reloc_y) else ev_y[i]
+            reg = int(ev_regime[i]) if i < len(ev_regime) else 0
+            # Format: orig_x,orig_y,reloc_x,reloc_y,regime
+            f.write("dp_%d=%.4f,%.4f,%.4f,%.4f,%d\n" % (
+                i, ev_x[i], ev_y[i], rx, ry, reg))
+
+        if warnings:
+            f.write("warning=%s\n" % "; ".join(warnings))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -938,7 +983,7 @@ def main():
 
     sf.write(out_wav, output, sr)
     write_stats_file(stats_file, events, order, regimes, temperature,
-                     losses, sr, warnings)
+                     losses, sr, warnings, Z_latent=Z_latent)
 
     # Summary
     out_dur = len(output) / sr if output.ndim == 1 else output.shape[0] / sr
