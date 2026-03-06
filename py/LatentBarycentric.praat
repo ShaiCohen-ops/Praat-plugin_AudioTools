@@ -651,6 +651,10 @@ modeReturn$     = "0"
 modeSettle$     = "0"
 warningStat$    = ""
 
+# Trajectory data for visualization
+nEvPts = 0
+nTrajPts = 0
+
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
 
@@ -688,6 +692,60 @@ if fileReadable(tempStats$)
     modeSettle$ = parseStatLine.result$
     @parseStatLine: statsText$, "warning="
     warningStat$ = parseStatLine.result$
+
+    # ── Parse event positions (PCA-projected) ──
+    @parseStatLine: statsText$, "n_ev_pts="
+    nEvPts$ = parseStatLine.result$
+    if nEvPts$ <> "?"
+        nEvPts = number(nEvPts$)
+    endif
+    if nEvPts > 200
+        nEvPts = 200
+    endif
+    for iEP from 0 to nEvPts - 1
+        @parseStatLine: statsText$, "ev_" + string$(iEP) + "="
+        epRaw$ = parseStatLine.result$
+        ep_'iEP'_x = 0
+        ep_'iEP'_y = 0
+        if epRaw$ <> "?"
+            comma = index(epRaw$, ",")
+            if comma > 0
+                ep_'iEP'_x = number(left$(epRaw$, comma - 1))
+                ep_'iEP'_y = number(mid$(epRaw$, comma + 1, length(epRaw$) - comma))
+            endif
+        endif
+    endfor
+
+    # ── Parse trajectory points (PCA-projected + mode) ──
+    @parseStatLine: statsText$, "n_traj_pts="
+    nTrajPts$ = parseStatLine.result$
+    if nTrajPts$ <> "?"
+        nTrajPts = number(nTrajPts$)
+    endif
+    if nTrajPts > 200
+        nTrajPts = 200
+    endif
+    for iTP from 0 to nTrajPts - 1
+        @parseStatLine: statsText$, "tr_" + string$(iTP) + "="
+        tpRaw$ = parseStatLine.result$
+        tp_'iTP'_x = 0
+        tp_'iTP'_y = 0
+        tp_'iTP'_mode$ = "drift"
+        if tpRaw$ <> "?"
+            comma1 = index(tpRaw$, ",")
+            if comma1 > 0
+                tp_'iTP'_x = number(left$(tpRaw$, comma1 - 1))
+                rest$ = mid$(tpRaw$, comma1 + 1, length(tpRaw$) - comma1)
+                comma2 = index(rest$, ",")
+                if comma2 > 0
+                    tp_'iTP'_y = number(left$(rest$, comma2 - 1))
+                    tp_'iTP'_mode$ = mid$(rest$, comma2 + 1, length(rest$) - comma2)
+                else
+                    tp_'iTP'_y = number(rest$)
+                endif
+            endif
+        endif
+    endfor
 endif
 
 ###############################################################################
@@ -774,8 +832,14 @@ if draw_visualization
     Select outer viewport: 0, 8, 3.7, 4.9
     Select inner viewport: 0.6, 7.7, 3.8, 4.8
     selectObject: resultSound
-    Extract one channel: 1
-    tmpOut = selected("Sound")
+    outChans = Get number of channels
+    if outChans > 1
+        Extract one channel: 1
+        tmpOut = selected("Sound")
+    else
+        Copy: "tmpOut"
+        tmpOut = selected("Sound")
+    endif
     To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
     specOut = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
@@ -787,37 +851,133 @@ if draw_visualization
     Text top: "no", "Barycentric output spectrogram (L channel)"
     removeObject: specOut, tmpOut
 
-    # === Navigation Plan Phase Panel ===
-    Select outer viewport: 0, 8, 5.0, 6.1
-    Select inner viewport: 0.6, 7.7, 5.1, 6.0
+    # === Latent Trajectory Panel ===
+    Select outer viewport: 0, 8, 5.0, 6.5
+    Select inner viewport: 0.6, 7.7, 5.1, 6.4
 
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.93, 0.96}", 0, 1, 0, 1
+    if nEvPts > 0 or nTrajPts > 0
+        # Compute axis bounds from all points
+        axMinX = 0
+        axMaxX = 1
+        axMinY = 0
+        axMaxY = 1
+        gotBounds = 0
+        for iB from 0 to nEvPts - 1
+            bx = ep_'iB'_x
+            by = ep_'iB'_y
+            if gotBounds = 0
+                axMinX = bx
+                axMaxX = bx
+                axMinY = by
+                axMaxY = by
+                gotBounds = 1
+            else
+                if bx < axMinX
+                    axMinX = bx
+                endif
+                if bx > axMaxX
+                    axMaxX = bx
+                endif
+                if by < axMinY
+                    axMinY = by
+                endif
+                if by > axMaxY
+                    axMaxY = by
+                endif
+            endif
+        endfor
+        for iB from 0 to nTrajPts - 1
+            bx = tp_'iB'_x
+            by = tp_'iB'_y
+            if gotBounds = 0
+                axMinX = bx
+                axMaxX = bx
+                axMinY = by
+                axMaxY = by
+                gotBounds = 1
+            else
+                if bx < axMinX
+                    axMinX = bx
+                endif
+                if bx > axMaxX
+                    axMaxX = bx
+                endif
+                if by < axMinY
+                    axMinY = by
+                endif
+                if by > axMaxY
+                    axMaxY = by
+                endif
+            endif
+        endfor
 
-    Font size: 7
-    Colour: "Black"
-    if plan_source = 2
-        Text: 0.02, "left", 0.92, "half", "Navigation plan phases (auto-generated — " + planModeStr$ + "):"
+        # Add margin
+        rangeX = axMaxX - axMinX
+        rangeY = axMaxY - axMinY
+        if rangeX < 0.01
+            rangeX = 1
+        endif
+        if rangeY < 0.01
+            rangeY = 1
+        endif
+        axMinX = axMinX - rangeX * 0.1
+        axMaxX = axMaxX + rangeX * 0.1
+        axMinY = axMinY - rangeY * 0.1
+        axMaxY = axMaxY + rangeY * 0.1
+
+        Axes: axMinX, axMaxX, axMinY, axMaxY
+        Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
+
+        # Draw event positions as filled grey circles
+        dotR = rangeX * 0.015
+        for iEP from 0 to nEvPts - 1
+            Paint circle (mm): "{0.7, 0.7, 0.7}", ep_'iEP'_x, ep_'iEP'_y, 1.2
+        endfor
+
+        # Draw trajectory lines colored by mode
+        Line width: 2
+        for iTP from 1 to nTrajPts - 1
+            iPrev = iTP - 1
+            thisMode$ = tp_'iTP'_mode$
+            if thisMode$ = "mutate"
+                Colour: "{0.8, 0.3, 0.2}"
+            elsif thisMode$ = "return"
+                Colour: "{0.3, 0.7, 0.4}"
+            elsif thisMode$ = "settle"
+                Colour: "{0.6, 0.5, 0.2}"
+            else
+                Colour: "{0.3, 0.5, 0.8}"
+            endif
+            Draw line: tp_'iPrev'_x, tp_'iPrev'_y, tp_'iTP'_x, tp_'iTP'_y
+        endfor
+        Line width: 1
+
+        # Mark start (green circle) and end (red circle)
+        if nTrajPts > 0
+            Paint circle (mm): "{0.2, 0.7, 0.3}", tp_0_x, tp_0_y, 1.8
+            iLast = nTrajPts - 1
+            Paint circle (mm): "{0.8, 0.2, 0.2}", tp_'iLast'_x, tp_'iLast'_y, 1.8
+        endif
+
+        Colour: "Black"
+        Draw inner box
+        Font size: 6
+        Text left: "yes", "PC2"
+        Text bottom: "yes", "PC1"
+        Text top: "no", "Latent trajectory (events = grey | ##S## = start | ##E## = end)"
     else
-        Text: 0.02, "left", 0.92, "half", "Navigation plan phases (external CSV):"
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
+        Font size: 7
+        Colour: "{0.5, 0.5, 0.5}"
+        Text: 0.5, "centre", 0.5, "half", "(latent trajectory data not available)"
+        Colour: "Black"
+        Draw rectangle: 0, 1, 0, 1
     endif
 
-    Font size: 6
-    Colour: "{0.3, 0.5, 0.8}"
-    Text: 0.02, "left", 0.68, "half", "drift:  " + modeDrift$ + " steps   (coherent small steps, low temperature)"
-    Colour: "{0.8, 0.3, 0.2}"
-    Text: 0.02, "left", 0.48, "half", "mutate: " + modeMutate$ + " steps   (large exploratory steps, high temperature)"
-    Colour: "{0.3, 0.7, 0.4}"
-    Text: 0.02, "left", 0.28, "half", "return: " + modeReturn$ + " steps   (gravitational pull toward anchor region)"
-    Colour: "{0.6, 0.5, 0.2}"
-    Text: 0.02, "left", 0.08, "half", "settle: " + modeSettle$ + " steps   (cool-down, convergence)"
-
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-
     # === Summary Panel ===
-    Select outer viewport: 0, 8, 6.2, 7.6
-    Select inner viewport: 0.6, 7.7, 6.3, 7.5
+    Select outer viewport: 0, 8, 6.6, 8.0
+    Select inner viewport: 0.6, 7.7, 6.7, 7.9
 
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
@@ -827,14 +987,18 @@ if draw_visualization
     Text: 0.02, "left", 0.91, "half", "Summary:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.72, "half", "Events: " + nEvStat$ + " | Plan: " + nPlanSteps$ + " steps | Used: " + nExecSteps$ + " / " + nPlanSteps$ + " | Mean event dur: " + meanEvDur$ + " s"
-    Text: 0.02, "left", 0.52, "half", "VAE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
-    Text: 0.02, "left", 0.32, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | Normalize: " + normModeStat$ + " | RMS: " + rmsInputStat$ + " -> " + rmsOutputStat$
-    Text: 0.02, "left", 0.12, "half", "Pitch: " + pitchModeStat$ + " | Plan source: " + planSourceStat$
+    Text: 0.02, "left", 0.75, "half", "Events: " + nEvStat$ + " | Plan: " + nPlanSteps$ + " steps | Used: " + nExecSteps$ + " / " + nPlanSteps$ + " | Mean event dur: " + meanEvDur$ + " s"
+    Text: 0.02, "left", 0.57, "half", "VAE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
+    Text: 0.02, "left", 0.39, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | Normalize: " + normModeStat$ + " | RMS: " + rmsInputStat$ + " -> " + rmsOutputStat$
+    Text: 0.02, "left", 0.21, "half", "Pitch: " + pitchModeStat$ + " | Plan source: " + planSourceStat$
+    # Phase breakdown (moved from the old Nav Phase panel)
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.02, "left", 0.05, "half",
+        ... "Phases: drift=" + modeDrift$ + " mutate=" + modeMutate$ + " return=" + modeReturn$ + " settle=" + modeSettle$
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.02, "left", -0.05, "half", "Warning: " + warningStat$
+        Text: 0.65, "left", 0.05, "half", "Warn: " + warningStat$
     endif
 
     Colour: "Black"

@@ -196,6 +196,19 @@ def generate_nav_plan(
 
     plan = []
 
+    # Pre-scan to find settle phase boundaries (for progressive decay)
+    settle_start_idx = None
+    settle_end_idx   = None
+    for i in range(n_steps):
+        frac = i / max(1, n_steps - 1)
+        is_settle = False
+        if mode_preset == "cycle" and frac >= 0.917:
+            is_settle = True
+        if is_settle:
+            if settle_start_idx is None:
+                settle_start_idx = i
+            settle_end_idx = i
+
     for i in range(n_steps):
         # ── Determine mode ──────────────────────────────────────────────────
         if mode_preset == "drift":
@@ -214,6 +227,19 @@ def generate_nav_plan(
                 mode = "return"
             else:
                 mode = "settle"
+
+        # ── Per-step step_size and temperature ─────────────────────────────
+        # Settle mode progressively decays both toward near-zero so the
+        # trajectory actually converges rather than drifting at constant rate.
+        if mode == "settle" and settle_start_idx is not None:
+            settle_span = max(1, settle_end_idx - settle_start_idx)
+            decay = 1.0 - (i - settle_start_idx) / settle_span  # 1.0 → 0.0
+            decay = max(0.02, decay)  # floor so last step isn't exactly zero
+            step_step_size   = step_size * decay
+            step_temperature = temperature * decay * decay  # faster cooldown
+        else:
+            step_step_size   = step_size
+            step_temperature = temperature
 
         # ── Determine return_anchor ─────────────────────────────────────────
         if mode == "return":
@@ -255,8 +281,8 @@ def generate_nav_plan(
             'step_index':             i,
             'relative_time':          round(i / max(1, n_steps - 1), 6),
             'mode':                   mode,
-            'step_size':              step_size,
-            'temperature':            temperature,
+            'step_size':              round(step_step_size, 6),
+            'temperature':            round(step_temperature, 6),
             'k_neighbors':            k_neighbors,
             'return_anchor':          anchor,
             'return_strength':        round(r_strength, 4),
@@ -848,14 +874,17 @@ def execute_nav_plan(plan, Z, clips, audio, sr, target_samples, seed,
 
         # ── 6. Crossfade and append ────────────────────────────────────────
         cl = len(mixed)
-        if write_ptr > 0 and cl >= xfade * 3:
+        do_xfade = write_ptr >= xfade and cl >= xfade * 3
+        if do_xfade:
+            # Fade out the tail of the already-written buffer
+            output[write_ptr - xfade : write_ptr] *= fade_out
+            # Fade in the head of the incoming segment
             mixed[:xfade] *= fade_in
         end = write_ptr + cl
         if end > len(output):
             output = np.pad(output, (0, end - len(output) + mean_clip_len))
         output[write_ptr:end] += mixed
-        write_ptr = (write_ptr + cl - xfade
-                     if (write_ptr > 0 and cl >= xfade * 3)
+        write_ptr = (write_ptr + cl - xfade if do_xfade
                      else write_ptr + cl)
 
         # ── Always record this step (append before any loop end) ──────────
@@ -993,7 +1022,8 @@ def extract_clips(audio, events, sr):
 
 def write_stats(path, events, plan, losses, step_stats,
                 sr, out_duration, plan_source, normalize_mode,
-                ref_rms, out_rms, pitch_mode, warnings):
+                ref_rms, out_rms, pitch_mode, warnings,
+                Z=None, anchor_positions=None):
     import numpy as np
 
     n_steps_plan = len(plan)
@@ -1007,6 +1037,45 @@ def write_stats(path, events, plan, losses, step_stats,
     exec_mode_counts = {}
     for s in step_stats:
         exec_mode_counts[s['mode']] = exec_mode_counts.get(s['mode'], 0) + 1
+
+    # ── PCA projection of events + trajectory to 2D ──────────────────────
+    # Used by Praat to draw the latent trajectory panel.
+    ev_x = []
+    ev_y = []
+    traj_x = []
+    traj_y = []
+    traj_modes = []
+
+    if Z is not None and len(Z) > 0 and anchor_positions is not None:
+        # Collect all points (events + trajectory) for joint PCA
+        traj_indices = sorted(anchor_positions.keys())
+        traj_points = np.array([anchor_positions[k] for k in traj_indices])
+
+        all_points = np.vstack([Z, traj_points]) if len(traj_points) > 0 else Z
+
+        # Simple 2-component PCA via SVD
+        mean_pt = np.mean(all_points, axis=0)
+        centered = all_points - mean_pt
+        # Limit to 2 components
+        if centered.shape[1] >= 2:
+            U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+            proj = centered.dot(Vt[:2].T)  # (N, 2)
+        else:
+            proj = centered[:, :2] if centered.shape[1] >= 2 else np.column_stack(
+                [centered[:, 0], np.zeros(len(centered))])
+
+        n_ev = len(Z)
+        ev_proj = proj[:n_ev]
+        traj_proj = proj[n_ev:]
+
+        ev_x = ev_proj[:, 0].tolist()
+        ev_y = ev_proj[:, 1].tolist()
+        traj_x = traj_proj[:, 0].tolist()
+        traj_y = traj_proj[:, 1].tolist()
+
+        # Get mode labels for each trajectory step
+        mode_lookup = {s['step']: s['mode'] for s in step_stats}
+        traj_modes = [mode_lookup.get(k, "drift") for k in traj_indices]
 
     with open(path, "w") as f:
         f.write("n_events=%d\n"           % len(events))
@@ -1027,8 +1096,22 @@ def write_stats(path, events, plan, losses, step_stats,
             float(e["end_time"]) - float(e["start_time"]) for e in events
         ]))
         f.write("mean_event_dur=%.3f\n"   % mean_ev_dur)
-        for w in warnings:
-            f.write("warning=%s\n" % w)
+
+        # ── Latent trajectory data ────────────────────────────────────────
+        # Event positions (PCA-projected)
+        f.write("n_ev_pts=%d\n" % len(ev_x))
+        for ei in range(len(ev_x)):
+            f.write("ev_%d=%.4f,%.4f\n" % (ei, ev_x[ei], ev_y[ei]))
+
+        # Navigation trajectory (PCA-projected, with mode labels)
+        n_traj = min(len(traj_x), 200)  # cap for stats file size
+        f.write("n_traj_pts=%d\n" % n_traj)
+        for ti in range(n_traj):
+            m = traj_modes[ti] if ti < len(traj_modes) else "drift"
+            f.write("tr_%d=%.4f,%.4f,%s\n" % (ti, traj_x[ti], traj_y[ti], m))
+
+        if warnings:
+            f.write("warning=%s\n" % "; ".join(warnings))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1222,7 +1305,8 @@ def main():
     write_stats(args.stats_txt, events, plan, losses,
                 step_stats, sr, out_dur, plan_source_label,
                 args.normalize_mode, input_rms, post_rms,
-                args.pitch_mode, warnings_list)
+                args.pitch_mode, warnings_list,
+                Z=Z, anchor_positions=anchor_positions)
 
     # ── Stage 8: Cleanup ───────────────────────────────────────────────────
     # Only delete files that were created by Praat (have the known temp prefix).
