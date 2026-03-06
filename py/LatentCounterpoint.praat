@@ -421,6 +421,7 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + fixed$(counterpoint_rigidity, 4)
     ... + " " + fixed$(speed, 4)
     ... + " " + fixed$(duration, 4)
+    ... + " " + string$(seed)
 
 if not fileReadable(tempOutput$)
     deleteFile: tempInput$
@@ -479,6 +480,11 @@ for iA from 0 to 5
     endfor
 endfor
 
+# Per-agent timeline block counts (initialized to 0)
+for iAT from 0 to 5
+    agNBlocks_'iAT' = 0
+endfor
+
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
 
@@ -520,6 +526,38 @@ if fileReadable(tempStats$)
         for iB from iA + 1 to number_of_agents - 1
             @parseStatLine: statsText$, "unison_rate_" + string$(iA) + "_" + string$(iB) + "="
             unisonRate_'iA'_'iB'$ = parseStatLine.result$
+        endfor
+    endfor
+
+    # ── Parse per-agent polyphonic timeline blocks ──
+    for iAT from 0 to number_of_agents - 1
+        @parseStatLine: statsText$, "ag_" + string$(iAT) + "_n_blocks="
+        nBl$ = parseStatLine.result$
+        agNBlocks_'iAT' = 0
+        if nBl$ <> "?"
+            agNBlocks_'iAT' = number(nBl$)
+        endif
+        if agNBlocks_'iAT' > 150
+            agNBlocks_'iAT' = 150
+        endif
+        for iBl from 0 to agNBlocks_'iAT' - 1
+            @parseStatLine: statsText$, "ag_" + string$(iAT) + "_bl_" + string$(iBl) + "="
+            blRaw$ = parseStatLine.result$
+            agBl_'iAT'_'iBl'_ev = 0
+            agBl_'iAT'_'iBl'_s = 0
+            agBl_'iAT'_'iBl'_e = 0
+            if blRaw$ <> "?"
+                comma1 = index(blRaw$, ",")
+                if comma1 > 0
+                    agBl_'iAT'_'iBl'_ev = number(left$(blRaw$, comma1 - 1))
+                    rest$ = mid$(blRaw$, comma1 + 1, length(blRaw$) - comma1)
+                    comma2 = index(rest$, ",")
+                    if comma2 > 0
+                        agBl_'iAT'_'iBl'_s = number(left$(rest$, comma2 - 1))
+                        agBl_'iAT'_'iBl'_e = number(mid$(rest$, comma2 + 1, length(rest$) - comma2))
+                    endif
+                endif
+            endif
         endfor
     endfor
 endif
@@ -603,8 +641,14 @@ if draw_visualization
     Select outer viewport: 0, 8, 3.7, 4.9
     Select inner viewport: 0.6, 7.7, 3.8, 4.8
     selectObject: resultSound
-    Extract one channel: 1
-    tmpOut = selected("Sound")
+    outChans = Get number of channels
+    if outChans > 1
+        Extract one channel: 1
+        tmpOut = selected("Sound")
+    else
+        Copy: "tmpOut"
+        tmpOut = selected("Sound")
+    endif
     To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
     specOut = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
@@ -651,35 +695,64 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # === Unison / Counterpoint Panel ===
-    Select outer viewport: 0, 8, 6.1, 6.7
-    Select inner viewport: 0.6, 7.7, 6.2, 6.6
+    # === Polyphonic Timeline Panel ===
+    Select outer viewport: 0, 8, 6.1, 7.2
+    Select inner viewport: 0.6, 7.7, 6.2, 7.1
 
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.93, 0.93}", 0, 1, 0, 1
+    # Compute max time span across all agents for the horizontal axis
+    tlMaxTime = 0.01
+    for iAT from 0 to number_of_agents - 1
+        nBl = agNBlocks_'iAT'
+        if nBl > 0
+            lastBl = nBl - 1
+            blEnd = agBl_'iAT'_'lastBl'_e
+            if blEnd > tlMaxTime
+                tlMaxTime = blEnd
+            endif
+        endif
+    endfor
 
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "Counterpoint (unison rates — lower = more independent):"
+    Axes: 0, tlMaxTime, -0.2, number_of_agents - 0.8
+    Paint rectangle: "{0.97, 0.97, 0.99}", 0, tlMaxTime, -0.2, number_of_agents - 0.8
 
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    unisonLine$ = ""
-    for iA from 0 to number_of_agents - 2
-        for iB from iA + 1 to number_of_agents - 1
-            thisRate$ = unisonRate_'iA'_'iB'$
-            if thisRate$ <> "?"
-                unisonLine$ = unisonLine$ + string$(iA) + "↔" + string$(iB) + "=" + thisRate$ + "  "
+    # Draw per-agent lanes with colored blocks
+    laneH = 0.35
+    for iAT from 0 to number_of_agents - 1
+        laneY = (number_of_agents - 1 - iAT) - 0.5
+        nBl = agNBlocks_'iAT'
+        thisCol$ = agCol_'iAT'$
+
+        for iBl from 0 to nBl - 1
+            blS = agBl_'iAT'_'iBl'_s
+            blE = agBl_'iAT'_'iBl'_e
+            blEv = agBl_'iAT'_'iBl'_ev
+            Paint rectangle: thisCol$, blS, blE, laneY - laneH, laneY + laneH
+
+            # Label event index on sufficiently wide blocks
+            blDur = blE - blS
+            if blDur > tlMaxTime * 0.04
+                Font size: 4
+                Colour: "White"
+                Text: (blS + blE) / 2, "centre", laneY, "half", string$(blEv)
             endif
         endfor
+
+        # Agent label on the left
+        Font size: 5
+        Colour: "Black"
+        Text: -tlMaxTime * 0.005, "right", laneY, "half", string$(iAT)
     endfor
-    Text: 0.02, "left", 0.30, "half", unisonLine$
+
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Agent"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Polyphonic Timeline (event index per voice)"
 
     # === Summary Panel ===
-    Select outer viewport: 0, 8, 6.9, 8.0
-    Select inner viewport: 0.6, 7.7, 7.0, 7.9
+    Select outer viewport: 0, 8, 7.3, 8.0
+    Select inner viewport: 0.6, 7.7, 7.35, 7.95
 
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
@@ -689,13 +762,25 @@ if draw_visualization
     Text: 0.02, "left", 0.88, "half", "Summary:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.68, "half", "Events: " + nEvStat$ + " | Total unique used: " + totalUnique$ + " | Mean dur: " + meanEvDur$ + " s"
-    Text: 0.02, "left", 0.48, "half", "AE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
-    Text: 0.02, "left", 0.28, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + " -> " + fixed$(rms_out, 4)
+    Text: 0.02, "left", 0.68, "half", "Events: " + nEvStat$ + " | Unique used: " + totalUnique$ + " | Mean dur: " + meanEvDur$ + "s | AE: " + initialLoss$ + "->" + finalLoss$
+    Text: 0.02, "left", 0.44, "half", "Duration: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | Latent=" + string$(latent_size) + " Seed=" + string$(seed)
+
+    # Unison rates (folded from old panel)
+    Colour: "{0.4, 0.4, 0.5}"
+    unisonLine$ = "Unison: "
+    for iA from 0 to number_of_agents - 2
+        for iB from iA + 1 to number_of_agents - 1
+            thisRate$ = unisonRate_'iA'_'iB'$
+            if thisRate$ <> "?"
+                unisonLine$ = unisonLine$ + string$(iA) + "↔" + string$(iB) + "=" + thisRate$ + " "
+            endif
+        endfor
+    endfor
+    Text: 0.02, "left", 0.20, "half", unisonLine$
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.02, "left", 0.08, "half", "Warning: " + warningStat$
+        Text: 0.60, "left", 0.20, "half", "Warn: " + warningStat$
     endif
 
     Colour: "Black"

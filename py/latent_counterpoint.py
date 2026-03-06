@@ -6,7 +6,7 @@ Author: Shai Cohen, Department of Music, Bar-Ilan University
 
 Usage (called by Praat, not directly):
     python latent_counterpoint.py input.wav events.csv output.wav stats.txt
-        num_agents latent_size counterpoint_rigidity speed duration
+        num_agents latent_size counterpoint_rigidity speed duration seed
 
 Architecture:
     Stage 1 — Load audio + event table from Praat
@@ -377,26 +377,26 @@ class Agent(object):
         self.velocity = np.zeros(latent_dim)
         self.history = []
         self.recent_memory = []  # LRU queue
-        self.memory_size = 5    # how many recent events to avoid
+        self.memory_size = 15    # how many recent events to avoid
 
         # Profile-specific parameters
         if profile == AGENT_CANTUS:
-            self.mass = 3.0         # high inertia
-            self.max_speed = 0.3    # slow
-            self.jitter_scale = 0.05
+            self.mass = 1.2         # REDUCED: Allows more movement
+            self.max_speed = 0.8    # INCREASED: Faster exploration
+            self.jitter_scale = 0.25 # INCREASED: Breaks local loops
             self.attraction_weight = 1.0
         elif profile == AGENT_FLORID:
-            self.mass = 0.5         # low inertia
-            self.max_speed = 1.5    # fast
-            self.jitter_scale = 0.2
+            self.mass = 0.5         
+            self.max_speed = 1.5    
+            self.jitter_scale = 0.50 # INCREASED: Maximizes variety
             self.attraction_weight = 0.6
         elif profile == AGENT_SHADOW:
-            self.mass = 2.0         # moderate inertia
-            self.max_speed = 0.4    # moderate
-            self.jitter_scale = 0.08
+            self.mass = 1.5         # REDUCED: More responsive
+            self.max_speed = 0.6    # INCREASED: Matches new Cantus speed
+            self.jitter_scale = 0.30 # INCREASED: Randomizes the lag path
             self.attraction_weight = 0.3
-            self.lag_buffer = []    # stores cantus positions for lag
-            self.lag_steps = 3      # temporal lag behind cantus
+            self.lag_buffer = []    
+            self.lag_steps = 20     # INCREASED: Forces Shadow away from Cantus
 
     def init_position(self, Z, center, periphery):
         """Initialize agent position based on profile."""
@@ -556,7 +556,7 @@ def run_physics(agents, Z, center, periphery, dists, median_dist,
             acceleration = forces[ai] / a.mass
 
             # Update velocity with damping
-            damping = 0.85
+            damping = 0.985
             a.velocity = damping * a.velocity + acceleration
 
             # Clamp speed
@@ -576,7 +576,7 @@ def run_physics(agents, Z, center, periphery, dists, median_dist,
             for mem_idx, ev_idx in enumerate(reversed(a.recent_memory)):
                 recency = mem_idx + 1
                 penalties[ev_idx] += (a.memory_size - recency + 1
-                                      ) * median_dist * 0.3
+                                      ) * median_dist * 5.0
 
             scores = d_to_events + penalties
             chosen = int(np.argmin(scores))
@@ -750,19 +750,20 @@ def _concatenate_mono(sequence, xfade, target_length):
 
 
 def _smooth_clicks(output, xfade):
-    """Detect and smooth sample-level clicks."""
+    """Detect and smooth sample-level clicks (vectorized)."""
     import numpy as np
     if len(output) < 4:
         return
-    smooth_r = max(4, xfade // 4)
     local_rms = max(0.001, np.sqrt(np.mean(output ** 2)))
     threshold = local_rms * 4.0
     diffs = np.abs(np.diff(output))
-    for i in range(len(diffs)):
-        if diffs[i] > threshold:
-            lo = max(0, i - 2)
-            hi = min(len(output), i + 3)
-            output[i] = np.median(output[lo:hi])
+    click_indices = np.where(diffs > threshold)[0]
+
+    # Only iterate over actual click positions (typically very few)
+    for i in click_indices:
+        lo = max(0, i - 2)
+        hi = min(len(output), i + 3)
+        output[i] = np.median(output[lo:hi])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -770,7 +771,8 @@ def _smooth_clicks(output, xfade):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def write_stats(path, events, agents, agent_histories, Z, center,
-                periphery, losses, sr, out_duration, warnings):
+                periphery, losses, sr, out_duration, warnings,
+                clips=None):
     """Write detailed stats report for Praat."""
     import numpy as np
 
@@ -841,8 +843,44 @@ def write_stats(path, events, agents, agent_histories, Z, center,
                      for e in events]
         f.write("mean_event_dur=%.3f\n" % np.mean(durations))
 
-        for w in warnings:
-            f.write("warning=%s\n" % w)
+        # ── Per-agent polyphonic timeline ─────────────────────────────
+        # Compute cumulative time positions per agent from clip lengths.
+        # Each agent independently concatenates clips with crossfade
+        # overlap, so their timelines are independent.
+        xfade_sec = XFADE_SEC
+        if clips is not None:
+            for ai, hist in enumerate(agent_histories):
+                blocks = []
+                t = 0.0
+                for si, ev_idx in enumerate(hist):
+                    clip = clips[ev_idx]
+                    clip_len = len(clip) if hasattr(clip, '__len__') else 0
+                    clip_dur = clip_len / sr if sr > 0 else 0
+                    if clip_dur < 0.001:
+                        clip_dur = 0.05  # floor for empty clips
+                    blocks.append((ev_idx, t, t + clip_dur))
+                    # Advance with crossfade overlap
+                    t += max(clip_dur - xfade_sec, clip_dur * 0.5)
+
+                # Run-length compress consecutive same-event blocks
+                compressed = []
+                for ev_idx, bs, be in blocks:
+                    if compressed and compressed[-1][0] == ev_idx:
+                        # Extend the previous block
+                        compressed[-1] = (ev_idx, compressed[-1][1], be)
+                    else:
+                        compressed.append((ev_idx, bs, be))
+
+                # Cap at 150 blocks per agent for file size
+                n_bl = min(len(compressed), 150)
+                f.write("ag_%d_n_blocks=%d\n" % (ai, n_bl))
+                for bi in range(n_bl):
+                    ev_idx, bs, be = compressed[bi]
+                    f.write("ag_%d_bl_%d=%d,%.4f,%.4f\n" % (
+                        ai, bi, ev_idx, bs, be))
+
+        if warnings:
+            f.write("warning=%s\n" % "; ".join(warnings))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -850,10 +888,10 @@ def write_stats(path, events, agents, agent_histories, Z, center,
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    if len(sys.argv) != 10:
+    if len(sys.argv) != 11:
         print("Usage: python latent_counterpoint.py "
               "input.wav events.csv output.wav stats.txt "
-              "num_agents latent_size counterpoint_rigidity speed duration",
+              "num_agents latent_size counterpoint_rigidity speed duration seed",
               file=sys.stderr)
         sys.exit(1)
 
@@ -871,6 +909,7 @@ def main():
     cp_rigidity  = float(sys.argv[7])
     speed        = float(sys.argv[8])
     target_dur   = float(sys.argv[9])
+    seed         = int(sys.argv[10])
 
     # Clamp
     num_agents   = max(2, min(6, num_agents))
@@ -879,7 +918,6 @@ def main():
     speed        = max(0.1, min(3.0, speed))
 
     learning_steps = max(50, min(300, 80 + num_agents * 20))
-    seed = 42
 
     np.random.seed(seed)
     warnings = []
@@ -967,7 +1005,8 @@ def main():
 
     out_dur = output.shape[0] / sr
     write_stats(stats_file, events, agents, agent_histories, Z,
-                center, periphery, losses, sr, out_dur, warnings)
+                center, periphery, losses, sr, out_dur, warnings,
+                clips=clips)
 
     # Check unison rates
     for ai in range(num_agents):
