@@ -537,6 +537,11 @@ topEv_0$ = "?"
 topEv_1$ = "?"
 topEv_2$ = "?"
 
+# Trajectory data for visualization
+nFEvPts = 0
+nFTrajPts = 0
+nFoldMarkers = 0
+
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
 
@@ -588,6 +593,84 @@ if fileReadable(tempStats$)
     topEv_1$ = parseStatLine.result$
     @parseStatLine: statsText$, "top_event_2="
     topEv_2$ = parseStatLine.result$
+
+    # ── Parse folding path trajectory ──
+    @parseStatLine: statsText$, "n_ev_pts="
+    nFEvPts$ = parseStatLine.result$
+    nFEvPts = 0
+    if nFEvPts$ <> "?"
+        nFEvPts = number(nFEvPts$)
+    endif
+    if nFEvPts > 200
+        nFEvPts = 200
+    endif
+    for iEP from 0 to nFEvPts - 1
+        @parseStatLine: statsText$, "fev_" + string$(iEP) + "="
+        epRaw$ = parseStatLine.result$
+        fep_'iEP'_x = 0
+        fep_'iEP'_y = 0
+        if epRaw$ <> "?"
+            comma = index(epRaw$, ",")
+            if comma > 0
+                fep_'iEP'_x = number(left$(epRaw$, comma - 1))
+                fep_'iEP'_y = number(mid$(epRaw$, comma + 1, length(epRaw$) - comma))
+            endif
+        endif
+    endfor
+
+    @parseStatLine: statsText$, "n_traj_pts="
+    nFTrajPts$ = parseStatLine.result$
+    nFTrajPts = 0
+    if nFTrajPts$ <> "?"
+        nFTrajPts = number(nFTrajPts$)
+    endif
+    if nFTrajPts > 200
+        nFTrajPts = 200
+    endif
+    for iTP from 0 to nFTrajPts - 1
+        @parseStatLine: statsText$, "ftr_" + string$(iTP) + "="
+        tpRaw$ = parseStatLine.result$
+        ftp_'iTP'_x = 0
+        ftp_'iTP'_y = 0
+        if tpRaw$ <> "?"
+            comma = index(tpRaw$, ",")
+            if comma > 0
+                ftp_'iTP'_x = number(left$(tpRaw$, comma - 1))
+                ftp_'iTP'_y = number(mid$(tpRaw$, comma + 1, length(tpRaw$) - comma))
+            endif
+        endif
+    endfor
+
+    @parseStatLine: statsText$, "n_fold_markers="
+    nFoldMarkers$ = parseStatLine.result$
+    nFoldMarkers = 0
+    if nFoldMarkers$ <> "?"
+        nFoldMarkers = number(nFoldMarkers$)
+    endif
+    if nFoldMarkers > 100
+        nFoldMarkers = 100
+    endif
+    for iFM from 0 to nFoldMarkers - 1
+        @parseStatLine: statsText$, "fm_" + string$(iFM) + "="
+        fmRaw$ = parseStatLine.result$
+        fm_'iFM'_x = 0
+        fm_'iFM'_y = 0
+        fm_'iFM'_type$ = "mirror"
+        if fmRaw$ <> "?"
+            comma1 = index(fmRaw$, ",")
+            if comma1 > 0
+                fm_'iFM'_x = number(left$(fmRaw$, comma1 - 1))
+                rest$ = mid$(fmRaw$, comma1 + 1, length(fmRaw$) - comma1)
+                comma2 = index(rest$, ",")
+                if comma2 > 0
+                    fm_'iFM'_y = number(left$(rest$, comma2 - 1))
+                    fm_'iFM'_type$ = mid$(rest$, comma2 + 1, length(rest$) - comma2)
+                else
+                    fm_'iFM'_y = number(rest$)
+                endif
+            endif
+        endif
+    endfor
 endif
 
 ###############################################################################
@@ -687,36 +770,134 @@ if draw_visualization
     Text top: "no", "Folded spectrogram"
     removeObject: specFold, tmpFold
 
-    # === Topology Stats Panel ===
-    Select outer viewport: 0, 8, 5.4, 6.4
-    Select inner viewport: 0.6, 7.7, 5.5, 6.3
+    # === Folding Path Trajectory ===
+    Select outer viewport: 0, 8, 5.4, 6.7
+    Select inner viewport: 0.6, 7.7, 5.5, 6.6
 
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.93, 0.96}", 0, 1, 0, 1
+    if nFTrajPts > 1 or nFEvPts > 0
+        # Compute axis bounds
+        axMinX = 0
+        axMaxX = 1
+        axMinY = 0
+        axMaxY = 1
+        gotBounds = 0
+        for iB from 0 to nFEvPts - 1
+            bx = fep_'iB'_x
+            by = fep_'iB'_y
+            if gotBounds = 0
+                axMinX = bx
+                axMaxX = bx
+                axMinY = by
+                axMaxY = by
+                gotBounds = 1
+            else
+                if bx < axMinX
+                    axMinX = bx
+                endif
+                if bx > axMaxX
+                    axMaxX = bx
+                endif
+                if by < axMinY
+                    axMinY = by
+                endif
+                if by > axMaxY
+                    axMaxY = by
+                endif
+            endif
+        endfor
+        for iB from 0 to nFTrajPts - 1
+            bx = ftp_'iB'_x
+            by = ftp_'iB'_y
+            if gotBounds = 0
+                axMinX = bx
+                axMaxX = bx
+                axMinY = by
+                axMaxY = by
+                gotBounds = 1
+            else
+                if bx < axMinX
+                    axMinX = bx
+                endif
+                if bx > axMaxX
+                    axMaxX = bx
+                endif
+                if by < axMinY
+                    axMinY = by
+                endif
+                if by > axMaxY
+                    axMaxY = by
+                endif
+            endif
+        endfor
 
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "Topology:"
+        rangeX = axMaxX - axMinX
+        rangeY = axMaxY - axMinY
+        if rangeX < 0.01
+            rangeX = 1
+        endif
+        if rangeY < 0.01
+            rangeY = 1
+        endif
+        axMinX = axMinX - rangeX * 0.1
+        axMaxX = axMaxX + rangeX * 0.1
+        axMinY = axMinY - rangeY * 0.1
+        axMaxY = axMaxY + rangeY * 0.1
 
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.65, "half", "Manifold: " + manifoldStat$ + " | Fold density=" + foldDensStat$ + " | Curvature=" + curvatureStat$
-    Text: 0.02, "left", 0.40, "half", "Fold events: " + nFoldEvents$ + " (mirrors=" + nMirrorsStat$ + " twists=" + nTwistsStat$ + " wraps=" + nWrapsStat$ + ")"
+        Axes: axMinX, axMaxX, axMinY, axMaxY
+        Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
 
-    if hasSymStat$ = "1"
-        Colour: "{0.4, 0.2, 0.6}"
-        Text: 0.02, "left", 0.15, "half", "Palindromic symmetry: ON | Score=" + palindromicStat$ + " (higher=more identity-inverted)"
+        # Draw event positions as grey circles
+        for iEP from 0 to nFEvPts - 1
+            Paint circle (mm): "{0.75, 0.75, 0.75}", fep_'iEP'_x, fep_'iEP'_y, 1.2
+        endfor
+
+        # Draw trajectory path
+        Colour: "{0.5, 0.2, 0.5}"
+        Line width: 2
+        for iTP from 1 to nFTrajPts - 1
+            iPrev = iTP - 1
+            Draw line: ftp_'iPrev'_x, ftp_'iPrev'_y, ftp_'iTP'_x, ftp_'iTP'_y
+        endfor
+        Line width: 1
+
+        # Draw fold markers
+        for iFM from 0 to nFoldMarkers - 1
+            fmType$ = fm_'iFM'_type$
+            if fmType$ = "twist"
+                Paint circle (mm): "{0.8, 0.3, 0.2}", fm_'iFM'_x, fm_'iFM'_y, 2.0
+            elsif fmType$ = "wrap"
+                Paint circle (mm): "{0.2, 0.6, 0.8}", fm_'iFM'_x, fm_'iFM'_y, 2.0
+            else
+                Paint circle (mm): "{0.3, 0.7, 0.4}", fm_'iFM'_x, fm_'iFM'_y, 2.0
+            endif
+        endfor
+
+        # Start/end markers
+        if nFTrajPts > 0
+            Paint circle (mm): "{0.2, 0.7, 0.3}", ftp_0_x, ftp_0_y, 2.0
+            iLast = nFTrajPts - 1
+            Paint circle (mm): "{0.8, 0.2, 0.2}", ftp_'iLast'_x, ftp_'iLast'_y, 2.0
+        endif
+
+        Colour: "Black"
+        Draw inner box
+        Font size: 6
+        Text left: "yes", "PC2"
+        Text bottom: "yes", "PC1"
+        Text top: "no", "Folding path (" + manifoldStat$ + ") — green=mirror | red=twist | blue=wrap"
     else
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
+        Font size: 7
         Colour: "{0.5, 0.5, 0.5}"
-        Text: 0.02, "left", 0.15, "half", "Palindromic symmetry: OFF"
+        Text: 0.5, "centre", 0.5, "half", "(folding path data not available)"
+        Colour: "Black"
+        Draw rectangle: 0, 1, 0, 1
     endif
 
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-
     # === Summary Panel ===
-    Select outer viewport: 0, 8, 6.6, 8.0
-    Select inner viewport: 0.6, 7.7, 6.7, 7.9
+    Select outer viewport: 0, 8, 6.8, 8.0
+    Select inner viewport: 0.6, 7.7, 6.85, 7.95
 
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
@@ -726,14 +907,22 @@ if draw_visualization
     Text: 0.02, "left", 0.92, "half", "Summary:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.73, "half", "Steps=" + nStepsStat$ + " | Unique=" + uniqueStat$ + "/" + nEvStat$ + " | Rep=" + repRateStat$ + " | Travel=" + avgTravelStat$
-    Text: 0.02, "left", 0.52, "half", "AE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size)
-    Text: 0.02, "left", 0.32, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + " -> " + fixed$(rms_out, 4)
-    Text: 0.02, "left", 0.12, "half", "Top events: " + topEv_0$ + " | " + topEv_1$ + " | " + topEv_2$
+    Text: 0.02, "left", 0.76, "half", "Steps=" + nStepsStat$ + " | Unique=" + uniqueStat$ + "/" + nEvStat$ + " | Rep=" + repRateStat$ + " | Travel=" + avgTravelStat$
+    Text: 0.02, "left", 0.58, "half", manifoldStat$ + " dens=" + foldDensStat$ + " curv=" + curvatureStat$ + " | Folds=" + nFoldEvents$ + " (m=" + nMirrorsStat$ + " t=" + nTwistsStat$ + " w=" + nWrapsStat$ + ")"
+    Text: 0.02, "left", 0.40, "half", "AE: " + initialLoss$ + "->" + finalLoss$ + " | Latent=" + string$(latent_size) + " | Dur: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4)
+
+    # Symmetry + top events line
+    Colour: "{0.4, 0.4, 0.5}"
+    symLine$ = ""
+    if hasSymStat$ = "1"
+        symLine$ = "Palindrome=" + palindromicStat$ + " | "
+    endif
+    symLine$ = symLine$ + "Top: " + topEv_0$ + " | " + topEv_1$ + " | " + topEv_2$
+    Text: 0.02, "left", 0.22, "half", symLine$
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.02, "left", -0.05, "half", "Warning: " + warningStat$
+        Text: 0.02, "left", 0.06, "half", "Warn: " + warningStat$
     endif
 
     Colour: "Black"

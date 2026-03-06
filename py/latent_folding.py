@@ -713,20 +713,24 @@ def reconstruct(clips, path_events, path_positions, Z, sr,
 
     output = output[:wp]
 
-    # Click smoothing
+    # Click smoothing (vectorized)
     if len(output) > 4:
         local_rms = max(0.001, np.sqrt(np.mean(output.flatten() ** 2)))
         threshold = local_rms * 4.0
         if multichannel:
             for ch in range(n_ch):
-                for i in range(1, len(output) - 1):
-                    if abs(output[i, ch] - output[i - 1, ch]) > threshold:
+                diffs = np.abs(np.diff(output[:, ch]))
+                click_idx = np.where(diffs > threshold)[0]
+                for i in click_idx:
+                    if 0 < i < len(output) - 1:
                         lo = max(0, i - 2)
                         hi = min(len(output), i + 3)
                         output[i, ch] = np.median(output[lo:hi, ch])
         else:
-            for i in range(1, len(output) - 1):
-                if abs(output[i] - output[i - 1]) > threshold:
+            diffs = np.abs(np.diff(output))
+            click_idx = np.where(diffs > threshold)[0]
+            for i in click_idx:
+                if 0 < i < len(output) - 1:
                     lo = max(0, i - 2)
                     hi = min(len(output), i + 3)
                     output[i] = np.median(output[lo:hi])
@@ -756,7 +760,7 @@ def reconstruct(clips, path_events, path_positions, Z, sr,
 def write_stats(path, events, path_events, fold_log, Z,
                 losses, sr, out_duration, manifold_type,
                 fold_density, curvature, permutation_intensity,
-                symmetry, warnings):
+                symmetry, warnings, path_positions=None):
     import numpy as np
 
     n_events = len(events)
@@ -789,9 +793,43 @@ def write_stats(path, events, path_events, fold_log, Z,
         half = n_steps // 2
         first_half = set(path_events[:half])
         second_half = set(path_events[half:])
-        # How much the second half uses different events
         diff = len(second_half - first_half)
         palindromic_score = diff / max(1, len(second_half))
+
+    # ── PCA projection for visualization ──────────────────────────────
+    ev_x = []
+    ev_y = []
+    traj_x = []
+    traj_y = []
+    fold_markers = []  # (x, y, type) for each fold event
+
+    if path_positions is not None and len(path_positions) > 0:
+        traj_arr = np.array(path_positions)
+        all_points = np.vstack([Z, traj_arr])
+
+        mean_pt = np.mean(all_points, axis=0)
+        centered = all_points - mean_pt
+        if centered.shape[1] >= 2:
+            U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+            proj = centered.dot(Vt[:2].T)
+        else:
+            proj = np.column_stack([centered[:, 0], np.zeros(len(centered))])
+
+        n_ev = len(Z)
+        ev_proj = proj[:n_ev]
+        traj_proj = proj[n_ev:]
+
+        ev_x = ev_proj[:, 0].tolist()
+        ev_y = ev_proj[:, 1].tolist()
+        traj_x = traj_proj[:, 0].tolist()
+        traj_y = traj_proj[:, 1].tolist()
+
+        # Map fold_log steps to trajectory coordinates
+        fold_step_map = {f[0]: f[1] for f in fold_log
+                         if f[1] != "symmetry_pivot"}
+        for step, ftype in fold_step_map.items():
+            if step < len(traj_x):
+                fold_markers.append((traj_x[step], traj_y[step], ftype))
 
     with open(path, "w") as f:
         f.write("n_events=%d\n" % n_events)
@@ -823,8 +861,32 @@ def write_stats(path, events, path_events, fold_log, Z,
             f.write("top_event_%d=%d|%d_uses\n" % (
                 rank, idx, usage[idx]))
 
-        for w in warnings:
-            f.write("warning=%s\n" % w)
+        # ── Folding path trajectory (PCA-projected) ───────────────────
+        # Event positions
+        f.write("n_ev_pts=%d\n" % len(ev_x))
+        for ei in range(len(ev_x)):
+            f.write("fev_%d=%.4f,%.4f\n" % (ei, ev_x[ei], ev_y[ei]))
+
+        # Trajectory (subsample to max 150 points)
+        n_traj = len(traj_x)
+        stride = max(1, n_traj // 150)
+        sampled_idx = list(range(0, n_traj, stride))
+        if n_traj - 1 not in sampled_idx:
+            sampled_idx.append(n_traj - 1)
+        n_out = len(sampled_idx)
+        f.write("n_traj_pts=%d\n" % n_out)
+        for ti, si in enumerate(sampled_idx):
+            f.write("ftr_%d=%.4f,%.4f\n" % (ti, traj_x[si], traj_y[si]))
+
+        # Fold markers
+        n_fm = min(len(fold_markers), 100)
+        f.write("n_fold_markers=%d\n" % n_fm)
+        for fi in range(n_fm):
+            fx, fy, ft = fold_markers[fi]
+            f.write("fm_%d=%.4f,%.4f,%s\n" % (fi, fx, fy, ft))
+
+        if warnings:
+            f.write("warning=%s\n" % "; ".join(warnings))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -948,7 +1010,8 @@ def main():
     print("  [Py 7/7] Writing stats...")
     write_stats(stats_file, events, path_events, fold_log, Z,
                 losses, sr, out_dur, manifold, fold_dens, curvature,
-                perm_int, symmetry, warnings)
+                perm_int, symmetry, warnings,
+                path_positions=path_positions)
 
     print("    Output: %.2fs | Peak: %.4f" %
           (out_dur, np.max(np.abs(output))))
