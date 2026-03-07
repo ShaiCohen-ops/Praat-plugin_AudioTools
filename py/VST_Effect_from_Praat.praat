@@ -33,9 +33,8 @@ endif
 
 pluginDir$ = preferencesDirectory$ + sep$ + "plugin_AudioTools" + sep$
 
-# Create plugin dir if needed (write a dummy file and remove it as mkdir workaround)
-tempMarker$ = pluginDir$ + ".keep"
-writeFileLine: tempMarker$, ""
+# Create plugin dir if needed: writing the prefs file is enough to make the folder.
+# (Praat creates parent directories automatically when writing a file.)
 
 tempInput$  = pluginDir$ + "vst_input.wav"
 tempOutput$ = pluginDir$ + "vst_output.wav"
