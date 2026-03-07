@@ -54,9 +54,8 @@ if not fileReadable(pythonScript$)
         ... + "Please verify AudioTools installation."
 endif
 
-# ---- FORM ----
+# ---- FORM  (window 1 - core + VAE + STFT) ----
 form Latent STFT Decoder v1.0
-    # ── Core ──────────────────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom
         option Quick (small, fast)
@@ -67,43 +66,57 @@ form Latent STFT Decoder v1.0
     integer Seed 42
     boolean Draw_visualization 1
     boolean Play_result 1
-    # ── VAE Training ──────────────────────────────────────────────────────
-    comment ── VAE training ──────────────────────────────────────────────
+    comment __ VAE Training ________________________________________________
     real Beta_(KL_weight) 0.5
     integer Epochs 30
     integer Batch_size 8
-    # ── STFT ──────────────────────────────────────────────────────────────
-    comment ── STFT settings ─────────────────────────────────────────────
+    comment __ STFT Settings ________________________________________________
     integer N_fft 512
     integer Hop_length 128
     integer Patch_frames 32
-    # ── VAE patch size (key speed control) ────────────────────────────────
-    comment ── VAE grid (smaller = faster; 32x16 is default) ────────────
-    integer Vae_freq 32
-    integer Vae_frames 16
-    # ── Latent Navigation ─────────────────────────────────────────────────
-    comment ── Latent navigation ─────────────────────────────────────────
-    optionmenu Nav_mode: 1
-        option interpolate
-        option random_walk
-        option drift
-    integer Nav_steps 30
-    integer K_neighbors 4
-    real Step_size 0.30
-    real Temperature 0.25
-    real P_jump_(teleport_prob) 0.05
-    real Visit_weight 2.0
-    real Visit_decay 0.92
-    # ── Output ────────────────────────────────────────────────────────────
-    comment ── Output settings ───────────────────────────────────────────
-    optionmenu Normalize_mode: 3
-        option none
-        option peak
-        option rms
-    optionmenu Phase_mode: 1
-        option borrow
-        option griffinlim
 endform
+
+# ---- ADVANCED PARAMETERS  (window 2 - VAE grid + nav + output) ----
+beginPause: "Advanced Parameters - Latent STFT Decoder"
+    comment: "---- Preset override (overrides window 1 if changed) ----"
+    choice: "Preset2", 1
+        option: "keep window 1 preset"
+        option: "Quick (small, fast)"
+        option: "Standard"
+        option: "High quality"
+    comment: "---- VAE Grid  (smaller = faster; 32x16 is default) ----"
+    integer: "Vae_freq", 32
+    integer: "Vae_frames", 16
+    comment: "---- Latent Navigation ----"
+    choice: "Nav_mode", 1
+        option: "interpolate"
+        option: "random_walk"
+        option: "drift"
+    integer: "Nav_steps", 30
+    integer: "K_neighbors", 4
+    real: "Step_size", 0.30
+    real: "Temperature", 0.25
+    real: "P_jump", 0.05
+    real: "Visit_weight", 2.0
+    real: "Visit_decay", 0.92
+    comment: "---- Output Settings ----"
+    choice: "Normalize_mode", 3
+        option: "none"
+        option: "peak"
+        option: "rms"
+    choice: "Phase_mode", 1
+        option: "borrow"
+        option: "griffinlim"
+clicked = endPause: "Cancel", "OK", 2
+if clicked = 1
+    exitScript
+endif
+
+# If window 2 preset was changed, it overrides window 1
+# preset2: 1=keep  2=Quick  3=Standard  4=HighQuality
+if preset2 > 1
+    preset = preset2
+endif
 
 # ---- PRESET APPLICATION ----
 if preset = 2
@@ -616,6 +629,10 @@ finalLoss$      = "?"
 initialLoss$    = "?"
 warningStat$    = ""
 
+# Trajectory data
+nSEvPts = 0
+nSTrajPts = 0
+
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
 
@@ -672,6 +689,51 @@ if fileReadable(tempStats$)
 
     @parseStatLine: statsText$, "warning="
     warningStat$ = parseStatLine.result$
+
+    # ── Parse trajectory data ──
+    @parseStatLine: statsText$, "n_ev_pts="
+    nSEP$ = parseStatLine.result$
+    if nSEP$ <> "?"
+        nSEvPts = number(nSEP$)
+    endif
+    if nSEvPts > 200
+        nSEvPts = 200
+    endif
+    for iEP from 0 to nSEvPts - 1
+        @parseStatLine: statsText$, "sev_" + string$(iEP) + "="
+        epRaw$ = parseStatLine.result$
+        sep_'iEP'_x = 0
+        sep_'iEP'_y = 0
+        if epRaw$ <> "?"
+            comma = index(epRaw$, ",")
+            if comma > 0
+                sep_'iEP'_x = number(left$(epRaw$, comma - 1))
+                sep_'iEP'_y = number(mid$(epRaw$, comma + 1, length(epRaw$) - comma))
+            endif
+        endif
+    endfor
+
+    @parseStatLine: statsText$, "n_traj_pts="
+    nSTP$ = parseStatLine.result$
+    if nSTP$ <> "?"
+        nSTrajPts = number(nSTP$)
+    endif
+    if nSTrajPts > 200
+        nSTrajPts = 200
+    endif
+    for iTP from 0 to nSTrajPts - 1
+        @parseStatLine: statsText$, "str_" + string$(iTP) + "="
+        tpRaw$ = parseStatLine.result$
+        stp_'iTP'_x = 0
+        stp_'iTP'_y = 0
+        if tpRaw$ <> "?"
+            comma = index(tpRaw$, ",")
+            if comma > 0
+                stp_'iTP'_x = number(left$(tpRaw$, comma - 1))
+                stp_'iTP'_y = number(mid$(tpRaw$, comma + 1, length(tpRaw$) - comma))
+            endif
+        endif
+    endfor
 endif
 
 ###############################################################################
@@ -769,75 +831,150 @@ if draw_visualization
     Text top: "no", "STFT-decoded output spectrogram (L channel)"
     removeObject: specOut, tmpOut
 
-    # === Config Panel ===
-    Select outer viewport: 0, 8, 4.95, 6.05
-    Select inner viewport: 0.6, 7.7, 5.00, 6.00
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.93, 0.96}", 0, 1, 0, 1
+    # === Latent Navigation Trajectory ===
+    Select outer viewport: 0, 8, 4.95, 6.35
+    Select inner viewport: 0.6, 7.7, 5.00, 6.30
 
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.90, "half", "VAE + STFT configuration:"
-    Font size: 6
-    Colour: "{0.3, 0.5, 0.8}"
-    Text: 0.02, "left", 0.68, "half",
-        ... "STFT:  n_fft=" + nFftStat$
-        ... + "  hop=" + hopStat$
-        ... + "  patch_frames=" + patchFStat$
-        ... + "  freq_bins=" + freqBinsStat$
-    Colour: "{0.6, 0.3, 0.7}"
-    Text: 0.02, "left", 0.48, "half",
-        ... "VAE:   latent=" + latentStat$
-        ... + "  beta=" + betaStat$
-        ... + "  epochs=" + epochsStat$
-        ... + "  loss: " + initialLoss$ + " -> " + finalLoss$
-    Colour: "{0.8, 0.5, 0.1}"
-    Text: 0.02, "left", 0.28, "half",
-        ... "Nav:   mode=" + navModeStat$
-        ... + "  steps=" + nStepsStat$
-        ... + "  phase=" + phaseModeStat$
-    Colour: "{0.3, 0.65, 0.4}"
-    Text: 0.02, "left", 0.08, "half",
-        ... "Events: " + nEvStat$
-        ... + "  dur: " + fixed$(dur, 2) + " s -> " + outDurStat$ + " s"
-        ... + "  normalize=" + normModeStat$
+    if nSTrajPts > 1 or nSEvPts > 0
+        # Compute axis bounds
+        axMinX = 0
+        axMaxX = 1
+        axMinY = 0
+        axMaxY = 1
+        gotBounds = 0
+        for iB from 0 to nSEvPts - 1
+            bx = sep_'iB'_x
+            by = sep_'iB'_y
+            if gotBounds = 0
+                axMinX = bx
+                axMaxX = bx
+                axMinY = by
+                axMaxY = by
+                gotBounds = 1
+            else
+                if bx < axMinX
+                    axMinX = bx
+                endif
+                if bx > axMaxX
+                    axMaxX = bx
+                endif
+                if by < axMinY
+                    axMinY = by
+                endif
+                if by > axMaxY
+                    axMaxY = by
+                endif
+            endif
+        endfor
+        for iB from 0 to nSTrajPts - 1
+            bx = stp_'iB'_x
+            by = stp_'iB'_y
+            if gotBounds = 0
+                axMinX = bx
+                axMaxX = bx
+                axMinY = by
+                axMaxY = by
+                gotBounds = 1
+            else
+                if bx < axMinX
+                    axMinX = bx
+                endif
+                if bx > axMaxX
+                    axMaxX = bx
+                endif
+                if by < axMinY
+                    axMinY = by
+                endif
+                if by > axMaxY
+                    axMaxY = by
+                endif
+            endif
+        endfor
 
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+        rangeX = axMaxX - axMinX
+        rangeY = axMaxY - axMinY
+        if rangeX < 0.01
+            rangeX = 1
+        endif
+        if rangeY < 0.01
+            rangeY = 1
+        endif
+        axMinX = axMinX - rangeX * 0.1
+        axMaxX = axMaxX + rangeX * 0.1
+        axMinY = axMinY - rangeY * 0.1
+        axMaxY = axMaxY + rangeY * 0.1
+
+        Axes: axMinX, axMaxX, axMinY, axMaxY
+        Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
+
+        # Event positions as grey circles
+        for iEP from 0 to nSEvPts - 1
+            Paint circle (mm): "{0.75, 0.75, 0.75}", sep_'iEP'_x, sep_'iEP'_y, 1.2
+        endfor
+
+        # Trajectory path
+        Colour: "{0.2, 0.55, 0.75}"
+        Line width: 2
+        for iTP from 1 to nSTrajPts - 1
+            iPrev = iTP - 1
+            Draw line: stp_'iPrev'_x, stp_'iPrev'_y, stp_'iTP'_x, stp_'iTP'_y
+        endfor
+        Line width: 1
+
+        # Start/end markers
+        if nSTrajPts > 0
+            Paint circle (mm): "{0.2, 0.7, 0.3}", stp_0_x, stp_0_y, 2.0
+            iLast = nSTrajPts - 1
+            Paint circle (mm): "{0.8, 0.2, 0.2}", stp_'iLast'_x, stp_'iLast'_y, 2.0
+        endif
+
+        Colour: "Black"
+        Draw inner box
+        Font size: 6
+        Text left: "yes", "PC2"
+        Text bottom: "yes", "PC1"
+        Text top: "no", "Latent trajectory (" + navModeStat$ + " " + nStepsStat$ + " steps) — ##S##=start ##E##=end"
+    else
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
+        Font size: 7
+        Colour: "{0.5, 0.5, 0.5}"
+        Text: 0.5, "centre", 0.5, "half", "(trajectory data not available)"
+        Colour: "Black"
+        Draw rectangle: 0, 1, 0, 1
+    endif
 
     # === Summary Panel ===
-    Select outer viewport: 0, 8, 6.15, 7.55
-    Select inner viewport: 0.6, 7.7, 6.20, 7.50
+    Select outer viewport: 0, 8, 6.45, 8.0
+    Select inner viewport: 0.6, 7.7, 6.50, 7.95
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.90, "half", "Summary:"
+    Text: 0.02, "left", 0.92, "half", "Summary:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.70, "half",
-        ... "Events: " + nEvStat$
-        ... + " | Nav steps: " + nStepsStat$
-        ... + " | Mode: " + navModeStat$
-        ... + " | Phase: " + phaseModeStat$
-    Text: 0.02, "left", 0.50, "half",
-        ... "VAE loss: " + initialLoss$ + " -> " + finalLoss$
-        ... + " | Latent=" + latentStat$
+    Text: 0.02, "left", 0.76, "half",
+        ... navModeStat$ + " " + nStepsStat$ + " steps | "
+        ... + phaseModeStat$ + " | Events=" + nEvStat$
+        ... + " | Dur: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s"
+    Colour: "{0.3, 0.5, 0.8}"
+    Text: 0.02, "left", 0.58, "half",
+        ... "STFT: fft=" + nFftStat$ + " hop=" + hopStat$
+        ... + " frames=" + patchFStat$ + " bins=" + freqBinsStat$
+        ... + " | Norm=" + normModeStat$
+        ... + " | RMS: " + rmsInputStat$ + "->" + rmsOutputStat$
+    Colour: "{0.6, 0.3, 0.7}"
+    Text: 0.02, "left", 0.40, "half",
+        ... "VAE: lat=" + latentStat$ + " beta=" + betaStat$
+        ... + " ep=" + epochsStat$
+        ... + " | Loss: " + initialLoss$ + "->" + finalLoss$
         ... + " | Seed=" + string$(seed)
-    Text: 0.02, "left", 0.30, "half",
-        ... "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$
-        ... + "s | Normalize: " + normModeStat$
-        ... + " | RMS: " + rmsInputStat$ + " -> " + rmsOutputStat$
-    Text: 0.02, "left", 0.10, "half",
-        ... "n_fft=" + nFftStat$
-        ... + " hop=" + hopStat$
-        ... + " frames=" + patchFStat$
-        ... + " freq_bins=" + freqBinsStat$
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.02, "left", -0.08, "half", "Warning: " + warningStat$
+        Text: 0.02, "left", 0.22, "half", "Warn: " + warningStat$
     endif
 
     Colour: "Black"

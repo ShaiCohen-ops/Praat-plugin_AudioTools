@@ -432,10 +432,6 @@ def generate_trajectory(Z, n_steps, nav_mode, seed,
 # Stage 6 — Waveform Reconstruction
 # ═══════════════════════════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Stage 6 — Waveform Reconstruction
-# ═══════════════════════════════════════════════════════════════════════════
-
 def _do_istft(Zxx, n_fft, hop_length, sr):
     from scipy.signal import istft
     _, audio = istft(Zxx, fs=sr, window="hann",
@@ -620,7 +616,28 @@ def apply_normalization(audio, ref_rms, mode):
 def write_stats(path, n_events, n_steps, nav_mode, phase_mode,
                 latent_size, beta, epochs, n_fft, hop_length, patch_frames,
                 vae_freq, vae_frames, freq_bins, losses, sr, out_dur,
-                normalize_mode, ref_rms, out_rms, warnings_list):
+                normalize_mode, ref_rms, out_rms, warnings_list,
+                Z_events=None, trajectory=None):
+    # ── PCA projection for trajectory visualization ───────────────────
+    ev_x, ev_y, traj_x, traj_y = [], [], [], []
+    if Z_events is not None and trajectory is not None:
+        Z_ev = np.asarray(Z_events, dtype=np.float64)
+        Z_tr = np.asarray(trajectory, dtype=np.float64)
+        all_pts = np.vstack([Z_ev, Z_tr])
+        mean_pt = np.mean(all_pts, axis=0)
+        centered = all_pts - mean_pt
+        if centered.shape[1] >= 2:
+            U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+            proj = centered.dot(Vt[:2].T)
+        else:
+            proj = np.column_stack(
+                [centered[:, 0], np.zeros(len(centered))])
+        n_ev = len(Z_ev)
+        ev_x = proj[:n_ev, 0].tolist()
+        ev_y = proj[:n_ev, 1].tolist()
+        traj_x = proj[n_ev:, 0].tolist()
+        traj_y = proj[n_ev:, 1].tolist()
+
     with open(path, "w") as f:
         f.write("n_events=%d\n"          % n_events)
         f.write("n_steps=%d\n"           % n_steps)
@@ -641,8 +658,24 @@ def write_stats(path, n_events, n_steps, nav_mode, phase_mode,
         f.write("rms_output=%.6f\n"      % out_rms)
         f.write("initial_loss=%.6f\n"    % (losses[0]  if losses else 0.0))
         f.write("final_loss=%.6f\n"      % (losses[-1] if losses else 0.0))
-        for w in warnings_list:
-            f.write("warning=%s\n" % w)
+
+        # ── Trajectory data ───────────────────────────────────────────
+        f.write("n_ev_pts=%d\n" % len(ev_x))
+        for i in range(len(ev_x)):
+            f.write("sev_%d=%.4f,%.4f\n" % (i, ev_x[i], ev_y[i]))
+
+        n_traj = len(traj_x)
+        stride = max(1, n_traj // 150)
+        sampled = list(range(0, n_traj, stride))
+        if n_traj > 0 and n_traj - 1 not in sampled:
+            sampled.append(n_traj - 1)
+        n_out = len(sampled)
+        f.write("n_traj_pts=%d\n" % n_out)
+        for ti, si in enumerate(sampled):
+            f.write("str_%d=%.4f,%.4f\n" % (ti, traj_x[si], traj_y[si]))
+
+        if warnings_list:
+            f.write("warning=%s\n" % "; ".join(warnings_list))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -821,7 +854,8 @@ def main():
                 args.phase_mode, latent_size, args.beta, args.epochs,
                 args.n_fft, args.hop_length, args.patch_frames,
                 vae_freq, vae_frames, freq_bins, losses, sr, out_dur,
-                args.normalize_mode, ref_rms, out_rms, warnings_list)
+                args.normalize_mode, ref_rms, out_rms, warnings_list,
+                Z_events=Z, trajectory=trajectory)
 
     if args.cleanup:
         for path in [args.input_wav, args.events_csv]:
