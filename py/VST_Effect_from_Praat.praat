@@ -1,7 +1,26 @@
 # ============================================================
-# Praat -> Python GUI host -> VST3 -> Praat
-# Put this .praat file and host_vst.py in the same folder.
-# Select one Sound object and run this script.
+# Praat AudioTools - VST_Effect_from_Praat.praat
+# Author: Shai Cohen
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 1.0 (2026)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   VST3 Effect — Praat -> Python GUI host -> VST3 -> Praat
+#
+#   This script serves as a bridge between Praat and a Python-based 
+#   GUI host for VST3 plugins. It allows users to process Praat 
+#   Sound objects through external VST3 effects while maintaining 
+#   a responsive front-end.
+#
+# Citation:
+#   Cohen, S. (2026). VST3 Host:
+#   Python GUI Bridge for Praat.
+#   Praat AudioTools Plugin.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
 # ============================================================
 
 if numberOfSelected("Sound") <> 1
