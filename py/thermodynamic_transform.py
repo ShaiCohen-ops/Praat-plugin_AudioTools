@@ -97,70 +97,71 @@ def compute_spectral_features(audio, sr, times):
     and multi-band energies (8 bands).
     """
     import numpy as np
+    from scipy.signal import stft as scipy_stft
 
     n_fft = 2048
     half = n_fft // 2 + 1
     freqs = np.linspace(0, sr / 2, half)
-    window = np.hanning(n_fft)
 
     n_frames = len(times)
-    flatness = np.zeros(n_frames)
-    flux = np.zeros(n_frames)
-    centroid = np.zeros(n_frames)
-    bandwidth = np.zeros(n_frames)
-    rolloff = np.zeros(n_frames)
 
+    # Compute hop from time grid
+    if n_frames > 1:
+        hop_samples = max(1, int((times[1] - times[0]) * sr))
+    else:
+        hop_samples = n_fft // 4
+
+    # Vectorized STFT
+    _, _, Zxx = scipy_stft(audio, fs=sr, window="hann",
+                           nperseg=n_fft, noverlap=n_fft - hop_samples,
+                           nfft=n_fft, boundary="zeros", padded=True)
+    mag_all = np.abs(Zxx) + 1e-12  # (half, n_stft_frames)
+
+    # Align STFT frames to Praat time grid (take first n_frames)
+    n_stft = mag_all.shape[1]
+    if n_stft >= n_frames:
+        mag = mag_all[:, :n_frames]
+    else:
+        # Pad with last frame if STFT produced fewer frames
+        pad_count = n_frames - n_stft
+        mag = np.concatenate([mag_all,
+                              np.tile(mag_all[:, -1:], (1, pad_count))], axis=1)
+
+    # Spectral flatness: geometric / arithmetic mean per frame
+    log_mag = np.log(mag)
+    geo = np.exp(np.mean(log_mag, axis=0))
+    ari = np.mean(mag, axis=0)
+    flatness = geo / (ari + 1e-12)
+
+    # Spectral flux: RMS of frame-to-frame magnitude difference
+    flux = np.zeros(n_frames)
+    if n_frames > 1:
+        diff = np.diff(mag, axis=1)
+        flux[1:] = np.sqrt(np.mean(diff ** 2, axis=0))
+
+    # Spectral centroid
+    total = np.sum(mag, axis=0)  # (n_frames,)
+    centroid = np.dot(freqs, mag) / (total + 1e-12)
+
+    # Spectral bandwidth
+    freq_dev = freqs[:, None] - centroid[None, :]  # (half, n_frames)
+    bandwidth = np.sqrt(np.sum(mag * freq_dev ** 2, axis=0) / (total + 1e-12))
+
+    # Spectral rolloff (85%)
+    cumsum = np.cumsum(mag, axis=0)  # (half, n_frames)
+    threshold = 0.85 * cumsum[-1, :]  # (n_frames,)
+    rolloff = np.zeros(n_frames)
+    for fi in range(n_frames):
+        idx = np.searchsorted(cumsum[:, fi], threshold[fi])
+        rolloff[fi] = freqs[min(idx, len(freqs) - 1)]
+
+    # Multi-band energies
     n_bands = 8
     band_edges = np.linspace(0, half, n_bands + 1, dtype=int)
     band_energy = np.zeros((n_frames, n_bands))
-
-    prev_mag = None
-    n_samples = len(audio)
-
-    for i, t in enumerate(times):
-        center = int(t * sr)
-        start = center - n_fft // 2
-        end = start + n_fft
-
-        if start < 0 or end > n_samples:
-            frame = np.zeros(n_fft, dtype=np.float64)
-            src_start = max(0, start)
-            src_end = min(n_samples, end)
-            dst_start = src_start - start
-            dst_end = dst_start + (src_end - src_start)
-            frame[dst_start:dst_end] = audio[src_start:src_end]
-        else:
-            frame = audio[start:end].copy()
-
-        frame *= window
-        spec = np.fft.rfft(frame)
-        mag = np.abs(spec) + 1e-12
-
-        log_mag = np.log(mag)
-        geo = np.exp(np.mean(log_mag))
-        ari = np.mean(mag)
-        flatness[i] = geo / (ari + 1e-12)
-
-        if prev_mag is not None:
-            diff = mag - prev_mag
-            flux[i] = np.sqrt(np.mean(diff ** 2))
-        prev_mag = mag.copy()
-
-        total = np.sum(mag)
-        centroid[i] = np.sum(freqs * mag) / (total + 1e-12)
-
-        c = centroid[i]
-        bandwidth[i] = np.sqrt(
-            np.sum(mag * (freqs - c) ** 2) / (total + 1e-12))
-
-        cumsum = np.cumsum(mag)
-        threshold = 0.85 * cumsum[-1]
-        idx = np.searchsorted(cumsum, threshold)
-        rolloff[i] = freqs[min(idx, len(freqs) - 1)]
-
-        for b in range(n_bands):
-            band_energy[i, b] = np.mean(
-                mag[band_edges[b]:band_edges[b + 1]] ** 2)
+    for b in range(n_bands):
+        band_energy[:, b] = np.mean(
+            mag[band_edges[b]:band_edges[b + 1], :] ** 2, axis=0)
 
     return {
         "flatness": flatness,
@@ -357,11 +358,20 @@ def ai_mode_c(X_norm, S0, seed):
     L = pca.fit_transform(X_norm)
 
     window = max(3, int(0.3 / 0.01))
+    # Vectorized rolling std via uniform_filter
+    from scipy.ndimage import uniform_filter1d
+    # Mean of per-component std in a sliding window:
+    # Compute local variance via E[x²] - E[x]² for each component
+    half_w = window // 2
+    w_size = 2 * half_w + 1
     S_learned = np.zeros(len(L))
-    for i in range(len(L)):
-        lo = max(0, i - window // 2)
-        hi = min(len(L), i + window // 2 + 1)
-        S_learned[i] = np.mean(np.std(L[lo:hi], axis=0))
+    for d in range(L.shape[1]):
+        col = L[:, d]
+        local_mean = uniform_filter1d(col, size=w_size, mode="nearest")
+        local_sq = uniform_filter1d(col ** 2, size=w_size, mode="nearest")
+        local_var = np.maximum(local_sq - local_mean ** 2, 0.0)
+        S_learned += np.sqrt(local_var)
+    S_learned /= L.shape[1]
 
     S_learned = _safe_normalize(S_learned)
     S_blend = 0.6 * S_learned + 0.4 * S0
@@ -1063,12 +1073,12 @@ def _smooth_clicks(seg, radius):
     threshold = local_rms * 4.0  # jump > 4× local RMS = click
 
     diffs = np.abs(np.diff(seg))
-    for i in range(len(diffs)):
-        if diffs[i] > threshold:
-            # Smooth this sample with its neighbors using a 5-tap median
-            lo = max(0, i - 2)
-            hi = min(len(seg), i + 3)
-            seg[i] = np.median(seg[lo:hi])
+    click_pos = np.where(diffs > threshold)[0]
+    for i in click_pos:
+        # Smooth this sample with its neighbors using a 5-tap median
+        lo = max(0, i - 2)
+        hi = min(len(seg), i + 3)
+        seg[i] = np.median(seg[lo:hi])
 
 
 # ═══════════════════════════════════════════════════════════════════════════
