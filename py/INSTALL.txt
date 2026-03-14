@@ -3,7 +3,7 @@
 ============================================================
 
 The AudioTools plugin contains a collection of hybrid
-Praat–Python systems for AI-assisted audio analysis,
+Praat-Python systems for AI-assisted audio analysis,
 recomposition, and generative sound transformation.
 
 These systems rely on Python for numerical processing,
@@ -23,14 +23,16 @@ Install the following packages:
     scipy
     scikit-learn
     sounddevice
+    torch
+    librosa
 
 Quick install command:
 
 Windows
-    pip install numpy soundfile scipy scikit-learn sounddevice
+    pip install numpy soundfile scipy scikit-learn sounddevice torch librosa
 
 Mac / Linux
-    pip3 install numpy soundfile scipy scikit-learn sounddevice
+    pip3 install numpy soundfile scipy scikit-learn sounddevice torch librosa
 
 
 ============================================================
@@ -51,6 +53,14 @@ scikit-learn
 
 sounddevice
     Multichannel audio playback for professional interfaces
+
+torch
+    Deep learning engine used by GranularNavigationEngine
+    for latent autoencoder training and grain embedding
+
+librosa
+    Constant-Q Transform (CQT) and music information retrieval
+    used by SympatheticResonance for pitch discovery
 
 
 ============================================================
