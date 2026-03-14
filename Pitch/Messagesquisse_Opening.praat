@@ -678,8 +678,11 @@ if draw_visualization = 1
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, totalDuration, 0
     selectObject: finalStereo
+    Extract one channel: 1
+    leftCh = selected("Sound")
     Colour: "{0.20, 0.45, 0.82}"
     Draw: 0, 0, -outAmpMax, outAmpMax, "no", "Curve"
+    removeObject: leftCh
     Colour: "Black"
     Draw inner box
     Font size: 7

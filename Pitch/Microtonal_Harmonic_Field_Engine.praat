@@ -915,17 +915,19 @@ if visualize
             endif
             Line width: 1.2
 
+            # Intervals depend only on (field, voice) — compute once per voice
+            @getInterval: act_field_A, v
+            viz_iA = getInterval.result
+            @getInterval: act_field_B, v
+            viz_iB = getInterval.result
+
             prev_t2 = 0
             prev_f2 = 0
             for t from 1 to n_frames
                 ph_t = frame_phrase# [t]
                 if ph_t >= 1 and ph_t <= n_phrases and f0_hz# [t] > 0
-                    @getInterval: act_field_A, v
-                    iA = getInterval.result
-                    @getInterval: act_field_B, v
-                    iB = getInterval.result
                     fmx = field_mix_p [ph_t]
-                    ei  = (1 - fmx) * iA + fmx * iB
+                    ei  = (1 - fmx) * viz_iA + fmx * viz_iB
                     tg  = anchor_hz_p [ph_t] * 2 ^ (ei / 1200)
                     t_m = (t - 0.5) * analysis_step_sec
                     if prev_f2 > 0 and tg > pitch_floor_Hz and tg < pitch_ceiling_Hz
