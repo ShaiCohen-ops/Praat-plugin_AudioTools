@@ -89,16 +89,15 @@ def compute_onset_strength(audio, sr, hop=128):
     Onset strength curve via half-wave rectified spectral flux.
     Returns (strength_curve, hop_size).
     """
+    from scipy.signal import stft as scipy_stft
     n_fft = 1024
-    frames = []
-    for i in range(0, len(audio) - n_fft, hop):
-        frame = audio[i:i + n_fft] * np.hanning(n_fft)
-        spec  = np.abs(np.fft.rfft(frame))
-        frames.append(spec)
-    frames = np.array(frames)
-    flux   = np.diff(frames, axis=0)
-    flux   = np.maximum(flux, 0).sum(axis=1)          # half-wave rectify
-    flux   = np.concatenate([[0.0], flux])
+    _, _, Zxx = scipy_stft(audio, fs=sr, window="hann",
+                           nperseg=n_fft, noverlap=n_fft - hop,
+                           nfft=n_fft, boundary="zeros", padded=True)
+    mag = np.abs(Zxx)  # (freq_bins, n_frames)
+    flux = np.diff(mag, axis=1)
+    flux = np.maximum(flux, 0).sum(axis=0)  # half-wave rectify + sum across freq
+    flux = np.concatenate([[0.0], flux])
     return flux, hop
 
 
@@ -107,19 +106,13 @@ def pick_onsets(strength, sr, hop, min_gap_s=0.08, threshold_ratio=0.35):
     Peak-pick the onset strength curve.
     Returns list of onset sample positions.
     """
+    from scipy.signal import find_peaks as _find_peaks
     min_gap_frames = max(1, int(min_gap_s * sr / hop))
-    # Adaptive threshold: mean + ratio * (max - mean)
     mu    = strength.mean()
     sigma = strength.std()
     thr   = mu + threshold_ratio * sigma
-    peaks = []
-    for i in range(1, len(strength) - 1):
-        if strength[i] > thr and strength[i] >= strength[i-1] and strength[i] >= strength[i+1]:
-            if not peaks or (i - peaks[-1]) >= min_gap_frames:
-                peaks.append(i)
-    # Always include frame 0
-    if not peaks or peaks[0] > 0:
-        peaks.insert(0, 0)
+    peak_idx, _ = _find_peaks(strength, height=thr, distance=min_gap_frames)
+    peaks = sorted(set([0] + peak_idx.tolist()))
     return [p * hop for p in peaks]
 
 
@@ -674,12 +667,10 @@ def build_event_similarity_matrix(feat_vecs):
     Compute pairwise cosine similarity matrix for all events.
     Returns (N, N) numpy array.
     """
-    n   = len(feat_vecs)
-    mat = np.zeros((n, n), dtype=np.float32)
-    for i in range(n):
-        for j in range(n):
-            mat[i, j] = cosine_sim(feat_vecs[i], feat_vecs[j])
-    return mat
+    X = np.array(feat_vecs, dtype=np.float32)
+    norms = np.linalg.norm(X, axis=1, keepdims=True) + 1e-12
+    X_n = X / norms
+    return (X_n @ X_n.T).astype(np.float32)
 
 
 def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops, rng):

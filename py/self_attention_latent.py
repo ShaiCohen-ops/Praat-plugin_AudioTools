@@ -88,12 +88,15 @@ def _mel_filterbank(sr, n_fft, n_mels):
     pts    = mel2hz(np.linspace(hz2mel(20), hz2mel(sr / 2), n_mels + 2))
     bins   = np.clip(np.floor((n_fft + 1) * pts / sr).astype(int), 0, n_bins - 1)
     fb     = np.zeros((n_mels, n_bins))
+    k_all  = np.arange(n_bins)
     for m in range(1, n_mels + 1):
         lo, ctr, hi = bins[m-1], bins[m], bins[m+1]
-        for k in range(lo, ctr):
-            if ctr > lo: fb[m-1, k] = (k - lo) / (ctr - lo)
-        for k in range(ctr, hi):
-            if hi > ctr: fb[m-1, k] = (hi - k) / (hi - ctr)
+        if ctr > lo:
+            mask = (k_all >= lo) & (k_all < ctr)
+            fb[m-1, mask] = (k_all[mask] - lo) / (ctr - lo)
+        if hi > ctr:
+            mask = (k_all >= ctr) & (k_all < hi)
+            fb[m-1, mask] = (hi - k_all[mask]) / (hi - ctr)
     return fb
 
 

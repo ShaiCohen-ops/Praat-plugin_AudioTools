@@ -365,7 +365,8 @@ procedure parseStatLine: .text$, .key$
     .kl = length(.key$)
     .pos = index(.text$, .key$)
     if .pos > 0
-        .rest$ = mid$(.text$, .pos + .kl, 200)
+        .start = .pos + .kl
+        .rest$ = mid$(.text$, .start, length(.text$) - .start + 1)
         .nl    = index(.rest$, newline$)
         if .nl > 0
             .result$ = left$(.rest$, .nl - 1)
@@ -429,10 +430,12 @@ endif
 # ═════════════════════════════════════════════════════════════════════════════
 # Step 5 — Load output + cleanup disk files
 # ═════════════════════════════════════════════════════════════════════════════
+haveOutput = 0
 if load_output and fileReadable(output_wav$)
     outSound = Read from file: output_wav$
     Rename: soundName$ + "_sal"
     appendInfoLine: "SAL: Loaded output as: " + soundName$ + "_sal"
+    haveOutput = 1
 endif
 
 # Delete output files from disk — result lives as Praat object only
@@ -515,7 +518,7 @@ if show_visualization
     Text left: "yes", "Original"
 
     # === Output waveform ===
-    if load_output and fileReadable(output_wav$)
+    if haveOutput
         Select outer viewport: 0, 8, 2.3, 3.1
         Select inner viewport: 0.6, 7.7, 2.35, 3.05
         selectObject: outSound
@@ -555,7 +558,7 @@ if show_visualization
     removeObject: specOrig, tmpOrig
 
     # === Output spectrogram ===
-    if load_output and fileReadable(output_wav$)
+    if haveOutput
         Select outer viewport: 0, 8, 4.5, 5.8
         Select inner viewport: 0.6, 7.7, 4.6, 5.7
         selectObject: outSound
@@ -633,7 +636,7 @@ appendInfoLine: "Normalize:   ", normModeStat$, "  RMS: ", rmsInputStat$, " → 
 appendInfoLine: "══════════════════════════════════════════"
 appendInfoLine: ""
 
-if play_result and load_output
+if play_result and haveOutput
     selectObject: outSound
     Play
 endif

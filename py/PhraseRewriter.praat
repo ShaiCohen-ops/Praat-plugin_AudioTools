@@ -570,8 +570,13 @@ if draw_visualization
     Select outer viewport: 0, 8, 3.55, 4.65
     Select inner viewport: 0.6, 7.7, 3.60, 4.60
     selectObject: resultSound
-    Extract one channel: 1
-    tmpOut = selected("Sound")
+    if nChannels > 1
+        Extract one channel: 1
+        tmpOut = selected("Sound")
+    else
+        Copy: "tmpOut"
+        tmpOut = selected("Sound")
+    endif
     To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
     specOut = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"

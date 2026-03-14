@@ -134,15 +134,11 @@ def segment_events(audio, sr, pf, hop_sec):
     novelty = smooth(novelty, 1.0)
     thr = float(np.mean(novelty) + 0.35 * np.std(novelty))
 
-    candidates = [0]
     min_frames = max(2, int(EVENT_MIN_DUR / hop_sec))
-    last = 0
-    for i in range(1, n - 1):
-        if novelty[i] > thr and novelty[i] >= novelty[i - 1] and novelty[i] >= novelty[i + 1]:
-            if i - last >= min_frames:
-                candidates.append(i)
-                last = i
-    candidates.append(n - 1)
+
+    from scipy.signal import find_peaks as _find_peaks
+    peak_idx, _ = _find_peaks(novelty, height=thr, distance=min_frames)
+    candidates = sorted(set([0] + list(peak_idx) + [n - 1]))
 
     # split long events
     max_frames = max(min_frames + 1, int(EVENT_MAX_DUR / hop_sec))
@@ -552,6 +548,7 @@ def generate_plan(events, mode, preserve, intensity, duration_policy, variation,
                     "blur":             _blur,
                     "res":              0.0,
                     "_onset_trim_sec":  _trim_sec,  # renderer trims clip before resampling
+                    "_frag_offset_sec": _frag["frag_offset_sec"],
                     "_min_render_sec":  0.060,
                     "_role":            _role,
                 })

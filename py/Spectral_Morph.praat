@@ -163,7 +163,7 @@ appendInfoLine: "Region:  ", fixed$(start_morph_s, 2), " – ", fixed$(end_morph
 appendInfoLine: ""
 
 # ---- EXPORT BOTH SOUNDS ----
-appendInfoLine: "[1/4] Exporting WAVs..."
+appendInfoLine: "[1/5] Exporting WAVs..."
 
 selectObject: soundA
 Save as WAV file: tempA$
@@ -171,13 +171,63 @@ Save as WAV file: tempA$
 selectObject: soundB
 Save as WAV file: tempB$
 
-# ---- CALL PYTHON ----
-appendInfoLine: "[2/4] Running Python morphing engine..."
+# ---- DETECT PYTHON ----
+appendInfoLine: "[2/4] Detecting Python..."
 
-pythonCmd$ = "python"
+probeMarker$ = pluginDir$ + "temp_morph_pyprobe.ok"
+
 if windows
-    pythonCmd$ = "py"
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
 endif
+
+pythonCmd$ = ""
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    probeCode$ = "import numpy,soundfile; open(r'" + probeMarker$ + "','w').write('ok')"
+    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        appendInfoLine: "  Python found: ", pythonCmd$
+    endif
+    if pythonCmd$ <> ""
+        iCand = nCandidates + 1
+    endif
+endfor
+
+if pythonCmd$ = ""
+    deleteFile: tempA$
+    deleteFile: tempB$
+    exitScript: "Cannot find Python with required packages." + newline$
+        ... + "Install: pip install numpy soundfile"
+endif
+
+# ---- CALL PYTHON ----
+appendInfoLine: "[3/4] Running Python morphing engine..."
 
 runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempA$ + """"
@@ -203,7 +253,7 @@ if not fileReadable(tempOutput$)
 endif
 
 # ---- IMPORT RESULT ----
-appendInfoLine: "[3/4] Importing result..."
+appendInfoLine: "[4/5] Importing result..."
 
 Read from file: tempOutput$
 Rename: nameA$ + "_morph_" + nameB$
@@ -217,6 +267,9 @@ appendInfoLine: "  Output: ", fixed$(outputDuration, 2), " s"
 deleteFile: tempA$
 deleteFile: tempB$
 deleteFile: tempOutput$
+if fileReadable(probeMarker$)
+    deleteFile: probeMarker$
+endif
 
 ###############################################################################
 # VISUALIZATION
@@ -412,7 +465,7 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
 else
-    appendInfoLine: "[4/4] Visualization skipped."
+    appendInfoLine: "[5/5] Visualization skipped."
 endif
 
 # ---- FINISH ----

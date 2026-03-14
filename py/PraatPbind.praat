@@ -127,12 +127,12 @@ appendInfoLine: ""
 appendInfoLine: "writing analysis csv..."
 
 deleteFile: tempAnalysis$
-fileappend 'tempAnalysis$' duration_seconds,sampling_rate'newline$'
-fileappend 'tempAnalysis$' 'dur','sr''newline$'
+writeFileLine: tempAnalysis$, "duration_seconds,sampling_rate"
+appendFileLine: tempAnalysis$, string$(dur) + "," + string$(sr)
 
 # ---- STAGE 2: Write Pbind text file ----
 deleteFile: tempPbind$
-fileappend 'tempPbind$' 'pbind$''newline$'
+writeFileLine: tempPbind$, pbind$
 
 # ---- STAGE 3: Detect Python ----
 appendInfoLine: "running python..."

@@ -304,7 +304,8 @@ brightStat$ = "?"
 procedure parseStatLine: .text$, .key$
     .pos = index(.text$, .key$)
     if .pos > 0
-        .rest$ = mid$(.text$, .pos + length(.key$), 200)
+        .start = .pos + length(.key$)
+        .rest$ = mid$(.text$, .start, length(.text$) - .start + 1)
         .nl    = index(.rest$, newline$)
         if .nl = 0
             .nl = length(.rest$) + 1

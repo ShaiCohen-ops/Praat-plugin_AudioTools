@@ -158,11 +158,20 @@ def compute_metrics(audio, sr):
 
     # RMS energy variance over short frames
     frame_len = n_fft
-    rms_list  = []
-    for i in range(0, len(audio) - frame_len, hop):
-        frame = audio[i: i + frame_len]
-        rms_list.append(float(np.sqrt(np.mean(frame ** 2))))
-    rms_energy_var = float(np.var(rms_list)) if rms_list else 0.0
+    n_rms_frames = max(1, (len(audio) - frame_len) // hop + 1)
+    # Truncate audio to fit exact frames, reshape, compute per-frame RMS
+    usable = n_rms_frames * hop + (frame_len - hop)
+    if usable <= len(audio) and n_rms_frames > 0:
+        # Use stride tricks for overlapping frames
+        from numpy.lib.stride_tricks import as_strided
+        itemsize = audio.strides[0]
+        frames = as_strided(audio[:usable],
+                            shape=(n_rms_frames, frame_len),
+                            strides=(hop * itemsize, itemsize))
+        rms_vals = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1))
+        rms_energy_var = float(np.var(rms_vals))
+    else:
+        rms_energy_var = 0.0
 
     # Spectral flux (mean positive inter-frame difference)
     diff = np.diff(mag, axis=1)

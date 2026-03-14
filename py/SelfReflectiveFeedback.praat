@@ -453,11 +453,7 @@ while iter < max_iter and stopFlag = 0
     endif
 
     # Capture both stdout (log) and stderr (errors)
-    if windows
-        pythonCall$ = pythonCall$ + " > """ + logFile$ + """ 2> """ + errorFile$ + """"
-    else
-        pythonCall$ = pythonCall$ + " > """ + logFile$ + """ 2> """ + errorFile$ + """"
-    endif
+    pythonCall$ = pythonCall$ + " > """ + logFile$ + """ 2> """ + errorFile$ + """"
 
     runSystem_nocheck: pythonCall$
 
@@ -593,6 +589,50 @@ else
     stopReason$ = "max_iter_reached"
 endif
 appendInfoLine: "Stop reason: ", stopReason$
+
+# ---- CLEANUP TEMP DIRECTORY ----
+appendInfoLine: ""
+appendInfoLine: "Cleaning up temp files..."
+
+# Delete known per-iteration files (preview WAVs + metrics JSONs)
+for cleanIter from 1 to max_iter
+    cleanWav$     = reflectDir$ + "preview_"  + string$(cleanIter) + ".wav"
+    cleanMetrics$ = reflectDir$ + "metrics_"  + string$(cleanIter) + ".json"
+    if fileReadable(cleanWav$)
+        deleteFile: cleanWav$
+    endif
+    if fileReadable(cleanMetrics$)
+        deleteFile: cleanMetrics$
+    endif
+endfor
+
+# Delete fixed temp files (params, status, log, error)
+for cleanIdx from 1 to 6
+    if cleanIdx = 1
+        cleanFile$ = paramsInFile$
+    elsif cleanIdx = 2
+        cleanFile$ = paramsOutJson$
+    elsif cleanIdx = 3
+        cleanFile$ = paramsOutTxt$
+    elsif cleanIdx = 4
+        cleanFile$ = statusFile$
+    elsif cleanIdx = 5
+        cleanFile$ = errorFile$
+    elsif cleanIdx = 6
+        cleanFile$ = logFile$
+    endif
+    if fileReadable(cleanFile$)
+        deleteFile: cleanFile$
+    endif
+endfor
+
+# Remove the temp directory itself (now empty)
+if windows
+    runSystem_nocheck: "rmdir """ + reflectDir$ + """ 2>NUL"
+else
+    runSystem_nocheck: "rmdir """ + reflectDir$ + """"
+endif
+appendInfoLine: "  Temp folder removed: ", reflectDir$
 
 # ============================================================
 # Procedure: extract line N (1-indexed) from a newline-delimited string
