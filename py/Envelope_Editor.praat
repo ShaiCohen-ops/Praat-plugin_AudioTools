@@ -210,6 +210,7 @@ for i from 1 to nOrigPts
             else
                 shift_st = v0
             endif
+            row = nShiftPts
         endif
     endfor
 

@@ -62,7 +62,7 @@ import sys
 def check_dependencies():
     """Verify required packages are installed."""
     missing = []
-    for pkg in ("numpy", "soundfile", "scipy", "librosa"):
+    for pkg in ("numpy", "soundfile", "scipy"):
         try:
             __import__(pkg)
         except ImportError:
@@ -79,7 +79,6 @@ import numpy as np
 import soundfile as sf
 from scipy.signal import sosfilt, find_peaks
 from scipy.ndimage import gaussian_filter1d
-import librosa
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -159,57 +158,39 @@ def load_audio(path):
 def compute_log_spectrum(audio, sr, n_fft=4096, hop=512, n_bins=120,
                          f_min=32.7, f_max=5000.0):
     """
-    True Constant-Q Transform (CQT) via librosa.
-    Each bin has constant Q = centre_freq / bandwidth, giving uniform
-    resolution in log-frequency space (one semitone per bin at
-    bins_per_octave=12, quarter-tone at 24, etc.).
-    Returns (cqt_mag [n_bins, n_frames], cqt_freqs [n_bins]).
+    Log-frequency spectrum via STFT with log-spaced frequency averaging.
+    Each output bin maps to the nearest linear FFT bin, giving approximately
+    constant resolution in log-frequency space.
+    Returns (mag [n_bins, n_frames], freqs [n_bins]).
     """
-    # 2 bins per semitone = 24 bins/octave for fine pitch resolution
-    bins_per_octave = 24
-    f_min_cqt       = max(f_min, librosa.note_to_hz("B1"))  # ~61 Hz
+    n_fft_fb = min(n_fft, len(audio))
+    n_fft_fb = max(256, 2 ** int(np.floor(np.log2(n_fft_fb))))
+    win      = np.hanning(n_fft_fb).astype(np.float32)
+    freqs_fb = np.fft.rfftfreq(n_fft_fb, 1.0 / sr)
 
-    # n_bins spans from f_min_cqt upward; cap at Nyquist
-    n_octaves = math.log2(min(f_max, sr * 0.45) / f_min_cqt)
-    n_bins_cqt = int(math.floor(n_octaves * bins_per_octave))
-    n_bins_cqt = max(12, min(n_bins_cqt, n_bins))
+    # Build STFT frames
+    frames = []
+    pos    = 0
+    while pos + n_fft_fb <= len(audio):
+        frames.append(np.abs(np.fft.rfft(audio[pos:pos + n_fft_fb] * win)))
+        pos += hop
+    if not frames:
+        frames.append(np.zeros(n_fft_fb // 2 + 1, dtype=np.float32))
+    stft_fb = np.array(frames, dtype=np.float32).T  # (freq_bins, n_frames)
 
-    try:
-        C = librosa.cqt(
-            audio.astype(np.float32),
-            sr=sr,
-            hop_length=max(64, 512),
-            fmin=f_min_cqt,
-            n_bins=n_bins_cqt,
-            bins_per_octave=bins_per_octave,
-            window="hann",
-        )
-        cqt_mag   = np.abs(C).astype(np.float32)
-        cqt_freqs = librosa.cqt_frequencies(n_bins_cqt, fmin=f_min_cqt,
-                                             bins_per_octave=bins_per_octave)
-    except Exception as e:
-        print("    WARNING: CQT failed (%s), falling back to STFT log-spectrum" % e)
-        # Fallback: simple STFT log-averaging (original method)
-        n_fft_fb = min(4096, len(audio))
-        n_fft_fb = max(256, 2 ** int(np.floor(np.log2(n_fft_fb))))
-        win      = np.hanning(n_fft_fb).astype(np.float32)
-        freqs_fb = np.fft.rfftfreq(n_fft_fb, 1.0 / sr)
-        frames   = []
-        pos      = 0
-        while pos + n_fft_fb <= len(audio):
-            frames.append(np.abs(np.fft.rfft(audio[pos:pos + n_fft_fb] * win)))
-            pos += 512
-        if not frames:
-            frames.append(np.zeros(n_fft_fb // 2 + 1, dtype=np.float32))
-        stft_fb   = np.array(frames, dtype=np.float32).T
-        cqt_freqs = np.logspace(np.log10(max(f_min, freqs_fb[1])),
-                                np.log10(min(f_max, freqs_fb[-1])), n_bins)
-        cqt_mag   = np.zeros((len(cqt_freqs), stft_fb.shape[1]), dtype=np.float32)
-        for i, fc in enumerate(cqt_freqs):
-            idx = int(np.argmin(np.abs(freqs_fb - fc)))
-            cqt_mag[i] = stft_fb[idx]
+    # Log-spaced target frequencies
+    f_min_eff = max(f_min, freqs_fb[1])
+    f_max_eff = min(f_max, freqs_fb[-1])
+    log_freqs = np.logspace(np.log10(f_min_eff), np.log10(f_max_eff), n_bins)
 
-    return cqt_mag, cqt_freqs
+    # Map each log-frequency bin to nearest linear STFT bin (vectorised)
+    idx = np.argmin(np.abs(freqs_fb[:, None] - log_freqs[None, :]), axis=0)
+    log_mag = stft_fb[idx]  # (n_bins, n_frames)
+
+    print("    Log-spectrum: %d bins  |  %d frames  |  %.1f-%.1f Hz"
+          % (n_bins, log_mag.shape[1], log_freqs[0], log_freqs[-1]))
+
+    return log_mag.astype(np.float32), log_freqs.astype(np.float32)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -769,9 +750,9 @@ def main():
     print("    %d samples  |  %d Hz  |  %.2f s" % (len(audio), sr, len(audio) / sr))
 
     # ── B: Log-frequency spectrum ──────────────────────────────────────────
-    print("[Py 2/6] Computing CQT (Constant-Q Transform)...")
+    print("[Py 2/6] Computing log-frequency spectrum...")
     log_stft, log_freqs = compute_log_spectrum(audio, sr)
-    print("    CQT bins: %d  |  Frames: %d  |  freq range: %.1f-%.1f Hz"
+    print("    Bins: %d  |  Frames: %d  |  freq range: %.1f-%.1f Hz"
           % (log_stft.shape[0], log_stft.shape[1],
              log_freqs[0], log_freqs[-1]))
 

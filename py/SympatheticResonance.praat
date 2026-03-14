@@ -198,20 +198,71 @@ appendInfoLine: ""
 # ============================================================
 # Stage 1 -- Export WAV
 # ============================================================
-appendInfoLine: "[1/4] Exporting WAV..."
+appendInfoLine: "[1/5] Exporting WAV..."
 
 selectObject: origSound
 Save as WAV file: tempInput$
 
 # ============================================================
-# Stage 2 -- Run Python engine
+# Stage 2 -- Detect Python
 # ============================================================
-appendInfoLine: "[2/4] Running sympathetic resonance engine..."
+appendInfoLine: "[2/4] Detecting Python..."
 
-pythonCmd$ = "python3"
+probeMarker$ = pluginDir$ + "temp_sr_pyprobe.ok"
+
 if windows
-    pythonCmd$ = "python"
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
 endif
+
+pythonCmd$ = ""
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
+    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        appendInfoLine: "  Python found: ", pythonCmd$
+    endif
+    if pythonCmd$ <> ""
+        iCand = nCandidates + 1
+    endif
+endfor
+
+if pythonCmd$ = ""
+    deleteFile: tempInput$
+    exitScript: "Cannot find Python with required packages." + newline$
+        ... + "Install: pip install numpy soundfile scipy"
+endif
+
+# ============================================================
+# Stage 3 -- Run Python engine
+# ============================================================
+appendInfoLine: "[3/4] Running sympathetic resonance engine..."
 
 if fileReadable(tempOutput$)
     deleteFile: tempOutput$
@@ -241,15 +292,11 @@ appendInfoLine: "  Engine complete."
 # ============================================================
 # Stage 3 -- Import result and read stats
 # ============================================================
-appendInfoLine: "[3/4] Importing result..."
+appendInfoLine: "[4/5] Importing result..."
 
 Read from file: tempOutput$
 if preset = 1
-    if preset = 1
     outName$ = "SR_" + origName$ + "_" + charStr$
-else
-    outName$ = "SR_" + origName$ + "_" + presetName$
-endif
 else
     outName$ = "SR_" + origName$ + "_" + presetName$
 endif
@@ -295,7 +342,7 @@ appendInfoLine: "  Spectral flatness: ", statFlatness$
 ###############################################################################
 
 if draw_visualization
-    appendInfoLine: "[4/4] Drawing visualization..."
+    appendInfoLine: "[5/5] Drawing visualization..."
 
     Erase all
     Select outer viewport: 0, 8, 0, 8
@@ -457,7 +504,7 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
 else
-    appendInfoLine: "[4/4] Visualization skipped."
+    appendInfoLine: "[5/5] Visualization skipped."
 endif
 
 # ============================================================

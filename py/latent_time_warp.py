@@ -96,12 +96,15 @@ def _mel_filterbank(sr, n_fft, n_mels):
                        for i in range(n_mels + 2)])
     bins   = np.clip(np.floor((n_fft + 1) * pts / sr).astype(int), 0, n_bins - 1)
     fb     = np.zeros((n_mels, n_bins))
+    k_all  = np.arange(n_bins)
     for m in range(1, n_mels + 1):
         lo, c, hi = bins[m-1], bins[m], bins[m+1]
-        for k in range(lo, c):
-            if c > lo: fb[m-1, k] = (k - lo) / (c - lo)
-        for k in range(c, hi):
-            if hi > c: fb[m-1, k] = (hi - k) / (hi - c)
+        if c > lo:
+            mask = (k_all >= lo) & (k_all < c)
+            fb[m-1, mask] = (k_all[mask] - lo) / (c - lo)
+        if hi > c:
+            mask = (k_all >= c) & (k_all < hi)
+            fb[m-1, mask] = (hi - k_all[mask]) / (hi - c)
     _mel_filterbank_cache[key] = fb
     return fb
 
@@ -479,10 +482,9 @@ def build_temporal_field(Z, mode, seed,
         # stay sub-luminal and the formula remains real-valued).
 
         # Compute per-event velocity: ||z(i) - z(i-1)||
-        velocities = np.zeros(N)
-        for i in range(1, N):
-            velocities[i] = np.sqrt(np.sum((Z[i] - Z[i - 1]) ** 2))
-        velocities[0] = velocities[1] if N > 1 else 0.0
+        deltas = np.diff(Z, axis=0)                           # (N-1, D)
+        vels   = np.sqrt(np.sum(deltas ** 2, axis=1))         # (N-1,)
+        velocities = np.concatenate([[vels[0] if N > 1 else 0.0], vels])
 
         # Set c to 95th-percentile velocity so scale stays finite
         c = np.percentile(velocities, 95) + 1e-8
