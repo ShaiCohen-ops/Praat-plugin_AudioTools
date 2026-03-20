@@ -305,12 +305,8 @@ if nExtracted > 1
     endfor
 endif
 
-xfadeSec = overlap_factor * minSliceDur
-if xfadeSec < 0.001
-    xfadeSec = 0.001
-endif
-
-# Build mono Left channel
+# Build mono Left channel (sequential — Praat concatenates by object list order,
+# not selection order, so sorted output requires two-at-a-time approach)
 if nExtracted = 1
     selectObject: extracted_1
     monoL = Copy: "BP_L"
