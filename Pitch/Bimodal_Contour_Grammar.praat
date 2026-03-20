@@ -3,20 +3,47 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-# Description: The SAME procedures generate both audio resynthesis and visual animation
-# Grammar: S → Phrase + S (recursive) |
-# Phrase → Onset + Nucleus + Coda
+#   The SAME procedures generate both audio resynthesis and
+#   visual animation.
+#   Grammar: S → Phrase + S (recursive)
+#            Phrase → Onset + Nucleus + Coda
+#
+#   Terminals:
+#     Onset   — JumpUp  | GlissandoUp
+#     Nucleus — Plateau | Wobble
+#     Coda    — Fall    | DeepDrop
+#
+#   Grammar parameters (pitch range, gesture speed, interval
+#   width, wobble depth) shape the musical character.  Six
+#   presets cover distinct compositional aesthetics.  The
+#   seeded LCG ensures full reproducibility from seed.
 #
 # ============================================================
 
 # Bimodal Contour Grammar: Sound Processing + Visual Presentation
 
-form Bimodal Contour Generator
+form Bimodal Contour Generator v0.4
+    comment === Preset ===
+    optionmenu Preset: 1
+        option Custom
+        option Microtonal Murmur   (narrow, slow, tiny wobble)
+        option Leaping Gestures    (wide jumps, moderate speed)
+        option Rapid Stutter       (very short, narrow range)
+        option Wide Arc            (large intervals, slow, deep)
+        option Gentle Drift        (medium range, slow, soft wobble)
+
+    comment === Grammar Parameters (Custom only) ===
+    positive Pitch_base_lo_Hz 100
+    positive Pitch_base_hi_Hz 200
+    real Gesture_scale 1.0
+    real Interval_scale 1.0
+    positive Wobble_depth_Hz 5.0
+
     comment === Random Seed ===
     integer randomSeed 0
     comment (0 = use current time, any other number = fixed seed)
@@ -46,6 +73,69 @@ form Bimodal Contour Generator
     boolean playAfterGeneration 1
 endform
 
+# ============================================================
+# APPLY PRESETS
+# ============================================================
+
+presetName$ = "Custom"
+
+if preset = 2
+    presetName$       = "Microtonal Murmur"
+    pitch_base_lo_Hz  = 120
+    pitch_base_hi_Hz  = 160
+    gesture_scale     = 1.8
+    interval_scale    = 0.25
+    wobble_depth_Hz   = 1.5
+elsif preset = 3
+    presetName$       = "Leaping Gestures"
+    pitch_base_lo_Hz  = 80
+    pitch_base_hi_Hz  = 250
+    gesture_scale     = 0.9
+    interval_scale    = 2.0
+    wobble_depth_Hz   = 6.0
+elsif preset = 4
+    presetName$       = "Rapid Stutter"
+    pitch_base_lo_Hz  = 140
+    pitch_base_hi_Hz  = 180
+    gesture_scale     = 0.3
+    interval_scale    = 0.5
+    wobble_depth_Hz   = 3.0
+elsif preset = 5
+    presetName$       = "Wide Arc"
+    pitch_base_lo_Hz  = 60
+    pitch_base_hi_Hz  = 300
+    gesture_scale     = 1.6
+    interval_scale    = 1.8
+    wobble_depth_Hz   = 8.0
+elsif preset = 6
+    presetName$       = "Gentle Drift"
+    pitch_base_lo_Hz  = 100
+    pitch_base_hi_Hz  = 200
+    gesture_scale     = 1.4
+    interval_scale    = 0.7
+    wobble_depth_Hz   = 4.0
+endif
+
+# Clamp grammar parameters
+if gesture_scale < 0.1
+    gesture_scale = 0.1
+endif
+if gesture_scale > 5.0
+    gesture_scale = 5.0
+endif
+if interval_scale < 0.05
+    interval_scale = 0.05
+endif
+if interval_scale > 5.0
+    interval_scale = 5.0
+endif
+if wobble_depth_Hz < 0.1
+    wobble_depth_Hz = 0.1
+endif
+if wobble_depth_Hz > 50.0
+    wobble_depth_Hz = 50.0
+endif
+
 # ========================================================================================
 # INITIALIZATION
 # ========================================================================================
@@ -64,11 +154,16 @@ duration = Get total duration
 startTime = Get start time
 endTime = Get end time
 
-writeInfoLine: "Bimodal Contour Grammar Generator"
+writeInfoLine: "Bimodal Contour Grammar Generator v0.4"
 appendInfoLine: "========================================================"
 appendInfoLine: "Sound: ", name$
 appendInfoLine: "Duration: ", fixed$ (duration, 3), " seconds"
 appendInfoLine: "Grammar: S → Phrase + S | Phrase → Onset + Nucleus + Coda"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "  Pitch base: ", fixed$(pitch_base_lo_Hz, 0), " – ", fixed$(pitch_base_hi_Hz, 0), " Hz"
+appendInfoLine: "  Gesture scale: ", fixed$(gesture_scale, 2),
+    ... "  Interval scale: ", fixed$(interval_scale, 2),
+    ... "  Wobble: ±", fixed$(wobble_depth_Hz, 1), " Hz"
 
 # Set random seed
 if randomSeed = 0
@@ -198,7 +293,7 @@ Colour: "Black"
 Line width: 1
 Font size: 12
 
-Text top: "yes", "Bimodal Grammar: " + name$ + " (S → Phrase + S)"
+Text top: "yes", "Bimodal Grammar: " + name$ + "  [" + presetName$ + "]  (S → Phrase + S)"
 Text bottom: "yes", "Time (s)"
 Text left: "yes", "MIDI Note (Hz mapped)"
 
@@ -218,6 +313,7 @@ endif
 appendInfoLine: ""
 appendInfoLine: "========================================================"
 appendInfoLine: "✓ Complete!"
+appendInfoLine: "  Preset: ", presetName$
 appendInfoLine: "  Random seed: ", seedValue
 appendInfoLine: "  Grammar points: ", point_count
 appendInfoLine: "  MIDI range: ", currentMidiMin, "-", currentMidiMax
@@ -300,7 +396,33 @@ Font size: 7
 Select outer viewport: 0, 0.65, imgH + 0.45, imgH + 1.25
 Text left: "yes", "Gestures"
 
-# == Panel 2: Intensity curve ==============================================================
+# == Panel 2: Output waveform =================================================================
+
+Select outer viewport: 0, 8, imgH + 1.30, imgH + 2.10
+Select inner viewport: 0.6, 7.6, imgH + 1.35, imgH + 2.05
+
+selectObject: resynthID
+resPeak = Get absolute extremum: 0, 0, "None"
+if resPeak < 0.001
+    resPeak = 0.001
+endif
+resAmpMax = resPeak * 1.15
+
+Axes: startTime, endTime, -resAmpMax, resAmpMax
+Paint rectangle: "{0.97, 0.97, 0.97}", startTime, endTime, -resAmpMax, resAmpMax
+Colour: "{0.80, 0.80, 0.80}"
+Draw line: startTime, 0, endTime, 0
+selectObject: resynthID
+Colour: "{0.22, 0.55, 0.72}"
+Draw: 0, 0, -resAmpMax, resAmpMax, "no", "Curve"
+Colour: "Black"
+Draw inner box
+Font size: 7
+Text left: "yes", "Output"
+Text top: "no", name$ + "_grammar  (PSOLA resynthesis)"
+Text bottom: "yes", "Time (s)"
+
+# == Panel 3: Intensity curve ==============================================================
 
 selectObject: intensityID
 intMin = Get minimum: 0, 0, "Parabolic"
@@ -309,15 +431,15 @@ intLo = intMin - 4
 intHi = intMax + 4
 
 # Label strip
-Select outer viewport: 1, 8, imgH + 1.30, imgH + 1.65
+Select outer viewport: 1, 8, imgH + 2.15, imgH + 2.50
 Axes: 0, 1, 0, 1
 Font size: 7
 Colour: "{0.40, 0.40, 0.40}"
 Text: 0, "left", 0.5, "half", "Source intensity  " + fixed$(intMin, 0) + " – " + fixed$(intMax, 0) + " dB   dashed = baseLoudness (" + fixed$(baseLoudness, 0) + " dB)"
 
 # Drawing panel
-Select outer viewport: 0, 8, imgH + 1.65, imgH + 2.45
-Select inner viewport: 0.6, 7.6, imgH + 1.75, imgH + 2.35
+Select outer viewport: 0, 8, imgH + 2.50, imgH + 3.30
+Select inner viewport: 0.6, 7.6, imgH + 2.60, imgH + 3.20
 Axes: startTime, endTime, intLo, intHi
 
 Paint rectangle: "{0.97, 0.97, 0.97}", startTime, endTime, intLo, intHi
@@ -337,15 +459,15 @@ Colour: "Black"
 Line width: 1
 Draw inner box
 Font size: 7
-Select outer viewport: 0, 0.65, imgH + 1.65, imgH + 2.45
+Select outer viewport: 0, 0.65, imgH + 2.50, imgH + 3.30
 Text left: "yes", "Intensity (dB)"
-Select outer viewport: 0.6, 7.6, imgH + 2.35, imgH + 2.52
+Select outer viewport: 0.6, 7.6, imgH + 3.20, imgH + 3.37
 Axes: 0, 1, 0, 1
 Font size: 7
 Colour: "{0.50, 0.50, 0.50}"
 Text: 0.5, "centre", 0.5, "half", "Time (s)"
 
-# == Panel 3: Stats bar ====================================================================
+# == Panel 4: Stats bar ====================================================================
 
 jumpUp_count = 0
 glissUp_count = 0
@@ -372,12 +494,21 @@ for i from 1 to phrase_count
     endif
 endfor
 
-Select outer viewport: 0, 8, imgH + 2.56, imgH + 3.10
+Select outer viewport: 0, 8, imgH + 3.42, imgH + 4.10
 Axes: 0, 1, 0, 1
 Font size: 6
 Colour: "{0.40, 0.40, 0.40}"
-Text: 0.5, "centre", 0.72, "half", "Phrases: " + string$(phrase_count) + "   Points: " + string$(point_count) + "   MIDI range: " + string$(currentMidiMin) + " – " + string$(currentMidiMax) + "   Seed: " + string$(seedValue)
-Text: 0.5, "centre", 0.28, "half", "Onsets  JumpUp: " + string$(jumpUp_count) + "  GlissUp: " + string$(glissUp_count) + "     Nuclei  Plateau: " + string$(plateau_count) + "  Wobble: " + string$(wobble_count) + "     Codas  Fall: " + string$(fall_count) + "  DeepDrop: " + string$(deepDrop_count)
+Text: 0.5, "centre", 0.78, "half",
+    ... "##" + presetName$ + "##   Phrases: " + string$(phrase_count)
+    ... + "   Points: " + string$(point_count)
+    ... + "   MIDI: " + string$(currentMidiMin) + "–" + string$(currentMidiMax)
+    ... + "   Seed: " + string$(seedValue)
+Text: 0.5, "centre", 0.42, "half",
+    ... "Pitch: " + fixed$(pitch_base_lo_Hz, 0) + "–" + fixed$(pitch_base_hi_Hz, 0) + " Hz"
+    ... + "   GestScale: " + fixed$(gesture_scale, 2)
+    ... + "   IntScale: " + fixed$(interval_scale, 2)
+    ... + "   Wobble: ±" + fixed$(wobble_depth_Hz, 1) + " Hz"
+Text: 0.5, "centre", 0.10, "half", "Onsets  JumpUp: " + string$(jumpUp_count) + "  GlissUp: " + string$(glissUp_count) + "     Nuclei  Plateau: " + string$(plateau_count) + "  Wobble: " + string$(wobble_count) + "     Codas  Fall: " + string$(fall_count) + "  DeepDrop: " + string$(deepDrop_count)
 
 Font size: 10
 Colour: "Black"
@@ -506,12 +637,14 @@ procedure generate_contour: .targetTime
 endproc
 
 procedure phrase
-    # Determine base pitch
-    .base = randomUniform(100, 200)
+    # Determine base pitch from grammar parameters
+    @randomUniform: pitch_base_lo_Hz, pitch_base_hi_Hz
+    .base = randomUniform.result
     current_pitch = .base
     
     # Vary intensity for this phrase
-    current_intensity = baseLoudness + randomUniform(-loudnessVariation, loudnessVariation)
+    @randomUniform: -loudnessVariation, loudnessVariation
+    current_intensity = baseLoudness + randomUniform.result
     
     # v0.3: record phrase index and timing boundaries
     phrase_count = phrase_count + 1
@@ -533,7 +666,8 @@ procedure phrase
     coda_type_'cur_ph'$ = last_gesture_type$
     
     # Breath pause
-    current_time = current_time + randomUniform(0.05, 0.1)
+    @randomUniform: 0.05 * gesture_scale, 0.1 * gesture_scale
+    current_time = current_time + randomUniform.result
 endproc
 
 # ========================================================================================
@@ -541,14 +675,17 @@ endproc
 # ========================================================================================
 
 procedure onset
-    .dur = randomUniform(0.05, 0.15)
-    .choice = randomInteger(1, 2)
+    @randomUniform: 0.05 * gesture_scale, 0.15 * gesture_scale
+    .dur = randomUniform.result
+    @randomInteger: 1, 2
+    .choice = randomInteger.result
     
     if .choice = 1
         # JumpUp
         last_gesture_type$ = "JumpUp"
         @addPoint: current_time, current_pitch
-        current_pitch = current_pitch + randomUniform(10, 30)
+        @randomUniform: 10 * interval_scale, 30 * interval_scale
+        current_pitch = current_pitch + randomUniform.result
         current_time = current_time + .dur
         @addPoint: current_time, current_pitch
     else
@@ -556,15 +693,18 @@ procedure onset
         last_gesture_type$ = "GlissUp"
         @addPoint: current_time, current_pitch
         current_time = current_time + .dur
-        current_pitch = current_pitch + randomUniform(20, 50)
+        @randomUniform: 20 * interval_scale, 50 * interval_scale
+        current_pitch = current_pitch + randomUniform.result
         @addPoint: current_time, current_pitch
     endif
 endproc
 
 procedure nucleus
-    .dur = randomUniform(0.2, 0.5)
+    @randomUniform: 0.2 * gesture_scale, 0.5 * gesture_scale
+    .dur = randomUniform.result
     .endTime = current_time + .dur
-    .choice = randomInteger(1, 2)
+    @randomInteger: 1, 2
+    .choice = randomInteger.result
     
     if .choice = 1
         # Plateau
@@ -576,8 +716,12 @@ procedure nucleus
         # Wobble
         last_gesture_type$ = "Wobble"
         while current_time < .endTime
-            .step = 0.05
-            .wobble = randomUniform(-5, 5)
+            .step = 0.05 * gesture_scale
+            if .step < 0.01
+                .step = 0.01
+            endif
+            @randomUniform: -wobble_depth_Hz, wobble_depth_Hz
+            .wobble = randomUniform.result
             @addPoint: current_time, current_pitch + .wobble
             current_time = current_time + .step
         endwhile
@@ -585,16 +729,20 @@ procedure nucleus
 endproc
 
 procedure coda
-    .dur = randomUniform(0.1, 0.2)
+    @randomUniform: 0.1 * gesture_scale, 0.2 * gesture_scale
+    .dur = randomUniform.result
     
-    if randomUniform(0, 1) > 0.5
+    @randomUniform: 0, 1
+    if randomUniform.result > 0.5
         # Fall
         last_gesture_type$ = "Fall"
-        .drop = randomUniform(20, 40)
+        @randomUniform: 20 * interval_scale, 40 * interval_scale
+        .drop = randomUniform.result
     else
         # DeepDrop
         last_gesture_type$ = "DeepDrop"
-        .drop = randomUniform(50, 80)
+        @randomUniform: 50 * interval_scale, 80 * interval_scale
+        .drop = randomUniform.result
     endif
     
     @addPoint: current_time, current_pitch
