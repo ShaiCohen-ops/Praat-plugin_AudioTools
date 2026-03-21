@@ -600,14 +600,27 @@ procedure processChannel: .inputSound
         # Convert back to sound
         To Sound
         .segFilt = selected("Sound")
-        .segFiltId$ = string$(.segFilt)
         removeObject: .seg, .spec
         
         # Mix into output buffer (overlap-add)
+        # Formula (part) restricts evaluation to [segStart, segEnd] only,
+        # avoiding the O(n_total) scan that full Formula requires.
+        # col-indexed access avoids time-domain interpolation overhead.
+        selectObject: .segFilt
+        .segNs = Get number of samples
         selectObject: .output
-        startStr$ = string$(segStart)
-        endStr$ = string$(segEnd)
-        Formula: "if x >= " + startStr$ + " and x < " + endStr$ + " then self + Object_" + .segFiltId$ + "(x - " + startStr$ + ") else self endif"
+        .s1 = Get sample number from time: segStart
+        if .s1 < 1
+            .s1 = 1
+        endif
+        .s2 = .s1 + .segNs - 1
+        .outNs = Get number of samples
+        if .s2 > .outNs
+            .s2 = .outNs
+        endif
+        .off = .s1 - 1
+        Formula (part): segStart, segEnd, 1, 1,
+            ... "self + object[" + string$(.segFilt) + ", col - " + string$(.off) + "]"
         
         removeObject: .segFilt
         
