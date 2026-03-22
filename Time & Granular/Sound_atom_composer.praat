@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Added visualizations
+# Version: 1.0 (2025) - Fixed object references, added safety checks
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,12 +16,11 @@
 # Usage:
 #   Run this script and select a folder containing audio clips.
 #
-# Changelog v0.3:
-#   - Added comprehensive visualization
-#   - Atom distribution plot (frequency vs time)
-#   - Stereo field visualization
-#   - Energy/spectral analysis display
-#   - Play option
+# Changelog v1.0:
+#   - Fixed object reference syntax (now uses object() function)
+#   - Added preset name for display
+#   - Added safety check for zero atoms
+#   - Improved error handling
 #
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
@@ -62,10 +61,6 @@ form "Sound Atom Composer - True Granular"
     boolean Play_result 1
 endform
 
-writeInfoLine: "=== Sound Atom Composer ==="
-appendInfoLine: ""
-appendInfoLine: "Starting True Granular Composer..."
-
 ################################################################################
 # PRESET LOGIC
 ################################################################################
@@ -78,6 +73,7 @@ if preset_style = 2
     randomize_order = 0
     output_duration = 20.0
     atom_duration_multiplier = 2.0
+    preset$ = "Time Stretch"
     
 elsif preset_style = 3
     # Pitch Shifted Cloud (Dense, high pitch)
@@ -87,6 +83,7 @@ elsif preset_style = 3
     randomize_order = 1
     output_duration = 8.0
     atom_duration_multiplier = 1.0
+    preset$ = "Pitch Shifted Cloud"
     
 elsif preset_style = 4
     # Shuffle Texture (Randomized order)
@@ -96,7 +93,17 @@ elsif preset_style = 4
     randomize_order = 1
     output_duration = 10.0
     atom_duration_multiplier = 1.0
+    preset$ = "Shuffle Texture"
+    
+else
+    # Custom
+    preset$ = "Custom"
 endif
+
+writeInfoLine: "=== Sound Atom Composer ==="
+appendInfoLine: "Preset: ", preset$
+appendInfoLine: ""
+appendInfoLine: "Starting True Granular Composer..."
 
 ################################################################################
 # STEP 1: LOAD AND PREPARE SOURCE BANK
@@ -114,7 +121,8 @@ endif
 Create Strings as file list: "fileList", input_folder$ + "/*.wav"
 numFiles = Get number of strings
 if numFiles = 0
-    exitScript: "No WAV files found."
+    removeObject: "Strings fileList"
+    exitScript: "No WAV files found in the selected folder."
 endif
 
 appendInfoLine: "  Found ", numFiles, " WAV files"
@@ -141,7 +149,29 @@ for i to nRows
     id_list#[i] = Get value: i, "id"
 endfor
 
-# 5. Select sounds
+# 5. Find max sample rate across all files
+maxSR = 0
+for i to nRows
+    selectObject: id_list#[i]
+    thisSR = Get sampling frequency
+    if thisSR > maxSR
+        maxSR = thisSR
+    endif
+endfor
+
+# 6. Resample any files that don't match maxSR
+for i to nRows
+    selectObject: id_list#[i]
+    thisSR = Get sampling frequency
+    if thisSR <> maxSR
+        Resample: maxSR, 50
+        newID = selected("Sound")
+        removeObject: id_list#[i]
+        id_list#[i] = newID
+    endif
+endfor
+
+# 7. Select all sounds for concatenation
 for i to nRows
     currentID = id_list#[i]
     if i = 1
@@ -151,16 +181,19 @@ for i to nRows
     endif
 endfor
 
-# 6. Concatenate and Rename to a Safe Identifier
+# 8. Concatenate and Rename to a Safe Identifier
 Concatenate
 Rename: "SourceBankTemp"
 sourceBankID = selected("Sound")
+
+# Store source bank ID as string for Formula references
+sourceBankStr$ = string$(sourceBankID)
 
 selectObject: sourceBankID
 sourceDuration = Get total duration
 appendInfoLine: "  Source bank duration: ", fixed$(sourceDuration, 2), " s"
 
-# 7. Cleanup Individual Files
+# 10. Cleanup Individual Files
 for i to nRows
     currentID = id_list#[i]
     if i = 1
@@ -238,6 +271,13 @@ appendInfoLine: "  Frequency range: ", min_freq, "-", max_freq, " Hz"
 selectObject: "Table atomDictionary"
 numAtoms = Get number of rows
 
+# Safety check: ensure we have atoms to work with
+if numAtoms = 0
+    removeObject: sourceBankID
+    removeObject: "Table atomDictionary"
+    exitScript: "No atoms found matching criteria. Try lowering min_energy or adjusting frequency range."
+endif
+
 if randomize_order = 1
     Randomize rows
     appendInfoLine: "  Order: Randomized"
@@ -262,7 +302,8 @@ appendInfoLine: "  Output duration: ", output_duration, " s"
 appendInfoLine: "  Transpose: ", transpose_semitones, " semitones"
 appendInfoLine: "  Amplitude scale: ", amplitude_scale
 
-samplingFreq = 44100
+selectObject: sourceBankID
+samplingFreq = Get sampling frequency
 Create Sound from formula: "Left", 1, 0, output_duration, samplingFreq, "0"
 leftID = selected("Sound")
 
@@ -286,6 +327,7 @@ for i from 1 to numAtoms
     freq = Get value: i, "frequency"
     amp = Get value: i, "amplitude"
     
+    # Safe division (numAtoms already checked > 0)
     dstTime = (i - 1) * (output_duration / numAtoms)
     jitter = randomGauss(0, 0.01)
     
@@ -312,8 +354,9 @@ for i from 1 to numAtoms
         midL = dstStartL + (effDur / 2)
         width = effDur / 4
         
+        # FIXED: Use object() syntax instead of Sound_SourceBankTemp
         cmd$ = "self + " + fixed$(gainL, 6) 
-        cmd$ = cmd$ + " * Sound_SourceBankTemp(" + fixed$(srcTime, 6) + " + (x - " + fixed$(dstStartL, 6) + ") * " + fixed$(playRate, 6) + ") "
+        cmd$ = cmd$ + " * object(" + sourceBankStr$ + ", " + fixed$(srcTime, 6) + " + (x - " + fixed$(dstStartL, 6) + ") * " + fixed$(playRate, 6) + ") "
         cmd$ = cmd$ + " * exp(-0.5 * ((x - " + fixed$(midL, 6) + ") / " + fixed$(width, 6) + ")^2)"
         
         Formula (part): dstStartL, dstEndL, 1, 1, cmd$
@@ -324,8 +367,9 @@ for i from 1 to numAtoms
         midR = dstStartR + (effDur / 2)
         width = effDur / 4
         
+        # FIXED: Use object() syntax instead of Sound_SourceBankTemp
         cmd$ = "self + " + fixed$(gainR, 6) 
-        cmd$ = cmd$ + " * Sound_SourceBankTemp(" + fixed$(srcTime, 6) + " + (x - " + fixed$(dstStartR, 6) + ") * " + fixed$(playRate, 6) + ") "
+        cmd$ = cmd$ + " * object(" + sourceBankStr$ + ", " + fixed$(srcTime, 6) + " + (x - " + fixed$(dstStartR, 6) + ") * " + fixed$(playRate, 6) + ") "
         cmd$ = cmd$ + " * exp(-0.5 * ((x - " + fixed$(midR, 6) + ") / " + fixed$(width, 6) + ")^2)"
         
         Formula (part): dstStartR, dstEndR, 1, 1, cmd$
@@ -361,7 +405,7 @@ if draw_visualization
     Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Sound Atom Composer: Granular Synthesis"
+    Text: 0.5, "centre", 0.5, "half", "Sound Atom Composer: " + preset$
     
     # Source Bank Waveform
     Select outer viewport: 0, 8, 0.6, 1.6
@@ -391,8 +435,8 @@ if draw_visualization
     Select inner viewport: 0.6, 3.6, 3.0, 4.4
     
     # Find min/max for scaling
-    minFreq = min_freq
-    maxFreq = max_freq
+    minFreqViz = min_freq
+    maxFreqViz = max_freq
     minAmp = 1000
     maxAmp = 0
     
@@ -405,8 +449,8 @@ if draw_visualization
         endif
     endfor
     
-    Axes: 0, output_duration, minFreq, maxFreq
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, output_duration, minFreq, maxFreq
+    Axes: 0, output_duration, minFreqViz, maxFreqViz
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, output_duration, minFreqViz, maxFreqViz
     
     # Draw atoms as dots colored by amplitude
     for i to numAtoms
@@ -448,8 +492,8 @@ if draw_visualization
     # Draw pan positions
     for i to numAtoms
         # Color by frequency
-        if maxFreq > minFreq
-            normFreq = (atomFreq[i] - minFreq) / (maxFreq - minFreq)
+        if maxFreqViz > minFreqViz
+            normFreq = (atomFreq[i] - minFreqViz) / (maxFreqViz - minFreqViz)
         else
             normFreq = 0.5
         endif
@@ -512,6 +556,7 @@ selectObject: finalID
 
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
+appendInfoLine: "Preset: ", preset$
 appendInfoLine: "Created: Granular_Output"
 appendInfoLine: "Duration: ", fixed$(output_duration, 2), " s"
 appendInfoLine: "Total atoms placed: ", numAtoms
