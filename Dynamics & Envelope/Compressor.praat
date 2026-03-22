@@ -355,25 +355,34 @@ if draw_result
     appendInfoLine: "Creating visualization..."
     
     Erase all
-    Font size: 10
-    
-    # === TITLE ===
-    Select outer viewport: 0, 10, 0, 0.5
+    Select outer viewport: 0, 8, 0, 8
+
+    # ----------------------------------------------------------
+    # Title
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.65
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Hybrid Compressor## | " + original_name$ + " | Ratio: " + fixed$(ratio, 1) + ":1 | Thresh: " + fixed$(threshold_dB, 0) + "dB"
-    
-    # === TRANSFER CURVE (left panel) ===
-    Select outer viewport: 0, 5, 0.6, 4.0
-    Select inner viewport: 0.6, 4.6, 1.0, 3.8
-    
+    Text: 0.5, "centre", 0.85, "half", "##Studio Dynamic Compressor##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.25, "half",
+        ... original_name$ + "  |  Ratio " + fixed$(ratio, 1) + ":1"
+        ... + "  |  Thresh " + fixed$(threshold_dB, 0) + " dB"
+        ... + "  |  A=" + fixed$(attack_ms, 0) + " R=" + fixed$(release_ms, 0) + " ms"
+
+    # ----------------------------------------------------------
+    # Transfer curve (left half)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.1, 0.52, 3.52
+    Select inner viewport: 0.55, 3.85, 0.72, 3.40
+
     Axes: -60, 0, -60, 0
-    
-    # Background
-    Paint rectangle: "{0.98, 0.98, 0.98}", -60, 0, -60, 0
-    
-    # Draw grid
-    Colour: "{0.85, 0.85, 0.85}"
+    Paint rectangle: "{0.97, 0.97, 0.97}", -60, 0, -60, 0
+
+    # Grid
+    Colour: "{0.86, 0.86, 0.86}"
     Line width: 1
     grid_line = -50
     while grid_line <= -10
@@ -381,32 +390,29 @@ if draw_result
         Draw line: -60, grid_line, 0, grid_line
         grid_line = grid_line + 10
     endwhile
-    
-    # Draw 1:1 reference line
-    Colour: "{0.6, 0.6, 0.6}"
-    Line width: 1
+
+    # 1:1 reference
+    Colour: "{0.62, 0.62, 0.62}"
     Dashed line
     Draw line: -60, -60, 0, 0
     Solid line
-    
-    # Draw threshold lines
-    Colour: "{0.3, 0.3, 0.8}"
-    Line width: 1
+
+    # Threshold lines
+    Colour: "{0.30, 0.30, 0.80}"
     Dashed line
     Draw line: threshold_dB, -60, threshold_dB, 0
     Draw line: -60, threshold_dB, 0, threshold_dB
     Solid line
-    
-    # Draw knee region
+
+    # Knee region
     if knee_dB > 0
-        Colour: "{0.9, 0.9, 1}"
-        Paint rectangle: "{0.9, 0.9, 1}", threshold_dB - knee_dB/2, threshold_dB + knee_dB/2, -60, 0
+        Paint rectangle: "{0.92, 0.92, 1.00}",
+            ... threshold_dB - knee_dB/2, threshold_dB + knee_dB/2, -60, 0
     endif
-    
-    # Draw compression curve
-    Colour: "{0.8, 0.2, 0.2}"
+
+    # Compression curve
+    Colour: "{0.80, 0.20, 0.20}"
     Line width: 3
-    
     prev_out = -60
     for in_lev from -60 to 0
         if knee_dB <= 0
@@ -426,92 +432,114 @@ if draw_result
                 out_lev = in_lev - knee_factor * (in_lev - threshold_dB + knee_dB/2) * (1 - 1/ratio)
             endif
         endif
-        
         if in_lev > -60
             Draw line: in_lev - 1, prev_out, in_lev, out_lev
         endif
         prev_out = out_lev
     endfor
-    
+
     Line width: 1
     Colour: "Black"
     Draw inner box
-    
-    # Axis labels
     Marks bottom every: 1, 10, "yes", "yes", "no"
     Marks left every: 1, 10, "yes", "yes", "no"
-    Font size: 8
+    Font size: 7
     Text bottom: "yes", "Input (dB)"
     Text left: "yes", "Output (dB)"
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    Text top: "no", "Transfer Curve"
-    
-    # === WAVEFORM COMPARISON (right panel) ===
-    Select outer viewport: 5, 10, 0.6, 2.3
-    Select inner viewport: 5.4, 9.6, 0.9, 2.1
-    
-    # Get amplitude range
+    Text top: "no", "Transfer curve"
+
+    # ----------------------------------------------------------
+    # Waveform comparison (right upper)
+    # ----------------------------------------------------------
+    Select outer viewport: 4.1, 8, 0.52, 2.12
+    Select inner viewport: 4.40, 7.65, 0.62, 2.02
+
     selectObject: sound
     wave_max = Get maximum: 0, 0, "Sinc70"
     wave_min = Get minimum: 0, 0, "Sinc70"
     wave_range = max(abs(wave_max), abs(wave_min)) * 1.1
-    
+
     Axes: 0, dur, -wave_range, wave_range
-    
-    # Background
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, -wave_range, wave_range
-    
-    # Zero line
-    Colour: "{0.8, 0.8, 0.8}"
+    Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, dur, 0
-    
-    # Draw input waveform (Gray)
+
+    # Input (grey)
     selectObject: sound
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.62, 0.62, 0.62}"
     Line width: 1
     Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    # Draw output waveform (Green)
+
+    # Output (green)
     selectObject: compressed
-    Colour: "{0.2, 0.6, 0.3}"
+    Colour: "{0.20, 0.60, 0.30}"
     Line width: 1.5
     Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    Colour: "Black"
+
     Line width: 1
+    Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text bottom: "yes", "Time (s)"
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    Text top: "no", "Waveform (Gray=In, Green=Out)"
-    
-    # === GAIN REDUCTION TIMELINE (bottom panel) ===
-    Select outer viewport: 0, 10, 4.1, 6.0
-    Select inner viewport: 0.6, 9.6, 4.4, 5.8
-    
+    Text top: "no", "Waveform  (grey=in  green=out)"
+
+    # ----------------------------------------------------------
+    # Stats panel (right lower)
+    # ----------------------------------------------------------
+    Select outer viewport: 4.1, 8, 2.18, 3.52
+    Select inner viewport: 4.40, 7.65, 2.26, 3.42
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+
+    Font size: 7
+    Colour: "Black"
+    Text: 0.08, "left", 0.88, "half", "##Metering##"
+    Font size: 6
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.08, "left", 0.72, "half", "In Peak:   " + fixed$(in_peak_dB, 1) + " dBFS"
+    Text: 0.08, "left", 0.56, "half", "Out Peak: " + fixed$(out_peak_dB, 1) + " dBFS"
+    Text: 0.08, "left", 0.40, "half", "In RMS:   " + fixed$(in_rms_dB, 1) + " dBFS"
+    Text: 0.08, "left", 0.24, "half", "Out RMS: " + fixed$(out_rms_dB, 1) + " dBFS"
+
+    # Max GR indicator
+    Font size: 7
+    Colour: "{0.70, 0.15, 0.15}"
+    Text: 0.60, "left", 0.72, "half", "Max GR:"
+    Font size: 6
+    Text: 0.60, "left", 0.56, "half", fixed$(gr_min_dB, 1) + " dB"
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.60, "left", 0.40, "half", "Makeup:"
+    Text: 0.60, "left", 0.24, "half", "+" + fixed$(makeup_gain_dB, 1) + " dB"
+
+    Colour: "Black"
+    Draw inner box
+
+    # ----------------------------------------------------------
+    # Gain Reduction timeline (full width)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 3.60, 5.10
+    Select inner viewport: 0.55, 7.65, 3.70, 5.00
+
     # Create GR display in dB
     selectObject: gain_sound
     gr_display = Copy: "gr_display"
     Formula: "20 * log10(self + 1e-10) - makeup_gain_dB"
-    
+
     gr_disp_min = Get minimum: 0, 0, "Sinc70"
     gr_disp_min = min(-6, floor(gr_disp_min / 3) * 3 - 3)
-    
+
     Axes: 0, dur, gr_disp_min, 3
-    
-    # Background for GR area
-    Paint rectangle: "{1, 0.95, 0.95}", 0, dur, gr_disp_min, 0
-    Paint rectangle: "{0.95, 1, 0.95}", 0, dur, 0, 3
-    
-    # Draw zero line
-    Colour: "{0.5, 0.5, 0.5}"
-    Line width: 1
+
+    # Background — red below 0, green above
+    Paint rectangle: "{1, 0.96, 0.96}", 0, dur, gr_disp_min, 0
+    Paint rectangle: "{0.96, 1, 0.96}", 0, dur, 0, 3
+
+    # Zero line
+    Colour: "{0.55, 0.55, 0.55}"
     Draw line: 0, 0, dur, 0
-    
-    # Fill gain reduction area
-    Colour: "{0.9, 0.3, 0.3}"
+
+    # Fill GR area
+    Colour: "{0.90, 0.30, 0.30}"
     n_draw_points = 500
     draw_step = dur / n_draw_points
     t_pos = 0
@@ -523,78 +551,67 @@ if draw_result
         endif
         t_pos = t_pos + draw_step
     endwhile
-    
-    # Draw GR curve on top
-    Colour: "{0.6, 0, 0}"
+
+    # GR curve on top
+    Colour: "{0.60, 0, 0}"
     Line width: 2
     selectObject: gr_display
     Draw: 0, dur, gr_disp_min, 3, "no", "Curve"
-    
+
     Line width: 1
     Colour: "Black"
     Draw inner box
-    
-    # Axis marks
     Marks bottom every: 1, 0.5, "yes", "yes", "no"
     Marks left every: 1, 3, "yes", "yes", "no"
     One mark left: 0, "no", "yes", "yes", "0"
-    
-    Font size: 8
+    Font size: 7
     Text bottom: "yes", "Time (s)"
     Text left: "yes", "GR (dB)"
-    
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    Text top: "no", "Gain Reduction Timeline"
-    
+    Text top: "no", "Gain reduction timeline"
+
     removeObject: gr_display
-    
-    # === GR METER (vertical bar) ===
-    Select outer viewport: 9.3, 10, 4.1, 6.0
-    Select inner viewport: 9.4, 9.9, 4.4, 5.8
-    
-    Axes: 0, 1, gr_disp_min, 3
-    
-    # Meter background
-    Paint rectangle: "{0.9, 0.9, 0.9}", 0, 1, gr_disp_min, 0
-    Paint rectangle: "{0.85, 0.95, 0.85}", 0, 1, 0, 3
-    
-    # Current GR level (max)
-    if gr_min_dB < 0
-        Colour: "{0.9, 0.3, 0.3}"
-        Paint rectangle: "{0.9, 0.3, 0.3}", 0.15, 0.85, gr_min_dB, 0
-    endif
-    
-    # Scale marks
-    Colour: "{0.4, 0.4, 0.4}"
-    Line width: 1
-    Font size: 6
-    db = 0
-    while db >= -24
-        if db >= gr_disp_min
-            Draw line: 0, db, 0.2, db
-            Draw line: 0.8, db, 1, db
-        endif
-        db = db - 6
-    endwhile
-    
-    Colour: "Black"
-    Draw inner box
-    
-    # === STATS BOX ===
-    Select outer viewport: 5, 10, 2.4, 4.0
+
+    # ----------------------------------------------------------
+    # Summary panel
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.20, 5.98
+    Select inner viewport: 0.55, 7.65, 5.26, 5.92
     Axes: 0, 1, 0, 1
-    
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    
-    Text: 0.05, "left", 0.9, "half", "##Input Peak:## " + fixed$(in_peak_dB, 1) + " dB"
-    Text: 0.05, "left", 0.7, "half", "##Output Peak:## " + fixed$(out_peak_dB, 1) + " dB"
-    Text: 0.05, "left", 0.5, "half", "##Max GR:## " + fixed$(gr_min_dB, 1) + " dB"
-    Text: 0.05, "left", 0.3, "half", "##Auto Makeup:## +" + fixed$(makeup_gain_dB, 1) + " dB"
-    
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.30, 0.30, 0.30}"
+
+    if sidechain_filter = 2
+        scStr$ = "HP 80Hz"
+    elsif sidechain_filter = 3
+        scStr$ = "HP 150Hz"
+    elsif sidechain_filter = 4
+        scStr$ = "LP 8kHz"
+    else
+        scStr$ = "Off"
+    endif
+
+    Text: 0.02, "left", 0.52, "half",
+        ... "Thresh: " + fixed$(threshold_dB, 0) + " dB"
+        ... + "  |  Ratio: " + fixed$(ratio, 1) + ":1"
+        ... + "  |  Knee: " + fixed$(knee_dB, 0) + " dB"
+        ... + "  |  Attack: " + fixed$(attack_ms, 0) + " ms"
+        ... + "  |  Release: " + fixed$(release_ms, 0) + " ms"
+        ... + "  |  SC: " + scStr$
+    Text: 0.02, "left", 0.18, "half",
+        ... "Makeup: +" + fixed$(makeup_gain_dB, 1) + " dB"
+        ... + "  |  Max GR: " + fixed$(gr_min_dB, 1) + " dB"
+        ... + "  |  Peak: " + fixed$(in_peak_dB, 1) + " → " + fixed$(out_peak_dB, 1) + " dBFS"
+        ... + "  |  RMS: " + fixed$(in_rms_dB, 1) + " → " + fixed$(out_rms_dB, 1) + " dBFS"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # === CLEANUP ===
