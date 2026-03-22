@@ -227,17 +227,33 @@ procedure processChannel: .outputID, .phaseScale, .channelName$
                 Fade out: 0, .procDur - .fadeDur, .fadeDur, "yes"
             endif
             
-            # Overlap-add
+            # Overlap-add using Formula (part) — restricts evaluation
+            # to the frame's time range only, avoiding O(n_total) scan.
+            # col-indexed access avoids time-domain interpolation.
             .tOut = .iframe * hopOut
-            Shift times to: "start time", .tOut
-            
+
+            selectObject: .processed
+            .procNs = Get number of samples
+
             selectObject: .outputID
-            .tAddEnd = .tOut + window_size_s
-            .procID = .processed
-            .sTOut$ = fixed$(.tOut, 6)
-            .sTEnd$ = fixed$(.tAddEnd, 6)
-            
-            Formula: "if x >= " + .sTOut$ + " and x <= " + .sTEnd$ + " then self + object(" + string$(.procID) + ", x) else self fi"
+            .s1 = Get sample number from time: .tOut
+            if .s1 < 1
+                .s1 = 1
+            endif
+            .s2 = .s1 + .procNs - 1
+            .outNs = Get number of samples
+            if .s2 > .outNs
+                .s2 = .outNs
+            endif
+            .sOff = .s1 - 1
+
+            .tOutEnd = .tOut + window_size_s
+            if .tOutEnd > outputDuration + window_size_s
+                .tOutEnd = outputDuration + window_size_s
+            endif
+
+            Formula (part): .tOut, .tOutEnd, 1, 1,
+                ... "self + object[" + string$(.processed) + ", col - " + string$(.sOff) + "]"
             
             removeObject: .frame, .spectrum, .matComplex, .spectrumMod, .processed
         endif
@@ -307,89 +323,166 @@ endif
 
 removeObject: sourceSound
 
+selectObject: result
+finalDuration = Get total duration
+
 processingTime = stopwatch - startTime
 
 # Visualization
 if draw_visualization
     Erase all
-    
-    Select outer viewport: 2, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, 8
+
+    # ----------------------------------------------------------
+    # Title
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.45
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Paulstretch: " + original_name$ + " (" + preset_name$ + " " + string$(stretch_factor) + "x)"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 2.0
-    Select inner viewport: 0.6, 7.6, 0.7, 1.9
+    Text: 0.5, "centre", 0.65, "half", "##Paulstretch — Spectral Time Stretch##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.25, "half",
+        ... original_name$ + "  |  " + preset_name$
+        ... + "  |  " + fixed$(stretch_factor, 1) + "x"
+        ... + "  |  " + speedStr$
+        ... + "  |  " + fixed$(processingTime, 1) + "s"
+
+    # ----------------------------------------------------------
+    # Input waveform
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0.52, 1.42
+    Select inner viewport: 0.55, 7.65, 0.57, 1.37
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 2.1, 3.5
-    Select inner viewport: 0.6, 7.6, 2.2, 3.4
+    Font size: 7
+    Text left: "yes", "Input"
+    Text top: "no", "Original  (" + fixed$(inputDuration, 2) + " s)"
+
+    # ----------------------------------------------------------
+    # Output waveform
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 1.46, 2.36
+    Select inner viewport: 0.55, 7.65, 1.51, 2.31
     selectObject: result
-    Colour: "{0.4, 0.6, 0.8}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    nChResult = Get number of channels
+    if nChResult > 1
+        Extract one channel: 1
+        vizL = selected("Sound")
+        Colour: "{0.25, 0.50, 0.82}"
+        Draw: 0, 0, 0, 0, "no", "Curve"
+        selectObject: result
+        Extract one channel: 2
+        vizR = selected("Sound")
+        Colour: "{0.82, 0.45, 0.25}"
+        Draw: 0, 0, 0, 0, "no", "Curve"
+        removeObject: vizL, vizR
+    else
+        selectObject: result
+        Colour: "{0.35, 0.58, 0.78}"
+        Draw: 0, 0, 0, 0, "no", "Curve"
+    endif
     Colour: "Black"
     Draw inner box
+    Font size: 7
     Text left: "yes", "Stretched"
     Text bottom: "yes", "Time (s)"
-    
-    # Original spectrogram
-    Select outer viewport: 0, 4, 3.7, 5.3
-    Select inner viewport: 0.6, 3.8, 3.9, 5.2
+    Text top: "no", "Output  (" + fixed$(finalDuration, 2) + " s,  " + fixed$(stretch_factor, 1) + "x)"
+
+    # ----------------------------------------------------------
+    # Original spectrogram (left half)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.1, 2.44, 3.84
+    Select inner viewport: 0.55, 3.85, 2.54, 3.74
     selectObject: original
+    if numChannels > 1
+        Extract one channel: 1
+        vizSpecOrig = selected("Sound")
+    else
+        Copy: "vizSpecOrig"
+        vizSpecOrig = selected("Sound")
+    endif
     To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: origSpec
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    removeObject: origSpec, vizSpecOrig
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Freq"
-    Text bottom: "yes", "Original (s)"
-    
-    # Result spectrogram
-    Select outer viewport: 4, 8, 3.7, 5.3
-    Select inner viewport: 4.4, 7.6, 3.9, 5.2
+    Text left: "yes", "Hz"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Original spectrogram"
+
+    # ----------------------------------------------------------
+    # Stretched spectrogram (right half)
+    # ----------------------------------------------------------
+    Select outer viewport: 4.1, 8, 2.44, 3.84
+    Select inner viewport: 4.40, 7.65, 2.54, 3.74
     selectObject: result
-    
+    if nChResult > 1
+        Extract one channel: 1
+        vizSpecOut = selected("Sound")
+    else
+        Copy: "vizSpecOut"
+        vizSpecOut = selected("Sound")
+    endif
     resDur = Get total duration
     showDur = min(10, resDur)
-    
     To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
-    Paint: 0, showDur, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: resSpec
+    Paint: 0, showDur, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    removeObject: resSpec, vizSpecOut
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Freq"
-    Text bottom: "yes", "Stretched (s)"
-    
-    # Legend with timing
-    Select outer viewport: 2, 8, 5.4, 5.7
+    Text left: "yes", "Hz"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Stretched spectrogram"
+
+    # ----------------------------------------------------------
+    # Summary panel
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 3.92, 4.72
+    Select inner viewport: 0.55, 7.65, 3.98, 4.66
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
+    Colour: "Black"
+    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.30, 0.30, 0.30}"
+
     if create_stereo
-        legendText$ = "Stretch: " + string$(stretch_factor) + "x | " + speedStr$ + " | Time: " + fixed$(processingTime, 2) + "s | Stereo offset: " + fixed$(stereo_phase_offset, 2)
+        stereoStr$ = "Stereo (offset=" + fixed$(stereo_phase_offset, 2) + ")"
     else
-        legendText$ = "Stretch: " + string$(stretch_factor) + "x | " + speedStr$ + " | Time: " + fixed$(processingTime, 2) + "s"
+        stereoStr$ = "Mono"
     endif
-    Text: 0.5, "centre", 0.5, "half", legendText$
-    
+
+    Text: 0.02, "left", 0.52, "half",
+        ... "Preset: " + preset_name$
+        ... + "  |  Stretch: " + fixed$(stretch_factor, 1) + "x"
+        ... + "  |  Window: " + fixed$(window_size_s, 3) + " s"
+        ... + "  |  Overlap: " + fixed$(overlap_percent, 0) + "%"
+        ... + "  |  " + stereoStr$
+    Text: 0.02, "left", 0.18, "half",
+        ... "In: " + fixed$(inputDuration, 2) + " s → Out: " + fixed$(finalDuration, 2) + " s"
+        ... + "  |  " + speedStr$
+        ... + "  |  Frames: " + string$(nFrames)
+        ... + "  |  Render: " + fixed$(processingTime, 1) + " s"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # Final Info
 selectObject: result
-finalDuration = Get total duration
 
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
