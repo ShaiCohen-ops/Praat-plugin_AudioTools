@@ -258,7 +258,7 @@ if draw_visualization
     # ----------------------------------------------------------
     # Title
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.45
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"

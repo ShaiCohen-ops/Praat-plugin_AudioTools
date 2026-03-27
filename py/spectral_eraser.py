@@ -1,20 +1,14 @@
 """
 spectral_eraser.py  –  Interactive spectral eraser with tkinter GUI
+(Now with Text-Filter Capabilities)
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
 
-Draws a spectrogram from a WAV file.  The user can paint over
-time-frequency regions to silence them.  Uses numpy STFT/iSTFT
-(no scipy required).
-
-Usage:
-    python spectral_eraser.py input.wav output.wav done_file fft_size
-
-    fft_size:  FFT window in samples (512 / 1024 / 2048 / 4096)
-
-The GUI writes output.wav on Apply, and always writes done_file
-("OK" or "CANCEL") so the calling Praat script knows what happened.
+Draws a spectrogram from a WAV file. The user can paint over
+time-frequency regions to silence them, or type text to erase
+words directly out of the audio spectrum.
+Uses numpy STFT/iSTFT and PIL for text mapping.
 """
 
 import sys
@@ -35,6 +29,7 @@ def check_dependencies():
         import soundfile      # noqa: F401
     except ImportError:
         missing.append("soundfile")
+        
     if missing:
         print("ERROR: Missing packages: " + ", ".join(missing),
               file=sys.stderr)
@@ -120,7 +115,7 @@ def build_colormap():
 # ────────────────────────────────────────────────────────────────
 
 class SpectralEraserGUI:
-    """tkinter GUI: spectrogram canvas with draw-to-erase."""
+    """tkinter GUI: spectrogram canvas with draw-to-erase and text filter."""
 
     CANVAS_H = 400          # pixels (frequency axis)
     MAX_CANVAS_W = 2000     # cap width for very long sounds
@@ -186,15 +181,19 @@ class SpectralEraserGUI:
         self.brush_sl.set(self.brush)
         self.brush_sl.pack(side="left", padx=4)
 
+        # TEXT FILTER ADDITION
+        tk.Label(top, text="Text Filter:").pack(side="left", padx=(15, 2))
+        self.text_entry = tk.Entry(top, width=12)
+        self.text_entry.pack(side="left")
+        self.text_entry.bind('<Return>', lambda e: self._erase_text())
+        tk.Button(top, text="Erase Text", command=self._erase_text).pack(side="left", padx=(4, 0))
+
         tk.Button(top, text="Clear All", command=self._clear_all
-                  ).pack(side="left", padx=12)
+                  ).pack(side="left", padx=15)
 
         dur = len(self.audio) / self.sr
-        tk.Label(top, text=(f"SR {self.sr} Hz  |  {dur:.2f} s  |  "
-                            f"FFT {self.win_size}  |  "
-                            f"{self.n_frames} frames  ×  "
-                            f"{self.n_freq} bins"),
-                 fg="#555").pack(side="left", padx=12)
+        tk.Label(top, text=(f"SR {self.sr} Hz  |  {dur:.2f} s"),
+                 fg="#555").pack(side="right", padx=12)
 
         # ── Scrollable canvas ──
         cf = tk.Frame(self.root)
@@ -324,6 +323,101 @@ class SpectralEraserGUI:
 
         self.mask[f_lo:f_hi + 1, t_lo:t_hi + 1] = 0
 
+    def _erase_text(self):
+        """Render typed text as a spectral erasure mask across the visible area."""
+        text = self.text_entry.get().strip()
+        if not text:
+            return
+
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            self.status.set("Text filter requires: pip install pillow")
+            return
+
+        import numpy as np
+
+        # 1. Current visible canvas region
+        x_view = self.canvas.xview()
+        vis_x0 = int(x_view[0] * self.cw)
+        vis_x1 = int(x_view[1] * self.cw)
+        vis_w = max(50, vis_x1 - vis_x0)
+
+        # 2. Find a TrueType font, fall back to default
+        font = None
+        target_h = int(self.ch * 0.35)
+        for font_name in ["arial.ttf", "Arial.ttf", "DejaVuSans.ttf",
+                          "LiberationSans-Regular.ttf",
+                          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                          "/System/Library/Fonts/Helvetica.ttc"]:
+            try:
+                font = ImageFont.truetype(font_name, target_h)
+                break
+            except (IOError, OSError):
+                continue
+
+        if font is None:
+            # Scale up the default bitmap font via a large temp image
+            font = ImageFont.load_default()
+
+        # 3. Measure text, render at native size
+        temp_img = Image.new('L', (1, 1), 0)
+        temp_draw = ImageDraw.Draw(temp_img)
+        bbox = temp_draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
+        if tw < 1 or th < 1:
+            return
+
+        # Render text
+        text_img = Image.new('L', (tw + 4, th + 4), 0)
+        draw = ImageDraw.Draw(text_img)
+        draw.text((-bbox[0] + 2, -bbox[1] + 2), text, fill=255, font=font)
+
+        # 4. Scale to fill 80% of visible width, 35% of canvas height
+        target_w = int(vis_w * 0.8)
+        target_h_final = int(self.ch * 0.35)
+        scale = min(target_w / float(tw + 4), target_h_final / float(th + 4))
+        new_w = max(1, int((tw + 4) * scale))
+        new_h = max(1, int((th + 4) * scale))
+
+        scaled_text = text_img.resize((new_w, new_h), Image.LANCZOS)
+
+        # 5. Place in full-canvas mask at bottom of visible area (low frequencies)
+        mask_img = Image.new('L', (self.cw, self.ch), 0)
+        offset_x = vis_x0 + (vis_w - new_w) // 2
+        offset_y = self.ch - new_h - 5
+        mask_img.paste(scaled_text, (offset_x, offset_y))
+
+        # 6. Map to STFT dimensions
+        stft_mask = mask_img.resize((self.n_frames, self.n_freq), Image.NEAREST)
+        stft_arr = np.array(stft_mask)
+
+        # Canvas Y=0 = top = high freq; STFT index 0 = DC = low freq → flip
+        stft_arr = stft_arr[::-1, :]
+
+        # Apply: erase where text pixels are bright
+        self.mask[stft_arr > 64] = 0
+
+        # 7. Visual feedback — red rectangle + text overlay on canvas
+        rid = self.canvas.create_rectangle(
+            offset_x, offset_y, offset_x + new_w, offset_y + new_h,
+            fill="white", outline="", stipple="gray50", tags="erased")
+        self.rect_ids.append(rid)
+
+        # Overlay text label
+        center_x = offset_x + new_w // 2
+        center_y = offset_y + new_h // 2
+        disp_font_size = max(10, int(new_h * 0.6))
+        rid2 = self.canvas.create_text(
+            center_x, center_y,
+            text=text, font=("Helvetica", disp_font_size, "bold"),
+            fill="#ff6666", tags="erased")
+        self.rect_ids.append(rid2)
+
+        erased_pct = float((1.0 - self.mask.mean()) * 100)
+        self.status.set(f"Erased text '{text}'  |  Total erased: {erased_pct:.1f}%")
+
     def _on_press(self, event):
         cx, cy = self._canvas_xy(event)
         self._erase_at(cx, cy)
@@ -344,7 +438,7 @@ class SpectralEraserGUI:
             f"Erased: {erased}%")
 
     def _clear_all(self):
-        """Reset mask and remove overlay rectangles."""
+        """Reset mask and remove overlay rectangles/text."""
         self.mask[:] = 1
         for rid in self.rect_ids:
             self.canvas.delete(rid)
