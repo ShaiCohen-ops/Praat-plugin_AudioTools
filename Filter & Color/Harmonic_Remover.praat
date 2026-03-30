@@ -121,7 +121,7 @@ elsif preset = 5
     # Remove All Overtones (keep F0 only — sine-like output)
     removal_mode = 3
     number_of_harmonics = 12
-    notch_bandwidth_Hz = 40
+    notch_bandwidth_Hz = 60
     analysis_window_ms = 80
     presetName$ = "KeepF0Only"
 elsif preset = 6
@@ -410,19 +410,18 @@ for iframe from 1 to nFrames
                 endfor
 
             elsif removal_mode = 3
-                # All overtones (keep F0)
-                for hn from 2 to number_of_harmonics
-                    fh = hn * f0
-                    if fh < sampleRate / 2 - 100
-                        lowB = max(20, fh - notch_bandwidth_Hz)
-                        highB = min(sampleRate / 2 - 50, fh + notch_bandwidth_Hz)
-                        selectObject: frameSound
-                        isolated = Filter (pass Hann band): lowB, highB, notch_bandwidth_Hz / 2
-                        selectObject: frameResult
-                        Formula: "self - object[" + string$(isolated) + "]"
-                        removeObject: isolated
-                    endif
-                endfor
+                # All overtones (keep F0) — ISOLATE F0 directly
+                # Instead of subtracting N overtones (cumulative error),
+                # extract F0 with a single bandpass.  One filter, zero
+                # accumulation error, and the rolloff tails don't matter
+                # because we're keeping what passes, not subtracting.
+                lowB = max(20, f0 - notch_bandwidth_Hz)
+                highB = min(sampleRate / 2 - 50, f0 + notch_bandwidth_Hz)
+                selectObject: frameSound
+                isolated = Filter (pass Hann band): lowB, highB, notch_bandwidth_Hz / 2
+                # Replace frameResult with the isolated F0
+                removeObject: frameResult
+                frameResult = isolated
 
             elsif removal_mode = 4
                 # F0 + all overtones
@@ -521,7 +520,7 @@ if draw_visualization
     # ----------------------------------------------------------
     # Title
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.45
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
@@ -622,6 +621,13 @@ if draw_visualization
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 1, vizMaxFreq, 1
 
+    # For mode 3: show F0 isolation band (green)
+    if removal_mode = 3
+        lowBViz = max(0, medianF0 - notch_bandwidth_Hz)
+        highBViz = min(vizMaxFreq, medianF0 + notch_bandwidth_Hz)
+        Paint rectangle: "{0.85, 1.00, 0.85}", lowBViz, highBViz, -0.05, 1.15
+    endif
+
     # Draw removal bands as shaded rectangles + harmonic markers
     # Mark harmonic positions
     for hn from 1 to number_of_harmonics
@@ -672,9 +678,15 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Gain"
     Text bottom: "yes", "Frequency (Hz)"
-    Text top: "no",
-        ... "Removal bands at median F0 (" + fixed$(medianF0, 1) + " Hz)"
-        ... + "  ×=removed  green=kept"
+    if removal_mode = 3
+        Text top: "no",
+            ... "F0 isolation band at " + fixed$(medianF0, 1) + " Hz"
+            ... + "  (±" + fixed$(notch_bandwidth_Hz, 0) + " Hz)"
+    else
+        Text top: "no",
+            ... "Removal bands at median F0 (" + fixed$(medianF0, 1) + " Hz)"
+            ... + "  ×=removed  green=kept"
+    endif
 
     # ----------------------------------------------------------
     # Summary panel
