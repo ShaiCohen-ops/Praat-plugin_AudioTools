@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025) - Group shuffle added (CDP distort_shuf)
+# Version: 1.2 (2025) - Loudness-based deletion added (CDP distort_del)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,11 +26,23 @@
 #   - Group size 1 reproduces the original individual-waveset shuffle.
 #   - Repeat decay factor is now an explicit user parameter.
 #
+#   v1.2 adds CDP distort_del behaviour (two new types):
+#   - Keep Strongest: wavesets are grouped in windows of <group_size>;
+#     within each group only the single waveset with the highest energy
+#     (sum of absolute sample values — matching CDP's DISTDEL_CYCLEVAL
+#     accumulation) is kept; the rest are discarded. Produces a sparse,
+#     percussive thinning effect.
+#   - Delete Weakest: same grouping, but only the quietest waveset is
+#     removed and all others are kept. Produces subtle noise-reduction /
+#     cleaning at the waveset level.
+#   Both modes measure energy the same way CDP does: integrate |sample|
+#   over the full waveset (Praat: Get energy, a monotone proxy).
+#
 # Usage:
 #   Select a Sound object in Praat and run this script.
 # ============================================================
 
-form Waveset Distortion v1.1
+form Waveset Distortion v1.2
     optionmenu Preset: 1
         option Custom
         option Waveset Repeat (stutter)
@@ -41,6 +53,8 @@ form Waveset Distortion v1.1
         option Waveset Shuffle (individual)
         option Waveset Shuffle (groups, CDP)
         option Waveset Amplitude
+        option Keep Strongest (CDP)
+        option Delete Weakest (CDP)
     comment === Parameters ===
     optionmenu Type: 1
         option Repeat
@@ -50,10 +64,12 @@ form Waveset Distortion v1.1
         option Compress
         option Randomize
         option Amplitude
+        option Keep Strongest
+        option Delete Weakest
     positive Amount 2.0
     comment --- Repeat only ---
     positive Repeat_decay 0.8
-    comment --- Randomize only: group size (1 = individual wavesets) ---
+    comment --- Randomize / Keep Strongest / Delete Weakest: group size ---
     positive Group_size 4
     boolean Preserve_length 0
     comment === Output ===
@@ -99,6 +115,16 @@ elsif preset = 9
     type = 7
     amount = 2.0
     presetName$ = "WavesetAmplitude"
+elsif preset = 10
+    type = 8
+    amount = 1.0
+    group_size = 4
+    presetName$ = "KeepStrongest"
+elsif preset = 11
+    type = 9
+    amount = 1.0
+    group_size = 4
+    presetName$ = "DeleteWeakest"
 endif
 
 # === VALIDATION ===
@@ -117,8 +143,8 @@ if original_duration < 0.05
     exitScript: "Sound must be at least 50 ms."
 endif
 
-# Clamp group_size to a sane minimum
-groupSz = max(1, round(group_size))
+# Clamp group_size (need at least 2 for loudness modes to be meaningful)
+groupSz = max(2, round(group_size))
 
 # Type name
 if type = 1
@@ -137,12 +163,16 @@ elsif type = 6
     else
         typeName$ = "Randomize"
     endif
+elsif type = 8
+    typeName$ = "Keep Strongest (group=" + string$(groupSz) + ")"
+elsif type = 9
+    typeName$ = "Delete Weakest (group=" + string$(groupSz) + ")"
 else
     typeName$ = "Amplitude"
 endif
 
 clearinfo
-writeInfoLine: "=== Waveset Distortion v1.1 ==="
+writeInfoLine: "=== Waveset Distortion v1.2 ==="
 appendInfoLine: "Input: ", soundName$, " (", fixed$(original_duration, 2), " s, ",
     ... sampling_rate, " Hz)"
 appendInfoLine: "Preset: ", presetName$
@@ -152,6 +182,9 @@ if type = 1
 endif
 if type = 6 and groupSz > 1
     appendInfoLine: "Group size: ", groupSz, " wavesets per group (CDP distort_shuf)"
+endif
+if type = 8 or type = 9
+    appendInfoLine: "Group size: ", groupSz, " wavesets per group (CDP distort_del)"
 endif
 appendInfoLine: ""
 
@@ -185,29 +218,42 @@ n_wavesets = n_crossings - 1
 appendInfoLine: "  Crossings: ", n_crossings, " (", n_wavesets, " wavesets)"
 
 # ============================================================
-# STEP 2: BUILD PLAYBACK ORDER
+# STEP 2: MEASURE WAVESET ENERGIES (types 8 and 9 only)
 # ============================================================
 #
-# CDP distort_shuf logic (see distort_shuf / do_shuffle in source):
-#   - Wavesets are first packed into groups of <groupSz> (DISTORTS_CYCLECNT).
-#   - The groups (not individual wavesets) are shuffled via Fisher-Yates
-#     (DISTORTS_MAP array in CDP).
-#   - Within each group the original waveset order is preserved.
-#   - Any trailing wavesets that do not fill a complete group are appended
-#     unshuffled at the end (matching CDP's behaviour for the remainder).
-#
-# When groupSz = 1 this degenerates to the original individual-waveset shuffle.
+# CDP distort_del_with_loudness accumulates sum(|sample|) over both
+# half-cycles of each waveset into DISTDEL_CYCLEVAL[cyclecnt].
+# We use Praat's Get energy (proportional to RMS * duration) as an
+# equivalent monotone proxy — sufficient for ranking loudest/quietest.
+
+if type = 8 or type = 9
+    appendInfoLine: "  Measuring waveset energies..."
+    for ws from 1 to n_wavesets
+        selectObject: ppZeroes
+        t1 = Get time from index: ws
+        t2 = Get time from index: ws + 1
+        selectObject: monoWork
+        Extract part: t1, t2, "rectangular", 1, "no"
+        wsTmp = selected("Sound")
+        wsEnergy[ws] = Get energy: 0, 0
+        removeObject: wsTmp
+    endfor
+endif
+
+# ============================================================
+# STEP 3: BUILD PLAYBACK ORDER (shuffle types)
+# ============================================================
 
 appendInfoLine: "[2/3] Processing (", typeName$, ")..."
 
-# Initialise sequential order (identity permutation over wavesets)
+# Initialise sequential order (identity permutation)
 for ws from 1 to n_wavesets
     wsOrder[ws] = ws
 endfor
 
 if type = 6
     if groupSz = 1
-        # --- Individual waveset shuffle (original behaviour) ---
+        # Individual waveset shuffle (original v1.0 behaviour)
         for ws from n_wavesets to 2
             j = randomInteger(1, ws)
             tmp = wsOrder[ws]
@@ -215,12 +261,9 @@ if type = 6
             wsOrder[j] = tmp
         endfor
     else
-        # --- CDP group-based shuffle ---
-        # Number of complete groups
+        # CDP group-based shuffle (distort_shuf / do_shuffle)
         n_groups = floor(n_wavesets / groupSz)
         remainder = n_wavesets - n_groups * groupSz
-
-        # Build group-index array (identity) and Fisher-Yates shuffle it
         for g from 1 to n_groups
             groupOrder[g] = g
         endfor
@@ -230,8 +273,6 @@ if type = 6
             groupOrder[g] = groupOrder[j]
             groupOrder[j] = tmp
         endfor
-
-        # Expand shuffled group order back into waveset order
         outIdx = 0
         for g from 1 to n_groups
             srcGroup = groupOrder[g]
@@ -240,7 +281,7 @@ if type = 6
                 wsOrder[outIdx] = (srcGroup - 1) * groupSz + m
             endfor
         endfor
-        # Append remainder wavesets (tail group) unshuffled
+        # Tail remainder: append unshuffled (CDP behaviour)
         for m from 1 to remainder
             outIdx = outIdx + 1
             wsOrder[outIdx] = n_groups * groupSz + m
@@ -249,7 +290,54 @@ if type = 6
 endif
 
 # ============================================================
-# STEP 3: EXTRACT, PROCESS, AND BATCH-CONCATENATE WAVESETS
+# STEP 4: BUILD INCLUDE/EXCLUDE MAP (types 8 and 9)
+# ============================================================
+#
+# Mirrors CDP's get_loudest_cycle / get_quietest_cycle + do_cycle_loud /
+# do_cycle_quiet logic: scan each group of <groupSz> wavesets, identify
+# the loudest or quietest by energy, then mark which to keep.
+# Remainder wavesets (tail group) are always kept unchanged.
+
+if type = 8 or type = 9
+    # Default: include all
+    for ws from 1 to n_wavesets
+        wsInclude[ws] = 1
+    endfor
+
+    n_full_groups = floor(n_wavesets / groupSz)
+
+    for g from 0 to n_full_groups - 1
+        groupStart = g * groupSz + 1      
+		# 1-based
+        groupEnd   = groupStart + groupSz - 1
+
+        loudestWS  = groupStart
+        quietestWS = groupStart
+        for ws from groupStart to groupEnd
+            if wsEnergy[ws] > wsEnergy[loudestWS]
+                loudestWS = ws
+            endif
+            if wsEnergy[ws] < wsEnergy[quietestWS]
+                quietestWS = ws
+            endif
+        endfor
+
+        if type = 8
+            # KEEP_STRONGEST: discard all but the loudest
+            for ws from groupStart to groupEnd
+                if ws <> loudestWS
+                    wsInclude[ws] = 0
+                endif
+            endfor
+        elsif type = 9
+            # DELETE_WEAKEST: discard only the quietest
+            wsInclude[quietestWS] = 0
+        endif
+    endfor
+endif
+
+# ============================================================
+# STEP 5: EXTRACT, PROCESS, AND BATCH-CONCATENATE WAVESETS
 # ============================================================
 
 batchSize = 100
@@ -261,6 +349,11 @@ for wsIdx from 1 to n_wavesets
         ws = wsOrder[wsIdx]
     else
         ws = wsIdx
+    endif
+
+    # Skip excluded wavesets (types 8 and 9)
+    if (type = 8 or type = 9) and wsInclude[ws] = 0
+        goto nextWaveset
     endif
 
     # Get waveset boundaries
@@ -348,6 +441,10 @@ for wsIdx from 1 to n_wavesets
         else
             Formula: "self * " + fixed$(1 / amount, 4)
         endif
+
+    # types 8 (Keep Strongest) and 9 (Delete Weakest):
+    # waveset is already selected and included as-is; no further processing.
+
     endif
 
     # Accumulate into batch
@@ -376,6 +473,8 @@ for wsIdx from 1 to n_wavesets
     if wsIdx mod 500 = 0 or wsIdx = n_wavesets
         appendInfoLine: "  Waveset ", wsIdx, " / ", n_wavesets
     endif
+
+    label nextWaveset
 endfor
 
 # Final concatenation of batches
@@ -442,7 +541,7 @@ if draw_visualization
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
-    Select outer viewport: 0, 8, 0, 0.45
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
