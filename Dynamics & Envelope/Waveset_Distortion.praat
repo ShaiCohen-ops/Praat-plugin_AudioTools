@@ -42,7 +42,7 @@
 #   Select a Sound object in Praat and run this script.
 # ============================================================
 
-form Waveset Distortion v1.2
+form Waveset Distortion v1.3
     optionmenu Preset: 1
         option Custom
         option Waveset Repeat (stutter)
@@ -55,6 +55,7 @@ form Waveset Distortion v1.2
         option Waveset Amplitude
         option Keep Strongest (CDP)
         option Delete Weakest (CDP)
+        option Telescope (CDP distort_tel)
     comment === Parameters ===
     optionmenu Type: 1
         option Repeat
@@ -66,11 +67,16 @@ form Waveset Distortion v1.2
         option Amplitude
         option Keep Strongest
         option Delete Weakest
+        option Telescope
     positive Amount 2.0
     comment --- Repeat only ---
     positive Repeat_decay 0.8
-    comment --- Randomize / Keep Strongest / Delete Weakest: group size ---
+    comment --- Randomize / Keep-Delete / Telescope: group size ---
     positive Group_size 4
+    comment --- Telescope only ---
+    optionmenu Telescope_mode: 1
+        option Longest cycle (CDP default)
+        option Mean cycle length
     boolean Preserve_length 0
     comment === Output ===
     positive Scale_peak 0.95
@@ -125,6 +131,12 @@ elsif preset = 11
     amount = 1.0
     group_size = 4
     presetName$ = "DeleteWeakest"
+elsif preset = 12
+    type = 10
+    amount = 1.0
+    group_size = 4
+    telescope_mode = 1
+    presetName$ = "Telescope"
 endif
 
 # === VALIDATION ===
@@ -149,7 +161,7 @@ groupSz = round(group_size)
 if groupSz < 1
     groupSz = 1
 endif
-if (type = 8 or type = 9) and groupSz < 2
+if (type = 8 or type = 9 or type = 10) and groupSz < 2
     groupSz = 2
 endif
 
@@ -174,12 +186,19 @@ elsif type = 8
     typeName$ = "Keep Strongest (group=" + string$(groupSz) + ")"
 elsif type = 9
     typeName$ = "Delete Weakest (group=" + string$(groupSz) + ")"
+elsif type = 10
+    if telescope_mode = 1
+        teleModeName$ = "longest"
+    else
+        teleModeName$ = "mean"
+    endif
+    typeName$ = "Telescope (group=" + string$(groupSz) + ", " + teleModeName$ + ")"
 else
     typeName$ = "Amplitude"
 endif
 
 clearinfo
-writeInfoLine: "=== Waveset Distortion v1.2 ==="
+writeInfoLine: "=== Waveset Distortion v1.3 ==="
 appendInfoLine: "Input: ", soundName$, " (", fixed$(original_duration, 2), " s, ",
     ... sampling_rate, " Hz)"
 appendInfoLine: "Preset: ", presetName$
@@ -192,6 +211,10 @@ if type = 6 and groupSz > 1
 endif
 if type = 8 or type = 9
     appendInfoLine: "Group size: ", groupSz, " wavesets per group (CDP distort_del)"
+endif
+if type = 10
+    appendInfoLine: "Group size: ", groupSz, " wavesets per group (CDP distort_tel)"
+    appendInfoLine: "Ref length: ", teleModeName$
 endif
 appendInfoLine: ""
 
@@ -225,13 +248,216 @@ n_wavesets = n_crossings - 1
 appendInfoLine: "  Crossings: ", n_crossings, " (", n_wavesets, " wavesets)"
 
 # ============================================================
-# STEP 2: MEASURE WAVESET ENERGIES (types 8 and 9 only)
+# TYPE 10: TELESCOPE (CDP distort_tel) — separate code path
 # ============================================================
 #
-# CDP distort_del_with_loudness accumulates sum(|sample|) over both
-# half-cycles of each waveset into DISTDEL_CYCLEVAL[cyclecnt].
-# We use Praat's Get energy (proportional to RMS * duration) as an
-# equivalent monotone proxy — sufficient for ranking loudest/quietest.
+# CDP's telescope collapses N consecutive wavesets into one:
+#   1. Collect a group of N wavesets
+#   2. Find reference length (longest or mean cycle)
+#   3. For each output sample at proportional position ratio:
+#        sum each waveset's value at that same ratio, then average
+#   4. Output 1 averaged waveform per group
+#
+# This is time compression with timbral smoothing — N cycles become
+# one "consensus" waveform.  Transients vanish, noise drops by sqrt(N),
+# pitch is preserved.  Sounds focused, crystallised, telescoped.
+#
+# In Praat, we extract each waveset, time-stretch it to the reference
+# length via the SR override trick, then average column-by-column.
+# This avoids the object[id, col_vs_time] ambiguity in Praat formulas.
+#
+# NOTE: Telescope uses PITCH-SYNCHRONOUS boundaries (not raw zero
+# crossings) so that each waveset is one complete pitch period.
+# This produces meaningful averaging — N similar wavecycles merge
+# into a consensus waveform — rather than sub-cycle fragment averaging.
+
+if type = 10
+    appendInfoLine: "[2/3] Telescoping (group=", groupSz, ", ref=", teleModeName$, ")..."
+
+    # Pitch-synchronous boundary detection
+    appendInfoLine: "  Detecting pitch periods..."
+    selectObject: monoWork
+    telePitch = To Pitch: 0.01, 75, 600
+    selectObject: telePitch
+    plusObject: monoWork
+    telePP = To PointProcess (cc)
+    selectObject: telePP
+    n_pulses = Get number of points
+
+    if n_pulses < groupSz + 1
+        removeObject: telePitch, telePP
+        appendInfoLine: "  Not enough pitched periods for telescope."
+        appendInfoLine: "  Falling back to zero-crossing wavesets."
+        # Fall back: use ppZeroes as before
+        telePP_use = ppZeroes
+        selectObject: telePP_use
+        n_periods = Get number of points - 1
+    else
+        telePP_use = telePP
+        n_periods = n_pulses - 1
+        appendInfoLine: "  Pitch periods: ", n_periods
+    endif
+
+    n_full_groups = floor(n_periods / groupSz)
+    remainder = n_periods - n_full_groups * groupSz
+
+    batchSize = 100
+    batchCount = 0
+    resultParts = 0
+
+    for gIdx from 1 to n_full_groups
+        groupStart = (gIdx - 1) * groupSz + 1
+
+        # Collect period boundaries and durations
+        refDur = 0
+        sumDur = 0
+        for m from 1 to groupSz
+            pp = groupStart + m - 1
+            selectObject: telePP_use
+            grpT1[m] = Get time from index: pp
+            grpT2[m] = Get time from index: pp + 1
+            grpDur[m] = grpT2[m] - grpT1[m]
+            sumDur = sumDur + grpDur[m]
+            if grpDur[m] > refDur
+                refDur = grpDur[m]
+            endif
+        endfor
+
+        if telescope_mode = 2
+            refDur = sumDur / groupSz
+        endif
+
+        if refDur < 2 / sampling_rate
+            refDur = 2 / sampling_rate
+        endif
+
+        # ---- Extract each waveset and resample to refDur ----
+        # CDP's indexed_value reads each waveset at proportional
+        # position ratio.  We achieve this by time-stretching each
+        # waveset to refDur using the SR override trick, then
+        # averaging column-by-column.
+        for m from 1 to groupSz
+            selectObject: monoWork
+            Extract part: grpT1[m], grpT2[m], "rectangular", 1, "no"
+            grpWS[m] = selected("Sound")
+
+            # Time-stretch to refDur using SR override
+            selectObject: grpWS[m]
+            wsDur = Get total duration
+            if abs(wsDur - refDur) > 0.5 / sampling_rate
+                fakeSR = max(100, round(sampling_rate * wsDur / refDur))
+                Override sampling frequency: fakeSR
+                Resample: sampling_rate, 50
+                stretched = selected("Sound")
+                removeObject: grpWS[m]
+                grpWS[m] = stretched
+            endif
+        endfor
+
+        # Average all normalised wavesets (column-by-column)
+        selectObject: grpWS[1]
+        Copy: "tele"
+        teleWS = selected("Sound")
+        for m from 2 to groupSz
+            selectObject: teleWS
+            Formula: "self + object[" + string$(grpWS[m]) + ", col]"
+        endfor
+        selectObject: teleWS
+        Formula: "self / " + string$(groupSz)
+
+        # Cleanup individual wavesets
+        for m from 1 to groupSz
+            removeObject: grpWS[m]
+        endfor
+
+        # Accumulate into batch
+        batchCount = batchCount + 1
+        batchWS[batchCount] = teleWS
+
+        if batchCount >= batchSize or gIdx = n_full_groups
+            selectObject: batchWS[1]
+            for b from 2 to batchCount
+                plusObject: batchWS[b]
+            endfor
+            if batchCount > 1
+                Concatenate
+                batchResult = selected("Sound")
+                for b from 1 to batchCount
+                    removeObject: batchWS[b]
+                endfor
+            else
+                batchResult = batchWS[1]
+            endif
+            resultParts = resultParts + 1
+            resultPart[resultParts] = batchResult
+            batchCount = 0
+        endif
+
+        if gIdx mod 200 = 0 or gIdx = n_full_groups
+            appendInfoLine: "  Group ", gIdx, " / ", n_full_groups
+        endif
+    endfor
+
+    # Handle remainder periods (pass through unmodified)
+    if remainder > 0
+        for m from 1 to remainder
+            pp = n_full_groups * groupSz + m
+            selectObject: telePP_use
+            t1 = Get time from index: pp
+            t2 = Get time from index: pp + 1
+            selectObject: monoWork
+            Extract part: t1, t2, "rectangular", 1, "no"
+            remWS = selected("Sound")
+            batchCount = batchCount + 1
+            batchWS[batchCount] = remWS
+        endfor
+        selectObject: batchWS[1]
+        for b from 2 to batchCount
+            plusObject: batchWS[b]
+        endfor
+        if batchCount > 1
+            Concatenate
+            batchResult = selected("Sound")
+            for b from 1 to batchCount
+                removeObject: batchWS[b]
+            endfor
+        else
+            batchResult = batchWS[1]
+        endif
+        resultParts = resultParts + 1
+        resultPart[resultParts] = batchResult
+    endif
+
+    # Final concatenation of batches
+    if resultParts > 1
+        selectObject: resultPart[1]
+        for rp from 2 to resultParts
+            plusObject: resultPart[rp]
+        endfor
+        Concatenate
+        result = selected("Sound")
+        for rp from 1 to resultParts
+            removeObject: resultPart[rp]
+        endfor
+    else
+        result = resultPart[1]
+    endif
+
+    # Cleanup telescope objects
+    if telePP_use = telePP
+        removeObject: telePitch, telePP
+    else
+        removeObject: telePitch
+    endif
+    removeObject: ppZeroes, monoWork
+
+else
+
+# ============================================================
+# TYPES 1-9: EXISTING PROCESSING
+# ============================================================
+
+# STEP 2: MEASURE WAVESET ENERGIES (types 8 and 9 only)
 
 if type = 8 or type = 9
     appendInfoLine: "  Measuring waveset energies..."
@@ -522,6 +748,11 @@ else
 endif
 
 removeObject: ppZeroes, monoWork
+
+endif
+# ============================================================
+# end of type=10 / types 1-9 branch
+# ============================================================
 
 # ============================================================
 # PRESERVE LENGTH (optional)
