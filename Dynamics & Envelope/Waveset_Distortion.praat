@@ -143,8 +143,15 @@ if original_duration < 0.05
     exitScript: "Sound must be at least 50 ms."
 endif
 
-# Clamp group_size (need at least 2 for loudness modes to be meaningful)
-groupSz = max(2, round(group_size))
+# Clamp group_size (need at least 2 for energy modes to be meaningful,
+# but allow 1 for individual waveset shuffle)
+groupSz = round(group_size)
+if groupSz < 1
+    groupSz = 1
+endif
+if (type = 8 or type = 9) and groupSz < 2
+    groupSz = 2
+endif
 
 # Type name
 if type = 1
@@ -253,9 +260,10 @@ endfor
 
 if type = 6
     if groupSz = 1
-        # Individual waveset shuffle (original v1.0 behaviour)
-        for ws from n_wavesets to 2
-            j = randomInteger(1, ws)
+        # Individual waveset shuffle
+        # Ascending Fisher-Yates (Praat can't do descending for-loops)
+        for ws from 1 to n_wavesets - 1
+            j = randomInteger(ws, n_wavesets)
             tmp = wsOrder[ws]
             wsOrder[ws] = wsOrder[j]
             wsOrder[j] = tmp
@@ -267,8 +275,9 @@ if type = 6
         for g from 1 to n_groups
             groupOrder[g] = g
         endfor
-        for g from n_groups to 2
-            j = randomInteger(1, g)
+        # Ascending Fisher-Yates on group indices
+        for g from 1 to n_groups - 1
+            j = randomInteger(g, n_groups)
             tmp = groupOrder[g]
             groupOrder[g] = groupOrder[j]
             groupOrder[j] = tmp
@@ -476,6 +485,26 @@ for wsIdx from 1 to n_wavesets
 
     label nextWaveset
 endfor
+
+# Flush any remaining batch (if last wavesets were excluded by goto)
+if batchCount > 0
+    selectObject: batchWS[1]
+    for b from 2 to batchCount
+        plusObject: batchWS[b]
+    endfor
+    if batchCount > 1
+        Concatenate
+        batchResult = selected("Sound")
+        for b from 1 to batchCount
+            removeObject: batchWS[b]
+        endfor
+    else
+        batchResult = batchWS[1]
+    endif
+    resultParts = resultParts + 1
+    resultPart[resultParts] = batchResult
+    batchCount = 0
+endif
 
 # Final concatenation of batches
 if resultParts > 1
