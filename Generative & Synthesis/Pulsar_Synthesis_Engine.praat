@@ -120,7 +120,6 @@ if preset = 2
     # PERIODIC TONE: Short period -> audible pitch ~100 Hz
     presetName$ = "Periodic Tone"
     synthMode = 1
-    duration_s = 3
     period_s = 0.01
     dutyC = 0.5
     jitter = 0.0
@@ -136,7 +135,6 @@ elsif preset = 3
     # RHYTHMIC PULSE: Long period -> sub-audio rhythm ~4 Hz
     presetName$ = "Rhythmic Pulse"
     synthMode = 1
-    duration_s = 4
     period_s = 0.25
     dutyC = 0.15
     jitter = 0.05
@@ -152,7 +150,6 @@ elsif preset = 4
     # STOCHASTIC CLOUD: Poisson 100 pulses/s
     presetName$ = "Stochastic Cloud"
     synthMode = 2
-    duration_s = 3
     period_s = 0.01
     density = 100
     dutyC = 0.5
@@ -169,7 +166,6 @@ elsif preset = 5
     # CHIRP SWEEP: Period glides 0.02 s -> 0.002 s (50 Hz -> 500 Hz)
     presetName$ = "Chirp Sweep"
     synthMode = 1
-    duration_s = 4
     period_s = 0.02
     dutyC = 0.5
     jitter = 0.01
@@ -185,7 +181,6 @@ elsif preset = 6
     # TREMOLO WEB: AM at 6 Hz over a stochastic cloud
     presetName$ = "Tremolo Web"
     synthMode = 2
-    duration_s = 5
     period_s = 0.008
     density = 150
     dutyC = 0.4
@@ -202,7 +197,6 @@ elsif preset = 7
     # NOISE BURST: Very dense Poisson, short duty cycle -> near-noise
     presetName$ = "Noise Burst"
     synthMode = 2
-    duration_s = 2
     period_s = 0.005
     density = 400
     dutyC = 0.8
@@ -557,11 +551,11 @@ if show_visualization = 1
     # ==========================================================
     # TITLE (matches Grisey engine: outer 0,8 / 0,0.55)
     # ==========================================================
-    Select outer viewport: 0, 8, 0, 0.55
+    Select outer viewport: 0, 8, 0, 0.85
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half",
+    Text: 0.5, "centre", 0.90, "half",
         ... "##Pulsar Synthesis Engine v1.0##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
