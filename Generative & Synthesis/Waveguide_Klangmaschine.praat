@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2025)
+# Version: 2.1 (2025) - Audio Analysis Input Pipeline
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,80 +15,33 @@
 #   resonator bank, spectral-split stereo imaging, and a true-
 #   stereo Poisson-process spectral decay reverb.
 #
-#   Each run produces a unique chord by randomizing:
-#     - MIDI notes (Bass 40–55, Tenor 52–64, Alto 53–72,
-#       Soprano 60–84)
-#     - Velocity, inter-string detune, body resonance depth
-#     - Per-voice onset micro-delay (0–30 ms humanization)
+# v2.1 Audio Analysis Pipeline:
+#   If a Sound object is selected before running, the script
+#   analyzes it and automatically derives synthesis parameters:
+#     - Root pitch / F0    → Transpose_semitones (key center)
+#     - Up to 4 pitches    → Constrain SATB note ranges
+#     - Duration           → Duration_s
+#     - HNR                → Randomize_depth
+#     - Spectral centroid  → High_cutoff_Hz + reverb brightness
+#     - Decay rate         → Decay_base + Tail_duration_s
+#     - RMS / loudness     → velocity + Wet_dry_percent
+#     - Envelope shape     → Reverb Preset selection
+#   Falls back to manual form values when no Sound is selected.
 #
-#   Synthesis architecture:
-#     - Excitation: velocity-shaped half-sine pulse (Chaigne-
-#       inspired contact time scaling for high notes)
-#     - String loop: allpass fractional delay → allpass stiffness
-#       dispersion → one-pole LP damping → loop gain
-#     - Multi-string unison (1–3 strings with detune + beating)
-#     - Stability-derived bridge coupling (auto-safe per note)
-#     - DC blocker on summed string output
-#     - 8-resonator soundboard (65–3200 Hz, fixed modes,
-#       Nyquist-guarded for low internal sample rates)
-#     - Spectral-split stereo (LP left / HP right, overlapping)
-#     - Poisson-process convolution reverb with decorrelated
-#       L/R impulse responses and preset system
-#
-#   CPU optimization:
-#     - Runs waveguide DSP at a low internal rate (default
-#       5512.5 Hz), then resamples to 44100 Hz for output.
-#
-#   Deep randomization (3 layers, controlled by depth):
-#     LAYER 1 — Per-voice string character:
-#       strike position, LP damping, stiffness dispersion
-#       (each voice becomes a different "instrument")
-#     LAYER 2 — Instrument body:
-#       8 soundboard resonator frequencies, bandwidths, gains
-#       (each run is a different radiating structure)
-#     LAYER 3 — Excitation physics:
-#       hammer amplitude, brightness exponent, contact time,
-#       coupling safety factor
-#     Depth: None (standard piano), Subtle (ensemble variation),
-#            Wild (imaginary instrument space)
-#       At 5512.5 Hz, a 3-string × 4-voice × 8s chord runs
-#       in seconds rather than minutes.
-#
-#   Visualization:
-#     - Left: Mondrian-style composition driven by note
-#       positions, with SATB pitch labels in cells
-#     - Right: reverb waveform, bandpass shape, IR envelope,
-#       parameter summary, and spectrogram
-#
-#   Based on the OpenPiano physical model (Michele Perrone,
-#   2021–2022, AGPL-3.0), adapted to Praat digital waveguide
-#   architecture with substantial extensions.
-#
-#   References:
-#     - Chaigne, A. & Askenfelt, A. (1994). Numerical Simulations
-#       of Piano Strings. JASA, 95(2), 1112–1118.
-#     - Smith, J. O. (2010). Physical Audio Signal Processing.
-#       W3K Publishing.
-#     - Karplus, K. & Strong, A. (1983). Digital Synthesis of
-#       Plucked-String and Drum Timbres. Computer Music Journal.
-#     - Perrone, M. (2022). OpenPiano: Physical Modeling Piano
-#       Engine. github.com/michele-perrone/OpenPiano
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
-#   Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Category: Generative & Synthesis Systems
 # ============================================================
 
 form Synthesize Random SATB Klang Machine
+    comment === Input Mode ===
+    comment (Select a Sound object before running to use audio analysis)
+    boolean Use_selected_sound 1
+    comment (If unchecked, manual parameters below are used)
+
     real Duration_s 8.0
     comment --- CPU Optimization ---
     positive Internal_rate 5512.5
     positive Final_rate 44100
     integer Transpose_semitones 0
-    
+
     comment === Spectral Decay Reverb ===
     optionmenu Preset 3
         option Custom (use settings below)
@@ -105,7 +58,7 @@ form Synthesize Random SATB Klang Machine
     positive Smoothing_Hz 100
     real Wet_dry_percent 50
     positive Fadeout_duration_s 1.2
-    
+
     comment === Output ===
     optionmenu Randomize_depth 2
         option None (standard waveguide)
@@ -114,21 +67,448 @@ form Synthesize Random SATB Klang Machine
 endform
 
 # =============================================================
+# AUDIO ANALYSIS PIPELINE
+# =============================================================
+
+audio_was_analyzed = 0
+analysis_pitch_count = 0
+
+# SATB note constraint ranges (defaults — may be overridden by analysis)
+bass_lo = 40
+bass_hi = 55
+tenor_lo = 52
+tenor_hi = 64
+alto_lo = 53
+alto_hi = 72
+soprano_lo = 60
+soprano_hi = 84
+
+if use_selected_sound
+    nSel = numberOfSelected("Sound")
+
+    if nSel = 0
+        appendInfoLine: "[Analysis] No Sound selected — using manual parameters."
+    else
+        inputSound = selected("Sound")
+        inputSound$ = selected$("Sound")
+        appendInfoLine: "[Analysis] Analyzing: '", inputSound$, "'"
+        selectObject: inputSound
+
+        # ------------------------------------------------------------------
+        # 1. DURATION
+        # ------------------------------------------------------------------
+        analysed_dur = Get total duration
+        duration_s = analysed_dur
+        appendInfoLine: "  Duration:         ", fixed$(duration_s, 3), " s"
+
+        # ------------------------------------------------------------------
+        # 2. PITCH ANALYSIS — root pitch + up to 4 voices
+        #    Uses To Pitch to get a sequence of F0 values, then clusters
+        #    them into up to 4 distinct pitch classes for SATB constraint.
+        # ------------------------------------------------------------------
+        selectObject: inputSound
+        pitchObj = To Pitch: 0, 60, 800
+
+        meanPitch = Get mean: 0, 0, "Hertz"
+        minPitch = Get minimum: 0, 0, "Hertz", "Parabolic"
+        maxPitch = Get maximum: 0, 0, "Hertz", "Parabolic"
+
+        if meanPitch = undefined or meanPitch < 60
+            root_hz = 220
+            root_midi = 57
+            appendInfoLine: "  Pitch:            undefined (unpitched) → A3 default"
+        else
+            root_hz = meanPitch
+            root_midi = round(69 + 12 * log2(root_hz / 440))
+            appendInfoLine: "  Root pitch:       ", fixed$(root_hz, 1), " Hz  → MIDI ", root_midi
+        endif
+
+        # Transpose to align root pitch to nearest C, then compute offset
+        root_pc = root_midi mod 12
+        nearest_c_midi = root_midi - root_pc
+        transpose_semitones = nearest_c_midi - 60
+
+        if transpose_semitones < -12
+            transpose_semitones = transpose_semitones + 12
+        endif
+        if transpose_semitones > 12
+            transpose_semitones = transpose_semitones - 12
+        endif
+        appendInfoLine: "  Transpose offset: ", transpose_semitones, " semitones (key-center alignment)"
+
+        # Attempt multi-pitch detection by sampling pitch at 8 time points
+        # and collecting distinct MIDI values for SATB range narrowing
+        pitchDur = Get total duration
+        step = pitchDur / 9
+        p_count = 0
+        p1 = 0
+        p2 = 0
+        p3 = 0
+        p4 = 0
+
+        for ti from 1 to 8
+            t_sample = ti * step
+            hz_val = Get value at time: t_sample, "Hertz", "Linear"
+            if hz_val <> undefined and hz_val > 60 and hz_val < 1200
+                midi_val = round(69 + 12 * log2(hz_val / 440))
+                # Store if distinct from existing (within 2 semitones = same note)
+                is_new = 1
+                if p_count >= 1
+                    if abs(midi_val - p1) < 3
+                        is_new = 0
+                    endif
+                endif
+                if p_count >= 2
+                    if abs(midi_val - p2) < 3
+                        is_new = 0
+                    endif
+                endif
+                if p_count >= 3
+                    if abs(midi_val - p3) < 3
+                        is_new = 0
+                    endif
+                endif
+                if p_count >= 4
+                    if abs(midi_val - p4) < 3
+                        is_new = 0
+                    endif
+                endif
+                if is_new = 1 and p_count < 4
+                    p_count = p_count + 1
+                    if p_count = 1
+                        p1 = midi_val
+                    elsif p_count = 2
+                        p2 = midi_val
+                    elsif p_count = 3
+                        p3 = midi_val
+                    else
+                        p4 = midi_val
+                    endif
+                endif
+            endif
+        endfor
+
+        analysis_pitch_count = p_count
+        appendInfoLine: "  Detected pitches: ", p_count
+
+        # If we found multiple pitches, constrain SATB ranges around them.
+        # Sort detected pitches low→high and assign to Bass/Tenor/Alto/Soprano.
+        # Each voice range is narrowed to ±5 semitones around the detected pitch.
+        if p_count >= 2
+            # Simple bubble sort of p1..p4
+            if p_count >= 2 and p1 > p2
+                tmp = p1
+                p1 = p2
+                p2 = tmp
+            endif
+            if p_count >= 3 and p2 > p3
+                tmp = p2
+                p2 = p3
+                p3 = tmp
+            endif
+            if p_count >= 4 and p3 > p4
+                tmp = p3
+                p3 = p4
+                p4 = tmp
+            endif
+            if p_count >= 2 and p1 > p2
+                tmp = p1
+                p1 = p2
+                p2 = tmp
+            endif
+            if p_count >= 3 and p2 > p3
+                tmp = p2
+                p2 = p3
+                p3 = tmp
+            endif
+            if p_count >= 2 and p1 > p2
+                tmp = p1
+                p1 = p2
+                p2 = tmp
+            endif
+
+            spread = 5
+
+            if p_count = 2
+                bass_lo  = p1 - spread
+                bass_hi  = p1 + spread
+                tenor_lo = p1 - spread
+                tenor_hi = p1 + spread
+                alto_lo  = p2 - spread
+                alto_hi  = p2 + spread
+                soprano_lo = p2 - spread
+                soprano_hi = p2 + spread
+            elsif p_count = 3
+                bass_lo  = p1 - spread
+                bass_hi  = p1 + spread
+                tenor_lo = p2 - spread
+                tenor_hi = p2 + spread
+                alto_lo  = p2 - spread
+                alto_hi  = p2 + spread
+                soprano_lo = p3 - spread
+                soprano_hi = p3 + spread
+            else
+                bass_lo  = p1 - spread
+                bass_hi  = p1 + spread
+                tenor_lo = p2 - spread
+                tenor_hi = p2 + spread
+                alto_lo  = p3 - spread
+                alto_hi  = p3 + spread
+                soprano_lo = p4 - spread
+                soprano_hi = p4 + spread
+            endif
+
+            # Clamp to SATB physical ranges
+            if bass_lo < 28
+                bass_lo = 28
+            endif
+            if bass_hi > 60
+                bass_hi = 60
+            endif
+            if tenor_lo < 40
+                tenor_lo = 40
+            endif
+            if tenor_hi > 69
+                tenor_hi = 69
+            endif
+            if alto_lo < 48
+                alto_lo = 48
+            endif
+            if alto_hi > 74
+                alto_hi = 74
+            endif
+            if soprano_lo < 55
+                soprano_lo = 55
+            endif
+            if soprano_hi > 88
+                soprano_hi = 88
+            endif
+
+            # Guarantee at least 1-semitone range
+            if bass_lo >= bass_hi
+                bass_hi = bass_lo + 1
+            endif
+            if tenor_lo >= tenor_hi
+                tenor_hi = tenor_lo + 1
+            endif
+            if alto_lo >= alto_hi
+                alto_hi = alto_lo + 1
+            endif
+            if soprano_lo >= soprano_hi
+                soprano_hi = soprano_lo + 1
+            endif
+
+            appendInfoLine: "  SATB ranges constrained from detected pitches:"
+            appendInfoLine: "    Bass:    MIDI ", bass_lo, "–", bass_hi
+            appendInfoLine: "    Tenor:   MIDI ", tenor_lo, "–", tenor_hi
+            appendInfoLine: "    Alto:    MIDI ", alto_lo, "–", alto_hi
+            appendInfoLine: "    Soprano: MIDI ", soprano_lo, "–", soprano_hi
+        endif
+
+        removeObject: pitchObj
+
+        # ------------------------------------------------------------------
+        # 3. HNR → Randomize_depth
+        #    High HNR (>15 dB) → None (clean piano waveguide)
+        #    Mid  HNR (5–15)   → Subtle
+        #    Low  HNR (<5)     → Wild
+        # ------------------------------------------------------------------
+        selectObject: inputSound
+        hnrObj = To Harmonicity (cc): 0.01, 75, 0.1, 1.0
+        meanHNR = Get mean: 0, 0
+        removeObject: hnrObj
+
+        if meanHNR = undefined
+            meanHNR = 0
+        endif
+        appendInfoLine: "  HNR:              ", fixed$(meanHNR, 2), " dB"
+
+        if meanHNR > 15
+            randomize_depth = 1
+            appendInfoLine: "  Randomize depth: None (harmonic source)"
+        elsif meanHNR > 5
+            randomize_depth = 2
+            appendInfoLine: "  Randomize depth: Subtle (mixed source)"
+        else
+            randomize_depth = 3
+            appendInfoLine: "  Randomize depth: Wild (noisy source)"
+        endif
+
+        # ------------------------------------------------------------------
+        # 4. SPECTRAL CENTROID → High_cutoff_Hz + reverb brightness
+        #    Brighter input = wider high shelf in stereo reverb
+        # ------------------------------------------------------------------
+        selectObject: inputSound
+        specObj = To Spectrum: "yes"
+        centroid = Get centre of gravity: 2
+        removeObject: specObj
+
+        if centroid = undefined
+            centroid = 2000
+        endif
+        appendInfoLine: "  Spectral centroid:", fixed$(centroid, 0), " Hz"
+
+        # Map centroid 500–6000 Hz → high_cutoff 2000–8000 Hz
+        high_cutoff_Hz = 2000 + ((centroid - 500) / 5500) * 6000
+        if high_cutoff_Hz < 2000
+            high_cutoff_Hz = 2000
+        endif
+        if high_cutoff_Hz > 8000
+            high_cutoff_Hz = 8000
+        endif
+        appendInfoLine: "  High cutoff:      ", fixed$(high_cutoff_Hz, 0), " Hz"
+
+        # ------------------------------------------------------------------
+        # 5. RMS → velocity + wet_dry_percent
+        #    Louder input → higher velocity, drier mix
+        #    Quieter input → lower velocity, wetter mix
+        # ------------------------------------------------------------------
+        selectObject: inputSound
+        rmsVal = Get root-mean-square: 0, 0
+
+        if rmsVal = undefined or rmsVal <= 0
+            rmsVal = 0.1
+        endif
+        # Clamp to sensible range 0.001–0.5
+        if rmsVal > 0.5
+            rmsVal = 0.5
+        endif
+        if rmsVal < 0.001
+            rmsVal = 0.001
+        endif
+
+        # Map RMS log-scale to velocity 0.3–0.95
+        log_rms = ln(rmsVal / 0.001) / ln(0.5 / 0.001)
+        velocity_from_audio = 0.3 + log_rms * 0.65
+        if velocity_from_audio < 0.3
+            velocity_from_audio = 0.3
+        endif
+        if velocity_from_audio > 0.95
+            velocity_from_audio = 0.95
+        endif
+
+        # Louder → drier (lower wet%), quieter → wetter
+        wet_dry_percent = 75 - (log_rms * 40)
+        if wet_dry_percent < 20
+            wet_dry_percent = 20
+        endif
+        if wet_dry_percent > 80
+            wet_dry_percent = 80
+        endif
+        appendInfoLine: "  RMS:              ", fixed$(rmsVal, 4), "  → velocity=", fixed$(velocity_from_audio, 2), "  wet=", fixed$(wet_dry_percent, 0), "%"
+
+        # ------------------------------------------------------------------
+        # 6. DECAY RATE → Decay_base + Tail_duration_s
+        #    Fast-decaying input → shorter reverb tail & higher decay_base
+        #    Sustained input    → longer tail & lower decay_base
+        # ------------------------------------------------------------------
+        selectObject: inputSound
+        totalDurDecay = Get total duration
+        earlyEnd = totalDurDecay * 0.1
+        lateStart = totalDurDecay * 0.7
+
+        rmsEarly = Get root-mean-square: 0, earlyEnd
+        rmsLate  = Get root-mean-square: lateStart, totalDurDecay
+
+        if rmsEarly = undefined or rmsEarly <= 0
+            rmsEarly = 0.01
+        endif
+        if rmsLate = undefined or rmsLate <= 0
+            rmsLate = 0.0001
+        endif
+
+        timeSpan = (lateStart + totalDurDecay) / 2 - earlyEnd / 2
+        if timeSpan > 0 and rmsEarly > 0 and rmsLate > 0
+            decayExp = -ln(rmsLate / rmsEarly) / timeSpan
+        else
+            decayExp = 5
+        endif
+        appendInfoLine: "  Decay exponent:   ", fixed$(decayExp, 3)
+
+        # Map decayExp 0–30 → decay_base 50–200 (fast decay = high base = short reverb)
+        decay_base = 50 + (decayExp / 30) * 150
+        if decay_base < 50
+            decay_base = 50
+        endif
+        if decay_base > 200
+            decay_base = 200
+        endif
+
+        # Map decayExp to tail duration: fast → short tail, slow → long tail
+        tail_duration_s = 3.5 - (decayExp / 30) * 2.5
+        if tail_duration_s < 1.0
+            tail_duration_s = 1.0
+        endif
+        if tail_duration_s > 4.5
+            tail_duration_s = 4.5
+        endif
+        impulse_duration_s = tail_duration_s * 1.3
+        appendInfoLine: "  Decay base:       ", fixed$(decay_base, 0), "  tail=", fixed$(tail_duration_s, 2), " s"
+
+        # ------------------------------------------------------------------
+        # 7. ENVELOPE SHAPE → Reverb Preset
+        #    Compare RMS in 3 zones to classify shape
+        # ------------------------------------------------------------------
+        selectObject: inputSound
+        envDur = Get total duration
+        zone = envDur / 3
+
+        rmsZ1 = Get root-mean-square: 0,        zone
+        rmsZ2 = Get root-mean-square: zone,      zone * 2
+        rmsZ3 = Get root-mean-square: zone * 2,  envDur
+
+        if rmsZ1 = undefined
+            rmsZ1 = 0.01
+        endif
+        if rmsZ2 = undefined
+            rmsZ2 = 0.01
+        endif
+        if rmsZ3 = undefined
+            rmsZ3 = 0.01
+        endif
+
+        if rmsZ1 > rmsZ2 * 1.5 and rmsZ1 > rmsZ3 * 2.5
+            preset = 2
+            appendInfoLine: "  Envelope:         Percussive → Subtle reverb"
+        elsif rmsZ3 > rmsZ1 * 1.5
+            preset = 4
+            appendInfoLine: "  Envelope:         Swell → Heavy reverb"
+        elsif rmsZ1 < rmsZ2 * 0.7 and rmsZ2 > rmsZ3 * 1.5
+            preset = 3
+            appendInfoLine: "  Envelope:         ADSR → Medium reverb"
+        elsif decayExp < 2
+            preset = 5
+            appendInfoLine: "  Envelope:         Sustained/drone → Extreme reverb"
+        else
+            preset = 3
+            appendInfoLine: "  Envelope:         Steady → Medium reverb"
+        endif
+
+        appendInfoLine: ""
+        audio_was_analyzed = 1
+        selectObject: inputSound
+    endif
+endif
+
+# =============================================================
 # 1. GLOBAL SETUP & RANDOMIZED PARAMETERS
 # =============================================================
 Erase all
 clearinfo
-appendInfoLine: "KLANG MACHINE v4: Generating New Patch..."
+appendInfoLine: "KLANG MACHINE v2.1: Generating New Patch..."
+if audio_was_analyzed
+    appendInfoLine: "(Parameters derived from audio analysis)"
+endif
 
-velocity = randomUniform(0.4, 0.95)
+if audio_was_analyzed
+    velocity = velocity_from_audio
+else
+    velocity = randomUniform(0.4, 0.95)
+endif
 strings = randomInteger(1, 3)
 detune = randomUniform(0.1, 2.5)
 resonance = randomUniform(0.2, 0.95)
 
-# --- Randomization depth ---
-#   depth_frac controls how far each parameter can deviate
-#   from its physical default.  0 = standard piano waveguide,
-#   0.3 = subtle per-voice character, 1.0 = imaginary instruments.
 if randomize_depth = 1
     depth_frac = 0.0
     depth_name$ = "None"
@@ -155,23 +535,6 @@ rate_ratio = internal_rate / 44100.0
 master_dry# = zero#(total_samples)
 
 # --- LAYER 2: Randomize body resonator parameters ---
-# Default centre frequencies, bandwidths, and gains for 8 modes.
-# With depth_frac > 0, each is jittered to create an imaginary body.
-#
-# freq:  jittered ± depth_frac * spread_pct
-# bw:    jittered ± depth_frac * 50%
-# gain:  jittered ± depth_frac * 60%
-
-# Base values:  freq,  bw,   gain
-#   R1:          65,    7,   0.42
-#   R2:         130,   13,   0.34
-#   R3:         210,   22,   0.26
-#   R4:         340,   36,   0.19
-#   R5:         560,   60,   0.13
-#   R6:         950,  100,   0.08
-#   R7:        1800,  175,   0.05
-#   R8:        3200,  320,   0.025
-
 body_f1 = 65.0
 body_f2 = 130.0
 body_f3 = 210.0
@@ -200,7 +563,6 @@ body_g7 = 0.05
 body_g8 = 0.025
 
 if depth_frac > 0
-    # Frequency jitter: ± depth_frac × 40%  (keeps modes ordered)
     body_f1 = body_f1  * (1.0 + depth_frac * randomUniform(-0.40, 0.40))
     body_f2 = body_f2  * (1.0 + depth_frac * randomUniform(-0.40, 0.40))
     body_f3 = body_f3  * (1.0 + depth_frac * randomUniform(-0.40, 0.40))
@@ -210,7 +572,6 @@ if depth_frac > 0
     body_f7 = body_f7  * (1.0 + depth_frac * randomUniform(-0.40, 0.40))
     body_f8 = body_f8  * (1.0 + depth_frac * randomUniform(-0.40, 0.40))
 
-    # Bandwidth jitter: ± depth_frac × 50%
     body_bw1 = body_bw1 * (1.0 + depth_frac * randomUniform(-0.50, 0.50))
     body_bw2 = body_bw2 * (1.0 + depth_frac * randomUniform(-0.50, 0.50))
     body_bw3 = body_bw3 * (1.0 + depth_frac * randomUniform(-0.50, 0.50))
@@ -220,7 +581,6 @@ if depth_frac > 0
     body_bw7 = body_bw7 * (1.0 + depth_frac * randomUniform(-0.50, 0.50))
     body_bw8 = body_bw8 * (1.0 + depth_frac * randomUniform(-0.50, 0.50))
 
-    # Gain jitter: ± depth_frac × 60%
     body_g1 = body_g1 * (1.0 + depth_frac * randomUniform(-0.60, 0.60))
     body_g2 = body_g2 * (1.0 + depth_frac * randomUniform(-0.60, 0.60))
     body_g3 = body_g3 * (1.0 + depth_frac * randomUniform(-0.60, 0.60))
@@ -230,7 +590,6 @@ if depth_frac > 0
     body_g7 = body_g7 * (1.0 + depth_frac * randomUniform(-0.60, 0.60))
     body_g8 = body_g8 * (1.0 + depth_frac * randomUniform(-0.60, 0.60))
 
-    # Floor gains at 0.005
     if body_g1 < 0.005
         body_g1 = 0.005
     endif
@@ -277,23 +636,23 @@ if depth_frac > 0
 endif
 
 # =============================================================
-# 2. VOICE LOOP (Generate 4 random SATB notes)
+# 2. VOICE LOOP (Generate 4 SATB notes — constrained if analyzed)
 # =============================================================
 for voice from 1 to 4
-    if voice == 1
-        midi_note = randomInteger(40, 55) + transpose_semitones
+    if voice = 1
+        midi_note = randomInteger(bass_lo, bass_hi) + transpose_semitones
         bass_note = midi_note
         voice_name$ = "Bass   "
-    elsif voice == 2
-        midi_note = randomInteger(52, 64) + transpose_semitones
+    elsif voice = 2
+        midi_note = randomInteger(tenor_lo, tenor_hi) + transpose_semitones
         tenor_note = midi_note
         voice_name$ = "Tenor  "
-    elsif voice == 3
-        midi_note = randomInteger(53, 72) + transpose_semitones
+    elsif voice = 3
+        midi_note = randomInteger(alto_lo, alto_hi) + transpose_semitones
         alto_note = midi_note
         voice_name$ = "Alto   "
     else
-        midi_note = randomInteger(60, 84) + transpose_semitones
+        midi_note = randomInteger(soprano_lo, soprano_hi) + transpose_semitones
         soprano_note = midi_note
         voice_name$ = "Soprano"
     endif
@@ -323,7 +682,6 @@ for voice from 1 to 4
         strike_a = 0.07
     endif
     if depth_frac > 0
-        # Subtle: ±20%  Wild: strike_a randomized across 0.03–0.22
         strike_a = strike_a * (1.0 + depth_frac * randomUniform(-0.5, 0.5))
         if strike_a < 0.03
             strike_a = 0.03
@@ -354,7 +712,6 @@ for voice from 1 to 4
         damp_lp = 0.50
     endif
     if depth_frac > 0
-        # Subtle: ±30%  Wild: can range from bright to very dark
         damp_lp = damp_lp * (1.0 + depth_frac * randomUniform(-0.7, 0.7))
         if damp_lp < 0.01
             damp_lp = 0.01
@@ -369,7 +726,6 @@ for voice from 1 to 4
         stiff_c = 0.12
     endif
     if depth_frac > 0
-        # Subtle: ±40%  Wild: from near-harmonic to bell-like
         stiff_c = stiff_c * (1.0 + depth_frac * randomUniform(-0.8, 0.8))
         if stiff_c < 0.001
             stiff_c = 0.001
@@ -392,7 +748,6 @@ for voice from 1 to 4
     if coupling_max < 0
         coupling_max = 0
     endif
-    # --- LAYER 3: Coupling safety factor randomization ---
     coupling_safety = 0.5
     if depth_frac > 0
         coupling_safety = 0.5 + depth_frac * randomUniform(-0.3, 0.3)
@@ -411,7 +766,6 @@ for voice from 1 to 4
         coupling = 0
     endif
 
-    # --- LAYER 3: Excitation physics randomization ---
     contact_time = 0.004 - (voice_vel * 0.002)
     if midi_note > 72
         contact_time = contact_time * (72.0 / midi_note)
@@ -421,7 +775,6 @@ for voice from 1 to 4
     bright_pow = 3.0 - (2.0 * voice_vel)
 
     if depth_frac > 0
-        # Contact time: Subtle ±25%, Wild ×0.3–3.0
         contact_time = contact_time * (1.0 + depth_frac * randomUniform(-0.7, 1.0))
         if contact_time < 0.0005
             contact_time = 0.0005
@@ -430,13 +783,11 @@ for voice from 1 to 4
             contact_time = 0.015
         endif
 
-        # Hammer amplitude: Subtle ±20%, Wild ×0.3–3.0
         hammer_amp = hammer_amp * (1.0 + depth_frac * randomUniform(-0.7, 1.0))
         if hammer_amp < 0.005
             hammer_amp = 0.005
         endif
 
-        # Brightness exponent: Subtle ±20%, Wild 0.5–5.0
         bright_pow = bright_pow * (1.0 + depth_frac * randomUniform(-0.5, 0.5))
         if bright_pow < 0.5
             bright_pow = 0.5
@@ -451,7 +802,6 @@ for voice from 1 to 4
         pulse_width = 2
     endif
 
-    # --- Per-voice log ---
     if depth_frac > 0
         appendInfoLine: "  → strike=", fixed$(strike_a, 3),
             ... "  damp=", fixed$(damp_lp, 3),
@@ -463,11 +813,11 @@ for voice from 1 to 4
 
     buffer_size = round(internal_rate / 82.0) + 40
 
-    if strings == 1
+    if strings = 1
         f1 = base_freq
         f2 = base_freq
         f3 = base_freq
-    elsif strings == 2
+    elsif strings = 2
         f1 = base_freq - detune * 0.5
         f2 = base_freq + detune * 0.5
         f3 = base_freq + detune * 0.5
@@ -493,11 +843,6 @@ for voice from 1 to 4
     c2 = (1.0 - l_frac2) / (1.0 + l_frac2)
     c3 = (1.0 - l_frac3) / (1.0 + l_frac3)
 
-    # FIX 3 — Added upper-bound clamp for xs_contact.
-    # At 5512.5 Hz, high MIDI notes have very short delay lines
-    # (MIDI 84 → ~830 Hz → l_int ≈ 6).  Without the upper clamp,
-    # xs_contact could equal l_int, putting injection and readback
-    # at the same index → zero-length loop segment → instability.
     xs_contact1 = round(strike_a * l_int1)
     if xs_contact1 < 2
         xs_contact1 = 2
@@ -583,14 +928,19 @@ for voice from 1 to 4
 
         bridge_in = coupling * bridge_prev
 
-        # --- String 1 ---
         idxA1 = ptr1 - l_int1
-        if idxA1 <= 0
+        if idxA1 < 1
             idxA1 = idxA1 + buffer_size
         endif
+        if idxA1 < 1
+            idxA1 = 1
+        endif
         idxB1 = idxA1 - 1
-        if idxB1 <= 0
+        if idxB1 < 1
             idxB1 = idxB1 + buffer_size
+        endif
+        if idxB1 < 1
+            idxB1 = 1
         endif
 
         d_out1 = c1 * dl1#[idxA1] + dl1#[idxB1] - c1 * frac_y1
@@ -603,14 +953,20 @@ for voice from 1 to 4
         dl1#[ptr1] = lp_out1 * loop_gain + bridge_in
 
         inj1 = ptr1 - xs_contact1
-        if inj1 <= 0
+        if inj1 < 1
             inj1 = inj1 + buffer_size
+        endif
+        if inj1 < 1
+            inj1 = 1
         endif
         dl1#[inj1] = dl1#[inj1] + exc_val
 
         pk1 = ptr1 - xs_pickup1
-        if pk1 <= 0
+        if pk1 < 1
             pk1 = pk1 + buffer_size
+        endif
+        if pk1 < 1
+            pk1 = 1
         endif
         pickup1 = dl1#[pk1]
         ptr1 = ptr1 + 1
@@ -618,16 +974,21 @@ for voice from 1 to 4
             ptr1 = 1
         endif
 
-        # --- String 2 ---
         pickup2 = 0.0
         if strings >= 2
             idxA2 = ptr2 - l_int2
-            if idxA2 <= 0
+            if idxA2 < 1
                 idxA2 = idxA2 + buffer_size
             endif
+            if idxA2 < 1
+                idxA2 = 1
+            endif
             idxB2 = idxA2 - 1
-            if idxB2 <= 0
+            if idxB2 < 1
                 idxB2 = idxB2 + buffer_size
+            endif
+            if idxB2 < 1
+                idxB2 = 1
             endif
 
             d_out2 = c2 * dl2#[idxA2] + dl2#[idxB2] - c2 * frac_y2
@@ -640,14 +1001,20 @@ for voice from 1 to 4
             dl2#[ptr2] = lp_out2 * loop_gain + bridge_in
 
             inj2 = ptr2 - xs_contact2
-            if inj2 <= 0
+            if inj2 < 1
                 inj2 = inj2 + buffer_size
+            endif
+            if inj2 < 1
+                inj2 = 1
             endif
             dl2#[inj2] = dl2#[inj2] + exc_val
 
             pk2 = ptr2 - xs_pickup2
-            if pk2 <= 0
+            if pk2 < 1
                 pk2 = pk2 + buffer_size
+            endif
+            if pk2 < 1
+                pk2 = 1
             endif
             pickup2 = dl2#[pk2]
             ptr2 = ptr2 + 1
@@ -656,16 +1023,21 @@ for voice from 1 to 4
             endif
         endif
 
-        # --- String 3 ---
         pickup3 = 0.0
-        if strings == 3
+        if strings = 3
             idxA3 = ptr3 - l_int3
-            if idxA3 <= 0
+            if idxA3 < 1
                 idxA3 = idxA3 + buffer_size
             endif
+            if idxA3 < 1
+                idxA3 = 1
+            endif
             idxB3 = idxA3 - 1
-            if idxB3 <= 0
+            if idxB3 < 1
                 idxB3 = idxB3 + buffer_size
+            endif
+            if idxB3 < 1
+                idxB3 = 1
             endif
 
             d_out3 = c3 * dl3#[idxA3] + dl3#[idxB3] - c3 * frac_y3
@@ -678,14 +1050,20 @@ for voice from 1 to 4
             dl3#[ptr3] = lp_out3 * loop_gain + bridge_in
 
             inj3 = ptr3 - xs_contact3
-            if inj3 <= 0
+            if inj3 < 1
                 inj3 = inj3 + buffer_size
+            endif
+            if inj3 < 1
+                inj3 = 1
             endif
             dl3#[inj3] = dl3#[inj3] + exc_val
 
             pk3 = ptr3 - xs_pickup3
-            if pk3 <= 0
+            if pk3 < 1
                 pk3 = pk3 + buffer_size
+            endif
+            if pk3 < 1
+                pk3 = 1
             endif
             pickup3 = dl3#[pk3]
             ptr3 = ptr3 + 1
@@ -705,7 +1083,7 @@ endfor
 master_dry# = master_dry# / 4.0
 
 # =============================================================
-# 3. GLOBAL SOUNDBOARD SETUP (using randomized body params)
+# 3. GLOBAL SOUNDBOARD SETUP
 # =============================================================
 nyq = internal_rate * 0.48
 
@@ -846,7 +1224,6 @@ else
     resampled_id = raw_sound_id
 endif
 
-# --- Spectral-Split Stereo ---
 selectObject: resampled_id
 left_id = Copy: "KlangLeft"
 Filter (pass Hann band): 20, 3000, 100
@@ -856,7 +1233,7 @@ left_id = left_filtered_id
 
 selectObject: resampled_id
 right_id = Copy: "KlangRight"
-Filter (pass Hann band): 150, 8000, 100
+Filter (pass Hann band): 150, high_cutoff_Hz, 100
 right_filtered_id = selected("Sound")
 removeObject: right_id
 right_id = right_filtered_id
@@ -876,7 +1253,6 @@ selectObject: original
 originalDur = Get total duration
 sr = Get sampling frequency
 
-# === Apply Presets ===
 if preset = 2
     tail_duration_s = 1.5
     impulse_duration_s = 2.0
@@ -925,6 +1301,12 @@ else
     presetName$ = "Custom"
 endif
 
+# Override reverb params with analysed values when audio was analyzed
+# (only for Custom preset or when analysis was active)
+if audio_was_analyzed and preset = 1
+    presetName$ = "Custom (from audio)"
+endif
+
 if wet_dry_percent < 0
     wet_dry_percent = 0
 elsif wet_dry_percent > 100
@@ -947,7 +1329,6 @@ decay_str$ = string$(decay_base)
 
 appendInfoLine: "  Convolving left and right channels..."
 
-# Extract channels
 selectObject: extendedSound
 Extract one channel: 1
 leftChannel = selected("Sound")
@@ -955,7 +1336,6 @@ selectObject: extendedSound
 Extract one channel: 2
 rightChannel = selected("Sound")
 
-# --- Left Channel Reverb ---
 Create Poisson process: "poisson_left", 0, impulse_duration_s, poisson_density
 poissonLeft = selected("PointProcess")
 To Sound (pulse train): sr, 1, 0.035, 2800
@@ -968,13 +1348,12 @@ Filter (pass Hann band): low_cutoff_Hz, high_cutoff_Hz, smoothing_Hz
 filtLeft = selected("Sound")
 removeObject: convLeft
 
-# --- Right Channel Reverb (Decorrelated) ---
+decay_R = decay_base * 0.95
+decay_R_str$ = string$(decay_R)
 Create Poisson process: "poisson_right", 0, impulse_duration_s * 0.93, poisson_density * 0.95
 poissonRight = selected("PointProcess")
 To Sound (pulse train): sr, 1, 0.032, 2600
 irRight = selected("Sound")
-decay_R = decay_base * 0.95
-decay_R_str$ = string$(decay_R)
 Formula: "self * " + decay_R_str$ + "^(-(x-xmin)/(xmax-xmin)) * (1 + 0.65*sin(2*pi*x*140 + (x-xmin)*22))"
 selectObject: rightChannel, irRight
 Convolve: "sum", "zero"
@@ -983,7 +1362,6 @@ Filter (pass Hann band): low_cutoff_Hz * 1.2, high_cutoff_Hz * 0.95, smoothing_H
 filtRight = selected("Sound")
 removeObject: convRight
 
-# Normalize & Mix Wet/Dry
 selectObject: filtLeft
 Scale peak: 0.95
 selectObject: filtRight
@@ -999,7 +1377,6 @@ Formula: "self * " + wet_str$ + " + object[" + left_str$ + "] * " + dry_str$
 selectObject: filtRight
 Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
 
-# Fadeout & Truncate
 fade_start = totalDur - fadeout_duration_s
 fade_str$ = string$(fadeout_duration_s)
 start_str$ = string$(fade_start)
@@ -1026,13 +1403,11 @@ selectObject: filtRight
 Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
 Scale peak: 0.98
 
-# Combine
 selectObject: filtLeft, filtRight
 Combine to stereo
 result = selected("Sound")
 Rename: originalName$ + "_spectral_" + presetName$
 
-# Cleanup
 removeObject: leftChannel, rightChannel, extendedSound
 removeObject: poissonLeft, poissonRight, irLeft, irRight
 removeObject: filtLeft, filtRight, original
@@ -1042,7 +1417,6 @@ removeObject: filtLeft, filtRight, original
 # =============================================================
 appendInfoLine: "Drawing Visualization..."
 
-# --- Convert MIDI notes to pitch names for labels ---
 procedure midiName: .midi, .result$
     .octave = floor(.midi / 12) - 1
     .pc = .midi mod 12
@@ -1083,18 +1457,17 @@ alto_name$ = midiName.result$
 @midiName: soprano_note, ""
 soprano_name$ = midiName.result$
 
-# ============================================================
-# VISUALIZATION  (8 × 5.9 inch canvas — library standard)
-# ============================================================
-
-# --- Title ---
 Select outer viewport: 0, 8, 0, 0.55
 Font size: 11
 Colour: "Black"
-Text special: 0.5, "centre", 0.5, "half", "Helvetica", 11, "0",
-    ... "##Waveguide Klangmaschine — " + presetName$ + " Reverb##"
+if audio_was_analyzed
+    Text special: 0.5, "centre", 0.5, "half", "Helvetica", 11, "0",
+        ... "##Waveguide Klangmaschine v2.1 — " + presetName$ + " [from audio]##"
+else
+    Text special: 0.5, "centre", 0.5, "half", "Helvetica", 11, "0",
+        ... "##Waveguide Klangmaschine — " + presetName$ + " Reverb##"
+endif
 
-# --- Mondrian ---
 Select outer viewport: 0.6, 7.7, 0.6, 5.3
 Axes: 0, 100, 0, 100
 Solid line
@@ -1125,7 +1498,6 @@ Draw line: x1, y2 + 5, x2, y2 + 5
 Draw line: x1 - 5, y1, x1 - 5, y2
 Line width: 1
 
-# Note labels
 Font size: 8
 Colour: "White"
 Text special: x1 / 2, "centre", y1 / 2, "half",
@@ -1140,7 +1512,6 @@ Colour: "White"
 Text special: (x2 + 100) / 2, "centre", (y2 + 100) / 2, "half",
     ... "Helvetica", 8, "0", "S: " + soprano_name$
 
-# --- Footer ---
 Select outer viewport: 0, 8, 5.5, 5.9
 Axes: 0, 1, 0, 1
 Font size: 6
