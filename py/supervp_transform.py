@@ -276,31 +276,17 @@ def mode_age(args, tmp_dir, supervp_exe, log_path):
 
 def mode_gender(args, tmp_dir, supervp_exe, log_path):
     """
-    Stronger gender morph.
-
-    Pass 1: IRCAM's built-in -male / -female transform with shape-invariant mode.
-    Pass 2: an additional spectral-envelope (formant) shift via -transenv.
-
-    Why two passes?
-    The plain gender switch can be fairly subtle on some voices. Perceived
-    vocal gender depends strongly on vocal-tract resonances (formants), so a
-    moderate envelope shift usually makes the result much more obvious without
-    forcing an unnatural pitch jump.
-
-    The envelope shift is chosen heuristically from gender_amount:
-        1 -> 120 cents
-        2 -> 180 cents
-        3 -> 260 cents
-        4 -> 340 cents
-        5 -> 420 cents
-    Female direction shifts formants up; male shifts them down.
+    Gender morph: two-pass pipeline.
+    Pass 1: SuperVP built-in -male/-female (value as separate arg).
+    Pass 2: formant envelope shift via -transenv for perceptual reinforcement.
+    -Afft enables proper spectral envelope estimation in both passes.
     """
     print(f"  Mode: gender  dir={args.gender_dir}  amount={args.gender_amount}",
           flush=True)
 
     flag = "-female" if args.gender_dir == "female" else "-male"
     amount = max(1, min(5, int(args.gender_amount)))
-    auto_formant = {1: 120, 2: 180, 3: 260, 4: 340, 5: 420}[amount]
+    auto_formant = {1: 120, 2: 200, 3: 300, 4: 400, 5: 500}[amount]
     if args.gender_dir == "male":
         auto_formant = -auto_formant
 
@@ -309,22 +295,21 @@ def mode_gender(args, tmp_dir, supervp_exe, log_path):
     # Pass 1 — built-in gender transform
     svp_args_1 = [
         "-S", args.input_wav1,
-        "-A", "-Z",
-        "-shape", "1",
+        "-A", "-Afft", "-Z",
         flag, str(amount),
         inter_wav
     ]
-    print(f"  Pass 1 — {flag} {amount} with shape-invariant synthesis", flush=True)
+    print(f"  Pass 1 — {flag} {amount}", flush=True)
     rc, _ = run_supervp(supervp_exe, svp_args_1, log_path, dry_run=args.dry_run)
     if rc != 0 and not args.dry_run:
-        print("  ERROR: gender pass failed", flush=True)
+        print("  ERROR: gender pass 1 failed", flush=True)
         return rc
 
-    # Pass 2 — extra formant movement for a clearer perceived gender shift
+    # Pass 2 — formant shift for perceptual reinforcement
     src = inter_wav if (os.path.isfile(inter_wav) or args.dry_run) else args.input_wav1
     svp_args_2 = [
         "-S", src,
-        "-A", "-Z",
+        "-A", "-Afft", "-Z",
         "-transenv", str(auto_formant),
         args.result_wav
     ]
@@ -452,27 +437,40 @@ def mode_tremolo(args, tmp_dir, supervp_exe, log_path):
 
 def mode_cross(args, tmp_dir, supervp_exe, log_path):
     """
-    Spectral cross-synthesis: -Gcross blends amplitude of sound1 with
-    frequency (pitch) of sound2 (or vice versa) according to --cross_mix.
+    Spectral cross-synthesis: -Gcross blends the spectral envelope (timbre)
+    of one sound with the fine structure (pitch/harmonics) of another.
+
+    -Afft / -afft enable FFT-based envelope estimation on both inputs,
+    which is essential for meaningful amplitude/frequency separation.
+    Without these, -Gcross operates on raw FFT bins and produces
+    unreliable results.
+
+    X/Y control the blend:
+      -X = amplitude weight from source 1
+      -x = amplitude weight from source 2
+      -Y = frequency weight from source 1
+      -y = frequency weight from source 2
     """
     if not args.input_wav2 or not os.path.isfile(args.input_wav2):
         print("  ERROR: cross mode requires --input_wav2", flush=True)
         return 1
 
     mix = max(0.0, min(1.0, args.cross_mix))
-    print(f"  Mode: cross  mix={mix:.3f}  "
-          f"(amp: {1-mix:.2f}×snd1 + {mix:.2f}×snd2 | "
-          f"freq: {1-mix:.2f}×snd1 + {mix:.2f}×snd2)", flush=True)
+    print(f"  Mode: cross  mix={mix:.3f}", flush=True)
+    print(f"  Envelope (timbre): {1-mix:.2f}×src1 + {mix:.2f}×src2", flush=True)
+    print(f"  Fine structure:    {mix:.2f}×src1 + {1-mix:.2f}×src2", flush=True)
 
     svp_args = [
         "-S", args.input_wav1,
         "-s", args.input_wav2,
-        "-A", "-a", "-Z",
+        "-A", "-Afft",
+        "-a", "-afft",
+        "-Z",
         "-Gcross",
         f"-X{1.0 - mix:.4f}",
         f"-x{mix:.4f}",
-        f"-Y{1.0 - mix:.4f}",
-        f"-y{mix:.4f}",
+        f"-Y{mix:.4f}",
+        f"-y{1.0 - mix:.4f}",
         args.result_wav
     ]
     rc, _ = run_supervp(supervp_exe, svp_args, log_path, dry_run=args.dry_run)
@@ -595,24 +593,25 @@ def mode_breathiness(args, tmp_dir, supervp_exe, log_path):
 def mode_formant_shift(args, tmp_dir, supervp_exe, log_path):
     """
     Formant shift: moves vocal-tract resonances independently of pitch.
-    Stripped down to minimal flags to prevent SuperVP bypass errors.
+    -Afft enables proper spectral envelope estimation (fixes distortion
+    from the original version which lacked envelope-aware analysis).
     """
     cents = int(args.formant_shift_cents)
-    print(f"  Mode: formant_shift  {cents:+.0f} cents", flush=True)
+    print(f"  Mode: formant_shift  {cents:+d} cents", flush=True)
 
     if args.dry_run:
         return 0
 
-    # Minimal, proven syntax from the naked test
     svp_args = [
         "-S", args.input_wav1,
-        "-A", 
-        "-Z", 
+        "-A", "-Afft",
+        "-Z",
         "-transenv", str(cents),
         args.result_wav
     ]
     
-    rc, _ = run_supervp(supervp_exe, svp_args, log_path=log_path, verbose=False, dry_run=args.dry_run)
+    rc, _ = run_supervp(supervp_exe, svp_args, log_path=log_path, dry_run=args.dry_run)
+    return rc
     return rc
 
 
@@ -759,22 +758,23 @@ def mode_denoise(args, tmp_dir, supervp_exe, log_path):
 
 def mode_age_gender(args, tmp_dir, supervp_exe, log_path):
     """
-    Chain age transform then gender transform in two SuperVP passes.
+    Chain age transform then gender transform.
     Pass 1: age → intermediate WAV
-    Pass 2: gender on intermediate → final result WAV
-    All age and gender parameters are re-used from the standard flags.
+    Pass 2: gender (standalone flag) on intermediate
+    Pass 3: formant shift for perceptual gender reinforcement → final result
     """
     print(f"  Mode: age_gender  age={args.age_val}  "
           f"dir={args.gender_dir}  amount={args.gender_amount}", flush=True)
 
-    inter_wav = os.path.join(tmp_dir, "svp_age_inter.wav")
+    inter_wav1 = os.path.join(tmp_dir, "svp_age_inter.wav")
+    inter_wav2 = os.path.join(tmp_dir, "svp_gender_inter.wav")
 
     # Pass 1 — age
     svp_args_1 = [
         "-S", args.input_wav1,
         "-A", "-Z",
         "-age", str(args.age_val),
-        inter_wav
+        inter_wav1
     ]
     print("  Pass 1 — age transform", flush=True)
     rc, _ = run_supervp(supervp_exe, svp_args_1, log_path, dry_run=args.dry_run)
@@ -782,23 +782,46 @@ def mode_age_gender(args, tmp_dir, supervp_exe, log_path):
         print("  ERROR: age pass failed", flush=True)
         return rc
 
-    # Pass 2 — gender (on intermediate)
+    # Pass 2 — gender
     flag = "-female" if args.gender_dir == "female" else "-male"
-    src  = inter_wav if (os.path.isfile(inter_wav) or args.dry_run) else args.input_wav1
+    amount = max(1, min(5, int(args.gender_amount)))
+    src = inter_wav1 if (os.path.isfile(inter_wav1) or args.dry_run) else args.input_wav1
     svp_args_2 = [
         "-S", src,
-        "-A", "-Z",
-        flag, str(args.gender_amount),
+        "-A", "-Afft", "-Z",
+        flag, str(amount),
+        inter_wav2
+    ]
+    print(f"  Pass 2 — {flag} {amount}", flush=True)
+    rc, _ = run_supervp(supervp_exe, svp_args_2, log_path, dry_run=args.dry_run)
+    if rc != 0 and not args.dry_run:
+        print("  ERROR: gender pass failed", flush=True)
+        # Clean up
+        if os.path.isfile(inter_wav1):
+            try: os.remove(inter_wav1)
+            except OSError: pass
+        return rc
+
+    # Pass 3 — formant shift for perceptual reinforcement
+    amount = max(1, min(5, int(args.gender_amount)))
+    auto_formant = {1: 120, 2: 200, 3: 300, 4: 400, 5: 500}[amount]
+    if args.gender_dir == "male":
+        auto_formant = -auto_formant
+
+    src2 = inter_wav2 if (os.path.isfile(inter_wav2) or args.dry_run) else src
+    svp_args_3 = [
+        "-S", src2,
+        "-A", "-Afft", "-Z",
+        "-transenv", str(auto_formant),
         args.result_wav
     ]
-    print("  Pass 2 — gender transform", flush=True)
-    rc, _ = run_supervp(supervp_exe, svp_args_2, log_path, dry_run=args.dry_run)
+    print(f"  Pass 3 — formant shift {auto_formant:+d} cents", flush=True)
+    rc, _ = run_supervp(supervp_exe, svp_args_3, log_path, dry_run=args.dry_run)
 
-    if os.path.isfile(inter_wav) and not args.dry_run:
-        try:
-            os.remove(inter_wav)
-        except OSError:
-            pass
+    for p in [inter_wav1, inter_wav2]:
+        if os.path.isfile(p) and not args.dry_run:
+            try: os.remove(p)
+            except OSError: pass
 
     return rc
 
