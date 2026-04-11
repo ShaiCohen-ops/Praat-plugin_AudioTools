@@ -100,7 +100,7 @@ form IRCAM Pan to Binaural
     optionmenu room_preset: 1
         option "1. none"
         option "2. hall"
-        option "3. living_room"
+        option "3. living room"
         option "4. studio"
         option "5. preset1"
         option "6. preset2"
@@ -252,7 +252,7 @@ if room_preset = 1
 elsif room_preset = 2
     roomName$ = "hall"
 elsif room_preset = 3
-    roomName$ = "livingroom"
+    roomName$ = "living room"
 elsif room_preset = 4
     roomName$ = "studio"
 elsif room_preset = 5
