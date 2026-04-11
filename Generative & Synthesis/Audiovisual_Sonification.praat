@@ -45,9 +45,9 @@ beginPause: "AV Parameter Mapping — Select Preset"
 endPause: "Run", 1
 
 totalDur = total_duration
-step = 0.08   ; ~12fps — good balance of smoothness vs speed
+frame_step = 0.08   ; ~12fps — good balance of smoothness vs speed
 sr = 44100
-total_frames = floor(totalDur / step)
+total_frames = floor(totalDur / frame_step)
 
 # Seed randomization for organic variations
 time_offset = 0
@@ -138,7 +138,7 @@ demoShow()
 
 # Pre-compute RMS — only needed for presets 1 and 2 (HUD)
 # Uses direct sample access on masterSound — no Extract needed
-samples_per_frame = round(step * sr)
+samples_per_frame = round(frame_step * sr)
 if preset = 1 or preset = 2
     selectObject: masterSound
     for frame from 0 to total_frames - 1
@@ -171,8 +171,8 @@ if preset = 2
     selectObject: masterSound
     fullPitch = To Pitch: 0, 75, 1000
     for frame from 0 to total_frames - 1
-        t = frame * step
-        pv = Get value at time: t + (step/2), "Hertz", "Linear"
+        t = frame * frame_step
+        pv = Get value at time: t + (frame_step/2), "Hertz", "Linear"
         if pv = undefined
             pitch_cache[frame] = 200
         else
@@ -188,8 +188,8 @@ demo Colour: "White"
 demo Text: 50, "centre", 60, "half", "Pre-slicing audio chunks..."
 demoShow()
 for frame from 0 to total_frames - 1
-    t = frame * step
-    t_end = t + step
+    t = frame * frame_step
+    t_end = t + frame_step
     selectObject: masterSound
     chunk_id[frame] = Extract part: t, t_end, "rectangular", 1, "no"
 endfor
@@ -198,8 +198,8 @@ endfor
 # PHASE 3: LEAN REAL-TIME PLAYBACK (draw + play only)
 # ============================================================
 for frame from 0 to total_frames - 1
-    t = frame * step
-    t_end = t + step
+    t = frame * frame_step
+    t_end = t + frame_step
     t_offset = t + time_offset
 
     # Pull pre-computed values from cache
@@ -285,11 +285,13 @@ for frame from 0 to total_frames - 1
         .b = 2.0 + 1.5 * sin(2*pi * 0.4 * t_offset) 
         demo Line width: 2
         .c_val = abs(sin(2*pi * 0.4 * t_offset))
-        demo Colour: "{1.0, '.c_val', 0.5}"
+        c_val = .c_val
+        demo Colour: "{1.0, 'c_val', 0.5}"
         
         .last_x = 0
         .last_y = 0
-        for .p from -75 to 75 step 2
+        .p = -75
+        while .p <= 75
             .phi = .p * 0.2
             .x = 50 + 8 * (.a * .phi - .b * sin(.phi))
             .y = 50 + 8 * (.a - .b * cos(.phi))
@@ -300,13 +302,16 @@ for frame from 0 to total_frames - 1
             endif
             .last_x = .x
             .last_y = .y
-        endfor
+            .p = .p + 2
+        endwhile
 
     elsif preset = 7
         # STEREO LISSAJOUS WITH PHOSPHOR TRAILS
-        .phase_drift = t_offset * 0.3
-        .new_x = 50 + 45 * sin(2*pi * 1.0 * t_offset)
-        .new_y = 50 + 45 * sin(2*pi * 2.0 * t_offset + pi/4 + .phase_drift)
+        # Ratio 3:2 matches the audio (220Hz left, 330Hz right = perfect fifth)
+        # Slow precession keeps figure alive without unbounded drift
+        .phase_drift = pi/4 + 0.3 * sin(2*pi * 0.05 * t_offset)
+        .new_x = 50 + 45 * sin(2*pi * 3.0 * t_offset)
+        .new_y = 50 + 45 * sin(2*pi * 2.0 * t_offset + .phase_drift)
         
         # Shift the history array
         for .h from 1 to 19
@@ -323,7 +328,8 @@ for frame from 0 to total_frames - 1
             if .fade < 0.05
                 .fade = 0.05
             endif
-            demo Paint circle (mm): "{0.2, '.fade', 0.8}", hist_x[.h], hist_y[.h], 3 * .fade
+            fade_val = .fade
+            demo Paint circle (mm): "{0.2, 'fade_val', 0.8}", hist_x[.h], hist_y[.h], 3 * fade_val
         endfor
         
         # Draw main bright point
