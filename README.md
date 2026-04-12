@@ -25,9 +25,9 @@ Developed for composers, sound designers, and researchers, the toolkit extends P
 2. **Locate your Praat plugins folder.**  
    Depending on your operating system, Praat looks for plugins here:
 
-   - **Windows:**   `C:\Users\<YourName>\Praat\plugins\`
-   - **macOS:**     `~/Library/Preferences/Praat/plugins/`
-   - **Linux:**     `~/.praat-dir/plugins/`
+   - **Windows:**   `C:\Users\<YourName>\Praat\plugin_AudioTools\`
+   - **macOS:**     `~/Library/Preferences/Praat Prefs/plugin_AudioTools/`
+   - **Linux:**     `~/.praat-dir/plugin_AudioTools/`
 
 3. **Important**⚠️ Rename the folder after downloading or cloning, ensure that the folder name is exactly:`plugin_AudioTools`.
  If the folder name differs, Praat will not display the “AudioTools” menu.
