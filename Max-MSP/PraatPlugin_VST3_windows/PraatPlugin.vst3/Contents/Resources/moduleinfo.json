@@ -1,0 +1,48 @@
+{
+  "Name": "PraatPlugin",
+  "Version": "1.5.0",
+  "Factory Info": {
+    "Vendor": "PraatPlugin",
+    "URL": "",
+    "E-Mail": "",
+    "Flags": {
+      "Unicode": true,
+      "Classes Discardable": false,
+      "Component Non Discardable": false,
+    },
+  },
+  "Classes": [
+    {
+      "CID": "ABCDEF019182FAEB5072617450727431",
+      "Category": "Audio Module Class",
+      "Name": "PraatPlugin",
+      "Vendor": "PraatPlugin",
+      "Version": "1.5.0",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": [
+        "Fx",
+        "Analyzer",
+      ],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+    {
+      "CID": "ABCDEF011234ABCD5072617450727431",
+      "Category": "Component Controller Class",
+      "Name": "PraatPlugin",
+      "Vendor": "PraatPlugin",
+      "Version": "1.5.0",
+      "SDKVersion": "VST 3.8.0",
+      "Sub Categories": [
+        "Fx",
+        "Analyzer",
+      ],
+      "Class Flags": 0,
+      "Cardinality": 2147483647,
+      "Snapshots": [
+      ],
+    },
+  ],
+}
