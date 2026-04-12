@@ -9,7 +9,7 @@
 #
 # Description:
 #   Live recording + Composition 3 processing chain with RANDOMIZED parameters
-#   Flow: Record → Whisper Morph → Bimodal Contour → Percussive Groove
+#   Flow: Record -> Whisper Morph -> Bimodal Contour -> Percussive Groove
 #   Each run generates different parameter combinations for unique results!
 # ============================================================
 
@@ -63,7 +63,7 @@ selectObject: trimmed
 
 # ============================================================
 # PART 2: COMPOSITION 3 (AudioTools) - RANDOMIZED
-# Flow: Whisper Morph → Bimodal Contour → Percussive Groove
+# Flow: Whisper Morph -> Bimodal Contour -> Percussive Groove
 # ============================================================
 
 # === INPUT SETUP ===
@@ -80,13 +80,13 @@ final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "Filter & Color/Whisper Morph.praat"
-path_body$ = pluginPath$ + "Pitch/Bimodal Contour Grammar.praat"
+path_body$ = pluginPath$ + "Pitch/Bimodal_Contour_Grammar.praat"
 path_outro$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
 
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  LIVE 3 RANDOM - Whisper → Contour → Groove"
+writeInfoLine: "  LIVE 3 RANDOM - Whisper -> Contour -> Groove"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Random seed: ", random_seed
@@ -192,13 +192,14 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 2: Body (Bimodal Contour Grammar - Randomized) ==="
 appendInfoLine: "  Generating random parameters..."
 
-# Randomize Bimodal Contour Grammar parameters
-# Random seed: use a different seed for this part
+# Randomize Bimodal Contour Grammar v0.4 parameters
 contour_seed = randomInteger(1, 999999)
-
-# Image dimensions: 800-1200 x 400-600
-contour_width = randomInteger(800, 1200)
-contour_height = randomInteger(400, 600)
+bc_preset$ = "Custom"
+bc_lo = randomInteger(50, 150)
+bc_hi = randomInteger(200, 800)
+bc_gest = randomUniform(0.5, 2.0)
+bc_int = randomUniform(0.5, 2.0)
+bc_wobble = randomUniform(0.0, 10.0)
 
 # Color scheme: random choice
 contour_color_choice = randomInteger(1, 4)
@@ -237,7 +238,8 @@ contour_grid = randomInteger(0, 1)
 contour_labels = randomInteger(0, 1)
 
 appendInfoLine: "  Random seed: ", contour_seed
-appendInfoLine: "  Image size: ", contour_width, " x ", contour_height
+appendInfoLine: "  Base Lo Hz: ", bc_lo
+appendInfoLine: "  Base Hi Hz: ", bc_hi
 appendInfoLine: "  Color scheme: ", contour_color$
 appendInfoLine: "  Line style: ", contour_line$
 appendInfoLine: "  Dot sizes: ", fixed$(contour_min_dot, 1), " - ", fixed$(contour_max_dot, 1)
@@ -246,11 +248,8 @@ appendInfoLine: "  Loudness variation: ", contour_variation
 appendInfoLine: "  Show grid: ", if contour_grid then "yes" else "no" fi
 appendInfoLine: "  Show labels: ", if contour_labels then "yes" else "no" fi
 
-# Bimodal Contour Grammar parameters:
-# Seed, Width, Height, ColorScheme, LineStyle, MinDot, MaxDot, Loudness, Variation, Grid, Labels, Play
-runScript: path_body$, contour_seed, contour_width, contour_height, contour_color$, 
-    ... contour_line$, contour_min_dot, contour_max_dot, contour_loudness, 
-    ... contour_variation, contour_grid, contour_labels, 0
+# Bimodal Contour Grammar v0.4 parameters (16 arguments)
+runScript: path_body$, bc_preset$, bc_lo, bc_hi, bc_gest, bc_int, bc_wobble, contour_seed, contour_color$, contour_line$, contour_min_dot, contour_max_dot, contour_loudness, contour_variation, contour_grid, contour_labels, 0
 
 # Get the output
 sound_body = selected("Sound")
@@ -456,8 +455,7 @@ selectObject: track1
 track2_str$ = string$(track2)
 track3_str$ = string$(track3)
 Formula: "self + object(" + track2_str$ + ", x) + object(" + track3_str$ + ", x)"
-
-final_name$ = initial_name$ + "_Composition3_Random"
+final_name$ = initial_name$ + "_Composition3"
 Rename: final_name$
 final_sound = selected("Sound")
 
@@ -469,11 +467,9 @@ appendInfoLine: "=== Final Mastering ==="
 
 # --- Trim trailing silence ---
 appendInfoLine: "  Trimming silence..."
-
 selectObject: final_sound
 Convert to mono
 mono_for_trim = selected("Sound")
-
 Trim silences: 0.1, "yes", 100, 0, -40, 0.1, 0.05, "no", "Trim"
 
 mono_trimmed_final = selected("Sound")
@@ -489,11 +485,9 @@ Rename: final_name$
 
 # --- Apply final fade-out ---
 appendInfoLine: "  Applying fade-out (", fixed$(final_fade_sec, 1), " s)..."
-
 selectObject: final_sound
 final_dur = Get total duration
 fade_start = final_dur - final_fade_sec
-
 if fade_start > 0
     Formula: "if x > " + string$(fade_start) + " then self * ((xmax - x) / " + string$(final_fade_sec) + ") else self fi"
 endif
@@ -527,25 +521,24 @@ if numberOfSelected("Sound") > 0
     for j to n
         name'j'$ = selected$("Sound", j)
     endfor
+    
     # Now remove artifacts
     for j to n
         tempName$ = name'j'$
+        
         # Check if name contains artifact patterns and it's not our final sound
         if tempName$ <> final_name$
             isArtifact = 0
-            if index(tempName$, "Whisper") > 0
+            if index(tempName$, "intro") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "whisper") > 0
+            if index(tempName$, "body") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "Contour") > 0
+            if index(tempName$, "outro") > 0
                 isArtifact = 1
             endif
-            if index(tempName$, "contour") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Groove") > 0
+            if index(tempName$, "bimodal") > 0
                 isArtifact = 1
             endif
             if index(tempName$, "groove") > 0

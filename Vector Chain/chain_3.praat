@@ -1,3 +1,23 @@
+# ============================================================
+# Praat AudioTools - Chain 3
+# Author: Shai Cohen
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 1.0 (2025)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   This script executes a sequential processing chain using three 
+#   AudioTools modules:
+#   1. Whisper Morph - Morphs the original sound into a whisper.
+#   2. Bimodal Contour Grammar - Generates and applies a contour based on custom grammatical rules.
+#   3. Percussive Audio Groove Creator - Embeds a rhythmic breakbeat into the resulting audio.
+#
+#   The script concludes by generating a visual text summary of the 
+#   pipeline in the Praat Picture window.
+# ============================================================
+
 Erase all
 # 1. Preparation
 numSelected = numberOfSelected("Sound")
@@ -11,7 +31,7 @@ appendInfoLine: "--- Starting AudioTools Chain 3 ---"
 
 # --- Define Paths (Relative) ---
 path1$ = "../Filter & Color/Whisper Morph.praat"
-path2$ = "../Pitch/Bimodal Contour Grammar.praat"
+path2$ = "../Pitch/Bimodal_Contour_Grammar.praat"
 path3$ = "../Time & Granular/Percussive Audio Groove Creator.praat"
 
 # ==============================================================================
@@ -29,7 +49,8 @@ sound2 = selected("Sound")
 # STEP 2: Bimodal Contour Grammar
 # ==============================================================================
 selectObject: sound2
-runScript: path2$, 0, 1000, 500, "Pitch+Loudness Rainbow", "Thin continuous line", 1.0, 4.0, 70, 10, 0, 0, 0
+# Updated to match the 16 arguments of the Bimodal Contour Grammar v0.4 form definition
+runScript: path2$, "Custom", 100, 200, 1.0, 1.0, 5.0, 0, "Pitch+Loudness Rainbow", "Thin continuous line", 1.0, 4.0, 70, 10, 0, 0, 0
 
 # Select Output
 expected_name_2$ = expected_name_1$ + "_grammar"

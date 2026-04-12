@@ -9,7 +9,7 @@
 #
 # Description:
 #   Live recording + Composition 3 processing chain
-#   Flow: Record → Whisper Morph → Bimodal Contour → Percussive Groove
+#   Flow: Record -> Whisper Morph -> Bimodal Contour -> Percussive Groove
 # ============================================================
 
 # ============================================================
@@ -47,7 +47,7 @@ selectObject: trimmed
 
 # ============================================================
 # PART 2: COMPOSITION 3 (AudioTools)
-# Flow: Whisper Morph → Bimodal Contour → Percussive Groove
+# Flow: Whisper Morph -> Bimodal Contour -> Percussive Groove
 # ============================================================
 
 # === INPUT SETUP ===
@@ -64,13 +64,13 @@ final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "Filter & Color/Whisper Morph.praat"
-path_body$ = pluginPath$ + "Pitch/Bimodal Contour Grammar.praat"
+path_body$ = pluginPath$ + "Pitch/Bimodal_Contour_Grammar.praat"
 path_outro$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
 
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  LIVE 3 - Whisper → Contour → Groove"
+writeInfoLine: "  LIVE 3 - Whisper -> Contour -> Groove"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Recording time: ", recording_time_seconds, " seconds"
@@ -119,10 +119,8 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 2: Body (Bimodal Contour Grammar) ==="
 appendInfoLine: "  Generating..."
 
-# Bimodal Contour Grammar parameters:
-# Start_time, End_time, Step_ms, Visualization, Line_type, Time_step, Max_formant, 
-# N_formants, Dynamic_range, Visualize, Play, Save_textgrid
-runScript: path_body$, 0, 1000, 500, "Pitch+Loudness Rainbow", "Thin continuous line", 1.0, 4.0, 70, 10, 0, 0, 0
+# Bimodal Contour Grammar v0.4 parameters (16 arguments)
+runScript: path_body$, "Custom", 100, 200, 1.0, 1.0, 5.0, 0, "Pitch+Loudness Rainbow", "Thin continuous line", 1.0, 4.0, 70, 10, 0, 0, 0
 
 # Get the output
 sound_body = selected("Sound")
@@ -277,7 +275,6 @@ selectObject: track1
 track2_str$ = string$(track2)
 track3_str$ = string$(track3)
 Formula: "self + object(" + track2_str$ + ", x) + object(" + track3_str$ + ", x)"
-
 final_name$ = initial_name$ + "_Composition3"
 Rename: final_name$
 final_sound = selected("Sound")
@@ -290,11 +287,9 @@ appendInfoLine: "=== Final Mastering ==="
 
 # --- Trim trailing silence ---
 appendInfoLine: "  Trimming silence..."
-
 selectObject: final_sound
 Convert to mono
 mono_for_trim = selected("Sound")
-
 Trim silences: 0.1, "yes", 100, 0, -40, 0.1, 0.05, "no", "Trim"
 
 mono_trimmed_final = selected("Sound")
@@ -310,11 +305,9 @@ Rename: final_name$
 
 # --- Apply final fade-out ---
 appendInfoLine: "  Applying fade-out (", fixed$(final_fade_sec, 1), " s)..."
-
 selectObject: final_sound
 final_dur = Get total duration
 fade_start = final_dur - final_fade_sec
-
 if fade_start > 0
     Formula: "if x > " + string$(fade_start) + " then self * ((xmax - x) / " + string$(final_fade_sec) + ") else self fi"
 endif
@@ -348,45 +341,14 @@ if numberOfSelected("Sound") > 0
     for j to n
         name'j'$ = selected$("Sound", j)
     endfor
+    
     # Now remove artifacts
     for j to n
         tempName$ = name'j'$
+        
         # Check if name contains artifact patterns and it's not our final sound
         if tempName$ <> final_name$
             isArtifact = 0
-            if index(tempName$, "whisper") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Whisper") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "morph") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Morph") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "grammar") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Grammar") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Contour") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Groove") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Recording") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "_Part") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Track_") > 0
-                isArtifact = 1
-            endif
             if index(tempName$, "Intro") > 0
                 isArtifact = 1
             endif

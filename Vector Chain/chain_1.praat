@@ -1,3 +1,24 @@
+# ============================================================
+# Praat AudioTools - Chain 1
+# Author: Shai Cohen
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 1.0 (2025)
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   This script executes a sequential processing chain using four 
+#   AudioTools modules:
+#   1. MDS Space Navigator - Auto-segments and reorders audio based on similarity.
+#   2. Spectral Freeze & Glitch - Applies spectral freezing and glitch effects.
+#   3. Crystalline Cascade - Adds a subtle flutter reverberation cascade.
+#   4. 4-Channel Canon - Distributes the result into a quadraphonic canon.
+#
+#   The script concludes by generating a visual text summary of the 
+#   pipeline in the Praat Picture window.
+# ============================================================
+
 Erase all
 # 1. Preparation
 numSelected = numberOfSelected("Sound")
@@ -11,7 +32,7 @@ appendInfoLine: "--- Starting AudioTools Chain 1 (Relative Paths) ---"
 
 # --- Define Paths (Relative) ---
 # Assumes this script is in "plugin_AudioTools/_Chains/"
-path1$ = "../Time & Granular/MDS Space Navigator.praat"
+path1$ = "../Time & Granular/MDS_Space_Navigator.praat"
 path2$ = "../Time & Granular/Spectral_Freeze_&_Glitch.praat"
 path3$ = "../Reverb/Crystalline_Cascade.praat"
 path4$ = "../Spatial & Surround/4-Channel Canon.praat"
@@ -20,7 +41,7 @@ path4$ = "../Spatial & Surround/4-Channel Canon.praat"
 # STEP 1: MDS Space Navigator
 # ==============================================================================
 selectObject: initial_sound
-# Note: Using "Nearest neighbor..." text string for safety
+# Note: Using "Nearest neighbor..." text string for safety. 10 arguments matching form.
 runScript: path1$, 25, 0.1, 0.1, "Formants (Vowel Quality)", 5500, 5, 12, "Nearest neighbor chain (most similar next)", 0.05, 0
 
 # FIX: Force selection by name (MDS always appends "_reordered")
@@ -38,7 +59,8 @@ selectObject: sound2
 runScript: path2$, "Default (balanced)", 12, 25, 0.5, 1.5, 3, 0.1, 0.9, 0, 0
 
 expected_name_2$ = expected_name_1$ + "_glitch"
-# We check if it exists; if not, we assume the previous sound is still the active one (some presets might vary)
+# We check if it exists;
+# if not, we assume the previous sound is still the active one (some presets might vary)
 if selected$("Sound") <> expected_name_2$
     selectObject: "Sound " + expected_name_2$
 endif
@@ -65,6 +87,7 @@ selectObject: sound4
 runScript: path4$, "Classic Canon (unison, staggered)", 0, 0, 0, 0, 0.0, 0.5, 1.0, 1.5, 44100, 0.01, "4 channels (quadraphonic)", 0, 1
 
 appendInfoLine: "Step 4: 4-Channel Canon complete. Chain finished."
+
 # ==============================================================================
 # VISUALIZATION (Simple Text)
 # ==============================================================================
