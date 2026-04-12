@@ -42,17 +42,34 @@
 # ============================================================
 
 # ============================================================
-# FORM
+# PERSISTENT DEFAULTS (used as initial values on first run)
 # ============================================================
+mode              = 1
+preset            = 1
+shape             = 1
+color_palette     = 1
+movement          = 1
+synthesis_type    = 1
+number_of_voices  = 3
+total_duration    = 4
+master_volume     = 0.85
+show_trails       = 1
+randomize_seed    = 1
+
+# ============================================================
+# FORM (persistent — re-opens after each run)
+# ============================================================
+repeat
+
 beginPause: "AudioTools v5 — Select Mode & Configure"
 
     comment: "════  MODE  ════"
-    optionmenu: "Mode", 1
+    optionmenu: "Mode", mode
         option: "AV Presets  (signal analysis → visuals)"
         option: "Poly Composition  (multi-voice generative)"
 
     comment: "────  AV PRESETS — ignored in Poly mode  ────"
-    optionmenu: "Preset", 1
+    optionmenu: "Preset", preset
         option: "1. TRUE ANALYSIS: RMS -> Size"
         option: "2. TRUE ANALYSIS: Pitch -> Y-Position"
         option: "3. Tone -> Sharpness (The Morphing Star)"
@@ -62,7 +79,7 @@ beginPause: "AudioTools v5 — Select Mode & Configure"
         option: "7. Stereo Waveform -> Path (Lissajous)"
 
     comment: "────  POLY COMPOSITION — ignored in AV Presets mode  ────"
-    optionmenu: "Shape", 1
+    optionmenu: "Shape", shape
         option: "Circle"
         option: "Triangle  (3 sides)"
         option: "Square  (4 sides)"
@@ -72,7 +89,7 @@ beginPause: "AudioTools v5 — Select Mode & Configure"
         option: "Plane  (filled square)"
         option: "Points"
         option: "Lines  (from centre)"
-    optionmenu: "Color palette", 1
+    optionmenu: "Color palette", color_palette
         option: "Rainbow  (per voice)"
         option: "Fire  (red to orange)"
         option: "Ice  (blue to white)"
@@ -80,27 +97,31 @@ beginPause: "AudioTools v5 — Select Mode & Configure"
         option: "Magenta"
         option: "Gold"
         option: "White"
-    optionmenu: "Movement", 1
+    optionmenu: "Movement", movement
         option: "Orbit  (circular)"
         option: "Spiral  (in and out)"
         option: "Bounce  (Lissajous paths)"
         option: "Pendulum  (coupled XY)"
         option: "Expand / Contract"
-    optionmenu: "Synthesis type", 1
+    optionmenu: "Synthesis type", synthesis_type
         option: "Pure Sine"
         option: "FM  (rich timbre)"
         option: "AM  (tremolo)"
         option: "Additive  (harmonics 1-4)"
         option: "Pulse  (bright, 6 partials)"
-    natural: "Number of voices", 3
+    natural: "Number of voices", number_of_voices
 
     comment: "════  SHARED PARAMETERS  ════"
-    real: "Total duration", 4
-    real: "Master volume", 0.85
-    boolean: "Show trails", 1
-    boolean: "Randomize seed", 1
+    real: "Total duration", total_duration
+    real: "Master volume", master_volume
+    boolean: "Show trails", show_trails
+    boolean: "Randomize seed", randomize_seed
 
-endPause: "Run", 1
+clicked = endPause: "Quit", "Run", 2, 1
+
+if clicked = 1
+    exitScript: "Audiovisual session ended."
+endif
 
 # ============================================================
 # SHARED SETUP
@@ -724,3 +745,5 @@ elsif mode = 2
     demoShow()
 
 endif   ; end mode branch
+
+until 0

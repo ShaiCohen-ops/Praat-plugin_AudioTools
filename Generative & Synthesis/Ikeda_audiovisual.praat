@@ -28,17 +28,30 @@
 #
 # ============================================================
 
+# ---- PERSISTENT DEFAULTS ----
+work           = 1
+total_duration = 16
+enable_color   = 1
+master_volume  = 0.9
+
+# ---- FORM (re-opens after each run) ----
+repeat
+
 beginPause: "IKEDA/SYN — Parameters"
     comment: "Select a Ryoji Ikeda-inspired audiovisual model:"
-    optionmenu: "Work", 1
+    optionmenu: "Work", work
         option: "1. test pattern (Barcodes & Glitch)"
         option: "2. datamatics (Grids & Scans)"
         option: "3. spectra (Drones & Light)"
         option: "4. supercodex (Genome Barcodes)"
-    real: "Total duration", 16
-    boolean: "Enable color", 1
-    real: "Master volume", 0.9
-endPause: "Run", 1
+    real: "Total duration", total_duration
+    boolean: "Enable color", enable_color
+    real: "Master volume", master_volume
+clicked = endPause: "Quit", "Run", 2, 1
+
+if clicked = 1
+    exitScript: "IKEDA/SYN session ended."
+endif
 
 totalDur = total_duration
 step = 0.125
@@ -292,4 +305,7 @@ demo Colour: "White"
 demo Text: 50, "centre", 10, "half", title$ + " / praat"
 demoShow()
 
+removeObject: masterSound
 appendInfoLine: "Playback complete."
+
+until 0
