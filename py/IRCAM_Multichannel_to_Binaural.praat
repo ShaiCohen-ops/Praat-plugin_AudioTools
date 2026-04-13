@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -33,6 +33,9 @@
 #   Python 3
 #
 # Changelog:
+#   v1.3 — Fix: robust 3-candidate Python detection with dependency probe
+#          Fix: cross-platform support (macOS/Linux)
+#          Added: platform display in Info header
 #   v1.2 — Fix: tools_folder$ moved into the form so path is user-editable
 #          Fix: Room_preset no longer overwrites Hrtf_preset room
 #          Fix: log file preserved on render failure for diagnostics
@@ -56,10 +59,10 @@ helper_py$      = defaultDirectory$ + "/spat_binaural_bridge.py"
 working_folder$ = defaultDirectory$ + "/"
 
 # ---- FORM ----
-form Multichannel to Binaural v1.2
+form Multichannel to Binaural v1.3
 
     comment === SPAT5 TOOLS FOLDER ===
-    comment Folder containing spat5.virtualspeakers~.exe
+    comment Folder containing spat5.virtualspeakers~ binary
     sentence Tools_folder C:/Users/User/Documents/Max 9/Packages/spat5-x64/media/tools/
 
     comment === SPEAKER LAYOUT ===
@@ -190,7 +193,16 @@ outputWav$ = working_folder$ + "mcbin_output.wav"
 logTxt$    = working_folder$ + "mcbin_log.txt"
 
 # ---- INFO ----
-writeInfoLine:  "=== Multichannel to Binaural v1.2 ==="
+if windows
+    platform$ = "Windows"
+elsif macintosh
+    platform$ = "macOS"
+else
+    platform$ = "Linux"
+endif
+
+writeInfoLine:  "=== Multichannel to Binaural v1.3 ==="
+appendInfoLine: "Platform: ", platform$
 appendInfoLine: "Source:   ", sourceName$, "  (", numCh, " ch  /  ",
     ... fixed$(duration, 2), " s  @  ", sr, " Hz)"
 appendInfoLine: "Layout:   ", layoutToken$
@@ -216,11 +228,57 @@ else
     Save as WAV file: inputWav$
 endif
 
-# ---- DETERMINE PYTHON COMMAND ----
-if macintosh or unix
-    pythonCmd$ = "python3"
+# ---- DETECT PYTHON (multi-candidate probe with dependency check) ----
+# NOTE: candidates must be single-word commands because runSubprocess
+# passes the executable name as one argument. "py -3" would fail.
+probeMarker$ = working_folder$ + "mcbin_probe.ok"
+
+if windows
+    nPyCandidates = 3
+    pyCandidate1$ = "python"
+    pyCandidate2$ = "py"
+    pyCandidate3$ = "python3"
 else
-    pythonCmd$ = "python"
+    nPyCandidates = 3
+    pyCandidate1$ = "python3"
+    pyCandidate2$ = "python"
+    pyCandidate3$ = "py"
+endif
+
+pythonCmd$ = ""
+for iCand from 1 to nPyCandidates
+    if iCand = 1
+        tryCmd$ = pyCandidate1$
+    elsif iCand = 2
+        tryCmd$ = pyCandidate2$
+    else
+        tryCmd$ = pyCandidate3$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    # Probe: check Python exists AND can import the required stdlib modules
+    probeCode$ = "import sys,os,subprocess,struct,math,wave; open(r'" + probeMarker$ + "','w').write('ok')"
+    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        appendInfoLine: "  Python found: ", pythonCmd$
+    endif
+    if pythonCmd$ <> ""
+        iCand = nPyCandidates + 1
+    endif
+endfor
+
+if pythonCmd$ = ""
+    exitScript: "Cannot find a working Python installation." + newline$
+        ... + "" + newline$
+        ... + "Tried: " + pyCandidate1$ + ", " + pyCandidate2$ + ", " + pyCandidate3$ + newline$
+        ... + "" + newline$
+        ... + "Please install Python 3 and ensure it is on your PATH."
 endif
 
 # ---- RUN ----
