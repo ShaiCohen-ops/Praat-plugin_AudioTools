@@ -521,7 +521,7 @@ else
 endif
 
 appendInfoLine: "Randomize Depth:    ", depth_name$, " (", fixed$(depth_frac, 1), ")"
-if transpose_semitones <> 0
+if not audio_was_analyzed and transpose_semitones <> 0
     appendInfoLine: "Transpose:          ", transpose_semitones, " semitones"
 endif
 appendInfoLine: "Velocity (Force):   ", fixed$(velocity, 2)
@@ -639,20 +639,28 @@ endif
 # 2. VOICE LOOP (Generate 4 SATB notes — constrained if analyzed)
 # =============================================================
 for voice from 1 to 4
+    # When audio was analyzed, SATB ranges are already centered on detected pitches,
+    # so transpose_semitones must not be added again (it would double-apply the shift).
+    if audio_was_analyzed
+        effective_transpose = 0
+    else
+        effective_transpose = transpose_semitones
+    endif
+
     if voice = 1
-        midi_note = randomInteger(bass_lo, bass_hi) + transpose_semitones
+        midi_note = randomInteger(bass_lo, bass_hi) + effective_transpose
         bass_note = midi_note
         voice_name$ = "Bass   "
     elsif voice = 2
-        midi_note = randomInteger(tenor_lo, tenor_hi) + transpose_semitones
+        midi_note = randomInteger(tenor_lo, tenor_hi) + effective_transpose
         tenor_note = midi_note
         voice_name$ = "Tenor  "
     elsif voice = 3
-        midi_note = randomInteger(alto_lo, alto_hi) + transpose_semitones
+        midi_note = randomInteger(alto_lo, alto_hi) + effective_transpose
         alto_note = midi_note
         voice_name$ = "Alto   "
     else
-        midi_note = randomInteger(soprano_lo, soprano_hi) + transpose_semitones
+        midi_note = randomInteger(soprano_lo, soprano_hi) + effective_transpose
         soprano_note = midi_note
         voice_name$ = "Soprano"
     endif
