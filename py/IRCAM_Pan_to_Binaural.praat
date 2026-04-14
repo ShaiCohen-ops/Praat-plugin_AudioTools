@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.9 (2026) - Python Bridge Edition
+# Version: 1.0 (2026)
 # License: MIT License
 #
 # Description:
@@ -46,6 +46,10 @@
 # ============================================================
 
 form IRCAM Pan to Binaural
+
+    comment === SPAT5 TOOLS FOLDER ===
+    comment Folder containing spat5 binaries (hoa.encoder~, hoa.decoder~, virtualspeakers~)
+    sentence Tools_folder C:/Users/User/Documents/Max 9/Packages/spat5-x64/media/tools/
 
     comment === POSITION / MOVEMENT ===
     boolean movement_enabled 0
@@ -120,7 +124,7 @@ play_output = 1
 delete_temp_files = 1
 verbose_log = 0
 
-tools_folder$   = "C:/Users/User/Documents/Max 9/Packages/spat5-x64/media/tools/"
+# tools_folder$ comes from the form field (tools_folder$).
 helper_py$      = defaultDirectory$ + "/spat_bridge.py"
 working_folder$ = defaultDirectory$ + "/"
 
@@ -365,9 +369,22 @@ else
 endif
 
 # ============================================================
+# Platform detection
+# ============================================================
+if windows
+    platform$ = "Windows"
+elsif macintosh
+    platform$ = "macOS"
+else
+    platform$ = "Linux"
+endif
+
+# ============================================================
 # Info panel header
 # ============================================================
-writeInfoLine:  "=== IRCAM Pan to Binaural v0.9 (Python Bridge) ==="
+writeInfoLine:  "=== IRCAM Pan to Binaural v1.0 (Python Bridge) ==="
+appendInfoLine: "Platform : ", platform$
+appendInfoLine: "Tools    : ", tools_folder$
 appendInfoLine: "Source   : ", soundName$, "  (", nChannels, " ch  /  ",
     ... fixed$ (duration, 2), " s  @  ", sr, " Hz)"
 appendInfoLine: "Mode     : ", sourceMode$
@@ -457,13 +474,6 @@ procedure renderChunk: .tStart, .tEnd, .az, .el, .chunkNum
     Save as WAV file: inputWav$
     removeObject: chunkInputID
 
-    # Determine Python command based on OS
-    if macintosh or unix
-        pythonCmd$ = "python3"
-    else
-        pythonCmd$ = "python"
-    endif
-
     runSubprocess: pythonCmd$, helper_py$,
         ... inputWav$, hoaWav$, speakerWav$, outputWav$, logTxt$,
         ... tools_folder$, encoderPreset$, decoderPreset$, layoutToken$,
@@ -491,6 +501,61 @@ procedure renderChunk: .tStart, .tEnd, .az, .el, .chunkNum
         deleteFile: logTxt$
     endif
 endproc
+
+# ============================================================
+# DETECT PYTHON (3-candidate probe, runs once before any render)
+# ============================================================
+probeMarker$ = working_folder$ + "pan_probe.ok"
+
+if windows
+    nPyCandidates = 3
+    pyCandidate1$ = "python"
+    pyCandidate2$ = "py"
+    pyCandidate3$ = "python3"
+else
+    nPyCandidates = 3
+    pyCandidate1$ = "python3"
+    pyCandidate2$ = "python"
+    pyCandidate3$ = "py"
+endif
+
+pythonCmd$ = ""
+for iCand from 1 to nPyCandidates
+    if iCand = 1
+        tryCmd$ = pyCandidate1$
+    elsif iCand = 2
+        tryCmd$ = pyCandidate2$
+    else
+        tryCmd$ = pyCandidate3$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    probeCode$ = "import sys,os,subprocess; open(r'" + probeMarker$ + "','w').write('ok')"
+    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+    endif
+    if pythonCmd$ <> ""
+        iCand = nPyCandidates + 1
+    endif
+endfor
+
+if pythonCmd$ = ""
+    removeObject: workID
+    exitScript: "Cannot find a working Python installation." + newline$
+        ... + "" + newline$
+        ... + "Tried: " + pyCandidate1$ + ", " + pyCandidate2$ + ", " + pyCandidate3$ + newline$
+        ... + "" + newline$
+        ... + "Please install Python 3 and ensure it is on your PATH."
+endif
+
+appendInfoLine: "Python   : ", pythonCmd$
+appendInfoLine: ""
 
 # ============================================================
 # STATIC MODE

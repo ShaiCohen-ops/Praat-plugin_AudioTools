@@ -2,7 +2,7 @@
 # Praat AudioTools - Partial_Stretch.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -30,11 +30,9 @@ soundName$ = selected$("Sound")
 
 # ---- PLATFORM ----
 if windows
-    sep$       = "\"
-    pythonCmd$ = "py"
+    sep$ = "\"
 else
-    sep$       = "/"
-    pythonCmd$ = "python3"
+    sep$ = "/"
 endif
 
 # ---- PATHS ----
@@ -45,8 +43,6 @@ resultWav$     = pluginDir$ + "ps_result.wav"
 doneFile$      = pluginDir$ + "ps_done.txt"
 logFile$       = pluginDir$ + "ps_log.txt"
 
-pm2Dir$ = "C:\Users\User\Pm2\bin"
-
 createFolder: pluginDir$
 createFolder: pluginDir$ + "py" + sep$
 
@@ -55,7 +51,11 @@ if not fileReadable(pythonScript$)
 endif
 
 # ---- FORM ----
-form Partial Stretch v1.1
+form Partial Stretch v1.2
+    comment === PM2 / TOOLS PATH ===
+    comment Folder containing the PM2 binary (pm2 or pm2.exe)
+    sentence PM2_bin_directory C:\Users\User\Pm2\bin
+
     comment === MODE ===
     optionmenu Mode: 1
         option Spectral Stretch
@@ -98,6 +98,68 @@ form Partial Stretch v1.1
     boolean Play_result 1
 endform
 
+# ---- PM2 DIR FROM FORM ----
+pm2Dir$ = pM2_bin_directory$
+
+# Normalise trailing separator
+if windows
+    bs$ = "\"
+    if right$(pm2Dir$, 1) <> "\" and right$(pm2Dir$, 1) <> "/"
+        pm2Dir$ = pm2Dir$ + "\"
+    endif
+else
+    if right$(pm2Dir$, 1) <> "/"
+        pm2Dir$ = pm2Dir$ + "/"
+    endif
+endif
+
+# ---- DETECT PYTHON (3-candidate probe) ----
+probeMarker$ = pluginDir$ + "ps_probe.ok"
+
+if windows
+    nPyCandidates = 3
+    pyCandidate1$ = "python"
+    pyCandidate2$ = "py"
+    pyCandidate3$ = "python3"
+else
+    nPyCandidates = 3
+    pyCandidate1$ = "python3"
+    pyCandidate2$ = "python"
+    pyCandidate3$ = "py"
+endif
+
+pythonCmd$ = ""
+for iCand from 1 to nPyCandidates
+    if iCand = 1
+        tryCmd$ = pyCandidate1$
+    elsif iCand = 2
+        tryCmd$ = pyCandidate2$
+    else
+        tryCmd$ = pyCandidate3$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    probeCode$ = "import sys,os,subprocess,struct,math,wave; open(r'" + probeMarker$ + "','w').write('ok')"
+    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+    endif
+    if pythonCmd$ <> ""
+        iCand = nPyCandidates + 1
+    endif
+endfor
+
+if pythonCmd$ = ""
+    exitScript: "Cannot find a working Python installation." + newline$
+        ... + "Tried: " + pyCandidate1$ + ", " + pyCandidate2$ + ", " + pyCandidate3$ + newline$
+        ... + "Please install Python 3 and ensure it is on your PATH."
+endif
+
 # ---- MAP MODE ----
 if mode = 1
     mode$ = "spectral_stretch"
@@ -114,8 +176,19 @@ endif
 resultName$ = soundName$ + "_ps_" + mode$
 
 # ---- INFO HEADER ----
+if windows
+    platform$ = "Windows"
+elsif macintosh
+    platform$ = "macOS"
+else
+    platform$ = "Linux"
+endif
+
 clearinfo
-writeInfoLine:  "=== Partial Stretch v1.1 ==="
+writeInfoLine:  "=== Partial Stretch v1.2 ==="
+appendInfoLine: "Platform: ", platform$
+appendInfoLine: "Python:   ", pythonCmd$
+appendInfoLine: "PM2 dir:  ", pm2Dir$
 appendInfoLine: "Mode:     ", mode$
 appendInfoLine: "Source:   ", soundName$
 appendInfoLine: ""
@@ -129,37 +202,45 @@ deleteFile: logFile$
 selectObject: sound
 Save as WAV file: inputWav$
 
-# ---- BUILD PYTHON COMMAND ----
-dq$ = """"
-cmd$ = pythonCmd$ + " "
-cmd$ = cmd$ + dq$ + pythonScript$ + dq$ + " "
-cmd$ = cmd$ + dq$ + inputWav$     + dq$ + " "
-cmd$ = cmd$ + dq$ + doneFile$     + dq$ + " "
-cmd$ = cmd$ + "--pm2_dir "               + dq$ + pm2Dir$ + dq$ + " "
-cmd$ = cmd$ + "--result_wav "            + dq$ + resultWav$ + dq$ + " "
-cmd$ = cmd$ + "--log_path "              + dq$ + logFile$ + dq$ + " "
-cmd$ = cmd$ + "--mode "                  + mode$ + " "
-cmd$ = cmd$ + "--max_partials "          + string$(max_partials) + " "
-cmd$ = cmd$ + "--analysis_window_ms "    + string$(analysis_window_ms) + " "
-cmd$ = cmd$ + "--hop_ms "                + string$(hop_ms) + " "
-cmd$ = cmd$ + "--output_gain "           + string$(output_gain) + " "
-cmd$ = cmd$ + "--split_freq_hz "         + string$(split_frequency_Hz) + " "
-cmd$ = cmd$ + "--upper_stretch_factor "  + string$(upper_stretch_factor) + " "
-cmd$ = cmd$ + "--band_lo_hz "            + string$(band_low_Hz) + " "
-cmd$ = cmd$ + "--band_mid_hz "           + string$(band_mid_Hz) + " "
-cmd$ = cmd$ + "--band_lo_stretch "       + string$(band_low_stretch) + " "
-cmd$ = cmd$ + "--band_mid_stretch "      + string$(band_mid_stretch) + " "
-cmd$ = cmd$ + "--band_hi_stretch "       + string$(band_high_stretch) + " "
-cmd$ = cmd$ + "--freeze_time "           + string$(freeze_time) + " "
-cmd$ = cmd$ + "--freeze_duration "       + string$(freeze_duration) + " "
-cmd$ = cmd$ + "--thin_above_hz "         + string$(thin_above_Hz) + " "
-cmd$ = cmd$ + "--thin_every_n "          + string$(thin_every_N) + " "
-cmd$ = cmd$ + "--blur_window_ms "        + string$(blur_window_ms)
+# ---- VERIFY PM2 BINARY EXISTS ----
+if windows
+    pm2Exe$ = pm2Dir$ + "pm2.exe"
+else
+    pm2Exe$ = pm2Dir$ + "pm2"
+endif
+
+if not fileReadable(pm2Exe$)
+    exitScript: "PM2 binary not found: " + pm2Exe$ + newline$
+        ... + "Please set the correct PM2 bin folder in the form."
+endif
 
 appendInfoLine: "Running Partial Stretch..."
 
 # ---- RUN PYTHON ----
-runSystem: cmd$
+runSubprocess: pythonCmd$,
+    ... pythonScript$,
+    ... inputWav$,
+    ... doneFile$,
+    ... "--pm2_dir",            pm2Dir$,
+    ... "--result_wav",         resultWav$,
+    ... "--log_path",           logFile$,
+    ... "--mode",               mode$,
+    ... "--max_partials",       string$(max_partials),
+    ... "--analysis_window_ms", string$(analysis_window_ms),
+    ... "--hop_ms",             string$(hop_ms),
+    ... "--output_gain",        string$(output_gain),
+    ... "--split_freq_hz",      string$(split_frequency_Hz),
+    ... "--upper_stretch_factor", string$(upper_stretch_factor),
+    ... "--band_lo_hz",         string$(band_low_Hz),
+    ... "--band_mid_hz",        string$(band_mid_Hz),
+    ... "--band_lo_stretch",    string$(band_low_stretch),
+    ... "--band_mid_stretch",   string$(band_mid_stretch),
+    ... "--band_hi_stretch",    string$(band_high_stretch),
+    ... "--freeze_time",        string$(freeze_time),
+    ... "--freeze_duration",    string$(freeze_duration),
+    ... "--thin_above_hz",      string$(thin_above_Hz),
+    ... "--thin_every_n",       string$(thin_every_N),
+    ... "--blur_window_ms",     string$(blur_window_ms)
 
 # ---- IMPORT RESULT ----
 if fileReadable(doneFile$)
