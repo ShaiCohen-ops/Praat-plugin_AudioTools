@@ -31,25 +31,6 @@
 #     IV.  Stretto        : compressed entries pile up
 #     V.   Pedal/Cadence  : augmented drone, final subject, fade
 #
-#   OUTPUT DURATION: ~11x input (3 voices) or ~12x (4 voices).
-#   Recommended input: 0.5 - 5.0 seconds, voiced content for
-#   best PSOLA transposition; unvoiced content passes through.
-#
-#   PITCH TRANSPOSITION: PSOLA via Manipulation + PitchTier.
-#   AUGMENTATION: PSOLA via DurationTier.
-#   RETROGRADE: Reverse.
-#   SPATIAL PROCESSING: ITD/ILD/shadow/reflection/reverb/anchor.
-#   MIXING: Formula-based additive (true sum, not averaging).
-#
-# Changelog v2.0 (from v1.1):
-#   - Complete rewrite: sequential sections -> timeline voice engine
-#   - Voices now overlap as in real fugue polyphony
-#   - PSOLA pitch transposition for answer/entries at intervals
-#   - Augmentation, retrograde, fragmentation techniques
-#   - Stretto with configurable compression ratio
-#   - Per-voice spatial signatures maintained throughout
-#   - Pedal point with augmented drone
-#   - All v1.1 fixes retained (additive mixing, baked Formulas, etc.)
 #
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
@@ -87,7 +68,7 @@ endif
 # FORM
 # ============================================================
 
-form Perceptual Fugue v2.0
+form Perceptual Fugue v2.1
     comment === Preset ===
     optionmenu Preset: 2
         option Custom
@@ -115,7 +96,7 @@ form Perceptual Fugue v2.0
 endform
 
 # ============================================================
-# PRESETS
+# PRESETS & PARAMS
 # ============================================================
 
 if preset = 2
@@ -179,18 +160,6 @@ endif
 if stretto_compression > 1.0
     stretto_compression = 1.0
 endif
-if exposition_ITD_ms < 0.5
-    exposition_ITD_ms = 0.5
-endif
-if exposition_ITD_ms > 4.0
-    exposition_ITD_ms = 4.0
-endif
-if exposition_ILD_factor < 1.0
-    exposition_ILD_factor = 1.0
-endif
-if exposition_ILD_factor > 6.0
-    exposition_ILD_factor = 6.0
-endif
 
 # Derived parameters
 itdBase_s = exposition_ITD_ms / 1000
@@ -198,7 +167,6 @@ ildBase = exposition_ILD_factor
 numV = number_of_voices
 comp = stretto_compression
 
-# Answer interval (equal temperament)
 if answer_interval = 1
     answerRatio = 2 ^ (7/12)
     intervalName$ = "fifth up"
@@ -213,7 +181,6 @@ else
     intervalName$ = "tritone"
 endif
 
-# Voice pitch ratios
 v1ratio = 1.0
 v2ratio = answerRatio
 v3ratio = 0.5
@@ -231,8 +198,8 @@ else
 endif
 
 subDur = monoDur
+monoSr = Get sampling frequency
 
-# Timeline structure
 expoEnd = 3 * subDur
 episodeEnd = expoEnd + subDur
 middleEnd = episodeEnd + 2 * subDur
@@ -243,35 +210,23 @@ totalDur = strettoEnd + pedalDur
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: "  PERCEPTUAL FUGUE v2.0"
-writeInfoLine: "  Polyphonic spatial fugue engine"
+writeInfoLine: " PERCEPTUAL FUGUE v2.1 (Optimized)"
 writeInfoLine: "=================================================="
 appendInfoLine: ""
-appendInfoLine: "Source: ", soundName$, " | ", fixed$(monoDur, 3), " s | ",
-    ... monoSr, " Hz"
-appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Voices: ", numV, " | Answer: ", intervalName$,
-    ... " (x", fixed$(answerRatio, 3), ")"
-appendInfoLine: "Stretto compression: ", fixed$(comp, 2)
-appendInfoLine: "Output duration: ", fixed$(totalDur, 2), " s (~",
-    ... fixed$(totalDur / subDur, 1), "x input)"
-appendInfoLine: ""
-appendInfoLine: "Spatial: ITD ", fixed$(exposition_ITD_ms, 1),
-    ... "ms | ILD x", fixed$(ildBase, 1),
-    ... " | Shadow ", fixed$(shadow_cutoff_Hz, 0), " Hz"
+appendInfoLine: "Source: ", soundName$, " | ", fixed$(monoDur, 3), " s | ", monoSr, " Hz"
+appendInfoLine: "Voices: ", numV, " | Answer: ", intervalName$, " (x", fixed$(answerRatio, 3), ")"
+appendInfoLine: "Output duration: ", fixed$(totalDur, 2), " s"
 appendInfoLine: ""
 
 # ============================================================
-# PROCEDURES
+# PROCEDURES (Optimized)
 # ============================================================
 
-# --- Additive mixing (no averaging) ---
 procedure mixAdd: .a, .b
     selectObject: .a
     Formula: "self + object[" + string$(.b) + "]"
 endproc
 
-# --- Delay via concatenation (silence first for ID order) ---
 procedure makeDelay: .snd, .delaySec
     selectObject: .snd
     .sr = Get sampling frequency
@@ -296,73 +251,11 @@ procedure makeDelay: .snd, .delaySec
     endif
 endproc
 
-# --- Filters ---
 procedure lowPassAsym: .snd, .cutHz
     selectObject: .snd
     filtResult = Filter (pass Hann band): 0, .cutHz, 100
 endproc
 
-procedure highPassAsym: .snd, .cutHz
-    selectObject: .snd
-    .sr = Get sampling frequency
-    hpFiltResult = Filter (pass Hann band): .cutHz, .sr / 2, 200
-endproc
-
-# --- Reverb (3-tap, additive) ---
-procedure makeReverb: .snd, .rvTime, .wetMix
-    selectObject: .snd
-    .sr = Get sampling frequency
-    .dur = Get total duration
-    .rt = .rvTime
-    if .rt > 1.2
-        .rt = 1.2
-    endif
-    if .rt < 0.05
-        .rt = 0.05
-    endif
-    @makeDelay: .snd, .rt * 0.25
-    .tap1 = delayResult
-    @makeDelay: .snd, .rt * 0.5
-    .tap2 = delayResult
-    selectObject: .tap2
-    Formula: "self * 0.65"
-    @makeDelay: .snd, .rt * 1.0
-    .tap3 = delayResult
-    selectObject: .tap3
-    Formula: "self * 0.35"
-    @mixAdd: .tap1, .tap2
-    @mixAdd: .tap1, .tap3
-    removeObject: .tap2, .tap3
-    selectObject: .tap1
-    .wetSmooth = Filter (pass Hann band): 0, 5000, 300
-    removeObject: .tap1
-    selectObject: .wetSmooth
-    .wetDur = Get total duration
-    if .wetDur >= .dur
-        .wet = Extract part: 0, .dur, "rectangular", 1, "no"
-        removeObject: .wetSmooth
-    else
-        .ext = .dur - .wetDur
-        .pad = Create Sound from formula: "pad", 1, 0, .ext, .sr, "0"
-        selectObject: .wetSmooth
-        plusObject: .pad
-        .wet = Concatenate
-        removeObject: .wetSmooth, .pad
-    endif
-    selectObject: .wet
-    Formula: "self * " + string$(.wetMix)
-    selectObject: .snd
-    .dry = Copy: "dry_rv"
-    selectObject: .dry
-    Formula: "self * " + string$(1 - .wetMix)
-    @mixAdd: .dry, .wet
-    removeObject: .wet
-    selectObject: .dry
-    reverbResult = Copy: "rv_out"
-    removeObject: .dry
-endproc
-
-# --- Early/late reflection layers ---
 procedure makeEarlyRef: .snd, .rvTime
     selectObject: .snd
     .sr = Get sampling frequency
@@ -417,14 +310,12 @@ procedure makeEarlyRef: .snd, .rvTime
     endif
 endproc
 
-# --- Stereo combine ---
 procedure makeStereo: .left, .right
     selectObject: .left
     plusObject: .right
     stereoResult = Combine to stereo
 endproc
 
-# --- Trim or extend to exact duration ---
 procedure trimTo: .snd, .tDur
     selectObject: .snd
     .d = Get total duration
@@ -441,44 +332,20 @@ procedure trimTo: .snd, .tDur
     endif
 endproc
 
-# --- Identity anchor (500-3000 Hz midband) ---
-procedure addAnchor: .snd, .anchorSrc, .anchorGain
-    selectObject: .snd
-    .dur = Get total duration
-    selectObject: .anchorSrc
-    .mid = Filter (pass Hann band): 500, 3000, 200
-    selectObject: .mid
-    Formula: "self * " + string$(.anchorGain)
-    @trimTo: .mid, .dur
-    .midTrimmed = trimResult
-    removeObject: .mid
-    selectObject: .snd
-    anchorResult = Copy: "anch_out"
-    @mixAdd: anchorResult, .midTrimmed
-    removeObject: .midTrimmed
-endproc
-
-# --- PSOLA pitch transposition ---
 procedure transposeByRatio: .snd, .ratio
     selectObject: .snd
-    .dur = Get total duration
-    .manip = To Manipulation: 0.01, 50, 800
-    selectObject: .manip
-    .pt = Extract pitch tier
-    selectObject: .pt
-    .np = Get number of points
-    if .np > 0
-        Multiply frequencies: 0, .dur, .ratio
-    endif
-    selectObject: .manip
-    plusObject: .pt
-    Replace pitch tier
-    selectObject: .manip
-    transposeResult = Get resynthesis (overlap-add)
-    removeObject: .manip, .pt
+    .intendedDur = Get total duration
+    samplingFrequency = Get sampling frequency
+    .tmp = Copy: "ps_tmp"
+    selectObject: .tmp
+    Override sampling frequency: round(samplingFrequency * .ratio)
+    .shifted = Resample: samplingFrequency, 50
+    removeObject: .tmp
+    @trimTo: .shifted, .intendedDur
+    removeObject: .shifted
+    transposeResult = trimResult
 endproc
 
-# --- PSOLA duration scaling ---
 procedure augmentByRatio: .snd, .durRatio
     selectObject: .snd
     .dur = Get total duration
@@ -495,7 +362,6 @@ procedure augmentByRatio: .snd, .durRatio
     removeObject: .manip, .dt
 endproc
 
-# --- Retrograde ---
 procedure reverseSound: .snd
     selectObject: .snd
     reverseResult = Copy: "rev"
@@ -503,7 +369,6 @@ procedure reverseSound: .snd
     Reverse
 endproc
 
-# --- Apply 5ms raised-cosine fades to prevent clicks ---
 procedure applyFades: .snd
     selectObject: .snd
     .dur = Get total duration
@@ -515,31 +380,53 @@ procedure applyFades: .snd
     endif
 endproc
 
-# --- Place fragment into timeline at offset via Formula ---
 procedure placeAt: .timeline, .fragment, .startSec
-    selectObject: .fragment
-    .fNx = Get number of samples
     selectObject: .timeline
-    .sr = Get sampling frequency
-    .startSamp = round(.startSec * .sr)
-    .endSamp = .startSamp + .fNx
-    Formula: "if col > " + string$(.startSamp) + " and col <= " + string$(.endSamp) + " then self + object[" + string$(.fragment) + ", col - " + string$(.startSamp) + "] else self fi"
+    .tDur = Get total duration
+    selectObject: .fragment
+    .fDur = Get total duration
+    .fNx = Get number of samples
+    .endSec = .startSec + .fDur
+    if .endSec > .tDur
+        .endSec = .tDur
+    endif
+    .before = 0
+    if .startSec > 0
+        selectObject: .timeline
+        .before = Extract part: 0, .startSec, "rectangular", 1, "no"
+    endif
+    selectObject: .timeline
+    .middle = Extract part: .startSec, .endSec, "rectangular", 1, "no"
+    selectObject: .middle
+    Formula: "self + (if col <= " + string$(.fNx) + " then object[" + string$(.fragment) + ", 1, col] else 0 fi)"
+    .after = 0
+    if .endSec < .tDur
+        selectObject: .timeline
+        .after = Extract part: .endSec, .tDur, "rectangular", 1, "no"
+    endif
+    if .before <> 0
+        selectObject: .before
+        plusObject: .middle
+    else
+        selectObject: .middle
+    endif
+    if .after <> 0
+        plusObject: .after
+    endif
+    .newTimeline = Concatenate
+    removeObject: .timeline, .middle
+    if .before <> 0
+        removeObject: .before
+    endif
+    if .after <> 0
+        removeObject: .after
+    endif
+    placeAt_result = .newTimeline
 endproc
 
-# --- Spatial processing (reads global sp_* variables) ---
-# sp_itd:  signed seconds (+ = left leads)
-# sp_ild:  factor (> 1 = left louder)
-# sp_shSide:  1 = shadow right, -1 = shadow left, 0 = none
-# sp_shCut:  shadow LP cutoff Hz
-# sp_rvTime, sp_rvWet:  reverb
-# sp_refGain:  early reflection gain
-# sp_anchorGain:  identity anchor gain
-# sp_invRight:  1 = invert right channel polarity
-# Output: spatialResult (stereo)
 procedure applySpatial: .monoSnd
     selectObject: .monoSnd
     .dur = Get total duration
-    selectObject: .monoSnd
     .left = Copy: "sp_left"
     selectObject: .monoSnd
     .right = Copy: "sp_right"
@@ -581,25 +468,51 @@ procedure applySpatial: .monoSnd
         .left = .leftFilt
     endif
 
-    # Polarity inversion
     if sp_invRight = 1
         selectObject: .right
         Formula: "self * -1"
     endif
 
-    # Reverb
+    # Reverb 
     if sp_rvWet > 0
-        @makeReverb: .left, sp_rvTime, sp_rvWet
-        .leftRv = reverbResult
-        removeObject: .left
-        .left = .leftRv
-        @makeReverb: .right, sp_rvTime, sp_rvWet
-        .rightRv = reverbResult
-        removeObject: .right
-        .right = .rightRv
+        .rt = sp_rvTime
+        if .rt > 1.2
+            .rt = 1.2
+        endif
+        if .rt < 0.05
+            .rt = 0.05
+        endif
+        @makeDelay: .monoSnd, .rt * 0.25
+        .tap1 = delayResult
+        @makeDelay: .monoSnd, .rt * 0.5
+        .tap2 = delayResult
+        selectObject: .tap2
+        Formula: "self * 0.65"
+        @makeDelay: .monoSnd, .rt * 1.0
+        .tap3 = delayResult
+        selectObject: .tap3
+        Formula: "self * 0.35"
+        @mixAdd: .tap1, .tap2
+        @mixAdd: .tap1, .tap3
+        removeObject: .tap2, .tap3
+        selectObject: .tap1
+        .wetSmooth = Filter (pass Hann band): 0, 5000, 300
+        removeObject: .tap1
+        @trimTo: .wetSmooth, .dur
+        .wet = trimResult
+        removeObject: .wetSmooth
+        selectObject: .wet
+        Formula: "self * " + string$(sp_rvWet)
+        selectObject: .left
+        Formula: "self * " + string$(1 - sp_rvWet)
+        selectObject: .right
+        Formula: "self * " + string$(1 - sp_rvWet)
+        @mixAdd: .left, .wet
+        @mixAdd: .right, .wet
+        removeObject: .wet
     endif
 
-    # Reflections (opposite the direct)
+    # Reflections
     if sp_refGain > 0
         @makeEarlyRef: .monoSnd, sp_rvTime
         .early = earlyResult
@@ -624,16 +537,18 @@ procedure applySpatial: .monoSnd
         removeObject: .earlyT, .lateT
     endif
 
-    # Identity anchor
+    # Identity anchor 
     if sp_anchorGain > 0
-        @addAnchor: .left, .monoSnd, sp_anchorGain
-        .leftAnch = anchorResult
-        removeObject: .left
-        .left = .leftAnch
-        @addAnchor: .right, .monoSnd, sp_anchorGain
-        .rightAnch = anchorResult
-        removeObject: .right
-        .right = .rightAnch
+        selectObject: .monoSnd
+        .mid = Filter (pass Hann band): 500, 3000, 200
+        selectObject: .mid
+        Formula: "self * " + string$(sp_anchorGain)
+        @trimTo: .mid, .dur
+        .midTrimmed = trimResult
+        removeObject: .mid
+        @mixAdd: .left, .midTrimmed
+        @mixAdd: .right, .midTrimmed
+        removeObject: .midTrimmed
     endif
 
     @trimTo: .left, .dur
@@ -648,52 +563,49 @@ procedure applySpatial: .monoSnd
 endproc
 
 # ============================================================
-# CREATE SUBJECT MATERIALS
+# CREATE SUBJECT MATERIALS (DRY)
 # ============================================================
 
 appendInfoLine: "Creating subject materials..."
 
-# Subject (original)
 selectObject: mono
 subject = Copy: "subject"
 @applyFades: subject
 
-# Answer (transposed by interval)
 @transposeByRatio: subject, answerRatio
 answer = transposeResult
 @applyFades: answer
 
-# Subject low (octave below)
 @transposeByRatio: subject, 0.5
 subjectLow = transposeResult
 @applyFades: subjectLow
 
-# Answer low (answer octave below, for V4)
 if numV >= 4
     @transposeByRatio: subject, v4ratio
     answerLow = transposeResult
     @applyFades: answerLow
 endif
 
-# Counter-subject (retrograde)
 if include_retrograde
     @reverseSound: subject
     counterSubject = reverseResult
     @applyFades: counterSubject
+    selectObject: counterSubject
+    retroSubject = Copy: "retro_sub"
 else
     selectObject: subject
     counterSubject = Copy: "counter_sub"
     selectObject: counterSubject
     Formula: "self * (0.3 + 0.7 * (0.5 + 0.5 * sin(2 * pi * 2 * x)))"
     @applyFades: counterSubject
+    selectObject: subject
+    retroSubject = Copy: "retro_sub"
 endif
 
-# Head motif (first 50% of subject)
 selectObject: subject
 headMotif = Extract part: 0, subDur * 0.5, "rectangular", 1, "no"
 @applyFades: headMotif
 
-# Augmented subject (2x duration, for middle entries)
 if include_augmentation
     @augmentByRatio: subject, 2.0
     augSubject = augmentResult
@@ -703,30 +615,15 @@ else
     augSubject = Copy: "aug_sub"
 endif
 
-# Retrograde (for middle entries)
-if include_retrograde
-    @reverseSound: subject
-    retroSubject = reverseResult
-    @applyFades: retroSubject
-else
-    selectObject: subject
-    retroSubject = Copy: "retro_sub"
-endif
-
-# Augmented drone (2x, pitched low, for pedal)
-@transposeByRatio: subject, 0.5
-.pedSrc = transposeResult
 if include_augmentation
-    @augmentByRatio: .pedSrc, 2.0
+    @augmentByRatio: subjectLow, 2.0
     pedalDrone = augmentResult
 else
-    selectObject: .pedSrc
+    selectObject: subjectLow
     pedalDrone = Copy: "pedal_drone"
 endif
-removeObject: .pedSrc
 @applyFades: pedalDrone
 
-# Transposed head motifs for episode
 @transposeByRatio: headMotif, answerRatio
 headMotifT1 = transposeResult
 @applyFades: headMotifT1
@@ -735,24 +632,11 @@ headMotifT1 = transposeResult
 headMotifT2 = transposeResult
 @applyFades: headMotifT2
 
-appendInfoLine: "  Subject: ", fixed$(subDur, 3), " s"
-appendInfoLine: "  Answer: x", fixed$(answerRatio, 3),
-    ... " (", intervalName$, ")"
-appendInfoLine: "  Augmented: ", fixed$(subDur * 2, 3), " s"
-appendInfoLine: "  Materials created."
-appendInfoLine: ""
-
 # ============================================================
 # BUILD VOICE TIMELINES
-#
-# Each voice gets a silent mono buffer of totalDur length.
-# Entries are placed via placeAt (Formula-based, additive).
 # ============================================================
 
 appendInfoLine: "Building voice timelines..."
-appendInfoLine: "  Total duration: ", fixed$(totalDur, 2), " s"
-
-# Create empty timelines
 vt1 = Create Sound from formula: "vt1", 1, 0, totalDur, monoSr, "0"
 vt2 = Create Sound from formula: "vt2", 1, 0, totalDur, monoSr, "0"
 vt3 = Create Sound from formula: "vt3", 1, 0, totalDur, monoSr, "0"
@@ -761,30 +645,28 @@ if numV >= 4
 endif
 
 # ---- I. EXPOSITION ----
-# V1: subject @ 0, counter-sub @ subDur, sustained @ 2*subDur
-# V2: answer @ subDur, counter-sub @ 2*subDur
-# V3: subjectLow @ 2*subDur
-
-appendInfoLine: "  I. Exposition..."
-
 @placeAt: vt1, subject, 0
+vt1 = placeAt_result
 @placeAt: vt1, counterSubject, subDur
+vt1 = placeAt_result
 
-# Sustained pad for V1 at 2*subDur (LP filtered, quiet)
 @lowPassAsym: subject, 800
 .v1pad = filtResult
 selectObject: .v1pad
 Formula: "self * 0.4"
 @applyFades: .v1pad
 @placeAt: vt1, .v1pad, 2 * subDur
+vt1 = placeAt_result
 removeObject: .v1pad
 
 @placeAt: vt2, answer, subDur
+vt2 = placeAt_result
 @placeAt: vt2, counterSubject, 2 * subDur
+vt2 = placeAt_result
 
 @placeAt: vt3, subjectLow, 2 * subDur
+vt3 = placeAt_result
 
-# V4 gets a quiet sustained entry during exposition (if present)
 if numV >= 4
     @lowPassAsym: subject, 600
     .v4pad = filtResult
@@ -792,104 +674,94 @@ if numV >= 4
     Formula: "self * 0.3"
     @applyFades: .v4pad
     @placeAt: vt4, .v4pad, 2 * subDur
+    vt4 = placeAt_result
     removeObject: .v4pad
 endif
 
 # ---- II. EPISODE ----
-# Head motif fragments transposed, passed V1->V2->V1->V2
-# 0.5*subDur spacing
-
-appendInfoLine: "  II. Episode..."
-
 epStart = expoEnd
 halfSub = subDur * 0.5
 
 @placeAt: vt1, headMotif, epStart
+vt1 = placeAt_result
 @placeAt: vt2, headMotifT1, epStart + halfSub * 0.5
+vt2 = placeAt_result
 @placeAt: vt1, headMotifT2, epStart + halfSub
+vt1 = placeAt_result
 @placeAt: vt2, headMotif, epStart + halfSub * 1.5
+vt2 = placeAt_result
 
-# V3: quiet sustained note during episode
 @lowPassAsym: subjectLow, 500
 .v3ep = filtResult
 selectObject: .v3ep
 Formula: "self * 0.3"
 @applyFades: .v3ep
 @placeAt: vt3, .v3ep, epStart
+vt3 = placeAt_result
 removeObject: .v3ep
 
 # ---- III. MIDDLE ENTRIES ----
-# V1: retrograde @ middleStart
-# V2: answer at new transposition @ middleStart + subDur
-# V3: augmented subject spanning 2*subDur @ middleStart
-
-appendInfoLine: "  III. Middle Entries..."
-
 midStart = episodeEnd
 
 @placeAt: vt1, retroSubject, midStart
+vt1 = placeAt_result
 
-# Answer transposed further (answer of the answer)
 @transposeByRatio: answer, answerRatio
 .ansT2 = transposeResult
 @applyFades: .ansT2
 @placeAt: vt2, .ansT2, midStart + subDur
+vt2 = placeAt_result
 removeObject: .ansT2
 
 @placeAt: vt3, augSubject, midStart
+vt3 = placeAt_result
 
-# V1: counter-subject during V3's augmentation
 @placeAt: vt1, counterSubject, midStart + subDur
+vt1 = placeAt_result
 
-# V4: enters with answer during middle (if present)
 if numV >= 4
     @placeAt: vt4, answerLow, midStart + subDur
+    vt4 = placeAt_result
 endif
 
 # ---- IV. STRETTO ----
-# Entries compress: V1 starts, others follow at comp*subDur intervals
-
-appendInfoLine: "  IV. Stretto (compression: ", fixed$(comp, 2), ")..."
-
 strStart = middleEnd
 
 @placeAt: vt1, subject, strStart
+vt1 = placeAt_result
 @placeAt: vt2, answer, strStart + comp * subDur
+vt2 = placeAt_result
 @placeAt: vt3, subjectLow, strStart + 2 * comp * subDur
+vt3 = placeAt_result
 
 if numV >= 4
     @placeAt: vt4, answerLow, strStart + 3 * comp * subDur
+    vt4 = placeAt_result
 endif
 
-# Add counter-subject overlap for thickness
 @placeAt: vt1, counterSubject, strStart + comp * subDur
+vt1 = placeAt_result
 @placeAt: vt2, counterSubject, strStart + 2 * comp * subDur
+vt2 = placeAt_result
 
 # ---- V. PEDAL + CADENCE ----
-# V3: augmented drone
-# V1: final subject statement
-# Exponential fade to silence
-
-appendInfoLine: "  V. Pedal + Cadence..."
-
 pedStart = strettoEnd
 
-# Pedal drone in V3
 @placeAt: vt3, pedalDrone, pedStart
+vt3 = placeAt_result
 
-# V2: sustained quiet answer
 @lowPassAsym: answer, 600
 .v2ped = filtResult
 selectObject: .v2ped
 Formula: "self * 0.35"
 @applyFades: .v2ped
 @placeAt: vt2, .v2ped, pedStart
+vt2 = placeAt_result
 removeObject: .v2ped
 
-# V1: final subject statement
 @placeAt: vt1, subject, pedStart + subDur
+vt1 = placeAt_result
 
-# V4: quiet drone doubling
 if numV >= 4
     @lowPassAsym: answerLow, 500
     .v4ped = filtResult
@@ -897,10 +769,10 @@ if numV >= 4
     Formula: "self * 0.25"
     @applyFades: .v4ped
     @placeAt: vt4, .v4ped, pedStart
+    vt4 = placeAt_result
     removeObject: .v4ped
 endif
 
-# Exponential fade on all voices over last 0.5*subDur
 fadeStart = totalDur - 0.5 * subDur
 fadeStartStr$ = string$(fadeStart)
 fadeLenStr$ = string$(0.5 * subDur)
@@ -916,7 +788,6 @@ if numV >= 4
     Formula: "if x > " + fadeStartStr$ + " then self * exp(-5 * (x - " + fadeStartStr$ + ") / " + fadeLenStr$ + ") else self fi"
 endif
 
-# Scale voice timelines before spatial processing
 voiceGain = 1 / numV
 selectObject: vt1
 Formula: "self * " + string$(voiceGain)
@@ -929,22 +800,11 @@ if numV >= 4
     Formula: "self * " + string$(voiceGain)
 endif
 
-appendInfoLine: ""
-appendInfoLine: "Timeline complete. Applying spatial processing..."
+appendInfoLine: "Applying spatial processing..."
 
 # ============================================================
 # SPATIAL PROCESSING
-#
-# Voice 1 (Dux): hard LEFT
-# Voice 2 (Comes): hard RIGHT (mirror)
-# Voice 3 (Third): center, polarity contradiction, moderate reverb
-# Voice 4 (Fourth): diffuse, heavy reverb
 # ============================================================
-
-# --- Voice 1: hard left ---
-appendInfoLine: "  V1: hard left (ITD +",
-    ... fixed$(exposition_ITD_ms, 1), "ms, ILD x",
-    ... fixed$(ildBase, 1), ")"
 
 sp_itd = itdBase_s
 sp_ild = ildBase
@@ -959,11 +819,6 @@ sp_invRight = 0
 @applySpatial: vt1
 stereoV1 = spatialResult
 
-# --- Voice 2: hard right (mirror of V1) ---
-appendInfoLine: "  V2: hard right (ITD -",
-    ... fixed$(exposition_ITD_ms, 1), "ms, ILD x",
-    ... fixed$(1 / ildBase, 2), ")"
-
 sp_itd = -itdBase_s
 sp_ild = 1 / ildBase
 sp_shSide = -1
@@ -976,9 +831,6 @@ sp_invRight = 0
 
 @applySpatial: vt2
 stereoV2 = spatialResult
-
-# --- Voice 3: center, polarity contradiction ---
-appendInfoLine: "  V3: center-left (polarity inv, reverb 0.35)"
 
 sp_itd = itdBase_s * 0.33
 sp_ild = 1.3
@@ -993,10 +845,7 @@ sp_invRight = 1
 @applySpatial: vt3
 stereoV3 = spatialResult
 
-# --- Voice 4: diffuse field (if present) ---
 if numV >= 4
-    appendInfoLine: "  V4: diffuse (no ITD, reverb 0.60)"
-
     sp_itd = 0
     sp_ild = 1.0
     sp_shSide = 0
@@ -1011,7 +860,6 @@ if numV >= 4
     stereoV4 = spatialResult
 endif
 
-# Clean up mono timelines
 removeObject: vt1, vt2, vt3
 if numV >= 4
     removeObject: vt4
@@ -1021,10 +869,6 @@ endif
 # MIX VOICES
 # ============================================================
 
-appendInfoLine: ""
-appendInfoLine: "Mixing ", numV, " voices..."
-
-# Extract L/R from each voice, sum, recombine
 selectObject: stereoV1
 v1L = Extract one channel: 1
 selectObject: stereoV1
@@ -1043,7 +887,6 @@ selectObject: stereoV3
 v3R = Extract one channel: 2
 removeObject: stereoV3
 
-# Sum into V1's channels
 @mixAdd: v1L, v2L
 @mixAdd: v1L, v3L
 @mixAdd: v1R, v2R
@@ -1056,6 +899,7 @@ if numV >= 4
     selectObject: stereoV4
     v4R = Extract one channel: 2
     removeObject: stereoV4
+
     @mixAdd: v1L, v4L
     @mixAdd: v1R, v4R
     removeObject: v4L, v4R
@@ -1067,12 +911,14 @@ removeObject: v1L, v1R
 
 selectObject: fugue
 Rename: soundName$ + "_perceptual_fugue"
+
+# Dynamic Scaling based on intensity
+Scale intensity: section_intensity_dB
 Scale peak: 0.99
 
 fugueName$ = selected$("Sound")
 fugueDur = Get total duration
 
-# Clean up materials
 removeObject: subject, answer, subjectLow, counterSubject
 removeObject: headMotif, augSubject, retroSubject, pedalDrone
 removeObject: headMotifT1, headMotifT2, mono
@@ -1081,21 +927,21 @@ if numV >= 4
 endif
 
 # ============================================================
-# VISUALIZATION
+# VISUALIZATION & OUTPUT
 # ============================================================
 
 if draw_visualization
-    appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
-
+    
     selectObject: fugue
     Extract one channel: 1
     vizLeft = selected("Sound")
     selectObject: fugue
     Extract one channel: 2
     vizRight = selected("Sound")
+    selectObject: fugue
+    vizSpec = To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
 
-    # Amplitude range
     selectObject: vizLeft
     lMax = Get maximum: 0, 0, "Sinc70"
     lMin = Get minimum: 0, 0, "Sinc70"
@@ -1108,6 +954,7 @@ if draw_visualization
     if lMin > lMax
         lMax = lMin
     endif
+
     selectObject: vizRight
     rMax = Get maximum: 0, 0, "Sinc70"
     rMin = Get minimum: 0, 0, "Sinc70"
@@ -1120,6 +967,7 @@ if draw_visualization
     if rMin > rMax
         rMax = rMin
     endif
+
     if lMax > rMax
         ampMax = lMax * 1.1
     else
@@ -1129,40 +977,30 @@ if draw_visualization
         ampMax = 0.001
     endif
 
-    # Section boundaries
     sb1 = expoEnd
     sb2 = episodeEnd
     sb3 = middleEnd
     sb4 = strettoEnd
 
     Erase all
-
-    # === TITLE ===
     Select outer viewport: 0, 8, 0, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.7, "half", "##Perceptual Fugue v2.0##"
+    Text: 0.5, "centre", 0.7, "half", "##Perceptual Fugue v2.1##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.2, "half",
-        ... presetName$ + " | " + soundName$ + " | "
-        ... + string$(numV) + " voices | "
-        ... + intervalName$ + " | "
-        ... + fixed$(fugueDur, 1) + " s"
+    Text: 0.5, "centre", -0.2, "half", presetName$ + " | " + soundName$ + " | " + string$(numV) + " voices | " + intervalName$ + " | " + fixed$(fugueDur, 1) + " s"
 
-    # === PANEL 1: Left channel ===
     Select outer viewport: 0, 8, 0.55, 1.5
     Select inner viewport: 0.8, 7.6, 0.6, 1.45
     Axes: 0, fugueDur, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, fugueDur, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
-    Dotted line
     Draw line: sb1, -ampMax, sb1, ampMax
     Draw line: sb2, -ampMax, sb2, ampMax
     Draw line: sb3, -ampMax, sb3, ampMax
     Draw line: sb4, -ampMax, sb4, ampMax
-    Solid line
     Colour: "{0.85, 0.85, 0.85}"
     Draw line: 0, 0, fugueDur, 0
     selectObject: vizLeft
@@ -1172,29 +1010,16 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "Left"
-    Text top: "no", "Left Channel (V1 Dux dominant)"
-    # Section labels
-    Axes: 0, 1, 0, 1
-    Font size: 6
-    Colour: "{0.55, 0.55, 0.6}"
-    Text: sb1 * 0.5 / fugueDur, "centre", 0.92, "half", "Expo"
-    Text: (sb1 + sb2) * 0.5 / fugueDur, "centre", 0.92, "half", "Ep"
-    Text: (sb2 + sb3) * 0.5 / fugueDur, "centre", 0.92, "half", "Mid"
-    Text: (sb3 + sb4) * 0.5 / fugueDur, "centre", 0.92, "half", "Str"
-    Text: (sb4 + fugueDur) * 0.5 / fugueDur, "centre", 0.92, "half", "Ped"
 
-    # === PANEL 2: Right channel ===
-    Select outer viewport: 0, 8, 1.55, 2.5
-    Select inner viewport: 0.8, 7.6, 1.6, 2.45
+    Select outer viewport: 0, 8, 1.6, 2.55
+    Select inner viewport: 0.8, 7.6, 1.65, 2.5
     Axes: 0, fugueDur, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, fugueDur, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
-    Dotted line
     Draw line: sb1, -ampMax, sb1, ampMax
     Draw line: sb2, -ampMax, sb2, ampMax
     Draw line: sb3, -ampMax, sb3, ampMax
     Draw line: sb4, -ampMax, sb4, ampMax
-    Solid line
     Colour: "{0.85, 0.85, 0.85}"
     Draw line: 0, 0, fugueDur, 0
     selectObject: vizRight
@@ -1202,157 +1027,33 @@ if draw_visualization
     Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 7
     Text left: "yes", "Right"
-    Text top: "no", "Right Channel (V2 Comes dominant)"
 
-    # === PANEL 3: L-R difference ===
-    selectObject: vizLeft
-    vizDiff = Copy: "LR_diff"
-    selectObject: vizDiff
-    Formula: "self - object[" + string$(vizRight) + "]"
-
-    Select outer viewport: 0, 8, 2.55, 3.5
-    Select inner viewport: 0.8, 7.6, 2.6, 3.45
-    Axes: 0, fugueDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, fugueDur, -ampMax, ampMax
+    Select outer viewport: 0, 8, 2.65, 4.0
+    Select inner viewport: 0.8, 7.6, 2.7, 3.9
+    Axes: 0, fugueDur, 0, 5000
+    selectObject: vizSpec
+    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "yes"
     Colour: "{0.82, 0.82, 0.82}"
-    Dotted line
-    Draw line: sb1, -ampMax, sb1, ampMax
-    Draw line: sb2, -ampMax, sb2, ampMax
-    Draw line: sb3, -ampMax, sb3, ampMax
-    Draw line: sb4, -ampMax, sb4, ampMax
-    Solid line
-    Colour: "{0.85, 0.85, 0.85}"
-    Draw line: 0, 0, fugueDur, 0
-    selectObject: vizDiff
-    Colour: "{0.6, 0.2, 0.6}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+    Draw line: sb1, 0, sb1, 5000
+    Draw line: sb2, 0, sb2, 5000
+    Draw line: sb3, 0, sb3, 5000
+    Draw line: sb4, 0, sb4, 5000
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "L-R"
-    Text top: "no", "Interaural Difference (spatial polyphony)"
-    removeObject: vizDiff
-
-    # === PANEL 4: Spectrogram ===
-    Select outer viewport: 0, 8, 3.55, 4.75
-    Select inner viewport: 0.8, 7.6, 3.6, 4.7
-    specMaxF = 8000
-    if specMaxF > monoSr / 2 - 500
-        specMaxF = monoSr / 2 - 500
-    endif
-    selectObject: fugue
-    To Spectrogram: 0.03, specMaxF, 0.002, 20, "Gaussian"
-    specGram = selected("Spectrogram")
-    Paint: 0, 0, 0, specMaxF, 100, "yes", 50, 6, 0, "no"
-    Axes: 0, fugueDur, 0, specMaxF
-    Colour: "{1, 1, 1}"
-    Dotted line
-    Line width: 1.5
-    Draw line: sb1, 0, sb1, specMaxF
-    Draw line: sb2, 0, sb2, specMaxF
-    Draw line: sb3, 0, sb3, specMaxF
-    Draw line: sb4, 0, sb4, specMaxF
-    Solid line
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Hz"
-    Text top: "no", "Spectrogram (voice entries visible as pitch layers)"
+    Text left: "yes", "Freq (Hz)"
     Text bottom: "yes", "Time (s)"
-    removeObject: specGram
 
-    # === STATS ===
-    Select outer viewport: 0, 8, 4.85, 5.95
-    Select inner viewport: 0.5, 7.8, 4.9, 5.9
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    Font size: 7
+    Font size: 8
     Colour: "Black"
-    Text: 0.02, "left", 0.92, "half", "##Fugue Score##"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.35}"
-    # Precompute conditional strings
-    if numV >= 4
-        v4text$ = " | V4: ans low, diffuse"
-    else
-        v4text$ = ""
-    endif
-    if include_retrograde
-        retroText$ = "retrograde | "
-    else
-        retroText$ = ""
-    endif
-    if include_augmentation
-        augText$ = "augment 2x | "
-    else
-        augText$ = ""
-    endif
-    Text: 0.02, "left", 0.78, "half",
-        ... "V1 Dux: orig pitch, LEFT | V2 Comes: "
-        ... + intervalName$ + " (x" + fixed$(answerRatio, 2)
-        ... + "), RIGHT | V3: 8vb, center+inv"
-        ... + v4text$
-    Text: 0.02, "left", 0.62, "half",
-        ... "I. Expo (0-" + fixed$(expoEnd, 1) + "s): entries 1/sub"
-        ... + " | II. Episode (" + fixed$(expoEnd, 1) + "-"
-        ... + fixed$(episodeEnd, 1) + "s): fragments"
-        ... + " | III. Middle (" + fixed$(episodeEnd, 1) + "-"
-        ... + fixed$(middleEnd, 1) + "s): retro+aug"
-    Text: 0.02, "left", 0.46, "half",
-        ... "IV. Stretto (" + fixed$(middleEnd, 1) + "-"
-        ... + fixed$(strettoEnd, 1) + "s): comp="
-        ... + fixed$(comp, 2)
-        ... + " | V. Pedal (" + fixed$(strettoEnd, 1) + "-"
-        ... + fixed$(totalDur, 1) + "s): drone+final"
-    Text: 0.02, "left", 0.30, "half",
-        ... "Techniques: PSOLA transpose | "
-        ... + retroText$ + augText$
-        ... + "fragmentation | stretto compress"
-    Text: 0.02, "left", 0.14, "half",
-        ... "Spatial: ITD " + fixed$(exposition_ITD_ms, 1)
-        ... + "ms | ILD x" + fixed$(ildBase, 1)
-        ... + " | Shadow " + fixed$(shadow_cutoff_Hz, 0)
-        ... + "Hz | Additive mix | Anchor 500-3kHz"
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Text: sb1 / 2, "centre", 5500, "half", "EXPOSITION"
+    Text: sb1 + (sb2 - sb1) / 2, "centre", 5500, "half", "EPISODE"
+    Text: sb2 + (sb3 - sb2) / 2, "centre", 5500, "half", "MIDDLE ENTRIES"
+    Text: sb3 + (sb4 - sb3) / 2, "centre", 5500, "half", "STRETTO"
+    Text: sb4 + (fugueDur - sb4) / 2, "centre", 5500, "half", "PEDAL"
 
-    # === LEGEND ===
-    Select outer viewport: 0, 8, 6.0, 6.3
-    Axes: 0, 1, 0, 1
-    Font size: 6
-    Colour: "{0.2, 0.45, 0.82}"
-    Draw line: 0.02, 0.5, 0.06, 0.5
-    Colour: "Black"
-    Text: 0.07, "left", 0.5, "half", "Left (V1)"
-    Colour: "{0.82, 0.3, 0.2}"
-    Draw line: 0.18, 0.5, 0.22, 0.5
-    Colour: "Black"
-    Text: 0.23, "left", 0.5, "half", "Right (V2)"
-    Colour: "{0.6, 0.2, 0.6}"
-    Draw line: 0.36, 0.5, 0.40, 0.5
-    Colour: "Black"
-    Text: 0.41, "left", 0.5, "half", "L-R diff"
-    Colour: "{0.82, 0.82, 0.82}"
-    Dotted line
-    Draw line: 0.55, 0.5, 0.59, 0.5
-    Solid line
-    Colour: "Black"
-    Text: 0.60, "left", 0.5, "half", "Section bounds"
-    Text: 0.78, "left", 0.5, "half", presetName$
-    Font size: 10
-    Colour: "Black"
-    Line width: 1
-
-    removeObject: vizLeft, vizRight
-    appendInfoLine: "  Visualization complete."
+    removeObject: vizLeft, vizRight, vizSpec
 endif
-
-# ============================================================
-# OUTPUT
-# ============================================================
 
 selectObject: fugue
 Play
@@ -1363,29 +1064,21 @@ appendInfoLine: "  DONE"
 appendInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Output:   ", fugueName$
-appendInfoLine: "Duration: ", fixed$(fugueDur, 2), " s (~",
-    ... fixed$(fugueDur / subDur, 1), "x input)"
+appendInfoLine: "Duration: ", fixed$(fugueDur, 2), " s (~", fixed$(fugueDur / subDur, 1), "x input)"
 appendInfoLine: ""
 appendInfoLine: "FUGUE SCORE:"
 appendInfoLine: "  Voices:"
-appendInfoLine: "    V1 Dux   : pitch x1.0, LEFT  (ITD +",
-    ... fixed$(exposition_ITD_ms, 1), "ms)"
-appendInfoLine: "    V2 Comes : pitch x", fixed$(answerRatio, 3),
-    ... " (", intervalName$, "), RIGHT"
+appendInfoLine: "    V1 Dux   : pitch x1.0, LEFT  (ITD +", fixed$(exposition_ITD_ms, 1), "ms)"
+appendInfoLine: "    V2 Comes : pitch x", fixed$(answerRatio, 3), " (", intervalName$, "), RIGHT"
 appendInfoLine: "    V3 Third : pitch x0.5 (8vb), center + polarity inv"
 if numV >= 4
-    appendInfoLine: "    V4 Fourth: pitch x", fixed$(v4ratio, 3),
-        ... ", diffuse field"
+    appendInfoLine: "    V4 Fourth: pitch x", fixed$(v4ratio, 3), ", diffuse field"
 endif
 appendInfoLine: ""
 appendInfoLine: "  Structure:"
 appendInfoLine: "    I.   EXPOSITION     S -> A -> S(low)  [overlapping]"
 appendInfoLine: "    II.  EPISODE        head motif x3 transpositions"
 appendInfoLine: "    III. MIDDLE ENTRIES retrograde + answer^2 + augmented"
-appendInfoLine: "    IV.  STRETTO        ",
-    ... numV, " entries at ", fixed$(comp, 2), "x compression"
-appendInfoLine: "    V.   PEDAL+CADENCE  drone + final subject -> fade"
-appendInfoLine: ""
-appendInfoLine: "Listen on headphones."
-appendInfoLine: "The subject was perceptual certainty."
-appendInfoLine: "It did not survive. But you heard it die."
+appendInfoLine: "    IV.  STRETTO        ", numV, " entries at ", fixed$(comp * 100, 0), "% compression"
+appendInfoLine: "    V.   PEDAL          augmented drone cadence"
+appendInfoLine: "=================================================="
