@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,7 +22,7 @@
 #   - Shadow:  mirrors Cantus with temporal lag + inverted coordinates
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,21 +36,66 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/latent_counterpoint.py"
-tempInput$   = pluginDir$ + "temp_latcp_input.wav"
-tempCSV$     = pluginDir$ + "temp_latcp_events.csv"
-tempOutput$  = pluginDir$ + "temp_latcp_output.wav"
-tempStats$   = pluginDir$ + "temp_latcp_stats.txt"
-
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
+# ---- PATHS ----
+pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
+pythonScript$ = pluginDir$ + "py/latent_counterpoint.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/latent_counterpoint.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: latent_counterpoint.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempInput$   = temporaryDirectory$ + "/temp_latcp_input.wav"
+tempCSV$     = temporaryDirectory$ + "/temp_latcp_events.csv"
+tempOutput$  = temporaryDirectory$ + "/temp_latcp_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_latcp_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_latcp_probe.ok"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form The Latent Counterpoint v1.0
+form The Latent Counterpoint v1.1
     optionmenu Preset: 1
         option Custom
         option Duo (2 voices)
@@ -126,7 +171,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== The Latent Counterpoint v1.0 ==="
+writeInfoLine:  "=== The Latent Counterpoint v1.1 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -153,10 +198,25 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: 
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 1 — Event Segmentation
+# Stage 1 — Detect Python Dependencies
 # ===========================================================================
+appendInfoLine: "[1/5] Detecting Python dependencies..."
 
-appendInfoLine: "[1/5] Segmenting events..."
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# Stage 2 — Event Segmentation
+# ===========================================================================
+appendInfoLine: "[2/5] Segmenting events..."
 
 minEventDur = 0.200
 maxEventDur = 3.000
@@ -269,13 +329,11 @@ endif
 appendInfoLine: "  Found ", nEvents, " events"
 
 # ===========================================================================
-# Stage 2 — Extract Features + Export
+# Stage 3 — Extract Features + Export
 # ===========================================================================
+appendInfoLine: "[3/5] Extracting features..."
 
-appendInfoLine: "[2/5] Extracting features..."
-
-Create Table with column names: "eventFeatures", nEvents,
-    ... "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
+Create Table with column names: "eventFeatures", nEvents, "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
@@ -342,7 +400,7 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
-appendInfoLine: "[3/5] Exporting temp files..."
+appendInfoLine: "  Exporting temp files..."
 selectObject: sound
 Save as WAV file: tempInput$
 selectObject: eventTable
@@ -352,66 +410,12 @@ removeObject: analysisMono, pitchObj, harmObj, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
 # ===========================================================================
-# Stage 3 — Call Python
+# Stage 4 — Call Python
 # ===========================================================================
-
 appendInfoLine: "[4/5] Running Python engine..."
 appendInfoLine: "  (Training AE + running ", number_of_agents, "-voice counterpoint)"
 
-# ---- Python detection ----
-probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "  pip install numpy soundfile scipy"
-endif
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
+pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempInput$ + """"
     ... + " """ + tempCSV$ + """"
     ... + " """ + tempOutput$ + """"
@@ -423,21 +427,16 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + fixed$(duration, 4)
     ... + " " + string$(seed)
 
+runSystem_nocheck: pythonCall$
+
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python counterpoint engine failed." + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python counterpoint engine failed." + newline$ + "Check terminal for error details."
 endif
 
 # ===========================================================================
-# Import Result
+# Stage 5 — Import Result
 # ===========================================================================
-
 appendInfoLine: "[5/5] Importing result..."
 
 Read from file: tempOutput$
@@ -451,7 +450,6 @@ durOut = Get total duration
 # ===========================================================================
 # Read Stats
 # ===========================================================================
-
 nEvStat$ = "?"
 nAgentsStat$ = "?"
 outDurStat$ = "?"
@@ -461,7 +459,6 @@ meanEvDur$ = "?"
 totalUnique$ = "?"
 warningStat$ = ""
 
-# Per-agent stats arrays (up to 6 agents)
 for iA from 0 to 5
     agProfile_'iA'$ = "?"
     agSteps_'iA'$ = "?"
@@ -472,7 +469,6 @@ for iA from 0 to 5
     agTop_'iA'$ = "?"
 endfor
 
-# Unison rates (up to 15 pairs for 6 agents)
 nUnisonPairs = 0
 for iA from 0 to 5
     for iB from iA + 1 to 5
@@ -480,7 +476,6 @@ for iA from 0 to 5
     endfor
 endfor
 
-# Per-agent timeline block counts (initialized to 0)
 for iAT from 0 to 5
     agNBlocks_'iAT' = 0
 endfor
@@ -671,7 +666,6 @@ if draw_visualization
     Colour: "Black"
     Text: 0.02, "left", 0.92, "half", "Agent Profiles:"
 
-    # Agent colors
     agCol_0$ = "{0.2, 0.4, 0.7}"
     agCol_1$ = "{0.7, 0.3, 0.2}"
     agCol_2$ = "{0.3, 0.6, 0.3}"
@@ -685,10 +679,7 @@ if draw_visualization
         thisCol$ = agCol_'iA'$
         Colour: thisCol$
         Font size: 6
-        agLine$ = agProfile_'iA'$ + " | Steps=" + agSteps_'iA'$
-            ... + " Uniq=" + agUnique_'iA'$
-            ... + " Rep=" + agRepRate_'iA'$
-            ... + " Travel=" + agTravel_'iA'$
+        agLine$ = agProfile_'iA'$ + " | Steps=" + agSteps_'iA'$ + " Uniq=" + agUnique_'iA'$ + " Rep=" + agRepRate_'iA'$ + " Travel=" + agTravel_'iA'$
         Text: 0.02, "left", yPos, "half", "Agent " + string$(iA) + ": " + agLine$
     endfor
 
@@ -699,7 +690,6 @@ if draw_visualization
     Select outer viewport: 0, 8, 6.1, 7.2
     Select inner viewport: 0.6, 7.7, 6.2, 7.1
 
-    # Compute max time span across all agents for the horizontal axis
     tlMaxTime = 0.01
     for iAT from 0 to number_of_agents - 1
         nBl = agNBlocks_'iAT'
@@ -715,7 +705,6 @@ if draw_visualization
     Axes: 0, tlMaxTime, -0.2, number_of_agents - 0.8
     Paint rectangle: "{0.97, 0.97, 0.99}", 0, tlMaxTime, -0.2, number_of_agents - 0.8
 
-    # Draw per-agent lanes with colored blocks
     laneH = 0.35
     for iAT from 0 to number_of_agents - 1
         laneY = (number_of_agents - 1 - iAT) - 0.5
@@ -728,7 +717,6 @@ if draw_visualization
             blEv = agBl_'iAT'_'iBl'_ev
             Paint rectangle: thisCol$, blS, blE, laneY - laneH, laneY + laneH
 
-            # Label event index on sufficiently wide blocks
             blDur = blE - blS
             if blDur > tlMaxTime * 0.04
                 Font size: 4
@@ -737,7 +725,6 @@ if draw_visualization
             endif
         endfor
 
-        # Agent label on the left
         Font size: 5
         Colour: "Black"
         Text: -tlMaxTime * 0.005, "right", laneY, "half", string$(iAT)
@@ -765,7 +752,6 @@ if draw_visualization
     Text: 0.02, "left", 0.68, "half", "Events: " + nEvStat$ + " | Unique used: " + totalUnique$ + " | Mean dur: " + meanEvDur$ + "s | AE: " + initialLoss$ + "->" + finalLoss$
     Text: 0.02, "left", 0.44, "half", "Duration: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | Latent=" + string$(latent_size) + " Seed=" + string$(seed)
 
-    # Unison rates (folded from old panel)
     Colour: "{0.4, 0.4, 0.5}"
     unisonLine$ = "Unison: "
     for iA from 0 to number_of_agents - 2
@@ -785,28 +771,14 @@ if draw_visualization
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
-
     Font size: 10
     Colour: "Black"
 endif
 
 # ===========================================================================
-# Cleanup
+# Cleanup & Summary
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempCSV$
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
-
-# ===========================================================================
-# Summary
-# ===========================================================================
+@cleanUpTempFiles
 
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
@@ -815,12 +787,7 @@ appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Agents:"
 for iA from 0 to number_of_agents - 1
-    appendInfoLine: "  ", string$(iA), ": ", agProfile_'iA'$,
-        ... " | Steps=", agSteps_'iA'$,
-        ... " | Unique=", agUnique_'iA'$,
-        ... " | Rep=", agRepRate_'iA'$,
-        ... " | Travel=", agTravel_'iA'$,
-        ... " | Periphery=", agPeriph_'iA'$
+    appendInfoLine: "  ", string$(iA), ": ", agProfile_'iA'$, " | Steps=", agSteps_'iA'$, " | Unique=", agUnique_'iA'$, " | Rep=", agRepRate_'iA'$, " | Travel=", agTravel_'iA'$, " | Periphery=", agPeriph_'iA'$
 endfor
 
 appendInfoLine: ""
@@ -841,7 +808,6 @@ if warningStat$ <> "?" and warningStat$ <> ""
 endif
 
 selectObject: resultSound
-
 if play_result
     Play
 endif
@@ -849,7 +815,6 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
-
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)

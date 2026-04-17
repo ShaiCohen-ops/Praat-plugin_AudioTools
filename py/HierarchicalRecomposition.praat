@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,7 +18,7 @@
 #   pip install numpy scipy soundfile torch
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-
 #   Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
@@ -28,23 +28,62 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-sound     = selected("Sound")
+sound      = selected("Sound")
 soundName$ = selected$("Sound")
+
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
 
 # ---- PATHS ----
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/hierarchical_recomposition.py"
-tempInput$    = pluginDir$ + "temp_hnr_input.wav"
-tempOutput$   = pluginDir$ + "temp_hnr_output.wav"
-tempStats$    = pluginDir$ + "temp_hnr_stats.txt"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
 endif
 
+tempInput$   = temporaryDirectory$ + "/temp_hnr_input.wav"
+tempOutput$  = temporaryDirectory$ + "/temp_hnr_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_hnr_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_hnr_probe.ok"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Hierarchical Neural Recomposition v1.0
+form Hierarchical Neural Recomposition v1.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -167,13 +206,13 @@ rms_orig  = Get root-mean-square: 0, 0
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Hierarchical Neural Recomposition v1.0 ==="
+writeInfoLine:  "=== Hierarchical Neural Recomposition v1.1 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
-appendInfoLine: "Duration:     ", fixed$(dur, 2), " s"
-appendInfoLine: "SR:           ", sr, " Hz"
-appendInfoLine: "Channels:     ", nChannels
+appendInfoLine: "Duration:      ", fixed$(dur, 2), " s"
+appendInfoLine: "SR:            ", sr, " Hz"
+appendInfoLine: "Channels:      ", nChannels
 appendInfoLine: ""
 appendInfoLine: "Target duration ratio: ", target_duration
 appendInfoLine: "Density:               ", density
@@ -188,76 +227,33 @@ appendInfoLine: "Formal surprise:       ", formal_surprise
 appendInfoLine: "Seed:                  ", random_seed
 appendInfoLine: ""
 
+# ---- PYTHON DEPENDENCY VALIDATION ----
+appendInfoLine: "[1/4] Detecting Python dependencies..."
+
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile, torch; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile torch"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
+
 # ---- EXPORT WAV ----
-appendInfoLine: "[1/4] Exporting audio..."
+appendInfoLine: "[2/4] Exporting audio..."
 selectObject: sound
 Save as WAV file: tempInput$
-
-# ---- PYTHON DETECTION ----
-appendInfoLine: "[2/4] Detecting Python..."
-
-probeMarker$ = pluginDir$ + "temp_hnr_probe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    exitScript: "Python not found or dependencies missing." + newline$
-        ... + "Please install: pip install numpy scipy soundfile torch"
-endif
 
 # ---- RUN PYTHON ----
 appendInfoLine: "[3/4] Running hierarchical neural recomposition..."
 appendInfoLine: "  (event segmentation + phrase grouping + section planning + rendering)"
 
-q$ = """"
-
-runSystem: pythonCmd$ + " " + q$ + pythonScript$ + q$
-    ... + " " + q$ + tempInput$ + q$
-    ... + " " + q$ + tempOutput$ + q$
-    ... + " " + q$ + tempStats$ + q$
+pyCmd$ = pythonCmd$ + " """ + pythonScript$ + """"
+    ... + " """ + tempInput$ + """"
+    ... + " """ + tempOutput$ + """"
+    ... + " """ + tempStats$ + """"
     ... + " " + fixed$(target_duration, 4)
     ... + " " + fixed$(density, 4)
     ... + " " + fixed$(phrase_coherence, 4)
@@ -271,14 +267,12 @@ runSystem: pythonCmd$ + " " + q$ + pythonScript$ + q$
     ... + " " + string$(random_seed)
     ... + " " + presetName$
 
+runSystem_nocheck: pyCmd$
+
 # ---- VERIFY OUTPUT ----
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    exitScript: "Python recomposition failed." + newline$
-        ... + "Possible causes:" + newline$
-        ... + "  - numpy/scipy/soundfile not installed" + newline$
-        ... + "  - Python not in PATH" + newline$
-        ... + "Check terminal/console for details."
+    @cleanUpTempFiles
+    exitScript: "Python recomposition failed." + newline$ + "Check terminal/console for details."
 endif
 
 # ---- IMPORT RESULT ----
@@ -340,13 +334,6 @@ appendInfoLine: "Sections:   ", nSecStat$
 appendInfoLine: "PyTorch:    ", torchStat$
 appendInfoLine: "Density:    ", densityStat$
 appendInfoLine: "Brightness: ", brightStat$
-
-# ---- CLEANUP TEMP FILES ----
-deleteFile: tempInput$
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
 
 ###############################################################################
 # VISUALIZATION
@@ -533,6 +520,9 @@ if draw_visualization
     Colour: "Black"
 
 endif
+
+# ---- CLEANUP AND FINISH ----
+@cleanUpTempFiles
 
 # ---- PLAY ----
 if play_result

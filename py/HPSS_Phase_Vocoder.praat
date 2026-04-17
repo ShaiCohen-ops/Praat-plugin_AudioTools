@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2025) — Distribution-ready
+# Version: 2.1 (2026) — Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,7 +18,7 @@
 #   pip install numpy scipy soundfile
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-
 #   Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
@@ -31,20 +31,59 @@ endif
 sound      = selected("Sound")
 soundName$ = selected$("Sound")
 
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
 # ---- PATHS ----
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/stretch.py"
-tempInput$    = pluginDir$ + "temp_hpss_input.wav"
-tempOutput$   = pluginDir$ + "temp_hpss_output.wav"
-tempStats$    = pluginDir$ + "temp_hpss_stats.txt"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
 endif
 
+tempInput$   = temporaryDirectory$ + "/temp_hpss_input.wav"
+tempOutput$  = temporaryDirectory$ + "/temp_hpss_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_hpss_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_hpss_probe.ok"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form HPSS Phase Vocoder v2.0
+form HPSS Phase Vocoder v2.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -127,7 +166,7 @@ rms_in    = Get root-mean-square: 0, 0
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== HPSS Phase Vocoder v2.0 ==="
+writeInfoLine:  "=== HPSS Phase Vocoder v2.1 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
@@ -144,81 +183,40 @@ selectObject: sound
 Save as WAV file: tempInput$
 
 # ===========================================================================
-# Stage 2 — Detect Python
+# Stage 2 — Detect Python Dependencies
 # ===========================================================================
-appendInfoLine: "[2/4] Detecting Python..."
+appendInfoLine: "[2/4] Detecting Python dependencies..."
 
-probeMarker$ = pluginDir$ + "temp_hpss_pyprobe.ok"
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
 
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
 endif
 
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,scipy,soundfile; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    exitScript: "Cannot find Python with required packages." + newline$
-        ... + "Install: pip install numpy scipy soundfile"
-endif
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
 
 # ===========================================================================
 # Stage 3 — Run Python
 # ===========================================================================
 appendInfoLine: "[3/4] Running HPSS + Phase Vocoder..."
 
-q$ = """"
-
-runSystem: pythonCmd$ + " " + q$ + pythonScript$ + q$
-    ... + " " + q$ + tempInput$ + q$
-    ... + " " + q$ + tempOutput$ + q$
-    ... + " " + q$ + tempStats$ + q$
+pyCmd$ = pythonCmd$ + " """ + pythonScript$ + """"
+    ... + " """ + tempInput$ + """"
+    ... + " """ + tempOutput$ + """"
+    ... + " """ + tempStats$ + """"
     ... + " " + fixed$(stretch_factor, 6)
     ... + " " + string$(fFT_size)
     ... + " " + fixed$(hPSS_margin, 2)
 
+runSystem_nocheck: pyCmd$
+
 # ---- Verify output ----
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    exitScript: "Python engine failed — output file not created." + newline$
-        ... + "Check terminal for error messages."
+    @cleanUpTempFiles
+    exitScript: "Python engine failed — output file not created." + newline$ + "Check terminal for error messages."
 endif
 
 # ===========================================================================
@@ -265,16 +263,6 @@ if fileReadable(tempStats$)
     hpRatioStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "output_peak="
     outPeakStat$ = parseStatLine.result$
-endif
-
-# ---- Cleanup temp files ----
-deleteFile: tempInput$
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
 endif
 
 ###############################################################################
@@ -399,6 +387,9 @@ if draw_visualization
     Colour: "Black"
 
 endif
+
+# ---- CLEANUP TEMP FILES ----
+@cleanUpTempFiles
 
 # ---- PLAY ----
 if play_result

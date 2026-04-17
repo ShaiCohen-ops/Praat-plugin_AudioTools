@@ -3,7 +3,7 @@
 # Script:      Envelope_Editor.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     2.0 (2025)
+# Version:     2.0 (2026) - Unified Cross-Platform Version
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,10 +11,10 @@
 #   Opens a Python GUI with four independent breakpoint envelope lanes,
 #   then applies all processing natively in Praat:
 #
-#     1. Pitch      — via To Manipulation + PitchTier (PSOLA resynthesis)
-#     2. Intensity  — via IntensityTier multiply
-#     3. Pan        — via AmplitudeTier on L/R channels
-#     4. Filter     — segmented Hann-band pass filter
+#     1. Pitch     — via To Manipulation + PitchTier (PSOLA resynthesis)
+#     2. Intensity — via IntensityTier multiply
+#     3. Pan       — via AmplitudeTier on L/R channels
+#     4. Filter    — segmented Hann-band pass filter
 #
 # Workflow:
 #   1. Python GUI writes a breakpoints JSON file
@@ -39,86 +39,109 @@ sound      = selected ("Sound")
 soundName$ = selected$ ("Sound")
 duration   = Get total duration
 
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
 # ---- Paths ----
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/envelope_editor.py"
-bpFile$       = pluginDir$ + "temp_enved_breakpoints.json"
-gainIntens$   = pluginDir$ + "temp_gain_intensity.wav"
-gainPanL$     = pluginDir$ + "temp_gain_panL.wav"
-gainPanR$     = pluginDir$ + "temp_gain_panR.wav"
-pitchFile$    = pluginDir$ + "temp_bp_pitch.txt"
-filterFile$   = pluginDir$ + "temp_bp_filter.txt"
 
-# Clean stale files from any previous run
-if fileReadable (bpFile$)
-    deleteFile: bpFile$
-endif
-if fileReadable (gainIntens$)
-    deleteFile: gainIntens$
-endif
-if fileReadable (gainPanL$)
-    deleteFile: gainPanL$
-endif
-if fileReadable (gainPanR$)
-    deleteFile: gainPanR$
-endif
-if fileReadable (pitchFile$)
-    deleteFile: pitchFile$
-endif
-if fileReadable (filterFile$)
-    deleteFile: filterFile$
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
 endif
 
-# ---- Robust Python detection (tkinter only needed now) ----
-pythonCmd$   = ""
-probeMarker$ = pluginDir$ + "temp_enved_probe.ok"
+bpFile$       = temporaryDirectory$ + "/temp_enved_breakpoints.json"
+gainIntens$   = temporaryDirectory$ + "/temp_gain_intensity.wav"
+gainPanL$     = temporaryDirectory$ + "/temp_gain_panL.wav"
+gainPanR$     = temporaryDirectory$ + "/temp_gain_panR.wav"
+pitchFile$    = temporaryDirectory$ + "/temp_bp_pitch.txt"
+filterFile$   = temporaryDirectory$ + "/temp_bp_filter.txt"
+gainFiltLP$   = temporaryDirectory$ + "/temp_gain_filtLP.wav"
+gainFiltHP$   = temporaryDirectory$ + "/temp_gain_filtHP.wav"
+gainFiltDry$  = temporaryDirectory$ + "/temp_gain_filtDry.wav"
+probeMarker$  = temporaryDirectory$ + "/temp_enved_probe.ok"
 
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
 
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
+# ---- Cleanup Procedure ----
+procedure cleanUpTempFiles
+    if fileReadable (bpFile$)
+        deleteFile: bpFile$
     endif
-
+    if fileReadable (gainIntens$)
+        deleteFile: gainIntens$
+    endif
+    if fileReadable (gainIntens$ + ".peak")
+        deleteFile: gainIntens$ + ".peak"
+    endif
+    if fileReadable (gainPanL$)
+        deleteFile: gainPanL$
+    endif
+    if fileReadable (gainPanL$ + ".peak")
+        deleteFile: gainPanL$ + ".peak"
+    endif
+    if fileReadable (gainPanR$)
+        deleteFile: gainPanR$
+    endif
+    if fileReadable (gainPanR$ + ".peak")
+        deleteFile: gainPanR$ + ".peak"
+    endif
+    if fileReadable (pitchFile$)
+        deleteFile: pitchFile$
+    endif
+    if fileReadable (filterFile$)
+        deleteFile: filterFile$
+    endif
+    if fileReadable (gainFiltLP$)
+        deleteFile: gainFiltLP$
+    endif
+    if fileReadable (gainFiltLP$ + ".peak")
+        deleteFile: gainFiltLP$ + ".peak"
+    endif
+    if fileReadable (gainFiltHP$)
+        deleteFile: gainFiltHP$
+    endif
+    if fileReadable (gainFiltHP$ + ".peak")
+        deleteFile: gainFiltHP$ + ".peak"
+    endif
+    if fileReadable (gainFiltDry$)
+        deleteFile: gainFiltDry$
+    endif
+    if fileReadable (gainFiltDry$ + ".peak")
+        deleteFile: gainFiltDry$ + ".peak"
+    endif
     if fileReadable (probeMarker$)
         deleteFile: probeMarker$
     endif
+endproc
 
-    probeCode$ = "import tkinter; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+@cleanUpTempFiles
 
-    if fileReadable (probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-    endif
+# ---- Robust Python detection & dependency probe ----
+probeCmd$ = pythonCmd$ + " -c ""import tkinter; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
 
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    exitScript: "Cannot find Python with tkinter." + newline$
-        ... + "tkinter ships with standard Python — reinstall Python."
+if not fileReadable (probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python with tkinter." + newline$ + "tkinter ships with standard Python — please reinstall Python."
 endif
+
+deleteFile: probeMarker$
 
 # ---- Launch GUI ----
 clearinfo
@@ -129,41 +152,24 @@ appendInfoLine: "Python:   ", pythonCmd$
 appendInfoLine: ""
 appendInfoLine: "Opening envelope editor..."
 
-runSystem_nocheck: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " " + fixed$ (duration, 6)
-    ... + " """ + bpFile$ + """"
+runSystem_nocheck: pythonCmd$ + " """ + pythonScript$ + """ " + fixed$(duration, 6) + " """ + bpFile$ + """"
 
 # ---- Check result ----
 if not fileReadable (bpFile$)
     appendInfoLine: "Cancelled."
+    @cleanUpTempFiles
     exitScript: "Envelope Editor cancelled."
 endif
 
 appendInfoLine: "Breakpoints received. Applying DSP in Praat..."
 
 # ---- Python: interpolate envelopes, write gain WAVs + breakpoint texts ----
-# envelope_editor.py handles both the GUI and DSP modes.
-# Gain WAVs are int16-normalised; a .peak sidecar holds the true scale factor.
-# Praat applies them with Formula: "self * Sound_name(x)" — fully vectorized,
-# no sample loops in Praat script at all (same pattern as DBAP).
-
 selectObject: sound
 nSampTotal = Get number of samples
 srTotal    = Get sampling frequency
 tStartS    = Get start time
 
-runSystem: pythonCmd$ +
-    ... " """ + pythonScript$         + """" +
-    ... " envelopes"                          +
-    ... " """ + bpFile$              + """" +
-    ... " "   + string$ (nSampTotal) +
-    ... " "   + string$ (srTotal)    +
-    ... " "   + string$ (tStartS)    +
-    ... " """ + gainIntens$          + """" +
-    ... " """ + gainPanL$            + """" +
-    ... " """ + gainPanR$            + """" +
-    ... " """ + pitchFile$           + """" +
-    ... " """ + filterFile$          + """"
+runSystem: pythonCmd$ + " """ + pythonScript$ + """ envelopes """ + bpFile$ + """ " + string$(nSampTotal) + " " + string$(srTotal) + " " + string$(tStartS) + " """ + gainIntens$ + """ """ + gainPanL$ + """ """ + gainPanR$ + """ """ + pitchFile$ + """ """ + filterFile$ + """"
 
 # ============================================================
 # STEP 1 — PITCH  (Manipulation / PSOLA resynthesis)
@@ -259,8 +265,6 @@ gainIntensSound = Read from file: gainIntens$
 Rename: "gainIntensity"
 intensPeak = number (readFile$ (gainIntens$ + ".peak"))
 
-# Sound_gainIntensity(x) interpolates the gain sound at time x.
-# Multiply by intensPeak to undo the int16 normalisation Python applied.
 selectObject: soundPitched
 soundIntensity = Copy: "intensity"
 nChI = Get number of channels
@@ -297,7 +301,7 @@ else
     removeObject: soundIntensity
 endif
 
-# Apply L and R gain envelopes — one Formula call each, fully vectorized
+# Apply L and R gain envelopes
 selectObject: soundStereo
 Formula (part): 0, 0, 1, 1, "self * Sound_gainPanL(x) * 'panLPeak'"
 Formula (part): 0, 0, 2, 2, "self * Sound_gainPanR(x) * 'panRPeak'"
@@ -330,32 +334,12 @@ if filterActive = 0
     soundFiltered = soundPanned
     appendInfoLine: "    skipped (all neutral)."
 else
-    # Artifact-free time-varying filter via 3-way blend:
-    #   dry signal  × wDry(t)
-    # + lowpass 300Hz × wLP(t)
-    # + highpass 3kHz × wHP(t)
-    # where wDry + wLP + wHP = 1 at every sample → no amplitude loss.
-    # Python writes the three weight WAVs; Praat blends in one Formula call.
-
-    gainFiltLP$  = pluginDir$ + "temp_gain_filtLP.wav"
-    gainFiltHP$  = pluginDir$ + "temp_gain_filtHP.wav"
-    gainFiltDry$ = pluginDir$ + "temp_gain_filtDry.wav"
-
     selectObject: soundPanned
     nSampF  = Get number of samples
     srF     = Get sampling frequency
     tStartF = Get start time
 
-    runSystem: pythonCmd$ +
-        ... " """ + pythonScript$         + """" +
-        ... " filter"                            +
-        ... " """ + filterFile$          + """" +
-        ... " "   + string$ (srF)        +
-        ... " "   + string$ (nSampF)     +
-        ... " "   + string$ (tStartF)    +
-        ... " """ + gainFiltLP$          + """" +
-        ... " """ + gainFiltHP$          + """" +
-        ... " """ + gainFiltDry$         + """"
+    runSystem: pythonCmd$ + " """ + pythonScript$ + """ filter """ + filterFile$ + """ " + string$(srF) + " " + string$(nSampF) + " " + string$(tStartF) + " """ + gainFiltLP$ + """ """ + gainFiltHP$ + """ """ + gainFiltDry$ + """"
 
     # Filter the whole sound once at each fixed frequency
     selectObject: soundPanned
@@ -379,7 +363,7 @@ else
     Rename: "gainFiltDry"
     peakDry = number (readFile$ (gainFiltDry$ + ".peak"))
 
-    # Blend all three — one vectorized Formula call, no segment cuts
+    # Blend all three
     selectObject: soundPanned
     soundFiltered = Copy: "filtered"
     nChF = Get number of channels
@@ -394,13 +378,6 @@ else
     removeObject: gainLP, gainHP, gainDry
     removeObject: soundLP, soundHP
     removeObject: soundPanned
-
-    deleteFile: gainFiltLP$
-    deleteFile: gainFiltLP$ + ".peak"
-    deleteFile: gainFiltHP$
-    deleteFile: gainFiltHP$ + ".peak"
-    deleteFile: gainFiltDry$
-    deleteFile: gainFiltDry$ + ".peak"
 
     appendInfoLine: "    done."
 endif
@@ -427,15 +404,7 @@ else
     appendInfoLine: "OK"
 endif
 
-deleteFile: bpFile$
-deleteFile: gainIntens$
-deleteFile: gainIntens$ + ".peak"
-deleteFile: gainPanL$
-deleteFile: gainPanL$ + ".peak"
-deleteFile: gainPanR$
-deleteFile: gainPanR$ + ".peak"
-deleteFile: pitchFile$
-deleteFile: filterFile$
+@cleanUpTempFiles
 
 selectObject: result
 Play

@@ -3,14 +3,14 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2025)
+# Version: 2.0 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Blind dereverberation using WPE (Weighted Prediction Error).
 #   Removes room reverberation without knowing the room acoustics.
-#   Powered by nara_wpe (pip install nara_wpe).
+#   Powered by nara_wpe (pip install nara_wpe soundfile).
 #
 #   Parameters:
 #   - Iterations:    more = stronger dereverberation (5-20)
@@ -18,7 +18,7 @@
 #   - Filter length: prediction filter size (10-30, longer = more reverb removed)
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # ============================================================
@@ -31,17 +31,64 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS (plugin-relative for distribution) ----
+# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
+# ---- PATHS ----
 pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/dereverberation.py"
-tempInput$    = pluginDir$ + "temp_dereverb_input.wav"
-tempOutput$   = pluginDir$ + "temp_dereverb_output.wav"
+
+tempInput$    = temporaryDirectory$ + "/temp_dereverb_input.wav"
+tempOutput$   = temporaryDirectory$ + "/temp_dereverb_output.wav"
+probeMarker$  = temporaryDirectory$ + "/temp_dereverb_probe.ok"
+
+# Replace backslashes for the Python inline probe to prevent escape character crashes on Windows
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
 
 # Verify Python script exists
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
 endif
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
+# ---- PYTHON DEPENDENCY VALIDATION ----
+probeCmd$ = pythonCmd$ + " -c ""import nara_wpe, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Missing Python dependencies!" + newline$ + "Please open your terminal/command prompt and run: pip install nara_wpe soundfile"
+endif
+
+deleteFile: probeMarker$
 
 # ---- FORM ----
 form Blind Dereverberation (WPE) v2.0
@@ -116,27 +163,14 @@ Save as WAV file: tempInput$
 # ---- CALL PYTHON ----
 appendInfoLine: "[2/4] Running WPE dereverberation..."
 
-# Detect Python command (cross-platform)
-pythonCmd$ = "python"
-if windows
-    pythonCmd$ = "py"
-endif
+pyCmd$ = pythonCmd$ + " """ + pythonScript$ + """ """ + tempInput$ + """ """ + tempOutput$ + """ " + string$(iterations) + " " + string$(delay) + " " + string$(filter_length)
 
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " """ + tempInput$ + """"
-    ... + " """ + tempOutput$ + """"
-    ... + " " + string$(iterations)
-    ... + " " + string$(delay)
-    ... + " " + string$(filter_length)
+runSystem_nocheck: pyCmd$
 
 # ---- VERIFY OUTPUT ----
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    exitScript: "Python dereverberation failed." + newline$
-        ... + "Possible causes:" + newline$
-        ... + "  - nara_wpe not installed (pip install nara_wpe)" + newline$
-        ... + "  - Python not found in PATH" + newline$
-        ... + "Check the terminal/console for Python error messages."
+    @cleanUpTempFiles
+    exitScript: "Python dereverberation failed. Please check the Praat info window or system terminal for errors."
 endif
 
 # ---- IMPORT RESULT ----
@@ -145,10 +179,6 @@ appendInfoLine: "[3/4] Importing result..."
 Read from file: tempOutput$
 Rename: soundName$ + "_dry"
 resultSound = selected("Sound")
-
-# ---- CLEANUP TEMP FILES ----
-deleteFile: tempInput$
-deleteFile: tempOutput$
 
 # ---- RESULT STATS ----
 selectObject: resultSound
@@ -335,6 +365,9 @@ if draw_visualization
 else
     appendInfoLine: "[4/4] Visualization skipped."
 endif
+
+# ---- CLEANUP ----
+@cleanUpTempFiles
 
 # ---- SUMMARY ----
 appendInfoLine: ""

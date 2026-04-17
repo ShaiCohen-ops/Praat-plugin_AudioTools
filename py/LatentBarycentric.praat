@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025)
+# Version: 1.2 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,14 +26,8 @@
 #   - settle:  cool-down, converge to stability (external CSV only)
 #   - cycle:   auto preset that sequences drift → mutate → return
 #
-# v1.1 changes:
-#   - Added "Plan Generator" section to the form
-#   - Plan source choice: External CSV or Auto-generate
-#   - When Auto-generate is selected the nav-plan CSV check is skipped
-#   - Python receives --plan_source and all generator flags
-#
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -47,23 +41,68 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
 # ---- PATHS ----
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/latent_barycentric.py"
 navPlanCSV$   = pluginDir$ + "py/latent_nav_plan.csv"
-tempPlanCSV$  = pluginDir$ + "temp_latbary_plan_placeholder.csv"
-tempInput$    = pluginDir$ + "temp_latbary_input.wav"
-tempCSV$      = pluginDir$ + "temp_latbary_events.csv"
-tempOutput$   = pluginDir$ + "temp_latbary_output.wav"
-tempStats$    = pluginDir$ + "temp_latbary_stats.txt"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
 endif
 
+tempPlanCSV$ = temporaryDirectory$ + "/temp_latbary_plan_placeholder.csv"
+tempInput$   = temporaryDirectory$ + "/temp_latbary_input.wav"
+tempCSV$     = temporaryDirectory$ + "/temp_latbary_events.csv"
+tempOutput$  = temporaryDirectory$ + "/temp_latbary_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_latbary_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_latbary_probe.ok"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempPlanCSV$)
+        deleteFile: tempPlanCSV$
+    endif
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Latent Barycentric Mutation v1.1
+form Latent Barycentric Mutation v1.2
     # ── Core settings ─────────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom
@@ -140,15 +179,12 @@ if latent_size > 32
 endif
 
 # ---- MAP FORM OPTION-MENUS TO STRING VALUES ----
-
-# plan_source: 1=External CSV, 2=Auto-generate
 if plan_source = 1
     planSourceStr$ = "external_csv"
 else
     planSourceStr$ = "auto_generate"
 endif
 
-# plan_mode_preset: 1=drift, 2=mutate, 3=return, 4=cycle
 if plan_mode_preset = 1
     planModeStr$ = "drift"
 elsif plan_mode_preset = 2
@@ -159,7 +195,6 @@ else
     planModeStr$ = "cycle"
 endif
 
-# plan_anchor_strategy: 1=center, 2=step0, 3=last, 4=periodic
 if plan_anchor_strategy = 1
     planAnchorStr$ = "center"
 elsif plan_anchor_strategy = 2
@@ -170,7 +205,6 @@ else
     planAnchorStr$ = "periodic"
 endif
 
-# normalize_mode: 1=none, 2=peak, 3=rms, 4=loudness
 if normalize_mode = 1
     normModeStr$ = "none"
 elsif normalize_mode = 2
@@ -181,7 +215,6 @@ else
     normModeStr$ = "loudness"
 endif
 
-# pitch_mode: 1=off, 2=preserve_f0, 3=preserve_spectral_envelope
 if pitch_mode = 1
     pitchModeStr$ = "off"
 elsif pitch_mode = 2
@@ -190,12 +223,10 @@ else
     pitchModeStr$ = "preserve_spectral_envelope"
 endif
 
-# ---- EXTERNAL CSV CHECK (only when not auto-generating) ----
+# ---- EXTERNAL CSV CHECK ----
 if plan_source = 1
     if not fileReadable(navPlanCSV$)
-        exitScript: "Cannot find navigation plan: " + navPlanCSV$ + newline$
-            ... + "Expected: " + navPlanCSV$ + newline$
-            ... + "Tip: switch Plan source to Auto-generate to skip this file."
+        exitScript: "Cannot find navigation plan: " + navPlanCSV$ + newline$ + "Expected: " + navPlanCSV$ + newline$ + "Tip: switch Plan source to Auto-generate to skip this file."
     endif
 endif
 
@@ -254,7 +285,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Barycentric Mutation v1.1 ==="
+writeInfoLine:  "=== Latent Barycentric Mutation v1.2 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -274,10 +305,8 @@ if plan_source = 2
     if plan_anchor_strategy = 4
         appendInfoLine: "Anchor period:", plan_anchor_period
     endif
-    appendInfoLine: "Dur scale:    ", fixed$(plan_dur_scale, 3),
-        ... "  jitter: ", fixed$(plan_dur_jitter, 3)
-    appendInfoLine: "Eng scale:    ", fixed$(plan_eng_scale, 3),
-        ... "  jitter: ", fixed$(plan_eng_jitter, 3)
+    appendInfoLine: "Dur scale:    ", fixed$(plan_dur_scale, 3), "  jitter: ", fixed$(plan_dur_jitter, 3)
+    appendInfoLine: "Eng scale:    ", fixed$(plan_eng_scale, 3), "  jitter: ", fixed$(plan_eng_jitter, 3)
 endif
 appendInfoLine: ""
 
@@ -296,10 +325,25 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: 
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 1 — Event Segmentation
+# Stage 1 — Detect Python Dependencies
 # ===========================================================================
+appendInfoLine: "[1/5] Detecting Python dependencies..."
 
-appendInfoLine: "[1/5] Segmenting events..."
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# Stage 2 — Event Segmentation
+# ===========================================================================
+appendInfoLine: "[2/5] Segmenting events..."
 
 minEventDur = 0.200
 maxEventDur = 3.000
@@ -412,13 +456,11 @@ endif
 appendInfoLine: "  Found ", nEvents, " events"
 
 # ===========================================================================
-# Stage 2 — Extract Features + Export
+# Stage 3 — Extract Features + Export
 # ===========================================================================
+appendInfoLine: "[3/5] Extracting features..."
 
-appendInfoLine: "[2/5] Extracting features..."
-
-Create Table with column names: "eventFeatures", nEvents,
-    ... "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
+Create Table with column names: "eventFeatures", nEvents, "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
@@ -450,7 +492,7 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "pitch_stability", pitchStab
 
     selectObject: intObj
-    iMean  = Get mean:            t1, t2, "energy"
+    iMean  = Get mean:             t1, t2, "energy"
     if iMean = undefined
         iMean = 0
     endif
@@ -485,7 +527,7 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
-appendInfoLine: "[3/5] Exporting temp files..."
+appendInfoLine: "  Exporting temp files..."
 selectObject: sound
 Save as WAV file: tempInput$
 selectObject: eventTable
@@ -495,75 +537,16 @@ removeObject: analysisMono, pitchObj, harmObj, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
 # ===========================================================================
-# Stage 3 — Call Python
+# Stage 4 — Call Python
 # ===========================================================================
 
 if plan_source = 2
     appendInfoLine: "[4/5] Running Python engine..."
-    appendInfoLine: "  (VAE + auto-generated plan: ", planModeStr$, ", ",
-        ... plan_steps, " steps, latent=", latent_size, ")"
+    appendInfoLine: "  (VAE + auto-generated plan: ", planModeStr$, ", ", plan_steps, " steps, latent=", latent_size, ")"
 else
     appendInfoLine: "[4/5] Running Python engine..."
     appendInfoLine: "  (VAE + external nav plan, latent=", latent_size, ")"
 endif
-
-# ---- Python detection ----
-probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "  pip install numpy soundfile scipy"
-endif
-
-# ---- Build the Python command line ----
-# Positional args are always the same five paths.
-# When auto-generating, pass a temp placeholder so Python's --cleanup
-# never touches the real latent_nav_plan.csv in py/.
 
 if plan_source = 2
     navPlanArg$ = tempPlanCSV$
@@ -602,23 +585,16 @@ if plan_source = 2
         ... + " --plan_cleanup_policy python_cleanup"
 endif
 
-runSystem: pythonCall$
+runSystem_nocheck: pythonCall$
 
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python barycentric engine failed." + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python barycentric engine failed." + newline$ + "Check terminal for error details."
 endif
 
 # ===========================================================================
-# Import Result
+# Stage 5 — Import Result
 # ===========================================================================
-
 appendInfoLine: "[5/5] Importing result..."
 
 Read from file: tempOutput$
@@ -632,7 +608,6 @@ durOut  = Get total duration
 # ===========================================================================
 # Read Stats
 # ===========================================================================
-
 nEvStat$        = "?"
 nPlanSteps$     = "?"
 nExecSteps$     = "?"
@@ -651,7 +626,6 @@ modeReturn$     = "0"
 modeSettle$     = "0"
 warningStat$    = ""
 
-# Trajectory data for visualization
 nEvPts = 0
 nTrajPts = 0
 
@@ -856,7 +830,6 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 5.1, 6.4
 
     if nEvPts > 0 or nTrajPts > 0
-        # Compute axis bounds from all points
         axMinX = 0
         axMaxX = 1
         axMinY = 0
@@ -911,7 +884,6 @@ if draw_visualization
             endif
         endfor
 
-        # Add margin
         rangeX = axMaxX - axMinX
         rangeY = axMaxY - axMinY
         if rangeX < 0.01
@@ -928,13 +900,11 @@ if draw_visualization
         Axes: axMinX, axMaxX, axMinY, axMaxY
         Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
 
-        # Draw event positions as filled grey circles
         dotR = rangeX * 0.015
         for iEP from 0 to nEvPts - 1
             Paint circle (mm): "{0.7, 0.7, 0.7}", ep_'iEP'_x, ep_'iEP'_y, 1.2
         endfor
 
-        # Draw trajectory lines colored by mode
         Line width: 2
         for iTP from 1 to nTrajPts - 1
             iPrev = iTP - 1
@@ -952,7 +922,6 @@ if draw_visualization
         endfor
         Line width: 1
 
-        # Mark start (green circle) and end (red circle)
         if nTrajPts > 0
             Paint circle (mm): "{0.2, 0.7, 0.3}", tp_0_x, tp_0_y, 1.8
             iLast = nTrajPts - 1
@@ -991,10 +960,8 @@ if draw_visualization
     Text: 0.02, "left", 0.57, "half", "VAE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
     Text: 0.02, "left", 0.39, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | Normalize: " + normModeStat$ + " | RMS: " + rmsInputStat$ + " -> " + rmsOutputStat$
     Text: 0.02, "left", 0.21, "half", "Pitch: " + pitchModeStat$ + " | Plan source: " + planSourceStat$
-    # Phase breakdown (moved from the old Nav Phase panel)
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.02, "left", 0.05, "half",
-        ... "Phases: drift=" + modeDrift$ + " mutate=" + modeMutate$ + " return=" + modeReturn$ + " settle=" + modeSettle$
+    Text: 0.02, "left", 0.05, "half", "Phases: drift=" + modeDrift$ + " mutate=" + modeMutate$ + " return=" + modeReturn$ + " settle=" + modeSettle$
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
@@ -1009,23 +976,9 @@ if draw_visualization
 endif
 
 # ===========================================================================
-# Cleanup (Praat side)
-# Python handles its own temp files via --cleanup.
-# Praat deletes the output WAV (already imported) and stats file.
-# The input WAV and events CSV are deleted by Python (--cleanup flag).
+# Cleanup & Summary
 # ===========================================================================
-
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
-
-# ===========================================================================
-# Summary
-# ===========================================================================
+@cleanUpTempFiles
 
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
@@ -1043,16 +996,16 @@ appendInfoLine: "Plan steps: ", nPlanSteps$, " | Used: ", nExecSteps$, " / ", nP
 appendInfoLine: "Events:     ", nEvStat$,    " | Mean dur: ", meanEvDur$, " s"
 appendInfoLine: "VAE loss:   ", initialLoss$, " -> ", finalLoss$
 appendInfoLine: "Duration:   ", fixed$(dur, 2), " s -> ", outDurStat$, " s"
-appendInfoLine: "Normalize:  ", normModeStat$, " | RMS: ", rmsInputStat$, " -> ", rmsOutputStat$
+appendInfoLine: "Normalize:  ", normModeStat$
 appendInfoLine: "Pitch mode: ", pitchModeStat$
+appendInfoLine: "RMS input:  ", rmsInputStat$
+appendInfoLine: "RMS output: ", rmsOutputStat$
 
 if warningStat$ <> "?" and warningStat$ <> ""
-    appendInfoLine: ""
-    appendInfoLine: "WARNING: ", warningStat$
+    appendInfoLine: "WARNING:    ", warningStat$
 endif
 
 selectObject: resultSound
-
 if play_result
     Play
 endif
@@ -1060,7 +1013,6 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
-
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)

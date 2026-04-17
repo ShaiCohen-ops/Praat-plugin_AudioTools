@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,14 +18,14 @@
 #   audio sequence per cluster, evolving from static / noise-like
 #   texture into a recognisable instrument identity.
 #
-#   Anti-loop mechanisms (v1.0):
+#   Anti-loop mechanisms (v1.1):
 #     - Stochastic top-K event selection (Boltzmann-weighted)
 #     - Tabu penalty (size=5, penalty=4x) for recent events
 #     - Latent Jitter floor: T_end never falls below 0.05
 #     - No identical-Z padding on early convergence
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -39,21 +39,66 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
 # ---- PATHS ----
 pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/latent_diffusion.py"
-tempInput$  = pluginDir$ + "temp_latdiff_input.wav"
-tempCSV$    = pluginDir$ + "temp_latdiff_events.csv"
-tempOutput$ = pluginDir$ + "temp_latdiff_output.wav"
-tempStats$  = pluginDir$ + "temp_latdiff_stats.txt"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/latent_diffusion.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: latent_diffusion.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
 endif
 
+tempInput$  = temporaryDirectory$ + "/temp_latdiff_input.wav"
+tempCSV$    = temporaryDirectory$ + "/temp_latdiff_events.csv"
+tempOutput$ = temporaryDirectory$ + "/temp_latdiff_output.wav"
+tempStats$  = temporaryDirectory$ + "/temp_latdiff_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_latdiff_probe.ok"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Latent Diffusion Resynthesis v1.0
+form Latent Diffusion Resynthesis v1.1
     optionmenu Preset: 1
         option Custom
         option Gentle crystallisation
@@ -189,7 +234,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Diffusion Resynthesis v1.0 ==="
+writeInfoLine:  "=== Latent Diffusion Resynthesis v1.1 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
@@ -214,10 +259,25 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: 
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 1 — Event Segmentation  (intensity-peak method)
+# Stage 1 — Detect Python Dependencies
 # ===========================================================================
+appendInfoLine: "[1/5] Detecting Python dependencies..."
 
-appendInfoLine: "[1/5] Segmenting events..."
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# Stage 2 — Event Segmentation  (intensity-peak method)
+# ===========================================================================
+appendInfoLine: "[2/5] Segmenting events..."
 
 minEventDur = 0.200
 maxEventDur = 3.000
@@ -330,13 +390,11 @@ endif
 appendInfoLine: "  Found ", nEvents, " events"
 
 # ===========================================================================
-# Stage 2 — Feature Extraction + Export
+# Stage 3 — Feature Extraction + Export
 # ===========================================================================
+appendInfoLine: "[3/5] Extracting features..."
 
-appendInfoLine: "[2/5] Extracting features..."
-
-Create Table with column names: "eventFeatures", nEvents,
-    ... "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
+Create Table with column names: "eventFeatures", nEvents, "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
@@ -403,7 +461,7 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
-appendInfoLine: "[3/5] Exporting temp files..."
+appendInfoLine: "  Exporting temp files..."
 selectObject: sound
 Save as WAV file: tempInput$
 selectObject: eventTable
@@ -413,75 +471,12 @@ removeObject: analysisMono, pitchObj, harmObj, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
 # ===========================================================================
-# Stage 3 — Python Detection
+# Stage 4 — Call Python Engine
 # ===========================================================================
-
 appendInfoLine: "[4/5] Running Python engine..."
 appendInfoLine: "  (AE training + k-means++ + diffusion chains)"
 
-probeMarker$ = pluginDir$ + "temp_latdiff_probe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "" + newline$
-        ... + "Tried: python, py, py -3, python3" + newline$
-        ... + "" + newline$
-        ... + "Please install the packages and ensure Python is in PATH:" + newline$
-        ... + "  pip install numpy soundfile scipy" + newline$
-        ... + "" + newline$
-        ... + "Note: scikit-learn is NOT required for this script."
-endif
-
-# ===========================================================================
-# Stage 4 — Run Python
-# ===========================================================================
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
+pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempInput$ + """"
     ... + " """ + tempCSV$ + """"
     ... + " """ + tempOutput$ + """"
@@ -496,24 +491,16 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + fixed$(denoising_strength, 6)
     ... + " " + string$(seed)
 
+runSystem_nocheck: pythonCall$
+
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python diffusion engine failed." + newline$
-        ... + "" + newline$
-        ... + "Python command used: " + pythonCmd$ + newline$
-        ... + "" + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python diffusion engine failed." + newline$ + "Check terminal for error details."
 endif
 
 # ===========================================================================
 # Stage 5 — Import Result
 # ===========================================================================
-
 appendInfoLine: "[5/5] Importing result..."
 
 Read from file: tempOutput$
@@ -527,7 +514,6 @@ durOut  = Get total duration
 # ===========================================================================
 # Read Stats
 # ===========================================================================
-
 nEvStat$        = "?"
 nClustersStat$  = "?"
 nChainsStat$    = "?"
@@ -540,14 +526,12 @@ latentSpread$   = "?"
 meanEvDur$      = "?"
 warningStat$    = ""
 
-# Per-cluster stats (up to 8 clusters)
 for ki from 0 to 7
     clEvStat_'ki'$ = "?"
     clPctStat_'ki'$ = "?"
     clRadStat_'ki'$ = "?"
 endfor
 
-# Per-chain CE convergence data (initialized to 0)
 for ki from 0 to 7
     chainNCE_'ki' = 0
 endfor
@@ -587,7 +571,6 @@ if fileReadable(tempStats$)
         clRadStat_'ki'$ = parseStatLine.result$
     endfor
 
-    # ── Parse per-chain CE convergence paths ──
     for ki from 0 to number_of_clusters - 1
         @parseStatLine: statsText$, "chain_" + string$(ki) + "_n_ce="
         nCE$ = parseStatLine.result$
@@ -599,7 +582,6 @@ if fileReadable(tempStats$)
             chainNCE_'ki' = 101
         endif
 
-        # Parse comma-separated CE values
         @parseStatLine: statsText$, "chain_" + string$(ki) + "_ce_vals="
         ceRaw$ = parseStatLine.result$
         if ceRaw$ <> "?" and chainNCE_'ki' > 0
@@ -730,8 +712,6 @@ if draw_visualization
     Colour: "Black"
     Text: 0.02, "left", 0.94, "half", "Diffusion:"
 
-    # Temperature annealing bar (hot orange -> cold blue, 10 segments)
-    # Temperature annealing bar: 10 static segments, hot orange -> cold blue
     barLeft  = 0.02
     barRight = 0.60
     barBot   = 0.52
@@ -746,7 +726,8 @@ if draw_visualization
     Paint rectangle: "{0.35, 0.36, 0.65}", barLeft + 6*segW, barLeft + 7*segW, barBot, barTop
     Paint rectangle: "{0.27, 0.33, 0.73}", barLeft + 7*segW, barLeft + 8*segW, barBot, barTop
     Paint rectangle: "{0.20, 0.31, 0.78}", barLeft + 8*segW, barLeft + 9*segW, barBot, barTop
-    Paint rectangle: "{0.15, 0.30, 0.80}", barLeft + 9*segW, barRight,         barBot, barTop
+    Paint rectangle: "{0.15, 0.30, 0.80}", barLeft + 9*segW, barRight,          barBot, barTop
+    
     Font size: 5
     Colour: "Black"
     Text: barLeft,  "left",  barBot - 0.10, "half", "T=" + fixed$(temperature_start, 2)
@@ -757,7 +738,6 @@ if draw_visualization
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
 
-    # Cluster population bars — static palette, height proportional to %
     clBarLeft  = 0.64
     clBarRight = 0.97
     clBarBot   = 0.10
@@ -807,7 +787,6 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.95, 6.85
     Select inner viewport: 0.6, 7.7, 6.05, 6.75
 
-    # Determine axis ranges from CE data
     ceMaxStep = 1
     ceMaxVal  = 1
     ceMinVal  = 0
@@ -833,7 +812,6 @@ if draw_visualization
         Axes: 0, ceMaxStep, 0, ceMaxVal
         Paint rectangle: "{0.97, 0.97, 0.99}", 0, ceMaxStep, 0, ceMaxVal
 
-        # Draw entropy threshold line
         if entropy_threshold > 0 and entropy_threshold < ceMaxVal
             Colour: "{0.7, 0.7, 0.7}"
             Line width: 1
@@ -845,7 +823,6 @@ if draw_visualization
             Solid line
         endif
 
-        # Draw one curve per chain, colored by cluster
         for ki from 0 to number_of_clusters - 1
             nCE = chainNCE_'ki'
             if nCE > 1
@@ -911,16 +888,7 @@ endif
 # ===========================================================================
 # Cleanup
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempCSV$
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
 # ===========================================================================
 # Summary
@@ -967,7 +935,6 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
-
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)

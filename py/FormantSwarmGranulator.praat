@@ -2,7 +2,7 @@
 # Praat AudioTools - FormantSwarmGranulator.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026)
+# Version: 1.2 (2026) - Unified Cross-Platform Version
 # License: MIT License
 #
 # Description:
@@ -29,27 +29,62 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
+# ---- Paths ----
+pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/formant_swarm_granulator.py"
+
 if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "formant_swarm_granulator.py"
-endif
-if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "/formant_swarm_granulator.py"
-endif
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: formant_swarm_granulator.py" + newline$
-        ... + "Expected at: " + pythonScript$ + newline$
-        ... + "Please place formant_swarm_granulator.py next to this script" + newline$
-        ... + "or inside the plugin_AudioTools/py/ folder."
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
 endif
 
-tempInput$ = pluginDir$ + "temp_fsg_input.wav"
-tempCSV$ = pluginDir$ + "temp_fsg_grains.csv"
-tempOutput$ = pluginDir$ + "temp_fsg_output.wav"
-tempStats$ = pluginDir$ + "temp_fsg_stats.txt"
-probeMarker$ = pluginDir$ + "temp_fsg_pyprobe.ok"
+tempInput$   = temporaryDirectory$ + "/temp_fsg_input.wav"
+tempCSV$     = temporaryDirectory$ + "/temp_fsg_grains.csv"
+tempOutput$  = temporaryDirectory$ + "/temp_fsg_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_fsg_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_fsg_pyprobe.ok"
 
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- Cleanup Procedure ----
+procedure cleanUpTempFiles
+    if fileReadable (tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable (tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable (tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable (tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable (probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
+# ---- Form ----
 form Formant Swarm Granulator
     optionmenu Swarm_mode: 1
         option vowel_cloud
@@ -121,19 +156,33 @@ appendInfoLine: "Seed:       ", random_seed
 appendInfoLine: ""
 
 # ============================================================
-# Stage 1 — Export source audio
+# Stage 1 — Detect Python dependencies
 # ============================================================
-appendInfoLine: "[1/4] Exporting source audio..."
+appendInfoLine: "[1/4] Detecting Python dependencies..."
+
+probeCmd$ = pythonCmd$ + " -c ""import numpy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable (probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python with required packages." + newline$ + "  pip install numpy soundfile"
+endif
+deleteFile: probeMarker$
+
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ============================================================
+# Stage 2 — Export source audio
+# ============================================================
+appendInfoLine: "[2/4] Exporting source audio..."
 selectObject: sound
 Save as WAV file: tempInput$
 
 # ============================================================
-# Stage 2 — Extract grain table in Praat
+# Stage 3 — Extract grain table in Praat
 # ============================================================
-appendInfoLine: "[2/4] Extracting grain formants..."
-if fileReadable(tempCSV$)
-    deleteFile: tempCSV$
-endif
+appendInfoLine: "[3/4] Extracting grain formants..."
+
 csvHeader$ = "grain_id,start_time_s,duration_s,pitch_hz,intensity_db,centroid_hz,f1_hz,f2_hz,f3_hz,bw1_hz,bw2_hz,bw3_hz,voiced,confidence"
 fileappend 'tempCSV$' 'csvHeader$''newline$'
 
@@ -141,6 +190,7 @@ selectObject: sound
 totalDur = Get total duration
 grainId = 0
 startTime = 0
+
 while startTime < totalDur - 0.01
     localDur = grainLengthSec
     if abs(grainJitterSec) > 0
@@ -164,9 +214,7 @@ while startTime < totalDur - 0.01
     actualDur = Get total duration
     pitchObj = 0
     pitchHz = 0
-    ; Praat pitch floor rule: floor must be < 0.8/duration.
-    ; Use ceiling with a generous +20 buffer to clear floating-point edge cases.
-    ; Also require actualDur > 0.040 s (below that pitch is unreliable anyway).
+
     if actualDur > 0.040
         safePitchFloor = ceiling(0.8 / actualDur) + 20
         if safePitchFloor < 75
@@ -219,6 +267,7 @@ while startTime < totalDur - 0.01
         bw2 = Get bandwidth at time: 2, midTime, "Hertz", "Linear"
         bw3 = Get bandwidth at time: 3, midTime, "Hertz", "Linear"
     endif
+    
     if f1 = undefined
         f1 = 0
     endif
@@ -242,6 +291,7 @@ while startTime < totalDur - 0.01
     if pitchHz > 0
         voiced = 1
     endif
+    
     confidence = 0.25
     if f1 > 0
         confidence = confidence + 0.25
@@ -303,68 +353,10 @@ endwhile
 appendInfoLine: "  Grains analysed: ", grainId
 
 # ============================================================
-# Stage 3 — Detect Python and call engine
+# Stage 4 — Run Python engine
 # ============================================================
-appendInfoLine: "[3/4] Detecting Python..."
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile; open(r'" + probeMarker$ + "','w').write('ok')"
-    nocheck runSystem: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    if fileReadable(tempInput$)
-        deleteFile: tempInput$
-    endif
-    if fileReadable(tempCSV$)
-        deleteFile: tempCSV$
-    endif
-    exitScript: "Cannot find Python with required packages." + newline$
-        ... + "  pip install numpy soundfile"
-endif
-
 appendInfoLine: "[4/4] Running Python engine..."
+
 pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --grains """ + tempCSV$ + """"
     ... + " --input """ + tempInput$ + """"
@@ -378,18 +370,13 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --pan_spread " + fixed$(pan_spread, 4)
     ... + " --pitch_drift " + fixed$(pitch_drift_semitones, 4)
     ... + " --seed " + string$(random_seed)
+
 appendInfoLine: "  CMD: " + pythonCall$
 runSystem: pythonCall$
 
 if not fileReadable(tempOutput$)
-    if fileReadable(tempInput$)
-        deleteFile: tempInput$
-    endif
-    if fileReadable(tempCSV$)
-        deleteFile: tempCSV$
-    endif
-    exitScript: "Python engine failed to create output WAV." + newline$
-        ... + "Check the Info window for the executed command."
+    @cleanUpTempFiles
+    exitScript: "Python engine failed to create output WAV." + newline$ + "Check the Info window for the executed command."
 endif
 
 Read from file: tempOutput$
@@ -401,17 +388,16 @@ appendInfoLine: "Done. Output created as: ", soundName$, "_formantSwarm"
 # ============================================================
 # Read stats
 # ============================================================
-
-statMode$       = "?"
-statGrains$     = "?"
-statScheduled$  = "?"
-statClusters$   = "?"
+statMode$        = "?"
+statGrains$      = "?"
+statScheduled$   = "?"
+statClusters$    = "?"
 statVoicedRatio$ = "?"
-statMeanF1$     = "?"
-statMeanF2$     = "?"
-statMeanF3$     = "?"
-statRmsIn$      = "?"
-statRmsOut$     = "?"
+statMeanF1$      = "?"
+statMeanF2$      = "?"
+statMeanF3$      = "?"
+statRmsIn$       = "?"
+statRmsOut$      = "?"
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
@@ -435,6 +421,7 @@ if fileReadable(tempStats$)
     statRmsIn$ = parseStatLine.result$
     @parseStatLine: statsText$, "rms_out="
     statRmsOut$ = parseStatLine.result$
+    
     appendInfoLine: ""
     appendInfoLine: "--- Stats ---"
     appendInfoLine: statsText$
@@ -443,7 +430,6 @@ endif
 # ============================================================
 # Visualization
 # ============================================================
-
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
@@ -561,21 +547,18 @@ if draw_visualization
     Axes: 0, fMax, 0, 1
     Paint rectangle: "{0.96, 0.96, 0.98}", 0, fMax, 0, 1
 
-    # F1 bar  (warm red)
     if f1Mean > 0
         Paint rectangle: "{0.82, 0.25, 0.18}", 0, f1Mean, 0.62, 0.92
         Colour: "Black"
         Font size: 6
         Text: f1Mean + 60, "left", 0.77, "half", "F1 " + fixed$(f1Mean, 0) + " Hz"
     endif
-    # F2 bar  (steel blue)
     if f2Mean > 0
         Paint rectangle: "{0.22, 0.48, 0.80}", 0, f2Mean, 0.35, 0.60
         Colour: "Black"
         Font size: 6
         Text: f2Mean + 60, "left", 0.475, "half", "F2 " + fixed$(f2Mean, 0) + " Hz"
     endif
-    # F3 bar  (teal)
     if f3Mean > 0
         Paint rectangle: "{0.15, 0.62, 0.55}", 0, f3Mean, 0.08, 0.33
         Colour: "Black"
@@ -605,6 +588,7 @@ if draw_visualization
     else
         Paint rectangle: "{0.65, 0.35, 0.70}", 0, 1, 0, 1
     endif
+    
     Font size: 9
     Colour: "White"
     Text: 0.5, "centre", 0.5, "half", "##" + swarmMode$ + "##"
@@ -652,32 +636,12 @@ if draw_visualization
 
     Font size: 10
     Colour: "Black"
-
 endif
 
 # ============================================================
-# Cleanup temp files
+# Final info + cleanup
 # ============================================================
-
-if fileReadable(tempInput$)
-    deleteFile: tempInput$
-endif
-if fileReadable(tempCSV$)
-    deleteFile: tempCSV$
-endif
-if fileReadable(tempOutput$)
-    deleteFile: tempOutput$
-endif
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
-
-# ============================================================
-# Final info + play
-# ============================================================
+@cleanUpTempFiles
 
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
@@ -701,7 +665,6 @@ endif
 # ============================================================
 # Procedures
 # ============================================================
-
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)

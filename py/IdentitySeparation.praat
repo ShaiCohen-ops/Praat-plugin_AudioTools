@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,7 +21,7 @@
 #   E — Hybridization (spectral envelope shaping)
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -35,22 +35,63 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/identity_separation.py"
-tempInput$   = pluginDir$ + "temp_idsep_input.wav"
-tempCSV$     = pluginDir$ + "temp_idsep_features.csv"
-tempOutput$  = pluginDir$ + "temp_idsep_output.wav"
-tempStats$   = pluginDir$ + "temp_idsep_stats.txt"
-
-# Verify Python script exists
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
+# ---- PATHS ----
+pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
+pythonScript$ = pluginDir$ + "py/identity_separation.py"
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+endif
+
+tempInput$   = temporaryDirectory$ + "/temp_idsep_input.wav"
+tempCSV$     = temporaryDirectory$ + "/temp_idsep_features.csv"
+tempOutput$  = temporaryDirectory$ + "/temp_idsep_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_idsep_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_idsep_probe.ok"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Acoustic Identity Separation v1.0
+form Acoustic Identity Separation v1.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -133,7 +174,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Acoustic Identity Separation v1.0 ==="
+writeInfoLine:  "=== Acoustic Identity Separation v1.1 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -154,14 +195,31 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: 
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 1 — Feature Extraction
+# Stage 1 — Detect Python Dependencies
+# ===========================================================================
+appendInfoLine: "[1/5] Detecting Python dependencies..."
+
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile, sklearn; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile scikit-learn"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# Stage 2 — Feature Extraction
 # ===========================================================================
 
-appendInfoLine: "[1/5] Extracting acoustic features..."
+appendInfoLine: "[2/5] Extracting acoustic features..."
 
 hopSec = 0.01
 nFrames = floor(dur / hopSec)
 if nFrames < 10
+    @cleanUpTempFiles
     exitScript: "Sound is too short for analysis (need > 0.1 s)."
 endif
 
@@ -189,8 +247,7 @@ selectObject: analysisMono
 formantObj = To Formant (burg): 0.01, 5, 5500, 0.025, 50
 
 # ---- Build feature table ----
-Create Table with column names: "features", nFrames,
-    ... "time pitch voiced hnr intensity f1 f2 f3 f4 b1 b2 b3 b4"
+Create Table with column names: "features", nFrames, "time pitch voiced hnr intensity f1 f2 f3 f4 b1 b2 b3 b4"
 featureTable = selected("Table")
 
 for i from 1 to nFrames
@@ -253,8 +310,6 @@ endfor
 appendInfoLine: "  Extracted ", nFrames, " frames at ", fixed$(hopSec * 1000, 0), " ms hop"
 
 # ---- Export WAV + CSV ----
-appendInfoLine: "[2/5] Exporting temp files..."
-
 selectObject: sound
 Save as WAV file: tempInput$
 
@@ -265,73 +320,12 @@ Save as comma-separated file: tempCSV$
 removeObject: analysisMono, pitchObj, harmObj, intObj, formantObj, featureTable
 
 # ===========================================================================
-# Stage 2–6 — Call Python
+# Stage 3 — Call Python
 # ===========================================================================
 
 appendInfoLine: "[3/5] Running Python engine (this may take a while)..."
 
-# ---- Robust Python detection ----
-probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy,sklearn; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "" + newline$
-        ... + "Tried: python, py, py -3, python3" + newline$
-        ... + "" + newline$
-        ... + "Please install the packages and ensure Python is in PATH:" + newline$
-        ... + "  pip install numpy soundfile scipy scikit-learn" + newline$
-        ... + "" + newline$
-        ... + "To check which Python pip uses:   pip --version" + newline$
-        ... + "Then call that same Python, e.g.:  python --version"
-endif
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
+pyCmd$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempInput$ + """"
     ... + " """ + tempCSV$ + """"
     ... + " """ + tempOutput$ + """"
@@ -342,28 +336,16 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + string$(seed)
     ... + " " + fixed$(hopSec, 4)
 
+runSystem_nocheck: pyCmd$
+
 # ---- Verify output ----
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python identity separation engine failed." + newline$
-        ... + "" + newline$
-        ... + "Python command used: " + pythonCmd$ + newline$
-        ... + "" + newline$
-        ... + "Possible causes:" + newline$
-        ... + "  - A package version is incompatible" + newline$
-        ... + "  - Input audio is corrupt or empty" + newline$
-        ... + "  - Out of memory for very long files" + newline$
-        ... + "" + newline$
-        ... + "Run this in your terminal to see the exact error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python identity separation engine failed." + newline$ + "Check terminal/console for details."
 endif
 
 # ===========================================================================
-# Import Result
+# Stage 4 — Import Result
 # ===========================================================================
 
 appendInfoLine: "[4/5] Importing result..."
@@ -397,6 +379,21 @@ for idxStat from 0 to 7
 endfor
 
 nTimelineRuns = 0
+
+procedure parseStatLine: .text$, .key$
+    .result$ = "?"
+    .pos = index(.text$, .key$)
+    if .pos > 0
+        .start = .pos + length(.key$)
+        .rest$ = mid$(.text$, .start, length(.text$) - .start + 1)
+        .nlPos = index(.rest$, newline$)
+        if .nlPos > 0
+            .result$ = left$(.rest$, .nlPos - 1)
+        else
+            .result$ = .rest$
+        endif
+    endif
+endproc
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
@@ -672,8 +669,7 @@ if draw_visualization
             runDur = tl_'tlLabel'_end - tl_'tlLabel'_start
             if runDur > dur * 0.03
                 midT = (tl_'tlLabel'_start + tl_'tlLabel'_end) / 2
-                Text: midT, "centre", 0.5, "half",
-                    ... string$(tl_'tlLabel'_id)
+                Text: midT, "centre", 0.5, "half", string$(tl_'tlLabel'_id)
             endif
         endfor
     endif
@@ -720,21 +716,11 @@ endif
 # ===========================================================================
 # Cleanup — always delete temp files
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempCSV$
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
 # ===========================================================================
 # Summary
 # ===========================================================================
-
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output: ", soundName$, "_identity"
@@ -765,22 +751,3 @@ selectObject: resultSound
 if play_result
     Play
 endif
-
-# ===========================================================================
-# Procedures
-# ===========================================================================
-
-procedure parseStatLine: .text$, .key$
-    .result$ = "?"
-    .pos = index(.text$, .key$)
-    if .pos > 0
-        .start = .pos + length(.key$)
-        .rest$ = mid$(.text$, .start, length(.text$) - .start + 1)
-        .nlPos = index(.rest$, newline$)
-        if .nlPos > 0
-            .result$ = left$(.rest$, .nlPos - 1)
-        else
-            .result$ = .rest$
-        endif
-    endif
-endproc

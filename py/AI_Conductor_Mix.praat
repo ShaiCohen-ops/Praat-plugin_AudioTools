@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.0 (2026) - Python-rendered mix (sample-level, click-free)
+# Version: 3.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,7 +11,7 @@
 #   Algorithmic Conductor Mix - descriptor-driven ensemble mixer.
 #   Selects 2+ Sound objects, exports WAVs, sends them to a Python
 #   backend which builds a role-based plan and renders a stereo mix
-#   at sample level.  Praat reads the result back and visualises.
+#   at sample level. Praat reads the result back and visualises.
 #
 #   Roles: leader, shadow, resonance, noise fringe,
 #   pulse carrier, interruption, sustain bed, contrast voice,
@@ -37,36 +37,40 @@ for i from 1 to nSounds
     soundName'i'$ = selected$("Sound", i)
 endfor
 
-# ---- PATHS ----
-if windows
-    sep$ = "\"
-    pythonCmd$ = "py"
-    platform$ = "Windows"
-elsif macintosh
-    sep$ = "/"
-    pythonCmd$ = "python3"
-    platform$ = "macOS"
+# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
 else
-    sep$ = "/"
     pythonCmd$ = "python3"
-    platform$ = "Linux"
 endif
 
-pluginDir$      = preferencesDirectory$ + sep$ + "plugin_AudioTools" + sep$
-pythonScript$   = pluginDir$ + "py" + sep$ + "ai_conductor_mix.py"
-manifestFile$   = pluginDir$ + "conductor_manifest.txt"
-descriptorFile$ = pluginDir$ + "conductor_descriptors.txt"
-mixPlanFile$    = pluginDir$ + "conductor_mix_plan.csv"
-resultWavFile$  = pluginDir$ + "conductor_result.wav"
-logFile$        = pluginDir$ + "conductor_log.txt"
-doneFile$       = pluginDir$ + "conductor_done.txt"
+# ---- PATHS ----
+pluginDir$      = preferencesDirectory$ + "/plugin_AudioTools/"
+pythonScript$   = pluginDir$ + "py/ai_conductor_mix.py"
+
+manifestFile$   = temporaryDirectory$ + "/conductor_manifest.txt"
+descriptorFile$ = temporaryDirectory$ + "/conductor_descriptors.txt"
+mixPlanFile$    = temporaryDirectory$ + "/conductor_mix_plan.csv"
+resultWavFile$  = temporaryDirectory$ + "/conductor_result.wav"
+logFile$        = temporaryDirectory$ + "/conductor_log.txt"
+doneFile$       = temporaryDirectory$ + "/conductor_done.txt"
 
 if not fileReadable(pythonScript$)
     exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
 endif
 
 # ---- FORM ----
-form AI Conductor Mix v3.0
+form AI Conductor Mix v3.1
     comment === Segmentation ===
     optionmenu Segment_mode: 2
         option Fixed frames
@@ -139,9 +143,42 @@ else
     segMode$ = "hybrid"
 endif
 
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(manifestFile$)
+        deleteFile: manifestFile$
+    endif
+    if fileReadable(descriptorFile$)
+        deleteFile: descriptorFile$
+    endif
+    if fileReadable(resultWavFile$)
+        deleteFile: resultWavFile$
+    endif
+    if fileReadable(logFile$)
+        deleteFile: logFile$
+    endif
+    if fileReadable(doneFile$)
+        deleteFile: doneFile$
+    endif
+    for c_i from 1 to nSounds
+        tmpWav$ = temporaryDirectory$ + "/conductor_input_" + string$(c_i) + ".wav"
+        if fileReadable(tmpWav$)
+            deleteFile: tmpWav$
+        endif
+    endfor
+    if not export_mix_plan
+        if fileReadable(mixPlanFile$)
+            deleteFile: mixPlanFile$
+        endif
+    endif
+endproc
+
+# Run cleanup at the beginning
+@cleanUpTempFiles
+
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== AI Conductor Mix v3.0 ==="
+writeInfoLine:  "=== AI Conductor Mix v3.1 ==="
 appendInfoLine: "Ensemble size: ", nSounds, " sounds"
 for i from 1 to nSounds
     appendInfoLine: "  [", i, "] ", soundName'i'$
@@ -158,10 +195,8 @@ appendInfoLine: ""
 # ---- STEP 1: EXPORT ALL SOUNDS + COLLECT DESCRIPTORS ----
 appendInfoLine: "[1/5] Exporting ensemble WAVs and extracting descriptors..."
 
-deleteFile: manifestFile$
-
 for i from 1 to nSounds
-    wavPath$ = pluginDir$ + "conductor_input_" + string$(i) + ".wav"
+    wavPath$ = temporaryDirectory$ + "/conductor_input_" + string$(i) + ".wav"
 
     selectObject: sound'i'
     dur'i' = Get total duration
@@ -177,7 +212,6 @@ endfor
 appendInfoLine: "  Manifest written: ", nSounds, " files"
 
 # ---- STEP 2: PRAAT-SIDE DESCRIPTOR EXTRACTION ----
-deleteFile: descriptorFile$
 appendFileLine: descriptorFile$, "file_index" + tab$ + "file_name" + tab$ + "duration" + tab$ + "rms" + tab$ + "mean_pitch_hz" + tab$ + "pitch_range" + tab$ + "mean_intensity_db" + tab$ + "intensity_range_db" + tab$ + "spectral_centroid_est" + tab$ + "harmonicity_hnr"
 
 for i from 1 to nSounds
@@ -242,27 +276,12 @@ appendInfoLine: "  Descriptors written for ", nSounds, " sounds"
 # ---- STEP 3: LAUNCH PYTHON CONDUCTOR ----
 appendInfoLine: "[2/5] Launching conductor engine..."
 
-if fileReadable(doneFile$)
-    deleteFile: doneFile$
-endif
-if fileReadable(mixPlanFile$)
-    deleteFile: mixPlanFile$
-endif
-if fileReadable(resultWavFile$)
-    deleteFile: resultWavFile$
-endif
-if fileReadable(logFile$)
-    deleteFile: logFile$
-endif
-
-q$ = """"
-
-pyArgs$ = " " + q$ + manifestFile$ + q$ + " " + q$ + descriptorFile$ + q$ + " " + q$ + mixPlanFile$ + q$ + " " + q$ + doneFile$ + q$ + " --result_wav " + q$ + resultWavFile$ + q$ + " --style " + cStyle$ + " --seg_mode " + segMode$ + " --frame_ms " + string$(frame_size_ms) + " --hop_ms " + string$(frame_hop_ms) + " --onset_gap_ms " + string$(min_onset_gap_ms) + " --memory " + fixed$(memWeight, 3) + " --tension " + fixed$(tensionSens, 3) + " --allow_silence " + string$(allowSilence) + " --nonlinear " + string$(nonlinear)
+pyArgs$ = " """ + manifestFile$ + """ """ + descriptorFile$ + """ """ + mixPlanFile$ + """ """ + doneFile$ + """ --result_wav """ + resultWavFile$ + """ --style " + cStyle$ + " --seg_mode " + segMode$ + " --frame_ms " + string$(frame_size_ms) + " --hop_ms " + string$(frame_hop_ms) + " --onset_gap_ms " + string$(min_onset_gap_ms) + " --memory " + fixed$(memWeight, 3) + " --tension " + fixed$(tensionSens, 3) + " --allow_silence " + string$(allowSilence) + " --nonlinear " + string$(nonlinear)
 
 if windows
-    cmd$ = "start /b " + pythonCmd$ + " " + q$ + pythonScript$ + q$ + pyArgs$ + " > " + q$ + logFile$ + q$ + " 2>&1"
+    cmd$ = "start /b " + pythonCmd$ + " """ + pythonScript$ + """" + pyArgs$ + " > """ + logFile$ + """ 2>&1"
 else
-    cmd$ = pythonCmd$ + " " + q$ + pythonScript$ + q$ + pyArgs$ + " > " + q$ + logFile$ + q$ + " 2>&1 &"
+    cmd$ = pythonCmd$ + " """ + pythonScript$ + """" + pyArgs$ + " > """ + logFile$ + """ 2>&1 &"
 endif
 
 runSystem_nocheck: cmd$
@@ -285,22 +304,15 @@ until gotPlan = 1 or waited >= maxWait
 if fileReadable(logFile$)
     log$ = readFile$(logFile$)
     appendInfoLine: log$
-    deleteFile: logFile$
 endif
 
-deleteFile: doneFile$
-deleteFile: manifestFile$
-deleteFile: descriptorFile$
-
-for i from 1 to nSounds
-    deleteFile: pluginDir$ + "conductor_input_" + string$(i) + ".wav"
-endfor
-
 if waited >= maxWait and gotPlan = 0
+    @cleanUpTempFiles
     exitScript: "Timed out waiting for conductor (10 min). Check Python environment."
 endif
 
 if not fileReadable(resultWavFile$)
+    @cleanUpTempFiles
     exitScript: "Rendered WAV not produced. See log for errors."
 endif
 
@@ -309,7 +321,6 @@ appendInfoLine: "[4/5] Importing rendered mix..."
 
 mixObj = Read from file: resultWavFile$
 Rename: "ConductedMix"
-deleteFile: resultWavFile$
 
 selectObject: mixObj
 totalDur = Get total duration
@@ -329,7 +340,6 @@ if fileReadable(mixPlanFile$)
         roleLabel'ri'$ = ""
     endfor
 
-    # Skip sentinel line + header line
     firstNL = index(planText$, newline$)
     if firstNL > 0
         dataStart = firstNL + 1
@@ -392,10 +402,6 @@ if fileReadable(mixPlanFile$)
             endif
         until lineEnd = 0 or scanPos > length(planText$)
     endif
-endif
-
-if not export_mix_plan
-    deleteFile: mixPlanFile$
 endif
 
 appendInfoLine: "  Segments in plan: ", nRendered
@@ -477,7 +483,7 @@ if draw_visualization
 
         if rF >= 1 and rF <= nSounds and rX > rE
             if rL$ = "leader"
-                roleCol$ = "{0.85, 0.15, 0.15}"
+                 roleCol$ = "{0.85, 0.15, 0.15}"
             elsif rL$ = "shadow"
                 roleCol$ = "{0.55, 0.55, 0.55}"
             elsif rL$ = "resonance"
@@ -591,7 +597,9 @@ if play_result
     Play
 endif
 
-# ---- DONE ----
+# ---- CLEANUP AND DONE ----
+@cleanUpTempFiles
+
 appendInfoLine: ""
 appendInfoLine: "=== Conducted mix complete ==="
 appendInfoLine: "Output: ConductedMix (" + fixed$(totalDur, 2) + " s, stereo)"

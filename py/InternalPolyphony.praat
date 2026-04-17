@@ -2,8 +2,9 @@
 # Praat AudioTools - InternalPolyphony.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Internal Polyphony
@@ -17,19 +18,13 @@
 #   generic spectral effect. It reveals hidden chamber music already
 #   present inside the source.
 #
-# Python engine: internal_polyphony.py (must be in the same folder)
-#
-# Example workflow:
-#   1. Select one Sound object in Praat
-#   2. Run this script
-#   3. Adjust parameters in the dialog
-#   4. The result appears as <soundname>_polyphony
+# Python engine: internal_polyphony.py
 #
 # Dependencies (Python):
 #   pip install numpy scipy soundfile
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
@@ -42,33 +37,63 @@ endif
 sound      = selected("Sound")
 soundName$ = selected$("Sound")
 
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
 # ---- PATHS ----
-# The Python script is expected in the same directory as this Praat script.
-# If running from the AudioTools plugin, pluginDir$ is used instead.
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/internal_polyphony.py"
 
-# Fallback: look next to this script using defaultDirectory
 if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "internal_polyphony.py"
-endif
-if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "/internal_polyphony.py"
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
 endif
 
-tempInput$   = pluginDir$ + "temp_intpoly_input.wav"
-tempOutput$  = pluginDir$ + "temp_intpoly_output.wav"
-tempReport$  = pluginDir$ + "temp_intpoly_report.json"
-tempCSV$     = pluginDir$ + "temp_intpoly_roles.csv"
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: internal_polyphony.py" + newline$
-        ... + "Expected at: " + pythonScript$ + newline$
-        ... + "Please place internal_polyphony.py next to this script" + newline$
-        ... + "or inside the plugin_AudioTools/py/ folder."
-endif
+tempInput$   = temporaryDirectory$ + "/temp_intpoly_input.wav"
+tempOutput$  = temporaryDirectory$ + "/temp_intpoly_output.wav"
+tempReport$  = temporaryDirectory$ + "/temp_intpoly_report.json"
+tempCSV$     = temporaryDirectory$ + "/temp_intpoly_roles.csv"
+probeMarker$ = temporaryDirectory$ + "/temp_intpoly_probe.ok"
+
+# Replace backslashes for the Python inline probe (Windows safety)
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempReport$)
+        deleteFile: tempReport$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
 
 # ---- FORM ----
-form Internal Polyphony v1.0
+form Internal Polyphony v1.1
     optionmenu Preset: 1
         option Custom
         option Reveal (subtle)
@@ -108,7 +133,6 @@ endform
 
 # ---- APPLY PRESETS ----
 if preset = 2
-    # Reveal: gentle emergence of inner voices
     polyphony_mode = 1
     voice_density  = 0.45
     dry_wet        = 0.65
@@ -117,7 +141,6 @@ if preset = 2
     stereo_width   = 0.9
     presetName$    = "Reveal"
 elsif preset = 3
-    # Counterpoint: stronger independence
     polyphony_mode = 2
     voice_density  = 0.7
     dry_wet        = 0.9
@@ -126,7 +149,6 @@ elsif preset = 3
     stereo_width   = 1.3
     presetName$    = "Counterpoint"
 elsif preset = 4
-    # Canon: staggered role entries
     polyphony_mode = 3
     voice_density  = 0.6
     dry_wet        = 0.85
@@ -135,7 +157,6 @@ elsif preset = 4
     stereo_width   = 1.4
     presetName$    = "Canon"
 elsif preset = 5
-    # PedalHalo: sustain + halo
     polyphony_mode = 4
     voice_density  = 0.55
     dry_wet        = 0.80
@@ -144,7 +165,6 @@ elsif preset = 5
     stereo_width   = 1.5
     presetName$    = "PedalHalo"
 elsif preset = 6
-    # FracturedChoir: dense overlapping fragments
     polyphony_mode = 5
     voice_density  = 0.9
     dry_wet        = 0.95
@@ -157,8 +177,6 @@ else
 endif
 
 # ---- MAP OPTION MENUS TO STRINGS ----
-
-# analysis_mode: 1=full 2=hpss 3=transient
 if analysis_mode = 1
     analysisModeStr$ = "full"
 elsif analysis_mode = 2
@@ -167,7 +185,6 @@ else
     analysisModeStr$ = "transient"
 endif
 
-# polyphony_mode: 1=reveal 2=counterpoint 3=canon 4=pedalhalo 5=fracturedchoir
 if polyphony_mode = 1
     polyModeStr$ = "reveal"
 elsif polyphony_mode = 2
@@ -250,7 +267,7 @@ nChannels = Get number of channels
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Internal Polyphony v1.0 ==="
+writeInfoLine:  "=== Internal Polyphony v1.1 ==="
 appendInfoLine: "Input:    ", soundName$
 appendInfoLine: "Preset:   ", presetName$
 appendInfoLine: ""
@@ -267,76 +284,33 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Ch: ", nCh
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 1 — Export Source Audio
+# Stage 1 — Detect Python Dependencies
 # ===========================================================================
+appendInfoLine: "[1/4] Detecting Python dependencies..."
 
-appendInfoLine: "[1/4] Exporting source audio..."
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# Stage 2 — Export Source Audio
+# ===========================================================================
+appendInfoLine: "[2/4] Exporting source audio..."
 
 selectObject: sound
 Save as WAV file: tempInput$
 
 # ===========================================================================
-# Stage 2 — Detect Python
-# ===========================================================================
-
-appendInfoLine: "[2/4] Detecting Python..."
-
-probeMarker$ = pluginDir$ + "temp_intpoly_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,scipy,soundfile; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    exitScript: "Cannot find Python with required packages." + newline$
-        ... + "  pip install numpy scipy soundfile"
-endif
-
-# ===========================================================================
 # Stage 3 — Call Python Engine
 # ===========================================================================
-
-appendInfoLine: "[3/4] Running Python engine..."
+appendInfoLine: "[3/4] Running Python engine (this may take a while)..."
 appendInfoLine: "  Components: ", num_components, " | Mode: ", polyModeStr$
 appendInfoLine: "  Analysis: ", analysisModeStr$, " | Density: ", fixed$(voice_density, 2)
 
@@ -360,25 +334,16 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --width "      + fixed$(stereo_width, 4)
     ... + " --seed "       + string$(random_seed)
 
-appendInfoLine: "  CMD: " + pythonCall$
-runSystem: pythonCall$
+runSystem_nocheck: pythonCall$
 
 if not fileReadable(tempOutput$)
-    if fileReadable(tempInput$)
-        deleteFile: tempInput$
-    endif
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python engine failed — output file not found." + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python engine failed — output file not found." + newline$ + "Run in terminal to see error: " + pythonCall$
 endif
 
 # ===========================================================================
 # Stage 4 — Import Result + Parse Report
 # ===========================================================================
-
 appendInfoLine: "[4/4] Importing result..."
 
 Read from file: tempOutput$
@@ -392,8 +357,6 @@ selectObject: sound
 rms_in  = Get root-mean-square: 0, 0
 
 # ---- Parse JSON report ----
-# We extract key-value pairs from the JSON text manually (no JSON parser in Praat)
-
 nComponents$    = "?"
 effectiveComp$  = "?"
 decompError$    = "?"
@@ -405,7 +368,6 @@ stereoSpread$   = "?"
 modeReport$     = "?"
 warningReport$  = ""
 
-# Role stats (up to 6 roles) — names assigned explicitly (no word$() needed)
 nRoles = 6
 roleName_1$ = "support"
 roleName_2$ = "body"
@@ -419,12 +381,7 @@ for iR from 1 to nRoles
     role_frags_'iR'$  = "?"
     role_avgdur_'iR'$ = "?"
     role_rms_'iR'$    = "?"
-endfor
-
-# Role timeline data (for visualization bars)
-# We read activity values per role as percentages of total duration
-for iR from 1 to nRoles
-    roleAct_'iR' = 0
+    roleAct_'iR'      = 0
 endfor
 
 if fileReadable(tempReport$)
@@ -432,53 +389,39 @@ if fileReadable(tempReport$)
 
     @parseJsonField: reportText$, "n_components"
     nComponents$ = parseJsonField.result$
-
     @parseJsonField: reportText$, "effective_components"
     effectiveComp$ = parseJsonField.result$
-
     @parseJsonField: reportText$, "decomp_error"
     decompError$ = parseJsonField.result$
-
     @parseJsonField: reportText$, "output_rms"
     outputRMS$ = parseJsonField.result$
-
     @parseJsonField: reportText$, "output_peak"
     outputPeak$ = parseJsonField.result$
-
     @parseJsonField: reportText$, "novelty_ratio"
     noveltyRatio$ = parseJsonField.result$
-
     @parseJsonField: reportText$, "overlap_density"
     overlapDensity$ = parseJsonField.result$
-
     @parseJsonField: reportText$, "stereo_spread"
     stereoSpread$ = parseJsonField.result$
-
     @parseJsonField: reportText$, "mode"
     modeReport$ = parseJsonField.result$
-
     @parseJsonField: reportText$, "warning"
     warningReport$ = parseJsonField.result$
+
     if warningReport$ = "?"
         warningReport$ = ""
     endif
 
-    # Role-level stats (from JSON)
     for iR from 1 to nRoles
         rn$ = roleName_'iR'$
         @parseJsonField: reportText$, rn$ + "_duration"
         role_dur_'iR'$ = parseJsonField.result$
-
         @parseJsonField: reportText$, rn$ + "_fragments"
         role_frags_'iR'$ = parseJsonField.result$
-
         @parseJsonField: reportText$, rn$ + "_avg_frag_dur"
         role_avgdur_'iR'$ = parseJsonField.result$
-
         @parseJsonField: reportText$, rn$ + "_rms"
         role_rms_'iR'$ = parseJsonField.result$
-
-        # Parse activity ratio for visualization bar
         @parseJsonField: reportText$, rn$ + "_activity"
         actStr$ = parseJsonField.result$
         if actStr$ <> "?" and actStr$ <> ""
@@ -506,9 +449,7 @@ if draw_visualization
     Text: 0.5, "centre", 0.6, "half", "##Internal Polyphony##"
     Font size: 8
     Colour: "{0.35, 0.35, 0.45}"
-    subtitleStr$ = soundName$ + " | " + presetName$
-        ... + " | " + polyModeStr$
-        ... + " | components=" + nComponents$
+    subtitleStr$ = soundName$ + " | " + presetName$ + " | " + polyModeStr$ + " | components=" + nComponents$
     Text: 0.5, "centre", -1.2, "half", subtitleStr$
 
     # === Input Waveform ===
@@ -585,7 +526,6 @@ if draw_visualization
     Colour: "Black"
     Text: 0.02, "left", 0.97, "half", "##Role Activity##"
 
-    # Role colors: support, body, accent, halo, residue, shimmer
     rCol_1$ = "{0.25, 0.45, 0.75}"
     rCol_2$ = "{0.30, 0.65, 0.40}"
     rCol_3$ = "{0.80, 0.35, 0.25}"
@@ -600,7 +540,6 @@ if draw_visualization
     for iR from 1 to nRoles
         barY = barTopY - (iR - 1) * barGap
         actVal = roleAct_'iR'
-        # Clamp to [0, 1]
         if actVal < 0
             actVal = 0
         endif
@@ -609,21 +548,17 @@ if draw_visualization
         endif
 
         thisCol$ = rCol_'iR'$
-        # Background track
         Paint rectangle: "{0.88, 0.88, 0.92}", 0.14, 0.95, barY - barH, barY
-        # Active fill
         if actVal > 0
             fillRight = 0.14 + actVal * 0.81
             Paint rectangle: thisCol$, 0.14, fillRight, barY - barH, barY
         endif
 
-        # Label
         Font size: 6
         Colour: "Black"
         rn$ = roleName_'iR'$
         Text: 0.01, "left", barY - barH / 2, "half", rn$
 
-        # Stats on right
         Font size: 5
         Colour: "{0.3, 0.3, 0.3}"
         rdur$ = role_dur_'iR'$
@@ -638,8 +573,7 @@ if draw_visualization
         if ravgd$ = "?"
             ravgd$ = "--"
         endif
-        Text: 0.96, "right", barY - barH / 2, "half",
-            ... rdur$ + "s | " + rfrags$ + "f | " + ravgd$ + "s"
+        Text: 0.96, "right", barY - barH / 2, "half", rdur$ + "s | " + rfrags$ + "f | " + ravgd$ + "s"
     endfor
 
     Colour: "Black"
@@ -657,37 +591,19 @@ if draw_visualization
 
     Font size: 6
     Colour: "{0.25, 0.35, 0.60}"
-    Text: 0.02, "left", 0.80, "half",
-        ... "Components: " + nComponents$ + " (effective: " + effectiveComp$ + ")"
-        ... + "  |  Decomp error: " + decompError$
-        ... + "  |  Mode: " + modeReport$
+    Text: 0.02, "left", 0.80, "half", "Components: " + nComponents$ + " (effective: " + effectiveComp$ + ")  |  Decomp error: " + decompError$ + "  |  Mode: " + modeReport$
 
     Colour: "{0.20, 0.55, 0.35}"
-    Text: 0.02, "left", 0.65, "half",
-        ... "RMS: " + fixed$(rms_in, 4) + " → " + fixed$(rms_out, 4)
-        ... + "  |  Peak: " + outputPeak$
-        ... + "  |  Novelty: " + noveltyRatio$
+    Text: 0.02, "left", 0.65, "half", "RMS: " + fixed$(rms_in, 4) + " → " + fixed$(rms_out, 4) + "  |  Peak: " + outputPeak$ + "  |  Novelty: " + noveltyRatio$
 
     Colour: "{0.55, 0.30, 0.65}"
-    Text: 0.02, "left", 0.50, "half",
-        ... "Overlap density: " + overlapDensity$
-        ... + "  |  Stereo spread: " + stereoSpread$
-        ... + "  |  Seed: " + string$(random_seed)
+    Text: 0.02, "left", 0.50, "half", "Overlap density: " + overlapDensity$ + "  |  Stereo spread: " + stereoSpread$ + "  |  Seed: " + string$(random_seed)
 
     Colour: "{0.35, 0.35, 0.45}"
-    Text: 0.02, "left", 0.35, "half",
-        ... "FFT: " + string$(fft_window)
-        ... + "  hop: " + string$(hop_size)
-        ... + "  |  Analysis: " + analysisModeStr$
-        ... + "  |  Density: " + fixed$(voice_density, 2)
-        ... + "  |  Expand: " + fixed$(expansion_factor, 2)
+    Text: 0.02, "left", 0.35, "half", "FFT: " + string$(fft_window) + "  hop: " + string$(hop_size) + "  |  Analysis: " + analysisModeStr$ + "  |  Density: " + fixed$(voice_density, 2) + "  |  Expand: " + fixed$(expansion_factor, 2)
 
     Colour: "{0.45, 0.35, 0.25}"
-    Text: 0.02, "left", 0.20, "half",
-        ... "Accent prom: " + fixed$(accent_prominence, 2)
-        ... + "  |  Halo: " + fixed$(halo_amount, 2)
-        ... + "  |  Width: " + fixed$(stereo_width, 2)
-        ... + "  |  Dry/wet: " + fixed$(dry_wet, 2)
+    Text: 0.02, "left", 0.20, "half", "Accent prom: " + fixed$(accent_prominence, 2) + "  |  Halo: " + fixed$(halo_amount, 2) + "  |  Width: " + fixed$(stereo_width, 2) + "  |  Dry/wet: " + fixed$(dry_wet, 2)
 
     if warningReport$ <> "?" and warningReport$ <> ""
         Colour: "{0.80, 0.20, 0.20}"
@@ -702,24 +618,9 @@ if draw_visualization
 endif
 
 # ===========================================================================
-# Cleanup
+# Cleanup & Summary
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempOutput$
-if fileReadable(tempReport$)
-    deleteFile: tempReport$
-endif
-if fileReadable(tempCSV$)
-    deleteFile: tempCSV$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
-
-# ===========================================================================
-# Summary in Info Window
-# ===========================================================================
+@cleanUpTempFiles
 
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
@@ -737,6 +638,7 @@ appendInfoLine: "Overlap density:  ", overlapDensity$
 appendInfoLine: "Stereo spread:    ", stereoSpread$
 appendInfoLine: ""
 appendInfoLine: "Role breakdown:"
+
 for iR from 1 to nRoles
     rn$ = roleName_'iR'$
     rdur$ = role_dur_'iR'$
@@ -765,7 +667,6 @@ if warningReport$ <> "?" and warningReport$ <> ""
 endif
 
 selectObject: resultSound
-
 if play_result
     Play
 endif
@@ -773,10 +674,6 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
-
-# Parse a "key": value pair from JSON text (handles strings and numbers).
-# Strategy: locate the key, find the colon, then grab text up to the
-# next newline or comma - avoids multi-line boolean expressions.
 procedure parseJsonField: .text$, .key$
     .result$ = "?"
     .searchKey$ = """" + .key$ + """"
@@ -788,19 +685,15 @@ procedure parseJsonField: .text$, .key$
         if .colPos > 0
             .valStart = .colPos + 1
             .valRest$ = mid$(.rest$, .valStart, length(.rest$) - .valStart + 1)
-            # Trim leading spaces
             while left$(.valRest$, 1) = " "
                 .valRest$ = mid$(.valRest$, 2, length(.valRest$) - 1)
             endwhile
-            # String value: starts with a quote
             if left$(.valRest$, 1) = """"
-                # Strip the opening quote then find the closing one
                 .inner$ = mid$(.valRest$, 2, length(.valRest$) - 1)
                 .endQ = index(.inner$, """")
                 if .endQ > 0
                     .result$ = left$(.inner$, .endQ - 1)
                 endif
-            # Numeric value: grab up to next newline, comma, or brace
             else
                 .endNum = length(.valRest$)
                 .nlPos = index(.valRest$, newline$)
@@ -825,7 +718,6 @@ procedure parseJsonField: .text$, .key$
                     .endNum = 0
                 endif
                 .result$ = left$(.valRest$, .endNum)
-                # Trim trailing spaces
                 while right$(.result$, 1) = " "
                     .result$ = left$(.result$, length(.result$) - 1)
                 endwhile

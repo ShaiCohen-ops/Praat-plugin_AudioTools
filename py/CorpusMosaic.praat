@@ -2,7 +2,7 @@
 # Praat AudioTools - CorpusMosaic.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.2 (2026)
+# Version: 1.2 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -56,14 +56,30 @@ if corpusDir$ == ""
 endif
 
 # ============================================================
-# AudioTools Path Integration
+# OS-Specific Python Discovery
+# ============================================================
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
+# ============================================================
+# Paths Setup
 # ============================================================
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/corpus_mosaic_engine.py"
 
-if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "corpus_mosaic_engine.py"
-endif
 if not fileReadable(pythonScript$)
     pythonScript$ = defaultDirectory$ + "/corpus_mosaic_engine.py"
 endif
@@ -71,96 +87,68 @@ if not fileReadable(pythonScript$)
     exitScript: "Cannot find corpus_mosaic_engine.py." + newline$ + "Expected at: " + pluginDir$ + "py/"
 endif
 
-tempSource$  = pluginDir$ + "temp_mosaic_source.wav"
-tempOutput$  = pluginDir$ + "temp_mosaic_output.wav"
-tempCsv$     = pluginDir$ + "temp_mosaic_path.csv"
-tempStats$   = pluginDir$ + "temp_mosaic_stats.txt"
-probeMarker$ = pluginDir$ + "temp_mosaic_probe.ok"
-pyLog$       = pluginDir$ + "temp_mosaic_error.log"
+tempSource$  = temporaryDirectory$ + "/temp_mosaic_source.wav"
+tempOutput$  = temporaryDirectory$ + "/temp_mosaic_output.wav"
+tempCsv$     = temporaryDirectory$ + "/temp_mosaic_path.csv"
+tempStats$   = temporaryDirectory$ + "/temp_mosaic_stats.txt"
+pyLog$       = temporaryDirectory$ + "/temp_mosaic_error.log"
+probeMarker$ = temporaryDirectory$ + "/temp_mosaic_probe.ok"
 
-# Cleanup old temp files
-if fileReadable(tempSource$)
-    deleteFile: tempSource$
-endif
-if fileReadable(tempOutput$)
-    deleteFile: tempOutput$
-endif
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(tempCsv$)
-    deleteFile: tempCsv$
-endif
-if fileReadable(pyLog$)
-    deleteFile: pyLog$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+# Replace backslashes for the Python inline probe to prevent escape character crashes on Windows
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
 
-selectObject: sourceId
-Save as WAV file: tempSource$
+# ============================================================
+# Cleanup Procedure
+# ============================================================
+procedure cleanUpTempFiles
+    if fileReadable(tempSource$)
+        deleteFile: tempSource$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempCsv$)
+        deleteFile: tempCsv$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(pyLog$)
+        deleteFile: pyLog$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
 
+@cleanUpTempFiles
+
+# ============================================================
+# Check Python Dependencies
+# ============================================================
 clearinfo
 writeInfoLine: "=== Offline Corpus Mosaic ==="
 appendInfoLine: "Scanning corpus: ", corpusDir$
-
-# ============================================================
-# Stage 1 — Detect Python & Probe Dependencies
-# ============================================================
 appendInfoLine: "[1/3] Detecting Python and Librosa..."
 
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile, librosa; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Missing Python dependencies!" + newline$ + "Please open your terminal/command prompt and run: pip install numpy scipy soundfile librosa"
 endif
 
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-    
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    
-    probeCode$ = "import numpy,soundfile,librosa; open(r'" + probeMarker$ + "','w').write('ok')"
-    nocheck runSystem: tryCmd$ + " -c """ + probeCode$ + """"
-    
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    exitScript: "Cannot find Python with required packages." + newline$ + "Please run: pip install numpy scipy soundfile librosa"
-endif
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
 
 # ============================================================
 # Stage 2 — Run Python engine
 # ============================================================
 appendInfoLine: "[2/3] Running Python Engine..."
+
+selectObject: sourceId
+Save as WAV file: tempSource$
 
 overlapRatio = overlap_percent / 100.0
 normFlag$ = ""
@@ -189,25 +177,21 @@ pyCmd$ = pyCmd$ + " " + normFlag$
 if windows
     pyCmd$ = pyCmd$ + " 2> """ + pyLog$ + """"
 else
-    pyCmd$ = pyCmd$ + " 2> '" + pyLog$ + "'"
+    pyCmd$ = pyCmd$ + " 2> """ + pyLog$ + """"
 endif
 
-nocheck runSystem: pyCmd$
+runSystem_nocheck: pyCmd$
 
 if not fileReadable(tempOutput$)
     errMsg$ = ""
     if fileReadable(pyLog$)
         errMsg$ = readFile$: pyLog$
-        deleteFile: pyLog$
     endif
+    @cleanUpTempFiles
     if errMsg$ = ""
         errMsg$ = "(no error output captured. Ensure audio files exist in the corpus folder.)"
     endif
     exitScript: "Python engine failed." + newline$ + newline$ + errMsg$
-endif
-
-if fileReadable(pyLog$)
-    deleteFile: pyLog$
 endif
 
 appendInfoLine: "  Engine complete."
@@ -541,10 +525,7 @@ appendInfoLine: "Render time:   ", statTime$
 
 selectObject: resultSound
 
-deleteFile: tempSource$
-deleteFile: tempOutput$
-deleteFile: tempStats$
-deleteFile: tempCsv$
+@cleanUpTempFiles
 
 if play_result
     Play

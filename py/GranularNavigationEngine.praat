@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,10 +18,10 @@
 #
 #   Role separation:
 #     Praat  — folder selection, path CSV read,
-#               reconstruction, visualization.
+#              reconstruction, visualization.
 #     Python — folder scan, grain slicing, ALL feature
-#               extraction, autoencoder training,
-#               path generation, stats. Zero Praat objects.
+#              extraction, autoencoder training,
+#              path generation, stats. Zero Praat objects.
 #
 # Python engine: granular_navigation_engine.py
 #
@@ -29,27 +29,69 @@
 #   pip install torch numpy soundfile
 # ============================================================
 
-pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/granular_navigation_engine.py"
-if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "granular_navigation_engine.py"
-endif
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find granular_navigation_engine.py" + newline$
-        ... + "Expected at: " + pluginDir$ + "py/" + newline$
-        ... + "or next to this script."
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
-tempPath$    = pluginDir$ + "temp_gne_path.csv"
-tempStats$   = pluginDir$ + "temp_gne_stats.txt"
-probeMarker$ = pluginDir$ + "temp_gne_probe.ok"
+# ---- Paths Setup ----
+pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
+pythonScript$ = pluginDir$ + "py/granular_navigation_engine.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/granular_navigation_engine.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find granular_navigation_engine.py" + newline$ + "Expected at: " + pluginDir$ + "py/" + newline$ + "or next to this script."
+endif
+
+tempPath$    = temporaryDirectory$ + "/temp_gne_path.csv"
+tempStats$   = temporaryDirectory$ + "/temp_gne_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_gne_probe.ok"
+pyLog$       = temporaryDirectory$ + "/temp_gne_error.log"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- Cleanup Procedure ----
+procedure cleanUpTempFiles
+    if fileReadable(tempPath$)
+        deleteFile: tempPath$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+    if fileReadable(pyLog$)
+        deleteFile: pyLog$
+    endif
+endproc
+
+@cleanUpTempFiles
 
 folder$ = chooseDirectory$: "Select folder of audio files"
 if folder$ = ""
     exitScript: "No folder selected."
 endif
-if right$(folder$, 1) <> "/" and right$(folder$, 1) <> "\"
-    folder$ = folder$ + "/"
+
+# Universally sanitize backslashes to forward slashes to prevent Windows escape character crashes
+folderJ$ = replace_regex$(folder$, "\\", "/", 0)
+if right$(folderJ$, 1) <> "/"
+    folderJ$ = folderJ$ + "/"
 endif
 
 # ---- FORM ----
@@ -70,7 +112,7 @@ form Granular Navigation Engine
     boolean Play_result 1
 endform
 
-# Fixed parameters (not exposed in form to keep it compact)
+# Fixed parameters
 epochs = 80
 seed   = 42
 
@@ -97,84 +139,40 @@ endif
 
 clearinfo
 writeInfoLine: "=== Granular Navigation Engine ==="
-appendInfoLine: "Folder: ", folder$
+appendInfoLine: "Folder: ", folderJ$
 appendInfoLine: "Mode:   ", modeStr$
 appendInfoLine: "Grain:  ", grain_ms, " ms"
 appendInfoLine: "Path:   ", path_length, " grains"
 appendInfoLine: ""
 
 # ============================================================
-# Stage 1 — Detect Python
+# Stage 1 — Detect Python Dependencies
 # ============================================================
-appendInfoLine: "[1/3] Detecting Python..."
+appendInfoLine: "[1/3] Detecting Python dependencies..."
 
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
+probeCmd$ = pythonCmd$ + " -c ""import torch, numpy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python with required packages." + newline$ + "  pip install torch numpy soundfile"
 endif
+deleteFile: probeMarker$
 
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    probeCode$ = "import torch,numpy,soundfile; open(r'" + probeMarker$ + "','w').write('ok')"
-    nocheck runSystem: tryCmd$ + " -c """ + probeCode$ + """"
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    exitScript: "Cannot find Python with required packages." + newline$
-        ... + "  pip install torch numpy soundfile"
-endif
+appendInfoLine: "  Python found: ", pythonCmd$
 
 # ============================================================
 # Stage 2 — Run Python engine
-#   (scans folder, extracts features, trains model, writes path)
 # ============================================================
 appendInfoLine: "[2/3] Running Python engine..."
 
-if fileReadable(tempPath$)
-    deleteFile: tempPath$
-endif
-
-# Build the command in a single variable to avoid any continuation ambiguity
 grainMsStr$    = fixed$(grain_ms, 0)
 pathLengthStr$ = string$(path_length)
 epochsStr$     = string$(epochs)
 seedStr$       = string$(seed)
 
 pyCmd$ = pythonCmd$ + " """ + pythonScript$ + """"
-pyCmd$ = pyCmd$ + " --folder """    + folder$      + """"
+pyCmd$ = pyCmd$ + " --folder """    + folderJ$     + """"
 pyCmd$ = pyCmd$ + " --path_out """  + tempPath$    + """"
 pyCmd$ = pyCmd$ + " --stats """     + tempStats$   + """"
 pyCmd$ = pyCmd$ + " --mode "        + modeStr$
@@ -183,12 +181,24 @@ pyCmd$ = pyCmd$ + " --path_length " + pathLengthStr$
 pyCmd$ = pyCmd$ + " --epochs "      + epochsStr$
 pyCmd$ = pyCmd$ + " --seed "        + seedStr$
 
-runSystem: pyCmd$
+if windows
+    pyCmd$ = pyCmd$ + " 2> """ + pyLog$ + """"
+else
+    pyCmd$ = pyCmd$ + " 2> """ + pyLog$ + """"
+endif
+
+runSystem_nocheck: pyCmd$
 
 if not fileReadable(tempPath$)
-    exitScript: "Python engine failed — path CSV not found." + newline$
-        ... + "Check the terminal for Python error messages." + newline$
-        ... + "Ensure: pip install torch numpy soundfile"
+    errMsg$ = ""
+    if fileReadable(pyLog$)
+        errMsg$ = readFile$: pyLog$
+    endif
+    @cleanUpTempFiles
+    if errMsg$ = ""
+        errMsg$ = "(no error output captured. Ensure audio files exist in the chosen folder.)"
+    endif
+    exitScript: "Python engine failed." + newline$ + newline$ + errMsg$ + newline$ + newline$ + "Fix: pip install torch numpy soundfile"
 endif
 
 appendInfoLine: "  Engine complete."
@@ -204,8 +214,7 @@ nPath = Get number of rows
 
 if nPath = 0
     removeObject: pathTable
-    deleteFile: tempPath$
-    deleteFile: tempStats$
+    @cleanUpTempFiles
     exitScript: "Path CSV is empty."
 endif
 
@@ -215,8 +224,9 @@ grainSec = grain_ms / 1000
 xfSec    = min(0.012, grainSec * 0.40)
 
 # Source file cache
-maxSrc = 500
-nSrc   = 0
+maxSrc   = 500
+nSrc     = 0
+targetSR = 0
 for q to maxSrc
     srcId[q] = 0
 endfor
@@ -238,7 +248,7 @@ for g to nPath
             endif
         endfor
         if srcSlot = 0
-            fp$ = folder$ + fn$
+            fp$ = folderJ$ + fn$
             if fileReadable(fp$)
                 lSnd = Read from file: fp$
                 selectObject: lSnd
@@ -248,6 +258,18 @@ for g to nPath
                     removeObject: lSnd
                     lSnd = mSnd
                 endif
+                # --- sample-rate normalisation ---
+                selectObject: lSnd
+                lSR = Get sampling frequency
+                if targetSR = 0
+                    targetSR = lSR
+                elsif lSR <> targetSR
+                    rSnd = Resample: targetSR, 50
+                    removeObject: lSnd
+                    lSnd = rSnd
+                    appendInfo: "~"
+                endif
+                # ----------------------------------
                 nSrc = nSrc + 1
                 srcFn_'nSrc'$ = fn$
                 srcId[nSrc]   = lSnd
@@ -281,8 +303,7 @@ if nOk = 0
         removeObject: srcId[q]
     endfor
     removeObject: pathTable
-    deleteFile: tempPath$
-    deleteFile: tempStats$
+    @cleanUpTempFiles
     exitScript: "No grains assembled."
 endif
 
@@ -627,17 +648,10 @@ if draw_visualization
 endif
 
 # ============================================================
-# Cleanup temp files
+# Final info + cleanup
 # ============================================================
-deleteFile: tempPath$
-deleteFile: tempStats$
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
-# ============================================================
-# Final info + play
-# ============================================================
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:   ", outName$
