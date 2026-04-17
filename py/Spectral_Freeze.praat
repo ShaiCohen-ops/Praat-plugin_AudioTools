@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.0 (2026) - Multi-Freeze mode
+# Version: 3.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -45,16 +45,47 @@ sound = selected("Sound")
 soundName$ = selected$("Sound")
 
 # ---- PATHS ----
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/spectral_freeze.py"
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 
-tempInput$  = pluginDir$ + "freeze_input.wav"
-tempOutput$ = pluginDir$ + "freeze_output.wav"
+pythonScript$ = pluginDir$ + "py/spectral_freeze.py"
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 
 if not fileReadable(pythonScript$)
     exitScript: "Cannot find Python script: " + pythonScript$ + newline$
         ... + "Please verify AudioTools installation."
 endif
+
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+tempInput$   = tempDir$ + "freeze_input.wav"
+tempOutput$  = tempDir$ + "freeze_output.wav"
+probePy$     = tempDir$ + "freeze_probe.py"
+probeMarker$ = tempDir$ + "freeze_probe.ok"
+
+tempInputJ$   = replace_regex$(tempInput$,   "\\", "/", 0)
+tempOutputJ$  = replace_regex$(tempOutput$,  "\\", "/", 0)
+probePyJ$     = replace_regex$(probePy$,     "\\", "/", 0)
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
 
 # ---- GET INPUT STATS ----
 selectObject: sound
@@ -62,8 +93,66 @@ totalDuration = Get total duration
 sr = Get sampling frequency
 nChannels = Get number of channels
 
+# ===========================================================================
+# STAGE 0 — Python Probe (file-based, runs before form)
+# ===========================================================================
+
+if windows
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
+endif
+
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import numpy, soundfile"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
+
+pythonCmd$ = ""
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        iCand = nCandidates + 1
+    endif
+endfor
+
+deleteFile: probePy$
+
+if pythonCmd$ = ""
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python with numpy and soundfile." + newline$
+        ... + "Install Python 3 and run:  pip install numpy soundfile"
+endif
+
 # ---- FORM ----
-form Spectral Freeze v3.0
+form Spectral Freeze v3.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -130,7 +219,6 @@ elsif preset = 5
     freeze_mode = 1
     presetName$ = "LongFade"
 elsif preset = 6
-    # Evolving Landscape: spread waypoints evenly, long crossfades
     window_ms  = 100
     shimmer    = 0.12
     fade_in_s  = 1.0
@@ -143,7 +231,6 @@ elsif preset = 6
     duration_s = 20.0
     presetName$ = "EvolvingLandscape"
 elsif preset = 7
-    # Vowel Drift: closely spaced points, short dwell, medium crossfade
     window_ms  = 60
     shimmer    = 0.18
     fade_in_s  = 0.5
@@ -156,7 +243,6 @@ elsif preset = 7
     duration_s = 12.0
     presetName$ = "VowelDrift"
 elsif preset = 8
-    # Frozen Glissando: looping through waypoints
     window_ms  = 80
     shimmer    = 0.08
     fade_in_s  = 0.3
@@ -191,7 +277,6 @@ if dwell_s < 0
 endif
 
 # ---- BUILD FREEZE TIMES STRING (multi mode) ----
-# Auto-distribute freeze points evenly across the source
 freezeTimesStr$ = ""
 nFP = number_of_freeze_points
 
@@ -230,7 +315,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Spectral Freeze v3.0 ==="
+writeInfoLine:  "=== Spectral Freeze v3.1 ==="
 appendInfoLine: "Input: ", soundName$, "  (", fixed$(totalDuration, 3), "s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode:   ", modeLabel$
@@ -247,26 +332,25 @@ appendInfoLine: "Duration:    ", fixed$(duration_s, 2), " s"
 appendInfoLine: "Window:      ", fixed$(window_ms, 0), " ms"
 appendInfoLine: "Shimmer:     ", fixed$(shimmer, 2)
 appendInfoLine: "Fades:       in ", fixed$(fade_in_s, 2), " s  out ", fixed$(fade_out_s, 2), " s"
+appendInfoLine: "Python:      ", pythonCmd$
 appendInfoLine: ""
 
-# ---- EXPORT ----
+# ===========================================================================
+# STAGE 1 — Export WAV
+# ===========================================================================
 appendInfoLine: "[1/4] Exporting WAV..."
 selectObject: sound
 Save as WAV file: tempInput$
 
-# ---- CALL PYTHON ----
+# ===========================================================================
+# STAGE 2 — Call Python
+# ===========================================================================
 appendInfoLine: "[2/4] Running spectral freeze engine..."
 
-pythonCmd$ = "python3"
-if windows
-    pythonCmd$ = "py"
-endif
-
 if freeze_mode = 1
-    # Single mode
-    runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-        ... + " """ + tempInput$ + """"
-        ... + " """ + tempOutput$ + """"
+    runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """"
+        ... + " """ + tempInputJ$ + """"
+        ... + " """ + tempOutputJ$ + """"
         ... + " " + fixed$(freeze_time_s, 6)
         ... + " " + fixed$(duration_s, 4)
         ... + " " + fixed$(window_ms, 2)
@@ -275,10 +359,9 @@ if freeze_mode = 1
         ... + " " + fixed$(fade_out_s, 4)
         ... + " single"
 else
-    # Multi mode
-    runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-        ... + " """ + tempInput$ + """"
-        ... + " """ + tempOutput$ + """"
+    runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """"
+        ... + " """ + tempInputJ$ + """"
+        ... + " """ + tempOutputJ$ + """"
         ... + " " + freezeTimesStr$
         ... + " " + fixed$(duration_s, 4)
         ... + " " + fixed$(window_ms, 2)
@@ -291,9 +374,11 @@ else
         ... + " " + string$(loop)
 endif
 
-# ---- VERIFY OUTPUT ----
+# ===========================================================================
+# STAGE 3 — Verify & Import
+# ===========================================================================
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
+    @cleanUpTempFiles
     exitScript: "Python spectral freeze failed." + newline$
         ... + "Possible causes:" + newline$
         ... + "  - numpy or soundfile not installed" + newline$
@@ -301,7 +386,6 @@ if not fileReadable(tempOutput$)
         ... + "Check the terminal/console for Python error messages."
 endif
 
-# ---- IMPORT RESULT ----
 appendInfoLine: "[3/4] Importing result..."
 
 Read from file: tempOutput$
@@ -311,10 +395,6 @@ else
     Rename: soundName$ + "_multiFreeze"
 endif
 resultSound = selected("Sound")
-
-# ---- CLEANUP TEMP FILES ----
-deleteFile: tempInput$
-deleteFile: tempOutput$
 
 # ---- RESULT STATS ----
 selectObject: resultSound
@@ -339,7 +419,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Spectral Freeze v3.0##"
+    Text: 0.5, "centre", 0.6, "half", "##Spectral Freeze v3.1##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + modeLabel$ + " | Shimmer: " + fixed$(shimmer, 2)
@@ -351,22 +431,18 @@ if draw_visualization
     Colour: "{0.5, 0.5, 0.5}"
     Draw: 0, 0, 0, 0, "no", "Curve"
 
-    # Draw freeze point markers
     if freeze_mode = 1
-        # Single: red vertical line
         Colour: "{0.8, 0.3, 0.3}"
         Line width: 2
         Draw line: freeze_time_s, -1, freeze_time_s, 1
         Line width: 1
     else
-        # Multi: coloured markers for each waypoint
         for fp from 1 to nFP
             if nFP > 1
                 fpTime = rangeStart + (fp - 1) * span / (nFP - 1)
             else
                 fpTime = totalDuration / 2
             endif
-            # Colour gradient from blue to red across waypoints
             rCol = 0.2 + 0.6 * (fp - 1) / max(nFP - 1, 1)
             bCol = 0.8 - 0.6 * (fp - 1) / max(nFP - 1, 1)
             Colour: "{" + fixed$(rCol, 2) + ", 0.3, " + fixed$(bCol, 2) + "}"
@@ -384,7 +460,6 @@ if draw_visualization
     Text left: "yes", "Original"
     Text top: "no", fixed$(totalDuration, 2) + " s"
 
-    # Freeze time label (single mode)
     if freeze_mode = 1
         Font size: 6
         Colour: "{0.8, 0.3, 0.3}"
@@ -499,7 +574,6 @@ if draw_visualization
     if freeze_mode = 1
         sliceTime = freeze_time_s
     else
-        # Show first waypoint spectrum
         sliceTime = rangeStart
     endif
     sliceSpec = To Spectrum (slice): sliceTime
@@ -595,7 +669,11 @@ else
     appendInfoLine: "[4/4] Visualization skipped."
 endif
 
-# ---- SUMMARY ----
+# ===========================================================================
+# CLEANUP & SUMMARY
+# ===========================================================================
+@cleanUpTempFiles
+
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 if freeze_mode = 1

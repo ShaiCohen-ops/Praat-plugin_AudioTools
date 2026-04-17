@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 2.0 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,7 +26,7 @@
 #   Select a Sound object in Praat and run this script.
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis–Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
@@ -44,8 +44,124 @@ duration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
 
-# ---- Form ----
-form Spectral Eraser v1.0
+# ============================================================
+# PATHS
+# ============================================================
+
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
+pythonScript$ = pluginDir$ + "py/spectral_eraser.py"
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
+        ... + "Please verify AudioTools installation."
+endif
+
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+tempInput$   = tempDir$ + "temp_speceraser_input.wav"
+tempOutput$  = tempDir$ + "temp_speceraser_output.wav"
+doneFile$    = tempDir$ + "temp_speceraser_done.txt"
+probePy$     = tempDir$ + "temp_speceraser_probe.py"
+probeMarker$ = tempDir$ + "temp_speceraser_probe.ok"
+
+# Forward-slash versions for Python
+tempInputJ$   = replace_regex$(tempInput$,   "\\", "/", 0)
+tempOutputJ$  = replace_regex$(tempOutput$,  "\\", "/", 0)
+doneFileJ$    = replace_regex$(doneFile$,    "\\", "/", 0)
+probePyJ$     = replace_regex$(probePy$,     "\\", "/", 0)
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ============================================================
+# CLEANUP PROCEDURE
+# ============================================================
+
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(doneFile$)
+        deleteFile: doneFile$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
+# ============================================================
+# STAGE 0 — Python Probe (file-based, runs before form)
+# ============================================================
+
+if windows
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
+endif
+
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import tkinter, numpy, soundfile"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
+
+pythonCmd$ = ""
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        iCand = nCandidates + 1
+    endif
+endfor
+
+deleteFile: probePy$
+
+if pythonCmd$ = ""
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python with tkinter, numpy, and soundfile." + newline$
+        ... + "Install Python 3 and run:  pip install numpy soundfile"
+endif
+
+# ============================================================
+# FORM
+# ============================================================
+
+form Spectral Eraser v2.0
     comment === FFT Resolution ===
     optionmenu FFT_size: 2
         option 512 (fast, low freq resolution)
@@ -70,94 +186,11 @@ else
 endif
 
 # ============================================================
-# PATHS  (plugin-relative for distribution)
-# ============================================================
-
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/spectral_eraser.py"
-
-tempInput$  = pluginDir$ + "temp_speceraser_input.wav"
-tempOutput$ = pluginDir$ + "temp_speceraser_output.wav"
-doneFile$   = pluginDir$ + "temp_speceraser_done.txt"
-
-# Verify Python script exists
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
-endif
-
-# Clean stale files from any previous run
-if fileReadable(tempInput$)
-    deleteFile: tempInput$
-endif
-if fileReadable(tempOutput$)
-    deleteFile: tempOutput$
-endif
-if fileReadable(doneFile$)
-    deleteFile: doneFile$
-endif
-
-# ============================================================
-# ROBUST PYTHON DETECTION  (4-candidate probe with tkinter check)
-# ============================================================
-
-pythonCmd$ = ""
-probeMarker$ = pluginDir$ + "temp_speceraser_probe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import tkinter; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-    endif
-
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    exitScript: "Cannot find Python with tkinter." + newline$
-        ... + "Install Python 3 (with tkinter) and ensure it is in PATH." + newline$
-        ... + "Also install:  pip install numpy soundfile"
-endif
-
-# ============================================================
 # INFO
 # ============================================================
 
 clearinfo
-writeInfoLine: "=== Spectral Eraser v1.0 ==="
+writeInfoLine: "=== Spectral Eraser v2.0 ==="
 appendInfoLine: "Source: ", soundName$, " (", fixed$(duration, 2), " s, ",
     ... sampleRate, " Hz, ", numChannels, " ch)"
 appendInfoLine: "FFT size: ", fftN
@@ -165,7 +198,7 @@ appendInfoLine: "Python: ", pythonCmd$
 appendInfoLine: ""
 
 # ============================================================
-# EXPORT MONO WAV
+# STAGE 1 — Export Mono WAV
 # ============================================================
 
 appendInfoLine: "[1/4] Exporting mono WAV..."
@@ -182,29 +215,25 @@ Save as WAV file: tempInput$
 removeObject: monoTemp
 
 # ============================================================
-# LAUNCH PYTHON GUI
+# STAGE 2 — Launch Python GUI
 # ============================================================
 
 appendInfoLine: "[2/4] Opening Spectral Eraser GUI..."
 appendInfoLine: "       (draw on the spectrogram, then click Apply)"
 appendInfoLine: ""
 
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " """ + tempInput$ + """"
-    ... + " """ + tempOutput$ + """"
-    ... + " """ + doneFile$ + """"
+runSystem: pythonCmd$ + " """ + pythonScriptJ$ + """"
+    ... + " """ + tempInputJ$ + """"
+    ... + " """ + tempOutputJ$ + """"
+    ... + " """ + doneFileJ$ + """"
     ... + " " + string$(fftN)
 
 # ============================================================
-# CHECK RESULT
+# STAGE 3 — Check Result
 # ============================================================
 
-# Read done file
 if not fileReadable(doneFile$)
-    # Python crashed or was killed
-    if fileReadable(tempInput$)
-        deleteFile: tempInput$
-    endif
+    @cleanUpTempFiles
     exitScript: "Python did not complete." + newline$
         ... + "Possible causes:" + newline$
         ... + "  - numpy or soundfile not installed" + newline$
@@ -212,31 +241,27 @@ if not fileReadable(doneFile$)
 endif
 
 doneStatus$ = readFile$(doneFile$)
-deleteFile: doneFile$
-deleteFile: tempInput$
 
 if doneStatus$ = "CANCEL"
-    if fileReadable(tempOutput$)
-        deleteFile: tempOutput$
-    endif
+    @cleanUpTempFiles
     appendInfoLine: "Cancelled by user."
     selectObject: sound
     exitScript: "Spectral Eraser cancelled."
 endif
 
 if not fileReadable(tempOutput$)
+    @cleanUpTempFiles
     exitScript: "Output file not found — Python may have failed."
 endif
 
 # ============================================================
-# IMPORT RESULT
+# STAGE 4 — Import Result
 # ============================================================
 
 appendInfoLine: "[3/4] Importing result..."
 
 Read from file: tempOutput$
 result = selected("Sound")
-deleteFile: tempOutput$
 
 selectObject: result
 Scale peak: 0.95
@@ -370,8 +395,10 @@ else
 endif
 
 # ============================================================
-# FINAL
+# CLEANUP & FINAL
 # ============================================================
+
+@cleanUpTempFiles
 
 selectObject: result
 
