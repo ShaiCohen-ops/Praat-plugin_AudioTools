@@ -3,55 +3,73 @@
 # Script:      Spatial_Panner.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     1.0 (2025)
+# Version:     2.0 (2026) - Unified Cross-Platform Version
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Opens a Python GUI with a 2D circular spatial trajectory editor.
-#   - Draw a moving source path inside a circle
-#   - Assign a time value to each path point
-#   - The source motion is converted to N-channel loudspeaker gains
-#     using DBAP (Distance-Based Amplitude Panning)
-#   - Default: 8 speakers arranged in a ring
-#
-# Workflow:
-#   1. Selected Sound → exported to temp WAV
-#   2. Python opens 2D stage GUI
-#   3. User draws trajectory, clicks Apply
-#   4. Python writes N-channel WAV
-#   5. Praat imports result as new Sound object
-#
-# Dependencies (Python):
-#   pip install numpy soundfile scipy
-#   tkinter — included in standard Python
-#
-# Usage:
-#   Select a Sound object, then run this script.
+#   Modernized Spatial Panner with robust path handling and 
+#   dependency probing. Opens a Python GUI for 2D trajectory editing.
 # ============================================================
 
-# ---- Verify selection ----
-if numberOfSelected ("Sound") <> 1
+# ---- SELECTION CHECK ----
+if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-sound      = selected ("Sound")
-soundName$ = selected$ ("Sound")
+inputSound = selected("Sound")
+inputName$ = selected$("Sound")
 
-# ---- Paths ----
-pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
+# ---- PATH NORMALIZATION (Forward Slashes) ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$    = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
+tempDirRaw$   = temporaryDirectory$ + "/"
+tempDir$      = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+# File Paths
 pythonScript$ = pluginDir$ + "py/spatial_panner.py"
-tempInput$    = pluginDir$ + "temp_spatial_input.wav"
-tempOutput$   = pluginDir$ + "temp_spatial_output.wav"
+tempInput$    = tempDir$ + "temp_spatial_input.wav"
+tempOutput$   = tempDir$ + "temp_spatial_output.wav"
+probePy$      = tempDir$ + "temp_spatial_probe.py"
+probeMarker$  = tempDir$ + "temp_spatial_probe.ok"
 
-# ---- Export selected sound to temp WAV ----
-selectObject: sound
-Save as WAV file: tempInput$
+# Escape paths for system calls (quoted)
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
+tempInputJ$    = replace_regex$(tempInput$, "\\", "/", 0)
+tempOutputJ$   = replace_regex$(tempOutput$, "\\", "/", 0)
+probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
 
-# ---- Robust Python detection ----
-pythonCmd$   = ""
-probeMarker$ = pluginDir$ + "temp_spatial_probe.ok"
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
 
+@cleanUpFiles
+
+# ===========================================================================
+# Stage 0 — File-Based Python Dependency Probe
+# ===========================================================================
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import numpy, scipy, soundfile"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
+
+pythonCmd$ = ""
 if windows
     nCandidates = 4
     candidate1$ = "python"
@@ -77,82 +95,78 @@ for iCand from 1 to nCandidates
         tryCmd$ = candidate4$
     endif
 
-    if fileReadable (probeMarker$)
+    if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
 
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+    # Run the probe script
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
 
-    if fileReadable (probeMarker$)
+    if fileReadable(probeMarker$)
         pythonCmd$ = tryCmd$
         deleteFile: probeMarker$
-    endif
-
-    if pythonCmd$ <> ""
         iCand = nCandidates + 1
     endif
 endfor
 
+deleteFile: probePy$
+
 if pythonCmd$ = ""
-    deleteFile: tempInput$
-    exitScript: "Cannot find Python with required packages." + newline$
-        ... + "" + newline$
-        ... + "Please install:" + newline$
-        ... + "  pip install numpy soundfile scipy"
+    @cleanUpFiles
+    exitScript: "Cannot find Python 3 with required packages (numpy, scipy, soundfile)."
 endif
 
-# ---- Launch GUI ----
+# ===========================================================================
+# Stage 1 — Execution
+# ===========================================================================
 clearinfo
-appendInfoLine: "=== Spatial Panner ==="
-appendInfoLine: "Input:   ", soundName$
-appendInfoLine: "Python:  ", pythonCmd$
+appendInfoLine: "=== Spatial Panner v2.0 ==="
+appendInfoLine: "Input:  ", inputName$
+appendInfoLine: "Python: ", pythonCmd$
 appendInfoLine: ""
+
+# Export selected sound to temporary space
+selectObject: inputSound
+Save as WAV file: tempInput$
+
 appendInfoLine: "Opening spatial trajectory editor..."
-appendInfoLine: "(Waiting for GUI)"
+appendInfoLine: "(Waiting for GUI to close)"
 
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " """ + tempInput$ + """"
-    ... + " """ + tempOutput$ + """"
+# Execute Python GUI
+runSystem: pythonCmd$ + " """ + pythonScriptJ$ + """ """ + tempInputJ$ + """ """ + tempOutputJ$ + """"
 
-# ---- Check result ----
-if not fileReadable (tempOutput$)
-    deleteFile: tempInput$
-    appendInfoLine: ""
-    appendInfoLine: "Cancelled."
+# Check if user saved a result or cancelled
+if not fileReadable(tempOutput$)
+    @cleanUpFiles
+    appendInfoLine: "Cancelled by user."
     exitScript: "Spatial Panner cancelled."
 endif
 
-# ---- Import result ----
-appendInfoLine: ""
-appendInfoLine: "Importing result..."
+# Import and label the result
+appendInfoLine: "Importing multi-channel result..."
 Read from file: tempOutput$
-Rename: soundName$ + "_spatial"
-result = selected ("Sound")
+Rename: inputName$ + "_spatial"
+resultSound = selected("Sound")
 
-# ---- Report output ----
-selectObject: result
-dur_out = Get total duration
-sr_out  = Get sampling frequency
-nch_out = Get number of channels
-rms_out = Get root-mean-square: 0, 0
+# Final Stats Reporting
+selectObject: resultSound
+dur = Get total duration
+sr  = Get sampling frequency
+nch = Get number of channels
+rms = Get root-mean-square: 0, 0
 
-appendInfoLine: "Duration:  ", fixed$ (dur_out, 3), " s"
-appendInfoLine: "SR:        ", sr_out, " Hz"
-appendInfoLine: "Channels:  ", nch_out
-appendInfoLine: "RMS:       ", fixed$ (rms_out, 6)
+appendInfoLine: "Duration: ", fixed$(dur, 3), " s"
+appendInfoLine: "SR:       ", sr, " Hz"
+appendInfoLine: "Channels: ", nch
+appendInfoLine: "RMS:      ", fixed$(rms, 6)
 
-if rms_out < 0.0001
-    appendInfoLine: "WARNING: output is silent or near-zero!"
-else
-    appendInfoLine: "OK: audio looks valid"
+if rms < 0.0001
+    appendInfoLine: "WARNING: Output signal is near silence!"
 endif
 
-# ---- Cleanup ----
-deleteFile: tempInput$
-deleteFile: tempOutput$
-
-selectObject: result
-Play
+# Clean up and finish
+@cleanUpFiles
 appendInfoLine: ""
-appendInfoLine: "Done. New object: ", soundName$ + "_spatial"
+appendInfoLine: "Done."
+selectObject: resultSound
+Play

@@ -2,7 +2,7 @@
 # Praat AudioTools - SelfReflectiveFeedback.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 #
 # Description:
 #   Single-stage self-reflective feedback loop.
@@ -34,19 +34,99 @@ endif
 inputSound = selected("Sound")
 inputName$ = selected$("Sound")
 
-# ---- PATHS ----
-# pythonScript$, stageScript$, reflectDir$: all via preferencesDirectory$ —
-# absolute, works on all platforms regardless of where this file is placed.
-pythonScript$ = preferencesDirectory$ + "/plugin_AudioTools/py/reflect_analyze.py"
-reflectDir$   = preferencesDirectory$ + "/plugin_AudioTools/_reflect_tmp/"
-pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
-
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find: " + pythonScript$
+# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
+# ---- PATHS & UNIFIED CROSS-PLATFORM FIX ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
+pythonScript$ = pluginDir$ + "py/reflect_analyze.py"
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/reflect_analyze.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: reflect_analyze.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+paramsInFile$  = tempDir$ + "temp_refl_params_in.json"
+paramsOutJson$ = tempDir$ + "temp_refl_params_out.json"
+paramsOutTxt$  = tempDir$ + "temp_refl_params_out.txt"
+statusFile$    = tempDir$ + "temp_refl_status.ok"
+errorFile$     = tempDir$ + "temp_refl_error.txt"
+logFile$       = tempDir$ + "temp_refl_log.txt"
+probePy$       = tempDir$ + "temp_refl_probe.py"
+probeMarker$   = tempDir$ + "temp_refl_probe.ok"
+
+pythonScriptJ$  = replace_regex$(pythonScript$, "\\", "/", 0)
+paramsInFileJ$  = replace_regex$(paramsInFile$, "\\", "/", 0)
+paramsOutJsonJ$ = replace_regex$(paramsOutJson$, "\\", "/", 0)
+paramsOutTxtJ$  = replace_regex$(paramsOutTxt$, "\\", "/", 0)
+statusFileJ$    = replace_regex$(statusFile$, "\\", "/", 0)
+errorFileJ$     = replace_regex$(errorFile$, "\\", "/", 0)
+logFileJ$       = replace_regex$(logFile$, "\\", "/", 0)
+probePyJ$       = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$   = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(paramsInFile$)
+        deleteFile: paramsInFile$
+    endif
+    if fileReadable(paramsOutJson$)
+        deleteFile: paramsOutJson$
+    endif
+    if fileReadable(paramsOutTxt$)
+        deleteFile: paramsOutTxt$
+    endif
+    if fileReadable(statusFile$)
+        deleteFile: statusFile$
+    endif
+    if fileReadable(errorFile$)
+        deleteFile: errorFile$
+    endif
+    if fileReadable(logFile$)
+        deleteFile: logFile$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+    for .i from 1 to 50
+        .w$ = tempDir$ + "temp_refl_preview_" + string$(.i) + ".wav"
+        .m$ = tempDir$ + "temp_refl_metrics_" + string$(.i) + ".json"
+        if fileReadable(.w$)
+            deleteFile: .w$
+        endif
+        if fileReadable(.m$)
+            deleteFile: .m$
+        endif
+    endfor
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Self-Reflective Feedback v1.0
+form Self-Reflective Feedback v1.1
     comment ── Stage ──────────────────────────────────────────────────
     optionmenu Stage: 1
         option MDS Space Navigator
@@ -65,7 +145,7 @@ endform
 
 # ---- STAGE SETUP ----
 if stage = 1
-    stageScript$ = pluginDir$ + "Time & Granular/MDS Space Navigator.praat"
+    stageScript$ = pluginDir$ + "Time & Granular/MDS_Space_Navigator.praat"
     stageName$   = "mds"
     stageLabel$  = "MDS Space Navigator"
 elsif stage = 2
@@ -82,29 +162,32 @@ elsif stage = 4
     stageLabel$  = "4-Channel Canon"
 endif
 
+stageScript$ = replace_regex$(stageScript$, "\\", "/", 0)
+
 if not fileReadable(stageScript$)
     exitScript: "Stage script not found: " + stageScript$
 endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Self-Reflective Feedback v1.0 ==="
+writeInfoLine:  "=== Self-Reflective Feedback v1.1 ==="
 appendInfoLine: "Input:      ", inputName$
 appendInfoLine: "Stage:      ", stageLabel$
 appendInfoLine: "Max iter:   ", max_iter, "  |  Default iter: ", default_iter
 appendInfoLine: "Tolerance:  ", fixed$(tolerance, 3)
 appendInfoLine: ""
 
-# ---- PYTHON AUTO-DETECTION ----
-appendInfoLine: "Detecting Python..."
-probeMarker$ = reflectDir$ + "reflect_pyprobe.ok"
+# ===========================================================================
+# Stage 0 — Early Python Dependency Probe
+# ===========================================================================
+appendInfoLine: "[0/...] Detecting Python dependencies..."
 
-# Ensure temp dir exists first (needed for probe marker)
-if windows
-    runSystem_nocheck: "mkdir """ + reflectDir$ + """ 2>NUL"
-else
-    runSystem_nocheck: "mkdir -p """ + reflectDir$ + """"
-endif
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import numpy, scipy, soundfile"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
 
 if windows
     nCandidates = 4
@@ -120,7 +203,6 @@ else
     candidate4$ = ""
 endif
 
-pythonCmd$ = ""
 for iCand from 1 to nCandidates
     if iCand = 1
         tryCmd$ = candidate1$
@@ -131,45 +213,35 @@ for iCand from 1 to nCandidates
     else
         tryCmd$ = candidate4$
     endif
+
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
-    probeCode$ = "import numpy,scipy,soundfile; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+
     if fileReadable(probeMarker$)
         pythonCmd$ = tryCmd$
         deleteFile: probeMarker$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
+        iCand = nCandidates + 1 ; Break early
     endif
 endfor
 
+deleteFile: probePy$
+
 if pythonCmd$ = ""
-    exitScript: "Cannot find Python with required packages." + newline$
-        ... + "  pip install numpy scipy soundfile"
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile"
 endif
+
 appendInfoLine: "  Python found: ", pythonCmd$
 appendInfoLine: ""
 
-# ---- FIXED TEMP FILE PATHS ----
-paramsInFile$  = reflectDir$ + "params_in.json"
-paramsOutJson$ = reflectDir$ + "params_out.json"
-paramsOutTxt$  = reflectDir$ + "params_out.txt"
-statusFile$    = reflectDir$ + "reflect_status.ok"
-errorFile$     = reflectDir$ + "reflect_error.txt"
-logFile$       = reflectDir$ + "reflect_log.txt"
-
 # ---- INITIAL PARAMETERS (stage defaults) ----
 if stage = 1
-    # MDS Space Navigator — reflective params (adjusted by Python)
-    # Silence_threshold_dB, Minimum_sounding_interval_s, Silence_between_words_s
     p_silence_threshold = 25.0
     p_min_sounding      = 0.10
     p_silence_between   = 0.10
-    # Fixed constants (not adjusted by reflection)
-    # Minimum_silent_interval_s, Similarity_metric, Max_formant_Hz,
-    # Number_of_formants, Number_of_MFCC_Coefficients, Ordering, Play_result
     p_min_silent        = 0.10
     p_similarity_metric$ = "Formants (Vowel Quality)"
     p_max_formant       = 5500
@@ -178,14 +250,9 @@ if stage = 1
     p_ordering$          = "Nearest neighbor chain (most similar next)"
     p_play_result       = 0
 elsif stage = 2
-    # Spectral Freeze & Glitch — reflective params (adjusted by Python)
-    # Freeze_points, Freeze_repeat_divisor, Artifact_amplitude
     p_freeze_points   = 12
     p_freeze_rep_div  = 3.0
     p_artifact_amp    = 0.10
-    # Fixed constants
-    # Preset, Freeze_duration_divisor, Freeze_length_min_factor,
-    # Freeze_length_max_factor, Scale_peak, Draw_visualization, Play_result
     p_preset$              = "Custom"
     p_freeze_dur_div       = 25.0
     p_freeze_len_min       = 0.5
@@ -194,15 +261,9 @@ elsif stage = 2
     p_draw_visualization   = 0
     p_play_result_freeze   = 0
 elsif stage = 3
-    # Crystalline Cascade — reflective params (adjusted by Python)
-    # Modulation_depth, Convolution_mix, Wet_dry_percent
     p_mod_depth        = 0.6
     p_conv_mix         = 0.35
     p_wet_dry          = 50.0
-    # Fixed constants
-    # Preset, Tail_duration_s, Poisson_density, Pulse_width, Pulse_period,
-    # Exponential_base, Modulation_frequency, Layer2_amplitude,
-    # Scale_peak, Draw_visualization, Play_result
     p_cascade_preset$  = "Custom (use settings below)"
     p_tail_dur         = 2.0
     p_poisson          = 800
@@ -215,8 +276,6 @@ elsif stage = 3
     p_cascade_viz      = 0
     p_cascade_play     = 0
 elsif stage = 4
-    # 4-Channel Canon — reflective params (adjusted by Python)
-    # Shift_percent_1..4, Delay_2..4 (Delay_1 always 0)
     p_shift1    = 0.0
     p_shift2    = 6.0
     p_shift3    = 12.0
@@ -225,8 +284,6 @@ elsif stage = 4
     p_delay2    = 0.3
     p_delay3    = 0.6
     p_delay4    = 0.9
-    # Fixed constants
-    # Preset, Resample_frequency, Fade_time, Output_format, Draw_visualization, Play_result
     p_canon_preset$    = "Custom (use values below)"
     p_resample         = 44100
     p_fade_time        = 0.01
@@ -250,11 +307,6 @@ while iter < max_iter and stopFlag = 0
     selectObject: inputSound
 
     if stage = 1
-        # Args: Silence_threshold_dB, Minimum_silent_interval_s,
-        #       Minimum_sounding_interval_s, Similarity_metric,
-        #       Max_formant_Hz, Number_of_formants,
-        #       Number_of_MFCC_Coefficients, Ordering,
-        #       Silence_between_words_s, Play_result
         runScript: stageScript$,
             ... p_silence_threshold,
             ... p_min_silent,
@@ -267,10 +319,6 @@ while iter < max_iter and stopFlag = 0
             ... p_silence_between,
             ... p_play_result
     elsif stage = 2
-        # Args: Preset, Freeze_points, Freeze_duration_divisor,
-        #       Freeze_length_min_factor, Freeze_length_max_factor,
-        #       Freeze_repeat_divisor, Artifact_amplitude,
-        #       Scale_peak, Draw_visualization, Play_result
         runScript: stageScript$,
             ... p_preset$,
             ... p_freeze_points,
@@ -283,10 +331,6 @@ while iter < max_iter and stopFlag = 0
             ... p_draw_visualization,
             ... p_play_result_freeze
     elsif stage = 3
-        # Args: Preset, Tail_duration_s, Poisson_density, Pulse_width,
-        #       Pulse_period, Exponential_base, Modulation_depth,
-        #       Modulation_frequency, Convolution_mix, Layer2_amplitude,
-        #       Wet_dry_percent, Scale_peak, Draw_visualization, Play_result
         runScript: stageScript$,
             ... p_cascade_preset$,
             ... p_tail_dur,
@@ -303,9 +347,6 @@ while iter < max_iter and stopFlag = 0
             ... p_cascade_viz,
             ... p_cascade_play
     elsif stage = 4
-        # Args: Preset, Shift_percent_1..4, Delay_1..4,
-        #       Resample_frequency, Fade_time,
-        #       Output_format, Draw_visualization, Play_result
         runScript: stageScript$,
             ... p_canon_preset$,
             ... p_shift1,
@@ -323,8 +364,6 @@ while iter < max_iter and stopFlag = 0
             ... p_canon_play
     endif
 
-    # MDS appends "_reordered"; Freeze appends "_glitch";
-    # Cascade appends "_cascade_Custom"; Canon appends "_canon4ch_Custom".
     if stage = 1
         expectedName$ = inputName$ + "_reordered"
     elsif stage = 2
@@ -339,12 +378,16 @@ while iter < max_iter and stopFlag = 0
     appendInfoLine: "      Output: ", selected$("Sound")
 
     # ── Export preview WAV ─────────────────────────────────────────────
-    previewWav$  = reflectDir$ + "preview_" + string$(iter) + ".wav"
-    metricsFile$ = reflectDir$ + "metrics_" + string$(iter) + ".json"
+    previewWav$  = tempDir$ + "temp_refl_preview_" + string$(iter) + ".wav"
+    metricsFile$ = tempDir$ + "temp_refl_metrics_" + string$(iter) + ".json"
     prevMetricsFile$ = ""
     if iter > 1
-        prevMetricsFile$ = reflectDir$ + "metrics_" + string$(iter - 1) + ".json"
+        prevMetricsFile$ = tempDir$ + "temp_refl_metrics_" + string$(iter - 1) + ".json"
     endif
+
+    previewWavJ$  = replace_regex$(previewWav$, "\\", "/", 0)
+    metricsFileJ$ = replace_regex$(metricsFile$, "\\", "/", 0)
+    prevMetricsFileJ$ = replace_regex$(prevMetricsFile$, "\\", "/", 0)
 
     selectObject: newSound
     Save as WAV file: previewWav$
@@ -416,9 +459,9 @@ while iter < max_iter and stopFlag = 0
         json$ = json$ + """shift_percent_2"": " + fixed$(p_shift2, 6) + ","
         json$ = json$ + """shift_percent_3"": " + fixed$(p_shift3, 6) + ","
         json$ = json$ + """shift_percent_4"": " + fixed$(p_shift4, 6) + ","
-        json$ = json$ + """delay_2"": "          + fixed$(p_delay2, 6) + ","
-        json$ = json$ + """delay_3"": "          + fixed$(p_delay3, 6) + ","
-        json$ = json$ + """delay_4"": "          + fixed$(p_delay4, 6)
+        json$ = json$ + """delay_2"": "         + fixed$(p_delay2, 6) + ","
+        json$ = json$ + """delay_3"": "         + fixed$(p_delay3, 6) + ","
+        json$ = json$ + """delay_4"": "         + fixed$(p_delay4, 6)
         json$ = json$ + "}}"
     endif
     writeFile: paramsInFile$, json$
@@ -432,18 +475,18 @@ while iter < max_iter and stopFlag = 0
         deleteFile: errorFile$
     endif
 
-    pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
-        ... + " """ + previewWav$    + """"
+    pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
+        ... + " """ + previewWavJ$     + """"
         ... + " "   + stageName$
-        ... + " """ + paramsInFile$  + """"
-        ... + " """ + paramsOutJson$ + """"
-        ... + " """ + paramsOutTxt$  + """"
-        ... + " --metrics-out """ + metricsFile$ + """"
-        ... + " --status-file """ + statusFile$  + """"
+        ... + " """ + paramsInFileJ$   + """"
+        ... + " """ + paramsOutJsonJ$  + """"
+        ... + " """ + paramsOutTxtJ$   + """"
+        ... + " --metrics-out """ + metricsFileJ$ + """"
+        ... + " --status-file """ + statusFileJ$  + """"
 
-    if prevMetricsFile$ <> ""
+    if prevMetricsFileJ$ <> ""
         if fileReadable(prevMetricsFile$)
-            pythonCall$ = pythonCall$ + " --prev-metrics """ + prevMetricsFile$ + """"
+            pythonCall$ = pythonCall$ + " --prev-metrics """ + prevMetricsFileJ$ + """"
         endif
     endif
 
@@ -452,12 +495,10 @@ while iter < max_iter and stopFlag = 0
         appendInfoLine: "      Cmd: ", pythonCall$
     endif
 
-    # Capture both stdout (log) and stderr (errors)
-    pythonCall$ = pythonCall$ + " > """ + logFile$ + """ 2> """ + errorFile$ + """"
+    pythonCall$ = pythonCall$ + " > """ + logFileJ$ + """ 2> """ + errorFileJ$ + """"
 
     runSystem_nocheck: pythonCall$
 
-    # Show Python log line in info window
     if fileReadable(logFile$)
         logText$ = readFile$(logFile$)
         if logText$ <> ""
@@ -466,7 +507,6 @@ while iter < max_iter and stopFlag = 0
         deleteFile: logFile$
     endif
 
-    # Check success
     if not fileReadable(statusFile$)
         errMsg$ = "(no error captured)"
         if fileReadable(errorFile$)
@@ -539,20 +579,17 @@ while iter < max_iter and stopFlag = 0
         endif
     endif
 
-    # ── Play preview if requested ──────────────────────────────────────
     if play_after_each_iter
         selectObject: newSound
         Play
     endif
 
-    # ── Remove previous iteration's intermediate Sound (not input) ────
     if hasPrevSound = 1
         removeObject: prevIterSound
     endif
     prevIterSound = newSound
     hasPrevSound  = 1
 
-    # ── Interrupt dialog (after default_iter auto-iterations) ─────────
     if iter >= default_iter and stopFlag = 0 and iter < max_iter
         beginPause: "Iteration " + string$(iter) + "/" + string$(max_iter) + " complete"
             comment: "Parameters updated. Choose next action:"
@@ -567,9 +604,6 @@ while iter < max_iter and stopFlag = 0
             stopFlag = 1
             appendInfoLine: "  User stopped at iteration ", iter, "."
         endif
-        # Options 1 and 2 both continue the while loop;
-        # "Iterate once more" shows the dialog again next iteration too,
-        # since iter will still be >= default_iter.
     endif
 
 endwhile
@@ -591,48 +625,7 @@ endif
 appendInfoLine: "Stop reason: ", stopReason$
 
 # ---- CLEANUP TEMP DIRECTORY ----
-appendInfoLine: ""
-appendInfoLine: "Cleaning up temp files..."
-
-# Delete known per-iteration files (preview WAVs + metrics JSONs)
-for cleanIter from 1 to max_iter
-    cleanWav$     = reflectDir$ + "preview_"  + string$(cleanIter) + ".wav"
-    cleanMetrics$ = reflectDir$ + "metrics_"  + string$(cleanIter) + ".json"
-    if fileReadable(cleanWav$)
-        deleteFile: cleanWav$
-    endif
-    if fileReadable(cleanMetrics$)
-        deleteFile: cleanMetrics$
-    endif
-endfor
-
-# Delete fixed temp files (params, status, log, error)
-for cleanIdx from 1 to 6
-    if cleanIdx = 1
-        cleanFile$ = paramsInFile$
-    elsif cleanIdx = 2
-        cleanFile$ = paramsOutJson$
-    elsif cleanIdx = 3
-        cleanFile$ = paramsOutTxt$
-    elsif cleanIdx = 4
-        cleanFile$ = statusFile$
-    elsif cleanIdx = 5
-        cleanFile$ = errorFile$
-    elsif cleanIdx = 6
-        cleanFile$ = logFile$
-    endif
-    if fileReadable(cleanFile$)
-        deleteFile: cleanFile$
-    endif
-endfor
-
-# Remove the temp directory itself (now empty)
-if windows
-    runSystem_nocheck: "rmdir """ + reflectDir$ + """ 2>NUL"
-else
-    runSystem_nocheck: "rmdir """ + reflectDir$ + """"
-endif
-appendInfoLine: "  Temp folder removed: ", reflectDir$
+@cleanUpTempFiles
 
 # ============================================================
 # Procedure: extract line N (1-indexed) from a newline-delimited string
@@ -651,7 +644,6 @@ procedure getLine: .text$, .n
                 .current$ = mid$(.current$, .nl + 1, length(.current$))
             endif
         else
-            # Last line with no trailing newline
             if .i = .n
                 .result$ = .current$
             endif

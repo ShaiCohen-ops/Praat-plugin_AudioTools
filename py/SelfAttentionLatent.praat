@@ -1,7 +1,15 @@
-# SelfAttentionLatent.praat
-# Self-Attention Latent Navigation Engine
-# Part of Praat AudioTools plugin
-# Author: Shai Cohen, Department of Music, Bar-Ilan University
+# ============================================================
+# Praat AudioTools - SelfAttentionLatent.praat
+# Author: Shai Cohen
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 1.1 (2026) - Unified Cross-Platform Version
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Self-Attention Latent Navigation Engine
+#   Part of Praat AudioTools plugin
 #
 # Pipeline:
 #   1. User selects audio file
@@ -12,6 +20,7 @@
 #
 # No plan.csv is ever written.
 # Only output.wav persists after execution.
+# ============================================================
 
 # ---- INPUT CHECK ----
 if numberOfSelected("Sound") <> 1
@@ -21,7 +30,81 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-form Self-Attention Latent Navigation
+# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
+# ---- PATHS & UNIFIED CROSS-PLATFORM FIX ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
+pythonScript$ = pluginDir$ + "py/self_attention_latent.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/self_attention_latent.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: self_attention_latent.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+tempWav$     = tempDir$ + "temp_sal_input.wav"
+eventsCSV$   = tempDir$ + "temp_sal_events.csv"
+output_wav$  = tempDir$ + "temp_sal_output.wav"
+stats_txt$   = tempDir$ + "temp_sal_stats.txt"
+probePy$     = tempDir$ + "temp_sal_probe.py"
+probeMarker$ = tempDir$ + "temp_sal_probe.ok"
+
+# Enforce forward slashes for all temporary paths passed to python
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
+tempWavJ$      = replace_regex$(tempWav$, "\\", "/", 0)
+eventsCSVJ$    = replace_regex$(eventsCSV$, "\\", "/", 0)
+output_wavJ$   = replace_regex$(output_wav$, "\\", "/", 0)
+stats_txtJ$    = replace_regex$(stats_txt$, "\\", "/", 0)
+probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempWav$)
+        deleteFile: tempWav$
+    endif
+    if fileReadable(eventsCSV$)
+        deleteFile: eventsCSV$
+    endif
+    if fileReadable(output_wav$)
+        deleteFile: output_wav$
+    endif
+    if fileReadable(stats_txt$)
+        deleteFile: stats_txt$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
+# ---- FORM ----
+form Self-Attention Latent Navigation v1.1
     comment ── Preset ───────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom
@@ -76,7 +159,6 @@ endform
 
 # ── Presets ────────────────────────────────────────────────────────────────
 if preset = 2
-    # Gentle drift — subtle, slow evolution, pitch preserved
     segmentation_method  = 1
     silence_threshold    = 25.0
     min_event_duration   = 0.05
@@ -93,7 +175,6 @@ if preset = 2
     normalize_mode       = 3
     presetName$          = "GentleDrift"
 elsif preset = 3
-    # Vocal texture — fine grain, high attention, f0 preserved
     segmentation_method  = 1
     silence_threshold    = 20.0
     min_event_duration   = 0.03
@@ -110,7 +191,6 @@ elsif preset = 3
     normalize_mode       = 3
     presetName$          = "VocalTexture"
 elsif preset = 4
-    # Fragmented echo — short events, many steps, scattered feel
     segmentation_method  = 1
     silence_threshold    = 15.0
     min_event_duration   = 0.02
@@ -127,7 +207,6 @@ elsif preset = 4
     normalize_mode       = 3
     presetName$          = "FragmentedEcho"
 elsif preset = 5
-    # Deep mutation — large latent, high heads, strong morphing
     segmentation_method  = 1
     silence_threshold    = 25.0
     min_event_duration   = 0.05
@@ -144,7 +223,6 @@ elsif preset = 5
     normalize_mode       = 3
     presetName$          = "DeepMutation"
 elsif preset = 6
-    # Rhythmic grid — equal intervals, tight jitter, pulse feel
     segmentation_method  = 2
     silence_threshold    = 25.0
     min_event_duration   = 0.05
@@ -161,7 +239,6 @@ elsif preset = 6
     normalize_mode       = 2
     presetName$          = "RhythmicGrid"
 elsif preset = 7
-    # Spectral smear — spectral envelope mode, slow large steps
     segmentation_method  = 1
     silence_threshold    = 30.0
     min_event_duration   = 0.1
@@ -178,7 +255,6 @@ elsif preset = 7
     normalize_mode       = 3
     presetName$          = "SpectralSmear"
 elsif preset = 8
-    # Chaotic plasma — max variation, large latent, high jitter
     segmentation_method  = 1
     silence_threshold    = 10.0
     min_event_duration   = 0.02
@@ -197,27 +273,6 @@ elsif preset = 8
 else
     presetName$ = "Custom"
 endif
-
-# ── Resolve paths ─────────────────────────────────────────────────────────
-sep$ = "/"
-pythonExe$ = "python3"
-if windows
-    sep$ = "\"
-    pythonExe$ = "python"
-endif
-
-pluginDir$ = preferencesDirectory$ + sep$ + "plugin_AudioTools" + sep$
-
-input_audio$ = pluginDir$ + soundName$ + ".wav"
-output_wav$  = pluginDir$ + soundName$ + "_sal_out.wav"
-stats_txt$   = pluginDir$ + soundName$ + "_sal_stats.txt"
-
-pyScript$ = pluginDir$ + "py" + sep$ + "self_attention_latent.py"
-
-# Temp files go inside pluginDir (same as ThermodynamicTransform)
-tempPrefix$ = "temp_sal_"
-tempWav$    = pluginDir$ + tempPrefix$ + "input.wav"
-eventsCSV$  = pluginDir$ + tempPrefix$ + "events.csv"
 
 # ── pitch mode string ──────────────────────────────────────────────────────
 if pitch_mode = 1
@@ -255,14 +310,73 @@ if latent_size > 32
 endif
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Step 1 — Load / prepare the Sound
+# Stage 0 — Early Python Dependency Probe
 # ═════════════════════════════════════════════════════════════════════════════
 clearinfo
 appendInfoLine: "=== Self-Attention Latent Navigation ==="
 appendInfoLine: "Input:  ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "SAL: Loading audio..."
+appendInfoLine: "[0/4] Detecting Python dependencies..."
+
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import numpy, scipy, soundfile"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
+
+if windows
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
+endif
+
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        iCand = nCandidates + 1 ; Break early
+    endif
+endfor
+
+deleteFile: probePy$
+
+if pythonCmd$ = ""
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Stage 1 — Load / prepare the Sound
+# ═════════════════════════════════════════════════════════════════════════════
+appendInfoLine: "[1/4] Loading and preparing audio..."
 
 selectObject: sound
 dur = Get total duration
@@ -271,9 +385,9 @@ dur = Get total duration
 Save as WAV file: tempWav$
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Step 2 — Segmentation → events.csv
+# Stage 2 — Segmentation → events.csv
 # ═════════════════════════════════════════════════════════════════════════════
-appendInfoLine: "SAL: Segmenting audio..."
+appendInfoLine: "[2/4] Segmenting audio..."
 
 selectObject: sound
 tg = To TextGrid (silences): 100, 0, -silence_threshold, min_silence_duration, min_event_duration, "silent", "sounding"
@@ -327,20 +441,20 @@ endif
 appendInfoLine: "  Events: " + string$(n_events)
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Step 3 — Call Python
+# Stage 3 — Call Python
 # ═════════════════════════════════════════════════════════════════════════════
-appendInfoLine: "SAL: Running Python engine..."
+appendInfoLine: "[3/4] Running Python engine..."
 
 targetDurArg$ = ""
 if target_duration > 0
     targetDurArg$ = " --duration " + string$(target_duration)
 endif
 
-cmd$ = pythonExe$ + " """ + pyScript$ + """"
-    ... + " """ + tempWav$ + """"
-    ... + " """ + eventsCSV$ + """"
-    ... + " """ + output_wav$ + """"
-    ... + " """ + stats_txt$ + """"
+cmd$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
+    ... + " """ + tempWavJ$ + """"
+    ... + " """ + eventsCSVJ$ + """"
+    ... + " """ + output_wavJ$ + """"
+    ... + " """ + stats_txtJ$ + """"
     ... + " --latent_size " + string$(latent_size)
     ... + " --seed " + string$(random_seed)
     ... + " --attn_heads " + string$(attention_heads)
@@ -354,11 +468,18 @@ cmd$ = pythonExe$ + " """ + pyScript$ + """"
     ... + targetDurArg$
     ... + " --cleanup"
 
-runSystem: cmd$
+runSystem_nocheck: cmd$
+
+if not fileReadable(stats_txt$)
+    @cleanUpTempFiles
+    exitScript: "Python engine failed. Check terminal for error details."
+endif
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Step 4 — Read stats
+# Stage 4 — Read stats & Load Output
 # ═════════════════════════════════════════════════════════════════════════════
+appendInfoLine: "[4/4] Finalizing results..."
+
 # Stats parsing helper
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
@@ -427,26 +548,21 @@ if fileReadable(stats_txt$)
     settleStat$ = parseStatLine.result$
 endif
 
-# ═════════════════════════════════════════════════════════════════════════════
-# Step 5 — Load output + cleanup disk files
-# ═════════════════════════════════════════════════════════════════════════════
 haveOutput = 0
 if load_output and fileReadable(output_wav$)
     outSound = Read from file: output_wav$
     Rename: soundName$ + "_sal"
-    appendInfoLine: "SAL: Loaded output as: " + soundName$ + "_sal"
+    appendInfoLine: "  Loaded output as: " + soundName$ + "_sal"
     haveOutput = 1
 endif
 
-# Delete output files from disk — result lives as Praat object only
-deleteFile: output_wav$
-deleteFile: stats_txt$
+@cleanUpTempFiles
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Step 6 — Visualization
+# Visualization
 # ═════════════════════════════════════════════════════════════════════════════
 if show_visualization
-    appendInfoLine: "SAL: Drawing visualization..."
+    appendInfoLine: "  Drawing visualization..."
 
     Erase all
     Select outer viewport: 0, 8, 0, 8
@@ -611,17 +727,17 @@ if show_visualization
     Font size: 10
     Colour: "Black"
 else
-    appendInfoLine: "SAL: Visualization skipped."
+    appendInfoLine: "  Visualization skipped."
 endif
 
 # ═════════════════════════════════════════════════════════════════════════════
-# Step 7 — Text log
+# Text log
 # ═════════════════════════════════════════════════════════════════════════════
 appendInfoLine: ""
 appendInfoLine: "══════════════════════════════════════════"
 appendInfoLine: "Self-Attention Latent — Run Summary"
 appendInfoLine: "══════════════════════════════════════════"
-appendInfoLine: "Input:       ", input_audio$
+appendInfoLine: "Input:       ", soundName$
 appendInfoLine: "Preset:      ", presetName$
 appendInfoLine: "Output:      ", soundName$, "_sal (Praat object)"
 appendInfoLine: "Events:      ", nEventsStat$

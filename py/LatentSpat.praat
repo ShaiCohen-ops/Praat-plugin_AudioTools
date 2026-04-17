@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) — Unified Cross-Platform
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,7 +22,7 @@
 #   Distance models: Amplitude, +LowPass, +LowPass+Reverb
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,21 +36,78 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/latent_spat.py"
-tempInput$   = pluginDir$ + "temp_latspat_input.wav"
-tempCSV$     = pluginDir$ + "temp_latspat_events.csv"
-tempOutput$  = pluginDir$ + "temp_latspat_output.wav"
-tempStats$   = pluginDir$ + "temp_latspat_stats.txt"
-
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
+# ---- PATHS & UNIFIED CROSS-PLATFORM FIX ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
+pythonScript$ = pluginDir$ + "py/latent_spat.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/latent_spat.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: latent_spat.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempInput$   = temporaryDirectory$ + "/temp_latspat_input.wav"
+tempCSV$     = temporaryDirectory$ + "/temp_latspat_events.csv"
+tempOutput$  = temporaryDirectory$ + "/temp_latspat_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_latspat_stats.txt"
+probePy$     = temporaryDirectory$ + "/temp_latspat_probe.py"
+probeMarker$ = temporaryDirectory$ + "/temp_latspat_probe.ok"
+
+# Enforce forward slashes for all temporary paths passed to python
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
+tempInputJ$    = replace_regex$(tempInput$, "\\", "/", 0)
+tempCSVJ$      = replace_regex$(tempCSV$, "\\", "/", 0)
+tempOutputJ$   = replace_regex$(tempOutput$, "\\", "/", 0)
+tempStatsJ$    = replace_regex$(tempStats$, "\\", "/", 0)
+probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Latent Spat v1.0 — Agent-Based Spatialization
+form Latent Spat v1.1 — Agent-Based Spatialization
     optionmenu Preset: 1
         option Custom
         option Stereo duo
@@ -191,7 +248,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Spat v1.0 — Agent-Based Spatialization ==="
+writeInfoLine:  "=== Latent Spat v1.1 — Agent-Based Spatialization ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -221,10 +278,36 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: 
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 1 — Event Segmentation
+# Stage 1 — Detect Python Dependencies
 # ===========================================================================
+appendInfoLine: "[1/5] Detecting Python dependencies..."
 
-appendInfoLine: "[1/5] Segmenting events..."
+# File-Based Python Probing (safest cross-platform approach)
+pyCode$ = "import sys" + newline$
+pyCode$ = pyCode$ + "try:" + newline$
+pyCode$ = pyCode$ + "    import numpy, scipy, soundfile" + newline$
+pyCode$ = pyCode$ + "    with open('" + probeMarkerJ$ + "', 'w') as f:" + newline$
+pyCode$ = pyCode$ + "        f.write('ok')" + newline$
+pyCode$ = pyCode$ + "except Exception as e:" + newline$
+pyCode$ = pyCode$ + "    print('Missing dependencies:', e)" + newline$
+writeFile: probePy$, pyCode$
+
+probeCmd$ = pythonCmd$ + " """ + probePyJ$ + """"
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+deleteFile: probeMarker$
+deleteFile: probePy$
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# Stage 2 — Event Segmentation
+# ===========================================================================
+appendInfoLine: "[2/5] Segmenting events..."
 
 minEventDur = 0.200
 maxEventDur = 3.000
@@ -337,13 +420,11 @@ endif
 appendInfoLine: "  Found ", nEvents, " events"
 
 # ===========================================================================
-# Stage 2 — Extract Features + Export
+# Stage 3 — Extract Features + Export
 # ===========================================================================
+appendInfoLine: "[3/5] Extracting features..."
 
-appendInfoLine: "[2/5] Extracting features..."
-
-Create Table with column names: "eventFeatures", nEvents,
-    ... "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
+Create Table with column names: "eventFeatures", nEvents, "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
@@ -410,7 +491,7 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
-appendInfoLine: "[3/5] Exporting temp files..."
+appendInfoLine: "  Exporting temp files..."
 selectObject: sound
 Save as WAV file: tempInput$
 selectObject: eventTable
@@ -420,70 +501,16 @@ removeObject: analysisMono, pitchObj, harmObj, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
 # ===========================================================================
-# Stage 3 — Call Python
+# Stage 4 — Call Python Engine
 # ===========================================================================
-
 appendInfoLine: "[4/5] Running Python engine..."
 appendInfoLine: "  (Training AE + ", number_of_agents, "-voice counterpoint → ", spatName$, " spatialization)"
 
-# ---- Python detection ----
-probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "  pip install numpy soundfile scipy"
-endif
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " """ + tempInput$ + """"
-    ... + " """ + tempCSV$ + """"
-    ... + " """ + tempOutput$ + """"
-    ... + " """ + tempStats$ + """"
+pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
+    ... + " """ + tempInputJ$ + """"
+    ... + " """ + tempCSVJ$ + """"
+    ... + " """ + tempOutputJ$ + """"
+    ... + " """ + tempStatsJ$ + """"
     ... + " " + string$(number_of_agents)
     ... + " " + string$(latent_size)
     ... + " " + fixed$(counterpoint_rigidity, 4)
@@ -494,21 +521,16 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + fixed$(reverb_amount, 4)
     ... + " " + string$(seed)
 
+runSystem_nocheck: pythonCall$
+
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python spatialization engine failed." + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python spatialization engine failed." + newline$ + "Check terminal for error details."
 endif
 
 # ===========================================================================
-# Import Result
+# Stage 5 — Import Result
 # ===========================================================================
-
 appendInfoLine: "[5/5] Importing result..."
 
 Read from file: tempOutput$
@@ -523,7 +545,6 @@ nChOut = Get number of channels
 # ===========================================================================
 # Read Stats
 # ===========================================================================
-
 nEvStat$ = "?"
 nAgentsStat$ = "?"
 nChannelsStat$ = "?"
@@ -677,19 +698,16 @@ if draw_visualization
 
     Axes: -1.5, 1.5, -1.5, 1.5
 
-    # Draw listener circle
     Paint rectangle: "{0.97, 0.97, 0.98}", -1.5, 1.5, -1.5, 1.5
     Colour: "{0.85, 0.85, 0.90}"
     Draw circle: 0, 0, 1.0
     Colour: "{0.9, 0.9, 0.92}"
     Draw circle: 0, 0, 0.5
 
-    # Draw listener at center
     Colour: "Black"
     Font size: 7
     Text: 0, "centre", 0, "half", "+"
 
-    # Draw speakers
     if spatial_format = 1
         nSpk = 2
         spkAz_1 = 330
@@ -724,14 +742,12 @@ if draw_visualization
     Font size: 6
     for iSpk from 1 to nSpk
         thisAz = spkAz_'iSpk'
-        # Convert azimuth to x,y (0=front=up, clockwise)
         azRad = (90 - thisAz) * pi / 180
         sx = 1.2 * cos(azRad)
         sy = 1.2 * sin(azRad)
         Draw rectangle: sx - 0.06, sx + 0.06, sy - 0.06, sy + 0.06
     endfor
 
-    # Draw agent positions (use mean azimuth and distance)
     agCol_0$ = "{0.2, 0.4, 0.7}"
     agCol_1$ = "{0.7, 0.3, 0.2}"
     agCol_2$ = "{0.3, 0.6, 0.3}"
@@ -751,7 +767,6 @@ if draw_visualization
         thisCol$ = agCol_'iA'$
         thisSymb$ = agSymb_'iA'$
 
-        # Parse azimuth range to get midpoint
         azRangeStr$ = agAzRange_'iA'$
         azTravelStr$ = agAzTravel_'iA'$
         distStr$ = agMeanDist_'iA'$
@@ -762,12 +777,10 @@ if draw_visualization
             agDist = 0.5
         endif
 
-        # Use actual mean azimuth from Python spatial trajectories
         azStr$ = agMeanAz_'iA'$
         if azStr$ <> "?"
             estAz = number(azStr$)
         else
-            # Fallback to profile-based estimate
             if iA mod 3 = 0
                 estAz = 150
             elsif iA mod 3 = 1
@@ -812,11 +825,8 @@ if draw_visualization
         Colour: thisCol$
         Font size: 6
 
-        line1$ = agProfile_'iA'$ + " | Az range=" + agAzRange_'iA'$ + "°"
-            ... + " | Travel=" + agAzTravel_'iA'$ + "°"
-        line2$ = "  Dist=" + agMeanDist_'iA'$
-            ... + " | Steps=" + agSteps_'iA'$
-            ... + " | Uniq=" + agUnique_'iA'$
+        line1$ = agProfile_'iA'$ + " | Az range=" + agAzRange_'iA'$ + "° | Travel=" + agAzTravel_'iA'$ + "°"
+        line2$ = "  Dist=" + agMeanDist_'iA'$ + " | Steps=" + agSteps_'iA'$ + " | Uniq=" + agUnique_'iA'$
 
         Text: 0.02, "left", yPos, "half", "Agent " + string$(iA) + ": " + line1$
         Text: 0.02, "left", yPos - yStep * 0.4, "half", line2$
@@ -891,16 +901,7 @@ endif
 # ===========================================================================
 # Cleanup
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempCSV$
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
 # ===========================================================================
 # Summary
@@ -915,21 +916,14 @@ appendInfoLine: ""
 
 appendInfoLine: "Agent Spatial Profiles:"
 for iA from 0 to number_of_agents - 1
-    appendInfoLine: "  Agent ", string$(iA), ": ", agProfile_'iA'$,
-        ... " | Az range=", agAzRange_'iA'$, "°",
-        ... " | Travel=", agAzTravel_'iA'$, "°",
-        ... " | Dist=", agMeanDist_'iA'$,
-        ... " | Steps=", agSteps_'iA'$,
-        ... " | Unique=", agUnique_'iA'$
+    appendInfoLine: "  Agent ", string$(iA), ": ", agProfile_'iA'$, " | Az range=", agAzRange_'iA'$, "° | Travel=", agAzTravel_'iA'$, "° | Dist=", agMeanDist_'iA'$, " | Steps=", agSteps_'iA'$, " | Unique=", agUnique_'iA'$
 endfor
 
 appendInfoLine: ""
 appendInfoLine: "Spatial Separation (degrees):"
 for iA from 0 to number_of_agents - 2
     for iB from iA + 1 to number_of_agents - 1
-        appendInfoLine: "  ", string$(iA), " ↔ ", string$(iB),
-            ... ": ", spatSep_'iA'_'iB'$, "°",
-            ... " (unison=", unisonRate_'iA'_'iB'$, ")"
+        appendInfoLine: "  ", string$(iA), " ↔ ", string$(iB), ": ", spatSep_'iA'_'iB'$, "° (unison=", unisonRate_'iA'_'iB'$, ")"
     endfor
 endfor
 

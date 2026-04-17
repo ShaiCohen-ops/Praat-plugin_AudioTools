@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,9 +25,9 @@
 #     - freq     (raw frequency in Hz)
 #
 #   Additional Controls:
-#     - dur       (event spacing)
-#     - amp       (linear amplitude)
-#     - legato    (segment scaling for articulation)
+#     - dur      (event spacing)
+#     - amp      (linear amplitude)
+#     - legato   (segment scaling for articulation)
 #
 #   PraatPbind functions as an offline, deterministic pattern engine
 #   for algorithmic acoustic transformation and experimental composition.
@@ -48,16 +48,64 @@ endif
 sound       = selected("Sound")
 soundName$  = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$      = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$   = pluginDir$ + "py/PraatPbind.py"
-tempAnalysis$   = pluginDir$ + "temp_eventgen_analysis.csv"
-tempPbind$      = pluginDir$ + "temp_eventgen_pbind.txt"
-tempPitchCsv$   = pluginDir$ + "temp_eventgen_pitch.csv"
-tempIntCsv$     = pluginDir$ + "temp_eventgen_intensity.csv"
+# ---- PATHS & UNIFIED CROSS-PLATFORM FIX ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
+pythonScript$ = pluginDir$ + "py/PraatPbind.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/PraatPbind.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: PraatPbind.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+tempAnalysis$  = tempDir$ + "temp_eventgen_analysis.csv"
+tempPbind$     = tempDir$ + "temp_eventgen_pbind.txt"
+tempPitchCsv$  = tempDir$ + "temp_eventgen_pitch.csv"
+tempIntCsv$    = tempDir$ + "temp_eventgen_intensity.csv"
+probePy$       = tempDir$ + "temp_eventgen_probe.py"
+probeMarker$   = tempDir$ + "temp_eventgen_probe.ok"
+
+# Enforce forward slashes for all temporary paths passed to python
+pythonScriptJ$  = replace_regex$(pythonScript$, "\\", "/", 0)
+tempAnalysisJ$  = replace_regex$(tempAnalysis$, "\\", "/", 0)
+tempPbindJ$     = replace_regex$(tempPbind$, "\\", "/", 0)
+tempPitchCsvJ$  = replace_regex$(tempPitchCsv$, "\\", "/", 0)
+tempIntCsvJ$    = replace_regex$(tempIntCsv$, "\\", "/", 0)
+probePyJ$       = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$   = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempAnalysis$)
+        deleteFile: tempAnalysis$
+    endif
+    if fileReadable(tempPbind$)
+        deleteFile: tempPbind$
+    endif
+    if fileReadable(tempPitchCsv$)
+        deleteFile: tempPitchCsv$
+    endif
+    if fileReadable(tempIntCsv$)
+        deleteFile: tempIntCsv$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
 
 # ---- FORM ----
-form EventGen — Pbind Resynthesis
+form EventGen — Pbind Resynthesis v1.1
     optionmenu Preset: 2
         option Custom
         option MajorUp
@@ -105,39 +153,34 @@ else
     presetName$ = "Custom"
 endif
 
+# ---- ORIGINAL STATS ----
+selectObject: sound
+dur = Get total duration
+sr  = Get sampling frequency
+
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== EventGen — Pbind Resynthesis ==="
+writeInfoLine:  "=== EventGen — Pbind Resynthesis v1.1 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: "Pbind:   ", pbind$
 appendInfoLine: "BaseHz:  ", baseHz
 appendInfoLine: "Seed:    ", seed
 appendInfoLine: ""
-
-# ---- ORIGINAL STATS ----
-selectObject: sound
-dur = Get total duration
-sr  = Get sampling frequency
-
 appendInfoLine: "Duration: ", fixed$(dur, 3), " s | SR: ", sr, " Hz"
 appendInfoLine: ""
 
-# ---- STAGE 1: Write analysis CSV ----
-appendInfoLine: "writing analysis csv..."
+# ===========================================================================
+# STAGE 1: Detect Python Dependencies
+# ===========================================================================
+appendInfoLine: "[1/4] Detecting Python..."
 
-deleteFile: tempAnalysis$
-writeFileLine: tempAnalysis$, "duration_seconds,sampling_rate"
-appendFileLine: tempAnalysis$, string$(dur) + "," + string$(sr)
-
-# ---- STAGE 2: Write Pbind text file ----
-deleteFile: tempPbind$
-writeFileLine: tempPbind$, pbind$
-
-# ---- STAGE 3: Detect Python ----
-appendInfoLine: "running python..."
-
-probeMarker$ = pluginDir$ + "temp_eventgen_probe.ok"
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import csv, re, math, random, argparse"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
 
 if windows
     nCandidates = 4
@@ -169,59 +212,58 @@ for iCand from 1 to nCandidates
         deleteFile: probeMarker$
     endif
 
-    probeCode$ = "import csv, re, math, random, argparse, sys; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
 
     if fileReadable(probeMarker$)
         pythonCmd$ = tryCmd$
         deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
+        iCand = nCandidates + 1 ; Break early
     endif
 endfor
 
+deleteFile: probePy$
+
 if pythonCmd$ = ""
-    deleteFile: tempAnalysis$
-    deleteFile: tempPbind$
-    exitScript: "Cannot find a Python 3 installation." + newline$
-        ... + "Please ensure Python 3 is in PATH." + newline$
-        ... + "Tried: python3, python, py"
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python 3 installation." + newline$ + "Tried: python3, python, py"
 endif
 
-# ---- STAGE 4: Run Python ----
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " """ + tempAnalysis$ + """"
-    ... + " """ + tempPbind$ + """"
-    ... + " """ + tempPitchCsv$ + """"
-    ... + " """ + tempIntCsv$ + """"
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# STAGE 2: Write Analysis CSV & Pbind Text File
+# ===========================================================================
+appendInfoLine: "[2/4] Writing analysis and Pbind files..."
+
+writeFileLine: tempAnalysis$, "duration_seconds,sampling_rate"
+appendFileLine: tempAnalysis$, string$(dur) + "," + string$(sr)
+
+writeFileLine: tempPbind$, pbind$
+
+# ===========================================================================
+# STAGE 3: Run Python Engine
+# ===========================================================================
+appendInfoLine: "[3/4] Running Python Pbind engine..."
+
+pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
+    ... + " """ + tempAnalysisJ$ + """"
+    ... + " """ + tempPbindJ$ + """"
+    ... + " """ + tempPitchCsvJ$ + """"
+    ... + " """ + tempIntCsvJ$ + """"
     ... + " --baseHz " + fixed$(baseHz, 6)
     ... + " --seed " + string$(seed)
 
-if not fileReadable(tempPitchCsv$)
-    deleteFile: tempAnalysis$
-    deleteFile: tempPbind$
-    exitScript: "Python EventGen engine failed — pitch CSV not found." + newline$
-        ... + "Expected: " + tempPitchCsv$ + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
-endif
+runSystem_nocheck: pythonCall$
 
-if not fileReadable(tempIntCsv$)
-    deleteFile: tempAnalysis$
-    deleteFile: tempPbind$
-    deleteFile: tempPitchCsv$
-    exitScript: "Python EventGen engine failed — intensity CSV not found." + newline$
-        ... + "Expected: " + tempIntCsv$ + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+if not fileReadable(tempPitchCsv$) or not fileReadable(tempIntCsv$)
+    @cleanUpTempFiles
+    exitScript: "Python EventGen engine failed to produce CSV outputs." + newline$ + "Check terminal for errors."
 endif
 
 # ===========================================================================
-# STAGE 5: Build PitchTier + store arrays for visualization
+# STAGE 4: Build Tiers & Resynthesize
 # ===========================================================================
-appendInfoLine: "loading tiers..."
+appendInfoLine: "[4/4] Resynthesizing..."
 
 Create PitchTier: "generatedPitch", 0, dur
 pitchTier = selected("PitchTier")
@@ -264,9 +306,6 @@ for iLine from 2 to nPitchLines
 endfor
 removeObject: pitchStrings
 
-# ===========================================================================
-# STAGE 6: Build IntensityTier + store arrays for visualization
-# ===========================================================================
 Create IntensityTier: "generatedIntensity", 0, dur
 intensityTier = selected("IntensityTier")
 
@@ -307,11 +346,7 @@ for iLine from 2 to nIntLines
 endfor
 removeObject: intStrings
 
-# ===========================================================================
-# STAGE 7: Resynthesize
-# ===========================================================================
-appendInfoLine: "resynthesizing..."
-
+# Resynthesis via Manipulation overlap-add
 selectObject: sound
 To Manipulation: 0.01, 75, 600
 manip = selected("Manipulation")
@@ -335,12 +370,11 @@ Rename: soundName$ + "_eventgen"
 
 removeObject: pitchTier, intensityTier, manip
 
-# ===========================================================================
-# STAGE 8: VISUALIZATION
-# ===========================================================================
+###############################################################################
+# STAGE 5: VISUALIZATION
+###############################################################################
 
 if draw_visualization
-    appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
     nEvents = nStoredPitch / 2
@@ -561,14 +595,7 @@ endif
 # ===========================================================================
 # CLEANUP
 # ===========================================================================
-
-deleteFile: tempAnalysis$
-deleteFile: tempPbind$
-deleteFile: tempPitchCsv$
-deleteFile: tempIntCsv$
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
 # ===========================================================================
 # SUMMARY
@@ -633,7 +660,6 @@ procedure getMidiNoteName: .midi
 endproc
 
 procedure pitchHeightToRGB: .midi, .brightness, .midiMin, .midiMax
-    # Low MIDI = blue (hue 240), high MIDI = red (hue 0)
     @mapToRange: .midi, .midiMin, .midiMax, 0, 1
     .hue = (1 - mapToRange.result) * 240
 

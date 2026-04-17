@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,7 +27,7 @@
 #     pip install numpy scipy soundfile
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,7 +38,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-sound     = selected("Sound")
+sound      = selected("Sound")
 soundName$ = selected$("Sound")
 
 # ---- PATHS ----
@@ -55,7 +55,7 @@ if not fileReadable(pythonScript$)
 endif
 
 # ---- FORM  (window 1 - core + VAE + STFT) ----
-form Latent STFT Decoder v1.0
+form Latent STFT Decoder v1.1
     optionmenu Preset: 1
         option Custom
         option Quick (small, fast)
@@ -284,7 +284,7 @@ endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Latent STFT Decoder v1.0 ==="
+writeInfoLine:  "=== Latent STFT Decoder v1.1 ==="
 appendInfoLine: "Input:       ", soundName$
 appendInfoLine: "Preset:      ", presetName$
 appendInfoLine: ""

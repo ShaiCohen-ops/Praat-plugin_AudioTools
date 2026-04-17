@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,7 +26,7 @@
 #   - Seed:            deterministic reproducibility
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -40,22 +40,66 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/latent_relocation.py"
-tempInput$   = pluginDir$ + "temp_latrel_input.wav"
-tempCSV$     = pluginDir$ + "temp_latrel_events.csv"
-tempOutput$  = pluginDir$ + "temp_latrel_output.wav"
-tempStats$   = pluginDir$ + "temp_latrel_stats.txt"
-
-# Verify Python script exists
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
+# ---- PATHS ----
+pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
+pythonScript$ = pluginDir$ + "py/latent_relocation.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/latent_relocation.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: latent_relocation.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempInput$   = temporaryDirectory$ + "/temp_latrel_input.wav"
+tempCSV$     = temporaryDirectory$ + "/temp_latrel_events.csv"
+tempOutput$  = temporaryDirectory$ + "/temp_latrel_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_latrel_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_latrel_probe.ok"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Online Latent-Event Relocation v1.0
+form Online Latent-Event Relocation v1.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -134,7 +178,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Online Latent-Event Relocation v1.0 ==="
+writeInfoLine:  "=== Online Latent-Event Relocation v1.1 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -158,19 +202,30 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: 
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 1 — Event Segmentation (Praat-side)
+# Stage 1 — Detect Python Dependencies
 # ===========================================================================
-# Segment audio into musically coherent events using intensity peaks,
-# pitch continuity, and HNR changes. Target: 200 ms – 3 s per event.
+appendInfoLine: "[1/5] Detecting Python dependencies..."
 
-appendInfoLine: "[1/6] Segmenting events..."
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# Stage 2 — Event Segmentation (Praat-side)
+# ===========================================================================
+appendInfoLine: "[2/5] Segmenting events..."
 
 minEventDur = 0.200
 maxEventDur = 3.000
 
-# ---- Create analysis objects ----
 selectObject: sound
-
 if nChannels > 1
     Extract one channel: 1
     analysisMono = selected("Sound")
@@ -188,7 +243,6 @@ harmObj = To Harmonicity (cc): 0.01, 75, 0.1, 1.0
 selectObject: analysisMono
 intObj = To Intensity: 100, 0.01, "yes"
 
-# ---- Find intensity peaks as candidate boundaries ----
 selectObject: intObj
 intMatrix = Down to Matrix
 intSound = To Sound (slice): 1
@@ -198,11 +252,9 @@ ppObj = To PointProcess (extrema): 1, "yes", "no", "Sinc70"
 selectObject: ppObj
 nPeaks = Get number of points
 
-# Collect peak times + add start and end
 nBounds = nPeaks + 2
 bound_1 = 0
 bound_2 = dur
-
 iBound = 3
 for iPeak from 1 to nPeaks
     selectObject: ppObj
@@ -212,7 +264,6 @@ for iPeak from 1 to nPeaks
 endfor
 nBounds = iBound - 1
 
-# Sort boundaries (simple insertion sort for Praat)
 for i from 1 to nBounds
     for j from i + 1 to nBounds
         if bound_'j' < bound_'i'
@@ -223,10 +274,8 @@ for i from 1 to nBounds
     endfor
 endfor
 
-# Remove duplicates and enforce minimum duration
 nFinal = 0
 prevT = -1
-
 for i from 1 to nBounds
     thisT = bound_'i'
     if thisT - prevT >= minEventDur
@@ -236,7 +285,6 @@ for i from 1 to nBounds
     endif
 endfor
 
-# Ensure end is included
 if nFinal > 0
     lastFinal = final_'nFinal'
     if dur - lastFinal > 0.050
@@ -251,7 +299,6 @@ else
     final_2 = dur
 endif
 
-# Enforce max duration: split long segments
 nEvents = 0
 for i from 1 to nFinal - 1
     evStart = final_'i'
@@ -260,7 +307,6 @@ for i from 1 to nFinal - 1
     evDur = evEnd - evStart
 
     if evDur > maxEventDur
-        # Split into chunks
         nChunks = ceiling(evDur / maxEventDur)
         chunkDur = evDur / nChunks
         for iChunk from 0 to nChunks - 1
@@ -288,14 +334,11 @@ endif
 appendInfoLine: "  Found ", nEvents, " events"
 
 # ===========================================================================
-# Stage 2 — Extract Per-Event Features
+# Stage 3 — Extract Per-Event Features
 # ===========================================================================
+appendInfoLine: "[3/5] Extracting per-event features..."
 
-appendInfoLine: "[2/6] Extracting per-event features..."
-
-# Create feature table
-Create Table with column names: "eventFeatures", nEvents,
-    ... "start_time end_time pitch_median pitch_stability intensity_mean attack_slope hnr_mean"
+Create Table with column names: "eventFeatures", nEvents, "start_time end_time pitch_median pitch_stability intensity_mean attack_slope hnr_mean"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
@@ -307,7 +350,6 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "start_time", t1
     Set numeric value: iEv, "end_time", t2
 
-    # Pitch median + stability (CV of voiced pitch values)
     selectObject: pitchObj
     pMed = Get quantile: t1, t2, 0.5, "Hertz"
     pMean = Get mean: t1, t2, "Hertz"
@@ -322,7 +364,6 @@ for iEv from 1 to nEvents
         if pStd = undefined
             pStd = 0
         endif
-        # Stability = 1 - CV (coefficient of variation), clamped
         pitchCV = pStd / (pMean + 0.001)
         pitchStab = 1 - min(1, pitchCV)
         if pitchStab < 0
@@ -334,14 +375,11 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "pitch_median", pMed
     Set numeric value: iEv, "pitch_stability", pitchStab
 
-    # Intensity mean + attack slope
     selectObject: intObj
     iMean = Get mean: t1, t2, "energy"
     if iMean = undefined
         iMean = 0
     endif
-
-    # Attack slope: (peak intensity - start intensity) / time to peak
     iStart = Get value at time: t1, "Cubic"
     if iStart = undefined
         iStart = 0
@@ -366,7 +404,6 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "intensity_mean", iMean
     Set numeric value: iEv, "attack_slope", attackSlope
 
-    # HNR mean
     selectObject: harmObj
     hMean = Get mean: t1, t2
     if hMean = undefined
@@ -377,87 +414,22 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
-# ---- Export WAV + CSV ----
-appendInfoLine: "[3/6] Exporting temp files..."
-
+appendInfoLine: "  Exporting temp files..."
 selectObject: sound
 Save as WAV file: tempInput$
-
 selectObject: eventTable
 Save as comma-separated file: tempCSV$
 
-# ---- Cleanup analysis objects ----
 removeObject: analysisMono, pitchObj, harmObj, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
 # ===========================================================================
-# Stage 3–6 — Call Python
+# Stage 4 — Call Python Engine
 # ===========================================================================
-
-appendInfoLine: "[4/6] Running Python engine..."
+appendInfoLine: "[4/5] Running Python engine..."
 appendInfoLine: "  (Training autoencoder + relocating events)"
 
-# ---- Robust Python detection ----
-probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "" + newline$
-        ... + "Tried: python, py, py -3, python3" + newline$
-        ... + "" + newline$
-        ... + "Please install the packages and ensure Python is in PATH:" + newline$
-        ... + "  pip install numpy soundfile scipy" + newline$
-        ... + "" + newline$
-        ... + "Note: scikit-learn is NOT required for this script."
-endif
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
+pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempInput$ + """"
     ... + " """ + tempCSV$ + """"
     ... + " """ + tempOutput$ + """"
@@ -470,31 +442,17 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + string$(preserve_duration)
     ... + " " + string$(seed)
 
-# ---- Verify output ----
+runSystem_nocheck: pythonCall$
+
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python latent relocation engine failed." + newline$
-        ... + "" + newline$
-        ... + "Python command used: " + pythonCmd$ + newline$
-        ... + "" + newline$
-        ... + "Possible causes:" + newline$
-        ... + "  - Incompatible package version" + newline$
-        ... + "  - Input audio too short or empty" + newline$
-        ... + "  - Too few events detected" + newline$
-        ... + "" + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python latent relocation engine failed." + newline$ + "Check terminal for error details."
 endif
 
 # ===========================================================================
-# Import Result
+# Stage 5 — Import Result
 # ===========================================================================
-
-appendInfoLine: "[5/6] Importing result..."
+appendInfoLine: "[5/5] Importing result..."
 
 Read from file: tempOutput$
 Rename: soundName$ + "_latent"
@@ -507,7 +465,6 @@ durOut = Get total duration
 # ===========================================================================
 # Read Stats
 # ===========================================================================
-
 nEvStat$ = "?"
 nMovedStat$ = "?"
 avgDispStat$ = "?"
@@ -522,7 +479,6 @@ meanTempStat$ = "?"
 meanEvDur$ = "?"
 warningStat$ = ""
 
-# Displacement map data
 nDispPts = 0
 
 if fileReadable(tempStats$)
@@ -573,27 +529,22 @@ if fileReadable(tempStats$)
         dp_'iDP'_ry = 0
         dp_'iDP'_reg = 0
         if dpRaw$ <> "?"
-            # Parse: ox,oy,rx,ry,regime
             remaining$ = dpRaw$
-            # ox
             comma = index(remaining$, ",")
             if comma > 0
                 dp_'iDP'_ox = number(left$(remaining$, comma - 1))
                 remaining$ = mid$(remaining$, comma + 1, length(remaining$) - comma)
             endif
-            # oy
             comma = index(remaining$, ",")
             if comma > 0
                 dp_'iDP'_oy = number(left$(remaining$, comma - 1))
                 remaining$ = mid$(remaining$, comma + 1, length(remaining$) - comma)
             endif
-            # rx
             comma = index(remaining$, ",")
             if comma > 0
                 dp_'iDP'_rx = number(left$(remaining$, comma - 1))
                 remaining$ = mid$(remaining$, comma + 1, length(remaining$) - comma)
             endif
-            # ry
             comma = index(remaining$, ",")
             if comma > 0
                 dp_'iDP'_ry = number(left$(remaining$, comma - 1))
@@ -609,7 +560,7 @@ endif
 ###############################################################################
 
 if draw_visualization
-    appendInfoLine: "[6/6] Creating visualization..."
+    appendInfoLine: "Drawing visualization..."
 
     Erase all
     Select outer viewport: 0, 8, 0, 8
@@ -635,7 +586,6 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Original"
 
-    # Draw event boundaries on input waveform
     Colour: "{0.8, 0.3, 0.3}"
     Line width: 1
     Axes: 0, dur, -1, 1
@@ -713,7 +663,6 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
 
-    # Draw stacked bar of regime percentages
     crystalW = 0
     fluidW = 0
     gasW = 0
@@ -735,22 +684,18 @@ if draw_visualization
     barH_top = 0.75
     barH_bot = 0.25
 
-    # Crystal (blue)
     if crystalW > 0.001
         Paint rectangle: "{0.3, 0.5, 0.9}", x0, x0 + crystalW * 0.9, barH_bot, barH_top
         x0 = x0 + crystalW * 0.9
     endif
-    # Fluid (green)
     if fluidW > 0.001
         Paint rectangle: "{0.3, 0.7, 0.4}", x0, x0 + fluidW * 0.9, barH_bot, barH_top
         x0 = x0 + fluidW * 0.9
     endif
-    # Gas (orange)
     if gasW > 0.001
         Paint rectangle: "{0.9, 0.6, 0.2}", x0, x0 + gasW * 0.9, barH_bot, barH_top
         x0 = x0 + gasW * 0.9
     endif
-    # Plasma (red)
     if plasmaW > 0.001
         Paint rectangle: "{0.85, 0.25, 0.25}", x0, x0 + plasmaW * 0.9, barH_bot, barH_top
     endif
@@ -767,7 +712,6 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 5.8, 6.9
 
     if nDispPts > 0
-        # Compute axis bounds from all displacement points
         axMinX = 0
         axMaxX = 1
         axMinY = 0
@@ -821,14 +765,12 @@ if draw_visualization
         Axes: axMinX, axMaxX, axMinY, axMaxY
         Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
 
-        # Draw displacement arrows (grey) then regime-colored dots
         Line width: 1
         Colour: "{0.75, 0.75, 0.75}"
         for iDP from 0 to nDispPts - 1
             Draw arrow: dp_'iDP'_ox, dp_'iDP'_oy, dp_'iDP'_rx, dp_'iDP'_ry
         endfor
 
-        # Draw original positions as regime-colored circles
         for iDP from 0 to nDispPts - 1
             reg = dp_'iDP'_reg
             if reg = 0
@@ -885,23 +827,12 @@ if draw_visualization
 
     Font size: 10
     Colour: "Black"
-else
-    appendInfoLine: "[6/6] Visualization skipped."
 endif
 
 # ===========================================================================
-# Cleanup — always delete temp files
+# Cleanup
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempCSV$
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
 # ===========================================================================
 # Summary
@@ -943,7 +874,6 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
-
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)

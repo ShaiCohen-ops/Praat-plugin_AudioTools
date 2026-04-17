@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,7 +25,7 @@
 #   - Morph: crossfades between nearest events
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -39,21 +39,66 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/latent_navigation.py"
-tempInput$   = pluginDir$ + "temp_latnav_input.wav"
-tempCSV$     = pluginDir$ + "temp_latnav_events.csv"
-tempOutput$  = pluginDir$ + "temp_latnav_output.wav"
-tempStats$   = pluginDir$ + "temp_latnav_stats.txt"
-
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
+# ---- PATHS ----
+pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
+pythonScript$ = pluginDir$ + "py/latent_navigation.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/latent_navigation.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: latent_navigation.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempInput$   = temporaryDirectory$ + "/temp_latnav_input.wav"
+tempCSV$     = temporaryDirectory$ + "/temp_latnav_events.csv"
+tempOutput$  = temporaryDirectory$ + "/temp_latnav_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_latnav_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_latnav_probe.ok"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Latent Space Navigation v1.0
+form Latent Space Navigation v1.1
     optionmenu Preset: 1
         option Custom
         option Gentle drift
@@ -186,7 +231,7 @@ durModeInt = target_duration - 1
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Space Navigation v1.0 ==="
+writeInfoLine:  "=== Latent Space Navigation v1.1 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -216,10 +261,25 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: 
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 1 — Event Segmentation
+# Stage 1 — Detect Python Dependencies
 # ===========================================================================
+appendInfoLine: "[1/5] Detecting Python dependencies..."
 
-appendInfoLine: "[1/5] Segmenting events..."
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# Stage 2 — Event Segmentation
+# ===========================================================================
+appendInfoLine: "[2/5] Segmenting events..."
 
 minEventDur = 0.200
 maxEventDur = 3.000
@@ -242,7 +302,6 @@ harmObj = To Harmonicity (cc): 0.01, 75, 0.1, 1.0
 selectObject: analysisMono
 intObj = To Intensity: 100, 0.01, "yes"
 
-# Find intensity peaks as candidate boundaries
 selectObject: intObj
 intMatrix = Down to Matrix
 intSound = To Sound (slice): 1
@@ -263,7 +322,6 @@ for iPeak from 1 to nPeaks
 endfor
 nBounds = iBound - 1
 
-# Sort
 for i from 1 to nBounds
     for j from i + 1 to nBounds
         if bound_'j' < bound_'i'
@@ -274,7 +332,6 @@ for i from 1 to nBounds
     endfor
 endfor
 
-# Remove duplicates + enforce min duration
 nFinal = 0
 prevT = -1
 for i from 1 to nBounds
@@ -300,7 +357,6 @@ else
     final_2 = dur
 endif
 
-# Enforce max duration
 nEvents = 0
 for i from 1 to nFinal - 1
     evStart = final_'i'
@@ -336,13 +392,11 @@ endif
 appendInfoLine: "  Found ", nEvents, " events"
 
 # ===========================================================================
-# Stage 2 — Extract Per-Event Features
+# Stage 3 — Extract Features + Export
 # ===========================================================================
+appendInfoLine: "[3/5] Extracting per-event features..."
 
-appendInfoLine: "[2/5] Extracting per-event features..."
-
-Create Table with column names: "eventFeatures", nEvents,
-    ... "start_time end_time pitch_stability intensity_mean attack_slope hnr_mean"
+Create Table with column names: "eventFeatures", nEvents, "start_time end_time pitch_stability intensity_mean attack_slope hnr_mean"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
@@ -354,7 +408,6 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "start_time", t1
     Set numeric value: iEv, "end_time", t2
 
-    # Pitch stability
     selectObject: pitchObj
     pMean = Get mean: t1, t2, "Hertz"
     pStd = Get standard deviation: t1, t2, "Hertz"
@@ -373,7 +426,6 @@ for iEv from 1 to nEvents
     selectObject: eventTable
     Set numeric value: iEv, "pitch_stability", pitchStab
 
-    # Intensity + attack slope
     selectObject: intObj
     iMean = Get mean: t1, t2, "energy"
     if iMean = undefined
@@ -401,7 +453,6 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "intensity_mean", iMean
     Set numeric value: iEv, "attack_slope", attackSlope
 
-    # HNR
     selectObject: harmObj
     hMean = Get mean: t1, t2
     if hMean = undefined
@@ -411,85 +462,22 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
-# ---- Export ----
-appendInfoLine: "[3/5] Exporting temp files..."
+appendInfoLine: "  Exporting temp files..."
 selectObject: sound
 Save as WAV file: tempInput$
 selectObject: eventTable
 Save as comma-separated file: tempCSV$
 
-# Cleanup analysis objects
 removeObject: analysisMono, pitchObj, harmObj, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
 # ===========================================================================
-# Stage 3 — Call Python
+# Stage 4 — Call Python Engine
 # ===========================================================================
-
 appendInfoLine: "[4/5] Running Python engine..."
 appendInfoLine: "  (Training AE + navigating latent space)"
 
-# ---- Python detection ----
-probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "" + newline$
-        ... + "Tried: python, py, py -3, python3" + newline$
-        ... + "" + newline$
-        ... + "Please install the packages and ensure Python is in PATH:" + newline$
-        ... + "  pip install numpy soundfile scipy" + newline$
-        ... + "" + newline$
-        ... + "Note: scikit-learn is NOT required for this script."
-endif
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
+pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempInput$ + """"
     ... + " """ + tempCSV$ + """"
     ... + " """ + tempOutput$ + """"
@@ -506,25 +494,16 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + string$(durModeInt)
     ... + " " + fixed$(density, 4)
 
-# ---- Verify ----
+runSystem_nocheck: pythonCall$
+
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python latent navigation engine failed." + newline$
-        ... + "" + newline$
-        ... + "Python command used: " + pythonCmd$ + newline$
-        ... + "" + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python latent navigation engine failed." + newline$ + "Check terminal for error details."
 endif
 
 # ===========================================================================
-# Import Result
+# Stage 5 — Import Result
 # ===========================================================================
-
 appendInfoLine: "[5/5] Importing result..."
 
 Read from file: tempOutput$
@@ -538,7 +517,6 @@ durOut = Get total duration
 # ===========================================================================
 # Read Stats
 # ===========================================================================
-
 nEvStat$ = "?"
 nOutputSteps$ = "?"
 uniqueUsed$ = "?"
@@ -557,7 +535,6 @@ top1$ = "?"
 top2$ = "?"
 warningStat$ = ""
 
-# Trajectory data
 nNEvPts = 0
 nNTrajPts = 0
 
@@ -676,7 +653,6 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Original"
 
-    # Event boundaries
     Colour: "{0.8, 0.3, 0.3}"
     Line width: 1
     Axes: 0, dur, -1, 1
@@ -768,7 +744,6 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 6.0, 7.0
 
     if nNTrajPts > 1 or nNEvPts > 0
-        # Compute axis bounds
         axMinX = 0
         axMaxX = 1
         axMinY = 0
@@ -839,12 +814,10 @@ if draw_visualization
         Axes: axMinX, axMaxX, axMinY, axMaxY
         Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
 
-        # Event positions as grey circles
         for iEP from 0 to nNEvPts - 1
             Paint circle (mm): "{0.75, 0.75, 0.75}", nep_'iEP'_x, nep_'iEP'_y, 1.2
         endfor
 
-        # Trajectory path
         Colour: "{0.2, 0.5, 0.7}"
         Line width: 2
         for iTP from 1 to nNTrajPts - 1
@@ -853,7 +826,6 @@ if draw_visualization
         endfor
         Line width: 1
 
-        # Start/end markers
         if nNTrajPts > 0
             Paint circle (mm): "{0.2, 0.7, 0.3}", ntp_0_x, ntp_0_y, 2.0
             iLast = nNTrajPts - 1
@@ -908,16 +880,7 @@ endif
 # ===========================================================================
 # Cleanup
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempCSV$
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
 # ===========================================================================
 # Summary
@@ -956,7 +919,6 @@ appendInfoLine: "  #2: ", top1$
 appendInfoLine: "  #3: ", top2$
 
 selectObject: resultSound
-
 if play_result
     Play
 endif
@@ -964,7 +926,6 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
-
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)

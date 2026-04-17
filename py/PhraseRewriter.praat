@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -34,6 +34,7 @@
 #
 # ============================================================
 
+# ---- INPUT CHECK ----
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
@@ -41,18 +42,84 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
+# ---- PATHS & NORMALIZATION ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 pythonScript$ = pluginDir$ + "py/phrase_rewriter.py"
-tempInput$  = pluginDir$ + "temp_phraserw_input.wav"
-tempCSV$    = pluginDir$ + "temp_phraserw_features.csv"
-tempOutput$ = pluginDir$ + "temp_phraserw_output.wav"
-tempStats$  = pluginDir$ + "temp_phraserw_stats.txt"
+
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+tempInput$   = tempDir$ + "temp_phraserw_input.wav"
+tempCSV$     = tempDir$ + "temp_phraserw_features.csv"
+tempOutput$  = tempDir$ + "temp_phraserw_output.wav"
+tempStats$   = tempDir$ + "temp_phraserw_stats.txt"
+probeScript$ = tempDir$ + "temp_phraserw_probe.py"
+probeMarker$ = tempDir$ + "temp_phraserw_probe.ok"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ \
+    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
         ... + "Please verify AudioTools installation."
 endif
 
+# ---- INITIAL CLEANUP ----
+@cleanUpTempFiles
+
+# ---- EARLY PYTHON DEPENDENCY PROBE ----
+writeFileLine: probeScript$, "import sys"
+appendFileLine: probeScript$, "try:"
+appendFileLine: probeScript$, "    import numpy, soundfile, scipy"
+appendFileLine: probeScript$, "    with open(r'" + probeMarker$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probeScript$, "except ImportError:"
+appendFileLine: probeScript$, "    sys.exit(1)"
+
+if windows
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
+endif
+
+pythonCmd$ = ""
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    runSystem_nocheck: tryCmd$ + " """ + probeScript$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        iCand = nCandidates + 1 ; Break early
+    endif
+endfor
+
+deleteFile: probeScript$
+
+if pythonCmd$ = ""
+    exitScript: "Cannot find a Python installation with the required packages." + newline$
+        ... + "Please install them via: pip install numpy scipy soundfile"
+endif
+
+# ---- UI FORM ----
 form Phrase Rewriter
     optionmenu Mode: 1
         option Constellation
@@ -140,7 +207,6 @@ if run_variation
     seedToUse = seed + randomInteger(1, 1000000)
 endif
 
-# fragment_length and pitch_shift are fully independent — no coupling.
 effective_pitch_shift = pitch_shift_semitones
 
 clearinfo
@@ -169,7 +235,7 @@ if nFrames < 10
     exitScript: "Sound is too short for analysis (need > 0.1 s)."
 endif
 
-appendInfoLine: "[1/4] Extracting phrase features..."
+appendInfoLine: "[1/3] Extracting phrase features..."
 
 selectObject: sound
 if nChannels > 1
@@ -241,65 +307,14 @@ for i from 1 to nFrames
     endfor
 endfor
 
-appendInfoLine: "[2/4] Exporting temp WAV + CSV..."
+appendInfoLine: "[2/3] Exporting temp WAV + CSV..."
 selectObject: sound
 Save as WAV file: tempInput$
 selectObject: featureTable
 Save as comma-separated file: tempCSV$
 removeObject: analysisMono, pitchObj, harmObj, intObj, formantObj, featureTable
 
-appendInfoLine: "[3/4] Running hidden Python engine..."
-
-probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-    endif
-
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$ \
-        ... + "Install: pip install numpy soundfile scipy"
-endif
+appendInfoLine: "[3/3] Running Python engine..."
 
 constellationFlags$ = ""
 if mode = 1
@@ -322,13 +337,12 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + constellationFlags$
 
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Phrase Rewriter Python engine failed." + newline$ \
+    @cleanUpTempFiles
+    exitScript: "Phrase Rewriter Python engine failed." + newline$
         ... + "Python command used: " + pythonCmd$
 endif
 
-appendInfoLine: "[4/4] Importing result..."
+appendInfoLine: "Importing result..."
 Read from file: tempOutput$
 Rename: soundName$ + "_rewritten_" + modeName$
 resultSound = selected("Sound")
@@ -336,8 +350,6 @@ resultSound = selected("Sound")
 selectObject: resultSound
 rms_out = Get root-mean-square: 0, 0
 durOut  = Get total duration
-# Active-region RMS will be read from stats file (written by Python engine).
-# Initialise fallback to whole-buffer values; overwritten after stats parse.
 rms_in_active  = 0
 rms_out_active = 0
 
@@ -362,14 +374,12 @@ warningStat$   = ""
 nEvParsed  = 0
 nPlParsed  = 0
 
-# Per-event arrays (up to 128)
 for ei from 0 to 127
     ev_start_'ei' = 0
     ev_end_'ei'   = 0
     ev_str_'ei'   = 0
 endfor
 
-# Per-plan-step arrays (up to 256)
 for pli from 0 to 255
     pl_src_'pli'   = 0
     pl_start_'pli' = 0
@@ -399,7 +409,6 @@ if fileReadable(tempStats$)
     @parseStatLine: statsText$, "output_duration="
     outDurStat$ = parseStatLine.result$
 
-    # Read active-region RMS from Python stats (silence-robust measurement)
     @parseStatLine: statsText$, "rms_in="
     if parseStatLine.result$ <> "?"
         rms_in_active = number(parseStatLine.result$)
@@ -413,7 +422,6 @@ if fileReadable(tempStats$)
         rms_out_active = rms_out
     endif
 
-    # Parse event rows: ev_N=start,end,strength
     if nEvStat$ <> "?"
         nEvParsed = number(nEvStat$)
         if nEvParsed > 128
@@ -425,7 +433,6 @@ if fileReadable(tempStats$)
         raw$ = parseStatLine.result$
         if raw$ <> "?"
             c1 = index(raw$, ",")
-            # find last comma by searching after c1
             rest_ev$ = mid$(raw$, c1 + 1, length(raw$) - c1)
             c2b = index(rest_ev$, ",")
             if c1 > 0 and c2b > 0
@@ -436,7 +443,6 @@ if fileReadable(tempStats$)
         endif
     endfor
 
-    # Parse plan rows: pl_N=src,start,dur_scale,gain
     if nPlanStat$ <> "?"
         nPlParsed = number(nPlanStat$)
         if nPlParsed > 256
@@ -447,7 +453,6 @@ if fileReadable(tempStats$)
         @parseStatLine: statsText$, "pl_" + string$(pli) + "="
         raw$ = parseStatLine.result$
         if raw$ <> "?"
-            # format: src,start,dur_scale,gain
             c1 = index(raw$, ",")
             rest1$ = mid$(raw$, c1 + 1, length(raw$) - c1)
             c2 = index(rest1$, ",")
@@ -512,7 +517,6 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Original"
 
-    # Event boundary lines
     Colour: "{0.85, 0.30, 0.20}"
     Line width: 1
     Axes: 0, dur, -1, 1
@@ -590,8 +594,6 @@ if draw_visualization
 
     # =========================================================
     # Phrase feature curves panel
-    # (Activity = blue, Tension = red, shown as horizontal bars
-    #  per event, stacked to give a quick phrase-shape overview)
     # =========================================================
     Select outer viewport: 0, 8, 4.75, 5.60
     Select inner viewport: 0.6, 7.7, 4.80, 5.55
@@ -600,7 +602,6 @@ if draw_visualization
     Paint rectangle: "{0.96, 0.96, 0.98}", 0, 1, 0, 1
 
     if nEvParsed > 1
-        # Compute max strength for normalisation
         strMax = 0.001
         for ei from 0 to nEvParsed - 1
             if ev_str_'ei' > strMax
@@ -608,7 +609,6 @@ if draw_visualization
             endif
         endfor
 
-        # Map event time → x axis [0,1]
         totalDur = dur
         if totalDur < 0.001
             totalDur = 0.001
@@ -623,11 +623,9 @@ if draw_visualization
             xR = eE / totalDur
             normStr = eStr / strMax
 
-            # Activity bar (blue, lower half)
             actH = 0.08 + 0.40 * normStr
             Paint rectangle: "{0.22, 0.48, 0.80}", xL + 0.002, xR - 0.002, 0.08, actH
 
-            # Tension bar (red, upper half — scaled separately to 1)
             tenH = 0.55 + 0.38 * normStr
             Paint rectangle: "{0.78, 0.28, 0.22}", xL + 0.002, xR - 0.002, 0.55, tenH
         endfor
@@ -647,13 +645,10 @@ if draw_visualization
 
     # =========================================================
     # Rewrite plan panel
-    # Plot each plan step as a dot:  x = output start time,
-    # y = source event index.  Dot colour = gain (dark→bright).
     # =========================================================
     Select outer viewport: 0, 8, 5.70, 6.70
     Select inner viewport: 0.6, 7.7, 5.75, 6.65
 
-    # Axis limits
     plMaxX = 0.001
     plMaxY = 0
     for pli from 0 to nPlParsed - 1
@@ -673,17 +668,12 @@ if draw_visualization
     Axes: 0, plMaxX, 0, plMaxY
     Paint rectangle: "{0.97, 0.97, 0.99}", 0, plMaxX, 0, plMaxY
 
-    # Horizontal event-lane guides (subtle)
     Colour: "{0.88, 0.88, 0.92}"
     Line width: 1
     for ei from 0 to nEvParsed - 1
         Draw line: 0, ei + 0.5, plMaxX, ei + 0.5
     endfor
 
-    # Plot plan dots — colour by gain bucketed into 5 fixed colours
-    # bucket 0 (<0.20): dim grey   bucket 1 (<0.40): mid grey
-    # bucket 2 (<0.60): steel blue bucket 3 (<0.80): teal
-    # bucket 4 (>=0.80): orange
     for pli from 0 to nPlParsed - 1
         px = pl_start_'pli'
         py = pl_src_'pli' + 0.5
@@ -792,23 +782,13 @@ if draw_visualization
 endif
 
 # ============================================================
-# Cleanup
+# FINAL CLEANUP
 # ============================================================
-
-if fileReadable(tempOutput$)
-    deleteFile: tempOutput$
-endif
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
 # ============================================================
-# Final summary to Info window
+# Summary to Info window
 # ============================================================
-
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output: ", soundName$, "_rewritten_", modeName$
@@ -841,5 +821,26 @@ procedure parseStatLine: .text$, .key$
         else
             .result$ = .rest$
         endif
+    endif
+endproc
+
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeScript$)
+        deleteFile: probeScript$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
     endif
 endproc

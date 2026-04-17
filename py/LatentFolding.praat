@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,7 +17,7 @@
 #   but identity-reversal. Creates "Recursive Spectralism."
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -31,21 +31,66 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/latent_folding.py"
-tempInput$   = pluginDir$ + "temp_latfold_input.wav"
-tempCSV$     = pluginDir$ + "temp_latfold_events.csv"
-tempOutput$  = pluginDir$ + "temp_latfold_output.wav"
-tempStats$   = pluginDir$ + "temp_latfold_stats.txt"
-
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
+# ---- PATHS ----
+pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
+pythonScript$ = pluginDir$ + "py/latent_folding.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/latent_folding.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: latent_folding.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempInput$   = temporaryDirectory$ + "/temp_latfold_input.wav"
+tempCSV$     = temporaryDirectory$ + "/temp_latfold_events.csv"
+tempOutput$  = temporaryDirectory$ + "/temp_latfold_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_latfold_stats.txt"
+probeMarker$ = temporaryDirectory$ + "/temp_latfold_probe.ok"
+
+# Replace backslashes for the Python inline probe
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Latent Folding v1.0 — Topological Manifold
+form Latent Folding v1.1 — Topological Manifold
     optionmenu Preset: 1
         option Custom
         option Gentle mirror
@@ -186,7 +231,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Folding v1.0 — Topological Manifold ==="
+writeInfoLine:  "=== Latent Folding v1.1 — Topological Manifold ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -210,10 +255,25 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: 
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 1 — Event Segmentation
+# Stage 1 — Detect Python Dependencies
 # ===========================================================================
+appendInfoLine: "[1/5] Detecting Python dependencies..."
 
-appendInfoLine: "[1/5] Segmenting events..."
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    @cleanUpTempFiles
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
+# Stage 2 — Event Segmentation
+# ===========================================================================
+appendInfoLine: "[2/5] Segmenting events..."
 
 minEventDur = 0.200
 maxEventDur = 3.000
@@ -326,13 +386,11 @@ endif
 appendInfoLine: "  Found ", nEvents, " events"
 
 # ===========================================================================
-# Stage 2 — Feature Extraction + Export
+# Stage 3 — Extract Features + Export
 # ===========================================================================
+appendInfoLine: "[3/5] Extracting features..."
 
-appendInfoLine: "[2/5] Extracting features..."
-
-Create Table with column names: "eventFeatures", nEvents,
-    ... "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
+Create Table with column names: "eventFeatures", nEvents, "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
@@ -399,7 +457,7 @@ for iEv from 1 to nEvents
     Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
-appendInfoLine: "[3/5] Exporting temp files..."
+appendInfoLine: "  Exporting temp files..."
 selectObject: sound
 Save as WAV file: tempInput$
 selectObject: eventTable
@@ -409,66 +467,12 @@ removeObject: analysisMono, pitchObj, harmObj, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
 # ===========================================================================
-# Stage 3 — Call Python
+# Stage 4 — Call Python
 # ===========================================================================
-
 appendInfoLine: "[4/5] Running Python engine..."
 appendInfoLine: "  (Training AE + ", manifoldName$, " folding, density=", fold_density, ")"
 
-# ---- Python detection ----
-probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "  pip install numpy soundfile scipy"
-endif
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
+pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempInput$ + """"
     ... + " """ + tempCSV$ + """"
     ... + " """ + tempOutput$ + """"
@@ -483,21 +487,16 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + fixed$(speed, 4)
     ... + " " + string$(seed)
 
+runSystem_nocheck: pythonCall$
+
 if not fileReadable(tempOutput$)
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python folding engine failed." + newline$
-        ... + "Run in terminal to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python folding engine failed." + newline$ + "Check terminal for error details."
 endif
 
 # ===========================================================================
-# Import Result
+# Stage 5 — Import Result
 # ===========================================================================
-
 appendInfoLine: "[5/5] Importing result..."
 
 Read from file: tempOutput$
@@ -511,7 +510,6 @@ durOut = Get total duration
 # ===========================================================================
 # Read Stats
 # ===========================================================================
-
 nEvStat$ = "?"
 nStepsStat$ = "?"
 uniqueStat$ = "?"
@@ -537,7 +535,6 @@ topEv_0$ = "?"
 topEv_1$ = "?"
 topEv_2$ = "?"
 
-# Trajectory data for visualization
 nFEvPts = 0
 nFTrajPts = 0
 nFoldMarkers = 0
@@ -775,7 +772,6 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 5.5, 6.6
 
     if nFTrajPts > 1 or nFEvPts > 0
-        # Compute axis bounds
         axMinX = 0
         axMaxX = 1
         axMinY = 0
@@ -846,12 +842,10 @@ if draw_visualization
         Axes: axMinX, axMaxX, axMinY, axMaxY
         Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
 
-        # Draw event positions as grey circles
         for iEP from 0 to nFEvPts - 1
             Paint circle (mm): "{0.75, 0.75, 0.75}", fep_'iEP'_x, fep_'iEP'_y, 1.2
         endfor
 
-        # Draw trajectory path
         Colour: "{0.5, 0.2, 0.5}"
         Line width: 2
         for iTP from 1 to nFTrajPts - 1
@@ -860,7 +854,6 @@ if draw_visualization
         endfor
         Line width: 1
 
-        # Draw fold markers
         for iFM from 0 to nFoldMarkers - 1
             fmType$ = fm_'iFM'_type$
             if fmType$ = "twist"
@@ -872,7 +865,6 @@ if draw_visualization
             endif
         endfor
 
-        # Start/end markers
         if nFTrajPts > 0
             Paint circle (mm): "{0.2, 0.7, 0.3}", ftp_0_x, ftp_0_y, 2.0
             iLast = nFTrajPts - 1
@@ -911,7 +903,6 @@ if draw_visualization
     Text: 0.02, "left", 0.58, "half", manifoldStat$ + " dens=" + foldDensStat$ + " curv=" + curvatureStat$ + " | Folds=" + nFoldEvents$ + " (m=" + nMirrorsStat$ + " t=" + nTwistsStat$ + " w=" + nWrapsStat$ + ")"
     Text: 0.02, "left", 0.40, "half", "AE: " + initialLoss$ + "->" + finalLoss$ + " | Latent=" + string$(latent_size) + " | Dur: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4)
 
-    # Symmetry + top events line
     Colour: "{0.4, 0.4, 0.5}"
     symLine$ = ""
     if hasSymStat$ = "1"
@@ -935,16 +926,7 @@ endif
 # ===========================================================================
 # Cleanup
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempCSV$
-deleteFile: tempOutput$
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
 # ===========================================================================
 # Summary
@@ -989,7 +971,6 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
-
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)
