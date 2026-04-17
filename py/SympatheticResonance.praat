@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -42,24 +42,80 @@ endif
 origSound  = selected("Sound")
 origName$  = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
+# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
+
+# ---- PATHS & UNIFIED CROSS-PLATFORM FIX ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
 pythonScript$ = pluginDir$ + "py/sympathetic_resonance.py"
 if not fileReadable(pythonScript$)
-    pythonScript$ = defaultDirectory$ + "sympathetic_resonance.py"
+    pythonScript$ = defaultDirectory$ + "/sympathetic_resonance.py"
 endif
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find sympathetic_resonance.py" + newline$
-        ... + "Expected at: " + pluginDir$ + "py/"
+    exitScript: "Cannot find Python script: sympathetic_resonance.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
 endif
 
-tempInput$   = pluginDir$ + "temp_sr_input.wav"
-tempOutput$  = pluginDir$ + "temp_sr_output.wav"
-tempStats$   = pluginDir$ + "temp_sr_stats.txt"
-tempResCSV$  = pluginDir$ + "temp_sr_resonances.csv"
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+tempInput$   = tempDir$ + "temp_sr_input.wav"
+tempOutput$  = tempDir$ + "temp_sr_output.wav"
+tempStats$   = tempDir$ + "temp_sr_stats.txt"
+tempResCSV$  = tempDir$ + "temp_sr_resonances.csv"
+probePy$     = tempDir$ + "temp_sr_probe.py"
+probeMarker$ = tempDir$ + "temp_sr_probe.ok"
+
+# Enforce forward slashes for all temporary paths passed to python
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
+tempInputJ$    = replace_regex$(tempInput$, "\\", "/", 0)
+tempOutputJ$   = replace_regex$(tempOutput$, "\\", "/", 0)
+tempStatsJ$    = replace_regex$(tempStats$, "\\", "/", 0)
+tempResCSVJ$   = replace_regex$(tempResCSV$, "\\", "/", 0)
+probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(tempResCSV$)
+        deleteFile: tempResCSV$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
 
 # ---- FORM ----
-form Sympathetic Resonance
+form Sympathetic Resonance v1.1
     optionmenu Preset: 1
         option Custom
         option Piano Frame
@@ -184,7 +240,7 @@ nChannels = Get number of channels
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Sympathetic Resonance v1.0 ==="
+writeInfoLine:  "=== Sympathetic Resonance v1.1 ==="
 appendInfoLine: "Source:    ", origName$
 appendInfoLine: "Preset:    ", presetName$
 appendInfoLine: "Character: ", charStr$
@@ -195,20 +251,17 @@ appendInfoLine: "Wet/dry:   ", fixed$(wet_dry, 3)
 appendInfoLine: "Duration:  ", fixed$(totalDur, 2), " s  |  SR: ", origSR, " Hz"
 appendInfoLine: ""
 
-# ============================================================
-# Stage 1 -- Export WAV
-# ============================================================
-appendInfoLine: "[1/5] Exporting WAV..."
+# ===========================================================================
+# Stage 0 — Early Python Dependency Probe
+# ===========================================================================
+appendInfoLine: "[0/4] Detecting Python dependencies..."
 
-selectObject: origSound
-Save as WAV file: tempInput$
-
-# ============================================================
-# Stage 2 -- Detect Python
-# ============================================================
-appendInfoLine: "[2/4] Detecting Python..."
-
-probeMarker$ = pluginDir$ + "temp_sr_pyprobe.ok"
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import numpy, scipy, soundfile"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
 
 if windows
     nCandidates = 4
@@ -224,7 +277,6 @@ else
     candidate4$ = ""
 endif
 
-pythonCmd$ = ""
 for iCand from 1 to nCandidates
     if iCand = 1
         tryCmd$ = candidate1$
@@ -240,51 +292,53 @@ for iCand from 1 to nCandidates
         deleteFile: probeMarker$
     endif
 
-    probeCode$ = "import numpy,soundfile,scipy; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
 
     if fileReadable(probeMarker$)
         pythonCmd$ = tryCmd$
         deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
+        iCand = nCandidates + 1 ; Break early
     endif
 endfor
 
+deleteFile: probePy$
+
 if pythonCmd$ = ""
-    deleteFile: tempInput$
-    exitScript: "Cannot find Python with required packages." + newline$
-        ... + "Install: pip install numpy soundfile scipy"
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile"
 endif
 
-# ============================================================
-# Stage 3 -- Run Python engine
-# ============================================================
-appendInfoLine: "[3/4] Running sympathetic resonance engine..."
+appendInfoLine: "  Python found: ", pythonCmd$
 
-if fileReadable(tempOutput$)
-    deleteFile: tempOutput$
-endif
+# ============================================================
+# Stage 1 -- Export WAV
+# ============================================================
+appendInfoLine: "[1/4] Exporting WAV..."
 
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " --input """       + tempInput$  + """"
-    ... + " --output """      + tempOutput$ + """"
-    ... + " --stats """       + tempStats$  + """"
-    ... + " --resonances """  + tempResCSV$ + """"
+selectObject: origSound
+Save as WAV file: tempInput$
+
+# ============================================================
+# Stage 2 -- Run Python engine
+# ============================================================
+appendInfoLine: "[2/4] Running sympathetic resonance engine..."
+
+pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
+    ... + " --input """       + tempInputJ$  + """"
+    ... + " --output """      + tempOutputJ$ + """"
+    ... + " --stats """       + tempStatsJ$  + """"
+    ... + " --resonances """  + tempResCSVJ$ + """"
     ... + " --character "     + charStr$
     ... + " --n_strings "     + string$(n_strings)
     ... + " --decay_s "       + fixed$(decay_s, 3)
     ... + " --coupling "      + fixed$(coupling, 4)
     ... + " --wet_dry "       + fixed$(wet_dry, 4)
 
-deleteFile: tempInput$
+runSystem_nocheck: pythonCall$
 
 if not fileReadable(tempOutput$)
-    exitScript: "Python engine failed -- output WAV not found." + newline$
-        ... + "Check terminal for Python error messages." + newline$
-        ... + "Ensure: pip install numpy soundfile scipy"
+    @cleanUpTempFiles
+    exitScript: "Python engine failed -- output WAV not found." + newline$ + "Check terminal for error messages."
 endif
 
 appendInfoLine: "  Engine complete."
@@ -292,7 +346,7 @@ appendInfoLine: "  Engine complete."
 # ============================================================
 # Stage 3 -- Import result and read stats
 # ============================================================
-appendInfoLine: "[4/5] Importing result..."
+appendInfoLine: "[3/4] Importing result..."
 
 Read from file: tempOutput$
 if preset = 1
@@ -302,7 +356,6 @@ else
 endif
 Rename: outName$
 resultSound = selected("Sound")
-deleteFile: tempOutput$
 
 selectObject: resultSound
 outDur = Get total duration
@@ -322,7 +375,6 @@ if fileReadable(tempStats$)
     statFlatness$ = parseStatLine.result$
     @parseStatLine: statsText$, "top_pitches="
     statPitches$ = parseStatLine.result$
-    deleteFile: tempStats$
 endif
 
 # Read resonances table for visualization
@@ -331,7 +383,6 @@ if fileReadable(tempResCSV$)
     resTable    = Read Table from comma-separated file: tempResCSV$
     nStrViz     = Get number of rows
     hasResTable = 1
-    deleteFile: tempResCSV$
 endif
 
 appendInfoLine: "  Strings active: ", statStrings$
@@ -342,7 +393,7 @@ appendInfoLine: "  Spectral flatness: ", statFlatness$
 ###############################################################################
 
 if draw_visualization
-    appendInfoLine: "[5/5] Drawing visualization..."
+    appendInfoLine: "[4/4] Drawing visualization..."
 
     Erase all
     Select outer viewport: 0, 8, 0, 8
@@ -504,12 +555,14 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
 else
-    appendInfoLine: "[5/5] Visualization skipped."
+    appendInfoLine: "[4/4] Visualization skipped."
 endif
 
 # ============================================================
-# Final summary + play
+# Final Cleanup + Play
 # ============================================================
+@cleanUpTempFiles
+
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:    ", outName$
@@ -527,7 +580,6 @@ endif
 # ============================================================
 # Procedures
 # ============================================================
-
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)

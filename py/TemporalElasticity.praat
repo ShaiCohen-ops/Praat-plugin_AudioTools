@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -28,20 +28,75 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/latent_time_warp.py"
-eventsCSV$    = pluginDir$ + "temp_te_events.csv"
-durationsCSV$ = pluginDir$ + "temp_te_durations.csv"
-statsTxt$     = pluginDir$ + "temp_te_stats.txt"
-
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
+# ---- PATHS & UNIFIED CROSS-PLATFORM FIX ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
+pythonScript$ = pluginDir$ + "py/latent_time_warp.py"
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/latent_time_warp.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: latent_time_warp.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+eventsCSV$    = tempDir$ + "temp_te_events.csv"
+durationsCSV$ = tempDir$ + "temp_te_durations.csv"
+statsTxt$     = tempDir$ + "temp_te_stats.txt"
+probePy$      = tempDir$ + "temp_te_probe.py"
+probeMarker$  = tempDir$ + "temp_te_probe.ok"
+
+# Enforce forward slashes for all temporary paths passed to python
+pythonScriptJ$  = replace_regex$(pythonScript$, "\\", "/", 0)
+eventsCSVJ$     = replace_regex$(eventsCSV$, "\\", "/", 0)
+durationsCSVJ$  = replace_regex$(durationsCSV$, "\\", "/", 0)
+statsTxtJ$      = replace_regex$(statsTxt$, "\\", "/", 0)
+probePyJ$       = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$   = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(eventsCSV$)
+        deleteFile: eventsCSV$
+    endif
+    if fileReadable(durationsCSV$)
+        deleteFile: durationsCSV$
+    endif
+    if fileReadable(statsTxt$)
+        deleteFile: statsTxt$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Temporal Elasticity v1.0
+form Temporal Elasticity v1.1
     comment ── Preset ───────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom
@@ -99,7 +154,6 @@ endform
 
 # ---- PRESETS ----
 if preset = 2
-    # Gentle warp — subtle gravitational pull, short events, low amplitude
     silence_threshold    = 20.0
     min_event_duration   = 0.04
     min_silence_duration = 0.03
@@ -115,7 +169,6 @@ if preset = 2
     reconstruction_method = 1
     presetName$ = "GentleWarp"
 elsif preset = 3
-    # Rhythmic stretch — equal-grid feel, short_stretch rules, gradient field
     silence_threshold    = 25.0
     min_event_duration   = 0.05
     min_silence_duration = 0.03
@@ -131,7 +184,6 @@ elsif preset = 3
     reconstruction_method = 2
     presetName$ = "RhythmicStretch"
 elsif preset = 4
-    # Gravitational pull — strong cluster wells, PSOLA, ae latent
     silence_threshold    = 25.0
     min_event_duration   = 0.05
     min_silence_duration = 0.03
@@ -147,7 +199,6 @@ elsif preset = 4
     reconstruction_method = 1
     presetName$ = "GravitationalPull"
 elsif preset = 5
-    # Turbulent scatter — stochastic fluctuations, noisy_dilate, placement
     silence_threshold    = 20.0
     min_event_duration   = 0.03
     min_silence_duration = 0.02
@@ -163,7 +214,6 @@ elsif preset = 5
     reconstruction_method = 3
     presetName$ = "TurbulentScatter"
 elsif preset = 6
-    # Time inversion — dense regions compressed, sparse stretched
     silence_threshold    = 25.0
     min_event_duration   = 0.05
     min_silence_duration = 0.03
@@ -179,7 +229,6 @@ elsif preset = 6
     reconstruction_method = 1
     presetName$ = "TimeInversion"
 elsif preset = 7
-    # Spectral drift — gradient along latent axis, harmonic compress
     silence_threshold    = 30.0
     min_event_duration   = 0.08
     min_silence_duration = 0.05
@@ -195,7 +244,6 @@ elsif preset = 7
     reconstruction_method = 2
     presetName$ = "SpectralDrift"
 elsif preset = 8
-    # Deep mutation — large latent, high amplitude, strong AE, PSOLA
     silence_threshold    = 15.0
     min_event_duration   = 0.03
     min_silence_duration = 0.02
@@ -211,7 +259,6 @@ elsif preset = 8
     reconstruction_method = 1
     presetName$ = "DeepMutation"
 elsif preset = 9
-    # Relativistic — latent velocity drives Lorentz time dilation
     silence_threshold    = 20.0
     min_event_duration   = 0.04
     min_silence_duration = 0.02
@@ -269,7 +316,7 @@ nChannels = Get number of channels
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Temporal Elasticity v1.0 ==="
+writeInfoLine:  "=== Temporal Elasticity v1.1 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: "Mode:    ", modeStr$, "  Method: ", methodStr$
@@ -279,9 +326,67 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz"
 appendInfoLine: ""
 
 # ===========================================================================
+# Stage 0 — Early Python Dependency Probe
+# ===========================================================================
+appendInfoLine: "[0/5] Detecting Python dependencies..."
+
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import numpy, soundfile"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
+
+if windows
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
+endif
+
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        iCand = nCandidates + 1 ; Break early
+    endif
+endfor
+
+deleteFile: probePy$
+
+if pythonCmd$ = ""
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy soundfile"
+endif
+
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
 # Stage 1 — Segment into events
 # ===========================================================================
-
 appendInfoLine: "[1/5] Segmenting events..."
 
 selectObject: sound
@@ -332,10 +437,8 @@ endif
 # ===========================================================================
 # Stage 2 — Feature extraction → events CSV
 # ===========================================================================
-
 appendInfoLine: "[2/5] Extracting features..."
 
-deleteFile: eventsCSV$
 writeFileLine: eventsCSV$,
     ... "event_index,start_time,end_time,duration,rms,spectral_centroid,patch_file"
 
@@ -368,73 +471,14 @@ endfor
 appendInfoLine: "  Wrote: ", eventsCSV$
 
 # ===========================================================================
-# Stage 3 — Detect Python
+# Stage 3 — Call Python engine
 # ===========================================================================
+appendInfoLine: "[3/5] Running Python engine..."
 
-appendInfoLine: "[3/5] Detecting Python..."
-
-probeMarker$ = pluginDir$ + "temp_te_pyprobe.ok"
-probeScript$ = pluginDir$ + "temp_te_pyprobe.py"
-writeFileLine: probeScript$, "import numpy, soundfile, sys"
-appendFileLine: probeScript$, "open(sys.argv[1], 'w').close()"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    nocheck runSystem: tryCmd$ + " """ + probeScript$ + """ """ + probeMarker$ + """"
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-deleteFile: probeScript$
-
-if pythonCmd$ = ""
-    deleteFile: eventsCSV$
-    exitScript: "Cannot find Python with numpy + soundfile." + newline$
-        ... + "Install with:  pip install numpy soundfile"
-endif
-
-# ===========================================================================
-# Stage 4 — Call Python engine
-# ===========================================================================
-
-appendInfoLine: "[4/5] Running Python engine..."
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " """ + eventsCSV$ + """"
-    ... + " """ + durationsCSV$ + """"
-    ... + " """ + statsTxt$ + """"
+pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
+    ... + " """ + eventsCSVJ$ + """"
+    ... + " """ + durationsCSVJ$ + """"
+    ... + " """ + statsTxtJ$ + """"
     ... + " --z_dim "         + string$(latent_dimensions)
     ... + " --n_iter "        + string$(training_iterations)
     ... + " --latent_method " + methodStr$
@@ -446,18 +490,17 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --extra_rules "   + rulesStr$
     ... + " --cleanup"
 
+runSystem_nocheck: pythonCall$
+
 if not fileReadable(durationsCSV$)
-    deleteFile: eventsCSV$
-    exitScript: "Python engine failed — durations CSV not found." + newline$
-        ... + "Run manually to see error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """"
+    @cleanUpTempFiles
+    exitScript: "Python engine failed — durations CSV not found. Check terminal for error details."
 endif
 
 # ===========================================================================
-# Stage 5 — Read durations + reconstruct
+# Stage 4 — Read durations + reconstruct
 # ===========================================================================
-
-appendInfoLine: "[5/5] Reconstructing..."
+appendInfoLine: "[4/5] Reconstructing..."
 
 Read Table from comma-separated file: durationsCSV$
 durTable = selected("Table")
@@ -633,17 +676,12 @@ if fileReadable(statsTxt$)
     entrStat$ = parseStatLine.result$
 endif
 
-# ---- Cleanup temp files ----
-deleteFile: eventsCSV$
-deleteFile: durationsCSV$
-deleteFile: statsTxt$
-
 ###############################################################################
 # VISUALIZATION
 ###############################################################################
 
 if draw_visualization
-    appendInfoLine: "Drawing visualization..."
+    appendInfoLine: "[5/5] Drawing visualization..."
 
     Erase all
     Select outer viewport: 0, 8, 0, 8
@@ -790,8 +828,11 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
 else
-    appendInfoLine: "Visualization skipped."
+    appendInfoLine: "[5/5] Visualization skipped."
 endif
+
+# ---- FINAL CLEANUP ----
+@cleanUpTempFiles
 
 # ---- Summary ----
 appendInfoLine: ""

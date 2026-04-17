@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2025)
+# Version: 1.4 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,76 +32,89 @@ endif
 sound     = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS ----
-pluginDir$     = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$  = pluginDir$ + "py/tinysol_retrieval.py"
+# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
+endif
 
-# ---- Run-specific temp filenames (fix 9: prevent stale-result reuse) ----
-# Use the sound name + a pseudo-unique suffix derived from the current time.
-runTag$    = replace_regex$(soundName$, "[^A-Za-z0-9_]", "_", 0)
-           ... + "_" + date$()
-# date$() returns a string like "Sun Apr  6 14:23:01 2025"; collapse spaces/colons
-runTag$    = replace_regex$(runTag$, "[ :]", "_", 0)
+# ---- PATHS & UNIFIED CROSS-PLATFORM FIX ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
+pythonScript$ = pluginDir$ + "py/tinysol_retrieval.py"
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/tinysol_retrieval.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: tinysol_retrieval.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+runTag$    = replace_regex$(soundName$, "[^A-Za-z0-9_]", "_", 0) + "_" + replace_regex$(date$(), "[ :]", "_", 0)
 runTag$    = replace_regex$(runTag$, "__+", "_", 0)
 
-tempInput$     = pluginDir$ + "tmp_" + runTag$ + "_input.wav"
-tempParams$    = pluginDir$ + "tmp_" + runTag$ + "_params.txt"
-tempOutput$    = pluginDir$ + "tmp_" + runTag$ + "_output.wav"
-tempResults$   = pluginDir$ + "tmp_" + runTag$ + "_results.txt"
-doneFile$      = pluginDir$ + "tmp_" + runTag$ + "_done.txt"
+tempInput$   = tempDir$ + "tmp_" + runTag$ + "_input.wav"
+tempParams$  = tempDir$ + "tmp_" + runTag$ + "_params.txt"
+tempOutput$  = tempDir$ + "tmp_" + runTag$ + "_output.wav"
+tempResults$ = tempDir$ + "tmp_" + runTag$ + "_results.txt"
+doneFile$    = tempDir$ + "tmp_" + runTag$ + "_done.txt"
+probePy$     = tempDir$ + "tmp_" + runTag$ + "_probe.py"
+probeMarker$ = tempDir$ + "tmp_" + runTag$ + "_probe.ok"
 
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
-endif
+# Enforce forward slashes for all temporary paths passed to python
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
+tempInputJ$    = replace_regex$(tempInput$, "\\", "/", 0)
+tempParamsJ$   = replace_regex$(tempParams$, "\\", "/", 0)
+tempOutputJ$   = replace_regex$(tempOutput$, "\\", "/", 0)
+tempResultsJ$  = replace_regex$(tempResults$, "\\", "/", 0)
+doneFileJ$     = replace_regex$(doneFile$, "\\", "/", 0)
+probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
 
-# ---- Detect Python executable (4-candidate probe) ----
-pythonExe$ = ""
-pyTestScript$ = pluginDir$ + "temp_pytest.py"
-pyTestResult$ = pluginDir$ + "temp_pytest.txt"
-
-# Write a tiny test script (avoids -c quoting issues across platforms)
-writeFileLine: pyTestScript$, "open(r'" + pyTestResult$ + "', 'w').write('ok')"
-
-q$ = """"
-
-for candidate from 1 to 4
-    if candidate = 1
-        tryPy$ = "python3"
-    elsif candidate = 2
-        tryPy$ = "py"
-    elsif candidate = 3
-        tryPy$ = "python"
-    else
-        tryPy$ = "python3.11"
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
     endif
-
-    if fileReadable(pyTestResult$)
-        deleteFile: pyTestResult$
+    if fileReadable(tempParams$)
+        deleteFile: tempParams$
     endif
-
-    nocheck runSystem: tryPy$ + " " + q$ + pyTestScript$ + q$
-
-    if fileReadable(pyTestResult$)
-        pythonExe$ = tryPy$
-        deleteFile: pyTestResult$
-        candidate = 4
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
     endif
-endfor
+    if fileReadable(tempResults$)
+        deleteFile: tempResults$
+    endif
+    if fileReadable(doneFile$)
+        deleteFile: doneFile$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
 
-deleteFile: pyTestScript$
-
-if pythonExe$ = ""
-    exitScript: "Cannot find Python on PATH." + newline$
-        ... + "Tried: python3, py, python, python3.11" + newline$
-        ... + "Please install Python 3 and ensure it is on your PATH."
-endif
+@cleanUpTempFiles
 
 # ---- FORM ----
-form TinySOL Orchestration Retrieval v1.3
+form TinySOL Orchestration Retrieval v1.4
     # ── Preset  ───────────────────────────────────────────────────────
-    # Choose a preset to override settings below with a known-good
-    # configuration.  "Custom" uses whatever you type in the fields.
     optionmenu Preset: 1
         option Custom  (use fields as-is)
         option REF-whole  (whole-file reference preset)
@@ -110,8 +123,8 @@ form TinySOL Orchestration Retrieval v1.3
         option Speech  (speech / vocal input — no harmonic matching)
 
     # ── Corpus paths ─────────────────────────────────────────────────
-    sentence DB_directory         D:\old D\waves\TinySOL_2020
-    sentence Corpus_root          D:\old D\waves\TinySOL_2020\TinySOL
+    sentence DB_directory         D:/old D/waves/TinySOL_2020
+    sentence Corpus_root          D:/old D/waves/TinySOL_2020/TinySOL
 
     # ── Instrument / family constraints ──────────────────────────────
     optionmenu Instrument_families: 1
@@ -173,31 +186,15 @@ form TinySOL Orchestration Retrieval v1.3
     boolean Stereo_output 0
     boolean Speech_mode 0
     # ── Match quality gate ───────────────────────────────────────────
-    # If the best match score exceeds this threshold the output is
-    # silence rather than a bad corpus substitute.  Score range: 0–1
-    # (lower = better match).
-    # Default 1.0 = DISABLED (always renders a match).
-    # Lower to e.g. 0.85 only once you know your typical score range.
     real Silence_threshold 2.0
 endform
 
-# ---- APPLY PRESET (overrides form fields when not Custom) ----
-#
-# REF-whole  — whole-file reference preset
-#   Stable, mono, best-match-only, full harmonic weight.
-#   Use this as the baseline before testing anything else.
-#
-# REF-frame  — frame-based reference preset
-#   Frame mode with sane hop, harmonic scoring on, mono, best per frame.
-#   Enable stereo / pitch_pan only after this sounds stable.
-#
-# REF-orchids — Orchidea-architecture preset (new in v1.2)
-#   Whole-file, raised specenv weight (Hellinger distance in Python),
-#   hard MIDI filter, silence threshold 0.80. Best starting point for
-#   evaluating the v1.3 Python engine improvements.
+# Sanitize input paths from the UI to ensure forward slashes
+dB_directory$ = replace_regex$(dB_directory$, "\\", "/", 0)
+corpus_root$  = replace_regex$(corpus_root$, "\\", "/", 0)
 
+# ---- APPLY PRESET ----
 if preset = 2
-    # REF-whole
     analysisStr$             = "whole_file"
     analysis_mode            = 1
     mFCC_weight              = 0.25
@@ -206,18 +203,14 @@ if preset = 2
     specpeaks_weight         = 0.15
     harmonic_weight          = 0.35
     dynStr$                  = "mf,ff"
-    # preferred_dynamics 6 = mf + ff
     preferred_dynamics       = 6
-    # render_mode 1 = best
     render_mode              = 1
     renderStr$               = "best"
     stereo_output            = 0
     pitch_pan_in_stereo      = 0
     draw_visualization       = 1
     silence_threshold        = 1.0
-    appendInfoLine: ">>> Preset: REF-whole applied <<<"
 elsif preset = 3
-    # REF-frame
     analysisStr$             = "frame_based"
     analysis_mode            = 2
     frame_size_ms            = 150
@@ -229,21 +222,14 @@ elsif preset = 3
     specpeaks_weight         = 0.15
     harmonic_weight          = 0.35
     dynStr$                  = "mf,ff"
-    # preferred_dynamics 6 = mf + ff
     preferred_dynamics       = 6
-    # render_mode 1 = best
     render_mode              = 1
     renderStr$               = "best"
     stereo_output            = 0
     pitch_pan_in_stereo      = 0
     draw_visualization       = 1
     silence_threshold        = 1.0
-    appendInfoLine: ">>> Preset: REF-frame applied <<<"
 elsif preset = 4
-    # REF-orchids — Orchidea-architecture reference preset (new in v1.2)
-    #   Whole-file, hard MIDI filter, silence threshold DISABLED (1.0).
-    #   Use this to explore the new domain-first scoring, then lower
-    #   silence_threshold manually once you know your score range.
     analysisStr$             = "whole_file"
     analysis_mode            = 1
     mFCC_weight              = 0.20
@@ -259,15 +245,9 @@ elsif preset = 4
     pitch_pan_in_stereo      = 0
     draw_visualization       = 1
     silence_threshold        = 1.0
-    appendInfoLine: ">>> Preset: REF-orchids applied (hard MIDI filter, silence gate disabled) <<<"
 endif
 
 if preset = 5
-    # Speech — optimised for vocal / speech input
-    #   Zeroes the harmonic weight (orchestral harmonic matching is meaningless
-    #   for speech) and boosts MFCC + specenv to capture timbre.
-    #   silence_threshold raised to 2.0 so imperfect matches still render.
-    #   speech_mode=1 also overrides weights in the Python backend.
     analysisStr$             = "whole_file"
     analysis_mode            = 1
     mFCC_weight              = 0.45
@@ -284,7 +264,6 @@ if preset = 5
     draw_visualization       = 1
     silence_threshold        = 2.0
     speech_mode              = 1
-    appendInfoLine: ">>> Preset: Speech applied (harmonic=0, silence gate raised) <<<"
 endif
 
 # ---- CLAMP numerical inputs ----
@@ -410,12 +389,19 @@ endif
 
 # ---- INFO header ----
 clearinfo
-writeInfoLine:  "=== TinySOL Orchestration Retrieval v1.3 ==="
+writeInfoLine:  "=== TinySOL Orchestration Retrieval v1.4 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "DB dir:  ", dB_directory$
 appendInfoLine: "Corpus:  ", corpus_root$
-appendInfoLine: "NOTE: On first run check Python console for '[IDX] Descriptor coverage'."
-appendInfoLine: "      If coverage is near 0%%, fix db_dir / corpus_root paths before tuning."
+if preset = 2
+    appendInfoLine: ">>> Preset: REF-whole applied <<<"
+elsif preset = 3
+    appendInfoLine: ">>> Preset: REF-frame applied <<<"
+elsif preset = 4
+    appendInfoLine: ">>> Preset: REF-orchids applied (hard MIDI filter, silence gate disabled) <<<"
+elsif preset = 5
+    appendInfoLine: ">>> Preset: Speech applied (harmonic=0, silence gate raised) <<<"
+endif
 appendInfoLine: ""
 appendInfoLine: "Families:   ", familyStr$
 appendInfoLine: "Dynamics:   ", dynStr$
@@ -439,24 +425,76 @@ sr        = Get sampling frequency
 nChannels = Get number of channels
 rms_orig  = Get root-mean-square: 0, 0
 
-appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: ", nChannels
-appendInfoLine: ""
+# ===========================================================================
+# Stage 0 — Early Python Dependency Probe
+# ===========================================================================
+appendInfoLine: "[0/5] Detecting Python dependencies..."
+
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import numpy, scipy, soundfile"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
+
+if windows
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
+endif
+
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        iCand = nCandidates + 1 ; Break early
+    endif
+endfor
+
+deleteFile: probePy$
+
+if pythonCmd$ = ""
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile"
+endif
+
+appendInfoLine: "  Python found: ", pythonCmd$
 
 # ===========================================================================
 # Stage 1 — Export target WAV
 # ===========================================================================
-
 appendInfoLine: "[1/5] Exporting target audio..."
-
 selectObject: sound
 Save as WAV file: tempInput$
 
 # ===========================================================================
 # Stage 2 — Write params file
 # ===========================================================================
-
 appendInfoLine: "[2/5] Writing parameter file..."
-
 deleteFile: tempParams$
 
 # Build descriptor weight string
@@ -491,46 +529,35 @@ appendFileLine: tempParams$, "speech_mode=" + string$(speech_mode)
 # ===========================================================================
 # Stage 3 — Run Python backend
 # ===========================================================================
-
 appendInfoLine: "[3/5] Running Python retrieval engine..."
-appendInfoLine: "  Python: ", pythonExe$
 appendInfoLine: "  (this may take a few seconds on first run while the"
 appendInfoLine: "   corpus index is built from the .db files)"
 appendInfoLine: ""
 
-# Clean up any stale done file
-if fileReadable(doneFile$)
-    deleteFile: doneFile$
-endif
+pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
+    ... + " """ + tempInputJ$   + """"
+    ... + " """ + tempParamsJ$  + """"
+    ... + " """ + tempOutputJ$  + """"
+    ... + " """ + tempResultsJ$ + """"
+    ... + " """ + doneFileJ$    + """"
 
-q$ = """"
-pythonCmd$ = pythonExe$ + " " + q$ + pythonScript$ + q$ + " "
-    ... + q$ + tempInput$   + q$ + " "
-    ... + q$ + tempParams$  + q$ + " "
-    ... + q$ + tempOutput$  + q$ + " "
-    ... + q$ + tempResults$ + q$ + " "
-    ... + q$ + doneFile$    + q$
-
-runSystem: pythonCmd$
+runSystem_nocheck: pythonCall$
 
 # ---- Check done file for status ----
 if fileReadable(doneFile$)
     doneStatus$ = readFile$(doneFile$)
     if index(doneStatus$, "ERROR") > 0
-        exitScript: "Python backend reported an error:" + newline$
-            ... + doneStatus$
+        @cleanUpTempFiles
+        exitScript: "Python backend reported an error:" + newline$ + doneStatus$
     endif
 elsif not fileReadable(tempOutput$)
-    exitScript: "Python backend did not produce output WAV." + newline$
-        ... + "Check the Praat Info window and verify:" + newline$
-        ... + "  - numpy, soundfile, scipy are installed" + newline$
-        ... + "  - DB directory and corpus root paths are correct"
+    @cleanUpTempFiles
+    exitScript: "Python backend did not produce output WAV." + newline$ + "Check the Praat Info window and verify paths."
 endif
 
 # ===========================================================================
 # Stage 4 — Import result
 # ===========================================================================
-
 appendInfoLine: "[4/5] Importing result..."
 
 Read from file: tempOutput$
@@ -545,7 +572,6 @@ rms_out   = Get root-mean-square: 0, 0
 # ===========================================================================
 # Stage 5 — Parse results file + display
 # ===========================================================================
-
 appendInfoLine: "[5/5] Reading retrieval results..."
 appendInfoLine: ""
 
@@ -575,12 +601,9 @@ if fileReadable(tempResults$)
     endif
 
     # Parse top-ranked match from the CSV section
-    # Format: rank,score,family,instrument,note,midi,dynamic,variant,...
-    # Find line starting with "1,"
     csvStart = index(resultText$, newline$ + "1,")
     if csvStart > 0
         lineStart = csvStart + 1
-        # index_regex takes only 2 args in Praat — work on the tail substring
         tailText$ = mid$(resultText$, lineStart, length(resultText$) - lineStart + 1)
         nlPos = index(tailText$, newline$)
         if nlPos > 0
@@ -589,12 +612,10 @@ if fileReadable(tempResults$)
             firstLine$ = tailText$
         endif
 
-        # Split on commas: rank, score, family, inst, note, midi, dyn, ...
         nCommas = 0
         fieldCount = 0
         fieldStr$ = firstLine$
 
-        # Extract field by field (Praat has no split, so we do it manually)
         # field 1 = rank
         p = index(fieldStr$, ",")
         if p > 0
@@ -644,7 +665,6 @@ endif
 # ===========================================================================
 # Visualization (optional)
 # ===========================================================================
-
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
 
@@ -658,7 +678,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##TinySOL Orchestration Retrieval v1.3##"
+    Text: 0.5, "centre", 0.65, "half", "##TinySOL Orchestration Retrieval v1.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -836,18 +856,9 @@ if draw_visualization
 endif
 
 # ===========================================================================
-# Cleanup
+# Final Cleanup
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempParams$
-deleteFile: tempOutput$
-if fileReadable(tempResults$)
-    deleteFile: tempResults$
-endif
-if fileReadable(doneFile$)
-    deleteFile: doneFile$
-endif
+@cleanUpTempFiles
 
 # ===========================================================================
 # Summary
@@ -881,17 +892,14 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
-
 procedure parseStatLine: .text$, .key$
     .result$ = "?"
     .pos = index(.text$, .key$)
     if .pos > 0
         .start = .pos + length(.key$)
         .rest$ = mid$(.text$, .start, length(.text$) - .start + 1)
-        # Find end of line — try both \n and \r\n
         .nlPos = index(.rest$, newline$)
         if .nlPos = 0
-            # Fallback: try bare linefeed
             .nlPos = index(.rest$, unicode$(10))
         endif
         if .nlPos > 0
@@ -899,7 +907,6 @@ procedure parseStatLine: .text$, .key$
         else
             .result$ = .rest$
         endif
-        # Strip trailing carriage return if present
         if length(.result$) > 0
             if right$(.result$, 1) = unicode$(13)
                 .result$ = left$(.result$, length(.result$) - 1)

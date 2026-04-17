@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 2.1 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,13 +17,13 @@
 #   - Macro intensity: overall transformation strength (0-1)
 #   - Memory:          state machine inertia/hysteresis (0-1)
 #   - Diffusion:       spectral smearing in Fluid regime (0-1)
-#   - Crystallization:  bias toward stable/Crystal regimes (0-1)
+#   - Crystallization: bias toward stable/Crystal regimes (0-1)
 #   - AI mode:         A=clustering  B=predictive  C=learned-entropy
 #   - AI strength:     AI influence on regime assignment (0-1)
 #   - Seed:            for full deterministic reproducibility
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -37,23 +37,85 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-# ---- PATHS (plugin-relative for distribution) ----
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$ = pluginDir$ + "py/thermodynamic_transform.py"
-tempInput$   = pluginDir$ + "temp_thermo_input.wav"
-tempCSV$     = pluginDir$ + "temp_thermo_features.csv"
-tempOutput$  = pluginDir$ + "temp_thermo_output.wav"
-tempRegimes$ = pluginDir$ + "temp_thermo_regimes.txt"
-tempStats$   = pluginDir$ + "temp_thermo_stats.txt"
-
-# Verify Python script exists
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+# ---- OS-SPECIFIC PYTHON DISCOVERY ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
+    else
+        pythonCmd$ = "python3"
+    endif
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
 
+# ---- PATHS & UNIFIED CROSS-PLATFORM FIX ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
+pythonScript$ = pluginDir$ + "py/thermodynamic_transform.py"
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/thermodynamic_transform.py"
+endif
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: thermodynamic_transform.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+endif
+
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+tempInput$   = tempDir$ + "temp_thermo_input.wav"
+tempCSV$     = tempDir$ + "temp_thermo_features.csv"
+tempOutput$  = tempDir$ + "temp_thermo_output.wav"
+tempRegimes$ = tempDir$ + "temp_thermo_regimes.txt"
+tempStats$   = tempDir$ + "temp_thermo_stats.txt"
+probePy$     = tempDir$ + "temp_thermo_probe.py"
+probeMarker$ = tempDir$ + "temp_thermo_probe.ok"
+
+# Enforce forward slashes for all temporary paths passed to python
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
+tempInputJ$    = replace_regex$(tempInput$, "\\", "/", 0)
+tempCSVJ$      = replace_regex$(tempCSV$, "\\", "/", 0)
+tempOutputJ$   = replace_regex$(tempOutput$, "\\", "/", 0)
+tempRegimesJ$  = replace_regex$(tempRegimes$, "\\", "/", 0)
+tempStatsJ$    = replace_regex$(tempStats$, "\\", "/", 0)
+probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(tempRegimes$)
+        deleteFile: tempRegimes$
+    endif
+    if fileReadable(tempStats$)
+        deleteFile: tempStats$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
 # ---- FORM ----
-form Thermodynamic Transform v1.0
+form Thermodynamic Transform v2.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -133,7 +195,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Thermodynamic Transform v2.0 (Event Relocation) ==="
+writeInfoLine:  "=== Thermodynamic Transform v2.1 (Event Relocation) ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -157,6 +219,65 @@ appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: 
 appendInfoLine: ""
 
 # ===========================================================================
+# Stage 0 — Early Python Dependency Probe
+# ===========================================================================
+appendInfoLine: "[0/5] Detecting Python dependencies..."
+
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import numpy, scipy, soundfile, sklearn"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
+
+if windows
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
+endif
+
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        iCand = nCandidates + 1 ; Break early
+    endif
+endfor
+
+deleteFile: probePy$
+
+if pythonCmd$ = ""
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile scikit-learn"
+endif
+
+appendInfoLine: "  Python found: ", pythonCmd$
+
+# ===========================================================================
 # Stage 1 — Feature Extraction
 # ===========================================================================
 
@@ -165,6 +286,7 @@ appendInfoLine: "[1/5] Extracting acoustic features..."
 hopSec = 0.01
 nFrames = floor(dur / hopSec)
 if nFrames < 10
+    @cleanUpTempFiles
     exitScript: "Sound is too short for analysis (need > 0.1 s)."
 endif
 
@@ -270,84 +392,17 @@ Save as comma-separated file: tempCSV$
 removeObject: analysisMono, pitchObj, harmObj, intObj, formantObj, featureTable
 
 # ===========================================================================
-# Stage 2–5 — Call Python
+# Stage 3 — Call Python
 # ===========================================================================
 
 appendInfoLine: "[3/5] Running Python engine (this may take a while)..."
 
-# ---- Robust Python detection ----
-# On Windows, "py" and "python" can resolve to different installations.
-# We probe each candidate by asking it to import sklearn and write a marker.
-probeMarker$ = pluginDir$ + "temp_pyprobe.ok"
-
-# Candidate list (order matters — first success wins)
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    # Delete marker if leftover
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    # Probe: import all required packages; write marker on success
-    probeCode$ = "import numpy,soundfile,scipy,sklearn; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    # Cleanup before exit
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find a Python installation with the required packages." + newline$
-        ... + "" + newline$
-        ... + "Tried: python, py, py -3, python3" + newline$
-        ... + "" + newline$
-        ... + "Please install the packages into your Python and ensure it is in PATH:" + newline$
-        ... + "  pip install numpy soundfile scipy scikit-learn" + newline$
-        ... + "" + newline$
-        ... + "To check which Python pip uses:   pip --version" + newline$
-        ... + "Then call that same Python, e.g.:  python --version"
-endif
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " """ + tempInput$ + """"
-    ... + " """ + tempCSV$ + """"
-    ... + " """ + tempOutput$ + """"
-    ... + " """ + tempRegimes$ + """"
-    ... + " """ + tempStats$ + """"
+pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
+    ... + " """ + tempInputJ$ + """"
+    ... + " """ + tempCSVJ$ + """"
+    ... + " """ + tempOutputJ$ + """"
+    ... + " """ + tempRegimesJ$ + """"
+    ... + " """ + tempStatsJ$ + """"
     ... + " " + fixed$(thermo_intensity, 4)
     ... + " " + fixed$(memory, 4)
     ... + " " + fixed$(convection, 4)
@@ -357,29 +412,16 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + string$(seed)
     ... + " " + fixed$(hopSec, 4)
 
+runSystem_nocheck: pythonCall$
+
 # ---- Verify output ----
 if not fileReadable(tempOutput$)
-    # Cleanup on failure
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-    exitScript: "Python thermodynamic engine failed." + newline$
-        ... + "" + newline$
-        ... + "Python command used: " + pythonCmd$ + newline$
-        ... + "" + newline$
-        ... + "Possible causes:" + newline$
-        ... + "  - A package version is incompatible with Python 3.7" + newline$
-        ... + "  - Input audio is corrupt or empty" + newline$
-        ... + "  - Out of memory for very long files" + newline$
-        ... + "" + newline$
-        ... + "Run this in your terminal to see the exact error:" + newline$
-        ... + "  " + pythonCmd$ + " """ + pythonScript$ + """ --help"
+    @cleanUpTempFiles
+    exitScript: "Python thermodynamic engine failed. Check terminal for error details."
 endif
 
 # ===========================================================================
-# Import Result
+# Stage 4 - Import Result
 # ===========================================================================
 
 appendInfoLine: "[4/5] Importing result..."
@@ -393,28 +435,27 @@ rms_out = Get root-mean-square: 0, 0
 durOut = Get total duration
 
 # ===========================================================================
-# Read stats file for visualization
+# Read stats & regimes for visualization
 # ===========================================================================
 
 # Parse stats
-crystalPct$ = "?"
-fluidPct$ = "?"
-gasPct$ = "?"
-plasmaPct$ = "?"
+crystalPct$   = "?"
+fluidPct$     = "?"
+gasPct$       = "?"
+plasmaPct$    = "?"
 nTransitions$ = "?"
-meanEntropy$ = "?"
-peakEntropy$ = "?"
-meanTemp$ = "?"
-nClusters$ = "?"
-nEvents$ = "?"
-nRelocated$ = "?"
-nEvaporated$ = "?"
-nDuplicated$ = "?"
+meanEntropy$  = "?"
+peakEntropy$  = "?"
+meanTemp$     = "?"
+nClusters$    = "?"
+nEvents$      = "?"
+nRelocated$   = "?"
+nEvaporated$  = "?"
+nDuplicated$  = "?"
 meanEventDur$ = "?"
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
-    # Parse key=value lines
     @parseStatLine: statsText$, "crystal_pct="
     crystalPct$ = parseStatLine.result$
     @parseStatLine: statsText$, "fluid_pct="
@@ -445,17 +486,11 @@ if fileReadable(tempStats$)
     meanEventDur$ = parseStatLine.result$
 endif
 
-# ===========================================================================
-# Read regime file for timeline visualization
-# ===========================================================================
-
-# Count regime frames
 nRegimeFrames = 0
 regimeHop = hopSec
 
 if fileReadable(tempRegimes$)
     regimeText$ = readFile$(tempRegimes$)
-    # First line is hop_sec=..., rest are regime indices
     nRegimeFrames = 0
     @countLines: regimeText$
     nRegimeFrames = countLines.n - 1
@@ -563,14 +598,11 @@ if draw_visualization
     Axes: 0, dur, -0.5, 3.5
     Paint rectangle: "{0.97, 0.97, 0.98}", 0, dur, -0.5, 3.5
 
-    # Draw regime bands from file (if available)
     if fileReadable(tempRegimes$) and nRegimeFrames > 0
-        # Read regime data line by line
         regimeLines$ = readFile$(tempRegimes$)
         lineStart = 1
         regIdx = 0
         for iLine from 1 to nRegimeFrames + 1
-            # Find end of current line
             lineEnd = index(mid$(regimeLines$, lineStart, length(regimeLines$)), newline$)
             if lineEnd = 0
                 lineEnd = length(regimeLines$) - lineStart + 2
@@ -578,9 +610,8 @@ if draw_visualization
             currentLine$ = mid$(regimeLines$, lineStart, lineEnd - 1)
             lineStart = lineStart + lineEnd
 
-            # Skip header line (hop_sec=...)
             if iLine = 1
-                # This is the header; skip
+                # Skip header
             else
                 regIdx = regIdx + 1
                 rVal = number(currentLine$)
@@ -590,7 +621,6 @@ if draw_visualization
                     tEnd = dur
                 endif
 
-                # Paint by regime colour
                 if rVal = 0
                     Paint rectangle: "{0.3, 0.5, 0.9}", tStart, tEnd, rVal - 0.35, rVal + 0.35
                 elsif rVal = 1
@@ -694,21 +724,9 @@ else
 endif
 
 # ===========================================================================
-# Cleanup — always delete temp files
+# Final Cleanup
 # ===========================================================================
-
-deleteFile: tempInput$
-deleteFile: tempCSV$
-deleteFile: tempOutput$
-if fileReadable(tempRegimes$)
-    deleteFile: tempRegimes$
-endif
-if fileReadable(tempStats$)
-    deleteFile: tempStats$
-endif
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
+@cleanUpTempFiles
 
 # ===========================================================================
 # Summary
