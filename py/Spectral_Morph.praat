@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.1 (2025) — Distribution-ready
+# Version: 4.2 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,7 +18,7 @@
 #   3. Formant/envelope  – cepstral envelope morph, A excitation
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # ============================================================
@@ -34,22 +34,125 @@ soundB = selected("Sound", 2)
 nameA$ = selected$("Sound", 1)
 nameB$ = selected$("Sound", 2)
 
-# ---- PATHS (plugin-relative for distribution) ----
-pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
+# ---- PATHS ----
+pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
+pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
+
 pythonScript$ = pluginDir$ + "py/spectral_morph.py"
-
-
-tempA$      = pluginDir$ + "morphA.wav"
-tempB$      = pluginDir$ + "morphB.wav"
-tempOutput$ = pluginDir$ + "morph_out.wav"
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 
 if not fileReadable(pythonScript$)
     exitScript: "Cannot find Python script: " + pythonScript$ + newline$
         ... + "Please verify AudioTools installation."
 endif
 
+tempDirRaw$ = temporaryDirectory$ + "/"
+tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+
+tempA$       = tempDir$ + "morph_A.wav"
+tempB$       = tempDir$ + "morph_B.wav"
+tempOutput$  = tempDir$ + "morph_output.wav"
+probePy$     = tempDir$ + "morph_probe.py"
+probeMarker$ = tempDir$ + "morph_probe.ok"
+
+tempAJ$       = replace_regex$(tempA$,       "\\", "/", 0)
+tempBJ$       = replace_regex$(tempB$,       "\\", "/", 0)
+tempOutputJ$  = replace_regex$(tempOutput$,  "\\", "/", 0)
+probePyJ$     = replace_regex$(probePy$,     "\\", "/", 0)
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+# ---- CLEANUP PROCEDURE ----
+procedure cleanUpTempFiles
+    if fileReadable(tempA$)
+        deleteFile: tempA$
+    endif
+    if fileReadable(tempB$)
+        deleteFile: tempB$
+    endif
+    if fileReadable(tempOutput$)
+        deleteFile: tempOutput$
+    endif
+    if fileReadable(probePy$)
+        deleteFile: probePy$
+    endif
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+endproc
+
+@cleanUpTempFiles
+
+# ---- GET INPUT STATS ----
+selectObject: soundA
+durA = Get total duration
+srA  = Get sampling frequency
+nchA = Get number of channels
+
+selectObject: soundB
+durB = Get total duration
+srB  = Get sampling frequency
+nchB = Get number of channels
+
+# ===========================================================================
+# STAGE 0 — Python Probe (file-based, runs before form)
+# ===========================================================================
+
+if windows
+    nCandidates = 4
+    candidate1$ = "python"
+    candidate2$ = "py"
+    candidate3$ = "py -3"
+    candidate4$ = "python3"
+else
+    nCandidates = 3
+    candidate1$ = "python3"
+    candidate2$ = "python"
+    candidate3$ = "py"
+    candidate4$ = ""
+endif
+
+writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "try:"
+appendFileLine: probePy$, "    import numpy, scipy, soundfile"
+appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
+appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    sys.exit(1)"
+
+pythonCmd$ = ""
+for iCand from 1 to nCandidates
+    if iCand = 1
+        tryCmd$ = candidate1$
+    elsif iCand = 2
+        tryCmd$ = candidate2$
+    elsif iCand = 3
+        tryCmd$ = candidate3$
+    else
+        tryCmd$ = candidate4$
+    endif
+
+    if fileReadable(probeMarker$)
+        deleteFile: probeMarker$
+    endif
+
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+
+    if fileReadable(probeMarker$)
+        pythonCmd$ = tryCmd$
+        deleteFile: probeMarker$
+        iCand = nCandidates + 1
+    endif
+endfor
+
+deleteFile: probePy$
+
+if pythonCmd$ = ""
+    @cleanUpTempFiles
+    exitScript: "Cannot find Python with numpy, scipy and soundfile." + newline$
+        ... + "Install Python 3 and run:  pip install numpy scipy soundfile"
+endif
+
 # ---- FORM ----
-form Spectral Morph v4.1
+form Spectral Morph v4.2
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -110,20 +213,9 @@ endif
 
 window_s = window_ms / 1000
 
-# ---- GET DURATIONS ----
-selectObject: soundA
-durA = Get total duration
-srA  = Get sampling frequency
-nchA = Get number of channels
-
-selectObject: soundB
-durB = Get total duration
-srB  = Get sampling frequency
-nchB = Get number of channels
-
 commonDuration = max(durA, durB)
 
-# Clamp morph region
+# ---- CLAMP MORPH REGION ----
 if end_morph_s <= start_morph_s or end_morph_s <= 0
     end_morph_s = commonDuration
 endif
@@ -152,7 +244,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Spectral Morph v4.1 (Python engine) ==="
+writeInfoLine:  "=== Spectral Morph v4.2 ==="
 appendInfoLine: "A: ", nameA$, "  (", fixed$(durA, 2), " s)"
 appendInfoLine: "B: ", nameB$, "  (", fixed$(durB, 2), " s)"
 appendInfoLine: "Preset:  ", presetName$
@@ -160,10 +252,13 @@ appendInfoLine: "Mode:    ", modeLabel$
 appendInfoLine: "Curve:   ", curveLabel$
 appendInfoLine: "Window:  ", fixed$(window_ms, 0), " ms"
 appendInfoLine: "Region:  ", fixed$(start_morph_s, 2), " – ", fixed$(end_morph_s, 2), " s"
+appendInfoLine: "Python:  ", pythonCmd$
 appendInfoLine: ""
 
-# ---- EXPORT BOTH SOUNDS ----
-appendInfoLine: "[1/5] Exporting WAVs..."
+# ===========================================================================
+# STAGE 1 — Export WAVs
+# ===========================================================================
+appendInfoLine: "[1/4] Exporting WAVs..."
 
 selectObject: soundA
 Save as WAV file: tempA$
@@ -171,68 +266,15 @@ Save as WAV file: tempA$
 selectObject: soundB
 Save as WAV file: tempB$
 
-# ---- DETECT PYTHON ----
-appendInfoLine: "[2/4] Detecting Python..."
+# ===========================================================================
+# STAGE 2 — Call Python
+# ===========================================================================
+appendInfoLine: "[2/4] Running Python morphing engine..."
 
-probeMarker$ = pluginDir$ + "temp_morph_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,soundfile; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempA$
-    deleteFile: tempB$
-    exitScript: "Cannot find Python with required packages." + newline$
-        ... + "Install: pip install numpy soundfile"
-endif
-
-# ---- CALL PYTHON ----
-appendInfoLine: "[3/4] Running Python morphing engine..."
-
-runSystem: pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " """ + tempA$ + """"
-    ... + " """ + tempB$ + """"
-    ... + " """ + tempOutput$ + """"
+runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """"
+    ... + " """ + tempAJ$ + """"
+    ... + " """ + tempBJ$ + """"
+    ... + " """ + tempOutputJ$ + """"
     ... + " " + fixed$(window_s, 6)
     ... + " " + fixed$(start_morph_s, 6)
     ... + " " + fixed$(end_morph_s, 6)
@@ -240,20 +282,19 @@ runSystem: pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + string$(curve_type)
     ... + " " + fixed$(mix_amount, 4)
 
-# ---- VERIFY OUTPUT ----
+# ===========================================================================
+# STAGE 3 — Verify & Import
+# ===========================================================================
 if not fileReadable(tempOutput$)
-    deleteFile: tempA$
-    deleteFile: tempB$
+    @cleanUpTempFiles
     exitScript: "Python spectral morph failed." + newline$
         ... + "Possible causes:" + newline$
-        ... + "  - numpy or soundfile not installed" + newline$
-        ... + "  - scipy needed for sample rate conversion" + newline$
+        ... + "  - numpy, scipy or soundfile not installed" + newline$
         ... + "  - Python not found in PATH" + newline$
         ... + "Check the terminal/console for Python error messages."
 endif
 
-# ---- IMPORT RESULT ----
-appendInfoLine: "[4/5] Importing result..."
+appendInfoLine: "[3/4] Importing result..."
 
 Read from file: tempOutput$
 Rename: nameA$ + "_morph_" + nameB$
@@ -263,19 +304,12 @@ rms_out = Get root-mean-square: 0, 0
 
 appendInfoLine: "  Output: ", fixed$(outputDuration, 2), " s"
 
-# ---- CLEANUP TEMP FILES ----
-deleteFile: tempA$
-deleteFile: tempB$
-deleteFile: tempOutput$
-if fileReadable(probeMarker$)
-    deleteFile: probeMarker$
-endif
-
 ###############################################################################
 # VISUALIZATION
 ###############################################################################
 
 if draw_visualization
+    appendInfoLine: "[4/4] Creating visualization..."
 
     selectObject: soundA
     if nchA > 1
@@ -299,7 +333,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Spectral Morph v4.1##"
+    Text: 0.5, "centre", 0.6, "half", "##Spectral Morph v4.2##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.6, "half", nameA$ + " → " + nameB$ + " | " + presetName$ + " | " + modeLabel$
@@ -465,10 +499,14 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
 else
-    appendInfoLine: "[5/5] Visualization skipped."
+    appendInfoLine: "[4/4] Visualization skipped."
 endif
 
-# ---- FINISH ----
+# ===========================================================================
+# CLEANUP & SUMMARY
+# ===========================================================================
+@cleanUpTempFiles
+
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output: ", nameA$, "_morph_", nameB$
