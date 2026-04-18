@@ -3,26 +3,39 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2025) - Audio Analysis Input Pipeline
+# Version: 2.2 (2025) - Attack reshape, rhythm palette, note-name display
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-# KlattGrid flute synthesis with dodecaphonic melody
-# and serial rhythm derived from the tone row.
+#   KlattGrid flute synthesis with dodecaphonic melody and
+#   interval-derived rhythm palette.
+#
 # SERIAL TECHNIQUE:
 #   - A 12-tone row is generated from a user-chosen seed pitch.
 #   - The row contains all 12 chromatic pitch classes exactly once.
-#   - A serial rhythm row (also 12 values) is derived from the
-#     pitch-class intervals: interval → IOI in seconds.
-#   - The melody plays the pitch row once through, each note
-#     lasting its serial duration.
+#   - A 5-value rhythm palette spanning Min_IOI..Max_IOI is built.
+#   - Each note's duration is the palette value picked by its
+#     pitch-class interval to the next note: small intervals pick
+#     short values, large intervals pick long values.
 #
-# CHIFF LAYERS (v4, preserved):
+# CHIFF LAYERS (first note only):
 #   A: broadband turbulence burst (~40 ms)
-#   B: sub-tone pitch sweep (60%→100% of note over ~130 ms)
+#   B: sub-tone pitch sweep (60%->100% of note over ~130 ms)
 #   C: high-frequency frication edge (~30 ms)
 #
+# v2.2 notes:
+#   * Attack tightened: voicing audible by ~10 ms, full by ~80 ms.
+#     Old design was silent until ~140 ms then climbed 63 dB in
+#     160 ms, producing a late crescendo slap rather than a natural
+#     onset.
+#   * Rhythm: 5-value palette (min..max, 4 steps) replaces the linear
+#     interval->IOI map. Notes sit on discrete durations so the
+#     sequence has a serial rhythmic identity rather than drifting.
+#   * Defaults narrowed: Min 0.20 / Max 0.80 / Scale 1.0 gives a
+#     4:1 duration ratio within one breathing tempo.
+#   * Display: all pitch readouts use note names (C5, F#4) instead
+#     of raw Hz. Vibrato rate stays in Hz since it is a rate.
 # ============================================================
 
 form Flute KlattGrid Serial Melody
@@ -45,10 +58,10 @@ form Flute KlattGrid Serial Melody
         option Inversion (I0)
         option Retrograde (R0)
         option Retrograde-Inversion (RI0)
-    comment === Serial Rhythm ===
-    positive Min_IOI_s 0.15
-    positive Max_IOI_s 1.20
-    positive Duration_scale 2.5
+    comment === Serial Rhythm (palette Min..Max in 5 steps) ===
+    positive Min_IOI_s 0.20
+    positive Max_IOI_s 0.80
+    positive Duration_scale 1.0
     comment === Flute Body ===
     real Open_phase 0.90
     real Vibrato_rate_Hz 5.3
@@ -65,27 +78,14 @@ endform
 
 # ============================================================
 # PRESET APPLICATION
-# Overwrite form values when a named preset is selected.
-# Preset 1 = Custom → keep all user values as-is.
 # ============================================================
-#
-# Preset parameter table:
-#   Preset name          | freq  | oct | minIOI | maxIOI | scale | open | vib_r | vib_d | voice | asp  | chA  | chB  | chC
-#   Default Flute        | 523.25|  5  |  0.15  |  1.20  |  2.5  | 0.90 |  5.3  |  0.25 |  90   |  54  | 0.06 | 0.04 | 0.02
-#   Baroque Flute        | 440.0 |  4  |  0.20  |  0.90  |  2.0  | 0.85 |  5.8  |  0.18 |  88   |  50  | 0.04 | 0.06 | 0.01
-#   Irish Folk Flute     | 587.33|  5  |  0.10  |  0.60  |  1.5  | 0.92 |  6.5  |  0.40 |  92   |  56  | 0.10 | 0.05 | 0.03
-#   Breathy Alto Flute   | 392.0 |  4  |  0.25  |  1.50  |  3.0  | 0.95 |  4.5  |  0.20 |  82   |  62  | 0.03 | 0.02 | 0.05
-#   Piercing Piccolo     |1046.5 |  6  |  0.08  |  0.50  |  1.2  | 0.88 |  7.2  |  0.30 |  94   |  48  | 0.08 | 0.07 | 0.04
-#   Mellow Bass Flute    | 261.63|  4  |  0.30  |  1.80  |  3.5  | 0.96 |  4.0  |  0.15 |  85   |  58  | 0.02 | 0.02 | 0.01
-#   Sul Ponticello (Glassy)| 523.25| 5 |  0.18  |  1.00  |  2.0  | 0.98 |  3.0  |  0.08 |  78   |  66  | 0.01 | 0.01 | 0.06
-
 if preset = 2
-    # Default Flute — the script's original values
+    ; Default Flute
     frequency_Hz       = 523.25
     base_octave        = 5
-    min_IOI_s          = 0.15
-    max_IOI_s          = 1.20
-    duration_scale     = 2.5
+    min_IOI_s          = 0.20
+    max_IOI_s          = 0.80
+    duration_scale     = 1.0
     open_phase         = 0.90
     vibrato_rate_Hz    = 5.3
     vibrato_depth_st   = 0.25
@@ -97,12 +97,12 @@ if preset = 2
     appendInfoLine: "[Preset] Default Flute loaded."
 
 elsif preset = 3
-    # Baroque Flute — lower pitch, gentler vibrato, more chiff B (embouchure colour)
+    ; Baroque Flute — lower pitch, gentler vibrato, more chiff B
     frequency_Hz       = 440.0
     base_octave        = 4
     min_IOI_s          = 0.20
-    max_IOI_s          = 0.90
-    duration_scale     = 2.0
+    max_IOI_s          = 0.70
+    duration_scale     = 1.0
     open_phase         = 0.85
     vibrato_rate_Hz    = 5.8
     vibrato_depth_st   = 0.18
@@ -114,12 +114,12 @@ elsif preset = 3
     appendInfoLine: "[Preset] Baroque Flute loaded."
 
 elsif preset = 4
-    # Irish Folk Flute — bright, fast articulation, punchy chiff A
+    ; Irish Folk Flute — bright, fast articulation
     frequency_Hz       = 587.33
     base_octave        = 5
-    min_IOI_s          = 0.10
-    max_IOI_s          = 0.60
-    duration_scale     = 1.5
+    min_IOI_s          = 0.15
+    max_IOI_s          = 0.50
+    duration_scale     = 1.0
     open_phase         = 0.92
     vibrato_rate_Hz    = 6.5
     vibrato_depth_st   = 0.40
@@ -131,12 +131,12 @@ elsif preset = 4
     appendInfoLine: "[Preset] Irish Folk Flute loaded."
 
 elsif preset = 5
-    # Breathy Alto Flute — lower register, high breathiness, slow and spacious
+    ; Breathy Alto Flute — slow and spacious
     frequency_Hz       = 392.0
     base_octave        = 4
-    min_IOI_s          = 0.25
-    max_IOI_s          = 1.50
-    duration_scale     = 3.0
+    min_IOI_s          = 0.30
+    max_IOI_s          = 1.20
+    duration_scale     = 1.0
     open_phase         = 0.95
     vibrato_rate_Hz    = 4.5
     vibrato_depth_st   = 0.20
@@ -148,12 +148,12 @@ elsif preset = 5
     appendInfoLine: "[Preset] Breathy Alto Flute loaded."
 
 elsif preset = 6
-    # Piercing Piccolo — high register, fast notes, strong edge chiff C
+    ; Piercing Piccolo — very fast
     frequency_Hz       = 1046.5
     base_octave        = 6
-    min_IOI_s          = 0.08
-    max_IOI_s          = 0.50
-    duration_scale     = 1.2
+    min_IOI_s          = 0.10
+    max_IOI_s          = 0.40
+    duration_scale     = 1.0
     open_phase         = 0.88
     vibrato_rate_Hz    = 7.2
     vibrato_depth_st   = 0.30
@@ -165,12 +165,12 @@ elsif preset = 6
     appendInfoLine: "[Preset] Piercing Piccolo loaded."
 
 elsif preset = 7
-    # Mellow Bass Flute — sub-register, slow and warm, minimal chiff
+    ; Mellow Bass Flute — slow and warm
     frequency_Hz       = 261.63
     base_octave        = 4
-    min_IOI_s          = 0.30
-    max_IOI_s          = 1.80
-    duration_scale     = 3.5
+    min_IOI_s          = 0.35
+    max_IOI_s          = 1.40
+    duration_scale     = 1.0
     open_phase         = 0.96
     vibrato_rate_Hz    = 4.0
     vibrato_depth_st   = 0.15
@@ -182,13 +182,12 @@ elsif preset = 7
     appendInfoLine: "[Preset] Mellow Bass Flute loaded."
 
 elsif preset = 8
-    # Sul Ponticello (Glassy) — nearly closed embouchure, slow vibrato,
-    #   very high breathiness (chiff C dominant), ethereal and hollow
+    ; Sul Ponticello (Glassy) — ethereal, hollow
     frequency_Hz       = 523.25
     base_octave        = 5
-    min_IOI_s          = 0.18
+    min_IOI_s          = 0.25
     max_IOI_s          = 1.00
-    duration_scale     = 2.0
+    duration_scale     = 1.0
     open_phase         = 0.98
     vibrato_rate_Hz    = 3.0
     vibrato_depth_st   = 0.08
@@ -204,7 +203,7 @@ else
 endif
 
 # ============================================================
-# Global constants / defaults for removed form fields
+# Global constants
 # ============================================================
 sr              = 44100
 pwr1            = 2
@@ -212,65 +211,51 @@ pwr2            = 10
 vibrato_amp_mod = 0.03
 amp_asp_peak_dB = 58
 amp_breath_dB   = 50
-attack_s        = 0.14
-stabilise_s     = 0.30
+
+; Attack timing (tightened in v2.2 — see header notes)
+attack_s        = 0.03    ; initial transient window
+stabilise_s     = 0.08    ; fully settled by this point
 release_s       = 0.25
 xfade_s         = 0.05
-single_note_dur = 2.5    ; duration for single-note mode
+single_note_dur = 2.5
 
 # ============================================================
 # 1.  12-TONE ROW GENERATION
 # ============================================================
-# Strategy:
-#   Start from a fixed seed sequence (Webern Op.24-style tritone
-#   construction) transposed to start on the user's pitch class.
-#   Then apply the requested row form (P/I/R/RI).
-#
-# seed_row#  = the 12 pitch-class intervals from note to note
-#              (semitones, positive = up, negative = down)
-# pc#        = the 12 pitch classes in order (0–11)
-# hz#        = final Hz values, placed in a sensible register
+# The seed is a pitch-class sequence with broad interval variety
+# (not a canonical all-interval row). Transposed to start on the
+# user's pitch class, then the chosen row form is applied.
 
-# --- Base row (pitch classes, 0=C) ---
-# A classic all-interval row: each adjacent interval is unique.
 base_pc# = {0, 11, 3, 4, 8, 7, 9, 6, 1, 5, 2, 10}
 
-# User's first pitch class from Frequency_Hz
-root_midi   = round(69 + 12 * log2(frequency_Hz / 440))
-root_pc     = root_midi mod 12
-base_octave_midi = (base_octave + 1) * 12   ; MIDI note for C in base_octave
+root_midi        = round(69 + 12 * log2(frequency_Hz / 440))
+root_pc          = root_midi mod 12
+base_octave_midi = (base_octave + 1) * 12
 
-# Declare vectors before indexed assignment (required in Praat)
-row_pc#    = zero# (12)
-final_pc#  = zero# (12)
-ri_pc#     = zero# (12)
+row_pc#     = zero# (12)
+final_pc#   = zero# (12)
+ri_pc#      = zero# (12)
 midi_notes# = zero# (12)
-note_hz#   = zero# (12)
-ioi#       = zero# (12)
+note_hz#    = zero# (12)
+ioi#        = zero# (12)
 
-# Transpose base row to start on root_pc
 for i from 1 to 12
     row_pc# [i] = (base_pc# [i] + root_pc) mod 12
 endfor
 
-# Apply row form
 if row_form = 1
-    # Prime: as-is
     for i from 1 to 12
         final_pc# [i] = row_pc# [i]
     endfor
 elsif row_form = 2
-    # Inversion: reflect pitch classes around root
     for i from 1 to 12
         final_pc# [i] = (root_pc - (row_pc# [i] - root_pc) + 120) mod 12
     endfor
 elsif row_form = 3
-    # Retrograde: reverse the row
     for i from 1 to 12
         final_pc# [i] = row_pc# [13 - i]
     endfor
 else
-    # Retrograde-Inversion
     for i from 1 to 12
         ri_pc# [i] = (root_pc - (row_pc# [i] - root_pc) + 120) mod 12
     endfor
@@ -279,18 +264,12 @@ else
     endfor
 endif
 
-# Assign each pitch class to a MIDI note in a sensible register.
-# Strategy: place each note within one octave of the previous,
-# choosing the nearest octave transposition (voice-leading style).
-midi_notes# = zero# (12)
+; Place each pitch class in the nearest octave to the previous note
 midi_notes# [1] = base_octave_midi + final_pc# [1]
-
 for i from 2 to 12
-    prev     = midi_notes# [i - 1]
-    this_pc  = final_pc# [i]
-    # Candidate in same octave as previous
-    cand     = floor(prev / 12) * 12 + this_pc
-    # Check candidate one octave up or down if closer to prev
+    prev    = midi_notes# [i - 1]
+    this_pc = final_pc# [i]
+    cand    = floor(prev / 12) * 12 + this_pc
     if abs(cand - prev) > 6
         if cand < prev
             cand = cand + 12
@@ -298,7 +277,6 @@ for i from 2 to 12
             cand = cand - 12
         endif
     endif
-    # Clamp to a playable flute range (MIDI 60–90 = C4–F#6)
     if cand < 60
         cand = cand + 12
     endif
@@ -308,23 +286,24 @@ for i from 2 to 12
     midi_notes# [i] = cand
 endfor
 
-# Convert MIDI to Hz
 for i from 1 to 12
     note_hz# [i] = 440 * (2 ^ ((midi_notes# [i] - 69) / 12))
 endfor
 
 # ============================================================
-# 2.  SERIAL RHYTHM DERIVATION
+# 2.  SERIAL RHYTHM DERIVATION (palette of 5 discrete values)
 # ============================================================
-# Derive a 12-value rhythm row from the pitch-class intervals.
-# Method:
-#   interval[i] = (final_pc[i+1] - final_pc[i] + 12) mod 12
-#   interval 0 (tritone enharmonic) → treated as 6
-#   Map interval 1–11 linearly to Min_IOI .. Max_IOI
-#   This gives each note a duration determined by where the
-#   row "moves" next — small intervals = short notes, large = long.
+# Build a 5-value palette spanning Min_IOI..Max_IOI in equal steps.
+# For each note, compute the pitch-class interval to the next note,
+# then map interval 0..11 onto palette index 1..5 so that small
+# intervals pick short durations and large intervals pick long ones.
+# Finally multiply by duration_scale.
 
-ioi_range = max_IOI_s - min_IOI_s
+rhythm_palette# = zero# (5)
+palette_step    = (max_IOI_s - min_IOI_s) / 4
+for i from 1 to 5
+    rhythm_palette# [i] = min_IOI_s + (i - 1) * palette_step
+endfor
 
 for i from 1 to 12
     if i < 12
@@ -332,22 +311,37 @@ for i from 1 to 12
     else
         intv = (final_pc# [1] - final_pc# [12] + 12) mod 12
     endif
-    if intv = 0
-        intv = 6
+    ; Map interval 0..11 -> palette index 1..5
+    pal_idx = floor(intv * 5 / 12) + 1
+    if pal_idx > 5
+        pal_idx = 5
     endif
-    ; Map 1..11 → min_IOI..max_IOI
-    ioi# [i] = min_IOI_s + (intv - 1) / 10 * ioi_range
+    if pal_idx < 1
+        pal_idx = 1
+    endif
+    ioi# [i] = rhythm_palette# [pal_idx] * duration_scale
 endfor
 
-; Stretch all note durations by the user-chosen scale factor
-for i from 1 to 12
-    ioi# [i] = ioi# [i] * duration_scale
-endfor
+# ============================================================
+# 2b.  MIDI -> NOTE NAME helper
+# ============================================================
+note_names$ = "C C# D D# E F F# G G# A A# B"
+
+procedure midiName: .midi
+    .pc     = .midi mod 12
+    .oct    = floor(.midi / 12) - 1
+    .pc_pos = .pc * 3 + 1
+    .n$     = mid$(note_names$, .pc_pos, 2)
+    if right$(.n$, 1) = " "
+        .n$ = left$(.n$, 1)
+    endif
+    .result$ = .n$ + string$(.oct)
+endproc
 
 # ============================================================
 # 3.  PRINT ROW & RHYTHM INFO
 # ============================================================
-writeInfoLine:  "=== Flute KlattGrid — Serial Melody ==="
+writeInfoLine:  "=== Flute KlattGrid - Serial Melody ==="
 appendInfoLine: ""
 
 if row_form = 1
@@ -360,25 +354,25 @@ else
     row_form$ = "Retrograde-Inversion (RI0)"
 endif
 
-appendInfoLine: "Row form:   ", row_form$
-appendInfoLine: "Root pitch: ", fixed$(frequency_Hz, 1), " Hz  (MIDI ", root_midi, ")"
-appendInfoLine: ""
-appendInfoLine: "Pitch row (Hz):"
+@midiName: root_midi
+root_name$ = midiName.result$
 
-note_names$ = "C C# D D# E F F# G G# A A# B"
+appendInfoLine: "Row form:    ", row_form$
+appendInfoLine: "Root pitch:  ", root_name$, "  (MIDI ", root_midi, ")"
+appendInfoLine: ""
+appendInfoLine: "Rhythm palette (s): ",
+...             fixed$(rhythm_palette# [1] * duration_scale, 3), "  ",
+...             fixed$(rhythm_palette# [2] * duration_scale, 3), "  ",
+...             fixed$(rhythm_palette# [3] * duration_scale, 3), "  ",
+...             fixed$(rhythm_palette# [4] * duration_scale, 3), "  ",
+...             fixed$(rhythm_palette# [5] * duration_scale, 3)
+appendInfoLine: ""
+appendInfoLine: "Pitch row:"
 
 for i from 1 to 12
-    pc_i = final_pc# [i]
-    ; Extract note name from the space-separated string
-    pc_pos = pc_i * 3 + 1
-    n$ = mid$(note_names$, pc_pos, 2)
-    ; Trim trailing space
-    if right$(n$, 1) = " "
-        n$ = left$(n$, 1)
-    endif
-    oct_i = floor(midi_notes# [i] / 12) - 1
-    appendInfoLine: "  ", i, ":  ", n$, oct_i,
-    ...             "  ", fixed$(note_hz# [i], 2), " Hz",
+    @midiName: midi_notes# [i]
+    note_label$ = midiName.result$
+    appendInfoLine: "  ", i, ":  ", note_label$,
     ...             "   IOI=", fixed$(ioi# [i], 3), " s"
 endfor
 
@@ -392,15 +386,17 @@ if melody_mode
     appendInfoLine: "Generating 12-tone row melody..."
     appendInfoLine: ""
 
-    ; Synthesize each note and collect Sound object IDs
+    ; Synthesize each note
     note_id# = zero# (12)
     for i from 1 to 12
-        appendInfoLine: "  Note ", i, " / 12  (", fixed$(note_hz# [i], 1), " Hz  ", fixed$(ioi# [i], 3), " s)"
+        @midiName: midi_notes# [i]
+        .label$ = midiName.result$
+        appendInfoLine: "  Note ", i, " / 12  (", .label$, "  ", fixed$(ioi# [i], 3), " s)"
         @makeFluteNote: note_hz# [i], ioi# [i], (i = 1)
         note_id# [i] = selected("Sound")
     endfor
 
-    ; --- Legato crossfade: cosine fades + Shift times + object(id,x) mix ---
+    ; --- Legato crossfade: cosine fades + Shift times + Formula (part) mix ---
     appendInfoLine: ""
     appendInfoLine: "Applying legato crossfades and mixing..."
 
@@ -411,31 +407,35 @@ if melody_mode
         note_dur_leg# [i] = Get total duration
     endfor
 
-    ; 2. Apply cosine fades while time axis is still 0-based
+    ; 2. Apply cosine fades while time axis is still 0-based.
+    ;    Dotted variables inside a Formula string at top level can
+    ;    be fragile across Praat versions, so we stringify values.
+    xf_str$ = fixed$(xfade_s, 6)
     for i from 1 to 12
         selectObject: note_id# [i]
         .nd = note_dur_leg# [i]
         if i > 1
             Formula (part): 0, xfade_s, 1, 1,
-            ... "self * (0.5 - 0.5*cos(pi*x/xfade_s))"
+            ... "self * (0.5 - 0.5*cos(pi*x/" + xf_str$ + "))"
         endif
         if i < 12
-            .fs = .nd - xfade_s
-            Formula (part): .fs, .nd, 1, 1,
-            ... "self * (0.5 + 0.5*cos(pi*(x-.fs)/xfade_s))"
+            fs_val = .nd - xfade_s
+            fs_str$ = fixed$(fs_val, 6)
+            Formula (part): fs_val, .nd, 1, 1,
+            ... "self * (0.5 + 0.5*cos(pi*(x-" + fs_str$ + ")/" + xf_str$ + "))"
         endif
     endfor
 
     ; 3. Compute offset for each note (overlap = xfade_s)
     note_offset_leg# = zero# (12)
-    .running_t = 0
+    running_t = 0
     for i from 1 to 12
-        note_offset_leg# [i] = .running_t
-        .running_t += note_dur_leg# [i] - xfade_s
+        note_offset_leg# [i] = running_t
+        running_t = running_t + note_dur_leg# [i] - xfade_s
     endfor
-    total_legato_dur = .running_t + xfade_s
+    total_legato_dur = running_t + xfade_s
 
-    ; 4. Shift each note's time axis to its absolute position in the melody
+    ; 4. Shift each note's time axis to its absolute position
     for i from 1 to 12
         selectObject: note_id# [i]
         Shift times to: "start time", note_offset_leg# [i]
@@ -444,27 +444,31 @@ if melody_mode
     ; 5. Create silence output buffer
     melody = Create Sound from formula: "flute_serial_melody", 1, 0, total_legato_dur, sr, "0"
 
-    ; 6. Add each note into the buffer at its shifted position using object(id, x)
-    ;    This is the correct Praat technique (learned from Additive_Particle_Field.praat)
+    ; 6. Add each note into the buffer using Formula (part) — ~12x faster
+    ;    than the full-range "if x >= tS and x <= tE" form because the
+    ;    else branch is never evaluated outside the note window.
     for i from 1 to 12
         .nid  = note_id# [i]
-        .tS$  = fixed$(note_offset_leg# [i], 6)
-        .tE$  = fixed$(note_offset_leg# [i] + note_dur_leg# [i], 6)
+        .tS   = note_offset_leg# [i]
+        .tE   = note_offset_leg# [i] + note_dur_leg# [i]
         .nid$ = string$(.nid)
         selectObject: melody
-        Formula: "if x >= " + .tS$ + " and x <= " + .tE$ +
-        ... " then self + object(" + .nid$ + ", x) else self fi"
+        Formula (part): .tS, .tE, 1, 1,
+        ... "self + object(" + .nid$ + ", x)"
         removeObject: .nid
     endfor
 
     Rename: "flute_serial_melody"
 
-    ; Fast cosine fade-out at the very end of the melody
-    .fade_end_s = 0.18
+    ; Cosine fade-out at end (stringify dotted vars for Formula safety)
+    fade_end_s = 0.18
     selectObject: melody
-    .meldur = Get total duration
-    Formula (part): .meldur - .fade_end_s, .meldur, 1, 1,
-    ... "self * (0.5 + 0.5*cos(pi*(x-(.meldur-.fade_end_s))/.fade_end_s))"
+    meldur   = Get total duration
+    fes_str$ = fixed$(fade_end_s, 6)
+    fes_begin = meldur - fade_end_s
+    fes_begin_str$ = fixed$(fes_begin, 6)
+    Formula (part): fes_begin, meldur, 1, 1,
+    ... "self * (0.5 + 0.5*cos(pi*(x-" + fes_begin_str$ + ")/" + fes_str$ + "))"
 
     sound = melody
 
@@ -472,7 +476,8 @@ else
     appendInfoLine: "Generating single note..."
     @makeFluteNote: frequency_Hz, single_note_dur, 1
     sound = selected("Sound")
-    Rename: "flute_" + fixed$(frequency_Hz, 0) + "Hz"
+    @midiName: root_midi
+    Rename: "flute_" + midiName.result$
 endif
 
 selectObject: sound
@@ -501,22 +506,18 @@ appendInfoLine: "Created: ", selected$("Sound")
 
 # ==============================================================================
 # Procedure: makeFluteNote
-#   Synthesizes one flute note with layered chiff attack.
-#   .freq  = frequency in Hz
-#   .dur   = note duration in seconds
-#   Leaves the mixed result selected.
+#   v2.2 attack: tight voicing ease-in so the voiced body arrives
+#   with the chiff rather than ~200 ms after it. Ramp points shaped
+#   log-like in dB (-30, -12, -3, 0 rel to amp_voice_dB).
 # ==============================================================================
 procedure makeFluteNote: .freq, .dur, .do_attack
-    # .do_attack = 1 : first note — full attack, pitch sag, chiff layers
-    # .do_attack = 0 : interior/last notes — start at full sustain, no chiff
-    #                  (legato: amplitude never dips; only pitch changes)
 
-    # --- Chiff durations (only used when .do_attack = 1) ---
+    ; Chiff durations (used when .do_attack = 1)
     .chiff_A_dur = 0.02
     .chiff_B_dur = 0.06
     .chiff_C_dur = 0.015
 
-    # Formants track the note frequency
+    ; Formants track the note frequency
     .f1_hz = .freq
     .f1_bw = .freq * 0.25
     .f2_hz = .freq * 2.0
@@ -538,11 +539,11 @@ procedure makeFluteNote: .freq, .dur, .do_attack
     Add power1 point:     0, pwr1
     Add power2 point:     0, pwr2
 
-    # Pitch — attack note: gentle sag then settle; legato note: on-pitch immediately
+    ; --- Pitch (attack: short sag 0-80 ms; legato: on-pitch from sample 0) ---
     selectObject: .kg
     if .do_attack
-        Add pitch point: 0.001,        .freq * 0.97
-        Add pitch point: attack_s,     .freq * 0.99
+        Add pitch point: 0.001,        .freq * 0.985
+        Add pitch point: 0.030,        .freq * 0.995
         Add pitch point: stabilise_s,  .freq
     else
         Add pitch point: 0.001, .freq
@@ -553,7 +554,7 @@ procedure makeFluteNote: .freq, .dur, .do_attack
     if .do_attack
         .vib_start = stabilise_s
     else
-        .vib_start = 0.05   ; vibrato kicks in quickly on legato notes
+        .vib_start = 0.05
     endif
     .n_vib = ceiling((.vib_end - .vib_start) / (.vib_period / 8))
 
@@ -566,17 +567,17 @@ procedure makeFluteNote: .freq, .dur, .do_attack
     endfor
     Add pitch point: .dur - 0.01, .freq
 
-    # Voicing amplitude
+    ; --- Voicing amplitude (5-point ease-in: audible by 10 ms, full by 80 ms) ---
     selectObject: .kg
     if .do_attack
-        ; Ramp up from silence over attack/stabilise, then release
-        Add voicing amplitude point: 0,                  0
-        Add voicing amplitude point: attack_s,            amp_voice_dB * 0.30
-        Add voicing amplitude point: stabilise_s,         amp_voice_dB
-        Add voicing amplitude point: .dur - release_s,    amp_voice_dB
-        Add voicing amplitude point: .dur,                0
+        Add voicing amplitude point: 0,                     0
+        Add voicing amplitude point: 0.008,                 amp_voice_dB - 30
+        Add voicing amplitude point: 0.025,                 amp_voice_dB - 12
+        Add voicing amplitude point: 0.060,                 amp_voice_dB - 3
+        Add voicing amplitude point: stabilise_s,           amp_voice_dB
+        Add voicing amplitude point: .dur - release_s,      amp_voice_dB
+        Add voicing amplitude point: .dur,                  0
     else
-        ; Full sustain from the very first sample — crossfade handles the blend
         Add voicing amplitude point: 0,    amp_voice_dB
         Add voicing amplitude point: .dur, amp_voice_dB
     endif
@@ -590,39 +591,39 @@ procedure makeFluteNote: .freq, .dur, .do_attack
         endif
     endfor
 
-    # Aspiration
+    ; --- Aspiration (peaks early at ~15 ms, settles by ~80 ms) ---
     selectObject: .kg
     if .do_attack
-        ; Ramp from 0 — no burst at time zero (fixes noise-at-onset bug)
-        Add aspiration amplitude point: 0,               0
-        Add aspiration amplitude point: attack_s,         amp_asp_peak_dB
-        Add aspiration amplitude point: stabilise_s,      amp_asp_sustain_dB
-        Add aspiration amplitude point: .dur - release_s, amp_asp_sustain_dB
-        Add aspiration amplitude point: .dur,             0
+        Add aspiration amplitude point: 0,                    0
+        Add aspiration amplitude point: 0.015,                amp_asp_peak_dB
+        Add aspiration amplitude point: 0.060,                amp_asp_sustain_dB + 2
+        Add aspiration amplitude point: stabilise_s,          amp_asp_sustain_dB
+        Add aspiration amplitude point: .dur - release_s,     amp_asp_sustain_dB
+        Add aspiration amplitude point: .dur,                 0
     else
         Add aspiration amplitude point: 0,    amp_asp_sustain_dB
         Add aspiration amplitude point: .dur, amp_asp_sustain_dB
     endif
 
-    # Breathiness
+    ; --- Breathiness ---
     selectObject: .kg
     if .do_attack
-        Add breathiness amplitude point: 0,               0
-        Add breathiness amplitude point: attack_s,         amp_breath_dB
-        Add breathiness amplitude point: stabilise_s,      amp_breath_dB - 5
-        Add breathiness amplitude point: .dur - release_s, amp_breath_dB - 5
-        Add breathiness amplitude point: .dur,             0
+        Add breathiness amplitude point: 0,                   0
+        Add breathiness amplitude point: 0.020,               amp_breath_dB
+        Add breathiness amplitude point: stabilise_s,         amp_breath_dB - 5
+        Add breathiness amplitude point: .dur - release_s,    amp_breath_dB - 5
+        Add breathiness amplitude point: .dur,                0
     else
         Add breathiness amplitude point: 0,    amp_breath_dB - 5
         Add breathiness amplitude point: .dur, amp_breath_dB - 5
     endif
 
-    # Flutter
+    ; --- Flutter ---
     selectObject: .kg
     Add flutter point: 0,    0.02
     Add flutter point: .dur, 0.02
 
-    # Oral formants
+    ; --- Oral formants ---
     selectObject: .kg
     Add oral formant frequency point: 1, 0, .f1_hz
     Add oral formant bandwidth point: 1, 0, .f1_bw
@@ -643,10 +644,10 @@ procedure makeFluteNote: .freq, .dur, .do_attack
 
     if .do_attack
         # ------------------------------------------------------------------
-        # CHIFF LAYERS — only on the first (attack) note
+        # CHIFF LAYERS
         # ------------------------------------------------------------------
 
-        # Chiff A — broadband turbulence burst
+        ; Chiff A — broadband turbulence burst
         .chA_dur$ = fixed$(.chiff_A_dur, 6)
         .chiff_A_noise = Create Sound from formula: "chiffA", 1, 0, .dur, sr,
         ... "if x < " + .chA_dur$ + " then randomGauss(0,1) else 0 fi"
@@ -657,7 +658,7 @@ procedure makeFluteNote: .freq, .dur, .do_attack
         Scale peak: chiff_A_amp
         removeObject: .chiff_A_noise
 
-        # Chiff B — sub-tone pitch sweep
+        ; Chiff B — sub-tone pitch sweep
         .kg_b = Create KlattGrid: "chiffB", 0, .dur, 2, 0, 0, 0, 0, 1, 0
         selectObject: .kg_b
         Add open phase point: 0, 0.95
@@ -686,7 +687,7 @@ procedure makeFluteNote: .freq, .dur, .do_attack
         Scale peak: chiff_B_amp
         removeObject: .kg_b, .chiff_B_raw
 
-        # Chiff C — high-frequency frication edge
+        ; Chiff C — high-frequency frication edge
         .chC_dur$ = fixed$(.chiff_C_dur, 6)
         .chiff_C_noise = Create Sound from formula: "chiffC", 1, 0, .dur, sr,
         ... "if x < " + .chC_dur$ + " then randomGauss(0,1) else 0 fi"
@@ -697,7 +698,7 @@ procedure makeFluteNote: .freq, .dur, .do_attack
         Scale peak: chiff_C_amp
         removeObject: .chiff_C_noise
 
-        # MIX: 4-channel combine → mono → restore additive sum
+        ; MIX
         selectObject: .main_tone, .chiff_A_filt, .chiff_B, .chiff_C_filt
         Combine to stereo
         .combined = selected("Sound")
@@ -736,22 +737,26 @@ procedure drawVisualization
 
     Erase all
 
+    ; --- Build display strings ---
+    @midiName: root_midi
+    root_name$ = midiName.result$
+
     # === Title ===
     Select outer viewport: 0, 8, 0, 0.95
     Font size: 13
     Colour: "Black"
     if melody_mode
         Text special: 0.5, "centre", 0.95, "half", "Helvetica", 13, "0",
-        ... "##Flute KlattGrid — Serial Melody  (" + row_form$ + ")##"
+        ... "##Flute KlattGrid - Serial Melody  (" + row_form$ + ")##"
     else
         Text special: 0.5, "centre", 0.6, "half", "Helvetica", 13, "0",
-        ... "##Flute KlattGrid — Single Note##"
+        ... "##Flute KlattGrid - Single Note##"
     endif
 
     Font size: 8
     Colour: "{0.4, 0.4, 0.4}"
     Text special: 0.5, "centre", 0.2, "half", "Helvetica", 8, "0",
-    ... "Root: " + fixed$(frequency_Hz, 1) + " Hz  |  "
+    ... "Root: " + root_name$ + "  |  "
     ... + "Vibrato: " + fixed$(vibrato_rate_Hz, 1) + " Hz  |  "
     ... + "Voice: " + fixed$(amp_voice_dB, 0) + " dB  |  "
     ... + "Open phase: " + fixed$(open_phase, 2)
@@ -818,17 +823,11 @@ procedure drawVisualization
         Font size: 7
         Colour: "{0.3, 0.3, 0.3}"
 
-        ; Build a compact pitch-class string for display
+        ; Compact row display: full note names with octave
         row_display$ = "Row: "
-        .t_cursor = 0
         for .i from 1 to 12
-            .pc_i = final_pc# [.i]
-            .pc_pos = .pc_i * 3 + 1
-            .n$ = mid$(note_names$, .pc_pos, 2)
-            if right$(.n$, 1) = " "
-                .n$ = left$(.n$, 1)
-            endif
-            row_display$ = row_display$ + .n$ + " "
+            @midiName: midi_notes# [.i]
+            row_display$ = row_display$ + midiName.result$ + " "
         endfor
         row_display$ = row_display$ + "  |  IOI: "
         for .i from 1 to 12
