@@ -29,6 +29,94 @@
 
 form "Semantic Timbre Retrieval"
     sentence Prompt dark airy swelling scrape
+    optionmenu Preset_prompt: 1
+        option — type your own above —
+        option dark airy sustained drone
+        option bright metallic burst
+        option warm smooth tonal sustained
+        option noisy rough scrape
+        option pure glassy wide sustained
+        option piercing unstable burst
+        option breathy narrow gesture
+        option dense cloud reverberant
+        option dry percussive wooden pulse
+        option frictional rough gliding stream
+        option vowel-like warm sustained
+        option dark rough distant drone
+        option mellow silky held tone
+        option shiny bell-like hit
+        option deep hissy scratch
+        option round clear long drone-like
+        option harsh gritty impact
+        option whispery far away swarm
+        option soft textured spacious flow
+        option steel quiver rise
+        option wood-like plucked close beat
+        option crystalline clean fade
+        option bowed coarse movement
+        option voice-like mellow long held
+        option slightly dark airy cloud
+        option a bit rough breathy gesture
+        option somewhat bright metallic stream
+        option moderately warm sustained drone
+        option quite piercing unstable burst
+        option very pure glassy sustained
+        option really noisy dense cloud
+        option strongly frictional scrape
+        option intensely reverberant distant drone
+        option extremely bright sharp hit
+        option touch of airy smooth tone
+        option hint of metallic roughness
+        option dark airy but not noisy
+        option bright without piercing
+        option warm sustained not rough
+        option metallic but less bright
+        option pure not glassy
+        option rough scrape without reverb
+        option wide cloud not distant
+        option breathy gesture less unstable
+        option drone without rough edge
+        option not bright, more warm, sustained
+        option no harsh hit, more wooden pulse
+        option without hissy noise, more tonal
+        option dark airy slowly swelling texture
+        option bright short percussive bursts
+        option warm sustained drone with rough edge
+        option far away breathy cloud
+        option dry wooden pulse
+        option glassy pure wide tone
+        option rough bowed stream
+        option metallic unstable gesture
+        option dense reverberant swarm
+        option soft mellow voice-like sustain
+        option sharp bright impact
+        option coarse noisy distant scrape
+        option bright percussive burst
+        option sharp metallic hit
+        option wooden dry pulse
+        option piercing rough impact
+        option dark sustained drone
+        option warm wide reverberant drone
+        option pure glassy sustained
+        option airy distant cloud
+        option frictional rough scrape
+        option bowed noisy gesture
+        option coarse scratch stream
+        option breathy rough scrape
+        option vowel-like warm sustained
+        option voice-like pure tone
+        option ah mellow held sound
+        option clear gliding vowel-like stream
+        option dark airy drone
+        option bright metallic burst
+        option rough frictional scrape
+        option warm vowel-like sustained
+        option pure glassy wide tone
+        option dry wooden pulse
+        option noisy dense cloud
+        option unstable gliding gesture
+        option distant reverberant airy texture
+        option not bright, more warm, sustained
     optionmenu Retrieval_mode: 2
         option files
         option segments
@@ -45,6 +133,24 @@ form "Semantic Timbre Retrieval"
     boolean Draw_visualization 1
     boolean Play_preview 1
 endform
+
+# If a preset was chosen (anything other than option 1), override the typed prompt
+if preset_prompt > 1
+    presetList$ = "dark airy sustained drone|bright metallic burst|warm smooth tonal sustained|noisy rough scrape|pure glassy wide sustained|piercing unstable burst|breathy narrow gesture|dense cloud reverberant|dry percussive wooden pulse|frictional rough gliding stream|vowel-like warm sustained|dark rough distant drone|mellow silky held tone|shiny bell-like hit|deep hissy scratch|round clear long drone-like|harsh gritty impact|whispery far away swarm|soft textured spacious flow|steel quiver rise|wood-like plucked close beat|crystalline clean fade|bowed coarse movement|voice-like mellow long held|slightly dark airy cloud|a bit rough breathy gesture|somewhat bright metallic stream|moderately warm sustained drone|quite piercing unstable burst|very pure glassy sustained|really noisy dense cloud|strongly frictional scrape|intensely reverberant distant drone|extremely bright sharp hit|touch of airy smooth tone|hint of metallic roughness|dark airy but not noisy|bright without piercing|warm sustained not rough|metallic but less bright|pure not glassy|rough scrape without reverb|wide cloud not distant|breathy gesture less unstable|drone without rough edge|not bright, more warm, sustained|no harsh hit, more wooden pulse|without hissy noise, more tonal|dark airy slowly swelling texture|bright short percussive bursts|warm sustained drone with rough edge|far away breathy cloud|dry wooden pulse|glassy pure wide tone|rough bowed stream|metallic unstable gesture|dense reverberant swarm|soft mellow voice-like sustain|sharp bright impact|coarse noisy distant scrape|bright percussive burst|sharp metallic hit|wooden dry pulse|piercing rough impact|dark sustained drone|warm wide reverberant drone|pure glassy sustained|airy distant cloud|frictional rough scrape|bowed noisy gesture|coarse scratch stream|breathy rough scrape|vowel-like warm sustained|voice-like pure tone|ah mellow held sound|clear gliding vowel-like stream|dark airy drone|bright metallic burst|rough frictional scrape|warm vowel-like sustained|pure glassy wide tone|dry wooden pulse|noisy dense cloud|unstable gliding gesture|distant reverberant airy texture|not bright, more warm, sustained"
+    # Extract the (preset_prompt - 1)-th pipe-delimited entry
+    presetIdx = preset_prompt - 1
+    remaining$ = presetList$
+    for i from 1 to presetIdx - 1
+        pipePos = index(remaining$, "|")
+        remaining$ = mid$(remaining$, pipePos + 1, length(remaining$) - pipePos)
+    endfor
+    pipePos = index(remaining$, "|")
+    if pipePos > 0
+        prompt$ = left$(remaining$, pipePos - 1)
+    else
+        prompt$ = remaining$
+    endif
+endif
 
 corpusDir$ = chooseDirectory$("Select Corpus Folder (WAV/FLAC/AIFF/MP3)")
 if corpusDir$ == ""
