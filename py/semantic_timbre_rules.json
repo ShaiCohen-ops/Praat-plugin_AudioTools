@@ -1,0 +1,62 @@
+{
+  "_comment": "Semantic Timbre Retrieval — tagging rules. Bands are on normalized dims in [0,1]. Human-editable.",
+  "rule_families": {
+    "brightness": [
+      {"tag": "dark",     "dim": "brightness", "min": 0.00, "max": 0.20},
+      {"tag": "warm",     "dim": "brightness", "min": 0.20, "max": 0.40},
+      {"tag": "neutral",  "dim": "brightness", "min": 0.40, "max": 0.60},
+      {"tag": "bright",   "dim": "brightness", "min": 0.60, "max": 0.82},
+      {"tag": "piercing", "dim": "brightness", "min": 0.82, "max": 1.01}
+    ],
+    "harmonicity": [
+      {"tag": "noisy", "dim": "noisiness",  "min": 0.62, "max": 1.01},
+      {"tag": "airy",  "dim": "noisiness",  "min": 0.42, "max": 0.62},
+      {"tag": "mixed", "dim": "noisiness",  "min": 0.25, "max": 0.42},
+      {"tag": "tonal", "dim": "tonalness",  "min": 0.55, "max": 0.80},
+      {"tag": "pure",  "dim": "tonalness",  "min": 0.80, "max": 1.01}
+    ],
+    "envelope": [
+      {"tag": "impulsive", "dim": "impulsiveness", "min": 0.70, "max": 1.01},
+      {"tag": "percussive","dim": "impulsiveness", "min": 0.50, "max": 0.70},
+      {"tag": "swelling",  "dim": "impulsiveness", "min": 0.00, "max": 0.25},
+      {"tag": "sustained", "dim": "sustain",       "min": 0.55, "max": 1.01},
+      {"tag": "decaying",  "dim": "sustain",       "min": 0.25, "max": 0.45}
+    ],
+    "texture": [
+      {"tag": "smooth",  "dim": "roughness", "min": 0.00, "max": 0.28},
+      {"tag": "rough",   "dim": "roughness", "min": 0.55, "max": 1.01},
+      {"tag": "grainy",  "dim": "roughness", "min": 0.40, "max": 0.55}
+    ],
+    "stability": [
+      {"tag": "stable",     "dim": "stability", "min": 0.65, "max": 1.01},
+      {"tag": "unstable",   "dim": "stability", "min": 0.00, "max": 0.35},
+      {"tag": "fluttering", "dim": "stability", "min": 0.35, "max": 0.55}
+    ],
+    "space": [
+      {"tag": "dry",         "dim": "spatiality", "min": 0.00, "max": 0.25},
+      {"tag": "narrow",      "dim": "spatiality", "min": 0.25, "max": 0.45},
+      {"tag": "wide",        "dim": "spatiality", "min": 0.55, "max": 0.80},
+      {"tag": "reverberant", "dim": "spatiality", "min": 0.80, "max": 1.01}
+    ]
+  },
+  "compound_rules": [
+    {"tag": "drone",     "conditions": {"sustain": [0.55, 1.01], "impulsiveness": [0.00, 0.30], "stability": [0.55, 1.01]}, "confidence": 0.85},
+    {"tag": "burst",     "conditions": {"impulsiveness": [0.70, 1.01], "sustain": [0.00, 0.30]}, "confidence": 0.85},
+    {"tag": "pulse",     "conditions": {"impulsiveness": [0.55, 0.75], "stability": [0.45, 1.01]}, "confidence": 0.70},
+    {"tag": "cloud",     "conditions": {"noisiness": [0.50, 1.01], "sustain": [0.45, 1.01], "impulsiveness": [0.00, 0.40]}, "confidence": 0.75},
+    {"tag": "scrape",    "conditions": {"roughness": [0.55, 1.01], "noisiness": [0.45, 1.01], "sustain": [0.25, 0.70]}, "confidence": 0.75},
+    {"tag": "gesture",   "conditions": {"impulsiveness": [0.30, 0.65], "stability": [0.00, 0.55]}, "confidence": 0.65},
+    {"tag": "stream",    "conditions": {"sustain": [0.50, 1.01], "noisiness": [0.30, 0.70], "stability": [0.40, 0.80]}, "confidence": 0.70},
+    {"tag": "metallic",  "conditions": {"brightness": [0.55, 1.01], "roughness": [0.40, 1.01], "tonalness": [0.25, 0.80]}, "confidence": 0.75},
+    {"tag": "wooden",    "conditions": {"brightness": [0.25, 0.55], "impulsiveness": [0.40, 1.01], "tonalness": [0.25, 0.75]}, "confidence": 0.65},
+    {"tag": "glassy",    "conditions": {"brightness": [0.70, 1.01], "tonalness": [0.55, 1.01], "roughness": [0.00, 0.35]}, "confidence": 0.70},
+    {"tag": "frictional","conditions": {"noisiness": [0.45, 1.01], "roughness": [0.50, 1.01]}, "confidence": 0.70},
+    {"tag": "vowel-like","conditions": {"tonalness": [0.55, 1.01], "brightness": [0.30, 0.70], "sustain": [0.35, 1.01]}, "confidence": 0.65},
+    {"tag": "breathy",   "conditions": {"noisiness": [0.45, 0.80], "tonalness": [0.20, 0.60]}, "confidence": 0.60},
+    {"tag": "gliding",   "conditions": {"stability": [0.20, 0.55], "tonalness": [0.45, 1.01]}, "confidence": 0.65},
+    {"tag": "trembling", "conditions": {"stability": [0.00, 0.45], "sustain": [0.35, 1.01]}, "confidence": 0.60},
+    {"tag": "distant",   "conditions": {"spatiality": [0.62, 1.01], "sustain": [0.35, 1.01]}, "confidence": 0.65},
+    {"tag": "dense",     "conditions": {"noisiness": [0.45, 1.01], "sustain": [0.45, 1.01], "spatiality": [0.30, 1.01]}, "confidence": 0.60},
+    {"tag": "sparse",    "conditions": {"sustain": [0.00, 0.35], "impulsiveness": [0.00, 0.55]}, "confidence": 0.55}
+  ]
+}
