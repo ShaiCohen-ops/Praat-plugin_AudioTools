@@ -1,29 +1,38 @@
 # ============================================================
-# Praat AudioTools - Formant_to_MusicXML_Chord_Converter
-#                    With Additive Player
+# Praat AudioTools - Formant_to_MusicXML_Chord_Converter.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Additive resynthesis player companion to
-#   Formant_to_MusicXML_Chord_Converter.
-#   Re-analyses the selected Sound, extracts F1-F4 per segment,
-#   renders each segment as a 4-voice additive chord using a
-#   mellow multi-partial waveform (soft organ/cello tone) shaped
-#   by a piano ADSR envelope.
+#   Reads a Sound, segments it uniformly, and for each segment
+#   extracts the time-averaged F1-F4 via Burg LPC. The four
+#   formants become a 4-voice chord which is:
+#     (a) written to a MusicXML file (optional, via file picker),
+#         using 8th-tone microtonal alter values; and
+#     (b) resynthesised as an additive chord with per-voice
+#         ADSR envelope and small onset stagger.
 #
+#   The synthesised pitches are register-folded into C2-C5 for
+#   musical listenability. This keeps pitch-class information but
+#   collapses the original formant geometry (F1~700Hz and
+#   F3~2500Hz both end up in the same octave window). This is a
+#   deliberate artistic choice; the MusicXML output reflects the
+#   same folding, so score and audio agree.
 #
 # Usage:
-#   Select the same Sound object used in the Converter and run.
-#   Match Number_of_segments and analysis settings to the Converter.
+#   Select a Sound. Run. If "Write MusicXML file" is checked,
+#   you will be prompted for a save path. A resynthesised
+#   Sound "formant_chords_<name>" is left selected at the end.
+#
+# Dependencies: Praat 6.3+ only (no Python).
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
-#   Toolkit for Experimental Composition.
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-
+#   Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
@@ -31,13 +40,13 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-sound      = selected("Sound")
+sourceId   = selected("Sound")
 soundName$ = selected$("Sound")
 
 # ============================================================
 # Form
 # ============================================================
-form Formant to MusicXML Chord Converter Player
+form Formant to MusicXML Chord Converter
     positive Number_of_segments  8
     positive Max_formant_Hz       5500
     integer  Transpose_semitones -24
@@ -48,6 +57,7 @@ form Formant to MusicXML Chord Converter Player
     positive Release_s            0.35
     real     Stagger_s            0.018
     integer  Num_harmonics        3
+    boolean  Write_MusicXML_file  1
     boolean  Normalize_output     1
     boolean  Play_result          1
     boolean  Draw_visualization   1
@@ -64,37 +74,77 @@ fGain[2] = 0.80
 fGain[3] = 0.60
 fGain[4] = 0.45
 
+# Pre-scale per voice to prevent clipping of the summed chord.
+# Sum of 4 voices, each with 1/k gaussian-tapered partials, can
+# peak around 5.0; voiceGain=0.18 keeps the chord comfortably
+# under unity even without normalize_output.
+voiceGain = 0.18
+
+# ============================================================
+# Output file path (prompted AFTER the form)
+# ============================================================
+xmlPath$        = ""
+writeXmlActual  = 0
+if write_MusicXML_file
+    xmlPath$ = chooseWriteFile$: "Save MusicXML as...", soundName$ + "_formant_chords.xml"
+    if xmlPath$ <> ""
+        writeXmlActual = 1
+    endif
+endif
+
 # ============================================================
 # Constants
 # ============================================================
 twoPi = 2 * pi
 uid$  = string$(randomInteger(10000, 99999))
 
+# Formant voice colours (shared by spectrogram overlay, staff
+# noteheads, and legend).
 fColour$[1] = "{0.85, 0.22, 0.12}"
 fColour$[2] = "{0.09, 0.37, 0.65}"
 fColour$[3] = "{0.06, 0.43, 0.34}"
 fColour$[4] = "{0.33, 0.29, 0.72}"
 
-# Register target: keep synthesised pitch between C2 (65 Hz) and C5 (523 Hz)
+# Register target: synthesised pitch lives in C2 (65 Hz)..C5 (523 Hz).
 regLow  = 65
 regHigh = 523
 
-# ADSR breakpoints — computed after form, safe here
-adsrDecEnd   = attack_s + decay_s
-adsrRelStart = note_duration_s - release_s
-adsrFadeT    = 0.003
+# ADSR global timing
+adsrFadeT = 0.003
+
+# Guard: if the user's ADSR + stagger timing does not fit inside
+# the note duration, the sustain region collapses and decay/release
+# overlap (compound envelope bug). Clamp and warn.
+maxStagger = (note_duration_s - release_s - attack_s - decay_s - 0.05) / 3
+if maxStagger < 0
+    exitScript: "ADSR does not fit inside note_duration_s. Increase note duration or shorten A/D/R."
+endif
+staggerClamped = stagger_s
+if staggerClamped > maxStagger
+    staggerClamped = maxStagger
+endif
 
 # ============================================================
 # Procedures
 # ============================================================
 
+# Escape XML-reserved characters in a string.
+procedure xmlEscape: .s$
+    .out$ = replace_regex$(.s$, "&", "&amp;", 0)
+    .out$ = replace_regex$(.out$, "<", "&lt;", 0)
+    .out$ = replace_regex$(.out$, ">", "&gt;", 0)
+    .out$ = replace_regex$(.out$, """", "&quot;", 0)
+    .out$ = replace_regex$(.out$, "'", "&apos;", 0)
+endproc
+
+# Frequency -> (midi note, fractional alter in eighth-tones).
 procedure freqToMidi: .freq
     if .freq > 0
         .midiFloat = 69 + 12 * ln(.freq / 440) / ln(2) + transpose_semitones
         .midiNote  = floor(.midiFloat)
-        fractionalSemitones = .midiFloat - .midiNote
-        divisionSteps = round(fractionalSemitones * tone_division)
-        .alter = divisionSteps / tone_division
+        .frac      = .midiFloat - .midiNote
+        .divSteps  = round(.frac * tone_division)
+        .alter     = .divSteps / tone_division
         if .alter >= 1
             .midiNote = .midiNote + floor(.alter)
             .alter    = .alter - floor(.alter)
@@ -105,11 +155,11 @@ procedure freqToMidi: .freq
     endif
 endproc
 
-# Get note name and octave from MIDI number (same as Converter)
+# MIDI -> (note letter, octave, sharp alter 0/1). Uses sharps only.
 procedure midiToNoteName: .midiNum
-    .octave = floor((.midiNum - 12) / 12)
+    .octave     = floor((.midiNum - 12) / 12)
     .pitchClass = (.midiNum - 12) mod 12
-    .alter = 0
+    .alter      = 0
     if .pitchClass = 0
         .step$ = "C"
     elsif .pitchClass = 1
@@ -142,6 +192,8 @@ procedure midiToNoteName: .midiNum
     endif
 endproc
 
+# MIDI -> integer diatonic-staff position (for Draw-based notation).
+# C4 = 28, E4 = 30, ..., A3 = 26.
 procedure midiToDiatonic: .midiNum
     .pc  = (.midiNum - 12) mod 12
     .oct = floor((.midiNum - 12) / 12)
@@ -173,7 +225,7 @@ procedure midiToDiatonic: .midiNum
     .diatonic = .oct * 7 + .dia
 endproc
 
-# Octave-shift a frequency into [regLow, regHigh]
+# Octave-shift a frequency into [regLow, regHigh].
 procedure registerCorrect: .hz
     .out = .hz
     if .out > 0
@@ -187,24 +239,28 @@ procedure registerCorrect: .hz
 endproc
 
 # ============================================================
-# Phase 1 — Extract formant frequencies
+# Phase 1 — Extract per-segment formants (time-averaged, robust)
 # ============================================================
 clearinfo
-appendInfoLine: "=== Formant to MusicXML Chord Converter Player ==="
+writeInfoLine: "=== Formant to MusicXML Chord Converter ==="
 appendInfoLine: "Source: ", soundName$
+appendInfoLine: "[1/5] Extracting formants..."
 
-selectObject: sound
+selectObject: sourceId
 totalSourceDur  = Get total duration
 segmentDuration = totalSourceDur / number_of_segments
 
-selectObject: sound
+selectObject: sourceId
 formantObj = To Formant (burg): time_step, number_of_formants, max_formant_Hz, window_length, 50
 
+# For each segment, use the MEAN formant across the full segment
+# (not a single snapshot at midTime), which damps spurious Burg jumps.
 for seg from 1 to number_of_segments
-    midTime = ((seg - 1) + 0.5) * segmentDuration
+    tStart = (seg - 1) * segmentDuration
+    tEnd   = seg * segmentDuration
     selectObject: formantObj
     for fNum from 1 to 4
-        fHz = Get value at time: fNum, midTime, "hertz", "Linear"
+        fHz = Get mean: fNum, tStart, tEnd, "Hertz"
         if fHz <> undefined and fHz > 0
             segFreq[seg, fNum] = fHz
         else
@@ -213,14 +269,11 @@ for seg from 1 to number_of_segments
     endfor
 endfor
 
-removeObject: formantObj
-appendInfoLine: "Formant extraction done."
+appendInfoLine: "  Done. Segments: ", number_of_segments,
+    ... " | Segment length: ", fixed$(segmentDuration, 3), " s"
 
-# ============================================================
-# MusicXML output to Info window (same as Converter)
-# ============================================================
-
-# Build storedMidi and storedAlter arrays for XML output
+# Precompute MIDI + alter values used by both the XML emitter
+# and the visualisation.
 for seg from 1 to number_of_segments
     for fNum from 1 to 4
         if segFreq[seg, fNum] > 0
@@ -234,100 +287,114 @@ for seg from 1 to number_of_segments
     endfor
 endfor
 
-writeInfoLine: "<?xml version=""1.0"" encoding=""UTF-8""?>"
-appendInfoLine: "<!DOCTYPE score-partwise PUBLIC ""-//Recordare//DTD MusicXML 3.1 Partwise//EN"" ""http://www.musicxml.org/dtds/partwise.dtd"">"
-appendInfoLine: "<score-partwise version=""3.1"">"
-appendInfoLine: "  <work>"
-appendInfoLine: "    <work-title>Formant Analysis: ", soundName$, "</work-title>"
-appendInfoLine: "  </work>"
-appendInfoLine: "  <identification>"
-appendInfoLine: "    <creator type=""software"">Praat Formant Analyzer</creator>"
-appendInfoLine: "  </identification>"
-appendInfoLine: "  <part-list>"
-appendInfoLine: "    <score-part id=""P1"">"
-appendInfoLine: "      <part-name>Formant Chords</part-name>"
-appendInfoLine: "    </score-part>"
-appendInfoLine: "  </part-list>"
-appendInfoLine: "  <part id=""P1"">"
+# ============================================================
+# Phase 2 — Write MusicXML file (if requested)
+# ============================================================
+if writeXmlActual
+    appendInfoLine: "[2/5] Writing MusicXML to:"
+    appendInfoLine: "  ", xmlPath$
 
-for seg from 1 to number_of_segments
-    appendInfoLine: "    <measure number=""", seg, """>"
+    @xmlEscape: soundName$
+    titleEsc$ = xmlEscape.out$
 
-    if seg = 1
-        appendInfoLine: "      <attributes>"
-        appendInfoLine: "        <divisions>1</divisions>"
-        appendInfoLine: "        <key>"
-        appendInfoLine: "          <fifths>0</fifths>"
-        appendInfoLine: "        </key>"
-        appendInfoLine: "        <time>"
-        appendInfoLine: "          <beats>4</beats>"
-        appendInfoLine: "          <beat-type>4</beat-type>"
-        appendInfoLine: "        </time>"
-        appendInfoLine: "        <clef>"
-        appendInfoLine: "          <sign>G</sign>"
-        appendInfoLine: "          <line>2</line>"
-        appendInfoLine: "        </clef>"
-        appendInfoLine: "      </attributes>"
-    endif
+    # Build the whole XML in memory, then write once. Cleaner than
+    # dozens of appendFile calls and avoids partial-file failures.
+    xml$ = "<?xml version=""1.0"" encoding=""UTF-8""?>" + newline$
+    xml$ = xml$ + "<!DOCTYPE score-partwise PUBLIC ""-//Recordare//DTD MusicXML 3.1 Partwise//EN"" ""http://www.musicxml.org/dtds/partwise.dtd"">" + newline$
+    xml$ = xml$ + "<score-partwise version=""3.1"">" + newline$
+    xml$ = xml$ + "  <work>" + newline$
+    xml$ = xml$ + "    <work-title>Formant Analysis: " + titleEsc$ + "</work-title>" + newline$
+    xml$ = xml$ + "  </work>" + newline$
+    xml$ = xml$ + "  <identification>" + newline$
+    xml$ = xml$ + "    <creator type=""software"">Praat AudioTools — Formant Chord Converter</creator>" + newline$
+    xml$ = xml$ + "  </identification>" + newline$
+    xml$ = xml$ + "  <part-list>" + newline$
+    xml$ = xml$ + "    <score-part id=""P1"">" + newline$
+    xml$ = xml$ + "      <part-name>Formant Chords</part-name>" + newline$
+    xml$ = xml$ + "    </score-part>" + newline$
+    xml$ = xml$ + "  </part-list>" + newline$
+    xml$ = xml$ + "  <part id=""P1"">" + newline$
 
-    noteCount = 0
-    noteIndex = 0
-    for fNum from 1 to 4
-        if storedMidi[seg, fNum] > 0
-            noteCount += 1
-            noteIndex += 1
+    for seg from 1 to number_of_segments
+        xml$ = xml$ + "    <measure number=""" + string$(seg) + """>" + newline$
 
-            @midiToNoteName: storedMidi[seg, fNum]
-            step$ = midiToNoteName.step$
-            octave = midiToNoteName.octave
-
-            appendInfoLine: "      <note>"
-            if noteIndex > 1
-                appendInfoLine: "        <chord/>"
-            endif
-            appendInfoLine: "        <pitch>"
-            appendInfoLine: "          <step>", step$, "</step>"
-
-            baseAlter  = midiToNoteName.alter
-            microAlter = storedAlter[seg, fNum]
-            totalAlter = baseAlter + microAlter
-            if totalAlter <> 0
-                appendInfoLine: "          <alter>", totalAlter, "</alter>"
-            endif
-
-            appendInfoLine: "          <octave>", octave, "</octave>"
-            appendInfoLine: "        </pitch>"
-            appendInfoLine: "        <duration>4</duration>"
-            appendInfoLine: "        <type>whole</type>"
-            appendInfoLine: "      </note>"
+        if seg = 1
+            xml$ = xml$ + "      <attributes>" + newline$
+            xml$ = xml$ + "        <divisions>1</divisions>" + newline$
+            xml$ = xml$ + "        <key><fifths>0</fifths></key>" + newline$
+            xml$ = xml$ + "        <time><beats>4</beats><beat-type>4</beat-type></time>" + newline$
+            xml$ = xml$ + "        <clef><sign>G</sign><line>2</line></clef>" + newline$
+            xml$ = xml$ + "      </attributes>" + newline$
         endif
+
+        noteIndex = 0
+        for fNum from 1 to 4
+            if storedMidi[seg, fNum] > 0
+                noteIndex += 1
+
+                @midiToNoteName: storedMidi[seg, fNum]
+                step$      = midiToNoteName.step$
+                octaveOut  = midiToNoteName.octave
+                baseAlter  = midiToNoteName.alter
+                microAlter = storedAlter[seg, fNum]
+                totalAlter = baseAlter + microAlter
+
+                xml$ = xml$ + "      <note>" + newline$
+                if noteIndex > 1
+                    xml$ = xml$ + "        <chord/>" + newline$
+                endif
+                xml$ = xml$ + "        <pitch>" + newline$
+                xml$ = xml$ + "          <step>" + step$ + "</step>" + newline$
+                if totalAlter <> 0
+                    xml$ = xml$ + "          <alter>" + fixed$(totalAlter, 4) + "</alter>" + newline$
+                endif
+                xml$ = xml$ + "          <octave>" + string$(octaveOut) + "</octave>" + newline$
+                xml$ = xml$ + "        </pitch>" + newline$
+                xml$ = xml$ + "        <duration>4</duration>" + newline$
+                xml$ = xml$ + "        <type>whole</type>" + newline$
+                xml$ = xml$ + "      </note>" + newline$
+            endif
+        endfor
+
+        if noteIndex = 0
+            xml$ = xml$ + "      <note>" + newline$
+            xml$ = xml$ + "        <rest/>" + newline$
+            xml$ = xml$ + "        <duration>4</duration>" + newline$
+            xml$ = xml$ + "        <type>whole</type>" + newline$
+            xml$ = xml$ + "      </note>" + newline$
+        endif
+
+        xml$ = xml$ + "    </measure>" + newline$
     endfor
 
-    if noteCount = 0
-        appendInfoLine: "      <note>"
-        appendInfoLine: "        <rest/>"
-        appendInfoLine: "        <duration>4</duration>"
-        appendInfoLine: "        <type>whole</type>"
-        appendInfoLine: "      </note>"
-    endif
+    xml$ = xml$ + "  </part>" + newline$
+    xml$ = xml$ + "</score-partwise>" + newline$
 
-    appendInfoLine: "    </measure>"
-endfor
-
-appendInfoLine: "  </part>"
-appendInfoLine: "</score-partwise>"
+    writeFile: xmlPath$, xml$
+    appendInfoLine: "  MusicXML written (", length(xml$), " bytes)."
+else
+    appendInfoLine: "[2/5] MusicXML output skipped."
+endif
 
 # ============================================================
-# Phase 2 — Synthesise one chord per segment
+# Phase 3 — Synthesise one chord per segment
 #
 # Each voice (F1-F4):
 #   1. Register-correct the frequency into C2-C5
 #   2. Build a mellow waveform: sum of num_harmonics sine partials
-#      with 1/n amplitude and a soft gaussian spectral rolloff
-#   3. Apply piano ADSR with per-voice onset stagger
-#   4. Mix into a shared chord buffer
+#      with 1/k amplitude and a soft gaussian spectral rolloff;
+#      all amplitudes and frequencies are baked in as literals so
+#      the Formula string contains no variable names (safe across
+#      Praat versions and contexts).
+#   3. Apply a piano-like ADSR envelope with per-voice onset stagger.
+#      The envelope is implemented as five successive Formula passes
+#      over disjoint time regions. Because each pass guards its
+#      region with an `else self fi` clause, the phases do NOT
+#      compound — inside each region, `self` is still the raw
+#      waveform value, and the envelope is applied exactly once.
+#   4. Mix into the shared chord buffer.
 # ============================================================
-appendInfoLine: "Synthesising ", number_of_segments, " chords..."
+appendInfoLine: "[3/5] Synthesising ", number_of_segments, " chords..."
 
 for seg from 1 to number_of_segments
 
@@ -339,63 +406,72 @@ for seg from 1 to number_of_segments
         if segF > 0
             pGain = fGain[fNum]
 
-            # --- Register correction ---
+            # Register correction
             @registerCorrect: segF
             playF = registerCorrect.out
 
-            # --- Onset stagger: voice fNum starts fNum*stagger_s later ---
-            onsetDelay = (fNum - 1) * stagger_s
+            # Onset stagger for this voice (clamped earlier)
+            onsetDelay = (fNum - 1) * staggerClamped
 
-            # --- Build mellow waveform as sum of harmonics ---
-            # Each harmonic k: amplitude = (1/k) * gaussian(k, sigma=2)
-            # Gaussian softens upper harmonics for a mellow timbre.
-            # We write the full formula string as a sum over num_harmonics.
-
-            # Build mellow waveform: sum of harmonics with 1/k gaussian rolloff.
-            # Amplitude and frequency are baked in as literals so the formula
-            # string contains no variable names (safe for Praat Formula engine).
-            # Onset silencing is handled separately by a Formula pass below.
+            # Build the mellow waveform (literals only inside Formula)
             waveFormula$ = "0"
             for k from 1 to num_harmonics
-                kAmp = (1 / k) * exp(-((k - 1)^2) / (2 * 4)) * pGain
+                kAmp  = voiceGain * (1 / k) * exp(-((k - 1)^2) / 8) * pGain
                 kFreq = k * playF
                 waveFormula$ = waveFormula$ + " + " +
                     ... fixed$(kAmp, 6) + " * sin(" + fixed$(twoPi * kFreq, 4) + " * x)"
             endfor
 
             partialSnd = Create Sound from formula: "p_" + uid$,
-                ... 1, 0, note_duration_s, sample_rate_Hz,
-                ... waveFormula$
+                ... 1, 0, note_duration_s, sample_rate_Hz, waveFormula$
 
-            # --- Piano ADSR (four passes, relative to onset) ---
-            # We shift the ADSR window by onsetDelay so it tracks
-            # the staggered onset correctly.
-            voiceDecEnd   = onsetDelay + attack_s + decay_s
-            voiceRelStart = onsetDelay + note_duration_s - release_s - onsetDelay
-            # (relStart stays at note_duration_s - release_s, independent of onset)
-            voiceRelStart = note_duration_s - release_s
+            # ADSR breakpoints for this voice
+            decEnd   = onsetDelay + attack_s + decay_s
+            relStart = note_duration_s - release_s
 
-            # Zero out samples before onset, then apply attack ramp
+            # Stringify all timing values so the Formula string is
+            # self-contained (no reliance on script-variable visibility
+            # inside the formula engine).
+            od$ = fixed$(onsetDelay, 6)
+            at$ = fixed$(attack_s, 6)
+            dc$ = fixed$(decay_s, 6)
+            de$ = fixed$(decEnd, 6)
+            rs$ = fixed$(relStart, 6)
+            rl$ = fixed$(release_s, 6)
+            sl$ = fixed$(sustain_level, 6)
+            nd$ = fixed$(note_duration_s, 6)
+            ft$ = fixed$(adsrFadeT, 6)
+
+            # 1. Zero samples before onset
             selectObject: partialSnd
-            Formula: "if x < onsetDelay then 0 else self fi"
+            Formula: "if x < " + od$ + " then 0 else self fi"
 
+            # 2. Attack ramp  (0 -> 1 over attack_s)
             selectObject: partialSnd
-            Formula: "if x >= onsetDelay and x < onsetDelay + attack_s then self * ((x - onsetDelay) / attack_s) else self fi"
+            Formula: "if x >= " + od$ + " and x < " + od$ + " + " + at$
+                ... + " then self * ((x - " + od$ + ") / " + at$ + ") else self fi"
 
+            # 3. Decay (1 -> sustain_level over decay_s)
             selectObject: partialSnd
-            Formula: "if x >= onsetDelay + attack_s and x < voiceDecEnd then self * (1 - (1 - sustain_level) * ((x - onsetDelay - attack_s) / decay_s)) else self fi"
+            Formula: "if x >= " + od$ + " + " + at$ + " and x < " + de$
+                ... + " then self * (1 - (1 - " + sl$ + ") * ((x - " + od$ + " - " + at$ + ") / " + dc$ + ")) else self fi"
 
+            # 4. Sustain
             selectObject: partialSnd
-            Formula: "if x >= voiceDecEnd and x < voiceRelStart then self * sustain_level else self fi"
+            Formula: "if x >= " + de$ + " and x < " + rs$
+                ... + " then self * " + sl$ + " else self fi"
 
+            # 5. Release (sustain_level -> 0)
             selectObject: partialSnd
-            Formula: "if x >= voiceRelStart then self * sustain_level * ((note_duration_s - x) / release_s) else self fi"
+            Formula: "if x >= " + rs$
+                ... + " then self * " + sl$ + " * ((" + nd$ + " - x) / " + rl$ + ") else self fi"
 
-            # Global fade-out only (onset fade handled above)
+            # Final tiny fade at the very end (anti-click)
             selectObject: partialSnd
-            Formula: "if x > note_duration_s - adsrFadeT then self * ((note_duration_s - x) / adsrFadeT) else self fi"
+            Formula: "if x > " + nd$ + " - " + ft$
+                ... + " then self * ((" + nd$ + " - x) / " + ft$ + ") else self fi"
 
-            # --- Mix into chord buffer ---
+            # Mix into chord buffer (column index; matches Praat Formula conventions)
             pid = partialSnd
             selectObject: chordBuf
             Formula: "self + object[pid, 1, col]"
@@ -405,15 +481,14 @@ for seg from 1 to number_of_segments
     endfor
 
     segSoundId[seg] = chordBuf
-    appendInfoLine: "  Segment ", seg, " done."
-
 endfor
 
-# ============================================================
-# Phase 3 — Concatenate
-# ============================================================
-appendInfoLine: "Concatenating..."
+appendInfoLine: "  Done."
 
+# ============================================================
+# Phase 4 — Concatenate chords
+# ============================================================
+appendInfoLine: "[4/5] Concatenating..."
 selectObject: segSoundId[1]
 for seg from 2 to number_of_segments
     plusObject: segSoundId[seg]
@@ -424,56 +499,27 @@ for seg from 1 to number_of_segments
     removeObject: segSoundId[seg]
 endfor
 
-# ============================================================
-# Normalize and rename
-# ============================================================
 selectObject: outputSound
 Rename: "formant_chords_" + soundName$
-
 if normalize_output
-    selectObject: outputSound
     Scale peak: 0.95
 endif
 
 # ============================================================
-# Visualization — notation style (mirrors Converter)
+# Phase 5 — Visualization
+# Shows the *phenomenon*: source spectrogram with F1-F4 tracks
+# overlaid, above the notation staff that carries the same
+# colour coding. Footer reports ADSR/synth parameters.
 # ============================================================
 if draw_visualization
-    appendInfoLine: "Drawing visualization..."
-    @drawNotationViz
-endif
+    appendInfoLine: "[5/5] Drawing visualization..."
 
-# ============================================================
-# Play
-# ============================================================
-if play_result
-    appendInfoLine: "Playing..."
-    selectObject: outputSound
-    Play
-endif
-
-selectObject: outputSound
-appendInfoLine: ""
-appendInfoLine: "=== Done ==="
-appendInfoLine: "Output: ", selected$("Sound")
-appendInfoLine: "Total duration: ", fixed$(note_duration_s * number_of_segments, 2), " s"
-
-
-# ============================================================
-# Procedure: drawNotationViz
-# Staff-notation style, identical layout to the Converter.
-# Uses register-corrected frequencies for correct staff placement.
-# ============================================================
-procedure drawNotationViz
-
-    # --- Collect MIDI / diatonic data ---
-    globalMinDia = 999
+    # ---- Collect diatonic positions for the staff panel ----
+    globalMinDia =  999
     globalMaxDia = -999
-
     for seg from 1 to number_of_segments
         for fNum from 1 to 4
             if segFreq[seg, fNum] > 0
-                # Use register-corrected pitch for staff placement
                 @registerCorrect: segFreq[seg, fNum]
                 @freqToMidi: registerCorrect.out
                 segMidi[seg, fNum] = freqToMidi.midiNote
@@ -491,29 +537,19 @@ procedure drawNotationViz
             endif
         endfor
     endfor
-
     if globalMinDia = 999
         globalMinDia = 28
         globalMaxDia = 38
     endif
-
     plotMinDia = globalMinDia - 3
     plotMaxDia = globalMaxDia + 3
 
-    # --- Staff diatonic positions ---
+    # Staff diatonic lines (C4 = 28)
     trebleLine1 = 30
-    trebleLine2 = 32
-    trebleLine3 = 34
-    trebleLine4 = 36
     trebleLine5 = 38
-
-    bassLine1 = 18
-    bassLine2 = 20
-    bassLine3 = 22
-    bassLine4 = 24
-    bassLine5 = 26
-
-    middleC = 28
+    bassLine1   = 18
+    bassLine5   = 26
+    middleC     = 28
 
     drawTreble = 0
     drawBass   = 0
@@ -528,10 +564,94 @@ procedure drawNotationViz
         drawBass   = 1
     endif
 
-    # --- Picture window ---
     Erase all
-    Select outer viewport: 0, 8, 0, 5.5
-    Select inner viewport: 0.6, 7.7, 0.4, 4.8
+    Select outer viewport: 0, 8, 0, 8
+
+    # ---- Title ----
+    Select outer viewport: 0, 8, 0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 13
+    Colour: "Black"
+    Text: 0.5, "centre", 0.70, "half", "##Formant-to-MusicXML Chord Converter##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.20, "half",
+        ... soundName$
+        ... + "   |   segments=" + string$(number_of_segments)
+        ... + "   |   note=" + fixed$(note_duration_s, 2) + "s"
+        ... + "   |   transpose=" + string$(transpose_semitones) + " st"
+
+    # ---- Source spectrogram with F1-F4 overlay ----
+    Select outer viewport: 0, 8, 0.55, 2.55
+    Select inner viewport: 0.6, 7.7, 0.60, 2.50
+
+    selectObject: sourceId
+    nChSrc = Get number of channels
+    if nChSrc > 1
+        Extract one channel: 1
+        tmpMono = selected("Sound")
+    else
+        Copy: "tmpMono_fmt"
+        tmpMono = selected("Sound")
+    endif
+    specMaxHz = max_formant_Hz
+    To Spectrogram: 0.03, specMaxHz, 0.002, 20, "Gaussian"
+    specObj = selected("Spectrogram")
+    Paint: 0, 0, 0, specMaxHz, 100, "yes", 50, 6, 0, "no"
+
+    # Overlay formant tracks from the existing Formant object.
+    # Axes are (time, Hz) after Paint, so Draw line works in that space.
+    Axes: 0, totalSourceDur, 0, specMaxHz
+    selectObject: formantObj
+    nFrames = Get number of frames
+    Line width: 1.5
+    for fNum from 1 to 4
+        Colour: fColour$[fNum]
+        havePrev = 0
+        prevT = 0
+        prevHz = 0
+        for frame from 1 to nFrames
+            selectObject: formantObj
+            tFrame = Get time from frame number: frame
+            hz = Get value at time: fNum, tFrame, "Hertz", "Linear"
+            if hz <> undefined and hz > 0 and hz <= specMaxHz
+                if havePrev = 1
+                    Draw line: prevT, prevHz, tFrame, hz
+                endif
+                prevT = tFrame
+                prevHz = hz
+                havePrev = 1
+            else
+                havePrev = 0
+            endif
+        endfor
+    endfor
+
+    # Segment boundary ticks (thin vertical lines)
+    Line width: 0.6
+    Colour: "{0.4, 0.4, 0.4}"
+    for seg from 0 to number_of_segments
+        segT = seg * segmentDuration
+        if segT <= totalSourceDur
+            Draw line: segT, 0, segT, specMaxHz
+        endif
+    endfor
+
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Hz"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Source spectrogram with F1-F4 tracks (per-segment means drive the chord)"
+
+    removeObject: specObj, tmpMono
+
+    # ---- Notation staff ----
+    staffTop    = 2.65
+    staffBottom = 6.50
+    Select outer viewport: 0, 8, staffTop, staffBottom
+    Select inner viewport: 0.6, 7.7, staffTop + 0.10, staffBottom - 0.05
 
     xMin = 0
     xMax = number_of_segments + 1.5
@@ -540,45 +660,23 @@ procedure drawNotationViz
     staffLeft  = 0.8
     staffRight = number_of_segments + 0.8
 
-    # --- Staff lines ---
+    # Staff lines
     Colour: {0.45, 0.45, 0.45}
     Line width: 1
-
     if drawTreble = 1
         for li from 1 to 5
-            if li = 1
-                yLine = trebleLine1
-            elsif li = 2
-                yLine = trebleLine2
-            elsif li = 3
-                yLine = trebleLine3
-            elsif li = 4
-                yLine = trebleLine4
-            elsif li = 5
-                yLine = trebleLine5
-            endif
+            yLine = trebleLine1 + (li - 1) * 2
             Draw line: staffLeft, yLine, staffRight, yLine
         endfor
     endif
-
     if drawBass = 1
         for li from 1 to 5
-            if li = 1
-                yLine = bassLine1
-            elsif li = 2
-                yLine = bassLine2
-            elsif li = 3
-                yLine = bassLine3
-            elsif li = 4
-                yLine = bassLine4
-            elsif li = 5
-                yLine = bassLine5
-            endif
+            yLine = bassLine1 + (li - 1) * 2
             Draw line: staffLeft, yLine, staffRight, yLine
         endfor
     endif
 
-    # --- Barlines ---
+    # Barlines
     Colour: {0.55, 0.55, 0.55}
     Line width: 0.8
     for seg from 1 to number_of_segments + 1
@@ -594,17 +692,17 @@ procedure drawNotationViz
         endif
     endfor
 
-    # --- Clef labels ---
+    # Clef labels
     Font size: 7
     Colour: {0.3, 0.3, 0.3}
     if drawTreble = 1
-        Text special: 0.4, "centre", trebleLine3, "half", "Helvetica", 7, "0", "T"
+        Text special: 0.4, "centre", trebleLine1 + 4, "half", "Helvetica", 7, "0", "T"
     endif
     if drawBass = 1
-        Text special: 0.4, "centre", bassLine3, "half", "Helvetica", 7, "0", "B"
+        Text special: 0.4, "centre", bassLine1 + 4, "half", "Helvetica", 7, "0", "B"
     endif
 
-    # --- Segment numbers ---
+    # Segment numbers
     Font size: 6
     Colour: {0.5, 0.5, 0.5}
     for seg from 1 to number_of_segments
@@ -612,21 +710,17 @@ procedure drawNotationViz
         Text special: noteX, "centre", plotMinDia - 0.5, "top", "Helvetica", 6, "0", string$(seg)
     endfor
 
-    # --- Noteheads, ledger lines, Hz annotations ---
+    # Noteheads + ledger lines + Hz annotation
     noteW = 0.25
     noteH = 0.7
-
     for seg from 1 to number_of_segments
         noteX = seg + 0.3
-
         for fNum from 1 to 4
             if segMidi[seg, fNum] > 0
                 noteY = segDia[seg, fNum]
 
-                # Ledger lines
                 Colour: {0.55, 0.55, 0.55}
                 Line width: 0.6
-
                 if drawTreble = 1
                     if noteY > trebleLine5
                         ldia = trebleLine5 + 2
@@ -647,7 +741,6 @@ procedure drawNotationViz
                         endwhile
                     endif
                 endif
-
                 if drawBass = 1
                     if noteY < bassLine1
                         ldia = bassLine1 - 2
@@ -669,63 +762,94 @@ procedure drawNotationViz
                     endif
                 endif
 
-                # Filled notehead
                 Paint ellipse: fColour$[fNum], noteX - noteW, noteX + noteW, noteY - noteH, noteY + noteH
 
-                # Hz annotation (original formant frequency)
                 Font size: 4
                 Colour: {0.6, 0.6, 0.6}
                 Text special: noteX + 0.35, "left", noteY, "half", "Helvetica", 4, "0",
                     ... fixed$(segFreq[seg, fNum], 0)
-
             endif
         endfor
     endfor
 
-    # --- Title ---
-    Font size: 8
     Colour: "Black"
-    Text special: (xMin + xMax) / 2, "centre", plotMaxDia + 1.5, "bottom", "Helvetica", 8, "0",
-        ... "##Formant Chord Player: " + soundName$ + "##"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Chord score (noteheads coloured by formant: red=F1 blue=F2 green=F3 purple=F4)"
 
-    # --- Legend ---
+    # Legend (inside the staff panel, bottom edge)
     Font size: 6
     legendY       = plotMinDia - 2
     legendStartX  = 1.5
     legendSpacing = 2.2
-
     Paint circle: fColour$[1], legendStartX, legendY, 0.12
     Colour: {0.3, 0.3, 0.3}
     Text special: legendStartX + 0.25, "left", legendY, "half", "Helvetica", 6, "0", "F1"
-
     Paint circle: fColour$[2], legendStartX + legendSpacing, legendY, 0.12
     Colour: {0.3, 0.3, 0.3}
     Text special: legendStartX + legendSpacing + 0.25, "left", legendY, "half", "Helvetica", 6, "0", "F2"
-
     Paint circle: fColour$[3], legendStartX + 2 * legendSpacing, legendY, 0.12
     Colour: {0.3, 0.3, 0.3}
     Text special: legendStartX + 2 * legendSpacing + 0.25, "left", legendY, "half", "Helvetica", 6, "0", "F3"
-
     Paint circle: fColour$[4], legendStartX + 3 * legendSpacing, legendY, 0.12
     Colour: {0.3, 0.3, 0.3}
     Text special: legendStartX + 3 * legendSpacing + 0.25, "left", legendY, "half", "Helvetica", 6, "0", "F4"
 
-    # --- Summary footer ---
-    Font size: 5
-    Colour: {0.45, 0.45, 0.45}
-    summaryText$ = string$(number_of_segments) + " segs | " +
-        ... "note=" + fixed$(note_duration_s, 2) + "s | " +
-        ... "harmonics=" + string$(num_harmonics) + " | " +
-        ... "stagger=" + fixed$(stagger_s * 1000, 0) + "ms | " +
-        ... "A=" + fixed$(attack_s * 1000, 0) +
-        ... "ms D=" + fixed$(decay_s * 1000, 0) +
-        ... "ms S=" + fixed$(sustain_level, 2) +
-        ... " R=" + fixed$(release_s * 1000, 0) + "ms"
-    Text special: (xMin + xMax) / 2, "centre", plotMinDia - 3, "half", "Helvetica", 5, "0", summaryText$
+    # ---- Summary panel ----
+    Select outer viewport: 0, 8, 6.60, 7.75
+    Select inner viewport: 0.6, 7.7, 6.65, 7.70
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.88, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.02, "left", 0.66, "half",
+        ... "Source: " + soundName$
+        ... + "  |  duration=" + fixed$(totalSourceDur, 2) + "s"
+        ... + "  |  segment=" + fixed$(segmentDuration, 3) + "s"
+        ... + "  |  max formant=" + string$(max_formant_Hz) + " Hz"
+    Text: 0.02, "left", 0.44, "half",
+        ... "Note=" + fixed$(note_duration_s, 2) + "s"
+        ... + "  |  A=" + fixed$(attack_s * 1000, 0)
+        ... + "ms D=" + fixed$(decay_s * 1000, 0)
+        ... + "ms S=" + fixed$(sustain_level, 2)
+        ... + " R=" + fixed$(release_s * 1000, 0) + "ms"
+        ... + "  |  harmonics=" + string$(num_harmonics)
+        ... + "  |  stagger=" + fixed$(staggerClamped * 1000, 0) + "ms"
+    xmlStatus$ = "skipped"
+    if writeXmlActual
+        xmlStatus$ = "written"
+    endif
+    Text: 0.02, "left", 0.22, "half",
+        ... "Register fold: " + string$(regLow) + "-" + string$(regHigh) + " Hz"
+        ... + "  |  8th-tone alter"
+        ... + "  |  MusicXML: " + xmlStatus$
+        ... + "  |  normalize=" + string$(normalize_output)
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
 
-    # --- Restore defaults ---
     Font size: 10
     Colour: "Black"
     Line width: 1
+endif
 
-endproc
+# ============================================================
+# Cleanup + play
+# ============================================================
+removeObject: formantObj
+selectObject: outputSound
+
+appendInfoLine: ""
+appendInfoLine: "=== DONE ==="
+appendInfoLine: "Output Sound: ", selected$("Sound")
+appendInfoLine: "Total duration: ", fixed$(note_duration_s * number_of_segments, 2), " s"
+if writeXmlActual
+    appendInfoLine: "MusicXML file: ", xmlPath$
+endif
+
+if play_result
+    Play
+endif
