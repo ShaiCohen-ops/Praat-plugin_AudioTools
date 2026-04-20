@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - Rewritten DSP
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,19 +12,29 @@
 #   resonances.  Creates organic shimmer, formant-like coloring,
 #   or evolving timbral shifts.
 #
-#   v1.0 rewrites the DSP from scratch:
+#   v1.0 rewrote the DSP:
 #   - OLD: per-bin independent random gain = sounded like noise
 #   - NEW: smooth random spectral envelope (sum of Gaussians at
 #     random centre frequencies) = sounds like resonance coloring.
-#     Processed in overlapping time segments with different random
-#     parameters per segment so the texture evolves over time.
+#     Processed as N full-file FFT copies with different random
+#     parameters per segment, then blended with triangular weights
+#     that form a perfect partition of unity.
+#
+#   v1.1 improves the visualization to show the phenomenon honestly:
+#   - Stores every segment's resonance set (not just the last).
+#   - Overlays all time_segments gain curves with a dark-to-light
+#     gradient, so the user sees HOW MUCH the spectrum drifts.
+#   - Labels the stereo case: only the left channel's curves are
+#     plotted (the right channel is independently randomised for
+#     decorrelation; this is by design).
+#   - Warns when time_segments x duration x channels is large.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
-#   Toolkit for Experimental Composition.
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-
+#   Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
@@ -144,7 +154,7 @@ if low_freq_Hz >= high_freq_Hz
 endif
 
 clearinfo
-writeInfoLine: "=== Subtle Random Texture v1.0 ==="
+writeInfoLine: "=== Subtle Random Texture v1.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -154,7 +164,37 @@ appendInfoLine: "Depth: ", fixed$(depth, 2)
 appendInfoLine: "Freq range: ", low_freq_Hz, " - ", high_freq_Hz, " Hz"
 appendInfoLine: "Time segments: ", time_segments
 appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
+
+# Rough memory/CPU warning. Each segment requires a full-file FFT
+# round-trip plus a resident copy of the result in RAM until blend.
+# For very long sources with many segments and stereo, this adds up.
+fftCopies = time_segments * n_channels
+if fftCopies * duration > 120
+    appendInfoLine: ""
+    appendInfoLine: "  (heads-up: ", fftCopies,
+        ... " full-file FFT copies x ", fixed$(duration, 1),
+        ... " s = heavy run; reduce time_segments if slow)"
+endif
 appendInfoLine: ""
+
+# ── Counters and storage for per-segment resonance parameters ──
+# applyRandomResonances uses storeSeg to decide WHERE in the 2D
+# store to write its draws. We store only LEFT-channel calls so
+# the visualization has a coherent set of curves to overlay; for
+# stereo the RIGHT channel gets its own independent draws (by
+# design, for decorrelation) but those are not plotted.
+storeSeg = 0
+storeCapSeg = time_segments
+# Per-segment, per-resonance store. Accessed as allResFC[seg, r].
+# In Praat, indexed-variable syntax creates these on first write,
+# but we "touch" them here so the visualization can't hit an
+# uninitialized read when e.g. the user chose depth=0.
+for s from 1 to storeCapSeg
+    for r from 1 to number_of_resonances
+        allResFC[s, r]  = 0
+        allResAmp[s, r] = 0
+    endfor
+endfor
 
 # ============================================================
 # PROCEDURE: Apply smooth random spectral envelope
@@ -183,9 +223,17 @@ procedure applyRandomResonances: .spectrumID
         endif
         .amp = depth * .sign * randomUniform(0.5, 1.0)
 
-        # Store for visualization (last call's values are shown)
-        resFC[.r] = .fc
+        # Keep a 1D copy for the per-call debug line just below.
+        resFC[.r]  = .fc
         resAmp[.r] = .amp
+
+        # Persist into the 2D store so the visualization can plot
+        # every segment's curve. Only the first N=storeCapSeg calls
+        # (i.e. the left-channel segment sequence) are stored.
+        if storeSeg >= 1 and storeSeg <= storeCapSeg
+            allResFC[storeSeg, .r]  = .fc
+            allResAmp[storeSeg, .r] = .amp
+        endif
 
         .formula$ = .formula$
             ... + " + " + fixed$(.amp, 4)
@@ -251,6 +299,7 @@ procedure processOneChannel: .inputChannelID
         .chCopy = selected("Sound")
         To Spectrum: "yes"
         .spec = selected("Spectrum")
+        storeSeg = storeSeg + 1
         @applyRandomResonances: .spec
 
         selectObject: .spec
@@ -282,6 +331,7 @@ procedure processOneChannel: .inputChannelID
             .segCopy = selected("Sound")
             To Spectrum: "yes"
             .segSpec = selected("Spectrum")
+            storeSeg = storeSeg + 1
             @applyRandomResonances: .segSpec
 
             selectObject: .segSpec
@@ -364,6 +414,10 @@ if n_channels >= 2
     @processOneChannel: chL_input
     wetL = processOneChannel.result
     removeObject: chL_input
+
+    # Park the store counter past its cap so the right channel's
+    # applyRandomResonances calls don't overwrite the stored L data.
+    storeSeg = storeCapSeg + 1
 
     appendInfoLine: "Processing RIGHT channel..."
     selectObject: originalID
@@ -460,7 +514,7 @@ if draw_visualization
     Text: 0.5, "centre", 0.65, "half", "##Subtle Random Texture##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
+    Text: 0.5, "centre", -1.25, "half",
         ... originalName$ + "  |  " + presetName$
         ... + "  |  " + string$(number_of_resonances) + " resonances"
         ... + "  |  depth=" + fixed$(depth, 2)
@@ -493,11 +547,16 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
-    # Spectral gain curve (last segment's resonances)
+    # Spectral gain curves — ALL segments overlaid
+    # Dark → light gradient shows progression segment 1..N.
+    # For stereo, only the LEFT channel's curves are plotted;
+    # the right channel has its own independent random draws
+    # (by design, for decorrelation) and is not shown.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 2.24, 3.54
     Select inner viewport: 0.55, 7.65, 2.34, 3.44
 
+    # Axis range
     gainMin = max(0, 1.0 - depth * 1.1)
     gainMax = 1.0 + depth * 1.1
     if gainMax < 2.0
@@ -518,37 +577,70 @@ if draw_visualization
     Draw line: 0, 0.05, high_freq_Hz * 1.1, 0.05
     Solid line
 
-    # Draw smooth gain curve (with max() clamp matching the formula)
-    Colour: "{0.25, 0.50, 0.82}"
-    Line width: 2
+    # ---- Draw each stored segment's gain curve, dark to light ----
     nPlotPts = 300
     freqStep = high_freq_Hz / nPlotPts
-    for pt from 1 to nPlotPts
-        freq = (pt - 0.5) * freqStep
-        gainVal = 1.0
-        for .r from 1 to number_of_resonances
-            gainVal = gainVal + resAmp[.r] * exp(-((freq - resFC[.r]) / bandwidth_Hz)^2)
+
+    # For each segment s, compute its curve and draw with a colour
+    # that darkens with segment index. Older segments are muted blue
+    # (r=0.10, g=0.25, b=0.55); newer segments pale blue
+    # (r=0.55, g=0.70, b=0.90). When storeCapSeg=1 the curve is
+    # drawn with the "newest" colour for consistency.
+    for s from 1 to storeCapSeg
+        if storeCapSeg > 1
+            t01 = (s - 1) / (storeCapSeg - 1)
+        else
+            t01 = 1
+        endif
+        rCol = 0.10 + 0.45 * t01
+        gCol = 0.25 + 0.45 * t01
+        bCol = 0.55 + 0.35 * t01
+        Colour: "{" + fixed$(rCol, 2) + "," + fixed$(gCol, 2) + "," + fixed$(bCol, 2) + "}"
+
+        # Last segment drawn more prominently
+        if s = storeCapSeg
+            Line width: 2.2
+        else
+            Line width: 1.2
+        endif
+
+        prevFreq = 0
+        prevGain = 1
+        for pt from 1 to nPlotPts
+            freq = (pt - 0.5) * freqStep
+            gainVal = 1.0
+            for r from 1 to number_of_resonances
+                gainVal = gainVal + allResAmp[s, r]
+                    ... * exp(-((freq - allResFC[s, r]) / bandwidth_Hz)^2)
+            endfor
+            if gainVal < 0.05
+                gainVal = 0.05
+            endif
+            if pt > 1
+                Draw line: prevFreq, prevGain, freq, gainVal
+            endif
+            prevFreq = freq
+            prevGain = gainVal
         endfor
-        # Same clamp as the Spectrum Formula
-        if gainVal < 0.05
-            gainVal = 0.05
-        endif
-        if pt > 1
-            Draw line: prevFreq, prevGain, freq, gainVal
-        endif
-        prevFreq = freq
-        prevGain = gainVal
     endfor
     Line width: 1
 
-    # Mark resonance centres (green = boost, red = cut)
-    for .r from 1 to number_of_resonances
-        if resFC[.r] <= high_freq_Hz
-            tickY = max(0.05, 1.0 + resAmp[.r])
-            if resAmp[.r] > 0
-                Paint circle (mm): "{0.22, 0.65, 0.32}", resFC[.r], tickY, 1.2
+    # ---- Resonance-centre ticks for the LAST segment only ----
+    # (Showing ticks for all segments turns the panel into a dot
+    # storm; the ticks should help read the curve in focus, which
+    # is the heavy line = last segment.)
+    for r from 1 to number_of_resonances
+        fcLast = allResFC[storeCapSeg, r]
+        ampLast = allResAmp[storeCapSeg, r]
+        if fcLast > 0 and fcLast <= high_freq_Hz
+            tickY = 1.0 + ampLast
+            if tickY < 0.05
+                tickY = 0.05
+            endif
+            if ampLast > 0
+                Paint circle (mm): "{0.22, 0.65, 0.32}", fcLast, tickY, 1.2
             else
-                Paint circle (mm): "{0.75, 0.30, 0.30}", resFC[.r], tickY, 1.2
+                Paint circle (mm): "{0.75, 0.30, 0.30}", fcLast, tickY, 1.2
             endif
         endif
     endfor
@@ -558,8 +650,20 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Gain"
     Text bottom: "yes", "Frequency (Hz)"
-    Text top: "no",
-        ... "Spectral envelope  (green = boost,  red = cut)"
+
+    # Panel title reflects how many curves are shown + stereo caveat
+    if time_segments = 1
+        envTitle$ = "Spectral envelope  (green = boost, red = cut)"
+    else
+        envTitle$ = "Spectral envelope  ("
+            ... + string$(time_segments)
+            ... + " curves overlaid, dark=first  light=last;"
+            ... + " ticks mark last curve)"
+    endif
+    if n_channels >= 2
+        envTitle$ = envTitle$ + "  [L channel]"
+    endif
+    Text top: "no", envTitle$
 
     # ----------------------------------------------------------
     # Output spectrogram
