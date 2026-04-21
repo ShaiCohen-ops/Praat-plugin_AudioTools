@@ -69,6 +69,7 @@ form HMM Timbre Sequencer v1.2 (True HMM)
     boolean Stereo_output 1
     boolean Draw_visualization 1
     boolean Show_info 1
+    boolean Play_result 1
 endform
 
 ####################################################################
@@ -1180,4 +1181,6 @@ if show_info
     appendInfoLine: "  Transitions: Learned from data"
 endif
 
-Play
+if play_result
+    Play
+endif
