@@ -363,6 +363,8 @@ endfor
 # ------------------------------------------------------------------------------
 selectObject: "Sound " + master_name$
 Scale peak: 0.95
-Play
+if show_visuals
+    Play
+endif
 
 appendInfoLine: "Done."
