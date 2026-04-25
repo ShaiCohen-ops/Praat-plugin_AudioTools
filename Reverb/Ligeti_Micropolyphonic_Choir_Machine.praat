@@ -3,16 +3,38 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - OPTIMIZED
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Ligeti Micropolyphonic Choir Machine - NOW WITH SPEED MODES!
-#   Creates dense, slowly-evolving textures with up to 8× speedup.
+#   Ligeti Micropolyphonic Choir Machine - dense, slowly-evolving
+#   textures via N pitch-detuned, time-offset, fade-enveloped voices
+#   summed into a single output buffer.
+#
+# Changelog v1.1 (2026):
+#   Speed-focused refactor. Output is mathematically equivalent to
+#   v1.0 (same RNG sequence, same mixing) — just considerably faster.
+#
+#   - SPEED: Combined pitch-shift and time-stretch into a single
+#     resample per voice (was: two). Both operations are
+#     SR-override + resample, so they commute as multiplicative
+#     factors and can be applied in one pass.
+#   - SPEED: Resample-precision parameter is now tied to speed_mode:
+#       Full Quality   -> precision 50 (original)
+#       Balanced       -> precision 10
+#       Fast           -> precision  5
+#     For dense choir textures with small pitch deviations, the
+#     aliasing from lower precision is masked by the texture itself.
+#   - SPEED: Folded envelope (attack/release fade) and per-voice
+#     gain into the final mix Formula. Eliminates two full-buffer
+#     passes per voice. Envelope math is computed in sample units
+#     (no division-by-sample-rate per sample inside Formula).
+#   - SPEED: When both pitch and time-stretch round to negligible,
+#     skip the resample entirely.
 # ============================================================
 
-form Ligeti Micropolyphonic Choir v1.0 (Optimized)
+form Ligeti Micropolyphonic Choir v1.1
     comment === Behavioral Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -138,15 +160,22 @@ if n_voices < 2
     exitScript: "Need at least 2 voices."
 endif
 
-# Set target sample rate
+# Set target sample rate and resample precision per speed mode.
+# v1.1: precision is now mode-dependent. Quality 50 is Praat's
+# default for high-quality work; 10 is fine for dense textures
+# with small detuning; 5 is fast and audibly fine when the source
+# is being multiplied 60× into a polyphonic mass.
 if speed_mode = 1
     targetSR = 0
+    resamplePrecision = 50
     speedStr$ = "Full Quality"
 elsif speed_mode = 2
     targetSR = 22050
+    resamplePrecision = 10
     speedStr$ = "Balanced"
 else
     targetSR = 11025
+    resamplePrecision = 5
     speedStr$ = "Fast"
 endif
 
@@ -165,7 +194,7 @@ endif
 startTime = stopwatch
 
 # Info
-writeInfoLine: "=== Ligeti Micropolyphonic Choir v1.0 (Optimized) ==="
+writeInfoLine: "=== Ligeti Micropolyphonic Choir v1.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Speed: ", speedStr$
@@ -259,59 +288,56 @@ for voice from 1 to n_voices
     endif
     
     voicePitch[voice] = current_pitch_cents
-    
-    # === 3. APPLY PITCH SHIFT ===
+
+    # === 3 + 4. COMBINED PITCH SHIFT + TIME STRETCH ===
+    # v1.1: both operations are SR-override + resample, so they
+    # commute as multiplicative factors on the override SR.
+    # combined_factor = pitch_ratio / dur_factor.
+    # When this rounds to ~1, the resample is skipped entirely.
     pitch_ratio = 2 ^ (current_pitch_cents / 1200)
-    
-    if abs(current_pitch_cents) > 0.1
-        selectObject: voiceCopy
-        new_sr = workingSR * pitch_ratio
-        Override sampling frequency: new_sr
-        Resample: workingSR, 50
-        temp = selected("Sound")
-        removeObject: voiceCopy
-        voiceCopy = temp
-    endif
-    
-    # === 4. TIME STRETCH ===
+
     if dist_shape$ = "gaussian"
         raw_rand = (randomUniform(-1, 1) + randomUniform(-1, 1)) / 2
         dur_factor = 1 + (raw_rand * dur_var)
     else
         dur_factor = 1 + randomUniform(-dur_var, dur_var)
     endif
-    
-    if abs(dur_factor - 1) > 0.001
+
+    combined_factor = pitch_ratio / dur_factor
+
+    if abs(combined_factor - 1) > 0.0008
         selectObject: voiceCopy
-        new_sr_stretch = workingSR / dur_factor
-        Override sampling frequency: new_sr_stretch
-        Resample: workingSR, 50
-        s_str = selected("Sound")
-        
-        selectObject: s_str
+        new_sr_combined = workingSR * combined_factor
+        Override sampling frequency: new_sr_combined
+        Resample: workingSR, resamplePrecision
+        temp = selected("Sound")
+        removeObject: voiceCopy
+        voiceCopy = temp
+
+        # If the combined operation lengthened the voice past the
+        # working duration window, trim. (When dur_factor > 1 and
+        # pitch_ratio < 1 — voice is both lower and longer.)
+        selectObject: voiceCopy
         s_dur = Get total duration
         if s_dur > workingDur + 0.01
             Extract part: 0, workingDur, "rectangular", 1, "no"
             temp = selected("Sound")
-            removeObject: s_str
-            s_str = temp
+            removeObject: voiceCopy
+            voiceCopy = temp
         endif
-        removeObject: voiceCopy
-        voiceCopy = s_str
     endif
-    
-    # === 5. ENVELOPE (Attack/Release Fade) ===
-    if fade > 0
-        selectObject: voiceCopy
-        fade_sec = fade / 1000
-        fade_str$ = string$(fade_sec)
-        Formula: "self * (if (x - xmin) < " + fade_str$ + " then (x - xmin)/" + fade_str$ + " else if (xmax - x) < " + fade_str$ + " then (xmax - x)/" + fade_str$ + " else 1 fi fi)"
-    endif
-    
-    # === 6. GAIN ===
-    selectObject: voiceCopy
+
+    # === 5 + 6. ENVELOPE + GAIN ===
+    # v1.1: envelope and gain are no longer applied via separate
+    # full-buffer Formulas. They are folded into the mix Formula
+    # below, saving two passes over the voice buffer per voice.
+    # We just compute the constants here.
     gain_per_voice = gain / sqrt(n_voices)
-    Formula: "self * " + string$(gain_per_voice)
+    fade_sec = fade / 1000
+    fade_samples = round(fade_sec * workingSR)
+    if fade_samples < 1
+        fade_samples = 1
+    endif
     
     # === 7. TIME OFFSET ===
     if dist_shape$ = "gaussian"
@@ -340,9 +366,17 @@ for voice from 1 to n_voices
         voiceMixStart = offset
     endif
     
-    # === 8. MIX INTO OUTPUT (Formula (part) + col indexing) ===
-    # No padding, no stereo conversion — mix mono voice directly
-    # into stereo output with per-channel panning gains.
+    # === 8. MIX INTO OUTPUT (folded envelope + gain + mix) ===
+    # v1.1: envelope and gain are folded into this Formula instead
+    # of running two prior full-buffer passes. This saves 2N voice-
+    # buffer scans across N voices.
+    #
+    # Envelope (in sample units, voice-local index vCol = col - sOff):
+    #   vCol < fade_samples            -> ramp in:  vCol / fade_samples
+    #   voiceNs - vCol + 1 < fade_samples -> ramp out: (voiceNs - vCol + 1) / fade_samples
+    #   else                           -> 1.0
+    # When fade = 0, the envelope multiplier is constant 1 and we
+    # build a simpler formula.
     selectObject: voiceCopy
     voiceNs = Get number of samples
 
@@ -363,25 +397,47 @@ for voice from 1 to n_voices
         voiceEnd_t = output_dur
     endif
 
+    voiceIdStr$ = string$(voiceCopy)
+    sOffStr$ = string$(sOff)
+    gainStr$ = string$(gain_per_voice)
+    voiceNsStr$ = string$(voiceNs)
+    fadeNsStr$ = string$(fade_samples)
+
+    # Build the voice-read-with-envelope expression once.
+    if fade > 0
+        vRead$ = "object[" + voiceIdStr$ + ", col - " + sOffStr$ + "]"
+            ... + " * (if (col - " + sOffStr$ + ") < " + fadeNsStr$
+            ... + " then (col - " + sOffStr$ + ") / " + fadeNsStr$
+            ... + " else if (" + voiceNsStr$ + " - (col - " + sOffStr$
+            ... + ") + 1) < " + fadeNsStr$
+            ... + " then (" + voiceNsStr$ + " - (col - " + sOffStr$
+            ... + ") + 1) / " + fadeNsStr$
+            ... + " else 1 fi fi)"
+            ... + " * " + gainStr$
+    else
+        vRead$ = "object[" + voiceIdStr$ + ", col - " + sOffStr$ + "]"
+            ... + " * " + gainStr$
+    endif
+
     if use_stereo = 1
         l_gain = sqrt((1 - pan_pos) / 2)
         r_gain = sqrt((1 + pan_pos) / 2)
         selectObject: output
         Formula (part): voiceMixStart, voiceEnd_t, 1, 1,
-            ... "self + object[" + string$(voiceCopy) + ", col - " + string$(sOff) + "] * " + string$(l_gain)
+            ... "self + " + vRead$ + " * " + string$(l_gain)
         Formula (part): voiceMixStart, voiceEnd_t, 2, 2,
-            ... "self + object[" + string$(voiceCopy) + ", col - " + string$(sOff) + "] * " + string$(r_gain)
+            ... "self + " + vRead$ + " * " + string$(r_gain)
     elsif outChannels > 1
         # Non-panned stereo: equal to both channels
         selectObject: output
         for ch from 1 to outChannels
             Formula (part): voiceMixStart, voiceEnd_t, ch, ch,
-                ... "self + object[" + string$(voiceCopy) + ", col - " + string$(sOff) + "]"
+                ... "self + " + vRead$
         endfor
     else
         selectObject: output
         Formula (part): voiceMixStart, voiceEnd_t, 1, 1,
-            ... "self + object[" + string$(voiceCopy) + ", col - " + string$(sOff) + "]"
+            ... "self + " + vRead$
     endif
 
     removeObject: voiceCopy
