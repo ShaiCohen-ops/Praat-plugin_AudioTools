@@ -3,12 +3,12 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Metropolis-Hastings MCMC chain for musical variation.
+#   Metropolis-Hastings-style chain for musical variation.
 #   State = pitch contour + time map + dynamic map per phrase.
 #   Proposals operate at phrase/note level (not granular).
 #   Energy enforces scale conformity, voice leading, rhythmic
@@ -23,6 +23,32 @@
 #   4. Lengthen (overlap-add)   (independent time stretch)
 #   5. Formula amplitude        (dynamics)
 #   6. Concatenate with overlap (assembly)
+#
+# Methodological note (v1.1):
+#   This is best understood as ANNEALED EXPLORATION with an
+#   MH-style acceptance rule, not strict posterior sampling.
+#   Some proposals satisfy detailed balance (PitchNudge,
+#   PhraseTranspose, TemporalSwap, GlobalTranspose are symmetric
+#   in the proposal density), while others do not — DynamicSwell,
+#   TempoWarp, and DynamicArch use clipping that breaks
+#   reversibility at boundaries; MicroRubato compensates an
+#   adjacent phrase, breaking symmetry. The chain explores the
+#   state space and biases toward lower-energy regions, which is
+#   the operationally useful property here. The "samples from a
+#   stationary posterior" interpretation does not strictly apply.
+#
+# Changelog v1.1 (2026):
+#   - SPEED: Per-phrase resample precision is now tied to a
+#     Speed_mode parameter (Full/Balanced/Fast -> 50/20/10).
+#     Resampling per phrase per variation was the dominant cost.
+#   - ROBUSTNESS: Pitch_floor_Hz and Pitch_ceiling_Hz form fields
+#     control the PSOLA pitch range used by Lengthen (overlap-add).
+#     Defaults widened from 75-600 to 60-700 Hz to handle
+#     instrumental music and low voices more reliably.
+#   - NAMING: Final multichannel output renamed from
+#     "<src>_mcmc_stereo" to "<src>_mcmc_multichannel" since the
+#     output has varCount channels (often >2), not stereo.
+#   - DOC: Detailed-balance note added to header (above).
 #
 # Category: Composition / MCMC
 # ============================================================
@@ -46,13 +72,18 @@ endif
 # FORM
 # ============================================================
 
-form MCMC Musical Variation v1.0
+form MCMC Musical Variation v1.1
     comment === Aesthetic Mode ===
     optionmenu Aesthetic_mode: 2
         option Custom
         option Conservative  (faithful, T=0.8 fixed)
         option Expressive    (reinterpretive, T 3.0 -> 1.0)
         option Exploratory   (creative, T 8.0 -> 2.0)
+    comment === Speed (resample precision per phrase) ===
+    optionmenu Speed_mode: 2
+        option Full Quality (precision 50)
+        option Balanced (precision 20)
+        option Fast (precision 10)
     comment === Chain ===
     integer Mcmc_steps 60
     integer Thinning_interval 6
@@ -63,6 +94,9 @@ form MCMC Musical Variation v1.0
     comment === Phrase Detection ===
     real Silence_thresh_dB -35.0
     positive Min_phrase_s 0.5
+    comment === Pitch Range for PSOLA Lengthen ===
+    positive Pitch_floor_Hz 60
+    positive Pitch_ceiling_Hz 700
     comment === Tonal Center (0=C 2=D 4=E 5=F 7=G 9=A 11=B) ===
     integer Tonal_center_st 0
     comment === Output ===
@@ -86,6 +120,24 @@ silThresh      = silence_thresh_dB
 minPhraseDur   = min_phrase_s
 tonalCenter    = tonal_center_st
 maxVar         = max_variations
+pitchFloorHz   = pitch_floor_Hz
+pitchCeilingHz = pitch_ceiling_Hz
+
+# v1.1: Resample precision tied to speed_mode.
+# Per-phrase resampling is the dominant cost. Lower precision
+# (down to ~10) is acceptable when the source is being
+# reassembled with crossfades and dynamic shaping anyway —
+# small aliasing artifacts are masked.
+if speed_mode = 1
+    resamplePrecision = 50
+    speedStr$ = "Full Quality"
+elsif speed_mode = 2
+    resamplePrecision = 20
+    speedStr$ = "Balanced"
+else
+    resamplePrecision = 10
+    speedStr$ = "Fast"
+endif
 
 # ============================================================
 # MODE PRESETS
@@ -584,7 +636,7 @@ procedure renderVariation: .vNum
             Copy: "seg_work"
             workedSeg = selected("Sound")
             Override sampling frequency: srcSr * pitchRatio
-            Resample: srcSr, 50
+            Resample: srcSr, resamplePrecision
             pitchedSeg = selected("Sound")
             removeObject: workedSeg, rawSeg
         else
@@ -607,7 +659,7 @@ procedure renderVariation: .vNum
         endif
         if abs(lenFactor - 1.0) > 0.02
             selectObject: pitchedSeg
-            Lengthen (overlap-add): 75, 600, lenFactor
+            Lengthen (overlap-add): pitchFloorHz, pitchCeilingHz, lenFactor
             stretchedSeg = selected("Sound")
             removeObject: pitchedSeg
         else
@@ -663,11 +715,15 @@ endproc
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  MCMC Musical Variation v1.0"
+writeInfoLine:  "  MCMC Musical Variation v1.1"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source    : ", srcName$, " (", fixed$(srcDur, 2), " s)"
 appendInfoLine: "Mode      : ", presetName$
+appendInfoLine: "Speed     : ", speedStr$, "  (resample precision=",
+    ... resamplePrecision, ")"
+appendInfoLine: "PSOLA F0  : ", fixed$(pitchFloorHz, 0), " - ",
+    ... fixed$(pitchCeilingHz, 0), " Hz"
 appendInfoLine: "Phrases   : ", nPhrases
 for pp from 1 to nPhrases
     appendInfoLine: "  P", pp, ": ", fixed$(phraseStart_'pp', 2),
@@ -870,7 +926,7 @@ if draw_visualization = 1 and varCount > 0
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##MCMC Musical Variation v1.0##"
+    Text: 0.5, "centre", 0.70, "half", "##MCMC Musical Variation v1.1##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.15, "half",
@@ -1117,7 +1173,7 @@ if draw_visualization = 1 and varCount > 0
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.87, "half", "##MCMC Musical Variation v1.0##"
+    Text: 0.02, "left", 0.87, "half", "##MCMC Musical Variation v1.1##"
     Font size: 6
     Colour: "{0.35, 0.35, 0.40}"
     Text: 0.02, "left", 0.66, "half",
@@ -1186,12 +1242,15 @@ if play_first = 1 and varCount > 0
     Play
 endif
 
-# Combine all variations to stereo and play
-# Each variation goes to a separate channel (up to 8).
+# Combine all variations into a multichannel sound and play.
+# Each variation goes to a separate channel (up to maxVar).
 # Variations are zero-padded to the longest duration before combining.
+# Note: despite Praat calling this action "Combine to stereo", the
+# result has N channels equal to the number of selected mono sounds.
+# When varCount > 2, this is a multichannel file, not stereo.
 
 appendInfoLine: ""
-appendInfoLine: "Combining variations to stereo mix..."
+appendInfoLine: "Combining variations into multichannel mix..."
 
 # Find longest variation duration
 maxVarDur = 0
@@ -1220,19 +1279,19 @@ for v from 1 to varCount
     endif
 endfor
 
-# Select all and combine to stereo
+# Select all and combine to multichannel
 selectObject: variation_1
 for v from 2 to varCount
     plusObject: variation_'v'
 endfor
 Combine to stereo
-mcmcStereo = selected("Sound")
-Rename: srcName$ + "_mcmc_stereo"
+mcmcMulti = selected("Sound")
+Rename: srcName$ + "_mcmc_multichannel"
 
-appendInfoLine: "  Combined: ", srcName$, "_mcmc_stereo  (",
-    ... string$(varCount), " channels -> stereo mix)"
+appendInfoLine: "  Combined: ", srcName$, "_mcmc_multichannel  (",
+    ... string$(varCount), " channels)"
 
-selectObject: mcmcStereo
+selectObject: mcmcMulti
 Scale peak: 0.95
 Play
 
@@ -1244,5 +1303,5 @@ if keep_individual_variations = 0
     appendInfoLine: "  Individual variations removed (keep_individual_variations = off)"
 else
     appendInfoLine: "  Individual variations kept in Objects list"
-    selectObject: mcmcStereo
+    selectObject: mcmcMulti
 endif
