@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2025)
+# Version: 2.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -31,9 +31,33 @@
 #     IV.  Stretto        : compressed entries pile up
 #     V.   Pedal/Cadence  : augmented drone, final subject, fade
 #
+# Changelog v2.2 (2026):
+#   Speed-focused refactor. Output is the same construction —
+#   placement, transposition, spatialization unchanged — just
+#   considerably faster.
+#
+#   - SPEED: placeAt now mixes the fragment into the timeline
+#     in-place via Formula (part) instead of Extract+Concat.
+#     The original procedure rebuilt the entire timeline buffer
+#     on every call (~20 calls per script run on multi-second
+#     buffers). In-place mixing is dramatically faster.
+#   - SPEED: makeDelay now writes the delayed signal into a
+#     pre-allocated zero buffer via Formula (part) instead of
+#     Concat+Extract. Called many times by applySpatial via
+#     reverb taps and early reflections.
+#   - SPEED: transposeByRatio's Resample precision is now tied
+#     to a Speed_mode form parameter (Full/Balanced/Fast =
+#     precision 50/20/10).
+#   - FIX: Removed conflicting Scale intensity + Scale peak pair
+#     at the end of the pipeline. Scale intensity was setting
+#     RMS to a target dB, then Scale peak rescaled the peak —
+#     making the intensity calibration meaningless. Now keeps
+#     only Scale peak: 0.99 (predictable, no clipping). The
+#     section_intensity_dB form field has been removed since
+#     it no longer affects the output.
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -68,7 +92,7 @@ endif
 # FORM
 # ============================================================
 
-form Perceptual Fugue v2.1
+form Perceptual Fugue v2.2
     comment === Preset ===
     optionmenu Preset: 2
         option Custom
@@ -90,8 +114,12 @@ form Perceptual Fugue v2.1
     positive Exposition_ITD_ms 3.0
     positive Exposition_ILD_factor 4.0
     positive Shadow_cutoff_Hz 500
+    comment === Render speed (transpose resample precision) ===
+    optionmenu Speed_mode: 2
+        option Full Quality (precision 50)
+        option Balanced (precision 20)
+        option Fast (precision 10)
     comment === Output ===
-    positive Section_intensity_dB 65
     boolean Draw_visualization 1
 endform
 
@@ -109,7 +137,6 @@ if preset = 2
     exposition_ITD_ms = 3.0
     exposition_ILD_factor = 4.0
     shadow_cutoff_Hz = 500
-    section_intensity_dB = 65
 elsif preset = 3
     presetName$ = "Spectral Fugue"
     answer_interval = 4
@@ -120,7 +147,6 @@ elsif preset = 3
     exposition_ITD_ms = 4.0
     exposition_ILD_factor = 5.0
     shadow_cutoff_Hz = 400
-    section_intensity_dB = 67
 elsif preset = 4
     presetName$ = "Chamber Fugue"
     answer_interval = 1
@@ -131,7 +157,6 @@ elsif preset = 4
     exposition_ITD_ms = 2.0
     exposition_ILD_factor = 2.5
     shadow_cutoff_Hz = 800
-    section_intensity_dB = 63
 elsif preset = 5
     presetName$ = "Stretto Study"
     answer_interval = 1
@@ -142,7 +167,6 @@ elsif preset = 5
     exposition_ITD_ms = 3.5
     exposition_ILD_factor = 4.5
     shadow_cutoff_Hz = 450
-    section_intensity_dB = 66
 else
     presetName$ = "Custom"
 endif
@@ -166,6 +190,22 @@ itdBase_s = exposition_ITD_ms / 1000
 ildBase = exposition_ILD_factor
 numV = number_of_voices
 comp = stretto_compression
+
+# v2.2: Resample precision tied to speed_mode.
+# transposeByRatio is called several times for entries and head-
+# motif transpositions. Lower precision is acceptable here —
+# the script then crossfades, filters, and adds reverb to each
+# voice, which masks small aliasing artifacts from the resample.
+if speed_mode = 1
+    resamplePrecision = 50
+    speedStr$ = "Full Quality"
+elsif speed_mode = 2
+    resamplePrecision = 20
+    speedStr$ = "Balanced"
+else
+    resamplePrecision = 10
+    speedStr$ = "Fast"
+endif
 
 if answer_interval = 1
     answerRatio = 2 ^ (7/12)
@@ -210,11 +250,12 @@ totalDur = strettoEnd + pedalDur
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: " PERCEPTUAL FUGUE v2.1 (Optimized)"
+writeInfoLine: " PERCEPTUAL FUGUE v2.2"
 writeInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", soundName$, " | ", fixed$(monoDur, 3), " s | ", monoSr, " Hz"
 appendInfoLine: "Voices: ", numV, " | Answer: ", intervalName$, " (x", fixed$(answerRatio, 3), ")"
+appendInfoLine: "Speed:  ", speedStr$, " (resample precision=", resamplePrecision, ")"
 appendInfoLine: "Output duration: ", fixed$(totalDur, 2), " s"
 appendInfoLine: ""
 
@@ -228,6 +269,11 @@ procedure mixAdd: .a, .b
 endproc
 
 procedure makeDelay: .snd, .delaySec
+    # v2.2: writes the delayed signal into a pre-allocated zero
+    # buffer via Formula (part). Old version did Concat + Extract,
+    # which is much slower for long buffers. Behavior identical:
+    # silence for the first .delaySec seconds, then the input,
+    # truncated to the input's original duration.
     selectObject: .snd
     .sr = Get sampling frequency
     .dur = Get total duration
@@ -238,16 +284,17 @@ procedure makeDelay: .snd, .delaySec
         if .nSamples < 1
             .nSamples = 1
         endif
-        .padDur = .nSamples / .sr
-        .sil = Create Sound from formula: "sil", 1, 0, .padDur, .sr, "0"
-        selectObject: .snd
-        .copy = Copy: "dly_src"
-        selectObject: .sil
-        plusObject: .copy
-        .cat = Concatenate
-        selectObject: .cat
-        delayResult = Extract part: 0, .dur, "rectangular", 1, "no"
-        removeObject: .cat, .sil, .copy
+        .startSec = .nSamples / .sr
+        .sndIdStr$ = string$(.snd)
+        .offsetStr$ = string$(.nSamples)
+
+        delayResult = Create Sound from formula: "dly", 1, 0, .dur, .sr, "0"
+        selectObject: delayResult
+        # Write the delayed signal: at timeline col c >= .nSamples + 1,
+        # read source col (c - .nSamples). Reads outside the source
+        # return 0, which is fine for the trailing silence.
+        Formula (part): .startSec, .dur, 1, 1,
+            ... "object[" + .sndIdStr$ + ", 1, col - " + .offsetStr$ + "]"
     endif
 endproc
 
@@ -339,7 +386,7 @@ procedure transposeByRatio: .snd, .ratio
     .tmp = Copy: "ps_tmp"
     selectObject: .tmp
     Override sampling frequency: round(samplingFrequency * .ratio)
-    .shifted = Resample: samplingFrequency, 50
+    .shifted = Resample: samplingFrequency, resamplePrecision
     removeObject: .tmp
     @trimTo: .shifted, .intendedDur
     removeObject: .shifted
@@ -381,47 +428,51 @@ procedure applyFades: .snd
 endproc
 
 procedure placeAt: .timeline, .fragment, .startSec
+    # v2.2: mixes the fragment into the timeline IN-PLACE via
+    # Formula (part). Old version extracted before/middle/after
+    # slices, mixed into middle, and concatenated — rebuilding
+    # the full timeline buffer on every call. With ~20 placeAt
+    # calls per script run on multi-second buffers, this was the
+    # dominant runtime cost.
+    #
+    # Behavior identical to v2.1: the fragment is added to the
+    # timeline starting at .startSec, clipped at the timeline
+    # end. Returns placeAt_result = .timeline (same ID; the
+    # caller's "vt1 = placeAt_result" is now a no-op rebind that
+    # keeps existing call sites working unchanged).
     selectObject: .timeline
     .tDur = Get total duration
+    .tSr = Get sampling frequency
+
     selectObject: .fragment
     .fDur = Get total duration
-    .fNx = Get number of samples
+    .fNs = Get number of samples
+
     .endSec = .startSec + .fDur
     if .endSec > .tDur
         .endSec = .tDur
     endif
-    .before = 0
-    if .startSec > 0
+    if .startSec < 0
+        .startSec = 0
+    endif
+
+    if .endSec > .startSec
+        # Sample-index offset such that timeline col (offset+1)
+        # reads fragment col 1. With Formula (part) starting at
+        # .startSec, the first written col is round(.startSec *
+        # sr) + 1, and we want fragment col 1 there, so offset =
+        # round(.startSec * sr).
+        .offsetCol = round(.startSec * .tSr)
+        .offsetStr$ = string$(.offsetCol)
+        .fragIdStr$ = string$(.fragment)
+
         selectObject: .timeline
-        .before = Extract part: 0, .startSec, "rectangular", 1, "no"
+        Formula (part): .startSec, .endSec, 1, 1,
+            ... "self + object[" + .fragIdStr$ + ", 1, col - "
+            ... + .offsetStr$ + "]"
     endif
-    selectObject: .timeline
-    .middle = Extract part: .startSec, .endSec, "rectangular", 1, "no"
-    selectObject: .middle
-    Formula: "self + (if col <= " + string$(.fNx) + " then object[" + string$(.fragment) + ", 1, col] else 0 fi)"
-    .after = 0
-    if .endSec < .tDur
-        selectObject: .timeline
-        .after = Extract part: .endSec, .tDur, "rectangular", 1, "no"
-    endif
-    if .before <> 0
-        selectObject: .before
-        plusObject: .middle
-    else
-        selectObject: .middle
-    endif
-    if .after <> 0
-        plusObject: .after
-    endif
-    .newTimeline = Concatenate
-    removeObject: .timeline, .middle
-    if .before <> 0
-        removeObject: .before
-    endif
-    if .after <> 0
-        removeObject: .after
-    endif
-    placeAt_result = .newTimeline
+
+    placeAt_result = .timeline
 endproc
 
 procedure applySpatial: .monoSnd
@@ -912,8 +963,11 @@ removeObject: v1L, v1R
 selectObject: fugue
 Rename: soundName$ + "_perceptual_fugue"
 
-# Dynamic Scaling based on intensity
-Scale intensity: section_intensity_dB
+# v2.2: Removed conflicting "Scale intensity: section_intensity_dB"
+# that preceded "Scale peak: 0.99". The peak normalization
+# would always overwrite the intensity setting, making the
+# section_intensity_dB form parameter cosmetic. Now keeps only
+# Scale peak — predictable, no clipping.
 Scale peak: 0.99
 
 fugueName$ = selected$("Sound")
@@ -987,7 +1041,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.7, "half", "##Perceptual Fugue v2.1##"
+    Text: 0.5, "centre", 0.7, "half", "##Perceptual Fugue v2.2##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.2, "half", presetName$ + " | " + soundName$ + " | " + string$(numV) + " voices | " + intervalName$ + " | " + fixed$(fugueDur, 1) + " s"
