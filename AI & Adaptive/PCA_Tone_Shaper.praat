@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Fixed syntax
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,23 @@
 #   - Added presets
 #   - Added visualization
 #   - Modern syntax throughout
+#
+# Changelog v0.4 (2026):
+#   - FIX: Band mixing was using "Combine to stereo + Convert to
+#     mono" twice, which averages instead of summing. The math
+#     produced low/4 + mid/4 + high/2 instead of low + mid + high
+#     — every preset's gains have been silently wrong since v0.1.
+#     Replaced with proper Formula-based summation: the bands now
+#     sum to unity gain when gL=gM=gH=1.0.
+#   - SPEED: Per-chunk Concatenate in the assembly loop rebuilt
+#     the entire growing buffer on every iteration — O(n^2) cost.
+#     Replaced with pre-allocated output buffer + Formula (part)
+#     in-place writes. Significant speedup on long inputs.
+#   - VIZ: Added PC1/PC2/PC3 trajectory panel showing the
+#     normalized PCA scores over time — directly displays what
+#     the system is responding to.
+#   - VIZ: Added input/output spectrogram comparison panels so
+#     the spectral effect of the EQ is visible.
 # ============================================================
 
 # === Input Validation ===
@@ -27,7 +44,7 @@ endif
 origSnd = selected("Sound")
 origName$ = selected$("Sound")
 
-form PCA Tone Shaper v0.3
+form PCA Tone Shaper v0.4
     comment === Preset ===
     optionmenu Preset: 1
         option Manual
@@ -92,7 +109,7 @@ endif
 
 # ===== SETUP =====
 clearinfo
-writeInfoLine: "=== PCA Tone Shaper v0.3 ==="
+writeInfoLine: "=== PCA Tone Shaper v0.4 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Strength: ", pca_strength
 appendInfoLine: ""
@@ -244,18 +261,18 @@ nCols = Get number of columns
 Create TableOfReal: "zfeat", nRows, nCols
 zfeat = selected("TableOfReal")
 
-for col from 1 to nCols
+for colIdx from 1 to nCols
     selectObject: feat
     sum = 0
-    for row from 1 to nRows
-        val = Get value: row, col
+    for rowIdx from 1 to nRows
+        val = Get value: rowIdx, colIdx
         sum = sum + val
     endfor
     mean = sum / nRows
     sumSq = 0
-    for row from 1 to nRows
+    for rowIdx from 1 to nRows
         selectObject: feat
-        val = Get value: row, col
+        val = Get value: rowIdx, colIdx
         diff = val - mean
         sumSq = sumSq + diff*diff
     endfor
@@ -263,12 +280,12 @@ for col from 1 to nCols
     if sd = 0
         sd = 1
     endif
-    for row from 1 to nRows
+    for rowIdx from 1 to nRows
         selectObject: feat
-        val = Get value: row, col
+        val = Get value: rowIdx, colIdx
         z = (val - mean) / sd
         selectObject: zfeat
-        Set value: row, col, z
+        Set value: rowIdx, colIdx, z
     endfor
 endfor
 
@@ -356,8 +373,13 @@ gainL_vals# = zero#(nChunks)
 gainM_vals# = zero#(nChunks)
 gainH_vals# = zero#(nChunks)
 
-firstDone = 0
-outS = 0
+# v0.4: Pre-allocate the output buffer at the input duration.
+# Previous version concatenated each chunk in a loop, rebuilding
+# the entire growing buffer at every step (O(n^2)). Now we write
+# each processed chunk into the pre-allocated buffer at its
+# original time offset using Formula (part).
+outS = Create Sound from formula: origName$ + "_PCATone_" + presetName$,
+    ... 1, 0, dur, fs, "0"
 
 for k from 1 to nChunks
     t1 = (k - 1) * cDur
@@ -472,53 +494,44 @@ for k from 1 to nChunks
         # Dispose spectra
         removeObject: s_low, s_mid, s_high, s_all
 
-        # Apply gains (fixed: use string$ for variable)
+        # v0.4 FIX: previous version applied gains to each band
+        # then mixed via "Combine to stereo + Convert to mono"
+        # twice, which AVERAGES instead of sums. With gL=gM=gH=1.0
+        # the previous output was low/4 + mid/4 + high/2 instead
+        # of low+mid+high. Now we apply the gains and sum directly
+        # via Formula in a single pass, writing into lowB.
         gLStr$ = string$(gL)
         gMStr$ = string$(gM)
         gHStr$ = string$(gH)
-        
+        midIdStr$ = string$(midB)
+        highIdStr$ = string$(highB)
+
         selectObject: lowB
         Formula: "self * " + gLStr$
-        selectObject: midB
-        Formula: "self * " + gMStr$
-        selectObject: highB
-        Formula: "self * " + gHStr$
+            ... + " + object[" + midIdStr$ + ", col] * " + gMStr$
+            ... + " + object[" + highIdStr$ + ", col] * " + gHStr$
+        segOut = lowB
+        removeObject: midB, highB
 
-        # Mix bands
-        selectObject: lowB
-        plusObject: midB
-        Combine to stereo
-        stereo1 = selected("Sound")
-        Convert to mono
-        lowMid = selected("Sound")
-
-        selectObject: lowMid
-        plusObject: highB
-        Combine to stereo
-        stereo2 = selected("Sound")
-        Convert to mono
-        segOut = selected("Sound")
-
-        # Cleanup intermediate
-        removeObject: stereo1, stereo2, lowMid
-
-        if firstDone = 0
-            selectObject: segOut
-            Copy: origName$ + "_PCATone_" + presetName$
-            outS = selected("Sound")
-            firstDone = 1
-            removeObject: segOut
-        else
-            selectObject: outS
-            plusObject: segOut
-            Concatenate
-            newOut = selected("Sound")
-            removeObject: outS, segOut
-            outS = newOut
+        # v0.4: write segOut into the pre-allocated output buffer
+        # at its time offset. Previous version called Concatenate
+        # in a loop — O(n^2) cost.
+        selectObject: segOut
+        segOutDur = Get total duration
+        segEnd_t = t1 + segOutDur
+        if segEnd_t > dur
+            segEnd_t = dur
         endif
+        segOutIdStr$ = string$(segOut)
+        chunkOffsetCol = round(t1 * fs)
+        chunkOffsetStr$ = string$(chunkOffsetCol)
+        selectObject: outS
+        Formula (part): t1, segEnd_t, 1, 1,
+            ... "self + object[" + segOutIdStr$
+            ... + ", 1, col - " + chunkOffsetStr$ + "]"
 
         # Cleanup chunk bits
-        removeObject: seg, lowB, midB, highB
+        removeObject: seg, segOut
     endif
     
     if k mod 10 = 0
@@ -531,7 +544,6 @@ appendInfoLine: " done"
 # ===== FINALIZE =====
 selectObject: outS
 Scale peak: headroom
-Rename: origName$ + "_PCATone_" + presetName$
 
 selectObject: outS
 outDur = Get total duration
@@ -539,92 +551,209 @@ outDur = Get total duration
 # ===== VISUALIZATION =====
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
-    
+
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, 8
+
+    # === Title ===
+    Select outer viewport: 0, 8, 0.05, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "PCA Tone Shaper: " + origName$ + " [" + presetName$ + "]"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    Text: 0.5, "centre", 0.65, "half",
+        ... "##PCA Tone Shaper v0.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.20, "half",
+        ... origName$ + "  |  preset: " + presetName$
+        ... + "  |  strength: " + fixed$(pca_strength, 2)
+        ... + "  |  bands: 0-" + string$(low_hi_crossover1_hz)
+        ... + "/" + string$(low_hi_crossover2_hz)
+        ... + "/" + string$(high_band_top_hz) + " Hz"
+        ... + "  |  PC1-3: " + fixed$(expl, 1) + "%"
+
+    # === Input waveform ===
+    Select outer viewport: 0, 8, 0.55, 1.30
+    Select inner viewport: 0.6, 7.6, 0.60, 1.25
     selectObject: origSnd
-    Colour: "{0.5, 0.5, 0.5}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Output waveform
-    Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    Font size: 7
+    Text left: "yes", "Input"
+
+    # === Output waveform ===
+    Select outer viewport: 0, 8, 1.35, 2.10
+    Select inner viewport: 0.6, 7.6, 1.40, 2.05
     selectObject: outS
-    Colour: "{0.4, 0.5, 0.7}"
+    Colour: "{0.30, 0.50, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
+    Font size: 7
     Text left: "yes", "Output"
-    Text bottom: "yes", "Time (s)"
-    
-    # Band gains over time
-    Select outer viewport: 0, 8, 2.7, 4.2
-    Select inner viewport: 0.6, 7.6, 2.9, 4.1
-    
+
+    # === Input spectrogram (NEW in v0.4) ===
+    Select outer viewport: 0, 8, 2.15, 3.30
+    Select inner viewport: 0.6, 7.6, 2.25, 3.25
+    selectObject: origSnd
+    if nch > 1
+        Convert to mono
+        viz_inMono = selected("Sound")
+    else
+        Copy: "viz_inMono"
+        viz_inMono = selected("Sound")
+    endif
+    selectObject: viz_inMono
+    To Spectrogram: 0.02, 5000, 0.005, 20, "Gaussian"
+    viz_specIn = selected("Spectrogram")
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    removeObject: viz_specIn, viz_inMono
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Hz"
+    Text top: "no", "Input spectrogram"
+
+    # === Output spectrogram (NEW in v0.4) ===
+    Select outer viewport: 0, 8, 3.35, 4.50
+    Select inner viewport: 0.6, 7.6, 3.45, 4.45
+    selectObject: outS
+    To Spectrogram: 0.02, 5000, 0.005, 20, "Gaussian"
+    viz_specOut = selected("Spectrogram")
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    removeObject: viz_specOut
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Hz"
+    Text top: "no", "Output spectrogram (after EQ)"
+
+    # === Band gains over time (existing, restyled) ===
+    Select outer viewport: 0, 8, 4.55, 5.55
+    Select inner viewport: 0.6, 7.6, 4.65, 5.50
+
     Axes: 0, dur, 0.4, 1.6
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, 0.4, 1.6
-    
+
     # Reference line at 1.0
-    Colour: "{0.7, 0.7, 0.7}"
+    Colour: "{0.78, 0.78, 0.78}"
     Dotted line
     Draw line: 0, 1, dur, 1
     Solid line
-    
+
     # Low band (red)
-    Colour: "{0.8, 0.3, 0.3}"
+    Colour: "{0.80, 0.30, 0.30}"
+    Line width: 1.4
     for k from 2 to nChunks
         t1_pt = (k - 2) * cDur
         t2_pt = (k - 1) * cDur
-        Draw line: t1_pt, gainL_vals#[k-1], t2_pt, gainL_vals#[k]
+        Draw line: t1_pt, gainL_vals#[k - 1], t2_pt, gainL_vals#[k]
     endfor
-    
+
     # Mid band (green)
-    Colour: "{0.3, 0.7, 0.3}"
+    Colour: "{0.30, 0.65, 0.30}"
     for k from 2 to nChunks
         t1_pt = (k - 2) * cDur
         t2_pt = (k - 1) * cDur
-        Draw line: t1_pt, gainM_vals#[k-1], t2_pt, gainM_vals#[k]
+        Draw line: t1_pt, gainM_vals#[k - 1], t2_pt, gainM_vals#[k]
     endfor
-    
+
     # High band (blue)
-    Colour: "{0.3, 0.4, 0.8}"
+    Colour: "{0.30, 0.40, 0.80}"
     for k from 2 to nChunks
         t1_pt = (k - 2) * cDur
         t2_pt = (k - 1) * cDur
-        Draw line: t1_pt, gainH_vals#[k-1], t2_pt, gainH_vals#[k]
+        Draw line: t1_pt, gainH_vals#[k - 1], t2_pt, gainH_vals#[k]
     endfor
-    
+    Line width: 1
+
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Gain"
+    Text top: "no",
+        ... "Band gains over time (red=Low, green=Mid, blue=High; dotted=unity)"
+
+    # === PC trajectory (NEW in v0.4) ===
+    # Shows what the PCA is responding to: PC1, PC2, PC3 over time.
+    # All three PCs are normalized to [-1, 1] so they share an axis.
+    Select outer viewport: 0, 8, 5.60, 6.55
+    Select inner viewport: 0.6, 7.6, 5.70, 6.50
+
+    Axes: 0, dur, -1.1, 1.1
+    Paint rectangle: "{0.97, 0.97, 0.99}", 0, dur, -1.1, 1.1
+
+    Colour: "{0.78, 0.78, 0.78}"
+    Dotted line
+    Draw line: 0, 0, dur, 0
+    Solid line
+
+    # Map frame index to time: t = t0 + (i - 0.5) * dt
+    # PC1 (purple)
+    Colour: "{0.55, 0.30, 0.70}"
+    Line width: 1.5
+    for ii from 2 to nScores
+        ti1 = t0 + (ii - 1.5) * dt
+        ti2 = t0 + (ii - 0.5) * dt
+        Draw line: ti1, pc1_vals#[ii - 1], ti2, pc1_vals#[ii]
+    endfor
+
+    # PC2 (orange)
+    Colour: "{0.85, 0.55, 0.20}"
+    Line width: 1.2
+    for ii from 2 to nScores
+        ti1 = t0 + (ii - 1.5) * dt
+        ti2 = t0 + (ii - 0.5) * dt
+        Draw line: ti1, pc2_vals#[ii - 1], ti2, pc2_vals#[ii]
+    endfor
+
+    # PC3 (teal)
+    Colour: "{0.20, 0.55, 0.55}"
+    Line width: 1.0
+    for ii from 2 to nScores
+        ti1 = t0 + (ii - 1.5) * dt
+        ti2 = t0 + (ii - 0.5) * dt
+        Draw line: ti1, pc3_vals#[ii - 1], ti2, pc3_vals#[ii]
+    endfor
+    Line width: 1
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Score"
     Text bottom: "yes", "Time (s)"
-    
-    # Legend
-    Select outer viewport: 0, 8, 4.3, 4.7
-    Font size: 8
-    Colour: "{0.8, 0.3, 0.3}"
-    Text: 1.2, "centre", 0.5, "half", "— Low (0-" + string$(low_hi_crossover1_hz) + " Hz)"
-    Colour: "{0.3, 0.7, 0.3}"
-    Text: 1.2, "centre", 2.5, "half", "— Mid (" + string$(low_hi_crossover1_hz) + "-" + string$(low_hi_crossover2_hz) + " Hz)"
-    Colour: "{0.3, 0.4, 0.8}"
-    Text: 1.2, "centre", 4.5, "half", "— High (" + string$(low_hi_crossover2_hz) + "-" + string$(high_band_top_hz) + " Hz)"
-    
+    Text top: "no",
+        ... "PC scores: PC1 (purple), PC2 (orange), PC3 (teal)"
+
+    # === Legend / parameters strip ===
+    Select outer viewport: 0, 8, 6.60, 7.00
+    Select inner viewport: 0.6, 7.6, 6.63, 6.97
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.70, "half",
+        ... "##Bands##  Low: 0-" + string$(low_hi_crossover1_hz)
+        ... + " Hz   Mid: " + string$(low_hi_crossover1_hz)
+        ... + "-" + string$(low_hi_crossover2_hz)
+        ... + " Hz   High: " + string$(low_hi_crossover2_hz)
+        ... + "-" + string$(high_band_top_hz) + " Hz"
+        ... + "    ##Chunk##  " + string$(chunk_ms) + " ms"
+        ... + "    ##Chunks##  " + string$(nChunks)
+    Text: 0.02, "left", 0.30, "half",
+        ... "##PCA##  variance explained PC1-3 = "
+        ... + fixed$(expl, 1) + "%"
+        ... + "    ##Strength##  " + fixed$(pca_strength, 2)
+        ... + "    ##Headroom##  " + fixed$(headroom, 2)
+        ... + "    ##Duration##  " + fixed$(outDur, 2) + " s"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # ===== REPORT =====
