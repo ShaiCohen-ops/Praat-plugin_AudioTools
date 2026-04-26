@@ -3,21 +3,56 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Feature-constrained experimental sound variation using MSE
-#   distance control. Extracts high-dimensional features (MFCC,
-#   spectral centroid, flux, harmonicity, sub-band energy) and
-#   iteratively applies spectral/temporal transformations until
-#   the transformed sound reaches a target MSE distance band
-#   from the original.
+#   Feature-constrained experimental sound variation using
+#   z-score-normalized feature distance control. Extracts
+#   high-dimensional features (MFCC, spectral centroid, flux,
+#   harmonicity, sub-band energy) and iteratively applies
+#   spectral/temporal transformations until the transformed
+#   sound reaches a target normalized distance band from the
+#   original.
 #
 #   Preserves: overall duration (structural anchor)
-#   Transforms: spectral tilt, band noise, segment-wise
-#   spectral coloring, amplitude modulation
+#   Transforms: granular reorder/reverse/gate, segment-wise
+#   spectral coloring, transient exaggeration, band-limited
+#   noise bursts, pitch jitter
+#
+# Changelog v1.2 (2026):
+#   - FIX: Noise-burst transform was a silent no-op. The mixing
+#     Formula used "object[burstId, x - ...]" with x (a time
+#     value) as the column index — Praat's object[] expects an
+#     integer sample index, so reads always returned 0 and no
+#     noise was added. Replaced with Formula (part) and proper
+#     col-based indexing. The transform now actually works.
+#   - FIX: presetName$ was being overwritten by a second dispatch
+#     block that mislabeled presets 3-5 as "Extreme"/"Custom".
+#     Removed the duplicate dispatch.
+#   - SPEED: Granular grain assembly (T1) and spectral mutation
+#     segment assembly (T2) used Concatenate in tight loops, which
+#     rebuilds the entire growing buffer on every iteration —
+#     classic O(n^2) cost. Replaced with pre-allocated output
+#     buffers and Formula (part) in-place mixing per fragment.
+#   - METRIC: MSE is now z-score normalized. Previously, the raw
+#     MSE summed (mean_diff)^2 + (var_diff)^2 across 19 features
+#     of wildly different scales — centroid (~2000-6000 Hz)
+#     dominated by ~12 orders of magnitude over band energies
+#     (~0.001-0.1). The "0.15 target" was effectively a squared-
+#     centroid distance. Now each dimension's mean-diff is divided
+#     by sqrt(orig_variance) and each var-diff by orig_variance,
+#     so all features contribute proportionally. Distance values
+#     now have an interpretation: 1.0 = average one-sigma shift
+#     across features.
+#   - RECALIBRATION: All preset target_distance values have been
+#     adjusted for the new z-score scale. Old 0.05 -> new 0.4
+#     (Subtle); old 0.15 -> new 1.0 (Standard); old 0.20 -> new
+#     1.5 (Granular); old 0.25 -> new 1.8 (Spectral); old 0.40 ->
+#     new 2.5 (Extreme). Custom users should expect targets
+#     roughly 6-8x larger than v1.1 for equivalent transformation
+#     amount.
 #
 # Category: Composition
 # ============================================================
@@ -33,7 +68,7 @@ originalName$ = selected$("Sound")
 # ============================================================
 # FORM
 # ============================================================
-form MSE Feature-Constrained Variation v1.1
+form MSE Feature-Constrained Variation v1.2
     comment === Preset ===
     optionmenu Preset: 2
         option Subtle (spectral drift only)
@@ -42,9 +77,9 @@ form MSE Feature-Constrained Variation v1.1
         option Spectral (timbral destruction)
         option Extreme (full disruption)
         option Custom
-    comment === MSE Control (Custom only) ===
-    positive Target_distance 0.15
-    positive Tolerance 0.04
+    comment === Distance Control (Custom only) - z-score normalized ===
+    positive Target_distance 1.0
+    positive Tolerance 0.25
     natural Max_iterations 15
     comment === Intensity (Custom only) ===
     positive Initial_intensity 0.8
@@ -90,8 +125,8 @@ gateScale = 0.5
 if preset = 1
     # SUBTLE: spectral-only, no structural disruption
     presetName$ = "Subtle"
-    targetDistance = 0.05
-    tolerance = 0.02
+    targetDistance = 0.4
+    tolerance = 0.12
     maxIterations = 8
     initialIntensity = 0.4
     intensityStep = 0.1
@@ -112,8 +147,8 @@ if preset = 1
 elsif preset = 2
     # STANDARD: balanced mix
     presetName$ = "Standard"
-    targetDistance = 0.15
-    tolerance = 0.04
+    targetDistance = 1.0
+    tolerance = 0.25
     maxIterations = 15
     initialIntensity = 0.8
     intensityStep = 0.2
@@ -137,8 +172,8 @@ elsif preset = 2
 elsif preset = 3
     # GRANULAR: structural fracture, minimal spectral
     presetName$ = "Granular"
-    targetDistance = 0.20
-    tolerance = 0.06
+    targetDistance = 1.5
+    tolerance = 0.35
     maxIterations = 15
     initialIntensity = 1.0
     intensityStep = 0.25
@@ -165,8 +200,8 @@ elsif preset = 3
 elsif preset = 4
     # SPECTRAL: timbral destruction, temporal flow preserved
     presetName$ = "Spectral"
-    targetDistance = 0.25
-    tolerance = 0.05
+    targetDistance = 1.8
+    tolerance = 0.30
     maxIterations = 15
     initialIntensity = 0.9
     intensityStep = 0.2
@@ -187,8 +222,8 @@ elsif preset = 4
 elsif preset = 5
     # EXTREME: everything maxed
     presetName$ = "Extreme"
-    targetDistance = 0.40
-    tolerance = 0.08
+    targetDistance = 2.5
+    tolerance = 0.50
     maxIterations = 20
     initialIntensity = 1.5
     intensityStep = 0.3
@@ -242,16 +277,9 @@ amFreqMax = 15
 nFeatPerFrame = 19
 totalFeatures = nAnalysisFrames * nFeatPerFrame
 
-# Preset label for reporting
-if preset = 1
-    presetName$ = "Subtle"
-elsif preset = 2
-    presetName$ = "Standard"
-elsif preset = 3
-    presetName$ = "Extreme"
-else
-    presetName$ = "Custom"
-endif
+# v1.2: Removed a duplicate presetName$ dispatch block that was
+# overwriting the correct labels here. The first if-elsif block
+# above sets presetName$ correctly for all six presets.
 
 # === Setup ===
 selectObject: originalSound
@@ -275,13 +303,13 @@ endif
 
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  MSE Feature-Constrained Variation v1.1"
+writeInfoLine: "  MSE Feature-Constrained Variation v1.2"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", originalName$,
     ... " (", fixed$(totalDur, 2), " s, ", sampleRate, " Hz, ", numChannels, " ch)"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Target MSE: ", fixed$(targetDistance, 3),
+appendInfoLine: "Target distance (z-score): ", fixed$(targetDistance, 3),
     ... " +/- ", fixed$(tolerance, 3)
 appendInfoLine: "Max iterations: ", maxIterations
 appendInfoLine: "Initial intensity: ", fixed$(initialIntensity, 3)
@@ -507,14 +535,19 @@ for iter from 1 to maxIterations
                 endif
             endfor
             
-            assembledSound = 0
+            # v1.2: Pre-allocate output buffer instead of growing
+            # via Concatenate. Compute each output grain's start
+            # position (cumulative sum of preceding durations after
+            # swaps), then write each grain in-place via
+            # Formula (part). O(n) instead of O(n^2).
             
+            # Pass 1: compute durations and start positions in output
+            outTotalDur = 0
             for gi from 1 to nGrains
                 srcIdx = grainOrder_'gi'
                 gStart = grainStart_'srcIdx'
                 gEnd = grainEnd_'srcIdx'
                 gDur = gEnd - gStart
-                
                 if gDur < 0.005
                     gDur = 0.005
                     gEnd = gStart + gDur
@@ -526,6 +559,24 @@ for iter from 1 to maxIterations
                         endif
                     endif
                 endif
+                outStart_'gi' = outTotalDur
+                outDur_'gi' = gDur
+                outSrcStart_'gi' = gStart
+                outSrcEnd_'gi' = gEnd
+                outTotalDur = outTotalDur + gDur
+            endfor
+            
+            # Allocate output buffer
+            assembledSound = Create Sound from formula: "granular_out", 1,
+                ... 0, outTotalDur, sampleRate, "0"
+            
+            # Pass 2: process each grain and mix into output at outStart
+            for gi from 1 to nGrains
+                gStart = outSrcStart_'gi'
+                gEnd = outSrcEnd_'gi'
+                gDur = outDur_'gi'
+                gOutStart = outStart_'gi'
+                gOutEnd = gOutStart + gDur
                 
                 selectObject: monoBase
                 Extract part: gStart, gEnd, "rectangular", 1, "no"
@@ -555,15 +606,16 @@ for iter from 1 to maxIterations
                     ... + " then self * ((xmax - x) / " + fadeStr$
                     ... + ") else self fi"
                 
-                if gi = 1
-                    assembledSound = grainSnd
-                else
-                    selectObject: assembledSound, grainSnd
-                    Concatenate
-                    newAssembled = selected("Sound")
-                    removeObject: assembledSound, grainSnd
-                    assembledSound = newAssembled
-                endif
+                # Mix grain into output at gOutStart via Formula (part)
+                grainStartCol = round(gOutStart * sampleRate)
+                grainStartColStr$ = string$(grainStartCol)
+                grainIdStr$ = string$(grainSnd)
+                selectObject: assembledSound
+                Formula (part): gOutStart, gOutEnd, 1, 1,
+                    ... "self + object[" + grainIdStr$
+                    ... + ", 1, col - " + grainStartColStr$ + "]"
+                
+                removeObject: grainSnd
             endfor
             
             workingSound = assembledSound
@@ -589,7 +641,13 @@ for iter from 1 to maxIterations
             mutSegDur = workDur / nMutSegs
             mutFade = 0.003
             
-            mutAssembled = 0
+            # v1.2: Pre-allocate output buffer of input duration.
+            # Each To Sound (from spectrum) round-trip can shift the
+            # segment length by a sample or two due to FFT padding;
+            # we clip writes to the planned segment window so any
+            # drift is absorbed silently.
+            mutAssembled = Create Sound from formula: "spectral_out", 1,
+                ... 0, workDur, sampleRate, "0"
             
             for ms from 1 to nMutSegs
                 msStart = (ms - 1) * mutSegDur
@@ -641,15 +699,20 @@ for iter from 1 to maxIterations
                     ... + " then self * ((xmax - x) / " + mutFadeStr$
                     ... + ") else self fi"
                 
-                if ms = 1
-                    mutAssembled = msResult
-                else
-                    selectObject: mutAssembled, msResult
-                    Concatenate
-                    newMut = selected("Sound")
-                    removeObject: mutAssembled, msResult
-                    mutAssembled = newMut
-                endif
+                # Mix into pre-allocated output via Formula (part).
+                # Write window is the planned [msStart, msEnd];
+                # any FFT-induced drift in msResult length is
+                # truncated when col - msStartCol exceeds msResult's
+                # column count (object[] returns 0 outside bounds).
+                msStartCol = round(msStart * sampleRate)
+                msStartColStr$ = string$(msStartCol)
+                msResIdStr$ = string$(msResult)
+                selectObject: mutAssembled
+                Formula (part): msStart, msEnd, 1, 1,
+                    ... "self + object[" + msResIdStr$
+                    ... + ", 1, col - " + msStartColStr$ + "]"
+                
+                removeObject: msResult
             endfor
             
             removeObject: workingSound
@@ -774,15 +837,25 @@ for iter from 1 to maxIterations
                     ... + " then self * ((xmax - x) / " + burstFadeStr$
                     ... + ") else self fi"
                 
-                burstId = filtBurst
-                burstTimeStr$ = fixed$(burstTime, 8)
-                burstEndStr$ = fixed$(burstTime + burstDur, 8)
-                
+                # v1.2 FIX: previous Formula used "object[burstId,
+                # x - burstTime + object[burstId].xmin]" which
+                # passes a TIME value as the column index. Praat's
+                # object[id, row, col] requires col to be an integer
+                # sample index. The result was always 0 — no noise
+                # was ever added. Now uses Formula (part) with col
+                # arithmetic so the burst samples are read correctly
+                # by their integer index.
+                burstStartCol = round(burstTime * sampleRate)
+                burstStartColStr$ = string$(burstStartCol)
+                burstIdStr$ = string$(filtBurst)
+                burstEndTime = burstTime + burstDur
+                if burstEndTime > workDur3
+                    burstEndTime = workDur3
+                endif
                 selectObject: workingSound
-                Formula: "if x >= " + burstTimeStr$
-                    ... + " and x < " + burstEndStr$
-                    ... + " then self + object[burstId, x - " + burstTimeStr$ + " + object[burstId].xmin]"
-                    ... + " else self fi"
+                Formula (part): burstTime, burstEndTime, 1, 1,
+                    ... "self + object[" + burstIdStr$
+                    ... + ", 1, col - " + burstStartColStr$ + "]"
                 
                 removeObject: filtBurst
             endfor
@@ -958,8 +1031,26 @@ for iter from 1 to maxIterations
         removeObject: transMelSpec, transMfcc, transHarm
 
         # =============================================
-        # COMPUTE MSE
+        # COMPUTE Z-SCORE NORMALIZED DISTANCE
         # =============================================
+        # v1.2: Each dimension's contribution is normalized by the
+        # ORIGINAL's variance (or std, for the mean term), so all
+        # features contribute proportionally regardless of their
+        # natural scale. The previous unnormalized MSE was dominated
+        # by the centroid term (~10^6 squared) over band energies
+        # (~10^-6 squared). Now:
+        #
+        #   normMeanDiff_d = (orig_mean_d - trans_mean_d) / sigma_d
+        #   normVarDiff_d  = (orig_var_d - trans_var_d)  / orig_var_d
+        #
+        # where sigma_d = sqrt(orig_var_d). With these, a value of
+        # 1.0 corresponds to "average one-sigma shift" — interpretable
+        # and scale-free. Total distance is the average of squared
+        # normalized differences across 19 dims and 2 stats.
+        #
+        # Epsilon (1e-12) prevents division by zero on dimensions
+        # where the original is constant (zero variance).
+        epsilon = 1e-12
         mseSum = 0
         for d from 1 to nFeatPerFrame
             transMean = transDimSum_'d' / nAnalysisFrames
@@ -968,16 +1059,21 @@ for iter from 1 to maxIterations
                 transVar = 0
             endif
 
+            origVarD = origVar_'d'
+            origStdD = sqrt(origVarD + epsilon)
+            
             diffMean = origMean_'d' - transMean
-            mseSum = mseSum + diffMean * diffMean
+            normMeanDiff = diffMean / origStdD
+            mseSum = mseSum + normMeanDiff * normMeanDiff
 
-            diffVar = origVar_'d' - transVar
-            mseSum = mseSum + diffVar * diffVar
+            diffVar = origVarD - transVar
+            normVarDiff = diffVar / (origVarD + epsilon)
+            mseSum = mseSum + normVarDiff * normVarDiff
         endfor
         mse = mseSum / totalStats
         mseHistory_'iter' = mse
 
-        appendInfoLine: "    MSE: ", fixed$(mse, 4),
+        appendInfoLine: "    Distance: ", fixed$(mse, 4),
             ... " (target: ", fixed$(targetDistance - tolerance, 3),
             ... " - ", fixed$(targetDistance + tolerance, 3), ")"
 
@@ -1058,7 +1154,7 @@ removeObject: monoBase
 
 appendInfoLine: "  Output: ", originalName$, "_experimental"
 appendInfoLine: "  Duration: ", fixed$(finalDur, 2), " s"
-appendInfoLine: "  Final MSE: ", fixed$(bestMse, 4)
+appendInfoLine: "  Final distance (z-score): ", fixed$(bestMse, 4)
 appendInfoLine: ""
 
 # ============================================================
@@ -1189,13 +1285,13 @@ if show_visualization = 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.6, "half",
-        ... "##MSE Feature-Constrained Variation v1.1##"
+        ... "##MSE Feature-Constrained Variation v1.2##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.6, "half",
         ... originalName$ + " | " + presetName$
         ... + " | Target: " + fixed$(targetDistance, 3)
-        ... + " | Final MSE: " + fixed$(bestMse, 4)
+        ... + " | Final distance: " + fixed$(bestMse, 4)
     
     # === ORIGINAL WAVEFORM ===
     Select outer viewport: 0, 4, 0.6, 1.5
@@ -1327,9 +1423,9 @@ if show_visualization = 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "MSE"
+    Text left: "yes", "Distance"
     Text bottom: "yes", "Iteration"
-    Text top: "no", "MSE Convergence"
+    Text top: "no", "Distance Convergence (z-score normalized)"
     
     # === PER-DIMENSION COMPARISON (orig vs transformed means) ===
     Select outer viewport: 4, 8, 3.0, 4.5
@@ -1399,7 +1495,7 @@ if show_visualization = 1
         ... + fixed$(totalDur, 2) + "s | "
         ... + string$(sampleRate) + " Hz | Preset: " + presetName$
     Text: 0.02, "left", 0.48, "half",
-        ... "MSE: " + fixed$(bestMse, 4)
+        ... "Distance: " + fixed$(bestMse, 4)
         ... + " | Target: " + fixed$(targetDistance, 3)
         ... + " +/- " + fixed$(tolerance, 3)
         ... + " | Converged: " + convergeTxt$
@@ -1439,7 +1535,7 @@ if show_visualization = 1
     Draw line: 0.38, 0.5, 0.42, 0.5
     Line width: 1
     Colour: "Black"
-    Text: 0.43, "left", 0.5, "half", "MSE/Flux"
+    Text: 0.43, "left", 0.5, "half", "Distance/Flux"
     
     Colour: "{0.6, 0.3, 0.7}"
     Draw line: 0.54, 0.5, 0.58, 0.5
@@ -1477,6 +1573,6 @@ appendInfoLine: "  COMPLETE"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Final MSE: ", fixed$(bestMse, 4)
+appendInfoLine: "Final distance (z-score): ", fixed$(bestMse, 4)
 appendInfoLine: "Converged: ", converged, " (in ", nIterationsRun, " iterations)"
 appendInfoLine: "Output: ", originalName$, "_experimental"
