@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,6 +22,30 @@
 #   - Fixed name-based object references
 #   - Added visualization (RT60 bars, IR waveform)
 #   - Option to keep or remove IR
+#
+# Changelog v0.3 (2026):
+#   - FEATURE: Tail preservation. Output was previously truncated
+#     to input length, discarding the reverb tail past the dry
+#     signal — wrong for music with sustained decays. New
+#     Preserve_tail form option extends the output by ir_length
+#     so the reverb rings out fully. Wet/dry mix correctly
+#     handles the asymmetry: dry only covers the input region,
+#     wet covers the full extended length.
+#   - QUALITY: Early reflection placement now uses rejection
+#     sampling with a 3.5 ms minimum spacing constraint between
+#     taps. v0.2 placed taps at unconstrained random times,
+#     allowing close clustering that produced audible flutter.
+#     If a tap can't find a free slot in 30 attempts, it's
+#     skipped — for typical settings (8 taps in ~46 ms window),
+#     all taps place comfortably.
+#   - FIX: Wet/dry mix logic when wet_dry_percent=100 was
+#     skipping the wet-gain Formula entirely, leaving the raw
+#     convolution output at whatever gain Praat's Convolve
+#     produced. Now always normalizes the wet signal.
+#   - VIZ: Added IR spectrogram panel between the IR waveform
+#     and the Summary, showing frequency-dependent decay
+#     directly — high frequencies decay faster than lows due
+#     to the larger bands' lower RT60.
 # ============================================================
 
 # === Check Input ===
@@ -224,7 +248,7 @@ high[6] = 4000 * sqrtTwo
 # 2) User Interface
 # ==============================================================================
 
-form Artificial Room Reverb
+form Artificial Room Reverb v0.3
     comment Select a Sound object first
     
     comment === Room Preset ===
@@ -315,6 +339,8 @@ form Artificial Room Reverb
     comment === Mix Control ===
     real Wet_dry_percent 70
     comment (0 = dry only, 100 = wet only)
+    boolean Preserve_tail 1
+    comment (extends output to let the reverb tail decay fully)
     
     comment === Output ===
     boolean Keep_IR 0
@@ -635,6 +661,12 @@ appendInfoLine: "  4000 Hz: ", fixed$(t60_6, 3)
 appendInfoLine: ""
 appendInfoLine: "IR length: ", fixed$(ir_length, 2), " s"
 appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
+if preserve_tail
+    appendInfoLine: "Tail: preserved (output extends to ",
+        ... fixed$(inputDur + ir_length, 2), " s)"
+else
+    appendInfoLine: "Tail: truncated to input length"
+endif
 appendInfoLine: ""
 
 # ==============================================================================
@@ -647,11 +679,59 @@ Create Sound from formula: "IR_base", 1, 0, ir_length, fs, "0"
 irBase = selected("Sound")
 
 # Early reflections (Hann-windowed pulses)
+# v0.3: Rejection-sampled placement with minimum spacing
+# between taps to prevent the audible flutter that arose in
+# v0.2 when two taps fell within ~1 ms of each other. With
+# nTaps=8 in a ~46 ms window and 3.5 ms minimum spacing, the
+# theoretical packing limit is ~13 taps — comfortable.
 nTaps = early_reflections_count
 pulse_dur = 0.0007
+min_tap_spacing = 0.0035
+max_attempts = 30
 
+# Pre-compute tap times satisfying the spacing constraint
+nPlacedTaps = 0
 for k from 1 to nTaps
-    t0 = pre_delay + randomUniform(0.004, 0.050)
+    placed = 0
+    attempts = 0
+    while placed = 0 and attempts < max_attempts
+        candidate = pre_delay + randomUniform(0.004, 0.050)
+        ok = 1
+        for j from 1 to nPlacedTaps
+            if abs(candidate - tapTime[j]) < min_tap_spacing
+                ok = 0
+            endif
+        endfor
+        if ok = 1
+            nPlacedTaps += 1
+            tapTime[nPlacedTaps] = candidate
+            tapOrigK[nPlacedTaps] = k
+            placed = 1
+        endif
+        attempts += 1
+    endwhile
+endfor
+
+if nPlacedTaps < nTaps
+    appendInfoLine: "  Note: placed ", nPlacedTaps, " of ", nTaps,
+        ... " taps (",
+        ... nTaps - nPlacedTaps, " skipped due to spacing)."
+endif
+
+# Sort placed taps by time so gain decay (k -> -2.5 dB/step)
+# follows temporal order, not random placement order.
+for a from 1 to nPlacedTaps
+    for b from a + 1 to nPlacedTaps
+        if tapTime[b] < tapTime[a]
+            tmpT = tapTime[a]
+            tapTime[a] = tapTime[b]
+            tapTime[b] = tmpT
+        endif
+    endfor
+endfor
+
+for k from 1 to nPlacedTaps
+    t0 = tapTime[k]
     gain_db = iR_early_gain_dB - ((k - 1) * 2.5)
     g = 10^(gain_db / 20) * randomUniform(0.9, 1.1)
     
@@ -711,25 +791,40 @@ irFinal = selected("Sound")
 
 appendInfoLine: "Convolving..."
 
+# v0.3: Determine output length based on tail preservation choice.
+# preserve_tail=1 keeps the full reverb tail past the input end;
+# preserve_tail=0 truncates to input length (v0.2 behavior).
+if preserve_tail
+    out_length = inputDur + ir_length
+else
+    out_length = inputDur
+endif
+
 selectObject: inputID, irFinal
 Convolve: "sum", "zero"
 wetSound = selected("Sound")
 
-# Trim to original length (convolution extends duration)
+# Convolve produces a sound of length inputDur + ir_length - 1/fs.
+# Trim to the chosen output length.
 selectObject: wetSound
-Extract part: 0, inputDur, "rectangular", 1, "no"
+Extract part: 0, out_length, "rectangular", 1, "no"
 wetTrimmed = selected("Sound")
 removeObject: wetSound
 
-# Mix wet/dry
-if wet_level < 1.0
-    # Need to mix with dry
+# v0.3: Always apply wet gain (v0.2 skipped this when wet=100%,
+# leaving the raw convolution at unspecified gain). Apply dry
+# only over the input region [0, inputDur] — the tail past
+# inputDur has no dry contribution.
+wet_str$ = string$(wet_level)
+selectObject: wetTrimmed
+Formula: "self * " + wet_str$
+
+if dry_level > 0.001
     dry_str$ = string$(dry_level)
-    wet_str$ = string$(wet_level)
     input_str$ = string$(inputID)
-    
     selectObject: wetTrimmed
-    Formula: "self * " + wet_str$ + " + object[" + input_str$ + "] * " + dry_str$
+    Formula (part): 0, inputDur, 1, 1,
+        ... "self + object[" + input_str$ + ", 1, col] * " + dry_str$
 endif
 
 selectObject: wetTrimmed
@@ -752,7 +847,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.95, "half", "##Artificial Room##"
+    Text: 0.5, "centre", 0.95, "half", "##Artificial Room v0.3##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -848,10 +943,32 @@ if draw_visualization
     Text top: "no", "Impulse response  (" + fixed$(ir_length, 2) + " s)"
 
     # ----------------------------------------------------------
+    # IR spectrogram (NEW in v0.3)
+    # Shows frequency-dependent decay: high bands decay faster
+    # than lows because their RT60 is shorter.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.00, 5.20
+    Select inner viewport: 0.55, 7.65, 4.10, 5.13
+
+    selectObject: irFinal
+    To Spectrogram: 0.04, 5000, 0.005, 20, "Gaussian"
+    irSpec = selected("Spectrogram")
+    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    removeObject: irSpec
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Hz"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no",
+        ... "IR spectrogram — frequency-dependent decay"
+
+    # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.04, 4.94
-    Select inner viewport: 0.55, 7.65, 4.10, 4.88
+    Select outer viewport: 0, 8, 5.26, 6.16
+    Select inner viewport: 0.55, 7.65, 5.32, 6.10
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
@@ -867,12 +984,19 @@ if draw_visualization
         ... + "  |  Floor: " + mFloor$
         ... + "  |  Ceil: " + mCeil$
         ... + "  |  Wall: " + mW1$
+    if preserve_tail
+        tailStr$ = "preserved"
+    else
+        tailStr$ = "truncated"
+    endif
     Text: 0.02, "left", 0.22, "half",
         ... "RT60 @1kHz: " + fixed$(t60_4, 2) + " s"
         ... + "  |  IR: " + fixed$(ir_length, 2) + " s"
         ... + "  |  Predelay: " + fixed$(iR_predelay_ms, 0) + " ms"
-        ... + "  |  Early refl: " + string$(early_reflections_count)
+        ... + "  |  Early refl: " + string$(nPlacedTaps)
+        ... + "/" + string$(early_reflections_count)
         ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "  |  Tail: " + tailStr$
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
