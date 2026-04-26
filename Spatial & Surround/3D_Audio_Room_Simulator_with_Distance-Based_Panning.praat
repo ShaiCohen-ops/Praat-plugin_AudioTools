@@ -3,19 +3,51 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   3D Audio Room Simulator with Distance-Based Panning
+#   3D Audio Room Simulator with Distance-Based Panning.
+#   Moves a source through a 3D room around the listener,
+#   convolving with a synthesized room IR per position and
+#   panning via DBAP or equal-power stereo.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
 #   Adjust parameters via the form dialog.
 #
+# Changelog v0.3 (2026):
+#   - FIX (critical): Two Formula sites used "Object_<id>(t)"
+#     with numeric IDs substituted via backtick interpolation.
+#     This crashes — Praat resolves Object_<n> by name at parse
+#     time, not by numeric ID. The bug affected the per-position
+#     mixing into the L/R output buffers, i.e. the entire audio
+#     output of the script. Replaced with sample-indexed reads
+#     and explicit linear interpolation.
+#   - FIX: Converted seven Formula strings from backtick 'var'
+#     interpolation to string$() concatenation. The backtick
+#     form is fragile across Praat versions and ambiguous when
+#     mixed with Formula's intrinsic variables; string$() is
+#     the portable idiom used elsewhere in AudioTools.
+#   - FIX: Random walk movement now uses a deterministic
+#     wandering pattern instead of uncorrelated random teleports
+#     per position. v0.2's audio loop teleported to fully random
+#     points (no continuity) while the visualization drew a
+#     smooth sin/cos path — the two paths didn't match. Both
+#     now use the same deterministic pattern, so what you see
+#     is what you hear.
+#   - FIX: Added input duration validation. v0.2 silently
+#     produced corrupted output for inputs shorter than the
+#     required segment_duration. Now exits with a clear error.
+#   - FORM: Migrated from three sequential beginPause/endPause
+#     dialogs to a single form...endform block. Custom-room
+#     dimension fields are always present in the form and
+#     ignored unless preset=Custom.
+#
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
@@ -45,27 +77,47 @@ else
     wasStereo = 0
 endif
 
-# Room preset selection
-beginPause: "Room Preset"
-    comment: "Select a room preset or customize"
-    optionMenu: "Preset", 1
-        option: "Custom"
-        option: "Small Studio (3x4x2.5m, dry)"
-        option: "Living Room (5x6x3m, medium)"
-        option: "Concert Hall (20x15x8m, live)"
-        option: "Cathedral (40x25x15m, very live)"
-        option: "Bathroom (2x2.5x2.5m, very live)"
-        option: "Anechoic Chamber (5x5x3m, dead)"
-        option: "Club/Bar (15x10x3.5m, medium)"
-endPause: "Cancel", "OK", 2
+# === Single form for all parameters ===
+form 3D Audio Room Simulator v0.3
+    comment === Room Preset ===
+    optionmenu Preset 1
+        option Custom
+        option Small Studio (3x4x2.5m, dry)
+        option Living Room (5x6x3m, medium)
+        option Concert Hall (20x15x8m, live)
+        option Cathedral (40x25x15m, very live)
+        option Bathroom (2x2.5x2.5m, very live)
+        option Anechoic Chamber (5x5x3m, dead)
+        option Club/Bar (15x10x3.5m, medium)
+    comment === Custom dimensions (used only if preset=Custom) ===
+    positive Custom_length 8.0
+    positive Custom_width 6.0
+    positive Custom_height 3.0
+    real Custom_absorption 0.3
+    comment === Movement ===
+    optionmenu Movement 1
+        option Circular (horizontal)
+        option Front to Back
+        option Left to Right
+        option Spiral (horizontal)
+        option Up and Down
+        option Random walk (deterministic wander)
+        option Figure-8 (horizontal)
+        option Diagonal sweep
+    positive Movement_radius 2.5
+    natural Num_positions 16
+    positive Reverb_tail 1.5
+    positive Crossfade_time 0.1
+    boolean Use_dbap 1
+endform
 
 # Apply preset values
 if preset = 1
-    # Custom - get from user
-    room_length = 8.0
-    room_width = 6.0
-    room_height = 3.0
-    absorption = 0.3
+    # Custom — use form fields
+    room_length = custom_length
+    room_width = custom_width
+    room_height = custom_height
+    absorption = custom_absorption
 elsif preset = 2
     # Small Studio
     room_length = 4.0
@@ -110,51 +162,31 @@ else
     absorption = 0.25
 endif
 
-# Get room dimensions from user (allow override if Custom)
-if preset = 1
-    beginPause: "Custom Room Dimensions"
-        comment: "Define the room (listener at center)"
-        positive: "room_length", room_length
-        comment: "Length (meters, front-back)"
-        positive: "room_width", room_width
-        comment: "Width (meters, left-right)"
-        positive: "room_height", room_height
-        comment: "Height (meters)"
-        positive: "absorption", absorption
-        comment: "Wall absorption (0-1, higher = more damping)"
-    endPause: "Cancel", "OK", 2
-endif
-
 if room_length <= 0 or room_width <= 0 or room_height <= 0
     exitScript: "Invalid room dimensions!"
 endif
 
-# Movement preset selection
-beginPause: "Movement Preset"
-    comment: "Select how the sound moves around the listener"
-    optionMenu: "Movement", 1
-        option: "Circular (horizontal)"
-        option: "Front to Back"
-        option: "Left to Right"
-        option: "Spiral (horizontal)"
-        option: "Up and Down"
-        option: "Random walk"
-        option: "Figure-8 (horizontal)"
-        option: "Diagonal sweep"
-    positive: "movement_radius", 2.5
-    comment: "Movement radius/distance (meters)"
-    positive: "num_positions", 16
-    comment: "Number of position samples (more = smoother)"
-    positive: "reverb_tail", 1.5
-    comment: "Reverb tail duration (seconds)"
-    positive: "crossfade_time", 0.1
-    comment: "Crossfade between positions (seconds)"
-    boolean: "use_dbap", 1
-    comment: "Use DBAP (Distance-Based Amplitude Panning)"
-endPause: "Cancel", "OK", 2
-
 if num_positions < 2
     num_positions = 2
+endif
+
+# Build movement$ string for display (was set by old endPause dialog)
+if movement = 1
+    movement$ = "Circular"
+elsif movement = 2
+    movement$ = "Front to Back"
+elsif movement = 3
+    movement$ = "Left to Right"
+elsif movement = 4
+    movement$ = "Spiral"
+elsif movement = 5
+    movement$ = "Up and Down"
+elsif movement = 6
+    movement$ = "Random walk"
+elsif movement = 7
+    movement$ = "Figure-8"
+else
+    movement$ = "Diagonal"
 endif
 
 # Speed of sound
@@ -219,6 +251,7 @@ wall_distance_y = room_width / 2
 wall_distance_z = room_height / 2
 
 # Calculate reflection times and amplitudes
+rt60_str$ = fixed$(rt60, 8)
 for reflection from 1 to 6
     if reflection = 1 or reflection = 2
         dist = wall_distance_x
@@ -230,21 +263,27 @@ for reflection from 1 to 6
     
     delay = dist / c
     amp = (1 - absorption) * 0.7
+    amp_str$ = fixed$(amp, 8)
     
     if delay < ir_duration
-        Formula (part): delay, delay + 0.0001, 1, 1, "self + 'amp' * exp(-3 * x / 'rt60')"
+        # v0.3: backtick 'amp' / 'rt60' replaced with string$()
+        Formula (part): delay, delay + 0.0001, 1, 1,
+            ... "self + " + amp_str$ + " * exp(-3 * x / " + rt60_str$ + ")"
     endif
     
     # Second order reflections
     delay2 = 2 * delay
     amp2 = amp * (1 - absorption) * 0.5
+    amp2_str$ = fixed$(amp2, 8)
     if delay2 < ir_duration
-        Formula (part): delay2, delay2 + 0.0001, 1, 1, "self + 'amp2' * exp(-3 * x / 'rt60')"
+        Formula (part): delay2, delay2 + 0.0001, 1, 1,
+            ... "self + " + amp2_str$ + " * exp(-3 * x / " + rt60_str$ + ")"
     endif
 endfor
 
 # Add diffuse reverb tail
-Formula: "self + 0.1 * randomGauss(0, 1) * exp(-6.9 * x / 'rt60')"
+# v0.3: backtick 'rt60' replaced with string$()
+Formula: "self + 0.1 * randomGauss(0, 1) * exp(-6.9 * x / " + rt60_str$ + ")"
 
 # Normalize IR
 Scale peak: 0.99
@@ -252,6 +291,22 @@ room_ir = selected("Sound")
 
 # Calculate segment duration with overlap
 segment_duration = sound_dur / num_positions + crossfade_time
+
+# v0.3: Input duration validation. Below this length the segment
+# extraction would silently truncate and produce corrupted output.
+min_required_dur = segment_duration * 1.2
+if sound_dur < min_required_dur
+    removeObject: room_ir
+    if wasStereo = 1
+        selectObject: sound_mono
+        Remove
+    endif
+    exitScript: "Input too short. Need at least ",
+        ... fixed$(min_required_dur, 2),
+        ... " s for ", num_positions, " positions with ",
+        ... fixed$(crossfade_time, 2), " s crossfade. Input is ",
+        ... fixed$(sound_dur, 2), " s. Reduce num_positions or crossfade_time, or use a longer source."
+endif
 
 # Calculate output duration
 output_duration = sound_dur + ir_duration + 1.0
@@ -307,9 +362,12 @@ for pos from 1 to num_positions
         y_pos = 0
         z_pos = movement_radius * sin(angle) * 0.5
     elsif movement = 6
-        # Random walk
-        x_pos = movement_radius * (randomUniform(0, 1) - 0.5) * 2
-        y_pos = movement_radius * (randomUniform(0, 1) - 0.5) * 2
+        # v0.3: Deterministic wandering pattern (was uncorrelated
+        # randomUniform teleports per position, which didn't match
+        # the visualization's smooth path). Now uses the same
+        # sin*cos formula as the viz so what you see is what you hear.
+        x_pos = movement_radius * sin(pos * 0.7) * cos(pos * 0.3)
+        y_pos = movement_radius * cos(pos * 0.5) * sin(pos * 0.4)
         z_pos = 0
     elsif movement = 7
         # Figure-8 (horizontal)
@@ -394,37 +452,75 @@ for pos from 1 to num_positions
     
     segment = Extract part: start_time, end_time, "rectangular", 1, "no"
     seg_dur = Get total duration
-    
+
+    # v0.3: backtick interpolation replaced with string$() for
+    # portability. The fade arithmetic is unchanged.
+    cf_str$ = fixed$(crossfade_time, 8)
+    seg_str$ = fixed$(seg_dur, 8)
+
     # Apply crossfade envelope to segment
     if pos > 1 and pos < num_positions
         # Fade in and out
-        Formula: "self * (if x < 'crossfade_time' then x / 'crossfade_time' else (if x > 'seg_dur' - 'crossfade_time' then ('seg_dur' - x) / 'crossfade_time' else 1 fi) fi)"
+        Formula: "self * (if x < " + cf_str$
+            ... + " then x / " + cf_str$
+            ... + " else (if x > " + seg_str$ + " - " + cf_str$
+            ... + " then (" + seg_str$ + " - x) / " + cf_str$
+            ... + " else 1 fi) fi)"
     elsif pos = 1
         # Only fade out at end
-        Formula: "self * (if x > 'seg_dur' - 'crossfade_time' then ('seg_dur' - x) / 'crossfade_time' else 1 fi)"
+        Formula: "self * (if x > " + seg_str$ + " - " + cf_str$
+            ... + " then (" + seg_str$ + " - x) / " + cf_str$
+            ... + " else 1 fi)"
     else
         # Only fade in at start
-        Formula: "self * (if x < 'crossfade_time' then x / 'crossfade_time' else 1 fi)"
+        Formula: "self * (if x < " + cf_str$
+            ... + " then x / " + cf_str$
+            ... + " else 1 fi)"
     endif
-    
+
     # Apply distance attenuation
-    Formula: "self * 'atten'"
+    atten_str$ = fixed$(atten, 8)
+    Formula: "self * " + atten_str$
     
     # Convolve with room IR
     plusObject: room_ir
     conv = Convolve: "sum", "zero"
-    Rename: "conv_'pos'"
+    Rename: "conv_" + string$(pos)
     conv_dur = Get total duration
-    
-    # Mix into output buffers with spatial positioning
+
+    # v0.3 FIX (critical): previous version used
+    #   "self + Object_'conv'(x - 'time_offset') * 'gain_L'"
+    # which is name-resolved at parse time and crashes with
+    # numeric IDs. Replaced with sample-indexed reads + manual
+    # linear interpolation. The conv has xmin=0 (Convolve output),
+    # sample rate = sound_sr, so column index for read time
+    # tRead = (x - time_offset) is colF = tRead * sr + 1.
+    convStr$ = string$(conv)
+    srStr$ = fixed$(sound_sr, 6)
+    toStr$ = fixed$(time_offset, 8)
+    gLStr$ = fixed$(gain_L, 8)
+    gRStr$ = fixed$(gain_R, 8)
+
+    # colF expression — repeated four times in the formula
+    # (Praat Formula has no let-bindings).
+    colF$ = "((x - " + toStr$ + ") * " + srStr$ + " + 1)"
+
     selectObject: output_L
-    Formula (part): time_offset, time_offset + conv_dur, 1, 1, 
-        ... "self + Object_'conv' (x - 'time_offset') * 'gain_L'"
-    
+    Formula (part): time_offset, time_offset + conv_dur, 1, 1,
+        ... "self + ((1 - (" + colF$ + " - floor(" + colF$ + "))) * "
+        ... + "object[" + convStr$ + ", 1, floor(" + colF$ + ")] + "
+        ... + "(" + colF$ + " - floor(" + colF$ + ")) * "
+        ... + "object[" + convStr$ + ", 1, floor(" + colF$ + ") + 1]"
+        ... + ") * " + gLStr$
+
     selectObject: output_R
-    Formula (part): time_offset, time_offset + conv_dur, 1, 1, 
-        ... "self + Object_'conv' (x - 'time_offset') * 'gain_R'"
-    
+    Formula (part): time_offset, time_offset + conv_dur, 1, 1,
+        ... "self + ((1 - (" + colF$ + " - floor(" + colF$ + "))) * "
+        ... + "object[" + convStr$ + ", 1, floor(" + colF$ + ")] + "
+        ... + "(" + colF$ + " - floor(" + colF$ + ")) * "
+        ... + "object[" + convStr$ + ", 1, floor(" + colF$ + ") + 1]"
+        ... + ") * " + gRStr$
+
     # Clean up
     removeObject: segment, conv
     
@@ -485,7 +581,7 @@ Select outer viewport: 0, 8, 0, 0.65
 Axes: 0, 1, 0, 1
 Font size: 12
 Colour: "Black"
-Text: 0.5, "centre", 0.65, "half", "##3D Audio Room Simulator##"
+Text: 0.5, "centre", 0.65, "half", "##3D Audio Room Simulator v0.3##"
 Font size: 7
 Colour: "{0.35, 0.35, 0.52}"
 Text: 0.5, "centre", -0.25, "half",
