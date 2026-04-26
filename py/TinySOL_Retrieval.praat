@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026) - Unified Cross-Platform Version
+# Version: 1.5 (2026) - Probe robustness + portability cleanups
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,6 +22,18 @@
 #     6. Returns a rendered WAV + a ranked results text file.
 #   Praat then imports the WAV and displays the results summary.
 #
+# Changelog v1.5 (2026):
+#   - FIX: The probe loop's "if pythonCmd$ = """ post-check at the
+#     end was dead code: the OS-discovery block (lines 36-50) always
+#     assigned pythonCmd$ to something non-empty, so total probe
+#     failure couldn't be detected. Now pythonCmd$ is cleared
+#     before the probe loop, and the early-discovery path (when
+#     present) is prepended as the highest-priority candidate.
+#     Total Python failure now produces the documented error.
+#   - PORTABILITY: Replaced the for-loop early-break that mutated
+#     the loop variable (iCand = nCandidates + 1) with a "found"
+#     flag pattern. Loop-var mutation works in current Praat but
+#     is documented as fragile across versions.
 # ============================================================
 
 # ---- INPUT CHECK ----
@@ -113,7 +125,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form TinySOL Orchestration Retrieval v1.4
+form TinySOL Orchestration Retrieval v1.5
     # ── Preset  ───────────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom  (use fields as-is)
@@ -389,7 +401,7 @@ endif
 
 # ---- INFO header ----
 clearinfo
-writeInfoLine:  "=== TinySOL Orchestration Retrieval v1.4 ==="
+writeInfoLine:  "=== TinySOL Orchestration Retrieval v1.5 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "DB dir:  ", dB_directory$
 appendInfoLine: "Corpus:  ", corpus_root$
@@ -437,41 +449,60 @@ appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.
 appendFileLine: probePy$, "except ImportError:"
 appendFileLine: probePy$, "    sys.exit(1)"
 
+# v1.5: Save the OS-discovery value as a candidate0 (highest priority),
+# then clear pythonCmd$ so the post-probe check can detect total failure.
+# The OS-discovery block at the top set pythonCmd$ to a path like
+# /opt/homebrew/bin/python3 if available — if that path passes the
+# probe, it's preferred over the generic "python3" name (which may
+# resolve to a different Python on Mac).
+earlyDiscovered$ = pythonCmd$
+pythonCmd$ = ""
+
 if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
+    nCandidates = 5
+    candidate1$ = earlyDiscovered$
     candidate2$ = "python"
     candidate3$ = "py"
-    candidate4$ = ""
+    candidate4$ = "py -3"
+    candidate5$ = "python3"
+else
+    nCandidates = 4
+    candidate1$ = earlyDiscovered$
+    candidate2$ = "python3"
+    candidate3$ = "python"
+    candidate4$ = "py"
+    candidate5$ = ""
 endif
 
+found = 0
 for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
+    if found = 0
+        if iCand = 1
+            tryCmd$ = candidate1$
+        elsif iCand = 2
+            tryCmd$ = candidate2$
+        elsif iCand = 3
+            tryCmd$ = candidate3$
+        elsif iCand = 4
+            tryCmd$ = candidate4$
+        else
+            tryCmd$ = candidate5$
+        endif
 
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
+        # Skip empty candidate slot (Linux candidate5)
+        if tryCmd$ <> ""
+            if fileReadable(probeMarker$)
+                deleteFile: probeMarker$
+            endif
 
-    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+            runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
 
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        iCand = nCandidates + 1 ; Break early
+            if fileReadable(probeMarker$)
+                pythonCmd$ = tryCmd$
+                deleteFile: probeMarker$
+                found = 1
+            endif
+        endif
     endif
 endfor
 
@@ -479,7 +510,7 @@ deleteFile: probePy$
 
 if pythonCmd$ = ""
     @cleanUpTempFiles
-    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile"
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: " + earlyDiscovered$ + ", python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile"
 endif
 
 appendInfoLine: "  Python found: ", pythonCmd$
@@ -678,7 +709,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##TinySOL Orchestration Retrieval v1.4##"
+    Text: 0.5, "centre", 0.65, "half", "##TinySOL Orchestration Retrieval v1.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
