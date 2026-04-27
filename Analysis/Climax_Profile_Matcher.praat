@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -29,6 +29,23 @@
 #   "Target_matched_to_Source_Climax"
 #
 # Category: AI & Adaptive
+#
+# Changelog v1.1 (2026):
+#   - FIX (critical): Four Formula sites used the
+#     "Sound_'name$'(x)" syntax to read time-interpolated
+#     samples from a filtered band Sound. This is name-based
+#     resolution at parse time and is fragile across Praat
+#     versions and Sound names containing unusual characters.
+#     All four sites collapsed into single-Formula wet/dry
+#     blends using "object[<id>, 1, col]" indexed reads. Each
+#     fix replaces three Formula calls with one — same math,
+#     faster, no name lookup.
+#   - SPEED: Climax-LTAS extraction was Concatenate-in-loop
+#     (O(n^2)). Now uses a pre-allocated buffer + Formula (part)
+#     writes. Significant on Sources with many short climaxes.
+#   - PORTABILITY: findPercentile procedure used the loop-var
+#     mutation pattern (.b = .nBins + 1) to break early. Replaced
+#     with a "found" flag for portability across Praat versions.
 # ============================================================
 
 # === INPUT VALIDATION ===
@@ -41,7 +58,7 @@ targetSound = selected("Sound", 2)
 sourceName$ = selected$("Sound", 1)
 targetName$ = selected$("Sound", 2)
 
-form Climax Profile Matcher
+form Climax Profile Matcher v1.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -155,7 +172,7 @@ tgtSR = Get sampling frequency
 
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  Climax Profile Matcher v1.0"
+writeInfoLine: "  Climax Profile Matcher v1.1"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", sourceName$, " (", fixed$(srcDuration, 2), " s, ", srcSR, " Hz, ", srcChannels, " ch)"
@@ -315,11 +332,16 @@ procedure findPercentile: .values#, .n, .pct, .result
         .target = floor(.nValid * .pct / 100)
         .cumul = 0
         .result = .max
+        # v1.1: replaced ".b = .nBins + 1" loop-var mutation early-break
+        # with the standard "found" flag pattern for portability.
+        .found = 0
         for .b from 1 to .nBins
-            .cumul = .cumul + histBin_'.b'
-            if .cumul >= .target
-                .result = .min + (.b - 0.5) / .nBins * .range
-                .b = .nBins + 1
+            if .found = 0
+                .cumul = .cumul + histBin_'.b'
+                if .cumul >= .target
+                    .result = .min + (.b - 0.5) / .nBins * .range
+                    .found = 1
+                endif
             endif
         endfor
     endif
@@ -570,26 +592,47 @@ if clxPitchMin = 9999
 endif
 
 # --- Compute Source climax LTAS ---
-# Extract and concatenate all climax segments for LTAS
+# v1.1: Pre-allocated buffer + Formula (part) writes instead of
+# Concatenate-in-loop. v1.0's Concatenate per iteration rebuilt the
+# entire growing buffer (O(n^2)). For Sources with many short climaxes
+# this becomes the dominant cost. Now linear.
 if numClimax > 0
-    selectObject: srcMono
-    Extract part: clxStartTime_1, clxEndTime_1, "rectangular", 1, "no"
-    clxConcat = selected("Sound")
-    
-    if numClimax > 1
-        for c from 2 to numClimax
-            selectObject: srcMono
-            Extract part: clxStartTime_'c', clxEndTime_'c', "rectangular", 1, "no"
-            clxPart = selected("Sound")
-            
-            selectObject: clxConcat, clxPart
-            Concatenate
-            temp = selected("Sound")
-            removeObject: clxConcat, clxPart
-            clxConcat = temp
-        endfor
-    endif
-    
+    # Pass 1: compute total climax duration to pre-allocate.
+    totalClxDur = 0
+    for c from 1 to numClimax
+        totalClxDur = totalClxDur + (clxEndTime_'c' - clxStartTime_'c')
+    endfor
+
+    # Pre-allocate destination buffer.
+    clxConcat = Create Sound from formula: "clx_concat",
+        ... 1, 0, totalClxDur, srcSR, "0"
+
+    # Pass 2: extract each climax part and write into the buffer
+    # at its running offset using indexed-column reads.
+    writePos = 0
+    for c from 1 to numClimax
+        selectObject: srcMono
+        Extract part: clxStartTime_'c', clxEndTime_'c',
+            ... "rectangular", 1, "no"
+        clxPart = selected("Sound")
+        partDur = Get total duration
+
+        # The extract has xmin=0, sr=srcSR. The destination buffer
+        # also has xmin=0, sr=srcSR. So writing destination col k
+        # is reading part col (k - offset) where offset = floor(writePos*sr).
+        partID_str$ = string$(clxPart)
+        offsetCol = round(writePos * srcSR)
+        offsetCol_str$ = string$(offsetCol)
+
+        selectObject: clxConcat
+        Formula (part): writePos, writePos + partDur, 1, 1,
+            ... "object[" + partID_str$
+            ... + ", 1, col - " + offsetCol_str$ + "]"
+
+        removeObject: clxPart
+        writePos = writePos + partDur
+    endfor
+
     selectObject: clxConcat
     srcClimaxLTAS = To Ltas: 100
     removeObject: clxConcat
@@ -847,20 +890,17 @@ if spectral_tilt_transfer > 0 and abs(deltaCentroid_Hz) > 50
         Filter (pass Hann band): emphLow, emphHigh, 300
         tiltWet = selected("Sound")
         
-        # Blend: keep (1-w) dry + w wet
+        # v1.1: Single Formula wet/dry blend using object[<id>, col]
+        # indexed read instead of three-step Sound_'name$'(x) pattern.
+        # Same math: dry * (1-w) + wet * w, where w = blendW.
         blendW = spectral_tilt_transfer * 0.5
+        wetID_str$ = string$(tiltWet)
+        blendW_str$ = fixed$(blendW, 6)
+        oneMinusW_str$ = fixed$(1 - blendW, 6)
         selectObject: resultCopy
-        Formula: "self * (1 - blendW)"
-        selectObject: tiltWet
-        Formula: "self * blendW"
-        
-        # Sum into resultCopy
-        selectObject: resultCopy
-        tiltDryName$ = selected$("Sound")
-        selectObject: tiltWet
-        tiltWetName$ = selected$("Sound")
-        selectObject: resultCopy
-        Formula: "self + Sound_'tiltWetName$'(x)"
+        Formula: "self * " + oneMinusW_str$
+            ... + " + object[" + wetID_str$
+            ... + ", 1, col] * " + blendW_str$
         
         removeObject: tiltWet, result
         result = resultCopy
@@ -878,18 +918,15 @@ if spectral_tilt_transfer > 0 and abs(deltaCentroid_Hz) > 50
         Filter (pass Hann band): emphLow, emphHigh, 300
         tiltWet = selected("Sound")
         
+        # v1.1: same single-Formula pattern as the brighten branch above.
         blendW = spectral_tilt_transfer * 0.5
+        wetID_str$ = string$(tiltWet)
+        blendW_str$ = fixed$(blendW, 6)
+        oneMinusW_str$ = fixed$(1 - blendW, 6)
         selectObject: resultCopy
-        Formula: "self * (1 - blendW)"
-        selectObject: tiltWet
-        Formula: "self * blendW"
-        
-        selectObject: resultCopy
-        tiltDryName$ = selected$("Sound")
-        selectObject: tiltWet
-        tiltWetName$ = selected$("Sound")
-        selectObject: resultCopy
-        Formula: "self + Sound_'tiltWetName$'(x)"
+        Formula: "self * " + oneMinusW_str$
+            ... + " + object[" + wetID_str$
+            ... + ", 1, col] * " + blendW_str$
         
         removeObject: tiltWet, result
         result = resultCopy
@@ -947,14 +984,16 @@ if eq_transfer > 0
         eqGain = eq_transfer * maxDelta / 40
         eqGain = max(-0.4, min(0.4, eqGain))
         
-        selectObject: eqBand
-        Formula: "self * eqGain"
-        
-        # Add to dry copy
-        selectObject: eqBand
-        eqBandName$ = selected$("Sound")
+        # v1.1: Single Formula EQ add using object[<id>, col]
+        # indexed read instead of three-step Sound_'name$'(x) pattern.
+        # Math: dry + filtered_band * eqGain.
+        # The dry signal is unchanged (full level); the filtered band
+        # is added at small gain (max ±0.4) on top.
+        bandID_str$ = string$(eqBand)
+        eqGain_str$ = fixed$(eqGain, 6)
         selectObject: resultCopy
-        Formula: "self + Sound_'eqBandName$'(x)"
+        Formula: "self + object[" + bandID_str$
+            ... + ", 1, col] * " + eqGain_str$
         
         removeObject: eqBand, result
         result = resultCopy
@@ -983,17 +1022,16 @@ if harmonicity_transfer > 0 and deltaHNR_dB > 1
     Filter (pass Hann band): 20, cutoff, 500
     harmFiltered = selected("Sound")
     
-    # Mix: (1-w) dry + w filtered
+    # v1.1: Single Formula wet/dry blend using object[<id>, col].
+    # Same math as before: dry * (1-w) + wet * w.
     harmW = harmonicity_transfer * 0.3
+    hfID_str$ = string$(harmFiltered)
+    harmW_str$ = fixed$(harmW, 6)
+    oneMinusHarmW_str$ = fixed$(1 - harmW, 6)
     selectObject: resultCopy
-    Formula: "self * (1 - harmW)"
-    selectObject: harmFiltered
-    Formula: "self * harmW"
-    
-    selectObject: harmFiltered
-    hfName$ = selected$("Sound")
-    selectObject: resultCopy
-    Formula: "self + Sound_'hfName$'(x)"
+    Formula: "self * " + oneMinusHarmW_str$
+        ... + " + object[" + hfID_str$
+        ... + ", 1, col] * " + harmW_str$
     
     removeObject: harmFiltered, result
     result = resultCopy
@@ -1042,7 +1080,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Climax Profile Matcher##"
+    Text: 0.5, "centre", 0.6, "half", "##Climax Profile Matcher v1.1##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.6, "half", sourceName$ + " → " + targetName$ + " | " + presetName$ + " | " + string$(numClimax) + " climax regions"
