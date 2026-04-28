@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,23 @@
 #   get deeper, faster pitch modulation. Creates adaptive,
 #   content-aware pitch effects.
 #
+# Changelog v0.3:
+#   - Vectorized spectral analysis. The per-bin loop made
+#     ~3*nBins Get-calls per analysis window (for an 0.2 s
+#     window at 44.1 kHz: 8193 bins -> ~25k Get-calls per
+#     window, ~200k total for 8 windows). Replaced with five
+#     Matrix Formula + Get sum operations on a
+#     Spectrum -> Matrix view. The roughness formula reads
+#     col-1 and col+1, so it cross-references a renamed
+#     source matrix (Matrix_spsrc) to avoid the in-place
+#     overwrite that would otherwise zero things out.
+#   - Split-phase pitch grid loop. originalPitchTier reads
+#     and shiftedPitchTier writes are now two separate
+#     passes, each needing one selectObject instead of
+#     one per iteration. Modulation parameters are
+#     precomputed as plain vectors.
+#   - Output is bit-for-bit equivalent (modulo floating
+#     point summation order); just much faster.
 # Changelog v0.2:
 #   - Added form with parameters
 #   - Modern syntax
@@ -62,28 +79,24 @@ endform
 
 # === Apply Presets ===
 if preset = 2
-    # Subtle
     base_shift_depth = 1
     flatness_multiplier = 3
     base_mod_speed = 0.3
     roughness_multiplier = 1.5
     presetName$ = "Subtle"
 elsif preset = 3
-    # Moderate
     base_shift_depth = 2
     flatness_multiplier = 6
     base_mod_speed = 0.5
     roughness_multiplier = 3.0
     presetName$ = "Moderate"
 elsif preset = 4
-    # Strong
     base_shift_depth = 4
     flatness_multiplier = 10
     base_mod_speed = 1.0
     roughness_multiplier = 5.0
     presetName$ = "Strong"
 elsif preset = 5
-    # Extreme
     base_shift_depth = 6
     flatness_multiplier = 15
     base_mod_speed = 1.5
@@ -104,17 +117,18 @@ appendInfoLine: "Shift depth: ", base_shift_depth, " + flatness×", flatness_mul
 appendInfoLine: "Mod speed: ", base_mod_speed, " + roughness×", roughness_multiplier
 appendInfoLine: ""
 
-# === Analyze Spectral Features ===
+# ============================================================
+# 1. ANALYZE SPECTRAL FEATURES  (vectorized)
+# ============================================================
 analysisTimes# = zero#(num_analysis_points)
 flatness# = zero#(num_analysis_points)
 roughness# = zero#(num_analysis_points)
 
-appendInfoLine: "Analyzing ", num_analysis_points, " time windows..."
+appendInfoLine: "Analyzing ", num_analysis_points, " time windows (vectorized)..."
+stopwatch
 
 for point from 1 to num_analysis_points
     analysisTimes#[point] = (point - 1) * duration / (num_analysis_points - 1)
-    
-    # Clamp to valid range
     if analysisTimes#[point] < 0.1
         analysisTimes#[point] = 0.1
     endif
@@ -124,7 +138,6 @@ for point from 1 to num_analysis_points
     
     beginTime = analysisTimes#[point] - 0.1
     endTime = analysisTimes#[point] + 0.1
-    
     if beginTime < 0
         beginTime = 0
     endif
@@ -132,7 +145,7 @@ for point from 1 to num_analysis_points
         endTime = duration
     endif
     
-    # Extract window
+    # --- Extract window and compute spectrum ---
     selectObject: original
     windowSound = Extract part: beginTime, endTime, "Hamming", 1, "no"
     
@@ -140,37 +153,44 @@ for point from 1 to num_analysis_points
     To Spectrum: "yes"
     spectrum = selected("Spectrum")
     
-    # Calculate flatness and roughness
-    lnSum = 0
-    linearSum = 0
-    validBins = 0
-    roughnessSum = 0
-    roughnessBins = 0
-    
     selectObject: spectrum
     nBins = Get number of bins
     binWidth = Get bin width
     
-    for bin from 1 to nBins
-        freq = (bin - 1) * binWidth
-        if freq >= min_frequency and freq <= max_frequency
-            amp = Get real value in bin: bin
-            power = amp * amp
-            power = max(power, 1e-12)
-            lnSum = lnSum + ln(power)
-            linearSum = linearSum + power
-            
-            if bin > 1 and bin < nBins
-                ampPrev = Get real value in bin: bin - 1
-                ampNext = Get real value in bin: bin + 1
-                roughnessSum = roughnessSum + abs(amp - (ampPrev + ampNext) / 2)
-                roughnessBins = roughnessBins + 1
-            endif
-            
-            validBins = validBins + 1
-        endif
-    endfor
+    # --- Spectrum -> Matrix (row 1 = real part, row 2 = imag part) ---
+    # Source matrix is renamed so cross-Matrix references can find it.
+    # Working matrix is where each Formula writes; we Get sum per pass.
+    To Matrix
+    spSrcID = selected("Matrix")
+    Rename: "spsrc"
     
+    Copy: "spwork"
+    spWorkID = selected("Matrix")
+    
+    # Aggregate 1: validBins (count of in-band bins, row 1 only)
+    selectObject: spWorkID
+    Formula: "if row = 1 and (col-1)*'binWidth' >= 'min_frequency' and (col-1)*'binWidth' <= 'max_frequency' then 1 else 0 fi"
+    validBins = Get sum
+    
+    # Aggregate 2: linearSum = sum_in_band( max(re^2, 1e-12) )
+    Formula: "if row = 1 and (col-1)*'binWidth' >= 'min_frequency' and (col-1)*'binWidth' <= 'max_frequency' then max(Matrix_spsrc[1, col] ^ 2, 1e-12) else 0 fi"
+    linearSum = Get sum
+    
+    # Aggregate 3: lnSum = sum_in_band( ln(max(re^2, 1e-12)) )
+    Formula: "if row = 1 and (col-1)*'binWidth' >= 'min_frequency' and (col-1)*'binWidth' <= 'max_frequency' then ln(max(Matrix_spsrc[1, col] ^ 2, 1e-12)) else 0 fi"
+    lnSum = Get sum
+    
+    # Aggregate 4: roughnessSum = sum_in_band_excl_edges( |x_k - (x_{k-1}+x_{k+1})/2| )
+    # Uses Matrix_spsrc to read col-1, col, col+1 from the unmodified source
+    # (in-place modification of self would corrupt neighbour reads).
+    Formula: "if row = 1 and col > 1 and col < ncol and (col-1)*'binWidth' >= 'min_frequency' and (col-1)*'binWidth' <= 'max_frequency' then abs(Matrix_spsrc[1, col] - (Matrix_spsrc[1, col-1] + Matrix_spsrc[1, col+1]) / 2) else 0 fi"
+    roughnessSum = Get sum
+    
+    # Aggregate 5: roughnessBins (count of bins contributing to roughnessSum)
+    Formula: "if row = 1 and col > 1 and col < ncol and (col-1)*'binWidth' >= 'min_frequency' and (col-1)*'binWidth' <= 'max_frequency' then 1 else 0 fi"
+    roughnessBins = Get sum
+    
+    # --- Reduce to flatness / roughness scalars ---
     if validBins > 0 and roughnessBins > 0
         flatness#[point] = exp(lnSum / validBins) / (linearSum / validBins)
         roughness#[point] = roughnessSum / roughnessBins
@@ -182,12 +202,18 @@ for point from 1 to num_analysis_points
     appendInfoLine: "  Window ", point, " (", fixed$(analysisTimes#[point], 2), "s): ",
         ... "flat=", fixed$(flatness#[point], 3), " rough=", fixed$(roughness#[point], 3)
     
-    removeObject: windowSound, spectrum
+    removeObject: windowSound, spectrum, spSrcID, spWorkID
 endfor
 
-# === Create Manipulation ===
+analysisElapsed = stopwatch
+appendInfoLine: "  (analysis: ", fixed$(analysisElapsed, 2), " s)"
+
+# ============================================================
+# 2. CREATE PITCH MODULATION  (vectorized + split-phase)
+# ============================================================
 appendInfoLine: ""
 appendInfoLine: "Creating pitch modulation..."
+stopwatch
 
 selectObject: original
 workingSound = Copy: "working_" + originalName$
@@ -198,13 +224,12 @@ manipulation = To Manipulation: 0.01, 75, 600
 selectObject: manipulation
 originalPitchTier = Extract pitch tier
 
-# Create fresh pitch tier
 shiftedPitchTier = Create PitchTier: "spectral_shifted_pitch", 0, duration
 
 timeStep = 0.01
 numGridPoints = round(duration / timeStep) + 1
 
-# Store for visualization
+# --- Visualization storage ---
 maxVizPoints = min(numGridPoints, 500)
 vizTimes# = zero#(maxVizPoints)
 vizShifts# = zero#(maxVizPoints)
@@ -212,80 +237,99 @@ vizDepths# = zero#(maxVizPoints)
 vizSpeeds# = zero#(maxVizPoints)
 vizStep = numGridPoints / maxVizPoints
 
-currentPhase = 0
-previousTime = 0
+# --- Precompute per-grid-point parameters (pure script math, no object queries) ---
+times# = zero#(numGridPoints)
+shiftDepths# = zero#(numGridPoints)
+modSpeeds# = zero#(numGridPoints)
 
 for i from 1 to numGridPoints
-    currentTime = (i - 1) * timeStep
+    t = (i - 1) * timeStep
+    times#[i] = t
     
-    # Find segment (without goto)
+    # Locate segment in analysisTimes#
     segment = num_analysis_points - 1
     for p from 1 to num_analysis_points - 1
-        if currentTime >= analysisTimes#[p] and currentTime <= analysisTimes#[p + 1]
+        if t >= analysisTimes#[p] and t <= analysisTimes#[p + 1]
             segment = p
             p = num_analysis_points
         endif
     endfor
-    
-    if currentTime < analysisTimes#[1]
+    if t < analysisTimes#[1]
         segment = 1
     endif
     
-    # Interpolate spectral features
     segmentStart = analysisTimes#[segment]
     segmentEnd = analysisTimes#[segment + 1]
-    
     if segmentEnd > segmentStart
-        progress = (currentTime - segmentStart) / (segmentEnd - segmentStart)
+        progress = (t - segmentStart) / (segmentEnd - segmentStart)
     else
         progress = 0
     endif
     
-    currentFlatness = flatness#[segment] + progress * (flatness#[segment + 1] - flatness#[segment])
+    currentFlatness  = flatness#[segment]  + progress * (flatness#[segment + 1]  - flatness#[segment])
     currentRoughness = roughness#[segment] + progress * (roughness#[segment + 1] - roughness#[segment])
     
-    # Calculate modulation parameters from spectral features
-    shiftDepth = base_shift_depth + (currentFlatness * flatness_multiplier)
-    modulationSpeed = base_mod_speed + (currentRoughness * roughness_multiplier)
-    
-    # Get original pitch
-    selectObject: originalPitchTier
-    originalFreq = Get value at time: currentTime
-    
-    if originalFreq > 0
-        # Update phase
+    shiftDepths#[i] = base_shift_depth + currentFlatness  * flatness_multiplier
+    modSpeeds#[i]   = base_mod_speed   + currentRoughness * roughness_multiplier
+endfor
+
+# --- Phase A: read all original pitch values in one pass ---
+selectObject: originalPitchTier
+origFreqs# = zero#(numGridPoints)
+for i from 1 to numGridPoints
+    origFreqs#[i] = Get value at time: times#[i]
+endfor
+
+# --- Compute new frequencies (phase has serial dependency, so a loop) ---
+# Phase advance is preserved exactly as in v0.2: phase only updates on
+# voiced points, currentPhase is reset to 0 at i=1, and previousTime
+# tracks the last voiced grid time.
+newFreqs# = zero#(numGridPoints)
+shiftSemis# = zero#(numGridPoints)
+currentPhase = 0
+previousTime = 0
+
+for i from 1 to numGridPoints
+    if origFreqs#[i] > 0
         if i > 1
-            timeDelta = currentTime - previousTime
-            phaseDelta = 2 * pi * modulationSpeed * timeDelta
-            currentPhase = currentPhase + phaseDelta
+            timeDelta = times#[i] - previousTime
+            currentPhase = currentPhase + 2 * pi * modSpeeds#[i] * timeDelta
         else
             currentPhase = 0
         endif
         
-        # Calculate pitch shift
-        semitoneShift = shiftDepth * sin(currentPhase)
-        freqMultiplier = 2 ^ (semitoneShift / 12)
-        newFreq = originalFreq * freqMultiplier
+        semitoneShift = shiftDepths#[i] * sin(currentPhase)
+        newFreqs#[i] = origFreqs#[i] * 2 ^ (semitoneShift / 12)
+        shiftSemis#[i] = semitoneShift
+        previousTime = times#[i]
         
-        selectObject: shiftedPitchTier
-        Add point: currentTime, newFreq
-        
-        # Store for visualization
+        # Sparse viz capture (first hit per viz bucket wins, matches v0.2)
         vizIdx = floor(i / vizStep) + 1
         if vizIdx >= 1 and vizIdx <= maxVizPoints
             if vizTimes#[vizIdx] = 0
-                vizTimes#[vizIdx] = currentTime
+                vizTimes#[vizIdx]  = times#[i]
                 vizShifts#[vizIdx] = semitoneShift
-                vizDepths#[vizIdx] = shiftDepth
-                vizSpeeds#[vizIdx] = modulationSpeed
+                vizDepths#[vizIdx] = shiftDepths#[i]
+                vizSpeeds#[vizIdx] = modSpeeds#[i]
             endif
         endif
-        
-        previousTime = currentTime
     endif
 endfor
 
-# === Resynthesize ===
+# --- Phase B: write all points to shiftedPitchTier in one pass ---
+selectObject: shiftedPitchTier
+for i from 1 to numGridPoints
+    if origFreqs#[i] > 0
+        Add point: times#[i], newFreqs#[i]
+    endif
+endfor
+
+pitchElapsed = stopwatch
+appendInfoLine: "  (pitch grid: ", fixed$(pitchElapsed, 2), " s)"
+
+# ============================================================
+# 3. RESYNTHESIZE
+# ============================================================
 appendInfoLine: ""
 appendInfoLine: "Resynthesizing..."
 
@@ -299,7 +343,9 @@ Rename: originalName$ + "_spectral_" + presetName$
 selectObject: result
 Scale peak: 0.95
 
-# === Visualization ===
+# ============================================================
+# 4. VISUALIZATION  (unchanged from v0.2)
+# ============================================================
 if draw_visualization
     Erase all
     
@@ -335,7 +381,6 @@ if draw_visualization
     Select outer viewport: 0, 8, 2.5, 3.5
     Select inner viewport: 0.6, 7.6, 2.6, 3.4
     
-    # Find range
     minS = vizShifts#[1]
     maxS = vizShifts#[1]
     for vp from 2 to maxVizPoints
@@ -352,13 +397,11 @@ if draw_visualization
     Axes: 0, duration, minS - sMargin, maxS + sMargin
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, minS - sMargin, maxS + sMargin
     
-    # Zero line
     Colour: "{0.7, 0.7, 0.7}"
     Dotted line
     Draw line: 0, 0, duration, 0
     Solid line
     
-    # Draw shift curve
     Colour: "{0.4, 0.5, 0.7}"
     Line width: 1.5
     for vp from 2 to maxVizPoints
@@ -373,11 +416,10 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Shift (st)"
     
-    # Spectral features
+    # Flatness panel
     Select outer viewport: 0, 4, 3.7, 4.7
     Select inner viewport: 0.6, 3.8, 3.8, 4.6
     
-    # Flatness
     maxFlat = flatness#[1]
     for p from 2 to num_analysis_points
         if flatness#[p] > maxFlat
@@ -392,8 +434,6 @@ if draw_visualization
     for p from 2 to num_analysis_points
         Draw line: analysisTimes#[p - 1], flatness#[p - 1], analysisTimes#[p], flatness#[p]
     endfor
-    
-    # Mark analysis points
     for p from 1 to num_analysis_points
         Paint circle (mm): "{0.7, 0.5, 0.5}", analysisTimes#[p], flatness#[p], 1.5
     endfor
@@ -404,7 +444,7 @@ if draw_visualization
     Text left: "yes", "Flatness"
     Text bottom: "yes", "Time (s)"
     
-    # Roughness
+    # Roughness panel
     Select outer viewport: 4, 8, 3.7, 4.7
     Select inner viewport: 4.4, 7.6, 3.8, 4.6
     
@@ -422,7 +462,6 @@ if draw_visualization
     for p from 2 to num_analysis_points
         Draw line: analysisTimes#[p - 1], roughness#[p - 1], analysisTimes#[p], roughness#[p]
     endfor
-    
     for p from 1 to num_analysis_points
         Paint circle (mm): "{0.5, 0.7, 0.5}", analysisTimes#[p], roughness#[p], 1.5
     endfor
@@ -433,7 +472,7 @@ if draw_visualization
     Text left: "yes", "Roughness"
     Text bottom: "yes", "Time (s)"
     
-    # Parameter mapping legend
+    # Legend
     Select outer viewport: 0, 8, 4.9, 5.3
     Font size: 7
     Colour: "{0.5, 0.5, 0.5}"
@@ -453,7 +492,6 @@ appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 
-# === Play ===
 if play_result
     selectObject: result
     Play
