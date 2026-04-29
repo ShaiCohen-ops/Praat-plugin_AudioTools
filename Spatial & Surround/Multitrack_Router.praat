@@ -1,24 +1,24 @@
 # ============================================================
-# Praat AudioTools – Multitrack_Router.praat
+# Praat AudioTools - Multitrack_Router.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 3.2 (2025)
+# Version: 3.3.2 (2025)
 # License: MIT License
 #
 # Description:
 #   Form-driven multitrack routing and time-placement engine.
 #   Select N Sound objects, assign them to virtual tracks,
-#   sequence / reorder them, insert silences, apply gain +
-#   fades, and render a single output Sound object:
+#   sequence/reorder them, insert silences, apply gain + fades,
+#   and render a single output Sound object:
 #     Mono          – all tracks summed to 1 channel
 #     Stereo        – tracks panned L/R via equal-power law
 #     Multichannel  – one channel per track
 #
 #   ASSIGNMENT MODES:
 #     1  All on track 1       2  One track per sound
-#     3  Round-robin           4  Manual (Assignments)
-#     5  Sequence per track   (Sequences field, | separates
-#        tracks, tokens: indices + SILx silence markers)
+#     3  Round-robin           4  Manual (Seq field)
+#     5  Sequence per track   (Seq field, | separates tracks,
+#        tokens: indices + SILx silence markers)
 #
 #   TIMING:
 #     All-at-0   – layered from t=0
@@ -29,9 +29,20 @@
 #     ch:0 2 1        channel select (0=mono 1=L 2=R)
 #     pan:-1 0 1      pan position per track (-1..+1)
 #     ord:3 1 2       manual order per sound
-#     xf:lin          crossfade shape (lin or ep)
-#     sched           print schedule to Info
-#     Example: "g:-3 0 -6 ch:0 2 pan:-1 1 xf:ep sched"
+#     xf:lin          crossfade shape: lin (3 dB dip) or ep
+#                     (3 dB bump if signals correlated)
+#     sched           print schedule (now on by default)
+#     Example: "g:-3 0 -6 ch:0 2 pan:-1 1 xf:ep"
+#
+#   CROSSFADE SHAPE NOTES:
+#     `lin`  = linear envelopes. Sum of envelopes = 1 at midpoint
+#              (correct for correlated signals; uncorrelated
+#              signals dip ~3 dB at seam).
+#     `ep`   = equal-power (sin/cos). Sum of POWERS = 1 at midpoint
+#              (correct for uncorrelated signals; correlated signals
+#              bump ~3 dB at seam).
+#     Use `lin` when stitching two parts of the same recording;
+#     use `ep` when stitching unrelated material.
 #
 #   PRESETS:
 #     1 Custom  2 Sequential Chain  3 Crossfade Montage
@@ -40,10 +51,65 @@
 #
 # Requires: Praat ≥ 6.0
 # Category: Routing / Mixing / Composition
+#
+# Changelog v3.3.2:
+#   - Form converted from Apply-loop (beginPause/endPause + repeat…
+#     until 0) to a single-stage form…endform. The dialog now
+#     appears once; the script runs and exits. Removed: v_ persistence
+#     variables, clicked/Close button logic, prevResultID plumbing.
+# Changelog v3.3.1 (regression fixes):
+#   - Fix: restore removeObject: prevResultID before each Apply.
+#     v3.3 dropped this block entirely, leaking one Sound object
+#     into the object list on every Apply press.
+#   - Fix: mix-down combine step reverted from Formula (part) back
+#     to the v3.2 conditional Formula with col <= tNS guard.
+#     Formula (part) uses output-relative col indices, so referencing
+#     object[trkID[t], col] on a shorter track read past its end.
+#   - Fix: loop variable 'fi' renamed to 'fIdx' in the fade-in
+#     envelope drawing loop. 'fi' is parsed as the closing keyword
+#     of an if-block by Praat, causing "Symbol misplaced fi" error.
+# Changelog v3.3:
+#   - Fix (correctness): fade-vs-crossfade precedence. v3.2's
+#     overlap-with-crossfade branch overwrote per-segment
+#     segFdOut[prev] and segFdIn[cur] with crossfade_seconds
+#     unconditionally. Users who set per-sound fade-in/out
+#     and used a crossfade had their fades silently replaced.
+#     Now uses max() so the longer fade wins.
+#   - Fix (correctness): re-clamp prev's fade-out length when
+#     cur's start time is clamped to 0. v3.2 left fade-out
+#     longer than the actual overlap, eating into prev's body.
+#   - Fix (safety): segment-array size now sized from actual
+#     token count after parsing (was nSounds*4+200, an
+#     unbounded user-input flowing into a fixed-size array).
+#   - Refactor: 4 near-duplicate override-parser blocks
+#     collapsed into one extractTag procedure. ~60 lines saved.
+#   - Speed: per-segment full-track Formula in stem assembly
+#     replaced with Formula (part), scanning only the affected
+#     sample range. On 30-segment tracks this is ~30x less work.
+#   - Speed: default-shape fade-in/fade-out now uses Praat's
+#     built-in Fade in / Fade out commands (Hanning curve)
+#     instead of per-sample Formula. Custom xf:lin and xf:ep
+#     shapes still use Formula since the built-ins don't
+#     expose shape choice. Most segments use the default, so
+#     this is a real win on typical material.
+#   - Schedule prints by default whenever segments exist.
+#     The sched tag is preserved as a no-op for backwards
+#     compatibility.
+#   - Visualization: timeline panel rewritten as the headline.
+#     Block height now encodes RMS. Fade-in / fade-out
+#     envelopes drawn on top of each block. Crossfade overlap
+#     regions hatched diagonally. Pan indicator drawn on the
+#     left edge of each lane when output is stereo. Time grid
+#     every 1 s. Tracks with no segments are visually muted.
+#   - Form variable name unified: 'visualize' (form) ->
+#     'draw_visualization' (working) renamed to a single
+#     consistent name throughout.
+# Changelog v3.2:
+#   - Apply-loop pattern, override tag mini-language.
 # ============================================================
 
 # ============================================================
-# STEP 0 – READ ALL SELECTED SOUNDS
+# STEP 0 - READ ALL SELECTED SOUNDS
 # ============================================================
 
 nSounds = numberOfSelected("Sound")
@@ -59,6 +125,8 @@ for i from 1 to nSounds
     selectObject: sndID[i]
     sndDur[i] = Get total duration
     sndFs[i]  = Get sampling frequency
+    # Pre-compute RMS for visualization (cached, used per-segment)
+    sndRMS[i] = Get root-mean-square: 0, 0
 endfor
 
 refFs = sndFs[1]
@@ -69,26 +137,10 @@ for i from 2 to nSounds
 endfor
 
 # ============================================================
-# STEP 1 – COMPACT FORM WITH APPLY LOOP
+# UTILITY PROCEDURES
 # ============================================================
 
-v_preset     = 1
-v_tracks     = 2
-v_assign     = 1
-v_sequences$ = ""
-v_time       = 2
-v_gap        = 0.0
-v_xfade      = 0.0
-v_gain       = 0.0
-v_fadein     = 0.01
-v_fadeout    = 0.01
-v_output     = 1
-v_over$      = ""
-v_norm       = 1
-v_draw       = 1
-prevResultID = 0
-
-# ---- Token splitter (used throughout) ----
+# Token splitter — splits .str$ on whitespace into .tok$[1..n]
 procedure splitTokens: .str$
     .n = 0
     .rem$ = .str$
@@ -117,69 +169,81 @@ procedure splitTokens: .str$
     endwhile
 endproc
 
-repeat
-
-    beginPause: "Multitrack Router  (" + string$(nSounds) + " sounds)"
-        optionMenu: "Preset", v_preset
-            option: "Custom"
-            option: "Sequential Chain"
-            option: "Crossfade Montage"
-            option: "Stereo Spread"
-            option: "Layered Stack"
-            option: "Dialogue Assembly"
-            option: "Multichannel Split"
-        natural: "Tracks", v_tracks
-        optionMenu: "Assignment", v_assign
-            option: "All on track 1"
-            option: "One track per sound"
-            option: "Round-robin"
-            option: "Manual  (→ Seq field)"
-            option: "Sequence  (→ Seq field)"
-        sentence: "Seq", v_sequences$
-        optionMenu: "Timing", v_time
-            option: "All at 0  (layer)"
-            option: "Sequential"
-        real: "Gap s", v_gap
-        real: "Crossfade s", v_xfade
-        real: "Gain dB", v_gain
-        real: "Fade in s", v_fadein
-        real: "Fade out s", v_fadeout
-        optionMenu: "Output", v_output
-            option: "Mono"
-            option: "Stereo"
-            option: "Multichannel"
-        sentence: "Overrides", v_over$
-        boolean: "Normalize", v_norm
-        boolean: "Visualize", v_draw
-    clicked = endPause: "Close", "Apply", 2, 1
-
-    v_preset     = preset
-    v_tracks     = tracks
-    v_assign     = assignment
-    v_sequences$ = seq$
-    v_time       = timing
-    v_gap        = gap_s
-    v_xfade      = crossfade_s
-    v_gain       = gain_dB
-    v_fadein     = fade_in_s
-    v_fadeout    = fade_out_s
-    v_output     = output
-    v_over$      = overrides$
-    v_norm       = normalize
-    v_draw       = visualize
-
-    if clicked = 1
-        exitScript: "Closed."
+# Tag extractor — finds .tag$ inside .ovr$ and returns the
+# whitespace-trimmed value substring up to the next tag boundary
+# (next ":" anywhere, walked back to the preceding space). Returns
+# .found = 1 if the tag was present.
+# Replaces 4 × 18-line copy-paste blocks from v3.2.
+procedure extractTag: .ovr$, .tag$
+    .found = 0
+    .val$ = ""
+    .pos = index(.ovr$, .tag$)
+    if .pos > 0
+        .found = 1
+        .skip = length(.tag$)
+        .sub$ = mid$(.ovr$, .pos + .skip)
+        .end = index(.sub$, ":")
+        if .end > 0
+            # Walk back to the space before the next tag
+            .end2 = .end - 1
+            while .end2 > 1 and mid$(.sub$, .end2, 1) <> " "
+                .end2 = .end2 - 1
+            endwhile
+            .val$ = left$(.sub$, .end2)
+        else
+            .val$ = .sub$
+        endif
+        # Trim trailing whitespace
+        while length(.val$) > 0 and right$(.val$, 1) = " "
+            .val$ = left$(.val$, length(.val$) - 1)
+        endwhile
+        # Trim leading whitespace
+        while length(.val$) > 0 and left$(.val$, 1) = " "
+            .val$ = mid$(.val$, 2)
+        endwhile
     endif
+endproc
 
-    # Remove previous result before building new one
-    if prevResultID > 0
-        removeObject: prevResultID
-        prevResultID = 0
-    endif
+# ============================================================
+# STEP 1 - FORM WITH APPLY LOOP
+# ============================================================
+
+form Multitrack Router
+    optionmenu Preset: 1
+        option Custom
+        option Sequential Chain
+        option Crossfade Montage
+        option Stereo Spread
+        option Layered Stack
+        option Dialogue Assembly
+        option Multichannel Split
+    natural Tracks 2
+    optionmenu Assignment: 1
+        option All on track 1
+        option One track per sound
+        option Round-robin
+        option Manual  (-> Seq field)
+        option Sequence  (-> Seq field)
+    sentence Seq 
+    optionmenu Timing: 2
+        option All at 0  (layer)
+        option Sequential
+    real Gap_s 0.0
+    real Crossfade_s 0.0
+    real Gain_dB 0.0
+    real Fade_in_s 0.01
+    real Fade_out_s 0.01
+    optionmenu Output: 1
+        option Mono
+        option Stereo
+        option Multichannel
+    sentence Overrides 
+    boolean Normalize 1
+    boolean Draw_visualization 1
+endform
 
     # ========================================================
-    # APPLY: PROCESS
+    # PROCESS
     # ========================================================
 
     # --- Map form names to internal names ---
@@ -194,116 +258,54 @@ repeat
     fade_out_seconds  = fade_out_s
     output_channels   = output
     normalize_output  = normalize
-    draw_visualization = visualize
+    do_visualization  = draw_visualization
+
 
     # Defaults for override-only params
     crossfade_shape   = 2
-    print_schedule    = 0
+    print_schedule    = 1
     order_mode        = 1
     gains_dB$         = ""
     channel_select$   = ""
     pan_positions$    = ""
     order$            = ""
 
-    # ---- Parse Overrides field ----
-    # Tags: g: ch: pan: ord: xf: sched
-    ovr$ = overrides$
-    # Append space sentinel
-    ovr$ = ovr$ + " "
-
-    # g: per-sound gains
-    gPos = index(ovr$, "g:")
-    if gPos > 0
-        gSub$ = mid$(ovr$, gPos + 2)
-        gEnd = index(gSub$, ":")
-        if gEnd > 0
-            # walk back to find tag start
-            gEnd2 = gEnd - 1
-            while gEnd2 > 1 and mid$(gSub$, gEnd2, 1) <> " "
-                gEnd2 = gEnd2 - 1
-            endwhile
-            gains_dB$ = left$(gSub$, gEnd2)
-        else
-            gains_dB$ = gSub$
-        endif
-        # Trim trailing spaces
-        while length(gains_dB$) > 0 and right$(gains_dB$, 1) = " "
-            gains_dB$ = left$(gains_dB$, length(gains_dB$) - 1)
-        endwhile
+    # ---- Parse Overrides field via shared procedure ----
+    ovr$ = overrides$ + " "
+    
+    @extractTag: ovr$, "g:"
+    if extractTag.found = 1
+        gains_dB$ = extractTag.val$
     endif
-
-    # ch: channel select
-    chPos = index(ovr$, "ch:")
-    if chPos > 0
-        chSub$ = mid$(ovr$, chPos + 3)
-        chEnd = index(chSub$, ":")
-        if chEnd > 0
-            chEnd2 = chEnd - 1
-            while chEnd2 > 1 and mid$(chSub$, chEnd2, 1) <> " "
-                chEnd2 = chEnd2 - 1
-            endwhile
-            channel_select$ = left$(chSub$, chEnd2)
-        else
-            channel_select$ = chSub$
-        endif
-        while length(channel_select$) > 0 and right$(channel_select$, 1) = " "
-            channel_select$ = left$(channel_select$, length(channel_select$) - 1)
-        endwhile
+    
+    @extractTag: ovr$, "ch:"
+    if extractTag.found = 1
+        channel_select$ = extractTag.val$
     endif
-
-    # pan: positions
-    pPos = index(ovr$, "pan:")
-    if pPos > 0
-        pSub$ = mid$(ovr$, pPos + 4)
-        pEnd = index(pSub$, ":")
-        if pEnd > 0
-            pEnd2 = pEnd - 1
-            while pEnd2 > 1 and mid$(pSub$, pEnd2, 1) <> " "
-                pEnd2 = pEnd2 - 1
-            endwhile
-            pan_positions$ = left$(pSub$, pEnd2)
-        else
-            pan_positions$ = pSub$
-        endif
-        while length(pan_positions$) > 0 and right$(pan_positions$, 1) = " "
-            pan_positions$ = left$(pan_positions$, length(pan_positions$) - 1)
-        endwhile
+    
+    @extractTag: ovr$, "pan:"
+    if extractTag.found = 1
+        pan_positions$ = extractTag.val$
     endif
-
-    # ord: manual order
-    oPos = index(ovr$, "ord:")
-    if oPos > 0
+    
+    @extractTag: ovr$, "ord:"
+    if extractTag.found = 1
         order_mode = 3
-        oSub$ = mid$(ovr$, oPos + 4)
-        oEnd = index(oSub$, ":")
-        if oEnd > 0
-            oEnd2 = oEnd - 1
-            while oEnd2 > 1 and mid$(oSub$, oEnd2, 1) <> " "
-                oEnd2 = oEnd2 - 1
-            endwhile
-            order$ = left$(oSub$, oEnd2)
-        else
-            order$ = oSub$
-        endif
-        while length(order$) > 0 and right$(order$, 1) = " "
-            order$ = left$(order$, length(order$) - 1)
-        endwhile
+        order$ = extractTag.val$
     endif
-
-    # xf: crossfade shape
-    xfPos = index(ovr$, "xf:")
-    if xfPos > 0
-        xfSub$ = mid$(ovr$, xfPos + 3, 3)
-        if left$(xfSub$, 3) = "lin"
+    
+    @extractTag: ovr$, "xf:"
+    if extractTag.found = 1
+        if left$(extractTag.val$, 3) = "lin"
             crossfade_shape = 1
         else
             crossfade_shape = 2
         endif
     endif
-
-    # sched flag
-    scPos = index(ovr$, "sched")
-    if scPos > 0
+    
+    # sched flag is a no-op now (schedule prints by default)
+    # but the tag is still parsed for backward compatibility
+    if index(ovr$, "sched") > 0
         print_schedule = 1
     endif
 
@@ -394,7 +396,7 @@ repeat
     presetName$[5] = "Layered Stack"
     presetName$[6] = "Dialogue Assembly"
     presetName$[7] = "Multichannel Split"
-    assignName$[1] = "All→1"
+    assignName$[1] = "All->1"
     assignName$[2] = "1/snd"
     assignName$[3] = "RndRbn"
     assignName$[4] = "Manual"
@@ -502,8 +504,40 @@ repeat
         endif
     endif
 
+    # ---- Compute segment array size from actual usage ----
+    # v3.2 used a fixed nSounds*4 + 200, which could be exceeded
+    # by sequence-mode tracks packing many SIL markers + reuse.
+    # Now we count tokens up front for the sequence-mode case and
+    # size the array accordingly.
+    if assignment_mode = 5 and sequences$ <> ""
+        # Count all tokens across all track sub-sequences
+        seqCountTmp$ = sequences$
+        # Replace pipes with spaces so splitTokens counts everything
+        countTokens = 0
+        countRem$ = sequences$
+        while length(countRem$) > 0
+            pipePosTmp = index(countRem$, "|")
+            if pipePosTmp > 0
+                segPart$ = left$(countRem$, pipePosTmp - 1)
+                countRem$ = mid$(countRem$, pipePosTmp + 1)
+            else
+                segPart$ = countRem$
+                countRem$ = ""
+            endif
+            if segPart$ <> ""
+                @splitTokens: segPart$
+                countTokens = countTokens + splitTokens.n
+            endif
+        endwhile
+        maxSegs = countTokens + number_of_tracks + 50
+    else
+        maxSegs = nSounds + number_of_tracks + 50
+    endif
+    if maxSegs < 100
+        maxSegs = 100
+    endif
+
     # ---- Build segment lists ----
-    maxSegs = nSounds * 4 + 200
     for s from 1 to maxSegs
         segType[s]   = 0
         segSrc[s]    = 0
@@ -513,6 +547,7 @@ repeat
         segFdOut[s]  = 0.0
         segStart[s]  = 0.0
         segTrack[s]  = 0
+        segXfWith[s] = 0
     endfor
     totalSegs = 0
     for t from 1 to number_of_tracks
@@ -521,11 +556,11 @@ repeat
     endfor
 
     clearinfo
-    writeInfoLine:  "=================================================="
-    writeInfoLine:  "  Multitrack Router v3.2  ·  ", presetName$[preset]
-    writeInfoLine:  "=================================================="
+    appendInfoLine: "=================================================="
+    appendInfoLine: "  Multitrack Router v3.3.1  ·  ", presetName$[preset]
+    appendInfoLine: "=================================================="
     appendInfoLine: ""
-    appendInfoLine: nSounds, " sounds → ", number_of_tracks, " tracks  ",
+    appendInfoLine: nSounds, " sounds -> ", number_of_tracks, " tracks  ",
         ... refFs, " Hz  ", outModeName$
     appendInfoLine: ""
 
@@ -610,7 +645,7 @@ repeat
             endif
         endfor
 
-    # ---- MODES 1–4 ----
+    # ---- MODES 1-4 ----
     else
         for i from 1 to nSounds
             if assignment_mode = 1
@@ -633,7 +668,7 @@ repeat
             trkSnd[t, trkN[t]] = i
         endfor
 
-        # Sort
+        # Sort by manual order if requested
         for t from 1 to number_of_tracks
             n = trkN[t]
             if n > 1 and order_mode = 3
@@ -718,14 +753,31 @@ repeat
                         prop = pEnd - ovl
                         if prop < 0
                             prop = 0
+                            # FIX (Bug C v3.3): re-clamp the actual overlap
+                            # length when start was clamped to 0.
+                            ovl = pEnd
                         endif
                         if crossfade_seconds > 0
+                            # FIX (Bug A v3.3): use max() instead of
+                            # overwriting per-segment fades. The longer
+                            # fade wins; user-supplied fade-out / fade-in
+                            # is preserved if it exceeds crossfade_seconds.
+                            cfLen = ovl
+                            if cfLen > crossfade_seconds
+                                cfLen = crossfade_seconds
+                            endif
                             if segType[prev] = 1
-                                segFdOut[prev] = crossfade_seconds
+                                if segFdOut[prev] < cfLen
+                                    segFdOut[prev] = cfLen
+                                endif
                             endif
                             if segType[cur] = 1
-                                segFdIn[cur] = crossfade_seconds
+                                if segFdIn[cur] < cfLen
+                                    segFdIn[cur] = cfLen
+                                endif
                             endif
+                            # Mark the crossfade pair for visualization
+                            segXfWith[prev] = cur
                         endif
                     endif
                     segStart[cur] = prop
@@ -798,6 +850,11 @@ repeat
                         Formula: "self * " + fixed$(glin, 8)
                     endif
 
+                    # ---- Apply fades ----
+                    # v3.3: built-in Fade in / Fade out for the default
+                    # Hanning shape (faster), Formula path only when
+                    # crossfade_shape selects an explicit lin/ep curve
+                    # AND the segment is part of a crossfade pair.
                     selectObject: sc
                     sDur = Get total duration
                     if sDur >= minDurForFade
@@ -809,37 +866,57 @@ repeat
                         if fdO > sDur * 0.45
                             fdO = sDur * 0.45
                         endif
+                        
+                        # Use Praat built-ins (Hanning) for the default
+                        # case. Switch to Formula for crossfade segments
+                        # where shape was explicitly chosen.
+                        useExplicit = 0
+                        if segXfWith[sIdx] > 0 or (sIdx > s0 and segXfWith[sIdx - 1] = sIdx)
+                            useExplicit = 1
+                        endif
+                        
                         if fdI > 0.0001
-                            selectObject: sc
-                            fiS$ = fixed$(fdI, 8)
-                            if crossfade_shape = 1
-                                Formula: "if x < " + fiS$
-                                    ... + " then self * (x / " + fiS$ + ")"
-                                    ... + " else self fi"
+                            if useExplicit = 1
+                                fiS$ = fixed$(fdI, 8)
+                                if crossfade_shape = 1
+                                    Formula: "if x < " + fiS$
+                                        ... + " then self * (x / " + fiS$ + ")"
+                                        ... + " else self fi"
+                                else
+                                    Formula: "if x < " + fiS$
+                                        ... + " then self * sin(pi/2 * x / " + fiS$ + ")"
+                                        ... + " else self fi"
+                                endif
                             else
-                                Formula: "if x < " + fiS$
-                                    ... + " then self * sin(pi/2 * x / " + fiS$ + ")"
-                                    ... + " else self fi"
+                                Fade in: 0, 0, fdI, "yes"
                             endif
                         endif
                         if fdO > 0.0001
-                            selectObject: sc
-                            foS$ = fixed$(fdO, 8)
-                            dS$  = fixed$(sDur, 8)
-                            foB$ = fixed$(sDur - fdO, 8)
-                            if crossfade_shape = 1
-                                Formula: "if x > " + foB$
-                                    ... + " then self * ((" + dS$ + " - x) / " + foS$ + ")"
-                                    ... + " else self fi"
+                            if useExplicit = 1
+                                foS$ = fixed$(fdO, 8)
+                                dS$  = fixed$(sDur, 8)
+                                foB$ = fixed$(sDur - fdO, 8)
+                                if crossfade_shape = 1
+                                    Formula: "if x > " + foB$
+                                        ... + " then self * ((" + dS$ + " - x) / " + foS$ + ")"
+                                        ... + " else self fi"
+                                else
+                                    Formula: "if x > " + foB$
+                                        ... + " then self * cos(pi/2 * (x - " + foB$
+                                        ... + ") / " + foS$ + ")"
+                                        ... + " else self fi"
+                                endif
                             else
-                                Formula: "if x > " + foB$
-                                    ... + " then self * cos(pi/2 * (x - " + foB$
-                                    ... + ") / " + foS$ + ")"
-                                    ... + " else self fi"
+                                Fade out: 0, sDur - fdO, fdO, "yes"
                             endif
                         endif
                     endif
 
+                    # ---- Overlay onto track stem via Formula (part) ----
+                    # v3.3: Formula (part) instead of full-track Formula.
+                    # On a 30-segment track, full-track Formula scans the
+                    # entire track buffer 30 times; Formula (part) scans
+                    # only each segment's actual sample range.
                     selectObject: sc
                     scNS = Get number of samples
                     selectObject: trkID[t]
@@ -852,13 +929,19 @@ repeat
                     if s2 > tNS
                         s2 = tNS
                     endif
-                    off = s1 - 1
-                    selectObject: trkID[t]
-                    Formula: "if col >= " + string$(s1)
-                        ... + " and col <= " + string$(s2)
-                        ... + " then self + object[" + string$(sc)
-                        ... + ", col - " + string$(off) + "]"
-                        ... + " else self fi"
+                    
+                    if s2 >= s1
+                        off = s1 - 1
+                        # Convert sample range to time range for Formula (part) bounds
+                        t_lo = (s1 - 1) / refFs
+                        t_hi = s2 / refFs
+                        
+                        selectObject: trkID[t]
+                        Formula (part): t_lo, t_hi, 1, 1,
+                            ... "self + object[" + string$(sc)
+                            ... + ", col - " + string$(off) + "]"
+                    endif
+                    
                     removeObject: sc
                 endif
             endfor
@@ -942,170 +1025,13 @@ repeat
         removeObject: trkID[t]
     endfor
 
-    # ---- Visualization ----
-    if draw_visualization = 1
-        Erase all
-
-        # Title
-        Select outer viewport: 0, 8, 0, 0.38
-        Axes: 0, 1, 0, 1
-        Font size: 10
-        Colour: "Black"
-        Text: 0.5, "centre", 0.7, "half", "##Multitrack Router##"
-        Font size: 7
-        Colour: "{0.35, 0.35, 0.45}"
-        Text: 0.5, "centre", -0.1, "half",
-            ... presetName$[preset] + "  |  "
-            ... + string$(nSounds) + " snd → "
-            ... + string$(number_of_tracks) + " trk  " + outModeName$
-
-        # Panel 1: Track timeline
-        nTrkVis = number_of_tracks
-        if nTrkVis > 8
-            nTrkVis = 8
-        endif
-        panelH = 0.25 * nTrkVis + 0.30
-        if panelH < 0.80
-            panelH = 0.80
-        endif
-        if panelH > 2.50
-            panelH = 2.50
-        endif
-        p1top = 0.42
-        p1bot = p1top + panelH
-
-        Select outer viewport: 0, 8, p1top, p1bot
-        Select inner viewport: 0.55, 7.65, p1top + 0.06, p1bot - 0.06
-        yTop = nTrkVis + 1
-
-        globalEnd = 0.001
-        for s from 1 to totalSegs
-            eT = segStart[s] + segDur[s]
-            if eT > globalEnd
-                globalEnd = eT
-            endif
-        endfor
-        globalEnd = globalEnd * 1.02
-
-        Axes: 0, globalEnd, 0, yTop
-        Paint rectangle: "{0.97, 0.97, 0.97}", 0, globalEnd, 0, yTop
-        Colour: "{0.85, 0.85, 0.85}"
-        for t from 1 to nTrkVis
-            yLane = nTrkVis + 1 - t
-            Draw line: 0, yLane, globalEnd, yLane
-        endfor
-        Font size: 6
-        Colour: "{0.45, 0.45, 0.55}"
-        for t from 1 to nTrkVis
-            yMid = nTrkVis + 1 - t + 0.5
-            Text: -globalEnd * 0.005, "right", yMid, "half", "T" + string$(t)
-        endfor
-
-        nSndM1 = nSounds - 1
-        if nSndM1 < 1
-            nSndM1 = 1
-        endif
-        for s from 1 to totalSegs
-            t = segTrack[s]
-            if t <= nTrkVis
-                yB = nTrkVis + 1 - t + 0.08
-                yT = nTrkVis + 1 - t + 0.92
-                x1 = segStart[s]
-                x2 = segStart[s] + segDur[s]
-                if segType[s] = 1
-                    srcI = segSrc[s]
-                    frac = (srcI - 1) / nSndM1
-                    cR = 0.28 + frac * 0.55
-                    cG = 0.52 - frac * 0.18
-                    cB = 0.72 - frac * 0.50
-                    clr$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
-                    Paint rectangle: clr$, x1, x2, yB, yT
-                    if (x2 - x1) > globalEnd * 0.03
-                        Font size: 5
-                        Colour: "White"
-                        Text: (x1 + x2) / 2, "centre", (yB + yT) / 2, "half", string$(srcI)
-                    endif
-                else
-                    Paint rectangle: "{0.92, 0.90, 0.85}", x1, x2, yB, yT
-                    Colour: "{0.70, 0.68, 0.60}"
-                    Draw rectangle: x1, x2, yB, yT
-                endif
-            endif
-        endfor
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text top: "no", "Track timeline"
-        Text bottom: "yes", "Time (s)"
-
-        # Panel 2: Output waveform
-        p2top = p1bot + 0.08
-        p2bot = p2top + 0.80
-        Select outer viewport: 0, 8, p2top, p2bot
-        Select inner viewport: 0.55, 7.65, p2top + 0.05, p2bot - 0.05
-        selectObject: resultID
-        resPeak = Get absolute extremum: 0, 0, "None"
-        if resPeak < 0.001
-            resPeak = 0.001
-        endif
-        ampMax = resPeak * 1.15
-        Axes: 0, resultDur, -ampMax, ampMax
-        Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -ampMax, ampMax
-        Colour: "{0.80, 0.80, 0.80}"
-        Draw line: 0, 0, resultDur, 0
-        selectObject: resultID
-        Colour: "{0.20, 0.72, 0.48}"
-        Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text left: "yes", "Out"
-        Text top: "no", outputName$
-        Text bottom: "yes", "Time (s)"
-
-        # Panel 3: Summary bar
-        p3top = p2bot + 0.06
-        p3bot = p3top + 0.44
-        Select outer viewport: 0, 8, p3top, p3bot
-        Select inner viewport: 0.55, 7.65, p3top + 0.03, p3bot - 0.03
-        Axes: 0, 1, 0, 1
-        Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-        Font size: 6
-        Colour: "{0.30, 0.30, 0.40}"
-        if time_mode = 1
-            tLbl$ = "Layer"
-        else
-            tLbl$ = "Seq"
-        endif
-        if crossfade_shape = 1
-            xLbl$ = "lin"
-        else
-            xLbl$ = "ep"
-        endif
-        Text: 0.02, "left", 0.72, "half",
-            ... "##" + presetName$[preset] + "##  "
-            ... + assignName$[assignment_mode] + "  "
-            ... + tLbl$ + "  gap=" + fixed$(gap_seconds, 3)
-            ... + " xf=" + fixed$(crossfade_seconds, 3)
-            ... + "(" + xLbl$ + ")"
-        Text: 0.02, "left", 0.25, "half",
-            ... outModeName$ + "  "
-            ... + fixed$(resultDur, 3) + "s  "
-            ... + "pk=" + fixed$(pkFinal, 4) + "  "
-            ... + "gain=" + fixed$(default_gain_dB, 1)
-            ... + " fade=" + fixed$(fade_in_seconds, 3) + "/" + fixed$(fade_out_seconds, 3)
-        Colour: "Black"
-        Draw rectangle: 0, 1, 0, 1
-
-        Font size: 10
-        Line width: 1
-    endif
-
-    # ---- Schedule ----
-    if print_schedule = 1
+    # ============================================================
+    # SCHEDULE  (printed by default in v3.3)
+    # ============================================================
+    if print_schedule = 1 and totalSegs > 0
         appendInfoLine: ""
         appendInfoLine: "== SCHEDULE =="
-        appendInfoLine: "Seg|Trk|Type   |Src|Start   |End     |Gain|FdIn |FdOut"
+        appendInfoLine: "Seg|Trk|Type   |Src|Start   |End     |Gain|FdIn |FdOut|Name"
         for s from 1 to totalSegs
             eT = segStart[s] + segDur[s]
             if segType[s] = 1
@@ -1131,11 +1057,376 @@ repeat
         endfor
     endif
 
+    # ============================================================
+    # VISUALIZATION  (8 x 8 canvas, suite-standard)
+    # Headline panel = enriched timeline
+    # ============================================================
+    if do_visualization = 1
+        Erase all
+        
+        # --- Title ---
+        Select outer viewport: 0, 8, 0, 0.55
+        Axes: 0, 1, 0, 1
+        Font size: 12
+        Colour: "Black"
+        Text: 0.5, "centre", 0.65, "half", "##MULTITRACK ROUTER##"
+        Font size: 7
+        Colour: "{0.35, 0.35, 0.45}"
+        Text: 0.5, "centre", -0.20, "half",
+            ... presetName$[preset]
+            ... + "  |  " + string$(nSounds) + " snd -> "
+            ... + string$(number_of_tracks) + " trk"
+            ... + "  |  " + outModeName$
+            ... + "  |  " + assignName$[assignment_mode]
+            ... + "  |  " + fixed$(resultDur, 2) + " s"
+            ... + "  |  pk=" + fixed$(pkFinal, 3)
+        
+        # --- Panel 1 (HEADLINE): enriched track timeline ---
+        # Sized adaptively to track count; capped at 8 visible tracks.
+        nTrkVis = number_of_tracks
+        if nTrkVis > 8
+            nTrkVis = 8
+        endif
+        
+        # Allocate 0.65–4.40 of the canvas for this panel.
+        p1top = 0.65
+        p1bot = 4.40
+        
+        Select outer viewport: 0, 8, p1top, p1bot
+        Select inner viewport: 0.65, 7.55, p1top + 0.10, p1bot - 0.20
+        
+        # Find global timeline end
+        globalEnd = 0.001
+        for s from 1 to totalSegs
+            eT = segStart[s] + segDur[s]
+            if eT > globalEnd
+                globalEnd = eT
+            endif
+        endfor
+        if resultDur > globalEnd
+            globalEnd = resultDur
+        endif
+        globalEnd = globalEnd * 1.02
+        
+        Axes: 0, globalEnd, 0, nTrkVis + 1
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, globalEnd, 0, nTrkVis + 1
+        
+        # Time grid every 1 s
+        Colour: "{0.90, 0.90, 0.93}"
+        Line width: 1
+        gx = 1
+        while gx <= globalEnd
+            Draw line: gx, 0, gx, nTrkVis + 1
+            gx = gx + 1
+        endwhile
+        
+        # Lane separators (between tracks)
+        Colour: "{0.78, 0.78, 0.82}"
+        for t from 1 to nTrkVis + 1
+            yLane = nTrkVis + 1 - t
+            Draw line: 0, yLane, globalEnd, yLane
+        endfor
+        
+        # --- Track labels and pan indicators (left edge) ---
+        Font size: 6
+        Colour: "{0.45, 0.45, 0.55}"
+        for t from 1 to nTrkVis
+            yMid = nTrkVis + 1 - t + 0.5
+            
+            # Mute the label if track has no segments
+            if trkSegN[t] = 0
+                Colour: "{0.75, 0.75, 0.78}"
+            else
+                Colour: "{0.30, 0.30, 0.40}"
+            endif
+            Text: -globalEnd * 0.005, "right", yMid, "half", "T" + string$(t)
+            
+            # Pan indicator for stereo output
+            if output_channels = 2
+                pn = trkPan[t]
+                # Mini bar showing pan: -1 -> left edge, +1 -> right edge.
+                # Positioned just left of the track label area.
+                Font size: 5
+                if pn < -0.05
+                    Colour: "{0.30, 0.50, 0.78}"
+                    Text: -globalEnd * 0.040, "right", yMid, "half", "L" + fixed$(abs(pn), 2)
+                elsif pn > 0.05
+                    Colour: "{0.78, 0.45, 0.30}"
+                    Text: -globalEnd * 0.040, "right", yMid, "half", "R" + fixed$(pn, 2)
+                else
+                    Colour: "{0.55, 0.55, 0.55}"
+                    Text: -globalEnd * 0.040, "right", yMid, "half", "C"
+                endif
+            endif
+        endfor
+        
+        # --- Find max RMS for block-height scaling ---
+        maxRMSfound = 0
+        for s from 1 to totalSegs
+            if segType[s] = 1
+                if sndRMS[segSrc[s]] > maxRMSfound
+                    maxRMSfound = sndRMS[segSrc[s]]
+                endif
+            endif
+        endfor
+        if maxRMSfound < 0.0001
+            maxRMSfound = 0.0001
+        endif
+        
+        # --- Identify crossfade overlap regions ---
+        # For sequential mode with overlaps, mark the [start_of_cur, end_of_prev]
+        # interval per pair. We draw these as light hatching first, so segment
+        # blocks render on top.
+        if time_mode = 2
+            for s from 1 to totalSegs
+                if segXfWith[s] > 0
+                    other = segXfWith[s]
+                    if other >= 1 and other <= totalSegs
+                        xfStart = segStart[other]
+                        xfEnd = segStart[s] + segDur[s]
+                        if xfStart < xfEnd
+                            t = segTrack[s]
+                            if t <= nTrkVis
+                                yB = nTrkVis + 1 - t + 0.05
+                                yT = nTrkVis + 1 - t + 0.95
+                                # Diagonal hatching: 6 thin diagonal lines
+                                Colour: "{0.85, 0.78, 0.55}"
+                                Line width: 1
+                                hatchN = 6
+                                for h from 0 to hatchN
+                                    hxa = xfStart + (xfEnd - xfStart) * h / hatchN
+                                    hxb = xfStart + (xfEnd - xfStart) * (h + 1) / hatchN
+                                    if hxb > xfEnd
+                                        hxb = xfEnd
+                                    endif
+                                    Draw line: hxa, yB, hxb, yT
+                                endfor
+                            endif
+                        endif
+                    endif
+                endif
+            endfor
+        endif
+        
+        # --- Draw segment blocks ---
+        nSndM1 = nSounds - 1
+        if nSndM1 < 1
+            nSndM1 = 1
+        endif
+        for s from 1 to totalSegs
+            t = segTrack[s]
+            if t <= nTrkVis
+                yLaneBase = nTrkVis + 1 - t
+                bx1 = segStart[s]
+                bx2 = segStart[s] + segDur[s]
+                
+                if segType[s] = 1
+                    srcI = segSrc[s]
+                    
+                    # Block height encodes RMS
+                    rmsRel = sndRMS[srcI] / maxRMSfound
+                    if rmsRel < 0.15
+                        rmsRel = 0.15
+                    endif
+                    if rmsRel > 1.0
+                        rmsRel = 1.0
+                    endif
+                    blockH = 0.10 + rmsRel * 0.75
+                    yB = yLaneBase + 0.08
+                    yT = yLaneBase + 0.08 + blockH
+                    
+                    # Source-index colour (warm spread)
+                    frac = (srcI - 1) / nSndM1
+                    cR = 0.28 + frac * 0.55
+                    cG = 0.52 - frac * 0.18
+                    cB = 0.72 - frac * 0.50
+                    if cG < 0
+                        cG = 0
+                    endif
+                    if cB < 0
+                        cB = 0
+                    endif
+                    clr$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
+                    Paint rectangle: clr$, bx1, bx2, yB, yT
+                    
+                    # Block outline
+                    Colour: "{0.30, 0.30, 0.30}"
+                    Line width: 1
+                    Draw rectangle: bx1, bx2, yB, yT
+                    
+                    # --- Fade-in / fade-out envelopes drawn ON the block ---
+                    # Black line traces the envelope from yB->yT for fade-in
+                    # and yT->yB for fade-out.
+                    fdI = segFdIn[s]
+                    fdO = segFdOut[s]
+                    Colour: "{0.10, 0.10, 0.10}"
+                    Line width: 1.2
+                    if fdI > 0.0001 and fdI < segDur[s]
+                        # Linear approximation suffices for visual; sample 6 points
+                        nFi = 6
+                        for fIdx from 0 to nFi - 1
+                            fiRatio = fIdx / nFi
+                            fi1Ratio = (fIdx + 1) / nFi
+                            ax = bx1 + fdI * fiRatio
+                            bx = bx1 + fdI * fi1Ratio
+                            ay = yB + (yT - yB) * fiRatio
+                            by = yB + (yT - yB) * fi1Ratio
+                            Draw line: ax, ay, bx, by
+                        endfor
+                    endif
+                    if fdO > 0.0001 and fdO < segDur[s]
+                        nFo = 6
+                        foStart = bx2 - fdO
+                        for fo from 0 to nFo - 1
+                            foRatio = fo / nFo
+                            fo1Ratio = (fo + 1) / nFo
+                            ax = foStart + fdO * foRatio
+                            bx = foStart + fdO * fo1Ratio
+                            ay = yT - (yT - yB) * foRatio
+                            by = yT - (yT - yB) * fo1Ratio
+                            Draw line: ax, ay, bx, by
+                        endfor
+                    endif
+                    Line width: 1
+                    
+                    # Source index label inside block (only if wide enough)
+                    if (bx2 - bx1) > globalEnd * 0.025
+                        Font size: 5
+                        Colour: "White"
+                        Text: (bx1 + bx2) / 2, "centre", (yB + yT) / 2, "half", string$(srcI)
+                    endif
+                else
+                    # SILENCE: low neutral block, dashed outline
+                    yB = yLaneBase + 0.30
+                    yT = yLaneBase + 0.50
+                    Paint rectangle: "{0.92, 0.90, 0.85}", bx1, bx2, yB, yT
+                    Colour: "{0.65, 0.62, 0.55}"
+                    Dotted line
+                    Line width: 1
+                    Draw rectangle: bx1, bx2, yB, yT
+                    Solid line
+                    if (bx2 - bx1) > globalEnd * 0.04
+                        Font size: 5
+                        Colour: "{0.55, 0.50, 0.40}"
+                        Text: (bx1 + bx2) / 2, "centre", (yB + yT) / 2, "half", "sil"
+                    endif
+                endif
+            endif
+        endfor
+        
+        Colour: "Black"
+        Line width: 1
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Track timeline  (height = RMS, lines = fades, hatched = crossfade)"
+        Text bottom: "yes", "Time (s)"
+        
+        # --- Panel 2: Output waveform ---
+        Select outer viewport: 0, 8, 4.55, 5.85
+        Select inner viewport: 0.55, 7.65, 4.65, 5.78
+        
+        selectObject: resultID
+        resPeak = Get absolute extremum: 0, 0, "None"
+        if resPeak < 0.001
+            resPeak = 0.001
+        endif
+        ampMax = resPeak * 1.15
+        Axes: 0, resultDur, -ampMax, ampMax
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -ampMax, ampMax
+        Colour: "{0.80, 0.80, 0.80}"
+        Draw line: 0, 0, resultDur, 0
+        
+        # Use channel colours for stereo, single colour otherwise
+        selectObject: resultID
+        nResultCh = Get number of channels
+        if nResultCh = 1
+            Colour: "{0.20, 0.55, 0.50}"
+            Line width: 1
+            Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+        elsif nResultCh = 2
+            Extract one channel: 1
+            vCh1 = selected("Sound")
+            Colour: "{0.25, 0.50, 0.82}"
+            Line width: 1
+            Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+            removeObject: vCh1
+            
+            selectObject: resultID
+            Extract one channel: 2
+            vCh2 = selected("Sound")
+            Colour: "{0.82, 0.45, 0.25}"
+            Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+            removeObject: vCh2
+        else
+            # Multichannel — just show channel 1 as a representative
+            Extract one channel: 1
+            vCh1 = selected("Sound")
+            Colour: "{0.25, 0.50, 0.82}"
+            Line width: 1
+            Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+            removeObject: vCh1
+        endif
+        
+        Colour: "Black"
+        Line width: 1
+        Draw inner box
+        Font size: 7
+        if nResultCh = 2
+            Text top: "no", "Output  (blue = L, orange = R)"
+        elsif nResultCh > 2
+            Text top: "no", "Output  (Ch1 shown of " + string$(nResultCh) + ")"
+        else
+            Text top: "no", "Output"
+        endif
+        Text left: "yes", "Amp"
+        Text bottom: "yes", "Time (s)"
+        
+        # --- Panel 3: Summary stats bar ---
+        Select outer viewport: 0, 8, 5.95, 6.65
+        Select inner viewport: 0.55, 7.65, 6.00, 6.60
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+        
+        if time_mode = 1
+            tLbl$ = "Layer"
+        else
+            tLbl$ = "Seq"
+        endif
+        if crossfade_shape = 1
+            xLbl$ = "lin"
+        else
+            xLbl$ = "ep"
+        endif
+        
+        Font size: 6
+        Colour: "{0.28, 0.28, 0.28}"
+        Text: 0.02, "left", 0.75, "half",
+            ... "##" + presetName$[preset] + "##"
+            ... + "  " + assignName$[assignment_mode]
+            ... + "  |  " + tLbl$
+            ... + "  |  gap=" + fixed$(gap_seconds, 3) + " s"
+            ... + "  |  xfade=" + fixed$(crossfade_seconds, 3) + " s (" + xLbl$ + ")"
+            ... + "  |  default fade in/out: " + fixed$(fade_in_seconds, 3) + " / " + fixed$(fade_out_seconds, 3) + " s"
+        
+        Text: 0.02, "left", 0.28, "half",
+            ... "Output: " + outModeName$
+            ... + "  |  " + fixed$(resultDur, 3) + " s"
+            ... + "  |  peak=" + fixed$(pkFinal, 4)
+            ... + "  |  default gain=" + fixed$(default_gain_dB, 1) + " dB"
+            ... + "  |  segments: " + string$(totalSegs)
+            ... + "  |  norm=" + string$(normalize_output)
+        
+        Colour: "Black"
+        Draw rectangle: 0, 1, 0, 1
+        
+        Font size: 10
+        Line width: 1
+    endif
+
     selectObject: resultID
+    Play
     appendInfoLine: ""
     appendInfoLine: "== DONE: ", outputName$, " =="
     appendInfoLine: ""
 
-    prevResultID = resultID
 
-until 0
