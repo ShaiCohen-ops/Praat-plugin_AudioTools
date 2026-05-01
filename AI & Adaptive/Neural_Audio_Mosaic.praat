@@ -641,72 +641,132 @@ if normalize_volume
     Scale peak: 0.99
 endif
 
-# ============================================
-# VISUALIZATION
-# ============================================
-
-appendInfoLine: ""
-appendInfoLine: "Creating visualization..."
-
+# ============================================================
+# VISUALIZATION (Creative & Colorful AudioTools Style)
+# ============================================================
 Erase all
 
-# === TITLE ===
-Select outer viewport: 1, 8, 0, 0.5
-Font size: 12
+# Setup base font and styling
+Helvetica
+Line width: 1
+
+# === GLOBAL HEADER ===
+Select outer viewport: 0, 8, 0, 0.6
+Select inner viewport: 0.8, 7.6, 0.1, 0.5
+Axes: 0, 1, 0, 1
+
+# Title and Subtitle
+Font size: 14
 Colour: "Black"
-Text: 0.5, "centre", 0.5, "half", "##Neural Audio Mosaic v0.5## | " + presetName$
-
-# === TARGET WAVEFORM ===
-Select outer viewport: 0, 8, 0.6, 2.0
-Select inner viewport: 0.8, 7.6, 0.8, 1.8
-
-selectObject: id1
+Text: 0.5, "centre", 0.6, "half", "NEURAL AUDIO MOSAIC"
+Font size: 9
 Colour: "{0.5, 0.5, 0.5}"
-Draw: 0, 0, 0, 0, "no", "Curve"
+Text: 0.5, "centre", 0.1, "half", "Concatenative Synthesis Reconstruction Map"
 
-Colour: "Black"
-Draw inner box
-Font size: 7
-Select outer viewport: 0.15, 8, 0.6, 2.0
-Text left: "yes", "Target"
+# Divider Line
+Line width: 2
+Colour: "{0.2, 0.2, 0.2}"
+Draw line: 0, -0.2, 1, -0.2
+Line width: 1
 
-# === SOURCE WAVEFORM ===
-Select outer viewport: 0, 8, 2.1, 3.5
-Select inner viewport: 0.8, 7.6, 2.3, 3.3
+# === PANEL 1: SOURCE WAVEFORM ===
+Select outer viewport: 0, 8, 0.7, 2.0
+Select inner viewport: 0.8, 7.6, 0.7, 1.9
 
 selectObject: id2
-Colour: "{0.6, 0.5, 0.4}"
+# Cool Slate Blue
+Colour: "{0.4, 0.5, 0.6}"
 Draw: 0, 0, 0, 0, "no", "Curve"
 
 Colour: "Black"
 Draw inner box
-Font size: 7
-Select outer viewport: 0.15, 8, 2.1, 3.5
+Font size: 8
+Select outer viewport: 0.15, 8, 0.7, 2.0
 Text left: "yes", "Source"
 
-# === OUTPUT WAVEFORM ===
-Select outer viewport: 0, 8, 3.6, 5.2
-Select inner viewport: 0.8, 7.6, 3.8, 5.0
+# === PANEL 2: CREATIVE GRAIN TRAJECTORY MAP ===
+Select outer viewport: 0, 8, 2.1, 4.5
+Select inner viewport: 0.8, 7.6, 2.1, 4.3
+
+Axes: 0, durTarget, 0, durSource
+Colour: "Black"
+Draw inner box
+Font size: 8
+Text left: "yes", "Source Time"
+Text bottom: "no", "Target Time"
+
+# 1. Draw the "Playhead Trajectory" (connecting lines)
+Colour: "{0.85, 0.85, 0.85}"
+Line width: 1
+for g from 2 to nTarget
+    x1 = tTime#[g-1]
+    y1 = sTime#[matchIdx#[g-1]]
+    x2 = tTime#[g]
+    y2 = sTime#[matchIdx#[g]]
+    Draw line: x1, y1, x2, y2
+endfor
+
+# 2. Draw mapping dots with dynamic color gradient
+for g from 1 to nTarget
+    x_pos = tTime#[g] 
+    src_idx = matchIdx#[g]
+    y_pos = sTime#[src_idx] 
+    
+    # Color morphs dynamically from Magenta (start) to Cyan (end)
+    pos_ratio = y_pos / durSource
+    cR = 0.8 - (0.7 * pos_ratio)
+    cG = 0.2 + (0.6 * pos_ratio)
+    cB = 0.6 + (0.3 * pos_ratio)
+    
+    color$ = "{" + fixed$(cR, 3) + "," + fixed$(cG, 3) + "," + fixed$(cB, 3) + "}"
+    
+    # Outer colored glow
+    Paint circle (mm): color$, x_pos, y_pos, 1.6
+    # Inner white core
+    Paint circle (mm): "White", x_pos, y_pos, 0.5
+endfor
+
+# === PANEL 3: MOSAIC OUTPUT WAVEFORM ===
+Select outer viewport: 0, 8, 4.6, 6.0
+Select inner viewport: 0.8, 7.6, 4.6, 5.9
 
 selectObject: finalOut
-Colour: "{0.3, 0.6, 0.5}"
+# Vibrant Teal
+Colour: "{0.1, 0.7, 0.6}"
 Draw: 0, 0, 0, 0, "no", "Curve"
 
 Colour: "Black"
 Draw inner box
-Font size: 7
-Select outer viewport: 0.15, 8, 3.6, 5.2
+Font size: 8
+Select outer viewport: 0.15, 8, 4.6, 6.0
 Text left: "yes", "Mosaic"
 Text bottom: "yes", "Time (s)"
 
-# === INFO ===
-Select outer viewport: 0, 8, 5.3, 5.8
-Font size: 6
-Colour: "{0.4, 0.4, 0.4}"
-Text: 0.5, "centre", 0.5, "half", "Grain: " + string$(grain_size_ms) + "ms | Overlap: " + fixed$(overlap_ratio * 100, 0) + "% | Weights - Pitch: " + fixed$(pitch_weight, 1) + " Spectral: " + fixed$(spectral_weight, 1) + " Energy: " + fixed$(energy_weight, 1)
+# === PANEL 4: STYLIZED DARK-MODE STATS BAR ===
+Select outer viewport: 0, 8, 6.3, 6.8
+Select inner viewport: 0.8, 7.6, 6.3, 6.7
 
+Axes: 0, 1, 0, 1
+# Dark slate background
+Paint rectangle: "{0.15, 0.15, 0.18}", 0, 1, 0, 1
+Colour: "Black"
+Draw rectangle: 0, 1, 0, 1
+
+Font size: 8
+Colour: "{0.9, 0.9, 0.9}"
+Text: 0.02, "left", 0.5, "half", "GRAIN: " + string$(grain_size_ms) + "ms   |   OVERLAP: " + fixed$(overlap_ratio * 100, 0) + "%"
+
+# Colored weights info
+Colour: "{0.5, 0.8, 0.9}"
+Text: 0.50, "centre", 0.5, "half", "Weights [ Pitch: " + fixed$(pitch_weight, 1) + " | Spectral: " + fixed$(spectral_weight, 1) + " ]"
+
+Colour: "{0.9, 0.9, 0.9}"
+Text: 0.98, "right", 0.5, "half", "GRAINS MAPPED: " + string$(nTarget)
+
+# Reset for safety
 Font size: 10
 Colour: "Black"
+Line width: 1
 
 # ============================================
 # CLEANUP
