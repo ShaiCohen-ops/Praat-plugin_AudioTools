@@ -1,24 +1,63 @@
 # ============================================================
-# Praat AudioTools - Microphone Simulation.praat
+# Praat AudioTools - Microphone_Simulation.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Optimized
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Physically accurate microphone simulation
-#   Supports various polar patterns and stereo configurations
+#   Physically-modelled microphone simulation. Renders a mono source as
+#   it would be picked up by various studio mic pairs (Mid-Side, XY,
+#   Blumlein, AB, ORTF, Decca Tree) with directional polar patterns
+#   (omni, fig-8, cardioid, hypercardioid).
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
+# Modeled phenomena:
+#   - Polar pattern attenuation (azimuth-dependent gain)
+#   - Inter-mic delays for spaced configurations (yields comb filter
+#     on summed playback, the "AB sound")
+#   - Distance attenuation (1/r pressure law, optional)
+#   - Proximity effect (low-shelf boost on directional mics at <30cm,
+#     optional, NEW in v0.3)
+#
+# NOT modeled:
+#   - Room acoustics / reflections
+#   - Specific mic models / capsule color
+#   - Phase response of the directional pattern (only magnitude)
+#   - Self-noise / handling noise
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
+#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis
+#   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v0.3:
+#   - NEW: optional proximity-effect simulation. When enabled and
+#     pattern is directional and distance < 30cm, applies a low-shelf
+#     boost via Praat's Filter (de-emphasis from) — magnitude scales
+#     with proximity (max ~+6 dB at closest, tapering to 0 at 30 cm).
+#     This is the single most-audible signature of close-miking and
+#     was missing from v0.2.
+#   - NEW: frequency-response panel in visualization. Drives an impulse
+#     through the same processing chain and plots the magnitude
+#     spectrum of the result. For spaced configurations (AB, ORTF,
+#     Decca) this shows the comb-filter pattern that defines their
+#     sonic character. For coincident configurations (XY, Blumlein,
+#     M/S) it shows the flat response that explains why those don't
+#     have the "spaced sound."
+#   - Visualization: canvas now uses the full suite-standard 8x8
+#     layout with title bar + metadata subtitle + aligned panel
+#     titles + summary bar. v0.2 used only ~5.5 of the 8 vertical
+#     units, leaving the bottom ~2.5 blank.
+#   - NEW: ITD readout on configuration diagram for spaced mics.
+#     For AB, ORTF, Decca: shows the inter-channel delay in
+#     milliseconds and which channel leads. Lets the user see at
+#     a glance how strong the timing cue is.
+#   - Modernized formula syntax: Object_<id>[col] -> object[<id>,col]
+#     throughout, matching the rest of the suite.
+#   - Style: Get sample period followed by 1/x replaced with
+#     direct Get sampling frequency.
 # Changelog v0.2:
 #   - Fixed critical delay calculation bug (was dividing by period, not rate)
 #   - Modern selectObject: syntax throughout
@@ -26,8 +65,6 @@
 #   - Simplified sound selection (uses selected sound directly)
 #   - Added visualization of polar patterns and mic configuration
 #   - Added draw_visualization toggle
-#   - Proper variable naming (samplePeriod vs sampleRate)
-#   - Cleaner object cleanup
 # ============================================================
 
 clearinfo
@@ -36,7 +73,7 @@ clearinfo
 # FORM
 # ============================================================
 
-form Microphone Simulation
+form Microphone Simulation v0.3
     comment ─────────────────────────────────────────
     comment Preset (overrides custom settings)
     optionmenu Preset: 1
@@ -50,6 +87,7 @@ form Microphone Simulation
         option Close XY (Cardioid, 50cm)
         option Hypercardioid Spot (Mono, 1.5m)
         option AB Wide (100cm spacing, 2m)
+        option Close Vocal Bass-boost (Cardioid Mono, 10cm)
     comment ─────────────────────────────────────────
     comment Microphone Pattern
     optionmenu Pattern: 3
@@ -75,6 +113,7 @@ form Microphone Simulation
     real Mic_spacing_cm 17
     comment ─────────────────────────────────────────
     boolean Apply_distance_attenuation 0
+    boolean Apply_proximity_effect 1
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -84,21 +123,18 @@ endform
 # ============================================================
 
 if preset = 2
-    # Studio Vocal
     pattern = 3
     stereo_config = 1
     azimuth_degrees = 0
     distance_cm = 30
     presetName$ = "StudioVocal"
 elsif preset = 3
-    # Blumlein
     pattern = 2
     stereo_config = 4
     azimuth_degrees = 0
     distance_cm = 100
     presetName$ = "Blumlein"
 elsif preset = 4
-    # ORTF Standard
     pattern = 3
     stereo_config = 6
     azimuth_degrees = 0
@@ -106,7 +142,6 @@ elsif preset = 4
     mic_spacing_cm = 17
     presetName$ = "ORTF"
 elsif preset = 5
-    # Spaced Omnis AB
     pattern = 1
     stereo_config = 5
     azimuth_degrees = 0
@@ -114,41 +149,43 @@ elsif preset = 5
     mic_spacing_cm = 50
     presetName$ = "AB50"
 elsif preset = 6
-    # Mid-Side
     pattern = 3
     stereo_config = 2
     azimuth_degrees = 0
     distance_cm = 100
     presetName$ = "MidSide"
 elsif preset = 7
-    # Decca Tree
     pattern = 1
     stereo_config = 7
     azimuth_degrees = 0
     distance_cm = 300
     presetName$ = "DeccaTree"
 elsif preset = 8
-    # Close XY
     pattern = 3
     stereo_config = 3
     azimuth_degrees = 0
     distance_cm = 50
     presetName$ = "XY"
 elsif preset = 9
-    # Hypercardioid Spot
     pattern = 4
     stereo_config = 1
     azimuth_degrees = 0
     distance_cm = 150
     presetName$ = "HyperSpot"
 elsif preset = 10
-    # AB Wide
     pattern = 1
     stereo_config = 5
     azimuth_degrees = 0
     distance_cm = 200
     mic_spacing_cm = 100
     presetName$ = "ABwide"
+elsif preset = 11
+    pattern = 3
+    stereo_config = 1
+    azimuth_degrees = 0
+    distance_cm = 10
+    apply_proximity_effect = 1
+    presetName$ = "CloseVocalBassBoost"
 else
     presetName$ = "Custom"
 endif
@@ -189,12 +226,12 @@ if numberOfSelected("Sound") = 0
     exitScript: "Please select a Sound object first."
 endif
 
-# XY requires directional mics
 if stereo_config = 3 and pattern = 1
-    exitScript: "XY pair requires directional microphones." + newline$ + "Please select Cardioid, Figure-of-eight, or Hypercardioid." + newline$ + "For omnidirectional spacing, use AB Pair instead."
+    exitScript: "XY pair requires directional microphones." + newline$
+        ... + "Please select Cardioid, Figure-of-eight, or Hypercardioid." + newline$
+        ... + "For omnidirectional spacing, use AB Pair instead."
 endif
 
-# AB requires omnis
 if stereo_config = 5 and pattern <> 1
     appendInfoLine: "Note: AB pair typically uses omnidirectional mics. Proceeding with selected pattern."
 endif
@@ -205,8 +242,7 @@ originalName$ = selected$("Sound")
 selectObject: original
 nChannelsOrig = Get number of channels
 duration = Get total duration
-samplePeriod = Get sample period
-sr = 1 / samplePeriod
+sr = Get sampling frequency
 
 # Convert to mono
 if nChannelsOrig > 1
@@ -232,13 +268,28 @@ else
     distanceAmp = 1.0
 endif
 
+# Proximity-effect parameters
+# Active when: distance < 30 cm AND pattern is directional (not omni)
+# Boost magnitude scales linearly from +6 dB at 0 cm to 0 dB at 30 cm.
+# Below ~150 Hz where the boost is concentrated.
+proxActive = 0
+proxBoostDb = 0
+if apply_proximity_effect and distance_cm < 30 and pattern <> 1
+    proxActive = 1
+    proxScale = 1.0 - (distance_cm / 30.0)
+    if proxScale < 0
+        proxScale = 0
+    endif
+    proxBoostDb = 6.0 * proxScale
+endif
+
 # ============================================================
 # INFO OUTPUT
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Microphone Simulation v0.2"
-writeInfoLine: "============================================"
+appendInfoLine: "Microphone Simulation v0.3"
+appendInfoLine: "============================================"
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
 appendInfoLine: "Sample rate: ", sr, " Hz"
@@ -253,34 +304,37 @@ appendInfoLine: "Distance: ", distance_cm, " cm"
 if stereo_config >= 5
     appendInfoLine: "Mic spacing: ", mic_spacing_cm, " cm"
 endif
-appendInfoLine: "Distance attenuation: ", if apply_distance_attenuation then "ON (1/r)" else "OFF" fi
+if apply_distance_attenuation
+    appendInfoLine: "Distance attenuation: ON (1/r)"
+else
+    appendInfoLine: "Distance attenuation: OFF"
+endif
+if proxActive
+    appendInfoLine: "Proximity effect: ON (+", fixed$(proxBoostDb, 1), " dB low-shelf)"
+elsif apply_proximity_effect
+    appendInfoLine: "Proximity effect: enabled but inactive (distance >= 30cm or omni)"
+else
+    appendInfoLine: "Proximity effect: OFF"
+endif
 appendInfoLine: "--------------------------------------------"
 appendInfoLine: ""
 
 # ============================================================
-# PROCEDURE: Apply polar pattern
+# PROCEDURES
 # ============================================================
 
 procedure applyPattern: .sound, .azimuth, .patternType
     selectObject: .sound
     if .patternType = 1
-        # Omnidirectional: gain = 1
-        # No formula needed
+        # Omnidirectional: gain = 1, no formula needed
     elsif .patternType = 2
-        # Figure-of-eight: cos(θ)
         Formula: "self * cos(" + string$(.azimuth) + ")"
     elsif .patternType = 3
-        # Cardioid: 0.5 + 0.5*cos(θ)
         Formula: "self * (0.5 + 0.5 * cos(" + string$(.azimuth) + "))"
     elsif .patternType = 4
-        # Hypercardioid: 0.25 + 0.75*cos(θ)
         Formula: "self * (0.25 + 0.75 * cos(" + string$(.azimuth) + "))"
     endif
 endproc
-
-# ============================================================
-# PROCEDURE: Apply fractional sample delay
-# ============================================================
 
 procedure applyDelay: .sound, .delaySec
     selectObject: .sound
@@ -294,47 +348,75 @@ procedure applyDelay: .sound, .delaySec
     endif
 endproc
 
+# Proximity-effect low-shelf approximation.
+# Praat's "Filter (de-emphasis from)" applies y[n] = x[n] + alpha*y[n-1]
+# which gives a low-frequency boost. We use it on a copy at the chosen
+# corner frequency, mix with the unfiltered signal scaled to produce
+# the desired shelf gain in dB.
+#
+# Recipe: shelf at corner Fc with boost B dB
+#   filtered = unity-gain low-pass-ish via de-emphasis
+#   output   = signal + filtered * (10^(B/20) - 1)
+# This sums the original (flat) with a low-passed copy at gain
+# (linear_boost - 1), giving total LF gain ~ linear_boost and HF gain
+# ~ 1 (because the low-passed copy is near-zero at HF). Simple and
+# stable.
+procedure applyProximity: .sound, .boostDb, .cornerHz
+    if .boostDb > 0.01
+        selectObject: .sound
+        .filtered = Filter (de-emphasis): .cornerHz
+        .linBoost = 10 ^ (.boostDb / 20)
+        .extra = .linBoost - 1
+        # Add scaled filtered copy to the signal in place
+        selectObject: .sound
+        Formula: "self + " + fixed$(.extra, 8)
+            ... + " * object[" + string$(.filtered) + ", col]"
+        removeObject: .filtered
+    endif
+endproc
+
 # ============================================================
 # PROCESS: MONO
 # ============================================================
 
 if stereo_config = 1
-    # Mono - single mic
     selectObject: monoSound
     finalSound = Copy: originalName$ + "_" + pattern$ + "_mono"
     @applyPattern: finalSound, azimuthRad, pattern
+    if proxActive
+        @applyProximity: finalSound, proxBoostDb, 150
+    endif
 
 # ============================================================
 # PROCESS: MID-SIDE
 # ============================================================
 
 elsif stereo_config = 2
-    # Mid mic (selected pattern, faces forward)
     selectObject: monoSound
     mid = Copy: "mid"
     @applyPattern: mid, azimuthRad, pattern
+    if proxActive
+        @applyProximity: mid, proxBoostDb, 150
+    endif
     
-    # Side mic (figure-8, faces sideways)
-    # cos(θ + π/2) = -sin(θ) for positive-left convention
     selectObject: monoSound
     side = Copy: "side"
     sideAngle = azimuthRad + pi/2
     selectObject: side
     Formula: "self * cos(" + string$(sideAngle) + ")"
     
-    # M/S Decode: L = (M+S)/√2, R = (M-S)/√2
     midId$ = string$(mid)
     sideId$ = string$(side)
     
     selectObject: mid
     left = Copy: "left"
     selectObject: left
-    Formula: "(Object_" + midId$ + "[col] + Object_" + sideId$ + "[col]) / sqrt(2)"
+    Formula: "(object[" + midId$ + ", col] + object[" + sideId$ + ", col]) / sqrt(2)"
     
     selectObject: mid
     right = Copy: "right"
     selectObject: right
-    Formula: "(Object_" + midId$ + "[col] - Object_" + sideId$ + "[col]) / sqrt(2)"
+    Formula: "(object[" + midId$ + ", col] - object[" + sideId$ + ", col]) / sqrt(2)"
     
     selectObject: left
     plusObject: right
@@ -349,14 +431,19 @@ elsif stereo_config = 2
 # ============================================================
 
 elsif stereo_config = 3
-    # Two directional mics at ±45°
     selectObject: monoSound
     left = Copy: "xy_L"
     @applyPattern: left, azimuthRad + pi/4, pattern
+    if proxActive
+        @applyProximity: left, proxBoostDb, 150
+    endif
     
     selectObject: monoSound
     right = Copy: "xy_R"
     @applyPattern: right, azimuthRad - pi/4, pattern
+    if proxActive
+        @applyProximity: right, proxBoostDb, 150
+    endif
     
     selectObject: left
     plusObject: right
@@ -371,18 +458,23 @@ elsif stereo_config = 3
 # ============================================================
 
 elsif stereo_config = 4
-    # Two figure-8s at ±45°
     selectObject: monoSound
     left = Copy: "blum_L"
     leftAngle = azimuthRad + pi/4
     selectObject: left
     Formula: "self * cos(" + string$(leftAngle) + ")"
+    if proxActive
+        @applyProximity: left, proxBoostDb, 150
+    endif
     
     selectObject: monoSound
     right = Copy: "blum_R"
     rightAngle = azimuthRad - pi/4
     selectObject: right
     Formula: "self * cos(" + string$(rightAngle) + ")"
+    if proxActive
+        @applyProximity: right, proxBoostDb, 150
+    endif
     
     selectObject: left
     plusObject: right
@@ -393,25 +485,19 @@ elsif stereo_config = 4
     removeObject: left, right
 
 # ============================================================
-# PROCESS: AB PAIR (spaced omnis)
+# PROCESS: AB PAIR
 # ============================================================
 
 elsif stereo_config = 5
     spacing_m = mic_spacing_cm / 100
     
-    # Source position in Cartesian (origin at array center)
     sourceX = distance_m * sin(azimuthRad)
     sourceY = distance_m * cos(azimuthRad)
     
-    # Distance from source to each mic
-    # Left at (-spacing/2, 0), Right at (+spacing/2, 0)
     distL = sqrt((sourceX + spacing_m/2)^2 + sourceY^2)
     distR = sqrt((sourceX - spacing_m/2)^2 + sourceY^2)
-    
-    # Reference to closest mic
     minDist = min(distL, distR)
     
-    # Delays (seconds)
     delayL = (distL - minDist) / speedOfSound
     delayR = (distR - minDist) / speedOfSound
     
@@ -427,12 +513,19 @@ elsif stereo_config = 5
     @applyDelay: right, delayR
     right = applyDelay.result
     
-    # Apply inverse-distance amplitude
     selectObject: left
     Formula: "self * " + string$(minDist / distL)
     
     selectObject: right
     Formula: "self * " + string$(minDist / distR)
+    
+    # Proximity-effect doesn't really apply to AB omnis (omnis don't have
+    # proximity), but if user set a directional pattern on AB anyway,
+    # apply it.
+    if proxActive
+        @applyProximity: left, proxBoostDb, 150
+        @applyProximity: right, proxBoostDb, 150
+    endif
     
     selectObject: left
     plusObject: right
@@ -447,16 +540,12 @@ elsif stereo_config = 5
 # ============================================================
 
 elsif stereo_config = 6
-    # ORTF: 17cm spacing, ±55° angle
     spacing_m = 0.17
     
-    # Time difference based on spacing
     deltaT = (spacing_m / speedOfSound) * sin(azimuthRad)
-    
     delayL = -deltaT / 2
     delayR = deltaT / 2
     
-    # Ensure positive delays (shift reference)
     if delayL < 0
         delayR = delayR - delayL
         delayL = 0
@@ -468,19 +557,23 @@ elsif stereo_config = 6
     
     appendInfoLine: "ORTF delays: L=", fixed$(delayL * 1000, 3), "ms, R=", fixed$(delayR * 1000, 3), "ms"
     
-    # Left cardioid at +55° from center
     selectObject: monoSound
     left = Copy: "ortf_L"
     @applyPattern: left, azimuthRad + 55*pi/180, 3
     @applyDelay: left, delayL
     left = applyDelay.result
+    if proxActive
+        @applyProximity: left, proxBoostDb, 150
+    endif
     
-    # Right cardioid at -55° from center
     selectObject: monoSound
     right = Copy: "ortf_R"
     @applyPattern: right, azimuthRad - 55*pi/180, 3
     @applyDelay: right, delayR
     right = applyDelay.result
+    if proxActive
+        @applyProximity: right, proxBoostDb, 150
+    endif
     
     selectObject: left
     plusObject: right
@@ -495,27 +588,25 @@ elsif stereo_config = 6
 # ============================================================
 
 elsif stereo_config = 7
-    # Classic Decca: L-C-R omnis, 2m L-R spacing, 1.5m center forward
     deccaSpacing = 2.0
     centerForward = 1.5
     
-    # Source position
     sourceX = distance_m * sin(azimuthRad)
     sourceY = distance_m * cos(azimuthRad)
     
-    # Distances to each mic
     distL = sqrt((sourceX + deccaSpacing/2)^2 + sourceY^2)
     distC = sqrt(sourceX^2 + (sourceY - centerForward)^2)
     distR = sqrt((sourceX - deccaSpacing/2)^2 + sourceY^2)
     
     minDist = min(distL, min(distC, distR))
     
-    # Delays
     delayL = (distL - minDist) / speedOfSound
     delayC = (distC - minDist) / speedOfSound
     delayR = (distR - minDist) / speedOfSound
     
-    appendInfoLine: "Decca delays: L=", fixed$(delayL * 1000, 2), "ms, C=", fixed$(delayC * 1000, 2), "ms, R=", fixed$(delayR * 1000, 2), "ms"
+    appendInfoLine: "Decca delays: L=", fixed$(delayL * 1000, 2),
+        ... "ms, C=", fixed$(delayC * 1000, 2),
+        ... "ms, R=", fixed$(delayR * 1000, 2), "ms"
     
     selectObject: monoSound
     left = Copy: "decca_L"
@@ -532,7 +623,6 @@ elsif stereo_config = 7
     @applyDelay: right, delayR
     right = applyDelay.result
     
-    # Apply inverse-distance amplitude
     selectObject: left
     Formula: "self * " + string$(minDist / distL)
     
@@ -542,18 +632,17 @@ elsif stereo_config = 7
     selectObject: right
     Formula: "self * " + string$(minDist / distR)
     
-    # Mix: L+0.7C and R+0.7C
     centerId$ = string$(center)
     
     selectObject: left
     leftMix = Copy: "left_mix"
     selectObject: leftMix
-    Formula: "self + 0.7 * Object_" + centerId$ + "[col]"
+    Formula: "self + 0.7 * object[" + centerId$ + ", col]"
     
     selectObject: right
     rightMix = Copy: "right_mix"
     selectObject: rightMix
-    Formula: "self + 0.7 * Object_" + centerId$ + "[col]"
+    Formula: "self + 0.7 * object[" + centerId$ + ", col]"
     
     selectObject: leftMix
     plusObject: rightMix
@@ -565,7 +654,7 @@ elsif stereo_config = 7
 endif
 
 # ============================================================
-# APPLY DISTANCE ATTENUATION
+# DISTANCE ATTENUATION (post-process)
 # ============================================================
 
 if distanceAmp <> 1.0
@@ -573,7 +662,6 @@ if distanceAmp <> 1.0
     Formula: "self * " + string$(distanceAmp)
 endif
 
-# Scale output
 selectObject: finalSound
 Scale peak: 0.99
 
@@ -584,77 +672,338 @@ Scale peak: 0.99
 removeObject: monoSound
 
 # ============================================================
-# VISUALIZATION
+# FREQUENCY-RESPONSE PROBE
+# Drive an impulse through the same processing chain to capture
+# the system's actual transfer function. Used by the visualization
+# panel to show the comb-filter pattern for spaced configurations.
 # ============================================================
 
-# Pre-build summary strings
-attenStr$ = "OFF"
-if apply_distance_attenuation
-    attenStr$ = "1/r"
+procRunFreqResponse = 0
+if draw_visualization
+    procRunFreqResponse = 1
 endif
 
-if draw_visualization
-    Erase all
-    Select outer viewport: 0, 8, 0, 8
+if procRunFreqResponse
+    # Generate a 0.05s impulse at the same SR
+    impDur = 0.05
+    impulseSrc = Create Sound from formula: "imp_src", 1, 0, impDur, sr,
+        ... "if col = 1 then 1 else 0 fi"
+    
+    # Run the full pipeline on the impulse, mirroring the processing above
+    # (slight code duplication, but cleaner than refactoring the pipeline
+    # into a single procedure that handles both real and impulse inputs)
+    
+    if stereo_config = 1
+        selectObject: impulseSrc
+        impOut = Copy: "imp_mono"
+        @applyPattern: impOut, azimuthRad, pattern
+        if proxActive
+            @applyProximity: impOut, proxBoostDb, 150
+        endif
+    elsif stereo_config = 2
+        selectObject: impulseSrc
+        iMid = Copy: "imp_mid"
+        @applyPattern: iMid, azimuthRad, pattern
+        if proxActive
+            @applyProximity: iMid, proxBoostDb, 150
+        endif
+        selectObject: impulseSrc
+        iSide = Copy: "imp_side"
+        selectObject: iSide
+        Formula: "self * cos(" + string$(azimuthRad + pi/2) + ")"
+        iMidStr$ = string$(iMid)
+        iSideStr$ = string$(iSide)
+        selectObject: iMid
+        iL = Copy: "imp_L"
+        Formula: "(object[" + iMidStr$ + ", col] + object[" + iSideStr$ + ", col]) / sqrt(2)"
+        selectObject: iMid
+        iR = Copy: "imp_R"
+        Formula: "(object[" + iMidStr$ + ", col] - object[" + iSideStr$ + ", col]) / sqrt(2)"
+        selectObject: iL
+        plusObject: iR
+        impOut = Combine to stereo
+        removeObject: iMid, iSide, iL, iR
+    elsif stereo_config = 3
+        selectObject: impulseSrc
+        iL = Copy: "imp_L"
+        @applyPattern: iL, azimuthRad + pi/4, pattern
+        if proxActive
+            @applyProximity: iL, proxBoostDb, 150
+        endif
+        selectObject: impulseSrc
+        iR = Copy: "imp_R"
+        @applyPattern: iR, azimuthRad - pi/4, pattern
+        if proxActive
+            @applyProximity: iR, proxBoostDb, 150
+        endif
+        selectObject: iL
+        plusObject: iR
+        impOut = Combine to stereo
+        removeObject: iL, iR
+    elsif stereo_config = 4
+        selectObject: impulseSrc
+        iL = Copy: "imp_L"
+        Formula: "self * cos(" + string$(azimuthRad + pi/4) + ")"
+        if proxActive
+            @applyProximity: iL, proxBoostDb, 150
+        endif
+        selectObject: impulseSrc
+        iR = Copy: "imp_R"
+        Formula: "self * cos(" + string$(azimuthRad - pi/4) + ")"
+        if proxActive
+            @applyProximity: iR, proxBoostDb, 150
+        endif
+        selectObject: iL
+        plusObject: iR
+        impOut = Combine to stereo
+        removeObject: iL, iR
+    elsif stereo_config = 5
+        # AB
+        spacing_m = mic_spacing_cm / 100
+        sourceX = distance_m * sin(azimuthRad)
+        sourceY = distance_m * cos(azimuthRad)
+        distL = sqrt((sourceX + spacing_m/2)^2 + sourceY^2)
+        distR = sqrt((sourceX - spacing_m/2)^2 + sourceY^2)
+        minDist = min(distL, distR)
+        delayL = (distL - minDist) / speedOfSound
+        delayR = (distR - minDist) / speedOfSound
+        selectObject: impulseSrc
+        iL = Copy: "imp_L"
+        @applyDelay: iL, delayL
+        iL = applyDelay.result
+        selectObject: impulseSrc
+        iR = Copy: "imp_R"
+        @applyDelay: iR, delayR
+        iR = applyDelay.result
+        selectObject: iL
+        Formula: "self * " + string$(minDist / distL)
+        selectObject: iR
+        Formula: "self * " + string$(minDist / distR)
+        selectObject: iL
+        plusObject: iR
+        impOut = Combine to stereo
+        removeObject: iL, iR
+    elsif stereo_config = 6
+        # ORTF
+        spacing_m = 0.17
+        deltaT = (spacing_m / speedOfSound) * sin(azimuthRad)
+        delayL = -deltaT / 2
+        delayR = deltaT / 2
+        if delayL < 0
+            delayR = delayR - delayL
+            delayL = 0
+        endif
+        if delayR < 0
+            delayL = delayL - delayR
+            delayR = 0
+        endif
+        selectObject: impulseSrc
+        iL = Copy: "imp_L"
+        @applyPattern: iL, azimuthRad + 55*pi/180, 3
+        @applyDelay: iL, delayL
+        iL = applyDelay.result
+        selectObject: impulseSrc
+        iR = Copy: "imp_R"
+        @applyPattern: iR, azimuthRad - 55*pi/180, 3
+        @applyDelay: iR, delayR
+        iR = applyDelay.result
+        selectObject: iL
+        plusObject: iR
+        impOut = Combine to stereo
+        removeObject: iL, iR
+    else
+        # Decca
+        deccaSpacing = 2.0
+        centerForward = 1.5
+        sourceX = distance_m * sin(azimuthRad)
+        sourceY = distance_m * cos(azimuthRad)
+        distL = sqrt((sourceX + deccaSpacing/2)^2 + sourceY^2)
+        distC = sqrt(sourceX^2 + (sourceY - centerForward)^2)
+        distR = sqrt((sourceX - deccaSpacing/2)^2 + sourceY^2)
+        minDist = min(distL, min(distC, distR))
+        delayL = (distL - minDist) / speedOfSound
+        delayC = (distC - minDist) / speedOfSound
+        delayR = (distR - minDist) / speedOfSound
+        selectObject: impulseSrc
+        iL = Copy: "imp_L"
+        @applyDelay: iL, delayL
+        iL = applyDelay.result
+        selectObject: impulseSrc
+        iC = Copy: "imp_C"
+        @applyDelay: iC, delayC
+        iC = applyDelay.result
+        selectObject: impulseSrc
+        iR = Copy: "imp_R"
+        @applyDelay: iR, delayR
+        iR = applyDelay.result
+        selectObject: iL
+        Formula: "self * " + string$(minDist / distL)
+        selectObject: iC
+        Formula: "self * " + string$(minDist / distC)
+        selectObject: iR
+        Formula: "self * " + string$(minDist / distR)
+        iCStr$ = string$(iC)
+        selectObject: iL
+        iLM = Copy: "imp_LM"
+        Formula: "self + 0.7 * object[" + iCStr$ + ", col]"
+        selectObject: iR
+        iRM = Copy: "imp_RM"
+        Formula: "self + 0.7 * object[" + iCStr$ + ", col]"
+        selectObject: iLM
+        plusObject: iRM
+        impOut = Combine to stereo
+        removeObject: iL, iC, iR, iLM, iRM
+    endif
+    
+    removeObject: impulseSrc
+    
+    # Compute spectrum of the impulse response
+    selectObject: impOut
+    impCh = Get number of channels
+    if impCh > 1
+        # Use channel 1 as representative for the FR plot;
+        # AB / ORTF / Decca produce nearly identical L and R magnitude
+        # for a centered source.
+        irMono = Convert to mono
+        removeObject: impOut
+        impOut = irMono
+    endif
+    
+    selectObject: impOut
+    irSpectrum = To Spectrum: "yes"
+    irLtas = To Ltas (1-to-1)
+    Rename: "fr_ltas"
+    irLtasID = selected("Ltas")
+    
+    removeObject: impOut, irSpectrum
+endif
 
+# ============================================================
+# VISUALIZATION  (8 x 8 canvas — suite standard)
+# ============================================================
+
+if draw_visualization
+    
+    # Pre-build summary strings
+    attenStr$ = "OFF"
+    if apply_distance_attenuation
+        attenStr$ = "1/r"
+    endif
+    
+    proxStr$ = "OFF"
+    if proxActive
+        proxStr$ = "+" + fixed$(proxBoostDb, 1) + " dB"
+    elsif apply_proximity_effect
+        proxStr$ = "ENABLED (inactive)"
+    endif
+    
+    # Compute ITD readout (for spaced configurations only)
+    itdMs = 0
+    itdSide$ = ""
+    if stereo_config = 5
+        # AB
+        spacing_m = mic_spacing_cm / 100
+        sourceX = distance_m * sin(azimuthRad)
+        sourceY = distance_m * cos(azimuthRad)
+        dL = sqrt((sourceX + spacing_m/2)^2 + sourceY^2)
+        dR = sqrt((sourceX - spacing_m/2)^2 + sourceY^2)
+        itdMs = (dL - dR) * 1000 / speedOfSound
+    elsif stereo_config = 6
+        # ORTF
+        spacing_m = 0.17
+        itdMs = (spacing_m / speedOfSound) * sin(azimuthRad) * 1000
+    elsif stereo_config = 7
+        # Decca: report L–R only
+        deccaSpacing = 2.0
+        sourceX = distance_m * sin(azimuthRad)
+        sourceY = distance_m * cos(azimuthRad)
+        dL = sqrt((sourceX + deccaSpacing/2)^2 + sourceY^2)
+        dR = sqrt((sourceX - deccaSpacing/2)^2 + sourceY^2)
+        itdMs = (dL - dR) * 1000 / speedOfSound
+    endif
+    
+    if itdMs > 0.001
+        itdSide$ = "right leads"
+    elsif itdMs < -0.001
+        itdSide$ = "left leads"
+    else
+        itdSide$ = "centered"
+    endif
+    
+    Erase all
+    
     # ----------------------------------------------------------
-    # Title
+    # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.75
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Microphone Simulation##"
-    Font size: 8
+    Text: 0.5, "centre", 0.68, "half", "##MICROPHONE SIMULATION##"
+    Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.15, "half",
-        ... originalName$ + "  |  " + config$ + "  " + pattern$
-        ... + "  |  " + presetName$
-
+    Text: 0.5, "centre", -0.22, "half",
+        ... originalName$
+        ... + "  |  Preset: " + presetName$
+        ... + "  |  " + config$ + "  " + pattern$
+        ... + "  |  Az: " + string$(azimuth_degrees) + "°"
+        ... + "  |  Dist: " + string$(distance_cm) + " cm"
+        ... + "  |  Prox: " + proxStr$
+    
     # ----------------------------------------------------------
-    # Polar pattern diagram (left half)
+    # PANEL A: POLAR PATTERN  (left, headline)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.1, 0.52, 3.42
-    Select inner viewport: 0.45, 3.85, 0.62, 3.30
-
-    Axes: -1.35, 1.35, -1.35, 1.35
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.35, 1.35, -1.35, 1.35
-
-    # Grid circles
-    Colour: "{0.85, 0.85, 0.85}"
+    Select outer viewport: 0, 4.2, 0.75, 4.40
+    Select inner viewport: 0.45, 3.95, 0.95, 4.20
+    
+    Axes: -1.4, 1.4, -1.4, 1.4
+    Paint rectangle: "{0.96, 0.96, 0.96}", -1.4, 1.4, -1.4, 1.4
+    
+    # Concentric guides at 0.25, 0.5, 0.75, 1.0
+    Colour: "{0.85, 0.85, 0.88}"
     Line width: 1
-    Draw circle: 0, 0, 0.25
-    Draw circle: 0, 0, 0.50
-    Draw circle: 0, 0, 0.75
-    Draw circle: 0, 0, 1.00
-
-    # Crosshairs
-    Draw line: 0, -1.25, 0, 1.25
-    Draw line: -1.25, 0, 1.25, 0
-
-    # Direction labels
-    Font size: 6
-    Colour: "{0.50, 0.50, 0.50}"
-    Text: 0.08, "left", 1.22, "half", "0° Front"
-    Text: 0.08, "left", -1.22, "half", "180° Back"
-    Text: -1.28, "right", -0.12, "half", "-90° L"
-    Text: 1.28, "left", -0.12, "half", "+90° R"
-
-    # Draw polar pattern curve
-    Colour: "{0.25, 0.50, 0.72}"
+    rGuide# = { 0.25, 0.50, 0.75, 1.00 }
+    for k from 1 to 4
+        rg = rGuide#[k]
+        prevX = rg
+        prevY = 0
+        for h from 1 to 64
+            a = 2 * pi * h / 64
+            cx = rg * cos(a)
+            cy = rg * sin(a)
+            Draw line: prevX, prevY, cx, cy
+            prevX = cx
+            prevY = cy
+        endfor
+    endfor
+    
+    # Crosshair
+    Colour: "{0.78, 0.78, 0.82}"
+    Dotted line
+    Draw line: -1.3, 0, 1.3, 0
+    Draw line: 0, -1.3, 0, 1.3
+    Solid line
+    
+    # Polar pattern lobe (mic forward = +y)
+    Colour: "{0.30, 0.50, 0.78}"
     Line width: 2
-    nPoints = 360
-    for i from 0 to nPoints
-        angle = i * 2 * pi / nPoints
+    prevX = 0
+    prevY = 0
+    for i from 0 to 360
+        angle = i * pi / 180
         if pattern = 1
-            pGain = 1.0
+            pGain = 1
         elsif pattern = 2
             pGain = abs(cos(angle))
         elsif pattern = 3
             pGain = 0.5 + 0.5 * cos(angle)
         else
-            pGain = max(0, 0.25 + 0.75 * cos(angle))
+            pGain = 0.25 + 0.75 * cos(angle)
         endif
+        if pGain < 0
+            pGain = 0
+        endif
+        # Polar to Cartesian: +y is the mic axis (forward)
         px = pGain * sin(angle)
         py = pGain * cos(angle)
         if i > 0
@@ -663,71 +1012,61 @@ if draw_visualization
         prevX = px
         prevY = py
     endfor
-
-    # Draw source position
-    srcDist = min(distance_m / 3, 1.15)
+    Line width: 1
+    
+    # Source position
+    srcDist = min(distance_m / 3, 1.20)
     srcPx = srcDist * sin(azimuthRad)
     srcPy = srcDist * cos(azimuthRad)
-
+    
     Colour: "{0.82, 0.28, 0.28}"
     Line width: 2
     Draw arrow: 0, 0, srcPx, srcPy
     Paint circle (mm): "{0.90, 0.30, 0.30}", srcPx, srcPy, 2.5
     Line width: 1
-
-    # Source label — position adaptively to avoid clipping
+    
     Font size: 6
     Colour: "{0.60, 0.25, 0.25}"
     if srcPy > 0
-        Text: srcPx, "centre", srcPy + 0.14, "half", "Src " + string$(azimuth_degrees) + "°"
+        Text: srcPx, "centre", srcPy + 0.13, "half", "Src " + string$(azimuth_degrees) + "°"
     else
-        Text: srcPx, "centre", srcPy - 0.14, "half", "Src " + string$(azimuth_degrees) + "°"
+        Text: srcPx, "centre", srcPy - 0.13, "half", "Src " + string$(azimuth_degrees) + "°"
     endif
-
+    
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 7
-    Text top: "no", "Polar pattern: " + pattern$
-
+    
     # ----------------------------------------------------------
-    # Configuration diagram (right half)
+    # PANEL B: CONFIGURATION DIAGRAM  (right column, upper)
     # ----------------------------------------------------------
-    Select outer viewport: 4.1, 8, 0.52, 3.42
-    Select inner viewport: 4.40, 7.70, 0.62, 3.30
-
+    Select outer viewport: 4.2, 8, 0.75, 2.55
+    Select inner viewport: 4.50, 7.75, 0.95, 2.42
+    
     Axes: -1.6, 1.6, -0.4, 2.2
     Paint rectangle: "{0.96, 0.96, 0.96}", -1.6, 1.6, -0.4, 2.2
-
-    # Mic positions (blue = L, red = R, grey = C)
+    
     Colour: "{0.25, 0.50, 0.72}"
     Line width: 2
-
+    
     if stereo_config = 1
-        # Mono
         Paint circle (mm): "{0.25, 0.50, 0.72}", 0, 0.6, 3.5
         Font size: 7
         Colour: "{0.25, 0.25, 0.25}"
         Text: 0, "centre", 0.30, "half", "Mono"
-
     elsif stereo_config = 2
-        # M/S
         Paint circle (mm): "{0.25, 0.50, 0.72}", 0, 0.6, 3.5
         Paint circle (mm): "{0.82, 0.35, 0.35}", 0.22, 0.6, 2.8
         Font size: 6
         Colour: "{0.25, 0.25, 0.25}"
         Text: 0, "centre", 0.30, "half", "M"
         Text: 0.22, "centre", 0.30, "half", "S"
-        # M points forward, S points sideways
         Draw line: 0, 0.6, 0, 1.0
         Colour: "{0.82, 0.35, 0.35}"
         Draw line: 0.22, 0.6, 0.55, 0.6
-
     elsif stereo_config = 3 or stereo_config = 4
-        # XY or Blumlein — coincident pair at ±45°
         Paint circle (mm): "{0.25, 0.50, 0.72}", -0.12, 0.6, 2.8
         Paint circle (mm): "{0.82, 0.35, 0.35}", 0.12, 0.6, 2.8
-        # Direction lines at ±45°
         Colour: "{0.25, 0.50, 0.72}"
         Draw line: -0.12, 0.6, -0.12 + 0.35 * sin(-pi/4), 0.6 + 0.35 * cos(-pi/4)
         Colour: "{0.82, 0.35, 0.35}"
@@ -739,9 +1078,7 @@ if draw_visualization
         else
             Text: 0, "centre", 0.28, "half", "Blumlein ±45°"
         endif
-
     elsif stereo_config = 5
-        # AB spaced omnis
         spacing_vis = min(mic_spacing_cm / 100, 1.2)
         Paint circle (mm): "{0.25, 0.50, 0.72}", -spacing_vis/2, 0.6, 2.8
         Paint circle (mm): "{0.82, 0.35, 0.35}", spacing_vis/2, 0.6, 2.8
@@ -751,9 +1088,7 @@ if draw_visualization
         Font size: 6
         Colour: "{0.25, 0.25, 0.25}"
         Text: 0, "centre", 0.26, "half", "AB " + string$(mic_spacing_cm) + " cm"
-
     elsif stereo_config = 6
-        # ORTF — 17cm spacing, ±55°
         Paint circle (mm): "{0.25, 0.50, 0.72}", -0.12, 0.6, 2.8
         Paint circle (mm): "{0.82, 0.35, 0.35}", 0.12, 0.6, 2.8
         Colour: "{0.25, 0.50, 0.72}"
@@ -762,14 +1097,11 @@ if draw_visualization
         Draw line: 0.12, 0.6, 0.12 + 0.30 * sin(55*pi/180), 0.6 + 0.30 * cos(55*pi/180)
         Font size: 6
         Colour: "{0.25, 0.25, 0.25}"
-        Text: 0, "centre", 0.26, "half", "ORTF 17cm 110°"
-
+        Text: 0, "centre", 0.26, "half", "ORTF 17 cm 110°"
     elsif stereo_config = 7
-        # Decca Tree — L C R
         Paint circle (mm): "{0.25, 0.50, 0.72}", -0.55, 0.4, 2.8
         Paint circle (mm): "{0.55, 0.55, 0.55}", 0, 0.95, 2.8
         Paint circle (mm): "{0.82, 0.35, 0.35}", 0.55, 0.4, 2.8
-        # Connecting lines
         Colour: "{0.78, 0.78, 0.78}"
         Line width: 1
         Dotted line
@@ -783,37 +1115,144 @@ if draw_visualization
         Text: 0, "centre", 1.12, "half", "C"
         Text: 0.55, "centre", 0.18, "half", "R"
     endif
-
-    # Source position indicator
-    cfgSrcY = 1.75
+    
+    # Source indicator
+    cfgSrcY = 1.85
     cfgSrcX = cfgSrcY * sin(azimuthRad)
-    if abs(cfgSrcX) > 1.35
-        cfgSrcX = 1.35 * (cfgSrcX / abs(cfgSrcX))
+    if abs(cfgSrcX) > 1.40
+        cfgSrcX = 1.40 * (cfgSrcX / abs(cfgSrcX))
     endif
     Colour: "{0.82, 0.28, 0.28}"
     Paint circle (mm): "{0.90, 0.30, 0.30}", cfgSrcX, cfgSrcY, 2
-    # Dotted line from array centre to source
     Colour: "{0.82, 0.65, 0.65}"
     Dotted line
     Draw line: 0, 0.6, cfgSrcX, cfgSrcY
     Solid line
     Font size: 6
     Colour: "{0.60, 0.25, 0.25}"
-    Text: cfgSrcX, "centre", cfgSrcY - 0.18, "half",
+    Text: cfgSrcX, "centre", cfgSrcY - 0.14, "half",
         ... string$(azimuth_degrees) + "°  " + string$(distance_cm) + "cm"
-
+    
+    # ITD readout for spaced configs
+    if stereo_config >= 5
+        Font size: 5
+        Colour: "{0.30, 0.30, 0.40}"
+        Text: -1.55, "left", -0.30, "half",
+            ... "ITD: " + fixed$(abs(itdMs), 3) + " ms (" + itdSide$ + ")"
+    endif
+    
     Colour: "Black"
     Line width: 1
     Draw inner box
+    
+    # ----------------------------------------------------------
+    # PANEL C: FREQUENCY RESPONSE  (right column, lower)
+    # The whole point of this script — shows what the chosen mic
+    # configuration actually does to the frequency content.
+    # Comb filter on AB / ORTF / Decca, flat on coincident pairs.
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 2.65, 4.40
+    Select inner viewport: 4.50, 7.75, 2.85, 4.25
+    
+    selectObject: irLtasID
+    ltasMin = Get minimum: 0, 0, "None"
+    ltasMax = Get maximum: 0, 0, "None"
+    ltasN = Get number of bins
+    binSize = Get bin width
+    nyq = ltasN * binSize
+    
+    # Use log-frequency from 100 Hz to Nyquist
+    freqLo = 100
+    freqHi = nyq
+    if freqHi < freqLo * 2
+        freqHi = freqLo * 2
+    endif
+    logLo = log10(freqLo)
+    logHi = log10(freqHi)
+    
+    # Y range: relative to peak, floor at -24 dB
+    yLo = ltasMax - 24
+    yHi = ltasMax + 3
+    
+    Axes: logLo, logHi, yLo, yHi
+    Paint rectangle: "{0.96, 0.96, 0.96}", logLo, logHi, yLo, yHi
+    
+    # Decade gridlines + labels
+    Colour: "{0.88, 0.88, 0.92}"
+    Line width: 1
+    decadeLabels$# = { "100", "1k", "10k" }
+    decadeFreqs# = { 100, 1000, 10000 }
+    for k from 1 to 3
+        if decadeFreqs#[k] >= freqLo and decadeFreqs#[k] <= freqHi
+            lf = log10(decadeFreqs#[k])
+            Draw line: lf, yLo, lf, yHi
+            Font size: 5
+            Colour: "{0.45, 0.45, 0.50}"
+            Text: lf, "centre", yLo + (yHi - yLo) * 0.04, "half", decadeLabels$#[k]
+            Colour: "{0.88, 0.88, 0.92}"
+        endif
+    endfor
+    
+    # 0 dB reference line
+    Colour: "{0.65, 0.65, 0.65}"
+    Dotted line
+    Draw line: logLo, ltasMax, logHi, ltasMax
+    Solid line
+    
+    # FR curve
+    Colour: "{0.25, 0.50, 0.78}"
+    Line width: 1.5
+    prevLogF = logLo
+    prevDb = yLo
+    bin = 1
+    while bin <= ltasN
+        f = bin * binSize
+        if f >= freqLo
+            db = Get value in bin: bin
+            if db = undefined
+                db = yLo
+            endif
+            if db < yLo
+                db = yLo
+            endif
+            lf = log10(f)
+            if lf > logHi
+                lf = logHi
+            endif
+            if prevLogF >= logLo
+                Draw line: prevLogF, prevDb, lf, db
+            endif
+            prevLogF = lf
+            prevDb = db
+        endif
+        bin = bin + 1
+    endwhile
+    Line width: 1
+    
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Mag (dB rel)"
+    Text bottom: "yes", "Freq (Hz, log)"
+    
+    # ----------------------------------------------------------
+    # ALIGNED PANEL TITLES
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 8
+    Select inner viewport: 0, 8, 0, 8
+    Axes: 0, 8, 0, 8
+    
     Font size: 7
-    Text top: "no", "Configuration: " + config$
-
+    Colour: "Black"
+    Text: 2.20, "centre", 7.30, "half", "Polar pattern: " + pattern$
+    Text: 6.10, "centre", 7.30, "half", "Configuration (upper) & frequency response (lower)"
+    
     # ----------------------------------------------------------
-    # Output waveform (L blue, R orange)
+    # PANEL D: OUTPUT WAVEFORM
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 3.50, 4.60
-    Select inner viewport: 0.55, 7.70, 3.58, 4.52
-
+    Select outer viewport: 0, 8, 4.50, 5.65
+    Select inner viewport: 0.55, 7.72, 4.60, 5.55
+    
     selectObject: finalSound
     nChOut = Get number of channels
     outPeak = Get absolute extremum: 0, 0, "None"
@@ -821,69 +1260,80 @@ if draw_visualization
         outPeak = 0.001
     endif
     ampMax = outPeak * 1.15
-
+    
     Axes: 0, duration, -ampMax, ampMax
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -ampMax, ampMax
     Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, duration, 0
-
+    
     if nChOut > 1
         selectObject: finalSound
         Extract one channel: 1
         vizL = selected("Sound")
         Colour: "{0.25, 0.50, 0.82}"
+        Line width: 1
         Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-
+        removeObject: vizL
+        
         selectObject: finalSound
         Extract one channel: 2
         vizR = selected("Sound")
         Colour: "{0.82, 0.45, 0.25}"
         Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-        removeObject: vizL, vizR
+        removeObject: vizR
     else
         selectObject: finalSound
         Colour: "{0.25, 0.50, 0.82}"
+        Line width: 1
         Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
     endif
-
+    
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
     if nChOut > 1
-        Text top: "no", "Stereo output  (blue=L  orange=R)"
+        Text top: "no", "Output  (blue=L  orange=R)"
     else
         Text top: "no", "Mono output"
     endif
+    Text left: "yes", "Amp"
     Text bottom: "yes", "Time (s)"
-
+    
     # ----------------------------------------------------------
-    # Summary panel
+    # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.70, 5.45
-    Select inner viewport: 0.55, 7.70, 4.76, 5.38
+    Select outer viewport: 0, 8, 5.75, 6.55
+    Select inner viewport: 0.55, 7.72, 5.82, 6.50
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    
     Font size: 6
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.52, "half",
-        ... "Source: " + originalName$
-        ... + "  |  Config: " + config$ + "  " + pattern$
-        ... + "  |  Preset: " + presetName$
-    Text: 0.02, "left", 0.20, "half",
-        ... "Azimuth: " + string$(azimuth_degrees) + "°"
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.75, "half",
+        ... "##" + presetName$ + "##"
+        ... + "  " + originalName$
+        ... + "  |  Config: " + config$ + "  Pattern: " + pattern$
+        ... + "  |  Az: " + string$(azimuth_degrees) + "°"
         ... + "  |  Dist: " + string$(distance_cm) + " cm"
         ... + "  |  Spacing: " + string$(mic_spacing_cm) + " cm"
-        ... + "  |  Dist atten: " + attenStr$
+    
+    Text: 0.02, "left", 0.28, "half",
+        ... "Dist atten: " + attenStr$
+        ... + "  |  Proximity: " + proxStr$
+        ... + "  |  Out channels: " + string$(nChOut)
+        ... + "  |  Out duration: " + fixed$(duration, 2) + " s"
+        ... + "  |  Peak: " + fixed$(outPeak, 3)
+    
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
-
+    
     Font size: 10
     Colour: "Black"
     Line width: 1
+    
+    # Cleanup viz-only objects
+    removeObject: irLtasID
 endif
 
 # ============================================================
@@ -900,11 +1350,7 @@ appendInfoLine: "Output: ", selected$("Sound")
 appendInfoLine: ""
 appendInfoLine: "Configuration: ", config$
 appendInfoLine: "Pattern: ", pattern$
-appendInfoLine: "Source: ", azimuth_degrees, "° at ", distance_cm, "cm"
-
-# ============================================================
-# PLAY RESULT
-# ============================================================
+appendInfoLine: "Source: ", azimuth_degrees, "° at ", distance_cm, " cm"
 
 if play_result
     selectObject: finalSound
