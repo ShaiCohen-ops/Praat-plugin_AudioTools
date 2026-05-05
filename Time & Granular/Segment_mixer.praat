@@ -156,6 +156,25 @@ for i to numberOfSelectedSounds
     endif
 endfor
 
+# === Normalise Sampling Frequency ===
+# Use the first sound's sampling frequency as the target for all sounds and buffers.
+selectObject: monoSounds#[1]
+targetSR = Get sampling frequency
+
+for i to numberOfSelectedSounds
+    selectObject: monoSounds#[i]
+    sr_i = Get sampling frequency
+    if sr_i <> targetSR
+        Resample: targetSR, 50
+        resampledID = selected("Sound")
+        removeObject: monoSounds#[i]
+        monoSounds#[i] = resampledID
+        selectObject: monoSounds#[i]
+        Rename: "mono_work_" + string$(i)
+    endif
+endfor
+
+appendInfoLine: "Target sampling frequency: ", fixed$(targetSR, 0), " Hz"
 appendInfoLine: "Processing files:"
 for i to numberOfSelectedSounds
     selectObject: monoSounds#[i]
@@ -165,10 +184,10 @@ endfor
 appendInfoLine: ""
 
 # === Create Initial Buffers ===
-Create Sound from formula: "temp_left", 1, 0, 0.01, 44100, "0"
+Create Sound from formula: "temp_left", 1, 0, 0.01, targetSR, "0"
 leftID = selected("Sound")
 
-Create Sound from formula: "temp_right", 1, 0, 0.01, 44100, "0"
+Create Sound from formula: "temp_right", 1, 0, 0.01, targetSR, "0"
 rightID = selected("Sound")
 
 # === Store Segment Info for Visualization ===
