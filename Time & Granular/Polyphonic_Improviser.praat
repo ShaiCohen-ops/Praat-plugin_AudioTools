@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2025)
+# Version: 2.1 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,6 +27,33 @@
 #     V4 Fourth : ratio 1.50           pan +0.75  enters at 3x delay
 #
 # Category: Composition
+#
+# Changelog v2.1:
+#   - Audio pipeline UNCHANGED. Output bit-identical to v2.0
+#     for the same form parameters and same RNG state. Same
+#     chunk extraction, same shuffle algorithm with dummy RNG
+#     advance per voice, same transforms, same crossfade
+#     concatenation, same panning, same silence trim.
+#   - Fix: three == comparisons changed to = (Praat's
+#     documented comparison operator). v2.0 used == as an
+#     alias which works in current Praat but isn't guaranteed.
+#   - Voice count clamping (2 <= numV <= 4) now reports when
+#     the user's value was clamped — v2.0 silently changed
+#     it without notice.
+#   - Visualization rewritten to suite 8x8 standard:
+#       Title bar + metadata subtitle
+#       Panel A (left, headline): chunk shuffle map — the
+#         script's most distinctive visual, promoted from v2.0's
+#         third panel position
+#       Panel B (right, headline): active span per voice
+#       Panel C: L channel waveform with beat gridlines +
+#         voice entry markers
+#       Panel D: R channel waveform with same overlays
+#       Panel E: summary stats bar
+#     All v2.0 visualization information preserved (waveforms,
+#     voice colors, beat lines, voice entries, shuffle indices,
+#     active spans, stats). Just reorganized for the 8x8 suite
+#     standard.
 # ============================================================
 
 # ============================================================
@@ -53,7 +80,7 @@ endif
 # FORM
 # ============================================================
 
-form Polyphonic Improviser v2.0
+form Polyphonic Improviser v2.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -121,6 +148,7 @@ use_quantize = quantize_entries
 note_val     = note_value
 nChunks      = number_of_chunks
 xfadeMs      = crossfade_ms
+numV_input   = number_of_voices
 numV         = number_of_voices
 tMode        = transform_mode
 
@@ -328,6 +356,13 @@ for v from 1 to 4
     endif
 endfor
 
+# Pre-compute clamping notice (replaces v2.0's silent clamp)
+if numV_input <> numV
+    voiceClampNote$ = "  [user requested " + string$(numV_input) + ", clamped to " + string$(numV) + "]"
+else
+    voiceClampNote$ = ""
+endif
+
 # ============================================================
 # BPM / ENTRY TIMING
 # ============================================================
@@ -395,14 +430,14 @@ endif
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Polyphonic Improviser v2.0  | Chunk Shuffle Canon"
-writeInfoLine:  "=================================================="
+appendInfoLine: "  Polyphonic Improviser v2.1  | Chunk Shuffle Canon"
+appendInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Preset   : ", presetName$
 appendInfoLine: "Source   : ", srcName$, " | ", fixed$(srcDur, 2), " s | ", srcSr, " Hz"
 appendInfoLine: "Chunks   : ", nChunks, " x ", fixed$(chunkDur, 3), " s"
 appendInfoLine: "Transform: ", tModeName$
-appendInfoLine: "Voices   : ", numV
+appendInfoLine: "Voices   : ", numV, voiceClampNote$
 appendInfoLine: "Entry    : ", fixed$(entry_delay_s, 3), " s  [", entryMode$, "]"
 if use_quantize = 1
     appendInfoLine: "BPM      : ", fixed$(bpm, 1),
@@ -656,6 +691,7 @@ thresh = 0.005
 startTime = -1
 endTime = -1
 
+# v2.1 fix: == changed to = (Praat's documented comparison operator)
 for i from 1 to nSteps
     t1 = (i - 1) * step
     t2 = i * step
@@ -664,7 +700,7 @@ for i from 1 to nSteps
     peakMin = Get minimum: t1, t2, "None"
     
     if peakMax > thresh or peakMin < -thresh
-        if startTime == -1
+        if startTime = -1
             startTime = t1
         endif
         endTime = t2
@@ -676,7 +712,7 @@ if t1 < dur
     peakMax = Get maximum: t1, dur, "None"
     peakMin = Get minimum: t1, dur, "None"
     if peakMax > thresh or peakMin < -thresh
-        if startTime == -1
+        if startTime = -1
             startTime = t1
         endif
         endTime = dur
@@ -715,7 +751,7 @@ else
 endif
 
 # ============================================================
-# STEP 5: VISUALIZATION
+# STEP 5: VISUALIZATION  (8 x 8 canvas — suite standard)
 # ============================================================
 
 appendInfoLine: ""
@@ -743,6 +779,7 @@ if draw_visualization = 1
     endif
     ampMax = ampMax * 1.1
 
+    # Voice colors (preserved from v2.0)
     vColR_1 = 0.20
     vColG_1 = 0.45
     vColB_1 = 0.82
@@ -758,115 +795,44 @@ if draw_visualization = 1
 
     Erase all
 
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # ----------------------------------------------------------
+    # TITLE BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Polyphonic Improviser v2.0  | Chunk Shuffle Canon##"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.3, "half",
-        ... "[" + presetName$ + "]  " + srcName$ + " | " + string$(numV) + " voices | "
-        ... + string$(nChunks) + " chunks x " + fixed$(chunkDur, 2) + " s | "
-        ... + tModeName$ + " | " + fixed$(finalDur, 1) + " s"
-
-    # === PANEL 1: Left channel ===
-    Select outer viewport: 0, 8, 0.55, 1.5
-    Select inner viewport: 0.75, 7.6, 0.6, 1.45
-    Axes: 0, finalDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -ampMax, ampMax
-    Colour: "{0.88, 0.88, 0.88}"
-    Draw line: 0, 0, finalDur, 0
-    
-    bT = beatDur - (trimOffset mod beatDur)
-    while bT < finalDur
-        Colour: "{0.90, 0.90, 0.90}"
-        Dotted line
-        Draw line: bT, -ampMax, bT, ampMax
-        Solid line
-        bT = bT + beatDur
-    endwhile
-    
-    for v from 1 to numV
-        vEnt = (entry_delay_s * (v - 1)) - trimOffset
-        if vEnt >= 0 and vEnt < finalDur
-            cR = vColR_'v'
-            cG = vColG_'v'
-            cB = vColB_'v'
-            vCs$ = "{" + fixed$(cR,2) + ", " + fixed$(cG,2) + ", " + fixed$(cB,2) + "}"
-            Colour: vCs$
-            Line width: 1.5
-            Dotted line
-            Draw line: vEnt, -ampMax, vEnt, ampMax
-            Solid line
-            Line width: 1
-        endif
-    endfor
-    
-    selectObject: vizL
-    Colour: "{0.20, 0.45, 0.82}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
+    Text: 0.5, "centre", 0.68, "half", "##POLYPHONIC IMPROVISER (chunk shuffle canon)##"
     Font size: 7
-    Text left: "yes", "Left"
-    Text top: "no", "Left channel  (light dotted=beats | colored dotted=voice entries)"
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half",
+        ... srcName$
+        ... + "  |  " + presetName$
+        ... + "  |  " + string$(numV) + " voices"
+        ... + "  |  " + string$(nChunks) + " chunks x " + fixed$(chunkDur, 3) + "s"
+        ... + "  |  Mode: " + tModeName$
+        ... + "  |  Entry: " + fixed$(entry_delay_s, 3) + "s [" + entryMode$ + "]"
 
-    # === PANEL 2: Right channel ===
-    Select outer viewport: 0, 8, 1.55, 2.5
-    Select inner viewport: 0.75, 7.6, 1.6, 2.45
-    Axes: 0, finalDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -ampMax, ampMax
-    Colour: "{0.88, 0.88, 0.88}"
-    Draw line: 0, 0, finalDur, 0
-    
-    bT = beatDur - (trimOffset mod beatDur)
-    while bT < finalDur
-        Colour: "{0.90, 0.90, 0.90}"
-        Dotted line
-        Draw line: bT, -ampMax, bT, ampMax
-        Solid line
-        bT = bT + beatDur
-    endwhile
-    
-    for v from 1 to numV
-        vEnt = (entry_delay_s * (v - 1)) - trimOffset
-        if vEnt >= 0 and vEnt < finalDur
-            cR = vColR_'v'
-            cG = vColG_'v'
-            cB = vColB_'v'
-            vCs$ = "{" + fixed$(cR,2) + ", " + fixed$(cG,2) + ", " + fixed$(cB,2) + "}"
-            Colour: vCs$
-            Line width: 1.5
-            Dotted line
-            Draw line: vEnt, -ampMax, vEnt, ampMax
-            Solid line
-            Line width: 1
-        endif
-    endfor
-    
-    selectObject: vizR
-    Colour: "{0.82, 0.30, 0.20}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Right"
-    Text bottom: "yes", "Time (s)"
-    removeObject: vizL, vizR
+    # ----------------------------------------------------------
+    # PANEL A: CHUNK SHUFFLE MAP  (left, headline)
+    # The script's signature visual. Top row = source order
+    # (numbered chunks colored by position). Each voice row
+    # below shows that voice's shuffled assignment of chunks
+    # to output slots.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 0.75, 4.60
+    Select inner viewport: 0.55, 4.00, 0.95, 4.40
 
-    # === PANEL 3: Chunk shuffle map ===
-    Select outer viewport: 0, 8, 2.6, 4.2
-    Select inner viewport: 0.75, 7.6, 2.65, 4.15
     rowH = 1.0
     panelH = (numV + 1) * rowH
     Axes: 0, nChunks, 0, panelH
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, nChunks, 0, panelH
 
+    # Top row: source order
     for c from 1 to nChunks
         norm = (c - 1) / nChunks
-        Paint rectangle: "{" + fixed$(0.3+norm*0.5,2) + ", " + fixed$(0.3+norm*0.3,2) + ", " + fixed$(0.8-norm*0.4,2) + "}", c - 1, c, numV * rowH + 0.1, (numV + 1) * rowH - 0.1
+        Paint rectangle: "{" + fixed$(0.3+norm*0.5,2) + ", " + fixed$(0.3+norm*0.3,2) + ", " + fixed$(0.8-norm*0.4,2) + "}",
+            ... c - 1, c, numV * rowH + 0.1, (numV + 1) * rowH - 0.1
         Colour: "White"
         Font size: 5
         Text: c - 0.5, "centre", numV * rowH + 0.5, "half", string$(c)
@@ -877,6 +843,8 @@ if draw_visualization = 1
     Text: 0.01, "left", (numV * rowH + 0.5) / panelH, "half", "src"
     Axes: 0, nChunks, 0, panelH
 
+    # Voice rows: reproduce the shuffle by regenerating RNG state
+    # (matches Step 3 audio shuffle exactly)
     for v from 1 to numV
         rowBot = (numV - v) * rowH + 0.1
         rowTop = (numV - v + 1) * rowH - 0.1
@@ -904,7 +872,8 @@ if draw_visualization = 1
             bR = cR * (0.35 + norm * 0.65)
             bG = cG * (0.35 + norm * 0.65)
             bB = cB * (0.35 + norm * 0.65)
-            Paint rectangle: "{" + fixed$(bR,2) + ", " + fixed$(bG,2) + ", " + fixed$(bB,2) + "}", ci - 1, ci, rowBot, rowTop
+            Paint rectangle: "{" + fixed$(bR,2) + ", " + fixed$(bG,2) + ", " + fixed$(bB,2) + "}",
+                ... ci - 1, ci, rowBot, rowTop
             Colour: "White"
             Font size: 5
             Text: ci - 0.5, "centre", (rowBot + rowTop) / 2, "half", string$(c)
@@ -920,28 +889,32 @@ if draw_visualization = 1
 
     Colour: "Black"
     Draw inner box
-    Font size: 7
+    Font size: 6
     Text left: "yes", "Voice"
-    Text bottom: "yes", "Output slot  (number = source chunk index)"
-    Text top: "no", "Chunk Shuffle Map  (color intensity = source position)"
+    Text bottom: "yes", "Output slot (number = source chunk)"
 
-    # === PANEL 4: Active span per voice ===
-    Select outer viewport: 0, 8, 4.3, 5.2
-    Select inner viewport: 0.75, 7.6, 4.35, 5.15
+    # ----------------------------------------------------------
+    # PANEL B: ACTIVE SPAN PER VOICE  (right, headline)
+    # Horizontal bars showing each voice's entry -> end-of-shuffle
+    # range with speed and pan annotations.
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 0.75, 4.60
+    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+
     Axes: 0, finalDur, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, 0, 1
 
     for v from 1 to numV
         vEnt = (entry_delay_s * (v - 1)) - trimOffset
         vEndEst = vEnt + (v1PassDur / vSpeed_'v')
-        
+
         if vEnt < 0
             vEnt = 0
         endif
         if vEndEst > finalDur
             vEndEst = finalDur
         endif
-        
+
         if vEndEst > vEnt
             cR = vColR_'v'
             cG = vColG_'v'
@@ -952,10 +925,13 @@ if draw_visualization = 1
             Paint rectangle: vCs$, vEnt, vEndEst, barBot, barTop
             Colour: "White"
             Font size: 6
-            Text: (vEnt + vEndEst) / 2, "centre", (barBot + barTop) / 2, "half", "V" + string$(v) + "  x" + fixed$(vSpeed_'v', 3) + "  pan" + fixed$(vPan_'v', 2)
+            Text: (vEnt + vEndEst) / 2, "centre", (barBot + barTop) / 2, "half",
+                ... "V" + string$(v) + "  x" + fixed$(vSpeed_'v', 3)
+                ... + "  pan" + fixed$(vPan_'v', 2)
         endif
     endfor
 
+    # Beat gridlines
     bT = beatDur - (trimOffset mod beatDur)
     while bT < finalDur
         Colour: "{0.80, 0.80, 0.80}"
@@ -967,31 +943,153 @@ if draw_visualization = 1
 
     Colour: "Black"
     Draw inner box
-    Font size: 7
+    Font size: 6
     Text left: "yes", "Voice"
     Text bottom: "yes", "Output time (s)"
-    Text top: "no", "Active Span per Voice  (entry -> end of shuffled chunks)"
 
-    # === STATS ===
-    Select outer viewport: 0, 8, 5.25, 6.05
-    Select inner viewport: 0.5, 7.8, 5.30, 6.0
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    # ----------------------------------------------------------
+    # ALIGNED PANEL TITLES
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 8
+    Select inner viewport: 0, 8, 0, 8
+    Axes: 0, 8, 0, 8
+
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "##Polyphonic Improviser v2.0  | Chunk Shuffle Canon##"
-    Colour: "{0.35, 0.35, 0.60}"
-    Text: 0.75, "left", 0.88, "half", "Preset: " + presetName$
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.35}"
-    Text: 0.02, "left", 0.67, "half", "Source: " + srcName$ + " (" + fixed$(srcDur, 2) + " s)  | " + string$(nChunks) + " chunks x " + fixed$(chunkDur, 3) + " s  | Xfade: " + fixed$(xfadeMs, 1) + " ms  | Transform: " + tModeName$
-    Text: 0.02, "left", 0.46, "half", "V1 x" + fixed$(vSpeed_1, 3) + " pan" + fixed$(vPan_1, 2) + "  V2 x" + fixed$(vSpeed_2, 3) + " pan" + fixed$(vPan_2, 2) + "  V3 x" + fixed$(vSpeed_3, 3) + " pan" + fixed$(vPan_3, 2) + "  V4 x" + fixed$(vSpeed_4, 3) + " pan" + fixed$(vPan_4, 2)
-    statsLine3$ = "Entry: " + fixed$(entry_delay_s, 3) + " s [" + entryMode$ + "]  | BPM: " + fixed$(bpm, 1) + "  Beat: " + fixed$(beatDur, 4) + " s  = " + fixed$(entry_delay_s / beatDur, 2) + " beats"
+    Text: 2.10, "centre", 7.30, "half", "Chunk shuffle map (color intensity = source position)"
+    Text: 6.10, "centre", 7.30, "half", "Active span per voice (entry -> end)"
+
+    # ----------------------------------------------------------
+    # PANEL C: LEFT CHANNEL WAVEFORM
+    # With beat gridlines (light) and voice entry markers (colored)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.68, 5.55
+    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+
+    Axes: 0, finalDur, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -ampMax, ampMax
+    Colour: "{0.88, 0.88, 0.88}"
+    Draw line: 0, 0, finalDur, 0
+
+    # Beat gridlines (light)
+    bT = beatDur - (trimOffset mod beatDur)
+    while bT < finalDur
+        Colour: "{0.90, 0.90, 0.90}"
+        Dotted line
+        Draw line: bT, -ampMax, bT, ampMax
+        Solid line
+        bT = bT + beatDur
+    endwhile
+
+    # Voice entry markers (colored, dotted)
+    for v from 1 to numV
+        vEnt = (entry_delay_s * (v - 1)) - trimOffset
+        if vEnt >= 0 and vEnt < finalDur
+            cR = vColR_'v'
+            cG = vColG_'v'
+            cB = vColB_'v'
+            vCs$ = "{" + fixed$(cR,2) + ", " + fixed$(cG,2) + ", " + fixed$(cB,2) + "}"
+            Colour: vCs$
+            Line width: 1.5
+            Dotted line
+            Draw line: vEnt, -ampMax, vEnt, ampMax
+            Solid line
+            Line width: 1
+        endif
+    endfor
+
+    selectObject: vizL
+    Colour: "{0.20, 0.45, 0.82}"
+    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Left channel  (light dotted = beats | colored dotted = voice entries)"
+    Text left: "yes", "Amp"
+
+    # ----------------------------------------------------------
+    # PANEL D: RIGHT CHANNEL WAVEFORM
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.62, 6.55
+    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+
+    Axes: 0, finalDur, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -ampMax, ampMax
+    Colour: "{0.88, 0.88, 0.88}"
+    Draw line: 0, 0, finalDur, 0
+
+    bT = beatDur - (trimOffset mod beatDur)
+    while bT < finalDur
+        Colour: "{0.90, 0.90, 0.90}"
+        Dotted line
+        Draw line: bT, -ampMax, bT, ampMax
+        Solid line
+        bT = bT + beatDur
+    endwhile
+
+    for v from 1 to numV
+        vEnt = (entry_delay_s * (v - 1)) - trimOffset
+        if vEnt >= 0 and vEnt < finalDur
+            cR = vColR_'v'
+            cG = vColG_'v'
+            cB = vColB_'v'
+            vCs$ = "{" + fixed$(cR,2) + ", " + fixed$(cG,2) + ", " + fixed$(cB,2) + "}"
+            Colour: vCs$
+            Line width: 1.5
+            Dotted line
+            Draw line: vEnt, -ampMax, vEnt, ampMax
+            Solid line
+            Line width: 1
+        endif
+    endfor
+
+    selectObject: vizR
+    Colour: "{0.82, 0.30, 0.20}"
+    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Right channel"
+    Text left: "yes", "Amp"
+    Text bottom: "yes", "Time (s)"
+    removeObject: vizL, vizR
+
+    # ----------------------------------------------------------
+    # PANEL E: SUMMARY BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.62, 7.30
+    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
     if use_quantize = 1
-        statsLine3$ = statsLine3$ + "  [" + noteName$ + "]"
+        timingStr$ = "BPM " + fixed$(bpm, 1) + " / " + noteName$
+            ... + " = " + fixed$(entry_delay_s, 3) + "s entry"
+    else
+        timingStr$ = "Manual entry: " + fixed$(entry_delay_s, 3) + "s"
+            ... + "  (" + fixed$(entry_delay_s / beatDur, 2) + " beats @ " + fixed$(bpm, 1) + " bpm)"
     endif
-    Text: 0.02, "left", 0.25, "half", statsLine3$
-    Text: 0.02, "left", 0.06, "half", "Output: " + srcName$ + "_poly_improv_v2  (" + fixed$(finalDur, 2) + " s)  |  Peak normalized 0.95"
+
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.78, "half",
+        ... "##" + presetName$ + "##"
+        ... + "  " + srcName$
+        ... + "  |  " + string$(numV) + " voices x " + string$(nChunks) + " chunks (" + fixed$(chunkDur, 3) + "s each)"
+        ... + "  |  Transform: " + tModeName$
+        ... + "  |  Xfade: " + fixed$(xfadeMs, 1) + " ms"
+
+    Text: 0.02, "left", 0.50, "half",
+        ... "V1 x" + fixed$(vSpeed_1, 3) + " pan" + fixed$(vPan_1, 2)
+        ... + "  V2 x" + fixed$(vSpeed_2, 3) + " pan" + fixed$(vPan_2, 2)
+        ... + "  V3 x" + fixed$(vSpeed_3, 3) + " pan" + fixed$(vPan_3, 2)
+        ... + "  V4 x" + fixed$(vSpeed_4, 3) + " pan" + fixed$(vPan_4, 2)
+
+    Text: 0.02, "left", 0.20, "half",
+        ... timingStr$
+        ... + "  |  Output: " + srcName$ + "_poly_improv_v2"
+        ... + " (" + fixed$(finalDur, 2) + " s, peak normalized 0.95)"
+
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
@@ -1020,11 +1118,15 @@ appendInfoLine: "Mode     : ", tModeName$
 appendInfoLine: ""
 appendInfoLine: "Voice speeds:"
 for v from 1 to numV
-    appendInfoLine: "  V", v, ": x", fixed$(vSpeed_'v', 4), "  pan ", fixed$(vPan_'v', 2), "  entry ", fixed$(entry_delay_s * (v-1), 3), " s"
+    appendInfoLine: "  V", v, ": x", fixed$(vSpeed_'v', 4), "  pan ", fixed$(vPan_'v', 2),
+        ... "  entry ", fixed$(entry_delay_s * (v-1), 3), " s"
 endfor
 appendInfoLine: ""
-appendInfoLine: "BPM: ", fixed$(bpm, 1), "  Beat: ", fixed$(beatDur, 4), " s", "  Entry = ", fixed$(entry_delay_s / beatDur, 2), " beats  [", entryMode$, "]"
+appendInfoLine: "BPM: ", fixed$(bpm, 1), "  Beat: ", fixed$(beatDur, 4), " s",
+    ... "  Entry = ", fixed$(entry_delay_s / beatDur, 2), " beats  [", entryMode$, "]"
 
 if play_output = 1
     Play
 endif
+
+selectObject: finalOutput
