@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026) - Unified Cross-Platform Version
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,14 +23,60 @@
 #   - Voice 3 (cousin): rank 8  | wide ±0.8 pan  | 45 ms delay
 #   - Voice 4 (ghost):  rank 20 | random pan     | 80 ms delay
 #
+#   ENGINEERING NOTES:
+#   - Track scheduling: each voice's grains are scheduled into
+#     a FIFO list of "tracks" where each track holds only
+#     non-overlapping grains. Tracks are concatenated linearly
+#     then additively mixed into the voice sound. This avoids
+#     per-grain Formula writes (which would be slow).
+#   - Corpus file caching: the matching CSV is sorted by file
+#     path so each unique corpus file is opened only once.
+#   - Cosine fade-in/out is split into two separate Formula
+#     passes (the recursive elsif pattern doesn't work reliably
+#     inside Praat's Formula context).
+#
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.1:
+#   - Audio pipeline UNCHANGED. Output bit-identical to v1.0
+#     for the same form parameters and same RNG state. Same
+#     feature extraction, same KD-tree matching (Python helper
+#     unchanged), same track-scheduling reconstruction, same
+#     pause-gate and amplitude-envelope shaping, same trim and
+#     fade-out.
+#   - Fix: == comparison on line 319 (nFiles == 0) changed to
+#     = (Praat's documented comparison operator). v1.0 used ==
+#     as an alias which works in current Praat but isn't
+#     guaranteed.
+#   - NEW: Show_spectrograms form toggle (default OFF). v1.0
+#     always computed `To Spectrogram` twice (target + mix) for
+#     the visualization panels — that can take several seconds
+#     on long files. Default OFF means the script's wallclock
+#     is dominated only by feature extraction and audio
+#     reconstruction. Turn ON to see the time-frequency
+#     comparison.
+#   - Visualization rewritten to suite 8x8 standard:
+#       Title bar + metadata subtitle
+#       Panel A (left, headline): voice timeline — promoted
+#         from v1.0's bottom-of-canvas position. This is the
+#         script's most distinctive visual.
+#       Panel B (right, headline): parameter report
+#       Panel C (full width): target waveform (or target
+#         spectrogram when Show_spectrograms = ON)
+#       Panel D (full width): mix waveform (or mix
+#         spectrogram when Show_spectrograms = ON)
+#       Panel E: summary stats bar
+#   - Header documents the engineering pieces (track scheduling,
+#     file caching, two-pass cosine fade) so future maintainers
+#     understand what is intentional.
+# Changelog v1.0:
+#   - Initial unified cross-platform release.
 # ============================================================
 
-form KD-Tree Timbral Counterpoint
+form KD-Tree Timbral Counterpoint v1.1
     comment ── Target & Corpus ──
     sentence Corpus_folder /Users/username/Desktop/Corpus
     real Grain_size_ms 200
@@ -64,6 +110,8 @@ form KD-Tree Timbral Counterpoint
         option Pauses only
         option Amplitude envelope only
         option Pauses + Amplitude envelope
+    boolean Show_spectrograms 0
+    comment (ON shows time-frequency comparison, but adds analysis time)
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -300,7 +348,7 @@ procedure extractFeatures: .sndObj, .fPath$, .csvTable, .isCorpus
 endproc
 
 clearinfo
-writeInfoLine: "KD-Tree Timbral Counterpoint running..."
+writeInfoLine: "KD-Tree Timbral Counterpoint v1.1 running..."
 
 # 1. Target Features
 appendInfoLine: "[1/4] Extracting Target Features..."
@@ -316,7 +364,8 @@ Create Strings as file list: "list", corpus_folder$ + "/*.wav"
 fileList = selected("Strings")
 nFiles = Get number of strings
 
-if nFiles == 0
+# v1.1 fix: == changed to = (Praat's documented comparison operator)
+if nFiles = 0
     removeObject: fileList
     exitScript: "Error: No .wav files found in the specified Corpus folder: " + corpus_folder$
 endif
@@ -401,7 +450,8 @@ for r from 1 to nRows
     selectObject: grainTemp
     fade = crossfade_duration
     
-    # ── THE FIX: Two separate, simple formulas to avoid 'elsif' completely ──
+    # Cosine fade-in then fade-out, two separate Formula passes
+    # (recursive elsif inside Formula context is unreliable in Praat)
     Formula: "if x < xmin + 'fade' then self * (0.5 - 0.5*cos(pi*(x-xmin)/'fade')) else self fi"
     Formula: "if x > xmax - 'fade' then self * (0.5 - 0.5*cos(pi*(xmax-x)/'fade')) else self fi"
     Formula: "self * 'gain'"
@@ -723,99 +773,81 @@ if envelope_shaping > 1
 endif
 
 # ===========================================================================
-# Visualization
+# Pre-compute envelope shaping label (used in viz and info output)
 # ===========================================================================
+envShapeLabel$ = ""
+if envelope_shaping = 1
+    envShapeLabel$ = "Off"
+elsif envelope_shaping = 2
+    envShapeLabel$ = "Pauses only"
+elsif envelope_shaping = 3
+    envShapeLabel$ = "Envelope only"
+else
+    envShapeLabel$ = "Pauses + Envelope"
+endif
+
+nTargetGrains = vg_idx[1]
+
+# ============================================================================
+# VISUALIZATION  (8 x 8 canvas — suite standard)
+# ============================================================================
 if draw_visualization
+
+    # ----------------------------------------------------------
+    # Compute spectrograms ONLY if user opted in
+    # ----------------------------------------------------------
+    if show_spectrograms
+        appendInfoLine: "  Computing spectrograms for visualization..."
+
+        selectObject: targetObj
+        tgtChans_pre = Get number of channels
+        if tgtChans_pre > 1
+            Extract one channel: 1
+            tmpTgt = selected("Sound")
+        else
+            Copy: "tmpTgt"
+            tmpTgt = selected("Sound")
+        endif
+        selectObject: tmpTgt
+        To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
+        specTgt = selected("Spectrogram")
+
+        selectObject: kdtcMix
+        Extract one channel: 1
+        tmpMix = selected("Sound")
+        To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
+        specMix = selected("Spectrogram")
+    endif
+
     Erase all
     Black
     Plain line
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # ----------------------------------------------------------
+    # TITLE BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##KD-Tree Timbral Counterpoint##"
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + string$(number_of_voices) + " voices | Ranks: " + eff_ranks$ + " | " + presetName$
-
-    # === Target Waveform (with grain boundaries) ===
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.7, 0.65, 1.45
-    selectObject: targetObj
-    Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
+    Text: 0.5, "centre", 0.68, "half", "##KD-TREE TIMBRAL COUNTERPOINT##"
     Font size: 7
-    Text left: "yes", "Target"
-    Colour: "{0.75, 0.45, 0.15}"
-    Line width: 1
-    Axes: 0, targetDur, -1, 1
-    grainT = hop
-    while grainT < targetDur
-        Draw line: grainT, -0.9, grainT, 0.9
-        grainT = grainT + hop
-    endwhile
-    Line width: 1
-    nTargetGrains = vg_idx[1]
-    Text top: "no", "Grain: " + fixed$(grain_size_ms, 0) + " ms | Overlap: " + fixed$(grain_overlap_percent, 0) + "% | " + string$(nTargetGrains) + " grains/voice"
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half",
+        ... soundName$
+        ... + "  |  " + presetName$
+        ... + "  |  " + string$(number_of_voices) + " voices"
+        ... + "  |  Ranks: " + eff_ranks$
+        ... + "  |  Grain " + fixed$(grain_size_ms, 0) + "ms / " + fixed$(grain_overlap_percent, 0) + "% overlap"
+        ... + "  |  Shaping: " + envShapeLabel$
 
-    # === Output Mix Waveform ===
-    Select outer viewport: 0, 8, 1.5, 2.4
-    Select inner viewport: 0.6, 7.7, 1.55, 2.35
-    selectObject: kdtcMix
-    Colour: "{0.2, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Mix"
-    Text bottom: "yes", "Time (s)"
-
-    # === Target Spectrogram ===
-    Select outer viewport: 0, 8, 2.5, 3.7
-    Select inner viewport: 0.6, 7.7, 2.6, 3.6
-    selectObject: targetObj
-    tgtChans = Get number of channels
-    if tgtChans > 1
-        Extract one channel: 1
-        tmpTgt = selected("Sound")
-    else
-        Copy: "tmpTgt"
-        tmpTgt = selected("Sound")
-    endif
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-    specTgt = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Hz"
-    Text top: "no", "Target spectrogram"
-    removeObject: specTgt, tmpTgt
-
-    # === Output Spectrogram ===
-    Select outer viewport: 0, 8, 3.7, 4.9
-    Select inner viewport: 0.6, 7.7, 3.8, 4.8
-    selectObject: kdtcMix
-    Extract one channel: 1
-    tmpMix = selected("Sound")
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-    specMix = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Mix spectrogram (L channel)"
-    removeObject: specMix, tmpMix
-
-    # === Contrapuntal Voice Timeline ===
-    Select outer viewport: 0, 8, 5.0, 6.5
-    Select inner viewport: 0.6, 7.7, 5.1, 6.4
+    # ----------------------------------------------------------
+    # PANEL A: VOICE TIMELINE  (left, headline)
+    # The script's most distinctive visual — colored grain blocks
+    # showing the contrapuntal placement of corpus matches.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 0.75, 4.60
+    Select inner viewport: 0.55, 4.00, 0.95, 4.40
 
     tlDur = trimEnd
     Axes: 0, tlDur, -0.5, number_of_voices - 0.5
@@ -849,41 +881,176 @@ if draw_visualization
     Font size: 6
     Text left: "yes", "Voice"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Contrapuntal Voice Timeline — " + string$(number_of_voices) + " voices | each colour = one corpus-grain block"
 
-    # === Summary Panel ===
-    Select outer viewport: 0, 8, 6.6, 8.0
-    Select inner viewport: 0.6, 7.7, 6.65, 7.90
+    # ----------------------------------------------------------
+    # PANEL B: PARAMETER REPORT  (right, headline)
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 0.75, 4.60
+    Select inner viewport: 4.55, 7.75, 0.95, 4.40
 
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
 
-    envShapeLabel$ = ""
-    if envelope_shaping = 1
-        envShapeLabel$ = "Off"
-    elsif envelope_shaping = 2
-        envShapeLabel$ = "Pauses only"
-    elsif envelope_shaping = 3
-        envShapeLabel$ = "Envelope only"
-    else
-        envShapeLabel$ = "Pauses + Envelope"
-    endif
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.93, "half", "Architecture:"
+
+    Font size: 11
+    Colour: "{0.20, 0.50, 0.80}"
+    Text: 0.10, "left", 0.85, "half", "Voices:    " + string$(number_of_voices)
+    Text: 0.10, "left", 0.78, "half", "Ranks:     " + eff_ranks$
+
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.69, "half", "Grain:"
+
+    Font size: 10
+    Colour: "{0.70, 0.45, 0.20}"
+    Text: 0.10, "left", 0.62, "half", "Size:      " + fixed$(grain_size_ms, 0) + " ms"
+    Text: 0.10, "left", 0.55, "half", "Overlap:   " + fixed$(grain_overlap_percent, 0) + "%"
+    Text: 0.10, "left", 0.48, "half", "Per voice: " + string$(nTargetGrains) + " grains"
+    Text: 0.10, "left", 0.41, "half", "Corpus:    " + string$(nFiles) + " files"
+
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.32, "half", "Weights:"
+
+    Font size: 7
+    Colour: "{0.30, 0.55, 0.30}"
+    Text: 0.10, "left", 0.26, "half", "MFCC: " + fixed$(eff_mfcc_w, 2)
+        ... + "  Pitch: " + fixed$(eff_pitch_w, 2)
+        ... + "  Cent: " + fixed$(eff_cent_w, 2)
+    Text: 0.10, "left", 0.20, "half", "Int: " + fixed$(eff_int_w, 2)
+        ... + "  HNR: " + fixed$(eff_hnr_w, 2)
+
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.12, "half", "Search:"
+
+    Font size: 8
+    Colour: "{0.55, 0.30, 0.65}"
+    Text: 0.10, "left", 0.06, "half", "Random: " + fixed$(eff_randomness, 2)
+        ... + "  Rep penalty: " + string$(repetition_penalty)
+
+    Colour: "Black"
+    Draw inner box
+
+    # ----------------------------------------------------------
+    # ALIGNED PANEL TITLES
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 8
+    Select inner viewport: 0, 8, 0, 8
+    Axes: 0, 8, 0, 8
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.92, "half", "Summary:"
+    Text: 2.10, "centre", 7.30, "half", "Voice timeline (one block = one corpus grain)"
+    Text: 6.10, "centre", 7.30, "half", "Parameter report"
+
+    # ----------------------------------------------------------
+    # PANEL C: TARGET WAVEFORM or SPECTROGRAM
+    # Conditional on Show_spectrograms
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.68, 5.55
+    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+
+    if show_spectrograms
+        # Spectrogram
+        selectObject: specTgt
+        Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Target spectrogram"
+        Text left: "yes", "Hz"
+    else
+        # Waveform
+        selectObject: targetObj
+        Colour: "{0.50, 0.50, 0.50}"
+        Draw: 0, 0, 0, 0, "no", "Curve"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Target waveform"
+        Text left: "yes", "Amp"
+    endif
+
+    # ----------------------------------------------------------
+    # PANEL D: MIX WAVEFORM or SPECTROGRAM
+    # Conditional on Show_spectrograms
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.62, 6.55
+    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+
+    if show_spectrograms
+        selectObject: specMix
+        Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Mix spectrogram (L channel)"
+        Text left: "yes", "Hz"
+        Text bottom: "yes", "Time (s)"
+    else
+        selectObject: kdtcMix
+        Colour: "{0.20, 0.50, 0.70}"
+        Draw: 0, 0, 0, 0, "no", "Curve"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Mix waveform"
+        Text left: "yes", "Amp"
+        Text bottom: "yes", "Time (s)"
+    endif
+
+    # ----------------------------------------------------------
+    # PANEL E: SUMMARY BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.62, 7.30
+    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    if show_spectrograms
+        spectrogramStr$ = "shown"
+    else
+        spectrogramStr$ = "off"
+    endif
+
     Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.74, "half", "Voices: " + string$(number_of_voices) + " | Ranks: " + eff_ranks$ + " | Randomness: " + fixed$(eff_randomness, 2) + " | Rep penalty: " + string$(repetition_penalty)
-    Text: 0.02, "left", 0.54, "half", "Grain: " + fixed$(grain_size_ms, 0) + " ms | Overlap: " + fixed$(grain_overlap_percent, 0) + "% | " + string$(nTargetGrains) + " grains/voice | Corpus files: " + string$(nFiles)
-    Text: 0.02, "left", 0.34, "half", "Target: " + fixed$(targetDur, 2) + " s | Output: " + fixed$(trimEnd, 2) + " s | Preset: " + presetName$ + " | Shaping: " + envShapeLabel$
-    Text: 0.02, "left", 0.14, "half", "Weights — MFCC: " + fixed$(eff_mfcc_w, 2) + "  Pitch: " + fixed$(eff_pitch_w, 2) + "  Centroid: " + fixed$(eff_cent_w, 2) + "  Intensity: " + fixed$(eff_int_w, 2) + "  HNR: " + fixed$(eff_hnr_w, 2)
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.78, "half",
+        ... "##" + presetName$ + "##"
+        ... + "  " + soundName$
+        ... + "  |  " + string$(number_of_voices) + " voices x " + string$(nTargetGrains) + " grains"
+        ... + "  |  Corpus: " + string$(nFiles) + " files"
+        ... + "  |  Ranks: " + eff_ranks$
+        ... + "  |  Random: " + fixed$(eff_randomness, 2)
+
+    Text: 0.02, "left", 0.50, "half",
+        ... "Weights — MFCC: " + fixed$(eff_mfcc_w, 2)
+        ... + "  Pitch: " + fixed$(eff_pitch_w, 2)
+        ... + "  Cent: " + fixed$(eff_cent_w, 2)
+        ... + "  Int: " + fixed$(eff_int_w, 2)
+        ... + "  HNR: " + fixed$(eff_hnr_w, 2)
+        ... + "  |  Rep penalty: " + string$(repetition_penalty)
+
+    Text: 0.02, "left", 0.20, "half",
+        ... "Target: " + fixed$(targetDur, 2) + " s"
+        ... + "  |  Output: " + fixed$(trimEnd, 2) + " s"
+        ... + "  |  Shaping: " + envShapeLabel$
+        ... + "  |  Spectrograms: " + spectrogramStr$
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     Font size: 10
     Colour: "Black"
+
+    # Cleanup spectrogram objects if computed
+    if show_spectrograms
+        removeObject: specTgt, tmpTgt, specMix, tmpMix
+    endif
 endif
 
 # ===========================================================================
