@@ -3,27 +3,72 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2025)
+# Version: 2.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Metamodulator - comprehensive 8-algorithm modulation toolkit:
-#   Cubic/Quadratic phase distortion, Exponential/Logarithmic
-#   frequency sweeps, Sinusoidal FM, Spiral FM, Time-varying
-#   ring modulation, and Trembling ring modulation.
+#   Metamodulator - comprehensive 8-algorithm modulation toolkit.
+#   Multiplies the source signal by one of eight synthesized
+#   modulator waveforms:
+#     1. Cubic Phase Distortion      sin(2pi*f0*t + k*t^3)
+#     2. Exponential Frequency Sweep sin(2pi*f_start*exp(ln(f_end/f_start)*t/T)*t)
+#     3. Logarithmic Frequency Sweep (descending variant of #2)
+#     4. Quadratic Phase Modulation  sin(2pi*f0*t + k*t^2)
+#     5. Sinusoidal FM               sin(2pi*(f0 + d*sin(2pi*r*t))*t)
+#     6. Spiral FM                   sin(2pi*(f0 + d*sin(r*t)*t/T)*t)
+#     7. Time-Varying (linear chirp) sin(pi*f0*t^2)
+#     8. Trembling (vibrato + chirp) sin(pi*f0*(1 + d*sin(2pi*r*t))*t^2)
 #
+# Citation:
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Toolkit for Experimental Composition.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.3:
+#   - Audio pipeline UNCHANGED. Output is bit-identical to v2.2
+#     for the same form parameters. Same Formula expressions for
+#     all 8 algorithms. Same 33 presets with same values. Same
+#     Scale peak.
+#   - Form syntax modernized: both optionmenus use colon.
+#   - Divider-option safety: v2.2's preset menu has --- divider
+#     labels (e.g. "--- Cubic Phase Distortion ---") that look
+#     like non-selectable headers but Praat lets the user pick
+#     them. In v2.2 picking a divider silently fell through to
+#     whatever was in Manual_Algorithm. v2.3 detects this and
+#     exits with a clear message asking the user to pick a real
+#     preset or use Custom.
+#   - Show_spectrogram is now an opt-in form toggle (default OFF).
+#     v2.2 always ran two `To Spectrogram` calls — one of which
+#     was DEAD CODE (spec_orig was computed but never drawn).
+#     v2.3 only computes the result spectrogram, and only when
+#     the toggle is on. The dead spec_orig calculation is gone.
+#   - Removed dead variable `sr = Get sampling frequency` that
+#     v2.2 read but never used.
+#   - Visualization rewritten to suite 8x8 standard:
+#       Title bar + metadata subtitle (with formula displayed
+#         per algorithm — promoted from v2.2's formula box)
+#       Panel A (left, headline): modulation curve — the
+#         algorithm-specific diagnostic (phase distortion,
+#         frequency sweep, FM envelope, or chirp profile)
+#       Panel B (right, headline): carrier preview at t=0
+#         (3 cycles of the modulator waveform)
+#       Panel C: zoom overlay (first 50 ms, original gray +
+#         modulated purple)
+#       Panel D: output waveform (full file) OR output
+#         spectrogram (when Show_spectrogram = ON)
+#       Panel E: light-grey summary stats bar matching the
+#         suite-standard pattern
+#   - Dropped the decorative `comment ===` form separators
+#     to keep the form compact.
 # Changelog v2.2:
 #   - Enhanced visualization with spectrograms
 #   - Added carrier signal preview
 #   - Added zoomed waveform detail
 # ============================================================
 
-form Advanced Ring Modulator v2.2
-    comment ========================================
-    comment           PRESETS
-    comment ========================================
-    optionmenu Preset 1
+form Metamodulator v2.3
+    optionmenu Preset: 1
         option Custom (Use Manual Settings)
         option --- Cubic Phase Distortion ---
         option Cubic: Mild Distortion
@@ -65,13 +110,7 @@ form Advanced Ring Modulator v2.2
         option Tremble: Deep Space
         option Tremble: Vintage Synth
         option Tremble: Alien Voice
-
-    comment 
-    comment ========================================
-    comment      MANUAL SETTINGS (Custom Mode)
-    comment ========================================
-    comment Select Algorithm:
-    optionmenu Manual_Algorithm 1
+    optionmenu Manual_Algorithm: 1
         option 1. Cubic Phase Distortion
         option 2. Exponential Frequency Sweep
         option 3. Logarithmic Frequency Sweep
@@ -80,18 +119,13 @@ form Advanced Ring Modulator v2.2
         option 6. Spiral FM
         option 7. Time-Varying (Chirp)
         option 8. Trembling (Vibrato+Chirp)
-    
-    comment --- Frequency Parameters ---
     positive Carrier_Frequency_Hz 200
     positive Start_Frequency_Hz 100
     positive End_Frequency_Hz 800
-    
-    comment --- Modulation/Distortion Parameters ---
     real Modulation_Factor 2.0
     positive Modulation_Rate_Hz 5.0
-    
-    comment --- Output Control ---
     positive Scale_peak 0.95
+    boolean Show_spectrogram 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -103,12 +137,19 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
+# Detect divider preset selection. Praat optionmenus don't have
+# non-selectable separators, so the user can accidentally pick
+# a "--- Category ---" entry. v2.2 silently fell through to manual.
+# v2.3 catches this and asks the user to choose a real preset.
+if left$(preset$, 3) = "---"
+    exitScript: "You selected a category divider (" + preset$ + ")." + newline$ + "Please pick a real preset, or choose 'Custom (Use Manual Settings)' to use the manual algorithm."
+endif
+
 sound = selected("Sound")
 name$ = selected$("Sound")
 
 selectObject: sound
 duration = Get total duration
-sr = Get sampling frequency
 
 # ============================================================
 # PRESET LOGIC
@@ -259,31 +300,40 @@ elsif preset$ = "Tremble: Alien Voice"
 endif
 
 # ============================================================
-# Algorithm Names
+# Algorithm Names + Formulas (formula strings used in title bar)
 # ============================================================
 if algo = 1
     algo_name$ = "Cubic"
+    algo_formula$ = "y = x . sin(2pi.f0.t + k.t^3)"
 elsif algo = 2
     algo_name$ = "ExpSweep"
+    algo_formula$ = "y = x . sin(2pi.f_s.exp(ln(f_e/f_s).t/T).t)"
 elsif algo = 3
     algo_name$ = "LogSweep"
+    algo_formula$ = "y = x . sin(2pi.f_s.exp(-ln(f_s/f_e).t/T).t)"
 elsif algo = 4
     algo_name$ = "Quad"
+    algo_formula$ = "y = x . sin(2pi.f0.t + k.t^2)"
 elsif algo = 5
     algo_name$ = "SinFM"
+    algo_formula$ = "y = x . sin(2pi.(f0 + d.sin(2pi.r.t)).t)"
 elsif algo = 6
     algo_name$ = "Spiral"
+    algo_formula$ = "y = x . sin(2pi.(f0 + d.sin(r.t).t/T).t)"
 elsif algo = 7
     algo_name$ = "TimeVar"
+    algo_formula$ = "y = x . sin(pi.f0.t^2)"
 elsif algo = 8
     algo_name$ = "Tremble"
+    algo_formula$ = "y = x . sin(pi.f0.(1 + d.sin(2pi.r.t)).t^2)"
 endif
 
 # === Info ===
 clearinfo
-writeInfoLine: "=== Metamodulator v2.2 ==="
+writeInfoLine: "=== Metamodulator v2.3 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Algorithm: ", algo, " - ", algo_name$
+appendInfoLine: "Preset: ", preset$
 appendInfoLine: ""
 if algo = 1 or algo = 4
     appendInfoLine: "Carrier: ", f0, " Hz"
@@ -315,7 +365,7 @@ selectObject: result
 totalDuration = Get end time
 
 # ============================================================
-# ALGORITHM IMPLEMENTATION
+# ALGORITHM IMPLEMENTATION (identical to v2.2)
 # ============================================================
 
 appendInfoLine: "Applying ", algo_name$, " modulation..."
@@ -341,82 +391,218 @@ endif
 selectObject: result
 Scale peak: scale_peak
 
+# Final stats
+selectObject: result
+finalDur = Get total duration
+finalPeak = Get absolute extremum: 0, 0, "None"
+
 # ============================================================
-# ENHANCED VISUALIZATION
+# VISUALIZATION  (8 x 8 canvas — suite standard)
 # ============================================================
+
 if draw_visualization
     appendInfoLine: "Creating visualization..."
     
     Erase all
-    Select outer viewport: 0, 8, 0, 8
     
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # ----------------------------------------------------------
+    # Compute spectrogram ONLY if user opted in
+    # ----------------------------------------------------------
+    if show_spectrogram
+        selectObject: result
+        To Spectrogram: 0.01, 4000, 0.002, 20, "Gaussian"
+        spec_result = selected("Spectrogram")
+    endif
+    
+    # ----------------------------------------------------------
+    # TITLE BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Metamodulator: " + algo_name$ + "##"
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.2, "centre", -1.0, "half", name$ + " | " + fixed$(duration, 2) + " s"
-    
-    # === Original Waveform ===
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.7, 0.7, 1.35
-    selectObject: sound
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
+    Text: 0.5, "centre", 0.68, "half", "##METAMODULATOR##"
     Font size: 7
-    Text left: "yes", "Original"
+    Colour: "{0.35, 0.35, 0.52}"
     
-    # === Result Waveform ===
-    Select outer viewport: 0, 8, 1.4, 2.2
-    Select inner viewport: 0.6, 7.7, 1.5, 2.15
-    selectObject: result
-    Colour: "{0.6, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", algo_name$
-    Text bottom: "yes", "Time (s)"
+    # Build a compact parameter summary by algorithm class
+    if algo = 1 or algo = 4
+        paramStr$ = "f0 " + fixed$(f0, 0) + " Hz  |  k " + fixed$(mod_factor, 2)
+    elsif algo = 2 or algo = 3
+        paramStr$ = fixed$(f_start, 0) + " -> " + fixed$(f_end, 0) + " Hz"
+    elsif algo = 5 or algo = 6
+        paramStr$ = "f0 " + fixed$(f0, 0) + " Hz  |  rate " + fixed$(mod_rate, 1) + " Hz  |  depth " + fixed$(mod_factor, 0)
+    elsif algo = 7
+        paramStr$ = "f0 " + fixed$(f0, 0) + " Hz  (linear chirp)"
+    else
+        paramStr$ = "f0 " + fixed$(f0, 0) + " Hz  |  vibrato " + fixed$(mod_rate, 0) + " Hz @ " + fixed$(mod_factor * 100, 1) + "%"
+    endif
     
-    # === Zoomed Detail (first 50ms) ===
-    Select outer viewport: 0, 4, 2.3, 3.4
-    Select inner viewport: 0.6, 3.7, 2.45, 3.3
+    Text: 0.5, "centre", -0.22, "half",
+        ... name$
+        ... + "  |  " + algo_name$
+        ... + "  |  " + paramStr$
+        ... + "  |  " + fixed$(finalDur, 2) + " s"
     
-    zoomEnd = min(0.05, duration)
+    # ----------------------------------------------------------
+    # PANEL A: MODULATION CURVE  (left, headline)
+    # Algorithm-specific diagnostic: phase trajectory for 1/4,
+    # instantaneous frequency for 2/3/5/6, instantaneous freq
+    # of chirp for 7/8.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 0.75, 4.60
+    Select inner viewport: 0.55, 4.00, 0.95, 4.40
     
-    selectObject: sound
-    Colour: "{0.7, 0.7, 0.7}"
-    Draw: 0, zoomEnd, 0, 0, "no", "Curve"
+    modDisplayDur = min(1, duration)
+    nModPoints = 300
     
-    selectObject: result
-    Colour: "{0.6, 0.4, 0.7}"
-    Draw: 0, zoomEnd, 0, 0, "no", "Curve"
+    if algo = 1 or algo = 4
+        # Phase distortion (cubic or quadratic)
+        if algo = 1
+            maxPhase = abs(mod_factor * (modDisplayDur^3))
+        else
+            maxPhase = abs(mod_factor * (modDisplayDur^2))
+        endif
+        if maxPhase < 0.1
+            maxPhase = 1
+        endif
+        
+        Axes: 0, modDisplayDur, -maxPhase * 1.2, maxPhase * 1.2
+        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, -maxPhase * 1.2, maxPhase * 1.2
+        
+        Colour: "{0.85, 0.85, 0.85}"
+        Draw line: 0, 0, modDisplayDur, 0
+        
+        Colour: "{0.55, 0.35, 0.78}"
+        Line width: 1.8
+        for mp from 2 to nModPoints
+            t1 = (mp - 2) / nModPoints * modDisplayDur
+            t2 = (mp - 1) / nModPoints * modDisplayDur
+            if algo = 1
+                p1 = mod_factor * (t1^3)
+                p2 = mod_factor * (t2^3)
+            else
+                p1 = mod_factor * (t1^2)
+                p2 = mod_factor * (t2^2)
+            endif
+            Draw line: t1, p1, t2, p2
+        endfor
+        Line width: 1
+        
+        yLabel$ = "Phase (rad)"
+        
+    elsif algo = 2 or algo = 3
+        # Frequency sweep
+        minF = min(f_start, f_end)
+        maxF = max(f_start, f_end)
+        fMargin = (maxF - minF) * 0.15
+        if fMargin < 20
+            fMargin = 20
+        endif
+        
+        Axes: 0, modDisplayDur, minF - fMargin, maxF + fMargin
+        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, minF - fMargin, maxF + fMargin
+        
+        Colour: "{0.55, 0.35, 0.78}"
+        Line width: 1.8
+        for mp from 2 to nModPoints
+            t1 = (mp - 2) / nModPoints * modDisplayDur
+            t2 = (mp - 1) / nModPoints * modDisplayDur
+            if algo = 2
+                freq1 = f_start * exp(ln(f_end/f_start) * t1/totalDuration)
+                freq2 = f_start * exp(ln(f_end/f_start) * t2/totalDuration)
+            else
+                freq1 = f_start * exp(-ln(f_start/f_end) * t1/totalDuration)
+                freq2 = f_start * exp(-ln(f_start/f_end) * t2/totalDuration)
+            endif
+            Draw line: t1, freq1, t2, freq2
+        endfor
+        Line width: 1
+        
+        yLabel$ = "Freq (Hz)"
+        
+    elsif algo = 5 or algo = 6
+        # FM visualization
+        minF = f0 - abs(mod_factor) * 1.2
+        maxF = f0 + abs(mod_factor) * 1.2
+        
+        Axes: 0, modDisplayDur, minF, maxF
+        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, minF, maxF
+        
+        Colour: "{0.85, 0.85, 0.85}"
+        Draw line: 0, f0, modDisplayDur, f0
+        
+        Colour: "{0.55, 0.35, 0.78}"
+        Line width: 1.8
+        for mp from 2 to nModPoints
+            t1 = (mp - 2) / nModPoints * modDisplayDur
+            t2 = (mp - 1) / nModPoints * modDisplayDur
+            if algo = 5
+                freq1 = f0 + mod_factor * sin(2 * pi * mod_rate * t1)
+                freq2 = f0 + mod_factor * sin(2 * pi * mod_rate * t2)
+            else
+                freq1 = f0 + mod_factor * sin(mod_rate * t1) * t1/totalDuration
+                freq2 = f0 + mod_factor * sin(mod_rate * t2) * t2/totalDuration
+            endif
+            Draw line: t1, freq1, t2, freq2
+        endfor
+        Line width: 1
+        
+        yLabel$ = "Freq (Hz)"
+        
+    elsif algo = 7 or algo = 8
+        # Chirp visualization
+        maxInstF = f0 * modDisplayDur
+        if algo = 8
+            maxInstF = f0 * (1 + abs(mod_factor)) * modDisplayDur
+        endif
+        if maxInstF < 50
+            maxInstF = 100
+        endif
+        
+        Axes: 0, modDisplayDur, 0, maxInstF * 1.15
+        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, 0, maxInstF * 1.15
+        
+        Colour: "{0.55, 0.35, 0.78}"
+        Line width: 1.8
+        for mp from 2 to nModPoints
+            t1 = (mp - 2) / nModPoints * modDisplayDur
+            t2 = (mp - 1) / nModPoints * modDisplayDur
+            if algo = 7
+                freq1 = f0 * t1
+                freq2 = f0 * t2
+            else
+                freq1 = f0 * (1 + mod_factor * sin(2 * pi * mod_rate * t1)) * t1
+                freq2 = f0 * (1 + mod_factor * sin(2 * pi * mod_rate * t2)) * t2
+            endif
+            Draw line: t1, freq1, t2, freq2
+        endfor
+        Line width: 1
+        
+        yLabel$ = "Inst. Freq (Hz)"
+    endif
     
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Amplitude"
+    Text left: "yes", yLabel$
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Zoom: 0-50ms (gray=orig, purple=mod)"
     
-    # === Carrier Signal Preview ===
-    Select outer viewport: 4, 8, 2.3, 3.4
-    Select inner viewport: 4.4, 7.7, 2.45, 3.3
+    # ----------------------------------------------------------
+    # PANEL B: CARRIER PREVIEW AT t=0  (right, headline)
+    # Shows the actual modulator waveform shape (3 cycles).
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 0.75, 4.60
+    Select inner viewport: 4.55, 7.75, 0.95, 4.40
     
-    # Show 3 cycles of the carrier at t=0
-    if algo = 1 or algo = 4 or algo = 5 or algo = 6
-        carrierFreq = f0
-    elsif algo = 2
+    # Pick a sensible carrier reference frequency for the preview
+    if algo = 2 or algo = 3
         carrierFreq = f_start
-    elsif algo = 3
-        carrierFreq = f_start
-    elsif algo = 7 or algo = 8
+    else
         carrierFreq = f0
+    endif
+    if carrierFreq < 10
+        carrierFreq = 100
     endif
     
     carrierPeriod = 1 / carrierFreq
@@ -424,15 +610,17 @@ if draw_visualization
     nCarrierPts = 200
     
     Axes: 0, carrierPreviewDur * 1000, -1.1, 1.1
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, carrierPreviewDur * 1000, -1.1, 1.1
+    Paint rectangle: "{0.98, 0.98, 0.98}", 0, carrierPreviewDur * 1000, -1.1, 1.1
     
     # Zero line
     Colour: "{0.85, 0.85, 0.85}"
     Draw line: 0, 0, carrierPreviewDur * 1000, 0
+    Draw line: 0, 1, carrierPreviewDur * 1000, 1
+    Draw line: 0, -1, carrierPreviewDur * 1000, -1
     
-    # Draw carrier
-    Colour: "{0.6, 0.5, 0.7}"
-    Line width: 1.5
+    # Draw the modulator waveform (instantaneous shape near t=0)
+    Colour: "{0.55, 0.35, 0.78}"
+    Line width: 1.8
     for cp from 2 to nCarrierPts
         t1 = (cp - 2) / nCarrierPts * carrierPreviewDur
         t2 = (cp - 1) / nCarrierPts * carrierPreviewDur
@@ -470,254 +658,173 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Carrier"
+    Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (ms)"
-    Text top: "no", "Modulator Signal (3 cycles @ " + fixed$(carrierFreq, 0) + " Hz)"
     
-    # === Modulation Curve ===
-    Select outer viewport: 0, 4, 3.5, 4.8
-    Select inner viewport: 0.6, 3.7, 3.65, 4.7
-    
-    modDisplayDur = min(1, duration)
-    nModPoints = 300
-    
-    if algo = 1 or algo = 4
-        # Phase distortion visualization
-        if algo = 1
-            maxPhase = abs(mod_factor * (modDisplayDur^3))
-        else
-            maxPhase = abs(mod_factor * (modDisplayDur^2))
-        endif
-        if maxPhase < 0.1
-            maxPhase = 1
-        endif
-        
-        Axes: 0, modDisplayDur, -maxPhase * 1.2, maxPhase * 1.2
-        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, -maxPhase * 1.2, maxPhase * 1.2
-        
-        Colour: "{0.85, 0.85, 0.85}"
-        Draw line: 0, 0, modDisplayDur, 0
-        
-        Colour: "{0.6, 0.5, 0.7}"
-        Line width: 1.5
-        for mp from 2 to nModPoints
-            t1 = (mp - 2) / nModPoints * modDisplayDur
-            t2 = (mp - 1) / nModPoints * modDisplayDur
-            if algo = 1
-                p1 = mod_factor * (t1^3)
-                p2 = mod_factor * (t2^3)
-            else
-                p1 = mod_factor * (t1^2)
-                p2 = mod_factor * (t2^2)
-            endif
-            Draw line: t1, p1, t2, p2
-        endfor
-        Line width: 1
-        
-        yLabel$ = "Phase (rad)"
-        plotTitle$ = "Phase Distortion"
-        
-    elsif algo = 2 or algo = 3
-        # Frequency sweep
-        minF = min(f_start, f_end)
-        maxF = max(f_start, f_end)
-        fMargin = (maxF - minF) * 0.15
-        if fMargin < 20
-            fMargin = 20
-        endif
-        
-        Axes: 0, modDisplayDur, minF - fMargin, maxF + fMargin
-        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, minF - fMargin, maxF + fMargin
-        
-        Colour: "{0.6, 0.5, 0.7}"
-        Line width: 1.5
-        for mp from 2 to nModPoints
-            t1 = (mp - 2) / nModPoints * modDisplayDur
-            t2 = (mp - 1) / nModPoints * modDisplayDur
-            if algo = 2
-                freq1 = f_start * exp(ln(f_end/f_start) * t1/totalDuration)
-                freq2 = f_start * exp(ln(f_end/f_start) * t2/totalDuration)
-            else
-                freq1 = f_start * exp(-ln(f_start/f_end) * t1/totalDuration)
-                freq2 = f_start * exp(-ln(f_start/f_end) * t2/totalDuration)
-            endif
-            Draw line: t1, freq1, t2, freq2
-        endfor
-        Line width: 1
-        
-        yLabel$ = "Freq (Hz)"
-        if algo = 2
-            plotTitle$ = "Exponential Sweep"
-        else
-            plotTitle$ = "Logarithmic Sweep"
-        endif
-        
-    elsif algo = 5 or algo = 6
-        # FM visualization
-        minF = f0 - abs(mod_factor) * 1.2
-        maxF = f0 + abs(mod_factor) * 1.2
-        
-        Axes: 0, modDisplayDur, minF, maxF
-        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, minF, maxF
-        
-        Colour: "{0.85, 0.85, 0.85}"
-        Draw line: 0, f0, modDisplayDur, f0
-        
-        Colour: "{0.6, 0.5, 0.7}"
-        Line width: 1.5
-        for mp from 2 to nModPoints
-            t1 = (mp - 2) / nModPoints * modDisplayDur
-            t2 = (mp - 1) / nModPoints * modDisplayDur
-            if algo = 5
-                freq1 = f0 + mod_factor * sin(2 * pi * mod_rate * t1)
-                freq2 = f0 + mod_factor * sin(2 * pi * mod_rate * t2)
-            else
-                freq1 = f0 + mod_factor * sin(mod_rate * t1) * t1/totalDuration
-                freq2 = f0 + mod_factor * sin(mod_rate * t2) * t2/totalDuration
-            endif
-            Draw line: t1, freq1, t2, freq2
-        endfor
-        Line width: 1
-        
-        yLabel$ = "Freq (Hz)"
-        if algo = 5
-            plotTitle$ = "Sinusoidal FM"
-        else
-            plotTitle$ = "Spiral FM"
-        endif
-        
-    elsif algo = 7 or algo = 8
-        # Chirp visualization
-        maxInstF = f0 * modDisplayDur
-        if algo = 8
-            maxInstF = f0 * (1 + abs(mod_factor)) * modDisplayDur
-        endif
-        if maxInstF < 50
-            maxInstF = 100
-        endif
-        
-        Axes: 0, modDisplayDur, 0, maxInstF * 1.15
-        Paint rectangle: "{0.98, 0.98, 0.98}", 0, modDisplayDur, 0, maxInstF * 1.15
-        
-        Colour: "{0.6, 0.5, 0.7}"
-        Line width: 1.5
-        for mp from 2 to nModPoints
-            t1 = (mp - 2) / nModPoints * modDisplayDur
-            t2 = (mp - 1) / nModPoints * modDisplayDur
-            if algo = 7
-                freq1 = f0 * t1
-                freq2 = f0 * t2
-            else
-                freq1 = f0 * (1 + mod_factor * sin(2 * pi * mod_rate * t1)) * t1
-                freq2 = f0 * (1 + mod_factor * sin(2 * pi * mod_rate * t2)) * t2
-            endif
-            Draw line: t1, freq1, t2, freq2
-        endfor
-        Line width: 1
-        
-        yLabel$ = "Inst. Freq"
-        if algo = 7
-            plotTitle$ = "Time-Varying Chirp"
-        else
-            plotTitle$ = "Trembling Chirp"
-        endif
-    endif
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", yLabel$
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", plotTitle$
-    
-    # === Spectrogram Comparison ===
-    Select outer viewport: 4, 8, 3.5, 4.8
-    Select inner viewport: 4.4, 7.7, 3.65, 4.7
-    
-    # Create spectrograms
-    selectObject: sound
-    To Spectrogram: 0.01, 4000, 0.002, 20, "Gaussian"
-    spec_orig = selected("Spectrogram")
-    
-    selectObject: result
-    To Spectrogram: 0.01, 4000, 0.002, 20, "Gaussian"
-    spec_result = selected("Spectrogram")
-    
-    # Draw result spectrogram
-    selectObject: spec_result
-    Paint: 0, 0, 0, 4000, 100, "yes", 50, 6, 0, "no"
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Freq (Hz)"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output Spectrogram"
-    
-    removeObject: spec_orig, spec_result
-    
-    # === Algorithm Formula Box ===
-    Select outer viewport: 0, 8, 4.9, 5.6
-    Select inner viewport: 0.6, 7.7, 5.0, 5.5
-    
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.97}", 0, 1, 0, 1
+    # ----------------------------------------------------------
+    # ALIGNED PANEL TITLES
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 8
+    Select inner viewport: 0, 8, 0, 8
+    Axes: 0, 8, 0, 8
     
     Font size: 7
-    Colour: "{0.3, 0.3, 0.4}"
+    Colour: "Black"
     
+    # Algorithm-specific title for Panel A
     if algo = 1
-        Text: 0.5, "centre", 0.65, "half", "CUBIC: y = x · sin(2π·f₀·t + k·t³)"
-        Text: 0.5, "centre", 0.25, "half", "Harsh, metallic phase distortion"
+        panelATitle$ = "Phase trajectory: cubic"
     elsif algo = 2
-        Text: 0.5, "centre", 0.65, "half", "EXP SWEEP: y = x · sin(2π·f₀·e^(ln(f₁/f₀)·t/T)·t)"
-        Text: 0.5, "centre", 0.25, "half", "Rising frequency sweep"
+        panelATitle$ = "Frequency sweep: exponential"
     elsif algo = 3
-        Text: 0.5, "centre", 0.65, "half", "LOG SWEEP: y = x · sin(2π·f₀·e^(-ln(f₀/f₁)·t/T)·t)"
-        Text: 0.5, "centre", 0.25, "half", "Falling frequency sweep"
+        panelATitle$ = "Frequency sweep: logarithmic"
     elsif algo = 4
-        Text: 0.5, "centre", 0.65, "half", "QUADRATIC: y = x · sin(2π·f₀·t + k·t²)"
-        Text: 0.5, "centre", 0.25, "half", "Softer, tube-like distortion"
+        panelATitle$ = "Phase trajectory: quadratic"
     elsif algo = 5
-        Text: 0.5, "centre", 0.65, "half", "SIN FM: y = x · sin(2π·(f₀ + d·sin(2π·r·t))·t)"
-        Text: 0.5, "centre", 0.25, "half", "Classic frequency modulation"
+        panelATitle$ = "Instantaneous freq: sinusoidal FM"
     elsif algo = 6
-        Text: 0.5, "centre", 0.65, "half", "SPIRAL: y = x · sin(2π·(f₀ + d·sin(r·t)·t/T)·t)"
-        Text: 0.5, "centre", 0.25, "half", "Evolving vortex modulation"
+        panelATitle$ = "Instantaneous freq: spiral FM"
     elsif algo = 7
-        Text: 0.5, "centre", 0.65, "half", "TIME-VAR: y = x · sin(π·f₀·t²)"
-        Text: 0.5, "centre", 0.25, "half", "Linear chirp"
-    elsif algo = 8
-        Text: 0.5, "centre", 0.65, "half", "TREMBLE: y = x · sin(π·f₀·(1 + d·sin(2π·r·t))·t²)"
-        Text: 0.5, "centre", 0.25, "half", "Chirp with vibrato"
+        panelATitle$ = "Instantaneous freq: linear chirp"
+    else
+        panelATitle$ = "Instantaneous freq: trembling chirp"
     endif
+    
+    Text: 2.10, "centre", 7.30, "half", panelATitle$
+    Text: 6.10, "centre", 7.30, "half", "Modulator waveform (3 cycles @ " + fixed$(carrierFreq, 0) + " Hz)"
+    
+    # ----------------------------------------------------------
+    # PANEL C: ZOOM OVERLAY  (first 50 ms)
+    # Original (gray) + result (purple) overlaid.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.68, 5.55
+    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    
+    zoomDur = 0.05
+    if zoomDur > duration
+        zoomDur = duration
+    endif
+    
+    selectObject: sound
+    origPeak = Get absolute extremum: 0, zoomDur, "None"
+    selectObject: result
+    resPeak = Get absolute extremum: 0, zoomDur, "None"
+    zoomMax = origPeak
+    if resPeak > zoomMax
+        zoomMax = resPeak
+    endif
+    if zoomMax < 0.001
+        zoomMax = 0.001
+    endif
+    zAmpViz = zoomMax * 1.15
+    
+    Axes: 0, zoomDur, -zAmpViz, zAmpViz
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, zoomDur, -zAmpViz, zAmpViz
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, zoomDur, 0
+    
+    # Original (gray, behind)
+    selectObject: sound
+    Colour: "{0.65, 0.65, 0.65}"
+    Line width: 1
+    Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+    
+    # Result (purple, on top)
+    selectObject: result
+    Colour: "{0.55, 0.35, 0.78}"
+    Line width: 1.3
+    Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+    Line width: 1
     
     Colour: "Black"
     Draw inner box
-    
-    # === Parameter Summary ===
-    Select outer viewport: 0, 8, 5.7, 6.2
-    Axes: 0, 1, 0, 1
-    
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
-    
     Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
+    Text top: "no", "Zoom: first " + fixed$(zoomDur * 1000, 0) + " ms  (gray = original, purple = modulated)"
+    Text left: "yes", "Amp"
+    Text bottom: "yes", "Time (s)"
     
-    if algo = 1 or algo = 4
-        Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Factor: " + fixed$(mod_factor, 2)
-    elsif algo = 2 or algo = 3
-        Text: 0.5, "centre", 0.5, "half", "Start: " + fixed$(f_start, 0) + " Hz → End: " + fixed$(f_end, 0) + " Hz"
-    elsif algo = 5 or algo = 6
-        Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Rate: " + fixed$(mod_rate, 1) + " Hz | Depth: " + fixed$(mod_factor, 0) + " Hz"
-    elsif algo = 7
-        Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Chirp: quadratic"
-    elsif algo = 8
-        Text: 0.5, "centre", 0.5, "half", "Carrier: " + fixed$(f0, 0) + " Hz | Vibrato: " + fixed$(mod_rate, 0) + " Hz @ " + fixed$(mod_factor * 100, 1) + "%"
+    # ----------------------------------------------------------
+    # PANEL D: OUTPUT WAVEFORM or SPECTROGRAM
+    # Conditional on Show_spectrogram form toggle.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.62, 6.55
+    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    
+    if show_spectrogram
+        selectObject: spec_result
+        Paint: 0, 0, 0, 4000, 100, "yes", 50, 6, 0, "no"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Output spectrogram"
+        Text left: "yes", "Freq (Hz)"
+        Text bottom: "yes", "Time (s)"
+    else
+        selectObject: result
+        outPeakViz = Get absolute extremum: 0, 0, "None"
+        if outPeakViz < 0.001
+            outPeakViz = 0.001
+        endif
+        ampViz = outPeakViz * 1.15
+        
+        Axes: 0, finalDur, -ampViz, ampViz
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -ampViz, ampViz
+        Colour: "{0.82, 0.82, 0.82}"
+        Draw line: 0, 0, finalDur, 0
+        
+        selectObject: result
+        Colour: "{0.55, 0.35, 0.78}"
+        Line width: 1
+        Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
+        
+        Colour: "Black"
+        Line width: 1
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Output (full file)"
+        Text left: "yes", "Amp"
+        Text bottom: "yes", "Time (s)"
     endif
+    
+    # ----------------------------------------------------------
+    # PANEL E: SUMMARY BAR  (suite standard — light grey)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.62, 7.30
+    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    
+    if show_spectrogram
+        specStr$ = "shown"
+    else
+        specStr$ = "off"
+    endif
+    
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.75, "half",
+        ... "##" + algo_name$ + "##"
+        ... + "  " + name$
+        ... + "  |  Preset: " + preset$
+        ... + "  |  " + paramStr$
+    
+    Text: 0.02, "left", 0.28, "half",
+        ... algo_formula$
+        ... + "  |  Scale peak: " + fixed$(scale_peak, 2)
+        ... + "  |  Spectrogram: " + specStr$
+        ... + "  |  Out: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
+    
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
     
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    
+    # Cleanup spectrogram if computed
+    if show_spectrogram
+        removeObject: spec_result
+    endif
 endif
 
 # === Final Info ===
@@ -726,6 +833,7 @@ selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Duration: ", fixed$(finalDur, 2), " s, peak ", fixed$(finalPeak, 4)
 
 if play_result
     selectObject: result
