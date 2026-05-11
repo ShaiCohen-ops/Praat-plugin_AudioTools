@@ -3,9 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026) - Unified Cross-Platform Version
+# Version: 1.1 (2026)
 # License: MIT License
-# Repository: [github.com](https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools)
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   IRCAM-Style Pitch-Tracked Additive Resynthesizer
@@ -29,11 +29,57 @@
 #     - gaussian formant band
 #     - random static / random slow
 #
+#   ENGINEERING NOTES:
+#   - F0 + intensity + events CSV building: each CSV is built
+#     as an in-memory string and written with one writeFile call.
+#     appendFileLine inside a loop opens+closes the file every
+#     iteration, which is dramatically slower.
+#   - Cross-platform Python discovery: macOS tries Homebrew,
+#     Framework, /usr/local, then PATH; Windows uses "python";
+#     other platforms use "python3". A probe step verifies
+#     numpy + scipy + soundfile before invoking the engine.
+#   - The probe marker path is regex-converted from Windows
+#     backslashes to forward slashes so Python sees a portable
+#     path in the probe command string.
+#
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
-#   [github.com](https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools)
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.1:
+#   - Audio pipeline UNCHANGED. Output bit-identical to v1.0
+#     for the same form parameters and same seed. Same pitch
+#     tracking, same intensity extraction, same event-segment
+#     building, same Python additive engine (helper unchanged),
+#     same stats parsing.
+#   - NEW: Show_spectrograms form toggle (default OFF). v1.0
+#     always computed `To Spectrogram` twice (original + synth)
+#     for the visualization panels — that can take several
+#     seconds on long files. Default OFF means the script's
+#     wallclock is dominated only by feature extraction and
+#     the Python additive engine. Turn ON to see the
+#     time-frequency comparison between input and resynthesis.
+#   - Visualization rewritten to suite 8x8 standard (v1.0 used
+#     8x9):
+#       Title bar + metadata subtitle
+#       Panel A (left, headline): tracked F0 contour — the
+#         analysis input that drives synthesis
+#       Panel B (right, headline): partial frequency plan
+#         (min/mean/max ranges per partial) — the synthesis
+#         spec, this script's most distinctive visual
+#       Panel C: original waveform (or original spectrogram
+#         when Show_spectrograms = ON)
+#       Panel D: synthesized waveform (or synth spectrogram
+#         when Show_spectrograms = ON)
+#       Panel E: summary stats bar
+#     All v1.0 information preserved (F0 trace, partial ranges,
+#     waveform comparison, F0/RMS/peak stats, voiced %).
+#   - Header documents the engineering pieces (CSV strategy,
+#     Python discovery, probe marker path conversion) so future
+#     maintainers understand what is intentional.
+# Changelog v1.0:
+#   - Initial unified cross-platform release.
 # ============================================================
 
 # ---- INPUT CHECK ----
@@ -107,7 +153,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Pitch-Tracked Additive Resynthesizer v1.0
+form Pitch-Tracked Additive Resynthesizer v1.1
     optionmenu Preset: 1
         option custom
         option natural_voice
@@ -143,6 +189,8 @@ form Pitch-Tracked Additive Resynthesizer v1.0
         option noise_unvoiced
         option copy_original_unvoiced
     real Output_duration_s 0
+    boolean Show_spectrograms 0
+    comment (ON shows time-frequency comparison, but adds analysis time)
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -339,7 +387,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Pitch-Tracked Additive Resynthesizer v1.0 ==="
+writeInfoLine:  "=== Pitch-Tracked Additive Resynthesizer v1.1 ==="
 appendInfoLine: "Input:           ", soundName$
 appendInfoLine: ""
 appendInfoLine: "Pitch range:     ", fixed$(pitch_floor_Hz, 1), " - ", fixed$(pitch_ceiling_Hz, 1), " Hz"
@@ -655,100 +703,73 @@ if fileReadable(tempStats$)
     endfor
 endif
 
-###############################################################################
-# VISUALIZATION
-###############################################################################
-
+# ============================================================================
+# VISUALIZATION  (8 x 8 canvas — suite standard)
+# ============================================================================
 if draw_visualization
     appendInfoLine: ""
-    appendInfoLine: "Drawing visualization..."
+    appendInfoLine: "[5/5] Drawing visualization..."
+
+    # ----------------------------------------------------------
+    # Compute spectrograms ONLY if user opted in
+    # ----------------------------------------------------------
+    if show_spectrograms
+        appendInfoLine: "  Computing spectrograms..."
+
+        selectObject: sound
+        if nChannels > 1
+            Extract one channel: 1
+            tmpOrig = selected("Sound")
+        else
+            Copy: "tmpOrig"
+            tmpOrig = selected("Sound")
+        endif
+        selectObject: tmpOrig
+        To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
+        specOrig = selected("Spectrogram")
+
+        selectObject: resultSound
+        outChans_pre = Get number of channels
+        if outChans_pre > 1
+            Extract one channel: 1
+            tmpOut = selected("Sound")
+        else
+            Copy: "tmpOut"
+            tmpOut = selected("Sound")
+        endif
+        selectObject: tmpOut
+        To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
+        specOut = selected("Spectrogram")
+    endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 9
-    Font size: 10
+    Black
+    Plain line
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # ----------------------------------------------------------
+    # TITLE BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Pitch-Tracked Additive Resynthesizer##"
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    subtitleStr$ = soundName$ + " | " + partialFamStat$ + " | " + ampLawStat$ + " | partials=" + nPartialsStat$
-    Text: 0.5, "centre", -1.2, "half", subtitleStr$
-
-    # === Original waveform ===
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.7, 0.65, 1.45
-    selectObject: sound
-    Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
+    Text: 0.5, "centre", 0.68, "half", "##PITCH-TRACKED ADDITIVE RESYNTHESIZER##"
     Font size: 7
-    Text left: "yes", "Original"
-    Text top: "no", fixed$(dur, 2) + " s"
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half",
+        ... soundName$
+        ... + "  |  Family: " + partialFamStat$
+        ... + "  |  Amp: " + ampLawStat$
+        ... + "  |  Partials: " + nPartialsStat$
+        ... + "  |  Voicing: " + voicingStr$
+        ... + "  |  F0: " + f0MinStat$ + "-" + f0MaxStat$ + " Hz (mean " + f0MeanStat$ + ")"
 
-    # === Synthesized waveform ===
-    Select outer viewport: 0, 8, 1.5, 2.4
-    Select inner viewport: 0.6, 7.7, 1.55, 2.35
-    selectObject: resultSound
-    Colour: "{0.2, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Synthesized"
-    Text bottom: "yes", "Time (s)"
-
-    # === Original spectrogram ===
-    Select outer viewport: 0, 8, 2.5, 3.7
-    Select inner viewport: 0.6, 7.7, 2.6, 3.6
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrig = selected("Sound")
-    else
-        Copy: "tmpOrig"
-        tmpOrig = selected("Sound")
-    endif
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-    specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Hz"
-    Text top: "no", "Original spectrogram"
-    removeObject: specOrig, tmpOrig
-
-    # === Synthesized spectrogram ===
-    Select outer viewport: 0, 8, 3.7, 4.9
-    Select inner viewport: 0.6, 7.7, 3.8, 4.8
-    selectObject: resultSound
-    outChans = Get number of channels
-    if outChans > 1
-        Extract one channel: 1
-        tmpOut = selected("Sound")
-    else
-        Copy: "tmpOut"
-        tmpOut = selected("Sound")
-    endif
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-    specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Synthesized spectrogram"
-    removeObject: specOut, tmpOut
-
-    # === F0 curve ===
-    Select outer viewport: 0, 8, 5.0, 6.1
-    Select inner viewport: 0.6, 7.7, 5.1, 6.0
+    # ----------------------------------------------------------
+    # PANEL A: TRACKED F0 CONTOUR  (left, headline)
+    # The analysis input — what drives the additive synthesis.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 0.75, 4.60
+    Select inner viewport: 0.55, 4.00, 0.95, 4.40
 
     if nF0Pts > 0
         f0Lo = pitch_floor_Hz
@@ -756,7 +777,25 @@ if draw_visualization
         Axes: 0, dur, f0Lo, f0Hi
         Paint rectangle: "{0.97, 0.97, 0.99}", 0, dur, f0Lo, f0Hi
 
-        Colour: "{0.2, 0.4, 0.7}"
+        # Light reference grid at common octaves
+        Colour: "{0.88, 0.88, 0.92}"
+        Line width: 1
+        Dotted line
+        octaveLine = 100
+        while octaveLine < f0Hi
+            if octaveLine > f0Lo
+                Draw line: 0, octaveLine, dur, octaveLine
+                Font size: 5
+                Colour: "{0.55, 0.55, 0.55}"
+                Text: 0, "left", octaveLine, "half", "  " + string$(octaveLine)
+                Colour: "{0.88, 0.88, 0.92}"
+            endif
+            octaveLine = octaveLine * 2
+        endwhile
+        Solid line
+
+        # F0 trace
+        Colour: "{0.20, 0.40, 0.70}"
         Line width: 2
         prevValid = 0
         prevT = 0
@@ -782,7 +821,6 @@ if draw_visualization
         Font size: 6
         Text left: "yes", "F0 (Hz)"
         Text bottom: "yes", "Time (s)"
-        Text top: "no", "Tracked F0 contour | mean=" + f0MeanStat$ + " Hz | voiced=" + voicedPctStat$ + "%"
     else
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
@@ -790,12 +828,16 @@ if draw_visualization
         Colour: "{0.5, 0.5, 0.5}"
         Text: 0.5, "centre", 0.5, "half", "(no F0 trace data)"
         Colour: "Black"
-        Draw rectangle: 0, 1, 0, 1
+        Draw inner box
     endif
 
-    # === Partial plan ===
-    Select outer viewport: 0, 8, 6.2, 7.4
-    Select inner viewport: 0.6, 7.7, 6.3, 7.3
+    # ----------------------------------------------------------
+    # PANEL B: PARTIAL FREQUENCY PLAN  (right, headline)
+    # The synthesis spec — min/mean/max ranges per partial.
+    # This is the script's most distinctive visual.
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 0.75, 4.60
+    Select inner viewport: 4.55, 7.75, 0.95, 4.40
 
     if nPartialEntries > 0
         # Find global frequency range
@@ -817,12 +859,11 @@ if draw_visualization
         Paint rectangle: "{0.97, 0.97, 0.99}", 0, nPartialEntries + 1, pfMin * 0.9, pfMax * 1.1
 
         for iP from 1 to nPartialEntries
-            Colour: "{0.7, 0.4, 0.2}"
+            Colour: "{0.70, 0.40, 0.20}"
             Line width: 4
             Draw line: iP, pmin_'iP', iP, pmax_'iP'
             Line width: 1
-            Colour: "{0.2, 0.2, 0.2}"
-            Paint circle (mm): "{0.2, 0.2, 0.7}", iP, pmean_'iP', 0.8
+            Paint circle (mm): "{0.20, 0.20, 0.70}", iP, pmean_'iP', 0.8
         endfor
 
         Colour: "Black"
@@ -830,7 +871,6 @@ if draw_visualization
         Font size: 6
         Text left: "yes", "Hz"
         Text bottom: "yes", "Partial index"
-        Text top: "no", "Partial frequency ranges (min/mean/max) | family=" + partialFamStat$
     else
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
@@ -838,37 +878,128 @@ if draw_visualization
         Colour: "{0.5, 0.5, 0.5}"
         Text: 0.5, "centre", 0.5, "half", "(no partial data)"
         Colour: "Black"
-        Draw rectangle: 0, 1, 0, 1
+        Draw inner box
     endif
 
-    # === Summary panel ===
-    Select outer viewport: 0, 8, 7.5, 8.9
-    Select inner viewport: 0.6, 7.7, 7.6, 8.8
-
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    # ----------------------------------------------------------
+    # ALIGNED PANEL TITLES
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 8
+    Select inner viewport: 0, 8, 0, 8
+    Axes: 0, 8, 0, 8
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.91, "half", "Summary:"
+    Text: 2.10, "centre", 7.30, "half", "Tracked F0 contour (analysis input)"
+    Text: 6.10, "centre", 7.30, "half", "Partial frequency plan (min/mean/max)"
+
+    # ----------------------------------------------------------
+    # PANEL C: ORIGINAL WAVEFORM or SPECTROGRAM
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.68, 5.55
+    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+
+    if show_spectrograms
+        selectObject: specOrig
+        Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Original spectrogram"
+        Text left: "yes", "Hz"
+    else
+        selectObject: sound
+        Colour: "{0.50, 0.50, 0.50}"
+        Draw: 0, 0, 0, 0, "no", "Curve"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Original waveform (" + fixed$(dur, 2) + " s)"
+        Text left: "yes", "Amp"
+    endif
+
+    # ----------------------------------------------------------
+    # PANEL D: SYNTHESIZED WAVEFORM or SPECTROGRAM
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.62, 6.55
+    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+
+    if show_spectrograms
+        selectObject: specOut
+        Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Synthesized spectrogram"
+        Text left: "yes", "Hz"
+        Text bottom: "yes", "Time (s)"
+    else
+        selectObject: resultSound
+        Colour: "{0.20, 0.50, 0.70}"
+        Draw: 0, 0, 0, 0, "no", "Curve"
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text top: "no", "Synthesized waveform (" + durationStat$ + " s)"
+        Text left: "yes", "Amp"
+        Text bottom: "yes", "Time (s)"
+    endif
+
+    # ----------------------------------------------------------
+    # PANEL E: SUMMARY BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.62, 7.30
+    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    if show_spectrograms
+        spectrogramStr$ = "shown"
+    else
+        spectrogramStr$ = "off"
+    endif
+
     Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.75, "half", "F0: " + f0MinStat$ + " - " + f0MaxStat$ + " Hz | mean=" + f0MeanStat$ + " | median=" + f0MedianStat$ + " | voiced=" + voicedPctStat$ + "%"
-    Text: 0.02, "left", 0.57, "half", "Partials: " + nPartialsStat$ + " (" + partialFamStat$ + ") | Amp law: " + ampLawStat$
-    Text: 0.02, "left", 0.39, "half", "Duration: " + fixed$(dur, 2) + "s -> " + durationStat$ + "s | Normalize: " + normModeStat$ + " | RMS: " + rmsInStat$ + " -> " + rmsOutStat$ + " | Peak: " + peakOutStat$
-    Text: 0.02, "left", 0.21, "half", "Voicing: " + voicingStr$ + " | Env: " + envSourceStr$ + " | Stereo: " + stereoStr$
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.02, "left", 0.05, "half", "Samples: " + nSamplesStat$ + " @ " + sampleRateStat$ + " Hz | Seed=" + string$(seed)
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.78, "half",
+        ... "##" + partialFamStat$ + " / " + ampLawStat$ + "##"
+        ... + "  " + soundName$
+        ... + "  |  Partials: " + nPartialsStat$
+        ... + "  |  Voicing: " + voicingStr$
+        ... + "  |  Env: " + envSourceStr$
+        ... + "  |  Stereo: " + stereoStr$
+
+    Text: 0.02, "left", 0.50, "half",
+        ... "F0: " + f0MinStat$ + " - " + f0MaxStat$ + " Hz"
+        ... + "  |  Mean: " + f0MeanStat$
+        ... + "  |  Median: " + f0MedianStat$
+        ... + "  |  Voiced: " + voicedPctStat$ + "%"
+        ... + "  |  Samples: " + nSamplesStat$ + " @ " + sampleRateStat$ + " Hz"
+
+    Text: 0.02, "left", 0.20, "half",
+        ... "Duration: " + fixed$(dur, 2) + "s -> " + durationStat$ + "s"
+        ... + "  |  Normalize: " + normModeStat$
+        ... + "  |  RMS: " + rmsInStat$ + " -> " + rmsOutStat$
+        ... + "  |  Peak: " + peakOutStat$
+        ... + "  |  Seed: " + string$(seed)
+        ... + "  |  Spectrograms: " + spectrogramStr$
 
     if warningStat$ <> "?" and warningStat$ <> ""
-        Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.65, "left", 0.05, "half", "Warn: " + warningStat$
+        Font size: 5
+        Colour: "{0.80, 0.20, 0.20}"
+        Text: 0.98, "right", 0.03, "half", "Warn: " + warningStat$
     endif
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     Font size: 10
+    Colour: "Black"
+
+    # Cleanup spectrogram objects if computed
+    if show_spectrograms
+        removeObject: specOrig, tmpOrig, specOut, tmpOut
+    endif
 endif
 
 # ===========================================================================
