@@ -4,7 +4,7 @@
 # ============================================================
 
 Erase all
-Convert to stereo
+
 # 1. Preparation
 numSelected = numberOfSelected("Sound")
 if numSelected <> 1
@@ -15,10 +15,13 @@ initial_sound = selected("Sound")
 initial_name$ = selected$("Sound")
 appendInfoLine: "--- Starting AudioTools Chain 6 ---"
 
-# --- Define Paths (Relative) ---
-path1$ = "../Spectral/Phase Shaper.praat"
-path2$ = "../Time & Granular/Phase_Modulation_Matrix.praat"
-path3$ = "../Spatial & Surround/BPM_Panning.praat"
+# --- Define Paths (Absolute via preferencesDirectory$) ---
+preferencesDir$ = preferencesDirectory$
+pluginPath$ = preferencesDir$ + "/plugin_AudioTools/"
+
+path1$ = pluginPath$ + "Spectral/Phase Shaper.praat"
+path2$ = pluginPath$ + "Time & Granular/Phase_Modulation_Matrix.praat"
+path3$ = pluginPath$ + "Spatial & Surround/BPM_Panning.praat"
 
 # ==============================================================================
 # STEP 1: Phase Shaper
@@ -47,9 +50,9 @@ appendInfoLine: "Step 2: Phase Modulation Matrix complete."
 # ==============================================================================
 selectObject: sound3
 
-# FIX: Changed "1. Circle..." to the valid option "1. Spiral (accelerating)"
-# Parameters: Cycles, Pattern, Draw, Play
-runScript: path3$, "8 cycles (medium)", "1. Spiral (accelerating)", "yes", "yes"
+# FIX: Updated to the correct 8-argument signature matching Live_6
+# Parameters: Tempo_bpm, Subdivision, Swing_percent, Accent_grid, Pattern, Edge_smoothness, Draw, Play
+runScript: path3$, 120, "1/16 (sixteenth notes)", 50, "1010100110101001", "1.  Ping-pong (hard L/R alternation)", 0.3, 0, 1
 
 # Capture final output
 sound4 = selected("Sound")

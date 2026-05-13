@@ -1,3 +1,4 @@
+Erase all
 # 1. Preparation
 numSelected = numberOfSelected("Sound")
 if numSelected <> 1
@@ -10,7 +11,7 @@ appendInfoLine: "--- Starting AudioTools Chain 4 (Cubic) ---"
 
 # --- Define Paths (Relative) ---
 path1$ = "../Modulation/Metamodulator.praat"
-path2$ = "../Time & Granular/Adaptive Grain Cloud Synthesis.praat"
+path2$ = "../Time & Granular/Adaptive_Grain_Cloud_Synthesis.praat"
 path3$ = "../Spatial & Surround/8-Channel_Comb_Delay.praat"
 
 # ==============================================================================
@@ -19,7 +20,7 @@ path3$ = "../Spatial & Surround/8-Channel_Comb_Delay.praat"
 selectObject: initial_sound
 # FIX: Changed Preset to "Cubic: Strong Distortion"
 # Args: Preset, Manual_Algo, F_carrier, F_start, F_end, Mod_factor, Mod_rate, Scale, Viz, Play
-runScript: path1$, "Cubic: Strong Distortion", "1. Cubic Phase Distortion", 200, 100, 800, 2.0, 5.0, 0.95, 0, 0
+runScript: path1$, "Cubic: Strong Distortion", "1. Cubic Phase Distortion", 200, 100, 800, 2.0, 5.0, 0.95, 0, 0, 0
 
 # Select Output
 sound2 = selected("Sound")

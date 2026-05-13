@@ -35,7 +35,7 @@ appendInfoLine: "--- Starting AudioTools Chain 1 (Relative Paths) ---"
 path1$ = "../Time & Granular/MDS_Space_Navigator.praat"
 path2$ = "../Time & Granular/Spectral_Freeze_&_Glitch.praat"
 path3$ = "../Reverb/Crystalline_Cascade.praat"
-path4$ = "../Spatial & Surround/4-Channel Canon.praat"
+path4$ = "../Spatial & Surround/4-Channel_Canon.praat"
 
 # ==============================================================================
 # STEP 1: MDS Space Navigator

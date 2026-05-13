@@ -157,9 +157,9 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 3: Outro (BPM Stereo Panning) ==="
 appendInfoLine: "  Generating..."
 
-# BPM Stereo Panning parameters
-# Parameters: Cycles, Pattern, Draw, Play
-runScript: path_outro$, "8 cycles (medium)", "1. Spiral (accelerating)", "no", "no"
+# BPM Panning parameters (8 args)
+# Tempo_bpm, Subdivision, Swing_percent, Accent_grid, Pattern, Edge_smoothness, Draw, Play
+runScript: path_outro$, 120, "1/16 (sixteenth notes)", 50, "1010100110101001", "1.  Ping-pong (hard L/R alternation)", 0.3, 0, 0
 
 # Get the output
 sound_outro_raw = selected("Sound")
