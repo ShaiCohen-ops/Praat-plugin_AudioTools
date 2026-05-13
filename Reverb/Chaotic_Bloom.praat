@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,57 @@
 #   Stereo mode uses decorrelated L/R impulse patterns with
 #   sinusoidal panning for spatial movement.
 #
+# Algorithmic notes:
+#   - IR generation: Poisson point process -> pulse train ->
+#     envelope (sin^2 fade x exponential decay x chirp shimmer).
+#   - The shimmer chirp `sin(2*pi*x*200*(x-xmin)/(xmax-xmin))`
+#     has phase = 2*pi*200*t^2/T, so its instantaneous
+#     frequency sweeps from 0 Hz at t=0 to 400 Hz at t=T=6s
+#     (left channel; right channel uses 180 -> 360 Hz). This
+#     is a fixed character of the IR.
+#   - Stereo "pan crossfade": each channel time-modulates a
+#     crossfade between dry and convolved signals at an
+#     independent LFO rate (2 Hz left, 1.8 Hz right). Creates
+#     spatial wandering.
+#   - Two-stage mix: pan-crossfade output is then mixed with
+#     original dry via wet_dry_percent. Both mix levels remain
+#     user-controllable.
+#   - RNG (Poisson) is unseeded; same Praat session = same IR.
+#
+# Citation:
+#   Cohen, S. (2026). Praat AudioTools: An Offline
+#   Analysis-Resynthesis Toolkit for Experimental Composition.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.3:
+#   - Audio pipeline UNCHANGED. Output is bit-identical to v0.2
+#     for the same form parameters AND same Praat RNG state.
+#     Same Poisson IR generation, same chirp envelope math
+#     (0->400 Hz left, 0->360 Hz right), same stereo crossfade
+#     architecture (2 Hz left, 1.8 Hz right), same two-stage
+#     mix (pan crossfade then wet/dry), same Scale peak.
+#     All 4 presets (+ Custom) preserved with same values.
+#   - Form syntax modernized: `optionmenu Preset:` with colon.
+#   - Dropped 8 decorative form lines (6 `comment === ... ===`
+#     section dividers, 1 instructional, 2 inline parenthetical
+#     hints). Form went from ~14 effective rows to 10.
+#   - Visualization rewritten to suite 8x8 standard (v0.2 was
+#     8x3.8 with title + 2 stacked waveforms + IR+parameters
+#     side-by-side):
+#       Title bar + metadata subtitle (preset, density, tail,
+#         pulse width, conv mix, wet/dry %)
+#       Panel A (left, headline): IR waveform (first 3 s of
+#         the 6 s IR) — PRESERVED v0.2's signature visual,
+#         showing the chirp-modulated Poisson cloud
+#       Panel B (right, headline): parameter report — algorithm
+#         explanation (Poisson + chirp envelope + pan crossfade),
+#         parameters, stereo crossfade rates (when stereo)
+#       Panel C: zoom overlay (first 500 ms, gray = original,
+#         purple = processed) — shows the bloom emerging
+#       Panel D: full waveform comparison (gray = original,
+#         purple = processed, SHARED y-axis) — fixes v0.2's
+#         independent auto-scaling
+#       Panel E: light-grey summary stats bar (suite standard)
 # Changelog v0.2:
 #   - Fixed selection syntax (object IDs)
 #   - Fixed name-based references
@@ -23,33 +74,20 @@
 #   - Added info output
 # ============================================================
 
-form Chaotic Bloom
-    comment Select a Sound object first
-    
-    comment === Preset ===
-    optionmenu Preset 1
+form Chaotic Bloom v0.3
+    optionmenu Preset: 1
         option Default (balanced)
         option Dense Bloom
         option Sparse Bloom
         option Wide Stereo Shimmer
         option Custom (use settings below)
-    
-    comment === Bloom Parameters ===
     positive Tail_duration_s 2.0
     positive Poisson_density 3000
-    comment (impulses per second)
-    
-    comment === Pulse Train ===
     positive Pulse_amplitude 1.0
     positive Pulse_width 0.04
     positive Pulse_period 2500
-    
-    comment === Mix ===
     positive Convolution_mix 0.4
     real Wet_dry_percent 50
-    comment (0 = dry only, 100 = wet only)
-    
-    comment === Output ===
     positive Scale_peak 0.85
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -120,7 +158,7 @@ wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
 # === Info ===
-writeInfoLine: "=== Chaotic Bloom ==="
+writeInfoLine: "=== Chaotic Bloom v0.3 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -326,79 +364,323 @@ else
     removeObject: poissonMono, convMono, extendedSound
 endif
 
+# Capture stats for visualization
+selectObject: result
+finalDur = Get total duration
+finalPeak = Get absolute extremum: 0, 0, "None"
+resultNumCh = Get number of channels
+
+# Compute actual chirp frequency endpoints (for the parameter report)
+chirpEndL = 2 * 200
+chirpEndR = 2 * 180
+
 # ============================================================
-# VISUALIZATION
+# VISUALIZATION  (8 x 8 canvas — suite standard)
 # ============================================================
 
 if draw_visualization
-    Erase all
+    appendInfoLine: "Drawing visualization..."
     
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Erase all
+    Black
+    Plain line
+    
+    # Mono copies of original and result for waveform display
+    selectObject: original
+    if numChannels > 1
+        vizOrig = Convert to mono
+    else
+        vizOrig = Copy: "viz_orig"
+    endif
+    
+    selectObject: result
+    if resultNumCh > 1
+        vizProc = Convert to mono
+    else
+        vizProc = Copy: "viz_proc"
+    endif
+    
+    # Compute SHARED y-axis from BOTH dry and wet
+    selectObject: vizOrig
+    oPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizProc
+    pPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = oPeak
+    if pPeak > sharedPeak
+        sharedPeak = pPeak
+    endif
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
+    endif
+    sharedAmp = sharedPeak * 1.15
+    
+    # ----------------------------------------------------------
+    # TITLE BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.65
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Chaotic Bloom: " + originalName$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
-    selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
+    Text: 0.5, "centre", 0.68, "half", "##CHAOTIC BLOOM##"
     Font size: 7
-    Text left: "yes", "Dry"
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half",
+        ... originalName$
+        ... + "  |  " + presetName$
+        ... + "  |  Poisson " + fixed$(poisson_density, 0) + "/s"
+        ... + "  |  tail " + fixed$(tail_duration_s, 2) + " s"
+        ... + "  |  pulse w " + fixed$(pulse_width, 3)
+        ... + "  |  conv " + fixed$(convolution_mix, 2)
+        ... + "  |  " + fixed$(wet_dry_percent, 0) + "% wet"
     
-    # Result waveform
-    Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
-    selectObject: result
-    Colour: "{0.6, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Bloom " + fixed$(wet_dry_percent, 0) + "%"
-    Text bottom: "yes", "Time (s)"
+    # ----------------------------------------------------------
+    # PANEL A: IR WAVEFORM  (left, headline)
+    # First 3 s of the 6 s IR — PRESERVED v0.2's signature
+    # visual showing chirp-modulated Poisson cloud.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 0.75, 4.60
+    Select inner viewport: 0.55, 4.00, 0.95, 4.40
     
-    # IR waveform
-    Select outer viewport: 0, 4, 2.5, 3.8
-    Select inner viewport: 0.6, 3.8, 2.6, 3.7
+    irDispDur = 3
+    if irDispDur > irDuration
+        irDispDur = irDuration
+    endif
+    
     selectObject: irForViz
-    Colour: "{0.5, 0.7, 0.6}"
-    Draw: 0, 3, 0, 0, "no", "Curve"
+    ir_peak = Get absolute extremum: 0, irDispDur, "None"
+    if ir_peak < 0.001
+        ir_peak = 0.001
+    endif
+    ir_amp = ir_peak * 1.15
+    
+    Axes: 0, irDispDur, -ir_amp, ir_amp
+    Paint rectangle: "{0.97, 0.97, 0.99}", 0, irDispDur, -ir_amp, ir_amp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, irDispDur, 0
+    
+    selectObject: irForViz
+    Colour: "{0.55, 0.35, 0.78}"
+    Line width: 1
+    Draw: 0, irDispDur, -ir_amp, ir_amp, "no", "Curve"
+    
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 6
-    Text left: "yes", "IR"
+    Text left: "yes", "IR amp"
     Text bottom: "yes", "Time (s)"
     
-    # Parameters
-    Select outer viewport: 4, 8, 2.5, 3.8
-    Select inner viewport: 4.4, 7.6, 2.6, 3.7
+    # ----------------------------------------------------------
+    # PANEL B: PARAMETER REPORT  (right, headline)
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 0.75, 4.60
+    Select inner viewport: 4.55, 7.75, 0.95, 4.40
     
-    Axes: 0, 4, 0, 6
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 4, 0, 6
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
     
-    Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.94, "half", "Algorithm:"
     
-    Text: 0.2, "left", 5.5, "half", "Poisson density: " + string$(poisson_density) + "/s"
-    Text: 0.2, "left", 4.7, "half", "Tail: " + fixed$(tail_duration_s, 1) + " s"
-    Text: 0.2, "left", 3.9, "half", "Pulse width: " + fixed$(pulse_width, 3)
-    Text: 0.2, "left", 3.1, "half", "Conv mix: " + fixed$(convolution_mix, 2)
-    Text: 0.2, "left", 2.3, "half", "Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
-    Text: 0.2, "left", 1.5, "half", "Channels: " + string$(numChannels)
+    Font size: 7
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.10, "left", 0.88, "half", "Poisson process -> pulse train -> envelope:"
+    Text: 0.10, "left", 0.83, "half", "  sin^2 fade \\.c exp decay \\.c chirp shimmer"
+    Text: 0.10, "left", 0.78, "half", "then Convolve with input."
+    
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.70, "half", "IR parameters:"
+    
+    Font size: 9
+    Colour: "{0.55, 0.35, 0.78}"
+    Text: 0.10, "left", 0.63, "half", "Density: " + fixed$(poisson_density, 0) + " imp/s"
+    Text: 0.10, "left", 0.56, "half", "Pulse:   w " + fixed$(pulse_width, 3) + " | T " + fixed$(pulse_period, 0)
+    Text: 0.10, "left", 0.49, "half", "Duration: " + fixed$(irDuration, 1) + " s (IR)"
+    
+    if numChannels = 2
+        Font size: 7
+        Colour: "{0.30, 0.55, 0.30}"
+        Text: 0.10, "left", 0.42, "half", "L chirp: 0 -> " + fixed$(chirpEndL, 0) + " Hz over IR"
+        Text: 0.10, "left", 0.37, "half", "R chirp: 0 -> " + fixed$(chirpEndR, 0) + " Hz over IR"
+    else
+        Font size: 7
+        Colour: "{0.30, 0.55, 0.30}"
+        Text: 0.10, "left", 0.42, "half", "Chirp: 0 -> " + fixed$(chirpEndL, 0) + " Hz over IR"
+    endif
+    
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.30, "half", "Mix:"
+    
+    Font size: 9
+    Colour: "{0.70, 0.45, 0.20}"
+    Text: 0.10, "left", 0.23, "half", "Conv mix: " + fixed$(convolution_mix, 2)
+    Text: 0.10, "left", 0.16, "half", "Wet/Dry:  " + fixed$(wet_dry_percent, 0) + "% wet"
+    Text: 0.10, "left", 0.09, "half", "Tail:     " + fixed$(tail_duration_s, 2) + " s"
+    
+    if numChannels = 2
+        Font size: 7
+        Colour: "{0.55, 0.30, 0.20}"
+        Text: 0.05, "left", 0.02, "half", "Stereo pan crossfade: 2.0 Hz L, 1.8 Hz R"
+    else
+        Font size: 7
+        Colour: "{0.30, 0.55, 0.30}"
+        Text: 0.05, "left", 0.02, "half", "Mono: no pan crossfade"
+    endif
     
     Colour: "Black"
     Draw inner box
+    
+    # ----------------------------------------------------------
+    # ALIGNED PANEL TITLES
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 8
+    Select inner viewport: 0, 8, 0, 8
+    Axes: 0, 8, 0, 8
+    
+    Font size: 7
+    Colour: "Black"
+    Text: 2.10, "centre", 7.30, "half",
+        ... "Impulse response (first " + fixed$(irDispDur, 1) + " s of " + fixed$(irDuration, 1) + " s)"
+    Text: 6.10, "centre", 7.30, "half", "Parameter report"
+    
+    # ----------------------------------------------------------
+    # PANEL C: ZOOM OVERLAY  (first 500 ms)
+    # Gray = original, purple = processed.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.68, 5.55
+    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    
+    zoomDur = 0.5
+    if zoomDur > originalDur
+        zoomDur = originalDur
+    endif
+    if zoomDur > finalDur
+        zoomDur = finalDur
+    endif
+    
+    selectObject: vizOrig
+    z_peak1 = Get absolute extremum: 0, zoomDur, "None"
+    selectObject: vizProc
+    z_peak2 = Get absolute extremum: 0, zoomDur, "None"
+    z_max = z_peak1
+    if z_peak2 > z_max
+        z_max = z_peak2
+    endif
+    if z_max < 0.001
+        z_max = 0.001
+    endif
+    z_amp = z_max * 1.15
+    
+    Axes: 0, zoomDur, -z_amp, z_amp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, zoomDur, -z_amp, z_amp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, zoomDur, 0
+    
+    # Original behind
+    selectObject: vizOrig
+    Colour: "{0.65, 0.65, 0.65}"
+    Line width: 1
+    Draw: 0, zoomDur, -z_amp, z_amp, "no", "Curve"
+    
+    # Processed on top
+    selectObject: vizProc
+    Colour: "{0.55, 0.35, 0.78}"
+    Line width: 1
+    Draw: 0, zoomDur, -z_amp, z_amp, "no", "Curve"
+    
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Zoom: first " + fixed$(zoomDur * 1000, 0) + " ms  (gray = original, purple = processed)"
+    Text left: "yes", "Amp"
+    Text bottom: "yes", "Time (s)"
+    
+    # ----------------------------------------------------------
+    # PANEL D: FULL WAVEFORM COMPARISON  (overlaid, SHARED y-axis)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.62, 6.55
+    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    
+    Axes: 0, finalDur, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, finalDur, 0
+    
+    # Mark the dry-vs-tail boundary
+    if originalDur < finalDur
+        Colour: "{0.85, 0.50, 0.20}"
+        Line width: 1
+        Dotted line
+        Draw line: originalDur, -sharedAmp, originalDur, sharedAmp
+        Solid line
+        Font size: 5
+        Text: originalDur, "left", sharedAmp * 0.85, "half", "  tail"
+    endif
+    
+    # Original behind
+    selectObject: vizOrig
+    Colour: "{0.65, 0.65, 0.65}"
+    Line width: 1
+    Draw: 0, finalDur, -sharedAmp, sharedAmp, "no", "Curve"
+    
+    # Processed on top
+    selectObject: vizProc
+    Colour: "{0.55, 0.35, 0.78}"
+    Line width: 1
+    Draw: 0, finalDur, -sharedAmp, sharedAmp, "no", "Curve"
+    
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Full output (gray = original, purple = processed, shared y-axis)"
+    Text left: "yes", "Amp"
+    Text bottom: "yes", "Time (s)"
+    
+    # ----------------------------------------------------------
+    # PANEL E: SUMMARY BAR  (suite standard — light grey)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.62, 7.30
+    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    
+    if numChannels = 2
+        stereoStr$ = "stereo pan crossfade (2.0/1.8 Hz)"
+    else
+        stereoStr$ = "mono"
+    endif
+    
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.75, "half",
+        ... "##" + presetName$ + "##"
+        ... + "  " + originalName$
+        ... + "  |  Poisson: " + fixed$(poisson_density, 0) + "/s"
+        ... + "  |  Pulse: w " + fixed$(pulse_width, 3) + " | A " + fixed$(pulse_amplitude, 2) + " | T " + fixed$(pulse_period, 0)
+        ... + "  |  IR: " + fixed$(irDuration, 1) + " s"
+        ... + "  |  Tail: " + fixed$(tail_duration_s, 2) + " s"
+    
+    Text: 0.02, "left", 0.28, "half",
+        ... "Conv mix: " + fixed$(convolution_mix, 2)
+        ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "  |  Mode: " + stereoStr$
+        ... + "  |  In: " + fixed$(originalDur, 2) + " s"
+        ... + "  |  Out: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
+    
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
     
     Font size: 10
     Colour: "Black"
+    Line width: 1
     
-    # Cleanup IR
-    removeObject: irForViz
+    # Cleanup viz objects
+    removeObject: vizOrig, vizProc, irForViz
 endif
 
 # If no visualization, still cleanup IR
