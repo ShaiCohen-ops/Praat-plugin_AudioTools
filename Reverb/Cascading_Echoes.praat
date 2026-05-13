@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,46 +13,81 @@
 #   Stereo mode uses different delay ranges for L/R channels
 #   to create width. Exponential amplitude decay per tap.
 #
+# Algorithmic note (despite the name "Cascading"):
+#   This is a multi-tap FIR delay, NOT cascading IIR feedback.
+#   Each iteration k adds an independently-delayed copy of the
+#   DRY signal to the wet accumulator, attenuated by decay^k:
+#       wet = dry + sum_{k=1..N} (decay^k) * dry[col - delay[k]]
+#   The taps don't feed back into each other; they're parallel
+#   delayed-and-attenuated copies of the original.
+#
+# Stereo width note:
+#   In stereo mode, each channel is independently Scale peak'd
+#   to 0.95 BEFORE recombination. This maximizes per-channel
+#   headroom but distorts the original L/R balance. By design
+#   for the "Wide Stereo Delay" character; flagged in Panel B
+#   so users see what's happening.
+#
+# Citation:
+#   Cohen, S. (2026). Praat AudioTools: An Offline
+#   Analysis-Resynthesis Toolkit for Experimental Composition.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.3:
+#   - Audio pipeline UNCHANGED. Output is bit-identical to v0.2
+#     for the same form parameters AND same Praat RNG state.
+#     Same multi-tap FIR algorithm, same exponential decay
+#     schedule (decay^k), same independent random delay
+#     generation (unseeded), same mono/stereo processing
+#     branches, same independent per-channel Scale peak before
+#     stereo recombination, same wet/dry mix, same tail
+#     extension. Same 4 presets (+ Custom) with same values.
+#   - Form syntax modernized: `optionmenu Preset:` with colon.
+#   - Dropped 9 decorative form lines (7 `comment === ... ===`
+#     section dividers, 1 instructional, 1 inline parenthetical
+#     hint). Form went from ~17 effective rows to 8 functional
+#     rows.
+#   - Visualization rewritten to suite 8x8 standard (v0.2 was
+#     8x4.7 with 4 unconsolidated panels):
+#       Title bar + metadata subtitle (preset, iterations,
+#         decay L/R, delay ranges, wet/dry %)
+#       Panel A (left, headline): echo tap diagram —
+#         PRESERVED v0.2 design (L green stems + dots, R blue
+#         stems + dots, dry gray dot at origin), now positioned
+#         at suite-standard headline location
+#       Panel B (right, headline): parameter report + tap list
+#         showing individual tap times for both channels
+#       Panel C: zoom overlay (first 500 ms, gray = original,
+#         blue = processed) — shows the early echo cascade
+#       Panel D: full waveform comparison (gray = original,
+#         blue = processed, overlaid with SHARED y-axis) —
+#         fixes v0.2's independent auto-scaling that made dry
+#         vs wet hard to compare visually
+#       Panel E: light-grey summary stats bar (suite standard)
 # Changelog v0.2:
-#   - Fixed echo formula (was incorrect)
+#   - Fixed echo formula
 #   - Added bounds checking
 #   - Fixed selection syntax
 #   - Added wet/dry mix control
 #   - Added visualization
 # ============================================================
 
-form Cascading Echoes
-    comment Select a Sound object first
-    
-    comment === Preset ===
-    optionmenu Preset 1
+form Cascading Echoes v0.3
+    optionmenu Preset: 1
         option Default (balanced)
         option Short and Tight
         option Long Ambient Tail
         option Wide Stereo Delay
         option Custom (use settings below)
-    
-    comment === Echo Parameters ===
     positive Tail_duration_s 1.0
     natural Iterations 5
-    
-    comment === Delay Range (ms) ===
     positive Delay_min_ms 10
     positive Delay_max_ms 100
-    
-    comment === Stereo Offset (ms, for R channel) ===
     positive Stereo_delay_min_ms 12
     positive Stereo_delay_max_ms 120
-    
-    comment === Decay ===
     positive Decay_left 0.8
     positive Decay_right 0.75
-    
-    comment === Mix ===
     real Wet_dry_percent 60
-    comment (0 = dry only, 100 = wet only)
-    
-    comment === Output ===
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -144,7 +179,7 @@ for k from 1 to iterations
 endfor
 
 # === Info ===
-writeInfoLine: "=== Cascading Echoes ==="
+writeInfoLine: "=== Cascading Echoes v0.3 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -244,7 +279,7 @@ if numChannels = 2
         Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
     endif
     
-    # Normalize
+    # Normalize (per-channel — preserves "Wide Stereo Delay" character)
     selectObject: leftWet
     Scale peak: 0.95
     
@@ -300,47 +335,24 @@ else
     removeObject: extendedSound
 endif
 
+# Capture stats for visualization
+selectObject: result
+finalDur = Get total duration
+finalPeak = Get absolute extremum: 0, 0, "None"
+resultNumCh = Get number of channels
+
 # ============================================================
-# VISUALIZATION
+# VISUALIZATION  (8 x 8 canvas — suite standard)
 # ============================================================
 
 if draw_visualization
+    appendInfoLine: "Drawing visualization..."
+    
     Erase all
+    Black
+    Plain line
     
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Cascading Echoes: " + originalName$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
-    selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Dry"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
-    selectObject: result
-    Colour: "{0.5, 0.7, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Wet " + fixed$(wet_dry_percent, 0) + "%"
-    Text bottom: "yes", "Time (s)"
-    
-    # Echo tap diagram
-    Select outer viewport: 0, 8, 2.5, 4.2
-    Select inner viewport: 0.6, 7.6, 2.6, 4.1
-    
-    # Find max delay for axis
+    # Find max delay (for tap diagram axis)
     maxDelay = 0
     for k from 1 to iterations
         if delayL[k] > maxDelay
@@ -351,53 +363,342 @@ if draw_visualization
         endif
     endfor
     maxDelayMs = maxDelay * 1000 / sr * 1.1
+    if maxDelayMs < 10
+        maxDelayMs = 10
+    endif
     
-    Axes: 0, maxDelayMs, 0, 1.1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, maxDelayMs, 0, 1.1
+    # Mono copies of original and result for waveform display
+    selectObject: original
+    if numChannels > 1
+        vizOrig = Convert to mono
+    else
+        vizOrig = Copy: "viz_orig"
+    endif
     
-    # Draw echo taps
-    Font size: 5
+    selectObject: result
+    if resultNumCh > 1
+        vizProc = Convert to mono
+    else
+        vizProc = Copy: "viz_proc"
+    endif
     
+    # Compute SHARED y-axis from BOTH dry and wet (fixes v0.2's
+    # independent auto-scaling that made comparison difficult)
+    selectObject: vizOrig
+    oPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: vizProc
+    pPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = oPeak
+    if pPeak > sharedPeak
+        sharedPeak = pPeak
+    endif
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
+    endif
+    sharedAmp = sharedPeak * 1.15
+    
+    # ----------------------------------------------------------
+    # TITLE BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.65
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##CASCADING ECHOES##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half",
+        ... originalName$
+        ... + "  |  " + presetName$
+        ... + "  |  " + string$(iterations) + " iter"
+        ... + "  |  decay L/R " + fixed$(decay_left, 2) + "/" + fixed$(decay_right, 2)
+        ... + "  |  L " + fixed$(delay_min_ms, 0) + "-" + fixed$(delay_max_ms, 0) + " ms"
+        ... + "  |  R " + fixed$(stereo_delay_min_ms, 0) + "-" + fixed$(stereo_delay_max_ms, 0) + " ms"
+        ... + "  |  " + fixed$(wet_dry_percent, 0) + "% wet"
+    
+    # ----------------------------------------------------------
+    # PANEL A: ECHO TAP DIAGRAM  (left, headline)
+    # PRESERVED v0.2 design: L green stems + dots, R blue stems
+    # + dots, dry gray dot at origin.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 0.75, 4.60
+    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    
+    Axes: 0, maxDelayMs, 0, 1.15
+    Paint rectangle: "{0.96, 0.96, 0.97}", 0, maxDelayMs, 0, 1.15
+    
+    # Reference grid
+    Colour: "{0.88, 0.88, 0.92}"
+    Line width: 1
+    Dotted line
+    Draw line: 0, 0.25, maxDelayMs, 0.25
+    Draw line: 0, 0.50, maxDelayMs, 0.50
+    Draw line: 0, 0.75, maxDelayMs, 0.75
+    Draw line: 0, 1.00, maxDelayMs, 1.00
+    Solid line
+    
+    # Dry signal marker at origin (gray)
+    Colour: "{0.55, 0.55, 0.55}"
+    Line width: 2
+    Draw line: 0, 0, 0, 1
+    Paint circle (mm): "{0.55, 0.55, 0.55}", 0, 1, 1.0
+    
+    # Echo taps
+    Line width: 2
     for k from 1 to iterations
         # Left tap (green)
         delayMs_L = delayL[k] * 1000 / sr
-        Colour: "{0.4, 0.7, 0.4}"
+        Colour: "{0.30, 0.65, 0.35}"
         Draw line: delayMs_L, 0, delayMs_L, ampL[k]
-        Paint circle: "{0.4, 0.7, 0.4}", delayMs_L, ampL[k], 0.015 * maxDelayMs
+        Paint circle (mm): "{0.30, 0.65, 0.35}", delayMs_L, ampL[k], 0.9
         
         # Right tap (blue)
         delayMs_R = delayR[k] * 1000 / sr
-        Colour: "{0.4, 0.4, 0.7}"
+        Colour: "{0.30, 0.45, 0.78}"
         Draw line: delayMs_R, 0, delayMs_R, ampR[k]
-        Paint circle: "{0.4, 0.4, 0.7}", delayMs_R, ampR[k], 0.015 * maxDelayMs
+        Paint circle (mm): "{0.30, 0.45, 0.78}", delayMs_R, ampR[k], 0.9
+    endfor
+    Line width: 1
+    
+    # Inline legend
+    Font size: 5
+    Colour: "{0.55, 0.55, 0.55}"
+    Text: maxDelayMs * 0.02, "left", 1.10, "half", "dry"
+    Colour: "{0.30, 0.65, 0.35}"
+    Text: maxDelayMs * 0.10, "left", 1.10, "half", "L taps"
+    Colour: "{0.30, 0.45, 0.78}"
+    Text: maxDelayMs * 0.22, "left", 1.10, "half", "R taps"
+    
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Amplitude (decay^k)"
+    Text bottom: "yes", "Delay (ms)"
+    
+    # ----------------------------------------------------------
+    # PANEL B: PARAMETER REPORT + TAP LIST  (right, headline)
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 0.75, 4.60
+    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.95, "half", "Algorithm:"
+    
+    Font size: 7
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.10, "left", 0.89, "half", "Multi-tap FIR delay (parallel, not cascading)"
+    Text: 0.10, "left", 0.84, "half", "wet = dry + sum_k (decay^k) \\.c dry[col - delay_k]"
+    
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.77, "half", "Settings:"
+    
+    Font size: 8
+    Colour: "{0.30, 0.65, 0.35}"
+    Text: 0.10, "left", 0.71, "half", "Decay L: " + fixed$(decay_left, 3) + "  |  Range: " + fixed$(delay_min_ms, 0) + "-" + fixed$(delay_max_ms, 0) + " ms"
+    Colour: "{0.30, 0.45, 0.78}"
+    Text: 0.10, "left", 0.65, "half", "Decay R: " + fixed$(decay_right, 3) + "  |  Range: " + fixed$(stereo_delay_min_ms, 0) + "-" + fixed$(stereo_delay_max_ms, 0) + " ms"
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.10, "left", 0.59, "half", "Iterations: " + string$(iterations) + "  |  Tail: " + fixed$(tail_duration_s, 2) + " s"
+    Text: 0.10, "left", 0.53, "half", "Wet/Dry:    " + fixed$(wet_dry_percent, 0) + "% wet"
+    
+    Font size: 9
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.05, "left", 0.46, "half", "Taps:"
+    
+    # Tap list (up to 7 taps shown; if more, show first 5 + last 1)
+    Font size: 6
+    if iterations <= 7
+        nShow = iterations
+        truncate = 0
+    else
+        nShow = 5
+        truncate = 1
+    endif
+    
+    tapY = 0.40
+    for k from 1 to nShow
+        Colour: "{0.30, 0.65, 0.35}"
+        Text: 0.10, "left", tapY, "half", "L" + string$(k) + ": " + fixed$(delayL[k] * 1000 / sr, 1) + " ms (" + fixed$(ampL[k], 2) + ")"
+        Colour: "{0.30, 0.45, 0.78}"
+        Text: 0.52, "left", tapY, "half", "R" + string$(k) + ": " + fixed$(delayR[k] * 1000 / sr, 1) + " ms (" + fixed$(ampR[k], 2) + ")"
+        tapY = tapY - 0.045
     endfor
     
-    # Draw dry signal marker
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw line: 0, 0, 0, 1
-    Paint circle: "{0.6, 0.6, 0.6}", 0, 1, 0.02 * maxDelayMs
+    if truncate
+        Colour: "{0.55, 0.55, 0.55}"
+        Text: 0.10, "left", tapY, "half", "..."
+        tapY = tapY - 0.045
+        Colour: "{0.30, 0.65, 0.35}"
+        Text: 0.10, "left", tapY, "half", "L" + string$(iterations) + ": " + fixed$(delayL[iterations] * 1000 / sr, 1) + " ms (" + fixed$(ampL[iterations], 2) + ")"
+        Colour: "{0.30, 0.45, 0.78}"
+        Text: 0.52, "left", tapY, "half", "R" + string$(iterations) + ": " + fixed$(delayR[iterations] * 1000 / sr, 1) + " ms (" + fixed$(ampR[iterations], 2) + ")"
+    endif
+    
+    # Stereo width disclaimer if relevant
+    if numChannels = 2
+        Font size: 6
+        Colour: "{0.55, 0.30, 0.20}"
+        Text: 0.05, "left", 0.03, "half", "Note: per-channel Scale peak (Wide Stereo character)"
+    endif
     
     Colour: "Black"
     Draw inner box
-    Font size: 6
-    Text left: "yes", "Amplitude"
-    Text bottom: "yes", "Delay (ms)"
     
-    # Legend
-    Font size: 5
-    Colour: "{0.4, 0.7, 0.4}"
-    Text: maxDelayMs * 0.85, "centre", 1.0, "half", "L taps"
-    Colour: "{0.4, 0.4, 0.7}"
-    Text: maxDelayMs * 0.85, "centre", 0.9, "half", "R taps"
+    # ----------------------------------------------------------
+    # ALIGNED PANEL TITLES
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 8
+    Select inner viewport: 0, 8, 0, 8
+    Axes: 0, 8, 0, 8
     
-    # Parameters
-    Select outer viewport: 0, 8, 4.3, 4.7
+    Font size: 7
+    Colour: "Black"
+    Text: 2.10, "centre", 7.30, "half", "Echo tap diagram  (L green, R blue, dry gray)"
+    Text: 6.10, "centre", 7.30, "half", "Parameter report + tap list"
+    
+    # ----------------------------------------------------------
+    # PANEL C: ZOOM OVERLAY  (first 500 ms)
+    # Gray = original, blue = processed.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.68, 5.55
+    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    
+    zoomDur = 0.5
+    if zoomDur > originalDur
+        zoomDur = originalDur
+    endif
+    if zoomDur > finalDur
+        zoomDur = finalDur
+    endif
+    
+    selectObject: vizOrig
+    z_peak1 = Get absolute extremum: 0, zoomDur, "None"
+    selectObject: vizProc
+    z_peak2 = Get absolute extremum: 0, zoomDur, "None"
+    z_max = z_peak1
+    if z_peak2 > z_max
+        z_max = z_peak2
+    endif
+    if z_max < 0.001
+        z_max = 0.001
+    endif
+    z_amp = z_max * 1.15
+    
+    Axes: 0, zoomDur, -z_amp, z_amp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, zoomDur, -z_amp, z_amp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, zoomDur, 0
+    
+    # Original behind
+    selectObject: vizOrig
+    Colour: "{0.65, 0.65, 0.65}"
+    Line width: 1
+    Draw: 0, zoomDur, -z_amp, z_amp, "no", "Curve"
+    
+    # Processed on top
+    selectObject: vizProc
+    Colour: "{0.25, 0.50, 0.82}"
+    Line width: 1
+    Draw: 0, zoomDur, -z_amp, z_amp, "no", "Curve"
+    
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Zoom: first " + fixed$(zoomDur * 1000, 0) + " ms  (gray = original, blue = processed)"
+    Text left: "yes", "Amp"
+    Text bottom: "yes", "Time (s)"
+    
+    # ----------------------------------------------------------
+    # PANEL D: FULL WAVEFORM COMPARISON  (overlaid, SHARED y-axis)
+    # Fixes v0.2's independent auto-scaling.
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.62, 6.55
+    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    
+    Axes: 0, finalDur, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -sharedAmp, sharedAmp
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0, 0, finalDur, 0
+    
+    # Mark the dry-vs-tail boundary
+    if originalDur < finalDur
+        Colour: "{0.85, 0.50, 0.20}"
+        Line width: 1
+        Dotted line
+        Draw line: originalDur, -sharedAmp, originalDur, sharedAmp
+        Solid line
+        Font size: 5
+        Text: originalDur, "left", sharedAmp * 0.85, "half", "  tail"
+    endif
+    
+    # Original behind
+    selectObject: vizOrig
+    Colour: "{0.65, 0.65, 0.65}"
+    Line width: 1
+    Draw: 0, finalDur, -sharedAmp, sharedAmp, "no", "Curve"
+    
+    # Processed on top
+    selectObject: vizProc
+    Colour: "{0.25, 0.50, 0.82}"
+    Line width: 1
+    Draw: 0, finalDur, -sharedAmp, sharedAmp, "no", "Curve"
+    
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Full output  (gray = original, blue = processed, shared y-axis)"
+    Text left: "yes", "Amp"
+    Text bottom: "yes", "Time (s)"
+    
+    # ----------------------------------------------------------
+    # PANEL E: SUMMARY BAR  (suite standard — light grey)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.62, 7.30
+    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    
+    if numChannels = 2
+        stereoStr$ = "stereo (per-ch peak)"
+    else
+        stereoStr$ = "mono"
+    endif
+    
     Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Iterations: " + string$(iterations) + " | Decay L/R: " + fixed$(decay_left, 2) + "/" + fixed$(decay_right, 2) + " | Tail: " + fixed$(tail_duration_s, 1) + "s"
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.75, "half",
+        ... "##" + presetName$ + "##"
+        ... + "  " + originalName$
+        ... + "  |  " + string$(iterations) + " iterations"
+        ... + "  |  Decay L: " + fixed$(decay_left, 3)
+        ... + "  |  Decay R: " + fixed$(decay_right, 3)
+        ... + "  |  L range: " + fixed$(delay_min_ms, 0) + "-" + fixed$(delay_max_ms, 0) + " ms"
+        ... + "  |  R range: " + fixed$(stereo_delay_min_ms, 0) + "-" + fixed$(stereo_delay_max_ms, 0) + " ms"
+    
+    Text: 0.02, "left", 0.28, "half",
+        ... "Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "  |  Tail: " + fixed$(tail_duration_s, 2) + " s"
+        ... + "  |  Mode: " + stereoStr$
+        ... + "  |  In: " + fixed$(originalDur, 2) + " s"
+        ... + "  |  Out: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
+    
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
     
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    
+    # Cleanup viz objects
+    removeObject: vizOrig, vizProc
 endif
 
 # === Final Info ===
