@@ -3,13 +3,18 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Live recording + Composition 4 processing chain
 #   Flow: Record → Cubic Phase → Grain Cloud → 8-Channel Comb
+#
+# Changelog v1.1:
+#   - Fixed runScript call to Metamodulator.praat to match v2.3
+#     form signature (added Draw_visualization argument).
+#     Old call had 10 args; v2.3 requires 11.
 # ============================================================
 
 # ============================================================
@@ -64,7 +69,7 @@ final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "Modulation/Metamodulator.praat"
-path_body$ = pluginPath$ + "Time & Granular/Adaptive Grain Cloud Synthesis.praat"
+path_body$ = pluginPath$ + "Time & Granular/Adaptive_Grain_Cloud_Synthesis.praat"
 path_outro$ = pluginPath$ + "Spatial & Surround/8-Channel_Comb_Delay.praat"
 
 # === INFO HEADER ===
@@ -85,9 +90,11 @@ selectObject: initial_sound
 appendInfoLine: "=== Part 1: Intro (Cubic Phase Distortion) ==="
 appendInfoLine: "  Generating..."
 
-# Metamodulator parameters
-# Args: Preset, Manual_Algo, F_carrier, F_start, F_end, Mod_factor, Mod_rate, Scale, Viz, Play
-runScript: path_intro$, "Cubic: Strong Distortion", "1. Cubic Phase Distortion", 200, 100, 800, 2.0, 5.0, 0.95, 0, 0
+# Metamodulator v2.3 parameters
+# Args: Preset, Manual_Algo, F_carrier, F_start, F_end, Mod_factor, Mod_rate,
+#       Scale_peak, Show_spectrogram, Draw_visualization, Play_result
+# FIX v1.1: added Draw_visualization (arg 10) to match Metamodulator v2.3 form
+runScript: path_intro$, "Cubic: Strong Distortion", "1. Cubic Phase Distortion", 200, 100, 800, 2.0, 5.0, 0.95, 0, 0, 0
 
 # Get the output
 sound_intro = selected("Sound")
