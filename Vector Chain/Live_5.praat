@@ -63,9 +63,9 @@ overlap_sec = 0.1
 final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
-path_intro$ = pluginPath$ + "Distortion/Full-Wave Rectifier Abs.praat"
-path_body$ = pluginPath$ + "Time & Granular/Brownian Motion Texture Generator.praat"
-path_outro$ = pluginPath$ + "Spatial & Surround/8-Channel movements.praat"
+path_intro$ = pluginPath$ + "Distortion/Full-Wave_Rectifier_Abs.praat"
+path_body$ = pluginPath$ + "Time & Granular/Brownian_Motion_Texture_Generator.praat"
+path_outro$ = pluginPath$ + "Spatial & Surround/8-Channel_Movements.praat"
 
 # === INFO HEADER ===
 clearinfo
@@ -87,7 +87,7 @@ appendInfoLine: "  Generating..."
 
 # Full-Wave Rectifier parameters
 # Args (4): Preset, Scale_peak, Viz, Play
-runScript: path_intro$, "Default (0.95 peak)", 0.95, 0, 0
+runScript: path_intro$, "Default (0.95 peak)", 0.95, 0, 0, 0
 
 # Get the output
 sound_intro = selected("Sound")
@@ -122,7 +122,7 @@ appendInfoLine: "  Generating..."
 # Brownian Motion Texture Generator parameters
 # Args (15): Preset, GrainDur, OutDur, Dens, TimeStep, TimeDrift, SpatEnable, 
 # SpatStep, SpatDrift, AmpScale, RandPos, FadeDur, FadeOut, Viz, Play
-runScript: path_body$, "Dense Cloud", 0.05, 10.0, 20, 0.1, 0.0, 1, 0.15, 0.0, 0.7, 1, 0.005, 2.0, 0, 0
+runScript: path_body$, "Dense Cloud", 0.05, 10.0, 20, 0.1, 0.0, 1, 0.15, 0.0, "Clamp (matches v0.2 — pins at edges)", 0.7, 1, 0.005, 2.0, 1, 0, 0
 
 # Get the output
 sound_body = selected("Sound")
