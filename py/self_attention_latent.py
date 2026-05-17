@@ -3,6 +3,7 @@ self_attention_latent.py — Self-Attention Latent Navigation Engine
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
+Version: 1.2 (2026)
 
 Called by SelfAttentionLatent.praat — not run directly.
 
@@ -25,6 +26,15 @@ Pipeline:
 
 No PyTorch. No TensorFlow. No sklearn. No external plan file.
 Dependencies: numpy, soundfile (scipy optional, unused here)
+
+Changelog v1.2:
+    Cosmetic-only change for AudioTools v1.2 release.
+    - _rms_compensate: removed unreachable "loudness" alias. The
+      Praat front-end only ever passes "none", "peak", or "rms"
+      (the only three options exposed in its optionmenu), so the
+      `elif mode in ("rms", "loudness")` branch's "loudness" arm
+      was dead code. Simplified to `elif mode == "rms"`.
+      Behavior and output are bit-identical.
 """
 
 import sys
@@ -768,7 +778,9 @@ def _rms_compensate(stereo, ref_rms, mode):
         return out
     if mode == "peak":
         out *= CEIL / peak
-    elif mode in ("rms", "loudness"):
+    elif mode == "rms":
+        # v1.2: dropped the unreachable "loudness" alias here -- the
+        # Praat front-end never sends it (only "none" / "peak" / "rms").
         rms = float(np.sqrt(np.mean(out.astype(np.float64) ** 2)))
         if rms > 1e-9 and ref_rms > 1e-9:
             out *= ref_rms / rms
