@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,6 +25,53 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.2:
+#
+#   TIER 1 (Praat polish, audio bit-identical):
+#     - Dropped 4 decorative `comment === ... ===` form rows
+#       (Preset / Identity Discovery / Resynthesis Mode / Output).
+#       Form: 11 rows -> 7. All 3 optionmenus already had colons.
+#     - Visualization rewritten with suite styling. New layout:
+#         Title bar (suite light) + metadata subtitle
+#         Input waveform / Output waveform   (side-by-side headline)
+#         Original spectrogram / Output spec  (side-by-side)
+#         Per-Identity Summary Bars  (full width, signature panel)
+#         Identity Timeline          (full width, color-coded runs)
+#         Light-grey 3-line summary  (suite standard)
+#       Pairing waveforms and spectrograms side-by-side makes
+#       before/after comparison direct, which is the main use case
+#       for those panels here.
+#     - Output filename: `<name>_identity` ->
+#       `<name>_identity_<preset>` so multiple runs with different
+#       presets don't silently overwrite.
+#
+#   TIER 2 (bug fixes, audio bit-identical):
+#     - FIXED: subtitle text overflowing into the Input Waveform
+#       panel. v1.1 line 478 had `Text: 0.5, "centre", -1.2, ...`
+#       with viewport 0,8,0,0.5 and axes 0,1,0,1. The mapping
+#       (axis y=0 -> outer 0.5, axis y=1 -> outer 0) sent axis
+#       y=-1.2 to outer y = 0.5 + 1.2*0.5 = 1.1 inches, which is
+#       INSIDE the Input Waveform panel (outer 0.6-1.4). So the
+#       subtitle was drawn ON TOP of the input waveform. v1.2 uses
+#       the suite-standard subtitle position (axis y=-0.22 in a
+#       0-0.65 title viewport) which puts the subtitle in the
+#       panel-header strip just above the first content panel's
+#       inner box.
+#     - FIXED: unicode `->` (right arrow) in the summary panel
+#       (v1.1 line 705 used `string$(nChannels) + "ch" + ... `
+#       with a U+2192 RIGHTWARDS ARROW glyph). Per the suite
+#       gotcha library, non-ASCII glyphs in `Text()` render
+#       unpredictably across platforms (mojibake on Windows,
+#       missing-glyph boxes elsewhere). Replaced with `->`.
+#
+#   TIER 3 (Python backend):
+#     - identity_separation.py Mode A: removed `or True` dead
+#       code (was `if n_channels >= 2 or True:`). The condition
+#       was always true, making the else branch unreachable.
+#       Cosmetic-only change; output is bit-identical.
+#
+#   Audio output is bit-identical to v1.1 for any input and
+#   preset.
 # ============================================================
 
 # ---- INPUT CHECK ----
@@ -91,8 +138,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Acoustic Identity Separation v1.1
-    comment === Preset ===
+form Acoustic Identity Separation v1.2
     optionmenu Preset: 1
         option Custom
         option Gentle (3 identities, layered)
@@ -101,16 +147,13 @@ form Acoustic Identity Separation v1.1
         option Recomposition (4 identities, grouped)
         option Morphing blend (3 identities)
         option Hybrid filter (3 identities)
-    comment === Identity Discovery ===
     integer Number_of_identities 4
-    comment === Resynthesis Mode ===
     optionmenu Mode: 1
         option A — Layered reconstruction
         option B — Identity alternation
         option C — Identity recomposition
         option D — Identity morphing
         option E — Hybridization
-    comment === Output ===
     optionmenu Output_format: 1
         option Stereo mix
         option Multi-channel (1 identity per channel)
@@ -174,7 +217,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Acoustic Identity Separation v1.1 ==="
+writeInfoLine:  "=== Acoustic Identity Separation v1.2 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -351,7 +394,9 @@ endif
 appendInfoLine: "[4/5] Importing result..."
 
 Read from file: tempOutput$
-Rename: soundName$ + "_identity"
+# v1.2: output filename now includes preset suffix.
+compositeName$ = soundName$ + "_identity_" + presetName$
+Rename: compositeName$
 resultSound = selected("Sound")
 
 selectObject: resultSound
@@ -458,7 +503,7 @@ if fileReadable(tempStats$)
 endif
 
 ###############################################################################
-# VISUALIZATION
+# VISUALIZATION  (8 x 8 canvas, suite styling, custom layout for 6 panels)
 ###############################################################################
 
 if draw_visualization
@@ -466,34 +511,53 @@ if draw_visualization
 
     Erase all
     Select outer viewport: 0, 8, 0, 8
+    Black
+    Plain line
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # ----------------------------------------------------------
+    # TITLE BAR
+    # ----------------------------------------------------------
+    # v1.2: subtitle position fixed. v1.1 had axis y=-1.2 with
+    # viewport 0,8,0,0.5 -> outer y=1.1 (inside Input Waveform).
+    # v1.2 uses suite-standard axis y=-0.22 with viewport 0-0.65.
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Acoustic Identity Separation##"
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | Mode: " + modeLetter$ + " | IDs: " + string$(number_of_identities) + " | Seed: " + string$(seed)
+    Text: 0.5, "centre", 0.68, "half", "##ACOUSTIC IDENTITY SEPARATION##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half",
+        ... soundName$
+        ... + "  |  " + presetName$
+        ... + "  |  Mode " + modeLetter$
+        ... + "  |  " + string$(number_of_identities) + " IDs"
+        ... + "  |  Seed " + string$(seed)
 
-    # === Input Waveform ===
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.7, 0.65, 1.35
+    # ----------------------------------------------------------
+    # PANEL A (left): INPUT WAVEFORM  (headline)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 0.75, 1.85
+    Select inner viewport: 0.55, 4.00, 0.95, 1.75
+
     selectObject: sound
-    Colour: "{0.5, 0.5, 0.5}"
+    Colour: "{0.55, 0.55, 0.60}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Original"
-    Text top: "no", fixed$(dur, 2) + " s"
+    Text top: "no", "Input waveform  (" + fixed$(dur, 2) + " s)"
+    Font size: 6
+    Text left: "yes", "Amp"
 
-    # === Output Waveform ===
-    Select outer viewport: 0, 8, 1.4, 2.2
-    Select inner viewport: 0.6, 7.7, 1.45, 2.15
+    # ----------------------------------------------------------
+    # PANEL B (right): OUTPUT WAVEFORM  (headline)
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 0.75, 1.85
+    Select inner viewport: 4.55, 7.75, 0.95, 1.75
 
-    # For multi-channel output, draw ch1
+    # For multi-channel output, draw channel 1 only
     if outChans > 1
         selectObject: resultSound
         Extract one channel: 1
@@ -507,14 +571,18 @@ if draw_visualization
         Draw: 0, 0, 0, 0, "no", "Curve"
     endif
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
-    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Output waveform  (mode " + modeLetter$ + ",  " + string$(outChans) + " ch)"
+    Font size: 6
+    Text left: "yes", "Amp"
 
-    # === Original Spectrogram ===
-    Select outer viewport: 0, 8, 2.3, 3.5
-    Select inner viewport: 0.6, 7.7, 2.4, 3.4
+    # ----------------------------------------------------------
+    # PANEL C (left): ORIGINAL SPECTROGRAM
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 1.95, 4.10
+    Select inner viewport: 0.55, 4.00, 2.10, 3.95
 
     selectObject: sound
     if nChannels > 1
@@ -529,15 +597,20 @@ if draw_visualization
     specOrig = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
+    Line width: 1
     Draw inner box
+    Font size: 7
+    Text top: "no", "Original spectrogram"
     Font size: 6
     Text left: "yes", "Hz"
-    Text top: "no", "Original spectrogram"
+    Text bottom: "yes", "Time (s)"
     removeObject: specOrig, tmpOrig
 
-    # === Output Spectrogram ===
-    Select outer viewport: 0, 8, 3.5, 4.7
-    Select inner viewport: 0.6, 7.7, 3.6, 4.6
+    # ----------------------------------------------------------
+    # PANEL D (right): OUTPUT SPECTROGRAM
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 1.95, 4.10
+    Select inner viewport: 4.55, 7.75, 2.10, 3.95
 
     selectObject: resultSound
     if outChans > 1
@@ -552,43 +625,43 @@ if draw_visualization
     specOut = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
+    Line width: 1
     Draw inner box
+    Font size: 7
+    Text top: "no", "Output spectrogram  (mode " + modeLetter$ + ")"
     Font size: 6
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output spectrogram (mode " + modeLetter$ + ")"
     removeObject: specOut, tmpOut
 
-    # === Per-Identity Summary Bars ===
-    Select outer viewport: 0, 8, 4.8, 5.9
-    Select inner viewport: 0.6, 7.7, 4.9, 5.8
+    # ----------------------------------------------------------
+    # PANEL E: PER-IDENTITY SUMMARY BARS  (full width, signature)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.20, 5.40
+    Select inner viewport: 0.55, 7.72, 4.35, 5.30
 
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
 
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.92, "half", "##Identity Profiles##"
-
     # Define identity colours (up to 8)
-    idCol_0$ = "{0.2, 0.5, 0.8}"
-    idCol_1$ = "{0.8, 0.3, 0.3}"
-    idCol_2$ = "{0.3, 0.7, 0.4}"
-    idCol_3$ = "{0.8, 0.6, 0.2}"
-    idCol_4$ = "{0.6, 0.3, 0.7}"
-    idCol_5$ = "{0.2, 0.7, 0.7}"
-    idCol_6$ = "{0.7, 0.5, 0.3}"
-    idCol_7$ = "{0.5, 0.5, 0.5}"
+    idCol_0$ = "{0.20, 0.50, 0.80}"
+    idCol_1$ = "{0.80, 0.30, 0.30}"
+    idCol_2$ = "{0.30, 0.70, 0.40}"
+    idCol_3$ = "{0.80, 0.60, 0.20}"
+    idCol_4$ = "{0.60, 0.30, 0.70}"
+    idCol_5$ = "{0.20, 0.70, 0.70}"
+    idCol_6$ = "{0.70, 0.50, 0.30}"
+    idCol_7$ = "{0.50, 0.50, 0.50}"
 
     nIdShow = number_of_identities
     if nIdShow > 8
         nIdShow = 8
     endif
 
-    rowHeight = 0.8 / nIdShow
+    rowHeight = 0.85 / nIdShow
 
     for idDraw from 0 to nIdShow - 1
-        yTop = 0.85 - idDraw * rowHeight
+        yTop = 0.92 - idDraw * rowHeight
         yBot = yTop - rowHeight * 0.85
 
         # Get percentage for bar width
@@ -607,20 +680,19 @@ if draw_visualization
         endif
 
         # Draw bar
-        Colour: idCol_'idDraw'$
-        Paint rectangle: idCol_'idDraw'$, 0.02, 0.02 + barWidth * 0.35, yBot, yTop
+        Paint rectangle: idCol_'idDraw'$, 0.02, 0.02 + barWidth * 0.30, yBot, yTop
 
-        # Label
+        # Label (left of bar end)
         Font size: 6
         Colour: "Black"
-        label$ = "ID " + string$(idDraw) + ": " + thisPct$ + "% "
+        label$ = "ID " + string$(idDraw) + ": " + thisPct$ + "%"
         if thisBehav$ <> "" and thisBehav$ <> "?"
-            label$ = label$ + "(" + thisBehav$ + ")"
+            label$ = label$ + "  (" + thisBehav$ + ")"
         endif
-        Text: 0.40, "left", (yTop + yBot) / 2, "half", label$
+        Text: 0.36, "left", (yTop + yBot) / 2, "half", label$
 
         # Stats on right
-        Colour: "{0.4, 0.4, 0.4}"
+        Colour: "{0.40, 0.40, 0.45}"
         stats$ = ""
         if thisHnr$ <> "" and thisHnr$ <> "?"
             stats$ = "HNR:" + thisHnr$
@@ -629,17 +701,22 @@ if draw_visualization
             stats$ = stats$ + "  flat:" + thisFlat$
         endif
         if thisDur$ <> "" and thisDur$ <> "?"
-            stats$ = stats$ + "  dur:" + thisDur$ + "s"
+            stats$ = stats$ + "  mean dur:" + thisDur$ + "s"
         endif
         Text: 0.72, "left", (yTop + yBot) / 2, "half", stats$
     endfor
 
     Colour: "Black"
+    Line width: 1
     Draw rectangle: 0, 1, 0, 1
+    Font size: 7
+    Text top: "no", "Per-identity profiles  (bar width = % of total frames)"
 
-    # === Identity Timeline ===
-    Select outer viewport: 0, 8, 6.0, 6.8
-    Select inner viewport: 0.6, 7.7, 6.1, 6.7
+    # ----------------------------------------------------------
+    # PANEL F: IDENTITY TIMELINE  (full width, color-coded runs)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.50, 6.30
+    Select inner viewport: 0.55, 7.72, 5.65, 6.20
 
     Axes: 0, dur, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.98}", 0, dur, 0, 1
@@ -657,11 +734,11 @@ if draw_visualization
     else
         # Fallback if no timeline data
         Font size: 6
-        Colour: "{0.5, 0.5, 0.5}"
+        Colour: "{0.55, 0.55, 0.60}"
         Text: dur / 2, "centre", 0.5, "half", "(timeline data not available)"
     endif
 
-    # Draw thin identity-number labels for long runs
+    # Identity-number labels for long runs
     Font size: 5
     Colour: "White"
     if nTimelineRuns > 0
@@ -675,40 +752,51 @@ if draw_visualization
     endif
 
     Colour: "Black"
+    Line width: 1
     Draw inner box
+    Font size: 7
+    Text top: "no", "Identity timeline  (color = identity, label = ID number)"
     Font size: 6
     Text left: "yes", "ID"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Identity Timeline (colour = identity)"
 
-    # === Summary Panel ===
-    Select outer viewport: 0, 8, 7.0, 8.0
-    Select inner viewport: 0.6, 7.7, 7.1, 7.9
-
+    # ----------------------------------------------------------
+    # PANEL G: SUMMARY BAR  (suite standard light grey)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.40, 7.10
+    Select inner viewport: 0.55, 7.72, 6.47, 7.05
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.8, "half", "Summary:"
     Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.55, "half", "Events: " + nEventsID$ + " | Transitions: " + nTransitionsID$ + " | Mean dur: " + meanEventDurID$ + " s"
-    Text: 0.02, "left", 0.3, "half", "RMS orig: " + fixed$(rms_orig, 4) + " | RMS out: " + fixed$(rms_out, 4) + " | Ratio: " + fixed$(rms_out / rms_orig, 3) + "x"
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.82, "half",
+        ... "##" + presetName$ + "##"
+        ... + "  Mode " + modeLetter$
+        ... + "  |  " + string$(number_of_identities) + " identities"
+        ... + "  |  Events: " + nEventsID$
+        ... + "  |  Transitions: " + nTransitionsID$
+        ... + "  |  Mean event dur: " + meanEventDurID$ + " s"
 
-    Font size: 7
-    Colour: "Black"
-    Text: 0.62, "left", 0.8, "half", "Settings:"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.62, "left", 0.55, "half", "Mode: " + modeLetter$ + " | IDs: " + string$(number_of_identities) + " | Format: " + outFmt$
-    Text: 0.62, "left", 0.3, "half", "Seed: " + string$(seed) + " | " + string$(nChannels) + "ch→" + string$(outChans) + "ch | " + string$(sr) + "Hz"
+    Text: 0.02, "left", 0.50, "half",
+        ... "Input: " + string$(nChannels) + "ch  ->  Output: " + string$(outChans) + "ch"
+        ... + "  |  Format: " + outFmt$
+        ... + "  |  SR: " + string$(sr) + " Hz"
+        ... + "  |  Seed: " + string$(seed)
+
+    Text: 0.02, "left", 0.18, "half",
+        ... "Output: " + compositeName$
+        ... + "  |  Duration: " + fixed$(dur, 2) + " s"
+        ... + "  |  RMS orig: " + fixed$(rms_orig, 4)
+        ... + "  |  RMS out: " + fixed$(rms_out, 4)
+        ... + "  |  Ratio: " + fixed$(rms_out / rms_orig, 3) + "x"
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     Font size: 10
     Colour: "Black"
+    Line width: 1
 else
     appendInfoLine: "[5/5] Visualization skipped."
 endif
@@ -723,7 +811,7 @@ endif
 # ===========================================================================
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
-appendInfoLine: "Output: ", soundName$, "_identity"
+appendInfoLine: "Output: ", compositeName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Identity separation:"

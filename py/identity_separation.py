@@ -3,6 +3,7 @@ identity_separation.py — Acoustic Identity Separation & Resynthesis
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
+Version: 1.2 (2026)
 
 Usage (called by Praat, not directly):
     python identity_separation.py input.wav features.csv output.wav
@@ -22,6 +23,14 @@ Architecture:
     Stage 5 — Identity-based audio separation into layers
     Stage 6 — Resynthesis (5 selectable modes)
     Stage 7 — Output
+
+Changelog v1.2:
+    Cosmetic-only change for AudioTools v1.2 release.
+    - _mode_a_layered: removed `or True` dead-code condition that
+      made an if-branch unconditional. Mode A always outputs stereo
+      with spatial panning regardless of input channel count;
+      v1.1's `if n_channels >= 2 or True:` was a leftover from
+      development. Behavior and audio output are unchanged.
 """
 
 import sys
@@ -583,21 +592,27 @@ def _mode_a_layered(layers, n_samples, n_channels, n_id):
     Mode A — Layered Reconstruction.
     Sum all identity layers back together (= original order).
     Spatial separation: pan identities across stereo field.
+
+    Always outputs stereo regardless of input channel count -- the
+    point of this mode is the spatial spread of identities across
+    the L-R field, which requires a 2-channel output.
     """
     import numpy as np
 
-    if n_channels >= 2 or True:
-        # Always output stereo with spatial separation
-        output = np.zeros((n_samples, 2), dtype=np.float32)
-        for i, layer in enumerate(layers):
-            # Pan position: spread identities evenly across L-R
-            pan = i / max(1, n_id - 1)  # 0=left, 1=right
-            gain_l = np.cos(pan * np.pi / 2).astype(np.float32)
-            gain_r = np.sin(pan * np.pi / 2).astype(np.float32)
+    # Always output stereo with spatial separation. v1.1 had
+    # `if n_channels >= 2 or True:` here -- the `or True` made the
+    # condition unconditional, so the if-branch always ran. Cleaned
+    # up; behavior is identical.
+    output = np.zeros((n_samples, 2), dtype=np.float32)
+    for i, layer in enumerate(layers):
+        # Pan position: spread identities evenly across L-R
+        pan = i / max(1, n_id - 1)  # 0=left, 1=right
+        gain_l = np.cos(pan * np.pi / 2).astype(np.float32)
+        gain_r = np.sin(pan * np.pi / 2).astype(np.float32)
 
-            mono = layer if layer.ndim == 1 else np.mean(layer, axis=1)
-            output[:len(mono), 0] += mono * gain_l
-            output[:len(mono), 1] += mono * gain_r
+        mono = layer if layer.ndim == 1 else np.mean(layer, axis=1)
+        output[:len(mono), 0] += mono * gain_l
+        output[:len(mono), 1] += mono * gain_r
 
     _normalize_output(output)
     return output
