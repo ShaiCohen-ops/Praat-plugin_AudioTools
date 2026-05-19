@@ -34,7 +34,7 @@ soundB = selected("Sound", 2)
 nameA$ = selected$("Sound", 1)
 nameB$ = selected$("Sound", 2)
 
-form Perceptual Synchrony Pipeline v3.0
+form Perceptual Synchrony 
     comment === Synchrony Mode ===
     optionmenu Sync_mode 2
         option Enhance Only (no time change)
@@ -766,9 +766,11 @@ if sync_mode = 2 and numClusters > 0
     
     selectObject: durationTier
     numPoints = Get number of points
-    for p from numPoints to 1
+    p = numPoints
+    while p >= 1
         Remove point: p
-    endfor
+        p = p - 1
+    endwhile
     
     # Sort clusters by B time
     for c from 1 to numClusters
