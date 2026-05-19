@@ -3,16 +3,75 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - OPTIMIZED
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Paulstretch - extreme time stretching with phase randomization.
-#   NOW WITH SPEED MODES for 4-8× faster processing!
+#
+# Changelog v1.1 (audio CHANGES from v1.0 - both fixes are intentional):
+#
+#   FIX A -- "clicks" eliminated.
+#     v1.0 produced an audible click every `hopOut` seconds (around
+#     16 Hz at the default 0.25 s window, 75 % overlap). Root cause:
+#       Praat's `To Spectrum: "yes"` uses the fast FFT path, which
+#       silently zero-pads the input up to the next power of 2 for
+#       efficiency. The resulting Spectrum has frequency step
+#       dx = 1 / paddedDuration, NOT 1 / windowDuration. When the
+#       inverse `To Sound` is then taken, the output Sound has
+#       duration `paddedDuration = nextPow2(windowSamples) / sr`,
+#       which is LONGER than the original `window_size_s`.
+#       v1.0 then called `Multiply by window: "Hanning"` on this
+#       longer sound, so the Hann window spanned [0, paddedDuration]
+#       rather than [0, window_size_s]. v1.0 then overlap-added only
+#       the FIRST `window_size_s` of this longer sound back into the
+#       output (via `Formula (part): .tOut, .tOut + window_size_s`).
+#       At the cutoff point (sample `windowSamples` of `.processed`)
+#       the Hann value was Hann(window_size_s / paddedDuration), which
+#       at the default 0.25 s window / 0.371 s paddedDuration is
+#       ~0.74 -- not zero. So each frame's contribution to the output
+#       ended with a non-zero value that was abruptly truncated, and
+#       the next sample beyond the iterated range got no contribution
+#       from this frame at all. That step of size 0.74 x audio_value,
+#       repeating every `hopOut` seconds across all frames, is what
+#       was heard as clicks.
+#     v1.1 fix: round `windowSamples` UP to the next power of 2
+#     before computing anything, so the FFT input is already pow2 and
+#     `To Spectrum: "yes"` doesn't add any padding. `procDur` then
+#     equals `window_size_s` exactly, the synthesis Hann zeros the
+#     edges of the actually-used range, and overlap-add is COLA-clean
+#     at the user's overlap setting.
+#     Side effect: the effective window size differs slightly from the
+#     user's input (rounded UP to nearest pow2). For the default 0.25 s
+#     request at 22.05 kHz: 5512 samples -> 8192 samples = 0.371 s.
+#     This is reported in the info log.
+#
+#   FIX B -- phase randomization corrected.
+#     v1.0 Formula on the 2-row complex Matrix had two compounding bugs:
+#       (1) In-place evaluation. When Praat processed row=2 of a column,
+#           it read object[.matID, 1, col] -- but row 1 had ALREADY been
+#           overwritten by the row=1 branch with `mag * cos(rand)`. So
+#           the magnitude computed for row 2 was
+#               sqrt((mag*cos(rand1))^2 + orig_imag^2)
+#           not the original `sqrt(orig_real^2 + orig_imag^2)`.
+#       (2) Two independent `randomUniform(-pi, pi)` calls -- one inside
+#           cos(), one inside sin() -- gave row 1 and row 2 DIFFERENT
+#           random phases. So new_real and new_imag at the same bin
+#           weren't a coherent (mag, theta) pair; they were independent
+#           scrambles.
+#       Net effect: each frame's spectrum had random magnitudes as well
+#       as random phases, breaking Paulstretch's "preserve magnitudes"
+#       property. Audible as graininess and a brighter / noisier
+#       character than canonical Paulstretch.
+#     v1.1 fix: precompute the magnitudes into a separate Matrix and
+#     the random phases into another, both indexed by column. The main
+#     Formula on `.matComplex` then reads these via `object[]` (so
+#     row 2 sees the original magnitude, not a modified row 1) and uses
+#     the same phase value for both cos() and sin().
 # ============================================================
 
-form Paulstretch v1.0 (Optimized)
+form Paulstretch v1.1
     comment === Preset ===
     optionmenu Preset 1
         option Custom
@@ -121,11 +180,21 @@ else
     workingSR = sampleRate
 endif
 
-# Calculate Parameters
-windowSamples = round(window_size_s * workingSR)
-if windowSamples mod 2 = 1
-    windowSamples += 1
-endif
+# === FIX A: round windowSamples UP to the next power of 2 ===
+# This prevents Praat's `To Spectrum: "yes"` from silently
+# zero-padding the FFT input. With windowSamples already pow2,
+# the IFFT output has duration exactly window_size_s, so the
+# synthesis Hanning window zeros the edges of the range that
+# overlap-add actually uses. No step discontinuity, no clicks.
+requestedWindowSizeS = window_size_s
+requestedWindowSamples = round(window_size_s * workingSR)
+
+windowSamples = 1
+while windowSamples < requestedWindowSamples
+    windowSamples = windowSamples * 2
+endwhile
+
+window_size_s = windowSamples / workingSR
 
 overlapFrac = overlap_percent / 100
 hopOut = window_size_s * (1 - overlapFrac)
@@ -136,19 +205,25 @@ nFrames = ceiling(outputDuration / hopOut) + 1
 microFadeDur = 0.003
 
 # Info
-writeInfoLine: "=== Paulstretch v1.0 (Optimized) ==="
+writeInfoLine: "=== Paulstretch v1.1 ==="
 appendInfoLine: "Preset: ", preset_name$
-appendInfoLine: "Speed: ", speedStr$
+appendInfoLine: "Speed:  ", speedStr$
 appendInfoLine: "Source: ", original_name$, " (", fixed$(inputDuration, 2), " s)"
 appendInfoLine: ""
 appendInfoLine: "Stretch: ", stretch_factor, "x"
-appendInfoLine: "Output: ", fixed$(outputDuration, 2), " s"
-appendInfoLine: "Frames: ", nFrames
+if abs(window_size_s - requestedWindowSizeS) > 0.0005
+    appendInfoLine: "Window:  ", fixed$(window_size_s, 4), " s (", windowSamples,
+        ... " samples; pow2-rounded up from request of ", fixed$(requestedWindowSizeS, 4), " s)"
+else
+    appendInfoLine: "Window:  ", fixed$(window_size_s, 4), " s (", windowSamples, " samples)"
+endif
+appendInfoLine: "Output:  ", fixed$(outputDuration, 2), " s"
+appendInfoLine: "Frames:  ", nFrames
 appendInfoLine: "Overlap: ", overlap_percent, "%"
 if create_stereo
-    appendInfoLine: "Mode: STEREO (phase offset: ", stereo_phase_offset, ")"
+    appendInfoLine: "Mode:    STEREO (phase offset: ", stereo_phase_offset, ")"
 else
-    appendInfoLine: "Mode: MONO"
+    appendInfoLine: "Mode:    MONO"
 endif
 appendInfoLine: ""
 
@@ -192,7 +267,7 @@ procedure processChannel: .outputID, .phaseScale, .channelName$
                 .frame = .padded
             endif
             
-            # FFT
+            # FFT (input is already pow2 thanks to Fix A, so no auto-padding)
             selectObject: .frame
             To Spectrum: "yes"
             .spectrum = selected("Spectrum")
@@ -204,9 +279,37 @@ procedure processChannel: .outputID, .phaseScale, .channelName$
             .ncols = Get number of columns
             .matID = .matComplex
             
-            # Phase randomization
-            Formula: "if col = 1 or col = .ncols then self else if row = 1 then sqrt(object[.matID, 1, col]^2 + object[.matID, 2, col]^2) * cos(randomUniform(-pi, pi) * .phaseScale) else sqrt(object[.matID, 1, col]^2 + object[.matID, 2, col]^2) * sin(randomUniform(-pi, pi) * .phaseScale) fi fi"
-            
+            # === FIX B: phase randomization via auxiliary matrices ===
+            # v1.0's in-place Formula on .matComplex had two bugs:
+            #   (1) Row 2 read row 1 AFTER row 1 had been overwritten,
+            #       corrupting the magnitude term for the imag part.
+            #   (2) cos() and sin() called randomUniform() independently,
+            #       so real and imag got DIFFERENT random phases.
+            # v1.1 precomputes magnitudes and phases into separate
+            # matrices, then the main Formula reads them via object[]
+            # (so the original magnitudes survive) and uses the same
+            # phase value for cos() and sin() (so real/imag are a
+            # coherent rotation).
+
+            # Magnitudes -> row 1 of .magsMat (row 2 left alone, unused)
+            selectObject: .matComplex
+            Copy: "mags_aux"
+            .magsMat = selected("Matrix")
+            Formula: "if row = 1 then sqrt(object[.matID, 1, col]^2 + object[.matID, 2, col]^2) else self fi"
+
+            # Random phases -> row 1 of .phasesMat (one phase per column)
+            selectObject: .matComplex
+            Copy: "phases_aux"
+            .phasesMat = selected("Matrix")
+            Formula: "if row = 1 then randomUniform(-pi, pi) * .phaseScale else self fi"
+
+            # Apply: new_real = mag * cos(phase),  new_imag = mag * sin(phase)
+            # DC (col=1) and Nyquist (col=.ncols) preserved.
+            selectObject: .matComplex
+            Formula: "if col = 1 or col = .ncols then self else if row = 1 then object[.magsMat, 1, col] * cos(object[.phasesMat, 1, col]) else object[.magsMat, 1, col] * sin(object[.phasesMat, 1, col]) fi fi"
+
+            removeObject: .magsMat, .phasesMat
+
             # IFFT
             selectObject: .matComplex
             To Spectrum
@@ -215,11 +318,15 @@ procedure processChannel: .outputID, .phaseScale, .channelName$
             To Sound
             .processed = selected("Sound")
             
-            # Window
+            # Window (Fix A guarantees .processed duration == window_size_s,
+            # so the Hann zeros the edges of the actually-used range)
             selectObject: .processed
             Multiply by window: "Hanning"
             
-            # Micro-fades
+            # Micro-fades (kept for defensive zero-edge enforcement;
+            # post-Fix A, these are redundant with the Hann zeros but
+            # harmless -- they cost a microsecond and protect against
+            # any floating-point edge residue.)
             .procDur = Get total duration
             .fadeDur = min(microFadeDur, .procDur * 0.05)
             if .fadeDur > 0.0005
@@ -227,9 +334,9 @@ procedure processChannel: .outputID, .phaseScale, .channelName$
                 Fade out: 0, .procDur - .fadeDur, .fadeDur, "yes"
             endif
             
-            # Overlap-add using Formula (part) — restricts evaluation
-            # to the frame's time range only, avoiding O(n_total) scan.
-            # col-indexed access avoids time-domain interpolation.
+            # Overlap-add (now click-free: every frame's contribution
+            # is zero at its iterated-range endpoint, since the Hann
+            # was applied over exactly window_size_s)
             .tOut = .iframe * hopOut
 
             selectObject: .processed
@@ -340,7 +447,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Paulstretch — Spectral Time Stretch##"
+    Text: 0.5, "centre", 0.65, "half", "##Paulstretch - Spectral Time Stretch##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -465,11 +572,11 @@ if draw_visualization
     Text: 0.02, "left", 0.52, "half",
         ... "Preset: " + preset_name$
         ... + "  |  Stretch: " + fixed$(stretch_factor, 1) + "x"
-        ... + "  |  Window: " + fixed$(window_size_s, 3) + " s"
+        ... + "  |  Window: " + fixed$(window_size_s, 3) + " s (" + string$(windowSamples) + " smp)"
         ... + "  |  Overlap: " + fixed$(overlap_percent, 0) + "%"
         ... + "  |  " + stereoStr$
     Text: 0.02, "left", 0.18, "half",
-        ... "In: " + fixed$(inputDuration, 2) + " s → Out: " + fixed$(finalDuration, 2) + " s"
+        ... "In: " + fixed$(inputDuration, 2) + " s -> Out: " + fixed$(finalDuration, 2) + " s"
         ... + "  |  " + speedStr$
         ... + "  |  Frames: " + string$(nFrames)
         ... + "  |  Render: " + fixed$(processingTime, 1) + " s"
