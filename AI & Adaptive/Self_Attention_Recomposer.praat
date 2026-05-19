@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,6 +22,71 @@
 #   5. Reconstruct audio with crossfades
 #
 # Category: Composition
+#
+# Changelog v1.1:
+#
+#   TIER 1 (polish, audio bit-identical):
+#     - Dropped 4 decorative form rows (Preset / Segmentation /
+#       Attention / Start and Output `comment === ... ===`
+#       separators). Form: 16 rows -> 12. All 4 optionmenus
+#       already had colons.
+#     - Added `presetName$` variable for each preset. v1.0 had
+#       no preset-name string at all -- the visualization
+#       summary and output naming had nothing to display.
+#     - Output filename now includes input name and preset:
+#       `<input>_attnRec_<preset>` (was bare `attn_variation`).
+#       Multiple runs with different presets no longer collide
+#       on object naming.
+#     - Removed dead code at v1.0 line 603 (`pci = order_'t' - 1`)
+#       which was immediately overwritten by the next line
+#       (`pci = order_'prevT'`). Cosmetic only.
+#     - Visualization rewritten from custom 8x7.1 layout to
+#       suite 8x8 standard:
+#         Title bar (suite light) + metadata subtitle
+#         Original waveform / Output waveform (side-by-side headline)
+#         Attention order path  (full width, signature)
+#         Consecutive similarity (full width)
+#         Light-grey 3-line summary  (suite standard)
+#       The standalone legend panel was dropped; legend
+#       information is in the summary bar instead.
+#
+#   TIER 2 (real bugs, audio bit-identical):
+#     - FIXED: writeInfoLine clobbered the opening banner. v1.0
+#       lines 155-157 had THREE writeInfoLine calls in a row:
+#         writeInfoLine: "=========..."
+#         writeInfoLine: "  Self-Attention Recomposer v1.0"
+#         writeInfoLine: "=========..."
+#       Each `writeInfoLine` CLEARS the info window before
+#       writing, so only the last line survived. The title was
+#       wiped before the user could see it. v1.1 uses ONE
+#       writeInfoLine on the first line and `appendInfoLine`
+#       for everything else, so the banner stays intact.
+#     - FIXED: subtitle text was drawn ON TOP of the Original
+#       Waveform panel. v1.0 line 754 used axis y=-0.6 inside a
+#       title viewport `0, 8, 0, 0.5` with axes `0, 1, 0, 1`.
+#       The viewport-to-axis mapping (y_outer = 0.5 - y_axis *
+#       0.5) sent axis y=-0.6 to outer y = 0.8 inches, which is
+#       INSIDE the Original Waveform panel (outer 0.6-1.7) at
+#       the top of its inner drawing area. The subtitle was
+#       drawn over the waveform. v1.1 uses the suite-standard
+#       title viewport `0-0.65` with subtitle at axis y=-0.22,
+#       so the subtitle lands in the panel-header strip just
+#       above the first content panel's inner box (around outer
+#       y=0.79, well above the inner box at outer y=0.95).
+#
+#   TIER 3 (performance, audio bit-identical):
+#     - Fade in/out at chunk reconstruction now uses
+#       `Formula (part)` over just the fade region instead of
+#       `Formula` over the whole chunk with an `if ... else
+#       self fi` test per sample. Same arithmetic on the same
+#       samples; no wasted else-branch iterations across the
+#       chunk middle. Speedup scales with chunk_duration_s /
+#       fade_duration_s -- typical ~10-30x faster on the fade
+#       step alone. (Same pattern as the
+#       In-Place_Paulstretch_Slicer v0.2 -> v0.3 speedup.)
+#
+#   Audio output is bit-identical to v1.0 for the same seed
+#   (the sampling/random pathways are unchanged).
 # ============================================================
 
 # === Input Validation ===
@@ -32,19 +97,16 @@ endif
 originalSound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Self-Attention Recomposer v1.0
-    comment === Preset ===
+form Self-Attention Recomposer v1.1
     optionmenu Preset: 1
         option Custom
         option Smooth Flow (sustained sounds)
         option Jumpy Mosaic (percussive)
         option Exploratory (sampling + variance)
         option Strict Permutation (greedy, no repeats)
-    comment === Segmentation ===
     boolean Use_silence_segmentation 0
     positive Chunk_duration_s 0.20
     positive Min_chunk_duration_s 0.05
-    comment === Attention ===
     real Temperature 1.0
     optionmenu Context_mode: 1
         option Last chunk
@@ -55,7 +117,6 @@ form Self-Attention Recomposer v1.0
         option Sampling
     boolean Permutation_mode 1
     integer Output_length_chunks 0
-    comment === Start and Output ===
     optionmenu Start_mode: 1
         option First chunk
         option Random chunk
@@ -83,6 +144,8 @@ silence_threshold_dB = -25
 min_silence_duration_s = 0.10
 
 # Apply presets
+# v1.1: each preset now defines presetName$ for output filename + viz.
+presetName$ = "Custom"
 if preset = 2
     # Smooth Flow
     chunk_duration_s = 0.30
@@ -94,6 +157,7 @@ if preset = 2
     use_time_decay = 1
     time_tau = 2.0
     permutation_mode = 1
+    presetName$ = "SmoothFlow"
 elsif preset = 3
     # Jumpy Mosaic
     chunk_duration_s = 0.15
@@ -102,6 +166,7 @@ elsif preset = 3
     selection_mode = 2
     near_dup_penalty = 0.8
     permutation_mode = 1
+    presetName$ = "JumpyMosaic"
 elsif preset = 4
     # Exploratory
     chunk_duration_s = 0.20
@@ -114,6 +179,7 @@ elsif preset = 4
     permutation_mode = 0
     output_length_chunks = 0
     repeat_penalty = 1.5
+    presetName$ = "Exploratory"
 elsif preset = 5
     # Strict Permutation
     chunk_duration_s = 0.25
@@ -122,6 +188,7 @@ elsif preset = 5
     selection_mode = 1
     near_dup_penalty = 0.5
     permutation_mode = 1
+    presetName$ = "StrictPerm"
 endif
 
 # ============================================================
@@ -152,11 +219,16 @@ if time_tau < 0.01
 endif
 
 clearinfo
+# v1.1: ONE writeInfoLine then appendInfoLine for everything else.
+# v1.0 had three writeInfoLines in a row, which clobbered the title
+# (each writeInfoLine clears the info window). Only the bottom
+# divider survived.
 writeInfoLine: "=============================================="
-writeInfoLine: "  Self-Attention Recomposer v1.0"
-writeInfoLine: "=============================================="
+appendInfoLine: "  Self-Attention Recomposer v1.1"
+appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", originalName$, " (", fixed$(totalDur, 2), " s, ", sampleRate, " Hz, ", numChannels, " ch)"
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 
 # ============================================================
@@ -600,8 +672,9 @@ for t from 2 to outputLength
     useCount_'chosenIdx' = useCount_'chosenIdx' + 1
     
     # Consecutive similarity
-    pci = order_'t' - 1
-    # Fix: get previous order entry
+    # v1.1: removed dead code from v1.0 (line 603 had
+    # `pci = order_'t' - 1` which was immediately overwritten by the
+    # next two lines). Cleaner now.
     prevT = t - 1
     pci = order_'prevT'
     consecSim = 0
@@ -671,11 +744,20 @@ for t from 1 to outputLength
         fadeDur = chkDur / 2
     endif
     
-    # Fade in
-    Formula: "if x - xmin < fadeDur then self * ((x - xmin) / fadeDur) else self fi"
-    
-    # Fade out
-    Formula: "if xmax - x < fadeDur then self * ((xmax - x) / fadeDur) else self fi"
+    # v1.1 Tier 3: Formula (part) over only the fade region.
+    # v1.0 used `Formula: "if x - xmin < fadeDur then ... else self
+    # fi"` which iterated the whole chunk doing a per-sample
+    # comparison plus an `else self` no-op for the middle ~98% of
+    # the buffer. v1.1 evaluates the fade arithmetic only in the
+    # [0, fadeDur] and [chkDur - fadeDur, chkDur] ranges. Same
+    # arithmetic on the same samples; same audio output.
+    if fadeDur > 0
+        # Fade in:  ramp 0 -> 1 over [0, fadeDur]
+        Formula (part): 0, fadeDur, 1, 1, "self * ((x - xmin) / fadeDur)"
+        # Fade out: ramp 1 -> 0 over [chkDur - fadeDur, chkDur]
+        fadeOutStart = chkDur - fadeDur
+        Formula (part): fadeOutStart, chkDur, 1, 1, "self * ((xmax - x) / fadeDur)"
+    endif
 endfor
 
 # Concatenate all
@@ -685,7 +767,9 @@ for t from 2 to outputLength
 endfor
 Concatenate
 finalOutput = selected("Sound")
-Rename: "attn_variation"
+# v1.1: output name now includes input + preset for uniqueness.
+compositeName$ = originalName$ + "_attnRec_" + presetName$
+Rename: compositeName$
 
 # Remove temp chunks
 for t from 1 to outputLength
@@ -733,55 +817,125 @@ if orderStr$ <> ""
     appendInfoLine: "  ", orderStr$
 endif
 
-# ============================================================
-# Visualization
-# ============================================================
+###############################################################################
+# VISUALIZATION  (8 x 8 canvas, suite styling)
+# Title bar (suite light) + metadata subtitle
+# Panel A: Original waveform with chunk boundaries   (left half, headline)
+# Panel B: Output waveform                            (right half, headline)
+# Panel C: Attention order path  (full width, signature)
+# Panel D: Consecutive similarity (full width)
+# Panel E: Light-grey 3-line summary  (suite standard)
+###############################################################################
+
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
     
     Erase all
+    Select outer viewport: 0, 8, 0, 8
+    Black
+    Plain line
     
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # ----------------------------------------------------------
+    # TITLE BAR
+    # ----------------------------------------------------------
+    # v1.1: subtitle position fixed. v1.0 had axis y=-0.6 with
+    # viewport 0,8,0,0.5, which mapped subtitle to outer y=0.8
+    # (INSIDE the Original Waveform panel, on top of the waveform).
+    # v1.1 uses suite-standard axis y=-0.22 in title viewport 0-0.65,
+    # which lands in the panel-header strip just above the first
+    # content panel's inner box.
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half",
-        ... "##Self-Attention Recomposer v1.0##"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.6, "half",
-        ... originalName$ + " | " + string$(nChunks) + " chunks | T=" + fixed$(temperature, 2)
+    Text: 0.5, "centre", 0.68, "half", "##SELF-ATTENTION RECOMPOSER##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
     
-    # === ORIGINAL WAVEFORM + CHUNK BOUNDARIES ===
-    Select outer viewport: 0, 8, 0.6, 1.7
-    Select inner viewport: 0.6, 7.7, 0.7, 1.6
+    if context_mode = 1
+        ctxLabel$ = "Last chunk"
+    elsif context_mode = 2
+        ctxLabel$ = "Mean-" + string$(context_window)
+    else
+        ctxLabel$ = "EMA-" + fixed$(ema_alpha, 1)
+    endif
+    
+    if selection_mode = 1
+        selLabel$ = "Greedy"
+    else
+        selLabel$ = "Sampling"
+    endif
+    
+    Text: 0.5, "centre", -0.22, "half",
+        ... originalName$
+        ... + "  |  " + presetName$
+        ... + "  |  " + string$(nChunks) + " chunks -> " + string$(outputLength) + " steps"
+        ... + "  |  T=" + fixed$(temperature, 2)
+        ... + "  |  " + ctxLabel$ + " / " + selLabel$
+    
+    # ----------------------------------------------------------
+    # PANEL A (left): ORIGINAL WAVEFORM WITH CHUNK BOUNDARIES
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 0.75, 2.30
+    Select inner viewport: 0.55, 4.00, 0.95, 2.18
+    
     selectObject: originalSound
-    Colour: "{0.5, 0.5, 0.6}"
+    Colour: "{0.55, 0.55, 0.60}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     
-    Colour: "{0.8, 0.3, 0.3}"
+    # Chunk boundary markers (dotted, faint)
+    Colour: "{0.80, 0.40, 0.40}"
     Dotted line
     for i from 2 to nChunks
         cs = chunkStart_'i'
         Draw line: cs, -0.9, cs, 0.9
     endfor
     Solid line
+    
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
+    Text top: "no", "Original waveform  (" + string$(nChunks) + " chunks)"
+    Font size: 6
     Text left: "yes", "Amp"
-    Text top: "no", "Original (" + string$(nChunks) + " chunks)"
     
-    # === CHUNK ORDER PLOT ===
-    Select outer viewport: 0, 8, 1.8, 3.4
-    Select inner viewport: 0.6, 7.7, 1.9, 3.3
+    # ----------------------------------------------------------
+    # PANEL B (right): OUTPUT WAVEFORM
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 0.75, 2.30
+    Select inner viewport: 4.55, 7.75, 0.95, 2.18
+    
+    selectObject: finalOutput
+    Colour: "{0.40, 0.65, 0.45}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Output waveform  (" + fixed$(outputDur, 2) + " s)"
+    Font size: 6
+    Text left: "yes", "Amp"
+    
+    # ----------------------------------------------------------
+    # PANEL C: ATTENTION ORDER PATH  (full width, signature)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 2.40, 4.40
+    Select inner viewport: 0.55, 7.72, 2.55, 4.30
+    
     Axes: 1, outputLength, 0, nChunks + 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 1, outputLength, 0, nChunks + 1
     
+    # Reference grid: faint horizontal lines at each chunk index
+    Colour: "{0.88, 0.88, 0.90}"
+    Line width: 0.5
+    for gi from 1 to nChunks
+        Draw line: 1, gi, outputLength, gi
+    endfor
+    
     # Path lines
-    Colour: "{0.2, 0.4, 0.8}"
+    Colour: "{0.20, 0.40, 0.80}"
     Line width: 1.5
     for t from 1 to outputLength - 1
         tNext = t + 1
@@ -791,26 +945,29 @@ if draw_visualization
     endfor
     Line width: 1
     
-    # Dots
-    Colour: "{0.8, 0.3, 0.3}"
+    # Dots at each step
     for t from 1 to outputLength
         idx = order_'t'
-        Paint circle (mm): "{0.8, 0.3, 0.3}", t, idx, 1.2
+        Paint circle (mm): "{0.85, 0.30, 0.30}", t, idx, 1.4
     endfor
     
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Chunk #"
+    Text top: "no", "Attention order path  (y = chunk #, x = step)"
+    Font size: 6
+    Text left: "yes", "Chunk"
     Text bottom: "yes", "Step"
-    Text top: "no", "Attention Order Path"
     
-    # === CONSECUTIVE SIMILARITY ===
-    Select outer viewport: 0, 8, 3.5, 4.7
-    Select inner viewport: 0.6, 7.7, 3.6, 4.6
+    # ----------------------------------------------------------
+    # PANEL D: CONSECUTIVE SIMILARITY
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.50, 5.60
+    Select inner viewport: 0.55, 7.72, 4.65, 5.50
     
-    # Find range
     if outputLength > 2
+        # Find range
         minSim = consecSim_2
         maxSim = consecSim_2
         for t from 3 to outputLength
@@ -830,109 +987,83 @@ if draw_visualization
         Paint rectangle: "{0.97, 0.97, 0.97}",
             ... 2, outputLength, minSim - simRange * 0.1, maxSim + simRange * 0.1
         
+        # Average reference line (dotted)
+        Colour: "{0.70, 0.70, 0.70}"
+        Dotted line
+        Draw line: 2, avgConsecSim, outputLength, avgConsecSim
+        Solid line
+        
         # Similarity line
-        Colour: "{0.2, 0.6, 0.4}"
+        Colour: "{0.20, 0.60, 0.40}"
         Line width: 1.5
         for t from 2 to outputLength - 1
             tNext = t + 1
             Draw line: t, consecSim_'t', tNext, consecSim_'tNext'
         endfor
         Line width: 1
-        
-        # Average line
-        Colour: "{0.7, 0.7, 0.7}"
-        Dotted line
-        Draw line: 2, avgConsecSim, outputLength, avgConsecSim
-        Solid line
     else
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+        Font size: 6
+        Colour: "{0.55, 0.55, 0.60}"
+        Text: 0.5, "centre", 0.5, "half", "(not enough steps for similarity trace)"
     endif
     
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Sim"
-    Text top: "no", "Consecutive Similarity (avg: " + fixed$(avgConsecSim, 3) + ")"
-    
-    # === OUTPUT WAVEFORM ===
-    Select outer viewport: 0, 8, 4.8, 5.8
-    Select inner viewport: 0.6, 7.7, 4.9, 5.7
-    selectObject: finalOutput
-    Colour: "{0.4, 0.6, 0.4}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Out"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output: attn_variation (" + fixed$(outputDur, 2) + " s)"
-    
-    # === STATS PANEL ===
-    Select outer viewport: 0, 8, 5.9, 6.7
-    Select inner viewport: 0.6, 7.7, 6.0, 6.65
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.85, "half", "##Recomposer Summary##"
+    Text top: "no", "Consecutive similarity  (avg: " + fixed$(avgConsecSim, 3) + ", dotted = mean)"
     Font size: 6
-    Colour: "{0.3, 0.3, 0.35}"
+    Text left: "yes", "Sim"
+    Text bottom: "yes", "Step"
     
-    if context_mode = 1
-        ctxLabel$ = "Last chunk"
-    elsif context_mode = 2
-        ctxLabel$ = "Mean-" + string$(context_window)
+    # ----------------------------------------------------------
+    # PANEL E: SUMMARY BAR  (suite standard light grey)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.70, 6.40
+    Select inner viewport: 0.55, 7.72, 5.77, 6.35
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    
+    if permutation_mode
+        modeLabel$ = "Permutation"
     else
-        ctxLabel$ = "EMA-" + fixed$(ema_alpha, 1)
+        modeLabel$ = "Repeats allowed"
     endif
     
-    if selection_mode = 1
-        selLabel$ = "Greedy"
-    else
-        selLabel$ = "Sampling"
-    endif
+    Text: 0.02, "left", 0.82, "half",
+        ... "##" + presetName$ + "##"
+        ... + "  " + originalName$
+        ... + "  |  " + string$(nChunks) + " chunks -> " + string$(outputLength) + " steps"
+        ... + "  |  MFCC dim: " + string$(embDim)
+        ... + "  |  T=" + fixed$(temperature, 2)
+        ... + "  |  Mode: " + modeLabel$
     
-    Text: 0.02, "left", 0.62, "half",
-        ... string$(nChunks) + " chunks -> " + string$(outputLength)
-        ... + " steps | MFCC dim: " + string$(embDim) + " | T=" + fixed$(temperature, 2)
-    Text: 0.02, "left", 0.38, "half",
-        ... "Context: " + ctxLabel$ + " | Select: " + selLabel$
-        ... + " | NearDup: " + fixed$(near_dup_penalty, 1)
-        ... + " | Entropy: " + fixed$(avgEntropy, 2)
-    Text: 0.02, "left", 0.15, "half",
-        ... "AvgSim: " + fixed$(avgConsecSim, 3)
-        ... + " | TopK: " + string$(top_k) + " | TopP: " + fixed$(top_p, 1)
-        ... + " | Fade: " + fixed$(fade_duration_s * 1000, 0) + "ms"
+    Text: 0.02, "left", 0.50, "half",
+        ... "Context: " + ctxLabel$
+        ... + "  |  Select: " + selLabel$
+        ... + "  |  NearDup: " + fixed$(near_dup_penalty, 1)
+        ... + "  |  TopK: " + string$(top_k)
+        ... + "  |  TopP: " + fixed$(top_p, 2)
+        ... + "  |  Entropy: " + fixed$(avgEntropy, 2)
+    
+    Text: 0.02, "left", 0.18, "half",
+        ... "Output: " + compositeName$
+        ... + "  |  Dur: " + fixed$(outputDur, 2) + " s"
+        ... + "  |  AvgSim: " + fixed$(avgConsecSim, 3)
+        ... + "  |  Fade: " + fixed$(fade_duration_s * 1000, 0) + " ms"
+        ... + "  |  SR: " + fixed$(sampleRate / 1000, 1) + " kHz"
     
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
-    # === LEGEND ===
-    Select outer viewport: 0, 8, 6.75, 7.1
-    Axes: 0, 1, 0, 1
-    Font size: 6
-    Colour: "{0.5, 0.5, 0.6}"
-    Draw line: 0.05, 0.5, 0.09, 0.5
-    Colour: "Black"
-    Text: 0.10, "left", 0.5, "half", "Original"
-    Colour: "{0.2, 0.4, 0.8}"
-    Line width: 1.5
-    Draw line: 0.25, 0.5, 0.29, 0.5
-    Line width: 1
-    Colour: "Black"
-    Text: 0.30, "left", 0.5, "half", "Order path"
-    Colour: "{0.2, 0.6, 0.4}"
-    Draw line: 0.48, 0.5, 0.52, 0.5
-    Colour: "Black"
-    Text: 0.53, "left", 0.5, "half", "Similarity"
-    Colour: "{0.4, 0.6, 0.4}"
-    Draw line: 0.70, 0.5, 0.74, 0.5
-    Colour: "Black"
-    Text: 0.75, "left", 0.5, "half", "Output"
-    
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # ============================================================
