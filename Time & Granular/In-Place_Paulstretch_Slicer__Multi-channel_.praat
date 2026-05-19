@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,59 +20,98 @@
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.3:
-#   AUDIO CHANGE: slice Extract now uses rectangular window
-#   (was Hanning, full-segment). v0.2 applied a Hann window
-#   to the input segment BEFORE Paulstretch and then applied
-#   explicit fade_in_s / fade_out_s to the stretched slice
-#   AFTER — two separate fades stacked. v0.3 lets the explicit
-#   fades be the only envelope shaping. Stretched slices have
-#   more body, slightly brighter Paulstretch character, sharper
-#   attack/release before the explicit fades take effect. For
-#   the prior softer character, set fade_in_s and fade_out_s
-#   to larger values (e.g., 0.15 / 0.3 s).
+# Changelog v0.4 (audio CHANGES from v0.3 -- both fixes intentional):
 #
-#   PERFORMANCE (audio bit-identical apart from the Hann->rect
-#   change above): three Formula calls converted to
-#   Formula (part) to skip wasted iterations:
-#     - Line 246 v0.2 (frame padding inside Paulstretch)
-#     - Line 284 v0.2 (overlap-add inside Paulstretch — the
-#       hot inner loop)
-#     - Line 370 v0.2 (final wet-channel placement)
-#   v0.2 evaluated `if x >= start and x <= end then self + ...
-#   else self fi` for every sample in the WHOLE destination
-#   buffer, including ~88% of samples that just returned self.
-#   v0.3 uses Formula (part) which only iterates over the
-#   relevant range. Same arithmetic, same destination samples,
-#   no wasted else-branch iterations. Typical speedup of
-#   Paulstretch operations: 2-5x. Total script wallclock:
-#   ~30-60% faster depending on slice count and stretch.
+#   FIX A -- "clicks" eliminated (same fix as Paulstretch.praat v1.1).
+#     v0.3's `paulstretchFast` procedure rounded `.winSamples` to
+#     even but NOT to a power of 2. Praat's `To Spectrum: "yes"`
+#     uses the fast FFT path, which silently zero-pads the input
+#     up to the next power of 2. The resulting Spectrum has
+#     frequency step dx = 1/paddedDuration, so when `Spectrum:
+#     To Sound` IFFTs back, the output Sound has duration
+#     `paddedDuration = nextPow2(.winSamples)/.sr`, LONGER than
+#     `.winSize`. The subsequent `Multiply by window: "Hanning"`
+#     then spanned [0, paddedDuration] rather than [0, .winSize],
+#     so when overlap-add used only the first .winSize of the
+#     processed frame, the Hann value at that cutoff was
+#     Hann(.winSize/paddedDuration) which is non-zero (~0.74 for
+#     0.25 s / 0.371 s). Each frame ended with a step
+#     discontinuity, audible as clicks at 1/hopOut Hz.
+#     v0.4: round `.winSamples` UP to next pow2 inside the
+#     procedure. The FFT input is then already pow2 so no
+#     auto-padding occurs, IFFT roundtrip preserves duration,
+#     synthesis Hann zeros the edges of the actually-used range,
+#     overlap-add is clean.
+#     Side effect: effective `.winSize` inside the Paulstretch
+#     procedure may be larger than the caller's
+#     `window_size_s`. The caller's `window_size_s` is the
+#     REQUEST; the procedure rounds it up internally. Reported
+#     in the info log when rounding occurs.
 #
-#   POLISH:
-#   - optionmenu Preset: (added colon)
-#   - Dropped 9 decorative form rows (1 instructional comment,
-#     6 `comment === ... ===` section dividers, 1 inline
-#     parenthetical, 1 implicit section grouping). Form went
-#     from 19 effective rows to 10.
-#   - presetName$ added; output filename now includes preset
-#     name: <input>_PSslice_<presetName> (was just _PSslice).
-#   - Visualization rewritten to suite 8x8 standard (v0.2 was
-#     8x5.4 custom):
-#       Title bar (suite light) + metadata subtitle
-#       Panel A (left, headline): slice mapping diagram
-#         (preserved v0.2 concept — each slice as a row with
-#         original position + stretched position rectangles,
-#         color-coded by channel L/R, center marker for the
-#         original midpoint)
-#       Panel B (right, headline): parameter report (preset,
-#         counts, durations, stretch settings, fades, mix,
-#         channel distribution, output stats)
-#       Panel C: original waveform with vertical markers at
-#         each slice position, color-coded by channel
-#       Panel D: result L/R waveforms split top/bottom on
-#         shared time axis (see directly which slices ended
-#         up in which channel)
-#       Panel E: light-grey summary stats bar (suite standard)
+#   FIX B -- magnitude term in phase-randomization formula.
+#     v0.3 already correctly used a single random phase per bin
+#     (cos and sin both read `object[.pid, 1, col]`, the same
+#     value -- the cos/sin half of Fix B was not needed here).
+#     BUT the magnitude computation `sqrt(self[1,col]^2 +
+#     self[2,col]^2)` was still corrupted by in-place Formula
+#     evaluation: when row 2 is processed, `self[1, col]` reads
+#     the row-1 cell that was JUST overwritten by
+#     `mag * cos(phase)` in the previous iteration of the same
+#     Formula pass. So the magnitude used for the imaginary
+#     part was sqrt((mag*cos(phase))^2 + orig_imag^2), not the
+#     original sqrt(orig_real^2 + orig_imag^2). This broke
+#     Paulstretch's "preserve magnitudes" property and added
+#     graininess.
+#     v0.4: precompute magnitudes into a separate Matrix
+#     `.matM` from .matC (while .matC is still untouched), then
+#     the main Formula on .matC reads `object[.mid, 1, col]`
+#     for both rows. Row 2 sees the correct original magnitude,
+#     not a value derived from the modified row 1.
+#
+#   Changelog v0.3 (preserved, no further changes):
+#     AUDIO CHANGE: slice Extract now uses rectangular window
+#     (was Hanning, full-segment). v0.2 applied a Hann window
+#     to the input segment BEFORE Paulstretch and then applied
+#     explicit fade_in_s / fade_out_s to the stretched slice
+#     AFTER — two separate fades stacked. v0.3 lets the explicit
+#     fades be the only envelope shaping. Stretched slices have
+#     more body, slightly brighter Paulstretch character, sharper
+#     attack/release before the explicit fades take effect. For
+#     the prior softer character, set fade_in_s and fade_out_s
+#     to larger values (e.g., 0.15 / 0.3 s).
+#
+#     PERFORMANCE (audio bit-identical apart from the Hann->rect
+#     change above): three Formula calls converted to
+#     Formula (part) to skip wasted iterations:
+#       - Line 246 v0.2 (frame padding inside Paulstretch)
+#       - Line 284 v0.2 (overlap-add inside Paulstretch — the
+#         hot inner loop)
+#       - Line 370 v0.2 (final wet-channel placement)
+#     v0.2 evaluated `if x >= start and x <= end then self + ...
+#     else self fi` for every sample in the WHOLE destination
+#     buffer, including ~88% of samples that just returned self.
+#     v0.3 uses Formula (part) which only iterates over the
+#     relevant range. Same arithmetic, same destination samples,
+#     no wasted else-branch iterations. Typical speedup of
+#     Paulstretch operations: 2-5x. Total script wallclock:
+#     ~30-60% faster depending on slice count and stretch.
+#
+#     POLISH:
+#     - optionmenu Preset: (added colon)
+#     - Dropped 9 decorative form rows (1 instructional comment,
+#       6 `comment === ... ===` section dividers, 1 inline
+#       parenthetical, 1 implicit section grouping). Form went
+#       from 19 effective rows to 10.
+#     - presetName$ added; output filename now includes preset
+#       name: <input>_PSslice_<presetName> (was just _PSslice).
+#     - Visualization rewritten to suite 8x8 standard (v0.2 was
+#       8x5.4 custom):
+#         Title bar (suite light) + metadata subtitle
+#         Panel A (left, headline): slice mapping diagram
+#         Panel B (right, headline): parameter report
+#         Panel C: original waveform with vertical markers
+#         Panel D: result L/R waveforms split top/bottom
+#         Panel E: light-grey summary stats bar
 #
 # Changelog v0.2:
 #   - Added fade in/out on slices
@@ -82,7 +121,7 @@
 #   - Added presets
 # ============================================================
 
-form In-Place Paulstretch Slicer v0.3
+form In-Place Paulstretch Slicer v0.4
     optionmenu Preset: 1
         option Custom
         option Subtle Shimmer
@@ -200,13 +239,29 @@ elsif dry_wet_mix > 1
 endif
 
 # === Info ===
-writeInfoLine: "=== In-Place Paulstretch Slicer v0.3 ==="
+writeInfoLine: "=== In-Place Paulstretch Slicer v0.4 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(totalDuration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Slices: ", number_of_slices
 appendInfoLine: "Duration: ", fixed$(min_duration_s, 2), " - ", fixed$(max_duration_s, 2), " s"
 appendInfoLine: "Stretch: ", stretch_factor, "x"
+
+# v0.4: report effective Paulstretch window after pow2 rounding so the
+# user can see if their request was adjusted (see Fix A in header).
+ps_requestedSamples = round(window_size_s * sampleRate)
+ps_effectiveSamples = 1
+while ps_effectiveSamples < ps_requestedSamples
+    ps_effectiveSamples = ps_effectiveSamples * 2
+endwhile
+ps_effectiveWinSize = ps_effectiveSamples / sampleRate
+if abs(ps_effectiveWinSize - window_size_s) > 0.0005
+    appendInfoLine: "Window: ", fixed$(ps_effectiveWinSize, 4), " s (", ps_effectiveSamples,
+        ... " samples; pow2-rounded up from request of ", fixed$(window_size_s, 4), " s)"
+else
+    appendInfoLine: "Window: ", fixed$(window_size_s, 4), " s (", ps_effectiveSamples, " samples)"
+endif
+
 appendInfoLine: "Dry/Wet: ", fixed$(dry_wet_mix * 100, 0), "% wet"
 appendInfoLine: ""
 
@@ -266,10 +321,19 @@ procedure paulstretchFast: .inputID, .stretch, .winSize, .overlapPct
     .dur = Get total duration
     .sr = Get sampling frequency
     
-    .winSamples = round(.winSize * .sr)
-    if .winSamples mod 2 = 1
-        .winSamples += 1
-    endif
+    # v0.4 Fix A: round .winSamples UP to next pow2 so that
+    # `To Spectrum: "yes"` doesn't auto-pad the FFT input.
+    # With pow2 input, IFFT roundtrip preserves duration, so the
+    # synthesis Hann window applied via `Multiply by window`
+    # zeros the edges of the actually-used overlap-add range
+    # (Fix A: see header changelog).
+    .requestedWinSize = .winSize
+    .requestedWinSamples = round(.winSize * .sr)
+    .winSamples = 1
+    while .winSamples < .requestedWinSamples
+        .winSamples = .winSamples * 2
+    endwhile
+    .winSize = .winSamples / .sr
     
     .overlapFrac = .overlapPct / 100
     .hopOut = .winSize * (1 - .overlapFrac)
@@ -323,9 +387,26 @@ procedure paulstretchFast: .inputID, .stretch, .winSize, .overlapPct
             .matP = Copy: "phases"
             Formula: "randomUniform(-pi, pi)"
             
+            # v0.4 Fix B: precompute magnitudes into a separate
+            # Matrix BEFORE running the in-place randomization on
+            # .matC. v0.3 used `sqrt(self[1,col]^2 + self[2,col]^2)`
+            # inside the .matC Formula, which was corrupted by the
+            # in-place evaluation order: when row=2 was processed,
+            # `self[1,col]` had already been overwritten by the
+            # row=1 branch (with mag*cos(phase)). So the magnitude
+            # used for the imag part was wrong.
+            # v0.4 reads `object[.mid, 1, col]` for both rows --
+            # .matM is never modified during the .matC Formula, so
+            # row 2 sees the correct ORIGINAL magnitude.
+            selectObject: .matC
+            .matM = Copy: "mags"
+            .cid = .matC
+            Formula: "if row = 1 then sqrt(object[.cid, 1, col]^2 + object[.cid, 2, col]^2) else self fi"
+            
             selectObject: .matC
             .pid = .matP
-            Formula: "if (col=1 or col=ncol) then self else (if row=1 then sqrt(self[1,col]^2 + self[2,col]^2) * cos(object[" + string$(.pid) + ",1,col]) else sqrt(self[1,col]^2 + self[2,col]^2) * sin(object[" + string$(.pid) + ",1,col]) fi) fi"
+            .mid = .matM
+            Formula: "if (col=1 or col=ncol) then self else (if row=1 then object[.mid,1,col] * cos(object[.pid,1,col]) else object[.mid,1,col] * sin(object[.pid,1,col]) fi) fi"
             
             .specMod = To Spectrum
             selectObject: .specMod
@@ -347,7 +428,7 @@ procedure paulstretchFast: .inputID, .stretch, .winSize, .overlapPct
             # (~88% wasted iterations).
             Formula (part): .tOut, .tOut + .winSize, 1, 1, "self + object(" + string$(.procID) + ", x)"
             
-            removeObject: .frame, .spec, .matC, .matP, .specMod, .proc
+            removeObject: .frame, .spec, .matC, .matP, .matM, .specMod, .proc
         endif
     endfor
     
