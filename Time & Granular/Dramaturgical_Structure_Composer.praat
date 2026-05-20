@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.0 (2026)
+# Version: 5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -33,6 +33,45 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v5.1:
+#   Output channel count now matches input. v5.0 always produced
+#   mono output regardless of input channel count, because the
+#   `Convert to mono` at the top of the script created `workSound`
+#   and ALL downstream operations (section extraction, silence
+#   creation, noise tail, time-stretch, recall, concatenation)
+#   built on that mono buffer. The original stereo `inputSound`
+#   was used only for spectrogram analysis and then ignored.
+#
+#   v5.1 keeps `workSound` mono (correctly -- it's still used for
+#   analysis where mono is required) but rebuilds the assembly
+#   path from the original `inputSound`. Specific changes:
+#
+#     1. Per-section extract (Step 2): the section stored in
+#        secSound#[s] now comes from inputSound (preserves channel
+#        count). A separate mono temporary is created from
+#        workSound for the per-section analysis procedures
+#        (computeSpectralCentroid uses To Spectrum, computeHarmonicity
+#        uses To Harmonicity (cc) -- both mono-only in Praat).
+#        For mono inputs the temp is skipped (sectionMono = sectionSound).
+#     2. Noise tail template (silence_mode = 2): extracted from
+#        inputSound instead of workSound.
+#     3. Digital silence creation: number of channels parameter
+#        now uses inputChannels (was hardcoded `1`). Required for
+#        Concatenate with overlap to accept timeline items of
+#        consistent channel count.
+#     4. Time-stretch operation (itemType = 4): To Manipulation
+#        is mono-only in Praat, so the stretch path now splits a
+#        stereo section into channels, manipulates each
+#        independently, and recombines via Combine to stereo.
+#        Mono inputs skip the split and use the v5.0 code path.
+#     5. Recall (itemType = 5): Filter (pass Hann band), Reverse,
+#        and Multiply all already work on stereo, so the recall
+#        path works unchanged for stereo input.
+#
+#   For mono input audio, output is bit-identical to v5.0. For
+#   stereo input, output is now stereo and preserves the original
+#   L/R image of each section.
 #
 # Changelog v5.0:
 #   This is a substantial rewrite. v4.0 audio is NOT preserved.
@@ -109,7 +148,7 @@
 #   - Context-aware silence placement
 # ============================================================
 
-form Dramaturgical Structure Composer v5.0
+form Dramaturgical Structure Composer v5.1
     positive Min_section_duration_s 8
     positive Max_section_duration_s 90
     real Novelty_threshold 0.25
@@ -315,7 +354,7 @@ if inputDuration < 20
 endif
 
 writeInfoLine: "=============================================="
-appendInfoLine: "  Dramaturgical Structure Composer v5.0"
+appendInfoLine: "  Dramaturgical Structure Composer v5.1"
 appendInfoLine: "=============================================="
 appendInfoLine: "Input: ", inputName$
 appendInfoLine: "Duration: ", fixed$(inputDuration, 2), " s"
@@ -431,28 +470,47 @@ for s from 1 to actualNumSections
         secDur#[s] = max_section_duration_s
     endif
     
-    selectObject: workSound
-    # v5.0: rectangular instead of Hanning. v4.0's Hanning
-    # zeroed the section content at both edges; the crossfade
-    # assembly stage handles joints.
+    # v5.1: extract from inputSound (preserves channel count) for
+    # the stored section that goes into the assembly pipeline.
+    # v5.0 extracted from workSound which was always mono.
+    selectObject: inputSound
     Extract part: secStart#[s], secEnd#[s], "rectangular", 1, "no"
     sectionSound = selected("Sound")
     
-    @computeSpectralCentroid: sectionSound
+    # v5.1: separate mono temp for analysis. computeSpectralCentroid
+    # calls `To Spectrum: "yes"` and computeHarmonicity calls
+    # `To Harmonicity (cc)`, both of which expect mono input.
+    # For mono inputs the temp is skipped (sectionMono = sectionSound).
+    if inputChannels > 1
+        selectObject: workSound
+        Extract part: secStart#[s], secEnd#[s], "rectangular", 1, "no"
+        sectionMono = selected("Sound")
+    else
+        sectionMono = sectionSound
+    endif
+    
+    @computeSpectralCentroid: sectionMono
     secCentroid#[s] = computeSpectralCentroid.centroid
     
-    @computeHarmonicity: sectionSound
+    @computeHarmonicity: sectionMono
     secHarm#[s] = computeHarmonicity.harmValue
     
-    @computeRMS: sectionSound
+    @computeRMS: sectionMono
     secRms#[s] = computeRMS.rms
     
     if secRms#[s] > globalMaxRms
         globalMaxRms = secRms#[s]
     endif
     
-    selectObject: sectionSound
+    selectObject: sectionMono
     secEnergy#[s] = Get energy: 0, 0
+    
+    # v5.1: cleanup the mono temp if we created a separate one.
+    # When inputChannels = 1, sectionMono IS sectionSound, so we
+    # must NOT remove it (the stored sectionSound is still needed).
+    if inputChannels > 1
+        removeObject: sectionMono
+    endif
     
     # Classify texture: 1=tonal, 2=quiet, 3=bright, 4=dark, 5=fallback
     if secHarm#[s] > harmonicity_threshold
@@ -924,7 +982,11 @@ appendInfoLine: "  Timeline: ", numTimelineItems, " items"
 
 # Noise tail template (for organic silences)
 if silence_mode = 2
-    selectObject: workSound
+    # v5.1: extract from inputSound (preserves channel count).
+    # v5.0 used workSound which is always mono, producing mono
+    # noise tails that broke Concatenate with overlap against
+    # stereo timeline items.
+    selectObject: inputSound
     tailStart = max(0, inputDuration - 2.0)
     Extract part: tailStart, inputDuration, "rectangular", 1, "no"
     noiseTailRaw = selected("Sound")
@@ -954,21 +1016,67 @@ for t from 1 to numTimelineItems
         if itemType = 4
             selectObject: itemSound
             itemDur = Get total duration
+            itemChannels = Get number of channels
             if itemDur > 0
                 safePitchFloor = max(75, 3.0 / itemDur + 5)
-                To Manipulation: 0.01, safePitchFloor, 600
-                manipObj = selected("Manipulation")
-                Extract duration tier
-                durTier = selected("DurationTier")
-                Add point: 0, param
-                selectObject: manipObj
-                plusObject: durTier
-                Replace duration tier
-                selectObject: manipObj
-                Get resynthesis (overlap-add)
-                stretched = selected("Sound")
-                removeObject: manipObj, durTier, itemSound
-                itemSound = stretched
+                if itemChannels = 1
+                    # Mono path (unchanged from v5.0)
+                    To Manipulation: 0.01, safePitchFloor, 600
+                    manipObj = selected("Manipulation")
+                    Extract duration tier
+                    durTier = selected("DurationTier")
+                    Add point: 0, param
+                    selectObject: manipObj
+                    plusObject: durTier
+                    Replace duration tier
+                    selectObject: manipObj
+                    Get resynthesis (overlap-add)
+                    stretched = selected("Sound")
+                    removeObject: manipObj, durTier, itemSound
+                    itemSound = stretched
+                else
+                    # v5.1 multichannel path: To Manipulation is
+                    # mono-only, so split into channels, stretch each
+                    # with the SAME duration factor (preserves the
+                    # spatial image), then recombine. Generalized to
+                    # N channels (handles stereo, quad, octo, etc.).
+                    selectObject: itemSound
+                    Extract all channels
+                    chanIn# = zero# (itemChannels)
+                    for ch from 1 to itemChannels
+                        chanIn#[ch] = selected("Sound", ch)
+                    endfor
+                    
+                    chanOut# = zero# (itemChannels)
+                    for ch from 1 to itemChannels
+                        selectObject: chanIn#[ch]
+                        To Manipulation: 0.01, safePitchFloor, 600
+                        manipC = selected("Manipulation")
+                        Extract duration tier
+                        durTierC = selected("DurationTier")
+                        Add point: 0, param
+                        selectObject: manipC
+                        plusObject: durTierC
+                        Replace duration tier
+                        selectObject: manipC
+                        Get resynthesis (overlap-add)
+                        chanOut#[ch] = selected("Sound")
+                        removeObject: manipC, durTierC, chanIn#[ch]
+                    endfor
+                    
+                    # Recombine all stretched channels
+                    selectObject: chanOut#[1]
+                    for ch from 2 to itemChannels
+                        plusObject: chanOut#[ch]
+                    endfor
+                    Combine to stereo
+                    stretched = selected("Sound")
+                    for ch from 1 to itemChannels
+                        removeObject: chanOut#[ch]
+                    endfor
+                    removeObject: itemSound
+                    itemSound = stretched
+                endif
             endif
         endif
         
@@ -1048,7 +1156,11 @@ for t from 1 to numTimelineItems
             
             timelineSound#[t] = trimmedSil
         else
-            Create Sound from formula: "silence_" + string$(t), 1, 0, silDur, sampleRate, "0"
+            # v5.1: channel count matches input. v5.0 hardcoded `1`,
+            # producing mono silence that broke Concatenate with
+            # overlap against stereo timeline items (Praat requires
+            # matching channel counts for concatenation).
+            Create Sound from formula: "silence_" + string$(t), inputChannels, 0, silDur, sampleRate, "0"
             timelineSound#[t] = selected("Sound")
         endif
         timelineTexture#[t] = 0
