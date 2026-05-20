@@ -2,7 +2,7 @@
 # Praat AudioTools Plugin
 # Script:      PerformanceLauncher.praat
 # Author:      Shai Cohen
-# Version:     1.1 (2026) — Cross-platform scroll + header sync
+# Version:     1.2 (2026) — Dependency probe + version sync + cleanup
 # License:     MIT License
 #
 # Description:
@@ -12,6 +12,20 @@
 #
 # Usage:
 #   Select one or more Sound objects, then run this script.
+#
+# Changelog v1.2:
+#   - Dependency probe hardened: now imports tkinter, numpy,
+#     sounddevice and soundfile (was tkinter only), so a missing
+#     audio module is reported before the GUI launches rather than
+#     surfacing later via the Python crash trap. Exit message lists
+#     all required modules and the pip install command.
+#   - Version synced to 1.2: info-window banner and manifest
+#     plugin_version both updated (the v1.1 "header sync" left these
+#     reading 1.0).
+#   - Removed the dead done-file handshake (doneFile$ definitions,
+#     manifest "done_file" entry, and its cleanup): this script only
+#     ever read the error file; the Python engine no longer writes a
+#     done file.
 #
 # Changelog v1.1:
 #   - Version bump to match performance_launcher.py cross-platform
@@ -57,14 +71,12 @@ pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/performance_launcher.py"
 
 manifestFile$ = temporaryDirectory$ + "/temp_launcher_manifest.json"
-doneFile$     = temporaryDirectory$ + "/temp_launcher_done.json"
 errorFile$    = temporaryDirectory$ + "/temp_launcher_error.txt"
 logFile$      = temporaryDirectory$ + "/temp_launcher_log.txt"
 configFile$   = temporaryDirectory$ + "/temp_launcher_config.json"
 
 # JSON formatting requires unified forward slashes across all platforms
 manifestFileJ$ = replace_regex$ (manifestFile$, "\\", "/", 0)
-doneFileJ$     = replace_regex$ (doneFile$,     "\\", "/", 0)
 errorFileJ$    = replace_regex$ (errorFile$,    "\\", "/", 0)
 logFileJ$      = replace_regex$ (logFile$,      "\\", "/", 0)
 configFileJ$   = replace_regex$ (configFile$,   "\\", "/", 0)
@@ -81,11 +93,11 @@ if fileReadable(probeOkFile$)
     deleteFile: probeOkFile$
 endif
 
-probeCmd$ = pythonCmd$ + " -c ""import tkinter; open('""" + probeOkFileJ$ + """', 'w').write('OK')"""
+probeCmd$ = pythonCmd$ + " -c ""import tkinter, numpy, sounddevice, soundfile; open('""" + probeOkFileJ$ + """', 'w').write('OK')"""
 runSystem_nocheck: probeCmd$
 
 if not fileReadable(probeOkFile$)
-    exitScript: "Standard Python tkinter wrapper missing. Please verify your Python environment distribution."
+    exitScript: "Missing Python dependencies. The performance engine requires: tkinter, numpy, sounddevice, soundfile." + newline$ + "Install with:  python -m pip install sounddevice soundfile numpy"
 endif
 deleteFile: probeOkFile$
 
@@ -93,9 +105,6 @@ deleteFile: probeOkFile$
 procedure cleanUpTempFiles
     if fileReadable (manifestFile$)
         deleteFile: manifestFile$
-    endif
-    if fileReadable (doneFile$)
-        deleteFile: doneFile$
     endif
     if fileReadable (errorFile$)
         deleteFile: errorFile$
@@ -159,11 +168,10 @@ endfor
 nl$ = newline$
 manifest$ = "{" + nl$
 manifest$ = manifest$ + "  ""plugin_name"": ""Performance Launcher""," + nl$
-manifest$ = manifest$ + "  ""plugin_version"": ""1.0""," + nl$
+manifest$ = manifest$ + "  ""plugin_version"": ""1.2""," + nl$
 manifest$ = manifest$ + "  ""project_sample_rate"": " + string$ (targetSR) + "," + nl$
 manifest$ = manifest$ + "  ""project_max_channels"": " + string$ (maxChannels) + "," + nl$
 manifest$ = manifest$ + "  ""temp_dir"": """ + replace_regex$(temporaryDirectory$, "\\", "/", 0) + """," + nl$
-manifest$ = manifest$ + "  ""done_file"": """ + doneFileJ$ + """," + nl$
 manifest$ = manifest$ + "  ""error_file"": """ + errorFileJ$ + """," + nl$
 manifest$ = manifest$ + "  ""log_file"": """ + logFileJ$ + """," + nl$
 manifest$ = manifest$ + "  ""config_file"": """ + configFileJ$ + """," + nl$
@@ -198,7 +206,7 @@ writeFile: manifestFile$, manifest$
 
 # ---- Execution Log Window Feed ----
 clearinfo
-appendInfoLine: "=== Performance Launcher 1.0 ==="
+appendInfoLine: "=== Performance Launcher 1.2 ==="
 appendInfoLine: "Loaded Cues: ", nSounds
 appendInfoLine: "Target System Rate: ", targetSR, " Hz"
 appendInfoLine: "Max File Channels:  ", maxChannels

@@ -3,7 +3,7 @@
 # Praat AudioTools Plugin
 # Script:      performance_launcher.py
 # Author:      Shai Cohen
-# Version:     1.1 (2026) — Cross-platform scroll + header sync
+# Version:     1.2 (2026) — Real-time callback hardening
 # License:     MIT License
 #
 # Description:
@@ -15,6 +15,24 @@
 #
 # Usage (called by PerformanceLauncher.praat):
 #   python performance_launcher.py <manifest.json>
+#
+# Changelog v1.2:
+#   - Real-time fix: the natural (end-of-file) fade-out in the audio
+#     callback was a per-sample Python `for` loop -- up to blocksize
+#     iterations per cue per callback, inside the RT thread, a real
+#     xrun risk under load. Replaced with a vectorized numpy ramp,
+#     identical math, matching the already-vectorized triggered-stop
+#     fade-out.
+#   - Mono->mono gain guard: a mono cue is only duplicated to two
+#     channels when the output has >= 2 channels. Previously, with a
+#     1-channel output, both duplicated copies wrapped onto channel 0
+#     and summed (a silent ~+6 dB bump on mono cues).
+#   - Removed the dead done-file handshake: write_done_file() and its
+#     call/field are gone (PerformanceLauncher.praat only ever read
+#     the error file; the done file was written then deleted, never
+#     consumed). Config persistence is unchanged.
+#   - Version synced to 1.2 across the Praat front-end (header, info
+#     log, and manifest plugin_version).
 #
 # Changelog v1.1:
 #   - Cross-platform cue-list scroll: Linux Button-4/Button-5
@@ -265,16 +283,32 @@ class AudioEngine:
                     abs_start = inst.current_frame
                     abs_end   = inst.current_frame + chunk_len
                     if abs_end > fo_start_frame:
+                        # v1.2: vectorized natural fade-out. v1.1 ran a
+                        # per-sample Python `for` loop here, inside the
+                        # real-time audio callback -- up to blocksize
+                        # iterations per cue per callback, risking xruns
+                        # under load. numpy gives identical math with no
+                        # Python-level loop (matches the np.linspace used
+                        # in the triggered-stop fade-out above).
                         ofs = max(0, fo_start_frame - abs_start)
-                        for k in range(ofs, chunk_len):
-                            pos_in_fade = (abs_start + k) - fo_start_frame
-                            chunk[k] *= max(0.0, 1.0 - pos_in_fade / inst.fade_out_frames)
+                        idx = np.arange(ofs, chunk_len)
+                        pos_in_fade = (abs_start + idx) - fo_start_frame
+                        ramp = np.maximum(0.0, 1.0 - pos_in_fade / inst.fade_out_frames)
+                        if chunk.ndim > 1:
+                            chunk[ofs:] *= ramp[:, np.newaxis]
+                        else:
+                            chunk[ofs:] *= ramp
 
                 # Apply gain
                 chunk *= inst.gain_linear * self.master_gain_linear
 
                 # Mono-to-stereo expand
-                if cue.mono_to_stereo and chunk.ndim == 1:
+                # v1.2: only duplicate a mono cue to two channels when
+                # there are >= 2 output channels. With a 1-channel output
+                # both copies wrapped (via the modulo below) back onto
+                # channel 0 and summed -> a silent 2x (≈ +6 dB) level
+                # bump on mono cues. Now mono-out keeps a single channel.
+                if cue.mono_to_stereo and chunk.ndim == 1 and self.output_channels >= 2:
                     chunk = np.stack([chunk, chunk], axis=1)
                 elif chunk.ndim == 1:
                     chunk = chunk[:, np.newaxis]
@@ -354,13 +388,6 @@ class AudioEngine:
                 'total_frames': int(duration * self.sample_rate)
             })
 
-    def write_done_file(self, done_path, config):
-        try:
-            with open(done_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2)
-        except Exception:
-            pass
-
 
 # ── Settings / Config Persistence ─────────────────────────────────────
 def load_config(path):
@@ -385,7 +412,6 @@ class PerformanceLauncherApp:
         self.manifest = manifest
         self.engine = AudioEngine(manifest)
 
-        self.done_file   = manifest.get('done_file', '')
         self.config_file = manifest.get('config_file', '')
 
         cfg = load_config(self.config_file)
@@ -752,7 +778,6 @@ class PerformanceLauncherApp:
         targets.append(self.manifest.get('_manifest_path', ''))
         targets.append(self.manifest.get('log_file', ''))
         targets.append(self.manifest.get('config_file', ''))
-        targets.append(self.manifest.get('done_file', ''))
         targets.append(self.manifest.get('error_file', ''))   # set in main()
         for path in targets:
             if not path:
@@ -785,7 +810,6 @@ class PerformanceLauncherApp:
             'cues':            cue_data,
         }
         save_config(self.config_file, cfg)
-        self.engine.write_done_file(self.done_file, cfg)
         self.engine.log_event("Config saved. Launcher exiting.")
 
 
