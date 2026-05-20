@@ -750,7 +750,10 @@ class PerformanceLauncherApp:
         removed, failed = [], []
         targets = [cue.filename for cue in self.cues]
         targets.append(self.manifest.get('_manifest_path', ''))
-        targets.append(self.manifest.get('log_file', ''))   # set in main()
+        targets.append(self.manifest.get('log_file', ''))
+        targets.append(self.manifest.get('config_file', ''))
+        targets.append(self.manifest.get('done_file', ''))
+        targets.append(self.manifest.get('error_file', ''))   # set in main()
         for path in targets:
             if not path:
                 continue
