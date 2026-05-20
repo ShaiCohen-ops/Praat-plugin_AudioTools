@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - Particle_Field_Renderer.praat
+# Praat AudioTools - Additive_Particle_Field.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,55 +12,89 @@
 #   that follow the pitch and intensity contour of the input audio.
 #   Creates ethereal, bell-like textures from any source material.
 #
-# Changelog v0.2:
-#   - Fixed Formula interpolation syntax
-#   - Optimized grain creation (short grains, not full-length)
-#   - Added visualization
+# Changelog v0.3:
+#   TIER 3 (performance, audio bit-identical):
+#     - MAJOR speedup. v0.2 placed each grain into the full-length
+#       mixL/mixR buffers with a whole-buffer `Formula`:
+#         Formula: "if x >= tStart and x <= tEnd then self +
+#                   object(grain, x) * gainL else self fi"
+#       That iterated EVERY sample of the full-duration buffer for
+#       EVERY particle (twice -- L and R), returning `else self`
+#       for ~99.9% of samples. For Dense Cloud (300 particles) on
+#       a 60 s input that is ~1.5 billion sample evaluations,
+#       almost all wasted. v0.3 uses `Formula (part)` over only
+#       the grain's time range:
+#         Formula (part): grainStart, grainEnd, 1, 1,
+#                         "self + object(grain, x) * gainL"
+#       Same samples modified, same arithmetic -- bit-identical
+#       output -- but each grain touches only ~grain_duration_s
+#       worth of samples instead of the whole buffer. Speedup
+#       scales with duration / grain_duration_s; typically
+#       100-1000x on the synthesis loop, which dominates runtime.
+#
+#   TIER 2 (real bug, audio bit-identical):
+#     - FIXED: legend text positioning. v0.2's legend panel
+#       (outer viewport 0,8,5.1,5.4) set no Axes, so it inherited
+#       `Axes: 0, duration, 0, 1` from the pan/amplitude panel.
+#       The legend `Text: 1.5, "centre", 0.5, ...` was placed at
+#       time=1.5 s / pan=0.5 in those inherited axes, so its
+#       horizontal position depended on `duration` and fell off
+#       the panel entirely for short inputs (duration < 1.5 s).
+#       v0.3 sets explicit `Axes: 0, 1, 0, 1` (the legend is now
+#       the suite-standard light-grey summary bar).
+#
+#   TIER 1 (polish, audio bit-identical):
+#     - Dropped 7 form comment rows (1 instructional + 6
+#       decorative `=== ... ===` dividers).
+#     - Added colons to all 4 optionmenus (Preset:, Envelope_shape:,
+#       Panning_mode:, Time_distribution:).
+#     - Added presetName$ per preset; output filename now includes
+#       it: <input>_particles_<preset> (was bare <input>_particles).
+#     - Visualization rewritten to suite 8x8:
+#         Title bar (suite light) + metadata subtitle
+#         Original / Result waveform (side-by-side, headline)
+#         Particle field time-vs-pitch (color = pan, signature)
+#         Particle field time-vs-pan (color = amplitude)
+#         Light-grey 3-line summary (suite standard)
+#
+#   Changelog v0.2:
+#     - Fixed Formula interpolation syntax
+#     - Optimized grain creation (short grains, not full-length)
+#     - Added visualization
 # ============================================================
 
-form Additive Particle Field
-    comment Select a Sound object first
-    
-    comment === Preset ===
-    optionmenu Preset 1
+form Additive Particle Field v0.3
+    optionmenu Preset: 1
         option Custom
         option Dense Cloud
         option Sparse Field
         option Rhythmic Pulse
         option Shimmer
         option Long Resonance
-    
-    comment === Particles ===
     integer Number_of_particles 100
     real Grain_duration_s 0.050
-    optionmenu Envelope_shape 1
+    optionmenu Envelope_shape: 1
         option Hann
         option Gaussian
         option Rectangular
-    
-    comment === Panning ===
-    optionmenu Panning_mode 1
+    optionmenu Panning_mode: 1
         option Pitch-derived
         option Random
         option Fixed
     real Fixed_pan 0.5
-    
-    comment === Modulation ===
     boolean Apply_LFO 0
     real LFO_frequency 0.5
-    
-    comment === Time Distribution ===
-    optionmenu Time_distribution 1
+    optionmenu Time_distribution: 1
         option Linear
         option Exponential
         option Random
-    
-    comment === Output ===
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
 # === Apply Presets ===
+# v0.3: each preset defines presetName$ for the output filename + viz.
+presetName$ = "Custom"
 if preset = 2
     # Dense Cloud
     number_of_particles = 300
@@ -69,6 +103,7 @@ if preset = 2
     panning_mode = 2
     apply_LFO = 0
     time_distribution = 3
+    presetName$ = "DenseCloud"
 elsif preset = 3
     # Sparse Field
     number_of_particles = 30
@@ -77,6 +112,7 @@ elsif preset = 3
     panning_mode = 1
     apply_LFO = 0
     time_distribution = 1
+    presetName$ = "SparseField"
 elsif preset = 4
     # Rhythmic Pulse
     number_of_particles = 80
@@ -87,6 +123,7 @@ elsif preset = 4
     apply_LFO = 1
     lFO_frequency = 4.0
     time_distribution = 1
+    presetName$ = "RhythmicPulse"
 elsif preset = 5
     # Shimmer
     number_of_particles = 150
@@ -96,6 +133,7 @@ elsif preset = 5
     apply_LFO = 1
     lFO_frequency = 0.25
     time_distribution = 2
+    presetName$ = "Shimmer"
 elsif preset = 6
     # Long Resonance
     number_of_particles = 15
@@ -105,6 +143,7 @@ elsif preset = 6
     apply_LFO = 1
     lFO_frequency = 0.15
     time_distribution = 2
+    presetName$ = "LongResonance"
 endif
 
 # === Fixed Parameters ===
@@ -281,18 +320,22 @@ for i to number_of_particles
         # Shift grain to correct position
         Shift times to: "start time", grainStart
         
-        # Add to mix buffers using Formula
+        # Add to mix buffers using Formula (part)
+        # v0.3: Formula (part) over [grainStart, grainEnd] only.
+        # v0.2 used a whole-buffer `Formula` with an `if x in range
+        # then ... else self fi` test, iterating every sample of the
+        # full-length buffer for every particle (twice). Formula
+        # (part) touches only the grain's samples. Bit-identical
+        # output, dramatically faster.
         grainStr$ = string$(grain)
-        tStart$ = fixed$(grainStart, 6)
-        tEnd$ = fixed$(grainEnd, 6)
         
         # Add to left channel
         selectObject: mixL
-        Formula: "if x >= " + tStart$ + " and x <= " + tEnd$ + " then self + object(" + grainStr$ + ", x) * gainL else self fi"
+        Formula (part): grainStart, grainEnd, 1, 1, "self + object(" + grainStr$ + ", x) * gainL"
         
         # Add to right channel
         selectObject: mixR
-        Formula: "if x >= " + tStart$ + " and x <= " + tEnd$ + " then self + object(" + grainStr$ + ", x) * gainR else self fi"
+        Formula (part): grainStart, grainEnd, 1, 1, "self + object(" + grainStr$ + ", x) * gainR"
         
         removeObject: grain
     endif
@@ -307,108 +350,199 @@ selectObject: mixL, mixR
 Combine to stereo
 result = selected("Sound")
 Scale peak: 0.95
-Rename: original_name$ + "_particles"
+Rename: original_name$ + "_particles_" + presetName$
 
 # === Cleanup ===
 removeObject: mixL, mixR, intensityObj, pitchObj
 
-# === Visualization ===
+###############################################################################
+# VISUALIZATION  (8 x 8 canvas, suite styling)
+# Title bar (suite light) + metadata subtitle
+# Panel A: Original waveform   (left half, headline)
+# Panel B: Result waveform     (right half, headline)
+# Panel C: Particle field time-vs-pitch (color = pan, signature)
+# Panel D: Particle field time-vs-pan (color = amplitude)
+# Panel E: Light-grey 3-line summary  (suite standard)
+###############################################################################
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, 8
+    Black
+    Plain line
+
+    if envelope_shape = 1
+        envName$ = "Hann"
+    elsif envelope_shape = 2
+        envName$ = "Gaussian"
+    else
+        envName$ = "Rectangular"
+    endif
+
+    if panning_mode = 1
+        panName$ = "Pitch-derived"
+    elsif panning_mode = 2
+        panName$ = "Random"
+    else
+        panName$ = "Fixed " + fixed$(fixed_pan, 2)
+    endif
+
+    if time_distribution = 1
+        distName$ = "Linear"
+    elsif time_distribution = 2
+        distName$ = "Exponential"
+    else
+        distName$ = "Random"
+    endif
+
+    # ----------------------------------------------------------
+    # TITLE BAR
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.65
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Additive Particle Field: " + original_name$
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.8
-    Select inner viewport: 0.6, 7.6, 0.7, 1.7
+    Text: 0.5, "centre", 0.68, "half", "##ADDITIVE PARTICLE FIELD##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half",
+        ... original_name$
+        ... + "  |  " + presetName$
+        ... + "  |  " + string$(number_of_particles) + " particles"
+        ... + "  |  " + fixed$(grain_duration_s * 1000, 0) + " ms grains"
+        ... + "  |  " + envName$ + " env"
+        ... + "  |  " + distName$ + " dist"
+
+    # ----------------------------------------------------------
+    # PANEL A (left): ORIGINAL WAVEFORM
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 0.75, 2.30
+    Select inner viewport: 0.55, 4.00, 0.95, 2.18
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.55, 0.55, 0.60}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Select outer viewport: 0.1, 8, 0.5, 1.8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.9, 3.1
-    Select inner viewport: 0.6, 7.6, 2.0, 3.0
-    selectObject: result
-    Colour: "{0.6, 0.3, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Text left: "yes", "Particles"
-    Text bottom: "yes", "Time (s)"
-    
-    # Particle field (time vs pitch, color by pan)
-    Select outer viewport: 0, 4, 3.3, 5.0
-    Select inner viewport: 0.6, 3.8, 3.5, 4.9
-    
-    Axes: 0, duration, minPitch, maxPitch
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, minPitch, maxPitch
-    
-    # Draw particles as dots (color by pan: blue=left, red=right)
-    for i to number_of_particles
-        pan = particlePan[i]
-        dotColor$ = "{" + fixed$(0.3 + pan * 0.6, 2) + ", " + fixed$(0.3, 2) + ", " + fixed$(0.9 - pan * 0.6, 2) + "}"
-        
-        Paint circle (mm): dotColor$, particleTime[i], particlePitch[i], 0.5
-    endfor
-    
-    Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
+    Text top: "no", "Original  (" + fixed$(duration, 2) + " s)"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # ----------------------------------------------------------
+    # PANEL B (right): RESULT WAVEFORM
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 0.75, 2.30
+    Select inner viewport: 4.55, 7.75, 0.95, 2.18
+    selectObject: result
+    Colour: "{0.55, 0.30, 0.70}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Particle field output  (stereo)"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # ----------------------------------------------------------
+    # PANEL C (left): PARTICLE FIELD  time vs pitch (color = pan)
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 4.2, 2.40, 4.40
+    Select inner viewport: 0.55, 4.00, 2.60, 4.28
+    Axes: 0, duration, minPitch, maxPitch
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, minPitch, maxPitch
+
+    for i to number_of_particles
+        pan = particlePan[i]
+        dotColor$ = "{" + fixed$(0.30 + pan * 0.60, 2) + ", " + fixed$(0.30, 2) + ", " + fixed$(0.90 - pan * 0.60, 2) + "}"
+        Paint circle (mm): dotColor$, particleTime[i], particlePitch[i], 0.6
+    endfor
+
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Particles: pitch over time  (blue = L, red = R)"
+    Font size: 6
     Text left: "yes", "Pitch (Hz)"
     Text bottom: "yes", "Time (s)"
-    
-    # Particle field (time vs pan, color by amplitude)
-    Select outer viewport: 4, 8, 3.3, 5.0
-    Select inner viewport: 4.4, 7.6, 3.5, 4.9
-    
+
+    # ----------------------------------------------------------
+    # PANEL D (right): PARTICLE FIELD  time vs pan (color = amp)
+    # ----------------------------------------------------------
+    Select outer viewport: 4.2, 8, 2.40, 4.40
+    Select inner viewport: 4.55, 7.75, 2.60, 4.28
     Axes: 0, duration, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1
-    
-    # Find max amplitude for normalization
+
     maxAmp = 0.001
     for i to number_of_particles
         if particleAmp[i] > maxAmp
             maxAmp = particleAmp[i]
         endif
     endfor
-    
-    # Draw particles (color by amplitude)
-    for i to number_of_particles
-        ampNorm = particleAmp[i] / maxAmp
-        dotColor$ = "{" + fixed$(0.3 + ampNorm * 0.5, 2) + ", " + fixed$(0.5 + ampNorm * 0.3, 2) + ", " + fixed$(0.3, 2) + "}"
-        
-        Paint circle (mm): dotColor$, particleTime[i], particlePan[i], 0.5
-    endfor
-    
-    # Center line
-    Colour: "{0.7, 0.7, 0.7}"
+
+    # Center (pan = 0.5) reference
+    Colour: "{0.70, 0.70, 0.74}"
     Dotted line
     Draw line: 0, 0.5, duration, 0.5
     Solid line
-    
+
+    for i to number_of_particles
+        ampNorm = particleAmp[i] / maxAmp
+        dotColor$ = "{" + fixed$(0.30 + ampNorm * 0.50, 2) + ", " + fixed$(0.50 + ampNorm * 0.30, 2) + ", " + fixed$(0.30, 2) + "}"
+        Paint circle (mm): dotColor$, particleTime[i], particlePan[i], 0.6
+    endfor
+
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Pan (L-R)"
+    Text top: "no", "Particles: pan over time  (greener = louder)"
+    Font size: 6
+    Text left: "yes", "Pan (L=0, R=1)"
     Text bottom: "yes", "Time (s)"
-    
-    # Legend
-    Select outer viewport: 0, 8, 5.1, 5.4
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 1.5, "centre", 0.5, "half", "Particles: " + string$(number_of_particles) + " | Duration: " + fixed$(grain_duration_s * 1000, 0) + "ms | Pitch range: " + string$(minPitch) + "-" + string$(maxPitch) + " Hz"
-    
+
+    # ----------------------------------------------------------
+    # PANEL E: SUMMARY BAR  (suite standard light grey)
+    # v0.3 fix: explicit Axes 0,1,0,1 before any Text(). v0.2's
+    # legend inherited axes from the panel above, so text landed at
+    # unpredictable positions (off-panel for short inputs).
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 4.50, 5.20
+    Select inner viewport: 0.55, 7.75, 4.57, 5.14
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    if apply_LFO
+        lfoStr$ = "ON (" + fixed$(lFO_frequency, 2) + " Hz)"
+    else
+        lfoStr$ = "OFF"
+    endif
+
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.75, "half",
+        ... "##" + presetName$ + "##"
+        ... + "  " + original_name$
+        ... + "  |  " + string$(number_of_particles) + " particles"
+        ... + "  |  grain " + fixed$(grain_duration_s * 1000, 0) + " ms"
+        ... + "  |  env " + envName$
+        ... + "  |  pan " + panName$
+
+    Text: 0.02, "left", 0.28, "half",
+        ... "Time dist: " + distName$
+        ... + "  |  LFO: " + lfoStr$
+        ... + "  |  Pitch range: " + string$(minPitch) + "-" + string$(maxPitch) + " Hz"
+        ... + "  |  In: " + fixed$(duration, 2) + " s"
+        ... + "  |  Out: " + original_name$ + "_particles_" + presetName$
+
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # === Final Info ===
