@@ -749,7 +749,8 @@ class PerformanceLauncherApp:
         """Delete the per-cue WAV exports and the manifest written by Praat."""
         removed, failed = [], []
         targets = [cue.filename for cue in self.cues]
-        targets.append(self.manifest.get('_manifest_path', ''))   # set in main()
+        targets.append(self.manifest.get('_manifest_path', ''))
+        targets.append(self.manifest.get('log_file', ''))   # set in main()
         for path in targets:
             if not path:
                 continue
