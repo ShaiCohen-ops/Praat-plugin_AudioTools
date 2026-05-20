@@ -2,13 +2,25 @@
 # Praat AudioTools Plugin
 # Script:      PerformanceLauncher.praat
 # Author:      Shai Cohen
-# Version:     1.0 (2026) — Multichannel Live Performance Engine
+# Version:     1.1 (2026) — Cross-platform scroll + header sync
 # License:     MIT License
 #
 # Description:
 #   Prepares selected Sound objects, resamples them to a unified
 #   maximum sample rate, writes a performance manifest, and hands
 #   complete execution over to the real-time Python audio engine.
+#
+# Usage:
+#   Select one or more Sound objects, then run this script.
+#
+# Changelog v1.1:
+#   - Version bump to match performance_launcher.py cross-platform
+#     scroll fix (Linux Button-4/5 bindings in Python GUI).
+#   - Header updated to match plugin standard format.
+#
+# Changelog v1.0:
+#   - Initial release. OS-specific Python discovery, manifest JSON
+#     generation, resampling pass, and Python engine handoff.
 # ============================================================
 
 # ---- Verify selection ----

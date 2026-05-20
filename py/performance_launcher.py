@@ -3,8 +3,35 @@
 # Praat AudioTools Plugin
 # Script:      performance_launcher.py
 # Author:      Shai Cohen
-# Version:     1.0.1 (2026) — Multichannel Hardware Cue Launcher (Fixed)
+# Version:     1.1 (2026) — Cross-platform scroll + header sync
 # License:     MIT License
+#
+# Description:
+#   Real-time multichannel audio cue launcher for live performance.
+#   Accepts a manifest JSON from PerformanceLauncher.praat, loads
+#   each cue into memory, and provides a keyboard-triggered GUI
+#   for firing cues to any output channel configuration with
+#   per-cue gain, fade-in/out, pan offset, and progress display.
+#
+# Usage (called by PerformanceLauncher.praat):
+#   python performance_launcher.py <manifest.json>
+#
+# Changelog v1.1:
+#   - Cross-platform cue-list scroll: Linux Button-4/Button-5
+#     events added alongside Windows/macOS MouseWheel, so the
+#     cue list scrolls with the mouse wheel on all platforms.
+#   - Header updated to match plugin standard format.
+#
+# Changelog v1.0.1:
+#   - Progress bar and countdown timer added to each cue row.
+#   - Temp file cleanup on window close.
+#   - AudioEngine.get_cue_progress() for thread-safe position
+#     snapshots driving the per-cue UI indicators.
+#
+# Changelog v1.0:
+#   - Initial release. Multichannel OutputStream via sounddevice,
+#     real-time mixing with fade-in/out and gain, keyboard cue
+#     triggering, device selector, config persistence.
 # ============================================================
 
 import sys
@@ -490,6 +517,16 @@ class PerformanceLauncherApp:
 
         self.cue_frame.bind('<Configure>', _on_frame_configure)
         canvas.bind('<Configure>', _on_canvas_configure)
+
+        # Cross-platform vertical scroll:
+        #   Windows / macOS  → <MouseWheel>  (delta in multiples of 120)
+        #   Linux (X11)      → <Button-4> / <Button-5>  (no delta field)
+        canvas.bind('<MouseWheel>',
+            lambda e: canvas.yview_scroll(-1 * (e.delta // 120), 'units'))
+        canvas.bind('<Button-4>',
+            lambda e: canvas.yview_scroll(-1, 'units'))
+        canvas.bind('<Button-5>',
+            lambda e: canvas.yview_scroll(1, 'units'))
 
         for cue in self.cues:
             self._add_cue_row(cue)
