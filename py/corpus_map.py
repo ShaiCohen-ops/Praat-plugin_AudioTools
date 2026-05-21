@@ -281,6 +281,23 @@ class AudioEngine:
             ptr[0] = end
 
         try:
+            # v2.5: if this unit already has a stream, close it first so we
+            # don't leak the portaudio handle (the dict entry would be
+            # silently overwritten otherwise, orphaning the old stream).
+            existing = self._streams.pop(unit_id, None)
+            if existing is not None:
+                try: existing.stop(); existing.close()
+                except Exception: pass
+
+            # v2.5: hard cap — close the oldest stream when pool is full,
+            # preventing portaudio handle exhaustion on sustained hover.
+            MAX_STREAMS = 16
+            while len(self._streams) >= MAX_STREAMS:
+                oldest = next(iter(self._streams))
+                s = self._streams.pop(oldest)
+                try: s.stop(); s.close()
+                except Exception: pass
+
             # v2.3: finished_callback is a void C callback and MUST return
             # None. The previous lambda returned dict.pop()'s value (the
             # stream object when the key existed), which raised the CFFI
