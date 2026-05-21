@@ -40,7 +40,7 @@ Developed for composers, sound designers, and researchers, the toolkit extends P
 **Interactive HTML documentation for all 415 scripts:**  
 [https://mashav.com/sha/Praat%20AudioTools/](https://mashav.com/sha/Praat%20AudioTools/)
 
-📖 [Detailed Script Overview](script-overview.html)
+📖 [Detailed Script Overview]([script-overview.html](https://mashav.com/sha/Praat%20AudioTools/script-overview.html))
 
 🎵 Did You Know? Algorithmic Music (1-Min Intros): [YouTube Playlist](https://www.youtube.com/playlist?list=PLgvns-wRHeYo-EcXGacjOwbmwA7vbSLW2)
 
