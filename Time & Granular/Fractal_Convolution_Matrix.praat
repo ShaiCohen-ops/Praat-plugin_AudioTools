@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,23 @@
 #   geometrically decreasing intervals (2^depth), creating
 #   fractal-like temporal patterns.
 #
+# Changelog v0.3:
+#   - FIX (audio): the per-depth amplitude scaling was linear
+#     (1 - depth*reduction), which crosses zero and goes NEGATIVE for
+#     deep levels (e.g. Extreme at depth >= 5; depth 10 -> -1.2, an
+#     invert-and-amplify). Replaced with a geometric law
+#     (1 - reduction)^depth, so deeper levels genuinely get quieter and
+#     stay in (0,1). Changes the deep-level character of every preset.
+#   - FIX (audio): the convolution taps used in-place self[col+shift],
+#     which reads already-modified samples (backward taps) and lets each
+#     tap feed the next -- an IIR feedback, not a convolution. Each depth
+#     now snapshots its input and all taps read that fixed source
+#     (object[snapshot,...]), making it a true feedback-free FIR.
+#   - VISUALIZATION: rebuilt to the AudioTools suite 8x8 standard
+#     (waveform pair + original/result spectrograms + summary).
+#   - Added presetName$ (presets did not set it); preset name now
+#     appears in the output filename.
+#
 # Changelog v0.2:
 #   - Modern syntax
 #   - Added visualization
@@ -22,25 +39,18 @@
 
 form Fractal Convolution
     comment Select a Sound object first
-    
-    comment === Preset ===
-    optionmenu Preset 1
+    optionmenu Preset: 1
         option Custom
         option Subtle Fractal
         option Medium Fractal
         option Heavy Fractal
         option Extreme Fractal
     
-    comment === Fractal Parameters ===
     positive Tail_duration_s 2.0
     natural Fractal_depth 5
     natural Convolution_width 3
-    
-    comment === Scaling ===
     positive Kernel_divisor 10
     positive Amplitude_reduction 0.15
-    
-    comment === Output ===
     positive Scale_peak 0.90
     positive Fadeout_duration_s 1.0
     boolean Draw_visualization 1
@@ -57,6 +67,7 @@ if preset = 2
     amplitude_reduction = 0.12
     scale_peak = 0.92
     fadeout_duration_s = 0.8
+    presetName$ = "Subtle"
 elsif preset = 3
     # Medium Fractal
     tail_duration_s = 2.0
@@ -66,6 +77,7 @@ elsif preset = 3
     amplitude_reduction = 0.15
     scale_peak = 0.90
     fadeout_duration_s = 1.0
+    presetName$ = "Medium"
 elsif preset = 4
     # Heavy Fractal
     tail_duration_s = 2.8
@@ -75,6 +87,7 @@ elsif preset = 4
     amplitude_reduction = 0.18
     scale_peak = 0.88
     fadeout_duration_s = 1.4
+    presetName$ = "Heavy"
 elsif preset = 5
     # Extreme Fractal
     tail_duration_s = 4.0
@@ -84,6 +97,9 @@ elsif preset = 5
     amplitude_reduction = 0.22
     scale_peak = 0.86
     fadeout_duration_s = 1.8
+    presetName$ = "Extreme"
+else
+    presetName$ = "Custom"
 endif
 
 # === Check Input ===
@@ -100,7 +116,7 @@ channels = Get number of channels
 originalDuration = Get total duration
 
 # === Info ===
-writeInfoLine: "=== Fractal Convolution Matrix ==="
+writeInfoLine: "=== Fractal Convolution Matrix v0.3 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(originalDuration, 2), " s)"
 appendInfoLine: ""
 appendInfoLine: "Fractal depth: ", fractal_depth
@@ -145,18 +161,28 @@ for depth from 1 to fractal_depth
     delayMs = kernelSize / sampling_rate * 1000
     appendInfoLine: "  ", depth, "   |  ", scaleFactor, "   |    ", kernelSize, "     | ", fixed$(delayMs, 1), " ms"
     
-    # Fractal convolution kernel
+    # Snapshot this depth's input so every tap reads a FIXED source
+    # (feedback-free FIR) instead of the accumulating in-place result.
+    selectObject: result
+    Copy: "fractal_snapshot"
+    snapshot = selected("Sound")
+    
+    # Fractal convolution kernel (taps read the snapshot)
     selectObject: result
     for kernel from -convolution_width to convolution_width
         kernelWeight = 1 / (1 + abs(kernel))
         kernelShift = kernel * kernelSize
         depthFactor = depth + 2
         
-        Formula: "self + if col + kernelShift >= 1 and col + kernelShift <= ncol then self[col + kernelShift] * kernelWeight / depthFactor else 0 fi"
+        Formula: "self + if col + kernelShift >= 1 and col + kernelShift <= ncol then object['snapshot', row, col + kernelShift] * kernelWeight / depthFactor else 0 fi"
     endfor
     
-    # Fractal amplitude scaling
-    ampScale = 1 - depth * amplitude_reduction
+    removeObject: snapshot
+    
+    # Fractal amplitude scaling (geometric: deep levels truly decrease,
+    # stays in (0,1) instead of the old linear law going negative)
+    selectObject: result
+    ampScale = (1 - amplitude_reduction) ^ depth
     Formula: "self * ampScale"
 endfor
 
@@ -170,80 +196,135 @@ fadeStart = totalDuration - fadeout_duration_s
 
 Formula: "if x > fadeStart then self * (0.5 + 0.5 * cos(pi * (x - fadeStart) / fadeout_duration_s)) else self fi"
 
-Rename: original_name$ + "_fractal"
+Rename: original_name$ + "_fractal_" + presetName$
 
 # === Cleanup ===
 removeObject: extended
 
 # === Visualization ===
 if draw_visualization
+    selectObject: result
+    vizDur = Get total duration
+
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0.2, 0.6
+    Select outer viewport: 0, 8, 0, 8
+    Black
+    Plain line
+
+    # ---- TITLE BAR ----
+    Select outer viewport: 0, 8, 0, 0.65
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Fractal Convolution: " + original_name$
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.8, 2.2
-    Select inner viewport: 0.6, 7.6, 0.9, 2.1
+    Text: 0.5, "centre", 0.68, "half", "##FRACTAL CONVOLUTION MATRIX##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half",
+        ... original_name$
+        ... + "  |  " + presetName$
+        ... + "  |  depth " + string$(fractal_depth)
+        ... + "  |  width " + string$(convolution_width)
+        ... + "  |  " + fixed$(originalDuration, 2) + " s -> " + fixed$(vizDur, 2) + " s"
+
+    # ---- ORIGINAL WAVEFORM (left) ----
+    Select outer viewport: 0, 4.2, 0.75, 2.10
+    Select inner viewport: 0.55, 4.00, 0.95, 1.98
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.55, 0.55, 0.60}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
+    Line width: 1
     Draw inner box
-    Font size: 8
-    Select outer viewport: 0.1, 8, 0.5, 2.8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 2.3, 3.7
-    Select inner viewport: 0.6, 7.6, 2.4, 3.6
+    Font size: 7
+    Text top: "no", "Original"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # ---- RESULT WAVEFORM (right) ----
+    Select outer viewport: 4.2, 8, 0.75, 2.10
+    Select inner viewport: 4.55, 7.75, 0.95, 1.98
     selectObject: result
-    Colour: "{0.2, 0.5, 0.7}"
+    Colour: "{0.20, 0.50, 0.70}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
+    Line width: 1
     Draw inner box
-    Text left: "yes", "Fractal"
-    Text bottom: "yes", "Time (s)"
-    
-    # Original spectrogram
-    Select outer viewport: 0, 4, 3.9, 5.5
-    Select inner viewport: 0.6, 3.8, 4.1, 5.4
+    Font size: 7
+    Text top: "no", "Fractal"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # ---- ORIGINAL SPECTROGRAM (left) ----
+    Select outer viewport: 0, 4.2, 2.20, 4.40
+    Select inner viewport: 0.55, 4.00, 2.40, 4.28
     selectObject: original
+    if channels > 1
+        origMono = Convert to mono
+    else
+        origMono = Copy: "fcm_orig_mono"
+    endif
+    selectObject: origMono
     To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: origSpec
+    removeObject: origSpec, origMono
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Freq"
-    Text bottom: "yes", "Original (s)"
-    
-    # Result spectrogram
-    Select outer viewport: 4, 8, 3.9, 5.5
-    Select inner viewport: 4.4, 7.6, 4.1, 5.4
+    Text top: "no", "Original spectrogram"
+    Font size: 6
+    Text left: "yes", "Hz"
+    Text bottom: "yes", "Time (s)"
+
+    # ---- RESULT SPECTROGRAM (right, signature: fractal echo buildup) ----
+    Select outer viewport: 4.2, 8, 2.20, 4.40
+    Select inner viewport: 4.55, 7.75, 2.40, 4.28
     selectObject: result
+    if channels > 1
+        resMono = Convert to mono
+    else
+        resMono = Copy: "fcm_res_mono"
+    endif
+    selectObject: resMono
     To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: resSpec
+    removeObject: resSpec, resMono
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Freq"
-    Text bottom: "yes", "Fractal (s)"
-    
-    # Legend
-    Select outer viewport: 0, 8, 5.6, 5.9
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 1.5, "centre", 0.5, "half", "Depth: " + string$(fractal_depth) + " | Width: " + string$(convolution_width) + " | Divisor: " + string$(kernel_divisor)
-    
+    Text top: "no", "Fractal spectrogram"
+    Font size: 6
+    Text left: "yes", "Hz"
+    Text bottom: "yes", "Time (s)"
+
+    # ---- SUMMARY BAR ----
+    Select outer viewport: 0, 8, 4.50, 5.20
+    Select inner viewport: 0.55, 7.75, 4.57, 5.14
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.75, "half",
+        ... "##" + presetName$ + "##"
+        ... + "  " + original_name$
+        ... + "  |  depth " + string$(fractal_depth)
+        ... + "  |  width " + string$(convolution_width)
+        ... + "  |  divisor " + string$(kernel_divisor)
+        ... + "  |  amp reduction " + fixed$(amplitude_reduction, 2)
+    Text: 0.02, "left", 0.28, "half",
+        ... "Tail " + fixed$(tail_duration_s, 1) + " s"
+        ... + "  |  scale peak " + fixed$(scale_peak, 2)
+        ... + "  |  fadeout " + fixed$(fadeout_duration_s, 1) + " s"
+        ... + "  |  " + fixed$(originalDuration, 2) + " s -> " + fixed$(vizDur, 2) + " s"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # === Final Info ===
