@@ -8,7 +8,7 @@
 
 ## Overview
 
-**Praat AudioTools** is a collection of more than **300 scripts** for **audio processing, analysis, and synthesis** in [Praat](http://www.praat.org).  
+**Praat AudioTools** is a collection of more than **400 scripts** for **audio processing, analysis, and synthesis** in [Praat](http://www.praat.org).  
 The plugin adds a unified **AudioTools** menu to Praat, offering a wide range of effects, filters, transformations, and creative analysis-driven tools for sound design and experimental composition.
 
 Developed for composers, sound designers, and researchers, the toolkit extends Praat's phonetic analysis environment into a **complete offline sound laboratory** — enabling processes such as granular synthesis, adaptive filtering, spectral manipulation, fractal reverbs, multichannel spatialisation, and machine learning-driven audio effects.
@@ -41,6 +41,7 @@ Developed for composers, sound designers, and researchers, the toolkit extends P
 
 **Interactive HTML documentation for all 254 scripts:**  
 [https://mashav.com/sha/Praat%20AudioTools/)
+ Did You Know? Algorithmic Music (1-Min Intros) - https://www.youtube.com/playlist?list=PLgvns-wRHeYo-EcXGacjOwbmwA7vbSLW2
 
 The documentation includes searchable guides with detailed parameter descriptions, usage examples, and technical explanations for each script.
 
