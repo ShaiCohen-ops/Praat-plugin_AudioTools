@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025)
+# Version: 0.5 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,11 +23,25 @@
 #   presets cover distinct compositional aesthetics.  The
 #   seeded LCG ensures full reproducibility from seed.
 #
+# Changelog v0.5:
+#   - Fixed conditionals: 30 'elif' -> 'elsif' (Praat keyword); the
+#     script could not run past the first 'elif'
+#   - Mono-safe: source is folded to mono before To Intensity /
+#     To Manipulation (both mono-only); stereo no longer errors
+#   - MIDI plot range now derived from the pitch parameters (incl.
+#     the 50 Hz coda floor) instead of a fixed 40-100 that clipped
+#     low contours off the bottom
+#   - Visualization: legend text anchored to endTime (was at a fixed
+#     7.84 s); lineStyle-3 dots use Paint circle (mm) so the radius
+#     is in mm not seconds; first contour segment now drawn
+#   - Removed unreachable grid branch; stronger input guard; seed
+#     comment corrected
+#
 # ============================================================
 
 # Bimodal Contour Grammar: Sound Processing + Visual Presentation
 
-form Bimodal Contour Generator v0.4
+form Bimodal Contour Generator v0.5
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -145,16 +159,17 @@ image_width = 800
 image_height = 300
 
 # Select sound
-ids = selected("Sound")
-if ids = undefined
-    exitScript: "Please select a Sound object first."
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object first."
 endif
+ids = selected("Sound")
 name$ = selected$("Sound")
+selectObject: ids
 duration = Get total duration
 startTime = Get start time
 endTime = Get end time
 
-writeInfoLine: "Bimodal Contour Grammar Generator v0.4"
+writeInfoLine: "Bimodal Contour Grammar Generator v0.5"
 appendInfoLine: "========================================================"
 appendInfoLine: "Sound: ", name$
 appendInfoLine: "Duration: ", fixed$ (duration, 3), " seconds"
@@ -167,7 +182,7 @@ appendInfoLine: "  Gesture scale: ", fixed$(gesture_scale, 2),
 
 # Set random seed
 if randomSeed = 0
-    # Use current time for randomness
+    # Derive a seed from the sound's end time (deterministic per sound)
     seedValue = round(endTime * 1000000) mod 1000000
     appendInfoLine: "Random seed: ", seedValue, " (auto-generated)"
 else
@@ -180,12 +195,22 @@ endif
 randomUniform.seed = seedValue
 appendInfoLine: ""
 
+# Fold to mono for analysis/resynthesis (To Intensity / To Manipulation are mono-only)
+selectObject: ids
+numChan = Get number of channels
+if numChan > 1
+    workMono = Convert to mono
+    appendInfoLine: "  (stereo input folded to mono for analysis & resynthesis)"
+else
+    workMono = Copy: name$ + "_workmono"
+endif
+
 # Create PitchTier for sound processing
 Create PitchTier: name$, 0, duration
 pt_id = selected("PitchTier")
 
 # Extract intensity for loudness modulation
-selectObject: ids
+selectObject: workMono
 intensityID = To Intensity: 75, 0.01, "yes"
 
 # Setup Picture window
@@ -193,9 +218,13 @@ Erase all
 Select outer viewport: 0, image_width/100, 0, image_height/100
 Font size: 10
 
-# Determine MIDI range
-currentMidiMin = 40
-currentMidiMax = 100
+# Determine MIDI range from pitch parameters (incl. 50 Hz coda floor)
+@hzToMidi: 50
+loMidiData = hzToMidi.midi
+@hzToMidi: pitch_base_hi_Hz + 50 * interval_scale
+hiMidiData = hzToMidi.midi
+currentMidiMin = floor(loMidiData) - 2
+currentMidiMax = ceiling(hiMidiData) + 2
 
 Axes: startTime, endTime, currentMidiMin - 0.5, currentMidiMax + 0.5
 
@@ -213,10 +242,6 @@ if showGrid
         if noteClass = 0
             Colour: "{0.65, 0.65, 0.65}"
             Line width: 2
-            Draw line: startTime, midiLine, endTime, midiLine
-        elif (midiLine mod 12) = 0
-            Colour: "{0.75, 0.75, 0.75}"
-            Line width: 1.2
             Draw line: startTime, midiLine, endTime, midiLine
         else
             Colour: "{0.92, 0.92, 0.92}"
@@ -251,6 +276,7 @@ current_pitch = 150
 prev_time = 0
 prev_freq = 150
 point_count = 0
+has_prev = 0
 
 # Intensity tracking
 current_intensity = baseLoudness
@@ -272,18 +298,19 @@ appendInfoLine: "Total points generated: ", point_count
 # ========================================================================================
 appendInfoLine: "Resynthesizing audio..."
 
-selectObject: ids
-To Manipulation: 0.01, 75, 600
+selectObject: workMono
+manipID = To Manipulation: 0.01, 75, 600
 selectObject: pt_id
-plusObject: "Manipulation " + name$
+plusObject: manipID
 Replace pitch tier
-selectObject: "Manipulation " + name$
+selectObject: manipID
 Get resynthesis (overlap-add)
 Rename: name$ + "_grammar"
 resynthID = selected("Sound")
 
-# Cleanup manipulation
-removeObject: "Manipulation " + name$
+# Cleanup manipulation + mono work copy
+removeObject: manipID
+removeObject: workMono
 
 # ========================================================================================
 # LABELS
@@ -299,11 +326,11 @@ Text left: "yes", "MIDI Note (Hz mapped)"
 
 Font size: 8
 Select outer viewport: 0, image_width/100, 0, image_height/100
-Text: (image_width/100) * 0.98, "right", currentMidiMax, "top", colorScheme$
+Text: endTime, "right", currentMidiMax, "top", colorScheme$
 if lineStyle = 3
-    Text: (image_width/100) * 0.98, "right", currentMidiMax - 2, "top", "Dots: " + fixed$(minDotSize, 1) + "-" + fixed$(maxDotSize, 1)
+    Text: endTime, "right", currentMidiMax - 2, "top", "Dots: " + fixed$(minDotSize, 1) + "-" + fixed$(maxDotSize, 1)
 else
-    Text: (image_width/100) * 0.98, "right", currentMidiMax - 2, "top", lineStyle$
+    Text: endTime, "right", currentMidiMax - 2, "top", lineStyle$
 endif
 
 # ========================================================================================
@@ -550,7 +577,7 @@ procedure addPoint: .t, .f
     brightness = mapToRange.result
     
     # VISUAL MODE: Draw on Picture
-    if prev_time > 0
+    if has_prev
         # Choose color scheme
         if colorScheme = 1
             @pitchHeightToRGB: .midi, brightness
@@ -558,13 +585,13 @@ procedure addPoint: .t, .f
             g = pitchHeightToRGB.green
             b = pitchHeightToRGB.blue
             
-        elif colorScheme = 2
+        elsif colorScheme = 2
             @pitchClassToRGB: .midi, brightness
             r = pitchClassToRGB.red
             g = pitchClassToRGB.green
             b = pitchClassToRGB.blue
             
-        elif colorScheme = 3
+        elsif colorScheme = 3
             @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, 0, 1
             heatValue = mapToRange.result
             
@@ -572,7 +599,7 @@ procedure addPoint: .t, .f
                 r = 0
                 g = heatValue * 3
                 b = 1 - heatValue * 3
-            elif heatValue < 0.66
+            elsif heatValue < 0.66
                 localVal = (heatValue - 0.33) * 3
                 r = localVal
                 g = 1
@@ -584,7 +611,7 @@ procedure addPoint: .t, .f
                 b = 0
             endif
             
-        elif colorScheme = 4
+        elsif colorScheme = 4
             @octaveSpiralRGB: .midi, brightness
             r = octaveSpiralRGB.red
             g = octaveSpiralRGB.green
@@ -608,15 +635,15 @@ procedure addPoint: .t, .f
             Line width: 1.5
             Draw line: prev_time, prev_midi_note, .t, .midi
             
-        elif lineStyle = 2
+        elsif lineStyle = 2
             @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, 0.5, 4.5
             Line width: mapToRange.result
             Draw line: prev_time, prev_midi_note, .t, .midi
             
-        elif lineStyle = 3
+        elsif lineStyle = 3
             @mapToRange: .intensity, baseLoudness - loudnessVariation, baseLoudness + loudnessVariation, minDotSize, maxDotSize
             dotSize = mapToRange.result
-            Paint circle: colourString$, .t, .midi, dotSize
+            Paint circle (mm): colourString$, .t, .midi, dotSize
         endif
     endif
     
@@ -624,6 +651,7 @@ procedure addPoint: .t, .f
     prev_time = .t
     prev_freq = .f
     point_count = point_count + 1
+    has_prev = 1
 endproc
 
 # ========================================================================================
@@ -802,27 +830,27 @@ procedure getMidiNoteName: .midi
     
     if .noteClass = 0
         .noteName$ = "C"
-    elif .noteClass = 1
+    elsif .noteClass = 1
         .noteName$ = "C#"
-    elif .noteClass = 2
+    elsif .noteClass = 2
         .noteName$ = "D"
-    elif .noteClass = 3
+    elsif .noteClass = 3
         .noteName$ = "D#"
-    elif .noteClass = 4
+    elsif .noteClass = 4
         .noteName$ = "E"
-    elif .noteClass = 5
+    elsif .noteClass = 5
         .noteName$ = "F"
-    elif .noteClass = 6
+    elsif .noteClass = 6
         .noteName$ = "F#"
-    elif .noteClass = 7
+    elsif .noteClass = 7
         .noteName$ = "G"
-    elif .noteClass = 8
+    elsif .noteClass = 8
         .noteName$ = "G#"
-    elif .noteClass = 9
+    elsif .noteClass = 9
         .noteName$ = "A"
-    elif .noteClass = 10
+    elsif .noteClass = 10
         .noteName$ = "A#"
-    elif .noteClass = 11
+    elsif .noteClass = 11
         .noteName$ = "B"
     endif
     
@@ -845,19 +873,19 @@ procedure pitchClassToRGB: .midi, .brightness
         .r = .c
         .g = .x
         .b = 0
-    elif .h < 120
+    elsif .h < 120
         .r = .x
         .g = .c
         .b = 0
-    elif .h < 180
+    elsif .h < 180
         .r = 0
         .g = .c
         .b = .x
-    elif .h < 240
+    elsif .h < 240
         .r = 0
         .g = .x
         .b = .c
-    elif .h < 300
+    elsif .h < 300
         .r = .x
         .g = 0
         .b = .c
@@ -888,19 +916,19 @@ procedure pitchHeightToRGB: .midi, .brightness
         .r = .c
         .g = .x
         .b = 0
-    elif .h < 120
+    elsif .h < 120
         .r = .x
         .g = .c
         .b = 0
-    elif .h < 180
+    elsif .h < 180
         .r = 0
         .g = .c
         .b = .x
-    elif .h < 240
+    elsif .h < 240
         .r = 0
         .g = .x
         .b = .c
-    elif .h < 300
+    elsif .h < 300
         .r = .x
         .g = 0
         .b = .c
@@ -937,19 +965,19 @@ procedure octaveSpiralRGB: .midi, .brightness
         .r = .c
         .g = .x
         .b = 0
-    elif .hue < 120
+    elsif .hue < 120
         .r = .x
         .g = .c
         .b = 0
-    elif .hue < 180
+    elsif .hue < 180
         .r = 0
         .g = .c
         .b = .x
-    elif .hue < 240
+    elsif .hue < 240
         .r = 0
         .g = .x
         .b = .c
-    elif .hue < 300
+    elsif .hue < 300
         .r = .x
         .g = 0
         .b = .c
