@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,17 @@
 #   patterns through phase-rotated bidirectional delays. Combines
 #   forward and backward sample offsets with cos/sin rotation,
 #   producing unique swirling, evolving textures.
+#
+# Changelog v0.3:
+#   - Bidirectional delay is now true FIR: a pre-pass snapshot is
+#     read for both taps, so the backward tap no longer feeds back
+#     on already-modified samples (was a recursive/IIR path)
+#   - Clamped superposition strength to [0,1] (custom values >1 made
+#     sqrt(1-strength) undefined -> corrupted output)
+#   - Visualization: set Axes before Text on title and legend (the
+#     legend was inheriting the spectrogram's data axes), and made
+#     the spectrogram panels mono-safe (convert before To Spectrogram)
+#   - Removed unused sampleRate variable
 #
 # Changelog v0.2:
 #   - Modern syntax
@@ -119,7 +130,6 @@ original = selected("Sound")
 original_name$ = selected$("Sound")
 
 selectObject: original
-sampleRate = Get sampling frequency
 duration = Get total duration
 totalSamples = Get number of samples
 
@@ -141,6 +151,14 @@ if use_fixed_superposition
     superpositionStrength = fixed_superposition
 else
     superpositionStrength = randomUniform(superposition_min, superposition_max)
+endif
+
+# Clamp to [0,1] so sqrt(1-strength) stays defined
+if superpositionStrength < 0
+    superpositionStrength = 0
+endif
+if superpositionStrength > 1
+    superpositionStrength = 1
 endif
 
 # === Info ===
@@ -176,7 +194,7 @@ for state from 1 to states
     
     stateOffset = round(totalSamples / (state_offset_base + state * state_offset_increment))
     
-    # Mixing coefficients (sqrt for energy conservation)
+    # Mixing coefficients (sqrt-law gain; exact energy conservation only when probAmplitude = 1)
     dryCoef = sqrt(1 - superpositionStrength)
     wetCoef = sqrt(superpositionStrength) * probAmplitude
     cosPhase = cos(phaseShift)
@@ -184,11 +202,15 @@ for state from 1 to states
     
     appendInfoLine: "  State ", state, ": offset=", stateOffset, " phase=", fixed$(phaseShift, 2), " strength=", fixed$(superpositionStrength, 3)
     
-    # State superposition with bounds checking
+    # State superposition with bounds checking (true FIR via pre-pass snapshot)
+    selectObject: result
+    snapshot = Copy: "quantum_snapshot"
+    selectObject: result
     Formula: ~ if col + stateOffset <= ncol and col - stateOffset >= 1 
-        ... then dryCoef * self + wetCoef * (cosPhase * self[col + stateOffset] + sinPhase * self[col - stateOffset])
+        ... then dryCoef * self + wetCoef * (cosPhase * object[snapshot, row, col + stateOffset] + sinPhase * object[snapshot, row, col - stateOffset])
         ... else self fi
-    
+    removeObject: snapshot
+
     # Collapse probability (decay toward original)
     superpositionStrength = superpositionStrength * superposition_decay
 endfor
@@ -203,6 +225,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Quantum Superposition: " + original_name$ + " (" + presetName$ + ")"
@@ -233,10 +256,17 @@ if draw_visualization
     Select outer viewport: 0, 4, 3.7, 5.3
     Select inner viewport: 0.6, 3.8, 3.9, 5.2
     selectObject: original
+    nchOrig = Get number of channels
+    if nchOrig > 1
+        origMono = Convert to mono
+    else
+        origMono = Copy: "orig_mono_viz"
+    endif
+    selectObject: origMono
     To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: origSpec
+    removeObject: origSpec, origMono
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -247,10 +277,17 @@ if draw_visualization
     Select outer viewport: 4, 8, 3.7, 5.3
     Select inner viewport: 4.4, 7.6, 3.9, 5.2
     selectObject: result
+    nchRes = Get number of channels
+    if nchRes > 1
+        resMono = Convert to mono
+    else
+        resMono = Copy: "res_mono_viz"
+    endif
+    selectObject: resMono
     To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: resSpec
+    removeObject: resSpec, resMono
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -259,6 +296,7 @@ if draw_visualization
     
     # Legend
     Select outer viewport: 0, 8, 5.4, 5.7
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "States: " + string$(states) + " | Decay: " + fixed$(superposition_decay, 2) + " | Offset base: " + string$(state_offset_base)
