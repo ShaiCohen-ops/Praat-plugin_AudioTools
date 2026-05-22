@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.0 (2025)
+# Version: 4.1 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -35,8 +35,20 @@
 #         Lsets:          global sets without pauses
 #         Lsets ∧ Ø:      with pauses and phrases in brackets
 #         Lsets ∧ Ø(dur): with proportional silence durations
-#     - 6-panel visualization of timbral-textural layers
+#     - 5-panel visualization of timbral-textural layers
 #     - Category dominance analysis
+#
+# Changelog v4.1 (from v4.0):
+#   - Fixed phi gap-bridging: now re-merges adjacent identical
+#     labels after absorbing interruptions (was leaving duplicate
+#     ϕ segments → one sustained region per Chapter 8 intent)
+#   - Implemented the Classified TextGrid output (was documented
+#     but never built) — one labelled interval per merged segment
+#   - Guarded ranked-candidate selection against labels with more
+#     than maxRank candidates (prevented unset-index error in
+#     Random/Rotate modes; now uses top-maxRank longest)
+#   - Removed dead dominance dedup checks; corrected section
+#     numbering and "atoms placed" reporting
 #
 # Changelog v4.0 (from v3):
 #   - Added ϕ (phi) vibrational set classification
@@ -67,7 +79,7 @@ originalSound = selected("Sound")
 soundName$ = selected$("Sound")
 
 # ── 1. FORM ─────────────────────────────────────────────────
-form Llogic Symbolic Granular Recomposition v4.0
+form Llogic Symbolic Granular Recomposition v4.1
     optionmenu Preset: 1
         option Custom
         option Breath to Tone
@@ -320,12 +332,26 @@ if nMerged > 0
     endfor
 endif
 
-nMerged = nBridged
-for i from 1 to nMerged
-    mStart[i] = bStart[i]
-    mEnd[i] = bEnd[i]
-    mLabel$[i] = bLabel$[i]
-endfor
+# Collapse adjacent identical labels produced by bridging
+# (absorbing an interruption leaves the following same-label
+# segment adjacent; a second merge pass fuses them into one).
+nMerged = 0
+if nBridged > 0
+    nMerged = 1
+    mStart[1] = bStart[1]
+    mEnd[1] = bEnd[1]
+    mLabel$[1] = bLabel$[1]
+    for i from 2 to nBridged
+        if bLabel$[i] = mLabel$[nMerged]
+            mEnd[nMerged] = bEnd[i]
+        else
+            nMerged += 1
+            mStart[nMerged] = bStart[i]
+            mEnd[nMerged] = bEnd[i]
+            mLabel$[nMerged] = bLabel$[i]
+        endif
+    endfor
+endif
 
 # ── 7. SILENCE DURATION CLASSIFICATION ─────────────────────
 # Tag null segments as Ø(S), Ø(M), or Ø(L)
@@ -342,6 +368,51 @@ for i from 1 to nMerged
         endif
     endif
 endfor
+
+# ── 8. CLASSIFIED TEXTGRID ─────────────────────────────────
+# One labelled interval per merged segment (Llogic glyphs).
+# Boundaries are placed at each segment START (strictly
+# increasing), so the tier tiles [0, duration] gaplessly even
+# if window overlap made segEnd values overlap.
+selectObject: originalSound
+classGrid = To TextGrid: "Llogic", ""
+prevBt = 0
+for i from 2 to nMerged
+    bt = mStart[i]
+    if bt > prevBt + 1e-9 and bt < duration - 1e-9
+        selectObject: classGrid
+        Insert boundary: 1, bt
+        prevBt = bt
+    endif
+endfor
+for i from 1 to nMerged
+    lab$ = mLabel$[i]
+    if lab$ = "null"
+        gk$ = "Ø(" + mSilDur$[i] + ")"
+    elsif lab$ = "psi"
+        gk$ = "ψ"
+    elsif lab$ = "theta"
+        gk$ = "θ"
+    elsif lab$ = "chi"
+        gk$ = "χ"
+    elsif lab$ = "phi"
+        gk$ = "ϕ"
+    elsif lab$ = "omega"
+        gk$ = "ω"
+    else
+        gk$ = lab$
+    endif
+    # Probe just inside the interval's start edge (robust to overlap)
+    probeT = mStart[i] + 1e-6
+    if probeT >= duration
+        probeT = duration - 1e-6
+    endif
+    selectObject: classGrid
+    iv = Get interval at time: 1, probeT
+    Set interval text: 1, iv, gk$
+endfor
+selectObject: classGrid
+Rename: soundName$ + "_Llogic_grid"
 
 # ── 9. BUILD CANDIDATE POOL (direct from merged segments) ───
 maxCand = 5000
@@ -512,7 +583,7 @@ for s from 1 to nSymbols
         endfor
     endfor
 
-    # Store ranked indices (up to maxRank) — linearized as rankIdx[s*maxRank + r]
+    # Store ranked indices (up to maxRank) — linearized as rankIdx[s*100 + r]
     for r from 1 to min(nMatch, maxRank)
         rankIdx[s * 100 + r] = matchIdx[r]
     endfor
@@ -535,6 +606,11 @@ for cyc from 1 to cycles
     for s from 1 to nSymbols
         req$ = symbol$[s]
         nRanked = rankCount[s]
+        # Cap to the ranks actually stored (top maxRank longest);
+        # otherwise Random/Rotate could index an unset rankIdx.
+        if nRanked > maxRank
+            nRanked = maxRank
+        endif
         if nRanked > 0
             if selection_mode = 1
                 chosenRank = 1
@@ -765,7 +841,7 @@ for cyc from 1 to cycles
     endfor
 endfor
 
-# ── 15. COUNT CATEGORIES ───────────────────────────────────
+# ── 16. COUNT CATEGORIES ───────────────────────────────────
 psiCount = 0
 thetaCount = 0
 nullCount = 0
@@ -812,31 +888,32 @@ endif
 domStr$ = ""
 domCounts = 0
 
-# Find max 6 iterations for sorting
+# Find max 6 iterations for sorting. A category is "used up"
+# by setting its count to -1, so it cannot be picked again.
 for rank from 1 to 6
     bestLab$ = ""
     bestN = -1
-    if psiCount > bestN and index(domStr$, "psi") = 0
+    if psiCount > bestN
         bestLab$ = "ψ"
         bestN = psiCount
     endif
-    if thetaCount > bestN and index(domStr$, "theta") = 0
+    if thetaCount > bestN
         bestLab$ = "θ"
         bestN = thetaCount
     endif
-    if chiCount > bestN and index(domStr$, "chi") = 0
+    if chiCount > bestN
         bestLab$ = "χ"
         bestN = chiCount
     endif
-    if phiCount > bestN and index(domStr$, "phi") = 0
+    if phiCount > bestN
         bestLab$ = "ϕ"
         bestN = phiCount
     endif
-    if omegaCount > bestN and index(domStr$, "omega") = 0
+    if omegaCount > bestN
         bestLab$ = "ω"
         bestN = omegaCount
     endif
-    if nullCount > bestN and index(domStr$, "null") = 0
+    if nullCount > bestN
         bestLab$ = "Ø"
         bestN = nullCount
     endif
@@ -847,9 +924,8 @@ for rank from 1 to 6
             domStr$ = domStr$ + " > " + bestLab$
         endif
     endif
-    # Mark used (use dummy string tracking)
+    # Mark the selected category as used
     if bestLab$ = "ψ"
-        domStr$ = domStr$
         psiCount = -1
     elsif bestLab$ = "θ"
         thetaCount = -1
@@ -930,7 +1006,7 @@ elsif lpcSnd$ <> ""
     lpcStr$ = lpcSnd$
 endif
 
-# ── 16. VISUALIZATION ──────────────────────────────────────
+# ── 17. VISUALIZATION ──────────────────────────────────────
 if draw_visualization
 
     # Get waveform amplitude range
@@ -966,7 +1042,7 @@ if draw_visualization
     Font size: 11
     Colour: "Black"
     Text: 0.5, "centre", 0.75, "half",
-        ... "##Llogic System v4.0##"
+        ... "##Llogic System v4.1##"
     Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.05, "half",
@@ -1238,7 +1314,7 @@ if draw_visualization
     Text: 0.02, "left", 0.10, "half",
         ... "Proposition:  " + proposition$
         ... + "  →  " + string$(nTotalAtoms)
-        ... + "/" + string$(nSymbols) + " atoms extracted"
+        ... + " atoms placed"
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -1280,15 +1356,15 @@ if draw_visualization
     removeObject: vizMono
 endif
 
-# ── 17. CLEANUP ────────────────────────────────────────────
+# ── 18. CLEANUP ────────────────────────────────────────────
 removeObject: pitchObj, hnrObj, intObj
 
-# ── 18. INFO OUTPUT ────────────────────────────────────────
+# ── 19. INFO OUTPUT ────────────────────────────────────────
 selectObject: resynthSound
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: "  LLOGIC SYSTEM v4.0"
+writeInfoLine: "  LLOGIC SYSTEM v4.1"
 writeInfoLine: "  Based on: Logic of Sound and Silence"
 writeInfoLine: "  (Rakhat-Bi Abdyssagin)"
 writeInfoLine: "=================================================="
@@ -1351,7 +1427,7 @@ appendInfoLine: ""
 appendInfoLine: "── PROPOSITION ──"
 appendInfoLine: "  Requested: ", proposition$
 appendInfoLine: "  Cycles: ", cycles
-appendInfoLine: "  Atoms extracted: ", nTotalAtoms, " (", nSymbols, " symbols × ", cycles, " cycles)"
+appendInfoLine: "  Atoms placed: ", nTotalAtoms, " (", nSymbols, " symbols × ", cycles, " cycles, expanded by arrangement)"
 for s from 1 to nSymbols
     req$ = symbol$[s]
     nRanked = rankCount[s]
