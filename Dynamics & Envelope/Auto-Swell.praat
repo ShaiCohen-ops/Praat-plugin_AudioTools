@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,17 +12,32 @@
 #   Applies periodic or envelope-shaped amplitude modulations
 #   with flexible stereo modes for spatial movement.
 #
+# Changelog v1.1:
+#   - Fixed Info window: was 13 consecutive writeInfoLine calls
+#     (each clears the window), which wiped the header/parameters;
+#     now one writeInfoLine + appendInfoLine
+#   - Fixed preset reporting: shape/stereo strings are derived from
+#     the numeric settings (form $-strings are not updated by
+#     presets, so non-Custom presets printed the wrong labels)
+#   - Fixed triangle phase_start: was inverted (start-at-minimum
+#     began at maximum); all three starts now correct. phase_start
+#     applies to the smooth oscillators (sine, triangle); the
+#     asymmetric/gate shapes start at their natural phase
+#   - Fixed visualization: set Axes before Text on the title and
+#     parameters captions (placement inherited the prior panel's
+#     axes); title centered on the full 0-8 canvas
+#
 # Changelog v1.0:
 #   - Added presets for common use cases
 #   - Added visualization of modulation envelopes
 #   - Fixed cleanup issues (orphan objects)
 #   - Modernized procedure calls (@ syntax)
 #   - Added info output with statistics
-#   - Fixed phase_start consistency across all shapes
+#   - Added phase_start option (sine)
 #   - Play is now optional
 # ============================================================
 
-form Stereo Amplitude Modulator v1.0
+form Stereo Amplitude Modulator v1.1
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -168,23 +183,7 @@ swellPeriod = 1 / swell_rate_Hz
 pulseWidth = pulse_width_percent / 100
 phaseOffsetRad = phase_offset_degrees * pi / 180
 
-# === Info Output ===
-clearinfo
-writeInfoLine: "=============================================="
-writeInfoLine: "  STEREO AMPLITUDE MODULATOR v1.0"
-writeInfoLine: "=============================================="
-writeInfoLine: ""
-writeInfoLine: "Input: ", soundName$, " (", fixed$(dur, 2), " s, ", nChannels, " ch)"
-writeInfoLine: "Preset: ", presetName$
-writeInfoLine: ""
-writeInfoLine: "=== Parameters ==="
-writeInfoLine: "  Shape: ", swell_shape, " (", swell_shape$, ")"
-writeInfoLine: "  Rate: ", fixed$(swell_rate_Hz, 2), " Hz (period: ", fixed$(swellPeriod, 3), " s)"
-writeInfoLine: "  Depth: ", fixed$(depth_percent, 0), "%"
-writeInfoLine: "  Stereo mode: ", stereo_mode$
-writeInfoLine: ""
-
-# === Get shape name for info ===
+# === Get Shape & Stereo Names (derived from numeric settings) ===
 if swell_shape = 1
     shapeName$ = "Sine"
 elsif swell_shape = 2
@@ -210,6 +209,31 @@ elsif swell_shape = 11
 else
     shapeName$ = "RiseFall"
 endif
+
+if stereo_mode = 1
+    stereoName$ = "Mono (identical L/R)"
+elsif stereo_mode = 2
+    stereoName$ = "Phase offset (" + fixed$(phase_offset_degrees, 0) + " deg)"
+elsif stereo_mode = 3
+    stereoName$ = "Different rates (R x" + fixed$(right_rate_multiplier, 2) + ")"
+else
+    stereoName$ = "Different shapes"
+endif
+
+# === Info Output (single writeInfoLine, then appendInfoLine) ===
+writeInfoLine: "=============================================="
+appendInfoLine: "  STEREO AMPLITUDE MODULATOR v1.1"
+appendInfoLine: "=============================================="
+appendInfoLine: ""
+appendInfoLine: "Input: ", soundName$, " (", fixed$(dur, 2), " s, ", nChannels, " ch)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: ""
+appendInfoLine: "=== Parameters ==="
+appendInfoLine: "  Shape: ", swell_shape, " (", shapeName$, ")"
+appendInfoLine: "  Rate: ", fixed$(swell_rate_Hz, 2), " Hz (period: ", fixed$(swellPeriod, 3), " s)"
+appendInfoLine: "  Depth: ", fixed$(depth_percent, 0), "%"
+appendInfoLine: "  Stereo mode: ", stereoName$
+appendInfoLine: ""
 
 # === Prepare Input ===
 # Work with a copy to preserve original
@@ -263,15 +287,16 @@ procedure generateModulation: .shape, .phaseStart, .rate, .pulseW, .smoothness, 
         Formula: ~ 0.5 + 0.5 * sin(2 * pi * .rate * x + .startOffset + .phaseOffset)
         
     elsif .shape = 2
-        # Triangle wave
-        .p = "((x * .rate + .phaseOffset/(2*pi)) mod 1)"
+        # Triangle wave  -  T(q) rises 0->1 over [0,.5], falls 1->0 over [.5,1]
+        # phase_start picks the cycle start: min=q+0, max=q+0.5, middle=q+0.25
         if .phaseStart = 1
-            Formula: ~ abs(('.p' - 0.5) * 2)
+            .q = "((x * .rate + .phaseOffset/(2*pi)) mod 1)"
         elsif .phaseStart = 2
-            Formula: ~ 1 - abs(('.p' - 0.5) * 2)
+            .q = "((x * .rate + .phaseOffset/(2*pi) + 0.5) mod 1)"
         else
-            Formula: ~ if '.p' < 0.5 then '.p' * 2 else 2 - '.p' * 2 fi
+            .q = "((x * .rate + .phaseOffset/(2*pi) + 0.25) mod 1)"
         endif
+        Formula: ~ if '.q' < 0.5 then '.q' * 2 else 2 - '.q' * 2 fi
         
     elsif .shape = 3
         # Sawtooth (rise)
@@ -433,7 +458,8 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 1, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 11
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "##Stereo Amplitude Modulator## | " + soundName$ + " | " + presetName$
@@ -485,9 +511,10 @@ if draw_visualization
     
     # Parameters
     Select outer viewport: 0, 8, 3.6, 4.1
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.45}"
-    Text: 1.5, "centre", 0.5, "half", "Shape: " + shapeName$ + " | Rate: " + fixed$(swell_rate_Hz, 2) + " Hz | Depth: " + fixed$(depth_percent, 0) + "% | Stereo: " + stereo_mode$
+    Text: 0.5, "centre", 0.5, "half", "Shape: " + shapeName$ + " | Rate: " + fixed$(swell_rate_Hz, 2) + " Hz | Depth: " + fixed$(depth_percent, 0) + "% | Stereo: " + stereoName$
     
     Font size: 10
     Colour: "Black"
