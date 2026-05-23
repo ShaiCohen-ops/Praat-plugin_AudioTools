@@ -4,6 +4,9 @@ spectral_freeze.py  –  Spectral freeze via phase vocoder OLA
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
 
+v3.1 — Phase mode: 'coherent' locks bin phases for a steady tonal
+       freeze (vs 'random' diffuse). Fixed loop double-dwell at seam.
+
 v3.0 — Multi-Freeze mode: captures spectra at multiple moments and
        crossfades between them, creating an evolving frozen texture.
 
@@ -13,7 +16,7 @@ Modes:
 
 Usage (single):
     python spectral_freeze.py input.wav output.wav freeze_time_s duration_s
-           window_ms shimmer fade_in_s fade_out_s single
+           window_ms shimmer fade_in_s fade_out_s single [phase_mode]
 
 Usage (multi):
     python spectral_freeze.py input.wav output.wav freeze_times duration_s
@@ -23,6 +26,7 @@ Usage (multi):
     xfade_s:       crossfade duration between waypoints (seconds)
     dwell_s:       hold time at each waypoint before crossfading (seconds)
     loop:          0 = one pass through waypoints, 1 = loop back to start
+    phase_mode:    random (diffuse, default) | coherent (tonal, locked)
 """
 
 import sys
@@ -63,12 +67,41 @@ def next_pow2(n):
     return 1 << int(math.ceil(math.log2(max(n, 1))))
 
 
+def _coherent_advance(audio, sr, freeze_time_s, wsize, hop, win):
+    """Phase reference for a tonal (phase-locked) freeze.
+
+    Returns (phase0, per_hop_advance): the captured phase and the
+    per-hop phase increment for each bin, using the bin's TRUE
+    frequency estimated from two analysis frames (phase-vocoder
+    instantaneous frequency). Advancing by this keeps partials
+    locked, so a frozen tone stays steady instead of beating.
+    """
+    import numpy as np
+    n = wsize
+    fs = int(np.clip(freeze_time_s * sr, 0, len(audio) - n))
+    s0 = np.fft.rfft(audio[fs:fs + n] * win)
+    phase0 = np.angle(s0).astype(np.float64)
+    k = np.arange(s0.shape[0])
+    fs2 = min(fs + hop, len(audio) - n)
+    gap = fs2 - fs
+    if gap >= 1:
+        s1 = np.fft.rfft(audio[fs2:fs2 + n] * win)
+        expected = 2.0 * np.pi * k * gap / n
+        dev = np.angle(s1) - phase0 - expected
+        dev = (dev + np.pi) % (2.0 * np.pi) - np.pi   # principal value
+        per_hop = (expected + dev) / gap * hop
+    else:
+        per_hop = 2.0 * np.pi * k * hop / n            # bin-centre fallback
+    return phase0, per_hop
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Single freeze (v2 behaviour, unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def spectral_freeze_single(audio, sr, freeze_time_s, duration_s,
-                           window_ms, shimmer, fade_in_s, fade_out_s):
+                           window_ms, shimmer, fade_in_s, fade_out_s,
+                           phase_mode="random"):
     """
     Freeze the spectrum at a single moment and sustain it.
     """
@@ -90,6 +123,16 @@ def spectral_freeze_single(audio, sr, freeze_time_s, duration_s,
     spectrum = np.fft.rfft(frame)
     mag_freeze = np.abs(spectrum).astype(np.float32)
 
+    # Phase-coherent synthesis: lock each bin to its TRUE frequency
+    # (estimated from two analysis frames) so the freeze is a steady
+    # tonal sustain rather than a diffuse random-phase texture.
+    coherent = (phase_mode == "coherent")
+    if coherent:
+        running_phase, dphi = _coherent_advance(
+            audio, sr, freeze_time_s, wsize, hop, win)
+    else:
+        running_phase, dphi = None, None
+
     print(f"  Freeze point: {freeze_time_s:.3f}s (sample {freeze_sample})")
     print(f"  Window: {wsize} samples ({window_ms:.0f}ms)  hop: {hop}")
     print(f"  Output duration: {duration_s:.2f}s  shimmer: {shimmer:.2f}")
@@ -110,8 +153,12 @@ def spectral_freeze_single(audio, sr, freeze_time_s, duration_s,
         else:
             mag = mag_freeze.copy()
 
-        phase = rng.random(len(mag)) * 2.0 * np.pi
-        S_out = mag * np.exp(1j * phase)
+        if coherent:
+            S_out = mag * np.exp(1j * running_phase)
+            running_phase = running_phase + dphi
+        else:
+            phase = rng.random(len(mag)) * 2.0 * np.pi
+            S_out = mag * np.exp(1j * phase)
 
         frame_out = np.fft.irfft(S_out, n=wsize).real.astype(np.float32)
         frame_out *= win
@@ -157,7 +204,7 @@ def _capture_magnitude(audio, sr, freeze_time_s, wsize, win):
 
 def spectral_freeze_multi(audio, sr, freeze_times, duration_s,
                           window_ms, shimmer, fade_in_s, fade_out_s,
-                          xfade_s, dwell_s, loop):
+                          xfade_s, dwell_s, loop, phase_mode="random"):
     """
     Multi-freeze: capture spectra at multiple moments and crossfade
     between them, creating an evolving frozen texture.
@@ -191,7 +238,8 @@ def spectral_freeze_multi(audio, sr, freeze_times, duration_s,
         print("  Multi-freeze needs >=2 points, falling back to single.")
         return spectral_freeze_single(
             audio, sr, freeze_times[0] if freeze_times else 0.5,
-            duration_s, window_ms, shimmer, fade_in_s, fade_out_s)
+            duration_s, window_ms, shimmer, fade_in_s, fade_out_s,
+            phase_mode)
 
     wsize = next_pow2(int(window_ms / 1000 * sr))
     wsize = max(wsize, 64)
@@ -207,25 +255,26 @@ def spectral_freeze_multi(audio, sr, freeze_times, duration_s,
         print(f"  Waypoint {i + 1}/{n_wp}: {ft:.3f}s  "
               f"(energy={float(np.sum(mag ** 2)):.1f})")
 
-    # Build the waypoint sequence
-    # Each segment: dwell_s of pure waypoint, then xfade_s to the next
-    if loop:
-        # Add first waypoint at the end to close the loop
-        wp_indices = list(range(n_wp)) + [0]
-    else:
-        wp_indices = list(range(n_wp))
-
-    n_segs = len(wp_indices)
-
-    # One pass duration: dwell at each + xfade between each pair
-    n_transitions = n_segs - 1
-    one_pass_dur = n_segs * dwell_s + n_transitions * xfade_s
-
+    # Timeline: dwell@wp0, xfade 0->1, dwell@wp1, ..., dwell@wp(n-1).
+    # If loop, one extra xfade (n-1)->0 closes the cycle WITHOUT a
+    # trailing dwell, so wp0 is not held twice at the seam.
+    n_dwell = n_wp
+    n_xfade = n_wp if loop else (n_wp - 1)
+    one_pass_dur = n_dwell * dwell_s + n_xfade * xfade_s
     if one_pass_dur <= 0:
         one_pass_dur = duration_s
 
-    print(f"  Waypoints: {n_segs}  |  One pass: {one_pass_dur:.2f}s  "
+    print(f"  Waypoints: {n_wp}  |  One pass: {one_pass_dur:.2f}s  "
           f"|  Target: {duration_s:.2f}s  |  Loop: {loop}")
+
+    # Coherent phase: lock partials to the first waypoint's TRUE bin
+    # frequencies (see _coherent_advance); magnitudes still morph.
+    coherent = (phase_mode == "coherent")
+    if coherent:
+        running_phase, dphi = _coherent_advance(
+            audio, sr, freeze_times[0], wsize, hop, win)
+    else:
+        running_phase, dphi = None, None
 
     # Build a timeline function: for any time t, return (mag_interp, phase_random)
     # by figuring out which segment we're in and the blend factor
@@ -249,41 +298,41 @@ def spectral_freeze_multi(audio, sr, freeze_times, duration_s,
         else:
             t_local = 0.0
 
-        # Walk through segments to find where t_local falls
+        # Walk waypoints (dwell then xfade) to find where t_local falls
         cursor = 0.0
-        mag_a_idx = wp_indices[0]
-        mag_b_idx = wp_indices[0]
+        mag_a_idx = 0
+        mag_b_idx = 0
         blend = 0.0
+        found = False
 
-        for seg_i in range(n_segs):
-            wp_i = wp_indices[seg_i]
-
-            # Dwell phase at this waypoint
+        for wp_i in range(n_wp):
             dwell_end = cursor + dwell_s
             if t_local < dwell_end:
-                # In the dwell phase of waypoint seg_i
                 mag_a_idx = wp_i
                 mag_b_idx = wp_i
                 blend = 0.0
+                found = True
                 break
             cursor = dwell_end
 
-            # Crossfade to next waypoint (if not the last)
-            if seg_i < n_segs - 1:
+            has_xfade = (wp_i < n_wp - 1) or loop
+            if has_xfade:
+                nxt = (wp_i + 1) % n_wp
                 xfade_end = cursor + xfade_s
                 if t_local < xfade_end:
-                    # In the crossfade between seg_i and seg_i+1
                     mag_a_idx = wp_i
-                    mag_b_idx = wp_indices[seg_i + 1]
+                    mag_b_idx = nxt
                     u = (t_local - cursor) / max(xfade_s, 1e-9)
                     # Cosine S-curve for smooth crossfade
                     blend = 0.5 - 0.5 * math.cos(math.pi * u)
+                    found = True
                     break
                 cursor = xfade_end
-        else:
-            # Past the end of the sequence — hold last waypoint
-            mag_a_idx = wp_indices[-1]
-            mag_b_idx = wp_indices[-1]
+
+        if not found:
+            # Past the end (non-loop): hold the last waypoint
+            mag_a_idx = n_wp - 1
+            mag_b_idx = n_wp - 1
             blend = 0.0
 
         # Interpolate magnitudes in log domain
@@ -304,9 +353,13 @@ def spectral_freeze_multi(audio, sr, freeze_times, duration_s,
                 rng.random(n_bins).astype(np.float32) * 2 - 1)
             mag = mag * np.abs(jitter)
 
-        # Random phase
-        phase = rng.random(n_bins) * 2.0 * np.pi
-        S_out = mag * np.exp(1j * phase)
+        # Phase: coherent (locked) or random (diffuse)
+        if coherent:
+            S_out = mag * np.exp(1j * running_phase)
+            running_phase = running_phase + dphi
+        else:
+            phase = rng.random(n_bins) * 2.0 * np.pi
+            S_out = mag * np.exp(1j * phase)
 
         frame_out = np.fft.irfft(S_out, n=wsize).real.astype(np.float32)
         frame_out *= win
@@ -394,6 +447,15 @@ def main():
         if len(args) >= 12:
             loop = int(args[11]) != 0
 
+    # Optional trailing phase_mode argument (random | coherent)
+    phase_mode = "random"
+    if mode == "multi" and len(args) >= 13:
+        phase_mode = args[12].lower()
+    elif mode == "single" and len(args) >= 10:
+        phase_mode = args[9].lower()
+    if phase_mode not in ("random", "coherent"):
+        phase_mode = "random"
+
     if not os.path.isfile(in_wav):
         print(f"ERROR: Input file not found: {in_wav}", file=sys.stderr)
         sys.exit(1)
@@ -415,19 +477,20 @@ def main():
                         if t.strip()]
         print(f"  Mode: MULTI-FREEZE  |  {len(freeze_times)} waypoints")
         print(f"  Dwell: {dwell_s:.2f}s  |  Xfade: {xfade_s:.2f}s  "
-              f"|  Loop: {loop}")
+              f"|  Loop: {loop}  |  Phase: {phase_mode}")
 
         output = spectral_freeze_multi(
             audio, sr, freeze_times, duration_s,
             window_ms, shimmer, fade_in_s, fade_out_s,
-            xfade_s, dwell_s, loop)
+            xfade_s, dwell_s, loop, phase_mode)
     else:
         freeze_time_s = float(times_str)
-        print(f"  Mode: SINGLE freeze at {freeze_time_s:.3f}s")
+        print(f"  Mode: SINGLE freeze at {freeze_time_s:.3f}s  "
+              f"(phase={phase_mode})")
 
         output = spectral_freeze_single(
             audio, sr, freeze_time_s, duration_s,
-            window_ms, shimmer, fade_in_s, fade_out_s)
+            window_ms, shimmer, fade_in_s, fade_out_s, phase_mode)
 
     sf.write(out_wav, output, sr)
     print(f"OK: wrote {out_wav}  ({len(output)/sr:.3f}s)")

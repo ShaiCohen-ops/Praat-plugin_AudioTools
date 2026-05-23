@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.1 (2026) - Unified Cross-Platform Version
+# Version: 3.2 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -33,6 +33,12 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v3.2:
+#   - Phase mode: Coherent locks partials to their true frequencies for
+#     a steady tonal freeze; Random keeps the diffuse texture
+#   - Loop no longer holds the first waypoint twice at the seam
+#   - Notes when Duration is shorter than one full waypoint pass
 #
 # ============================================================
 
@@ -152,7 +158,7 @@ if pythonCmd$ = ""
 endif
 
 # ---- FORM ----
-form Spectral Freeze v3.1
+form Spectral Freeze v3.2
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -180,6 +186,9 @@ form Spectral Freeze v3.1
     positive Window_ms 80.0
     comment === Character ===
     real Shimmer 0.15
+    optionmenu Phase: 1
+        option Random (diffuse)
+        option Coherent (tonal)
     comment === Fades ===
     real Fade_in_s 0.5
     real Fade_out_s 1.0
@@ -196,6 +205,7 @@ if preset = 2
     fade_in_s  = 0.1
     fade_out_s = 0.5
     freeze_mode = 1
+    phase = 2
     presetName$ = "Drone"
 elsif preset = 3
     window_ms  = 80
@@ -203,6 +213,7 @@ elsif preset = 3
     fade_in_s  = 0.5
     fade_out_s = 1.0
     freeze_mode = 1
+    phase = 1
     presetName$ = "Pad"
 elsif preset = 4
     window_ms  = 40
@@ -210,6 +221,7 @@ elsif preset = 4
     fade_in_s  = 0.1
     fade_out_s = 0.5
     freeze_mode = 1
+    phase = 1
     presetName$ = "Shimmer"
 elsif preset = 5
     window_ms  = 100
@@ -217,6 +229,7 @@ elsif preset = 5
     fade_in_s  = 2.0
     fade_out_s = 3.0
     freeze_mode = 1
+    phase = 2
     presetName$ = "LongFade"
 elsif preset = 6
     window_ms  = 100
@@ -229,6 +242,7 @@ elsif preset = 6
     dwell_s = 2.0
     loop = 0
     duration_s = 20.0
+    phase = 1
     presetName$ = "EvolvingLandscape"
 elsif preset = 7
     window_ms  = 60
@@ -241,6 +255,7 @@ elsif preset = 7
     dwell_s = 0.8
     loop = 0
     duration_s = 12.0
+    phase = 1
     presetName$ = "VowelDrift"
 elsif preset = 8
     window_ms  = 80
@@ -253,6 +268,7 @@ elsif preset = 8
     dwell_s = 1.0
     loop = 1
     duration_s = 15.0
+    phase = 1
     presetName$ = "FrozenGlissando"
 endif
 
@@ -313,9 +329,16 @@ else
     modeLabel$ = "Multi (" + string$(nFP) + " points)"
 endif
 
+# ---- PHASE MODE ----
+if phase = 2
+    phaseMode$ = "coherent"
+else
+    phaseMode$ = "random"
+endif
+
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Spectral Freeze v3.1 ==="
+writeInfoLine:  "=== Spectral Freeze v3.2 ==="
 appendInfoLine: "Input: ", soundName$, "  (", fixed$(totalDuration, 3), "s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode:   ", modeLabel$
@@ -327,10 +350,17 @@ else
     appendInfoLine: "Crossfade:   ", fixed$(crossfade_s, 2), " s"
     appendInfoLine: "Dwell:       ", fixed$(dwell_s, 2), " s"
     appendInfoLine: "Loop:        ", string$(loop)
+    if loop = 0
+        onePassDur = nFP * dwell_s + (nFP - 1) * crossfade_s
+        if duration_s < onePassDur - 0.01
+            appendInfoLine: "  NOTE: Duration (", fixed$(duration_s, 1), "s) < one pass (", fixed$(onePassDur, 1), "s); later waypoints not reached."
+        endif
+    endif
 endif
 appendInfoLine: "Duration:    ", fixed$(duration_s, 2), " s"
 appendInfoLine: "Window:      ", fixed$(window_ms, 0), " ms"
 appendInfoLine: "Shimmer:     ", fixed$(shimmer, 2)
+appendInfoLine: "Phase:       ", phaseMode$
 appendInfoLine: "Fades:       in ", fixed$(fade_in_s, 2), " s  out ", fixed$(fade_out_s, 2), " s"
 appendInfoLine: "Python:      ", pythonCmd$
 appendInfoLine: ""
@@ -358,6 +388,7 @@ if freeze_mode = 1
         ... + " " + fixed$(fade_in_s, 4)
         ... + " " + fixed$(fade_out_s, 4)
         ... + " single"
+        ... + " " + phaseMode$
 else
     runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """"
         ... + " """ + tempInputJ$ + """"
@@ -372,6 +403,7 @@ else
         ... + " " + fixed$(crossfade_s, 4)
         ... + " " + fixed$(dwell_s, 4)
         ... + " " + string$(loop)
+        ... + " " + phaseMode$
 endif
 
 # ===========================================================================
@@ -419,10 +451,10 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Spectral Freeze v3.1##"
+    Text: 0.5, "centre", 0.6, "half", "##Spectral Freeze v3.2##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + modeLabel$ + " | Shimmer: " + fixed$(shimmer, 2)
+    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + modeLabel$ + " | " + phaseMode$ + " | Shimmer: " + fixed$(shimmer, 2)
 
     # === Input Waveform with freeze markers ===
     Select outer viewport: 0, 8, 0.6, 1.6
