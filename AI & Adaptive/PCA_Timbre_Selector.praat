@@ -606,14 +606,14 @@ if draw_visualization
     Select outer viewport: 0, 8, 0, 8
     
     # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.6
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##PCA Timbre Selector## | " + sndName$
+    Text: 0.5, "centre", 0.65, "half", "##PCA Timbre Selector## | " + sndName$
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.15, "half", presetName$ + " | " + fixed$(100 * selected_frame_count / nF, 0) + "% selected | " + string$(chunk_count) + " segments"
+    Text: 0.5, "centre", -1.0, "half", presetName$ + " | " + fixed$(100 * selected_frame_count / nF, 0) + "% selected | " + string$(chunk_count) + " segments"
     
     # === Waveforms ===
     Select outer viewport: 0, 8, 0.6, 1.5
