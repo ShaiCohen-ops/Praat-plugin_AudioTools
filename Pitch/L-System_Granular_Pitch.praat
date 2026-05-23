@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2.1 (2025) - Fixed Visualization Variable
+# Version: 0.4.1 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,29 @@
 #   to generate algorithmic patterns for granular gating and
 #   pitch control. Symbols: G=grain, S=skip, U=pitch up,
 #   D=pitch down, N=neutral. Creates self-similar structures.
+#
+# Changelog v0.4.1 (from 0.4.0):
+#   - Fixed the Fibonacci preset, which had no audible effect: its
+#     rules only produced G and N, and N is a no-op (plays like G,
+#     no skip, no pitch). New rules emit G/U/D/S so the self-similar
+#     pattern drives both gating (S) and pitch (U/D, oscillating).
+#
+# Changelog v0.4.0 (from 0.3.0):
+#   - Smoother gating: grains now form a continuous gain envelope
+#     (raised-cosine head ramp from the previous grain's gain to its
+#     own, then hold) instead of fading each grain to zero at both
+#     edges. Contiguous play grains are no longer notched at every
+#     boundary, removing the grain-rate tremolo. Transition window
+#     widened to 12 ms. GrainOverlap=0 still gives hard steps.
+#
+# Changelog v0.3.0 (from 0.2.1):
+#   - Mono-safe: source folded to mono before To Manipulation /
+#     To Pitch (both mono-only); stereo no longer errors
+#   - Visualization: pattern-panel legend spread across the panel
+#     (x was a width-fraction under a 0..grains axis, so all four
+#     labels piled at the left); Axes set before the title,
+#     L-System info, and stats captions so they center correctly
+#   - Clamp pitch-tier targets to the manipulation's [75,600] range
 # ============================================================
 
 # === Check Input ===
@@ -169,16 +192,18 @@ elsif preset = 7
     pitchStep_semitones = 1
     presetName$ = "Dense"
 elsif preset = 8
-    # Fibonacci Pattern
-    axiom$ = "G"
-    rule_G$ = "GN"
-    rule_S$ = "S"
-    rule_U$ = "UN"
-    rule_D$ = "DN"
-    rule_N$ = "G"
+    # Fibonacci Pattern (self-similar substitution driving BOTH
+    # gating and pitch: G=play, U=play+up, D=play+down, S=skip)
+    axiom$ = "GU"
+    rule_G$ = "GU"
+    rule_S$ = "G"
+    rule_U$ = "SD"
+    rule_D$ = "GU"
+    rule_N$ = "N"
     iterations = 5
     grainDuration_ms = 45
-    pitchStep_semitones = 2
+    basePitchShift_semitones = -6
+    pitchStep_semitones = 1
     presetName$ = "Fibonacci"
 else
     presetName$ = "Custom"
@@ -304,7 +329,17 @@ endfor
 # === Pitch Processing ===
 appendInfoLine: "Applying pitch shifting..."
 
+# Fold to mono (To Manipulation / To Pitch are mono-only)
 selectObject: original
+nch = Get number of channels
+if nch > 1
+    src = Convert to mono
+    appendInfoLine: "  (stereo input folded to mono)"
+else
+    src = Copy: name$ + "_srcmono"
+endif
+
+selectObject: src
 manipulation = To Manipulation: 0.01, 75, 600
 
 selectObject: manipulation
@@ -312,7 +347,7 @@ pitchTier = Extract pitch tier
 selectObject: pitchTier
 Remove points between: start_t, end_t
 
-selectObject: original
+selectObject: src
 refPitch = To Pitch: 0.01, 75, 600
 
 for k from 1 to n_grains
@@ -327,6 +362,11 @@ for k from 1 to n_grains
     endif
     
     f_target = f_orig * (2 ^ (shift / 12))
+    if f_target < 75
+        f_target = 75
+    elsif f_target > 600
+        f_target = 600
+    endif
     
     selectObject: pitchTier
     Add point: tc, f_target
@@ -339,17 +379,23 @@ selectObject: manipulation
 resynthSound = Get resynthesis (overlap-add)
 Rename: name$ + "_pitched"
 
-removeObject: manipulation, pitchTier, refPitch
+removeObject: manipulation, pitchTier, refPitch, src
 
 # === Granular Gating ===
 selectObject: resynthSound
 result = Copy: name$ + "_LSystem_" + presetName$
 channels = Get number of channels
 
-fade_time = min(grain_dur_sec / 4, 0.005)
+# Smooth gating: build a continuous gain envelope. Each grain holds
+# its own gain and ramps ONLY at its head, from the previous grain's
+# gain to its own (raised-cosine). Within a run of equal-gain grains
+# the head ramp is flat, so contiguous grains are no longer notched
+# to zero at every boundary (which caused the grain-rate tremolo).
+fade_time = min(grain_dur_sec / 2, 0.012)
 
 appendInfoLine: "Applying granular gating..."
 
+prevGain = 0
 for k from 1 to n_grains
     selectObject: scheduleTable
     t1 = Get value: k, "tStart"
@@ -359,26 +405,28 @@ for k from 1 to n_grains
     len = t2 - t1
     if len > 0
         if play = 1
-            gain = repeatGain
+            thisGain = repeatGain
         else
-            gain = baseSkipGain
+            thisGain = baseSkipGain
+        endif
+        
+        ft = fade_time
+        if ft > len
+            ft = len
         endif
         
         selectObject: result
         
-        if grainOverlap and play = 1
-            # With fades
-            t_fade_in_end = t1 + fade_time
-            t_fade_out_start = t2 - fade_time
-            
+        if grainOverlap
+            # Raised-cosine head ramp prevGain -> thisGain, then hold
             Formula (part): t1, t2, 1, channels,
-                ... ~ self * gain *
-                ... (if x < t_fade_in_end then (x - t1) / fade_time else 1 fi) *
-                ... (if x > t_fade_out_start then (t2 - x) / fade_time else 1 fi)
+                ... ~ self * (if x < t1 + ft then prevGain + (thisGain - prevGain) * (0.5 - 0.5 * cos(pi * (x - t1) / ft)) else thisGain fi)
         else
-            # Simple gain
-            Formula (part): t1, t2, 1, channels, ~ self * gain
+            # Hard step (no smoothing)
+            Formula (part): t1, t2, 1, channels, ~ self * thisGain
         endif
+        
+        prevGain = thisGain
     endif
 endfor
 
@@ -391,6 +439,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "L-System Granular: " + name$ + " (" + presetName$ + ")"
@@ -457,13 +506,13 @@ if draw_visualization
     # Legend
     Font size: 5
     Colour: "{0.5, 0.7, 0.5}"
-    Text: 0.02, "left", 1.3, "half", "G=grain"
+    Text: 0.02 * maxVizGrains, "left", 1.3, "half", "G=grain"
     Colour: "{0.7, 0.5, 0.5}"
-    Text: 0.12, "left", 1.3, "half", "S=skip"
+    Text: 0.12 * maxVizGrains, "left", 1.3, "half", "S=skip"
     Colour: "{0.5, 0.5, 0.8}"
-    Text: 0.22, "left", 1.3, "half", "U=up"
+    Text: 0.22 * maxVizGrains, "left", 1.3, "half", "U=up"
     Colour: "{0.8, 0.6, 0.5}"
-    Text: 0.32, "left", 1.3, "half", "D=down"
+    Text: 0.32 * maxVizGrains, "left", 1.3, "half", "D=down"
     
     # Pitch curve
     Select outer viewport: 0, 8, 3.8, 4.8
@@ -507,12 +556,14 @@ if draw_visualization
     
     # L-System info
     Select outer viewport: 0, 8, 5.0, 5.3
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Axiom: " + axiom$ + " | Rules: G→" + rule_G$ + " S→" + rule_S$ + " U→" + rule_U$ + " | Iter: " + string$(iterations) + " → " + string$(l_len) + " symbols"
     
     # Stats
     Select outer viewport: 0, 8, 5.4, 5.7
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(n_grains) + " (" + string$(grainDuration_ms) + "ms) | Pitch step: " + fixed$(pitchStep_semitones, 1) + " st | Range: ±" + string$(maxPitchShift_semitones) + " st"
