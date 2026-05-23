@@ -4,7 +4,7 @@
 # Script:      spatial_panner.py
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     1.0 (2025)
+# Version:     1.1 (2026)
 # License:     MIT License
 #
 # Description:
@@ -40,6 +40,15 @@
 # Dependencies:
 #   pip install numpy soundfile scipy
 #   tkinter — standard Python
+#
+# Changelog v1.1 (2026):
+#   - Smooth (PCHIP) interpolation option for curved, non-jerky motion
+#     (GUI toggle; shape-preserving, so the path stays in the stage)
+#   - Trajectory presets: Circle, Spiral, Figure-8, with rotation count
+#   - New points take the midpoint of the largest time gap, so adding
+#     points spreads them across the duration (was: piled near the end)
+#   - save_audio normalizes before the safety clip (was clip-then-norm)
+#   - Removed dead label-position lines in speaker drawing
 # ============================================================
 
 import sys
@@ -143,21 +152,74 @@ def dbap_gains_array(sx_arr, sy_arr, speakers):
 # ─────────────────────────────────────────────────────────────
 # TRAJECTORY INTERPOLATION
 # ─────────────────────────────────────────────────────────────
-def interp_trajectory(traj, n_samples, sr):
+def interp_trajectory(traj, n_samples, sr, smooth=True):
     """
-    Linear interpolation of trajectory points over time.
+    Interpolate trajectory points over time.
 
-    traj : list of [time, x, y], sorted by time
+    traj   : list of [time, x, y], sorted by time
+    smooth : if True and >=3 distinct time points, use shape-preserving
+             PCHIP (curved motion that does not overshoot the stage);
+             otherwise linear.
     Returns sx_arr, sy_arr each shape (n_samples,)
     """
     pts  = sorted(traj, key=lambda p: p[0])
     ts   = np.array([p[0] for p in pts], dtype=np.float64)
     xs   = np.array([p[1] for p in pts], dtype=np.float64)
     ys   = np.array([p[2] for p in pts], dtype=np.float64)
+
+    # Drop duplicate/near-equal times (interpolators need increasing x)
+    keep = np.concatenate(([True], np.diff(ts) > 1e-9))
+    ts, xs, ys = ts[keep], xs[keep], ys[keep]
+
     t_ax = np.arange(n_samples, dtype=np.float64) / sr
-    sx   = np.interp(t_ax, ts, xs).astype(np.float32)
-    sy   = np.interp(t_ax, ts, ys).astype(np.float32)
-    return sx, sy
+    if len(ts) >= 2:
+        t_ax = np.clip(t_ax, ts[0], ts[-1])
+
+    if smooth and len(ts) >= 3:
+        from scipy.interpolate import PchipInterpolator
+        sx = PchipInterpolator(ts, xs)(t_ax)
+        sy = PchipInterpolator(ts, ys)(t_ax)
+    else:
+        sx = np.interp(t_ax, ts, xs)
+        sy = np.interp(t_ax, ts, ys)
+    return sx.astype(np.float32), sy.astype(np.float32)
+
+
+# ──────────────────────────────
+# TRAJECTORY SHAPE PRESETS
+# ──────────────────────────────
+def _preset_points(duration, n, fn):
+    """Build a [t,x,y] trajectory; fn(frac)->(x,y) with frac in [0,1].
+    Times are evenly spaced; first/last act as the t=0 / t=dur anchors."""
+    n = max(8, n)
+    traj = []
+    for i in range(n):
+        frac = i / (n - 1)
+        x, y = fn(frac)
+        traj.append([frac * duration, float(x), float(y)])
+    return traj
+
+
+def preset_circle(duration, rotations=1, radius=0.8):
+    def fn(frac):
+        ang = 2.0 * math.pi * rotations * frac
+        return radius * math.sin(ang), radius * math.cos(ang)
+    return _preset_points(duration, 12 * rotations + 1, fn)
+
+
+def preset_spiral(duration, rotations=2, radius=0.85):
+    def fn(frac):
+        ang = 2.0 * math.pi * rotations * frac
+        r = radius * frac
+        return r * math.sin(ang), r * math.cos(ang)
+    return _preset_points(duration, 12 * rotations + 1, fn)
+
+
+def preset_figure8(duration, rotations=1, radius=0.85):
+    def fn(frac):
+        ang = 2.0 * math.pi * rotations * frac
+        return radius * math.sin(ang), radius * math.sin(2.0 * ang) / 2.0
+    return _preset_points(duration, 16 * rotations + 1, fn)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -177,10 +239,11 @@ def load_audio(path):
 
 
 def save_audio(path, audio, sr):
-    audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
+    audio = np.asarray(audio, dtype=np.float32)
     peak  = np.max(np.abs(audio))
     if peak > 1e-8:
         audio = audio / peak * 0.99
+    audio = np.clip(audio, -1.0, 1.0).astype(np.float32)
     sf.write(path, audio, sr, subtype="FLOAT")
 
 
@@ -261,6 +324,7 @@ class StageCanvas(tk.Canvas):
                          bg="#0e0e1a", highlightthickness=0, **kwargs)
         self.duration  = duration
         self.speakers  = speakers
+        self.smooth    = True
 
         # Default trajectory: centre at t=0, centre at t=duration
         self.traj = [
@@ -310,14 +374,22 @@ class StageCanvas(tk.Canvas):
             return
         if self._inside_stage(e.x, e.y):
             x, y = stage_to_unit(e.x, e.y)
-            # Assign time between last interior point and duration anchor
-            pts = self.traj
-            # Insert before the end anchor, suggest midpoint time
-            t_last = pts[-2][0] if len(pts) >= 2 else 0.0
-            t_end  = pts[-1][0]
-            t_new  = (t_last + t_end) / 2.0
-            self.traj.insert(len(pts) - 1, [t_new, x, y])
-            self._drag_idx = len(self.traj) - 2
+            # Place the new point at the midpoint of the largest time
+            # gap, so adding points spreads them across the whole
+            # duration instead of piling up near the end.
+            pts = sorted(self.traj, key=lambda p: p[0])
+            best_gap = -1.0
+            t_new = self.duration / 2.0
+            for k in range(len(pts) - 1):
+                gap = pts[k + 1][0] - pts[k][0]
+                if gap > best_gap:
+                    best_gap = gap
+                    t_new = (pts[k][0] + pts[k + 1][0]) / 2.0
+            new_pt = [t_new, x, y]
+            self.traj.append(new_pt)
+            self.traj.sort(key=lambda p: p[0])
+            self._drag_idx = next(i for i, p in enumerate(self.traj)
+                                  if p is new_pt)
             self.draw()
 
     def _on_drag(self, e):
@@ -412,10 +484,7 @@ class StageCanvas(tk.Canvas):
             r = SPK_R
             self.create_oval(px - r, py - r, px + r, py + r,
                              fill="#2a1a3a", outline=SPK_COL, width=2)
-            # Label outside
-            lx = STAGE_CX + (ux * (STAGE_R + 14) / 1.0 * (STAGE_R / STAGE_R))
-            ly = STAGE_CY - (uy * (STAGE_R + 14) / 1.0 * (STAGE_R / STAGE_R))
-            # Simple label offset in pixel space
+            # Label just outside the speaker dot, in pixel space
             nx, ny = ux / max(abs(ux), abs(uy), 0.01), uy / max(abs(ux), abs(uy), 0.01)
             lx2 = px + nx * (SPK_R + 10)
             ly2 = py - ny * (SPK_R + 10)
@@ -425,10 +494,15 @@ class StageCanvas(tk.Canvas):
     def _draw_trajectory(self):
         if len(self.traj) < 2:
             return
-        pts_sorted = sorted(self.traj, key=lambda p: p[0])
+        # Draw the path exactly as it will be rendered (linear or PCHIP)
+        # so the canvas is WYSIWYG with the motion.
+        n_draw  = 160
+        sr_draw = n_draw / max(self.duration, 1e-6)
+        sx, sy  = interp_trajectory(self.traj, n_draw, sr_draw,
+                                    smooth=self.smooth)
         coords = []
-        for t, x, y in pts_sorted:
-            px, py = unit_to_stage(x, y)
+        for i in range(n_draw):
+            px, py = unit_to_stage(sx[i], sy[i])
             coords += [px, py]
         self.create_line(*coords, fill=TRAJ_COLOR, width=2,
                          smooth=False, arrow=tk.LAST,
@@ -436,6 +510,7 @@ class StageCanvas(tk.Canvas):
 
     def _draw_points(self):
         n = len(self.traj)
+        show_labels = n <= 10
         for i, (t, x, y) in enumerate(self.traj):
             px, py = unit_to_stage(x, y)
             is_anchor = (i == 0 or i == n - 1)
@@ -443,9 +518,10 @@ class StageCanvas(tk.Canvas):
             r   = POINT_R + (2 if is_anchor else 0)
             self.create_oval(px - r, py - r, px + r, py + r,
                              fill=col, outline="#ffffff", width=1)
-            self.create_text(px, py - r - 6,
-                             text=f"{t:.2f}s",
-                             fill="#ccccee", font=("Courier", 7))
+            if show_labels or is_anchor:
+                self.create_text(px, py - r - 6,
+                                 text=f"{t:.2f}s",
+                                 fill="#ccccee", font=("Courier", 7))
 
     # ── public API ────────────────────────────────────────────
 
@@ -542,6 +618,8 @@ class SpatialPannerApp:
         self.root.resizable(False, False)
         self.root.configure(bg="#12121e")
         self.root.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        self.smooth_var = tk.BooleanVar(value=True)
+        self.rot_var    = tk.StringVar(value="1")
 
         # ── Header ────────────────────────────────────────────
         hdr = tk.Frame(self.root, bg="#12121e", pady=6)
@@ -608,6 +686,39 @@ class SpatialPannerApp:
                       bg="#2a1a3a", fg="#c0a0e0",
                       font=("Helvetica", 8), relief="flat",
                       padx=4, pady=2).pack(side="left", padx=2)
+
+        # ── Trajectory shape presets ────────────────────
+        tk.Label(info_frame, text="Shape Presets",
+                 bg="#12121e", fg="#c0a0e0",
+                 font=("Helvetica", 10, "bold")).pack(anchor="w",
+                                                       pady=(12, 4))
+        rot_frame = tk.Frame(info_frame, bg="#12121e")
+        rot_frame.pack(fill="x")
+        tk.Label(rot_frame, text="Rotations:",
+                 bg="#12121e", fg="#9090c0",
+                 font=("Courier", 9)).pack(side="left")
+        tk.Entry(rot_frame, textvariable=self.rot_var, width=4,
+                 bg="#0e0e1a", fg="#c0c0e0", relief="flat",
+                 highlightthickness=1, highlightbackground="#2a2a5a",
+                 font=("Courier", 9)).pack(side="left", padx=4)
+        shape_btn = tk.Frame(info_frame, bg="#12121e")
+        shape_btn.pack(fill="x", pady=4)
+        for lbl, kind in [("Circle", "circle"),
+                          ("Spiral", "spiral"),
+                          ("Fig-8", "figure8")]:
+            tk.Button(shape_btn, text=lbl,
+                      command=lambda k_=kind: self._apply_preset(k_),
+                      bg="#2a1a3a", fg="#c0a0e0",
+                      font=("Helvetica", 8), relief="flat",
+                      padx=4, pady=2).pack(side="left", padx=2)
+
+        tk.Checkbutton(info_frame, text="Smooth motion (PCHIP)",
+                       variable=self.smooth_var,
+                       command=self._on_smooth_toggle,
+                       bg="#12121e", fg="#9090c0", selectcolor="#0e0e1a",
+                       activebackground="#12121e",
+                       activeforeground="#c0c0e0",
+                       font=("Helvetica", 9)).pack(anchor="w", pady=(6, 0))
 
         tk.Label(info_frame, text="Trajectory Points",
                  bg="#12121e", fg=TRAJ_COLOR,
@@ -703,6 +814,31 @@ class SpatialPannerApp:
             f"Speaker layout changed to {n} speakers."
         )
 
+    def _on_smooth_toggle(self):
+        self.stage.smooth = self.smooth_var.get()
+        self.stage.draw()
+        self._on_stage_change()
+
+    def _apply_preset(self, kind):
+        try:
+            rot = int(float(self.rot_var.get()))
+        except (TypeError, ValueError):
+            rot = 1
+        rot = max(1, min(8, rot))
+        if kind == "circle":
+            traj = preset_circle(self.duration, rot)
+        elif kind == "spiral":
+            traj = preset_spiral(self.duration, rot)
+        else:
+            traj = preset_figure8(self.duration, rot)
+        self.stage.traj = traj
+        self.stage.draw()
+        self._on_stage_change()
+        self.status_var.set(
+            f"{kind.title()} preset — {rot} rotation(s), "
+            f"{len(traj)} points."
+        )
+
     def _on_reset(self):
         self.stage.reset()
         self._on_stage_change()
@@ -747,7 +883,8 @@ class SpatialPannerApp:
                 dbg(f"  t={pt[0]:.3f}s  x={pt[1]:+.3f}  y={pt[2]:+.3f}")
 
             self._set_status("Interpolating trajectory…", 30)
-            sx, sy = interp_trajectory(traj, n, sr)
+            sx, sy = interp_trajectory(traj, n, sr,
+                                       smooth=self.stage.smooth)
             dbg(f"sx range: {sx.min():.3f} .. {sx.max():.3f}")
             dbg(f"sy range: {sy.min():.3f} .. {sy.max():.3f}")
 
