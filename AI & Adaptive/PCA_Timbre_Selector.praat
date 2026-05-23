@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2025) - Direct selection + PCA visualization
+# Version: 1.3 (2025) - Direct selection + PCA visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,15 @@
 #   PCA Timbre Selector - Analyzes timbre and selects segments
 #   using direct feature selection for presets, with PCA
 #   visualization for understanding the timbre space.
+#
+# Changelog v1.3:
+#   - Fixed info banner (3 writeInfoLine -> 1 + appendInfoLine; the
+#     title line was being erased)
+#   - Standardize feature columns (z-score) before PCA so the timbre
+#     space isn't dominated by the Hz-scale features
+#   - Output preserves stereo (chunks extracted from the original,
+#     not the mono analysis copy)
+#   - Subtitle centered; distance-panel label reflects the mode
 #
 # Changelog v1.2:
 #   - Restored PCA scatter plots and eigenvector loadings
@@ -27,7 +36,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form PCA Timbre Selector v1.2
+form PCA Timbre Selector v1.3
     comment === Timbre Presets ===
     optionmenu Preset: 1
         option Custom (PCA targeting)
@@ -96,10 +105,9 @@ elsif preset = 9
 endif
 
 # ===== 1. SETUP =====
-clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  PCA TIMBRE SELECTOR v1.2"
-writeInfoLine: "=============================================="
+appendInfoLine: "  PCA TIMBRE SELECTOR v1.3"
+appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", sndName$
 appendInfoLine: "Preset: ", presetName$
@@ -252,6 +260,22 @@ appendInfoLine: "  ", nF, " frames analyzed"
 # ===== 3. PCA (for visualization) =====
 appendInfoLine: ""
 appendInfoLine: "STEP 2: Running PCA..."
+
+# Standardize feature columns (z-score) so PCA weights the Hz-scale
+# and dB-scale features comparably, not by raw variance.
+for c from 1 to 5
+    selectObject: feat
+    colMean = Get column mean (index): c
+    colSd = Get column stdev (index): c
+    if colSd <= 0
+        colSd = 1
+    endif
+    for r from 1 to nF
+        selectObject: feat
+        v = Get value: r, c
+        Set value: r, c, (v - colMean) / colSd
+    endfor
+endfor
 
 selectObject: feat
 To PCA
@@ -529,7 +553,7 @@ for i from 1 to nF
         chunk_end = t_e
     else
         if chunk_start <> -1
-            selectObject: workSnd
+            selectObject: snd
             Extract part: chunk_start, chunk_end, "Hanning", 1, "no"
             chunkID = selected("Sound")
             chunk_count += 1
@@ -540,7 +564,7 @@ for i from 1 to nF
 endfor
 
 if chunk_start <> -1
-    selectObject: workSnd
+    selectObject: snd
     Extract part: chunk_start, chunk_end, "Hanning", 1, "no"
     chunkID = selected("Sound")
     chunk_count += 1
@@ -589,7 +613,7 @@ if draw_visualization
     Text: 0.5, "centre", 0.6, "half", "##PCA Timbre Selector## | " + sndName$
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.2, "centre", 0.15, "half", presetName$ + " | " + fixed$(100 * selected_frame_count / nF, 0) + "% selected | " + string$(chunk_count) + " segments"
+    Text: 0.5, "centre", 0.15, "half", presetName$ + " | " + fixed$(100 * selected_frame_count / nF, 0) + "% selected | " + string$(chunk_count) + " segments"
     
     # === Waveforms ===
     Select outer viewport: 0, 8, 0.6, 1.5
@@ -788,7 +812,11 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "|z-score|"
+    if selectionFeature$ = "PCA"
+        Text left: "yes", "Distance"
+    else
+        Text left: "yes", "|z-score|"
+    endif
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Selection Score"
     
