@@ -39,6 +39,11 @@ Architecture:
     - N-channel output file
 
 No external model downloads. No internet. No PyTorch/TensorFlow/sklearn.
+
+Changelog v1.2:
+    - 5.1: pan among real speakers only (L R C LS RS); the LFE is
+      fed separately, so front/center content is no longer routed
+      into the LFE channel and then discarded.
 """
 
 import sys
@@ -632,6 +637,23 @@ def vbap_gains(azimuth_deg, speaker_azimuths_deg):
     return gains
 
 
+def panning_gains(azimuth_deg, speaker_azimuths, spatial_format):
+    """Pan among real speakers only. For 5.1 the LFE (index 3) sits
+    at 0 deg alongside C, so VBAP would route front content into it;
+    that channel is skipped at render time, dropping the energy.
+    Exclude LFE from panning here; it is fed a separate bass signal."""
+    import numpy as np
+    if spatial_format == SPAT_51:
+        pan_idx = [0, 1, 2, 4, 5]  # L R C LS RS  (skip LFE = 3)
+        pan_az = [speaker_azimuths[i] for i in pan_idx]
+        g = vbap_gains(azimuth_deg, pan_az)
+        full = np.zeros(len(speaker_azimuths))
+        for k, i in enumerate(pan_idx):
+            full[i] = g[k]
+        return full
+    return vbap_gains(azimuth_deg, speaker_azimuths)
+
+
 def distance_attenuation(distance):
     """
     Amplitude attenuation based on distance.
@@ -807,7 +829,7 @@ def reconstruct_spatial(clips, agent_histories, agents,
                 processed[-xfade:] *= fade_out
 
             # VBAP gains for this position
-            gains = vbap_gains(azimuth, speaker_azimuths)
+            gains = panning_gains(azimuth, speaker_azimuths, spatial_format)
 
             # Special case for 5.1: route low frequencies to LFE
             if spatial_format == SPAT_51:
@@ -836,7 +858,7 @@ def reconstruct_spatial(clips, agent_histories, agents,
 
                 # Smooth spatial blend for first portion
                 if blend_frac is not None and len(blend_frac) <= cl:
-                    prev_gains = vbap_gains(prev_az, speaker_azimuths)
+                    prev_gains = panning_gains(prev_az, speaker_azimuths, spatial_format)
                     bl = len(blend_frac)
                     ch_signal[:bl] = (
                         processed[:bl] * (

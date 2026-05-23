@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) — Unified Cross-Platform
+# Version: 1.2 (2026) — Unified Cross-Platform
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,6 +25,12 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.2:
+#   - 5.1: Python pans among real speakers only (LFE fed separately);
+#     front/center content is no longer routed into the LFE and lost
+#   - Renamed the Duration form field to a clean identifier
+#   - Removed unused RMS captures and a redundant clearinfo
 #
 # ============================================================
 
@@ -107,7 +113,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Spat v1.1 — Agent-Based Spatialization
+form Latent Spat v1.2 — Agent-Based Spatialization
     optionmenu Preset: 1
         option Custom
         option Stereo duo
@@ -130,7 +136,8 @@ form Latent Spat v1.1 — Agent-Based Spatialization
         option Amplitude + Low-pass
         option Amplitude + Low-pass + Reverb
     real Reverb_amount 0.4
-    real Duration_(0_=_original) 0
+    comment Output duration in seconds (0 = original)
+    real Duration 0
     integer Seed 42
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -247,8 +254,7 @@ else
 endif
 
 # ---- INFO ----
-clearinfo
-writeInfoLine:  "=== Latent Spat v1.1 — Agent-Based Spatialization ==="
+writeInfoLine:  "=== Latent Spat v1.2 — Agent-Based Spatialization ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -268,7 +274,6 @@ selectObject: sound
 dur = Get total duration
 sr  = Get sampling frequency
 nChannels = Get number of channels
-rms_orig = Get root-mean-square: 0, 0
 
 if duration <= 0
     duration = dur
@@ -538,7 +543,6 @@ Rename: soundName$ + "_spat"
 resultSound = selected("Sound")
 
 selectObject: resultSound
-rms_out = Get root-mean-square: 0, 0
 durOut = Get total duration
 nChOut = Get number of channels
 
