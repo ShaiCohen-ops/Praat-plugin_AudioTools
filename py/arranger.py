@@ -3,8 +3,20 @@
 # Praat AudioTools Plugin
 # Script:      arranger.py
 # Author:      Shai Cohen
-# Version:     1.3 (2026) — fixes 8-bit + 24-bit WAV decoding
+# Version:     1.4 (2026) — dynamic lanes + audition button
 # License:     MIT License
+#
+# Changelog v1.4:
+#   - Dynamic lane count: N_LANES now equals the number of selected clips
+#     instead of being hardcoded at 4.  A 7-clip selection opens 7 tracks;
+#     a 2-clip selection opens 2.  LANE_COLORS cycles by modulo so any
+#     count looks correct.  Praat-side unchanged (already sends
+#     default_track = i-1 for each clip).
+#   - Audition button: renders the current arrangement to stereo float
+#     buffers and plays non-blocking via sounddevice + numpy.  A ■ Stop
+#     button calls sd.stop().  Audition shares _compute_mix() with the
+#     final Render path so what you hear is what you get.  Missing
+#     sounddevice / numpy degrades gracefully (status-bar message only).
 #
 # Changelog v1.3:
 #   - FIXED: 8-bit WAV decoding produced DC offset + 2x amplitude.
@@ -57,10 +69,11 @@ def _crash(exc):
 # ─────────────────────────────────────────────────────────────────────────────
 # LAYOUT CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
-N_LANES          = 4
+N_LANES          = 4        # default kept only for LANE_COLORS length; actual
+                            # track count is set dynamically in ArrangerApp
 LANE_H           = 80
 RULER_H          = 28
-CANVAS_H         = RULER_H + N_LANES * LANE_H   # 348 px
+# CANVAS_H is computed dynamically: RULER_H + n_lanes * LANE_H
 PAD_L            = 40
 PAD_R            = 40
 CLIP_MARGIN      = 4
@@ -96,7 +109,7 @@ class Clip:
         self.duration  = float(data['duration'])
         self.channels  = int(data['channels'])
         self.sr        = int(data['sample_rate'])
-        self.lane      = int(data['default_track']) % N_LANES
+        self.lane      = int(data['default_track'])   # Praat sends 0..n-1
         self.start     = float(data['default_start'])
         self.color     = CLIP_PALETTE[self.id % len(CLIP_PALETTE)]
         # New per-clip parameters
@@ -111,7 +124,7 @@ class Clip:
 
     def reset(self, index):
         self.start    = 0.0
-        self.lane     = index % N_LANES
+        self.lane     = index
         self.gain     = 0.0
         self.pan      = 0.0
         self.fade_in  = 0.0
@@ -138,6 +151,11 @@ class ArrangerApp:
         self.done_file   = manifest['done_file']
         self.error_file  = manifest.get('error_file', '')
         self.clips       = [Clip(c) for c in manifest['clips']]
+
+        # Dynamic lane count: one track per clip.  Min 1 so an empty
+        # manifest doesn't produce a zero-height canvas.
+        self.n_lanes  = max(len(self.clips), 1)
+        self.canvas_h = RULER_H + self.n_lanes * LANE_H
 
         global _error_file
         _error_file = self.error_file
@@ -205,8 +223,8 @@ class ArrangerApp:
             c_frame,
             bg=BG,
             width=vis_w,
-            height=CANVAS_H,
-            scrollregion=(0, 0, self._total_canvas_width(), CANVAS_H),
+            height=self.canvas_h,
+            scrollregion=(0, 0, self._total_canvas_width(), self.canvas_h),
             xscrollcommand=self.hscroll.set,
             highlightthickness=0)
         self.canvas.pack(side='left', fill='both', expand=True)
@@ -237,6 +255,18 @@ class ArrangerApp:
                   command=self._on_reset,
                   bg='#2a2a4e', fg='#c0c0e0',
                   activebackground='#3a3a6a',
+                  **btn_style).pack(side='left', padx=8)
+
+        tk.Button(btn_frame, text=' ▶ Audition ',
+                  command=self._on_audition,
+                  bg='#1a3a4e', fg='#a0d0ee',
+                  activebackground='#2a4a60',
+                  **btn_style).pack(side='left', padx=8)
+
+        tk.Button(btn_frame, text=' ■ Stop ',
+                  command=self._on_stop,
+                  bg='#3a3a1a', fg='#d0d090',
+                  activebackground='#4a4a2a',
                   **btn_style).pack(side='left', padx=8)
 
         tk.Button(btn_frame, text=' Cancel ',
@@ -270,7 +300,7 @@ class ArrangerApp:
         return RULER_H + lane * LANE_H
 
     def _y2lane(self, cy):
-        return max(0, min(N_LANES - 1, int((cy - RULER_H) / LANE_H)))
+        return max(0, min(self.n_lanes - 1, int((cy - RULER_H) / LANE_H)))
 
     def _canvas_x(self, event):
         return self.canvas.canvasx(event.x)
@@ -284,7 +314,7 @@ class ArrangerApp:
     def _redraw(self):
         self.canvas.delete('all')
         self.canvas.configure(
-            scrollregion=(0, 0, self._total_canvas_width(), CANVAS_H))
+            scrollregion=(0, 0, self._total_canvas_width(), self.canvas_h))
         self._draw_lanes()
         self._draw_ruler()
         for clip in self.clips:
@@ -292,7 +322,7 @@ class ArrangerApp:
 
     def _draw_lanes(self):
         w = self._total_canvas_width()
-        for i in range(N_LANES):
+        for i in range(self.n_lanes):
             y0 = self._lane2y_top(i)
             y1 = y0 + LANE_H
             self.canvas.create_rectangle(0, y0, w, y1,
@@ -608,12 +638,14 @@ class ArrangerApp:
         self.status_var.set('All clips reset to default positions.')
 
     def _on_cancel(self):
+        self._stop_playback()
         self.cancelled = True
         self.root.destroy()
 
     def _on_render(self):
         self.status_var.set('Rendering mix…')
         self.root.update()
+        self._stop_playback()        # halt any audition before closing
         try:
             self._render_mix()
             self.cancelled = False
@@ -628,10 +660,54 @@ class ArrangerApp:
                 pass
             self.cancelled = True
 
+    def _on_audition(self):
+        """Render the current arrangement and play non-blocking via sounddevice.
+        Shares _compute_mix() with the final Render path — WYSIWYG preview."""
+        try:
+            import sounddevice as sd
+            import numpy as np
+        except ImportError as exc:
+            self.status_var.set(
+                f'Audition needs sounddevice + numpy ({exc}). '
+                f'pip install sounddevice numpy')
+            return
+
+        self.status_var.set('Rendering preview…')
+        self.root.update()
+
+        try:
+            buf_L, buf_R, sr = self._compute_mix()
+            data = np.column_stack([
+                np.array(buf_L, dtype=np.float32),
+                np.array(buf_R, dtype=np.float32),
+            ])
+            sd.stop()
+            sd.play(data, samplerate=sr, blocking=False)
+            dur = len(buf_L) / sr
+            self.status_var.set(
+                f'▶ Playing {dur:.2f} s  —  press ■ Stop to halt')
+        except Exception as exc:
+            self.status_var.set(f'Audition error: {exc}')
+
+    def _on_stop(self):
+        """Halt any active sounddevice playback."""
+        self._stop_playback()
+        self.status_var.set('Stopped.')
+
+    def _stop_playback(self):
+        """Internal helper — silently stop sounddevice if available."""
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
+
     # ─────────────────────────────────────────────────────────
     # RENDERER
     # ─────────────────────────────────────────────────────────
-    def _render_mix(self):
+    def _compute_mix(self):
+        """Mix all clips into stereo float lists.
+        Returns (buf_L, buf_R, sr); shared by _render_mix and _on_audition."""
         sr = self.sample_rate
         if self.clips:
             max_end = max(c.start + c.duration for c in self.clips)
@@ -687,10 +763,14 @@ class ArrangerApp:
             buf_L = [x / peak for x in buf_L]
             buf_R = [x / peak for x in buf_R]
 
+        return buf_L, buf_R, sr
+
+    def _render_mix(self):
+        buf_L, buf_R, sr = self._compute_mix()
         self._write_stereo_wav(self.result_file, buf_L, buf_R, sr)
 
         done = {'result':   self.result_file,
-                'duration': trim / sr,
+                'duration': len(buf_L) / sr,
                 'channels': 2,
                 'clips':    len(self.clips)}
         with open(self.done_file, 'w', encoding='utf-8') as f:
