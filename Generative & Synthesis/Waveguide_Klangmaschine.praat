@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2025) - Audio Analysis Input Pipeline
+# Version: 2.2 (2025) - Audio analysis now drives reverb (cutoff/wet/decay/tail)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -1261,6 +1261,18 @@ selectObject: original
 originalDur = Get total duration
 sr = Get sampling frequency
 
+# Preserve the audio-analysed reverb params (centroid->cutoff, RMS->wet,
+# decay->decay_base/tail). The envelope-selected preset below sets ALL reverb
+# params; without this, it would silently discard the analysed values. They are
+# restored just after the preset block.
+if audio_was_analyzed
+    an_high_cutoff_Hz = high_cutoff_Hz
+    an_wet_dry_percent = wet_dry_percent
+    an_decay_base = decay_base
+    an_tail_duration_s = tail_duration_s
+    an_impulse_duration_s = impulse_duration_s
+endif
+
 if preset = 2
     tail_duration_s = 1.5
     impulse_duration_s = 2.0
@@ -1309,10 +1321,17 @@ else
     presetName$ = "Custom"
 endif
 
-# Override reverb params with analysed values when audio was analyzed
-# (only for Custom preset or when analysis was active)
-if audio_was_analyzed and preset = 1
-    presetName$ = "Custom (from audio)"
+# Restore the audio-analysed reverb params, overriding the envelope preset's
+# fixed cutoff/wet/decay/tail (as documented). The preset still supplies the
+# remaining reverb settings (density, low cut, smoothing, fadeout) and the
+# character name.
+if audio_was_analyzed
+    high_cutoff_Hz = an_high_cutoff_Hz
+    wet_dry_percent = an_wet_dry_percent
+    decay_base = an_decay_base
+    tail_duration_s = an_tail_duration_s
+    impulse_duration_s = an_impulse_duration_s
+    presetName$ = presetName$ + " (from audio)"
 endif
 
 if wet_dry_percent < 0
