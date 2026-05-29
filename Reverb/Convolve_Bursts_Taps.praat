@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2.1 (2025) - Stereo Fix
+# Version: 0.3 (2025) - Real pulse shaping
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,20 @@
 #   Bursts & Taps Convolution - creates impulse response with
 #   sparse discrete taps (distinct echoes) plus clustered
 #   burst patterns (Gaussian-distributed impulse clouds).
+#
+#   Pulse shaping:
+#     Pulse_amplitude  - burst-cloud level relative to the sparse taps
+#     Pulse_width_s    - grain length (only active when Pulse_tone_Hz > 0)
+#     Pulse_tone_Hz    - 0 = broadband clicks; > 0 = Hann-windowed tone
+#                        grains at this carrier frequency
+#
+# Changelog v0.3:
+#   - Replaced the To Sound (pulse train) IR with explicit pulse shaping.
+#     The old Pulse_amplitude/width/period fed the pulse-train adaptation
+#     factor / adaptation time / interpolation depth, so width did nothing
+#     and amplitude was normalized away. Now: Pulse_amplitude sets the
+#     burst/tap balance, and Pulse_tone_Hz turns impulses into tonal grains
+#     of Pulse_width_s. Pulse_tone_Hz = 0 reproduces the original clicks.
 # ============================================================
 
 form Bursts and Taps Convolution
@@ -39,10 +53,13 @@ form Bursts and Taps Convolution
     positive Burst_margin_s 0.3
     comment (minimum distance from edges)
     
-    comment === Pulse Parameters ===
+    comment === Pulse Shaping ===
     positive Pulse_amplitude 1.0
-    positive Pulse_width 0.02
-    positive Pulse_period 2000
+    comment (burst-cloud level relative to the sparse taps)
+    positive Pulse_width_s 0.02
+    comment (grain length; only used when Pulse_tone_Hz > 0)
+    real Pulse_tone_Hz 0
+    comment (0 = broadband clicks, >0 = tonal grains at this carrier Hz)
     
     comment === Mix ===
     real Wet_dry_percent 60
@@ -78,8 +95,8 @@ if preset = 2
     points_per_burst = 6
     burst_stddev_s = 0.025
     burst_margin_s = 0.25
-    pulse_width = 0.018
-    pulse_period = 2200
+    pulse_width_s = 0.018
+    pulse_tone_Hz = 0
     presetName$ = "Subtle"
 elsif preset = 3
     # Medium Bursts
@@ -90,8 +107,8 @@ elsif preset = 3
     points_per_burst = 10
     burst_stddev_s = 0.035
     burst_margin_s = 0.3
-    pulse_width = 0.02
-    pulse_period = 2000
+    pulse_width_s = 0.02
+    pulse_tone_Hz = 0
     presetName$ = "Medium"
 elsif preset = 4
     # Heavy Bursts
@@ -102,8 +119,8 @@ elsif preset = 4
     points_per_burst = 15
     burst_stddev_s = 0.050
     burst_margin_s = 0.35
-    pulse_width = 0.025
-    pulse_period = 1800
+    pulse_width_s = 0.025
+    pulse_tone_Hz = 0
     presetName$ = "Heavy"
 elsif preset = 5
     # Extreme Bursts
@@ -114,8 +131,8 @@ elsif preset = 5
     points_per_burst = 25
     burst_stddev_s = 0.080
     burst_margin_s = 0.4
-    pulse_width = 0.03
-    pulse_period = 1600
+    pulse_width_s = 0.03
+    pulse_tone_Hz = 0
     presetName$ = "Extreme"
 else
     presetName$ = "Custom"
@@ -160,38 +177,99 @@ appendInfoLine: ""
 
 appendInfoLine: "Processing..."
 
-# === CREATE POINT PROCESS ===
+# === BUILD IMPULSE TIMES (taps + Gaussian bursts) ===
 appendInfoLine: "  Creating point pattern..."
 
-Create empty PointProcess: "pp_bursts", 0, iR_duration_s
-ppBursts = selected("PointProcess")
-
-# Add sparse taps
+# Sparse taps -> their own train (reference level)
+Create empty PointProcess: "pp_taps", 0, iR_duration_s
+ppTaps = selected("PointProcess")
 Add point: tap_1_time_s
 Add point: tap_2_time_s
 
-# Add burst clusters
+# Burst clusters -> separate train (scaled by Pulse_amplitude relative to taps)
+Create empty PointProcess: "pp_bursts", 0, iR_duration_s
+ppBursts = selected("PointProcess")
 totalPoints = 2
+burstPoints = 0
 for b from 1 to number_of_bursts
     center = burstCenter[b]
     for i from 1 to points_per_burst
         t = center + randomGauss(0, burst_stddev_s)
         if t > 0 and t < iR_duration_s
+            selectObject: ppBursts
             Add point: t
             totalPoints = totalPoints + 1
+            burstPoints = burstPoints + 1
         endif
     endfor
 endfor
 
 appendInfoLine: "  Total impulse points: ", totalPoints
 
-# === CONVERT TO PULSE TRAIN ===
-appendInfoLine: "  Converting to pulse train..."
+# === CONVERT POINTS TO IMPULSE TRAINS ===
+appendInfoLine: "  Building impulse trains..."
 
-selectObject: ppBursts
-To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulse_period
-irSound = selected("Sound")
+selectObject: ppTaps
+To Sound (pulse train): sr, 1.0, 0.001, 2000
+impTaps = selected("Sound")
+Scale peak: 1.0
+
+if burstPoints > 0
+    selectObject: ppBursts
+    To Sound (pulse train): sr, 1.0, 0.001, 2000
+    impBursts = selected("Sound")
+    Scale peak: 1.0
+endif
+
+removeObject: ppTaps, ppBursts
+
+# === SHAPE EACH IMPULSE ===
+# tone = 0 -> broadband single-sample clicks (original character)
+# tone > 0 -> each impulse becomes a Hann-windowed tone grain of width seconds
+if pulse_tone_Hz > 0
+    appendInfoLine: "  Shaping pulses into tone grains..."
+    kernelDur = pulse_width_s
+    kc = kernelDur / 2
+    tone$ = string$(pulse_tone_Hz)
+    kc$ = string$(kc)
+    kdur$ = string$(kernelDur)
+    Create Sound from formula: "pulse_kernel", 1, 0, kernelDur, sr, "(0.5 - 0.5 * cos(2*pi*x/" + kdur$ + ")) * cos(2*pi*" + tone$ + "*(x - " + kc$ + "))"
+    kernel = selected("Sound")
+
+    selectObject: impTaps, kernel
+    Convolve: "sum", "zero"
+    convTaps = selected("Sound")
+    Extract part: kc, kc + iR_duration_s, "rectangular", 1, "no"
+    irTaps = selected("Sound")
+    removeObject: convTaps, impTaps
+
+    if burstPoints > 0
+        selectObject: impBursts, kernel
+        Convolve: "sum", "zero"
+        convBursts = selected("Sound")
+        Extract part: kc, kc + iR_duration_s, "rectangular", 1, "no"
+        irBursts = selected("Sound")
+        removeObject: convBursts, impBursts
+    endif
+    removeObject: kernel
+else
+    irTaps = impTaps
+    if burstPoints > 0
+        irBursts = impBursts
+    endif
+endif
+
+# === COMBINE TAPS + (Pulse_amplitude-scaled) BURSTS ===
+selectObject: irTaps
+if burstPoints > 0
+    amp$ = string$(pulse_amplitude)
+    irBursts$ = string$(irBursts)
+    Formula: "self + " + amp$ + " * object[" + irBursts$ + "]"
+    removeObject: irBursts
+endif
 Scale peak: 0.9
+Rename: "ir_" + presetName$
+irSound = selected("Sound")
 
 # === CONVOLVE ===
 appendInfoLine: "  Convolving..."
@@ -351,7 +429,6 @@ else
     removeObject: irSound
 endif
 
-removeObject: ppBursts
 
 # === Final Info ===
 selectObject: result
