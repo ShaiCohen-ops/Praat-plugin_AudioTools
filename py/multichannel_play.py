@@ -45,6 +45,32 @@ def list_devices(out_file=None):
         print(text)
 
 
+def list_devices_tsv(out_file):
+    """Write output devices as parseable lines for the Praat picker.
+
+    One line per output-capable device:  <id>\t<label>
+    where <label> = "<id>: <name> (<Nch>ch) [<hostapi>]".
+    The id before the tab lets Praat map a dropdown choice back to a
+    sounddevice device index; the label after the tab is shown in the menu.
+    """
+    import sounddevice as sd
+    devices  = sd.query_devices()
+    hostapis = sd.query_hostapis()
+    rows = []
+    for i, d in enumerate(devices):
+        if d["max_output_channels"] < 1:
+            continue
+        api   = hostapis[d["hostapi"]]["name"]
+        name  = d["name"]
+        label = "%d: %s (%dch) [%s]" % (i, name, d["max_output_channels"], api)
+        label = label.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+        rows.append("%d\t%s" % (i, label))
+    with open(out_file, "w", encoding="utf-8") as f:
+        f.write("\n".join(rows))
+        if rows:
+            f.write("\n")
+
+
 def play_file(wav_path, device_id=None, latency="low", debug=False,
               downmix=False, status_file=None):
     import numpy as np
@@ -156,6 +182,9 @@ def main():
         help="List all available output devices and exit")
     parser.add_argument("--list-devices-file", default=None,
         help="Write device list to this file instead of stdout")
+    parser.add_argument("--devices-tsv", default=None,
+        help="Write output devices as <id>\\t<label> lines to this file and exit "
+             "(parseable device picker used by the Praat front-end)")
     parser.add_argument("--downmix", action="store_true",
         help="Fold all channels to stereo if device supports fewer channels than audio")
     parser.add_argument("--status-file", default=None,
@@ -179,6 +208,10 @@ def main():
 
     if args.list_devices:
         list_devices(out_file=args.list_devices_file)
+        sys.exit(0)
+
+    if args.devices_tsv:
+        list_devices_tsv(args.devices_tsv)
         sys.exit(0)
 
     if not args.wav_file:

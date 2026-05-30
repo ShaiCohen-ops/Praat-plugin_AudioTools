@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2 (2026) - Live device picker dropdown (remembers last device)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,9 +25,17 @@
 # Usage:
 #   1. Select a multichannel Sound in Praat object list.
 #   2. Run this script.
-#   3. Set Device_ID (-1 = system default) and click OK / Play.
+#   3. Pick your output device (sound card) from the dropdown, then Play.
+#      The list is queried live; your choice is remembered for next time.
 #   4. Python plays back the audio on the chosen device.
 #   5. Temp file is deleted automatically when playback ends.
+#
+# Changelog v1.2:
+#   - Output device is chosen from a live dropdown built from the system's
+#     actual output devices (no more reading a text table and typing an ID).
+#     The last-used device is remembered between runs in play_device.cfg.
+#   - multichannel_play.py gains a --devices-tsv mode emitting a parseable
+#     id<TAB>label device list for the picker.
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
@@ -82,6 +90,7 @@ deviceListFile$  = tempDir$ + "temp_play_devices.txt"
 playStatusFile$  = tempDir$ + "temp_play_status.ok"
 probePy$         = tempDir$ + "temp_play_probe.py"
 probeMarker$     = tempDir$ + "temp_play_probe.ok"
+configFile$      = pluginDir$ + "play_device.cfg"
 
 # Enforce forward slashes for all temporary paths passed to python
 pythonScriptJ$   = replace_regex$(pythonScript$, "\\", "/", 0)
@@ -112,20 +121,6 @@ endproc
 
 @cleanUpTempFiles
 
-# ---- FORM ----
-form Multichannel Playback v1.1
-    comment ── Device selection (-1 = system default) ───────────────────
-    integer Device_ID -1
-    comment ── Latency (low = ASIO optimised;  high = more stable) ──────
-    optionmenu Latency: 1
-        option low
-        option high
-    comment ── Utilities ────────────────────────────────────────────────
-    boolean Downmix_to_stereo_if_needed 0
-    boolean List_devices_and_exit 0
-    boolean Print_debug_info 0
-endform
-
 # ---- CAPTURE SOUND STATS ----
 selectObject: sound
 nChannels = Get number of channels
@@ -134,22 +129,15 @@ dur       = Get total duration
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Multichannel Playback v1.1 ==="
+writeInfoLine:  "=== Multichannel Playback v1.2 ==="
 appendInfoLine: "Sound:    ", soundName$
 appendInfoLine: "Channels: ", nChannels
 appendInfoLine: "SR:       ", sr, " Hz"
 appendInfoLine: "Duration: ", fixed$(dur, 3), " s"
 appendInfoLine: ""
 
-# ---- LATENCY STRING ----
-if latency = 1
-    latencyStr$ = "low"
-else
-    latencyStr$ = "high"
-endif
-
 # ===========================================================================
-# Stage 1 — Detect Python Dependencies
+# Stage 1 - Detect Python Dependencies
 # ===========================================================================
 appendInfoLine: "Detecting Python dependencies..."
 
@@ -209,27 +197,101 @@ appendInfoLine: "  Python found: ", pythonCmd$
 appendInfoLine: ""
 
 # ===========================================================================
-# Stage 2 — List Devices Mode
+# Stage 2 - Enumerate output devices for the picker
 # ===========================================================================
-if list_devices_and_exit
-    appendInfoLine: "Available output devices:"
-    appendInfoLine: ""
-    listCmd$ = pythonCmd$ + " """ + pythonScriptJ$ + """ --list-devices --list-devices-file """ + deviceListFileJ$ + """"
-    runSystem_nocheck: listCmd$
-    
-    if fileReadable(deviceListFile$)
-        deviceText$ = readFile$(deviceListFile$)
-        appendInfoLine: deviceText$
-        deleteFile: deviceListFile$
-    else
-        appendInfoLine: "(Could not capture device list — check terminal output)"
-    endif
-    appendInfoLine: "Re-run with List_devices_and_exit = 0 and Device_ID set to play."
-    goto END
+appendInfoLine: "Querying output devices..."
+
+if fileReadable(deviceListFile$)
+    deleteFile: deviceListFile$
 endif
 
+runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """ --devices-tsv """ + deviceListFileJ$ + """"
+
+nDev = 0
+if fileReadable(deviceListFile$)
+    Read Strings from raw text file: deviceListFile$
+    strObj = selected("Strings")
+    nDev = Get number of strings
+    for i from 1 to nDev
+        selectObject: strObj
+        line$ = Get string: i
+        tabPos = index(line$, tab$)
+        if tabPos > 0
+            deviceId[i]     = number(left$(line$, tabPos - 1))
+            deviceLabel$[i] = right$(line$, length(line$) - tabPos)
+        else
+            deviceId[i]     = -1
+            deviceLabel$[i] = line$
+        endif
+    endfor
+    removeObject: strObj
+    deleteFile: deviceListFile$
+endif
+
+appendInfoLine: "  ", nDev, " output device(s) found."
+appendInfoLine: ""
+
+# ---- Remembered default device (from last run) ----
+savedDevice = -1
+if fileReadable(configFile$)
+    savedDevice = number(readFile$(configFile$))
+    if savedDevice = undefined
+        savedDevice = -1
+    endif
+endif
+
+defaultIdx = 1
+for i from 1 to nDev
+    if deviceId[i] = savedDevice
+        defaultIdx = i + 1
+    endif
+endfor
+
 # ===========================================================================
-# Stage 3 — Export Temp WAV
+# Stage 3 - Playback options dialog (device picker dropdown)
+# ===========================================================================
+beginPause: "Multichannel Playback"
+    comment: "Sound: " + soundName$ + "   (" + string$(nChannels) + " ch, " + string$(sr) + " Hz, " + fixed$(dur, 2) + " s)"
+    comment: "Output device (your sound card):"
+    optionmenu: "Device", defaultIdx
+        option: "System default"
+        for i from 1 to nDev
+            option: deviceLabel$[i]
+        endfor
+    comment: "Latency: low = ASIO-optimised; high = more stable"
+    optionmenu: "Latency", 1
+        option: "low"
+        option: "high"
+    boolean: "Downmix to stereo if needed", 0
+    boolean: "Print debug info", 0
+clicked = endPause: "Cancel", "Play", 2, 1
+
+if clicked = 1
+    @cleanUpTempFiles
+    exitScript: "Cancelled."
+endif
+
+# ---- Map dropdown choice -> device id, and remember it ----
+if device = 1
+    chosenDevice = -1
+    appendInfoLine: "Device:   system default"
+else
+    chosenDevice = deviceId[device - 1]
+    appendInfoLine: "Device:   ", deviceLabel$[device - 1]
+endif
+
+writeFile: configFile$, string$(chosenDevice)
+
+# ---- Latency string ----
+if latency = 1
+    latencyStr$ = "low"
+else
+    latencyStr$ = "high"
+endif
+appendInfoLine: ""
+
+# ===========================================================================
+# Stage 4 - Export Temp WAV
 # ===========================================================================
 appendInfoLine: "[1/3] Exporting temp WAV..."
 selectObject: sound
@@ -243,14 +305,14 @@ endif
 appendInfoLine: "      Written: ", tempWav$
 
 # ===========================================================================
-# Stage 4 — Playback
+# Stage 5 - Playback
 # ===========================================================================
 appendInfoLine: "[2/3] Starting Python playback engine..."
 
 pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """" + " """ + tempWavJ$ + """"
 
-if device_ID >= 0
-    pythonCall$ = pythonCall$ + " --device " + string$(device_ID)
+if chosenDevice >= 0
+    pythonCall$ = pythonCall$ + " --device " + string$(chosenDevice)
 endif
 
 pythonCall$ = pythonCall$ + " --latency " + latencyStr$
@@ -266,11 +328,11 @@ if print_debug_info
     appendInfoLine: "  Command: ", pythonCall$
 endif
 
-# ---- PLAY (blocking) — nocheck so cleanup always runs ----
+# ---- PLAY (blocking) - nocheck so cleanup always runs ----
 runSystem_nocheck: pythonCall$
 
 # ===========================================================================
-# Stage 5 — Cleanup
+# Stage 6 - Cleanup
 # ===========================================================================
 appendInfoLine: "[3/3] Cleaning up..."
 if fileReadable(tempWav$)
@@ -286,8 +348,6 @@ if not fileReadable(playStatusFile$)
 else
     deleteFile: playStatusFile$
 endif
-
-label END
 
 appendInfoLine: ""
 appendInfoLine: "=== DONE ==="
