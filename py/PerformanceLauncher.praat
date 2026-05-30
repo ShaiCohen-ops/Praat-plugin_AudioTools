@@ -2,7 +2,7 @@
 # Praat AudioTools Plugin
 # Script:      PerformanceLauncher.praat
 # Author:      Shai Cohen
-# Version:     1.2 (2026) — Dependency probe + version sync + cleanup
+# Version:     1.3 (2026) — Version sync (engine live master gain)
 # License:     MIT License
 #
 # Description:
@@ -12,6 +12,12 @@
 #
 # Usage:
 #   Select one or more Sound objects, then run this script.
+#
+# Changelog v1.3:
+#   - Version bump to match performance_launcher.py live master-gain
+#     control (Up/Down +/-1 dB, Left/Right +/-0.1 dB from the keyboard).
+#     Front-end logic unchanged; header, info banner, and manifest
+#     plugin_version synced to 1.3.
 #
 # Changelog v1.2:
 #   - Dependency probe hardened: now imports tkinter, numpy,
@@ -168,7 +174,7 @@ endfor
 nl$ = newline$
 manifest$ = "{" + nl$
 manifest$ = manifest$ + "  ""plugin_name"": ""Performance Launcher""," + nl$
-manifest$ = manifest$ + "  ""plugin_version"": ""1.2""," + nl$
+manifest$ = manifest$ + "  ""plugin_version"": ""1.3""," + nl$
 manifest$ = manifest$ + "  ""project_sample_rate"": " + string$ (targetSR) + "," + nl$
 manifest$ = manifest$ + "  ""project_max_channels"": " + string$ (maxChannels) + "," + nl$
 manifest$ = manifest$ + "  ""temp_dir"": """ + replace_regex$(temporaryDirectory$, "\\", "/", 0) + """," + nl$
@@ -206,7 +212,7 @@ writeFile: manifestFile$, manifest$
 
 # ---- Execution Log Window Feed ----
 clearinfo
-appendInfoLine: "=== Performance Launcher 1.2 ==="
+appendInfoLine: "=== Performance Launcher 1.3 ==="
 appendInfoLine: "Loaded Cues: ", nSounds
 appendInfoLine: "Target System Rate: ", targetSR, " Hz"
 appendInfoLine: "Max File Channels:  ", maxChannels

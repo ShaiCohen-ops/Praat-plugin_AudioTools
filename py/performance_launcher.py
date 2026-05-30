@@ -3,7 +3,7 @@
 # Praat AudioTools Plugin
 # Script:      performance_launcher.py
 # Author:      Shai Cohen
-# Version:     1.2 (2026) — Real-time callback hardening
+# Version:     1.3 (2026) — Live master gain via arrow keys
 # License:     MIT License
 #
 # Description:
@@ -15,6 +15,15 @@
 #
 # Usage (called by PerformanceLauncher.praat):
 #   python performance_launcher.py <manifest.json>
+#
+# Changelog v1.3:
+#   - Live master gain from the keyboard: Up/Down nudge master +/-1 dB
+#     (coarse), Right/Left +/-0.1 dB (fine), clamped to the slider range.
+#     The on-screen Master Gain slider follows (it is bound to the same
+#     var) and the value persists in config as before. Master slider
+#     resolution refined 0.5 -> 0.1 dB so the fine step is representable.
+#     Arrow keysyms were previously unused (DEFAULT_KEYS is digits +
+#     letters), so cue triggering is unaffected.
 #
 # Changelog v1.2:
 #   - Real-time fix: the natural (end-of-file) fade-out in the audio
@@ -118,6 +127,12 @@ DEFAULT_KEYS = [
     'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l',
     'z', 'x', 'c', 'v', 'b', 'n', 'm'
 ]
+
+# Master gain range (dB) — shared by the slider and the arrow-key nudges
+MASTER_MIN_DB         = -40.0
+MASTER_MAX_DB         =  12.0
+MASTER_STEP_COARSE_DB =   1.0
+MASTER_STEP_FINE_DB   =   0.1
 
 # ── Data Model Classes ────────────────────────────────────────────────
 class Cue:
@@ -490,9 +505,10 @@ class PerformanceLauncherApp:
         ctrl = tk.Frame(self.root, bg=BG)
         ctrl.pack(fill='x', padx=8, pady=4)
 
-        tk.Label(ctrl, text="Master Gain (dB):", bg=BG, fg=LABEL_FG,
+        tk.Label(ctrl, text="Master Gain (dB)  [↑↓ ±1  ←→ ±0.1]:", bg=BG, fg=LABEL_FG,
                  font=("Helvetica", 9)).grid(row=0, column=0, sticky='w', padx=4)
-        tk.Scale(ctrl, from_=-40, to=12, resolution=0.5, orient='horizontal',
+        tk.Scale(ctrl, from_=MASTER_MIN_DB, to=MASTER_MAX_DB, resolution=0.1,
+                 orient='horizontal',
                  variable=self.master_gain_var, bg=BG, fg=TEXT_FG,
                  troughcolor=BUTTON_BG, highlightthickness=0, length=200,
                  command=lambda _: self._apply_master_gain()
@@ -705,6 +721,17 @@ class PerformanceLauncherApp:
         db = self.master_gain_var.get()
         self.engine.master_gain_linear = 10.0 ** (db / 20.0)
 
+    def _nudge_master(self, step_db):
+        # Ride the master gain from the keyboard. The slider is bound to this
+        # same var, so setting it moves the slider on screen; the value is
+        # persisted by _save_config exactly like a manual slider move.
+        new_db = self.master_gain_var.get() + step_db
+        new_db = max(MASTER_MIN_DB, min(MASTER_MAX_DB, new_db))
+        new_db = round(new_db, 2)
+        self.master_gain_var.set(new_db)
+        self._apply_master_gain()
+        self._status_msg.set(f"Master gain: {new_db:+.1f} dB")
+
     def _apply_exclusive(self):
         self.engine.exclusive_mode = self.exclusive_var.get()
 
@@ -718,6 +745,16 @@ class PerformanceLauncherApp:
         k = event.keysym.lower()
         if k == 'escape':
             self.engine.stop_all()
+            return
+        # Arrow keys ride the master gain: Up/Down coarse (±1 dB),
+        # Right/Left fine (±0.1 dB). These keysyms are never cue triggers
+        # (DEFAULT_KEYS is digits + letters), so there is no collision.
+        if k in ('up', 'down', 'left', 'right'):
+            step = {'up':    MASTER_STEP_COARSE_DB,
+                    'down': -MASTER_STEP_COARSE_DB,
+                    'right': MASTER_STEP_FINE_DB,
+                    'left': -MASTER_STEP_FINE_DB}[k]
+            self._nudge_master(step)
             return
         if k in self.key_map:
             self._trigger_cue(self.key_map[k])
