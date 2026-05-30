@@ -3,7 +3,7 @@
 # Script:      Envelope_Editor.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     2.0 (2026) - Unified Cross-Platform Version
+# Version:     2.1 (2026) - Render-and-iterate audition loop
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,7 +20,9 @@
 #   1. Python GUI writes a breakpoints JSON file
 #   2. Praat reads JSON (via Python one-liner), builds native tiers
 #   3. Praat applies each effect in sequence
-#   4. Result added to object list
+#   4. Result is played, then: Play again / Tweak again / Keep
+#   5. "Tweak again" reopens the editor pre-loaded with your curves
+#      and re-renders — a full-fidelity audition loop
 #
 # JSON produced by envelope_editor.py:
 #   { "pan":[[t,v],...], "pitch":[[t,v],...],
@@ -128,6 +130,9 @@ procedure cleanUpTempFiles
     if fileReadable (probeMarker$)
         deleteFile: probeMarker$
     endif
+    if fileReadable (bpFile$ + ".applied")
+        deleteFile: bpFile$ + ".applied"
+    endif
 endproc
 
 @cleanUpTempFiles
@@ -143,33 +148,71 @@ endif
 
 deleteFile: probeMarker$
 
-# ---- Launch GUI ----
+# ---- Banner ----
 clearinfo
-appendInfoLine: "=== Envelope Editor 2.0 ==="
+appendInfoLine: "=== Envelope Editor 2.1 ==="
 appendInfoLine: "Sound:    ", soundName$
 appendInfoLine: "Duration: ", fixed$ (duration, 3), " s"
 appendInfoLine: "Python:   ", pythonCmd$
 appendInfoLine: ""
-appendInfoLine: "Opening envelope editor..."
 
-runSystem_nocheck: pythonCmd$ + " """ + pythonScript$ + """ " + fixed$(duration, 6) + " """ + bpFile$ + """"
-
-# ---- Check result ----
-if not fileReadable (bpFile$)
-    appendInfoLine: "Cancelled."
-    @cleanUpTempFiles
-    exitScript: "Envelope Editor cancelled."
-endif
-
-appendInfoLine: "Breakpoints received. Applying DSP in Praat..."
-
-# ---- Python: interpolate envelopes, write gain WAVs + breakpoint texts ----
+# ---- Render constants (from the original; unchanged across passes) ----
 selectObject: sound
 nSampTotal = Get number of samples
 srTotal    = Get sampling frequency
 tStartS    = Get start time
 
-runSystem: pythonCmd$ + " """ + pythonScript$ + """ envelopes """ + bpFile$ + """ " + string$(nSampTotal) + " " + string$(srTotal) + " " + string$(tStartS) + " """ + gainIntens$ + """ """ + gainPanL$ + """ """ + gainPanR$ + """ """ + pitchFile$ + """ """ + filterFile$ + """"
+# The GUI writes this marker on Apply. Because the breakpoints file now
+# persists between passes (so the GUI can pre-load the last curves), the
+# marker is what tells Apply apart from Cancel.
+appliedMarker$ = bpFile$ + ".applied"
+
+result      = 0
+iteration   = 0
+auditioning = 1
+
+# ============================================================
+# AUDITION LOOP  —  edit -> render -> listen -> (tweak again | keep)
+# ============================================================
+while auditioning
+    iteration = iteration + 1
+
+    # Clear any stale marker so its presence afterwards means "Applied"
+    if fileReadable (appliedMarker$)
+        deleteFile: appliedMarker$
+    endif
+
+    if iteration = 1
+        appendInfoLine: "Opening envelope editor..."
+    else
+        appendInfoLine: ""
+        appendInfoLine: "Reopening editor (pass ", iteration, ") -- previous curves pre-loaded..."
+    endif
+
+    # ---- Launch GUI (pre-loads bpFile$ if it exists from a prior pass) ----
+    runSystem_nocheck: pythonCmd$ + " """ + pythonScript$ + """ " + fixed$(duration, 6) + " """ + bpFile$ + """"
+
+    if not fileReadable (appliedMarker$)
+        # GUI closed without Apply
+        if iteration = 1
+            appendInfoLine: "Cancelled."
+            @cleanUpTempFiles
+            exitScript: "Envelope Editor cancelled."
+        endif
+        appendInfoLine: "Editor closed without Apply -- keeping the last render."
+        auditioning = 0
+    else
+        deleteFile: appliedMarker$
+        appendInfoLine: "Breakpoints received. Applying DSP in Praat..."
+
+        # Drop the previous render before building a new one
+        if result <> 0
+            removeObject: result
+            result = 0
+        endif
+
+        # ---- Python: interpolate envelopes, write gain WAVs + breakpoint texts ----
+        runSystem: pythonCmd$ + " """ + pythonScript$ + """ envelopes """ + bpFile$ + """ " + string$(nSampTotal) + " " + string$(srTotal) + " " + string$(tStartS) + " """ + gainIntens$ + """ """ + gainPanL$ + """ """ + gainPanR$ + """ """ + pitchFile$ + """ """ + filterFile$ + """"
 
 # ============================================================
 # STEP 1 — PITCH  (Manipulation / PSOLA resynthesis)
@@ -382,32 +425,59 @@ else
     appendInfoLine: "    done."
 endif
 
+    # ============================================================
+    # OUTPUT (this pass)
+    # ============================================================
+    selectObject: soundFiltered
+    Rename: soundName$ + "_enved"
+    result = selected ("Sound")
+
+    selectObject: result
+    rms_out = Get root-mean-square: 0, 0
+    nch_out = Get number of channels
+    dur_out = Get total duration
+
+    appendInfoLine: ""
+    appendInfoLine: "--- Pass ", iteration, ": ", soundName$ + "_enved ---"
+    appendInfoLine: "Duration: ", fixed$ (dur_out, 3), " s   Channels: ", nch_out
+    appendInfoLine: "RMS:      ", fixed$ (rms_out, 6)
+    if rms_out < 0.0001
+        appendInfoLine: "WARNING: output is silent!"
+    else
+        appendInfoLine: "OK"
+    endif
+
+    # ---- Audition: play, then choose what to do ----
+    choosing = 1
+    while choosing
+        selectObject: result
+        Play
+        beginPause: "Envelope Editor -- Audition (pass " + string$(iteration) + ")"
+            comment: "Result: " + soundName$ + "_enved"
+            comment: ""
+            comment: "Play again  -- replay this render"
+            comment: "Tweak again -- reopen the editor with your current curves"
+            comment: "Keep        -- finish, leaving this render in the object list"
+        clickedAud = endPause: "Play again", "Tweak again", "Keep", 3
+        if clickedAud = 1
+            # replay -- loop
+        elsif clickedAud = 2
+            choosing = 0
+            # auditioning stays 1 -> reopen the editor for another pass
+        else
+            choosing = 0
+            auditioning = 0
+        endif
+    endwhile
+    endif
+endwhile
+
 # ============================================================
-# OUTPUT & CLEANUP
+# FINAL CLEANUP
 # ============================================================
-selectObject: soundFiltered
-Rename: soundName$ + "_enved"
-result = selected ("Sound")
-
-selectObject: result
-rms_out = Get root-mean-square: 0, 0
-nch_out = Get number of channels
-dur_out = Get total duration
-
-appendInfoLine: ""
-appendInfoLine: "--- Output: ", soundName$ + "_enved ---"
-appendInfoLine: "Duration: ", fixed$ (dur_out, 3), " s   Channels: ", nch_out
-appendInfoLine: "RMS:      ", fixed$ (rms_out, 6)
-if rms_out < 0.0001
-    appendInfoLine: "WARNING: output is silent!"
-else
-    appendInfoLine: "OK"
-endif
-
 @cleanUpTempFiles
 
 selectObject: result
-Play
-
 appendInfoLine: ""
+appendInfoLine: "Kept: ", soundName$, "_enved  (", iteration, " pass(es))"
 appendInfoLine: "Done."

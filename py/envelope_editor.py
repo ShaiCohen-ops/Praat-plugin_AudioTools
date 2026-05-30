@@ -4,7 +4,7 @@
 # Script:      envelope_editor.py
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     2.0 (2025)
+# Version:     2.1 (2026) - Pre-load + Apply marker (for Praat audition loop)
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -298,6 +298,17 @@ class EnvelopeEditorApp:
         self.output_path = output_path
         self.cancelled   = True
 
+        # Pre-load previously-applied curves if the breakpoints file already
+        # exists. Praat's render-and-iterate audition loop relaunches this GUI
+        # with the same output path so each pass continues from the last edit.
+        self._preset = None
+        try:
+            if os.path.exists(output_path):
+                with open(output_path, 'r', encoding='utf-8') as f:
+                    self._preset = json.load(f)
+        except Exception:
+            self._preset = None
+
         # ── Window ────────────────────────────────────────────────
         self.root = tk.Tk()
         self.root.title("Envelope Editor — Praat AudioTools")
@@ -343,6 +354,18 @@ class EnvelopeEditorApp:
             frame = tk.Frame(self.inner, bg="#1a1a2e", pady=2)
             frame.pack(fill="x", padx=4, pady=3)
             ed = BreakpointEditor(frame, self.duration, lane)
+            if self._preset and isinstance(self._preset.get(lane['key']), list):
+                try:
+                    pts = [[max(0.0, min(self.duration, float(t))), float(v)]
+                           for t, v in self._preset[lane['key']]]
+                    if len(pts) >= 2:
+                        pts.sort(key=lambda p: p[0])
+                        pts[0][0]  = 0.0
+                        pts[-1][0] = self.duration
+                        ed.points  = pts
+                        ed.draw()
+                except Exception:
+                    pass
             ed.pack()
             self.editors[lane['key']] = ed
 
@@ -399,6 +422,13 @@ class EnvelopeEditorApp:
                        for key, ed in self.editors.items()}
         with open(self.output_path, "w", encoding="utf-8") as f:
             json.dump(breakpoints, f, indent=2)
+        # Marker file: tells Praat the user pressed Apply (vs. cancelled),
+        # even though the breakpoints file persists between audition passes.
+        try:
+            with open(self.output_path + ".applied", "w", encoding="utf-8") as f:
+                f.write("ok")
+        except Exception:
+            pass
         self.status_var.set("Breakpoints saved — Praat will now apply DSP.")
         self.cancelled = False
         self.root.after(400, self.root.destroy)
