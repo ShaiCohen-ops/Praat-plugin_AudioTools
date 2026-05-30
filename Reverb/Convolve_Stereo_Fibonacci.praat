@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025) - Visualization alignment fix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,11 @@
 #   that become sparser over time (like real room acoustics).
 #   L and R channels use different Fibonacci seeds and jitter
 #   for natural stereo decorrelation.
+#
+# Changelog v0.3:
+#   - Visualization: title and bottom parameter line now set their own Axes
+#     so they center correctly (the parameter line no longer clips off the
+#     left edge, which happened because it inherited the tap panel's axes).
 #
 # Changelog v0.2:
 #   - Fixed selection syntax (object IDs)
@@ -339,6 +344,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Stereo Fibonacci: " + originalName$ + " (" + presetName$ + ")"
@@ -416,6 +422,7 @@ if draw_visualization
     
     # Parameters
     Select outer viewport: 0, 8, 4.1, 4.5
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "L: seeds(" + string$(left_fib_start_1) + "," + string$(left_fib_start_2) + ") | R: seeds(" + string$(right_fib_start_1) + "," + string$(right_fib_start_2) + ") | Impulses: " + string$(number_of_impulses) + " | Jitter L/R: " + fixed$(left_jitter_s * 1000, 0) + "/" + fixed$(right_jitter_s * 1000, 0) + "ms"
