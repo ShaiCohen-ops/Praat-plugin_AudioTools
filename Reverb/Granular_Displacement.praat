@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,13 @@
 #   - Fixed selection and formula syntax
 #   - Added wet/dry mix control
 #   - Added visualization
+#
+# Changelog v0.3:
+#   - Fixed visualization: title and parameter line spilled off the left edge
+#     (centred against a stale/seconds world window); now pinned to a 0..1 axis.
+#     The result panel now shows its full length, including the echo tail.
+#   - Wet/dry references the dry signal per-channel (object[id, row, col]).
+#   - Guarded the delay range so max can never fall below min (tiny grains).
 # ============================================================
 
 form Granular Displacement
@@ -129,6 +136,9 @@ grainDur = grainSizeSamp / sr
 
 delay_min_samp = round(delay_min_ms / 1000 * sr)
 delay_max_samp = round(grainSizeSamp * delay_max_factor)
+if delay_max_samp < delay_min_samp
+    delay_max_samp = delay_min_samp
+endif
 
 # Pre-generate random delays and amplitudes for visualization
 for g from 1 to number_of_grains
@@ -220,8 +230,13 @@ if numChannels = 2
     wetRight = selected("Sound")
     
     for g from 1 to number_of_grains
-        # Generate new random values for right channel
-        delay = round(randomUniform(delay_min_samp * 1.1, delay_max_samp * 0.9))
+        # Generate new random values for right channel (guard the swapped range)
+        rLo = delay_min_samp * 1.1
+        rHi = delay_max_samp * 0.9
+        if rHi < rLo
+            rHi = rLo
+        endif
+        delay = round(randomUniform(rLo, rHi))
         amp = randomUniform(amplitude_min * 0.9, amplitude_max * 0.95)
         
         startSamp = (g - 1) * grainSizeSamp + 1
@@ -248,10 +263,10 @@ if numChannels = 2
         right_str$ = string$(rightChannel)
         
         selectObject: wetLeft
-        Formula: "self * " + wet_str$ + " + object[" + left_str$ + "] * " + dry_str$
+        Formula: "self * " + wet_str$ + " + object[" + left_str$ + ", row, col] * " + dry_str$
         
         selectObject: wetRight
-        Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
+        Formula: "self * " + wet_str$ + " + object[" + right_str$ + ", row, col] * " + dry_str$
     endif
     
     # Normalize
@@ -305,7 +320,7 @@ else
         ext_str$ = string$(extendedSound)
         
         selectObject: wetMono
-        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + "] * " + dry_str$
+        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + ", row, col] * " + dry_str$
     endif
     
     selectObject: wetMono
@@ -325,6 +340,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Granular Displacement: " + originalName$ + " (" + presetName$ + ")"
@@ -345,7 +361,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.6, 1.6, 2.2
     selectObject: result
     Colour: "{0.6, 0.7, 0.5}"
-    Draw: 0, originalDur, 0, 0, "no", "Curve"
+    Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -399,6 +415,7 @@ if draw_visualization
     
     # Parameters
     Select outer viewport: 0, 8, 3.9, 4.3
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(number_of_grains) + " | Duration: " + fixed$(grainDur * 1000, 0) + "ms | Delay: " + string$(delay_min_ms) + "-" + fixed$(delay_max_samp / sr * 1000, 0) + "ms"
