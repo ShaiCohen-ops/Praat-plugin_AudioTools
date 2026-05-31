@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,6 +24,14 @@
 #   - Added wet/dry mix control
 #   - Added visualization
 #   - Removed goto statement
+#
+# Changelog v0.3:
+#   - Fixed visualization: title and parameter line were centred against a
+#     stale (seconds) world window and spilled off the left edge; now pinned
+#     to a 0..1 axis.
+#   - Result now matches the input length exactly (Extract part overshot by one
+#     sample). Wet/dry is built on the original's grid and references the wet
+#     signal per-channel via object[id, row, col].
 # ============================================================
 
 form Feedback-Aware Convolution
@@ -341,20 +349,22 @@ Extract part: 0, originalDur, "rectangular", 1, "no"
 wetTrimmed = selected("Sound")
 removeObject: wetSound
 
-# Apply wet/dry mix
-if dry_level > 0
-    wet_str$ = string$(wet_level)
-    dry_str$ = string$(dry_level)
-    orig_str$ = string$(original)
-    
-    selectObject: wetTrimmed
-    Formula: "self * " + wet_str$ + " + object[" + orig_str$ + "] * " + dry_str$
-endif
+# Apply wet/dry mix on the original's time grid so the result length matches
+# the input exactly (Extract part can overshoot by one sample), and reference
+# the wet signal per-channel.
+wet_str$ = string$(wet_level)
+dry_str$ = string$(dry_level)
+wet_id$ = string$(wetTrimmed)
 
-selectObject: wetTrimmed
+selectObject: original
+Copy: "fac_mix"
+result = selected("Sound")
+Formula: "object[" + wet_id$ + ", row, col] * " + wet_str$ + " + self * " + dry_str$
+removeObject: wetTrimmed
+
+selectObject: result
 Scale peak: 0.95
 Rename: originalName$ + "_feedback_" + presetName$
-result = selected("Sound")
 
 # ============================================================
 # VISUALIZATION
@@ -365,6 +375,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Feedback-Aware Convolution: " + originalName$ + " (" + presetName$ + ")"
@@ -444,6 +455,7 @@ if draw_visualization
     
     # Parameters
     Select outer viewport: 0, 8, 3.6, 4.0
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Mode: " + paramType$ + " | Threshold: " + string$(detection_threshold) + " | Spacing: " + fixed$(minimum_spacing_s * 1000, 0) + "ms | Impulses: " + string$(impulse_count)
