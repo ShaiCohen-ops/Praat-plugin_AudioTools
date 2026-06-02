@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,10 +13,18 @@
 #
 # Changelog v1.0:
 #   - Fast vectorized processing (no sample loops)
-#   - Multiple limiting algorithms
-#   - Ceiling control
-#   - Visualization
-#   - Presets
+#   - Multiple limiting algorithms, ceiling control, visualization, presets
+#
+# Changelog v1.1:
+#   - Auto_makeup now controls behaviour: ON maximizes the peak to the
+#     ceiling (up or down); OFF limits only (peaks above the ceiling are
+#     pulled down, quieter material is left untouched). Previously the
+#     final Scale peak always forced the peak to the ceiling, so the tool
+#     boosted quiet input (normalizer) and the toggle did nothing.
+#   - Ceiling scaling now references the Sinc70 (true-peak) reading, so it
+#     does not leave inter-sample peaks above the ceiling.
+#   - Fixed the info header (was erased by repeated writeInfoLine calls).
+#   - Fixed visualization title centring (0..1 axis before the title text).
 # ============================================================
 
 form Limiter v1.0
@@ -112,15 +120,15 @@ ceiling = 10 ^ (ceiling_dBTP / 20)
 
 # === INFO HEADER ===
 clearinfo
-writeInfoLine: "=============================================="
-writeInfoLine: "  LIMITER v1.0 (Fast)"
-writeInfoLine: "=============================================="
-writeInfoLine: ""
-writeInfoLine: "Input: ", sound_name$, " (", fixed$(dur, 2), "s)"
-writeInfoLine: "Preset: ", presetName$
-writeInfoLine: "Threshold: ", fixed$(threshold_dB, 1), " dB"
-writeInfoLine: "Ceiling: ", fixed$(ceiling_dBTP, 1), " dBTP"
-writeInfoLine: ""
+appendInfoLine: "=============================================="
+appendInfoLine: "  LIMITER v1.1 (Fast)"
+appendInfoLine: "=============================================="
+appendInfoLine: ""
+appendInfoLine: "Input: ", sound_name$, " (", fixed$(dur, 2), "s)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Threshold: ", fixed$(threshold_dB, 1), " dB"
+appendInfoLine: "Ceiling: ", fixed$(ceiling_dBTP, 1), " dBTP"
+appendInfoLine: ""
 
 # === INPUT ANALYSIS ===
 selectObject: sound
@@ -169,24 +177,32 @@ else
     Formula: ~ if abs(self) < threshold then self else if abs(self) < threshold * 2 then self - ((abs(self) - threshold) ^ 3 / (3 * threshold ^ 2)) * (self / (abs(self) + 1e-10)) else threshold * 1.33 * (self / (abs(self) + 1e-10)) fi fi
 endif
 
-# === AUTO MAKEUP ===
+# === CEILING STAGE ===
+# Measure the limited peak via Sinc70 (true-peak) interpolation, then:
+#   Auto_makeup ON  -> maximize: bring the peak exactly to the ceiling.
+#   Auto_makeup OFF -> limit only: pull down peaks above the ceiling,
+#                      leave quieter material untouched (true limiter).
+selectObject: result
+currentPeak = Get maximum: 0, 0, "Sinc70"
+currentPeakNeg = Get minimum: 0, 0, "Sinc70"
+currentPeakAbs = max(abs(currentPeak), abs(currentPeakNeg))
+
 if auto_makeup
-    selectObject: result
-    currentPeak = Get maximum: 0, 0, "Sinc70"
-    currentPeakNeg = Get minimum: 0, 0, "Sinc70"
-    currentPeakAbs = max(abs(currentPeak), abs(currentPeakNeg))
-    
-    if currentPeakAbs > 0.001 and currentPeakAbs < ceiling
-        makeupRatio = ceiling / currentPeakAbs
-        Formula: ~ self * makeupRatio
-        makeupGain_dB = 20 * log10(makeupRatio)
-        appendInfoLine: "  Auto makeup: +", fixed$(makeupGain_dB, 1), " dB"
+    if currentPeakAbs > 0.001
+        gainRatio = ceiling / currentPeakAbs
+        Formula: ~ self * gainRatio
+        gain_dB = 20 * log10(gainRatio)
+        appendInfoLine: "  Maximized to ceiling (", fixed$(gain_dB, 1), " dB)"
+    endif
+else
+    if currentPeakAbs > ceiling
+        gainRatio = ceiling / currentPeakAbs
+        Formula: ~ self * gainRatio
+        appendInfoLine: "  Peak attenuated ", fixed$(20 * log10(gainRatio), 1), " dB to ceiling"
+    else
+        appendInfoLine: "  Below ceiling - level left unchanged"
     endif
 endif
-
-# === FINAL CEILING ===
-selectObject: result
-Scale peak: ceiling
 
 # === OUTPUT ANALYSIS ===
 selectObject: result
@@ -213,6 +229,7 @@ if visualize
     
     # === TITLE ===
     Select outer viewport: 1, 8, 0, 0.4
+    Axes: 0, 1, 0, 1
     Font size: 11
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "##Limiter## | " + presetName$ + " | Ceiling: " + fixed$(ceiling_dBTP, 1) + " dBTP"
