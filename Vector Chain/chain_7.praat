@@ -21,7 +21,7 @@ appendInfoLine: "--- Starting Custom Generative Chain ---"
 path1$ = "../AI & Adaptive/HMM_Timbre_Sequencing.praat"
 path2$ = "../Generative & Synthesis/Kotoński_FSM_Event_Generator.praat"
 path3$ = "../Generative & Synthesis/Risset's_Mutations.praat"
-path4$ = "../Generative & Synthesis/Stockhausen Studie II Generator.praat"
+path4$ = "../Generative & Synthesis/Stockhausen_Studie_II_Generator.praat"
 path5$ = "../Spatial & Surround/Stereo_Mixer.praat"
 path6$ = "../Filter & Color/Golden_Ratio_Processor.praat"
 
@@ -66,7 +66,7 @@ appendInfoLine: "Step 3: Risset's Mutations complete."
 # STEP 4: Stockhausen Studie II Generator
 # ==============================================================================
 appendInfoLine: "Step 4: Generating Stockhausen Studie II..."
-runScript: path4$, "Random (varied each time)", 30, 7, 44100, 100, 0.1, 0.3, 0, 0, 0
+runScript: path4$, "Random (varied each time)", 30, 7, 44100, 100, 0.1, 0.3, 0, 0, 0, 0
 
 sound4 = selected("Sound")
 appendInfoLine: "Step 4: Stockhausen Studie II complete."
