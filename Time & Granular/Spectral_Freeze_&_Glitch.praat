@@ -1,17 +1,44 @@
 # ============================================================
-# Praat AudioTools - Spectral_Freeze_Glitch.praat
+# Praat AudioTools - Spectral_Freeze_&_Glitch.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.5 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Spectral Freeze & Glitch - creates stutter, freeze, and
-#   glitch effects by looping small segments at random positions.
-#   Adds sinusoidal artifacts for digital corruption aesthetic.
-#   Creates CD-skip, buffer glitch, and broken playback effects.
+#   Buffer-stutter freeze & glitch (TIME-DOMAIN, not spectral): loops
+#   small sample segments at random positions to create stutter/freeze
+#   glitches, then applies time-domain amplitude modulation as a
+#   corruption artifact. Despite the "Spectral" name, no FFT/spectral
+#   processing is performed. Creates CD-skip, buffer-glitch, and broken
+#   playback effects.
+#
+# Changelog v0.5:
+#   - Loop-wrap declick: a short raised-cosine taper (Smoothing_ms,
+#     default 2 ms) is applied to the start/end of each repeated grain
+#     so the periodic loop-wrap discontinuities don't click. No overlap-
+#     add is possible in a single Formula pass, so the taper fades each
+#     grain edge to zero (a small dip at the loop rate, not a click).
+#     Taper auto-clamps to repeatSegment/2; disabled when too short.
+#     Toggle Smooth_loop_wraps. Window exit is intentionally left as-is.
+#
+# Changelog v0.4:
+#   - Silence avoidance: freeze positions whose loop-source region is
+#     silent (RMS below a fraction of the source's overall RMS) are
+#     re-rolled, up to Max_position_attempts; if none found, the point
+#     is skipped rather than looping silence. Toggle Avoid_silence.
+#     Set Avoid_silence = 0 to reproduce v0.3 behaviour exactly.
+#
+# Changelog v0.3:
+#   - Description corrected: this is a time-domain buffer stutter + AM,
+#     not spectral processing (name kept for continuity).
+#   - Viz fix: freeze-zone rectangles were painted OVER the result
+#     waveform and position lines, hiding the regions of interest. Now
+#     drawn as a background band first; waveform and lines render on top.
+#   - Removed a dead Colour set before Paint rectangle.
+#   - Reset axes explicitly for legend/stats text.
 #
 # Changelog v0.2:
 #   - Modern syntax
@@ -40,6 +67,15 @@ form Spectral Freeze and Glitch
     
     comment === Artifacts ===
     positive Artifact_amplitude 0.1
+    
+    comment === Loop Smoothing ===
+    boolean Smooth_loop_wraps 1
+    positive Smoothing_ms 2
+    
+    comment === Silence Avoidance ===
+    boolean Avoid_silence 1
+    positive Silence_rms_factor 0.15
+    natural Max_position_attempts 20
     
     comment === Output ===
     positive Scale_peak 0.91
@@ -125,25 +161,35 @@ result = selected("Sound")
 # === Calculate Base Freeze Duration ===
 freezeDuration = floor(totalSamples / freeze_duration_divisor)
 
+# === Overall level reference for silence avoidance ===
+selectObject: original
+overallRMS = Get root-mean-square: 0, duration
+if overallRMS = undefined or overallRMS <= 0
+    overallRMS = 0.0001
+endif
+silenceThreshold = silence_rms_factor * overallRMS
+
+# === Loop-smoothing taper width (samples) ===
+smoothSamples = round(smoothing_ms / 1000 * sampleRate)
+if smoothSamples < 1
+    smoothSamples = 1
+endif
+
 # === Store Freeze Positions for Visualization ===
 freezePositions# = zero#(freeze_points)
 freezeLengths# = zero#(freeze_points)
+freezeApplied# = zero#(freeze_points)
 
 # === Main Freeze Processing Loop ===
 appendInfoLine: "Processing freeze points..."
 
 for point from 1 to freeze_points
-    selectObject: result
-    
-    # Random freeze position
+    # Position / length bounds
     minPos = floor(freezeDuration)
     maxPos = totalSamples - floor(freezeDuration)
     if maxPos <= minPos
         maxPos = minPos + 1
     endif
-    freezePos = randomInteger(minPos, maxPos)
-    
-    # Random freeze length
     minLen = floor(freezeDuration * freeze_length_min_factor)
     maxLen = floor(freezeDuration * freeze_length_max_factor)
     if minLen < 1
@@ -152,28 +198,73 @@ for point from 1 to freeze_points
     if maxLen <= minLen
         maxLen = minLen + 1
     endif
-    freezeLength = randomInteger(minLen, maxLen)
     
-    # Store for visualization
-    freezePositions#[point] = freezePos / sampleRate
-    freezeLengths#[point] = freezeLength / sampleRate
+    # Pick a freeze whose loop-source region is not silent (re-roll if it is)
+    attempt = 0
+    foundLoud = 0
+    repeat
+        attempt += 1
+        freezePos = randomInteger(minPos, maxPos)
+        freezeLength = randomInteger(minLen, maxLen)
+        repeatSegment = floor(freezeLength / freeze_repeat_divisor)
+        if repeatSegment < 1
+            repeatSegment = 1
+        endif
+        if avoid_silence = 1
+            t1 = freezePos / sampleRate
+            t2 = (freezePos + repeatSegment) / sampleRate
+            if t2 > duration
+                t2 = duration
+            endif
+            selectObject: original
+            segRMS = Get root-mean-square: t1, t2
+            if segRMS = undefined
+                segRMS = 0
+            endif
+            if segRMS >= silenceThreshold
+                foundLoud = 1
+            endif
+        else
+            foundLoud = 1
+        endif
+    until (foundLoud = 1) or (attempt >= max_position_attempts)
     
-    # Calculate repeat segment length
-    repeatSegment = floor(freezeLength / freeze_repeat_divisor)
-    if repeatSegment < 1
-        repeatSegment = 1
+    if (avoid_silence = 1) and (foundLoud = 0)
+        # No non-silent region found; skip this point rather than loop silence
+        freezeApplied#[point] = 0
+        freezePositions#[point] = -1
+        freezeLengths#[point] = 0
+        appendInfoLine: "  Point ", point, ": skipped (no non-silent region)"
+    else
+        freezeApplied#[point] = 1
+        freezePositions#[point] = freezePos / sampleRate
+        freezeLengths#[point] = freezeLength / sampleRate
+        appendInfoLine: "  Point ", point, ": pos=", fixed$(freezePositions#[point], 3), "s len=", fixed$(freezeLengths#[point] * 1000, 1), "ms"
+        
+        # Clamp taper to this grain (need >=1 sample, at most half the grain)
+        locSmooth = smoothSamples
+        if locSmooth > floor(repeatSegment / 2)
+            locSmooth = floor(repeatSegment / 2)
+        endif
+        doSmooth = smooth_loop_wraps
+        if locSmooth < 1
+            locSmooth = 1
+            doSmooth = 0
+        endif
+        
+        # Freeze and repeat segment (stutter), with raised-cosine taper on
+        # each grain's edges to declick the loop-wrap boundaries
+        selectObject: result
+        Formula: ~ if col >= freezePos and col < freezePos + freezeLength 
+            ... then self[freezePos + ((col - freezePos) mod repeatSegment)] * ( if doSmooth = 0 then 1 else if ((col - freezePos) mod repeatSegment) < locSmooth then (0.5 - 0.5 * cos(pi * ((col - freezePos) mod repeatSegment) / locSmooth)) else if ((col - freezePos) mod repeatSegment) >= repeatSegment - locSmooth then (0.5 - 0.5 * cos(pi * (repeatSegment - ((col - freezePos) mod repeatSegment)) / locSmooth)) else 1 fi fi fi ) 
+            ... else self fi
+        
+        # Add amplitude-modulation artifacts (time-domain, whole-file; compounds per point)
+        Formula: ~ self * (1 + artifact_amplitude * sin(2 * pi * point * col / totalSamples))
     endif
-    
-    appendInfoLine: "  Point ", point, ": pos=", fixed$(freezePositions#[point], 3), "s len=", fixed$(freezeLengths#[point] * 1000, 1), "ms"
-    
-    # Freeze and repeat segment (stutter effect)
-    Formula: ~ if col >= freezePos and col < freezePos + freezeLength 
-        ... then self[freezePos + ((col - freezePos) mod repeatSegment)] 
-        ... else self fi
-    
-    # Add spectral artifacts
-    Formula: ~ self * (1 + artifact_amplitude * sin(2 * pi * point * col / totalSamples))
 endfor
+
+appliedCount = sum(freezeApplied#)
 
 # === Scale Peak ===
 selectObject: result
@@ -203,20 +294,30 @@ if draw_visualization
     # Result waveform with freeze markers
     Select outer viewport: 0, 8, 2.1, 3.5
     Select inner viewport: 0.6, 7.6, 2.2, 3.4
+    
+    # Freeze zones as background bands first (so the waveform shows on top)
+    Axes: 0, duration, -1, 1
+    for p to freeze_points
+        if freezeApplied#[p] = 1
+            pos = freezePositions#[p]
+            len = freezeLengths#[p]
+            Paint rectangle: "{0.92, 0.82, 0.85}", pos, pos + len, -0.95, 0.95
+        endif
+    endfor
+    
+    # Glitched waveform on top of the zones
     selectObject: result
     Colour: "{0.6, 0.4, 0.5}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     
-    # Mark freeze positions
+    # Freeze position lines on top
     Axes: 0, duration, -1, 1
+    Colour: "{0.9, 0.3, 0.3}"
     for p to freeze_points
-        pos = freezePositions#[p]
-        len = freezeLengths#[p]
-        
-        Colour: "{0.9, 0.3, 0.3}"
-        Draw line: pos, -0.9, pos, 0.9
-        Colour: "{0.9, 0.6, 0.6}"
-        Paint rectangle: "{0.9, 0.8, 0.8}", pos, pos + len, -0.8, 0.8
+        if freezeApplied#[p] = 1
+            pos = freezePositions#[p]
+            Draw line: pos, -0.9, pos, 0.9
+        endif
     endfor
     
     Colour: "Black"
@@ -226,9 +327,10 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     
     # Legend
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.9, 0.3, 0.3}"
-    Text: 0.02, "left", 1.05, "half", "Freeze zones"
+    Text: 0.02, "left", 0.97, "half", "Freeze zones"
     
     # Freeze position scatter plot
     Select outer viewport: 0, 8, 3.7, 5.1
@@ -239,18 +341,20 @@ if draw_visualization
     
     # Draw freeze zones as horizontal bars
     for p to freeze_points
-        pos = freezePositions#[p]
-        len = freezeLengths#[p]
-        
-        # Color intensity by length
-        avgLen = (freeze_length_min_factor + freeze_length_max_factor) / 2
-        lenNorm = (freezeLengths#[p] * sampleRate / freezeDuration) / avgLen
-        r = 0.5 + 0.3 * lenNorm
-        g = 0.3
-        b = 0.5
-        barColor$ = "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"
-        
-        Paint rectangle: barColor$, pos, pos + len, p - 0.4, p + 0.4
+        if freezeApplied#[p] = 1
+            pos = freezePositions#[p]
+            len = freezeLengths#[p]
+            
+            # Color intensity by length
+            avgLen = (freeze_length_min_factor + freeze_length_max_factor) / 2
+            lenNorm = (freezeLengths#[p] * sampleRate / freezeDuration) / avgLen
+            r = 0.5 + 0.3 * lenNorm
+            g = 0.3
+            b = 0.5
+            barColor$ = "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"
+            
+            Paint rectangle: barColor$, pos, pos + len, p - 0.4, p + 0.4
+        endif
     endfor
     
     Colour: "Black"
@@ -261,9 +365,10 @@ if draw_visualization
     
     # Stats
     Select outer viewport: 0, 8, 5.3, 5.6
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Freeze points: " + string$(freeze_points) + " | Artifact: " + fixed$(artifact_amplitude, 2) + " | Repeat divisor: " + string$(freeze_repeat_divisor)
+    Text: 0.5, "centre", 0.5, "half", "Freeze points: " + string$(appliedCount) + "/" + string$(freeze_points) + " applied | Artifact: " + fixed$(artifact_amplitude, 2) + " | Repeat divisor: " + string$(freeze_repeat_divisor)
     
     Font size: 10
     Colour: "Black"
@@ -276,6 +381,7 @@ finalDuration = Get total duration
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Freeze points applied: ", appliedCount, " / ", freeze_points
 appendInfoLine: "Duration: ", fixed$(finalDuration, 2), " s"
 
 # === Play ===
