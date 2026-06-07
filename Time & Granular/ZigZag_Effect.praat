@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,14 @@
 #   forward and backward through the audio timeline. Two modes:
 #   Stutter (always play forward) creates rhythmic repetition,
 #   Scrub (reverse when moving back) creates tape manipulation.
+#
+# Changelog v0.3:
+#   - Stitching now batched: grains collected and concatenated in a
+#     single Concatenate-with-overlap pass instead of re-concatenating a
+#     growing master each iteration (O(n) vs O(n^2)). Audio-equivalent.
+#   - maxSegments exposed as a form field (default 500).
+#   - Viz: legend labels were placed in source-second coordinates and
+#     overlapped on multi-second files; now drawn in normalized axes.
 #
 # Changelog v0.2:
 #   - Added visualization
@@ -55,6 +63,7 @@ form ZigZag Time Effect
     positive Amplitude_variation 0.1
     
     comment === Output ===
+    natural Max_segments 500
     positive Scale_peak 0.91
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -163,7 +172,7 @@ appendInfoLine: ""
 appendInfoLine: "Processing..."
 
 # === Store Segment Info for Visualization ===
-maxSegments = 500
+maxSegments = max_segments
 segStarts# = zero#(maxSegments)
 segEnds# = zero#(maxSegments)
 segDirections# = zero#(maxSegments)
@@ -172,7 +181,6 @@ segDirections# = zero#(maxSegments)
 currentPosition = 0.0
 direction = 1
 segmentCount = 0
-masterID = 0
 
 while currentPosition < totalDuration and segmentCount < maxSegments
     segmentCount += 1
@@ -249,25 +257,8 @@ while currentPosition < totalDuration and segmentCount < maxSegments
     ampFactor = randomUniform(1.0 - amplitude_variation, 1.0 + amplitude_variation)
     Formula: ~ self * ampFactor
     
-    # === Stitching ===
-    if masterID = 0
-        # First segment
-        masterID = grain
-        Rename: "Output_Temp"
-    else
-        # Append to master
-        selectObject: masterID, grain
-        
-        if segment_overlap_s > 0
-            tempID = Concatenate with overlap: segment_overlap_s
-        else
-            tempID = Concatenate
-        endif
-        
-        removeObject: masterID, grain
-        masterID = tempID
-        Rename: "Output_Temp"
-    endif
+    # === Store grain for batched concatenation ===
+    grainID[segmentCount] = grain
     
     # Progress
     if segmentCount mod 100 = 0
@@ -275,6 +266,24 @@ while currentPosition < totalDuration and segmentCount < maxSegments
         appendInfoLine: "  Segment ", segmentCount, " (", perc, "%)"
     endif
 endwhile
+
+# === Batched Concatenation (single pass; equivalent to pairwise) ===
+if segmentCount = 1
+    masterID = grainID[1]
+else
+    selectObject: grainID[1]
+    for i from 2 to segmentCount
+        plusObject: grainID[i]
+    endfor
+    if segment_overlap_s > 0
+        masterID = Concatenate with overlap: segment_overlap_s
+    else
+        masterID = Concatenate
+    endif
+    for i from 1 to segmentCount
+        removeObject: grainID[i]
+    endfor
+endif
 
 # === Finalize ===
 selectObject: masterID
@@ -358,14 +367,16 @@ if draw_visualization
     Text bottom: "yes", "Source position (s)"
     
     # Legend
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.3, 0.5, 0.8}"
-    Text: 0.02, "left", 1.02, "half", "Forward"
+    Text: 0.02, "left", 0.97, "half", "Forward"
     Colour: "{0.8, 0.4, 0.3}"
-    Text: 0.12, "left", 1.02, "half", "Backward"
+    Text: 0.20, "left", 0.97, "half", "Backward"
     
     # Stats
     Select outer viewport: 0, 8, 5.4, 5.7
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Segments: " + string$(segmentCount) + " | Changes/s: " + string$(direction_changes_per_second) + " | Duration: " + fixed$(outputDuration, 2) + "s"
