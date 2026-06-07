@@ -48,7 +48,7 @@ appendInfoLine: "Step 1: HMM Timbre Sequencing complete."
 # STEP 2: Kotoński FSM Event Generator
 # ==============================================================================
 appendInfoLine: "Step 2: Generating Kotoński FSM Events..."
-runScript: path2$, "6. Custom (compositional control below)", 30, 44100, 120, 0.6, 10, 15, "Palindrome: 1→2→3→4→3→2→1", "Event-based (every N events)", 25, 80, 8000, 1, "Noise", "Noise", "Mixed", "Tones", 800, 0, 0
+runScript: path2$, "6. Custom (compositional control below)", 30, 44100, 120, 0.6, 10, 15, "Palindrome: 1->2->3->4->3->2->1", "Event-based (every N events)", 25, 80, 8000, 1, "Noise", "Noise", "Mixed", "Tones", 800, 0, 0
 
 sound2 = selected("Sound")
 appendInfoLine: "Step 2: Kotoński Generator complete."
