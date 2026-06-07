@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,10 +14,20 @@
 #   to create endless spiral motion in stereo.
 #
 # Changelog v0.2:
-#   - Modern syntax
-#   - Fixed input check
-#   - Fixed mono conversion tracking
-#   - Added visualization
+#   - Modern syntax, input check, mono tracking, visualization
+#
+# Changelog v0.3:
+#   - FIXED the core effect, which was broken three ways:
+#       * It addressed L/R via "col mod 2", assuming interleaved stereo - but
+#         Praat stores channels as ROWS, so this selected odd/even SAMPLES
+#         within each channel instead of channels. Result: both output channels
+#         came out identical (dual-mono - no stereo spiral at all), and the
+#         odd/even decimation injected aliasing/high-frequency junk.
+#       * The base term read self[...] in place (the recursive-delay trap).
+#     Now each turn reads a DRY copy (feedforward) per channel (row), with the
+#     stereo phase applied to the right channel via (row-1)*stereo_phase, so the
+#     two channels genuinely differ and the spiral is stereo. No decimation.
+#   - Visualization polished to house style; ASCII legend.
 # ============================================================
 
 # === Check Input ===
@@ -190,26 +200,27 @@ stereo_phase = stereo_phase_offset * 2 * pi
 # === Apply Barber-Pole Effect ===
 appendInfoLine: "Applying barber-pole effect..."
 
+# Keep a clean (dry) copy of the stereo source; every turn reads from it
+# (feedforward) so taps are never recursive.
+selectObject: result
+Copy: originalName$ + "_dry"
+dry = selected("Sound")
+
 for t from 1 to number_of_turns
     appendInfoLine: "  Turn ", t, "/", number_of_turns
-    
-    # Calculate weight for this turn
+
+    # Weight for this turn
     w = 1 / (t + turn_attenuation)
-    
+
+    # One pass per turn, applied to BOTH channels. Channels are rows in Praat,
+    # so the right channel (row 2) gets the stereo phase via (row - 1).
+    # Two opposing modulated-delay taps (up-drift and down-drift) of the dry
+    # signal are added, each read from the dry copy at the same channel (row).
     selectObject: result
-    
-    # Upward-drifting halo on LEFT channel
-    Formula: ~ self[col - (col mod 2) + 1] + self[max(1, min(ncol, (col - (col mod 2) + 1) + round(base + base * modulation_depth * sin(2 * pi * base_rate_hz * x + 2 * pi * drift_rate_hz * x + t * temporal_shift))))] * w
-    
-    # Downward-drifting halo on LEFT channel
-    Formula: ~ self[col - (col mod 2) + 1] + self[max(1, min(ncol, (col - (col mod 2) + 1) + round(base + base * modulation_depth * sin(2 * pi * base_rate_hz * x - 2 * pi * drift_rate_hz * x + phase_offset - t * temporal_shift))))] * w
-    
-    # Upward-drifting halo on RIGHT channel (with stereo phase)
-    Formula: ~ self[col - (col mod 2) + 2] + self[max(1, min(ncol, (col - (col mod 2) + 2) + round(base + base * modulation_depth * sin(2 * pi * base_rate_hz * x + 2 * pi * drift_rate_hz * x + t * temporal_shift + stereo_phase))))] * w
-    
-    # Downward-drifting halo on RIGHT channel (with stereo phase)
-    Formula: ~ self[col - (col mod 2) + 2] + self[max(1, min(ncol, (col - (col mod 2) + 2) + round(base + base * modulation_depth * sin(2 * pi * base_rate_hz * x - 2 * pi * drift_rate_hz * x + phase_offset - t * temporal_shift + stereo_phase))))] * w
+    Formula: ~ self + w * object[dry, row, max(1, min(ncol, col + round(base + base * modulation_depth * sin(2 * pi * base_rate_hz * x + 2 * pi * drift_rate_hz * x + t * temporal_shift + (row - 1) * stereo_phase))))] + w * object[dry, row, max(1, min(ncol, col + round(base + base * modulation_depth * sin(2 * pi * base_rate_hz * x - 2 * pi * drift_rate_hz * x + phase_offset - t * temporal_shift + (row - 1) * stereo_phase))))]
 endfor
+
+removeObject: dry
 
 # Scale to peak
 selectObject: result
@@ -221,8 +232,9 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
-    Font size: 12
+    Select outer viewport: 0, 8, 0.1, 0.7
+    Axes: 0, 1, 0, 1
+    Font size: 14
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Barber-Pole Orbit: " + originalName$ + " (" + presetName$ + ")"
     
@@ -230,7 +242,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 0.6, 1.5
     Select inner viewport: 0.6, 7.6, 0.7, 1.4
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.60, 0.60, 0.60}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
@@ -241,7 +253,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 1.6, 2.5
     Select inner viewport: 0.6, 7.6, 1.7, 2.4
     selectObject: result
-    Colour: "{0.5, 0.6, 0.7}"
+    Colour: "{0.50, 0.60, 0.70}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
@@ -253,10 +265,10 @@ if draw_visualization
     Select inner viewport: 0.6, 7.6, 2.9, 4.1
     
     Axes: 0, dur, -1.2, 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, dur, -1.2, 1.2
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, dur, -1.2, 1.2
     
     # Zero line
-    Colour: "{0.8, 0.8, 0.8}"
+    Colour: "{0.80, 0.80, 0.80}"
     Dotted line
     Draw line: 0, 0, dur, 0
     Solid line
@@ -299,10 +311,10 @@ if draw_visualization
     
     # Legend
     Font size: 5
-    Colour: "{0.4, 0.5, 0.7}"
-    Text: 0.02, "left", 1.1, "half", "— Up drift"
-    Colour: "{0.7, 0.4, 0.5}"
-    Text: 0.12, "left", 1.1, "half", "··· Down drift"
+    Colour: "{0.40, 0.50, 0.70}"
+    Text: 0.02, "left", 1.1, "half", "- Up drift"
+    Colour: "{0.70, 0.40, 0.50}"
+    Text: 0.12, "left", 1.1, "half", "... Down drift"
     
     # Turn weights
     Select outer viewport: 0, 8, 4.4, 5.0
@@ -310,12 +322,12 @@ if draw_visualization
     
     maxW = 1 / (1 + turn_attenuation)
     Axes: 0, number_of_turns + 1, 0, maxW * 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, number_of_turns + 1, 0, maxW * 1.2
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, number_of_turns + 1, 0, maxW * 1.2
     
     for t from 1 to number_of_turns
         w = 1 / (t + turn_attenuation)
-        Colour: "{0.5, 0.6, 0.7}"
-        Paint rectangle: "{0.5, 0.6, 0.7}", t - 0.3, t + 0.3, 0, w
+        Colour: "{0.50, 0.60, 0.70}"
+        Paint rectangle: "{0.50, 0.60, 0.70}", t - 0.3, t + 0.3, 0, w
     endfor
     
     Colour: "Black"
@@ -324,11 +336,15 @@ if draw_visualization
     Text left: "yes", "Weight"
     Text bottom: "yes", "Turn"
     
-    # Stats
-    Select outer viewport: 0, 8, 5.1, 5.4
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Turns: " + string$(number_of_turns) + " | Rate: " + fixed$(base_rate_hz, 1) + " Hz | Drift: " + fixed$(drift_rate_hz, 2) + " Hz | Stereo: " + fixed$(stereo_phase_offset, 2)
+    # Summary panel (grey)
+    Select outer viewport: 0, 8, 5.1, 5.6
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.5, "centre", 0.5, "half", "Turns: " + string$(number_of_turns) + "  |  rate " + fixed$(base_rate_hz, 1) + " Hz  |  drift " + fixed$(drift_rate_hz, 2) + " Hz  |  stereo phase " + fixed$(stereo_phase_offset, 2)
     
     Font size: 10
     Colour: "Black"
