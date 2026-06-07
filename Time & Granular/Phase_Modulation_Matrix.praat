@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,18 @@
 #   effects through layered sinusoidal sample displacement. Each
 #   layer modulates at a different frequency with feedback,
 #   creating rich, swirling textures.
+#
+# Changelog v0.3:
+#   - Feedback now feed-forward (FIR): displaced reads taken from a
+#     per-layer snapshot of the layer input, not from samples already
+#     modified in the same in-place pass. Inter-layer feedback retained.
+#     This changes the sound of every preset.
+#   - Added optional fixed-ms modulation depth (off by default). When off,
+#     depth stays the original fraction-of-duration behaviour.
+#   - Relabelled "Spectral tilt" -> "Layer gain": the operation is a
+#     per-layer broadband scalar gain, not a frequency-dependent tilt.
+#     (Form fields renamed too for coherence; no audio change.)
+#   - Viz: spectrograms now computed on a mono fold (fixes stereo crash).
 #
 # Changelog v0.2:
 #   - Modern syntax
@@ -43,13 +55,15 @@ form Phase Modulation Matrix
     comment === Modulation Depth ===
     positive Mod_depth_base 8
     positive Mod_depth_increment 2
+    boolean Use_fixed_ms_depth 0
+    positive Fixed_depth_ms 20
     
     comment === Feedback ===
     positive Feedback_base 0.7
     
-    comment === Spectral Tilt ===
-    positive Spectral_tilt_base 1.1
-    positive Spectral_tilt_rate 0.1
+    comment === Layer Gain ===
+    positive Layer_gain_base 1.1
+    positive Layer_gain_rate 0.1
     
     comment === Output ===
     positive Scale_peak 0.93
@@ -67,8 +81,8 @@ if preset = 1
     mod_depth_base = 8
     mod_depth_increment = 2
     feedback_base = 0.7
-    spectral_tilt_base = 1.1
-    spectral_tilt_rate = 0.1
+    layer_gain_base = 1.1
+    layer_gain_rate = 0.1
 elsif preset = 2
     # Subtle Chorus
     modulation_layers = 3
@@ -78,8 +92,8 @@ elsif preset = 2
     mod_depth_base = 10
     mod_depth_increment = 1
     feedback_base = 0.4
-    spectral_tilt_base = 1.05
-    spectral_tilt_rate = 0.05
+    layer_gain_base = 1.05
+    layer_gain_rate = 0.05
 elsif preset = 3
     # Deep Phase Sweep
     modulation_layers = 6
@@ -89,8 +103,8 @@ elsif preset = 3
     mod_depth_base = 6
     mod_depth_increment = 2
     feedback_base = 0.8
-    spectral_tilt_base = 1.15
-    spectral_tilt_rate = 0.12
+    layer_gain_base = 1.15
+    layer_gain_rate = 0.12
 elsif preset = 4
     # Vibrato / Whirl
     modulation_layers = 7
@@ -100,8 +114,8 @@ elsif preset = 4
     mod_depth_base = 5
     mod_depth_increment = 3
     feedback_base = 0.9
-    spectral_tilt_base = 1.2
-    spectral_tilt_rate = 0.15
+    layer_gain_base = 1.2
+    layer_gain_rate = 0.15
 endif
 
 # === Check Input ===
@@ -145,6 +159,11 @@ appendInfoLine: ""
 appendInfoLine: "Layers: ", modulation_layers
 appendInfoLine: "Carrier freq: ", fixed$(carrierFreq, 3), " Hz"
 appendInfoLine: "Feedback: ", feedback_base
+if use_fixed_ms_depth
+    appendInfoLine: "Depth: fixed ", fixed_depth_ms, " ms"
+else
+    appendInfoLine: "Depth: duration-relative (1/", mod_depth_base, "..)"
+endif
 appendInfoLine: ""
 
 # === Copy for Processing ===
@@ -159,25 +178,38 @@ for layer from 1 to modulation_layers
     selectObject: result
     
     # Dynamic modulation depth
-    modDepth = totalSamples / (mod_depth_base + layer * mod_depth_increment)
+    if use_fixed_ms_depth
+        modDepth = (fixed_depth_ms / 1000) * sampleRate
+    else
+        modDepth = totalSamples / (mod_depth_base + layer * mod_depth_increment)
+    endif
     modulatorFreq = carrierFreq * (layer + 1)
     
     # Feedback decreases with layer
     layerFeedback = feedback_base / layer
     
-    # Spectral tilt compensation
-    tiltFactor = spectral_tilt_base - spectral_tilt_rate * layer
+    # Layer gain compensation
+    gainFactor = layer_gain_base - layer_gain_rate * layer
     
     appendInfoLine: "  Layer ", layer, ": depth=", floor(modDepth), " freq=", fixed$(modulatorFreq, 3), " fb=", fixed$(layerFeedback, 2)
     
-    # Phase modulation with feedback (with bounds checking)
+    # Snapshot this layer's input so displaced reads are feed-forward (FIR)
+    selectObject: result
+    Copy: "pm_snapshot"
+    snapshot = selected("Sound")
+    
+    # Phase modulation with feedback (FIR read from snapshot, with bounds checking)
+    selectObject: result
     Formula: ~ if (col + round(modDepth * sin(2 * pi * modulatorFreq * col / totalSamples))) >= 1 
         ... and (col + round(modDepth * sin(2 * pi * modulatorFreq * col / totalSamples))) <= ncol 
-        ... then self + self[col + round(modDepth * sin(2 * pi * modulatorFreq * col / totalSamples))] * layerFeedback 
+        ... then self + object[snapshot, row, col + round(modDepth * sin(2 * pi * modulatorFreq * col / totalSamples))] * layerFeedback 
         ... else self fi
     
-    # Spectral tilt compensation
-    Formula: ~ self * tiltFactor
+    removeObject: snapshot
+    selectObject: result
+    
+    # Layer gain compensation
+    Formula: ~ self * gainFactor
 endfor
 
 # === Scale Peak ===
@@ -220,10 +252,16 @@ if draw_visualization
     Select outer viewport: 0, 4, 3.7, 5.3
     Select inner viewport: 0.6, 3.8, 3.9, 5.2
     selectObject: original
+    nch = Get number of channels
+    if nch > 1
+        origMono = Convert to mono
+    else
+        origMono = Copy: "origMono"
+    endif
     To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: origSpec
+    removeObject: origSpec, origMono
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -234,10 +272,16 @@ if draw_visualization
     Select outer viewport: 4, 8, 3.7, 5.3
     Select inner viewport: 4.4, 7.6, 3.9, 5.2
     selectObject: result
+    nch = Get number of channels
+    if nch > 1
+        resMono = Convert to mono
+    else
+        resMono = Copy: "resMono"
+    endif
     To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: resSpec
+    removeObject: resSpec, resMono
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -248,7 +292,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.4, 5.7
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Layers: " + string$(modulation_layers) + " | Carrier: " + fixed$(carrierFreq, 3) + " Hz | Feedback: " + fixed$(feedback_base, 2) + " | Tilt: " + fixed$(spectral_tilt_base, 2)
+    Text: 0.5, "centre", 0.5, "half", "Layers: " + string$(modulation_layers) + " | Carrier: " + fixed$(carrierFreq, 3) + " Hz | Feedback: " + fixed$(feedback_base, 2) + " | Gain: " + fixed$(layer_gain_base, 2)
     
     Font size: 10
     Colour: "Black"
