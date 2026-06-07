@@ -1,24 +1,55 @@
 # ============================================================
-# Praat AudioTools - Kotoński_FSM_Event_Generator.praat 
+# Praat AudioTools - Kotonski_FSM_Event_Generator.praat 
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025) 
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-# FSM Event Generator - Kotoński Edition
-# Inspired by Włodzimierz Kotoński: Aela (1967)
-# Fully deterministic finite-state machine with compositional presets
+# Pointillistic electronic texture generator - a deterministic finite-state
+# machine with compositional presets.
+#
+# Inspired by the sound-world of the Polish Radio Experimental Studio (the
+# milieu of Wlodzimierz Kotonski's tape works) - sparse pointillistic events,
+# tone/noise alternation, registral arcs. This is NOT a reconstruction of
+# Kotonski's compositional method: his tape pieces transform concrete recorded
+# sources (e.g. a struck cymbal in "Study on One Cymbal Stroke", 1959, or
+# struck glass/wood/metal in "Microstructures", 1963) by editing, transposition
+# and filtering, organised serially or aleatorically - whereas this tool
+# synthesises tones and noise from scratch. Aela (1970) in particular is an
+# aleatoric electronic work, not stochastic synthesis.
 #
 # FIXES in v1.1:
 #   - Fixed timing: gaps now scale to fill requested duration
 #   - Fixed stopwatch timing calculation
-#   - All previous fixes maintained
+#
+# Changelog v1.2:
+#   - Rebuilt the visualization in the AudioTools house style (8-inch canvas,
+#     title band, grey {0.94} summary merging legend + info) while keeping the
+#     dark event score.
+#   - Replaced non-ASCII characters for Praat rendering safety: state-transition
+#     arrows (-> and <->), multiplication signs, and the Polish diacritics in
+#     the printed name (Kotonski / Wlodzimierz). The filename keeps its
+#     diacritics; restore the in-text diacritics if your Praat renders UTF-8.
+#
+# Changelog v1.3:
+#   - Fixed the summary panel: the two text lines overlapped and spilled past
+#     the box (panel too short, no inner margins). Taller panel with an explicit
+#     inner viewport, lines well separated, darker text.
+#
+# Changelog v1.4:
+#   - Honest reframing. This is a pointillistic electronic texture generator
+#     inspired by the Polish Radio Experimental Studio sound-world, NOT a
+#     reconstruction of Kotonski's method (which transforms concrete recorded
+#     sources, organised serially/aleatorically). Dropped the "stochastic
+#     synthesis" / "stochastic composition techniques" claims and corrected the
+#     Aela date (1970, not 1967; Aela is an aleatoric electronic work). The
+#     "Kotonski Edition" / "Aela I-V" labels remain as evocative homage.
 # ============================================================
 
-form FSM Generator - Kotoński Edition
+form FSM Generator - Kotonski Edition
     comment === PRESET STRATEGIES ===
     optionmenu Preset 1
         option 1. Aela I: Sparse Pointillism (high register, silence)
@@ -40,10 +71,10 @@ form FSM Generator - Kotoński Edition
     comment (Only active when Custom preset selected)
     
     optionmenu State_progression 1
-        option Linear cycle: 1→2→3→4
-        option Palindrome: 1→2→3→4→3→2→1
-        option Emphasize sparse: 1→3→1→3
-        option Emphasize dense: 2→4→2→4
+        option Linear cycle: 1->2->3->4
+        option Palindrome: 1->2->3->4->3->2->1
+        option Emphasize sparse: 1->3->1->3
+        option Emphasize dense: 2->4->2->4
     
     optionmenu Transition_mode 1
         option Event-based (every N events)
@@ -144,9 +175,9 @@ release_t = release_ms / 1000
 
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  FSM GENERATOR - KOTOŃSKI EDITION"
-writeInfoLine: "  Inspired by Włodzimierz Kotoński (1925-2014)"
-writeInfoLine: "  Aela (1967) - Stochastic Synthesis"
+writeInfoLine: "  POINTILLISTIC ELECTRONIC TEXTURE GENERATOR"
+writeInfoLine: "  Inspired by the Polish Radio Experimental Studio"
+writeInfoLine: "  (sound-world of Wlodzimierz Kotonski, 1925-2014)"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "PRESET: ", preset_name$
@@ -219,13 +250,13 @@ if custom_mode = 1
     appendInfoLine: "=== CUSTOM MODE ACTIVE ==="
     
     if state_progression = 1
-        progType$ = "Linear cycle (1→2→3→4)"
+        progType$ = "Linear cycle (1->2->3->4)"
     elsif state_progression = 2
-        progType$ = "Palindrome (1→2→3→4→3→2→1)"
+        progType$ = "Palindrome (1->2->3->4->3->2->1)"
     elsif state_progression = 3
-        progType$ = "Emphasize sparse (1↔3)"
+        progType$ = "Emphasize sparse (1<->3)"
     else
-        progType$ = "Emphasize dense (2↔4)"
+        progType$ = "Emphasize dense (2<->4)"
     endif
     appendInfoLine: "State progression: ", progType$
     
@@ -571,7 +602,7 @@ if actual_duration < total_dur
     target_gap_total = total_dur - total_event_dur
     gap_scaling = target_gap_total / total_gap_dur
     
-    appendInfoLine: "  Gap scaling: ", fixed$(gap_scaling, 3), "×"
+    appendInfoLine: "  Gap scaling: ", fixed$(gap_scaling, 3), "x"
     
     # Recalculate start times with scaled gaps
     current_time = 0
@@ -585,7 +616,7 @@ elsif actual_duration > total_dur
     # Scale everything down proportionally
     time_scaling = total_dur / actual_duration
     
-    appendInfoLine: "  Time scaling: ", fixed$(time_scaling, 3), "×"
+    appendInfoLine: "  Time scaling: ", fixed$(time_scaling, 3), "x"
     
     current_time = 0
     for i to n_events
@@ -801,34 +832,32 @@ appendInfoLine: ""
 if draw_score
     vizStartTime = stopwatch
     appendInfoLine: "Drawing score visualization..."
-    
+
     Erase all
-    
-    # === Title Section ===
-    Select outer viewport: 0, 12, 0, 1.2
-    Font size: 16
+
+    # === Title (own clear band) ===
+    Select outer viewport: 0, 8, 0.1, 0.7
+    Axes: 0, 1, 0, 1
+    Font size: 14
     Colour: "Black"
-    Text top: "no", "FSM Generator - Kotoński Edition"
-    Font size: 12
-    Text: 6, "centre", 0.7, "half", preset_name$
-    
-    # === Main Score ===
-    Select outer viewport: 0, 12, 1.5, 8
-    Select inner viewport: 0.8, 11.5, 1.8, 7.7
-    
-    # Black background
+    Text: 0.5, "centre", 0.5, "half", "FSM Generator - Kotonski Edition: " + preset_name$
+
+    # === Main score (dark) ===
+    Select outer viewport: 0, 8, 0.9, 4.9
+    Select inner viewport: 0.8, 7.6, 1.05, 4.8
+
     Axes: 0, total_dur, 0, max_freq_viz
     Paint rectangle: "Black", 0, total_dur, 0, max_freq_viz
-    
+
     # Frequency grid
-    Colour: "{0.2, 0.2, 0.25}"
+    Colour: "{0.20, 0.20, 0.25}"
     Line width: 0.5
     freq_grid = 500
     while freq_grid < max_freq_viz
         Draw line: 0, freq_grid, total_dur, freq_grid
         freq_grid = freq_grid + 500
     endwhile
-    
+
     # Time grid
     time_grid = 5
     if total_dur > 60
@@ -839,10 +868,9 @@ if draw_score
         Draw line: t_mark, 0, t_mark, max_freq_viz
         t_mark = t_mark + time_grid
     endwhile
-    
-    # === Draw Events ===
+
+    # === Events ===
     Line width: 2
-    
     for i to n_events
         t = startTime#[i]
         d = dur#[i]
@@ -850,8 +878,6 @@ if draw_score
         a = amp#[i]
         typ = type#[i]
         st = state#[i]
-        
-        # Color based on state
         if st = 1
             r = 0.2
             g = 0.8
@@ -869,91 +895,58 @@ if draw_score
             g = 0.5
             b = 0.1
         endif
-        
         brightness = 0.5 + a * 0.5
         r = r * brightness
         g = g * brightness
         b = b * brightness
-        
         Colour: "{" + fixed$(r, 3) + ", " + fixed$(g, 3) + ", " + fixed$(b, 3) + "}"
-        
         if typ = 1
-            # TONE
             Draw line: t, f - 50, t, f + 50
             Draw line: t, f, t + d, f
             Draw line: t + d, f - 30, t + d, f + 30
         else
-            # NOISE
             bw_val = bandwidth#[i]
             f_low = f - bw_val / 2
             f_high = f + bw_val / 2
-            
             steps = 5
             for step to steps
                 y_pos = f_low + (f_high - f_low) * step / steps
                 Draw line: t, y_pos, t + d, y_pos
             endfor
-            
             Line width: 1.5
             Draw line: t, f_low, t + d, f_low
             Draw line: t, f_high, t + d, f_high
             Line width: 2
         endif
     endfor
-    
-    # === Axes ===
+
+    # === Axes + labels ===
     Line width: 1.5
-    Colour: "{0.8, 0.8, 0.8}"
+    Colour: "{0.80, 0.80, 0.80}"
     Draw inner box
-    
-    # === Labels ===
     Colour: "White"
-    Font size: 10
+    Font size: 9
     Marks bottom every: 1, time_grid, "yes", "yes", "no"
     Marks left every: 1, 1000, "yes", "yes", "no"
-    
-    Font size: 11
+    Font size: 10
     Text bottom: "yes", "Time (seconds)"
     Text left: "yes", "Frequency (Hz)"
-    
-    # === Legend ===
-    Select outer viewport: 0, 12, 8.2, 9
+
+    # === Summary panel (grey) ===
+    Select outer viewport: 0, 8, 5.35, 6.45
+    Select inner viewport: 0.55, 7.65, 5.45, 6.35
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    
-    Font size: 9
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "Black"
-    
-    legend$ = "Tone = line - Noise = band - Colors: State 1 (cyan) to State 2 (green) to State 3 (yellow) to State 4 (orange) - Brightness = amplitude"
-    
-    Text: 0.5, "centre", 0.5, "half", legend$
-    
-    Colour: "Black"
-    Line width: 1
-    Draw rectangle: 0, 1, 0, 1
-    
-    # === Info Panel ===
-    Select outer viewport: 0, 12, 9.2, 10
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.1, 0.1, 0.1}", 0, 1, 0, 1
-    
+    Draw inner box
     Font size: 8
-    Colour: "White"
-    
-    info$ = "Events: " + string$(n_events)
-    info$ = info$ + " - Duration: " + fixed$(total_dur, 1) + "s"
-    info$ = info$ + " - Range: " + fixed$(min_freq_viz, 0) + "-" + fixed$(max_freq_viz, 0) + "Hz"
-    info$ = info$ + " - Attack: " + fixed$(attack_ms, 1) + "ms"
-    info$ = info$ + " - Release: " + fixed$(release_ms, 1) + "ms"
-    
-    Text: 0.5, "centre", 0.5, "half", info$
-    
-    Draw rectangle: 0, 1, 0, 1
-    
+    Colour: "{0.20, 0.20, 0.20}"
+    Text: 0.5, "centre", 0.72, "half", "Tone = line    Noise = band    States: 1 cyan, 2 green, 3 yellow, 4 orange    brightness = amplitude"
+    Text: 0.5, "centre", 0.28, "half", "Events: " + string$(n_events) + "    Duration: " + fixed$(total_dur, 1) + " s    Range: " + fixed$(min_freq_viz, 0) + "-" + fixed$(max_freq_viz, 0) + " Hz    Attack: " + fixed$(attack_ms, 1) + " ms    Release: " + fixed$(release_ms, 1) + " ms"
     Font size: 10
     Colour: "Black"
     Line width: 1
-    
+
     vizTime = stopwatch - vizStartTime
     appendInfoLine: "Visualization complete (", fixed$(vizTime, 2), " s)"
     appendInfoLine: ""
@@ -984,7 +977,7 @@ if custom_mode = 1
     appendInfoLine: "  Custom state sequencer with user-defined progression"
 else
     appendInfoLine: "  Preset '", preset_name$, "'"
-    appendInfoLine: "  Based on Kotoński's stochastic composition techniques"
+    appendInfoLine: "  Pointillistic texture inspired by the PRES sound-world"
 endif
 appendInfoLine: ""
 appendInfoLine: "Output character:"
