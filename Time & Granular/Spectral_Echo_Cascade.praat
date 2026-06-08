@@ -3,15 +3,29 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Spectral Echo Cascade - creates cascading echoes with
-#   Fibonacci-based delay timing and spectral coloring.
-#   The Fibonacci progression creates more natural, organic
-#   echo patterns than linear or geometric delays.
+#   Spectral Echo Cascade - recursive feedback echoes with Fibonacci-
+#   based delay timing and a time-varying gain "shimmer" (an LFO on the
+#   echo amplitude that speeds up at higher levels). NOTE: the shimmer is
+#   a temporal gain modulation, NOT spectral/frequency-dependent colour,
+#   despite the script name. Default delay timing is a fraction of the
+#   file (totalSamples/(delay_base+fib)); enable Use_fixed_ms for delays
+#   anchored to an absolute base time, with the same Fibonacci ratios.
+#
+# Changelog v0.3:
+#   - Added optional fixed-ms delay mode (Use_fixed_ms, off by default):
+#     level-1 echo = Fixed_base_ms, other levels scaled by the same
+#     (delay_base+1)/(delay_base+fib) law -> identical ratios, absolute
+#     timing, duration-independent. Off = original fraction-of-file.
+#   - Relabelled "Spectral Coloring" -> "Echo Shimmer": the factor is a
+#     time-varying gain (LFO), not spectral colour. Form fields renamed
+#     for coherence; no audio change.
+#   - Viz fix: legend text inherited the decay-curve axes (clamped left);
+#     now drawn in normalized axes.
 #
 # Changelog v0.2:
 #   - Modern syntax
@@ -38,9 +52,13 @@ form Spectral Echo Cascade
     positive Decay_rate 0.75
     positive Delay_base 5
     
-    comment === Spectral Coloring ===
-    positive Coloring_center 0.5
-    positive Coloring_depth 0.5
+    comment === Delay Timing ===
+    boolean Use_fixed_ms 0
+    positive Fixed_base_ms 800
+    
+    comment === Echo Shimmer (time-varying gain) ===
+    positive Shimmer_center 0.5
+    positive Shimmer_depth 0.5
     
     comment === Output ===
     positive Scale_peak 0.88
@@ -55,32 +73,32 @@ if preset = 1
     cascade_levels = 6
     decay_rate = 0.75
     delay_base = 5
-    coloring_center = 0.5
-    coloring_depth = 0.5
+    shimmer_center = 0.5
+    shimmer_depth = 0.5
     tail_duration_s = 2.0
 elsif preset = 2
     # Gentle Echoes
     cascade_levels = 4
     decay_rate = 0.85
     delay_base = 7
-    coloring_center = 0.45
-    coloring_depth = 0.35
+    shimmer_center = 0.45
+    shimmer_depth = 0.35
     tail_duration_s = 3.0
 elsif preset = 3
     # Dense Cluster
     cascade_levels = 8
     decay_rate = 0.7
     delay_base = 4
-    coloring_center = 0.55
-    coloring_depth = 0.65
+    shimmer_center = 0.55
+    shimmer_depth = 0.65
     tail_duration_s = 1.5
 elsif preset = 4
     # Long Tails
     cascade_levels = 7
     decay_rate = 0.9
     delay_base = 9
-    coloring_center = 0.5
-    coloring_depth = 0.4
+    shimmer_center = 0.5
+    shimmer_depth = 0.4
     tail_duration_s = 4.0
 endif
 
@@ -117,7 +135,7 @@ appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Levels: ", cascade_levels
 appendInfoLine: "Decay: ", decay_rate
-appendInfoLine: "Coloring: center=", coloring_center, " depth=", coloring_depth
+appendInfoLine: "Shimmer: center=", shimmer_center, " depth=", shimmer_depth
 appendInfoLine: "Tail: ", tail_duration_s, " s"
 appendInfoLine: ""
 
@@ -157,6 +175,11 @@ decayValues# = zero#(cascade_levels)
 
 # === Main Cascade Processing Loop ===
 appendInfoLine: "Processing cascade levels..."
+if use_fixed_ms
+    appendInfoLine: "Delay mode: fixed-ms (base ", fixed_base_ms, " ms)"
+else
+    appendInfoLine: "Delay mode: fraction of file"
+endif
 
 fibPrev = 1
 fibCurrent = 1
@@ -174,22 +197,29 @@ for level from 1 to cascade_levels
     fibValues#[level] = fibCurrent
     
     # Calculate delay
-    delayShift = round(totalSamples / (delay_base + fibCurrent))
+    if use_fixed_ms
+        delayShift = round(fixed_base_ms / 1000 * sampleRate * (delay_base + 1) / (delay_base + fibCurrent))
+    else
+        delayShift = round(totalSamples / (delay_base + fibCurrent))
+    endif
+    if delayShift < 1
+        delayShift = 1
+    endif
     delayMs#[level] = (delayShift / sampleRate) * 1000
     
     # Calculate decay
     currentDecay = decay_rate ^ level
     decayValues#[level] = currentDecay
     
-    # Spectral coloring parameters
-    colorCenter = coloring_center
-    colorDepth = coloring_depth
+    # Echo shimmer (time-varying gain, not spectral)
+    shimmerCenter = shimmer_center
+    shimmerDepth = shimmer_depth
     
     appendInfoLine: "  Level ", level, ": fib=", fibCurrent, " delay=", fixed$(delayMs#[level], 1), "ms decay=", fixed$(currentDecay, 3)
     
-    # Multi-tap delay with spectral coloring and bounds checking
+    # Recursive feedback echo with time-varying gain (shimmer) and bounds checking
     Formula: ~ if col - delayShift >= 1 
-        ... then self + self[col - delayShift] * currentDecay * (colorCenter + colorDepth * cos(level * 2 * pi * col / totalSamples))
+        ... then self + self[col - delayShift] * currentDecay * (shimmerCenter + shimmerDepth * cos(level * 2 * pi * col / totalSamples))
         ... else self fi
 endfor
 
@@ -300,6 +330,7 @@ if draw_visualization
     
     # Legend
     Select outer viewport: 1, 8, 5.3, 5.7
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Levels: " + string$(cascade_levels) + " | Decay: " + fixed$(decay_rate, 2) + " | Fibonacci: 1→" + string$(fibValues#[cascade_levels]) + " | Tail: " + fixed$(tail_duration_s, 1) + "s"
