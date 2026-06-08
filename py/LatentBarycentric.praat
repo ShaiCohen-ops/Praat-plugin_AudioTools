@@ -3,7 +3,15 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Unified Cross-Platform Version
+# Version: 1.3 (2026) - Unified Cross-Platform Version
+#
+# Changelog v1.3:
+#   - Viz: title/subtitle split into separate viewport bands (subtitle was
+#     at y=-1.2, rendering over the input waveform).
+#   - Python engine: fixed segment crossfade in execute_nav_plan that
+#     placed the faded-in head adjacent to (not overlapping) the faded-out
+#     tail, dipping to silence at every step junction. Now a proper
+#     equal-power overlap-add.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -733,20 +741,24 @@ if draw_visualization
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # === Title (own band) ===
+    Select outer viewport: 0, 8, 0, 0.33
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Latent Barycentric Mutation##"
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", 0.5, "half", "##Latent Barycentric Mutation##"
+
+    # === Subtitle (separate band so it can't collide with the title) ===
     if plan_source = 2
         subtitleStr$ = soundName$ + " | " + presetName$ + " | auto:" + planModeStr$ + "/" + string$(plan_steps) + "steps | Latent=" + string$(latent_size)
     else
         subtitleStr$ = soundName$ + " | " + presetName$ + " | ext.plan | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
     endif
-    Text: 0.5, "centre", -1.2, "half", subtitleStr$
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", 0.5, "half", subtitleStr$
 
     # === Input Waveform ===
     Select outer viewport: 0, 8, 0.6, 1.5

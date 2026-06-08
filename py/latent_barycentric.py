@@ -872,20 +872,22 @@ def execute_nav_plan(plan, Z, clips, audio, sr, target_samples, seed,
         # Energy scaling
         mixed *= eng_scale
 
-        # ── 6. Crossfade and append ────────────────────────────────────────
+        # ── 6. Crossfade and append (equal-power overlap-add) ──────────────
         cl = len(mixed)
         do_xfade = write_ptr >= xfade and cl >= xfade * 3
         if do_xfade:
-            # Fade out the tail of the already-written buffer
+            # Overlap the incoming head with the existing tail so the two
+            # complementary fades sum over the SAME samples (no silence dip).
             output[write_ptr - xfade : write_ptr] *= fade_out
-            # Fade in the head of the incoming segment
             mixed[:xfade] *= fade_in
-        end = write_ptr + cl
+            start = write_ptr - xfade
+        else:
+            start = write_ptr
+        end = start + cl
         if end > len(output):
             output = np.pad(output, (0, end - len(output) + mean_clip_len))
-        output[write_ptr:end] += mixed
-        write_ptr = (write_ptr + cl - xfade if do_xfade
-                     else write_ptr + cl)
+        output[start:end] += mixed
+        write_ptr = end
 
         # ── Always record this step (append before any loop end) ──────────
         step_stats.append({
