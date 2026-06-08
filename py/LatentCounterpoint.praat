@@ -3,7 +3,11 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2 (2026) - Unified Cross-Platform Version
+#
+# Changelog v1.2:
+#   - Viz: title/subtitle split into separate viewport bands (subtitle was
+#     at y=-1.2, rendering over the input waveform).
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -568,15 +572,19 @@ if draw_visualization
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # === Title (own band) ===
+    Select outer viewport: 0, 8, 0, 0.33
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##The Latent Counterpoint##"
+    Text: 0.5, "centre", 0.5, "half", "##The Latent Counterpoint##"
+
+    # === Subtitle (separate band so it can't collide with the title) ===
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + string$(number_of_agents) + " voices | Rigidity=" + fixed$(counterpoint_rigidity, 2)
+    Text: 0.5, "centre", 0.5, "half", soundName$ + " | " + presetName$ + " | " + string$(number_of_agents) + " voices | Rigidity=" + fixed$(counterpoint_rigidity, 2)
 
     # === Input Waveform ===
     Select outer viewport: 0, 8, 0.6, 1.5
