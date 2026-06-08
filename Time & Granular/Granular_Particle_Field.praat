@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - Particle_Field_Renderer.praat
+# Praat AudioTools - Granular_Particle_Field.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,8 +13,19 @@
 #   source audio with envelope shaping, pitch variation,
 #   panning, and LFO modulation.
 #
+# Changelog v0.3:
+#   - Fixed pitch shift: was Resample (preserves pitch -> no-op); now
+#     Override sampling frequency (varispeed) which actually shifts pitch
+#     and changes grain length. Mild aliasing possible on up-shifts.
+#   - Header filename corrected to Granular_Particle_Field.praat.
+#   - Viz legend drawn in normalized axes (was inheriting panel axes).
+#   - Viz: particle dots enlarged (diameter was 0.5 mm ~ invisible); now
+#     2-4 mm, scaled by grain amplitude.
+#   - Perf note: mixing cost is O(grains x output-samples) - each grain
+#     runs two whole-buffer Formula passes; the v0.2 "O(n)" note was
+#     inaccurate. Correct but heavy for dense clouds / long outputs.
+#
 # Changelog v0.2:
-#   - Major optimization: O(n) instead of O(n²)
 #   - Fixed Formula interpolation
 #   - Added visualization
 # ============================================================
@@ -260,18 +271,14 @@ for i to number_of_grains
     # Get actual grain duration
     grainDur = Get total duration
     
-    # Apply pitch shift
+    # Apply pitch shift (varispeed: reinterpret samples at a new rate ->
+    # shifts pitch and changes grain length; mild aliasing on up-shifts)
     if apply_pitch_shift
         semitones = pitch_shift_semitones + randomUniform(-pitch_variation_semitones, pitch_variation_semitones)
         pitchFactor = 2^(semitones / 12)
         
         selectObject: grain
-        Resample: sampleRate * pitchFactor, 50
-        resampledGrain = selected("Sound")
-        removeObject: grain
-        grain = resampledGrain
-        
-        selectObject: grain
+        Override sampling frequency: sampleRate * pitchFactor
         grainDur = Get total duration
     endif
     
@@ -390,7 +397,9 @@ if draw_visualization
         ampColor = grainAmp[i]
         dotColor$ = "{" + fixed$(0.2 + ampColor * 0.5, 2) + ", " + fixed$(0.4 + ampColor * 0.3, 2) + ", " + fixed$(0.8 - ampColor * 0.3, 2) + "}"
         
-        Paint circle (mm): dotColor$, grainTime[i], grainPan[i], 0.5
+        # Diameter (mm): visible floor + scale with amplitude
+        dotDia = 2.0 + 2.0 * grainAmp[i]
+        Paint circle (mm): dotColor$, grainTime[i], grainPan[i], dotDia
     endfor
     
     # Center line
@@ -407,9 +416,10 @@ if draw_visualization
     
     # Legend
     Select outer viewport: 0, 8, 5.1, 5.4
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 1.5, "centre", 0.5, "half", "Grains: " + string$(number_of_grains) + " | Duration: " + fixed$(grain_duration_s * 1000, 0) + "ms | Envelope: " + string$(envelope_shape)
+    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(number_of_grains) + " | Duration: " + fixed$(grain_duration_s * 1000, 0) + "ms | Envelope: " + string$(envelope_shape)
     
     Font size: 10
     Colour: "Black"
