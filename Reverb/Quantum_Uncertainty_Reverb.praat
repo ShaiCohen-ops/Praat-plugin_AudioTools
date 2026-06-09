@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,15 @@
 #   Each "quantum state" either collapses to a single echo
 #   or spreads into multiple superposed substates based on
 #   probability threshold.
+#
+# Changelog v0.3:
+#   - Viz: set world axes explicitly before title & parameters text
+#     (parameters line was inheriting the state-diagram axes -> mis-placed)
+#   - NOTE (known, intentionally left): the pre-generated state arrays and
+#     the printed collapsed/superposed counts come from a SEPARATE random
+#     realization than the rendered audio (processing loops draw fresh
+#     randoms). The diagram/stats are a representative sample, not a literal
+#     map of this render. Audio is unaffected.
 #
 # Changelog v0.2:
 #   - Fixed selection and formula syntax
@@ -395,6 +404,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Quantum Uncertainty Reverb: " + originalName$ + " (" + presetName$ + ")"
@@ -466,6 +476,7 @@ if draw_visualization
     
     # Parameters
     Select outer viewport: 0, 8, 4.1, 4.5
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "States: " + string$(quantum_states) + " | Uncertainty: σ=" + fixed$(uncertainty_stddev, 2) + " | Threshold: " + fixed$(collapse_threshold, 2) + " | Substates: " + string$(substates)
