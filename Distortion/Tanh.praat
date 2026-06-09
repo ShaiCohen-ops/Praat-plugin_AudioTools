@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,13 @@
 #   hyperbolic tangent function. Smoothly compresses peaks without
 #   harsh hard clipping, adding warm harmonics. Drive controls
 #   saturation intensity from subtle warmth to heavy overdrive.
+#
+# Changelog v0.3:
+#   - Added "Apply scale peak" toggle (default ON = identical to v0.2).
+#     With Scale peak always on, output_level was a uniform post-gain that
+#     normalization cancelled out (audibly inert). Turn the toggle OFF to
+#     let drive + output_level set the actual level.
+#   - Viz: set world axes explicitly before the title text (#32 standard)
 #
 # Changelog v0.2:
 #   - Fixed input check
@@ -38,6 +45,8 @@ form Tanh Soft Clipping
     positive Output_level 0.7
     
     comment === Output ===
+    boolean Apply_scale_peak 1
+    comment (OFF = let drive/output_level set the level)
     positive Scale_peak 0.95
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -92,6 +101,11 @@ appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Drive: ", drive_amount
 appendInfoLine: "Output level: ", output_level
+if apply_scale_peak
+    appendInfoLine: "Scale peak: ", scale_peak, " (output_level normalized away)"
+else
+    appendInfoLine: "Scale peak: OFF (output_level active)"
+endif
 appendInfoLine: ""
 appendInfoLine: "Formula: tanh(x × drive) × output_level"
 appendInfoLine: ""
@@ -112,8 +126,10 @@ level_str$ = string$(output_level)
 
 Formula: "tanh(self * " + drive_str$ + ") * " + level_str$
 
-# Scale to peak
-Scale peak: scale_peak
+# Scale to peak (optional)
+if apply_scale_peak
+    Scale peak: scale_peak
+endif
 
 # ============================================================
 # VISUALIZATION
@@ -124,6 +140,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Tanh Soft Clipping: " + originalName$ + " (" + presetName$ + ")"
