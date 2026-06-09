@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,14 @@
 #   pitch modulation using complex waveforms combining breath
 #   fundamentals, harmonics, flutter, tremor, and gasp effects.
 #   Emotional intensity builds over time.
+#
+# Changelog v0.3:
+#   - Fixed stereo crash: To Manipulation is mono-only, so a stereo
+#     input is now folded to mono before analysis/resynthesis.
+#     Mono input is unchanged.
+#   - Viz: title and the two end captions now set explicit Axes
+#     (0,1,0,1); they were inheriting the pitch-curve panel's axes
+#     and rendering off-position.
 #
 # Changelog v0.2:
 #   - Modern syntax
@@ -158,6 +166,15 @@ selectObject: original
 Copy: originalName$ + "_breath_tmp"
 tmpSound = selected("Sound")
 
+# To Manipulation (below) is mono-only; fold a stereo copy down first.
+selectObject: tmpSound
+nch = Get number of channels
+if nch > 1
+    monoTmp = Convert to mono
+    removeObject: tmpSound
+    tmpSound = monoTmp
+endif
+
 selectObject: tmpSound
 manipulation = To Manipulation: time_step, minimum_pitch, maximum_pitch
 
@@ -275,6 +292,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Breathing Pitch Waves: " + originalName$ + " (" + presetName$ + ")"
@@ -349,12 +367,14 @@ if draw_visualization
     
     # Breathing components illustration
     Select outer viewport: 0, 8, 4.9, 5.3
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Components: sin³(breath) + sin⁵(2×) + sin²(0.5×) + flutter + tremor + gasps × intensity_envelope"
     
     # Stats
     Select outer viewport: 0, 8, 5.4, 5.7
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Rate: " + fixed$(breath_rate, 2) + " Hz | Depth: ±" + string$(pitch_depth_semitones) + " st | Flutter: " + fixed$(micro_flutter, 1) + " | Intensity: " + fixed$(emotional_intensity, 1)

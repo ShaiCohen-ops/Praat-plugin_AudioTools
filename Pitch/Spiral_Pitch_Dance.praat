@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,13 @@
 #   Spiral Pitch Dance - creates accelerating sinusoidal pitch
 #   movement. The spiral speeds up over time, creating a Doppler-
 #   like flyby effect. Great for transitions and buildups.
+#
+# Changelog v0.3:
+#   - Stereo-safe: fold multichannel input to mono before To Manipulation
+#     (output is mono for stereo input; mono input unchanged / bit-identical)
+#   - Viz: set world axes explicitly before title & stats text (was
+#     inheriting stale axes from the frequency panel -> mis-placed text)
+#   - Viz: track filled buckets so the first curve point (t=0) is drawn
 #
 # Changelog v0.2:
 #   - Modern syntax
@@ -123,6 +130,18 @@ selectObject: original
 Copy: "temp"
 tmpSound = selected("Sound")
 
+# To Manipulation is mono-only: fold stereo input to mono.
+# (Output becomes mono for stereo input; mono input is untouched.)
+selectObject: tmpSound
+nchan = Get number of channels
+if nchan > 1
+    Convert to mono
+    monoSound = selected("Sound")
+    removeObject: tmpSound
+    tmpSound = monoSound
+    appendInfoLine: "Stereo input folded to mono for pitch manipulation."
+endif
+
 selectObject: tmpSound
 manipulation = To Manipulation: time_step, floor_pitch, ceiling_pitch
 
@@ -162,6 +181,7 @@ maxVizPoints = min(npoints, 500)
 vizTimes# = zero#(maxVizPoints)
 vizShifts# = zero#(maxVizPoints)
 vizPhases# = zero#(maxVizPoints)
+vizFilled# = zero#(maxVizPoints)
 vizStep = npoints / maxVizPoints
 
 # === Build Spiral Pitch Curve ===
@@ -183,7 +203,8 @@ for i from 0 to npoints - 1
     # Store for visualization
     vizIdx = floor(i / vizStep) + 1
     if vizIdx >= 1 and vizIdx <= maxVizPoints
-        if vizTimes#[vizIdx] = 0
+        if vizFilled#[vizIdx] = 0
+            vizFilled#[vizIdx] = 1
             vizTimes#[vizIdx] = t
             vizShifts#[vizIdx] = pitch_shift_st
             vizPhases#[vizIdx] = phase
@@ -226,6 +247,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Spiral Pitch Dance: " + orig$ + " (" + presetName$ + ")"
@@ -278,7 +300,7 @@ if draw_visualization
     Colour: "{0.5, 0.4, 0.7}"
     Line width: 1.5
     for vp from 2 to maxVizPoints
-        if vizTimes#[vp] > 0 and vizTimes#[vp - 1] > 0
+        if vizFilled#[vp] and vizFilled#[vp - 1]
             Draw line: vizTimes#[vp - 1], vizShifts#[vp - 1], vizTimes#[vp], vizShifts#[vp]
         endif
     endfor
@@ -335,6 +357,7 @@ if draw_visualization
     
     # Stats
     Select outer viewport: 0, 8, 5.1, 5.4
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Spirals: " + fixed$(spirals, 1) + " | Range: ±" + string$(semitone_range) + " st | Acceleration: " + fixed$(acceleration, 2)
