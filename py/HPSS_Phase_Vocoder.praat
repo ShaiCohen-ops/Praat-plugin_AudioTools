@@ -274,15 +274,19 @@ if draw_visualization
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # === Title (own band) ===
+    Select outer viewport: 0, 8, 0, 0.33
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##HPSS Phase Vocoder##"
+    Text: 0.5, "centre", 0.5, "half", "##HPSS Phase Vocoder##"
+
+    # === Subtitle (separate band so it can't collide with the title) ===
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | x" + fixed$(stretch_factor, 2) + " | " + presetName$ + " | FFT=" + string$(fFT_size)
+    Text: 0.5, "centre", 0.5, "half", soundName$ + " | x" + fixed$(stretch_factor, 2) + " | " + presetName$ + " | FFT=" + string$(fFT_size)
 
     # === Input waveform ===
     Select outer viewport: 0, 8, 0.6, 1.45
