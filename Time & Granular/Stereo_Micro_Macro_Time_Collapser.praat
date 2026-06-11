@@ -357,7 +357,7 @@ for channel to 2
         tStart = burstStart_'i'
         tEnd = burstEnd_'i'
         
-        selectObject: inputSound
+        selectObject: analysisMono
         burstSeg = Extract part: tStart, tEnd, "rectangular", 1, "no"
         segDur = Get total duration
         
@@ -417,7 +417,7 @@ for channel to 2
         tStart = slowStart_'i'
         tEnd = slowEnd_'i'
         
-        selectObject: inputSound
+        selectObject: analysisMono
         slowSeg = Extract part: tStart, tEnd, "rectangular", 1, "no"
         segDur = Get total duration
         
@@ -755,7 +755,7 @@ if draw_visualization
     selectObject: intensityObj
     Colour: "{0.3, 0.3, 0.4}"
     Line width: 1.5
-    Draw: 0, 0, 0, 0, "no"
+    Draw: 0, 0, minInt - intRange * 0.1, maxInt + intRange * 0.15, "no"
     Line width: 1
     
     # Draw burst peak markers
