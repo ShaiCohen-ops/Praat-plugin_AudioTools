@@ -79,7 +79,7 @@ overlap_sec = 0.1
 final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
-path_intro$ = pluginPath$ + "AI & Adaptive/Neural Ambient Drone Designer.praat"
+path_intro$ = pluginPath$ + "AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
 path_body$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
 path_outro$ = pluginPath$ + "Reverb/Crystalline_Cascade.praat"
 
