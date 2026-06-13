@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -41,6 +41,19 @@
 #   - Genetic_Recomposer:        Grain schedule + assembly phases.
 #   - Neural_Adaptive_Phonetic_Vibrato: GD adaptive parameters.
 #   - Perceptual_Synchrony:      Activity proxy + feature norms.
+#
+# Changelog v1.2 (CHANGES AUDIO of every preset):
+#   - Assembly redesigned to true time-placed overlap-add: grains
+#     are summed into one output buffer at their scheduled onset
+#     (out_t) instead of being concatenated end-to-end. Density
+#     (grains/sec) now genuinely controls onset spacing and grain
+#     overlap, matching the documented model. out_dur is exact by
+#     construction (no post-hoc trim/pad). Dense regions overlap
+#     and gain energy; sparse regions thin out - this is the
+#     intended "morphic" dynamic and will sound markedly different
+#     from v1.1, especially for dense/collapse presets.
+#   - Silence behavior under OLA = a gap in onsets (out_t advances
+#     by the silence duration) rather than an inserted silent grain.
 #
 # Changelog v1.1:
 #   - Added output duration control (ratio or absolute seconds)
@@ -585,7 +598,7 @@ while out_t < out_dur and grain_count < max_grains
         grain_count = grain_count + 1
         g_src_'grain_count' = src_pos
         g_dur_'grain_count' = actual_gr_s
-        g_sil_'grain_count' = 0
+        g_out_'grain_count' = out_t
         last_src = src_pos
 
         if grain_count <= viz_grain_max
@@ -593,14 +606,13 @@ while out_t < out_dur and grain_count < max_grains
             viz_src_t#[grain_count] = src_pos
         endif
 
-        # Silence insertion (Attractor A behavior only)
-        if randomUniform(0.0, 1.0) < cur_sil and grain_count < max_grains
+        # Silence (Attractor A): under overlap-add a silence is simply
+        # a GAP in onsets - advance the output clock so the next grain
+        # starts later, leaving the buffer at zero in between.
+        if randomUniform(0.0, 1.0) < cur_sil
             sil_dur = randomUniform(0.012, att_a_sil_ms / 1000.0)
             if sil_dur > 0.001
-                grain_count = grain_count + 1
-                g_src_'grain_count' = 0.0
-                g_dur_'grain_count' = sil_dur
-                g_sil_'grain_count' = 1
+                out_t = out_t + sil_dur
             endif
         endif
     endif
@@ -621,88 +633,55 @@ if grain_count < 1
 endif
 
 # ============================================================
-# STEP 6: GRAIN EXTRACTION + ROLLING ASSEMBLY
-#   Each grain is extracted with 10% fade in/out (xmin-relative).
-#   Grain+grain boundaries use crossfade; silence boundaries
-#   use hard concatenation.
+# STEP 6: GRAIN EXTRACTION + TIME-PLACED OVERLAP-ADD
+#   One output buffer of length out_dur is created up front.
+#   Each grain is extracted, faded (10% in/out, xmin-relative),
+#   and SUMMED into the buffer at its scheduled onset (g_out).
+#   Density therefore controls onset spacing and overlap, and
+#   out_dur is exact by construction.
 # ============================================================
 
 appendInfoLine: ""
-appendInfoLine: "[6/6] Assembling grains..."
+appendInfoLine: "[6/6] Overlap-add assembly..."
 
-# Extract first grain or silence
-k = 1
-sil_val_k = g_sil_'k'
-if sil_val_k = 1
-    Create Sound from formula: "mg_sil", src_ch, 0.0, g_dur_'k', src_sr, "0"
-    result_id = selected("Sound")
-else
-    selectObject: src_id
+# Output buffer (matches source channel count)
+Create Sound from formula: "morphic_buf", src_ch, 0.0, out_dur, src_sr, "0"
+result_id = selected("Sound")
+
+for k from 1 to grain_count
     g_start = g_src_'k'
     g_end = g_start + g_dur_'k'
-    Extract part: g_start, g_end, "rectangular", 1.0, "no"
-    result_id = selected("Sound")
-    # Fade in/out using xmin-relative positions
-    selectObject: result_id
-    Formula: "if x - xmin < (xmax - xmin) * 0.10"
-        ... + " then self * ((x - xmin) / ((xmax - xmin) * 0.10))"
-        ... + " else (if x > xmax - (xmax - xmin) * 0.10"
-        ... + " then self * ((xmax - x) / ((xmax - xmin) * 0.10))"
-        ... + " else self fi) fi"
-endif
+    g_onset = g_out_'k'
 
-for k from 2 to grain_count
-    sil_val_k = g_sil_'k'
-    if sil_val_k = 1
-        Create Sound from formula: "mg_sil", src_ch, 0.0, g_dur_'k', src_sr, "0"
-        next_id = selected("Sound")
-    else
+    # Skip grains whose onset is past the buffer end
+    if g_onset < out_dur - 0.0005
         selectObject: src_id
-        g_start = g_src_'k'
-        g_end = g_start + g_dur_'k'
         Extract part: g_start, g_end, "rectangular", 1.0, "no"
-        next_id = selected("Sound")
-        selectObject: next_id
+        grain_id = selected("Sound")
+
+        # 10% raised-linear fade in/out (xmin-relative) for click-free OLA
+        selectObject: grain_id
         Formula: "if x - xmin < (xmax - xmin) * 0.10"
             ... + " then self * ((x - xmin) / ((xmax - xmin) * 0.10))"
             ... + " else (if x > xmax - (xmax - xmin) * 0.10"
             ... + " then self * ((xmax - x) / ((xmax - xmin) * 0.10))"
             ... + " else self fi) fi"
-    endif
 
-    # Determine crossfade (grain+grain only)
-    prev_k = k - 1
-    prev_sil_val = g_sil_'prev_k'
-    xfade = 0.0
-    if prev_sil_val = 0 and sil_val_k = 0
-        prev_dur = g_dur_'prev_k'
-        cur_dur = g_dur_'k'
-        min_dur = prev_dur
-        if cur_dur < min_dur
-            min_dur = cur_dur
+        # Sum into the buffer at the scheduled onset. Object_<id>(x)
+        # reads the grain in its own 0..dur time frame, returning 0
+        # outside it, so we offset by g_onset.
+        grainStr$ = string$(grain_id)
+        onsetStr$ = string$(g_onset)
+        g_tail = g_onset + g_dur_'k'
+        if g_tail > out_dur
+            g_tail = out_dur
         endif
-        xfade = min_dur * 0.08
-        if xfade < 0.001
-            xfade = 0.0
-        endif
-        if xfade > 0.020
-            xfade = 0.020
-        endif
+        selectObject: result_id
+        Formula (part): g_onset, g_tail, 1, src_ch,
+            ... "self + Object_" + grainStr$ + "(x - " + onsetStr$ + ")"
+
+        removeObject: grain_id
     endif
-
-    selectObject: result_id
-    plusObject: next_id
-
-    if xfade > 0.001
-        Concatenate with overlap: xfade
-    else
-        Concatenate
-    endif
-
-    assembled_id = selected("Sound")
-    removeObject: result_id
-    removeObject: next_id
-    result_id = assembled_id
 
     kDiv200 = k - floor(k / 200) * 200
     if kDiv200 = 0
@@ -711,27 +690,6 @@ for k from 2 to grain_count
 endfor
 
 appendInfoLine: ""
-
-# Trim or pad to target output duration
-selectObject: result_id
-assembled_dur = Get total duration
-
-if assembled_dur > out_dur + 0.01
-    Extract part: 0.0, out_dur, "rectangular", 1.0, "no"
-    trimmed_id = selected("Sound")
-    removeObject: result_id
-    result_id = trimmed_id
-elsif assembled_dur < out_dur - 0.01
-    # Pad with silence to reach target
-    padNeeded = out_dur - assembled_dur
-    Create Sound from formula: "pad", src_ch, 0, padNeeded, src_sr, "0"
-    padSnd = selected("Sound")
-    selectObject: result_id, padSnd
-    Concatenate
-    padded_id = selected("Sound")
-    removeObject: result_id, padSnd
-    result_id = padded_id
-endif
 
 selectObject: result_id
 Scale peak: 0.99
