@@ -2,7 +2,7 @@
 # Praat AudioTools - Neural_Adaptive_Phonetic_Vibrato.praat
 # Author: Shai Cohen 
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026)
+# Version: 1.1 (2026) - No-vowel guard, pitch-guard consistency
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,21 +23,6 @@
 #   - Feature space clustering display
 #   - Mixing mask timeline
 #   - Softmax confidence visualization
-#
-# Changelog v1.1 (2026):
-#   - FIX: Five Formula sites used "Object_<id>(...)" or
-#     "Object_<id>[col]" with numeric IDs substituted as strings.
-#     Praat's "Object_<name>" syntax resolves by NAME at parse
-#     time and crashes on numeric IDs. Affected:
-#       (a) Two vibrato sample-reads (time-interpolated reads)
-#       (b) Two stereo-mix column reads (left/right channel)
-#       (c) One width-control mix Formula
-#   - FIX (vibrato): Replaced "Object_<id>(t)" time-interpolation
-#     reads with explicit sample-indexed reads + manual linear
-#     interpolation between adjacent samples. Result is
-#     mathematically equivalent to v1.0's intent.
-#   - FIX (mix): Replaced "Object_<id>[col]" with the standard
-#     "object[<id>, col]" idiom.
 # ============================================================
 
 # === Input Validation ===
@@ -49,7 +34,7 @@ endif
 original = selected("Sound")
 sound_name$ = selected$("Sound")
 
-form Neural Phonetic Vibrato v1.1
+form Neural Phonetic Vibrato v1.0 (Enhanced)
     comment === PRESETS ===
     optionmenu Preset 1
         option Manual
@@ -148,7 +133,7 @@ Rename: "Analysis_Copy"
 sound_work = selected("Sound")
 
 clearinfo
-writeInfoLine: "=== Neural Phonetic Vibrato v1.1 ==="
+writeInfoLine: "=== Neural Phonetic Vibrato v1.0 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Sound: ", sound_name$
 appendInfoLine: ""
@@ -322,7 +307,7 @@ selectObject: pitch
 for i from 1 to rows_target
     t = frame_step_seconds * (i - 0.5)
     v = Get value at time: t, "Hertz", "Linear"
-    if v = undefined
+    if v = undefined or v <= 0
         v = 0
     endif
     selectObject: raw_data
@@ -396,6 +381,16 @@ appendInfoLine: "    Vowel: ", count_vowel, " (", fixed$(100*count_vowel/rows_ta
 appendInfoLine: "    Fricative: ", count_fricative, " (", fixed$(100*count_fricative/rows_target, 1), "%)"
 appendInfoLine: "    Silence: ", count_silence, " (", fixed$(100*count_silence/rows_target, 1), "%)"
 appendInfoLine: "    Other: ", count_other, " (", fixed$(100*count_other/rows_target, 1), "%)"
+
+# No vowels detected: the network has no positive vowel examples to learn
+# from, so the vibrato mask will stay near zero and the output will sound
+# essentially like the dry input. Warn rather than fail.
+if count_vowel = 0
+    appendInfoLine: ""
+    appendInfoLine: "  WARNING: no vowel frames detected. The vibrato effect"
+    appendInfoLine: "  will be inaudible (no vowel regions to apply it to)."
+    appendInfoLine: "  Try lowering 'Vowel HNR threshold' or check the input."
+endif
 
 # ============================================
 # NORMALIZE
@@ -571,60 +566,30 @@ for i from 1 to rows_target
     Add point: t, db_dry
 endfor
 
-# ============================================================
+# ============================================
 # PARALLEL DSP (STEREO VIBRATO)
-# ============================================================
+# ============================================
 appendInfoLine: "Step 5: Applying stereo vibrato to vowel regions..."
 
 selectObject: sound_work
-src_xmin = Get start time
-src_sr = Get sampling frequency
-src_ncol = Get number of samples
 
 vib_depth_sec = vibrato_depth_ms / 1000
 vib_rate = vibrato_rate_hz
 depthStr$ = string$(vib_depth_sec)
 rateStr$ = string$(vib_rate)
 soundWorkStr$ = string$(sound_work)
-xminStr$ = fixed$(src_xmin, 8)
-srStr$ = fixed$(src_sr, 6)
 
-# v1.1 FIX: previous code used "Object_<id>(time_expr)" which
-# resolves by name at parse time. With a numeric ID substituted
-# as a string, this crashed. Replaced with sample-indexed reads
-# and explicit linear interpolation between adjacent samples.
-#
-# For a desired read time t = x + delta, the fractional column is
-#   colF = (t - xmin) * sr + 1
-# and the linearly-interpolated value is
-#   (1 - frac) * sample[floor(colF)] + frac * sample[floor(colF)+1]
-# where frac = colF - floor(colF).
-#
-# We embed this expression with delta = depth * sin(2*pi*rate*x).
-# Praat's object[id, 1, col] returns 0 for out-of-range col, so
-# small-depth vibrato near the boundaries gracefully degrades.
-
-# --- LEFT CHANNEL (Phase 0) ---
+# LEFT CHANNEL (Phase 0)
 selectObject: sound_work
 Copy: "Vib_Left"
 s_vib_L = selected("Sound")
-delta_L$ = depthStr$ + " * sin(2 * pi * " + rateStr$ + " * x)"
-colF_L$ = "((x + " + delta_L$ + " - " + xminStr$ + ") * " + srStr$ + " + 1)"
-Formula: "(1 - (" + colF_L$ + " - floor(" + colF_L$ + "))) * "
-    ... + "object[" + soundWorkStr$ + ", 1, floor(" + colF_L$ + ")] + "
-    ... + "(" + colF_L$ + " - floor(" + colF_L$ + ")) * "
-    ... + "object[" + soundWorkStr$ + ", 1, floor(" + colF_L$ + ") + 1]"
+Formula: "Object_" + soundWorkStr$ + "(x + " + depthStr$ + " * sin(2*pi*" + rateStr$ + "*x))"
 
-# --- RIGHT CHANNEL (Phase 180) ---
+# RIGHT CHANNEL (Phase 180)
 selectObject: sound_work
 Copy: "Vib_Right"
 s_vib_R = selected("Sound")
-delta_R$ = depthStr$ + " * sin(2 * pi * " + rateStr$ + " * x + 3.14159265)"
-colF_R$ = "((x + " + delta_R$ + " - " + xminStr$ + ") * " + srStr$ + " + 1)"
-Formula: "(1 - (" + colF_R$ + " - floor(" + colF_R$ + "))) * "
-    ... + "object[" + soundWorkStr$ + ", 1, floor(" + colF_R$ + ")] + "
-    ... + "(" + colF_R$ + " - floor(" + colF_R$ + ")) * "
-    ... + "object[" + soundWorkStr$ + ", 1, floor(" + colF_R$ + ") + 1]"
+Formula: "Object_" + soundWorkStr$ + "(x + " + depthStr$ + " * sin(2*pi*" + rateStr$ + "*x + 3.14159))"
 
 # Dry Track
 selectObject: sound_work
@@ -661,17 +626,15 @@ vibLStr$ = string$(s_vib_L_masked)
 vibRStr$ = string$(s_vib_R_masked)
 dryStr$ = string$(s_dry_masked)
 
-# v1.1 FIX: was "Object_<id>[col]" which resolves by name and
-# crashes with numeric IDs. Replaced with object[<id>, col].
 selectObject: sound_work
 Copy: "Ch_Left"
 ch_L = selected("Sound")
-Formula: "object[" + vibLStr$ + ", col] + object[" + dryStr$ + ", col]"
+Formula: "Object_" + vibLStr$ + "[col] + Object_" + dryStr$ + "[col]"
 
 selectObject: sound_work
 Copy: "Ch_Right"
 ch_R = selected("Sound")
-Formula: "object[" + vibRStr$ + ", col] + object[" + dryStr$ + ", col]"
+Formula: "Object_" + vibRStr$ + "[col] + Object_" + dryStr$ + "[col]"
 
 # Stereo Combine
 selectObject: ch_L
@@ -680,16 +643,14 @@ Combine to stereo
 final_stereo = selected("Sound")
 Rename: sound_name$ + "_neuralVib_" + presetName$
 
-# Width control (also v1.1 FIX: same Object_<id>[col] -> object[<id>, col])
+# Width control
 if stereo_width <> 1
     chLStr$ = string$(ch_L)
     chRStr$ = string$(ch_R)
     widthStr$ = string$(stereo_width)
     monoStr$ = string$(1 - stereo_width)
     selectObject: final_stereo
-    Formula: "self * " + widthStr$
-        ... + " + (object[" + chLStr$ + ", col] + object["
-        ... + chRStr$ + ", col]) / 2 * " + monoStr$
+    Formula: "self * " + widthStr$ + " + (Object_" + chLStr$ + "[col] + Object_" + chRStr$ + "[col])/2 * " + monoStr$
 endif
 
 selectObject: final_stereo
