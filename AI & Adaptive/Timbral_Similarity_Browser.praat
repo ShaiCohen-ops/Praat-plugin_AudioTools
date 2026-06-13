@@ -3,13 +3,23 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - Enhanced visualization
+# Version: 1.1 (2026) - Single-file guard; skipped sounds excluded from ordering
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Timbral Similarity Browser - Orders sounds from a folder by
 #   MFCC-based timbral similarity using nearest-neighbor path.
+#
+# Changelog v1.1:
+#   - Guard against a single-sound batch (n = 1): no path/stats
+#     division-by-zero; the one sound is output directly.
+#   - Sounds too short to analyze (no MFCC) no longer pollute the
+#     ordering with an all-zero feature vector. Their distance to
+#     everything is set just above the max, so the nearest-neighbor
+#     path visits them LAST instead of treating silence-like zero
+#     vectors as mutually similar. (Changes ordering only for
+#     batches that contain an un-analyzable file.)
 #
 # Changelog v1.0:
 #   - Added path sequence display
@@ -177,6 +187,7 @@ for i from 1 to number_of_sounds
         appendInfoLine: "[", i, "] ", name$, " - SKIPPED (too short)"
         failed_mfcc = failed_mfcc + 1
         mfcc_'i' = 0
+        analyzed_'i' = 0
     else
         To MFCC: num_coefficients, window_length, time_step, 100, 100, 0.0
         mfcc_'i' = selected("MFCC")
@@ -185,6 +196,7 @@ for i from 1 to number_of_sounds
         nFrames = Get number of frames
         appendInfoLine: "[", i, "] ", name$, " - ", nFrames, " frames"
         analyzed = analyzed + 1
+        analyzed_'i' = 1
     endif
 endfor
 
@@ -285,35 +297,62 @@ endfor
 
 appendInfoLine: "Max distance: ", fixed$(maxDist, 2)
 
-appendInfoLine: "Creating nearest-neighbor path..."
-
-visited# = zero#(n)
-path# = zero#(n)
-current = 1
-path#[1] = 1
-visited#[1] = 1
-
-for step from 2 to n
-    min_dist = 1e30
-    next_sound = 0
-    
-    selectObject: distMatrix
-    for candidate from 1 to n
-        if visited#[candidate] = 0
-            dist = Get value: current, candidate
-            if dist < min_dist
-                min_dist = dist
-                next_sound = candidate
+# Sounds with no MFCC have an all-zero feature row, which would place
+# them at a phantom origin in MFCC space. Push their pairwise distances
+# just above the real maximum so the nearest-neighbor path defers them
+# to the end rather than clustering them as "similar".
+penalty = maxDist + 1.0
+any_skipped = 0
+for i from 1 to n
+    if analyzed_'i' = 0
+        any_skipped = 1
+        selectObject: distMatrix
+        for j from 1 to n
+            if j <> i
+                Set value: i, j, penalty
+                Set value: j, i, penalty
             endif
-        endif
-    endfor
-    
-    if next_sound > 0
-        path#[step] = next_sound
-        visited#[next_sound] = 1
-        current = next_sound
+        endfor
     endif
 endfor
+if any_skipped = 1
+    appendInfoLine: "  (un-analyzable sounds deferred to end of path)"
+endif
+
+appendInfoLine: "Creating nearest-neighbor path..."
+
+path# = zero#(n)
+if n = 1
+    # Single sound: the path is trivially that one sound.
+    path#[1] = 1
+else
+    visited# = zero#(n)
+    current = 1
+    path#[1] = 1
+    visited#[1] = 1
+
+    for step from 2 to n
+        min_dist = 1e30
+        next_sound = 0
+        
+        selectObject: distMatrix
+        for candidate from 1 to n
+            if visited#[candidate] = 0
+                dist = Get value: current, candidate
+                if dist < min_dist
+                    min_dist = dist
+                    next_sound = candidate
+                endif
+            endif
+        endfor
+        
+        if next_sound > 0
+            path#[step] = next_sound
+            visited#[next_sound] = 1
+            current = next_sound
+        endif
+    endfor
+endif
 
 appendInfoLine: ""
 appendInfoLine: "SIMILARITY PATH:"
@@ -355,26 +394,29 @@ totalDur = Get total duration
 appendInfoLine: "Output duration: ", fixed$(totalDur, 2), " s"
 
 # Compute path distances and total path length
-pathDist# = zero#(n - 1)
 totalPathLength = 0
 maxPathDist = 0
+meanPathDist = 0
 
-for i from 1 to n - 1
-    idx1 = path#[i]
-    idx2 = path#[i + 1]
-    selectObject: distMatrix
-    d = Get value: idx1, idx2
-    pathDist#[i] = d
-    totalPathLength = totalPathLength + d
-    if d > maxPathDist
-        maxPathDist = d
-    endif
-endfor
-
-meanPathDist = totalPathLength / (n - 1)
-
-appendInfoLine: "Total path length: ", fixed$(totalPathLength, 2)
-appendInfoLine: "Mean step distance: ", fixed$(meanPathDist, 3)
+if n > 1
+    pathDist# = zero#(n - 1)
+    for i from 1 to n - 1
+        idx1 = path#[i]
+        idx2 = path#[i + 1]
+        selectObject: distMatrix
+        d = Get value: idx1, idx2
+        pathDist#[i] = d
+        totalPathLength = totalPathLength + d
+        if d > maxPathDist
+            maxPathDist = d
+        endif
+    endfor
+    meanPathDist = totalPathLength / (n - 1)
+    appendInfoLine: "Total path length: ", fixed$(totalPathLength, 2)
+    appendInfoLine: "Mean step distance: ", fixed$(meanPathDist, 3)
+else
+    appendInfoLine: "Single sound: no path distances."
+endif
 
 # ========== VISUALIZATION ==========
 if draw_visualization
