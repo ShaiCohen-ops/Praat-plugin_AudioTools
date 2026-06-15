@@ -59,6 +59,17 @@ form Stereo Micro ↔ Macro Time Collapser
     boolean Allow_fallback_if_insufficient_segments 1
     boolean Draw_visualization 1
     boolean Play_output 1
+    comment === Normalization ===
+    optionmenu Segment_normalization: 1
+        option Scale peak (0.95)
+        option Scale intensity
+        option Off
+    positive Segment_intensity_target_dB 70
+    optionmenu Output_normalization: 1
+        option Scale peak (0.99)
+        option Scale intensity
+        option Off
+    positive Output_intensity_target_dB 70
 endform
 
 # ============================================================
@@ -395,7 +406,7 @@ for channel to 2
                 currSR = Get sampling frequency
                 pitch_shift_factor = randomUniform(0.98, 1.02)
                 Override sampling frequency: currSR * pitch_shift_factor
-                Resample: currSR, 50
+                Resample: sampleRate, 50
                 shiftedSound = selected("Sound")
                 
                 removeObject: tempSound
@@ -409,7 +420,11 @@ for channel to 2
         endif
         
         selectObject: burstTransformed_'i'
-        Scale peak: 0.95
+        if segment_normalization = 1
+            Scale peak: 0.95
+        elsif segment_normalization = 2
+            Scale intensity: segment_intensity_target_dB
+        endif
         removeObject: burstSeg
     endfor
 
@@ -455,7 +470,7 @@ for channel to 2
                 currSR = Get sampling frequency
                 pitch_shift_factor = randomUniform(0.99, 1.01)
                 Override sampling frequency: currSR * pitch_shift_factor
-                Resample: currSR, 50
+                Resample: sampleRate, 50
                 shiftedSound = selected("Sound")
                 
                 removeObject: tempSound
@@ -469,7 +484,11 @@ for channel to 2
         endif
         
         selectObject: slowTransformed_'i'
-        Scale peak: 0.95
+        if segment_normalization = 1
+            Scale peak: 0.95
+        elsif segment_normalization = 2
+            Scale intensity: segment_intensity_target_dB
+        endif
         removeObject: slowSeg
     endfor
 
@@ -677,7 +696,11 @@ endif
 selectObject: finalChannel_1, finalChannel_2
 Combine to stereo
 Rename: "Stereo_Collapser_Output"
-Scale peak: 0.99
+if output_normalization = 1
+    Scale peak: 0.99
+elsif output_normalization = 2
+    Scale intensity: output_intensity_target_dB
+endif
 finalOutput = selected("Sound")
 
 selectObject: finalOutput
