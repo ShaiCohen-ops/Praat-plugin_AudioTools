@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025)
+# Version: 0.5 (2026) - Fix stereo mix channel routing (right gains were dropped)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,11 @@
 #   Select 1-8 Sound objects and run this script.
 #   Sounds are mixed in selection order (first selected = Sound 1).
 #
+# Changelog v0.5:
+#   - Fixed mix formula: object[id, row, col] so each output channel
+#     reads its matching source channel. Previously object[id, col] read
+#     channel 1 into BOTH outputs, silently discarding right-channel
+#     gains and collapsing all panning/presets toward a left-only sum.
 # Changelog v0.4:
 #   - Visualization rewritten to AudioTools library style
 #     (8-inch canvas, ##Bold## titles, inner/outer viewports,
@@ -191,7 +196,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Stereo Mixer v0.4 ==="
+writeInfoLine: "=== Stereo Mixer v0.5 ==="
 appendInfoLine: "Mixing ", numSounds, " sounds"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -279,10 +284,14 @@ for i from 1 to numSounds
     Formula (part): 0, 0, 1, 1, "self * " + valLstr$
     Formula (part): 0, 0, 2, 2, "self * " + valRstr$
 
-    # Add to result (stringify ID for formula engine)
+    # Add to result. The result is stereo, so the formula runs per
+    # (row, col); use object[id, row, col] so output channel 1 (L) reads
+    # the layer's left-gained channel 1 and channel 2 (R) reads its
+    # right-gained channel 2. (object[id, col] would read channel 1 for
+    # BOTH rows, silently discarding all right-channel gains/panning.)
     tempIDstr$ = string$(tempID)
     selectObject: resultID
-    Formula: "self + object[" + tempIDstr$ + ", col]"
+    Formula: "self + object[" + tempIDstr$ + ", row, col]"
 
     # Cleanup
     removeObject: tempID
