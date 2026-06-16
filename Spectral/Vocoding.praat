@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026) - Fix wet/dry mix channel indexing (crashed at wet<100%)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,10 @@
 #   injection for crisp consonants. Creates robot voice, whisper,
 #   and pitch-tracked effects with stereo spreading.
 #
+# Changelog v0.3:
+#   - Fixed wet/dry mix: object[id] -> object[id, row, col]. The old form
+#     had no column/row index and errored (or misread) whenever Wet < 100%
+#     (the default 100% hid it).
 # Changelog v0.2:
 #   - Added presets
 #   - Added wet/dry mix control
@@ -120,7 +124,7 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-writeInfoLine: "=== Poly-Carrier Vocoder v0.2 ==="
+writeInfoLine: "=== Poly-Carrier Vocoder v0.3 ==="
 appendInfoLine: "Preset: ", presetName$
 
 orig_id = selected("Sound")
@@ -304,7 +308,7 @@ if dry_level > 0
     dry_id_str$ = string$(dry_sound)
     
     selectObject: final_id
-    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + "] * " + dry_str$
+    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + ", row, col] * " + dry_str$
 endif
 
 selectObject: final_id
