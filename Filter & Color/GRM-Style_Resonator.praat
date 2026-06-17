@@ -3,11 +3,15 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025) - Enhanced with Visualization
+# Version: 1.2 (2026) - Fix object[] channel indexing in mix; honest "GRM-style" naming
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
+#   GRM-STYLE (not the GRM algorithm): evokes the tuned resonant-bank
+#   textures of GRM Tools, but implemented as an OFFLINE Karplus-Strong /
+#   delay-line resonator (Hann band-pass + feedback comb), NOT real-time
+#   tunable resonant biquad filters. "GRM-style" = aesthetic lineage.
 # - Pitch-Tracking Delays (Karplus-Strong style)
 # - Spectral Tilt to tame high bands
 # - Auto-leveling Wet signal before mixing (Safety)
@@ -23,7 +27,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form GRM Tuned Resonator v1.1
+form GRM-Style Resonator v1.2
     comment === PRESET ===
     optionmenu Preset: 1
         option Custom
@@ -243,6 +247,18 @@ for i from 1 to actualNumBands
     # B. Filter
     Filter (pass Hann band): low, high, 100
     bandSound = selected("Sound")
+
+    # Bands are positioned in the stereo field by the panner below, so each
+    # band must be a single (mono) signal. Convert if the source was stereo
+    # (otherwise object[band, col] below would only read channel 1 and the
+    # panning would be inconsistent).
+    selectObject: bandSound
+    bandCh = Get number of channels
+    if bandCh > 1
+        monoBand = Convert to mono
+        removeObject: bandSound
+        bandSound = monoBand
+    endif
     
     # C. Cleanup Temp
     selectObject: tempSource
@@ -367,8 +383,8 @@ for i from 1 to actualNumBands
     valR = pR[i]
     
     selectObject: wetSum, theBand
-    Formula (part): 0, 0, 1, 1, "self + (object[" + string$(theBand) + "] * " + string$(valL) + ")"
-    Formula (part): 0, 0, 2, 2, "self + (object[" + string$(theBand) + "] * " + string$(valR) + ")"
+    Formula (part): 0, 0, 1, 1, "self + (object[" + string$(theBand) + ", col] * " + string$(valL) + ")"
+    Formula (part): 0, 0, 2, 2, "self + (object[" + string$(theBand) + ", col] * " + string$(valR) + ")"
 endfor
 
 # --- 8. WET SAFETY & FINAL MIX ---
@@ -381,7 +397,7 @@ Scale peak: 0.9
 if dryWet >= 0.999
     # Full wet - no dry signal needed
     selectObject: wetSum
-    Rename: originalName$ + "_GRM_Tuned_" + presetName$
+    Rename: originalName$ + "_GRMstyle_" + presetName$
     output = selected("Sound")
 elsif dryWet <= 0.001
     # Full dry - no wet signal needed
@@ -390,7 +406,7 @@ elsif dryWet <= 0.001
         Convert to stereo
         output = selected("Sound")
     else
-        output = Copy: originalName$ + "_GRM_Tuned_" + presetName$
+        output = Copy: originalName$ + "_GRMstyle_" + presetName$
     endif
     selectObject: wetSum
     Remove
@@ -415,13 +431,13 @@ else
     selectObject: wetSum
     Formula: "self * " + string$(dryWet)
     
-    # Sum
+    # Sum (both dry and wetSum are stereo -> index row and col)
     selectObject: dry, wetSum
-    Formula: ~ self + object[wetSum]
+    Formula: ~ self + object[wetSum, row, col]
     
     # Finalize
     selectObject: dry
-    Rename: originalName$ + "_GRM_Tuned_" + presetName$
+    Rename: originalName$ + "_GRMstyle_" + presetName$
     output = selected("Sound")
     
     # Cleanup
