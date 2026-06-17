@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3.2 (2025) - Fixed Syntax Error
+# Version: 0.4 (2026) - Stereo-safe analysis (mono before To MFCC)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,10 @@
 #   OT Corpus Concatenator - Optimality Theory-inspired audio
 #   selection and concatenation based on weighted constraint violations.
 #
+# Changelog v0.4:
+#   - FIXED: analysis loop now converts to mono before To MFCC; stereo
+#            corpus files previously crashed there (the concat loop
+#            already converted - only the analysis loop was missed).
 # Changelog v0.3.2:
 #   - FIXED: "Unknown symbol Get" error. Moved 'Get sampling frequency'
 #            outside the 'if' statement.
@@ -27,6 +31,8 @@ form OT Corpus Concatenator v0.3.2
         option Timbral Consistency
     comment === Selection ===
     integer Limit_files 10
+    sentence Folder_path
+    comment (leave blank to get a chooser dialog)
     comment === OT Constraints (Weights) ===
     real Weight_darkness 0.0
     real Weight_brightness 1.0
@@ -85,13 +91,16 @@ endif
 # ============================================
 
 clearinfo
-writeInfoLine: "=== OT Corpus Concatenator v0.3.2 ==="
+writeInfoLine: "=== OT Corpus Concatenator v0.4 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 
 n_target = limit_files
 
-directory$ = chooseDirectory$: "Choose the folder containing your audio files"
+directory$ = folder_path$
+if directory$ = ""
+    directory$ = chooseDirectory$: "Choose the folder containing your audio files"
+endif
 
 if directory$ = ""
     exitScript: "No folder selected."
@@ -138,7 +147,19 @@ for i from 1 to nFiles
     fileName$ = Get string: i
     
     soundID = Read from file: directory$ + fileName$
-    
+
+    # To MFCC requires a mono signal - convert if the corpus file is
+    # multichannel (the concat loop below already does this; the analysis
+    # loop must too, or stereo files crash at To MFCC).
+    selectObject: soundID
+    nCh = Get number of channels
+    if nCh > 1
+        monoID = Convert to mono
+        removeObject: soundID
+        soundID = monoID
+    endif
+
+    selectObject: soundID
     mfccID = To MFCC: 12, 0.015, 0.005, 100.0, 100.0, 0
     
     nFrames = Get number of frames
