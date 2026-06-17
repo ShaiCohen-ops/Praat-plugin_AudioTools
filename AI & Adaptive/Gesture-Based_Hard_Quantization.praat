@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025)
+# Version: 1.3 (2026) - Output_duration (tiling) + typed folder path field
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -82,7 +82,11 @@ form Gesture Quantization v1.1
     positive Pitch_ceiling 600
     comment === Audio ===
     positive Target_sample_rate 44100
-    comment === Output ===
+    comment === Input / Output ===
+    sentence Folder_path
+    comment (leave blank to get a chooser; first file = reference)
+    real Output_duration 0
+    comment (0 = match reference length; >0 = extend by tiling the reference)
     boolean Draw_visualization 1
     boolean Verbose_output 1
     boolean Play_result 1
@@ -132,7 +136,10 @@ endif
 
 clearinfo
 
-folder_path$ = chooseDirectory$: "Select folder containing sound files (first file = reference)"
+folder_path$ = folder_path$
+if folder_path$ = ""
+    folder_path$ = chooseDirectory$: "Select folder containing sound files (first file = reference)"
+endif
 
 if folder_path$ = ""
     exitScript: "No folder selected."
@@ -371,8 +378,10 @@ procedure buildVoice: .vIdx, .kForVoice, .penScale
     hasOutput = 0
     currentOutput = 0
 
-    for .segIdx to number_of_segments
-        .segStart = refStart + (.segIdx - 1) * segmentDur
+    for .segIdx to segmentsToGenerate
+        # tile the reference cyclically when generating more than N segments
+        .refSegIdx = ((.segIdx - 1) mod number_of_segments) + 1
+        .segStart = refStart + (.refSegIdx - 1) * segmentDur
         .segEnd   = .segStart + segmentDur
 
         selectObject: refSound
@@ -387,8 +396,9 @@ procedure buildVoice: .vIdx, .kForVoice, .penScale
         .bestIdx  = findKBestMatches.selectedIndex
         .bestDist = findKBestMatches.selectedDistance
 
-        # Store per-voice distance for visualization
+        # Store per-voice distance + match index for stats/visualization
         voiceDist_'.vIdx'_'.segIdx' = .bestDist
+        voiceMatch_'.vIdx'_'.segIdx' = .bestIdx
 
         # Update history ring
         .hist3 = .hist2
@@ -418,7 +428,9 @@ procedure buildVoice: .vIdx, .kForVoice, .penScale
             Lengthen (overlap-add): 75, 600, .lenFactor
             .stretched = selected("Sound")
             removeObject: .fullCopy
-            # Now trim to exact segmentDur
+            # Now trim to exact segmentDur (must select the stretched
+            # sound first - removeObject above cleared the selection)
+            selectObject: .stretched
             .piece = Extract part: 0, segmentDur, "rectangular", 1, "no"
             removeObject: .stretched
         endif
@@ -633,10 +645,27 @@ refDur     = Get total duration
 refStart   = Get start time
 segmentDur = refDur / number_of_segments
 
+# number_of_segments analyses the reference. If Output_duration > 0 we
+# GENERATE more segments than the reference has, tiling the reference
+# cyclically (segment i reads reference region ((i-1) mod N)), so a short
+# reference can drive a long output. The matching still evolves per pass
+# (recency penalty + k-best randomness), so it is not a literal loop.
+segmentsToGenerate = number_of_segments
+if output_duration > 0
+    segmentsToGenerate = ceiling(output_duration / segmentDur)
+    if segmentsToGenerate < 1
+        segmentsToGenerate = 1
+    endif
+endif
+
 @log: "Reference: " + soundName_1$
 @log: "  Duration:     " + fixed$(refDur, 3) + " s"
-@log: "  Segments:     " + string$(number_of_segments)
+@log: "  Analysis segs:" + string$(number_of_segments)
 @log: "  Segment dur:  " + fixed$(segmentDur, 3) + " s"
+if output_duration > 0
+    @log: "  Output target:" + fixed$(output_duration, 2) + " s -> " +
+        ... string$(segmentsToGenerate) + " segments (tiled)"
+endif
 @log: ""
 
 # ============================================================
@@ -678,7 +707,7 @@ sumDist     = 0
 statMinDist = voiceDist_1_1
 statMaxDist = voiceDist_1_1
 
-for segIdx to number_of_segments
+for segIdx to segmentsToGenerate
     dist = voiceDist_1_'segIdx'
     sumDist = sumDist + dist
     if dist < statMinDist
@@ -688,33 +717,36 @@ for segIdx to number_of_segments
         statMaxDist = dist
     endif
 endfor
-meanDist = sumDist / number_of_segments
+meanDist = sumDist / segmentsToGenerate
 
 sumSqDiff = 0
-for segIdx to number_of_segments
+for segIdx to segmentsToGenerate
     diff = voiceDist_1_'segIdx' - meanDist
     sumSqDiff = sumSqDiff + diff * diff
 endfor
-stdDist = sqrt(sumSqDiff / number_of_segments)
+stdDist = sqrt(sumSqDiff / segmentsToGenerate)
 
-# Gesture usage (voice 1)
+# Gesture usage (voice 1): count how often each dictionary gesture was
+# chosen, how many distinct gestures were used, and the peak reuse.
 for dictIdx to nDictSounds
     gestureCount_'dictIdx' = 0
+endfor
+for segIdx to segmentsToGenerate
+    m = voiceMatch_1_'segIdx'
+    if m >= 1 and m <= nDictSounds
+        gestureCount_'m' = gestureCount_'m' + 1
+    endif
 endfor
 uniqueCount = 0
 maxUsage    = 0
-for segIdx to number_of_segments
-    dictIdx = 0
-    # reconstruct from voiceDist is not enough - need the match
-    # We need to store bestMatch per voice; re-read from voice 1 build
-    # Since buildVoice doesn't store bestMatch externally, approximate:
-    # (we stored distances; usage counting uses a simplified approach)
-endfor
-# Simpler: count via re-scanning distances (usage approx by nearest dict)
-# For accurate usage: store voiceMatch_vIdx_segIdx in buildVoice
-# Patch: add gestureCount tracking via dict distance minimization
 for dictIdx to nDictSounds
-    gestureCount_'dictIdx' = 0
+    c = gestureCount_'dictIdx'
+    if c > 0
+        uniqueCount = uniqueCount + 1
+    endif
+    if c > maxUsage
+        maxUsage = c
+    endif
 endfor
 
 # ============================================================
@@ -881,6 +913,10 @@ if verbose_output
     appendInfoLine: "  Min:  ", fixed$(statMinDist, 4)
     appendInfoLine: "  Max:  ", fixed$(statMaxDist, 4)
     appendInfoLine: ""
+    appendInfoLine: "Voice 1 Gesture Usage:"
+    appendInfoLine: "  Distinct gestures used: ", uniqueCount, " / ", nDictSounds
+    appendInfoLine: "  Most-reused gesture:    ", maxUsage, " segment(s)"
+    appendInfoLine: ""
     appendInfoLine: "════════════════════════════════════════════════════════"
 endif
 
@@ -923,7 +959,7 @@ if draw_visualization
     Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, refDur, 0
     # Segment boundary lines
-    for segIdx to number_of_segments - 1
+    for segIdx to segmentsToGenerate - 1
         bTime = refStart + segIdx * segmentDur
         Colour: "{0.72, 0.78, 0.88}"
         Dotted line
@@ -959,17 +995,17 @@ if draw_visualization
     # === PANEL 3: Segment → Gesture mapping (voice 1) ===
     Select outer viewport: 0, 8, 2.28, 3.32
     Select inner viewport: 0.60, 7.65, 2.33, 3.27
-    Axes: 0, number_of_segments, 0, nDictSounds + 1
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, number_of_segments, 0, nDictSounds + 1
+    Axes: 0, segmentsToGenerate, 0, nDictSounds + 1
+    Paint rectangle: "{0.97, 0.97, 0.98}", 0, segmentsToGenerate, 0, nDictSounds + 1
 
     # Horizontal grid lines per gesture
     for dictIdx to nDictSounds
         Colour: "{0.88, 0.88, 0.88}"
-        Draw line: 0, dictIdx, number_of_segments, dictIdx
+        Draw line: 0, dictIdx, segmentsToGenerate, dictIdx
     endfor
 
     # Colored bars per segment (color = match distance quality)
-    for segIdx to number_of_segments
+    for segIdx to segmentsToGenerate
         dist     = voiceDist_1_'segIdx'
         distNorm = (dist - statMinDist) / (statMaxDist - statMinDist + 0.001)
         cR = 0.35 + distNorm * 0.45
@@ -998,13 +1034,13 @@ if draw_visualization
     if statMaxDist < 0.001
         statMaxDist = 1
     endif
-    Axes: 0, number_of_segments + 1, 0, statMaxDist * 1.2
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, number_of_segments + 1, 0, statMaxDist * 1.2
+    Axes: 0, segmentsToGenerate + 1, 0, statMaxDist * 1.2
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, segmentsToGenerate + 1, 0, statMaxDist * 1.2
 
     # Mean line
     Colour: "{0.80, 0.80, 0.80}"
     Dotted line
-    Draw line: 0, meanDist, number_of_segments + 1, meanDist
+    Draw line: 0, meanDist, segmentsToGenerate + 1, meanDist
     Solid line
 
     # Voice colors
@@ -1027,7 +1063,7 @@ if draw_visualization
         cB$ = fixed$(vc_'vv'B, 2)
         Colour: "{" + cR$ + "," + cG$ + "," + cB$ + "}"
         Line width: 1.2
-        for segIdx from 2 to number_of_segments
+        for segIdx from 2 to segmentsToGenerate
             prevIdx = segIdx - 1
             d1 = voiceDist_'vv'_'prevIdx'
             d2 = voiceDist_'vv'_'segIdx'
@@ -1046,7 +1082,7 @@ if draw_visualization
     # Legend
     if num_voices > 1
         Font size: 5
-        xLeg = number_of_segments * 0.65
+        xLeg = segmentsToGenerate * 0.65
         yLeg = statMaxDist * 1.15
         yStep = statMaxDist * 0.10
         for vv to num_voices
