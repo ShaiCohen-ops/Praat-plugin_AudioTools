@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Enhanced
+# Version: 0.3 (2026) - Stereo-safe (mono copy for LPC Filter)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,7 +27,7 @@ endif
 sound = selected("Sound")
 origName$ = selected$("Sound")
 
-form Vowel Formant Filter v0.2
+form Vowel Formant Filter v0.3
     comment === Preset ===
     optionmenu Preset: 1
         option All Vowels (a-e-i-o-u)
@@ -129,7 +129,7 @@ endif
 # Setup
 # ============================================================
 clearinfo
-writeInfoLine: "=== Vowel Formant Filter v0.2 ==="
+writeInfoLine: "=== Vowel Formant Filter v0.3 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Input: ", origName$
 appendInfoLine: ""
@@ -142,6 +142,16 @@ nch = Get number of channels
 appendInfoLine: "Duration: ", fixed$(dur, 3), " s"
 appendInfoLine: "Sample rate: ", fs, " Hz"
 appendInfoLine: ""
+
+# LPC Filter requires a mono signal. Build a mono copy to filter; the
+# original (possibly stereo) is kept for the visualization.
+selectObject: sound
+if nch > 1
+    filterSrc = Convert to mono
+    Rename: "vt_filter_src"
+else
+    filterSrc = Copy: "vt_filter_src"
+endif
 
 # Count selected vowels
 numVowels = include_a + include_e + include_i + include_o + include_u
@@ -240,7 +250,7 @@ appendInfoLine: "Filtering..."
 outputCount = 0
 
 if include_a
-    selectObject: sound
+    selectObject: filterSrc
     plusObject: lpc_a
     Filter: "no"
     filtered_a_temp = selected("Sound")
@@ -255,7 +265,7 @@ if include_a
 endif
 
 if include_e
-    selectObject: sound
+    selectObject: filterSrc
     plusObject: lpc_e
     Filter: "no"
     filtered_e_temp = selected("Sound")
@@ -270,7 +280,7 @@ if include_e
 endif
 
 if include_i
-    selectObject: sound
+    selectObject: filterSrc
     plusObject: lpc_i
     Filter: "no"
     filtered_i_temp = selected("Sound")
@@ -285,7 +295,7 @@ if include_i
 endif
 
 if include_o
-    selectObject: sound
+    selectObject: filterSrc
     plusObject: lpc_o
     Filter: "no"
     filtered_o_temp = selected("Sound")
@@ -300,7 +310,7 @@ if include_o
 endif
 
 if include_u
-    selectObject: sound
+    selectObject: filterSrc
     plusObject: lpc_u
     Filter: "no"
     filtered_u_temp = selected("Sound")
@@ -425,6 +435,8 @@ endif
 # ============================================================
 appendInfoLine: ""
 appendInfoLine: "Cleaning up..."
+
+nocheck removeObject: filterSrc
 
 # Remove VocalTracts, VocalTractTiers, and LPCs
 if include_a
