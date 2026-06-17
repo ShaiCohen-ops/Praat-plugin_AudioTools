@@ -2,7 +2,7 @@
 # Praat AudioTools - Granular_Attention_Resynth.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Fix pitch-jitter grain length + wet/dry object[id,col]
 # License: MIT License
 #
 # Description:
@@ -71,7 +71,7 @@ endif
 # FORM
 # ============================================================
 
-form Granular Attention Re-synthesis v1.0
+form Granular Attention Re-synthesis v1.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -271,7 +271,7 @@ dryLevel    = 1.0 - wetLevel
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Granular Attention Re-synthesis v1.0"
+writeInfoLine:  "  Granular Attention Re-synthesis v1.1"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source   : ", srcName$, "  (", fixed$(srcDur, 3), " s)"
@@ -577,6 +577,27 @@ for hop from 1 to nOutputHops
         selectObject: pitched
         Override sampling frequency: srcSr
         grainCopy = pitched
+
+        # Resample+override changed the grain's DURATION (that is the pitch
+        # shift). For uniform-overlap concatenation every grain must be the
+        # same length, so trim or zero-pad back to exactly grainDur.
+        selectObject: grainCopy
+        jDur = Get total duration
+        targetDur = tGEnd - origStart
+        if jDur > targetDur + 0.0000001
+            fixed = Extract part: 0, targetDur, "rectangular", 1, "no"
+            removeObject: grainCopy
+            grainCopy = fixed
+        elsif jDur < targetDur - 0.0000001
+            padLen = targetDur - jDur
+            Create Sound from formula: "gar_pad", 1, 0, padLen, srcSr, "0"
+            padG = selected("Sound")
+            selectObject: grainCopy
+            plusObject: padG
+            joined = Concatenate
+            removeObject: grainCopy, padG
+            grainCopy = joined
+        endif
     endif
 
     # Store grain ID for later concatenation
@@ -648,7 +669,7 @@ if dryLevel > 0.001
     dryStr$ = fixed$(dryLevel, 6)
     dryID$  = string$(dryCopy)
     selectObject: concatResult
-    Formula: "self * " + wetStr$ + " + object[" + dryID$ + "] * " + dryStr$
+    Formula: "self * " + wetStr$ + " + object[" + dryID$ + ", col] * " + dryStr$
     removeObject: dryCopy
 endif
 
