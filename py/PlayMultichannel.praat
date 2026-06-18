@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Live device picker dropdown (remembers last device)
+# Version: 1.3 (2026) - Capture Python stdout/stderr to Info window on failure
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -29,6 +29,11 @@
 #      The list is queried live; your choice is remembered for next time.
 #   4. Python plays back the audio on the chosen device.
 #   5. Temp file is deleted automatically when playback ends.
+#
+# Changelog v1.3:
+#   - On playback failure, the actual Python stdout/stderr is now captured to a
+#     temp log and printed to Praat's Info window, instead of the unhelpful
+#     "check terminal" message (the console window closes instantly on Windows).
 #
 # Changelog v1.2:
 #   - Output device is chosen from a live dropdown built from the system's
@@ -88,6 +93,7 @@ tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 tempWav$         = tempDir$ + "temp_play.wav"
 deviceListFile$  = tempDir$ + "temp_play_devices.txt"
 playStatusFile$  = tempDir$ + "temp_play_status.ok"
+playLogFile$     = tempDir$ + "temp_play_log.txt"
 probePy$         = tempDir$ + "temp_play_probe.py"
 probeMarker$     = tempDir$ + "temp_play_probe.ok"
 configFile$      = pluginDir$ + "play_device.cfg"
@@ -97,6 +103,7 @@ pythonScriptJ$   = replace_regex$(pythonScript$, "\\", "/", 0)
 tempWavJ$        = replace_regex$(tempWav$, "\\", "/", 0)
 deviceListFileJ$ = replace_regex$(deviceListFile$, "\\", "/", 0)
 playStatusFileJ$ = replace_regex$(playStatusFile$, "\\", "/", 0)
+playLogFileJ$    = replace_regex$(playLogFile$, "\\", "/", 0)
 probePyJ$        = replace_regex$(probePy$, "\\", "/", 0)
 probeMarkerJ$    = replace_regex$(probeMarker$, "\\", "/", 0)
 
@@ -110,6 +117,9 @@ procedure cleanUpTempFiles
     endif
     if fileReadable(playStatusFile$)
         deleteFile: playStatusFile$
+    endif
+    if fileReadable(playLogFile$)
+        deleteFile: playLogFile$
     endif
     if fileReadable(probePy$)
         deleteFile: probePy$
@@ -129,7 +139,7 @@ dur       = Get total duration
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Multichannel Playback v1.2 ==="
+writeInfoLine:  "=== Multichannel Playback v1.3 ==="
 appendInfoLine: "Sound:    ", soundName$
 appendInfoLine: "Channels: ", nChannels
 appendInfoLine: "SR:       ", sr, " Hz"
@@ -329,7 +339,9 @@ if print_debug_info
 endif
 
 # ---- PLAY (blocking) - nocheck so cleanup always runs ----
-runSystem_nocheck: pythonCall$
+# Redirect Python's stdout+stderr to a log so any error survives the
+# console window closing (works under cmd /c on Windows and sh -c elsewhere).
+runSystem_nocheck: pythonCall$ + " > """ + playLogFileJ$ + """ 2>&1"
 
 # ===========================================================================
 # Stage 6 - Cleanup
@@ -343,10 +355,21 @@ else
 endif
 
 if not fileReadable(playStatusFile$)
+    appendInfoLine: ""
+    appendInfoLine: "--- Python output (stdout + stderr) ---"
+    if fileReadable(playLogFile$)
+        appendInfoLine: readFile$(playLogFile$)
+    else
+        appendInfoLine: "(no output was captured)"
+    endif
+    appendInfoLine: "---------------------------------------"
     @cleanUpTempFiles
-    exitScript: "Python playback failed. Check terminal for errors."
+    exitScript: "Python playback failed. See the Info window above for the Python error."
 else
     deleteFile: playStatusFile$
+    if fileReadable(playLogFile$)
+        deleteFile: playLogFile$
+    endif
 endif
 
 appendInfoLine: ""

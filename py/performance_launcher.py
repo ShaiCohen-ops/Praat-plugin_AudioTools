@@ -3,7 +3,7 @@
 # Praat AudioTools Plugin
 # Script:      performance_launcher.py
 # Author:      Shai Cohen
-# Version:     1.3 (2026) — Live master gain via arrow keys
+# Version:     1.4 (2026) — ASIO auto-enable + host-API device labels
 # License:     MIT License
 #
 # Description:
@@ -15,6 +15,18 @@
 #
 # Usage (called by PerformanceLauncher.praat):
 #   python performance_launcher.py <manifest.json>
+#
+# Changelog v1.4:
+#   - ASIO auto-enabled on Windows (SD_ENABLE_ASIO set before sounddevice is
+#     imported). Multichannel interfaces (e.g. PreSonus Studio 68c) only expose
+#     >2 outputs under ASIO; under MME/DirectSound/WASAPI/WDM-KS they fragment
+#     into stereo pairs, so the device was previously unreachable for >2ch out.
+#   - Device picker labels now include the host API, e.g.
+#     "26: Studio USB ASIO Driver (6ch) [ASIO]", so the multichannel device is
+#     unambiguous when the same hardware appears under several host APIs.
+#   - Stream-open failures now name the likely cause (sample-rate mismatch --
+#     ASIO does not resample -- or device already in use) in the status bar.
+#   - Line endings normalized to LF (file previously had mixed CRLF/LF).
 #
 # Changelog v1.3:
 #   - Live master gain from the keyboard: Up/Down nudge master +/-1 dB
@@ -71,6 +83,16 @@ import threading
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+
+# ── Enable ASIO on Windows ────────────────────────────────────────────
+# Must run before sounddevice is first imported (below). The pip wheel ships
+# an ASIO-capable PortAudio DLL but loads the non-ASIO one unless
+# SD_ENABLE_ASIO is set. Multichannel interfaces (e.g. PreSonus Studio 68c)
+# only appear as a single >2-output device under ASIO; under MME / DirectSound
+# / WASAPI / WDM-KS they fragment into stereo pairs and cannot do >2 channels.
+# setdefault() lets an explicit external override stand.
+if sys.platform == "win32":
+    os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
 # ── Early Dependency Check & Crash Trap ───────────────────────────────
 _error_file = None
@@ -212,7 +234,10 @@ class AudioEngine:
             self.log_event(f"Audio stream opened: {self.output_channels}ch @ {self.sample_rate} Hz")
             return True
         except Exception as e:
-            err = f"Failed to open audio stream: {e}"
+            err = (f"Failed to open audio stream: {e}  "
+                   f"(check the interface is set to {self.sample_rate} Hz \u2014 "
+                   f"ASIO does not resample \u2014 and is not already in use by "
+                   f"another app; ASIO is exclusive)")
             self.audio_status_errs.append(err)
             self.log_event(err)
             return False
@@ -661,11 +686,13 @@ class PerformanceLauncherApp:
     # ── Device Helpers ────────────────────────────────────────────────
     def _populate_devices(self):
         devs = sd.query_devices()
+        apis = sd.query_hostapis()
         entries = []
         idx_map = []
         for i, d in enumerate(devs):
             if d['max_output_channels'] > 0:
-                entries.append(f"{i}: {d['name']}  ({d['max_output_channels']}ch)")
+                api = apis[d['hostapi']]['name']
+                entries.append(f"{i}: {d['name']}  ({d['max_output_channels']}ch) [{api}]")
                 idx_map.append(i)
         self._device_indices = idx_map
         self.device_combo['values'] = entries

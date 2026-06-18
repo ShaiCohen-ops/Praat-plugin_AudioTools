@@ -7,6 +7,11 @@ Author: Shai Cohen, Department of Music, Bar-Ilan University
 Plays multichannel WAV files via sounddevice (ASIO / WASAPI / CoreAudio).
 Called by PlayMultichannel.praat via runSystem.
 
+On Windows, ASIO is auto-enabled (SD_ENABLE_ASIO) so that multichannel
+interfaces appear as a single >2-output device. The interface's own sample
+rate must match the file (ASIO does not resample); a mismatch is reported
+with a clear message rather than a raw PortAudio error.
+
 Usage:
     python multichannel_play.py path_to_wav
     python multichannel_play.py path_to_wav --device DEVICE_ID
@@ -18,6 +23,17 @@ import sys
 import os
 import math
 import argparse
+
+# ── Enable ASIO on Windows ────────────────────────────────────────────────
+# The pip-installed sounddevice wheel ships an ASIO-capable PortAudio DLL but
+# loads the non-ASIO one unless SD_ENABLE_ASIO is set BEFORE sounddevice is
+# first imported. Multichannel interfaces (e.g. PreSonus Studio 68c) only
+# appear as a single >2-out device under ASIO; under MME/DirectSound/WASAPI/
+# WDM-KS they fragment into stereo pairs and cannot do >2 channels. This must
+# run before the dependency check below imports sounddevice. setdefault() lets
+# an explicit external override stand.
+if sys.platform == "win32":
+    os.environ.setdefault("SD_ENABLE_ASIO", "1")
 
 
 def list_devices(out_file=None):
@@ -113,8 +129,7 @@ def play_file(wav_path, device_id=None, latency="low", debug=False,
     # ── Channel safety check / downmix ───────────────────────────────────
     if n_channels > dev_max_ch:
         if downmix:
-            # Equal-power fold-down: sum all channels in pairs onto stereo
-            import numpy as np
+            # Fold-down: sum channels in round-robin onto the available outs.
             n_out  = min(2, dev_max_ch)
             folded = np.zeros((n_samples, n_out), dtype=np.float32)
             gain   = 1.0 / math.ceil(n_channels / n_out)
@@ -124,10 +139,9 @@ def play_file(wav_path, device_id=None, latency="low", debug=False,
             peak = float(np.max(np.abs(folded)))
             if peak > 0.99:
                 folded *= 0.99 / peak
+            print("  Downmix: %d ch -> %d ch (fold-down)" % (n_channels, n_out))
             audio      = folded
             n_channels = n_out
-            print("  Downmix: %d ch -> %d ch (equal-power fold-down)"
-                  % (audio.shape[1] + n_channels - n_out, n_out))
         else:
             print("ERROR: Audio has %d channels but device '%s' supports only %d."
                   % (n_channels, dev_name, dev_max_ch), file=sys.stderr)
@@ -139,6 +153,31 @@ def play_file(wav_path, device_id=None, latency="low", debug=False,
     if n_channels < dev_max_ch and debug:
         print("  INFO: Audio has fewer channels (%d) than device max (%d)."
               % (n_channels, dev_max_ch))
+
+    # ── Pre-flight check: can this device actually open these settings? ───
+    # ASIO does not resample, so a sample-rate mismatch otherwise surfaces as
+    # a cryptic PortAudio exception. Validate first and report it plainly.
+    check_kwargs = dict(channels=n_channels, samplerate=sr, dtype="float32")
+    if device_id is not None:
+        check_kwargs["device"] = device_id
+    try:
+        sd.check_output_settings(**check_kwargs)
+    except Exception as e:
+        print("ERROR: Device '%s' cannot play this file as-is." % dev_name,
+              file=sys.stderr)
+        print("       Reason: %s" % e, file=sys.stderr)
+        print("       File: %d Hz, %d channel(s)." % (sr, n_channels),
+              file=sys.stderr)
+        try:
+            print("       Device default sample rate: %d Hz."
+                  % int(round(dev_info["default_samplerate"])), file=sys.stderr)
+        except Exception:
+            pass
+        print("       Common causes: the interface is set to a different sample "
+              "rate (ASIO does not resample \u2014 match it in the device control "
+              "panel, e.g. PreSonus Universal Control), or the device is already "
+              "in use by another app (ASIO is exclusive).", file=sys.stderr)
+        sys.exit(1)
 
     # ── Playback ──────────────────────────────────────────────────────────
     play_kwargs = dict(
