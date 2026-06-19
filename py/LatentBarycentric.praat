@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Unified Cross-Platform Version
+# Version: 1.1 (2026) - Presets now set navigation params (not just latent_size); staleness fix
 #
 # Changelog v1.3:
 #   - Viz: title/subtitle split into separate viewport bands (subtitle was
@@ -163,17 +163,57 @@ form Latent Barycentric Mutation v1.2
 endform
 
 # ---- PRESET APPLICATION (core settings) ----
+# Each preset configures the NAVIGATION cluster to match its name, not just
+# latent_size. (Previously presets set only latent_size, so GentleDrift and
+# SlowSettle were identical and FullMutationArc/ReturnFocus never actually
+# set mutate/return mode.)
 if preset = 2
+    # GentleDrift - small coherent steps, weak anchoring, low jitter
     latent_size = 6
+    plan_mode_preset = 1
+    plan_return_strength = 0.2
+    plan_k_neighbors = 4
+    plan_anchor_strategy = 1
+    plan_dur_jitter = 0.0
+    plan_eng_jitter = 0.05
     presetName$ = "GentleDrift"
 elsif preset = 3
+    # FullMutationArc - a full arc: drift -> mutate -> return (cycle mode),
+    # wider neighbourhood, more jitter for an evolving trajectory
     latent_size = 10
+    plan_mode_preset = 4
+    plan_return_strength = 0.6
+    plan_k_neighbors = 6
+    plan_anchor_strategy = 4
+    plan_dur_jitter = 0.15
+    plan_eng_jitter = 0.2
     presetName$ = "FullMutationArc"
 elsif preset = 4
+    # ReturnFocus - pull strongly back toward the opening identity (step0),
+    # high return strength, tight neighbourhood
     latent_size = 8
+    plan_mode_preset = 3
+    plan_return_strength = 0.85
+    plan_k_neighbors = 3
+    plan_anchor_strategy = 2
+    plan_dur_jitter = 0.0
+    plan_eng_jitter = 0.0
     presetName$ = "ReturnFocus"
 elsif preset = 5
+    # SlowSettle - a gentle, gradual settling toward a periodic anchor.
+    # NOTE: must use RETURN mode, not drift - the engine zeroes
+    # return_strength in every non-return mode, so "drift + return pull"
+    # would be identical to GentleDrift. Return mode with a low strength and
+    # a periodic anchor gives a slow, repeated settling distinct from the
+    # hard pull of ReturnFocus.
     latent_size = 6
+    plan_mode_preset = 3
+    plan_return_strength = 0.4
+    plan_k_neighbors = 4
+    plan_anchor_strategy = 4
+    plan_anchor_period = 10
+    plan_dur_jitter = 0.0
+    plan_eng_jitter = 0.0
     presetName$ = "SlowSettle"
 else
     presetName$ = "Custom"
@@ -591,6 +631,17 @@ if plan_source = 2
         ... + " --plan_eng_scale "           + fixed$(plan_eng_scale, 4)
         ... + " --plan_eng_jitter "          + fixed$(plan_eng_jitter, 4)
         ... + " --plan_cleanup_policy python_cleanup"
+endif
+
+# Remove any stale output/stats from a PREVIOUS run before calling Python.
+# The temp filenames are fixed, so without this a crashed run would leave
+# the old files in place and the fileReadable() check below would pass on
+# stale data - silently importing a previous result as if it were new.
+if fileReadable(tempOutput$)
+    deleteFile: tempOutput$
+endif
+if fileReadable(tempStats$)
+    deleteFile: tempStats$
 endif
 
 runSystem_nocheck: pythonCall$

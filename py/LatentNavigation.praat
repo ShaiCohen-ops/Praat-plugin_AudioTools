@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.1 (2026) - Delete stale temp output/stats before Python call
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -493,6 +493,17 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + string$(outModeInt)
     ... + " " + string$(durModeInt)
     ... + " " + fixed$(density, 4)
+
+# Remove any stale output/stats from a PREVIOUS run before calling Python.
+# The temp filenames are fixed, so without this a crashed run would leave
+# the old files in place and the fileReadable() check below would pass on
+# stale data - silently importing a previous result as if it were new.
+if fileReadable(tempOutput$)
+    deleteFile: tempOutput$
+endif
+if fileReadable(tempStats$)
+    deleteFile: tempStats$
+endif
 
 runSystem_nocheck: pythonCall$
 

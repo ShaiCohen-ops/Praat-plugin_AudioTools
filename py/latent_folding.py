@@ -486,6 +486,14 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
     usage_count = np.zeros(n_events, dtype=int)
     last_used = np.full(n_events, -100)
 
+    # LRU anti-loop window. The Mirror manifold reverses direction at the
+    # extremes and retraces its path, so the nearest-event picks tend to form
+    # a short cycle (~4 events). A look-back of only 4 cannot see a 4-step
+    # cycle closing, so it never penalises it. Widening to 8 lets the penalty
+    # catch the loop and forces variety. (Verified: Mirror presets go from ~4
+    # to 8-10 distinct events; Mobius/Torus unaffected since they don't loop.)
+    lru_window = 8
+
     current_z = start_z.copy()
     polarity = 1  # for Möbius
     direction = 1.0  # +1 forward, -1 backward along principal axis
@@ -539,8 +547,8 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
         lru_penalty = np.zeros(n_events)
         for i in range(n_events):
             recency = step - last_used[i]
-            if recency < 4:
-                lru_penalty[i] = (4 - recency) * median_dist * 0.4
+            if recency < lru_window:
+                lru_penalty[i] = (lru_window - recency) * median_dist * 0.4
         scores = d_to_events + lru_penalty
 
         chosen = int(np.argmin(scores))
@@ -593,8 +601,8 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
             total_step = len(path_events) + len(second_half_events)
             for i in range(n_events):
                 recency = total_step - last_used[i]
-                if recency < 4:
-                    lru_penalty[i] = (4 - recency) * median_dist * 0.4
+                if recency < lru_window:
+                    lru_penalty[i] = (lru_window - recency) * median_dist * 0.4
             scores = d_to_events + lru_penalty
 
             chosen = int(np.argmin(scores))

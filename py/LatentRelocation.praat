@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2 (2026) - Re-voiced Gentle/Balanced presets above the reorder threshold; staleness fix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -124,18 +124,23 @@ endform
 
 # ---- PRESETS ----
 if preset = 2
-    learning_steps = 80
+    # Gentle lattice - mild but AUDIBLE reordering. relocation_intensity
+    # must clear the engine's reorder-by-sort threshold, and stability_bias
+    # must stay low enough not to anchor events back to their original
+    # order (high stability + low intensity = no audible change).
+    learning_steps = 90
     latent_size = 6
-    relocation_intensity = 0.3
-    stability_bias = 0.6
-    novelty_bias = 0.1
+    relocation_intensity = 0.45
+    stability_bias = 0.25
+    novelty_bias = 0.2
     presetName$ = "GentleLattice"
 elsif preset = 3
-    learning_steps = 100
+    # Balanced flow - clearly audible mid-strength reshuffling
+    learning_steps = 110
     latent_size = 8
-    relocation_intensity = 0.5
-    stability_bias = 0.3
-    novelty_bias = 0.3
+    relocation_intensity = 0.6
+    stability_bias = 0.2
+    novelty_bias = 0.35
     presetName$ = "BalancedFlow"
 elsif preset = 4
     learning_steps = 150
@@ -441,6 +446,17 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + fixed$(novelty_bias, 4)
     ... + " " + string$(preserve_duration)
     ... + " " + string$(seed)
+
+# Remove any stale output/stats from a PREVIOUS run before calling Python.
+# The temp filenames are fixed, so without this a crashed run would leave
+# the old files in place and the fileReadable() check below would pass on
+# stale data - silently importing a previous result as if it were new.
+if fileReadable(tempOutput$)
+    deleteFile: tempOutput$
+endif
+if fileReadable(tempStats$)
+    deleteFile: tempStats$
+endif
 
 runSystem_nocheck: pythonCall$
 

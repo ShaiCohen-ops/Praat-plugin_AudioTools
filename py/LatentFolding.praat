@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Delete stale temp output/stats before Python call
+# Version: 1.2 (2026) - Staleness fix; engine LRU window 4->8 (breaks Mirror-manifold event loop)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
