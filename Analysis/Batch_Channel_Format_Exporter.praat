@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - folder-selection dialog option; native MP3 export
+# Version: 1.3 (2026) - user control over sample rate and bit depth
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,11 +16,29 @@
 #   For each selected Sound the script:
 #     1. Applies the chosen channel mode
 #        (mono mixdown / stereo / keep / split channels)
-#     2. Saves the result to the chosen output folder
-#     3. Optionally renames files sequentially (01, 02, 03...)
+#     2. Optionally resamples to the chosen sampling rate
+#     3. Saves the result to the chosen output folder, at the
+#        chosen bit depth, in the chosen format
+#     4. Optionally renames files sequentially (01, 02, 03...)
 #        with enough leading zeros for the whole batch
 #
 #   Original objects in the list are never modified or removed.
+#
+# SAMPLE RATE NOTE:
+#   Resampling uses Praat's own "Resample:" command (precision 50),
+#   which is a genuine, native operation. If "Keep original
+#   sampling rate" is chosen, no resampling occurs.
+#
+# BIT DEPTH NOTE:
+#   Praat's own file-writing commands (Save as WAV/AIFF/FLAC file)
+#   are hard-wired to 16-bit; Praat itself has no scripting option
+#   to write 24-bit or 32-bit float files. To offer real control,
+#   this script first saves natively (16-bit), then, if 24-bit or
+#   32-bit float was requested, re-encodes that file in place using
+#   ffmpeg (pcm_s24le/be or pcm_f32le/be), if ffmpeg is installed
+#   and on the system PATH. If ffmpeg is missing or fails, the file
+#   is left at native 16-bit and this is reported per file and in
+#   the summary. Bit depth has no effect on MP3 (a lossy format).
 #
 # MP3 NOTE:
 #   Since the Praat 6.4 series (late 2023), Praat CAN save MP3
@@ -56,8 +74,50 @@ form Batch Channel and Format Exporter
         option WAV
         option AIFF
         option MP3 (highest quality; needs Praat 6.4+)
+    optionmenu Sample_rate: 1
+        option Keep original sampling rate
+        option 16000 Hz
+        option 22050 Hz
+        option 44100 Hz
+        option 48000 Hz
+        option 96000 Hz
+        option 192000 Hz
+        option Custom (set below)
+    positive Custom_sample_rate_Hz 44100
+    comment Custom rate is used only when "Custom" is selected above.
+    optionmenu Bit_depth: 1
+        option 16-bit (Praat native; no extra software needed)
+        option 24-bit (WAV/AIFF; re-encoded with ffmpeg)
+        option 32-bit float (WAV/AIFF; re-encoded with ffmpeg)
+    comment Praat itself can only write 16-bit WAV/AIFF/FLAC files.
+    comment 24-bit / 32-bit float re-encodes the saved file with
+    comment ffmpeg (if installed on the system PATH). No effect on MP3.
     boolean Overwrite_existing_files 0
 endform
+
+# ============================================================
+# Resolve sample-rate and bit-depth choices
+# ============================================================
+
+if sample_rate = 1
+    targetRate = 0
+elsif sample_rate = 2
+    targetRate = 16000
+elsif sample_rate = 3
+    targetRate = 22050
+elsif sample_rate = 4
+    targetRate = 44100
+elsif sample_rate = 5
+    targetRate = 48000
+elsif sample_rate = 6
+    targetRate = 96000
+elsif sample_rate = 7
+    targetRate = 192000
+else
+    targetRate = custom_sample_rate_hz
+endif
+
+bitDepth = bit_depth
 
 # ============================================================
 # Collect the current selection BEFORE anything changes it
@@ -121,13 +181,81 @@ if padDigits < 2
 endif
 
 # ============================================================
+# Bit-depth conversion (post-process, via ffmpeg)
+#   .path$ : path of the just-saved (native 16-bit) file
+#   .fmt   : 1 = WAV, 2 = AIFF  (never called for MP3)
+# Praat cannot itself write anything but 16-bit, so 24-bit and
+# 32-bit-float requests are realized by re-encoding the file in
+# place with ffmpeg. If ffmpeg is missing or fails, the file is
+# simply left at native 16-bit and that is reported.
+# Updates the global counters numBitDepthDone / numBitDepthFailed.
+# ============================================================
+
+procedure convertBitDepth: .path$, .fmt
+    if .fmt = 1
+        if bitDepth = 2
+            .codec$ = "pcm_s24le"
+            .label$ = "24-bit"
+        else
+            .codec$ = "pcm_f32le"
+            .label$ = "32-bit float"
+        endif
+    else
+        if bitDepth = 2
+            .codec$ = "pcm_s24be"
+            .label$ = "24-bit"
+        else
+            .codec$ = "pcm_f32be"
+            .label$ = "32-bit float"
+        endif
+    endif
+
+    .tmpPath$ = .path$ + ".bitdepth_tmp"
+    nocheck deleteFile: .tmpPath$
+    runSystem_nocheck: "ffmpeg -y -loglevel error -i ""'.path$'"" -c:a '.codec$' ""'.tmpPath$'"""
+
+    if fileReadable (.tmpPath$)
+        deleteFile: .path$
+        if windows
+            runSystem_nocheck: "move /Y ""'.tmpPath$'"" ""'.path$'"""
+        else
+            runSystem_nocheck: "mv ""'.tmpPath$'"" ""'.path$'"""
+        endif
+        if fileReadable (.path$)
+            appendInfoLine: "    -> re-encoded to ", .label$, " (ffmpeg)"
+            numBitDepthDone = numBitDepthDone + 1
+        else
+            appendInfoLine: "    -> WARNING: bit-depth temp file created but could not be moved into place"
+            numBitDepthFailed = numBitDepthFailed + 1
+        endif
+    else
+        appendInfoLine: "    -> kept at native 16-bit (ffmpeg not found, or conversion failed)"
+        numBitDepthFailed = numBitDepthFailed + 1
+    endif
+endproc
+
+# ============================================================
 # Saving procedure (shared by all channel modes)
 #   .obj      : Sound object to save
 #   .outBase$ : file name without extension
 # Updates the global counters numSaved / numSkipped / numFailed.
+# Resamples a temporary copy first if a target sample rate was
+# requested and differs from the object's current rate; the
+# original object passed in is never modified.
 # ============================================================
 
 procedure saveOne: .obj, .outBase$
+    .saveObj = .obj
+    .resampled = 0
+    if targetRate > 0
+        selectObject: .obj
+        .curRate = Get sampling frequency
+        if .curRate <> targetRate
+            .saveObj = Resample: targetRate, 50
+            .resampled = 1
+        endif
+    endif
+
     .path$ = outFolder$ + "/" + .outBase$ + ext$
     if fileReadable (.path$) and not overwrite_existing_files
         appendInfoLine: "  SKIPPED (file exists): ", .path$
@@ -138,7 +266,7 @@ procedure saveOne: .obj, .outBase$
         if fileReadable (.path$)
             deleteFile: .path$
         endif
-        selectObject: .obj
+        selectObject: .saveObj
         if saveFormat = 1
             nocheck Save as WAV file: .path$
         elsif saveFormat = 2
@@ -152,6 +280,9 @@ procedure saveOne: .obj, .outBase$
         if fileReadable (.path$)
             appendInfoLine: "  saved: ", .path$
             numSaved = numSaved + 1
+            if saveFormat <> 3 and bitDepth > 1
+                @convertBitDepth: .path$, saveFormat
+            endif
         elsif saveFormat = 3
             .fallback$ = outFolder$ + "/" + .outBase$ + ".wav"
             if fileReadable (.fallback$) and not overwrite_existing_files
@@ -161,12 +292,15 @@ procedure saveOne: .obj, .outBase$
                 if fileReadable (.fallback$)
                     deleteFile: .fallback$
                 endif
-                selectObject: .obj
+                selectObject: .saveObj
                 nocheck Save as WAV file: .fallback$
                 if fileReadable (.fallback$)
                     appendInfoLine: "  saved as WAV (MP3 export unavailable in this Praat): ", .fallback$
                     numSaved = numSaved + 1
                     numMp3Fallback = numMp3Fallback + 1
+                    if bitDepth > 1
+                        @convertBitDepth: .fallback$, 1
+                    endif
                 else
                     appendInfoLine: "  FAILED to save: ", .path$
                     numFailed = numFailed + 1
@@ -176,6 +310,10 @@ procedure saveOne: .obj, .outBase$
             appendInfoLine: "  FAILED to save: ", .path$
             numFailed = numFailed + 1
         endif
+    endif
+
+    if .resampled
+        removeObject: .saveObj
     endif
 endproc
 
@@ -193,12 +331,28 @@ elsif saveFormat = 2
 else
     appendInfoLine: "Format: MP3 (highest quality)"
 endif
+if targetRate = 0
+    appendInfoLine: "Sample rate: unchanged (original rate kept)"
+else
+    appendInfoLine: "Sample rate: ", targetRate, " Hz (resampled as needed)"
+endif
+if bitDepth = 1
+    appendInfoLine: "Bit depth: 16-bit (Praat native)"
+elsif saveFormat = 3
+    appendInfoLine: "Bit depth: n/a (MP3 is lossy; bit-depth choice ignored)"
+elsif bitDepth = 2
+    appendInfoLine: "Bit depth: 24-bit (native 16-bit save, then re-encoded via ffmpeg)"
+else
+    appendInfoLine: "Bit depth: 32-bit float (native 16-bit save, then re-encoded via ffmpeg)"
+endif
 appendInfoLine: ""
 
 numSaved = 0
 numSkipped = 0
 numFailed = 0
 numMp3Fallback = 0
+numBitDepthDone = 0
+numBitDepthFailed = 0
 
 for i to numSounds
     sndID = soundID_'i'
@@ -275,6 +429,18 @@ appendInfoLine: "DONE"
 appendInfoLine: "Files saved:   ", numSaved
 appendInfoLine: "Files skipped: ", numSkipped, " (already existed; enable overwrite to replace)"
 appendInfoLine: "Files failed:  ", numFailed
+
+if bitDepth > 1
+    appendInfoLine: ""
+    appendInfoLine: "BIT-DEPTH CONVERSION (via ffmpeg)"
+    appendInfoLine: "Re-encoded successfully: ", numBitDepthDone
+    if numBitDepthFailed > 0
+        appendInfoLine: numBitDepthFailed, " file(s) stayed at native 16-bit because ffmpeg was"
+        appendInfoLine: "not found (or failed). Install ffmpeg and make sure it is on"
+        appendInfoLine: "the system PATH, then re-run with overwrite enabled to upgrade"
+        appendInfoLine: "those files."
+    endif
+endif
 
 if numMp3Fallback > 0
     appendInfoLine: ""
