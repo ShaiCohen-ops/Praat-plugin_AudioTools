@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2 (2026) - Staleness fix (delete stale output/stats before Python call)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -55,7 +55,7 @@ if not fileReadable(pythonScript$)
 endif
 
 # ---- FORM  (window 1 - core + VAE + STFT) ----
-form Latent STFT Decoder v1.1
+form Latent STFT Decoder v1.2
     optionmenu Preset: 1
         option Custom
         option Quick (small, fast)
@@ -577,6 +577,18 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --vae_freq "      + string$(vae_freq)
     ... + " --vae_frames "    + string$(vae_frames)
     ... + " --cleanup"
+
+# Remove any stale output/stats from a PREVIOUS run before calling Python.
+# These temps live in the plugin folder (not the OS temp dir), so a stale
+# file survives reboots. Without this, a crashed run after a prior success
+# would leave the old output in place and the fileReadable() check below
+# would pass on stale data - silently importing a previous result as new.
+if fileReadable(tempOutput$)
+    deleteFile: tempOutput$
+endif
+if fileReadable(tempStats$)
+    deleteFile: tempStats$
+endif
 
 runSystem: pythonCall$
 
