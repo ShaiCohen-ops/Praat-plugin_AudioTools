@@ -2,7 +2,7 @@
 # Praat AudioTools - VoidMosaic.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.2 (2026) - Migrated Sieve params: jitter, rests, register, spacing, source-variety
+# Version: 1.3 (2026) - Stereo output (pan + decorrelation); ~1x cost
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,7 +17,7 @@
 # Python engine: void_mosaic_engine.py
 # ============================================================
 
-form "Latent Void Mosaic v1.2"
+form "Latent Void Mosaic v1.3"
     comment ── Corpus Configuration ──
     comment (Leave blank to pick a folder with a dialog)
     sentence Corpus_folder 
@@ -55,6 +55,14 @@ form "Latent Void Mosaic v1.2"
         option Alto (F3 - F5)
         option Soprano (C4 - C6)
         option Full Range Open
+    
+    comment ── Stereo ──
+    boolean Stereo_output 1
+    optionmenu Pan_strategy: 1
+        option Random per grain
+        option Spectral centroid -> L/R
+        option Alternate L/R
+    real Stereo_width 0.85
     
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -241,6 +249,9 @@ pyCmd$ = pyCmd$ + " --min_pitch " + string$(minPitchHz)
 pyCmd$ = pyCmd$ + " --max_pitch " + string$(maxPitchHz)
 pyCmd$ = pyCmd$ + " --void_spacing " + string$(void_spacing)
 pyCmd$ = pyCmd$ + " --reuse_penalty " + string$(source_variety)
+pyCmd$ = pyCmd$ + " --stereo " + string$(stereo_output)
+pyCmd$ = pyCmd$ + " --pan_mode " + string$(pan_strategy)
+pyCmd$ = pyCmd$ + " --stereo_width " + string$(stereo_width)
 pyCmd$ = pyCmd$ + " --out_wav """ + tempWav$ + """"
 pyCmd$ = pyCmd$ + " --out_csv """ + tempCsv$ + """"
 pyCmd$ = pyCmd$ + " --out_stats """ + tempStats$ + """"
@@ -266,8 +277,18 @@ if fileReadable(tempWav$)
     Rename: "Mutated_Bestiary"
     result_id = selected("Sound")
     
+    # To Spectrogram requires mono; the output may be stereo. Build a mono
+    # copy for the spectrogram and keep the (possibly stereo) result as the
+    # actual output object.
+    nCh = Get number of channels
+    if nCh > 1
+        specSrc = Convert to mono
+    else
+        specSrc = Copy: "vm_spec_src"
+    endif
     To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
     spectrogram_id = selected("Spectrogram")
+    removeObject: specSrc
     
     if draw_visualization
         Erase all
