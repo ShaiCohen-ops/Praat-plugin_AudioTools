@@ -535,24 +535,30 @@ def compute_spatial_trajectories(agents, Z):
     idx = np.argsort(eigvals)[::-1]
     top2 = eigvecs[:, idx[:2]]
 
-    # Gather all agent positions for normalization
-    all_pos_2d = []
-    for a in agents:
-        for pos in a.position_history:
-            p2d = (pos - np.mean(Z, axis=0)).dot(top2)
-            all_pos_2d.append(p2d)
-    all_pos_2d = np.array(all_pos_2d)
+    # Reference scale: the corpus's OWN spread along each PCA axis. We map
+    # agent positions in units of this fixed, run-independent scale instead
+    # of stretching each run to fill the full circle.
+    #
+    # WHY: the previous code normalized every run to span x_min->0 deg,
+    # x_max->360 deg, so a tightly clustered set of agents (low rigidity)
+    # and a widely repelled set (high rigidity) BOTH filled the whole
+    # azimuth circle - rigidity's effect on spatial WIDTH was erased, and
+    # presets differed spatially far less than their names imply. Scaling
+    # against a fixed reference lets clustered agents stay near front-centre
+    # (narrow image) while repelled agents swing wide, so counterpoint_
+    # rigidity now genuinely controls how wide the spatial field is.
+    corpus_2d = Z_c.dot(top2)
+    x_ref = np.std(corpus_2d[:, 0]) + 1e-8
+    y_ref = np.std(corpus_2d[:, 1]) + 1e-8
 
-    # Normalize range
-    if len(all_pos_2d) > 1:
-        x_min, x_max = np.min(all_pos_2d[:, 0]), np.max(all_pos_2d[:, 0])
-        y_min, y_max = np.min(all_pos_2d[:, 1]), np.max(all_pos_2d[:, 1])
-    else:
-        x_min, x_max = -1, 1
-        y_min, y_max = -1, 1
-
-    x_range = max(x_max - x_min, 1e-8)
-    y_range = max(y_max - y_min, 1e-8)
+    # How many reference-std of X-spread map to the lateral azimuth limit.
+    # Agents traverse roughly 2.6 std (low rigidity) to 4.7 std (high
+    # rigidity) over a run, so a limit of 5.0 std lets low-rigidity runs use
+    # about half the field (narrow image) while high-rigidity runs approach
+    # the sides (wide image). Beyond the limit the agent is clamped to the
+    # side - it does not wrap back through front-centre.
+    AZIMUTH_LIMIT_STD = 5.0
+    AZIMUTH_LIMIT_DEG = 150.0  # signed: -150 (hard left) .. +150 (hard right)
 
     spatial_trajectories = []
 
@@ -561,14 +567,19 @@ def compute_spatial_trajectories(agents, Z):
         for pos in a.position_history:
             p2d = (pos - np.mean(Z, axis=0)).dot(top2)
 
-            # X → azimuth: normalize to [0, 360]
-            x_norm = (p2d[0] - x_min) / x_range
-            azimuth = x_norm * 360.0
+            # X -> signed azimuth around the front. Centred so the corpus
+            # mean sits at 0 deg (front); spread scales with actual motion.
+            x_units = p2d[0] / x_ref
+            x_units = max(-AZIMUTH_LIMIT_STD, min(AZIMUTH_LIMIT_STD, x_units))
+            azimuth = (x_units / AZIMUTH_LIMIT_STD) * AZIMUTH_LIMIT_DEG
+            azimuth = azimuth % 360.0  # keep in [0,360) for the panners
 
-            # Y → distance: normalize to [0.1, 1.0]
-            # (0.1 = close/loud, 1.0 = far/quiet)
-            y_norm = (p2d[1] - y_min) / y_range
-            distance = 0.1 + 0.9 * y_norm
+            # Y -> distance. Corpus mean -> mid-distance (~0.55); nearer the
+            # listener when Y is below the mean, farther when above.
+            y_units = p2d[1] / y_ref
+            y_units = max(-5.0, min(5.0, y_units))
+            distance = 0.55 + 0.09 * y_units      # ~0.1 .. ~1.0 over +/-5 std
+            distance = max(0.1, min(1.0, distance))
 
             traj.append((azimuth, distance))
         spatial_trajectories.append(traj)
