@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026) - Mono guard (stereo input no longer crashes To Manipulation)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,8 +25,19 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-original = selected("Sound")
+userSound = selected("Sound")
 origName$ = selected$("Sound")
+
+# To Manipulation / Change gender require a mono Sound; stereo input would
+# crash. Voice transformation (PSOLA pitch/formant) is inherently mono, so
+# work on a mono copy. The user's selected object is left untouched.
+selectObject: userSound
+nChannels = Get number of channels
+if nChannels > 1
+    original = Convert to mono
+else
+    original = Copy: origName$ + "_work"
+endif
 
 selectObject: original
 dur = Get total duration
@@ -372,6 +383,7 @@ endif
 
 # === Cleanup ===
 removeObject: manipulation
+removeObject: original
 
 # === Final Info ===
 selectObject: result
