@@ -380,14 +380,18 @@ if draw_visualization
     selectObject: original
     Axes: 0, resultDur, -1, 1
     Colour: "{0.55, 0.55, 0.6}"
-    Draw: 0, resultDur, -1, 1, "no", "Curve"
+    Draw: 0, originalDur, -1, 1, "no", "Curve"
+    Colour: "{0.75, 0.75, 0.8}"
+    Dotted line
+    Draw line: originalDur, -1, originalDur, 1
+    Solid line
     Colour: "Black"
     Draw inner box
     Font size: 7
     Marks left: 3, "yes", "yes", "no"
     Text left: "yes", "Dry"
     Font size: 9
-    Text top: "no", "##Original (dry)##"
+    Text top: "no", "##Original (dry) — ends before the tail##"
 
     # === RESULT WAVEFORM (full length, including shimmer tail) ===
     Select outer viewport: 0, 8, 2.6, 4.4
