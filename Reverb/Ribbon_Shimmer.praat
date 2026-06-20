@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026) - Fixed wet/dry mix object[id,col]; speedup (trimmed inaudible taps); house-style viz + full-length result
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,7 +36,7 @@ form Ribbon Shimmer
     
     comment === Effect Parameters ===
     positive Tail_duration_s 0.5
-    natural Number_of_delays 95
+    natural Number_of_delays 48
     positive Base_amplitude 0.24
     positive Min_delay_s 0.015
     positive Max_delay_s 1.35
@@ -83,7 +83,7 @@ if preset = 2
 elsif preset = 3
     # Medium Ribbon
     tail_duration_s = 0.5
-    number_of_delays = 95
+    number_of_delays = 72
     base_amplitude = 0.24
     min_delay_s = 0.015
     max_delay_s = 1.35
@@ -94,7 +94,7 @@ elsif preset = 3
 elsif preset = 4
     # Heavy Ribbon
     tail_duration_s = 0.8
-    number_of_delays = 140
+    number_of_delays = 90
     base_amplitude = 0.3
     min_delay_s = 0.012
     max_delay_s = 1.8
@@ -105,7 +105,7 @@ elsif preset = 4
 elsif preset = 5
     # Extreme Ribbon
     tail_duration_s = 1.2
-    number_of_delays = 200
+    number_of_delays = 100
     base_amplitude = 0.38
     min_delay_s = 0.01
     max_delay_s = 2.5
@@ -216,7 +216,7 @@ if numChannels = 2
         selectObject: shimmerLeft
         Formula: "if x > " + delay_str$ + " then self + " + a_str$ + " * (self(x - " + delay_str$ + ") + " + sparkle_str$ + " * (self(x - " + delay_str$ + ") - self(x - " + delay_str$ + " - " + sp_str$ + "))) else self fi"
         
-        if k mod 20 = 0
+        if k mod 40 = 0
             Scale peak: 0.98
         endif
     endfor
@@ -269,10 +269,10 @@ if numChannels = 2
         right_str$ = string$(rightChannel)
         
         selectObject: shimmerLeft
-        Formula: "self * " + wet_str$ + " + object[" + left_str$ + "] * " + dry_str$
+        Formula: "self * " + wet_str$ + " + object[" + left_str$ + ", col] * " + dry_str$
         
         selectObject: shimmerRight
-        Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
+        Formula: "self * " + wet_str$ + " + object[" + right_str$ + ", col] * " + dry_str$
     endif
     
     # Apply fadeout
@@ -322,7 +322,7 @@ else
         selectObject: shimmerMono
         Formula: "if x > " + delay_str$ + " then self + " + a_str$ + " * (self(x - " + delay_str$ + ") + " + sparkle_str$ + " * (self(x - " + delay_str$ + ") - self(x - " + delay_str$ + " - " + sp_str$ + "))) else self fi"
         
-        if k mod 20 = 0
+        if k mod 40 = 0
             Scale peak: 0.98
         endif
     endfor
@@ -336,7 +336,7 @@ else
         ext_str$ = string$(extendedSound)
         
         selectObject: shimmerMono
-        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + "] * " + dry_str$
+        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + ", col] * " + dry_str$
     endif
     
     # Apply fadeout
@@ -359,69 +359,78 @@ endif
 
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Ribbon Shimmer: " + originalName$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
-    selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Dry"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    Select outer viewport: 0, 8, 0, 8
+
     selectObject: result
-    Colour: "{0.6, 0.5, 0.7}"
-    Draw: 0, originalDur, 0, 0, "no", "Curve"
+    resultDur = Get total duration
+
+    # === TITLE ===
+    Select outer viewport: 0, 8, 0.0, 0.6
+    Axes: 0, 1, 0, 1
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.66, "half", "##Ribbon Shimmer##  |  " + presetName$
+    Font size: 8
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", -1.24, "half", originalName$ + "   |   " + string$(number_of_delays) + " delays   |   wet/dry " + fixed$(wet_dry_percent, 0) + "%"
+
+    # === DRY WAVEFORM ===
+    Select outer viewport: 0, 8, 0.7, 2.5
+    Select inner viewport: 0.6, 7.6, 0.8, 2.4
+    selectObject: original
+    Axes: 0, resultDur, -1, 1
+    Colour: "{0.55, 0.55, 0.6}"
+    Draw: 0, resultDur, -1, 1, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
+    Marks left: 3, "yes", "yes", "no"
+    Text left: "yes", "Dry"
+    Font size: 9
+    Text top: "no", "##Original (dry)##"
+
+    # === RESULT WAVEFORM (full length, including shimmer tail) ===
+    Select outer viewport: 0, 8, 2.6, 4.4
+    Select inner viewport: 0.6, 7.6, 2.7, 4.3
+    selectObject: result
+    Axes: 0, resultDur, -1, 1
+    Colour: "{0.55, 0.45, 0.7}"
+    Draw: 0, resultDur, -1, 1, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Marks left: 3, "yes", "yes", "no"
     Text left: "yes", "Shimmer " + fixed$(wet_dry_percent, 0) + "%"
     Text bottom: "yes", "Time (s)"
-    
-    # Exponential delay pattern
-    Select outer viewport: 0, 8, 2.5, 4.0
-    Select inner viewport: 0.6, 7.6, 2.6, 3.9
-    
+    Font size: 9
+    Text top: "no", "##Shimmered Output (full length with tail)##"
+
+    # === DELAY / ECHO PATTERN ===
+    Select outer viewport: 0, 8, 4.5, 6.9
+    Select inner viewport: 0.6, 7.6, 4.6, 6.8
     maxDelayMs = max_delay_s * 1000 * 1.1
     maxAmp = base_amplitude * 1.2
-    
     Axes: 0, maxDelayMs, -maxAmp, maxAmp
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, maxDelayMs, -maxAmp, maxAmp
-    
-    # Zero line
+    Paint rectangle: "{0.96, 0.96, 0.97}", 0, maxDelayMs, -maxAmp, maxAmp
     Colour: "{0.85, 0.85, 0.85}"
     Draw line: 0, 0, maxDelayMs, 0
-    
-    # Draw delay impulses
+
     numShow = min(number_of_delays, 100)
+    radius = maxDelayMs * 0.006
     for k from 1 to numShow
         delayMs = echoDelay[k] * 1000
         amp = echoAmp[k] * echoPol[k]
-        
-        # Color by polarity
         if echoPol[k] > 0
-            col$ = "{0.5, 0.6, 0.8}"
+            col$ = "{0.45, 0.55, 0.80}"
         else
-            col$ = "{0.8, 0.5, 0.5}"
+            col$ = "{0.80, 0.45, 0.45}"
         endif
-        
         Colour: col$
         Draw line: delayMs, 0, delayMs, amp
-        Paint circle (mm): col$, delayMs, amp, 0.8
+        Paint circle: col$, delayMs, amp, radius
     endfor
-    
-    # Exponential envelope
+
+    # exponential decay envelope
     Colour: "{0.7, 0.7, 0.7}"
     Dotted line
     prevX = 0
@@ -434,26 +443,32 @@ if draw_visualization
         prevY = env
     endfor
     Solid line
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 6
+    Font size: 7
+    Marks left: 3, "yes", "yes", "no"
     Text left: "yes", "Amplitude"
     Text bottom: "yes", "Delay (ms) — exponential spacing"
-    
-    # Legend
-    Font size: 5
-    Colour: "{0.5, 0.6, 0.8}"
-    Text: maxDelayMs * 0.85, "centre", maxAmp * 0.85, "half", "+ polarity"
-    Colour: "{0.8, 0.5, 0.5}"
-    Text: maxDelayMs * 0.85, "centre", -maxAmp * 0.85, "half", "- polarity"
-    
-    # Parameters
-    Select outer viewport: 0, 8, 4.1, 4.5
-    Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Delays: " + string$(number_of_delays) + " | Range: " + fixed$(min_delay_s * 1000, 0) + "-" + fixed$(max_delay_s * 1000, 0) + "ms | Decay: " + fixed$(decay_factor, 3) + " | Sparkle: " + fixed$(sparkle_amount, 2)
-    
+    Font size: 9
+    Text top: "no", "##Echo Tap Pattern (blue +, red −)##"
+
+    # === GREY SUMMARY PANEL ===
+    Select outer viewport: 0, 8, 7.0, 8.0
+    Select inner viewport: 0.6, 7.6, 7.05, 7.95
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.70, "half", "##Shimmer Parameters##"
+    Font size: 8
+    Colour: "{0.25, 0.25, 0.25}"
+    Text: 0.02, "left", 0.40, "half", "Delays: " + string$(number_of_delays) + "    Range: " + fixed$(min_delay_s * 1000, 0) + "–" + fixed$(max_delay_s * 1000, 0) + " ms    Decay: " + fixed$(decay_factor, 3) + "    Sparkle: " + fixed$(sparkle_amount, 2)
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.02, "left", 0.12, "half", "Output: " + fixed$(resultDur, 2) + " s  (original " + fixed$(originalDur, 2) + " s + " + fixed$(tail_duration_s, 2) + " s tail)    Wet/dry: " + fixed$(wet_dry_percent, 0) + "%"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
     Font size: 10
     Colour: "Black"
 endif
