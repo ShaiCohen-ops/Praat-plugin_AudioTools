@@ -2,9 +2,32 @@
 # Praat AudioTools - NeuralResynthesisVocoder.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 2.6 (2026) - House-style colour accents (preset-coded, no more B&W)
+# Email: shai.cohen@biu.ac.il
+# Version: 2.7 (2026) - House-style colour accents; collision fixes
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Neural Resynthesis Vocoder - latent-space speech resynthesis.
+#   Selects one Sound object, exports a WAV, and sends it to a Python
+#   backend running a three-stage neural pipeline (HuBERT-Soft units ->
+#   acoustic model -> HiFi-GAN). The latent unit vector is intercepted
+#   and perturbed before resynthesis. Praat reads the result back,
+#   plays it, and visualises waveform + spectrogram.
+#
+#   Latent operations:
+#     temperature - scales unit-vector magnitude (not sampling temp),
+#     quantization - rounds soft units to q levels (unit bitcrush),
+#     noise - injects Gaussian noise into the units.
+#
+#   Note: the pipeline is speech-trained and runs at 16 kHz internally
+#   (output band-limited to 8 kHz). Non-speech input is "speech-ified" -
+#   a creative effect, not a general-purpose vocoder.
+#
+# Citation:
+#   Cohen, S. (2026). Praat AudioTools: Neural Resynthesis Vocoder.
+#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
 # ============================================================
 
 # ---- INPUT CHECK ----
@@ -18,7 +41,7 @@ selectObject: sound_id
 original_sr = Get sampling frequency
 
 # ---- FORM INTERFACE WITH EXTREME PRESETS ----
-form Neural Audio Resynthesis Vocoder v2.5
+form Neural Audio Resynthesis Vocoder v2.7
     comment ── Synthesis Configuration ──
     optionmenu Preset: 2
         option Custom Settings
@@ -221,73 +244,65 @@ if fileReadable(tempOutput$)
         Erase all
         Select outer viewport: 0, 8, 0, 8
 
-        # Panel 0: Title (accent stripe + coloured preset tag, house style)
-        Select outer viewport: 0, 8, 0, 0.9
+        # Panel 0: Title
+        Select outer viewport: 0, 8, 0.0, 0.62
         Axes: 0, 1, 0, 1
-        Paint rectangle: presetColor$, 0, 1, 0.94, 1
         Black
-        Font size: 14
-        Text: 0.5, "centre", 0.62, "half", "##Neural Resynthesis Vocoder##"
+        Font size: 13
+        Text: 0.5, "centre", 0.72, "half", "##Neural Resynthesis Vocoder##"
         Font size: 8
-        Text: 0.5, "centre", 0.22, "half", "HuBERT-Soft -> Acoustic Model -> HiFi-GAN  (16 kHz internal)"
+        Colour: "{0.35, 0.35, 0.5}"
+        Text: 0.5, "centre", -1.28, "half", "HuBERT-Soft -> Acoustic Model -> HiFi-GAN  (16 kHz internal)  |  preset: " + preset$
+        Black
 
         # Panel 1: Waveform of the resynthesis (coloured by preset).
-        # Inner viewport is padded: 0.4 at the top for "Text top" (the
-        # panel heading) and 0.3 at the bottom for "Marks bottom" +
-        # "Text bottom" (the time-axis tick labels), so nothing bleeds
-        # into the panels above/below.
-        Select outer viewport: 0, 8, 1.05, 3.55
-        Select inner viewport: 0.6, 7.7, 1.45, 3.25
+        Select outer viewport: 0, 8, 0.75, 3.20
+        Select inner viewport: 0.6, 7.6, 0.85, 3.05
         selectObject: result_id
         Colour: presetColor$
         Draw: 0, 0, 0, 0, "no", "Curve"
         Black
         Draw inner box
         Font size: 7
-        Marks left: 3, "yes", "yes", "no"
         Text left: "yes", "Amplitude"
-        Text bottom: "yes", "Time (seconds)"
-        Font size: 9
         Colour: presetColor$
         Text top: "no", "##Resynthesized Waveform##"
 
         # Panel 2: Spectrogram of the resynthesis (greyscale cells are a
         # Praat engine limitation - Spectrogram Paint has no colormap - so
         # the accent colour goes on the frame/title instead, tying it
-        # visually back to panel 1 and the preset tag). Same top/bottom
-        # padding logic as panel 1, with a gap above from panel 1's
-        # bottom axis labels.
-        Select outer viewport: 0, 8, 3.75, 6.25
-        Select inner viewport: 0.6, 7.7, 4.15, 5.95
+        # visually back to panel 1 and the preset tag). Same margins as
+        # panel 1.
+        Select outer viewport: 0, 8, 3.25, 5.85
+        Select inner viewport: 0.6, 7.6, 3.35, 5.70
         selectObject: spectrogram_id
         Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-        Colour: presetColor$
-        Draw inner box
         Black
+        Draw inner box
         Font size: 7
         Text left: "yes", "Frequency (Hz)"
         Text bottom: "yes", "Time (seconds)"
-        Font size: 9
         Colour: presetColor$
         Text top: "no", "##Spectral Output (note 8 kHz model ceiling)##"
 
-        # Panel 3: Summary panel - light tint of the preset colour instead
-        # of flat grey, accent-coloured heading to match panels 1-2
-        Select outer viewport: 0, 8, 6.45, 8.0
-        Select inner viewport: 0.6, 7.7, 6.5, 7.95
+        # Panel 3: Summary strip - light tint of the preset colour, same
+        # density as PCA Tone Shaper's legend strip (Font 6-7, rows ~0.18
+        # apart), just taller since there's more to report here.
+        Select outer viewport: 0, 8, 5.90, 7.95
+        Select inner viewport: 0.6, 7.6, 5.95, 7.90
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.96, 0.96, 0.97}", 0, 1, 0, 1
         Paint rectangle: presetColor$, 0, 0.012, 0, 1
-        Font size: 9
+        Font size: 8
         Colour: presetColor$
         Text: 0.03, "left", 0.84, "half", "##Latent Unit Operations##"
-        Font size: 8
+        Font size: 7
         Colour: "{0.25, 0.25, 0.25}"
-        Text: 0.03, "left", 0.62, "half", "Preset: " + preset$
-        Text: 0.03, "left", 0.44, "half", "Temperature (unit gain): " + fixed$(temperature, 2) + "    Quantization: " + string$(codebook_Quantization_Steps) + "    Noise: " + fixed$(noise_injection_scale, 3)
-        Text: 0.03, "left", 0.26, "half", "Source: " + sound_name$ + "    Output rate: " + string$(original_sr) + " Hz"
+        Text: 0.03, "left", 0.64, "half", "Preset: " + preset$
+        Text: 0.03, "left", 0.46, "half", "Temperature (unit gain): " + fixed$(temperature, 2) + "    Quantization: " + string$(codebook_Quantization_Steps) + "    Noise: " + fixed$(noise_injection_scale, 3)
+        Text: 0.03, "left", 0.28, "half", "Source: " + sound_name$ + "    Output rate: " + string$(original_sr) + " Hz"
         Colour: "{0.4, 0.4, 0.5}"
-        Text: 0.03, "left", 0.08, "half", "Pipeline is speech-trained; non-speech input is 'speech-ified' (a feature, not a bug)."
+        Text: 0.03, "left", 0.10, "half", "Pipeline is speech-trained; non-speech input is 'speech-ified' (a feature, not a bug)."
         Black
         Draw rectangle: 0, 1, 0, 1
 
