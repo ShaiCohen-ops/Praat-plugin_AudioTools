@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - With Presets
+# Version: 0.4 (2026) - House-style viz (8-wide, subtitle, grey summary; fixed legend overflow)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -246,17 +246,22 @@ endproc
 procedure drawVisualization: .totalDur
     
     Erase all
-    
-    # === Title ===
-    Select outer viewport: 0, 7, 0, 0.6
-    Font size: 12
+    Select outer viewport: 0, 8, 0, 8
+
+    # === TITLE ===
+    Select outer viewport: 0, 8, 0.0, 0.6
+    Axes: 0, 1, 0, 1
+    Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Vector Synthesis: " + path_type$
-    
-    # === Vector Space ===
-    Select outer viewport: 0, 7, 0.7, 7.7
-    Select inner viewport: 0.8, 6.2, 1.2, 7.2
-    
+    Text: 0.5, "centre", 0.66, "half", "##Vector Synthesis##  |  " + path_type$
+    Font size: 8
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", -1.24, "half", "2D oscillator morph (SAW / SQR / TRI / SIN)  |  " + fixed$(.totalDur, 1) + " s  |  " + string$(path_speed) + " cycles/s"
+
+    # === VECTOR SPACE (centerpiece) ===
+    Select outer viewport: 0, 8, 0.7, 6.9
+    Select inner viewport: 1.4, 6.6, 0.9, 6.7
+
     Axes: 0, 1, 0, 1
     
     # Grid
@@ -384,12 +389,23 @@ procedure drawVisualization: .totalDur
     Paint circle (mm): "{0.0, 0.8, 0.0}", .x_start, .y_start, 2.5
     Colour: "White"
     Paint circle (mm): "White", .x_start, .y_start, 1
-    
-    # Legend
+
+    # === GREY SUMMARY PANEL ===
+    Select outer viewport: 0, 8, 7.0, 8.0
+    Select inner viewport: 0.6, 7.6, 7.05, 7.95
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.70, "half", "##Vector Path##"
     Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", -0.08, "bottom", "Duration: " + fixed$(.totalDur, 1) + " s  •  Speed: " + string$(path_speed) + " cycles/s"
-    
+    Colour: "{0.25, 0.25, 0.25}"
+    Text: 0.02, "left", 0.40, "half", "Path: " + path_type$ + "    Duration: " + fixed$(.totalDur, 1) + " s    Speed: " + string$(path_speed) + " cycles/s    Frequency: " + string$(frequency_Hz) + " Hz"
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.02, "left", 0.12, "half", "Corners: SAW (lower-left), SQR (lower-right), TRI (upper-left), SIN (upper-right).  Green dot = path start."
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
     Colour: "Black"
     Font size: 10
     Line width: 1
