@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025)
+# Version: 1.2 (2026) - Fixed Random Modulation smoothing window (was sized by audio SR, not Intensity frame rate)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,7 +21,7 @@
 #   - Fixed gating clicks with smoothing
 # ============================================================
 
-form Intensity Envelope Processor v1.1
+form Intensity Envelope Processor v1.2
     optionmenu Preset 1
         option Custom
         option Soft Compression
@@ -41,30 +41,27 @@ form Intensity Envelope Processor v1.1
         option Time Scaling (tape speed)
         option Envelope Inversion
         option Random Modulation
-    comment === Power Shaping ===
+    comment Power: exponent (<1 compress, >1 expand)
     real Exponent 2.0
-    comment (<1 = compress, >1 = expand)
-    comment === Tremolo ===
+    comment Tremolo: rate Hz, depth, center, phase deg
     positive Tremolo_rate_Hz 5.0
     real Tremolo_depth 0.5
     real Tremolo_center 0.5
     real Tremolo_phase 0
-    comment === Gating ===
+    comment Gate: rate Hz, duty %, max, min, smooth ms
     positive Gate_rate_Hz 4.0
     real Gate_duty_percent 50
     real Gate_max 1.0
     real Gate_min 0.0
     positive Gate_smoothing_ms 5
-    comment === Time Manipulation ===
+    comment Time: shift s, scale (0.5=2x speed, 2=half)
     real Shift_seconds 0.1
     positive Scale_factor 1.5
-    comment (0.5 = double speed, 2.0 = half speed)
-    comment === Random Modulation ===
+    comment Random: rate Hz, depth, seed (0=random)
     positive Random_rate_Hz 8
     real Random_depth 0.3
     integer Random_seed 0
-    comment (0 = different each time)
-    comment === Output ===
+    comment Output: normalize / visualize / play
     boolean Normalize 1
     boolean Visualize 1
     boolean Play 1
@@ -262,8 +259,14 @@ elsif mode = 7
     # Create smoothed random modulation
     Formula: ~ randomUniform(1 - random_depth, 1)
     
-    # Smooth by averaging neighbors
-    smoothSamples = round(orig_sr / random_rate_Hz / 10)
+    # Smooth by averaging neighbours. The modulator is an Intensity object whose
+    # frame rate is far lower than the audio sample rate, so size the smoothing
+    # window from the modulator's OWN frame rate, not orig_sr (using orig_sr here
+    # gave a window of thousands of frames = several seconds, flattening the
+    # randomness or exceeding the object length).
+    modFrames = Get number of frames
+    modRate = modFrames / dur
+    smoothSamples = round(modRate / random_rate_Hz / 10)
     if smoothSamples < 2
         smoothSamples = 2
     endif
