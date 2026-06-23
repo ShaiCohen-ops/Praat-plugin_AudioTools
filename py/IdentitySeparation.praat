@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Unified Cross-Platform Version
+# Version: 1.3 (2026) - Resynthesis Correctness Pass
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,14 +16,37 @@
 #   Modes:
 #   A — Layered reconstruction (spatial separation)
 #   B — Identity alternation (one at a time)
-#   C — Identity recomposition (grouped by identity)
+#   C — Identity recomposition (grouped by identity, harmonic->noisy)
 #   D — Identity morphing (confidence-weighted blend)
 #   E — Hybridization (spectral envelope shaping)
+#
+#   NOTE: With "Multi-channel" output format the audio is a raw
+#   per-identity separation (one identity per channel) and the
+#   resynthesis Mode is NOT applied to the audio.
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.3:
+#   Resynthesis correctness pass (most changes are in the Python
+#   backend identity_separation.py — see its header for detail):
+#     - Modes D and E redesigned so they actually blend / hybridize
+#       across identities (v1.2 fed them time-disjoint event layers,
+#       so D degenerated to a gated original and E produced near-
+#       silence). Mode C now orders identity blocks by descending
+#       HNR (harmonic -> noisy) instead of an accidental no-op sort.
+#     - "Stereo mix" now yields a 2-channel file for every mode.
+#     - Multi-channel output no longer silently ignores the Mode; the
+#       summary now states the Mode is not applied for multi output.
+#   Praat-side:
+#     - Form option labels: U+2014 em-dash -> ASCII "-" (consistent
+#       with the v1.2 non-ASCII purge in rendered text).
+#     - Summary/info now annotate "(layers; mode N/A)" when the
+#       Multi-channel format is selected, so the displayed Mode no
+#       longer disagrees with the written audio.
+#     - Guarded RMS ratio against divide-by-zero on silent input.
 #
 # Changelog v1.2:
 #
@@ -138,7 +161,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Acoustic Identity Separation v1.2
+form Acoustic Identity Separation v1.3
     optionmenu Preset: 1
         option Custom
         option Gentle (3 identities, layered)
@@ -149,11 +172,11 @@ form Acoustic Identity Separation v1.2
         option Hybrid filter (3 identities)
     integer Number_of_identities 4
     optionmenu Mode: 1
-        option A — Layered reconstruction
-        option B — Identity alternation
-        option C — Identity recomposition
-        option D — Identity morphing
-        option E — Hybridization
+        option A - Layered reconstruction
+        option B - Identity alternation
+        option C - Identity recomposition
+        option D - Identity morphing
+        option E - Hybridization
     optionmenu Output_format: 1
         option Stereo mix
         option Multi-channel (1 identity per channel)
@@ -203,8 +226,10 @@ modeLetter$ = mid$("ABCDE", mode, 1)
 # Resolve output format string
 if output_format = 1
     outFmt$ = "stereo"
+    modeNote$ = ""
 else
     outFmt$ = "multi"
+    modeNote$ = "  (layers; mode N/A)"
 endif
 
 # Clamp identities
@@ -217,12 +242,12 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Acoustic Identity Separation v1.2 ==="
+writeInfoLine:  "=== Acoustic Identity Separation v1.3 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Identities:    ", number_of_identities
-appendInfoLine: "Mode:          ", modeLetter$
+appendInfoLine: "Mode:          ", modeLetter$, modeNote$
 appendInfoLine: "Output format: ", outFmt$
 appendInfoLine: "Seed:          ", seed
 appendInfoLine: ""
@@ -404,6 +429,13 @@ rms_out = Get root-mean-square: 0, 0
 durOut = Get total duration
 outChans = Get number of channels
 
+# Guard the RMS ratio against divide-by-zero on silent input
+if rms_orig > 0
+    rmsRatio$ = fixed$(rms_out / rms_orig, 3) + "x"
+else
+    rmsRatio$ = "n/a"
+endif
+
 # ===========================================================================
 # Read stats file
 # ===========================================================================
@@ -530,7 +562,7 @@ if draw_visualization
     Text: 0.5, "centre", -0.22, "half",
         ... soundName$
         ... + "  |  " + presetName$
-        ... + "  |  Mode " + modeLetter$
+        ... + "  |  Mode " + modeLetter$ + modeNote$
         ... + "  |  " + string$(number_of_identities) + " IDs"
         ... + "  |  Seed " + string$(seed)
 
@@ -772,7 +804,7 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.82, "half",
         ... "##" + presetName$ + "##"
-        ... + "  Mode " + modeLetter$
+        ... + "  Mode " + modeLetter$ + modeNote$
         ... + "  |  " + string$(number_of_identities) + " identities"
         ... + "  |  Events: " + nEventsID$
         ... + "  |  Transitions: " + nTransitionsID$
@@ -789,7 +821,7 @@ if draw_visualization
         ... + "  |  Duration: " + fixed$(dur, 2) + " s"
         ... + "  |  RMS orig: " + fixed$(rms_orig, 4)
         ... + "  |  RMS out: " + fixed$(rms_out, 4)
-        ... + "  |  Ratio: " + fixed$(rms_out / rms_orig, 3) + "x"
+        ... + "  |  Ratio: " + rmsRatio$
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -832,7 +864,7 @@ endfor
 appendInfoLine: ""
 appendInfoLine: "RMS original:    ", fixed$(rms_orig, 6)
 appendInfoLine: "RMS output:      ", fixed$(rms_out, 6)
-appendInfoLine: "RMS ratio:       ", fixed$(rms_out / rms_orig, 3), "x"
+appendInfoLine: "RMS ratio:       ", rmsRatio$
 
 selectObject: resultSound
 

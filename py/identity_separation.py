@@ -3,7 +3,7 @@ identity_separation.py — Acoustic Identity Separation & Resynthesis
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.2 (2026)
+Version: 1.3 (2026)
 
 Usage (called by Praat, not directly):
     python identity_separation.py input.wav features.csv output.wav
@@ -24,13 +24,63 @@ Architecture:
     Stage 6 — Resynthesis (5 selectable modes)
     Stage 7 — Output
 
+Changelog v1.3:
+    Resynthesis correctness pass. Mode A is bit-identical to v1.2.
+    Mode B's per-channel samples are unchanged (mono input under
+    "stereo" format is now duplicated to two identical channels — see
+    the upmix note). Modes C, D, E and the multi-channel path change.
+
+    AUDIO-CHANGING:
+    - Mode D (Morphing) REDESIGNED. v1.2 blended the per-identity
+      *event layers*, which are time-disjoint by construction (each
+      frame belongs to exactly one identity), so at any instant only
+      one layer had audio and the "blend" degenerated to a gated
+      original — no actual morph. v1.3 builds a CONTINUOUS material
+      stream per identity (that identity's events concatenated and
+      loop-tiled to full length with equal-power wrap crossfades),
+      then blends those continuous streams by the smoothed posterior.
+      Now there is real cross-identity material to morph between.
+    - Mode E (Hybridization) REDESIGNED. v1.2 took layers[0]/layers[1]
+      as source/excitation; being disjoint, the harmonic source was
+      silent exactly where the noisy excitation had energy, so the
+      STFT envelope transfer produced near-silence (measured peak
+      ~0.08 vs ~0.95 for other modes). v1.3 (a) selects source =
+      highest-mean-HNR identity and excitation = highest-flatness
+      identity (so the docstring's "most harmonic / most noisy" is
+      now actually true), and (b) feeds CONTINUOUS streams for both,
+      so the envelope transfer has overlapping material to act on.
+      Mode E also gets makeup gain (scales to a target peak rather than
+      only attenuating), since envelope masking sheds energy and v1.2's
+      attenuate-only normalizer left it drastically quiet.
+    - Mode C (Recomposition): the v1.2 "behavioral hierarchy" sort
+      was a no-op (the key reduced to the identity index, giving
+      plain numeric order). v1.3 orders identity blocks by DESCENDING
+      mean HNR (harmonic blocks first, noisy last), making the
+      ordering claim true. Same events, different block order.
+    - Mono input + "stereo" format now upmixes mono -> dual-mono so
+      "Stereo mix" actually yields a 2-channel file for every mode
+      (previously only Mode A force-upmixed; B/C/D/E followed the
+      input and could return mono). Perceptually identical (L == R).
+
+    BUG FIX:
+    - Multi-channel output no longer silently ignores the Mode.
+      v1.2 computed `output = resynthesize(...)` then DISCARDED it
+      whenever out_format == "multi", writing raw layers regardless;
+      mode-B-multi and mode-C-multi were byte-identical. v1.3 skips
+      the wasted resynthesis call for multi output and the console +
+      stats now state plainly that multi-channel writes one identity
+      per channel and the resynthesis Mode is not applied to audio.
+
+    NON-AUDIO:
+    - Removed dead `hop_samples` variable in Mode D.
+    - Mode B docstring: "equal-power" -> "constant-sum (equal-
+      amplitude)" crossfade, matching what the code actually does
+      (linear normalization of summed gates). No audio change.
+
 Changelog v1.2:
     Cosmetic-only change for AudioTools v1.2 release.
     - _mode_a_layered: removed `or True` dead-code condition that
-      made an if-branch unconditional. Mode A always outputs stereo
-      with spatial panning regardless of input channel count;
-      v1.1's `if n_channels >= 2 or True:` was a leftover from
-      development. Behavior and audio output are unchanged.
+      made an if-branch unconditional. Behavior and output unchanged.
 """
 
 import sys
@@ -577,11 +627,11 @@ def resynthesize(mode, events, clips, layers, identities,
         return _mode_c_recomposition(events, clips, identities, sr,
                                      n_samples, n_channels, n_identities)
     elif mode == "D":
-        return _mode_d_morphing(layers, probs, n_samples, n_channels,
-                                n_identities)
+        return _mode_d_morphing(events, clips, probs, sr, n_samples,
+                                n_channels, n_identities)
     elif mode == "E":
-        return _mode_e_hybridization(layers, sr, n_samples, n_channels,
-                                     n_identities)
+        return _mode_e_hybridization(events, clips, identities, sr,
+                                     n_samples, n_channels, n_identities)
     else:
         return _mode_a_layered(layers, n_samples, n_channels,
                                n_identities)
@@ -624,8 +674,10 @@ def _mode_b_alternation(layers, Z, sr, hop_sec, n_samples,
     Mode B — Identity Alternation.
     Only one identity is audible at any moment — the identity assigned
     by the GMM for that time region.  At identity transitions, a short
-    equal-power crossfade is applied between the outgoing and incoming
-    layers so that only the active identity's audio is heard cleanly.
+    constant-sum (equal-amplitude) crossfade is applied between the
+    outgoing and incoming layers — the per-identity gates are Gaussian-
+    smoothed and linearly renormalized to sum to 1 at every frame — so
+    that only the active identity's audio is heard cleanly.
     """
     import numpy as np
     from scipy.ndimage import gaussian_filter1d
@@ -674,23 +726,23 @@ def _mode_c_recomposition(events, clips, identities, sr, n_samples,
                           n_channels, n_id):
     """
     Mode C — Identity Recomposition.
-    Group events by identity, then concatenate identity blocks
-    sequentially: all events of identity 0, then identity 1, etc.
-    Creates a new timeline organized by acoustic personality.
+    Group events by identity, then concatenate identity blocks ordered
+    by DESCENDING mean HNR (most harmonic identity first, noisiest
+    last). Creates a new timeline organized by acoustic personality.
     """
     import numpy as np
 
-    xfade = max(4, int(XFADE_SEC * sr))
-    angle = np.linspace(0, np.pi / 2, xfade, dtype=np.float32)
-    fade_in = np.sin(angle)
-    fade_out = np.cos(angle)
+    # Order identities by descending mean HNR (harmonic -> noisy).
+    # Identities with no frames sort last.
+    def _hnr_key(k):
+        for ident in identities:
+            if ident["id"] == k:
+                if ident.get("n_frames", 0) <= 0:
+                    return -1e9
+                return ident.get("mean_hnr", 0.0)
+        return -1e9
 
-    # Sort identities by behavioral hierarchy
-    id_order = sorted(
-        range(n_id),
-        key=lambda k: next(
-            (i for i, ident in enumerate(identities) if ident["id"] == k),
-            k))
+    id_order = sorted(range(n_id), key=_hnr_key, reverse=True)
 
     # Gather events per identity
     groups = {k: [] for k in range(n_id)}
@@ -707,14 +759,21 @@ def _mode_c_recomposition(events, clips, identities, sr, n_samples,
     return output
 
 
-def _mode_d_morphing(layers, probs, n_samples, n_channels, n_id):
+def _mode_d_morphing(events, clips, probs, sr, n_samples, n_channels,
+                     n_id):
     """
     Mode D — Identity Morphing.
-    At each sample, blend identity layers weighted by posterior
-    probabilities. Creates smooth transitions between identities.
+    Build a CONTINUOUS material stream per identity (that identity's
+    events looped to full length), then blend the streams at each sample
+    by the smoothed posterior probabilities. Because every identity now
+    has material present at every instant, the posterior weighting
+    produces a genuine cross-identity morph rather than a gated original.
     """
     import numpy as np
     from scipy.ndimage import gaussian_filter1d
+
+    streams = _continuous_identity_streams(
+        events, clips, n_id, n_samples, n_channels, sr)
 
     # Smooth probabilities to avoid rapid flickering
     smooth_probs = np.zeros_like(probs)
@@ -726,84 +785,98 @@ def _mode_d_morphing(layers, probs, n_samples, n_channels, n_id):
     row_sums = smooth_probs.sum(axis=1, keepdims=True)
     smooth_probs = smooth_probs / (row_sums + 1e-12)
 
-    # Output: weighted sum of layers at each time
     if n_channels == 1:
         output = np.zeros(n_samples, dtype=np.float32)
     else:
         output = np.zeros((n_samples, n_channels), dtype=np.float32)
 
-    hop_samples = max(1, n_samples // len(probs))
+    frame_grid = np.linspace(0, n_samples - 1, len(probs))
+    sample_idx = np.arange(n_samples)
 
     for k in range(n_id):
-        layer = layers[k]
         weights = smooth_probs[:, k]
-
-        # Upsample weights from frame rate to sample rate
-        w_upsampled = np.interp(
-            np.arange(n_samples),
-            np.linspace(0, n_samples - 1, len(weights)),
-            weights
-        ).astype(np.float32)
-
-        if layer.ndim == 1:
-            output[:len(layer)] += layer * w_upsampled[:len(layer)]
+        w_up = np.interp(sample_idx, frame_grid, weights).astype(np.float32)
+        stream = streams[k]
+        if stream.ndim == 1:
+            output += stream * w_up
         else:
-            for ch in range(n_channels):
-                output[:len(layer), ch] += (
-                    layer[:, ch] * w_upsampled[:len(layer)])
+            for ch in range(stream.shape[1]):
+                output[:, ch] += stream[:, ch] * w_up
 
     _normalize_output(output)
     return output
 
 
-def _mode_e_hybridization(layers, sr, n_samples, n_channels, n_id):
+def _mode_e_hybridization(events, clips, identities, sr, n_samples,
+                          n_channels, n_id):
     """
     Mode E — Hybridization.
-    Use spectral envelope of identity 0 (most harmonic) as a
-    shaping filter applied to identity 1 (most noisy/chaotic).
-    Output the filtered result plus remaining identities untouched.
+    Use the spectral envelope of the most-harmonic identity (highest
+    mean HNR) to shape the most-noisy identity (highest spectral
+    flatness). Both are rendered as CONTINUOUS full-length streams so
+    the envelope of one actually overlaps the excitation of the other;
+    otherwise (disjoint event layers) the transfer has nothing to act on.
+    Remaining identities are mixed in from their original sparse layers.
     """
     import numpy as np
 
     if n_id < 2:
-        # Not enough identities — fall back to layered
-        return _mode_a_layered(layers, n_samples, n_channels, n_id)
+        # Not enough identities — fall back to a continuous single stream
+        streams = _continuous_identity_streams(
+            events, clips, n_id, n_samples, n_channels, sr)
+        out = streams[0] if streams else np.zeros(n_samples, dtype=np.float32)
+        _normalize_output(out)
+        return out
 
-    # Use identity 0 as envelope source, identity 1 as excitation
-    source = layers[0]
-    excitation = layers[1]
+    # Select source (most harmonic) and excitation (most noisy) by stats.
+    def _stat(k, key, default):
+        for ident in identities:
+            if ident["id"] == k:
+                return ident.get(key, default)
+        return default
 
-    if source.ndim > 1:
-        source_mono = np.mean(source, axis=1)
-    else:
-        source_mono = source.copy()
+    valid = [k for k in range(n_id) if _stat(k, "n_frames", 0) > 0]
+    if len(valid) < 2:
+        valid = list(range(n_id))
+    src_id = max(valid, key=lambda k: _stat(k, "mean_hnr", 0.0))
+    exc_id = max(valid, key=lambda k: _stat(k, "mean_flatness", 0.0))
+    if exc_id == src_id:
+        # Pick a different excitation if HNR and flatness peak coincide
+        others = [k for k in valid if k != src_id]
+        if others:
+            exc_id = max(others, key=lambda k: _stat(k, "mean_flatness", 0.0))
 
-    if excitation.ndim > 1:
-        exc_mono = np.mean(excitation, axis=1)
-    else:
-        exc_mono = excitation.copy()
+    streams = _continuous_identity_streams(
+        events, clips, n_id, n_samples, n_channels, sr)
+
+    def _mono(sig):
+        return sig if sig.ndim == 1 else np.mean(sig, axis=1)
+
+    source_mono = _mono(streams[src_id]).astype(np.float64)
+    exc_mono = _mono(streams[exc_id]).astype(np.float64)
 
     # STFT-based spectral envelope transfer
     n_fft = 2048
     hop = 512
-
     from scipy.signal import stft as sp_stft, istft as sp_istft
+    from scipy.ndimage import gaussian_filter1d
 
     _, _, Z_src = sp_stft(source_mono, fs=sr, window="hann",
                           nperseg=n_fft, noverlap=n_fft - hop)
     _, _, Z_exc = sp_stft(exc_mono, fs=sr, window="hann",
                           nperseg=n_fft, noverlap=n_fft - hop)
 
-    # Smooth source magnitude to get envelope
-    from scipy.ndimage import gaussian_filter1d
+    # Align frame counts (continuous streams are equal length, but
+    # STFT framing can differ by one).
+    n_common = min(Z_src.shape[1], Z_exc.shape[1])
+    Z_src = Z_src[:, :n_common]
+    Z_exc = Z_exc[:, :n_common]
+
     src_mag = np.abs(Z_src)
     src_envelope = gaussian_filter1d(src_mag, sigma=3, axis=0)
-
-    # Normalize envelope per frame
     frame_max = np.max(src_envelope, axis=0, keepdims=True) + 1e-12
     src_envelope = src_envelope / frame_max
 
-    # Apply source envelope to excitation magnitude
     exc_mag = np.abs(Z_exc)
     exc_phase = np.angle(Z_exc)
     hybrid_mag = exc_mag * src_envelope
@@ -812,30 +885,38 @@ def _mode_e_hybridization(layers, sr, n_samples, n_channels, n_id):
     _, hybrid = sp_istft(Z_hybrid, fs=sr, window="hann",
                          nperseg=n_fft, noverlap=n_fft - hop)
 
-    # Combine: hybrid + remaining identity layers
     if n_channels == 1:
         output = np.zeros(n_samples, dtype=np.float32)
     else:
         output = np.zeros((n_samples, n_channels), dtype=np.float32)
 
-    # Add hybrid
     n_h = min(len(hybrid), n_samples)
     if output.ndim == 1:
         output[:n_h] += hybrid[:n_h].astype(np.float32)
     else:
-        output[:n_h, 0] += hybrid[:n_h].astype(np.float32)
-        output[:n_h, 1] += hybrid[:n_h].astype(np.float32)
+        for ch in range(output.shape[1]):
+            output[:n_h, ch] += hybrid[:n_h].astype(np.float32)
 
-    # Add remaining identities
-    for k in range(2, n_id):
+    # Mix in the remaining identities from their sparse event layers so
+    # the rest of the cast is still present in the timeline.
+    layers = build_identity_layers(events, clips, n_id, n_samples,
+                                   n_channels, sr)
+    for k in range(n_id):
+        if k == src_id or k == exc_id:
+            continue
         layer = layers[k]
         n_l = min(len(layer), n_samples)
         if output.ndim == 1:
-            output[:n_l] += layer[:n_l]
+            output[:n_l] += (layer[:n_l] if layer.ndim == 1
+                             else np.mean(layer[:n_l], axis=1)) * 0.6
         else:
-            output[:n_l] += layer[:n_l]
+            if layer.ndim == 1:
+                for ch in range(output.shape[1]):
+                    output[:n_l, ch] += layer[:n_l] * 0.6
+            else:
+                output[:n_l] += layer[:n_l] * 0.6
 
-    _normalize_output(output)
+    _normalize_peak(output, target=0.9)
     return output
 
 
@@ -922,6 +1003,124 @@ def _normalize_output(output):
     peak = np.max(np.abs(output))
     if peak > 0.95:
         output *= (0.95 / peak)
+
+
+def _normalize_peak(output, target=0.9, floor=1e-5):
+    """
+    Scale to a target peak (both boost and attenuate). Used by modes
+    whose processing sheds energy (e.g. Mode E's spectral-envelope
+    masking), so they don't come out drastically quieter than the
+    other modes. No-op for essentially silent output.
+    """
+    import numpy as np
+    peak = np.max(np.abs(output))
+    if peak > floor:
+        output *= (target / peak)
+    return output
+
+
+def _loop_to_length(sig, n_samples, sr):
+    """
+    Loop-tile a (possibly short) signal to exactly n_samples, using a
+    short equal-power crossfade at each wrap so the loop point doesn't
+    click. Used to turn an identity's concatenated event material into a
+    CONTINUOUS full-length stream for the blend/hybrid modes (D, E).
+    Mono or multichannel.
+    """
+    import numpy as np
+
+    mc = sig.ndim > 1
+    base = len(sig)
+    if base == 0:
+        if mc:
+            return np.zeros((n_samples, sig.shape[1]), dtype=np.float32)
+        return np.zeros(n_samples, dtype=np.float32)
+    if base >= n_samples:
+        return sig[:n_samples].astype(np.float32)
+
+    xf = max(4, int(XFADE_SEC * sr))
+    xf = min(xf, base // 4) if base // 4 > 1 else 0
+
+    if mc:
+        out = np.zeros((n_samples, sig.shape[1]), dtype=np.float32)
+    else:
+        out = np.zeros(n_samples, dtype=np.float32)
+
+    if xf > 1:
+        ang = np.linspace(0, np.pi / 2, xf, dtype=np.float32)
+        fi = np.sin(ang)
+        fo = np.cos(ang)
+
+    wp = 0
+    first = True
+    while wp < n_samples:
+        c = sig.astype(np.float32).copy()
+        if xf > 1 and not first:
+            # Fade in the head of this repetition over the tail already
+            # written, so the wrap is an equal-power crossfade.
+            head = c[:xf]
+            if mc:
+                for ch in range(c.shape[1]):
+                    head[:, ch] *= fi
+            else:
+                head[:] = head * fi
+            ov_s = max(0, wp - xf)
+            ov_e = wp
+            ln = ov_e - ov_s
+            if ln > 0:
+                if mc:
+                    for ch in range(c.shape[1]):
+                        out[ov_s:ov_e, ch] *= fo[:ln]
+                else:
+                    out[ov_s:ov_e] *= fo[:ln]
+            wp = ov_s  # overlap the head onto the faded tail
+        end = min(wp + len(c), n_samples)
+        seg = end - wp
+        out[wp:end] += c[:seg]
+        wp = end
+        first = False
+
+    return out[:n_samples].astype(np.float32)
+
+
+def _continuous_identity_streams(events, clips, n_identities,
+                                 n_samples, n_channels, sr):
+    """
+    For each identity, concatenate all of its event clips (with tiny
+    crossfades) and loop-tile to full length, producing a continuous
+    per-identity material stream. Identities with no events return
+    silence. Returns a list of n_identities arrays.
+    """
+    import numpy as np
+
+    groups = {k: [] for k in range(n_identities)}
+    for ev, clip in zip(events, clips):
+        groups[ev["identity"]].append(clip)
+
+    streams = []
+    for k in range(n_identities):
+        gk = groups[k]
+        if not gk:
+            if n_channels == 1:
+                streams.append(np.zeros(n_samples, dtype=np.float32))
+            else:
+                streams.append(
+                    np.zeros((n_samples, n_channels), dtype=np.float32))
+            continue
+        # Concatenate this identity's material (no truncation to a
+        # fixed length here — we want the raw concatenated material).
+        total = sum(len(c) for c in gk)
+        concat = _concatenate_clips(gk, sr, total, n_channels)
+        streams.append(_loop_to_length(concat, n_samples, sr))
+    return streams
+
+
+def _ensure_stereo(output):
+    """Upmix a mono array to dual-mono stereo (L == R) for 'stereo' format."""
+    import numpy as np
+    if output.ndim == 1:
+        return np.column_stack([output, output]).astype(np.float32)
+    return output
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1072,15 +1271,13 @@ def main():
     layers = build_identity_layers(events, clips, n_identities,
                                    n_samples, n_channels, sr)
 
-    # ---- Resynthesis ----
-    print("  [Py 6/6] Resynthesizing (mode %s)..." % mode)
-    output = resynthesize(mode, events, clips, layers, identities,
-                          probs, sr, n_samples, n_channels, n_identities,
-                          Z=Z, hop_sec=hop_sec)
-
-    # ---- Multi-channel output ----
+    # ---- Output ----
     if out_format == "multi" and n_identities > 1:
-        # Stack identity layers as channels
+        # Multi-channel = one identity per channel. This is a raw
+        # per-identity separation; the resynthesis Mode does NOT apply
+        # here, so we skip the (otherwise discarded) resynthesis call.
+        print("    [multi] Writing one identity per channel; "
+              "resynthesis mode %s is NOT applied to audio." % mode)
         mono_layers = []
         for layer in layers:
             if layer.ndim > 1:
@@ -1095,7 +1292,16 @@ def main():
         if peak > 0.95:
             multi *= (0.95 / peak)
         sf.write(out_wav, multi, sr)
+        output = multi  # for the console summary below
     else:
+        # ---- Resynthesis (only needed for non-multi output) ----
+        print("  [Py 6/6] Resynthesizing (mode %s)..." % mode)
+        output = resynthesize(mode, events, clips, layers, identities,
+                              probs, sr, n_samples, n_channels,
+                              n_identities, Z=Z, hop_sec=hop_sec)
+        # "stereo" format guarantees a 2-channel file for every mode.
+        if out_format == "stereo":
+            output = _ensure_stereo(output)
         sf.write(out_wav, output, sr)
 
     # ---- Stats ----
