@@ -3,9 +3,19 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026) - Unified Cross-Platform Version
+# Version: 1.5 (2026) - Folder field with blank-to-dialog fallback
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.5:
+#   - Added a "Folder" form field (mirrors VoidMosaic): type a path, or
+#     leave it blank to fall back to a folder-selection dialog. The path
+#     is whitespace- and trailing-slash-trimmed; cancelling exits cleanly.
+#     Folder selection now happens via the form rather than a dialog that
+#     pops up before it. The existing backslash-sanitize + trailing-slash
+#     (folderJ$) is kept, as that path feeds both the Python engine and
+#     Praat-side source reads during reconstruction. Synced version across
+#     header / form title / banner.
 #
 # Description:
 #   Granular Navigation Engine
@@ -83,19 +93,11 @@ endproc
 
 @cleanUpTempFiles
 
-folder$ = chooseDirectory$: "Select folder of audio files"
-if folder$ = ""
-    exitScript: "No folder selected."
-endif
-
-# Universally sanitize backslashes to forward slashes to prevent Windows escape character crashes
-folderJ$ = replace_regex$(folder$, "\\", "/", 0)
-if right$(folderJ$, 1) <> "/"
-    folderJ$ = folderJ$ + "/"
-endif
-
 # ---- FORM ----
-form Granular Navigation Engine
+form Granular Navigation Engine v1.5
+    comment === Audio Folder ===
+    comment (Leave blank to pick a folder with a dialog)
+    sentence Folder 
     optionmenu Navigation_mode: 1
         option Similarity
         option Smooth
@@ -111,6 +113,30 @@ form Granular Navigation Engine
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# ---- FOLDER DISCOVERY ----
+# Mirrors VoidMosaic: use the typed path, or fall back to a dialog when
+# the Folder field is left blank. Trim whitespace and trailing slashes.
+folder$ = replace_regex$(folder$, "^[ \t]*|[ \t]*$", "", 0)
+folder$ = replace_regex$(folder$, "[\\/]+$", "", 0)
+
+if folder$ == ""
+    folder$ = chooseFolder$: "Select folder of audio files"
+    folder$ = replace_regex$(folder$, "[\\/]+$", "", 0)
+endif
+
+if folder$ == ""
+    exitScript: "Operation cancelled. Please supply a valid folder path."
+endif
+
+# Universally sanitize backslashes to forward slashes to prevent Windows
+# escape-character crashes. folderJ$ feeds both the Python --folder
+# argument and Praat-side source reads during reconstruction, so it keeps
+# a trailing slash.
+folderJ$ = replace_regex$(folder$, "\\", "/", 0)
+if right$(folderJ$, 1) <> "/"
+    folderJ$ = folderJ$ + "/"
+endif
 
 # Fixed parameters
 epochs = 80
@@ -138,7 +164,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Granular Navigation Engine ==="
+writeInfoLine: "=== Granular Navigation Engine v1.5 ==="
 appendInfoLine: "Folder: ", folderJ$
 appendInfoLine: "Mode:   ", modeStr$
 appendInfoLine: "Grain:  ", grain_ms, " ms"
