@@ -3,9 +3,17 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Output_duration (tiling) + typed folder path field
+# Version: 1.4 (2026) - Standardized folder field (blank-to-dialog idiom)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.4:
+#   - Standardized the Folder field to the shared blank-to-dialog idiom
+#     (as in VoidMosaic): the typed path is whitespace- and trailing-
+#     slash-trimmed, a blank field falls back to a chooseFolder$ dialog,
+#     and cancelling exits cleanly. The existing trailing-slash re-add is
+#     kept (this script globs the folder in Praat). Synced the version
+#     string across header / form title / visualization panels.
 #
 # Description:
 #   Gesture-Based Hard Quantization - Segments a reference sound
@@ -52,7 +60,7 @@
 # FORM
 # ============================================================
 
-form Gesture Quantization v1.1
+form Gesture Quantization v1.4
     comment === Preset ===
     optionmenu Preset: 2
         option Maximum Variety   (k=10, 4 voices)
@@ -84,7 +92,7 @@ form Gesture Quantization v1.1
     positive Target_sample_rate 44100
     comment === Input / Output ===
     sentence Folder_path
-    comment (leave blank to get a chooser; first file = reference)
+    comment (Leave blank to pick a folder with a dialog; first file = reference)
     real Output_duration 0
     comment (0 = match reference length; >0 = extend by tiling the reference)
     boolean Draw_visualization 1
@@ -136,13 +144,21 @@ endif
 
 clearinfo
 
-folder_path$ = folder_path$
-if folder_path$ = ""
-    folder_path$ = chooseDirectory$: "Select folder containing sound files (first file = reference)"
+# --- FOLDER DISCOVERY ---
+# Mirrors VoidMosaic: use the typed path, or fall back to a dialog when
+# the Folder field is left blank. Trim whitespace and trailing slashes
+# first; the trailing-slash normalization just below re-adds it for the
+# *.wav glob.
+folder_path$ = replace_regex$(folder_path$, "^[ \t]*|[ \t]*$", "", 0)
+folder_path$ = replace_regex$(folder_path$, "[\\/]+$", "", 0)
+
+if folder_path$ == ""
+    folder_path$ = chooseFolder$: "Select folder containing sound files (first file = reference)"
+    folder_path$ = replace_regex$(folder_path$, "[\\/]+$", "", 0)
 endif
 
-if folder_path$ = ""
-    exitScript: "No folder selected."
+if folder_path$ == ""
+    exitScript: "Operation cancelled. Please supply a valid folder path."
 endif
 
 if right$(folder_path$, 1) <> "/" and right$(folder_path$, 1) <> "\"
@@ -498,7 +514,7 @@ endproc
 
 if verbose_output
     appendInfoLine: "════════════════════════════════════════════════════════"
-    appendInfoLine: "  Gesture-Based Hard Quantization v1.1"
+    appendInfoLine: "  Gesture-Based Hard Quantization v1.4"
     appendInfoLine: "════════════════════════════════════════════════════════"
     appendInfoLine: ""
     appendInfoLine: "Preset:   ", presetName$
@@ -941,7 +957,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##Gesture-Based Hard Quantization v1.1##"
+    Text: 0.5, "centre", 0.70, "half", "##Gesture-Based Hard Quantization v1.4##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.15, "half",
@@ -1142,7 +1158,7 @@ if draw_visualization
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.87, "half", "##Gesture-Based Hard Quantization v1.1##"
+    Text: 0.02, "left", 0.87, "half", "##Gesture-Based Hard Quantization v1.4##"
     Font size: 6
     Colour: "{0.35, 0.35, 0.40}"
     Text: 0.02, "left", 0.65, "half",
