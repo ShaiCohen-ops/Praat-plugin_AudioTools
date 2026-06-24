@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - Stereo-safe analysis (mono before To MFCC)
+# Version: 0.5 (2026) - Standardized folder field (blank-to-dialog idiom)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,12 @@
 #   OT Corpus Concatenator - Optimality Theory-inspired audio
 #   selection and concatenation based on weighted constraint violations.
 #
+# Changelog v0.5:
+#   - Standardized the Folder field to the shared blank-to-dialog idiom
+#     (as in VoidMosaic): the typed path is whitespace- and trailing-
+#     slash-trimmed, a blank field falls back to a chooseFolder$ dialog,
+#     and cancelling exits cleanly. Synced the version string across
+#     header/form/banner (form title was still v0.3.2).
 # Changelog v0.4:
 #   - FIXED: analysis loop now converts to mono before To MFCC; stereo
 #            corpus files previously crashed there (the concat loop
@@ -20,7 +26,7 @@
 #            outside the 'if' statement.
 # ============================================================
 
-form OT Corpus Concatenator v0.3.2
+form OT Corpus Concatenator v0.5
     comment === Preset ===
     optionmenu Preset: 1
         option Manual
@@ -32,7 +38,7 @@ form OT Corpus Concatenator v0.3.2
     comment === Selection ===
     integer Limit_files 10
     sentence Folder_path
-    comment (leave blank to get a chooser dialog)
+    comment (Leave blank to pick a folder with a dialog)
     comment === OT Constraints (Weights) ===
     real Weight_darkness 0.0
     real Weight_brightness 1.0
@@ -91,19 +97,27 @@ endif
 # ============================================
 
 clearinfo
-writeInfoLine: "=== OT Corpus Concatenator v0.4 ==="
+writeInfoLine: "=== OT Corpus Concatenator v0.5 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 
 n_target = limit_files
 
-directory$ = folder_path$
-if directory$ = ""
-    directory$ = chooseDirectory$: "Choose the folder containing your audio files"
+# --- FOLDER DISCOVERY ---
+# Mirrors VoidMosaic: use the typed path, or fall back to a dialog when
+# the Folder field is left blank. Trim whitespace and trailing slashes
+# first; the OS-specific trailing-slash normalization just below re-adds
+# the separator for the *.wav glob.
+directory$ = replace_regex$(folder_path$, "^[ \t]*|[ \t]*$", "", 0)
+directory$ = replace_regex$(directory$, "[\\/]+$", "", 0)
+
+if directory$ == ""
+    directory$ = chooseFolder$: "Choose the folder containing your audio files"
+    directory$ = replace_regex$(directory$, "[\\/]+$", "", 0)
 endif
 
-if directory$ = ""
-    exitScript: "No folder selected."
+if directory$ == ""
+    exitScript: "Operation cancelled. Please supply a valid folder path."
 endif
 
 if right$(directory$, 1) <> "/" and right$(directory$, 1) <> "\"
