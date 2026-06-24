@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - Fixed assembly Formula
+# Version: 0.5 (2026) - User-selectable output level (density leveling)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,7 +13,37 @@
 #   and assembles them into evolving drone textures.
 #
 # Usage:
-#   Run this script and select a folder containing audio clips.
+#   Run this script. Type an audio-clip folder path into the form, or
+#   leave the Folder field blank to pick one with a dialog.
+#
+# Changelog v0.5 (2026):
+#   - Added an "Output level" form option. The clips are never loudness-
+#     matched (processClip resamples but does not normalize level) and the
+#     timeline picks clips by gesture, not loudness — so each section's
+#     volume just followed whichever clips it used, and a single global
+#     peak-normalize left the airy, fading-in opening sounding very quiet.
+#     Options:
+#       * Dramatic arc (original): clips keep their inherent recording
+#         level (unchanged behaviour).
+#       * Even loudness: every clip is normalized to a common intensity
+#         (level_target_db), AND the assembled output's slow loudness
+#         contour is flattened by a low-passed envelope AGC
+#         (flattenLoudness) so the section-to-section swell is evened out
+#         while within-clip dynamics ride on top. (Per-clip averaging
+#         alone did not flatten the contour, since a long-faded clip still
+#         has a quiet contour even at a matched average level.)
+#       * Even loudness, quick start: same, plus the opening clip's
+#         fade-in is capped short so the piece does not begin faint.
+#     (Note: an earlier draft tried to divide the mix by an overlap-count
+#     envelope, but the clips already crossfade at their overlaps, so the
+#     summed gain stays ~1 and that had no audible effect — per-clip
+#     normalization is the mechanism that matters.)
+#
+# Changelog v0.4 (2026):
+#   - Added a "Folder" form field (mirrors VoidMosaic): type a path, or
+#     leave it blank to fall back to a folder-selection dialog. The path
+#     is whitespace- and trailing-slash-trimmed; cancelling the dialog
+#     exits cleanly.
 #
 # Changelog v0.3 (2026):
 #   - FIX: assembleDrone's mix Formula used "Object_<id>[...]" which
@@ -31,7 +61,10 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Bayesian Drone Weaver v0.3
+form Bayesian Drone Weaver v0.5
+    comment === Audio Folder ===
+    comment (Leave blank to pick a folder with a dialog)
+    sentence Folder 
     comment === Composition Style ===
     optionmenu Preset: 1
         option Custom
@@ -42,6 +75,11 @@ form Bayesian Drone Weaver v0.3
     comment === Parameters ===
     positive Max_clips 30
     positive Overlap_factor 1.0
+    comment === Output level (controls the quiet-start / changing-volume) ===
+    optionmenu Output_level: 1
+        option Dramatic arc (original)
+        option Even loudness
+        option Even loudness, quick start
     boolean Draw_visualization 1
 endform
 
@@ -70,15 +108,25 @@ else
     presetName$ = "Custom"
 endif
 
-# --- USER INTERACTION ---
-folder$ = chooseDirectory$: "Select folder with audio clips"
-if folder$ = ""
-    exitScript: "No folder selected."
+# --- FOLDER DISCOVERY ---
+# Mirrors VoidMosaic: use the typed path, or fall back to a dialog when
+# the field is left blank. Trim whitespace and trailing slashes first.
+folder$ = replace_regex$(folder$, "^[ \t]*|[ \t]*$", "", 0)
+folder$ = replace_regex$(folder$, "[\\/]+$", "", 0)
+
+if folder$ == ""
+    folder$ = chooseFolder$: "Select folder with audio clips"
+    folder$ = replace_regex$(folder$, "[\\/]+$", "", 0)
+endif
+
+if folder$ == ""
+    exitScript: "Operation cancelled. Please supply a valid audio folder path."
 endif
 
 # --- CONSTANTS ---
 target_sr = 44100
 min_clips = 3
+level_target_db = 70   ; common per-clip intensity for the even-loudness modes
 
 intensity_floor = 40
 intensity_time_step = 0.05 
@@ -95,8 +143,16 @@ h_pulse = 5
 n_hypotheses = 5
 
 clearinfo
-writeInfoLine: "=== Bayesian Drone Weaver v0.3 ==="
+writeInfoLine: "=== Bayesian Drone Weaver v0.5 ==="
 appendInfoLine: "Preset: ", presetName$
+if output_level = 2
+    levelName$ = "Even loudness"
+elsif output_level = 3
+    levelName$ = "Even loudness, quick start"
+else
+    levelName$ = "Dramatic arc (original)"
+endif
+appendInfoLine: "Output level: ", levelName$
 appendInfoLine: ""
 
 # --- SCAN FOLDER ---
@@ -192,6 +248,13 @@ appendInfoLine: "Building timeline..."
 
 appendInfoLine: "Assembling drone..."
 @assembleDrone
+
+# Even-loudness modes: flatten the assembled output's slow loudness
+# contour (section-to-section swell) while keeping within-clip dynamics.
+if output_level >= 2
+    appendInfoLine: "Leveling output loudness..."
+    @flattenLoudness: final_sound
+endif
 
 # --- FINALIZE ---
 selectObject: final_sound
@@ -538,7 +601,7 @@ endproc
 
 procedure assembleDrone
     final_sound = Create Sound from formula: "base", 1, 0, timeline_total_duration, target_sr, "0"
-    
+
     for .seg to timeline_n_segments
         .clip_idx = timeline_clip_'.seg'
         .start_time = timeline_start_'.seg'
@@ -560,14 +623,30 @@ procedure assembleDrone
         if .fade_out > .duration / 2
             .fade_out = .duration / 2
         endif
+
+        # Quick start: cap the opening clip's fade-in so the piece does
+        # not begin faint (mode 3 only).
+        if .seg = 1 and output_level = 3
+            if .fade_in > 0.06
+                .fade_in = 0.06
+            endif
+        endif
         
         selectObject: .part
         Fade in: 0, 0, .fade_in, "yes"
         Fade out: 0, .duration, -.fade_out, "yes"
         
+        # Per-clip loudness. Arc mode (1) leaves each clip at its inherent
+        # recording level (original behaviour), so the section volume
+        # follows whichever clips it used. Even modes (2,3) normalize every
+        # clip to a common intensity, which is what actually equalizes the
+        # output level. 'soften' still pulls pulse-y clips down, relative
+        # to the same target.
         if .soften > 0.5
             .scale = 1 - (.soften - 0.5)
-            Scale intensity: .scale * 70
+            Scale intensity: .scale * level_target_db
+        elsif output_level >= 2
+            Scale intensity: level_target_db
         endif
         
         # Mix into final sound.
@@ -595,6 +674,32 @@ procedure assembleDrone
 
         removeObject: .part
     endfor
+endproc
+
+procedure flattenLoudness: .snd
+    # Slow-envelope automatic gain. Build a low-passed amplitude envelope
+    # of the assembled output and divide the signal by it, so the slow
+    # section-to-section loudness swell is flattened while within-clip
+    # (faster than .env_cutoff) dynamics ride on top untouched. A linear
+    # floor stops gaps/near-silence from being boosted into noise.
+    .floor = 0.02            ; linear amplitude floor for the divide
+    .env_cutoff = 1.5        ; Hz; below this is treated as the "slow" contour
+    .env_smooth = 0.5        ; Hz; filter transition smoothing
+    .floor$ = fixed$(.floor, 4)
+
+    selectObject: .snd
+    .env = Copy: "level_env"
+    selectObject: .env
+    Formula: "abs(self)"
+    .envlow = Filter (pass Hann band): 0, .env_cutoff, .env_smooth
+    removeObject: .env
+    .elId$ = fixed$(.envlow, 0)
+
+    selectObject: .snd
+    Formula: "self / (if object[" + .elId$ + ", col] > " + .floor$
+        ... + " then object[" + .elId$ + ", col] else " + .floor$ + " fi)"
+
+    removeObject: .envlow
 endproc
 
 procedure drawVisualization: .n_clips
