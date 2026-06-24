@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-stretch.py — HPSS + Phase Vocoder Time-Stretching
+stretch.py — HPSS + Phase Vocoder Time-Stretching  v2.2
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -9,10 +9,19 @@ Pipeline:
     1. Load audio
     2. High-resolution STFT  (N=4096, hop=N//8)
     3. HPSS — split into harmonic (H) and percussive (P) spectrograms
-    4. Harmonic: phase-vocoder stretch → ISTFT
-    5. Percussive: resample waveform to new length (preserves attacks)
+    4. Harmonic: phase-vocoder stretch → ISTFT  (pitch-preserving)
+    5. Percussive: WSOLA waveform-similarity overlap-add stretch
+       (pitch- and transient-preserving — no rate-change detuning)
     6. Recombine H + P waveforms
     7. Write output WAV + stats
+
+Changelog v2.2:
+    - Percussive band now stretched with WSOLA instead of resample().
+      Resampling changed playback rate, which slowed attacks and pitched
+      the percussion DOWN by the stretch factor (so it drifted out of tune
+      with the pitch-preserved harmonic layer). WSOLA changes duration only.
+    - n_fft is now forced even; odd values broke the forward/inverse STFT
+      window-size round-trip ((n_bins-1)*2 != n_fft for odd n_fft).
 
 Dependencies: numpy scipy soundfile  (no librosa)
 """
@@ -181,28 +190,95 @@ def phase_vocoder_stretch(S, stretch_factor, hop):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Percussive stretch (resample — preserves transient shape)
+# Percussive stretch (WSOLA — preserves pitch AND transient sharpness)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def stretch_percussive(y_P, stretch_factor, target_len):
-    """Resample percussive waveform to target_len using polyphase filter."""
+    """
+    WSOLA (waveform-similarity overlap-add) time-stretch of the percussive
+    band. This changes DURATION only: pitch is preserved and transients
+    stay sharp, because frames are overlap-added at the ORIGINAL sample
+    rate and a similarity search aligns each new frame to the waveform
+    continuation of the previous one (so attacks are not chopped mid-cycle).
+
+    This replaces the earlier resample() approach, which time-stretched by
+    changing playback rate — that slowed attacks and pitched the whole
+    percussive band down by the stretch factor.
+    """
     import numpy as np
-    from scipy.signal import resample_poly
-    from fractions import Fraction
 
-    if abs(stretch_factor - 1.0) < 1e-6:
-        if len(y_P) >= target_len:
-            return y_P[:target_len]
-        return np.concatenate([y_P, np.zeros(target_len - len(y_P))])
+    y = y_P.astype(np.float64)
+    n = len(y)
 
-    r = Fraction(stretch_factor).limit_denominator(300)
-    p, q = r.numerator, r.denominator
+    # Trivial / passthrough cases
+    if n < 64 or abs(stretch_factor - 1.0) < 1e-6:
+        if len(y) >= target_len:
+            return y[:target_len]
+        return np.concatenate([y, np.zeros(target_len - len(y))])
 
-    y_s = resample_poly(y_P.astype(np.float64), p, q).astype(np.float64)
+    # Frame geometry (even window, 50 % synthesis overlap)
+    W    = min(1024, max(128, (n // 16) // 2 * 2))
+    if W < 64:
+        W = 64
+    Hs   = W // 2                                   # synthesis hop
+    L    = W - Hs                                   # overlap length
+    Ha   = max(1, int(round(Hs / stretch_factor)))  # analysis hop
+    seek = max(1, W // 4)                           # similarity search radius
+    win  = np.hanning(W)
 
-    if len(y_s) >= target_len:
-        return y_s[:target_len]
-    return np.concatenate([y_s, np.zeros(target_len - len(y_s))])
+    out_len = target_len + W
+    out = np.zeros(out_len, dtype=np.float64)
+    ow  = np.zeros(out_len, dtype=np.float64)
+
+    # First frame copied straight from the input start
+    out[:W] += y[:W] * win
+    ow[:W]  += win
+    prev = 0
+
+    m = 1
+    while True:
+        s_pos = m * Hs
+        if s_pos + W > out_len:
+            break
+        nominal = m * Ha
+
+        # Reference = how the previously placed frame would naturally continue
+        ref = y[prev + Hs: prev + Hs + L]
+        if len(ref) < L:
+            ref = np.pad(ref, (0, L - len(ref)))
+
+        lo = max(0, nominal - seek)
+        hi = min(n - W, nominal + seek)
+        if hi < lo:
+            break
+
+        seg = y[lo: hi + L]
+        if len(seg) < L:
+            best_off = lo
+        else:
+            # Vectorised normalised cross-correlation across the search range
+            cc   = np.correlate(seg, ref, mode="valid")        # (hi-lo+1,)
+            sq   = seg ** 2
+            csum = np.concatenate([[0.0], np.cumsum(sq)])
+            energy    = csum[L:] - csum[:-L]                    # window energies
+            cand_norm = np.sqrt(np.maximum(energy, 0.0)) + 1e-9
+            score    = cc / cand_norm[:len(cc)]
+            best_off = lo + int(np.argmax(score))
+
+        frame = y[best_off: best_off + W]
+        if len(frame) < W:
+            frame = np.pad(frame, (0, W - len(frame)))
+
+        out[s_pos: s_pos + W] += frame * win
+        ow[s_pos: s_pos + W]  += win
+        prev = best_off
+        m += 1
+
+    ow  = np.maximum(ow, 1e-6)
+    out = (out / ow)[:target_len]
+    if len(out) < target_len:
+        out = np.concatenate([out, np.zeros(target_len - len(out))])
+    return out.astype(np.float64)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -283,6 +359,11 @@ def main():
         print("ERROR: stretch_factor must be > 0", file=sys.stderr)
         sys.exit(1)
     n_fft = max(256, min(8192, n_fft))
+    # forward_stft uses n_fft bins but inverse_stft re-derives n_fft from the
+    # bin count as (n_bins-1)*2, which only round-trips for EVEN n_fft. Snap
+    # odd values up so analysis and synthesis windows always match.
+    if n_fft % 2 == 1:
+        n_fft += 1
 
     # Load
     print("[HPSS-PV] Loading: %s" % in_wav)

@@ -3,16 +3,23 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026) — Unified Cross-Platform Version
+# Version: 2.2 (2026) — WSOLA percussive stretch (pitch/transient preserving)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   High-quality time-stretching via HPSS + phase vocoder.
 #   Harmonic content is stretched with the phase vocoder.
-#   Percussive/transient content is resampled — no metallic smearing.
+#   Percussive/transient content is WSOLA time-stretched — pitch and
+#   attacks are preserved, no metallic smearing and no detuning.
 #
 #   Python engine: stretch.py (numpy/scipy/soundfile, no librosa)
+#
+# Changelog v2.2:
+#   - Engine (stretch.py): percussive band now uses WSOLA instead of
+#     resampling. Resampling stretched by changing playback rate, which
+#     slowed attacks and pitched percussion down by the stretch factor;
+#     WSOLA changes duration only. n_fft is also forced even.
 #
 # Dependencies (Python):
 #   pip install numpy scipy soundfile
@@ -83,7 +90,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form HPSS Phase Vocoder v2.1
+form HPSS Phase Vocoder v2.2
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -166,7 +173,7 @@ rms_in    = Get root-mean-square: 0, 0
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== HPSS Phase Vocoder v2.1 ==="
+writeInfoLine:  "=== HPSS Phase Vocoder v2.2 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
