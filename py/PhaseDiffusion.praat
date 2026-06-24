@@ -4,7 +4,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 6.0 (2026) — renamed to Latent Spectral Diffusion
+# Version: 6.1 (2026) — Latent Spectral Diffusion
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -45,6 +45,21 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v6.1:
+#   Backend correctness refinement (audio change for AE-Weighted / AR
+#   Smear via phase_diffusion_ai.py; see its header for detail):
+#     - Stage 4 now measures per-mel-band reconstruction error in RAW
+#       log-mel space, not z-scored space. v6.0 kept the per-band axis
+#       but evaluated error after per-dimension normalization, which
+#       equalized band variances and left the weights nearly flat (the
+#       visible contrast came from min-max stretching). Raw-space error
+#       makes the AE coherence weights genuinely frequency-discriminative.
+#     - Latent model: fixed per-frame event lookup so trailing frames use
+#       the last event's envelope instead of event 0.
+#     - Removed dead Python parameters (no behaviour change).
+#   Praat-side: version strings synced to v6.1; Panel D-right label
+#   "(v6.0 honest)" -> "(v6.1 raw-space)". No Praat behaviour change.
 #
 # Changelog v6.0:
 #   AUDIO CHANGE (via Python backend):
@@ -192,7 +207,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Spectral Diffusion v6.0
+form Latent Spectral Diffusion v6.1
     optionmenu Preset: 1
         option Custom
         option Veil
@@ -459,7 +474,7 @@ endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Latent Spectral Diffusion v6.0 ==="
+writeInfoLine:  "=== Latent Spectral Diffusion v6.1 ==="
 appendInfoLine: "Input:    ", inputName$
 appendInfoLine: "Preset:   ", presetName$
 appendInfoLine: "Model:    ", modelLabel$
@@ -518,7 +533,7 @@ Save as WAV file: tempInput$
 # Stage 3 — Call Python Engine
 # ===========================================================================
 appendInfoLine: ""
-appendInfoLine: "[3/4] Running Latent Spectral Diffusion v6.0..."
+appendInfoLine: "[3/4] Running Latent Spectral Diffusion v6.1..."
 
 pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " """ + tempInputJ$  + """"
@@ -833,7 +848,7 @@ if draw_visualization
     else
         Colour: "{0.30, 0.40, 0.55}"
         Text: 0.05, "left", 0.50, "half",
-            ... "##Per-bin AE coherence (v6.0 honest)##"
+            ... "##Per-bin AE coherence (v6.1 raw-space)##"
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.38, "half",
             ... "Per-mel-band MSE -> " + string$(window_size / 2 + 1) + " FFT bins"

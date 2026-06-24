@@ -3,14 +3,42 @@
 phase_diffusion_ai.py — Latent Spectral Diffusion Engine
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 6.0 (2026)
+Version: 6.1 (2026)
 
 (filename `phase_diffusion_ai.py` preserved for distribution compatibility)
 
 Called by PhaseDiffusion.praat.
 
 ═══════════════════════════════════════════════════════════════════════════════
-ARCHITECTURE v6.0 — LATENT AUTOENCODER + SPECTRAL DIFFUSION
+CHANGELOG v6.1
+═══════════════════════════════════════════════════════════════════════════════
+AUDIO CHANGE (pca / AE-Weighted and ar / AR Smear models):
+  Stage 4 (encode_events) now computes the per-mel-band reconstruction
+  error in RAW log-mel space instead of z-scored space. v6.0 correctly
+  kept the per-band axis intact (fixing v5's scalar broadcast), but it
+  measured the error AFTER per-dimension normalization, which equalizes
+  each band's variance and washes out the tonal-vs-noisy distinction the
+  Stage-5a coherence weights are meant to capture (measured per-band error
+  coefficient-of-variation ~0.3 in normalized space vs ~1.0 raw on the
+  same signal). Measuring in raw log-mel space makes ae_weights genuinely
+  frequency-discriminative, delivering what the v6.0 docs promised. The
+  Latent model is unaffected (its envelopes come from decoded Z, not from
+  ae_weights).
+
+BUG FIX (latent model):
+  process_channel's latent branch initialized the per-frame event index to
+  0, so frames whose center fell past the last event's end (the trailing
+  reflect-pad region) used event 0's envelope instead of the last event's.
+  Now defaults to len(events)-1.
+
+CLEANUP (no audio impact):
+  Removed dead parameters: mel_fb / n_fft_bins from process_channel (only
+  ever in its signature) and n_fft_bins / sr / n_samples / win_size from
+  ae_error_to_bin_weights (body uses only band_errs, events, mel_fb). The
+  now-unused mel_fb_main build in main() was dropped.
+
+═══════════════════════════════════════════════════════════════════════════════
+ARCHITECTURE — LATENT AUTOENCODER + SPECTRAL DIFFUSION
 ═══════════════════════════════════════════════════════════════════════════════
 
 Shared pipeline across all three models:
@@ -79,10 +107,17 @@ v6.0 computes the per-event per-mel-band MSE explicitly (averaging the
 squared reconstruction error across the time dimension of each (40×16)
 patch, leaving the band dimension intact), then time-weighted-averages
 across events to get a single (40,) per-band error profile, and finally
-projects that through mel_fb.T to (n_fft_bins,) per-bin weights. The
-resulting weight profile now genuinely depends on which frequencies the
-trained AE could reconstruct well. PCA and AR models become frequency-
-discriminative in the way the v5 docs always promised.
+projects that through mel_fb.T to (n_fft_bins,) per-bin weights.
+
+v6.1 additionally measures that per-band MSE in RAW log-mel space rather
+than z-scored space. v6.0 kept the band axis but evaluated the error after
+per-dimension normalization, which equalizes band variances and leaves the
+per-band errors nearly flat (CV ~0.3) — so the visible contrast in the
+final weight curve came mostly from min-max stretching a near-flat profile.
+In raw log-mel space the per-band errors carry real contrast (CV ~1.0), so
+the weight profile genuinely depends on which frequencies the trained AE
+could reconstruct well. PCA and AR models become frequency-discriminative
+in the way the v5 docs always promised.
 
 WHAT IS AND ISN'T LEARNED
 ─────────────────────────────────────────────────────────────────────────────
@@ -450,24 +485,33 @@ def encode_events(model, patches):
 
     Returns:
         Z          : (n_events, latent_dim)  latent vectors
-        event_errs : (n_events,)             per-event scalar MSE (mean across all 640 dims)
-        band_errs  : (n_events, N_MELS)      per-event per-mel-band MSE
-                                             (mean of squared error across the 16 time frames
-                                              of each event patch, leaving the band axis intact)
+        event_errs : (n_events,)             per-event scalar MSE in NORMALIZED
+                                             space (training-quality indicator,
+                                             matches the training loss; debug only)
+        band_errs  : (n_events, N_MELS)      per-event per-mel-band MSE in RAW
+                                             log-mel space (mean of squared error
+                                             across the 16 time frames per band)
 
-    The band_errs return value is what Stage 5a now uses to build genuinely
-    frequency-dependent coherence weights. v5.x used only the scalar
-    event_errs broadcast uniformly across bands, which gave coherence weights
-    whose frequency profile came entirely from filterbank geometry rather
-    than from anything the AE had learned per-band.
+    v6.1: band_errs is now measured in raw (un-normalized) log-mel space.
+    v6.0 measured it in z-scored space, where per-dimension normalization
+    equalizes each band's variance and washes out the tonal-vs-noisy
+    distinction the Stage-5a weights are meant to capture (per-band error
+    coefficient-of-variation ~0.3 normalized vs ~1.0 raw on the same signal).
+    Un-normalizing before the per-band MSE makes the resulting coherence
+    weights genuinely frequency-discriminative, as the v6.0 docs promised.
     """
     X     = (patches - model._norm_mu) / model._norm_sigma
     Z     = model.encode(X)
     recon = model.decode(Z)
-    sq_err = (recon - X) ** 2                         # (n_events, N_MELS * MEL_FRAMES)
-    event_errs = sq_err.mean(axis=1)                   # (n_events,)
-    n_events   = sq_err.shape[0]
-    band_errs  = sq_err.reshape(n_events, N_MELS, MEL_FRAMES).mean(axis=2)
+
+    # event_errs: scalar per-event MSE in normalized space (debug stat)
+    event_errs = ((recon - X) ** 2).mean(axis=1)       # (n_events,)
+
+    # band_errs: per-mel-band MSE in RAW log-mel space (v6.1)
+    recon_raw  = recon * model._norm_sigma + model._norm_mu
+    sq_err_raw = (recon_raw - patches) ** 2             # (n_events, N_MELS*MEL_FRAMES)
+    n_events   = sq_err_raw.shape[0]
+    band_errs  = sq_err_raw.reshape(n_events, N_MELS, MEL_FRAMES).mean(axis=2)
     return Z, event_errs, band_errs
 
 
@@ -533,8 +577,7 @@ def kmeans_plus_plus(Z, k, n_iter=60, seed=42):
 # so the frequency profile is now genuinely AE-derived.
 # ═══════════════════════════════════════════════════════════════════════════
 
-def ae_error_to_bin_weights(band_errs, events, mel_fb, n_fft_bins, sr,
-                            n_samples, win_size):
+def ae_error_to_bin_weights(band_errs, events, mel_fb):
     """
     band_errs : (n_events, N_MELS) per-event per-mel-band reconstruction MSE
     events    : list of {'start_time', 'end_time'}
@@ -744,7 +787,7 @@ def diffuse_frame_latent(magnitude, fft_envelope, eff_amount, rng):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def process_channel(signal, sr, model, ae_weights, events, Z,
-                    centers, variances, mel_fb, n_fft_bins,
+                    centers, variances,
                     model_name, diffusion_amount, diffusion_steps,
                     mag_smear, preserve_transients, win_size, hop_size,
                     temperature, rng, debug, ch):
@@ -838,7 +881,11 @@ def process_channel(signal, sr, model, ae_weights, events, Z,
 
         elif model_name == "latent":
             t_frame = (pos - pad) / sr
-            ev_idx  = 0
+            # Default to the LAST event so frames whose center falls past the
+            # final event's end (the trailing reflect-pad region) use the last
+            # envelope, not event 0. v6.0 left ev_idx=0 here, which mapped a
+            # few tail frames near the end onto the first event's envelope.
+            ev_idx  = len(events) - 1
             for j, ev in enumerate(events):
                 if float(ev["start_time"]) <= t_frame < float(ev["end_time"]):
                     ev_idx = j
@@ -874,7 +921,7 @@ def process_channel(signal, sr, model, ae_weights, events, Z,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Latent Spectral Diffusion Engine v6.0 -- Praat AudioTools"
+        description="Latent Spectral Diffusion Engine v6.1 -- Praat AudioTools"
     )
     parser.add_argument("input_wav")
     parser.add_argument("output_wav")
@@ -977,13 +1024,10 @@ def main():
             print("    Cluster %d: %d events (%.0f%%)"
                   % (ki, cnt, 100.0 * cnt / max(1, len(events))))
 
-    # ── Stage 5: AE band-error → per-bin weights (v6.0 honest version) ──
-    n_fft_bins = win_size // 2 + 1
-    mel_fb_main = build_mel_filterbank(sr, 1024, N_MELS)   # same as patches
-    mel_fb_win  = build_mel_filterbank(sr, win_size, N_MELS)  # for bin weights
+    # ── Stage 5: AE band-error → per-bin weights (raw-space, v6.1) ──
+    mel_fb_win = build_mel_filterbank(sr, win_size, N_MELS)  # for bin weights
 
-    ae_weights = ae_error_to_bin_weights(
-        band_errs, events, mel_fb_win, n_fft_bins, sr, n_samples, win_size)
+    ae_weights = ae_error_to_bin_weights(band_errs, events, mel_fb_win)
 
     if args.debug:
         # Report frequency-axis statistics so the user can see that the
@@ -1009,8 +1053,6 @@ def main():
             Z                = Z,
             centers          = centers,
             variances        = variances,
-            mel_fb           = mel_fb_main,
-            n_fft_bins       = n_fft_bins,
             model_name       = args.model,
             diffusion_amount = diffusion_amount,
             diffusion_steps  = diffusion_steps,
@@ -1040,7 +1082,7 @@ def main():
         with open(args.status_file, "w", encoding="utf-8") as f:
             f.write("ok")
 
-    print("Latent Spectral Diffusion OK | v6.0 | model=%s | amount=%.3f | "
+    print("Latent Spectral Diffusion OK | v6.1 | model=%s | amount=%.3f | "
           "latent=%d | events=%d | clusters=%d | "
           "win=%d | hop=%d | sr=%d | ch=%d"
           % (args.model, diffusion_amount, latent_size, len(events),
