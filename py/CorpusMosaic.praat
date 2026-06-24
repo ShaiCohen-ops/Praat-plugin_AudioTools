@@ -2,7 +2,7 @@
 # Praat AudioTools - CorpusMosaic.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.2 (2026) - Unified Cross-Platform Version
+# Version: 1.3 (2026) - Folder field with blank-to-dialog fallback
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,9 +25,20 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-
 #   Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.3:
+#   - Added a "Corpus_folder" form field (mirrors VoidMosaic): type a
+#     path, or leave it blank to fall back to a folder-selection dialog.
+#     The path is whitespace- and trailing-slash-trimmed; cancelling the
+#     dialog exits cleanly. The trimmed path is passed straight to the
+#     Python engine (no Praat-side slash re-add, as the engine globs the
+#     corpus itself). Synced the version across header/form/banner.
 # ============================================================
 
-form "Offline Corpus Mosaic Synthesizer"
+form "Offline Corpus Mosaic Synthesizer v1.3"
+    comment === Corpus ===
+    comment (Leave blank to pick a folder with a dialog)
+    sentence Corpus_folder 
     positive Grain_size_ms 100
     real Overlap_percent 50.0
     real Pitch_weight 1.0
@@ -50,9 +61,21 @@ endif
 sourceId = selected("Sound")
 sourceName$ = selected$("Sound")
 
-corpusDir$ = chooseDirectory$("Select Corpus Folder (WAV/FLAC/AIFF)")
+# --- FOLDER DISCOVERY ---
+# Mirrors VoidMosaic: use the typed path, or fall back to a dialog when
+# the Corpus folder field is left blank. Trim whitespace and trailing
+# slashes; the trimmed path is passed straight to the Python engine
+# (which globs the corpus), so no trailing slash is re-added here.
+corpusDir$ = replace_regex$(corpus_folder$, "^[ \t]*|[ \t]*$", "", 0)
+corpusDir$ = replace_regex$(corpusDir$, "[\\/]+$", "", 0)
+
 if corpusDir$ == ""
-    exitScript: "Operation cancelled."
+    corpusDir$ = chooseFolder$: "Select Corpus Folder (WAV/FLAC/AIFF)"
+    corpusDir$ = replace_regex$(corpusDir$, "[\\/]+$", "", 0)
+endif
+
+if corpusDir$ == ""
+    exitScript: "Operation cancelled. Please supply a valid Corpus folder path."
 endif
 
 # ============================================================
@@ -127,7 +150,7 @@ endproc
 # Check Python Dependencies
 # ============================================================
 clearinfo
-writeInfoLine: "=== Offline Corpus Mosaic ==="
+writeInfoLine: "=== Offline Corpus Mosaic v1.3 ==="
 appendInfoLine: "Scanning corpus: ", corpusDir$
 appendInfoLine: "[1/3] Detecting Python and Librosa..."
 
