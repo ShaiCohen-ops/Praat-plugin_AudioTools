@@ -3,13 +3,19 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Single-file guard; skipped sounds excluded from ordering
+# Version: 1.2 (2026) - Folder field with blank-to-dialog fallback
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Timbral Similarity Browser - Orders sounds from a folder by
 #   MFCC-based timbral similarity using nearest-neighbor path.
+#
+# Changelog v1.2:
+#   - Added a "Folder" form field (mirrors VoidMosaic): type a path, or
+#     leave it blank to fall back to a folder-selection dialog. The path
+#     is whitespace- and trailing-slash-trimmed; cancelling the dialog
+#     exits cleanly. Synced the version string across header/form/banner.
 #
 # Changelog v1.1:
 #   - Guard against a single-sound batch (n = 1): no path/stats
@@ -28,7 +34,10 @@
 #   - Improved visualization layout
 # ============================================================
 
-form Timbral Similarity Browser v1.0
+form Timbral Similarity Browser v1.2
+    comment === Audio Folder ===
+    comment (Leave blank to pick a folder with a dialog)
+    sentence Folder 
     comment === Preset ===
     optionmenu Preset: 1
         option Standard (12 MFCC)
@@ -66,7 +75,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Timbral Similarity Browser v1.0 ==="
+writeInfoLine: "=== Timbral Similarity Browser v1.2 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "MFCC coefficients: ", num_coefficients
 appendInfoLine: ""
@@ -75,9 +84,21 @@ appendInfoLine: ""
 appendInfoLine: "STEP 1: Loading sounds from folder"
 appendInfoLine: "------------------------------------"
 
-directory$ = chooseDirectory$: "Select folder containing .wav files"
-if directory$ = ""
-    exitScript: "No folder selected."
+# --- FOLDER DISCOVERY ---
+# Mirrors VoidMosaic: use the typed path, or fall back to a dialog when
+# the Folder field is left blank. Trim whitespace and trailing slashes
+# first; the trailing-slash normalization just below re-adds it for the
+# *.wav glob.
+directory$ = replace_regex$(folder$, "^[ \t]*|[ \t]*$", "", 0)
+directory$ = replace_regex$(directory$, "[\\/]+$", "", 0)
+
+if directory$ == ""
+    directory$ = chooseFolder$: "Select folder containing .wav files"
+    directory$ = replace_regex$(directory$, "[\\/]+$", "", 0)
+endif
+
+if directory$ == ""
+    exitScript: "Operation cancelled. Please supply a valid folder path."
 endif
 
 if right$(directory$, 1) <> "/" and right$(directory$, 1) <> "\"
