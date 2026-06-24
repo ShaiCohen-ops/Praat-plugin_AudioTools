@@ -1,11 +1,18 @@
 """
-granular_navigation_engine.py — Granular Navigation Engine  v1.3
+granular_navigation_engine.py — Granular Navigation Engine  v1.4
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
 Email: shai.cohen@biu.ac.il
 
 Called by GranularNavigationEngine.praat — not run directly.
+
+Changelog v1.4:
+    - FIXED: training could crash on grain counts where the final batch
+      held a single sample (n % batch_size == 1), because BatchNorm1d
+      raises "Expected more than 1 value per channel" in training mode.
+      The DataLoader now drops the final batch ONLY in that exact case,
+      so all other grain counts produce bit-for-bit identical embeddings.
 
 Usage:
     python granular_navigation_engine.py \\
@@ -342,8 +349,14 @@ def train_autoencoder(X_norm, latent_dim, n_epochs, batch_size, seed):
     batch_size = max(2, min(batch_size, n))
 
     Xt     = torch.tensor(X_norm)
+    # drop_last ONLY when the final batch would be a single sample: a
+    # size-1 batch crashes BatchNorm1d in training mode ("Expected more
+    # than 1 value per channel"). For every other grain count the loader
+    # is unchanged, so existing embeddings/paths stay bit-for-bit identical.
+    drop_last = (n % batch_size == 1)
     loader = DataLoader(TensorDataset(Xt),
-                        batch_size=batch_size, shuffle=True)
+                        batch_size=batch_size, shuffle=True,
+                        drop_last=drop_last)
 
     model     = GrainAutoencoder(n_feat, latent_dim)
     opt       = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
