@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2 (2026) - Captures Python stderr on failure
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,14 @@
 #   A PyTorch three-level hierarchical model (EventEncoder,
 #   PhraseEncoder, SectionPlanner) generates a recomposition
 #   plan. Audio is re-rendered from the original source material.
+#
+# Changelog v1.2:
+#   - On engine failure the captured Python stderr (traceback) is now
+#     shown in the error dialog instead of "check the console", which is
+#     invisible when Praat runs from the GUI.
+#   - Pairs with hierarchical_recomposition.py v1.1 (fallback reachable,
+#     surprise-swap crash fixed, real sample rate in the planner, FFT
+#     autocorrelation).
 #
 # Dependencies (Python):
 #   pip install numpy scipy soundfile torch
@@ -59,6 +67,7 @@ endif
 tempInput$   = temporaryDirectory$ + "/temp_hnr_input.wav"
 tempOutput$  = temporaryDirectory$ + "/temp_hnr_output.wav"
 tempStats$   = temporaryDirectory$ + "/temp_hnr_stats.txt"
+tempLog$     = temporaryDirectory$ + "/temp_hnr_log.txt"
 probeMarker$ = temporaryDirectory$ + "/temp_hnr_probe.ok"
 
 # Replace backslashes for the Python inline probe
@@ -75,6 +84,9 @@ procedure cleanUpTempFiles
     if fileReadable(tempStats$)
         deleteFile: tempStats$
     endif
+    if fileReadable(tempLog$)
+        deleteFile: tempLog$
+    endif
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
@@ -83,7 +95,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Hierarchical Neural Recomposition v1.1
+form Hierarchical Neural Recomposition v1.2
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -206,7 +218,7 @@ rms_orig  = Get root-mean-square: 0, 0
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Hierarchical Neural Recomposition v1.1 ==="
+writeInfoLine:  "=== Hierarchical Neural Recomposition v1.2 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
@@ -266,13 +278,18 @@ pyCmd$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + fixed$(formal_surprise, 4)
     ... + " " + string$(random_seed)
     ... + " " + presetName$
+    ... + " 2> """ + tempLog$ + """"
 
 runSystem_nocheck: pyCmd$
 
 # ---- VERIFY OUTPUT ----
 if not fileReadable(tempOutput$)
+    errMsg$ = "Python recomposition failed."
+    if fileReadable(tempLog$)
+        errMsg$ = errMsg$ + newline$ + newline$ + "Python error output:" + newline$ + readFile$(tempLog$)
+    endif
     @cleanUpTempFiles
-    exitScript: "Python recomposition failed." + newline$ + "Check terminal/console for details."
+    exitScript: errMsg$
 endif
 
 # ---- IMPORT RESULT ----

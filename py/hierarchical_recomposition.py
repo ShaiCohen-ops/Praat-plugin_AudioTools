@@ -2,9 +2,23 @@
 # =============================================================================
 # Hierarchical Neural Recomposition
 # Author: Shai Cohen — Department of Music, Bar-Ilan University, Israel
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.1:
+#   - Numpy fallback is now reachable: the torch nn.Module subclasses are
+#     rebased onto a BaseModule alias (object when torch is absent), so the
+#     module imports without torch instead of NameError-ing at class
+#     definition. (Previously the advertised fallback was dead code.)
+#   - Fixed an IndexError in the surprise-swap path: rng.randint(0, len) is
+#     inclusive and could index one past the list end (hit FormalBraiding,
+#     surprise=0.35). Now uses len-1 and guards length >= 2.
+#   - plan_event_ordering now takes the real sample rate instead of a
+#     hardcoded 44100, so event placement geometry is correct for non-44.1k
+#     input (previously planning seconds and render seconds disagreed).
+#   - harmonicity_estimate uses an FFT autocorrelation (O(n log n)) instead
+#     of np.correlate full (O(n^2)) — matters for long events.
 #
 # Description:
 #   Multi-scale neural recomposition engine.
@@ -44,6 +58,14 @@ try:
 except ImportError:
     TORCH_OK = False
     print("[WARNING] PyTorch not found. Using fallback numpy model.", flush=True)
+
+# Base class for the torch modules below. When torch is present this is the
+# real nn.Module; when it is absent it is a plain object so the module can
+# still IMPORT (the torch classes are only ever instantiated in the TORCH_OK
+# branch of main(), so the stand-in is never actually used — it just keeps the
+# `class X(nn.Module)` statements from raising NameError and lets the numpy
+# fallback run).
+BaseModule = nn.Module if TORCH_OK else object
 
 
 # =============================================================================
@@ -166,17 +188,22 @@ def spectral_flatness(audio):
 
 def harmonicity_estimate(audio, sr):
     """
-    Estimate HNR via simple autocorrelation ratio.
+    Estimate HNR via autocorrelation peak ratio in the 60-800 Hz range.
     Returns 0 (noisy) to 1 (harmonic).
+    Uses an FFT autocorrelation: O(n log n) instead of np.correlate's O(n^2),
+    which mattered for long (up to ~4 s) events.
     """
-    if len(audio) < 64:
+    n = len(audio)
+    if n < 64:
         return 0.0
-    ac = np.correlate(audio, audio, mode='full')
-    ac = ac[len(ac)//2:]
-    ac = ac / (ac[0] + 1e-12)
+    # Linear autocorrelation via FFT (zero-pad to >= 2n-1 to avoid wrap-around)
+    nfft = 1 << ((2 * n - 1).bit_length())
+    spec = np.fft.rfft(audio, nfft)
+    ac   = np.fft.irfft(spec * np.conj(spec), nfft)[:n]
+    ac   = ac / (ac[0] + 1e-12)
     # Look for peak in 60-800 Hz range
     min_lag = max(1, int(sr / 800))
-    max_lag = min(len(ac)-1, int(sr / 60))
+    max_lag = min(len(ac) - 1, int(sr / 60))
     if min_lag >= max_lag:
         return 0.0
     peak = ac[min_lag:max_lag].max()
@@ -310,7 +337,7 @@ SECTION_DIM = 64
 PLAN_DIM    = 16
 
 
-class EventEncoder(nn.Module):
+class EventEncoder(BaseModule):
     """
     Projects raw event feature vectors into a latent event embedding.
     """
@@ -330,7 +357,7 @@ class EventEncoder(nn.Module):
         return self.net(x)
 
 
-class PhraseEncoder(nn.Module):
+class PhraseEncoder(BaseModule):
     """
     Encodes a variable-length sequence of event embeddings into
     a single phrase embedding using a small transformer.
@@ -356,7 +383,7 @@ class PhraseEncoder(nn.Module):
         return self.pool(pooled).squeeze(0)   # (SECTION_DIM,)
 
 
-class SectionPlanner(nn.Module):
+class SectionPlanner(BaseModule):
     """
     Takes section-level phrase embeddings and produces
     a recomposition plan vector per phrase.
@@ -385,7 +412,7 @@ class SectionPlanner(nn.Module):
         return self.plan_head(out.squeeze(0))      # (n_sections, PLAN_DIM)
 
 
-class HierarchicalRecompositionModel(nn.Module):
+class HierarchicalRecompositionModel(BaseModule):
     """
     Full three-level hierarchical model:
       raw features → event embeddings → phrase embeddings → section plan
@@ -673,7 +700,7 @@ def build_event_similarity_matrix(feat_vecs):
     return (X_n @ X_n.T).astype(np.float32)
 
 
-def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops, rng):
+def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops, rng, sr):
     """
     Generate a linear ordering of event indices with operations
     (repetition, fragmentation, overlap, memory callbacks, etc.).
@@ -682,16 +709,14 @@ def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops
       {type, event_idx, start_time, gain, crossfade_ms, label}
     """
     n_events = len(events)
-    sr_dummy = 44100   # placeholder; actual sr passed at render time
 
     sim_matrix = build_event_similarity_matrix(feat_vecs)
 
     ops_list = []
     cursor   = 0.0    # placement time in seconds
-    sr_est   = 44100  # will be replaced at render
 
     target_dur = params.get('target_duration', 1.0) * sum(
-        len(e['audio']) for e in events) / 44100.0
+        len(e['audio']) for e in events) / sr
 
     phrase_order = _plan_phrase_order(phrases, section_plan_np, params, ops, rng)
 
@@ -714,7 +739,7 @@ def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops
                 recall_phrase_idx = recall_phrase_idx[0]
             recall_phrase = phrases[min(recall_phrase_idx, len(phrases)-1)]
             for ei in recall_phrase['event_indices'][:2]:
-                dur_s = len(events[ei]['audio']) / 44100.0
+                dur_s = len(events[ei]['audio']) / sr
                 ops_list.append({
                     'type':          'recall',
                     'event_idx':     ei,
@@ -737,12 +762,12 @@ def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops
                 'slice_ratio':   rng.uniform(0.15, 0.45),
                 'label':         f'fragment(p{phrase_idx},e{sub_ev})',
             })
-            dur_s = len(events[int(sub_ev)]['audio']) / 44100.0
+            dur_s = len(events[int(sub_ev)]['audio']) / sr
             cursor += dur_s * rng.uniform(0.15, 0.45)
 
         # ── Main phrase placement ────────────────────────────────────────
         for pos_in_phrase, ei in enumerate(ev_indices):
-            ev_dur_s = len(events[ei]['audio']) / 44100.0
+            ev_dur_s = len(events[ei]['audio']) / sr
 
             # Repetition
             if plan_row[slot('repetition')] > 0.5 and rng.random() < plan_row[slot('repetition')] * 0.4:
@@ -785,10 +810,10 @@ def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops
             if contrast_idx is not None:
                 braid_evs = phrases[contrast_idx]['event_indices']
                 braid_cursor = cursor - sum(
-                    len(events[ei]['audio']) / 44100.0 for ei in ev_indices
+                    len(events[ei]['audio']) / sr for ei in ev_indices
                 ) * 0.5
                 for bei in braid_evs[:3]:
-                    dur_s = len(events[bei]['audio']) / 44100.0
+                    dur_s = len(events[bei]['audio']) / sr
                     ops_list.append({
                         'type':         'braid',
                         'event_idx':    bei,
@@ -808,7 +833,7 @@ def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops
             echo_decay = ops.get('echo_decay', 0.5)
             echo_depth = ops.get('echo_depth', 2)
             src_ev     = ev_indices[0]
-            ev_dur_s   = len(events[src_ev]['audio']) / 44100.0
+            ev_dur_s   = len(events[src_ev]['audio']) / sr
             for ech in range(1, echo_depth + 1):
                 ops_list.append({
                     'type':         'echo',
@@ -822,7 +847,7 @@ def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops
         # ── Inversion ────────────────────────────────────────────────────
         if plan_row[slot('inversion')] > 0.65 and rng.random() < 0.3:
             for ei in ev_indices[:2]:
-                dur_s = len(events[ei]['audio']) / 44100.0
+                dur_s = len(events[ei]['audio']) / sr
                 ops_list.append({
                     'type':         'invert',
                     'event_idx':    ei,
@@ -897,10 +922,11 @@ def _plan_phrase_order(phrases, section_plan_np, params, ops, rng):
 
     # Surprise: random transpositions
     surprise = params.get('surprise', 0.2)
-    if surprise > 0.3:
+    if surprise > 0.3 and len(final_order) >= 2:
         n_swaps = int(len(final_order) * surprise * 0.5)
+        hi = len(final_order) - 1   # randint is INCLUSIVE; must not exceed last index
         for _ in range(n_swaps):
-            i, j = rng.randint(0, len(final_order)), rng.randint(0, len(final_order))
+            i, j = rng.randint(0, hi), rng.randint(0, hi)
             final_order[i], final_order[j] = final_order[j], final_order[i]
 
     return final_order
@@ -1197,7 +1223,8 @@ def main():
     # ── Stage 5: Hierarchical model ──────────────────────────────────────
     print("[5/6] Running hierarchical neural model...", flush=True)
 
-    torch.manual_seed(seed)
+    if TORCH_OK:
+        torch.manual_seed(seed)
     np.random.seed(seed)
 
     phrase_arrays = []
@@ -1242,7 +1269,7 @@ def main():
             v_plan = v_plan + v_np.randn(*v_plan.shape) * 0.05
             v_plan = np.clip(v_plan, 0, 1)
             v_ops  = plan_event_ordering(
-                events, feat_vecs, phrases, v_plan, params, ops, v_rng)
+                events, feat_vecs, phrases, v_plan, params, ops, v_rng, sr)
             offset = v * dur_in / n_voices * 0.3
             for op in v_ops:
                 op['start_time'] += offset
@@ -1256,7 +1283,7 @@ def main():
             output_audio[:len(buf)] += buf / n_voices
     else:
         plan_ops     = plan_event_ordering(
-            events, feat_vecs, phrases, section_plan_np, params, ops, rng)
+            events, feat_vecs, phrases, section_plan_np, params, ops, rng, sr)
         output_audio = render_ops(plan_ops, events, sr, target_dur)
 
     # ── Source trace: removed ────────────────────────────────────────────
