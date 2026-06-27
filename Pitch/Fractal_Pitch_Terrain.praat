@@ -67,6 +67,7 @@ form Fractal Pitch Terrain
     positive Pitch_depth 15
     positive Drift_amplitude 2
     positive Drift_frequency 0.7
+    boolean Normalize_depth 1
     
     comment === Time Evolution ===
     positive Time_evolution_power 2
@@ -244,8 +245,27 @@ pitchTier = selected("PitchTier")
 maxVizPoints = min(npoints, 500)
 vizTimes# = zero#(maxVizPoints)
 vizShifts# = zero#(maxVizPoints)
+vizFilled# = zero#(maxVizPoints)
 vizLayers## = zero##(maxVizPoints, min(iterations, 6))
 vizStep = npoints / maxVizPoints
+
+# === Normalization factor ===
+# The raw layer sum overshoots ±1 (it's a sum of decaying layers), so
+# without normalising, pitch_depth does NOT equal the real semitone
+# excursion and the pitch rails against the min/max clamp. Dividing by
+# (peak-per-layer x sum-of-amplitudes) brings the sum into ~±1 so that
+# pitch_depth becomes the true depth in semitones.
+if amplitude_decay = 1
+    ampSum = iterations
+else
+    ampSum = (1 - amplitude_decay ^ iterations) / (1 - amplitude_decay)
+endif
+peakPerLayer = sine_mix + square_mix + chaos_factor
+normFactor = peakPerLayer * ampSum
+if normFactor <= 0
+    normFactor = 1
+endif
+maxTimeFactor = 1 + time_evolution_strength
 
 # === Build Fractal Pitch Terrain ===
 for i from 0 to npoints - 1
@@ -287,7 +307,7 @@ for i from 0 to npoints - 1
         
         # Store layer for visualization
         if vizIdx >= 1 and vizIdx <= maxVizPoints and iter <= 6
-            if vizTimes#[vizIdx] = 0
+            if vizFilled#[vizIdx] = 0
                 vizLayers##[vizIdx, iter] = layer_value
             endif
         endif
@@ -300,7 +320,16 @@ for i from 0 to npoints - 1
     
     # Time evolution envelope
     time_factor = 1 + time_evolution_strength * u ^ time_evolution_power
-    pitch_st = pitch_depth * pitch_sum * time_factor
+
+    # Scale the layer sum into semitones. When normalising, the sum is
+    # divided to ~±1 and time_factor is referenced to its own maximum, so
+    # pitch_depth is the true peak depth and the terrain stays in range.
+    # (Toggle off to keep the original clamp-railing "extreme" character.)
+    if normalize_depth
+        pitch_st = pitch_depth * (pitch_sum / normFactor) * (time_factor / maxTimeFactor)
+    else
+        pitch_st = pitch_depth * pitch_sum * time_factor
+    endif
     
     # Low-frequency drift
     drift = drift_amplitude * sin(u * drift_frequency * pi) * u * u
@@ -308,9 +337,10 @@ for i from 0 to npoints - 1
     
     # Store for visualization
     if vizIdx >= 1 and vizIdx <= maxVizPoints
-        if vizTimes#[vizIdx] = 0
+        if vizFilled#[vizIdx] = 0
             vizTimes#[vizIdx] = t
             vizShifts#[vizIdx] = pitch_st
+            vizFilled#[vizIdx] = 1
         endif
     endif
     
@@ -345,11 +375,19 @@ Scale peak: 0.95
 if draw_visualization
     Erase all
     
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    # --- Title ---
+    Select outer viewport: 0, 8, 0, 0.33
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Fractal Pitch Terrain: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "##Fractal Pitch Terrain##"
+    
+    # --- Subtitle ---
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", 0.5, "half", originalName$ + " | " + presetName$
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
@@ -407,7 +445,7 @@ if draw_visualization
     Colour: "{0.4, 0.6, 0.5}"
     Line width: 1.5
     for vp from 2 to maxVizPoints
-        if vizTimes#[vp] > 0 and vizTimes#[vp - 1] > 0
+        if vizFilled#[vp] = 1 and vizFilled#[vp - 1] = 1
             Draw line: vizTimes#[vp - 1], vizShifts#[vp - 1], vizTimes#[vp], vizShifts#[vp]
         endif
     endfor
@@ -452,7 +490,7 @@ if draw_visualization
     for ly from 1 to numLayers
         Colour: layerColors$#[ly]
         for vp from 2 to maxVizPoints
-            if vizTimes#[vp] > 0 and vizTimes#[vp - 1] > 0
+            if vizFilled#[vp] = 1 and vizFilled#[vp - 1] = 1
                 Draw line: vizTimes#[vp - 1], vizLayers##[vp - 1, ly], vizTimes#[vp], vizLayers##[vp, ly]
             endif
         endfor
@@ -475,7 +513,12 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.6, 5.9
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Layers: " + string$(iterations) + " | Freq×" + fixed$(frequency_multiplier, 2) + " | Decay: " + fixed$(amplitude_decay, 2) + " | Chaos: " + fixed$(chaos_factor, 2) + " | Depth: ±" + string$(pitch_depth) + "st"
+    if normalize_depth
+        depthLabel$ = "Depth: ±" + string$(pitch_depth) + "st"
+    else
+        depthLabel$ = "Depth: " + string$(pitch_depth) + "st x sum (raw)"
+    endif
+    Text: 0.5, "centre", 0.5, "half", "Layers: " + string$(iterations) + " | Freq×" + fixed$(frequency_multiplier, 2) + " | Decay: " + fixed$(amplitude_decay, 2) + " | Chaos: " + fixed$(chaos_factor, 2) + " | " + depthLabel$
     
     Font size: 10
     Colour: "Black"
