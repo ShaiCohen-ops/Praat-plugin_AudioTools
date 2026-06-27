@@ -8,14 +8,19 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Pitch Contour Transfer - matches the mean pitch of Sound B
-#   to Sound A by calculating the pitch difference and applying
-#   a global shift. Blend strength controls partial matching.
+#   Pitch Contour Transfer - imposes the pitch CONTOUR (the melodic
+#   shape) of Sound A onto Sound B. A's contour is time-warped to B's
+#   duration, expressed as semitone deviations from A's mean, then
+#   applied to B. Register choice keeps B's own pitch level or moves it
+#   to A's; Blend strength interpolates between B's own contour and A's.
 #
-# Changelog v0.3:
-#   - Modern syntax throughout
-#   - Added visualization
-#   - Better description
+# Changelog v0.4:
+#   - TRUE contour transfer (was a mean-level match): A's time-warped
+#     contour shape is now transferred, not just its average pitch
+#   - Register option (keep B's / match A's); blend now shape-amount
+#   - Synthesis-range clamp (no longer truncates at the analysis range)
+#   - Visualization shows A's shape, B original and result; fixed legend
+#   - Standard header
 # ============================================================
 
 # === Check Input ===
@@ -30,10 +35,12 @@ sound_b = selected("Sound", 2)
 selectObject: sound_a
 name_a$ = selected$("Sound")
 dur_a = Get total duration
+xmin_a = Get start time
 
 selectObject: sound_b
 name_b$ = selected$("Sound")
 dur_b = Get total duration
+xmin_b = Get start time
 
 # === Form ===
 form Pitch Contour Transfer
@@ -51,8 +58,11 @@ form Pitch Contour Transfer
     real Pitch_ceiling_B 300
     
     comment === Transfer ===
+    optionmenu Register 1
+        option Keep B's register (B's voice, A's tune)
+        option Match A's register (move B to A's level)
     real Blend_strength 1.0
-    comment (0 = no change, 1 = full match)
+    comment (0 = keep B's own contour, 1 = full A contour)
     
     comment === Output ===
     boolean Draw_visualization 1
@@ -92,15 +102,22 @@ appendInfoLine: "  Mean pitch: ", fixed$(mean_b, 1), " Hz"
 appendInfoLine: "  Voiced: ", fixed$(voiced_percent, 1), "%"
 appendInfoLine: ""
 
-# === Calculate Shift ===
-mean_shift = (mean_a - mean_b) * blend_strength
-if mean_b > 0
-    semitones = 12 * log2((mean_b + mean_shift) / mean_b)
+# === Transfer Setup ===
+if register = 2
+    anchor = mean_a
+    regName$ = "match A"
 else
-    semitones = 0
+    anchor = mean_b
+    regName$ = "keep B"
 endif
 
-appendInfoLine: "Shift: ", fixed$(mean_shift, 1), " Hz (", fixed$(semitones, 2), " semitones)"
+# Generous synthesis clamp (covers both ranges, not just B's analysis
+# range) so a transferred contour is never truncated at resynthesis.
+synthFloor = min(pitch_floor_A, pitch_floor_B)
+synthCeil  = max(pitch_ceiling_A, pitch_ceiling_B)
+
+appendInfoLine: "Transfer: ", regName$, " register, blend ", fixed$(blend_strength, 2)
+appendInfoLine: "Synthesis range: ", round(synthFloor), "-", round(synthCeil), " Hz"
 appendInfoLine: ""
 
 # === Create Manipulation ===
@@ -113,43 +130,65 @@ pitch_tier = Extract pitch tier
 selectObject: pitch_tier
 Remove points between: 0, 10000
 
-# === Build New Pitch Tier ===
-appendInfoLine: "Building shifted pitch tier..."
+# === Build Pitch Tier from A's time-warped contour ===
+appendInfoLine: "Transferring contour..."
 n_points = 0
 
-# Store original and shifted for visualization
-maxVizPoints = min(n_frames_b, 500)
-vizTimes# = zero#(maxVizPoints)
+maxVizPoints  = min(n_frames_b, 500)
+vizTimes#     = zero#(maxVizPoints)
 vizOrigPitch# = zero#(maxVizPoints)
-vizNewPitch# = zero#(maxVizPoints)
+vizNewPitch#  = zero#(maxVizPoints)
+vizAShape#    = zero#(maxVizPoints)
+vizFilled#    = zero#(maxVizPoints)
 vizStep = ceiling(n_frames_b / maxVizPoints)
+
+# Carry A's deviation across its unvoiced gaps (start at 0 = A's mean)
+prev_dev_a = 0
 
 for i from 1 to n_frames_b
     selectObject: pitch_b
     t = Get time from frame number: i
     f0_b = Get value at time: t, "Hertz", "Linear"
-    
-    if f0_b <> undefined
-        target_f0 = f0_b + mean_shift
-        
-        # Clamp to range
-        if target_f0 < pitch_floor_B
-            target_f0 = pitch_floor_B
-        elsif target_f0 > pitch_ceiling_B
-            target_f0 = pitch_ceiling_B
+
+    if f0_b <> undefined and f0_b > 0
+        # B's own contour as a semitone deviation from B's mean
+        dev_b = 12 * log2(f0_b / mean_b)
+
+        # Map B's time to the same PHASE in A, read A's contour there
+        phase = (t - xmin_b) / dur_b
+        t_a = xmin_a + phase * dur_a
+        selectObject: pitch_a
+        f0_a = Get value at time: t_a, "Hertz", "Linear"
+        if f0_a <> undefined and f0_a > 0
+            dev_a = 12 * log2(f0_a / mean_a)
+            prev_dev_a = dev_a
+        else
+            dev_a = prev_dev_a
         endif
-        
+
+        # Blend A's shape with B's own, anchored to the chosen register
+        final_dev = blend_strength * dev_a + (1 - blend_strength) * dev_b
+        target_f0 = anchor * 2 ^ (final_dev / 12)
+
+        if target_f0 < synthFloor
+            target_f0 = synthFloor
+        elsif target_f0 > synthCeil
+            target_f0 = synthCeil
+        endif
+
         selectObject: pitch_tier
         Add point: t, target_f0
         n_points = n_points + 1
-        
-        # Store for visualization
+
+        # Store B original, A's shape on the register, and the result
         vizIdx = ceiling(i / vizStep)
         if vizIdx >= 1 and vizIdx <= maxVizPoints
-            if vizTimes#[vizIdx] = 0
-                vizTimes#[vizIdx] = t
+            if vizFilled#[vizIdx] = 0
+                vizTimes#[vizIdx]     = t
                 vizOrigPitch#[vizIdx] = f0_b
-                vizNewPitch#[vizIdx] = target_f0
+                vizAShape#[vizIdx]    = anchor * 2 ^ (dev_a / 12)
+                vizNewPitch#[vizIdx]  = target_f0
+                vizFilled#[vizIdx]    = 1
             endif
         endif
     endif
@@ -175,19 +214,31 @@ selectObject: sound_result
 pitch_result = To Pitch: analysis_time_step, pitch_floor_B, pitch_ceiling_B
 mean_result = Get mean: 0, 0, "Hertz"
 
-appendInfoLine: "Result: ", fixed$(mean_b, 1), " Hz → ", fixed$(mean_result, 1), " Hz"
-appendInfoLine: "Target was: ", fixed$(mean_a, 1), " Hz"
+appendInfoLine: "Result mean: ", fixed$(mean_b, 1), " Hz → ", fixed$(mean_result, 1), " Hz"
+if register = 2
+    appendInfoLine: "Register target (A): ", fixed$(mean_a, 1), " Hz"
+else
+    appendInfoLine: "Register kept (B): ", fixed$(mean_b, 1), " Hz"
+endif
 appendInfoLine: ""
 
 # === Visualization ===
 if draw_visualization
     Erase all
     
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    # --- Title ---
+    Select outer viewport: 0, 8, 0, 0.33
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Pitch Contour Transfer: " + name_a$ + " → " + name_b$
+    Text: 0.5, "centre", 0.5, "half", "##Pitch Contour Transfer##"
+    
+    # --- Subtitle ---
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", 0.5, "half", name_a$ + " → " + name_b$ + " | " + regName$ + " | blend " + fixed$(blend_strength, 2)
     
     # Sound A waveform
     Select outer viewport: 0, 4, 0.6, 1.5
@@ -227,19 +278,23 @@ if draw_visualization
     Select outer viewport: 0, 8, 2.7, 4.3
     Select inner viewport: 0.6, 7.6, 2.9, 4.2
     
-    # Find pitch range
-    minP = mean_a
-    maxP = mean_a
+    # Find pitch range across B original, A's shape, and result
+    minP = mean_b
+    maxP = mean_b
     for vp from 1 to maxVizPoints
-        if vizOrigPitch#[vp] > 0
+        if vizFilled#[vp] = 1
             if vizOrigPitch#[vp] < minP
                 minP = vizOrigPitch#[vp]
             endif
             if vizOrigPitch#[vp] > maxP
                 maxP = vizOrigPitch#[vp]
             endif
-        endif
-        if vizNewPitch#[vp] > 0
+            if vizAShape#[vp] < minP
+                minP = vizAShape#[vp]
+            endif
+            if vizAShape#[vp] > maxP
+                maxP = vizAShape#[vp]
+            endif
             if vizNewPitch#[vp] < minP
                 minP = vizNewPitch#[vp]
             endif
@@ -257,32 +312,35 @@ if draw_visualization
     Axes: 0, dur_b, minP - pMargin, maxP + pMargin
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, dur_b, minP - pMargin, maxP + pMargin
     
-    # Draw mean lines
-    Colour: "{0.5, 0.7, 0.5}"
-    Dotted line
-    Draw line: 0, mean_a, dur_b, mean_a
-    Font size: 6
-    Text: dur_b * 0.02, "left", mean_a + pMargin * 0.3, "half", "A mean"
-    
+    # B's mean reference line
     Colour: "{0.6, 0.6, 0.6}"
+    Dotted line
     Draw line: 0, mean_b, dur_b, mean_b
-    Text: dur_b * 0.02, "left", mean_b - pMargin * 0.3, "half", "B orig"
-    
     Solid line
     
-    # Draw original B pitch
+    # Draw original B pitch (grey)
     Colour: "{0.7, 0.7, 0.7}"
     for vp from 2 to maxVizPoints
-        if vizOrigPitch#[vp] > 0 and vizOrigPitch#[vp - 1] > 0
+        if vizFilled#[vp] = 1 and vizFilled#[vp - 1] = 1
             Draw line: vizTimes#[vp - 1], vizOrigPitch#[vp - 1], vizTimes#[vp], vizOrigPitch#[vp]
         endif
     endfor
     
-    # Draw shifted pitch
-    Colour: "{0.4, 0.5, 0.7}"
+    # Draw A's contour shape on the register (green dashed = target shape)
+    Colour: "{0.4, 0.65, 0.45}"
+    Dotted line
+    for vp from 2 to maxVizPoints
+        if vizFilled#[vp] = 1 and vizFilled#[vp - 1] = 1
+            Draw line: vizTimes#[vp - 1], vizAShape#[vp - 1], vizTimes#[vp], vizAShape#[vp]
+        endif
+    endfor
+    Solid line
+    
+    # Draw result (blue, bold)
+    Colour: "{0.3, 0.45, 0.75}"
     Line width: 1.5
     for vp from 2 to maxVizPoints
-        if vizNewPitch#[vp] > 0 and vizNewPitch#[vp - 1] > 0
+        if vizFilled#[vp] = 1 and vizFilled#[vp - 1] = 1
             Draw line: vizTimes#[vp - 1], vizNewPitch#[vp - 1], vizTimes#[vp], vizNewPitch#[vp]
         endif
     endfor
@@ -294,12 +352,16 @@ if draw_visualization
     Text left: "yes", "Pitch (Hz)"
     Text bottom: "yes", "Time (s)"
     
-    # Legend
+    # Legend (in the panel's own Hz/time coordinates, near the top)
+    legY = maxP + pMargin * 0.5
+    legX = dur_b * 0.03
     Font size: 6
     Colour: "{0.7, 0.7, 0.7}"
-    Text: 0.85, "left", 1.05, "half", "B original"
-    Colour: "{0.4, 0.5, 0.7}"
-    Text: 0.92, "left", 1.05, "half", "B shifted"
+    Text: legX, "left", legY, "half", "B original"
+    Colour: "{0.4, 0.65, 0.45}"
+    Text: legX + dur_b * 0.18, "left", legY, "half", "A contour"
+    Colour: "{0.3, 0.45, 0.75}"
+    Text: legX + dur_b * 0.36, "left", legY, "half", "result"
     
     # Stats bar
     Select outer viewport: 0, 8, 4.5, 5.2
@@ -336,7 +398,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.3, 5.6
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Shift: " + fixed$(mean_shift, 1) + " Hz (" + fixed$(semitones, 2) + " st) | Blend: " + fixed$(blend_strength, 2)
+    Text: 0.5, "centre", 0.5, "half", "Contour: " + name_a$ + " → " + name_b$ + " | Register: " + regName$ + " | Blend: " + fixed$(blend_strength, 2)
     
     Font size: 10
     Colour: "Black"
