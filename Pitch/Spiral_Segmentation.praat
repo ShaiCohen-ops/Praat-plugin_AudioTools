@@ -60,6 +60,10 @@ form Spiral Segmentation
         option Rising
         option Falling
         option Alternating
+    optionmenu Pitch_scaling 1
+        option Hertz (additive)
+        option Semitones (proportional)
+    real Pitch_step_semitones 1.0
     comment === Temporal Jitter (non-metric) ===
     real Jitter_amount 0.08
     comment === Output ===
@@ -183,6 +187,20 @@ else
     presetName$ = "Custom"
 endif
 
+# === PITCH SCALING MODE ===
+# Hz mode adds a constant frequency offset per segment (original behaviour).
+# Semitone mode multiplies by a constant ratio per segment, so equal steps
+# are equal musical intervals — a perceptually uniform spiral in pitch.
+# (Presets leave Pitch_scaling at its default of 1 = Hz, so their feel is
+# unchanged; the semitone mode is opt-in from the form.)
+if pitch_scaling = 1
+    pstep = pitch_step_Hz
+    pitchUnit$ = "Hz"
+else
+    pstep = pitch_step_semitones
+    pitchUnit$ = "st"
+endif
+
 # === SETUP ===
 clearinfo
 writeInfoLine: "=============================================="
@@ -202,8 +220,9 @@ appendInfoLine: "Parameters:"
 appendInfoLine: "  Segments: ", number_of_segments
 appendInfoLine: "  Duration multiplier: ", duration_multiplier
 appendInfoLine: "  Spiral direction: ", spiral_direction$
-appendInfoLine: "  Pitch step: ", pitch_step_Hz, " Hz"
+appendInfoLine: "  Pitch step: ", pstep, " ", pitchUnit$
 appendInfoLine: "  Pitch direction: ", pitch_direction$
+appendInfoLine: "  Pitch scaling: ", pitch_scaling$
 appendInfoLine: "  Jitter amount: ", jitter_amount
 appendInfoLine: ""
 
@@ -278,20 +297,20 @@ appendInfoLine: "Pitch shifts (spiral):"
 for i from 1 to number_of_segments
     if pitch_direction = 1
         # Rising: pitch increases with each segment
-        pitchShift[i] = pitch_step_Hz * (i - 1)
+        pitchShift[i] = pstep * (i - 1)
     elsif pitch_direction = 2
         # Falling: pitch decreases with each segment
-        pitchShift[i] = -pitch_step_Hz * (i - 1)
+        pitchShift[i] = -pstep * (i - 1)
     else
         # Alternating: oscillates up and down
         if (i mod 2) = 1
-            pitchShift[i] = pitch_step_Hz * floor((i - 1) / 2)
+            pitchShift[i] = pstep * floor((i - 1) / 2)
         else
-            pitchShift[i] = -pitch_step_Hz * floor(i / 2)
+            pitchShift[i] = -pstep * floor(i / 2)
         endif
     endif
     
-    appendInfoLine: "  Segment ", i, ": ", fixed$(pitchShift[i], 1), " Hz"
+    appendInfoLine: "  Segment ", i, ": ", fixed$(pitchShift[i], 1), " ", pitchUnit$
 endfor
 
 appendInfoLine: ""
@@ -313,19 +332,19 @@ durationTier = selected("DurationTier")
 # Add points at segment boundaries with appropriate duration factors
 # We need to specify the duration factor (relative tempo) at each point
 
+# DurationTier points are placed just inside each segment. The offset
+# must be smaller than half a segment, or the start/end points invert
+# and corrupt the tier (happens for short sounds with many segments,
+# e.g. a 0.05 s sound split into 32). Clamp it to a quarter-segment.
+tierOffset = min(0.001, segmentDuration / 4)
+
 for i from 1 to number_of_segments
-    segMid = (segStart[i] + segEnd[i]) / 2
-    
     # Add point at segment start
     selectObject: durationTier
-    Add point: segStart[i] + 0.001, durationFactorJittered[i]
-    
-    # Add point at segment end (same factor for this segment)
-    if i < number_of_segments
-        Add point: segEnd[i] - 0.001, durationFactorJittered[i]
-    else
-        Add point: segEnd[i] - 0.001, durationFactorJittered[i]
-    endif
+    Add point: segStart[i] + tierOffset, durationFactorJittered[i]
+
+    # Add point at segment end (same factor across the whole segment)
+    Add point: segEnd[i] - tierOffset, durationFactorJittered[i]
 endfor
 
 # === BUILD PITCH TIER ===
@@ -363,8 +382,14 @@ for p from 1 to numPitchPoints
         endif
     endfor
     
-    # Apply pitch shift for this segment
-    newPitch = pointPitch + pitchShift[segmentIndex]
+    # Apply pitch shift for this segment.
+    # Hz mode: add a frequency offset. Semitone mode: multiply by a ratio
+    # (2^(semitones/12)) so equal steps are equal musical intervals.
+    if pitch_scaling = 1
+        newPitch = pointPitch + pitchShift[segmentIndex]
+    else
+        newPitch = pointPitch * 2 ^ (pitchShift[segmentIndex] / 12)
+    endif
     
     # Ensure pitch stays in reasonable range
     if newPitch < 50
@@ -391,7 +416,11 @@ if numNewPoints = 0
     
     for i from 1 to number_of_segments
         segMid = (segStart[i] + segEnd[i]) / 2
-        newPitch = basePitch + pitchShift[i]
+        if pitch_scaling = 1
+            newPitch = basePitch + pitchShift[i]
+        else
+            newPitch = basePitch * 2 ^ (pitchShift[i] / 12)
+        endif
         
         if newPitch < 50
             newPitch = 50
@@ -443,10 +472,18 @@ if show_visualization
     Erase all
     
     # --- Title ---
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 11
+    Select outer viewport: 0, 8, 0, 0.33
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Spiral Segmentation## | " + name$ + " | " + presetName$
+    Text: 0.5, "centre", 0.5, "half", "##Spiral Segmentation##"
+    
+    # --- Subtitle ---
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", 0.5, "half", name$ + " | " + presetName$
     
     # --- Original Waveform ---
     Select outer viewport: 0, 8, 0.6, 1.8
@@ -589,7 +626,7 @@ if show_visualization
     Draw inner box
     
     Font size: 7
-    Text left: "yes", "Pitch (Hz)"
+    Text left: "yes", "Shift (" + pitchUnit$ + ")"
     Text bottom: "yes", "Segment"
     
     # --- Spiral Diagram ---
@@ -673,7 +710,7 @@ if show_visualization
     Text: 0.1, "left", 0.75, "half", "Segments: " + string$(number_of_segments)
     Text: 0.1, "left", 0.62, "half", "Duration multiplier: " + fixed$(duration_multiplier, 2)
     Text: 0.1, "left", 0.49, "half", "Direction: " + spiral_direction$
-    Text: 0.1, "left", 0.36, "half", "Pitch step: " + fixed$(pitch_step_Hz, 1) + " Hz"
+    Text: 0.1, "left", 0.36, "half", "Pitch step: " + fixed$(pstep, 1) + " " + pitchUnit$
     Text: 0.1, "left", 0.23, "half", "Pitch direction: " + pitch_direction$
     Text: 0.1, "left", 0.10, "half", "Jitter: " + fixed$(jitter_amount, 2)
     
