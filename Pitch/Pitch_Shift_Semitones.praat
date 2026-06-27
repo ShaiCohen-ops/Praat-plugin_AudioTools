@@ -130,6 +130,16 @@ newfs = fs * note_ratio
 
 appendInfoLine: "Pitch ratio: ", fixed$(note_ratio, 4)
 appendInfoLine: "Temp sample rate: ", round(newfs), " Hz"
+
+# Manipulation analyses the ALREADY-shifted sound (pitch x note_ratio),
+# so scale the analysis range by the same ratio. Otherwise large up-shifts
+# push the fundamental past a fixed 600 Hz ceiling and PSOLA mistracks.
+manipMin = 75 * note_ratio
+manipMax = 600 * note_ratio
+if manipMin < 40
+    manipMin = 40
+endif
+appendInfoLine: "Manipulation range: ", round(manipMin), "-", round(manipMax), " Hz"
 appendInfoLine: ""
 
 # === Copy and Override Sample Rate ===
@@ -142,7 +152,7 @@ Override sampling frequency: newfs
 # === Create Manipulation and Duration Tier ===
 appendInfoLine: "Creating manipulation..."
 selectObject: tmpSound
-manipulation = To Manipulation: 0.01, 75, 600
+manipulation = To Manipulation: 0.01, manipMin, manipMax
 
 selectObject: manipulation
 durationTier = Extract duration tier
@@ -174,11 +184,19 @@ removeObject: durationTier, manipulation, tmpSound, resynthSound
 if draw_visualization
     Erase all
     
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    # --- Title ---
+    Select outer viewport: 0, 8, 0, 0.33
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Pitch Shift: " + originalName$ + " → " + intervalName$ + " (" + string$(semitones) + " st)"
+    Text: 0.5, "centre", 0.5, "half", "##Pitch Shift (Semitones)##"
+    
+    # --- Subtitle ---
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", 0.5, "half", originalName$ + " → " + intervalName$ + " (" + string$(semitones) + " st)"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.9
