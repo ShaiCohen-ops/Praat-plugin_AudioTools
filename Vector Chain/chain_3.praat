@@ -30,7 +30,7 @@ initial_name$ = selected$("Sound")
 appendInfoLine: "--- Starting AudioTools Chain 3 ---"
 
 # --- Define Paths (Relative) ---
-path1$ = "../Filter & Color/Whisper Morph.praat"
+path1$ = "../Filter & Color/Whisper_Morph.praat"
 path2$ = "../Pitch/Bimodal_Contour_Grammar.praat"
 path3$ = "../Time & Granular/Percussive Audio Groove Creator.praat"
 

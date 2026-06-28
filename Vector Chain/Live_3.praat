@@ -63,7 +63,7 @@ overlap_sec = 0.1
 final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
-path_intro$ = pluginPath$ + "Filter & Color/Whisper Morph.praat"
+path_intro$ = pluginPath$ + "Filter & Color/Whisper_Morph.praat"
 path_body$ = pluginPath$ + "Pitch/Bimodal_Contour_Grammar.praat"
 path_outro$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
 
