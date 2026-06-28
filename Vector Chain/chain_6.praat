@@ -19,7 +19,7 @@ appendInfoLine: "--- Starting AudioTools Chain 6 ---"
 preferencesDir$ = preferencesDirectory$
 pluginPath$ = preferencesDir$ + "/plugin_AudioTools/"
 
-path1$ = pluginPath$ + "Spectral/Phase Shaper.praat"
+path1$ = pluginPath$ + "Spectral/Phase_Shaper.praat"
 path2$ = pluginPath$ + "Time & Granular/Phase_Modulation_Matrix.praat"
 path3$ = pluginPath$ + "Spatial & Surround/BPM_Panning.praat"
 
@@ -38,8 +38,13 @@ appendInfoLine: "Step 1: Phase Shaper complete."
 # STEP 2: Phase Modulation Matrix
 # ==============================================================================
 selectObject: sound2
-# Parameters: Preset, Layers, CarMin, CarMax, FixedCar, FixedFreq, ModMin, ModMax, FeedMin, FeedMax, Spread, Mix, Draw, Play
-runScript: path2$, "Default (balanced)", 5, 0.1, 0.5, "no", 0.3, 8, 2, 0.7, 1.1, 0.1, 0.93, "yes", "no"
+# FIX: Updated to the correct 16-argument signature for Phase_Modulation_Matrix v0.3.
+# v0.3 inserted Use_fixed_ms_depth + Fixed_depth_ms after Mod_depth_increment, and
+# renamed Spectral_tilt_base/rate -> Layer_gain_base/rate (the chain previously
+# passed the old 14-arg v0.2 signature, which misaligned from arg 9 onward).
+# Parameters: Preset, Layers, CarMin, CarMax, FixedCar, FixedFreq, ModBase, ModIncr,
+#             FixedMsDepth, DepthMs, Feedback, GainBase, GainRate, Scale, Draw, Play
+runScript: path2$, "Default (balanced)", 5, 0.1, 0.5, "no", 0.3, 8, 2, "no", 20, 0.7, 1.1, 0.1, 0.93, "yes", "no"
 
 # Capture output
 sound3 = selected("Sound")

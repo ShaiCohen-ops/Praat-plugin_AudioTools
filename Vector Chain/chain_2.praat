@@ -18,7 +18,7 @@ appendInfoLine: "--- Starting AudioTools Chain 2 ---"
 # --- Define Paths (Relative) ---
 # Ensure these match your actual folder structure
 path1$ = "../Pitch/Spiral_Pitch_Dance.praat"
-path2$ = "../AI & Adaptive/Neural Ambient Drone Designer.praat"
+path2$ = "../AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
 path3$ = "../Spatial & Surround/8-channel_speed_deviations.praat"
 
 # ==============================================================================

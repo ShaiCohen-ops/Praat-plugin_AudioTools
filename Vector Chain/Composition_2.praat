@@ -33,7 +33,7 @@ final_fade_sec = 4.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "Pitch/Spiral_Pitch_Dance.praat"
-path_body$ = pluginPath$ + "AI & Adaptive/Neural Ambient Drone Designer.praat"
+path_body$ = pluginPath$ + "AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
 path_outro$ = pluginPath$ + "Spatial & Surround/8-channel_speed_deviations.praat"
 
 # === INFO HEADER ===
