@@ -256,6 +256,9 @@ endif
 # ============================================================
 # User must have a Sound selected before running.
 # That Sound will be used as the convolution kernel (pulsaret waveform).
+if numberOfSelected("Sound") <> 1
+    exitScript: "Pulsar Synthesis Engine: please select exactly ONE Sound object (the pulsaret / convolution kernel) before running."
+endif
 tmp = selected("Sound")
 
 # ============================================================
@@ -371,8 +374,8 @@ appendInfoLine: ""
 appendInfoLine: "[2/5] Generating pulse-train sound..."
 
 selectObject: pp
-# adaptFactor=1.0 means amplitude scales with local IOI (natural)
-# maximumPeriod=2000 Hz ceiling -> any pulse below 0.0005 s skipped
+# adaptFactor=1.0: pulse amplitude adapts to local IOI (natural dynamics)
+# adaptTime=0.05 s; interpolationDepth=2000 samples (sinc interpolation)
 To Sound (pulse train): sr, 1, 0.05, 2000
 pulseTrain = selected("Sound")
 
@@ -392,9 +395,11 @@ appendInfoLine: "[3/5] Shaping pulsarets (duty cycle = ",
 # dutyC * IOI.  We approximate this by multiplying by a
 # repeating raised-cosine gate derived from the PointProcess.
 
-# Duty-cycle gate: for each pulse at time t_k, the gate is
-#   g(t) = 0.5*(1 - cos(pi*(t-t_k)/w))  for  t in [t_k, t_k+w]
-#   g(t) = 0                              otherwise
+# Duty-cycle gate: for each pulse at time t_k, the gate is a Hann
+# window CENTERED on the onset (peak = 1 at t_k, so the pulse energy
+# is preserved rather than zeroed):
+#   g(t) = 0.5*(1 - cos(2*pi*(t - (t_k - w/2)) / w))  for t in [t_k-w/2, t_k+w/2]
+#   g(t) = 0                                           otherwise
 # where  w = dutyC * IOI_k
 # We build this as a formula Sound, then multiply.
 
@@ -429,21 +434,25 @@ for k from 1 to pulseCount
         w_k = 1 / sr
     endif
 
-    t_start = t_k
-    t_end = t_k + w_k
+    # Window centered on the onset: [t_k - w/2, t_k + w/2]
+    winStart = t_k - w_k / 2
+    t_start = winStart
+    if t_start < 0
+        t_start = 0
+    endif
+    t_end = t_k + w_k / 2
     if t_end > duration
         t_end = duration
     endif
 
-    # Accumulate Hanning gate for this pulsaret window
-    tkStr$ = fixed$(t_k, 10)
+    # Accumulate Hann pulsaret gate (peak = 1 at t_k)
+    winStartStr$ = fixed$(winStart, 10)
     wkStr$ = fixed$(w_k, 10)
-    tendStr$ = fixed$(t_end, 10)
 
     selectObject: gateSnd
     Formula (part): t_start, t_end, 1, 1,
-        ... "self + 0.5 * (1 - cos(" + piStr$
-        ... + " * (x - " + tkStr$ + ") / " + wkStr$ + "))"
+        ... "self + 0.5 * (1 - cos(2 * " + piStr$
+        ... + " * (x - " + winStartStr$ + ") / " + wkStr$ + "))"
 
     # Progress every 50 pulses
     kMod = k - floor(k / 50) * 50
