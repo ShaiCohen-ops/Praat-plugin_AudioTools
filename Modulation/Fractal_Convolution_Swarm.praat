@@ -10,14 +10,20 @@
 # Description:
 #   Fractal Convolution Swarm - multi-scale delay processing
 #   with exponentially increasing time scales. Creates complex,
-#   self-similar textures by convolving at multiple depths with
-#   weighted kernels. Produces ambient, granular, or dense effects.
+#   self-similar textures by mixing weighted delayed copies at
+#   multiple depths. Swarm mode sums the taps in parallel against
+#   a preserved dry signal; Cascade mode is the original in-place
+#   recursive dissolver. Ambient, granular, or dense effects.
 #
-# Changelog v0.2:
-#   - Modern syntax
-#   - Fixed input check
-#   - Added visualization
-#   - Better description
+# Changelog v0.3:
+#   - Added Swarm (parallel) mode: weighted delayed copies of the
+#     dry signal are ADDED as echoes (multi-tap delay) on top of the
+#     preserved dry, so mix_amount is an echo send and the weight
+#     panels are faithful. Original behaviour kept as Cascade.
+#   - Guard: taps whose delay exceeds the signal are skipped
+#   - Stereo placement for Swarm: Wide (spread taps by kernel) and
+#     Ping-pong (bounce depth levels L/R), equal-power pan
+#   - Standard header
 # ============================================================
 
 # === Check Input ===
@@ -54,6 +60,15 @@ form Fractal Convolution Swarm
     positive Base_delay_ms 5.0
     positive Depth_scale_factor 1.6
     positive Mix_amount 0.3
+    
+    comment === Processing ===
+    optionmenu Processing 1
+        option Swarm (parallel, preserves dry)
+        option Cascade (original, dissolving)
+    optionmenu Stereo 3
+        option Centered
+        option Wide (spread taps by kernel)
+        option Ping-pong (bounce by depth)
     
     comment === Output ===
     positive Scale_peak 0.95
@@ -114,10 +129,25 @@ else
     presetName$ = "Custom"
 endif
 
+if processing = 2
+    procName$ = "Cascade"
+else
+    procName$ = "Swarm"
+endif
+
+if stereo = 2
+    stereoName$ = "Wide"
+elsif stereo = 3
+    stereoName$ = "Ping-pong"
+else
+    stereoName$ = "Centered"
+endif
+
 # === Info ===
 writeInfoLine: "=== Fractal Convolution Swarm ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Mode: ", procName$, " | Stereo: ", stereoName$
 appendInfoLine: ""
 appendInfoLine: "Fractal depth: ", fractal_depth
 appendInfoLine: "Convolution width: ±", convolution_width
@@ -138,65 +168,134 @@ for d from 1 to fractal_depth
     depthWeights#[d] = 1 / sqrt(d)
 endfor
 
-# === Create Working Copy ===
+# === Working copies ===
 selectObject: original
-Copy: originalName$ + "_fractal"
-result = selected("Sound")
+nChannels = Get number of channels
+nSamples = Get number of samples
+
+# Mono source for delay taps (named fcsdry for the Formula reference)
+if nChannels = 1
+    drymono = Copy: "fcsdry"
+else
+    drymono = Convert to mono
+    Rename: "fcsdry"
+endif
+
+# Stereo result: dry passthrough now, echoes added below
+if nChannels = 1
+    selectObject: original
+    fcsTmpL = Copy: "fcsTmpL"
+    selectObject: original
+    fcsTmpR = Copy: "fcsTmpR"
+    selectObject: fcsTmpL, fcsTmpR
+    result = Combine to stereo
+    Rename: originalName$ + "_fractal"
+    removeObject: fcsTmpL, fcsTmpR
+else
+    selectObject: original
+    result = Copy: originalName$ + "_fractal"
+endif
 
 # === Apply Fractal Convolution ===
 appendInfoLine: "Applying fractal convolution..."
 
 totalOperations = fractal_depth * (2 * convolution_width)
 opCount = 0
+skippedCount = 0
 
-for depth from 1 to fractal_depth
-    # Calculate delay for this depth level
-    current_delay = round(base_delay * (depth_scale_factor ^ depth))
-    
-    # Weight decreases with depth
-    depth_weight = 1 / sqrt(depth)
-    
-    appendInfoLine: "  Depth ", depth, "/", fractal_depth, " (delay: ", round(current_delay / sampling * 1000), " ms)"
-    
-    # Apply convolution kernel at multiple offsets
-    for kernel from -convolution_width to convolution_width
-        if kernel <> 0
-            opCount = opCount + 1
-            
-            # Center-weighted kernel
-            kernel_weight = 1 / (1 + abs(kernel))
-            
-            # Total shift includes kernel offset
-            total_shift = current_delay + (kernel * round(current_delay * 0.3))
-            
-            # Combined weight
-            combined_weight = mix_amount * kernel_weight * depth_weight
-            dry_weight = 1 - combined_weight
-            
-            # Mix delayed signal
-            selectObject: result
-            Formula: ~ self * dry_weight + self[max(1, min(ncol, col + total_shift))] * combined_weight
-        endif
+if processing = 2
+    # ---- CASCADE (original): in-place, each op reads its own output ----
+    for depth from 1 to fractal_depth
+        current_delay = round(base_delay * (depth_scale_factor ^ depth))
+        depth_weight = 1 / sqrt(depth)
+        appendInfoLine: "  Depth ", depth, "/", fractal_depth, " (delay: ", round(current_delay / sampling * 1000), " ms)"
+        for kernel from -convolution_width to convolution_width
+            if kernel <> 0
+                opCount = opCount + 1
+                kernel_weight = 1 / (1 + abs(kernel))
+                total_shift = current_delay + (kernel * round(current_delay * 0.3))
+                combined_weight = mix_amount * kernel_weight * depth_weight
+                dry_weight = 1 - combined_weight
+                selectObject: result
+                Formula: ~ self * dry_weight + self[max(1, min(ncol, col + total_shift))] * combined_weight
+            endif
+        endfor
     endfor
-endfor
+else
+    # ---- SWARM (parallel multi-tap delay): ADD weighted, panned delayed
+    #      copies of the dry signal as echoes on top of the preserved dry.
+    #      Sound_fcsdry(time) reads the mono dry by time and returns 0
+    #      outside its domain, so out-of-range taps add silence.
+    #      Stereo: Wide spreads taps by kernel position; Ping-pong bounces
+    #      successive depth levels left/right (equal-power pan). ----
+    for depth from 1 to fractal_depth
+        current_delay = round(base_delay * (depth_scale_factor ^ depth))
+        depth_weight = 1 / sqrt(depth)
+        appendInfoLine: "  Depth ", depth, "/", fractal_depth, " (delay: ", round(current_delay / sampling * 1000), " ms)"
+        for kernel from -convolution_width to convolution_width
+            if kernel <> 0
+                opCount = opCount + 1
+                kernel_weight = 1 / (1 + abs(kernel))
+                total_shift = current_delay + (kernel * round(current_delay * 0.3))
+                offset = total_shift / sampling
+                gain = mix_amount * kernel_weight * depth_weight
+                # Stereo pan position p in [-1, 1]
+                if stereo = 2
+                    p = kernel / convolution_width
+                elsif stereo = 3
+                    if depth - 2 * floor(depth / 2) = 1
+                        p = -1
+                    else
+                        p = 1
+                    endif
+                else
+                    p = 0
+                endif
+                panAngle = (p + 1) / 2 * pi / 2
+                gL = cos(panAngle)
+                gR = sin(panAngle)
+                # Skip taps whose delay exceeds the signal
+                if abs(total_shift) < nSamples
+                    selectObject: result
+                    Formula: ~ self + (if row = 1 then gL else gR fi) * gain * Sound_fcsdry(x + offset)
+                else
+                    skippedCount = skippedCount + 1
+                endif
+            endif
+        endfor
+    endfor
+endif
 
 appendInfoLine: ""
 appendInfoLine: "Operations: ", opCount
+if skippedCount > 0
+    appendInfoLine: "Skipped (delay > signal): ", skippedCount, " / ", totalOperations
+endif
 
 # === Scale ===
 selectObject: result
 Scale peak: scale_peak
 Rename: originalName$ + "_fractal_" + presetName$
 
+removeObject: drymono
+
 # === Visualization ===
 if draw_visualization
     Erase all
     
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    # --- Title ---
+    Select outer viewport: 0, 8, 0, 0.33
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Fractal Convolution Swarm: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "##Fractal Convolution Swarm##"
+    
+    # --- Subtitle ---
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", 0.5, "half", originalName$ + " | " + presetName$ + " | " + procName$ + " | " + stereoName$
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
@@ -291,7 +390,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.3, 5.6
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Depth: " + string$(fractal_depth) + " | Width: ±" + string$(convolution_width) + " | Base: " + fixed$(base_delay_ms, 1) + "ms | Scale: " + fixed$(depth_scale_factor, 2) + "× | Max delay: " + fixed$(maxDelay, 0) + "ms"
+    Text: 0.5, "centre", 0.5, "half", "Mode: " + procName$ + " (" + stereoName$ + ") | Depth: " + string$(fractal_depth) + " | Width: ±" + string$(convolution_width) + " | Base: " + fixed$(base_delay_ms, 1) + "ms | Scale: " + fixed$(depth_scale_factor, 2) + "× | Max delay: " + fixed$(maxDelay, 0) + "ms"
     
     Font size: 10
     Colour: "Black"
