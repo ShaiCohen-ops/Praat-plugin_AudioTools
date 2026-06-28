@@ -207,6 +207,19 @@ elsif preset = 11
     decay_ms = 40
 endif
 
+# --- Guard acceleration factor (avoid zero/negative cycle durations) ---
+# Exponential mode needs accel > 0; linear mode needs the per-cycle factor
+# 1 + (cycle-1)*(accel-1) to stay positive across all cycles.
+if acceleration_factor < 0.01
+    acceleration_factor = 0.01
+endif
+if exponential_acceleration = 0
+    minAccelLin = 1 - 0.9 / max(total_cycles - 1, 1)
+    if acceleration_factor < minAccelLin
+        acceleration_factor = minAccelLin
+    endif
+endif
+
 # --- Defaults for fields removed from form ---
 sample_rate_Hz = 44100
 pattern1_amplitude = 0.4
@@ -461,20 +474,29 @@ procedure drawRhythmVisualization: .nEvents, .totalDur
     
     # Layout
     .leftMargin = 0.6
-    .rightMargin = 6.5
+    .rightMargin = 7.7
     
     # === Title ===
-    Select outer viewport: 0, 7, 0, 1.6
+    Select outer viewport: 0, 8, 0, 0.33
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Accelerating Polyrhythm##"
+    
+    # === Subtitle ===
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
     if preset > 1
-        Text top: "no", preset$ + ": " + string$(pattern1_beats) + " against " + string$(pattern2_beats)
+        .subText$ = preset$ + " | " + string$(pattern1_beats) + " against " + string$(pattern2_beats) + " | " + string$(total_cycles) + " cycles"
     else
-        Text top: "no", "Accelerating Polyrhythm: " + string$(pattern1_beats) + " against " + string$(pattern2_beats)
+        .subText$ = string$(pattern1_beats) + " against " + string$(pattern2_beats) + " | " + string$(total_cycles) + " cycles | accel " + fixed$(acceleration_factor, 2)
     endif
+    Text: 0.5, "centre", 0.5, "half", .subText$
     
     # === Panel 1: Event timeline ===
-    Select outer viewport: 0, 7, 0.6, 3.0
+    Select outer viewport: 0, 8, 0.6, 3.0
     Colour: .colGrid$
     Draw inner box
     
@@ -541,7 +563,7 @@ procedure drawRhythmVisualization: .nEvents, .totalDur
     Marks bottom every: 1, 0.5, "yes", "yes", "no"
     
     # === Panel 2: IOI curve ===
-    Select outer viewport: 0, 7, 3.2, 5.0
+    Select outer viewport: 0, 8, 3.2, 5.0
     Colour: .colGrid$
     Draw inner box
     
@@ -602,17 +624,20 @@ procedure drawRhythmVisualization: .nEvents, .totalDur
     Marks bottom every: 1, 0.5, "yes", "yes", "no"
     Text bottom: "yes", "Time (s)"
     
-    # === Footer ===
-    Select outer viewport: 0, 7, 6.4, 7
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
+    # === Footer (summary panel) ===
     if exponential_acceleration
         .accelType$ = "(exp)"
     else
         .accelType$ = "(lin)"
     endif
     .paramText$ = "Accel: " + fixed$(acceleration_factor, 2) + "x " + .accelType$ + " | Morph: " + morph_type$ + " | Waveform: " + waveform$
-    Text top: "no", .paramText$
+    Select outer viewport: 0, 8, 6.4, 7
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Draw inner box
+    Font size: 8
+    Colour: "{0.4, 0.4, 0.4}"
+    Text: 0.5, "centre", 0.5, "half", .paramText$
     
     # Reset
     Font size: 10
