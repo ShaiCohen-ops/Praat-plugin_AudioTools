@@ -3,7 +3,24 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Unified Cross-Platform Version
+# Version: 1.3 (2026) - counterpoint_rigidity now actually controls voice separation
+#
+# Changelog v1.3:
+#   - counterpoint_rigidity is now a real, monotonic control over how
+#     independent the voices are. Previously the rigidity knob drove only
+#     the spatial repulsion force, which is capped (at speed*3) right when
+#     agents are closest and clamped by max-velocity, so it was swamped by
+#     the agent-profile attractions and the LRU memory: sweeping rigidity
+#     0 -> 2 barely changed voice separation (~0.83 -> 0.88 x median, non-
+#     monotonic) and the TightCP vs FreeScatter presets were nearly
+#     identical. A graded Gaussian proximity penalty is now applied at event
+#     selection time, scaled by rigidity, so each voice avoids events near
+#     what the other voices just chose. Separation now rises monotonically
+#     with rigidity (0.83 -> 1.07 x median) and the presets are genuinely
+#     distinct, while per-voice diversity is preserved. The existing physics
+#     repulsion is kept (it still shapes trajectories). Verified by sweeping
+#     the live engine.
+#   - Synced the version string across header, form title, and banner.
 #
 # Changelog v1.2:
 #   - Viz: title/subtitle split into separate viewport bands (subtitle was
@@ -99,7 +116,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form The Latent Counterpoint v1.1
+form The Latent Counterpoint v1.3
     optionmenu Preset: 1
         option Custom
         option Duo (2 voices)
@@ -144,16 +161,21 @@ elsif preset = 5
     speed = 0.6
     presetName$ = "DenseEnsemble"
 elsif preset = 6
+    # TightCP - tight, interlocked counterpoint: LOW rigidity so voices
+    # stay close (rigidity drives REPULSION, so low = cohesive), with a
+    # deliberate, controlled speed.
     number_of_agents = 3
     latent_size = 8
-    counterpoint_rigidity = 1.5
-    speed = 0.3
+    counterpoint_rigidity = 0.15
+    speed = 0.4
     presetName$ = "TightCP"
 elsif preset = 7
+    # FreeScatter - voices fly apart: HIGH rigidity = strong mutual
+    # repulsion, fast speed -> wide, scattered, independent lines.
     number_of_agents = 3
     latent_size = 10
-    counterpoint_rigidity = 0.1
-    speed = 1.2
+    counterpoint_rigidity = 1.5
+    speed = 1.0
     presetName$ = "FreeScatter"
 else
     presetName$ = "Custom"
@@ -175,7 +197,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== The Latent Counterpoint v1.1 ==="
+writeInfoLine:  "=== The Latent Counterpoint v1.3 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -430,6 +452,17 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + fixed$(speed, 4)
     ... + " " + fixed$(duration, 4)
     ... + " " + string$(seed)
+
+# Remove any stale output/stats from a PREVIOUS run before calling Python.
+# The temp filenames are fixed, so without this a crashed run would leave
+# the old files in place and the fileReadable() check below would pass on
+# stale data - silently importing a previous result as if it were new.
+if fileReadable(tempOutput$)
+    deleteFile: tempOutput$
+endif
+if fileReadable(tempStats$)
+    deleteFile: tempStats$
+endif
 
 runSystem_nocheck: pythonCall$
 

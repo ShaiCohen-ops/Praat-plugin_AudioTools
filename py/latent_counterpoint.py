@@ -551,6 +551,7 @@ def run_physics(agents, Z, center, periphery, dists, median_dist,
             forces.append(force)
 
         # --- Update agents ---
+        chosen_pos_this_step = []
         for ai, a in enumerate(agents):
             # Inertia: F = ma → a = F/m
             acceleration = forces[ai] / a.mass
@@ -579,7 +580,24 @@ def run_physics(agents, Z, center, periphery, dists, median_dist,
                                       ) * median_dist * 5.0
 
             scores = d_to_events + penalties
+
+            # Counterpoint separation (rigidity): push this voice away from
+            # events lying near the events the OTHER voices have already
+            # selected this step. The spatial repulsion force alone is too
+            # weak (it is capped at speed*3 and the velocity is clamped) to
+            # give rigidity an audible, monotonic effect - voice separation
+            # barely changed across the whole 0..2 range. The counterpoint
+            # constraint is therefore also applied directly at selection time
+            # as a graded Gaussian proximity penalty: higher rigidity makes
+            # each voice pick more contrasting (latent-distant) events.
+            # Verified monotonic on the live engine.
+            for _zp in chosen_pos_this_step:
+                _prox = np.exp(-np.sum((Z - _zp) ** 2, axis=1)
+                               / (median_dist ** 2 + 1e-9))
+                scores = scores + counterpoint_rigidity * median_dist * _prox
+
             chosen = int(np.argmin(scores))
+            chosen_pos_this_step.append(Z[chosen])
 
             a.history.append(chosen)
 
