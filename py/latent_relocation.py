@@ -196,7 +196,7 @@ class NumpyAutoencoder(object):
     Simple MLP autoencoder with:
     - Encoder: input → hidden → latent
     - Decoder: latent → hidden → output
-    - ReLU activations (leaky for encoder, sigmoid for decoder output)
+    - Leaky-ReLU hidden activations; linear decoder output (for MSE)
     - Denoising: corrupt input with Gaussian noise
     - L2 regularization
     - Adam optimizer
@@ -439,9 +439,13 @@ def compute_latent_fields(model, patches, events, stability_bias,
     np.fill_diagonal(dists, np.inf)
     k = min(3, n - 1)
     knn_dists = np.zeros(n)
-    for i in range(n):
-        sorted_d = np.sort(dists[i])
-        knn_dists[i] = np.mean(sorted_d[:k])
+    if k >= 1:
+        for i in range(n):
+            sorted_d = np.sort(dists[i])
+            knn_dists[i] = np.mean(sorted_d[:k])
+    # n <= 1: no neighbors exist, so knn_dists stays zeros. (Without this
+    # guard, sorted_d[:0] is empty and np.mean([]) is NaN, which would
+    # poison temperature and the mean_temperature stat.)
     knn_norm = _safe_normalize(knn_dists)
 
     # Component 3: Praat stability metrics (inverted = instability)
@@ -449,19 +453,19 @@ def compute_latent_fields(model, patches, events, stability_bias,
     instability = 1.0 - np.clip(pitch_stab, 0, 1)
 
     # Weighted temperature
-    # Temperature = instability + latent isolation
-    # (reconstruction error already contributes via err_norm above;
-    #  novelty_bias acts separately through pivot positioning in
-    #  relocate_events to avoid double-compounding)
-    temperature = (
-        (1.0 - stability_bias) * (0.5 * err_norm + 0.5 * knn_norm)
-        + stability_bias * instability
-    )
+    # Temperature = latent novelty/isolation + a fixed pitch-instability
+    # contribution. Decoupled from stability_bias (v1.4): previously
+    # stability_bias re-weighted this blend, which made "more stable"
+    # paradoxically route unstable events into the high-displacement
+    # regimes. stability_bias now acts ONLY as an anchor in relocate_events,
+    # so its relationship to the result is monotonic.
+    temperature = 0.4 * err_norm + 0.4 * knn_norm + 0.2 * instability
     temperature = np.clip(temperature, 0, 1)
 
     # --- Affinity matrix ---
     # Gaussian kernel on latent distances
-    sigma = np.median(dists[dists < np.inf]) + 1e-6
+    finite_d = dists[dists < np.inf]
+    sigma = (np.median(finite_d) if finite_d.size > 0 else 1.0) + 1e-6
     affinity = np.exp(-dists ** 2 / (2 * sigma ** 2))
     np.fill_diagonal(affinity, 1.0)
 
@@ -528,6 +532,15 @@ def relocate_events(events, Z_latent, temperature, affinity, regimes,
     - Temperature (hot events scatter, cold events anchor)
     - Reconstruction error (true novelty for pivot decisions)
 
+    Parameter semantics (v1.4 - made intuitive and monotonic):
+    - relocation_intensity: smooth morph from the original order (0) to the
+      fully-relocated order (1). No cliff: each event's sort position is
+      interpolated between its original rank and its relocated rank.
+    - stability_bias: pure anchoring. Higher -> less movement (events are
+      pulled back toward their original rank). Monotonic.
+    - novelty_bias: pushes the most novel events to evenly-spaced structural
+      positions, with a blend that reaches full strength at 1.0.
+
     Returns: new ordering as list of event indices.
     """
     import numpy as np
@@ -536,97 +549,83 @@ def relocate_events(events, Z_latent, temperature, affinity, regimes,
     if n <= 1:
         return list(range(n))
 
-    # Compute target positions for each event
-    targets = np.zeros(n)
+    intensity = relocation_intensity
+    mean_temp = float(np.mean(temperature))
+    novelty = _safe_normalize(recon_error)
 
+    # --- Step 1: full-strength relocated TARGET per event (regime character) ---
+    # These are not scaled by intensity; they define WHERE each event wants to
+    # go at maximum relocation. Magnitudes differ by regime so that Crystal
+    # barely moves while Gas/Plasma can travel across the whole timeline.
+    full = np.zeros(n)
     for i in range(n):
-        original_pos = float(i)
         regime = regimes[i]
         temp = temperature[i]
+        pos = float(i)
 
         if regime == REGIME_CRYSTAL:
-            # Crystal: stay near original position
-            # Slight attraction toward most similar event
-            most_similar = np.argmax(affinity[i])
-            if most_similar != i:
-                pull = 0.1 * relocation_intensity * (most_similar - i)
-            else:
-                pull = 0.0
-            targets[i] = original_pos + pull
+            most_similar = int(np.argmax(affinity[i]))
+            full[i] = pos + (0.15 * (most_similar - i) if most_similar != i else 0.0)
 
         elif regime == REGIME_FLUID:
-            # Fluid: swap toward lower-temperature neighbors
-            # Bubble-sort like: move toward cooler positions
-            direction = -1.0 if temp > np.mean(temperature) else 1.0
-            displacement = relocation_intensity * temp * direction * 2.0
-            targets[i] = original_pos + displacement
+            direction = -1.0 if temp > mean_temp else 1.0
+            full[i] = pos + temp * direction * (n * 0.25)
 
         elif regime == REGIME_GAS:
-            # Gas: scatter proportionally to temperature
-            # Direction: away from center of mass of similar events
             sim_weights = affinity[i].copy()
             sim_weights[i] = 0
             if np.sum(sim_weights) > 0:
-                center = np.average(
-                    np.arange(n), weights=sim_weights)
-                direction = np.sign(original_pos - center)
+                center = np.average(np.arange(n), weights=sim_weights)
+                direction = np.sign(pos - center)
                 if direction == 0:
                     direction = 1.0
             else:
                 direction = 1.0
-
-            displacement = (relocation_intensity * temp
-                            * direction * n * 0.3)
-            targets[i] = original_pos + displacement
+            full[i] = pos + temp * direction * (n * 0.5)
 
         else:  # REGIME_PLASMA
-            # Plasma: large displacement, novelty-driven pivot
-            # High-novelty events move to structural positions
-            # (beginning, climax, end)
-            # Use reconstruction error as true novelty measure
-            # (not temperature, which conflates instability with novelty)
-            novelty_rank = _safe_normalize(recon_error)[i]
-            if novelty_rank > 0.7:
-                # Very novel → move to beginning or end
-                if i < n // 2:
-                    targets[i] = n - 1 - i * 0.2
-                else:
-                    targets[i] = i * 0.2
+            if novelty[i] > 0.7:
+                # Very novel -> driven to a far structural extreme
+                full[i] = (n - 1) if i < n // 2 else 0.0
             else:
-                # Less novel plasma → large random-like scatter
-                displacement = (relocation_intensity * temp
-                                * n * 0.4
-                                * np.sin(i * 2.3 + temp * 5.7))
-                targets[i] = original_pos + displacement
+                full[i] = pos + temp * (n * 0.5) * np.sin(i * 2.3 + temp * 5.7)
 
-    # --- Stability anchoring ---
-    # Events with high pitch stability resist displacement
+    # Convert full-strength targets into a relocated RANK (a permutation):
+    # reloc_rank[i] = the position event i would occupy at full relocation.
+    reloc_rank = np.empty(n, dtype=float)
+    reloc_rank[np.argsort(full, kind="stable")] = np.arange(n)
+
+    orig_rank = np.arange(n, dtype=float)
+
+    # --- Step 2: smooth intensity morph (rank space, no cliff) ---
+    # At intensity 0 the key is the original rank (identity order); at 1 it is
+    # the relocated rank. Interpolating ranks makes crossings accumulate
+    # gradually as intensity rises, instead of all at once past a threshold.
+    key = (1.0 - intensity) * orig_rank + intensity * reloc_rank
+
+    # --- Step 3: stability anchoring (monotonic: higher bias = less movement) ---
+    # Pull each key back toward its original rank. Every event is anchored at
+    # least a little; stable (high pitch_stability) events resist more.
     for i in range(n):
-        ps = events[i].get("pitch_stability", 0.5)
-        anchor_strength = stability_bias * ps
-        targets[i] = (1 - anchor_strength) * targets[i] + anchor_strength * i
+        ps = float(events[i].get("pitch_stability", 0.5))
+        ps = min(1.0, max(0.0, ps))
+        anchor = stability_bias * (0.4 + 0.6 * ps)
+        key[i] = (1.0 - anchor) * key[i] + anchor * orig_rank[i]
 
-    # --- Novelty pivoting ---
-    # High-novelty events become structural pivots (move to key positions)
-    # Use reconstruction error as true novelty (not temperature which
-    # conflates instability with rarity)
-    if novelty_bias > 0.1:
-        novelty_scores = _safe_normalize(recon_error)
-        # Find top novelty events
-        top_k = max(1, int(n * 0.2))
-        top_indices = np.argsort(novelty_scores)[-top_k:]
-
-        # Space pivots evenly
-        pivot_positions = np.linspace(0, n - 1, top_k)
+    # --- Step 4: novelty pivoting (now has teeth) ---
+    # Force the most novel events toward evenly-spaced structural slots. Gated
+    # by intensity so that intensity = 0 always yields the original order; at
+    # full intensity the strength reaches novelty_bias.
+    nov_strength = novelty_bias * intensity
+    if nov_strength > 0.02:
+        top_k = max(1, int(round(n * 0.25)))
+        top_indices = np.argsort(novelty)[-top_k:]
+        structural = np.linspace(0, n - 1, top_k)
         for pi, idx in enumerate(sorted(top_indices)):
-            blend = novelty_bias * 0.5
-            targets[idx] = ((1 - blend) * targets[idx]
-                            + blend * pivot_positions[pi])
+            key[idx] = (1.0 - nov_strength) * key[idx] + nov_strength * structural[pi]
 
-    # --- Convert targets to ordering ---
-    # Sort events by their target position
-    order_pairs = sorted(enumerate(targets), key=lambda x: x[1])
-    order = [idx for idx, _ in order_pairs]
+    # --- Final order: sort events by their morphed key (always a permutation) ---
+    order = list(np.argsort(key, kind="stable"))
 
     return order
 

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Re-voiced Gentle/Balanced presets above the reorder threshold; staleness fix
+# Version: 1.4 (2026) - Relocation params made intuitive/monotonic
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,11 +19,40 @@
 #   Parameters:
 #   - Learning steps:  autoencoder training iterations (20–500)
 #   - Latent size:     bottleneck dimensionality (2–32)
-#   - Relocation intensity: strength of event displacement (0–1)
-#   - Stability bias:  anchoring strength for stable events (0–1)
-#   - Novelty bias:    structural pivot role for rare events (0–1)
+#   - Relocation intensity: how much reordering (0=original .. 1=max)
+#   - Stability bias:  anchoring strength - higher = less movement
+#   - Novelty bias:    how tightly novel events snap to structural slots
 #   - Preserve duration: maintain original length
 #   - Seed:            deterministic reproducibility
+#
+# Changelog v1.4:
+#   - Rewrote the event-relocation engine so the three knobs behave the
+#     way their names imply (the previous mapping was counter-intuitive):
+#       * relocation_intensity is now a smooth master dial - it morphs
+#         each event's rank from its original position toward its
+#         relocated position, so 0 = original order and movement grows
+#         gradually (no more "nothing happens then everything jumps"
+#         cliff around 0.4-0.5).
+#       * stability_bias now MONOTONICALLY reduces movement (anchors all
+#         events toward their original position; stable events resist
+#         more). It no longer secretly re-weighted the temperature field,
+#         which had made "more stable" produce MORE scatter.
+#       * novelty_bias now has a real, monotonic effect: it locks the
+#         most novel events onto evenly-spaced structural positions,
+#         gated by intensity. It was previously near-inert.
+#     Output ordering is still always a valid permutation (no events
+#     dropped or duplicated). Verified by parameter sweeps on the engine.
+#
+# Changelog v1.3:
+#   - Replaced the runSystem_nocheck Python calls (probe + main engine)
+#     with "nocheck runSubprocess", which passes each argument directly
+#     without a shell. This avoids Windows mangling the long multi-quoted
+#     command string, and surfaces Python's stderr into the Info window.
+#   - Synced the version string across header, form title, and banner
+#     (form/banner had lagged at v1.1).
+#   - Python: guarded the single-event (n=1) case in the latent fields
+#     (k-NN temperature no longer produces a NaN); corrected a stale
+#     docstring (decoder output is linear, not sigmoid).
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
@@ -99,7 +128,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Online Latent-Event Relocation v1.1
+form Online Latent-Event Relocation v1.4
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -183,7 +212,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Online Latent-Event Relocation v1.1 ==="
+writeInfoLine:  "=== Online Latent-Event Relocation v1.4 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -211,8 +240,8 @@ appendInfoLine: ""
 # ===========================================================================
 appendInfoLine: "[1/5] Detecting Python dependencies..."
 
-probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
-runSystem_nocheck: probeCmd$
+probeSrc$ = "import numpy, scipy, soundfile; open('" + probeMarkerJ$ + "', 'w').write('ok')"
+nocheck runSubprocess: pythonCmd$, "-c", probeSrc$
 
 if not fileReadable(probeMarker$)
     @cleanUpTempFiles
@@ -434,19 +463,6 @@ removeObject: intMatrix, intSound, ppObj, eventTable
 appendInfoLine: "[4/5] Running Python engine..."
 appendInfoLine: "  (Training autoencoder + relocating events)"
 
-pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
-    ... + " """ + tempInput$ + """"
-    ... + " """ + tempCSV$ + """"
-    ... + " """ + tempOutput$ + """"
-    ... + " """ + tempStats$ + """"
-    ... + " " + string$(learning_steps)
-    ... + " " + string$(latent_size)
-    ... + " " + fixed$(relocation_intensity, 4)
-    ... + " " + fixed$(stability_bias, 4)
-    ... + " " + fixed$(novelty_bias, 4)
-    ... + " " + string$(preserve_duration)
-    ... + " " + string$(seed)
-
 # Remove any stale output/stats from a PREVIOUS run before calling Python.
 # The temp filenames are fixed, so without this a crashed run would leave
 # the old files in place and the fileReadable() check below would pass on
@@ -458,11 +474,20 @@ if fileReadable(tempStats$)
     deleteFile: tempStats$
 endif
 
-runSystem_nocheck: pythonCall$
+# runSubprocess runs Python DIRECTLY (no shell), so it cannot mangle the
+# quoted temp paths the way a single long runSystem command can on Windows,
+# and it surfaces Python's own stderr into the Info window. The nocheck
+# prefix lets the fileReadable() check below handle a failure gracefully
+# instead of halting the script.
+nocheck runSubprocess: pythonCmd$, pythonScript$,
+    ... tempInput$, tempCSV$, tempOutput$, tempStats$,
+    ... string$(learning_steps), string$(latent_size),
+    ... fixed$(relocation_intensity, 4), fixed$(stability_bias, 4),
+    ... fixed$(novelty_bias, 4), string$(preserve_duration), string$(seed)
 
 if not fileReadable(tempOutput$)
     @cleanUpTempFiles
-    exitScript: "Python latent relocation engine failed." + newline$ + "Check terminal for error details."
+    exitScript: "Python latent relocation engine failed." + newline$ + "Check the Info window above for the Python error."
 endif
 
 # ===========================================================================
