@@ -428,10 +428,10 @@ def apply_curvature_blend(z_original, z_folded, curvature, center):
     """
     import numpy as np
 
-    # Curvature as sigmoid-like blend
-    # Sharp curvature → weight toward folded
-    # Smooth curvature → weight toward original (pre-fold)
-    alpha = curvature ** 0.5  # soften the response curve
+    # Curvature is a linear blend: the dial position is the fold weight.
+    # (A previous sqrt mapping front-loaded the response, so even curvature
+    #  0.1 jumped almost straight to a full fold.)
+    alpha = curvature
     return z_original * (1.0 - alpha) + z_folded * alpha
 
 
@@ -471,13 +471,13 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
     # Start at one extreme of the principal projection
     start_z = center + primary_axis * proj_min[0] * 0.9
 
-    # If symmetry mode: generate first half, then fold-invert for second
-    if symmetry > 0.5:
-        half_steps = n_output_steps // 2
-        full_steps = half_steps  # we'll mirror to get the rest
-    else:
-        half_steps = n_output_steps
-        full_steps = n_output_steps
+    # Symmetry continuously morphs the SECOND half of the path from its
+    # normal trajectory (symmetry=0) toward the topological inverse of the
+    # first half (symmetry=1) - a smooth palindrome control with no dead
+    # zone. (Previously symmetry did nothing at all below 0.5 and snapped
+    # the entire second half to a palindrome at exactly 0.5.)
+    full_steps = n_output_steps
+    half_steps = n_output_steps // 2
 
     # --- Generate first half (or full) path ---
     path_positions = []
@@ -542,6 +542,30 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
         final_z = apply_curvature_blend(raw_z, folded_z, curvature,
                                         center)
 
+        # --- Symmetry: continuously morph the second half toward the ---
+        # topological inverse of the mirror-step's first-half position.
+        # symmetry=0 leaves the normal trajectory untouched; symmetry=1
+        # gives a full palindromic inversion; values between blend smoothly.
+        if symmetry > 1e-6 and step >= half_steps:
+            mirror_step = 2 * half_steps - 1 - step
+            if 0 <= mirror_step < len(path_positions):
+                mirror_z = path_positions[mirror_step]
+                inverted_z = center + (center - mirror_z)
+                # Optional rotation in the principal plane (permutation)
+                if permutation_intensity > 0.1:
+                    angle = permutation_intensity * np.pi * 0.25
+                    cos_a = np.cos(angle)
+                    sin_a = np.sin(angle)
+                    z_c = inverted_z - center
+                    proj1 = np.dot(z_c, primary_axis)
+                    proj2 = np.dot(z_c, secondary_axis)
+                    new_proj1 = proj1 * cos_a - proj2 * sin_a
+                    new_proj2 = proj1 * sin_a + proj2 * cos_a
+                    z_c = z_c + primary_axis * (new_proj1 - proj1) \
+                          + secondary_axis * (new_proj2 - proj2)
+                    inverted_z = center + z_c
+                final_z = final_z * (1.0 - symmetry) + inverted_z * symmetry
+
         # --- Select nearest event (LRU) ---
         d_to_events = np.sqrt(np.sum((Z - final_z) ** 2, axis=1))
         lru_penalty = np.zeros(n_events)
@@ -567,53 +591,9 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
             elif proj_val < proj_min[0] * 0.9:
                 direction = 1.0
 
-    # --- Apply symmetry: topological inverse of first half ---
-    if symmetry > 0.5:
-        second_half_events = []
-        second_half_positions = []
-
-        for si in range(len(path_events) - 1, -1, -1):
-            orig_z = path_positions[si]
-
-            # Topological inversion: reflect through center
-            # This is NOT time-reversal — it's identity inversion
-            inverted_z = center + (center - orig_z) * symmetry
-
-            # Blend with permutation for non-trivial symmetry
-            if permutation_intensity > 0.1:
-                # Rotate inverted position slightly
-                angle = permutation_intensity * np.pi * 0.25
-                cos_a = np.cos(angle)
-                sin_a = np.sin(angle)
-                z_c = inverted_z - center
-                # Rotate in principal plane
-                proj1 = np.dot(z_c, primary_axis)
-                proj2 = np.dot(z_c, secondary_axis)
-                new_proj1 = proj1 * cos_a - proj2 * sin_a
-                new_proj2 = proj1 * sin_a + proj2 * cos_a
-                z_c = z_c + primary_axis * (new_proj1 - proj1) \
-                      + secondary_axis * (new_proj2 - proj2)
-                inverted_z = center + z_c
-
-            # Find nearest event to inverted position
-            d_to_events = np.sqrt(np.sum((Z - inverted_z) ** 2, axis=1))
-            lru_penalty = np.zeros(n_events)
-            total_step = len(path_events) + len(second_half_events)
-            for i in range(n_events):
-                recency = total_step - last_used[i]
-                if recency < lru_window:
-                    lru_penalty[i] = (lru_window - recency) * median_dist * 0.4
-            scores = d_to_events + lru_penalty
-
-            chosen = int(np.argmin(scores))
-            second_half_events.append(chosen)
-            second_half_positions.append(inverted_z.copy())
-            usage_count[chosen] += 1
-            last_used[chosen] = total_step
-
-        path_events.extend(second_half_events)
-        path_positions.extend(second_half_positions)
-        fold_log.append((len(path_events) // 2, "symmetry_pivot"))
+    # Mark the palindrome pivot (midpoint) for stats / visualization.
+    if symmetry > 1e-6:
+        fold_log.append((half_steps, "symmetry_pivot"))
 
     return path_events, fold_log, path_positions
 

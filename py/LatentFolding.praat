@@ -3,7 +3,20 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Staleness fix; engine LRU window 4->8 (breaks Mirror-manifold event loop)
+# Version: 1.3 (2026) - Symmetry is continuous (no dead zone); curvature linearized
+#
+# Changelog v1.3:
+#   - symmetry is now a continuous control with no dead zone. Previously
+#     the whole bottom half of the range did nothing and the palindrome
+#     snapped on at exactly 0.5 (it was gated by `if symmetry > 0.5`). The
+#     second half of the path now blends smoothly from its normal trajectory
+#     (symmetry=0) toward the topological inverse of the first half
+#     (symmetry=1); the first half is unchanged. Verified monotonic on the
+#     live engine.
+#   - curvature now uses a linear blend (dial position = fold weight). The
+#     previous sqrt mapping front-loaded the response, so even curvature 0.1
+#     jumped almost straight to a full fold.
+#   - Synced the version string across header, form title, and banner.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -90,7 +103,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Folding v1.1 — Topological Manifold
+form Latent Folding v1.3 — Topological Manifold
     optionmenu Preset: 1
         option Custom
         option Gentle mirror
@@ -231,7 +244,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Folding v1.1 — Topological Manifold ==="
+writeInfoLine:  "=== Latent Folding v1.3 — Topological Manifold ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
