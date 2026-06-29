@@ -807,9 +807,20 @@ def execute_nav_plan(plan, Z, clips, audio, sr, target_samples, seed,
 
         # ── 1. Compute latent displacement ─────────────────────────────────
         if mode in ('drift', 'settle'):
-            noise      = rng.randn(latent_dim) * temperature
-            target_dir = velocity / (np.linalg.norm(velocity) + 1e-8)
-            new_pos    = current_pos + target_dir * step_size + noise * step_size
+            noise = rng.randn(latent_dim) * temperature
+            vnorm = np.linalg.norm(velocity)
+            if vnorm < 1e-6:
+                # Seed a unit direction so a directed drift still moves when
+                # temperature is 0. Without this, velocity never leaves zero
+                # and the walk is frozen regardless of step_size (step_size
+                # became a dead knob whenever temperature was low). This
+                # decouples step_size (= drift distance) from temperature
+                # (= added wander).
+                target_dir = rng.randn(latent_dim)
+                target_dir = target_dir / (np.linalg.norm(target_dir) + 1e-8)
+            else:
+                target_dir = velocity / vnorm
+            new_pos = current_pos + target_dir * step_size + noise * step_size
 
         elif mode == 'mutate':
             noise = rng.randn(latent_dim)

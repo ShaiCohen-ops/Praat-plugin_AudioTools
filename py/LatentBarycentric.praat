@@ -3,7 +3,20 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Presets now set navigation params (not just latent_size); staleness fix
+# Version: 1.4 (2026) - Drift/settle move at temperature=0 (step_size decoupled)
+#
+# Changelog v1.4:
+#   - Navigation: drift and settle steps now move even when temperature=0.
+#     Previously the drift direction came only from accumulated velocity,
+#     which started at zero and was kicked into motion solely by the
+#     temperature noise - so at low/zero temperature the walk froze in
+#     place and step_size did nothing. A unit drift direction is now seeded
+#     whenever velocity is ~0, so step_size controls drift DISTANCE and
+#     temperature controls added WANDER (the two are decoupled). Verified by
+#     sweeping the live engine: step_size now produces monotonically growing
+#     latent travel at temperature=0. return_strength's homing behavior is
+#     unchanged (already correct and monotonic).
+#   - Synced the version string across header, form title, and banner.
 #
 # Changelog v1.3:
 #   - Viz: title/subtitle split into separate viewport bands (subtitle was
@@ -110,7 +123,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Barycentric Mutation v1.2
+form Latent Barycentric Mutation v1.4
     # ── Core settings ─────────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom
@@ -333,7 +346,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Barycentric Mutation v1.2 ==="
+writeInfoLine:  "=== Latent Barycentric Mutation v1.4 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
