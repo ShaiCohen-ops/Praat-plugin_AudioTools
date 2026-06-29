@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - Fixed object references, added safety checks
+# Version: 1.2 (2026) - Folder field with blank-to-dialog fallback
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,24 @@
 #
 # Usage:
 #   Run this script and select a folder containing audio clips.
+#
+# Changelog v1.2:
+#   - Added a "Folder" form field (mirrors Timbral_Similarity_Browser):
+#     type a path, or leave it blank to fall back to the folder-selection
+#     dialog. The path is whitespace- and trailing-slash-trimmed, then a
+#     single separator is re-added; cancelling the dialog exits cleanly.
+#
+# Changelog v1.1:
+#   - Force each loaded file to mono before concatenation. Stereo or
+#     mixed-channel inputs previously crashed Concatenate and made the
+#     object() grain read ambiguous. The stereo image is produced by
+#     per-grain panning, so a mono source bank is the correct input.
+#   - Visualization: added explicit "Axes: 0,1,0,1" to the title, both
+#     panel subtitles, and the statistics block. Without it those text
+#     panels inherited the previous panel's world coordinates, pushing
+#     the stats second line (and the atom-distribution subtitle) off
+#     screen. Coordinates re-expressed in 0..1 so text is duration-
+#     independent.
 #
 # Changelog v1.0:
 #   - Fixed object reference syntax (now uses object() function)
@@ -30,6 +48,10 @@
 
 form "Sound Atom Composer - True Granular"
     comment This version uses the ACTUAL AUDIO from your files.
+    
+    comment === Audio Folder ===
+    comment (Leave blank to pick a folder with a dialog)
+    sentence Folder 
     
     comment === Preset ===
     optionmenu Preset_style 1
@@ -112,13 +134,35 @@ appendInfoLine: "Starting True Granular Composer..."
 appendInfoLine: ""
 appendInfoLine: "Step 1: Loading Source Audio..."
 
-input_folder$ = chooseDirectory$: "Select folder with WAV files"
-if input_folder$ = ""
-    exitScript: "Cancelled."
+# --- FOLDER DISCOVERY ---
+# Mirrors Timbral_Similarity_Browser: use the typed Folder path, or fall
+# back to a dialog when it is left blank. Whitespace and trailing slashes
+# are trimmed first, then a single separator is re-added for the *.wav glob
+# (and for "+ fileName$" in the load loop below).
+input_folder$ = replace_regex$(folder$, "^[ \t]*|[ \t]*$", "", 0)
+input_folder$ = replace_regex$(input_folder$, "[\\/]+$", "", 0)
+
+if input_folder$ == ""
+    input_folder$ = chooseDirectory$: "Select folder with WAV files"
+    input_folder$ = replace_regex$(input_folder$, "[\\/]+$", "", 0)
 endif
 
+if input_folder$ == ""
+    exitScript: "Cancelled. Please supply a valid folder path."
+endif
+
+if right$(input_folder$, 1) <> "/" and right$(input_folder$, 1) <> "\"
+    if index(input_folder$, "\") > 0
+        input_folder$ = input_folder$ + "\"
+    else
+        input_folder$ = input_folder$ + "/"
+    endif
+endif
+
+appendInfoLine: "  Loading from: ", input_folder$
+
 # 1. Create List of Files
-Create Strings as file list: "fileList", input_folder$ + "/*.wav"
+Create Strings as file list: "fileList", input_folder$ + "*.wav"
 numFiles = Get number of strings
 if numFiles = 0
     removeObject: "Strings fileList"
@@ -134,9 +178,20 @@ Create Table with column names: "loadedSounds", numFiles, "id"
 for i to numFiles
     selectObject: "Strings fileList"
     fileName$ = Get string: i
-    Read from file: input_folder$ + "/" + fileName$
+    Read from file: input_folder$ + fileName$
     soundID = selected("Sound")
-    
+
+    # Force mono: stereo or mixed-channel files would crash Concatenate
+    # and make the object() grain read ambiguous. The stereo image is
+    # built later from per-grain panning, so a mono source bank is correct.
+    nch = Get number of channels
+    if nch > 1
+        Convert to mono
+        monoID = selected("Sound")
+        removeObject: soundID
+        soundID = monoID
+    endif
+
     selectObject: "Table loadedSounds"
     Set numeric value: i, "id", soundID
 endfor
@@ -403,6 +458,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 1, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Sound Atom Composer: " + preset$
@@ -478,9 +534,10 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     
     Select outer viewport: 0, 4, 2.7, 2.9
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 2.0, "centre", 0.5, "half", "Atom Distribution (color = amplitude)"
+    Text: 0.5, "centre", 0.5, "half", "Atom Distribution (color = amplitude)"
     
     # Stereo Field (Pan vs Time)
     Select outer viewport: 4, 8, 2.9, 4.5
@@ -521,12 +578,14 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     
     Select outer viewport: 4, 8, 2.7, 2.9
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 6.0, "centre", 0.5, "half", "Stereo Field (color = frequency)"
+    Text: 0.5, "centre", 0.5, "half", "Stereo Field (color = frequency)"
     
     # Statistics and Legend
     Select outer viewport: 0, 8, 4.6, 5.2
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     
@@ -537,8 +596,8 @@ if draw_visualization
     endfor
     avgFreq = avgFreq / numAtoms
     
-    Text: 1.0, "left", 0.3, "half", "Atoms: " + string$(numAtoms) + " | Avg Freq: " + fixed$(avgFreq, 0) + " Hz | Transpose: " + fixed$(transpose_semitones, 1) + " st | Duration: " + fixed$(output_duration, 1) + " s"
-    Text: 1.0, "left", -2.7, "half", "Source: " + string$(numFiles) + " files (" + fixed$(sourceDuration, 1) + "s) | Time step: " + fixed$(time_step * 1000, 0) + " ms | Randomized: " + string$(randomize_order)
+    Text: 0.02, "left", 0.68, "half", "Atoms: " + string$(numAtoms) + " | Avg Freq: " + fixed$(avgFreq, 0) + " Hz | Transpose: " + fixed$(transpose_semitones, 1) + " st | Duration: " + fixed$(output_duration, 1) + " s"
+    Text: 0.02, "left", 0.28, "half", "Source: " + string$(numFiles) + " files (" + fixed$(sourceDuration, 1) + "s) | Time step: " + fixed$(time_step * 1000, 0) + " ms | Randomized: " + string$(randomize_order)
     
     Font size: 10
     Colour: "Black"
