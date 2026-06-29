@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.8 (2026)
+# Version: 0.9 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,18 @@
 #   True autoencoder with latent space perturbation for novel variations.
 #   Uses KlattGrid source-filter synthesis to render independent F0 and
 #   F1-F4 trajectories. Dynamic voicing amplitude for natural silence.
+#
+# Changelog v0.9 (2026):
+#   - TIMBRE: Added source-naturalness controls to reduce the "plastic"
+#     Klatt buzz. Spectral_tilt_dB rolls off the buzzy upper harmonics;
+#     Breathiness_dB mixes breath noise into the voiced source (gated to
+#     voiced frames in Clean, constant in Glitch); Flutter adds F0
+#     micro-variation so pitch is not robotically steady. All three are
+#     form parameters; 0 disables a given effect (KlattGrid default).
+#   - VISUALIZATION: Reformatted the network view to the 8-inch AudioTools
+#     standard - title block, grey subtitle band, paired encoder/decoder
+#     topology and weight panels on an 8-wide canvas (was 10-wide), bold
+#     panel labels, and a grey summary panel at the bottom.
 #
 # Changelog v0.7:
 #   - Fixed output selection (use ID array instead of name)
@@ -50,7 +62,7 @@ endif
 sound_orig = selected()
 sound_name$ = selected$("Sound")
 
-form Parametric Autoencoder v0.8
+form Parametric Autoencoder v0.9
     choice Preset_selection: 1
         button Clean - Dynamic Amplitude - 6 Params
         button Glitch - Constant Drone - 5 Params
@@ -64,6 +76,10 @@ form Parametric Autoencoder v0.8
     positive Latent_noise 0.15
     positive Bandwidth_fraction 0.1
     positive Aspiration_during_unvoiced 20
+    comment === Naturalness (reduce plastic timbre; 0 = off) ===
+    real Spectral_tilt_dB 20
+    real Breathiness_dB 25
+    real Flutter 0.3
     boolean Draw_network 1
     boolean Draw_visualization 1
 endform
@@ -78,7 +94,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Parametric Autoencoder v0.8 ==="
+writeInfoLine: "=== Parametric Autoencoder v0.9 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Parameters: ", nparams, " | Bottleneck: ", bottleneck_size
 appendInfoLine: ""
@@ -270,33 +286,74 @@ Learn: epochs, 0.001, "Minimum-squared-error"
 if draw_network = 1
     appendInfoLine: "Drawing network visualization..."
     Erase all
-    
-    Select outer viewport: 0.5, 5, 0.5, 3
+    Line width: 1
+
+    # ---- Title block (suite standard) ----
+    Select outer viewport: 0, 8, 0, 0.33
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Parametric Autoencoder v0.9 - Network##"
+
+    # ---- Subtitle band ----
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "{0.4, 0.4, 0.5}"
+    Text: 0.5, "centre", 0.5, "half", sound_name$ + "   |   " + presetName$ + "   |   " + string$(nparams) + " params -> " + string$(bottleneck_size) + " latent -> " + string$(nparams) + " params   |   " + string$(epochs) + " epochs"
+
+    # ---- Encoder topology (left) ----
+    Select outer viewport: 0.1, 3.95, 0.62, 0.92
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Encoder##   " + string$(nparams) + " -> " + string$(bottleneck_size)
+    Select outer viewport: 0.3, 3.75, 0.95, 3.45
     selectObject: autoencoder
     Draw topology
-    Select outer viewport: 0.5, 5, 0.2, 0.7
-    Text top: "no", "Encoder: " + string$(nparams) + " -> " + string$(bottleneck_size)
 
-    Select outer viewport: 5.5, 10, 0.5, 3
+    # ---- Decoder topology (right) ----
+    Select outer viewport: 4.05, 7.9, 0.62, 0.92
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Decoder##   " + string$(bottleneck_size) + " -> " + string$(nparams)
+    Select outer viewport: 4.25, 7.7, 0.95, 3.45
     selectObject: decoder
     Draw topology
-    Select outer viewport: 5.5, 10, 0.2, 0.7
-    Text top: "no", "Decoder: " + string$(bottleneck_size) + " -> " + string$(nparams)
 
-    Select outer viewport: 0.5, 5, 4.5, 7.5
+    # ---- Encoder weights (left) ----
+    Select outer viewport: 0.1, 3.95, 3.75, 4.05
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Encoder weights##   (Input -> Latent)"
+    Select outer viewport: 0.3, 3.75, 4.08, 6.5
     selectObject: autoencoder
     Draw weights: 1, "yes"
-    Select outer viewport: 0.5, 5, 4, 4.5
-    Text top: "no", "Encoder weights (Input->Latent)"
 
-    Select outer viewport: 5.5, 10, 4.5, 7.5
+    # ---- Decoder weights (right) ----
+    Select outer viewport: 4.05, 7.9, 3.75, 4.05
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Decoder weights##   (Latent -> Output)"
+    Select outer viewport: 4.25, 7.7, 4.08, 6.5
     selectObject: decoder
     Draw weights: 1, "yes"
-    Select outer viewport: 5.5, 10, 4, 4.5
-    Text top: "no", "Decoder weights (Latent->Output)"
 
-    Select outer viewport: 0.5, 10, 8, 8.5
-    Text top: "no", "Preset: " + presetName$ + " | Params: " + string$(nparams) + " | Latent: " + string$(bottleneck_size)
+    # ---- Summary panel (grey, suite standard) ----
+    Select outer viewport: 0, 8, 6.7, 7.3
+    Select inner viewport: 0.6, 7.7, 6.78, 7.22
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.3, 0.3, 0.3}"
+    Text: 0.02, "left", 0.5, "half", "Preset: " + presetName$ + "    Params: " + string$(nparams) + "    Latent: " + string$(bottleneck_size) + "    Epochs: " + string$(epochs) + "    Variations: " + string$(num_variations + 1) + "    Latent range: [" + fixed$(latent_min, 2) + ", " + fixed$(latent_max, 2) + "]"
+    Font size: 10
+    Colour: "Black"
 endif
 
 # ===== 7. GENERATE VARIATIONS =====
@@ -533,10 +590,25 @@ for var_num from 0 to num_variations
         endfor
     endfor
     
+    # --- SOURCE NATURALNESS (reduce plastic timbre) ---
+    # Spectral tilt rolls off the buzzy upper harmonics; flutter adds
+    # natural F0 micro-variation so the pitch is not robotically steady.
+    # Both are constant across the sound; 0 leaves the KlattGrid default.
+    selectObject: klatt
+    if spectral_tilt_dB > 0
+        Add spectral tilt point: start_time, spectral_tilt_dB
+        Add spectral tilt point: end_time, spectral_tilt_dB
+    endif
+    if flutter > 0
+        Add flutter point: start_time, flutter
+        Add flutter point: end_time, flutter
+    endif
+
     # --- AMPLITUDE LOGIC ---
     selectObject: klatt
     Remove voicing amplitude points: start_time, end_time
     Remove aspiration amplitude points: start_time, end_time
+    Remove breathiness amplitude points: start_time, end_time
 
     if preset_selection = 1
         # === CLEAN (Dynamic Amplitude) ===
@@ -567,9 +639,15 @@ for var_num from 0 to num_variations
             if f0_val > pitch_floor
                 Add voicing amplitude point: t, amp
                 Add aspiration amplitude point: t, 0
+                if breathiness_dB > 0
+                    Add breathiness amplitude point: t, breathiness_dB
+                endif
             else
                 Add voicing amplitude point: t, 0
                 Add aspiration amplitude point: t, aspiration_during_unvoiced
+                if breathiness_dB > 0
+                    Add breathiness amplitude point: t, 0
+                endif
             endif
         endfor
         
@@ -580,6 +658,10 @@ for var_num from 0 to num_variations
         Add voicing amplitude point: end_time, 90
         Add aspiration amplitude point: start_time, 0
         Add aspiration amplitude point: end_time, 0
+        if breathiness_dB > 0
+            Add breathiness amplitude point: start_time, breathiness_dB
+            Add breathiness amplitude point: end_time, breathiness_dB
+        endif
     endif
     
     # --- SYNTHESIZE ---
@@ -613,7 +695,7 @@ if draw_visualization = 1 and draw_network = 0
     Select outer viewport: 0, 8, 0, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Parametric Autoencoder v0.8## | " + sound_name$ + " [" + presetName$ + "]"
+    Text: 0.5, "centre", 0.5, "half", "##Parametric Autoencoder v0.9## | " + sound_name$ + " [" + presetName$ + "]"
 
     # ====== ORIGINAL WAVEFORM (full width) ======
     Select outer viewport: 0, 8, 0.5, 1.5
