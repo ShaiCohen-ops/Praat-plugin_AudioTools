@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2025)
+# Version: 2.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,7 +18,8 @@
 #   3. Each voice applies a speed/pitch transformation:
 #      Tape Speed  - Override SR by ratio (pitch + time together).
 #      Lengthen    - Lengthen (overlap-add) by 1/ratio (time only).
-#   4. Chunks joined with crossfade, voices panned, additively mixed.
+#   4. Chunks joined by equal-power overlap-add (legato), voices
+#      panned, additively mixed.
 #
 #   VOICE DEFAULTS:
 #     V1 Leader : ratio 1.00  pan -0.35  enters at 0
@@ -27,6 +28,34 @@
 #     V4 Fourth : ratio 1.50           pan +0.75  enters at 3x delay
 #
 # Category: Composition
+#
+# Changelog v2.5:
+#   - The "Voice Details (V3, V4, amplitudes, pan)" dialog now appears
+#     ONLY for Preset = Custom. Under any other preset it is skipped,
+#     because the preset overrides all voice ratios/amplitudes/pans and
+#     the dialog's input had no effect (a confusing silent discard).
+#
+# Changelog v2.4:
+#   - Added a final fade-out to silence (raised cosine) over the last
+#     2.0 s of the trimmed output. Length is set by endFadeSec near the
+#     end of the script and clamped to half the piece.
+#
+# Changelog v2.3:
+#   - Within-voice joins rebuilt as EQUAL-POWER OVERLAP-ADD with a
+#     40% overlap (legato), replacing the short linear crossfade that
+#     read as hard cuts. Each chunk is windowed with a raised-cosine
+#     (sin) ramp on its first/last 40% and placed hop = dC*0.6 apart,
+#     so every fade-out aligns with the next fade-in -> constant power,
+#     no level dip (linear crossfade dipped ~2.8 dB at every join),
+#     and chunks bleed into continuous lines so staggered voices read
+#     as true polyphony rather than edits.
+#   - Removed the redundant 10 ms per-chunk linear fade (the window
+#     now shapes the edges).
+#   - Crossfade_ms form field retained for signature compatibility but
+#     no longer sets the join length; the legato overlap is 40% of the
+#     (per-voice) chunk duration. Info/visualization report the overlap.
+#   - Audio output changes (this is the intended fix); the shuffle
+#     ORDER and RNG consumption are unchanged from v2.2.
 #
 # Changelog v2.1:
 #   - Audio pipeline UNCHANGED. Output bit-identical to v2.0
@@ -80,7 +109,7 @@ endif
 # FORM
 # ============================================================
 
-form Polyphonic Improviser v2.1
+form Polyphonic Improviser v2.5
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -120,23 +149,40 @@ form Polyphonic Improviser v2.1
 endform
 
 # ---- Advanced settings (V3/V4 speeds, amplitudes, pans) ----
-beginPause: "Voice Details (V3, V4, amplitudes, pan)"
-    comment: "=== V3 & V4 Speed Ratios ==="
-    positive: "V3_speed_ratio", 0.50
-    positive: "V4_speed_ratio", 1.50
-    comment: "=== Amplitudes ==="
-    positive: "V1_amplitude", 1.0
-    positive: "V2_amplitude", 0.85
-    positive: "V3_amplitude", 0.75
-    positive: "V4_amplitude", 0.65
-    comment: "=== Pan  (-1=left  0=centre  +1=right) ==="
-    real: "V1_pan", -0.35
-    real: "V2_pan",  0.40
-    real: "V3_pan", -0.75
-    real: "V4_pan",  0.75
-clicked = endPause: "Cancel", "OK", 2, 1
-if clicked = 1
-    exitScript: ""
+if preset = 1
+    beginPause: "Voice Details (V3, V4, amplitudes, pan)"
+        comment: "=== V3 & V4 Speed Ratios ==="
+        positive: "V3_speed_ratio", 0.50
+        positive: "V4_speed_ratio", 1.50
+        comment: "=== Amplitudes ==="
+        positive: "V1_amplitude", 1.0
+        positive: "V2_amplitude", 0.85
+        positive: "V3_amplitude", 0.75
+        positive: "V4_amplitude", 0.65
+        comment: "=== Pan  (-1=left  0=centre  +1=right) ==="
+        real: "V1_pan", -0.35
+        real: "V2_pan",  0.40
+        real: "V3_pan", -0.75
+        real: "V4_pan",  0.75
+    clicked = endPause: "Cancel", "OK", 2, 1
+    if clicked = 1
+        exitScript: ""
+    endif
+else
+    # A preset is selected, so the Voice Details dialog is skipped: the
+    # preset block below overrides every voice ratio/amplitude/pan, which
+    # made that dialog's input meaningless. These placeholders exist only
+    # so the aliases resolve; the preset replaces all of them.
+    v3_speed_ratio = 0.50
+    v4_speed_ratio = 1.50
+    v1_amplitude = 1.0
+    v2_amplitude = 0.85
+    v3_amplitude = 0.75
+    v4_amplitude = 0.65
+    v1_pan = -0.35
+    v2_pan = 0.40
+    v3_pan = -0.75
+    v4_pan = 0.75
 endif
 
 # ============================================================
@@ -417,10 +463,11 @@ else
 endif
 
 chunkDur = srcDur / nChunks
-xfadeSec = xfadeMs / 1000.0
-if xfadeSec > chunkDur * 0.4
-    xfadeSec = chunkDur * 0.4
-endif
+# v2.3: within-voice joins use a 40% equal-power overlap-add (legato),
+# not the old short linear crossfade. The Crossfade_ms form field is
+# retained for signature compatibility but no longer sets the join length.
+xfFrac = 0.40
+xfPct = xfFrac * 100
 
 if tMode = 1
     tModeName$ = "Tape speed"
@@ -443,7 +490,7 @@ if use_quantize = 1
     appendInfoLine: "BPM      : ", fixed$(bpm, 1),
         ... "  | Note: ", noteName$, "  |  Beat: ", fixed$(beatDur, 4), " s"
 endif
-appendInfoLine: "Crossfade: ", fixed$(xfadeMs, 1), " ms"
+appendInfoLine: "Crossfade: ", fixed$(xfPct, 0), "% equal-power overlap (legato)"
 appendInfoLine: ""
 
 # ============================================================
@@ -463,7 +510,7 @@ for c from 1 to nChunks
     chunk_'c' = selected("Sound")
 endfor
 
-appendInfoLine: "  Chunk size: ", fixed$(chunkDur, 3), " s  | Crossfade: ", fixed$(xfadeMs, 1), " ms"
+appendInfoLine: "  Chunk size: ", fixed$(chunkDur, 3), " s  | Overlap: ", fixed$(xfPct, 0), "% equal-power"
 
 # ============================================================
 # STEP 2: TRANSFORM CHUNKS PER VOICE
@@ -501,17 +548,9 @@ for v from 1 to numV
         endif
 
         selectObject: tChunk
-        tCDur = Get total duration
-        fadeSec = 0.010
-        if fadeSec > tCDur * 0.2
-            fadeSec = tCDur * 0.2
-        endif
-        if fadeSec > 0.001
-            fsStr$ = fixed$(fadeSec, 8)
-            Formula: "if x - xmin < " + fsStr$ + " then self * ((x - xmin) / " + fsStr$ + ") else self fi"
-            Formula: "if xmax - x < " + fsStr$ + " then self * ((xmax - x) / " + fsStr$ + ") else self fi"
-        endif
-
+        # Per-chunk edge fades removed in v2.3: the legato assembly applies
+        # an equal-power (raised-cosine) window at overlap-add time, so a
+        # separate linear fade here would only add a conflicting seam.
         vChunk_'v'_'c' = tChunk
     endfor
 endfor
@@ -523,12 +562,19 @@ endfor
 appendInfoLine: ""
 appendInfoLine: "[3/5] Shuffling and assembling voices..."
 
-v1PassDur = 0
-for c from 1 to nChunks
-    selectObject: vChunk_1_'c'
-    cDurTmp = Get total duration
-    v1PassDur = v1PassDur + cDurTmp
-endfor
+# Legato assembly uses the equal-power 40% overlap defined in SETUP (xfFrac).
+
+# v1PassDur = voice-1's actual OLA body length (chunks are uniform within
+# a voice, so body = dC + (nChunks-1)*hop, hop = dC*(1-xfFrac)). Used for
+# outDur and for the viz active-span estimate (which scales it by 1/ratio).
+selectObject: vChunk_1_1
+dC1 = Get total duration
+x1  = xfFrac * dC1
+if x1 > dC1 * 0.5
+    x1 = dC1 * 0.5
+endif
+hop1 = dC1 - x1
+v1PassDur = dC1 + (nChunks - 1) * hop1
 
 lastEntry = entry_delay_s * (numV - 1)
 outDur = lastEntry + v1PassDur + 0.5
@@ -550,51 +596,52 @@ for v from 1 to numV
         shuffleIdx_'j' = tmp
     endfor
 
-    if vEntryTime > 0.002
-        Create Sound from formula: "v_entry_sil", 1, 0, vEntryTime, srcSr, "0"
-        vAssembled = selected("Sound")
-        hasAssembled = 1
-    else
-        hasAssembled = 0
-        vAssembled = 0
-    endif
+    # Record this voice's shuffle so the visualization shows the ACTUAL
+    # audio ordering. Regenerating the RNG in the viz would desync (the
+    # stream has advanced), so the map must read these stored indices.
+    for ci from 1 to nChunks
+        pmShuf_'v'_'ci' = shuffleIdx_'ci'
+    endfor
 
+    # --- Equal-power overlap-add assembly (legato, 40% overlap) ---
+    # Chunks within a voice are uniform duration, so one crossfade length
+    # serves every join. Each chunk gets a raised-cosine (sin) window on
+    # its first/last xv; placing them hop = dCv - xv apart makes each
+    # fade-out align with the next fade-in -> constant power, no seams.
+    selectObject: vChunk_'v'_1
+    dCv = Get total duration
+    xv = xfFrac * dCv
+    if xv > dCv * 0.5
+        xv = dCv * 0.5
+    endif
+    hopV = dCv - xv
+    bodyLenV = dCv + (nChunks - 1) * hopV
+    masterLenV = vEntryTime + bodyLenV
+
+    Create Sound from formula: "v_master", 1, 0, masterLenV, srcSr, "0"
+    vAssembled = selected("Sound")
+
+    xvStr$ = fixed$(xv, 8)
     for ci from 1 to nChunks
         c = shuffleIdx_'ci'
+        onsetCi = vEntryTime + (ci - 1) * hopV
+        onStr$ = fixed$(onsetCi, 8)
 
-        if hasAssembled = 0
-            selectObject: vChunk_'v'_'c'
-            Copy: "v" + string$(v) + "_asm"
-            vAssembled = selected("Sound")
-            hasAssembled = 1
-        else
-            selectObject: vAssembled
-            aDur = Get total duration
-            selectObject: vChunk_'v'_'c'
-            nextDur = Get total duration
+        # Window this chunk (equal-power fade in over first xv, out over last xv)
+        selectObject: vChunk_'v'_'c'
+        Rename: "ola_chunk"
+        Formula: "if (x - xmin) < " + xvStr$ + " then self * sin((x - xmin) / " + xvStr$ + " * pi / 2) else self fi"
+        Formula: "if (xmax - x) < " + xvStr$ + " then self * sin((xmax - x) / " + xvStr$ + " * pi / 2) else self fi"
 
-            safeCF = xfadeSec
-            minDur = aDur
-            if nextDur < minDur
-                minDur = nextDur
-            endif
-            if safeCF > minDur * 0.4
-                safeCF = minDur * 0.4
-            endif
+        # Overlap-add into the master buffer at this chunk's onset.
+        # Out-of-domain reads return 0, so only [onset, onset+dCv] is touched.
+        selectObject: vAssembled
+        Formula: "self + Sound_ola_chunk(x - " + onStr$ + ")"
 
-            if safeCF > 0.002
-                selectObject: vAssembled
-                plusObject: vChunk_'v'_'c'
-                Concatenate with overlap: safeCF
-            else
-                selectObject: vAssembled
-                plusObject: vChunk_'v'_'c'
-                Concatenate
-            endif
-            newAss = selected("Sound")
-            removeObject: vAssembled
-            vAssembled = newAss
-        endif
+        # Rename away so the next iteration's "ola_chunk" is unambiguous
+        # (cleanup later removes by stored object id, not by name).
+        selectObject: vChunk_'v'_'c'
+        Rename: "ola_spent"
     endfor
 
     selectObject: vAssembled
@@ -751,6 +798,27 @@ else
 endif
 
 # ============================================================
+# FINAL FADE-OUT (raised cosine to silence)
+# ============================================================
+# Length of the closing fade, in seconds. Change this one value to
+# taste; it is clamped to at most half the piece.
+endFadeSec = 2.0
+
+selectObject: finalOutput
+fadeDur = Get total duration
+if endFadeSec > fadeDur * 0.5
+    endFadeSec = fadeDur * 0.5
+endif
+if endFadeSec > 0.01
+    efStr$ = fixed$(endFadeSec, 8)
+    # Smooth S-curve from 1 -> 0 over the last endFadeSec seconds.
+    # Uses (xmax - x) so it is independent of the start time, and
+    # reaches exactly 0 at the very end (a complete fade to silence).
+    Formula: "if (xmax - x) < " + efStr$ + " then self * (0.5 - 0.5 * cos(pi * (xmax - x) / " + efStr$ + ")) else self fi"
+    appendInfoLine: "  Final fade-out: ", fixed$(endFadeSec, 2), " s (raised cosine to silence)."
+endif
+
+# ============================================================
 # STEP 5: VISUALIZATION  (8 x 8 canvas — suite standard)
 # ============================================================
 
@@ -843,8 +911,9 @@ if draw_visualization = 1
     Text: 0.01, "left", (numV * rowH + 0.5) / panelH, "half", "src"
     Axes: 0, nChunks, 0, panelH
 
-    # Voice rows: reproduce the shuffle by regenerating RNG state
-    # (matches Step 3 audio shuffle exactly)
+    # Voice rows: read the shuffle recorded during Step 3, so the map
+    # shows the ACTUAL audio ordering (not a re-rolled RNG, which would
+    # desync because the random stream has already advanced).
     for v from 1 to numV
         rowBot = (numV - v) * rowH + 0.1
         rowTop = (numV - v + 1) * rowH - 0.1
@@ -852,18 +921,8 @@ if draw_visualization = 1
         cG = vColG_'v'
         cB = vColB_'v'
 
-        for c from 1 to nChunks
-            vizIdx_'c' = c
-        endfor
-        for dummy from 1 to (v - 1) * nChunks
-            discard = randomInteger(1, nChunks)
-        endfor
-        for fy_k from 1 to nChunks - 1
-            i = nChunks - fy_k + 1
-            j = randomInteger(1, i)
-            tmp = vizIdx_'i'
-            vizIdx_'i' = vizIdx_'j'
-            vizIdx_'j' = tmp
+        for ci from 1 to nChunks
+            vizIdx_'ci' = pmShuf_'v'_'ci'
         endfor
 
         for ci from 1 to nChunks
@@ -1077,7 +1136,7 @@ if draw_visualization = 1
         ... + "  " + srcName$
         ... + "  |  " + string$(numV) + " voices x " + string$(nChunks) + " chunks (" + fixed$(chunkDur, 3) + "s each)"
         ... + "  |  Transform: " + tModeName$
-        ... + "  |  Xfade: " + fixed$(xfadeMs, 1) + " ms"
+        ... + "  |  Overlap: " + fixed$(xfPct, 0) + "% eq-power"
 
     Text: 0.02, "left", 0.50, "half",
         ... "V1 x" + fixed$(vSpeed_1, 3) + " pan" + fixed$(vPan_1, 2)
