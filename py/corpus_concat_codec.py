@@ -1076,6 +1076,262 @@ def write_textgrid(path, used, sr, out_len):
 
 
 # ============================================================
+# gesture-rhyme subcommand
+#   "Compositional Gestural Rhyming - Exploiting Hashed Bigrams"
+#
+#   Re-voices an abstract KINETIC gesture (accelerating clicks, a bouncing
+#   ball, an explosive attack decaying into hiss, a microtonal dive, tremolo
+#   flutter, ...) using corpus grains whose codec-token TRANSITION structure
+#   rhymes with the source - NOT whose timbre matches. The match is driven by
+#   the hashed-bigram section of the feature with a high bigram weight and a
+#   low histogram weight, so a click-train source can be voiced by speech
+#   syllables, field recordings, or instrument noises that simply MOVE the
+#   same way frame-to-frame.
+#
+#   Reuses the existing onset segmentation, sub-window subdivision, peak-
+#   aligned onset_place reconstruction, and TextGrid writer. The corpus index
+#   is loaded read-only - this mode never builds or reslices the corpus.
+#
+#   FEATURE-COMPATIBILITY NOTE (existing indexes):
+#   The stored corpus feature matrix was written by build_corpus with the
+#   DEFAULT grain_feature weights (hist_weight=1, bigram_weight=1) and the
+#   raw tokens are NOT stored. grain_feature lays each row out as
+#       [ histogram (n_codebooks * codebook_size) | bigrams (64 buckets) ]
+#   so the bigram section is always the trailing N_BIGRAM_BUCKETS columns.
+#   We therefore SPLIT each stored row into its histogram and bigram sections
+#   and re-apply (hist_weight, bigram_weight) at match time, exactly mirroring
+#   how grain_feature weights the freshly-encoded source. No rebuild needed.
+# ============================================================
+
+N_BIGRAM_BUCKETS = 64   # must match token_bigrams' default n_buckets
+
+
+def gesture_rhyme(args):
+    # ---- Load index (read-only; never built or resliced here) ----
+    json_path = args.index + ".json"
+    feats_path = args.index + "_feats.npy"
+    if not os.path.isfile(json_path):
+        sys.stderr.write("ERROR: corpus index not found: %s\n"
+                         "Build a corpus index first (build-corpus); "
+                         "gesture-rhyme never builds one.\n" % json_path)
+        sys.exit(2)
+    if not os.path.isfile(feats_path):
+        sys.stderr.write("ERROR: corpus feature matrix not found: %s\n"
+                         "The index JSON exists but its _feats.npy is missing; "
+                         "rebuild the corpus index.\n" % feats_path)
+        sys.exit(2)
+
+    with open(json_path) as f:
+        index = json.load(f)
+    feats = np.load(feats_path)
+    cb = index["codebook_size"]
+    sr = index["sample_rate"]
+    grains_meta = index["grains"]
+    feature_dim = int(feats.shape[1])
+
+    # ---- Feature-layout compatibility: split into hist | bigram sections ----
+    hist_dim = feature_dim - N_BIGRAM_BUCKETS
+    if hist_dim <= 0:
+        sys.stderr.write(
+            "ERROR: corpus feature layout is incompatible with gesture-rhyme.\n"
+            "Expected [histogram | %d bigram buckets] but feature_dim=%d leaves "
+            "no histogram section. Rebuild the index with this codec.\n"
+            % (N_BIGRAM_BUCKETS, feature_dim))
+        sys.exit(2)
+
+    bigram_weight = float(args.bigram_weight)
+    hist_weight = float(args.hist_weight)
+    energy_weight = float(args.energy_weight)
+    seq_context = max(0, int(args.sequence_context))
+
+    # Re-weight the stored corpus features by section (the stored rows used
+    # weights 1.0/1.0, so multiplying each section IS the reweighting).
+    corpus_hist = feats[:, :hist_dim]
+    corpus_bg = feats[:, hist_dim:]
+    weighted_corpus = np.concatenate(
+        [corpus_hist * hist_weight, corpus_bg * bigram_weight], axis=1
+    ).astype(np.float32)
+    corpus_norms = np.linalg.norm(weighted_corpus, axis=1) + 1e-9
+
+    # codec is dictated by the corpus (warn, like match, if the request differs)
+    if index["codec"] != args.codec and args.codec != "auto":
+        sys.stderr.write("Warning: corpus codec '%s' != requested '%s'; "
+                         "using corpus codec.\n"
+                         % (index["codec"], args.codec))
+    codec = make_codec(index["codec"])
+
+    # ---- Load + check the source gesture ----
+    src = load_audio_mono(args.input, codec.sample_rate)
+    if len(src) < int(0.01 * sr):
+        sys.stderr.write("Source gesture too short (<10 ms).\n")
+        sys.exit(3)
+
+    src_grains = onset_segments(src, sr, args.onset_min_interval_ms)
+
+    # per-grain RMS for the (low-weighted) energy term, log scale - same as match
+    has_rms = all("rms" in g for g in grains_meta)
+    if has_rms:
+        corpus_rms = np.array([g["rms"] for g in grains_meta], dtype=np.float64)
+        corpus_log_rms = np.log(np.maximum(corpus_rms, 1e-6))
+    else:
+        sys.stderr.write(
+            "Note: corpus index has no per-grain RMS data (older build); "
+            "energy term disabled for this gesture-rhyme run.\n")
+        corpus_log_rms = None
+
+    placements = []   # (onset_sample, grain_audio, peak_offset_sample)
+    used = []
+    last_choice = -1
+    context_buf = []  # rolling weighted source features for --sequence-context
+
+    for (seg_start, seg) in src_grains:
+        sub_windows = subdivide_segment(seg_start, seg, sr,
+                                        args.analysis_grain_ms,
+                                        args.analysis_hop_ms)
+        for (start, sub, is_head) in sub_windows:
+            sub_peak = float(np.abs(sub).max())
+            if sub_peak < args.silence_floor:
+                # explicit silence placeholder (no holes in the timeline) and
+                # reset the sequence context so kinetics don't bleed across a gap
+                placements.append((start, np.zeros_like(sub), 0))
+                used.append(_gr_used_entry(start, sub, sr, is_head, None,
+                                           None, None, None, None, None, None,
+                                           bigram_weight, hist_weight,
+                                           energy_weight))
+                context_buf = []
+                continue
+
+            tokens = codec.encode(sub)
+            q = grain_feature(tokens, cb, hist_weight, bigram_weight)
+
+            # --- sequence context: average over the last (seq_context+1)
+            # weighted sub-window features, privileging SUSTAINED transition
+            # structure over a single isolated window ---
+            context_buf.append(q)
+            if len(context_buf) > seq_context + 1:
+                context_buf.pop(0)
+            q_match = np.mean(np.stack(context_buf), axis=0) if len(context_buf) > 1 else q
+            qn = np.linalg.norm(q_match) + 1e-9
+
+            # kinetic (bigram-dominant) cosine distance to every corpus grain
+            sims = weighted_corpus.dot(q_match) / (corpus_norms * qn)
+            gesture_dist = 1.0 - sims
+
+            if corpus_log_rms is not None:
+                sub_rms = float(np.sqrt(np.mean(sub.astype(np.float64) ** 2)))
+                sub_log_rms = np.log(max(sub_rms, 1e-6))
+                energy_dist = np.abs(corpus_log_rms - sub_log_rms) / 4.0
+                dists = gesture_dist + energy_weight * energy_dist
+            else:
+                energy_dist = None
+                dists = gesture_dist
+
+            if args.repeat_penalty > 0 and 0 <= last_choice < len(dists):
+                dists[last_choice] += args.repeat_penalty
+
+            best = int(np.argmin(dists))
+            last_choice = best
+
+            # per-component contributions for the chosen grain (interpretable:
+            # gesture/bigram should match well even when timbre/hist does not)
+            q_hist, q_bg = q_match[:hist_dim], q_match[hist_dim:]
+            c_hist = weighted_corpus[best, :hist_dim]
+            c_bg = weighted_corpus[best, hist_dim:]
+            timbre_contrib = cosine_distance(q_hist, c_hist)
+            gesture_contrib = cosine_distance(q_bg, c_bg)
+            energy_contrib = (float(energy_weight * energy_dist[best])
+                              if energy_dist is not None else None)
+
+            # load the chosen grain's audio (fail clearly if it's missing)
+            gp = grains_meta[best]["grain_audio"]
+            if not os.path.isfile(gp):
+                sys.stderr.write(
+                    "ERROR: corpus grain audio missing: %s\n"
+                    "(referenced by grain id %s in %s). The index is "
+                    "incomplete; rebuild the corpus.\n"
+                    % (gp, grains_meta[best]["id"], json_path))
+                sys.exit(2)
+            g = np.load(gp)
+
+            # head sub-window carries the attack -> peak-align it to the onset;
+            # later sub-windows tile forward continuously (peak_off = 0)
+            if is_head:
+                peak_off = int(round(grains_meta[best].get("peak_offset_s", 0.0) * sr))
+            else:
+                peak_off = 0
+            placements.append((start, g, peak_off))
+            used.append(_gr_used_entry(
+                start, sub, sr, is_head,
+                grains_meta[best]["id"], grains_meta[best]["source_file"],
+                grains_meta[best]["start_s"], round(float(dists[best]), 4),
+                round(timbre_contrib, 4), round(gesture_contrib, 4),
+                (round(energy_contrib, 4) if energy_contrib is not None else None),
+                bigram_weight, hist_weight, energy_weight))
+
+    if not placements:
+        sys.stderr.write("No usable source material (gesture all silent?).\n")
+        sys.exit(3)
+
+    out = onset_place(placements, sr, len(src), args.xfade_ms)
+    if args.match_duration:
+        target_n = len(src)
+        if len(out) > target_n:
+            out = out[:target_n]
+        elif len(out) < target_n:
+            out = np.pad(out, (0, target_n - len(out)))
+
+    write_audio(args.output, out, sr)
+
+    if args.metadata:
+        with open(args.metadata, "w") as f:
+            json.dump({
+                "mode": "gesture-rhyme",
+                "codec": index["codec"],
+                "sample_rate": sr,
+                "bigram_weight": bigram_weight,
+                "hist_weight": hist_weight,
+                "energy_weight": energy_weight,
+                "sequence_context": seq_context,
+                "n_onset_segments": len(src_grains),
+                "n_sub_windows_used": len(used),
+                "output_duration_s": round(len(out) / sr, 4),
+                "grains": used,
+            }, f, indent=1)
+
+    if args.textgrid:
+        write_textgrid(args.textgrid, used, sr, len(out))
+
+    sys.stdout.write(
+        "Gesture rhyme done: %d source onset(s), %d matched sub-window(s), "
+        "%.2f s -> %s\n"
+        % (len(src_grains), len(used), len(out) / sr, args.output))
+
+
+def _gr_used_entry(start, sub, sr, is_head, grain_id, corpus_file,
+                   corpus_start_s, distance, timbre_contrib, gesture_contrib,
+                   energy_contrib, bigram_weight, hist_weight, energy_weight):
+    """One metadata record per matched sub-window. Keeps the keys
+    write_textgrid needs (src_start_s, src_duration_s, corpus_file,
+    corpus_start_s) plus the gesture-rhyme provenance fields, so it's possible
+    to study which UNRELATED corpus grains voiced each abstract gesture."""
+    return {
+        "src_start_s": round(start / sr, 4),
+        "src_duration_s": round(len(sub) / sr, 4),
+        "segment_head": is_head,
+        "corpus_grain_id": grain_id,
+        "corpus_file": corpus_file,
+        "corpus_start_s": corpus_start_s,
+        "distance": distance,
+        "timbre_contribution": timbre_contrib,
+        "gesture_contribution": gesture_contrib,
+        "energy_contribution": energy_contrib,
+        "bigram_weight": bigram_weight,
+        "hist_weight": hist_weight,
+        "energy_weight": energy_weight,
+    }
+
+
+# ============================================================
 # CLI
 # ============================================================
 
@@ -1152,6 +1408,41 @@ def main():
     dr.add_argument("--xfade-ms", type=float, default=20.0)
     dr.add_argument("--repeat-penalty", type=float, default=0.05)
     dr.set_defaults(func=draw)
+
+    gr = sub.add_parser("gesture-rhyme", parents=[common],
+                        help="re-voice an abstract gesture by codec-token "
+                             "transition (hashed-bigram) rhyming")
+    gr.add_argument("--codec", default="auto", help="encodec | dac | mock | auto")
+    gr.add_argument("--input", required=True, help="source gesture WAV from Praat")
+    gr.add_argument("--output", required=True, help="output WAV")
+    gr.add_argument("--index", required=True,
+                    help="EXISTING corpus index prefix (never built here)")
+    gr.add_argument("--metadata", default=None, help="optional JSON metadata path")
+    gr.add_argument("--textgrid", default=None, help="optional TextGrid path")
+    gr.add_argument("--bigram-weight", type=float, default=4.0,
+                    help="weight of the hashed-bigram (token-transition) section; "
+                         "high by default so kinetic motion drives the match")
+    gr.add_argument("--hist-weight", type=float, default=0.5,
+                    help="weight of the token-histogram (timbre) section; low by "
+                         "default so literal tone-colour is de-emphasised")
+    gr.add_argument("--energy-weight", type=float, default=0.2,
+                    help="weight of the log-RMS loudness term; low by default so "
+                         "energy can't dominate the kinetic bigram match")
+    gr.add_argument("--analysis-grain-ms", type=float, default=60.0)
+    gr.add_argument("--analysis-hop-ms", type=float, default=30.0)
+    gr.add_argument("--onset-min-interval-ms", type=float, default=60.0,
+                    dest="onset_min_interval_ms")
+    gr.add_argument("--repeat-penalty", type=float, default=0.05)
+    gr.add_argument("--xfade-ms", type=float, default=20.0)
+    gr.add_argument("--match-duration", type=int, default=1,
+                    help="1 = trim/pad output to source duration")
+    gr.add_argument("--sequence-context", type=int, default=0,
+                    dest="sequence_context",
+                    help="average source features over this many PRECEDING "
+                         "sub-windows (0 = independent windows); >0 privileges "
+                         "sustained transition structure over isolated windows")
+    gr.add_argument("--silence-floor", type=float, default=1e-4)
+    gr.set_defaults(func=gesture_rhyme)
 
     args = p.parse_args()
     _install_log_tee(getattr(args, "log", None))

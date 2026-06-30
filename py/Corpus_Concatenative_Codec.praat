@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.6 (2026) - Added Gesture-rhyme mode (hashed-bigram kinetic matching)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -28,18 +28,28 @@
 #
 #   You must build a corpus index once (Mode = Build corpus) before matching.
 #
+#   GESTURE RHYME mode (Mode = Gesture rhyme) re-voices an ABSTRACT kinetic
+#   gesture - accelerating clicks, a bouncing ball, an explosive attack
+#   decaying into hiss, a microtonal dive, tremolo flutter - using corpus
+#   grains whose codec-token TRANSITION structure (hashed bigrams) rhymes
+#   with the source, NOT whose timbre matches. It weights the bigram section
+#   high and the histogram/energy sections low, so a click-train can be
+#   voiced by speech syllables or field recordings that simply move the same
+#   way frame-to-frame. It requires an existing index and never builds one.
+#
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Corpus Concatenative Synthesis (codec) v1.5
+form Corpus Concatenative Synthesis (codec) v1.6
     comment ── Mode ──
     optionmenu Mode: 1
         option Match (synthesise from corpus)
         option Build corpus index
         option Draw (brightness contour -> corpus)
+        option Gesture rhyme (hashed bigram kinetics)
     comment ── Codec (only used when BUILDING the index; match reuses the corpus codec) ──
     optionmenu Codec: 1
         option dac
@@ -69,6 +79,11 @@ form Corpus Concatenative Synthesis (codec) v1.5
     real Energy_weight 1.0
     positive Crossfade_ms 20
     real Repeat_penalty 0.05
+    comment ── Gesture rhyme mode (re-voice an abstract gesture by token-transition / bigram rhyming) ──
+    real Bigram_weight 4.0
+    real Hist_weight 0.5
+    real Gesture_energy_weight 0.2
+    integer Sequence_context 2
     boolean Import_textgrid 1
     boolean Play_result 1
 endform
@@ -379,6 +394,118 @@ if mode = 3
         Play
     endif
     selectObject: drawResult
+    goto END
+endif
+
+# ============================================================
+# GESTURE RHYME MODE - re-voice an abstract kinetic gesture by codec-token
+# transition (hashed-bigram) rhyming. The source may be an abstract dictionary
+# of kinetic shapes (accelerating clicks, a bouncing ball, an explosive attack
+# decaying into hiss, a microtonal dive, tremolo flutter) rather than a phrase.
+# The system ignores literal sound identity as much as possible and searches
+# the EXISTING corpus for grains whose token-transition structure follows the
+# same internal movement: a click-train can be voiced by speech syllables,
+# field recordings, or instrument noises that simply move the same way.
+# This mode never builds or reslices the corpus - it requires an existing index.
+# ============================================================
+if mode = 4
+    if numberOfSelected("Sound") <> 1
+        exitScript: "Gesture rhyme: please select exactly one Sound (the abstract gesture source)."
+    endif
+    source = selected("Sound")
+    sourceName$ = selected$("Sound")
+
+    # Existing index REQUIRED - gesture mode never builds the corpus.
+    if not fileReadable(corpusIndexPath$ + ".json")
+        exitScript: "Gesture rhyme needs an existing corpus index." + newline$
+            ... + "None found at: " + corpusIndexPath$ + ".json" + newline$
+            ... + "Build one first (Build corpus index mode); gesture mode never builds."
+    endif
+
+    selectObject: source
+    Save as WAV file: tempInput$
+    if not fileReadable(tempInput$)
+        exitScript: "Could not export the selected Sound to a temp WAV."
+    endif
+
+    # Persist the provenance metadata under a SOURCE-NAMED file (not the shared
+    # ccc_meta.json that cleanUpTempFiles deletes), so it survives the run for
+    # studying which unrelated corpus grains voiced each gesture.
+    gestureMeta$ = tempDir$ + sourceName$ + "_gesture_rhyme_meta.json"
+    if fileReadable(gestureMeta$)
+        deleteFile: gestureMeta$
+    endif
+
+    appendInfoLine: "=== Gesture Rhyme (hashed-bigram kinetics) ==="
+    appendInfoLine: "Source gesture: ", sourceName$
+    appendInfoLine: "Corpus: ", corpusIndexPath$
+    appendInfoLine: "Bigram weight: ", string$(bigram_weight),
+        ... "   Hist weight: ", string$(hist_weight),
+        ... "   Energy weight: ", string$(gesture_energy_weight),
+        ... "   Sequence context: ", string$(sequence_context)
+    appendInfoLine: "Searching corpus for grains whose token-transition motion rhymes with the gesture..."
+
+    textgridArg$ = ""
+    if import_textgrid
+        textgridArg$ = tempTG$
+    endif
+
+    # runSubprocess passes each argument straight to Python (no shell), so no
+    # quoting is needed; nocheck stops Praat halting on a nonzero exit - we
+    # check for the output WAV ourselves and show the Python log if missing.
+    nocheck runSubprocess: python_exe$, backend_script$,
+        ... "gesture-rhyme",
+        ... "--codec", codec$,
+        ... "--input", tempInput$,
+        ... "--output", tempOutput$,
+        ... "--index", corpusIndexPath$,
+        ... "--metadata", gestureMeta$,
+        ... "--textgrid", textgridArg$,
+        ... "--bigram-weight", string$(bigram_weight),
+        ... "--hist-weight", string$(hist_weight),
+        ... "--energy-weight", string$(gesture_energy_weight),
+        ... "--analysis-grain-ms", string$(analysis_grain_ms),
+        ... "--analysis-hop-ms", string$(analysis_hop_ms),
+        ... "--onset-min-interval-ms", string$(onset_min_interval_ms),
+        ... "--xfade-ms", string$(crossfade_ms),
+        ... "--repeat-penalty", string$(repeat_penalty),
+        ... "--sequence-context", string$(sequence_context),
+        ... "--log", tempLog$
+
+    if not fileReadable(tempOutput$)
+        @showPyLog
+        exitScript: "Gesture rhyme failed - no output WAV produced." + newline$
+            ... + "The Python error is shown in the Info window above." + newline$
+            ... + "Common causes: missing corpus index (.json / _feats.npy), missing" + newline$
+            ... + "grain audio files, incompatible feature layout, or source too short."
+    endif
+
+    Read from file: tempOutput$
+    result = selected("Sound")
+    Rename: sourceName$ + "_gesture_rhyme_" + codec$
+    appendInfoLine: ""
+    appendInfoLine: "Imported result: ", selected$("Sound")
+
+    if import_textgrid and fileReadable(tempTG$)
+        Read from file: tempTG$
+        Rename: sourceName$ + "_gesture_rhyme_grains"
+        appendInfoLine: "Imported grain TextGrid."
+    endif
+
+    if fileReadable(gestureMeta$)
+        appendInfoLine: "Provenance metadata (which corpus grains voiced each gesture):"
+        appendInfoLine: "  ", gestureMeta$
+    endif
+
+    # Clean the shared scratch (input/output/TextGrid/log/probe). The source-
+    # named gestureMeta$ has a different name and is intentionally preserved.
+    @cleanUpTempFiles
+
+    if play_result
+        selectObject: result
+        Play
+    endif
+    selectObject: result
     goto END
 endif
 
