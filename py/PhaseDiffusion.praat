@@ -4,7 +4,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 6.1 (2026) — Latent Spectral Diffusion
+# Version: 6.2 (2026) — Latent Spectral Diffusion (Temperature + Mag_smear knobs made live/consistent)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -45,6 +45,16 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v6.2:
+#   Secondary knobs made live/consistent (audio change; see
+#   phase_diffusion_ai.py header for detail):
+#     - Temperature now audibly affects the Latent model (was near-inert);
+#       still Latent-only. Form + info gate it as such.
+#     - Mag_smear is now one consistent spectral blur across all three
+#       models (was an exponent / weak multiplier / unused). Form labels it
+#       as an all-model blur.
+#     - diffusion_amount unchanged (already a clean master dial).
 #
 # Changelog v6.1:
 #   Backend correctness refinement (audio change for AE-Weighted / AR
@@ -207,7 +217,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Spectral Diffusion v6.1
+form Latent Spectral Diffusion v6.2
     optionmenu Preset: 1
         option Custom
         option Veil
@@ -226,6 +236,7 @@ form Latent Spectral Diffusion v6.1
     integer Window_size      8192
     integer Hop_size         2048
     real    Mag_smear        1.0
+    comment (Mag_smear: spectral blur — all models; strongest on AE-Weighted / AR Smear)
     optionmenu Model: 1
         option AE-Weighted
         option AR Smear
@@ -234,6 +245,7 @@ form Latent Spectral Diffusion v6.1
     integer Train_steps   150
     integer N_clusters    4
     real    Temperature   1.0
+    comment (Temperature: Latent model only — ignored by AE-Weighted / AR Smear)
     boolean Preserve_transients 1
     boolean Draw_visualization  1
     boolean Play_result         1
@@ -474,7 +486,7 @@ endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Latent Spectral Diffusion v6.1 ==="
+writeInfoLine:  "=== Latent Spectral Diffusion v6.2 ==="
 appendInfoLine: "Input:    ", inputName$
 appendInfoLine: "Preset:   ", presetName$
 appendInfoLine: "Model:    ", modelLabel$
@@ -485,13 +497,17 @@ appendInfoLine: "  diffusion_amount : ", fixed$(diffusion_amount, 3)
 appendInfoLine: "  diffusion_steps  : ", diffusion_steps, "  (latent: gradient steps)"
 appendInfoLine: "  window_size      : ", window_size, " smp (", fixed$(winMs, 1), " ms)"
 appendInfoLine: "  hop_size         : ", hop_size, " smp"
-appendInfoLine: "  mag_smear        : ", fixed$(mag_smear, 2)
+appendInfoLine: "  mag_smear        : ", fixed$(mag_smear, 2), "  (spectral blur, all models)"
 appendInfoLine: "  preserve_transients: ", transStr$
 appendInfoLine: "-- Autoencoder -----------------------------------------"
 appendInfoLine: "  latent_size : ", latent_size
 appendInfoLine: "  train_steps : ", train_steps
 appendInfoLine: "  n_clusters  : ", n_clusters
-appendInfoLine: "  temperature : ", fixed$(temperature, 3), "  (latent model)"
+if modelName$ = "latent"
+    appendInfoLine: "  temperature : ", fixed$(temperature, 3), "  (active — Latent model)"
+else
+    appendInfoLine: "  temperature : ", fixed$(temperature, 3), "  (ignored — Latent model only)"
+endif
 appendInfoLine: "--------------------------------------------------------"
 appendInfoLine: ""
 
@@ -533,7 +549,7 @@ Save as WAV file: tempInput$
 # Stage 3 — Call Python Engine
 # ===========================================================================
 appendInfoLine: ""
-appendInfoLine: "[3/4] Running Latent Spectral Diffusion v6.1..."
+appendInfoLine: "[3/4] Running Latent Spectral Diffusion v6.2..."
 
 pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " """ + tempInputJ$  + """"

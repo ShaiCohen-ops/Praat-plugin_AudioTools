@@ -3,11 +3,30 @@
 phase_diffusion_ai.py — Latent Spectral Diffusion Engine
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 6.1 (2026)
+Version: 6.2 (2026)
 
 (filename `phase_diffusion_ai.py` preserved for distribution compatibility)
 
 Called by PhaseDiffusion.praat.
+
+═══════════════════════════════════════════════════════════════════════════════
+CHANGELOG v6.2
+═══════════════════════════════════════════════════════════════════════════════
+AUDIO CHANGE — three secondary knobs made live/consistent:
+  - Temperature was nearly inert even in the Latent model (its per-step noise
+    annealed to zero, so the walk always settled on the centroid). It now adds
+    a temperature-scaled excursion to the settled latent (scaled by latent
+    spread), so it audibly maps low = coherent, high = diffuse. Still applies
+    to the Latent model only (a latent-diffusion concept; AE-Weighted / AR
+    Smear don't use it).
+  - Mag_smear was an exponent in pca, a weak/clipped multiplier in ar, and
+    UNUSED in latent. It is now one consistent frequency-domain blur
+    (spectral_blur) applied to every model's wet magnitude — strongest where
+    the wet magnitude has detail (pca / ar), subtler on latent's already-smooth
+    envelope.
+  - Praat: Temperature is labelled/gated as Latent-only (form comment + a
+    runtime "active/ignored" line); Mag_smear labelled as all-model blur.
+    No change to diffusion_amount (already a clean identity-at-0 master dial).
 
 ═══════════════════════════════════════════════════════════════════════════════
 CHANGELOG v6.1
@@ -658,6 +677,12 @@ def diffuse_latent_z(z_orig, centers, variances, n_steps, temperature,
     """
     Walk z_orig toward its cluster centroid over n_steps with annealed
     temperature, then blend with the original z by diffusion_amount.
+
+    Temperature also adds an explicit exploration excursion to the settled
+    latent (scaled by the latent spread so it stays in-distribution), so the
+    knob audibly maps low T -> clean/coherent envelope, high T -> diffuse.
+    Without this the per-step noise annealed to zero and the walk always
+    settled on the centroid, leaving temperature nearly inert.
     """
     z = z_orig.copy()
     T_start = temperature
@@ -669,6 +694,11 @@ def diffuse_latent_z(z_orig, centers, variances, n_steps, temperature,
         z    = latent_diffusion_step(z, centers, variances,
                                      T_t, 0.6, rng, frac)
 
+    # temperature-scaled excursion away from the settled centroid
+    spread = float(np.sqrt(np.mean(
+        np.concatenate([np.atleast_1d(v).ravel() for v in variances])))) + 1e-6
+    z = z + rng.randn(*z.shape) * (temperature * 1.1) * spread
+
     # Blend: diffusion_amount=0 -> original Z; 1 -> fully diffused Z
     return (1.0 - diffusion_amount) * z_orig + diffusion_amount * z
 
@@ -676,6 +706,20 @@ def diffuse_latent_z(z_orig, centers, variances, n_steps, temperature,
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 6 — Spectral processing helpers
 # ═══════════════════════════════════════════════════════════════════════════
+
+def spectral_blur(mag, smear):
+    """Frequency-domain smoothing of a magnitude spectrum. `smear` is the same
+    Mag_smear knob for every model (0 = no blur / sharp, higher = wider blur),
+    so 'smear' means one consistent thing across pca / ar / latent. Window
+    width grows with smear via a normalised Hann kernel."""
+    if smear <= 1e-6:
+        return mag
+    w = int(1 + 2 * int(round(smear * 2.0)))   # smear 1 -> 5 bins, 2 -> 9, ...
+    if w <= 1:
+        return mag
+    kernel = np.hanning(w + 2)[1:-1]
+    kernel = kernel / (kernel.sum() + 1e-12)
+    return np.convolve(mag, kernel, mode="same")
 
 def hann_window(n):
     return 0.5 - 0.5 * np.cos(2.0 * np.pi * np.arange(n, dtype=np.float64)
@@ -696,12 +740,14 @@ def diffuse_frame_pca(magnitude, ae_weight, eff_amount, mag_smear, rng):
                             0 = AE reconstructed well        = structured / tonal
 
     Coherence weight = 1 - ae_weight (so tonal bins get full diffusion).
+    Mag_smear applies a consistent frequency-domain blur to the wet magnitude
+    (same meaning in every model).
     """
     n_bins      = len(magnitude)
     rand_phase  = rng.uniform(0.0, 2.0 * np.pi, n_bins)
     coherence_w = 1.0 - ae_weight                    # tonal = high coherence
-    attenuation = 1.0 - eff_amount * (coherence_w ** mag_smear)
-    mag_wet     = magnitude * attenuation
+    attenuation = 1.0 - eff_amount * coherence_w
+    mag_wet     = spectral_blur(magnitude * attenuation, mag_smear)
     return mag_wet * np.exp(1j * rand_phase)
 
 
@@ -726,23 +772,25 @@ def diffuse_frame_ar(magnitude, ar_coeff, ae_weight, eff_amount, mag_smear,
     IIR magnitude smear, gated by both AR coefficient (temporal sustain)
     AND autoencoder coherence (per-band structure).
 
-    decay[f] = ar_coeff[f] * (1 - ae_weight[f]) * eff_amount * mag_smear
+    decay[f] = ar_coeff[f] * (1 - ae_weight[f]) * eff_amount
 
     Bins that are both sustained AND well-reconstructed by the AE get
-    the heaviest smear. Bands the AE failed on (high ae_weight) are
-    protected. Full phase randomisation on all bins.
+    the heaviest temporal smear. Bands the AE failed on (high ae_weight) are
+    protected. Full phase randomisation on all bins. Mag_smear then applies the
+    same frequency-domain blur used by the other models.
     """
     n_bins = len(magnitude)
     if smear_state[0] is None:
         smear_state[0] = magnitude.copy()
 
     coherence_w = 1.0 - ae_weight
-    decay = ar_coeff * coherence_w * eff_amount * mag_smear
+    decay = ar_coeff * coherence_w * eff_amount
     decay = np.clip(decay, 0.0, 0.97)
 
     smear_state[0] = decay * smear_state[0] + (1.0 - decay) * magnitude
-    rand_phase     = rng.uniform(0.0, 2.0 * np.pi, n_bins)
-    return smear_state[0] * np.exp(1j * rand_phase)
+    mag_wet    = spectral_blur(smear_state[0], mag_smear)
+    rand_phase = rng.uniform(0.0, 2.0 * np.pi, n_bins)
+    return mag_wet * np.exp(1j * rand_phase)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -768,10 +816,11 @@ def build_latent_mag_envelope(model, sr, win_size, z_diffused, mel_fb_win=None):
     return fft_envelope
 
 
-def diffuse_frame_latent(magnitude, fft_envelope, eff_amount, rng):
+def diffuse_frame_latent(magnitude, fft_envelope, eff_amount, mag_smear, rng):
     """
     Blend the frame's own magnitude with the decoded latent envelope,
-    then randomise all phases.
+    then randomise all phases. Mag_smear applies the same frequency-domain
+    blur used by the other models.
     """
     n_bins    = len(magnitude)
     rand_phase = rng.uniform(0.0, 2.0 * np.pi, n_bins)
@@ -779,6 +828,7 @@ def diffuse_frame_latent(magnitude, fft_envelope, eff_amount, rng):
     latent_energy = np.mean(fft_envelope) + 1e-12
     env_scaled    = fft_envelope * (orig_energy / latent_energy)
     mag_wet       = (1.0 - eff_amount) * magnitude + eff_amount * env_scaled
+    mag_wet       = spectral_blur(mag_wet, mag_smear)
     return mag_wet * np.exp(1j * rand_phase)
 
 
@@ -895,7 +945,7 @@ def process_channel(signal, sr, model, ae_weights, events, Z,
                     break
             ev_idx  = min(ev_idx, len(latent_envelopes) - 1)
             new_spec = diffuse_frame_latent(mag, latent_envelopes[ev_idx],
-                                            eff_amount, rng)
+                                            eff_amount, mag_smear, rng)
 
         out_frame = np.fft.irfft(new_spec, n=win_size) * win
         y_wet[pos:pos + win_size] += out_frame
@@ -921,7 +971,7 @@ def process_channel(signal, sr, model, ae_weights, events, Z,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Latent Spectral Diffusion Engine v6.1 -- Praat AudioTools"
+        description="Latent Spectral Diffusion Engine v6.2 -- Praat AudioTools"
     )
     parser.add_argument("input_wav")
     parser.add_argument("output_wav")
@@ -1082,7 +1132,7 @@ def main():
         with open(args.status_file, "w", encoding="utf-8") as f:
             f.write("ok")
 
-    print("Latent Spectral Diffusion OK | v6.1 | model=%s | amount=%.3f | "
+    print("Latent Spectral Diffusion OK | v6.2 | model=%s | amount=%.3f | "
           "latent=%d | events=%d | clusters=%d | "
           "win=%d | hop=%d | sr=%d | ch=%d"
           % (args.model, diffusion_amount, latent_size, len(events),
