@@ -1,8 +1,18 @@
 """
 phrase_rewriter.py — Phrase Rewriter Engine
+Version: 1.2 (2026)
 
 Part of Praat AudioTools plugin
 Author: OpenAI (for Shai Cohen workflow adaptation)
+
+Changelog v1.2:
+    Wired three per-mode knobs that were dead/near-inert (audio change):
+      - Mass: `variation` now controls cluster looseness (was unused).
+      - Multiplication: `variation` now controls copy timing/gain/length
+        scatter (was a negligible jitter); deterministic at variation=0.
+      - Becoming: `preserve` now tempers the transformation depth — high
+        preserve keeps events closer to the original (was spacing-only).
+    Other modes' knob wiring is unchanged (already effective).
 
 Usage (called by Praat, not directly):
     python phrase_rewriter.py input.wav features.csv output.wav stats.txt \
@@ -689,12 +699,18 @@ def generate_plan(events, mode, preserve, intensity, duration_policy, variation,
     elif mode == "Becoming":
         t = 0.0
         step = mean_len * (0.45 + 0.10 * preserve)
+        # preserve tempers the transformation depth: high preserve keeps each
+        # event closer to its original (gentler ramp of stretch / blur /
+        # resonance); low preserve lets the "becoming" gradient run fully.
+        dev = 1.0 - 0.75 * preserve
         for idx in range(n):
             frac = idx / max(1, n - 1)
-            dur_scale = (0.50 + 0.80 * frac * intensity) * (1.0 + rng.uniform(-0.05, 0.05) * variation)
+            base_ds  = 0.50 + 0.80 * frac * intensity
+            dur_scale = (base_ds + (1.0 - base_ds) * (1.0 - dev)) \
+                        * (1.0 + rng.uniform(-0.05, 0.05) * variation)
             gain = 0.30 + 0.65 * frac
-            blur = 0.0 + 0.25 * frac
-            res  = 0.0 + 0.55 * frac * intensity
+            blur = (0.0 + 0.25 * frac) * dev
+            res  = (0.0 + 0.55 * frac * intensity) * dev
             target.append({"src": idx, "start": t, "dur_scale": max(0.2, dur_scale),
                            "gain": gain, "blur": blur, "res": res})
             t += max(mean_len * 0.15, step * (1.0 + rng.uniform(-0.08, 0.08) * variation))
@@ -725,16 +741,21 @@ def generate_plan(events, mode, preserve, intensity, duration_policy, variation,
         orig_dur = max(ev["end_time"] for ev in events)
         center = orig_dur * 0.30
         spread_base = mean_len * (0.30 + 1.20 * (1.0 - intensity))
+        # variation controls how loose the cluster is: 0 = tight, ordered
+        # layering near the centre; 1 = widely scattered in time, duration
+        # and gain. (Previously variation was unused in this mode.)
+        scatter_w = 0.15 + 0.85 * variation
         act_weights = np.array([ev["activity"] + 0.1 for ev in events])
         act_weights /= act_weights.sum()
         for j in range(reps):
             idx = int(rng.choice(n, p=act_weights))
             ev = events[idx]
-            spread = spread_base * (1.2 - 0.5 * ev["activity"])
+            spread = spread_base * (1.2 - 0.5 * ev["activity"]) * scatter_w
             start = max(0.0, center + rng.randn() * spread)
-            dur_scale = 0.50 + 0.45 * rng.rand() * (0.6 + 0.4 * preserve)
-            gain = 0.38 + 0.32 * ev["activity"] + 0.15 * rng.rand()
-            target.append({"src": idx, "start": start, "dur_scale": dur_scale,
+            dur_scale = (0.50 + 0.45 * rng.rand() * (0.6 + 0.4 * preserve)) \
+                        * (1.0 + rng.uniform(-0.30, 0.30) * variation)
+            gain = 0.38 + 0.32 * ev["activity"] + 0.15 * rng.rand() * variation
+            target.append({"src": idx, "start": start, "dur_scale": max(0.2, dur_scale),
                            "gain": gain, "blur": 0.10 + 0.30 * intensity, "res": 0.0})
 
     elif mode == "Multiplication":
@@ -745,15 +766,19 @@ def generate_plan(events, mode, preserve, intensity, duration_policy, variation,
             copies = 1 + int(round(1.0 + 3.0 * intensity * (0.5 + 0.5 * ev["activity"])))
             dur_scale_base = 0.55 + 0.45 * preserve
             for c in range(copies):
+                # variation loosens the copy pattern: timing, gain and length
+                # scatter grow with it (0 = clean regular echoes, 1 = loose)
                 offset = ev_dur * dur_scale_base * (0.55 * c) + \
                          mean_len * 0.04 * c + \
-                         rng.uniform(-0.03, 0.03) * mean_len * variation
-                gain = (0.70 + 0.20 * ev["activity"]) * (0.65 ** c)
+                         rng.uniform(-0.15, 0.15) * mean_len * variation * (c + 1)
+                gain = (0.70 + 0.20 * ev["activity"]) * (0.65 ** c) \
+                       * (1.0 + rng.uniform(-0.30, 0.30) * variation)
                 blur = 0.0 + 0.12 * c * intensity
                 target.append({"src": idx, "start": max(0.0, t + offset),
-                               "dur_scale": dur_scale_base * max(0.5, 1.0 - 0.10 * c),
+                               "dur_scale": dur_scale_base * max(0.5, 1.0 - 0.10 * c)
+                                            * (1.0 + rng.uniform(-0.18, 0.18) * variation),
                                "gain": gain, "blur": min(0.8, blur), "res": 0.0})
-            t += max(mean_len * 0.20, step * (1.0 + rng.uniform(-0.06, 0.06) * variation))
+            t += max(mean_len * 0.20, step * (1.0 + rng.uniform(-0.20, 0.20) * variation))
 
     else:
         t = 0.0

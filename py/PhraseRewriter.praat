@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2 (2026) - Wired inert per-mode knobs; per-mode control hints
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -137,6 +137,7 @@ form Phrase Rewriter
         option allow shorter
         option allow longer
     real Variation_amount 0.20
+    comment (Preserve / Intensity / Variation act differently per mode — Info window lists this mode's primary controls)
     integer Seed 42
     boolean Run_variation 0
     boolean Draw_visualization 1
@@ -178,20 +179,28 @@ if fragment_length_scale > 4.0
 endif
 
 modeName$ = "Constellation"
+modeKnobs$ = "preserve (seed density), intensity (fragmentation); variation subtle"
 if mode = 2
     modeName$ = "Cloud"
+    modeKnobs$ = "intensity (density/overlap), variation (scatter), preserve (length/gain)"
 elsif mode = 3
     modeName$ = "Resonance"
+    modeKnobs$ = "intensity (sustain/resonance), preserve (event count/gain)"
 elsif mode = 4
     modeName$ = "Center"
+    modeKnobs$ = "intensity (repeat count), preserve (satellites/length)"
 elsif mode = 5
     modeName$ = "Becoming"
+    modeKnobs$ = "intensity (final transform), preserve (gentleness of the ramp)"
 elsif mode = 6
     modeName$ = "Distance"
+    modeKnobs$ = "intensity (gap size/rhythm), preserve (selection/gain), variation (echoes)"
 elsif mode = 7
     modeName$ = "Mass"
+    modeKnobs$ = "intensity (density), variation (scatter/looseness), preserve (grain length)"
 elsif mode = 8
     modeName$ = "Multiplication"
+    modeKnobs$ = "intensity (copies), variation (looseness), preserve (spacing/length)"
 endif
 
 if duration_policy = 1
@@ -213,6 +222,7 @@ clearinfo
 writeInfoLine: "=== Phrase Rewriter ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Mode: ", modeName$
+appendInfoLine: "  Primary controls: ", modeKnobs$
 appendInfoLine: "Preserve source: ", fixed$(preserve_source, 2)
 appendInfoLine: "Rewrite intensity: ", fixed$(rewrite_intensity, 2)
 appendInfoLine: "Duration policy: ", durPolicy$
