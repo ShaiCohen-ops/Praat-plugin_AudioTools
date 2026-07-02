@@ -3,12 +3,12 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.1 (2026) - Unified Cross-Platform Version
+# Version: 3.2 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Rhythmic Voice Flattener v3.1 - Compositional Voice Transformer
+#   Rhythmic Voice Flattener v3.2 - Compositional Voice Transformer
 #
 #   Takes a selected Sound (spoken or vocal audio), flattens its
 #   pitch contour to a single centre pitch, and rebuilds the audio
@@ -53,6 +53,15 @@
 #              silence architecture (inter + intra gesture),
 #              duration ratios, accent weights, gesture arrangement,
 #              repetition and motif scatter.
+#
+# Changelog v3.2:
+#   - Fixed stereo crash: the analysis/PSOLA path used mono-only
+#     commands (To Spectrum, To Manipulation) and the assembly mixes
+#     mono silences via Concatenate. The input is now folded to mono
+#     once and all analysis + extraction run on that copy. Mono input
+#     is unchanged.
+#   - Viz: title/subtitle split into separate bands (subtitle was at
+#     y=-1.1, overprinting the original waveform).
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline
@@ -137,7 +146,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Rhythmic Voice Flattener v3.1
+form Rhythmic Voice Flattener v3.2
     comment — Preset (overrides arrangement / arc / rhythm / sparsity) —
     optionmenu Preset: 1
         option none
@@ -249,7 +258,7 @@ else
 endif
 
 clearinfo
-writeInfoLine:  "=== Rhythmic Voice Flattener v3.1 ==="
+writeInfoLine:  "=== Rhythmic Voice Flattener v3.2 ==="
 appendInfoLine: "Source:      ", origName$
 appendInfoLine: "Preset:      ", presetStr$
 appendInfoLine: "Arrangement: ", arrangStr$
@@ -263,6 +272,17 @@ selectObject: origSound
 totalDur  = Get total duration
 sr        = Get sampling frequency
 nChannels = Get number of channels
+
+# Voice flattening is inherently mono (PSOLA/To Manipulation and the
+# mono silence assembly require it); fold a stereo input down once and
+# run all analysis + extraction on that copy.
+if nChannels > 1
+    selectObject: origSound
+    workSound = Convert to mono
+else
+    selectObject: origSound
+    workSound = Copy: "rvf_work_mono"
+endif
 
 # ===========================================================================
 # Stage 0 — Detect Python Dependencies
@@ -328,10 +348,10 @@ appendInfoLine: "  Python found: ", pythonCmd$
 # ============================================================
 appendInfoLine: "[1/4] Analysing events..."
 
-selectObject: origSound
+selectObject: workSound
 intObj   = To Intensity: 100, 0, "yes"
 
-selectObject: origSound
+selectObject: workSound
 pitchObj = To Pitch: 0, 50, 800
 
 selectObject: intObj
@@ -386,7 +406,7 @@ for iInt from 1 to nIntervals
                 intVal = 60
             endif
 
-            selectObject: origSound
+            selectObject: workSound
             segTmp  = Extract part: tS, tE, "Hanning", 1, "no"
             selectObject: segTmp
             specTmp = To Spectrum: "yes"
@@ -609,7 +629,7 @@ for row from 1 to nScore
         segDur = srcEnd - srcStart
 
         if segDur >= 0.005
-            selectObject: origSound
+            selectObject: workSound
             segSnd = Extract part: srcStart, srcEnd, "rectangular", 1, "no"
 
             if prevWasSound = 1
@@ -718,6 +738,8 @@ for row from 1 to nScore
     endif
 endfor
 
+removeObject: workSound
+
 appendInfoLine: "  Assembled: ", nOk, "/", nScore, " events"
 
 if nOk = 0
@@ -764,15 +786,19 @@ if draw_visualization
     Erase all
     Select outer viewport: 0, 8, 0, 7
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # === Title (own band) ===
+    Select outer viewport: 0, 8, 0, 0.33
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##Rhythmic Voice Flattener v3.1##"
+    Text: 0.5, "centre", 0.5, "half", "##Rhythmic Voice Flattener v3.2##"
+
+    # === Subtitle (separate band) ===
+    Select outer viewport: 0, 8, 0.33, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 8
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.1, "half",
+    Text: 0.5, "centre", 0.5, "half",
         ... "preset: " + statPreset$
         ... + "  | " + effectiveArrangStr$
         ... + "  | arc: " + effectiveArcStr$
