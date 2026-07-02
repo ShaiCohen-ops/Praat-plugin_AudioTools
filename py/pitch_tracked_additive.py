@@ -1,5 +1,6 @@
 """
 pitch_tracked_additive.py — IRCAM-style Pitch-Tracked Additive Resynthesizer
+Version: 1.4 (2026)
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -22,6 +23,13 @@ Amplitude laws:   1_over_k, 1_over_k_squared, equal,
                   random_static, random_slow
 
 Voicing policies: silence_unvoiced, noise_unvoiced, copy_original_unvoiced
+
+Research modes:   none (default; full artistic engine, unchanged), and
+                  prosody_only (constrained preset for unintelligible,
+                  speech-derived prosodic stimuli — synthesized from the
+                  extracted F0 + intensity envelope only; no formant
+                  modeling, no reuse of the original waveform, voicing/
+                  pause structure and duration preserved).
 
 No external model downloads. No internet. No PyTorch/TensorFlow/sklearn.
 """
@@ -750,7 +758,8 @@ def write_stats(path, n_samples, sr, duration,
                 rms_in, rms_out, peak_out,
                 warnings,
                 partial_freq_table,
-                f0_trace=None):
+                f0_trace=None,
+                research_info=None):
     """
     f0_stats: dict with mean, median, min, max
     partial_freq_table: list of (min, max, mean) per partial (up to 16)
@@ -772,6 +781,30 @@ def write_stats(path, n_samples, sr, duration,
         f.write("rms_input=%.6f\n"    % rms_in)
         f.write("rms_output=%.6f\n"   % rms_out)
         f.write("peak_output=%.6f\n"  % peak_out)
+
+        # ── Research-mode / safety / QC block (additive keys) ──
+        # Key names deliberately avoid containing any existing stat key as a
+        # substring (e.g. eff_partials, not effective_num_partials) so the
+        # Praat substring-based stats parser cannot mis-match them.
+        if research_info is not None:
+            def _b(x):
+                return "true" if bool(x) else "false"
+            f.write("research_mode=%s\n"            % research_info.get("research_mode", "none"))
+            f.write("prosody_carrier=%s\n"          % research_info.get("prosody_carrier", "none"))
+            f.write("prosody_only_safety=%s\n"      % _b(research_info.get("prosody_only_safety", False)))
+            f.write("copied_original_waveform=%s\n" % _b(research_info.get("copied_original_waveform", False)))
+            f.write("formant_modeling_used=%s\n"    % _b(research_info.get("formant_modeling_used", False)))
+            f.write("original_unvoiced_copied=%s\n" % _b(research_info.get("original_unvoiced_copied", False)))
+            f.write("duration_preserved=%s\n"       % _b(research_info.get("duration_preserved", False)))
+            # Final EFFECTIVE synthesis parameters (after research overrides):
+            f.write("eff_partials=%d\n"  % int(research_info.get("eff_partials", 0)))
+            f.write("eff_family=%s\n"    % research_info.get("eff_family", ""))
+            f.write("eff_amplaw=%s\n"    % research_info.get("eff_amplaw", ""))
+            f.write("eff_envsource=%s\n" % research_info.get("eff_envsource", ""))
+            f.write("eff_voicing=%s\n"   % research_info.get("eff_voicing", ""))
+            f.write("eff_stereo=%s\n"    % research_info.get("eff_stereo", ""))
+            f.write("eff_normmode=%s\n"  % research_info.get("eff_normmode", ""))
+            f.write("eff_carrier=%s\n"   % research_info.get("eff_carrier", "none"))
 
         # Partial table
         n_entries = min(16, len(partial_freq_table))
@@ -795,6 +828,106 @@ def write_stats(path, n_samples, sr, duration,
 # ═══════════════════════════════════════════════════════════════════════════
 # Main
 # ═══════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Research-mode safety constraints (prosody-only stimuli)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def apply_research_mode_constraints(args, warnings_list):
+    """
+    Enforce a safe, constrained preset for "prosody-only" research stimuli.
+
+    Goal of prosody_only: an unintelligible, speech-derived rendering that
+    preserves F0 movement, intensity envelope, voicing/pause structure and
+    duration, but does NOT preserve recognizable words, phonemes, formant
+    trajectories, or the original unvoiced consonants. The audible output is
+    synthesized from the extracted F0 + envelope ONLY — the original speech
+    waveform is never reused as audio.
+
+    This function (called before anything reads args.*):
+      * forces the safe synthesis parameters listed below,
+      * appends a warning whenever a user-supplied option is overridden,
+      * raises ValueError if a requested setting would reintroduce linguistic
+        information (copying original material or modeling formants),
+      * explicitly forbids copy_original_unvoiced.
+
+    Returns a dict of safety flags for the stats / QC output. In
+    research_mode=none it is a no-op and returns all-false flags.
+    """
+    safety = {
+        "prosody_only_safety": False,
+        "copied_original_waveform": False,
+        "formant_modeling_used": False,
+        "original_unvoiced_copied": False,
+    }
+
+    if args.research_mode != "prosody_only":
+        # research_mode=none -> behave EXACTLY like the original script.
+        return safety
+
+    safety["prosody_only_safety"] = True
+
+    def _override(name, safe_value):
+        current = getattr(args, name)
+        if current != safe_value:
+            warnings_list.append(
+                "prosody_only: %s forced from '%s' to '%s'"
+                % (name, current, safe_value))
+        setattr(args, name, safe_value)
+
+    # ── Hard rejections: settings that reintroduce linguistic information ──
+    # copy_original_unvoiced literally mixes the ORIGINAL unvoiced waveform
+    # back into the output. Unvoiced segments carry consonantal/segmental
+    # (phonetic) information, so this is unsafe for prosody-only stimuli and
+    # is never permitted here.
+    if args.voicing_policy == "copy_original_unvoiced":
+        raise ValueError(
+            "prosody_only: copy_original_unvoiced is forbidden — it reuses "
+            "the original unvoiced waveform and preserves consonant/segmental "
+            "(linguistic) information.")
+    # gaussian_formant_band imposes a formant-like spectral envelope, i.e.
+    # speech-like coloration. Not allowed in a prosody-only stimulus.
+    if args.amplitude_law == "gaussian_formant_band":
+        raise ValueError(
+            "prosody_only: amplitude_law 'gaussian_formant_band' is forbidden "
+            "— it models a formant band (speech-like spectral coloration).")
+
+    # ── Forced safe parameters (regardless of user input) ──
+    _override("partial_family", "harmonic")
+    # Rolloff is selectable (--prosody_rolloff) between two formant-free
+    # harmonic laws: 1_over_k_squared (default; stricter, duller, least
+    # speech-like) or 1_over_k (brighter, makes prosody_max_partials clearly
+    # audible). Neither introduces formants or original spectral material.
+    # This override also disables random_slow / random_static / spectral_tilt
+    # / gaussian_formant_band.
+    _override("amplitude_law", args.prosody_rolloff)
+    _override("envelope_source", "intensity")
+    _override("stereo_mode", "mono")
+    _override("normalize_mode", "rms")
+
+    # ── Carrier: sets harmonic count and unvoiced handling ──
+    carrier = args.prosody_carrier
+    if carrier == "hum":
+        # Strictest: a single sine following the cleaned F0; silence unvoiced.
+        _override("num_partials", 1)
+        _override("voicing_policy", "silence_unvoiced")
+    elif carrier == "soft_hum":
+        # 2-4 harmonics (rolloff via --prosody_rolloff); still no formants.
+        n = min(4, max(2, int(args.prosody_max_partials)))
+        _override("num_partials", n)
+        _override("voicing_policy", "silence_unvoiced")
+
+    # Belt-and-suspenders: never leave a policy that copies original audio.
+    if args.voicing_policy == "copy_original_unvoiced":
+        _override("voicing_policy", "silence_unvoiced")
+
+    # In this mode the formant_* params are inert (only used by the rejected
+    # gaussian_formant_band law); record that no formant modeling is used.
+    safety["formant_modeling_used"] = False
+    safety["copied_original_waveform"] = False
+    safety["original_unvoiced_copied"] = False
+    return safety
+
 
 def main():
     import argparse
@@ -848,11 +981,38 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cleanup", action="store_true")
 
+    # ── Research mode (constrained "prosody-only" stimuli) ────────────────
+    # research_mode=none behaves EXACTLY like the original artistic engine.
+    # research_mode=prosody_only locks a safe preset (see
+    # apply_research_mode_constraints): output is synthesized from F0 +
+    # intensity only, with no recognizable words/phonemes/formants and no
+    # reuse of the original speech waveform.
+    parser.add_argument("--research_mode",
+        choices=["none", "prosody_only"], default="none")
+    # Carrier for prosody_only (ignored when research_mode=none):
+    #   hum       -> single sine on F0 (strictest, least intelligible)
+    #   soft_hum  -> 2-4 harmonics (see --prosody_rolloff), no formants
+    parser.add_argument("--prosody_carrier",
+        choices=["hum", "soft_hum"], default="hum")
+    # Separate parameter that "explicitly allows" >1 harmonic in prosody_only.
+    # hum forces 1; soft_hum clamps this to [2, 4].
+    parser.add_argument("--prosody_max_partials", type=int, default=1)
+    # Amplitude rolloff for the prosody-only harmonic stack. Both choices are
+    # formant-free: 1_over_k_squared is the stricter / duller / least
+    # speech-like default; 1_over_k is brighter and makes prosody_max_partials
+    # clearly audible. (hum uses a single partial, so rolloff is moot for it.)
+    parser.add_argument("--prosody_rolloff",
+        choices=["1_over_k_squared", "1_over_k"], default="1_over_k_squared")
+
     args = parser.parse_args()
     check_dependencies()
 
     np.random.seed(args.seed)
     warnings_list = []
+
+    # Lock the safe preset BEFORE anything reads args.* (mutates args in place).
+    # In research_mode=none this is a no-op and returns all-false safety flags.
+    research_safety = apply_research_mode_constraints(args, warnings_list)
 
     # ── Stage 1: Load ─────────────────────────────────────────────────────
     print("  [Py 1/6] Loading audio + analysis data...")
@@ -873,7 +1033,15 @@ def main():
 
     # Target output length
     out_dur = args.duration if args.duration > 0 else orig_dur
+    # prosody_only must preserve the input recording's duration exactly.
+    if args.research_mode == "prosody_only":
+        if args.duration > 0 and abs(args.duration - orig_dur) > 1e-3:
+            warnings_list.append(
+                "prosody_only: output duration forced to input "
+                "(%.3fs); --duration %.3f ignored" % (orig_dur, args.duration))
+        out_dur = orig_dur
     n_out = max(1, int(round(out_dur * sr)))
+    duration_preserved = abs(out_dur - orig_dur) < 1e-3
 
     # Load F0
     if not os.path.exists(args.f0_csv):
@@ -1045,6 +1213,27 @@ def main():
     else:
         trace = []
 
+    # Effective synthesis parameters reflect any research-mode overrides,
+    # because apply_research_mode_constraints mutated args in place.
+    eff_carrier = args.prosody_carrier if args.research_mode == "prosody_only" else "none"
+    research_info = {
+        "research_mode":            args.research_mode,
+        "prosody_carrier":          eff_carrier,
+        "prosody_only_safety":      research_safety["prosody_only_safety"],
+        "copied_original_waveform": research_safety["copied_original_waveform"],
+        "formant_modeling_used":    research_safety["formant_modeling_used"],
+        "original_unvoiced_copied": research_safety["original_unvoiced_copied"],
+        "duration_preserved":       duration_preserved,
+        "eff_partials":             args.num_partials,
+        "eff_family":               args.partial_family,
+        "eff_amplaw":               args.amplitude_law,
+        "eff_envsource":            args.envelope_source,
+        "eff_voicing":              args.voicing_policy,
+        "eff_stereo":               args.stereo_mode,
+        "eff_normmode":             args.normalize_mode,
+        "eff_carrier":              eff_carrier,
+    }
+
     write_stats(
         args.stats_txt,
         n_samples=n_out, sr=sr, duration=out_dur,
@@ -1058,7 +1247,26 @@ def main():
         warnings=warnings_list,
         partial_freq_table=table,
         f0_trace=trace,
+        research_info=research_info,
     )
+
+    # ── QC summary ────────────────────────────────────────────────────────
+    print("")
+    print("  -- QC summary --")
+    print("    research_mode:            %s" % args.research_mode)
+    print("    effective_carrier:        %s" % eff_carrier)
+    print("    duration:                 %.3f s (preserved: %s)"
+          % (out_dur, "true" if duration_preserved else "false"))
+    print("    voiced_percent:           %.1f%%" % voiced_pct)
+    print("    original_waveform_copied: %s"
+          % ("true" if research_safety["copied_original_waveform"] else "false"))
+    print("    original_unvoiced_copied: %s"
+          % ("true" if research_safety["original_unvoiced_copied"] else "false"))
+    print("    output:                   %s" % args.output_wav)
+    print("    stats:                    %s" % args.stats_txt)
+    if args.research_mode == "prosody_only":
+        print("    Prosody-only mode: synthesized from F0 and intensity "
+              "envelope. Original waveform was not used as audible output.")
 
     # ── Cleanup ───────────────────────────────────────────────────────────
     if args.cleanup:

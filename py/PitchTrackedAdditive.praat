@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -46,6 +46,32 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.4:
+#   - Removed the 'noise_unvoiced_hum' prosody carrier (poor sound
+#     quality). Prosody carriers are now 'hum' and 'soft_hum' only.
+#     The artistic 'noise_unvoiced' voicing policy is unchanged.
+#
+# Changelog v1.3:
+#   - NEW: Prosody_rolloff form control (prosody-only only) wired to
+#     the engine's --prosody_rolloff. Default 1_over_k_squared (the
+#     stricter, duller, least speech-like hum). Choose 1_over_k for a
+#     brighter stack that makes Prosody_max_partials clearly audible.
+#     Both are formant-free; research_mode=none is unaffected.
+#
+# Changelog v1.2:
+#   - NEW: Research mode form controls (Research_mode,
+#     Prosody_carrier, Prosody_max_partials) wired to the Python
+#     engine's --research_mode / --prosody_carrier /
+#     --prosody_max_partials. research_mode=none is the default
+#     and behaves EXACTLY like v1.1 (flags added with safe
+#     defaults; nothing else changed).
+#   - prosody_only locks a safe preset in the engine (harmonic,
+#     1_over_k, intensity envelope, mono, rms) and produces
+#     an unintelligible, F0+intensity-only "prosody hum". Praat
+#     fails closed with a specific message if a forbidden setting
+#     (copy_original_unvoiced / gaussian_formant_band) is combined
+#     with prosody_only.
 #
 # Changelog v1.1:
 #   - Audio pipeline UNCHANGED. Output bit-identical to v1.0
@@ -153,7 +179,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Pitch-Tracked Additive Resynthesizer v1.1
+form Pitch-Tracked Additive Resynthesizer v1.4
     optionmenu Preset: 1
         option custom
         option natural_voice
@@ -188,6 +214,19 @@ form Pitch-Tracked Additive Resynthesizer v1.1
         option silence_unvoiced
         option noise_unvoiced
         option copy_original_unvoiced
+    comment === Research mode (constrained prosody-only stimuli) ===
+    optionmenu Research_mode: 1
+        option none
+        option prosody_only
+    optionmenu Prosody_carrier: 1
+        option hum
+        option soft_hum
+    integer Prosody_max_partials 1
+    optionmenu Prosody_rolloff: 1
+        option 1_over_k_squared
+        option 1_over_k
+    comment (carrier/max-partials/rolloff only apply when Research mode = prosody_only)
+    comment (rolloff: 1_over_k_squared = strict/dull; 1_over_k = brighter, audible partials)
     real Output_duration_s 0
     boolean Show_spectrograms 0
     comment (ON shows time-frequency comparison, but adds analysis time)
@@ -365,6 +404,39 @@ else
     normModeStr$ = "loudness"
 endif
 
+# ---- RESEARCH MODE MAPPING ----
+if research_mode = 1
+    researchModeStr$ = "none"
+else
+    researchModeStr$ = "prosody_only"
+endif
+
+if prosody_carrier = 1
+    prosodyCarrierStr$ = "hum"
+else
+    prosodyCarrierStr$ = "soft_hum"
+endif
+
+if prosody_rolloff = 1
+    prosodyRolloffStr$ = "1_over_k_squared"
+else
+    prosodyRolloffStr$ = "1_over_k"
+endif
+
+# ---- RESEARCH-MODE PRE-CHECKS (fail-closed, specific message) ----
+# prosody_only forbids any setting that reintroduces linguistic information.
+# The Python engine enforces this too (and locks the other params), but we
+# surface a clear, specific message here instead of a generic failure.
+# Note: these use the post-preset effective values.
+if research_mode = 2
+    if voicing_policy = 3
+        exitScript: "Prosody-only mode forbids the 'copy_original_unvoiced' voicing policy," + newline$ + "because it re-injects the original unvoiced (consonant) waveform and" + newline$ + "would preserve linguistic/segmental information." + newline$ + "Choose silence_unvoiced or noise_unvoiced, or set Research mode to none."
+    endif
+    if amplitude_law = 5
+        exitScript: "Prosody-only mode forbids the 'gaussian_formant_band' amplitude law," + newline$ + "because it imposes a speech-like formant coloration." + newline$ + "Choose another amplitude law, or set Research mode to none."
+    endif
+endif
+
 # ---- CLAMP ----
 if num_partials < 1
     num_partials = 1
@@ -384,10 +456,16 @@ endif
 if attack_release_smoothing_ms < 0
     attack_release_smoothing_ms = 0
 endif
+if prosody_max_partials < 1
+    prosody_max_partials = 1
+endif
+if prosody_max_partials > 4
+    prosody_max_partials = 4
+endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Pitch-Tracked Additive Resynthesizer v1.1 ==="
+writeInfoLine:  "=== Pitch-Tracked Additive Resynthesizer v1.4 ==="
 appendInfoLine: "Input:           ", soundName$
 appendInfoLine: ""
 appendInfoLine: "Pitch range:     ", fixed$(pitch_floor_Hz, 1), " - ", fixed$(pitch_ceiling_Hz, 1), " Hz"
@@ -400,6 +478,12 @@ appendInfoLine: "Envelope src:    ", envSourceStr$
 appendInfoLine: "Stereo mode:     ", stereoStr$
 appendInfoLine: "Normalize:       ", normModeStr$
 appendInfoLine: "Seed:            ", seed
+appendInfoLine: "Research mode:   ", researchModeStr$
+if research_mode = 2
+    appendInfoLine: "Prosody carrier: ", prosodyCarrierStr$, " (max partials ", prosody_max_partials, ")"
+    appendInfoLine: "  prosody_only locks: harmonic / ", prosodyRolloffStr$, " / intensity / mono / rms"
+    appendInfoLine: "  any conflicting form settings are overridden by the engine"
+endif
 appendInfoLine: ""
 
 # ---- CAPTURE STATS ----
@@ -566,6 +650,10 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --stereo_mode "      + stereoStr$
     ... + " --normalize_mode "   + normModeStr$
     ... + " --seed "             + string$(seed)
+    ... + " --research_mode "         + researchModeStr$
+    ... + " --prosody_carrier "       + prosodyCarrierStr$
+    ... + " --prosody_max_partials "  + string$(prosody_max_partials)
+    ... + " --prosody_rolloff "       + prosodyRolloffStr$
 
 if cleanup
     pythonCall$ = pythonCall$ + " --cleanup"
