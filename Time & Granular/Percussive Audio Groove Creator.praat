@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,14 @@
 #   Percussive Audio Groove Creator - detects bass drums, hi-hats,
 #   and snares from audio using spectral classification, then
 #   creates new groove patterns in various styles.
+#
+# Changelog v0.3:
+#   - Visualization fix: three text panels (title, detection legend,
+#     pattern-name caption) drew without setting their own Axes and so
+#     inherited stale world coordinates from the preceding Draw (the
+#     waveform's seconds axis / the grid's 0..totalSixteenths axis),
+#     which bunched the legend labels at the far left and jammed the
+#     caption against the left edge. Each now sets explicit Axes first.
 #
 # Changelog v0.2:
 #   - Modern array syntax throughout
@@ -568,6 +576,7 @@ if draw_visualization
     Select outer viewport: 2, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
+    Axes: 0, 1, 0, 1
     Text: 0.5, "centre", 0.5, "half", "Percussive Groove: " + soundName$ + " (" + string$(bars) + " bar, " + string$(tempo_BPM) + " BPM)"
     
     # Original waveform with detected events
@@ -600,6 +609,10 @@ if draw_visualization
     
     # Legend for detection
     Font size: 6
+    # Explicit axes: the waveform Draw above left the x-axis in SECONDS, which
+    # would bunch these fractional-position labels at the far left. Restore a
+    # 0..1 fractional x-axis (y spans the waveform amplitude + headroom).
+    Axes: 0, 1, -1, 1.2
     Colour: "{0.8, 0.2, 0.2}"
     Text: 0.15, "left", 1.1, "half", "Bass (" + string$(numBass) + ")"
     Colour: "{0.2, 0.7, 0.2}"
@@ -699,6 +712,9 @@ if draw_visualization
         patternName$ = "Sparse Minimal"
     endif
     
+    # Explicit axes: without this the caption inherits the grid axis
+    # (0..totalSixteenths) above, jamming x=1.5 against the left edge.
+    Axes: 0, 3, 0, 1
     Text: 1.5, "centre", 0.5, "half", "Pattern: " + patternName$ + " | Density: " + fixed$(groove_density, 2) + " | Hits: " + string$(hitsPlacedL) + if create_stereo then "/" + string$(hitsPlacedR) else "" fi
     
     Font size: 10
