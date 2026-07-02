@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Unified Cross-Platform Version
+# Version: 1.3 (2026) - Wired pitch_mode, Duration_scale, Energy_scale
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,15 @@
 #
 # No plan.csv is ever written.
 # Only output.wav persists after execution.
+#
+# Changelog v1.3:
+#   Backend: three exposed knobs made audible (see .py header):
+#     - Pitch_mode now actually works (off = varispeed / pitch tracks
+#       speed; preserve_f0 & preserve_spectral_envelope = phase-vocoder,
+#       pitch preserved). It was previously inert.
+#     - Duration_scale now sets output length (was cancelled by the
+#       final time-normalize).
+#     - Energy_scale now works as a master gain (was normalized away).
 #
 # Changelog v1.2:
 #
@@ -167,7 +176,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Self-Attention Latent Navigation v1.2
+form Self-Attention Latent Navigation v1.3
     optionmenu Preset: 1
         option Custom
         option Gentle drift
@@ -362,7 +371,7 @@ endif
 # Stage 0 — Early Python Dependency Probe
 # ═════════════════════════════════════════════════════════════════════════════
 clearinfo
-appendInfoLine: "=== Self-Attention Latent Navigation v1.2 ==="
+appendInfoLine: "=== Self-Attention Latent Navigation v1.3 ==="
 appendInfoLine: "Input:  ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""

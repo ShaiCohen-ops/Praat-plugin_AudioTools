@@ -3,7 +3,7 @@ self_attention_latent.py — Self-Attention Latent Navigation Engine
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.2 (2026)
+Version: 1.3 (2026)
 
 Called by SelfAttentionLatent.praat — not run directly.
 
@@ -26,6 +26,22 @@ Pipeline:
 
 No PyTorch. No TensorFlow. No sklearn. No external plan file.
 Dependencies: numpy, soundfile (scipy optional, unused here)
+
+Changelog v1.3:
+    Wired three exposed knobs that had no audible effect (audio change):
+      - pitch_mode: was plumbed through but never used in execution (off /
+        preserve_f0 / preserve_spectral_envelope produced identical audio).
+        Now gates the length-change resampler via _resize(): 'off' = varispeed
+        _resample (pitch tracks speed); 'preserve_*' = _pvoc_stretch (pitch
+        preserved). The two preserve_* modes currently coincide (both pvoc,
+        which preserves pitch and envelope in this time-stretch-only path).
+      - Duration_scale: a uniform per-segment scale was cancelled by the final
+        time-normalize. Now scales the render TARGET, so it sets output length
+        (pitch-preserved when pitch_mode != off); per-segment jitter is kept
+        for internal rhythm.
+      - Energy_scale: was applied per-segment then normalized away. Now applied
+        as a post-normalization master gain (peak-guarded); per-segment jitter
+        kept for internal dynamics.
 
 Changelog v1.2:
     Cosmetic-only change for AudioTools v1.2 release.
@@ -562,6 +578,23 @@ def _pvoc_stretch(clip, target_len):
     return (out_buf / norm_buf)[:target_len].astype(np.float32)
 
 
+def _resize(clip, target_len, pitch_mode):
+    """Length-change dispatcher honouring pitch_mode.
+
+        off                        -> _resample  (varispeed: pitch tracks
+                                       speed, the classic tape-stretch sound)
+        preserve_f0 /              -> _pvoc_stretch (phase-vocoder time-stretch:
+        preserve_spectral_envelope    pitch is preserved)
+
+    In this time-stretch-only pipeline the two 'preserve_*' modes both resolve
+    to the phase vocoder, which preserves pitch AND the spectral envelope; they
+    are kept as distinct choices for a future pitch-shifting path.
+    """
+    if pitch_mode == "off":
+        return _resample(clip, target_len)
+    return _pvoc_stretch(clip, target_len)
+
+
 def _mix_weights(query, neighbor_positions, attn_row, alpha, p=2.0, q=1.0):
     """
     Spec formula: w_j ∝ (1/dist_j^p) * (A[i,j]^q)
@@ -689,20 +722,20 @@ def execute_plan(plan, Z, A, clips, sr, target_samples, seed,
                     pad_shape = (tgt_len - clen, n_ch) if n_ch > 1 else (tgt_len - clen,)
                     c = np.concatenate([c, np.zeros(pad_shape, dtype=np.float32)])
             else:
-                # Use _resample dispatcher — pvoc only for large ratios
+                # Length-change honouring pitch_mode (off=varispeed, else pvoc)
                 if n_ch > 1:
-                    c = np.stack([_resample(c[:, ch], tgt_len) for ch in range(n_ch)], axis=1)
+                    c = np.stack([_resize(c[:, ch], tgt_len, pitch_mode) for ch in range(n_ch)], axis=1)
                 else:
-                    c = _resample(c, tgt_len)
+                    c = _resize(c, tgt_len, pitch_mode)
             mixed += w * c
 
         # Duration + energy scaling
         if abs(dsca - 1.0) > 0.01:
             nl = max(4, int(round(mixed.shape[0] * dsca)))
             if n_ch > 1:
-                mixed = np.stack([_resample(mixed[:, ch], nl) for ch in range(n_ch)], axis=1)
+                mixed = np.stack([_resize(mixed[:, ch], nl, pitch_mode) for ch in range(n_ch)], axis=1)
             else:
-                mixed = _resample(mixed, nl)
+                mixed = _resize(mixed, nl, pitch_mode)
         mixed = (mixed * esca).astype(np.float32)
 
         # ── 5. Crossfade and append ─────────────────────────────────────────
@@ -740,9 +773,9 @@ def execute_plan(plan, Z, A, clips, sr, target_samples, seed,
     raw = buf[:max(1, ptr)]
     if raw.shape[0] != target_samples:
         if n_ch > 1:
-            mono = np.stack([_resample(raw[:, ch], target_samples) for ch in range(n_ch)], axis=1)
+            mono = np.stack([_resize(raw[:, ch], target_samples, pitch_mode) for ch in range(n_ch)], axis=1)
         else:
-            mono = _resample(raw, target_samples)
+            mono = _resize(raw, target_samples, pitch_mode)
     else:
         mono = raw.copy().astype(np.float32)
 
@@ -916,12 +949,17 @@ def main():
 
     # ── Stage 3: Plan generation ───────────────────────────────────────────
     print("  [SAL 3/5] Generating navigation plan (%d steps)..." % args.plan_steps)
+    # Per-segment scales carry only the JITTER here (internal rhythm/dynamics).
+    # The GLOBAL Duration_scale is applied to the render target (below) so it
+    # sets output length instead of being cancelled by the final time-
+    # normalize; the GLOBAL Energy_scale is applied as a post-normalize master
+    # gain so it isn't undone by loudness normalization.
     plan = generate_plan(Z, A,
                          n_steps    = args.plan_steps,
                          seed       = args.seed,
-                         dur_scale  = args.plan_dur_scale,
+                         dur_scale  = 1.0,
                          dur_jitter = args.plan_dur_jitter,
-                         eng_scale  = args.plan_eng_scale,
+                         eng_scale  = 1.0,
                          eng_jitter = args.plan_eng_jitter)
     # Clamp k to event count
     for row in plan:
@@ -934,8 +972,11 @@ def main():
     # ── Stage 4: Execute ───────────────────────────────────────────────────
     print("  [SAL 4/5] Extracting clips + executing plan...")
     clips  = _extract_clips(audio, events, sr)
+    # Global Duration_scale sets the output length (pitch-preserved when
+    # pitch_mode != off, since the final time-normalize goes through _resize).
+    render_samples = max(1, int(round(tgt_samp * args.plan_dur_scale)))
     output, step_stats = execute_plan(
-        plan, Z, A, clips, sr, tgt_samp, args.seed,
+        plan, Z, A, clips, sr, render_samples, args.seed,
         pitch_mode=args.pitch_mode)
     print("    Used %d/%d steps | %.2fs | peak=%.4f" % (
         len(step_stats), len(plan),
@@ -945,9 +986,16 @@ def main():
     print("  [SAL 5/5] Loudness compensation + writing output...")
     pre_rms = float(np.sqrt(np.mean(output.astype(np.float64) ** 2)))
     output  = _rms_compensate(output, ref_rms, args.normalize_mode)
+    # Global Energy_scale as a master gain AFTER loudness normalization, so it
+    # is not cancelled by it. Peak-guarded to avoid hard clipping on boosts.
+    if abs(args.plan_eng_scale - 1.0) > 1e-6:
+        output = output * float(args.plan_eng_scale)
+        peak = float(np.max(np.abs(output))) if output.size else 0.0
+        if peak > 0.99:
+            output = output * (0.99 / peak)
     out_rms = float(np.sqrt(np.mean(output.astype(np.float64) ** 2)))
-    print("    %s: RMS %.4f → %.4f (ref %.4f)" % (
-        args.normalize_mode, pre_rms, out_rms, ref_rms))
+    print("    %s: RMS %.4f → %.4f (ref %.4f)  eng_scale=%.2f" % (
+        args.normalize_mode, pre_rms, out_rms, ref_rms, args.plan_eng_scale))
 
     sf.write(args.output_wav, output, sr)
     write_stats(args.stats_txt, events, plan, losses, step_stats,
