@@ -3,9 +3,24 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2026)
+# Version: 2.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.1 (2026):
+#   - FIX: backpropagation computed hidden-layer deltas from output
+#     weights that had ALREADY been updated in the same training
+#     step (w_out was modified, then read for error propagation).
+#     The update was therefore not the gradient. All deltas are now
+#     computed from pre-update weights, then all updates applied.
+#     (Same recurring pattern as in-place Formula reads: values
+#     consumed after being overwritten within one conceptual step.)
+#   - Ring-mod accumulated phase now wrapped mod 2*pi per segment
+#     (precision hygiene for long inputs; audibly identical).
+#   - Verified empirically (Praat 6.4.42): Spectrogram slices carry
+#     zero imaginary parts, so the rolloff's re^2 power is correct;
+#     PSOLA resynthesis preserves the sample count; out-of-range
+#     object[] reads return 0 (dry/wet 1-sample mismatch is benign).
 #
 # Description:
 #   Content-aware chaotic modulation. A small MLP is trained on
@@ -56,7 +71,7 @@ endif
 input_sound_original = selected("Sound")
 input_name$ = selected$("Sound")
 
-form Chaotic Neural Map Modulator v2.0
+form Chaotic Neural Map Modulator v2.1
     comment === Presets ===
     optionmenu Preset: 2
         option Custom
@@ -186,7 +201,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== CHAOTIC NEURAL MAP MODULATOR v2.0 ==="
+writeInfoLine: "=== CHAOTIC NEURAL MAP MODULATOR v2.1 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Instability: ", fixed$(instability, 1), "/10"
 appendInfoLine: "Modulation rate: ", fixed$(modulation_rate_Hz, 2), " Hz"
@@ -490,6 +505,12 @@ for iter to training_iterations
             endif
         endfor
 
+        # v2.1: correct gradient ordering. All deltas are computed
+        # BEFORE any weight is touched -- v2.0 updated w_out first
+        # and then read the updated values when backpropagating to
+        # the hidden layer, so the hidden update wasn't the gradient.
+
+        # 1) Output deltas (and loss accounting)
         for d to 3
             if d = 1
                 targVal = targ_1
@@ -503,6 +524,22 @@ for iter to training_iterations
             iterSSE = iterSSE + err * err
             iterCount = iterCount + 1
             delta_o_'d' = err * (1 - outVal^2)
+        endfor
+
+        # 2) Hidden deltas from PRE-UPDATE output weights
+        for h to hidden_neurons
+            dh = 0
+            for d to 3
+                deltaO = delta_o_'d'
+                wOut = w_out_'d'_'h'
+                dh = dh + deltaO * wOut
+            endfor
+            hidVal = hid_'h'
+            delta_h_'h' = dh * (1 - hidVal^2)
+        endfor
+
+        # 3) Apply all updates
+        for d to 3
             deltaVal = delta_o_'d'
             for h to hidden_neurons
                 hidVal = hid_'h'
@@ -512,18 +549,11 @@ for iter to training_iterations
         endfor
 
         for h to hidden_neurons
-            delta_h = 0
-            for d to 3
-                deltaO = delta_o_'d'
-                wOut = w_out_'d'_'h'
-                delta_h = delta_h + deltaO * wOut
-            endfor
-            hidVal = hid_'h'
-            delta_h = delta_h * (1 - hidVal^2)
-            w_in_'h'_1 = w_in_'h'_1 + learning_rate * delta_h * inp_1
-            w_in_'h'_2 = w_in_'h'_2 + learning_rate * delta_h * inp_2
-            w_in_'h'_3 = w_in_'h'_3 + learning_rate * delta_h * inp_3
-            b_h_'h' = b_h_'h' + learning_rate * delta_h
+            dh = delta_h_'h'
+            w_in_'h'_1 = w_in_'h'_1 + learning_rate * dh * inp_1
+            w_in_'h'_2 = w_in_'h'_2 + learning_rate * dh * inp_2
+            w_in_'h'_3 = w_in_'h'_3 + learning_rate * dh * inp_3
+            b_h_'h' = b_h_'h' + learning_rate * dh
         endfor
     endfor
     if iterCount > 0
@@ -901,6 +931,8 @@ if ring_mod_depth > 0
                 ... + ") * (x - " + t1Str$ + ")^2 / " + spanStr$ + "))"
 
             accum_phase = accum_phase + 2 * pi * 0.5 * (f1 + f2) * span
+            # v2.1: wrap to keep the formula-string phase small
+            accum_phase = accum_phase mod (2 * pi)
         endif
     endfor
 
@@ -988,7 +1020,7 @@ if draw_visualization
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", -1.7, "half",
-        ... "##Chaotic Neural Map Modulator v2.0##"
+        ... "##Chaotic Neural Map Modulator v2.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.20, "half",
