@@ -2,7 +2,7 @@
 # Praat AudioTools - Genetic_Recomposer.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,36 @@
 #   and silence insertion. Fitness rewards a preset-dependent
 #   combination of onset density, spectral similarity to input, and
 #   envelope regularity.
+#
+# Changelog v1.3 (2026):
+#   - FIX: output duration. Concatenate-with-overlap shortens the
+#     result by (nParts - 1) * crossfade, but .currentTime ignored
+#     the overlap, so glitch presets (hundreds of parts) came out
+#     SECONDS short of target. Accounting is now overlap-aware and
+#     deliberately conservative (never under-builds; trim handles
+#     the small overshoot).
+#   - FIX: true reproducibility of the best-ever candidate. The
+#     synthesis is stochastic, so re-rendering the best GENOME gave
+#     a different random phenotype than the one that actually won.
+#     Every synthesis is now seeded (base seed + counter); the
+#     winning candidate's seed is snapshotted with its genome, and
+#     the final render re-seeds with it -- the output IS the
+#     best-ever candidate, sample for sample.
+#   - FIX: cheap/expensive fitness scores were compared in the same
+#     best-ever ledger (cheap scores pad onset/regularity with a
+#     neutral 0.5). Best-ever now only updates on full-fitness
+#     generations, and the LAST generation is always full-fitness.
+#     Elitism guards against injecting the zero genome before the
+#     first full-fitness generation.
+#   - FIX: one tiny part in the pool capped safeXfade for the WHOLE
+#     concatenation (clicks everywhere). Minimum part duration now
+#     covers 2x the genome crossfade, for silences too.
+#   - FIX: envelope-regularity ACF was dominated by -300 dB silent
+#     frames (deviations of ~250 dB drown the musical envelope);
+#     values are now floored at refIntMin - 10 dB before the ACF.
+#   - FIX: population init could call randomUniform with a reversed
+#     range when min_seg_ms > 0.4 * max_seg_ms.
+#   - VIZ: stale "v1.1" title corrected; seed reported in summary.
 #
 # Changelog v1.2 (2026):
 #   - FIX: Best-ever tracking used to store genome INDEX only, which
@@ -44,7 +74,7 @@ endif
 inputSound = selected("Sound")
 soundName$ = selected$("Sound")
 
-form GA Segment Recombination v1.2
+form GA Segment Recombination v1.3
     comment === Presets ===
     optionmenu Preset: 1
         option Custom
@@ -162,7 +192,7 @@ endif
 ###############################################################################
 
 clearinfo
-writeInfoLine: "=== GA Segment Recomposer v1.2 ==="
+writeInfoLine: "=== GA Segment Recomposer v1.3 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Target duration: ", target_duration_s, " s"
 appendInfoLine: "Preset: ", presetName$
@@ -247,8 +277,12 @@ appendInfoLine: ""
 
 appendInfoLine: "Initializing population (", pop_size, " individuals)..."
 
+# v1.3: guard against a reversed randomUniform range when
+# eff_min_seg_ms > 0.4 * eff_max_seg_ms (e.g. min 100, max 200).
+initSegUpper = max(eff_min_seg_ms + 5, eff_max_seg_ms * 0.4)
+
 for ind to pop_size
-    segMinMs_'ind' = randomUniform(eff_min_seg_ms, eff_max_seg_ms * 0.4)
+    segMinMs_'ind' = randomUniform(eff_min_seg_ms, initSegUpper)
     segMaxMs_'ind' = randomUniform(max(segMinMs_'ind' + 10, eff_max_seg_ms * 0.6), eff_max_seg_ms)
     segBias_'ind' = randomUniform(-0.8, 0.8)
     reorderProb_'ind' = randomUniform(0, 1)
@@ -269,7 +303,15 @@ fitnessHistMax# = zero#(generations)
 fitnessHistMean# = zero#(generations)
 fitnessHistMin# = zero#(generations)
 bestFitness = -100000
-bestInd = 1
+
+# v1.3: seeded synthesis for true reproducibility. Every candidate
+# synthesis gets seed = gaBaseSeed + counter; the winning seed is
+# snapshotted with the genome, and the final render re-seeds with it
+# so the output is sample-identical to the candidate that won.
+gaBaseSeed = randomInteger(1, 1000000000)
+synthSeedCounter = 0
+bestGenomeSeed = 0
+bestEverSet = 0
 
 # Snapshot of the best genome's parameter VALUES (not index), so the
 # final render reproduces the true best-ever candidate. Previous
@@ -295,8 +337,18 @@ for gen to generations
     elsif gen mod fitness_stride = 0
         doExpensive = 1
     endif
+    # v1.3: the last generation is ALWAYS full-fitness, so the final
+    # best-ever comparison is made on complete scores.
+    if gen = generations
+        doExpensive = 1
+    endif
 
     for ind to pop_size
+        # v1.3: seed this synthesis so the phenotype is reproducible
+        synthSeedCounter += 1
+        candSeed_'ind' = gaBaseSeed + synthSeedCounter
+        random_initializeWithSeedUnsafelyButPredictably: candSeed_'ind'
+
         @synthesizeCandidate: ind
         candidateSound = synthesizeCandidate.result
 
@@ -320,9 +372,11 @@ for gen to generations
         if .f < genMinFitness
             genMinFitness = .f
         endif
-        if .f > bestFitness
+        if .f > bestFitness and doExpensive = 1
+            # v1.3: best-ever only updates on full-fitness scores --
+            # cheap scores pad onset/regularity with a neutral 0.5
+            # and are not comparable with full ones.
             bestFitness = .f
-            bestInd = ind
             # Snapshot the winning genome's 8 parameter values. This
             # is the key fix over v1.1: subsequent evolution cannot
             # overwrite these.
@@ -334,6 +388,10 @@ for gen to generations
             bestGenomeSilProb  = silenceProb_'ind'
             bestGenomeSilMin   = silenceMin_'ind'
             bestGenomeSilMax   = silenceMax_'ind'
+            # v1.3: snapshot the seed too -- genome + seed together
+            # determine the phenotype exactly.
+            bestGenomeSeed     = candSeed_'ind'
+            bestEverSet = 1
         endif
     endfor
 
@@ -350,14 +408,19 @@ for gen to generations
         # Elitism: force the best-ever genome into slot 1 of the new
         # population. This prevents the best genome from being lost
         # through tournament selection + mutation.
-        segMinMs_1   = bestGenomeSegMin
-        segMaxMs_1   = bestGenomeSegMax
-        segBias_1    = bestGenomeBias
-        reorderProb_1 = bestGenomeReorder
-        crossfadeMs_1 = bestGenomeXfade
-        silenceProb_1 = bestGenomeSilProb
-        silenceMin_1 = bestGenomeSilMin
-        silenceMax_1 = bestGenomeSilMax
+        # v1.3: guarded -- before the first full-fitness generation
+        # there is no best-ever snapshot yet (the fields would be 0,
+        # and segMin = segMax = 0 hangs Phase 1 forever).
+        if bestEverSet = 1
+            segMinMs_1   = bestGenomeSegMin
+            segMaxMs_1   = bestGenomeSegMax
+            segBias_1    = bestGenomeBias
+            reorderProb_1 = bestGenomeReorder
+            crossfadeMs_1 = bestGenomeXfade
+            silenceProb_1 = bestGenomeSilProb
+            silenceMin_1 = bestGenomeSilMin
+            silenceMax_1 = bestGenomeSilMax
+        endif
     endif
 endfor
 
@@ -368,6 +431,10 @@ endfor
 # whatever currently sits at index `bestInd` (which may have been
 # overwritten by later evolution). We force the best values into
 # slot 1 and synthesise from there.
+# v1.3: re-seed the RNG with the winning candidate's seed first.
+# Genome + seed determine the phenotype exactly, so the rendered
+# output is sample-identical to the candidate that actually won --
+# not just a fresh random draw from the same genome.
 ###############################################################################
 
 appendInfoLine: ""
@@ -382,7 +449,9 @@ silenceProb_1 = bestGenomeSilProb
 silenceMin_1 = bestGenomeSilMin
 silenceMax_1 = bestGenomeSilMax
 
+random_initializeWithSeedUnsafelyButPredictably: bestGenomeSeed
 @synthesizeCandidate: 1
+random_initializeSafelyAndUnpredictably()
 finalSound = synthesizeCandidate.result
 finalNumSegs = synthesizeCandidate.numSegs
 finalOutputParts = synthesizeCandidate.outputParts
@@ -416,7 +485,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##GA Segment Recomposer v1.1##"
+    Text: 0.5, "centre", 0.6, "half", "##GA Segment Recomposer v1.3##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | Strength: " + string$(effect_strength)
@@ -734,6 +803,7 @@ if draw_visualization
         ... "##Evolution##   Pop: " + string$(pop_size)
         ... + "   Gens: " + string$(generations)
         ... + "   Best fitness: " + fixed$(bestFitness, 3)
+        ... + "   Seed: " + string$(bestGenomeSeed)
         ... + "   Weights: onset=" + fixed$(w_onset, 2)
         ... + " spec=" + fixed$(w_spectral, 2)
         ... + " reg=" + fixed$(w_regular, 2)
@@ -789,7 +859,13 @@ procedure synthesizeCandidate: .ind
     # === PHASE 2: Build output by drawing from segment pool ===
     .currentTime = 0
     .outputParts = 0
-    .minSegDur = max(0.001, 2 / inputSampleRate)
+    # v1.3: every part must be able to carry the genome's crossfade
+    # on both sides -- previously one tiny part capped safeXfade for
+    # the WHOLE concatenation, silently disabling all crossfades.
+    .minSegDur = max(0.005, 2 / inputSampleRate)
+    if 2 * .xfade + 0.002 > .minSegDur
+        .minSegDur = 2 * .xfade + 0.002
+    endif
     .lastUsedIdx = randomInteger(1, .numSegs)
     
     # Keep looping until we hit target duration
@@ -833,7 +909,22 @@ procedure synthesizeCandidate: .ind
             partOutputStart_'.outputParts' = .currentTime
             partKind_'.outputParts' = 1
             partSegIdx_'.outputParts' = .idx
-            .currentTime += .dur
+            # v1.3: overlap-aware advance. Concatenate-with-overlap
+            # shortens the result by xfade per JOIN, which the old
+            # accounting ignored -- outputs came out (nParts-1)*xfade
+            # short of target (seconds, for glitch presets). Using
+            # the genome xfade (>= the safeXfade actually applied)
+            # under-counts, so the build can only OVERSHOOT, and the
+            # trim step brings it back to the exact target.
+            if .outputParts = 1
+                .advance = .dur
+            else
+                .advance = .dur - .xfade
+                if .advance < .dur * 0.5
+                    .advance = .dur * 0.5
+                endif
+            endif
+            .currentTime += .advance
         endif
         
         # Add silence with probability
@@ -845,7 +936,8 @@ procedure synthesizeCandidate: .ind
                 .silDur = target_duration_s - .currentTime
             endif
             
-            if .silDur > 0.001
+            # v1.3: silences must also carry the crossfade
+            if .silDur > .minSegDur
                 Create Sound from formula: "silence", inputChannels, 0, .silDur, inputSampleRate, "0"
                 .silence = selected("Sound")
                 
@@ -856,7 +948,16 @@ procedure synthesizeCandidate: .ind
                 partOutputStart_'.outputParts' = .currentTime
                 partKind_'.outputParts' = 0
                 partSegIdx_'.outputParts' = 0
-                .currentTime += .silDur
+                # v1.3: overlap-aware advance (see segment branch)
+                if .outputParts = 1
+                    .advance = .silDur
+                else
+                    .advance = .silDur - .xfade
+                    if .advance < .silDur * 0.5
+                        .advance = .silDur * 0.5
+                    endif
+                endif
+                .currentTime += .advance
             endif
         endif
     endwhile
@@ -1017,9 +1118,18 @@ procedure calculateFitnessFAST: .sound, .doExpensive
 
                 # Regularity: autocorrelation at several candidate
                 # lags, keep the best. Read values into a vector once.
+                # v1.3: silent frames read as -300 dB; deviations of
+                # ~250 dB from the mean would dominate the ACF and
+                # make it measure silence PLACEMENT, not envelope
+                # shape. Floor at refIntMin - 10 dB.
+                .envFloor = refIntMin - 10
                 envVals# = zero#(.nFr)
                 for .f from 1 to .nFr
-                    envVals#[.f] = Get value in frame: .f
+                    .ev = Get value in frame: .f
+                    if .ev < .envFloor
+                        .ev = .envFloor
+                    endif
+                    envVals#[.f] = .ev
                 endfor
                 .envMean = 0
                 for .f from 1 to .nFr
@@ -1099,7 +1209,7 @@ procedure evolvePopulation
     
     for .i to pop_size
         if randomUniform(0, 1) < .mutRate
-            newSegMinMs_'.i' = max(eff_min_seg_ms, min(eff_max_seg_ms * 0.4, newSegMinMs_'.i' + randomGauss(0, 10)))
+            newSegMinMs_'.i' = max(eff_min_seg_ms, min(initSegUpper, newSegMinMs_'.i' + randomGauss(0, 10)))
         endif
         if randomUniform(0, 1) < .mutRate
             newSegMaxMs_'.i' = max(newSegMinMs_'.i' + 10, min(eff_max_seg_ms, newSegMaxMs_'.i' + randomGauss(0, 15)))
