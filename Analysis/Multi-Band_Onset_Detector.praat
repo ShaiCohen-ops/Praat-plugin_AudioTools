@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,9 +18,35 @@
 #     2. Per-band rectification + smoothing -> band envelopes
 #     3. Summed envelope -> onset function (positive derivative)
 #     4. Sigmoid mask from onset function (soft gating)
-#     5. Mask dilation via convolution (attack/release shaping)
+#     5. Mask dilation via max-decay recursion (attack lookahead
+#        + release decay, peak-preserving, zero latency)
 #     6. Mask upsampled to original SR, applied at full quality
 #     7. Sustain = original - transient (perfect reconstruction)
+#
+# Changelog v1.1:
+#   - FIXED (critical): onset derivative was computed in place
+#     (self[col-1] reads the value just written -> recursion
+#     y[n] = max(0, x[n] - y[n-1]), a Nyquist-rate zigzag, not a
+#     derivative). Now differences a frozen copy via object[].
+#   - Derivative now taken over a 5 ms hop, so detector behaviour
+#     no longer depends on Working_sample_rate_Hz.
+#   - FIXED (critical): dilation replaced. Convolution was
+#     unnormalized (values summed to >>1) and un-shifted (mask
+#     opened attack_ms LATE, clipping the attacks). The re-sigmoid
+#     also floored the mask at ~0.27 (27% sustain leak). New
+#     dilation: forward max-decay pass (release) + reversed pass
+#     (attack lookahead). Mask stays in [0,1], peaks preserved,
+#     onsets pre-opened by the attack time as intended.
+#   - FIXED (critical): inputs with >2 channels crashed with
+#     undefined transId. Channel processing generalized to any
+#     channel count.
+#   - Frequency range now clamped to the ANALYSIS nyquist before
+#     band edges are computed (was: original nyquist), preventing
+#     silently collapsed / duplicated top bands.
+#   - Mask application guarded against off-by-a-few-samples
+#     length mismatch after resampling.
+#   - Energy split reported before transient gain and relabelled
+#     as RMS balance (RMS is not additive energy).
 #
 # Changelog v1.0:
 #   - Fixed: mask now applied at full SR (upsample mask, not output)
@@ -53,7 +79,7 @@ originalName$ = selected$("Sound")
 # ============================================================
 # FORM
 # ============================================================
-form Multi-Band Onset Detector v1.0
+form Multi-Band Onset Detector v1.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -156,21 +182,28 @@ if totalDur < 0.05
     exitScript: "Sound is too short (minimum 0.05 s)."
 endif
 
-# Clamp frequency range
-if high_frequency_Hz > nyquist - 100
-    high_frequency_Hz = nyquist - 100
-endif
-if low_frequency_Hz >= high_frequency_Hz
-    low_frequency_Hz = 50
-endif
-
 # Working SR: use for analysis only, output stays at original SR
 workingSR = working_sample_rate_Hz
 if workingSR > originalSR
     workingSR = originalSR
 endif
+workNyquist = workingSR / 2
 
-writeInfoLine: "=== Multi-Band Onset Detector v1.0 ==="
+# Clamp frequency range to the ANALYSIS nyquist (v1.1).
+# Band edges are computed once from this range, so clamping here
+# guarantees monotone, valid edges: the per-band rescue that could
+# collapse a top band into a duplicate full-range band is gone.
+if high_frequency_Hz > workNyquist - 100
+    high_frequency_Hz = workNyquist - 100
+endif
+if low_frequency_Hz >= high_frequency_Hz
+    low_frequency_Hz = 50
+endif
+if low_frequency_Hz >= high_frequency_Hz
+    exitScript: "Frequency range collapsed: raise Working_sample_rate_Hz or lower Low_frequency_Hz."
+endif
+
+writeInfoLine: "=== Multi-Band Onset Detector v1.1 ==="
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "  ", fixed$(totalDur, 3), " s | ",
     ... originalSR, " Hz | ", nChannels, " ch"
@@ -206,9 +239,6 @@ else
     workingSR = originalSR
 endif
 
-selectObject: workSound
-workNyquist = workingSR / 2
-
 # ============================================================
 # STEP 2: Multi-band filterbank + envelope extraction
 # ============================================================
@@ -231,13 +261,8 @@ for bi from 1 to number_of_bands
     loEdge = bandEdge_'biM1'
     hiEdge = bandEdge_'bi'
     
-    # Clamp to working nyquist
-    if hiEdge > workNyquist - 50
-        hiEdge = workNyquist - 50
-    endif
-    if loEdge >= hiEdge
-        loEdge = 20
-    endif
+    # Edges are guaranteed monotone and < workNyquist - 100
+    # by the up-front clamp in SETUP (v1.1).
     
     appendInfoLine: "  Band ", bi, ": ",
         ... fixed$(loEdge, 0), "-", fixed$(hiEdge, 0), " Hz"
@@ -275,8 +300,19 @@ appendInfoLine: "[3/6] Onset function..."
 selectObject: combinedEnv
 onsetFunc = Copy: "onset_func"
 
-# Positive half-wave rectified derivative: captures energy increases
-Formula: "if col > 1 then max(0, self - self[col-1]) else 0 endif"
+# Positive half-wave rectified derivative: captures energy increases.
+# v1.1: MUST difference the frozen source via object[] -- inside
+# Formula, self[col-1] reads the value just written (in-place,
+# left-to-right evaluation), which turned this into the recursion
+# y[n] = max(0, x[n] - y[n-1]): a Nyquist-rate zigzag, not a
+# derivative. Differencing over a 5 ms hop also decouples the
+# onset function's scale from the working sample rate.
+combinedEnvSrc = combinedEnv
+onsetLag = round(workingSR * 0.005)
+if onsetLag < 1
+    onsetLag = 1
+endif
+Formula: "if col > onsetLag then max(0, object[combinedEnvSrc, col] - object[combinedEnvSrc, col - onsetLag]) else 0 endif"
 
 selectObject: onsetFunc
 onsetMax = Get maximum: 0, 0, "None"
@@ -326,44 +362,35 @@ appendInfoLine: "[5/6] Mask dilation..."
 
 attackSec = attack_ms / 1000
 releaseSec = release_ms / 1000
-windowDur = attackSec + releaseSec
 
-if windowDur > 0.001
-    # Create attack/release shaping window
-    attackStr$ = fixed$(attackSec, 8)
-    releaseStr$ = fixed$(releaseSec, 8)
-    
-    Create Sound from formula: "dilation_window", 1, 0, windowDur, workingSR,
-        ... "if x < " + attackStr$
-        ... + " then x / (" + attackStr$ + " + 1e-12)"
-        ... + " else exp(-5 * (x - " + attackStr$
-        ... + ") / (" + releaseStr$ + " + 1e-12)) endif"
-    dilationWin = selected("Sound")
-    
-    # Convolve
-    selectObject: mask, dilationWin
-    Convolve: "sum", "zero"
-    convolvedMask = selected("Sound")
-    
-    # Crop to original duration (convolution extends the signal)
-    selectObject: convolvedMask
-    convDur = Get total duration
-    
-    # The onset is shifted by half the window; crop from start
-    Extract part: 0, totalDur, "rectangular", 1, "no"
-    croppedMask = selected("Sound")
-    Shift times to: "start time", 0
-    
-    # Re-sigmoid to clamp to 0-1
-    Formula: "1 / (1 + exp(-10 * (self - 0.1)))"
-    
-    removeObject: mask, dilationWin, convolvedMask
-    mask = croppedMask
-    Rename: "mask_final"
-    
-    appendInfoLine: "  Window: ", fixed$(attack_ms, 0),
-        ... " ms attack + ", fixed$(release_ms, 0), " ms release"
-endif
+# v1.1: peak-preserving max-decay dilation instead of convolution.
+# The old convolution was unnormalized (window summed to >>1, so
+# the re-sigmoid saturated the mask almost everywhere -- and its
+# value at self=0 floored the mask at ~0.27, a 27% sustain leak)
+# and un-shifted (mask opened attack_ms LATE, clipping attacks).
+#
+# New scheme, per pass: y[n] = max(x[n], y[n-1] * coef).
+# This deliberately exploits Praat's in-place Formula semantics
+# (self[col-1] is the value just computed) -- the same property
+# that was a bug in Step 3 is the correct tool here.
+#   Forward pass  = release: mask decays exponentially after an
+#                   onset region (time constant release_ms).
+#   Reversed pass = attack LOOKAHEAD: mask pre-opens before each
+#                   onset (time constant attack_ms), so the very
+#                   first samples of the attack are kept.
+# Mask stays in [0, 1]; peaks are preserved exactly; zero latency.
+relCoef = exp(-1 / (releaseSec * workingSR))
+attCoef = exp(-1 / (attackSec * workingSR))
+
+selectObject: mask
+Formula: "if col > 1 then max(self, self[col-1] * relCoef) else self endif"
+Reverse
+Formula: "if col > 1 then max(self, self[col-1] * attCoef) else self endif"
+Reverse
+Rename: "mask_final"
+
+appendInfoLine: "  Attack lookahead: ", fixed$(attack_ms, 0),
+    ... " ms | Release decay: ", fixed$(release_ms, 0), " ms (1/e)"
 
 # Store visualization copies
 if show_visualization
@@ -411,9 +438,9 @@ if maskDur < totalDur - 0.001
     Rename: "mask_fullsr"
 elsif maskDur > totalDur + 0.001
     selectObject: mask
+    # preserve times "no" already rebases the result to 0
     Extract part: 0, totalDur, "rectangular", 1, "no"
     trimMask = selected("Sound")
-    Shift times to: "start time", 0
     removeObject: mask
     mask = trimMask
     Rename: "mask_fullsr"
@@ -421,12 +448,17 @@ endif
 
 # Apply to each channel
 maskId = mask
+# v1.1: resampling can leave the mask a few samples short/long
+# within the 1 ms tolerance above; guard the object[] read so an
+# out-of-range column can never be touched.
+selectObject: mask
+maskNx = Get number of samples
 
 if nChannels = 1
     # Mono: mask * original = transients
     selectObject: originalSound
     transId = Copy: originalName$ + "_transients"
-    Formula: "self * object[maskId]"
+    Formula: "if col <= maskNx then self * object[maskId, col] else 0 endif"
     
     # Sustain = original - transients (perfect reconstruction)
     transIdNum = transId
@@ -434,57 +466,55 @@ if nChannels = 1
     sustId = Copy: originalName$ + "_sustain"
     Formula: "self - object[transIdNum]"
 
-elsif nChannels = 2
-    # Stereo: apply mask to each channel
+else
+    # v1.1: generalized to ANY channel count (was: stereo only,
+    # so >2-channel input crashed with undefined transId).
+    # The mono-derived mask is applied identically to every channel.
     selectObject: originalSound
     Extract all channels
-    ch1 = selected("Sound", 1)
-    ch2 = selected("Sound", 2)
+    for c from 1 to nChannels
+        chan_'c' = selected("Sound", c)
+    endfor
     
     # Transient channels
-    selectObject: ch1
-    transL = Copy: "transL"
-    Formula: "self * object[maskId]"
+    for c from 1 to nChannels
+        selectObject: chan_'c'
+        trans_'c' = Copy: "trans_ch" + string$(c)
+        Formula: "if col <= maskNx then self * object[maskId, col] else 0 endif"
+    endfor
     
-    selectObject: ch2
-    transR = Copy: "transR"
-    Formula: "self * object[maskId]"
-    
-    selectObject: transL, transR
+    selectObject: trans_1
+    for c from 2 to nChannels
+        plusObject: trans_'c'
+    endfor
     Combine to stereo
     transId = selected("Sound")
     Rename: originalName$ + "_transients"
     
-    # Sustain channels
-    transLid = transL
-    transRid = transR
+    # Sustain channels (perfect reconstruction per channel)
+    for c from 1 to nChannels
+        srcTrans = trans_'c'
+        selectObject: chan_'c'
+        sust_'c' = Copy: "sust_ch" + string$(c)
+        Formula: "self - object[srcTrans]"
+    endfor
     
-    selectObject: ch1
-    sustL = Copy: "sustL"
-    Formula: "self - object[transLid]"
-    
-    selectObject: ch2
-    sustR = Copy: "sustR"
-    Formula: "self - object[transRid]"
-    
-    selectObject: sustL, sustR
+    selectObject: sust_1
+    for c from 2 to nChannels
+        plusObject: sust_'c'
+    endfor
     Combine to stereo
     sustId = selected("Sound")
     Rename: originalName$ + "_sustain"
     
-    removeObject: ch1, ch2, transL, transR, sustL, sustR
+    for c from 1 to nChannels
+        removeObject: chan_'c', trans_'c', sust_'c'
+    endfor
 endif
 
-# Transient gain
-if transient_gain_dB <> 0
-    selectObject: transId
-    gainLinear = 10 ^ (transient_gain_dB / 20)
-    gainStr$ = fixed$(gainLinear, 8)
-    Formula: "self * " + gainStr$
-    appendInfoLine: "  Transient gain: ", fixed$(transient_gain_dB, 1), " dB"
-endif
-
-# Energy reporting
+# RMS balance (v1.1: reported BEFORE gain so it reflects the
+# detection itself; note RMS is not additive energy -- this is a
+# relative balance indicator, not an energy-conservation figure)
 selectObject: transId
 transRMS = Get root-mean-square: 0, 0
 selectObject: sustId
@@ -494,9 +524,18 @@ transPct = transRMS / totalRMS * 100
 sustPct = sustRMS / totalRMS * 100
 
 appendInfoLine: ""
-appendInfoLine: "Energy split:"
+appendInfoLine: "RMS balance:"
 appendInfoLine: "  Transient: ", fixed$(transPct, 1), "%"
 appendInfoLine: "  Sustain:   ", fixed$(sustPct, 1), "%"
+
+# Transient gain (applied after reporting)
+if transient_gain_dB <> 0
+    selectObject: transId
+    gainLinear = 10 ^ (transient_gain_dB / 20)
+    gainStr$ = fixed$(gainLinear, 8)
+    Formula: "self * " + gainStr$
+    appendInfoLine: "  Transient gain: ", fixed$(transient_gain_dB, 1), " dB"
+endif
 
 removeObject: mask, workSound, monoFull
 
@@ -575,7 +614,7 @@ if show_visualization
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.6, "half",
-        ... "##Multi-Band Onset Detector v1.0##"
+        ... "##Multi-Band Onset Detector v1.1##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.6, "half",
@@ -759,7 +798,7 @@ if show_visualization
         ... "Attack: " + fixed$(attack_ms, 0) + " ms"
         ... + " | Release: " + fixed$(release_ms, 0) + " ms"
         ... + " | Transient gain: " + fixed$(transient_gain_dB, 1) + " dB"
-        ... + " | Energy: " + fixed$(transPct, 1)
+        ... + " | RMS: " + fixed$(transPct, 1)
         ... + "% trans / " + fixed$(sustPct, 1) + "% sust"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
