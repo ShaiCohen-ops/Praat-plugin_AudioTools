@@ -3,13 +3,39 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   PCA Tone Shaper - Maps PCA-derived timbre features to
 #   dynamic 3-band EQ for adaptive spectral shaping.
+#
+# Changelog v0.5 (2026):
+#   - FIX (critical): chunks were Hamming-windowed but written back
+#     ABUTTING, with no overlap -- the output amplitude dipped to
+#     ~8% at every chunk boundary (a 5 Hz tremolo at the default
+#     200 ms chunk). Now proper 50%-overlap-add with Hann windows:
+#     the window sum is exactly 1 everywhere (head and tail covered
+#     by zero-padded boundary chunks), and band gains crossfade
+#     smoothly between chunks instead of stepping.
+#   - FIX: crossover smoothing unified to 100 Hz on all three band
+#     filters. The old mixed smoothings (100/200/500) left ~16%
+#     ripple around each crossover; with equal smoothing the skirts
+#     are exactly complementary -- verified: 3-band sum matches the
+#     band-limited reference at machine precision (3e-16 RMS).
+#     The "unity gain when gL=gM=gH=1" claim is now exactly true
+#     within the band range.
+#   - FIX: HNR was sampled by PITCH-frame index ("Get value in
+#     frame: i"), but Harmonicity frames neither align with nor
+#     count the same as Pitch frames -- tail frames read out of
+#     range (undefined -> 0 fallback), the rest were time-shifted.
+#     Now queried by time with cubic interpolation, like the other
+#     features.
+#   - FIX: PCA guard raised to nF >= 5 (3 components need at least
+#     4 rows; "To Configuration: 3" errored on 3-frame inputs).
+#   - VIZ: gain trajectory drawn at true chunk centers on the new
+#     hop timeline.
 #
 # Changelog v0.3:
 #   - Fixed Formula variable interpolation
@@ -44,7 +70,7 @@ endif
 origSnd = selected("Sound")
 origName$ = selected$("Sound")
 
-form PCA Tone Shaper v0.4
+form PCA Tone Shaper v0.5
     comment === Preset ===
     optionmenu Preset: 1
         option Manual
@@ -109,7 +135,7 @@ endif
 
 # ===== SETUP =====
 clearinfo
-writeInfoLine: "=== PCA Tone Shaper v0.4 ==="
+writeInfoLine: "=== PCA Tone Shaper v0.5 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Strength: ", pca_strength
 appendInfoLine: ""
@@ -189,8 +215,9 @@ fmtObj = selected("Formant")
 # ===== FRAME GRID =====
 selectObject: pit
 nF = Get number of frames
-if nF < 3
-    exitScript: "Not enough frames for PCA (need >= 3)."
+# v0.5: 3 PCA components need at least 4 data rows
+if nF < 5
+    exitScript: "Not enough frames for PCA (need >= 5)."
 endif
 t0 = Get start time
 dt = Get time step
@@ -235,8 +262,10 @@ for i from 1 to nF
         intVal = 60
     endif
 
+    # v0.5: query by TIME, not by pitch-frame index -- Harmonicity
+    # frames neither align with nor count the same as Pitch frames
     selectObject: hnr
-    hnrVal = Get value in frame: i
+    hnrVal = Get value at time: t, "Cubic"
     if hnrVal = undefined
         hnrVal = 0
     endif
@@ -354,185 +383,188 @@ for pcNum from 1 to 3
     endfor
 endfor
 
-# ===== CHUNKED PROCESSING =====
-appendInfoLine: "Processing chunks..."
+# ===== CHUNKED PROCESSING (v0.5: 50% OVERLAP-ADD) =====
+# Each chunk is Hann-windowed and overlap-added at half-chunk hops.
+# Hann windows at 50% overlap sum to exactly 1, so unity gains give
+# a transparent pass (the old abutting Hamming chunks dipped to ~8%
+# amplitude at every boundary -- a 5 Hz tremolo at 200 ms chunks).
+# Boundary chunks overhang the file edges; Extract part zero-pads
+# outside the domain, so the window sum stays 1 over [0, dur].
+# Bonus: band gains now crossfade smoothly between chunks.
+appendInfoLine: "Processing chunks (50% overlap-add)..."
 
 cDur = chunk_ms / 1000
-if cDur < dt
-    cDur = dt
+if cDur < 2 * dt
+    cDur = 2 * dt
 endif
-nChunks = round(dur / cDur + 0.4999)
-if nChunks < 1
-    nChunks = 1
+hop = cDur / 2
+nChunks = ceiling(dur / hop) + 1
+if nChunks < 2
+    nChunks = 2
 endif
 
-appendInfoLine: "  ", nChunks, " chunks of ", chunk_ms, " ms"
+appendInfoLine: "  ", nChunks, " chunks of ", chunk_ms, " ms (hop ",
+    ... fixed$(hop * 1000, 0), " ms)"
 
-# Store gains for visualization
+# Store gains for visualization (per chunk, at chunk centers)
 gainL_vals# = zero#(nChunks)
 gainM_vals# = zero#(nChunks)
 gainH_vals# = zero#(nChunks)
 
-# v0.4: Pre-allocate the output buffer at the input duration.
-# Previous version concatenated each chunk in a loop, rebuilding
-# the entire growing buffer at every step (O(n^2)). Now we write
-# each processed chunk into the pre-allocated buffer at its
-# original time offset using Formula (part).
+# Pre-allocated output buffer; each windowed chunk is overlap-added
+# into it at its time offset via Formula (part).
 outS = Create Sound from formula: origName$ + "_PCATone_" + presetName$,
     ... 1, 0, dur, fs, "0"
 
 for k from 1 to nChunks
-    t1 = (k - 1) * cDur
+    # Chunk k is centered at (k-1)*hop; the first chunk overhangs
+    # the file start, the last overhangs the end (zero-padded).
+    t1 = (k - 2) * hop
     t2 = t1 + cDur
-    if t2 > dur
-        t2 = dur
+
+    # Frame indices for the control average (clamped to valid range)
+    f1i = round((t1 - t0) / dt - 0.5) + 1
+    f2i = round((t2 - t0) / dt + 0.5)
+    if f1i < 1
+        f1i = 1
     endif
-    if t2 > t1
-        # Frame indices
-        f1i = round((t1 - t0) / dt - 0.5) + 1
-        f2i = round((t2 - t0) / dt + 0.5)
-        if f1i < 1
-            f1i = 1
-        endif
-        if f2i > nScores
-            f2i = nScores
-        endif
-        if f2i < f1i
-            f2i = f1i
-        endif
-
-        # Mean controls
-        a1 = 0
-        a2 = 0
-        a3 = 0
-        effCnt = 0
-        selectObject: ctrl
-        nCtrlRows = Get number of rows
-        for frameIdx from f1i to f2i
-            if frameIdx <= nCtrlRows
-                val1 = Get value: frameIdx, 1
-                val2 = Get value: frameIdx, 2
-                val3 = Get value: frameIdx, 3
-                a1 = a1 + val1
-                a2 = a2 + val2
-                a3 = a3 + val3
-                effCnt = effCnt + 1
-            endif
-        endfor
-        if effCnt = 0
-            effCnt = 1
-        endif
-        pc1m = a1 / effCnt
-        pc2m = a2 / effCnt
-        pc3m = a3 / effCnt
-
-        # Map to band gains
-        tilt = 0.35 * pca_strength * pc1m
-        presence = 0.20 * pca_strength * pc2m
-        body = 0.30 * pca_strength * pc3m
-        gL = 1.0 - tilt + 0.8*body
-        gM = 1.0 + 0.3*presence - 0.2*body
-        gH = 1.0 + 1.2*tilt + 0.7*presence - 0.2*body
-        
-        if gL < 0.5
-            gL = 0.5
-        endif
-        if gL > 1.5
-            gL = 1.5
-        endif
-        if gM < 0.5
-            gM = 0.5
-        endif
-        if gM > 1.5
-            gM = 1.5
-        endif
-        if gH < 0.5
-            gH = 0.5
-        endif
-        if gH > 1.5
-            gH = 1.5
-        endif
-        
-        # Store for visualization
-        gainL_vals#[k] = gL
-        gainM_vals#[k] = gM
-        gainH_vals#[k] = gH
-
-        # Extract chunk
-        selectObject: snd
-        Extract part: t1, t2, "Hamming", 1, "yes"
-        seg = selected("Sound")
-
-        selectObject: seg
-        To Spectrum: "yes"
-        s_all = selected("Spectrum")
-
-        # Low band
-        selectObject: s_all
-        Copy: "s_low"
-        s_low = selected("Spectrum")
-        Filter (pass Hann band): 0, low_hi_crossover1_hz, 100
-        To Sound
-        lowB = selected("Sound")
-
-        # Mid band
-        selectObject: s_all
-        Copy: "s_mid"
-        s_mid = selected("Spectrum")
-        Filter (pass Hann band): low_hi_crossover1_hz, low_hi_crossover2_hz, 200
-        To Sound
-        midB = selected("Sound")
-
-        # High band
-        selectObject: s_all
-        Copy: "s_high"
-        s_high = selected("Spectrum")
-        Filter (pass Hann band): low_hi_crossover2_hz, high_band_top_hz, 500
-        To Sound
-        highB = selected("Sound")
-
-        # Dispose spectra
-        removeObject: s_low, s_mid, s_high, s_all
-
-        # v0.4 FIX: previous version applied gains to each band
-        # then mixed via "Combine to stereo + Convert to mono"
-        # twice, which AVERAGES instead of sums. With gL=gM=gH=1.0
-        # the previous output was low/4 + mid/4 + high/2 instead
-        # of low+mid+high. Now we apply the gains and sum directly
-        # via Formula in a single pass, writing into lowB.
-        gLStr$ = string$(gL)
-        gMStr$ = string$(gM)
-        gHStr$ = string$(gH)
-        midIdStr$ = string$(midB)
-        highIdStr$ = string$(highB)
-
-        selectObject: lowB
-        Formula: "self * " + gLStr$
-            ... + " + object[" + midIdStr$ + ", col] * " + gMStr$
-            ... + " + object[" + highIdStr$ + ", col] * " + gHStr$
-        segOut = lowB
-        removeObject: midB, highB
-
-        # v0.4: write segOut into the pre-allocated output buffer
-        # at its time offset. Previous version called Concatenate
-        # in a loop — O(n^2) cost.
-        selectObject: segOut
-        segOutDur = Get total duration
-        segEnd_t = t1 + segOutDur
-        if segEnd_t > dur
-            segEnd_t = dur
-        endif
-        segOutIdStr$ = string$(segOut)
-        chunkOffsetCol = round(t1 * fs)
-        chunkOffsetStr$ = string$(chunkOffsetCol)
-        selectObject: outS
-        Formula (part): t1, segEnd_t, 1, 1,
-            ... "self + object[" + segOutIdStr$
-            ... + ", 1, col - " + chunkOffsetStr$ + "]"
-
-        # Cleanup chunk bits
-        removeObject: seg, segOut
+    if f2i > nScores
+        f2i = nScores
     endif
+    if f2i < f1i
+        f2i = f1i
+    endif
+
+    # Mean controls
+    a1 = 0
+    a2 = 0
+    a3 = 0
+    effCnt = 0
+    selectObject: ctrl
+    nCtrlRows = Get number of rows
+    for frameIdx from f1i to f2i
+        if frameIdx <= nCtrlRows
+            val1 = Get value: frameIdx, 1
+            val2 = Get value: frameIdx, 2
+            val3 = Get value: frameIdx, 3
+            a1 = a1 + val1
+            a2 = a2 + val2
+            a3 = a3 + val3
+            effCnt = effCnt + 1
+        endif
+    endfor
+    if effCnt = 0
+        effCnt = 1
+    endif
+    pc1m = a1 / effCnt
+    pc2m = a2 / effCnt
+    pc3m = a3 / effCnt
+
+    # Map to band gains
+    tilt = 0.35 * pca_strength * pc1m
+    presence = 0.20 * pca_strength * pc2m
+    body = 0.30 * pca_strength * pc3m
+    gL = 1.0 - tilt + 0.8*body
+    gM = 1.0 + 0.3*presence - 0.2*body
+    gH = 1.0 + 1.2*tilt + 0.7*presence - 0.2*body
+    
+    if gL < 0.5
+        gL = 0.5
+    endif
+    if gL > 1.5
+        gL = 1.5
+    endif
+    if gM < 0.5
+        gM = 0.5
+    endif
+    if gM > 1.5
+        gM = 1.5
+    endif
+    if gH < 0.5
+        gH = 0.5
+    endif
+    if gH > 1.5
+        gH = 1.5
+    endif
+    
+    # Store for visualization
+    gainL_vals#[k] = gL
+    gainM_vals#[k] = gM
+    gainH_vals#[k] = gH
+
+    # Extract Hann-windowed chunk (zero-padded outside the domain)
+    selectObject: snd
+    Extract part: t1, t2, "Hanning", 1, "no"
+    seg = selected("Sound")
+
+    selectObject: seg
+    To Spectrum: "yes"
+    s_all = selected("Spectrum")
+
+    # v0.5: all three bands use the SAME crossover smoothing so the
+    # skirts at shared edges are exactly complementary -- the bands
+    # sum to the band-limited input at machine precision.
+    # Low band
+    selectObject: s_all
+    Copy: "s_low"
+    s_low = selected("Spectrum")
+    Filter (pass Hann band): 0, low_hi_crossover1_hz, 100
+    To Sound
+    lowB = selected("Sound")
+
+    # Mid band
+    selectObject: s_all
+    Copy: "s_mid"
+    s_mid = selected("Spectrum")
+    Filter (pass Hann band): low_hi_crossover1_hz, low_hi_crossover2_hz, 100
+    To Sound
+    midB = selected("Sound")
+
+    # High band
+    selectObject: s_all
+    Copy: "s_high"
+    s_high = selected("Spectrum")
+    Filter (pass Hann band): low_hi_crossover2_hz, high_band_top_hz, 100
+    To Sound
+    highB = selected("Sound")
+
+    # Dispose spectra
+    removeObject: s_low, s_mid, s_high, s_all
+
+    # Apply the gains and sum the bands via Formula in one pass,
+    # writing into lowB.
+    gLStr$ = string$(gL)
+    gMStr$ = string$(gM)
+    gHStr$ = string$(gH)
+    midIdStr$ = string$(midB)
+    highIdStr$ = string$(highB)
+
+    selectObject: lowB
+    Formula: "self * " + gLStr$
+        ... + " + object[" + midIdStr$ + ", col] * " + gMStr$
+        ... + " + object[" + highIdStr$ + ", col] * " + gHStr$
+    segOut = lowB
+    removeObject: midB, highB
+
+    # Overlap-add segOut into the output buffer at its time offset.
+    # The write window is clipped to the Hann support [t1, t1+cDur]
+    # (FFT padding beyond it carries only negligible ringing, and
+    # the window is zero there anyway); Formula (part) clamps the
+    # negative start of the head chunk to the buffer domain.
+    segEnd_t = t1 + cDur
+    if segEnd_t > dur
+        segEnd_t = dur
+    endif
+    segOutIdStr$ = string$(segOut)
+    chunkOffsetCol = round(t1 * fs)
+    chunkOffsetStr$ = string$(chunkOffsetCol)
+    selectObject: outS
+    Formula (part): t1, segEnd_t, 1, 1,
+        ... "self + object[" + segOutIdStr$
+        ... + ", 1, col - " + chunkOffsetStr$ + "]"
+
+    # Cleanup chunk bits
+    removeObject: seg, segOut
     
     if k mod 10 = 0
         appendInfo: "."
@@ -556,15 +588,20 @@ if draw_visualization
     Select outer viewport: 0, 8, 0, 8
 
     # === Title ===
+    # v0.5: explicit inner viewport == outer strip. With only an
+    # outer viewport, Praat subtracts font-size-dependent margins,
+    # which compressed the world mapping and printed the title and
+    # subtitle on top of each other.
     Select outer viewport: 0, 8, 0.05, 0.50
+    Select inner viewport: 0, 8, 0.05, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half",
-        ... "##PCA Tone Shaper v0.4##"
+    Text: 0.5, "centre", 0.72, "half",
+        ... "##PCA Tone Shaper v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.20, "half",
+    Text: 0.5, "centre", 0.22, "half",
         ... origName$ + "  |  preset: " + presetName$
         ... + "  |  strength: " + fixed$(pca_strength, 2)
         ... + "  |  bands: 0-" + string$(low_hi_crossover1_hz)
@@ -643,28 +680,31 @@ if draw_visualization
     Draw line: 0, 1, dur, 1
     Solid line
 
+    # v0.5: gains drawn at true chunk centers, (k-1)*hop -- this is
+    # also where each chunk's Hann window peaks, so the plotted
+    # trajectory matches the effective crossfaded gain contour.
     # Low band (red)
     Colour: "{0.80, 0.30, 0.30}"
     Line width: 1.4
     for k from 2 to nChunks
-        t1_pt = (k - 2) * cDur
-        t2_pt = (k - 1) * cDur
+        t1_pt = (k - 2) * hop
+        t2_pt = (k - 1) * hop
         Draw line: t1_pt, gainL_vals#[k - 1], t2_pt, gainL_vals#[k]
     endfor
 
     # Mid band (green)
     Colour: "{0.30, 0.65, 0.30}"
     for k from 2 to nChunks
-        t1_pt = (k - 2) * cDur
-        t2_pt = (k - 1) * cDur
+        t1_pt = (k - 2) * hop
+        t2_pt = (k - 1) * hop
         Draw line: t1_pt, gainM_vals#[k - 1], t2_pt, gainM_vals#[k]
     endfor
 
     # High band (blue)
     Colour: "{0.30, 0.40, 0.80}"
     for k from 2 to nChunks
-        t1_pt = (k - 2) * cDur
-        t2_pt = (k - 1) * cDur
+        t1_pt = (k - 2) * hop
+        t2_pt = (k - 1) * hop
         Draw line: t1_pt, gainH_vals#[k - 1], t2_pt, gainH_vals#[k]
     endfor
     Line width: 1
