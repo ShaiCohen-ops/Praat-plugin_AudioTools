@@ -3,9 +3,38 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.3 (2026):
+#   - FIX: zero-variance feature dimensions exploded the distance.
+#     The var-diff normalizer (origVar + 1e-12) turns a single
+#     constant dimension in the original (steady tones, silence-
+#     padded material) into a ~1e11 term that drowns the other 18
+#     dimensions -- the loop then reads "too different" forever and
+#     never converges. Two-part fix: (a) both normalizers use a
+#     RELATIVE floor, (2% of |mean|)^2 + 1e-12; (b) each dimension's
+#     z contribution is capped at +/-10 sigma, so the distance is
+#     bounded by 100 and degenerate dimensions saturate instead of
+#     dominating. Healthy dimensions are unaffected (calibration
+#     preserved).
+#   - FIX: granular pass discarded the tail remainder (up to one
+#     grain, ~30-60 ms) every iteration -- floor -> ceiling on the
+#     grain count, honouring the "duration preserved" contract.
+#   - FIX: N_mfcc_coeffs is locked to 12. The 19-dim feature layout
+#     hardcodes harmonicity at slot 13, bands at 14-17, centroid 18,
+#     flux 19; other values silently corrupted the vector (dead
+#     dims below 12, or MFCC c13 overwriting the harmonicity slot).
+#   - ADDED: T5 skips the PSOLA round-trip entirely when the pitch
+#     tier has zero points (fully unvoiced input) -- it changed
+#     nothing and only added resynthesis coloration. (Verified on
+#     Praat 6.4.42 that the empty tier itself is not a crash.)
+#   - ADDED: Play_result form gate (library consistency; Play was
+#     unconditional).
+#   - FIX: info header erased itself (repeated writeInfoLine).
+#   - FIX: noise-burst placement used a reversed randomUniform
+#     range for inputs shorter than one burst.
 #
 # Description:
 #   Feature-constrained experimental sound variation using
@@ -68,7 +97,7 @@ originalName$ = selected$("Sound")
 # ============================================================
 # FORM
 # ============================================================
-form MSE Feature-Constrained Variation v1.2
+form MSE Feature-Constrained Variation v1.3
     comment === Preset ===
     optionmenu Preset: 2
         option Subtle (spectral drift only)
@@ -87,6 +116,7 @@ form MSE Feature-Constrained Variation v1.2
     comment === Analysis ===
     natural N_analysis_frames 50
     natural N_mfcc_coeffs 12
+    comment (MFCC count is locked to 12 - the 19-dim feature layout depends on it)
     comment === Transform Params (Custom only) ===
     natural N_mut_segments 6
     positive Noise_level 0.02
@@ -94,6 +124,7 @@ form MSE Feature-Constrained Variation v1.2
     positive Seg_emph_scale 1.5
     comment === Output ===
     boolean Show_visualization 1
+    boolean Play_result 1
 endform
 
 # ============================================================
@@ -262,6 +293,14 @@ else
     segEmphScale = seg_emph_scale
 endif
 
+# v1.3: the 19-dim feature layout hardcodes slot 13 = harmonicity,
+# 14-17 = bands, 18 = centroid, 19 = flux. Other MFCC counts either
+# leave dead dimensions (which explode the z-score distance) or
+# overwrite slot 13 -- so the coefficient count is a layout constant.
+if nMfccCoeffs <> 12
+    nMfccCoeffs = 12
+endif
+
 # Fixed parameters
 analysisWindowDur = 0.05
 amDepthMax = 0.25
@@ -303,8 +342,8 @@ endif
 
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  MSE Feature-Constrained Variation v1.2"
-writeInfoLine: "=============================================="
+appendInfoLine: "  MSE Feature-Constrained Variation v1.3"
+appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", originalName$,
     ... " (", fixed$(totalDur, 2), " s, ", sampleRate, " Hz, ", numChannels, " ch)"
@@ -488,7 +527,11 @@ for iter from 1 to maxIterations
             endif
             
             selectObject: monoBase
-            nGrains = floor(totalDur / grainDur)
+            # v1.3: ceiling, not floor -- floor silently discarded the
+            # tail remainder (up to one grain) every granular pass,
+            # violating the "duration preserved" contract by ~30-60 ms
+            # per run. The last grain is clipped to totalDur below.
+            nGrains = ceiling(totalDur / grainDur)
             if nGrains < 3
                 nGrains = 3
             endif
@@ -803,7 +846,13 @@ for iter from 1 to maxIterations
             workDur3 = Get total duration
             
             for nb from 1 to nBursts
-                burstTime = randomUniform(0, workDur3 - burstDur)
+                # v1.3: guard against reversed range on inputs
+                # shorter than one burst
+                burstSpan = workDur3 - burstDur
+                if burstSpan < 0
+                    burstSpan = 0
+                endif
+                burstTime = randomUniform(0, burstSpan)
                 burstFreq = randomUniform(200, 6000)
                 burstBW = randomUniform(200, 2000)
                 burstLo = burstFreq - burstBW / 2
@@ -883,39 +932,48 @@ for iter from 1 to maxIterations
             
             pitchJitter = currentIntensity * 0.35 * pitchMult
             
-            pp = nPitchPoints
-            while pp >= 1
-                selectObject: workPitchTier
-                ppTime = Get time from index: pp
-                ppVal = Get value at index: pp
-                if ppVal > 0
-                    ppShift = ppVal * pitchJitter * randomUniform(-1, 1)
-                    newVal = ppVal + ppShift
-                    if newVal < 50
-                        newVal = 50
+            
+            if nPitchPoints = 0
+                # v1.3: fully unvoiced input -- jitter has nothing to
+                # move, and the PSOLA round-trip would only add
+                # resynthesis coloration. Skip the whole stage.
+                removeObject: workManip, workPitchTier
+                appendInfoLine: "    T5 Pitch jitter: skipped (no voiced frames)"
+            else
+                pp = nPitchPoints
+                while pp >= 1
+                    selectObject: workPitchTier
+                    ppTime = Get time from index: pp
+                    ppVal = Get value at index: pp
+                    if ppVal > 0
+                        ppShift = ppVal * pitchJitter * randomUniform(-1, 1)
+                        newVal = ppVal + ppShift
+                        if newVal < 50
+                            newVal = 50
+                        endif
+                        if newVal > 800
+                            newVal = 800
+                        endif
+                        Remove point: pp
+                        Add point: ppTime, newVal
                     endif
-                    if newVal > 800
-                        newVal = 800
-                    endif
-                    Remove point: pp
-                    Add point: ppTime, newVal
-                endif
-                pp = pp - 1
-            endwhile
+                    pp = pp - 1
+                endwhile
             
-            selectObject: workManip
-            plusObject: workPitchTier
-            Replace pitch tier
+                selectObject: workManip
+                plusObject: workPitchTier
+                Replace pitch tier
             
-            selectObject: workManip
-            Get resynthesis (overlap-add)
-            pitchResult = selected("Sound")
+                selectObject: workManip
+                Get resynthesis (overlap-add)
+                pitchResult = selected("Sound")
             
-            removeObject: workManip, workPitchTier, workingSound
-            workingSound = pitchResult
+                removeObject: workManip, workPitchTier, workingSound
+                workingSound = pitchResult
             
-            appendInfoLine: "    T5 Pitch jitter: ", fixed$(pitchJitter * 100, 1),
-                ... "% (x", fixed$(pitchMult, 1), ")"
+                appendInfoLine: "    T5 Pitch jitter: ", fixed$(pitchJitter * 100, 1),
+                    ... "% (x", fixed$(pitchMult, 1), ")"
+            endif
         else
             appendInfoLine: "    T5 Pitch jitter: OFF"
         endif
@@ -1050,7 +1108,13 @@ for iter from 1 to maxIterations
         #
         # Epsilon (1e-12) prevents division by zero on dimensions
         # where the original is constant (zero variance).
-        epsilon = 1e-12
+        # v1.3: RELATIVE variance floor. With the old absolute
+        # epsilon (1e-12), one constant original dimension (steady
+        # tone, silence padding) produced a ~1e11 normalized term
+        # that drowned the other 18 dimensions and made convergence
+        # impossible. The floor (2% of |mean|)^2 + 1e-12 leaves
+        # healthy dimensions untouched (std >> 2% of mean), so the
+        # v1.2 calibration is preserved.
         mseSum = 0
         for d from 1 to nFeatPerFrame
             transMean = transDimSum_'d' / nAnalysisFrames
@@ -1060,14 +1124,33 @@ for iter from 1 to maxIterations
             endif
 
             origVarD = origVar_'d'
-            origStdD = sqrt(origVarD + epsilon)
+            varFloor = (0.02 * abs(origMean_'d'))^2 + 1e-12
             
             diffMean = origMean_'d' - transMean
-            normMeanDiff = diffMean / origStdD
+            normMeanDiff = diffMean / sqrt(origVarD + varFloor)
+            # v1.3: cap each z contribution at +/-10 sigma. The
+            # z-metric is legitimately unbounded when the original
+            # has (near-)zero variance in a dimension; capping keeps
+            # degenerate dimensions from dominating (they saturate at
+            # 100 per stat instead of 1e11) while leaving healthy
+            # dimensions untouched. Distance stays interpretable and
+            # bounded by 100.
+            if normMeanDiff > 10
+                normMeanDiff = 10
+            endif
+            if normMeanDiff < -10
+                normMeanDiff = -10
+            endif
             mseSum = mseSum + normMeanDiff * normMeanDiff
 
             diffVar = origVarD - transVar
-            normVarDiff = diffVar / (origVarD + epsilon)
+            normVarDiff = diffVar / (origVarD + varFloor)
+            if normVarDiff > 10
+                normVarDiff = 10
+            endif
+            if normVarDiff < -10
+                normVarDiff = -10
+            endif
             mseSum = mseSum + normVarDiff * normVarDiff
         endfor
         mse = mseSum / totalStats
@@ -1285,7 +1368,7 @@ if show_visualization = 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.6, "half",
-        ... "##MSE Feature-Constrained Variation v1.2##"
+        ... "##MSE Feature-Constrained Variation v1.3##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.6, "half",
@@ -1565,7 +1648,9 @@ endif
 # Final
 # ============================================================
 selectObject: finalOutput
-Play
+if play_result
+    Play
+endif
 
 appendInfoLine: ""
 appendInfoLine: "=============================================="
