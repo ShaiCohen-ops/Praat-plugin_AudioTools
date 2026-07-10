@@ -4,7 +4,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -35,6 +35,27 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.6 (2026):
+#   - FIX (audible): OLA gain was never flat. Grains carry a Hanning
+#     window PLUS an extra linear crossfade ramp, placed at
+#     grain*(1-synthesis_overlap): even at overlap 0.5 the extra
+#     ramps break the Hann COLA sum; RhythmicPulse (0.3) had deep
+#     ~29 Hz inter-grain dips; DenseTexture (0.7) a rippling
+#     over-overlapped sum. The constant 1/(1+overlap*0.7)
+#     compensation addressed none of it. v0.6 accumulates each
+#     grain's ANALYTIC envelope (Hann x crossfade ramps, at its
+#     actual duration and actual jittered placement) into a
+#     window-sum buffer per pass and divides the channel by it:
+#     flat unity gain at any synthesis_overlap, exact even under
+#     pitch scatter (which changes grain durations) and density
+#     variation (which moves placements). Output edges recover
+#     full level; gain compensation removed.
+#     NOTE: output is therefore NOT bit-identical to v0.4/v0.5
+#     (their gain structure was the bug). Grain phase interference
+#     remains -- that is the granular texture, not a gain artifact.
+#   - VIZ: title bar uses an explicit inner viewport (outer-only
+#     form risks the margin-compression text collision).
 #
 # Changelog v0.5:
 #   - Audio output is bit-identical to v0.4 for the same form
@@ -106,7 +127,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Markov Soundscape Weaver v0.5
+form Markov Soundscape Weaver v0.6
     optionmenu Preset: 1
         option Manual
         option Ambient Flow
@@ -248,7 +269,7 @@ dur = Get total duration
 fs = Get sampling frequency
 
 clearinfo
-writeInfoLine: "=== Markov Soundscape Weaver v0.5 ==="
+writeInfoLine: "=== Markov Soundscape Weaver v0.6 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Grain: ", grain_size_ms, " ms | States: ", number_of_states
 appendInfoLine: "Markov: ", markovOrderName$
@@ -654,6 +675,12 @@ for pass from 1 to n_passes
     
     output_buf = Create Sound from formula: "Output_" + string$(pass), 1, 0, output_dur, fs, "0"
     
+    # v0.6: per-pass window-sum envelope. Each grain's analytic
+    # envelope (Hann x crossfade ramps, actual duration, actual
+    # placement) is accumulated here; the channel is divided by it
+    # after the walk, giving flat unity gain at any overlap.
+    env_sum = Create Sound from formula: "EnvSum_" + string$(pass), 1, 0, output_dur, fs, "0"
+    
     current_state = randomInteger(1, k)
     prev_state = randomInteger(1, k)
     
@@ -746,6 +773,24 @@ for pass from 1 to n_passes
         Formula (part): t_out, t_out + grain_dur, 1, 1,
             ... "self + object(grain, x - t_out)"
         
+        # v0.6: accumulate this grain's analytic envelope:
+        # Hann over its actual duration, times the same linear
+        # crossfade ramps applied above (fade may be 0).
+        if crossfadeSec > 0
+            env_fade = min(crossfadeSec, grain_dur * 0.4)
+        else
+            env_fade = 0
+        endif
+        selectObject: env_sum
+        if env_fade > 0
+            Formula (part): t_out, t_out + grain_dur, 1, 1,
+                ... "self + (0.5 - 0.5 * cos(2 * pi * (x - t_out) / grain_dur))"
+                ... + " * min(1, min((x - t_out) / env_fade, (grain_dur - (x - t_out)) / env_fade))"
+        else
+            Formula (part): t_out, t_out + grain_dur, 1, 1,
+                ... "self + (0.5 - 0.5 * cos(2 * pi * (x - t_out) / grain_dur))"
+        endif
+        
         removeObject: grain
         
         # Markov transition
@@ -788,11 +833,12 @@ for pass from 1 to n_passes
         current_state = next_state
     endfor
     
+    # v0.6: exact window-sum normalization (replaces the constant
+    # 1/(1+overlap*0.7), which was never flat at any overlap)
+    envSumIdStr$ = string$(env_sum)
     selectObject: output_buf
-    if synthesis_overlap > 0.3
-        gain_comp = 1 / (1 + synthesis_overlap * 0.7)
-        Formula: "self * gain_comp"
-    endif
+    Formula: "self / (object[" + envSumIdStr$ + ", 1, col] + 1e-6)"
+    removeObject: env_sum
     
     if pass = 1
         channel_left = output_buf
@@ -908,13 +954,14 @@ if draw_visualization
     # TITLE BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 0.65
+    Select inner viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##MARKOV SOUNDSCAPE WEAVER##"
+    Text: 0.5, "centre", 0.72, "half", "##MARKOV SOUNDSCAPE WEAVER##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
+    Text: 0.5, "centre", 0.26, "half",
         ... sndName$
         ... + "  |  " + presetName$
         ... + "  |  " + string$(nGrains) + " grains analyzed"
