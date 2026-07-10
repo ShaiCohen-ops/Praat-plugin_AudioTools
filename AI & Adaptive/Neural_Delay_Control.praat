@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -77,6 +77,29 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.1 (2026):
+#   - FIX (structural): the MLP's SECOND output was decorative.
+#     ctrl_fb# was computed, smoothed, plotted and reported -- but
+#     every tap's gain was still feedback_base^rep, the static form
+#     value. The header's central claim ("per-frame mix AND
+#     feedback modulation") was half false. v1.1 folds the
+#     per-frame feedback into the tap gain: each repeat's frame
+#     gain is mix(t) * fb(t)^rep, so sustained/harmonic material
+#     (where the network raises fb) rings longer and transients
+#     (where the transient detector suppresses fb) die faster --
+#     exactly what the hand-designed output weights intended.
+#   - SPEED: the delayed-add Formula uses indexed-column reads
+#     (object[id, 1, col - offset]) instead of time-interpolated
+#     object(id, x) -- the library-standard upgrade. Non-integer
+#     delay-in-samples is quantized to the nearest sample
+#     (<= half-sample shift; the old interpolated read was also a
+#     mild lowpass near Nyquist).
+#   - VIZ: title bar uses an explicit inner viewport (outer-only
+#     form risks the margin-compression text collision).
+#   - Verified on Praat 6.4.42: trailing ";" comments in the
+#     weight-init block are legal (parser tolerates them), and 2D
+#     comma-indexed pseudo-arrays (w1[j, k]) work as written.
+#
 # Changelog v1.0:
 #   - Replaced v0.6's linear formula for mix/feedback control with
 #     a 30-8-2 MLP forward pass evaluated per frame inside Praat.
@@ -114,7 +137,7 @@ endif
 original_sound = selected("Sound")
 original_name$ = selected$("Sound")
 
-form Neural Delay Control v1.0
+form Neural Delay Control v1.1
     optionmenu Preset: 1
         option Manual
         option Clean Digital
@@ -204,7 +227,7 @@ duration = Get total duration
 fs = Get sampling frequency
 
 clearinfo
-writeInfoLine: "=== Neural Delay Control v1.0 ==="
+writeInfoLine: "=== Neural Delay Control v1.1 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Delay: ", delay_time_ms, " ms | Feedback base: ", fixed$(feedback_base, 2)
 appendInfoLine: "Mix base: ", fixed$(mix_base, 2), " | Repeats: ", number_of_repeats
@@ -529,7 +552,6 @@ for rep from 1 to number_of_repeats
     appendInfoLine: "  Repeat ", rep, "/", number_of_repeats
     
     rep_delay = delay_sec * rep
-    fb_amount = feedback_base ^ rep
     
     selectObject: sound_work
     delayed = Copy: "Delayed_" + string$(rep)
@@ -549,12 +571,9 @@ for rep from 1 to number_of_repeats
         endif
     endif
     
-    # Scale by feedback (per-tap exponential decay)
-    fbStr$ = string$(fb_amount)
-    selectObject: delayed
-    Formula: "self * " + fbStr$
-    
-    # Apply adaptive mix per frame (from MLP output)
+    # v1.1: per-frame gain = mix(t) * fb(t)^rep. Both MLP outputs
+    # are now live: v1.0 applied feedback_base^rep globally, so the
+    # network's feedback output modulated nothing.
     for i from 1 to nFrames
         t_start = (i - 1) * frame_step_sec
         t_end = i * frame_step_sec
@@ -562,22 +581,23 @@ for rep from 1 to number_of_repeats
             t_end = duration
         endif
         
-        mix_val = ctrl_mix_smooth#[i]
-        mixStr$ = string$(mix_val)
+        gain_val = ctrl_mix_smooth#[i] * ctrl_fb_smooth#[i] ^ rep
+        gainStr$ = string$(gain_val)
         
         selectObject: delayed
-        Formula (part): t_start, t_end, 1, 1, "self * " + mixStr$
+        Formula (part): t_start, t_end, 1, 1, "self * " + gainStr$
     endfor
     
-    # Add to output at delayed position
-    delayedId = delayed
-    delayedIdStr$ = string$(delayedId)
-    repDelayStr$ = string$(rep_delay)
-    repDelayPlusDur$ = string$(rep_delay + duration)
+    # Add to output at delayed position.
+    # v1.1: indexed-column read (out-of-range object[] reads return
+    # 0, so no explicit bounds condition is needed). Non-integer
+    # delay-in-samples quantizes to the nearest sample.
+    delayedIdStr$ = string$(delayed)
+    offsetCol = round(rep_delay * fs)
+    offsetColStr$ = string$(offsetCol)
     
     selectObject: output
-    Formula: "self + (if x >= " + repDelayStr$ + " and x < " + repDelayPlusDur$ + 
-        ... " then object(" + delayedIdStr$ + ", x - " + repDelayStr$ + ") else 0 fi)"
+    Formula: "self + object[" + delayedIdStr$ + ", 1, col - " + offsetColStr$ + "]"
     
     removeObject: delayed
 endfor
@@ -645,13 +665,14 @@ if draw_visualization
     # TITLE BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 0.65
+    Select inner viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##NEURAL DELAY CONTROL  -  30-8-2 MLP##"
+    Text: 0.5, "centre", 0.72, "half", "##NEURAL DELAY CONTROL  -  30-8-2 MLP##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
+    Text: 0.5, "centre", 0.26, "half",
         ... original_name$
         ... + "  |  " + presetName$
         ... + "  |  delay " + fixed$(delay_time_ms, 0) + " ms x " + string$(number_of_repeats)
