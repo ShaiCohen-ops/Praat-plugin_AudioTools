@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,6 +24,40 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5 (2026):
+#   - FIX (audible): output segments were rectangular and plain-
+#     Concatenated -- a discontinuity CLICK at every segment
+#     boundary, on every preset. v0.5 applies 2 ms raised-cosine
+#     edge fades to each varied segment and joins with
+#     Concatenate-with-overlap (2 ms crossfades). The output window
+#     count gains headroom for the crossfade shrink; the existing
+#     trim still lands the exact target duration. (The Hann-grain
+#     dips INSIDE Granular shuffle are left as-is: that amplitude
+#     texture is the granular aesthetic; the top-level clicks were
+#     not.)
+#   - FIX: the v0.4 claim that "the similarity check now uses both
+#     features" was only true for the Euclidean metric. Correlation
+#     and Cosine read feature1 alone, so AmbientDrift (Correlation)
+#     kept exactly the vibrato-blind false positives v0.4 said it
+#     fixed. Both metrics now average per-feature relative
+#     distances over feature1 AND feature2. The sorted-sweep prune
+#     stays valid: rel-diff <= (1-thr) on the average still implies
+#     |f1 diff| <= (1-thr) * max_dist_global... no -- the f1 term
+#     alone can exceed (1-thr) while the average passes, so the
+#     prune bound is DOUBLED for metrics 2/3 (still a large
+#     speedup, never drops a valid pair).
+#   - FIX: Spectrum analysis used a hardcoded 5000 Hz scale for
+#     similarity/pruning, but spectral CoG ranges to Nyquist --
+#     bright material was over-pruned and similarity mis-scaled.
+#     Now sample_rate / 2.
+#   - FIX: the time-stretch duration-tier point was placed at
+#     ORIGINAL-time coordinates on a tier whose domain starts at 0
+#     (the segment is extracted rebased). It worked only through
+#     RealTier constant extrapolation; the point now sits at the
+#     segment's own midpoint.
+#   - VIZ: title bar uses an explicit inner viewport (outer-only
+#     form risks the margin-compression text collision).
 #
 # Changelog v0.4:
 #   - Fix (Spectral filter, variation method 4): two bugs.
@@ -224,7 +258,7 @@ endif
 
 # === Info ===
 clearinfo
-writeInfoLine: "=== Feature-Similarity Audio Variations v0.4 ==="
+writeInfoLine: "=== Feature-Similarity Audio Variations v0.5 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(total_duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -418,11 +452,22 @@ if analysis_type = 1
     max_acceptable_diff = 600 * (1 - similarity_threshold)
     max_dist_global = 600
 elsif analysis_type = 2
-    max_acceptable_diff = 5000 * (1 - similarity_threshold)
-    max_dist_global = 5000
+    # v0.5: spectral CoG ranges to Nyquist, not 5000 Hz -- the old
+    # hardcoded scale over-pruned bright material and mis-scaled
+    # similarity
+    max_dist_global = sample_rate / 2
+    max_acceptable_diff = max_dist_global * (1 - similarity_threshold)
 else
     max_acceptable_diff = 100 * (1 - similarity_threshold)
     max_dist_global = 100
+endif
+
+# v0.5: metrics 2/3 average per-feature RELATIVE distances, so the
+# feature1 term alone may reach twice the threshold while the average
+# still qualifies -- the sorted-sweep prune bound doubles (still a
+# large speedup; never drops a valid pair).
+if distance_metric <> 1
+    max_acceptable_diff = max_acceptable_diff * 2
 endif
 
 stopwatch
@@ -452,17 +497,45 @@ for i to num_windows - 1
                 else
                     comparisons_made += 1
                     
+                    # v0.5: all three metrics use BOTH features (v0.4
+                    # only fixed Euclidean; Correlation/Cosine stayed
+                    # feature1-only). Windows with undefined feature2
+                    # (e.g. pitch stdev over <2 voiced frames) fall
+                    # back to the feature1-only form instead of
+                    # silently failing the comparison.
+                    f2ok = 1
+                    if f2_i = undefined or f2_j = undefined
+                        f2ok = 0
+                    endif
+                    
                     if distance_metric = 1
-                        # Euclidean using both features
-                        dist = sqrt((f1_i - f1_j)^2 + (f2_i - f2_j)^2)
+                        # Euclidean
+                        if f2ok
+                            dist = sqrt((f1_i - f1_j)^2 + (f2_i - f2_j)^2)
+                        else
+                            dist = abs(f1_i - f1_j)
+                        endif
                         max_dist = max_dist_global
                     elsif distance_metric = 2
-                        # Correlation-style normalized difference
-                        dist = abs(f1_i - f1_j) / max(abs(f1_i), abs(f1_j) + 0.0001)
+                        # Correlation-style normalized difference,
+                        # averaged over both features
+                        d1rel = abs(f1_i - f1_j) / max(abs(f1_i), abs(f1_j) + 0.0001)
+                        if f2ok
+                            d2rel = abs(f2_i - f2_j) / max(abs(f2_i), abs(f2_j) + 0.0001)
+                            dist = 0.5 * (d1rel + d2rel)
+                        else
+                            dist = d1rel
+                        endif
                         max_dist = 1
                     else
-                        # Cosine-style
-                        dist = 1 - (min(abs(f1_i), abs(f1_j)) / (max(abs(f1_i), abs(f1_j)) + 0.0001))
+                        # Cosine-style, averaged over both features
+                        d1rel = 1 - (min(abs(f1_i), abs(f1_j)) / (max(abs(f1_i), abs(f1_j)) + 0.0001))
+                        if f2ok
+                            d2rel = 1 - (min(abs(f2_i), abs(f2_j)) / (max(abs(f2_i), abs(f2_j)) + 0.0001))
+                            dist = 0.5 * (d1rel + d2rel)
+                        else
+                            dist = d1rel
+                        endif
                         max_dist = 1
                     endif
                     
@@ -556,7 +629,14 @@ endfor
 appendInfoLine: ""
 appendInfoLine: "Creating variations..."
 
-num_output_windows = floor(output_duration_s / window_size_s)
+# v0.5: headroom for the 2 ms crossfade shrink at every join;
+# the trim below lands the exact target
+xfadeSec = 0.002
+effAdvance = window_size_s - xfadeSec
+if effAdvance < 0.005
+    effAdvance = 0.005
+endif
+num_output_windows = ceiling(output_duration_s / effAdvance) + 1
 if num_output_windows < 1
     num_output_windows = 1
 endif
@@ -674,7 +754,10 @@ for out_i to num_output_windows
         selectObject: segment
         manipulation = To Manipulation: 0.01, 75, 600
         duration_tier = Extract duration tier
-        Add point: start_time + window_size_s/2, stretch_factor
+        # v0.5: the segment is extracted rebased to 0, so the tier
+        # point belongs at the SEGMENT midpoint (the old original-
+        # time coordinate worked only via constant extrapolation)
+        Add point: seg_dur / 2, stretch_factor
         plusObject: manipulation
         Replace duration tier
         selectObject: manipulation
@@ -774,6 +857,16 @@ for out_i to num_output_windows
         endfor
     endif
     
+    # v0.5: 2 ms raised-cosine edge fades so the crossfaded joins
+    # are click-free (segments were rectangular and butt-joined:
+    # a discontinuity at every boundary)
+    selectObject: varied_segment
+    vsDur = Get total duration
+    if vsDur > 3 * xfadeSec
+        Fade in: 0, 0, xfadeSec, "yes"
+        Fade out: 0, vsDur, -xfadeSec, "yes"
+    endif
+    
     segment_ids#[out_i] = varied_segment
     
     if varied_segment <> segment
@@ -790,7 +883,8 @@ for i from 2 to num_output_windows
     plusObject: segment_ids#[i]
 endfor
 
-output = Concatenate
+# v0.5: crossfaded join (was plain Concatenate -- clicks)
+output = Concatenate with overlap: xfadeSec
 Rename: sound_name$ + "_LZ_" + presetName$
 
 for i to num_output_windows
@@ -824,13 +918,14 @@ if draw_visualization
     # TITLE BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 0.65
+    Select inner viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##FEATURE-SIMILARITY AUDIO VARIATIONS##"
+    Text: 0.5, "centre", 0.72, "half", "##FEATURE-SIMILARITY AUDIO VARIATIONS##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
+    Text: 0.5, "centre", 0.26, "half",
         ... sound_name$
         ... + "  |  " + presetName$
         ... + "  |  Analysis: " + analysis_name$
