@@ -3,13 +3,42 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Neural Phonetic Harmonizer - Adaptive pitch shifting per
 #   phonetic class using FFNet classification.
+#
+# Changelog v0.6 (2026):
+#   - FIX (critical): harmony voices were MONOTONE. Each voice built
+#     a flat 100 Hz PitchTier and multiplied THAT by the interval
+#     ratio, never extracting the sound's own pitch -- every voice
+#     was resynthesized at a constant ~100*ratio Hz, destroying the
+#     input's intonation (Detuned Unison = two flat drones at
+#     ~99/101 Hz). v0.6 extracts the actual pitch tier from the
+#     Manipulation and scales it, so voices follow the sung contour.
+#     (Unvoiced material passes through unshifted -- PSOLA has no
+#     pulses there; the class gains still apply.)
+#   - FIX (critical): the class weights never came from the
+#     classifier. "To ActivationList: 1" returns the HIDDEN layer
+#     (16 units here), so the softmax ran over 4 arbitrary hidden
+#     neurons. Layer 2 (the output layer) is now used -- verified
+#     empirically on Praat 6.4.42.
+#   - FIX (critical): output columns are ordered ALPHABETICALLY by
+#     category (consonant, other, silence, vowel), not in the
+#     assumed vowel/consonant/other/silence order -- every weight
+#     read the wrong class. Columns are now mapped by name, built
+#     from the classes actually present.
+#   - FIX: inputs missing a class (e.g. a sung vowel with no
+#     consonant or silence frames) produced an FFNet with fewer
+#     output columns; reading column 4 returned undefined and
+#     silently poisoned the softmax. Absent classes now get -1e9
+#     activation (softmax ~0); if fewer than 2 classes are present
+#     the net is skipped and the rule-based labels are used
+#     directly.
+#   - Class distribution now reported in the info window.
 #
 # Changelog v0.4:
 #   - Fixed preset comparison (number not string)
@@ -54,7 +83,7 @@ endif
 sound = selected("Sound")
 sound_name$ = selected$("Sound")
 
-form Neural Phonetic Harmonizer v0.5
+form Neural Phonetic Harmonizer v0.6
     comment === Preset ===
     optionmenu Preset: 1
         option Manual
@@ -220,7 +249,7 @@ if duration < 0.1
 endif
 
 clearinfo
-writeInfoLine: "=== Neural Phonetic Harmonizer v0.5 ==="
+writeInfoLine: "=== Neural Phonetic Harmonizer v0.6 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Vowel: ", vowel_interval_1, " / ", vowel_interval_2, " st"
 appendInfoLine: "Consonant: ", consonant_interval, " st | Other: ", other_interval, " st"
@@ -570,82 +599,170 @@ for i from 1 to nFrames
     endif
 endfor
 
-selectObject: pattern
-plusObject: categories
-ffnet = To FFNet: hidden_units, 0
+# v0.6: class presence + alphabetical column mapping. Praat's FFNet
+# orders output nodes ALPHABETICALLY over the categories that are
+# actually present: consonant, other, silence, vowel. Columns are
+# assigned by name; absent classes get no column (activation -1e9,
+# softmax ~0). Verified empirically on Praat 6.4.42.
+nVowelFr = 0
+nConsFr = 0
+nOtherFr = 0
+nSilFr = 0
+for i from 1 to nFrames
+    nVowelFr += cat_vowel#[i]
+    nConsFr += cat_consonant#[i]
+    nOtherFr += cat_other#[i]
+    nSilFr += cat_silence#[i]
+endfor
+appendInfoLine: "  Classes: vowel ", fixed$(100 * nVowelFr / nFrames, 0),
+    ... "% | consonant ", fixed$(100 * nConsFr / nFrames, 0),
+    ... "% | other ", fixed$(100 * nOtherFr / nFrames, 0),
+    ... "% | silence ", fixed$(100 * nSilFr / nFrames, 0), "%"
 
-prev_cost = 1e9
-stale = 0
-iter = 0
-chunk = 100
-
-while iter < training_iterations
-    selectObject: ffnet
-    plusObject: pattern
-    plusObject: categories
-    Learn: chunk, learning_rate, "Minimum-squared-error"
-    
-    selectObject: ffnet
-    plusObject: pattern
-    plusObject: categories
-    current_cost = Get total costs: "Minimum-squared-error"
-    
-    if abs(prev_cost - current_cost) < prev_cost * 0.001
-        stale += 1
-    else
-        stale = 0
-    endif
-    
-    prev_cost = current_cost
-    iter += chunk
-    
-    if stale >= 5
-        appendInfoLine: "  Converged at iteration ", iter
-        iter = training_iterations + 1
-    endif
-endwhile
-
-appendInfoLine: "  Training complete"
-
-selectObject: ffnet
-plusObject: pattern
-To ActivationList: 1
-activations = selected("Activation")
-To Matrix
-activation_matrix = selected("Matrix")
+colIdx = 0
+col_consonant = 0
+if nConsFr > 0
+    colIdx += 1
+    col_consonant = colIdx
+endif
+col_other = 0
+if nOtherFr > 0
+    colIdx += 1
+    col_other = colIdx
+endif
+col_silence = 0
+if nSilFr > 0
+    colIdx += 1
+    col_silence = colIdx
+endif
+col_vowel = 0
+if nVowelFr > 0
+    colIdx += 1
+    col_vowel = colIdx
+endif
+nClassesPresent = colIdx
 
 weight_vowel# = zero#(nFrames)
 weight_consonant# = zero#(nFrames)
 weight_other# = zero#(nFrames)
 weight_silence# = zero#(nFrames)
 
-for i from 1 to nFrames
-    selectObject: activation_matrix
-    a1 = Get value in cell: i, 1
-    a2 = Get value in cell: i, 2
-    a3 = Get value in cell: i, 3
-    a4 = Get value in cell: i, 4
-    
-    t_div = max(0.001, temperature)
-    max_a = max(a1, max(a2, max(a3, a4)))
-    
-    e1 = exp((a1 - max_a) / t_div)
-    e2 = exp((a2 - max_a) / t_div)
-    e3 = exp((a3 - max_a) / t_div)
-    e4 = exp((a4 - max_a) / t_div)
-    
-    sum_e = e1 + e2 + e3 + e4
-    if sum_e < 0.001
-        sum_e = 1
-    endif
-    
-    weight_vowel#[i] = e1 / sum_e
-    weight_consonant#[i] = e2 / sum_e
-    weight_other#[i] = e3 / sum_e
-    weight_silence#[i] = e4 / sum_e
-endfor
+if nClassesPresent < 2
+    # Degenerate input (a single class): an FFNet with one output
+    # is meaningless -- use the rule-based labels directly.
+    appendInfoLine: "  Only ", nClassesPresent, " class present; skipping FFNet, using rule-based weights"
+    for i from 1 to nFrames
+        weight_vowel#[i] = cat_vowel#[i]
+        weight_consonant#[i] = cat_consonant#[i]
+        weight_other#[i] = cat_other#[i]
+        weight_silence#[i] = cat_silence#[i]
+    endfor
+    removeObject: feat_table, feat_matrix, pattern, categories
+else
+    selectObject: pattern
+    plusObject: categories
+    ffnet = To FFNet: hidden_units, 0
 
-removeObject: feat_table, feat_matrix, pattern, categories, ffnet, activations, activation_matrix
+    prev_cost = 1e9
+    stale = 0
+    iter = 0
+    chunk = 100
+
+    while iter < training_iterations
+        selectObject: ffnet
+        plusObject: pattern
+        plusObject: categories
+        Learn: chunk, learning_rate, "Minimum-squared-error"
+        
+        selectObject: ffnet
+        plusObject: pattern
+        plusObject: categories
+        current_cost = Get total costs: "Minimum-squared-error"
+        
+        if abs(prev_cost - current_cost) < prev_cost * 0.001
+            stale += 1
+        else
+            stale = 0
+        endif
+        
+        prev_cost = current_cost
+        iter += chunk
+        
+        if stale >= 5
+            appendInfoLine: "  Converged at iteration ", iter
+            iter = training_iterations + 1
+        endif
+    endwhile
+
+    appendInfoLine: "  Training complete"
+
+    selectObject: ffnet
+    plusObject: pattern
+    # v0.6: layer 2 = the OUTPUT layer of this one-hidden-layer net.
+    # Layer 1 is the hidden layer -- v0.5 softmaxed 4 of the 16
+    # hidden neurons, so the trained classification never reached
+    # the mixer at all.
+    To ActivationList: 2
+    activations = selected("ActivationList")
+    To Matrix
+    activation_matrix = selected("Matrix")
+
+    for i from 1 to nFrames
+        selectObject: activation_matrix
+        if col_vowel > 0
+            a1 = Get value in cell: i, col_vowel
+        else
+            a1 = -1e9
+        endif
+        if col_consonant > 0
+            a2 = Get value in cell: i, col_consonant
+        else
+            a2 = -1e9
+        endif
+        if col_other > 0
+            a3 = Get value in cell: i, col_other
+        else
+            a3 = -1e9
+        endif
+        if col_silence > 0
+            a4 = Get value in cell: i, col_silence
+        else
+            a4 = -1e9
+        endif
+        if a1 = undefined
+            a1 = -1e9
+        endif
+        if a2 = undefined
+            a2 = -1e9
+        endif
+        if a3 = undefined
+            a3 = -1e9
+        endif
+        if a4 = undefined
+            a4 = -1e9
+        endif
+        
+        t_div = max(0.001, temperature)
+        max_a = max(a1, max(a2, max(a3, a4)))
+        
+        e1 = exp((a1 - max_a) / t_div)
+        e2 = exp((a2 - max_a) / t_div)
+        e3 = exp((a3 - max_a) / t_div)
+        e4 = exp((a4 - max_a) / t_div)
+        
+        sum_e = e1 + e2 + e3 + e4
+        if sum_e < 0.001
+            sum_e = 1
+        endif
+        
+        weight_vowel#[i] = e1 / sum_e
+        weight_consonant#[i] = e2 / sum_e
+        weight_other#[i] = e3 / sum_e
+        weight_silence#[i] = e4 / sum_e
+    endfor
+
+    removeObject: feat_table, feat_matrix, pattern, categories, ffnet, activations, activation_matrix
+endif
 
 # ============================================
 # SMOOTH WEIGHTS
@@ -690,9 +807,10 @@ appendInfoLine: "Creating harmony voices..."
 if vowel_interval_1 <> 0
     selectObject: workSnd
     manip1 = To Manipulation: 0.01, 75, 600
-    pt1 = Create PitchTier: "shift1", 0, duration
-    Add point: 0, 100
-    Add point: duration, 100
+    # v0.6: scale the sound's OWN pitch tier. The old code built a
+    # flat 100 Hz tier, so every voice came out monotone.
+    Extract pitch tier
+    pt1 = selected("PitchTier")
     int1Str$ = string$(vowel_interval_1)
     Formula: "self * 2^(" + int1Str$ + "/12)"
     selectObject: manip1
@@ -712,9 +830,10 @@ Rename: "HarmVoice1"
 if vowel_interval_2 <> 0
     selectObject: workSnd
     manip2 = To Manipulation: 0.01, 75, 600
-    pt2 = Create PitchTier: "shift2", 0, duration
-    Add point: 0, 100
-    Add point: duration, 100
+    # v0.6: scale the sound's OWN pitch tier. The old code built a
+    # flat 100 Hz tier, so every voice came out monotone.
+    Extract pitch tier
+    pt2 = selected("PitchTier")
     int2Str$ = string$(vowel_interval_2)
     Formula: "self * 2^(" + int2Str$ + "/12)"
     selectObject: manip2
@@ -735,9 +854,10 @@ endif
 if consonant_interval <> 0
     selectObject: workSnd
     manip3 = To Manipulation: 0.01, 75, 600
-    pt3 = Create PitchTier: "shift3", 0, duration
-    Add point: 0, 100
-    Add point: duration, 100
+    # v0.6: scale the sound's OWN pitch tier. The old code built a
+    # flat 100 Hz tier, so every voice came out monotone.
+    Extract pitch tier
+    pt3 = selected("PitchTier")
     int3Str$ = string$(consonant_interval)
     Formula: "self * 2^(" + int3Str$ + "/12)"
     selectObject: manip3
@@ -757,9 +877,10 @@ Rename: "HarmVoice3"
 if other_interval <> 0
     selectObject: workSnd
     manip4 = To Manipulation: 0.01, 75, 600
-    pt4 = Create PitchTier: "shift4", 0, duration
-    Add point: 0, 100
-    Add point: duration, 100
+    # v0.6: scale the sound's OWN pitch tier. The old code built a
+    # flat 100 Hz tier, so every voice came out monotone.
+    Extract pitch tier
+    pt4 = selected("PitchTier")
     int4Str$ = string$(other_interval)
     Formula: "self * 2^(" + int4Str$ + "/12)"
     selectObject: manip4
@@ -930,7 +1051,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Neural Phonetic Harmonizer v0.5: " + sound_name$ + " [" + presetName$ + "]"
+    Text: 0.5, "centre", 0.5, "half", "Neural Phonetic Harmonizer v0.6: " + sound_name$ + " [" + presetName$ + "]"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
