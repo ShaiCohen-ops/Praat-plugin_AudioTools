@@ -3,13 +3,38 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Neural Audio Mosaic - Reconstructs 'Target' using 'Source' grains
 #   via feature matching (concatenative synthesis / musaicing).
+#
+# Changelog v0.6 (2026):
+#   - FIX (audible): OLA gain was only correct at Overlap_ratio 0.5.
+#     Full-length Hanning grains placed at grain*(1-overlap) sum to
+#     a constant ONLY at 50% overlap: the Rhythmic preset (0.25)
+#     left deep inter-grain dips, and CreativeLoose/HybridTexture
+#     (0.6/0.65) produced a rippling over-overlapped sum. The crude
+#     constant 1/(1+overlap) compensation could fix neither. v0.6
+#     normalizes by the EXACT window-sum envelope: the bare Hanning
+#     window is overlap-added once on the same grid, and each
+#     channel is divided by it. Flat unity gain at ANY overlap
+#     ratio (the knob becomes a pure grain-density/texture control),
+#     output edges recover full level, gain_comp removed.
+#     Measured on DC grains (isolating windowing from grain phase):
+#     overlap 0.25: 10.7 dB dips -> 0.00002 dB; overlap 0.65:
+#     0.26 dB ripple -> flat; overlap 0.5 was v0.5's only correct
+#     case and stays flat. Note: phase interference between
+#     overlapping grains from different source positions remains --
+#     that is the granular texture itself, not a gain artifact.
+#   - FIX: unvoiced frames contributed logF0 = 0 to the pitch
+#     feature's min/max normalization pool, stretching the range
+#     and compressing voiced pitch discrimination (e.g. all-high
+#     voices squeezed into the upper half). Feature 13 is now
+#     normalized over VOICED frames only (unvoiced values are never
+#     read by the voicing-aware distance).
 #
 # Changelog v0.4:
 #   - Fixed preset comparison (number not string)
@@ -45,7 +70,7 @@ endif
 id1 = selected("Sound", 1)
 id2 = selected("Sound", 2)
 
-form Neural Audio Mosaic v0.5
+form Neural Audio Mosaic v0.6
     comment Select 2 Sounds: #1 = Target, #2 = Source
     comment === Preset ===
     optionmenu Preset: 1
@@ -177,7 +202,7 @@ if durTarget < grainSec or durSource < grainSec
 endif
 
 clearinfo
-writeInfoLine: "=== Neural Audio Mosaic v0.5 ==="
+writeInfoLine: "=== Neural Audio Mosaic v0.6 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Target: ", targetName$, " (", fixed$(durTarget, 2), " s)"
 appendInfoLine: "Source: ", sourceName$, " (", fixed$(durSource, 2), " s)"
@@ -355,25 +380,39 @@ for f from 1 to nFeatures
     minV = 1e9
     maxV = -1e9
     
+    # v0.6: feature 13 (pitch) pools min/max over VOICED frames only.
+    # Unvoiced frames carry logF0 = 0, which stretched the range and
+    # compressed voiced pitch discrimination; the voicing-aware
+    # distance never reads unvoiced pitch values anyway.
     for i from 1 to nTarget
-        v = tFeat_'f'#[i]
-        if v < minV
-            minV = v
-        endif
-        if v > maxV
-            maxV = v
+        if f <> 13 or tValid#[i] = 1
+            v = tFeat_'f'#[i]
+            if v < minV
+                minV = v
+            endif
+            if v > maxV
+                maxV = v
+            endif
         endif
     endfor
     
     for i from 1 to nSource
-        v = sFeat_'f'#[i]
-        if v < minV
-            minV = v
-        endif
-        if v > maxV
-            maxV = v
+        if f <> 13 or sValid#[i] = 1
+            v = sFeat_'f'#[i]
+            if v < minV
+                minV = v
+            endif
+            if v > maxV
+                maxV = v
+            endif
         endif
     endfor
+    
+    # No voiced frames at all: leave feature 13 untouched
+    if minV > maxV
+        minV = 0
+        maxV = 1
+    endif
     
     range = maxV - minV
     if range < 1e-9
@@ -518,6 +557,32 @@ appendInfoLine: "Synthesizing mosaic..."
 
 outputDur = nTarget * stepSec + grainSec
 
+# v0.6: exact window-sum envelope for OLA normalization. Overlap-add
+# the bare Hanning window (obtained by windowing a constant-1 sound,
+# so it matches Praat's Extract-part window exactly) on the same
+# placement grid, once, shared by both channels. Dividing each
+# channel by this envelope gives flat unity gain at ANY overlap
+# ratio -- the old constant 1/(1+overlap) was only ever correct-ish
+# at 0.5, dipping at low overlaps and rippling at high ones.
+onesSnd = Create Sound from formula: "ones", 1, 0, grainSec, fs, "1"
+selectObject: onesSnd
+hannWin = Extract part: 0, grainSec, "Hanning", 1, "no"
+removeObject: onesSnd
+hannIdStr$ = string$(hannWin)
+
+winSum = Create Sound from formula: "winsum", 1, 0, outputDur, fs, "0"
+for i from 1 to nTarget
+    destTime = (i - 1) * stepSec
+    offsetCol = round(destTime * fs)
+    offsetCol_str$ = string$(offsetCol)
+    selectObject: winSum
+    Formula (part): destTime, destTime + grainSec, 1, 1,
+        ... "self + object[" + hannIdStr$
+        ... + ", 1, col - " + offsetCol_str$ + "]"
+endfor
+removeObject: hannWin
+winSumIdStr$ = string$(winSum)
+
 if stereo_output
     n_passes = 2
 else
@@ -582,13 +647,10 @@ for pass from 1 to n_passes
         removeObject: grain
     endfor
     
-    # OLA gain compensation
+    # v0.6: normalize by the exact Hann window-sum envelope
+    # (replaces the constant 1/(1+overlap) compensation)
     selectObject: outputSnd
-    if overlap_ratio > 0
-        gain_comp = 1 / (1 + overlap_ratio)
-        gainStr$ = string$(gain_comp)
-        Formula: "self * " + gainStr$
-    endif
+    Formula: "self / (object[" + winSumIdStr$ + ", 1, col] + 1e-6)"
     
     if pass = 1
         channel_left = outputSnd
@@ -600,6 +662,8 @@ for pass from 1 to n_passes
         Rename: "Channel_Right"
     endif
 endfor
+
+removeObject: winSum
 
 # ============================================
 # COMBINE OUTPUT
