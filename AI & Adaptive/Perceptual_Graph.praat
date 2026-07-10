@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.1 (2026)
+# Version: 3.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,32 @@
 #   - Cluster transition matrix
 #   - Fixed audio scaling for all clusters
 #   - Enhanced cluster colors
+#
+# Changelog v3.2 (2026):
+#   - FIX (audible): montage fragments were full-length Hanning
+#     windows placed with only Overlap_time_ms (5 ms) of overlap --
+#     at every junction BOTH windows are near zero, stamping a deep
+#     ~22 Hz amplitude dip across the whole montage (v3.0's
+#     Concatenate path had the same double-taper flaw; v3.1 was
+#     faithfully equivalent to it). v3.2 places fragments at 50%
+#     Hann overlap-add: the window sum is exactly 1, junctions are
+#     seamless, and -- since every preset's analysis step is half
+#     the window -- contiguous same-cluster runs reconstruct the
+#     source EXACTLY. Each cluster's montage duration now also
+#     approximates the time that cluster occupies in the source.
+#     Overlap_time_ms is deprecated (kept in the form for argument
+#     compatibility; ignored, with an info note).
+#   - FIX: the analysis grid started at t = step, skipping the
+#     first frame of audio entirely; it now starts at t = 0.
+#   - FIX: the info header erased itself (three consecutive
+#     writeInfoLine calls -- each clears the Info window).
+#   - FIX: the final "select all created sounds" ran BEFORE the
+#     per-sound info loop, whose selectObject clobbered it -- the
+#     script always ended with only the last cluster selected. The
+#     multi-selection now happens last.
+#   - VIZ: title strip uses an explicit inner viewport (the
+#     outer-only form let font margins compress the mapping and
+#     collide the two text lines).
 #
 # Changelog v3.1 (2026):
 #   - PORTABILITY: The k-means convergence loop terminated early
@@ -41,7 +67,7 @@
 #     dead code from a previous version).
 # ============================================================
 
-form Perceptual Graph Explorer v3.1
+form Perceptual Graph Explorer v3.2
     comment Select a Sound object first
     
     comment === Preset ===
@@ -58,6 +84,7 @@ form Perceptual Graph Explorer v3.1
     natural Number_of_clusters 3
     
     comment === Smoothing ===
+    comment (Overlap_time is deprecated since v3.2: placement is 50% Hann OLA)
     positive Overlap_time_ms 5
     
     comment === Output ===
@@ -134,8 +161,8 @@ clusterColorLight$[8] = "{0.82, 0.88, 0.78}"
 
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  PERCEPTUAL GRAPH EXPLORER v3.1"
-writeInfoLine: "=============================================="
+appendInfoLine: "  PERCEPTUAL GRAPH EXPLORER v3.2"
+appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
@@ -163,7 +190,9 @@ harmonicityID = selected("Harmonicity")
 # To Spectrum + Get centre of gravity.
 
 # Prepare Data Table
-numFrames = floor((duration - window_length) / step_size)
+# v3.2: grid starts at t = 0 (the old i*step grid skipped the
+# first frame of audio entirely)
+numFrames = floor((duration - window_length) / step_size) + 1
 if numFrames < number_of_clusters
     removeObject: intensityID, harmonicityID
     exitScript: "Audio too short for ", number_of_clusters, " clusters. Reduce clusters or use longer audio."
@@ -174,7 +203,7 @@ tableID = selected("Table")
 
 # 4. Populate Nodes
 for i from 1 to numFrames
-    t = i * step_size
+    t = (i - 1) * step_size
     t_center = t + window_length / 2
     
     # --- Get Energy ---
@@ -552,21 +581,20 @@ for k from 1 to number_of_clusters
         # Formula (part) at its calculated offset. Mathematically
         # equivalent (same Hanning OLA) at O(N) cost.
         
-        # Sample-domain layout:
-        #   frag_samples = window length in samples
-        #   step_samples = frag_samples - overlap_samples
-        #   total = frag_samples + (nRows - 1) * step_samples
-        # Note: Praat treats capital-letter names as commands, so we use
-        # frag_samples (not L_samples) to keep the lexer happy.
+        # v3.2: fragments are placed at 50% Hann overlap-add. Hann
+        # windows at half-window hops sum to exactly 1, so junctions
+        # are seamless (the old Overlap_time_ms placement left both
+        # windows near zero at every junction: a deep ~22 Hz dip
+        # stamped across the montage). Since every preset's analysis
+        # step is half the window, contiguous same-cluster runs
+        # reconstruct the source EXACTLY, and the montage duration
+        # approximates the time the cluster occupies in the source.
+        # Overlap_time_ms is deprecated and ignored.
         frag_samples = round(window_length * sr)
-        overlap_samples = round(overlap_time * sr)
-        if overlap_samples >= frag_samples
-            overlap_samples = frag_samples - 1
+        step_samples = round(frag_samples / 2)
+        if step_samples < 1
+            step_samples = 1
         endif
-        if overlap_samples < 0
-            overlap_samples = 0
-        endif
-        step_samples = frag_samples - overlap_samples
         total_samples = frag_samples + (nRows - 1) * step_samples
         total_dur = total_samples / sr
         
@@ -638,14 +666,18 @@ if draw_visualization
     Erase all
     
     # === TITLE ===
+    # v3.2: explicit inner viewport == outer strip (outer-only form
+    # lets font-size margins compress the mapping; the two text
+    # lines collided)
     Select outer viewport: 0, 8, 0, 0.6
+    Select inner viewport: 0, 8, 0, 0.6
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.7, "half", "##Perceptual Graph Explorer v3.1## | " + originalName$
+    Text: 0.5, "centre", 0.70, "half", "##Perceptual Graph Explorer v3.2## | " + originalName$
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.1, "centre", 0.25, "half", presetName$ + " | " + string$(number_of_clusters) + " clusters | " + string$(numFrames) + " frames"
+    Text: 0.5, "centre", 0.28, "half", presetName$ + " | " + string$(number_of_clusters) + " clusters | " + string$(numFrames) + " frames"
     
     # === 3D ISOMETRIC SCATTER PLOT ===
     Select outer viewport: 0, 4.5, 0.7, 3.7
@@ -947,14 +979,6 @@ endif
 # ============================================================
 removeObject: tableID
 
-# Select all created sounds
-if soundsCreated > 0
-    selectObject: createdSounds[1]
-    for k from 2 to soundsCreated
-        plusObject: createdSounds[k]
-    endfor
-endif
-
 appendInfoLine: ""
 appendInfoLine: "=============================================="
 appendInfoLine: "  COMPLETE"
@@ -971,4 +995,14 @@ endfor
 if play_result and soundsCreated > 0
     selectObject: createdSounds[1]
     Play
+endif
+
+# v3.2: final multi-selection LAST. It used to run before the info
+# loop, whose per-sound selectObject clobbered it -- the script
+# always ended with only the last cluster selected.
+if soundsCreated > 0
+    selectObject: createdSounds[1]
+    for k from 2 to soundsCreated
+        plusObject: createdSounds[k]
+    endfor
 endif
