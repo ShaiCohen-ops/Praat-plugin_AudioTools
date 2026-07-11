@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -29,6 +29,34 @@
 #   "Target_matched_to_Source_Climax"
 #
 # Category: AI & Adaptive
+#
+# Changelog v1.2 (2026):
+#   - FIX (critical): the intensity transfer -- the headline
+#     feature of a climax matcher -- was destroyed before output.
+#     Step 6A's Scale intensity ran FIRST, then 6C/6D/6E each
+#     ended with Scale peak 0.99 and the final output did too, so
+#     the result always peaked at 0.99 regardless of
+#     Intensity_transfer. The intensity match now runs LAST, with
+#     a headroom-aware clamp: if the blended level would push the
+#     peak past 0.99 the output is limited and the shortfall
+#     reported, otherwise the level is exact.
+#   - FIX: the v1.1 wet/dry blends hardcoded channel 1
+#     (object[id, 1, col]) -- on STEREO targets the right channel
+#     was blended with the LEFT channel's filtered signal, in all
+#     four sites (tilt x2, EQ add, harmonicity). Now object[id,
+#     row, col].
+#   - FIX: with zero detected climaxes the script printed "output
+#     will be unmodified" but then ran every transform against an
+#     all-zero profile: deltaIntensity = -tgtAvg, and the
+#     intensity stage scaled the output toward silence. The
+#     transforms are now actually skipped.
+#   - FIX: info header erased itself (repeated writeInfoLine).
+#   - FORM: Processing_chunk_s and Crossfade_ms were never read
+#     by any code path -- marked "(reserved)" pending a chunked
+#     long-file mode; values are accepted and ignored.
+#   - VIZ: title strip uses an explicit inner viewport (the
+#     outer-only form compresses the mapping via font margins and
+#     collides the two text lines).
 #
 # Changelog v1.1 (2026):
 #   - FIX (critical): Four Formula sites used the
@@ -58,7 +86,7 @@ targetSound = selected("Sound", 2)
 sourceName$ = selected$("Sound", 1)
 targetName$ = selected$("Sound", 2)
 
-form Climax Profile Matcher v1.1
+form Climax Profile Matcher v1.2
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -82,7 +110,7 @@ form Climax Profile Matcher v1.1
     real Spectral_tilt_transfer 0.6
     real Eq_transfer 0.5
     real Harmonicity_transfer 0.3
-    comment === Processing ===
+    comment === Processing (reserved - not yet used) ===
     positive Processing_chunk_s 30
     positive Crossfade_ms 20
     comment === Output ===
@@ -172,8 +200,8 @@ tgtSR = Get sampling frequency
 
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  Climax Profile Matcher v1.1"
-writeInfoLine: "=============================================="
+appendInfoLine: "  Climax Profile Matcher v1.2"
+appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", sourceName$, " (", fixed$(srcDuration, 2), " s, ", srcSR, " Hz, ", srcChannels, " ch)"
 appendInfoLine: "Target: ", targetName$, " (", fixed$(tgtDuration, 2), " s, ", tgtSR, " Hz, ", tgtChannels, " ch)"
@@ -858,17 +886,21 @@ appendInfoLine: "[6/7] Applying transformations..."
 selectObject: targetSound
 result = Copy: "working"
 
-# --- 6A: INTENSITY MATCHING ---
-if intensity_transfer > 0 and abs(deltaIntensity_dB) > 0.5
-    appliedIntDB = deltaIntensity_dB * intensity_transfer
-    
-    selectObject: result
-    Scale intensity: clxAvgIntensity * intensity_transfer + tgtAvgIntensity * (1 - intensity_transfer)
-    
-    appendInfoLine: "  [A] Intensity: applied ", fixed$(appliedIntDB, 1), " dB shift"
-else
-    appendInfoLine: "  [A] Intensity: no change needed"
+# v1.2: honor the "output will be unmodified" promise. With zero
+# climaxes the profile is all zeros and every delta is garbage
+# (deltaIntensity = -tgtAvg scaled the output toward silence).
+if numClimax = 0
+    appendInfoLine: "  No climax profile: all transforms skipped (output = unmodified copy)."
+    intensity_transfer = 0
+    spectral_tilt_transfer = 0
+    eq_transfer = 0
+    harmonicity_transfer = 0
 endif
+
+# v1.2: intensity matching (6A) moved to run LAST -- see below.
+# It used to run first, and the Scale peak 0.99 calls in 6C/6D/6E
+# plus the final one overwrote it completely: the output always
+# peaked at 0.99 regardless of Intensity_transfer.
 
 appendInfoLine: "  [B] Pitch: disabled (preserves formant structure)"
 
@@ -900,7 +932,7 @@ if spectral_tilt_transfer > 0 and abs(deltaCentroid_Hz) > 50
         selectObject: resultCopy
         Formula: "self * " + oneMinusW_str$
             ... + " + object[" + wetID_str$
-            ... + ", 1, col] * " + blendW_str$
+            ... + ", row, col] * " + blendW_str$
         
         removeObject: tiltWet, result
         result = resultCopy
@@ -926,7 +958,7 @@ if spectral_tilt_transfer > 0 and abs(deltaCentroid_Hz) > 50
         selectObject: resultCopy
         Formula: "self * " + oneMinusW_str$
             ... + " + object[" + wetID_str$
-            ... + ", 1, col] * " + blendW_str$
+            ... + ", row, col] * " + blendW_str$
         
         removeObject: tiltWet, result
         result = resultCopy
@@ -993,7 +1025,7 @@ if eq_transfer > 0
         eqGain_str$ = fixed$(eqGain, 6)
         selectObject: resultCopy
         Formula: "self + object[" + bandID_str$
-            ... + ", 1, col] * " + eqGain_str$
+            ... + ", row, col] * " + eqGain_str$
         
         removeObject: eqBand, result
         result = resultCopy
@@ -1031,7 +1063,7 @@ if harmonicity_transfer > 0 and deltaHNR_dB > 1
     selectObject: resultCopy
     Formula: "self * " + oneMinusHarmW_str$
         ... + " + object[" + hfID_str$
-        ... + ", 1, col] * " + harmW_str$
+        ... + ", row, col] * " + harmW_str$
     
     removeObject: harmFiltered, result
     result = resultCopy
@@ -1055,10 +1087,34 @@ else
     appendInfoLine: "  [E] Harmonicity: no change needed"
 endif
 
+# --- 6A (v1.2: runs LAST): INTENSITY MATCHING ---
+if intensity_transfer > 0 and abs(deltaIntensity_dB) > 0.5
+    targetIntensity = clxAvgIntensity * intensity_transfer + tgtAvgIntensity * (1 - intensity_transfer)
+    selectObject: result
+    Scale intensity: targetIntensity
+    peakNow = Get absolute extremum: 0, 0, "None"
+    if peakNow > 0.99
+        Scale peak: 0.99
+        achievedIntensity = Get intensity (dB)
+        appendInfoLine: "  [A] Intensity: target ", fixed$(targetIntensity, 1),
+            ... " dB limited by headroom -> ", fixed$(achievedIntensity, 1), " dB"
+    else
+        appendInfoLine: "  [A] Intensity: applied ", fixed$(deltaIntensity_dB * intensity_transfer, 1),
+            ... " dB shift (level ", fixed$(targetIntensity, 1), " dB)"
+    endif
+else
+    appendInfoLine: "  [A] Intensity: no change needed"
+endif
+
 # --- Final output ---
+# v1.2: no blanket Scale peak here -- it destroyed the intensity
+# match. Safety clamp only.
 selectObject: result
 Rename: "Target_matched_to_Source_Climax"
-Scale peak: 0.99
+finalPeakChk = Get absolute extremum: 0, 0, "None"
+if finalPeakChk > 0.99
+    Scale peak: 0.99
+endif
 finalOutput = selected("Sound")
 outputDuration = Get total duration
 
@@ -1076,14 +1132,18 @@ if draw_visualization
     Erase all
     
     # === TITLE ===
+    # v1.2: explicit inner viewport == outer strip (outer-only
+    # form compresses the mapping via font margins; the two text
+    # lines collided)
     Select outer viewport: 0, 8, 0, 0.5
+    Select inner viewport: 0, 8, 0, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Climax Profile Matcher v1.1##"
+    Text: 0.5, "centre", 0.72, "half", "##Climax Profile Matcher v1.2##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.6, "half", sourceName$ + " → " + targetName$ + " | " + presetName$ + " | " + string$(numClimax) + " climax regions"
+    Text: 0.5, "centre", 0.24, "half", sourceName$ + " → " + targetName$ + " | " + presetName$ + " | " + string$(numClimax) + " climax regions"
     
     # === SOURCE WAVEFORM WITH CLIMAX HIGHLIGHTS ===
     Select outer viewport: 0, 8, 0.6, 1.5
