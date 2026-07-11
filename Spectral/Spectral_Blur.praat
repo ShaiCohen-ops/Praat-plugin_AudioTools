@@ -3,7 +3,34 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2025) - Rewritten: single FFT, no chunking
+# Version: 2.2 (2026)
+#
+# Changelog v2.2 (2026):
+#   - ADDED tail + fade-out. The blur makes the signal no longer
+#     time-limited: spectral smearing spills energy past the
+#     input's end, which the pad trim used to discard. Each
+#     channel is now zero-padded by Tail_seconds BEFORE the FFT,
+#     so the blur spills organically into real tail room; the
+#     wet/dry mix leaves the tail pure wet (the dry ends with the
+#     input); and a raised-cosine Fade_out_seconds closes the
+#     output. Tail 0 + fade 0 reproduces v2.1 exactly.
+#
+# Changelog v2.1 (2026):
+#   - FIX (correctness): the binomial smoothing kernels read
+#     self[1, col-k] IN PLACE -- Praat's Formula overwrites left
+#     to right, so the left taps returned already-smoothed values
+#     from the same pass while the right taps read originals: a
+#     recursive asymmetric smoother, not the documented binomial.
+#     v2.1 ping-pongs between two magnitude buffers (read frozen,
+#     write other), making the kernel exactly what the comment
+#     says. Measured honestly: for CONTRACTION kernels the
+#     recursion's audible footprint is small (skirt asymmetry
+#     around an isolated partial ~0.1 dB after 50 ExtremeWash
+#     passes) -- unlike difference/shift formulas, where the same
+#     in-place pattern is catastrophic. Fixed on principle; the
+#     blur character is essentially unchanged.
+#   - Verified on 6.4.42: procedure-local dotted variables
+#     (.nBins) ARE resolvable inside Formula strings.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -33,7 +60,7 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Spectral Blur v2.0
+form Spectral Blur v2.2
     optionmenu Preset: 1
         option Standard Blur (smooth smear)
         option Ethereal Pad (heavy, dreamy)
@@ -50,6 +77,10 @@ form Spectral Blur v2.0
         option Wide (7-bin kernel)
     comment === Mix ===
     real Wet_dry_percent 100
+    comment === Tail & Fade ===
+    real Tail_seconds 1.0
+    comment (extra room after the input; the blur spills into it organically)
+    real Fade_out_seconds 0.5
     comment === Output ===
     positive Scale_peak 0.95
     boolean Draw_visualization 1
@@ -100,6 +131,12 @@ elsif wet_dry_percent > 100
 endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
+if tail_seconds < 0
+    tail_seconds = 0
+endif
+if fade_out_seconds < 0
+    fade_out_seconds = 0
+endif
 
 # Kernel name
 if blur_type = 1
@@ -119,7 +156,7 @@ numChannels = Get number of channels
 startTime = stopwatch
 
 clearinfo
-writeInfoLine: "=== Spectral Blur v2.0 ==="
+writeInfoLine: "=== Spectral Blur v2.2 ==="
 appendInfoLine: "Input: ", originalName$, " (", fixed$(totalDuration, 2), " s, ",
     ... sampleRate, " Hz, ", numChannels, " ch)"
 appendInfoLine: "Preset: ", presetName$
@@ -156,29 +193,55 @@ procedure blurSpectrum: .specID, .nPasses, .kernelSize
         ... + " + object[" + .specStr$ + ", 2, col]^2)"
 
     # Step 2: Smooth magnitude (multi-pass binomial kernel)
-    Copy: "smoothedMag"
-    .smoothMag = selected("Matrix")
+    # v2.1: ping-pong buffers -- each pass READS the previous
+    # buffer via object[] and WRITES the other. The old in-place
+    # self[1, col-k] reads returned just-written values (Formula
+    # overwrites left to right): a recursive asymmetric smoother
+    # drifting energy downward in frequency.
+    Copy: "smoothedMagA"
+    .bufA = selected("Matrix")
+    Copy: "smoothedMagB"
+    .bufB = selected("Matrix")
+    .bufAStr$ = string$(.bufA)
+    .bufBStr$ = string$(.bufB)
 
     for .pass from 1 to .nPasses
-        selectObject: .smoothMag
+        if .pass mod 2 = 1
+            .srcStr$ = .bufAStr$
+            selectObject: .bufB
+        else
+            .srcStr$ = .bufBStr$
+            selectObject: .bufA
+        endif
 
         if .kernelSize = 1
             Formula: "if col > 1 and col < .nBins then "
-                ... + "(self[1, col-1] + 2*self + self[1, col+1]) / 4 "
-                ... + "else self endif"
+                ... + "(object[" + .srcStr$ + ", 1, col-1] + 2*object[" + .srcStr$ + ", 1, col]"
+                ... + " + object[" + .srcStr$ + ", 1, col+1]) / 4 "
+                ... + "else object[" + .srcStr$ + ", 1, col] endif"
         elsif .kernelSize = 2
             Formula: "if col > 2 and col < .nBins - 1 then "
-                ... + "(self[1, col-2] + 4*self[1, col-1] + 6*self "
-                ... + "+ 4*self[1, col+1] + self[1, col+2]) / 16 "
-                ... + "else self endif"
+                ... + "(object[" + .srcStr$ + ", 1, col-2] + 4*object[" + .srcStr$ + ", 1, col-1]"
+                ... + " + 6*object[" + .srcStr$ + ", 1, col]"
+                ... + " + 4*object[" + .srcStr$ + ", 1, col+1] + object[" + .srcStr$ + ", 1, col+2]) / 16 "
+                ... + "else object[" + .srcStr$ + ", 1, col] endif"
         else
             Formula: "if col > 3 and col < .nBins - 2 then "
-                ... + "(self[1, col-3] + 6*self[1, col-2] + 15*self[1, col-1] "
-                ... + "+ 20*self + 15*self[1, col+1] + 6*self[1, col+2] "
-                ... + "+ self[1, col+3]) / 64 "
-                ... + "else self endif"
+                ... + "(object[" + .srcStr$ + ", 1, col-3] + 6*object[" + .srcStr$ + ", 1, col-2]"
+                ... + " + 15*object[" + .srcStr$ + ", 1, col-1] + 20*object[" + .srcStr$ + ", 1, col]"
+                ... + " + 15*object[" + .srcStr$ + ", 1, col+1] + 6*object[" + .srcStr$ + ", 1, col+2]"
+                ... + " + object[" + .srcStr$ + ", 1, col+3]) / 64 "
+                ... + "else object[" + .srcStr$ + ", 1, col] endif"
         endif
     endfor
+
+    if .nPasses mod 2 = 1
+        .smoothMag = .bufB
+        .unusedBuf = .bufA
+    else
+        .smoothMag = .bufA
+        .unusedBuf = .bufB
+    endif
 
     # Step 3: Apply ratio directly to Spectrum (both re and im rows)
     # ratio = smoothedMag / origMag — scales magnitude, preserves phase
@@ -189,7 +252,7 @@ procedure blurSpectrum: .specID, .nPasses, .kernelSize
     Formula: "self * object[" + .smoothMagStr$ + ", 1, col]"
         ... + " / max(1e-30, object[" + .origMagStr$ + ", 1, col])"
 
-    removeObject: .origMag, .smoothMag
+    removeObject: .origMag, .bufA, .bufB
 
     # Spectrum modified in-place — no new ID needed
     blurSpectrum.resultSpec = .specID
@@ -202,10 +265,27 @@ endproc
 procedure processChannel: .channelID
     selectObject: .channelID
     .chDur = Get total duration
+    .chSR = Get sampling frequency
+    .outDur = .chDur + tail_seconds
+
+    # v2.2: append tail silence BEFORE the FFT so the spectral
+    # smear spills into real tail room (out-of-range object[]
+    # reads return 0, so the formula pads implicitly)
+    if tail_seconds > 0
+        .chStr$ = string$(.channelID)
+        Create Sound from formula: "tailpad", 1, 0, .outDur, .chSR,
+            ... "object[" + .chStr$ + ", col]"
+        .padded = selected("Sound")
+    else
+        Copy: "tailpad"
+        .padded = selected("Sound")
+    endif
 
     # Full-file FFT
+    selectObject: .padded
     To Spectrum: "yes"
     .wetSpec = selected("Spectrum")
+    removeObject: .padded
 
     # Apply blur (magnitude smoothing in-place, phase preserved)
     @blurSpectrum: .wetSpec, blur_passes, blur_type
@@ -216,11 +296,11 @@ procedure processChannel: .channelID
     .wetSound = selected("Sound")
     removeObject: .wetSpec
 
-    # Trim FFT padding
+    # Trim FFT padding (keep input + tail)
     selectObject: .wetSound
     .rDur = Get total duration
-    if .rDur > .chDur
-        Extract part: 0, .chDur, "rectangular", 1, "no"
+    if .rDur > .outDur
+        Extract part: 0, .outDur, "rectangular", 1, "no"
         .trimmed = selected("Sound")
         removeObject: .wetSound
         .wetSound = .trimmed
@@ -302,6 +382,17 @@ endif
 # ============================================================
 # FINALIZE
 # ============================================================
+
+# v2.2: raised-cosine fade at the very end
+if fade_out_seconds > 0
+    selectObject: wetSound
+    outDurF = Get total duration
+    fd = fade_out_seconds
+    if fd > outDurF
+        fd = outDurF
+    endif
+    Fade out: 0, outDurF, -fd, "yes"
+endif
 
 selectObject: wetSound
 Scale peak: scale_peak
