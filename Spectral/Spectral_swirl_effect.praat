@@ -3,19 +3,47 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Sinusoidal frequency bin shifting
+#   Sinusoidal spectral shifting: each output bin reads the input
+#   spectrum at a sinusoidally displaced position, warping the
+#   frequency axis in swirling lobes across the range.
+#
+# Changelog v0.3 (2026):
+#   - FIX: the swirl DEPTH was specified in FFT bins, so its
+#     effect in Hz shrank with file duration ("AlienVoice" was
+#     ~50 Hz of swirl on a 3 s file, ~15 Hz on 10 s -- fading
+#     with length, overshooting on short clips). Depth is now
+#     Maximum_shift_hz, converted through the measured bin width:
+#     duration-independent. Presets recalibrated to their
+#     3-second-equivalent Hz values. (The lobe POSITIONS were
+#     always duration-safe -- normalized to the spectrum width.)
+#   - REMOVED the speed modes, with a benchmark: full quality
+#     processes 60 s in 0.03 s and 300 s in 0.1 s -- and the
+#     DEFAULT mode (Balanced/22050) was lowpassing every output
+#     at 11 kHz, the same muffle pattern fixed in CA_Reverb_IR.
+#   - FIX: info header erased itself (repeated writeInfoLine).
+#   - VIZ: the "result spectrum" panel is computed from the
+#     actual output (it showed the pre-mix, pre-trim wet
+#     spectrum); the swirl-pattern panel now speaks Hz on both
+#     axes, matching the parameter.
+#   - Reconstructed sample rate pinned (Override) after the
+#     Spectrum -> Sound round-trip.
+#   - Form title said v1.0 while the header said v0.2; unified.
+#   - NOTE: the core swirl formula was verified CORRECT as
+#     written -- it reads from a frozen source matrix, row-aware
+#     (complex bins move wholesale, phase-coherent). No pattern
+#     ledger entry applies to it.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
 #   Adjust parameters via the form dialog.
 # ============================================================
 
-form Spectral Swirl Effect v1.0 (Optimized)
+form Spectral Swirl Effect v0.3
     optionmenu Preset: 1
         option Custom
         option Gentle Wobble
@@ -25,12 +53,7 @@ form Spectral Swirl Effect v1.0 (Optimized)
         option Extreme Mangle
     comment === Swirl Parameters ===
     natural number_of_cycles 4
-    positive maximum_bin_shift 100
-    comment === Performance ===
-    optionmenu Speed_mode: 2
-        option Full Quality (original sample rate)
-        option Balanced (downsample to 22 kHz)
-        option Fast (downsample to 11 kHz)
+    positive Maximum_shift_hz 35
     comment === Mix ===
     real wet_dry_percent 100
     boolean stereo_output 1
@@ -45,36 +68,24 @@ presetName$ = "Custom"
 
 if preset = 2
     number_of_cycles = 2
-    maximum_bin_shift = 30
+    maximum_shift_hz = 10
     presetName$ = "GentleWobble"
 elsif preset = 3
     number_of_cycles = 6
-    maximum_bin_shift = 80
+    maximum_shift_hz = 25
     presetName$ = "LiquidMetal"
 elsif preset = 4
     number_of_cycles = 8
-    maximum_bin_shift = 150
+    maximum_shift_hz = 50
     presetName$ = "AlienVoice"
 elsif preset = 5
     number_of_cycles = 3
-    maximum_bin_shift = 60
+    maximum_shift_hz = 20
     presetName$ = "UnderwaterWarble"
 elsif preset = 6
     number_of_cycles = 12
-    maximum_bin_shift = 300
+    maximum_shift_hz = 100
     presetName$ = "ExtremeMangle"
-endif
-
-# Set target sample rate based on speed mode
-if speed_mode = 1
-    targetSR = 0
-    speedStr$ = "Full Quality"
-elsif speed_mode = 2
-    targetSR = 22050
-    speedStr$ = "Balanced"
-else
-    targetSR = 11025
-    speedStr$ = "Fast"
 endif
 
 # Input validation
@@ -96,14 +107,13 @@ n_channels = Get number of channels
 startTime = stopwatch
 
 writeInfoLine: "╔══════════════════════════════════════════════════════════════╗"
-writeInfoLine: "║      SPECTRAL SWIRL v1.0 (Optimized)                        ║"
-writeInfoLine: "╚══════════════════════════════════════════════════════════════╝"
+appendInfoLine: "║      SPECTRAL SWIRL v0.3                                    ║"
+appendInfoLine: "╚══════════════════════════════════════════════════════════════╝"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Speed: ", speedStr$
 appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
 appendInfoLine: "Original SR: ", original_sr, " Hz"
 appendInfoLine: "Cycles: ", number_of_cycles
-appendInfoLine: "Max shift: ", maximum_bin_shift, " bins"
+appendInfoLine: "Max shift: ", fixed$(maximum_shift_hz, 0), " Hz"
 appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
 appendInfoLine: ""
 
@@ -127,36 +137,17 @@ else
     dry_sound = selected("Sound")
 endif
 
-# === OPTIONAL DOWNSAMPLING FOR SPEED ===
-if targetSR > 0 and original_sr > targetSR
-    appendInfoLine: "[1/5] Downsampling to ", targetSR, " Hz..."
-    
-    selectObject: workingID
-    Resample: targetSR, 50
-    resampledID = selected("Sound")
-    removeObject: workingID
-    workingID = resampledID
-    
-    selectObject: dry_sound
-    Resample: targetSR, 50
-    resampledDry = selected("Sound")
-    removeObject: dry_sound
-    dry_sound = resampledDry
-    
-    workingSR = targetSR
-else
-    appendInfoLine: "[1/5] Using original sample rate..."
-    workingSR = original_sr
-endif
-
 # === SPECTRUM PROCESSING ===
+# (v0.3: speed modes removed -- full rate swirls 300 s in 0.1 s,
+# and the old default lowpassed everything at 11 kHz)
 appendInfoLine: ""
-appendInfoLine: "[2/5] Analyzing spectrum..."
+appendInfoLine: "[1/4] Analyzing spectrum..."
 selectObject: workingID
 To Spectrum: "yes"
 origSpec = selected("Spectrum")
+binWidth = Get bin width
 
-appendInfoLine: "[3/5] Converting to matrix..."
+appendInfoLine: "[2/4] Converting to matrix..."
 selectObject: origSpec
 To Matrix
 origMat = selected("Matrix")
@@ -170,11 +161,16 @@ appendInfoLine: "      Matrix: ", nrows, " × ", ncols, " (", nrows * ncols, " e
 
 # === APPLY SWIRL ===
 appendInfoLine: ""
-appendInfoLine: "[4/5] Applying swirl..."
+appendInfoLine: "[3/4] Applying swirl..."
+
+# v0.3: depth in Hz -> bins through the measured bin width
+# (duration-independent effect)
+shiftBins = maximum_shift_hz / binWidth
+appendInfoLine: "      ", fixed$(maximum_shift_hz, 0), " Hz = ", fixed$(shiftBins, 1), " bins at this FFT size"
 
 # Pre-build formula string
 cycStr$ = string$(number_of_cycles)
-shiftStr$ = string$(maximum_bin_shift)
+shiftStr$ = string$(shiftBins)
 ncolStr$ = string$(ncols)
 
 # Copy and apply formula
@@ -188,7 +184,7 @@ appendInfoLine: "      Swirl complete!"
 
 # === RECONSTRUCTION ===
 appendInfoLine: ""
-appendInfoLine: "[5/5] Reconstructing audio..."
+appendInfoLine: "[4/4] Reconstructing audio..."
 
 selectObject: swirlMat
 To Spectrum
@@ -197,6 +193,7 @@ swirlSpec = selected("Spectrum")
 selectObject: swirlSpec
 To Sound
 resultID = selected("Sound")
+Override sampling frequency: original_sr
 
 # Trim to original duration
 selectObject: resultID
@@ -206,23 +203,6 @@ if resultDur > duration
     trimmed = selected("Sound")
     removeObject: resultID
     resultID = trimmed
-endif
-
-# Upsample back if needed
-if targetSR > 0 and original_sr > targetSR
-    appendInfoLine: "      Upsampling to ", original_sr, " Hz..."
-    
-    selectObject: resultID
-    Resample: original_sr, 50
-    upsampledID = selected("Sound")
-    removeObject: resultID
-    resultID = upsampledID
-    
-    selectObject: dry_sound
-    Resample: original_sr, 50
-    upsampledDry = selected("Sound")
-    removeObject: dry_sound
-    dry_sound = upsampledDry
 endif
 
 # === WET/DRY MIX ===
@@ -283,7 +263,7 @@ if draw_visualization
     Select outer viewport: 1, 8, 0.0, 0.5
     Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Spectral Swirl: " + presetName$ + " (" + speedStr$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Spectral Swirl v0.3: " + presetName$
     
     # Original waveform
     Select outer viewport: 0, 4, 0.6, 1.6
@@ -319,12 +299,21 @@ if draw_visualization
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
     
-    # Result spectrum
+    # Result spectrum (v0.3: from the ACTUAL output -- swirlSpec is
+    # the pre-mix, pre-trim wet spectrum)
     Select outer viewport: 4, 8, 1.8, 2.8
     Select inner viewport: 4.4, 7.8, 1.9, 2.7
-    selectObject: swirlSpec
+    selectObject: resultID
+    vizCh = Get number of channels
+    if vizCh > 1
+        vizOutMono = Extract one channel: 1
+    else
+        vizOutMono = Copy: "viz_out"
+    endif
+    vizOutSpec = To Spectrum: "yes"
     Colour: "{0.8, 0.4, 0.2}"
     Draw: 0, 0, 0, 80, "no"
+    removeObject: vizOutMono, vizOutSpec
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -335,12 +324,13 @@ if draw_visualization
     Select outer viewport: 0, 8, 3.0, 4.2
     Select inner viewport: 0.4, 7.6, 3.1, 4.1
     
-    Axes: 0, ncols, -maximum_bin_shift * 1.2, maximum_bin_shift * 1.2
-    Colour: "{0.95, 0.95, 0.95}"
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, ncols, -maximum_bin_shift * 1.2, maximum_bin_shift * 1.2
+    # v0.3: both axes in Hz, matching the parameter
+    nyq = original_sr / 2
+    Axes: 0, nyq, -maximum_shift_hz * 1.2, maximum_shift_hz * 1.2
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, nyq, -maximum_shift_hz * 1.2, maximum_shift_hz * 1.2
     
     Colour: "{0.8, 0.8, 0.8}"
-    Draw line: 0, 0, ncols, 0
+    Draw line: 0, 0, nyq, 0
     
     Colour: "{0.2, 0.6, 0.8}"
     Line width: 1.5
@@ -348,13 +338,13 @@ if draw_visualization
     # Draw swirl curve
     numPoints = 300
     for i from 1 to numPoints
-        col = (i - 1) / (numPoints - 1) * ncols
-        shift = maximum_bin_shift * sin(2 * pi * number_of_cycles * col / ncols)
+        fHz = (i - 1) / (numPoints - 1) * nyq
+        shift = maximum_shift_hz * sin(2 * pi * number_of_cycles * fHz / nyq)
         
         if i > 1
-            Draw line: prev_col, prev_shift, col, shift
+            Draw line: prev_f, prev_shift, fHz, shift
         endif
-        prev_col = col
+        prev_f = fHz
         prev_shift = shift
     endfor
     
@@ -362,8 +352,8 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Bin shift"
-    Text bottom: "yes", "Frequency bin"
+    Text left: "yes", "Shift (Hz)"
+    Text bottom: "yes", "Frequency (Hz)"
     
     # Parameters
     Select outer viewport: 1, 8, 4.3, 4.7
@@ -371,7 +361,7 @@ if draw_visualization
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", 
         ... "Cycles: " + string$(number_of_cycles) +
-        ... " | Max shift: " + string$(maximum_bin_shift) + " bins" +
+        ... " | Max shift: " + fixed$(maximum_shift_hz, 0) + " Hz" +
         ... " | Time: " + fixed$(processingTime, 2) + "s"
     
     Font size: 10
