@@ -3,7 +3,30 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - Rewritten: direct spectral processing
+# Version: 1.1 (2026)
+#
+# Changelog v1.1 (2026):
+#   - FIX (correctness): the blur kernel read self[1, col-k] IN
+#     PLACE -- the left taps returned already-smoothed values from
+#     the same pass (Formula overwrites left to right). Now
+#     ping-pong buffers, making the kernel the true binomial the
+#     comment describes. Per the Spectral_Blur v2.1 calibration,
+#     the audible footprint of this pattern on contraction kernels
+#     is ~0.1 dB: fixed on principle, character unchanged.
+#   - FIX: Blur_passes and Sharpen_strength were "positive" form
+#     fields whose own comments say "0 = off" -- typing 0 in
+#     Custom was rejected by Praat (presets bypassed validation,
+#     which is why HolographicFreeze's sharpen 0.0 worked). Now
+#     integer / real.
+#   - VIZ: title strip uses an explicit inner viewport (the
+#     outer-only form compresses the mapping via font margins and
+#     collides the two text lines).
+#   - Reconstructed sample rate pinned (Override) after the
+#     Spectrum -> Sound round-trip.
+#   - VERIFIED CORRECT as written: the fractal-zoom accumulation
+#     (frozen-source reads, weight normalization), the
+#     phase-preserving ratio application, the row-aware dry/wet
+#     with channel-mismatch fallback, and the unsharp mask.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -31,7 +54,7 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Fractal Spectral Hologram v1.0
+form Fractal Spectral Hologram v1.1
     optionmenu Preset: 1
         option Custom
         option Subtle Shimmer (light blur + sharpen)
@@ -41,9 +64,9 @@ form Fractal Spectral Hologram v1.0
         option Metallic Bell (zoom stretches harmonics)
         option Glass Fracture (sharpen + wide zoom)
     comment === Spectral Processing ===
-    positive Blur_passes 3
+    integer Blur_passes 3
     comment (0 = off, 3 = subtle, 10 = heavy)
-    positive Sharpen_strength 0.5
+    real Sharpen_strength 0.5
     comment (0 = off, 0.5 = moderate, 2.0 = extreme)
     comment === Fractal Zoom ===
     positive Fractal_zoom 1.3
@@ -169,7 +192,7 @@ elsif fractal_decay > 0.9
 endif
 
 clearinfo
-writeInfoLine: "=== Fractal Spectral Hologram v1.0 ==="
+writeInfoLine: "=== Fractal Spectral Hologram v1.1 ==="
 appendInfoLine: "Input: ", originalName$, " (", fixed$(duration, 2), " s, ",
     ... sampleRate, " Hz, ", numChannels, " ch)"
 appendInfoLine: "Preset: ", presetName$
@@ -219,19 +242,41 @@ procedure processChannel: .chID
     .origMagStr$ = string$(.origMag)
 
     # ---- Blur (smooth magnitude) ----
+    # v1.1: ping-pong buffers -- the old in-place self[1, col-k]
+    # reads returned just-written values (recursive asymmetric
+    # smoother, not the documented binomial)
     selectObject: .origMag
     Copy: "processedMag"
     .procMag = selected("Matrix")
 
     if blur_passes > 0
         appendInfoLine: "  Blur (", blur_passes, " passes)..."
+        selectObject: .procMag
+        Copy: "blurAlt"
+        .blurAlt = selected("Matrix")
+        .pmStr$ = string$(.procMag)
+        .baStr$ = string$(.blurAlt)
         for .p from 1 to blur_passes
-            selectObject: .procMag
+            if .p mod 2 = 1
+                .srcStr$ = .pmStr$
+                selectObject: .blurAlt
+            else
+                .srcStr$ = .baStr$
+                selectObject: .procMag
+            endif
             Formula: "if col > 2 and col < .nBins - 1 then "
-                ... + "(self[1, col-2] + 4*self[1, col-1] + 6*self "
-                ... + "+ 4*self[1, col+1] + self[1, col+2]) / 16 "
-                ... + "else self endif"
+                ... + "(object[" + .srcStr$ + ", 1, col-2] + 4*object[" + .srcStr$ + ", 1, col-1]"
+                ... + " + 6*object[" + .srcStr$ + ", 1, col]"
+                ... + " + 4*object[" + .srcStr$ + ", 1, col+1] + object[" + .srcStr$ + ", 1, col+2]) / 16 "
+                ... + "else object[" + .srcStr$ + ", 1, col] endif"
         endfor
+        if blur_passes mod 2 = 1
+            # final result sits in blurAlt: swap roles
+            removeObject: .procMag
+            .procMag = .blurAlt
+        else
+            removeObject: .blurAlt
+        endif
     endif
 
     # ---- Sharpen (unsharp mask) ----
@@ -332,6 +377,7 @@ procedure processChannel: .chID
     selectObject: .spec
     To Sound
     .result = selected("Sound")
+    Override sampling frequency: sampleRate
     removeObject: .spec
 
     # Trim FFT padding
@@ -440,13 +486,14 @@ if draw_visualization
     # Title
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 0.65
+    Select inner viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Fractal Spectral Hologram##"
+    Text: 0.5, "centre", 0.72, "half", "##Fractal Spectral Hologram v1.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
+    Text: 0.5, "centre", 0.26, "half",
         ... originalName$ + "  |  " + presetName$
         ... + "  |  zoom=" + fixed$(fractal_zoom, 2)
         ... + "x @" + fixed$(zoom_centre_Hz, 0) + "Hz"
