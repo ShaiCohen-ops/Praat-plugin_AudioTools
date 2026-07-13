@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.1 (2026)
+# Version: 5.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,28 @@
 #   dry. IRs are harvested live from the source material and
 #   crossfaded on an adaptive schedule, so the convolution
 #   character evolves continuously with the source.
+#
+# Changelog v5.2 (2026):
+#   - FIX: sieve remainders >= modulus (e.g. rem 5, mod 3) made a
+#     sieve silently unhittable -- the whole run came out dry with
+#     no warning, and findIRStart constructed "hits" that the main
+#     loop's test then rejected. Remainders are now folded
+#     (rem mod mod), with an info note when folding occurs.
+#   - VERIFIED on 6.4.42 (probes): 2-arg object[id, col] reads are
+#     ROW-AWARE for matching channel counts and BROADCAST for mono
+#     sources -- so the v5.1 per-channel stereo mix and the IR
+#     crossfade blends are correct as written. mixIntoBuffer's two
+#     identical branches (the else promised a channel-1 replicate
+#     that Praat already performs) collapsed into one documented
+#     call.
+#   - VIZ: title strip uses an explicit inner viewport (the
+#     outer-only form with a hand-tuned negative offset is the
+#     margin-compression collision geometry).
+#   - MEASURED, left as design: Slow Morph (hop 0.75) and Dissolve
+#     (0.6) are non-COLA placements -- the inter-grain pulsation is
+#     part of those presets' character (see info line). Micro Pulse
+#     runs ~400 grains/second of source; expect it to be the slow
+#     preset.
 #
 # Changelog v5.1 (2026):
 #   - FIX: stray ";" inline comments replaced with "#" (Praat-correct)
@@ -197,6 +219,12 @@ m1                       = sieve_a_mod
 i1                       = sieve_a_rem
 m2                       = sieve_b_mod
 i2                       = sieve_b_rem
+# v5.2: fold remainders into range -- rem >= mod (or negative)
+# made the sieve silently unhittable (all-dry output)
+i1_orig = i1
+i2_orig = i2
+i1 = ((i1 mod m1) + m1) mod m1
+i2 = ((i2 mod m2) + m2) mod m2
 adaptive_update_interval = update_interval
 ir_crossfade_grains      = crossfade_grains
 hop_duration             = segment_duration * hop_fraction
@@ -216,10 +244,13 @@ src_dur = Get total duration
 src_sr  = Get sampling frequency
 src_ch  = Get number of channels
 
-writeInfoLine:  "=== Self-Adaptive Sieve Convolution v5.1 ==="
+writeInfoLine:  "=== Self-Adaptive Sieve Convolution v5.2 ==="
 appendInfoLine: "Source: ", source_name$, "  (", fixed$(src_dur, 3), " s  ", src_sr, " Hz  ", src_ch, " ch)"
 appendInfoLine: "Sieve A: n mod ", m1, " = ", i1,
     ... "   Sieve B: n mod ", m2, " = ", i2
+if i1 <> i1_orig or i2 <> i2_orig
+    appendInfoLine: "NOTE: remainder(s) folded into range (were ", i1_orig, " / ", i2_orig, ")"
+endif
 
 # ============================================================
 # PROCEDURE: half-Hann fade, in-place
@@ -379,17 +410,13 @@ procedure mixIntoBuffer: .buf_id, .grain_id, .t_start
         .off = round(.t_start * src_sr)
         .gid$ = fixed$(.grain_id, 0)
         .off$ = fixed$(.off, 0)
-        # If grain channel count matches buffer, 1:1 per channel;
-        # otherwise replicate grain channel 1 into all buffer channels.
-        if .g_ch = .b_ch
-            selectObject: .buf_id
-            Formula (part): .mix_s, .mix_e, 1, .b_ch,
-                ... "self + object[" + .gid$ + ", col - " + .off$ + "]"
-        else
-            selectObject: .buf_id
-            Formula (part): .mix_s, .mix_e, 1, .b_ch,
-                ... "self + object[" + .gid$ + ", col - " + .off$ + "]"
-        endif
+        # v5.2 (probed on 6.4.42): the 2-arg object[id, col] read is
+        # row-aware when channel counts match and BROADCASTS mono
+        # sources across all buffer rows -- one call covers both
+        # cases (the old if/else had two identical branches).
+        selectObject: .buf_id
+        Formula (part): .mix_s, .mix_e, 1, .b_ch,
+            ... "self + object[" + .gid$ + ", col - " + .off$ + "]"
     endif
 endproc
 
@@ -768,14 +795,17 @@ if draw_visualization
     Select outer viewport: 0, 8, 0, 8
 
     # --- Title ---
+    # v5.2: explicit inner viewport (the hand-tuned -1.22 offset
+    # depended on the margin-compressed mapping)
     Select outer viewport: 0, 8, 0, 0.50
+    Select inner viewport: 0, 8, 0, 0.50
     Axes: 0, 1, 0, 1
     Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##Self-Adaptive Sieve Convolution##"
+    Text: 0.5, "centre", 0.72, "half", "##Self-Adaptive Sieve Convolution v5.2##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", -1.22, "half",
+    Text: 0.5, "centre", 0.24, "half",
         ... source_name$
         ... + "   |   A: n mod " + string$(m1) + "=" + string$(i1)
         ... + "   B: n mod " + string$(m2) + "=" + string$(i2)
