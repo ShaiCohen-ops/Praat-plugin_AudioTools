@@ -1,17 +1,51 @@
 # ============================================================
-# Praat AudioTools - Partial_Editing___Resynthesis.praat
+# Praat AudioTools - Partial_Editing_Resynthesis.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 0.3 (2025) - Fixed syntax, added visualization
+# Email: shai.cohen@biu.ac.il
+# Version: 0.4 (2026)
 # License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4 (2026):
+#   - FIX (crash): STEREO inputs crashed at the first frame's
+#     To Spectrum (the ledger's confirmed stereo-analysis crash).
+#     The input is now converted to mono upfront; resynthesis is
+#     inherently mono.
+#   - FIX: grain overlap-add is normalized by the exact analytic
+#     window-sum envelope. The default 60/15 ms window/hop is
+#     Hann-COLA (sum constant), but the parameters are free: any
+#     non-integer window/hop ratio (e.g. 60/25) previously
+#     stamped hop-rate tremolo across the output. Defaults sound
+#     unchanged (constant division, re-normalized by the final
+#     Scale intensity).
+#   - FIX: Freq_jitter was a "positive" form field, but the
+#     Robotic preset's documented value is 0.0 -- typing 0 in
+#     Custom was rejected by Praat. Now real, clamped at 0;
+#     Amp_jitter clamped to [0, 1].
+#   - FIX: an all-silent result (no partials found) crashed the
+#     final Scale intensity; now guarded.
+#   - FIX: the final original+result selection was clobbered by
+#     the Play branch; the visualization's original spectrogram
+#     extracts channel 1 of stereo inputs.
 #
 # Description:
 #   SPEAR-like sinusoidal analysis-resynthesis. Extracts
 #   frequency peaks frame-by-frame and resynthesizes with
 #   pure sine waves.
+#
+#   CHARACTER NOTE (measured, v0.4): grains carry no phase
+#   continuity between frames (no partial tracking), so STEADY
+#   spectra resynthesize cleanly (<0.4 dB envelope ripple) while
+#   MOVING partials (vibrato, glides) beat against their own
+#   neighbours in the overlap -- a chorus/shimmer that grows with
+#   time (~24 dB envelope motion on a 440 Hz vibrato tone). This
+#   is the "Texture" in the title: embrace it, or feed the tool
+#   steady material for faithful resynthesis. True McAulay-
+#   Quatieri phase tracking would be a separate project.
 # ============================================================
 
-form Sinusoidal Texture Resynthesis v0.3
+form Sinusoidal Texture Resynthesis v0.4
     optionmenu Preset: 1
         option Custom
         option Clean Resynth (faithful)
@@ -32,7 +66,7 @@ form Sinusoidal Texture Resynthesis v0.3
     positive Max_frequency 8000
     integer Max_partials_per_frame 15
     comment === Diffusion & Texture ===
-    positive Freq_jitter 3.0
+    real Freq_jitter 3.0
     real Amp_jitter 0.1
     comment === Pitch/Formant ===
     real Transpose_semitones 0
@@ -117,7 +151,7 @@ t2 = Get end time
 dur = t2 - t1
 
 clearinfo
-writeInfoLine: "=== Sinusoidal Texture Resynthesis v0.3 ==="
+writeInfoLine: "=== Sinusoidal Texture Resynthesis v0.4 ==="
 appendInfoLine: "Input: ", orig_name$
 appendInfoLine: "Duration: ", fixed$(dur, 2), " s"
 appendInfoLine: ""
@@ -129,9 +163,25 @@ appendInfoLine: "Transpose: ", transpose_semitones, " semitones"
 appendInfoLine: "Formant ratio: ", formant_shift_ratio
 appendInfoLine: ""
 
+if freq_jitter < 0
+    freq_jitter = 0
+endif
+if amp_jitter < 0
+    amp_jitter = 0
+elsif amp_jitter > 1
+    amp_jitter = 1
+endif
+
 # Prepare working copy
+# v0.4: mono upfront -- stereo grains crashed To Spectrum
 selectObject: orig_id
-input_id = Copy: "input"
+origCh = Get number of channels
+if origCh > 1
+    input_id = Convert to mono
+    appendInfoLine: "Stereo input converted to mono for analysis."
+else
+    input_id = Copy: "input"
+endif
 
 # Use original sample rate (no downsampling needed — fast enough now)
 selectObject: input_id
@@ -141,6 +191,11 @@ totdur = Get total duration
 
 # Create output buffer
 output_id = Create Sound from formula: "resynth", 1, 0, totdur, work_sr, "0"
+
+# v0.4: window-sum envelope (analytic Hann per frame). The default
+# 60/15 window/hop is COLA, but free parameters are not -- dividing
+# by the exact sum makes any ratio artifact-free.
+envsum_id = Create Sound from formula: "envsum", 1, 0, totdur, work_sr, "0"
 
 # Constants
 tr = 2 ^ (transpose_semitones / 12)
@@ -230,6 +285,14 @@ for i from 0 to nframes - 1
 
     removeObject: frame_id, spec_id, mat_id, ltas_id
 
+    # v0.4: accumulate this frame's analytic Hann into the
+    # window-sum envelope (every frame, found partials or not --
+    # the OLA gain is a property of the grid, not of detection)
+    selectObject: envsum_id
+    Formula (part): t_start, t_end, 1, 1,
+        ... "self + 0.5 * (1 - cos(2*pi*(x - " + fixed$(t_start, 8)
+        ... + ") / " + fixed$(current_win_dur, 8) + "))"
+
     # E. BUILD SINGLE FORMULA for all sines + Hann window
     if nFound > 0
         # Build formula string: sum of all sines × Hann window
@@ -270,9 +333,20 @@ for i from 0 to nframes - 1
 endfor
 
 # === FINALIZE ===
+# v0.4: exact OLA normalization
+envStr$ = string$(envsum_id)
+selectObject: output_id
+Formula: "self / (object[" + envStr$ + ", 1, col] + 1e-6)"
+removeObject: envsum_id
+
 selectObject: output_id
 Rename: orig_name$ + "_resynth_" + presetName$
-Scale intensity: 70
+outPeakChk = Get absolute extremum: 0, 0, "None"
+if outPeakChk > 1e-9
+    Scale intensity: 70
+else
+    appendInfoLine: "NOTE: no partials found anywhere -- output is silent."
+endif
 
 removeObject: input_id
 
@@ -309,7 +383,13 @@ if draw_visualization
     
     Select outer viewport: 0, 4, 2.0, 3.8
     selectObject: orig_id
+    if origCh > 1
+        vizOrig = Extract one channel: 1
+    else
+        vizOrig = Copy: "vizOrig"
+    endif
     origSpecID = To Spectrogram: 0.01, 5000, 0.002, 20, "Gaussian"
+    removeObject: vizOrig
     selectObject: origSpecID
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     Font size: 8
@@ -343,10 +423,11 @@ appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Created: ", orig_name$, "_resynth_", presetName$
 
-selectObject: orig_id
-plusObject: output_id
-
 if play_result
     selectObject: output_id
     Play
 endif
+
+# v0.4: consistent final selection (Play used to clobber it)
+selectObject: orig_id
+plusObject: output_id
