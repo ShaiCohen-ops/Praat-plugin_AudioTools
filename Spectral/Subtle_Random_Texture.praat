@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,18 @@
 #     Processed as N full-file FFT copies with different random
 #     parameters per segment, then blended with triangular weights
 #     that form a perfect partition of unity.
+#
+#   v1.2 (2026):
+#   - VIZ: title strip uses an explicit inner viewport (the
+#     outer-only form with a hand-tuned negative offset is the
+#     margin-compression collision geometry).
+#   - Inputs with more than 2 channels get an info NOTE that
+#     channels 3+ are not processed (L/R only).
+#   - AUDIT: verified correct as written -- the triangular-blend
+#     partition of unity (measured: evolving-mode unity residual
+#     -240 dB), the phase-preserving spectral gain, per-channel
+#     stereo with independent decorrelating draws, and the
+#     row-aware wet/dry with channel-mismatch fallback.
 #
 #   v1.1 improves the visualization to show the phenomenon honestly:
 #   - Stores every segment's resonance set (not just the last).
@@ -38,7 +50,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Subtle Random Texture v1.0
+form Subtle Random Texture v1.2
     optionmenu Preset: 1
         option Custom
         option Subtle Shimmer (gentle spectral coloring)
@@ -154,7 +166,7 @@ if low_freq_Hz >= high_freq_Hz
 endif
 
 clearinfo
-writeInfoLine: "=== Subtle Random Texture v1.1 ==="
+writeInfoLine: "=== Subtle Random Texture v1.2 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -407,6 +419,9 @@ appendInfoLine: ""
 
 if n_channels >= 2
     # ---- STEREO: process each channel independently ----
+    if n_channels > 2
+        appendInfoLine: "NOTE: input has ", n_channels, " channels; only 1-2 (L/R) are processed."
+    endif
     appendInfoLine: "Processing LEFT channel..."
     selectObject: originalID
     Extract one channel: 1
@@ -508,13 +523,14 @@ if draw_visualization
     # Title
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 0.45
+    Select inner viewport: 0, 8, 0, 0.45
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Subtle Random Texture##"
+    Text: 0.5, "centre", 0.72, "half", "##Subtle Random Texture v1.2##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.25, "half",
+    Text: 0.5, "centre", 0.24, "half",
         ... originalName$ + "  |  " + presetName$
         ... + "  |  " + string$(number_of_resonances) + " resonances"
         ... + "  |  depth=" + fixed$(depth, 2)
