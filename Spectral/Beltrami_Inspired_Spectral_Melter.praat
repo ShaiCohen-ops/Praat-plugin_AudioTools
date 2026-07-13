@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026)
+# Version: 2.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,34 @@
 #   at ridges (attacks, formant edges, note boundaries).
 #   The diffused matrix encodes a reshaped spectral terrain.
 #
+# Changelog v2.4 (2026):
+#   - FIX: Stereo_phase_offset was statistically a DEAD KNOB. Both
+#     channels drew fully independent per-frame random phases, and
+#     the offset merely scaled a uniform(-pi,pi) draw -- scaled
+#     uniform phase mod 2pi is still ~uniform, so offset 0 did NOT
+#     correlate the channels and 0.3 vs 1.5 were indistinguishable
+#     (maximum width always). v2.4: phase = shared per-frame SEEDED
+#     base + offset-scaled independent component (seeded RNG drives
+#     Formula draws reproducibly -- verified on 6.4.42). Offset 0 =
+#     identical channels, 1 = fully independent, which is exactly
+#     the old sound in distribution -- presets and the form default
+#     moved to 1.0 so nothing changes audibly until you turn it.
+#   - FIX: the Nyquist-clamp notice printed before writeInfoLine
+#     and was erased by the header.
+#   - FIX: the final trim threshold (50 ms) let short-window
+#     presets (Transient Glass, 46 ms pow2 window) keep a silent
+#     tail; now 1 ms.
+#   - VIZ: title strip uses an explicit inner viewport (the
+#     outer-only negative-offset form is the margin-compression
+#     collision geometry).
+#   - AUDIT: verified correct as written -- the frozen-source
+#     explicit diffusion scheme (stable, dt clamped), both
+#     gradient passes, the exaggeration stage, the mono
+#     phase-preserving shaping (Fix B), the Hann^2 OLA norm WITH
+#     floored correction, the v2.3 bin rolloff, and the
+#     early-frame pad/placement double-clamp (the two clamps
+#     cancel; content lands at the correct absolute time).
+#
 # Changelog v2.3:
 #   - Roll off FFT bins above max_frequency_Hz (was clamping them to
 #     the top analyzed bin, adding a spurious high shelf / stereo hiss
@@ -26,7 +54,7 @@
 #
 # ============================================================
 
-form Beltrami Inspired Spectral Melter v2.3
+form Beltrami Inspired Spectral Melter v2.4
     comment Select a Sound object first.
 
     comment === Preset ===
@@ -61,7 +89,8 @@ form Beltrami Inspired Spectral Melter v2.3
 
     comment === Stereo (Paulstretch pattern) ===
     boolean   Create_stereo          1
-    positive  Stereo_phase_offset    0.3
+    positive  Stereo_phase_offset    1.0
+    comment (0 = identical channels ... 1 = fully independent/widest)
 
     comment === Output ===
     optionmenu Speed_mode: 1
@@ -198,7 +227,7 @@ elsif preset = 8
     effect_strength     = 8.0
     wet_dry_mix         = 1.0
     create_stereo       = 1
-    stereo_phase_offset = 0.5
+    stereo_phase_offset = 1.0
     preset_name$        = "Void Chasm"
 
 else
@@ -284,10 +313,11 @@ windowLength = windowSamples / workingSR
 # Presets (e.g. Void Chasm 12 kHz) can exceed the working Nyquist
 # in Balanced / Fast speed modes, causing silent mis-binning.
 nyquist = workingSR / 2
+nyquistClampNote$ = ""
 if max_frequency_Hz > nyquist - fRes
     max_frequency_Hz = nyquist - fRes
-    appendInfoLine: "  [Nyquist clamp] max_frequency_Hz -> ",
-        ... fixed$(max_frequency_Hz, 0), " Hz"
+    nyquistClampNote$ = "[Nyquist clamp] max_frequency_Hz -> "
+        ... + fixed$(max_frequency_Hz, 0) + " Hz"
 endif
 
 selectObject: source
@@ -300,7 +330,7 @@ nBins   = round(max_frequency_Hz / fRes)
 ; Fix 3: this estimate is used only for the early info-print below.
 ; The authoritative nBins is read from the actual Matrix after To Matrix.
 
-writeInfoLine:  "=== BeltramiInspired Spectral Melter v2.3 ==="
+writeInfoLine:  "=== BeltramiInspired Spectral Melter v2.4 ==="
 appendInfoLine: "Preset  : ", preset_name$
 appendInfoLine: "Source  : ", originalName$, " (", fixed$(inputDur, 2), " s)"
 appendInfoLine: "Speed   : ", speedStr$
@@ -308,6 +338,9 @@ appendInfoLine: "Window  : ", fixed$(windowLength*1000, 1), " ms (",
     ... windowSamples, " samples, pow2)"
 appendInfoLine: "Frames  : ", nFrames, "   Bins: ", nBins
 appendInfoLine: "Iters   : ", iterations
+if nyquistClampNote$ <> ""
+    appendInfoLine: nyquistClampNote$
+endif
 if create_stereo
     appendInfoLine: "Stereo  : YES (phase offset: ", stereo_phase_offset, ")"
 else
@@ -507,6 +540,10 @@ removeObject: meanAmp
 
 appendInfoLine: "[4/4] Overlap-add resynthesis..."
 
+# v2.4: per-run base for the frame phase seeds (run-to-run variety
+# preserved; within a run, L and R share the same per-frame base)
+phaseSeedBase = randomInteger(1, 1000000)
+
 overlapFrac  = 0.75
 hopTime      = windowLength * (1 - overlapFrac)
 nOlaFrames   = ceiling(sourceDur / hopTime) + 2
@@ -522,7 +559,7 @@ wSR  = workingSR
 
 progressStep = max(1, round(nOlaFrames / 20))
 
-procedure olaChannel: .outSnd, .normSnd, .phaseScale, .chanName$
+procedure olaChannel: .outSnd, .normSnd, .extraScale, .chanSeedOff, .chanName$
     ; Fix 4: .normSnd accumulates synthesis-Hann² per frame for OLA
     ; normalisation. After the loop the caller divides out / norm.
     appendInfoLine: "  Channel: ", .chanName$
@@ -588,12 +625,21 @@ procedure olaChannel: .outSnd, .normSnd, .phaseScale, .chanName$
                 # .phaseScale differentiates L (1.0) from R (1+offset).
                 # Both channels share daID but have independent draws
                 # from randomUniform, so their spectrograms decorrelate.
+                # v2.4: shared seeded base (identical across channels
+                # for the same frame) + offset-scaled independent
+                # component (channel-distinct seed). offset 0 = dual
+                # mono; 1 = fully independent (the old sound).
+                random_initializeWithSeedUnsafelyButPredictably: phaseSeedBase + .iframe
                 selectObject: .matCx
                 Copy: "phases_" + uid$
                 .phasesMat = selected("Matrix")
                 .pmID = .phasesMat
                 selectObject: .phasesMat
-                Formula: "if row = 1 then randomUniform(-pi, pi) * .phaseScale else self fi"
+                Formula: "if row = 1 then randomUniform(-pi, pi) else self fi"
+                if .extraScale > 0
+                    random_initializeWithSeedUnsafelyButPredictably: phaseSeedBase + .iframe + .chanSeedOff
+                    Formula: "if row = 1 then self + randomUniform(-pi, pi) * .extraScale else self fi"
+                endif
 
                 # new_real = diffMag * cos(randPhase)
                 # new_imag = diffMag * sin(randPhase)
@@ -687,7 +733,7 @@ if create_stereo
     Create Sound from formula: "norm_L_" + uid$, 1, 0,
         ... sourceDur + windowLength, workingSR, "0"
     norm_L = selected("Sound")
-    @olaChannel: sound_wet_L, norm_L, 1.0, "LEFT"
+    @olaChannel: sound_wet_L, norm_L, 0, 0, "LEFT"
     # Fix 4: normalise L channel by accumulated Hann² sum
     normLID = norm_L
     selectObject: sound_wet_L
@@ -700,8 +746,7 @@ if create_stereo
     Create Sound from formula: "norm_R_" + uid$, 1, 0,
         ... sourceDur + windowLength, workingSR, "0"
     norm_R = selected("Sound")
-    phaseScaleR = 1.0 + stereo_phase_offset
-    @olaChannel: sound_wet_R, norm_R, phaseScaleR, "RIGHT"
+    @olaChannel: sound_wet_R, norm_R, stereo_phase_offset, 500009, "RIGHT"
     # Fix 4: normalise R channel
     normRID = norm_R
     selectObject: sound_wet_R
@@ -717,7 +762,7 @@ else
     Create Sound from formula: "norm_" + uid$, 1, 0,
         ... sourceDur + windowLength, workingSR, "0"
     norm_wet = selected("Sound")
-    @olaChannel: sound_wet, norm_wet, 1.0, "MONO"
+    @olaChannel: sound_wet, norm_wet, 0, 0, "MONO"
     # Fix 4: normalise mono channel
     normWID = norm_wet
     selectObject: sound_wet
@@ -726,6 +771,7 @@ else
 endif
 
 removeObject: diffAmp
+random_initializeSafelyAndUnpredictably()
 
 # ============================================================
 #  8.  WET / DRY MIX + FINALIZE
@@ -792,7 +838,7 @@ endif
 # Trim to sourceDur if the buffer overran
 selectObject: sound_out
 outDur = Get total duration
-if outDur > sourceDur + 0.05
+if outDur > sourceDur + 0.001
     currentName$ = selected$("Sound")
     Extract part: 0, sourceDur, "rectangular", 1, "no"
     trimmed = selected("Sound")
@@ -828,14 +874,15 @@ if draw_visualization
     Erase all
 
     Select outer viewport: 0, 8, 0, 0.45
+    Select inner viewport: 0, 8, 0, 0.45
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half",
-        ... "##BeltramiInspired Spectral Melter — " + preset_name$ + "##"
+    Text: 0.5, "centre", 0.72, "half",
+        ... "##BeltramiInspired Spectral Melter v2.4 — " + preset_name$ + "##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.15, "half",
+    Text: 0.5, "centre", 0.24, "half",
         ... originalName$ + "  |  iters:" + string$(iterations)
         ... + "  κ=" + fixed$(kappa_eff, 2)
         ... + "  dt_t=" + fixed$(dt_t, 2)
@@ -973,7 +1020,7 @@ selectObject: sound_out
 
 appendInfoLine: ""
 appendInfoLine: "==========================================="
-appendInfoLine: " BELTRAMI INSPIRED SPECTRAL MELTER v2.3 — Done"
+appendInfoLine: " BELTRAMI INSPIRED SPECTRAL MELTER v2.4 — Done"
 appendInfoLine: "==========================================="
 appendInfoLine: "Preset    : ", preset_name$
 appendInfoLine: "Input     : ", originalName$, " (", fixed$(inputDur, 2), " s)"
