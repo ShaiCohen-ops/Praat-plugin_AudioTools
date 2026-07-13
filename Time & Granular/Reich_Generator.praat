@@ -3,12 +3,35 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2026)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Random Reich Generator (Auto-Phasing Tool)
+#
+# Changelog v0.3 (2026):
+#   - FIX (audible): loops were cut rectangularly at random
+#     positions -- a hard discontinuity clicked at EVERY
+#     repetition, metronomically, in both channels. Loop bounds
+#     now snap to the nearest zero crossings (the standard looper
+#     cure; no amplitude dips, no character change beyond the
+#     tick's absence). If you ever want the raw splice ticks back
+#     as a rhythm layer, say so -- it is one boolean.
+#   - FIX: the phase wheel's cycle markers (C1, C2...) could
+#     never draw -- prev_phase_norm was updated BEFORE the marker
+#     test re-compared it against the current value. The cycle
+#     COUNT was right (tested before the update); only the labels
+#     were dead code. Wrapped-flag fix.
+#   - Play is now gated by a form flag (house convention;
+#     previously unconditional).
+#   - NOTE printed when the pitch tier is empty (unvoiced loop):
+#     Fifth/Octave settings act through PSOLA and silently do
+#     nothing on unpitched material.
+#   - AUDIT: the drift math verified exact -- Override to
+#     base_sr*(n+1)/n makes V2's loop n/(n+1) shorter, so full
+#     realignment lands at precisely Cycle_Duration; the ~0.8%
+#     pitch lift is the authentic tape-phasing artifact.
 #
 # Changelog v0.2:
 #   - Robustness: clamp the loop range (Min/Max_loop_sec) to the source
@@ -66,6 +89,8 @@ form Harmonic Reich Generator [PRO]
     
     comment --- Visualizations ---
     boolean Create_polar_phase_wheel 1
+    comment --- Output ---
+    boolean Play_result 1
 endform
 
 # ============================================
@@ -151,6 +176,20 @@ while found = 0 and attempts < 40
     selectObject: check_id
     rms = Get root-mean-square: 0, 0
     if rms > 0.001
+        # v0.3: snap loop bounds to zero crossings -- rectangular
+        # random cuts clicked at every repetition
+        .cd = Get total duration
+        z1 = Get nearest zero crossing: 1, 0.003
+        z2 = Get nearest zero crossing: 1, .cd - 0.003
+        if z1 = undefined
+            z1 = 0
+        endif
+        if z2 = undefined or z2 <= z1 + 0.05
+            z2 = .cd
+        endif
+        snapped = Extract part: z1, z2, "rectangular", 1, "no"
+        removeObject: check_id
+        check_id = snapped
         found = 1
         Rename: "Loop_Base"
         loop_base = check_id
@@ -203,6 +242,10 @@ if pitch_ratio <> 1.0 or p_flut > 0
     
     Extract pitch tier
     pitch_id = selected("PitchTier")
+    nPitchPts = Get number of points
+    if nPitchPts = 0 and pitch_ratio <> 1.0
+        appendInfoLine: "NOTE: no voiced material in the loop -- the V2 interval acts through PSOLA and will have no effect."
+    endif
     
     if pitch_ratio <> 1.0
         Formula: "self * " + string$(pitch_ratio)
@@ -262,6 +305,10 @@ if p_v3$ <> "None"
         
         Extract pitch tier
         v3_pitch_id = selected("PitchTier")
+        nV3Pts = Get number of points
+        if nV3Pts = 0
+            appendInfoLine: "NOTE: no voiced material in the loop -- the V3 octave acts through PSOLA and will have no effect."
+        endif
         
         Formula: "self * " + string$(v3_ratio)
         
@@ -462,9 +509,13 @@ if create_polar_phase_wheel
              endif
         endif
         
-        # Cycle check
+        # Cycle check (v0.3: wrapped flag -- the marker block below
+        # used to re-test prev vs current AFTER this update, i.e.
+        # compare a value with itself: markers never drew)
+        wrapped = 0
         if i > 1 and prev_phase_norm > 0.9 and phase_norm < 0.1
             cycle_count = cycle_count + 1
+            wrapped = 1
         endif
         prev_phase_norm = phase_norm
         
@@ -499,7 +550,7 @@ if create_polar_phase_wheel
         endif
         
         # Cycle markers
-        if i > 1 and prev_phase_norm > 0.9 and phase_norm < 0.1
+        if wrapped
             Colour: "Black"
             Paint circle (mm): "White", x, y, 1.2
             Draw circle (mm): x, y, 1.2
@@ -611,4 +662,7 @@ endif
 Remove
 
 selectObject: final_id
-Play
+if play_result
+    Play
+endif
+selectObject: final_id
