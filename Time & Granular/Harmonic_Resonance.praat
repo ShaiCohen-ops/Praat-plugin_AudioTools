@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,13 +13,40 @@
 #   resonances at harmonicBase^k intervals, creating rich harmonic
 #   textures similar to a tuned comb filter bank.
 #
+# Changelog v0.3 (2026):
+#   - Character menu (A/B and choose your default -- the
+#     Basic_Mirror lesson, applied proactively this time):
+#       * corrected: the backward tap reads the FROZEN
+#         pre-iteration signal -- the "bidirectional sample
+#         delay" the description states. Both taps feedforward.
+#       * legacy (v0.2): the backward tap read already-processed
+#         samples in the same Formula pass (Praat overwrites left
+#         to right) -- a feedback comb through the output,
+#         compounding across iterations. Kept VERBATIM as an
+#         option; if that texture is this tool's identity, flip
+#         the form default and say so.
+#   - Viz spectra computed from mono copies (defensive: on
+#     6.4.42 To Spectrum averages stereo natively -- probe-
+#     verified, correcting an overbroad ledger entry -- but the
+#     library targets 6.3+, where behavior has differed). The
+#     ENGINE was always stereo-safe: single-index self[expr] is
+#     row-aware (verified).
+#   - FIX: the "Original" label was drawn on a stray full-width
+#     viewport, landing across the title zone.
+#   - GUARDS: Decay_factor clamped below 1 (values above flipped
+#     polarity on late iterations); Fadeout clamped to the total
+#     duration (longer values pushed the cosine past pi into
+#     polarity inversion); the silent tail is created with the
+#     source's channel count (>2-channel sources used to fail the
+#     concatenation).
+#
 # Changelog v0.2:
 #   - Modern syntax
 #   - Added bounds checking
 #   - Added visualization
 # ============================================================
 
-form Harmonic Resonance
+form Harmonic Resonance v0.3
     comment Select a Sound object first
     
     comment === Preset ===
@@ -29,6 +56,10 @@ form Harmonic Resonance
         option Medium Harmonics
         option Heavy Harmonics
         option Extreme Harmonics
+    
+    optionmenu Character: 1
+        option corrected (bidirectional feedforward)
+        option legacy texture (v0.2: feedback comb)
     
     comment === Resonance Parameters ===
     positive Tail_duration_s 2.0
@@ -110,6 +141,11 @@ sampling_rate = Get sampling frequency
 channels = Get number of channels
 originalDuration = Get total duration
 
+# === Guards (v0.3) ===
+if decay_factor > 0.99
+    decay_factor = 0.99
+endif
+
 # === Determine Harmonic Base ===
 if use_fixed_base
     harmonicBase = fixed_harmonic_base
@@ -118,20 +154,21 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Harmonic Resonance ==="
+writeInfoLine: "=== Harmonic Resonance v0.3 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(originalDuration, 2), " s)"
 appendInfoLine: ""
 appendInfoLine: "Harmonic base: ", fixed$(harmonicBase, 3)
 appendInfoLine: "Iterations: ", num_iterations
 appendInfoLine: "Decay factor: ", decay_factor
+if character = 1
+    appendInfoLine: "Character: corrected (feedforward)"
+else
+    appendInfoLine: "Character: legacy texture (v0.2 feedback comb)"
+endif
 appendInfoLine: ""
 
-# === Create Silent Tail ===
-if channels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sampling_rate, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sampling_rate, "0"
-endif
+# === Create Silent Tail (v0.3: source channel count) ===
+Create Sound from formula: "silent_tail", channels, 0, tail_duration_s, sampling_rate, "0"
 silentTail = selected("Sound")
 
 # === Concatenate ===
@@ -171,7 +208,22 @@ for k from 1 to num_iterations
     
     # Bidirectional formula with harmonic weighting and bounds checking
     selectObject: result
-    Formula: "if col + delaySamples <= ncol and col - halfDelay >= 1 then (self[col + delaySamples] - self[col - halfDelay]) * iterWeight else self * 0.5 fi"
+    if character = 1
+        # corrected: BOTH taps read the frozen pre-iteration
+        # signal (2-arg object reads are row-aware and broadcast
+        # mono -- verified on 6.4.42)
+        frozenIt = Copy: "frozen_iter"
+        fzStr$ = string$(frozenIt)
+        selectObject: result
+        Formula: "if col + delaySamples <= ncol and col - halfDelay >= 1 then (object[" + fzStr$
+            ... + ", col + delaySamples] - object[" + fzStr$ + ", col - halfDelay]) * iterWeight else self * 0.5 fi"
+        removeObject: frozenIt
+        selectObject: result
+    else
+        # legacy (v0.2, verbatim): the backward tap reads
+        # already-processed samples -- feedback comb
+        Formula: "if col + delaySamples <= ncol and col - halfDelay >= 1 then (self[col + delaySamples] - self[col - halfDelay]) * iterWeight else self * 0.5 fi"
+    endif
     
     # Harmonic amplitude decay
     Formula: "self * ampDecay"
@@ -183,6 +235,9 @@ Scale peak: scale_peak
 
 # === Apply Fadeout ===
 totalDuration = Get total duration
+if fadeout_duration_s > totalDuration
+    fadeout_duration_s = totalDuration
+endif
 fadeStart = totalDuration - fadeout_duration_s
 
 Formula: "if x > fadeStart then self * (0.5 + 0.5 * cos(pi * (x - fadeStart) / fadeout_duration_s)) else self fi"
@@ -211,7 +266,6 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
-    Select outer viewport: 0.1, 8, 0.5, 2.5
     Text left: "yes", "Original"
     
     # Result waveform
@@ -229,8 +283,14 @@ if draw_visualization
     Select outer viewport: 0, 4, 3.9, 5.5
     Select inner viewport: 0.6, 3.8, 4.1, 5.4
     selectObject: original
+    if channels > 1
+        vizOrigMono = Convert to mono
+    else
+        vizOrigMono = Copy: "vizOrig"
+    endif
     To Spectrum: "yes"
     origSpec = selected("Spectrum")
+    removeObject: vizOrigMono
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 5000, 0, 0, "no"
     Colour: "Black"
@@ -244,8 +304,14 @@ if draw_visualization
     Select outer viewport: 4, 8, 3.9, 5.5
     Select inner viewport: 4.4, 7.6, 4.1, 5.4
     selectObject: result
+    if channels > 1
+        vizResMono = Convert to mono
+    else
+        vizResMono = Copy: "vizRes"
+    endif
     To Spectrum: "yes"
     resSpec = selected("Spectrum")
+    removeObject: vizResMono
     Colour: "{0.3, 0.6, 0.8}"
     Draw: 0, 5000, 0, 0, "no"
     Colour: "Black"
