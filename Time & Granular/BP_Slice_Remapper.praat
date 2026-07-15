@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -28,6 +28,29 @@
 
 #
 # Changelog:
+#   1.1 (2026):
+#   - FIX (structural, output-preserving): v1.0's ordering was
+#     right BY DOUBLE ACCIDENT -- the sort ran opposite to its own
+#     comment, and the chain assembly PREPENDED every slice
+#     (Praat's Concatenate orders by object-list creation order,
+#     and the growing chain was always the newest object). Two
+#     inversions canceled. v1.1 makes the assembly a true append
+#     (fresh slice copies) and keeps the sort, so the audible
+#     ordering is UNCHANGED while both halves of the code now do
+#     what they say. Verified: Accelerando plays longest-first.
+#   - FIX: stereo sources produced a 4-CHANNEL output (stereo
+#     slices through Combine to stereo). Per the design statement
+#     -- "both channels use the same source audio [in] different
+#     orderings" -- the source is now mixed to mono for slicing;
+#     the output is genuinely stereo.
+#   - Overlap_factor was a dead knob (defined, clamped, never
+#     read). It now does what its name promises: crossfaded
+#     slice joins (fraction of the shortest slice), curing the
+#     click at every joint between duration-sorted non-adjacent
+#     material. Default 0 = the original butt-joins, unchanged.
+#   - VIZ: title strip uses an explicit inner viewport (the
+#     outer-only negative-offset form is the margin-compression
+#     collision geometry).
 #   1.0 (2026) -- initial release
 # ============================================================
 
@@ -109,6 +132,14 @@ selectObject: origSound
 totalDur  = Get total duration
 origSR    = Get sampling frequency
 nChannels = Get number of channels
+
+# v1.1: slice a mono mixdown -- stereo slices made the final
+# Combine produce a 4-channel object
+if nChannels > 1
+    sliceSource = Convert to mono
+else
+    sliceSource = origSound
+endif
 
 # === Safety check ===
 totalSlices    = numBlocks * num_slices
@@ -251,7 +282,7 @@ for g from 1 to totalSlices
     endif
     segDur = tE - tS
     if segDur >= 0.005
-        selectObject: origSound
+        selectObject: sliceSource
         tmpSnd = Extract part: tS, tE, "rectangular", 1, "yes"
         nExtracted = nExtracted + 1
         extracted_'nExtracted' = tmpSnd
@@ -263,6 +294,20 @@ endfor
 
 appendInfoLine: "  Slices extracted: ", nExtracted
 
+# v1.1: crossfade duration for slice joins -- Overlap_factor was a
+# dead knob; it now crossfades each joint by a fraction of the
+# shortest extracted slice (0 = original butt-joins)
+minExDur = 1e9
+for i from 1 to nExtracted
+    if exDur_'i' < minExDur
+        minExDur = exDur_'i'
+    endif
+endfor
+xfadeDur = overlap_factor * minExDur * 0.45
+if xfadeDur > 0
+    appendInfoLine: "  Slice crossfades: ", fixed$(xfadeDur * 1000, 1), " ms"
+endif
+
 # Bubble sort L (Direction from form)
 if nExtracted > 1
     for i from 1 to nExtracted - 1
@@ -271,10 +316,16 @@ if nExtracted > 1
             sj = sortIdxL_'j'
             di = exDur_'si'
             dj = exDur_'sj'
+            # v1.1: descending comparison (longest first for
+            # Accelerando) paired with a true APPENDING chain below.
+            # v1.0 had the double-inverted twin: ascending sort +
+            # prepending assembly (Concatenate object-list order) --
+            # same audible ordering, by accident. Net output is
+            # unchanged; both halves now do what they say.
             if direction = 1
-                doSwap = (dj < di)
-            else
                 doSwap = (dj > di)
+            else
+                doSwap = (dj < di)
             endif
             if doSwap
                 sortIdxL_'i' = sj
@@ -293,9 +344,9 @@ if nExtracted > 1
             di = exDur_'si'
             dj = exDur_'sj'
             if direction = 1
-                doSwap = (dj > di)
-            else
                 doSwap = (dj < di)
+            else
+                doSwap = (dj > di)
             endif
             if doSwap
                 sortIdxR_'i' = sj
@@ -317,10 +368,20 @@ elsif nExtracted > 1
     for k from 2 to nExtracted
         pk       = sortIdxL_'k'
         oldChain = monoL
+        # v1.1: Concatenate orders by OBJECT LIST (creation) order,
+        # not selection order -- the chain, being newest, used to
+        # come LAST: every slice was PREPENDED. A fresh copy of the
+        # slice (newer than the chain) makes this a true append.
+        selectObject: extracted_'pk'
+        freshSlice = Copy: "sl"
         selectObject: monoL
-        plusObject: extracted_'pk'
-        monoL = Concatenate
-        removeObject: oldChain
+        plusObject: freshSlice
+        if xfadeDur > 0
+            monoL = Concatenate with overlap: xfadeDur
+        else
+            monoL = Concatenate
+        endif
+        removeObject: oldChain, freshSlice
     endfor
     Rename: "BP_L"
 endif
@@ -336,10 +397,20 @@ elsif nExtracted > 1
     for k from 2 to nExtracted
         pk       = sortIdxR_'k'
         oldChain = monoR
+        # v1.1: Concatenate orders by OBJECT LIST (creation) order,
+        # not selection order -- the chain, being newest, used to
+        # come LAST: every slice was PREPENDED. A fresh copy of the
+        # slice (newer than the chain) makes this a true append.
+        selectObject: extracted_'pk'
+        freshSlice = Copy: "sl"
         selectObject: monoR
-        plusObject: extracted_'pk'
-        monoR = Concatenate
-        removeObject: oldChain
+        plusObject: freshSlice
+        if xfadeDur > 0
+            monoR = Concatenate with overlap: xfadeDur
+        else
+            monoR = Concatenate
+        endif
+        removeObject: oldChain, freshSlice
     endfor
     Rename: "BP_R"
 endif
@@ -348,6 +419,9 @@ endif
 for i from 1 to nExtracted
     removeObject: extracted_'i'
 endfor
+if sliceSource <> origSound
+    removeObject: sliceSource
+endif
 
 # Match durations: pad shorter channel with silence at end
 selectObject: monoL
@@ -402,13 +476,14 @@ if draw_visualization = 1
 
     # ---- Title ----
     Select outer viewport: 0, 8, 0, 0.50
+    Select inner viewport: 0, 8, 0, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##BP Slicing Protocol -- Temporal Grids##"
+    Text: 0.5, "centre", 0.72, "half", "##BP Slicing Protocol v1.1 -- Temporal Grids##"
     Font size: 8
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.15, "half",
+    Text: 0.5, "centre", 0.24, "half",
         ... origName$ + "  |  " + string$(numBlocks) + " block(s)"
         ... + "  |  " + string$(num_slices) + " slices/block"
         ... + "  |  " + dirStr$
