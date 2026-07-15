@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - GENDYN_Synthesis.praat v3.0 OPTIMIZED
+# Praat AudioTools - GENDYN_Synthesis.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.0 (2025) - OPTIMIZED (~10-15× faster)
+# Version: 3.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,12 +25,34 @@
 #   4. Apply elastic barriers to keep values bounded
 #   5. Repeat with evolved waveform
 #
-# Optimization v3.0:
-#   - Batch waveform generation (10× faster than sample-by-sample)
-#   - Reduced control rate (2-3× faster)
-#   - Speed modes (Fast/Balanced/Full Quality)
-#   - Optimized breakpoint interpolation
-#   - Combined speedup: ~10-15× overall
+# Changelog v3.1 (2026):
+#   - FIX (audible, severe): the "control rate" architecture
+#     bandlimited the output at HALF THE SYNTHESIS RATE -- the
+#     default (Balanced) synthesized at 4 kHz and upsampled, so
+#     nothing above 2 kHz survived (measured: -35 dB above 2 kHz).
+#     GENDYN's timbre lives in the breakpoint CORNERS; capping
+#     their spectrum is the recurring "muffle" pattern in
+#     synthesis form. v3.1 synthesizes at the target sample rate.
+#   - REWRITE (speed): the per-sample interpreter loop with
+#     Set-value-per-sample writes cost 3.0 s mono / 9.2 s stereo
+#     AT 4-8 kHz (v3.0 measured); at 44.1 kHz it would run
+#     ~30-100 s. v3.1 evaluates ONE Formula (part) per waveform
+#     period -- breakpoint data in two small matrices, the
+#     interpolation cascade as a constant formula string, C++
+#     per-sample evaluation. MEASURED: 12 s mono in 5.1 s and
+#     stereo GENDY3 in 10.3 s at FULL 44.1 kHz, vs v3.0's 3.0 /
+#     9.2 s at 4-8 kHz -- comparable wall time at 11x the
+#     synthesis rate; HF energy (2-12 kHz vs 0.1-2 kHz) rose
+#     from -35.0 to -22.4 dB.
+#   - Speed modes removed (they only chose how much spectrum to
+#     discard). Form argument list changed accordingly.
+#   - FIX: float-edge gap where phase in [sum(dur), 1) produced
+#     silent samples (click seeds); the cumulative-duration
+#     matrix now pins its final boundary to exactly 1.
+#   - NOTE (honesty): pitch here is a SEPARATE bounded random
+#     walk; canonical GENDYN derives pitch from the unnormalized
+#     duration sum. This variant is more controllable and is the
+#     established sound of this tool.
 #
 # Reference:
 #   Xenakis, I. (1992). Formalized Music. Pendragon Press.
@@ -40,7 +62,7 @@
 #   Toolkit for Experimental Composition.
 # ============================================================
 
-form GENDYN Synthesis v3.0 OPTIMIZED (Tribute to Xenakis)
+form GENDYN Synthesis v3.1 (Tribute to Xenakis)
     comment === Preset ===
     optionmenu Preset: 1
         option Custom (use settings below)
@@ -52,12 +74,6 @@ form GENDYN Synthesis v3.0 OPTIMIZED (Tribute to Xenakis)
         option Chaotic Bursts
         option Whispered Stochasm
         option Electronic Organisms
-    
-    comment === Performance ===
-    optionmenu Speed_mode: 2
-        option Full Quality (highest control rate)
-        option Balanced (good quality, 2x faster)
-        option Fast (draft quality, 4x faster)
     
     comment === Basic Settings ===
     positive Duration_s 12.0
@@ -210,17 +226,7 @@ elsif preset = 9
     preset_name$ = "ElectronicOrganisms"
 endif
 
-# Speed mode
-if speed_mode = 1
-    controlRateMultiplier = 1.0
-    speedStr$ = "Full Quality"
-elsif speed_mode = 2
-    controlRateMultiplier = 0.5
-    speedStr$ = "Balanced"
-else
-    controlRateMultiplier = 0.25
-    speedStr$ = "Fast"
-endif
+speedStr$ = "Full bandwidth"
 
 startTime = stopwatch
 
@@ -228,32 +234,23 @@ startTime = stopwatch
 uid$ = string$(randomInteger(10000, 99999))
 twoPi = 2 * pi
 
-# OPTIMIZED: Lower control rate (still captures waveform detail)
-baseControlRate = max(8000, base_frequency_Hz * number_of_breakpoints * 2)
-if baseControlRate > 22050
-    baseControlRate = 22050
-endif
-
-controlRate = round(baseControlRate * controlRateMultiplier)
-if controlRate < 4000
-    controlRate = 4000
-endif
-
-nControlSamples = round(duration_s * controlRate)
+# v3.1: synthesis runs at the target sample rate (the old
+# "control rate" bandlimited the output at half its value)
+synthRate = sample_rate_Hz
 
 # === Info ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  GENDYN SYNTHESIS v3.0 OPTIMIZED"
-writeInfoLine: "  A Tribute to Iannis Xenakis (1922-2001)"
-writeInfoLine: "=============================================="
+appendInfoLine: "  GENDYN SYNTHESIS v3.1"
+appendInfoLine: "  A Tribute to Iannis Xenakis (1922-2001)"
+appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Speed: ", speedStr$
 appendInfoLine: "Duration: ", duration_s, " s"
 appendInfoLine: "Breakpoints: ", number_of_breakpoints
 appendInfoLine: "Base frequency: ", base_frequency_Hz, " Hz"
-appendInfoLine: "Control rate: ", controlRate, " Hz"
+appendInfoLine: "Synthesis rate: ", synthRate, " Hz (full bandwidth)"
 appendInfoLine: "Distribution: ", distribution_type$
 appendInfoLine: ""
 
@@ -281,208 +278,190 @@ if spatial_mode >= 2
     currentFreq2 = base_frequency_Hz * (1 + 0.05 * randomUniform(-1, 1))
 endif
 
-# === Create output sound buffer ===
+# === Create output sound buffer (v3.1: full audio rate) ===
 appendInfoLine: "Creating sound buffer..."
-outputSound = Create Sound from formula: "gendyn_" + uid$, 1, 0, duration_s, controlRate, "0"
+outputSound = Create Sound from formula: "gendyn_" + uid$, 1, 0, duration_s, synthRate, "0"
 
 if spatial_mode >= 2
-    outputSound2 = Create Sound from formula: "gendyn2_" + uid$, 1, 0, duration_s, controlRate, "0"
+    outputSound2 = Create Sound from formula: "gendyn2_" + uid$, 1, 0, duration_s, synthRate, "0"
 endif
 
-# === OPTIMIZED SYNTHESIS ===
-appendInfoLine: "Synthesizing GENDYN..."
+# === v3.1 SYNTHESIS: one Formula (part) per waveform period ===
+# Breakpoint state lives in two small matrices per voice:
+#   am: amplitudes, N+1 cols (col N+1 = col 1, the wrap)
+#   cm: cumulative durations, N+1 cols (col 1 = 0, col N+1
+#       PINNED to exactly 1.0 -- also fixes the v3.0 float-edge
+#       silent-sample gap)
+# The interpolation cascade is a CONSTANT formula string reading
+# them via object[]; genT/genP are plain script variables the
+# formula references. Praat's C++ engine evaluates per sample.
 
-# OPTIMIZATION: Generate in chunks instead of sample-by-sample
-chunkSize = 1024
-numChunks = ceiling(nControlSamples / chunkSize)
-
-phase = 0
-generation = 0
-sampleIdx = 1
-
+nBp1 = number_of_breakpoints + 1
+amMat = Create simple Matrix: "am1_" + uid$, 1, nBp1, "0"
+cmMat = Create simple Matrix: "cm1_" + uid$, 1, nBp1, "0"
 if spatial_mode >= 2
-    phase2 = 0
-    generation2 = 0
-    sampleIdx2 = 1
+    amMat2 = Create simple Matrix: "am2_" + uid$, 1, nBp1, "0"
+    cmMat2 = Create simple Matrix: "cm2_" + uid$, 1, nBp1, "0"
 endif
 
-lastReportPercent = 0
-
-for chunk to numChunks
-    # Determine chunk range
-    chunkStart = (chunk - 1) * chunkSize + 1
-    chunkEnd = min(chunk * chunkSize, nControlSamples)
-    chunkLen = chunkEnd - chunkStart + 1
-    
-    # Build waveform chunk for voice 1
-    for cs from 1 to chunkLen
-        # Find current segment and interpolate
-        cumDur = 0
-        value = 0
-        
-        for bp to number_of_breakpoints
-            nextCumDur = cumDur + dur[bp]
-            if phase >= cumDur and phase < nextCumDur
-                nextBp = bp + 1
-                if nextBp > number_of_breakpoints
-                    nextBp = 1
-                endif
-                
-                if dur[bp] > 0
-                    localPhase = (phase - cumDur) / dur[bp]
-                else
-                    localPhase = 0
-                endif
-                
-                value = amp[bp] + (amp[nextBp] - amp[bp]) * localPhase
-                bp = number_of_breakpoints
-            endif
-            cumDur = nextCumDur
-        endfor
-        
-        waveChunk[cs] = value
-        
-        # Advance phase
-        phaseIncrement = currentFreq / controlRate
-        phase = phase + phaseIncrement
-        
-        # Wrap and evolve
-        if phase >= 1
-            phase = phase - 1
-            generation = generation + 1
-            
-            # Evolve amplitudes
-            for bp to number_of_breakpoints
-                @getRandomStep: amplitude_step
-                newAmp = amp[bp] + getRandomStep.result
-                @applyBarrier: newAmp, -amplitude_barrier, amplitude_barrier
-                amp[bp] = applyBarrier.result
-            endfor
-            
-            # Evolve durations
-            totalDur = 0
-            for bp to number_of_breakpoints
-                @getRandomStep: duration_step
-                newDur = dur[bp] * (1 + getRandomStep.result)
-                if newDur < 0.01
-                    newDur = 0.01
-                endif
-                dur[bp] = newDur
-                totalDur = totalDur + newDur
-            endfor
-            
-            for bp to number_of_breakpoints
-                dur[bp] = dur[bp] / totalDur
-            endfor
-            
-            # Evolve frequency
-            @getRandomStep: duration_step
-            currentFreq = currentFreq * (1 + getRandomStep.result * 0.5)
-            @applyBarrier: currentFreq, min_frequency_Hz, max_frequency_Hz
-            currentFreq = applyBarrier.result
+procedure refreshMats: .amId, .cmId, .which
+    .cum = 0
+    selectObject: .cmId
+    Set value: 1, 1, 0
+    for .bp from 1 to number_of_breakpoints
+        if .which = 1
+            .a = amp[.bp]
+            .d = dur[.bp]
+        else
+            .a = amp2[.bp]
+            .d = dur2[.bp]
+        endif
+        selectObject: .amId
+        Set value: 1, .bp, .a
+        .cum = .cum + .d
+        selectObject: .cmId
+        if .bp < number_of_breakpoints
+            Set value: 1, .bp + 1, .cum
+        else
+            Set value: 1, .bp + 1, 1.0
         endif
     endfor
-    
-    # OPTIMIZED: Write chunk to sound (much faster than sample-by-sample)
+    selectObject: .amId
+    if .which = 1
+        Set value: 1, number_of_breakpoints + 1, amp[1]
+    else
+        Set value: 1, number_of_breakpoints + 1, amp2[1]
+    endif
+endproc
+
+procedure buildGendynFormula: .amId, .cmId, .tVar$, .pVar$
+    .ph$ = "min((x - " + .tVar$ + ") / " + .pVar$ + ", 0.9999995)"
+    .am$ = string$(.amId)
+    .cm$ = string$(.cmId)
+    .f$ = ""
+    for .bp from 1 to number_of_breakpoints
+        .b$ = string$(.bp)
+        .b1$ = string$(.bp + 1)
+        .lerp$ = "object[" + .am$ + ",1," + .b$ + "] + (object[" + .am$ + ",1," + .b1$
+            ... + "] - object[" + .am$ + ",1," + .b$ + "]) * (" + .ph$
+            ... + " - object[" + .cm$ + ",1," + .b$ + "]) / (object[" + .cm$ + ",1," + .b1$
+            ... + "] - object[" + .cm$ + ",1," + .b$ + "] + 1e-12)"
+        if .bp < number_of_breakpoints
+            .f$ = .f$ + "if " + .ph$ + " < object[" + .cm$ + ",1," + .b1$ + "] then " + .lerp$ + " else "
+        else
+            .f$ = .f$ + .lerp$
+        endif
+    endfor
+    for .bp from 1 to number_of_breakpoints - 1
+        .f$ = .f$ + " fi"
+    endfor
+    buildGendynFormula.result$ = .f$
+endproc
+
+@buildGendynFormula: amMat, cmMat, "genT", "genP"
+gendynF1$ = buildGendynFormula.result$
+if spatial_mode >= 2
+    @buildGendynFormula: amMat2, cmMat2, "genT2", "genP2"
+    gendynF2$ = buildGendynFormula.result$
+endif
+
+appendInfoLine: "Synthesizing GENDYN (voice 1)..."
+
+genT = 0
+generation = 0
+lastReportPercent = 0
+while genT < duration_s
+    genP = 1 / currentFreq
+    @refreshMats: amMat, cmMat, 1
     selectObject: outputSound
-    for cs from 1 to chunkLen
-        Set value at sample number: 1, chunkStart + cs - 1, waveChunk[cs]
+    Formula (part): genT, min(genT + genP, duration_s), 1, 1, gendynF1$
+    generation = generation + 1
+    
+    # Evolve amplitudes
+    for bp to number_of_breakpoints
+        @getRandomStep: amplitude_step
+        newAmp = amp[bp] + getRandomStep.result
+        @applyBarrier: newAmp, -amplitude_barrier, amplitude_barrier
+        amp[bp] = applyBarrier.result
     endfor
     
-    # Voice 2 (stereo)
-    if spatial_mode >= 2
-        for cs from 1 to chunkLen
-            cumDur2 = 0
-            value2 = 0
-            
-            for bp to number_of_breakpoints
-                nextCumDur2 = cumDur2 + dur2[bp]
-                if phase2 >= cumDur2 and phase2 < nextCumDur2
-                    nextBp = bp + 1
-                    if nextBp > number_of_breakpoints
-                        nextBp = 1
-                    endif
-                    
-                    if dur2[bp] > 0
-                        localPhase2 = (phase2 - cumDur2) / dur2[bp]
-                    else
-                        localPhase2 = 0
-                    endif
-                    
-                    value2 = amp2[bp] + (amp2[nextBp] - amp2[bp]) * localPhase2
-                    bp = number_of_breakpoints
-                endif
-                cumDur2 = nextCumDur2
-            endfor
-            
-            waveChunk2[cs] = value2
-            
-            phaseIncrement2 = currentFreq2 / controlRate
-            phase2 = phase2 + phaseIncrement2
-            
-            if phase2 >= 1
-                phase2 = phase2 - 1
-                generation2 = generation2 + 1
-                
-                for bp to number_of_breakpoints
-                    @getRandomStep: amplitude_step
-                    newAmp2 = amp2[bp] + getRandomStep.result
-                    @applyBarrier: newAmp2, -amplitude_barrier, amplitude_barrier
-                    amp2[bp] = applyBarrier.result
-                endfor
-                
-                totalDur2 = 0
-                for bp to number_of_breakpoints
-                    @getRandomStep: duration_step
-                    newDur2 = dur2[bp] * (1 + getRandomStep.result)
-                    if newDur2 < 0.01
-                        newDur2 = 0.01
-                    endif
-                    dur2[bp] = newDur2
-                    totalDur2 = totalDur2 + newDur2
-                endfor
-                
-                for bp to number_of_breakpoints
-                    dur2[bp] = dur2[bp] / totalDur2
-                endfor
-                
-                @getRandomStep: duration_step
-                currentFreq2 = currentFreq2 * (1 + getRandomStep.result * 0.5)
-                @applyBarrier: currentFreq2, min_frequency_Hz, max_frequency_Hz
-                currentFreq2 = applyBarrier.result
-            endif
-        endfor
-        
-        selectObject: outputSound2
-        for cs from 1 to chunkLen
-            Set value at sample number: 1, chunkStart + cs - 1, waveChunk2[cs]
-        endfor
-    endif
+    # Evolve durations
+    totalDur = 0
+    for bp to number_of_breakpoints
+        @getRandomStep: duration_step
+        newDur = dur[bp] * (1 + getRandomStep.result)
+        if newDur < 0.01
+            newDur = 0.01
+        endif
+        dur[bp] = newDur
+        totalDur = totalDur + newDur
+    endfor
+    for bp to number_of_breakpoints
+        dur[bp] = dur[bp] / totalDur
+    endfor
     
-    # Progress
-    percentDone = round(100 * chunk / numChunks)
-    if percentDone >= lastReportPercent + 10
-        appendInfoLine: "  ", percentDone, "% | Gen: ", generation, " | Freq: ", fixed$(currentFreq, 0), " Hz"
+    # Evolve frequency
+    @getRandomStep: duration_step
+    currentFreq = currentFreq * (1 + getRandomStep.result * 0.5)
+    @applyBarrier: currentFreq, min_frequency_Hz, max_frequency_Hz
+    currentFreq = applyBarrier.result
+    
+    genT = genT + genP
+    
+    percentDone = round(100 * genT / duration_s)
+    if percentDone >= lastReportPercent + 20
+        appendInfoLine: "  ", min(percentDone, 100), "% | Gen: ", generation, " | Freq: ", fixed$(currentFreq, 0), " Hz"
         lastReportPercent = percentDone
     endif
-endfor
+endwhile
+
+if spatial_mode >= 2
+    appendInfoLine: "Synthesizing GENDYN (voice 2)..."
+    genT2 = 0
+    generation2 = 0
+    while genT2 < duration_s
+        genP2 = 1 / currentFreq2
+        @refreshMats: amMat2, cmMat2, 2
+        selectObject: outputSound2
+        Formula (part): genT2, min(genT2 + genP2, duration_s), 1, 1, gendynF2$
+        generation2 = generation2 + 1
+        
+        for bp to number_of_breakpoints
+            @getRandomStep: amplitude_step
+            newAmp2 = amp2[bp] + getRandomStep.result
+            @applyBarrier: newAmp2, -amplitude_barrier, amplitude_barrier
+            amp2[bp] = applyBarrier.result
+        endfor
+        
+        totalDur2 = 0
+        for bp to number_of_breakpoints
+            @getRandomStep: duration_step
+            newDur2 = dur2[bp] * (1 + getRandomStep.result)
+            if newDur2 < 0.01
+                newDur2 = 0.01
+            endif
+            dur2[bp] = newDur2
+            totalDur2 = totalDur2 + newDur2
+        endfor
+        for bp to number_of_breakpoints
+            dur2[bp] = dur2[bp] / totalDur2
+        endfor
+        
+        @getRandomStep: duration_step
+        currentFreq2 = currentFreq2 * (1 + getRandomStep.result * 0.5)
+        @applyBarrier: currentFreq2, min_frequency_Hz, max_frequency_Hz
+        currentFreq2 = applyBarrier.result
+        
+        genT2 = genT2 + genP2
+    endwhile
+endif
 
 appendInfoLine: ""
 appendInfoLine: "Total generations: ", generation
 
-# === Resample to audio rate ===
-appendInfoLine: "Resampling to audio rate..."
-
-selectObject: outputSound
-finalSound = Resample: sample_rate_Hz, 50
-removeObject: outputSound
-outputSound = finalSound
-
+removeObject: amMat, cmMat
 if spatial_mode >= 2
-    selectObject: outputSound2
-    finalSound2 = Resample: sample_rate_Hz, 50
-    removeObject: outputSound2
-    outputSound2 = finalSound2
+    removeObject: amMat2, cmMat2
 endif
 
 # === Apply fade ===
