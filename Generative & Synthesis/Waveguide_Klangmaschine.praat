@@ -3,7 +3,34 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2025) - Audio analysis now drives reverb (cutoff/wet/decay/tail)
+# Version: 2.3 (2026)
+#
+# Changelog v2.3 (2026):
+#   - Internal_rate default raised 5512.5 -> 11025 Hz. The old
+#     default put a structural 2.76 kHz Nyquist under the whole
+#     instrument (the soundboard's 3200 Hz mode was clamped below
+#     its own design frequency; the stereo split filtered content
+#     that could not exist). MEASURED: the raise costs +1.1 s on
+#     an 8 s render (10.3 -> 11.4 s; 22050 -> 39.3 s, available
+#     for patient renders) and adds ~3 dB integrated energy in
+#     the newly available 2.8-3.9 kHz band (seeded same-chord
+#     comparison) -- concentrated in attack transients and body
+#     air; the instrument's own damping keeps it dark by design.
+#   - FIX (pitch): the delay-line buffer sized for >= 82 Hz, but
+#     analysis constraints and transpose legitimately reach
+#     MIDI 28 (41.2 Hz); the index guard then silently FLOORED
+#     the read -- low bass notes played at a wrong,
+#     buffer-limited pitch. Buffer now covers the true floor.
+#   - FIX: clearinfo ran AFTER the audio-analysis pipeline,
+#     erasing its entire report (pitches, SATB ranges, HNR,
+#     centroid, decay mapping) before it could be read.
+#   - FIX: the wet reverb channels were peak-normalized
+#     INDEPENDENTLY -- rebalancing the deliberately spectral-split
+#     stereo arbitrarily per run. Now scaled jointly.
+#   - Draw_visualization / Play_result gates added (house
+#     convention; Play was unconditional).
+#
+# Changelog v2.2 (2025): audio analysis drives reverb (cutoff/wet/decay/tail)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -37,8 +64,9 @@ form Synthesize Random SATB Klang Machine
     comment (If unchecked, manual parameters below are used)
 
     real Duration_s 8.0
-    comment --- CPU Optimization ---
-    positive Internal_rate 5512.5
+    comment --- CPU / Bandwidth (measured: 8 s piece renders in ---
+    comment --- ~11 s at 11025 Hz, ~39 s at 22050; Nyquist = rate/2) ---
+    positive Internal_rate 11025
     positive Final_rate 44100
     integer Transpose_semitones 0
 
@@ -64,12 +92,15 @@ form Synthesize Random SATB Klang Machine
         option None (standard waveguide)
         option Subtle (slight per-voice variation)
         option Wild (imaginary instrument space)
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
 # =============================================================
 # AUDIO ANALYSIS PIPELINE
 # =============================================================
 
+clearinfo
 audio_was_analyzed = 0
 analysis_pitch_count = 0
 
@@ -494,8 +525,7 @@ endif
 # 1. GLOBAL SETUP & RANDOMIZED PARAMETERS
 # =============================================================
 Erase all
-clearinfo
-appendInfoLine: "KLANG MACHINE v2.1: Generating New Patch..."
+appendInfoLine: "KLANG MACHINE v2.3: Generating New Patch..."
 if audio_was_analyzed
     appendInfoLine: "(Parameters derived from audio analysis)"
 endif
@@ -819,7 +849,11 @@ for voice from 1 to 4
             ... "  ct=", fixed$(contact_time * 1000, 1), "ms"
     endif
 
-    buffer_size = round(internal_rate / 82.0) + 40
+    # v2.3: sized for the true bass floor (MIDI 28 = 41.2 Hz is
+    # reachable via analysis constraints or transpose; the old
+    # /82 sizing made the index guard floor the read -- wrong
+    # pitch on low notes)
+    buffer_size = round(internal_rate / 38.0) + 40
 
     if strings = 1
         f1 = base_freq
@@ -1389,10 +1423,20 @@ Filter (pass Hann band): low_cutoff_Hz * 1.2, high_cutoff_Hz * 0.95, smoothing_H
 filtRight = selected("Sound")
 removeObject: convRight
 
+# v2.3: JOINT wet scaling -- independent per-channel peaks
+# rebalanced the deliberately spectral-split stereo
 selectObject: filtLeft
-Scale peak: 0.95
+wpL = Get absolute extremum: 0, 0, "None"
 selectObject: filtRight
-Scale peak: 0.95
+wpR = Get absolute extremum: 0, 0, "None"
+wpMax = max(wpL, wpR)
+if wpMax > 1e-9
+    wjs = 0.95 / wpMax
+    selectObject: filtLeft
+    Formula: "self * wjs"
+    selectObject: filtRight
+    Formula: "self * wjs"
+endif
 
 wet_str$ = string$(wet_level)
 dry_str$ = string$(dry_level)
@@ -1442,8 +1486,6 @@ removeObject: filtLeft, filtRight, original
 # =============================================================
 # 8. VISUALIZATION
 # =============================================================
-appendInfoLine: "Drawing Visualization..."
-
 procedure midiName: .midi, .result$
     .octave = floor(.midi / 12) - 1
     .pc = .midi mod 12
@@ -1475,6 +1517,8 @@ procedure midiName: .midi, .result$
     .result$ = .n$ + string$(.octave)
 endproc
 
+if draw_visualization
+appendInfoLine: "Drawing Visualization..."
 @midiName: bass_note, ""
 bass_name$ = midiName.result$
 @midiName: tenor_note, ""
@@ -1489,10 +1533,10 @@ Font size: 11
 Colour: "Black"
 if audio_was_analyzed
     Text special: 0.5, "centre", 0.5, "half", "Helvetica", 11, "0",
-        ... "##Waveguide Klangmaschine v2.1 — " + presetName$ + " [from audio]##"
+        ... "##Waveguide Klangmaschine v2.3 — " + presetName$ + " [from audio]##"
 else
     Text special: 0.5, "centre", 0.5, "half", "Helvetica", 11, "0",
-        ... "##Waveguide Klangmaschine — " + presetName$ + " Reverb##"
+        ... "##Waveguide Klangmaschine v2.3 — " + presetName$ + " Reverb##"
 endif
 
 Select outer viewport: 0.6, 7.7, 0.6, 5.3
@@ -1555,8 +1599,12 @@ Text special: 0.5, "centre", 0.5, "half", "Helvetica", 6, "0",
 
 Font size: 10
 Colour: "Black"
+endif
 
 appendInfoLine: "=== Done ==="
 
+if play_result
+    selectObject: result
+    Play
+endif
 selectObject: result
-Play
