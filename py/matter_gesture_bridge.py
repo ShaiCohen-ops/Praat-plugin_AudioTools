@@ -4,26 +4,78 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Matter Gesture Bridge — Stochastic Timbral Plastic
+#   Matter Gesture Bridge — Stochastic Spectral Mosaicing
 #   Python rendering engine. Called by MatterGestureBridge.praat.
 #
-#   Core technique:
-#     1. Slice the Matter Sound into spectral patches (real STFT frames).
-#     2. For each output frame, select the best-matching Matter patch
-#        using gesture-driven target descriptors (intensity, brightness).
-#     3. Apply stochastic modulation: intensity roughness, pitch noise
-#        spectral warp, formant resonance injection, liminal freeze.
-#     4. Griffin-Lim ISTFT → audio.
-#     5. Apply gesture amplitude envelope in the time domain.
+#   What this actually is (v1.3, honest): a stochastic spectral-
+#   mosaicing effect. Matter magnitude-spectrum STFT frames are
+#   selected per output frame by the Gesture's RELATIVE intensity
+#   contour, its TIME-VARYING spectral centroid (brightness), and
+#   (when voiced) its normalized pitch; a continuity mechanism
+#   walks coherent Matter runs whose average length is
+#   Patch_length_sec. Selected spectra pass through spectral
+#   granulation (per-cell log-normal gain), pitch-motion spectral
+#   fracture (circular bin rotation driven by pitch change), and
+#   CONTINUOUS formant-like resonance injection from the
+#   Gesture's estimated F1-F4 trajectories. Phase is
+#   reconstructed with Griffin-Lim; the Gesture's relative
+#   amplitude envelope (with silence gate) is imposed last.
+#   There is no diffusion model, no training, and no learned
+#   prior; renders are seed-reproducible.
+#
+#   Pipeline:
+#     1. Load audio (both sounds MONO-MIXED, resampled).
+#     2. Read Praat descriptor tracks (intensity, pitch, F1-F4);
+#        compute the Gesture's own STFT centroid track (same
+#        frame grid as the output).
+#     3. Build the Matter STFT frame library (mag, RMS, centroid).
+#     4. Sequential gesture-driven frame selection with
+#        continuity (memory O(M) per frame -- no all-to-all
+#        matrix, long Matter files stay safe).
+#     5. Spectral granulation -> pitch-motion fracture ->
+#        continuous formant injection -> liminal freeze.
+#     6. Griffin-Lim phase reconstruction.
+#     7. Relative amplitude envelope + gate; normalize; write.
 #
 # Dependencies:
 #   pip install numpy soundfile
 #   Optional: pip install librosa, scipy (multithreaded FFT)
+#
+# Changelog v1.3 (2026) -- the honesty release (external review):
+#   - FIX: pitch normalization min/max were REVERSED, so the
+#     normalized pitch was almost always the constant 0.5 and the
+#     advertised pitch->brightness frame selection never happened.
+#     Now voiced-only min/max, correct order.
+#   - Gesture BRIGHTNESS is now genuinely used: a time-varying
+#     centroid track computed from the gesture's own STFT (same
+#     mono mixdown, same frame grid) drives centroid matching;
+#     voiced pitch adds a pull. Previously brightness was
+#     diagnostic metadata only.
+#   - Patch_length_sec is now REAL: continuity -- with
+#     probability 1 - hop/patch_sec the selector continues from
+#     the previous Matter frame's successor when that match is
+#     acceptable, so patch length = average coherent Matter run.
+#     This also replaces the all-to-all distance matrix with a
+#     sequential O(M)-per-frame loop: the >1 GB memory blowup on
+#     long Matter files is gone.
+#   - Formant injection is CONTINUOUS (every frame, chunked
+#     evaluation); the old stride touched only ~200 columns,
+#     striping long outputs.
+#   - "diffusion_steps" renamed gl_iterations (both keys
+#     accepted): they are Griffin-Lim phase-reconstruction
+#     iterations. "epochs" is gone (nothing ever trained).
+#   - Stats now include warning=, sel_centroid_corr= (how well
+#     selected Matter centroids track the target curve) and
+#     mean_run_frames= (measured continuity).
+#   - Stage numbering matches the pipeline (8 stages).
+#   - RNG note: selection draws are now per-frame, so v1.3
+#     renders differ from v1.2 at the same seed (still fully
+#     reproducible within v1.3).
 #
 # Changelog v1.2:
 #   - Vectorized the per-frame Python loops (the bottleneck) with identical
@@ -339,6 +391,26 @@ def load_or_build_library(matter: np.ndarray, cfg: dict,
 # GESTURE CONDITIONING
 # =============================================================================
 
+def gesture_centroid_track(gesture: np.ndarray, target_sr: int,
+                           n_frames: int) -> np.ndarray:
+    """
+    Time-varying spectral centroid of the gesture, on the SAME
+    N_FFT/HOP frame grid as the output. This is the brightness
+    trajectory the description promises (v1.3: actually used).
+    """
+    win    = np.hanning(N_FFT).astype(np.float32)
+    n_fr   = max(1, (len(gesture) - N_FFT) // HOP + 1)
+    if len(gesture) >= N_FFT:
+        sw   = np.lib.stride_tricks.sliding_window_view(gesture, N_FFT)[::HOP][:n_fr]
+        spec = np.abs(np.fft.rfft(sw * win[None, :], n=N_FFT, axis=1))
+    else:
+        chunk = np.pad(gesture, (0, N_FFT - len(gesture))) * win
+        spec  = np.abs(np.fft.rfft(chunk, n=N_FFT))[None, :]
+    freqs = np.fft.rfftfreq(N_FFT, d=1.0 / target_sr).astype(np.float32)
+    cen   = (spec * freqs[None, :]).sum(axis=1) / (spec.sum(axis=1) + 1e-8)
+    return interpolate_controls(cen.astype(np.float32), n_frames)
+
+
 def build_gesture_conditioning(controls: dict, n_frames: int, cfg: dict) -> dict:
     gesture_amount = float(cfg.get("gesture_amount", 0.65))
 
@@ -366,6 +438,8 @@ def build_gesture_conditioning(controls: dict, n_frames: int, cfg: dict) -> dict
         "intensity_norm": int_norm,
         "amp_env":        amp_env,
         "pitch_hz":       pitch,
+        "brightness_hz":  controls.get("brightness_track",
+                                       np.full(n_frames, 2000.0, dtype=np.float32)),
         "f1": f1, "f2": f2, "f3": f3, "f4": f4,
     }
 
@@ -378,14 +452,17 @@ def select_matter_frames(lib: dict, cond: dict, cfg: dict,
                           n_frames: int, rng: np.random.Generator,
                           log_file: str = "") -> np.ndarray:
     """
-    For each output frame select the best-matching Matter STFT frame
-    based on the gesture's intensity (→ RMS target) and brightness
-    (→ centroid target).  A small stochastic jitter avoids repetition.
+    Sequential gesture-driven selection: intensity -> RMS target,
+    time-varying brightness (+ voiced pitch pull) -> centroid
+    target, stochastic jitter, and Patch_length continuity.
 
-    Returns selected_mag: (n_freq, n_frames) linear magnitude.
+    Returns (selected_mag (n_freq, n_frames), mean_run_frames,
+    centroid_tracking_r).
     """
     chaos        = float(cfg.get("chaos", 0.50))
     gesture_amt  = float(cfg.get("gesture_amount", 0.65))
+    patch_sec    = float(cfg.get("patch_sec", 1.5))
+    target_sr    = int(cfg.get("target_sr", 44100))
 
     matter_rms = lib["rms"]         # (M,)
     matter_cen = lib["centroid"]    # (M,)
@@ -394,53 +471,97 @@ def select_matter_frames(lib: dict, cond: dict, cfg: dict,
 
     int_norm   = cond["intensity_norm"]  # (n_frames,) in [0,1]
     pitch_hz   = cond["pitch_hz"]        # (n_frames,)
+    bright_hz  = interpolate_controls(cond["brightness_hz"], n_frames)
 
-    # Map gesture intensity [0,1] → target RMS in Matter's range
+    # Map gesture intensity [0,1] -> target RMS in Matter's range
     rms_min, rms_max = matter_rms.min(), matter_rms.max()
     target_rms = rms_min + int_norm * (rms_max - rms_min)
 
-    # Map gesture pitch (where voiced) → centroid target
     cen_min, cen_max = matter_cen.min(), matter_cen.max()
-    voiced    = pitch_hz > 50.0
-    # Normalize pitch within its own range
-    p_min, p_max = float(pitch_hz.max()), float(pitch_hz.min())
-    if p_max > p_min:
+    voiced = pitch_hz > 50.0
+
+    # v1.3: pitch normalized over VOICED frames, correct min/max
+    # order (v1.2 had them reversed -- the normalization always
+    # failed and pitch never steered brightness).
+    p_voiced = pitch_hz[voiced]
+    if len(p_voiced) > 1 and float(p_voiced.max()) > float(p_voiced.min()):
+        p_min, p_max = float(p_voiced.min()), float(p_voiced.max())
         pitch_norm = np.clip((pitch_hz - p_min) / (p_max - p_min + 1e-8), 0.0, 1.0)
     else:
         pitch_norm = np.full(n_frames, 0.5, dtype=np.float32)
 
-    target_cen = np.where(voiced,
-                          cen_min + pitch_norm * (cen_max - cen_min),
-                          np.full(n_frames, lib["mean_cen"])).astype(np.float32)
+    # v1.3: the gesture's TIME-VARYING brightness drives the
+    # centroid target; voiced pitch adds a pull. Both trajectories
+    # the description promises now genuinely act.
+    b_min, b_max = float(bright_hz.min()), float(bright_hz.max())
+    if b_max > b_min:
+        bright_norm = (bright_hz - b_min) / (b_max - b_min)
+    else:
+        bright_norm = np.full(n_frames, 0.5, dtype=np.float32)
+    cen_target_norm = np.where(voiced,
+                               0.5 * (bright_norm + pitch_norm),
+                               bright_norm).astype(np.float32)
+    target_cen = cen_min + cen_target_norm * (cen_max - cen_min)
 
-    # Normalise cost components
     rms_range = rms_max - rms_min + 1e-8
     cen_range = cen_max - cen_min + 1e-8
     norm_rms  = (matter_rms - rms_min) / rms_range   # (M,)
     norm_cen  = (matter_cen - cen_min) / cen_range   # (M,)
-
-    # Vectorized over all output frames at once.
-    tr = (target_rms - rms_min) / rms_range          # (n_frames,)
-    tc = (target_cen - cen_min) / cen_range          # (n_frames,)
+    tr = ((target_rms - rms_min) / rms_range).astype(np.float32)
+    tc = ((target_cen - cen_min) / cen_range).astype(np.float32)
 
     w_rms = gesture_amt
     w_cen = gesture_amt * 0.5
 
-    # Weighted L1 distance for every (Matter frame m, output frame t): (M, n_frames)
-    dist = (w_rms * np.abs(norm_rms[:, None] - tr[None, :])
-            + w_cen * np.abs(norm_cen[:, None] - tc[None, :])).astype(np.float32)
+    # v1.3: SEQUENTIAL selection with continuity. Memory is O(M)
+    # per frame (no all-to-all matrix: long Matter files stay
+    # safe), and Patch_length_sec becomes real -- with
+    # probability 1 - hop/patch the selector continues from the
+    # previous Matter frame's successor when that continuation is
+    # an acceptable match (within tol of the frame's best).
+    hop_dur   = HOP / float(target_sr)
+    p_stay    = max(0.0, 1.0 - hop_dur / max(hop_dur, patch_sec))
+    # tolerance grows with the requested patch length: longer
+    # coherent runs mean more willingness to ride out target drift
+    stay_tol  = (0.15 + 0.10 * min(patch_sec, 4.0)) * (w_rms + w_cen) + 0.05
+    best      = np.zeros(n_frames, dtype=np.int64)
+    prev      = -1
+    run_len   = 0
+    runs      = []
+    for tix in range(n_frames):
+        d = (w_rms * np.abs(norm_rms - tr[tix])
+             + w_cen * np.abs(norm_cen - tc[tix]))
+        d = d + rng.uniform(0.0, chaos * 0.3, size=M).astype(np.float32)
+        d_min = float(d.min())
+        cont  = prev + 1
+        if (prev >= 0 and cont < M and rng.uniform() < p_stay
+                and float(d[cont]) <= d_min + stay_tol):
+            choice = cont
+            run_len += 1
+        else:
+            choice = int(np.argmin(d))
+            if run_len > 0:
+                runs.append(run_len)
+            run_len = 1
+        best[tix] = choice
+        prev = choice
+    if run_len > 0:
+        runs.append(run_len)
 
-    # Stochastic jitter. Drawn as (n_frames, M) then transposed so the random
-    # stream is consumed in the exact same order as the original per-frame loop
-    # (frame 0's M draws, then frame 1's, ...), keeping output reproducible.
-    jitter = rng.uniform(0.0, chaos * 0.3, size=(n_frames, M)).astype(np.float32).T
-    dist += jitter
-
-    best = np.argmin(dist, axis=0)                   # (n_frames,)
     selected = matter_mag[:, best].astype(np.float32)
 
-    log(f"  Frame selection complete: {n_frames} frames from {M} Matter frames", log_file)
-    return selected
+    mean_run = float(np.mean(runs)) if runs else float(n_frames)
+    # diagnostic: how well do the selected Matter centroids track
+    # the target curve? (v1.2's broken pitch path scored ~0 here)
+    sel_cen = matter_cen[best]
+    if float(np.std(sel_cen)) > 1e-6 and float(np.std(target_cen)) > 1e-6:
+        cen_corr = float(np.corrcoef(sel_cen, target_cen)[0, 1])
+    else:
+        cen_corr = 0.0
+
+    log(f"  Frame selection: {n_frames} frames from {M} Matter frames "
+        f"(mean run {mean_run:.1f} frames, centroid tracking r={cen_corr:.3f})", log_file)
+    return selected, mean_run, cen_corr
 
 
 # =============================================================================
@@ -516,17 +637,19 @@ def inject_formant_vectors(mag: np.ndarray, cond: dict, cfg: dict,
     freqs = np.fft.rfftfreq(N_FFT, d=1.0 / target_sr).astype(np.float32)
     bws   = {"f1": 120.0, "f2": 200.0, "f3": 300.0, "f4": 400.0}
 
-    step = max(1, n_frames // 200)
-    cols = np.arange(0, n_frames, step)                   # strided columns to update
+    # v1.3: CONTINUOUS injection -- every frame, chunked so peak
+    # memory stays bounded on long outputs. (The old stride
+    # touched only ~200 columns, striping the trajectory.)
+    chunkN = 4096
     for fname, bw in bws.items():
-        # col_mean recomputed per formant so later formants see earlier
-        # injections, matching the original outer-formant / inner-frame ordering.
-        col_mean = mag[:, cols].mean(axis=0)              # (n_cols,)
-        f_curve  = interpolate_controls(cond[fname], n_frames)[cols]   # (n_cols,)
-        valid    = f_curve >= 50.0
-        boost    = np.exp(-0.5 * ((freqs[:, None] - f_curve[None, :]) / bw) ** 2).astype(np.float32)
-        boost   *= valid[None, :]                         # zero columns with f_hz < 50
-        mag[:, cols] += formant_inj * boost * col_mean[None, :]
+        f_curve = interpolate_controls(cond[fname], n_frames)
+        valid   = (f_curve >= 50.0).astype(np.float32)
+        for c0 in range(0, n_frames, chunkN):
+            c1 = min(c0 + chunkN, n_frames)
+            col_mean = mag[:, c0:c1].mean(axis=0)
+            boost = np.exp(-0.5 * ((freqs[:, None] - f_curve[None, c0:c1]) / bw) ** 2).astype(np.float32)
+            boost *= valid[None, c0:c1]
+            mag[:, c0:c1] += formant_inj * boost * col_mean[None, :]
 
     return mag
 
@@ -696,7 +819,7 @@ def safe_normalize(audio: np.ndarray, target_peak: float = 0.92) -> np.ndarray:
 def main() -> None:
     check_dependencies()
 
-    ap = argparse.ArgumentParser(description="Matter Gesture Bridge v1.2")
+    ap = argparse.ArgumentParser(description="Matter Gesture Bridge v1.3")
     ap.add_argument("config_json", type=str)
     args = ap.parse_args()
 
@@ -722,7 +845,7 @@ def main() -> None:
         except Exception:
             pass
 
-    log("=== Matter Gesture Bridge v1.2 ===", log_file)
+    log("=== Matter Gesture Bridge v1.3 ===", log_file)
     log(f"Matter:  {os.path.basename(matter_wav)}", log_file)
     log(f"Gesture: {os.path.basename(gesture_wav)}", log_file)
     log(f"freeze_t={cfg.get('freeze_t',0.45)}  chaos={cfg.get('chaos',0.50)}  "
@@ -748,38 +871,40 @@ def main() -> None:
         write_done(done_file, "error"); sys.exit(1)
 
     # [2] Extract gesture controls
-    log("[2/7] Extracting gesture controls...", log_file)
+    log("[2/8] Extracting gesture controls...", log_file)
     controls = extract_internal_gesture_controls(cfg, gesture, target_sr, log_file)
 
     # [3] Build / load Matter library
-    log("[3/7] Building Matter library...", log_file)
+    log("[3/8] Building Matter library...", log_file)
     cache_dir = os.path.dirname(log_file) if log_file else os.path.dirname(result_wav)
     lib = load_or_build_library(matter, cfg, cache_dir, log_file)
 
     # [4] Determine output frame count from gesture duration
     gesture_samples = len(gesture)
     n_frames = max(4, (gesture_samples - N_FFT) // HOP + 1)
-    log(f"  Output: {n_frames} frames -> {gesture_samples/target_sr:.3f}s", log_file)
+    log(f"[4/8] Output: {n_frames} frames -> {gesture_samples/target_sr:.3f}s", log_file)
 
-    # [5] Build gesture conditioning
+    # [5] Build gesture conditioning (incl. the time-varying
+    # brightness track on the output frame grid)
+    controls["brightness_track"] = gesture_centroid_track(gesture, target_sr, n_frames)
     cond = build_gesture_conditioning(controls, n_frames, cfg)
 
     # [6] Select Matter frames driven by gesture
-    log("[5/7] Gesture-driven patch selection...", log_file)
-    mag = select_matter_frames(lib, cond, cfg, n_frames, rng, log_file)
+    log("[5/8] Gesture-driven frame selection...", log_file)
+    mag, mean_run, cen_corr = select_matter_frames(lib, cond, cfg, n_frames, rng, log_file)
 
     # [7] Modulation passes (all in linear magnitude space)
-    log("[6/7] Applying modulation...", log_file)
+    log("[6/8] Applying modulation...", log_file)
     mag = apply_intensity_roughness(mag,    cond, cfg, rng)
     mag = apply_pitch_noise_schedule(mag,   cond, cfg, target_sr, rng)
     mag = inject_formant_vectors(mag,       cond, cfg, target_sr)
     mag = apply_liminal_freeze(mag,         lib,  cfg, rng)
     mag = np.clip(mag, 0.0, None)          # ensure non-negative magnitude
 
-    # [8] ISTFT → audio
-    log("[7/7] Rendering...", log_file)
+    # [8] ISTFT -> audio
+    log("[7/8] Griffin-Lim phase reconstruction...", log_file)
     try:
-        n_iter_gl  = int(cfg.get("diffusion_steps", 64))
+        n_iter_gl  = int(cfg.get("gl_iterations", cfg.get("diffusion_steps", 64)))
         use_phasor = bool(int(cfg.get("gl_phasor", 1)))
         audio = griffin_lim(mag, n_iter=n_iter_gl, seed=seed,
                             log_file=log_file, use_phasor=use_phasor)
@@ -794,6 +919,7 @@ def main() -> None:
         audio = np.pad(audio, (0, gesture_samples - len(audio)))
 
     # Apply gesture amplitude envelope
+    log("[8/8] Amplitude envelope + normalize...", log_file)
     audio = apply_amplitude_envelope(audio, cond, cfg, target_sr)
 
     # Normalize
@@ -836,6 +962,16 @@ def main() -> None:
                 sf_out.write(f"pitch_mean={float(voiced.mean()) if len(voiced) else 0.0:.2f}\n")
                 sf_out.write(f"pitch_range={float(voiced.max() - voiced.min()) if len(voiced) > 1 else 0.0:.2f}\n")
                 sf_out.write(f"brightness={float(cfg.get('gesture_brightness', 2000.0)):.1f}\n")
+                sf_out.write(f"sel_centroid_corr={cen_corr:.3f}\n")
+                sf_out.write(f"mean_run_frames={mean_run:.1f}\n")
+                warn_bits = []
+                if len(voiced) == 0:
+                    warn_bits.append("no voiced pitch in gesture")
+                if lib["mag"].shape[1] < 8:
+                    warn_bits.append("very short Matter file")
+                if cen_corr < 0.2:
+                    warn_bits.append("weak centroid tracking (flat gesture or flat Matter?)")
+                sf_out.write(f"warning={'; '.join(warn_bits)}\n")
         except Exception as e:
             log(f"  Warning: could not write stats file: {e}", log_file)
 

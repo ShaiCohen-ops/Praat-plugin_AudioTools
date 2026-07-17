@@ -3,19 +3,40 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.3 (2026)
+#
+# Changelog v1.3 (2026) -- external-review repairs (both sides):
+#   - Description rewritten honestly: this is stochastic spectral
+#     MOSAICING (no diffusion model, no training, no epochs);
+#     "Diffusion steps" are Griffin-Lim phase-reconstruction
+#     iterations and are now named so; Model epochs removed.
+#   - Patch length is now REAL: average coherent Matter run
+#     length (selection continuity), engine-side.
+#   - Engine fixes: reversed pitch normalization corrected;
+#     time-varying gesture brightness now genuinely drives
+#     centroid matching; formant injection continuous (was
+#     strided); selection memory O(M) per frame (no >1 GB
+#     matrices on long Matter files).
+#   - Praat analysis uses a MONO MIXDOWN (matching the engine's
+#     channel averaging; channel 1 was analyzed before).
+#   - Viz title strip on house geometry (was the collision form);
+#     summary shows centroid-tracking r and mean run length;
+#     warning line is now actually produced by the engine.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Matter Gesture Bridge — Stochastic Timbral Plastic
+#   Matter Gesture Bridge — Stochastic Spectral Mosaicing
 #
-#   Structural cross-synthesis audio effect.
-#   The user selects one Sound object (the Gesture Sound) and
-#   chooses one long external audio file (the Matter Sound).
-#   Python animates the Matter's timbral substance using the
-#   Gesture's motion — intensity, pitch, brightness, and formant
-#   trajectory — through a stochastic diffusion-style prior.
+#   Structural cross-synthesis audio effect (stochastic spectral
+#   mosaicing). The user selects one Sound object (the Gesture)
+#   and chooses one long external audio file (the Matter).
+#   The Python engine reorders the Matter's STFT frames along the
+#   Gesture's motion -- relative intensity, time-varying
+#   brightness, voiced pitch, and formant-like resonance
+#   trajectories -- with Patch-length continuity, spectral
+#   granulation, pitch-motion spectral fracture, and Griffin-Lim
+#   phase reconstruction.
 #
 #   Result: a new Praat Sound object. 
 #
@@ -114,7 +135,7 @@ if not fileReadable(matter_sound_file$)
 endif
 
 # ---- FORM ----
-form Matter Gesture Bridge v1.1
+form Matter Gesture Bridge v1.3
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -126,20 +147,20 @@ form Matter Gesture Bridge v1.1
         option Spectral breath
     comment === Rendering ===
     integer Target_sample_rate 44100
-    integer Training_excerpt_limit_sec 420
+    integer Matter_excerpt_limit_sec 420
+    comment Patch length: average coherent Matter run (selection continuity)
     positive Patch_length_sec 1.5
-    integer Model_epochs 8
-    integer Diffusion_steps 64
+    integer Griffin_Lim_iterations 64
     comment === Synthesis Controls ===
     comment Freeze time: 0.0=crystallized  0.55=liminal cloud  0.95=ghost matter
     real Freeze_time 0.45
     comment Gesture conditioning amount (0.0-1.0)
     real Gesture_amount 0.65
-    comment Intensity roughness: high=unstable/noisy, low=crystallized
+    comment Spectral granulation: high=unstable/noisy, low=crystallized
     real Intensity_roughness 0.75
-    comment Pitch / brightness noise injection (0.0-1.0)
+    comment Pitch-motion spectral fracture (0.0-1.0)
     real Pitch_noise 0.55
-    comment Formant injection: bends the spectral field (0.0-1.0)
+    comment Formant-like resonance injection (0.0-1.0)
     real Formant_injection 0.45
     comment Chaos / crystallization balance (0.0=crystallize, 1.0=chaos)
     real Chaos 0.50
@@ -158,7 +179,7 @@ if preset = 2
     pitch_noise = 0.25
     formant_injection = 0.60
     chaos = 0.15
-    diffusion_steps = 80
+    griffin_Lim_iterations = 80
     presetName$ = "CrystallineTrace"
 elsif preset = 3
     freeze_time = 0.55
@@ -167,7 +188,7 @@ elsif preset = 3
     pitch_noise = 0.50
     formant_injection = 0.45
     chaos = 0.50
-    diffusion_steps = 64
+    griffin_Lim_iterations = 64
     presetName$ = "LiminalCloud"
 elsif preset = 4
     freeze_time = 0.90
@@ -176,7 +197,7 @@ elsif preset = 4
     pitch_noise = 0.70
     formant_injection = 0.20
     chaos = 0.85
-    diffusion_steps = 48
+    griffin_Lim_iterations = 48
     presetName$ = "GhostMatter"
 elsif preset = 5
     freeze_time = 0.35
@@ -185,7 +206,7 @@ elsif preset = 5
     pitch_noise = 0.80
     formant_injection = 0.35
     chaos = 0.75
-    diffusion_steps = 64
+    griffin_Lim_iterations = 64
     presetName$ = "VolatileGesture"
 elsif preset = 6
     freeze_time = 0.05
@@ -194,7 +215,7 @@ elsif preset = 6
     pitch_noise = 0.10
     formant_injection = 0.80
     chaos = 0.05
-    diffusion_steps = 96
+    griffin_Lim_iterations = 96
     presetName$ = "DeepFreeze"
 elsif preset = 7
     freeze_time = 0.60
@@ -203,7 +224,7 @@ elsif preset = 7
     pitch_noise = 0.60
     formant_injection = 0.55
     chaos = 0.40
-    diffusion_steps = 64
+    griffin_Lim_iterations = 64
     presetName$ = "SpectralBreath"
 else
     presetName$ = "Custom"
@@ -221,7 +242,7 @@ outputName$ = gestureName$ + "_MGB"
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Matter Gesture Bridge v1.1 ==="
+writeInfoLine:  "=== Matter Gesture Bridge v1.3 ==="
 appendInfoLine: "Gesture Sound:  ", gestureName$
 appendInfoLine: "Matter file:    ", matter_sound_file$
 appendInfoLine: "Preset:         ", presetName$
@@ -252,10 +273,13 @@ appendInfoLine: "  Gesture: ", fixed$(gestureDur, 3), " s @ ", gestureSR, " Hz  
 appendInfoLine: "[2/5] Extracting gesture controls..."
 
 # ---- Convert to mono for analysis ----
+# v1.3: mono MIXDOWN, matching the engine's channel averaging
+# (channel 1 alone was analyzed before -- descriptors and audio
+# could disagree on stereo gestures)
 selectObject: gestureId
 nGestCh = Get number of channels
 if nGestCh > 1
-    Extract one channel: 1
+    Convert to mono
     gestMono = selected("Sound")
 else
     Copy: "mgb_gestmono"
@@ -408,10 +432,9 @@ writeFile: configJson$,
     ... "  ""pitch_txt"":        """ + pitchJ$        + """," + newline$ +
     ... "  ""formant_txt"":      """ + formantJ$      + """," + newline$ +
     ... "  ""target_sr"":        "  + string$(target_sample_rate)          + "," + newline$ +
-    ... "  ""train_limit_sec"":  "  + string$(training_excerpt_limit_sec)  + "," + newline$ +
+    ... "  ""train_limit_sec"":  "  + string$(matter_excerpt_limit_sec)    + "," + newline$ +
     ... "  ""patch_sec"":        "  + fixed$(patch_length_sec, 4)          + "," + newline$ +
-    ... "  ""epochs"":           "  + string$(model_epochs)                + "," + newline$ +
-    ... "  ""diffusion_steps"":  "  + string$(diffusion_steps)             + "," + newline$ +
+    ... "  ""gl_iterations"":    "  + string$(griffin_Lim_iterations)      + "," + newline$ +
     ... "  ""freeze_t"":         "  + fixed$(freezeT,      4)              + "," + newline$ +
     ... "  ""gesture_amount"":   "  + fixed$(gestureAmt,   4)              + "," + newline$ +
     ... "  ""intensity_roughness"": " + fixed$(intRoughness, 4)            + "," + newline$ +
@@ -529,6 +552,8 @@ statIntRange$    = "?"
 statPitchMean$   = "?"
 statPitchRange$  = "?"
 statBrightness$  = "?"
+statCenCorr$     = "?"
+statMeanRun$     = "?"
 warningStat$     = ""
 
 if fileReadable(statsFile$)
@@ -567,6 +592,10 @@ if fileReadable(statsFile$)
     statPitchRange$ = parseStatLine.result$
     @parseStatLine: statsText$, "brightness="
     statBrightness$ = parseStatLine.result$
+    @parseStatLine: statsText$, "sel_centroid_corr="
+    statCenCorr$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_run_frames="
+    statMeanRun$ = parseStatLine.result$
     @parseStatLine: statsText$, "warning="
     warningStat$ = parseStatLine.result$
     if warningStat$ = "?"
@@ -585,15 +614,17 @@ if draw_visualization
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
-    # === Title ===
+    # === Title (v1.3: house geometry -- the old subtitle at
+    # y = -1.2 was the margin-compression collision form) ===
     Select outer viewport: 0, 8, 0, 0.5
+    Select inner viewport: 0, 8, 0, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Matter Gesture Bridge##"
-    Font size: 9
+    Text: 0.5, "centre", 0.72, "half", "##Matter Gesture Bridge v1.3##"
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", gestureName$ + " | " + presetName$ + " | freeze=" + fixed$(freezeT, 2) + " chaos=" + fixed$(chaosVal, 2) + " gesture=" + fixed$(gestureAmt, 2)
+    Text: 0.5, "centre", 0.24, "half", gestureName$ + " | " + presetName$ + " | freeze=" + fixed$(freezeT, 2) + " chaos=" + fixed$(chaosVal, 2) + " gesture=" + fixed$(gestureAmt, 2)
 
     # === Original Waveform ===
     Select outer viewport: 0, 8, 0.6, 1.6
@@ -625,7 +656,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 2.8, 3.75
     selectObject: gestureId
     if nGestureCh > 1
-        Extract one channel: 1
+        Convert to mono
         tmpGestMono = selected("Sound")
     else
         Copy: "tmpGestMono"
@@ -820,7 +851,7 @@ if draw_visualization
     Text: 0.02, "left", 0.92, "half", "Summary:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.76, "half", "Preset=" + presetName$ + " | Frames=" + statNFrames$ + " | GL iters=" + statGLIters$ + " | Cache=" + statCacheHit$
+    Text: 0.02, "left", 0.76, "half", "Preset=" + presetName$ + " | Frames=" + statNFrames$ + " | Griffin-Lim iters=" + statGLIters$ + " | Cache=" + statCacheHit$ + " | centroid r=" + statCenCorr$ + " | run=" + statMeanRun$ + " frames"
     Text: 0.02, "left", 0.57, "half", "freeze=" + statFreeze$ + " | chaos=" + statChaos$ + " | gesture=" + statGestureAmt$ + " | seed=" + statSeed$
     Text: 0.02, "left", 0.38, "half", "Gesture: " + fixed$(gestureDur, 2) + "s  RMS=" + fixed$(gestureRMS, 4) + " | Result: " + fixed$(resultDur, 2) + "s  RMS=" + statRMSOut$ + "  Peak=" + statPeak$
     Colour: "{0.4, 0.4, 0.5}"
@@ -856,7 +887,8 @@ appendInfoLine: "Freeze time:    ", fixed$(freezeT, 2), "  Chaos: ", fixed$(chao
 appendInfoLine: "Roughness:      ", fixed$(intRoughness, 2), "  Pitch noise: ", fixed$(pitchNoise, 2), "  Formant inj: ", fixed$(formantInj, 2)
 appendInfoLine: ""
 appendInfoLine: "Frames:         ", statNFrames$
-appendInfoLine: "GL iters:       ", statGLIters$
+appendInfoLine: "Griffin-Lim:    ", statGLIters$, " iterations"
+appendInfoLine: "Centroid r:     ", statCenCorr$, "   Mean run: ", statMeanRun$, " frames"
 appendInfoLine: "Cache hit:      ", statCacheHit$
 appendInfoLine: "RMS result:     ", statRMSOut$
 appendInfoLine: "Peak:           ", statPeak$
