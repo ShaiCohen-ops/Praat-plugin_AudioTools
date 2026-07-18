@@ -3,7 +3,25 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
+#
+# Changelog v1.4 (2026) -- second-round review repairs:
+#   - JSON config now built as a string and written in one plain
+#     writeFile (the multi-line continuation form parses on
+#     6.4.42 -- probe-verified -- but has failed on other
+#     versions; the library targets 6.3+, so portability wins).
+#   - Patch_length_sec renamed Matter_continuity_sec: it is a
+#     PERSISTENCE SCALE, monotone but content-dependent -- the
+#     acceptance tolerance shortens runs when the gesture moves.
+#     The measured mean run is reported in stats; no false
+#     precision in the label.
+#   - Gesture_amount is now a true MASTER on the engine side
+#     (0 = gesture-free mosaic apart from duration); see the
+#     engine changelog. Preset effective fracture/formant depths
+#     shift by their amount factor -- audible but modest.
+#   - Analysis ranges exposed (Pitch floor/ceiling, Formant
+#     ceiling): the fixed 60-600 Hz / 5500 Hz vocal defaults are
+#     a methodological limit for instrumental gestures.
 #
 # Changelog v1.3 (2026) -- external-review repairs (both sides):
 #   - Description rewritten honestly: this is stochastic spectral
@@ -135,7 +153,7 @@ if not fileReadable(matter_sound_file$)
 endif
 
 # ---- FORM ----
-form Matter Gesture Bridge v1.3
+form Matter Gesture Bridge v1.4
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -148,8 +166,8 @@ form Matter Gesture Bridge v1.3
     comment === Rendering ===
     integer Target_sample_rate 44100
     integer Matter_excerpt_limit_sec 420
-    comment Patch length: average coherent Matter run (selection continuity)
-    positive Patch_length_sec 1.5
+    comment Matter continuity: persistence scale (measured mean run in stats)
+    positive Matter_continuity_sec 1.5
     integer Griffin_Lim_iterations 64
     comment === Synthesis Controls ===
     comment Freeze time: 0.0=crystallized  0.55=liminal cloud  0.95=ghost matter
@@ -164,6 +182,10 @@ form Matter Gesture Bridge v1.3
     real Formant_injection 0.45
     comment Chaos / crystallization balance (0.0=crystallize, 1.0=chaos)
     real Chaos 0.50
+    comment === Gesture Analysis Ranges (vocal defaults) ===
+    positive Pitch_floor_Hz 60
+    positive Pitch_ceiling_Hz 600
+    positive Formant_ceiling_Hz 5500
     comment === Options ===
     integer Random_seed 1234
     boolean Reuse_cache 0
@@ -242,7 +264,7 @@ outputName$ = gestureName$ + "_MGB"
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Matter Gesture Bridge v1.3 ==="
+writeInfoLine:  "=== Matter Gesture Bridge v1.4 ==="
 appendInfoLine: "Gesture Sound:  ", gestureName$
 appendInfoLine: "Matter file:    ", matter_sound_file$
 appendInfoLine: "Preset:         ", presetName$
@@ -316,7 +338,7 @@ removeObject: intObj
 
 # ---- Pitch curve ----
 selectObject: gestMono
-To Pitch: 0, 60, 600
+To Pitch: 0, pitch_floor_Hz, pitch_ceiling_Hz
 pitchObj = selected("Pitch")
 meanPitch = Get mean: 0, 0, "Hertz"
 minPitch  = Get minimum: 0, 0, "Hertz", "Parabolic"
@@ -353,7 +375,7 @@ f4mean = 3500
 writeFile: formantTxt$, "time" + tab$ + "f1" + tab$ + "f2" + tab$ + "f3" + tab$ + "f4" + newline$
 
 if sndDurMono > 0.1
-    To Formant (burg): 0, 5, 5500, 0.025, 50
+    To Formant (burg): 0, 5, formant_ceiling_Hz, 0.025, 50
     formantObj = selected("Formant")
     frmFrames  = Get number of frames
 
@@ -420,38 +442,41 @@ formantJ$      = replace_regex$(formantTxt$,         "\\", "/", 0)
 
 reuseCache = reuse_cache
 
-writeFile: configJson$,
-    ... "{" + newline$ +
-    ... "  ""matter_wav"":       """ + matterPathJ$   + """," + newline$ +
-    ... "  ""gesture_wav"":      """ + gestureWavJ$   + """," + newline$ +
-    ... "  ""result_wav"":       """ + resultWavJ$    + """," + newline$ +
-    ... "  ""log_file"":         """ + logFileJ$      + """," + newline$ +
-    ... "  ""done_file"":        """ + doneFileJ$     + """," + newline$ +
-    ... "  ""stats_file"":       """ + statsFileJ$    + """," + newline$ +
-    ... "  ""intensity_txt"":    """ + intensityJ$    + """," + newline$ +
-    ... "  ""pitch_txt"":        """ + pitchJ$        + """," + newline$ +
-    ... "  ""formant_txt"":      """ + formantJ$      + """," + newline$ +
-    ... "  ""target_sr"":        "  + string$(target_sample_rate)          + "," + newline$ +
-    ... "  ""train_limit_sec"":  "  + string$(matter_excerpt_limit_sec)    + "," + newline$ +
-    ... "  ""patch_sec"":        "  + fixed$(patch_length_sec, 4)          + "," + newline$ +
-    ... "  ""gl_iterations"":    "  + string$(griffin_Lim_iterations)      + "," + newline$ +
-    ... "  ""freeze_t"":         "  + fixed$(freezeT,      4)              + "," + newline$ +
-    ... "  ""gesture_amount"":   "  + fixed$(gestureAmt,   4)              + "," + newline$ +
-    ... "  ""intensity_roughness"": " + fixed$(intRoughness, 4)            + "," + newline$ +
-    ... "  ""pitch_noise"":      "  + fixed$(pitchNoise,   4)              + "," + newline$ +
-    ... "  ""formant_injection"": "  + fixed$(formantInj,  4)              + "," + newline$ +
-    ... "  ""chaos"":            "  + fixed$(chaosVal,     4)              + "," + newline$ +
-    ... "  ""seed"":             "  + string$(random_seed)                 + "," + newline$ +
-    ... "  ""reuse_cache"":      "  + string$(reuseCache)                  + "," + newline$ +
-    ... "  ""gesture_dur"":      "  + fixed$(gestureDur,   6)              + "," + newline$ +
-    ... "  ""gesture_sr"":       "  + string$(gestureSR)                   + "," + newline$ +
-    ... "  ""gesture_rms"":      "  + fixed$(gestureRMS,   6)              + "," + newline$ +
-    ... "  ""gesture_mean_pitch"": " + fixed$(meanPitch,   4)              + "," + newline$ +
-    ... "  ""gesture_pitch_range"": " + fixed$(pitchRange, 4)              + "," + newline$ +
-    ... "  ""gesture_brightness"": " + fixed$(brightnessCOG, 2)            + "," + newline$ +
-    ... "  ""gesture_int_mean"": "   + fixed$(intMean,     4)              + "," + newline$ +
-    ... "  ""gesture_int_range"": "  + fixed$(intMax - intMin, 4)          + newline$ +
-    ... "}" + newline$
+# v1.4: build the JSON as a string, then one plain write --
+# multi-line writeFile continuations have failed on some Praat
+# versions (probe-verified fine on 6.4.42; portability wins)
+cfg$ = "{" + newline$
+cfg$ = cfg$ + "  ""matter_wav"":       """ + matterPathJ$   + """," + newline$
+cfg$ = cfg$ + "  ""gesture_wav"":      """ + gestureWavJ$   + """," + newline$
+cfg$ = cfg$ + "  ""result_wav"":       """ + resultWavJ$    + """," + newline$
+cfg$ = cfg$ + "  ""log_file"":         """ + logFileJ$      + """," + newline$
+cfg$ = cfg$ + "  ""done_file"":        """ + doneFileJ$     + """," + newline$
+cfg$ = cfg$ + "  ""stats_file"":       """ + statsFileJ$    + """," + newline$
+cfg$ = cfg$ + "  ""intensity_txt"":    """ + intensityJ$    + """," + newline$
+cfg$ = cfg$ + "  ""pitch_txt"":        """ + pitchJ$        + """," + newline$
+cfg$ = cfg$ + "  ""formant_txt"":      """ + formantJ$      + """," + newline$
+cfg$ = cfg$ + "  ""target_sr"":        " + string$(target_sample_rate) + "," + newline$
+cfg$ = cfg$ + "  ""train_limit_sec"":  " + string$(matter_excerpt_limit_sec) + "," + newline$
+cfg$ = cfg$ + "  ""continuity_sec"":   " + fixed$(matter_continuity_sec, 4) + "," + newline$
+cfg$ = cfg$ + "  ""gl_iterations"":    " + string$(griffin_Lim_iterations) + "," + newline$
+cfg$ = cfg$ + "  ""freeze_t"":         " + fixed$(freezeT, 4) + "," + newline$
+cfg$ = cfg$ + "  ""gesture_amount"":   " + fixed$(gestureAmt, 4) + "," + newline$
+cfg$ = cfg$ + "  ""intensity_roughness"": " + fixed$(intRoughness, 4) + "," + newline$
+cfg$ = cfg$ + "  ""pitch_noise"":      " + fixed$(pitchNoise, 4) + "," + newline$
+cfg$ = cfg$ + "  ""formant_injection"": " + fixed$(formantInj, 4) + "," + newline$
+cfg$ = cfg$ + "  ""chaos"":            " + fixed$(chaosVal, 4) + "," + newline$
+cfg$ = cfg$ + "  ""seed"":             " + string$(random_seed) + "," + newline$
+cfg$ = cfg$ + "  ""reuse_cache"":      " + string$(reuseCache) + "," + newline$
+cfg$ = cfg$ + "  ""gesture_dur"":      " + fixed$(gestureDur, 6) + "," + newline$
+cfg$ = cfg$ + "  ""gesture_sr"":       " + string$(gestureSR) + "," + newline$
+cfg$ = cfg$ + "  ""gesture_rms"":      " + fixed$(gestureRMS, 6) + "," + newline$
+cfg$ = cfg$ + "  ""gesture_mean_pitch"": " + fixed$(meanPitch, 4) + "," + newline$
+cfg$ = cfg$ + "  ""gesture_pitch_range"": " + fixed$(pitchRange, 4) + "," + newline$
+cfg$ = cfg$ + "  ""gesture_brightness"": " + fixed$(brightnessCOG, 2) + "," + newline$
+cfg$ = cfg$ + "  ""gesture_int_mean"": " + fixed$(intMean, 4) + "," + newline$
+cfg$ = cfg$ + "  ""gesture_int_range"": " + fixed$(intMax - intMin, 4) + newline$
+cfg$ = cfg$ + "}" + newline$
+writeFile: configJson$, cfg$
 
 appendInfoLine: "  Config written: ", configJson$
 
@@ -621,7 +646,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Matter Gesture Bridge v1.3##"
+    Text: 0.5, "centre", 0.72, "half", "##Matter Gesture Bridge v1.4##"
     Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.24, "half", gestureName$ + " | " + presetName$ + " | freeze=" + fixed$(freezeT, 2) + " chaos=" + fixed$(chaosVal, 2) + " gesture=" + fixed$(gestureAmt, 2)

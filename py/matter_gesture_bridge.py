@@ -4,7 +4,32 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
+#
+# Changelog v1.4 (2026) -- second-round review repairs:
+#   - Gesture_amount is now a true MASTER: it scales selection
+#     weights (as before) AND the pitch-motion fracture depth,
+#     the formant-injection depth, and the amplitude
+#     envelope+gate (gate blends open as amount -> 0). At
+#     amount = 0 the render is a gesture-free Matter mosaic --
+#     bit-identical across different gesture pitch/formant tracks
+#     at the same seed (ablation-clean); only the DURATION still
+#     comes from the gesture. Preset effective fracture/formant
+#     depths shift by their amount factor.
+#   - Cache key now includes the Matter file's size and mtime
+#     (stale-cache bug: swapped content at the same path used to
+#     replay the old render) and no longer includes the
+#     continuity value (it never touched the library).
+#   - "patch_sec" renamed "continuity_sec" (old key accepted):
+#     a persistence SCALE, monotone but content-dependent; the
+#     measured mean run is in stats.
+#   - Top-level try/except: any unexpected error writes the
+#     traceback to the log and "error" to the done-file
+#     immediately (Praat no longer waits out its timeout).
+#   - Single logging mechanism: when a log file is given,
+#     messages go there only (Praat's stdout redirect was
+#     double-writing every line).
+#   - Stage numbering: [1/8] (one stray [1/7] remained).
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -158,13 +183,17 @@ def write_done(done_file: str, status: str = "ok") -> None:
 
 
 def log(msg: str, log_file: str = "") -> None:
-    print(msg, flush=True)
+    # v1.4: one mechanism only -- when a log file is given, write
+    # there and stay silent on stdout (the Praat side redirects
+    # stdout to the same file: printing too duplicated every line)
     if log_file:
         try:
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
         except Exception:
-            pass
+            print(msg, flush=True)
+    else:
+        print(msg, flush=True)
 
 
 # =============================================================================
@@ -301,8 +330,16 @@ HOP   = N_FFT // 4
 
 
 def matter_hash(matter_path: str, train_limit_sec: float,
-                patch_sec: float, target_sr: int) -> str:
-    key = f"{matter_path}|{train_limit_sec}|{patch_sec}|{target_sr}"
+                target_sr: int) -> str:
+    # v1.4: size+mtime in the key -- swapped content at the same
+    # path used to replay a stale cache. Continuity is NOT in the
+    # key: it never affects the STFT library.
+    try:
+        sz = os.path.getsize(matter_path)
+        mt = int(os.path.getmtime(matter_path))
+    except OSError:
+        sz, mt = -1, -1
+    key = f"{matter_path}|{sz}|{mt}|{train_limit_sec}|{target_sr}"
     return hashlib.md5(key.encode()).hexdigest()[:16]
 
 
@@ -354,12 +391,11 @@ def build_matter_library(matter: np.ndarray, target_sr: int,
 def load_or_build_library(matter: np.ndarray, cfg: dict,
                            cache_dir: str, log_file: str = "") -> dict:
     target_sr   = int(cfg.get("target_sr", 44100))
-    patch_sec   = float(cfg.get("patch_sec", 1.5))
     reuse       = int(cfg.get("reuse_cache", 0))
 
     h          = matter_hash(cfg.get("matter_wav", ""),
                              float(cfg.get("train_limit_sec", 420)),
-                             patch_sec, target_sr)
+                             target_sr)
     cache_path = os.path.join(cache_dir, f"mgb_lib_{h}.pkl")
 
     if reuse and os.path.isfile(cache_path):
@@ -461,7 +497,7 @@ def select_matter_frames(lib: dict, cond: dict, cfg: dict,
     """
     chaos        = float(cfg.get("chaos", 0.50))
     gesture_amt  = float(cfg.get("gesture_amount", 0.65))
-    patch_sec    = float(cfg.get("patch_sec", 1.5))
+    patch_sec    = float(cfg.get("continuity_sec", cfg.get("patch_sec", 1.5)))
     target_sr    = int(cfg.get("target_sr", 44100))
 
     matter_rms = lib["rms"]         # (M,)
@@ -598,7 +634,8 @@ def apply_pitch_noise_schedule(mag: np.ndarray, cond: dict, cfg: dict,
     """
     Pitch change rate → spectral bin shift (timbral fracture).
     """
-    pitch_noise = float(cfg.get("pitch_noise", 0.55))
+    # v1.4: gesture_amount is a master -- it scales fracture depth
+    pitch_noise = float(cfg.get("pitch_noise", 0.55)) * float(cfg.get("gesture_amount", 0.65))
     pitch_hz    = interpolate_controls(cond["pitch_hz"], mag.shape[1])
     n_freq      = mag.shape[0]
 
@@ -629,7 +666,8 @@ def inject_formant_vectors(mag: np.ndarray, cond: dict, cfg: dict,
     """
     Boost energy at F1-F4 positions using Gaussian resonance shapes.
     """
-    formant_inj = float(cfg.get("formant_injection", 0.45))
+    # v1.4: gesture_amount is a master -- it scales injection depth
+    formant_inj = float(cfg.get("formant_injection", 0.45)) * float(cfg.get("gesture_amount", 0.65))
     if formant_inj < 1e-4:
         return mag
 
@@ -710,9 +748,13 @@ def apply_amplitude_envelope(audio: np.ndarray, cond: dict,
     gate = np.convolve(gate, fade / fade.sum(), mode="same")
     gate = np.clip(gate, 0.0, 1.0)
 
-    # Blend: full gesture envelope × gesture_amount + unity × (1 - gesture_amount)
+    # Blend: full gesture envelope x gesture_amount + unity x (1 - gesture_amount)
     env = amp_env * gesture_amt + (1.0 - gesture_amt)
-    return (audio * env * gate).astype(np.float32)
+    # v1.4: the gate follows the master too -- at amount 0 it is
+    # fully open (a gesture-free mosaic), instead of silencing
+    # passages by a gesture the user asked to ignore
+    gate_eff = gate * gesture_amt + (1.0 - gesture_amt)
+    return (audio * env * gate_eff).astype(np.float32)
 
 
 # =============================================================================
@@ -819,7 +861,7 @@ def safe_normalize(audio: np.ndarray, target_peak: float = 0.92) -> np.ndarray:
 def main() -> None:
     check_dependencies()
 
-    ap = argparse.ArgumentParser(description="Matter Gesture Bridge v1.3")
+    ap = argparse.ArgumentParser(description="Matter Gesture Bridge v1.4")
     ap.add_argument("config_json", type=str)
     args = ap.parse_args()
 
@@ -845,7 +887,7 @@ def main() -> None:
         except Exception:
             pass
 
-    log("=== Matter Gesture Bridge v1.3 ===", log_file)
+    log("=== Matter Gesture Bridge v1.4 ===", log_file)
     log(f"Matter:  {os.path.basename(matter_wav)}", log_file)
     log(f"Gesture: {os.path.basename(gesture_wav)}", log_file)
     log(f"freeze_t={cfg.get('freeze_t',0.45)}  chaos={cfg.get('chaos',0.50)}  "
@@ -861,7 +903,7 @@ def main() -> None:
             write_done(done_file, "error"); sys.exit(1)
 
     # [1] Load audio
-    log("[1/7] Loading audio...", log_file)
+    log("[1/8] Loading audio...", log_file)
     try:
         matter  = load_matter_file(matter_wav,  target_sr,
                                    float(cfg.get("train_limit_sec", 420)), log_file)
@@ -979,5 +1021,36 @@ def main() -> None:
     log("=== Matter Gesture Bridge complete ===", log_file)
 
 
+def main_guarded() -> None:
+    """
+    v1.4: top-level guard. Any unexpected exception writes the
+    full traceback to the log and "error" to the done-file
+    immediately, so the Praat side never waits out its timeout.
+    """
+    import traceback
+    cfg_path = sys.argv[1] if len(sys.argv) > 1 else ""
+    log_file = ""
+    done_file = ""
+    try:
+        if cfg_path and os.path.isfile(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                pre = json.load(f)
+            log_file  = pre.get("log_file", "")
+            done_file = pre.get("done_file", "")
+    except Exception:
+        pass
+    try:
+        main()
+    except SystemExit:
+        raise
+    except BaseException:
+        tb = traceback.format_exc()
+        log("FATAL: unhandled exception", log_file)
+        log(tb, log_file)
+        if done_file:
+            write_done(done_file, "error")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
-    main()
+    main_guarded()
