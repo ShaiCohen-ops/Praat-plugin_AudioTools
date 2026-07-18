@@ -1,5 +1,11 @@
 """
-phase_space_compose.py — Phase-Space Composition Engine  v1.2
+phase_space_compose.py — Phase-Space Composition Engine  v1.3
+    v1.3: --dim_weights is now resolved onto the active feature columns
+    BY NAME (see CANONICAL_FEATURE_ORDER / resolve_dim_weights), fixing
+    a bug where weight presets were silently mismatched to the wrong
+    feature at state_dims < 5. Added --weight_preset_name for accurate
+    stats.txt display, and stats.txt now also emits the selected-event
+    path in plan order (n_sel_pts / psel_*) for visualization.
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -17,7 +23,11 @@ Usage (called by Praat — not directly):
         --temperature 0.15
         --seed        1234
         --min_event_dur_ms 30
-        --dim_weights "1.0,1.0,1.0"  # per-dimension distance weights
+        --dim_weights "1.0,1.0,1.0,1.0,1.0"  # ALWAYS canonical order:
+                                              # centroid,flatness,entropy,flux,rms
+                                              # — resolved by name onto whatever
+                                              # columns --state_dims actually has
+        --weight_preset_name "Brightness"    # optional; for stats.txt display only
         --velocity_weight 0.0        # 0=position only, 1=direction only
         --coupling    0.0            # feedback pull: events bend the trajectory
         [--debug]
@@ -69,6 +79,11 @@ LOGISTIC_R       = 3.9      # logistic parameter (chaotic regime)
 HOPF_ALPHA       = 0.5      # Hopf growth rate (limit cycle radius = sqrt(α))
 HOPF_OMEGA       = 2.0 * math.pi   # Hopf angular frequency
 
+# Canonical name order that --dim_weights values are always given in,
+# regardless of --state_dims. This lets weight presets stay meaningful
+# across dimensionalities (see resolve_dim_weights below).
+CANONICAL_FEATURE_ORDER = ["centroid", "flatness", "entropy", "flux", "rms"]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dependency check
@@ -76,7 +91,7 @@ HOPF_OMEGA       = 2.0 * math.pi   # Hopf angular frequency
 
 def check_deps():
     missing = []
-    for pkg in ["numpy", "soundfile"]:
+    for pkg in ["numpy", "soundfile", "scipy"]:
         try:
             __import__(pkg)
         except ImportError:
@@ -250,6 +265,34 @@ def build_state_matrix(feats, state_dims):
     cols = [feats[n] for n in names]
     X    = np.column_stack(cols).astype("float64")
     return X, names
+
+
+def resolve_dim_weights(dim_weights_list, col_names):
+    """
+    Map a --dim_weights vector (always given in CANONICAL_FEATURE_ORDER,
+    i.e. centroid, flatness, entropy, flux, rms) onto the actual columns
+    present at this state_dims, by NAME rather than by position.
+
+    Fixes a semantic bug: because the feature order in build_state_matrix()
+    changes across state_dims (e.g. 3D omits entropy but 4D/5D include it),
+    truncating the weight vector positionally silently applied the wrong
+    weight to the wrong feature (e.g. the entropy weight landing on flux
+    in 3D). Resolving by name keeps a preset like "Transient focus"
+    (high flux weight) correct at every dimensionality, and makes it
+    explicit when a preset's target dimension (e.g. rms for "Energy
+    focus") simply isn't part of the state space.
+
+    Returns a list of length len(col_names), aligned to col_names order.
+    """
+    if not dim_weights_list:
+        return [1.0] * len(col_names)
+
+    padded = list(dim_weights_list[:len(CANONICAL_FEATURE_ORDER)])
+    while len(padded) < len(CANONICAL_FEATURE_ORDER):
+        padded.append(1.0)
+
+    lut = dict(zip(CANONICAL_FEATURE_ORDER, padded))
+    return [lut.get(name, 1.0) for name in col_names]
 
 
 def robust_normalize_01(X):
@@ -702,6 +745,31 @@ def write_stats(path, events, plan, attractor, state_dims,
         for ti, si in enumerate(sampled):
             f.write("ptr_%d=%.4f,%.4f\n" % (ti, tr_x[si], tr_y[si]))
 
+        # ── Selected-event compositional path ──────────────────────────
+        # The 2D projections above show the source corpus (grey) and the
+        # attractor trajectory (blue) but never the actual sequence of
+        # DECISIONS: trajectory point -> selected event -> next selected
+        # event. That sequence is exactly what makes this a "compositional
+        # controller" rather than a static scatter, so we sample it here
+        # in plan order (order-preserving, not sorted by feature value)
+        # and let Praat draw it as its own path.
+        if X_norm is not None and len(plan) > 0:
+            n_plan_pts  = len(plan)
+            stride_sel  = max(1, n_plan_pts // 200)
+            sel_steps   = list(range(0, n_plan_pts, stride_sel))
+            if n_plan_pts - 1 not in sel_steps:
+                sel_steps.append(n_plan_pts - 1)
+            sel_x = [float(X_norm[plan[i], 0]) for i in sel_steps]
+            sel_y = [float(X_norm[plan[i], 1]) if X_norm.shape[1] > 1 else 0.0
+                     for i in sel_steps]
+        else:
+            sel_x, sel_y = [], []
+
+        n_sel = len(sel_x)
+        f.write("n_sel_pts=%d\n" % n_sel)
+        for i in range(n_sel):
+            f.write("psel_%d=%.4f,%.4f\n" % (i, sel_x[i], sel_y[i]))
+
 
 def write_debug_log(path, events, plan, traj, X_norm):
     """Optional verbose log of chosen indices and distances."""
@@ -750,9 +818,16 @@ def main():
     parser.add_argument("--min_event_dur_ms", type=float, default=30.0,
                         help="Minimum event duration in milliseconds")
     parser.add_argument("--dim_weights",    type=str, default="",
-                        help="Comma-separated per-dimension distance weights "
-                             "(e.g. '1.0,1.0,1.0').  Fewer values than D are "
-                             "padded with 1.0; more are truncated.")
+                        help="Comma-separated distance weights, always given "
+                             "in canonical order (centroid,flatness,entropy,"
+                             "flux,rms) regardless of --state_dims. Resolved "
+                             "onto the active feature columns by name, not "
+                             "position. Missing values default to 1.0.")
+    parser.add_argument("--weight_preset_name", type=str, default="",
+                        help="Human-readable name of the weight preset "
+                             "(e.g. 'Brightness'), for display in stats.txt "
+                             "only. Falls back to the raw --dim_weights "
+                             "string, then 'Uniform', if omitted.")
     parser.add_argument("--velocity_weight", type=float, default=0.0,
                         help="0=position only, 1=direction only, "
                              "intermediate blends both [0..1]")
@@ -822,6 +897,19 @@ def main():
     X_raw, names = build_state_matrix(feats, args.state_dims)
     X_norm       = robust_normalize_01(X_raw)
 
+    # Resolve the canonical-order weight vector onto this state_dims'
+    # actual feature columns, BY NAME. Previously this was a positional
+    # truncation of dim_weights_list, which silently mismatched weights
+    # to features whenever state_dims < 5 (e.g. "Transient focus"'s flux
+    # weight landing on entropy's old slot in 3D, or "Energy focus"
+    # applying to a column that doesn't exist below 5D).
+    resolved_weights = resolve_dim_weights(dim_weights_list, names)
+    if dim_weights_list and "rms" not in names and \
+            any(abs(w - 1.0) > 1e-9 for w in dim_weights_list[4:5]):
+        print("    NOTE: weight preset targets 'rms', which is not part "
+              "of the %dD state space (%s) — that weight has no effect "
+              "here." % (args.state_dims, "+".join(names)))
+
     print("    X shape: %s  |  features: %s" % (
         str(X_norm.shape), ", ".join(names)))
     print("    Centroid range: %.1f – %.1f Hz" % (
@@ -851,7 +939,7 @@ def main():
 
     plan = map_to_events(traj, X_norm, args.n_output,
                          tabu_eff, args.temperature, args.seed,
-                         dim_weights=dim_weights_list,
+                         dim_weights=resolved_weights,
                          velocity_weight=args.velocity_weight,
                          coupling=args.coupling)
 
@@ -866,10 +954,13 @@ def main():
     print("  [Py 5/5] Writing plan + stats...")
 
     write_plan(args.out_plan, plan)
+    weight_preset_display = (args.weight_preset_name.strip()
+                              or args.dim_weights.strip()
+                              or "Uniform")
     write_stats(args.out_stats, events, plan, args.attractor,
                 args.state_dims, args.n_output, tabu_eff,
                 args.temperature, args.seed, mean_speed, names,
-                weight_preset=args.dim_weights if args.dim_weights else "Uniform",
+                weight_preset=weight_preset_display,
                 velocity_weight=args.velocity_weight,
                 coupling=args.coupling,
                 X_norm=X_norm, traj=traj)

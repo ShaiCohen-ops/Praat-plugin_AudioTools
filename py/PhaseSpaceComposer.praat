@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Unified Cross-Platform Version
+# Version: 1.3 (2026) - Fixed weight-preset dimension mismatch, true crossfade,
+#                        composed-path visualization, unified stereo downmix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -106,7 +107,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Phase-Space Composer v1.2
+form Phase-Space Composer v1.3
     comment === Attractor ===
     optionmenu Attractor_type: 2
         option LimitCycle (Hopf)
@@ -124,7 +125,7 @@ form Phase-Space Composer v1.2
         option Uniform
         option Brightness focus
         option Noisiness focus
-        option Energy focus
+        option Energy focus (5D only)
         option Transient focus
     comment === Composition ===
     integer Num_events_output 300
@@ -136,7 +137,6 @@ form Phase-Space Composer v1.2
     real Coupling 0.0
     comment === Audio ===
     real Crossfade_ms 10
-    real Crossfade_jitter_ms 1.5
     real Min_event_duration_ms 30
     comment === Segmentation ===
     real Silence_threshold_dB -25
@@ -191,6 +191,23 @@ else
     weightName$ = "Transient"
 endif
 
+# dimWeights$ is always given in canonical order (centroid, flatness,
+# entropy, flux, rms) regardless of State_dims — the Python engine now
+# resolves it onto the active feature columns BY NAME, so presets stay
+# semantically correct at every dimensionality (fixes the old bug where
+# e.g. Transient's flux weight silently landed on the wrong column in 3D).
+
+# "Energy focus" targets the rms dimension, which only exists at 5D.
+# Below 5D this isn't a harmless no-op: the remaining non-rms weights in
+# the preset (e.g. flux=1.0 relative to centroid/flatness=0.6 in 3D)
+# still apply after renormalization, so the preset silently turns into
+# an unlabelled transient/entropy-leaning preset instead of doing
+# nothing. That's worse than an error, so this stops the run instead of
+# just warning.
+if weight_preset = 4 and stateDimInt < 5
+    exitScript: "Energy focus requires the 5D state space, because RMS is not present in 2D, 3D, or 4D." + newline$ + "Set State_dims to 5D, or choose a different Weight_preset."
+endif
+
 # ---- CLAMP PARAMETERS ----
 if num_events_output < 10
     num_events_output = 10
@@ -216,12 +233,6 @@ endif
 if crossfade_ms > 200
     crossfade_ms = 200
 endif
-if crossfade_jitter_ms < 0
-    crossfade_jitter_ms = 0
-endif
-if crossfade_jitter_ms > crossfade_ms
-    crossfade_jitter_ms = crossfade_ms
-endif
 if velocity_weight < 0
     velocity_weight = 0
 endif
@@ -237,12 +248,12 @@ endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Phase-Space Composer v1.2 ==="
+writeInfoLine:  "=== Phase-Space Composer v1.3 ==="
 appendInfoLine: "Input:     ", soundName$
 appendInfoLine: "Attractor: ", attractorStr$, " | State: ", stateDimStr$, " | Weights: ", weightName$
 appendInfoLine: "Output:    ", num_events_output, " events | Tabu: ", tabu_length, " | Temp: ", fixed$(temperature, 3), " | Seed: ", seed
 appendInfoLine: "Dynamics:  Vel.weight=", fixed$(velocity_weight, 3), " | Coupling=", fixed$(coupling, 3)
-appendInfoLine: "Crossfade: ", crossfade_ms, " ms ± ", crossfade_jitter_ms, " ms | Min event: ", min_event_duration_ms, " ms"
+appendInfoLine: "Crossfade: ", crossfade_ms, " ms | Min event: ", min_event_duration_ms, " ms"
 appendInfoLine: ""
 
 # ---- CAPTURE ORIGINAL STATS ----
@@ -286,9 +297,15 @@ appendInfoLine: "  Python found: ", pythonCmd$
 # ===========================================================================
 appendInfoLine: "[2/5] Segmenting sound into events..."
 
+# Downmix policy: segmentation and Python feature extraction must agree
+# on how stereo is analysed, or event boundaries and the features
+# computed on them come from two different signals. Python averages
+# channels (audio.mean(axis=1)), so segmentation does the same here via
+# "Convert to mono" (equal-weight channel average) rather than using
+# channel 1 alone.
 selectObject: sound
 if nChannels > 1
-    Extract one channel: 1
+    Convert to mono
     analysisMono = selected("Sound")
 else
     Copy: "phsp_analysisMono"
@@ -371,6 +388,7 @@ pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " --seed "        + string$(seed)
     ... + " --min_event_dur_ms " + fixed$(min_event_duration_ms, 1)
     ... + " --dim_weights """ + dimWeights$ + """"
+    ... + " --weight_preset_name """ + weightName$ + """"
     ... + " --velocity_weight " + fixed$(velocity_weight, 4)
     ... + " --coupling "        + fixed$(coupling, 4)
     ... + debugFlag$
@@ -435,15 +453,16 @@ if nPlanSteps < 1
     exitScript: "Plan CSV was empty or unparseable."
 endif
 
-xfBase    = crossfade_ms / 1000.0
-xfJitter  = crossfade_jitter_ms / 1000.0
-jitterSeed = seed - floor(seed / 9973) * 9973
+minSegDur = evDur[planEvIdx[1]]
 
 for step from 1 to nPlanSteps
     evIdx   = planEvIdx[step]
     tS      = evStart[evIdx]
     tE      = evEnd[evIdx]
     segDur  = evDur[evIdx]
+    if segDur < minSegDur
+        minSegDur = segDur
+    endif
 
     selectObject: sound
     Extract part: tS, tE, "rectangular", 1.0, "no"
@@ -455,27 +474,34 @@ for step from 1 to nPlanSteps
         selectObject: curSnd
         Formula: "self * " + fixed$(gVal, 5)
     endif
-
-    jitterSeed = jitterSeed * 1664525 + 1013904223
-    jitterSeed = jitterSeed - floor(jitterSeed / 4294967296) * 4294967296
-    jitterFrac = (jitterSeed - floor(jitterSeed / 1000) * 1000) / 1000.0 - 0.5
-    xfSec = xfBase + xfJitter * jitterFrac
-    if xfSec < 0.001
-        xfSec = 0.001
-    endif
-
-    if segDur > xfSec * 4 and xfSec > 0.0
-        selectObject: curSnd
-        Fade in:  0, 0,              xfSec, "no"
-        Fade out: 0, segDur - xfSec, xfSec, "no"
-    endif
 endfor
+
+# ---- TRUE CROSSFADE ----
+# Previously this applied a fade-in/fade-out to each segment's own edges
+# and then used plain Concatenate, which abuts segments with no overlap
+# at all — that's an edge fade, not a crossfade. "Concatenate with
+# overlap" actually overlaps and blends adjacent segments by xfEff
+# seconds, which is what "Crossfade_ms" has always claimed to do.
+# The overlap is clamped so it can never exceed a fraction of the
+# shortest segment in the plan (a segment can't crossfade with itself).
+xfEff = crossfade_ms / 1000.0
+maxOverlap = minSegDur * 0.45
+if xfEff > maxOverlap
+    xfEff = maxOverlap
+endif
+if xfEff < 0.001
+    xfEff = 0
+endif
 
 selectObject: "Sound phsp_step_1"
 for step from 2 to nPlanSteps
     plusObject: "Sound phsp_step_" + string$(step)
 endfor
-Concatenate
+if xfEff > 0
+    Concatenate with overlap: xfEff
+else
+    Concatenate
+endif
 Rename: soundName$ + "_phaseSpace_" + attractorStr$
 resultSound = selected("Sound")
 
@@ -509,6 +535,7 @@ couplingStat$       = "?"
 
 nPEvPts = 0
 nPTrajPts = 0
+nPSelPts = 0
 projAxis0$ = "dim0"
 projAxis1$ = "dim1"
 
@@ -585,6 +612,31 @@ if fileReadable(tempStats$)
             if comma > 0
                 ptp_'iTP'_x = number(left$(tpRaw$, comma - 1))
                 ptp_'iTP'_y = number(mid$(tpRaw$, comma + 1, length(tpRaw$) - comma))
+            endif
+        endif
+    endfor
+
+    # Selected-event path: the actual sequence "trajectory point ->
+    # selected event -> next selected event", in plan order (not sorted
+    # by feature value). This is what makes the controller visible.
+    @parseStatLine: statsText$, "n_sel_pts="
+    nSP$ = parseStatLine.result$
+    if nSP$ <> "?"
+        nPSelPts = number(nSP$)
+    endif
+    if nPSelPts > 200
+        nPSelPts = 200
+    endif
+    for iSP from 0 to nPSelPts - 1
+        @parseStatLine: statsText$, "psel_" + string$(iSP) + "="
+        spRaw$ = parseStatLine.result$
+        psel_'iSP'_x = 0
+        psel_'iSP'_y = 0
+        if spRaw$ <> "?"
+            comma = index(spRaw$, ",")
+            if comma > 0
+                psel_'iSP'_x = number(left$(spRaw$, comma - 1))
+                psel_'iSP'_y = number(mid$(spRaw$, comma + 1, length(spRaw$) - comma))
             endif
         endif
     endfor
@@ -790,12 +842,30 @@ if draw_visualization
             Paint circle (mm): "{0.8, 0.2, 0.2}", ptp_'iLast'_x, ptp_'iLast'_y, 2.0
         endif
 
+        # === Composed path: trajectory point -> selected event -> next selected event ===
+        # This is the sequence actually heard, in plan order — distinct from the
+        # attractor curve above (which is where the dynamics WANT to go) and the
+        # grey dots (which are just the available corpus). Drawing it is what makes
+        # the "compositional controller" claim visible rather than asserted.
+        if nPSelPts > 1
+            Colour: "{0.95, 0.55, 0.05}"
+            Line width: 1.3
+            for iSPL from 1 to nPSelPts - 1
+                iSPrev = iSPL - 1
+                Draw line: psel_'iSPrev'_x, psel_'iSPrev'_y, psel_'iSPL'_x, psel_'iSPL'_y
+            endfor
+            Line width: 1
+            Paint circle (mm): "{0.95, 0.75, 0.15}", psel_0_x, psel_0_y, 1.5
+            iSPLast = nPSelPts - 1
+            Paint circle (mm): "{0.6, 0.25, 0.6}", psel_'iSPLast'_x, psel_'iSPLast'_y, 1.5
+        endif
+
         Colour: "Black"
         Draw inner box
         Font size: 6
         Text left: "yes", projAxis1$
         Text bottom: "yes", projAxis0$
-        Text top: "no", attractorStr$ + " trajectory (" + stateDimStr$ + ") — events=grey dots  ##S##=start ##E##=end"
+        Text top: "no", attractorStr$ + " (" + stateDimStr$ + ") — grey=corpus  blue=attractor  ##orange=composed path##"
     else
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
@@ -820,7 +890,7 @@ if draw_visualization
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
     Text: 0.02, "left", 0.73, "half", attractorStat$ + " " + stateDimsStat$ + "D | Events=" + nSourceEvStat$ + "->" + string$(nPlanSteps) + " | Uniq=" + uniqueUsedStat$ + " Rep=" + repRateStat$ + " | Speed=" + trajSpeedStat$
-    Text: 0.02, "left", 0.53, "half", "Vel=" + velocityWeightStat$ + " Cpl=" + couplingStat$ + " W=" + weightPresetStat$ + " | Tabu=" + tabuStat$ + " T=" + tempStatVal$ + " | Xfade=" + fixed$(crossfade_ms, 0) + "±" + fixed$(crossfade_jitter_ms, 1) + "ms"
+    Text: 0.02, "left", 0.53, "half", "Vel=" + velocityWeightStat$ + " Cpl=" + couplingStat$ + " W=" + weightPresetStat$ + " | Tabu=" + tabuStat$ + " T=" + tempStatVal$ + " | Xfade=" + fixed$(xfEff * 1000, 1) + "ms (set " + fixed$(crossfade_ms, 0) + "ms)"
     Text: 0.02, "left", 0.33, "half", "RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | " + fixed$(dur, 2) + "s->" + fixed$(durOut, 2) + "s | Seed=" + string$(seed)
 
     Colour: "{0.35, 0.35, 0.35}"
