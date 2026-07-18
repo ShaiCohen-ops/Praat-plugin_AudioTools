@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,6 +36,55 @@
 #   state space and biases toward lower-energy regions, which is
 #   the operationally useful property here. The "samples from a
 #   stationary posterior" interpretation does not strictly apply.
+#
+# Changelog v1.2 (2026):
+#   - REPRODUCIBILITY: Added a Seed field. Seed=0 keeps behaviour
+#     unpredictable (as before); any other value fixes Praat's RNG
+#     via random_initializeWithSeedUnsafelyButPredictably, so a
+#     chain that produced a good result can be rerun exactly.
+#   - CORRECTNESS: Guaranteed that at least one Variation is always
+#     rendered. Previously a Variation was only produced when a
+#     step was BOTH accepted AND on the thinning interval, and the
+#     one fallback path also required the last step to be accepted
+#     - so varCount could legitimately end at 0 and crash the
+#     multichannel-combine step. The chain's final state is now
+#     rendered directly whenever nothing else was rendered.
+#   - BEHAVIOUR: Removed the separate Play_first (variation-1
+#     preview) option. There is now a single Play checkbox
+#     (default on) that governs playback of the combined output,
+#     so it's explicit and user-controlled rather than always-on
+#     regardless of what was requested. A note is still printed
+#     when >2 channels are combined, since most playback hardware
+#     is stereo and won't expose every channel.
+#   - CORRECTNESS: "Combine to stereo" requires 2+ selected mono
+#     sounds and could fail whenever exactly one variation was
+#     produced (the varCount=0 fallback, Max_variations=1, or only
+#     one thinning point ever accepted). That case now copies the
+#     single variation through directly (named "..._mcmc_output")
+#     instead of calling Combine to stereo on one sound.
+#   - CORRECTNESS: PitchNudge's proposal is now actually symmetric.
+#     A rounded-Gaussian delta of 0 used to always become +1, which
+#     gave +1 extra probability mass -1 never got. It now resolves
+#     to +1/-1 with a fair coin, matching the symmetric-proposal
+#     claim in the methodological note above.
+#   - CORRECTNESS: The duration-preservation term (E4) now compares
+#     processed phrase length against the sum of the ORIGINAL
+#     (silence-stripped) phrase durations, not the full source
+#     duration. Comparing against srcDur penalised even the
+#     untouched state (tm=1 for every phrase) whenever the source
+#     contained silence.
+#   - VISUALIZATION: Render markers in the energy-trace plot now
+#     use the step actually recorded at render time (renderStep_v),
+#     not an assumed v * thinning_interval position, which could be
+#     wrong whenever earlier candidate steps were rejected.
+#   - WORDING: "lower = more musical" replaced with "lower = better
+#     fit to the selected energy criteria" - the model measures
+#     conformance to defined weights, not musicality in general.
+#   - ROBUSTNESS: Added validation for Mcmc_steps > 0,
+#     Thinning_interval > 0, Max_variations > 0, and
+#     Pitch_floor_Hz < Pitch_ceiling_Hz. Added a printed warning
+#     when phrase detection finds more than 20 phrases and later
+#     ones are dropped (previously silent).
 #
 # Changelog v1.1 (2026):
 #   - SPEED: Per-phrase resample precision is now tied to a
@@ -72,7 +121,7 @@ endif
 # FORM
 # ============================================================
 
-form MCMC Musical Variation v1.1
+form MCMC Musical Variation v1.2
     comment === Aesthetic Mode ===
     optionmenu Aesthetic_mode: 2
         option Custom
@@ -84,6 +133,9 @@ form MCMC Musical Variation v1.1
         option Full Quality (precision 50)
         option Balanced (precision 20)
         option Fast (precision 10)
+    comment === Reproducibility ===
+    integer Seed 0
+    comment (0 = unpredictable/random each run; any other integer = reproducible chain)
     comment === Chain ===
     integer Mcmc_steps 60
     integer Thinning_interval 6
@@ -103,7 +155,7 @@ form MCMC Musical Variation v1.1
     integer Max_variations 8
     boolean Keep_individual_variations 0
     boolean Draw_visualization 1
-    boolean Play_first 0
+    boolean Play 1
 endform
 
 # ============================================================
@@ -122,6 +174,39 @@ tonalCenter    = tonal_center_st
 maxVar         = max_variations
 pitchFloorHz   = pitch_floor_Hz
 pitchCeilingHz = pitch_ceiling_Hz
+
+# ============================================================
+# PARAMETER VALIDATION (v1.2)
+# ============================================================
+
+if nSteps <= 0
+    exitScript: "Mcmc_steps must be greater than 0."
+endif
+if thin <= 0
+    exitScript: "Thinning_interval must be greater than 0."
+endif
+if maxVar <= 0
+    exitScript: "Max_variations must be greater than 0."
+endif
+if pitchFloorHz >= pitchCeilingHz
+    exitScript: "Pitch_floor_Hz must be lower than Pitch_ceiling_Hz."
+endif
+
+# ============================================================
+# RANDOM SEED (v1.2)
+# A fixed, non-zero Seed makes the whole chain (proposals AND
+# acceptance draws) reproducible, so a chain that produced a
+# good result can be re-run exactly. Seed = 0 keeps behaviour
+# unpredictable, as before.
+# ============================================================
+
+if seed <> 0
+    random_initializeWithSeedUnsafelyButPredictably (seed)
+    seedStr$ = string$(seed) + " (fixed / reproducible)"
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedStr$ = "0 (unpredictable)"
+endif
 
 # v1.1: Resample precision tied to speed_mode.
 # Per-phrase resampling is the dominant cost. Lower precision
@@ -289,8 +374,26 @@ if nPhrases < 2
     endfor
 endif
 
+phrasesTruncated = 0
+nPhrasesDetected = nPhrases
 if nPhrases > 20
+    phrasesTruncated = 1
     nPhrases = 20
+endif
+
+# v1.2: Reference duration for the E4 duration-preservation term.
+# Phrase detection strips silence, so the sum of *processed*
+# phrase durations should never be compared against srcDur (which
+# includes the stripped silence) — even tm=1 for every phrase
+# would then look "too short" and be penalised. Compare instead
+# against the sum of the *original* (silence-stripped) phrase
+# durations, which is what tm=1 for every phrase actually equals.
+srcPhraseDurSum = 0
+for pp from 1 to nPhrases
+    srcPhraseDurSum = srcPhraseDurSum + phraseDur_'pp'
+endfor
+if srcPhraseDurSum <= 0
+    srcPhraseDurSum = srcDur
 endif
 
 # ============================================================
@@ -381,7 +484,7 @@ procedure computeEnergy
     for pp from 1 to nPhrases
         newDurSum = newDurSum + phraseDur_'pp' * tm_'pp'
     endfor
-    durRatio = newDurSum / srcDur
+    durRatio = newDurSum / srcPhraseDurSum
     durPen = (durRatio - 1.0)^2 * 8
     e4 = tmVar + durPen
 
@@ -475,8 +578,19 @@ endproc
 procedure proposePitchNudge
     pp = randomInteger(1, nPhrases)
     delta = round(randomGauss(0, 1.5))
+    # v1.2: a rounded Gaussian can land on 0, which is not a move.
+    # Previously this was always bumped to +1, which added extra
+    # probability mass to +1 that -1 never got, breaking the
+    # symmetric-proposal-density claim in the header. Resolve the
+    # zero case with a fair coin instead, so +1 and -1 remain
+    # equally likely.
     if delta = 0
-        delta = 1
+        signR = randomInteger(0, 1)
+        if signR = 0
+            delta = -1
+        else
+            delta = 1
+        endif
     endif
     pc_'pp' = pc_'pp' + delta
 endproc
@@ -715,16 +829,22 @@ endproc
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  MCMC Musical Variation v1.1"
+writeInfoLine:  "  MCMC Musical Variation v1.2"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source    : ", srcName$, " (", fixed$(srcDur, 2), " s)"
+appendInfoLine: "Seed      : ", seedStr$
 appendInfoLine: "Mode      : ", presetName$
 appendInfoLine: "Speed     : ", speedStr$, "  (resample precision=",
     ... resamplePrecision, ")"
 appendInfoLine: "PSOLA F0  : ", fixed$(pitchFloorHz, 0), " - ",
     ... fixed$(pitchCeilingHz, 0), " Hz"
 appendInfoLine: "Phrases   : ", nPhrases
+if phrasesTruncated = 1
+    appendInfoLine: "WARNING: ", nPhrasesDetected,
+        ... " phrases detected; only the first 20 are used ",
+        ... "(later phrases are ignored)."
+endif
 for pp from 1 to nPhrases
     appendInfoLine: "  P", pp, ": ", fixed$(phraseStart_'pp', 2),
         ... " -> ", fixed$(phraseEnd_'pp', 2), " s  (",
@@ -853,9 +973,6 @@ for step from 1 to nSteps
         if stepMod = 0
             doRender = 1
         endif
-        if step = nSteps and varCount = 0
-            doRender = 1
-        endif
         if doRender = 1
             varCount = varCount + 1
             appendInfoLine: "  [step ", step, "/", nSteps,
@@ -869,6 +986,7 @@ for step from 1 to nSteps
             endfor
             varTranspo_'varCount' = transpo
             varEnergy_'varCount'  = currentEnergy
+            renderStep_'varCount' = step
             @renderVariation: varCount
             variation_'varCount' = lastVariation
         else
@@ -888,6 +1006,27 @@ for step from 1 to nSteps
     endif
 
 endfor
+
+# v1.2: The loop above only renders on an accepted step that also
+# lands on the thinning interval, so it is possible to reach the
+# end of the chain with varCount = 0 (nothing rendered), which
+# used to crash the multichannel-combine step below. Guarantee at
+# least one rendered variation by rendering the chain's final
+# state directly, independent of accept/thinning timing.
+if varCount = 0
+    varCount = 1
+    appendInfoLine: "  [fallback]  no step was both accepted and on ",
+        ... "the thinning interval -> rendering final chain state",
+        ... "  E=", fixed$(currentEnergy, 3)
+    for pp from 1 to nPhrases
+        varPc_1_'pp' = pc_'pp'
+    endfor
+    varTranspo_1 = transpo
+    varEnergy_1  = currentEnergy
+    renderStep_1 = nSteps
+    @renderVariation: 1
+    variation_1 = lastVariation
+endif
 
 acceptRate = nAccepted / nSteps
 
@@ -926,7 +1065,7 @@ if draw_visualization = 1 and varCount > 0
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##MCMC Musical Variation v1.1##"
+    Text: 0.5, "centre", 0.70, "half", "##MCMC Musical Variation v1.2##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.15, "half",
@@ -1012,8 +1151,11 @@ if draw_visualization = 1 and varCount > 0
 
     # Mark render points
     for v from 1 to varCount
-        # Find step where this variation was rendered (approx = v * thin)
-        rStep = v * thin
+        # Exact step where this variation was rendered, recorded
+        # at render time (v1.2) — not guessed from v * thin, since
+        # a variation is only rendered on an accepted step that
+        # also lands on the thinning interval.
+        rStep = renderStep_'v'
         if rStep > nSteps
             rStep = nSteps
         endif
@@ -1164,7 +1306,7 @@ if draw_visualization = 1 and varCount > 0
     Font size: 7
     Text left: "yes", "Energy"
     Text bottom: "yes", "Variation"
-    Text top: "no", "Energy per rendered variation  (lower = more musical)"
+    Text top: "no", "Energy per rendered variation  (lower = better fit to the selected energy criteria)"
 
     # === PANEL 6: Stats ===
     Select outer viewport: 0, 8, 3.62, 4.30
@@ -1173,7 +1315,7 @@ if draw_visualization = 1 and varCount > 0
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.87, "half", "##MCMC Musical Variation v1.1##"
+    Text: 0.02, "left", 0.87, "half", "##MCMC Musical Variation v1.2##"
     Font size: 6
     Colour: "{0.35, 0.35, 0.40}"
     Text: 0.02, "left", 0.66, "half",
@@ -1235,13 +1377,6 @@ for v from 1 to varCount
         ... "  transpo=", varTranspo_'v', " st"
 endfor
 
-if play_first = 1 and varCount > 0
-    appendInfoLine: ""
-    appendInfoLine: "Playing variation 1..."
-    selectObject: variation_1
-    Play
-endif
-
 # Combine all variations into a multichannel sound and play.
 # Each variation goes to a separate channel (up to maxVar).
 # Variations are zero-padded to the longest duration before combining.
@@ -1279,21 +1414,53 @@ for v from 1 to varCount
     endif
 endfor
 
-# Select all and combine to multichannel
-selectObject: variation_1
-for v from 2 to varCount
-    plusObject: variation_'v'
-endfor
-Combine to stereo
-mcmcMulti = selected("Sound")
-Rename: srcName$ + "_mcmc_multichannel"
+# Select all and combine to multichannel.
+# "Combine to stereo" requires 2+ selected mono sounds; with a
+# single variation (fallback case, Max_variations=1, or only one
+# thinning point ever accepted) there is nothing to combine, so
+# that case is copied through directly instead.
+if varCount = 1
+    selectObject: variation_1
+    mcmcMulti = Copy: srcName$ + "_mcmc_output"
+    outName$ = srcName$ + "_mcmc_output"
+else
+    selectObject: variation_1
+    for v from 2 to varCount
+        plusObject: variation_'v'
+    endfor
+    Combine to stereo
+    mcmcMulti = selected("Sound")
+    Rename: srcName$ + "_mcmc_multichannel"
+    outName$ = srcName$ + "_mcmc_multichannel"
+endif
 
-appendInfoLine: "  Combined: ", srcName$, "_mcmc_multichannel  (",
-    ... string$(varCount), " channels)"
+if varCount = 1
+    chanWord$ = "channel"
+else
+    chanWord$ = "channels"
+endif
+appendInfoLine: "  Combined: ", outName$, "  (",
+    ... string$(varCount), " ", chanWord$, ")"
 
 selectObject: mcmcMulti
 Scale peak: 0.95
-Play
+
+if varCount > 2
+    appendInfoLine: "  Note: ", varCount, " channels - most audio ",
+        ... "interfaces are stereo, so playback will only expose ",
+        ... "2 of them meaningfully. Use Keep_individual_variations ",
+        ... "to inspect the others individually."
+endif
+
+if play = 1
+    appendInfoLine: ""
+    appendInfoLine: "Playing..."
+    Play
+else
+    appendInfoLine: ""
+    appendInfoLine: "  (Play = off, not auto-playing. The combined ",
+        ... "sound is available in the Objects list.)"
+endif
 
 # Remove individual variations unless user asked to keep them
 if keep_individual_variations = 0
