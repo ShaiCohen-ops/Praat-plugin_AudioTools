@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - Messagesquisse_Opening.praat (Modified v4.4)
+# Praat AudioTools - Messagesquisse_Opening.praat (v4.6)
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.4 (2025)
+# Version: 4.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,11 +12,67 @@
 #   Transforms a single cello tone into a six-layer hexachordal
 #   field using the SACHER pitch set and Morse-derived timing.
 #
+# Changelog v4.6 (2026) — response to internal review:
+#   - FIX (presets clobbering Source_pitch_MIDI): the six preset
+#     overrides were also resetting source_pitch_MIDI = 36, so
+#     choosing any preset silently discarded whatever fundamental
+#     the user had entered for their own input file. Presets now
+#     only touch what they conceptually own (register, wet/dry,
+#     pan, fades) and leave Source_pitch_MIDI alone.
+#   - FIX (Dry/Wet): wet layers were accumulated at full gain and
+#     were never multiplied by wetMix, so Wet_mix behaved as an
+#     on/off toggle rather than a crossfade. Wet layers are now
+#     scaled by wetMix, so wetMix=0 is dry-only, wetMix=1 is
+#     wet-only, and intermediate values genuinely crossfade.
+#   - FIX (Quartertone Haze): Base_MIDI_note is an integer field
+#     and could never express "+50 cents", so the preset silently
+#     fell back to a plain C2. Added a separate real-valued
+#     Quartertone_offset_semitones field; the Quartertone Haze
+#     preset now sets it to 0.5 (50 cents), which detunes the
+#     whole hexachord register independent of the integer MIDI note.
+#   - FIX (register presets): pitch-shift ratio pf = targetFreq/baseFreq
+#     previously used the SAME baseFreq on top and bottom, so it
+#     depended only on the SACHER semitone offsets and Base_MIDI_note
+#     cancelled out — "Low Drone Field" and "High Shimmer" produced
+#     identical audio, differing only in the printed Hz labels.
+#     Base_MIDI_note is now the TARGET/root register (what the six
+#     layers transpose to), while a new fixed Source_pitch_MIDI
+#     (assumed fundamental of the input, default C2/36) anchors the
+#     ratio, so changing the register preset now actually changes
+#     the transposition applied to the audio.
+#   - FIX: added a short equal-power fade-out at the end of the
+#     final stereo file so standalone renders don't end in an
+#     abrupt cut.
+#   - FIX: added an explicit "Axes: 0, 1, 0, 1" call for the title
+#     panel so its text position no longer depends on whatever
+#     axes state the Picture window was left in.
+#   - NOTE (Morse units): re-checked by hand — S=5, A=5, C=11,
+#     H=7, E=1, R=7 dot-units = 36 total, matching totalUnits=36
+#     and auto_unit = originalDuration/36 exactly. No change needed;
+#     this one was a false alarm in the review (C is "-.-.", i.e.
+#     4 symbols + 3 gaps = 3+1+1+1+3+1+1 = 11, not 9).
+#
+# Changelog v4.5 (2026):
+#   - FIX: The Hanning fade-in was using "cos(2 * pi * x / dur)" which
+#     ramps 0 -> 1 -> 0 over the fade window (a brief pulse at each
+#     layer entry, not a fade-in). Changed to "cos(pi * x / dur)"
+#     so the ramp is monotonic 0 -> 1 as intended.
+#   - SPEED: Per-layer resample precision is now tied to a
+#     Speed_mode parameter (Full Quality / Balanced / Fast =
+#     precision 50 / 20 / 10). Six layers means six resamples
+#     per run, so Balanced or Fast is a real time saving on
+#     longer inputs.
+#
 #   PITCH STRUCTURE — SACHER hexachord (Boulez, 1975):
 #     S  A  C  H  E  R
 #     Eb A  C  B  E  D
 #     Semitone offsets from C: [3, 9, 0, 11, 4, 2]
 #     Each layer pitch-shifted via Sample Rate Reinterpretation.
+#     Base_MIDI_note = TARGET/root register the hexachord transposes
+#     to. Source_pitch_MIDI = assumed fundamental of the input
+#     recording (default C2/36) used only to compute the transposition
+#     ratio. Quartertone_offset_semitones detunes the whole target
+#     register (0.5 = 50 cents).
 #
 #   TEMPORAL STRUCTURE — Morse code of "SACHER":
 #     S=...  A=.-  C=-.-.  H=....  E=.  R=.-.
@@ -38,9 +94,11 @@
 #     Accumulation directly into L/R mono buffers via Formula.
 #
 #   DRY / WET:
-#     Dry = original (centred, 0.707 gain on both channels).
-#     Wet = six processed pitch-shifted layers.
-#     wet_mix 0→1 fades between pure original and full field.
+#     Dry = original (centred, 0.707 gain on both channels), scaled
+#     by (1 - wet_mix).
+#     Wet = six processed pitch-shifted layers, scaled by wet_mix.
+#     wet_mix 0→1 is a true crossfade between pure original and
+#     the full processed field.
 #
 #   VISUALIZATION (6 panels):
 #     1. Input waveform
@@ -90,7 +148,7 @@ auto_unit  = originalDuration / totalUnits
 # FORM
 # ============================================================
 
-form Messagesquisse Opening v4.4
+form Messagesquisse Opening v4.6
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -100,8 +158,12 @@ form Messagesquisse Opening v4.4
         option Centred Mass       (C2, no spread, 100% wet)
         option Dry Ghost          (C2, full spread, 20% wet)
         option Quartertone Haze   (C2+50ct, partial spread, 75% wet)
-    comment === Pitch (MIDI note, C2=36) ===
+    comment === Target register (MIDI note the hexachord transposes to, C2=36) ===
     integer  Base_MIDI_note 36
+    comment === Quartertone detune of the target register [semitones, e.g. 0.5 = 50 cents] ===
+    real     Quartertone_offset_semitones 0.0
+    comment === Assumed fundamental of the INPUT recording [MIDI note, default C2=36] (presets never override this — it describes your file, not the preset) ===
+    integer  Source_pitch_MIDI 36
     comment === Timing  [0 = auto-fit to input duration] ===
     real     Unit_duration_s 0.0
     comment === Entry smoothing ===
@@ -112,6 +174,11 @@ form Messagesquisse Opening v4.4
     real     Wet_mix 0.8
     comment === Source handling ===
     boolean  Loop_if_short 1
+    comment === Render speed (per-layer resample precision) ===
+    optionmenu Speed_mode: 2
+        option Full Quality (precision 50)
+        option Balanced (precision 20)
+        option Fast (precision 10)
     comment === Output ===
     boolean  Draw_visualization 1
     boolean  Play_result 1
@@ -126,6 +193,7 @@ preset_name$ = "Custom"
 if preset = 2
     preset_name$     = "Boulez Reference"
     base_MIDI_note   = 36
+    quartertone_offset_semitones = 0.0
     unit_duration_s  = 0.0
     fade_duration_s  = 0.05
     pan_spread       = 1.0
@@ -135,6 +203,7 @@ if preset = 2
 elsif preset = 3
     preset_name$     = "Low Drone Field"
     base_MIDI_note   = 24
+    quartertone_offset_semitones = 0.0
     unit_duration_s  = 0.0
     fade_duration_s  = 0.08
     pan_spread       = 1.0
@@ -144,6 +213,7 @@ elsif preset = 3
 elsif preset = 4
     preset_name$     = "High Shimmer"
     base_MIDI_note   = 60
+    quartertone_offset_semitones = 0.0
     unit_duration_s  = 0.0
     fade_duration_s  = 0.03
     pan_spread       = 1.0
@@ -153,6 +223,7 @@ elsif preset = 4
 elsif preset = 5
     preset_name$     = "Centred Mass"
     base_MIDI_note   = 36
+    quartertone_offset_semitones = 0.0
     unit_duration_s  = 0.0
     fade_duration_s  = 0.05
     pan_spread       = 0.0
@@ -162,6 +233,7 @@ elsif preset = 5
 elsif preset = 6
     preset_name$     = "Dry Ghost"
     base_MIDI_note   = 36
+    quartertone_offset_semitones = 0.0
     unit_duration_s  = 0.0
     fade_duration_s  = 0.05
     pan_spread       = 1.0
@@ -171,6 +243,7 @@ elsif preset = 6
 elsif preset = 7
     preset_name$     = "Quartertone Haze"
     base_MIDI_note   = 36
+    quartertone_offset_semitones = 0.5
     unit_duration_s  = 0.0
     fade_duration_s  = 0.06
     pan_spread       = 0.65
@@ -183,12 +256,29 @@ endif
 # ALIASES & DERIVED PARAMETERS
 # ============================================================
 
-midiNote   = base_MIDI_note
-fadeDur    = fade_duration_s
-pSpread    = pan_spread
-wetMix     = wet_mix
-dryMix     = 1.0 - wetMix
-loopShort  = loop_if_short
+midiNote     = base_MIDI_note
+qtOffset     = quartertone_offset_semitones
+sourceMidi   = source_pitch_MIDI
+fadeDur      = fade_duration_s
+pSpread      = pan_spread
+wetMix       = wet_mix
+dryMix       = 1.0 - wetMix
+loopShort    = loop_if_short
+
+# v4.5: resample precision tied to speed_mode.
+# Per-layer pitch shift (Override SR -> Resample) runs once per
+# layer (six total). Lower precision is acceptable for sustained
+# drone material and gives a real time saving on longer inputs.
+if speed_mode = 1
+    resamplePrecision = 50
+    speedStr$ = "Full Quality"
+elsif speed_mode = 2
+    resamplePrecision = 20
+    speedStr$ = "Balanced"
+else
+    resamplePrecision = 10
+    speedStr$ = "Fast"
+endif
 
 # Clamp pan_spread and wet_mix to [0, 1]
 if pSpread > 1.0
@@ -206,7 +296,15 @@ endif
 dryMix = 1.0 - wetMix
 
 # MIDI → Hz
-baseFreq = 440.0 * (2 ^ ((midiNote - 69) / 12.0))
+# baseFreq is the TARGET/root register the SACHER hexachord transposes
+# to (Base_MIDI_note, plus any quartertone detune). sourcePitchFreq is
+# the assumed fundamental of the INPUT recording (Source_pitch_MIDI)
+# and is what actually anchors the pitch-shift ratio below — this is
+# what makes changing the register preset (Low Drone / High Shimmer)
+# audibly change the processed output, rather than only the printed
+# Hz labels.
+baseFreq       = 440.0 * (2 ^ ((midiNote + qtOffset - 69) / 12.0))
+sourcePitchFreq = 440.0 * (2 ^ ((sourceMidi - 69) / 12.0))
 
 # MIDI note name (for display)
 noteNames$[0]  = "C"
@@ -225,6 +323,14 @@ noteNames$[11] = "B"
 notePC     = midiNote mod 12
 noteOctave = (midiNote div 12) - 1
 noteName$  = noteNames$[notePC] + string$(noteOctave)
+if qtOffset <> 0.0
+    qtCents$  = fixed$(qtOffset * 100, 0)
+    if qtOffset > 0
+        noteName$ = noteName$ + "+" + qtCents$ + "ct"
+    else
+        noteName$ = noteName$ + qtCents$ + "ct"
+    endif
+endif
 
 # Timing
 if unit_duration_s <= 0.0
@@ -303,13 +409,15 @@ endfor
 
 clearinfo
 appendInfoLine: "==================================================="
-appendInfoLine: "  Messagesquisse Opening v4.4"
+appendInfoLine: "  Messagesquisse Opening v4.6"
 appendInfoLine: "==================================================="
 appendInfoLine: "Source   : ", soundName$, "  (", fixed$(originalDuration, 3), " s)"
-appendInfoLine: "Base note: MIDI ", midiNote, "  (", noteName$, " = ", fixed$(baseFreq, 2), " Hz)"
+appendInfoLine: "Target reg: MIDI ", midiNote, "  (", noteName$, " = ", fixed$(baseFreq, 2), " Hz)"
+appendInfoLine: "Src pitch : MIDI ", sourceMidi, "  (assumed = ", fixed$(sourcePitchFreq, 2), " Hz)"
 appendInfoLine: "dot=", fixed$(dot, 4), " s   dash=", fixed$(dash, 4), " s"
 appendInfoLine: "Score dur: ", fixed$(totalDuration, 4), " s"
 appendInfoLine: "Wet mix  : ", fixed$(wetMix * 100, 1), "%   Pan spread: ", fixed$(pSpread * 100, 1), "%"
+appendInfoLine: "Speed    : ", speedStr$, "  (resample precision=", resamplePrecision, ")"
 appendInfoLine: "Preset   : ", preset_name$
 appendInfoLine: ""
 appendInfoLine: "Layer     | Note | Freq (Hz)  | Entry (s)  | Active (s) | Pan   "
@@ -339,8 +447,12 @@ accumR = selected("Sound")
 
 for i from 1 to 6
 
-    # 1. Calculate pitch factor (ratio of target to base)
-    pf = targetFreq[i] / baseFreq
+    # 1. Calculate pitch factor (ratio of target to assumed source pitch).
+    # NOTE: this must be sourcePitchFreq, not baseFreq — dividing by
+    # baseFreq would cancel it out of the ratio entirely (since
+    # targetFreq[i] is itself baseFreq * an interval), which is why
+    # Base_MIDI_note previously had no audible effect on the register.
+    pf = targetFreq[i] / sourcePitchFreq
     
     # 2. Since sample rate scaling alters duration, extract a segment 
     # proportional to the pitch factor so the final shifted duration is correct
@@ -429,7 +541,7 @@ for i from 1 to 6
 
     selectObject: sourceReady
     Override sampling frequency: oSr
-    shiftedLayerRaw = Resample: samplingFrequency, 50
+    shiftedLayerRaw = Resample: samplingFrequency, resamplePrecision
     removeObject: sourceReady
 
     # Trim or pad to exact activeDur[i] to ensure alignment
@@ -514,16 +626,24 @@ for i from 1 to 6
 
     if fadeDurActual > 0.001
         selectObject: paddedLayer
+        # v4.5 FIX: was "cos(2 * pi * (x - fadeStart) / fadeDurActual)"
+        # which ramped 0 -> 1 -> 0 over the fade window (a brief
+        # pulse at each layer entry, not a fade-in). Corrected to
+        # "cos(pi * ... )" so the cosine arg ranges from 0 to pi
+        # and the multiplier ramps monotonically 0 -> 1.
         Formula (part): fadeStart, fadeEnd, 1, 1,
-        ... "self * (0.5 - 0.5 * cos(2 * pi * (x - fadeStart) / fadeDurActual))"
+        ... "self * (0.5 - 0.5 * cos(pi * (x - fadeStart) / fadeDurActual))"
     endif
 
     # --- Accumulate into stereo buffers ---
+    # v4.6 FIX: wet layers are now scaled by wetMix (previously always
+    # accumulated at full gain regardless of Wet_mix, so wetMix=0 still
+    # produced the full processed field on top of the dry signal).
     selectObject: accumL
-    Formula: "self + object[paddedLayer] * panGainL[i]"
+    Formula: "self + object[paddedLayer] * panGainL[i] * wetMix"
 
     selectObject: accumR
-    Formula: "self + object[paddedLayer] * panGainR[i]"
+    Formula: "self + object[paddedLayer] * panGainR[i] * wetMix"
 
     removeObject: paddedLayer
 
@@ -593,6 +713,24 @@ Rename: "Messagesquisse_Opening"
 removeObject: accumL
 removeObject: accumR
 
+# ------------------------------------------------------------
+# FINAL FADE-OUT
+# All six layers are active right up to totalDuration and were
+# previously cut off in one block, risking a click/abrupt ending.
+# Add a short cosine (equal-power-ish) fade-out at the tail.
+# ------------------------------------------------------------
+finalFadeDur = fadeDur * 3
+if finalFadeDur > totalDuration * 0.25
+    finalFadeDur = totalDuration * 0.25
+endif
+
+if finalFadeDur > 0.001
+    fadeOutStart = totalDuration - finalFadeDur
+    selectObject: finalStereo
+    Formula (part): fadeOutStart, totalDuration, 1, 2,
+    ... "self * (0.5 + 0.5 * cos(pi * (x - fadeOutStart) / finalFadeDur))"
+endif
+
 # ============================================================
 # VISUALIZATION
 # ============================================================
@@ -628,6 +766,7 @@ if draw_visualization = 1
     # TITLE
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.0, 0.55
+    Axes: 0, 1, 0, 1
     Font size: 13
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half",
@@ -851,14 +990,15 @@ if draw_visualization = 1
     Font size: 7
     Colour: "Black"
     Text: 0.01, "left", 0.82, "half",
-    ... "##Messagesquisse Opening v4.4  | SACHER Hexachord  |  Morse Temporal Structure##"
+    ... "##Messagesquisse Opening v4.6  | SACHER Hexachord  |  Morse Temporal Structure##"
     Colour: "{0.35, 0.35, 0.60}"
     Text: 0.80, "left", 0.82, "half", "Preset: " + preset_name$
     Font size: 6
     Colour: "{0.30, 0.30, 0.35}"
     Text: 0.01, "left", 0.55, "half",
     ... "Source: " + soundName$ + "  (" + fixed$(originalDuration, 3) + " s)" +
-    ... "   Base: MIDI " + string$(midiNote) + " (" + noteName$ + " = " + fixed$(baseFreq, 2) + " Hz)" +
+    ... "   Target reg: MIDI " + string$(midiNote) + " (" + noteName$ + " = " + fixed$(baseFreq, 2) + " Hz)" +
+    ... "   Src pitch: MIDI " + string$(sourceMidi) + " (" + fixed$(sourcePitchFreq, 2) + " Hz)" +
     ... "   dot=" + fixed$(dot, 4) + " s   Score=" + fixed$(totalDuration, 3) + " s"
     Text: 0.01, "left", 0.30, "half",
     ... "Wet=" + fixed$(wetMix*100, 0) + "%   Dry=" + fixed$(dryMix*100, 0) + "%" +
@@ -893,7 +1033,8 @@ appendInfoLine: "  COMPLETE"
 appendInfoLine: "=================================================="
 appendInfoLine: "Output   : Messagesquisse_Opening  (stereo)"
 appendInfoLine: "Duration : ", fixed$(totalDuration, 3), " s"
-appendInfoLine: "Base     : MIDI ", midiNote, "  (", noteName$, " = ", fixed$(baseFreq, 2), " Hz)"
+appendInfoLine: "Target reg: MIDI ", midiNote, "  (", noteName$, " = ", fixed$(baseFreq, 2), " Hz)"
+appendInfoLine: "Src pitch : MIDI ", sourceMidi, "  (assumed = ", fixed$(sourcePitchFreq, 2), " Hz)"
 appendInfoLine: "Wet/Dry  : ", fixed$(wetMix*100,1), "% / ", fixed$(dryMix*100,1), "%"
 appendInfoLine: "Pan      : ", fixed$(pSpread*100,0), "% spread"
 appendInfoLine: "Preset   : ", preset_name$
