@@ -3,14 +3,76 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Length-safe layer mix (mono crash fix),
-#                        shimmer length preserved, panel axes, pitch guard
+# Version: 0.7 (2026) - Real per-grain crossfade (no pre-tapered
+#                        window fighting the overlap), integer
+#                        layer count, empty-cluster guard
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Neural Ambient Drone Designer - Generates lush evolving
-#   drones from source material using k-means clustering.
+#   Cluster-Based Ambient Drone Designer - Generates lush evolving
+#   drones from source material using k-means clustering over
+#   acoustic features (spectral centroid, bandwidth, HNR, pitch).
+#   File kept as "Neural_Ambient_Drone_Designer.praat" for now, but
+#   the method has no neural network in it - it's feature-space /
+#   k-means clustering. The form title, Info banner, and
+#   visualization below all say "Cluster-Based" instead, since that
+#   is what a technical audience (e.g. at DAFx) will actually see
+#   and hear referenced. Please call it "Feature-Space Ambient
+#   Drone Designer" or "Cluster-Based Ambient Drone Designer" when
+#   presenting it - not "neural" or "AI analysis".
+#
+# Changelog v0.7:
+#   - CORRECTNESS: Grains are now extracted with a rectangular
+#     window instead of Hanning. The Hanning window already tapered
+#     each grain to ~0 at both edges, so "Concatenate with overlap"
+#     was crossfading between two signals that were already faded
+#     out - reintroducing the same power dip the v0.6 fix was meant
+#     to remove, especially at short overlap ratios. The overlap
+#     crossfade is now the only fade applied.
+#   - ROBUSTNESS: Layer_density is now an integer field (was
+#     "positive", which silently accepted non-integer values like
+#     3.5 for something used as an array size / loop count), and is
+#     validated to be at least 1.
+#   - CORRECTNESS: k-means centroids are initialized by drawing grain
+#     indices with replacement, so two centroids can start on the
+#     same grain and a cluster can end up with zero members. The
+#     final membership count per cluster is now tracked, and
+#     best_cluster is chosen only among clusters that actually have
+#     members - previously an empty cluster's untouched (and
+#     possibly high-HNR) centroid could "win" and produce a false
+#     "No tonal segments found" failure.
+#   - CORRECTNESS: Removed a stray "+1" from the grains_needed
+#     formula. N grains joined with a fixed overlap produce a total
+#     length of fade + N*(grainSec-fade), so the "+1" always
+#     rendered and processed one extra grain per layer that was
+#     immediately trimmed away.
+#
+# Changelog v0.6:
+#   - VERSION: Header, form title, and Info banner now agree (all
+#     said different things: header 0.5, form/Info 0.4).
+#   - TERMINOLOGY: Form title and on-screen labels no longer claim
+#     "Neural" or "AI Analysis" - the method is k-means clustering
+#     over hand-designed acoustic features, not a neural network.
+#     The "=== AI Analysis ===" form section is now
+#     "=== Feature Extraction & Clustering ===".
+#   - REPRODUCIBILITY: Added a Seed field. k-means initialization,
+#     grain selection, and shimmer decisions all draw from Praat's
+#     RNG; Seed=0 keeps behaviour unpredictable (as before), any
+#     other value makes the whole run reproducible.
+#   - CORRECTNESS: Grains are now genuinely crossfaded using
+#     Praat's "Concatenate with overlap" (a real overlap where the
+#     outgoing grain fades out and the incoming grain fades in over
+#     Grain_crossfade_ms), instead of a per-grain fade-to-~0
+#     envelope followed by a plain, non-overlapping Concatenate -
+#     which produced audible gating rather than a crossfade.
+#     grains_needed is now derived from the actual hop implied by
+#     that overlap, instead of assuming a 50%-hop architecture the
+#     code never implemented.
+#   - ROBUSTNESS: Number_of_clusters is capped at the grain count,
+#     Kmeans_iterations must be positive, Shimmer_probability and
+#     Stereo_width are clamped to [0,1], and the spectrogram's
+#     analysis ceiling is capped below the Nyquist frequency.
 #
 # Changelog v0.5:
 #   - Mono mix no longer crashes when layers differ in length:
@@ -37,7 +99,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Neural Ambient Drone Designer v0.4
+form Cluster-Based Ambient Drone Designer v0.7
     comment === Preset ===
     optionmenu Preset: 1
         option Manual
@@ -46,9 +108,12 @@ form Neural Ambient Drone Designer v0.4
         option Dense Texture
         option Sparse Minimal
         option Evolving Pad
+    comment === Reproducibility ===
+    integer Seed 0
+    comment (0 = unpredictable/random each run; any other integer = reproducible run)
     comment === Synthesis ===
     positive Output_duration_sec 20.0
-    positive Layer_density 3
+    integer Layer_density 3
     positive Grain_crossfade_ms 20
     comment === Shimmer Control ===
     boolean Add_octave_shimmer 1
@@ -57,7 +122,7 @@ form Neural Ambient Drone Designer v0.4
         option Octaves only
         option Octaves and fifths
         option Full harmonic series
-    comment === AI Analysis ===
+    comment === Feature Extraction & Clustering ===
     positive Grain_size_ms 100
     integer Number_of_clusters 3
     integer Kmeans_iterations 10
@@ -135,6 +200,50 @@ else
     presetName$ = "Manual"
 endif
 
+# ============================================================
+# PARAMETER VALIDATION (v0.6)
+# ============================================================
+
+if kmeans_iterations < 1
+    exitScript: "Kmeans_iterations must be at least 1."
+endif
+
+if layer_density < 1
+    exitScript: "Layer_density must be at least 1."
+endif
+
+if shimmer_probability > 1
+    shimmerClamped = 1
+    shimmer_probability = 1
+else
+    shimmerClamped = 0
+endif
+
+widthClamped$ = ""
+if stereo_width < 0
+    widthClamped$ = "low"
+    stereo_width = 0
+elsif stereo_width > 1
+    widthClamped$ = "high"
+    stereo_width = 1
+endif
+
+# ============================================================
+# RANDOM SEED (v0.6)
+# k-means initialization, grain selection, and shimmer decisions
+# all draw from Praat's RNG. A fixed, non-zero Seed makes the
+# whole run reproducible; Seed = 0 keeps behaviour unpredictable,
+# as before.
+# ============================================================
+
+if seed <> 0
+    random_initializeWithSeedUnsafelyButPredictably (seed)
+    seedStr$ = string$(seed) + " (fixed / reproducible)"
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedStr$ = "0 (unpredictable)"
+endif
+
 # ============================================
 # SETUP
 # ============================================
@@ -152,16 +261,30 @@ grainSec = grain_size_ms / 1000
 stepSec = grainSec * 0.5
 crossfadeSec = grain_crossfade_ms / 1000
 
+# v0.6: the true per-join crossfade time, shared by the grain
+# assembly (Concatenate with overlap) and the grains_needed
+# calculation below, so the two stay consistent with each other.
+fade = min(crossfadeSec, grainSec * 0.4)
+
 if dur < grainSec * 2
     removeObject: workSnd
     exitScript: "Sound too short. Need at least " + fixed$(grainSec * 2, 2) + " s."
 endif
 
 clearinfo
-writeInfoLine: "=== Neural Ambient Drone Designer v0.4 ==="
+writeInfoLine: "=== Cluster-Based Ambient Drone Designer v0.7 ==="
+appendInfoLine: "Seed: ", seedStr$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Duration: ", output_duration_sec, " s | Layers: ", layer_density
 appendInfoLine: "Grain: ", grain_size_ms, " ms | Clusters: ", number_of_clusters
+if shimmerClamped = 1
+    appendInfoLine: "WARNING: Shimmer_probability was above 1, clamped to 1."
+endif
+if widthClamped$ = "low"
+    appendInfoLine: "WARNING: Stereo_width was below 0, clamped to 0."
+elsif widthClamped$ = "high"
+    appendInfoLine: "WARNING: Stereo_width was above 1, clamped to 1."
+endif
 if add_octave_shimmer
     appendInfoLine: "Shimmer: ", fixed$(shimmer_probability * 100, 0), "%"
 endif
@@ -181,6 +304,15 @@ appendInfoLine: "Analyzing spectral stability..."
 nGrains = floor((dur - grainSec) / stepSec)
 nFeatures = 4
 
+# v0.6: The spectrogram's frequency ceiling was a fixed 8000 Hz,
+# which can meet or exceed the Nyquist frequency for lower sample
+# rates. Cap it a little below Nyquist instead.
+nyquist = fs / 2
+specMaxFreq = 8000
+if specMaxFreq >= nyquist
+    specMaxFreq = nyquist * 0.98
+endif
+
 feat_centroid# = zero#(nGrains)
 feat_bandwidth# = zero#(nGrains)
 feat_hnr# = zero#(nGrains)
@@ -188,7 +320,7 @@ feat_pitch# = zero#(nGrains)
 grain_time# = zero#(nGrains)
 
 selectObject: workSnd
-spec = To Spectrogram: grainSec, 8000, stepSec, 20, "Gaussian"
+spec = To Spectrogram: grainSec, specMaxFreq, stepSec, 20, "Gaussian"
 
 selectObject: workSnd
 hnr = To Harmonicity (cc): stepSec, 75, 0.1, 1.0
@@ -311,6 +443,16 @@ endfor
 
 appendInfoLine: "Clustering textures..."
 
+if number_of_clusters < 1
+    exitScript: "Number_of_clusters must be at least 1."
+endif
+if number_of_clusters > nGrains
+    appendInfoLine: "WARNING: Number_of_clusters (", number_of_clusters,
+        ... ") exceeds the number of grains (", nGrains,
+        ... "); reducing to ", nGrains, "."
+    number_of_clusters = nGrains
+endif
+
 k = number_of_clusters
 
 cent_c# = zero#(k)
@@ -327,6 +469,7 @@ for c from 1 to k
 endfor
 
 assigns# = zero#(nGrains)
+clusterCount# = zero#(k)
 
 for iter from 1 to kmeans_iterations
     changes = 0
@@ -376,6 +519,7 @@ for iter from 1 to kmeans_iterations
             cent_h#[c] = sum_h / count
             cent_p#[c] = sum_p / count
         endif
+        clusterCount#[c] = count
     endfor
     
     if changes = 0
@@ -388,17 +532,23 @@ endfor
 # IDENTIFY BEST CLUSTER (Highest HNR)
 # ============================================
 
-best_cluster = 1
+best_cluster = 0
 max_hnr_score = -1e9
 
 for c from 1 to k
-    if cent_h#[c] > max_hnr_score
+    if clusterCount#[c] > 0 and cent_h#[c] > max_hnr_score
         max_hnr_score = cent_h#[c]
         best_cluster = c
     endif
 endfor
 
-appendInfoLine: "  Selected Cluster ", best_cluster, " (Most Tonal)"
+if best_cluster = 0
+    removeObject: workSnd
+    exitScript: "k-means produced no non-empty clusters. Try a different Seed or fewer clusters."
+endif
+
+appendInfoLine: "  Selected Cluster ", best_cluster, " (Most Tonal, ",
+    ... clusterCount#[best_cluster], " grains)"
 
 tonal_indices# = zero#(nGrains)
 tonal_count = 0
@@ -466,7 +616,18 @@ endfor
 for layer_idx from 1 to nLayers
     appendInfoLine: "  Layer ", layer_idx, "/", nLayers, "..."
     
-    grains_needed = ceiling(layer_dur / (grainSec * 0.5))
+    # v0.6: grains are joined with a real crossfade (see below), so
+    # each additional grain only advances the output by
+    # (grainSec - fade), not by a full grain. Solve for the grain
+    # count that reaches layer_dur under that hop.
+    hopSec = grainSec - fade
+    if hopSec <= 0
+        hopSec = grainSec * 0.1
+    endif
+    grains_needed = ceiling((layer_dur - fade) / hopSec)
+    if grains_needed < 1
+        grains_needed = 1
+    endif
     grain_sounds# = zero#(grains_needed)
     
     for g from 1 to grains_needed
@@ -487,7 +648,7 @@ for layer_idx from 1 to nLayers
         endif
         
         selectObject: workSnd
-        Extract part: t1, t2, "Hanning", 1, "no"
+        Extract part: t1, t2, "rectangular", 1, "no"
         gid = selected("Sound")
         
         # Shimmer transposition. Resample shifts pitch but also
@@ -522,29 +683,28 @@ for layer_idx from 1 to nLayers
             endif
         endif
         
-        # Crossfade envelope
-        if crossfadeSec > 0
-            selectObject: gid
-            grain_dur = Get total duration
-            fade = min(crossfadeSec, grain_dur * 0.4)
-            fadeStr$ = string$(fade)
-            durMinusFade$ = string$(grain_dur - fade)
-            durStr$ = string$(grain_dur)
-            Formula: "self * (if x < " + fadeStr$ + " then x/" + fadeStr$ + 
-                ... " else if x > " + durMinusFade$ + " then (" + durStr$ + "-x)/" + fadeStr$ + 
-                ... " else 1 fi fi)"
-        endif
-        
         grain_sounds#[g] = gid
     endfor
     
-    # Concatenate grains
+    # Join grains with a genuine crossfade: "Concatenate with
+    # overlap" fades the outgoing grain out and the incoming grain
+    # in over `fade` seconds and sums them, instead of each grain
+    # fading to ~silence on its own and being butted up against the
+    # next (which produced audible gating, not a crossfade).
     selectObject: grain_sounds#[1]
-    for g from 2 to grains_needed
-        plusObject: grain_sounds#[g]
-    endfor
-    Concatenate
-    layerSnd = selected("Sound")
+    if grains_needed = 1
+        layerSnd = Copy: "Layer_" + string$(layer_idx)
+    else
+        for g from 2 to grains_needed
+            plusObject: grain_sounds#[g]
+        endfor
+        if fade > 0
+            Concatenate with overlap: fade
+        else
+            Concatenate
+        endif
+        layerSnd = selected("Sound")
+    endif
     
     # Trim to duration
     selectObject: layerSnd
@@ -611,7 +771,7 @@ if stereo_output
     selectObject: output_left
     plusObject: output_right
     finalOut = Combine to stereo
-    Rename: sndName$ + "_NeuralDrone_" + presetName$
+    Rename: sndName$ + "_ClusterDrone_" + presetName$
     
     removeObject: output_left, output_right
 else
@@ -626,7 +786,7 @@ else
     endfor
     
     selectObject: finalOut
-    Rename: sndName$ + "_NeuralDrone_" + presetName$
+    Rename: sndName$ + "_ClusterDrone_" + presetName$
 endif
 
 selectObject: finalOut
@@ -651,7 +811,7 @@ Select outer viewport: 1, 8, 0, 0.5
 Axes: 0, 1, 0, 1
 Font size: 12
 Colour: "Black"
-Text: 0.5, "centre", 0.5, "half", "##Neural Ambient Drone## | " + presetName$ + " | " + string$(nLayers) + " layers"
+Text: 0.5, "centre", 0.5, "half", "##Cluster-Based Ambient Drone## | " + presetName$ + " | " + string$(nLayers) + " layers"
 
 # === SOURCE WAVEFORM ===
 Select outer viewport: 0, 8, 0.6, 2.0
