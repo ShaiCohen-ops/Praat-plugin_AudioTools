@@ -1,14 +1,70 @@
 # ============================================================
-# Praat AudioTools - Random Reich Generator (Auto-Phasing Tool)
+# Praat AudioTools - Reich Generator (Auto-Phasing Tool)
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Random Reich Generator (Auto-Phasing Tool)
+#   Reich Generator (Auto-Phasing Tool) -- extracts a loop from a
+#   source recording and phases it against a pitch/tempo-drifting
+#   copy (and an optional static anchor voice), Steve Reich style.
+#
+# Changelog v0.4.1 (2026) — second review pass:
+#   - FIX: Classic Reich (the default preset) still forced
+#     p_cycle = 2.0 while the default Total_Duration_min is 1.0 min,
+#     so the default demo run ended halfway through the first phase
+#     cycle. Classic Reich's cycle is now 1.0 min, matching the
+#     default render length.
+#   - FIX: the "no voiced material" notice only checked
+#     pitch_ratio <> 1.0, so on unpitched loops with the V2 interval
+#     left at Unison but Flutter_Amount_st > 0 (e.g. Broken Tape on
+#     unvoiced material), flutter silently did nothing with no
+#     warning. Notice now also fires when only flutter needed the
+#     (empty) PitchTier.
+#   - FIX: the phase wheel sampled t = (i-1) * (actual_duration /
+#     num_samples), so the last sample landed one interval short of
+#     the piece's actual end. For a duration that's an exact multiple
+#     of the phase cycle, the drawn path approached but never
+#     crossed the wrap point, undercounting cycle_count by one.
+#     Sample interval is now actual_duration / (num_samples - 1) so
+#     the last sample lands exactly at the end.
+#
+# Changelog v0.4 (2026) — response to internal review:
+#   - FIX (audible, real bug): Flutter_Amount_st was labelled in
+#     semitones but applied as "self + randomGauss(0, p_flut)"
+#     directly to the PitchTier, whose values are in Hz. A "0.3"
+#     setting was a 0.3 Hz standard deviation -- inaudibly small,
+#     and its audible size depended on the loop's register. Flutter
+#     is now applied multiplicatively/exponentially in log-frequency
+#     space ("self * 2^(randomGauss(0, p_flut)/12)"), so the field
+#     is genuinely in semitones and scales correctly with pitch.
+#   - FIX (structural, real bug): a non-zero Start_Offset trimmed
+#     the head off Voice 2 and the tail off Voice 1/3 to align them,
+#     which shortened the final render to Total_Duration - Offset
+#     instead of the requested Total_Duration. Voice 2's wall is now
+#     built Offset_sec longer up front and only then has its head
+#     trimmed, so every voice -- and the final mix -- lands at
+#     exactly Total_Duration_min regardless of offset.
+#   - ADDED: Random_seed (0 = fresh random sequence every run, any
+#     other integer = reproducible loop pick / offset / flutter via
+#     random_initializeWithSeedUnsafelyButPredictably).
+#   - RENAMED: the form title, changelog, and output object name were
+#     three different names ("Random Reich Generator",
+#     "Harmonic Reich Generator [PRO]", "...ProReich..."). Unified to
+#     "Reich Generator" everywhere.
+#   - CHANGED: demo-friendlier defaults -- Cycle_Duration_min and
+#     Total_Duration_min both default to 1.0 min (was 2.0 / 3.0), so
+#     a full phase cycle completes within the default render.
+#   - FIX: Voice 3 ("the anchor") was set with "Scale intensity: 65",
+#     an absolute dB SPL-equivalent target unrelated to how loud the
+#     actual source recording is. It's now set relative to the loop's
+#     own intensity via a new V3_Level_dB_relative field (default
+#     -6 dB under the loop), so the anchor sits under the other
+#     voices instead of at an arbitrary absolute level.
+#   - ADDED: final peak normalisation on the mixed output.
 #
 # Changelog v0.3 (2026):
 #   - FIX (audible): loops were cut rectangularly at random
@@ -49,7 +105,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Harmonic Reich Generator [PRO]
+form Reich Generator
     comment --- Presets ---
     optionmenu Preset 1
         option Classic Reich (Speech / Unison)
@@ -75,9 +131,10 @@ form Harmonic Reich Generator [PRO]
         option Center Anchor (Unison Static)
         option Low Shadow (Octave Down Static)
         option High Shimmer (Octave Up Static)
+    real V3_Level_dB_relative -6.0
     
     comment --- Structure & Feel ---
-    positive Cycle_Duration_min 2.0
+    positive Cycle_Duration_min 1.0
     
     optionmenu Start_Offset 3
         option 0% (Unison Start)
@@ -85,7 +142,10 @@ form Harmonic Reich Generator [PRO]
         option Random
     
     real Flutter_Amount_st 0.05
-    positive Total_Duration_min 3.0
+    positive Total_Duration_min 1.0
+    
+    comment --- Reproducibility [0 = fresh random sequence each run] ---
+    integer Random_seed 0
     
     comment --- Visualizations ---
     boolean Create_polar_phase_wheel 1
@@ -101,6 +161,7 @@ p_min = min_loop_sec
 p_max = max_loop_sec
 p_v2$ = v2_Interval$
 p_v3$ = v3_Mode$
+p_v3_level = v3_Level_dB_relative
 p_cycle = cycle_Duration_min
 p_off$ = start_Offset$
 p_flut = flutter_Amount_st
@@ -108,7 +169,12 @@ p_flut = flutter_Amount_st
 if preset$ = "Classic Reich (Speech / Unison)"
     p_min = 0.5; p_max = 1.0
     p_v2$ = "Unison"; p_v3$ = "None"
-    p_cycle = 2.0; p_off$ = "0% (Unison Start)"
+    # v0.4.1 FIX: was 2.0, which meant the (also default-selected)
+    # Classic Reich preset needed a 2-minute cycle to complete, but
+    # Total_Duration_min defaults to 1.0 -- the default demo run
+    # ended halfway through the first phase cycle. Matches the
+    # 1-minute default duration so a full cycle completes.
+    p_cycle = 1.0; p_off$ = "0% (Unison Start)"
     p_flut = 0.0
 
 elsif preset$ = "Deep Space (Sub-Bass Shadow)"
@@ -129,6 +195,19 @@ elsif preset$ = "Broken Tape (Flutter + Random Offset)"
     p_cycle = 1.5; p_off$ = "Random"
     p_flut = 0.3
 endif
+# NOTE: p_v3_level (Voice 3's level relative to the loop) is
+# deliberately never touched by a preset -- like Source pitch in
+# Messagesquisse Opening, it's a mix-balance knob the user set for
+# their own source material, not a trait of the compositional preset.
+
+# Reproducibility: 0 = a fresh random sequence every run (default
+# Praat behaviour). Any other integer reseeds the generator so the
+# loop pick, offset, and flutter draws are exactly repeatable.
+if random_seed <> 0
+    seedResult = random_initializeWithSeedUnsafelyButPredictably (random_seed)
+endif
+
+
 
 # ============================================
 # 2. SOURCE EXTRACTION (CLEAN)
@@ -206,6 +285,7 @@ endif
 selectObject: loop_base
 base_sr = Get sampling frequency
 dur_base = Get duration
+loopBaseIntensity_dB = Get intensity (dB)
 
 # ============================================
 # 3. CALCULATE DRIFT
@@ -243,8 +323,8 @@ if pitch_ratio <> 1.0 or p_flut > 0
     Extract pitch tier
     pitch_id = selected("PitchTier")
     nPitchPts = Get number of points
-    if nPitchPts = 0 and pitch_ratio <> 1.0
-        appendInfoLine: "NOTE: no voiced material in the loop -- the V2 interval acts through PSOLA and will have no effect."
+    if nPitchPts = 0 and (pitch_ratio <> 1.0 or p_flut > 0)
+        appendInfoLine: "NOTE: no voiced material in the loop -- V2 pitch interval and flutter will have no effect."
     endif
     
     if pitch_ratio <> 1.0
@@ -252,7 +332,12 @@ if pitch_ratio <> 1.0 or p_flut > 0
     endif
     
     if p_flut > 0
-        Formula: "self + randomGauss(0, " + string$(p_flut) + ")"
+        # v0.4 FIX: PitchTier values are in Hz, so "self + randomGauss(0, st)"
+        # was adding a fraction-of-a-Hz jitter, not a semitone-scaled one --
+        # audibly negligible and register-dependent. Semitones are a ratio,
+        # so the jitter has to be multiplicative/exponential in log-frequency
+        # space: self * 2^(randomGauss(0, semitones)/12).
+        Formula: "self * 2 ^ (randomGauss(0, " + string$(p_flut) + ") / 12)"
     endif
     
     selectObject: manip_id
@@ -331,11 +416,29 @@ if p_v3$ <> "None"
     endif
     
     selectObject: v3_id
-    Scale intensity: 65
+    # v0.4 FIX: was "Scale intensity: 65", an absolute dB SPL-equivalent
+    # target with no relation to how loud the actual source recording is.
+    # Set relative to the loop's own measured intensity instead, so the
+    # anchor sits a controlled number of dB under/over the other voices
+    # regardless of the source's absolute level.
+    Scale intensity: loopBaseIntensity_dB + p_v3_level
 endif
 
 # ============================================
-# 6. BUILD TRACKS
+# 6. OFFSET (computed before the walls are built --
+#    Voice 2's wall needs extra length up front so trimming its
+#    head doesn't shorten the final render)
+# ============================================
+
+offset_sec = 0
+if p_off$ = "50% (Anti-Phase)"
+    offset_sec = dur_base * 0.5
+elsif p_off$ = "Random"
+    offset_sec = randomUniform(0, dur_base)
+endif
+
+# ============================================
+# 7. BUILD TRACKS
 # ============================================
 
 total_sec = total_Duration_min * 60
@@ -373,52 +476,31 @@ endproc
 call make_wall loop_base total_sec "Track_1_Static"
 t1 = selected("Sound")
 
-call make_wall v2_final total_sec "Track_2_Drift"
-t2 = selected("Sound")
+# v0.4 FIX: previously built at total_sec and then had its HEAD cut by
+# offset_sec afterwards, which shortened the whole render to
+# total_sec - offset_sec instead of the requested Total_Duration_min.
+# Build it offset_sec longer up front, then trim the head to length --
+# the tail lands exactly at total_sec either way.
+v2_wall_len = total_sec + offset_sec
+call make_wall v2_final v2_wall_len "Track_2_Drift_Raw"
+t2_raw = selected("Sound")
+
+if offset_sec > 0
+    selectObject: t2_raw
+    Extract part: offset_sec, offset_sec + total_sec, "rectangular", 1, "no"
+    Rename: "Track_2_Drift"
+    t2 = selected("Sound")
+    removeObject: t2_raw
+else
+    t2 = t2_raw
+    selectObject: t2
+    Rename: "Track_2_Drift"
+endif
 
 t3 = 0
 if has_v3
     call make_wall v3_id total_sec "Track_3_Anchor"
     t3 = selected("Sound")
-endif
-
-# ============================================
-# 7. OFFSET LOGIC
-# ============================================
-
-offset_sec = 0
-if p_off$ = "50% (Anti-Phase)"
-    offset_sec = dur_base * 0.5
-elsif p_off$ = "Random"
-    offset_sec = randomUniform(0, dur_base)
-endif
-
-if offset_sec > 0
-    selectObject: t2
-    Extract part: offset_sec, total_sec, "rectangular", 1, "no"
-    Rename: "T2_Trim"
-    t2_new = selected("Sound")
-    selectObject: t2
-    Remove
-    t2 = t2_new
-    
-    final_len = total_sec - offset_sec
-    
-    selectObject: t1
-    Extract part: 0, final_len, "rectangular", 1, "no"
-    t1_new = selected("Sound")
-    selectObject: t1
-    Remove
-    t1 = t1_new
-    
-    if has_v3
-        selectObject: t3
-        Extract part: 0, final_len, "rectangular", 1, "no"
-        t3_new = selected("Sound")
-        selectObject: t3
-        Remove
-        t3 = t3_new
-    endif
 endif
 
 # ============================================
@@ -430,13 +512,19 @@ if create_polar_phase_wheel
     appendInfoLine: ""
     appendInfoLine: "=== GENERATING PROCESS MONITOR ==="
 
+    # v0.4: the render is now always exactly total_sec, offset or not
+    # (see section 6/7 fix), so no separate "shortened" duration exists.
     actual_duration = total_sec
-    if offset_sec > 0
-        actual_duration = final_len
-    endif
 
     num_samples = 1200
-    sample_interval = actual_duration / num_samples
+    # v0.4.1 FIX: was actual_duration / num_samples, whose last sample
+    # (t at i=num_samples) lands one interval short of actual_duration.
+    # For a duration that's an exact multiple of the phase cycle, the
+    # drawn path approaches but never crosses the 360deg wrap point, so
+    # cycle_count could read one lower than the true number of cycles.
+    # Dividing by (num_samples - 1) makes the last sample land exactly
+    # at the end of the piece.
+    sample_interval = actual_duration / (num_samples - 1)
     
     # --- VIEWPORT ---
     Erase all
@@ -648,7 +736,7 @@ endif
 selectObject: t1
 plusObject: t2
 Combine to stereo
-Rename: source_name$ + "_ProReich_" + preset$
+Rename: source_name$ + "_ReichGen_" + preset$
 final_id = selected("Sound")
 
 # Final Cleanup
@@ -660,6 +748,12 @@ if has_v3
    plusObject: v3_id
 endif
 Remove
+
+# v0.4: final peak normalisation -- previously absent, so overall
+# loudness depended entirely on the source recording's own level
+# plus however the three voices happened to sum.
+selectObject: final_id
+Scale peak: 0.99
 
 selectObject: final_id
 if play_result
