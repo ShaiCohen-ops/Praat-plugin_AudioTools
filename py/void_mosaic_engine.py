@@ -1,8 +1,11 @@
 """
-void_mosaic_engine.py — Latent Void Mosaic Engine v1.1
+void_mosaic_engine.py — Latent Void Mosaic Engine v1.5
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.3 (2026) - Stereo output (pan+decorrelate); vectorized feature extraction (~47x)
+Version: 1.5 (2026) - Grain schedule covers target (no silent tail); register
+         folded to nearest-source octave + honest 8-col pitch CSV; KD-tree void
+         search (memory-safe on large corpora); path-safe file counting.
+         (1.4: exact length, pan fix, clamps, validation)
 License: MIT
 """
 
@@ -30,8 +33,8 @@ def parse_args():
     parser.add_argument("--jitter", type=float, default=0.0, help="Grain length jitter percentage")
     parser.add_argument("--max_shift", type=float, default=24.0, help="Max semitones to stretch")
     parser.add_argument("--rest_prob", type=float, default=0.0, help="Probability (0..1) of a silent rest grain")
-    parser.add_argument("--min_pitch", type=float, default=50.0, help="Minimum target F0 Hz (octave-folded)")
-    parser.add_argument("--max_pitch", type=float, default=2000.0, help="Maximum target F0 Hz (octave-folded)")
+    parser.add_argument("--min_pitch", type=float, default=50.0, help="Minimum preferred F0 Hz (register floor, subject to max_shift)")
+    parser.add_argument("--max_pitch", type=float, default=2000.0, help="Maximum preferred F0 Hz (register ceiling, subject to max_shift)")
     parser.add_argument("--void_spacing", type=float, default=2.0, help="Min z-space distance between selected voids")
     parser.add_argument("--reuse_penalty", type=float, default=1.0, help="0=allow repeats, 1=strongly diversify source grains")
     parser.add_argument("--stereo", type=int, default=0, help="0=mono, 1=stereo (pan + decorrelate)")
@@ -87,6 +90,13 @@ def mutate_grain(y_grain, sr, source_f0, target_f0, source_rms, target_rms, max_
     y_mut = y_grain.copy()
     shift_st = 0.0
 
+    # If the void gave no usable pitch target but the source grain IS voiced,
+    # fall back to folding the source pitch, so the chosen Vocal Register is
+    # honored instead of leaving the grain at its original (out-of-range) pitch.
+    if target_f0 <= 20 and source_f0 > 20:
+        target_f0 = source_f0
+
+    folded_target = 0.0
     # Fold the target F0 into the chosen register (octave folding), so the
     # mosaic respects the selected vocal range instead of shifting to
     # wherever the void's raw coordinate fell.
@@ -95,7 +105,24 @@ def mutate_grain(y_grain, sr, source_f0, target_f0, source_rms, target_rms, max_
             target_f0 *= 2.0
         while target_f0 > max_pitch:
             target_f0 /= 2.0
+        # If the register spans more than one octave, pick the in-range octave
+        # NEAREST the source, so the required shift is smallest and most likely
+        # to fit within max_shift (best chance of actually reaching register).
+        if source_f0 > 20:
+            best = target_f0
+            cand = target_f0
+            while cand / 2.0 >= min_pitch:
+                cand /= 2.0
+                if abs(math.log2(cand / source_f0)) < abs(math.log2(best / source_f0)):
+                    best = cand
+            cand = target_f0
+            while cand * 2.0 <= max_pitch:
+                cand *= 2.0
+                if abs(math.log2(cand / source_f0)) < abs(math.log2(best / source_f0)):
+                    best = cand
+            target_f0 = best
         target_f0 = float(np.clip(target_f0, min_pitch, max_pitch))
+        folded_target = target_f0
 
     # 1. Pitch Mutation
     if source_f0 > 20 and target_f0 > 20:
@@ -103,7 +130,13 @@ def mutate_grain(y_grain, sr, source_f0, target_f0, source_rms, target_rms, max_
         shift_st = np.clip(shift_st, -max_shift, max_shift)
         if abs(shift_st) > 0.1:
             y_mut = librosa.effects.pitch_shift(y_mut, sr=sr, n_steps=shift_st)
-            
+
+    # Actual output pitch after the (possibly clipped) shift. When the source
+    # is far from register and max_shift is small, this may fall short of the
+    # register -- the register is a preference bounded by Max Pitch Shift, not
+    # a guarantee.
+    reachable_f0 = source_f0 * (2.0 ** (shift_st / 12.0)) if source_f0 > 20 else 0.0
+
     # 2. RMS Mutation
     current_rms = np.sqrt(np.mean(y_mut**2))
     if current_rms > 1e-6:
@@ -112,31 +145,85 @@ def mutate_grain(y_grain, sr, source_f0, target_f0, source_rms, target_rms, max_
         scaler = np.clip(scaler, 0.1, 5.0) 
         y_mut = y_mut * scaler
         
-    return y_mut, shift_st
+    return y_mut, shift_st, folded_target, reachable_f0
 
 def main():
     start_time = time.time()
     args = parse_args()
-    
+
+    # ── Input validation (the engine must not trust the caller) ──
+    # Reversed np.clip bounds silently pin every grain to a wrong value, and
+    # out-of-range percentages corrupt the synthesis, so clamp here as well
+    # as in the Praat form.
+    args.max_shift = max(0.0, args.max_shift)
+    args.overlap = min(max(args.overlap, 0.0), 95.0)
+    args.jitter = min(max(args.jitter, 0.0), 100.0)
+    args.rest_prob = min(max(args.rest_prob, 0.0), 1.0)
+    args.reuse_penalty = min(max(args.reuse_penalty, 0.0), 1.0)
+    args.stereo_width = min(max(args.stereo_width, 0.0), 1.0)
+    args.void_spacing = max(0.0, args.void_spacing)
+    args.grain_dur = max(1.0, args.grain_dur)
+    args.target_dur = max(0.05, args.target_dur)
+    if args.max_pitch < args.min_pitch:
+        args.min_pitch, args.max_pitch = args.max_pitch, args.min_pitch
+    # A standalone engine shouldn't trust that pitch bounds are sane even if
+    # the Praat form can't produce bad ones.
+    args.min_pitch = max(20.0, args.min_pitch)
+    args.max_pitch = max(args.min_pitch + 1.0, args.max_pitch)
+    args.pan_mode = args.pan_mode if args.pan_mode in (1, 2, 3) else 1
+    args.stereo = 1 if args.stereo == 1 else 0
+
     target_sr = 22050
     grain_samples = int((args.grain_dur / 1000.0) * target_sr)
     hop_samples = int(grain_samples * (1.0 - (args.overlap / 100.0)))
     hop_samples = max(1, hop_samples)
     
-    # ── Calculate Required Voids for Target Duration ──
+    # ── Schedule grains until the material COVERS the target ──
+    # Computing num_voids as floor(target/hop) undershoots, leaving a silent
+    # tail after the exact-length trim. Instead, lay out jittered grain
+    # lengths/hops until the last grain's end reaches target_samples, so the
+    # audio fills right up to the cut. (Jitter is applied here, once.)
     target_samples = int(args.target_dur * target_sr)
-    num_voids = max(1, int(target_samples / hop_samples))
-    
+    base_samples = grain_samples
+    grain_lengths = []
+    hop_lengths = []
+    start = 0
+    while True:
+        if args.jitter > 0:
+            jf = np.random.uniform(1.0 - args.jitter / 100.0, 1.0 + args.jitter / 100.0)
+            g_len = int(base_samples * jf)
+        else:
+            g_len = base_samples
+        g_len = max(64, g_len)
+        h_len = max(1, int(g_len * (1.0 - args.overlap / 100.0)))
+        grain_lengths.append(g_len)
+        hop_lengths.append(h_len)
+        if start + g_len >= target_samples:
+            break
+        start += h_len
+        if len(grain_lengths) >= 2000000:   # sanity guard
+            break
+    num_voids = len(grain_lengths)
+
     # ── 1. Corpus Extraction ──
+    # Case-insensitive filesystems return the same file for "*.wav" and
+    # "*.WAV", so dedupe by normalized absolute path. Sorted for reproducibility.
+    exts = ("*.wav", "*.flac", "*.aif", "*.aiff")
     audio_files = []
-    exts = ("*.wav", "*.WAV", "*.flac", "*.FLAC", "*.aif", "*.aiff", "*.AIF")
+    seen_paths = set()
     for ext in exts:
-        audio_files.extend(glob.glob(os.path.join(args.corpus, '**', ext), recursive=True))
-        
+        for pat in (ext, ext.upper()):
+            for p in glob.glob(os.path.join(args.corpus, '**', pat), recursive=True):
+                key = os.path.normcase(os.path.abspath(p))
+                if key not in seen_paths:
+                    seen_paths.add(key)
+                    audio_files.append(p)
+    audio_files.sort()
+
     if not audio_files:
         with open(args.out_stats, 'w') as f:
             f.write("Status: Failed\nNo target audio files identified.")
-        sys.exit(0)
+        sys.exit(1)
         
     corpus_vectors = []
     corpus_metadata = []
@@ -157,7 +244,9 @@ def main():
                 extract_features_grids(y, target_sr, hop=stft_hop)
             n_frames = len(cen_f)
             
-            num_grains = (len(y) - grain_samples) // hop_samples
+            # +1: a file whose length is exactly grain_samples must still
+            # yield one grain (len>=grain_samples guaranteed by the skip above).
+            num_grains = (len(y) - grain_samples) // hop_samples + 1
             for i in range(num_grains):
                 start = i * hop_samples
                 # STFT frames covering this grain
@@ -180,7 +269,7 @@ def main():
                 corpus_vectors.append(vec)
                 corpus_metadata.append({
                     'file_idx': file_idx,
-                    'file_path': os.path.basename(f_path),
+                    'file_path': os.path.relpath(f_path, args.corpus),
                     'start_sample': start
                 })
         except Exception:
@@ -189,7 +278,7 @@ def main():
     if not corpus_vectors:
         with open(args.out_stats, 'w') as f:
             f.write("Status: Failed\nCould not extract spatial features.")
-        sys.exit(0)
+        sys.exit(1)
         
     corpus_matrix = np.array(corpus_vectors)
     means = np.mean(corpus_matrix, axis=0)
@@ -204,9 +293,15 @@ def main():
     
     num_probes = 40000
     probes_z = np.random.uniform(min_bounds, max_bounds, size=(num_probes, 6))
-    
-    distances = spatial.distance.cdist(probes_z, corpus_z, metric='euclidean')
-    min_distances = np.min(distances, axis=1)
+
+    # Nearest-corpus distance per probe via a KD-tree. A dense cdist here is
+    # (num_probes x num_grains) and blows past several GB on a large corpus
+    # (~9.6 GB at 30k grains); the tree query is O(P log N) in time and memory.
+    corpus_tree = spatial.cKDTree(corpus_z)
+    try:
+        min_distances, _ = corpus_tree.query(probes_z, k=1, workers=-1)
+    except TypeError:
+        min_distances, _ = corpus_tree.query(probes_z, k=1)
     sorted_probe_indices = np.argsort(min_distances)[::-1]
     
     selected_voids_z = []
@@ -222,13 +317,30 @@ def main():
                 selected_voids_z.append(candidate)
         if len(selected_voids_z) >= num_voids:
             break
-            
+
+    # How many satisfied the spacing constraint before we had to backfill.
+    voids_spaced = len(selected_voids_z)
     while len(selected_voids_z) < num_voids:
-        # Fallback if we need massive amounts of voids for a very long target duration
+        # Fallback if we need massive amounts of voids for a very long target
+        # duration. These backfilled points do NOT respect void_spacing.
         selected_voids_z.append(probes_z[np.random.choice(sorted_probe_indices[:1000])])
-        
+    voids_fallback = num_voids - voids_spaced
+
     selected_voids_z = np.array(selected_voids_z)
     selected_voids_physical = (selected_voids_z * stds) + means
+
+    # ── Clamp void targets to physically valid acoustics ──
+    # Voids are sampled in a z-box expanded past the corpus, so inverting the
+    # standardization can produce impossible coordinates (negative Hz, flatness
+    # or ZCR outside 0..1). Clamp the physical targets that feed mutation and
+    # the Matter Map; the z-space voids used for grain *selection* stay as-is.
+    nyq = target_sr / 2.0
+    selected_voids_physical[:, 0] = np.maximum(selected_voids_physical[:, 0], 0.0)       # rms
+    selected_voids_physical[:, 1] = np.clip(selected_voids_physical[:, 1], 0.0, nyq)     # centroid
+    selected_voids_physical[:, 2] = np.clip(selected_voids_physical[:, 2], 0.0, 1.0)     # flatness
+    selected_voids_physical[:, 3] = np.clip(selected_voids_physical[:, 3], 0.0, nyq)     # rolloff
+    selected_voids_physical[:, 4] = np.clip(selected_voids_physical[:, 4], 0.0, 1.0)     # zcr
+    selected_voids_physical[:, 5] = np.clip(selected_voids_physical[:, 5], 0.0, args.max_pitch)  # f0
 
     # Map Export
     if args.out_map:
@@ -246,21 +358,8 @@ def main():
             pass
 
     # ── 3. Mutation and Synthesis ──
-    # Per-grain lengths/hops (jitter varies each grain's length).
-    base_samples = grain_samples
-    grain_lengths = []
-    hop_lengths = []
-    for i in range(num_voids):
-        if args.jitter > 0:
-            jf = np.random.uniform(1.0 - args.jitter / 100.0, 1.0 + args.jitter / 100.0)
-            g_len = int(base_samples * jf)
-        else:
-            g_len = base_samples
-        g_len = max(64, g_len)
-        h_len = max(1, int(g_len * (1.0 - args.overlap / 100.0)))
-        grain_lengths.append(g_len)
-        hop_lengths.append(h_len)
-
+    # Grain lengths/hops were scheduled up front (see the coverage loop) so the
+    # material fills the target duration.
     total_audio_samples = sum(hop_lengths) + max(grain_lengths) + target_sr
 
     stereo = (args.stereo == 1)
@@ -280,6 +379,7 @@ def main():
 
     grain_records = []
     rests_generated = 0
+    used_grain_keys = set()   # (file_idx, start_sample) -> genuinely distinct grains
 
     # Reuse penalty: corpus grains used recently are temporarily pushed away
     # in the nearest-grain search so the mosaic spreads across more of the
@@ -307,7 +407,7 @@ def main():
             grain_records.append([
                 f"Rest_{i}", "(silence)",
                 round(current_sample / target_sr, 3),
-                0.0, 0.0, 0.0
+                0.0, 0.0, 0.0, 0.0, 0.0
             ])
             current_sample += h_len
             continue
@@ -324,6 +424,7 @@ def main():
         recent_used = recent_used[-recent_window:]
 
         meta = corpus_metadata[best_idx]
+        used_grain_keys.add((meta['file_idx'], meta['start_sample']))
         c_phys = corpus_matrix[best_idx]
 
         y_full = corpus_audio_data[meta['file_idx']]
@@ -333,7 +434,7 @@ def main():
         if len(y_grain) < g_len:
             y_grain = np.pad(y_grain, (0, g_len - len(y_grain)))
 
-        y_mutated, shift_applied = mutate_grain(
+        y_mutated, shift_applied, folded_target, reachable_f0 = mutate_grain(
             y_grain, target_sr,
             source_f0=c_phys[5], target_f0=void_phys[5],
             source_rms=c_phys[0], target_rms=void_phys[0],
@@ -372,8 +473,12 @@ def main():
             sR = current_sample + (off if pos < 0 else 0)
             out_L[sL:sL + g_len] += windowed * gL
             out_R[sR:sR + g_len] += windowed * gR
-            wsum_L[sL:sL + g_len] += window * gL
-            wsum_R[sR:sR + g_len] += window * gR
+            # Normalize by the pan-INDEPENDENT overlap envelope. Dividing each
+            # channel by its own pan-weighted sum cancels gL/gR and collapses
+            # every non-hard pan back to center; using the bare window keeps
+            # the constant-power balance intact.
+            wsum_L[sL:sL + g_len] += window
+            wsum_R[sR:sR + g_len] += window
         else:
             out_audio[current_sample:current_sample + g_len] += windowed
             window_sum[current_sample:current_sample + g_len] += window
@@ -383,20 +488,32 @@ def main():
             meta['file_path'],
             round(start_samp / target_sr, 3),
             round(shift_applied, 2),
-            round(void_phys[5], 2),
-            round(c_phys[5], 2)
+            round(float(void_phys[5]), 2),   # raw void F0 coordinate
+            round(float(folded_target), 2),  # target after register folding
+            round(float(reachable_f0), 2),   # actual output F0 after (clipped) shift
+            round(float(c_phys[5]), 2)       # source grain F0
         ])
 
         current_sample += h_len
 
-    final_active_sample = current_sample - hop_lengths[-1] + grain_lengths[-1] + pad
+    # ── Enforce exact output length ──
+    # The schedule covers the target (last grain crosses target_samples), so
+    # trimming to target_samples removes only the final grain's overshoot and
+    # leaves no silent tail. Pad is a defensive fallback (e.g. an all-rest run).
+    # Fade at the true end so the cut is click-free.
+    final_len = target_samples
     window_sum_floor = 1e-3
 
+    def _fit(a):
+        if len(a) >= final_len:
+            return a[:final_len]
+        return np.pad(a, (0, final_len - len(a)))
+
     if stereo:
-        out_L = out_L[:final_active_sample]
-        out_R = out_R[:final_active_sample]
-        wsum_L = wsum_L[:final_active_sample]
-        wsum_R = wsum_R[:final_active_sample]
+        out_L = _fit(out_L)
+        out_R = _fit(out_R)
+        wsum_L = _fit(wsum_L)
+        wsum_R = _fit(wsum_R)
         out_L = out_L * np.minimum(1.0 / np.maximum(wsum_L, window_sum_floor), 4.0)
         out_R = out_R * np.minimum(1.0 / np.maximum(wsum_R, window_sum_floor), 4.0)
         # joint peak normalize (preserve the L/R balance / image)
@@ -415,8 +532,8 @@ def main():
             out_R[-fade_samples:] *= fout
         out_audio = np.stack([out_L, out_R], axis=1)  # (n, 2) for soundfile
     else:
-        out_audio = out_audio[:final_active_sample]
-        window_sum = window_sum[:final_active_sample]
+        out_audio = _fit(out_audio)
+        window_sum = _fit(window_sum)
         gain = np.minimum(1.0 / np.maximum(window_sum, window_sum_floor), 4.0)
         out_audio = out_audio * gain
         peak = float(np.abs(out_audio).max())
@@ -431,7 +548,8 @@ def main():
     
     with open(args.out_csv, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
-        writer.writerow(["void_id", "corpus_victim", "source_time_sec", "mutation_shift_st", "target_hz", "source_hz"])
+        writer.writerow(["void_id", "corpus_victim", "source_time_sec", "applied_shift_st",
+                         "raw_void_f0_hz", "folded_target_f0_hz", "reachable_output_f0_hz", "source_f0_hz"])
         writer.writerows(grain_records)
         
     total_time = round(time.time() - start_time, 3)
@@ -442,10 +560,17 @@ def main():
         f.write(f"Total computation time: {total_time}\n")
         f.write(f"Target duration: {args.target_dur}\n")
         f.write(f"Total audio length: {audio_length}\n")
-        f.write(f"Corpus files analyzed: {len(audio_files)}\n")
+        files_contributing = len(set(m['file_idx'] for m in corpus_metadata))
+        distinct_files = len(set(fi for fi, _ in used_grain_keys))
+        f.write(f"Corpus files found: {len(audio_files)}\n")
+        f.write(f"Corpus files analyzed: {files_contributing}\n")
         f.write(f"Acoustic grains mutated: {num_voids - rests_generated}\n")
         f.write(f"Rests injected: {rests_generated}\n")
-        f.write(f"Distinct source grains: {len(set(r[1] for r in grain_records if r[1] != '(silence)'))}\n")
+        f.write(f"Distinct source grains: {len(used_grain_keys)}\n")
+        f.write(f"Distinct source files: {distinct_files}\n")
+        f.write(f"Voids meeting spacing: {voids_spaced} of {num_voids}\n")
+        if voids_fallback > 0:
+            f.write(f"Voids backfilled (spacing not guaranteed): {voids_fallback}\n")
 
 if __name__ == '__main__':
     main()

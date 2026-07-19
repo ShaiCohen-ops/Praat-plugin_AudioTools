@@ -2,22 +2,27 @@
 # Praat AudioTools - VoidMosaic.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.3 (2026) - Stereo output (pan + decorrelation); ~1x cost
+# Version: 1.5 (2026) - Grain schedule covers target; register preference-bounded; honest pitch CSV; memory-safe void search
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Latent Void Mosaic.
 #
-#   Combines the spatial negative-space mapping of the Void Sieve 
-#   with the real audio extraction of the Corpus Mosaic. Finds deep
-#   acoustic voids, then forces real corpus grains to mutate (via 
-#   algorithmic pitch-shifting and scaling) to fill those voids.
+#   Combines the spatial negative-space mapping of the Void Sieve
+#   with the real audio extraction of the Corpus Mosaic. Charts deep
+#   acoustic voids in a 6-D feature space (RMS, centroid, flatness,
+#   rolloff, ZCR, F0), then for each void selects the nearest real
+#   corpus grain in that full 6-D space and nudges it TOWARD the void
+#   along two axes -- pitch (folded toward the chosen register, as far as the
+#   Max Pitch Shift limit allows) and loudness. The four spectral axes shape
+#   selection, not mutation; the Matter Map plots the selected void targets,
+#   not re-measured post-mutation grains.
 #
 # Python engine: void_mosaic_engine.py
 # ============================================================
 
-form "Latent Void Mosaic v1.3"
+form "Latent Void Mosaic v1.5"
     comment ── Corpus Configuration ──
     comment (Leave blank to pick a folder with a dialog)
     sentence Corpus_folder 
@@ -38,7 +43,7 @@ form "Latent Void Mosaic v1.3"
     
     comment ── Mutation Constraints ──
     comment (Maximum allowed pitch-shift in semitones before clipping)
-    real Max_Stretch_Semitones 24.0
+    real Max_pitch_shift_semitones 24.0
     
     comment ── Articulation & Spacing ──
     comment (Rest probability: 0.0 = no rests, 1.0 = all silence)
@@ -48,13 +53,13 @@ form "Latent Void Mosaic v1.3"
     comment (Source variety: 0 = allow repeats, 1 = strongly diversify)
     real Source_variety 1.0
     
-    comment ── Target Pitch Register (octave folding) ──
+    comment ── Preferred Pitch Register (folded, subject to Max Pitch Shift) ──
     optionmenu Vocal_Register: 5
         option Bass (E2 - E4)
         option Tenor (C3 - C5)
         option Alto (F3 - F5)
         option Soprano (C4 - C6)
-        option Full Range Open
+        option Full Range (50-2000 Hz)
     
     comment ── Stereo ──
     boolean Stereo_output 1
@@ -87,7 +92,7 @@ if preset = 2
     grain_Duration_ms = 250
     overlap_percent = 50.0
     length_Jitter_percent = 10.0
-    max_Stretch_Semitones = 24.0
+    max_pitch_shift_semitones = 24.0
     rest_probability = 0.0
     void_spacing = 2.0
     source_variety = 1.0
@@ -97,7 +102,7 @@ elsif preset = 3
     grain_Duration_ms = 800
     overlap_percent = 75.0
     length_Jitter_percent = 5.0
-    max_Stretch_Semitones = 36.0
+    max_pitch_shift_semitones = 36.0
     rest_probability = 0.0
     void_spacing = 1.5
     source_variety = 0.6
@@ -107,7 +112,7 @@ elsif preset = 4
     grain_Duration_ms = 50
     overlap_percent = 15.0
     length_Jitter_percent = 40.0
-    max_Stretch_Semitones = 12.0
+    max_pitch_shift_semitones = 12.0
     rest_probability = 0.1
     void_spacing = 2.5
     source_variety = 1.0
@@ -117,7 +122,7 @@ elsif preset = 5
     grain_Duration_ms = 150
     overlap_percent = 50.0
     length_Jitter_percent = 25.0
-    max_Stretch_Semitones = 60.0
+    max_pitch_shift_semitones = 60.0
     rest_probability = 0.0
     void_spacing = 3.0
     source_variety = 1.0
@@ -127,7 +132,7 @@ elsif preset = 6
     grain_Duration_ms = 400
     overlap_percent = 40.0
     length_Jitter_percent = 30.0
-    max_Stretch_Semitones = 24.0
+    max_pitch_shift_semitones = 24.0
     rest_probability = 0.35
     void_spacing = 2.5
     source_variety = 1.0
@@ -177,6 +182,24 @@ if rest_probability > 1.0
 endif
 if source_variety < 0.0
     source_variety = 0.0
+endif
+if source_variety > 1.0
+    source_variety = 1.0
+endif
+if max_pitch_shift_semitones < 0.0
+    max_pitch_shift_semitones = 0.0
+endif
+if length_Jitter_percent < 0.0
+    length_Jitter_percent = 0.0
+endif
+if length_Jitter_percent > 100.0
+    length_Jitter_percent = 100.0
+endif
+if stereo_width < 0.0
+    stereo_width = 0.0
+endif
+if stereo_width > 1.0
+    stereo_width = 1.0
 endif
 
 # ---- PYTHON ENVIRONMENT DISCOVERY ----
@@ -232,7 +255,7 @@ endproc
 
 # ---- RUN PROCESSOR ----
 clearinfo
-writeInfoLine: "=== Latent Void Mosaic v1.1 ==="
+writeInfoLine: "=== Latent Void Mosaic v1.5 ==="
 appendInfoLine: "Preset:        ", presetName$
 appendInfoLine: "Target Length: ", target_Duration_s, " seconds"
 appendInfoLine: "Extracting acoustic matter and charting voids..."
@@ -243,7 +266,7 @@ pyCmd$ = pyCmd$ + " --target_dur " + string$(target_Duration_s)
 pyCmd$ = pyCmd$ + " --grain_dur " + string$(grain_Duration_ms)
 pyCmd$ = pyCmd$ + " --overlap " + string$(overlap_percent)
 pyCmd$ = pyCmd$ + " --jitter " + string$(length_Jitter_percent)
-pyCmd$ = pyCmd$ + " --max_shift " + string$(max_Stretch_Semitones)
+pyCmd$ = pyCmd$ + " --max_shift " + string$(max_pitch_shift_semitones)
 pyCmd$ = pyCmd$ + " --rest_prob " + string$(rest_probability)
 pyCmd$ = pyCmd$ + " --min_pitch " + string$(minPitchHz)
 pyCmd$ = pyCmd$ + " --max_pitch " + string$(maxPitchHz)
@@ -271,26 +294,39 @@ endif
 
 statsText$ = readFile$(tempStats$)
 
+# The engine writes a stats file even on failure, so check the Status line
+# rather than merely the file's existence, and require the WAV to exist.
+if index(statsText$, "Status: Success") = 0 or not fileReadable(tempWav$)
+    errMsg$ = statsText$
+    if fileReadable(pyLog$)
+        errMsg$ = errMsg$ + newline$ + newline$ + readFile$: pyLog$
+    endif
+    @cleanUpTempFiles
+    exitScript: "Void Mosaic engine reported a failure:" + newline$ + newline$ + errMsg$
+endif
+
 # ---- VISUALIZATION & OUTPUT ----
 if fileReadable(tempWav$)
     Read from file: tempWav$
-    Rename: "Mutated_Bestiary"
+    Rename: "Void_Mosaic"
     result_id = selected("Sound")
     
-    # To Spectrogram requires mono; the output may be stereo. Build a mono
-    # copy for the spectrogram and keep the (possibly stereo) result as the
-    # actual output object.
-    nCh = Get number of channels
-    if nCh > 1
-        specSrc = Convert to mono
-    else
-        specSrc = Copy: "vm_spec_src"
-    endif
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-    spectrogram_id = selected("Spectrogram")
-    removeObject: specSrc
-    
     if draw_visualization
+        # To Spectrogram requires mono; the output may be stereo. Build a mono
+        # copy for the spectrogram and keep the (possibly stereo) result as the
+        # actual output object. Only built when visualization is requested, so
+        # a headless run does no wasted spectrogram computation.
+        selectObject: result_id
+        nCh = Get number of channels
+        if nCh > 1
+            specSrc = Convert to mono
+        else
+            specSrc = Copy: "vm_spec_src"
+        endif
+        To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
+        spectrogram_id = selected("Spectrogram")
+        removeObject: specSrc
+
         Erase all
         Select outer viewport: 0, 8, 0, 8
         
@@ -299,14 +335,14 @@ if fileReadable(tempWav$)
         Axes: 0, 1, 0, 1
         Font size: 12
         Colour: "Black"
-        Text: 0.5, "centre", 0.65, "half", "##Latent Void Mosaic v1.1##"
+        Text: 0.5, "centre", 0.65, "half", "##Latent Void Mosaic v1.5##"
         Font size: 7.5
         Colour: "{0.35, 0.35, 0.45}"
         Text: 0.5, "centre", -1.1, "half", 
             ... "Preset: " + presetName$ + 
             ... " | Target: " + string$(target_Duration_s) + "s" +
             ... " | Base Dur: " + string$(grain_Duration_ms) + "ms" +
-            ... " | Max Stretch: ±" + string$(max_Stretch_Semitones) + " st"
+            ... " | Max Pitch Shift: ±" + string$(max_pitch_shift_semitones) + " st"
             
         # Panel 2: Waveform
         Select outer viewport: 0, 8, 0.65, 2.30
@@ -398,7 +434,7 @@ if fileReadable(tempWav$)
             Draw inner box
             Text left: "yes", "Rolloff (Hz)"
             Text bottom: "yes", "Spectral centroid (Hz)"
-            Text top: "no", "Matter Map (grey = original corpus, purple = mutated voids)"
+            Text top: "no", "Matter Map (grey = corpus grains, purple = selected void targets)"
         endif
         
         # Panel 5: Diagnostics
@@ -417,7 +453,7 @@ if fileReadable(tempWav$)
         numGrains$ = parseStatLine.result$
         @parseStatLine: statsText$, "Total audio length: "
         totalLen$ = parseStatLine.result$
-        @parseStatLine: statsText$, "Corpus files analyzed: "
+        @parseStatLine: statsText$, "Distinct source files: "
         filesUsed$ = parseStatLine.result$
         
         Text: 0.03, "left", 0.45, "half", "• Spliced " + numGrains$ + " acoustic slices from " + filesUsed$ + " parent files."
@@ -430,8 +466,9 @@ if fileReadable(tempWav$)
     appendInfoLine: ""
     appendInfoLine: statsText$
     
-    selectObject: spectrogram_id
-    Remove
+    if draw_visualization
+        removeObject: spectrogram_id
+    endif
     selectObject: result_id
     if play_result
         Play
