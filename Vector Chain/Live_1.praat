@@ -63,7 +63,7 @@ overlap_sec = 0.1
 final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
-path_intro$ = pluginPath$ + "AI & Adaptive/Neural Ambient Drone Designer.praat"
+path_intro$ = pluginPath$ + "AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
 path_body$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
 path_outro$ = pluginPath$ + "Reverb/Crystalline_Cascade.praat"
 
@@ -85,8 +85,11 @@ selectObject: initial_sound
 appendInfoLine: "=== Part 1: Intro (Neural Drone) ==="
 appendInfoLine: "  Generating..."
 
-# Neural Ambient Drone Designer parameters
-runScript: path_intro$, "Manual", 15.0, 3, 20, 1, 0.15, "Octaves only", 100, 3, 10, 1, 0.7, 0
+# Neural Ambient Drone Designer parameters (v0.7):
+# Preset, Seed, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
+# Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
+# Seed=0 keeps the internal RNG unpredictable, matching prior behaviour.
+runScript: path_intro$, "Manual", 0, 15.0, 3, 20, 1, 0.15, "Octaves only", 100, 3, 10, 1, 0.7, 0
 
 # Ensure stereo
 selectObject: selected("Sound")

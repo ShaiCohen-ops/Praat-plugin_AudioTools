@@ -155,10 +155,12 @@ appendInfoLine: "  Clusters: ", drone_clusters
 appendInfoLine: "  K-means iter: ", drone_kmeans
 appendInfoLine: "  Stereo width: ", fixed$(drone_width, 2)
 
-# Neural Ambient Drone Designer parameters
-# Args: Preset, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
+# Neural Ambient Drone Designer parameters (v0.7)
+# Args: Preset, Seed, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
 #       Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
-runScript: path_intro$, "Manual", drone_dur, drone_layers, drone_crossfade, drone_shimmer, 
+# Seed=0 keeps the drone's internal RNG unpredictable (matches prior behaviour);
+# pass random_seed here instead if you want the drone layer fully reproducible too.
+runScript: path_intro$, "Manual", 0, drone_dur, drone_layers, drone_crossfade, drone_shimmer, 
     ... drone_shimmer_prob, drone_shimmer_intervals$, drone_grain, drone_clusters, 
     ... drone_kmeans, drone_stereo, drone_width, 0
 

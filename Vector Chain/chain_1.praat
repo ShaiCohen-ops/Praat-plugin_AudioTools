@@ -54,9 +54,13 @@ appendInfoLine: "Step 1: MDS Space Navigator complete."
 # STEP 2: Spectral Freeze & Glitch
 # ==============================================================================
 selectObject: sound2
-# Visualization (Arg 9) is set to 0, so the sound usually stays selected.
+# Visualization (Arg 14) is set to 0, so the sound usually stays selected.
 # However, for safety, we track the name logic: Input + "_glitch"
-runScript: path2$, "Default (balanced)", 12, 25, 0.5, 1.5, 3, 0.1, 0.9, 0, 0
+# v0.5 form (15 args): Preset, Freeze_points, Freeze_duration_divisor,
+# Freeze_length_min_factor, Freeze_length_max_factor, Freeze_repeat_divisor,
+# Artifact_amplitude, Smooth_loop_wraps, Smoothing_ms, Avoid_silence,
+# Silence_rms_factor, Max_position_attempts, Scale_peak, Draw_visualization, Play_result
+runScript: path2$, "Default (balanced)", 12, 25, 0.5, 1.5, 3, 0.1, 1, 2, 1, 0.15, 20, 0.9, 0, 0
 
 expected_name_2$ = expected_name_1$ + "_glitch"
 # We check if it exists;
