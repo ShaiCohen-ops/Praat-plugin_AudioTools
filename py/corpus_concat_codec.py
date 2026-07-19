@@ -3,7 +3,21 @@
 # Praat AudioTools - corpus_concat_codec.py
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
+#   v1.4 fix pass: per-codebook bigram bucketing (was pooling all codebooks
+#   into 64 shared, alias-prone buckets - see token_bigrams); onset
+#   peak-picking now finds the true rise-maximum in each candidate run
+#   instead of the first frame to cross threshold; silence placeholders now
+#   actually truncate any earlier grain's tail that would otherwise bleed
+#   through them; corpus indexes store grain paths relative to the index
+#   folder (portable across machines) plus schema_version/provenance
+#   metadata; gesture-rhyme's --sequence-context is documented accurately as
+#   context SMOOTHING (an unordered mean, not an order-aware sequence
+#   model) and gained a --random-baseline ablation condition; weight/penalty
+#   CLI args reject negative values; metadata field names
+#   (histogram_distance/bigram_distance/weighted_energy_distance/
+#   combined_distance) reflect what they actually are instead of implying
+#   they sum to a total.
 # License: MIT License
 # ============================================================
 #
@@ -14,18 +28,21 @@
 #   Praat exports the selected Sound -> this script detects ONSETS in the
 #   source (amplitude/energy based) and segments the source onset-to-onset
 #   (not a fixed grid). Each onset-bounded segment is further subdivided
-#   into a fine grid of analysis sub-windows (the onset boundaries stay the
-#   only authoritative rhythm markers - subdivision is internal to matching
-#   only), encodes each sub-window into codec tokens, compares against a
-#   pre-encoded corpus of grains using BOTH timbre (cosine distance on
-#   token features) and loudness (log-RMS similarity), then places each
-#   matched corpus grain's own loudest moment exactly on the source onset
-#   its segment started from. This is what keeps the OUTPUT's rhythm locked
-#   to the INPUT's rhythm: source onset times drive where things happen,
-#   corpus material determines what they sound like - and since each
-#   segment is now matched sub-window by sub-window, a decaying/evolving
-#   span of source audio is no longer forced to match ONE static corpus
-#   grain for its whole duration. The output WAV is read back into Praat.
+#   into a fine grid of analysis sub-windows, encodes each sub-window into
+#   codec tokens, compares against a pre-encoded corpus of grains using BOTH
+#   timbre (cosine distance on token features) and loudness (log-RMS
+#   similarity), then places each matched corpus grain's own loudest moment
+#   exactly on the source onset its segment started from. This is what
+#   keeps the OUTPUT's rhythm locked to the INPUT's rhythm: source onset
+#   times drive where things happen, corpus material determines what they
+#   sound like. Source onsets define the macro-articulatory skeleton, while
+#   the analysis hop introduces a SECONDARY corpus-mosaic articulation
+#   within each onset-bounded segment - every sub-window (not just the
+#   onset-aligned head) independently selects and places its OWN corpus
+#   grain, so subdivision is not merely internal bookkeeping for matching:
+#   a decaying/evolving span of source audio is no longer forced to sound
+#   like ONE static corpus grain for its whole duration, it is re-voiced by
+#   a sequence of them. The output WAV is read back into Praat.
 #
 # Two subcommands:
 #   build-corpus  : slice target audio into grains (fixed grid - the corpus
@@ -58,6 +75,21 @@ import argparse
 import traceback
 
 import numpy as np
+
+
+# ============================================================
+# Feature schema version
+#   Bumped whenever the on-disk feature vector LAYOUT changes (bucket
+#   counts, hash function, section ordering, etc) in a way that makes an
+#   old index's _feats.npy numerically incompatible with a freshly-encoded
+#   query vector. v3 bumps this because BIGRAM_BUCKETS_PER_CODEBOOK changed
+#   (256 -> 1021) and the bigram hash function changed (see token_bigrams) -
+#   both change every bigram feature's dimensionality/meaning, so indexes
+#   built under v2 or earlier are NOT reinterpretable and must be rebuilt.
+#   See _load_corpus_index: match/gesture-rhyme now HARD-FAIL on a mismatch
+#   instead of silently guessing a legacy layout.
+# ============================================================
+CURRENT_SCHEMA_VERSION = 3
 
 
 # ============================================================
@@ -161,6 +193,13 @@ class CodecAdapter:
     def decode(self, tokens):
         raise NotImplementedError
 
+    def provenance(self):
+        """Extra codec-specific fields to fold into the corpus index JSON,
+        beyond name/sample_rate/codebook_size (which every adapter already
+        exposes). Lets a corpus index be traced back to the exact model
+        configuration and package version that produced its tokens."""
+        return {}
+
 
 class EncodecAdapter(CodecAdapter):
     name = "encodec"
@@ -174,6 +213,7 @@ class EncodecAdapter(CodecAdapter):
         self.model.eval()
         self.sample_rate = self.model.sample_rate          # 24000
         self.codebook_size = 1024                           # EnCodec RVQ codebook
+        self.bandwidth = bandwidth
 
     def encode(self, wav):
         torch = self.torch
@@ -191,6 +231,17 @@ class EncodecAdapter(CodecAdapter):
             wav = self.model.decode([(codes, None)])
         return wav.squeeze().cpu().numpy().astype(np.float32)
 
+    def provenance(self):
+        try:
+            import importlib.metadata as _im
+            pkg_version = _im.version("encodec")
+        except Exception:
+            pkg_version = None
+        return {
+            "encodec_bandwidth": self.bandwidth,
+            "encodec_package_version": pkg_version,
+        }
+
 
 class DACAdapter(CodecAdapter):
     name = "dac"
@@ -199,6 +250,7 @@ class DACAdapter(CodecAdapter):
         import torch
         import dac
         self.torch = torch
+        self.model_type = model_type
         model_path = dac.utils.download(model_type=model_type)
         self.model = dac.DAC.load(model_path)
         self.model.eval()
@@ -221,6 +273,17 @@ class DACAdapter(CodecAdapter):
             z, _, _ = self.model.quantizer.from_codes(codes)
             wav = self.model.decode(z)
         return wav.squeeze().cpu().numpy().astype(np.float32)
+
+    def provenance(self):
+        try:
+            import importlib.metadata as _im
+            pkg_version = _im.version("descript-audio-codec")
+        except Exception:
+            pkg_version = None
+        return {
+            "dac_model_type": self.model_type,
+            "dac_package_version": pkg_version,
+        }
 
 
 class MockAdapter(CodecAdapter):
@@ -280,25 +343,84 @@ def token_histogram(tokens, codebook_size):
     return np.concatenate(feats).astype(np.float32)
 
 
-def token_bigrams(tokens, n_buckets=64):
-    """Hashed bigram transition counts pooled across codebooks. Captures local
-    token SEQUENCE structure - discriminates better than marginal histograms,
-    especially for short grains."""
-    v = np.zeros(n_buckets, dtype=np.float32)
-    for cb in range(tokens.shape[0]):
+BIGRAM_BUCKETS_PER_CODEBOOK = 1021  # per-codebook bucket count (see token_bigrams)
+# ^ MUST be prime (or at least not a power of two) - see the mod-256
+# aliasing bug this replaces, documented in token_bigrams below. 1021 is the
+# largest prime under 1024, chosen so a 1024-symbol codebook (1024*1024 =
+# 1,048,576 possible ordered token pairs) gets far less lossy bucketing than
+# the previous 256 (~4096 possible pairs colliding per bucket on average)
+# while keeping the feature vector a small, fixed size.
+
+_MIN_TOKEN_FRAMES_WARN = 3  # below this, a sub-window has <=2 bigram
+                             # transitions per codebook - not enough for the
+                             # bigram section to be meaningfully populated
+
+_MASK64 = 0xFFFFFFFFFFFFFFFF
+
+
+def _mix64(h):
+    """Avalanche finalizer mix (murmur3/splitmix64-style) so every output
+    bit depends on ALL of the input's bits before we reduce mod n_buckets.
+    A bare multiply-and-add hash can still leave high input bits poorly
+    mixed into the low output bits a modulo actually keeps - this closes
+    that gap."""
+    h &= _MASK64
+    h ^= h >> 33
+    h = (h * 0xFF51AFD7ED558CCD) & _MASK64
+    h ^= h >> 33
+    h = (h * 0xC4CEB9FE1A85EC53) & _MASK64
+    h ^= h >> 33
+    return h
+
+
+def token_bigrams(tokens, n_buckets_per_codebook=BIGRAM_BUCKETS_PER_CODEBOOK):
+    """Hashed bigram transition counts, kept SEPARATE per codebook and hashed
+    into a bucket count large enough that collisions are the exception, not
+    the representation.
+
+    Three things the previous version got wrong, all fixed here:
+      1. All codebooks were pooled into the SAME 64 cells, so a grain's
+         codebook identity was destroyed before matching ever happened.
+         (Fixed in the prior pass: each codebook now gets its own
+         contiguous slice of n_buckets_per_codebook cells.)
+      2. The hash was `(t1*131 + t2) % 64`. Since 131 % 64 == 3, the result
+         depended only on (t1*3 + t2) % 64 - i.e. on token IDs' low-order
+         residues mod 64, not on the tokens themselves.
+      3. The REPLACEMENT for #2 still had a live version of the same bug:
+         `h % 256` with a 256-bucket (power-of-two) modulus. For ANY
+         multiplier, odd or not, (t1*C) mod 2^k depends only on t1 mod 2^k
+         (multiplying by an odd constant is a bijection mod 2^k that never
+         touches bits above position k). So [1,2,3,4] and
+         [257,258,259,260] - which differ by exactly 256 in every token -
+         hashed IDENTICALLY under the 256-bucket version despite sharing no
+         token. Fixed two ways at once: n_buckets_per_codebook is now 1021,
+         a PRIME (mod-prime does not have the power-of-two
+         low-bits-only property), and the raw multiply-add hash is passed
+         through a real 64-bit avalanche mix (_mix64) before the modulo, so
+         a collision now requires an actual coincidence in the full mixed
+         hash rather than a fixed additive offset.
+    """
+    n_cb = tokens.shape[0]
+    v = np.zeros(n_cb * n_buckets_per_codebook, dtype=np.float32)
+    for cb in range(n_cb):
         row = tokens[cb]
+        base = cb * n_buckets_per_codebook
         for i in range(len(row) - 1):
-            b = (int(row[i]) * 131 + int(row[i + 1])) % n_buckets
-            v[b] += 1.0
+            t1 = int(row[i])
+            t2 = int(row[i + 1])
+            h = _mix64(t1 * 0x9E3779B97F4A7C15 + t2 * 0xD1B54A32D192ED03
+                        + ((t1 ^ t2) * 0xBF58476D1CE4E5B9))
+            v[base + (h % n_buckets_per_codebook)] += 1.0
     s = v.sum()
     return v / s if s > 0 else v
 
 
-def grain_feature(tokens, codebook_size, hist_weight=1.0, bigram_weight=1.0):
+def grain_feature(tokens, codebook_size, hist_weight=1.0, bigram_weight=1.0,
+                   bigram_buckets_per_codebook=BIGRAM_BUCKETS_PER_CODEBOOK):
     """Full searchable feature: histogram (+) bigram. Both are L1-normalised
     distributions, so cosine distance is meaningful on the concatenation."""
     hist = token_histogram(tokens, codebook_size) * hist_weight
-    bg = token_bigrams(tokens) * bigram_weight
+    bg = token_bigrams(tokens, bigram_buckets_per_codebook) * bigram_weight
     return np.concatenate([hist, bg]).astype(np.float32)
 
 
@@ -396,13 +518,34 @@ def detect_onsets(wav, sr, frame_ms=10.0, min_interval_ms=60.0,
 
     min_gap_frames = max(1, int(round(min_interval_ms / frame_ms)))
 
+    # Peak-pick: group contiguous above-threshold frames into runs and take
+    # the frame of MAXIMUM rise within each run (the actual attack peak),
+    # not just the first frame to cross threshold - on a gradual transient
+    # the earliest above-threshold frame can sit well before the strongest
+    # part of the rise, placing the onset too early.
     candidates = np.where(rise > threshold)[0]
+    peak_frames = []
+    if len(candidates) > 0:
+        run_start = candidates[0]
+        prev = candidates[0]
+        runs = []
+        for f in candidates[1:]:
+            if f - prev > 1:
+                runs.append((run_start, prev))
+                run_start = f
+            prev = f
+        runs.append((run_start, prev))
+        for (a, b) in runs:
+            peak_frames.append(int(a + np.argmax(rise[a:b + 1])))
+
+    # enforce minimum spacing between PEAKS; if two run-peaks land closer
+    # together than min_gap_frames, keep whichever one has the stronger rise
     onset_frames = []
-    last = -min_gap_frames
-    for f in candidates:
-        if f - last >= min_gap_frames:
-            onset_frames.append(int(f))
-            last = f
+    for f in sorted(peak_frames):
+        if not onset_frames or f - onset_frames[-1] >= min_gap_frames:
+            onset_frames.append(f)
+        elif rise[f] > rise[onset_frames[-1]]:
+            onset_frames[-1] = f
 
     onset_samples = sorted(set([0] + [int(f * frame_n) for f in onset_frames]))
     return onset_samples
@@ -522,6 +665,139 @@ def grain_peak_offset(seg, sr, frame_ms=10.0):
     return peak_frame * frame_n
 
 
+def _sha256_file(path):
+    """Best-effort file hash for run-provenance metadata; never fatal."""
+    import hashlib
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _corpus_manifest_sha256(files):
+    """Hash (relative name, size, mtime) of every corpus SOURCE file that
+    build-corpus was asked to encode, so an index can be tied back to the
+    exact audio it was built from (not just "some corpus that used the same
+    codec"). Content-hashing every file would be more airtight but is
+    expensive for large corpora; name+size+mtime catches the common
+    reproducibility failure (wrong/edited/reordered source files) cheaply.
+    """
+    import hashlib
+    h = hashlib.sha256()
+    for fp in sorted(files):
+        h.update(os.path.basename(fp).encode("utf-8", "replace"))
+        try:
+            st = os.stat(fp)
+            h.update(str(st.st_size).encode("ascii"))
+            h.update(str(int(st.st_mtime)).encode("ascii"))
+        except OSError:
+            h.update(b"?")
+    return h.hexdigest()
+
+
+def _load_corpus_index(index_path_prefix):
+    """Load a corpus index (.json + _feats.npy), refusing to proceed if its
+    feature schema doesn't match CURRENT_SCHEMA_VERSION.
+
+    Earlier versions tried to stay "compatible" with older indexes by
+    reading a stored bigram_dim/defaulting to a legacy pooled-64 layout
+    when it was missing. In practice a freshly-encoded QUERY vector is
+    always built with the CURRENT code's bucket count/hash, so the moment
+    the corpus's stored layout differs from that even slightly, the two
+    vectors have different dimensions (or the same dimension but
+    incompatible meaning) and every downstream cosine-distance call is
+    either a crash (shape mismatch) or silently wrong (same size, garbage
+    comparison). There is no safe partial compatibility here, so we stop
+    immediately with an actionable message instead of guessing.
+    """
+    json_path = index_path_prefix + ".json"
+    feats_path = index_path_prefix + "_feats.npy"
+    if not os.path.isfile(json_path):
+        sys.stderr.write(
+            "ERROR: corpus index not found: %s\n"
+            "Build a corpus index first (build-corpus).\n" % json_path)
+        sys.exit(2)
+    with open(json_path) as f:
+        index = json.load(f)
+    found_version = index.get("schema_version")
+    if found_version != CURRENT_SCHEMA_VERSION:
+        sys.stderr.write(
+            "ERROR: this corpus index uses an obsolete feature schema "
+            "(schema_version=%r, this script requires %d).\n"
+            "The stored feature layout (bigram bucket count/hash) is not "
+            "compatible with a freshly-encoded query, so it cannot be used "
+            "as-is. Please rebuild the corpus index with build-corpus.\n"
+            % (found_version, CURRENT_SCHEMA_VERSION))
+        sys.exit(2)
+    if not os.path.isfile(feats_path):
+        sys.stderr.write(
+            "ERROR: corpus feature matrix not found: %s\n"
+            "The index JSON exists but its _feats.npy is missing; "
+            "rebuild the corpus index.\n" % feats_path)
+        sys.exit(2)
+    feats = np.load(feats_path)
+    return index, feats
+
+
+def _rmtree_retry(path, attempts=6, delay=0.4):
+    """shutil.rmtree, hardened for Windows.
+
+    A folder of many small files that this SAME process just finished
+    writing (e.g. a previous build's *_grains/ directory) is a classic
+    target for Windows antivirus or the search indexer to briefly hold a
+    lock on one file right as we try to delete it. shutil.rmtree deletes
+    every file it can, then calls rmdir() on the now-should-be-empty
+    directory - if even one file was momentarily locked, rmdir() fails with
+    WinError 145 "The directory is not empty", even though every unlink()
+    call reported success. This is a timing race, not a real permissions
+    or ownership problem, so the fix is simply to retry after a short
+    pause (clearing the read-only bit on any straggler first, since that's
+    the other common Windows cause of a failed delete) rather than failing
+    the whole build over a transient lock.
+    """
+    import shutil
+    import stat
+    import time
+
+    def _onerror(func, p, exc_info):
+        try:
+            os.chmod(p, stat.S_IWRITE)
+            func(p)
+        except Exception:
+            pass
+
+    last_err = None
+    for _ in range(attempts):
+        try:
+            shutil.rmtree(path, onerror=_onerror)
+            return
+        except OSError as e:
+            last_err = e
+            if not os.path.isdir(path):
+                return  # it actually succeeded despite raising
+            time.sleep(delay)
+    raise last_err
+
+
+def _resolve_grain_path(index_path_prefix, grain_audio):
+    """grain_audio may be stored relative to the index's own directory
+    (current indexes, see build_corpus) or as an absolute path (older
+    indexes, kept working for backward compatibility). Resolve either into
+    something np.load can open regardless of where the index folder has
+    been moved to since it was built."""
+    if os.path.isabs(grain_audio) and os.path.isfile(grain_audio):
+        return grain_audio
+    base = os.path.dirname(os.path.abspath(index_path_prefix))
+    candidate = os.path.join(base, grain_audio)
+    if os.path.isfile(candidate):
+        return candidate
+    return grain_audio  # last resort - let the caller's own error fire
+
+
 def build_corpus(args):
     codec = make_codec(args.codec)
     cb = getattr(codec, "codebook_size", 1024)
@@ -557,10 +833,20 @@ def build_corpus(args):
     # references - orphaned data sitting in the one folder meant to hold
     # exactly what's needed to run again, nothing more.
     if os.path.isdir(grain_audio_dir):
-        import shutil
-        shutil.rmtree(grain_audio_dir)
+        try:
+            _rmtree_retry(grain_audio_dir)
+        except OSError as e:
+            sys.stderr.write(
+                "ERROR: could not clear the old grain folder before "
+                "rebuilding: %s\n(%s)\n"
+                "This is usually a file left open by another program - "
+                "close any file explorer window, antivirus scan, or other "
+                "process that might be touching files under that folder, "
+                "then try the build again.\n" % (grain_audio_dir, e))
+            sys.exit(2)
     os.makedirs(grain_audio_dir, exist_ok=True)
 
+    n_codebooks_at_build = None
     gid = 0
     for fp in files:
         try:
@@ -573,6 +859,8 @@ def build_corpus(args):
             if np.abs(seg).max() < args.silence_floor:
                 continue  # skip near-silent grains
             tokens = codec.encode(seg)
+            if n_codebooks_at_build is None:
+                n_codebooks_at_build = int(tokens.shape[0])
             feat = grain_feature(tokens, cb)
             peak_offset = grain_peak_offset(seg, codec.sample_rate)
             rms = float(np.sqrt(np.mean(seg.astype(np.float64) ** 2)))
@@ -580,6 +868,12 @@ def build_corpus(args):
             # store the grain AUDIO so reconstruction uses real corpus material
             grain_path = os.path.join(grain_audio_dir, "grain_%06d.npy" % gid)
             np.save(grain_path, seg.astype(np.float32))
+            # Store the grain path RELATIVE to the index's own directory so
+            # the index folder can be moved/copied to another machine or
+            # location without every grain reference breaking. Resolved
+            # back to an absolute path at load time via _resolve_grain_path.
+            rel_grain_path = (os.path.relpath(grain_path, index_parent)
+                              if index_parent else grain_path)
             grains_meta.append({
                 "id": gid,
                 "source_file": os.path.basename(fp),
@@ -590,7 +884,7 @@ def build_corpus(args):
                 "rms": round(rms, 6),
                 "centroid_hz": round(centroid, 2),
                 "codec": codec.name,
-                "grain_audio": grain_path,
+                "grain_audio": rel_grain_path,
             })
             feats.append(feat)
             gid += 1
@@ -599,19 +893,37 @@ def build_corpus(args):
         sys.stderr.write("No grains produced (all silent or files unreadable).\n")
         sys.exit(2)
 
+    import platform
+    import hashlib
     feats = np.stack(feats).astype(np.float32)
     np.save(args.index + "_feats.npy", feats)
+    n_cb_used = n_codebooks_at_build or 1
+    index_out = {
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "codec": codec.name,
+        "sample_rate": codec.sample_rate,
+        "codebook_size": cb,
+        "n_codebooks": n_cb_used,
+        "bigram_buckets_per_codebook": BIGRAM_BUCKETS_PER_CODEBOOK,
+        "bigram_dim": n_cb_used * BIGRAM_BUCKETS_PER_CODEBOOK,
+        "grain_ms": args.grain_ms,
+        "hop_ms": args.hop_ms,
+        "silence_floor": args.silence_floor,
+        "n_grains": len(grains_meta),
+        "feature_dim": int(feats.shape[1]),
+        "python_version": platform.python_version(),
+        "feats_sha256": hashlib.sha256(feats.tobytes()).hexdigest(),
+        # Reproducibility provenance beyond just the codec name: which
+        # specific model configuration/package version produced these
+        # tokens, plus a manifest hash of the source corpus files actually
+        # encoded (so an index can be tied back to the exact audio it was
+        # built from).
+        "corpus_source_manifest_sha256": _corpus_manifest_sha256(files),
+        "grains": grains_meta,
+    }
+    index_out.update(codec.provenance())
     with open(args.index + ".json", "w") as f:
-        json.dump({
-            "codec": codec.name,
-            "sample_rate": codec.sample_rate,
-            "codebook_size": cb,
-            "grain_ms": args.grain_ms,
-            "hop_ms": args.hop_ms,
-            "n_grains": len(grains_meta),
-            "feature_dim": int(feats.shape[1]),
-            "grains": grains_meta,
-        }, f, indent=1)
+        json.dump(index_out, f, indent=1)
     sys.stdout.write("Built corpus index: %d grains from %d files -> %s.json\n"
                      % (len(grains_meta), len(files), args.index))
 
@@ -643,8 +955,43 @@ def onset_place(placements, sr, total_len, xfade_ms):
     """
     out = np.zeros(total_len, dtype=np.float32)
     xf = max(0, int(round(xfade_ms / 1000.0 * sr)))
-    n_g = len(placements)
 
+    # ---- pre-pass: stop earlier grains' tails from sounding THROUGH a
+    # later silent placeholder ----
+    # A silent placeholder means the SOURCE was below its silence floor at
+    # that point in time, so the output is expected to be silent there too.
+    # But grains are written at their own full natural length regardless of
+    # what comes next, and with overlapping sub-windows (the normal case)
+    # a long-enough grain can still be sounding when a later silent
+    # window's write position arrives, playing straight through it. Fix:
+    # truncate (with a short fade to zero) any earlier grain whose written
+    # span would otherwise extend past the START of a later silent
+    # placement.
+    write_starts = [max(0, onset - peak_off) for (onset, g, peak_off) in placements]
+    is_silent = [g is None or len(g) == 0 or float(np.abs(g).max()) == 0.0
+                 for (_, g, _) in placements]
+    fade_samples = max(1, int(round(0.008 * sr)))  # ~8 ms fade to zero
+    placements = list(placements)
+    for i, silent in enumerate(is_silent):
+        if not silent:
+            continue
+        silent_start = write_starts[i]
+        for j in range(i):
+            if is_silent[j]:
+                continue
+            oj, gj, pj = placements[j]
+            wj = write_starts[j]
+            natural_end = wj + len(gj)
+            if wj < silent_start < natural_end:
+                keep = silent_start - wj
+                gj2 = gj[:keep].copy()
+                fn = min(fade_samples, len(gj2))
+                if fn > 0:
+                    t = np.linspace(0.0, np.pi / 2.0, fn, dtype=np.float32)
+                    gj2[-fn:] *= np.cos(t)
+                placements[j] = (oj, gj2, pj)
+
+    n_g = len(placements)
     for k, (onset, g, peak_off) in enumerate(placements):
         g = g.astype(np.float32)
         if len(g) == 0:
@@ -682,10 +1029,10 @@ def onset_place(placements, sr, total_len, xfade_ms):
 
 
 def match(args):
-    # load index
-    with open(args.index + ".json") as f:
-        index = json.load(f)
-    feats = np.load(args.index + "_feats.npy")
+    # load index (hard-fails on an obsolete/incompatible feature schema
+    # rather than silently building a query vector of a different shape -
+    # see _load_corpus_index)
+    index, feats = _load_corpus_index(args.index)
     cb = index["codebook_size"]
     sr = index["sample_rate"]
     grains_meta = index["grains"]
@@ -734,6 +1081,7 @@ def match(args):
     placements = []   # (onset_sample, grain_audio, peak_offset_sample) for onset_place
     used = []
     last_choice = -1
+    warned_short_window = False
     # ---- SUB-WINDOW SUBDIVISION (within each onset segment) ----
     # A real decay/sustain tail isn't one static loop - its spectral content
     # keeps moving. Rather than matching ONE corpus grain to the whole
@@ -769,9 +1117,21 @@ def match(args):
                     "corpus_file": None,
                     "corpus_start_s": None,
                     "distance": None,
+                    "n_token_frames": None,
+                    "n_bigrams": None,
                 })
                 continue
             tokens = codec.encode(sub)
+            n_token_frames = int(tokens.shape[1])
+            n_bigrams = int(tokens.shape[0] * max(0, n_token_frames - 1))
+            if n_token_frames < _MIN_TOKEN_FRAMES_WARN and not warned_short_window:
+                sys.stderr.write(
+                    "Warning: some analysis sub-windows encode to only %d "
+                    "token frame(s) (< %d) - too few transitions for the "
+                    "bigram section to carry much signal. Consider raising "
+                    "--analysis-grain-ms (try 120-180ms) for this codec.\n"
+                    % (n_token_frames, _MIN_TOKEN_FRAMES_WARN))
+                warned_short_window = True
             q = grain_feature(tokens, cb)
             qn = np.linalg.norm(q) + 1e-9
             # cosine distance to every corpus grain (vectorised)
@@ -795,7 +1155,7 @@ def match(args):
                 dists[last_choice] += args.repeat_penalty
             best = int(np.argmin(dists))
             last_choice = best
-            g = np.load(grains_meta[best]["grain_audio"])
+            g = np.load(_resolve_grain_path(args.index, grains_meta[best]["grain_audio"]))
             # peak_offset_s may be absent on an index built before this
             # field existed; fall back to 0 (old behaviour: align buffer
             # start) rather than crashing on a stale corpus index. Only the
@@ -817,6 +1177,8 @@ def match(args):
                 "corpus_file": grains_meta[best]["source_file"],
                 "corpus_start_s": grains_meta[best]["start_s"],
                 "distance": round(float(dists[best]), 4),
+                "n_token_frames": n_token_frames,
+                "n_bigrams": n_bigrams,
             })
 
     if not placements:
@@ -843,10 +1205,25 @@ def match(args):
 
     # optional metadata (which corpus grains were used, and exactly when)
     if args.metadata:
+        import platform
         with open(args.metadata, "w") as f:
             json.dump({
+                "mode": "match",
                 "codec": index["codec"],
                 "sample_rate": sr,
+                "feature_schema_version": index.get("schema_version"),
+                "bigram_buckets_per_codebook": index.get("bigram_buckets_per_codebook"),
+                "n_codebooks": index.get("n_codebooks"),
+                "analysis_grain_ms": args.analysis_grain_ms,
+                "analysis_hop_ms": args.analysis_hop_ms,
+                "onset_min_interval_ms": args.onset_min_interval_ms,
+                "repeat_penalty": args.repeat_penalty,
+                "energy_weight": args.energy_weight,
+                "xfade_ms": args.xfade_ms,
+                "silence_floor": args.silence_floor,
+                "python_version": platform.python_version(),
+                "source_input_sha256": _sha256_file(args.input),
+                "index_json_sha256": _sha256_file(args.index + ".json"),
                 "n_onset_segments": len(src_grains),
                 "n_sub_windows_used": len(used),
                 "output_duration_s": round(len(out) / sr, 4),
@@ -965,7 +1342,7 @@ def draw(args):
             dist[last_choice] += args.repeat_penalty
         best = int(np.argmin(dist))
         last_choice = best
-        g = np.load(grains_meta[best]["grain_audio"])
+        g = np.load(_resolve_grain_path(args.index, grains_meta[best]["grain_audio"]))
         onset = int(round(t * sr))
         placements.append((onset, g, 0))
         used.append({
@@ -1096,47 +1473,46 @@ def write_textgrid(path, used, sr, out_len):
 #   The stored corpus feature matrix was written by build_corpus with the
 #   DEFAULT grain_feature weights (hist_weight=1, bigram_weight=1) and the
 #   raw tokens are NOT stored. grain_feature lays each row out as
-#       [ histogram (n_codebooks * codebook_size) | bigrams (64 buckets) ]
-#   so the bigram section is always the trailing N_BIGRAM_BUCKETS columns.
-#   We therefore SPLIT each stored row into its histogram and bigram sections
-#   and re-apply (hist_weight, bigram_weight) at match time, exactly mirroring
-#   how grain_feature weights the freshly-encoded source. No rebuild needed.
+#       [ histogram (n_codebooks * codebook_size) | bigrams (n_codebooks *
+#         bigram_buckets_per_codebook) ]
+#   The bigram section's width depends on how many codebooks the corpus was
+#   built with, so it is read from the index's own "bigram_dim" field
+#   (written by build_corpus) rather than assumed as a fixed constant. We
+#   SPLIT each stored row into its histogram and bigram sections and
+#   re-apply (hist_weight, bigram_weight) at match time, exactly mirroring
+#   how grain_feature weights the freshly-encoded source. No rebuild needed
+#   for indexes already built with the current (per-codebook) bigram layout.
 # ============================================================
-
-N_BIGRAM_BUCKETS = 64   # must match token_bigrams' default n_buckets
 
 
 def gesture_rhyme(args):
     # ---- Load index (read-only; never built or resliced here) ----
+    # _load_corpus_index hard-fails on an obsolete schema_version instead of
+    # falling back to a guessed legacy layout: gesture-rhyme's own
+    # feature-splitting below TRUSTS the index's schema_version to already
+    # match this script's current bigram_dim - there is no safe partial
+    # compatibility to fall back to (a stale bigram_dim just produces a
+    # differently-shaped or differently-meaning-ed vector, not a merely
+    # "less accurate" one).
+    index, feats = _load_corpus_index(args.index)
     json_path = args.index + ".json"
-    feats_path = args.index + "_feats.npy"
-    if not os.path.isfile(json_path):
-        sys.stderr.write("ERROR: corpus index not found: %s\n"
-                         "Build a corpus index first (build-corpus); "
-                         "gesture-rhyme never builds one.\n" % json_path)
-        sys.exit(2)
-    if not os.path.isfile(feats_path):
-        sys.stderr.write("ERROR: corpus feature matrix not found: %s\n"
-                         "The index JSON exists but its _feats.npy is missing; "
-                         "rebuild the corpus index.\n" % feats_path)
-        sys.exit(2)
-
-    with open(json_path) as f:
-        index = json.load(f)
-    feats = np.load(feats_path)
     cb = index["codebook_size"]
     sr = index["sample_rate"]
     grains_meta = index["grains"]
     feature_dim = int(feats.shape[1])
 
-    # ---- Feature-layout compatibility: split into hist | bigram sections ----
-    hist_dim = feature_dim - N_BIGRAM_BUCKETS
+    # ---- Split the (now schema-verified) feature vector into hist | bigram
+    # sections. bigram_dim depends on n_codebooks * bigram_buckets_per_codebook
+    # (each codebook has its own bucket range - see token_bigrams), so it is
+    # read from the index rather than assumed as a fixed constant.
+    bigram_dim = index["bigram_dim"]
+    hist_dim = feature_dim - bigram_dim
     if hist_dim <= 0:
         sys.stderr.write(
-            "ERROR: corpus feature layout is incompatible with gesture-rhyme.\n"
-            "Expected [histogram | %d bigram buckets] but feature_dim=%d leaves "
-            "no histogram section. Rebuild the index with this codec.\n"
-            % (N_BIGRAM_BUCKETS, feature_dim))
+            "ERROR: corpus feature layout is inconsistent with itself.\n"
+            "Expected [histogram | %d bigram bucket(s)] but feature_dim=%d "
+            "leaves no histogram section. Rebuild the index with this codec.\n"
+            % (bigram_dim, feature_dim))
         sys.exit(2)
 
     bigram_weight = float(args.bigram_weight)
@@ -1179,9 +1555,14 @@ def gesture_rhyme(args):
             "energy term disabled for this gesture-rhyme run.\n")
         corpus_log_rms = None
 
+    random_baseline = bool(getattr(args, "random_baseline", 0))
+    rng = np.random.default_rng(args.seed) if random_baseline else None
+    n_corpus = len(grains_meta)
+
     placements = []   # (onset_sample, grain_audio, peak_offset_sample)
     used = []
     last_choice = -1
+    warned_short_window = False
     context_buf = []  # rolling weighted source features for --sequence-context
 
     for (seg_start, seg) in src_grains:
@@ -1197,16 +1578,29 @@ def gesture_rhyme(args):
                 used.append(_gr_used_entry(start, sub, sr, is_head, None,
                                            None, None, None, None, None, None,
                                            bigram_weight, hist_weight,
-                                           energy_weight))
+                                           energy_weight, random_baseline))
                 context_buf = []
                 continue
 
             tokens = codec.encode(sub)
+            n_token_frames = int(tokens.shape[1])
+            n_bigrams = int(tokens.shape[0] * max(0, n_token_frames - 1))
+            if n_token_frames < _MIN_TOKEN_FRAMES_WARN and not warned_short_window:
+                sys.stderr.write(
+                    "Warning: some analysis sub-windows encode to only %d "
+                    "token frame(s) (< %d) - too few transitions for the "
+                    "bigram section to carry much signal. Consider raising "
+                    "--analysis-grain-ms (try 120-180ms) for this codec.\n"
+                    % (n_token_frames, _MIN_TOKEN_FRAMES_WARN))
+                warned_short_window = True
             q = grain_feature(tokens, cb, hist_weight, bigram_weight)
 
-            # --- sequence context: average over the last (seq_context+1)
-            # weighted sub-window features, privileging SUSTAINED transition
-            # structure over a single isolated window ---
+            # --- sequence context (see gr.add_argument("--sequence-context")
+            # for the accurate description: this is CONTEXT SMOOTHING, an
+            # unordered mean over the last few windows, not a sequence /
+            # order-aware match - averaging [A, B] and [B, A] gives the same
+            # vector, so it stabilises matches across neighbouring windows
+            # without encoding which one came first ---
             context_buf.append(q)
             if len(context_buf) > seq_context + 1:
                 context_buf.pop(0)
@@ -1229,21 +1623,41 @@ def gesture_rhyme(args):
             if args.repeat_penalty > 0 and 0 <= last_choice < len(dists):
                 dists[last_choice] += args.repeat_penalty
 
-            best = int(np.argmin(dists))
+            if random_baseline:
+                # ---- Onset-aligned random corpus selection (ablation) ----
+                # Same onsets, same sub-windows, same overlap-add as every
+                # other condition - the ONLY thing that changes is that the
+                # grain choice ignores all distances and is drawn uniformly
+                # at random (seeded, so reproducible). This isolates how
+                # much of Gesture Rhyme's output is attributable to
+                # bigram/histogram/energy matching versus just inheriting
+                # the source's rhythmic skeleton.
+                best = int(rng.integers(0, n_corpus))
+            else:
+                best = int(np.argmin(dists))
             last_choice = best
 
-            # per-component contributions for the chosen grain (interpretable:
-            # gesture/bigram should match well even when timbre/hist does not)
+            # per-section distances for the chosen grain, reported
+            # separately (they do NOT sum to combined_distance - see
+            # _gr_used_entry docstring)
             q_hist, q_bg = q_match[:hist_dim], q_match[hist_dim:]
             c_hist = weighted_corpus[best, :hist_dim]
             c_bg = weighted_corpus[best, hist_dim:]
-            timbre_contrib = cosine_distance(q_hist, c_hist)
-            gesture_contrib = cosine_distance(q_bg, c_bg)
-            energy_contrib = (float(energy_weight * energy_dist[best])
+            # A weight of 0 makes that section's vectors all-zero, which
+            # cosine_distance reports as 1.0 (its "no valid direction to
+            # compare" fallback) - that reads as "a bad match" when the
+            # section was simply switched off. Report null instead so the
+            # metadata can't be misread as a genuinely poor histogram/bigram
+            # match when the term never participated in selection at all.
+            histogram_distance = (cosine_distance(q_hist, c_hist)
+                                   if hist_weight > 0 else None)
+            bigram_distance = (cosine_distance(q_bg, c_bg)
+                                if bigram_weight > 0 else None)
+            weighted_energy_distance = (float(energy_weight * energy_dist[best])
                               if energy_dist is not None else None)
 
             # load the chosen grain's audio (fail clearly if it's missing)
-            gp = grains_meta[best]["grain_audio"]
+            gp = _resolve_grain_path(args.index, grains_meta[best]["grain_audio"])
             if not os.path.isfile(gp):
                 sys.stderr.write(
                     "ERROR: corpus grain audio missing: %s\n"
@@ -1264,9 +1678,11 @@ def gesture_rhyme(args):
                 start, sub, sr, is_head,
                 grains_meta[best]["id"], grains_meta[best]["source_file"],
                 grains_meta[best]["start_s"], round(float(dists[best]), 4),
-                round(timbre_contrib, 4), round(gesture_contrib, 4),
-                (round(energy_contrib, 4) if energy_contrib is not None else None),
-                bigram_weight, hist_weight, energy_weight))
+                (round(histogram_distance, 4) if histogram_distance is not None else None),
+                (round(bigram_distance, 4) if bigram_distance is not None else None),
+                (round(weighted_energy_distance, 4) if weighted_energy_distance is not None else None),
+                bigram_weight, hist_weight, energy_weight, random_baseline,
+                n_token_frames, n_bigrams))
 
     if not placements:
         sys.stderr.write("No usable source material (gesture all silent?).\n")
@@ -1283,15 +1699,31 @@ def gesture_rhyme(args):
     write_audio(args.output, out, sr)
 
     if args.metadata:
+        import platform
         with open(args.metadata, "w") as f:
             json.dump({
                 "mode": "gesture-rhyme",
                 "codec": index["codec"],
                 "sample_rate": sr,
+                "feature_schema_version": index.get("schema_version"),
+                "bigram_buckets_per_codebook": index.get("bigram_buckets_per_codebook"),
+                "n_codebooks": index.get("n_codebooks"),
                 "bigram_weight": bigram_weight,
                 "hist_weight": hist_weight,
                 "energy_weight": energy_weight,
                 "sequence_context": seq_context,
+                "context_mode": "smoothing",  # unordered mean, NOT sequence-aware - see CLI help
+                "random_baseline": random_baseline,
+                "seed": args.seed if random_baseline else None,
+                "analysis_grain_ms": args.analysis_grain_ms,
+                "analysis_hop_ms": args.analysis_hop_ms,
+                "onset_min_interval_ms": args.onset_min_interval_ms,
+                "repeat_penalty": args.repeat_penalty,
+                "xfade_ms": args.xfade_ms,
+                "silence_floor": args.silence_floor,
+                "python_version": platform.python_version(),
+                "source_input_sha256": _sha256_file(args.input),
+                "index_json_sha256": _sha256_file(json_path),
                 "n_onset_segments": len(src_grains),
                 "n_sub_windows_used": len(used),
                 "output_duration_s": round(len(out) / sr, 4),
@@ -1308,12 +1740,20 @@ def gesture_rhyme(args):
 
 
 def _gr_used_entry(start, sub, sr, is_head, grain_id, corpus_file,
-                   corpus_start_s, distance, timbre_contrib, gesture_contrib,
-                   energy_contrib, bigram_weight, hist_weight, energy_weight):
+                   corpus_start_s, combined_distance, histogram_distance,
+                   bigram_distance, weighted_energy_distance,
+                   bigram_weight, hist_weight, energy_weight,
+                   random_baseline=False, n_token_frames=None, n_bigrams=None):
     """One metadata record per matched sub-window. Keeps the keys
     write_textgrid needs (src_start_s, src_duration_s, corpus_file,
     corpus_start_s) plus the gesture-rhyme provenance fields, so it's possible
-    to study which UNRELATED corpus grains voiced each abstract gesture."""
+    to study which UNRELATED corpus grains voiced each abstract gesture.
+
+    Field names describe what they ARE: histogram_distance and
+    bigram_distance are each section's own cosine distance, computed
+    separately - they do NOT sum to combined_distance, since the actual
+    match is made on the concatenated, weighted, re-normalised vector, not
+    by adding the sections' individual distances together."""
     return {
         "src_start_s": round(start / sr, 4),
         "src_duration_s": round(len(sub) / sr, 4),
@@ -1321,19 +1761,40 @@ def _gr_used_entry(start, sub, sr, is_head, grain_id, corpus_file,
         "corpus_grain_id": grain_id,
         "corpus_file": corpus_file,
         "corpus_start_s": corpus_start_s,
-        "distance": distance,
-        "timbre_contribution": timbre_contrib,
-        "gesture_contribution": gesture_contrib,
-        "energy_contribution": energy_contrib,
+        "combined_distance": combined_distance,
+        "histogram_distance": histogram_distance,
+        "bigram_distance": bigram_distance,
+        "weighted_energy_distance": weighted_energy_distance,
         "bigram_weight": bigram_weight,
         "hist_weight": hist_weight,
         "energy_weight": energy_weight,
+        "random_baseline": random_baseline,
+        "n_token_frames": n_token_frames,
+        "n_bigrams": n_bigrams,
     }
 
 
 # ============================================================
 # CLI
 # ============================================================
+
+def _nonneg_float(x):
+    """argparse type: parses a float and clamps negative values to 0, with a
+    warning. Weight/penalty fields (bigram/hist/energy weight, repeat
+    penalty) are meant to scale a distance term up or down - since cosine
+    distance is already sign-sensitive in ways a negative weight wouldn't
+    cleanly invert, and a negative energy-weight or repeat-penalty would
+    silently flip its intended effect (e.g. REWARDING repetition instead of
+    penalising it), negative input is treated as a user error and clamped
+    rather than accepted."""
+    v = float(x)
+    if v < 0:
+        sys.stderr.write(
+            "Warning: negative value %.4g not allowed for this parameter; "
+            "clamped to 0.\n" % v)
+        v = 0.0
+    return v
+
 
 def main():
     # Shared by both subcommands: where to mirror stderr output (replaces the
@@ -1364,8 +1825,8 @@ def main():
     m.add_argument("--metadata", default=None, help="optional JSON metadata path")
     m.add_argument("--textgrid", default=None, help="optional TextGrid path")
     m.add_argument("--xfade-ms", type=float, default=20.0)
-    m.add_argument("--repeat-penalty", type=float, default=0.05)
-    m.add_argument("--energy-weight", type=float, default=1.0,
+    m.add_argument("--repeat-penalty", type=_nonneg_float, default=0.05)
+    m.add_argument("--energy-weight", type=_nonneg_float, default=1.0,
                    help="weight of the loudness-similarity term in grain matching "
                         "(0 = pure timbre matching, like before; higher = stronger "
                         "preference for corpus grains matching the source's loudness)")
@@ -1378,14 +1839,17 @@ def main():
     m.add_argument("--onset-min-interval-ms", type=float, default=60.0,
                    dest="onset_min_interval_ms",
                    help="minimum spacing between detected source onsets (ms)")
-    m.add_argument("--analysis-grain-ms", type=float, default=60.0,
+    m.add_argument("--analysis-grain-ms", type=float, default=150.0,
                    help="size (ms) of the internal analysis sub-window used to "
                         "subdivide each onset-bounded segment for matching. "
                         "Separate from build-corpus's --grain-ms: this only "
                         "controls how finely a segment's evolving decay/sustain "
                         "is re-matched against the corpus after the onset; it "
-                        "never moves the onset boundary itself.")
-    m.add_argument("--analysis-hop-ms", type=float, default=30.0,
+                        "never moves the onset boundary itself. A window this "
+                        "short (formerly 60ms default) can leave very few "
+                        "token frames/transitions for some codecs - see the "
+                        "n_token_frames/n_bigrams warning in match's output.")
+    m.add_argument("--analysis-hop-ms", type=float, default=45.0,
                    help="hop (ms) between analysis sub-windows within a segment; "
                         "hop < analysis-grain-ms means overlapping analysis "
                         "windows (smoother tracking of the decay), same shape as "
@@ -1406,7 +1870,7 @@ def main():
     dr.add_argument("--grain-rate-ms", type=float, default=80.0,
                     help="place one grain every N ms along the drawn curve")
     dr.add_argument("--xfade-ms", type=float, default=20.0)
-    dr.add_argument("--repeat-penalty", type=float, default=0.05)
+    dr.add_argument("--repeat-penalty", type=_nonneg_float, default=0.05)
     dr.set_defaults(func=draw)
 
     gr = sub.add_parser("gesture-rhyme", parents=[common],
@@ -1419,29 +1883,54 @@ def main():
                     help="EXISTING corpus index prefix (never built here)")
     gr.add_argument("--metadata", default=None, help="optional JSON metadata path")
     gr.add_argument("--textgrid", default=None, help="optional TextGrid path")
-    gr.add_argument("--bigram-weight", type=float, default=4.0,
+    gr.add_argument("--bigram-weight", type=_nonneg_float, default=4.0,
                     help="weight of the hashed-bigram (token-transition) section; "
                          "high by default so kinetic motion drives the match")
-    gr.add_argument("--hist-weight", type=float, default=0.5,
+    gr.add_argument("--hist-weight", type=_nonneg_float, default=0.5,
                     help="weight of the token-histogram (timbre) section; low by "
                          "default so literal tone-colour is de-emphasised")
-    gr.add_argument("--energy-weight", type=float, default=0.2,
+    gr.add_argument("--energy-weight", type=_nonneg_float, default=0.2,
                     help="weight of the log-RMS loudness term; low by default so "
                          "energy can't dominate the kinetic bigram match")
-    gr.add_argument("--analysis-grain-ms", type=float, default=60.0)
-    gr.add_argument("--analysis-hop-ms", type=float, default=30.0)
+    gr.add_argument("--analysis-grain-ms", type=float, default=150.0,
+                    help="size (ms) of the internal analysis sub-window "
+                         "(see match's --analysis-grain-ms help for detail; "
+                         "raised from a 60ms default since short windows can "
+                         "starve the bigram section of real transitions)")
+    gr.add_argument("--analysis-hop-ms", type=float, default=45.0)
     gr.add_argument("--onset-min-interval-ms", type=float, default=60.0,
                     dest="onset_min_interval_ms")
-    gr.add_argument("--repeat-penalty", type=float, default=0.05)
+    gr.add_argument("--repeat-penalty", type=_nonneg_float, default=0.05)
     gr.add_argument("--xfade-ms", type=float, default=20.0)
     gr.add_argument("--match-duration", type=int, default=1,
                     help="1 = trim/pad output to source duration")
     gr.add_argument("--sequence-context", type=int, default=0,
                     dest="sequence_context",
-                    help="average source features over this many PRECEDING "
-                         "sub-windows (0 = independent windows); >0 privileges "
-                         "sustained transition structure over isolated windows")
+                    help="CONTEXT SMOOTHING, not a sequence/order model: "
+                         "averages source features over this many PRECEDING "
+                         "sub-windows (0 = independent windows). Because it's "
+                         "an unordered mean, [A, B] and [B, A] produce the "
+                         "SAME averaged vector - it stabilises matches across "
+                         "neighbouring windows, it does not know which window "
+                         "came first or in what direction motion is heading.")
     gr.add_argument("--silence-floor", type=float, default=1e-4)
+    gr.add_argument("--random-baseline", type=int, default=0,
+                    dest="random_baseline",
+                    help="1 = ablation condition: ignore all distance "
+                         "matching and pick a uniformly random corpus grain "
+                         "for every sub-window, keeping onsets, sub-window "
+                         "subdivision, and overlap-add identical to every "
+                         "other condition. Use with --seed for a "
+                         "reproducible run. Isolates how much of the output "
+                         "comes from bigram/histogram/energy matching versus "
+                         "just inheriting the source's rhythmic skeleton.")
+    gr.add_argument("--seed", type=int, default=1234,
+                    help="random seed for --random-baseline (ignored "
+                         "otherwise, since normal matching is a "
+                         "deterministic argmin with no randomness). "
+                         "Defaults to a fixed value rather than None so "
+                         "that --random-baseline 1 without an explicit "
+                         "--seed is still reproducible run to run.")
     gr.set_defaults(func=gesture_rhyme)
 
     args = p.parse_args()
