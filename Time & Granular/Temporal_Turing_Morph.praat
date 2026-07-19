@@ -2,61 +2,73 @@
 # Praat AudioTools - Temporal_Turing_Morph.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT License
 #
 # Description:
-#   Applies a 1D reaction-diffusion (Turing) process to a
-#   sequence of audio segments, using the emergent stripe
+#   Applies a 1D activator-inhibitor reaction-diffusion process to
+#   a sequence of audio segments, using the resulting spatial
 #   pattern to creatively reorder them in time.
 #
 #   Unlike granular synthesis (ms-scale grains), this operates
-#   at the EVENT scale (5ms–2000ms). The Turing instability
-#   grows characteristic stripes across the segment sequence;
-#   those stripes become the reordering logic.
+#   at the EVENT scale (5ms-2000ms). A spatial pattern forms
+#   across the segment sequence; that pattern becomes the
+#   reordering logic.
 #
-#   MATHEMATICAL MODEL (1D Gierer-Meinhardt):
+#   MATHEMATICAL MODEL (1D activator-inhibitor reaction-diffusion):
 #     dA/dt = Da*Lap1D(A) + r*A*(1 - A/K) - s*A*I
 #     dI/dt = Di*Lap1D(I) + r*A - s*I
-#   Lap1D = discrete 1D Laplacian over segment index axis.
-#   Di >> Da is the Turing instability condition, producing
-#   periodic stripe-like bands across the segment sequence.
+#   Lap1D = discrete 1D Laplacian over the segment-index axis.
+#
+#   NOTE ON DYNAMICS: these kinetics are stable at their non-zero
+#   equilibrium and do NOT undergo a true Turing bifurcation (both
+#   reaction self-derivatives are negative, so Da*g_I + Di*f_A < 0
+#   for any Da,Di). The visible structure is driven by the seed
+#   perturbation plus a small per-iteration stochastic term, shaped
+#   -- not created -- by diffusion. This is a musically useful
+#   reaction-diffusion morph, not a Turing pattern generator. For a
+#   genuine Turing system, swap the kinetics for Gierer-Meinhardt or
+#   Gray-Scott (where Di >> Da really is the instability condition).
 #
 #   REORDER MODES:
-#   Sort      — output segments ranked by ascending Turing
-#               activator value → clusters of similar "energy",
-#               rhythmic crystallization, repeating blocks.
-#   Displace  — each segment shifts forward/back by an amount
-#               proportional to (A[i] - mean). Turing high
-#               spots pull segments forward, low spots push
-#               them back → local smearing, memory erosion.
-#   StripeRev — within each contiguous Turing stripe (high or
-#               low band), the internal segment order is
-#               reversed → palindromic micro-structures,
-#               retrograde pockets inside forward motion.
+#   Sort      - output segments ranked by ascending activator
+#               value -> clusters of similar activator level.
+#   Displace  - each segment shifts forward/back by an amount
+#               proportional to (A[i] - mean(A)); high spots pull
+#               forward, low spots push back -> local smearing.
+#   StripeRev - within each contiguous band (segments on the same
+#               side of mean(A)), the internal order is reversed
+#               -> palindromic pockets inside forward motion.
 #
 #   SEED MODES:
-#   Flat + noise   — pure mathematical emergence
-#   Energy-seeded  — RMS envelope seeds the activator so the
-#                    Turing pattern "grows out of" the audio's
-#                    own dynamic structure
+#   Flat + noise   - pattern emerges from the random seed
+#   Energy-seeded  - RMS envelope seeds the activator so the
+#                    pattern grows out of the audio's own dynamics
 #
-#   MORPH BLEND:
+#   MORPH BLEND (0..1):
 #   0.0 = original order unchanged
-#   1.0 = full Turing permutation
-#   Between: interpolated; indices are rounded and duplicate-
-#   resolved (repeats fill gaps) so output is always valid.
+#   1.0 = full reordered permutation
+#   Between: a proportional prefix of the adjacent transpositions
+#   that turn identity into the target order is applied, so the
+#   deviation from the original grows monotonically with morph.
+#
+#   ARC / DRIFT / RUPTURE: these shape the R-D evolution ACROSS
+#   ITERATIONS, which changes the single final pattern used for
+#   reordering. They do NOT animate the audio along its own
+#   timeline -- e.g. "Expand-Collapse" bends the simulation
+#   trajectory that yields one permutation, it does not make the
+#   output literally expand then collapse in time.
 #
 #   COMPUTATIONAL PIPELINE:
-#   1. Sound → N fixed-length segments
+#   1. Sound -> N segments (last may be shorter; whole file covered)
 #   2. Optional: extract RMS envelope for energy seeding
 #   3. Initialize 1D activator A[1..N], inhibitor I[1..N]
 #   4. Iterate 1D R-D (explicit Euler, reflective boundaries)
 #   5. Compute permutation from final A[] state
-#   6. Apply morph blend; resolve duplicates
-#   7. Apply cosine crossfade taper to each segment
-#   8. Concatenate in Turing order → output Sound
-#   9. Visualization: activator stripe, permutation map,
+#   6. Apply monotonic morph blend
+#   7. Apply cosine edge taper (fade in/out) to each segment
+#   8. Concatenate in reordered order -> output Sound
+#   9. Visualization: activator pattern, permutation map,
 #      waveforms, energy evolution, parameter summary
 #
 # Category: Temporal / Experimental / Composition
@@ -81,7 +93,7 @@ endif
 # FORM  (no comment lines — keeps form height minimal)
 # ============================================================
 
-form Temporal Turing Morph v1.0
+form Temporal Turing Morph v1.1
     optionmenu Preset: 1
         option Custom
         option Temporal Stutter  (short chunks, frozen stripes)
@@ -95,17 +107,17 @@ form Temporal Turing Morph v1.0
     positive Reaction_rate 0.20
     positive Inhibition_strength 0.30
     integer  Iterations 25
-    real     Pattern_density 0.05
+    real     Initial_perturbation 0.05
     optionmenu Reorder_mode: 1
-        option Sort  (Turing rank)
-        option Displace  (Turing shift)
+        option Sort  (R-D rank)
+        option Displace  (R-D shift)
         option StripeRev  (palindrome within stripes)
     integer  Max_displacement_segments 10
     real     Morph_amount 1.0
     optionmenu Seed_mode: 1
         option Flat + noise
         option Energy-seeded
-    real     Crossfade_ms 5.0
+    real     Edge_taper_ms 5.0
     optionmenu Arc_mode: 1
         option Off  (constant)
         option Expand-Collapse  (peak then rupture)
@@ -114,6 +126,7 @@ form Temporal Turing Morph v1.0
     real     Arc_strength 0.8
     real     Drift_strength 0.0
     real     Rupture_prob 0.0
+    integer  Random_seed 0
     boolean  Normalize_output 1
     boolean  Draw_visualization 1
     boolean  Play_result 1
@@ -135,12 +148,12 @@ if preset = 2
     reaction_rate             = 0.35
     inhibition_strength       = 0.30
     iterations                = 50
-    pattern_density           = 0.05
+    initial_perturbation           = 0.05
     reorder_mode              = 1
     max_displacement_segments = 15
     morph_amount              = 1.0
     seed_mode                 = 1
-    crossfade_ms              = 2.0
+    edge_taper_ms              = 2.0
     arc_mode                  = 1
     arc_strength              = 0.0
     drift_strength            = 0.0
@@ -152,12 +165,12 @@ elsif preset = 3
     reaction_rate             = 0.60
     inhibition_strength       = 0.30
     iterations                = 7
-    pattern_density           = 0.08
+    initial_perturbation           = 0.08
     reorder_mode              = 1
     max_displacement_segments = 20
     morph_amount              = 1.0
     seed_mode                 = 2
-    crossfade_ms              = 12.0
+    edge_taper_ms              = 12.0
     arc_mode                  = 1
     arc_strength              = 0.0
     drift_strength            = 0.0
@@ -169,12 +182,12 @@ elsif preset = 4
     reaction_rate             = 0.25
     inhibition_strength       = 0.40
     iterations                = 20
-    pattern_density           = 0.05
+    initial_perturbation           = 0.05
     reorder_mode              = 2
     max_displacement_segments = 8
     morph_amount              = 0.75
     seed_mode                 = 2
-    crossfade_ms              = 20.0
+    edge_taper_ms              = 20.0
     arc_mode                  = 1
     arc_strength              = 0.0
     drift_strength            = 0.0
@@ -186,12 +199,12 @@ elsif preset = 5
     reaction_rate             = 0.15
     inhibition_strength       = 0.85
     iterations                = 80
-    pattern_density           = 0.05
+    initial_perturbation           = 0.05
     reorder_mode              = 1
     max_displacement_segments = 30
     morph_amount              = 1.0
     seed_mode                 = 1
-    crossfade_ms              = 3.0
+    edge_taper_ms              = 3.0
     arc_mode                  = 1
     arc_strength              = 0.0
     drift_strength            = 0.0
@@ -203,12 +216,12 @@ elsif preset = 6
     reaction_rate             = 0.30
     inhibition_strength       = 0.25
     iterations                = 40
-    pattern_density           = 0.05
+    initial_perturbation           = 0.05
     reorder_mode              = 1
     max_displacement_segments = 15
     morph_amount              = 1.0
     seed_mode                 = 2
-    crossfade_ms              = 8.0
+    edge_taper_ms              = 8.0
     arc_mode                  = 2
     arc_strength              = 0.9
     drift_strength            = 0.0
@@ -220,12 +233,12 @@ elsif preset = 7
     reaction_rate             = 0.25
     inhibition_strength       = 0.30
     iterations                = 35
-    pattern_density           = 0.05
+    initial_perturbation           = 0.05
     reorder_mode              = 2
     max_displacement_segments = 12
     morph_amount              = 1.0
     seed_mode                 = 2
-    crossfade_ms              = 6.0
+    edge_taper_ms              = 6.0
     arc_mode                  = 1
     arc_strength              = 0.0
     drift_strength            = 1.2
@@ -266,11 +279,11 @@ endif
 if iterations > 200
     iterations = 200
 endif
-if pattern_density < 0.001
-    pattern_density = 0.001
+if initial_perturbation < 0.001
+    initial_perturbation = 0.001
 endif
-if pattern_density > 0.5
-    pattern_density = 0.5
+if initial_perturbation > 0.5
+    initial_perturbation = 0.5
 endif
 if morph_amount < 0.0
     morph_amount = 0.0
@@ -278,8 +291,8 @@ endif
 if morph_amount > 1.0
     morph_amount = 1.0
 endif
-if crossfade_ms < 0.0
-    crossfade_ms = 0.0
+if edge_taper_ms < 0.0
+    edge_taper_ms = 0.0
 endif
 if max_displacement_segments < 1
     max_displacement_segments = 1
@@ -311,31 +324,60 @@ endif
 # ============================================================
 
 chunkDur     = chunk_duration_ms / 1000.0
-crossfadeDur = crossfade_ms / 1000.0
+edgeTaperDur = edge_taper_ms / 1000.0
 
-# Turing instability condition: Di >> Da
 diffA  = diffusion_rate * 0.08
 diffI  = diffusion_rate * 4.0
-# CFL stability for explicit Euler
-dtSafe = 0.85 / (4.0 * diffI)
+# Fixed, stable time step. Previously dt = 0.85/(4*diffI) cancelled the
+# diffusion coefficient (dt*diffI was constant, so Diffusion_rate did nothing
+# to the diffusion) and blew up at low diffusion. Size dt for the WORST case:
+# the largest diffI (Diffusion_rate<=5 -> diffI<=20) AND the largest drift bias
+# (local_bias up to 1+Drift_strength), so the explicit-Euler CFL holds even
+# when a strong drift hotspot multiplies the local diffusion. Diffusion_rate
+# still genuinely scales the per-iteration diffusion (dt*diffI grows with it).
+diffI_ceiling = 5.0 * 4.0
+maxBias = 1.0 + drift_strength
+dtSafe = 0.85 / (4.0 * diffI_ceiling * maxBias)
 
-# Segment count (ignore trailing fragment shorter than half a chunk)
-nSeg = floor(srcDur / chunkDur)
+# Segment count. Use ceiling so the WHOLE file is covered; the final segment
+# may be shorter than a chunk (the extractor clamps it to the file end). If we
+# would exceed the segment cap, grow the chunk so the whole file still fits.
+nSeg = ceiling(srcDur / chunkDur)
 if nSeg < 2
-    exitScript: "Chunk too long — fewer than 2 segments. Use a shorter Chunk_duration_ms."
+    exitScript: "Chunk too long - fewer than 2 segments. Use a shorter Chunk_duration_ms."
 endif
-if nSeg > 500
-    nSeg = 500
-    appendInfoLine: "  Note: capped at 500 segments for performance."
+maxSeg = 500
+segNote$ = ""
+if nSeg > maxSeg
+    chunkDur = srcDur / maxSeg
+    chunk_duration_ms = chunkDur * 1000.0
+    nSeg = maxSeg
+    segNote$ = "Note: chunk enlarged to " + fixed$(chunk_duration_ms, 1) +
+        ... " ms so all " + fixed$(srcDur, 2) + " s fit within " + string$(maxSeg) + " segments."
+endif
+
+# Seed the RNG AFTER the early-exit checks above, so a seeded run can't leave
+# Praat in the predictable state by exiting before the restore at the end.
+# random_initializeWithSeedUnsafelyButPredictably is a formula FUNCTION
+# (parenthesis call, not a colon command); its predictable state persists in
+# Praat until random_initializeSafelyAndUnpredictably() is called. In auto mode
+# we reset to the safe state explicitly, so results don't depend on RNG state
+# left behind by a previous script.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedNote$ = "seed=" + string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedNote$ = "seed=auto (not reproducible)"
 endif
 
 # Reorder mode label
 if reorder_mode = 1
-    modeStr$ = "Sort (Turing rank)"
+    modeStr$ = "Sort (R-D rank)"
 elsif reorder_mode = 2
-    modeStr$ = "Displace (Turing shift)"
+    modeStr$ = "Displace (R-D shift)"
 else
-    modeStr$ = "StripeRev (palindrome)"
+    modeStr$ = "StripeRev (band palindrome)"
 endif
 
 # ============================================================
@@ -344,21 +386,25 @@ endif
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Temporal Turing Morph v1.0"
+writeInfoLine:  "  Temporal Turing Morph v1.1"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source   : ", srcName$, "  (", fixed$(srcDur, 3), " s  ", srcCh, " ch)"
-appendInfoLine: "Chunk    : ", fixed$(chunk_duration_ms, 1), " ms  →  ", nSeg, " segments"
+appendInfoLine: "Chunk    : ", fixed$(chunk_duration_ms, 1), " ms  ->  ", nSeg, " segments"
+if segNote$ <> ""
+    appendInfoLine: "  ", segNote$
+endif
 appendInfoLine: ""
-appendInfoLine: "1D R-D Model:"
+appendInfoLine: "1D activator-inhibitor R-D (not a true Turing bifurcation):"
 appendInfoLine: "  Da=", fixed$(diffA, 4), "  Di=", fixed$(diffI, 4),
     ... "  (Di/Da=", fixed$(diffI / diffA, 0), "x)"
 appendInfoLine: "  r=", fixed$(reaction_rate, 4), "  s=", fixed$(inhibition_strength, 4),
     ... "  dt=", fixed$(dtSafe, 6)
-appendInfoLine: "  iterations=", iterations, "  seed=", fixed$(pattern_density, 4)
+appendInfoLine: "  iterations=", iterations, "  perturb=", fixed$(initial_perturbation, 4),
+    ... "  ", seedNote$
 appendInfoLine: ""
 appendInfoLine: "Reorder  : ", modeStr$, "  morph=", fixed$(morph_amount, 2)
-appendInfoLine: "Crossfade: ", fixed$(crossfade_ms, 1), " ms"
+appendInfoLine: "Edge taper: ", fixed$(edge_taper_ms, 1), " ms"
 appendInfoLine: ""
 
 # ============================================================
@@ -367,7 +413,9 @@ appendInfoLine: ""
 
 selectObject: srcID
 if srcCh > 1
-    monoSrc = Extract one channel: 1
+    # True mono mixdown (average of all channels), not just channel 1 --
+    # otherwise a file with content only on channel 2 would come out silent.
+    monoSrc = Convert to mono
     Rename: "tTM_mono"
 else
     monoSrc = Copy: "tTM_mono"
@@ -415,7 +463,7 @@ if seed_mode = 2
         rmsMax = 1e-10
     endif
     for i from 1 to nSeg
-        act#[i] = segRMS#[i] / rmsMax + pattern_density * randomGauss(0.0, 1.0)
+        act#[i] = segRMS#[i] / rmsMax + initial_perturbation * randomGauss(0.0, 1.0)
         if act#[i] < 0
             act#[i] = 0
         endif
@@ -423,7 +471,7 @@ if seed_mode = 2
 else
     # Flat + noise: pure mathematical emergence
     for i from 1 to nSeg
-        act#[i] = 0.5 + pattern_density * randomGauss(0.0, 1.0)
+        act#[i] = 0.5 + initial_perturbation * randomGauss(0.0, 1.0)
         if act#[i] < 0
             act#[i] = 0
         endif
@@ -436,7 +484,7 @@ for i from 1 to nSeg
 endfor
 
 # ============================================================
-# STEP 4: RUN 1D TURING REACTION-DIFFUSION
+# STEP 4: RUN 1D REACTION-DIFFUSION
 # ============================================================
 
 appendInfoLine: "[3/5] Running ", iterations, " R-D iterations..."
@@ -535,7 +583,7 @@ for iter from 1 to iterations
         lap_inh#[i] = inh_pad#[i] - 2.0 * inh_pad#[i + 1] + inh_pad#[i + 2]
     endfor
 
-    # --- Gierer-Meinhardt update (arc rate + drift bias per cell) ---
+    # --- Activator-inhibitor R-D update (arc rate + drift bias per cell) ---
     for i from 1 to nSeg
         aV = act#[i]
         iV = inh#[i]
@@ -592,27 +640,23 @@ endfor
 appendInfoLine: "  A_mean final: ", fixed$(iterMean#[iterations], 4)
 
 # ============================================================
-# STEP 5: COMPUTE PERMUTATION FROM TURING PATTERN
+# STEP 5: COMPUTE PERMUTATION FROM R-D PATTERN
 # ============================================================
 
 appendInfoLine: "[4/5] Computing reorder permutation (", modeStr$, ")..."
 
-# Normalize act# to [0,1] for displacement math
+# Range of act# (used by Displace for mean-centered shift scaling)
 aMin   = min(act#)
 aMax   = max(act#)
 aRange = aMax - aMin
 if aRange < 1e-10
     aRange = 1e-10
 endif
-act_norm# = zero#(nSeg)
-for i from 1 to nSeg
-    act_norm#[i] = (act#[i] - aMin) / aRange
-endfor
 
 turingOrder# = zero#(nSeg)
 
 if reorder_mode = 1
-    # SORT: output slot j ← segment with j-th smallest Turing value
+    # SORT: output slot j ← segment with j-th smallest activator value
     # Manual argsort (selection sort) — Praat has no sort_index#
     turingOrder# = zero#(nSeg)
     sortUsed#    = zero#(nSeg)   ; 1 = already placed
@@ -634,10 +678,18 @@ elsif reorder_mode = 2
     # Segments with A > mean shift forward; A < mean shift back.
     # Sort segments by target position → defines output order.
     aMeanVal = mean(act#)
+    # Normalize by the largest deviation from the mean so |shift| never exceeds
+    # max_displacement_segments (dividing by range*2 could overshoot the user's
+    # stated maximum for skewed activator distributions).
+    maxDev = max(abs(aMax - aMeanVal), abs(aMin - aMeanVal))
+    if maxDev < 1e-10
+        maxDev = 1e-10
+    endif
     targetPos# = zero#(nSeg)
     for i from 1 to nSeg
-        # Map Anorm to [-1, +1], then scale by max_displacement
-        shift = round((act_norm#[i] * 2.0 - 1.0) * max_displacement_segments)
+        # Shift proportional to (A[i] - mean(A)): above-mean segments move
+        # forward, below-mean move back, bounded by max_displacement_segments.
+        shift = round((act#[i] - aMeanVal) / maxDev * max_displacement_segments)
         targetPos#[i] = i + shift
     endfor
     # Sort segments by target position — manual argsort on targetPos#
@@ -656,7 +708,7 @@ elsif reorder_mode = 2
     endfor
 
 else
-    # STRIPEREV: reverse segment order within each Turing stripe.
+    # STRIPEREV: reverse segment order within each activator band.
     # A stripe = contiguous run of segments on same side of mean(A).
     # Start with identity, then reverse each run in-place.
     for i from 1 to nSeg
@@ -689,63 +741,64 @@ else
 
 endif
 
-# --- Morph blend: interpolate identity ↔ Turing order ---
-# blendedOrder[j] = round((1-morph)*j + morph*turingOrder[j])
-# Then resolve duplicates so finalOrder is a valid permutation.
+# --- Monotonic morph blend: identity ↔ reordered permutation ---
+# The old scheme interpolated index numbers, rounded, and patched duplicates,
+# which is non-monotonic (raising morph could move the output CLOSER to the
+# original). Instead: take the sequence of adjacent transpositions that turns
+# identity into turingOrder, and apply a morph-fraction PREFIX of them. The
+# result is always a valid permutation and its deviation from the original
+# grows monotonically with morph.
 
-blendRaw# = zero#(nSeg)
-for j from 1 to nSeg
-    blended = (1.0 - morph_amount) * j + morph_amount * turingOrder#[j]
-    blended = round(blended)
-    if blended < 1
-        blended = 1
-    endif
-    if blended > nSeg
-        blended = nSeg
-    endif
-    blendRaw#[j] = blended
-endfor
-
-# Duplicate resolution: first-come-first-served; fill gaps with unused
-usedSeg# = zero#(nSeg)
 finalOrder# = zero#(nSeg)
-for j from 1 to nSeg
-    idx = round(blendRaw#[j])
-    if usedSeg#[idx] = 0
-        finalOrder#[j] = idx
-        usedSeg#[idx]  = 1
-    else
-        # Mark as unresolved — will be filled in the gap-filler loop below
-        finalOrder#[j] = 0
-    endif
+for i from 1 to nSeg
+    finalOrder#[i] = i
 endfor
 
-unusedPtr = 1
-for j from 1 to nSeg
-    if finalOrder#[j] = 0
-        # Find next unused segment
-        while unusedPtr <= nSeg and usedSeg#[unusedPtr] = 1
-            unusedPtr = unusedPtr + 1
-        endwhile
-        if unusedPtr <= nSeg
-            finalOrder#[j]      = unusedPtr
-            usedSeg#[unusedPtr] = 1
-        else
-            # Safety fallback — all slots exhausted
-            finalOrder#[j] = nSeg
-        endif
-    endif
-endfor
+if morph_amount >= 0.999
+    # Full permutation
+    for i from 1 to nSeg
+        finalOrder#[i] = turingOrder#[i]
+    endfor
+elsif morph_amount > 0.001
+    # Record adjacent swaps that bubble-sort a copy of turingOrder back to
+    # identity; reversed, these build turingOrder from identity.
+    maxSwaps = floor(nSeg * (nSeg - 1) / 2) + 1
+    swapPos# = zero#(maxSwaps)
+    work#    = zero#(nSeg)
+    for i from 1 to nSeg
+        work#[i] = turingOrder#[i]
+    endfor
+    nSwaps = 0
+    for a from 1 to nSeg
+        for p from 1 to nSeg - 1
+            if work#[p] > work#[p + 1]
+                tmpw          = work#[p]
+                work#[p]      = work#[p + 1]
+                work#[p + 1]  = tmpw
+                nSwaps        = nSwaps + 1
+                swapPos#[nSwaps] = p
+            endif
+        endfor
+    endfor
+    # Apply the first round(morph * nSwaps) swaps of the reversed sequence.
+    kApply = round(morph_amount * nSwaps)
+    for q from 1 to kApply
+        p = swapPos#[nSwaps - q + 1]
+        tmpf              = finalOrder#[p]
+        finalOrder#[p]    = finalOrder#[p + 1]
+        finalOrder#[p + 1] = tmpf
+    endfor
+endif
 
 # ============================================================
-# STEP 6: APPLY COSINE CROSSFADE TAPER TO EACH SEGMENT
+# STEP 6: APPLY COSINE EDGE TAPER (fade in/out) TO EACH SEGMENT
 # ============================================================
 
-if crossfadeDur > 0.0005
+if edgeTaperDur > 0.0005
     for i from 1 to nSeg
         selectObject: segID#[i]
         segLen = Get total duration
-        fadeT  = crossfadeDur
+        fadeT  = edgeTaperDur
         if fadeT > segLen * 0.40
             fadeT = segLen * 0.40
         endif
@@ -759,7 +812,7 @@ if crossfadeDur > 0.0005
 endif
 
 # ============================================================
-# STEP 7: CONCATENATE IN TURING ORDER
+# STEP 7: CONCATENATE IN REORDERED ORDER
 # ============================================================
 
 appendInfoLine: "[5/5] Reassembling ", nSeg, " segments..."
@@ -825,7 +878,7 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Font size: 11
     Colour: "Black"
-    Text: 0.5, "centre", 0.73, "half", "##Temporal Turing Morph v1.0##"
+    Text: 0.5, "centre", 0.73, "half", "##Temporal Turing Morph v1.1##"
     Font size: 7.5
     Colour: "{0.35, 0.35, 0.45}"
     Text: 0.5, "centre", -0.08, "half",
@@ -835,7 +888,7 @@ if draw_visualization = 1
         ... + "  " + modeStr$
         ... + "  morph=" + fixed$(morph_amount, 1)
 
-    # --- Panel 1: Turing activator stripe (the permutation driver) ---
+    # --- Panel 1: activator pattern (the permutation driver) ---
     Select outer viewport: 0, 8, 0.50, 1.42
     Select inner viewport: 0.58, 7.65, 0.55, 1.37
     aMinViz = min(act#)
@@ -867,7 +920,7 @@ if draw_visualization = 1
     Draw inner box
     Font size: 7
     Text left: "yes", "A(i)"
-    Text top: "no", "1D Turing activator  (stripe structure → reordering)"
+    Text top: "no", "1D activator pattern  (spatial structure -> reordering)"
 
     # --- Panel 2: Permutation map  original index → output slot ---
     Select outer viewport: 0, 8, 1.46, 2.38
@@ -895,7 +948,7 @@ if draw_visualization = 1
     Font size: 7
     Text left: "yes", "Out pos"
     Text bottom: "yes", "Orig. segment"
-    Text top: "no", "Permutation map  (diagonal = identity, deviation = Turing reorder)"
+    Text top: "no", "Permutation map  (diagonal = identity, deviation = R-D reorder)"
 
     # --- Panel 3 & 4: Input / Output waveforms ---
     selectObject: srcID
@@ -904,6 +957,15 @@ if draw_visualization = 1
         srcPeak = 0.001
     endif
     ampMax = srcPeak * 1.15
+    # The output is peak-normalized independently, so scale its panel to its
+    # OWN peak; otherwise a quiet source would push the output waveform out of
+    # the frame.
+    selectObject: resultID
+    outPeak = Get absolute extremum: 0, 0, "None"
+    if outPeak < 0.001
+        outPeak = 0.001
+    endif
+    ampMaxOut = outPeak * 1.15
 
     Select outer viewport: 0, 8, 2.42, 3.14
     Select inner viewport: 0.58, 7.65, 2.47, 3.09
@@ -922,13 +984,13 @@ if draw_visualization = 1
 
     Select outer viewport: 0, 8, 3.17, 3.89
     Select inner viewport: 0.58, 7.65, 3.22, 3.84
-    Axes: 0, resultDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -ampMax, ampMax
+    Axes: 0, resultDur, -ampMaxOut, ampMaxOut
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -ampMaxOut, ampMaxOut
     Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, resultDur, 0
     selectObject: resultID
     Colour: "{0.20, 0.72, 0.48}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+    Draw: 0, 0, -ampMaxOut, ampMaxOut, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -972,7 +1034,7 @@ if draw_visualization = 1
         Text: iterations * 0.72, "left", yBotE + eRange * 0.35 + eRange * 0.08, "half", "arc"
     endif
 
-    # Initial energy reference line
+    # Reference line: mean A after iteration 1 (not the raw seed)
     Colour: "{0.85, 0.65, 0.22}"
     Dotted line
     Draw line: 0, iterMean#[1], iterations + 1, iterMean#[1]
@@ -995,7 +1057,7 @@ if draw_visualization = 1
     Font size: 7
     Text left: "yes", "A mean"
     Text bottom: "yes", "Iteration"
-    Text top: "no", "Activator energy  (gold = arc profile,  color = iteration progress)"
+    Text top: "no", "Activator mean A per iteration  (gold = arc profile, colour = progress)"
 
     # --- Panel 6: R-D parameter summary ---
     Select outer viewport: 5.5, 8, 3.93, 4.85
@@ -1004,7 +1066,7 @@ if draw_visualization = 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.06, "left", 0.93, "half", "##Temporal Turing R-D##"
+    Text: 0.06, "left", 0.93, "half", "##Activator-Inhibitor R-D##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.40}"
     Text: 0.06, "left", 0.81, "half",
@@ -1015,7 +1077,7 @@ if draw_visualization = 1
         ... + "  dt=" + fixed$(dtSafe, 5)
     Text: 0.06, "left", 0.57, "half",
         ... "iter=" + string$(iterations) + "  segs=" + string$(nSeg)
-        ... + "  seed=" + fixed$(pattern_density, 3)
+        ... + "  perturb=" + fixed$(initial_perturbation, 3)
     Text: 0.06, "left", 0.45, "half",
         ... "chunk=" + fixed$(chunk_duration_ms, 0) + "ms"
         ... + "  morph=" + fixed$(morph_amount, 2)
@@ -1046,7 +1108,7 @@ appendInfoLine: "  COMPLETE"
 appendInfoLine: "=================================================="
 appendInfoLine: "Output   : ", outputName$
 appendInfoLine: "Duration : ", fixed$(resultDur, 3), " s"
-appendInfoLine: "Segments : ", nSeg, "  (", fixed$(chunk_duration_ms, 1), " ms each)"
+appendInfoLine: "Segments : ", nSeg, "  (nominal chunk ", fixed$(chunk_duration_ms, 1), " ms; final may be shorter)"
 appendInfoLine: "Reorder  : ", modeStr$, "  morph=", fixed$(morph_amount, 2)
 appendInfoLine: "A_mean final: ", fixed$(iterMean#[iterations], 5)
 
@@ -1054,4 +1116,9 @@ selectObject: resultID
 
 if play_result = 1
     Play
+endif
+
+# Undo the predictable-RNG state so it doesn't persist across later Praat work.
+if random_seed > 0
+    random_initializeSafelyAndUnpredictably ()
 endif
