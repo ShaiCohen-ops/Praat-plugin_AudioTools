@@ -112,7 +112,7 @@ form Total Serialism Machine v0.3
     integer Num_events 30
     positive Min_event_ms 200
     positive Max_event_ms 600
-    positive Gap_between_events_ms 50
+    real Gap_between_events_ms 50
     
     comment ═══════════ PITCH RANGE ═══════════
     integer Min_pitch_cents -200
@@ -136,6 +136,18 @@ input_name$ = selected$("Sound")
 selectObject: input_sound
 input_duration = Get total duration
 input_sr = Get sampling frequency
+
+# Build a mono working copy once. Every extraction below reads from this,
+# so any channel count works correctly (previously only n_ch=2 was
+# converted; a 4- or 6-channel file was left untouched and later treated
+# as if it were mono, which reads the wrong samples).
+selectObject: input_sound
+input_n_ch = Get number of channels
+if input_n_ch > 1
+    input_mono = Convert to mono
+else
+    input_mono = Copy: "input_mono"
+endif
 
 # ============================================================================
 # RESOLVE PRESET NAME (used in output naming and visualization)
@@ -194,18 +206,59 @@ elsif preset = 5
     use_inversion = 1
     use_retrograde = 1
 elsif preset = 6
-    # Statistical Field: dense overlapping cloud
+    # Statistical Field: dense overlapping cloud.
+    # Negative gap means each event's onset comes before the previous
+    # event finishes — genuine overlap, not just back-to-back density.
     num_events = 80
     min_event_ms = 150
     max_event_ms = 500
-    gap_between_events_ms = 10
+    gap_between_events_ms = -120
     min_pitch_cents = -300
     max_pitch_cents = 300
+endif
+
+# ============================================================================
+# VALIDATE STRUCTURAL PARAMETERS
+# ============================================================================
+# Hard failures for values that would break array indexing or produce a
+# degenerate/empty result. Inverted ranges are auto-swapped rather than
+# rejected, so audio and visualization always agree on which end is which.
+
+if series_length < 2
+    exitScript: "Series_length must be at least 2."
+endif
+
+if num_events < 1
+    exitScript: "Num_events must be at least 1."
+endif
+
+if min_event_ms > max_event_ms
+    tmp_swap = min_event_ms
+    min_event_ms = max_event_ms
+    max_event_ms = tmp_swap
+endif
+
+if min_pitch_cents > max_pitch_cents
+    tmp_swap = min_pitch_cents
+    min_pitch_cents = max_pitch_cents
+    max_pitch_cents = tmp_swap
 endif
 
 min_event_s = min_event_ms / 1000
 max_event_s = max_event_ms / 1000
 gap_s = gap_between_events_ms / 1000
+
+# Negative gap creates overlap (onset before previous event ends). Clamp
+# so cur_time still advances every step — otherwise a very negative gap
+# could stall or push the schedule backwards.
+if gap_s < -0.9 * min_event_s
+    gap_s = -0.9 * min_event_s
+endif
+
+# Reflect the clamped value in the display variable, so the Info window
+# and the summary panel always show the gap that was actually used —
+# not the raw, possibly more extreme, form input.
+gap_between_events_ms = gap_s * 1000
 
 # Resolve transformation summary string
 xformStr$ = ""
@@ -216,7 +269,7 @@ if use_retrograde = 1
     xformStr$ = xformStr$ + "R"
 endif
 if rotation <> 0
-    xformStr$ = xformStr$ + "T" + string$(rotation)
+    xformStr$ = xformStr$ + "Rot" + string$(rotation)
 endif
 if xformStr$ = ""
     xformStr$ = "P (prime)"
@@ -225,6 +278,47 @@ endif
 # ============================================================================
 # BUILD SERIES (procedures defined at end of file; forward-referenced)
 # ============================================================================
+
+permutationWarning$ = ""
+rowTypeWarning$ = ""
+
+# A "12-tone row" is only meaningful at length 12. Previously, choosing
+# this type with a different Series_length silently fell back to a plain
+# 1..N arithmetic series with no indication that the row type was ignored.
+if series_type = 3 and series_length <> 12
+    rowTypeWarning$ = "  12-tone row requires Series_length=12 — you had "
+        ... + string$(series_length) + ", so Series_length was overridden to 12."
+        ... + newline$
+    series_length = 12
+endif
+
+# Check the five parameter offsets (duration+1, source+3, pitch+4, gain+6,
+# pan+8) for an actual modulo collision at the final series_length, rather
+# than a fixed length threshold — a threshold like "<7" is both a false
+# negative (length 7 still collides: 8 mod 7 = 1 mod 7) and a false
+# positive (length 6 has no collision among these five offsets at all).
+offs[1] = 1
+offs[2] = 3
+offs[3] = 4
+offs[4] = 6
+offs[5] = 8
+offName$[1] = "duration"
+offName$[2] = "source"
+offName$[3] = "pitch"
+offName$[4] = "gain"
+offName$[5] = "pan"
+
+seriesLengthWarning$ = ""
+for aOff to 5
+    for bOff from aOff + 1 to 5
+        if (offs[aOff] mod series_length) = (offs[bOff] mod series_length)
+            seriesLengthWarning$ = seriesLengthWarning$ + "  Series_length=" + string$(series_length)
+                ... + " makes " + offName$[aOff] + " (offset +" + string$(offs[aOff]) + ")"
+                ... + " and " + offName$[bOff] + " (offset +" + string$(offs[bOff]) + ")"
+                ... + " read the identical series stream." + newline$
+        endif
+    endfor
+endfor
 
 @createSeries: series_type, series_length, series_values$
 
@@ -271,6 +365,20 @@ endfor
 appendInfoLine: ""
 appendInfoLine: ""
 
+if rowTypeWarning$ <> "" or permutationWarning$ <> "" or seriesLengthWarning$ <> ""
+    appendInfoLine: "--- Series warnings ---"
+    if rowTypeWarning$ <> ""
+        appendInfo: rowTypeWarning$
+    endif
+    if permutationWarning$ <> ""
+        appendInfo: permutationWarning$
+    endif
+    if seriesLengthWarning$ <> ""
+        appendInfo: seriesLengthWarning$
+    endif
+    appendInfoLine: ""
+endif
+
 # ============================================================================
 # COMPUTE EVENT PARAMETERS  (no sorting in v0.3 — events play in series order)
 # ============================================================================
@@ -281,7 +389,7 @@ appendInfoLine: ""
 #   source pos     offset +3
 #   pitch          offset +4
 #   gain           offset +6
-#   pan            uses (i*2) mod L
+#   pan            offset +8
 # This was already the v0.2 design — what was broken was the post-sort.
 
 # Pre-compute and store all parameters per event (still no audio yet)
@@ -292,7 +400,7 @@ for i to num_events
     src_idx = ((i + 3 - 1) mod series_length) + 1
     ptc_idx = ((i + 4 - 1) mod series_length) + 1
     gan_idx = ((i + 6 - 1) mod series_length) + 1
-    pan_idx = ((i * 2 - 1) mod series_length) + 1
+    pan_idx = ((i + 8 - 1) mod series_length) + 1
     
     ev_dur[i] = min_event_s + normalized_series[dur_idx] * (max_event_s - min_event_s)
     ev_src[i] = normalized_series[src_idx]
@@ -331,6 +439,53 @@ result = Create Sound from formula: input_name$ + "_serial_" + presetName$,
     ... 2, 0, total_dur, input_sr, "0"
 
 # ============================================================================
+# PRE-BUILD A SHARED LOOPED SOURCE  (for sources shorter than events need)
+# ============================================================================
+# If the input is shorter than some event will need, build ONE tiled copy
+# here — long enough for the worst case across all events — instead of
+# re-concatenating a fresh tile inside every event (which was O(events ×
+# repeats) and, being a hard splice, could click at every seam). This also
+# uses "Concatenate with overlap" so repeat boundaries are crossfaded
+# rather than spliced hard.
+
+abs_min_pc = abs(min_pitch_cents)
+abs_max_pc = abs(max_pitch_cents)
+max_abs_pc = abs_min_pc
+if abs_max_pc > max_abs_pc
+    max_abs_pc = abs_max_pc
+endif
+max_pitch_ratio = 2 ^ (max_abs_pc / 1200)
+max_extract_needed = max_event_s * max_pitch_ratio
+
+use_shared_tile = 0
+if input_duration < max_extract_needed
+    use_shared_tile = 1
+    tile_overlap = 0.005
+    # Target with generous margin: worst-case extract length, plus one
+    # full source cycle of slack for the wrapped start position, plus
+    # a few overlap-widths of slack since each overlap-concatenation
+    # shortens the result slightly.
+    target_tile_dur = max_extract_needed + input_duration + tile_overlap * 4
+    selectObject: input_mono
+    tiled_shared = Copy: "tiled_shared"
+    selectObject: tiled_shared
+    cur_tile_dur = Get total duration
+    tile_guard = 0
+    while cur_tile_dur < target_tile_dur and tile_guard < 1000
+        selectObject: input_mono
+        extra_shared = Copy: "extra_shared"
+        selectObject: tiled_shared, extra_shared
+        tiled_shared2 = Concatenate with overlap: tile_overlap
+        removeObject: tiled_shared
+        removeObject: extra_shared
+        tiled_shared = tiled_shared2
+        selectObject: tiled_shared
+        cur_tile_dur = Get total duration
+        tile_guard += 1
+    endwhile
+endif
+
+# ============================================================================
 # PROCESS EACH EVENT, WRITE INTO CANVAS AT SCHEDULED TIME
 # ============================================================================
 
@@ -355,32 +510,27 @@ for i to num_events
     endif
     src_extract_dur = edur * pitch_ratio
     
-    # Source position — clamp so we don't read past the end of the input
+    # Output duration always equals the series-scheduled event duration.
+    # If the source is too short to supply src_extract_dur seconds of
+    # material, we tile/loop the source instead of shrinking the event —
+    # this keeps event duration, canvas length, and the visualization's
+    # timing in sync with the series schedule in every case, including
+    # sources shorter than the requested extract length.
+    actual_edur = edur
+    
     max_src_start = input_duration - src_extract_dur
-    if max_src_start < 0
-        max_src_start = 0
-        src_extract_dur = input_duration
-    endif
-    src_pos = ev_src[i] * max_src_start
     
-    # Update event_dur to reflect any extract-clamping
-    if abs(pcents) > 1
-        actual_edur = src_extract_dur / pitch_ratio
+    if max_src_start >= 0
+        # Source is long enough — extract normally, no looping needed.
+        src_pos = ev_src[i] * max_src_start
+        selectObject: input_mono
+        segment = Extract part: src_pos, src_pos + src_extract_dur, "rectangular", 1, "no"
     else
-        actual_edur = src_extract_dur
-    endif
-    
-    # ---- Extract segment ----
-    selectObject: input_sound
-    segment = Extract part: src_pos, src_pos + src_extract_dur, "rectangular", 1, "no"
-    
-    # Convert to mono
-    selectObject: segment
-    n_ch = Get number of channels
-    if n_ch = 2
-        mono = Convert to mono
-        removeObject: segment
-        segment = mono
+        # Source shorter than required — read from the shared tiled copy,
+        # starting from a position wrapped within one source-length cycle.
+        src_pos = ev_src[i] * input_duration
+        selectObject: tiled_shared
+        segment = Extract part: src_pos, src_pos + src_extract_dur, "rectangular", 1, "no"
     endif
     
     # ---- Apply gain (mono pre-pan) ----
@@ -407,6 +557,20 @@ for i to num_events
         segment = trimmed
         selectObject: segment
         seg_dur_actual = Get total duration
+    elsif seg_dur_actual < actual_edur
+        # Rounding in the resample step can leave the segment a sample
+        # or two short of actual_edur. Pad with silence at the end so
+        # the write into the canvas always covers the full scheduled
+        # span (the alternative — leaving a gap — is more audible than
+        # a sub-millisecond silent tail).
+        padded = Create Sound from formula: "padded", 1, 0, actual_edur, input_sr, "0"
+        seg_id_pad$ = string$(segment)
+        selectObject: padded
+        Formula (part): 0, seg_dur_actual, 1, 1,
+            ... "self + object[" + seg_id_pad$ + ", col]"
+        removeObject: segment
+        segment = padded
+        seg_dur_actual = actual_edur
     endif
     
     # ---- Fade-in / fade-out (5 ms each) for click-free splicing ----
@@ -475,6 +639,13 @@ for i to num_events
             ... "  dur=", fixed$(actual_edur * 1000, 0), "ms"
     endif
 endfor
+
+selectObject: input_mono
+removeObject: input_mono
+if use_shared_tile = 1
+    selectObject: tiled_shared
+    removeObject: tiled_shared
+endif
 
 # ============================================================================
 # FINALIZE
@@ -935,10 +1106,12 @@ procedure parseSeriesValues: .values$, .length
             .value$ = left$(.remaining$, .comma_pos - 1)
             .value$ = replace$(.value$, " ", "", 0)
             
-            if .value$ <> ""
+            if .value$ <> "" and index_regex(.value$, "^-?[0-9]+\.?[0-9]*$") > 0
                 base_series[.count] = number(.value$)
             else
                 base_series[.count] = .count
+                permutationWarning$ = permutationWarning$ + "  Value #" + string$(.count)
+                    ... + " ('" + .value$ + "') is not numeric — defaulted to " + string$(.count) + newline$
             endif
             
             .remaining$ = right$(.remaining$, length(.remaining$) - .comma_pos)
@@ -947,9 +1120,51 @@ procedure parseSeriesValues: .values$, .length
         endif
     endwhile
     
+    if .count < .length
+        permutationWarning$ = permutationWarning$ + "  Only " + string$(.count) + " of " + string$(.length)
+            ... + " values supplied — remaining positions filled with 1.." + string$(.length) + newline$
+    endif
+    
+    # Count any remaining unparsed values beyond .length to report extras
+    # that were silently ignored (the while loop above stops as soon as
+    # .count reaches .length).
+    .extra_scan$ = .remaining$
+    .extra_count = 0
+    while length(.extra_scan$) > 0
+        .ecp = index(.extra_scan$, ",")
+        if .ecp > 0
+            .piece$ = left$(.extra_scan$, .ecp - 1)
+            if .piece$ <> ""
+                .extra_count += 1
+            endif
+            .extra_scan$ = right$(.extra_scan$, length(.extra_scan$) - .ecp)
+        else
+            .extra_scan$ = ""
+        endif
+    endwhile
+    if .extra_count > 0
+        permutationWarning$ = permutationWarning$ + "  " + string$(.extra_count)
+            ... + " extra value(s) beyond Series_length=" + string$(.length) + " were ignored." + newline$
+    endif
+    
     for .i from .count + 1 to .length
         base_series[.i] = .i
     endfor
+    
+    # A true permutation has no repeated values — flag it if this one does,
+    # since the form field is labelled "Permutation" but nothing previously
+    # enforced that property.
+    .dupFound = 0
+    for .i to .length
+        for .j from .i + 1 to .length
+            if base_series[.i] = base_series[.j]
+                .dupFound = 1
+            endif
+        endfor
+    endfor
+    if .dupFound = 1
+        permutationWarning$ = permutationWarning$ + "  Repeated values found — this is a numeric series, not a true permutation." + newline$
+    endif
 endproc
 
 procedure applySerialTransformations: .invert, .retro, .rotate
