@@ -63,7 +63,7 @@ overlap_sec = 0.1
 final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
-path_intro$ = pluginPath$ + "Spectral/Phase Shaper.praat"
+path_intro$ = pluginPath$ + "Spectral/Phase_Shaper.praat"
 path_body$ = pluginPath$ + "Time & Granular/Phase_Modulation_Matrix.praat"
 path_outro$ = pluginPath$ + "Spatial & Surround/BPM_Panning.praat"
 
@@ -86,7 +86,7 @@ appendInfoLine: "=== Part 1: Intro (Phase Shaper) ==="
 appendInfoLine: "  Generating..."
 
 # Phase Shaper parameters
-# Parameters: Mode, Preset, Intensity, IR_Dur, Trim, Stereo, Mix, Draw, Play
+# Parameters: Mode, Preset, Intensity, Wet_dry_percent, Trim_to_original, Stereo_output, Scale_peak, Draw_visualization, Play_result
 # Using mode 1 (Hyper-Dispersion) but with stereo disabled to avoid script bug
 runScript: path_intro$, "Hyper-Dispersion (sweeping drone)", "Custom (use intensity below)", 0.8, 100, "no", "no", 0.95, "no", "no"
 
@@ -121,8 +121,13 @@ appendInfoLine: "=== Part 2: Body (Phase Modulation Matrix) ==="
 appendInfoLine: "  Generating..."
 
 # Phase Modulation Matrix parameters
-# Parameters: Preset, Layers, CarMin, CarMax, FixedCar, FixedFreq, ModMin, ModMax, FeedMin, FeedMax, Spread, Mix, Draw, Play
-runScript: path_body$, "Default (balanced)", 5, 0.1, 0.5, "no", 0.3, 8, 2, 0.7, 1.1, 0.1, 0.93, "no", "no"
+# FIX: Updated to the correct 16-argument signature for Phase_Modulation_Matrix v0.3.
+# v0.3 inserted Use_fixed_ms_depth + Fixed_depth_ms after Mod_depth_increment, and
+# renamed Spectral_tilt_base/rate -> Layer_gain_base/rate (this call previously used
+# the old 14-arg v0.2 signature, which misaligned every argument from position 9 on).
+# Parameters: Preset, Layers, CarMin, CarMax, FixedCar, FixedFreq, ModBase, ModIncr,
+#             FixedMsDepth, DepthMs, Feedback, GainBase, GainRate, Scale, Draw, Play
+runScript: path_body$, "Default (balanced)", 5, 0.1, 0.5, "no", 0.3, 8, 2, "no", 20, 0.7, 1.1, 0.1, 0.93, "no", "no"
 
 # Get the output
 sound_body = selected("Sound")

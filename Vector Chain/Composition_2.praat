@@ -90,7 +90,7 @@ appendInfoLine: "  Generating..."
 # Neural Ambient Drone Designer parameters:
 # Preset, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
 # Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
-runScript: path_body$, "Evolving Pad", 20.0, 4, 30, 1, 0.18, "Octaves and fifths", 120, 4, 10, 1, 0.75, 0
+runScript: path_body$, "Evolving Pad", 0, 20.0, 4, 30, 1, 0.18, "Octaves and fifths", 120, 4, 10, 1, 0.75, 0
 
 # Get the output
 sound_body = selected("Sound")

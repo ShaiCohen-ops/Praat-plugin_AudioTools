@@ -27,7 +27,7 @@ path3$ = pluginPath$ + "Spatial & Surround/BPM_Panning.praat"
 # STEP 1: Phase Shaper
 # ==============================================================================
 selectObject: initial_sound
-# Parameters: Mode, Preset, Intensity, IR_Dur, Trim, Stereo, Mix, Draw, Play
+# Parameters: Mode, Preset, Intensity, Wet_dry_percent, Trim_to_original, Stereo_output, Scale_peak, Draw_visualization, Play_result
 runScript: path1$, "Hyper-Dispersion (sweeping drone)", "Custom (use intensity below)", 1, 100, "no", "yes", 0.95, "yes", "no"
 
 # Capture output (Phase Shaper appends mode name)

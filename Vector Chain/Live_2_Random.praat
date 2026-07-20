@@ -241,6 +241,9 @@ drone_stereo = 1
 # Stereo width: 0.5-0.95
 drone_width = randomUniform(0.5, 0.95)
 
+# Seed: 0 = unpredictable each run, matching this script's randomized design
+drone_seed = 0
+
 appendInfoLine: "  Preset: ", drone_preset$
 appendInfoLine: "  Duration: ", fixed$(drone_dur, 1), "s"
 appendInfoLine: "  Layers: ", drone_layers
@@ -253,10 +256,10 @@ appendInfoLine: "  Clusters: ", drone_clusters
 appendInfoLine: "  K-means iter: ", drone_kmeans
 appendInfoLine: "  Stereo width: ", fixed$(drone_width, 2)
 
-# Neural Ambient Drone Designer parameters:
-# Preset, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
+# Neural Ambient Drone Designer parameters (v0.7 form order):
+# Preset, Seed, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
 # Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
-runScript: path_body$, drone_preset$, drone_dur, drone_layers, drone_crossfade, 
+runScript: path_body$, drone_preset$, drone_seed, drone_dur, drone_layers, drone_crossfade, 
     ... drone_shimmer, drone_shimmer_prob, drone_shimmer_intervals$, drone_grain, 
     ... drone_clusters, drone_kmeans, drone_stereo, drone_width, 0
 

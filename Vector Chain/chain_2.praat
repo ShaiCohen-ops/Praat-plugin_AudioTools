@@ -56,10 +56,12 @@ selectObject: sound2
 # 12. Width (0.7)
 # 13. Play result (0)
 
-runScript: path2$, "Manual", 20.0, 3, 20, 1, 0.15, "Octaves only", 100, 3, 10, 1, 0.7, 0
+runScript: path2$, "Manual", 0, 20.0, 3, 20, 1, 0.15, "Octaves only", 100, 3, 10, 1, 0.7, 0
 
-# FIX: Output name is now "_NeuralDrone_Manual" instead of "_stereo"
-expected_name_2$ = expected_name_1$ + "_NeuralDrone_Manual"
+# FIX: Output name is "_ClusterDrone_Manual" (matches Rename in
+# Neural_Ambient_Drone_Designer.praat, which uses "_ClusterDrone_" +
+# presetName$, not "_NeuralDrone_")
+expected_name_2$ = expected_name_1$ + "_ClusterDrone_Manual"
 selectObject: "Sound " + expected_name_2$
 sound3 = selected("Sound")
 appendInfoLine: "Step 2: Neural Drone complete."
