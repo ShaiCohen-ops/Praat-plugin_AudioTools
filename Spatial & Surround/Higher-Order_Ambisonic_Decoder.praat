@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025) - Optimized
+# Version: 0.4 (2026) - SN3D-correct decode normalization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,49 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v0.4:
+#   SN3D-aware decode normalization (the panning was too broad; HOA
+#   directivity had collapsed toward first order).
+#   - Each ambisonic order n is now scaled by (2n+1) in the decode matrix.
+#     For SN3D input this turns the raw projection sum_n P_n(cos g) into the
+#     correct basic panning function sum_n (2n+1) P_n(cos g). Verified: the
+#     octagon gain curve now matches 1 + 3cos + 5P2 + 7P3 exactly.
+#   - In-phase weights replaced with the 3-D spherical form
+#     a_n = N!(N+1)! / ((N+n+1)!(N-n)!) (order 3: 1, 3/5, 1/5, 1/35);
+#     the previous values were the 2-D cardioid weights. Max-rE (Legendre)
+#     is now applied IN ADDITION to (2n+1), not instead of it.
+#   - Normalization now divides by the number of DIRECTIONAL speakers
+#     (LFE excluded), so 5.1/7.1 output is no longer needlessly quiet; the
+#     minimum-speaker check counts directional speakers too.
+#   - RGB values in the speaker/bar colours are clamped to [0,1] (the old
+#     formula could go negative and break Praat drawing).
+#   - Combined mode auto-detects order from the channel count (4/9/16).
+#   - 5.1/7.1 flagged as approximate sampling decode for a non-uniform
+#     layout; minor label fixes (row-norm chart, LFE in angle list).
+#
+# Changelog v0.3:
+#   Correctness pass; now matches the corrected ambiX encoder.
+#   - FIX (critical): speaker layouts were mirrored (left content came out
+#     right). All presets now use the ambiX convention (azimuth CCW from
+#     front, +Y = LEFT); stereo is a +/-30 deg pair, not +/-90.
+#   - FIX (math): 3rd-order SN3D coefficients for ACN 9/11/13/15 corrected
+#     from sqrt5/4, sqrt3/4 to sqrt(5/8), sqrt(3/8). Verified by an
+#     encode->decode round trip (loudest speaker = nearest to the source).
+#   - Combined-input mode: accepts one multichannel ambiX Sound (the
+#     encoder's output) and extracts ACN0..N-1 automatically.
+#   - Full input validation: channel count, mono, matching sample rate and
+#     length across all channels.
+#   - Decode weights: Max-rE now uses Legendre P_m(rE) and In-phase uses
+#     (L!)^2/((L+m)!(L-m)!), applied per ORDER (W no longer lumped with
+#     order 1). The old Max-rE wrongly BOOSTED higher orders.
+#   - Peak protection is attenuate-only (a quiet decode is no longer boosted
+#     to 0.99, which had hidden the true level).
+#   - LFE (5.1/7.1) is no longer fed a full-band ambisonic decode; it is left
+#     silent. Undersized layouts (< ~2N+1 speakers) are warned about.
+#   - Honest labelling: this is a HORIZONTAL decoder (height not
+#     reconstructed). Visualization mirrored to match (+Y left); the flat
+#     "W coefficient" chart replaced with per-speaker decoder row norm.
+#
 # Changelog v0.2:
 #   - Efficient channel summing using Formula (not Combine to stereo)
 #   - Modern selectObject: syntax throughout
@@ -34,31 +77,36 @@
 # FORM
 # ============================================================
 
-form Ambisonic Decoder
-    comment Select ambisonic channel sounds (W, Y, Z, X, etc.)
-    comment in correct ACN order before running.
+form Ambisonic Decoder (horizontal)
+    comment Input: a combined ambiX Sound (from the encoder) OR legacy separate
+    comment ACN channels selected in order. This is a HORIZONTAL decoder
+    comment (speakers in the horizontal plane; height is not reconstructed).
+    comment ─────────────────────────────────────────
+    optionmenu Input_mode: 1
+        option Combined ambiX Sound (one multichannel object)
+        option Separate ACN channels (legacy, select in ACN order)
     comment ─────────────────────────────────────────
     optionmenu Ambisonic_order: 1
-        option 1st order (4 channels: W,Y,Z,X)
-        option 2nd order (9 channels: W,Y,Z,X,V,T,R,S,U)
-        option 3rd order (16 channels: W,Y,Z,X,V,T,R,S,U,Q,O,M,K,L,N,P)
+        option 1st order (4 channels)
+        option 2nd order (9 channels)
+        option 3rd order (16 channels)
     comment ─────────────────────────────────────────
     optionmenu Speaker_preset: 1
-        option Stereo (2 speakers)
+        option Stereo pair (+/-30 deg, 2 speakers)
         option Triangle (3 speakers)
         option Quad (4 speakers)
         option Pentagon (5 speakers)
         option Hexagon (6 speakers)
-        option Surround 5.1 (6 speakers)
-        option Surround 7.1 (8 speakers)
+        option Surround 5.1 (6 incl. silent LFE)
+        option Surround 7.1 (8 incl. silent LFE)
         option Octagon (8 speakers)
     comment ─────────────────────────────────────────
     optionmenu Decode_method: 1
-        option Basic (simple projection)
-        option Max-rE (energy optimized)
-        option In-phase (controlled)
+        option Basic (projection)
+        option Max-rE (energy vector)
+        option In-phase (no side lobes)
     comment ─────────────────────────────────────────
-    boolean Normalize_output 1
+    boolean Peak_protect_only 1
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -81,28 +129,74 @@ else
     orderName$ = "3rd"
 endif
 
-# Check selection
-numSelected = numberOfSelected("Sound")
-if numSelected <> expectedChannels
-    exitScript: "Please select exactly " + string$(expectedChannels) + " Sound objects for " + orderName$ + " order ambisonics." + newline$ + "Currently selected: " + string$(numSelected)
+# ── Acquire the 16/9/4 ACN channels as mono objects in ambiChannel[] ──
+if input_mode = 1
+    # Combined: one multichannel Sound (e.g. the encoder's output).
+    numSelected = numberOfSelected("Sound")
+    if numSelected <> 1
+        exitScript: "Combined mode: select exactly ONE multichannel Sound. Selected: " + string$(numSelected)
+    endif
+    combinedInput = selected("Sound")
+    selectObject: combinedInput
+    inCh = Get number of channels
+    # Auto-detect order from the channel count; the form's order is ignored here.
+    if inCh = 4
+        ambisonic_order = 1
+        expectedChannels = 4
+        orderName$ = "1st"
+    elsif inCh = 9
+        ambisonic_order = 2
+        expectedChannels = 9
+        orderName$ = "2nd"
+    elsif inCh = 16
+        ambisonic_order = 3
+        expectedChannels = 16
+        orderName$ = "3rd"
+    else
+        exitScript: "Combined Sound must have 4, 9, or 16 channels (ACN/SN3D); got " + string$(inCh) + "."
+    endif
+    duration = Get total duration
+    sr = Get sampling frequency
+    numSamples = Get number of samples
+    # Channel k of the file = ACN(k-1). Extract each to a mono working object.
+    for i from 1 to expectedChannels
+        selectObject: combinedInput
+        ambiChannel[i] = Extract one channel: i
+        channelName$[i] = "ACN" + string$(i - 1)
+    endfor
+    fromCombined = 1
+else
+    # Legacy: separate mono ACN channels selected in order.
+    numSelected = numberOfSelected("Sound")
+    if numSelected <> expectedChannels
+        exitScript: "Legacy mode: select exactly " + string$(expectedChannels) + " mono Sound objects in ACN order." + newline$ + "Currently selected: " + string$(numSelected)
+    endif
+    for i from 1 to expectedChannels
+        ambiChannel[i] = selected("Sound", i)
+    endfor
+    # Reference properties from channel 1, then validate every channel matches.
+    selectObject: ambiChannel[1]
+    duration = Get total duration
+    sr = Get sampling frequency
+    numSamples = Get number of samples
+    for i from 1 to expectedChannels
+        selectObject: ambiChannel[i]
+        channelName$[i] = selected$("Sound")
+        chN = Get number of channels
+        chSr = Get sampling frequency
+        chSamp = Get number of samples
+        if chN <> 1
+            exitScript: "Channel " + string$(i) + " (" + channelName$[i] + ") is not mono."
+        endif
+        if chSr <> sr
+            exitScript: "Channel " + string$(i) + " sample-rate mismatch (" + string$(chSr) + " vs " + string$(sr) + ")."
+        endif
+        if chSamp <> numSamples
+            exitScript: "Channel " + string$(i) + " length mismatch (" + string$(chSamp) + " vs " + string$(numSamples) + " samples)."
+        endif
+    endfor
+    fromCombined = 0
 endif
-
-# Store selected ambisonic channels
-for i from 1 to expectedChannels
-    ambiChannel[i] = selected("Sound", i)
-endfor
-
-# Get channel names and verify properties
-for i from 1 to expectedChannels
-    selectObject: ambiChannel[i]
-    channelName$[i] = selected$("Sound")
-endfor
-
-# Get audio properties from first channel
-selectObject: ambiChannel[1]
-duration = Get total duration
-sr = Get sampling frequency
-numSamples = Get number of samples
 
 # ============================================================
 # SPEAKER CONFIGURATION
@@ -144,81 +238,90 @@ else
     methodName$ = "inphase"
 endif
 
-# Define speaker positions (azimuth in radians, 0 = front, clockwise)
-# Using Cartesian coordinates: x = right, y = front
+# Define speaker positions (azimuth in radians).
+# Convention MATCHES the encoder: azimuth CCW from front (+X), +Y = LEFT, so a
+# left speaker has POSITIVE azimuth and a right speaker negative (= 360-x). The
+# old layouts were mirrored, which sent left-encoded content to the right.
+for i from 1 to 8
+    speakerEl[i] = 0
+    speakerIsLFE[i] = 0
+endfor
 
 if speaker_preset = 1
-    # Stereo: L at 270° (left), R at 90° (right)
-    speakerAz[1] = 270 * pi / 180
-    speakerAz[2] = 90 * pi / 180
-    speakerEl[1] = 0
-    speakerEl[2] = 0
+    # Stereo loudspeaker pair at +/-30 deg (standard, not +/-90).
+    speakerAz[1] = 30 * pi / 180
+    speakerAz[2] = 330 * pi / 180
 
 elsif speaker_preset = 2
-    # Triangle: front and two rear
+    # Triangle: front + rear-left + rear-right (CCW)
     speakerAz[1] = 0
-    speakerAz[2] = 240 * pi / 180
-    speakerAz[3] = 120 * pi / 180
-    for i from 1 to 3
-        speakerEl[i] = 0
-    endfor
+    speakerAz[2] = 120 * pi / 180
+    speakerAz[3] = 240 * pi / 180
 
 elsif speaker_preset = 3
-    # Quad: FL, FR, RL, RR
-    speakerAz[1] = 315 * pi / 180
-    speakerAz[2] = 45 * pi / 180
-    speakerAz[3] = 225 * pi / 180
-    speakerAz[4] = 135 * pi / 180
-    for i from 1 to 4
-        speakerEl[i] = 0
-    endfor
+    # Quad: FL, FR, RL, RR (left = positive az)
+    speakerAz[1] = 45 * pi / 180
+    speakerAz[2] = 315 * pi / 180
+    speakerAz[3] = 135 * pi / 180
+    speakerAz[4] = 225 * pi / 180
 
 elsif speaker_preset = 4
-    # Pentagon: 5 speakers evenly spaced, front center
+    # Pentagon: 5 evenly spaced, CCW (already correct)
     for i from 1 to 5
         speakerAz[i] = (i - 1) * 2 * pi / 5
-        speakerEl[i] = 0
     endfor
 
 elsif speaker_preset = 5
-    # Hexagon: 6 speakers evenly spaced
+    # Hexagon: 6 evenly spaced, CCW
     for i from 1 to 6
         speakerAz[i] = (i - 1) * 2 * pi / 6
-        speakerEl[i] = 0
     endfor
 
 elsif speaker_preset = 6
-    # 5.1 Surround: L, R, C, LFE (center), Ls, Rs
-    speakerAz[1] = 330 * pi / 180
-    speakerAz[2] = 30 * pi / 180
+    # 5.1: L, R, C, LFE, Ls, Rs (ITU-ish; left = positive az). LFE is NOT decoded.
+    speakerAz[1] = 30 * pi / 180
+    speakerAz[2] = 330 * pi / 180
     speakerAz[3] = 0
     speakerAz[4] = 0
-    speakerAz[5] = 250 * pi / 180
-    speakerAz[6] = 110 * pi / 180
-    for i from 1 to 6
-        speakerEl[i] = 0
-    endfor
+    speakerAz[5] = 110 * pi / 180
+    speakerAz[6] = 250 * pi / 180
+    speakerIsLFE[4] = 1
 
 elsif speaker_preset = 7
-    # 7.1 Surround: L, R, C, LFE, Ls, Rs, Lb, Rb
-    speakerAz[1] = 330 * pi / 180
-    speakerAz[2] = 30 * pi / 180
+    # 7.1: L, R, C, LFE, Ls, Rs, Lb, Rb (left = positive az). LFE is NOT decoded.
+    speakerAz[1] = 30 * pi / 180
+    speakerAz[2] = 330 * pi / 180
     speakerAz[3] = 0
     speakerAz[4] = 0
-    speakerAz[5] = 270 * pi / 180
-    speakerAz[6] = 90 * pi / 180
-    speakerAz[7] = 225 * pi / 180
-    speakerAz[8] = 135 * pi / 180
-    for i from 1 to 8
-        speakerEl[i] = 0
-    endfor
+    speakerAz[5] = 90 * pi / 180
+    speakerAz[6] = 270 * pi / 180
+    speakerAz[7] = 135 * pi / 180
+    speakerAz[8] = 225 * pi / 180
+    speakerIsLFE[4] = 1
 
 else
-    # Octagon: 8 speakers evenly spaced
+    # Octagon: 8 evenly spaced, CCW
     for i from 1 to 8
         speakerAz[i] = (i - 1) * 2 * pi / 8
-        speakerEl[i] = 0
     endfor
+endif
+
+# Count directional (non-LFE) speakers: LFE is not part of the decode, so it
+# must not dilute the normalization or the minimum-speaker requirement.
+numLFE = 0
+for i from 1 to numSpeakers
+    if speakerIsLFE[i]
+        numLFE = numLFE + 1
+    endif
+endfor
+numDirectionalSpeakers = numSpeakers - numLFE
+
+# Minimum-speaker sanity: a horizontal order-N decode needs about 2N+1
+# DIRECTIONAL speakers.
+minSpeakers = 2 * ambisonic_order + 1
+undersized = 0
+if numDirectionalSpeakers < minSpeakers
+    undersized = 1
 endif
 
 # ============================================================
@@ -226,11 +329,15 @@ endif
 # ============================================================
 
 writeInfoLine: "============================================"
-writeInfoLine: "Higher-Order Ambisonic Decoder v0.2"
+writeInfoLine: "Higher-Order Ambisonic Decoder v0.4"
 writeInfoLine: "============================================"
 appendInfoLine: "Ambisonic order: ", orderName$, " (", expectedChannels, " channels)"
-appendInfoLine: "Speaker layout: ", presetName$, " (", numSpeakers, " speakers)"
+appendInfoLine: "Speaker layout: ", presetName$, " (", numSpeakers, " output channels, ", numDirectionalSpeakers, " directional)"
 appendInfoLine: "Decode method: ", methodName$
+if speaker_preset = 6 or speaker_preset = 7
+    appendInfoLine: "  Note: non-uniform layout -- approximate horizontal sampling decode"
+    appendInfoLine: "        (AllRAD/EPAD would be better for irregular arrays)."
+endif
 appendInfoLine: "--------------------------------------------"
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
 appendInfoLine: "Sample rate: ", sr, " Hz"
@@ -244,8 +351,18 @@ appendInfoLine: "Speaker positions:"
 for spk from 1 to numSpeakers
     azDeg = speakerAz[spk] * 180 / pi
     elDeg = speakerEl[spk] * 180 / pi
-    appendInfoLine: "  Spk ", spk, ": az=", fixed$(azDeg, 1), "°, el=", fixed$(elDeg, 1), "°"
+    if speakerIsLFE[spk]
+        appendInfoLine: "  Spk ", spk, ": LFE (not decoded, silent)"
+    else
+        appendInfoLine: "  Spk ", spk, ": az=", fixed$(azDeg, 1), "°, el=", fixed$(elDeg, 1), "°"
+    endif
 endfor
+if undersized
+    appendInfoLine: ""
+    appendInfoLine: "  WARNING: ", numSpeakers, " speakers is fewer than the ~", minSpeakers,
+        ... " needed for a stable horizontal order-", ambisonic_order, " decode."
+    appendInfoLine: "           Directions and levels will not be well reconstructed."
+endif
 appendInfoLine: ""
 
 # ============================================================
@@ -304,62 +421,67 @@ for spk from 1 to numSpeakers
         cos_2az = cos(2 * az)
         sin_2az = sin(2 * az)
         
-        coeff[spk, 10] = sqrt5 * sin_3az * cos_el * cos_el_sq * 0.25
+        # SN3D-correct 3rd-order (matches the encoder): ACN 9/11/13/15 use
+        # sqrt(5/8) and sqrt(3/8), not sqrt5/4 and sqrt3/4.
+        coeff[spk, 10] = sqrt(5/8) * sin_3az * cos_el * cos_el_sq
         coeff[spk, 11] = sqrt15 * sin_2az * sin_el * cos_el_sq * 0.5
-        coeff[spk, 12] = sqrt3 * sin_az * cos_el * (5 * sin_el_sq - 1) * 0.25
+        coeff[spk, 12] = sqrt(3/8) * sin_az * cos_el * (5 * sin_el_sq - 1)
         coeff[spk, 13] = 0.5 * sin_el * (5 * sin_el_sq - 3)
-        coeff[spk, 14] = sqrt3 * cos_az * cos_el * (5 * sin_el_sq - 1) * 0.25
+        coeff[spk, 14] = sqrt(3/8) * cos_az * cos_el * (5 * sin_el_sq - 1)
         coeff[spk, 15] = sqrt15 * cos_2az * sin_el * cos_el_sq * 0.5
-        coeff[spk, 16] = sqrt5 * cos_3az * cos_el * cos_el_sq * 0.25
+        coeff[spk, 16] = sqrt(5/8) * cos_3az * cos_el * cos_el_sq
     endif
     
-    # Apply decode method weighting
+    # Per-order SIDE weights a_n (method-dependent). Basic = all 1.
+    a0 = 1
+    a1 = 1
+    a2 = 1
+    a3 = 1
     if decode_method = 2
-        # Max-rE: optimize energy vector
-        weight1 = 1 / sqrt(numSpeakers)
-        weight2 = weight1 * 1.5
-        weight3 = weight1 * 1.9
-        
-        for ch from 1 to 4
-            coeff[spk, ch] = coeff[spk, ch] * weight1
-        endfor
-        if ambisonic_order >= 2
-            for ch from 5 to 9
-                coeff[spk, ch] = coeff[spk, ch] * weight2
-            endfor
-        endif
-        if ambisonic_order >= 3
-            for ch from 10 to 16
-                coeff[spk, ch] = coeff[spk, ch] * weight3
-            endfor
-        endif
-        
+        # Max-rE: a_n = Legendre P_n(rE), rE = cos(137.9 / (order+1.51) deg).
+        rE = cos(137.9 / (ambisonic_order + 1.51) * pi / 180)
+        a1 = rE
+        a2 = 0.5 * (3 * rE * rE - 1)
+        a3 = 0.5 * (5 * rE * rE * rE - 3 * rE)
     elsif decode_method = 3
-        # In-phase: controlled directivity
-        weight1 = 1 / numSpeakers
-        weight2 = weight1 * 0.75
-        weight3 = weight1 * 0.5
-        
-        for ch from 1 to 4
-            coeff[spk, ch] = coeff[spk, ch] * weight1
-        endfor
-        if ambisonic_order >= 2
-            for ch from 5 to 9
-                coeff[spk, ch] = coeff[spk, ch] * weight2
-            endfor
+        # In-phase (3-D spherical): a_n = N!(N+1)! / ((N+n+1)!(N-n)!).
+        # (The 2-D cardioid weights used before were wrong for a 3-D basis.)
+        if ambisonic_order = 1
+            a1 = 1/3
+        elsif ambisonic_order = 2
+            a1 = 1/2
+            a2 = 1/10
+        else
+            a1 = 3/5
+            a2 = 1/5
+            a3 = 1/35
         endif
-        if ambisonic_order >= 3
-            for ch from 10 to 16
-                coeff[spk, ch] = coeff[spk, ch] * weight3
-            endfor
-        endif
-    else
-        # Basic: simple normalization
-        weight = 1 / sqrt(numSpeakers)
-        for ch from 1 to expectedChannels
-            coeff[spk, ch] = coeff[spk, ch] * weight
-        endfor
     endif
+
+    # Normalize by the number of DIRECTIONAL speakers (LFE excluded).
+    normFactor = 1 / numDirectionalSpeakers
+
+    # Decode weight per channel = (2n+1) * a_n * normFactor.
+    # The (2n+1) factor is essential for SN3D input: it is what turns the raw
+    # projection sum_n P_n(cos g) into the proper basic panning function
+    # sum_n (2n+1) P_n(cos g). Without it, higher orders are suppressed and the
+    # HOA directivity collapses toward first order.
+    for ch from 1 to expectedChannels
+        if ch = 1
+            n2p1 = 1
+            aw = a0
+        elsif ch <= 4
+            n2p1 = 3
+            aw = a1
+        elsif ch <= 9
+            n2p1 = 5
+            aw = a2
+        else
+            n2p1 = 7
+            aw = a3
+        endif
+        coeff[spk, ch] = coeff[spk, ch] * n2p1 * aw * normFactor
+    endfor
 endfor
 
 appendInfoLine: "Decoder matrix calculated"
@@ -378,32 +500,31 @@ for spk from 1 to numSpeakers
     Create Sound from formula: "Speaker_" + string$(spk), 1, 0, duration, sr, "0"
     speakerSound[spk] = selected("Sound")
     
-    # Sum weighted ambisonic channels using Formula
-    # Build formula string that references all input channels
-    
-    for ch from 1 to expectedChannels
-        c = coeff[spk, ch]
-        
-        if c <> 0
-            coeffStr$ = fixed$(c, 8)
-            inputIdStr$ = string$(ambiChannel[ch])
-            
-            selectObject: speakerSound[spk]
-            Formula: "self + " + coeffStr$ + " * Object_" + inputIdStr$ + "[col]"
-        endif
-    endfor
+    # Sum weighted ambisonic channels using Formula.
+    # LFE speakers are NOT part of the ambisonic decode (an LFE is not a
+    # directional loudspeaker); leave them silent.
+    if not speakerIsLFE[spk]
+        for ch from 1 to expectedChannels
+            c = coeff[spk, ch]
+            if c <> 0
+                coeffStr$ = fixed$(c, 8)
+                inputIdStr$ = string$(ambiChannel[ch])
+                selectObject: speakerSound[spk]
+                Formula: "self + " + coeffStr$ + " * Object_" + inputIdStr$ + "[col]"
+            endif
+        endfor
+    endif
 endfor
 
 appendInfoLine: ""
 
 # ============================================================
-# NORMALIZE
+# PEAK PROTECTION (attenuate only)
 # ============================================================
 
-if normalize_output
-    appendInfoLine: "Normalizing speaker outputs..."
+if peak_protect_only
+    appendInfoLine: "Peak protection (attenuate-only)..."
     
-    # Find global peak across all speakers
     globalPeak = 0
     for spk from 1 to numSpeakers
         selectObject: speakerSound[spk]
@@ -413,18 +534,20 @@ if normalize_output
         endif
     endfor
     
-    # Apply uniform scaling to preserve relative levels
-    if globalPeak > 0
+    # Only attenuate on clipping, with a shared factor across all speakers, so
+    # the true decode level and relative speaker levels are preserved (boosting
+    # a quiet decode up to 0.99 would hide the actual level and defeat
+    # comparisons between methods/layouts).
+    if globalPeak > 0.99
         scaleFactor = 0.99 / globalPeak
         scaleStr$ = fixed$(scaleFactor, 8)
-        
         for spk from 1 to numSpeakers
             selectObject: speakerSound[spk]
             Formula: "self * " + scaleStr$
         endfor
-        
-        appendInfoLine: "  Global peak: ", fixed$(globalPeak, 4)
-        appendInfoLine: "  Scale factor: ", fixed$(scaleFactor, 4)
+        appendInfoLine: "  Global peak: ", fixed$(globalPeak, 4), " -> attenuated by ", fixed$(20*log10(scaleFactor), 1), " dB"
+    else
+        appendInfoLine: "  Global peak: ", fixed$(globalPeak, 4), " (no attenuation needed)"
     endif
 endif
 
@@ -512,7 +635,7 @@ if draw_visualization
     # Speakers — coloured squares with radial lines
     for spk from 1 to numSpeakers
         az = speakerAz[spk]
-        spkVizX = sin(az)
+        spkVizX = -sin(az)
         spkVizY = cos(az)
 
         # Colour from hue wheel
@@ -520,6 +643,9 @@ if draw_visualization
         sR = 0.30 + 0.50 * sin(hue * 2 * pi)
         sG = 0.30 + 0.50 * sin(hue * 2 * pi + 2 * pi / 3)
         sB = 0.30 + 0.50 * sin(hue * 2 * pi + 4 * pi / 3)
+        sR = min(1, max(0, sR))
+        sG = min(1, max(0, sG))
+        sB = min(1, max(0, sB))
         spkCol$ = "{" + fixed$(sR, 2) + ", " + fixed$(sG, 2) + ", " + fixed$(sB, 2) + "}"
 
         Paint rectangle: spkCol$,
@@ -534,7 +660,7 @@ if draw_visualization
 
         # Number label outside
         lblDist = 1.18
-        lblX = lblDist * sin(az)
+        lblX = -lblDist * sin(az)
         lblY = lblDist * cos(az)
         Font size: 6
         Colour: "{0.30, 0.30, 0.30}"
@@ -548,32 +674,43 @@ if draw_visualization
     Text top: "no", "Speaker layout: " + presetName$
 
     # ----------------------------------------------------------
-    # Per-speaker W-coefficient bar chart (right, upper)
+    # Per-speaker decoder row-norm bar chart (right, upper)
     # ----------------------------------------------------------
     Select outer viewport: 4.5, 8, 0.52, 2.22
     Select inner viewport: 4.80, 7.65, 0.62, 2.10
 
-    # Use W (channel 1) coefficient as representative gain per speaker
-    maxWcoeff = 0
+    # Decoder ROW NORM per speaker = sqrt(sum of that speaker's coefficients^2).
+    # Unlike the W coefficient (identical for every speaker), this varies and
+    # shows how strongly each speaker is driven overall.
+    rowNorm# = zero#(numSpeakers)
+    maxNorm = 0
     for spk from 1 to numSpeakers
-        if abs(coeff[spk, 1]) > maxWcoeff
-            maxWcoeff = abs(coeff[spk, 1])
+        ss = 0
+        for ch from 1 to expectedChannels
+            ss = ss + coeff[spk, ch] * coeff[spk, ch]
+        endfor
+        rowNorm#[spk] = sqrt(ss)
+        if rowNorm#[spk] > maxNorm
+            maxNorm = rowNorm#[spk]
         endif
     endfor
-    if maxWcoeff < 0.01
-        maxWcoeff = 1
+    if maxNorm < 0.01
+        maxNorm = 1
     endif
-    wTop = maxWcoeff * 1.3
+    wTop = maxNorm * 1.3
 
     Axes: 0.3, numSpeakers + 0.7, 0, wTop
     Paint rectangle: "{0.96, 0.96, 0.96}", 0.3, numSpeakers + 0.7, 0, wTop
 
     for spk from 1 to numSpeakers
-        wVal = abs(coeff[spk, 1])
+        wVal = rowNorm#[spk]
         hue = (spk - 1) / numSpeakers
         sR = 0.30 + 0.50 * sin(hue * 2 * pi)
         sG = 0.30 + 0.50 * sin(hue * 2 * pi + 2 * pi / 3)
         sB = 0.30 + 0.50 * sin(hue * 2 * pi + 4 * pi / 3)
+        sR = min(1, max(0, sR))
+        sG = min(1, max(0, sG))
+        sB = min(1, max(0, sB))
         Paint rectangle: "{" + fixed$(sR, 2) + ", " + fixed$(sG, 2) + ", " + fixed$(sB, 2) + "}",
             ... spk - 0.32, spk + 0.32, 0, wVal
         Font size: 5
@@ -586,9 +723,9 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "W gain"
+    Text left: "yes", "Row norm"
     Text bottom: "yes", "Speaker"
-    Text top: "no", "Omni (W) coefficient per speaker"
+    Text top: "no", "Decoder row norm per speaker"
 
     # ----------------------------------------------------------
     # Output waveform — mono downmix (right, lower)
@@ -627,8 +764,12 @@ if draw_visualization
         if spk > 1
             spkAngles$ = spkAngles$ + "  "
         endif
-        azDeg = speakerAz[spk] * 180 / pi
-        spkAngles$ = spkAngles$ + string$(spk) + ":" + fixed$(azDeg, 0) + "°"
+        if speakerIsLFE[spk]
+            spkAngles$ = spkAngles$ + string$(spk) + ":LFE"
+        else
+            azDeg = speakerAz[spk] * 180 / pi
+            spkAngles$ = spkAngles$ + string$(spk) + ":" + fixed$(azDeg, 0) + "°"
+        endif
     endfor
 
     Text: 0.02, "left", 0.58, "half",
@@ -666,7 +807,7 @@ appendInfoLine: "Ambisonic order: ", orderName$
 appendInfoLine: "Speaker layout: ", presetName$
 appendInfoLine: "Decode method: ", methodName$
 appendInfoLine: ""
-appendInfoLine: "Decoder coefficients (W weight per speaker):"
+appendInfoLine: "Decoder coefficients (1st-order components per speaker):"
 for spk from 1 to numSpeakers
     appendInfoLine: "  Spk ", spk, ": W=", fixed$(coeff[spk, 1], 4), ", Y=", fixed$(coeff[spk, 2], 4), ", Z=", fixed$(coeff[spk, 3], 4), ", X=", fixed$(coeff[spk, 4], 4)
 endfor
@@ -678,6 +819,15 @@ endfor
 if play_result
     selectObject: result
     Play
+endif
+
+# Clean up channels extracted from a combined input (the user's original
+# multichannel object is left untouched). Legacy inputs are the user's own
+# objects and are never removed.
+if fromCombined = 1
+    for i from 1 to expectedChannels
+        removeObject: ambiChannel[i]
+    endfor
 endif
 
 selectObject: result
