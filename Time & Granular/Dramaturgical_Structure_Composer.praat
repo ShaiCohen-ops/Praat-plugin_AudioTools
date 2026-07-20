@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.1 (2026)
+# Version: 5.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -33,6 +33,41 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v5.3:
+#   Capacity + edge-case pass. (1) max_timeline is now sized to hold
+#   the worst-case Rondo form (2N-1) plus all operation insertions
+#   (= 2*max_sections + 2*max_operations_bound), and the timeline build
+#   WARNS if capacity is ever reached instead of silently dropping the
+#   tail of the form. (2) Max-duration splitting now respects Min
+#   section duration: it never creates a sub-Min fragment, keeping one
+#   slightly-over-Max piece when Max and Min conflict, and reports both
+#   that case and any hit of the max_sections cap. (3) max_operations
+#   set to realistic values (only one op per type is planned, so the
+#   ceiling is 4); over-cap trimming now drops a RANDOM operation rather
+#   than always the last-planned one (which always removed recall).
+#   (4) Novelty threshold clamped to its stated 0-1 range.
+#
+# Changelog v5.2:
+#   Correctness pass. (1) Max section duration now SPLITS long spans
+#   into forced boundaries instead of truncating them, so the whole
+#   source is covered exactly once (v5.1 silently discarded material
+#   past each cut, and a no-peak file kept only the first Max seconds).
+#   (2) Structural operations are now applied in a SINGLE forward pass
+#   keyed to stable form positions; v5.1 applied them to a mutating
+#   timeline, so loop/silence insertions shifted the targets of later
+#   stretch/recall ops -- a stretch could land on an inserted silence
+#   and render secSound#[0] (a crash). (3) Detected-section count and
+#   form length are now separate variables (numDetectedSections vs
+#   formLength); Rondo (2N-1 items) no longer overflows sectionOrder#
+#   (sized to max_timeline) or corrupts Panel A / cleanup. Also: novelty
+#   is now gain-invariant (log-power flux, normalized so the threshold
+#   is relative 0-1); "quiet" is classified by RMS relative to the
+#   loudest section (not duration-dependent energy); texture distance
+#   uses a categorical same/different term (not arbitrary code
+#   arithmetic); parameter validation added (min<=max, arc bounds,
+#   non-negative novelty); Random seed added; Harmonicity threshold
+#   labelled in dB; Narrative "return" and arc-edge labels corrected.
 #
 # Changelog v5.1:
 #   Output channel count now matches input. v5.0 always produced
@@ -148,11 +183,12 @@
 #   - Context-aware silence placement
 # ============================================================
 
-form Dramaturgical Structure Composer v5.1
+form Dramaturgical Structure Composer v5.3
     positive Min_section_duration_s 8
     positive Max_section_duration_s 90
+    comment Novelty threshold is relative (0-1 of peak); Harmonicity is HNR in dB
     real Novelty_threshold 0.25
-    real Harmonicity_threshold 0.15
+    real Harmonicity_threshold_dB 0.15
     optionmenu Strategy: 2
         option Conservative (subtle)
         option Dramatic (major)
@@ -162,7 +198,7 @@ form Dramaturgical Structure Composer v5.1
         option Arch (build to peak)
         option Contrast (max adjacent diff)
         option Rondo (refrain + episodes)
-        option Narrative (dark to bright + recall)
+        option Narrative (dark to bright + return)
         option Random swap
     optionmenu Crossfade_mode: 2
         option Fixed short (30 ms)
@@ -179,6 +215,7 @@ form Dramaturgical Structure Composer v5.1
     boolean Apply_tension_arc 1
     real Arc_peak_position 0.65
     real Arc_exaggeration 1.5
+    integer Random_seed 0
     boolean Draw_visualization 1
     boolean Play_output 1
 endform
@@ -194,7 +231,10 @@ recall_lowpass_hz = 2500
 # Pre-allocated bounds
 max_sections = 200
 max_operations_bound = 50
-max_timeline = 400
+# Worst case: Rondo form = 2*max_sections-1 items, plus up to 2 insertions per
+# planned operation (loop copies, silence, recall). Sized so the timeline never
+# has to silently drop the tail of the form.
+max_timeline = 2 * max_sections + 2 * max_operations_bound
 
 # ============================================================
 # Helper Procedures
@@ -272,7 +312,14 @@ procedure getCrossfadeDuration: .fromTex, .toTex
 endproc
 
 procedure textureDistance: .tex1, .tex2, .cent1, .cent2, .rms1, .rms2
-    .texDiff = abs(.tex1 - .tex2)
+    # Texture codes are CATEGORIES, so |code1-code2| is meaningless (it would
+    # make tonal<->fallback "4x" more distant than bright<->dark). Use a binary
+    # same/different term plus continuous centroid and RMS distances.
+    if .tex1 = .tex2
+        .texDiff = 0
+    else
+        .texDiff = 1
+    endif
     .centDiff = abs(.cent1 - .cent2) / 5000
     .maxRms = max(.rms1, .rms2)
     if .maxRms > 0
@@ -302,7 +349,7 @@ elsif strategy = 2
     silence_insert_probability = 0.35
     stretch_probability = 0.4
     recall_probability = 0.4
-    max_operations = 6
+    max_operations = 4
     silence_duration_range_s = 8
     stretch_factor_min = 0.4
     stretch_factor_max = 2.5
@@ -312,7 +359,7 @@ else
     silence_insert_probability = 0.5
     stretch_probability = 0.5
     recall_probability = 0.6
-    max_operations = 10
+    max_operations = 4
     silence_duration_range_s = 20
     stretch_factor_min = 0.25
     stretch_factor_max = 4.0
@@ -353,8 +400,47 @@ if inputDuration < 20
     exitScript: "Sound too short (< 20 s). Need longer material for structural analysis."
 endif
 
+# ============================================================
+# Parameter validation (prevents out-of-range crashes downstream:
+# arc div-by-zero, min>max detection/clip conflict, negative novelty)
+# ============================================================
+if min_section_duration_s > max_section_duration_s
+    tmpDur = min_section_duration_s
+    min_section_duration_s = max_section_duration_s
+    max_section_duration_s = tmpDur
+endif
+if novelty_threshold < 0
+    novelty_threshold = 0
+endif
+if novelty_threshold > 1
+    novelty_threshold = 1
+endif
+if arc_peak_position <= 0.01
+    arc_peak_position = 0.01
+endif
+if arc_peak_position >= 0.99
+    arc_peak_position = 0.99
+endif
+if arc_exaggeration <= 0.01
+    arc_exaggeration = 0.01
+endif
+
+# Reproducible runs when a positive seed is given. This is a formula FUNCTION
+# (parenthesis call); its predictable state persists in Praat until
+# random_initializeSafelyAndUnpredictably() is called (done at the end). Placed
+# after the early-exit checks above so a seeded run can't strand the RNG. In
+# auto mode we reset to the safe state so results don't inherit a prior script's
+# predictable state.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedNote$ = "seed " + string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedNote$ = "seed auto"
+endif
+
 writeInfoLine: "=============================================="
-appendInfoLine: "  Dramaturgical Structure Composer v5.1"
+appendInfoLine: "  Dramaturgical Structure Composer v5.3"
 appendInfoLine: "=============================================="
 appendInfoLine: "Input: ", inputName$
 appendInfoLine: "Duration: ", fixed$(inputDuration, 2), " s"
@@ -405,7 +491,12 @@ for i from 1 to numAnalysisFrames
     if i > 1
         difference = 0
         for freqBin from 1 to 100
-            diff = abs(currentSpectrum#[freqBin] - prevSpectrum#[freqBin])
+            # Log-power spectral flux. A global gain g scales power by g^2, i.e.
+            # adds a constant to log-power, which cancels in the frame-to-frame
+            # difference -- so novelty no longer depends on the file's loudness.
+            logCur = ln(currentSpectrum#[freqBin] + 1e-10)
+            logPrev = ln(prevSpectrum#[freqBin] + 1e-10)
+            diff = abs(logCur - logPrev)
             difference = difference + diff
         endfor
         spectralNovelty#[i] = difference / 100
@@ -415,6 +506,21 @@ for i from 1 to numAnalysisFrames
 endfor
 
 removeObject: spectrogram
+
+# Normalize the novelty curve to its own peak so Novelty_threshold is a
+# RELATIVE value (0-1 of peak), consistent across files of different loudness,
+# rather than an absolute power number.
+noveltyPeak = 0
+for i from 1 to numAnalysisFrames
+    if spectralNovelty#[i] > noveltyPeak
+        noveltyPeak = spectralNovelty#[i]
+    endif
+endfor
+if noveltyPeak > 0
+    for i from 1 to numAnalysisFrames
+        spectralNovelty#[i] = spectralNovelty#[i] / noveltyPeak
+    endfor
+endif
 
 # Find section boundaries from novelty peaks
 sectionBoundaries# = zero# (max_sections)
@@ -438,8 +544,64 @@ endfor
 numSections = numSections + 1
 sectionBoundaries#[numSections] = inputDuration
 
-actualNumSections = numSections - 1
-appendInfoLine: "  Detected ", actualNumSections, " section(s)"
+# Enforce Max section duration by SPLITTING long spans, not by truncating them.
+# The old code shortened an over-long section and silently dropped the material
+# between the cut and the next boundary. Here we insert forced boundaries so the
+# whole source is covered exactly once. We aim for pieces <= Max, but never
+# create a piece shorter than Min: if Max and Min are incompatible for a span
+# (span between Max and 2*Min), we keep one slightly-over-Max piece rather than
+# sub-Min fragments (Min wins the conflict). Any such case is reported.
+splitBoundaries# = zero# (max_sections)
+nSplit = 0
+overMaxPieces = 0
+capHit = 0
+for b from 1 to numSections - 1
+    gapStart = sectionBoundaries#[b]
+    gapEnd = sectionBoundaries#[b + 1]
+    if nSplit < max_sections - 1
+        nSplit = nSplit + 1
+        splitBoundaries#[nSplit] = gapStart
+    endif
+    span = gapEnd - gapStart
+    if span > max_section_duration_s
+        # smallest #pieces with each <= Max, but not so many that a piece < Min
+        piecesMax = ceiling(span / max_section_duration_s)
+        piecesMin = max(1, floor(span / min_section_duration_s))
+        pieces = min(piecesMax, piecesMin)
+        pieceDur = span / pieces
+        if pieceDur > max_section_duration_s + 0.001
+            overMaxPieces = overMaxPieces + 1
+        endif
+        for k from 1 to pieces - 1
+            if nSplit < max_sections - 1
+                nSplit = nSplit + 1
+                splitBoundaries#[nSplit] = gapStart + k * pieceDur
+            else
+                capHit = 1
+            endif
+        endfor
+    endif
+endfor
+nSplit = nSplit + 1
+splitBoundaries#[nSplit] = inputDuration
+numSections = nSplit
+for b from 1 to numSections
+    sectionBoundaries#[b] = splitBoundaries#[b]
+endfor
+
+if overMaxPieces > 0
+    appendInfoLine: "  Note: ", overMaxPieces, " span(s) kept above Max duration to avoid sub-Min fragments."
+endif
+if capHit = 1
+    appendInfoLine: "  Note: hit the ", max_sections, "-section cap; some spans stayed longer than Max duration (whole source still covered)."
+endif
+
+# numDetectedSections is the count of analyzed source sections. It is fixed here
+# and NEVER overwritten by the reordering (Rondo/Narrative change form length,
+# not the number of real sections). Panel A, section analysis, and cleanup use
+# this; reordering/operations/timeline use formLength (set in Step 3).
+numDetectedSections = numSections - 1
+appendInfoLine: "  Detected ", numDetectedSections, " section(s)"
 
 # ============================================================
 # STEP 2: ANALYZE EACH SECTION
@@ -460,15 +622,13 @@ secSound# = zero# (max_sections)
 
 globalMaxRms = 0
 
-for s from 1 to actualNumSections
+for s from 1 to numDetectedSections
     secStart#[s] = sectionBoundaries#[s]
     secEnd#[s] = sectionBoundaries#[s + 1]
     secDur#[s] = secEnd#[s] - secStart#[s]
     
-    if secDur#[s] > max_section_duration_s
-        secEnd#[s] = secStart#[s] + max_section_duration_s
-        secDur#[s] = max_section_duration_s
-    endif
+    # (Max section duration is now enforced by splitting boundaries in Step 1,
+    # so no truncation here -- the whole source is already covered.)
     
     # v5.1: extract from inputSound (preserves channel count) for
     # the stored section that goes into the assembly pipeline.
@@ -512,10 +672,19 @@ for s from 1 to actualNumSections
         removeObject: sectionMono
     endif
     
-    # Classify texture: 1=tonal, 2=quiet, 3=bright, 4=dark, 5=fallback
-    if secHarm#[s] > harmonicity_threshold
+    secSound#[s] = sectionSound
+endfor
+
+# ── Second pass: classify texture with RELATIVE loudness ──
+# "quiet" is judged by RMS relative to the loudest section (duration-
+# independent), instead of cumulative energy, which grew with section length
+# and so mislabeled long-quiet vs short-loud sections. Runs after the loop so
+# globalMaxRms is final.
+quietRmsThreshold = globalMaxRms * 0.12
+for s from 1 to numDetectedSections
+    if secHarm#[s] > harmonicity_threshold_dB
         secTexture#[s] = 1
-    elsif secEnergy#[s] < 0.001
+    elsif secRms#[s] < quietRmsThreshold
         secTexture#[s] = 2
     elsif secCentroid#[s] > spectral_centroid_high_hz
         secTexture#[s] = 3
@@ -524,9 +693,7 @@ for s from 1 to actualNumSections
     else
         secTexture#[s] = 5
     endif
-    
-    secSound#[s] = sectionSound
-    
+
     textureCode = secTexture#[s]
     if textureCode = 1
         textureName$ = "tonal"
@@ -539,7 +706,7 @@ for s from 1 to actualNumSections
     else
         textureName$ = "mid"
     endif
-    
+
     appendInfoLine: "  Section ", s, ": ", fixed$(secStart#[s], 1), "-", fixed$(secEnd#[s], 1),
         ... "s | ", textureName$,
         ... " | centroid=", fixed$(secCentroid#[s], 0), "Hz",
@@ -552,8 +719,11 @@ endfor
 appendInfoLine: ""
 appendInfoLine: "[3/6] Applying form archetype: ", reorderName$
 
-sectionOrder# = zero# (max_sections)
-for s from 1 to actualNumSections
+# sectionOrder holds the FORM (may be longer than the detected sections, e.g.
+# Rondo = 2N-1 items), so it is sized to max_timeline, not max_sections.
+sectionOrder# = zero# (max_timeline)
+formLength = numDetectedSections
+for s from 1 to numDetectedSections
     sectionOrder#[s] = s
 endfor
 
@@ -566,12 +736,12 @@ elsif reorder_mode = 2
     appendInfoLine: "  Arch: building to peak at ~", fixed$(arc_peak_position * 100, 0), "%"
     
     rmsSortIdx# = zero# (max_sections)
-    for i from 1 to actualNumSections
+    for i from 1 to numDetectedSections
         rmsSortIdx#[i] = i
     endfor
     # Bubble sort ascending by RMS
-    for i from 1 to actualNumSections - 1
-        for j from 1 to actualNumSections - i
+    for i from 1 to numDetectedSections - 1
+        for j from 1 to numDetectedSections - i
             jNext = j + 1
             idxJ = rmsSortIdx#[j]
             idxJNext = rmsSortIdx#[jNext]
@@ -582,10 +752,10 @@ elsif reorder_mode = 2
         endfor
     endfor
     
-    peakIdx = max(1, round(actualNumSections * arc_peak_position))
+    peakIdx = max(1, round(numDetectedSections * arc_peak_position))
     archPos# = zero# (max_sections)
     
-    sortPos = actualNumSections
+    sortPos = numDetectedSections
     archPos#[peakIdx] = rmsSortIdx#[sortPos]
     sortPos = sortPos - 1
     leftSlot = peakIdx - 1
@@ -598,7 +768,7 @@ elsif reorder_mode = 2
             leftSlot = leftSlot - 1
             sortPos = sortPos - 1
             toggle = 0
-        elsif toggle = 0 and rightSlot <= actualNumSections
+        elsif toggle = 0 and rightSlot <= numDetectedSections
             archPos#[rightSlot] = rmsSortIdx#[sortPos]
             rightSlot = rightSlot + 1
             sortPos = sortPos - 1
@@ -607,7 +777,7 @@ elsif reorder_mode = 2
             archPos#[leftSlot] = rmsSortIdx#[sortPos]
             leftSlot = leftSlot - 1
             sortPos = sortPos - 1
-        elsif rightSlot <= actualNumSections
+        elsif rightSlot <= numDetectedSections
             archPos#[rightSlot] = rmsSortIdx#[sortPos]
             rightSlot = rightSlot + 1
             sortPos = sortPos - 1
@@ -616,7 +786,7 @@ elsif reorder_mode = 2
         endif
     endwhile
     
-    for s from 1 to actualNumSections
+    for s from 1 to numDetectedSections
         sectionOrder#[s] = archPos#[s]
     endfor
 
@@ -629,7 +799,7 @@ elsif reorder_mode = 3
     # Start with darkest (lowest centroid)
     bestStart = 1
     bestCent = secCentroid#[1]
-    for s from 2 to actualNumSections
+    for s from 2 to numDetectedSections
         if secCentroid#[s] < bestCent
             bestCent = secCentroid#[s]
             bestStart = s
@@ -639,13 +809,13 @@ elsif reorder_mode = 3
     sectionOrder#[1] = bestStart
     contrastUsed#[bestStart] = 1
     
-    for pos from 2 to actualNumSections
+    for pos from 2 to numDetectedSections
         prevPos = pos - 1
         prevSec = sectionOrder#[prevPos]
         bestNext = 0
         bestDist = -1
         
-        for candidate from 1 to actualNumSections
+        for candidate from 1 to numDetectedSections
             if contrastUsed#[candidate] = 0
                 @textureDistance: secTexture#[prevSec], secTexture#[candidate],
                     ... secCentroid#[prevSec], secCentroid#[candidate],
@@ -669,7 +839,7 @@ elsif reorder_mode = 4
     
     refrainIdx = 1
     bestScore = 0
-    for s from 1 to actualNumSections
+    for s from 1 to numDetectedSections
         score = abs(secHarm#[s]) + abs(secCentroid#[s] - 1500) / 1500
         if score > bestScore
             bestScore = score
@@ -680,7 +850,7 @@ elsif reorder_mode = 4
     
     episodeList# = zero# (max_sections)
     numEpisodes = 0
-    for s from 1 to actualNumSections
+    for s from 1 to numDetectedSections
         if s <> refrainIdx
             numEpisodes = numEpisodes + 1
             episodeList#[numEpisodes] = s
@@ -689,25 +859,29 @@ elsif reorder_mode = 4
     
     orderPos = 0
     for ep from 1 to numEpisodes
+        if orderPos + 2 <= max_timeline
+            orderPos = orderPos + 1
+            sectionOrder#[orderPos] = refrainIdx
+            orderPos = orderPos + 1
+            sectionOrder#[orderPos] = episodeList#[ep]
+        endif
+    endfor
+    if orderPos + 1 <= max_timeline
         orderPos = orderPos + 1
         sectionOrder#[orderPos] = refrainIdx
-        orderPos = orderPos + 1
-        sectionOrder#[orderPos] = episodeList#[ep]
-    endfor
-    orderPos = orderPos + 1
-    sectionOrder#[orderPos] = refrainIdx
-    actualNumSections = orderPos
+    endif
+    formLength = orderPos
 
 elsif reorder_mode = 5
     # Narrative: dark -> bright + appended recall of opening
-    appendInfoLine: "  Narrative: dark -> build -> bright -> recall -> fade"
+    appendInfoLine: "  Narrative: dark -> bright, then return of the opening section (unprocessed)"
     
     centSortIdx# = zero# (max_sections)
-    for i from 1 to actualNumSections
+    for i from 1 to numDetectedSections
         centSortIdx#[i] = i
     endfor
-    for i from 1 to actualNumSections - 1
-        for j from 1 to actualNumSections - i
+    for i from 1 to numDetectedSections - 1
+        for j from 1 to numDetectedSections - i
             jNext = j + 1
             idxJ = centSortIdx#[j]
             idxJNext = centSortIdx#[jNext]
@@ -718,24 +892,24 @@ elsif reorder_mode = 5
         endfor
     endfor
     
-    for s from 1 to actualNumSections
+    for s from 1 to numDetectedSections
         sectionOrder#[s] = centSortIdx#[s]
     endfor
     
     # Append recall of opening (darkest)
-    if actualNumSections < max_sections
-        actualNumSections = actualNumSections + 1
-        sectionOrder#[actualNumSections] = centSortIdx#[1]
+    if formLength < max_timeline
+        formLength = formLength + 1
+        sectionOrder#[formLength] = centSortIdx#[1]
     endif
 
 elsif reorder_mode = 6
     # Random swap (legacy)
     appendInfoLine: "  Random swap"
-    if actualNumSections >= 3
-        numSwaps = randomInteger(1, max(1, floor(actualNumSections / 2)))
+    if formLength >= 3
+        numSwaps = randomInteger(1, max(1, floor(formLength / 2)))
         for sw from 1 to numSwaps
-            s1 = randomInteger(1, actualNumSections)
-            s2 = randomInteger(1, actualNumSections)
+            s1 = randomInteger(1, formLength)
+            s2 = randomInteger(1, formLength)
             if s1 <> s2
                 temp = sectionOrder#[s1]
                 sectionOrder#[s1] = sectionOrder#[s2]
@@ -748,9 +922,9 @@ endif
 
 # Log final order
 order$ = "  Final order: "
-for s from 1 to actualNumSections
+for s from 1 to formLength
     order$ = order$ + string$(sectionOrder#[s])
-    if s < actualNumSections
+    if s < formLength
         order$ = order$ + " -> "
     endif
 endfor
@@ -769,8 +943,8 @@ opParam1# = zero# (max_operations_bound)
 numOperations = 0
 
 # LOOP
-if allow_looping and randomUniform(0, 1) < loop_probability and actualNumSections >= 2
-    targetPos = randomInteger(1, actualNumSections)
+if allow_looping and randomUniform(0, 1) < loop_probability and formLength >= 2
+    targetPos = randomInteger(1, formLength)
     targetSec = sectionOrder#[targetPos]
     
     if secDur#[targetSec] >= 15 and secDur#[targetSec] <= 60
@@ -788,7 +962,7 @@ endif
 if allow_long_silences and randomUniform(0, 1) < silence_insert_probability
     bestSilencePos = 1
     bestSilenceRms = 0
-    for pos from 1 to actualNumSections - 1
+    for pos from 1 to formLength - 1
         posSection = sectionOrder#[pos]
         if secRms#[posSection] > bestSilenceRms
             bestSilenceRms = secRms#[posSection]
@@ -797,7 +971,7 @@ if allow_long_silences and randomUniform(0, 1) < silence_insert_probability
     endfor
     
     nextPos = bestSilencePos + 1
-    if nextPos <= actualNumSections
+    if nextPos <= formLength
         nextSec = sectionOrder#[nextPos]
         peakSec = sectionOrder#[bestSilencePos]
         contrast = secRms#[peakSec] - secRms#[nextSec]
@@ -819,9 +993,9 @@ if allow_long_silences and randomUniform(0, 1) < silence_insert_probability
 endif
 
 # STRETCH (prefer non-quiet sections)
-if allow_time_stretching and randomUniform(0, 1) < stretch_probability and actualNumSections >= 2
+if allow_time_stretching and randomUniform(0, 1) < stretch_probability and formLength >= 2
     bestStretchPos = 0
-    for pos from 1 to actualNumSections
+    for pos from 1 to formLength
         posSection = sectionOrder#[pos]
         if secTexture#[posSection] <> 2
             if bestStretchPos = 0 or randomUniform(0, 1) < 0.4
@@ -830,7 +1004,7 @@ if allow_time_stretching and randomUniform(0, 1) < stretch_probability and actua
         endif
     endfor
     if bestStretchPos = 0
-        bestStretchPos = randomInteger(1, actualNumSections)
+        bestStretchPos = randomInteger(1, formLength)
     endif
     
     if randomUniform(0, 1) < 0.5
@@ -851,9 +1025,9 @@ if allow_time_stretching and randomUniform(0, 1) < stretch_probability and actua
 endif
 
 # RECALL
-if allow_material_recall and randomUniform(0, 1) < recall_probability and actualNumSections >= 3
-    sourcePos = randomInteger(1, max(1, actualNumSections - 2))
-    targetPosition = randomInteger(min(sourcePos + 1, actualNumSections), actualNumSections)
+if allow_material_recall and randomUniform(0, 1) < recall_probability and formLength >= 3
+    sourcePos = randomInteger(1, max(1, formLength - 2))
+    targetPosition = randomInteger(min(sourcePos + 1, formLength), formLength)
     
     if numOperations < max_operations_bound
         numOperations = numOperations + 1
@@ -866,7 +1040,18 @@ endif
 
 if numOperations > max_operations
     appendInfoLine: "  (limiting to ", max_operations, " operations)"
-    numOperations = max_operations
+    # Remove RANDOM operations down to the cap. The old code truncated the
+    # end of the list, which always dropped recall (planned last) -- e.g. every
+    # capped Conservative run lost its recall. Random removal keeps the mix fair.
+    while numOperations > max_operations
+        dropIdx = randomInteger(1, numOperations)
+        for k from dropIdx to numOperations - 1
+            opType#[k] = opType#[k + 1]
+            opTarget#[k] = opTarget#[k + 1]
+            opParam1#[k] = opParam1#[k + 1]
+        endfor
+        numOperations = numOperations - 1
+    endwhile
 endif
 
 appendInfoLine: "  Total: ", numOperations, " operation(s)"
@@ -888,97 +1073,99 @@ timelineOutputEnd# = zero# (max_timeline)
 timelineLoopFlag# = zero# (max_timeline)
 timelineReverseFlag# = zero# (max_timeline)
 
-# Initial: one entry per reordered section
-numTimelineItems = 0
-for s from 1 to actualNumSections
-    if numTimelineItems < max_timeline
-        numTimelineItems = numTimelineItems + 1
-        timelineType#[numTimelineItems] = 0
-        timelineSectionIdx#[numTimelineItems] = sectionOrder#[s]
-        timelineParam#[numTimelineItems] = 0
-    endif
-endfor
+# Build per-position operation tables. Operations were planned against the
+# STABLE reordered form positions (1..formLength). The old code applied them to
+# a mutating timeline, so loop/silence insertions shifted the targets of later
+# stretch/recall ops -- a stretch could land on an inserted silence and try to
+# render secSound#[0] (a crash). Here we index every op by its intended position
+# and construct the timeline in ONE forward pass, so each op hits its section.
+stretchAtPos# = zero# (max_timeline)
+loopAtPos#    = zero# (max_timeline)
+silenceAfterPos# = zero# (max_timeline)
+recallAfterActive# = zero# (max_timeline)
+recallAfterSource# = zero# (max_timeline)
 
-# Apply operations
 for op from 1 to numOperations
     thisOpType = opType#[op]
     thisOpTarget = opTarget#[op]
     thisOpParam = opParam1#[op]
-    
     if thisOpType = 1
-        # LOOP: insert (loopCount-1) extra copies after target position
-        loopCount = thisOpParam
-        insertPos = min(thisOpTarget, numTimelineItems)
-        if insertPos > 0 and numTimelineItems + loopCount - 1 <= max_timeline
-            targetSecIdx = timelineSectionIdx#[insertPos]
-            shiftBy = loopCount - 1
-            # Shift items insertPos+1..end forward by shiftBy (reverse iteration)
-            for offset from 0 to numTimelineItems - insertPos - 1
-                srcT = numTimelineItems - offset
-                dstT = srcT + shiftBy
-                timelineType#[dstT] = timelineType#[srcT]
-                timelineSectionIdx#[dstT] = timelineSectionIdx#[srcT]
-                timelineParam#[dstT] = timelineParam#[srcT]
-            endfor
-            # Fill the loop copies
-            for rep from 1 to loopCount - 1
-                repPos = insertPos + rep
-                timelineType#[repPos] = 0
-                timelineSectionIdx#[repPos] = targetSecIdx
-                timelineParam#[repPos] = 0
-            endfor
-            numTimelineItems = numTimelineItems + shiftBy
+        if thisOpTarget >= 1 and thisOpTarget <= formLength
+            loopAtPos#[thisOpTarget] = thisOpParam
         endif
-    
     elsif thisOpType = 3
-        # SILENCE: insert after target position
-        insertPos = min(thisOpTarget, numTimelineItems)
-        if insertPos > 0 and numTimelineItems + 1 <= max_timeline
-            for offset from 0 to numTimelineItems - insertPos - 1
-                srcT = numTimelineItems - offset
-                dstT = srcT + 1
-                timelineType#[dstT] = timelineType#[srcT]
-                timelineSectionIdx#[dstT] = timelineSectionIdx#[srcT]
-                timelineParam#[dstT] = timelineParam#[srcT]
-            endfor
-            silPos = insertPos + 1
-            timelineType#[silPos] = 3
-            timelineSectionIdx#[silPos] = 0
-            timelineParam#[silPos] = thisOpParam
-            numTimelineItems = numTimelineItems + 1
+        if thisOpTarget >= 1 and thisOpTarget <= formLength
+            silenceAfterPos#[thisOpTarget] = thisOpParam
         endif
-    
     elsif thisOpType = 4
-        # STRETCH: mark existing item (no insert)
-        stretchPos = min(thisOpTarget, numTimelineItems)
-        if stretchPos > 0
-            timelineType#[stretchPos] = 4
-            timelineParam#[stretchPos] = thisOpParam
+        if thisOpTarget >= 1 and thisOpTarget <= formLength
+            stretchAtPos#[thisOpTarget] = thisOpParam
         endif
-    
     elsif thisOpType = 5
-        # RECALL: insert transformed copy
-        sourceTimelinePos = min(thisOpTarget, numTimelineItems)
-        afterPos = min(thisOpParam, numTimelineItems)
-        if sourceTimelinePos > 0 and afterPos > 0 and numTimelineItems + 1 <= max_timeline
-            sourceSec = timelineSectionIdx#[sourceTimelinePos]
-            for offset from 0 to numTimelineItems - afterPos - 1
-                srcT = numTimelineItems - offset
-                dstT = srcT + 1
-                timelineType#[dstT] = timelineType#[srcT]
-                timelineSectionIdx#[dstT] = timelineSectionIdx#[srcT]
-                timelineParam#[dstT] = timelineParam#[srcT]
-            endfor
-            recallPos = afterPos + 1
-            timelineType#[recallPos] = 5
-            timelineSectionIdx#[recallPos] = sourceSec
-            timelineParam#[recallPos] = 0
+        srcPos = thisOpTarget
+        afterP = round(thisOpParam)
+        if srcPos >= 1 and srcPos <= formLength and afterP >= 1 and afterP <= formLength
+            recallAfterActive#[afterP] = 1
+            # store a STABLE section id, resolved now against the fixed order
+            recallAfterSource#[afterP] = sectionOrder#[srcPos]
+        endif
+    endif
+endfor
+
+# Single forward pass over the form.
+numTimelineItems = 0
+timelineFull = 0
+for p from 1 to formLength
+    secId = sectionOrder#[p]
+    # (a) the section itself (stretched in place if flagged)
+    if numTimelineItems < max_timeline
+        numTimelineItems = numTimelineItems + 1
+        if stretchAtPos#[p] > 0
+            timelineType#[numTimelineItems] = 4
+            timelineParam#[numTimelineItems] = stretchAtPos#[p]
+        else
+            timelineType#[numTimelineItems] = 0
+            timelineParam#[numTimelineItems] = 0
+        endif
+        timelineSectionIdx#[numTimelineItems] = secId
+    else
+        timelineFull = 1
+    endif
+    # (b) loop copies (plain, unstretched)
+    if loopAtPos#[p] > 1
+        for rep from 2 to loopAtPos#[p]
+            if numTimelineItems < max_timeline
+                numTimelineItems = numTimelineItems + 1
+                timelineType#[numTimelineItems] = 0
+                timelineSectionIdx#[numTimelineItems] = secId
+                timelineParam#[numTimelineItems] = 0
+            endif
+        endfor
+    endif
+    # (c) silence inserted after this position
+    if silenceAfterPos#[p] > 0
+        if numTimelineItems < max_timeline
             numTimelineItems = numTimelineItems + 1
+            timelineType#[numTimelineItems] = 3
+            timelineSectionIdx#[numTimelineItems] = 0
+            timelineParam#[numTimelineItems] = silenceAfterPos#[p]
+        endif
+    endif
+    # (d) recall inserted after this position (source section is stable)
+    if recallAfterActive#[p] > 0
+        if numTimelineItems < max_timeline
+            numTimelineItems = numTimelineItems + 1
+            timelineType#[numTimelineItems] = 5
+            timelineSectionIdx#[numTimelineItems] = recallAfterSource#[p]
+            timelineParam#[numTimelineItems] = 0
         endif
     endif
 endfor
 
 appendInfoLine: "  Timeline: ", numTimelineItems, " items"
+if timelineFull = 1
+    appendInfoLine: "  WARNING: timeline capacity (", max_timeline, ") reached; some form items were omitted."
+endif
 
 # Noise tail template (for organic silences)
 if silence_mode = 2
@@ -1314,7 +1501,7 @@ if draw_visualization
         ... inputName$
         ... + "  |  " + strategyName$
         ... + "  |  reorder " + reorderName$
-        ... + "  |  " + string$(actualNumSections) + " sections"
+        ... + "  |  " + string$(numDetectedSections) + " sections"
         ... + "  |  " + string$(numTimelineItems) + " timeline items"
         ... + "  |  " + string$(numOperations) + " ops"
         ... + "  |  in " + fixed$(inputDuration, 1) + " s -> out " + fixed$(outputDuration, 1) + " s"
@@ -1329,10 +1516,10 @@ if draw_visualization
     Axes: 0, inputDuration, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.99}", 0, inputDuration, 0, 1
     
-    for s from 1 to actualNumSections
-        # Skip narrative-appended recall (it's at index actualNumSections
-        # if reorder_mode = 5 — it's not a "real" input section)
-        if not (reorder_mode = 5 and s = actualNumSections)
+    for s from 1 to numDetectedSections
+        # Panel A shows only real detected sections; form extensions
+        # (Rondo/Narrative) are shown in Panel B.
+        if 1
             sStart = secStart#[s]
             sEnd = secEnd#[s]
             tex = secTexture#[s]
@@ -1586,7 +1773,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "Tension arc envelope (multiplicative, 0 = silence edges, 1 = peak)"
+    Text top: "no", "Tension arc envelope (multiplicative gain: 0.3 at edges, 1.0 at peak)"
     Text left: "yes", "Gain"
     Text bottom: "yes", "Normalized output position"
     
@@ -1638,7 +1825,7 @@ if draw_visualization
     Text: 0.02, "left", 0.75, "half",
         ... "##" + strategyName$ + " / " + reorderName$ + "##"
         ... + "  " + inputName$
-        ... + "  |  " + string$(actualNumSections) + " sections detected"
+        ... + "  |  " + string$(numDetectedSections) + " sections detected"
         ... + "  |  Timeline: " + string$(numTimelineItems) + " items"
         ... + "  |  Ops: LOOP " + string$(nLoop)
         ... + " / SIL " + string$(nSil)
@@ -1666,13 +1853,10 @@ endif
 # CLEANUP
 # ============================================================
 removeObject: workSound
-for s from 1 to actualNumSections
-    # Skip narrative-appended recall (sectionOrder entry, not a real section)
-    if not (reorder_mode = 5 and s = actualNumSections)
-        snd = secSound#[s]
-        if snd > 0
-            removeObject: snd
-        endif
+for s from 1 to numDetectedSections
+    snd = secSound#[s]
+    if snd > 0
+        removeObject: snd
     endif
 endfor
 
@@ -1683,9 +1867,15 @@ appendInfoLine: "=============================================="
 appendInfoLine: "  COMPLETE"
 appendInfoLine: "=============================================="
 appendInfoLine: "Output: ", inputName$, "_dramat_", strategyName$, "_", reorderName$
+appendInfoLine: "Random: ", seedNote$
 
 if play_output
     Play
+endif
+
+# Undo the predictable-RNG state so it doesn't persist across later Praat work.
+if random_seed > 0
+    random_initializeSafelyAndUnpredictably ()
 endif
 
 selectObject: finalOutput
