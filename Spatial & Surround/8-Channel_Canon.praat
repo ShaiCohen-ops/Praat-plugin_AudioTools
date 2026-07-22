@@ -3,13 +3,62 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   8-Channel Canon Generator - creates a musical canon effect
-#   with 8 pitch-shifted voices on separate channels.
+#   with 8 pitch-shifted voices on separate channels, deliverable
+#   as octophonic, stems, or a downmix.
+#
+# Changelog v0.3 (2026):
+#   - NEW: Output_format menu. The canon mechanism is untouched; the
+#     branch happens only after ch1-ch8 are complete.
+#       1  8 channels - octophonic          (default, v0.2 behaviour)
+#       2  4 stereo pairs                   V1|V2  V3|V4  V5|V6  V7|V8
+#       3  2 quadraphonic groups            V1-V4, V5-V8
+#       4  4-channel fold-down              V1+V5, V2+V6, V3+V7, V4+V8
+#       5  Stereo mix                       L: V1-V4   R: V5-V8
+#     The fold-down pairs voices four apart rather than adjacent, so
+#     both turns of the canon land on the same channel pattern and the
+#     cyclic identity of the array survives the downmix.
+#   - NEW: shared-gain normalisation. v0.2 scaled a single result to
+#     0.95, which does not generalise: normalising four stereo pairs
+#     independently would give a quiet pair more gain than a loud one
+#     and silently rewrite the balance between voice groups. One gain
+#     is now derived from the loudest of the eight working channels and
+#     applied to all of them, so every format - and every stem within a
+#     format - carries the same level. The two summing formats are
+#     summed first and the finished object normalised once.
+#   - NEW: monitoring mix. The spectrogram was built by folding the
+#     single 8-channel result to mono, which only worked because there
+#     was always exactly one output object. Using the first stem
+#     instead would show a quarter or a half of the canon, so a
+#     temporary mono mix of all eight working channels now feeds the
+#     spectrogram in every format.
+#   - NEW: in stem formats, Play_result auditions that monitoring mix
+#     rather than the first stem, and says so. Playing out[1] alone
+#     would be a quarter of the canon presented as the result.
+#   - NEW: the Info window reports the output format, the number of
+#     output objects, their channel counts and the exact mapping, and
+#     the closing line is no longer hard-coded to "8-channel".
+#   - FIX: the Sound check ran after the form, so a wrong selection was
+#     only reported once ~20 fields had been filled in. It runs first.
+#   - FIX: negative delays. Delay fields accept any real, but a
+#     negative delay made Formula (part) start before the buffer, which
+#     truncates the voice. Delays are now shifted as a block so the
+#     earliest entry is 0, preserving every relative offset.
+#   - FIX: fade guard. Fade_time longer than half a voice made the
+#     fade-in and fade-out overlap. It is now clamped per voice.
+#   - FIX: voice placement used "Sound_'name$'(x - 'd')". The backtick
+#     numeric form is fragile across versions; string$() concatenation
+#     is the portable idiom. Voices are also renamed to canonvoiceN so
+#     the by-name reference cannot collide with a user object called
+#     voice_1.
+#   - FIX: cleanup is driven by an explicit output list. v0.2's cleanup
+#     assumed one result; formats 2 and 3 leave four and two objects
+#     alive and every intermediate still has to go.
 #
 # Changelog v0.2:
 #   - Added time delays for true canon effect
@@ -18,6 +67,11 @@
 #   - Added visualization
 #   - Refactored with loops
 # ============================================================
+
+# === Check Input (before the form, so a bad selection costs nothing) ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
 form 8-Channel Canon Settings
     comment === PRESETS ===
@@ -56,6 +110,14 @@ form 8-Channel Canon Settings
     comment === Settings ===
     positive Resample_frequency 44100
     real Fade_time 0.01
+    
+    comment === Output format ===
+    optionmenu Output_format: 1
+        option: "8 channels - octophonic (V1-V8)"
+        option: "4 stereo pairs (V1|V2, V3|V4, V5|V6, V7|V8)"
+        option: "2 quadraphonic groups (V1-V4, V5-V8)"
+        option: "4-channel fold-down (V1+V5, V2+V6, V3+V7, V4+V8)"
+        option: "Stereo mix (L: V1-V4, R: V5-V8)"
     
     comment === Output ===
     boolean Draw_visualization 1
@@ -238,9 +300,22 @@ else
     presetName$ = "Custom"
 endif
 
-# === Check Input ===
-if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object."
+# === Output format labels and mapping ===
+if output_format = 1
+    formatName$ = "8-channel octophonic"
+    formatShort$ = "8ch"
+elsif output_format = 2
+    formatName$ = "4 stereo pairs"
+    formatShort$ = "4 pairs"
+elsif output_format = 3
+    formatName$ = "2 quadraphonic groups"
+    formatShort$ = "2 quads"
+elsif output_format = 4
+    formatName$ = "4-channel fold-down"
+    formatShort$ = "fold-4"
+else
+    formatName$ = "Stereo mix"
+    formatShort$ = "stereo"
 endif
 
 originalID = selected("Sound")
@@ -256,6 +331,7 @@ baseWorkID = selected("Sound")
 Convert to mono
 monoID = selected("Sound")
 Resample: resample_frequency, 50
+baseResampledID = selected("Sound")
 Rename: "base_resampled"
 baseDur = Get total duration
 
@@ -280,9 +356,27 @@ delay[6] = delay_6
 delay[7] = delay_7
 delay[8] = delay_8
 
+# v0.3: the delay fields are plain reals, so a negative value is
+# reachable. Formula (part) starting before the buffer truncates the
+# voice, so shift the whole set until the earliest entry is at 0. This
+# keeps every relative offset, which is what the canon actually is.
+minDelay = delay[1]
+for i from 2 to 8
+    if delay[i] < minDelay
+        minDelay = delay[i]
+    endif
+endfor
+delaysShifted = 0
+if minDelay < 0
+    for i from 1 to 8
+        delay[i] = delay[i] - minDelay
+    endfor
+    delaysShifted = 1
+endif
+
 # === Create 8 pitched versions ===
 for i from 1 to 8
-    select Sound base_resampled
+    selectObject: baseResampledID
     Copy: "v" + string$(i) + "_work"
     vWork = selected("Sound")
     
@@ -292,13 +386,18 @@ for i from 1 to 8
     
     Override sampling frequency: shiftRate
     Resample: resample_frequency, 50
-    Rename: "voice_" + string$(i)
+    Rename: "canonvoice" + string$(i)
     voice[i] = selected("Sound")
     dur[i] = Get total duration
     
-    if fade_time > 0
-        Fade in: 0, 0, fade_time, "yes"
-        Fade out: 0, dur[i], -fade_time, "yes"
+    # v0.3: clamp so fade-in and fade-out cannot overlap on short voices
+    fadeUse = fade_time
+    if fadeUse > dur[i] / 2
+        fadeUse = dur[i] / 2
+    endif
+    if fadeUse > 0
+        Fade in: 0, 0, fadeUse, "yes"
+        Fade out: 0, dur[i], -fadeUse, "yes"
     endif
     
     removeObject: vWork
@@ -326,12 +425,48 @@ for i from 1 to 8
     d = delay[i]
     voiceDur = dur[i]
     
-    # Build formula string with voice name
-    voiceName$ = "voice_" + string$(i)
-    Formula (part): d, d + voiceDur, 1, 1, "Sound_'voiceName$'(x - 'd')"
+    # v0.3: string$() concatenation instead of backtick interpolation
+    voiceName$ = "canonvoice" + string$(i)
+    Formula (part): d, d + voiceDur, 1, 1,
+        ... "Sound_" + voiceName$ + "(x - " + fixed$(d, 9) + ")"
 endfor
 
-# === Combine all 8 channels ===
+# ============================================================
+# SHARED-GAIN NORMALISATION
+# ============================================================
+# One gain for all eight working channels, taken from the loudest of
+# them. Every format and every stem inherits it, so switching format
+# never changes the level and no stem is boosted relative to another.
+# The two summing formats re-normalise their finished object once,
+# after the sums exist.
+
+peakAll = 0
+for i from 1 to 8
+    selectObject: ch[i]
+    thisPeak = Get absolute extremum: 0, 0, "None"
+    if thisPeak > peakAll
+        peakAll = thisPeak
+    endif
+endfor
+if peakAll < 1e-9
+    peakAll = 1e-9
+endif
+sharedGain = 0.95 / peakAll
+sharedGain$ = fixed$(sharedGain, 10)
+
+for i from 1 to 8
+    selectObject: ch[i]
+    Formula: "self * " + sharedGain$
+endfor
+
+# ============================================================
+# BUILD THE CHANNEL TREE
+# ============================================================
+# The pairwise cascade is kept from v0.2 because every format needs
+# some node of it: format 2 takes the four pairs, format 3 the two
+# quads, format 5 folds the quads to mono, and the 8-channel node
+# feeds both format 1 and the monitoring mix.
+
 selectObject: ch[1], ch[2]
 Combine to stereo
 pair12 = selected("Sound")
@@ -358,32 +493,169 @@ quad5678 = selected("Sound")
 
 selectObject: quad1234, quad5678
 Combine to stereo
-result = selected("Sound")
+oct = selected("Sound")
+
+# Monitoring mix: all eight voices folded to mono. Used for the
+# spectrogram in every format, and auditioned in the stem formats.
+selectObject: oct
+Convert to mono
+monitorID = selected("Sound")
+Rename: "canon_monitor"
 Scale peak: 0.95
-Rename: originalName$ + "_canon8ch_" + presetName$
+
+# ============================================================
+# OUTPUT FORMAT BRANCH
+# ============================================================
+# out[1..outCount] is the list of objects the user keeps. Everything
+# else built above is an intermediate and is removed below.
+
+if output_format = 1
+    # --- 8 channels, octophonic ---
+    selectObject: oct
+    Rename: originalName$ + "_canon8ch_" + presetName$
+    outCount = 1
+    out[1] = oct
+    outChannels = 8
+    removeObject: pair12, pair34, pair56, pair78, quad1234, quad5678
+
+elsif output_format = 2
+    # --- 4 stereo pairs ---
+    selectObject: pair12
+    Rename: originalName$ + "_canon_pair_12_" + presetName$
+    selectObject: pair34
+    Rename: originalName$ + "_canon_pair_34_" + presetName$
+    selectObject: pair56
+    Rename: originalName$ + "_canon_pair_56_" + presetName$
+    selectObject: pair78
+    Rename: originalName$ + "_canon_pair_78_" + presetName$
+    outCount = 4
+    out[1] = pair12
+    out[2] = pair34
+    out[3] = pair56
+    out[4] = pair78
+    outChannels = 2
+    removeObject: quad1234, quad5678, oct
+
+elsif output_format = 3
+    # --- 2 quadraphonic groups ---
+    selectObject: quad1234
+    Rename: originalName$ + "_canon_quad_1to4_" + presetName$
+    selectObject: quad5678
+    Rename: originalName$ + "_canon_quad_5to8_" + presetName$
+    outCount = 2
+    out[1] = quad1234
+    out[2] = quad5678
+    outChannels = 4
+    removeObject: pair12, pair34, pair56, pair78, oct
+
+elsif output_format = 4
+    # --- 4-channel fold-down: V1+V5, V2+V6, V3+V7, V4+V8 ---
+    # Voices four apart share a physical channel, so the first turn of
+    # the canon (V1-V4) and the second (V5-V8) keep the same channel
+    # pattern. Combine + Convert to mono averages the pair; the factor
+    # is identical for all four channels, so the balance is untouched
+    # and the finished object is normalised once at the end.
+    for k from 1 to 4
+        selectObject: ch[k], ch[k + 4]
+        Combine to stereo
+        foldPair = selected("Sound")
+        Convert to mono
+        fold[k] = selected("Sound")
+        Rename: "fold_" + string$(k)
+        removeObject: foldPair
+    endfor
+
+    selectObject: fold[1], fold[2]
+    Combine to stereo
+    foldA = selected("Sound")
+    selectObject: fold[3], fold[4]
+    Combine to stereo
+    foldB = selected("Sound")
+    selectObject: foldA, foldB
+    Combine to stereo
+    foldOut = selected("Sound")
+    Rename: originalName$ + "_canon_fold4_" + presetName$
+    Scale peak: 0.95
+
+    outCount = 1
+    out[1] = foldOut
+    outChannels = 4
+    removeObject: fold[1], fold[2], fold[3], fold[4], foldA, foldB
+    removeObject: pair12, pair34, pair56, pair78, quad1234, quad5678, oct
+
+else
+    # --- Stereo mix: L = V1-V4, R = V5-V8 ---
+    # A functional split of the voices into two groups, not a spatial
+    # downmix: there is no speaker geometry anywhere in this script.
+    selectObject: quad1234
+    Convert to mono
+    mixL = selected("Sound")
+    Rename: "mix_L"
+    selectObject: quad5678
+    Convert to mono
+    mixR = selected("Sound")
+    Rename: "mix_R"
+
+    selectObject: mixL, mixR
+    Combine to stereo
+    stereoOut = selected("Sound")
+    Rename: originalName$ + "_canon_stereo_" + presetName$
+    Scale peak: 0.95
+
+    outCount = 1
+    out[1] = stereoOut
+    outChannels = 2
+    removeObject: mixL, mixR
+    removeObject: pair12, pair34, pair56, pair78, quad1234, quad5678, oct
+endif
 
 # === Info ===
 writeInfoLine: "=== 8-Channel Canon ==="
-appendInfoLine: "Source: ", originalName$
+appendInfoLine: "Source: ", originalName$, "  (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 for i from 1 to 8
     if semi[i] >= 0
-        appendInfoLine: "Ch", i, ": +", fixed$(semi[i], 1), " st, delay ", fixed$(delay[i], 2), "s"
+        appendInfoLine: "Voice ", i, ": +", fixed$(semi[i], 1), " st, delay ", fixed$(delay[i], 2), "s"
     else
-        appendInfoLine: "Ch", i, ": ", fixed$(semi[i], 1), " st, delay ", fixed$(delay[i], 2), "s"
+        appendInfoLine: "Voice ", i, ": ", fixed$(semi[i], 1), " st, delay ", fixed$(delay[i], 2), "s"
     endif
 endfor
+if delaysShifted = 1
+    appendInfoLine: ""
+    appendInfoLine: "NOTE: delays contained a negative value and were shifted as a block"
+    appendInfoLine: "      by ", fixed$(-minDelay, 2), " s so the earliest entry starts at 0."
+endif
 
-# === Cleanup ===
-select Sound base_resampled
-Remove
+appendInfoLine: ""
+appendInfoLine: "Output format: ", formatName$
+appendInfoLine: "Objects: ", outCount, "  |  channels each: ", outChannels
+if output_format = 1
+    appendInfoLine: "  Ch1-Ch8: V1 - V8"
+elsif output_format = 2
+    appendInfoLine: "  Pair 1: V1 -> L, V2 -> R"
+    appendInfoLine: "  Pair 2: V3 -> L, V4 -> R"
+    appendInfoLine: "  Pair 3: V5 -> L, V6 -> R"
+    appendInfoLine: "  Pair 4: V7 -> L, V8 -> R"
+elsif output_format = 3
+    appendInfoLine: "  Quad 1: V1 V2 V3 V4"
+    appendInfoLine: "  Quad 2: V5 V6 V7 V8"
+elsif output_format = 4
+    appendInfoLine: "  Ch1: V1 + V5"
+    appendInfoLine: "  Ch2: V2 + V6"
+    appendInfoLine: "  Ch3: V3 + V7"
+    appendInfoLine: "  Ch4: V4 + V8"
+else
+    appendInfoLine: "  L: V1 + V2 + V3 + V4"
+    appendInfoLine: "  R: V5 + V6 + V7 + V8"
+endif
+appendInfoLine: "Normalisation: one shared gain across all eight voices"
 
+# === Cleanup of everything that is not an output ===
+removeObject: baseResampledID
 for i from 1 to 8
     removeObject: voice[i], ch[i]
 endfor
-
-removeObject: pair12, pair34, pair56, pair78, quad1234, quad5678
 
 # ============================================================
 # VISUALIZATION
@@ -406,6 +678,7 @@ if draw_visualization
     Text: 0.5, "centre", -0.25, "half",
         ... originalName$ + "  |  " + presetName$
         ... + "  |  " + fixed$(outputDur, 2) + " s"
+        ... + "  |  Format: " + formatName$
 
     # ----------------------------------------------------------
     # Canon timeline diagram
@@ -428,6 +701,29 @@ if draw_visualization
         Draw line: gridT, 0, gridT, 9
         gridT = gridT + timeStep
     endwhile
+
+    # Output-group banding: shows which voices share an output object
+    if output_format = 2
+        groupSize = 2
+    elsif output_format = 3
+        groupSize = 4
+    elsif output_format = 5
+        groupSize = 4
+    else
+        groupSize = 0
+    endif
+    if groupSize > 0
+        Colour: "{0.90, 0.92, 0.96}"
+        gStart = 1
+        while gStart <= 8
+            if (((gStart - 1) / groupSize) mod 2) = 0
+                Paint rectangle: "{0.91, 0.93, 0.97}",
+                    ... -outputDur * 0.02, outputDur * 1.05,
+                    ... 9 - (gStart + groupSize - 1), 9 - gStart + 1
+            endif
+            gStart = gStart + groupSize
+        endwhile
+    endif
 
     # Draw each channel bar
     for i from 1 to 8
@@ -469,7 +765,7 @@ if draw_visualization
         # Only draw label if bar is wide enough
         if dur[i] > outputDur * 0.08
             Text: barMidX, "centre", barMidY, "half",
-                ... "Ch" + string$(i) + "  " + semiLbl$ + " st"
+                ... "V" + string$(i) + "  " + semiLbl$ + " st"
         endif
 
         # Delay label at left edge (outside bar if needed)
@@ -487,48 +783,83 @@ if draw_visualization
     Font size: 7
     Marks bottom every: 1, timeStep, "yes", "yes", "no"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Canon timeline  (colour = pitch direction,  warm = up,  cool = down)"
+    tlNote$ = "Canon timeline  (colour = pitch direction,  warm = up,  cool = down"
+    if groupSize > 0
+        tlNote$ = tlNote$ + ",  bands = output grouping"
+    endif
+    tlNote$ = tlNote$ + ")"
+    Text top: "no", tlNote$
 
-    # Channel labels on left
+    # Voice labels on left, with the output routing they receive
     for i from 1 to 8
         yPos = 9 - i
         Font size: 6
         Colour: "{0.35, 0.35, 0.35}"
-        Text: -outputDur * 0.015, "right", yPos + 0.46, "half", string$(i)
+        # Kept to about five characters: this sits in the 0.55 inch
+        # margin left of the inner viewport, so a long label would clip.
+        if output_format = 1
+            routeLbl$ = string$(i) + ">c" + string$(i)
+        elsif output_format = 2
+            if i mod 2 = 1
+                routeLbl$ = string$(i) + ">P" + string$((i + 1) / 2) + "L"
+            else
+                routeLbl$ = string$(i) + ">P" + string$(i / 2) + "R"
+            endif
+        elsif output_format = 3
+            if i <= 4
+                routeLbl$ = string$(i) + ">Q1"
+            else
+                routeLbl$ = string$(i) + ">Q2"
+            endif
+        elsif output_format = 4
+            if i <= 4
+                routeLbl$ = string$(i) + ">c" + string$(i)
+            else
+                routeLbl$ = string$(i) + ">c" + string$(i - 4)
+            endif
+        else
+            if i <= 4
+                routeLbl$ = string$(i) + ">L"
+            else
+                routeLbl$ = string$(i) + ">R"
+            endif
+        endif
+        Text: -outputDur * 0.015, "right", yPos + 0.46, "half", routeLbl$
     endfor
 
     # ----------------------------------------------------------
-    # Spectrogram of stereo downmix (shows pitch canon structure)
+    # Spectrogram of the monitoring mix (all eight voices)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 3.58, 4.88
     Select inner viewport: 0.55, 7.65, 3.65, 4.80
 
-    # Create mono downmix of the 8-channel result
-    selectObject: result
-    vizMix = Convert to mono
+    # v0.3: built from the monitoring mix, not from an output object.
+    # In a stem format the first output holds a quarter or a half of the
+    # canon, so drawing it would show part of the piece as the whole.
+    selectObject: monitorID
     To Spectrogram: 0.02, 5000, 0.005, 20, "Gaussian"
     specMix = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    removeObject: specMix, vizMix
+    removeObject: specMix
 
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Canon spectrogram  (mono downmix — stacked pitch entries)"
+    Text top: "no", "Canon spectrogram  (mono monitoring mix of all 8 voices)"
 
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.98, 6.08
-    Select inner viewport: 0.55, 7.65, 5.04, 6.02
+    Select outer viewport: 0, 8, 4.98, 6.28
+    Select inner viewport: 0.55, 7.65, 5.04, 6.22
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "##Summary##"
+    Text: 0.02, "left", 0.90, "half", "##Summary##"
 
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
@@ -555,14 +886,32 @@ if draw_visualization
         delList$ = delList$ + fixed$(delay[i], 2)
     endfor
 
-    Text: 0.02, "left", 0.68, "half",
+    # Mapping line
+    if output_format = 1
+        mapLine$ = "ch1-ch8 = V1-V8"
+    elsif output_format = 2
+        mapLine$ = "V1|V2   V3|V4   V5|V6   V7|V8"
+    elsif output_format = 3
+        mapLine$ = "quad 1 = V1-V4    quad 2 = V5-V8"
+    elsif output_format = 4
+        mapLine$ = "ch1=V1+V5   ch2=V2+V6   ch3=V3+V7   ch4=V4+V8"
+    else
+        mapLine$ = "L = V1+V2+V3+V4    R = V5+V6+V7+V8"
+    endif
+
+    Text: 0.02, "left", 0.74, "half",
         ... "Preset: " + presetName$
         ... + "  |  Source: " + originalName$
         ... + "  |  Duration: " + fixed$(outputDur, 2) + " s"
-    Text: 0.02, "left", 0.44, "half",
+    Text: 0.02, "left", 0.54, "half",
         ... "Semitones:  " + intList$
-    Text: 0.02, "left", 0.20, "half",
+    Text: 0.02, "left", 0.34, "half",
         ... "Delays (s): " + delList$
+    Text: 0.02, "left", 0.14, "half",
+        ... "Format: " + formatName$
+        ... + "  |  " + string$(outCount) + " object"
+        ... + " x " + string$(outChannels) + " ch"
+        ... + "  |  " + mapLine$
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -575,11 +924,34 @@ endif
 # === Done ===
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
-appendInfoLine: "Output: 8-channel, ", fixed$(outputDur, 2), "s"
-
-if play_result
-    selectObject: result
-    Play
+if outCount = 1
+    appendInfoLine: "Output: 1 object, ", outChannels, "-channel, ",
+        ... fixed$(outputDur, 2), "s"
+else
+    appendInfoLine: "Output: ", outCount, " objects, ", outChannels,
+        ... "-channel each, ", fixed$(outputDur, 2), "s"
 endif
 
-selectObject: result
+if play_result
+    if outCount = 1
+        selectObject: out[1]
+        Play
+    else
+        # v0.3: playing out[1] alone would present a quarter or a half of
+        # the canon as the result. The monitoring mix is auditioned
+        # instead, and labelled as a preview rather than a deliverable.
+        appendInfoLine: ""
+        appendInfoLine: "Playback: mono preview downmix of all 8 voices."
+        appendInfoLine: "          It is not one of the ", outCount, " output objects."
+        selectObject: monitorID
+        Play
+    endif
+endif
+
+removeObject: monitorID
+
+# === Select the output object(s) for the user ===
+selectObject: out[1]
+for k from 2 to outCount
+    plusObject: out[k]
+endfor
