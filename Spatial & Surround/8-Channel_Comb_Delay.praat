@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,56 @@
 #   8-Channel Comb Filter / Delay Processor
 #   Creates 8 channels with different comb-filter settings.
 #   Optional: Reverse even-numbered channels for spatial effects.
+#   Deliverable as octophonic, stems, or a downmix.
+#
+# Changelog v0.4 (2026):
+#   - NEW: Output_format menu. The preset choice, the b calculation, the
+#     comb formula, the even-channel reversal and the construction of
+#     the eight working channels are untouched; the branch begins only
+#     once ch[1]-ch[8] exist.
+#       1  8 channels - octophonic     Ch1-Ch8
+#       2  4 stereo pairs              Ch1|Ch2  Ch3|Ch4  Ch5|Ch6  Ch7|Ch8
+#       3  2 quadraphonic groups       Ch1-Ch4, Ch5-Ch8
+#       4  4-channel fold-down         Ch1+Ch5, Ch2+Ch6, Ch3+Ch7, Ch4+Ch8
+#       5  Stereo mix                  L: odd channels   R: even channels
+#     The two downmixes are keyed to parity rather than to position,
+#     which is where this script differs from the canon. Odd channels
+#     stay with odd and even with even, so with Reverse_even_channels on
+#     a forward channel is never summed into the same output channel as
+#     a reversed one, and the stereo mix puts the forward channels left
+#     and the reversed ones right. That turns the reversal from a
+#     per-channel curiosity into an audible property of the downmix,
+#     and it spreads the comb divisors across both sides instead of
+#     stacking the four shortest delays on one.
+#   - NEW: shared-gain normalisation, reported as two distinct stages.
+#     Formats that keep the eight channels separate take one gain
+#     derived from the loudest of them, applied to all eight, so no
+#     stem is lifted relative to another and the relation between comb
+#     settings survives. Formats that sum channels do all the sums
+#     first and normalise the finished object once. For format 1 this
+#     is numerically identical to v0.3's Scale peak on the 8-channel
+#     result, so the default output is unchanged.
+#   - NEW: monitoring mix, L = Ch1+Ch3+Ch5+Ch7, R = Ch2+Ch4+Ch6+Ch8 -
+#     the same mapping the stereo format offers, so a preview sounds
+#     like the downmix it previews. Auditioned in the stem formats,
+#     where playing the first pair or quad alone would present a
+#     quarter or a half of the result as the whole.
+#   - FIX: the waveform panel drew Ch1 and Ch2 by extracting them from
+#     the single output object. That only holds when there is exactly
+#     one output with the channels in that order. It now draws the
+#     working channels directly, so the panel is identical in all five
+#     formats and always shows the processed source.
+#   - FIX: b = floor(numSamples / n) silently reached 0 when a divisor
+#     exceeded the sample count - Exponential (/256) on a short source,
+#     for instance. The comb then evaluated self[col] - self[col],
+#     i.e. digital silence on that channel, with no warning. b is
+#     clamped to at least 1 and the degenerate cases are reported.
+#   - FIX: the comb formula interpolated 'b' with backticks. string$()
+#     is the portable idiom and cannot produce a non-integer index.
+#   - FIX: Scale_peak is a plain real, so 0 or a negative value was
+#     reachable and would have made Scale peak fail. Clamped to (0, 1].
+#   - FIX: cleanup is driven by an explicit output list. v0.3's cleanup
+#     assumed one result; formats 2 and 3 leave four and two objects.
 #
 # Changelog v0.3:
 #   - Resized visualization from non-standard 10x canvas to 8x8
@@ -22,6 +72,11 @@
 #       Panel D: Output waveform strip
 #       Panel E: Summary bar
 # ============================================================
+
+# === Check Input (before the form, so a bad selection costs nothing) ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
 
 form 8-Channel Comb Delay
     comment === PRESETS ===
@@ -50,6 +105,14 @@ form 8-Channel Comb Delay
     comment === Processing options ===
     boolean Reverse_even_channels 0
     real Scale_peak 0.99
+
+    comment === Output format ===
+    optionmenu Output_format: 1
+        option: "8 channels - octophonic (Ch1-Ch8)"
+        option: "4 stereo pairs (Ch1|Ch2, Ch3|Ch4, Ch5|Ch6, Ch7|Ch8)"
+        option: "2 quadraphonic groups (Ch1-Ch4, Ch5-Ch8)"
+        option: "4-channel fold-down (Ch1+Ch5, Ch2+Ch6, Ch3+Ch7, Ch4+Ch8)"
+        option: "Stereo mix (L: odd channels, R: even channels)"
 
     comment === Output ===
     boolean Draw_visualization 1
@@ -151,9 +214,31 @@ else
     presetName$ = "Custom"
 endif
 
-# === Check Input ===
-if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object."
+# v0.4: Scale_peak is a plain real; 0 or negative would make Scale peak
+# fail after all the processing had already been done.
+if scale_peak <= 0
+    scale_peak = 0.99
+endif
+if scale_peak > 1
+    scale_peak = 1
+endif
+
+# === Output format labels ===
+if output_format = 1
+    formatName$ = "8-channel octophonic"
+    mapLine$ = "ch1-ch8 = Ch1-Ch8"
+elsif output_format = 2
+    formatName$ = "4 stereo pairs"
+    mapLine$ = "Ch1|Ch2   Ch3|Ch4   Ch5|Ch6   Ch7|Ch8"
+elsif output_format = 3
+    formatName$ = "2 quadraphonic groups"
+    mapLine$ = "quad 1 = Ch1-Ch4    quad 2 = Ch5-Ch8"
+elsif output_format = 4
+    formatName$ = "4-channel fold-down"
+    mapLine$ = "1=Ch1+Ch5  2=Ch2+Ch6  3=Ch3+Ch7  4=Ch4+Ch8"
+else
+    formatName$ = "Stereo mix (L odd / R even)"
+    mapLine$ = "L = Ch1+Ch3+Ch5+Ch7    R = Ch2+Ch4+Ch6+Ch8"
 endif
 
 originalID = selected("Sound")
@@ -188,6 +273,10 @@ divisor[7] = delay_7
 divisor[8] = delay_8
 
 # === Create 8 channels with comb filter ===
+# The formula reads self[col + b], i.e. forward, into samples the
+# in-place pass has not reached yet, so the read is of original values.
+bClamped = 0
+bInverted = 0
 for i from 1 to 8
     selectObject: monoID
     Copy: "Ch" + string$(i)
@@ -195,9 +284,22 @@ for i from 1 to 8
 
     n = divisor[i]
     b = floor(numSamples / n)
+
+    # v0.4: a divisor larger than the sample count gave b = 0, which
+    # turns the comb into self[col] - self[col] - a silent channel, with
+    # nothing reported. b >= 1 keeps it a first difference at worst.
+    if b < 1
+        b = 1
+        bClamped = 1
+    endif
+    if b >= numSamples
+        bInverted = 1
+    endif
     b_[i] = b
 
-    Formula: "if col + 'b' <= ncol then self[col + 'b'] - self[col] else -self[col] fi"
+    # v0.4: string$() instead of backtick interpolation of b
+    Formula: "if col + " + string$(b) + " <= ncol then self[col + "
+        ... + string$(b) + "] - self[col] else -self[col] fi"
 endfor
 
 # === Optionally reverse even-numbered channels ===
@@ -213,12 +315,158 @@ else
     revLabel$ = ""
 endif
 
-# === Combine all 8 channels ===
-selectObject: ch[1], ch[2], ch[3], ch[4], ch[5], ch[6], ch[7], ch[8]
+# ============================================================
+# SHARED-GAIN NORMALISATION
+# ============================================================
+# Stage 1, applied in every format: one gain taken from the loudest of
+# the eight processed channels and applied to all eight. Normalising a
+# pair or a quad on its own would give a quiet group more gain than a
+# loud one and rewrite the relation between comb settings, which is the
+# whole content of this script.
+
+peakAll = 0
+for i from 1 to 8
+    selectObject: ch[i]
+    thisPeak = Get absolute extremum: 0, 0, "None"
+    if thisPeak > peakAll
+        peakAll = thisPeak
+    endif
+endfor
+if peakAll < 1e-9
+    peakAll = 1e-9
+endif
+sharedGain = scale_peak / peakAll
+sharedGain$ = fixed$(sharedGain, 10)
+
+for i from 1 to 8
+    selectObject: ch[i]
+    Formula: "self * " + sharedGain$
+endfor
+
+# ============================================================
+# ODD / EVEN FOLD  (monitoring mix, and the stereo format)
+# ============================================================
+# Combine + Convert to mono averages the group. The divisor is the same
+# for both sides, so the L/R balance is untouched.
+
+selectObject: ch[1], ch[3], ch[5], ch[7]
 Combine to stereo
-result = selected("Sound")
+oddQuad = selected("Sound")
+Convert to mono
+mixL = selected("Sound")
+Rename: "mix_odd"
+removeObject: oddQuad
+
+selectObject: ch[2], ch[4], ch[6], ch[8]
+Combine to stereo
+evenQuad = selected("Sound")
+Convert to mono
+mixR = selected("Sound")
+Rename: "mix_even"
+removeObject: evenQuad
+
+selectObject: mixL, mixR
+Combine to stereo
+monitorID = selected("Sound")
+Rename: "comb_monitor"
 Scale peak: scale_peak
-Rename: originalName$ + "_8chComb_" + presetName$
+
+# ============================================================
+# OUTPUT FORMAT BRANCH
+# ============================================================
+# out[1..outCount] is what the user keeps; everything else goes below.
+# downmixNorm marks the formats that sum channels and therefore need a
+# second, whole-object normalisation after the sums exist.
+
+downmixNorm = 0
+
+if output_format = 1
+    # --- 8 channels, octophonic ---
+    selectObject: ch[1], ch[2], ch[3], ch[4], ch[5], ch[6], ch[7], ch[8]
+    Combine to stereo
+    oct = selected("Sound")
+    Rename: originalName$ + "_8chComb_" + presetName$
+    outCount = 1
+    out[1] = oct
+    outChannels = 8
+
+elsif output_format = 2
+    # --- 4 stereo pairs ---
+    selectObject: ch[1], ch[2]
+    Combine to stereo
+    out[1] = selected("Sound")
+    Rename: originalName$ + "_comb_pair_12_" + presetName$
+    selectObject: ch[3], ch[4]
+    Combine to stereo
+    out[2] = selected("Sound")
+    Rename: originalName$ + "_comb_pair_34_" + presetName$
+    selectObject: ch[5], ch[6]
+    Combine to stereo
+    out[3] = selected("Sound")
+    Rename: originalName$ + "_comb_pair_56_" + presetName$
+    selectObject: ch[7], ch[8]
+    Combine to stereo
+    out[4] = selected("Sound")
+    Rename: originalName$ + "_comb_pair_78_" + presetName$
+    outCount = 4
+    outChannels = 2
+
+elsif output_format = 3
+    # --- 2 quadraphonic groups ---
+    selectObject: ch[1], ch[2], ch[3], ch[4]
+    Combine to stereo
+    out[1] = selected("Sound")
+    Rename: originalName$ + "_comb_quad_1to4_" + presetName$
+    selectObject: ch[5], ch[6], ch[7], ch[8]
+    Combine to stereo
+    out[2] = selected("Sound")
+    Rename: originalName$ + "_comb_quad_5to8_" + presetName$
+    outCount = 2
+    outChannels = 4
+
+elsif output_format = 4
+    # --- 4-channel fold-down: Ch1+Ch5, Ch2+Ch6, Ch3+Ch7, Ch4+Ch8 ---
+    # Pairing four apart keeps odd with odd and even with even, so with
+    # Reverse_even_channels on no output channel carries a forward and
+    # a reversed channel at the same time.
+    for k from 1 to 4
+        selectObject: ch[k], ch[k + 4]
+        Combine to stereo
+        foldPair = selected("Sound")
+        Convert to mono
+        fold[k] = selected("Sound")
+        Rename: "fold_" + string$(k)
+        removeObject: foldPair
+    endfor
+    selectObject: fold[1], fold[2], fold[3], fold[4]
+    Combine to stereo
+    foldOut = selected("Sound")
+    Rename: originalName$ + "_comb_fold4_" + presetName$
+    Scale peak: scale_peak
+    downmixNorm = 1
+    outCount = 1
+    out[1] = foldOut
+    outChannels = 4
+    removeObject: fold[1], fold[2], fold[3], fold[4]
+
+else
+    # --- Stereo mix: L = odd channels, R = even channels ---
+    # With Reverse_even_channels on, this puts the forward channels
+    # left and the reversed ones right, and it spreads the comb
+    # divisors across both sides instead of stacking the four shortest
+    # delays on one.
+    selectObject: mixL, mixR
+    Combine to stereo
+    stereoOut = selected("Sound")
+    Rename: originalName$ + "_comb_stereo_" + presetName$
+    Scale peak: scale_peak
+    downmixNorm = 1
+    outCount = 1
+    out[1] = stereoOut
+    outChannels = 2
+endif
+
+removeObject: mixL, mixR
 
 # === Info ===
 writeInfoLine: "=== 8-Channel Comb Delay ==="
@@ -235,16 +483,56 @@ for i from 1 to 8
     endif
     appendInfoLine: "  Ch", i, ": /", divisor[i], " -> b=", b_[i], " (", dir$, ")"
 endfor
+if bClamped = 1
+    appendInfoLine: ""
+    appendInfoLine: "NOTE: at least one divisor exceeded the sample count, so b would"
+    appendInfoLine: "      have been 0 and that channel silent. b was clamped to 1,"
+    appendInfoLine: "      which makes the comb a first difference on that channel."
+endif
+if bInverted = 1
+    appendInfoLine: ""
+    appendInfoLine: "NOTE: at least one b reaches the end of the source, so that channel"
+    appendInfoLine: "      is a phase-inverted copy rather than a comb."
+endif
 
-# === Cleanup ===
-removeObject: monoID
-for i from 1 to 8
-    removeObject: ch[i]
-endfor
+appendInfoLine: ""
+appendInfoLine: "Output format: ", formatName$
+appendInfoLine: "Objects: ", outCount, "  |  channels each: ", outChannels
+if output_format = 1
+    appendInfoLine: "  ch1-ch8: Ch1 - Ch8"
+elsif output_format = 2
+    appendInfoLine: "  Pair 1: Ch1 -> L, Ch2 -> R"
+    appendInfoLine: "  Pair 2: Ch3 -> L, Ch4 -> R"
+    appendInfoLine: "  Pair 3: Ch5 -> L, Ch6 -> R"
+    appendInfoLine: "  Pair 4: Ch7 -> L, Ch8 -> R"
+elsif output_format = 3
+    appendInfoLine: "  Quad 1: Ch1 Ch2 Ch3 Ch4"
+    appendInfoLine: "  Quad 2: Ch5 Ch6 Ch7 Ch8"
+elsif output_format = 4
+    appendInfoLine: "  ch1: Ch1 + Ch5   ch2: Ch2 + Ch6"
+    appendInfoLine: "  ch3: Ch3 + Ch7   ch4: Ch4 + Ch8"
+else
+    appendInfoLine: "  L: Ch1 + Ch3 + Ch5 + Ch7"
+    appendInfoLine: "  R: Ch2 + Ch4 + Ch6 + Ch8"
+endif
+
+appendInfoLine: ""
+appendInfoLine: "Normalisation:"
+appendInfoLine: "  Shared gain across all eight processed channels: x",
+    ... fixed$(sharedGain, 4), " (from peak ", fixed$(peakAll, 4), ")"
+if downmixNorm = 1
+    appendInfoLine: "  Final peak normalisation after downmix: Scale peak ",
+        ... fixed$(scale_peak, 3)
+else
+    appendInfoLine: "  No downmix, so no second normalisation stage."
+endif
 
 # ============================================================
 # VISUALIZATION  (8 x 8 canvas — suite standard)
 # ============================================================
+# v0.4: the working channels ch[1]-ch[8] are still alive here. The
+# waveform panel draws them directly instead of extracting from an
+# output object, so it is identical in all five formats.
 
 if draw_visualization
 
@@ -302,8 +590,8 @@ if draw_visualization
         ... originalName$
         ... + "  |  Preset: " + presetName$ + revLabel$
         ... + "  |  " + fixed$(originalDur, 2) + " s"
-        ... + "  |  " + string$(numSamples) + " samples"
         ... + "  |  @" + string$(sr) + " Hz"
+        ... + "  |  Format: " + formatName$
 
     # ----------------------------------------------------------
     # PANEL A: DELAY SAMPLES BAR CHART  (left column)
@@ -408,7 +696,7 @@ if draw_visualization
     Text bottom: "yes", "Comb period (ms)"
 
     # ----------------------------------------------------------
-    # PANEL C: DIRECTION DIAGRAM  (right column, lower)
+    # PANEL C: DIRECTION AND OUTPUT ROUTING  (right column, lower)
     # ----------------------------------------------------------
     Select outer viewport: 4.2, 8, 3.05, 4.60
     Select inner viewport: 4.52, 7.75, 3.12, 4.52
@@ -422,6 +710,35 @@ if draw_visualization
         yHi = y + 0.38
         yMid = y
 
+        # v0.4: where this channel lands in the chosen output format
+        if output_format = 1
+            route$ = "out" + string$(i)
+        elsif output_format = 2
+            if i mod 2 = 1
+                route$ = "P" + string$((i + 1) / 2) + "L"
+            else
+                route$ = "P" + string$(i / 2) + "R"
+            endif
+        elsif output_format = 3
+            if i <= 4
+                route$ = "Q1"
+            else
+                route$ = "Q2"
+            endif
+        elsif output_format = 4
+            if i <= 4
+                route$ = "out" + string$(i)
+            else
+                route$ = "out" + string$(i - 4)
+            endif
+        else
+            if i mod 2 = 1
+                route$ = "L"
+            else
+                route$ = "R"
+            endif
+        endif
+
         if reverse_even_channels and (i mod 2 = 0)
             # Reversed: draw arrow pointing left
             Paint rectangle: "{0.90, 0.72, 0.70}", 0.3, 9.7, yLo, yHi
@@ -431,7 +748,9 @@ if draw_visualization
             Line width: 1
             Font size: 5
             Colour: "White"
-            Text: 5.0, "centre", yMid, "half", "Ch" + string$(i) + "  REVERSED  /÷" + string$(divisor[i])
+            Text: 5.0, "centre", yMid, "half",
+                ... "Ch" + string$(i) + "  REV  /÷" + string$(divisor[i])
+                ... + "  → " + route$
         else
             # Forward: draw arrow pointing right
             Paint rectangle: "{0.72, 0.80, 0.90}", 0.3, 9.7, yLo, yHi
@@ -441,7 +760,9 @@ if draw_visualization
             Line width: 1
             Font size: 5
             Colour: "White"
-            Text: 5.0, "centre", yMid, "half", "Ch" + string$(i) + "  forward  /÷" + string$(divisor[i])
+            Text: 5.0, "centre", yMid, "half",
+                ... "Ch" + string$(i) + "  fwd  /÷" + string$(divisor[i])
+                ... + "  → " + route$
         endif
     endfor
 
@@ -449,7 +770,7 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 5
-    Text bottom: "yes", "Playback direction  (blue = forward,  red = reversed)"
+    Text bottom: "yes", "Direction and routing  (blue = forward,  red = reversed)"
 
     # ----------------------------------------------------------
     # ALIGNED PANEL TITLES
@@ -461,68 +782,68 @@ if draw_visualization
     Font size: 7
     Colour: "Black"
     Text: 2.10, "centre", 7.30, "half", "Comb delay b (samples) & divisor"
-    Text: 6.10, "centre", 7.30, "half", "Period ms (upper) & direction (lower)"
+    Text: 6.10, "centre", 7.30, "half", "Period ms (upper) & routing (lower)"
 
     # ----------------------------------------------------------
-    # PANEL D: OUTPUT WAVEFORM (full width)
+    # PANEL D: PROCESSED CHANNELS Ch1 / Ch2 (full width)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.75
     Select inner viewport: 0.55, 7.72, 4.75, 5.68
 
-    selectObject: result
+    # v0.4: drawn from the working channels, not from an output object
+    selectObject: ch[1]
     outDurViz = Get total duration
-    outPeak = Get absolute extremum: 0, 0, "None"
-    if outPeak < 0.001
-        outPeak = 0.001
+    peakViz = Get absolute extremum: 0, 0, "None"
+    selectObject: ch[2]
+    peak2 = Get absolute extremum: 0, 0, "None"
+    if peak2 > peakViz
+        peakViz = peak2
     endif
-    ampViz = outPeak * 1.15
+    if peakViz < 0.001
+        peakViz = 0.001
+    endif
+    ampViz = peakViz * 1.15
 
     Axes: 0, outDurViz, -ampViz, ampViz
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, outDurViz, -ampViz, ampViz
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, outDurViz, 0
 
-    selectObject: result
-    Extract one channel: 1
-    vizCh1 = selected("Sound")
+    selectObject: ch[1]
     Colour: "{0.25, 0.45, 0.78}"
     Line width: 1
     Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-    removeObject: vizCh1
 
-    selectObject: result
-    Extract one channel: 2
-    vizCh2 = selected("Sound")
+    selectObject: ch[2]
     Colour: "{0.82, 0.45, 0.25}"
     Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-    removeObject: vizCh2
 
     Colour: "Black"
     Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Output 8-ch mix  (blue = Ch1,  orange = Ch2)"
+    Text top: "no", "Processed channels  (blue = Ch1,  orange = Ch2)"
     Text left: "yes", "Amp"
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR (full width, bottom)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select outer viewport: 0, 8, 5.82, 6.85
+    Select inner viewport: 0.55, 7.72, 5.88, 6.79
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Text: 0.02, "left", 0.80, "half",
         ... "##" + presetName$ + "##" + revLabel$
         ... + "  " + originalName$
         ... + "  |  " + fixed$(originalDur, 2) + " s"
         ... + "  |  " + string$(numSamples) + " smp"
         ... + "  |  @" + string$(sr) + " Hz"
 
-    Text: 0.02, "left", 0.28, "half",
+    Text: 0.02, "left", 0.50, "half",
         ... "÷" + string$(divisor[1])
         ... + "  ÷" + string$(divisor[2])
         ... + "  ÷" + string$(divisor[3])
@@ -533,6 +854,12 @@ if draw_visualization
         ... + "  ÷" + string$(divisor[8])
         ... + "  [Ch1–Ch8]"
 
+    Text: 0.02, "left", 0.20, "half",
+        ... "Format: " + formatName$
+        ... + "  |  " + string$(outCount) + " object"
+        ... + " x " + string$(outChannels) + " ch"
+        ... + "  |  " + mapLine$
+
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
@@ -542,14 +869,41 @@ if draw_visualization
 
 endif
 
+# === Cleanup ===
+removeObject: monoID
+for i from 1 to 8
+    removeObject: ch[i]
+endfor
+
 # === Done ===
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
-appendInfoLine: "Output: 8-channel comb delay"
-
-if play_result
-    selectObject: result
-    Play
+if outCount = 1
+    appendInfoLine: "Output: 1 object, ", outChannels, "-channel comb delay"
+else
+    appendInfoLine: "Output: ", outCount, " objects, ", outChannels, "-channel each"
 endif
 
-selectObject: result
+if play_result
+    if outCount = 1
+        # One object: play it directly, as v0.3 did.
+        selectObject: out[1]
+        Play
+    else
+        # v0.4: playing the first pair or quad alone would present a
+        # quarter or a half of the result as the whole.
+        appendInfoLine: ""
+        appendInfoLine: "Playback: stereo preview, L = odd channels, R = even channels."
+        appendInfoLine: "          It is not one of the ", outCount, " output objects."
+        selectObject: monitorID
+        Play
+    endif
+endif
+
+removeObject: monitorID
+
+# === Select the output object(s) for the user ===
+selectObject: out[1]
+for k from 2 to outCount
+    plusObject: out[k]
+endfor
