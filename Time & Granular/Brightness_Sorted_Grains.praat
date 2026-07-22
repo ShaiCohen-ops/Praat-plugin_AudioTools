@@ -326,6 +326,12 @@ for i from 1 to num_grains
         To Spectrum: "yes"
         spectrum = selected("Spectrum")
         centroid = Get centre of gravity: 2
+        if centroid = undefined
+            ; Silent or near-zero-energy grain: centre of gravity is 0/0.
+            ; Fall back to a neutral brightness so it doesn't poison
+            ; minB/maxB and the colour gradient downstream.
+            centroid = 0
+        endif
         brightness = centroid
         original_brightness = brightness
         removeObject: spectrum
