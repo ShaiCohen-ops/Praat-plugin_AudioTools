@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4.2 (2026)
+# Version: 0.5.0 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,85 @@
 #   and gestural motion. Creates variants with pitch/formant/
 #   duration shifts, then selects a path through timbral space
 #   following a dissimilarity budget schedule.
+#
+# Changelog v0.5.0:
+#
+#   NOTE: audio is NOT comparable to v0.4.2. The feature space,
+#   the path selection and the audio ordering were all wrong;
+#   every fix below changes the output.
+#
+#   CRITICAL 1 - MFCC feature extraction was collapsing to 2 dims.
+#     `Get mean: d, d, 1, n_cols` on a Matrix takes WORLD-COORDINATE
+#     ranges, and Praat treats an equal-bounds range as "all". Probe
+#     on 6.4.42 with a 3x4 matrix of known values: rows are 102.5 /
+#     202.5 / 302.5, but `Get mean: d, d, 1, 4` returned 202.5 (the
+#     grand mean) for every d. So f_i_1 ... f_i_13 were all the same
+#     number, and with motion on, f_i_14 ... f_i_26 likewise. The
+#     "13/26-dimensional timbre space" was at most 2-dimensional.
+#     v0.5.0 uses `Get all values in row: d` -> vector, then
+#     mean() / stdev() on that vector.
+#
+#   CRITICAL 2 - the canon played backwards.
+#     `Sounds: Concatenate with overlap` follows the OBJECT LIST
+#     order, not the selectObject/plusObject order. `Copy: "Result"`
+#     puts Result at the bottom of the list while every variant was
+#     created earlier and sits above it, so each pass produced
+#     next + Result. Probe confirmed: with A above B in the list,
+#     `selectObject: B / plusObject: A` yields A-then-B audio.
+#     Consequence: the rendered path was the reverse of the plotted
+#     path, so Accelerate sounded like Decelerate and vice versa.
+#     v0.5.0 makes a fresh Copy of the next variant AFTER Result so
+#     the list order matches the intended order.
+#
+#   CRITICAL 3 - the random seed did nothing.
+#     `randomseed = random_seed` only created a numeric variable.
+#     Probe: two identical assignments gave different draws.
+#     v0.5.0 calls random_initializeWithSeedUnsafelyButPredictably
+#     and restores random_initializeSafelyAndUnpredictably once the
+#     variant family is built.
+#
+#   4 - Pacing schedule was off by one. progress = s / K aimed the
+#     first of K-1 transitions at 1/K of the budget. Now
+#     progress = (s-1)/(K-1), so schedule[1] = 0 and
+#     schedule[K] = target_budget. K = 1 handled separately.
+#
+#   5 - Anchor. New `Anchor_is_source`: variant 1 is now the
+#     untransformed source (0 st, ratio 1.0, factor 1.0), so
+#     Skip_first has a real meaning - start the path at the source
+#     but do not sound it. Budget is now reported twice:
+#     conceptual (includes the source transition) and audible.
+#
+#   6 - Motion measure. Standard deviation is dispersion, not
+#     motion. New `Motion_measure`: mean absolute frame-to-frame
+#     MFCC difference (default) or the old per-coefficient SD,
+#     now honestly labelled temporal dispersion.
+#
+#   7 - Feature standardization. Each of the 13/26 dimensions is
+#     z-scored across the variant family before the Euclidean
+#     distance, so large-scale coefficients no longer dominate.
+#
+#   8 - Budget is now in median-distance units. All pairwise
+#     distances are divided by the median pairwise distance, so a
+#     budget of 6.0 means roughly six typical transitions
+#     regardless of input file, dimension count or ranges.
+#     Defaults and presets rescaled accordingly (was 40-120 raw).
+#
+#   9 - Floors on the median distance and on rel_dist, so a
+#     degenerate variant family cannot divide by zero.
+#
+#   10 - Multichannel. >2 channels no longer silently dropped:
+#     all channels are transformed with the same parameters and
+#     recombined (Combine to stereo accepts N sounds -> N channels,
+#     verified on a 4-channel probe).
+#
+#   11 - Validation: Formant_shift_range clamped to [0, 0.95],
+#     1 + Time_stretch clamped to 3, N_variants / K_steps are now
+#     `natural`, K_steps clamped to N_variants.
+#
+#   12 - New `Overlap_span`: overlap may be limited by the whole
+#     accumulated composite (multi-layer smearing, the old and
+#     still default behaviour) or by the previous variant only
+#     (strict pairwise transitions).
 #
 # Changelog v0.4.2:
 #
@@ -80,7 +159,7 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
-form Compositional Canon v0.4.2
+form Gestural Accumulator v0.5.0
     optionmenu Preset: 1
         option Custom
         option Smooth Drift (Hide Ruptures)
@@ -93,36 +172,49 @@ form Compositional Canon v0.4.2
     optionmenu Overlap_mode: 1
         option Hide Ruptures (Big Diff = Long Fade)
         option Expose Ruptures (Big Diff = Hard Cut)
-    positive N_variants 30
-    positive K_steps 8
-    positive Target_budget 60.0
+    optionmenu Overlap_span: 1
+        option Accumulated composite (multi-layer smear)
+        option Previous variant only (strict pairwise)
+    natural N_variants 30
+    natural K_steps 8
+    positive Target_budget 6.0
     boolean Track_motion_variance 1
+    optionmenu Motion_measure: 1
+        option Delta-MFCC (frame-to-frame motion)
+        option Temporal dispersion (per-coefficient SD)
     positive Pitch_range_st 2.0
     positive Time_stretch 0.15
     real Formant_shift_range 0.15
     positive Random_seed 1987
+    boolean Anchor_is_source 1
     boolean Skip_first 1
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
+# Target_budget is in MEDIAN-DISTANCE units (v0.5.0), not raw MFCC
+# units. 6.0 means "accumulate about six typical transitions".
+
 # ==============================================================================
 # 1. PRESETS
 # ==============================================================================
+# v0.5.0: budgets restated in median-distance units. The old raw
+# values (40 / 120 / 80) were in unnormalized MFCC units and meant
+# nothing across different input files.
 if preset = 2
     # Smooth Drift
     pacing_curve = 1
     overlap_mode = 1
     track_motion_variance = 0
     pitch_range_st = 0.5
-    target_budget = 40.0
+    target_budget = 4.0
 elsif preset = 3
     # Violent Rupture
     pacing_curve = 2
     overlap_mode = 2
     track_motion_variance = 1
     pitch_range_st = 12.0
-    target_budget = 120.0
+    target_budget = 12.0
 elsif preset = 4
     # Nervous Energy
     pacing_curve = 3
@@ -130,7 +222,7 @@ elsif preset = 4
     track_motion_variance = 1
     pitch_range_st = 3.0
     time_stretch = 0.5
-    target_budget = 80.0
+    target_budget = 8.0
 endif
 
 # v0.4.2 Tier 1: short preset name for output filename + viz.
@@ -166,10 +258,57 @@ else
     overlap_mode$ = "Expose ruptures"
 endif
 
+if overlap_span = 1
+    overlap_span$ = "Composite"
+else
+    overlap_span$ = "Pairwise"
+endif
+
+if motion_measure = 1
+    motion_measure$ = "Delta-MFCC"
+else
+    motion_measure$ = "Dispersion (SD)"
+endif
+
+# ==============================================================================
+# 1b. PARAMETER VALIDATION  (v0.5.0)
+# ==============================================================================
+warn_lines$ = ""
+
+# Formant ratio must stay strictly positive: f_shift is drawn from
+# 1 +/- formant_shift_range, so a range >= 1 can produce ratio <= 0.
+if formant_shift_range < 0
+    formant_shift_range = 0
+    warn_lines$ = warn_lines$ + "  ! Formant_shift_range < 0 -> clamped to 0" + newline$
+endif
+if formant_shift_range > 0.95
+    formant_shift_range = 0.95
+    warn_lines$ = warn_lines$ + "  ! Formant_shift_range > 0.95 -> clamped (ratio must stay > 0)" + newline$
+endif
+
+# Change gender is documented as unreliable above a duration factor
+# of 3. It does not error above that, but quality degrades.
+if 1 + time_stretch > 3
+    time_stretch = 2.0
+    warn_lines$ = warn_lines$ + "  ! Time_stretch clamped so 1 + stretch <= 3 (Change gender limit)" + newline$
+endif
+
+# Variants are never reused, so the path cannot be longer than the family.
+if k_steps > n_variants
+    k_steps = n_variants
+    warn_lines$ = warn_lines$ + "  ! K_steps > N_variants -> clamped to " + string$(n_variants) + newline$
+endif
+
 # ==============================================================================
 # 2. SETUP (Stereo-Aware)
 # ==============================================================================
-randomseed = random_seed
+# v0.5.0 CRITICAL 3: v0.4.2 had `randomseed = random_seed`, which
+# only created a numeric variable and never touched the generator,
+# so the reported seed described nothing. Praat needs the explicit
+# call below; the generator is returned to its safe unpredictable
+# state once the variant family has been drawn.
+random_initializeWithSeedUnsafelyButPredictably (random_seed)
+
 user_original_id = selected("Sound")
 user_name$ = selected$("Sound")
 n_channels_orig = Get number of channels
@@ -202,74 +341,109 @@ if base_pitch = undefined or base_pitch < 50
     base_pitch = 150
 endif
 
-writeInfoLine: "=== Gestural Accumulator: ", preset$, " ==="
+writeInfoLine: "=== Gestural Accumulator v0.5.0: ", preset$, " ==="
 appendInfoLine: "Original: ", user_name$
 appendInfoLine: "Channels: ", n_channels_orig
 appendInfoLine: "Base pitch: ", fixed$(base_pitch, 1), " Hz"
+appendInfoLine: "Seed: ", random_seed, " (generator actually initialized)"
+if warn_lines$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Parameter adjustments:"
+    appendInfo: warn_lines$
+endif
 appendInfoLine: ""
-appendInfoLine: "Generating ", n_variants, " variants..."
+if anchor_is_source
+    appendInfoLine: "Generating ", n_variants, " variants (variant 1 = untransformed source)..."
+else
+    appendInfoLine: "Generating ", n_variants, " variants..."
+endif
 
 # ==============================================================================
 # 3. GENERATE VARIANTS (With Physics Safety)
 # ==============================================================================
+selectObject: work_id
+current_dur = Get total duration
+
 for i from 1 to n_variants
     # 1. Calculate Target Parameters
-    st_shift = randomUniform(-pitch_range_st, pitch_range_st)
+    # v0.5.0 fix 5: variant 1 is the untransformed source when
+    # Anchor_is_source is on, so the path has a real origin and
+    # Skip_first means "start at the source but don't sound it".
+    is_anchor = 0
+    if anchor_is_source and i = 1
+        is_anchor = 1
+        st_shift = 0
+        f_shift = 1.0
+        dur_factor = 1.0
+    else
+        st_shift = randomUniform(-pitch_range_st, pitch_range_st)
+        f_shift = randomUniform(1.0 - formant_shift_range, 1.0 + formant_shift_range)
+
+        # 2. DURATION PHYSICS (The Crash Fix)
+        min_stretch = 1.0 - time_stretch
+        if min_stretch < 0.1
+            min_stretch = 0.1
+        endif
+        dur_factor = randomUniform(min_stretch, 1.0 + time_stretch)
+
+        # SAFETY: Ensure resulting duration is at least 0.064s (Praat Limit)
+        projected_dur = current_dur * dur_factor
+        if projected_dur < 0.064
+             dur_factor = 0.07 / current_dur
+        endif
+    endif
+
     target_pitch = base_pitch * (2 ^ (st_shift / 12))
-    f_shift = randomUniform(1.0 - formant_shift_range, 1.0 + formant_shift_range)
 
     # Store transform params for viz
     variant_pitch_shift[i] = st_shift
     variant_formant_shift[i] = f_shift
-
-    # 2. DURATION PHYSICS (The Crash Fix)
-    selectObject: work_id
-    current_dur = Get total duration
-    
-    min_stretch = 1.0 - time_stretch
-    if min_stretch < 0.1
-        min_stretch = 0.1
-    endif
-    dur_factor = randomUniform(min_stretch, 1.0 + time_stretch)
-    
-    # SAFETY: Ensure resulting duration is at least 0.064s (Praat Limit)
-    projected_dur = current_dur * dur_factor
-    if projected_dur < 0.064
-         dur_factor = 0.07 / current_dur
-    endif
-    
     variant_duration_factor[i] = dur_factor
-    
+
     # 3. Process
     selectObject: work_id
-    if n_channels_orig > 1
-        # STEREO PATH
+    if is_anchor
+        # Untouched source - no Change gender pass at all
+        Copy: "Variant_source"
+        v_id'i' = selected("Sound")
+    elsif n_channels_orig > 1
+        # v0.5.0 fix 10: process EVERY channel, not just the first
+        # two. v0.4.2 read only selected("Sound",1) and (,2), so with
+        # 4-channel input channels 3-4 were dropped from the output
+        # and also leaked into the object list on every iteration.
         Extract all channels
-        ch1_id = selected("Sound", 1)
-        ch2_id = selected("Sound", 2)
-        
-        selectObject: ch1_id
-        nowarn noprogress Change gender: 75, 600, f_shift, target_pitch, 1.0, dur_factor
-        var_L = selected("Sound")
-        
-        selectObject: ch2_id
-        nowarn noprogress Change gender: 75, 600, f_shift, target_pitch, 1.0, dur_factor
-        var_R = selected("Sound")
-        
-        selectObject: var_L
-        plusObject: var_R
+        for c from 1 to n_channels_orig
+            ch'c' = selected("Sound", c)
+        endfor
+        for c from 1 to n_channels_orig
+            selectObject: ch'c'
+            nowarn noprogress Change gender: 75, 600, f_shift, target_pitch, 1.0, dur_factor
+            vch'c' = selected("Sound")
+        endfor
+        selectObject: vch1
+        for c from 2 to n_channels_orig
+            plusObject: vch'c'
+        endfor
+        # Combine to stereo accepts N sounds and yields N channels
         Combine to stereo
         v_id'i' = selected("Sound")
-        
-        removeObject: ch1_id, ch2_id, var_L, var_R
+        for c from 1 to n_channels_orig
+            removeObject: ch'c'
+            removeObject: vch'c'
+        endfor
     else
         # MONO PATH
         nowarn noprogress Change gender: 75, 600, f_shift, target_pitch, 1.0, dur_factor
         v_id'i' = selected("Sound")
     endif
-    
+
+    selectObject: v_id'i'
     Scale peak: 0.9
 endfor
+
+# v0.5.0 CRITICAL 3: all random draws are done; hand the generator
+# back to its safe unpredictable state.
+random_initializeSafelyAndUnpredictably ()
 
 appendInfoLine: "  Variants created"
 
@@ -308,19 +482,41 @@ for i from 1 to n_variants
             mat_id = selected("Matrix")
             n_cols = Get number of columns
             
-            # 1. Means
+            # 1. Per-coefficient means
+            # v0.5.0 CRITICAL 1: v0.4.2 used
+            #   Get mean: d, d, 1, n_cols
+            # which takes WORLD-COORDINATE ranges, and Praat reads an
+            # equal-bounds range as "the whole extent". Verified on
+            # 6.4.42: a 3x4 matrix with true row means 102.5/202.5/
+            # 302.5 returned 202.5 (the grand mean) for every d. All
+            # 13 mean features were therefore the same number, and
+            # the "13/26-dimensional space" was really 2-dimensional.
             for d from 1 to base_dim
-                val = Get mean: d, d, 1, n_cols
-                f'i'_'d' = val
+                row# = Get all values in row: d
+                f'i'_'d' = mean(row#)
             endfor
-            
-            # 2. Variance (With Safety Check)
+
+            # 2. Motion / dispersion (With Safety Check)
             if track_motion_variance
                 if n_cols > 1
                     for d from 1 to base_dim
-                        val = Get standard deviation: d, d, 1, n_cols
+                        row# = Get all values in row: d
                         idx = base_dim + d
-                        f'i'_'idx' = val
+                        if motion_measure = 1
+                            # v0.5.0 fix 6: mean absolute frame-to-frame
+                            # difference. SD describes spread, not motion:
+                            # a slow glide and a fast alternation between
+                            # the same two colours share an SD.
+                            acc = 0
+                            for c from 2 to n_cols
+                                acc += abs(row#[c] - row#[c - 1])
+                            endfor
+                            f'i'_'idx' = acc / (n_cols - 1)
+                        else
+                            # Legacy measure, now honestly named:
+                            # MFCC temporal dispersion.
+                            f'i'_'idx' = stdev(row#)
+                        endif
                     endfor
                 else
                     for d from 1 to base_dim
@@ -345,6 +541,39 @@ for i from 1 to n_variants
 endfor
 
 appendInfoLine: "  Feature extraction complete"
+
+# ==============================================================================
+# 4b. FEATURE STANDARDIZATION  (v0.5.0 fix 7)
+# ==============================================================================
+# MFCC coefficients live on very different scales, and the motion
+# features are on a different scale again. Without z-scoring, a
+# couple of large dimensions dominate the Euclidean distance and
+# the remaining dimensions contribute almost nothing.
+if n_variants > 1
+    for d from 1 to total_dim
+        sum_d = 0
+        for i from 1 to n_variants
+            sum_d += f'i'_'d'
+        endfor
+        mu_d = sum_d / n_variants
+
+        ss_d = 0
+        for i from 1 to n_variants
+            dev = f'i'_'d' - mu_d
+            ss_d += dev * dev
+        endfor
+        sd_d = sqrt(ss_d / (n_variants - 1))
+
+        # A constant dimension carries no information; leave it at 0.
+        if sd_d < 1e-9
+            sd_d = 1
+        endif
+
+        for i from 1 to n_variants
+            f'i'_'d' = (f'i'_'d' - mu_d) / sd_d
+        endfor
+    endfor
+endif
 
 # Distance Matrix & Median
 appendInfoLine: "Calculating pairwise distances..."
@@ -380,12 +609,42 @@ for i from 1 to count-1
 endfor
 if count > 0
     mid_idx = round(count / 2)
+    if mid_idx < 1
+        mid_idx = 1
+    endif
     global_median_dist = dist_list_'mid_idx'
 else
     global_median_dist = 1.0
 endif
 
-appendInfoLine: "  Median pairwise distance: ", fixed$(global_median_dist, 2)
+# v0.5.0 fix 9: an all-identical variant family (or a failed feature
+# extraction) gives a zero median, which then divides into rel_dist
+# and into the Expose-mode factor.
+degenerate_space = 0
+if global_median_dist < 1e-9
+    degenerate_space = 1
+    global_median_dist = 1e-9
+endif
+
+appendInfoLine: "  Median pairwise distance (raw): ", fixed$(global_median_dist, 4)
+if degenerate_space
+    appendInfoLine: "  ! WARNING: variants are effectively identical in feature"
+    appendInfoLine: "    space. The path and the overlap rhetoric are meaningless"
+    appendInfoLine: "    for this input. Widen the transform ranges."
+endif
+
+# v0.5.0 fix 8: express every distance in units of the median
+# pairwise distance, so the budget means the same thing across
+# different inputs, dimension counts and transform ranges. After
+# this rescale the median distance is 1.0 by construction and
+# Target_budget reads as "about N typical transitions".
+for i from 1 to n_variants
+    for j from 1 to n_variants
+        d'i'_'j' = d'i'_'j' / global_median_dist
+    endfor
+endfor
+
+appendInfoLine: "  Distances normalized: budget is in median-distance units"
 
 # ==============================================================================
 # 5. BUDGET-AS-SCHEDULE SELECTION
@@ -395,19 +654,28 @@ appendInfoLine: "Selecting path through variant space..."
 appendInfoLine: "  Pacing: ", pacing_curve$
 appendInfoLine: "  Target budget: ", target_budget
 
-for s from 1 to k_steps
-    progress = s / k_steps
-    if pacing_curve = 1
-        # Linear
-        sched_accum_'s' = target_budget * progress
-    elsif pacing_curve = 2
-        # Accelerate
-        sched_accum_'s' = target_budget * (progress^2)
-    elsif pacing_curve = 3
-        # Decelerate
-        sched_accum_'s' = target_budget * sqrt(progress)
-    endif
-endfor
+# v0.5.0 fix 4: the first state is chosen at cumulative distance 0,
+# so K steps contain K-1 transitions. v0.4.2 used progress = s / K,
+# which aimed the FIRST transition at 1/K of the budget (15.0 of 60
+# with K = 8) instead of 1/(K-1) (8.57). Now schedule[1] = 0 and
+# schedule[K] = target_budget exactly.
+if k_steps > 1
+    for s from 1 to k_steps
+        progress = (s - 1) / (k_steps - 1)
+        if pacing_curve = 1
+            # Linear
+            sched_accum_'s' = target_budget * progress
+        elsif pacing_curve = 2
+            # Accelerate
+            sched_accum_'s' = target_budget * (progress^2)
+        elsif pacing_curve = 3
+            # Decelerate
+            sched_accum_'s' = target_budget * sqrt(progress)
+        endif
+    endfor
+else
+    sched_accum_1 = 0
+endif
 
 curr = 1
 used'curr' = 1
@@ -457,8 +725,12 @@ for step from 2 to k_steps
 endfor
 label FINISH
 
-appendInfoLine: "  Selected ", sel_count, " variants"
-appendInfoLine: "  Actual cumulative distance: ", fixed$(current_accum, 2)
+appendInfoLine: "  Selected ", sel_count, " variants of ", k_steps, " requested"
+appendInfoLine: "  Conceptual budget: ", fixed$(current_accum, 2), " / ",
+    ... fixed$(target_budget, 2), " median-distance units"
+if sel_count < k_steps
+    appendInfoLine: "  ! Path ended early: no unused variant remained."
+endif
 
 # ==============================================================================
 # 6. ASSEMBLY (Stereo-Ready)
@@ -475,16 +747,31 @@ id = sel_idx_'start_pos'
 selectObject: v_id'id'
 Copy: "Result"
 result_id = selected("Sound")
+prev_variant_dur = Get total duration
+
+# v0.5.0 fix 5: the budget the listener actually hears is not the
+# budget the path accumulated. With Skip_first the transition into
+# the first sounded variant is counted by the selector but never
+# rendered, so report both figures.
+audible_accum = 0
 
 # Track overlaps for visualization
 for i from start_pos+1 to sel_count
     next_idx = sel_idx_'i'
     selectObject: v_id'next_idx'
     next_dur = Get total duration
-    
+
     step_dist = sel_dist_'i'
-    rel_dist = step_dist / global_median_dist
-    
+    audible_accum += step_dist
+
+    # Distances are already in median units (median = 1.0), so
+    # rel_dist is the step distance itself. Floor it so a degenerate
+    # family cannot blow up the Expose-mode division.
+    rel_dist = step_dist
+    if rel_dist < 0.01
+        rel_dist = 0.01
+    endif
+
     # Rhetoric Logic
     if overlap_mode = 1
         # Hide: Big distance = long fade
@@ -505,16 +792,28 @@ for i from start_pos+1 to sel_count
             factor = 0.05
         endif
     endif
-    
+
     overlap_sec = next_dur * factor
-    
+
     # === CRASH FIX: Protect against impossible overlap ===
     selectObject: result_id
     current_canon_dur = Get total duration
-    
+
+    # v0.5.0 fix 12: which sound bounds the overlap is a
+    # compositional choice, not just a safety limit. Bounding by the
+    # whole accumulated composite lets a long overlap reach back
+    # across several earlier layers (the "accumulator" reading);
+    # bounding by the previous variant keeps every transition a
+    # strict two-sound crossfade.
+    if overlap_span = 1
+        span_dur = current_canon_dur
+    else
+        span_dur = prev_variant_dur
+    endif
+
     # Cap overlap to 95% of the shortest involved sound segment
-    limit_dur = min(current_canon_dur, next_dur)
-    
+    limit_dur = min(span_dur, next_dur)
+
     if overlap_sec > limit_dur * 0.95
         overlap_sec = limit_dur * 0.95
     endif
@@ -522,14 +821,34 @@ for i from start_pos+1 to sel_count
 
     overlap_duration[i] = overlap_sec
     overlap_factor[i] = factor
-    
+
+    # v0.5.0 CRITICAL 2: `Concatenate with overlap` splices in OBJECT
+    # LIST order, not selection order. Result is a Copy and therefore
+    # sits at the BOTTOM of the list, while every variant was created
+    # earlier and sits above it - so v0.4.2 produced next + Result on
+    # every pass and rendered the whole path backwards. Copying the
+    # next variant here places it below Result and restores the
+    # intended order.
+    selectObject: v_id'next_idx'
+    Copy: "Next_Segment"
+    next_copy = selected("Sound")
+
     selectObject: result_id
-    plusObject: v_id'next_idx'
+    plusObject: next_copy
     Concatenate with overlap: overlap_sec
     temp = selected("Sound")
     removeObject: result_id
+    removeObject: next_copy
     result_id = temp
+    prev_variant_dur = next_dur
 endfor
+
+appendInfoLine: "  Audible budget: ", fixed$(audible_accum, 2),
+    ... " of ", fixed$(current_accum, 2), " conceptual units"
+if skip_first and sel_count > 1
+    appendInfoLine: "    (Skip_first: the transition into the first sounded"
+    appendInfoLine: "     variant is part of the path but not of the audio)"
+endif
 
 selectObject: result_id
 # v0.4.2: output filename now includes preset.
@@ -576,7 +895,7 @@ if draw_visualization
         ... + "  |  " + presetName$
         ... + "  |  " + string$(n_variants) + " variants -> " + string$(sel_count) + " sel"
         ... + "  |  Pacing: " + pacing_curve$
-        ... + "  |  Overlap: " + overlap_mode$
+        ... + "  |  Overlap: " + overlap_mode$ + " / " + overlap_span$
 
     # ----------------------------------------------------------
     # PANEL A (left): ORIGINAL WAVEFORM
@@ -672,7 +991,7 @@ if draw_visualization
     Font size: 7
     Text top: "no", "Dissimilarity trajectory  (grey dotted = target schedule)"
     Font size: 6
-    Text left: "yes", "Cumulative dist"
+    Text left: "yes", "Cumulative (median units)"
     Text bottom: "yes", "Step"
 
     # ----------------------------------------------------------
@@ -812,31 +1131,40 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
 
     if track_motion_variance
-        motionLabel$ = "On"
+        motionLabel$ = motion_measure$
     else
         motionLabel$ = "Off"
+    endif
+
+    if anchor_is_source
+        anchorLabel$ = "source"
+    else
+        anchorLabel$ = "random"
     endif
 
     Text: 0.02, "left", 0.82, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + user_name$
         ... + "  |  Variants: " + string$(n_variants) + " -> Selected: " + string$(sel_count)
-        ... + "  |  Budget actual/target: " + fixed$(current_accum, 1) + " / " + fixed$(target_budget, 1)
+        ... + "  |  Budget concept/audible/target: " + fixed$(current_accum, 2)
+        ... + " / " + fixed$(audible_accum, 2) + " / " + fixed$(target_budget, 2)
+        ... + " median units"
 
     Text: 0.02, "left", 0.50, "half",
         ... "Pacing: " + pacing_curve$
-        ... + "  |  Overlap: " + overlap_mode$
-        ... + "  |  Motion variance: " + motionLabel$
-        ... + "  |  Pitch range: +/-" + fixed$(pitch_range_st, 1) + " st"
-        ... + "  |  Formant range: +/-" + fixed$(formant_shift_range, 2)
+        ... + "  |  Overlap: " + overlap_mode$ + " / " + overlap_span$
+        ... + "  |  Motion: " + motionLabel$
+        ... + "  |  Pitch: +/-" + fixed$(pitch_range_st, 1) + " st"
+        ... + "  |  Formant: +/-" + fixed$(formant_shift_range, 2)
 
     Text: 0.02, "left", 0.18, "half",
-        ... "Output: " + compositeName$
+        ... "Obj: " + compositeName$
         ... + "  |  Dur: " + fixed$(final_duration, 2) + " s ("
         ... + fixed$(final_duration / original_duration, 2) + "x)"
-        ... + "  |  Median dist: " + fixed$(global_median_dist, 2)
+        ... + "  |  Med dist: " + fixed$(global_median_dist, 3)
         ... + "  |  Seed: " + string$(random_seed)
-        ... + "  |  Skip first: " + string$(skip_first)
+        ... + "  |  Anchor: " + anchorLabel$
+        ... + "  |  Skip1st: " + string$(skip_first)
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
