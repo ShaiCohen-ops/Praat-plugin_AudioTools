@@ -2,7 +2,7 @@
 # Praat AudioTools - Genetic_Recomposer.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.3 (2026)
+# Version: 1.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,202 @@
 #   and silence insertion. Fitness rewards a preset-dependent
 #   combination of onset density, spectral similarity to input, and
 #   envelope regularity.
+#
+# Changelog v1.5 (2026) -- fourth review-driven correctness pass:
+#   - FIX (spectral silence-gating was still gain-dependent): every
+#     candidate is peak-normalized (Scale peak: 0.95) before its chunk
+#     RMS values feed the refQuiet/candQuiet gate in
+#     calculateFitnessFAST, but refMono (the source of refChunkRms#)
+#     was never normalized to that same scale. A quiet-but-not-silent
+#     input could then have every reference chunk classified "quiet"
+#     while every (now peak-normalized) candidate chunk was classified
+#     "active" -- collapsing spectralSim to 0 for the ENTIRE
+#     population regardless of actual similarity. refMono is now
+#     scaled to the same peak as candidates before any RMS, centroid,
+#     or spread is measured from it (centroid/spread are amplitude-
+#     invariant, so only the RMS-based gate is actually affected).
+#   - FIX (Custom mode could hand Initialize Population a reversed
+#     randomUniform range): the earlier validation only checked
+#     min_seg_ms < max_seg_ms, but effect_strength scales min_seg_ms
+#     DOWN and max_seg_ms UP by different factors, and every gene pair
+#     in this genome needs a 10ms gap (segMax >= segMin + 10) to stay
+#     repairable. A narrow Custom range could pass the raw min<max
+#     check yet leave less than 10ms of room after scaling, handing
+#     segMaxMs's randomUniform call a lower bound above its upper
+#     bound. A new check on the EFFECTIVE (post-scaling) range now
+#     catches this with a clear message before initialization runs.
+#   - FIX (rare short-output path after iteration-cap padding): if the
+#     hard iteration cap was hit, padding aimed exactly at
+#     target_duration_s, but Concatenate with overlap then shortens
+#     the whole assembly by safeXfade at the final join -- so the
+#     result could still land safeXfade seconds short of target
+#     AFTER concatenation, undetected by the existing "trim if too
+#     long" check. The result's duration is now checked again after
+#     concatenation and topped up with a plain (non-overlapping)
+#     silence tail if still short, so target_duration_s is always met
+#     exactly regardless of which path produced the shortfall.
+#   - FIX (0.0005s exact-boundary gap): the per-segment micro-fade was
+#     skipped only when .xfade < 0.0005s, while Concatenate with
+#     overlap engaged only when .safeXfade > 0.0005s -- a crossfade of
+#     EXACTLY 0.0005s fell into neither protection. The micro-fade
+#     condition is now <= 0.0005s, so every value is covered by
+#     exactly one of the two.
+#
+# Changelog v1.5 (2026) -- third review-driven correctness pass:
+#   - FIX (mutation could re-break the min/max gene pairs crossover
+#     had just repaired): each of the 8 genes mutates independently,
+#     so e.g. silenceMin could mutate upward with silenceMax
+#     untouched, landing back on min > max even though crossover's
+#     repair step had just fixed it. A second repair now runs AFTER
+#     mutation, immediately before the new generation replaces the
+#     old one, and pushes the pair apart from whichever side has
+#     room left within its own bound (not just the max side) so the
+#     repair itself can't be pushed out of range.
+#   - FIX (onset/regularity noise floor still depended on the
+#     original recording's gain): using the candidate's own intensity
+#     MINIMUM as a +3dB floor failed whenever the candidate itself
+#     contained inserted digital silence (one of the genome's own
+#     genes) -- the minimum IS near-silence, so the floor barely
+#     filtered anything and onset counting could reward silence-and-
+#     repeat patterns instead of real fragmentation. Both the onset
+#     floor and the regularity floor are now relative to the
+#     CANDIDATE's own intensity MAXIMUM (max - 55 dB / max - 60 dB),
+#     computed once per candidate -- gain-invariant regardless of the
+#     original recording's level, and no longer confused by the
+#     candidate's own silence gene.
+#   - FIX (spectral trajectory undefined on silent chunks): a chunk
+#     that lands entirely in silence (either from the input's own
+#     content, or a candidate's inserted silence gene) has an
+#     undefined/degenerate centroid and spread, which could pollute
+#     spectralSim (and the fitness comparisons built on it) with a
+#     meaningless number. Each chunk pair is now RMS-gated: both
+#     sides quiet -> counted as a good match (distance 0); only one
+#     side quiet -> counted as a full mismatch (distance 1); both
+#     active -> centroid/spread distance as before.
+#   - REMOVED Fitness_stride from the form: it no longer had any
+#     effect after the cheap/full split was removed in v1.4, but
+#     stayed visible under "Quality / Speed" where a user would
+#     reasonably expect changing it to do something. It's gone
+#     entirely rather than renamed, since a misleading control is
+#     worse than a slightly less compatible settings file.
+#   - FIX (missing fade-in / threshold mismatch): a final fade-out
+#     was added in v1.4 for the exact-duration trim point, but
+#     nothing protected the very START of the output -- when
+#     crossfade is active, Concatenate with overlap smooths INTERNAL
+#     joins but not the leading edge of the first segment, so a
+#     waveform-cycle discontinuity at t=0 could still click. A
+#     matching final fade-in is now applied alongside the fade-out.
+#     Separately, the per-segment micro-fade was skipped whenever
+#     .xfade < 0.0005 s while overlap-concatenation required
+#     .safeXfade > 0.001 s to engage -- crossfades between roughly
+#     0.5-1 ms fell in neither protection. Both thresholds are now
+#     the same value.
+#   - FIX (iteration cap could silently return short output): if the
+#     v1.4 hard iteration cap in synthesizeCandidate is ever actually
+#     hit, the candidate is now padded with trailing silence up to
+#     the target duration (so downstream trimming/fitness code still
+#     sees the expected length), and the run prints a one-line
+#     summary warning at the end if this happened for any candidate,
+#     instead of staying silent about a short result.
+#   - DOC: v1.4's per-generation shared seed makes within-generation
+#     comparisons fair, but best-ever is still compared ACROSS
+#     generations that each used a different seed, so the winning
+#     genome is best described as a winning genome+seed realization
+#     found during the search, not a genome verified stable across
+#     random draws. No multi-seed re-evaluation is added (would
+#     multiply per-candidate cost); documented here as a known,
+#     intentional scope limit rather than a bug.
+#
+# Changelog v1.4 (2026) -- review-driven correctness pass:
+#   - FIX (selection bias): "cheap" generations scored onset and
+#     regularity as a constant 0.5 for the whole population, so
+#     tournament selection was driven ENTIRELY by spectralSim --
+#     100% spectral ranking on generations meant to optimize 70-80%
+#     onset/regularity presets (Glitch, Extreme Fragmentation,
+#     Rhythmic Loops). Every generation now computes full fitness.
+#     every generation now computes full fitness. At default
+#     population/generation sizes this is at most ~225 candidate
+#     evaluations (Extreme preset) -- affordable, and the only way to
+#     guarantee selection actually optimizes what each preset
+#     declares.
+#   - FIX (possible infinite loop): if every pool segment is shorter
+#     than 2*crossfade + 2ms, Phase 2's synthesis loop could never
+#     advance .currentTime and would spin forever. The pool is now
+#     checked for at least one segment long enough to carry the
+#     genome's crossfade; if none exists, the crossfade used for that
+#     candidate is reduced to fit the pool instead of hanging. A hard
+#     iteration cap is also added as a last-resort safety net.
+#   - FIX (unstable random realization): every candidate synthesis
+#     used a unique seed (base + running counter), so two genomes
+#     were never compared under the same random draw, and the elite
+#     genome carried forward to the next generation was NOT
+#     re-synthesized with its own winning seed during evolution (only
+#     at final render) -- fitness was effectively measuring
+#     genome + a fresh lucky realization each time. All individuals
+#     within one generation now share one per-generation seed, so
+#     within-generation comparisons are apples-to-apples; seeds still
+#     vary across generations so the search doesn't get stuck on one
+#     realization.
+#   - FIX (regularity ACF wasn't normalized): num/den used only the
+#     lag-0 signal's energy in the denominator, so the "correlation"
+#     could exceed 1 (silently clipped) and different envelopes could
+#     tie at the clipped ceiling. Now a proper Pearson-style
+#     normalization (sqrt of the product of BOTH sides' energy) is
+#     used, so it is bounded in [-1, 1] before clipping to [0, 1].
+#     Candidate lags are now derived from THIS genome's own typical
+#     segment duration (as documented) instead of one fixed list that
+#     ignored segMin/segMax entirely.
+#   - FIX (silence floor for regularity floored relative to the
+#     INPUT's own minimum, which is near -300 dB for near-silent
+#     inputs, defeating the floor entirely): floor is now relative to
+#     the intensity RANGE (max - 60 dB), not an offset from the
+#     minimum.
+#   - FIX (click at the very end of trimmed output): the exact-length
+#     trim can land mid-segment/mid-waveform-cycle; a short fade-out
+#     is now applied AFTER the final trim, not just at the original
+#     (now possibly discarded) segment edge.
+#   - FIX (onset threshold depended on input gain, not candidate
+#     gain): every candidate is peak-normalized (Scale peak: 0.95),
+#     but the onset noise floor came from the ORIGINAL input's
+#     intensity minimum -- a quiet input made the floor essentially
+#     -300 dB and filtered nothing. The floor is now computed from
+#     the CANDIDATE's own intensity minimum.
+#   - FIX (onset saturation same for every preset): 8 onsets/sec
+#     saturated .onsetScore to 1.0 regardless of preset, so
+#     Extreme Fragmentation (80% onset weight, 10-80ms segments)
+#     could not discriminate among its own high-onset population.
+#     The saturation point now scales with the preset's onset weight
+#     (higher w_onset -> higher bar to clear 1.0).
+#   - FIX (spectralSim barely discriminated within one input):
+#     a single whole-file centroid/spread comparison changes very
+#     little when segments of the SAME input are merely reordered.
+#     spectralSim now compares short-window (chunked) centroid/spread
+#     TRAJECTORIES against the input's own trajectory, which is
+#     sensitive to how the material was actually recombined in time.
+#   - FIX (reorderProb=0 was not sequential): the "sequential-ish"
+#     branch always jumped +/-30% of the pool regardless of
+#     reorderProb, so reorderProb=0 was already a fairly wide local
+#     random walk, not near-original order. The local jump range is
+#     now scaled BY reorderProb itself (0 -> next segment exactly,
+#     approaching the old wide walk as reorderProb -> 1).
+#   - ADDED uniform crossover: evolvePopulation used to clone one
+#     tournament-selected parent's genome wholesale before mutation
+#     (mutation-only search, no recombination of two parents). Each
+#     of the 8 genes is now drawn independently from one of two
+#     tournament-selected parents before mutation is applied.
+#   - ADDED input/parameter validation: Effect_strength, segment
+#     range ordering, Max_silence_prob range, crossfade-vs-segment-
+#     range consistency, minimum usable input duration, and
+#     population/generation sanity are all checked up front with a
+#     clear exitScript message instead of failing deep inside the GA.
+#   - FIX (double-fade at crossfaded joins): the 2ms per-segment edge
+#     fade is now skipped when the genome's crossfade is actually
+#     going to be used for that join (Concatenate with overlap
+#     already fades both sides); it still applies when crossfade is
+#     effectively off, so raw butt-joints don't click.
+#   - DOC: seed and preset weights are printed to the Info window
+#     regardless of whether visualization is drawn (previously only
+#     shown in the visualization summary strip).
 #
 # Changelog v1.3 (2026):
 #   - FIX: output duration. Concatenate-with-overlap shortens the
@@ -74,7 +270,7 @@ endif
 inputSound = selected("Sound")
 soundName$ = selected$("Sound")
 
-form GA Segment Recombination v1.3
+form GA Segment Recombination v1.5
     comment === Presets ===
     optionmenu Preset: 1
         option Custom
@@ -90,7 +286,6 @@ form GA Segment Recombination v1.3
     comment === Quality / Speed ===
     positive Pop_size 10
     positive Generations 10
-    positive Fitness_stride 3
     comment === Segmentation (ms) ===
     positive Min_seg_ms 20
     positive Max_seg_ms 180
@@ -121,7 +316,6 @@ if preset = 2
     effect_strength = 3
     pop_size = 8
     generations = 8
-    fitness_stride = 4
     max_crossfade_ms = 8
     max_silence_prob = 0.15
     presetName$ = "SubtleTexture"
@@ -133,7 +327,6 @@ elsif preset = 3
     effect_strength = 5
     pop_size = 12
     generations = 12
-    fitness_stride = 3
     max_crossfade_ms = 12
     max_silence_prob = 0.20
     presetName$ = "GranularShimmer"
@@ -145,7 +338,6 @@ elsif preset = 4
     effect_strength = 8
     pop_size = 10
     generations = 10
-    fitness_stride = 2
     max_crossfade_ms = 3
     max_silence_prob = 0.45
     presetName$ = "GlitchStutter"
@@ -159,7 +351,6 @@ elsif preset = 5
     max_seg_ms = 80
     pop_size = 15
     generations = 15
-    fitness_stride = 2
     max_crossfade_ms = 2
     max_silence_prob = 0.50
     presetName$ = "ExtremeFrag"
@@ -173,7 +364,6 @@ elsif preset = 6
     max_seg_ms = 250
     pop_size = 12
     generations = 12
-    fitness_stride = 3
     max_crossfade_ms = 8
     max_silence_prob = 0.10
     presetName$ = "RhythmicLoops"
@@ -188,11 +378,35 @@ else
 endif
 
 ###############################################################################
+# v1.4: VALIDATION -- catch bad parameter combinations here, with a clear
+# message, instead of failing deep inside the GA loop or the synthesis loop.
+###############################################################################
+
+if effect_strength < 1 or effect_strength > 10
+    exitScript: "Effect_strength must be between 1 and 10 (got ", effect_strength, ")."
+endif
+if min_seg_ms >= max_seg_ms
+    exitScript: "Min_seg_ms (", min_seg_ms, ") must be less than Max_seg_ms (", max_seg_ms, ")."
+endif
+if max_silence_prob < 0 or max_silence_prob > 1
+    exitScript: "Max_silence_prob must be between 0 and 1 (got ", max_silence_prob, ")."
+endif
+if pop_size < 2
+    exitScript: "Pop_size must be at least 2 (got ", pop_size, ")."
+endif
+if generations < 1
+    exitScript: "Generations must be at least 1 (got ", generations, ")."
+endif
+if target_duration_s < 0.2
+    exitScript: "Target_duration_s is too short to be usable (got ", target_duration_s, " s)."
+endif
+
+###############################################################################
 # SETUP
 ###############################################################################
 
 clearinfo
-writeInfoLine: "=== GA Segment Recomposer v1.3 ==="
+writeInfoLine: "=== GA Segment Recomposer v1.5 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Target duration: ", target_duration_s, " s"
 appendInfoLine: "Preset: ", presetName$
@@ -206,6 +420,18 @@ selectObject: inputSound
 inputDuration = Get total duration
 inputSampleRate = Get sampling frequency
 inputChannels = Get number of channels
+
+# v1.4: an input too short to hold even one minimal segment, or one
+# that is entirely (near-)silent, would produce an unusable segment
+# pool and/or undefined spectral reference features -- catch both
+# before any GA work starts.
+if inputDuration < 0.05
+    exitScript: "Input sound is too short to segment (", fixed$(inputDuration, 3), " s)."
+endif
+inputRms = Get root-mean-square: 0, 0
+if inputRms < 1e-6
+    exitScript: "Input sound appears to be silent (RMS ~ 0); there is no material to recompose."
+endif
 
 appendInfoLine: "Original duration: ", fixed$(inputDuration, 2), " s"
 appendInfoLine: "Sample rate: ", inputSampleRate, " Hz"
@@ -229,6 +455,21 @@ else
     refMono = inputForRefFeats
 endif
 
+# v1.5: every candidate is peak-normalized (Scale peak: 0.95) before
+# its chunk RMS values are computed in calculateFitnessFAST, but
+# refMono previously was NOT -- so chunkSilenceRms (an absolute
+# threshold) compared the reference and the candidate on two
+# different gain scales. A quiet-but-not-silent input could then have
+# every refChunk classified "quiet" while every (now-normalized)
+# candidate chunk was classified "active", collapsing spectralSim to
+# 0 for the whole population regardless of actual similarity.
+# Normalizing refMono here, before any RMS/centroid/spread is
+# measured from it, puts both sides on the same scale. Centroid and
+# spread are amplitude-invariant so this doesn't affect them; it only
+# fixes the RMS-based quiet/active gate.
+selectObject: refMono
+Scale peak: 0.95
+
 selectObject: refMono
 refSpec = To Spectrum: "yes"
 refCentroid = Get centre of gravity: 2
@@ -242,6 +483,38 @@ refIntMean = Get mean: 0, 0, "dB"
 refIntMin = Get minimum: 0, 0, "Parabolic"
 refIntMax = Get maximum: 0, 0, "Parabolic"
 removeObject: refIntensity
+
+# v1.4: a single whole-file centroid/spread barely moves when segments
+# of the SAME input are merely reordered, so spectralSim could not
+# discriminate much between candidates. We additionally record a
+# short-window centroid/spread TRAJECTORY across the input (nChunks
+# equal windows) so the fitness function can compare how the
+# recombination changed the spectral shape over time, not just its
+# whole-file average.
+#
+# v1.5: a chunk that is itself (near-)silent has an undefined or
+# meaningless centroid/spread, so its RMS is also recorded here --
+# the fitness function gates on it before trusting the spectral
+# numbers for that chunk (see calculateFitnessFAST).
+chunkSilenceRms = 0.001
+nSpecChunks = 6
+refChunkCentroid# = zero#(nSpecChunks)
+refChunkSpread# = zero#(nSpecChunks)
+refChunkRms# = zero#(nSpecChunks)
+chunkDur = inputDuration / nSpecChunks
+for .c to nSpecChunks
+    .t1 = (.c - 1) * chunkDur
+    .t2 = .t1 + chunkDur
+    selectObject: refMono
+    Extract part: .t1, .t2, "rectangular", 1, "no"
+    .chunkSnd = selected("Sound")
+    refChunkRms#[.c] = Get root-mean-square: 0, 0
+    .chunkSpec = To Spectrum: "yes"
+    refChunkCentroid#[.c] = Get centre of gravity: 2
+    refChunkSpread#[.c] = Get standard deviation: 2
+    removeObject: .chunkSnd, .chunkSpec
+endfor
+
 removeObject: refMono
 
 appendInfoLine: "Input reference features:"
@@ -265,11 +538,47 @@ eff_silence_prob = max_silence_prob * strength_factor
 min_silence_ms = 5
 max_silence_ms = 80
 
+# v1.4: onset saturation used to be a flat 8 onsets/sec for every
+# preset, so a preset that leans HEAVILY on onset density (Extreme
+# Fragmentation, w_onset=0.80) had its whole population clip to 1.0
+# and lose all discrimination among its own high-onset candidates.
+# The saturation bar now rises with how much the preset actually
+# weights onset density.
+onsetSatRate = 8 + 32 * w_onset
+
+# v1.5: min_seg_ms < max_seg_ms (checked earlier) is not sufficient --
+# the GA requires a genome-level gap of at least 10ms between the
+# segMin/segMax genes (see the repair steps in evolvePopulation), but
+# effect_strength scales min_seg_ms DOWN and max_seg_ms UP by
+# DIFFERENT factors, so a narrow Custom range that passed the earlier
+# check (e.g. min=97, max=104 after scaling) can still be too narrow
+# for that gap. Without this check, Initialize Population's
+# randomUniform calls for segMaxMs could receive a lower bound
+# greater than its upper bound.
+if eff_max_seg_ms - eff_min_seg_ms < 10
+    exitScript: "Min_seg_ms/Max_seg_ms are too close together for the current ",
+        ... "Effect_strength: after scaling they become ",
+        ... fixed$(eff_min_seg_ms, 1), " - ", fixed$(eff_max_seg_ms, 1),
+        ... " ms, which leaves less than the required 10 ms gap between ",
+        ... "them. Widen Min_seg_ms/Max_seg_ms or lower Effect_strength."
+endif
+
 appendInfoLine: "Effective parameters:"
 appendInfoLine: "  Segment range: ", fixed$(eff_min_seg_ms, 1), " - ", fixed$(eff_max_seg_ms, 1), " ms"
 appendInfoLine: "  Crossfade: 0 - ", fixed$(eff_max_crossfade_ms, 1), " ms"
 appendInfoLine: "  Silence prob: 0 - ", fixed$(eff_silence_prob, 3)
 appendInfoLine: ""
+
+# v1.4: if the max crossfade can't fit inside even the shortest
+# effective segment (crossfade needs roughly half the segment on
+# each side), warn rather than let every candidate silently discard
+# nearly its whole pool in synthesizeCandidate's minSegDur check.
+if eff_max_crossfade_ms * 2 > eff_min_seg_ms
+    appendInfoLine: "  NOTE: Max_crossfade_ms is large relative to the segment range;"
+    appendInfoLine: "        synthesizeCandidate will shrink crossfade per-candidate as needed"
+    appendInfoLine: "        (see v1.4 fix) rather than stall."
+    appendInfoLine: ""
+endif
 
 ###############################################################################
 # INITIALIZE POPULATION
@@ -304,14 +613,25 @@ fitnessHistMean# = zero#(generations)
 fitnessHistMin# = zero#(generations)
 bestFitness = -100000
 
-# v1.3: seeded synthesis for true reproducibility. Every candidate
-# synthesis gets seed = gaBaseSeed + counter; the winning seed is
-# snapshotted with the genome, and the final render re-seeds with it
-# so the output is sample-identical to the candidate that won.
+# v1.4: seeded synthesis for true reproducibility, as in v1.3, but
+# now one seed is shared by every individual IN A GENERATION rather
+# than a fresh seed per synthesis call. v1.3 gave every candidate a
+# unique seed, so fitness measured "genome + a fresh lucky random
+# realization" rather than the genome alone -- two genomes were never
+# actually compared under the same random draw, and even the elite
+# genome got re-synthesized with a NEW seed every generation (only
+# the final render used its snapshotted winning seed). Sharing one
+# seed per generation makes within-generation tournament comparisons
+# apples-to-apples; seeds still change across generations so the
+# search isn't stuck on one realization forever.
 gaBaseSeed = randomInteger(1, 1000000000)
-synthSeedCounter = 0
 bestGenomeSeed = 0
 bestEverSet = 0
+# v1.5: counts how many candidates ever hit synthesizeCandidate's
+# hard iteration cap and had to be padded with trailing silence.
+# Reported once at the end of the run (see "Complete" section) rather
+# than per-candidate, to avoid spamming the Info window.
+iterCapHitCount = 0
 
 # Snapshot of the best genome's parameter VALUES (not index), so the
 # final render reproduces the true best-ever candidate. Previous
@@ -331,28 +651,22 @@ for gen to generations
 
     selectObject: inputSound
 
-    doExpensive = 0
-    if fitness_stride < 1
-        doExpensive = 1
-    elsif gen mod fitness_stride = 0
-        doExpensive = 1
-    endif
-    # v1.3: the last generation is ALWAYS full-fitness, so the final
-    # best-ever comparison is made on complete scores.
-    if gen = generations
-        doExpensive = 1
-    endif
+    # v1.4: cheap/full fitness split removed entirely -- every
+    # generation now computes full fitness (see changelog). This is
+    # the only way selection reliably optimizes what a preset's
+    # weights actually declare, rather than defaulting to pure
+    # spectral-similarity ranking whenever a "cheap" generation hit.
+    genSeed = gaBaseSeed + gen
 
     for ind to pop_size
-        # v1.3: seed this synthesis so the phenotype is reproducible
-        synthSeedCounter += 1
-        candSeed_'ind' = gaBaseSeed + synthSeedCounter
+        candSeed_'ind' = genSeed
         random_initializeWithSeedUnsafelyButPredictably: candSeed_'ind'
 
         @synthesizeCandidate: ind
         candidateSound = synthesizeCandidate.result
 
-        @calculateFitnessFAST: candidateSound, doExpensive
+        typicalSegDurS = (segMinMs_'ind' + segMaxMs_'ind') / 2 / 1000
+        @calculateFitnessFAST: candidateSound, 1, typicalSegDurS
         fitness_'ind' = calculateFitnessFAST.score
 
         selectObject: candidateSound
@@ -372,10 +686,7 @@ for gen to generations
         if .f < genMinFitness
             genMinFitness = .f
         endif
-        if .f > bestFitness and doExpensive = 1
-            # v1.3: best-ever only updates on full-fitness scores --
-            # cheap scores pad onset/regularity with a neutral 0.5
-            # and are not comparable with full ones.
+        if .f > bestFitness
             bestFitness = .f
             # Snapshot the winning genome's 8 parameter values. This
             # is the key fix over v1.1: subsequent evolution cannot
@@ -388,8 +699,7 @@ for gen to generations
             bestGenomeSilProb  = silenceProb_'ind'
             bestGenomeSilMin   = silenceMin_'ind'
             bestGenomeSilMax   = silenceMax_'ind'
-            # v1.3: snapshot the seed too -- genome + seed together
-            # determine the phenotype exactly.
+            # genome + seed together determine the phenotype exactly.
             bestGenomeSeed     = candSeed_'ind'
             bestEverSet = 1
         endif
@@ -408,9 +718,9 @@ for gen to generations
         # Elitism: force the best-ever genome into slot 1 of the new
         # population. This prevents the best genome from being lost
         # through tournament selection + mutation.
-        # v1.3: guarded -- before the first full-fitness generation
-        # there is no best-ever snapshot yet (the fields would be 0,
-        # and segMin = segMax = 0 hangs Phase 1 forever).
+        # v1.3: guarded -- before generation 1 finishes there is no
+        # best-ever snapshot yet (the fields would be 0, and
+        # segMin = segMax = 0 hangs Phase 1 forever).
         if bestEverSet = 1
             segMinMs_1   = bestGenomeSegMin
             segMaxMs_1   = bestGenomeSegMax
@@ -470,6 +780,25 @@ bestSilMax  = bestGenomeSilMax
 selectObject: finalSound
 finalDuration = Get total duration
 appendInfoLine: "Final duration: ", fixed$(finalDuration, 2), " s (target was ", target_duration_s, " s)"
+# v1.4: previously only shown in the visualization summary strip, so
+# it was lost entirely when Draw_visualization was off.
+appendInfoLine: "Best fitness: ", fixed$(bestFitness, 3), "   Seed: ", bestGenomeSeed
+appendInfoLine: "Best genome: Seg ", fixed$(bestGenomeSegMin, 1), "-", fixed$(bestGenomeSegMax, 1),
+    ... " ms | Bias ", fixed$(bestGenomeBias, 2),
+    ... " | Reorder ", fixed$(bestGenomeReorder * 100, 0), "%",
+    ... " | Xfade ", fixed$(bestGenomeXfade, 1), " ms",
+    ... " | Silence ", fixed$(bestGenomeSilProb * 100, 0), "%, ",
+    ... fixed$(bestGenomeSilMin, 0), "-", fixed$(bestGenomeSilMax, 0), " ms"
+
+if iterCapHitCount > 0
+    appendInfoLine: ""
+    appendInfoLine: "WARNING: ", iterCapHitCount, " candidate(s) during the search hit the",
+        ... " synthesis iteration cap and were padded with trailing silence."
+    appendInfoLine: "         This means Min_seg_ms/Max_seg_ms/Max_crossfade_ms left too few",
+        ... " usable segments to reach Target_duration_s naturally for those genomes;"
+    appendInfoLine: "         consider a shorter crossfade or a wider segment range if this",
+        ... " persists across runs."
+endif
 
 ###############################################################################
 # VISUALIZATION
@@ -485,7 +814,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##GA Segment Recomposer v1.3##"
+    Text: 0.5, "centre", 0.6, "half", "##GA Segment Recomposer v1.5##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | Strength: " + string$(effect_strength)
@@ -866,20 +1195,63 @@ procedure synthesizeCandidate: .ind
     if 2 * .xfade + 0.002 > .minSegDur
         .minSegDur = 2 * .xfade + 0.002
     endif
+
+    # v1.4: if NO segment in the pool is long enough to carry this
+    # candidate's crossfade, Phase 2 below could never advance
+    # .currentTime and would loop forever (this genome's Min_seg_ms/
+    # Max_seg_ms/crossfade combination is simply infeasible). Rather
+    # than hang, shrink the crossfade actually used for THIS
+    # candidate to fit the pool's longest segment -- the fitness
+    # function will naturally select against genomes that need this.
+    .maxPoolSegDur = 0
+    for .s to .numSegs
+        .d = segEnd_'.s' - segStart_'.s'
+        if .d > .maxPoolSegDur
+            .maxPoolSegDur = .d
+        endif
+    endfor
+    if .maxPoolSegDur < .minSegDur
+        .xfade = max(0, .maxPoolSegDur / 2 - 0.002)
+        .minSegDur = max(0.005, 2 / inputSampleRate)
+        if 2 * .xfade + 0.002 > .minSegDur
+            .minSegDur = 2 * .xfade + 0.002
+        endif
+    endif
+
     .lastUsedIdx = randomInteger(1, .numSegs)
-    
+
+    # v1.4: hard iteration cap as a last-resort safety net -- no
+    # legitimate parameter combination should need more advances than
+    # this many times the theoretical minimum-segment count, but a
+    # cap guarantees the loop always terminates even if some future
+    # edit reintroduces a stuck case.
+    .maxIter = 4 * ceiling(target_duration_s / .minSegDur) + 2000
+    .iter = 0
+
     # Keep looping until we hit target duration
-    while .currentTime < target_duration_s
+    while .currentTime < target_duration_s and .iter < .maxIter
+        .iter += 1
         # Pick a segment from the pool
         if randomUniform(0, 1) < .reorder
             # Random selection
             .idx = randomInteger(1, .numSegs)
         else
-            # Sequential-ish: pick from nearby range
-            .range = max(2, floor(.numSegs * 0.3))
-            .offset = randomInteger(-.range, .range)
-            .idx = .lastUsedIdx + .offset
-            .idx = max(1, min(.numSegs, .idx))
+            # v1.4: the local jump range now SCALES with .reorder
+            # itself. reorderProb=0 used to still jump +/-30% of the
+            # whole pool regardless -- not remotely "sequential". Now
+            # reorderProb=0 advances to exactly the next segment
+            # (with wraparound), and the jitter grows toward the old
+            # wide walk as reorderProb approaches 1.
+            .range = round(.reorder * .numSegs * 0.3)
+            if .range < 1
+                .offset = 0
+            else
+                .offset = randomInteger(-.range, .range)
+            endif
+            .idx = .lastUsedIdx + 1 + .offset
+            # wrap around the pool instead of clamping, so running off
+            # either end loops back rather than sticking to an edge
+            .idx = ((.idx - 1 + .numSegs * 100) mod .numSegs) + 1
         endif
         
         .lastUsedIdx = .idx
@@ -894,7 +1266,20 @@ procedure synthesizeCandidate: .ind
             .segment = selected("Sound")
             
             .dur = Get total duration
-            if .dur > 0.005
+            # v1.4: this micro-fade and Concatenate with overlap's own
+            # crossfade both taper the same edge when .xfade is
+            # actually going to be used at the join, compounding into
+            # a slightly deeper dip than either fade alone intends.
+            # Only apply it when crossfade is effectively off, so a
+            # true butt-join still doesn't click.
+            # v1.5: was "< 0.0005" here vs "> 0.0005" at the overlap
+            # threshold below -- at exactly .xfade = 0.0005 s, NEITHER
+            # branch engaged. Using "<=" here closes that gap: at the
+            # boundary, the micro-fade now applies (and overlap
+            # concatenation still doesn't, since that side is
+            # unchanged), so every crossfade value is covered by
+            # exactly one of the two protections.
+            if .dur > 0.005 and .xfade <= 0.0005
                 Formula: "if x < 0.002 then self * x / 0.002 else if x > xmax - 0.002 then self * (xmax - x) / 0.002 else self fi fi"
             endif
             
@@ -961,7 +1346,27 @@ procedure synthesizeCandidate: .ind
             endif
         endif
     endwhile
-    
+
+    # v1.5: if the hard iteration cap above was actually hit before
+    # reaching target_duration_s, this candidate would otherwise come
+    # out short -- pad with trailing silence so downstream trimming/
+    # fitness code still sees the expected length, and flag it so the
+    # run can report it once at the end instead of staying silent.
+    if .currentTime < target_duration_s
+        iterCapHitCount += 1
+        .padDur = target_duration_s - .currentTime
+        Create Sound from formula: "capPad", inputChannels, 0, .padDur, inputSampleRate, "0"
+        .padSilence = selected("Sound")
+        .outputParts += 1
+        outputPart_'.outputParts' = .padSilence
+        partDuration_'.outputParts' = .padDur
+        partSourceStart_'.outputParts' = -1
+        partOutputStart_'.outputParts' = .currentTime
+        partKind_'.outputParts' = 0
+        partSegIdx_'.outputParts' = 0
+        .currentTime += .padDur
+    endif
+
     # === PHASE 3: Concatenate all parts ===
     if .outputParts > 0
         if .outputParts = 1
@@ -987,7 +1392,13 @@ procedure synthesizeCandidate: .ind
                 plusObject: outputPart_'.p'
             endfor
             
-            if .safeXfade > 0.001
+            # v1.5: this threshold now matches the micro-fade skip
+            # threshold above (.xfade < 0.0005) exactly. They used to
+            # differ (0.001 here vs 0.0005 there), so a crossfade of
+            # roughly 0.5-1 ms fell into neither protection: too small
+            # to trigger Concatenate with overlap, but also too large
+            # to still get the per-segment micro-fade.
+            if .safeXfade > 0.0005
                 Concatenate with overlap: .safeXfade
             else
                 Concatenate
@@ -1007,8 +1418,46 @@ procedure synthesizeCandidate: .ind
             .trimmed = selected("Sound")
             removeObject: .result
             .result = .trimmed
+        elsif .actualDur < target_duration_s
+            # v1.5: this is a rare-path top-up, not the normal case.
+            # It only fires when the iteration cap above was hit AND
+            # Concatenate with overlap then shortened the result by
+            # safeXfade at the final join, landing .actualDur just
+            # under target even though the padding loop aimed exactly
+            # at target_duration_s. Top up with a plain, non-
+            # overlapping silence tail (not run through Concatenate
+            # with overlap again, so it can't shave off yet more time)
+            # so the result always reaches target_duration_s exactly.
+            .shortfall = target_duration_s - .actualDur
+            Create Sound from formula: "shortfallPad", inputChannels, 0, .shortfall, inputSampleRate, "0"
+            .shortfallSnd = selected("Sound")
+            selectObject: .result
+            plusObject: .shortfallSnd
+            Concatenate
+            .padded = selected("Sound")
+            removeObject: .result, .shortfallSnd
+            .result = .padded
         endif
-        
+
+        # v1.4: the exact-duration trim above can land mid-segment or
+        # mid-waveform-cycle, and the original 2ms edge fade (applied
+        # before this cut, to a part that may no longer even be the
+        # last one) doesn't help at the NEW end point. Apply a short
+        # fade-out here, after the cut, so the actual final sample
+        # always tapers to zero instead of jumping.
+        #
+        # v1.5: also apply a matching fade-IN. Concatenate with
+        # overlap smooths INTERNAL joins between parts, but nothing
+        # protects the very first sample of the very first part --
+        # if it starts mid-waveform-cycle, the output could still
+        # click at t=0 even with crossfade fully engaged elsewhere.
+        selectObject: .result
+        .finalDur = Get total duration
+        .outFade = min(0.004, .finalDur * 0.2)
+        if .outFade > 0.0002
+            Formula: "if x < '.outFade' then self * x / '.outFade' else if x > xmax - '.outFade' then self * (xmax - x) / '.outFade' else self fi fi"
+        endif
+
         selectObject: .result
         Scale peak: 0.95
     else
@@ -1025,23 +1474,25 @@ procedure synthesizeCandidate: .ind
     synthesizeCandidate.outputParts = .outputParts
 endproc
 
-procedure calculateFitnessFAST: .sound, .doExpensive
+procedure calculateFitnessFAST: .sound, .doExpensive, .typicalSegDur
     # Three measurable components:
     #   .onsetScore    — count of sharp intensity jumps per second,
     #                    normalised. High on glitchy/fragmented outputs.
     #   .spectralSim   — 1 - distance(candidate spectral (centroid,
-    #                    spread) from input's). Higher = more
-    #                    input-like spectral distribution.
-    #   .regularScore  — intensity-envelope autocorrelation at a lag
-    #                    matching the genome's typical segment length.
-    #                    High = repeating rhythmic pattern.
+    #                    spread) TRAJECTORY from input's own trajectory,
+    #                    both measured in nSpecChunks short windows).
+    #                    Higher = more input-like spectral shape over
+    #                    time, not just on whole-file average.
+    #   .regularScore  — intensity-envelope autocorrelation at lags
+    #                    derived from THIS genome's typical segment
+    #                    length. High = repeating rhythmic pattern.
     # The final score is the preset-specified weighted sum. All three
     # components are in [0, 1] (clipped), so the fitness is in [0, 1].
     #
-    # .doExpensive (1/0) gates onset + regularity, which need an
-    # Intensity object and are not free. When 0, those components
-    # fall back to 0.5 (neutral). Used for coarse GA passes to save
-    # time; set fitness_stride = 1 to disable.
+    # v1.4: .doExpensive is kept as a parameter for call-site
+    # compatibility but is always 1 now -- the cheap/neutral-0.5
+    # fallback path was removed because it made selection track
+    # spectralSim alone regardless of preset (see changelog).
 
     selectObject: .sound
     .dur = Get total duration
@@ -1069,25 +1520,60 @@ procedure calculateFitnessFAST: .sound, .doExpensive
             .cMono = Copy: "cand_mono_tmp"
         endif
 
-        selectObject: .cMono
-        .cSpec = To Spectrum: "yes"
-        .candCentroid = Get centre of gravity: 2
-        .candSpread = Get standard deviation: 2
-        removeObject: .cSpec
+        # v1.4: whole-file centroid/spread barely moves when segments
+        # of the SAME input are just reordered, so this used to
+        # discriminate very little (esp. for Subtle Texture, where it
+        # carries 70% of the weight). Compare short-window trajectories
+        # against the input's own (computed once, in refChunkCentroid#/
+        # refChunkSpread#) instead of one number for the whole file.
+        .chunkDist = 0
+        .cChunkDur = .dur / nSpecChunks
+        for .c to nSpecChunks
+            .t1 = (.c - 1) * .cChunkDur
+            .t2 = .t1 + .cChunkDur
+            selectObject: .cMono
+            Extract part: .t1, .t2, "rectangular", 1, "no"
+            .chunkSnd = selected("Sound")
+            .cChunkRms = Get root-mean-square: 0, 0
 
-        .dCent = 0
-        if refCentroid > 1
-            .dCent = abs(.candCentroid - refCentroid) / refCentroid
-        endif
-        .dSpread = 0
-        if refSpread > 1
-            .dSpread = abs(.candSpread - refSpread) / refSpread
-        endif
-        .specDist = (.dCent + .dSpread) / 2
-        if .specDist > 1
-            .specDist = 1
-        endif
-        .spectralSim = 1 - .specDist
+            # v1.5: a chunk that's itself (near-)silent -- from the
+            # input's own content, OR from a candidate's inserted
+            # silence gene -- has an undefined/degenerate centroid
+            # and spread. Gate on RMS before trusting those numbers:
+            # both sides quiet is a genuine match (distance 0); only
+            # one side quiet is a genuine mismatch (distance 1);
+            # only when both are active do we measure centroid/spread.
+            .refQuiet = refChunkRms#[.c] < chunkSilenceRms
+            .candQuiet = .cChunkRms < chunkSilenceRms
+            if .refQuiet and .candQuiet
+                .d = 0
+                removeObject: .chunkSnd
+            elsif .refQuiet or .candQuiet
+                .d = 1
+                removeObject: .chunkSnd
+            else
+                .chunkSpec = To Spectrum: "yes"
+                .cc = Get centre of gravity: 2
+                .cs = Get standard deviation: 2
+                removeObject: .chunkSnd, .chunkSpec
+
+                .dCent = 0
+                if refChunkCentroid#[.c] > 1
+                    .dCent = abs(.cc - refChunkCentroid#[.c]) / refChunkCentroid#[.c]
+                endif
+                .dSpread = 0
+                if refChunkSpread#[.c] > 1
+                    .dSpread = abs(.cs - refChunkSpread#[.c]) / refChunkSpread#[.c]
+                endif
+                .d = (.dCent + .dSpread) / 2
+                if .d > 1
+                    .d = 1
+                endif
+            endif
+            .chunkDist = .chunkDist + .d
+        endfor
+        .chunkDist = .chunkDist / nSpecChunks
+        .spectralSim = 1 - .chunkDist
 
         # -- Components 2 and 3: onset density + regularity -----
         if .doExpensive = 1
@@ -1097,7 +1583,20 @@ procedure calculateFitnessFAST: .sound, .doExpensive
             .dt = Get time step
 
             if .nFr > 4
-                .noiseFloor = refIntMin + 3
+                # v1.5: the candidate's own intensity MINIMUM failed
+                # as a floor reference whenever the candidate itself
+                # contains inserted digital silence (one of the
+                # genome's own genes) -- the minimum IS near-silence
+                # in that case, so "min + 3" barely filters anything
+                # and onset counting could reward silence-and-repeat
+                # patterns instead of real fragmentation. Use the
+                # candidate's own intensity MAXIMUM instead (computed
+                # once, reused for the regularity floor below too):
+                # gain-invariant regardless of the original
+                # recording's level, and not confused by the
+                # candidate's own silence gene.
+                .candIntMax = Get maximum: 0, 0, "Parabolic"
+                .noiseFloor = .candIntMax - 55
                 .onsetThresh = 3.5
                 .prevVal = Get value in frame: 1
                 .onsetCount = 0
@@ -1110,19 +1609,27 @@ procedure calculateFitnessFAST: .sound, .doExpensive
                 endfor
                 .onsetRate = .onsetCount / .dur
 
-                # 8 onsets/sec saturates to 1.0
-                .onsetScore = .onsetRate / 8.0
+                # v1.4: saturation point now scales with the preset's
+                # own onset weight (onsetSatRate, set once in EFFECT
+                # STRENGTH SCALING) instead of a flat 8/sec that let
+                # high-onset presets' whole populations clip to 1.0.
+                .onsetScore = .onsetRate / onsetSatRate
                 if .onsetScore > 1
                     .onsetScore = 1
                 endif
 
-                # Regularity: autocorrelation at several candidate
-                # lags, keep the best. Read values into a vector once.
-                # v1.3: silent frames read as -300 dB; deviations of
-                # ~250 dB from the mean would dominate the ACF and
-                # make it measure silence PLACEMENT, not envelope
-                # shape. Floor at refIntMin - 10 dB.
-                .envFloor = refIntMin - 10
+                # Regularity: autocorrelation at lags derived from
+                # THIS genome's own typical segment duration, kept the
+                # best. Read values into a vector once.
+                # v1.5: floor is now relative to the CANDIDATE's own
+                # intensity maximum (reusing .candIntMax above), not
+                # the input's -- the candidate is always peak-
+                # normalized (Scale peak: 0.95) before fitness runs,
+                # so flooring against the un-normalized input's range
+                # was not actually gain-invariant: changing only the
+                # input's recording level left every candidate at the
+                # same normalized level, but shifted this floor.
+                .envFloor = .candIntMax - 60
                 envVals# = zero#(.nFr)
                 for .f from 1 to .nFr
                     .ev = Get value in frame: .f
@@ -1138,21 +1645,43 @@ procedure calculateFitnessFAST: .sound, .doExpensive
                 .envMean = .envMean / .nFr
 
                 .bestACF = 0
-                .lagsToTry# = {0.15, 0.25, 0.4, 0.6, 0.9, 1.3}
+                # v1.4: lags are now multiples of this genome's own
+                # typical segment duration (documented behavior that
+                # the fixed {0.15, 0.25, 0.4, 0.6, 0.9, 1.3} list
+                # never actually implemented), clipped to a sane
+                # audible-rhythm range.
+                .lagsToTry# = zero#(4)
+                for .l to 4
+                    .lagCand = .l * .typicalSegDur
+                    if .lagCand < 0.08
+                        .lagCand = 0.08
+                    elsif .lagCand > 2.0
+                        .lagCand = 2.0
+                    endif
+                    .lagsToTry#[.l] = .lagCand
+                endfor
                 for .l from 1 to size(.lagsToTry#)
                     .lagS = .lagsToTry#[.l]
                     .lagF = round(.lagS / .dt)
                     if .lagF >= 2 and .lagF < .nFr - 2
                         .num = 0
-                        .den = 0
+                        .denA = 0
+                        .denB = 0
                         for .f from 1 to .nFr - .lagF
                             .a = envVals#[.f] - .envMean
                             .b = envVals#[.f + .lagF] - .envMean
                             .num = .num + .a * .b
-                            .den = .den + .a * .a
+                            .denA = .denA + .a * .a
+                            .denB = .denB + .b * .b
                         endfor
-                        if .den > 1e-9
-                            .acf = .num / .den
+                        # v1.4: proper Pearson-style normalization
+                        # (sqrt of the product of BOTH sides' energy).
+                        # The old num/den (energy of the LAG-0 side
+                        # only) could exceed 1 and got silently
+                        # clipped, letting unrelated envelopes tie at
+                        # the ceiling.
+                        if .denA > 1e-9 and .denB > 1e-9
+                            .acf = .num / sqrt(.denA * .denB)
                             if .acf > .bestACF
                                 .bestACF = .acf
                             endif
@@ -1185,24 +1714,81 @@ procedure calculateFitnessFAST: .sound, .doExpensive
 endproc
 
 procedure evolvePopulation
+    # v1.4: uniform crossover. v1.3 ran one tournament and cloned the
+    # WHOLE winning genome (mutation-only search, no recombination of
+    # two parents' genes). Two tournaments now pick parentA/parentB,
+    # and each of the 8 genes is drawn independently from one of them
+    # before mutation is applied -- a proper Genetic Algorithm
+    # crossover step, not just tournament + mutation.
     for .i to pop_size
         parent1 = randomInteger(1, pop_size)
         parent2 = randomInteger(1, pop_size)
-        
         if fitness_'parent1' > fitness_'parent2'
-            .parent = parent1
+            .parentA = parent1
         else
-            .parent = parent2
+            .parentA = parent2
         endif
-        
-        newSegMinMs_'.i' = segMinMs_'.parent'
-        newSegMaxMs_'.i' = segMaxMs_'.parent'
-        newSegBias_'.i' = segBias_'.parent'
-        newReorderProb_'.i' = reorderProb_'.parent'
-        newCrossfadeMs_'.i' = crossfadeMs_'.parent'
-        newSilenceProb_'.i' = silenceProb_'.parent'
-        newSilenceMin_'.i' = silenceMin_'.parent'
-        newSilenceMax_'.i' = silenceMax_'.parent'
+
+        parent3 = randomInteger(1, pop_size)
+        parent4 = randomInteger(1, pop_size)
+        if fitness_'parent3' > fitness_'parent4'
+            .parentB = parent3
+        else
+            .parentB = parent4
+        endif
+
+        if randomUniform(0, 1) < 0.5
+            newSegMinMs_'.i' = segMinMs_'.parentA'
+        else
+            newSegMinMs_'.i' = segMinMs_'.parentB'
+        endif
+        if randomUniform(0, 1) < 0.5
+            newSegMaxMs_'.i' = segMaxMs_'.parentA'
+        else
+            newSegMaxMs_'.i' = segMaxMs_'.parentB'
+        endif
+        if randomUniform(0, 1) < 0.5
+            newSegBias_'.i' = segBias_'.parentA'
+        else
+            newSegBias_'.i' = segBias_'.parentB'
+        endif
+        if randomUniform(0, 1) < 0.5
+            newReorderProb_'.i' = reorderProb_'.parentA'
+        else
+            newReorderProb_'.i' = reorderProb_'.parentB'
+        endif
+        if randomUniform(0, 1) < 0.5
+            newCrossfadeMs_'.i' = crossfadeMs_'.parentA'
+        else
+            newCrossfadeMs_'.i' = crossfadeMs_'.parentB'
+        endif
+        if randomUniform(0, 1) < 0.5
+            newSilenceProb_'.i' = silenceProb_'.parentA'
+        else
+            newSilenceProb_'.i' = silenceProb_'.parentB'
+        endif
+        if randomUniform(0, 1) < 0.5
+            newSilenceMin_'.i' = silenceMin_'.parentA'
+        else
+            newSilenceMin_'.i' = silenceMin_'.parentB'
+        endif
+        if randomUniform(0, 1) < 0.5
+            newSilenceMax_'.i' = silenceMax_'.parentA'
+        else
+            newSilenceMax_'.i' = silenceMax_'.parentB'
+        endif
+
+        # v1.4: segMin/segMax and silenceMin/silenceMax are an
+        # ordered PAIR of genes -- independent crossover can pull
+        # e.g. segMin from parentA and segMax from parentB and land
+        # on an inconsistent pair (max < min). Repair unconditionally,
+        # regardless of whether mutation touches them below.
+        if newSegMaxMs_'.i' < newSegMinMs_'.i' + 10
+            newSegMaxMs_'.i' = newSegMinMs_'.i' + 10
+        endif
+        if newSilenceMax_'.i' < newSilenceMin_'.i' + 5
+            newSilenceMax_'.i' = newSilenceMin_'.i' + 5
+        endif
     endfor
     
     .mutRate = 0.15
@@ -1231,6 +1817,35 @@ procedure evolvePopulation
         endif
         if randomUniform(0, 1) < .mutRate
             newSilenceMax_'.i' = max(newSilenceMin_'.i' + 5, min(max_silence_ms, newSilenceMax_'.i' + randomGauss(0, 10)))
+        endif
+    endfor
+
+    # v1.5: mutation can re-break the min/max gene pairs even though
+    # crossover's repair (above) already fixed them -- each gene
+    # mutates independently, so e.g. silenceMin can mutate upward on
+    # its own with silenceMax untouched, landing back on min > max.
+    # Repair again here, right before the new generation replaces the
+    # old one. Prefer giving ground on the max side (raise it to
+    # min+gap) when that still fits under its own ceiling; only when
+    # the min is already too close to the ceiling do we instead pull
+    # the min down, so the repair itself can never be pushed out of
+    # the genome's allowed range.
+    for .i to pop_size
+        if newSegMaxMs_'.i' < newSegMinMs_'.i' + 10
+            if newSegMinMs_'.i' + 10 <= eff_max_seg_ms
+                newSegMaxMs_'.i' = newSegMinMs_'.i' + 10
+            else
+                newSegMaxMs_'.i' = eff_max_seg_ms
+                newSegMinMs_'.i' = max(eff_min_seg_ms, newSegMaxMs_'.i' - 10)
+            endif
+        endif
+        if newSilenceMax_'.i' < newSilenceMin_'.i' + 5
+            if newSilenceMin_'.i' + 5 <= max_silence_ms
+                newSilenceMax_'.i' = newSilenceMin_'.i' + 5
+            else
+                newSilenceMax_'.i' = max_silence_ms
+                newSilenceMin_'.i' = max(min_silence_ms, newSilenceMax_'.i' - 5)
+            endif
         endif
     endfor
     
