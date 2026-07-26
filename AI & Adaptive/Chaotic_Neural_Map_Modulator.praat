@@ -3,9 +3,126 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026)
+# Version: 2.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.3 (2026):
+#   - FIX (output-layer activation mismatch, mandatory): training
+#     compared a raw tanh output directly against 0..1 targets, but
+#     generation then remapped that same tanh output with
+#     (tanh_out + 1) / 2 before feeding it to the volatility/clipping
+#     stage -- a remap the training pass never saw. In practice this
+#     compressed the learned range into roughly 0.5..1.0 and pushed
+#     states toward the upper clip whenever volatility > 1. The
+#     hidden layer still uses tanh; the output layer now uses a
+#     logistic sigmoid (naturally 0..1) in BOTH training and
+#     generation, and the (tanh_out + 1) / 2 remap is removed. The
+#     output-layer gradient is now outVal * (1 - outVal), the correct
+#     sigmoid derivative, replacing (1 - outVal^2).
+#   - FIX (HF_boost_dB ignored below 0): validation allowed -24..24
+#     dB, but the filter stage only ran when hF_boost_dB > 0, so
+#     negative values were silently accepted and did nothing. The
+#     gain formula (10^(dB/20) - 1) is signed and already works for
+#     cut as well as boost, so the stage now runs whenever
+#     hF_boost_dB <> 0. Parameter renamed HF_boost_dB -> HF_gain_dB
+#     to reflect that it can cut as well as boost.
+#   - FIX (RNG left in predictable state): the seed reproducibility
+#     mechanism never called random_initializeSafelyAndUnpredictably
+#     again after use, so Praat's generator stayed in the predictable
+#     state for any script run afterward in the same session. Now
+#     reset to the safe/unpredictable state once chaos generation is
+#     finished (after the last randomUniform/randomInteger call in
+#     this script), which does not affect this run's own
+#     reproducibility.
+#   - FIX (pass-through limiter): Dry_wet = 0 could still be altered
+#     by the final "Scale peak: 0.99" safety limiter if the original
+#     dry material itself already peaked above 0.99. The limiter is
+#     now skipped whenever Dry_wet = 0, so a fully dry output is a
+#     true pass-through with no exceptions.
+#   - FIX (fully unvoiced control-rate content still resynthesized):
+#     when Pitch_range_semitones <> 0 but every control-rate tick in
+#     a clip is unvoiced (nVoicedCtrl = 0), the script still built a
+#     two-point fallback PitchTier and ran the audio through
+#     Manipulation/PSOLA. It now bypasses PSOLA in that case too (the
+#     same copy-through used for Pitch_range_semitones = 0), since
+#     there is nothing for the pitch stage to do.
+#   - DOC: changelog and comments describing "Manipulation/resynthesis
+#     always runs" corrected -- as of v2.2 it's already conditional on
+#     Pitch_range_semitones <> 0, and as of this version also on
+#     nVoicedCtrl > 0.
+#   - NOTE: at rates above 1/chaos_step_ms (~16.67 Hz with the 60 ms
+#     chaos step), more than one kick can become due between chaos
+#     frames, but only one injection happens per frame. An info line
+#     now warns when Modulation_rate_Hz exceeds this effective
+#     ceiling, since the requested rate cannot be fully realized past
+#     that point.
+#
+# Changelog v2.2 (2026):
+#   - FIX (null test): zero-depth parameters now bypass the stage
+#     they control instead of silently going through a resynthesis
+#     that isn't a true no-op. Pitch_range_semitones = 0 skips PSOLA
+#     entirely (copies input_sound); Amplitude_mod_depth = 0 skips
+#     the IntensityTier stage. Ring_mod_depth = 0 already bypassed
+#     ring-mod; that guard is unchanged.
+#   - FIX (amplitude tier): IntensityTier points are a RELATIVE dB
+#     change (multiplier = 10^(dB/20)), not an absolute target
+#     level. Baseline moved from 70 to 0 dB. "Multiply" now called
+#     with scaling off ("no") so it no longer force-renormalizes the
+#     wet path to a 0.9 peak regardless of modulation depth.
+#   - FIX (dry/wet): the always-on final "Scale peak: 0.99" has been
+#     replaced with a conditional limiter that only engages if the
+#     mixed output actually exceeds 0.99, so Dry_wet = 0 is now
+#     genuinely a pass-through and Dry_wet's meaning no longer
+#     depends on how the wet path happened to get renormalized.
+#   - FIX (F0 resolution): the 10 ms control-rate pitch/voicing used
+#     for resynthesis and ring-mod is now tracked with its own
+#     To Pitch pass at control_step_s, instead of being held for six
+#     ticks from the 60 ms chaos-frame F0. Chaos/features still run
+#     at 60 ms by design; only the F0 fed to PSOLA and ring-mod is
+#     now genuinely 10 ms.
+#   - FIX (state range mismatch): the autonomous iteration's output
+#     is tanh, range -1..1, centred on 0 -- but the volatility
+#     centring and clipping downstream assumed 0..1, centred on 0.5.
+#     Mapped once, explicitly, right after the tanh: new_state =
+#     (tanh_out + 1) / 2. Previously roughly a third of the tanh
+#     range was clipped away on each iteration.
+#   - FIX (modulation-rate scheduler): kicks were scheduled off
+#     last_kick = time of the triggering frame, which resets the
+#     schedule late every time and made the realized rate creep
+#     below the requested Modulation_rate_Hz. Replaced with a
+#     next_kick_time accumulator that advances by exactly
+#     1/Modulation_rate_Hz regardless of which frame triggers it.
+#     Mutation can now only add an extra injection; it no longer
+#     flips off a scheduled kick.
+#   - FIX (silence handling): an undefined Intensity frame no longer
+#     falls back to a fixed 70 dB (louder than most real audio,
+#     which skewed normalization and transient detection). It now
+#     falls just below the lowest defined value in the clip. Rolloff
+#     no longer reports a near-zero frequency when a frame has zero
+#     spectral energy; it keeps the documented 2500 Hz fallback.
+#   - ADDED: explicit parameter validation (Modulation_rate_Hz > 0,
+#     Dry_wet in [0,1], Amplitude_mod_depth >= 0, Ring_mod_depth in
+#     [0,1], Instability >= 0, Pitch_range_semitones >= 0, HF_boost_dB
+#     in [-24,24]) with a clear exitScript instead of silent misuse.
+#     HF boost is skipped (not aborted) with a message when the
+#     sampling frequency is too low for its filter band.
+#   - ADDED: Random_seed field (0 = auto). Every run re-seeds Praat's
+#     generator explicitly and prints the seed actually used, so any
+#     run -- including an unseeded one -- can be reproduced later by
+#     entering the printed seed.
+#   - DOC: corrected claims that didn't match the code. "PSOLA never
+#     runs on unvoiced frames" -> Manipulation/resynthesis always
+#     runs, but unvoiced frames get no pitch-tier points, so PSOLA
+#     leaves them at the analyzed pitch; the earlier claim that dry
+#     mix "overwrites" the wet result was also wrong -- dry and wet
+#     are blended at all Dry_wet values. "Sidebands sit at consonant
+#     intervals" -> ring-mod carrier frequencies are chosen from
+#     F0-related ratios, but the resulting sidebands (at |1-r|*F0 and
+#     (1+r)*F0) aren't all consonant. Scale quantization is relative
+#     to each frame's instantaneous input F0, not a fixed global
+#     tonic -- on a melody, each note becomes its own momentary
+#     reference pitch.
 #
 # Changelog v2.1 (2026):
 #   - FIX: backpropagation computed hidden-layer deltas from output
@@ -23,14 +140,17 @@
 #     object[] reads return 0 (dry/wet 1-sample mismatch is benign).
 #
 # Description:
-#   Content-aware chaotic modulation. A small MLP is trained on
-#   feature streams from the input, iterated with controlled
+#   Content-aware, chaos-inspired modulation (a stochastic recurrent
+#   nonlinear neural map, not a dynamical system verified to be
+#   chaotic in the formal sense). A small MLP is trained on feature
+#   streams from the input, iterated with controlled stochastic
 #   instability, and its output modulates pitch, amplitude, and
 #   ring-frequency. The application is content-aware: pitch is
 #   modulated RELATIVE to the input's tracked F0 contour and
-#   quantized to a chosen scale; ring-modulation locks to
-#   harmonic multiples of local F0; unvoiced frames skip
-#   pitch-shift entirely; modulation depth reduces near transients.
+#   quantized to a chosen scale (relative to each frame's own local
+#   F0, not a fixed global tonic); ring-modulation carrier frequency
+#   is chosen from F0-related ratios; unvoiced frames get no pitch
+#   target; modulation depth reduces near transients.
 #
 # Design vs v1.x (substantial rewrite — not compatible):
 #   v1.x treated the input as a texture to overwrite with chaos.
@@ -41,19 +161,22 @@
 #     * Pitch modulation follows the input's contour instead of
 #       replacing it with a median. On speech, vowel intonation is
 #       preserved + wobbled. On melody, note shape is retained.
-#     * Ring-mod frequency locks to harmonic ratios of local F0
-#       when F0 is confident. Sidebands sit at consonant intervals
-#       (octave, fifth, fourth, etc.) instead of arbitrary Hz.
-#     * Unvoiced frames (fricatives, drums, silence, noise) skip
-#       the pitch-shift stage entirely — PSOLA never runs on them.
-#       Amplitude and ring-mod still apply at reduced depth.
+#     * Ring-mod carrier frequency is chosen from F0-related ratios
+#       when F0 is confident, rather than arbitrary Hz -- note this
+#       does not mean the resulting sidebands are all consonant.
+#     * Unvoiced frames (fricatives, drums, silence, noise) get no
+#       pitch-tier target, so PSOLA leaves them essentially as
+#       analyzed. Amplitude and ring-mod still apply at reduced
+#       depth.
 #     * 10 ms modulation control rate instead of 60 ms. Chaos is
-#       still iterated at 60 ms (it's about slow dynamics), but
-#       the tiers applied to audio are interpolated 6x finer.
+#       still iterated at 60 ms (it's about slow dynamics), and as
+#       of v2.2 F0/voicing for resynthesis is tracked natively at
+#       10 ms rather than held from the 60 ms chaos frame.
 #     * Mono only. Independent-chaos-per-channel stereo was a
 #       design error. Run the tool twice with different seeds
 #       and combine externally if you want stereo.
-#     * Pitch deviations quantized to a chosen scale.
+#     * Pitch deviations quantized to a chosen scale, relative to
+#       each frame's own local F0.
 #     * Transient-aware: near onsets, modulation depth reduces.
 #
 # Scope (honest limits):
@@ -71,7 +194,7 @@ endif
 input_sound_original = selected("Sound")
 input_name$ = selected$("Sound")
 
-form Chaotic Neural Map Modulator v2.1
+form Chaotic Neural Map Modulator v2.3
     comment === Presets ===
     optionmenu Preset: 2
         option Custom
@@ -84,6 +207,8 @@ form Chaotic Neural Map Modulator v2.1
     comment === Core Behavior ===
     real Instability 5.0
     real Modulation_rate_Hz 2.0
+    comment Random seed (0 = auto-generate; the seed used is printed below)
+    integer Random_seed 0
 
     comment === Pitch ===
     real Pitch_range_semitones 6
@@ -101,7 +226,7 @@ form Chaotic Neural Map Modulator v2.1
 
     comment === Output ===
     real Dry_wet 0.7
-    real HF_boost_dB 3
+    real HF_gain_dB 3
     boolean Draw_visualization 1
     boolean Play_output 1
 endform
@@ -157,6 +282,34 @@ else
 endif
 
 #=============================================================================
+# PARAMETER VALIDATION
+#=============================================================================
+# Explicit checks instead of letting a nonsensical value silently
+# misbehave downstream (divide-by-near-zero, inverted mix, etc).
+
+if modulation_rate_Hz <= 0
+    exitScript: "Modulation_rate_Hz must be greater than 0."
+endif
+if instability < 0
+    exitScript: "Instability must be 0 or greater."
+endif
+if pitch_range_semitones < 0
+    exitScript: "Pitch_range_semitones must be 0 or greater."
+endif
+if amplitude_mod_depth < 0
+    exitScript: "Amplitude_mod_depth must be 0 or greater."
+endif
+if ring_mod_depth < 0 or ring_mod_depth > 1
+    exitScript: "Ring_mod_depth must be between 0 and 1."
+endif
+if dry_wet < 0 or dry_wet > 1
+    exitScript: "Dry_wet must be between 0 and 1."
+endif
+if hF_gain_dB < -24 or hF_gain_dB > 24
+    exitScript: "HF_gain_dB must be between -24 and 24 dB."
+endif
+
+#=============================================================================
 # INTERNAL CONSTANTS (exposed in v1.x, now baked in for form simplicity)
 #=============================================================================
 
@@ -173,14 +326,30 @@ if autonomy > 0.98
     autonomy = 0.98
 endif
 chaos_volatility = 1.0 + instability * 0.4
-kick_interval_ms = 1000 / (modulation_rate_Hz + 0.001)
+kick_interval_ms = 1000 / modulation_rate_Hz
+
+# v2.3: kicks are only checked/injected once per chaos_step_ms (60 ms)
+# frame, so at most one injection can happen per frame. Above
+# 1000 / chaos_step_ms (~16.67 Hz), more than one kick becomes due
+# between frames but only one is applied, so the realized rate can no
+# longer keep up with the requested one.
+maxEffectiveRateHz = 1000 / chaos_step_ms
+if modulation_rate_Hz > maxEffectiveRateHz
+    appendInfoLine: "  Note: Modulation_rate_Hz (", fixed$(modulation_rate_Hz, 2),
+        ... " Hz) exceeds the effective ceiling of ", fixed$(maxEffectiveRateHz, 2),
+        ... " Hz set by the 60 ms chaos step; the realized rate will be capped near that ceiling."
+endif
+
 chaos_mutation = instability / 12
 if chaos_mutation > 0.9
     chaos_mutation = 0.9
 endif
 
-# Ring-mod harmonic ratios: F0 multipliers for consonant sidebands.
-# Excludes unison (collapses signal).
+# Ring-mod carrier ratios: F0 multipliers used to pick the carrier
+# frequency (carrier = ratio * F0). This does NOT guarantee consonant
+# output: ring modulation produces sidebands at |1-ratio|*F0 and
+# (1+ratio)*F0, not just at the carrier itself. Excludes unison
+# (ratio = 1 collapses the signal).
 nRingRatios = 7
 ringRatio# = {0.5, 0.75, 1.333, 1.5, 2.0, 2.5, 3.0}
 
@@ -201,7 +370,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== CHAOTIC NEURAL MAP MODULATOR v2.1 ==="
+writeInfoLine: "=== CHAOTIC NEURAL MAP MODULATOR v2.2 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Instability: ", fixed$(instability, 1), "/10"
 appendInfoLine: "Modulation rate: ", fixed$(modulation_rate_Hz, 2), " Hz"
@@ -226,6 +395,26 @@ else
     scaleName$ = scaleName6$
 endif
 appendInfoLine: "Pitch scale: ", scaleName$
+
+#=============================================================================
+# RANDOM SEED
+#=============================================================================
+# 0 = auto: draw a fresh seed from Praat's own unpredictable
+# generator, then re-seed predictably with it. Either way, from this
+# point on every randomUniform/randomInteger call in this run is
+# reproducible, and the seed actually used is printed so a "random"
+# run can be repeated exactly by entering it in Random_seed.
+
+if random_seed = 0
+    random_initializeSafelyAndUnpredictably ()
+    effective_seed = randomInteger(1, 999999999)
+    seedNote$ = " (auto-generated -- re-enter as Random_seed to repeat this run)"
+else
+    effective_seed = random_seed
+    seedNote$ = " (user-specified)"
+endif
+random_initializeWithSeedUnsafelyButPredictably (effective_seed)
+appendInfoLine: "Random seed: ", effective_seed, seedNote$
 appendInfoLine: ""
 
 #=============================================================================
@@ -256,11 +445,33 @@ endfor
 # Intensity (amplitude)
 selectObject: input_sound
 intensity = To Intensity: 75, chaos_step_s, "yes"
+
+# v2.2: an undefined frame (true silence) used to fall back to a
+# fixed 70 dB, which is louder than most real audio and corrupted
+# normalization and transient detection. Find the lowest *defined*
+# value first, and fall back to just below that instead.
+minDefined = 1e9
+anyDefined = 0
+for i to num_frames
+    selectObject: intensity
+    val = Get value at time: time#[i], "Cubic"
+    if val <> undefined
+        anyDefined = 1
+        if val < minDefined
+            minDefined = val
+        endif
+    endif
+endfor
+if anyDefined = 0
+    minDefined = 30
+endif
+silenceFloor = minDefined - 10
+
 for i to num_frames
     selectObject: intensity
     val = Get value at time: time#[i], "Cubic"
     if val = undefined
-        feat_amp#[i] = 70
+        feat_amp#[i] = silenceFloor
     else
         feat_amp#[i] = val
     endif
@@ -294,23 +505,29 @@ for i to num_frames
         endif
     endfor
 
-    target = total_energy * 0.85
-    cumulative = 0
+    # v2.2: with total_energy = 0 (a silent frame), target was also
+    # 0, so "cumulative >= target" was true at the very first bin and
+    # silence got a near-zero rolloff instead of the documented
+    # 2500 Hz fallback. Only run the search when there's energy.
     rolloff_freq = 2500
-    rolloff_done = 0
-    for bin to n_bins
-        if rolloff_done = 0
-            freq = Get frequency from bin number: bin
-            if freq > 100 and freq < 5000
-                power = Get real value in bin: bin
-                cumulative = cumulative + power^2
-                if cumulative >= target
-                    rolloff_freq = freq
-                    rolloff_done = 1
+    if total_energy > 0
+        target = total_energy * 0.85
+        cumulative = 0
+        rolloff_done = 0
+        for bin to n_bins
+            if rolloff_done = 0
+                freq = Get frequency from bin number: bin
+                if freq > 100 and freq < 5000
+                    power = Get real value in bin: bin
+                    cumulative = cumulative + power^2
+                    if cumulative >= target
+                        rolloff_freq = freq
+                        rolloff_done = 1
+                    endif
                 endif
             endif
-        endif
-    endfor
+        endfor
+    endif
 
     feat_rolloff#[i] = rolloff_freq
     removeObject: slice
@@ -489,6 +706,11 @@ for iter to training_iterations
             endif
         endfor
 
+        # v2.3: output layer uses a logistic sigmoid, not tanh. The
+        # targets (feat_amp#/feat_centroid#/feat_rolloff#) live in
+        # 0..1, and sigmoid maps there naturally -- matching what
+        # generation now does with this same output, below. The
+        # hidden layer keeps tanh.
         for d to 3
             sum = b_o_'d'
             for h to hidden_neurons
@@ -499,9 +721,9 @@ for iter to training_iterations
             if sum > 20
                 out_'d' = 1
             elsif sum < -20
-                out_'d' = -1
+                out_'d' = 0
             else
-                out_'d' = (exp(sum) - exp(-sum)) / (exp(sum) + exp(-sum))
+                out_'d' = 1 / (1 + exp(-sum))
             endif
         endfor
 
@@ -523,7 +745,9 @@ for iter to training_iterations
             err = targVal - outVal
             iterSSE = iterSSE + err * err
             iterCount = iterCount + 1
-            delta_o_'d' = err * (1 - outVal^2)
+            # v2.3: sigmoid derivative outVal * (1 - outVal), replacing
+            # the tanh derivative (1 - outVal^2) used through v2.2.
+            delta_o_'d' = err * outVal * (1 - outVal)
         endfor
 
         # 2) Hidden deltas from PRE-UPDATE output weights
@@ -578,16 +802,27 @@ injection_rate = 1 - autonomy
 state_1 = randomUniform(0.2, 0.8)
 state_2 = randomUniform(0.2, 0.8)
 state_3 = randomUniform(0.2, 0.8)
-last_kick = 0
+# v2.2: schedule kicks from an accumulator that advances by exactly
+# 1/Modulation_rate_Hz, instead of resetting last_kick to "now" every
+# time a kick fires. The old approach always lost a fraction of a
+# chaos_step_ms on every kick, so the realized rate crept below the
+# requested rate (worse at higher rates, since more kicks meant more
+# accumulated loss per second).
+next_kick_time = kick_interval_s
 
 for frame to num_frames
     inject = 0
-    if time#[frame] - last_kick >= kick_interval_s
+    if time#[frame] >= next_kick_time
         inject = 1
-        last_kick = time#[frame]
+        while next_kick_time <= time#[frame]
+            next_kick_time = next_kick_time + kick_interval_s
+        endwhile
     endif
     if randomUniform(0, 1) < chaos_mutation * 0.3
-        inject = 1 - inject
+        # v2.2: mutation only ever *adds* an extra injection now; it
+        # no longer flips off a scheduled kick, which used to further
+        # depress the realized rate below nominal.
+        inject = 1
     endif
 
     if inject = 1
@@ -630,13 +865,26 @@ for frame to num_frames
             wVal = w_out_'d'_'h'
             sum = sum + hidVal * wVal
         endfor
+        # v2.3: output layer is sigmoid here too, matching training
+        # exactly (same weights, same activation, same 0..1 range).
+        # Through v2.2 this used tanh (-1..1) and then remapped with
+        # (tanh_out + 1) / 2 -- a remap training never applied to its
+        # own output, so the learned mapping and the generated mapping
+        # disagreed. tanh's -1..1 output was compressed into roughly
+        # 0.5..1.0 by that remap, and volatility > 1 then pushed most
+        # states toward the upper clip. Sigmoid needs no remap: it is
+        # already the 0..1 range the volatility/clipping stage below
+        # expects, and it's the same activation the network was
+        # trained with.
         if sum > 20
-            new_state = 1
+            out_val = 1
         elsif sum < -20
-            new_state = -1
+            out_val = 0
         else
-            new_state = (exp(sum) - exp(-sum)) / (exp(sum) + exp(-sum))
+            out_val = 1 / (1 + exp(-sum))
         endif
+
+        new_state = out_val
 
         volatility_factor = chaos_volatility * randomUniform(0.8, 1.2)
         new_state = (new_state - 0.5) * volatility_factor + 0.5
@@ -657,6 +905,14 @@ for frame to num_frames
     endfor
 endfor
 
+# v2.3: this is the last point in the script that calls
+# randomUniform/randomInteger, so it's safe to leave the predictable,
+# seeded state now without affecting this run's own reproducibility.
+# Through v2.2 the script never called this, so Praat's generator
+# stayed in the predictable state (seeded above) for any other script
+# run afterward in the same session.
+random_initializeSafelyAndUnpredictably ()
+
 #=============================================================================
 # BUILD CONTROL-RATE SIGNALS (at control_step_ms)
 #
@@ -669,13 +925,29 @@ endfor
 #   ringFreq#[]         — per-tick ring-mod frequency (F0-locked when
 #                         voiced, fallback band when unvoiced)
 #   ringMix#[]          — per-tick ring-mod mix (reduced when unvoiced)
-#   voicedAtCtrl#[]     — 1 if this tick's nearest chaos frame is voiced
+#   voicedAtCtrl#[]     — 1 if this tick is voiced, per its own 10 ms
+#                         Pitch analysis (not held from the 60 ms
+#                         chaos frame; see CONTROL-RATE F0 TRACKING)
 #=============================================================================
 
 appendInfoLine: "Building control-rate signals..."
 
 control_step_s = control_step_ms / 1000
 num_ctrl = floor(duration / control_step_s)
+
+#=============================================================================
+# CONTROL-RATE F0 TRACKING (at control_step_ms)
+#=============================================================================
+# v2.2: pitch shifting and ring-mod used to inherit F0/voicing from
+# the 60 ms chaos frame, held flat for six 10 ms ticks -- so voiced/
+# unvoiced boundaries and fast pitch movement could lag by up to
+# 60 ms. This is a second, independent To Pitch pass at the actual
+# 10 ms control rate. The 60 ms f0_chaos#/voiced_chaos# above is
+# still used for the MLP's own slow dynamics and for the chaos-level
+# visualization; this one is what actually drives resynthesis.
+
+selectObject: input_sound
+pitch_obj_ctrl = To Pitch: control_step_s, 75, 600
 
 tCtrl# = zero#(num_ctrl)
 pitchShiftCents# = zero#(num_ctrl)
@@ -787,8 +1059,15 @@ for ci to num_ctrl
     depth_scale = modDepthScale#[chaos_frame] * (1 - chaos_frac)
         ... + modDepthScale#[chaos_frame_next] * chaos_frac
 
-    voicedAtCtrl#[ci] = voiced_chaos#[chaos_frame]
-    f0AtCtrl#[ci] = f0_chaos#[chaos_frame]
+    selectObject: pitch_obj_ctrl
+    f0valCtrl = Get value at time: tCtrl#[ci], "Hertz", "Linear"
+    if f0valCtrl = undefined
+        voicedAtCtrl#[ci] = 0
+        f0AtCtrl#[ci] = median_f0
+    else
+        voicedAtCtrl#[ci] = 1
+        f0AtCtrl#[ci] = f0valCtrl
+    endif
 
     # --- Pitch shift ---
     if voicedAtCtrl#[ci] = 1
@@ -817,52 +1096,69 @@ for ci to num_ctrl
     endif
 endfor
 
+removeObject: pitch_obj_ctrl
+
+nVoicedCtrl = 0
+for ci to num_ctrl
+    if voicedAtCtrl#[ci] = 1
+        nVoicedCtrl = nVoicedCtrl + 1
+    endif
+endfor
+
 #=============================================================================
 # APPLY PITCH MODULATION (follows input contour, voiced-only)
 #=============================================================================
 
 appendInfoLine: "Applying pitch modulation..."
 
-pitch_tier = Create PitchTier: "chaos_pitch", 0, duration
+# v2.2 null test: with Pitch_range_semitones = 0, pitchShiftCents#
+# is already all zero, but rebuilding the PitchTier and running it
+# through PSOLA overlap-add is still not a true no-op -- the F0
+# contour gets replaced by the resynthesis's own tracking even when
+# every shift is zero. Skip Manipulation entirely and pass the audio
+# straight through instead.
+# v2.3: the same reasoning applies when the clip is fully unvoiced
+# (nVoicedCtrl = 0) even if Pitch_range_semitones <> 0 -- with no
+# voiced ticks, no per-tick points ever get added to the PitchTier,
+# so PSOLA would run purely on the two-point median_f0 fallback for
+# no benefit, doing unnecessary work and re-resynthesizing material
+# that had nothing for the pitch stage to modulate. Bypass PSOLA in
+# that case too, the same way as the zero-range case.
+if pitch_range_semitones <> 0 and nVoicedCtrl > 0
+    pitch_tier = Create PitchTier: "chaos_pitch", 0, duration
 
-# Guard: if the input is fully unvoiced, PSOLA has nothing to do.
-# An empty PitchTier causes "Replace pitch tier" to fail. Seed the
-# tier with the fallback median_f0 at both endpoints so resynthesis
-# is well-defined. Since every voicedAtCtrl flag is 0, no per-frame
-# points will be added and the result is effectively a resynthesis
-# at median_f0 — which we then overwrite by dry at mix time if
-# dry_wet < 1. For drum/unvoiced material with dry_wet near 1,
-# this branch never runs in practice because PSOLA is bypassed
-# semantically by the mix. Either way, the seed prevents a crash.
-if nVoiced = 0
-    selectObject: pitch_tier
-    Add point: 0, median_f0
-    Add point: duration, median_f0
+    for ci to num_ctrl
+        if voicedAtCtrl#[ci] = 1
+            selectObject: pitch_tier
+            semis = pitchShiftCents#[ci] / 100
+            newF0 = f0AtCtrl#[ci] * 2 ^ (semis / 12)
+            if newF0 < 50
+                newF0 = 50
+            endif
+            if newF0 > 1200
+                newF0 = 1200
+            endif
+            Add point: tCtrl#[ci], newF0
+        endif
+    endfor
+
+    selectObject: input_sound
+    manip = To Manipulation: 0.01, 75, 600
+    selectObject: manip
+    plusObject: pitch_tier
+    Replace pitch tier
+    selectObject: manip
+    work_pitched = Get resynthesis (overlap-add)
+    removeObject: manip, pitch_tier
+elsif pitch_range_semitones = 0
+    appendInfoLine: "  Pitch range = 0: bypassing PSOLA, passing audio through unchanged."
+    selectObject: input_sound
+    work_pitched = Copy: "work_pitched"
+else
+    appendInfoLine: "  No voiced control ticks: bypassing PSOLA, passing audio through unchanged."
+    selectObject: input_sound
+    work_pitched = Copy: "work_pitched"
 endif
-
-for ci to num_ctrl
-    if voicedAtCtrl#[ci] = 1
-        selectObject: pitch_tier
-        semis = pitchShiftCents#[ci] / 100
-        newF0 = f0AtCtrl#[ci] * 2 ^ (semis / 12)
-        if newF0 < 50
-            newF0 = 50
-        endif
-        if newF0 > 1200
-            newF0 = 1200
-        endif
-        Add point: tCtrl#[ci], newF0
-    endif
-endfor
-
-selectObject: input_sound
-manip = To Manipulation: 0.01, 75, 600
-selectObject: manip
-plusObject: pitch_tier
-Replace pitch tier
-selectObject: manip
-work_pitched = Get resynthesis (overlap-add)
-removeObject: manip, pitch_tier
 
 #=============================================================================
 # APPLY AMPLITUDE MODULATION (at control rate)
@@ -870,16 +1166,29 @@ removeObject: manip, pitch_tier
 
 appendInfoLine: "Applying amplitude modulation..."
 
-amp_tier = Create IntensityTier: "chaos_amp", 0, duration
-for ci to num_ctrl
-    selectObject: amp_tier
-    Add point: tCtrl#[ci], 70 + intensityDeltadB#[ci]
-endfor
+if amplitude_mod_depth <> 0
+    amp_tier = Create IntensityTier: "chaos_amp", 0, duration
+    for ci to num_ctrl
+        selectObject: amp_tier
+        # v2.2: IntensityTier points are a RELATIVE dB change --
+        # amplitude is multiplied by 10^(dB/20) -- not an absolute
+        # target level. Baseline is 0 dB (unity gain) plus this
+        # tick's delta, not the old 70 dB baseline.
+        Add point: tCtrl#[ci], intensityDeltadB#[ci]
+    endfor
 
-selectObject: work_pitched
-plusObject: amp_tier
-work_amp = Multiply: "yes"
-removeObject: amp_tier, work_pitched
+    selectObject: work_pitched
+    plusObject: amp_tier
+    # v2.2: "no" disables Praat's built-in rescale-to-0.9-peak, which
+    # used to renormalize the wet path regardless of modulation
+    # depth and made the dry/wet ratio depend on the input's own
+    # peak level instead of Dry_wet.
+    work_amp = Multiply: "no"
+    removeObject: amp_tier, work_pitched
+else
+    appendInfoLine: "  Amplitude depth = 0: skipping amplitude modulation."
+    work_amp = work_pitched
+endif
 
 #=============================================================================
 # APPLY RING MODULATION (F0-locked, phase-continuous)
@@ -943,20 +1252,35 @@ if ring_mod_depth > 0
 endif
 
 #=============================================================================
-# HF BOOST
+# HF GAIN (boost or cut)
 #=============================================================================
 
-if hF_boost_dB > 0
-    appendInfoLine: "Applying HF boost..."
-    selectObject: work_amp
-    highBand = Filter (pass Hann band): 2000, sr / 2, 100
-    hbGainDelta = 10 ^ (hF_boost_dB / 20) - 1
-    hbGainStr$ = fixed$(hbGainDelta, 6)
-    hbIdStr$ = fixed$(highBand, 0)
-    selectObject: work_amp
-    Formula: "self + " + hbGainStr$
-        ... + " * object[" + hbIdStr$ + ", col]"
-    removeObject: highBand
+# v2.3: this used to only trigger when hF_boost_dB > 0, so negative
+# (cut) values passed validation but silently did nothing. The gain
+# formula below is signed and already works for cut as well as
+# boost, so the stage now runs for any nonzero value.
+if hF_gain_dB <> 0
+    if sr > 4000
+        if hF_gain_dB > 0
+            appendInfoLine: "Applying HF boost..."
+        else
+            appendInfoLine: "Applying HF cut..."
+        endif
+        selectObject: work_amp
+        highBand = Filter (pass Hann band): 2000, sr / 2, 100
+        hbGainDelta = 10 ^ (hF_gain_dB / 20) - 1
+        hbGainStr$ = fixed$(hbGainDelta, 6)
+        hbIdStr$ = fixed$(highBand, 0)
+        selectObject: work_amp
+        Formula: "self + " + hbGainStr$
+            ... + " * object[" + hbIdStr$ + ", col]"
+        removeObject: highBand
+    else
+        # v2.2: the boost band is 2000..sr/2 Hz. At sr <= 4000 Hz,
+        # sr/2 <= 2000 Hz, so the band's top would be at or below its
+        # bottom -- skip rather than run an ill-defined filter.
+        appendInfoLine: "  Skipping HF gain: sampling frequency too low (Nyquist <= 2000 Hz)."
+    endif
 endif
 
 #=============================================================================
@@ -1003,7 +1327,21 @@ removeObject: work_amp
 #=============================================================================
 
 selectObject: output_sound
-Scale peak: 0.99
+# v2.2: this used to be an unconditional "Scale peak: 0.99", which
+# meant even a fully dry (Dry_wet = 0) or fully null-depth output
+# still got renormalized. It only engages as a limiter if the mix
+# actually clips or comes close to it.
+# v2.3: even so, Dry_wet = 0 could still be altered if the ORIGINAL
+# dry material itself already peaked above 0.99 -- the limiter isn't
+# conditioned on the wet path having contributed anything. Skip it
+# entirely at Dry_wet = 0 so a fully dry output is unconditionally a
+# pass-through, matching what the mix formula already guarantees.
+if dry_wet > 0
+    outPeak = Get absolute extremum: 0, 0, "none"
+    if outPeak > 0.99
+        Scale peak: 0.99
+    endif
+endif
 
 #=============================================================================
 # VISUALIZATION
@@ -1020,7 +1358,7 @@ if draw_visualization
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", -1.7, "half",
-        ... "##Chaotic Neural Map Modulator v2.1##"
+        ... "##Chaotic Neural Map Modulator v2.2##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.20, "half",
@@ -1175,10 +1513,17 @@ if draw_visualization
     Select outer viewport: 4, 8, 3.60, 4.70
     Select inner viewport: 4.2, 7.7, 3.70, 4.60
 
-    Axes: 0, duration, -pitch_range_semitones * 1.2, pitch_range_semitones * 1.2
+    # v2.2: with Pitch_range_semitones = 0 (now a legitimate null-test
+    # input), pitch_range_semitones * 1.2 would give a zero-height
+    # axis range. Floor it so the panel still draws.
+    pitchAxisRange = pitch_range_semitones * 1.2
+    if pitchAxisRange < 1
+        pitchAxisRange = 1
+    endif
+
+    Axes: 0, duration, -pitchAxisRange, pitchAxisRange
     Paint rectangle: "{0.97, 0.97, 0.98}",
-        ... 0, duration, -pitch_range_semitones * 1.2,
-        ... pitch_range_semitones * 1.2
+        ... 0, duration, -pitchAxisRange, pitchAxisRange
 
     Colour: "{0.85, 0.85, 0.85}"
     Draw line: 0, 0, duration, 0
@@ -1187,7 +1532,7 @@ if draw_visualization
         if voicedAtCtrl#[ci] = 0
             Paint rectangle: "{0.93, 0.88, 0.88}",
                 ... tCtrl#[ci - 1], tCtrl#[ci],
-                ... -pitch_range_semitones * 1.2, pitch_range_semitones * 1.2
+                ... -pitchAxisRange, pitchAxisRange
         endif
     endfor
 
@@ -1280,6 +1625,7 @@ if draw_visualization
         ... + "  volatility=" + fixed$(chaos_volatility, 2)
         ... + "  mutation=" + fixed$(chaos_mutation, 2)
         ... + "  kick=" + fixed$(kick_interval_ms, 0) + "ms"
+        ... + "  seed=" + string$(effective_seed)
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
