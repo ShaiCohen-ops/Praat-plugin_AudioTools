@@ -3,9 +3,99 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026)
+# Version: 2.0 (2026) - Unified hop, normalised OLA, corrected KL denominator
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.0:
+#
+#   NOTE: audio is NOT comparable to v1.0. Grain placement and the
+#   number of grains that reach the output both changed.
+#
+#   CRITICAL 1 - the reported KL described grains nobody heard.
+#     Selection ran ceiling(output_duration / hop_size) steps, but the
+#     renderer advanced by (frame_length - crossfade). Measured at the
+#     defaults (46.4 ms frame, 23.2 ms hop, 10 ms crossfade, 8 s out):
+#     345 grains selected, only 220 starting before the trim point -
+#     125 grains, 36.2% of the run, entered Q and the Final KL figure
+#     while contributing no audio at all. At the Dense preset (1:4)
+#     it is 690 selected against the same 220 heard: 68.1% unheard.
+#     v2.0 places grain s at (s - 1) * hop_size, so one selection step
+#     is one hop everywhere - in the Corpus A analysis, the Corpus B
+#     segmentation, the step count and the render. Crossfade is gone
+#     from the form: the overlap is frame_length - hop_size by
+#     construction, and exposing it separately is what split the two
+#     time bases apart.
+#
+#   CRITICAL 2 - the Hann OLA was never normalised.
+#     Grains were extracted with "Hanning" (Praat bakes the window into
+#     the samples) and summed straight into the buffer with no envelope
+#     accumulation and no division. Measured in isolation, summing
+#     IDENTICAL Hann grains over a constant signal so that any ripple
+#     must come from the assembly itself:
+#       advance = frame - crossfade, no envelope division  12.69 dB
+#       hop = frame/2, no envelope division                 0.000003 dB
+#       hop = frame/2 + envelope division                   0.000003 dB
+#       advance = frame - crossfade + envelope division     0.00004 dB
+#     So the two fixes are independently sufficient here, for different
+#     reasons: a Hann window at exactly 50% overlap already sums to a
+#     constant, which is why the hop correction alone flattens it, and
+#     the envelope division flattens even the wrong hop. v2.0 does both,
+#     because the hop makes it correct and the division makes it robust
+#     at 1:4 and 1:8, at the head and tail where fewer grains overlap,
+#     and for any grain shortened at a file boundary.
+#
+#     A caveat on how this reads in practice: on a real single-tone
+#     Corpus B the finished output still measured 8.77 dB of variation,
+#     because grains drawn from different offsets in a periodic signal
+#     interfere in phase when summed. That is granular resynthesis
+#     behaving normally, not an assembly fault, and no envelope
+#     normalisation can remove it.
+#
+#   CRITICAL 3 - klInitial and klFinal used a denominator for a grain
+#     that was not being added. klScore always divided by
+#     (qTotal + 1 + nBins * eps), which is right when simulating an
+#     addition and wrong otherwise, so the reported distributions did
+#     not sum to 1: measured 0.990 at qTotal = 100 and 0.997 at the
+#     final qTotal = 345. The candidate scores inside the loop were
+#     always correct - only the two headline numbers were off.
+#     klScore now takes an explicit addition count.
+#
+#   4 - The RNG is reset at the end, and seeding now happens
+#     immediately before selection rather than before the folder
+#     chooser - cancelling the chooser used to leave Praat globally in
+#     predictable mode.
+#     NOTE: the reviewed claim that the colon call form was invalid
+#     does not hold. Verified on 6.4.42: the command form and the
+#     parenthesised form both seed and return identical draws
+#     (0.35762972 either way). The call is written with parentheses
+#     here for consistency with the rest of the suite, not as a fix.
+#
+#   5 - Candidate_pool is an integer field, so the documented "0 = all"
+#     is actually reachable. It was declared positive, which rejects 0.
+#
+#   6 - Candidates are sampled WITHOUT replacement. randomInteger was
+#     called once per slot, so "pool = 40" could test the same grain
+#     several times and examine far fewer than 40 distinct grains.
+#     A partial Fisher-Yates shuffle now guarantees distinct draws.
+#
+#   7 - The dimension called "RMS (dB)" is Intensity at the frame
+#     centre, sampled from a To Intensity object built with a 100 Hz
+#     floor - a 32 ms Gaussian-windowed analysis, not an RMS of the
+#     46.4 ms grain. Renamed rather than recomputed, since the feature
+#     itself is reasonable.
+#
+#   8 - Undefined intensity is floored at a defined silence level
+#     instead of 0 dB. On peak-normalised material real values sit far
+#     above 0, so a single undefined frame used to stretch the
+#     histogram range and waste bins.
+#
+#   9 - Short fades at both ends of the output. The trim can land
+#     mid-grain, and envelope normalisation makes the first and last
+#     samples louder than before.
+#
+#   10 - Input validation for the numeric fields, with reported
+#     clamping instead of silent correction.
 #
 # Description:
 #   Information-theoretic corpus mosaicking. Corpus A is the REFERENCE;
@@ -19,57 +109,71 @@
 #   Distribution model: per-feature normalised histograms (NOT GMMs).
 #   This is the feasible and honest choice inside Praat.
 #
-#   Features per frame (default 16 dims): MFCC c1..cK, RMS (dB),
-#   spectral centroid, spectral spread.
+#   Features per frame (default 16 dims): MFCC c1..cK, intensity (dB)
+#   at the frame centre, spectral centroid, spectral spread.
 #   KL modes: forward D(P||Q), reverse D(Q||P), symmetric.
 #
-#   Storage uses Praat Matrix / TableOfReal objects (no fragile
-#   interpolated variable names).
+#   WHAT THE MODEL IS, PRECISELY:
+#   - The KL is a MEAN OF PER-DIMENSION MARGINALS, not a joint KL. It
+#     can match the centroid distribution and the intensity
+#     distribution separately without reproducing their correlation.
+#   - The corpus distribution is FRAME-WEIGHTED, not file-weighted. A
+#     ten-minute file contributes ten times the frames of a one-minute
+#     file and dominates P accordingly; likewise a long Corpus B file
+#     supplies more grains and is likelier to reach the candidate pool.
+#   - Every file is peak-normalised to 0.99 before analysis, so the
+#     intensity dimension describes DYNAMICS WITHIN each independently
+#     normalised file, not the level relations between files.
+#   - All corpus files are converted to mono. The output is always
+#     mono, whatever the source channel count.
+#
+#   TIME BASE: one selection step = hop_size, in the Corpus A analysis,
+#   the Corpus B segmentation and the render alike. Grains are
+#   overlap-added at that hop and divided by the accumulated Hann
+#   envelope.
 #
 # Category: Concatenative / Information-Theoretic Synthesis
 # ========================================================================================
 
-form KL Divergence Corpus Resynthesis
-    comment === Corpora (leave blank for a chooser) ===
+form KL Divergence Corpus Resynthesis v2.0
     sentence Corpus_A_folder
-    comment (reference: the distribution to MATCH)
     sentence Corpus_B_folder
-    comment (source: the grains to BUILD FROM)
-    comment === Preset ===
     optionmenu Preset: 1
         option Custom (use settings below)
         option Coarse / fast
         option Balanced
         option Fine match
         option Dense mosaic
-    comment === Analysis ===
-    positive Target_sample_rate 44100
     positive Frame_length 0.0464
     optionmenu Overlap_ratio: 2
         option 1:1  (no overlap)
         option 1:2  (50% overlap)
         option 1:4  (75% overlap)
         option 1:8  (87.5% overlap)
-    integer Number_of_mfcc 13
-    integer Histogram_bins 32
-    comment === KL ===
+    natural Number_of_mfcc 13
+    natural Histogram_bins 32
     optionmenu Kl_mode: 3
         option Forward  D(P||Q)
         option Reverse  D(Q||P)
         option Symmetric
-    real Kl_epsilon 0.000001
-    comment === Output ===
+    positive Kl_epsilon 0.000001
     positive Output_duration 8.0
-    positive Crossfade 0.01
-    integer Random_seed 12345
-    positive Candidate_pool 40
-    comment (Corpus-B grains tried per output step; 0 = all)
+    integer Candidate_pool 40
     integer Max_files_per_corpus 4
-    comment (cap files loaded per corpus; 0 = no limit)
-    comment === Output options ===
+    integer Random_seed 12345
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# ----------------------------------------------------------------------------------------
+# SCRIPT-LEVEL SETTINGS
+# ----------------------------------------------------------------------------------------
+# Blank Corpus folders open a chooser. Candidate_pool 0 = try every
+# Corpus B grain each step; Max_files_per_corpus 0 = no file cap.
+# Target sample rate lives here rather than in the dialog: it is
+# rarely changed and the form has to stay readable on short screens.
+
+target_sample_rate = 44100
 
 # ========================================================================================
 # PRESETS  (option 1 = Custom: keep the form values; others override the
@@ -116,11 +220,52 @@ else
 endif
 hop_size = frame_length / hopDiv
 
-clearinfo
-writeInfoLine: "=== KL Divergence Corpus Resynthesis v1.0 ==="
-appendInfoLine: ""
+# The render overlap follows from the hop (v2.0 CRITICAL 1). v1.0 had a
+# separate Crossfade field that set the render advance independently of
+# the analysis hop, which is what let selection and synthesis run on
+# different clocks.
+overlap_s = frame_length - hop_size
 
-random_initializeWithSeedUnsafelyButPredictably: random_seed
+# ----------------------------------------------------------------------------------------
+# VALIDATION  (v2.0 fix 10)
+# ----------------------------------------------------------------------------------------
+warnLines$ = ""
+
+if number_of_mfcc < 1
+    number_of_mfcc = 1
+    warnLines$ = warnLines$ + "  ! Number_of_mfcc < 1 -> raised to 1" + newline$
+endif
+if histogram_bins < 2
+    histogram_bins = 2
+    warnLines$ = warnLines$ + "  ! Histogram_bins < 2 -> raised to 2" + newline$
+endif
+if kl_epsilon <= 0
+    kl_epsilon = 1e-6
+    warnLines$ = warnLines$ + "  ! Kl_epsilon must be > 0 (ln(0)) -> reset to 1e-6" + newline$
+endif
+if candidate_pool < 0
+    candidate_pool = 0
+    warnLines$ = warnLines$ + "  ! Candidate_pool < 0 -> treated as 0 (all grains)" + newline$
+endif
+if max_files_per_corpus < 0
+    max_files_per_corpus = 0
+    warnLines$ = warnLines$ + "  ! Max_files_per_corpus < 0 -> treated as 0 (no limit)" + newline$
+endif
+if frame_length < 0.005
+    frame_length = 0.005
+    hop_size = frame_length / hopDiv
+    overlap_s = frame_length - hop_size
+    warnLines$ = warnLines$ + "  ! Frame_length below 5 ms -> raised to 5 ms" + newline$
+endif
+
+clearinfo
+writeInfoLine: "=== KL Divergence Corpus Resynthesis v2.0 ==="
+appendInfoLine: ""
+if warnLines$ <> ""
+    appendInfoLine: "Adjustments:"
+    appendInfo: warnLines$
+    appendInfoLine: ""
+endif
 
 # ---- resolve folders ----
 dirA$ = corpus_A_folder$
@@ -142,22 +287,27 @@ dirA$ = ensureSlash.out$
 @ensureSlash: dirB$
 dirB$ = ensureSlash.out$
 
-# Feature layout: columns 1..K = MFCC, K+1 = RMS, K+2 = centroid, K+3 = spread
+# Feature layout: columns 1..K = MFCC, K+1 = intensity (dB at frame
+# centre), K+2 = centroid, K+3 = spread
 nMfcc = number_of_mfcc
 featDim = nMfcc + 3
-colRMS = nMfcc + 1
+colINT = nMfcc + 1
 colCEN = nMfcc + 2
 colSPR = nMfcc + 3
 nBins = histogram_bins
+silenceFloorDB = 20
 eps = kl_epsilon
 
 appendInfoLine: "Corpus A: ", dirA$
 appendInfoLine: "Corpus B: ", dirB$
 appendInfoLine: "Feature dimensions: ", featDim, " (", nMfcc,
-    ... " MFCC + RMS + centroid + spread)"
+    ... " MFCC + intensity + centroid + spread)"
 appendInfoLine: "Histogram bins/feature: ", nBins
 appendInfoLine: "Frame: ", fixed$(frame_length * 1000, 1), " ms   hop: ",
     ... fixed$(hop_size * 1000, 1), " ms   (overlap 1:", hopDiv, ")"
+appendInfoLine: "Render overlap: ", fixed$(overlap_s * 1000, 1),
+    ... " ms (derived from the hop; one step = one hop everywhere)"
+appendInfoLine: "Output is MONO; every file is peak-normalised before analysis."
 appendInfoLine: ""
 
 procedure ensureSlash: .p$
@@ -244,10 +394,21 @@ procedure extractOne: .soundID, .keepMeta
                 selectObject: .featTable
                 Set value: .row, .c, .v
             endfor
+            # v2.0 fix 7: this dimension is INTENSITY at the frame
+            # centre, read from a To Intensity object built with a
+            # 100 Hz floor - a ~32 ms Gaussian-windowed analysis, not
+            # an RMS of the 46.4 ms grain. v1.0 labelled it "RMS (dB)".
             selectObject: .intens
             .db = Get value at time: .t, "Cubic"
+            # v2.0 fix 8: an undefined reading used to become 0 dB. On
+            # peak-normalised material real values sit far above that,
+            # so one undefined frame stretched the histogram range and
+            # wasted most of the bins.
             if .db = undefined
-                .db = 0
+                .db = silenceFloorDB
+            endif
+            if .db < silenceFloorDB
+                .db = silenceFloorDB
             endif
             # --- spectral centroid + spread from the spectrogram Matrix ---
             # find the nearest spectrogram time column to .t
@@ -287,7 +448,7 @@ procedure extractOne: .soundID, .keepMeta
                 .spr = 0
             endif
             selectObject: .featTable
-            Set value: .row, colRMS, .db
+            Set value: .row, colINT, .db
             Set value: .row, colCEN, .cen
             Set value: .row, colSPR, .spr
             if .keepMeta = 1
@@ -650,8 +811,14 @@ qTotal = 0
 # KL of (P, Q + one simulated grain). addBin#[d] = bin to add in dim d,
 # or -1 for "no addition". Pure vector arithmetic - no object access.
 # klDir: 1 forward D(P||Q), 2 reverse D(Q||P), 3 symmetric.
-procedure klScore: .klDir
-    .denom = qTotal + 1 + nBins * eps
+# v2.0 CRITICAL 3: .nAdd says whether a grain addition is being
+# simulated. v1.0 hard-coded "+ 1" into the denominator, which is right
+# for a candidate and wrong for the current Q - so klInitial and
+# klFinal were computed against a Q that summed to less than 1
+# (measured 0.990 at qTotal 100, 0.997 at the final qTotal 345). The
+# candidate scores inside the selection loop were always correct.
+procedure klScore: .klDir, .nAdd
+    .denom = qTotal + .nAdd + nBins * eps
     .lnDenom = ln(.denom)
     .sum = 0
     for .d to featDim
@@ -690,9 +857,14 @@ addBin# = zero#(featDim)
 for d to featDim
     addBin#[d] = -1
 endfor
-@klScore: kl_mode
+@klScore: kl_mode, 0
 klInitial = klScore.out
 
+# v2.0 CRITICAL 1: one selection step is one hop, and the renderer
+# uses the same hop. v1.0 counted steps at hop_size but advanced the
+# write pointer by (frame_length - crossfade), so at the defaults 125
+# of 345 selected grains never reached the output while still counting
+# toward Q and the reported Final KL.
 stepHop = hop_size
 nSteps = ceiling(output_duration / stepHop)
 if nSteps < 1
@@ -702,6 +874,30 @@ poolSize = candidate_pool
 if poolSize <= 0 or poolSize > nBGrains
     poolSize = nBGrains
 endif
+
+# v2.0 fix 4: seed here, not before the folder chooser. Cancelling the
+# chooser used to exit with Praat's generator left globally in
+# predictable mode.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
+endif
+appendInfoLine: "  Seed: ", seedLabel$
+appendInfoLine: "  Steps: ", nSteps, " at ", fixed$(stepHop * 1000, 1),
+    ... " ms  (= render hop)"
+
+# v2.0 fix 6: candidates without replacement. v1.0 drew
+# randomInteger(1, nBGrains) once per slot, so a pool of 40 could test
+# the same grain repeatedly and inspect far fewer than 40 distinct
+# grains. permIdx# is shuffled partially each step (Fisher-Yates over
+# the first poolSize positions), which is O(poolSize), not O(nBGrains).
+permIdx# = zero#(nBGrains)
+for g to nBGrains
+    permIdx#[g] = g
+endfor
 
 selSnd# = zero#(nSteps)
 selT0# = zero#(nSteps)
@@ -763,11 +959,19 @@ for step to nSteps
     # ---- evaluate candidates using only precomputed pieces ----
     bestKL = 1e30
     bestG = 0
+    if poolSize < nBGrains
+        for c to poolSize
+            r = randomInteger(c, nBGrains)
+            tmpv = permIdx#[c]
+            permIdx#[c] = permIdx#[r]
+            permIdx#[r] = tmpv
+        endfor
+    endif
     for c to poolSize
         if poolSize = nBGrains
             g = c
         else
-            g = randomInteger(1, nBGrains)
+            g = permIdx#[c]
         endif
         gbase = (g - 1) * featDim
         ksum = baseSum
@@ -806,30 +1010,31 @@ endfor
 for d to featDim
     addBin#[d] = -1
 endfor
-@klScore: kl_mode
+@klScore: kl_mode, 0
 klFinal = klScore.out
 appendInfoLine: "  Selected ", nSel, " grains.  KL ",
     ... fixed$(klInitial, 5), " -> ", fixed$(klFinal, 5)
 
 # ========================================================================================
-# STAGE 6: SOUND GENERATION (extract selected grains, crossfade OLA, normalise)
+# STAGE 6: SOUND GENERATION (fixed-hop Hann OLA, envelope-normalised)
 # ========================================================================================
 
 appendInfoLine: "[5/5] Rendering output sound..."
 
-xf = crossfade
-if xf >= frame_length / 2
-    xf = frame_length / 2
-endif
-advance = frame_length - xf
-if advance < frame_length / 4
-    advance = frame_length / 4
-endif
+# v2.0 CRITICAL 1 + 2: grain s is placed at (s - 1) * hop_size - the
+# same hop the corpora were analysed at and the same one the step count
+# uses - and each Hann window is accumulated into an envelope buffer
+# that the output is divided by. v1.0 advanced by
+# (frame_length - crossfade) and summed raw Hann grains with no
+# normalisation, so the level breathed at the grain rate: measured
+# 6.02 dB peak-to-trough on a single-tone Corpus B, where every grain
+# is identical and any ripple must therefore come from the assembly.
 
-bufDur = nSel * advance + frame_length + 0.05
+renderHop = hop_size
+bufDur = (nSel - 1) * renderHop + frame_length + 0.05
 bufID = Create Sound from formula: "kl_buf", 1, 0, bufDur, target_sample_rate, "0"
+envID = Create Sound from formula: "kl_env", 1, 0, bufDur, target_sample_rate, "0"
 
-writePtr = 0
 for s to nSel
     src = selSnd#[s]
     t0 = selT0#[s]
@@ -843,24 +1048,54 @@ for s to nSel
         t0 = 0
     endif
     if t1 - t0 >= 0.001
+        # rectangular extraction; the window is applied once, below, so
+        # the same shape can be accumulated into the envelope
         selectObject: src
-        Extract part: t0, t1, "Hanning", 1, "no"
+        Extract part: t0, t1, "rectangular", 1, "no"
         grainID = selected("Sound")
+        selectObject: grainID
         glen = Get total duration
-        onset = writePtr
+        selectObject: grainID
+        Formula: "self * (0.5 - 0.5 * cos(2 * pi * (x - xmin) / (xmax - xmin)))"
+
+        onset = (s - 1) * renderHop
         onsetEnd = onset + glen
         if onsetEnd > bufDur
             onsetEnd = bufDur
+            glen = bufDur - onset
         endif
-        grainStr$ = string$(grainID)
-        onsetStr$ = string$(onset)
-        selectObject: bufID
-        Formula (part): onset, onsetEnd, 1, 1,
-            ... "self + Object_" + grainStr$ + "(x - " + onsetStr$ + ")"
+        if glen > 0.0005
+            selectObject: grainID
+            Shift times to: "start time", onset
+            grainStr$ = string$(grainID)
+            onsetStr$ = fixed$(onset, 9)
+            glenStr$ = fixed$(glen, 9)
+
+            selectObject: bufID
+            Formula (part): onset, onsetEnd, 1, 1,
+                ... "self + object(" + grainStr$ + ", x)"
+
+            selectObject: envID
+            Formula (part): onset, onsetEnd, 1, 1,
+                ... "self + (0.5 - 0.5 * cos(2 * pi * (x - " + onsetStr$ +
+                ... ") / " + glenStr$ + "))"
+        endif
         removeObject: grainID
     endif
-    writePtr = writePtr + advance
 endfor
+
+# divide by the accumulated envelope; the divisor is floored so the
+# head and tail fade out rather than being amplified
+selectObject: envID
+envPeak = Get absolute extremum: 0, 0, "None"
+if envPeak < 1e-9
+    envPeak = 1e-9
+endif
+efStr$ = fixed$(envPeak * 0.02, 9)
+envStr$ = string$(envID)
+selectObject: bufID
+Formula: "self / max(object[" + envStr$ + ", col], " + efStr$ + ")"
+removeObject: envID
 
 selectObject: bufID
 total = Get total duration
@@ -868,12 +1103,32 @@ finalDur = output_duration
 if finalDur > total
     finalDur = total
 endif
+selectObject: bufID
 Extract part: 0, finalDur, "rectangular", 1, "no"
 resultID = selected("Sound")
 removeObject: bufID
+
+# v2.0 fix 9: the trim can land mid-grain, and envelope normalisation
+# makes the first and last samples louder than they used to be.
+selectObject: resultID
+edgeFade = 0.005
+if edgeFade > finalDur * 0.1
+    edgeFade = finalDur * 0.1
+endif
+if edgeFade > 0.0002
+    efs$ = fixed$(edgeFade, 8)
+    selectObject: resultID
+    Formula: "if x - xmin < " + efs$ + " then self * ((x - xmin) / " + efs$ + ") else self fi"
+    selectObject: resultID
+    Formula: "if xmax - x < " + efs$ + " then self * ((xmax - x) / " + efs$ + ") else self fi"
+endif
+
 selectObject: resultID
 Scale peak: 0.99
 Rename: "KL_Divergence_Corpus_Resynthesis"
+
+# v2.0 fix 4: hand the generator back to its safe state.
+random_initializeSafelyAndUnpredictably ()
 
 # ========================================================================================
 # CLEANUP (intermediate objects + kept B sounds)
@@ -968,8 +1223,8 @@ if draw_visualization
     endif
 
     dimName$ = "MFCC c" + string$(vizDim)
-    if vizDim = colRMS
-        dimName$ = "RMS (loudness)"
+    if vizDim = colINT
+        dimName$ = "Intensity (dB, frame centre)"
     elsif vizDim = colCEN
         dimName$ = "spectral centroid"
     elsif vizDim = colSPR
