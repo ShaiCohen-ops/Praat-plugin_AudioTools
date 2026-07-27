@@ -2,52 +2,142 @@
 # Praat AudioTools - Granular_Attention_Resynth.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026) - Fix pitch-jitter grain length + wet/dry object[id,col]
+# Version: 2.0 (2026) - True Hann OLA, gated softmax, live time jitter
 # License: MIT License
 #
+# Changelog v2.0:
+#
+#   NOTE: audio is NOT comparable to v1.1. The synthesis architecture,
+#   the selection distribution and the transient score all changed.
+#
+#   CRITICAL 1 - the ReLU gate did almost nothing.
+#     Rejected grains were set to 0 and then fed to softmax anyway, and
+#     exp(0) is not 0. Worked example, verified numerically: one active
+#     grain at score 1, ninety-nine rejected at 0, meanScore 0.5,
+#     alpha 1 -> active weight 1.000, each rejected 0.135, rejected
+#     total 13.398. The suppressed grains carried 93.05% of the
+#     probability mass. v2.0 computes softmax over ACTIVE grains only;
+#     rejected grains get exactly zero probability. If nothing passes
+#     the floor, only the single highest-scoring grain is activated
+#     (v1.1 re-opened the gate completely, so Floor_dB = +6 could turn
+#     into no floor at all).
+#
+#   CRITICAL 2 - the synthesis was not the Hann OLA this header claimed.
+#     Each grain was extracted with a full Hann window baked into its
+#     samples (verified: centre 0.500, edge 0.00049), and then
+#     Concatenate with overlap applied its own Hann crossfade over the
+#     same region. Measured on two 0.2 s Hann grains at 0.1 s overlap:
+#     the source level was 0.5, the grain peak read 0.500, and the join
+#     centre read 0.250 - a 6 dB dip at every single join, repeating at
+#     the hop rate. There was no envelope accumulation and no division
+#     by it anywhere in v1.1, despite the pipeline note above.
+#     v2.0 implements the documented architecture: rectangular grain ->
+#     one Hann window -> add into an output buffer at its true time ->
+#     accumulate the same Hann into an envelope buffer -> divide by the
+#     accumulated envelope. Overlaps beyond 2 grains now sum correctly,
+#     which the pairwise crossfade could never do.
+#
+#   CRITICAL 3 - Time_jitter_ms was a dead parameter.
+#     timeJitter was computed and then never read again. Self-Remix
+#     (8 ms), Slabs (15 ms) and Cloud (30 ms) all sounded exactly as
+#     they would at 0 ms. Buffer OLA makes it implementable, so it is
+#     now real output-position jitter around the nominal hop.
+#
+#   4 - Sources shorter than the grain broke the candidate math.
+#     With srcDur 50 ms, grainDur 150 ms, candHop 100 ms:
+#     floor((0.05 - 0.15) / 0.1) + 1 = 0, forced to 2, and candidate 2
+#     got tStart 0.100 with tEnd 0.050 - a start later than its end.
+#     overlapDur was still 75 ms against a real grain of at most 50 ms.
+#     v2.0 clamps the grain to the source length first and allows a
+#     single candidate.
+#
+#   5 - Transient mode scored decays as loudly as attacks. It used the
+#     absolute energy difference, so note endings competed with note
+#     beginnings while the form promised "attacks/onsets repeat".
+#     Score_type now distinguishes Onsets (positive slope only) from
+#     Energy edges (absolute slope, the old behaviour, honestly named).
+#
+#   6 - Scores are now measured on the windowed grain that is actually
+#     rendered. v1.1 scored a rectangular extraction but played a Hann
+#     one, so an event near a grain edge could win the competition and
+#     then be almost entirely windowed away.
+#
+#   7 - Dry is now the unmodified source level. v1.1 took the dry copy
+#     from the peak-normalized mono working sound, so Wet_percent = 0
+#     did not return the input. NOTE: output is MONO by design; a
+#     stereo input is summed. This was never stated before.
+#
+#   8 - Random_seed added (0 = unpredictable), and the generator is
+#     returned to its safe state once synthesis is done.
+#
+#   9 - Temperature renamed Attention_sharpness_alpha. The formula is
+#     exp(score * T), so a higher value SHARPENED the distribution,
+#     which is the inverse of the usual softmax(z / T) convention.
+#     The name now matches the behaviour and the alpha in these notes.
+#
+#   10 - Pitch jitter is varispeed and is now labelled as such. It is
+#     applied BEFORE windowing, so the Hann envelope is no longer
+#     truncated when a downward shift lengthens the grain. Grains no
+#     longer need identical lengths, because OLA places each one at its
+#     own position instead of relying on a uniform concatenation hop.
+#
+#   11 - A short fade is applied to the wet path after the trim to
+#     source length, since the cut can land mid-grain at a non-zero
+#     amplitude.
+#
+#   12 - Hop count is capped with a warning. v1.1 allowed a 1 ms hop
+#     over a ten-minute source, which meant roughly 600,000 Sound
+#     objects alive before concatenation. Buffer OLA keeps only one
+#     grain object alive at a time, but the cap still guards run time.
+#
+#   13 - Removed the unused cdf# array (drawGrain always rebuilt its own
+#     penalized distribution) and fixed two visualization panels that
+#     still read "v1.0".
+#
 # Description:
-#   Granular Attention Re-synthesis — grains compete for
+#   Granular Attention Re-synthesis - grains compete for
 #   being chosen (selection), not for gain.
 #
 #   CONCEPT:
 #   ReLU + Softmax applied to GRAIN SELECTION, not filtering.
 #   The source re-synthesizes itself from its own most
-#   energetic (or most transient) moments. At high temperature
+#   energetic (or most transient) moments. At high alpha
 #   this becomes motif extraction / crystallized stutter.
-#   At low temperature it becomes a textural self-remix.
+#   At low alpha it becomes a textural self-remix.
 #
 #   PIPELINE:
-#   1. Extract N candidate grains (sliding window, candHop)
-#      scored by: RMS power, transient slope, or mixed
-#   2. ReLU gate: grains below (meanScore + floor_dB) → score=0
-#   3. Softmax with temperature α:
-#        gated[i]  = score[i] * (score[i] above floor)
-#        w[i]      = exp(gated[i] / meanGated * α)   (log-sum-exp)
-#        prob[i]   = w[i] / Σw
-#      → probability distribution over candidate grains
-#   4. Build cumulative CDF for inverse-transform sampling
-#   5. Synthesis: for each output hop position:
-#        - draw grain index from CDF (weighted random)
+#   1. Extract N candidate grains (sliding window, candHop),
+#      Hann-window each one, and score it by RMS power,
+#      onset slope, energy-edge slope, or a mix
+#   2. ReLU gate: grains below (meanScore + floor_dB) are removed
+#      from the competition entirely
+#   3. Softmax over the SURVIVING grains only:
+#        w[i]    = exp((gated[i] - maxGated) / meanScore * alpha)
+#        prob[i] = w[i] / sum(w)   (rejected grains: prob = 0)
+#   4. Synthesis: for each output hop position:
+#        - draw a grain by inverse-transform sampling
 #        - recency penalty: last 3 grains less likely to repeat
-#        - apply Hanning window to selected grain copy
-#        - optional pitch micro-jitter (resample ± semitones)
-#        - optional time jitter (± ms)
-#        - OLA: Shift times by outputPosition + jitter
-#               Formula: outBuf += object[grainCopy]
-#               hannEnv += object[hannGrainCopy]
-#   6. Normalize by accumulated Hanning envelope (OLA correct)
-#   7. Wet/dry blend
+#        - optional varispeed pitch jitter (resample +/- semitones)
+#        - apply one Hann window
+#        - place at hop position +/- time jitter:
+#            outBuf += grain          (Formula (part), region-limited)
+#            envBuf += the same Hann window
+#   5. Divide outBuf by the accumulated envelope (true OLA)
+#   6. Trim to source length, fade, wet/dry blend
 #
 #   SCORE TYPES:
-#   RMS      — energy competition: loudest events repeat
-#   Transient — slope competition: attacks/onsets repeat
-#   Mixed    — weighted blend: control transient_weight
+#   RMS          - energy competition: loudest grains repeat
+#   Onsets       - positive slope only: attacks repeat
+#   Energy edges - absolute slope: attacks AND decays repeat
+#   Mixed        - weighted blend: control transient_weight
 #
-#   MUSICAL EFFECTS BY α:
-#   α 1-3:  gentle self-remix, all grains roughly equally chosen
-#   α 5-10: energetic moments dominate, texture crystallizes
-#   α 15+:  winner-take-most: a few grains repeat obsessively
-#           → motif extraction, stutter loops, self-quotation
+#   OUTPUT IS MONO. Stereo and multichannel input is summed to mono.
+#
+#   MUSICAL EFFECTS BY alpha:
+#   alpha 1-3:  gentle self-remix, all grains roughly equally chosen
+#   alpha 5-10: energetic moments dominate, texture crystallizes
+#   alpha 15+:  winner-take-most: a few grains repeat obsessively
+#               -> motif extraction, stutter loops, self-quotation
 #
 # Category: Granular / Composition / Experimental
 # ============================================================
@@ -71,42 +161,37 @@ endif
 # FORM
 # ============================================================
 
-form Granular Attention Re-synthesis v1.1
-    comment === Preset ===
+form Granular Attention Re-synthesis v2.0
     optionmenu Preset: 1
         option Custom
         option Self-Remix      (gentle, textural, most grains used)
-        option Crystallize     (high α, dense repeats, few grains)
-        option Motif Extract   (very high α, stutter of strongest)
-        option Onset Harvest   (transient score, attacks repeat)
-        option Shimmer         (small grains, light jitter, low α)
-        option Slabs            (large grains 300ms, slow mosaic)
-        option Cloud            (very large grains 600ms, drifting layers)
-    comment === Grain Parameters ===
+        option Crystallize     (high alpha, dense repeats, few grains)
+        option Motif Extract   (very high alpha, stutter of strongest)
+        option Onset Harvest   (onset score, attacks repeat)
+        option Shimmer         (small grains, light jitter, low alpha)
+        option Slabs           (large grains 300ms, slow mosaic)
+        option Cloud           (very large grains 600ms, drifting layers)
     positive Grain_size_ms 150.0
     positive Synthesis_hop_ms 50.0
-    comment Candidate density (ms between candidate grain starts)
     positive Candidate_hop_ms 20.0
-    comment === Competition ===
-    positive Temperature 1.0
-    comment ReLU floor: dB above mean score (0=at mean, +6=strict, -6=open)
+    positive Attention_sharpness_alpha 1.0
     real Floor_dB 0.0
-    comment === Score Type ===
     optionmenu Score_type: 1
         option RMS            (energy: loudest grains repeat)
-        option Transient      (slope: attacks/onsets repeat)
-        option Mixed          (blend of RMS and Transient)
+        option Onsets         (positive slope: attacks repeat)
+        option Energy edges   (absolute slope: attacks and decays)
+        option Mixed          (blend of RMS and slope)
     real Transient_weight 0.5
-    comment === Variation ===
     positive Time_jitter_ms 5.0
     real Pitch_jitter_semitones 0.0
     real Recency_penalty 0.5
-    comment === Mix ===
     real Wet_percent 100.0
-    comment === Output ===
+    integer Random_seed 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+
 
 # ============================================================
 # PRESETS
@@ -118,7 +203,7 @@ if preset = 2
     grain_size_ms           = 60.0
     synthesis_hop_ms        = 30.0
     candidate_hop_ms        = 20.0
-    temperature             = 3.0
+    attention_sharpness_alpha = 3.0
     floor_dB                = -3.0
     score_type              = 1
     transient_weight        = 0.3
@@ -131,7 +216,7 @@ elsif preset = 3
     grain_size_ms           = 40.0
     synthesis_hop_ms        = 20.0
     candidate_hop_ms        = 15.0
-    temperature             = 12.0
+    attention_sharpness_alpha = 12.0
     floor_dB                = 3.0
     score_type              = 1
     transient_weight        = 0.2
@@ -144,7 +229,7 @@ elsif preset = 4
     grain_size_ms           = 30.0
     synthesis_hop_ms        = 15.0
     candidate_hop_ms        = 10.0
-    temperature             = 25.0
+    attention_sharpness_alpha = 25.0
     floor_dB                = 6.0
     score_type              = 1
     transient_weight        = 0.0
@@ -157,7 +242,7 @@ elsif preset = 5
     grain_size_ms           = 50.0
     synthesis_hop_ms        = 25.0
     candidate_hop_ms        = 15.0
-    temperature             = 8.0
+    attention_sharpness_alpha = 8.0
     floor_dB                = 2.0
     score_type              = 2
     transient_weight        = 1.0
@@ -170,7 +255,7 @@ elsif preset = 6
     grain_size_ms           = 20.0
     synthesis_hop_ms        = 10.0
     candidate_hop_ms        = 10.0
-    temperature             = 2.0
+    attention_sharpness_alpha = 2.0
     floor_dB                = -6.0
     score_type              = 1
     transient_weight        = 0.2
@@ -183,7 +268,7 @@ elsif preset = 7
     grain_size_ms           = 300.0
     synthesis_hop_ms        = 150.0
     candidate_hop_ms        = 50.0
-    temperature             = 10.0
+    attention_sharpness_alpha = 10.0
     floor_dB                = 2.0
     score_type              = 1
     transient_weight        = 0.0
@@ -196,9 +281,9 @@ elsif preset = 8
     grain_size_ms           = 600.0
     synthesis_hop_ms        = 300.0
     candidate_hop_ms        = 80.0
-    temperature             = 4.0
+    attention_sharpness_alpha = 4.0
     floor_dB                = -3.0
-    score_type              = 3
+    score_type              = 4
     transient_weight        = 0.4
     time_jitter_ms          = 30.0
     pitch_jitter_semitones  = 0.0
@@ -227,6 +312,11 @@ endif
 if candidate_hop_ms < 1.0
     candidate_hop_ms = 1.0
 endif
+# alpha is the sharpness of the attention distribution: higher = more
+# concentrated on the winners. v1.1 called this Temperature, which reads
+# backwards for a softmax (softmax(z/T) flattens as T rises). Resolved
+# here, AFTER the presets have had their say.
+temperature = attention_sharpness_alpha
 if temperature < 0.01
     temperature = 0.01
 endif
@@ -265,26 +355,92 @@ timeJitter  = time_jitter_ms   / 1000.0
 wetLevel    = wet_percent / 100.0
 dryLevel    = 1.0 - wetLevel
 
+warnLines$ = ""
+
+# v2.0 fix 4: a grain cannot be longer than the source. v1.1 left
+# grainDur alone here, so with srcDur 50 ms / grainDur 150 ms /
+# candHop 100 ms the candidate count came out as
+# floor((0.05 - 0.15) / 0.1) + 1 = 0, was forced up to 2, and the
+# second candidate got tStart 0.100 against tEnd 0.050 - a start later
+# than its own end. overlapDur stayed at 75 ms for a grain that could
+# never exceed 50 ms.
+if grainDur > srcDur
+    warnLines$ = warnLines$ + "  ! Grain (" + fixed$(grainDur * 1000, 1) +
+        ... " ms) longer than source -> clamped to " +
+        ... fixed$(srcDur * 1000, 1) + " ms" + newline$
+    grainDur = srcDur
+endif
+
+# Re-apply the overlap rule against the clamped grain.
+if synthHop > grainDur / 2
+    synthHop = grainDur / 2
+endif
+if synthHop < 0.001
+    synthHop = 0.001
+endif
+if candHop > grainDur
+    candHop = grainDur
+endif
+
+# Time jitter must not be able to push a grain a whole hop out of place.
+if timeJitter > synthHop
+    timeJitter = synthHop
+    warnLines$ = warnLines$ + "  ! Time_jitter capped to one hop (" +
+        ... fixed$(timeJitter * 1000, 1) + " ms)" + newline$
+endif
+
+# v2.0 fix 12: guard run time. v1.1 permitted a 1 ms hop across a
+# ten-minute source, i.e. roughly 600,000 Sound objects held alive
+# before its single concatenation. Buffer OLA keeps one grain object
+# alive at a time, but the loop cost still needs a ceiling.
+maxHops = 20000
+projectedHops = floor(srcDur / synthHop) + 1
+if projectedHops > maxHops
+    synthHop = srcDur / (maxHops - 1)
+    warnLines$ = warnLines$ + "  ! " + string$(projectedHops) +
+        ... " hops requested; hop raised to " + fixed$(synthHop * 1000, 2) +
+        ... " ms to stay under " + string$(maxHops) + newline$
+endif
+
+# v2.0 fix 8: reproducibility. v1.1 had no seed at all.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
+endif
+
 # ============================================================
 # PREPARE MONO
 # ============================================================
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Granular Attention Re-synthesis v1.1"
+writeInfoLine:  "  Granular Attention Re-synthesis v2.0"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source   : ", srcName$, "  (", fixed$(srcDur, 3), " s)"
 appendInfoLine: "Preset   : ", presetName$
 appendInfoLine: "Grain    : ", fixed$(grain_size_ms, 1), " ms  hop: ", fixed$(synthesis_hop_ms, 1), " ms"
-appendInfoLine: "Temp α   : ", fixed$(temperature, 2)
+appendInfoLine: "Alpha    : ", fixed$(temperature, 2), " (attention sharpness)"
 appendInfoLine: "Floor    : mean + ", fixed$(floor_dB, 1), " dB"
 if score_type = 1
-    appendInfoLine: "Score    : RMS energy"
+    scoreLabel$ = "RMS energy"
 elsif score_type = 2
-    appendInfoLine: "Score    : Transient slope"
+    scoreLabel$ = "Onsets (positive slope)"
+elsif score_type = 3
+    scoreLabel$ = "Energy edges (absolute slope)"
 else
-    appendInfoLine: "Score    : Mixed (transient weight=", fixed$(transient_weight, 2), ")"
+    scoreLabel$ = "Mixed (slope weight=" + fixed$(transient_weight, 2) + ")"
+endif
+appendInfoLine: "Score    : ", scoreLabel$
+appendInfoLine: "Seed     : ", seedLabel$
+appendInfoLine: "Output   : MONO"
+if warnLines$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Adjustments:"
+    appendInfo: warnLines$
 endif
 appendInfoLine: "Jitter   : ±", fixed$(time_jitter_ms, 1), " ms  pitch: ±", fixed$(pitch_jitter_semitones, 2), " st"
 appendInfoLine: ""
@@ -295,6 +451,13 @@ if srcCh > 1
 else
     monoSrc = Copy: "gar_mono"
 endif
+
+# v2.0 fix 7: the dry path is the source at ITS OWN level. v1.1 copied
+# the dry signal from the peak-normalized working sound below, so
+# Wet_percent = 0 did not return the input.
+selectObject: monoSrc
+dryRef = Copy: "gar_dry_ref"
+
 selectObject: monoSrc
 Scale peak: 0.99
 
@@ -304,19 +467,31 @@ Scale peak: 0.99
 
 appendInfoLine: "[1/4] Extracting and scoring candidate grains..."
 
+# v2.0 fix 4: allow a SINGLE candidate. v1.1 forced the count to 2,
+# which manufactured an invalid second grain on short sources.
 nCandGrains = floor((srcDur - grainDur) / candHop) + 1
-if nCandGrains < 2
-    nCandGrains = 2
+if nCandGrains < 1
+    nCandGrains = 1
 endif
 
 appendInfoLine: "  Candidates: ", nCandGrains, "  (", fixed$(candHop * 1000, 1), " ms hop)"
 
-rmsScore#     = zero#(nCandGrains)
+rmsScore#       = zero#(nCandGrains)
 grainStartTime# = zero#(nCandGrains)
 
+# v2.0 fix 6: score the WINDOWED grain, i.e. the audio that actually
+# reaches the output. v1.1 scored a rectangular extraction but rendered
+# a Hann-windowed one, so an event sitting near a grain edge could win
+# the competition and then be almost entirely windowed away.
 for ii from 1 to nCandGrains
     tStart = (ii - 1) * candHop
-    tEnd   = tStart + grainDur
+    if tStart > srcDur - grainDur
+        tStart = srcDur - grainDur
+    endif
+    if tStart < 0
+        tStart = 0
+    endif
+    tEnd = tStart + grainDur
     if tEnd > srcDur
         tEnd = srcDur
     endif
@@ -324,6 +499,8 @@ for ii from 1 to nCandGrains
 
     selectObject: monoSrc
     gSnd = Extract part: tStart, tEnd, "rectangular", 1, "no"
+    selectObject: gSnd
+    Formula: "self * (0.5 - 0.5 * cos(2 * pi * (x - xmin) / (xmax - xmin)))"
     selectObject: gSnd
     rms = Get root-mean-square: 0, 0
     removeObject: gSnd
@@ -334,18 +511,29 @@ for ii from 1 to nCandGrains
     rmsScore#[ii] = rms * rms
 endfor
 
-# Compute transient scores (first derivative of RMS energy)
+# Slope score. v2.0 fix 5: v1.1 took the ABSOLUTE energy difference, so
+# a note ending scored as highly as a note beginning while the form
+# promised "attacks/onsets repeat". Onsets now means positive slope
+# only; the old behaviour is still available as Energy edges.
 transScore# = zero#(nCandGrains)
 transScore#[1] = 0
 for ii from 2 to nCandGrains
     diff = rmsScore#[ii] - rmsScore#[ii - 1]
-    if diff < 0
-        diff = -diff
+    if score_type = 3
+        # Energy edges: attacks AND decays
+        if diff < 0
+            diff = -diff
+        endif
+    else
+        # Onsets / Mixed: rising energy only
+        if diff < 0
+            diff = 0
+        endif
     endif
     transScore#[ii] = diff
 endfor
 
-# Normalize transient scores to same range as RMS for mixing
+# Normalize slope scores to the same range as RMS for mixing
 maxTrans = transScore#[1]
 for ii from 2 to nCandGrains
     if transScore#[ii] > maxTrans
@@ -372,7 +560,7 @@ for ii from 1 to nCandGrains
     transN = transScore#[ii] / maxTrans
     if score_type = 1
         rawScore#[ii] = rmsN
-    elsif score_type = 2
+    elsif score_type = 2 or score_type = 3
         rawScore#[ii] = transN
     else
         rawScore#[ii] = rmsN * (1 - transient_weight) + transN * transient_weight
@@ -400,46 +588,66 @@ endif
 floorFactor = 10 ^ (floor_dB / 10)
 floorValue  = meanScore * floorFactor
 
-# ReLU gate: zero out grains below floor
-gated# = zero#(nCandGrains)
+# ReLU gate. v2.0 CRITICAL 1: v1.1 set rejected grains to 0 and then
+# ran softmax over ALL of them, and exp(0) is not 0. Verified example:
+# 1 active grain at score 1 and 99 rejected at 0, meanScore 0.5,
+# alpha 1 -> active weight 1.000, each rejected exp(-2) = 0.135,
+# rejected total 13.398. The suppressed grains held 93.05% of the
+# probability mass, so at low alpha the floor barely mattered.
+# An explicit active mask now keeps them out of the sum entirely.
+gated#  = zero#(nCandGrains)
+active# = zero#(nCandGrains)
 nActive = 0
 for ii from 1 to nCandGrains
     if rawScore#[ii] >= floorValue
-        gated#[ii] = rawScore#[ii]
+        gated#[ii]  = rawScore#[ii]
+        active#[ii] = 1
         nActive     = nActive + 1
     endif
 endfor
 
-# If all suppressed, open gate fully
+# If nothing clears the floor, activate ONLY the strongest grain.
+# v1.1 re-opened the gate for everything, so Floor_dB = +6 could end up
+# behaving as no floor at all whenever the threshold exceeded the max.
 if nActive = 0
-    for ii from 1 to nCandGrains
-        gated#[ii] = rawScore#[ii]
+    bestIdx = 1
+    bestVal = rawScore#[1]
+    for ii from 2 to nCandGrains
+        if rawScore#[ii] > bestVal
+            bestVal = rawScore#[ii]
+            bestIdx = ii
+        endif
     endfor
-    nActive = nCandGrains
+    gated#[bestIdx]  = rawScore#[bestIdx]
+    active#[bestIdx] = 1
+    nActive = 1
+    warnLines$ = warnLines$ +
+        ... "  ! No grain cleared the floor; using the single strongest grain" +
+        ... newline$
 endif
 
-# Softmax on linear gated scores, normalised by meanScore
-# log-sum-exp: subtract max before exponentiation
-maxGated = gated#[1]
-for ii from 2 to nCandGrains
-    if gated#[ii] > maxGated
+# Softmax over ACTIVE grains only (max subtracted for stability)
+maxGated = -1e30
+for ii from 1 to nCandGrains
+    if active#[ii] = 1 and gated#[ii] > maxGated
         maxGated = gated#[ii]
     endif
 endfor
-if maxGated < 1e-30
-    maxGated = 1e-30
-endif
 
 softNum# = zero#(nCandGrains)
 softSum  = 0
 for ii from 1 to nCandGrains
-    arg = (gated#[ii] - maxGated) / meanScore * temperature
-    if arg < -500
-        arg = -500
+    if active#[ii] = 1
+        arg = (gated#[ii] - maxGated) / meanScore * temperature
+        if arg < -500
+            arg = -500
+        endif
+        sw = exp(arg)
+    else
+        sw = 0
     endif
-    sw = exp(arg)
     softNum#[ii] = sw
-    softSum       = softSum + sw
+    softSum      = softSum + sw
 endfor
 if softSum < 1e-30
     softSum = 1e-30
@@ -450,14 +658,9 @@ for ii from 1 to nCandGrains
     prob#[ii] = softNum#[ii] / softSum
 endfor
 
-# Build cumulative distribution for inverse-transform sampling
-cdf# = zero#(nCandGrains)
-cdf#[1] = prob#[1]
-for ii from 2 to nCandGrains
-    cdf#[ii] = cdf#[ii - 1] + prob#[ii]
-endfor
-# Ensure last bin sums exactly to 1.0
-cdf#[nCandGrains] = 1.0
+# v2.0 fix 13: the cdf# array built here in v1.1 was never read -
+# drawGrain always rebuilds its own distribution after the recency
+# penalty. Removed.
 
 appendInfoLine: "  Active grains: ", nActive, "/", nCandGrains
 appendInfoLine: "  Mean score: ", fixed$(meanScore, 6),
@@ -466,7 +669,7 @@ appendInfoLine: "  Mean score: ", fixed$(meanScore, 6),
 # ============================================================
 # HELPER: DRAW GRAIN FROM CDF WITH RECENCY PENALTY
 # Returns: selectedGrainIdx (1-based)
-# Uses globals: cdf#, prob#, nCandGrains, recency_penalty
+# Uses globals: prob#, nCandGrains, recency_penalty
 # Recency state: lastGrain1, lastGrain2, lastGrain3
 # ============================================================
 
@@ -514,54 +717,73 @@ procedure drawGrain
 endproc
 
 # ============================================================
-# PHASE 3: SYNTHESIS — Concatenate with overlap
+# PHASE 3: SYNTHESIS - TRUE HANN OVERLAP-ADD
 # ============================================================
-# Architecture: collect all windowed grains, then call
-# Praat's built-in Concatenate with overlap ONCE.
-# Avoids all manual OLA/envelope accumulation complexity.
-# Output length = nOutputHops * synthHop + (grainDur - synthHop)
-# trimmed to srcDur.
+# v2.0 CRITICAL 2. v1.1 extracted every grain with a Hann window baked
+# into its samples and then handed the whole set to
+# Concatenate with overlap, which applies its OWN Hann crossfade on top.
+# Measured on two 0.2 s Hann grains at 0.1 s overlap over a flat 0.5
+# source: grain peak 0.500, join centre 0.250 - a 6 dB dip at every
+# join, repeating at the hop rate, with no envelope normalization
+# anywhere despite the header claiming it. Pairwise crossfading also
+# cannot represent three or more grains overlapping at once, which is
+# exactly what happens when hop < grain/2.
+#
+# This is the architecture the header always described:
+#   rectangular grain -> varispeed -> one Hann window
+#   -> outBuf += grain at its true time
+#   -> envBuf += the same Hann window
+#   -> outBuf / envBuf
+# Formula (part) keeps each add region-limited, so cost scales with
+# total grain samples rather than hops x buffer length.
 # ============================================================
 
-appendInfoLine: "[3/4] Synthesizing output..."
+appendInfoLine: "[3/4] Synthesizing output (Hann OLA)..."
 
 nOutputHops = floor(srcDur / synthHop) + 1
-overlapDur  = grainDur - synthHop
-if overlapDur < 0
-    overlapDur = 0
-endif
+
+# Buffer runs past the source so late grains and jitter are not clipped
+bufDur = srcDur + grainDur + timeJitter + 0.05
+
+Create Sound from formula: "gar_outbuf", 1, 0, bufDur, srcSr, "0"
+outBuf = selected("Sound")
+Create Sound from formula: "gar_envbuf", 1, 0, bufDur, srcSr, "0"
+envBuf = selected("Sound")
 
 # Recency state
 lastGrain1 = 0
 lastGrain2 = 0
 lastGrain3 = 0
 
-# Per-hop grain choice log for visualization
+# Per-hop logs for visualization
 chosenGrain# = zero#(nOutputHops)
 
 appendInfoLine: "  Hops: ", nOutputHops,
-    ... "  overlap per grain: ", fixed$(overlapDur * 1000, 1), " ms"
+    ... "  grain: ", fixed$(grainDur * 1000, 1), " ms",
+    ... "  jitter: +/-", fixed$(timeJitter * 1000, 1), " ms"
 
 for hop from 1 to nOutputHops
-    # Select grain
     @drawGrain
     chosen = drawGrain.index
     chosenGrain#[hop] = chosen
 
-    # Extract grain with Hanning window applied by Praat
+    # --- rectangular extraction (window comes later, after varispeed) ---
     origStart = grainStartTime#[chosen]
     tGEnd = origStart + grainDur
     if tGEnd > srcDur
         tGEnd = srcDur
     endif
     selectObject: monoSrc
-    grainCopy = Extract part: origStart, tGEnd, "Hanning", 1, "no"
+    grainCopy = Extract part: origStart, tGEnd, "rectangular", 1, "no"
 
-    # Pitch micro-jitter: resample then trim/pad back to exact grainDur
-    # so all grains have identical length for uniform-hop concatenation
+    # --- varispeed pitch jitter (v2.0 fix 10) ---
+    # This is varispeed, not duration-preserving pitch shifting: pitch,
+    # internal speed and event durations all move together. It runs
+    # BEFORE the window, so a downward shift can no longer leave the
+    # Hann envelope truncated the way it did in v1.1. Grains need not
+    # share a length any more, because OLA places each at its own time.
     if pitch_jitter_semitones > 0.001
         pitchShift = randomUniform(-pitch_jitter_semitones, pitch_jitter_semitones)
-        # Shift pitch UP by shifting SR down (and vice versa)
         shiftFactor = 2 ^ (pitchShift / 12)
         interpSr = round(srcSr / shiftFactor)
         if interpSr < 1000
@@ -573,37 +795,52 @@ for hop from 1 to nOutputHops
         selectObject: grainCopy
         pitched = Resample: interpSr, 10
         removeObject: grainCopy
-        # Override SR back to srcSr: pitch shifted, duration unchanged
         selectObject: pitched
         Override sampling frequency: srcSr
         grainCopy = pitched
-
-        # Resample+override changed the grain's DURATION (that is the pitch
-        # shift). For uniform-overlap concatenation every grain must be the
-        # same length, so trim or zero-pad back to exactly grainDur.
-        selectObject: grainCopy
-        jDur = Get total duration
-        targetDur = tGEnd - origStart
-        if jDur > targetDur + 0.0000001
-            fixed = Extract part: 0, targetDur, "rectangular", 1, "no"
-            removeObject: grainCopy
-            grainCopy = fixed
-        elsif jDur < targetDur - 0.0000001
-            padLen = targetDur - jDur
-            Create Sound from formula: "gar_pad", 1, 0, padLen, srcSr, "0"
-            padG = selected("Sound")
-            selectObject: grainCopy
-            plusObject: padG
-            joined = Concatenate
-            removeObject: grainCopy, padG
-            grainCopy = joined
-        endif
     endif
 
-    # Store grain ID for later concatenation
-    grainID_'hop' = grainCopy
+    # --- one Hann window, applied exactly once ---
+    selectObject: grainCopy
+    gLen = Get total duration
+    if gLen > 0.0005
+        selectObject: grainCopy
+        Formula: "self * (0.5 - 0.5 * cos(2 * pi * (x - xmin) / (xmax - xmin)))"
+    endif
 
-    if hop mod 50 = 0
+    # --- output position, with real time jitter (v2.0 CRITICAL 3) ---
+    pos = (hop - 1) * synthHop
+    if timeJitter > 0
+        pos = pos + randomUniform(-timeJitter, timeJitter)
+    endif
+    if pos < 0
+        pos = 0
+    endif
+    if pos + gLen > bufDur
+        pos = bufDur - gLen
+    endif
+    if pos < 0
+        pos = 0
+    endif
+
+    # --- overlap-add into the buffers ---
+    selectObject: grainCopy
+    Shift times to: "start time", pos
+    gid$ = string$(grainCopy)
+    p0$ = fixed$(pos, 9)
+    p1$ = fixed$(pos + gLen, 9)
+    gl$ = fixed$(gLen, 9)
+
+    selectObject: outBuf
+    Formula (part): pos, pos + gLen, 1, 1, "self + object(" + gid$ + ", x)"
+
+    selectObject: envBuf
+    Formula (part): pos, pos + gLen, 1, 1,
+        ... "self + (0.5 - 0.5 * cos(2 * pi * (x - " + p0$ + ") / " + gl$ + "))"
+
+    removeObject: grainCopy
+
+    if hop mod 200 = 0
         appendInfoLine: "  Grain ", hop, "/", nOutputHops,
             ... "  (", fixed$(100 * hop / nOutputHops, 0), "%)"
     endif
@@ -611,22 +848,26 @@ endfor
 
 appendInfoLine: "  Grain ", nOutputHops, "/", nOutputHops, " (100%)"
 
-# --- Single Concatenate with overlap ---
-# Select all grains (stored IDs), then Praat does one O(n) C-level concat
-selectObject: grainID_1
-for hop from 2 to nOutputHops
-    plusObject: grainID_'hop'
-endfor
+# --- divide by the accumulated Hann envelope (the OLA step) ---
+appendInfoLine: "  Normalizing by accumulated envelope..."
+selectObject: envBuf
+envPeak = Get absolute extremum: 0, 0, "None"
+if envPeak < 1e-9
+    envPeak = 1e-9
+endif
+# Floor the divisor rather than dividing by near-zero: at the very head
+# and tail only one grain's rising edge is present, and an unfloored
+# division would boost that edge instead of letting it fade.
+envFloor = envPeak * 0.15
+ef$ = fixed$(envFloor, 9)
+envID$ = string$(envBuf)
+selectObject: outBuf
+Formula: "self / max(object[" + envID$ + ", col], " + ef$ + ")"
 
-appendInfoLine: "  Concatenating with ", fixed$(overlapDur * 1000, 1), " ms overlap..."
-concatResult = Concatenate with overlap: overlapDur
+removeObject: envBuf
+concatResult = outBuf
 
-# Cleanup all grain copies
-for hop from 1 to nOutputHops
-    removeObject: grainID_'hop'
-endfor
-
-# Trim to srcDur (concat may be slightly longer)
+# Trim to source length
 selectObject: concatResult
 concatDur = Get total duration
 if concatDur > srcDur
@@ -635,12 +876,32 @@ if concatDur > srcDur
     concatResult = trimmed
 endif
 
+# v2.0 fix 11: the trim can land mid-grain at a non-zero amplitude.
+selectObject: concatResult
+edgeFade = 0.005
+selectObject: concatResult
+resDur = Get total duration
+if edgeFade > resDur * 0.1
+    edgeFade = resDur * 0.1
+endif
+if edgeFade > 0.0002
+    fs$ = fixed$(edgeFade, 8)
+    selectObject: concatResult
+    Formula: "if x - xmin < " + fs$ + " then self * ((x - xmin) / " + fs$ + ") else self fi"
+    selectObject: concatResult
+    Formula: "if xmax - x < " + fs$ + " then self * ((xmax - x) / " + fs$ + ") else self fi"
+endif
+
+# v2.0 fix 8: all random draws are done.
+random_initializeSafelyAndUnpredictably ()
+
 # ============================================================
 # WET / DRY MIX
 # ============================================================
 
 if dryLevel > 0.001
-    selectObject: monoSrc
+    # v2.0 fix 7: dry comes from the UNNORMALIZED source copy.
+    selectObject: dryRef
     dryCopy  = Copy: "gar_dry"
 
     # Pad dry to match concatResult duration if needed
@@ -688,6 +949,7 @@ resultID  = selected("Sound")
 resultDur = Get total duration
 
 removeObject: monoSrc
+removeObject: dryRef
 
 appendInfoLine: ""
 appendInfoLine: "Output: ", outputName$
@@ -745,7 +1007,7 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Font size: 11
     Colour: "Black"
-    Text: 0.5, "centre", 0.73, "half", "##Granular Attention Re-synthesis v1.0##"
+    Text: 0.5, "centre", 0.73, "half", "##Granular Attention Re-synthesis v2.0##"
     Font size: 7.5
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.08, "half",
@@ -954,7 +1216,7 @@ if draw_visualization = 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.04, "left", 0.90, "half", "##Granular Attention Re-synthesis v1.0##"
+    Text: 0.04, "left", 0.90, "half", "##Granular Attention Re-synthesis v2.0##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.38}"
     Text: 0.04, "left", 0.71, "half",
@@ -994,7 +1256,7 @@ appendInfoLine: "=================================================="
 appendInfoLine: "Output  : ", outputName$
 appendInfoLine: "Duration: ", fixed$(resultDur, 3), " s"
 appendInfoLine: "Preset  : ", presetName$
-appendInfoLine: "α / floor: ", fixed$(temperature, 2), " / mean+", fixed$(floor_dB, 1), " dB"
+appendInfoLine: "alpha / floor: ", fixed$(temperature, 2), " / mean+", fixed$(floor_dB, 1), " dB"
 appendInfoLine: "Hops    : ", nOutputHops
 appendInfoLine: "Unique grains used: ", usedGrains, "/", nCandGrains
 
