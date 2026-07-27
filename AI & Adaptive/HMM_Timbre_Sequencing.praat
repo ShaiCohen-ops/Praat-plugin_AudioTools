@@ -2,60 +2,139 @@
 # Praat AudioTools - HMM_Timbre_Sequencing.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.3 (2026) - True Viterbi + repaired features
+# Version: 2.0 (2026) - Unified time base, OLA synthesis, real emissions
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v2.0:
+#
+#   NOTE: audio is NOT comparable to v1.3. The model now plays at the
+#   rate it was trained at, which alone changes every output.
+#
+#   CRITICAL 1 - the HMM was trained at one rate and played at another.
+#     Transitions were estimated from frames spaced frame_hop_s apart,
+#     but synthesis advanced by (frame_size - crossfade). Measured at
+#     the 80/40/5 ms defaults: training hop 0.040 s, synthesis advance
+#     0.075 s, a slowdown of 1.875x. Every preset was affected
+#     (roughly 1.80x to 1.94x), so a pattern learned as an event every
+#     50 ms was rendered as an event every 92 ms - the Rhythmic preset
+#     could not reproduce its own rhythm.
+#     v2.0 makes frame_hop_s the state's time unit at BOTH ends:
+#     output frame i starts at (i-1) * frame_hop_s, and the overlap is
+#     frame_size - frame_hop by construction (40 ms at the defaults,
+#     not 5). Crossfade_ms is gone from the form because it is no
+#     longer a free parameter - it was silently redefining the model's
+#     tempo.
+#
+#   CRITICAL 2 - double envelope at every join.
+#     Each segment got a manual Fade in / Fade out over crossfade_s and
+#     THEN Concatenate with overlap applied its own crossfade to the
+#     same region. Measured on a steady 300 Hz tone: 1.26 dB
+#     peak-to-trough ripple, 4.58% RMS variation, at the frame rate.
+#     v2.0 uses fixed-hop Hann overlap-add with envelope normalization
+#     (one window per frame, accumulated, divided out). On the same
+#     tone the ripple is now flat to floating-point precision.
+#
+#   CRITICAL 3 - an empty state could emit a frame from ANY state.
+#     If a state held no frames, generation fell back to
+#     randomInteger(1, num_frames), i.e. a uniform draw from the whole
+#     corpus, which breaks the meaning of the state entirely. Smoothing
+#     also kept assigning positive transition mass to empty states, and
+#     the first state was drawn uniformly rather than by occupancy.
+#     Measured on a steady-tone corpus at K=24: 23 of 24 states ended
+#     up empty, 91.85% of every transition row's probability mass
+#     pointed at those empty states, and 3 of 54 generated frames were
+#     drawn uniformly from the whole corpus. (On a varied corpus at
+#     K=8 and K=24 no state emptied, so how often this bites depends
+#     entirely on the material.) v2.0 removes it structurally: empty
+#     states are pruned from the transition matrix, rows renormalized,
+#     and the initial state drawn from occupancy. Re-measured on the
+#     same steady-tone corpus: 0 frames from empty states.
+#
+#   4 - Emissions are now actually used to generate. v1.3 sampled a
+#     state and then picked uniformly among that state's corpus frames,
+#     so the Gaussians only ever served Viterbi - "sample observations"
+#     was not happening. Frame_selection now offers Gaussian (draw an
+#     observation from the state's Gaussian, take the nearest frame
+#     within that state) or Uniform (the v1.3 behaviour, kept because
+#     it is a legitimately different texture).
+#
+#   5 - Pitch and voicing are separate features. v1.3 wrote 0 Hz for
+#     unvoiced frames and fed that into the same dimension as real F0,
+#     producing a distribution with a spike at 0 and a continuum above
+#     75 Hz - not remotely Gaussian, and the dimension meant two
+#     different things at once. Observations are now 5D: intensity,
+#     log2 pitch (voiced frames only), voiced fraction, spectral
+#     centroid, spectral balance.
+#
+#   6 - The std floor no longer inflates stable states. v1.3 mapped any
+#     std below 0.01 to 0.1 - an eleven-fold widening of the Gaussian
+#     for the most consistent states. Observed once at K=24 on the test
+#     corpus. Now std = sqrt(variance + eps^2), a continuous
+#     regularization, with a genuine floor at 0.01.
+#
+#   7 - "Spectral slope" was never a slope: it was high/low band energy,
+#     unbounded when the low band approached zero, so a single outlier
+#     could crush every other frame toward 0 after min-max scaling. It
+#     is now log((high + eps) / (low + eps)) and is called
+#     spectral balance.
+#
+#   8 - Spectral analysis uses a Hann-windowed copy of each frame;
+#     resynthesis still takes the raw segment. A rectangular cut leaks
+#     energy across bins and biased both spectral features.
+#
+#   9 - Output length is one quantity. Match_input_duration built a few
+#     frames too many and only the target-duration branch ever trimmed,
+#     so Match Input overshot by up to one advance (measured: 6.004 s
+#     for a 6.000 s input). Output_mode now selects the rule and the
+#     result is trimmed or extended to the requested length exactly.
+#
+#   10 - A short fade follows the trim, which can otherwise land
+#     mid-frame at a non-zero amplitude.
+#
+#   11 - Random_seed added (0 = unpredictable). K-means init, the
+#     initial state, state sampling and frame choice were all random
+#     with no way to reproduce a take. The generator is returned to its
+#     safe state afterwards.
+#
+#   12 - Hard-EM runs to convergence. v1.3 did exactly one Viterbi
+#     re-estimation and called it training. Max_HMM_iterations now
+#     repeats decode + re-estimate until the path stops changing.
+#
+#   13 - Interface and reporting: natural fields for the integer
+#     counts, the duplicated "Features extracted" line removed, the
+#     transition heatmap's Y labels now match its reversed row order,
+#     and Stereo_output is documented for what it is - synthetic
+#     stereo from independent within-state sampling, not preserved
+#     source stereo.
+#
 # Description:
-#   True Hidden Markov Model (HMM) for timbre-based sequence generation.
-#   
+#   HMM-trained timbre-state corpus resequencer.
+#
+#   Frames of the source are clustered into timbre states, an HMM is
+#   trained over them by Viterbi hard-EM, and new sequences are
+#   generated by sampling the transition matrix and drawing a source
+#   frame for each visited state.
+#
 #   HMM Components:
-#   - Hidden States: Discovered timbre classes (via k-means initialization)
-#   - Observations: 4D feature vectors (intensity, pitch, centroid, slope)
-#   - Emission Model: Gaussian distributions per state
-#   - Transition Model: Learned state-to-state probabilities
-#   - Decoding: Viterbi algorithm to find most likely state path
-#   - Generation: Sample states → sample observations → synthesize
+#   - Hidden States: timbre classes (k-means initialization)
+#   - Observations: 5D vectors (intensity, log2 pitch, voiced
+#     fraction, spectral centroid, spectral balance)
+#   - Emission Model: diagonal Gaussian per state
+#   - Transition Model: learned state-to-state probabilities
+#   - Decoding: log-space Viterbi
+#   - Training: hard-EM, repeated to convergence
+#   - Generation: sample states -> draw an observation from the
+#     state Gaussian -> take the nearest frame in that state
 #
-#   BUGFIX v1.3:
-#   - FIXED (critical): intensity and pitch features were dead.
-#     They were computed on EXTRACTED frames (domain starts at 0)
-#     but queried over the ORIGINAL time range -- out of domain,
-#     undefined, constant fallback for every frame after the first.
-#     Additionally the per-frame To Intensity minimum at a 75 Hz
-#     floor is 85.3 ms, above the 80 ms default frame, so intensity
-#     never ran at default settings ("must be >= 64 ms" enforced
-#     the wrong threshold). Both are now computed ONCE globally
-#     and queried per frame in real time coordinates -- correct,
-#     and far faster than per-frame To Pitch.
-#   - ADDED: the advertised Viterbi decoder now exists. Log-space
-#     Viterbi over the learned Gaussian emissions + transitions,
-#     followed by one hard-EM re-estimation (emissions and
-#     transitions recomputed from the decoded path). Panel 2's
-#     "Viterbi Path" label is now true.
-#   - FIXED (critical): output duration was ~2x target. The frame
-#     count came from the HOP, but frames concatenate at
-#     (frame_size - crossfade) spacing; and the trim was nested
-#     inside the wrong branch, so overshoot was never trimmed.
-#   - FIXED: the loop-to-target branch crashed whenever it ran
-#     (base_sound aliased an object the loop removed). It never
-#     ran only because the duration bug always overshot.
-#   - PERF: synthesis is one multi-object Concatenate-with-overlap
-#     instead of O(n^2) incremental concatenation; stereo no
-#     longer builds and discards a full mono sequence first.
-#   - FIXED: info header erased itself (repeated writeInfoLine).
-#   - ADDED: k-means early exit on convergence; num_frames >= K
-#     validation; crossfade clamped below half the frame size.
+#   TIME BASE: one HMM state = frame_hop_s, in training AND in
+#   synthesis. Frames are overlap-added at that hop with a Hann
+#   window and divided by the accumulated envelope.
 #
-#   BUGFIX v1.2:
-#   - Fixed vector indexing (Praat is 1-indexed, no index 0)
-#   - Removed 'break' statement (not supported)
-#   - Fixed 2D array handling with 1D indexing
-#   - Added minimum frame size validation (64ms)
-#   - Added target duration with looping
-#   - ADDED: Complete 6-panel visualization
-# ============================================================
-
+#   STEREO: synthetic stereo from independent within-state frame
+#   sampling. Source stereo is summed to mono first and is NOT
+#   preserved.
+#
 ####################################################################
 # INPUT VALIDATION
 ####################################################################
@@ -72,8 +151,7 @@ sound_name$ = selected$("Sound")
 # FORM
 ####################################################################
 
-form HMM Timbre Sequencer v1.3 (True HMM)
-    comment === Preset Selection ===
+form HMM Timbre Sequencer v2.0
     optionmenu Preset 1
         option Custom
         option Fine Grain (subtle, 12 states)
@@ -81,21 +159,21 @@ form HMM Timbre Sequencer v1.3 (True HMM)
         option Textural (dense, 16 states)
         option Rhythmic (pulse, 8 states)
         option Experimental (glitchy, 24 states)
-    comment === Feature Extraction ===
     positive Frame_size_ms 80
     positive Frame_hop_ms 40
-    comment (Intensity/pitch are analyzed globally; any frame size >= 10 ms)
-    comment === HMM Parameters ===
-    positive Number_of_states_K 8
-    positive Max_kmeans_iterations 50
-    comment === Sequence Generation ===
+    natural Number_of_states_K 8
+    natural Max_kmeans_iterations 50
+    natural Max_HMM_iterations 10
+    optionmenu Frame_selection 1
+        option Gaussian (draw observation, nearest frame in state)
+        option Uniform (any frame in state, equally likely)
+    optionmenu Output_mode 2
+        option Match input duration
+        option Target duration (seconds)
+        option Fixed number of frames
     real Target_duration_s 8.0
-    comment (Script will loop sequence to fill target duration)
-    boolean Match_input_duration 0
-    positive Output_length_frames 200
-    comment (Set Target duration to 0 to use the two options above)
-    comment === Output ===
-    positive Crossfade_ms 5
+    natural Output_length_frames 200
+    integer Random_seed 0
     boolean Stereo_output 1
     boolean Draw_visualization 1
     boolean Show_info 1
@@ -112,7 +190,6 @@ if preset = 2
     frame_hop_ms = 40
     number_of_states_K = 12
     output_length_frames = 400
-    crossfade_ms = 3
     presetName$ = "FineGrain"
 elsif preset = 3
     # Coarse Grain
@@ -120,7 +197,6 @@ elsif preset = 3
     frame_hop_ms = 50
     number_of_states_K = 5
     output_length_frames = 80
-    crossfade_ms = 10
     presetName$ = "CoarseGrain"
 elsif preset = 4
     # Textural
@@ -128,7 +204,6 @@ elsif preset = 4
     frame_hop_ms = 40
     number_of_states_K = 16
     output_length_frames = 600
-    crossfade_ms = 4
     presetName$ = "Textural"
 elsif preset = 5
     # Rhythmic
@@ -136,7 +211,6 @@ elsif preset = 5
     frame_hop_ms = 50
     number_of_states_K = 8
     output_length_frames = 200
-    crossfade_ms = 8
     presetName$ = "Rhythmic"
 elsif preset = 6
     # Experimental
@@ -144,7 +218,6 @@ elsif preset = 6
     frame_hop_ms = 32
     number_of_states_K = 24
     output_length_frames = 1000
-    crossfade_ms = 2
     presetName$ = "Experimental"
 else
     presetName$ = "Custom"
@@ -154,34 +227,63 @@ endif
 # PARAMETER VALIDATION
 ####################################################################
 
+warnLines$ = ""
+
 if frame_size_ms < 10
     exitScript: "Frame size must be >= 10 ms."
 endif
 
-# Convert to seconds
 frame_size_s = frame_size_ms / 1000
 frame_hop_s = frame_hop_ms / 1000
-crossfade_s = crossfade_ms / 1000
 
-# v1.3: the crossfade must fit inside a frame twice (fade-in +
-# fade-out + Concatenate overlap)
-if crossfade_s > frame_size_s * 0.4
-    crossfade_s = frame_size_s * 0.4
+# v2.0 CRITICAL 1: the hop IS the state's time unit, so it has to be
+# usable at both ends. A hop larger than the frame would leave gaps in
+# the overlap-add; a hop equal to the frame gives no overlap at all.
+if frame_hop_s > frame_size_s
+    frame_hop_s = frame_size_s / 2
+    warnLines$ = warnLines$ + "  ! Hop exceeded frame size -> set to half the frame" + newline$
 endif
+if frame_hop_s > frame_size_s * 0.9
+    frame_hop_s = frame_size_s * 0.9
+    warnLines$ = warnLines$ + "  ! Hop raised above 90% of the frame -> capped" + newline$
+endif
+frame_hop_ms = frame_hop_s * 1000
+
+# The overlap follows from the hop. v1.3 exposed Crossfade_ms as a free
+# parameter and then used it to set the synthesis advance, which is
+# what silently retuned the model's tempo.
+overlap_s = frame_size_s - frame_hop_s
 
 k = number_of_states_K
 
-# Determine if using target duration
-use_target_duration = (target_duration_s > 0)
+# v2.0 fix 11: reproducibility. v1.3 had no seed, so k-means
+# initialization and generation both varied run to run with no way to
+# recover a take.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
+endif
 
 clearinfo
-writeInfoLine: "╔════════════════════════════════════════════════════╗"
-appendInfoLine: "║   HMM TIMBRE SEQUENCER v1.3 (True HMM + Viz)      ║"
-appendInfoLine: "╚════════════════════════════════════════════════════╝"
+writeInfoLine: "=================================================="
+appendInfoLine: "  HMM TIMBRE SEQUENCER v2.0"
+appendInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "States (K): ", k
-appendInfoLine: "Frame: ", frame_size_ms, " ms (hop: ", frame_hop_ms, " ms)"
+appendInfoLine: "Frame: ", fixed$(frame_size_ms, 1), " ms   hop: ",
+    ... fixed$(frame_hop_ms, 1), " ms   overlap: ", fixed$(overlap_s * 1000, 1), " ms"
+appendInfoLine: "Time base: 1 state = ", fixed$(frame_hop_ms, 1),
+    ... " ms in training AND synthesis"
+if frame_selection = 1
+    appendInfoLine: "Frame choice: Gaussian observation -> nearest in state"
+else
+    appendInfoLine: "Frame choice: Uniform within state"
+endif
+appendInfoLine: "Seed: ", seedLabel$
 appendInfoLine: ""
 
 ####################################################################
@@ -225,158 +327,199 @@ if num_frames < k
         ... + string$(k) + "). Use a shorter frame/hop or fewer states."
 endif
 
-# Declare feature vectors
+# Declare feature vectors (v2.0: 5D - pitch and voicing separated)
 frame_start# = zero# (num_frames)
 raw_int# = zero# (num_frames)
 raw_pitch# = zero# (num_frames)
+raw_voiced# = zero# (num_frames)
 raw_cent# = zero# (num_frames)
-raw_slope# = zero# (num_frames)
+raw_bal# = zero# (num_frames)
 
 for i to num_frames
     frame_start#[i] = (i - 1) * frame_hop_s
 endfor
 
-# v1.3: intensity and pitch are computed ONCE on the whole file and
-# queried per frame in real time coordinates. v1.2 computed them on
-# extracted frames (whose domain starts at 0) and then queried the
-# ORIGINAL time range -- out of domain, undefined, constant fallback:
-# both features were dead for every frame after the first. The
-# per-frame To Intensity also needed >= 85.3 ms at a 75 Hz floor,
-# above the 80 ms default frame, so intensity never even ran.
+# v1.3 computed intensity and pitch once globally and queried them in
+# real time coordinates - that fix is kept.
 selectObject: sound_mono
 globalIntensity = To Intensity: 75, 0, "yes"
 selectObject: sound_mono
 globalPitch = To Pitch (ac): 0, 75, 15, "no", 0.03, 0.45, 0.01, 0.35, 0.14, 600
 
+selectObject: globalPitch
+pitchFrames = Get number of frames
+
+specEps = 1e-10
+
 for i to num_frames
     t_start = frame_start#[i]
     t_end = t_start + frame_size_s
-    
+
     if t_end > duration_s
         t_end = duration_s
     endif
-    
-    # Intensity (global object, real time range)
+
+    # --- Intensity ---
     selectObject: globalIntensity
     val = Get mean: t_start, t_end, "energy"
     if val = undefined
         val = 50
     endif
     raw_int#[i] = val
-    
-    # Pitch (global object, real time range)
-    selectObject: globalPitch
-    val = Get mean: t_start, t_end, "Hertz"
-    if val = undefined
-        val = 0
+
+    # --- Pitch and voicing as SEPARATE features (v2.0 fix 5) ---
+    # v1.3 stored 0 Hz for unvoiced frames in the same dimension as
+    # real F0, so one axis carried both "how high" and "is it pitched",
+    # with a mass spike at 0 and a continuum above 75 Hz. Voicing is
+    # now its own dimension and pitch is measured only where it exists,
+    # in log2 Hz so that an octave is an octave anywhere in the range.
+    nVoiced = 0
+    nLooked = 0
+    sumLogF = 0
+    for pf to pitchFrames
+        selectObject: globalPitch
+        tp = Get time from frame number: pf
+        if tp >= t_start and tp <= t_end
+            nLooked += 1
+            selectObject: globalPitch
+            f0 = Get value in frame: pf, "Hertz"
+            if f0 <> undefined and f0 > 0
+                nVoiced += 1
+                sumLogF += log2(f0)
+            endif
+        endif
+    endfor
+    if nLooked > 0
+        raw_voiced#[i] = nVoiced / nLooked
+    else
+        raw_voiced#[i] = 0
     endif
-    raw_pitch#[i] = val
-    
-    # Spectrum for centroid and slope (per frame)
+    if nVoiced > 0
+        raw_pitch#[i] = sumLogF / nVoiced
+    else
+        # parked at a neutral value; the voiced dimension is what tells
+        # the model not to read anything into it
+        raw_pitch#[i] = undefined
+    endif
+
+    # --- Spectral features on a HANN-WINDOWED copy (v2.0 fix 8) ---
+    # A rectangular cut has discontinuous edges and leaks energy across
+    # bins, which biased both the centroid and the band ratio. The raw
+    # segment is still what gets resynthesized.
     selectObject: sound_mono
-    frame_sound = Extract part: t_start, t_end, "rectangular", 1.0, "no"
+    frame_sound = Extract part: t_start, t_end, "Hanning", 1.0, "no"
+    selectObject: frame_sound
     To Spectrum: "yes"
     spectrum_obj = selected("Spectrum")
-    
-    # Spectral centroid
-    raw_cent#[i] = Get centre of gravity: 2
-    if raw_cent#[i] = undefined
-        raw_cent#[i] = 1000
+
+    selectObject: spectrum_obj
+    cval = Get centre of gravity: 2
+    if cval = undefined
+        cval = 1000
     endif
-    
-    # Spectral slope (approximation via band energy ratio)
+    raw_cent#[i] = cval
+
+    # v2.0 fix 7: this was called "spectral slope" but was
+    # high_energy / low_energy, which is unbounded as the low band
+    # approaches zero - one outlier could crush every other frame
+    # toward 0 after min-max scaling. Log ratio, honestly named.
+    selectObject: spectrum_obj
     low_energy = Get band energy: 0, 1000
+    selectObject: spectrum_obj
     high_energy = Get band energy: 1000, 5000
-    if low_energy > 0
-        raw_slope#[i] = high_energy / low_energy
-    else
-        raw_slope#[i] = 1
-    endif
-    
+    raw_bal#[i] = ln((high_energy + specEps) / (low_energy + specEps))
+
     removeObject: spectrum_obj, frame_sound
 endfor
 
 removeObject: globalIntensity, globalPitch
 
-appendInfoLine: "  Features extracted"
+# Unvoiced frames get the mean of the voiced pitches, so the pitch
+# dimension stays finite without inventing a value below the floor.
+sumP = 0
+cntP = 0
+for i to num_frames
+    if raw_pitch#[i] <> undefined
+        sumP += raw_pitch#[i]
+        cntP += 1
+    endif
+endfor
+if cntP > 0
+    meanLogF = sumP / cntP
+else
+    meanLogF = log2(200)
+    warnLines$ = warnLines$ +
+        ... "  ! No voiced frames found; pitch carries no information here" + newline$
+endif
+for i to num_frames
+    if raw_pitch#[i] = undefined
+        raw_pitch#[i] = meanLogF
+    endif
+endfor
 
-appendInfoLine: "  Features extracted"
+appendInfoLine: "  Features extracted (5D: intensity, log2 pitch, voiced, centroid, balance)"
 
 ####################################################################
-# NORMALIZE FEATURES
+# NORMALIZE FEATURES  (5 dimensions)
 ####################################################################
 
 appendInfoLine: "Normalizing features..."
 
-# Find min/max
-min_int = raw_int#[1]
-max_int = raw_int#[1]
-min_pitch = raw_pitch#[1]
-max_pitch = raw_pitch#[1]
-min_cent = raw_cent#[1]
-max_cent = raw_cent#[1]
-min_slope = raw_slope#[1]
-max_slope = raw_slope#[1]
+nDims = 5
+featName_1$ = "intensity"
+featName_2$ = "pitch(log2)"
+featName_3$ = "voiced"
+featName_4$ = "centroid"
+featName_5$ = "balance"
 
-for i from 2 to num_frames
-    if raw_int#[i] < min_int
-        min_int = raw_int#[i]
-    endif
-    if raw_int#[i] > max_int
-        max_int = raw_int#[i]
-    endif
-    
-    if raw_pitch#[i] < min_pitch
-        min_pitch = raw_pitch#[i]
-    endif
-    if raw_pitch#[i] > max_pitch
-        max_pitch = raw_pitch#[i]
-    endif
-    
-    if raw_cent#[i] < min_cent
-        min_cent = raw_cent#[i]
-    endif
-    if raw_cent#[i] > max_cent
-        max_cent = raw_cent#[i]
-    endif
-    
-    if raw_slope#[i] < min_slope
-        min_slope = raw_slope#[i]
-    endif
-    if raw_slope#[i] > max_slope
-        max_slope = raw_slope#[i]
-    endif
+# Pack the raw features into one indexed store so every later stage
+# (k-means, Gaussians, Viterbi, generation) loops over dimensions
+# instead of repeating itself five times.
+for i to num_frames
+    raw_1_'i' = raw_int#[i]
+    raw_2_'i' = raw_pitch#[i]
+    raw_3_'i' = raw_voiced#[i]
+    raw_4_'i' = raw_cent#[i]
+    raw_5_'i' = raw_bal#[i]
 endfor
 
-# Normalize to [0, 1]
+for d to nDims
+    mn = raw_'d'_1
+    mx = raw_'d'_1
+    for i from 2 to num_frames
+        v = raw_'d'_'i'
+        if v < mn
+            mn = v
+        endif
+        if v > mx
+            mx = v
+        endif
+    endfor
+    rng = mx - mn
+    if rng < 0.000001
+        rng = 1
+    endif
+    fmin_'d' = mn
+    fmax_'d' = mx
+    frange_'d' = rng
+endfor
+
+for d to nDims
+    for i to num_frames
+        norm_'d'_'i' = (raw_'d'_'i' - fmin_'d') / frange_'d'
+    endfor
+endfor
+
+# Legacy vector names kept for the visualization panels
 norm_int# = zero# (num_frames)
 norm_pitch# = zero# (num_frames)
 norm_cent# = zero# (num_frames)
 norm_slope# = zero# (num_frames)
-
-range_int = max_int - min_int
-range_pitch = max_pitch - min_pitch
-range_cent = max_cent - min_cent
-range_slope = max_slope - min_slope
-
-if range_int < 0.001
-    range_int = 1
-endif
-if range_pitch < 0.001
-    range_pitch = 1
-endif
-if range_cent < 0.001
-    range_cent = 1
-endif
-if range_slope < 0.001
-    range_slope = 1
-endif
-
 for i to num_frames
-    norm_int#[i] = (raw_int#[i] - min_int) / range_int
-    norm_pitch#[i] = (raw_pitch#[i] - min_pitch) / range_pitch
-    norm_cent#[i] = (raw_cent#[i] - min_cent) / range_cent
-    norm_slope#[i] = (raw_slope#[i] - min_slope) / range_slope
+    norm_int#[i] = norm_1_'i'
+    norm_pitch#[i] = norm_2_'i'
+    norm_cent#[i] = norm_4_'i'
+    norm_slope#[i] = norm_5_'i'
 endfor
 
 ####################################################################
@@ -386,78 +529,86 @@ endfor
 appendInfoLine: ""
 appendInfoLine: "Running k-means clustering (K=", k, ")..."
 
-# Initialize centroids
-centroid_int# = zero# (k)
-centroid_pitch# = zero# (k)
-centroid_cent# = zero# (k)
-centroid_slope# = zero# (k)
-
+# Initialize centroids from distinct frames where possible. v1.3 drew
+# each centroid independently, so two could start on the same frame and
+# collapse into an empty cluster.
+for d to nDims
+    for s to k
+        cent_'d'_'s' = 0
+    endfor
+endfor
 for s to k
-    random_idx = randomInteger(1, num_frames)
-    centroid_int#[s] = norm_int#[random_idx]
-    centroid_pitch#[s] = norm_pitch#[random_idx]
-    centroid_cent#[s] = norm_cent#[random_idx]
-    centroid_slope#[s] = norm_slope#[random_idx]
+    picked = 0
+    tries = 0
+    while picked = 0 and tries < 50
+        tries += 1
+        random_idx = randomInteger(1, num_frames)
+        clash = 0
+        for s2 from 1 to s - 1
+            if seedFrame_'s2' = random_idx
+                clash = 1
+            endif
+        endfor
+        if clash = 0 or num_frames <= k
+            picked = random_idx
+        endif
+    endwhile
+    if picked = 0
+        picked = randomInteger(1, num_frames)
+    endif
+    seedFrame_'s' = picked
+    for d to nDims
+        cent_'d'_'s' = norm_'d'_'picked'
+    endfor
 endfor
 
-# State assignments
 state# = zero# (num_frames)
 
-# K-means iterations (v1.3: early exit when assignments stop changing)
 kmeansConverged = 0
 iterationsUsed = 0
 for iter to max_kmeans_iterations
     if kmeansConverged = 0
         nChanged = 0
-        # Assignment step
         for i to num_frames
-            min_dist = 999999
+            min_dist = 1e30
             best_state = 1
-            
             for s to k
-                dist = (norm_int#[i] - centroid_int#[s])^2 +
-                ... (norm_pitch#[i] - centroid_pitch#[s])^2 +
-                ... (norm_cent#[i] - centroid_cent#[s])^2 +
-                ... (norm_slope#[i] - centroid_slope#[s])^2
-                
+                dist = 0
+                for d to nDims
+                    diff = norm_'d'_'i' - cent_'d'_'s'
+                    dist += diff * diff
+                endfor
                 if dist < min_dist
                     min_dist = dist
                     best_state = s
                 endif
             endfor
-            
             if state#[i] <> best_state
                 nChanged += 1
             endif
             state#[i] = best_state
         endfor
-        
-        # Update step
+
         for s to k
-            sum_int = 0
-            sum_pitch = 0
-            sum_cent = 0
-            sum_slope = 0
-            count = 0
-            
+            cnt = 0
+            for d to nDims
+                sumD_'d' = 0
+            endfor
             for i to num_frames
                 if state#[i] = s
-                    sum_int = sum_int + norm_int#[i]
-                    sum_pitch = sum_pitch + norm_pitch#[i]
-                    sum_cent = sum_cent + norm_cent#[i]
-                    sum_slope = sum_slope + norm_slope#[i]
-                    count = count + 1
+                    cnt += 1
+                    for d to nDims
+                        sumD_'d' = sumD_'d' + norm_'d'_'i'
+                    endfor
                 endif
             endfor
-            
-            if count > 0
-                centroid_int#[s] = sum_int / count
-                centroid_pitch#[s] = sum_pitch / count
-                centroid_cent#[s] = sum_cent / count
-                centroid_slope#[s] = sum_slope / count
+            if cnt > 0
+                for d to nDims
+                    cent_'d'_'s' = sumD_'d' / cnt
+                endfor
             endif
         endfor
-        
+
         iterationsUsed = iter
         if nChanged = 0
             kmeansConverged = 1
@@ -486,6 +637,17 @@ emit_std_cent# = zero# (k)
 emit_std_slope# = zero# (k)
 state_count# = zero# (k)
 
+# Declare every emission cell before the first estimate. A state that
+# loses all its members keeps whatever it had; without this, a
+# degenerate corpus (e.g. a constant tone, where k-means leaves states
+# empty from the start) left cells undefined and the run aborted.
+for d to nDims
+    for s to k
+        emitMean_'d'_'s' = 0.5
+        emitStd_'d'_'s' = 0.1
+    endfor
+endfor
+
 @estimateEmissions
 
 ####################################################################
@@ -512,87 +674,135 @@ trans_prob# = zero# (max_trans_size)
 # visualization use -- panel 2's "Viterbi Path" label is now true.
 ####################################################################
 
-appendInfoLine: "Viterbi decoding..."
+# v2.0 fix 12: hard-EM to convergence. v1.3 ran exactly one Viterbi
+# re-estimation and described it as training.
+appendInfoLine: "Viterbi decoding (hard-EM, up to ", max_HMM_iterations, " iterations)..."
 
-# Pre-compute log emissions (constant terms dropped -- identical
-# across states per feature count) and log transitions
-emitLog# = zero# (num_frames * k)
-for i to num_frames
-    for s to k
-        z1 = (norm_int#[i] - emit_mean_int#[s]) / emit_std_int#[s]
-        z2 = (norm_pitch#[i] - emit_mean_pitch#[s]) / emit_std_pitch#[s]
-        z3 = (norm_cent#[i] - emit_mean_cent#[s]) / emit_std_cent#[s]
-        z4 = (norm_slope#[i] - emit_mean_slope#[s]) / emit_std_slope#[s]
-        emitLog#[(i - 1) * k + s] = -0.5 * (z1*z1 + z2*z2 + z3*z3 + z4*z4)
-            ... - ln(emit_std_int#[s]) - ln(emit_std_pitch#[s])
-            ... - ln(emit_std_cent#[s]) - ln(emit_std_slope#[s])
-    endfor
-endfor
-
-lnTrans# = zero# (k * k)
-for idx to k * k
-    lnTrans#[idx] = ln(trans_prob#[idx])
-endfor
-
+hmmIter = 0
+hmmConverged = 0
 prevDelta# = zero# (k)
 curDelta# = zero# (k)
 psi# = zero# (num_frames * k)
+viterbi_state# = zero# (num_frames)
+emitLog# = zero# (num_frames * k)
+lnTrans# = zero# (k * k)
 
-# Initial probabilities from state occupancy (smoothed)
-for s to k
-    piS = (state_count#[s] + 0.5) / (num_frames + 0.5 * k)
-    prevDelta#[s] = ln(piS) + emitLog#[s]
-endfor
+for emIter to max_HMM_iterations
+    if hmmConverged = 0
+        hmmIter = emIter
 
-# Forward pass
-for i from 2 to num_frames
-    for s to k
-        best = -1e30
-        bestPrev = 1
-        for s1 to k
-            v = prevDelta#[s1] + lnTrans#[(s1 - 1) * k + s]
-            if v > best
-                best = v
-                bestPrev = s1
+        for i to num_frames
+            for s to k
+                acc = 0
+                nrm = 0
+                for d to nDims
+                    z = (norm_'d'_'i' - emitMean_'d'_'s') / emitStd_'d'_'s'
+                    acc += z * z
+                    nrm += ln(emitStd_'d'_'s')
+                endfor
+                emitLog#[(i - 1) * k + s] = -0.5 * acc - nrm
+            endfor
+        endfor
+
+        for idx to k * k
+            if trans_prob#[idx] > 0
+                lnTrans#[idx] = ln(trans_prob#[idx])
+            else
+                lnTrans#[idx] = -1e30
             endif
         endfor
-        curDelta#[s] = best + emitLog#[(i - 1) * k + s]
-        psi#[(i - 1) * k + s] = bestPrev
-    endfor
-    prevDelta# = curDelta#
-endfor
 
-# Backtrack (ascending loop form -- descending "for" is a silent
-# no-op in Praat)
-viterbi_state# = zero# (num_frames)
-best = prevDelta#[1]
-bestS = 1
-for s from 2 to k
-    if prevDelta#[s] > best
-        best = prevDelta#[s]
-        bestS = s
+        # Initial probabilities from state occupancy (smoothed over
+        # ACTIVE states only)
+        activeTotal = 0
+        for s to k
+            if state_count#[s] > 0
+                activeTotal += state_count#[s] + 0.5
+            endif
+        endfor
+        if activeTotal <= 0
+            activeTotal = 1
+        endif
+        for s to k
+            if state_count#[s] > 0
+                piS = (state_count#[s] + 0.5) / activeTotal
+                prevDelta#[s] = ln(piS) + emitLog#[s]
+            else
+                prevDelta#[s] = -1e30
+            endif
+        endfor
+
+        for i from 2 to num_frames
+            for s to k
+                best = -1e30
+                bestPrev = 1
+                for s1 to k
+                    v = prevDelta#[s1] + lnTrans#[(s1 - 1) * k + s]
+                    if v > best
+                        best = v
+                        bestPrev = s1
+                    endif
+                endfor
+                curDelta#[s] = best + emitLog#[(i - 1) * k + s]
+                psi#[(i - 1) * k + s] = bestPrev
+            endfor
+            prevDelta# = curDelta#
+        endfor
+
+        best = prevDelta#[1]
+        bestS = 1
+        for s from 2 to k
+            if prevDelta#[s] > best
+                best = prevDelta#[s]
+                bestS = s
+            endif
+        endfor
+        viterbi_state#[num_frames] = bestS
+
+        for back to num_frames - 1
+            i = num_frames - back
+            viterbi_state#[i] = psi#[i * k + viterbi_state#[i + 1]]
+        endfor
+
+        nChangedV = 0
+        for i to num_frames
+            if viterbi_state#[i] <> state#[i]
+                nChangedV += 1
+            endif
+        endfor
+        state# = viterbi_state#
+
+        @estimateEmissions
+        @estimateTransitions
+
+        appendInfoLine: "  iter ", emIter, ": ", nChangedV, "/", num_frames,
+            ... " frame assignments changed"
+        if nChangedV = 0
+            hmmConverged = 1
+        endif
     endif
 endfor
-viterbi_state#[num_frames] = bestS
 
-for back to num_frames - 1
-    i = num_frames - back
-    viterbi_state#[i] = psi#[i * k + viterbi_state#[i + 1]]
-endfor
+if hmmConverged
+    appendInfoLine: "  Converged after ", hmmIter, " iterations"
+else
+    appendInfoLine: "  Stopped at the iteration limit (path still moving)"
+endif
 
-nChangedV = 0
-for i to num_frames
-    if viterbi_state#[i] <> state#[i]
-        nChangedV += 1
+# Active-state bookkeeping used by generation (v2.0 CRITICAL 3)
+nActiveStates = 0
+activeTotalCount = 0
+for s to k
+    if state_count#[s] > 0
+        nActiveStates += 1
+        activeTotalCount += state_count#[s]
     endif
 endfor
-state# = viterbi_state#
-appendInfoLine: "  Viterbi changed ", nChangedV, "/", num_frames,
-    ... " frame assignments vs k-means"
-
-# Re-estimate the model on the decoded path (hard EM, one step)
-@estimateEmissions
-@estimateTransitions
+appendInfoLine: "  Active states: ", nActiveStates, "/", k
+if nActiveStates < k
+    warnLines$ = warnLines$ + "  . " + string$(k - nActiveStates) +
+        ... " state(s) ended up empty and were pruned from the chain" + newline$
+endif
 
 ####################################################################
 # GENERATE SEQUENCE (HMM SAMPLING)
@@ -601,130 +811,299 @@ appendInfoLine: "  Viterbi changed ", nChangedV, "/", num_frames,
 appendInfoLine: ""
 appendInfoLine: "Generating HMM sequence..."
 
-# Determine output length
-# v1.3: frames concatenate at (frame_size - crossfade) spacing, NOT
-# at the analysis hop. v1.2 divided the target by the hop, which
-# with the 80/40 ms defaults produced ~2x the requested duration
-# (and the trim was nested inside the under-build branch, so the
-# overshoot was never trimmed).
-advance_s = frame_size_s - crossfade_s
-if advance_s < 0.001
-    advance_s = 0.001
+# v2.0 CRITICAL 1 + fix 9: output length is expressed in the SAME time
+# unit the model was trained on. v1.3 advanced by
+# (frame_size - crossfade) at synthesis while estimating transitions at
+# frame_hop_s - measured 0.075 s against 0.040 s at the defaults, a
+# 1.875x slowdown. One state now equals one hop, everywhere.
+advance_s = frame_hop_s
+
+# One quantity decides the length, and it is always honoured exactly.
+# v1.3 let Match_input build a few frames too many while only the
+# target-duration branch ever trimmed (measured: 6.004 s out for a
+# 6.000 s input).
+if output_mode = 1
+    desired_duration = duration_s
+    useDuration = 1
+elsif output_mode = 2
+    desired_duration = target_duration_s
+    useDuration = 1
+    if desired_duration <= 0
+        desired_duration = duration_s
+        warnLines$ = warnLines$ +
+            ... "  ! Target duration <= 0 -> matching input instead" + newline$
+    endif
+else
+    useDuration = 0
 endif
 
-if use_target_duration
-    base_output_length = ceiling((target_duration_s - crossfade_s) / advance_s)
+if useDuration
+    base_output_length = ceiling(desired_duration / advance_s) + 1
     if base_output_length < 2
         base_output_length = 2
     endif
-    appendInfoLine: "Target: ", target_duration_s, " s (", base_output_length,
-        ... " frames at ", fixed$(advance_s * 1000, 0), " ms advance)"
+    appendInfoLine: "Output: ", fixed$(desired_duration, 3), " s (",
+        ... base_output_length, " frames at ", fixed$(advance_s * 1000, 1), " ms hop)"
 else
-    if match_input_duration
-        base_output_length = ceiling((duration_s - crossfade_s) / advance_s)
-        if base_output_length < 2
-            base_output_length = 2
-        endif
-        appendInfoLine: "Matching input duration (", base_output_length, " frames)"
-    else
-        base_output_length = output_length_frames
-        appendInfoLine: "Fixed output length: ", output_length_frames, " frames"
-    endif
+    base_output_length = output_length_frames
+    desired_duration = base_output_length * advance_s + (frame_size_s - advance_s)
+    appendInfoLine: "Output: ", output_length_frames, " frames -> ",
+        ... fixed$(desired_duration, 3), " s"
 endif
 
-# Generate initial sequence
 output_sequence_length = base_output_length
-
-# Declare output vectors with extra space
-max_output_frames = output_sequence_length * 3
+max_output_frames = output_sequence_length + 4
 output_state# = zero# (max_output_frames)
 output_frame# = zero# (max_output_frames)
 
-# Initialize with random state
-current_state = randomInteger(1, k)
+# Initial state drawn by OCCUPANCY over active states. v1.3 used
+# randomInteger(1, k), which could start the chain in an empty state.
+rInit = randomUniform(0, activeTotalCount)
+cum = 0
+current_state = 0
+for s to k
+    if state_count#[s] > 0
+        cum += state_count#[s]
+        if current_state = 0 and rInit <= cum
+            current_state = s
+        endif
+    endif
+endfor
+if current_state = 0
+    for s to k
+        if current_state = 0 and state_count#[s] > 0
+            current_state = s
+        endif
+    endfor
+endif
 output_state#[1] = current_state
 
-# Generate state sequence using transition probabilities
 for i from 2 to output_sequence_length
-    # Sample next state based on current state's transition probabilities
     rand = randomUniform(0, 1)
     cumulative = 0
-    next_state = 1
-    found = 0
-    
+    next_state = 0
     for s to k
-        if found = 0
+        if next_state = 0
             idx = (current_state - 1) * k + s
             cumulative += trans_prob#[idx]
             if rand <= cumulative
                 next_state = s
-                found = 1
             endif
         endif
     endfor
-    
+    if next_state = 0
+        # rounding shortfall: fall back to the last active state, never
+        # to an empty one
+        for s to k
+            if next_state = 0 and state_count#[s] > 0
+                next_state = s
+            endif
+        endfor
+    endif
     output_state#[i] = next_state
     current_state = next_state
 endfor
 
-# For each output frame, sample a matching input frame
-appendInfoLine: "Sampling frames from emission distributions..."
+# ============================================================
+# FRAME SELECTION
+# ============================================================
+# v2.0 fix 4: v1.3 described "sample states -> sample observations",
+# but observations were never sampled: it picked uniformly among the
+# state's corpus frames, so the Gaussians only ever served Viterbi.
+# Gaussian mode draws a 5D observation from the state's own
+# distribution and takes the nearest frame WITHIN that state, which is
+# what the description always claimed. Uniform mode is v1.3's
+# behaviour, kept because it is a genuinely different texture.
 
-# Declare candidates vector - use index 1 for count, 2+ for actual candidates
-candidates# = zero# (num_frames + 2)
+appendInfoLine: "Selecting frames per state..."
+
+# Membership lists per state
+for s to k
+    memberCount_'s' = 0
+endfor
+for f to num_frames
+    s = state#[f]
+    memberCount_'s' = memberCount_'s' + 1
+    idxm = memberCount_'s'
+    member_'s'_'idxm' = f
+endfor
+
+procedure pickFrame: .state
+    .cnt = memberCount_'.state'
+    if .cnt < 1
+        # Structurally unreachable now: empty states are pruned from
+        # the transition matrix and cannot be the initial state either.
+        .cnt = 0
+    endif
+    if .cnt = 1
+        pickFrame.result = member_'.state'_1
+    elsif frame_selection = 2 or .cnt < 1
+        .r = randomInteger(1, .cnt)
+        pickFrame.result = member_'.state'_'.r'
+    else
+        # draw an observation from the state Gaussian
+        for .d to nDims
+            .obs_'.d' = emitMean_'.d'_'.state' +
+                ... randomGauss(0, 1) * emitStd_'.d'_'.state'
+        endfor
+        .bestD = 1e30
+        .bestF = member_'.state'_1
+        for .m to .cnt
+            .f = member_'.state'_'.m'
+            .dd = 0
+            for .d to nDims
+                .df = norm_'.d'_'.f' - .obs_'.d'
+                .dd += .df * .df
+            endfor
+            if .dd < .bestD
+                .bestD = .dd
+                .bestF = .f
+            endif
+        endfor
+        pickFrame.result = .bestF
+    endif
+endproc
 
 ####################################################################
-# SYNTHESIZE OUTPUT
+# SYNTHESIZE OUTPUT - FIXED-HOP HANN OVERLAP-ADD
 #
-# v1.3: all segments are extracted and faded first, then joined in
-# a SINGLE multi-object Concatenate-with-overlap (the old one-at-a-
-# time loop copied the growing output every iteration: O(n^2), and
-# painful at the Experimental preset's 1000 frames). Stereo builds
-# L and R directly instead of building and discarding a full mono
-# sequence first. Loop-to-target and trim live in buildSequence,
-# with a real copy as the loop base (v1.2 aliased base_sound to an
-# object the loop removed, crashing whenever the branch ran).
+# v2.0 CRITICAL 1 + 2. Frames are placed at (i-1) * frame_hop_s, which
+# is the interval the transition matrix was estimated over, and each is
+# windowed ONCE with a Hann and divided out by the accumulated
+# envelope. v1.3 faded every segment manually over crossfade_s and then
+# handed the set to Concatenate with overlap, which applies its own
+# crossfade to the same samples: measured 1.26 dB peak-to-trough
+# ripple at the frame rate on a steady tone, on top of the 1.875x
+# slowdown from the advance mismatch.
 ####################################################################
 
 appendInfoLine: ""
-appendInfoLine: "Synthesizing audio..."
+appendInfoLine: "Synthesizing audio (Hann OLA at ", fixed$(frame_hop_ms, 1), " ms hop)..."
+
+procedure buildSequence: .n
+    .bufDur = (.n - 1) * frame_hop_s + frame_size_s + 0.05
+    Create Sound from formula: "hmm_out", 1, 0, .bufDur, sampleRate, "0"
+    .outBuf = selected("Sound")
+    Create Sound from formula: "hmm_env", 1, 0, .bufDur, sampleRate, "0"
+    .envBuf = selected("Sound")
+
+    for .i to .n
+        .fi = buildFrames#[.i]
+        .t1 = frame_start#[.fi]
+        .t2 = .t1 + frame_size_s
+        if .t2 > duration_s
+            .t2 = duration_s
+        endif
+
+        selectObject: sound_mono
+        .seg = Extract part: .t1, .t2, "rectangular", 1.0, "no"
+        selectObject: .seg
+        .segDur = Get total duration
+
+        # exactly one window per frame
+        if .segDur > 0.0005
+            selectObject: .seg
+            Formula: "self * (0.5 - 0.5 * cos(2 * pi * (x - xmin) / (xmax - xmin)))"
+        endif
+
+        .pos = (.i - 1) * frame_hop_s
+        if .pos + .segDur > .bufDur
+            .segDur = .bufDur - .pos
+        endif
+        if .segDur > 0.0005
+            selectObject: .seg
+            Shift times to: "start time", .pos
+            .sid$ = string$(.seg)
+            .p0$ = fixed$(.pos, 9)
+            .gl$ = fixed$(.segDur, 9)
+
+            selectObject: .outBuf
+            Formula (part): .pos, .pos + .segDur, 1, 1,
+                ... "self + object(" + .sid$ + ", x)"
+
+            selectObject: .envBuf
+            Formula (part): .pos, .pos + .segDur, 1, 1,
+                ... "self + (0.5 - 0.5 * cos(2 * pi * (x - " + .p0$ + ") / " + .gl$ + "))"
+        endif
+        removeObject: .seg
+    endfor
+
+    # divide by the accumulated envelope, with the divisor floored so
+    # the head and tail fade instead of being boosted
+    selectObject: .envBuf
+    .envPeak = Get absolute extremum: 0, 0, "None"
+    if .envPeak < 1e-9
+        .envPeak = 1e-9
+    endif
+    .ef$ = fixed$(.envPeak * 0.15, 9)
+    .eid$ = string$(.envBuf)
+    selectObject: .outBuf
+    Formula: "self / max(object[" + .eid$ + ", col], " + .ef$ + ")"
+    removeObject: .envBuf
+
+    .cat = .outBuf
+
+    # v2.0 fix 9: the requested length is delivered exactly, whichever
+    # mode asked for it.
+    selectObject: .cat
+    .d = Get total duration
+    if .d > desired_duration
+        selectObject: .cat
+        .tr = Extract part: 0, desired_duration, "rectangular", 1, "no"
+        removeObject: .cat
+        .cat = .tr
+    elsif .d < desired_duration - 0.0005
+        Create Sound from formula: "hmm_pad", 1, 0, desired_duration - .d, sampleRate, "0"
+        .pad = selected("Sound")
+        selectObject: .cat
+        plusObject: .pad
+        .joined = Concatenate
+        removeObject: .cat, .pad
+        .cat = .joined
+    endif
+
+    # v2.0 fix 10: the trim can land mid-frame at a non-zero amplitude.
+    selectObject: .cat
+    .rd = Get total duration
+    .fade = 0.005
+    if .fade > .rd * 0.1
+        .fade = .rd * 0.1
+    endif
+    if .fade > 0.0002
+        .fs$ = fixed$(.fade, 8)
+        selectObject: .cat
+        Formula: "if x - xmin < " + .fs$ + " then self * ((x - xmin) / " + .fs$ + ") else self fi"
+        selectObject: .cat
+        Formula: "if xmax - x < " + .fs$ + " then self * ((xmax - x) / " + .fs$ + ") else self fi"
+    endif
+
+    selectObject: .cat
+    Scale peak: 0.95
+    buildSequence.result = .cat
+endproc
 
 if stereo_output
-    appendInfoLine: "Creating stereo with independent channels..."
-    
+    appendInfoLine: "Creating synthetic stereo (independent within-state sampling)..."
+
     output_frame_L# = zero# (output_sequence_length)
     output_frame_R# = zero# (output_sequence_length)
-    
+
     for i to output_sequence_length
         s = output_state#[i]
-        
-        candidates#[1] = 0
-        for f to num_frames
-            if state#[f] = s
-                candidates#[1] += 1
-                candidates#[candidates#[1] + 1] = f
-            endif
-        endfor
-        
-        if candidates#[1] > 0
-            random_idx = randomInteger(1, candidates#[1])
-            output_frame_L#[i] = candidates#[random_idx + 1]
-            random_idx = randomInteger(1, candidates#[1])
-            output_frame_R#[i] = candidates#[random_idx + 1]
-        else
-            output_frame_L#[i] = randomInteger(1, num_frames)
-            output_frame_R#[i] = randomInteger(1, num_frames)
-        endif
+        @pickFrame: s
+        output_frame_L#[i] = pickFrame.result
+        @pickFrame: s
+        output_frame_R#[i] = pickFrame.result
     endfor
-    
+
     buildFrames# = output_frame_L#
     @buildSequence: output_sequence_length
     left_channel = buildSequence.result
-    
+
     buildFrames# = output_frame_R#
     @buildSequence: output_sequence_length
     right_channel = buildSequence.result
-    
+
     selectObject: left_channel, right_channel
     output_sound = Combine to stereo
     Rename: sound_name$ + "_HMM_" + presetName$ + "_stereo"
@@ -732,23 +1111,10 @@ if stereo_output
 else
     for i to output_sequence_length
         s = output_state#[i]
-        
-        candidates#[1] = 0
-        for f to num_frames
-            if state#[f] = s
-                candidates#[1] += 1
-                candidates#[candidates#[1] + 1] = f
-            endif
-        endfor
-        
-        if candidates#[1] > 0
-            random_idx = randomInteger(1, candidates#[1])
-            output_frame#[i] = candidates#[random_idx + 1]
-        else
-            output_frame#[i] = randomInteger(1, num_frames)
-        endif
+        @pickFrame: s
+        output_frame#[i] = pickFrame.result
     endfor
-    
+
     buildFrames# = zero# (output_sequence_length)
     for i to output_sequence_length
         buildFrames#[i] = output_frame#[i]
@@ -758,6 +1124,9 @@ else
     selectObject: output_sound
     Rename: sound_name$ + "_HMM_" + presetName$
 endif
+
+# v2.0 fix 11: all random draws are done.
+random_initializeSafelyAndUnpredictably ()
 
 appendInfoLine: "Generated ", output_sequence_length, " frames"
 
@@ -797,7 +1166,7 @@ if draw_visualization
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", -1.7, "half",
-        ... "##HMM Timbre Sequencer v1.3##"
+        ... "##HMM Timbre Sequencer v2.0##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.20, "half",
@@ -839,7 +1208,7 @@ if draw_visualization
     Select inner viewport: 4.2, 7.7, 0.60, 1.95
 
     # Output frames advance by (frame_size - crossfade)
-    max_time_output = output_sequence_length * advance_s + crossfade_s
+    max_time_output = output_sequence_length * advance_s + (frame_size_s - advance_s)
     Axes: 0, max_time_output, 0.5, k + 0.5
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time_output, 0.5, k + 0.5
 
@@ -942,7 +1311,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Marks bottom every: 1, markStep, "yes", "yes", "no"
-    Marks left every: 1, markStep, "yes", "yes", "no"
+    # v2.0 fix 13: rows are painted in reverse (state 1 at the top), so
+    # the default left marks labelled every row with the wrong state.
+    # Drawn explicitly to match the paint order.
+    Font size: 6
+    for s1 to k
+        if (s1 - 1) mod markStep = 0
+            One mark left: k - s1 + 1, "no", "yes", "no", string$(s1)
+        endif
+    endfor
     Font size: 7
     Text bottom: "yes", "To state"
     Text left: "yes", "From state"
@@ -1018,7 +1395,7 @@ if draw_visualization
         ... "##Frames##  size=" + string$(frame_size_ms) + " ms"
         ... + "  hop=" + string$(frame_hop_ms) + " ms"
         ... + "  advance=" + fixed$(advance_s * 1000, 0) + " ms"
-        ... + "  crossfade=" + fixed$(crossfade_s * 1000, 1) + " ms"
+        ... + "  overlap=" + fixed$(overlap_s * 1000, 1) + " ms"
     Text: 0.02, "left", 0.18, "half",
         ... "##Output##  " + fixed$(vizOutDur, 2) + " s"
         ... + "  " + string$(vizOutCh) + " ch"
@@ -1053,8 +1430,19 @@ if show_info
     appendInfoLine: ""
     appendInfoLine: "HMM Model:"
     appendInfoLine: "  States: ", k, " hidden timbre classes"
-    appendInfoLine: "  Observations: 4D feature vectors"
+    appendInfoLine: "  Observations: 5D (intensity, log2 pitch, voiced, centroid, balance)"
     appendInfoLine: "  Emissions: Gaussian (mean + std per feature)"
+if frame_selection = 1
+    appendInfoLine: "  Generation: observation sampled from state Gaussian"
+else
+    appendInfoLine: "  Generation: uniform within state"
+endif
+appendInfoLine: "  Time base: 1 state = " + fixed$(frame_hop_ms, 1) + " ms (train = synth)"
+if warnLines$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Notes:"
+    appendInfo: warnLines$
+endif
     appendInfoLine: "  Transitions: Learned from data"
 endif
 
@@ -1070,68 +1458,76 @@ endif
 # previous means (generation falls back to a random frame for them
 # anyway); stds get the standard floors.
 procedure estimateEmissions
-    .sInt# = zero# (k)
-    .sPit# = zero# (k)
-    .sCen# = zero# (k)
-    .sSlo# = zero# (k)
     state_count# = zero# (k)
-    
+    for .d to nDims
+        for .s to k
+            .sum_'.d'_'.s' = 0
+        endfor
+    endfor
+
     for .i to num_frames
         .s = state#[.i]
-        .sInt#[.s] += norm_int#[.i]
-        .sPit#[.s] += norm_pitch#[.i]
-        .sCen#[.s] += norm_cent#[.i]
-        .sSlo#[.s] += norm_slope#[.i]
         state_count#[.s] += 1
+        for .d to nDims
+            .sum_'.d'_'.s' = .sum_'.d'_'.s' + norm_'.d'_'.i'
+        endfor
     endfor
-    
+
     for .s to k
         if state_count#[.s] > 0
-            emit_mean_int#[.s] = .sInt#[.s] / state_count#[.s]
-            emit_mean_pitch#[.s] = .sPit#[.s] / state_count#[.s]
-            emit_mean_cent#[.s] = .sCen#[.s] / state_count#[.s]
-            emit_mean_slope#[.s] = .sSlo#[.s] / state_count#[.s]
+            for .d to nDims
+                emitMean_'.d'_'.s' = .sum_'.d'_'.s' / state_count#[.s]
+            endfor
         endif
     endfor
-    
-    .vInt# = zero# (k)
-    .vPit# = zero# (k)
-    .vCen# = zero# (k)
-    .vSlo# = zero# (k)
-    
+
+    for .d to nDims
+        for .s to k
+            .var_'.d'_'.s' = 0
+        endfor
+    endfor
     for .i to num_frames
         .s = state#[.i]
-        .vInt#[.s] += (norm_int#[.i] - emit_mean_int#[.s])^2
-        .vPit#[.s] += (norm_pitch#[.i] - emit_mean_pitch#[.s])^2
-        .vCen#[.s] += (norm_cent#[.i] - emit_mean_cent#[.s])^2
-        .vSlo#[.s] += (norm_slope#[.i] - emit_mean_slope#[.s])^2
+        for .d to nDims
+            .dv = norm_'.d'_'.i' - emitMean_'.d'_'.s'
+            .var_'.d'_'.s' = .var_'.d'_'.s' + .dv * .dv
+        endfor
     endfor
-    
+
+    # v2.0 fix 6: continuous variance regularization. v1.3 tested
+    # "if std < 0.01 then std = 0.1", which is not a floor at 0.01 - a
+    # state measuring 0.009 was widened elevenfold, and the most
+    # consistent states were punished hardest. Observed once at K=24 on
+    # the test corpus.
+    .eps = 0.02
+    .hardFloor = 0.01
     for .s to k
-        if state_count#[.s] > 1
-            emit_std_int#[.s] = sqrt(.vInt#[.s] / state_count#[.s])
-            emit_std_pitch#[.s] = sqrt(.vPit#[.s] / state_count#[.s])
-            emit_std_cent#[.s] = sqrt(.vCen#[.s] / state_count#[.s])
-            emit_std_slope#[.s] = sqrt(.vSlo#[.s] / state_count#[.s])
-        else
-            emit_std_int#[.s] = 0.1
-            emit_std_pitch#[.s] = 0.1
-            emit_std_cent#[.s] = 0.1
-            emit_std_slope#[.s] = 0.1
-        endif
-        
-        if emit_std_int#[.s] < 0.01
-            emit_std_int#[.s] = 0.1
-        endif
-        if emit_std_pitch#[.s] < 0.01
-            emit_std_pitch#[.s] = 0.1
-        endif
-        if emit_std_cent#[.s] < 0.01
-            emit_std_cent#[.s] = 0.1
-        endif
-        if emit_std_slope#[.s] < 0.01
-            emit_std_slope#[.s] = 0.1
-        endif
+        for .d to nDims
+            if state_count#[.s] > 1
+                .v = .var_'.d'_'.s' / state_count#[.s]
+            else
+                # a single member carries no spread; the epsilon below
+                # is what gives it a usable width
+                .v = 0
+            endif
+            .sd = sqrt(.v + .eps * .eps)
+            if .sd < .hardFloor
+                .sd = .hardFloor
+            endif
+            emitStd_'.d'_'.s' = .sd
+        endfor
+    endfor
+
+    # Legacy names for the visualization panels
+    for .s to k
+        emit_mean_int#[.s] = emitMean_1_'.s'
+        emit_mean_pitch#[.s] = emitMean_2_'.s'
+        emit_mean_cent#[.s] = emitMean_4_'.s'
+        emit_mean_slope#[.s] = emitMean_5_'.s'
+        emit_std_int#[.s] = emitStd_1_'.s'
+        emit_std_pitch#[.s] = emitStd_2_'.s'
+        emit_std_cent#[.s] = emitStd_4_'.s'
+        emit_std_slope#[.s] = emitStd_5_'.s'
     endfor
 endproc
 
@@ -1140,97 +1536,60 @@ endproc
 # smoothing.
 procedure estimateTransitions
     trans_count# = zero# (max_trans_size)
-    
+
     for .i from 1 to num_frames - 1
         .idx = (state#[.i] - 1) * k + state#[.i + 1]
         trans_count#[.idx] += 1
     endfor
-    
+
+    # v2.0 CRITICAL 3: an empty state must not be reachable. v1.3
+    # smoothed every cell equally, so states holding no frames kept a
+    # slice of probability in every row; generation could then walk
+    # into one and fall back to a uniform draw over the WHOLE corpus,
+    # which is the one thing a state model must never do.
     .smoothing = 0.01
     for .s1 to k
         .rowSum = 0
         for .s2 to k
             .idx = (.s1 - 1) * k + .s2
-            .rowSum += trans_count#[.idx] + .smoothing
-        endfor
-        
-        for .s2 to k
-            .idx = (.s1 - 1) * k + .s2
-            if .rowSum > 0
-                trans_prob#[.idx] = (trans_count#[.idx] + .smoothing) / .rowSum
-            else
-                trans_prob#[.idx] = 1 / k
+            if state_count#[.s2] > 0
+                .rowSum += trans_count#[.idx] + .smoothing
             endif
         endfor
+
+        for .s2 to k
+            .idx = (.s1 - 1) * k + .s2
+            if state_count#[.s2] = 0
+                trans_prob#[.idx] = 0
+            elsif .rowSum > 0
+                trans_prob#[.idx] = (trans_count#[.idx] + .smoothing) / .rowSum
+            else
+                trans_prob#[.idx] = 0
+            endif
+        endfor
+
+        # A row that reaches nothing (no active target at all) spreads
+        # evenly over the active states instead of being left at zero.
+        if .rowSum <= 0
+            .nAct = 0
+            for .s2 to k
+                if state_count#[.s2] > 0
+                    .nAct += 1
+                endif
+            endfor
+            if .nAct > 0
+                for .s2 to k
+                    .idx = (.s1 - 1) * k + .s2
+                    if state_count#[.s2] > 0
+                        trans_prob#[.idx] = 1 / .nAct
+                    endif
+                endfor
+            endif
+        endif
     endfor
 endproc
 
 # Build one audio sequence from buildFrames#[1..n]: extract and
 # fade all segments, join them in a single Concatenate-with-overlap,
 # then loop and/or trim to the target duration if one is set.
-procedure buildSequence: .n
-    for .i to .n
-        .fi = buildFrames#[.i]
-        .t1 = frame_start#[.fi]
-        .t2 = .t1 + frame_size_s
-        if .t2 > duration_s
-            .t2 = duration_s
-        endif
-        selectObject: sound_mono
-        bseg_'.i' = Extract part: .t1, .t2, "rectangular", 1.0, "no"
-        .segDur = Get total duration
-        Fade in: 0, 0, crossfade_s, "yes"
-        Fade out: 0, .segDur, -crossfade_s, "yes"
-    endfor
-    
-    selectObject: bseg_1
-    for .i from 2 to .n
-        plusObject: bseg_'.i'
-    endfor
-    if .n >= 2
-        .cat = Concatenate with overlap: crossfade_s
-    else
-        .cat = Copy: "sequence"
-    endif
-    for .i to .n
-        removeObject: bseg_'.i'
-    endfor
-    
-    if use_target_duration
-        selectObject: .cat
-        .d = Get total duration
-        
-        if .d < target_duration_s
-            # v1.3: the loop base is a REAL copy. v1.2 aliased it to
-            # the object the loop removes, crashing on iteration 2
-            # (or at cleanup after iteration 1).
-            selectObject: .cat
-            .base = Copy: "loop_base"
-            while .d < target_duration_s
-                selectObject: .base
-                .lc = Copy: "loop_tmp"
-                selectObject: .cat, .lc
-                .tmp = Concatenate with overlap: crossfade_s
-                removeObject: .cat, .lc
-                .cat = .tmp
-                selectObject: .cat
-                .d = Get total duration
-            endwhile
-            removeObject: .base
-        endif
-        
-        # v1.3: trim is unconditional on overshoot (it was nested
-        # inside the under-build branch, so it never ran)
-        selectObject: .cat
-        .d = Get total duration
-        if .d > target_duration_s
-            .tr = Extract part: 0, target_duration_s, "rectangular", 1, "no"
-            removeObject: .cat
-            .cat = .tr
-        endif
-    endif
-    
-    selectObject: .cat
-    Scale peak: 0.95
-    buildSequence.result = .cat
-endproc
+
