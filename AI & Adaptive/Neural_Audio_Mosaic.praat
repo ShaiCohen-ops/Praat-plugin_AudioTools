@@ -3,12 +3,117 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
+# Version: 0.7 (2026) - Unified time grid, exact duration, honest name
+#
+# Changelog v0.7 (2026):
+#
+#   AUDIO CHANGES everywhere: the analysis grid, the rendered grains
+#   and the output length were three different things and are now one.
+#
+#   CRITICAL 1 - the features described a different instant from the
+#     grain that got played, by a whole hop. The script read MFCC by
+#     FRAME NUMBER (Get value in frame: i) while reading pitch and
+#     intensity at a hand-computed time t = (i - 0.5) * hop, and those
+#     are not the same instant. Measured on a 1 s source at a 50 ms
+#     grain and 25 ms hop: MFCC frame 1 is centred at 0.03750 s, while
+#     the script assumed 0.01250 s - a 25 ms error, one full hop and
+#     half a grain. The rendered grain's own centre was a third value
+#     again (0.02500 s). v0.7 defines ONE grid,
+#       centre[i] = grainSec/2 + (i-1)*hop,
+#     and queries pitch, intensity, MFCC and the grain extraction all
+#     at that time - the MFCC frame index is now derived from the
+#     object's own x1 and dx instead of being assumed equal to i.
+#
+#   CRITICAL 2 - one valid grain was dropped at each end. The count
+#     used floor((dur - grain) / hop) without the +1: 37 instead of 38
+#     on a 1 s target, and the same omission cost the last usable
+#     grain of the source pool.
+#
+#   CRITICAL 3 - the output ended with a silent hop. outputDur was
+#     nTarget * hop + grain, but N grains starting at 0, H, 2H ...
+#     only cover (N-1) * H + G. Measured: a 1 s target gave a 0.9750 s
+#     buffer whose last grain ended at 0.9500 s, leaving 25 ms of
+#     silence that the window-sum division could not fill because the
+#     window sum is zero there too. v0.7 renders into a buffer of the
+#     target's own length, places a final grain so the coverage
+#     reaches the end, and trims to durTarget exactly.
+#
+#   4 - A global fade at both ends. Dividing by the window sum very
+#     nearly CANCELS the Hann taper of the first and last grain -
+#     source x Hann / Hann is source - so the output could start or
+#     stop at an arbitrary sample value. The internal window is not a
+#     substitute for a global fade once you divide by the window sum.
+#
+#   5 - "Neural" is gone. There is no network, no layer, no weight, no
+#     training and no inference anywhere in this script: the search is
+#     a weighted Euclidean nearest neighbour over 12 MFCCs, energy and
+#     a voiced-aware pitch distance, run either exhaustively or over
+#     random probes. It is now Feature-Matched Audio Mosaic, and the
+#     progress and panel titles match.
+#
+#   6 - The stochastic "second best" could be the SAME grain. Probes
+#     were drawn with replacement, so one index could be tested twice
+#     and become both best_idx and second_best_idx - the right channel
+#     then rendered the identical grain. With Search_probes = 1,
+#     second_best_idx stayed at its initial value of 1 even though
+#     source grain 1 was never examined. Probes are now distinct, and
+#     second_best is never allowed to equal best; with a single source
+#     grain the script says so and uses it for both channels.
+#
+#   7 - Random_seed added (0 = unpredictable), with the generator
+#     returned to its safe state afterwards.
+#
+#   8 - Validation: overlap in [0, 0.95], probes >= 2 for stereo
+#     stochastic, stereo variation in [0, 1], and a grain size at
+#     least as long as the 25 ms MFCC window.
+#
+#   9 - Silent Source (and silent Target) are rejected rather than
+#     producing arbitrary matches and a silent file handed to peak
+#     normalisation.
+#
+#   10 - Naming and documentation:
+#     - Normalize_volume renamed Normalize_peak: it scales every
+#       result to 0.99 whether or not anything was clipping.
+#     - Praat counts selected objects TOP-DOWN in the object list, not
+#       in click order, so "#1 = Target" means the higher one in the
+#       list. Stated explicitly.
+#     - Both inputs are downmixed to mono; the stereo output is
+#       synthesised by choosing a different source grain per channel.
+#
+# Version: 0.8 (2026) - Last grain placed where it was analysed
+#
+# Changelog v0.8 (2026):
+#
+#   1 - The FINAL grain was placed 12 ms from the window it analysed.
+#     v0.7 unified the analysis grid but left placement at
+#     (i-1)*stepSec. For every regular grain those agree, but the extra
+#     end event's analysis centre is clamped to durTarget - grainSec/2,
+#     so the two diverge exactly once - at the end of every render.
+#     Measured on a 1.013 s target at a 50 ms grain and 25 ms hop:
+#       grain 39  analysed 0.9750, placed centre 0.9750, offset 0
+#       grain 40  analysed 0.9880, placed centre 1.0000, offset -12 ms
+#                 and only 38 ms of its 50 ms survived the trim
+#     So v0.7's "ONE grid" claim held for all but the last grain.
+#     Placement is now tTime#[i] - grainSec/2 in both the window-sum
+#     pass and the render pass, which covers all three uses (the render
+#     loop serves both channels). The last grain now starts at
+#     durTarget - grainSec and ends exactly on the target edge.
+#
+#   2 - The RNG is seeded only after every path that can exitScript.
+#     v0.7 seeded near the top, so a sample-rate mismatch, a too-short
+#     input or a silent Source exited leaving Praat globally
+#     predictable. Those exits also leaked the mono working copies,
+#     which are now removed on the way out.
+#
+#   3 - Version strings and one stale comment reference to the old
+#     "NEURAL SEARCH" block heading.
+#
 # Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Neural Audio Mosaic - Reconstructs 'Target' using 'Source' grains
+#   Feature-Matched Audio Mosaic - Reconstructs 'Target' using 'Source' grains
 #   via feature matching (concatenative synthesis / musaicing).
 #
 # Changelog v0.6 (2026):
@@ -70,9 +175,8 @@ endif
 id1 = selected("Sound", 1)
 id2 = selected("Sound", 2)
 
-form Neural Audio Mosaic v0.6
-    comment Select 2 Sounds: #1 = Target, #2 = Source
-    comment === Preset ===
+form Feature-Matched Audio Mosaic v0.8
+    comment Top selected Sound = Target, lower one = Source (list order)
     optionmenu Preset: 1
         option Manual
         option Tight Match
@@ -81,24 +185,63 @@ form Neural Audio Mosaic v0.6
         option Spectral Only
         option Pitch Priority
         option Hybrid Texture
-    comment === Grain Parameters ===
     positive Grain_size_ms 50
     real Overlap_ratio 0.5
-    comment === Search ===
     optionmenu Search_mode: 1
         option Stochastic (fast)
         option Exhaustive (accurate)
     integer Search_probes 50
-    comment === Feature Weights ===
     positive Pitch_weight 1.0
     positive Spectral_weight 1.0
     positive Energy_weight 0.5
-    comment === Output ===
     boolean Stereo_output 1
     real Stereo_variation 0.3
-    boolean Normalize_volume 1
+    integer Random_seed 0
+    boolean Normalize_peak 1
     boolean Play_result 1
 endform
+
+# Praat numbers selected objects by their position in the object list,
+# top to bottom - NOT by the order you clicked them. So "#1 = Target"
+# means the Target must sit HIGHER in the list than the Source.
+# Both inputs are downmixed to mono; the stereo output is synthesised
+# by picking a different source grain for each channel.
+# Normalize_peak scales the result to 0.99 whether or not it clipped.
+normalize_volume = normalize_peak
+
+# ============================================
+# VALIDATION  (v0.7 fix 8)
+# ============================================
+warnLines$ = ""
+if overlap_ratio < 0
+    overlap_ratio = 0
+    warnLines$ = warnLines$ + "  ! Overlap_ratio < 0 leaves gaps -> 0" + newline$
+endif
+if overlap_ratio > 0.95
+    overlap_ratio = 0.95
+    warnLines$ = warnLines$ + "  ! Overlap_ratio >= 1 gives a zero or negative hop -> 0.95" + newline$
+endif
+if stereo_variation < 0
+    stereo_variation = 0
+    warnLines$ = warnLines$ + "  ! Stereo_variation < 0 -> 0" + newline$
+endif
+if stereo_variation > 1
+    stereo_variation = 1
+    warnLines$ = warnLines$ + "  ! Stereo_variation > 1 -> 1" + newline$
+endif
+if search_probes < 2
+    search_probes = 2
+    warnLines$ = warnLines$ + "  ! Search_probes < 2 cannot yield a distinct second" +
+        ... " candidate -> 2" + newline$
+endif
+# The MFCC analysis window is 25 ms; a shorter grain cannot be
+# described by it.
+if grain_size_ms < 25
+    grain_size_ms = 25
+    warnLines$ = warnLines$ + "  ! Grain_size_ms below the 25 ms MFCC window -> 25" + newline$
+endif
+
+
 
 # ============================================
 # PRESET LOGIC
@@ -202,7 +345,7 @@ if durTarget < grainSec or durSource < grainSec
 endif
 
 clearinfo
-writeInfoLine: "=== Neural Audio Mosaic v0.6 ==="
+writeInfoLine: "=== Feature-Matched Audio Mosaic v0.8 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Target: ", targetName$, " (", fixed$(durTarget, 2), " s)"
 appendInfoLine: "Source: ", sourceName$, " (", fixed$(durSource, 2), " s)"
@@ -226,6 +369,42 @@ Rename: "Work_Target"
 
 selectObject: id2
 sourceSnd = Convert to mono
+
+# v0.7 fix 9: silent inputs give zero or undefined MFCCs, no voicing
+# and fallback intensity, so every match becomes arbitrary and the
+# result is a silent file handed to peak normalisation.
+selectObject: targetSnd
+tgtPeak = Get absolute extremum: 0, 0, "None"
+selectObject: sourceSnd
+srcPeak = Get absolute extremum: 0, 0, "None"
+if srcPeak < 1e-6
+    removeObject: targetSnd, sourceSnd
+    exitScript: "The Source sound is silent (or near-silent); there is nothing to match against."
+endif
+if tgtPeak < 1e-6
+    removeObject: targetSnd, sourceSnd
+    exitScript: "The Target sound is silent (or near-silent); there is nothing to reconstruct."
+endif
+
+# v0.8: seed only AFTER every path that can exitScript. v0.7 seeded at
+# the top, so a sample-rate mismatch, a too-short input or a silent
+# Source exited with Praat's generator left globally predictable for
+# whatever ran next - and the mono working copies leaked too.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
+endif
+
+appendInfoLine: "Seed: ", seedLabel$
+if warnLines$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Adjustments:"
+    appendInfo: warnLines$
+    appendInfoLine: ""
+endif
 Rename: "Work_Source"
 
 # ============================================
@@ -234,8 +413,19 @@ Rename: "Work_Source"
 
 appendInfoLine: "Extracting features..."
 
-nTarget = floor((durTarget - grainSec) / stepSec)
-nSource = floor((durSource - grainSec) / stepSec)
+# v0.7 CRITICAL 2: the +1 that was missing. floor((D-G)/H) gives 37
+# full windows on a 1 s target at a 50 ms grain and 25 ms hop; there
+# are 38, and the same omission cost the last usable Source grain.
+nTarget = floor((durTarget - grainSec) / stepSec) + 1
+nSource = floor((durSource - grainSec) / stepSec) + 1
+
+# v0.7 CRITICAL 3: one more Target grain when the full windows stop
+# short of the end, so the mosaic actually reaches durTarget instead
+# of leaving a silent hop. Its centre is pinned to the last legal
+# position rather than running past the source.
+if (nTarget - 1) * stepSec + grainSec < durTarget - 1e-9
+    nTarget = nTarget + 1
+endif
 
 if nTarget < 1
     nTarget = 1
@@ -256,7 +446,7 @@ endfor
 tTime# = zero#(nTarget)
 # v0.5: voicing flag — 1 if frame had a valid pitch, 0 if unvoiced.
 # Used by the distance metric to exclude the pitch term for unvoiced
-# frames (see "NEURAL SEARCH" block below).
+# frames (see the FEATURE-MATCHING SEARCH block below).
 tValid# = zero#(nTarget)
 
 # Allocate source feature arrays
@@ -269,6 +459,20 @@ sValid# = zero#(nSource)
 # Extract TARGET features
 selectObject: targetSnd
 tMfcc = To MFCC: 12, 0.025, stepSec, 100, 100, 0
+selectObject: tMfcc
+tMfccN = Get number of frames
+selectObject: tMfcc
+tMfccT1 = Get time from frame number: 1
+if tMfccN > 1
+    selectObject: tMfcc
+    tMfccT2 = Get time from frame number: 2
+    tMfccDx = tMfccT2 - tMfccT1
+else
+    tMfccDx = stepSec
+endif
+if tMfccDx <= 0
+    tMfccDx = stepSec
+endif
 
 selectObject: targetSnd
 tPitch = To Pitch: stepSec, 75, 600
@@ -277,12 +481,33 @@ selectObject: targetSnd
 tIntensity = To Intensity: 75, stepSec, "yes"
 
 for i from 1 to nTarget
-    t = (i - 0.5) * stepSec
+    # v0.7 CRITICAL 1: ONE grid. The grain centre is grainSec/2 +
+    # (i-1)*hop, and pitch, intensity, MFCC and the extraction all
+    # use it. v0.6 read MFCC by frame NUMBER while querying pitch and
+    # intensity at (i-0.5)*hop, and those are 25 ms apart at the
+    # defaults - MFCC frame 1 is centred at 0.03750 s, not 0.01250 s.
+    t = grainSec / 2 + (i - 1) * stepSec
+    if t > durTarget - grainSec / 2
+        t = durTarget - grainSec / 2
+    endif
+    if t < grainSec / 2
+        t = grainSec / 2
+    endif
     tTime#[i] = t
-    
+
+    # MFCC frame index derived from the object's own x1 and dx rather
+    # than assumed equal to i
+    fIdx = round((t - tMfccT1) / tMfccDx) + 1
+    if fIdx < 1
+        fIdx = 1
+    endif
+    if fIdx > tMfccN
+        fIdx = tMfccN
+    endif
+
     selectObject: tMfcc
     for c from 1 to 12
-        val = Get value in frame: i, c
+        val = Get value in frame: fIdx, c
         if val = undefined
             val = 0
         endif
@@ -313,6 +538,20 @@ removeObject: tMfcc, tPitch, tIntensity
 # Extract SOURCE features
 selectObject: sourceSnd
 sMfcc = To MFCC: 12, 0.025, stepSec, 100, 100, 0
+selectObject: sMfcc
+sMfccN = Get number of frames
+selectObject: sMfcc
+sMfccT1 = Get time from frame number: 1
+if sMfccN > 1
+    selectObject: sMfcc
+    sMfccT2 = Get time from frame number: 2
+    sMfccDx = sMfccT2 - sMfccT1
+else
+    sMfccDx = stepSec
+endif
+if sMfccDx <= 0
+    sMfccDx = stepSec
+endif
 
 selectObject: sourceSnd
 sPitch = To Pitch: stepSec, 75, 600
@@ -321,12 +560,26 @@ selectObject: sourceSnd
 sIntensity = To Intensity: 75, stepSec, "yes"
 
 for i from 1 to nSource
-    t = (i - 0.5) * stepSec
+    t = grainSec / 2 + (i - 1) * stepSec
+    if t > durSource - grainSec / 2
+        t = durSource - grainSec / 2
+    endif
+    if t < grainSec / 2
+        t = grainSec / 2
+    endif
     sTime#[i] = t
-    
+
+    fIdx = round((t - sMfccT1) / sMfccDx) + 1
+    if fIdx < 1
+        fIdx = 1
+    endif
+    if fIdx > sMfccN
+        fIdx = sMfccN
+    endif
+
     selectObject: sMfcc
     for c from 1 to 12
-        val = Get value in frame: i, c
+        val = Get value in frame: fIdx, c
         if val = undefined
             val = 0
         endif
@@ -443,11 +696,18 @@ endfor
 w_13 = pitch_weight * nFeatures / totalWeight
 w_14 = energy_weight * nFeatures / totalWeight
 
+# v0.7 fix 6: the pool the probe shuffle draws from.
+nNoSecond = 0
+probeIdx# = zero#(nSource)
+for pIdx from 1 to nSource
+    probeIdx#[pIdx] = pIdx
+endfor
+
 # ============================================
-# NEURAL SEARCH
+# FEATURE-MATCHING SEARCH
 # ============================================
 
-appendInfoLine: "Running neural search..."
+appendInfoLine: "Running nearest-neighbour search..."
 
 matchIdx# = zero#(nTarget)
 
@@ -459,7 +719,9 @@ for i from 1 to nTarget
     best_dist = 1e9
     best_idx = 1
     second_best_dist = 1e9
-    second_best_idx = 1
+    # v0.7 fix 6: 0 means "no distinct second candidate found yet",
+    # so it can never silently render source grain 1 unexamined.
+    second_best_idx = 0
     
     if search_mode = 2
         # Exhaustive
@@ -493,7 +755,7 @@ for i from 1 to nTarget
                 second_best_idx = best_idx
                 best_dist = dist
                 best_idx = j
-            elsif dist < second_best_dist
+            elsif dist < second_best_dist and j <> best_idx
                 second_best_dist = dist
                 second_best_idx = j
             endif
@@ -501,8 +763,24 @@ for i from 1 to nTarget
     else
         # Stochastic — same voicing-aware distance as exhaustive
         tValid_i = tValid#[i]
-        for probe from 1 to search_probes
-            j = randomInteger(1, nSource)
+        # v0.7 fix 6: probes WITHOUT replacement. v0.6 drew with
+        # replacement, so one index could be tested twice and become
+        # both best_idx and second_best_idx - the right channel then
+        # rendered the identical grain. A partial Fisher-Yates shuffle
+        # over the first nProbes positions guarantees distinct indices
+        # at O(nProbes) cost.
+        nProbes = search_probes
+        if nProbes > nSource
+            nProbes = nSource
+        endif
+        for pp from 1 to nProbes
+            rr = randomInteger(pp, nSource)
+            tmpv = probeIdx#[pp]
+            probeIdx#[pp] = probeIdx#[rr]
+            probeIdx#[rr] = tmpv
+        endfor
+        for probe from 1 to nProbes
+            j = probeIdx#[probe]
             
             dist = 0
             for f from 1 to 12
@@ -524,7 +802,7 @@ for i from 1 to nTarget
                 second_best_idx = best_idx
                 best_dist = dist
                 best_idx = j
-            elsif dist < second_best_dist
+            elsif dist < second_best_dist and j <> best_idx
                 second_best_dist = dist
                 second_best_idx = j
             endif
@@ -532,7 +810,17 @@ for i from 1 to nTarget
     endif
     
     matchIdx#[i] = best_idx
-    
+
+    # v0.7 fix 6: with only one source grain, or if no DISTINCT runner
+    # up was examined, fall back to the best for both channels rather
+    # than rendering an unexamined grain. v0.6 left second_best_idx at
+    # its initial value of 1, so with Search_probes = 1 the right
+    # channel played source grain 1 even though it was never tested.
+    if second_best_idx < 1 or second_best_idx = best_idx
+        second_best_idx = best_idx
+        nNoSecond = nNoSecond + 1
+    endif
+
     if stereo_output
         if randomUniform(0, 1) < stereo_variation
             matchIdx_R#[i] = second_best_idx
@@ -555,7 +843,15 @@ appendInfoLine: "  Search complete"
 
 appendInfoLine: "Synthesizing mosaic..."
 
-outputDur = nTarget * stepSec + grainSec
+# v0.7 CRITICAL 3: the buffer is the TARGET's length. v0.6 used
+# nTarget * hop + grain, but N grains starting at 0, H, 2H ... only
+# reach (N-1)*H + G - measured on a 1 s target, a 0.9750 s buffer whose
+# last grain ended at 0.9500 s, so 25 ms of silence that the window-sum
+# division could not fill (the window sum is zero there too).
+outputDur = (nTarget - 1) * stepSec + grainSec
+if outputDur < durTarget
+    outputDur = durTarget
+endif
 
 # v0.6: exact window-sum envelope for OLA normalization. Overlap-add
 # the bare Hanning window (obtained by windowing a constant-1 sound,
@@ -572,7 +868,18 @@ hannIdStr$ = string$(hannWin)
 
 winSum = Create Sound from formula: "winsum", 1, 0, outputDur, fs, "0"
 for i from 1 to nTarget
-    destTime = (i - 1) * stepSec
+    # v0.8: place the grain where it was ANALYSED. For every regular
+    # grain this equals (i-1)*stepSec, but the final event's analysis
+    # centre is clamped to durTarget - grainSec/2, so the old formula
+    # put it 12 ms away from the window it measured and let the trim
+    # eat 12 ms off its end. Measured on a 1.013 s target at a 50 ms
+    # grain and 25 ms hop: grain 40 analysed 0.9880 but was placed at
+    # centre 1.0000, and only 38 ms of its 50 ms survived. Now the
+    # analysis, the selection and the placement share one time.
+    destTime = tTime#[i] - grainSec / 2
+    if destTime < 0
+        destTime = 0
+    endif
     offsetCol = round(destTime * fs)
     offsetCol_str$ = string$(offsetCol)
     selectObject: winSum
@@ -626,7 +933,11 @@ for pass from 1 to n_passes
         selectObject: sourceSnd
         grain = Extract part: t1, t2, "Hanning", 1, "no"
         
-        destTime = (i - 1) * stepSec
+        # v0.8: same unified placement as the window-sum pass above.
+        destTime = tTime#[i] - grainSec / 2
+        if destTime < 0
+            destTime = 0
+        endif
         
         selectObject: grain
         grainDur = Get total duration
@@ -651,6 +962,34 @@ for pass from 1 to n_passes
     # (replaces the constant 1/(1+overlap) compensation)
     selectObject: outputSnd
     Formula: "self / (object[" + winSumIdStr$ + ", 1, col] + 1e-6)"
+
+    # v0.7 CRITICAL 3: land exactly on the Target duration.
+    selectObject: outputSnd
+    curDur = Get total duration
+    if curDur > durTarget
+        selectObject: outputSnd
+        trimmedOut = Extract part: 0, durTarget, "rectangular", 1, "no"
+        removeObject: outputSnd
+        outputSnd = trimmedOut
+    endif
+
+    # v0.7 fix 4: a global fade. Dividing by the window sum very nearly
+    # CANCELS the Hann taper of the first and last grain - source x
+    # Hann / Hann is source - so without this the output can start or
+    # stop at an arbitrary sample value.
+    selectObject: outputSnd
+    fDur = Get total duration
+    edgeF = 0.004
+    if edgeF > fDur * 0.1
+        edgeF = fDur * 0.1
+    endif
+    if edgeF > 0.0002
+        eF$ = fixed$(edgeF, 8)
+        selectObject: outputSnd
+        Formula: "if x - xmin < " + eF$ + " then self * ((x - xmin) / " + eF$ + ") else self fi"
+        selectObject: outputSnd
+        Formula: "if xmax - x < " + eF$ + " then self * ((xmax - x) / " + eF$ + ") else self fi"
+    endif
     
     if pass = 1
         channel_left = outputSnd
@@ -664,6 +1003,15 @@ for pass from 1 to n_passes
 endfor
 
 removeObject: winSum
+
+if nNoSecond > 0
+    appendInfoLine: "  ", nNoSecond, "/", nTarget,
+        ... " target grains had no distinct second candidate;",
+        ... " both channels use the best match there."
+endif
+
+# v0.7 fix 7: all random draws are done.
+random_initializeSafelyAndUnpredictably ()
 
 # ============================================
 # COMBINE OUTPUT
@@ -722,7 +1070,7 @@ Axes: 0, 1, 0, 1
 # Title and Subtitle
 Font size: 14
 Colour: "Black"
-Text: 0.5, "centre", 0.6, "half", "NEURAL AUDIO MOSAIC"
+Text: 0.5, "centre", 0.6, "half", "FEATURE-MATCHED AUDIO MOSAIC"
 Font size: 9
 Colour: "{0.5, 0.5, 0.5}"
 Text: 0.5, "centre", 0.1, "half", "Concatenative Synthesis Reconstruction Map"
