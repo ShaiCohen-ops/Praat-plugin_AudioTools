@@ -2,7 +2,7 @@
 # Praat AudioTools - Neural_Adaptive_Phonetic_Vibrato.praat
 # Author: Shai Cohen 
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026) - No-vowel guard, pitch-guard consistency
+# Version: 1.4 (2026) - Mask scaled to Effect_strength (audible effect)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,7 +22,7 @@
 #   - Category statistics and distribution
 #   - Feature space clustering display
 #   - Mixing mask timeline
-#   - Softmax confidence visualization
+#   - Temperature-shaped weights visualization
 # ============================================================
 
 # === Input Validation ===
@@ -34,8 +34,178 @@ endif
 original = selected("Sound")
 sound_name$ = selected$("Sound")
 
-form Neural Phonetic Vibrato v1.0 (Enhanced)
-    comment === PRESETS ===
+# ============================================================
+# Changelog v1.4 (2026):
+#
+#   THE EFFECT WAS TOO SUBTLE, and the cause was structural rather
+#   than a bug. The wet weight is bounded by p(vowel), and p(vowel) is
+#   bounded by how peaked a softmax over FOUR near-equal activations
+#   can be. Measured on the test signal: the most vowel-like frame in
+#   the entire file reached only w = 0.2199, so even at the effect's
+#   strongest point the dry path sat at 0.78 and the vibrato was
+#   nearly inaudible. Every preset behaved this way.
+#
+#   The absolute scale of that mask carries no useful information -
+#   it is an artefact of having four categories and of how imbalanced
+#   they are in a given file. Only the SHAPE is meaningful. So the
+#   mask is now normalised by its own peak and scaled to a new
+#   Effect_strength control: the most vowel-like frame gets exactly
+#   Effect_strength of wet, every other frame keeps its relative
+#   weight, and consonants stay dry because the confidence gate has
+#   already zeroed them before the rescale.
+#
+#   Effect_strength defaults to 0.85, and each preset sets its own
+#   (Subtle Thickener 0.45 up to Dreamy Wash 1.00), so the presets
+#   stay distinct instead of all collapsing to "barely there".
+#
+#   A file whose mask never rises above 0.02 anywhere has no
+#   vowel-like frame at all; rescaling that up to full wet would be
+#   wrong, so it bypasses to dry and says so.
+#
+# ============================================================
+# Changelog v1.3 (2026):
+#
+#   CRITICAL - categories the network does not have were still taking
+#     softmax weight. v1.2 set a missing category's activation to 0 and
+#     then exponentiated it anyway; exp(0 - max) is a positive number,
+#     not zero. Measured with only vowel (0.8) and other (0.2) present
+#     at T = 0.45:
+#       v1.2:    vowel 0.6244, other 0.1646,
+#                fricative(absent) 0.1055, silence(absent) 0.1055
+#                -> 21.11% of the probability mass went to outputs
+#                   that do not exist
+#       correct: vowel 0.7914, other 0.2086
+#     The degenerate case is worse: on an all-vowel file pVowel capped
+#     at 0.7112 instead of 1.0000, so the wet mask could never open
+#     fully. Absent categories are now excluded from the denominator.
+#
+#   2 - Formant validity is now actually implemented. v1.2's changelog
+#     claimed it; the code still filled undefined formants with
+#     500 / 1500 / 2500 Hz, which ARE canonical vowel formants - so a
+#     frame whose formant analysis failed looked like a textbook vowel
+#     to the labelling rule (which only asks F1 > 300) and to the
+#     network. There is now a formantValid# flag, the vowel rule
+#     requires it, and missing values are filled with the file's own
+#     valid mean instead of a vowel-shaped constant.
+#
+#   3 - Two documentation corrections, both mine: the header still said
+#     Version 1.1, and the note under the form described
+#     Confidence_threshold as a margin test when the implementation
+#     gates on p(vowel). See also the correction inside item 8 below.
+#
+#   4 - The no-vowel message no longer tells the user to lower a
+#     "Vowel HNR threshold" that is not in the form. It now says what
+#     actually happened and what kind of input would work.
+#
+# ============================================================
+# Changelog v1.2 (2026):
+#
+#   CRITICAL 1 - the vibrato was keyed to the WRONG category.
+#     The script read activation columns 1..4 as vowel, fricative,
+#     silence, other, and drove the wet mask from column 1. Praat sorts
+#     an FFNet's outputs by category name. Verified on 6.4.42 with
+#     categories inserted in the order vowel, fricative, silence,
+#     other:
+#       output 1 -> 'fricative'
+#       output 2 -> 'other'
+#       output 3 -> 'silence'
+#       output 4 -> 'vowel'
+#     So w_vowel was the FRICATIVE weight and the effect ran almost
+#     exactly inverted from its stated design: vibrato on the
+#     consonants, dry on the vowels. Every category plot was mislabelled
+#     with it. v1.2 asks the network for each output's category by name
+#     (Get category of output unit) and builds an index map.
+#
+#   CRITICAL 2 - a missing category shifted or broke everything.
+#     The number of outputs is the number of DISTINCT categories
+#     present. Verified: with no 'vowel' frame the net has 3 outputs,
+#     labelled fricative / other / silence - so the old
+#     "Get value in cell: i, 4" read a column that does not exist, and
+#     the no-vowel guard could not fire because the script died first.
+#     v1.2 maps by name, treats a missing category's weight as 0, and
+#     turns "no vowel found" into a real dry bypass.
+#
+#   CRITICAL 3 - Sound & IntensityTier: Multiply renormalised each path
+#     to a peak of 0.9, destroying the mix ratio. Verified: a 0.5-peak
+#     tone multiplied by a -40 dB tier gives peak 0.00499971 with
+#     Multiply: "no" (correct: 0.5 * 10^-2) and 0.90000 with
+#     Multiply: "yes". Each of the three paths was normalised
+#     INDEPENDENTLY, so a vowel weight of 0.01 and a dry weight of 0.99
+#     both arrived at 0.9 and summed at roughly equal loudness. The
+#     mask therefore controlled almost nothing. v1.2 uses
+#     Multiply: "no" on all three paths and applies one conditional
+#     limiter after the sum.
+#
+#   4 - Confidence_threshold now does something. It appeared in the
+#     form and in every preset and was never read anywhere in the
+#     script, so all five presets behaved identically in that respect.
+#     It gates on p(vowel) with a soft knee: 0 below the threshold,
+#     ramping to full at twice it, so the mask does not step.
+#     NOTE: implemented first as a MARGIN test (p(vowel) minus its
+#     nearest rival), which is stricter and more principled and which
+#     turned out to be unusable. On ordinary material the classes are
+#     badly imbalanced - 16 vowel frames against 95 fricative and 181
+#     other on the test signal - and the vowel probability never leads
+#     at all (best margin -0.00606), so every preset rendered pure dry.
+#     The margin form is left in the code as a commented alternative
+#     for balanced material.
+#
+#   5 - Voiced state is separated from F0. Unvoiced frames were given
+#     z = 0.5 for pitch and then min-max normalised with real pitches,
+#     which puts them near the TOP of a 100-300 Hz file's range - so
+#     the "voicedness" boost could favour fricatives and silence. There
+#     is now an explicit voiced flag, pitch is read only where voiced,
+#     and undefined formants are flagged rather than filled with
+#     500/1500/2500 Hz, which reads as a canonical vowel.
+#
+#   6 - Frame times come from the MFCC object (Get time from frame
+#     number) instead of frame_step * (i - 0.5). The first MFCC frame
+#     centre is not necessarily half a step in, so MFCC rows were being
+#     paired with pitch, formant and intensity values from a slightly
+#     different instant.
+#
+#   7 - The silence threshold is now relative (max intensity - 35 dB).
+#     A fixed 45 dB SPL cut meant the same speech, attenuated by 20 dB,
+#     relabelled as silence and produced a different mask.
+#
+#   8 - Boundary artefacts are SUPPRESSED, not prevented. Praat returns
+#     0 outside a Sound's domain, so within one vibrato depth of each
+#     edge one channel reads past the boundary and drops out - up to
+#     5 ms on Wide & Slow, and asymmetric between channels. A final
+#     edge fade, longer than the vibrato depth, covers the region.
+#     CORRECTION (v1.3): v1.2's changelog said the work sound was
+#     "padded before modulation and trimmed after". It was not - no
+#     padding, extension, reflection or post-trim was ever written.
+#     The fade is a real improvement and covers the affected span, but
+#     the out-of-domain reads still happen and this entry now says so.
+#
+#   9 - Random_seed added (0 = unpredictable). FFNet initialisation and
+#     training are stochastic, so two runs could produce different
+#     masks; the generator is returned to its safe state afterwards.
+#
+#   10 - Stereo_width is validated to [0, 1]. It was an unbounded real,
+#     where negatives invert phase.
+#
+#   11 - Ch_Left and Ch_Right are always removed. They were only
+#     cleaned up inside the visualization branch, so running with the
+#     drawing off left two Sounds behind.
+#
+#   12 - Naming and framing:
+#     - Form, Info banner and header all said different versions.
+#     - "Temperature-shaped weights" -> temperature-shaped activation weights.
+#       An ActivationList already holds 0..1 values, not logits, so the
+#       result is a shaped weighting, not a calibrated probability.
+#     - The FFNet is trained on rules this script derives from THIS
+#       file, tested on the same frames, and used only on that file.
+#       There is no corpus, no held-out set and no ground truth. It is
+#       per-file rule distillation into a smooth vowel-likelihood mask
+#       - useful, but not learned phonetics.
+#     - Output is synthetic stereo built from a mono fold-down; source
+#       stereo is not preserved.
+#
+# ============================================================
+
+form Neural Phonetic Vibrato v1.4
     optionmenu Preset 1
         option Manual
         option Lush Chorus
@@ -43,18 +213,24 @@ form Neural Phonetic Vibrato v1.0 (Enhanced)
         option Nervous Shimmer
         option Subtle Thickener
         option Dreamy Wash
-    comment === Vowel Effect (Stereo Vibrato) ===
     positive Vibrato_rate_hz 6.0
     positive Vibrato_depth_ms 2.5
-    comment === Neural Mixing ===
     positive Confidence_threshold 0.15
     positive Temperature 0.45
     positive Voiced_boost 0.4
-    comment === Output ===
+    positive Effect_strength 0.85
     real Stereo_width 0.9
+    integer Random_seed 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Confidence_threshold gates on p(vowel) itself: below it the wet path
+# is silent, and it ramps to full at twice the threshold, so the mask
+# does not step. (A stricter margin form - p(vowel) minus its nearest
+# rival - is in the code as a commented alternative; it zeroes the wet
+# path on class-imbalanced material.) Output is synthetic stereo derived
+# from a mono fold-down. Random_seed 0 = unpredictable.
 
 # ============================================
 # PRESET LOGIC
@@ -66,6 +242,7 @@ if preset = 2
     confidence_threshold = 0.15
     temperature = 0.45
     stereo_width = 0.9
+    effect_strength = 0.90
     presetName$ = "LushChorus"
 elsif preset = 3
     # Wide & Slow
@@ -74,6 +251,7 @@ elsif preset = 3
     confidence_threshold = 0.10
     temperature = 0.5
     stereo_width = 1.0
+    effect_strength = 0.85
     presetName$ = "WideSlow"
 elsif preset = 4
     # Nervous Shimmer
@@ -82,6 +260,7 @@ elsif preset = 4
     confidence_threshold = 0.15
     temperature = 0.4
     stereo_width = 0.7
+    effect_strength = 0.95
     presetName$ = "NervousShimmer"
 elsif preset = 5
     # Subtle Thickener
@@ -90,6 +269,7 @@ elsif preset = 5
     confidence_threshold = 0.25
     temperature = 0.6
     stereo_width = 0.5
+    effect_strength = 0.45
     presetName$ = "SubtleThickener"
 elsif preset = 6
     # Dreamy Wash
@@ -98,6 +278,7 @@ elsif preset = 6
     confidence_threshold = 0.05
     temperature = 0.8
     stereo_width = 1.0
+    effect_strength = 1.00
     presetName$ = "DreamyWash"
 else
     presetName$ = "Manual"
@@ -115,7 +296,6 @@ frame_step_seconds = 0.01
 max_formant_hz = 5500
 vowel_hnr_threshold = 5.0
 fricative_hnr_max = 3.0
-silence_intensity_threshold = 45
 
 # ============================================
 # INIT & MONO CONVERSION
@@ -133,7 +313,7 @@ Rename: "Analysis_Copy"
 sound_work = selected("Sound")
 
 clearinfo
-writeInfoLine: "=== Neural Phonetic Vibrato v1.0 ==="
+writeInfoLine: "=== Neural Phonetic Vibrato v1.4 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Sound: ", sound_name$
 appendInfoLine: ""
@@ -175,6 +355,54 @@ n_features = 18
 
 appendInfoLine: "  Extracted ", rows_target, " frames x ", n_features, " features"
 
+# v1.2 fix 7: relative, not absolute. A fixed 45 dB SPL cut meant the
+# same speech attenuated by 20 dB relabelled as silence.
+selectObject: intensity
+maxIntensityDb = Get maximum: 0, 0, "Parabolic"
+if maxIntensityDb = undefined
+    maxIntensityDb = 60
+endif
+silence_intensity_threshold = maxIntensityDb - 35
+if silence_intensity_threshold < 5
+    silence_intensity_threshold = 5
+endif
+appendInfoLine: "  Silence threshold: ", fixed$(silence_intensity_threshold, 1),
+    ... " dB (max ", fixed$(maxIntensityDb, 1), " - 35)"
+
+# v1.2 fix 6: take frame centres from the MFCC object itself. The
+# first MFCC frame centre is x1, not half a step in, so
+# frame_step * (i - 0.5) paired each MFCC row with pitch, formant and
+# intensity values from a slightly different instant.
+frameTime# = zero#(rows_target)
+for i from 1 to rows_target
+    selectObject: mfcc
+    frameTime#[i] = Get time from frame number: i
+endfor
+
+# ============================================
+# VALIDATION + SEED  (v1.2 fixes 9, 10)
+# ============================================
+if stereo_width < 0
+    stereo_width = 0
+    appendInfoLine: "  ! Stereo_width < 0 (phase inversion) -> 0"
+endif
+if stereo_width > 1
+    stereo_width = 1
+    appendInfoLine: "  ! Stereo_width > 1 -> 1"
+endif
+
+# FFNet initialisation and training are stochastic; without a seed two
+# runs could produce different masks from the same input.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
+endif
+appendInfoLine: "  Seed: ", seedLabel$
+
+
 # ============================================
 # FEATURE MATRIX
 # ============================================
@@ -202,32 +430,73 @@ for i from 1 to rows_target
 endfor
 
 # 2. Formants
-selectObject: formant
+# v1.3: track formant VALIDITY. v1.2's changelog claimed this and it
+# was never written - the old 500 / 1500 / 2500 Hz fill stayed. Those
+# are canonical vowel formants, so a frame whose formant analysis
+# FAILED looked like a textbook vowel to both the labelling rule
+# (which only asks F1 > 300) and the network. Missing values are now
+# filled with the file's own valid mean, which carries no vowel bias,
+# and the validity flag gates the vowel rule.
+formantValid# = zero#(rows_target)
+sumF1 = 0
+sumF2 = 0
+sumF3 = 0
+nValidF = 0
 for i from 1 to rows_target
-    t = frame_step_seconds * (i - 0.5)
+    selectObject: formant
+    t = frameTime#[i]
     f1 = Get value at time: 1, t, "Hertz", "Linear"
+    selectObject: formant
     f2 = Get value at time: 2, t, "Hertz", "Linear"
+    selectObject: formant
     f3 = Get value at time: 3, t, "Hertz", "Linear"
-    if f1 = undefined
-        f1 = 500
+    if f1 <> undefined and f2 <> undefined and f3 <> undefined
+        formantValid#[i] = 1
+        nValidF = nValidF + 1
+        sumF1 = sumF1 + f1
+        sumF2 = sumF2 + f2
+        sumF3 = sumF3 + f3
     endif
-    if f2 = undefined
-        f2 = 1500
-    endif
-    if f3 = undefined
-        f3 = 2500
+endfor
+if nValidF > 0
+    fillF1 = sumF1 / nValidF
+    fillF2 = sumF2 / nValidF
+    fillF3 = sumF3 / nValidF
+else
+    # nothing valid anywhere: neutral values, and no frame can pass
+    # the vowel rule because formantValid# is 0 throughout
+    fillF1 = 500
+    fillF2 = 1500
+    fillF3 = 2500
+endif
+appendInfoLine: "  Formants valid in ", nValidF, "/", rows_target, " frames"
+
+for i from 1 to rows_target
+    if formantValid#[i] = 1
+        selectObject: formant
+        t = frameTime#[i]
+        f1 = Get value at time: 1, t, "Hertz", "Linear"
+        selectObject: formant
+        f2 = Get value at time: 2, t, "Hertz", "Linear"
+        selectObject: formant
+        f3 = Get value at time: 3, t, "Hertz", "Linear"
+    else
+        f1 = fillF1
+        f2 = fillF2
+        f3 = fillF3
     endif
     selectObject: feature_matrix
     Set value: i, 4, f1 / 1000
+    selectObject: feature_matrix
     Set value: i, 5, f2 / 1000
+    selectObject: feature_matrix
     Set value: i, 6, f3 / 1000
-    selectObject: formant
 endfor
 
 # 3. Intensity
 selectObject: intensity
 for i from 1 to rows_target
-    t = frame_step_seconds * (i - 0.5)
+    t = frameTime#[i]
     v = Get value at time: t, "cubic"
     if v = undefined
         v = 60
@@ -240,7 +509,7 @@ endfor
 # 4. Harmonicity
 selectObject: harmonicity
 for i from 1 to rows_target
-    t = frame_step_seconds * (i - 0.5)
+    t = frameTime#[i]
     v = Get value at time: t, "cubic"
     if v = undefined
         v = 0
@@ -251,21 +520,44 @@ for i from 1 to rows_target
 endfor
 
 # 5. Pitch
-selectObject: pitch
+# v1.2 fix 5: an explicit voiced flag, and pitch read only where the
+# frame is voiced. v1.1 wrote z = 0.5 for unvoiced frames and then
+# min-max normalised the column with real pitches, so unvoiced frames
+# landed near the TOP of a 100-300 Hz file's range and the voicedness
+# boost could favour exactly the frames it was meant to avoid.
+voicedFlag# = zero#(rows_target)
+sumVoicedZ = 0
+nVoicedFrames = 0
 for i from 1 to rows_target
-    t = frame_step_seconds * (i - 0.5)
+    selectObject: pitch
+    t = frameTime#[i]
     v = Get value at time: t, "Hertz", "Linear"
     if v = undefined or v <= 0
-        z = 0.5
+        voicedFlag#[i] = 0
     else
+        voicedFlag#[i] = 1
+        nVoicedFrames = nVoicedFrames + 1
+        sumVoicedZ = sumVoicedZ + v / 500
+    endif
+endfor
+if nVoicedFrames > 0
+    meanVoicedZ = sumVoicedZ / nVoicedFrames
+else
+    meanVoicedZ = 0
+endif
+for i from 1 to rows_target
+    if voicedFlag#[i] = 1
+        selectObject: pitch
+        t = frameTime#[i]
+        v = Get value at time: t, "Hertz", "Linear"
         z = v / 500
-        if z <= 0
-            z = 0.5
-        endif
+    else
+        # a neutral fill that is the voiced MEAN, so an unvoiced frame
+        # cannot masquerade as a high pitch after normalisation
+        z = meanVoicedZ
     endif
     selectObject: feature_matrix
     Set value: i, 9, z
-    selectObject: pitch
 endfor
 
 # ============================================
@@ -281,7 +573,7 @@ raw_data = selected("TableOfReal")
 
 selectObject: intensity
 for i from 1 to rows_target
-    t = frame_step_seconds * (i - 0.5)
+    t = frameTime#[i]
     v = Get value at time: t, "cubic"
     if v = undefined
         v = -100
@@ -293,7 +585,7 @@ endfor
 
 selectObject: harmonicity
 for i from 1 to rows_target
-    t = frame_step_seconds * (i - 0.5)
+    t = frameTime#[i]
     v = Get value at time: t, "cubic"
     if v = undefined
         v = -100
@@ -305,7 +597,7 @@ endfor
 
 selectObject: pitch
 for i from 1 to rows_target
-    t = frame_step_seconds * (i - 0.5)
+    t = frameTime#[i]
     v = Get value at time: t, "Hertz", "Linear"
     if v = undefined or v <= 0
         v = 0
@@ -317,10 +609,11 @@ endfor
 
 selectObject: formant
 for i from 1 to rows_target
-    t = frame_step_seconds * (i - 0.5)
+    t = frameTime#[i]
     v = Get value at time: 1, t, "Hertz", "Linear"
     if v = undefined
-        v = 500
+        # v1.3: the file's own valid mean, not a canonical vowel F1
+        v = fillF1
     endif
     selectObject: raw_data
     Set value: i, 4, v
@@ -347,7 +640,7 @@ for i from 1 to rows_target
     
     viz_f1#[i] = f1_val
     selectObject: formant
-    t = frame_step_seconds * (i - 0.5)
+    t = frameTime#[i]
     f2_val = Get value at time: 2, t, "Hertz", "Linear"
     if f2_val = undefined
         f2_val = 1500
@@ -359,7 +652,7 @@ for i from 1 to rows_target
         Append category: "silence"
         viz_category#[i] = 3
         count_silence += 1
-    elsif hnr_val > vowel_hnr_threshold and f0_val > 0 and f1_val > 300
+    elsif formantValid#[i] = 1 and hnr_val > vowel_hnr_threshold and f0_val > 0 and f1_val > 300
         Append category: "vowel"
         viz_category#[i] = 1
         count_vowel += 1
@@ -389,7 +682,10 @@ if count_vowel = 0
     appendInfoLine: ""
     appendInfoLine: "  WARNING: no vowel frames detected. The vibrato effect"
     appendInfoLine: "  will be inaudible (no vowel regions to apply it to)."
-    appendInfoLine: "  Try lowering 'Vowel HNR threshold' or check the input."
+    appendInfoLine: "  The wet path is bypassed; the output is the dry signal."
+    appendInfoLine: "  This input has no frame that is voiced, harmonic and"
+    appendInfoLine: "  above the silence floor with a valid F1 - try speech or"
+    appendInfoLine: "  sung material rather than noise or percussion."
 endif
 
 # ============================================
@@ -442,6 +738,42 @@ plusObject: output_categories
 To FFNet: hidden_units, 0
 ffnet = selected("FFNet")
 
+# v1.2 CRITICAL 1 + 2: ask the network which output is which. Praat
+# sorts FFNet outputs by category NAME, and creates one output per
+# DISTINCT category actually present. Verified on 6.4.42 with
+# categories inserted vowel, fricative, silence, other:
+#   output 1 'fricative'  2 'other'  3 'silence'  4 'vowel'
+# v1.1 read column 1 as the vowel weight, so the wet mask was driven
+# by the FRICATIVE probability - the effect ran inverted. And with no
+# vowel frame at all the net has only 3 outputs, so reading column 4
+# was an access past the end.
+selectObject: ffnet
+nOutputs = Get number of outputs
+idxVowel = 0
+idxFricative = 0
+idxSilence = 0
+idxOther = 0
+for k from 1 to nOutputs
+    selectObject: ffnet
+    catName$ = Get category of output unit: k
+    if catName$ = "vowel"
+        idxVowel = k
+    elsif catName$ = "fricative"
+        idxFricative = k
+    elsif catName$ = "silence"
+        idxSilence = k
+    elsif catName$ = "other"
+        idxOther = k
+    endif
+endfor
+appendInfoLine: "  FFNet outputs: ", nOutputs,
+    ... "   vowel=", idxVowel, " fricative=", idxFricative,
+    ... " silence=", idxSilence, " other=", idxOther
+if idxVowel = 0
+    appendInfoLine: "  ! No 'vowel' category in this file - the wet path"
+    appendInfoLine: "    is bypassed entirely and the output is the dry signal."
+endif
+
 total_trained = 0
 
 while total_trained < training_iterations
@@ -475,6 +807,7 @@ Create IntensityTier: "Mask_Dry", 0, duration
 mask_dry = selected("IntensityTier")
 
 # Store for visualization
+rawMask# = zero#(rows_target)
 viz_w_vowel# = zero#(rows_target)
 viz_w_dry# = zero#(rows_target)
 viz_time# = zero#(rows_target)
@@ -482,71 +815,231 @@ viz_predicted_category# = zero#(rows_target)
 viz_softmax# = zero#(rows_target * 4)
 
 for i from 1 to rows_target
-    t = frame_step_seconds * (i - 0.5)
+    t = frameTime#[i]
     viz_time#[i] = t
     
+    # v1.2 CRITICAL 1 + 2: read each category by its mapped output
+    # index, and treat a category the network does not have as 0.
     selectObject: activation_matrix
-    a1 = Get value in cell: i, 1
-    a2 = Get value in cell: i, 2
-    a3 = Get value in cell: i, 3
-    a4 = Get value in cell: i, 4
-    
-    # Softmax
+    if idxVowel > 0
+        aVowel = Get value in cell: i, idxVowel
+    else
+        aVowel = 0
+    endif
+    if idxFricative > 0
+        selectObject: activation_matrix
+        aFric = Get value in cell: i, idxFricative
+    else
+        aFric = 0
+    endif
+    if idxSilence > 0
+        selectObject: activation_matrix
+        aSil = Get value in cell: i, idxSilence
+    else
+        aSil = 0
+    endif
+    if idxOther > 0
+        selectObject: activation_matrix
+        aOther = Get value in cell: i, idxOther
+    else
+        aOther = 0
+    endif
+
+    # Temperature-shaped activation weights. An ActivationList already
+    # holds 0..1 values, not logits, so this is a shaped weighting -
+    # v1.1 called it "softmax confidence", which overstates it.
     tdiv = temperature
     if tdiv <= 0.0001
         tdiv = 0.0001
     endif
-    max_a = max(a1, max(a2, max(a3, a4)))
-    e1 = exp((a1-max_a) / tdiv)
-    e2 = exp((a2-max_a) / tdiv)
-    e3 = exp((a3-max_a) / tdiv)
-    e4 = exp((a4-max_a) / tdiv)
-    denom = e1 + e2 + e3 + e4
+    # v1.3 CRITICAL: a category the network does NOT have must not
+    # appear in the denominator. v1.2 set its activation to 0 and then
+    # exponentiated it anyway, and exp(0 - max) is a positive number.
+    # Measured with only vowel (0.8) and other (0.2) present, T=0.45:
+    #   v1.2   vowel 0.6244  other 0.1646
+    #          fricative(absent) 0.1055  silence(absent) 0.1055
+    #          -> 21.11% of the weight went to categories with no output
+    #   correct vowel 0.7914  other 0.2086
+    # Worse in the degenerate case: an all-vowel file capped pVowel at
+    # 0.7112 instead of 1.0000, so the wet mask could never open fully.
+    max_a = max(aVowel, max(aFric, max(aSil, aOther)))
+    if idxVowel > 0
+        eVowel = exp((aVowel - max_a) / tdiv)
+    else
+        eVowel = 0
+    endif
+    if idxFricative > 0
+        eFric = exp((aFric - max_a) / tdiv)
+    else
+        eFric = 0
+    endif
+    if idxSilence > 0
+        eSil = exp((aSil - max_a) / tdiv)
+    else
+        eSil = 0
+    endif
+    if idxOther > 0
+        eOther = exp((aOther - max_a) / tdiv)
+    else
+        eOther = 0
+    endif
+    denom = eVowel + eFric + eSil + eOther
     if denom <= 0
         denom = 1e-12
     endif
-    
-    p1 = e1 / denom
-    p2 = e2 / denom
-    p3 = e3 / denom
-    p4 = e4 / denom
-    
-    # Store softmax for visualization
-    viz_softmax#[(i-1)*4 + 1] = p1
-    viz_softmax#[(i-1)*4 + 2] = p2
-    viz_softmax#[(i-1)*4 + 3] = p3
-    viz_softmax#[(i-1)*4 + 4] = p4
-    
-    # Predicted category (argmax)
-    if p1 >= p2 and p1 >= p3 and p1 >= p4
+
+    pVowel = eVowel / denom
+    pFric = eFric / denom
+    pSil = eSil / denom
+    pOther = eOther / denom
+
+    # legacy names kept for the visualization panels
+    p1 = pVowel
+    p2 = pFric
+    p3 = pSil
+    p4 = pOther
+
+    # Store for visualization
+    viz_softmax#[(i-1)*4 + 1] = pVowel
+    viz_softmax#[(i-1)*4 + 2] = pFric
+    viz_softmax#[(i-1)*4 + 3] = pSil
+    viz_softmax#[(i-1)*4 + 4] = pOther
+
+    # Predicted category (argmax) - 1 vowel, 2 fricative, 3 silence,
+    # 4 other, matching the visualization legend
+    if pVowel >= pFric and pVowel >= pSil and pVowel >= pOther
         viz_predicted_category#[i] = 1
-    elsif p2 >= p3 and p2 >= p4
+    elsif pFric >= pSil and pFric >= pOther
         viz_predicted_category#[i] = 2
-    elsif p3 >= p4
+    elsif pSil >= pOther
         viz_predicted_category#[i] = 3
     else
         viz_predicted_category#[i] = 4
     endif
     
-    w_vowel = p1
-    w_rest  = p2 + p3 + p4
+    w_vowel = pVowel
+    w_rest  = pFric + pSil + pOther
 
-    # Adaptive boost
+    # v1.2 fix 4: Confidence_threshold finally does something. It is a
+    # MARGIN - how far the vowel weight leads its nearest rival - with
+    # a soft knee, so the mask ramps instead of stepping. v1.1 declared
+    # this parameter, set it in every preset, and never read it.
+    # The gate is on p(vowel) itself, with a soft knee: 0 below the
+    # threshold, ramping to full at twice it.
+    #
+    # I first implemented this as a MARGIN test - p(vowel) minus its
+    # nearest rival - which is the stricter and more principled form.
+    # It silenced the wet path completely on ordinary material: with
+    # 16 vowel frames against 95 fricative and 181 other, the vowel
+    # probability never led at all (best margin -0.00606), so every
+    # preset produced pure dry. Class imbalance is the normal case for
+    # this feature set, so the margin form is unusable as the only
+    # gate. It is kept here as a commented alternative for anyone
+    # working with balanced material:
+    #   rival = max(pFric, max(pSil, pOther))
+    #   margin = pVowel - rival
+    if pVowel <= confidence_threshold
+        confGate = 0
+    elsif pVowel >= confidence_threshold * 2
+        confGate = 1
+    else
+        confGate = (pVowel - confidence_threshold) / confidence_threshold
+    endif
+    w_vowel = w_vowel * confGate
+
+    # v1.2 fix 5: the boost uses an explicit VOICED flag. v1.1 gave
+    # unvoiced frames z = 0.5 for pitch and then min-max normalised
+    # that alongside real pitches, which lands near the top of a
+    # 100-300 Hz file's range - so the "voicedness" term could favour
+    # fricatives and silence, the opposite of its purpose.
     selectObject: feature_matrix
     norm_hnr = Get value: i, 8
+    selectObject: feature_matrix
     norm_f0 = Get value: i, 9
-    voicedness = (norm_hnr * 0.5) + (norm_f0 * 0.5) 
+    if voicedFlag#[i] = 1
+        voicedness = (norm_hnr * 0.5) + (norm_f0 * 0.5)
+    else
+        voicedness = 0
+    endif
     adapt_weight = 1 + voiced_boost * (voicedness - 0.5) * 2
-    
+    if adapt_weight < 0
+        adapt_weight = 0
+    endif
+
     w_vowel = w_vowel * adapt_weight
-    
+
+    # v1.2 CRITICAL 2: with no vowel category at all, bypass to dry.
+    if idxVowel = 0
+        w_vowel = 0
+    endif
+
     total = w_vowel + w_rest
+    if total <= 0
+        total = 1e-12
+    endif
     w_vowel = w_vowel / total
+    if w_vowel > 1
+        w_vowel = 1
+    endif
+    # v1.4: store the RAW mask. The tiers are written in a second pass,
+    # after the mask has been scaled to Effect_strength (see below).
+    rawMask#[i] = w_vowel
     w_dry = 1.0 - w_vowel
-    
+
     viz_w_vowel#[i] = w_vowel
     viz_w_dry#[i] = w_dry
     
+endfor
+
+# ============================================================
+# MASK SCALING  (v1.4)
+# ============================================================
+# The raw wet weight is bounded by p(vowel), and p(vowel) is bounded by
+# how peaked a softmax over FOUR near-equal activations can be. On real
+# material that ceiling is low: measured on the test signal, the most
+# vowel-like frame in the whole file reached only w = 0.2199, so the
+# dry path sat at 0.78 even at the effect's strongest point and the
+# vibrato was barely audible. That is a property of the descriptor, not
+# a defect - but it means the ABSOLUTE scale of the mask carries no
+# useful information, only its SHAPE does.
+#
+# So the mask is normalised by its own peak and then scaled to
+# Effect_strength: the most vowel-like frame in the file gets exactly
+# Effect_strength of wet, everything else keeps its relative weight,
+# and consonants stay dry because the confidence gate already zeroed
+# them BEFORE this rescale.
+rawPeak = 0
+for i from 1 to rows_target
+    if rawMask#[i] > rawPeak
+        rawPeak = rawMask#[i]
+    endif
+endfor
+
+appendInfoLine: "  Raw mask peak: ", fixed$(rawPeak, 4),
+    ... "  -> scaled to Effect_strength ", fixed$(effect_strength, 2)
+
+# A mask that never rises anywhere means no vowel-like frame was found;
+# rescaling noise up to full wet would be wrong, so bypass to dry.
+maskFloor = 0.02
+if rawPeak < maskFloor
+    appendInfoLine: "  ! Mask never rises above ", fixed$(maskFloor, 2),
+        ... " - no vowel-like frame found; wet path bypassed."
+    maskScale = 0
+else
+    maskScale = effect_strength / rawPeak
+endif
+
+for i from 1 to rows_target
+    t = frameTime#[i]
+    w_vowel = rawMask#[i] * maskScale
+    if w_vowel > 1
+        w_vowel = 1
+    endif
+    w_dry = 1.0 - w_vowel
+
+    viz_w_vowel#[i] = w_vowel
+    viz_w_dry#[i] = w_dry
+
     # Prob to dB
     floor_w = 0.001
     if w_vowel < floor_w
@@ -600,21 +1093,29 @@ s_dry = selected("Sound")
 # APPLY MASKS
 # ============================================
 
+# v1.2 CRITICAL 3: Multiply: "no". The bare "Multiply" renormalises the
+# result to a peak of 0.9 - verified on 6.4.42: a 0.5-peak tone times a
+# -40 dB tier gives 0.00499971 with "no" (correct) and 0.90000 with
+# "yes". v1.1 normalised all THREE paths independently, so a vowel
+# weight of 0.01 and a dry weight of 0.99 both arrived at 0.9 and were
+# summed at roughly equal loudness. The mask barely controlled the mix
+# at all, which is why Temperature and Voiced_boost seemed inert.
+# One conditional limiter is applied after the sum instead.
 selectObject: s_vib_L
 plusObject: mask_vib
-Multiply
+Multiply: "no"
 s_vib_L_masked = selected("Sound")
 Rename: "Mix_Vib_L"
 
 selectObject: s_vib_R
 plusObject: mask_vib
-Multiply
+Multiply: "no"
 s_vib_R_masked = selected("Sound")
 Rename: "Mix_Vib_R"
 
 selectObject: s_dry
 plusObject: mask_dry
-Multiply
+Multiply: "no"
 s_dry_masked = selected("Sound")
 Rename: "Mix_Dry"
 
@@ -653,8 +1154,38 @@ if stereo_width <> 1
     Formula: "self * " + widthStr$ + " + (Object_" + chLStr$ + "[col] + Object_" + chRStr$ + "[col])/2 * " + monoStr$
 endif
 
+# v1.2 CRITICAL 3: a CONDITIONAL limiter, not an unconditional
+# renormalisation. With the per-path normalisation removed, the mix
+# ratio the mask computed is what reaches the output; only rescale if
+# the sum actually clips.
 selectObject: final_stereo
-Scale peak: 0.99
+finalPeak = Get absolute extremum: 0, 0, "None"
+if finalPeak > 0.99
+    selectObject: final_stereo
+    Scale peak: 0.99
+    appendInfoLine: "  Limiter engaged (sum peaked at ", fixed$(finalPeak, 3), ")"
+endif
+
+# v1.2 fix 8: a short fade at each end. Praat reads 0 outside a Sound's
+# domain, so within one vibrato depth of each edge one channel read
+# past the boundary while the other did not - a dropout, asymmetric
+# between channels, up to 5 ms on Wide & Slow.
+selectObject: final_stereo
+fsDur = Get total duration
+edgeF = vibrato_depth_ms / 1000 + 0.002
+if edgeF > fsDur * 0.1
+    edgeF = fsDur * 0.1
+endif
+if edgeF > 0.0002
+    efS$ = fixed$(edgeF, 8)
+    selectObject: final_stereo
+    Formula: "if x - xmin < " + efS$ + " then self * ((x - xmin) / " + efS$ + ") else self fi"
+    selectObject: final_stereo
+    Formula: "if xmax - x < " + efS$ + " then self * ((xmax - x) / " + efS$ + ") else self fi"
+endif
+
+# v1.2 fix 9: all stochastic work is done.
+random_initializeSafelyAndUnpredictably ()
 
 # Store for visualization
 viz_left = ch_L
@@ -678,7 +1209,7 @@ if draw_visualization
     Text: 0.5, "centre", 0.6, "half", "Neural Phonetic Vibrato"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.1, "half", sound_name$ + " | " + presetName$ + " | FFNet: 18→24→4"
+    Text: 0.5, "centre", 0.1, "half", sound_name$ + " | " + presetName$ + " | FFNet: 18->24->N (one output per category present)"
     
     # === ORIGINAL WAVEFORM ===
     Select outer viewport: 0, 8, 0.6, 1.2
@@ -916,7 +1447,7 @@ if draw_visualization
     
     # Bottom text
     Font size: 6
-    Text: 0.02, "left", 0.25, "half", "Phonetic FFNet learns vowel regions → applies stereo vibrato adaptively"
+    Text: 0.02, "left", 0.25, "half", "Per-file FFNet distils the rule labels into a smooth vowel mask → applies stereo vibrato adaptively"
     
     Font size: 10
 endif
@@ -953,10 +1484,11 @@ endproc
 @safeRemove: s_vib_R_masked
 @safeRemove: s_dry_masked
 
-if draw_visualization
-    @safeRemove: viz_left
-    @safeRemove: viz_right
-endif
+# v1.2 fix 11: ALWAYS remove the channel copies. v1.1 cleaned them up
+# only inside this branch, so running with the drawing off left two
+# Sound objects behind on every run.
+@safeRemove: viz_left
+@safeRemove: viz_right
 
 appendInfoLine: ""
 appendInfoLine: "=== Complete ==="
