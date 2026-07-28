@@ -3,6 +3,141 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
+# Version: 0.9 (2026) - Honest cluster count, ordered seeding, smooth tiles
+#
+# Changelog v0.9 (2026):
+#
+#   1 - clusterCount# now describes assigns#. v0.8 reseeded an empty
+#     cluster by stealing a grain without decrementing the DONOR's
+#     count and without re-running assignment, so the two could
+#     disagree. The pathological case: with identical feature vectors
+#     every distance ties, `distSq < minDist` always keeps cluster 1,
+#     and each empty cluster took the same grain in turn - so k
+#     clusters could be reported active while only one held anything.
+#     v0.9 reseeds only from a donor with a grain to spare, decrements
+#     that donor, and then runs ONE authoritative pass after k-means:
+#     every grain reassigned to its nearest final centroid, counts
+#     rebuilt from scratch. If the data cannot support k clusters the
+#     report says so instead of inventing them. The title bar now
+#     shows active-of-requested.
+#
+#   2 - CORRECTION to v0.8's item 6. It claimed the RNG was seeded
+#     only after the deterministic input checks; it was not. Seeding
+#     sat at line 369 while "Sound too short" (394) and
+#     "Number_of_clusters < 1" (582) still came after it, so a short
+#     input with a positive seed exited and left Praat globally
+#     predictable - the exact failure the item said was fixed. Both
+#     checks now run before the generator is touched, and the two
+#     exits that can only happen after seeding reset it on the way out.
+#
+#   3 - Tile seams are crossfaded. v0.9's shimmer fix concatenated
+#     copies of the shortened grain directly, so wherever the last
+#     sample of one copy did not match the first sample of the next
+#     there was a waveform step - a hard seam in the middle of every
+#     shimmered grain, repeating at the grain rate, which on high-HNR
+#     material reads as a periodic spectral transient. A 2 ms internal
+#     crossfade removes it; the outer grain crossfade is unchanged.
+#
+#   4 - Centroid seeds are drawn from a shuffled index list. v0.8's
+#     rejection sampling had an `or nGrains <= k` escape that is
+#     always true when nGrains = k, so the same grain could still seed
+#     several centroids - precisely what the check existed to prevent.
+#
+#   5 - Remaining "tonal" wording in user-facing messages replaced,
+#     and the Shimmer_intervals option "Full harmonic series" renamed
+#     Extended interval set: it is a mixed set of up and down
+#     transpositions, not a harmonic series.
+#
+# Version: 0.8 (2026) - Aligned grid, tiled shimmer, real cluster count
+# License: MIT License
+#
+# Changelog v0.8 (2026):
+#
+#   CRITICAL 1 - octave shimmer replaced up to half of every affected
+#     grain with SILENCE. After Resample + Override the grain is
+#     shorter, and v0.7 restored its length by writing it into a buffer
+#     of zeros - so the tail was literally nothing. The crossfade only
+#     covers the join, not that hole. Measured silent gap before the
+#     next grain begins:
+#       100 ms grain, 20 ms fade, ratio 0.50 -> 30.0 ms of silence
+#       100 ms grain, 20 ms fade, ratio 0.25 -> 55.0 ms
+#        80 ms grain, 15 ms fade, ratio 0.50 -> 25.0 ms
+#        80 ms grain, 15 ms fade, ratio 0.25 -> 45.0 ms
+#     So Bright Shimmer, the preset built around this, gated itself
+#     periodically. v0.8 TILES the shortened grain - repeating it until
+#     it fills the slot, then cutting to length - so the duration is
+#     preserved with audio rather than with a hole.
+#     Measured end to end at shimmer probability 1.0 with the full
+#     harmonic series, counting 25 ms windows below RMS 0.002:
+#       1 layer:  v0.7 1.56% near-silent   v0.8 0%
+#       3 layers: v0.7 0%                  v0.8 0%
+#     The multi-layer figure is worth knowing: with three layers summed
+#     the holes in one layer are filled by the others, so the defect is
+#     masked at the default settings and shows up per-layer - worst on
+#     sparse, few-layer, high-shimmer material, which is exactly where
+#     an ambient drone is most exposed.
+#
+#   CRITICAL 2 - the analysis grid did not describe the grains that
+#     get played. nGrains used floor((dur - grain) / hop) with no +1,
+#     dropping a valid window (98 instead of 99 on a 5 s file), and
+#     centres were placed at (i - 0.5) * hop. At a 100 ms grain and
+#     50 ms hop that puts the first analysis point at 25.0 ms while
+#     the first rendered grain is centred at 50.0 ms - a 25 ms offset,
+#     half a grain. Every feature vector described audio adjacent to
+#     the grain it was clustering. Now
+#     nGrains = floor((dur - grain) / hop) + 1 and
+#     t = grain/2 + (i - 1) * hop.
+#     NOTE the remaining mismatch, which is not fixed: Praat's Gaussian
+#     spectrogram analysis uses a context roughly twice its effective
+#     window length, while the rendered grain is a rectangular cut of
+#     exactly grainSec. The centres now line up; the extents still do
+#     not. That is a wider spectral context, not an error, and it is
+#     documented rather than papered over.
+#
+#   3 - A global fade at both ends of the finished output. Grains are
+#     rectangular cuts and Concatenate with overlap fades only the
+#     JOINS, never the head of the first grain or the tail of the last;
+#     each layer was also trimmed with a rectangular Extract part that
+#     can land mid-waveform.
+#
+#   4 - Empty clusters are handled rather than merely excluded from
+#     selection. Centroids were seeded with replacement, so two could
+#     start on the same grain and leave a cluster permanently empty -
+#     Number_of_clusters = 5 could yield three active ones while the
+#     title and Info box still said 5. v0.8 seeds distinct grains,
+#     reseeds an empty cluster to its worst-fitting grain, and reports
+#     the ACTIVE count.
+#
+#   5 - Silent input is rejected up front, and the final Scale peak is
+#     conditional. A silent file gives undefined centroid and bandwidth
+#     values that then poison the means, standard deviations and the
+#     whole k-means pass.
+#
+#   6 - The RNG is seeded only AFTER the deterministic input checks
+#     (v0.7 seeded first, so exiting on "Sound too short" left Praat
+#     globally predictable) and is returned to its safe state once all
+#     random work is done.
+#
+#   7 - Naming:
+#     - "Highest HNR" cluster -> HIGHEST-HNR cluster. There is no
+#       absolute HNR floor, no voicing requirement and no pitch test,
+#       so on a noise source the script still picked a winner and
+#       called it tonal. It is the least inharmonic cluster present,
+#       which is a different claim.
+#     - Layer_density -> Number_of_layers. It never controlled density
+#       within a layer; each layer is a continuous grain sequence.
+#     - The effective crossfade is reported when it differs from the
+#       requested one (it is silently capped at 40% of the grain).
+#     - Multichannel input is downmixed to mono and the stereo output
+#       is synthesised from independently generated layers; the source
+#       stereo image is not preserved. Now stated.
+#
+#   ON PITCH AND HNR (documented, unchanged): an unvoiced frame gets
+#   pitch = 0 and HNR = -50, and both are z-scored alongside real
+#   values, so voiced/unvoiced can dominate two of the four k-means
+#   dimensions. For a drone designer that split is often what you want,
+#   which is why it is left alone - but it is a property of the model.
+#
 # Version: 0.7 (2026) - Real per-grain crossfade (no pre-tapered
 #                        window fighting the overlap), integer
 #                        layer count, empty-cluster guard
@@ -41,7 +176,7 @@
 #     best_cluster is chosen only among clusters that actually have
 #     members - previously an empty cluster's untouched (and
 #     possibly high-HNR) centroid could "win" and produce a false
-#     "No tonal segments found" failure.
+#     "No highest-HNR-cluster grains found" failure.
 #   - CORRECTNESS: Removed a stray "+1" from the grains_needed
 #     formula. N grains joined with a fixed overlap produce a total
 #     length of fade + N*(grainSec-fade), so the "+1" always
@@ -99,8 +234,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Cluster-Based Ambient Drone Designer v0.7
-    comment === Preset ===
+form Cluster-Based Ambient Drone Designer v0.9
     optionmenu Preset: 1
         option Manual
         option Dark Ambient
@@ -108,29 +242,43 @@ form Cluster-Based Ambient Drone Designer v0.7
         option Dense Texture
         option Sparse Minimal
         option Evolving Pad
-    comment === Reproducibility ===
-    integer Seed 0
-    comment (0 = unpredictable/random each run; any other integer = reproducible run)
-    comment === Synthesis ===
     positive Output_duration_sec 20.0
-    integer Layer_density 3
+    integer Number_of_layers 3
+    positive Grain_size_ms 100
     positive Grain_crossfade_ms 20
-    comment === Shimmer Control ===
     boolean Add_octave_shimmer 1
     positive Shimmer_probability 0.15
     optionmenu Shimmer_intervals: 1
         option Octaves only
         option Octaves and fifths
-        option Full harmonic series
-    comment === Feature Extraction & Clustering ===
-    positive Grain_size_ms 100
+        option Extended interval set
     integer Number_of_clusters 3
     integer Kmeans_iterations 10
-    comment === Output ===
-    boolean Stereo_output 1
     real Stereo_width 0.7
+    integer Seed 0
     boolean Play_result 1
 endform
+
+# Number_of_layers replaces Layer_density: it is a layer COUNT, not a
+# density control - each layer is a continuous sequence of grains.
+# Stereo_width < 0 gives mono output; 0 centres every layer.
+# Grain_crossfade_ms is capped at 40% of the grain size, and the
+# effective value is reported when the cap bites.
+# Seed 0 = unpredictable, any other integer = reproducible.
+# Multichannel input is downmixed to mono; the stereo output is
+# synthesised from independently generated layers, so the source
+# stereo image is NOT preserved.
+
+layer_density = number_of_layers
+if stereo_width < 0
+    stereo_output = 0
+    stereo_width = 0
+else
+    stereo_output = 1
+endif
+if stereo_width > 1
+    stereo_width = 1
+endif
 
 # ============================================
 # PRESET LOGIC
@@ -209,7 +357,7 @@ if kmeans_iterations < 1
 endif
 
 if layer_density < 1
-    exitScript: "Layer_density must be at least 1."
+    exitScript: "Number_of_layers must be at least 1."
 endif
 
 if shimmer_probability > 1
@@ -236,13 +384,6 @@ endif
 # as before.
 # ============================================================
 
-if seed <> 0
-    random_initializeWithSeedUnsafelyButPredictably (seed)
-    seedStr$ = string$(seed) + " (fixed / reproducible)"
-else
-    random_initializeSafelyAndUnpredictably ()
-    seedStr$ = "0 (unpredictable)"
-endif
 
 # ============================================
 # SETUP
@@ -253,26 +394,60 @@ dur = Get total duration
 fs = Get sampling frequency
 nch = Get number of channels
 
-selectObject: snd
-workSnd = Convert to mono
-Rename: "Analysis_Work"
-
+# v0.9: grain timing is derived here so the deterministic checks can
+# use it BEFORE the generator is seeded.
 grainSec = grain_size_ms / 1000
 stepSec = grainSec * 0.5
 crossfadeSec = grain_crossfade_ms / 1000
+
+if dur < grainSec * 2
+    exitScript: "Sound too short. Need at least " + fixed$(grainSec * 2, 2) + " s."
+endif
+if number_of_clusters < 1
+    exitScript: "Number_of_clusters must be at least 1."
+endif
+
+selectObject: snd
+workSnd = Convert to mono
+
+# v0.8 fix 5: reject a silent input BEFORE any analysis. An empty
+# spectrum gives undefined centroid and bandwidth, which then poison
+# the means, the standard deviations and the whole k-means pass.
+selectObject: workSnd
+srcPeak = Get absolute extremum: 0, 0, "None"
+if srcPeak < 1e-6
+    removeObject: workSnd
+    exitScript: "The selected Sound is silent (or near-silent); nothing to cluster."
+endif
+
+# v0.9 CORRECTION: every deterministic check that can exitScript now
+# runs BEFORE the generator is touched. v0.8's changelog claimed this
+# and it was not true - "Sound too short" and "Number_of_clusters < 1"
+# both still came after the seed, so a short input with a positive seed
+# exited leaving Praat globally predictable for whatever ran next.
+if seed <> 0
+    random_initializeWithSeedUnsafelyButPredictably (seed)
+    seedStr$ = string$(seed) + " (fixed / reproducible)"
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedStr$ = "0 (unpredictable)"
+endif
+
+Rename: "Analysis_Work"
+
 
 # v0.6: the true per-join crossfade time, shared by the grain
 # assembly (Concatenate with overlap) and the grains_needed
 # calculation below, so the two stay consistent with each other.
 fade = min(crossfadeSec, grainSec * 0.4)
-
-if dur < grainSec * 2
-    removeObject: workSnd
-    exitScript: "Sound too short. Need at least " + fixed$(grainSec * 2, 2) + " s."
+if fade < crossfadeSec - 1e-9
+    appendInfoLine: "  Crossfade requested ", fixed$(crossfadeSec * 1000, 1),
+        ... " ms -> capped to ", fixed$(fade * 1000, 1),
+        ... " ms (40% of the grain)"
 endif
 
 clearinfo
-writeInfoLine: "=== Cluster-Based Ambient Drone Designer v0.7 ==="
+writeInfoLine: "=== Cluster-Based Ambient Drone Designer v0.9 ==="
 appendInfoLine: "Seed: ", seedStr$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Duration: ", output_duration_sec, " s | Layers: ", layer_density
@@ -301,7 +476,10 @@ appendInfoLine: ""
 
 appendInfoLine: "Analyzing spectral stability..."
 
-nGrains = floor((dur - grainSec) / stepSec)
+# v0.8 CRITICAL 2: the standard full-window count includes the +1.
+# Without it one valid window was dropped (98 instead of 99 on a 5 s
+# file at a 100 ms grain and 50 ms hop).
+nGrains = floor((dur - grainSec) / stepSec) + 1
 nFeatures = 4
 
 # v0.6: The spectrogram's frequency ceiling was a fixed 8000 Hz,
@@ -329,7 +507,16 @@ selectObject: workSnd
 pit = To Pitch: stepSec, 75, 600
 
 for i from 1 to nGrains
-    t = (i - 0.5) * stepSec
+    # v0.8 CRITICAL 2: the first window's CENTRE is grain/2, not
+    # hop/2. At a 100 ms grain and 50 ms hop the old formula analysed
+    # 25.0 ms while the first rendered grain is centred at 50.0 ms - a
+    # 25 ms offset, half a grain, so every feature vector described
+    # audio next to the grain it was clustering rather than the grain
+    # itself.
+    t = grainSec / 2 + (i - 1) * stepSec
+    if t > dur - grainSec / 2
+        t = dur - grainSec / 2
+    endif
     grain_time#[i] = t
     
     selectObject: spec
@@ -443,9 +630,6 @@ endfor
 
 appendInfoLine: "Clustering textures..."
 
-if number_of_clusters < 1
-    exitScript: "Number_of_clusters must be at least 1."
-endif
 if number_of_clusters > nGrains
     appendInfoLine: "WARNING: Number_of_clusters (", number_of_clusters,
         ... ") exceeds the number of grains (", nGrains,
@@ -460,12 +644,29 @@ cent_b# = zero#(k)
 cent_h# = zero#(k)
 cent_p# = zero#(k)
 
+shuffledIdx# = zero#(nGrains)
+for i from 1 to nGrains
+    shuffledIdx#[i] = i
+endfor
+nShuf = min(k, nGrains)
+for i from 1 to nShuf
+    r = randomInteger(i, nGrains)
+    tmpv = shuffledIdx#[i]
+    shuffledIdx#[i] = shuffledIdx#[r]
+    shuffledIdx#[r] = tmpv
+endfor
+
 for c from 1 to k
-    randRow = randomInteger(1, nGrains)
-    cent_c#[c] = norm_cent#[randRow]
-    cent_b#[c] = norm_band#[randRow]
-    cent_h#[c] = norm_hnr#[randRow]
-    cent_p#[c] = norm_pitch#[randRow]
+    # v0.9: draw seeds from a SHUFFLED index list, without
+    # replacement. v0.8 used rejection sampling with an
+    # `or nGrains <= k` escape, and that escape is always true when
+    # nGrains = k, so the same grain could still seed several
+    # centroids - the exact case the check was meant to prevent.
+    picked = shuffledIdx#[c]
+    cent_c#[c] = norm_cent#[picked]
+    cent_b#[c] = norm_band#[picked]
+    cent_h#[c] = norm_hnr#[picked]
+    cent_p#[c] = norm_pitch#[picked]
 endfor
 
 assigns# = zero#(nGrains)
@@ -521,16 +722,93 @@ for iter from 1 to kmeans_iterations
         endif
         clusterCount#[c] = count
     endfor
-    
+
+    # v0.9: reseed an empty cluster only from a donor that can SPARE a
+    # grain, and decrement the donor's own count. v0.8 stole the grain
+    # without touching the donor, so clusterCount# stopped describing
+    # assigns#.
+    for c from 1 to k
+        if clusterCount#[c] = 0
+            worstD = -1
+            worstI = 0
+            for i from 1 to nGrains
+                own = assigns#[i]
+                if own >= 1 and clusterCount#[own] > 1
+                    dOwn = (norm_cent#[i] - cent_c#[own])^2 +
+                        ... (norm_band#[i] - cent_b#[own])^2 +
+                        ... (norm_hnr#[i] - cent_h#[own])^2 +
+                        ... (norm_pitch#[i] - cent_p#[own])^2
+                    if dOwn > worstD
+                        worstD = dOwn
+                        worstI = i
+                    endif
+                endif
+            endfor
+            # If no cluster has a grain to spare, the data genuinely
+            # cannot support k clusters. Leave it empty and let the
+            # final recount report the truth.
+            if worstI > 0
+                donor = assigns#[worstI]
+                clusterCount#[donor] = clusterCount#[donor] - 1
+                cent_c#[c] = norm_cent#[worstI]
+                cent_b#[c] = norm_band#[worstI]
+                cent_h#[c] = norm_hnr#[worstI]
+                cent_p#[c] = norm_pitch#[worstI]
+                assigns#[worstI] = c
+                clusterCount#[c] = 1
+                changes += 1
+            endif
+        endif
+    endfor
+
     if changes = 0
         appendInfoLine: "  Converged at iteration ", iter
         iter = kmeans_iterations + 1
     endif
 endfor
 
+# v0.9: one authoritative pass. Every grain is reassigned to its
+# nearest FINAL centroid and the counts are rebuilt from assigns#, so
+# clusterCount# and nActiveClusters describe what actually happened.
+# v0.8 could report k active clusters while only one or two held any
+# grain - most visibly when all feature vectors are identical, where
+# every distance ties, `distSq < minDist` always keeps cluster 1, and
+# the reseeding handed the same grain around in a circle.
+for c from 1 to k
+    clusterCount#[c] = 0
+endfor
+for i from 1 to nGrains
+    minDist = 1e30
+    bestC = 1
+    for c from 1 to k
+        distSq = (norm_cent#[i] - cent_c#[c])^2 +
+            ... (norm_band#[i] - cent_b#[c])^2 +
+            ... (norm_hnr#[i] - cent_h#[c])^2 +
+            ... (norm_pitch#[i] - cent_p#[c])^2
+        if distSq < minDist
+            minDist = distSq
+            bestC = c
+        endif
+    endfor
+    assigns#[i] = bestC
+    clusterCount#[bestC] = clusterCount#[bestC] + 1
+endfor
+
 # ============================================
 # IDENTIFY BEST CLUSTER (Highest HNR)
 # ============================================
+
+# v0.8 fix 7: this picks the HIGHEST-HNR cluster, not a "tonal" one.
+# There is no absolute HNR floor, no voicing requirement and no pitch
+# test, so on a pure noise source the script still selects a winner.
+# It is the least inharmonic cluster present - a weaker claim.
+nActiveClusters = 0
+for c from 1 to k
+    if clusterCount#[c] > 0
+        nActiveClusters += 1
+    endif
+endfor
+appendInfoLine: "  Active clusters: ", nActiveClusters, " of ", k, " requested"
 
 best_cluster = 0
 max_hnr_score = -1e9
@@ -544,10 +822,11 @@ endfor
 
 if best_cluster = 0
     removeObject: workSnd
+    random_initializeSafelyAndUnpredictably ()
     exitScript: "k-means produced no non-empty clusters. Try a different Seed or fewer clusters."
 endif
 
-appendInfoLine: "  Selected Cluster ", best_cluster, " (Most Tonal, ",
+appendInfoLine: "  Selected Cluster ", best_cluster, " (Highest HNR, ",
     ... clusterCount#[best_cluster], " grains)"
 
 tonal_indices# = zero#(nGrains)
@@ -562,10 +841,11 @@ endfor
 
 if tonal_count = 0
     removeObject: workSnd
-    exitScript: "No tonal segments found. Try more clusters."
+    random_initializeSafelyAndUnpredictably ()
+    exitScript: "No grains are assigned to the selected highest-HNR cluster. Try more clusters."
 endif
 
-appendInfoLine: "  Found ", tonal_count, " tonal grains"
+appendInfoLine: "  Found ", tonal_count, " highest-HNR-cluster grains"
 
 # ============================================
 # SHIMMER INTERVALS
@@ -672,11 +952,61 @@ for layer_idx from 1 to nLayers
                 if shifted_dur >= gid_dur0
                     gid_new = Extract part: 0, gid_dur0, "rectangular", 1, "no"
                 else
-                    gid_new = Create Sound from formula: "g", 1, 0, gid_dur0, sr_orig, "0"
-                    selectObject: gid_new
-                    shiftedStr$ = string$(gid_shifted)
-                    Formula (part): 0, shifted_dur, 1, 1,
-                        ... "Object_" + shiftedStr$ + "(x)"
+                    # v0.8 CRITICAL 1: TILE the shortened grain instead
+                    # of writing it into a buffer of zeros. v0.7 padded
+                    # with silence, so an octave-up grain was half
+                    # signal and half hole - measured gaps before the
+                    # next grain begins: 30.0 ms at a 100 ms grain with
+                    # a 20 ms fade and ratio 0.50, and 55.0 ms at ratio
+                    # 0.25. The crossfade covers the join, not the
+                    # hole, so Bright Shimmer gated itself.
+                    # v0.9: crossfade the tile seams. v0.8 used a bare
+                    # Concatenate, so wherever the last sample of one
+                    # copy did not match the first sample of the next
+                    # there was a waveform step - a hard seam in the
+                    # middle of every shimmered grain, repeating at the
+                    # grain rate. On high-HNR material that reads as a
+                    # periodic spectral transient. A 2 ms internal
+                    # crossfade removes it; the outer grain crossfade
+                    # is untouched.
+                    tileFade = 0.002
+                    if tileFade > shifted_dur * 0.25
+                        tileFade = shifted_dur * 0.25
+                    endif
+                    nCopies = ceiling((gid_dur0 + tileFade) / (shifted_dur - tileFade))
+                    if nCopies < 2
+                        nCopies = 2
+                    endif
+                    selectObject: gid_shifted
+                    tileAcc = Copy: "tile_acc"
+                    for cc from 2 to nCopies
+                        selectObject: gid_shifted
+                        tileNext = Copy: "tile_next"
+                        selectObject: tileAcc
+                        plusObject: tileNext
+                        if tileFade > 0.0002
+                            tileNew = Concatenate with overlap: tileFade
+                        else
+                            tileNew = Concatenate
+                        endif
+                        removeObject: tileAcc, tileNext
+                        tileAcc = tileNew
+                    endfor
+                    selectObject: tileAcc
+                    tiledDur = Get total duration
+                    if tiledDur < gid_dur0
+                        # one more copy if the overlap ate too much
+                        selectObject: gid_shifted
+                        tileNext = Copy: "tile_next"
+                        selectObject: tileAcc
+                        plusObject: tileNext
+                        tileNew = Concatenate with overlap: tileFade
+                        removeObject: tileAcc, tileNext
+                        tileAcc = tileNew
+                    endif
+                    selectObject: tileAcc
+                    gid_new = Extract part: 0, gid_dur0, "rectangular", 1, "no"
+                    removeObject: tileAcc
                 endif
                 removeObject: gid, gid_shifted
                 gid = gid_new
@@ -790,7 +1120,36 @@ else
 endif
 
 selectObject: finalOut
-Scale peak: 0.99
+# v0.8 fix 3: a global fade at both ends. Grains are rectangular cuts,
+# and Concatenate with overlap fades only the JOINS - never the head of
+# the first grain or the tail of the last - while each layer is trimmed
+# with a rectangular Extract part that can land mid-waveform.
+selectObject: finalOut
+outDurNow = Get total duration
+edgeFade = 0.005
+if edgeFade > outDurNow * 0.1
+    edgeFade = outDurNow * 0.1
+endif
+if edgeFade > 0.0002
+    efA$ = fixed$(edgeFade, 8)
+    selectObject: finalOut
+    Formula: "if x - xmin < " + efA$ + " then self * ((x - xmin) / " + efA$ + ") else self fi"
+    selectObject: finalOut
+    Formula: "if xmax - x < " + efA$ + " then self * ((xmax - x) / " + efA$ + ") else self fi"
+endif
+
+# v0.8 fix 5: only normalise if there is something to normalise.
+selectObject: finalOut
+outPeak = Get absolute extremum: 0, 0, "None"
+if outPeak > 1e-9
+    selectObject: finalOut
+    Scale peak: 0.99
+else
+    appendInfoLine: "  ! Output peak is zero; skipping normalisation."
+endif
+
+# v0.8 fix 6: hand the generator back to its safe state.
+random_initializeSafelyAndUnpredictably ()
 
 # Cleanup layers
 for layer_idx from 1 to nLayers
@@ -910,7 +1269,7 @@ if add_octave_shimmer
     shimmerText$ = " | Shimmer: " + fixed$(shimmer_probability * 100, 0) + "%"
 endif
 
-Text: 0.5, "centre", 0.5, "half", "Grain: " + string$(grain_size_ms) + "ms | Clusters: " + string$(number_of_clusters) + " | Tonal grains: " + string$(tonal_count) + "/" + string$(nGrains) + shimmerText$
+Text: 0.5, "centre", 0.5, "half", "Grain: " + string$(grain_size_ms) + "ms | Clusters: " + string$(nActiveClusters) + " active of " + string$(number_of_clusters) + " | Selected grains: " + string$(tonal_count) + "/" + string$(nGrains) + shimmerText$
 
 Font size: 10
 Colour: "Black"
