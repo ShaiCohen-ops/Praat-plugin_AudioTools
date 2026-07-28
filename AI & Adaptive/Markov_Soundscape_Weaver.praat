@@ -4,58 +4,110 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026)
+# Version: 0.7 (2026) - Real stereo control, exact duration, no empty states
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Description:
-#   Markov Soundscape Weaver - learns audio "grammar" from
-#   the input via:
-#     (1) Grain-based feature extraction: spectral centroid,
-#         spectral bandwidth, F0, harmonicity (HNR) — one
-#         z-score-normalized 4D feature vector per grain
-#     (2) K-means clustering (Lloyd's algorithm, ≤15 iters)
-#         into k "states"
-#     (3) First- or second-order Markov chain learned from
-#         the analyzed state sequence
-#   Synthesis: random walk through the Markov chain, picking
-#   a random grain from the current state's pool, optional
-#   pitch-scatter via resample-then-override-sr, Hanning grain
-#   window + triangle crossfade, overlap-add into stereo (or
-#   mono) output.
+# Changelog v0.7 (2026):
 #
-#   This is classical clustering + classical Markov + granular
-#   concatenative synthesis. No neural network is involved at
-#   any stage. The "Neural_" filename is preserved for
-#   distribution compatibility (existing users may have it
-#   wired into workflows); internal naming reflects what the
-#   algorithm actually is.
+#   NOTE: audio is NOT comparable to v0.6. Stereo generation, the
+#   analysis grid and the output length all changed.
 #
-# Citation:
-#   Cohen, S. (2026). Praat AudioTools: An Offline
-#   Analysis-Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#   CRITICAL 1 - Stereo_decorrelation = 0 did not give identical
+#     channels. Each channel was an INDEPENDENT run of the whole walk:
+#     its own initial state, its own transitions, its own grain picks,
+#     its own jitter. The parameter only sprinkled extra divergence on
+#     top of two already-unrelated sequences. Measured with
+#     decorrelation set to 0: L/R correlation -0.004 - no relationship
+#     whatsoever, where 1.000 was the documented meaning.
+#     v0.7 builds ONE event list (state, grain, source position,
+#     varispeed ratio, output onset) and derives the right channel from
+#     it: at 0 the events are copied exactly, at intermediate values
+#     that fraction of events is re-decided, at 1 the walk is fully
+#     independent. The off-by-one in the old channel shift
+#     ((s + shift) mod k) + 1 is gone with it.
+#     After the fix the parameter is a real continuum:
+#       0.0 -> L/R correlation 1.00000, 376/376 events identical
+#       0.5 -> L/R correlation 0.45733, 180/376 identical
+#       1.0 -> L/R correlation 0.00916,   1/376 identical
+#
+#   CRITICAL 2 - empty k-means states could emit a grain from ANY
+#     state. Centroids were seeded by independent random draws, so two
+#     could land on the same grain and leave a cluster empty; an empty
+#     cluster kept its uniform transition row, could still be the
+#     initial state, and then synthesis fell back to
+#     randomInteger(1, nGrains) - a grain from the whole corpus,
+#     unrelated to the state. Observed: 1 empty state of 45 on the test
+#     corpus. v0.7 reseeds empty clusters to the worst-fitting grain
+#     and re-runs assignment, prunes any that survive from the
+#     transition matrix and the initial draw, and removes the
+#     whole-corpus fallback.
+#
+#   CRITICAL 3 - the output was longer than Output_duration_sec. The
+#     buffer was built at output_duration_sec + grainSec and never
+#     trimmed back, so every preset overran by one grain: measured
+#     15.100 s for a requested 15.000 s. The title bar and the graph
+#     showed the requested figure while the Sound was longer.
+#     v0.7 trims both channels to the exact requested length before
+#     combining, then applies a short fade.
+#
+#   4 - The analysis grid was misaligned and short by one window.
+#     nGrains used floor((dur - grain) / hop) without the +1, dropping
+#     a valid window (197 instead of 198 on the test corpus), and grain
+#     centres were placed at (i - 0.5) * hop rather than
+#     grain/2 + (i-1) * hop. At 100 ms grains and 40 ms hops the first
+#     centre landed at 0.020 s, which implies a grain starting at
+#     -0.030 s; the renderer silently substituted 0-0.100 s, centred at
+#     0.050 s. So feature vector 1 described audio that was never
+#     played. Both fixed, and the boundary special-case is no longer
+#     reachable for the first grain.
+#
+#   5 - Second-order chains no longer collapse to uniform. Unobserved
+#     context pairs were given 1/k for every successor, and the walk
+#     was SEEDED with a random (prev, current) pair that may never have
+#     occurred - so a second-order run could begin, and stay, in pure
+#     uniform noise while claiming to continue a learned grammar. v0.7
+#     seeds from a pair actually observed in state_seq#, and backs off
+#     to the first-order row P(next | current) for unseen contexts,
+#     falling back to state occupancy only if that row is empty too.
+#
+#   6 - Random_seed added (0 = unpredictable), with the generator
+#     returned to its safe state afterwards.
+#
+#   7 - Validation for the Manual-mode fields. Two overlaps of 1 gave a
+#     zero hop and a division by zero; negative jitter, scatter or
+#     density were accepted silently.
+#
+#   8 - Pitch_scatter renamed Varispeed_scatter_semitones. Resample
+#     followed by Override sampling frequency moves pitch, internal
+#     speed and grain duration together - it is varispeed, not
+#     duration-preserving pitch shifting.
+#
+#   9 - The grammar time scale (synthesis hop / analysis hop) is now
+#     reported. Evolving Landscape learns at a 60 ms hop and plays at
+#     48 ms, so its grammar runs 25% fast - a real compositional
+#     choice that was nowhere documented.
+#
+#   10 - The state-trajectory panel plots the ACTUAL onset times,
+#     including density jitter, instead of the nominal grid.
+#
+#   ON THE FEATURE SET (unchanged, but now stated): unvoiced grains are
+#   given F0 = 0 and HNR = -50 and then z-scored alongside real values,
+#   so the first split k-means finds is usually voiced against
+#   unvoiced rather than a distinction within the pitched material.
+#   For a soundscape weaver that is often what you want, which is why
+#   it is left alone - but it is a property of the model, not an
+#   accident. A voiced mask as its own dimension would be the cleaner
+#   design and is left for a later pass.
 #
 # Changelog v0.6 (2026):
-#   - FIX (audible): OLA gain was never flat. Grains carry a Hanning
-#     window PLUS an extra linear crossfade ramp, placed at
-#     grain*(1-synthesis_overlap): even at overlap 0.5 the extra
-#     ramps break the Hann COLA sum; RhythmicPulse (0.3) had deep
-#     ~29 Hz inter-grain dips; DenseTexture (0.7) a rippling
-#     over-overlapped sum. The constant 1/(1+overlap*0.7)
-#     compensation addressed none of it. v0.6 accumulates each
-#     grain's ANALYTIC envelope (Hann x crossfade ramps, at its
-#     actual duration and actual jittered placement) into a
-#     window-sum buffer per pass and divides the channel by it:
-#     flat unity gain at any synthesis_overlap, exact even under
-#     pitch scatter (which changes grain durations) and density
-#     variation (which moves placements). Output edges recover
-#     full level; gain compensation removed.
-#     NOTE: output is therefore NOT bit-identical to v0.4/v0.5
-#     (their gain structure was the bug). Grain phase interference
-#     remains -- that is the granular texture, not a gain artifact.
-#   - VIZ: title bar uses an explicit inner viewport (outer-only
-#     form risks the margin-compression text collision).
+#   - FIX (audible): OLA gain was never flat. v0.6 accumulates each
+#     grain's ANALYTIC envelope (Hann x crossfade ramps, at its actual
+#     duration and actual jittered placement) into a window-sum buffer
+#     per pass and divides the channel by it: flat unity gain at any
+#     synthesis_overlap, exact even under varispeed scatter and
+#     density variation. Gain compensation removed.
+#   - VIZ: title bar uses an explicit inner viewport.
 #
 # Changelog v0.5:
 #   - Audio output is bit-identical to v0.4 for the same form
@@ -127,7 +179,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Markov Soundscape Weaver v0.6
+form Markov Soundscape Weaver v0.7
     optionmenu Preset: 1
         option Manual
         option Ambient Flow
@@ -137,23 +189,45 @@ form Markov Soundscape Weaver v0.6
         option Evolving Landscape
         option Chaotic Transitions
     positive Grain_size_ms 80
-    positive Analysis_overlap 0.5
-    integer Number_of_states 5
+    real Analysis_overlap 0.5
+    natural Number_of_states 5
     optionmenu Markov_order: 1
         option First Order
         option Second Order
     real Randomness 0.0
     positive Output_duration_sec 15.0
-    positive Synthesis_overlap 0.5
-    positive Crossfade_ms 10
-    real Pitch_scatter_semitones 0.0
+    real Synthesis_overlap 0.5
+    real Varispeed_scatter_semitones 0.0
     real Position_jitter 0.1
     real Density_variation 0.0
-    boolean Stereo_output 1
     real Stereo_decorrelation 0.3
+    integer Random_seed 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# ------------------------------------------------------------
+# SCRIPT-LEVEL SETTING
+# ------------------------------------------------------------
+# Stereo: decorrelation < 0 means mono output. 0 gives two identical
+# channels, 1 an independent walk per channel.
+if stereo_decorrelation < 0
+    stereo_output = 0
+    stereo_decorrelation = 0
+else
+    stereo_output = 1
+endif
+
+# Extra linear taper applied inside each grain, on top of its Hann
+# window. Since v0.6 divides by the accumulated analytic envelope this
+# is gain-neutral - it only shapes the grain edge - so it lives here
+# rather than in the dialog.
+    crossfade_ms = 10
+
+# Varispeed_scatter_semitones: Resample + Override sampling frequency
+# moves pitch, internal speed AND grain duration together. The OLA
+# envelope accounts for the changed duration, so gain stays flat.
+pitch_scatter_semitones = varispeed_scatter_semitones
 
 # ============================================
 # PRESET LOGIC
@@ -268,8 +342,73 @@ selectObject: snd
 dur = Get total duration
 fs = Get sampling frequency
 
+# ============================================
+# VALIDATION  (v0.7 fix 7)
+# ============================================
+warnLines$ = ""
+
+# An overlap of 1 makes the hop zero and divides by zero downstream.
+if analysis_overlap < 0
+    analysis_overlap = 0
+    warnLines$ = warnLines$ + "  ! Analysis_overlap < 0 -> 0" + newline$
+endif
+if analysis_overlap > 0.95
+    analysis_overlap = 0.95
+    warnLines$ = warnLines$ + "  ! Analysis_overlap >= 1 gives a zero hop -> capped at 0.95" + newline$
+endif
+if synthesis_overlap < 0
+    synthesis_overlap = 0
+    warnLines$ = warnLines$ + "  ! Synthesis_overlap < 0 -> 0" + newline$
+endif
+if synthesis_overlap > 0.95
+    synthesis_overlap = 0.95
+    warnLines$ = warnLines$ + "  ! Synthesis_overlap >= 1 gives a zero hop -> capped at 0.95" + newline$
+endif
+if randomness < 0
+    randomness = 0
+    warnLines$ = warnLines$ + "  ! Randomness < 0 -> 0" + newline$
+endif
+if randomness > 1
+    randomness = 1
+    warnLines$ = warnLines$ + "  ! Randomness > 1 -> 1" + newline$
+endif
+if position_jitter < 0
+    position_jitter = 0
+    warnLines$ = warnLines$ + "  ! Position_jitter < 0 -> 0" + newline$
+endif
+if position_jitter > 1
+    position_jitter = 1
+    warnLines$ = warnLines$ + "  ! Position_jitter > 1 -> 1" + newline$
+endif
+if density_variation < 0
+    density_variation = 0
+    warnLines$ = warnLines$ + "  ! Density_variation < 0 -> 0" + newline$
+endif
+if density_variation > 1
+    density_variation = 1
+    warnLines$ = warnLines$ + "  ! Density_variation > 1 -> 1" + newline$
+endif
+if stereo_decorrelation > 1
+    stereo_decorrelation = 1
+    warnLines$ = warnLines$ + "  ! Stereo_decorrelation > 1 -> 1" + newline$
+endif
+if pitch_scatter_semitones < 0
+    pitch_scatter_semitones = 0
+    warnLines$ = warnLines$ + "  ! Varispeed_scatter < 0 -> 0" + newline$
+endif
+
+# v0.7 fix 6: reproducibility. v0.6 had no seed, though k-means init,
+# state choice, grain choice, jitter and scatter are all random.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
+endif
+
 clearinfo
-writeInfoLine: "=== Markov Soundscape Weaver v0.6 ==="
+writeInfoLine: "=== Markov Soundscape Weaver v0.7 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Grain: ", grain_size_ms, " ms | States: ", number_of_states
 appendInfoLine: "Markov: ", markovOrderName$
@@ -278,6 +417,12 @@ if stereo_output
     appendInfoLine: "Output: Stereo (decorrelation ", fixed$(stereo_decorrelation * 100, 0), "%)"
 else
     appendInfoLine: "Output: Mono"
+endif
+appendInfoLine: "Seed: ", seedLabel$
+if warnLines$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Adjustments:"
+    appendInfo: warnLines$
 endif
 appendInfoLine: ""
 
@@ -302,7 +447,10 @@ k = number_of_states
 
 appendInfoLine: "Analyzing audio structure..."
 
-nGrains = floor((dur - grainSec) / stepSec)
+# v0.7 fix 4: the standard full-window count includes the +1. Without
+# it one valid window was dropped (197 instead of 198 on the test
+# corpus).
+nGrains = floor((dur - grainSec) / stepSec) + 1
 if nGrains < k * 2
     removeObject: workSnd
     exitScript: "Not enough grains for ", k, " states."
@@ -324,7 +472,15 @@ selectObject: workSnd
 hnr_obj = To Harmonicity (cc): stepSec, 75, 0.1, 1.0
 
 for i from 1 to nGrains
-    t = (i - 0.5) * stepSec
+    # v0.7 fix 4: the first window's CENTRE is grain/2, not hop/2. At
+    # 100 ms grains and a 40 ms hop the old formula analysed 0.020 s,
+    # which implies a grain starting at -0.030 s; the renderer then
+    # substituted 0-0.100 s centred at 0.050 s, so feature vector 1
+    # described audio that was never played.
+    t = grainSec / 2 + (i - 1) * stepSec
+    if t > dur - grainSec / 2
+        t = dur - grainSec / 2
+    endif
     grain_time#[i] = t
     
     selectObject: spec
@@ -507,6 +663,44 @@ for iter from 1 to max_iter
         endif
     endfor
     
+    # v0.7 CRITICAL 2: reseed empty clusters. Centroids were seeded by
+    # independent random draws, so two could land on the same grain and
+    # leave a cluster permanently empty - and an empty state later
+    # emitted a grain drawn from the WHOLE corpus. Observed: 1 empty
+    # state of 45 on the test corpus. An empty cluster is moved to the
+    # grain that currently fits its own centroid worst.
+    reseeded = 0
+    for c from 1 to k
+        cnt_c = 0
+        for i from 1 to nGrains
+            if state_seq#[i] = c
+                cnt_c += 1
+            endif
+        endfor
+        if cnt_c = 0
+            worstDist = -1
+            worstIdx = 1
+            for i from 1 to nGrains
+                own = state_seq#[i]
+                dOwn = (norm_centroid#[i] - cent_1#[own])^2 +
+                    ... (norm_bandwidth#[i] - cent_2#[own])^2 +
+                    ... (norm_pitch#[i] - cent_3#[own])^2 +
+                    ... (norm_hnr#[i] - cent_4#[own])^2
+                if dOwn > worstDist
+                    worstDist = dOwn
+                    worstIdx = i
+                endif
+            endfor
+            cent_1#[c] = norm_centroid#[worstIdx]
+            cent_2#[c] = norm_bandwidth#[worstIdx]
+            cent_3#[c] = norm_pitch#[worstIdx]
+            cent_4#[c] = norm_hnr#[worstIdx]
+            state_seq#[worstIdx] = c
+            reseeded += 1
+            changes += 1
+        endif
+    endfor
+
     if changes = 0
         appendInfoLine: "  Converged at iteration ", iter
         iter = max_iter + 1
@@ -541,6 +735,23 @@ for i from 1 to nGrains
     state_fill#[s] += 1
 endfor
 
+# v0.7 CRITICAL 2: after reseeding, a state may still be empty if the
+# corpus cannot support k clusters. Such states are pruned from the
+# chain entirely rather than being reachable and then emitting a grain
+# from the whole corpus.
+nActiveStates = 0
+activeTotal = 0
+for s2 to k
+    if state_count#[s2] > 0
+        nActiveStates += 1
+        activeTotal += state_count#[s2]
+    endif
+endfor
+if nActiveStates < k
+    appendInfoLine: "  ", k - nActiveStates,
+        ... " state(s) still empty after reseeding; pruned from the chain"
+endif
+
 # ============================================
 # BUILD MARKOV TRANSITION MATRIX
 # ============================================
@@ -564,23 +775,70 @@ if markov_order = 1
             row_sum += trans#[idx]
         endfor
         
+        # v0.7 CRITICAL 2: an empty state is not a possible successor.
         if row_sum > 0
             for c from 1 to k
                 idx = (r - 1) * k + c
-                trans#[idx] /= row_sum
+                if state_count#[c] > 0
+                    trans#[idx] /= row_sum
+                else
+                    trans#[idx] = 0
+                endif
             endfor
         else
             for c from 1 to k
                 idx = (r - 1) * k + c
-                trans#[idx] = 1 / k
+                if state_count#[c] > 0
+                    trans#[idx] = 1 / nActiveStates
+                else
+                    trans#[idx] = 0
+                endif
             endfor
         endif
     endfor
     
     appendInfoLine: "  First-order matrix built"
 else
+    # v0.7 fix 5: a first-order table is ALWAYS built alongside, so an
+    # unseen second-order context can back off to P(next | current)
+    # instead of collapsing to a uniform draw over every state.
+    backoff# = zero#(k * k)
+    for i from 1 to nGrains - 1
+        curr = state_seq#[i]
+        next = state_seq#[i + 1]
+        idx = (curr - 1) * k + next
+        backoff#[idx] += 1
+    endfor
+    for r from 1 to k
+        row_sum = 0
+        for c from 1 to k
+            idx = (r - 1) * k + c
+            row_sum += backoff#[idx]
+        endfor
+        if row_sum > 0
+            for c from 1 to k
+                idx = (r - 1) * k + c
+                if state_count#[c] > 0
+                    backoff#[idx] /= row_sum
+                else
+                    backoff#[idx] = 0
+                endif
+            endfor
+        else
+            for c from 1 to k
+                idx = (r - 1) * k + c
+                if state_count#[c] > 0
+                    backoff#[idx] = state_count#[c] / activeTotal
+                else
+                    backoff#[idx] = 0
+                endif
+            endfor
+        endif
+    endfor
+
     n_pairs = k * k
     trans2# = zero#(n_pairs * k)
+    pairSeen# = zero#(n_pairs)
     
     for i from 1 to nGrains - 2
         prev = state_seq#[i]
@@ -599,14 +857,23 @@ else
         endfor
         
         if row_sum > 0
+            pairSeen#[pair] = 1
             for c from 1 to k
                 idx = (pair - 1) * k + c
-                trans2#[idx] /= row_sum
+                if state_count#[c] > 0
+                    trans2#[idx] /= row_sum
+                else
+                    trans2#[idx] = 0
+                endif
             endfor
         else
+            # unseen context: copy the first-order row for `curr`
+            # instead of a uniform distribution over every state
+            pairSeen#[pair] = 0
+            curr_of_pair = ((pair - 1) mod k) + 1
             for c from 1 to k
                 idx = (pair - 1) * k + c
-                trans2#[idx] = 1 / k
+                trans2#[idx] = backoff#[(curr_of_pair - 1) * k + c]
             endfor
         endif
     endfor
@@ -650,8 +917,16 @@ appendInfoLine: ""
 appendInfoLine: "Weaving soundscape..."
 
 synth_step = grainSec * (1 - synthesis_overlap)
-grains_needed = ceiling(output_duration_sec / synth_step)
+grains_needed = ceiling(output_duration_sec / synth_step) + 1
+# The buffer runs one grain past the target so late grains are not
+# clipped; v0.7 CRITICAL 3 trims back to the requested length below.
 output_dur = output_duration_sec + grainSec
+
+# v0.7 fix 9: the grammar is learned at the analysis hop and played at
+# the synthesis hop. When they differ, the chain runs fast or slow.
+grammarScale = synth_step / stepSec
+appendInfoLine: "  Grammar time scale (synth hop / analysis hop): ",
+    ... fixed$(grammarScale, 3), "x"
 
 if stereo_output
     n_passes = 2
@@ -659,8 +934,251 @@ else
     n_passes = 1
 endif
 
-# Track state history for visualization
+# ============================================================
+# EVENT LIST  (v0.7 CRITICAL 1)
+# ============================================================
+# v0.6 ran the entire walk independently per channel, so
+# Stereo_decorrelation = 0 still produced two unrelated sequences:
+# measured L/R correlation -0.004 where 1.000 was the documented
+# meaning. One event list is now built for the left channel, and the
+# right channel is DERIVED from it - identical at 0, progressively
+# re-decided as decorrelation rises, fully independent at 1.
+
+ev_state# = zero#(grains_needed)
+ev_grain# = zero#(grains_needed)
+ev_tout# = zero#(grains_needed)
+ev_tgrain# = zero#(grains_needed)
+ev_ratio# = zero#(grains_needed)
+
+evR_state# = zero#(grains_needed)
+evR_grain# = zero#(grains_needed)
+evR_tout# = zero#(grains_needed)
+evR_tgrain# = zero#(grains_needed)
+evR_ratio# = zero#(grains_needed)
+
 state_history# = zero#(grains_needed)
+onset_history# = zero#(grains_needed)
+
+# --- pick a starting state by occupancy over ACTIVE states only ---
+procedure pickStartState
+    .r = randomUniform(0, activeTotal)
+    .cum = 0
+    .sel = 0
+    for .s to k
+        if state_count#[.s] > 0
+            .cum += state_count#[.s]
+            if .sel = 0 and .r <= .cum
+                .sel = .s
+            endif
+        endif
+    endfor
+    if .sel = 0
+        for .s to k
+            if .sel = 0 and state_count#[.s] > 0
+                .sel = .s
+            endif
+        endfor
+    endif
+    pickStartState.out = .sel
+endproc
+
+# --- draw the next state from the chain ---
+procedure stepChain: .prev, .curr
+    if randomUniform(0, 1) < randomness
+        # random jump, but never into a pruned state
+        .rr = randomUniform(0, activeTotal)
+        .cum = 0
+        .sel = 0
+        for .c to k
+            if state_count#[.c] > 0
+                .cum += state_count#[.c]
+                if .sel = 0 and .rr <= .cum
+                    .sel = .c
+                endif
+            endif
+        endfor
+        if .sel = 0
+            .sel = .curr
+        endif
+        stepChain.out = .sel
+    else
+        .roll = randomUniform(0, 1)
+        .cumSum = 0
+        .sel = 0
+        if markov_order = 1
+            for .c to k
+                .idx = (.curr - 1) * k + .c
+                .cumSum += trans#[.idx]
+                if .sel = 0 and .roll <= .cumSum
+                    .sel = .c
+                endif
+            endfor
+        else
+            .pair = (.prev - 1) * k + .curr
+            for .c to k
+                .idx = (.pair - 1) * k + .c
+                .cumSum += trans2#[.idx]
+                if .sel = 0 and .roll <= .cumSum
+                    .sel = .c
+                endif
+            endfor
+        endif
+        if .sel = 0
+            .sel = .curr
+        endif
+        stepChain.out = .sel
+    endif
+endproc
+
+# --- fill in the per-event grain choice, position and varispeed ---
+procedure drawEvent: .state
+    .rIdx = randomInteger(1, state_count#[.state])
+    .idxPos = state_offset#[.state] + .rIdx
+    drawEvent.grain = state_index#[.idxPos]
+
+    .tg = grain_time#[drawEvent.grain]
+    if position_jitter > 0
+        .tg = .tg + randomUniform(-1, 1) * position_jitter * grainSec
+        .tg = max(grainSec/2, min(dur - grainSec/2, .tg))
+    endif
+    drawEvent.tgrain = .tg
+
+    if pitch_scatter_semitones > 0
+        .sc = randomUniform(-pitch_scatter_semitones, pitch_scatter_semitones)
+        drawEvent.ratio = 2 ^ (.sc / 12)
+    else
+        drawEvent.ratio = 1
+    endif
+endproc
+
+# ---- build the LEFT event list ----
+# v0.7 fix 5: seed a second-order walk from a pair that actually
+# occurred. v0.6 drew prev and current independently, so the chain
+# could begin in a context never seen in the input and then run on the
+# uniform fallback while claiming to continue a learned grammar.
+if markov_order = 2 and nGrains >= 2
+    seedPos = randomInteger(1, nGrains - 1)
+    prev_state = state_seq#[seedPos]
+    current_state = state_seq#[seedPos + 1]
+else
+    @pickStartState
+    prev_state = pickStartState.out
+    @pickStartState
+    current_state = pickStartState.out
+endif
+
+for g from 1 to grains_needed
+    t_out = (g - 1) * synth_step
+    if density_variation > 0
+        t_out = t_out + randomUniform(-1, 1) * density_variation * synth_step
+        if t_out < 0
+            t_out = 0
+        endif
+    endif
+
+    ev_state#[g] = current_state
+    ev_tout#[g] = t_out
+    @drawEvent: current_state
+    ev_grain#[g] = drawEvent.grain
+    ev_tgrain#[g] = drawEvent.tgrain
+    ev_ratio#[g] = drawEvent.ratio
+
+    state_history#[g] = current_state
+    # v0.7 fix 10: the panel plots the ACTUAL onsets, jitter included
+    onset_history#[g] = t_out
+
+    @stepChain: prev_state, current_state
+    next_state = stepChain.out
+    prev_state = current_state
+    current_state = next_state
+endfor
+
+# ---- derive the RIGHT event list ----
+if stereo_output
+    if stereo_decorrelation <= 0
+        # exact copy: identical channels, as documented
+        for g from 1 to grains_needed
+            evR_state#[g] = ev_state#[g]
+            evR_grain#[g] = ev_grain#[g]
+            evR_tout#[g] = ev_tout#[g]
+            evR_tgrain#[g] = ev_tgrain#[g]
+            evR_ratio#[g] = ev_ratio#[g]
+        endfor
+    elsif stereo_decorrelation >= 1
+        # fully independent walk
+        if markov_order = 2 and nGrains >= 2
+            seedPos = randomInteger(1, nGrains - 1)
+            prev_state = state_seq#[seedPos]
+            current_state = state_seq#[seedPos + 1]
+        else
+            @pickStartState
+            prev_state = pickStartState.out
+            @pickStartState
+            current_state = pickStartState.out
+        endif
+        for g from 1 to grains_needed
+            t_out = (g - 1) * synth_step
+            if density_variation > 0
+                t_out = t_out + randomUniform(-1, 1) * density_variation * synth_step
+                if t_out < 0
+                    t_out = 0
+                endif
+            endif
+            evR_state#[g] = current_state
+            evR_tout#[g] = t_out
+            @drawEvent: current_state
+            evR_grain#[g] = drawEvent.grain
+            evR_tgrain#[g] = drawEvent.tgrain
+            evR_ratio#[g] = drawEvent.ratio
+            @stepChain: prev_state, current_state
+            next_state = stepChain.out
+            prev_state = current_state
+            current_state = next_state
+        endfor
+    else
+        # partial: that fraction of events is re-decided, the rest is
+        # copied. The chain is kept coherent by re-stepping from the
+        # last right-channel state whenever an event is re-decided.
+        prevR = ev_state#[1]
+        currR = ev_state#[1]
+        for g from 1 to grains_needed
+            if randomUniform(0, 1) < stereo_decorrelation
+                if g > 1
+                    @stepChain: prevR, currR
+                    currR2 = stepChain.out
+                    prevR = currR
+                    currR = currR2
+                endif
+                evR_state#[g] = currR
+                @drawEvent: currR
+                evR_grain#[g] = drawEvent.grain
+                evR_tgrain#[g] = drawEvent.tgrain
+                evR_ratio#[g] = drawEvent.ratio
+                tR = ev_tout#[g]
+                if density_variation > 0
+                    tR = (g - 1) * synth_step +
+                        ... randomUniform(-1, 1) * density_variation * synth_step
+                    if tR < 0
+                        tR = 0
+                    endif
+                endif
+                evR_tout#[g] = tR
+            else
+                evR_state#[g] = ev_state#[g]
+                evR_grain#[g] = ev_grain#[g]
+                evR_tout#[g] = ev_tout#[g]
+                evR_tgrain#[g] = ev_tgrain#[g]
+                evR_ratio#[g] = ev_ratio#[g]
+                prevR = currR
+                currR = ev_state#[g]
+            endif
+        endfor
+    endif
+endif
+
+# ============================================================
+# RENDER each channel from its event list
+# ============================================================
 
 for pass from 1 to n_passes
     if stereo_output
@@ -672,54 +1190,23 @@ for pass from 1 to n_passes
     else
         appendInfoLine: "  Generating..."
     endif
-    
+
     output_buf = Create Sound from formula: "Output_" + string$(pass), 1, 0, output_dur, fs, "0"
-    
-    # v0.6: per-pass window-sum envelope. Each grain's analytic
-    # envelope (Hann x crossfade ramps, actual duration, actual
-    # placement) is accumulated here; the channel is divided by it
-    # after the walk, giving flat unity gain at any overlap.
     env_sum = Create Sound from formula: "EnvSum_" + string$(pass), 1, 0, output_dur, fs, "0"
-    
-    current_state = randomInteger(1, k)
-    prev_state = randomInteger(1, k)
-    
-    if pass = 2 and stereo_decorrelation > 0
-        current_state = ((current_state + floor(k * stereo_decorrelation)) mod k) + 1
-    endif
-    
+
     for g from 1 to grains_needed
-        t_out = (g - 1) * synth_step
-        
-        if density_variation > 0
-            t_out = t_out + randomUniform(-1, 1) * density_variation * synth_step
-            if t_out < 0
-                t_out = 0
-            endif
-        endif
-        
-        # Store state for visualization (first pass only)
         if pass = 1
-            state_history#[g] = current_state
-        endif
-        
-        if state_count#[current_state] > 0
-            r_idx = randomInteger(1, state_count#[current_state])
-            idx_pos = state_offset#[current_state] + r_idx
-            grain_idx = state_index#[idx_pos]
+            t_out = ev_tout#[g]
+            t_grain = ev_tgrain#[g]
+            ratio = ev_ratio#[g]
         else
-            grain_idx = randomInteger(1, nGrains)
+            t_out = evR_tout#[g]
+            t_grain = evR_tgrain#[g]
+            ratio = evR_ratio#[g]
         endif
-        
-        t_grain = grain_time#[grain_idx]
-        if position_jitter > 0
-            t_grain = t_grain + randomUniform(-1, 1) * position_jitter * grainSec
-            t_grain = max(grainSec/2, min(dur - grainSec/2, t_grain))
-        endif
-        
+
         t_start = t_grain - grainSec/2
         t_end = t_grain + grainSec/2
-        
         if t_start < 0
             t_start = 0
             t_end = grainSec
@@ -731,14 +1218,12 @@ for pass from 1 to n_passes
                 t_start = 0
             endif
         endif
-        
+
         selectObject: workSnd
         grain = Extract part: t_start, t_end, "Hanning", 1, "no"
-        
-        if pitch_scatter_semitones > 0
+
+        if ratio <> 1
             selectObject: grain
-            scatter = randomUniform(-pitch_scatter_semitones, pitch_scatter_semitones)
-            ratio = 2 ^ (scatter / 12)
             orig_fs = Get sampling frequency
             new_fs = orig_fs * ratio
             if new_fs > 8000 and new_fs < 96000
@@ -749,11 +1234,7 @@ for pass from 1 to n_passes
                 grain = grain_new
             endif
         endif
-        
-        # v0.5: two Formula (part) calls — fade-in range and
-        # fade-out range only. Skips the middle "self * 1"
-        # no-op range that v0.4 iterated over via the nested
-        # if/else conditional. Bit-identical arithmetic.
+
         if crossfadeSec > 0
             selectObject: grain
             grain_dur = Get total duration
@@ -763,89 +1244,80 @@ for pass from 1 to n_passes
                 Formula (part): grain_dur - fade, grain_dur, 1, 1, "self * (grain_dur - x) / fade"
             endif
         endif
-        
+
         selectObject: grain
         grain_dur = Get total duration
-        
-        # v0.5: modern object(<id>, x) instead of legacy
-        # Object_<id>(x). Same lookup; forward-compatible.
-        selectObject: output_buf
-        Formula (part): t_out, t_out + grain_dur, 1, 1,
-            ... "self + object(grain, x - t_out)"
-        
-        # v0.6: accumulate this grain's analytic envelope:
-        # Hann over its actual duration, times the same linear
-        # crossfade ramps applied above (fade may be 0).
-        if crossfadeSec > 0
-            env_fade = min(crossfadeSec, grain_dur * 0.4)
-        else
-            env_fade = 0
+
+        if t_out + grain_dur > output_dur
+            grain_dur = output_dur - t_out
         endif
-        selectObject: env_sum
-        if env_fade > 0
+
+        if grain_dur > 0.0005
+            selectObject: output_buf
             Formula (part): t_out, t_out + grain_dur, 1, 1,
-                ... "self + (0.5 - 0.5 * cos(2 * pi * (x - t_out) / grain_dur))"
-                ... + " * min(1, min((x - t_out) / env_fade, (grain_dur - (x - t_out)) / env_fade))"
-        else
-            Formula (part): t_out, t_out + grain_dur, 1, 1,
-                ... "self + (0.5 - 0.5 * cos(2 * pi * (x - t_out) / grain_dur))"
-        endif
-        
-        removeObject: grain
-        
-        # Markov transition
-        if randomUniform(0, 1) < randomness
-            next_state = randomInteger(1, k)
-        else
-            roll = randomUniform(0, 1)
-            cumSum = 0
-            next_state = 1
-            
-            if markov_order = 1
-                for c from 1 to k
-                    idx = (current_state - 1) * k + c
-                    cumSum += trans#[idx]
-                    if roll <= cumSum
-                        next_state = c
-                        c = k + 1
-                    endif
-                endfor
+                ... "self + object(grain, x - t_out)"
+
+            if crossfadeSec > 0
+                env_fade = min(crossfadeSec, grain_dur * 0.4)
             else
-                pair_idx = (prev_state - 1) * k + current_state
-                for c from 1 to k
-                    idx = (pair_idx - 1) * k + c
-                    cumSum += trans2#[idx]
-                    if roll <= cumSum
-                        next_state = c
-                        c = k + 1
-                    endif
-                endfor
+                env_fade = 0
+            endif
+            selectObject: env_sum
+            if env_fade > 0
+                Formula (part): t_out, t_out + grain_dur, 1, 1,
+                    ... "self + (0.5 - 0.5 * cos(2 * pi * (x - t_out) / grain_dur))"
+                    ... + " * min(1, min((x - t_out) / env_fade, (grain_dur - (x - t_out)) / env_fade))"
+            else
+                Formula (part): t_out, t_out + grain_dur, 1, 1,
+                    ... "self + (0.5 - 0.5 * cos(2 * pi * (x - t_out) / grain_dur))"
             endif
         endif
-        
-        if pass = 2 and stereo_decorrelation > 0
-            if randomUniform(0, 1) < stereo_decorrelation * 0.3
-                next_state = randomInteger(1, k)
-            endif
-        endif
-        
-        prev_state = current_state
-        current_state = next_state
+
+        removeObject: grain
     endfor
-    
-    # v0.6: exact window-sum normalization (replaces the constant
-    # 1/(1+overlap*0.7), which was never flat at any overlap)
+
     envSumIdStr$ = string$(env_sum)
     selectObject: output_buf
     Formula: "self / (object[" + envSumIdStr$ + ", 1, col] + 1e-6)"
     removeObject: env_sum
-    
+
+    # v0.7 CRITICAL 3: trim to the requested length. v0.6 built the
+    # buffer at output_duration_sec + grainSec and never cut back, so
+    # every preset overran by one grain - measured 15.100 s for a
+    # requested 15.000 s, while the title bar reported 15.000.
+    selectObject: output_buf
+    bufNow = Get total duration
+    if bufNow > output_duration_sec
+        selectObject: output_buf
+        trimmedBuf = Extract part: 0, output_duration_sec, "rectangular", 1, "no"
+        removeObject: output_buf
+        output_buf = trimmedBuf
+    endif
+
+    # a short fade, since the cut can land mid-grain
+    selectObject: output_buf
+    chDur = Get total duration
+    eF = 0.005
+    if eF > chDur * 0.1
+        eF = chDur * 0.1
+    endif
+    if eF > 0.0002
+        eFs$ = fixed$(eF, 8)
+        selectObject: output_buf
+        Formula: "if x - xmin < " + eFs$ + " then self * ((x - xmin) / " + eFs$ + ") else self fi"
+        selectObject: output_buf
+        Formula: "if xmax - x < " + eFs$ + " then self * ((xmax - x) / " + eFs$ + ") else self fi"
+    endif
+
     if pass = 1
         channel_left = output_buf
     else
         channel_right = output_buf
     endif
 endfor
+
+# v0.7 fix 6: all random draws are done.
+random_initializeSafelyAndUnpredictably ()
 
 # ============================================
 # COMBINE OUTPUT
