@@ -3,6 +3,137 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
+# Version: 1.3 (2026) - Analysis time clamped inside the Sound
+#
+# Changelog v1.3 (2026):
+#
+#   1 - The last feature time could fall OUTSIDE the source. ceiling()
+#     gives enough rendering intervals, but the centre of the final one
+#     sits past the end whenever the remainder is under half a frame:
+#     measured at a 20 ms step, a 1.005 s source gives 51 frames and a
+#     last query at 1.0100 s - 5 ms beyond the audio. Every analysis
+#     then returned its fallback (intensity 60 dB, HNR -10, unvoiced,
+#     MFCC clamped to the last real frame), and that fabricated control
+#     point also anchored the ramp across the preceding interval, so up
+#     to ~25 ms of control was not derived from the source. Gains stayed
+#     bounded, so this was never the full-gain burst of v1.1 - but the
+#     values were invented. The analysis time is now clamped to half a
+#     frame inside the end.
+#
+#   2 - CORRECTION: v1.2's changelog claimed an explicit
+#     mfcc_n_frames >= 1 check. It was never written. Now implemented.
+#
+#   3 - Remaining user-facing strings and architectural comments moved
+#     to the v1.2 terminology: "Feedback base" / "Mix base" / "fb base"
+#     -> "Tap decay" / "Echo level", and the old "vocal-formant" and
+#     "high-band" MFCC labels in the weight table replaced with the
+#     cepstral-shape and cepstral-detail names the implementation
+#     comments already use.
+#
+# Version: 1.2 (2026) - Continuous control envelope, tail coverage, honest naming
+#
+# Changelog v1.2 (2026):
+#
+#   AUDIO CHANGES in every preset. Four of these alter the sound.
+#
+#   CRITICAL 1 - the last fragment of every delayed copy kept FULL
+#     gain. nFrames used floor(duration / frame_step), so whenever the
+#     source length was not an exact multiple of the step, the
+#     remainder was never touched by any Formula (part) and stayed at
+#     gain 1.0 while the rest of the tap sat at echo * decay^rep.
+#     Measured at a 20 ms step on a 1.013 s source (50 frames cover
+#     1.000 s, leaving 13 ms), with Clean Digital's 0.30 / 0.35:
+#       tap 1 covered 0.10500, tail 1.00000 ->   9.5x too loud
+#       tap 2 covered 0.03675, tail 1.00000 ->  27.2x
+#       tap 3 covered 0.01286, tail 1.00000 ->  77.7x
+#       tap 4 covered 0.00450, tail 1.00000 -> 222.1x
+#     So the LATER the echo, the worse it got - a short bright burst
+#     at the end of every tap, and the quietest taps were the most
+#     disfigured. Now ceiling(), with t_end clamped to the duration.
+#
+#   CRITICAL 2 - the smoothed control was applied as 20 ms STEPS.
+#     ctrl_mix_smooth# and ctrl_fb_smooth# were moving-averaged and
+#     then each value was multiplied over a whole block as a constant,
+#     so the actual gain function was a staircase: 20 ms flat, jump,
+#     20 ms flat, jump. Smoothing shrinks the jumps; it does not
+#     remove them. Wherever the waveform is not near zero at a frame
+#     boundary that is a discontinuity - zipper noise and amplitude
+#     sidebands that belong to the control update rate, not to the
+#     delay. v1.2 ramps LINEARLY between consecutive frame gains
+#     inside each Formula (part), so the envelope is continuous:
+#     frame i runs from g[i] to g[i+1] and frame i+1 starts where it
+#     ended.
+#
+#   3 - Feedback_base renamed Tap_decay_base, and the engine is
+#     described for what it is. Every repeat is built from the SOURCE,
+#     not from the previous repeat or the accumulating output, so
+#     nothing returns to a delay line: this is an MLP-controlled
+#     feed-forward multi-tap delay with feedback-LIKE exponential
+#     decay, not a recursive feedback system.
+#
+#   4 - The filter now accumulates with tap index. v1.1 applied one
+#     filter pass to repeats 1-2 and two passes to repeats 3 and up,
+#     so repeat 6 was no darker than repeat 3 and Ambient Wash stopped
+#     evolving after the third echo. Each repeat is now filtered once
+#     per round trip (rep passes, capped at 6), which is what a real
+#     feedback filter would do to that tap.
+#
+#   5 - Mix_base renamed Echo_level, and the first tap is now
+#     mix * decay^(rep-1) rather than mix * decay^rep. v1.1 applied
+#     the decay once even to the first echo, so Clean Digital's
+#     "mix 0.30" delivered 0.30 * 0.35 = 0.105. Echo_level now sets
+#     the first echo and Tap_decay_base only sets the falloff.
+#     Also: this is NOT a dry/wet mix. The output starts as a full
+#     copy of the source and Echo_level scales only the taps; there is
+#     no dry = 1 - mix anywhere.
+#
+#   6 - MFCC inputs are clipped, not merely scaled. "/30 (normalized
+#     to ~[-1,1])" was a fixed division with no bound, so an MFCC of
+#     90 entered the network as 3.0 and a delta of 120 as 4.0, far
+#     outside the range the hand-designed weights assume, pushing the
+#     ReLU units high and the tanh outputs into saturation. Now
+#     clipped to [-1, 1] and the deltas to [0, 1].
+#
+#   7 - Undefined HNR now reads as "no harmonicity" instead of a
+#     quarter of the range. hnr = 0 became (0 + 10)/40 = 0.25, which
+#     partially ACTIVATED the HNR detector (2*0.25 - 0.3 = 0.2) on
+#     frames where the analysis had simply failed.
+#
+#   8 - The two spectral units are renamed. MFCCs are DCT
+#     coefficients of a Mel-scaled spectrum: a higher coefficient
+#     index means faster variation of the spectral envelope along the
+#     Mel axis, NOT a higher frequency band. So MFCC 8-13 is not a
+#     high-band energy detector and MFCC 1-3 is not a validated
+#     formant detector. They are now called low-order cepstral-shape
+#     response and high-order cepstral-detail response.
+#
+#   9 - Validation: repeats >= 1, Echo_level and Tap_decay in range,
+#     frame step and smoothing positive, and the filter cutoff kept
+#     under Nyquist (4000 Hz was silently illegal on an 8 kHz file).
+#
+#   10 - Silent and too-short inputs are rejected, including an
+#     explicit check that the MFCC analysis produced at least one
+#     frame.
+#
+#   11 - The final Scale peak is now a CONDITIONAL limiter. It used to
+#     run unconditionally, which normalised every result to the same
+#     peak - erasing the level differences between presets and
+#     amplifying a quiet input and its noise floor along with it.
+#
+#   ON THE FILTER (documented, unchanged): Filter (pass Hann band) is
+#   a frequency-domain zero-phase filter with a symmetric impulse
+#   response, so it is acausal and can place energy slightly BEFORE a
+#   transient. Fine offline; not what an analog causal feedback filter
+#   does.
+#
+#   ON INTENSITY (documented, unchanged): the intensity input is
+#   measured against an absolute 60 dB reference, so the same material
+#   at a different file gain produces different delay control. That is
+#   usable as an aesthetic choice but it means the effect is NOT
+#   level-invariant.
+#
+#   Multichannel input is downmixed to mono; the output is mono.
+#
 # Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -35,11 +166,11 @@
 #       h3: transient detector        (w1[3,30]=2.5,  b=-0.3)
 #       h4: sustained-energy detector (HNR + voiced + intensity
 #                                      minus transient; b=-0.4)
-#       h5: vocal-formant MFCC
+#       h5: low-order cepstral-shape response
 #           (positive weights on MFCC1-3; b=-0.1)
 #       h6: timbral-change detector
 #           (positive weights on |delta-MFCC1..5|; b=-0.2)
-#       h7: high-band MFCC detector
+#       h7: high-order cepstral-detail response
 #           (positive weights on MFCC8-13; b=-0.1)
 #       h8: constant bias unit (no weights, b=+1.0 — always
 #           active, acts as a fixed contribution)
@@ -137,7 +268,7 @@ endif
 original_sound = selected("Sound")
 original_name$ = selected$("Sound")
 
-form Neural Delay Control v1.1
+form Neural Delay Control v1.3
     optionmenu Preset: 1
         option Manual
         option Clean Digital
@@ -147,8 +278,8 @@ form Neural Delay Control v1.1
         option Ambient Wash
         option Modulated
     positive Delay_time_ms 250
-    positive Feedback_base 0.4
-    positive Mix_base 0.3
+    positive Echo_level 0.3
+    positive Tap_decay_base 0.4
     integer Number_of_repeats 4
     boolean Enable_filter 1
     positive Filter_cutoff_hz 4000
@@ -157,6 +288,56 @@ form Neural Delay Control v1.1
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Echo_level sets the FIRST echo; Tap_decay_base sets how fast the
+# later taps fall away (tap n = Echo_level * Tap_decay^(n-1)). This is
+# not a dry/wet mix: the output starts as a full copy of the source
+# and Echo_level scales only the taps.
+# Each repeat is built from the SOURCE, so this is a feed-forward
+# multi-tap delay with feedback-like decay, not a recursive feedback
+# line. Output is mono.
+mix_base = echo_level
+feedback_base = tap_decay_base
+
+# ============================================
+# VALIDATION  (v1.2 fix 9)
+# ============================================
+warnLines$ = ""
+if number_of_repeats < 1
+    number_of_repeats = 1
+    warnLines$ = warnLines$ + "  ! Number_of_repeats < 1 -> 1 (a non-positive count"
+        ... + " gives an invalid tail length)" + newline$
+endif
+if number_of_repeats > 12
+    number_of_repeats = 12
+    warnLines$ = warnLines$ + "  ! Number_of_repeats capped at 12" + newline$
+endif
+if echo_level < 0
+    echo_level = 0
+    warnLines$ = warnLines$ + "  ! Echo_level < 0 -> 0" + newline$
+endif
+if echo_level > 1
+    echo_level = 1
+    warnLines$ = warnLines$ + "  ! Echo_level > 1 -> 1" + newline$
+endif
+if tap_decay_base < 0
+    tap_decay_base = 0
+    warnLines$ = warnLines$ + "  ! Tap_decay_base < 0 -> 0" + newline$
+endif
+if tap_decay_base > 0.95
+    tap_decay_base = 0.95
+    warnLines$ = warnLines$ + "  ! Tap_decay_base >= 1 would not decay -> 0.95" + newline$
+endif
+if frame_step_ms < 1
+    frame_step_ms = 1
+    warnLines$ = warnLines$ + "  ! Frame_step_ms < 1 -> 1" + newline$
+endif
+if smooth_ms < 0
+    smooth_ms = 0
+    warnLines$ = warnLines$ + "  ! Smooth_ms < 0 -> 0" + newline$
+endif
+mix_base = echo_level
+feedback_base = tap_decay_base
 
 # Note: Transient_suppression, Hnr_gain, Pitch_bonus from v0.6 are no longer
 # form fields — those were the linear-formula coefficients. The MLP has its
@@ -171,14 +352,18 @@ endform
 if preset = 2
     delay_time_ms = 250
     feedback_base = 0.35
+    tap_decay_base = 0.35
     mix_base = 0.3
+    echo_level = 0.3
     number_of_repeats = 4
     enable_filter = 0
     presetName$ = "CleanDigital"
 elsif preset = 3
     delay_time_ms = 300
     feedback_base = 0.5
+    tap_decay_base = 0.5
     mix_base = 0.35
+    echo_level = 0.35
     number_of_repeats = 5
     enable_filter = 1
     filter_cutoff_hz = 3000
@@ -186,14 +371,18 @@ elsif preset = 3
 elsif preset = 4
     delay_time_ms = 80
     feedback_base = 0.15
+    tap_decay_base = 0.15
     mix_base = 0.45
+    echo_level = 0.45
     number_of_repeats = 2
     enable_filter = 0
     presetName$ = "Slapback"
 elsif preset = 5
     delay_time_ms = 375
     feedback_base = 0.45
+    tap_decay_base = 0.45
     mix_base = 0.35
+    echo_level = 0.35
     number_of_repeats = 4
     enable_filter = 1
     filter_cutoff_hz = 4500
@@ -201,7 +390,9 @@ elsif preset = 5
 elsif preset = 6
     delay_time_ms = 500
     feedback_base = 0.6
+    tap_decay_base = 0.6
     mix_base = 0.4
+    echo_level = 0.4
     number_of_repeats = 6
     enable_filter = 1
     filter_cutoff_hz = 2500
@@ -209,7 +400,9 @@ elsif preset = 6
 elsif preset = 7
     delay_time_ms = 200
     feedback_base = 0.45
+    tap_decay_base = 0.45
     mix_base = 0.35
+    echo_level = 0.35
     number_of_repeats = 4
     enable_filter = 1
     filter_cutoff_hz = 5000
@@ -227,10 +420,10 @@ duration = Get total duration
 fs = Get sampling frequency
 
 clearinfo
-writeInfoLine: "=== Neural Delay Control v1.1 ==="
+writeInfoLine: "=== Neural Delay Control v1.3 ==="
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Delay: ", delay_time_ms, " ms | Feedback base: ", fixed$(feedback_base, 2)
-appendInfoLine: "Mix base: ", fixed$(mix_base, 2), " | Repeats: ", number_of_repeats
+appendInfoLine: "Delay: ", delay_time_ms, " ms | Tap decay: ", fixed$(tap_decay_base, 2)
+appendInfoLine: "Echo level: ", fixed$(echo_level, 2), " | Repeats: ", number_of_repeats
 if enable_filter
     appendInfoLine: "Filter: LP @ ", filter_cutoff_hz, " Hz"
 endif
@@ -239,6 +432,27 @@ appendInfoLine: ""
 # Work on mono copy
 selectObject: original_sound
 sound_work = Convert to mono
+
+# v1.2 fix 10: reject silent / too-short input before any analysis.
+selectObject: sound_work
+srcPeak = Get absolute extremum: 0, 0, "None"
+if srcPeak < 1e-6
+    removeObject: sound_work
+    exitScript: "The selected Sound is silent (or near-silent); nothing to control."
+endif
+if duration < 0.1
+    removeObject: sound_work
+    exitScript: "Sound too short: need at least 0.1 s for MFCC analysis."
+endif
+
+# v1.2 fix 9: the filter cutoff must stay under Nyquist. 4000 Hz is
+# silently illegal on an 8 kHz file, where Nyquist is 4000.
+nyquist = fs / 2
+if filter_cutoff_hz > nyquist * 0.9
+    filter_cutoff_hz = nyquist * 0.9
+    warnLines$ = warnLines$ + "  ! Filter_cutoff_hz above Nyquist -> capped to "
+        ... + fixed$(filter_cutoff_hz, 0) + " Hz" + newline$
+endif
 Rename: "Work"
 
 delay_sec = delay_time_ms / 1000
@@ -270,9 +484,9 @@ w1_bias[1] = -0.3   ; HNR detector
 w1_bias[2] = -0.4   ; voicing detector
 w1_bias[3] = -0.3   ; transient detector
 w1_bias[4] = -0.4   ; sustained-energy detector
-w1_bias[5] = -0.1   ; vocal-formant MFCC detector
+w1_bias[5] = -0.1   ; low-order cepstral-shape response
 w1_bias[6] = -0.2   ; timbral-change detector
-w1_bias[7] = -0.1   ; high-band MFCC detector
+w1_bias[7] = -0.1   ; high-order cepstral-detail response
 w1_bias[8] = 1.0    ; constant bias unit (always-on)
 
 # --- Hidden unit 1: HNR detector ---
@@ -290,7 +504,7 @@ w1[4, 28] = 0.7     ; voicing
 w1[4, 29] = 0.5     ; intensity
 w1[4, 30] = -1.5    ; transient (suppresses)
 
-# --- Hidden unit 5: vocal-formant MFCC detector ---
+# --- Hidden unit 5: low-order cepstral-shape response ---
 w1[5, 1] = 0.5      ; MFCC1 (overall spectral tilt)
 w1[5, 2] = 0.3      ; MFCC2 (coarse formant)
 w1[5, 3] = 0.2      ; MFCC3
@@ -302,7 +516,7 @@ w1[6, 16] = 0.3     ; |delta-MFCC3|
 w1[6, 17] = 0.2     ; |delta-MFCC4|
 w1[6, 18] = 0.2     ; |delta-MFCC5|
 
-# --- Hidden unit 7: high-band MFCC detector ---
+# --- Hidden unit 7: high-order cepstral-detail response ---
 w1[7, 8] = 0.3      ; MFCC8
 w1[7, 9] = 0.3      ; MFCC9
 w1[7, 10] = 0.3     ; MFCC10
@@ -321,9 +535,9 @@ w2[1, 1] =  0.20    ; from HNR detector
 w2[1, 2] =  0.15    ; from voicing detector
 w2[1, 3] = -0.50    ; from transient detector
 w2[1, 4] =  0.20    ; from sustained-energy detector
-w2[1, 5] =  0.15    ; from vocal-formant MFCC
+w2[1, 5] =  0.15    ; from low-order cepstral shape
 w2[1, 6] = -0.15    ; from timbral-change detector
-w2[1, 7] = -0.05    ; from high-band MFCC
+w2[1, 7] = -0.05    ; from high-order cepstral detail
 w2[1, 8] =  0.00    ; from constant bias unit (no contribution to mix)
 
 # --- Output 2: feedback modulation ---
@@ -331,9 +545,9 @@ w2[2, 1] =  0.15    ; from HNR detector
 w2[2, 2] =  0.05    ; from voicing detector
 w2[2, 3] = -0.40    ; from transient detector
 w2[2, 4] =  0.25    ; from sustained-energy detector
-w2[2, 5] =  0.05    ; from vocal-formant MFCC
+w2[2, 5] =  0.05    ; from low-order cepstral shape
 w2[2, 6] = -0.20    ; from timbral-change detector
-w2[2, 7] = -0.05    ; from high-band MFCC
+w2[2, 7] = -0.05    ; from high-order cepstral detail
 w2[2, 8] =  0.00    ; from constant bias unit
 
 # ============================================
@@ -342,7 +556,15 @@ w2[2, 8] =  0.00    ; from constant bias unit
 
 appendInfoLine: "Extracting features (Intensity, HNR, Pitch, MFCC)..."
 
-nFrames = floor(duration / frame_step_sec)
+# v1.2 CRITICAL 1: ceiling, so the final partial frame is covered.
+# floor() left the remainder untouched by any Formula (part), i.e. at
+# gain 1.0 while the rest of the tap sat at echo * decay^rep - at a
+# 20 ms step and a 1.013 s source that is the last 13 ms of every echo
+# roughly ten times too loud, once per repeat.
+nFrames = ceiling(duration / frame_step_sec)
+if nFrames < 1
+    nFrames = 1
+endif
 if nFrames < 1
     nFrames = 1
 endif
@@ -367,11 +589,37 @@ selectObject: sound_work
 mfcc_obj = To MFCC: 13, 0.025, frame_step_sec, 100, 100, 0
 mfcc_n_frames = Get number of frames
 
+# v1.3: this check was claimed in v1.2's changelog and never written.
+# The 100 ms minimum duration makes it unlikely, but an MFCC analysis
+# that yields no frame would leave every feature read clamped to a
+# frame index of zero.
+if mfcc_n_frames < 1
+    exitScript: "MFCC analysis produced no frames; the input is too short"
+        ... + " or too quiet for a 25 ms analysis window."
+endif
+
 # Prefetch all features into pseudo-arrays so the network forward
 # pass doesn't repeatedly cross Praat's command boundary
 for i from 1 to nFrames
+    # v1.3: keep the analysis point inside the Sound. ceiling() gives
+    # enough RENDERING intervals, but the centre of the last one can
+    # sit past the end when the final remainder is under half a frame:
+    # at a 20 ms step and a 1.005 s source, frame 51 queries 1.0100 s,
+    # 5 ms beyond the audio. Every analysis then falls back to its
+    # default - intensity 60 dB, HNR -10, unvoiced, MFCC clamped to the
+    # last real frame - and that fabricated control point also anchors
+    # the ramp across the preceding interval. Clamped to half a frame
+    # inside the end, so the last control value is still measured from
+    # real audio.
     t = (i - 0.5) * frame_step_sec
-    
+    tMax = duration - frame_step_sec / 2
+    if tMax < 0
+        tMax = duration / 2
+    endif
+    if t > tMax
+        t = tMax
+    endif
+
     selectObject: intensity_obj
     iv = Get value at time: t, "cubic"
     if iv = undefined
@@ -382,7 +630,10 @@ for i from 1 to nFrames
     selectObject: hnr_obj
     hnr = Get value at time: t, "cubic"
     if hnr = undefined
-        hnr = 0
+        # v1.2 fix 7: undefined HNR means NO harmonicity. The old
+        # hnr = 0 became (0 + 10)/40 = 0.25 and partially activated
+        # the HNR detector on frames where the analysis had failed.
+        hnr = -10
     endif
     feat_hnr#[i] = max(0, min(1, (hnr + 10) / 40))
     
@@ -445,11 +696,26 @@ for i from 1 to nFrames
     # --- Build input vector x[1..30] ---
     # [1..13]: normalized MFCC
     for c from 1 to 13
+        # v1.2 fix 6: CLIP, do not merely scale. An MFCC of 90
+        # entered as 3.0 under the old "/30", far outside the range
+        # the hand-designed weights assume.
         x[c] = mfcc_buf[i, c] / 30
+        if x[c] > 1
+            x[c] = 1
+        endif
+        if x[c] < -1
+            x[c] = -1
+        endif
     endfor
     # [14..26]: normalized |delta-MFCC|
     for c from 1 to 13
         x[13 + c] = dmfcc_buf[i, c] / 30
+        if x[13 + c] > 1
+            x[13 + c] = 1
+        endif
+        if x[13 + c] < 0
+            x[13 + c] = 0
+        endif
     endfor
     # [27]: HNR norm
     x[27] = feat_hnr#[i]
@@ -556,36 +822,58 @@ for rep from 1 to number_of_repeats
     selectObject: sound_work
     delayed = Copy: "Delayed_" + string$(rep)
     
-    # Apply feedback filter
+    # v1.2 fix 4: the filter accumulates with tap index - one pass per
+    # round trip. v1.1 gave repeats 1-2 a single pass and everything
+    # from 3 up exactly two, so repeat 6 was no darker than repeat 3
+    # and Ambient Wash stopped evolving after the third echo.
     if enable_filter
-        selectObject: delayed
-        filtered = Filter (pass Hann band): 0, filter_cutoff_hz, filter_cutoff_hz * 0.1
-        removeObject: delayed
-        delayed = filtered
-        
-        if rep > 2
+        nPasses = rep
+        if nPasses > 6
+            nPasses = 6
+        endif
+        for pass from 1 to nPasses
             selectObject: delayed
-            filtered = Filter (pass Hann band): 0, filter_cutoff_hz * 0.8, filter_cutoff_hz * 0.1
+            filtered = Filter (pass Hann band): 0, filter_cutoff_hz, filter_cutoff_hz * 0.1
             removeObject: delayed
             delayed = filtered
-        endif
+        endfor
     endif
-    
-    # v1.1: per-frame gain = mix(t) * fb(t)^rep. Both MLP outputs
-    # are now live: v1.0 applied feedback_base^rep globally, so the
-    # network's feedback output modulated nothing.
+
+    # v1.2 CRITICAL 2: ramp the gain LINEARLY across each frame rather
+    # than holding it constant. v1.1 multiplied a whole 20 ms block by
+    # one number, so the envelope was a staircase - smoothing shrinks
+    # those jumps but does not remove them, and every jump on a
+    # non-zero sample is a discontinuity. Frame i now runs from g[i] to
+    # g[i+1] and frame i+1 begins exactly where it ended, so the
+    # envelope is continuous.
+    #
+    # v1.2 fix 5: exponent is rep-1, so Echo_level sets the FIRST echo
+    # and the decay only shapes the ones after it. v1.1 used rep, so
+    # Clean Digital's stated mix of 0.30 actually delivered
+    # 0.30 * 0.35 = 0.105.
     for i from 1 to nFrames
         t_start = (i - 1) * frame_step_sec
         t_end = i * frame_step_sec
         if t_end > duration
             t_end = duration
         endif
-        
-        gain_val = ctrl_mix_smooth#[i] * ctrl_fb_smooth#[i] ^ rep
-        gainStr$ = string$(gain_val)
-        
-        selectObject: delayed
-        Formula (part): t_start, t_end, 1, 1, "self * " + gainStr$
+
+        gain_a = ctrl_mix_smooth#[i] * ctrl_fb_smooth#[i] ^ (rep - 1)
+        if i < nFrames
+            gain_b = ctrl_mix_smooth#[i + 1] * ctrl_fb_smooth#[i + 1] ^ (rep - 1)
+        else
+            gain_b = gain_a
+        endif
+
+        segLen = t_end - t_start
+        if segLen > 1e-9
+            aStr$ = fixed$(gain_a, 9)
+            slopeStr$ = fixed$((gain_b - gain_a) / segLen, 9)
+            t0Str$ = fixed$(t_start, 9)
+            selectObject: delayed
+            Formula (part): t_start, t_end, 1, 1,
+                ... "self * (" + aStr$ + " + " + slopeStr$ + " * (x - " + t0Str$ + "))"
+        endif
     endfor
     
     # Add to output at delayed position.
@@ -606,8 +894,19 @@ endfor
 # FINALIZE
 # ============================================
 
+# v1.2 fix 11: a CONDITIONAL limiter. Running Scale peak
+# unconditionally normalised every result to the same peak, erasing
+# the level differences between presets and lifting a quiet input and
+# its noise floor along with it.
 selectObject: output
-Scale peak: 0.99
+outPeak = Get absolute extremum: 0, 0, "None"
+if outPeak > 0.99
+    selectObject: output
+    Scale peak: 0.99
+    appendInfoLine: "  Limiter engaged (peak was ", fixed$(outPeak, 3), ")"
+endif
+
+selectObject: output
 Rename: original_name$ + "_neuralMLP_" + presetName$
 outS = selected("Sound")
 
@@ -676,8 +975,8 @@ if draw_visualization
         ... original_name$
         ... + "  |  " + presetName$
         ... + "  |  delay " + fixed$(delay_time_ms, 0) + " ms x " + string$(number_of_repeats)
-        ... + "  |  fb base " + fixed$(feedback_base, 2)
-        ... + "  |  mix base " + fixed$(mix_base, 2)
+        ... + "  |  tap decay " + fixed$(tap_decay_base, 2)
+        ... + "  |  echo level " + fixed$(mix_base, 2)
         ... + "  |  " + filterStr$
     
     # ----------------------------------------------------------
