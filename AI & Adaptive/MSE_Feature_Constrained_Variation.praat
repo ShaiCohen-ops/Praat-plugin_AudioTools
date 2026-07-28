@@ -3,38 +3,183 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.5 (2026) - Clamped probabilities, exact duration, RNG reset
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.5 (2026):
+#
+#   This release exists because v1.4's changelog item 6 described fixes
+#   that were never written. The ceiling it added applies to
+#   currentIntensity; every per-transform multiplier is applied AFTER
+#   that, so nothing downstream was actually bounded.
+#
+#   CRITICAL - the derived grain probabilities were never clamped, and
+#     two built-in presets were destroying their own source material
+#     from the first iteration. Measured at each preset's INITIAL
+#     intensity:
+#       Granular  gi=1.500 -> swap 1.500, reverse 1.500, gate 1.050
+#       Extreme   gi=2.250 -> swap 2.250, reverse 2.250, gate 1.800
+#       Standard  gi=0.400 -> swap 0.160, reverse 0.120, gate 0.060
+#     With gate > 1 every grain is silenced and with reverse > 1 every
+#     grain is reversed first, so the granular layer was gone before
+#     the noise stage put anything back. swapProb, reverseProb and
+#     gateProb are now clamped to [0, 1]. THIS CHANGES GRANULAR AND
+#     EXTREME AUDIO - they now actually contain granular material.
+#
+#   2 - The spectral multiplier (1 + mutAmp * sin) still goes negative,
+#     and that is now a stated choice rather than an unnoticed one.
+#     Measured ranges at each preset's initial intensity:
+#       Standard  mutAmp 1.200 -> -0.20 .. 2.20
+#       Spectral  mutAmp 3.375 -> -2.38 .. 4.38
+#       Extreme   mutAmp 6.750 -> -5.75 .. 7.75
+#     Negative values invert the phase of the affected bins.
+#     allowSpectralInversion (script-level, near the top) selects:
+#     1 = keep them, which is what every existing render of Spectral
+#     and Extreme was made with, and the default; 0 = clamp mutAmp to
+#     0.95 so the multiplier stays positive.
+#
+#   3 - A sub-5 ms final remainder is MERGED into the preceding grain
+#     instead of being padded up to 5 ms. The grain arithmetic did
+#     overrun: a 0.161 s input at a 0.080 s grain gives 80 + 80 + 1 ms,
+#     the 1 ms tail was inflated to 5 ms, and the fragments summed to
+#     0.165 s.
+#     Measured end to end, though, the OUTPUT duration was correct in
+#     both versions - 0.16100 s either way - because the granular pass
+#     writes into a buffer pre-allocated at the source length, so the
+#     extra 4 ms was clipped rather than appended. The real symptom was
+#     therefore a duplicated ~5 ms fragment overlapping the end of the
+#     buffer, not a duration error. Merging removes the duplicate and
+#     makes the grain arithmetic honest.
+#
+#   4 - The RNG is returned to its safe state once all random
+#     processing is done. v1.4 seeded it and never reset, leaving every
+#     later script in the same Praat session running from a predictable
+#     global sequence.
+#
+#   5 - The dead-dimension rationale is restated. Excluding a dimension
+#     with near-zero source mean and variance is a NORMALISATION
+#     decision, not a claim that the dimension is uninformative: a
+#     steady tone's zero spectral flux is meaningful, and excluding it
+#     makes the metric blind to a transformation that introduces flux.
+#     That blind spot is the accepted cost of stable normalisation.
+#
+# Changelog v1.4 (2026):
+#
+#   CRITICAL 1 - the reported distance was not the delivered file's
+#     distance. Candidates were measured, the best was chosen, and
+#     THEN Scale peak 0.95 was applied. Band energies, spectral flux
+#     and several MFCC coefficients all scale with gain, so the file
+#     the user receives sits at a different distance from the one
+#     printed. Measured on a source peaking at 0.60: Scale peak 0.95
+#     multiplied its energy by 2.51x - after the distance had been
+#     fixed. v1.4 normalises the source AND every candidate to the
+#     same peak BEFORE feature extraction, so the measured object and
+#     the delivered object are the same object at the same gain. The
+#     final Scale peak is gone.
+#
+#   CRITICAL 2 - degenerate dimensions could still decide the result.
+#     v1.3's relative floor, (2% of |mean|)^2, does nothing when the
+#     mean is ALSO zero - a steady tone's spectral flux, or a band
+#     that is empty at this sample rate. The 10-sigma cap then bounds
+#     the term but does not make it small: one saturated statistic
+#     contributes 10^2 / 38 = 2.6316 to the distance, which is 263% of
+#     the Standard target (1.0), 175% of Granular (1.5) and 658% of
+#     Subtle (0.4). One dead dimension could push every iteration past
+#     the target band on its own. v1.4 detects dimensions that carry
+#     no usable NORMALISER in the original (variance and mean both
+#     below an absolute floor), EXCLUDES them from the sum, and divides
+#     by the number of statistics actually used. Excluded dimensions
+#     are reported. Note this is a normalisation decision, not a claim
+#     that such a dimension is uninformative: a steady tone's zero
+#     spectral flux is meaningful, and excluding it makes the metric
+#     blind to a transformation that introduces flux. The blind spot is
+#     the accepted cost of stable normalisation.
+#
+#   CRITICAL 3 - the metric is a bag-of-frames timbral descriptor and
+#     is now described as one. Despite the "50 frames x 19 dimensions
+#     = 950 features" line, the distance reduces each dimension to its
+#     mean and variance: 19 x 2 = 38 numbers. Both statistics are
+#     invariant to frame order - verified on a toy dimension, where
+#     reordering left mean and variance identical to six decimals - so
+#     granular reordering and grain reversal are very nearly free,
+#     while a small overall gain or energy change moves the distance a
+#     great deal. That is a legitimate constraint to compose against,
+#     but it constrains TIMBRAL DISTRIBUTION, not amount of structural
+#     variation, and the header and report now say so. Adding
+#     order-sensitivity (delta-MFCC statistics, onset density, envelope
+#     autocorrelation) would need the fixed 19-slot layout reworked and
+#     every preset target recalibrated; that is a redesign, not a fix,
+#     and is deliberately NOT smuggled in here.
+#
+#   4 - Random_seed added (0 = unpredictable), and the search is
+#     described for what it is. Each iteration redraws every swap,
+#     reversal, gate, tilt, burst and pitch perturbation from scratch,
+#     so consecutive iterations differ by BOTH the intensity change and
+#     a fresh random realisation. The distance is therefore not a
+#     monotone function of intensity and the "convergence" plot is a
+#     stochastic search trace, not a descent curve. A measured 12-step
+#     run against a target of 1.0 went
+#       19.75, 22.99, 22.46, 18.39, 20.08, 17.29,
+#       13.73, 13.00,  6.40,  2.39,  8.86,  7.18
+#     - a clear downward trend with the distance nearly quadrupling
+#     again at step 11. bestSound keeps the closest candidate
+#     regardless, so the result is sound; the shape of the curve is
+#     not evidence of convergence, and should not be read as such.
+#
+#   5 - Short inputs no longer get phantom grains. nGrains was forced
+#     to at least 3: at a 0.08 s grain size, a 0.10 s or 0.14 s input
+#     produced three intervals of which one started PAST the end of
+#     the source, yielding a duplicate 5 ms fragment and breaking the
+#     "duration preserved" contract. Now max(1, ceiling(...)).
+#
+#   6 - Intensity is bounded: the controller no longer raises it
+#     without an upper limit, and the run reports when it is pinned at
+#     Maximum_intensity.
+#     CORRECTION (v1.5): this item ALSO claimed the derived
+#     probabilities were clamped and the spectral multiplier was kept
+#     positive. Neither was written. The ceiling applies to
+#     currentIntensity, but every per-transform multiplier is applied
+#     after it, so the derived values were still unbounded. See the
+#     v1.5 entry.
+#
+#   7 - "Intensity contrast expansion" renamed Intensity contrast expansion.
+#     It compares local intensity to the mean and scales gain
+#     accordingly - dynamic-range expansion. No derivative, onset or
+#     attack is computed anywhere in it.
+#
+#   8 - Band edges and the Mel ceiling follow Nyquist. Band 4 started
+#     at a hardcoded 5000 Hz: at an 8 kHz sample rate (Nyquist 4000)
+#     the whole band sat above Nyquist and contributed a dead
+#     dimension - exactly the kind that CRITICAL 2 lets dominate.
+#
+#   9 - A silent input is rejected up front rather than being analysed
+#     into degenerate dimensions and handed to peak normalisation.
+#
+#   10 - Output is MONO by design; multichannel input is summed before
+#     analysis and rendering. This was never stated.
+#
+#   ON THE GRAIN JOINS (documented, not changed): every granular grain
+#   gets its own fade-in and fade-out and the grains are laid end to
+#   end with NO overlap, so each join passes through zero. At the
+#   Standard settings that is roughly a 14 ms dip every 88 ms - audible
+#   periodic scalloping that is part of this effect's sound, and part
+#   of the measured distance, whether or not any reordering happened.
+#   The same applies to the spectral-mutation segment joins. Converting
+#   to overlap-add would change every preset's character and its
+#   calibration; it is left alone deliberately and noted here so it is
+#   not mistaken for a defect.
+#
 # Changelog v1.3 (2026):
-#   - FIX: zero-variance feature dimensions exploded the distance.
-#     The var-diff normalizer (origVar + 1e-12) turns a single
-#     constant dimension in the original (steady tones, silence-
-#     padded material) into a ~1e11 term that drowns the other 18
-#     dimensions -- the loop then reads "too different" forever and
-#     never converges. Two-part fix: (a) both normalizers use a
-#     RELATIVE floor, (2% of |mean|)^2 + 1e-12; (b) each dimension's
-#     z contribution is capped at +/-10 sigma, so the distance is
-#     bounded by 100 and degenerate dimensions saturate instead of
-#     dominating. Healthy dimensions are unaffected (calibration
-#     preserved).
-#   - FIX: granular pass discarded the tail remainder (up to one
-#     grain, ~30-60 ms) every iteration -- floor -> ceiling on the
-#     grain count, honouring the "duration preserved" contract.
-#   - FIX: N_mfcc_coeffs is locked to 12. The 19-dim feature layout
-#     hardcodes harmonicity at slot 13, bands at 14-17, centroid 18,
-#     flux 19; other values silently corrupted the vector (dead
-#     dims below 12, or MFCC c13 overwriting the harmonicity slot).
-#   - ADDED: T5 skips the PSOLA round-trip entirely when the pitch
-#     tier has zero points (fully unvoiced input) -- it changed
-#     nothing and only added resynthesis coloration. (Verified on
-#     Praat 6.4.42 that the empty tier itself is not a crash.)
-#   - ADDED: Play_result form gate (library consistency; Play was
-#     unconditional).
-#   - FIX: info header erased itself (repeated writeInfoLine).
-#   - FIX: noise-burst placement used a reversed randomUniform
-#     range for inputs shorter than one burst.
+#   - FIX: zero-variance feature dimensions exploded the distance;
+#     relative floor plus a +/-10 sigma cap per dimension.
+#   - FIX: granular pass discarded the tail remainder (floor ->
+#     ceiling on the grain count).
+#   - FIX: N_mfcc_coeffs locked to 12 (the 19-dim layout depends on it).
+#   - ADDED: T5 skips the PSOLA round-trip on fully unvoiced input.
+#   - ADDED: Play_result form gate.
+#   - FIX: info header erased itself; noise-burst placement used a
+#     reversed randomUniform range for very short inputs.
 #
 # Description:
 #   Feature-constrained experimental sound variation using
@@ -44,6 +189,16 @@
 #   spectral/temporal transformations until the transformed
 #   sound reaches a target normalized distance band from the
 #   original.
+#
+#   THE DISTANCE IS A BAG-OF-FRAMES TIMBRAL-STATISTICS DISTANCE.
+#   Each of the 19 dimensions is reduced to its mean and variance
+#   across frames (38 numbers). Both are invariant to frame ORDER, so
+#   reordering and reversal register only weakly, while overall gain
+#   and energy changes register strongly. Use it to constrain timbral
+#   distribution, not to measure how much structural variation a
+#   result contains.
+#
+#   Output is MONO. Multichannel input is summed before analysis.
 #
 #   Preserves: overall duration (structural anchor)
 #   Transforms: granular reorder/reverse/gate, segment-wise
@@ -94,11 +249,18 @@ endif
 originalSound = selected("Sound")
 originalName$ = selected$("Sound")
 
+# v1.4 fix 9: a silent input analyses into degenerate dimensions and
+# then reaches peak normalisation with a peak of zero.
+selectObject: originalSound
+srcPeakCheck = Get absolute extremum: 0, 0, "None"
+if srcPeakCheck < 1e-6
+    exitScript: "The selected Sound is silent (or near-silent); nothing to vary."
+endif
+
 # ============================================================
 # FORM
 # ============================================================
-form MSE Feature-Constrained Variation v1.3
-    comment === Preset ===
+form MSE Feature-Constrained Variation v1.5
     optionmenu Preset: 2
         option Subtle (spectral drift only)
         option Standard (balanced)
@@ -106,26 +268,51 @@ form MSE Feature-Constrained Variation v1.3
         option Spectral (timbral destruction)
         option Extreme (full disruption)
         option Custom
-    comment === Distance Control (Custom only) - z-score normalized ===
     positive Target_distance 1.0
     positive Tolerance 0.25
     natural Max_iterations 15
-    comment === Intensity (Custom only) ===
     positive Initial_intensity 0.8
     positive Intensity_step 0.2
-    comment === Analysis ===
+    positive Maximum_intensity 3.0
     natural N_analysis_frames 50
-    natural N_mfcc_coeffs 12
-    comment (MFCC count is locked to 12 - the 19-dim feature layout depends on it)
-    comment === Transform Params (Custom only) ===
     natural N_mut_segments 6
     positive Noise_level 0.02
     positive Tilt_scale 2.0
     positive Seg_emph_scale 1.5
-    comment === Output ===
+    integer Random_seed 0
     boolean Show_visualization 1
     boolean Play_result 1
 endform
+
+# ------------------------------------------------------------
+# SCRIPT-LEVEL SETTING
+# ------------------------------------------------------------
+# MFCC count is LOCKED to 12: the 19-dimension feature layout puts
+# harmonicity at slot 13, the four bands at 14-17, centroid at 18 and
+# flux at 19. Any other value corrupts the vector.
+n_mfcc_coeffs = 12
+
+# Spectral-mutation multiplier is (1 + mutAmp * sin(...)). Once mutAmp
+# passes 1 the multiplier goes negative on part of its cycle, flipping
+# the phase of those bins. That is audible destruction and it is what
+# the Spectral and Extreme presets have always done.
+#   1 = keep the inversions (default; preserves existing preset audio)
+#   0 = clamp mutAmp to 0.95, so the multiplier stays positive
+allowSpectralInversion = 1
+
+# Everything except Preset, Random_seed and the two output toggles is
+# read only when Preset = Custom. Random_seed: 0 = unpredictable.
+
+# v1.4 fix 4: reproducibility. Every iteration redraws all of its
+# swaps, reversals, gates, tilts, bursts and pitch perturbations, so
+# without a seed no successful take could be recovered.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
+endif
 
 # ============================================================
 # APPLY PRESETS
@@ -327,22 +514,56 @@ sampleRate = Get sampling frequency
 numChannels = Get number of channels
 nyquist = sampleRate / 2
 
-# Sub-band boundaries
+# Sub-band boundaries.
+# v1.4 fix 8: every edge follows Nyquist. Band 4 used to start at a
+# hardcoded 5000 Hz, so at an 8 kHz sample rate (Nyquist 4000) the
+# entire band sat above Nyquist and produced a dead dimension - and a
+# dead dimension is exactly what CRITICAL 2 lets dominate.
 band1lo = 0
 band1hi = 500
 band2lo = 500
 band2hi = 2000
 band3lo = 2000
-band3hi = 5000
 band4lo = 5000
+if band4lo > nyquist * 0.75
+    band4lo = nyquist * 0.75
+endif
+if band4lo < band3lo + 100
+    band3lo = band4lo / 2.5
+    if band3lo < band2hi + 50
+        band2hi = band3lo - 50
+        if band2hi < band2lo + 50
+            band2hi = band2lo + 50
+            band3lo = band2hi + 50
+        endif
+    endif
+endif
+band3hi = band4lo
 band4hi = nyquist - 10
-if band4hi < band4lo + 100
-    band4hi = band4lo + 100
+if band4hi < band4lo + 50
+    band4hi = band4lo + 50
+endif
+if band4hi > nyquist
+    band4hi = nyquist
+endif
+
+band1center = (band1lo + band1hi) / 2
+band2center = (band2lo + band2hi) / 2
+band3center = (band3lo + band3hi) / 2
+band4center = (band4lo + band4hi) / 2
+
+# Mel ceiling must also stay under Nyquist
+melMax = 5000
+if melMax > nyquist - 100
+    melMax = nyquist - 100
+endif
+if melMax < 500
+    melMax = 500
 endif
 
 clearinfo
 writeInfoLine: "=============================================="
-appendInfoLine: "  MSE Feature-Constrained Variation v1.3"
+appendInfoLine: "  MSE Feature-Constrained Variation v1.5"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", originalName$,
@@ -364,6 +585,19 @@ else
     monoBase = Copy: "mono_base"
 endif
 
+# v1.4 CRITICAL 1: fix the gain ONCE, before any feature is measured.
+# v1.3 measured candidates, chose the best, and only then applied
+# Scale peak 0.95 - but band energies, spectral flux and several MFCC
+# coefficients scale with gain, so the delivered file sat at a
+# different distance from the one reported. Measured on a source
+# peaking at 0.60, Scale peak 0.95 multiplied its energy by 2.51x,
+# after the distance had been decided. Normalising the source and
+# every candidate to the same peak makes the measured object and the
+# delivered object identical.
+analysisPeak = 0.95
+selectObject: monoBase
+Scale peak: analysisPeak
+
 # ============================================================
 # STEP 1: Extract features from original (bag-of-frames)
 # ============================================================
@@ -371,7 +605,7 @@ appendInfoLine: "[1/4] Extracting original features..."
 
 # MFCC analysis
 selectObject: monoBase
-To MelSpectrogram: 0.025, 0.01, 24, 100, 5000
+To MelSpectrogram: 0.025, 0.01, 24, 100, melMax
 origMelSpec = selected("MelSpectrogram")
 To MFCC: nMfccCoeffs
 origMfcc = selected("MFCC")
@@ -457,8 +691,7 @@ for af from 1 to nAnalysisFrames
     origDimSqSum_17 = origDimSqSum_17 + e4 * e4
 
     totalE = e1 + e2 + e3 + e4 + 1e-10
-    band4center = (band4lo + band4hi) / 2
-    centroid = (250 * e1 + 1250 * e2 + 3500 * e3 + band4center * e4) / totalE
+    centroid = (band1center * e1 + band2center * e2 + band3center * e3 + band4center * e4) / totalE
     origDimSum_18 = origDimSum_18 + centroid
     origDimSqSum_18 = origDimSqSum_18 + centroid * centroid
 
@@ -490,6 +723,27 @@ endfor
 
 totalStats = nFeatPerFrame * 2
 
+# v1.4 CRITICAL 2: mark dimensions the original never varies in, and
+# whose level is also ~0. Such a dimension cannot report how far a
+# variation has travelled; including it let a single saturated
+# statistic contribute 2.6316 - more than the whole Standard target.
+deadVarFloor = 1e-10
+deadMeanFloor = 1e-6
+nDeadDims = 0
+deadList$ = ""
+for d from 1 to nFeatPerFrame
+    dimIsDead_'d' = 0
+    if origVar_'d' < deadVarFloor and abs(origMean_'d') < deadMeanFloor
+        dimIsDead_'d' = 1
+        nDeadDims = nDeadDims + 1
+        deadList$ = deadList$ + " " + string$(d)
+    endif
+endfor
+if nDeadDims > 0
+    appendInfoLine: "  ", nDeadDims, " dimension(s) carry no information in the",
+        ... " original and are excluded from the distance:", deadList$
+endif
+
 appendInfoLine: "  Bag-of-frames statistics: ", totalStats, " values"
 appendInfoLine: "  (", nFeatPerFrame, " dims x {mean, var} over ", nAnalysisFrames, " frames)"
 appendInfoLine: ""
@@ -501,6 +755,16 @@ appendInfoLine: "[2/4] Iterative transformation..."
 
 currentIntensity = initialIntensity
 bestMse = -1
+
+# v1.4 fix 6: bound the controller. v1.3 raised intensity without a
+# ceiling, so gate and reverse probabilities could pass 1 (every grain
+# silenced or reversed), the spectral multiplier could go negative and
+# the noise level could grow without limit.
+maximumIntensity = maximum_intensity
+if maximumIntensity < initialIntensity
+    maximumIntensity = initialIntensity
+endif
+intensityPinned = 0
 bestSound = 0
 converged = 0
 nIterationsRun = 0
@@ -531,9 +795,15 @@ for iter from 1 to maxIterations
             # tail remainder (up to one grain) every granular pass,
             # violating the "duration preserved" contract by ~30-60 ms
             # per run. The last grain is clipped to totalDur below.
+            # v1.4 fix 5: do NOT invent grains. Forcing a minimum of
+            # 3 meant that at a 0.08 s grain size a 0.10 s or 0.14 s
+            # input got three intervals, one of which started past the
+            # end of the source - a duplicated 5 ms fragment and a
+            # broken "duration preserved" contract. Swaps, reversal
+            # and gating all work fine with one or two grains.
             nGrains = ceiling(totalDur / grainDur)
-            if nGrains < 3
-                nGrains = 3
+            if nGrains < 1
+                nGrains = 1
             endif
             
             for gi from 1 to nGrains
@@ -543,10 +813,55 @@ for iter from 1 to maxIterations
                     grainEnd_'gi' = totalDur
                 endif
             endfor
+
+            # v1.5: MERGE a sub-5 ms final remainder into the grain
+            # before it, rather than padding it up to 5 ms. Measured:
+            # a 0.161 s input at a 0.080 s grain gives 80 + 80 + 1 ms,
+            # and the 1 ms tail was inflated to 5 ms - a 0.165 s output
+            # from a 0.161 s input, breaking "duration preserved" by
+            # exactly the amount that was invented.
+            if nGrains > 1
+                lastLen = grainEnd_'nGrains' - grainStart_'nGrains'
+                if lastLen < 0.005
+                    prevG = nGrains - 1
+                    grainEnd_'prevG' = grainEnd_'nGrains'
+                    nGrains = nGrains - 1
+                endif
+            endif
             
+            # v1.5 CRITICAL: clamp the derived probabilities to [0, 1].
+            # v1.4's changelog claimed this and it was never written -
+            # only currentIntensity was capped, which does nothing here
+            # because the per-transform multiplier is applied
+            # afterwards. Measured at each preset's INITIAL intensity:
+            #   Granular  gi=1.500 -> swap 1.500, reverse 1.500, gate 1.050
+            #   Extreme   gi=2.250 -> swap 2.250, reverse 2.250, gate 1.800
+            #   Standard  gi=0.400 -> swap 0.160, reverse 0.120, gate 0.060
+            # So from their very first iteration Granular and Extreme
+            # reversed EVERY grain and then gated every grain to
+            # silence: the granular layer was gone before the noise
+            # stage put anything back.
             swapProb = gi_intensity * swapScale
+            if swapProb < 0
+                swapProb = 0
+            endif
+            if swapProb > 1
+                swapProb = 1
+            endif
             reverseProb = gi_intensity * reverseScale
+            if reverseProb < 0
+                reverseProb = 0
+            endif
+            if reverseProb > 1
+                reverseProb = 1
+            endif
             gateProb = gi_intensity * gateScale
+            if gateProb < 0
+                gateProb = 0
+            endif
+            if gateProb > 1
+                gateProb = 1
+            endif
             
             for gi from 1 to nGrains
                 grainOrder_'gi' = gi
@@ -711,7 +1026,29 @@ for iter from 1 to maxIterations
                 
                 mutPhase = randomUniform(0, 6.2832)
                 mutFreq = randomUniform(2, 12)
+                # v1.5: the spectral multiplier (1 + mutAmp * sin) goes
+                # NEGATIVE once mutAmp exceeds 1, inverting the phase of
+                # the affected bins. v1.4's changelog wrongly claimed
+                # Maximum_intensity prevented this; it does not, because
+                # segEmphScale is applied afterwards. Measured ranges at
+                # each preset's initial intensity:
+                #   Standard  mutAmp 1.200 -> -0.20 .. 2.20
+                #   Spectral  mutAmp 3.375 -> -2.38 .. 4.38
+                #   Extreme   mutAmp 6.750 -> -5.75 .. 7.75
+                # allowSpectralInversion (set near the top of the file)
+                # decides. The default KEEPS the inversions, because
+                # they are what every existing render of Spectral and
+                # Extreme was made with; set it to 0 for a positive-only
+                # multiplier bounded at 0.95.
                 mutAmp = sm_intensity * segEmphScale
+                if allowSpectralInversion = 0
+                    if mutAmp > 0.95
+                        mutAmp = 0.95
+                    endif
+                endif
+                if mutAmp < 0
+                    mutAmp = 0
+                endif
                 mutPhStr$ = fixed$(mutPhase, 8)
                 mutFrStr$ = fixed$(mutFreq, 8)
                 mutAmpStr$ = fixed$(mutAmp, 8)
@@ -768,7 +1105,7 @@ for iter from 1 to maxIterations
         endif
         
         # =============================================
-        # T3: Transient exaggeration / suppression
+        # T3: Intensity contrast expansion / suppression
         # =============================================
         if useTransientExagg
             te_intensity = currentIntensity * transientMult
@@ -827,10 +1164,10 @@ for iter from 1 to maxIterations
             
             removeObject: workCopy, workIntensity
             
-            appendInfoLine: "    T3 Transient exagg: ", fixed$(exaggeration, 3),
+            appendInfoLine: "    T3 Intensity contrast exagg: ", fixed$(exaggeration, 3),
                 ... " (x", fixed$(transientMult, 1), ")"
         else
-            appendInfoLine: "    T3 Transient exagg: OFF"
+            appendInfoLine: "    T3 Intensity contrast exagg: OFF"
         endif
         
         # =============================================
@@ -981,8 +1318,19 @@ for iter from 1 to maxIterations
         # =============================================
         # FEATURE EXTRACTION from transformed
         # =============================================
+        # v1.4 CRITICAL 1: bring the candidate to the SAME peak the
+        # original was analysed at, before measuring it. This is the
+        # gain the candidate keeps, so the reported distance is the
+        # distance of the delivered file.
         selectObject: workingSound
-        To MelSpectrogram: 0.025, 0.01, 24, 100, 5000
+        candPeak = Get absolute extremum: 0, 0, "None"
+        if candPeak > 1e-9
+            selectObject: workingSound
+            Scale peak: analysisPeak
+        endif
+
+        selectObject: workingSound
+        To MelSpectrogram: 0.025, 0.01, 24, 100, melMax
         transMelSpec = selected("MelSpectrogram")
         To MFCC: nMfccCoeffs
         transMfcc = selected("MFCC")
@@ -1066,8 +1414,7 @@ for iter from 1 to maxIterations
             transDimSqSum_17 = transDimSqSum_17 + e4 * e4
 
             totalE = e1 + e2 + e3 + e4 + 1e-10
-            band4center = (band4lo + band4hi) / 2
-            centroid = (250 * e1 + 1250 * e2 + 3500 * e3 + band4center * e4) / totalE
+            centroid = (band1center * e1 + band2center * e2 + band3center * e3 + band4center * e4) / totalE
             transDimSum_18 = transDimSum_18 + centroid
             transDimSqSum_18 = transDimSqSum_18 + centroid * centroid
 
@@ -1116,6 +1463,7 @@ for iter from 1 to maxIterations
         # healthy dimensions untouched (std >> 2% of mean), so the
         # v1.2 calibration is preserved.
         mseSum = 0
+        usedStats = 0
         for d from 1 to nFeatPerFrame
             transMean = transDimSum_'d' / nAnalysisFrames
             transVar = transDimSqSum_'d' / nAnalysisFrames - transMean * transMean
@@ -1124,36 +1472,57 @@ for iter from 1 to maxIterations
             endif
 
             origVarD = origVar_'d'
-            varFloor = (0.02 * abs(origMean_'d'))^2 + 1e-12
-            
-            diffMean = origMean_'d' - transMean
-            normMeanDiff = diffMean / sqrt(origVarD + varFloor)
-            # v1.3: cap each z contribution at +/-10 sigma. The
-            # z-metric is legitimately unbounded when the original
-            # has (near-)zero variance in a dimension; capping keeps
-            # degenerate dimensions from dominating (they saturate at
-            # 100 per stat instead of 1e11) while leaving healthy
-            # dimensions untouched. Distance stays interpretable and
-            # bounded by 100.
-            if normMeanDiff > 10
-                normMeanDiff = 10
-            endif
-            if normMeanDiff < -10
-                normMeanDiff = -10
-            endif
-            mseSum = mseSum + normMeanDiff * normMeanDiff
 
-            diffVar = origVarD - transVar
-            normVarDiff = diffVar / (origVarD + varFloor)
-            if normVarDiff > 10
-                normVarDiff = 10
+            # v1.4 CRITICAL 2: skip dimensions that carry no
+            # information in the ORIGINAL. v1.3's relative floor,
+            # (2% of |mean|)^2, does nothing when the mean is also
+            # zero - a steady tone's spectral flux, or a band that is
+            # empty at this sample rate. The 10-sigma cap bounded such
+            # a term but did not make it small: one saturated
+            # statistic contributes 10^2 / 38 = 2.6316, which is 263%
+            # of the Standard target, 175% of Granular and 658% of
+            # Subtle. A dimension the original never varies in cannot
+            # say anything about how far a variation has moved, so it
+            # is excluded and the denominator shrinks with it.
+            #
+            # v1.5, more precisely: this is a normalisation decision,
+            # not a claim that such a dimension holds no information.
+            # A steady tone's spectral flux of 0 IS meaningful, and if a
+            # transformation introduces large flux, excluding the
+            # dimension makes the metric blind to exactly that change.
+            # Dimensions with near-zero source mean AND variance are
+            # deliberately ignored because normalising by them is
+            # unstable - the blind spot is the accepted cost.
+            if dimIsDead_'d' = 0
+                varFloor = (0.02 * abs(origMean_'d'))^2 + 1e-12
+
+                diffMean = origMean_'d' - transMean
+                normMeanDiff = diffMean / sqrt(origVarD + varFloor)
+                if normMeanDiff > 10
+                    normMeanDiff = 10
+                endif
+                if normMeanDiff < -10
+                    normMeanDiff = -10
+                endif
+                mseSum = mseSum + normMeanDiff * normMeanDiff
+                usedStats = usedStats + 1
+
+                diffVar = origVarD - transVar
+                normVarDiff = diffVar / (origVarD + varFloor)
+                if normVarDiff > 10
+                    normVarDiff = 10
+                endif
+                if normVarDiff < -10
+                    normVarDiff = -10
+                endif
+                mseSum = mseSum + normVarDiff * normVarDiff
+                usedStats = usedStats + 1
             endif
-            if normVarDiff < -10
-                normVarDiff = -10
-            endif
-            mseSum = mseSum + normVarDiff * normVarDiff
         endfor
-        mse = mseSum / totalStats
+        if usedStats < 1
+            usedStats = 1
+        endif
+        mse = mseSum / usedStats
         mseHistory_'iter' = mse
 
         appendInfoLine: "    Distance: ", fixed$(mse, 4),
@@ -1199,8 +1568,16 @@ for iter from 1 to maxIterations
 
             if mse < loBound
                 currentIntensity = currentIntensity + intensityStep
+                if currentIntensity > maximumIntensity
+                    currentIntensity = maximumIntensity
+                    intensityPinned = 1
+                endif
                 appendInfoLine: "    -> Too similar, intensity +",
                     ... fixed$(intensityStep, 2)
+                if intensityPinned
+                    appendInfoLine: "       (pinned at Maximum_intensity ",
+                        ... fixed$(maximumIntensity, 2), ")"
+                endif
             else
                 halfStep = intensityStep * 0.5
                 currentIntensity = currentIntensity - halfStep
@@ -1227,8 +1604,16 @@ appendInfoLine: ""
 # ============================================================
 appendInfoLine: "[3/4] Finalizing..."
 
+# v1.4 CRITICAL 1: NO gain change here. The candidate was normalised
+# to analysisPeak before it was measured, so bestMse is genuinely the
+# distance of this object. v1.3 rescaled at this point and reported a
+# figure that belonged to a different gain.
+# v1.5: hand Praat's generator back to its safe state. v1.4 seeded it
+# and never reset, so every later script in the same session continued
+# from a predictable global sequence.
+random_initializeSafelyAndUnpredictably ()
+
 selectObject: bestSound
-Scale peak: 0.95
 Rename: originalName$ + "_experimental"
 finalOutput = selected("Sound")
 finalDur = Get total duration
@@ -1237,7 +1622,18 @@ removeObject: monoBase
 
 appendInfoLine: "  Output: ", originalName$, "_experimental"
 appendInfoLine: "  Duration: ", fixed$(finalDur, 2), " s"
-appendInfoLine: "  Final distance (z-score): ", fixed$(bestMse, 4)
+appendInfoLine: "  Final distance (z-score): ", fixed$(bestMse, 4),
+    ... "  [measured on this exact output]"
+appendInfoLine: "  Metric: bag-of-frames timbral statistics (mean + variance"
+appendInfoLine: "          per dimension); insensitive to frame ORDER."
+if nDeadDims > 0
+    appendInfoLine: "  ", nDeadDims, " of ", nFeatPerFrame,
+        ... " dimensions carried no information in the original and were excluded."
+endif
+if intensityPinned
+    appendInfoLine: "  ! The controller hit Maximum_intensity (",
+        ... fixed$(maximumIntensity, 2), ") and could go no further."
+endif
 appendInfoLine: ""
 
 # ============================================================
@@ -1257,7 +1653,7 @@ if show_visualization = 1
     endif
     
     selectObject: finalVizMono
-    To MelSpectrogram: 0.025, 0.01, 24, 100, 5000
+    To MelSpectrogram: 0.025, 0.01, 24, 100, melMax
     vizMelSpec = selected("MelSpectrogram")
     To MFCC: nMfccCoeffs
     vizMfcc = selected("MFCC")
@@ -1333,8 +1729,7 @@ if show_visualization = 1
         vizDimSum_17 = vizDimSum_17 + e4
         
         totalE = e1 + e2 + e3 + e4 + 1e-10
-        band4center = (band4lo + band4hi) / 2
-        centroid = (250 * e1 + 1250 * e2 + 3500 * e3 + band4center * e4) / totalE
+        centroid = (band1center * e1 + band2center * e2 + band3center * e3 + band4center * e4) / totalE
         vizDimSum_18 = vizDimSum_18 + centroid
         
         if af > 1
@@ -1368,7 +1763,7 @@ if show_visualization = 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.6, "half",
-        ... "##MSE Feature-Constrained Variation v1.3##"
+        ... "##MSE Feature-Constrained Variation v1.5##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.6, "half",
