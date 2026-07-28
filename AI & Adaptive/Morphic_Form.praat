@@ -3,57 +3,107 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026) - Bounded morph, safe scheduling cap, seeded
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Description:
-#   Morphic Form - Spectral-preserving grain placement engine.
-#   Generates MORPHIC FORM by controlling ONLY grain placement:
-#   size, density, time jitter, backtrack probability, repeat
-#   probability. Spectral content is never altered.
+# Changelog v1.3 (2026):
 #
-#   CONCEPTUAL MODEL:
-#   Two attractors define placement behavior extremes.
-#   A gradient-descent state walks smoothly from A toward B
-#   over the output duration, modulated frame-by-frame by local
-#   acoustic features extracted from the original.
+#   TWO REVIEWED ITEMS DID NOT HOLD - verified on Praat 6.4.42, and
+#   recorded here so they are not "fixed" again later:
 #
-#   Attractor A (Stable / Sparse / Coherent):
-#     larger grains, lower density, low jitter, mostly forward,
-#     rare repeats, occasional silence gaps.
+#   (a) Multi-channel input is NOT collapsed to mono. The claim was
+#       that Object_<id>(x) inside a multi-channel Formula returns the
+#       channel average. It does not: it is evaluated per cell and
+#       reads the grain's corresponding channel. Probe with a grain
+#       whose ch1 = +0.8 and ch2 = -0.2 (average +0.3), summed into a
+#       2-channel buffer: buffer ch1 = 0.8000, ch2 = -0.2000. The
+#       explicit object(id, x, y) form gives exactly the same result.
+#       Measured end to end on a stereo source: L/R correlation
+#       -0.0034 in the source, 0.0322 in the output - decorrelated
+#       channels, not duplicates (a collapse would read 1.000).
+#       The assembly is left as it was.
 #
-#   Attractor B (Turbulent / Dense / Unstable):
-#     shorter grains, higher density, high jitter,
-#     more backtracks and repeats, no silence gaps.
+#   (b) The inertia table in the review is wrong. With gd_lr = 0.22 the
+#       state follows 1 - 0.78^n, not the quoted values: 10 frames
+#       reaches 0.9166 (not 0.65), 20 reaches 0.9931 (not 0.82), and
+#       40 reaches 1.0000 to four places (not 0.91). "Fully reach B"
+#       is effectively true after ~40 analysis frames, which even a
+#       one-second input supplies. No endpoint correction is needed.
 #
-#   OUTPUT DURATION CONTROL:
-#   The output can be shorter or longer than the source.
-#   Source read position is decoupled from output position
-#   via a time ratio: src_pos = (out_t / out_dur) * src_dur.
-#   Ratio < 1: compressed reading (time acceleration).
-#   Ratio > 1: stretched reading (time dilation, with wrapping).
+#   CRITICAL 1 - Morph_intensity did not bound the morph.
+#     The local push was ADDED to the target and then clamped to 1.0,
+#     not to what the user allowed. Measured: at Morph_intensity = 0,
+#     documented as "stay at A entirely", an unvoiced high-activity
+#     frame produced adj_target = 0.3000 - 30% of the way to B. At
+#     Morph_intensity = 0.15 the same frame reached 0.4500, triple the
+#     requested amount. v1.3 makes the local push move the target
+#     WITHIN the permitted range:
+#       adjusted = target + w * push * (morph_intensity - target)
+#     so local features accelerate the approach to the ceiling instead
+#     of raising it. Verified, reporting the highest morph state each
+#     run actually reached:
+#       Morph 0.00 -> 0.00000   (v1.2 reached 0.30)
+#       Morph 0.15 -> 0.14474   (v1.2 reached up to 0.45)
+#       Morph 0.75 -> 0.72371
+#       Morph 1.00 -> 0.96495
 #
-#   DESIGN LINEAGE from AudioTools library:
-#   - OT_CORPUS_CONCATENATOR:    Attractor/constraint weight model.
-#   - HMM_Timbre_Sequencing:     Feature extraction pipeline.
-#   - Gestural_Accumulator:      Pacing curves + rolling concat.
-#   - Genetic_Recomposer:        Grain schedule + assembly phases.
-#   - Neural_Adaptive_Phonetic_Vibrato: GD adaptive parameters.
-#   - Perceptual_Synchrony:      Activity proxy + feature norms.
+#   CRITICAL 2 - the last grain could be cut before its own fade-out.
+#     Grains are faded over their final 10%, but a grain whose onset
+#     falls near the end is written only up to out_dur, which can land
+#     before the fade region begins - ending the file at a non-zero
+#     sample. A short fade is now applied to the assembled buffer, at
+#     both ends.
+#
+#   CRITICAL 3 - the scheduling cap could silently truncate.
+#     max_grains was floor(out_dur * 80), capped at 6000, while
+#     Attractor B allows up to 100 grains/sec - so a dense, long output
+#     could exhaust the budget while out_t was still short of out_dur,
+#     leaving a silent tail and no warning. (I could not drive a
+#     preset into it at the built-in 50 s duration ceiling; it is
+#     reachable in principle, not a routine occurrence.) The cap is now
+#     derived from the actual maximum density with a margin, and if it
+#     is ever reached the script says so and reports how much of the
+#     timeline went unscheduled.
+#
+#   4 - Random_seed added (0 = unpredictable). Grain jitter,
+#     backtracking, repeats and silence gaps are all random and no take
+#     could be recovered. The generator is returned to its safe state
+#     at the end.
+#
+#   5 - Nervous Scatter now starts where it claims to. Every preset
+#     began at gd_state = 0, i.e. at Attractor A, including the one
+#     described as "B-dominant from the start". Presets can now set an
+#     initial morph state; Nervous Scatter starts at 0.75.
+#
+#   6 - Source-edge pile-up. Jitter and backtrack were CLAMPED to the
+#     source bounds, so every overshoot landed on exactly the first or
+#     last legal start - over-selecting the beginning and end of the
+#     source. Positions now REFLECT off the bounds instead.
+#
+#   7 - "Voicing confidence" is a binary voiced flag: 1 where Pitch is
+#     defined, 0 where it is not. Renamed in the code and the report;
+#     "when voicing is weak" meant "when the frame is unvoiced".
+#
+#   8 - A silent input is rejected up front instead of being run
+#     through the whole pipeline and then handed to Scale peak.
+#
+#   9 - The form title, Info banner and visualization header all still
+#     said v1.1. Synced.
+#
+#   10 - Description wording. "Spectral content is never altered" was
+#     too strong: each grain's internal spectrum is untransformed, but
+#     overlapping grains interfere and the spectrum of the SUM does
+#     change. Restated.
 #
 # Changelog v1.2 (CHANGES AUDIO of every preset):
 #   - Assembly redesigned to true time-placed overlap-add: grains
 #     are summed into one output buffer at their scheduled onset
 #     (out_t) instead of being concatenated end-to-end. Density
 #     (grains/sec) now genuinely controls onset spacing and grain
-#     overlap, matching the documented model. out_dur is exact by
-#     construction (no post-hoc trim/pad). Dense regions overlap
-#     and gain energy; sparse regions thin out - this is the
-#     intended "morphic" dynamic and will sound markedly different
-#     from v1.1, especially for dense/collapse presets.
-#   - Silence behavior under OLA = a gap in onsets (out_t advances
-#     by the silence duration) rather than an inserted silent grain.
+#     overlap. out_dur is exact by construction.
+#   - Silence behavior under OLA = a gap in onsets rather than an
+#     inserted silent grain.
 #
 # Changelog v1.1:
 #   - Added output duration control (ratio or absolute seconds)
@@ -92,8 +142,7 @@ src_name$ = selected$("Sound")
 # FORM
 # ============================================================
 
-form Morphic Form v1.1  (Grain Placement Engine)
-    comment === Preset ===
+form Morphic Form v1.3  (Grain Placement Engine)
     optionmenu Preset 1
         option Custom
         option Slow Bloom  (gentle A->B, large grains)
@@ -102,25 +151,26 @@ form Morphic Form v1.1  (Grain Placement Engine)
         option Still Center  (A-dominant, minimal morphing)
         option Time Stretch  (2x duration, slow drift)
         option Collapse  (half duration, rapid compression)
-    comment === Morphic Control ===
     real Morph_intensity 0.75
-    comment (0.0 = stay at A entirely | 1.0 = fully reach B)
     positive Base_grain_ms 40.0
     positive Base_density_gps 25.0
-    comment (grains per second)
     positive Max_jitter_ms 15.0
-    comment === Duration ===
     positive Output_duration_ratio 1.0
-    comment (1.0 = same as input, 2.0 = double, 0.5 = half)
-    comment === Pacing Curve  (Gestural_Accumulator) ===
     optionmenu Pacing_curve 1
         option Linear
         option Accelerate  (slow start, rush to B)
         option Decelerate  (explosive start, then stabilize)
-    comment === Output ===
+    integer Random_seed 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Morph_intensity: 0.0 keeps the state at Attractor A for the whole
+# run; 1.0 lets it reach B. Local acoustic features move the state
+# WITHIN this range (v1.3 CRITICAL 1) - they no longer push past it.
+# Base_density_gps is grains per second. Output_duration_ratio is
+# relative to the input: 1.0 same, 2.0 double, 0.5 half.
+# Random_seed: 0 = unpredictable, any positive value = reproducible.
 
 # ============================================================
 # PRESET LOGIC
@@ -152,6 +202,10 @@ elsif preset = 4
     max_jitter_ms = 40.0
     output_duration_ratio = 0.85
     pacing_curve = 1
+    # v1.3 fix 5: this preset is described as B-dominant FROM THE
+    # START, but every preset used to begin at gd_state = 0, i.e. at
+    # Attractor A, and only drifted toward B afterwards.
+    initial_morph_state = 0.75
     preset_name$ = "Nervous Scatter"
 elsif preset = 5
     # Still Center: mostly A, minimal morphing
@@ -182,6 +236,14 @@ elsif preset = 7
     preset_name$ = "Collapse"
 else
     preset_name$ = "Custom"
+endif
+
+# Every other preset (and Custom) starts at Attractor A
+if not variableExists("initial_morph_state")
+    initial_morph_state = 0.0
+endif
+if initial_morph_state > morph_intensity
+    initial_morph_state = morph_intensity
 endif
 
 # Pacing curve name
@@ -237,6 +299,24 @@ src_dur = Get total duration
 src_sr = Get sampling frequency
 src_ch = Get number of channels
 
+# v1.3 fix 8: a silent input would run the whole pipeline and then be
+# handed to Scale peak with a peak of zero.
+selectObject: src_id
+src_peak_check = Get absolute extremum: 0, 0, "None"
+if src_peak_check < 1e-6
+    exitScript: "The selected Sound is silent (or near-silent); nothing to place."
+endif
+
+# v1.3 fix 4: reproducibility. Grain jitter, backtracking, repeats and
+# silence gaps are all random and v1.2 had no seed.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seed_label$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seed_label$ = "unpredictable"
+endif
+
 if src_dur < 0.10
     exitScript: "Sound too short (minimum 100 ms required)."
 endif
@@ -250,7 +330,7 @@ time_ratio = src_dur / out_dur
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: "  MORPHIC FORM v1.1  |  Grain Placement Engine"
+writeInfoLine: "  MORPHIC FORM v1.3  |  Grain Placement Engine"
 writeInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source  : ", src_name$
@@ -263,11 +343,12 @@ appendInfoLine: "Output duration : ", fixed$(out_dur, 3), " s",
     ... " (ratio: ", fixed$(output_duration_ratio, 2), "x)"
 appendInfoLine: "SR             : ", src_sr, " Hz"
 appendInfoLine: "Channels       : ", src_ch
+appendInfoLine: "Seed           : ", seed_label$
 
 # ============================================================
 # STEP 1: FEATURE EXTRACTION
 #   Following HMM_Timbre_Sequencing pipeline:
-#   intensity + pitch voicing confidence per analysis frame.
+#   intensity + pitch voiced flag (1 = Pitch defined, 0 = unvoiced) per analysis frame.
 #   Activity proxy from Perceptual_Synchrony gesture detection.
 #   Analysis frames span the OUTPUT duration, reading source
 #   via time ratio.
@@ -296,7 +377,7 @@ pit_obj_id = selected("Pitch")
 
 af_time# = zero#(n_af)
 af_int_raw# = zero#(n_af)
-af_voicing# = zero#(n_af)
+af_voiced# = zero#(n_af)
 
 for i to n_af
     # Output time for this analysis frame
@@ -329,9 +410,9 @@ for i to n_af
         pv = 0
     endif
     if pv > 0
-        af_voicing#[i] = 1
+        af_voiced#[i] = 1
     else
-        af_voicing#[i] = 0
+        af_voiced#[i] = 0
     endif
 endfor
 
@@ -469,7 +550,8 @@ appendInfoLine: "  B (turbulent): grain=", fixed$(att_b_grain_ms, 0),
 appendInfoLine: ""
 appendInfoLine: "[4/6] Gradient descent on placement..."
 
-gd_state = 0.0
+# v1.3 fix 5: presets may start away from A
+gd_state = initial_morph_state
 gd_lr = 0.22
 local_weight = 0.30
 
@@ -483,12 +565,20 @@ pf_sil_prob# = zero#(n_af)
 for i to n_af
     target_m = morph_curve#[i]
 
-    # Local push toward B when activity is high or voicing is weak
-    local_push = af_activity#[i] * 0.55 + (1.0 - af_voicing#[i]) * 0.45
+    # Local push toward B when activity is high or the frame is
+    # UNVOICED (af_voiced# is a 0/1 flag, not a continuous confidence).
+    local_push = af_activity#[i] * 0.55 + (1.0 - af_voiced#[i]) * 0.45
 
-    adj_target = target_m + local_weight * local_push
-    if adj_target > 1.0
-        adj_target = 1.0
+    # v1.3 CRITICAL 1: the push moves the target WITHIN the range the
+    # user allowed, instead of being added on top and then clamped to
+    # 1.0. Measured on v1.2: Morph_intensity = 0, documented as "stay
+    # at A entirely", gave adj_target = 0.3000 on an unvoiced
+    # high-activity frame; Morph_intensity = 0.15 gave 0.4500. Local
+    # features now accelerate the approach to the ceiling rather than
+    # raising it, so Morph 0 stays exactly at A.
+    adj_target = target_m + local_weight * local_push * (morph_intensity - target_m)
+    if adj_target > morph_intensity
+        adj_target = morph_intensity
     endif
     if adj_target < 0.0
         adj_target = 0.0
@@ -497,8 +587,8 @@ for i to n_af
     # Gradient step (inertial update)
     gd_err = adj_target - gd_state
     gd_state = gd_state + gd_lr * gd_err
-    if gd_state > 1.0
-        gd_state = 1.0
+    if gd_state > morph_intensity
+        gd_state = morph_intensity
     endif
     if gd_state < 0.0
         gd_state = 0.0
@@ -524,12 +614,19 @@ appendInfoLine: ""
 appendInfoLine: "[5/6] Grain schedule..."
 
 # Scale max grains with output duration
-max_grains = floor(out_dur * 80)
+# v1.3 CRITICAL 3: derive the budget from the density the model can
+# actually ask for. v1.2 used floor(out_dur * 80) capped at 6000 while
+# Attractor B allows up to att_b_density grains/sec, so a dense long
+# output could exhaust the budget with out_t still short of out_dur -
+# a silent tail, reported as success. The margin covers silence gaps
+# and rounding.
+peak_density = att_a_density
+if att_b_density > peak_density
+    peak_density = att_b_density
+endif
+max_grains = ceiling(out_dur * peak_density * 1.25) + 64
 if max_grains < 500
     max_grains = 500
-endif
-if max_grains > 6000
-    max_grains = 6000
 endif
 
 grain_count = 0
@@ -578,15 +675,32 @@ while out_t < out_dur and grain_count < max_grains
         src_pos = last_src
     endif
 
-    # Clamp source position
+    # v1.3 fix 6: REFLECT off the source bounds rather than clamping.
+    # v1.2 pinned every overshoot to exactly the first or last legal
+    # start, so large negative jitter piled up on the source's opening
+    # and large positive jitter on its ending - visible as
+    # over-selection of both edges, worst in Nervous Scatter.
+    src_hi = src_dur - cur_gr_s - 0.001
+    if src_hi < 0.0
+        src_hi = 0.0
+    endif
+    if src_hi > 0.0
+        reflect_guard = 0
+        while (src_pos < 0.0 or src_pos > src_hi) and reflect_guard < 8
+            if src_pos < 0.0
+                src_pos = -src_pos
+            endif
+            if src_pos > src_hi
+                src_pos = 2.0 * src_hi - src_pos
+            endif
+            reflect_guard = reflect_guard + 1
+        endwhile
+    endif
     if src_pos < 0.0
         src_pos = 0.0
     endif
-    if src_pos + cur_gr_s > src_dur - 0.001
-        src_pos = src_dur - cur_gr_s - 0.001
-    endif
-    if src_pos < 0.0
-        src_pos = 0.0
+    if src_pos > src_hi
+        src_pos = src_hi
     endif
 
     actual_gr_s = cur_gr_s
@@ -626,7 +740,18 @@ if n_viz_grains > viz_grain_max
 endif
 
 appendInfoLine: "  Grains scheduled : ", grain_count,
-    ... " (max: ", max_grains, ")"
+    ... " (budget: ", max_grains, ")"
+
+# v1.3 CRITICAL 3: never truncate in silence.
+sched_shortfall = out_dur - out_t
+if grain_count >= max_grains and sched_shortfall > 0.01
+    appendInfoLine: "  ! Scheduling budget reached with ",
+        ... fixed$(sched_shortfall, 3), " s (",
+        ... fixed$(100 * sched_shortfall / out_dur, 1),
+        ... "%) of the timeline unscheduled."
+    appendInfoLine: "    That tail will be SILENT. Lower the density or"
+    appendInfoLine: "    shorten Output_duration_ratio."
+endif
 
 if grain_count < 1
     exitScript: "No grains generated. Try reducing density or increasing duration."
@@ -691,9 +816,32 @@ endfor
 
 appendInfoLine: ""
 
+# v1.3 CRITICAL 2: a grain whose onset falls near the end is written
+# only as far as out_dur, which can cut it before its own 10% fade-out
+# region begins - ending the file at a non-zero sample. One short fade
+# on the assembled buffer covers that, and the head as well.
+selectObject: result_id
+buf_dur_now = Get total duration
+edge_fade = 0.005
+if edge_fade > buf_dur_now * 0.1
+    edge_fade = buf_dur_now * 0.1
+endif
+if edge_fade > 0.0002
+    ef_str$ = fixed$(edge_fade, 8)
+    selectObject: result_id
+    Formula: "if x - xmin < " + ef_str$ +
+        ... " then self * ((x - xmin) / " + ef_str$ + ") else self fi"
+    selectObject: result_id
+    Formula: "if xmax - x < " + ef_str$ +
+        ... " then self * ((xmax - x) / " + ef_str$ + ") else self fi"
+endif
+
 selectObject: result_id
 Scale peak: 0.99
 Rename: src_name$ + "_morphic"
+
+# v1.3 fix 4: all random draws are done.
+random_initializeSafelyAndUnpredictably ()
 final_name$ = selected$("Sound")
 
 selectObject: result_id
@@ -719,7 +867,7 @@ if draw_visualization
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.65, "half",
-        ... "##Morphic Form v1.1##"
+        ... "##Morphic Form v1.3##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -0.3, "half",
@@ -846,7 +994,7 @@ if draw_visualization
 
     # Voicing regions shaded
     for i to n_af
-        if af_voicing#[i] = 1
+        if af_voiced#[i] = 1
             t_l = af_time#[i] - af_hop_s * 0.5
             t_r = af_time#[i] + af_hop_s * 0.5
             if t_l < 0.0
@@ -883,8 +1031,8 @@ if draw_visualization
     Colour: "{0.28, 0.65, 0.32}"
     Line width: 1.2
     for i from 1 to n_af - 1
-        Draw line: af_time#[i], af_voicing#[i] * 0.92,
-            ... af_time#[i + 1], af_voicing#[i + 1] * 0.92
+        Draw line: af_time#[i], af_voiced#[i] * 0.92,
+            ... af_time#[i + 1], af_voiced#[i + 1] * 0.92
     endfor
 
     Line width: 1
