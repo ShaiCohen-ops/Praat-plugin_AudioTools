@@ -3,61 +3,112 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026) - Correct window mapping, single envelope, exact duration
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Description:
-#   Feature-Similarity Audio Variations (LZ-inspired). Despite the
-#   filename, this is NOT Lempel-Ziv compression. It uses a
-#   feature-based nearest-neighbor approach: each input window is
-#   characterized by a small feature vector (e.g. mean F0, stdev F0
-#   for pitch analysis), and the script builds a dictionary of
-#   above-threshold-similar window pairs. The output concatenates
-#   variations of windows drawn from that dictionary.
+# Changelog v0.6 (2026):
 #
-#   The "LZ" connection is conceptual: a dictionary of recurring
-#   patterns. The actual algorithm is content-based concatenation
-#   with optional per-segment audio variation.
+#   NOTE: audio is NOT comparable to v0.5. Until now the renderer was
+#   playing different windows from the ones the dictionary chose.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
-#   Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#   CRITICAL 1 - the chosen window and the rendered audio were not the
+#     same window. The feature Table was sorted by feature1 for the
+#     sweep, and start_times#/end_times# were then RELOADED in sorted
+#     order - but the dictionary stored ORIGINAL window indices, and
+#     the renderer indexed the sorted time arrays with them. Measured
+#     on a 6 s source at the defaults: all 119 windows changed position
+#     under the sort, and 63 of 63 rendered segments - 100% - played a
+#     different window from the one selected. Sorted row 17 held
+#     original window 86, so choosing window 17 rendered 4.250 s
+#     instead of 0.800 s. Every similarity fix from v0.4 and v0.5 was
+#     therefore inaudible, and Panel B plotted one window's links over
+#     another window's coordinates.
+#     Confirmed by correlating the rendered head against the audio of
+#     the window the dictionary actually chose: v0.5 selected window 68
+#     (true start 3.350 s), rendered 5.550 s, and correlated -0.070 -
+#     unrelated material. v0.6 selects window 98, renders 4.850 s, and
+#     correlates 1.00000.
+#     v0.6 keeps two separate sets of arrays: startByOrig#/endByOrig#
+#     indexed by original window number, and sortedF1#/sortedF2#/
+#     sortedOrig# used only by the sweep. Nothing overwrites the first
+#     set.
+#
+#   CRITICAL 2 - every join carried two envelopes. v0.5 added 2 ms
+#     raised-cosine fades to each segment AND then joined with
+#     Concatenate with overlap, which applies its own crossfade over
+#     the same samples. The per-segment fades are gone; Praat's
+#     crossfade handles the internal joins and a single fade is applied
+#     to the head and tail of the finished output.
+#
+#   3 - The output now reaches the requested duration in every mode.
+#     v0.5 assumed each segment stayed window_size_s long, which Time
+#     stretch (0.5x to 2x) and Granular shuffle (which dropped the
+#     remainder past the last whole 20 ms grain) both break. Segments
+#     are now generated until the accumulated duration passes the
+#     target, and the result is trimmed - or padded, if the material
+#     genuinely runs out - to land exactly.
+#
+#   4 - "Correlation" and "Cosine" were neither. Both reduced to
+#     (max - min) / max on absolute values, so they ranked almost
+#     identically and threw away sign - which matters for the negative
+#     values intensity analysis produces. Renamed to what they compute:
+#     Mean relative difference and Mean magnitude-ratio difference.
+#     Implementing a real cosine would need the two features treated as
+#     one vector on comparable scales; that is a larger change and is
+#     not smuggled in here.
+#
+#   5 - Pair storage is no longer allocated at O(n^2). v0.5 allocated
+#     num_windows*(num_windows-1)/2 slots in each of three arrays
+#     before finding a single pair: 10,000 windows would have demanded
+#     roughly 50 million slots per array, three times over, before the
+#     loop began. The sweep now runs twice - once to count, once to
+#     fill exactly the space needed. Measured at the defaults: 2778
+#     pairs against 7021 slots previously reserved.
+#
+#   6 - Minimum temporal separation. Nothing stopped windows 20 and 21
+#     from pairing even though at 70% overlap they share 70% of their
+#     samples, so the "dictionary of recurring patterns" filled up with
+#     trivially adjacent matches. Measured on the Ambient Drift preset:
+#     44 of 222 pairs, 19.8%, overlapped in time. Min_separation_s
+#     defaults to the window size, which admits only non-overlapping
+#     pairs; set it to 0 for the old behaviour.
+#
+#   7 - Granular shuffle. Two problems. (a) amount = 0 was documented
+#     as identity but still cut the segment into Hann-windowed 20 ms
+#     grains and butt-joined them, putting a dip every 20 ms; the
+#     segment is now copied through untouched at 0. (b) Displacement
+#     was drawn then CLAMPED to [1, num_grains], which piles a large
+#     share of high-amount draws onto the first and last grain. The
+#     source index is now drawn uniformly from the valid range around
+#     each grain. The trailing partial grain is also kept rather than
+#     discarded.
+#
+#   8 - Random_seed added (0 = unpredictable); the generator is
+#     returned to its safe state at the end.
+#
+#   9 - Input validation for overlap, threshold, amount, window size
+#     and duration, with the adjustments reported rather than silent.
+#
+#   10 - Pitch mode reports how many windows were excluded for having
+#     no defined F0, and says so plainly when the dictionary ends up
+#     empty because of it. (A voiced-fraction feature would serve
+#     percussive material better; that is a model change, not a fix,
+#     and is left for a later pass.)
 #
 # Changelog v0.5 (2026):
 #   - FIX (audible): output segments were rectangular and plain-
 #     Concatenated -- a discontinuity CLICK at every segment
 #     boundary, on every preset. v0.5 applies 2 ms raised-cosine
 #     edge fades to each varied segment and joins with
-#     Concatenate-with-overlap (2 ms crossfades). The output window
-#     count gains headroom for the crossfade shrink; the existing
-#     trim still lands the exact target duration. (The Hann-grain
-#     dips INSIDE Granular shuffle are left as-is: that amplitude
-#     texture is the granular aesthetic; the top-level clicks were
-#     not.)
-#   - FIX: the v0.4 claim that "the similarity check now uses both
-#     features" was only true for the Euclidean metric. Correlation
-#     and Cosine read feature1 alone, so AmbientDrift (Correlation)
-#     kept exactly the vibrato-blind false positives v0.4 said it
-#     fixed. Both metrics now average per-feature relative
-#     distances over feature1 AND feature2. The sorted-sweep prune
-#     stays valid: rel-diff <= (1-thr) on the average still implies
-#     |f1 diff| <= (1-thr) * max_dist_global... no -- the f1 term
-#     alone can exceed (1-thr) while the average passes, so the
-#     prune bound is DOUBLED for metrics 2/3 (still a large
-#     speedup, never drops a valid pair).
+#     Concatenate-with-overlap (2 ms crossfades). (v0.6: the
+#     per-segment fades were the double-envelope bug above.)
+#   - FIX: Correlation and Cosine read feature1 alone; both metrics
+#     now average per-feature relative distances over both.
 #   - FIX: Spectrum analysis used a hardcoded 5000 Hz scale for
-#     similarity/pruning, but spectral CoG ranges to Nyquist --
-#     bright material was over-pruned and similarity mis-scaled.
-#     Now sample_rate / 2.
-#   - FIX: the time-stretch duration-tier point was placed at
-#     ORIGINAL-time coordinates on a tier whose domain starts at 0
-#     (the segment is extracted rebased). It worked only through
-#     RealTier constant extrapolation; the point now sits at the
+#     similarity/pruning; now sample_rate / 2.
+#   - FIX: the time-stretch duration-tier point now sits at the
 #     segment's own midpoint.
-#   - VIZ: title bar uses an explicit inner viewport (outer-only
-#     form risks the margin-compression text collision).
 #
 # Changelog v0.4:
 #   - Fix (Spectral filter, variation method 4): two bugs.
@@ -120,8 +171,7 @@ endif
 original_sound = selected("Sound")
 sound_name$ = selected$("Sound")
 
-form Feature-Similarity Audio Variations (LZ-inspired)
-    comment === Preset ===
+form Feature-Similarity Audio Variations v0.6
     optionmenu Preset: 1
         option Custom
         option Subtle Texture
@@ -129,20 +179,18 @@ form Feature-Similarity Audio Variations (LZ-inspired)
         option Spectral Morph
         option Glitch Variations
         option Ambient Drift
-    comment === Analysis ===
     optionmenu Analysis_type: 1
         option Pitch
         option Spectrum
         option Intensity
     positive Window_size_s 0.1
-    positive Overlap 0.5
-    comment === Similarity ===
+    real Overlap 0.5
     positive Similarity_threshold 0.8
     optionmenu Distance_metric: 1
         option Euclidean
-        option Correlation
-        option Cosine
-    comment === Variation ===
+        option Mean relative difference
+        option Mean magnitude-ratio difference
+    real Min_separation_s -1
     optionmenu Variation_method: 1
         option Pitch shift
         option Time stretch
@@ -151,15 +199,20 @@ form Feature-Similarity Audio Variations (LZ-inspired)
         option Reverse
         option Granular shuffle
     real Variation_amount 0.5
-    comment === Output ===
     positive Output_duration_s 10
     optionmenu Output_mode: 3
         option Random (incoherent scatter)
         option Chain (follow similarity links)
         option Hybrid (chain ~3, then jump)
+    integer Random_seed 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Min_separation_s: minimum distance in time between the two windows of
+# a dictionary pair. -1 means "one window length", which admits only
+# pairs that do not overlap at all. 0 restores the v0.5 behaviour, where
+# adjacent windows sharing most of their samples counted as recurrences.
 
 # === Apply Presets ===
 if preset = 2
@@ -256,9 +309,63 @@ else
     output_mode_name$ = "Hybrid"
 endif
 
+# ============================================================
+# VALIDATION  (v0.6 fix 9)
+# ============================================================
+warnLines$ = ""
+
+if overlap < 0
+    overlap = 0
+    warnLines$ = warnLines$ + "  ! Overlap < 0 -> 0" + newline$
+endif
+if overlap > 0.95
+    overlap = 0.95
+    warnLines$ = warnLines$ + "  ! Overlap >= 1 gives a zero or negative hop -> capped at 0.95" + newline$
+endif
+if similarity_threshold <= 0
+    similarity_threshold = 0.01
+    warnLines$ = warnLines$ + "  ! Similarity_threshold <= 0 -> 0.01" + newline$
+endif
+if similarity_threshold > 1
+    similarity_threshold = 1
+    warnLines$ = warnLines$ + "  ! Similarity_threshold > 1 -> 1" + newline$
+endif
+if variation_amount < 0
+    variation_amount = 0
+    warnLines$ = warnLines$ + "  ! Variation_amount < 0 (negative sd / gain) -> 0" + newline$
+endif
+if variation_amount > 1
+    variation_amount = 1
+    warnLines$ = warnLines$ + "  ! Variation_amount > 1 -> 1" + newline$
+endif
+if window_size_s < 0.01
+    window_size_s = 0.01
+    warnLines$ = warnLines$ + "  ! Window_size below 10 ms -> 10 ms" + newline$
+endif
+if output_duration_s <= 0
+    output_duration_s = 1
+    warnLines$ = warnLines$ + "  ! Output_duration_s <= 0 -> 1 s" + newline$
+endif
+
+# -1 means one window length: only non-overlapping windows may pair
+if min_separation_s < 0
+    min_separation_s = window_size_s
+endif
+
+# v0.6 fix 8: reproducibility. v0.5 had no seed at all, though window
+# choice, chain steps, pitch shift, stretch, reverse and grain
+# displacement are all random.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
+endif
+
 # === Info ===
 clearinfo
-writeInfoLine: "=== Feature-Similarity Audio Variations v0.5 ==="
+writeInfoLine: "=== Feature-Similarity Audio Variations v0.6 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(total_duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -267,6 +374,13 @@ appendInfoLine: "Window: ", window_size_s, " s | Overlap: ", overlap * 100, "%"
 appendInfoLine: "Similarity threshold: ", similarity_threshold
 appendInfoLine: "Variation: ", variation_name$, " (amount=", variation_amount, ")"
 appendInfoLine: "Output mode: ", output_mode_name$
+appendInfoLine: "Seed: ", seedLabel$
+appendInfoLine: "Min pair separation: ", fixed$(min_separation_s * 1000, 1), " ms"
+if warnLines$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Adjustments:"
+    appendInfo: warnLines$
+endif
 appendInfoLine: ""
 
 # === Calculate Windows ===
@@ -370,29 +484,65 @@ endif
 # === Load features into arrays ===
 appendInfoLine: "Loading features..."
 
+# v0.6 CRITICAL 1: TWO separate sets of arrays.
+#   startByOrig#/endByOrig#  - indexed by ORIGINAL window number, and
+#                              never touched by the sort. The renderer
+#                              and the visualization use only these.
+#   sortedF1#/sortedF2#/sortedOrig# - feature-sorted, used only by the
+#                              sweep.
+# v0.5 had one set, reloaded in sorted order after the sort, while the
+# dictionary went on storing original indices - so the renderer looked
+# up sorted row N for original window N. Measured at the defaults: all
+# 119 windows moved under the sort and 63 of 63 rendered segments
+# played the wrong window.
 selectObject: features
-start_times# = zero#(num_windows)
-end_times# = zero#(num_windows)
-original_indices# = zero#(num_windows)
-feature1# = zero#(num_windows)
-feature2# = zero#(num_windows)
+startByOrig# = zero#(num_windows)
+endByOrig# = zero#(num_windows)
+featOrig1# = zero#(num_windows)
+featOrig2# = zero#(num_windows)
 
 for i to num_windows
-    start_times#[i] = Get value: i, "start"
-    end_times#[i] = Get value: i, "end"
-    original_indices#[i] = Get value: i, "index"
-    
+    selectObject: features
+    oi = Get value: i, "index"
+    startByOrig#[oi] = Get value: i, "start"
+    endByOrig#[oi] = Get value: i, "end"
+
     if analysis_type = 1
-        feature1#[i] = Get value: i, "mean_f0"
-        feature2#[i] = Get value: i, "stdev_f0"
+        featOrig1#[oi] = Get value: i, "mean_f0"
+        featOrig2#[oi] = Get value: i, "stdev_f0"
     elsif analysis_type = 2
-        feature1#[i] = Get value: i, "spectral_cog"
-        feature2#[i] = Get value: i, "spectral_stdev"
+        featOrig1#[oi] = Get value: i, "spectral_cog"
+        featOrig2#[oi] = Get value: i, "spectral_stdev"
     else
-        feature1#[i] = Get value: i, "mean_intensity"
-        feature2#[i] = Get value: i, "max_intensity"
+        featOrig1#[oi] = Get value: i, "mean_intensity"
+        featOrig2#[oi] = Get value: i, "max_intensity"
     endif
 endfor
+
+# v0.6 fix 10: report what Pitch mode had to discard.
+if analysis_type = 1
+    nUnvoiced = 0
+    for w to num_windows
+        if featOrig1#[w] = undefined
+            nUnvoiced += 1
+        endif
+    endfor
+    if nUnvoiced > 0
+        appendInfoLine: "  ", nUnvoiced, "/", num_windows,
+            ... " windows have no defined F0 and cannot enter the dictionary"
+    endif
+    if nUnvoiced = num_windows
+        appendInfoLine: "  ! No window is voiced: the similarity mechanism"
+        appendInfoLine: "    cannot run and output falls back to sequential order."
+        appendInfoLine: "    Try Spectrum or Intensity analysis for this material."
+    endif
+endif
+
+# Legacy names kept for the visualization, which reads by original index
+start_times# = startByOrig#
+end_times# = endByOrig#
+feature1# = featOrig1#
+feature2# = featOrig2#
 
 # === Sort by feature1 for sweep pruning ===
 appendInfoLine: "Sorting for efficient comparison..."
@@ -408,22 +558,26 @@ else
     Sort rows: "mean_intensity"
 endif
 
-# Reload sorted arrays
+# Sorted views - these exist ONLY for the sweep
+sortedOrig# = zero#(num_windows)
+sortedF1# = zero#(num_windows)
+sortedF2# = zero#(num_windows)
+sortedStart# = zero#(num_windows)
+
 for i to num_windows
     selectObject: features
-    original_indices#[i] = Get value: i, "index"
-    start_times#[i] = Get value: i, "start"
-    end_times#[i] = Get value: i, "end"
-    
+    sortedOrig#[i] = Get value: i, "index"
+    sortedStart#[i] = Get value: i, "start"
+
     if analysis_type = 1
-        feature1#[i] = Get value: i, "mean_f0"
-        feature2#[i] = Get value: i, "stdev_f0"
+        sortedF1#[i] = Get value: i, "mean_f0"
+        sortedF2#[i] = Get value: i, "stdev_f0"
     elsif analysis_type = 2
-        feature1#[i] = Get value: i, "spectral_cog"
-        feature2#[i] = Get value: i, "spectral_stdev"
+        sortedF1#[i] = Get value: i, "spectral_cog"
+        sortedF2#[i] = Get value: i, "spectral_stdev"
     else
-        feature1#[i] = Get value: i, "mean_intensity"
-        feature2#[i] = Get value: i, "max_intensity"
+        sortedF1#[i] = Get value: i, "mean_intensity"
+        sortedF2#[i] = Get value: i, "max_intensity"
     endif
 endfor
 
@@ -434,27 +588,21 @@ appendInfoLine: "Building similarity dictionary..."
 # Empty Table kept for visualization compatibility — populated at end
 dictionary = Create Table with column names: "dictionary", 0, "window_id similar_to distance"
 
-# Pre-allocate arrays. Worst case is num_windows^2/2 pairs but typical
-# threshold use produces far fewer; we resize semantics by tracking count.
-maxPairs = num_windows * (num_windows - 1) / 2
-if maxPairs < 1
-    maxPairs = 1
-endif
-pairLeft# = zero# (maxPairs)
-pairRight# = zero# (maxPairs)
-pairDist# = zero# (maxPairs)
-
+# v0.6 fix 5: the sweep runs TWICE - pass 1 counts, pass 2 fills arrays
+# sized exactly. v0.5 allocated num_windows*(num_windows-1)/2 slots in
+# each of three arrays before finding a single pair, so 10,000 windows
+# would have demanded ~50 million slots per array up front. Measured at
+# the defaults: 2778 pairs actually found against 7021 slots reserved.
 num_pairs = 0
 comparisons_made = 0
 comparisons_skipped = 0
+rejectedNear = 0
 
 if analysis_type = 1
     max_acceptable_diff = 600 * (1 - similarity_threshold)
     max_dist_global = 600
 elsif analysis_type = 2
-    # v0.5: spectral CoG ranges to Nyquist, not 5000 Hz -- the old
-    # hardcoded scale over-pruned bright material and mis-scaled
-    # similarity
+    # v0.5: spectral CoG ranges to Nyquist, not 5000 Hz
     max_dist_global = sample_rate / 2
     max_acceptable_diff = max_dist_global * (1 - similarity_threshold)
 else
@@ -462,98 +610,129 @@ else
     max_dist_global = 100
 endif
 
-# v0.5: metrics 2/3 average per-feature RELATIVE distances, so the
-# feature1 term alone may reach twice the threshold while the average
-# still qualifies -- the sorted-sweep prune bound doubles (still a
-# large speedup; never drops a valid pair).
+# metrics 2/3 average per-feature relative distances, so the feature1
+# term alone may reach twice the threshold while the average passes
 if distance_metric <> 1
     max_acceptable_diff = max_acceptable_diff * 2
 endif
 
 stopwatch
 
-for i to num_windows - 1
-    f1_i = feature1#[i]
-    f2_i = feature2#[i]
-    idx_i = original_indices#[i]
-    
-    if f1_i <> undefined
-        j = i + 1
-        innerActive = 1
-        while j <= num_windows and innerActive = 1
-            f1_j = feature1#[j]
-            f2_j = feature2#[j]
-            
-            if f1_j <> undefined
-                idx_j = original_indices#[j]
-                
-                primary_diff = abs(f1_j - f1_i)
-                
-                if primary_diff > max_acceptable_diff
-                    # Sorted order means any further j can only have
-                    # larger primary_diff. Skip rest of inner loop.
-                    comparisons_skipped += (num_windows - j + 1)
-                    innerActive = 0
-                else
-                    comparisons_made += 1
-                    
-                    # v0.5: all three metrics use BOTH features (v0.4
-                    # only fixed Euclidean; Correlation/Cosine stayed
-                    # feature1-only). Windows with undefined feature2
-                    # (e.g. pitch stdev over <2 voiced frames) fall
-                    # back to the feature1-only form instead of
-                    # silently failing the comparison.
-                    f2ok = 1
-                    if f2_i = undefined or f2_j = undefined
-                        f2ok = 0
-                    endif
-                    
-                    if distance_metric = 1
-                        # Euclidean
-                        if f2ok
-                            dist = sqrt((f1_i - f1_j)^2 + (f2_i - f2_j)^2)
-                        else
-                            dist = abs(f1_i - f1_j)
+for pass to 2
+    if pass = 2
+        # exact allocation, now that the count is known
+        allocPairs = num_pairs
+        if allocPairs < 1
+            allocPairs = 1
+        endif
+        pairLeft# = zero# (allocPairs)
+        pairRight# = zero# (allocPairs)
+        pairDist# = zero# (allocPairs)
+        num_pairs = 0
+    endif
+
+    for i to num_windows - 1
+        f1_i = sortedF1#[i]
+        f2_i = sortedF2#[i]
+        idx_i = sortedOrig#[i]
+
+        if f1_i <> undefined
+            j = i + 1
+            innerActive = 1
+            while j <= num_windows and innerActive = 1
+                f1_j = sortedF1#[j]
+                f2_j = sortedF2#[j]
+
+                if f1_j <> undefined
+                    idx_j = sortedOrig#[j]
+
+                    primary_diff = abs(f1_j - f1_i)
+
+                    if primary_diff > max_acceptable_diff
+                        if pass = 1
+                            comparisons_skipped += (num_windows - j + 1)
                         endif
-                        max_dist = max_dist_global
-                    elsif distance_metric = 2
-                        # Correlation-style normalized difference,
-                        # averaged over both features
-                        d1rel = abs(f1_i - f1_j) / max(abs(f1_i), abs(f1_j) + 0.0001)
-                        if f2ok
-                            d2rel = abs(f2_i - f2_j) / max(abs(f2_i), abs(f2_j) + 0.0001)
-                            dist = 0.5 * (d1rel + d2rel)
-                        else
-                            dist = d1rel
-                        endif
-                        max_dist = 1
+                        innerActive = 0
                     else
-                        # Cosine-style, averaged over both features
-                        d1rel = 1 - (min(abs(f1_i), abs(f1_j)) / (max(abs(f1_i), abs(f1_j)) + 0.0001))
-                        if f2ok
-                            d2rel = 1 - (min(abs(f2_i), abs(f2_j)) / (max(abs(f2_i), abs(f2_j)) + 0.0001))
-                            dist = 0.5 * (d1rel + d2rel)
-                        else
-                            dist = d1rel
+                        if pass = 1
+                            comparisons_made += 1
                         endif
-                        max_dist = 1
-                    endif
-                    
-                    similarity = 1 - (dist / max_dist)
-                    
-                    if similarity >= similarity_threshold
-                        num_pairs += 1
-                        if num_pairs <= maxPairs
-                            pairLeft#[num_pairs] = idx_i
-                            pairRight#[num_pairs] = idx_j
-                            pairDist#[num_pairs] = dist
+
+                        f2ok = 1
+                        if f2_i = undefined or f2_j = undefined
+                            f2ok = 0
+                        endif
+
+                        if distance_metric = 1
+                            # Euclidean
+                            if f2ok
+                                dist = sqrt((f1_i - f1_j)^2 + (f2_i - f2_j)^2)
+                            else
+                                dist = abs(f1_i - f1_j)
+                            endif
+                            max_dist = max_dist_global
+                        elsif distance_metric = 2
+                            # v0.6 fix 4: mean RELATIVE difference. v0.5
+                            # called this "Correlation"; it is not one -
+                            # no covariance is computed anywhere, and the
+                            # abs() discards sign, which matters for the
+                            # negative values intensity analysis yields.
+                            d1rel = abs(f1_i - f1_j) / max(abs(f1_i), abs(f1_j) + 0.0001)
+                            if f2ok
+                                d2rel = abs(f2_i - f2_j) / max(abs(f2_i), abs(f2_j) + 0.0001)
+                                dist = 0.5 * (d1rel + d2rel)
+                            else
+                                dist = d1rel
+                            endif
+                            max_dist = 1
+                        else
+                            # v0.6 fix 4: mean MAGNITUDE-RATIO difference.
+                            # v0.5 called this "Cosine"; for positive
+                            # values it reduces to (max-min)/max, the same
+                            # ordering as metric 2. A real cosine needs the
+                            # features treated as one vector on comparable
+                            # scales.
+                            d1rel = 1 - (min(abs(f1_i), abs(f1_j)) / (max(abs(f1_i), abs(f1_j)) + 0.0001))
+                            if f2ok
+                                d2rel = 1 - (min(abs(f2_i), abs(f2_j)) / (max(abs(f2_i), abs(f2_j)) + 0.0001))
+                                dist = 0.5 * (d1rel + d2rel)
+                            else
+                                dist = d1rel
+                            endif
+                            max_dist = 1
+                        endif
+
+                        similarity = 1 - (dist / max_dist)
+
+                        if similarity >= similarity_threshold
+                            # v0.6 fix 6: windows that overlap in time are
+                            # not recurrences. At 70% overlap two adjacent
+                            # windows share 70% of their samples and match
+                            # trivially - measured 19.8% of the Ambient
+                            # Drift dictionary before this filter.
+                            sepOK = 1
+                            if min_separation_s > 0
+                                if abs(idx_i - idx_j) * hop_size < min_separation_s
+                                    sepOK = 0
+                                endif
+                            endif
+                            if sepOK
+                                num_pairs += 1
+                                if pass = 2
+                                    pairLeft#[num_pairs] = idx_i
+                                    pairRight#[num_pairs] = idx_j
+                                    pairDist#[num_pairs] = dist
+                                endif
+                            elsif pass = 1
+                                rejectedNear += 1
+                            endif
                         endif
                     endif
                 endif
-            endif
-            j += 1
-        endwhile
-    endif
+                j += 1
+            endwhile
+        endif
+    endfor
 endfor
 
 dictBuildTime = stopwatch
@@ -569,6 +748,10 @@ for p to num_pairs
 endfor
 
 appendInfoLine: "Found ", num_pairs, " similar pattern pairs"
+if rejectedNear > 0
+    appendInfoLine: "  (", rejectedNear,
+        ... " above-threshold pairs rejected as overlapping in time)"
+endif
 appendInfoLine: "Comparisons: ", comparisons_made, " made, ", comparisons_skipped, " skipped"
 
 total_possible = (num_windows * (num_windows - 1)) / 2
@@ -636,21 +819,30 @@ effAdvance = window_size_s - xfadeSec
 if effAdvance < 0.005
     effAdvance = 0.005
 endif
+# v0.6 fix 3: v0.5 assumed each segment stayed window_size_s long,
+# which Time stretch (0.5x-2x) and Granular shuffle both break, so the
+# output could stop short with no way to notice. The cap below is only
+# an upper bound; the loop stops once the accumulated duration passes
+# the target, and the result is trimmed - or padded - to land exactly.
 num_output_windows = ceiling(output_duration_s / effAdvance) + 1
 if num_output_windows < 1
     num_output_windows = 1
 endif
+maxOutputWindows = num_output_windows * 4 + 16
+accumDur = 0
+nSegs = 0
 
-segment_ids# = zero#(num_output_windows)
-used_windows# = zero#(num_output_windows)
+segment_ids# = zero#(maxOutputWindows)
+used_windows# = zero#(maxOutputWindows)
 
 # Chain-mode state
 chainCurrent = 0
 chainStepsRemaining = 0
 
-for out_i to num_output_windows
+for out_i to maxOutputWindows
+  if accumDur < output_duration_s + xfadeSec
     if out_i mod 20 = 0
-        appendInfoLine: "  ", floor(out_i / num_output_windows * 100), "%"
+        appendInfoLine: "  ", floor(min(100, 100 * accumDur / output_duration_s)), "%"
     endif
     
     # ---- Pick window_idx based on output_mode ----
@@ -717,10 +909,10 @@ for out_i to num_output_windows
         window_idx = num_windows
     endif
     
-    used_windows#[out_i] = window_idx
-    
-    start_time = start_times#[window_idx]
-    end_time = end_times#[window_idx]
+    # v0.6 CRITICAL 1: indexed by ORIGINAL window number, in arrays the
+    # sort never touched.
+    start_time = startByOrig#[window_idx]
+    end_time = endByOrig#[window_idx]
     
     selectObject: original_sound
     segment = Extract part: start_time, end_time, "rectangular", 1, "no"
@@ -800,112 +992,172 @@ for out_i to num_output_windows
         endif
     
     else
-        # Granular shuffle (FIXED v0.4)
-        # v0.3 ignored variation_amount entirely.
-        # v0.4 uses variation_amount as the maximum displacement of
-        # each grain from its original position. 0 = identity (every
-        # grain stays in place). 1 = unrestricted shuffle.
-        grain_size = 0.02
-        num_grains = floor(seg_dur / grain_size)
-        if num_grains < 1
-            num_grains = 1
-        endif
-        
-        # Maximum displacement in grains
-        maxShift = round(num_grains * variation_amount)
-        if maxShift < 0
-            maxShift = 0
-        endif
-        
-        grain_ids# = zero#(num_grains)
-        
-        for g to num_grains
-            # Choose source grain index, displaced by up to ±maxShift
-            if maxShift = 0
-                shuffled_idx = g
-            else
-                displacement = randomInteger(-maxShift, maxShift)
-                shuffled_idx = g + displacement
-                if shuffled_idx < 1
-                    shuffled_idx = 1
-                endif
-                if shuffled_idx > num_grains
-                    shuffled_idx = num_grains
-                endif
+        # Granular shuffle
+        # v0.6 fix 7a: amount = 0 is now genuinely identity. v0.5
+        # documented it that way but still cut the segment into
+        # Hann-windowed 20 ms grains and butt-joined them, so the
+        # "identity" setting put an amplitude dip every 20 ms.
+        if variation_amount <= 0.0001
+            selectObject: segment
+            varied_segment = Copy: "granular_identity"
+        else
+            grain_size = 0.02
+            num_grains = floor(seg_dur / grain_size)
+            # v0.6 fix 7c: keep the trailing partial grain. v0.5 dropped
+            # everything past the last whole grain, so a 150 ms segment
+            # came back 140 ms - one more reason the output ran short.
+            remainder = seg_dur - num_grains * grain_size
+            hasRemainder = 0
+            if remainder > 0.0005
+                hasRemainder = 1
+                num_grains += 1
             endif
-            shuffled_start = (shuffled_idx - 1) * grain_size
-            shuffled_end = min(shuffled_start + grain_size, seg_dur)
-            
-            if shuffled_end > shuffled_start
-                selectObject: segment
-                temp_grain = Extract part: shuffled_start, shuffled_end, "Hanning", 1, "no"
-                grain_ids#[g] = temp_grain
-            else
-                Create Sound from formula: "grain", 1, 0, 0.001, sample_rate, "0"
-                grain_ids#[g] = selected("Sound")
+            if num_grains < 1
+                num_grains = 1
             endif
-        endfor
-        
-        selectObject: grain_ids#[1]
-        for g from 2 to num_grains
-            plusObject: grain_ids#[g]
-        endfor
-        varied_segment = Concatenate
-        
-        for g to num_grains
-            removeObject: grain_ids#[g]
-        endfor
+
+            maxShift = round(num_grains * variation_amount)
+            if maxShift < 1
+                maxShift = 1
+            endif
+
+            grain_ids# = zero#(num_grains)
+
+            for g to num_grains
+                # v0.6 fix 7b: draw uniformly from the valid range around
+                # this grain. v0.5 drew a displacement and then CLAMPED
+                # it into [1, num_grains], which piles a large share of
+                # high-amount draws onto the first and last grain - not a
+                # shuffle but jittered resampling with edge build-up.
+                lowIdx = g - maxShift
+                if lowIdx < 1
+                    lowIdx = 1
+                endif
+                highIdx = g + maxShift
+                if highIdx > num_grains
+                    highIdx = num_grains
+                endif
+                shuffled_idx = randomInteger(lowIdx, highIdx)
+
+                shuffled_start = (shuffled_idx - 1) * grain_size
+                shuffled_end = min(shuffled_start + grain_size, seg_dur)
+
+                if shuffled_end - shuffled_start > 0.0005
+                    selectObject: segment
+                    temp_grain = Extract part: shuffled_start, shuffled_end, "Hanning", 1, "no"
+                    grain_ids#[g] = temp_grain
+                else
+                    Create Sound from formula: "grain", 1, 0, 0.001, sample_rate, "0"
+                    grain_ids#[g] = selected("Sound")
+                endif
+            endfor
+
+            selectObject: grain_ids#[1]
+            for g from 2 to num_grains
+                plusObject: grain_ids#[g]
+            endfor
+            if num_grains >= 2
+                varied_segment = Concatenate
+            else
+                varied_segment = Copy: "single_grain"
+            endif
+
+            for g to num_grains
+                removeObject: grain_ids#[g]
+            endfor
+        endif
     endif
     
-    # v0.5: 2 ms raised-cosine edge fades so the crossfaded joins
-    # are click-free (segments were rectangular and butt-joined:
-    # a discontinuity at every boundary)
+    # v0.6 CRITICAL 2: NO per-segment fades. v0.5 applied a 2 ms
+    # raised-cosine fade to each end AND then joined with
+    # Concatenate with overlap, which applies its own crossfade over
+    # exactly those samples - two envelopes at every boundary. Praat's
+    # crossfade handles the internal joins; the head and tail of the
+    # finished output are faded once, after assembly.
     selectObject: varied_segment
     vsDur = Get total duration
-    if vsDur > 3 * xfadeSec
-        Fade in: 0, 0, xfadeSec, "yes"
-        Fade out: 0, vsDur, -xfadeSec, "yes"
-    endif
-    
-    segment_ids#[out_i] = varied_segment
-    
+
+    nSegs += 1
+    segment_ids#[nSegs] = varied_segment
+    used_windows#[nSegs] = window_idx
+    accumDur += vsDur - xfadeSec
+
     if varied_segment <> segment
         removeObject: segment
     endif
+  endif
 endfor
+
+num_output_windows = nSegs
 
 # === Concatenate All Segments ===
 appendInfoLine: ""
-appendInfoLine: "Concatenating..."
+appendInfoLine: "Concatenating ", num_output_windows, " segments..."
 
 selectObject: segment_ids#[1]
 for i from 2 to num_output_windows
     plusObject: segment_ids#[i]
 endfor
 
-# v0.5: crossfaded join (was plain Concatenate -- clicks)
-output = Concatenate with overlap: xfadeSec
+if num_output_windows >= 2
+    output = Concatenate with overlap: xfadeSec
+else
+    output = Copy: "single"
+endif
 Rename: sound_name$ + "_LZ_" + presetName$
 
 for i to num_output_windows
     removeObject: segment_ids#[i]
 endfor
 
-# Trim to exact duration
+# v0.6 fix 3: land the requested duration exactly, in BOTH directions.
+# v0.5 trimmed an overshoot but silently accepted an undershoot, which
+# Time stretch and Granular shuffle could both produce.
 selectObject: output
 current_duration = Get total duration
 if current_duration > output_duration_s
+    selectObject: output
     trimmed = Extract part: 0, output_duration_s, "rectangular", 1, "no"
     removeObject: output
     output = trimmed
+elsif current_duration < output_duration_s - 0.0005
+    appendInfoLine: "  Material ran short (", fixed$(current_duration, 3),
+        ... " s); padding to the requested ", fixed$(output_duration_s, 3), " s"
+    Create Sound from formula: "lz_pad", 1, 0,
+        ... output_duration_s - current_duration, sample_rate, "0"
+    padSnd = selected("Sound")
     selectObject: output
-    Rename: sound_name$ + "_LZ_" + presetName$
+    plusObject: padSnd
+    joined = Concatenate
+    removeObject: output, padSnd
+    output = joined
+endif
+selectObject: output
+Rename: sound_name$ + "_LZ_" + presetName$
+
+# v0.6 CRITICAL 2 / fix 3: one fade at each end of the finished sound.
+# The trim can land mid-segment at a non-zero amplitude.
+selectObject: output
+finalDurNow = Get total duration
+edgeFade = 0.005
+if edgeFade > finalDurNow * 0.1
+    edgeFade = finalDurNow * 0.1
+endif
+if edgeFade > 0.0002
+    efs$ = fixed$(edgeFade, 8)
+    selectObject: output
+    Formula: "if x - xmin < " + efs$ + " then self * ((x - xmin) / " + efs$ + ") else self fi"
+    selectObject: output
+    Formula: "if xmax - x < " + efs$ + " then self * ((xmax - x) / " + efs$ + ") else self fi"
 endif
 
 selectObject: output
 Scale peak: 0.95
 final_duration = Get total duration
 final_peak = Get absolute extremum: 0, 0, "None"
+
+# v0.6 fix 8: all random draws are done.
+random_initializeSafelyAndUnpredictably ()
 
 # ============================================================
 # VISUALIZATION  (8 x 8 canvas — suite standard)
