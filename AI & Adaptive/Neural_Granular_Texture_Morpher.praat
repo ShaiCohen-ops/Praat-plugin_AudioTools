@@ -3,13 +3,106 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026) - Empty-cluster fallback, scatter length preserved,
+# Version: 0.6 (2026) - Stereo_spread wired, unified grid, true OLA
+#
+# Changelog v0.6 (2026):
+#
+#   AUDIO CHANGES throughout. The analysis grid, the placement and the
+#   gain law all moved.
+#
+#   CRITICAL 1 - Stereo_spread was connected to nothing. The parameter
+#     appeared in the form, in every preset and in the Info banner, and
+#     the string "stereo_spread" occurred nowhere else in the script.
+#     Stereo mode simply ran the entire engine twice, redrawing the
+#     start cluster, the morph path, the grain index, the position
+#     jitter, the density jitter and the pitch scatter each time - so
+#     Stereo_spread = 0 gave two fully independent channels, exactly
+#     like 1. v0.6 builds ONE event list (cluster, grain, source
+#     position, varispeed ratio, output onset) and derives the right
+#     channel from it: 0 copies it exactly, intermediate values
+#     re-decide that fraction of events, 1 walks independently.
+#
+#   CRITICAL 2 - the analysis grid did not describe the grains played.
+#     nGrains used floor((dur - grain) / hop) with no +1, dropping a
+#     valid window, and centres sat at (i - 0.5) * hop instead of
+#     grain/2 + (i-1) * hop. On Slow Evolution (80 ms grain, 60%
+#     overlap, 32 ms hop) the first analysis point is 16 ms while the
+#     first rendered grain is centred at 40 ms - a 24 ms error. Every
+#     feature vector described audio next to the grain it clustered.
+#
+#   CRITICAL 3 - the OLA used a fixed gain guess, not the real overlap.
+#     1 / (1 + overlap_ratio * 0.8) is a single global multiplier that
+#     knows nothing about how many grains land on a given sample, what
+#     the Hann window is worth there, or how Density_variation moved
+#     the onsets. v0.6 accumulates each grain's Hann window into an
+#     envelope buffer and divides by it, so the gain is correct
+#     sample by sample at any overlap and under any onset jitter.
+#
+#   4 - The output is the requested length. The buffer was
+#     output_duration_sec + grainSec and was never trimmed, so a 10 s
+#     request produced a 10.06 s file with a partial grain and possibly
+#     a short silent tail past the end. Now trimmed exactly, with a
+#     global fade.
+#
+#   5 - Pitch scatter no longer pads with silence. A grain shortened by
+#     varispeed was written into a buffer of zeros, so one half of the
+#     scatter range added silence while the other half truncated
+#     material - an asymmetry with no musical justification. The grain
+#     is tiled with a short internal crossfade instead. The arbitrary
+#     new_fs > 8000 lower bound is gone too: on an 8 kHz file it
+#     rejected every downward shift while allowing upward ones.
+#
+#   6 - Morph_speed_hz renamed State_transition_rate_hz. It never meant
+#     the same thing in every mode: in Cycle each cluster lasts
+#     1/rate seconds, so a full cycle takes k/rate - 4 clusters at
+#     1 Hz is a 0.25 Hz cycle - while Random Walk and Random Jump use
+#     it as a per-step probability rate. The new name describes the
+#     one thing it does consistently.
+#
+#   7 - "Local Random Step" renamed Local Random Step. It draws
+#     randomInteger(-1, 1) and adds it to the current cluster: a lazy
+#     neighbour walk. No weights based on centroid distance, cluster
+#     size, transition counts or similarity exist anywhere.
+#
+#   8 - Empty clusters no longer occupy the morph axis. Centroids were
+#     seeded with replacement, so two could start on the same grain and
+#     leave a cluster permanently empty; the morph path still stepped
+#     through 1..k including the dead ones, so several axis positions
+#     mapped to the same active cluster and the traversal rate was
+#     uneven. v0.6 seeds distinct grains, recounts from the final
+#     assignment, and morphs over a dense list of ACTIVE clusters only.
+#     (CORRECTION, v0.7: this entry also claimed empty clusters were
+#     reseeded from a donor. No such reseeding was written. The three
+#     mechanisms above are what exists, and they are sufficient - an
+#     empty cluster simply never enters activeList#.)
+#
+#   9 - Random_seed added (0 = unpredictable), with the generator
+#     returned to its safe state afterwards.
+#
+#   10 - Validation for overlap, cluster count, jitter amounts, spread
+#     and scatter. Overlap_ratio = 1 gave a zero hop and divided by
+#     zero in both nGrains and grains_needed.
+#
+#   11 - Silent input rejected; the final normalisation is conditional.
+#
+#   12 - The Spectrogram ceiling follows Nyquist. A hardcoded 8000 Hz
+#     is above Nyquist on any file below 16 kHz.
+#
+#   13 - "Neural" is gone: there is no network, no training and no
+#     learned weight here. It is a K-means cluster-based granular
+#     texture morpher, and the version strings (header v0.5, form v0.4,
+#     Info v0.4) now agree.
+#
+#   Multichannel input is downmixed to mono; the stereo output is
+#   synthesised from the event list above, not from the source image.
+#
+# (superseded) Version: 0.5 (2026) - Empty-cluster fallback, scatter length preserved,
 #                        stereo cluster trajectory, title/stats axes
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Neural Granular Texture Morpher - K-means clustering
+#   K-means Granular Texture Morpher - K-means clustering
 #   with multiple morph modes for texture evolution.
 #
 # Changelog v0.5 (changes the audio of some presets):
@@ -39,8 +132,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Neural Texture Morpher v0.4
-    comment === Preset ===
+form K-means Granular Texture Morpher v0.6
     optionmenu Preset: 1
         option Manual
         option Slow Evolution
@@ -49,29 +141,40 @@ form Neural Texture Morpher v0.4
         option Rhythmic Cycle
         option Ambient Drift
         option Chaotic Morph
-    comment === Analysis ===
     positive Grain_size_ms 60
     positive Overlap_ratio 0.5
     integer Number_of_clusters 4
-    comment === Synthesis ===
     positive Output_duration_sec 10.0
-    positive Morph_speed_hz 0.5
+    positive State_transition_rate_hz 0.5
     optionmenu Morph_mode: 1
         option Cycle (linear)
         option Pendulum (back-forth)
         option Random Walk
         option Random Jump
-        option Weighted Random
-    comment === Grain Variation ===
+        option Local Random Step
     real Pitch_scatter_semitones 0.0
     real Position_randomness 0.2
     real Density_variation 0.1
-    comment === Output ===
-    boolean Stereo_output 1
     real Stereo_spread 0.5
+    integer Random_seed 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Stereo_spread: 0 = identical channels, 1 = an independent walk per
+# channel, in between = that fraction of events re-decided. Negative
+# gives mono output.
+# State_transition_rate_hz is a transition RATE, not a cycle frequency:
+# in Cycle each cluster lasts 1/rate seconds, so a full pass over k
+# clusters takes k/rate seconds.
+# Multichannel input is downmixed to mono.
+morph_speed_hz = state_transition_rate_hz
+if stereo_spread < 0
+    stereo_output = 0
+    stereo_spread = 0
+else
+    stereo_output = 1
+endif
 
 # ============================================
 # PRESET LOGIC
@@ -84,6 +187,7 @@ if preset = 2
     number_of_clusters = 4
     output_duration_sec = 15.0
     morph_speed_hz = 0.15
+    state_transition_rate_hz = 0.15
     morph_mode = 1
     pitch_scatter_semitones = 0.0
     position_randomness = 0.1
@@ -97,6 +201,7 @@ elsif preset = 3
     number_of_clusters = 6
     output_duration_sec = 8.0
     morph_speed_hz = 2.0
+    state_transition_rate_hz = 2.0
     morph_mode = 1
     pitch_scatter_semitones = 0.5
     position_randomness = 0.3
@@ -110,6 +215,7 @@ elsif preset = 4
     number_of_clusters = 5
     output_duration_sec = 12.0
     morph_speed_hz = 0.8
+    state_transition_rate_hz = 0.8
     morph_mode = 3
     pitch_scatter_semitones = 0.3
     position_randomness = 0.25
@@ -123,6 +229,7 @@ elsif preset = 5
     number_of_clusters = 4
     output_duration_sec = 10.0
     morph_speed_hz = 1.0
+    state_transition_rate_hz = 1.0
     morph_mode = 2
     pitch_scatter_semitones = 0.0
     position_randomness = 0.05
@@ -136,6 +243,7 @@ elsif preset = 6
     number_of_clusters = 3
     output_duration_sec = 20.0
     morph_speed_hz = 0.1
+    state_transition_rate_hz = 0.1
     morph_mode = 3
     pitch_scatter_semitones = 0.2
     position_randomness = 0.15
@@ -149,6 +257,7 @@ elsif preset = 7
     number_of_clusters = 8
     output_duration_sec = 10.0
     morph_speed_hz = 1.5
+    state_transition_rate_hz = 1.5
     morph_mode = 4
     pitch_scatter_semitones = 1.0
     position_randomness = 0.4
@@ -169,7 +278,7 @@ elsif morph_mode = 3
 elsif morph_mode = 4
     morphModeName$ = "RandomJump"
 else
-    morphModeName$ = "WeightedRandom"
+    morphModeName$ = "LocalRandomStep"
 endif
 
 # ============================================
@@ -181,7 +290,7 @@ dur = Get total duration
 fs = Get sampling frequency
 
 clearinfo
-writeInfoLine: "=== Neural Granular Texture Morpher v0.4 ==="
+writeInfoLine: "=== K-means Granular Texture Morpher v0.6 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Grain: ", grain_size_ms, " ms | Overlap: ", fixed$(overlap_ratio * 100, 0), "%"
 appendInfoLine: "Clusters: ", number_of_clusters, " | Morph: ", morph_speed_hz, " Hz"
@@ -195,6 +304,58 @@ appendInfoLine: ""
 
 selectObject: snd
 workSnd = Convert to mono
+
+# ============================================
+# VALIDATION  (v0.6 fix 10)
+# ============================================
+warnLines$ = ""
+if overlap_ratio < 0
+    overlap_ratio = 0
+    warnLines$ = warnLines$ + "  ! Overlap_ratio < 0 leaves gaps -> 0" + newline$
+endif
+if overlap_ratio > 0.95
+    overlap_ratio = 0.95
+    warnLines$ = warnLines$ + "  ! Overlap_ratio >= 1 gives a zero hop (division by zero)" +
+        ... " -> 0.95" + newline$
+endif
+if number_of_clusters < 1
+    number_of_clusters = 1
+    warnLines$ = warnLines$ + "  ! Number_of_clusters < 1 -> 1" + newline$
+endif
+if position_randomness < 0
+    position_randomness = 0
+    warnLines$ = warnLines$ + "  ! Position_randomness < 0 -> 0" + newline$
+endif
+if position_randomness > 1
+    position_randomness = 1
+    warnLines$ = warnLines$ + "  ! Position_randomness > 1 -> 1" + newline$
+endif
+if density_variation < 0
+    density_variation = 0
+    warnLines$ = warnLines$ + "  ! Density_variation < 0 -> 0" + newline$
+endif
+if density_variation > 1
+    density_variation = 1
+    warnLines$ = warnLines$ + "  ! Density_variation > 1 -> 1" + newline$
+endif
+if stereo_spread > 1
+    stereo_spread = 1
+    warnLines$ = warnLines$ + "  ! Stereo_spread > 1 -> 1" + newline$
+endif
+if pitch_scatter_semitones < 0
+    pitch_scatter_semitones = 0
+    warnLines$ = warnLines$ + "  ! Pitch_scatter_semitones < 0 -> 0" + newline$
+endif
+
+# v0.6 fix 11: a silent input gives undefined centroid and bandwidth,
+# fallback pitch and HNR, and then an invalid k-means pass.
+selectObject: workSnd
+srcPeak = Get absolute extremum: 0, 0, "None"
+if srcPeak < 1e-6
+    removeObject: workSnd
+    exitScript: "The selected Sound is silent (or near-silent); nothing to cluster."
+endif
+
 Rename: "Analysis_Work"
 
 grainSec = grain_size_ms / 1000
@@ -213,10 +374,23 @@ k = number_of_clusters
 
 appendInfoLine: "Analyzing grains..."
 
-nGrains = floor((dur - grainSec) / stepSec)
+# v0.6 CRITICAL 2: the missing +1. floor((D-G)/H) drops the last
+# valid window.
+nGrains = floor((dur - grainSec) / stepSec) + 1
 if nGrains < k
     removeObject: workSnd
     exitScript: "Not enough grains. Reduce grain size or clusters."
+endif
+
+# v0.7: seed AFTER every deterministic exit. v0.6 seeded before the
+# "Sound too short" and "Not enough grains" checks, so a positive seed
+# left Praat's generator globally predictable when either fired.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
 endif
 
 feat_centroid# = zero#(nGrains)
@@ -227,7 +401,13 @@ feat_intensity# = zero#(nGrains)
 grain_time# = zero#(nGrains)
 
 selectObject: workSnd
-spec = To Spectrogram: grainSec, 8000, stepSec, 20, "Gaussian"
+# v0.6 fix 12: a hardcoded 8000 Hz ceiling is above Nyquist on any
+# file below 16 kHz.
+specMax = 8000
+if specMax > fs / 2 * 0.9
+    specMax = fs / 2 * 0.9
+endif
+spec = To Spectrogram: grainSec, specMax, stepSec, 20, "Gaussian"
 
 selectObject: workSnd
 pit = To Pitch: stepSec, 75, 600
@@ -239,7 +419,14 @@ selectObject: workSnd
 inten = To Intensity: 75, stepSec, "yes"
 
 for i from 1 to nGrains
-    t = (i - 0.5) * stepSec
+    # v0.6 CRITICAL 2: the first window's CENTRE is grain/2, not
+    # hop/2. On Slow Evolution (80 ms grain, 32 ms hop) the old
+    # formula analysed 16 ms while the first rendered grain is
+    # centred at 40 ms - a 24 ms error on every frame.
+    t = grainSec / 2 + (i - 1) * stepSec
+    if t > dur - grainSec / 2
+        t = dur - grainSec / 2
+    endif
     grain_time#[i] = t
     
     selectObject: spec
@@ -389,8 +576,23 @@ cent_3# = zero#(k)
 cent_4# = zero#(k)
 cent_5# = zero#(k)
 
+shufIdx# = zero#(nGrains)
+for si from 1 to nGrains
+    shufIdx#[si] = si
+endfor
+nShuf = min(k, nGrains)
+for si from 1 to nShuf
+    rr = randomInteger(si, nGrains)
+    tmpv = shufIdx#[si]
+    shufIdx#[si] = shufIdx#[rr]
+    shufIdx#[rr] = tmpv
+endfor
+
 for c from 1 to k
-    r = randomInteger(1, nGrains)
+    # v0.6 fix 8: DISTINCT seeds from a shuffled index list. Drawing
+    # with replacement let two centroids start on the same grain and
+    # leave a cluster permanently empty.
+    r = shufIdx#[c]
     cent_1#[c] = norm_centroid#[r]
     cent_2#[c] = norm_bandwidth#[r]
     cent_3#[c] = norm_pitch#[r]
@@ -473,6 +675,101 @@ for i from 1 to nGrains
     cluster_count#[c] += 1
 endfor
 
+# v0.6 fix 8: one authoritative pass. Every grain is reassigned to its
+# nearest FINAL centroid and the counts rebuilt, so cluster_count#
+# describes assigns#. Then a DENSE list of active clusters is built:
+# v0.5 morphed over 1..k including empty ones, so several axis
+# positions mapped to the same active cluster and the traversal rate
+# was uneven.
+for c from 1 to k
+    cluster_count#[c] = 0
+endfor
+for i from 1 to nGrains
+    minD = 1e30
+    bestC = 1
+    for c from 1 to k
+        dd = (norm_centroid#[i] - cent_1#[c])^2 +
+            ... (norm_bandwidth#[i] - cent_2#[c])^2 +
+            ... (norm_pitch#[i] - cent_3#[c])^2 +
+            ... (norm_hnr#[i] - cent_4#[c])^2 +
+            ... (norm_intensity#[i] - cent_5#[c])^2
+        if dd < minD
+            minD = dd
+            bestC = c
+        endif
+    endfor
+    assigns#[i] = bestC
+    cluster_count#[bestC] = cluster_count#[bestC] + 1
+endfor
+
+# v0.7: order the active clusters by centroid PROXIMITY, not by label.
+# K-means labels are arbitrary - they come from the order of the random
+# centroid seeds - so "cluster 2 is next to cluster 3" meant nothing.
+# Cycle was not a linear traversal of timbre, Pendulum swung along an
+# arbitrary path, and a different seed reordered the morph even when
+# the partition of the material was nearly identical.
+# A greedy nearest-neighbour path over the centroids gives the axis a
+# real timbral meaning: adjacent positions are now adjacent textures.
+rawActive# = zero#(k)
+nActive = 0
+for c from 1 to k
+    if cluster_count#[c] > 0
+        nActive = nActive + 1
+        rawActive#[nActive] = c
+    endif
+endfor
+
+activeList# = zero#(k)
+usedC# = zero#(k)
+if nActive > 0
+    # start from the cluster with the lowest centroid brightness, so
+    # the axis has a stable orientation rather than a seed-dependent one
+    startI = 1
+    bestVal = 1e30
+    for a from 1 to nActive
+        cc = rawActive#[a]
+        if cent_1#[cc] < bestVal
+            bestVal = cent_1#[cc]
+            startI = a
+        endif
+    endfor
+    activeList#[1] = rawActive#[startI]
+    usedC#[startI] = 1
+    for pos from 2 to nActive
+        prevC = activeList#[pos - 1]
+        bestD = 1e30
+        bestA = 0
+        for a from 1 to nActive
+            if usedC#[a] = 0
+                cc = rawActive#[a]
+                dd = (cent_1#[cc] - cent_1#[prevC])^2 +
+                    ... (cent_2#[cc] - cent_2#[prevC])^2 +
+                    ... (cent_3#[cc] - cent_3#[prevC])^2 +
+                    ... (cent_4#[cc] - cent_4#[prevC])^2 +
+                    ... (cent_5#[cc] - cent_5#[prevC])^2
+                if dd < bestD
+                    bestD = dd
+                    bestA = a
+                endif
+            endif
+        endfor
+        if bestA > 0
+            activeList#[pos] = rawActive#[bestA]
+            usedC#[bestA] = 1
+        endif
+    endfor
+    ordStr$ = ""
+    for pos from 1 to nActive
+        ordStr$ = ordStr$ + " " + string$(activeList#[pos])
+    endfor
+    appendInfoLine: "  Morph axis (ordered by centroid proximity):", ordStr$
+endif
+appendInfoLine: "  Active clusters: ", nActive, " of ", k, " requested"
+if nActive < 1
+    random_initializeSafelyAndUnpredictably ()
+    exitScript: "k-means produced no non-empty cluster."
+endif
+
 cluster_offset# = zero#(k + 1)
 cluster_offset#[1] = 0
 for c from 2 to k + 1
@@ -496,7 +793,9 @@ for c from 1 to k
     endif
 endfor
 
+# v0.7: this exit happens AFTER seeding, so restore the generator.
 if valid_clusters < 2
+    random_initializeSafelyAndUnpredictably ()
     removeObject: workSnd
     exitScript: "Not enough distinct textures. Try fewer clusters."
 endif
@@ -526,6 +825,216 @@ walk_momentum = 0
 cluster_history# = zero#(grains_needed)
 cluster_history_R# = zero#(grains_needed)
 
+# ============================================================
+# EVENT LIST  (v0.6 CRITICAL 1)
+# ============================================================
+# v0.5 ran the whole engine twice and redrew every decision each time,
+# so Stereo_spread = 0 gave two unrelated channels - identical in
+# behaviour to Stereo_spread = 1. The parameter was declared, set by
+# every preset, printed in the Info banner, and read by nothing.
+# One event list is built for the left channel; the right is DERIVED
+# from it, with Stereo_spread deciding how much diverges.
+
+ev_cluster# = zero#(grains_needed)
+ev_grain# = zero#(grains_needed)
+ev_tout# = zero#(grains_needed)
+ev_ratio# = zero#(grains_needed)
+ev_tgrain# = zero#(grains_needed)
+# v0.7: the active-list POSITION of each left event. v0.6 restored the
+# right chain with curPosR = curPos, but curPos is the state after the
+# ENTIRE left list was built, not the state at event g - so a copied
+# event sounded correct while the chain it continued from was wrong.
+ev_pos# = zero#(grains_needed)
+
+evR_cluster# = zero#(grains_needed)
+evR_grain# = zero#(grains_needed)
+evR_tout# = zero#(grains_needed)
+evR_ratio# = zero#(grains_needed)
+evR_tgrain# = zero#(grains_needed)
+
+# --- pick a grain from a cluster, with its position and scatter ---
+procedure drawEvent: .cluster
+    .cnt = cluster_count#[.cluster]
+    if .cnt < 1
+        exitScript: "Internal error: cluster " + string$(.cluster) + " is empty."
+    endif
+    .r = randomInteger(1, .cnt)
+    drawEvent.grain = cluster_index#[cluster_offset#[.cluster] + .r]
+
+    .tg = grain_time#[drawEvent.grain]
+    if position_randomness > 0
+        .tg = .tg + randomUniform(-1, 1) * position_randomness * grainSec
+        .tg = max(grainSec/2, min(dur - grainSec/2, .tg))
+    endif
+    drawEvent.tgrain = .tg
+
+    if pitch_scatter_semitones > 0
+        .sc = randomUniform(-pitch_scatter_semitones, pitch_scatter_semitones)
+        drawEvent.ratio = 2 ^ (.sc / 12)
+    else
+        drawEvent.ratio = 1
+    endif
+endproc
+
+# --- morph over the DENSE active list, not 1..k ---
+procedure nextCluster: .curPos, .tOut
+    if morph_mode = 1
+        .cyc = .tOut * morph_speed_hz
+        nextCluster.out = floor(.cyc mod nActive) + 1
+    elsif morph_mode = 2
+        .cyc = .tOut * morph_speed_hz
+        .period = 2 * nActive - 2
+        if .period < 1
+            .period = 1
+        endif
+        .ph = .cyc mod .period
+        if .ph < nActive
+            nextCluster.out = floor(.ph) + 1
+        else
+            nextCluster.out = nActive - floor(.ph - nActive) - 1
+        endif
+        if nextCluster.out < 1
+            nextCluster.out = 1
+        endif
+        if nextCluster.out > nActive
+            nextCluster.out = nActive
+        endif
+    elsif morph_mode = 3
+        if randomUniform(0, 1) < morph_speed_hz * stepSec
+            .off = randomInteger(-1, 1)
+            .np = .curPos + .off
+            if .np < 1
+                .np = 1
+            endif
+            if .np > nActive
+                .np = nActive
+            endif
+            nextCluster.out = .np
+        else
+            nextCluster.out = .curPos
+        endif
+    elsif morph_mode = 4
+        if randomUniform(0, 1) < morph_speed_hz * stepSec
+            nextCluster.out = randomInteger(1, nActive)
+        else
+            nextCluster.out = .curPos
+        endif
+    else
+        # Local Random Step (v0.5 called this "Weighted Random"; no
+        # weight of any kind is computed - it is a neighbour walk).
+        # v0.7: gated by the transition rate like the other stochastic
+        # modes. v0.6 stepped on EVERY grain regardless, so at a 60 ms
+        # grain and 50% overlap it attempted ~33 transitions per second
+        # even with State_transition_rate_hz set to 0.01 - which
+        # contradicted the parameter's own name. Measured before the
+        # fix: 68 of 133 grains changed cluster at BOTH rate 0.01
+        # (p = 0.0003) and rate 20 (p = 0.6) - identical, because the
+        # rate was never consulted.
+        # It differs from Random Walk in that Random Walk can also hold
+        # position on a zero offset, making it stickier; this mode
+        # always moves when the gate opens.
+        if randomUniform(0, 1) < min(1, morph_speed_hz * stepSec)
+            .off = randomInteger(-1, 1)
+            if .off = 0
+                if randomUniform(0, 1) < 0.5
+                    .off = -1
+                else
+                    .off = 1
+                endif
+            endif
+            .np = .curPos + .off
+            if .np < 1
+                .np = 1
+            endif
+            if .np > nActive
+                .np = nActive
+            endif
+            nextCluster.out = .np
+        else
+            nextCluster.out = .curPos
+        endif
+    endif
+endproc
+
+appendInfoLine: "  Building event list..."
+
+curPos = 1
+for g from 1 to grains_needed
+    t_out = (g - 1) * stepSec
+    if density_variation > 0
+        t_out = t_out + randomUniform(-1, 1) * density_variation * stepSec
+        if t_out < 0
+            t_out = 0
+        endif
+    endif
+
+    @nextCluster: curPos, t_out
+    curPos = nextCluster.out
+    cl = activeList#[curPos]
+
+    ev_cluster#[g] = cl
+    ev_tout#[g] = t_out
+    @drawEvent: cl
+    ev_grain#[g] = drawEvent.grain
+    ev_tgrain#[g] = drawEvent.tgrain
+    ev_ratio#[g] = drawEvent.ratio
+    ev_pos#[g] = curPos
+    cluster_history#[g] = cl
+endfor
+
+# --- derive the right channel ---
+if stereo_output
+    if stereo_spread <= 0
+        for g from 1 to grains_needed
+            evR_cluster#[g] = ev_cluster#[g]
+            evR_grain#[g] = ev_grain#[g]
+            evR_tout#[g] = ev_tout#[g]
+            evR_tgrain#[g] = ev_tgrain#[g]
+            evR_ratio#[g] = ev_ratio#[g]
+            cluster_history_R#[g] = ev_cluster#[g]
+        endfor
+    else
+        curPosR = 1
+        for g from 1 to grains_needed
+            if randomUniform(0, 1) < stereo_spread
+                tR = (g - 1) * stepSec
+                if density_variation > 0
+                    tR = tR + randomUniform(-1, 1) * density_variation * stepSec
+                    if tR < 0
+                        tR = 0
+                    endif
+                endif
+                @nextCluster: curPosR, tR
+                curPosR = nextCluster.out
+                clR = activeList#[curPosR]
+                evR_cluster#[g] = clR
+                evR_tout#[g] = tR
+                @drawEvent: clR
+                evR_grain#[g] = drawEvent.grain
+                evR_tgrain#[g] = drawEvent.tgrain
+                evR_ratio#[g] = drawEvent.ratio
+            else
+                evR_cluster#[g] = ev_cluster#[g]
+                evR_grain#[g] = ev_grain#[g]
+                evR_tout#[g] = ev_tout#[g]
+                evR_tgrain#[g] = ev_tgrain#[g]
+                evR_ratio#[g] = ev_ratio#[g]
+                # v0.7: continue from the position of THIS left event,
+                # not from the final state of the whole left list.
+                curPosR = ev_pos#[g]
+            endif
+            cluster_history_R#[g] = evR_cluster#[g]
+        endfor
+    endif
+endif
+
+# ============================================================
+# RENDER  (v0.6 CRITICAL 3: true OLA with envelope normalisation)
+# ============================================================
+# v0.5 applied one global multiplier, 1 / (1 + overlap * 0.8), which
+# knows nothing about how many grains land on a sample, what the Hann
+# window is worth there, or how Density_variation moved the onsets.
+
 for pass from 1 to n_passes
     if stereo_output
         if pass = 1
@@ -536,125 +1045,23 @@ for pass from 1 to n_passes
     else
         appendInfoLine: "  Generating..."
     endif
-    
+
     output_buf = Create Sound from formula: "Output_" + string$(pass), 1, 0, output_dur, fs, "0"
-    
-    if pass = 2
-        current_cluster = randomInteger(1, k)
-    else
-        current_cluster = 1
-    endif
-    
+    env_buf = Create Sound from formula: "Env_" + string$(pass), 1, 0, output_dur, fs, "0"
+
     for g from 1 to grains_needed
-        t_out = (g - 1) * stepSec
-        
-        if density_variation > 0
-            t_out = t_out + randomUniform(-1, 1) * density_variation * stepSec
-            if t_out < 0
-                t_out = 0
-            endif
-        endif
-        
-        # Determine target cluster
-        if morph_mode = 1
-            cycle_pos = t_out * morph_speed_hz
-            target_c = floor(cycle_pos mod k) + 1
-        elsif morph_mode = 2
-            cycle_pos = t_out * morph_speed_hz
-            ping_pong = cycle_pos mod (2 * (k - 1))
-            if ping_pong < k - 1
-                target_c = floor(ping_pong) + 1
-            else
-                target_c = k - floor(ping_pong - (k - 1)) - 1
-            endif
-            target_c = max(1, min(k, target_c))
-        elsif morph_mode = 3
-            if randomUniform(0, 1) < morph_speed_hz * stepSec
-                walk_momentum += randomUniform(-1, 1)
-                walk_momentum = walk_momentum * 0.8
-                current_cluster += round(walk_momentum)
-                if current_cluster < 1
-                    current_cluster = 1
-                    walk_momentum = abs(walk_momentum)
-                elsif current_cluster > k
-                    current_cluster = k
-                    walk_momentum = -abs(walk_momentum)
-                endif
-            endif
-            target_c = current_cluster
-        elsif morph_mode = 4
-            if randomUniform(0, 1) < morph_speed_hz * stepSec
-                target_c = randomInteger(1, k)
-                current_cluster = target_c
-            else
-                target_c = current_cluster
-            endif
-        else
-            if randomUniform(0, 1) < morph_speed_hz * stepSec * 0.5
-                offset = randomInteger(-1, 1)
-                target_c = current_cluster + offset
-                target_c = max(1, min(k, target_c))
-                current_cluster = target_c
-            else
-                target_c = current_cluster
-            endif
-        endif
-        
-        if target_c < 1
-            target_c = 1
-        elsif target_c > k
-            target_c = k
-        endif
-        
-        # Handle empty cluster
-        if cluster_count#[target_c] = 0
-            for offset from 1 to k
-                if target_c + offset <= k and cluster_count#[target_c + offset] > 0
-                    target_c = target_c + offset
-                    offset = k + 1
-                elsif target_c - offset >= 1 and cluster_count#[target_c - offset] > 0
-                    target_c = target_c - offset
-                    offset = k + 1
-                endif
-            endfor
-        endif
-        
-        # Store cluster path for visualization (both channels)
         if pass = 1
-            cluster_history#[g] = target_c
+            t_out = ev_tout#[g]
+            t_grain = ev_tgrain#[g]
+            ratio = ev_ratio#[g]
         else
-            cluster_history_R#[g] = target_c
+            t_out = evR_tout#[g]
+            t_grain = evR_tgrain#[g]
+            ratio = evR_ratio#[g]
         endif
-        
-        # Select grain. If the target cluster is still empty after the
-        # outward search above, fall back to a RANDOM grain drawn from
-        # any non-empty cluster (avoids a constant first-grain bias).
-        n_in_cluster = cluster_count#[target_c]
-        if n_in_cluster > 0
-            r_idx = randomInteger(1, n_in_cluster)
-            idx_pos = cluster_offset#[target_c] + r_idx
-            grain_idx = cluster_index#[idx_pos]
-        else
-            fallback_c = current_cluster
-            for c_try from 1 to k
-                if cluster_count#[c_try] > 0
-                    fallback_c = c_try
-                    c_try = k + 1
-                endif
-            endfor
-            r_idx = randomInteger(1, cluster_count#[fallback_c])
-            grain_idx = cluster_index#[cluster_offset#[fallback_c] + r_idx]
-        endif
-        
-        t_grain = grain_time#[grain_idx]
-        if position_randomness > 0
-            t_grain = t_grain + randomUniform(-1, 1) * position_randomness * grainSec
-            t_grain = max(grainSec/2, min(dur - grainSec/2, t_grain))
-        endif
-        
+
         t_start = t_grain - grainSec/2
         t_end = t_grain + grainSec/2
-        
         if t_start < 0
             t_start = 0
             t_end = grainSec
@@ -666,64 +1073,144 @@ for pass from 1 to n_passes
                 t_start = 0
             endif
         endif
-        
+
+        # rectangular here; the Hann is applied once below so the same
+        # shape can be accumulated into the envelope
         selectObject: workSnd
-        grain = Extract part: t_start, t_end, "Hanning", 1, "no"
-        
-        # Pitch scatter. Resampling alone changes pitch but also the
-        # sample COUNT; to keep the grain's DURATION (so the OLA grid
-        # stays aligned) we resample to shift pitch, then trim/pad back
-        # to the original duration in seconds.
-        if pitch_scatter_semitones > 0
+        grain = Extract part: t_start, t_end, "rectangular", 1, "no"
+
+        if ratio <> 1
             selectObject: grain
             grain_dur0 = Get total duration
-            scatter = randomUniform(-pitch_scatter_semitones, pitch_scatter_semitones)
-            ratio = 2 ^ (scatter / 12)
             orig_fs = Get sampling frequency
             new_fs = orig_fs * ratio
-            if new_fs > 8000 and new_fs < 96000
+            # v0.6 fix 5: no arbitrary 8 kHz lower bound - on an 8 kHz
+            # file it rejected every downward shift while allowing the
+            # upward ones.
+            if new_fs > 1000 and new_fs < 200000
                 Resample: new_fs, 50
                 Override sampling frequency: orig_fs
                 grain_shifted = selected("Sound")
-                # Restore original duration: extract exactly grain_dur0 s,
-                # zero-padding if the shifted grain is shorter.
+                removeObject: grain
                 selectObject: grain_shifted
                 shifted_dur = Get total duration
                 if shifted_dur >= grain_dur0
-                    grain_new = Extract part: 0, grain_dur0, "rectangular", 1, "no"
+                    grain = Extract part: 0, grain_dur0, "rectangular", 1, "no"
+                    removeObject: grain_shifted
                 else
-                    grain_new = Create Sound from formula: "g", 1, 0, grain_dur0, orig_fs, "0"
-                    selectObject: grain_new
-                    shiftedStr$ = string$(grain_shifted)
-                    Formula (part): 0, shifted_dur, 1, 1,
-                        ... "Object_" + shiftedStr$ + "(x)"
+                    # v0.6 fix 5: TILE, do not pad with zeros. v0.5
+                    # wrote the shortened grain into a buffer of
+                    # silence, so one half of the scatter range added
+                    # holes while the other truncated material.
+                    tileFade = 0.002
+                    if tileFade > shifted_dur * 0.25
+                        tileFade = shifted_dur * 0.25
+                    endif
+                    nCopies = ceiling((grain_dur0 + tileFade) / (shifted_dur - tileFade))
+                    if nCopies < 2
+                        nCopies = 2
+                    endif
+                    selectObject: grain_shifted
+                    tAcc = Copy: "tile_acc"
+                    for cc from 2 to nCopies
+                        selectObject: grain_shifted
+                        tNext = Copy: "tile_next"
+                        selectObject: tAcc
+                        plusObject: tNext
+                        if tileFade > 0.0002
+                            tNew = Concatenate with overlap: tileFade
+                        else
+                            tNew = Concatenate
+                        endif
+                        removeObject: tAcc, tNext
+                        tAcc = tNew
+                    endfor
+                    selectObject: tAcc
+                    tiledDur = Get total duration
+                    if tiledDur < grain_dur0
+                        selectObject: grain_shifted
+                        tNext = Copy: "tile_next"
+                        selectObject: tAcc
+                        plusObject: tNext
+                        tNew = Concatenate with overlap: tileFade
+                        removeObject: tAcc, tNext
+                        tAcc = tNew
+                    endif
+                    selectObject: tAcc
+                    grain = Extract part: 0, grain_dur0, "rectangular", 1, "no"
+                    removeObject: tAcc, grain_shifted
                 endif
-                removeObject: grain, grain_shifted
-                grain = grain_new
             endif
         endif
-        
-        # Add to output (overlap-add)
+
         selectObject: grain
         grain_dur = Get total duration
-        grainIdStr$ = string$(grain)
-        tOutStr$ = string$(t_out)
-        
-        selectObject: output_buf
-        Formula (part): t_out, t_out + grain_dur, 1, 1,
-            ... "self + Object_" + grainIdStr$ + "(x - " + tOutStr$ + ")"
-        
+        if grain_dur > 0.0005
+            selectObject: grain
+            Formula: "self * (0.5 - 0.5 * cos(2 * pi * (x - xmin) / (xmax - xmin)))"
+        endif
+
+        if t_out + grain_dur > output_dur
+            grain_dur = output_dur - t_out
+        endif
+
+        if grain_dur > 0.0005
+            selectObject: grain
+            Shift times to: "start time", t_out
+            gStr$ = string$(grain)
+            oStr$ = fixed$(t_out, 9)
+            gdStr$ = fixed$(grain_dur, 9)
+
+            selectObject: output_buf
+            Formula (part): t_out, t_out + grain_dur, 1, 1,
+                ... "self + object(" + gStr$ + ", x)"
+
+            selectObject: env_buf
+            Formula (part): t_out, t_out + grain_dur, 1, 1,
+                ... "self + (0.5 - 0.5 * cos(2 * pi * (x - " + oStr$ + ") / " + gdStr$ + "))"
+        endif
+
         removeObject: grain
     endfor
-    
-    # OLA gain compensation
-    selectObject: output_buf
-    if overlap_ratio > 0.3
-        gain_comp = 1 / (1 + overlap_ratio * 0.8)
-        gainStr$ = string$(gain_comp)
-        Formula: "self * " + gainStr$
+
+    # divide by the accumulated envelope
+    selectObject: env_buf
+    envPeak = Get absolute extremum: 0, 0, "None"
+    if envPeak < 1e-9
+        envPeak = 1e-9
     endif
-    
+    efStr$ = fixed$(envPeak * 0.02, 9)
+    envStr$ = string$(env_buf)
+    selectObject: output_buf
+    Formula: "self / max(object[" + envStr$ + ", col], " + efStr$ + ")"
+    removeObject: env_buf
+
+    # v0.6 fix 4: deliver the requested length exactly. v0.5 built the
+    # buffer at output_duration_sec + grainSec and never trimmed, so a
+    # 10 s request produced a 10.06 s file.
+    selectObject: output_buf
+    bufNow = Get total duration
+    if bufNow > output_duration_sec
+        selectObject: output_buf
+        trimBuf = Extract part: 0, output_duration_sec, "rectangular", 1, "no"
+        removeObject: output_buf
+        output_buf = trimBuf
+    endif
+
+    selectObject: output_buf
+    chDur = Get total duration
+    eF = 0.005
+    if eF > chDur * 0.1
+        eF = chDur * 0.1
+    endif
+    if eF > 0.0002
+        eFs$ = fixed$(eF, 8)
+        selectObject: output_buf
+        Formula: "if x - xmin < " + eFs$ + " then self * ((x - xmin) / " + eFs$ + ") else self fi"
+        selectObject: output_buf
+        Formula: "if xmax - x < " + eFs$ + " then self * ((xmax - x) / " + eFs$ + ") else self fi"
+    endif
+
     if pass = 1
         channel_left = output_buf
     else
@@ -770,7 +1257,15 @@ else
 endif
 
 selectObject: finalOut
-Scale peak: 0.99
+# v0.6 fix 11: conditional, so a quiet result is not lifted along with
+# its noise floor.
+finalPeakChk = Get absolute extremum: 0, 0, "None"
+if finalPeakChk > 0.99
+    Scale peak: 0.99
+endif
+
+# v0.6 fix 9: all random draws are done.
+random_initializeSafelyAndUnpredictably ()
 
 # ============================================
 # CLEANUP
@@ -792,7 +1287,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Neural Granular Texture Morpher: " + sndName$ + " [" + presetName$ + "]"
+    Text: 0.5, "centre", 0.5, "half", "K-means Granular Texture Morpher: " + sndName$ + " [" + presetName$ + "]"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.6
@@ -829,9 +1324,12 @@ if draw_visualization
     
     # Left channel trajectory (solid)
     Line width: 1
+    # v0.7: plot the REAL onsets, including density jitter. v0.6 drew
+    # the nominal grid, so the picture did not match the audio whenever
+    # Density_variation was non-zero.
     for g from 2 to grains_needed
-        t1 = (g - 2) * stepSec
-        t2 = (g - 1) * stepSec
+        t1 = ev_tout#[g-1]
+        t2 = ev_tout#[g]
         c1 = cluster_history#[g-1]
         c2 = cluster_history#[g]
         colorVal = c2 / k
@@ -848,8 +1346,8 @@ if draw_visualization
         Colour: "{0.55, 0.55, 0.55}"
         for g from 2 to grains_needed
             if cluster_history_R#[g-1] > 0 and cluster_history_R#[g] > 0
-                t1 = (g - 2) * stepSec
-                t2 = (g - 1) * stepSec
+                t1 = evR_tout#[g-1]
+                t2 = evR_tout#[g]
                 Dashed line
                 Draw line: t1, cluster_history_R#[g-1], t2, cluster_history_R#[g]
             endif
