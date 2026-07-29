@@ -8,7 +8,7 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Neural Phonetic Harmonizer - Adaptive pitch shifting per
+#   Phonetic Harmonizer - Adaptive pitch shifting per
 #   phonetic class using FFNet classification.
 #
 # Changelog v0.6 (2026):
@@ -83,8 +83,88 @@ endif
 sound = selected("Sound")
 sound_name$ = selected$("Sound")
 
-form Neural Phonetic Harmonizer v0.6
-    comment === Preset ===
+# ============================================================
+# Changelog v0.7 (2026):
+#
+#   AUDIO CHANGES everywhere. Two of these are structural.
+#
+#   CRITICAL 1 - Consonant_interval could not act on a single frame it
+#     was named for. The consonant rule REQUIRED f0 <= 0:
+#       elsif iv > silence and hnr < fricative_max and f0 <= 0
+#     so every consonant-class frame was unvoiced by definition, while
+#     the entire harmony engine works by scaling PitchTier points -
+#     which unvoiced regions do not have. The class was defined as
+#     "material with no pitch" and the control tried to transpose it.
+#     Dark Consonants asked for -12 semitones and delivered an almost
+#     unshifted copy of the consonant into the wet path; -12, -5, +7
+#     and +12 were indistinguishable at the core of any consonant.
+#     v0.7 drops the f0 <= 0 requirement, so the class is now
+#     low-harmonicity material whether voiced or not. Voiced fricatives
+#     and nasals now fall in it AND can be transposed. The run reports
+#     how many consonant-class frames are voiced, i.e. how much of the
+#     class the interval can actually reach - it was structurally 0
+#     before. Genuinely unvoiced frames still pass through unshifted
+#     and are governed by Consonant_level alone; that is a property of
+#     PitchTier harmonisation, not something this fix removes.
+#
+#   CRITICAL 2 - Scale peak: 0.9 on the wet mix erased the class
+#     levels. The three levels were applied correctly and then the
+#     whole wet path was renormalised to a fixed peak, so on
+#     single-class material Vowel_level 0.1 and 0.9 produced the same
+#     wet loudness. Multiplying all three levels by any common factor
+#     changed nothing at all. Removed; the only gain stage left is a
+#     CONDITIONAL limiter on the finished output.
+#
+#   3 - MFCC is aligned in time with everything else. v0.6 read MFCC by
+#     FRAME NUMBER while querying pitch, intensity, HNR and formants at
+#     a hand-computed (i - 0.5) * frame_step, and the two are not the
+#     same instant - the 25 ms MFCC window puts frame 1 well past
+#     5 ms. Worse, iM = min(i, nFrames_mfcc) repeated the LAST MFCC
+#     frame for the whole tail once the control grid outran it. The
+#     frame index is now derived from the MFCC object's own x1 and dx,
+#     and the analysis time is clamped inside the sound.
+#
+#   4 - Formant validity is tracked. Undefined formants were filled
+#     with 500 / 1500 Hz - canonical vowel values - and the vowel rule
+#     only asks F1 > 300, so a frame whose formant analysis FAILED
+#     could be labelled a vowel because of the fallback, and the FFNet
+#     saw a textbook vowel rather than a missing measurement. The
+#     vowel rule now requires valid formants, and the feature fill is
+#     the file's own valid mean.
+#
+#   5 - The silence threshold is relative (max intensity - 35 dB). A
+#     fixed 45 dB SPL cut meant the same performance, attenuated,
+#     reclassified as silence.
+#
+#   6 - Random_seed added (0 = unpredictable). FFNet initialisation
+#     and training are stochastic; the generator is returned to its
+#     safe state afterwards.
+#
+#   7 - Silent input rejected before analysis.
+#
+#   8 - Validation. The form says "0-1" but `positive` does not bound
+#     to 1, so Wet_dry_mix = 1.5 gave dry_gain = -0.5 - a phase
+#     inversion of the dry path, not a mix - and Stereo_width > 2
+#     could drive a channel component negative.
+#
+#   9 - The formant ceiling follows Nyquist; a fixed 5500 Hz is above
+#     it on any file below 11 kHz.
+#
+#   10 - Documentation:
+#     - This is per-file FFNet distillation of heuristic rules: the
+#       rules make the labels, the net trains on those frames, is
+#       tested on the same frames, and smooths the same labels. There
+#       is no corpus, no held-out set and no ground truth. It is not a
+#       phonetic recogniser.
+#     - Stereo width comes from OPPOSING DRY/WET BALANCES, not from
+#       placing the harmony voices at different positions - both
+#       channels use the same wet mix.
+#     - Multichannel input is downmixed to mono; the stereo output is
+#       synthesised.
+#
+# ============================================================
+
+form Phonetic Harmonizer v0.7  (per-file FFNet class distillation)
     optionmenu Preset: 1
         option Manual
         option Octave Chorus
@@ -95,25 +175,35 @@ form Neural Phonetic Harmonizer v0.6
         option Detuned Unison
         option Major Chord
         option Minor Chord
-    comment === Harmony Intervals (semitones) ===
     real Vowel_interval_1 7.0
     real Vowel_interval_2 0.0
     real Consonant_interval -5.0
     real Other_interval 4.0
-    comment === Mix Levels (0-1) ===
-    positive Vowel_level 0.7
-    positive Consonant_level 0.5
-    positive Other_level 0.6
-    positive Wet_dry_mix 0.5
-    comment === Processing ===
+    real Vowel_level 0.7
+    real Consonant_level 0.5
+    real Other_level 0.6
+    real Wet_dry_mix 0.5
     positive Smoothing_ms 20
     positive Temperature 0.3
-    comment === Output ===
-    boolean Stereo_output 1
     real Stereo_width 0.5
+    integer Random_seed 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Consonant_interval only reaches VOICED consonant frames: harmony is
+# produced by scaling PitchTier points, and unvoiced material has none.
+# Those frames pass through unshifted and are governed by
+# Consonant_level. The run reports how much of the class is voiced.
+# Stereo_width < 0 gives mono. Width comes from opposing dry/wet
+# balances, not from placing the voices apart - both channels share one
+# wet mix. Multichannel input is downmixed to mono.
+if stereo_width < 0
+    stereo_output = 0
+    stereo_width = 0
+else
+    stereo_output = 1
+endif
 
 # ============================================
 # PRESET LOGIC
@@ -234,7 +324,6 @@ training_iterations = 1000
 learning_rate = 0.001
 vowel_hnr_threshold = 5.0
 fricative_hnr_max = 3.0
-silence_threshold = 45
 
 # ============================================
 # SETUP
@@ -249,7 +338,7 @@ if duration < 0.1
 endif
 
 clearinfo
-writeInfoLine: "=== Neural Phonetic Harmonizer v0.6 ==="
+writeInfoLine: "=== Phonetic Harmonizer v0.7 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Vowel: ", vowel_interval_1, " / ", vowel_interval_2, " st"
 appendInfoLine: "Consonant: ", consonant_interval, " st | Other: ", other_interval, " st"
@@ -263,6 +352,75 @@ appendInfoLine: ""
 
 selectObject: sound
 workSnd = Convert to mono
+
+# ============================================
+# VALIDATION  (v0.7 fix 8)
+# ============================================
+warnLines$ = ""
+if vowel_level < 0
+    vowel_level = 0
+    warnLines$ = warnLines$ + "  ! Vowel_level < 0 -> 0" + newline$
+endif
+if vowel_level > 1
+    vowel_level = 1
+    warnLines$ = warnLines$ + "  ! Vowel_level > 1 -> 1" + newline$
+endif
+if consonant_level < 0
+    consonant_level = 0
+    warnLines$ = warnLines$ + "  ! Consonant_level < 0 -> 0" + newline$
+endif
+if consonant_level > 1
+    consonant_level = 1
+    warnLines$ = warnLines$ + "  ! Consonant_level > 1 -> 1" + newline$
+endif
+if other_level < 0
+    other_level = 0
+    warnLines$ = warnLines$ + "  ! Other_level < 0 -> 0" + newline$
+endif
+if other_level > 1
+    other_level = 1
+    warnLines$ = warnLines$ + "  ! Other_level > 1 -> 1" + newline$
+endif
+if wet_dry_mix < 0
+    wet_dry_mix = 0
+    warnLines$ = warnLines$ + "  ! Wet_dry_mix < 0 -> 0" + newline$
+endif
+if wet_dry_mix > 1
+    wet_dry_mix = 1
+    warnLines$ = warnLines$ +
+        ... "  ! Wet_dry_mix > 1 inverts the dry path's phase -> 1" + newline$
+endif
+if stereo_width > 1
+    stereo_width = 1
+    warnLines$ = warnLines$ +
+        ... "  ! Stereo_width > 1 can drive a channel component negative -> 1" + newline$
+endif
+if smoothing_ms < 0
+    smoothing_ms = 0
+    warnLines$ = warnLines$ + "  ! Smoothing_ms < 0 -> 0" + newline$
+endif
+if temperature <= 0
+    temperature = 0.01
+    warnLines$ = warnLines$ + "  ! Temperature must be > 0 -> 0.01" + newline$
+endif
+
+# v0.7 fix 7: a silent input yields a single silence class, a wet mix
+# of zeros, and then peak normalisation of nothing.
+selectObject: workSnd
+srcPeak = Get absolute extremum: 0, 0, "None"
+if srcPeak < 1e-6
+    removeObject: workSnd
+    exitScript: "The selected Sound is silent (or near-silent); nothing to harmonise."
+endif
+
+# v0.7 fix 6: FFNet initialisation and training are stochastic.
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedLabel$ = string$(random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
+    seedLabel$ = "unpredictable"
+endif
 Rename: "Work"
 
 # ============================================
@@ -298,7 +456,13 @@ selectObject: workSnd
 intensity_obj = To Intensity: 75, 0, "yes"
 
 selectObject: workSnd
-formant_obj = To Formant (burg): 0, 5, 5500, 0.025, 50
+# v0.7 fix 9: a fixed 5500 Hz ceiling is above Nyquist on any file
+# below 11 kHz.
+maxFormantHz = 5500
+if maxFormantHz > fs / 2 * 0.9
+    maxFormantHz = fs / 2 * 0.9
+endif
+formant_obj = To Formant (burg): 0, 5, maxFormantHz, 0.025, 50
 
 selectObject: workSnd
 mfcc_obj = To MFCC: 12, 0.025, frame_step_sec, 100, 100, 0
@@ -307,13 +471,92 @@ selectObject: workSnd
 hnr_obj = To Harmonicity (cc): frame_step_sec, 75, 0.1, 1.0
 
 selectObject: mfcc_obj
+# v0.7 fix 5: relative to the file, not an absolute dB SPL cut. The
+# same performance attenuated by 20 dB used to reclassify as silence.
+selectObject: intensity_obj
+maxIntDb = Get maximum: 0, 0, "Parabolic"
+if maxIntDb = undefined
+    maxIntDb = 60
+endif
+silence_threshold = maxIntDb - 35
+if silence_threshold < 5
+    silence_threshold = 5
+endif
+
+# v0.7 fix 4: a neutral fill from the file's own valid formants.
+formantValid# = zero#(nFrames)
+sumFa = 0
+sumFb = 0
+nValidF = 0
+for i from 1 to nFrames
+    tv = (i - 0.5) * frame_step_sec
+    if tv > duration - frame_step_sec / 2
+        tv = duration - frame_step_sec / 2
+    endif
+    if tv < 0
+        tv = 0
+    endif
+    selectObject: formant_obj
+    fa = Get value at time: 1, tv, "Hertz", "Linear"
+    selectObject: formant_obj
+    fb = Get value at time: 2, tv, "Hertz", "Linear"
+    if fa <> undefined and fb <> undefined
+        nValidF = nValidF + 1
+        sumFa = sumFa + fa
+        sumFb = sumFb + fb
+    endif
+endfor
+if nValidF > 0
+    fillF1 = sumFa / nValidF
+    fillF2 = sumFb / nValidF
+else
+    fillF1 = 500
+    fillF2 = 1500
+endif
+appendInfoLine: "  Formants valid in ", nValidF, "/", nFrames, " frames"
+
+nConsVoiced = 0
+nConsTotal = 0
+
 nFrames_mfcc = Get number of frames
+if nFrames_mfcc < 1
+    exitScript: "MFCC analysis produced no frames; the input is too short for a 25 ms window."
+endif
+selectObject: mfcc_obj
+mfccT1 = Get time from frame number: 1
+if nFrames_mfcc > 1
+    selectObject: mfcc_obj
+    mfccT2 = Get time from frame number: 2
+    mfccDx = mfccT2 - mfccT1
+else
+    mfccDx = frame_step_sec
+endif
+if mfccDx <= 0
+    mfccDx = frame_step_sec
+endif
 
 for i from 1 to nFrames
+    # v0.7 fix 3: one time for every query, clamped inside the sound.
     t = (i - 0.5) * frame_step_sec
+    if t > duration - frame_step_sec / 2
+        t = duration - frame_step_sec / 2
+    endif
+    if t < 0
+        t = 0
+    endif
     frame_time#[i] = t
     
-    iM = min(i, nFrames_mfcc)
+    # v0.7 fix 3: derive the MFCC frame from the object's own x1/dx
+    # instead of assuming frame i is centred at (i-0.5)*step. v0.6 also
+    # used min(i, nFrames_mfcc), which repeated the LAST MFCC frame for
+    # the entire tail whenever the control grid outran the analysis.
+    iM = round((t - mfccT1) / mfccDx) + 1
+    if iM < 1
+        iM = 1
+    endif
+    if iM > nFrames_mfcc
+        iM = nFrames_mfcc
+    endif
     selectObject: mfcc_obj
     for c from 1 to 3
         v = Get value in frame: iM, c
@@ -331,12 +574,23 @@ for i from 1 to nFrames
     
     selectObject: formant_obj
     f1 = Get value at time: 1, t, "Hertz", "Linear"
+    selectObject: formant_obj
     f2 = Get value at time: 2, t, "Hertz", "Linear"
-    if f1 = undefined
-        f1 = 500
-    endif
-    if f2 = undefined
-        f2 = 1500
+    # v0.7 fix 4: track VALIDITY. v0.6 filled undefined formants with
+    # 500 / 1500 Hz - canonical vowel values - and the vowel rule only
+    # asks F1 > 300, so a frame whose formant analysis FAILED could be
+    # labelled a vowel because of the fallback. The fill is now the
+    # file's own valid mean and it is never enough on its own.
+    if f1 = undefined or f2 = undefined
+        formantValid#[i] = 0
+        if f1 = undefined
+            f1 = fillF1
+        endif
+        if f2 = undefined
+            f2 = fillF2
+        endif
+    else
+        formantValid#[i] = 1
     endif
     feat_f1#[i] = f1
     feat_f2#[i] = f2
@@ -366,10 +620,21 @@ for i from 1 to nFrames
     # Classify
     if iv < silence_threshold
         cat_silence#[i] = 1
-    elsif hnr > vowel_hnr_threshold and f0 > 0 and f1 > 300
+    elsif formantValid#[i] = 1 and hnr > vowel_hnr_threshold and f0 > 0 and f1 > 300
         cat_vowel#[i] = 1
-    elsif iv > silence_threshold and hnr < fricative_hnr_max and f0 <= 0
+    # v0.7 CRITICAL 1: the f0 <= 0 requirement is gone. It made every
+    # consonant-class frame unvoiced BY DEFINITION, and the harmony
+    # engine works by scaling PitchTier points, which unvoiced regions
+    # do not have - so Consonant_interval could not reach a single
+    # frame of the class it names. The class is now low-harmonicity
+    # material whether voiced or not, so voiced fricatives and nasals
+    # land in it and can actually be transposed.
+    elsif iv > silence_threshold and hnr < fricative_hnr_max
         cat_consonant#[i] = 1
+        if f0 > 0
+            nConsVoiced = nConsVoiced + 1
+        endif
+        nConsTotal = nConsTotal + 1
     else
         cat_other#[i] = 1
     endif
@@ -378,6 +643,15 @@ endfor
 removeObject: pitch_obj, intensity_obj, formant_obj, mfcc_obj, hnr_obj
 
 appendInfoLine: "  ", nFrames, " frames analyzed"
+appendInfoLine: "  Consonant class: ", nConsVoiced, "/", nConsTotal,
+    ... " frames voiced (only these can be transposed;"
+appendInfoLine: "    unvoiced ones pass through and follow Consonant_level)"
+appendInfoLine: "  Seed: ", seedLabel$
+if warnLines$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Adjustments:"
+    appendInfo: warnLines$
+endif
 
 # ============================================
 # NORMALIZE FEATURES
@@ -975,8 +1249,13 @@ endif
 
 appendInfoLine: "Creating final mix..."
 
+# v0.7 CRITICAL 2: NO renormalisation of the wet path. v0.6 applied
+# the three class levels correctly and then rescaled the whole wet mix
+# to a fixed peak of 0.9, so on single-class material Vowel_level 0.1
+# and 0.9 gave the same wet loudness, and scaling all three levels by
+# a common factor changed nothing. The only gain stage left is the
+# conditional limiter on the finished output.
 selectObject: wet_mix
-Scale peak: 0.9
 Rename: "WetMix"
 wetMixId = selected("Sound")
 wetMixStr$ = string$(wetMixId)
@@ -1030,7 +1309,15 @@ else
 endif
 
 selectObject: finalOut
-Scale peak: 0.99
+# v0.7 CRITICAL 2: a CONDITIONAL limiter, so the class levels and
+# Wet_dry_mix actually determine the output loudness.
+finalPeakChk = Get absolute extremum: 0, 0, "None"
+if finalPeakChk > 0.99
+    Scale peak: 0.99
+endif
+
+# v0.7 fix 6: all stochastic work is done.
+random_initializeSafelyAndUnpredictably ()
 
 # ============================================
 # CLEANUP
@@ -1051,7 +1338,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Neural Phonetic Harmonizer v0.6: " + sound_name$ + " [" + presetName$ + "]"
+    Text: 0.5, "centre", 0.5, "half", "Phonetic Harmonizer v0.7: " + sound_name$ + " [" + presetName$ + "]"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
