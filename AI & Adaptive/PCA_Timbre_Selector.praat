@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2025) - Direct selection + PCA visualization
+# Version: 1.5 (2025) - Direct selection + PCA visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,10 +36,9 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form PCA Timbre Selector v1.3
-    comment === Timbre Presets ===
+form PCA Timbre Selector v1.5
     optionmenu Preset: 1
-        option Custom (PCA targeting)
+        option Custom (within-file PCA targeting)
         option Bright (high spectral centroid)
         option Dark (low spectral centroid)
         option Noisy (low HNR)
@@ -48,22 +47,69 @@ form PCA Timbre Selector v1.3
         option Low Pitch
         option Loud (high intensity)
         option Quiet (low intensity)
-    comment === Analysis Parameters ===
-    positive Segment_ms 25
+    positive Analysis_window_ms 25
     positive Frame_step_seconds 0.01
     positive F0_min 75
     positive F0_max 600
-    comment === Selection Strength ===
-    comment (Percentile: 20 = top/bottom 20%)
     positive Selection_percentile 25
-    comment === Custom PCA Target (only for Custom preset) ===
     real Target_pc1 0.0
     real Target_pc2 0.0
     real Target_pc3 0.0
-    comment === Output ===
+    optionmenu Pca_whiten: 1
+        option Raw PC coordinates
+        option Whitened (equal weight per axis)
+    optionmenu Join_mode: 2
+        option Hard montage
+        option Short crossfade
+        option Hann phrase shaping
+    optionmenu Output_level_mode: 2
+        option Preserve source gain
+        option Conditional limiter
+        option Normalize peak to 0.99
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Analysis_window_ms is the SPECTRAL ANALYSIS window, renamed from
+# Segment_ms: it never set the length of the extracted audio. Selected
+# frames contribute their own cell, [t - step/2, t + step/2], and
+# adjacent cells merge into chunks.
+# Selection_percentile is now a true rank: k = ceil(valid frames x
+# percentile / 100), and the run reports how many frames that was.
+# Custom targeting is WITHIN-FILE - axis signs, scales and meanings
+# change with the material, so (1, -0.5, 0) is not the same timbre in
+# another file. (0, 0, 0) is well defined: the file's average timbre.
+# Output_level_mode matters most for Loud/Quiet: v1.3 always normalised
+# to 0.99, so Quiet selected the quietest regions and then raised them
+# to near full scale.
+#
+# ON MISSING VALUES (unchanged, now stated): undefined pitch, intensity,
+# centroid, spread and HNR enter the PCA as 0 Hz, -100 dB, 0 Hz, 0 Hz
+# and -50 dB. After z-scoring those are not "missing" - they are
+# extreme points, so PC1/PC2 often describe voiced-and-active versus
+# unvoiced-and-silent. That makes this an ACOUSTIC-STATE space rather
+# than a pure timbre space, which is useful for mixed material but
+# worth knowing.
+segment_ms = analysis_window_ms
+
+# ============================================
+# VALIDATION  (v1.4)
+# ============================================
+if analysis_window_ms <= 0
+    exitScript: "Analysis_window_ms must be greater than 0."
+endif
+if frame_step_seconds <= 0
+    exitScript: "Frame_step_seconds must be greater than 0."
+endif
+if f0_min <= 0
+    exitScript: "F0_min must be greater than 0."
+endif
+if f0_max <= f0_min
+    exitScript: "F0_max must be greater than F0_min."
+endif
+if selection_percentile <= 0 or selection_percentile > 100
+    exitScript: "Selection_percentile must be greater than 0 and at most 100."
+endif
 
 # ===== PRESET CONFIGURATION =====
 if preset = 1
@@ -106,7 +152,7 @@ endif
 
 # ===== 1. SETUP =====
 writeInfoLine: "=============================================="
-appendInfoLine: "  PCA TIMBRE SELECTOR v1.3"
+appendInfoLine: "  PCA TIMBRE SELECTOR v1.5"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", sndName$
@@ -133,6 +179,17 @@ nch = Get number of channels
 selectObject: snd
 Copy: "Analysis_Work"
 workSnd = selected("Sound")
+
+# v1.4: a silent input leaves most columns constant, so the PCA is
+# rank-deficient, Quiet/Noisy happily select the silence, and the old
+# unconditional Scale peak amplified whatever numerical residue came
+# out.
+selectObject: workSnd
+srcPeakChk = Get absolute extremum: 0, 0, "None"
+if srcPeakChk < 1e-5
+    removeObject: workSnd
+    exitScript: "The selected Sound is silent (or near-silent); there is no timbre to analyse."
+endif
 
 if nch > 1
     selectObject: workSnd
@@ -183,6 +240,8 @@ feature$[5] = "HNR"
 
 # Feature arrays
 pitch_vals# = zero#(nF)
+pitchValid# = zero#(nF)
+hnrValid# = zero#(nF)
 intensity_vals# = zero#(nF)
 centroid_vals# = zero#(nF)
 spread_vals# = zero#(nF)
@@ -199,30 +258,53 @@ endfor
 
 # Extract all features
 for i from 1 to nF
-    time_vals#[i] = t0 + (i-1)*dt
-    
+    # v1.4 CRITICAL 2: ONE time grid, taken from the Pitch object's own
+    # frame centres. v1.3 used Get start time (the domain start, 0) and
+    # built t0 + (i-1)*dt, then read Intensity and Harmonicity by FRAME
+    # INDEX. Measured on a 2 s file at a 10 ms step:
+    #   Pitch        197 frames, frame 1 centred at 0.020 s
+    #   Intensity    192 frames, frame 1 centred at 0.045 s
+    #   Harmonicity  198 frames, frame 1 centred at 0.015 s
+    # So the counts differ (index 197 runs PAST Intensity's 192 frames)
+    # and each row mixed three different instants up to 30 ms apart.
+    # Intensity and HNR are now queried BY TIME at the pitch frame's
+    # centre.
+    selectObject: pit
+    t = Get time from frame number: i
+    time_vals#[i] = t
+
     # Pitch
     selectObject: pit
     v = Get value in frame: i, "Hertz"
     if v = undefined or v <= 0
         v = 0
+        pitchValid#[i] = 0
+    else
+        pitchValid#[i] = 1
     endif
     pitch_vals#[i] = v
     selectObject: feat
-    Set value: i, 1, v
-    
-    # Intensity
+    # v1.4: log-frequency pitch for the PCA and the ranking, so
+    # 100->200 Hz and 200->400 Hz are the same distance. v1.3 used raw
+    # Hz, where a 100 Hz step means an octave low down and under four
+    # semitones higher up.
+    if v > 0
+        Set value: i, 1, 12 * log2(v / 55)
+    else
+        Set value: i, 1, 0
+    endif
+
+    # Intensity - BY TIME, not by frame index
     selectObject: inten
-    v = Get value in frame: i
+    v = Get value at time: t, "cubic"
     if v = undefined
         v = -100
     endif
     intensity_vals#[i] = v
     selectObject: feat
     Set value: i, 2, v
-    
+
     # Centroid & Spread
-    t = time_vals#[i]
     selectObject: specg
     To Spectrum (slice): t
     spec = selected("Spectrum")
@@ -243,10 +325,18 @@ for i from 1 to nF
     Set value: i, 4, spread
     
     # HNR
+    # v1.5: an explicit validity flag. v1.4 filled undefined with -50
+    # and then the Noisy/Tonal branch accepted only hnr > -40, so a
+    # genuinely measured -45 dB frame was discarded with the undefined
+    # ones - the Noisy preset was excluding the noisiest material it
+    # had.
     selectObject: harmo
-    v = Get value in frame: i
+    v = Get value at time: t, "cubic"
     if v = undefined
         v = -50
+        hnrValid#[i] = 0
+    else
+        hnrValid#[i] = 1
     endif
     hnr_vals#[i] = v
     selectObject: feat
@@ -280,6 +370,12 @@ endfor
 selectObject: feat
 To PCA
 pca = selected("PCA")
+# v1.4: eigenvalues, for the optional whitened PCA distance. Raw PC
+# coordinates keep each axis's own variance, so PC1 - usually the
+# largest - dominates a Euclidean distance. That is often what you
+# want (PC1 is the file's main axis of variation), but it is not an
+# equal-weight distance, so it is now a choice.
+
 
 # Store eigenvector loadings
 for pc from 1 to 3
@@ -403,6 +499,43 @@ appendInfoLine: "  HNR: ", fixed$(meanHNR, 1), " ± ", fixed$(sdHNR, 1), " dB"
 appendInfoLine: "  Pitch: ", fixed$(meanPitch, 0), " ± ", fixed$(sdPitch, 0), " Hz"
 appendInfoLine: "  Intensity: ", fixed$(meanInt, 1), " ± ", fixed$(sdInt, 1), " dB"
 
+# v1.5: whitening scales are the PC scores' own standard deviations.
+# v1.4 tried Get eigenvalue on the PCA object under nocheck; that query
+# returns nothing in this build, so all three silently defaulted to 1
+# and "Whitened" was identical to "Raw" - verified: both modes selected
+# exactly the same 75 frames. Dividing each axis by its own spread is
+# the same whitening and needs no query that may not exist.
+procedure sdOf: .n
+    .sum = 0
+    for .i from 1 to .n
+        .sum = .sum + sdSrc#[.i]
+    endfor
+    .mu = .sum / .n
+    .ss = 0
+    for .i from 1 to .n
+        .d = sdSrc#[.i] - .mu
+        .ss = .ss + .d * .d
+    endfor
+    if .n > 1
+        sdOf.out = sqrt(.ss / (.n - 1))
+    else
+        sdOf.out = 1
+    endif
+    if sdOf.out < 1e-9
+        sdOf.out = 1
+    endif
+endproc
+
+sdSrc# = pc1_vals#
+@sdOf: nF
+eig1 = sdOf.out ^ 2
+sdSrc# = pc2_vals#
+@sdOf: nF
+eig2 = sdOf.out ^ 2
+sdSrc# = pc3_vals#
+@sdOf: nF
+eig3 = sdOf.out ^ 2
+
 # ===== 5. SELECTION =====
 appendInfoLine: ""
 appendInfoLine: "STEP 4: Selecting frames..."
@@ -410,114 +543,164 @@ appendInfoLine: "STEP 4: Selecting frames..."
 selected_mask# = zero#(nF)
 dist_vals# = zero#(nF)
 
-# Percentile to z-score
-if selection_percentile <= 10
-    zThresh = 1.28
-elsif selection_percentile <= 20
-    zThresh = 0.84
-elsif selection_percentile <= 25
-    zThresh = 0.67
-elsif selection_percentile <= 30
-    zThresh = 0.52
-elsif selection_percentile <= 40
-    zThresh = 0.25
-else
-    zThresh = 0
-endif
+# ============================================================
+# SELECTION BY RANK  (v1.4 CRITICAL 1)
+# ============================================================
+# v1.3 mapped the percentile to a fixed z threshold (25% -> 0.67 and so
+# on), which assumes a clean Gaussian. Acoustic features almost never
+# are: HNR separates voiced from unvoiced, intensity is skewed, pitch
+# and centroid are often multi-modal. So "Selection_percentile = 20"
+# could return 3%, 35%, or nothing at all. Custom mode was worse - its
+# threshold was meanDist * (percentile / 50), which is neither a
+# percentile nor a quantile of the distances.
+#
+# Ranking the valid frames and taking exactly k of them makes the
+# number mean what the dialog says, and it removes the zero-standard-
+# deviation division at the same time: if every value is identical
+# there is no "top", and the run says so instead of dividing by 0.
+
+nValidSel = 0
+selVal# = zero#(nF)
+selIdx# = zero#(nF)
 
 if selectionFeature$ = "centroid"
     for i from 1 to nF
         if centroid_vals#[i] > 0
-            zScore = (centroid_vals#[i] - meanCent) / sdCent
-            dist_vals#[i] = abs(zScore)
-            if selectionDirection = 1
-                if zScore >= zThresh
-                    selected_mask#[i] = 1
-                endif
-            else
-                if zScore <= -zThresh
-                    selected_mask#[i] = 1
-                endif
-            endif
+            nValidSel += 1
+            selVal#[nValidSel] = centroid_vals#[i]
+            selIdx#[nValidSel] = i
+            dist_vals#[i] = abs(centroid_vals#[i] - meanCent) / max(sdCent, 1e-9)
         endif
     endfor
-
 elsif selectionFeature$ = "hnr"
     for i from 1 to nF
-        if hnr_vals#[i] > -40
-            zScore = (hnr_vals#[i] - meanHNR) / sdHNR
-            dist_vals#[i] = abs(zScore)
-            if selectionDirection = 1
-                if zScore >= zThresh
-                    selected_mask#[i] = 1
-                endif
-            else
-                if zScore <= -zThresh
-                    selected_mask#[i] = 1
-                endif
-            endif
+        # v1.5: use the VALIDITY flag, not a -40 dB cut. v1.4 rejected
+        # any frame below -40, so a genuinely measured HNR of -45 dB was
+        # discarded alongside the undefined ones - and the Noisy preset
+        # was therefore excluding the noisiest material it could find.
+        if hnrValid#[i] = 1
+            nValidSel += 1
+            selVal#[nValidSel] = hnr_vals#[i]
+            selIdx#[nValidSel] = i
+            dist_vals#[i] = abs(hnr_vals#[i] - meanHNR) / max(sdHNR, 1e-9)
         endif
     endfor
-
 elsif selectionFeature$ = "pitch"
     for i from 1 to nF
         if pitch_vals#[i] > 0
-            zScore = (pitch_vals#[i] - meanPitch) / sdPitch
-            dist_vals#[i] = abs(zScore)
-            if selectionDirection = 1
-                if zScore >= zThresh
-                    selected_mask#[i] = 1
-                endif
-            else
-                if zScore <= -zThresh
-                    selected_mask#[i] = 1
-                endif
-            endif
+            nValidSel += 1
+            # v1.4: rank on log frequency, so the percentile follows
+            # musical intervals rather than Hz differences.
+            selVal#[nValidSel] = 12 * log2(pitch_vals#[i] / 55)
+            selIdx#[nValidSel] = i
+            dist_vals#[i] = abs(pitch_vals#[i] - meanPitch) / max(sdPitch, 1e-9)
         endif
     endfor
-
 elsif selectionFeature$ = "intensity"
     for i from 1 to nF
         if intensity_vals#[i] > -90
-            zScore = (intensity_vals#[i] - meanInt) / sdInt
-            dist_vals#[i] = abs(zScore)
-            if selectionDirection = 1
-                if zScore >= zThresh
-                    selected_mask#[i] = 1
-                endif
-            else
-                if zScore <= -zThresh
-                    selected_mask#[i] = 1
-                endif
-            endif
+            nValidSel += 1
+            selVal#[nValidSel] = intensity_vals#[i]
+            selIdx#[nValidSel] = i
+            dist_vals#[i] = abs(intensity_vals#[i] - meanInt) / max(sdInt, 1e-9)
         endif
     endfor
-
 else
-    # PCA mode (Custom)
+    # Custom PCA: rank by DISTANCE to the target, smallest first.
+    # NOTE: the target is only meaningful inside THIS file's PCA space -
+    # axis signs, scales and meanings all change with the material, so
+    # (1, -0.5, 0) is not the same timbre in another file. (0, 0, 0) is
+    # well defined: the file's average timbre.
     t1 = target_pc1
     t2 = target_pc2
     t3 = target_pc3
-    
     for i from 1 to nF
-        d = sqrt((pc1_vals#[i] - t1)^2 + (pc2_vals#[i] - t2)^2 + (pc3_vals#[i] - t3)^2)
-        dist_vals#[i] = d
-    endfor
-    
-    # Find threshold
-    sumDist = 0
-    for i from 1 to nF
-        sumDist += dist_vals#[i]
-    endfor
-    meanDist = sumDist / nF
-    distThresh = meanDist * (selection_percentile / 50)
-    
-    for i from 1 to nF
-        if dist_vals#[i] < distThresh
-            selected_mask#[i] = 1
+        # v1.5: option 1 is "Raw PC coordinates", option 2 is
+        # "Whitened". v1.4 tested = 1 and so did the opposite of the
+        # dialog in both positions.
+        if pca_whiten = 2
+            e1 = max(sqrt(eig1), 1e-9)
+            e2 = max(sqrt(eig2), 1e-9)
+            e3 = max(sqrt(eig3), 1e-9)
+            d = sqrt(((pc1_vals#[i] - t1)/e1)^2 + ((pc2_vals#[i] - t2)/e2)^2
+                ... + ((pc3_vals#[i] - t3)/e3)^2)
+        else
+            d = sqrt((pc1_vals#[i] - t1)^2 + (pc2_vals#[i] - t2)^2 + (pc3_vals#[i] - t3)^2)
         endif
+        dist_vals#[i] = d
+        nValidSel += 1
+        # v1.5: store the DISTANCE, not its negation. v1.4 stored -d and
+        # Custom uses selectionDirection = 0, which takes the LOWEST
+        # values - and the lowest -d is the LARGEST distance. Custom
+        # targeting was selecting the frames FURTHEST from the target:
+        # distances 0.2, 0.8, 2.0 became -0.2, -0.8, -2.0 and -2.0 was
+        # picked first. It implemented PCA avoidance.
+        selVal#[nValidSel] = d
+        selIdx#[nValidSel] = i
     endfor
 endif
+
+if nValidSel < 1
+    removeObject: workSnd
+    exitScript: "No frame has a usable value for this preset's feature."
+endif
+
+# how many to take
+kTake = ceiling(nValidSel * selection_percentile / 100)
+if kTake < 1
+    kTake = 1
+endif
+if kTake > nValidSel
+    kTake = nValidSel
+endif
+
+# is the feature actually varying?
+minSel = selVal#[1]
+maxSel = selVal#[1]
+for v from 2 to nValidSel
+    if selVal#[v] < minSel
+        minSel = selVal#[v]
+    endif
+    if selVal#[v] > maxSel
+        maxSel = selVal#[v]
+    endif
+endfor
+if maxSel - minSel < 1e-12
+    appendInfoLine: "  ! This feature does not vary across the file - there is no"
+    appendInfoLine: "    'top' or 'bottom' to select. Taking the first ", kTake,
+        ... " valid frames in time order."
+    for v from 1 to kTake
+        idxHere = selIdx#[v]
+        selected_mask#[idxHere] = 1
+    endfor
+else
+    # partial selection sort: pull the kTake extreme values to the front
+    for a from 1 to kTake
+        bestPos = a
+        for b from a + 1 to nValidSel
+            if selectionDirection = 1
+                if selVal#[b] > selVal#[bestPos]
+                    bestPos = b
+                endif
+            else
+                if selVal#[b] < selVal#[bestPos]
+                    bestPos = b
+                endif
+            endif
+        endfor
+        tmpV = selVal#[a]
+        selVal#[a] = selVal#[bestPos]
+        selVal#[bestPos] = tmpV
+        tmpI = selIdx#[a]
+        selIdx#[a] = selIdx#[bestPos]
+        selIdx#[bestPos] = tmpI
+        idxHere = selIdx#[a]
+        selected_mask#[idxHere] = 1
+    endfor
+endif
+
+appendInfoLine: "  Requested ", fixed$(selection_percentile, 1), "% of ",
+    ... nValidSel, " valid frames -> ", kTake, " frames selected"
 
 # Count selected
 selected_frame_count = 0
@@ -539,12 +722,22 @@ if selected_frame_count < 2
 endif
 
 chunk_count = 0
+minChunkDur = 1e9
 chunk_start = -1
 chunk_end = -1
 
 for i from 1 to nF
-    t_s = time_vals#[i]
-    t_e = t_s + dt
+    # v1.4 CRITICAL 2: the frame's cell is CENTRED on its own time.
+    # v1.3 took [t, t+dt], so the audio began where the feature was
+    # measured and ran forward past it.
+    t_s = time_vals#[i] - dt/2
+    t_e = time_vals#[i] + dt/2
+    if t_s < 0
+        t_s = 0
+    endif
+    if t_e > dur
+        t_e = dur
+    endif
     
     if selected_mask#[i] = 1
         if chunk_start = -1
@@ -554,8 +747,17 @@ for i from 1 to nF
     else
         if chunk_start <> -1
             selectObject: snd
-            Extract part: chunk_start, chunk_end, "Hanning", 1, "no"
+            if join_mode = 3
+                Extract part: chunk_start, chunk_end, "Hanning", 1, "no"
+            else
+                Extract part: chunk_start, chunk_end, "rectangular", 1, "no"
+            endif
             chunkID = selected("Sound")
+            selectObject: chunkID
+            thisChunkDur = Get total duration
+            if chunk_count = 0 or thisChunkDur < minChunkDur
+                minChunkDur = thisChunkDur
+            endif
             chunk_count += 1
             chunk_id_'chunk_count' = chunkID
             chunk_start = -1
@@ -565,8 +767,25 @@ endfor
 
 if chunk_start <> -1
     selectObject: snd
-    Extract part: chunk_start, chunk_end, "Hanning", 1, "no"
+    # v1.5: the trailing chunk follows Join_mode too. v1.4 hard-coded
+    # Hanning here, so in Hard montage or Short crossfade every chunk
+    # was rectangular except the last, which got a full Hann - an
+    # unexplained fade at the end of the piece.
+    if join_mode = 3
+        Extract part: chunk_start, chunk_end, "Hanning", 1, "no"
+    else
+        Extract part: chunk_start, chunk_end, "rectangular", 1, "no"
+    endif
     chunkID = selected("Sound")
+    # v1.5: the trailing chunk counts toward minChunkDur too. v1.4
+    # updated it only inside the loop, so if the LAST chunk was the
+    # shortest the crossfade could exceed 30% of it - most likely
+    # exactly when the selection ends on a single frame.
+    selectObject: chunkID
+    thisChunkDur = Get total duration
+    if chunk_count = 0 or thisChunkDur < minChunkDur
+        minChunkDur = thisChunkDur
+    endif
     chunk_count += 1
     chunk_id_'chunk_count' = chunkID
 endif
@@ -579,10 +798,37 @@ if chunk_count > 0
         plusObject: chunk_id_'i'
     endfor
     
-    Concatenate with overlap: 0.01
+    # v1.4 CRITICAL 4: v1.3 applied a full Hann to EVERY chunk and then
+    # crossfaded on top. On a 20-40 ms chunk the Hann attenuates most of
+    # it, so the result carried a dynamic arch per chunk plus a dip at
+    # every join - a real effect, but not "neutral timbre selection".
+    # Join_mode makes it a choice; the crossfade is bounded by the
+    # shortest chunk so it cannot swallow one whole.
+    if join_mode = 1
+        Concatenate
+    else
+        xfUse = 0.01
+        if xfUse > minChunkDur * 0.3
+            xfUse = minChunkDur * 0.3
+        endif
+        if xfUse < 0.0005
+            Concatenate
+        else
+            Concatenate with overlap: xfUse
+        endif
+    endif
     Rename: sndName$ + "_" + presetName$
     finalSnd = selected("Sound")
-    Scale peak: 0.99
+    # v1.4 CRITICAL 5: normalising every result to 0.99 contradicts the
+    # Quiet preset outright - it picks the quietest regions of the
+    # source and then raises them to near full scale, erasing the level
+    # difference between Loud and Quiet entirely.
+    outPeakNow = Get absolute extremum: 0, 0, "None"
+    if output_level_mode = 3
+        Scale peak: 0.99
+    elsif output_level_mode = 2 and outPeakNow > 0.99
+        Scale peak: 0.99
+    endif
     
     selectObject: finalSnd
     finalDur = Get total duration
@@ -643,8 +889,8 @@ if draw_visualization
     Axes: 0, dur, 0, 1
     
     for i from 1 to nF
-        t_s = time_vals#[i]
-        t_e = t_s + dt
+        t_s = time_vals#[i] - dt/2
+        t_e = time_vals#[i] + dt/2
         if selected_mask#[i] = 1
             Paint rectangle: "{0.3, 0.75, 0.45}", t_s, t_e, 0, 1
         else
