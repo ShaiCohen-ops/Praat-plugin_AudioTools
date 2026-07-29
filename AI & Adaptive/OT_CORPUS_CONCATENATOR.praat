@@ -26,8 +26,97 @@
 #            outside the 'if' statement.
 # ============================================================
 
-form OT Corpus Concatenator v0.5
-    comment === Preset ===
+# ============================================================
+# Changelog v0.6 (2026):
+#
+#   CRITICAL 1 - the script read the wrong MFCC coefficients. Praat
+#     keeps C0 in a separate slot: "Get value in frame: f, 1" returns
+#     C1, not C0. Verified on 6.4.42, same frame of the same MFCC:
+#       Get c0 value in frame: 10   ->  2362.51248
+#       Get value in frame: 10, 1   ->   -78.43891
+#       Get value in frame: 10, 2   ->    43.03514
+#     So the column labelled C0_Energy held C1, C1_Tilt held C2, and
+#     Stability was the standard deviation of C2. Every preset was
+#     ranking on features other than the ones it names. Now
+#     Get c0 value in frame for C0 and Get value in frame: f, 1 for C1.
+#
+#   CRITICAL 2 - dark and bright were the wrong way round. Measured
+#     with two synthetic corpora at the same peak:
+#       dark   (120 + 200 Hz)  -> mean C1 = +1105.84
+#       bright (6 k + 9 kHz)   -> mean C1 =  -625.22
+#     C1's DCT basis is positive over the low Mel filters and negative
+#     over the high ones, so POSITIVE C1 means dark and NEGATIVE means
+#     bright - the opposite of v0.5's assignment. Combined with
+#     CRITICAL 1, Bright & Energetic was penalising the wrong sign of
+#     the wrong coefficient. Corrected and re-verified.
+#
+#   CRITICAL 3 - the weights were not comparable. Harmony summed raw
+#     violations on wildly different scales: an energy violation in the
+#     hundreds, a tilt violation in the units or tens, and stability
+#     multiplied by an arbitrary 10. "Balanced", with every weight at
+#     1, was nothing of the kind. v0.6 runs two passes - collect raw
+#     features, min-max normalise each violation across the corpus to
+#     0-1, then apply the weights - so Weight_energy = 3 really is
+#     about three times Weight_stability = 1. The 100 - C0 constant is
+#     gone with it: the energy violation is now relative to the corpus,
+#     not to a number with no basis in C0's range.
+#
+#   4 - Analysis now happens AFTER downmix and resampling. v0.5
+#     resampled only during assembly, so a 44.1 kHz file and a 96 kHz
+#     file went through different spectral front ends and their MFCCs
+#     were not comparable.
+#     CORRECTION (v0.7): this entry also claimed the normalised copy is
+#     reused for assembly. It is not - the analysis copy is removed at
+#     the end of each iteration and the selected files are read and
+#     converted a second time. Acoustically harmless, since both passes
+#     are deterministic and identical, but not the saving described.
+#
+#   5 - Unusable files are excluded from the ranking rather than
+#     scoring well by accident. A file with no frames got zero
+#     darkness, zero brightness and zero stability violation, so under
+#     Timbral Consistency (stability weight 5, energy weight 0.5) a
+#     silent or too-short file could rank near the top precisely
+#     because it had nothing measurable. Files are now rejected for
+#     near-silence, fewer than 2 frames, or undefined C0/C1, and
+#     n_target is clamped to the number of VALID candidates.
+#
+#   6 - Stability_measure is explicit: Dispersion (the standard
+#     deviation of C1, v0.5's behaviour and the right choice for
+#     timbral consistency) or Temporal (mean |C1(t) - C1(t-1)|, which
+#     distinguishes a slow sweep from fast jitter - they can share a
+#     standard deviation).
+#
+#   7 - Join_mode is a musical choice, not an implementation detail.
+#     Hard cut stays the default because abrupt joins are part of
+#     corpus montage; short and long crossfades are options with their
+#     own Crossfade_ms.
+#
+#   8 - Normalize_output_peak is a form field, and off means the mix is
+#     left alone unless it would clip. v0.5 always ran Scale peak: 0.99,
+#     which is full normalisation, not clipping protection.
+#
+#   9 - Validation: Limit_files >= 1, weights >= 0 with at least one
+#     above zero. A negative weight turns a violation into a reward -
+#     usable musically, but it stops being a constraint weight, so it
+#     is rejected rather than silently accepted.
+#
+#   ON THE NAME: this is closer to HARMONIC GRAMMAR than to Optimality
+#   Theory - a weighted SUM of violations, not lexicographic ranking of
+#   strictly ordered constraints. "OT-inspired" is fair; the mechanism
+#   is a weighted sum and the header now says so.
+#
+#   ON ENERGY (documented, unchanged): C0 tracks the file's level, so
+#   the same material recorded 12 dB hotter scores differently. That is
+#   what Maximum Energy selects for - recorded level - not musical
+#   energy. Normalise your corpus first if you want the latter.
+#
+#   ON FILE DURATION (documented): every file is one candidate, so a
+#   ten-minute file and a ten-second file weigh the same in the ranking
+#   but not in the output, where the first dominates.
+#
+# ============================================================
+
+form OT Corpus Concatenator v0.7  (weighted-sum / Harmonic Grammar)
     optionmenu Preset: 1
         option Manual
         option Bright & Energetic
@@ -35,19 +124,31 @@ form OT Corpus Concatenator v0.5
         option Balanced
         option Maximum Energy
         option Timbral Consistency
-    comment === Selection ===
     integer Limit_files 10
     sentence Folder_path
-    comment (Leave blank to pick a folder with a dialog)
-    comment === OT Constraints (Weights) ===
     real Weight_darkness 0.0
     real Weight_brightness 1.0
     real Weight_energy 2.0
     real Weight_stability 1.0
-    comment === Output ===
+    optionmenu Stability_measure: 1
+        option Dispersion (SD of C1)
+        option Temporal (mean frame-to-frame change)
+    optionmenu Join_mode: 1
+        option Hard cut
+        option Short crossfade
+        option Long crossfade
+    positive Crossfade_ms 30
+    boolean Normalize_output_peak 1
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Leave Folder_path blank to pick a folder with a dialog.
+# Violations are min-max normalised ACROSS THE CORPUS before the
+# weights are applied, so the weights are directly comparable.
+# C0 tracks recorded level, so Maximum Energy selects for file gain,
+# not musical energy - normalise the corpus first if you want that.
+# Every file is one candidate regardless of duration.
 
 # ============================================
 # PRESET LOGIC
@@ -97,11 +198,27 @@ endif
 # ============================================
 
 clearinfo
-writeInfoLine: "=== OT Corpus Concatenator v0.5 ==="
+writeInfoLine: "=== OT Corpus Concatenator v0.7 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 
 n_target = limit_files
+
+# v0.6 fix 4: the common analysis rate has to be known BEFORE the
+# analysis loop now, since resampling moved ahead of the MFCC.
+target_sample_rate = 44100
+
+# v0.6 fix 9: validation. A negative weight turns a violation into a
+# reward - usable musically, but then it is not a constraint weight.
+if n_target < 1
+    exitScript: "Limit_files must be at least 1."
+endif
+if weight_darkness < 0 or weight_brightness < 0 or weight_energy < 0 or weight_stability < 0
+    exitScript: "Weights must be >= 0. A negative weight rewards the violation it names."
+endif
+if weight_darkness + weight_brightness + weight_energy + weight_stability <= 0
+    exitScript: "At least one weight must be greater than zero, or every file scores 0."
+endif
 
 # --- FOLDER DISCOVERY ---
 # Mirrors VoidMosaic: use the typed path, or fall back to a dialog when
@@ -147,8 +264,19 @@ appendInfoLine: "Found ", nFiles, " files, selecting top ", n_target
 # ANALYSIS TABLE
 # ============================================
 
-tableID = Create Table with column names: "OT_Leaderboard", nFiles, 
-    ... "Filename C0_Energy C1_Tilt Stability Viol_Darkness Viol_Brightness Viol_Energy Viol_Stability Harmony_Score"
+# v0.6 CRITICAL 3: PASS 1 collects raw features; the table is built
+# after normalisation, so only valid candidates appear in it.
+nValid = 0
+nRejected = 0
+vIdx# = zero#(nFiles)
+vC0# = zero#(nFiles)
+vC1# = zero#(nFiles)
+vStab# = zero#(nFiles)
+vDark# = zero#(nFiles)
+vBright# = zero#(nFiles)
+for vi from 1 to nFiles
+    vName$[vi] = ""
+endfor
 
 appendInfoLine: "Analyzing files..."
 
@@ -162,9 +290,10 @@ for i from 1 to nFiles
     
     soundID = Read from file: directory$ + fileName$
 
-    # To MFCC requires a mono signal - convert if the corpus file is
-    # multichannel (the concat loop below already does this; the analysis
-    # loop must too, or stereo files crash at To MFCC).
+    # v0.6 fix 4: downmix AND resample BEFORE the MFCC. v0.5 resampled
+    # only during assembly, so files at different rates went through
+    # different spectral front ends and their coefficients were not
+    # comparable.
     selectObject: soundID
     nCh = Get number of channels
     if nCh > 1
@@ -172,85 +301,257 @@ for i from 1 to nFiles
         removeObject: soundID
         soundID = monoID
     endif
-
     selectObject: soundID
-    mfccID = To MFCC: 12, 0.015, 0.005, 100.0, 100.0, 0
-    
-    nFrames = Get number of frames
-    
-    sum_c0 = 0
-    sum_c1 = 0
-    
-    for f from 1 to nFrames
-        val_c0 = Get value in frame: f, 1
-        val_c1 = Get value in frame: f, 2
-        sum_c0 = sum_c0 + val_c0
-        sum_c1 = sum_c1 + val_c1
-    endfor
-    
-    if nFrames > 0
+    curFs = Get sampling frequency
+    if curFs <> target_sample_rate
+        rsID = Resample: target_sample_rate, 50
+        removeObject: soundID
+        soundID = rsID
+    endif
+
+    # v0.6 fix 5: reject what cannot be measured, instead of letting it
+    # score well by having no measurable variation.
+    selectObject: soundID
+    filePeak = Get absolute extremum: 0, 0, "None"
+    fileDur = Get total duration
+    isValid = 1
+    rejectReason$ = ""
+    if filePeak < 1e-5
+        isValid = 0
+        rejectReason$ = "silent"
+    elsif fileDur < 0.05
+        isValid = 0
+        rejectReason$ = "shorter than the analysis window"
+    endif
+
+    if isValid
+        selectObject: soundID
+        mfccID = To MFCC: 12, 0.015, 0.005, 100.0, 100.0, 0
+        nFrames = Get number of frames
+        if nFrames < 2
+            isValid = 0
+            rejectReason$ = "fewer than 2 analysis frames"
+        endif
+    endif
+
+    if isValid
+        sum_c0 = 0
+        sum_c1 = 0
+        badVal = 0
+        for f from 1 to nFrames
+            # v0.6 CRITICAL 1: C0 lives in its own slot. Verified on
+            # 6.4.42, same frame: Get c0 value = 2362.51248 while
+            # Get value in frame ,1 = -78.43891 - so v0.5's "C0" was
+            # C1 and its "C1" was C2.
+            selectObject: mfccID
+            val_c0 = Get c0 value in frame: f
+            selectObject: mfccID
+            val_c1 = Get value in frame: f, 1
+            if val_c0 = undefined or val_c1 = undefined
+                badVal = 1
+            else
+                sum_c0 = sum_c0 + val_c0
+                sum_c1 = sum_c1 + val_c1
+            endif
+        endfor
+        if badVal
+            isValid = 0
+            rejectReason$ = "undefined C0/C1"
+        endif
+    endif
+
+    if isValid
         mean_c0 = sum_c0 / nFrames
         mean_c1 = sum_c1 / nFrames
+
+        if stability_measure = 1
+            # dispersion: how spread C1 is about its mean
+            sum_sq_diff = 0
+            for f from 1 to nFrames
+                selectObject: mfccID
+                val_c1 = Get value in frame: f, 1
+                diff = val_c1 - mean_c1
+                sum_sq_diff = sum_sq_diff + diff * diff
+            endfor
+            stab_raw = sqrt(sum_sq_diff / (nFrames - 1))
+        else
+            # v0.6 fix 6: temporal - mean |C1(t) - C1(t-1)|. A slow
+            # sweep and fast jitter can share a standard deviation;
+            # this separates them.
+            selectObject: mfccID
+            prevC1 = Get value in frame: 1, 1
+            sumAbsD = 0
+            for f from 2 to nFrames
+                selectObject: mfccID
+                curC1 = Get value in frame: f, 1
+                sumAbsD = sumAbsD + abs(curC1 - prevC1)
+                prevC1 = curC1
+            endfor
+            stab_raw = sumAbsD / (nFrames - 1)
+        endif
+
+        # v0.6 CRITICAL 2: POSITIVE C1 is dark, NEGATIVE is bright.
+        # C1's DCT basis is positive over the low Mel filters and
+        # negative over the high ones. Measured at equal peak:
+        #   dark   (120 + 200 Hz) -> mean C1 = +1105.84
+        #   bright (6 k + 9 kHz)  -> mean C1 =  -625.22
+        # v0.5 had these reversed.
+        raw_dark = 0
+        if mean_c1 > 0
+            raw_dark = mean_c1
+        endif
+        raw_bright = 0
+        if mean_c1 < 0
+            raw_bright = abs(mean_c1)
+        endif
+
+        # v0.6 CRITICAL 3: RAW values here; normalisation across the
+        # corpus and the weights come in a second pass. v0.5 summed
+        # these directly, so "100 - C0" in the hundreds swamped a tilt
+        # violation in the units.
+        nValid = nValid + 1
+        vIdx#[nValid] = i
+        vName$[nValid] = fileName$
+        vC0#[nValid] = mean_c0
+        vC1#[nValid] = mean_c1
+        vStab#[nValid] = stab_raw
+        vDark#[nValid] = raw_dark
+        vBright#[nValid] = raw_bright
     else
-        mean_c0 = 0
-        mean_c1 = 0
+        nRejected = nRejected + 1
+        appendInfoLine: ""
+        appendInfoLine: "  Skipping ", fileName$, " (", rejectReason$, ")"
     endif
-    
-    sum_sq_diff = 0
-    selectObject: mfccID
-    for f from 1 to nFrames
-        val_c1 = Get value in frame: f, 2
-        diff = val_c1 - mean_c1
-        sum_sq_diff = sum_sq_diff + (diff * diff)
-    endfor
-    
-    if nFrames > 1
-        stdev_c1 = sqrt(sum_sq_diff / (nFrames - 1))
-    else
-        stdev_c1 = 0
-    endif
-    
-    # --- VIOLATIONS ---
-    viol_dark = 0
-    if mean_c1 < 0
-        viol_dark = abs(mean_c1)
-    endif
-    
-    viol_bright = 0
-    if mean_c1 > 0
-        viol_bright = mean_c1
-    endif
-    
-    viol_energy = 100 - mean_c0
-    if viol_energy < 0
-        viol_energy = 0
-    endif
-    
-    viol_stable = stdev_c1 * 10
-    
-    harmony = (viol_dark * weight_darkness) + (viol_bright * weight_brightness) + (viol_energy * weight_energy) + (viol_stable * weight_stability)
-    
-    selectObject: tableID
-    Set string value: i, "Filename", fileName$
-    Set numeric value: i, "C0_Energy", mean_c0
-    Set numeric value: i, "C1_Tilt", mean_c1
-    Set numeric value: i, "Stability", stdev_c1
-    Set numeric value: i, "Viol_Darkness", viol_dark
-    Set numeric value: i, "Viol_Brightness", viol_bright
-    Set numeric value: i, "Viol_Energy", viol_energy
-    Set numeric value: i, "Viol_Stability", viol_stable
-    Set numeric value: i, "Harmony_Score", harmony
-    
-    selectObject: soundID
-    plusObject: mfccID
-    Remove
-    
+
+    nocheck removeObject: mfccID
+    nocheck removeObject: soundID
+
     if i mod 10 = 0
         appendInfo: "."
     endif
 endfor
 
 appendInfoLine: " done"
+
+if nValid < 1
+    exitScript: "No usable files: all " + string$(nFiles) +
+        ... " were silent, too short, or produced undefined coefficients."
+endif
+if nRejected > 0
+    appendInfoLine: "  ", nRejected, " file(s) excluded; ", nValid, " valid candidates"
+endif
+
+# ============================================
+# PASS 2: NORMALISE VIOLATIONS, THEN WEIGHT
+# ============================================
+# v0.6 CRITICAL 3: v0.5 summed raw violations on wildly different
+# scales - energy in the hundreds, tilt in the units, stability times
+# an arbitrary 10 - so "Balanced" with all weights at 1 was nothing of
+# the kind. Each violation is min-max normalised across the CORPUS
+# first, which also removes the need for the "100 - C0" constant: the
+# energy violation is now relative to the corpus rather than to a
+# number with no basis in C0's range.
+
+# energy violation = how far BELOW the corpus maximum this file sits
+maxC0 = vC0#[1]
+minC0 = vC0#[1]
+for v from 2 to nValid
+    if vC0#[v] > maxC0
+        maxC0 = vC0#[v]
+    endif
+    if vC0#[v] < minC0
+        minC0 = vC0#[v]
+    endif
+endfor
+vEnergy# = zero#(nValid)
+for v from 1 to nValid
+    vEnergy#[v] = maxC0 - vC0#[v]
+endfor
+
+procedure normVec: .n
+    .mn = normSrc#[1]
+    .mx = normSrc#[1]
+    for .v from 2 to .n
+        if normSrc#[.v] < .mn
+            .mn = normSrc#[.v]
+        endif
+        if normSrc#[.v] > .mx
+            .mx = normSrc#[.v]
+        endif
+    endfor
+    .rng = .mx - .mn
+    if .rng < 1e-12
+        .rng = 1
+    endif
+    for .v from 1 to .n
+        normOut#[.v] = (normSrc#[.v] - .mn) / .rng
+    endfor
+endproc
+
+normSrc# = zero#(nValid)
+normOut# = zero#(nValid)
+nDark# = zero#(nValid)
+nBright# = zero#(nValid)
+nEnergy# = zero#(nValid)
+nStab# = zero#(nValid)
+
+for v from 1 to nValid
+    normSrc#[v] = vDark#[v]
+endfor
+@normVec: nValid
+for v from 1 to nValid
+    nDark#[v] = normOut#[v]
+endfor
+
+for v from 1 to nValid
+    normSrc#[v] = vBright#[v]
+endfor
+@normVec: nValid
+for v from 1 to nValid
+    nBright#[v] = normOut#[v]
+endfor
+
+for v from 1 to nValid
+    normSrc#[v] = vEnergy#[v]
+endfor
+@normVec: nValid
+for v from 1 to nValid
+    nEnergy#[v] = normOut#[v]
+endfor
+
+for v from 1 to nValid
+    normSrc#[v] = vStab#[v]
+endfor
+@normVec: nValid
+for v from 1 to nValid
+    nStab#[v] = normOut#[v]
+endfor
+
+tableID = Create Table with column names: "OT_Leaderboard", nValid,
+    ... "Filename C0_Energy C1_Tilt Stability Viol_Darkness Viol_Brightness Viol_Energy Viol_Stability Harmony_Score"
+
+for v from 1 to nValid
+    harmony = nDark#[v] * weight_darkness + nBright#[v] * weight_brightness +
+        ... nEnergy#[v] * weight_energy + nStab#[v] * weight_stability
+    selectObject: tableID
+    Set string value: v, "Filename", vName$[v]
+    Set numeric value: v, "C0_Energy", vC0#[v]
+    Set numeric value: v, "C1_Tilt", vC1#[v]
+    Set numeric value: v, "Stability", vStab#[v]
+    Set numeric value: v, "Viol_Darkness", nDark#[v]
+    Set numeric value: v, "Viol_Brightness", nBright#[v]
+    Set numeric value: v, "Viol_Energy", nEnergy#[v]
+    Set numeric value: v, "Viol_Stability", nStab#[v]
+    Set numeric value: v, "Harmony_Score", harmony
+endfor
+
+nFilesValid = nValid
+
+# v0.6 fix 5: clamp to the VALID candidates, not the raw file count.
+if n_target > nValid
+    n_target = nValid
+    appendInfoLine: "  Limit_files reduced to ", n_target, " (valid candidates)"
+endif
 
 # ============================================
 # SORTING
@@ -275,6 +576,8 @@ appendInfoLine: "--------------------------------------------"
 harmony_scores# = zero#(n_target)
 energy_vals# = zero#(n_target)
 tilt_vals# = zero#(n_target)
+
+minSelDur = 1e9
 
 for i from 1 to n_target
     selectObject: tableID
@@ -328,7 +631,6 @@ appendInfoLine: "Loading and concatenating files..."
 soundIDs# = zero#(n_target)
 
 # We set a standard sample rate to prevent "Unequal sampling frequencies" error
-target_sample_rate = 44100
 
 for i from 1 to n_target
     selectObject: tableID
@@ -359,6 +661,11 @@ for i from 1 to n_target
     endif
 
     soundIDs#[i] = soundID
+    selectObject: soundID
+    thisDur = Get total duration
+    if i = 1 or thisDur < minSelDur
+        minSelDur = thisDur
+    endif
 endfor
 
 # Select all sounds for concatenation
@@ -367,14 +674,38 @@ for i from 2 to n_target
     plusObject: soundIDs#[i]
 endfor
 
-# Concatenate
-Concatenate
+# v0.6 fix 7: joining is a musical choice. Hard cut stays the default -
+# abrupt joins are part of corpus montage - with crossfades available.
+if join_mode = 1
+    Concatenate
+else
+    if join_mode = 2
+        xfSec = crossfade_ms / 1000
+    else
+        xfSec = crossfade_ms / 1000 * 4
+    endif
+    if xfSec > minSelDur * 0.45
+        xfSec = minSelDur * 0.45
+    endif
+    if xfSec < 0.001
+        Concatenate
+    else
+        Concatenate with overlap: xfSec
+    endif
+endif
 finalID = selected("Sound")
 Rename: "OT_Concat_" + presetName$
 
 # Scale to prevent clipping
-selectObject: finalID
-Scale peak: 0.99
+# v0.6 fix 8: Normalize_output_peak is a choice now; when off, the mix
+# is only touched if it would clip.
+outPeakNow = Get absolute extremum: 0, 0, "None"
+if normalize_output_peak
+    Scale peak: 0.99
+elsif outPeakNow > 0.99
+    Scale peak: 0.99
+    appendInfoLine: "  Limiter engaged (peak was ", fixed$(outPeakNow, 3), ")"
+endif
 
 # Get duration for display
 selectObject: finalID
