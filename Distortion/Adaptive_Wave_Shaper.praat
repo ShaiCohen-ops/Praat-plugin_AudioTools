@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2025)
+# Version: 0.7 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,7 +25,8 @@
 #     1. Multiply by drive (raw level boost)
 #     2. Apply N rounds of symmetric folding through ±threshold
 #     3. Optional saturation (sin / tanh / none)
-#     4. Final peak normalization
+#     4. Output level stage (normalize / conditional limiter /
+#        preserve)
 #
 #   Folding behavior note: at high drive (>2x threshold) and
 #   multiple folds, the operation chains reflections that move
@@ -37,6 +38,72 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v0.7:
+#   - FIXED: the transfer function curve was clamped to +/-1.4 in
+#     VALUE, which the audio engine never does. Whenever the shaper
+#     produced more than 1.4 the panel drew a flat plateau instead
+#     of the real function - drive 4, threshold 0.6, one fold turns
+#     an input of 1.2 into -3.6, and the panel showed -1.4. Since
+#     the title promises the shaping function BEFORE the output
+#     level stage, that clamp rewrote the function rather than
+#     cropping the view. The curve's extent is now measured in a
+#     pre-pass and the Y axis sized to fit it (floor +/-1.5, 10%
+#     headroom); the axis label reports the range, since this panel
+#     draws no numeric marks.
+#   - The header subtitle now reports satApplied$ rather than
+#     satName$, so Drive-only fallback no longer shows "Sat: Sin"
+#     while saturation is switched off. The summary bar already
+#     did this.
+#   - Added a final ordering guard on the derived period limits
+#     after the one-sample floor is applied.
+#
+# Changelog v0.6:
+#   - FIXED (the curve did not describe the sound): the transfer
+#     function panel folded with two independent `if` statements,
+#     so a positive reflection overshooting below -threshold was
+#     reflected a SECOND time in the same pass. The audio Formula
+#     uses `if ... else if ... fi fi` - at most one reflection per
+#     pass, overshoot carried to the next. With the Default preset
+#     an input of 1.2 gave -1.2 in the audio and 0 on the curve;
+#     on Aggressive Drive the two disagreed across 37.5% of the
+#     input range, max error 3.6. Both the curve and its prevY
+#     seed now mirror the Formula exactly.
+#   - FIXED: Base_drive / Jitter_sensitivity / Shimmer_sensitivity
+#     were overwritten by every preset with no Custom path, so all
+#     three were editable fields that could not affect anything.
+#     Preset 6 "Custom" added; presets 1-5 unchanged.
+#   - FIXED: the unpitched fallback reported "clean shaping (drive
+#     only)" and then applied preset drive, one fold and
+#     saturation - on Maximum Destruction that meant 5x drive, a
+#     fold and a sine blend on an unpitched source. The message now
+#     describes the actual behaviour, and Unpitched_fallback offers
+#     genuine drive-only shaping.
+#   - FIXED: pitch_detected served as both "pulses found" and
+#     "jitter defined", and shimmer was computed regardless - so a
+#     file could be reported as "no pitch detected" while its
+#     shimmer was still setting the fold count. Now three separate
+#     flags (pulsesValid / jitterValid / shimmerValid), reported
+#     individually in the info window and the report panel.
+#   - FIXED: jitter and shimmer used Praat's fixed 0.0001-0.02 s
+#     period window regardless of Min/Max_pitch_Hz. The period
+#     limits are now derived from the pitch range, and the range
+#     itself is validated (min < max).
+#   - CORRECTED: the "safe ranges" comment. Bounding drive at 8 and
+#     folds at 8 bounds the PARAMETERS, not the peak - each pass
+#     reduces the excess by only 2 * threshold, so drive 8 with
+#     threshold 0.01 still leaves about 7.84 after eight folds. The
+#     pre-output peak is now reported, Output_level replaces the
+#     Normalize boolean (normalize / conditional limiter /
+#     preserve), and Preserve warns when the peak exceeds 1.0.
+#   - CORRECTED: the sin blend was described as non-monotonic. Its
+#     derivative 0.6*cos(2x) + 0.7 stays within [0.1, 1.3] and never
+#     reaches zero, so it is monotonically increasing everywhere -
+#     a sinusoidally rippled monotonic saturation.
+#   - CORRECTED: the transfer panel title now reads "Static shaping
+#     function (before output level stage)", since the curve does
+#     not include the file-dependent peak normalization.
+#   - Fixed a duplicated "Changelog v0.4" heading in this header.
+#
 # Changelog v0.5:
 #   - Removed the LTAS comparison panel (and its associated
 #     Convert to mono / To Spectrum / To Ltas pipeline that ran
@@ -47,7 +114,7 @@
 #     (headline), Panel B = parameter report, Panel C = output
 #     waveform, Panel D = summary bar. Standard suite layout
 #     minus the spectral panel.
-# Changelog v0.4:
+# Changelog v0.4b:
 #   - (REVERTED in v0.5): LTAS comparison panel.
 # Changelog v0.4:
 #   - Reverted v0.3's time-varying mode (was too slow to be
@@ -60,10 +127,9 @@
 #   - Speed: combined the two fold formulas into one if/else
 #     branch. v0.2 ran 2 * fold_count formula passes; v0.4+ runs
 #     fold_count passes. ~2x speedup on the fold step.
-#   - NEW: Saturation_type form parameter. Sin (v0.2) / Tanh
-#     (cleaner) / None (pure folding only). Tanh produces
-#     monotonic saturation without v0.2's amplitude-dependent
-#     non-monotonicity.
+#   - NEW: Saturation_type form parameter. Sin / Tanh / None
+#     (pure folding only). (The claim that the sin blend is
+#     non-monotonic was wrong - corrected in v0.6.)
 #   - NEW: Fold_threshold exposed as form parameter
 #     (was hardcoded to 0.6 in v0.2).
 #   - Form syntax modernized: optionmenu uses colon.
@@ -75,7 +141,7 @@
 #   - Added transfer function display
 # ============================================================
 
-form Adaptive Wave Shaper v0.5
+form Adaptive Wave Shaper v0.7
     comment Select a Sound object first
     
     comment === Preset ===
@@ -85,8 +151,9 @@ form Adaptive Wave Shaper v0.5
         option Aggressive Drive
         option Fold Emphasis
         option Maximum Destruction
+        option Custom (use Base Parameters below)
     
-    comment === Base Parameters ===
+    comment === Base Parameters (Custom preset only) ===
     positive Base_drive 2.0
     positive Jitter_sensitivity 1.5
     comment (how much jitter affects drive)
@@ -95,7 +162,7 @@ form Adaptive Wave Shaper v0.5
     
     comment === Wave Shaping ===
     optionmenu Saturation_type: 1
-        option Sin blend (v0.2)
+        option Sin blend (rippled)
         option Tanh (cleaner)
         option None (folding only)
     positive Fold_threshold 0.6
@@ -103,9 +170,15 @@ form Adaptive Wave Shaper v0.5
     comment === Analysis ===
     positive Min_pitch_Hz 75
     positive Max_pitch_Hz 600
+    optionmenu Unpitched_fallback: 1
+        option Base shaping (drive + 1 fold + saturation)
+        option Drive only (no folding, no saturation)
     
     comment === Output ===
-    boolean Normalize 1
+    optionmenu Output_level: 1
+        option Normalize to 0.9
+        option Conditional limiter (only if peak > 1)
+        option Preserve
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -149,6 +222,35 @@ elsif preset = 5
     base_drive = 5.0
     jitter_sensitivity = 3.0
     shimmer_sensitivity = 3.0
+else
+    # v0.6 (item 2): v0.5 had no Custom option, so Base_drive,
+    # Jitter_sensitivity and Shimmer_sensitivity were overwritten on
+    # every path through the form - three editable fields that could
+    # never affect anything. Preset 6 keeps the entered values;
+    # presets 1-5 keep their previous indices and values.
+    presetName$ = "Custom"
+endif
+
+# v0.6 (item 5): validate the pitch range, and derive the jitter/shimmer
+# period limits from it. v0.5 let the user set Min/Max_pitch_Hz for the
+# To Pitch call while jitter and shimmer kept Praat's fixed 0.0001-0.02 s
+# window (10000-50 Hz) - so changing the pitch range did not change which
+# periods the perturbation measures were allowed to accept.
+if min_pitch_Hz >= max_pitch_Hz
+    exitScript: "Min_pitch_Hz (" + fixed$(min_pitch_Hz, 1) + ") must be below Max_pitch_Hz (" + fixed$(max_pitch_Hz, 1) + ")."
+endif
+
+shortestPeriod = 1 / max_pitch_Hz / 1.5
+longestPeriod = 1 / min_pitch_Hz * 1.5
+if shortestPeriod < 1 / sr
+    shortestPeriod = 1 / sr
+endif
+# Final ordering guard: at an extreme sample rate the one-sample floor
+# could in principle meet or pass longestPeriod.
+if shortestPeriod >= longestPeriod
+    exitScript: "Derived period limits are inconsistent (shortest "
+        ... + fixed$(shortestPeriod, 6) + " s >= longest " + fixed$(longestPeriod, 6)
+        ... + " s). Widen the pitch range or use a higher sample rate."
 endif
 
 # Saturation display name
@@ -161,7 +263,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Adaptive Wave Shaper v0.5 ==="
+writeInfoLine: "=== Adaptive Wave Shaper v0.7 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Saturation: ", satName$
@@ -189,27 +291,39 @@ plusObject: pitch
 To PointProcess (cc)
 pp = selected("PointProcess")
 
-# Check whether pitch detection found enough pulses
-pitch_detected = 1
+# v0.6 (item 4): v0.5 used one flag, pitch_detected, as both "pulses were
+# found" and "jitter was defined" - and then went on to compute shimmer
+# regardless. A file whose jitter was undefined but whose shimmer was
+# fine had pitch_detected = 0, so the report and the visualization said
+# "no pitch detected - clean fallback" while the shimmer value was still
+# setting the fold count. The three conditions are now tracked
+# separately and reported for what they are.
+pulsesValid = 1
+jitterValid = 0
+shimmerValid = 0
+
 selectObject: pp
 nPulses = Get number of points
 if nPulses < 4
-    pitch_detected = 0
+    pulsesValid = 0
 endif
 
-if pitch_detected = 1
+if pulsesValid = 1
     selectObject: pp
-    jitter_local = Get jitter (local): 0, 0, 0.0001, 0.02, 1.3
+    jitter_local = Get jitter (local): 0, 0, shortestPeriod, longestPeriod, 1.3
     if jitter_local = undefined
         jitter_local = 0
-        pitch_detected = 0
+    else
+        jitterValid = 1
     endif
     
     selectObject: mono
     plusObject: pp
-    shimmer_local = Get shimmer (local): 0, 0, 0.0001, 0.02, 1.3, 1.6
+    shimmer_local = Get shimmer (local): 0, 0, shortestPeriod, longestPeriod, 1.3, 1.6
     if shimmer_local = undefined
         shimmer_local = 0
+    else
+        shimmerValid = 1
     endif
 else
     # FIX v0.4+: undefined pitch falls back to 0 (clean), not 0.5.
@@ -217,7 +331,42 @@ else
     # 50% jitter, triggering maximum aggression on these sources.
     jitter_local = 0
     shimmer_local = 0
-    appendInfoLine: "  No detectable pitch — falling back to clean shaping (drive only)"
+endif
+
+# v0.6 (item 3): v0.5 printed "falling back to clean shaping (drive
+# only)" and then applied preset drive, one fold and saturation anyway -
+# on Maximum Destruction an unpitched source still got 5x drive, a fold
+# and a sine blend, which is not clean shaping by any reading. The
+# message now describes what actually happens, and Unpitched_fallback
+# offers real drive-only shaping for those who wanted it.
+calibrated = 1
+if pulsesValid = 0
+    appendInfoLine: "  No usable pulses (", nPulses, " found, need 4) - calibration skipped"
+    calibrated = 0
+elsif jitterValid = 0 and shimmerValid = 0
+    appendInfoLine: "  Pulses found but neither jitter nor shimmer was defined - calibration skipped"
+    calibrated = 0
+else
+    if jitterValid = 0
+        appendInfoLine: "  Jitter undefined - drive left at the preset base"
+    endif
+    if shimmerValid = 0
+        appendInfoLine: "  Shimmer undefined - fold count left at 1"
+    endif
+endif
+
+if unpitched_fallback = 2
+    fallbackLabel$ = "drive only"
+else
+    fallbackLabel$ = "base shaping"
+endif
+
+if calibrated = 0
+    if unpitched_fallback = 2
+        appendInfoLine: "  Fallback: drive only (no folding, no saturation)"
+    else
+        appendInfoLine: "  Fallback: base shaping (preset drive + 1 fold + saturation)"
+    endif
 endif
 
 jitter_percent = jitter_local * 100
@@ -240,15 +389,30 @@ adaptive_drive = base_drive * (1 + (jitter_percent * jitter_sensitivity / 100))
 # Fold count increases with shimmer (amplitude instability -> more folds)
 adaptive_fold = 1 + round(shimmer_percent * shimmer_sensitivity / 20)
 
-# Limit parameters to safe ranges
+# v0.6 (item 3): true drive-only fallback when the user asks for it.
+applySaturation = 1
+if calibrated = 0 and unpitched_fallback = 2
+    adaptive_fold = 0
+    applySaturation = 0
+endif
+
+# Bound drive and fold count.
+# v0.6 (item 6): these were labelled "safe ranges", which they are not.
+# Each fold pass only reduces the excess by 2 * fold_threshold, so with a
+# small threshold the cap of 8 folds does not bring the signal back into
+# range at all: drive 8, threshold 0.01 and a full-scale input still
+# leaves about 7.84 after eight reflections. The bounds limit the
+# PARAMETERS, not the output peak - the peak is handled by Output_level,
+# and the pre-normalization peak is now reported so the choice is
+# informed rather than assumed.
 if adaptive_drive < 0.5
     adaptive_drive = 0.5
 endif
 if adaptive_drive > 8.0
     adaptive_drive = 8.0
 endif
-if adaptive_fold < 1
-    adaptive_fold = 1
+if adaptive_fold < 0
+    adaptive_fold = 0
 endif
 if adaptive_fold > 8
     adaptive_fold = 8
@@ -280,21 +444,51 @@ for i from 1 to adaptive_fold
 endfor
 
 # 3. Saturation
-if saturation_type = 1
-    # Sin blend (v0.2 behavior — non-monotonic at low levels)
-    selectObject: result
-    Formula: ~ sin(self * 2) * 0.3 + self * 0.7
-elsif saturation_type = 2
-    # Tanh — clean monotonic saturation
-    selectObject: result
-    Formula: ~ tanh(self * 1.5)
+if applySaturation = 1
+    if saturation_type = 1
+        # Sin blend: 0.3*sin(2x) + 0.7x. v0.5 called this non-monotonic,
+        # but its derivative 0.6*cos(2x) + 0.7 stays within [0.1, 1.3] and
+        # never reaches zero, so the function is monotonically increasing
+        # everywhere. It is a sinusoidally rippled monotonic saturation.
+        selectObject: result
+        Formula: ~ sin(self * 2) * 0.3 + self * 0.7
+    elsif saturation_type = 2
+        # Tanh - clean monotonic saturation
+        selectObject: result
+        Formula: ~ tanh(self * 1.5)
+    endif
+    # Type 3 = None: folding only
 endif
-# Type 3 = None: folding only
 
-# 4. Normalize
-if normalize
+# 4. Output level
+selectObject: result
+prePeak = Get absolute extremum: 0, 0, "None"
+appendInfoLine: "Peak before output stage: ", fixed$(prePeak, 3)
+
+if output_level = 1
     selectObject: result
     Scale peak: 0.9
+    levelDesc$ = "normalized to 0.9"
+elsif output_level = 2
+    if prePeak > 1.0
+        selectObject: result
+        Scale peak: 0.9
+        levelDesc$ = "limited to 0.9 (peak was " + fixed$(prePeak, 2) + ")"
+    else
+        levelDesc$ = "unchanged (peak " + fixed$(prePeak, 3) + ")"
+    endif
+else
+    levelDesc$ = "preserved (peak " + fixed$(prePeak, 3) + ")"
+    if prePeak > 1.0
+        appendInfoLine: "  WARNING: peak exceeds 1.0 and output level is set to Preserve - this will clip on playback or export."
+    endif
+endif
+appendInfoLine: "Output level: ", levelDesc$
+
+if applySaturation = 1
+    satApplied$ = satName$
+else
+    satApplied$ = "None (fallback)"
 endif
 
 # === Final stats ===
@@ -325,7 +519,7 @@ if draw_visualization
         ... + "  |  " + presetName$
         ... + "  |  Drive: " + fixed$(adaptive_drive, 2)
         ... + "  |  Folds: " + string$(adaptive_fold)
-        ... + "  |  Sat: " + satName$
+        ... + "  |  Sat: " + satApplied$
         ... + "  |  Jitter: " + fixed$(jitter_percent, 2) + "%"
         ... + "  |  Shimmer: " + fixed$(shimmer_percent, 2) + "%"
     
@@ -336,14 +530,46 @@ if draw_visualization
     Select outer viewport: 0, 4.2, 0.75, 4.60
     Select inner viewport: 0.55, 4.00, 0.95, 4.40
     
-    Axes: -1.5, 1.5, -1.5, 1.5
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.5, 1.5, -1.5, 1.5
+    # v0.7: the curve used to be clamped to +/-1.4 in VALUE, which is not
+    # something the audio engine does - so whenever the shaper produced
+    # more than 1.4 the panel drew a flat plateau instead of the real
+    # function. With drive 4, threshold 0.6 and one fold, an input of 1.2
+    # actually yields -3.6; the panel showed -1.4. Since the title
+    # promises the shaping function BEFORE the output level stage, that
+    # clamp was rewriting the function, not merely cropping the view.
+    # The extent is now measured first and the Y axis sized to fit.
+    nPoints = 200
+    yLim = 1.5
+    for p from 1 to nPoints
+        xs = -1.2 + (p - 1) / (nPoints - 1) * 2.4
+        ys = xs * adaptive_drive
+        for f from 1 to adaptive_fold
+            if ys > fold_threshold
+                ys = fold_threshold - (ys - fold_threshold)
+            elsif ys < -fold_threshold
+                ys = -fold_threshold - (ys + fold_threshold)
+            endif
+        endfor
+        if applySaturation = 1
+            if saturation_type = 1
+                ys = sin(ys * 2) * 0.3 + ys * 0.7
+            elsif saturation_type = 2
+                ys = tanh(ys * 1.5)
+            endif
+        endif
+        if abs(ys) * 1.1 > yLim
+            yLim = abs(ys) * 1.1
+        endif
+    endfor
+    
+    Axes: -1.5, 1.5, -yLim, yLim
+    Paint rectangle: "{0.96, 0.96, 0.96}", -1.5, 1.5, -yLim, yLim
     
     # Grid
     Colour: "{0.85, 0.85, 0.88}"
     Line width: 1
     Draw line: -1.5, 0, 1.5, 0
-    Draw line: 0, -1.5, 0, 1.5
+    Draw line: 0, -yLim, 0, yLim
     
     # y=x reference (no shaping)
     Dotted line
@@ -362,29 +588,34 @@ if draw_visualization
     Text: -1.4, "left", -fold_threshold, "top", " -thresh"
     
     # Draw transfer function with current calibrated params
+    # v0.6 CRITICAL (item 1): v0.5 folded the curve with TWO independent
+    # `if` statements, so a positive reflection that overshot below
+    # -threshold was reflected a second time within the same pass. The
+    # audio formula uses `if ... else if ... fi fi`, i.e. at most ONE
+    # reflection per pass, with the overshoot carried into the next pass.
+    # The two diverged exactly where the effect lives: with the Default
+    # preset an input of 1.2 gave -1.2 in the audio and 0 on the curve,
+    # and on Aggressive Drive the curve disagreed with the sound across
+    # 37.5% of the input range (max error 3.6). The diagnostic that the
+    # whole panel exists to provide was misreporting the process.
+    # Both branches below now mirror the Formula exactly.
     Colour: "{0.80, 0.40, 0.40}"
     Line width: 2
-    nPoints = 200
     prevX = -1.2
     prevY = -1.2 * adaptive_drive
     for f from 1 to adaptive_fold
         if prevY > fold_threshold
             prevY = fold_threshold - (prevY - fold_threshold)
-        endif
-        if prevY < -fold_threshold
+        elsif prevY < -fold_threshold
             prevY = -fold_threshold - (prevY + fold_threshold)
         endif
     endfor
-    if saturation_type = 1
-        prevY = sin(prevY * 2) * 0.3 + prevY * 0.7
-    elsif saturation_type = 2
-        prevY = tanh(prevY * 1.5)
-    endif
-    if prevY > 1.4
-        prevY = 1.4
-    endif
-    if prevY < -1.4
-        prevY = -1.4
+    if applySaturation = 1
+        if saturation_type = 1
+            prevY = sin(prevY * 2) * 0.3 + prevY * 0.7
+        elsif saturation_type = 2
+            prevY = tanh(prevY * 1.5)
+        endif
     endif
     
     for p from 2 to nPoints
@@ -393,21 +624,16 @@ if draw_visualization
         for f from 1 to adaptive_fold
             if y > fold_threshold
                 y = fold_threshold - (y - fold_threshold)
-            endif
-            if y < -fold_threshold
+            elsif y < -fold_threshold
                 y = -fold_threshold - (y + fold_threshold)
             endif
         endfor
-        if saturation_type = 1
-            y = sin(y * 2) * 0.3 + y * 0.7
-        elsif saturation_type = 2
-            y = tanh(y * 1.5)
-        endif
-        if y > 1.4
-            y = 1.4
-        endif
-        if y < -1.4
-            y = -1.4
+        if applySaturation = 1
+            if saturation_type = 1
+                y = sin(y * 2) * 0.3 + y * 0.7
+            elsif saturation_type = 2
+                y = tanh(y * 1.5)
+            endif
         endif
         Draw line: prevX, prevY, x, y
         prevX = x
@@ -418,7 +644,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Output"
+    Text left: "yes", "Output (+/-" + fixed$(yLim, 2) + ")"
     Text bottom: "yes", "Input"
     
     # ----------------------------------------------------------
@@ -442,10 +668,16 @@ if draw_visualization
     Text: 0.10, "left", 0.83, "half", "Jitter:  " + fixed$(jitter_percent, 2) + " %"
     Text: 0.10, "left", 0.75, "half", "Shimmer: " + fixed$(shimmer_percent, 2) + " %"
     
-    if pitch_detected = 0
-        Font size: 7
-        Colour: "{0.78, 0.45, 0.30}"
-        Text: 0.10, "left", 0.68, "half", "(no pitch detected — clean fallback)"
+    Font size: 7
+    Colour: "{0.78, 0.45, 0.30}"
+    if pulsesValid = 0
+        Text: 0.10, "left", 0.68, "half", "(no usable pulses — " + fallbackLabel$ + ")"
+    elsif jitterValid = 0 and shimmerValid = 0
+        Text: 0.10, "left", 0.68, "half", "(jitter and shimmer undefined — " + fallbackLabel$ + ")"
+    elsif jitterValid = 0
+        Text: 0.10, "left", 0.68, "half", "(jitter undefined — drive at preset base)"
+    elsif shimmerValid = 0
+        Text: 0.10, "left", 0.68, "half", "(shimmer undefined — fold count 1)"
     endif
     
     # Section: Calibrated parameters
@@ -481,7 +713,7 @@ if draw_visualization
     
     Font size: 7
     Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Transfer function (input -> output)"
+    Text: 2.10, "centre", 7.30, "half", "Static shaping function (before output level stage)"
     Text: 6.10, "centre", 7.30, "half", "Analysis report"
     
     # ----------------------------------------------------------
@@ -556,10 +788,11 @@ if draw_visualization
         ... + "  |  Folds: " + string$(adaptive_fold)
     
     Text: 0.02, "left", 0.28, "half",
-        ... "Saturation: " + satName$
+        ... "Saturation: " + satApplied$
         ... + "  |  Threshold: " + fixed$(fold_threshold, 2)
         ... + "  |  J-sens: " + fixed$(jitter_sensitivity, 1)
         ... + "  |  S-sens: " + fixed$(shimmer_sensitivity, 1)
+        ... + "  |  Level: " + levelDesc$
         ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
     
     Colour: "Black"
