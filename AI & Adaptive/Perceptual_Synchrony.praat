@@ -3,18 +3,42 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.0 (2025) - Refactored with true time-alignment
+# Version: 3.1 (2026) - Alignment tier corrections
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Perceptual Synchrony over Physical Asynchrony v3.0
+#   Perceptual Synchrony over Physical Asynchrony v3.1
 #   
 #   Creates perceptual synchrony between two sounds by:
 #   1. Detecting similar gesture shapes (PEAK, RISE, FALL, BLOOM, DROP)
 #   2. Clustering gestures by temporal/structural similarity
 #   3. OPTIONALLY time-warping Sound B to align with Sound A
 #   4. Applying timbral binding effects at anchor points
+#
+# Changelog v3.1:
+#   - Alignment tier: inter-anchor segments now form real plateaus
+#     (leading point placed just after the previous anchor, so Praat no
+#     longer silently drops a second point at an existing time)
+#   - Alignment tier: feedback walk tracks achievedOut (where output time
+#     has actually reached) instead of prevTimeA (where the anchor was
+#     supposed to land), so a clamped segment is compensated by the next
+#   - Alignment tier: the FINAL segment now holds finalStretch as a
+#     plateau instead of ramping into it from the last anchor's factor
+#   - Alignment tier: the segment guard has an else branch - an overshoot
+#     compresses at the 0.5 floor and is accounted for, and a too-close
+#     anchor is folded into the next segment instead of advancing
+#     prevTimeB past unaccounted input time
+#   - Alignment tier: clamp / overshoot / too-close counts and the
+#     achieved-vs-target duration are now reported; tail clamps counted
+#   - Clustering: gesture-pair candidates are deduplicated at append
+#     time (overlapping local windows and the structural pass could
+#     propose the same pair two or three times, and the greedy selector
+#     only gated on per-gesture counts, so a duplicate could be selected
+#     twice)
+#   - Shape analysis: minIntBefore was computed by a test that could
+#     never be true and kept its initial value for every gesture; it now
+#     has its own pass
 #
 # Changelog v3.0:
 #   - Refactored with procedures (reduced repetition)
@@ -127,7 +151,7 @@ covarThresh = 0.4
 # === SETUP ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  PERCEPTUAL SYNCHRONY v3.0"
+writeInfoLine: "  PERCEPTUAL SYNCHRONY v3.1"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 if sync_mode = 1
@@ -377,7 +401,6 @@ procedure analyzeGestureShape: .pfx$, .g, .startFrame, .endFrame
     
     .maxIntFrame = .startFrame
     .maxIntVal = '.pfx$'_normInt[.startFrame]
-    .minIntBefore = '.pfx$'_normInt[.startFrame]
     
     for .j from .startFrame to .endFrame
         .accumCent = .accumCent + '.pfx$'_dCent[.j]
@@ -404,7 +427,17 @@ procedure analyzeGestureShape: .pfx$, .g, .startFrame, .endFrame
             .maxIntVal = '.pfx$'_normInt[.j]
             .maxIntFrame = .j
         endif
-        if .j < .maxIntFrame and '.pfx$'_normInt[.j] < .minIntBefore
+    endfor
+    
+    # v3.1 FIX: minIntBefore used to be tested inside the loop above with
+    # "if .j < .maxIntFrame", but .maxIntFrame is assigned in that same
+    # forward pass, so it always equals the current frame or an earlier
+    # one - the condition could never be true and .minIntBefore kept its
+    # initial value for every gesture. It now gets its own pass, mirroring
+    # the .minIntAfter pass below.
+    .minIntBefore = '.pfx$'_normInt[.startFrame]
+    for .j from .startFrame to .maxIntFrame
+        if '.pfx$'_normInt[.j] < .minIntBefore
             .minIntBefore = '.pfx$'_normInt[.j]
         endif
     endfor
@@ -553,6 +586,50 @@ procedure computeConfidence: .gA, .gB, .wOverlap, .shapeScore
     computeConfidence.score = 0.30 * .tagScore + 0.30 * .shapeScore + 0.20 * .salienceScore + 0.20 * .durScore
 endproc
 
+# ============================================================
+# v3.1 FIX: pair-level candidate deduplication
+# ============================================================
+# The local-window pass steps by half a window, so the same (gA, gB)
+# pair falls inside two consecutive windows and used to be appended
+# twice; in hybrid mode the structural pass could append it a third
+# time. Nothing downstream compared pairs - the greedy selector only
+# checks per-gesture counts (a_clusterCount / b_clusterCount) against
+# Max_clusters_per_gesture, which defaults to 2. So a duplicate pair
+# could be SELECTED twice: it consumed the gesture's remaining slot
+# (blocking a genuinely different second match), inflated the reported
+# cluster count, produced a zero-length warp segment at that anchor,
+# and made STEP 8 apply timbral binding twice at the same point.
+#
+# Candidates are now merged by pair, keeping the highest-confidence
+# occurrence and its mode / metrics.
+procedure addCandidate: .gA, .gB, .conf, .mode$, .wOverlap, .shapeScore
+    .existing = 0
+    for .k from 1 to numCandidates
+        if cand_gA[.k] = .gA and cand_gB[.k] = .gB
+            .existing = .k
+            .k = numCandidates
+        endif
+    endfor
+    
+    if .existing > 0
+        nDupCandidates = nDupCandidates + 1
+        if .conf > cand_conf[.existing]
+            cand_conf[.existing] = .conf
+            cand_mode$[.existing] = .mode$
+            cand_wOverlap[.existing] = .wOverlap
+            cand_shapeScore[.existing] = .shapeScore
+        endif
+    else
+        numCandidates = numCandidates + 1
+        cand_gA[numCandidates] = .gA
+        cand_gB[numCandidates] = .gB
+        cand_conf[numCandidates] = .conf
+        cand_mode$[numCandidates] = .mode$
+        cand_wOverlap[numCandidates] = .wOverlap
+        cand_shapeScore[numCandidates] = .shapeScore
+    endif
+endproc
+
 
 # ============================================================
 # MAIN PIPELINE
@@ -592,6 +669,7 @@ appendInfoLine: "Finding clusters..."
 
 globalDuration = max(durationA, durationB)
 numCandidates = 0
+nDupCandidates = 0
 
 # Initialize cluster counts
 for g from 1 to a_numGestures
@@ -628,13 +706,7 @@ if clustering_mode = 1 or clustering_mode = 3
                                     confidence = computeConfidence.score
                                     
                                     if confidence >= min_confidence
-                                        numCandidates = numCandidates + 1
-                                        cand_gA[numCandidates] = gA
-                                        cand_gB[numCandidates] = gB
-                                        cand_conf[numCandidates] = confidence
-                                        cand_mode$[numCandidates] = "LOCAL"
-                                        cand_wOverlap[numCandidates] = wOverlap
-                                        cand_shapeScore[numCandidates] = shapeScore
+                                        @addCandidate: gA, gB, confidence, "LOCAL", wOverlap, shapeScore
                                     endif
                                 endif
                             endif
@@ -679,13 +751,7 @@ if clustering_mode = 2 or clustering_mode = 3
                             confidence = 0.35 * shapeScore + 0.30 * salienceScore + 0.35 * posScore
                             
                             if confidence >= min_confidence * 0.9
-                                numCandidates = numCandidates + 1
-                                cand_gA[numCandidates] = gA
-                                cand_gB[numCandidates] = gB
-                                cand_conf[numCandidates] = confidence
-                                cand_mode$[numCandidates] = "STRUCT"
-                                cand_wOverlap[numCandidates] = wOverlap
-                                cand_shapeScore[numCandidates] = shapeScore
+                                @addCandidate: gA, gB, confidence, "STRUCT", wOverlap, shapeScore
                             endif
                         endif
                     endif
@@ -695,7 +761,7 @@ if clustering_mode = 2 or clustering_mode = 3
     endfor
 endif
 
-appendInfoLine: "  Candidates: ", numCandidates
+appendInfoLine: "  Candidates: ", numCandidates, " (", nDupCandidates, " duplicate pair proposals merged)"
 
 # === STEP 6: GREEDY SELECTION ===
 appendInfoLine: "Selecting best matches..."
@@ -788,58 +854,154 @@ if sync_mode = 2 and numClusters > 0
         endfor
     endfor
     
+    # ========================================================
+    # v3.1 CRITICAL FIX 1: duplicate tier times were discarded
+    # ========================================================
+    # v3.0 added a point at midB for segment i, then a point at
+    # prevTimeB == midB for segment i+1. Praat SILENTLY DROPS the
+    # second point at an existing time - verified on 6.4.42: four
+    # Add point calls at 0.2 / 0.5 / 0.5 / 0.8 produced three points,
+    # and the value at 0.5 stayed 1.500 rather than the 0.700 added
+    # afterwards.
+    # So the intended piecewise-constant plateau never formed. The tier
+    # ramped LINEARLY from f_i to f_{i+1} instead, making the achieved
+    # segment duration segmentB * (f_i + f_{i+1})/2 rather than
+    # segmentB * f_{i+1} = segmentA. Anchors landed wrong by an amount
+    # set by the neighbouring factor. Each segment's leading point now
+    # sits just AFTER the previous anchor, so no two points share a
+    # time and the plateau is real.
+    #
+    # v3.1 CRITICAL FIX 2: the error used to accumulate. v3.0 carried
+    # prevTimeA - where the anchor was SUPPOSED to land - so once a
+    # segment hit the [0.5, 2.0] clamp every later anchor inherited the
+    # drift with no feedback. achievedOut tracks where output time has
+    # ACTUALLY reached, so a clamped segment is compensated by the next.
+    #
+    # v3.1 CRITICAL FIX 3: the segment guard had no else branch. When it
+    # failed, no tier point was added and achievedOut froze - but
+    # prevTimeB still advanced to midB, so every later factor was
+    # computed against a stale output time. The neededOut <= 0 case is
+    # exactly an overshoot after a clamped segment, i.e. the situation
+    # the achievedOut feedback exists to correct, so the hole sat at the
+    # stress case. Overshoot now compresses at the 0.5 floor and is
+    # accounted for; a too-short segment (duplicate or near-duplicate
+    # anchor) is folded into the next one by leaving prevTimeB alone
+    # rather than skipping past unaccounted input time.
     prevTimeB = 0
-    prevTimeA = 0
-    
+    achievedOut = 0
+    nClamped = 0
+    nOvershoot = 0
+    nTooClose = 0
+
     selectObject: durationTier
-    
+
     for i from 1 to numClusters
         c = clusterOrder[i]
         gA = cluster_gA[c]
         gB = cluster_gB[c]
-        
+
         midA = (a_gStart[gA] + a_gEnd[gA]) / 2
         midB = (b_gStart[gB] + b_gEnd[gB]) / 2
-        
+
         segmentB = midB - prevTimeB
-        segmentA = midA - prevTimeA
-        
+        neededOut = midA - achievedOut
+
         if segmentB > 0.01
-            stretchFactor = segmentA / segmentB
-            
+            if neededOut > 0
+                stretchFactor = neededOut / segmentB
+            else
+                # Output time has already passed this anchor. Compress as
+                # hard as the clamp allows so the next segments can catch
+                # up, and keep accounting for it.
+                stretchFactor = 0.5
+                nOvershoot += 1
+            endif
+
             if stretchFactor < 0.5
                 stretchFactor = 0.5
+                nClamped += 1
             endif
             if stretchFactor > 2.0
                 stretchFactor = 2.0
+                nClamped += 1
             endif
-            
-            if prevTimeB > 0.001
-                Add point: prevTimeB, stretchFactor
+
+            leadEps = segmentB * 0.02
+            if leadEps > 0.002
+                leadEps = 0.002
             endif
-            
+            if leadEps < 0.0002
+                leadEps = 0.0002
+            endif
+            leadT = prevTimeB + leadEps
+            if leadT < midB - 0.0002
+                Add point: leadT, stretchFactor
+            endif
+
             Add point: midB, stretchFactor
+
+            achievedOut = achievedOut + stretchFactor * segmentB
+            prevTimeB = midB
+        else
+            # Anchor sits within 10 ms of the previous one (typically a
+            # duplicate pair). Leave prevTimeB where it is so the input
+            # time is absorbed by the next segment instead of vanishing
+            # from the accounting.
+            nTooClose += 1
         endif
-        
-        prevTimeB = midB
-        prevTimeA = midA
     endfor
     
     if prevTimeB < durationB - 0.01
         remainingB = durationB - prevTimeB
-        remainingA = durationA - prevTimeA
+        # v3.1: measured from where output time has ACTUALLY reached.
+        # v3.0 used prevTimeA, the intended anchor position, which no
+        # longer exists now that the walk tracks achieved time.
+        remainingA = durationA - achievedOut
         
         if remainingB > 0.01 and remainingA > 0.01
             finalStretch = remainingA / remainingB
             if finalStretch < 0.5
                 finalStretch = 0.5
+                nClamped += 1
             endif
             if finalStretch > 2.0
                 finalStretch = 2.0
+                nClamped += 1
             endif
-            Add point: durationB - 0.01, finalStretch
+            
+            # v3.1 CRITICAL FIX 4: the tail used to get a single point at
+            # durationB - 0.01, so the tier interpolated linearly from the
+            # last anchor's factor across the WHOLE tail rather than
+            # holding finalStretch. The achieved tail was therefore about
+            # remainingB * (f_last + finalStretch) / 2, not
+            # remainingB * finalStretch - the same defect FIX 1 removed
+            # from the inter-anchor segments, left in place at the end.
+            # The tail now gets the same lead-point-plus-plateau shape.
+            tailEps = remainingB * 0.02
+            if tailEps > 0.002
+                tailEps = 0.002
+            endif
+            if tailEps < 0.0002
+                tailEps = 0.0002
+            endif
+            tailT = prevTimeB + tailEps
+            tailEnd = durationB - 0.01
+            if tailT < tailEnd - 0.0002
+                Add point: tailT, finalStretch
+            endif
+            Add point: tailEnd, finalStretch
+            
+            achievedOut = achievedOut + finalStretch * remainingB
         endif
     endif
+    
+    # v3.1: the clamp count and the achieved-vs-target figure were tracked
+    # but never printed, so a drifting alignment was invisible at runtime.
+    # achievedOut is the tier's own model of output time; the resynthesised
+    # duration is reported separately below so tier error and resynthesis
+    # error can be told apart.
+    appendInfoLine: "  Alignment tier: target ", fixed$(durationA, 4), " s | tier estimate ", fixed$(achievedOut, 4), " s | est. error ", fixed$((achievedOut - durationA) * 1000, 1), " ms"
+    appendInfoLine: "  Anchors: ", numClusters, " | clamped=", nClamped, " overshoot=", nOvershoot, " too-close=", nTooClose
     
     selectObject: manipulation
     plusObject: durationTier
@@ -849,7 +1011,8 @@ if sync_mode = 2 and numClusters > 0
     warpedB = Get resynthesis (overlap-add)
     Rename: "B_warped"
     
-    appendInfoLine: "  Time-warped B created"
+    warpedDur = Get total duration
+    appendInfoLine: "  Time-warped B created: ", fixed$(warpedDur, 4), " s (A: ", fixed$(durationA, 4), " s, residual ", fixed$((warpedDur - durationA) * 1000, 1), " ms)"
     
     soundB_processed = warpedB
     
@@ -1035,7 +1198,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 0, 0.5
     Font size: 11
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Perceptual Synchrony v3.0## | " + modeText$ + " | Clusters: " + string$(numClusters)
+    Text: 0.5, "centre", 0.5, "half", "##Perceptual Synchrony v3.1## | " + modeText$ + " | Clusters: " + string$(numClusters)
     
     # Sound A
     Select outer viewport: 0, 8, 0.6, 1.8
