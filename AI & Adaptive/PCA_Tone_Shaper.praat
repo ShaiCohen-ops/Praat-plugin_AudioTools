@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.8 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -70,72 +70,133 @@ endif
 origSnd = selected("Sound")
 origName$ = selected$("Sound")
 
-form PCA Tone Shaper v0.5
-    comment === Preset ===
+form PCA Tone Shaper v0.8  (adaptive PCA-driven EQ)
     optionmenu Preset: 1
         option Manual
-        option Warm (Bass Boost)
-        option Bright (Treble Boost)
-        option Presence (Mid Focus)
-        option Smooth (Reduce Harshness)
-        option Dynamic (Full Range)
-    comment === Processing ===
+        option Low crossover (200/2000 Hz)
+        option Wide band (150/3000 Hz)
+        option Mid focused (300/1800 Hz)
+        option Gentle (low strength)
+        option Strong (full range, high strength)
     positive Chunk_ms 200
     positive Frame_step_seconds 0.01
-    positive Pca_strength 0.8
-    comment === Frequency Bands (Hz) ===
+    positive Pca_strength 1.0
+    positive Depth_dB 9
     positive Low_hi_crossover1_hz 200
     positive Low_hi_crossover2_hz 2000
     positive High_band_top_hz 8000
-    comment === Analysis ===
     positive Max_formant_hz 5500
     integer N_formants 5
     positive F0_min 75
     positive F0_max 600
-    comment === Output ===
+    optionmenu Output_level_mode: 2
+        option Preserve gain
+        option Conditional limiter
+        option Normalize to headroom
     positive Headroom 0.97
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
+# v0.6: the presets are named for what they SET, not for a tone colour.
+# v0.5 called them Warm, Bright, Presence and Smooth, but the gain map
+# is identical in all of them - only the crossovers and the strength
+# change. PC1 is not brightness, PC2 is not presence and PC3 is not
+# body; PCA only guarantees axes of decreasing variance, and an
+# eigenvector's SIGN is mathematically arbitrary, so the same preset
+# can tilt one way on one file and the other way on another. "Warm
+# (Bass Boost)" could deliver a treble boost. The names now describe
+# the band layout, which is the part that is actually determined.
+#
+# What this tool is: an ADAPTIVE PCA-DRIVEN EQ whose motion follows the
+# largest axes of variation in the input's own features. It is not a
+# semantic tone shaper, and making it one would need direct spectral
+# features (centroid, high/low energy ratio) to anchor the axes.
+#
+# Depth_dB is the MAXIMUM swing of a band, in dB, at Pca_strength = 1.
+# v0.7 and earlier used unnamed linear coefficients that produced under
+# 2 dB at the default and left the mid band essentially static.
+#
+# Pca_strength = 0 is now a true bypass: a residual band above
+# High_band_top_hz passes at unity, so the sum is the whole signal.
+#
+# ON MISSING FEATURES (documented, not restructured): undefined
+# formants become 500/1500/2500 Hz and undefined HNR becomes 0 dB.
+# Those are meaningful acoustic values, not "missing" markers - 0 dB
+# HNR means equal harmonic and noise energy - so regions where the
+# analysis failed look like a canonical vowel of middling periodicity,
+# and PC1 can end up describing valid-analysis versus fallback-template
+# rather than timbre. Fixing this properly needs validity flags on
+# each feature and a decision about whether to drop those frames or
+# carry validity as its own dimension; that is a model change and is
+# left for a later pass rather than half-done here.
+
+# ============================================
+# VALIDATION  (v0.6 fix 8)
+# ============================================
+if chunk_ms <= 0
+    exitScript: "Chunk_ms must be greater than 0."
+endif
+if frame_step_seconds <= 0
+    exitScript: "Frame_step_seconds must be greater than 0."
+endif
+if pca_strength < 0
+    pca_strength = 0
+endif
+if f0_min <= 0 or f0_max <= f0_min
+    exitScript: "Need 0 < F0_min < F0_max."
+endif
+if n_formants < 1
+    n_formants = 1
+endif
+if headroom <= 0 or headroom > 1
+    headroom = 0.97
+    appendInfoLine: "  ! Headroom must be in (0, 1] -> 0.97"
+endif
+
 # ===== PRESET LOGIC =====
+# v0.7 CRITICAL: the preset LOGIC now matches the dialog. v0.6 renamed
+# the options but left v0.5's bodies, so choosing "Low crossover
+# (200/2000 Hz)" actually applied 250/1500 Hz at strength 1.0 and
+# named the output "..._PCATone_Warm". The interface and the engine
+# were describing two different tools.
 if preset = 2
-    # Warm
-    pca_strength = 1.0
-    low_hi_crossover1_hz = 250
-    low_hi_crossover2_hz = 1500
-    presetName$ = "Warm"
+    # Low crossover
+    pca_strength = 0.8
+    low_hi_crossover1_hz = 200
+    low_hi_crossover2_hz = 2000
+    presetName$ = "LowCrossover"
 elsif preset = 3
-    # Bright
-    pca_strength = 1.0
-    low_hi_crossover1_hz = 200
-    low_hi_crossover2_hz = 2500
-    presetName$ = "Bright"
-elsif preset = 4
-    # Presence
-    pca_strength = 0.9
-    low_hi_crossover1_hz = 300
-    low_hi_crossover2_hz = 3000
-    presetName$ = "Presence"
-elsif preset = 5
-    # Smooth
-    pca_strength = 0.6
+    # Wide band
+    pca_strength = 0.8
     low_hi_crossover1_hz = 150
-    low_hi_crossover2_hz = 2000
-    presetName$ = "Smooth"
-elsif preset = 6
-    # Dynamic
-    pca_strength = 1.2
+    low_hi_crossover2_hz = 3000
+    presetName$ = "WideBand"
+elsif preset = 4
+    # Mid focused
+    pca_strength = 0.8
+    low_hi_crossover1_hz = 300
+    low_hi_crossover2_hz = 1800
+    presetName$ = "MidFocused"
+elsif preset = 5
+    # Gentle
+    pca_strength = 0.4
     low_hi_crossover1_hz = 200
     low_hi_crossover2_hz = 2000
-    presetName$ = "Dynamic"
+    presetName$ = "Gentle"
+elsif preset = 6
+    # Strong
+    pca_strength = 1.4
+    low_hi_crossover1_hz = 200
+    low_hi_crossover2_hz = 2000
+    presetName$ = "Strong"
 else
     presetName$ = "Manual"
 endif
 
 # ===== SETUP =====
 clearinfo
-writeInfoLine: "=== PCA Tone Shaper v0.5 ==="
+writeInfoLine: "=== PCA Tone Shaper v0.8 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Strength: ", pca_strength
 appendInfoLine: ""
@@ -161,8 +222,27 @@ else
     snd = selected("Sound")
 endif
 
+# v0.6 fix 6: a silent input yields constant features, a degenerate
+# PCA, and - under the old unconditional Scale peak - amplification of
+# whatever numerical residue came out.
+selectObject: snd
+srcPeakChk = Get absolute extremum: 0, 0, "None"
+if srcPeakChk < 1e-5
+    exitScript: "The selected Sound is silent (or near-silent); there is nothing to analyse."
+endif
+
 # ===== GUARDS =====
 nyq = fs / 2
+# v0.6 fix 8: the guards below can produce zero or negative edges at a
+# low sample rate, so the rate is checked first.
+if nyq < 2000
+    exitScript: "Sample rate too low for this tool: Nyquist is " +
+        ... fixed$(nyq, 0) + " Hz and the three bands cannot be laid out."
+endif
+if low_hi_crossover1_hz >= low_hi_crossover2_hz
+    exitScript: "Low_hi_crossover1_hz must be below Low_hi_crossover2_hz."
+endif
+
 if high_band_top_hz > nyq - 50
     high_band_top_hz = nyq - 50
 endif
@@ -197,7 +277,11 @@ appendInfoLine: "Bands: Low 0-", low_hi_crossover1_hz, " | Mid ", low_hi_crossov
 appendInfoLine: "Extracting features..."
 
 selectObject: snd
-To Pitch: 0, f0_min, f0_max
+# v0.7: Frame_step_seconds now sets the PITCH grid as well. In v0.6 it
+# only reached To Harmonicity, so changing it altered HNR resolution
+# and nothing else - not the PCA row count, not the control rate, not
+# the chunk mapping.
+To Pitch: frame_step_seconds, f0_min, f0_max
 pit = selected("Pitch")
 
 selectObject: snd
@@ -221,6 +305,11 @@ if nF < 5
 endif
 t0 = Get start time
 dt = Get time step
+# v0.7: frame 1's CENTRE, not the domain start. Feature extraction was
+# already using the real frame times, but the chunk-to-frame mapping
+# below still assumed frame 1 sits at t0 + dt/2.
+selectObject: pit
+pitchX1 = Get time from frame number: 1
 if dt <= 0
     dt = frame_step_seconds
 endif
@@ -232,7 +321,11 @@ Create TableOfReal: "feat", nF, 8
 feat = selected("TableOfReal")
 
 for i from 1 to nF
-    t = t0 + (i - 0.5) * dt
+    # v0.6: the Pitch object's own frame centre. Get start time returns
+    # the domain start, not the centre of frame 1, so the whole grid
+    # was offset from the analysis it was reading.
+    selectObject: pit
+    t = Get time from frame number: i
     
     selectObject: fmtObj
     f1 = Get value at time: 1, t, "Hertz", "Linear"
@@ -345,6 +438,8 @@ Create TableOfReal: "ctrl", nScores, 3
 ctrl = selected("TableOfReal")
 
 # Store for visualization
+pcVar# = zero#(3)
+pcShare# = zero#(3)
 pc1_vals# = zero#(nScores)
 pc2_vals# = zero#(nScores)
 pc3_vals# = zero#(nScores)
@@ -362,17 +457,57 @@ for pcNum from 1 to 3
             mx = vv
         endif
     endfor
-    rg = mx - mn
-    if rg = 0
-        rg = 1
-    endif
+    # v0.6 CRITICAL 1 + 2: v0.5 min-max stretched EVERY axis to -1..+1
+    # and, when an axis had no range at all, mapped it to
+    # 2*(0/1) - 1 = -1. Two consequences, both measured:
+    #   * a CONSTANT PC produced control -1.0000, so at strength 0.8 it
+    #     drove body = 0.30 * 0.8 * -1 = -0.2400 permanently - a fixed
+    #     EQ offset from a component carrying no information at all.
+    #   * a PC spanning 100.0 and a PC spanning 0.01 both became
+    #     -1..+1, giving a negligible axis exactly the same authority
+    #     over the EQ as the dominant one.
+    # v0.6 uses a z-score with a clamp, and gates out axes whose share
+    # of the total variance is negligible. A neutral axis now reads 0.
+    sumV = 0
     for ii from 1 to nScores
         selectObject: scr
         vv = Get value: ii, pcNum
-        nv = 2*((vv - mn)/rg) - 1
+        sumV = sumV + vv
+    endfor
+    muV = sumV / nScores
+    ssV = 0
+    for ii from 1 to nScores
+        selectObject: scr
+        vv = Get value: ii, pcNum
+        dV = vv - muV
+        ssV = ssV + dV * dV
+    endfor
+    if nScores > 1
+        sdV = sqrt(ssV / (nScores - 1))
+    else
+        sdV = 0
+    endif
+    pcVar#[pcNum] = sdV * sdV
+
+    for ii from 1 to nScores
+        selectObject: scr
+        vv = Get value: ii, pcNum
+        if sdV < 1e-9
+            # no variation: this axis says nothing, so it modulates
+            # nothing
+            nv = 0
+        else
+            nv = (vv - muV) / (2.5 * sdV)
+            if nv > 1
+                nv = 1
+            endif
+            if nv < -1
+                nv = -1
+            endif
+        endif
         selectObject: ctrl
         Set value: ii, pcNum, nv
-        
+
         if pcNum = 1
             pc1_vals#[ii] = nv
         elsif pcNum = 2
@@ -382,6 +517,43 @@ for pcNum from 1 to 3
         endif
     endfor
 endfor
+
+# v0.6 CRITICAL 2: gate out axes with a negligible share of the total
+# variance. PCA orders its axes by explained variance, but v0.5's
+# per-axis min-max erased that ordering at the point of control - a PC3
+# holding a fraction of a percent of the variance steered the EQ as
+# hard as PC1.
+totVar = pcVar#[1] + pcVar#[2] + pcVar#[3]
+if totVar < 1e-12
+    totVar = 1
+endif
+varGateFrac = 0.02
+for pcNum from 1 to 3
+    shareHere = pcVar#[pcNum] / totVar
+    pcShare#[pcNum] = shareHere
+    if shareHere < varGateFrac
+        appendInfoLine: "  PC", pcNum, " holds ", fixed$(100 * shareHere, 2),
+            ... "% of the variance (< ", fixed$(100 * varGateFrac, 0),
+            ... "%) - gated out; it will not modulate the EQ."
+        # v0.7 CRITICAL: zero the ctrl TABLE too. v0.6 zeroed only the
+        # visualisation vectors, so an axis reported as "gated out" and
+        # drawn as a flat line still drove the EQ at full strength - the
+        # picture and the Info text hid what the engine was doing.
+        for ii from 1 to nScores
+            selectObject: ctrl
+            Set value: ii, pcNum, 0
+            if pcNum = 1
+                pc1_vals#[ii] = 0
+            elsif pcNum = 2
+                pc2_vals#[ii] = 0
+            else
+                pc3_vals#[ii] = 0
+            endif
+        endfor
+    endif
+endfor
+appendInfoLine: "  Variance share (within PC1-3, not of all components): PC1 ", fixed$(100*pcShare#[1], 1),
+    ... "%  PC2 ", fixed$(100*pcShare#[2], 1), "%  PC3 ", fixed$(100*pcShare#[3], 1), "%"
 
 # ===== CHUNKED PROCESSING (v0.5: 50% OVERLAP-ADD) =====
 # Each chunk is Hann-windowed and overlap-added at half-chunk hops.
@@ -406,6 +578,134 @@ endif
 appendInfoLine: "  ", nChunks, " chunks of ", chunk_ms, " ms (hop ",
     ... fixed$(hop * 1000, 0), " ms)"
 
+# ============================================================
+# CHUNK CONTROL NORMALISATION  (v0.7)
+# ============================================================
+# WHY THE EFFECT WAS FAINT. Two things shrank it, measured on the test
+# signal at strength 0.8:
+#   * v0.6's z/2.5-sigma scaling only reaches +/-1 at 2.5 SD, which
+#     almost no frame hits. Measured mean |control|: PC1 0.3211,
+#     PC2 0.3138, PC3 0.3478 - about a third of the available range.
+#     v0.5's min-max at least guaranteed the extremes touched +/-1.
+#   * the EQ is driven by the MEAN control over a whole chunk (~20
+#     frames at 200 ms), and averaging shrinks it again.
+# Result: the low-band gain deviated from unity by a mean of 0.089 and
+# peaked at 1.79 dB - under a dB most of the time, which is why it was
+# barely audible.
+#
+# The fix normalises the values that ACTUALLY drive the EQ. A first
+# pass computes the raw chunk means, then each axis is centred on its
+# median and scaled so its 5th-95th percentile span reaches +/-1. A
+# constant axis still maps to 0, and a gated axis stays 0.
+appendInfoLine: "Measuring chunk control range..."
+
+cm1# = zero#(nChunks)
+cm2# = zero#(nChunks)
+cm3# = zero#(nChunks)
+
+for k from 1 to nChunks
+    t1 = (k - 1) * hop
+    t2 = t1 + cDur
+    f1i = ceiling((t1 - pitchX1) / dt) + 1
+    f2i = floor((t2 - pitchX1) / dt) + 1
+    if f1i < 1
+        f1i = 1
+    endif
+    if f2i > nScores
+        f2i = nScores
+    endif
+    if f2i < f1i
+        f2i = f1i
+    endif
+    a1 = 0
+    a2 = 0
+    a3 = 0
+    cnt = 0
+    selectObject: ctrl
+    nCtrlRows = Get number of rows
+    for frameIdx from f1i to f2i
+        if frameIdx <= nCtrlRows
+            selectObject: ctrl
+            v1 = Get value: frameIdx, 1
+            selectObject: ctrl
+            v2 = Get value: frameIdx, 2
+            selectObject: ctrl
+            v3 = Get value: frameIdx, 3
+            a1 += v1
+            a2 += v2
+            a3 += v3
+            cnt += 1
+        endif
+    endfor
+    if cnt = 0
+        cnt = 1
+    endif
+    cm1#[k] = a1 / cnt
+    cm2#[k] = a2 / cnt
+    cm3#[k] = a3 / cnt
+endfor
+
+procedure robustScale: .n
+    # median and the 5th/95th percentile span of rsSrc#
+    for .a from 1 to .n
+        rsSort#[.a] = rsSrc#[.a]
+    endfor
+    for .a from 1 to .n - 1
+        for .b from 1 to .n - .a
+            .b2 = .b + 1
+            if rsSort#[.b] > rsSort#[.b2]
+                .tv = rsSort#[.b]
+                rsSort#[.b] = rsSort#[.b2]
+                rsSort#[.b2] = .tv
+            endif
+        endfor
+    endfor
+    .mid = round(.n / 2)
+    if .mid < 1
+        .mid = 1
+    endif
+    robustScale.med = rsSort#[.mid]
+    .lo = round(.n * 0.05)
+    if .lo < 1
+        .lo = 1
+    endif
+    .hi = round(.n * 0.95)
+    if .hi > .n
+        .hi = .n
+    endif
+    .span = (rsSort#[.hi] - rsSort#[.lo]) / 2
+    if .span < 1e-9
+        robustScale.scl = 0
+    else
+        robustScale.scl = 1 / .span
+    endif
+endproc
+
+rsSort# = zero#(nChunks)
+
+rsSrc# = cm1#
+@robustScale: nChunks
+med1 = robustScale.med
+scl1 = robustScale.scl
+rsSrc# = cm2#
+@robustScale: nChunks
+med2 = robustScale.med
+scl2 = robustScale.scl
+rsSrc# = cm3#
+@robustScale: nChunks
+med3 = robustScale.med
+scl3 = robustScale.scl
+
+for k from 1 to nChunks
+    v = (cm1#[k] - med1) * scl1
+    cm1#[k] = max(-1, min(1, v))
+    v = (cm2#[k] - med2) * scl2
+    cm2#[k] = max(-1, min(1, v))
+    v = (cm3#[k] - med3) * scl3
+    cm3#[k] = max(-1, min(1, v))
+endfor
+
+
 # Store gains for visualization (per chunk, at chunk centers)
 gainL_vals# = zero#(nChunks)
 gainM_vals# = zero#(nChunks)
@@ -423,8 +723,9 @@ for k from 1 to nChunks
     t2 = t1 + cDur
 
     # Frame indices for the control average (clamped to valid range)
-    f1i = round((t1 - t0) / dt - 0.5) + 1
-    f2i = round((t2 - t0) / dt + 0.5)
+    # v0.7: frames whose CENTRES fall inside this chunk.
+    f1i = ceiling((t1 - pitchX1) / dt) + 1
+    f2i = floor((t2 - pitchX1) / dt) + 1
     if f1i < 1
         f1i = 1
     endif
@@ -456,37 +757,52 @@ for k from 1 to nChunks
     if effCnt = 0
         effCnt = 1
     endif
-    pc1m = a1 / effCnt
-    pc2m = a2 / effCnt
-    pc3m = a3 / effCnt
+    # v0.7: the normalised chunk controls from the pre-pass, so the
+    # values that drive the EQ actually span +/-1.
+    pc1m = cm1#[k]
+    pc2m = cm2#[k]
+    pc3m = cm3#[k]
 
-    # Map to band gains
-    tilt = 0.35 * pca_strength * pc1m
-    presence = 0.20 * pca_strength * pc2m
-    body = 0.30 * pca_strength * pc3m
-    gL = 1.0 - tilt + 0.8*body
-    gM = 1.0 + 0.3*presence - 0.2*body
-    gH = 1.0 + 1.2*tilt + 0.7*presence - 0.2*body
-    
-    if gL < 0.5
-        gL = 0.5
+    # ========================================================
+    # BAND GAINS IN dB  (v0.8)
+    # ========================================================
+    # WHY THE EFFECT WAS STILL FAINT after v0.7 restored the control
+    # range. The controls were fine; the COEFFICIENTS were tiny and the
+    # clamp was unreachable. Measured at the defaults:
+    #   tilt     = 0.35 * 0.8 * 0.42  = 0.118
+    #   presence = 0.20 * 0.8 * 0.42  = 0.067
+    #   -> gL deviated about 0.20  (~1.7 dB)
+    #   -> gM deviated about 0.03  (~0.17 dB) - effectively STATIC
+    #   -> gH deviated about 0.19  (~1.6 dB)
+    # and the [0.5, 1.5] clamp never engaged at any normal setting, so
+    # tripling Pca_strength bought only about 3 dB. Verified on the
+    # rendered audio: strength 0.8 moved the low band +/-1.8 dB against
+    # strength 0, and strength 3.0 only reached +/-3.1 dB.
+    #
+    # v0.8 works in dB with normalised weights, so Depth_dB IS the
+    # maximum swing of a band at Pca_strength = 1, and the mid band
+    # gets comparable authority to the others.
+    wL = (-0.55 * pc1m + 0.45 * pc3m)
+    wM = ( 0.60 * pc2m - 0.40 * pc3m)
+    wH = ( 0.55 * pc1m + 0.45 * pc2m)
+
+    gLdB = depth_dB * pca_strength * wL
+    gMdB = depth_dB * pca_strength * wM
+    gHdB = depth_dB * pca_strength * wH
+
+    # a generous ceiling so Depth_dB is the operative limit, not this
+    capdB = depth_dB * 2.5
+    if capdB < 6
+        capdB = 6
     endif
-    if gL > 1.5
-        gL = 1.5
-    endif
-    if gM < 0.5
-        gM = 0.5
-    endif
-    if gM > 1.5
-        gM = 1.5
-    endif
-    if gH < 0.5
-        gH = 0.5
-    endif
-    if gH > 1.5
-        gH = 1.5
-    endif
-    
+    gLdB = max(-capdB, min(capdB, gLdB))
+    gMdB = max(-capdB, min(capdB, gMdB))
+    gHdB = max(-capdB, min(capdB, gHdB))
+
+    gL = 10 ^ (gLdB / 20)
+    gM = 10 ^ (gMdB / 20)
+    gH = 10 ^ (gHdB / 20)
+
     # Store for visualization
     gainL_vals#[k] = gL
     gainM_vals#[k] = gM
@@ -528,6 +844,24 @@ for k from 1 to nChunks
     To Sound
     highB = selected("Sound")
 
+    # v0.6 fix 5: RESIDUAL band above High_band_top_hz, passed at unity.
+    # v0.5 summed only the three shaped bands, so everything above
+    # High_band_top_hz was discarded - at the 8000 Hz default that is a
+    # permanent low-pass, and Pca_strength = 0 was therefore not a
+    # bypass but an 8 kHz filter. The residual keeps the sum
+    # transparent when the gains are 1.
+    haveResidual = 0
+    if high_band_top_hz < nyq - 1
+        selectObject: s_all
+        Copy: "s_res"
+        s_res = selected("Spectrum")
+        Filter (pass Hann band): high_band_top_hz, 0, 100
+        To Sound
+        resB = selected("Sound")
+        haveResidual = 1
+        removeObject: s_res
+    endif
+
     # Dispose spectra
     removeObject: s_low, s_mid, s_high, s_all
 
@@ -540,11 +874,22 @@ for k from 1 to nChunks
     highIdStr$ = string$(highB)
 
     selectObject: lowB
-    Formula: "self * " + gLStr$
-        ... + " + object[" + midIdStr$ + ", col] * " + gMStr$
-        ... + " + object[" + highIdStr$ + ", col] * " + gHStr$
+    if haveResidual
+        resIdStr$ = string$(resB)
+        Formula: "self * " + gLStr$
+            ... + " + object[" + midIdStr$ + ", col] * " + gMStr$
+            ... + " + object[" + highIdStr$ + ", col] * " + gHStr$
+            ... + " + object[" + resIdStr$ + ", col]"
+    else
+        Formula: "self * " + gLStr$
+            ... + " + object[" + midIdStr$ + ", col] * " + gMStr$
+            ... + " + object[" + highIdStr$ + ", col] * " + gHStr$
+    endif
     segOut = lowB
     removeObject: midB, highB
+    if haveResidual
+        removeObject: resB
+    endif
 
     # Overlap-add segOut into the output buffer at its time offset.
     # The write window is clipped to the Hann support [t1, t1+cDur]
@@ -575,7 +920,16 @@ appendInfoLine: " done"
 
 # ===== FINALIZE =====
 selectObject: outS
-Scale peak: headroom
+# v0.6 fix 6: output level is a choice. v0.5 always ran Scale peak, so
+# an EQ that lowered the whole file was pushed back up, one that raised
+# it was pulled down, Pca_strength = 0 still changed the source peak,
+# and a very quiet input was amplified along with its noise floor.
+outPeakNow = Get absolute extremum: 0, 0, "None"
+if output_level_mode = 3
+    Scale peak: headroom
+elsif output_level_mode = 2 and outPeakNow > headroom
+    Scale peak: headroom
+endif
 
 selectObject: outS
 outDur = Get total duration
@@ -598,7 +952,7 @@ if draw_visualization
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.72, "half",
-        ... "##PCA Tone Shaper v0.5##"
+        ... "##PCA Tone Shaper v0.8##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half",
