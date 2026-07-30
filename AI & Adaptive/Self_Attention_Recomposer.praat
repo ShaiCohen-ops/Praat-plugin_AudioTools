@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,9 +19,83 @@
 #   3. Z-score + L2 normalize embeddings
 #   4. Self-attention ordering with softmax, temperature,
 #      topK/topP, and configurable selection modes
-#   5. Reconstruct audio with crossfades
+#   5. Reconstruct audio (fade-separated concatenation or
+#      overlap crossfade, selectable)
 #
 # Category: Composition
+#
+# Changelog v1.2:
+#
+#   AUDIO-CHANGING FIXES:
+#     - FIXED (stereo): chunk fades were applied with a hardcoded
+#       channel range of `1, 1`, so on stereo input only the left
+#       channel was faded. The right channel kept its rectangular
+#       cut - clicks at every join and a momentary stereo-image
+#       asymmetry. Fades now run over `1, numChannels`.
+#     - FIXED (permutation): `Output_length_chunks > 0` silently set
+#       `permutation_mode = 0` for ANY positive value, including
+#       values well below nChunks. Asking for 20 of 100 chunks
+#       without repeats returned repeats. Permutation is now only
+#       dropped when the requested length exceeds the usable pool,
+#       and that is reported.
+#     - FIXED (permutation): "used" chunks were masked by setting
+#       score = -999 and then passed through the softmax anyway.
+#       Temperature is an unbounded `real` clamped only from below,
+#       so the mask leaks: at T=1000 a used chunk carries ~15.5%
+#       of the probability mass and Sampling mode repeats it.
+#       Eligibility is now separate from score - ineligible chunks
+#       get weight 0 exactly and normalization runs over the
+#       eligible set only. TopK narrows eligibility instead of
+#       writing -999 scores. All three selection paths (centroid,
+#       greedy, sampling) check eligibility, and sampling falls
+#       back to the last eligible chunk instead of index 1 on a
+#       floating-point shortfall.
+#     - FIXED (short chunks): a chunk shorter than 1.5 MFCC windows
+#       got an all-zero embedding, which the per-dimension z-score
+#       then turned into the specific direction [-mean/std, ...]
+#       and L2 scaled to unit length. "No information" became an
+#       artificial timbre with a definite position, shared by every
+#       short chunk, so they attracted each other. The enumeration
+#       minimum is now raised to the MFCC minimum, undefined MFCC
+#       frames are skipped rather than counted as 0, chunks with no
+#       analysable frames are excluded from the pool, and z-score
+#       statistics are taken over valid embeddings only.
+#
+#   NEW CONTROLS (defaults preserve v1.1 behaviour):
+#     - Random_seed: the script has two random pathways (Random
+#       start chunk, Sampling selection) but v1.1 never seeded the
+#       RNG and offered no seed field - the v1.1 changelog claimed
+#       "bit-identical for the same seed" with no way to set one.
+#       Seed 0 = unpredictable, as before.
+#     - Chunk_join: v1.1 called the reconstruction "crossfades",
+#       but it faded each chunk to zero at both ends and butt-joined
+#       them - chunk A -> silence -> chunk B, with an amplitude dip
+#       at every boundary and a per-chunk envelope. Default keeps
+#       that (now named honestly as fade-separated concatenation);
+#       option 2 does a real overlap crossfade.
+#     - Renormalize_query: Mean and EMA queries were not L2
+#       renormalized after update, so query LENGTH varied with the
+#       coherence of recent history and the same Temperature gave a
+#       sharper or flatter softmax depending on context. Preserved
+#       by default (context disagreement raising exploration is a
+#       reasonable musical behaviour); the option makes Temperature
+#       mean the same thing at every step.
+#
+#   INTERFACE HONESTY:
+#     - Temperature has no effect on Greedy ordering, because
+#       argmax(softmax(s / T)) = argmax(s) for every T > 0. It only
+#       moves the reported weights and entropy. Two presets
+#       (Smooth Flow 0.5, Strict Permutation 0.3) are Greedy, so
+#       their temperature values never reached the audio. The form
+#       now says so and the info window repeats it at runtime.
+#
+#   NAMING:
+#     - The mechanism is a query-updated MFCC similarity retrieval,
+#       not a Transformer layer: no learned Q/K/V projections, no
+#       chunk-by-chunk attention matrix, no value aggregation, no
+#       multi-head. "Self-attention" is kept as compositional
+#       language; for research presentation the accurate phrase is
+#       self-attention-inspired autoregressive MFCC retrieval.
 #
 # Changelog v1.1:
 #
@@ -85,8 +159,9 @@
 #       step alone. (Same pattern as the
 #       In-Place_Paulstretch_Slicer v0.2 -> v0.3 speedup.)
 #
-#   Audio output is bit-identical to v1.0 for the same seed
-#   (the sampling/random pathways are unchanged).
+#   v1.1 audio was bit-identical to v1.0 (the sampling/random
+#   pathways were unchanged) - though neither version let the user
+#   set the seed that claim depends on. v1.2 does.
 # ============================================================
 
 # === Input Validation ===
@@ -97,7 +172,7 @@ endif
 originalSound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Self-Attention Recomposer v1.1
+form Self-Attention Recomposer v1.2
     optionmenu Preset: 1
         option Custom
         option Smooth Flow (sustained sounds)
@@ -107,11 +182,13 @@ form Self-Attention Recomposer v1.1
     boolean Use_silence_segmentation 0
     positive Chunk_duration_s 0.20
     positive Min_chunk_duration_s 0.05
+    comment Temperature affects Sampling mode only (Greedy is argmax-invariant)
     real Temperature 1.0
     optionmenu Context_mode: 1
         option Last chunk
         option Mean of last N
         option Exponential moving average
+    boolean Renormalize_query 0
     optionmenu Selection_mode: 1
         option Greedy (argmax)
         option Sampling
@@ -121,7 +198,11 @@ form Self-Attention Recomposer v1.1
         option First chunk
         option Random chunk
         option Highest energy chunk
+    optionmenu Chunk_join: 1
+        option Fade-separated concatenation (v1.0/v1.1)
+        option Crossfade (overlap-add)
     positive Fade_duration_s 0.01
+    integer Random_seed 0
     boolean Draw_visualization 1
 endform
 
@@ -218,17 +299,51 @@ if time_tau < 0.01
     time_tau = 0.01
 endif
 
+# v1.2 (item 7): the script has two random pathways - Random start chunk
+# (randomInteger) and Sampling selection mode (randomUniform) - but v1.1
+# never seeded the RNG and the form had no seed field, so the changelog
+# claim "bit-identical for the same seed" was not something the user
+# could actually exercise. Seed 0 = unpredictable (previous behaviour).
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably: random_seed
+else
+    random_initializeSafelyAndUnpredictably()
+endif
+
+# v1.2 (item 6): a chunk shorter than 1.5 MFCC windows cannot be
+# analysed, and v1.1 gave it an all-zero embedding. That zero vector then
+# went through the per-dimension z-score, which turned "no information"
+# into the specific direction [-mean1/std1, -mean2/std2, ...], and L2
+# normalization scaled it to unit length - an artificial timbre with a
+# definite position in the space. Every too-short chunk got the SAME
+# artificial vector, so they attracted each other strongly. The
+# enumeration minimum is now raised to the MFCC minimum so such chunks
+# never enter the pool.
+mfccMinDur = mfcc_window_s * 1.5
+minChunkEff = min_chunk_duration_s
+if minChunkEff < mfccMinDur
+    minChunkEff = mfccMinDur
+endif
+
 clearinfo
 # v1.1: ONE writeInfoLine then appendInfoLine for everything else.
 # v1.0 had three writeInfoLines in a row, which clobbered the title
 # (each writeInfoLine clears the info window). Only the bottom
 # divider survived.
 writeInfoLine: "=============================================="
-appendInfoLine: "  Self-Attention Recomposer v1.1"
+appendInfoLine: "  Self-Attention Recomposer v1.2"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", originalName$, " (", fixed$(totalDur, 2), " s, ", sampleRate, " Hz, ", numChannels, " ch)"
 appendInfoLine: "Preset: ", presetName$
+if random_seed > 0
+    appendInfoLine: "Random seed: ", random_seed, " (reproducible)"
+else
+    appendInfoLine: "Random seed: none (unpredictable)"
+endif
+if minChunkEff > min_chunk_duration_s
+    appendInfoLine: "Min chunk duration raised to ", fixed$(minChunkEff * 1000, 1), " ms (MFCC analysis minimum)"
+endif
 appendInfoLine: ""
 
 # ============================================================
@@ -239,7 +354,7 @@ appendInfoLine: "[1/7] Creating TextGrid..."
 if use_silence_segmentation
     selectObject: originalSound
     To TextGrid (silences): 100, 0, silence_threshold_dB,
-        ... min_silence_duration_s, min_chunk_duration_s, "sil", "snd"
+        ... min_silence_duration_s, minChunkEff, "sil", "snd"
     textGrid = selected("TextGrid")
     Rename: "auto_chunks"
     appendInfoLine: "  Method: silence-based (threshold: ", silence_threshold_dB, " dB)"
@@ -283,7 +398,7 @@ for i from 1 to nIntervals
     if use_silence_segmentation and iLabel$ = "sil"
         skipThis = 1
     endif
-    if iDur < min_chunk_duration_s
+    if iDur < minChunkEff
         skipThis = 1
     endif
     
@@ -301,21 +416,8 @@ if nChunks < 2
         ... + newline$ + "Try shorter chunk_duration_s or lower min_chunk_duration_s."
 endif
 
-# Determine output length
-if output_length_chunks > 0
-    outputLength = output_length_chunks
-    permutation_mode = 0
-else
-    outputLength = nChunks
-endif
-
+# Output length is decided after STEP 3, once embedding validity is known.
 appendInfoLine: "  Valid chunks: ", nChunks
-appendInfoLine: "  Output length: ", outputLength
-if permutation_mode
-    appendInfoLine: "  Mode: permutation (each chunk once)"
-else
-    appendInfoLine: "  Mode: repeats allowed"
-endif
 appendInfoLine: ""
 
 # ============================================================
@@ -344,13 +446,16 @@ for i from 1 to nChunks
     selectObject: chunkSound
     chDur = Get total duration
     
-    if chDur < mfcc_window_s * 1.5
-        # Too short for MFCC
+    if chDur < mfccMinDur
+        # Should be unreachable now that enumeration enforces minChunkEff,
+        # kept as a guard. Marked invalid rather than given a zero vector.
+        embValid_'i' = 0
         for d from 1 to embDim
             emb_'i'_'d' = 0
         endfor
         removeObject: chunkSound
     else
+        embValid_'i' = 1
         selectObject: chunkSound
         To MelSpectrogram: mfcc_window_s, mfcc_step_s, 24, 100, max_frequency_Hz
         melSpec = selected("MelSpectrogram")
@@ -362,34 +467,55 @@ for i from 1 to nChunks
         nFrames = Get number of frames
         
         # Mean per coefficient
+        # v1.2 (item 6): an undefined frame value used to be replaced by 0
+        # and averaged in, which is not "no data" - it drags the mean
+        # toward zero in the RAW MFCC domain, and the later z-score turns
+        # that into a definite direction. Undefined frames are now skipped
+        # and the mean taken over the defined ones.
+        nDefined = 0
         for d from 1 to num_coefficients
             coeffSum = 0
+            nValid = 0
             for fr from 1 to nFrames
                 selectObject: mfcc
                 val = Get value in frame: fr, d
-                if val = undefined
-                    val = 0
+                if val <> undefined
+                    coeffSum = coeffSum + val
+                    nValid = nValid + 1
                 endif
-                coeffSum = coeffSum + val
             endfor
-            emb_'i'_'d' = coeffSum / nFrames
+            if nValid > 0
+                emb_'i'_'d' = coeffSum / nValid
+                nDefined = nDefined + 1
+            else
+                emb_'i'_'d' = 0
+            endif
         endfor
+        
+        if nDefined = 0
+            embValid_'i' = 0
+        endif
         
         # Variance if requested
         if use_variance
             for d from 1 to num_coefficients
                 varSum = 0
+                nValid = 0
                 meanVal = emb_'i'_'d'
                 for fr from 1 to nFrames
                     selectObject: mfcc
                     val = Get value in frame: fr, d
-                    if val = undefined
-                        val = 0
+                    if val <> undefined
+                        varSum = varSum + (val - meanVal) * (val - meanVal)
+                        nValid = nValid + 1
                     endif
-                    varSum = varSum + (val - meanVal) * (val - meanVal)
                 endfor
                 vIdx = num_coefficients + d
-                emb_'i'_'vIdx' = varSum / nFrames
+                if nValid > 0
+                    emb_'i'_'vIdx' = varSum / nValid
+                else
+                    emb_'i'_'vIdx' = 0
+                endif
             endfor
         endif
         
@@ -403,6 +529,49 @@ for i from 1 to nChunks
 endfor
 
 appendInfoLine: "  Embedding dim: ", embDim
+
+nUsable = 0
+for i from 1 to nChunks
+    if embValid_'i' = 1
+        nUsable = nUsable + 1
+    endif
+endfor
+if nUsable < nChunks
+    appendInfoLine: "  WARNING: ", nChunks - nUsable, " chunk(s) had no analysable MFCC frames and are excluded"
+endif
+if nUsable < 2
+    exitScript: "Need at least 2 chunks with valid MFCC embeddings. Found: " + string$(nUsable)
+endif
+
+# ------------------------------------------------------------
+# Determine output length
+# ------------------------------------------------------------
+# v1.2 (item 3): v1.1 set `permutation_mode = 0` for ANY positive
+# Output_length_chunks, so asking for 20 chunks out of 100 in permutation
+# mode silently became "repeats allowed" - and so did asking for exactly
+# nChunks. A shorter output is a PARTIAL permutation, which is perfectly
+# well defined. Permutation is now only dropped when the request cannot
+# be honoured (output longer than the usable pool), and that is reported.
+if output_length_chunks > 0
+    outputLength = output_length_chunks
+    if permutation_mode and outputLength > nUsable
+        permutation_mode = 0
+        appendInfoLine: "  NOTE: output length ", outputLength, " exceeds ", nUsable, " usable chunks - permutation disabled, repeats allowed"
+    endif
+else
+    outputLength = nUsable
+endif
+
+appendInfoLine: "  Output length: ", outputLength
+if permutation_mode
+    if outputLength < nUsable
+        appendInfoLine: "  Mode: partial permutation (", outputLength, " of ", nUsable, ", each chunk at most once)"
+    else
+        appendInfoLine: "  Mode: permutation (each chunk once)"
+    endif
+else
+    appendInfoLine: "  Mode: repeats allowed"
+endif
 appendInfoLine: ""
 
 # ============================================================
@@ -411,42 +580,52 @@ appendInfoLine: ""
 appendInfoLine: "[4/7] Normalizing embeddings..."
 
 # Z-score per dimension
+# v1.2: statistics are taken over VALID embeddings only, so an excluded
+# chunk cannot shift the mean or inflate the standard deviation.
 for d from 1 to embDim
     dimMean = 0
     for i from 1 to nChunks
-        dimMean = dimMean + emb_'i'_'d'
+        if embValid_'i' = 1
+            dimMean = dimMean + emb_'i'_'d'
+        endif
     endfor
-    dimMean = dimMean / nChunks
+    dimMean = dimMean / nUsable
     
     dimVar = 0
     for i from 1 to nChunks
-        diff = emb_'i'_'d' - dimMean
-        dimVar = dimVar + diff * diff
+        if embValid_'i' = 1
+            diff = emb_'i'_'d' - dimMean
+            dimVar = dimVar + diff * diff
+        endif
     endfor
-    dimVar = dimVar / nChunks
+    dimVar = dimVar / nUsable
     dimStd = sqrt(dimVar)
     if dimStd < 1e-10
         dimStd = 1e-10
     endif
     
     for i from 1 to nChunks
-        emb_'i'_'d' = (emb_'i'_'d' - dimMean) / dimStd
+        if embValid_'i' = 1
+            emb_'i'_'d' = (emb_'i'_'d' - dimMean) / dimStd
+        endif
     endfor
 endfor
 
 # L2 normalize per chunk
 for i from 1 to nChunks
-    l2norm = 0
-    for d from 1 to embDim
-        l2norm = l2norm + emb_'i'_'d' * emb_'i'_'d'
-    endfor
-    l2norm = sqrt(l2norm)
-    if l2norm < 1e-10
-        l2norm = 1e-10
+    if embValid_'i' = 1
+        l2norm = 0
+        for d from 1 to embDim
+            l2norm = l2norm + emb_'i'_'d' * emb_'i'_'d'
+        endfor
+        l2norm = sqrt(l2norm)
+        if l2norm < 1e-10
+            l2norm = 1e-10
+        endif
+        for d from 1 to embDim
+            emb_'i'_'d' = emb_'i'_'d' / l2norm
+        endfor
     endif
-    for d from 1 to embDim
-        emb_'i'_'d' = emb_'i'_'d' / l2norm
-    endfor
 endfor
 
 appendInfoLine: "  Z-score + L2 normalization complete"
@@ -457,26 +636,56 @@ appendInfoLine: ""
 # ============================================================
 appendInfoLine: "[5/7] Self-attention ordering..."
 
+# v1.2 (item 5): argmax(softmax(s / T)) = argmax(s) for every T > 0, so
+# Temperature cannot change the ORDER in Greedy mode - only the reported
+# weights and entropy. Two presets (Smooth Flow 0.5, Strict Permutation
+# 0.3) are Greedy, and their temperature values do not affect the audio.
+# Said out loud rather than left as a silent no-op control.
+if selection_mode = 1 and use_centroid_pick = 0
+    appendInfoLine: "  Note: Greedy mode - Temperature (", fixed$(temperature, 2), ") affects reported weights/entropy only, not the ordering."
+endif
+
 # Initialize tracking arrays
 for i from 1 to nChunks
     unused_'i' = 1
     useCount_'i' = 0
 endfor
 
-# Choose starting chunk
+# Choose starting chunk (valid embeddings only)
+firstValid = 0
+for i from 1 to nChunks
+    if embValid_'i' = 1
+        if firstValid = 0
+            firstValid = i
+        endif
+    endif
+endfor
+
 if start_mode = 2
-    currentIdx = randomInteger(1, nChunks)
+    startPick = randomInteger(1, nUsable)
+    seen = 0
+    currentIdx = firstValid
+    for i from 1 to nChunks
+        if embValid_'i' = 1
+            seen = seen + 1
+            if seen = startPick
+                currentIdx = i
+            endif
+        endif
+    endfor
 elsif start_mode = 3
-    bestRMS = rms_1
-    currentIdx = 1
-    for i from 2 to nChunks
-        if rms_'i' > bestRMS
-            bestRMS = rms_'i'
-            currentIdx = i
+    bestRMS = -1
+    currentIdx = firstValid
+    for i from 1 to nChunks
+        if embValid_'i' = 1
+            if rms_'i' > bestRMS
+                bestRMS = rms_'i'
+                currentIdx = i
+            endif
         endif
     endfor
 else
-    currentIdx = 1
+    currentIdx = firstValid
 endif
 
 order_1 = currentIdx
@@ -495,73 +704,121 @@ totalConsecSim = 0
 # Main attention loop
 for t from 2 to outputLength
     
-    # Compute attention scores
+    # ------------------------------------------------------------
+    # Eligibility (hard mask)
+    # ------------------------------------------------------------
+    # v1.2 (item 4): v1.1 expressed "this chunk may not be used" as a
+    # score of -999 and then fed it through the softmax anyway. That is a
+    # soft mask: the relative weight of a used chunk is exp(-1000/T), and
+    # Temperature is an unbounded `real` field clamped only from below.
+    # At T=100 the leak is ~2e-5 per step; at T=1000 it is ~0.155, so in
+    # Sampling mode a "permutation" could repeat a chunk 15% of the time.
+    # Eligibility is now separate from score: ineligible chunks get
+    # weight 0 exactly, and normalization runs over the eligible set only.
+    nEligible = 0
+    lastEligible = 0
     for i from 1 to nChunks
-        score_'i' = 0
-        for d from 1 to embDim
-            score_'i' = score_'i' + query_'d' * emb_'i'_'d'
-        endfor
-        
-        # Time decay
-        if use_time_decay
-            timeDist = chunkMid_'i' - chunkMid_'currentIdx'
-            if timeDist < 0
-                timeDist = -timeDist
-            endif
-            score_'i' = score_'i' - timeDist / time_tau
+        eligible_'i' = 1
+        if embValid_'i' = 0
+            eligible_'i' = 0
         endif
-        
-        # Permutation: mask used chunks
         if permutation_mode
             if unused_'i' = 0
-                score_'i' = -999
+                eligible_'i' = 0
             endif
-        else
-            score_'i' = score_'i' - repeat_penalty * useCount_'i'
         endif
-        
-        # Near-duplicate penalty
-        nearDupSim = 0
-        for d from 1 to embDim
-            nearDupSim = nearDupSim + emb_'currentIdx'_'d' * emb_'i'_'d'
-        endfor
-        score_'i' = score_'i' - near_dup_penalty * nearDupSim
+        if eligible_'i' = 1
+            nEligible = nEligible + 1
+            lastEligible = i
+        endif
     endfor
     
-    # TopK filtering
-    if top_k > 0 and top_k < nChunks
+    if nEligible = 0
+        exitScript: "No eligible chunks remain at step " + string$(t)
+            ... + ". This should not happen - please report."
+    endif
+    
+    # Compute attention scores (eligible chunks only)
+    for i from 1 to nChunks
+        score_'i' = 0
+        if eligible_'i' = 1
+            for d from 1 to embDim
+                score_'i' = score_'i' + query_'d' * emb_'i'_'d'
+            endfor
+            
+            # Time decay
+            if use_time_decay
+                timeDist = chunkMid_'i' - chunkMid_'currentIdx'
+                if timeDist < 0
+                    timeDist = -timeDist
+                endif
+                score_'i' = score_'i' - timeDist / time_tau
+            endif
+            
+            # Repeat penalty (only meaningful when repeats are allowed)
+            if permutation_mode = 0
+                score_'i' = score_'i' - repeat_penalty * useCount_'i'
+            endif
+            
+            # Near-duplicate penalty
+            nearDupSim = 0
+            for d from 1 to embDim
+                nearDupSim = nearDupSim + emb_'currentIdx'_'d' * emb_'i'_'d'
+            endfor
+            score_'i' = score_'i' - near_dup_penalty * nearDupSim
+        endif
+    endfor
+    
+    # TopK filtering - now narrows ELIGIBILITY, not the score
+    if top_k > 0 and top_k < nEligible
         for kk from 1 to nChunks
             topkFlag_'kk' = 0
         endfor
         for kk from 1 to top_k
-            bestVal = -99999
-            bestKidx = 1
+            bestVal = -1e30
+            bestKidx = 0
             for i from 1 to nChunks
-                if topkFlag_'i' = 0 and score_'i' > bestVal
-                    bestVal = score_'i'
-                    bestKidx = i
+                if eligible_'i' = 1
+                    if topkFlag_'i' = 0 and score_'i' > bestVal
+                        bestVal = score_'i'
+                        bestKidx = i
+                    endif
                 endif
             endfor
-            topkFlag_'bestKidx' = 1
+            if bestKidx > 0
+                topkFlag_'bestKidx' = 1
+            endif
         endfor
+        nEligible = 0
+        lastEligible = 0
         for i from 1 to nChunks
             if topkFlag_'i' = 0
-                score_'i' = -999
+                eligible_'i' = 0
+            endif
+            if eligible_'i' = 1
+                nEligible = nEligible + 1
+                lastEligible = i
             endif
         endfor
     endif
     
-    # Stable softmax with temperature
-    maxScore = -99999
+    # Stable softmax with temperature, over eligible chunks only
+    maxScore = -1e30
     for i from 1 to nChunks
-        if score_'i' > maxScore
-            maxScore = score_'i'
+        if eligible_'i' = 1
+            if score_'i' > maxScore
+                maxScore = score_'i'
+            endif
         endif
     endfor
     
     sumExp = 0
     for i from 1 to nChunks
-        weight_'i' = exp((score_'i' - maxScore) / temperature)
+        if eligible_'i' = 1
+            weight_'i' = exp((score_'i' - maxScore) / temperature)
+        else
+            weight_'i' = 0
+        endif
         sumExp = sumExp + weight_'i'
     endfor
     if sumExp < 1e-30
@@ -621,7 +878,7 @@ for t from 2 to outputLength
     totalEntropy = totalEntropy + stepEntropy
     
     # Selection
-    chosenIdx = 1
+    chosenIdx = lastEligible
     
     if use_centroid_pick
         for d from 1 to embDim
@@ -630,9 +887,9 @@ for t from 2 to outputLength
                 centroid_'d' = centroid_'d' + weight_'i' * emb_'i'_'d'
             endfor
         endfor
-        bestDot = -99999
+        bestDot = -1e30
         for i from 1 to nChunks
-            if weight_'i' > 1e-10
+            if eligible_'i' = 1 and weight_'i' > 1e-10
                 dotVal = 0
                 for d from 1 to embDim
                     dotVal = dotVal + centroid_'d' * emb_'i'_'d'
@@ -646,9 +903,11 @@ for t from 2 to outputLength
     elsif selection_mode = 1
         bestWeight = -1
         for i from 1 to nChunks
-            if weight_'i' > bestWeight
-                bestWeight = weight_'i'
-                chosenIdx = i
+            if eligible_'i' = 1
+                if weight_'i' > bestWeight
+                    bestWeight = weight_'i'
+                    chosenIdx = i
+                endif
             endif
         endfor
     else
@@ -656,7 +915,7 @@ for t from 2 to outputLength
         cumSum = 0
         found = 0
         for i from 1 to nChunks
-            if found = 0
+            if found = 0 and eligible_'i' = 1
                 cumSum = cumSum + weight_'i'
                 if cumSum >= r
                     chosenIdx = i
@@ -664,6 +923,11 @@ for t from 2 to outputLength
                 endif
             endif
         endfor
+        # Floating-point shortfall: fall back to the last eligible chunk
+        # rather than to index 1, which may not be eligible at all.
+        if found = 0
+            chosenIdx = lastEligible
+        endif
     endif
     
     # Record
@@ -717,6 +981,27 @@ for t from 2 to outputLength
         endfor
     endif
     
+    # v1.2 (item 8): chunk embeddings are unit length, but a Mean or EMA
+    # query is not renormalized after the update, so its LENGTH varies
+    # with how coherent the recent history is - a coherent history gives a
+    # long query and a sharper softmax, a scattered one gives a short
+    # query and a flatter softmax. That coupling is arguably a musical
+    # feature (context disagreement raises exploration on its own), so it
+    # is preserved by default. Turn Renormalize_query on to make
+    # Temperature mean the same thing at every step.
+    if renormalize_query and context_mode <> 1
+        qnorm = 0
+        for d from 1 to embDim
+            qnorm = qnorm + query_'d' * query_'d'
+        endfor
+        qnorm = sqrt(qnorm)
+        if qnorm > 1e-10
+            for d from 1 to embDim
+                query_'d' = query_'d' / qnorm
+            endfor
+        endif
+    endif
+    
     # Progress
     if t mod 20 = 0
         appendInfoLine: "  Step ", t, "/", outputLength
@@ -751,21 +1036,59 @@ for t from 1 to outputLength
     # the buffer. v1.1 evaluates the fade arithmetic only in the
     # [0, fadeDur] and [chkDur - fadeDur, chkDur] ranges. Same
     # arithmetic on the same samples; same audio output.
-    if fadeDur > 0
+    #
+    # v1.2 (item 1): the channel range was hardcoded `1, 1`, so on
+    # STEREO input only the left channel was faded while the right
+    # channel kept the rectangular cut - clicks on the right, and a
+    # momentary stereo-image asymmetry at every join. It now runs over
+    # all channels of the extracted chunk. This was the most serious
+    # acoustic defect in v1.1.
+    # In Crossfade join mode the per-chunk fades are skipped entirely,
+    # because Concatenate with overlap supplies its own crossfade and
+    # applying both would fade twice.
+    if fadeDur > 0 and chunk_join = 1
         # Fade in:  ramp 0 -> 1 over [0, fadeDur]
-        Formula (part): 0, fadeDur, 1, 1, "self * ((x - xmin) / fadeDur)"
+        Formula (part): 0, fadeDur, 1, numChannels, "self * ((x - xmin) / fadeDur)"
         # Fade out: ramp 1 -> 0 over [chkDur - fadeDur, chkDur]
         fadeOutStart = chkDur - fadeDur
-        Formula (part): fadeOutStart, chkDur, 1, 1, "self * ((xmax - x) / fadeDur)"
+        Formula (part): fadeOutStart, chkDur, 1, numChannels, "self * ((xmax - x) / fadeDur)"
     endif
 endfor
 
 # Concatenate all
+# v1.2 (item 2): v1.1 described this step as "crossfades", but each chunk
+# was faded to zero at both ends and the chunks were then butt-joined
+# with a plain Concatenate - no overlap, no summing across the boundary.
+# The transition was chunk A -> silence -> chunk B, which produces an
+# amplitude dip at every join and gives every chunk its own envelope
+# (audible as gating on sustained material; with Jumpy Mosaic's 150 ms
+# chunks and 10 ms fades, ~13% of each chunk is envelope). That can be a
+# wanted aesthetic, so it is kept as the default rather than replaced.
+# Chunk_join = 2 performs a real overlap crossfade instead.
 selectObject: chunkSnd_1
 for t from 2 to outputLength
     plusObject: chunkSnd_'t'
 endfor
-Concatenate
+
+if chunk_join = 2 and outputLength >= 2
+    # Overlap must be shorter than the shortest chunk in the sequence.
+    minOutChunk = 1e30
+    for t from 1 to outputLength
+        idx = order_'t'
+        if chunkDur_'idx' < minOutChunk
+            minOutChunk = chunkDur_'idx'
+        endif
+    endfor
+    joinOverlap = fade_duration_s
+    if joinOverlap > minOutChunk * 0.45
+        joinOverlap = minOutChunk * 0.45
+    endif
+    Concatenate with overlap: joinOverlap
+    joinDesc$ = "crossfade, " + fixed$(joinOverlap * 1000, 1) + " ms overlap"
+else
+    Concatenate
+    joinDesc$ = "fade-separated concatenation"
+endif
 finalOutput = selected("Sound")
 # v1.1: output name now includes input + preset for uniqueness.
 compositeName$ = originalName$ + "_attnRec_" + presetName$
@@ -779,7 +1102,7 @@ endfor
 selectObject: finalOutput
 outputDur = Get total duration
 
-appendInfoLine: "  Output: ", fixed$(outputDur, 2), " s"
+appendInfoLine: "  Output: ", fixed$(outputDur, 2), " s (", joinDesc$, ")"
 appendInfoLine: ""
 
 # ============================================================
@@ -1030,7 +1353,11 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     
     if permutation_mode
-        modeLabel$ = "Permutation"
+        if outputLength < nUsable
+            modeLabel$ = "Partial permutation"
+        else
+            modeLabel$ = "Permutation"
+        endif
     else
         modeLabel$ = "Repeats allowed"
     endif
@@ -1042,6 +1369,7 @@ if draw_visualization
         ... + "  |  MFCC dim: " + string$(embDim)
         ... + "  |  T=" + fixed$(temperature, 2)
         ... + "  |  Mode: " + modeLabel$
+        ... + "  |  Join: " + joinDesc$
     
     Text: 0.02, "left", 0.50, "half",
         ... "Context: " + ctxLabel$
