@@ -3,17 +3,19 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4b (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Distortion & Bit-Crusher Suite — two distinct effect modes:
 #
-#   (1) Bit Crusher: amplitude quantization. Maps each sample to
-#       the nearest of N evenly-spaced levels, producing a
-#       staircase transfer function. Lower N = harsher lo-fi
-#       character, with audible step-quantization noise.
+#   (1) Bit Crusher: amplitude quantization, producing a staircase
+#       transfer function. Two quantizers are offered. The legacy
+#       one sets a STEP of 1/N, which over -1..+1 yields 2N+1
+#       levels (N=4 gives nine, not four) and does not bound
+#       samples outside full scale. The second maps -1..+1 onto
+#       exactly N levels with clamping. Smaller N = harsher.
 #
 #   (2) Harsh Distortion: replaces the input waveform entirely
 #       with a synthesized texture whose ONLY connection to the
@@ -22,12 +24,98 @@
 #       AM oscillator and a periodic gate. The original waveform's
 #       amplitude information is discarded; only zero-crossings
 #       remain. This is intentionally extreme — useful for
-#       industrial / glitch / noise applications.
+#       industrial / glitch / noise applications. Note that a
+#       sample of exactly zero has no sign; Zero_handling decides
+#       what happens to it, and the default (negative) means
+#       digital silence becomes full synthesized texture whenever
+#       the gate is open.
 #
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4b:
+#   - FIXED: the four Bit Crush presets are named "step 1/N" but set
+#     only effect_type and quantization_steps, leaving Quantizer at
+#     whatever the form held. Selecting "Bit Crush: Default
+#     (step 1/4)" with Quantizer on "True N levels" produced 4
+#     levels, not the 9 the name promises - the Info window
+#     reported the truth while the preset name described a
+#     different operation. Those presets now pin quantizer = 1.
+#   - FIXED (ordering): validation ran BEFORE the presets were
+#     applied, so it judged stale form values. Choosing "Harsh:
+#     Balanced" with a leftover Quantization_steps of 1 aborted the
+#     script over a parameter that mode never touches, and a Bit
+#     Crush preset that would have replaced the value was blocked
+#     by the value it was about to replace. Validation now runs
+#     after the presets and only for the active mode.
+#   - FIXED: normalization called Scale peak and only then tested
+#     prePeak > 0 - the guard came after the operation it guards.
+#     A silent result is a reachable state by design now that
+#     Gate_duty_cycle_s may be 0 and Zero_handling can preserve
+#     silence, so the order mattered. Reported as "silent output -
+#     normalization skipped".
+#   - FIXED: the zoom panel queried and drew 0..zoomDur, assuming
+#     the time domain starts at 0 - on exactly the Sounds
+#     Phase_origin was added to support (xmin = 12.4 s and such) it
+#     was reading outside the data. It now runs from xmin.
+#   - The character guide is keyed on the actual level count rather
+#     than the raw parameter, and states it.
+#   - The Harsh diagram's SIGN box shows what zero maps to.
+#   - Scale_peak is capped at 1.0; above that the conditional
+#     limiter would leave peaks past full scale and normalization
+#     would aim deliberately beyond it.
+#
+# Changelog v0.4:
+#   - FIXED (the central mislabel): Quantization_levels was not a
+#     level count. `round(x * q) / q` sets a STEP of 1/q, and over
+#     -1..+1 that gives 2q+1 distinct values - measured, q=2 gives
+#     5 levels (-1, -0.5, 0, 0.5, 1), q=3 gives 7, q=4 gives 9,
+#     q=8 gives 17. So the preset "Bit Crush: Extreme (2 levels)"
+#     produced five. The "Effective bits" line compounded it,
+#     reporting ~2 bits for q=4 when nine states need four. The
+#     parameter is renamed Quantization_steps, the level count is
+#     computed rather than assumed, the bit figure is derived from
+#     the real state count, and the preset names now read
+#     "step 1/N". Quantizer option 2 gives a genuine N levels
+#     across -1..+1 with clamping.
+#   - Quantization_steps is `integer` and validated. As `positive`
+#     it accepted 3.7 or 0.5 while being used as a quantizer
+#     divisor, a level count, a drawing loop bound and the base of
+#     a log.
+#   - NEW Zero_handling. `if self > 0 then 1 else -1 fi` maps a
+#     sample of exactly ZERO to -1, so digital silence did not stay
+#     silent: it became a full-amplitude negative-polarity texture
+#     whenever the gate was open, and so did every digital pause
+#     inside ordinary material. A zero sample has no sign and v0.3
+#     chose one for it. Default keeps the v0.3 reading.
+#   - NEW Phase_origin. The gate and AM read `x`, ABSOLUTE time, so
+#     the v0.3 claim that the gate starts open only holds when the
+#     Sound's domain starts at 0. A Sound extracted with times
+#     preserved might start at 12.4 s, making the opening gate
+#     phase 12.4 mod gate_period - possibly shut. Phase now runs
+#     from the Sound's own start by default.
+#   - Output_level replaces the unconditional `Scale peak`. Always
+#     normalizing meant the ABSOLUTE scale of Base_amplitude and
+#     Mod_amplitude stopped mattering - scaling both by the same
+#     factor changed almost nothing, since only their ratio
+#     survived. Normalize remains the default.
+#   - The staircase panel now draws the selected quantizer and
+#     carries the render's actual peak scaling, so it describes the
+#     finished output rather than the pre-normalization function;
+#     its vertical range follows the drawn curve.
+#   - Gate_duty_cycle_s is clamped to Gate_period_s with a note.
+#     Unbounded, duty > period made `x mod period < duty` always
+#     true - a permanently open gate reported as e.g. "160% open".
+#     The field is now `real`, so a fully closed gate (duty 0) can
+#     be requested; `positive` forbade it.
+#   - A note fires when Mod_amplitude > Base_amplitude, where the
+#     AM envelope goes negative and adds polarity inversions from
+#     the modulator rather than the input.
+#   - The waveform panel legend no longer says "blue=L orange=R"
+#     on files with more than two channels; it says how many of how
+#     many are shown.
 #
 # Changelog v0.3:
 #   - Fix (Harsh mode gate logic): v0.2's gate condition was
@@ -38,10 +126,14 @@
 #       if (x mod gate_period < gate_duty) then 1 else 0 fi
 #     so gate_duty_cycle_s now genuinely means "how long the gate
 #     is open per cycle," matching the parameter name.
-#     Audible effect on sustained sources: identical (the gate
-#     pattern is phase-shifted by half a period — same on/off
-#     ratio, same modulation rate). Audible effect on transient
-#     onsets in the first ~milliseconds: original v0.2 silenced
+#     [v0.4 correction: this was overstated. The DUTY RATIO is
+#     unchanged and the modulation rate is unchanged, but the gate
+#     phase is inverted within each cycle, which moves it relative
+#     to the source's zero crossings, the AM oscillator and the
+#     transient structure. On periodic material the output waveform
+#     — and potentially the spectrum — differs. The accurate claim
+#     is "same duty ratio, inverted gate phase", not "identical".]
+#     Transient onsets in the first ~milliseconds: v0.2 silenced
 #     them; v0.3 keeps them. Bit Crusher mode is unchanged.
 #   - Form syntax modernized: optionmenu and choice use colons.
 #   - Visualization rewritten to suite 8x8 standard:
@@ -54,29 +146,27 @@
 #         first 30 ms) — replaces v0.2's two side-by-side zoom
 #         panels with a single overlaid panel that makes the
 #         comparison immediately visible
-#       Panel D: output waveform (full file, L/R distinguished)
+#       Panel D: output waveform (full file, first two channels)
 #       Panel E: summary stats bar
-#   - Both Bit Crusher and Harsh Distortion modes' AUDIO
-#     pipelines are otherwise unchanged. Bit Crusher output is
-#     bit-identical to v0.2. Harsh Distortion output for
-#     sustained material is essentially identical (phase-shifted
-#     gate); transient onsets handled differently per fix above.
+#   - Bit Crusher output is bit-identical to v0.2. Harsh
+#     Distortion has the same duty ratio as v0.2 with the gate
+#     phase inverted within each cycle (see the correction above).
 # Changelog v0.2:
 #   - Added visualization
 #   - Improved preset organization
 #   - Added detailed info output
 # ============================================================
 
-form Distortion and Bit-Crusher Suite v0.3
+form Distortion and Bit-Crusher Suite v0.4b
     comment Select a Sound object first
     
     comment === Preset ===
     optionmenu Preset: 1
         option Custom (use settings below)
-        option Bit Crush: Default (4 levels)
-        option Bit Crush: Mild (8 levels)
-        option Bit Crush: Lo-Fi (3 levels)
-        option Bit Crush: Extreme (2 levels)
+        option Bit Crush: Default (step 1/4)
+        option Bit Crush: Mild (step 1/8)
+        option Bit Crush: Lo-Fi (step 1/3)
+        option Bit Crush: Extreme (step 1/2)
         option Harsh: Balanced
         option Harsh: Light Drive
         option Harsh: Industrial
@@ -88,17 +178,31 @@ form Distortion and Bit-Crusher Suite v0.3
         button Harsh Distortion
     
     comment === Bit Crusher Parameters ===
-    positive Quantization_levels 4
-    comment (2=extreme, 8=mild, 16=subtle)
+    integer Quantization_steps 4
+    comment (steps per unit; smaller = harsher)
+    optionmenu Quantizer: 1
+        option Steps per unit, 2N+1 levels (v0.2/v0.3)
+        option True N levels over -1..+1
     
     comment === Harsh Distortion Parameters ===
     positive Base_amplitude 0.5
     positive Mod_amplitude 0.3
     positive Mod_frequency_Hz 100
     positive Gate_period_s 0.05
-    positive Gate_duty_cycle_s 0.025
+    real Gate_duty_cycle_s 0.025
+    optionmenu Zero_handling: 1
+        option Treat zero as negative (v0.2/v0.3)
+        option Preserve silence
+        option Treat zero as positive
+    optionmenu Phase_origin: 1
+        option Start of this Sound (v0.2/v0.3 if xmin=0)
+        option Absolute time axis
     
     comment === Output ===
+    optionmenu Output_level: 3
+        option Preserve
+        option Conditional limiter
+        option Normalize to target
     positive Scale_peak 0.95
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -116,23 +220,28 @@ selectObject: original
 duration = Get total duration
 sr = Get sampling frequency
 input_n_channels = Get number of channels
+xminOrig = Get start time
 
 # === Apply Presets ===
 if preset = 2
     effect_type = 1
-    quantization_levels = 4
+    quantizer = 1
+    quantization_steps = 4
     presetName$ = "BC_Default"
 elsif preset = 3
     effect_type = 1
-    quantization_levels = 8
+    quantizer = 1
+    quantization_steps = 8
     presetName$ = "BC_Mild"
 elsif preset = 4
     effect_type = 1
-    quantization_levels = 3
+    quantizer = 1
+    quantization_steps = 3
     presetName$ = "BC_LoFi"
 elsif preset = 5
     effect_type = 1
-    quantization_levels = 2
+    quantizer = 1
+    quantization_steps = 2
     presetName$ = "BC_Extreme"
 elsif preset = 6
     effect_type = 2
@@ -170,6 +279,59 @@ else
     presetName$ = "Custom"
 endif
 
+# v0.4b (items 1 and 2): validation runs AFTER the presets, and only for
+# the mode that is actually active.
+#   - v0.4 checked quantization_steps before any preset had been
+#     applied, so choosing "Harsh: Balanced" with a leftover
+#     Quantization_steps of 1 aborted the script over a parameter that
+#     mode never uses - and a Bit Crush preset that would have replaced
+#     the value with 4 or 8 was blocked by the stale form value.
+#   - The four Bit Crush presets are NAMED "step 1/N", so they now pin
+#     quantizer = 1 as well. Previously a user could select
+#     "Bit Crush: Default (step 1/4)" while Quantizer was set to
+#     "True N levels" and get 4 levels, not the 9 the preset name
+#     promises. The Info window reported the truth, but the preset name
+#     described a different operation.
+if effect_type = 1
+    if quantization_steps < 1
+        exitScript: "Quantization steps must be at least 1."
+    endif
+    if quantizer = 2 and quantization_steps < 2
+        exitScript: "True N-level quantization needs at least 2 levels."
+    endif
+endif
+
+# v0.4b (minor): Scale_peak was `positive` with no ceiling, so a value
+# above 1 made the conditional limiter leave peaks above full scale and
+# made normalization aim deliberately past it.
+if scale_peak > 1
+    exitScript: "Scale_peak must be 1.0 or below (it is a full-scale target)."
+endif
+
+if input_n_channels = 1
+    chanLegend$ = "(mono)"
+elsif input_n_channels = 2
+    chanLegend$ = "(blue=ch1  orange=ch2)"
+else
+    chanLegend$ = "(first 2 of " + string$(input_n_channels) + " channels shown)"
+endif
+
+if zero_handling = 2
+    signBoxLabel$ = "-1 / 0 / +1"
+elsif zero_handling = 3
+    signBoxLabel$ = "+/- 1  (0 -> +1)"
+else
+    signBoxLabel$ = "+/- 1  (0 -> -1)"
+endif
+
+if zero_handling = 2
+    zeroDesc$ = "preserved as silence"
+elsif zero_handling = 3
+    zeroDesc$ = "treated as positive"
+else
+    zeroDesc$ = "treated as negative (generates texture from silence)"
+endif
+
 # Get mode name and suffix
 if effect_type = 1
     modeName$ = "BitCrusher"
@@ -181,16 +343,86 @@ else
     suffix$ = "_harsh"
 endif
 
+# v0.4 (item 7): Gate_duty_cycle_s had no upper bound. With
+# duty > period the test `x mod period < duty` is always true, so the
+# gate is permanently open while the report showed impossible figures
+# like "160% open". The field was also `positive`, so a fully closed
+# gate (duty 0) could not be requested at all; it is now `real` with an
+# explicit range.
+dutyNote$ = ""
+if gate_duty_cycle_s < 0
+    exitScript: "Gate duty cycle cannot be negative."
+endif
+if gate_duty_cycle_s > gate_period_s
+    dutyNote$ = "  NOTE: duty (" + fixed$(gate_duty_cycle_s * 1000, 1)
+        ... + " ms) exceeded the period (" + fixed$(gate_period_s * 1000, 1)
+        ... + " ms) - the gate would never close. Clamped to the period."
+    gate_duty_cycle_s = gate_period_s
+endif
+
+# v0.4 (item 8): the AM envelope is base + mod*sin(wt). When
+# mod > base it goes negative for part of each cycle, so the output
+# carries sign inversions coming from the MODULATOR, not from the input
+# - which contradicts the description's "the ONLY connection to the
+# input is the sample-by-sample SIGN". The presets all keep base > mod;
+# Custom never checked. Allowed, but no longer silent.
+amNote$ = ""
+if effect_type = 2 and mod_amplitude > base_amplitude
+    amNote$ = "  NOTE: Mod_amplitude > Base_amplitude - the AM envelope goes negative, adding polarity inversions from the modulator itself (bipolar AM)."
+endif
+
+# v0.4 (item 6): the gate and the AM oscillator read `x`, Praat's
+# ABSOLUTE time. The v0.3 changelog claims the gate starts open so
+# transient onsets survive, but that is only true when the Sound's time
+# domain starts at 0. A Sound extracted with times preserved can start
+# at, say, 12.4 s, in which case the opening gate phase is
+# 12.4 mod gate_period and the gate may well be shut. Phase is now
+# measured from the Sound's own start by default.
+if phase_origin = 2
+    phaseOffset = 0
+    phaseDesc$ = "absolute time axis"
+else
+    phaseOffset = xminOrig
+    phaseDesc$ = "start of this Sound"
+endif
+
 # === Info ===
-writeInfoLine: "=== Distortion & Bit-Crusher Suite v0.3 ==="
-appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch)"
+writeInfoLine: "=== Distortion & Bit-Crusher Suite v0.4b ==="
+appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Mode: ", modeNameDisplay$
 appendInfoLine: "Preset: ", presetName$
+if dutyNote$ <> ""
+    appendInfoLine: dutyNote$
+endif
+if amNote$ <> ""
+    appendInfoLine: amNote$
+endif
 appendInfoLine: ""
 
 if effect_type = 1
-    appendInfoLine: "Quantization levels: ", quantization_levels
-    appendInfoLine: "Effective bits: ~", fixed$(ln(quantization_levels)/ln(2), 1)
+    # v0.4 CRITICAL (item 1): the parameter was called
+    # Quantization_levels and the presets were named "4 levels",
+    # "2 levels" and so on - but `round(x * q) / q` sets a STEP of 1/q,
+    # and over -1..+1 that yields 2q+1 distinct values, not q. Measured:
+    # q=2 gives 5 levels (-1, -0.5, 0, 0.5, 1), q=3 gives 7, q=4 gives 9,
+    # q=8 gives 17. The "effective bits" line was wrong by roughly a
+    # factor of two in the same direction - it reported ~2 bits for q=4
+    # while nine states need four. The parameter is renamed to what it
+    # is, the level count is computed rather than assumed, and Quantizer
+    # option 2 provides a genuine N-level mapping.
+    if quantizer = 2
+        actualLevels = quantization_steps
+        appendInfoLine: "Quantization: ", actualLevels, " levels over -1..+1 (clamped)"
+    else
+        actualLevels = 2 * quantization_steps + 1
+        appendInfoLine: "Quantization: step 1/", quantization_steps, " -> ", actualLevels, " levels over -1..+1 (unbounded)"
+    endif
+    appendInfoLine: "Bits needed: ", ceiling(ln(actualLevels)/ln(2)), " (for ", actualLevels, " states)"
+    if quantizer = 2
+        quantSummary$ = string$(actualLevels) + " levels"
+    else
+        quantSummary$ = "step 1/" + string$(quantization_steps) + " (" + string$(actualLevels) + " levels)"
+    endif
 else
     appendInfoLine: "Base amplitude: ", fixed$(base_amplitude, 2)
     appendInfoLine: "Mod amplitude: ", fixed$(mod_amplitude, 2)
@@ -198,6 +430,10 @@ else
     appendInfoLine: "Gate period: ", fixed$(gate_period_s * 1000, 1), " ms"
     appendInfoLine: "Gate duty: ", fixed$(gate_duty_cycle_s * 1000, 1), " ms (",
         ... fixed$(gate_duty_cycle_s / gate_period_s * 100, 0), "% open)"
+    appendInfoLine: "Zero samples: ", zeroDesc$
+    appendInfoLine: "Phase origin: ", phaseDesc$
+    actualLevels = 0
+    quantSummary$ = ""
 endif
 appendInfoLine: ""
 
@@ -213,10 +449,17 @@ result = selected("Sound")
 
 if effect_type = 1
     # === BIT CRUSHER ===
-    # round(x * levels) / levels — quantize to evenly-spaced levels
-    q_str$ = string$(quantization_levels)
+    q_str$ = string$(quantization_steps)
     selectObject: result
-    Formula: "round(self * " + q_str$ + ") / " + q_str$
+    if quantizer = 2
+        # True N levels across -1..+1, clamped first so nothing outside
+        # full scale extends the quantizer's range.
+        lm1$ = string$(quantization_steps - 1)
+        Formula: "2 * round((min(max(self, -1), 1) + 1) / 2 * " + lm1$ + ") / " + lm1$ + " - 1"
+    else
+        # Legacy: step of 1/q, giving 2q+1 levels over -1..+1.
+        Formula: "round(self * " + q_str$ + ") / " + q_str$
+    endif
     
 else
     # === HARSH DISTORTION ===
@@ -225,22 +468,86 @@ else
     # FIX v0.3: gate condition flipped from "> duty" (v0.2 — duty
     # was actually the silent portion) to "< duty" (v0.3 — duty
     # is now the open portion, matching the parameter name).
+    #
+    # v0.4 (item 5): the sign extraction was
+    # `if self > 0 then 1 else -1 fi`, which maps a sample of exactly
+    # ZERO to -1. Digital silence therefore did not stay silent - it
+    # became a full-amplitude synthesized texture of negative polarity
+    # whenever the gate was open, and any digital pause inside ordinary
+    # material did the same. A zero sample has no sign; v0.3 picked one
+    # for it. All three readings are now available, with the legacy one
+    # as default.
+    #
+    # v0.4 (item 6): `x` is absolute time, so phase now runs from
+    # (x - phaseOffset) where phaseOffset is the Sound's own start.
     
     base$ = string$(base_amplitude)
     mod_amp$ = string$(mod_amplitude)
     mod_freq$ = string$(mod_frequency_Hz)
     gate_per$ = string$(gate_period_s)
     gate_duty$ = string$(gate_duty_cycle_s)
+    phase$ = string$(phaseOffset)
+    
+    if zero_handling = 2
+        sign$ = "(if self > 0 then 1 else if self < 0 then -1 else 0 fi fi)"
+    elsif zero_handling = 3
+        sign$ = "(if self < 0 then -1 else 1 fi)"
+    else
+        sign$ = "(if self > 0 then 1 else -1 fi)"
+    endif
+    
+    t$ = "(x - " + phase$ + ")"
     
     selectObject: result
-    Formula: "if self > 0 then 1 else -1 fi"
-        ... + " * (" + base$ + " + " + mod_amp$ + " * sin(2*pi*" + mod_freq$ + " * x))"
-        ... + " * (if (x mod " + gate_per$ + " < " + gate_duty$ + ") then 1 else 0 fi)"
+    Formula: sign$
+        ... + " * (" + base$ + " + " + mod_amp$ + " * sin(2*pi*" + mod_freq$ + " * " + t$ + "))"
+        ... + " * (if (" + t$ + " mod " + gate_per$ + " < " + gate_duty$ + ") then 1 else 0 fi)"
 endif
 
-# Scale output
+# Output level
+# v0.4 (items 3 and 4): v0.3 always applied `Scale peak: scale_peak`.
+# That is normalization, not a ceiling: a quiet source was lifted to the
+# target, a loud one pulled down, and the ABSOLUTE scale of
+# Base_amplitude and Mod_amplitude stopped mattering - scaling both by
+# the same factor in Harsh mode produced almost no change, since only
+# their ratio survived. Normalize stays the default so v0.3 renders are
+# reproducible.
 selectObject: result
-Scale peak: scale_peak
+prePeak = Get absolute extremum: 0, 0, "None"
+appendInfoLine: "  Peak before output stage: ", fixed$(prePeak, 4)
+
+levelScale = 1
+if output_level = 1
+    levelDesc$ = "preserved"
+    if prePeak > 1.0
+        appendInfoLine: "  WARNING: peak is ", fixed$(prePeak, 3), " - above 1.0 it will clip on playback or export."
+    endif
+elsif output_level = 2
+    if prePeak > scale_peak
+        selectObject: result
+        Scale peak: scale_peak
+        levelScale = scale_peak / prePeak
+        levelDesc$ = "limited to " + fixed$(scale_peak, 2)
+    else
+        levelDesc$ = "unchanged"
+    endif
+else
+    # v0.4b (item 3): v0.4 called Scale peak first and only then tested
+    # prePeak > 0, so the guard arrived after the operation it was meant
+    # to protect. A fully silent result is now reachable by design -
+    # Gate_duty_cycle_s may legitimately be 0, and Zero_handling
+    # "Preserve silence" on a silent source does the same - so this is a
+    # real path, not a theoretical one.
+    if prePeak > 0
+        selectObject: result
+        Scale peak: scale_peak
+        levelScale = scale_peak / prePeak
+        levelDesc$ = "normalized to " + fixed$(scale_peak, 2)
+    else
+        levelDesc$ = "silent output - normalization skipped"
+    endif
+endif
+appendInfoLine: "  Output level: ", levelDesc$
 
 # === Final stats ===
 selectObject: result
@@ -270,8 +577,7 @@ if draw_visualization
             ... original_name$
             ... + "  |  " + modeNameDisplay$
             ... + "  |  " + presetName$
-            ... + "  |  Levels: " + string$(quantization_levels)
-            ... + "  |  Effective bits: ~" + fixed$(ln(quantization_levels)/ln(2), 1)
+            ... + "  |  " + quantSummary$
     else
         Text: 0.5, "centre", -0.22, "half",
             ... original_name$
@@ -293,14 +599,21 @@ if draw_visualization
     
     if effect_type = 1
         # ==== BIT CRUSHER STAIRCASE ====
-        Axes: -1.2, 1.2, -1.2, 1.2
-        Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, -1.2, 1.2
+        # v0.4: the staircase can now exceed +/-1 once levelScale is
+        # folded in, so the vertical range follows the drawn function.
+        yLimQ = 1.2
+        if levelScale > 1
+            yLimQ = 1.2 * levelScale
+        endif
+        
+        Axes: -1.2, 1.2, -yLimQ, yLimQ
+        Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, -yLimQ, yLimQ
         
         # Grid
         Colour: "{0.85, 0.85, 0.88}"
         Line width: 1
         Draw line: -1.2, 0, 1.2, 0
-        Draw line: 0, -1.2, 0, 1.2
+        Draw line: 0, -yLimQ, 0, yLimQ
         
         # y=x reference
         Dotted line
@@ -309,37 +622,71 @@ if draw_visualization
         Solid line
         
         # Draw staircase
+        # v0.4: draws whichever quantizer is selected, and carries the
+        # render's actual peak scaling so the panel describes the
+        # finished output rather than the pre-normalization function.
         Colour: "{0.30, 0.50, 0.78}"
         Line width: 2
-        step = 1 / quantization_levels
-        for i from -quantization_levels to quantization_levels
-            xStart = (i - 0.5) * step
-            xEnd = (i + 0.5) * step
-            yVal = i * step
-            
-            if xStart < -1
-                xStart = -1
-            endif
-            if xEnd > 1
-                xEnd = 1
-            endif
-            
-            if xStart < xEnd
-                Draw line: xStart, yVal, xEnd, yVal
-            endif
-        endfor
+        if quantizer = 2
+            nLev = quantization_steps
+            for i from 0 to nLev - 1
+                yVal = (2 * i / (nLev - 1) - 1) * levelScale
+                xCentre = 2 * i / (nLev - 1) - 1
+                xStart = xCentre - 1 / (nLev - 1)
+                xEnd = xCentre + 1 / (nLev - 1)
+                if xStart < -1
+                    xStart = -1
+                endif
+                if xEnd > 1
+                    xEnd = 1
+                endif
+                if xStart < xEnd
+                    Draw line: xStart, yVal, xEnd, yVal
+                endif
+            endfor
+        else
+            step = 1 / quantization_steps
+            for i from -quantization_steps to quantization_steps
+                xStart = (i - 0.5) * step
+                xEnd = (i + 0.5) * step
+                yVal = i * step * levelScale
+                
+                if xStart < -1
+                    xStart = -1
+                endif
+                if xEnd > 1
+                    xEnd = 1
+                endif
+                
+                if xStart < xEnd
+                    Draw line: xStart, yVal, xEnd, yVal
+                endif
+            endfor
+        endif
         
         # Vertical risers between steps (so it looks like a true staircase)
         Colour: "{0.55, 0.70, 0.85}"
         Line width: 1
-        for i from -quantization_levels to quantization_levels - 1
-            xRiser = (i + 0.5) * step
-            yLow = i * step
-            yHigh = (i + 1) * step
-            if xRiser >= -1 and xRiser <= 1 and yLow >= -1.1 and yHigh <= 1.1
-                Draw line: xRiser, yLow, xRiser, yHigh
-            endif
-        endfor
+        if quantizer = 2
+            nLev = quantization_steps
+            for i from 0 to nLev - 2
+                xRiser = 2 * i / (nLev - 1) - 1 + 1 / (nLev - 1)
+                yLow = (2 * i / (nLev - 1) - 1) * levelScale
+                yHigh = (2 * (i + 1) / (nLev - 1) - 1) * levelScale
+                if xRiser >= -1 and xRiser <= 1
+                    Draw line: xRiser, yLow, xRiser, yHigh
+                endif
+            endfor
+        else
+            for i from -quantization_steps to quantization_steps - 1
+                xRiser = (i + 0.5) * step
+                yLow = i * step * levelScale
+                yHigh = (i + 1) * step * levelScale
+                if xRiser >= -1 and xRiser <= 1 and abs(yLow) <= yLimQ and abs(yHigh) <= yLimQ
+                    Draw line: xRiser, yLow, xRiser, yHigh
+                endif
+            endfor
+        endif
         Line width: 1
         
         Colour: "Black"
@@ -377,7 +724,7 @@ if draw_visualization
         Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "SIGN(x)"
         Font size: 7
         Colour: "{0.40, 0.15, 0.15}"
-        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "+/- 1"
+        Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", signBoxLabel$
         
         Colour: "{0.45, 0.45, 0.45}"
         Draw arrow: 0.50, 4.0, 0.50, 3.7
@@ -452,8 +799,8 @@ if draw_visualization
         
         Font size: 11
         Colour: "{0.30, 0.45, 0.78}"
-        Text: 0.10, "left", 0.82, "half", "Levels:  " + string$(quantization_levels)
-        Text: 0.10, "left", 0.74, "half", "Bits:    ~" + fixed$(ln(quantization_levels)/ln(2), 1)
+        Text: 0.10, "left", 0.82, "half", "Steps:   " + string$(quantization_steps)
+        Text: 0.10, "left", 0.74, "half", "Levels:  " + string$(actualLevels)
         
         # Character guide
         Font size: 9
@@ -462,22 +809,26 @@ if draw_visualization
         
         Font size: 8
         Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.10, "left", 0.51, "half", "2 levels:  extreme square"
-        Text: 0.10, "left", 0.43, "half", "3-4 lvl:  heavy lo-fi"
-        Text: 0.10, "left", 0.35, "half", "8 lvl:    mild crush"
-        Text: 0.10, "left", 0.27, "half", "16+ lvl:  subtle"
+        Text: 0.10, "left", 0.51, "half", "2-3 levels:  extreme square"
+        Text: 0.10, "left", 0.43, "half", "5-9 levels:  heavy lo-fi"
+        Text: 0.10, "left", 0.35, "half", "17 levels:   mild crush"
+        Text: 0.10, "left", 0.27, "half", "33+ levels:  subtle"
         
         # Highlight current setting in the guide
+        # v0.4b: keyed on actualLevels, not the raw parameter. With the
+        # legacy quantizer, steps = 4 means NINE levels, so keying on
+        # steps put the marker in the "3-4" band while the audio sat in
+        # the heavy-lo-fi range for a quite different reason.
         Font size: 7
         Colour: "{0.78, 0.30, 0.30}"
-        if quantization_levels <= 2
-            Text: 0.10, "left", 0.16, "half", "(current: extreme)"
-        elsif quantization_levels <= 4
-            Text: 0.10, "left", 0.16, "half", "(current: heavy lo-fi)"
-        elsif quantization_levels <= 8
-            Text: 0.10, "left", 0.16, "half", "(current: mild crush)"
+        if actualLevels <= 3
+            Text: 0.10, "left", 0.16, "half", "(current: " + string$(actualLevels) + " levels, extreme)"
+        elsif actualLevels <= 9
+            Text: 0.10, "left", 0.16, "half", "(current: " + string$(actualLevels) + " levels, heavy lo-fi)"
+        elsif actualLevels <= 17
+            Text: 0.10, "left", 0.16, "half", "(current: " + string$(actualLevels) + " levels, mild crush)"
         else
-            Text: 0.10, "left", 0.16, "half", "(current: subtle)"
+            Text: 0.10, "left", 0.16, "half", "(current: " + string$(actualLevels) + " levels, subtle)"
         endif
     else
         # ==== HARSH DISTORTION PARAMS ====
@@ -544,15 +895,23 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.68, 5.55
     Select inner viewport: 0.55, 7.72, 4.75, 5.48
     
+    # v0.4b (item 4): the panel queried and drew 0..zoomDur, i.e. it
+    # assumed the Sound's time domain starts at 0. Phase_origin exists
+    # precisely to support Sounds extracted with times preserved
+    # (xmin = 12.4 s and the like), and on exactly those Sounds this
+    # panel was reading a window outside the data. It now runs from the
+    # Sound's own start.
     zoomDur = 0.03
     if zoomDur > duration
         zoomDur = duration
     endif
     
     selectObject: original
-    origPeak = Get absolute extremum: 0, zoomDur, "None"
+    zoomStart = xminOrig
+    zoomEnd = xminOrig + zoomDur
+    origPeak = Get absolute extremum: zoomStart, zoomEnd, "None"
     selectObject: result
-    resPeak = Get absolute extremum: 0, zoomDur, "None"
+    resPeak = Get absolute extremum: zoomStart, zoomEnd, "None"
     zoomMax = origPeak
     if resPeak > zoomMax
         zoomMax = resPeak
@@ -562,10 +921,10 @@ if draw_visualization
     endif
     zAmpViz = zoomMax * 1.15
     
-    Axes: 0, zoomDur, -zAmpViz, zAmpViz
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, zoomDur, -zAmpViz, zAmpViz
+    Axes: zoomStart, zoomEnd, -zAmpViz, zAmpViz
+    Paint rectangle: "{0.97, 0.97, 0.97}", zoomStart, zoomEnd, -zAmpViz, zAmpViz
     Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, zoomDur, 0
+    Draw line: zoomStart, 0, zoomEnd, 0
     
     # Original (gray, behind)
     selectObject: original
@@ -574,12 +933,12 @@ if draw_visualization
         zOrig = selected("Sound")
         Colour: "{0.65, 0.65, 0.65}"
         Line width: 1
-        Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
         removeObject: zOrig
     else
         Colour: "{0.65, 0.65, 0.65}"
         Line width: 1
-        Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
     endif
     
     # Result (colored, on top)
@@ -594,12 +953,12 @@ if draw_visualization
         zRes = selected("Sound")
         Colour: modeColor$
         Line width: 1.3
-        Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
         removeObject: zRes
     else
         Colour: modeColor$
         Line width: 1.3
-        Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
     endif
     Line width: 1
     
@@ -612,6 +971,7 @@ if draw_visualization
     
     # ----------------------------------------------------------
     # PANEL D: OUTPUT WAVEFORM (full file)
+    # Only the first two channels are drawn; see the legend note below.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
     Select inner viewport: 0.55, 7.72, 5.69, 6.48
@@ -656,7 +1016,11 @@ if draw_visualization
     Draw inner box
     Font size: 7
     if nResultCh > 1
-        Text top: "no", "Output (full file)  (blue=L  orange=R)"
+        # v0.4 (item 10): processing covers every channel, but this
+        # panel draws only the first two - the legend said "blue=L
+        # orange=R" on 4- and 6-channel files where channels 3+ were
+        # processed and simply not shown.
+        Text top: "no", "Output (full file)  " + chanLegend$
     else
         Text top: "no", "Output (full file, mono)"
     endif
@@ -678,11 +1042,10 @@ if draw_visualization
             ... "##" + presetName$ + "##"
             ... + "  " + original_name$
             ... + "  |  Mode: Bit Crusher"
-            ... + "  |  Levels: " + string$(quantization_levels)
-            ... + "  |  Effective bits: ~" + fixed$(ln(quantization_levels)/ln(2), 1)
+            ... + "  |  " + quantSummary$
         
         Text: 0.02, "left", 0.28, "half",
-            ... "Scale peak: " + fixed$(scale_peak, 2)
+            ... "Level: " + levelDesc$
             ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
     else
         Text: 0.02, "left", 0.75, "half",
@@ -696,7 +1059,7 @@ if draw_visualization
             ... "Gate: " + fixed$(gate_duty_cycle_s * 1000, 1) + "/"
             ... + fixed$(gate_period_s * 1000, 1) + " ms ("
             ... + fixed$(gate_duty_cycle_s / gate_period_s * 100, 0) + "% open)"
-            ... + "  |  Scale peak: " + fixed$(scale_peak, 2)
+            ... + "  |  Level: " + levelDesc$
             ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
     endif
     
