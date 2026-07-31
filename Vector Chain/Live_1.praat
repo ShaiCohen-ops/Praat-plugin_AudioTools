@@ -85,11 +85,17 @@ selectObject: initial_sound
 appendInfoLine: "=== Part 1: Intro (Neural Drone) ==="
 appendInfoLine: "  Generating..."
 
-# Neural Ambient Drone Designer parameters (v0.7):
-# Preset, Seed, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
-# Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
+# FIX: Updated to the correct 13-argument signature for
+# Neural_Ambient_Drone_Designer v0.9. v0.9 dropped the separate Stereo
+# on/off boolean - Stereo_width alone now controls it (negative = mono,
+# >=0 = stereo) - and reordered Seed to the end, next to Play. The old
+# v0.7 14-arg call below had a Stereo=1 value with no home in the new form.
+# Neural Ambient Drone Designer parameters (v0.9):
+# Preset, Duration, Layers, Grain_ms, Crossfade_ms, Shimmer, Shimmer_prob,
+# Shimmer_intervals, Clusters, Kmeans_iter, Stereo_width, Seed, Play
 # Seed=0 keeps the internal RNG unpredictable, matching prior behaviour.
-runScript: path_intro$, "Manual", 0, 15.0, 3, 20, 1, 0.15, "Octaves only", 100, 3, 10, 1, 0.7, 0
+# Stereo_width=0.7 (positive) keeps stereo output, matching the old Stereo=1.
+runScript: path_intro$, "Manual", 15.0, 3, 100, 20, 1, 0.15, "Octaves only", 3, 10, 0.7, 0, 0
 
 # Ensure stereo
 selectObject: selected("Sound")

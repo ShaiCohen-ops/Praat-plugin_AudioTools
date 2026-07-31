@@ -162,9 +162,13 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 3: Outro (BPM Stereo Panning) ==="
 appendInfoLine: "  Generating..."
 
-# BPM Panning parameters (8 args)
-# Tempo_bpm, Subdivision, Swing_percent, Accent_grid, Pattern, Edge_smoothness, Draw, Play
-runScript: path_outro$, 120, "1/16 (sixteenth notes)", 50, "1010100110101001", "1.  Ping-pong (hard L/R alternation)", 0.3, 0, 0
+# BPM Panning parameters (11 args, matching v0.4's signature)
+# v0.4 inserted Stereo_input, Output_normalisation and Peak_target between
+# Edge_transition_percent and Draw_visualization.
+# Tempo_bpm, Subdivision, Swing_percent, Accent_grid, Pattern,
+# Edge_transition_percent, Stereo_input, Output_normalisation, Peak_target,
+# Draw, Play
+runScript: path_outro$, 120, "1/16 (sixteenth notes)", 50, "1010100110101001", "1.  Ping-pong (hard L/R alternation)", 0.3, "Downmix to mono and pan (true panning)", "Peak (scale to target)", 0.95, 0, 0
 
 # Get the output
 sound_outro_raw = selected("Sound")

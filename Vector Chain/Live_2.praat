@@ -119,10 +119,11 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 2: Body (Neural Ambient Drone) ==="
 appendInfoLine: "  Generating..."
 
-# Neural Ambient Drone Designer parameters:
-# Preset, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
-# Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
-runScript: path_body$, "Evolving Pad", 0, 20.0, 4, 30, 1, 0.18, "Octaves and fifths", 120, 4, 10, 1, 0.75, 0
+# Neural Ambient Drone Designer parameters (matches current 13-arg form):
+# Preset, Output_duration_sec, Number_of_layers, Grain_size_ms, Grain_crossfade_ms,
+# Add_octave_shimmer, Shimmer_probability, Shimmer_intervals, Number_of_clusters,
+# Kmeans_iterations, Stereo_width, Seed, Play_result
+runScript: path_body$, "Evolving Pad", 20.0, 4, 120, 30, 1, 0.18, "Octaves and fifths", 4, 10, 0.75, 0, 0
 
 # Get the output
 sound_body = selected("Sound")
@@ -157,10 +158,12 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 3: Outro (8-Channel Deviations) ==="
 appendInfoLine: "  Generating..."
 
-# 8-Channel Speed Deviations parameters:
-# Preset, Mode, Factor, ch1-8 speeds, min, max, seed, pitch_floor, pitch_ceil, 
-# use_original_sr, target_sr, visualize, play
-runScript: path_outro$, "Custom (use mode below)", "Automatic (using factor)", 0.15, 0.85, 0.88, 0.91, 0.94, 1.06, 1.09, 1.12, 1.15, 0.80, 1.20, 42, 75, 600, 1, 44100, 0, 0
+# 8-Channel Speed Deviations parameters (matches current 22-arg form):
+# Preset, Mode, Speed_deviation_factor, Channel_1-8_speed, Random_min_speed,
+# Random_max_speed, Random_seed, Min_pitch, Max_pitch,
+# Override_sampling_frequency, Target_sampling_frequency, Output_format,
+# Scale_peak, Draw_visualization, Play_result
+runScript: path_outro$, "Custom (use mode below)", "Automatic (using factor)", 0.15, 0.85, 0.88, 0.91, 0.94, 1.06, 1.09, 1.12, 1.15, 0.80, 1.20, 42, 75, 600, 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 0
 
 # Get the output
 sound_outro_raw = selected("Sound")

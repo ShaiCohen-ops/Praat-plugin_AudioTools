@@ -41,22 +41,22 @@ appendInfoLine: "Step 1: Spiral Pitch Dance complete."
 # Note: The output name now includes the preset name (e.g., "Manual").
 selectObject: sound2
 
-# Parameters match the form in your file:
+# Parameters match the form in Neural_Ambient_Drone_Designer.praat (v0.9, 13 args):
 # 1. Preset (Manual)
-# 2. Duration (20.0)
-# 3. Layer density (3)
-# 4. Crossfade (20)
-# 5. Add octave shimmer (1)
-# 6. Shimmer prob (0.15)
-# 7. Shimmer intervals (Octaves only)
-# 8. Grain size (100)
-# 9. Clusters (3)
-# 10. Iterations (10)
-# 11. Stereo out (1)
-# 12. Width (0.7)
-# 13. Play result (0)
+# 2. Output_duration_sec (20.0)
+# 3. Number_of_layers (3)
+# 4. Grain_size_ms (100)
+# 5. Grain_crossfade_ms (20)
+# 6. Add_octave_shimmer (1)
+# 7. Shimmer_probability (0.15)
+# 8. Shimmer_intervals (Octaves only)
+# 9. Number_of_clusters (3)
+# 10. Kmeans_iterations (10)
+# 11. Stereo_width (0.7)
+# 12. Seed (0)
+# 13. Play_result (0)
 
-runScript: path2$, "Manual", 0, 20.0, 3, 20, 1, 0.15, "Octaves only", 100, 3, 10, 1, 0.7, 0
+runScript: path2$, "Manual", 20.0, 3, 100, 20, 1, 0.15, "Octaves only", 3, 10, 0.7, 0, 0
 
 # FIX: Output name is "_ClusterDrone_Manual" (matches Rename in
 # Neural_Ambient_Drone_Designer.praat, which uses "_ClusterDrone_" +
@@ -70,7 +70,12 @@ appendInfoLine: "Step 2: Neural Drone complete."
 # STEP 3: 8-Channel Speed Deviations
 # ==============================================================================
 selectObject: sound3
-runScript: path3$, "Custom (use mode below)", "Automatic (using factor)", 0.15, 0.85, 0.88, 0.91, 0.94, 1.06, 1.09, 1.12, 1.15, 0.80, 1.20, 42, 75, 600, 1, 44100, 0, 1
+# 8-Channel Speed Deviations parameters (matches current 22-arg form):
+# Preset, Mode, Speed_deviation_factor, Channel_1-8_speed, Random_min_speed,
+# Random_max_speed, Random_seed, Min_pitch, Max_pitch,
+# Override_sampling_frequency, Target_sampling_frequency, Output_format,
+# Scale_peak, Draw_visualization, Play_result
+runScript: path3$, "Custom (use mode below)", "Automatic (using factor)", 0.15, 0.85, 0.88, 0.91, 0.94, 1.06, 1.09, 1.12, 1.15, 0.80, 1.20, 42, 75, 600, 1, 44100, "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 1
 
 # Capture final output (Praat leaves the last created object selected)
 sound4 = selected("Sound")

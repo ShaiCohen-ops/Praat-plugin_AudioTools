@@ -126,7 +126,10 @@ if drone_shimmer_choice = 1
 elsif drone_shimmer_choice = 2
     drone_shimmer_intervals$ = "Octaves and fifths"
 else
-    drone_shimmer_intervals$ = "Full harmonic series"
+    # FIX: "Full harmonic series" is not a valid Shimmer_intervals option in
+    # Neural_Ambient_Drone_Designer v0.9 - the third option is named
+    # "Extended interval set".
+    drone_shimmer_intervals$ = "Extended interval set"
 endif
 
 # Grain size: 80-150 ms
@@ -137,9 +140,6 @@ drone_clusters = randomInteger(2, 5)
 
 # K-means iterations: 5-15
 drone_kmeans = randomInteger(5, 15)
-
-# Stereo: always 1
-drone_stereo = 1
 
 # Stereo width: 0.5-0.9
 drone_width = randomUniform(0.5, 0.9)
@@ -155,14 +155,20 @@ appendInfoLine: "  Clusters: ", drone_clusters
 appendInfoLine: "  K-means iter: ", drone_kmeans
 appendInfoLine: "  Stereo width: ", fixed$(drone_width, 2)
 
-# Neural Ambient Drone Designer parameters (v0.7)
-# Args: Preset, Seed, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
-#       Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
+# FIX: Updated to the correct 13-argument signature for
+# Neural_Ambient_Drone_Designer v0.9. v0.9 dropped the separate Stereo
+# on/off boolean - Stereo_width alone now controls it (negative = mono,
+# >=0 = stereo) - and moved Seed to just before Play. The old v0.7 14-arg
+# call passed a Stereo=1 value that has no home in the new form; the
+# drone_stereo variable above has been removed accordingly.
+# Neural Ambient Drone Designer parameters (v0.9)
+# Args: Preset, Duration, Layers, Grain_ms, Crossfade_ms, Shimmer, Shimmer_prob,
+#       Shimmer_intervals, Clusters, Kmeans_iter, Stereo_width, Seed, Play
 # Seed=0 keeps the drone's internal RNG unpredictable (matches prior behaviour);
 # pass random_seed here instead if you want the drone layer fully reproducible too.
-runScript: path_intro$, "Manual", 0, drone_dur, drone_layers, drone_crossfade, drone_shimmer, 
-    ... drone_shimmer_prob, drone_shimmer_intervals$, drone_grain, drone_clusters, 
-    ... drone_kmeans, drone_stereo, drone_width, 0
+runScript: path_intro$, "Manual", drone_dur, drone_layers, drone_grain, drone_crossfade,
+    ... drone_shimmer, drone_shimmer_prob, drone_shimmer_intervals$, drone_clusters,
+    ... drone_kmeans, drone_width, 0, 0
 
 # Ensure stereo
 selectObject: selected("Sound")

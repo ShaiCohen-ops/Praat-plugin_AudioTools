@@ -86,8 +86,14 @@ appendInfoLine: "=== Part 1: Intro (Full-Wave Rectifier) ==="
 appendInfoLine: "  Generating..."
 
 # Full-Wave Rectifier parameters
-# Args (4): Preset, Scale_peak, Viz, Play
-runScript: path_intro$, "Default (0.95 peak)", 0.95, 0, 0, 0
+# Args (8): Preset, Dc_handling, Output_level, Scale_peak, Show_spectrum,
+#           Spectrum_reference, Viz, Play
+# FIX: v0.4/v0.4b added Dc_handling, Output_level and Spectrum_reference
+# (optionmenus, so exact label strings are required) and renamed the
+# Preset options. Old call had 5 args; v0.4b requires 8.
+# Dc_handling = "Raw rectification (v0.2/v0.3)" and Output_level =
+# "Normalize to target" reproduce the old, always-scale-to-peak behavior.
+runScript: path_intro$, "Standard level (0.95 peak)", "Raw rectification (v0.2/v0.3)", "Normalize to target", 0.95, 0, "Match levels (isolates harmonic change)", 0, 0
 
 # Get the output
 sound_intro = selected("Sound")
@@ -157,11 +163,19 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 3: Outro (8-Channel Movements) ==="
 appendInfoLine: "  Generating..."
 
-# 8-Channel Spatial Movements parameters (14 args)
-# Pattern, Motion_speed, Frequency_hz, Fadein_time, Min_volume, Max_volume, 
-# Amplitude, Exponent, Custom_x, Custom_y, Number_of_points, Random_seed, 
-# Draw_visualization, Play_result
-runScript: path_outro$, "8. Circular rotation", 0.2, 2.0, 1.0, 60, 85, 50.0, 1.0, 0.5, 0.5, 100, 1, 0, 0
+# 8-Channel Spatial Movements parameters (16 args)
+# Pattern, Motion_speed, Frequency_hz, Fadein_time, Exponent, Path_radius,
+# Source_focus, Custom_x, Custom_y, Floor_db, Scale_peak, Number_of_points,
+# Random_seed, Output_format, Draw_visualization, Play_result
+#
+# FIX: v0.4/v0.5 dropped Min_volume, Max_volume and Amplitude (old
+# absolute-dB fields) in favor of Floor_db (relative dB) and Scale_peak
+# (peak target), inserted Path_radius and Source_focus after Exponent,
+# and added an Output_format optionmenu. Old call had 14 args; v0.5
+# requires 16. Pattern's label also changed to include the [SPATIAL]
+# tag. Output_format = octophonic is required since the code below
+# branches on nch > 2 to extract channels 1 & 2.
+runScript: path_outro$, "8. [SPATIAL] Circular rotation", 0.2, 2.0, 1.0, 1.0, 0.7, 2.0, 0.0, 0.0, -60.0, 0.95, 100, 1, "8 channels - octophonic (Ch1-Ch8)", 0, 0
 
 # Get the output
 sound_outro_raw = selected("Sound")

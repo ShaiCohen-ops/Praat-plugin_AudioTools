@@ -3,13 +3,19 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Live recording + Composition 4 processing chain
 #   Flow: Record → Cubic Phase → Grain Cloud → 8-Channel Comb
+#
+# Changelog v1.2:
+#   - Fixed runScript call to 8-Channel_Comb_Delay.praat to match v0.4
+#     form signature (added Output_format argument). Old call had 13
+#     args; v0.4 requires 14. Output_format = 1 (octophonic) preserves
+#     the 8-channel output the downstream nch>2 branch depends on.
 #
 # Changelog v1.1:
 #   - Fixed runScript call to Metamodulator.praat to match v2.3
@@ -165,8 +171,14 @@ appendInfoLine: "=== Part 3: Outro (8-Channel Comb Delay) ==="
 appendInfoLine: "  Generating..."
 
 # 8-Channel Comb Delay parameters
-# Args: Preset, D1-D8, Reverse_even, Scale_peak, Viz, Play
-runScript: path_outro$, "Linear (2,4,6,8,10,12,14,16)", 2, 4, 6, 8, 10, 12, 14, 16, 0, 0.99, 0, 0
+# Args: Preset, D1-D8, Reverse_even, Scale_peak, Output_format, Viz, Play
+# FIX: added Output_format (arg 12) to match 8-Channel_Comb_Delay v0.4 form.
+# Old call had 13 args; v0.4 requires 14. Output_format is an optionmenu,
+# so runScript needs its exact label string (like Preset below), not the
+# numeric index. "8 channels - octophonic..." is required here since the
+# code below explicitly branches on nch > 2 to extract channels 1 & 2 out
+# of an 8-channel object.
+runScript: path_outro$, "Linear (2,4,6,8,10,12,14,16)", 2, 4, 6, 8, 10, 12, 14, 16, 0, 0.99, "8 channels - octophonic (Ch1-Ch8)", 0, 0
 
 # Get the output
 sound_outro_raw = selected("Sound")

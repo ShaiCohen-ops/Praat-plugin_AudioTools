@@ -42,8 +42,13 @@ appendInfoLine: "Step 2: Grain Cloud complete."
 # STEP 3: 8-Channel Comb Delay
 # ==============================================================================
 selectObject: sound3
-# Args: Preset, D1-D8, Reverse_even, Scale_peak, Viz, Play
-runScript: path3$, "Linear (2,4,6,8,10,12,14,16)", 2, 4, 6, 8, 10, 12, 14, 16, 0, 0.99, 0, 1
+# Args: Preset, D1-D8, Reverse_even, Scale_peak, Output_format, Viz, Play
+# FIX: added Output_format (arg 12) to match 8-Channel_Comb_Delay v0.4 form.
+# Old call had 13 args; v0.4 requires 14. Output_format is an optionmenu,
+# so runScript needs its exact label string (like Preset below), not the
+# numeric index. "8 channels - octophonic..." preserves the original
+# all-8-channels behavior.
+runScript: path3$, "Linear (2,4,6,8,10,12,14,16)", 2, 4, 6, 8, 10, 12, 14, 16, 0, 0.99, "8 channels - octophonic (Ch1-Ch8)", 0, 1
 
 # Select Output
 sound4 = selected("Sound")

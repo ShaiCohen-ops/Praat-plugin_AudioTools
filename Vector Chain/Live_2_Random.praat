@@ -235,9 +235,6 @@ drone_clusters = randomInteger(3, 6)
 # K-means iterations: 5-15
 drone_kmeans = randomInteger(5, 15)
 
-# Stereo: always 1
-drone_stereo = 1
-
 # Stereo width: 0.5-0.95
 drone_width = randomUniform(0.5, 0.95)
 
@@ -256,12 +253,14 @@ appendInfoLine: "  Clusters: ", drone_clusters
 appendInfoLine: "  K-means iter: ", drone_kmeans
 appendInfoLine: "  Stereo width: ", fixed$(drone_width, 2)
 
-# Neural Ambient Drone Designer parameters (v0.7 form order):
-# Preset, Seed, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
-# Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
-runScript: path_body$, drone_preset$, drone_seed, drone_dur, drone_layers, drone_crossfade, 
-    ... drone_shimmer, drone_shimmer_prob, drone_shimmer_intervals$, drone_grain, 
-    ... drone_clusters, drone_kmeans, drone_stereo, drone_width, 0
+# Neural Ambient Drone Designer parameters (matches current 13-arg form,
+# same order confirmed in Composition_2.praat / Live_2.praat):
+# Preset, Output_duration_sec, Number_of_layers, Grain_size_ms, Grain_crossfade_ms,
+# Add_octave_shimmer, Shimmer_probability, Shimmer_intervals, Number_of_clusters,
+# Kmeans_iterations, Stereo_width, Seed, Play_result
+runScript: path_body$, drone_preset$, drone_dur, drone_layers, drone_grain, drone_crossfade, 
+    ... drone_shimmer, drone_shimmer_prob, drone_shimmer_intervals$, drone_clusters, 
+    ... drone_kmeans, drone_width, drone_seed, 0
 
 # Get the output
 sound_body = selected("Sound")
@@ -302,17 +301,17 @@ spatial_preset_choice = randomInteger(1, 7)
 if spatial_preset_choice = 1
     spatial_preset$ = "Custom (use mode below)"
 elsif spatial_preset_choice = 2
-    spatial_preset$ = "Subtle (±5%)"
+    spatial_preset$ = "Subtle (speed ±5%)"
 elsif spatial_preset_choice = 3
-    spatial_preset$ = "Moderate (±15%)"
+    spatial_preset$ = "Moderate (speed ±15%)"
 elsif spatial_preset_choice = 4
-    spatial_preset$ = "Wide (±30%)"
+    spatial_preset$ = "Wide (speed ±30%)"
 elsif spatial_preset_choice = 5
-    spatial_preset$ = "Extreme (±50%)"
+    spatial_preset$ = "Extreme (speed ±50%)"
 elsif spatial_preset_choice = 6
-    spatial_preset$ = "Accelerando (0.7 to 1.3)"
+    spatial_preset$ = "Ascending channel speeds (0.7 to 1.3)"
 else
-    spatial_preset$ = "Decelerando (1.3 to 0.7)"
+    spatial_preset$ = "Descending channel speeds (1.3 to 0.7)"
 endif
 
 # Mode: random choice (1=Automatic, 2=Manual, 3=Random)
@@ -366,13 +365,16 @@ appendInfoLine: "  Random seed: ", spatial_seed
 appendInfoLine: "  Pitch floor: ", spatial_floor, " Hz"
 appendInfoLine: "  Pitch ceiling: ", spatial_ceiling, " Hz"
 
-# 8-Channel Speed Deviations parameters:
-# Preset, Mode, Factor, ch1-8 speeds, min, max, seed, pitch_floor, pitch_ceil, 
-# use_original_sr, target_sr, visualize, play
+# 8-Channel Speed Deviations parameters (matches current 22-arg form):
+# Preset, Mode, Speed_deviation_factor, Channel_1-8_speed, Random_min_speed,
+# Random_max_speed, Random_seed, Min_pitch, Max_pitch,
+# Override_sampling_frequency, Target_sampling_frequency, Output_format,
+# Scale_peak, Draw_visualization, Play_result
 runScript: path_outro$, spatial_preset$, spatial_mode$, spatial_factor, 
     ... spatial_ch1, spatial_ch2, spatial_ch3, spatial_ch4, spatial_ch5, 
     ... spatial_ch6, spatial_ch7, spatial_ch8, spatial_min, spatial_max, spatial_seed, 
-    ... spatial_floor, spatial_ceiling, spatial_use_sr, spatial_target_sr, 0, 0
+    ... spatial_floor, spatial_ceiling, spatial_use_sr, spatial_target_sr, 
+    ... "8 channels - octophonic (Ch1-Ch8)", 0.95, 0, 0
 
 # Get the output
 sound_outro_raw = selected("Sound")

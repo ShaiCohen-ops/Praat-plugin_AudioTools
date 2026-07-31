@@ -54,11 +54,12 @@ selectObject: initial_sound
 appendInfoLine: "=== Part 1: Intro (Neural Drone) ==="
 appendInfoLine: "  Generating..."
 
-# Neural Ambient Drone Designer parameters (v0.7):
-# Preset, Seed, Duration, Layers, Crossfade_ms, Shimmer, Shimmer_prob, Shimmer_intervals,
-# Grain_ms, Clusters, Kmeans_iter, Stereo, Stereo_width, Play
+# Neural Ambient Drone Designer parameters (matches current 13-arg form, v0.9):
+# Preset, Output_duration_sec, Number_of_layers, Grain_size_ms, Grain_crossfade_ms,
+# Add_octave_shimmer, Shimmer_probability, Shimmer_intervals, Number_of_clusters,
+# Kmeans_iterations, Stereo_width, Seed, Play_result
 # Seed=0 keeps the internal RNG unpredictable, matching prior behaviour.
-runScript: path_intro$, "Manual", 0, 15.0, 3, 20, 1, 0.15, "Octaves only", 100, 3, 10, 1, 0.7, 0
+runScript: path_intro$, "Manual", 15.0, 3, 100, 20, 1, 0.15, "Octaves only", 3, 10, 0.7, 0, 0
 
 # Ensure stereo
 selectObject: selected("Sound")

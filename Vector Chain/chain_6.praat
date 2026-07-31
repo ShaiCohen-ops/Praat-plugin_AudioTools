@@ -55,9 +55,14 @@ appendInfoLine: "Step 2: Phase Modulation Matrix complete."
 # ==============================================================================
 selectObject: sound3
 
-# FIX: Updated to the correct 8-argument signature matching Live_6
-# Parameters: Tempo_bpm, Subdivision, Swing_percent, Accent_grid, Pattern, Edge_smoothness, Draw, Play
-runScript: path3$, 120, "1/16 (sixteenth notes)", 50, "1010100110101001", "1.  Ping-pong (hard L/R alternation)", 0.3, 0, 1
+# FIX: Updated to the correct 11-argument signature for BPM_Panning v0.4.
+# v0.4 inserted Stereo_input, Output_normalisation and Peak_target between
+# Edge_transition_percent and Draw_visualization (the chain previously passed
+# the old 8-arg v0.3 signature, which misaligned from arg 7 onward).
+# Parameters: Tempo_bpm, Subdivision, Swing_percent, Accent_grid, Pattern,
+#             Edge_transition_percent, Stereo_input, Output_normalisation,
+#             Peak_target, Draw_visualization, Play_result
+runScript: path3$, 120, "1/16 (sixteenth notes)", 50, "1010100110101001", "1.  Ping-pong (hard L/R alternation)", 0.3, "Downmix to mono and pan (true panning)", "Peak (scale to target)", 0.95, 0, 1
 
 # Capture final output
 sound4 = selected("Sound")
