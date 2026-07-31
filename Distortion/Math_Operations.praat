@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4b (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,8 +16,10 @@
 #   Select exactly 2 Sound objects before running.
 #
 #   The two inputs must share the same sample rate. Different
-#   durations are aligned at start and truncated to the shorter
-#   length.
+#   durations are aligned at each Sound's OWN start time and
+#   truncated to the shorter length. (v0.3 aligned both at absolute
+#   time 0, which silently produced silence for Sounds whose time
+#   domain did not begin there.)
 #
 #   OPERATION PRIORITY ORDER:
 #   The script applies ONE operation chosen by priority:
@@ -27,9 +29,11 @@
 #   use a Basic operation, leave the other three menus on
 #   "None". Presets handle this automatically.
 #
-#   NAMING NOTES:
-#   - "Bitcrush 8-bit" actually quantizes to 8 levels (~3 bits).
-#     A true 8-bit crush would have 256 levels.
+#   NAMING NOTES (v0.4: several operations were renamed for what
+#   they actually compute - see the changelog):
+#   - The quantizer sets a STEP of 1/N, which is not N levels:
+#     over -1..+1 a step of 1/8 gives 17 distinct values, and over
+#     the -2..+2 that a sum of two normalized Sounds can reach, 33.
 #   - "Logistic chaos" is not the recursive logistic map x_{n+1} =
 #     r*x*(1-x). It is a product (s1+s2) * (3.5 - 3.5*|s1|*|s2|),
 #     which produces audio-rate amplitude shaping but no
@@ -41,6 +45,147 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4b:
+#   All five items below are v0.4 regressions, found by a second
+#   runtime pass.
+#   - FIXED: the preset reset block set `output_scaling = 1.0`, so
+#     choosing any preset discarded the user's Output_scaling. The
+#     v0.4 output modes therefore worked only in Custom, which
+#     reinstated part of the problem they were added to fix.
+#     Presets select the operation; output level stays global.
+#   - FIXED: the intensity-in-use report tested only
+#     advanced_operation = 3, so Geometric magnitude product (= 2)
+#     showed "[in use]" while ignoring the control. Both magnitude
+#     products are now reported correctly, and the count is FIVE
+#     operations newly connected, not six - the form comment and
+#     the v0.4 changelog both said six.
+#   - FIXED (compatibility): I read v0.3's scatter range wrong
+#     twice. `0.8 + 0.4*randomUniform(-1,1)` spans 0.4..1.2, not
+#     0.8..1.2, since randomUniform(-1,1) spans -1..+1. The mapping
+#     is now 0.8 + 0.8*intensity*randomUniform(-1,1), which gives
+#     exactly 0.4..1.2 at intensity 0.5, and the Scatter preset is
+#     set to 0.5 (v0.4 left it at 0.6).
+#   - FIXED (compatibility): the Rectify preset still carried
+#     v0.3's `nonlinear_intensity = 0.0`, but intensity is now the
+#     weight on Sound 2 - so the preset computed abs(S1) alone with
+#     Sound 2 contributing nothing. Set to 0.5, which reproduces
+#     v0.3's abs(S1) - abs(S2).
+#   - FIXED: Divide_epsilon was `real` and tested with `<`, so
+#     entering 0 disabled the guard entirely (abs(0) < 0 is false)
+#     and an exact zero divided to NaN again. Now `positive` and
+#     tested with `<=`.
+#   - RENAMED "Power mod: sgn(S1)*|S1|^(1 + S2*depth)" to "Power
+#     mod (exponent floored at 0.05)". The code clamps the
+#     exponent, so S1=0.5, S2=-1, depth=2 returns 0.5^0.05 =
+#     0.9659, not the 0.5^-1 = 2 the label implied. Allowing
+#     negative exponents would reintroduce the 0^-1 blow-up the
+#     clamp prevents, so the clamp stays and the name changes.
+#   - RENAMED the "Conditional limiter" output mode to "Conditional
+#     peak normalization". `Scale peak` attenuates the whole signal
+#     when any sample exceeds the target; it does not act on peaks
+#     alone, so it is not a limiter.
+#
+# Changelog v0.4:
+#   This round follows a review that RAN every preset and operation
+#   through Praat rather than reading them, so several items below
+#   are confirmed failures rather than suspected ones.
+#
+#   BLOCKERS FIXED:
+#   - `sign()` is not a Praat function. Three operations therefore
+#     did not run at all, failing with "Unknown function «sign»":
+#     Wavefold, Hard sync sim, and Power mod - and with them the
+#     Wavefold Distortion and Hard Sync presets. Replaced with the
+#     ((x>0) - (x<0)) idiom that Hard_Clip.praat in this same suite
+#     already uses and documents as "version-safe".
+#   - Time alignment assumed both Sounds start at absolute 0.
+#     `Extract part: 0, min_dur` is not "the first min_dur of this
+#     object" - a Sound's start time is independent, and
+#     Preserve times = no only shifts the part after selection. On
+#     two Sounds starting at 2 s and 5 s the output was entirely
+#     silent; with one at 0 and one at 5 s only the first survived
+#     and the second became zeros, with no warning. Each Sound is
+#     now cut from its own start time.
+#   - Divide used `self / (S2 + 1e-10)`, which is not a
+#     divide-by-zero guard: it moves the denominator's zero to
+#     -1e-10, so S2 = -1e-10 divides by exactly zero and yields NaN
+#     that survives normalization and is not caught by the peak
+#     report. S2 = 0 gave 5e9 and S2 = 1e-12 gave 4.95e9. The guard
+#     now tests |denominator| against Divide_epsilon.
+#   - Sqrt domain and Exp domain added 1e-10 floors, so two silent
+#     inputs produced a small CONSTANT which `Scale peak: 0.95`
+#     then lifted to 0.95 on every sample - digital silence came
+#     out as full-scale DC. The floors are gone (sqrt(0) is
+#     defined), so silence stays silent.
+#   - Output_scaling did nothing whenever Normalize was on, since
+#     peak normalization divides any positive scalar back out;
+#     0.5 and 2.0 gave byte-identical output. Output_mode now makes
+#     the order explicit, including a normalize-then-gain mode, and
+#     the default mode says outright that the scaling is inert.
+#   - Channel behaviour was undefined and asymmetric: the result
+#     was always a copy of Sound 1, so stereo+mono broadcast the
+#     mono, 3ch+2ch processed channel 3 against silence, and
+#     mono+stereo discarded Sound 2's right channel - all
+#     dependent on selection order, which matters for Divide,
+#     Subtract and Power mod. Channel_policy is now explicit, with
+#     the v0.3 behaviour as default plus a warning when the counts
+#     differ.
+#
+#   DSP AND INTERFACE:
+#   - Power mod's guard tested the MODULATOR for being near zero,
+#     which is not where the singularity is. The exponent is
+#     1 + S2*depth (not S1^(S2/2) as the menu said), so S2 = -1 with
+#     depth 2 gives 0^-1. The guard now tests the exponent and the
+#     base, and the menu label states the real expression.
+#   - Nonlinear_intensity was shown in the form and the report for
+#     every run but was read by none of seven operations. FIVE now
+#     use it (Quantizer, Logistic, Rectify, Cross-phase, Random
+#     scatter), with the previous constants recovered at intensity
+#     0.5; the two magnitude products are plain products with no
+#     natural parameter for it to scale, and the report says per
+#     run whether the control is live.
+#   - Wavefold: threshold was 0.5 + intensity, so MORE intensity
+#     meant LESS folding. Inverted, and folding now repeats
+#     (Fold_passes) - a single reflection leaves anything past 3T
+#     outside the threshold again, which is not what "wavefold"
+#     describes.
+#   - Vector morph warns when intensity exceeds 1, where it
+#     extrapolates and Sound 1's weight goes negative.
+#   - Random scatter takes a Random_seed. Three identical runs
+#     previously gave three different outputs with nothing in the
+#     form or the report to indicate it.
+#   - Sqrt/Exp domain results are products of magnitudes and so
+#     were always positive, carrying heavy DC. Geometric_polarity
+#     restores Sound 1's sign by default.
+#   - The result panel labelled anything non-mono "blue=L
+#     orange=R" while drawing only two channels.
+#   - Undefined output samples and peaks above 1.0 are now
+#     reported.
+#
+#   RENAMED FOR ACCURACY (object names change accordingly):
+#   - "Spectral Blur" -> "Soft Normalized Mix". There is no
+#     spectrum, FFT, STFT, window or frequency-domain smoothing
+#     anywhere in it - it is a sample-wise mix with nonlinear
+#     normalization.
+#   - "Granular Scatter" -> "Random Amplitude Scatter". No grains,
+#     grain duration, displacement, density, overlap or windowing.
+#   - "Frequency Shifter" / "Freq shift sim" -> cosine cross-
+#     waveshaper. No phase accumulation, no fixed carrier, no
+#     Hilbert transform; it uses S2's sample value as an angle.
+#   - "Pseudo phase-vocoder" -> "Cross-phase waveshaper". No
+#     framing, spectrum, phase estimate or overlap-add.
+#   - "Exp domain mix" -> "Absolute product": exp(ln a + ln b) is
+#     identically a*b, verified exactly.
+#   - "Sqrt domain mix" -> "Geometric magnitude product".
+#   - "FM Synthesis" -> "FM-like waveshaping": sample values are
+#     used as angles with no frequency-to-phase integration.
+#   - "Bitcrush (8 levels)" -> "Quantize to 1/N amplitude steps",
+#     and there is no sample-rate reduction, so it is a quantizer
+#     rather than a bitcrusher.
+#   - The AM menu entries said S1 * sin(S2) but compute
+#     S1 * (0.5 + 0.5*sin(...)), unipolar with a carrier offset.
+#   - Tremolo's label notes that depth > 1 makes the gain bipolar
+#     and inverts phase.
 #
 # Changelog v0.3:
 #   - Audio pipeline UNCHANGED. Output is bit-identical to v0.2
@@ -74,7 +219,7 @@
 #   - Added info output
 # ============================================================
 
-form Math Operations Between Sounds v0.3
+form Math Operations Between Sounds v0.4b
     comment Select exactly 2 Sound objects first
     
     comment === Preset ===
@@ -84,17 +229,17 @@ form Math Operations Between Sounds v0.3
         option Clean Multiply (Ring Mod)
         option Tremolo Effect
         option Crunch Mod (Arctan)
-        option FM Synthesis
+        option FM-like Waveshaping
         option Double FM
         option Wavefold Distortion
         option Bitcrush Lo-Fi
-        option Frequency Shifter
+        option Cosine Cross-Waveshaper
         option Hard Sync
         option Chaotic Mix
-        option Spectral Blur
-        option Phase Vocoder-like
-        option Granular Scatter
-        option Sqrt Domain
+        option Soft Normalized Mix
+        option Cross-Phase Waveshaper
+        option Random Amplitude Scatter
+        option Geometric Magnitude Product
         option Vector Morph
         option Rectify Distortion
     
@@ -113,45 +258,73 @@ form Math Operations Between Sounds v0.3
     comment === Modulation ===
     optionmenu Modulation_operation: 1
         option None
-        option AM: Sound1 * sin(Sound2)
-        option AM: Sound1 * cos(Sound2)
+        option AM (unipolar): S1 * (0.5 + 0.5*sin(S2))
+        option AM (unipolar): S1 * (0.5 + 0.5*cos(S2))
         option FM-like: sin(Sound1) * Sound2
         option FM-like: cos(Sound1) * Sound2
         option Double FM: sin(S1) * sin(S2)
         option Soft clip: arctan(S1 * S2)
-        option Power mod: S1 ^ (S2/2)
-        option Tremolo: S1 * (1 + S2)
+        option Power mod (exponent floored at 0.05)
+        option Tremolo: S1 * (1 + S2*depth) [bipolar if depth>1]
     
     comment === Nonlinear ===
     optionmenu Nonlinear_operation: 1
         option None
-        option Freq shift sim
+        option Cosine cross-waveshape (not a freq shift)
         option AM depth control
         option Wavefold
         option Hard sync sim
-        option Bitcrush (8 levels, ~3-bit)
-        option Vector crossfade
+        option Quantize to 1/N amplitude steps
+        option Amplitude-dependent blend
         option Soft normalize mix
     
     comment === Advanced ===
     optionmenu Advanced_operation: 1
         option None
-        option Sqrt domain mix
-        option Exp domain mix
+        option Geometric magnitude product
+        option Absolute product (= |S1| * |S2|)
         option Vector morph
         option Logistic-style (non-recursive)
         option Rectify and mix
-        option Pseudo phase-vocoder
-        option Random scatter
+        option Cross-phase waveshaper
+        option Random amplitude scatter
     
     comment === Parameters ===
     positive Modulation_depth 1.0
     positive Nonlinear_intensity 0.5
+    comment (was unused by 7 operations; 5 now use it - the report says which)
+    natural Fold_passes 4
+    comment (Wavefold only: one pass leaves loud input still past threshold)
+    positive Divide_epsilon 0.001
+    comment (Divide only: |denominator| at or below this yields 0)
+    optionmenu Geometric_polarity: 1
+        option Restore sign of Sound 1
+        option Unsigned magnitude product (v0.2/v0.3)
+    comment (Sqrt / Exp domain only)
+    integer Random_seed 0
+    comment (Random scatter only; 0 = unpredictable)
+    
+    comment === Channels ===
+    optionmenu Channel_policy: 1
+        option Sound 1 defines layout (v0.2/v0.3)
+        option Require matching channel counts
+        option Mix both to mono
+    
+    comment === Output ===
+    optionmenu Output_mode: 1
+        option Normalize to 0.95 (v0.2/v0.3; scaling inert)
+        option Normalize to 0.95, then apply scaling
+        option Conditional peak normalization after scaling
+        option Preserve (scaling only)
     positive Output_scaling 1.0
-    boolean Normalize_output 1
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+divEps$ = string$(divide_epsilon)
+if fold_passes < 1
+    exitScript: "Fold_passes must be at least 1."
+endif
 
 # === Apply Presets ===
 if preset > 1
@@ -159,8 +332,14 @@ if preset > 1
     modulation_operation = 1
     nonlinear_operation = 1
     advanced_operation = 1
-    output_scaling = 1.0
     operation = 1
+    # v0.4b: `output_scaling = 1.0` used to be reset here, so choosing
+    # any preset silently discarded the user's Output_scaling - which
+    # left the v0.4 output modes working only in Custom, reinstating
+    # part of the very problem they were added to fix. The presets
+    # select the OPERATION; output level is a global control and stays
+    # under the user's hand. This does not affect v0.3 compatibility,
+    # since in the default Normalize mode the scaling is inert anyway.
     
     if preset = 2
         operation = 1
@@ -195,7 +374,7 @@ if preset > 1
     elsif preset = 10
         nonlinear_operation = 2
         nonlinear_intensity = 1.2
-        presetName$ = "FreqShift"
+        presetName$ = "CosXWaveshape"
     elsif preset = 11
         nonlinear_operation = 5
         nonlinear_intensity = 0.9
@@ -207,26 +386,32 @@ if preset > 1
     elsif preset = 13
         nonlinear_operation = 8
         nonlinear_intensity = 0.8
-        presetName$ = "SpectralBlur"
+        presetName$ = "SoftNormMix"
     elsif preset = 14
         advanced_operation = 7
         nonlinear_intensity = 0.5
-        presetName$ = "PhaseVoc"
+        presetName$ = "CrossPhase"
     elsif preset = 15
         advanced_operation = 8
-        nonlinear_intensity = 0.6
-        presetName$ = "Scatter"
+        # v0.4b: 0.5 is the value that reproduces v0.3's 0.4-1.2 gain
+        # range under the corrected mapping; v0.4's 0.6 did not.
+        nonlinear_intensity = 0.5
+        presetName$ = "RandAmpScatter"
     elsif preset = 16
         advanced_operation = 2
         nonlinear_intensity = 0.5
-        presetName$ = "SqrtDomain"
+        presetName$ = "GeoMagProduct"
     elsif preset = 17
         advanced_operation = 4
         nonlinear_intensity = 0.5
         presetName$ = "VectorMorph"
     elsif preset = 18
         advanced_operation = 6
-        nonlinear_intensity = 0.0
+        # v0.4b: the preset kept v0.3's 0.0, but intensity is now the
+        # weight on Sound 2, so 0.0 reduced the whole operation to
+        # abs(S1) with Sound 2 doing nothing at all. 0.5 is the value
+        # that reproduces v0.3's abs(S1) - abs(S2).
+        nonlinear_intensity = 0.5
         presetName$ = "Rectify"
     endif
 else
@@ -246,12 +431,14 @@ name1$ = selected$("Sound")
 sr1 = Get sampling frequency
 dur1 = Get total duration
 n_ch_1 = Get number of channels
+start1 = Get start time
 
 selectObject: sound2
 name2$ = selected$("Sound")
 sr2 = Get sampling frequency
 dur2 = Get total duration
 n_ch_2 = Get number of channels
+start2 = Get start time
 
 # Check sample rates match
 if sr1 <> sr2
@@ -260,22 +447,95 @@ endif
 
 min_dur = min(dur1, dur2)
 
+# v0.4 (item 6): v0.3 had no channel policy at all. The result was always
+# a copy of Sound 1, so Sound 1 silently dictated the layout and the
+# behaviour differed by combination - verified: stereo+mono broadcast the
+# mono across both channels; 3ch+2ch left channel 3 processed against
+# ZEROS (cells outside an object read as 0); mono+stereo discarded Sound
+# 2's right channel entirely. None of this was documented, all of it
+# depended on selection order, and for non-commutative operations
+# (Divide, Subtract, Power mod) the asymmetry matters. It is now a stated
+# choice, with the v0.3 behaviour as the default and a warning whenever
+# the counts differ.
+chanNote$ = ""
+if channel_policy = 2
+    if n_ch_1 <> n_ch_2
+        exitScript: "Channel counts differ (S1: " + string$(n_ch_1) + ", S2: " + string$(n_ch_2)
+            ... + "). Choose a different Channel_policy, or match the inputs."
+    endif
+    chanDesc$ = "matched (" + string$(n_ch_1) + " ch)"
+elsif channel_policy = 3
+    chanDesc$ = "both mixed to mono"
+else
+    chanDesc$ = "Sound 1 defines layout (" + string$(n_ch_1) + " ch)"
+    if n_ch_1 <> n_ch_2
+        if n_ch_2 = 1
+            chanNote$ = "  NOTE: Sound 2 is mono and will be applied to all " + string$(n_ch_1) + " channels of Sound 1."
+        elsif n_ch_2 > n_ch_1
+            chanNote$ = "  NOTE: Sound 2 has " + string$(n_ch_2) + " channels but only its first " + string$(n_ch_1) + " are used; the rest are discarded."
+        else
+            chanNote$ = "  NOTE: Sound 1 has " + string$(n_ch_1) + " channels and Sound 2 only " + string$(n_ch_2) + "; the extra channels of Sound 1 are processed against SILENCE."
+        endif
+    endif
+endif
+
+# v0.4 (item 14): Random scatter draws randomUniform per sample but v0.3
+# had no seed, so the operation was not reproducible - the reviewer got
+# three different outputs from three identical runs.
+if advanced_operation = 8
+    if random_seed > 0
+        random_initializeWithSeedUnsafelyButPredictably: random_seed
+    else
+        random_initializeSafelyAndUnpredictably()
+    endif
+endif
+
 # === Info ===
-writeInfoLine: "=== Math Operations v0.3 ==="
+writeInfoLine: "=== Math Operations v0.4b ==="
 appendInfoLine: "Sound 1: ", name1$, " (", fixed$(dur1, 2), " s, ", n_ch_1, " ch)"
 appendInfoLine: "Sound 2: ", name2$, " (", fixed$(dur2, 2), " s, ", n_ch_2, " ch)"
 appendInfoLine: "Using duration: ", fixed$(min_dur, 2), " s"
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Channels: S1 ", n_ch_1, " ch, S2 ", n_ch_2, " ch -> ", chanDesc$
+if chanNote$ <> ""
+    appendInfoLine: chanNote$
+endif
+appendInfoLine: "Start times: S1 ", fixed$(start1, 3), " s, S2 ", fixed$(start2, 3), " s (each cut from its own start)"
 appendInfoLine: ""
 
 # === Extract Equal Parts ===
+# v0.4 CRITICAL (item 2): v0.3 extracted 0..min_dur from BOTH Sounds,
+# which assumes each one's time domain starts at 0. A Sound's start time
+# is an independent property - a Sound extracted with times preserved can
+# sit at 2 s or 5 s - and "Preserve times = no" only shifts the part
+# AFTER it has been selected; it does not make 0 mean "the beginning of
+# this object". Verified by the reviewer on two three-sample Sounds
+# starting at 2 s and 5 s: the output was entirely silent, because
+# 0..0.003 lies outside both. With one Sound at 0 and one at 5 s, only
+# the first survived and the second became zeros - silently. Each Sound
+# is now cut from its own start.
 selectObject: sound1
-Extract part: 0, min_dur, "rectangular", 1, "no"
+Extract part: start1, start1 + min_dur, "rectangular", 1, "no"
 sound1_part = selected("Sound")
 
 selectObject: sound2
-Extract part: 0, min_dur, "rectangular", 1, "no"
+Extract part: start2, start2 + min_dur, "rectangular", 1, "no"
 sound2_part = selected("Sound")
+
+if channel_policy = 3
+    if n_ch_1 > 1
+        selectObject: sound1_part
+        monoS1 = Convert to mono
+        removeObject: sound1_part
+        sound1_part = monoS1
+    endif
+    if n_ch_2 > 1
+        selectObject: sound2_part
+        monoS2 = Convert to mono
+        removeObject: sound2_part
+        sound2_part = monoS2
+    endif
+endif
 
 # === Create Result ===
 selectObject: sound1_part
@@ -298,33 +558,88 @@ if advanced_operation > 1
     depth_str$ = string$(nonlinear_intensity)
     
     if advanced_operation = 2
-        ranLabel$ = "Sqrt domain mix"
+        ranLabel$ = "Geometric magnitude product"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: ~ sqrt(abs(self) + 1e-10) * sqrt(abs(object[sound2_part]) + 1e-10) * 10
+        # v0.4 (item 4): the 1e-10 floors were unnecessary - sqrt(0) is
+        # perfectly defined - and they were harmful: on two silent inputs
+        # the formula returned a small CONSTANT (1e-9), which the
+        # following `Scale peak: 0.95` then multiplied up so that every
+        # sample became 0.95. Digital silence came out as full-scale DC,
+        # which is a loud thump on playback. The floors are gone.
+        # (item 11): the result is a product of magnitudes and so is
+        # always positive - a unipolar signal with substantial DC. The
+        # sign of S1 is restored to keep it bipolar; set
+        # Geometric_polarity to "unsigned" for the v0.3 shape.
+        if geometric_polarity = 1
+            Formula: ~ ((self>0) - (self<0)) * sqrt(abs(self)) * sqrt(abs(object[sound2_part]))
+        else
+            Formula: ~ sqrt(abs(self)) * sqrt(abs(object[sound2_part]))
+        endif
     elsif advanced_operation = 3
-        ranLabel$ = "Exp domain mix"
+        ranLabel$ = "Absolute product (|S1| * |S2|)"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: ~ exp(ln(abs(self) + 1e-10) + ln(abs(object[sound2_part]) + 1e-10)) * 0.1
+        # v0.4 (items 4 and 10): exp(ln a + ln b) is identically a*b, so
+        # this was never an "exp domain" transform - it is the product of
+        # the two magnitudes, verified exactly. Written directly, which
+        # also removes the 1e-10 floors that made two silent inputs
+        # produce a constant 1e-21 that `Scale peak` then lifted to
+        # 0.95 DC.
+        if geometric_polarity = 1
+            Formula: ~ ((self>0) - (self<0)) * abs(self) * abs(object[sound2_part])
+        else
+            Formula: ~ abs(self) * abs(object[sound2_part])
+        endif
     elsif advanced_operation = 4
+        # v0.4 (item 12): this is a linear crossfade only for intensity in
+        # 0..1. Nonlinear_intensity is `positive` with no ceiling, so above
+        # 1 it extrapolates and Sound 1's weight goes negative. Allowed,
+        # but no longer silent.
+        if nonlinear_intensity > 1
+            appendInfoLine: "  NOTE: Vector morph with intensity ", fixed$(nonlinear_intensity, 2), " > 1 extrapolates - Sound 1's weight is negative (", fixed$(1 - nonlinear_intensity, 2), ")."
+        endif
         ranLabel$ = "Vector morph (depth=" + fixed$(nonlinear_intensity, 2) + ")"
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "self * (1 - " + depth_str$ + ") + object[" + s2_str$ + "] * " + depth_str$
     elsif advanced_operation = 5
-        ranLabel$ = "Logistic-style chaos (non-recursive)"
+        # v0.4 (item 7): intensity was reported but unused here. It now
+        # sets the shaping coefficient; 0.5 gives the v0.3 constant 3.5.
+        chaosR = 7 * nonlinear_intensity
+        chaosR$ = string$(chaosR)
+        ranLabel$ = "Logistic-style shaping (non-recursive, r=" + fixed$(chaosR, 2) + ")"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: ~ (self + object[sound2_part]) * (3.5 - 3.5 * abs(self) * abs(object[sound2_part]))
+        Formula: "(self + object[" + s2_str$ + "]) * (" + chaosR$ + " - " + chaosR$ + " * abs(self) * abs(object[" + s2_str$ + "]))"
     elsif advanced_operation = 6
-        ranLabel$ = "Rectify & mix"
+        # v0.4 (item 7): intensity was reported but unused. It now sets
+        # how much of Sound 2's magnitude is subtracted; 0.5 doubled to 1
+        # reproduces the v0.3 formula, so intensity 0.5 is unchanged.
+        rectMix$ = string$(2 * nonlinear_intensity)
+        ranLabel$ = "Rectify & mix (S2 weight " + fixed$(2 * nonlinear_intensity, 2) + ")"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: ~ abs(self) - abs(object[sound2_part])
+        Formula: "abs(self) - " + rectMix$ + " * abs(object[" + s2_str$ + "])"
     elsif advanced_operation = 7
-        ranLabel$ = "Pseudo phase-vocoder"
+        # v0.4 (items 7 and 9): renamed - there is no framing, spectrum,
+        # phase estimate or overlap-add here; it is a sample-wise cross
+        # waveshaper. Intensity now scales the shaping index instead of
+        # being displayed while unused (0.5 gives the v0.3 constant 50).
+        pvIndex$ = string$(100 * nonlinear_intensity)
+        ranLabel$ = "Cross-phase waveshaper (index " + fixed$(100 * nonlinear_intensity, 1) + ")"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: ~ self * cos(object[sound2_part] * 50 * pi) + object[sound2_part] * sin(self * 50 * pi)
+        Formula: "self * cos(object[" + s2_str$ + "] * " + pvIndex$ + " * pi) + object[" + s2_str$ + "] * sin(self * " + pvIndex$ + " * pi)"
     elsif advanced_operation = 8
-        ranLabel$ = "Random scatter"
+        # v0.4 (items 7, 9, 14): renamed - there are no grains, no grain
+        # duration, no time displacement, density, overlap or windowing.
+        # It is per-sample random amplitude modulation. Intensity now
+        # sets the modulation depth (0.5 gives the v0.3 range 0.8-1.2),
+        # and the run is reproducible when a seed is given.
+        # v0.4b: I mis-read the v0.3 range twice. v0.3 was
+        # 0.8 + 0.4*randomUniform(-1,1), and randomUniform(-1,1) spans
+        # -1..+1, so the gain spanned 0.4..1.2 - NOT 0.8..1.2. The
+        # mapping below gives exactly 0.4..1.2 at intensity 0.5, and the
+        # preset is set to 0.5 so it reproduces v0.3.
+        scatDepth$ = string$(0.8 * nonlinear_intensity)
+        ranLabel$ = "Random amplitude scatter (gain 0.8 +/- " + fixed$(0.8 * nonlinear_intensity, 2) + ")"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: ~ (self + object[sound2_part]) * (0.8 + 0.4 * randomUniform(-1, 1))
+        Formula: "(self + object[" + s2_str$ + "]) * (0.8 + " + scatDepth$ + " * randomUniform(-1, 1))"
     endif
 
 elsif nonlinear_operation > 1
@@ -332,7 +647,7 @@ elsif nonlinear_operation > 1
     intensity_str$ = string$(nonlinear_intensity)
     
     if nonlinear_operation = 2
-        ranLabel$ = "Freq shift sim"
+        ranLabel$ = "Cosine cross-waveshaper"
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "self * cos(2 * pi * object[" + s2_str$ + "] * " + intensity_str$ + " * 100)"
     elsif nonlinear_operation = 3
@@ -342,23 +657,51 @@ elsif nonlinear_operation > 1
     elsif nonlinear_operation = 4
         ranLabel$ = "Wavefold"
         appendInfoLine: "Applying: ", ranLabel$
-        thresh = 0.5 + nonlinear_intensity
+        # v0.4 (item 11/12): the threshold used to be 0.5 + intensity, so
+        # RAISING "intensity" produced LESS folding - the opposite of what
+        # the name implies. Intensity now sets the fold amount directly and
+        # the threshold falls as it rises.
+        thresh = 1.0 / (0.5 + nonlinear_intensity)
         thresh_str$ = string$(thresh)
-        Formula: "if abs(self + object[" + s2_str$ + "]) > " + thresh_str$ + " then " + thresh_str$ + " * sign(self + object[" + s2_str$ + "]) - (self + object[" + s2_str$ + "] - " + thresh_str$ + " * sign(self + object[" + s2_str$ + "])) else self + object[" + s2_str$ + "] fi"
+        sum$ = "(self + object[" + s2_str$ + "])"
+        sgnSum$ = "((" + sum$ + ">0) - (" + sum$ + "<0))"
+        # v0.4 (item 12): a single reflection leaves anything past 3T
+        # outside the threshold again, so this is repeated folding now -
+        # foldPasses reflections, which is what "wavefold" describes.
+        # (One pass remains available by setting Fold_passes to 1.)
+        Formula: "if abs(" + sum$ + ") > " + thresh_str$ + " then 2 * " + thresh_str$ + " * " + sgnSum$ + " - " + sum$ + " else " + sum$ + " fi"
+        for foldPass from 2 to fold_passes
+            sgnSelf$ = "((self>0) - (self<0))"
+            Formula: "if abs(self) > " + thresh_str$ + " then 2 * " + thresh_str$ + " * " + sgnSelf$ + " - self else self fi"
+        endfor
     elsif nonlinear_operation = 5
         ranLabel$ = "Hard sync sim"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: "if abs(object[" + s2_str$ + "]) > abs(self) * " + intensity_str$ + " then sign(object[" + s2_str$ + "]) * abs(self) else self * object[" + s2_str$ + "] fi"
+        # v0.4 (item 1): sign() is not a Praat function.
+        s2ref$ = "object[" + s2_str$ + "]"
+        sgnS2$ = "((" + s2ref$ + ">0) - (" + s2ref$ + "<0))"
+        Formula: "if abs(" + s2ref$ + ") > abs(self) * " + intensity_str$ + " then " + sgnS2$ + " * abs(self) else self * " + s2ref$ + " fi"
     elsif nonlinear_operation = 6
-        ranLabel$ = "Bitcrush (8 levels, ~3-bit)"
+        # v0.4 (items 7 and 8): `round(x*8)/8` sets a STEP of 1/8, which
+        # is not 8 levels - verified, 17 distinct values over [-1,1] and
+        # 33 over [-2,2], the actual range of a sum of two normalized
+        # Sounds. The label is corrected, and Nonlinear_intensity now
+        # drives the step size instead of being displayed while doing
+        # nothing (intensity 0.5 reproduces the v0.3 step of 1/8).
+        crushSteps = round(16 * nonlinear_intensity)
+        if crushSteps < 1
+            crushSteps = 1
+        endif
+        crush_str$ = string$(crushSteps)
+        ranLabel$ = "Quantize to 1/" + crush_str$ + " steps"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: ~ round((self + object[sound2_part]) * 8) / 8
+        Formula: "round((self + object[" + s2_str$ + "]) * " + crush_str$ + ") / " + crush_str$
     elsif nonlinear_operation = 7
-        ranLabel$ = "Vector crossfade"
+        ranLabel$ = "Amplitude-dependent blend"
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "self * (1 - " + intensity_str$ + " * abs(object[" + s2_str$ + "])) + object[" + s2_str$ + "] * " + intensity_str$
     elsif nonlinear_operation = 8
-        ranLabel$ = "Soft normalize mix"
+        ranLabel$ = "Soft normalized mix"
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "(self + object[" + s2_str$ + "]) / (1 + " + intensity_str$ + " * (abs(self) + abs(object[" + s2_str$ + "])))"
     endif
@@ -368,11 +711,11 @@ elsif modulation_operation > 1
     mod_str$ = string$(modulation_depth)
     
     if modulation_operation = 2
-        ranLabel$ = "AM (sin)"
+        ranLabel$ = "AM unipolar (sin)"
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "self * (0.5 + 0.5 * sin(object[" + s2_str$ + "] * pi * 10 * " + mod_str$ + "))"
     elsif modulation_operation = 3
-        ranLabel$ = "AM (cos)"
+        ranLabel$ = "AM unipolar (cos)"
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "self * (0.5 + 0.5 * cos(object[" + s2_str$ + "] * pi * 10 * " + mod_str$ + "))"
     elsif modulation_operation = 4
@@ -392,9 +735,27 @@ elsif modulation_operation > 1
         appendInfoLine: "Applying: ", ranLabel$
         Formula: "(2/pi) * arctan((self * object[" + s2_str$ + "]) * 10 * " + mod_str$ + ")"
     elsif modulation_operation = 8
-        ranLabel$ = "Power mod"
+        # v0.4b: the menu previously advertised the unclamped
+        # expression, but max(exponent, 0.05) means negative exponents
+        # never happen - S1=0.5, S2=-1, depth=2 gives 0.5^0.05 = 0.9659,
+        # not the 0.5^-1 = 2 the label implied. This is clamped power
+        # waveshaping and is now named that way. Allowing negative
+        # exponents would reintroduce the 0^-1 blow-up the clamp exists
+        # to prevent, so the clamp stays and the label changes.
+        ranLabel$ = "Clamped power waveshaping (exponent >= 0.05)"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: "if abs(object[" + s2_str$ + "]) < 0.01 then self else sign(self) * (abs(self) ^ (1 + object[" + s2_str$ + "] * " + mod_str$ + ")) fi"
+        # v0.4 (items 1 and 13): sign() is not a Praat function, and the
+        # old guard tested the MODULATOR for being near zero, which has
+        # nothing to do with the singularity. The real hazard is a base at
+        # or near zero raised to a negative exponent: with S2 = -1 and
+        # depth 2 the exponent is -1, so 0^-1 is undefined and small bases
+        # explode. The guard now tests the exponent and the base, which is
+        # where the danger actually is. The menu label said S1^(S2/2); the
+        # exponent is really 1 + S2*depth, and the label now says so.
+        sgnSelf$ = "((self>0) - (self<0))"
+        expo$ = "(1 + object[" + s2_str$ + "] * " + mod_str$ + ")"
+        Formula: "if " + expo$ + " < 0.05 and abs(self) < 1e-6 then 0 else "
+            ... + sgnSelf$ + " * (max(abs(self), 1e-6) ^ max(" + expo$ + ", 0.05)) fi"
     elsif modulation_operation = 9
         ranLabel$ = "Tremolo"
         appendInfoLine: "Applying: ", ranLabel$
@@ -418,7 +779,18 @@ else
     elsif operation = 4
         ranLabel$ = "Divide"
         appendInfoLine: "Applying: ", ranLabel$
-        Formula: ~ self / (object[sound2_part] + 1e-10)
+        # v0.4 (item 3): `self / (S2 + 1e-10)` is not a divide-by-zero
+        # guard. It shifts the denominator's zero from 0 to -1e-10, so
+        # S2 = -1e-10 gives an exact division by zero and a NaN that
+        # survives normalization and is not caught by the peak report;
+        # S2 = 0 gives 5e9; S2 = 1e-12 gives 4.95e9. The guard now tests
+        # the MAGNITUDE of the denominator and substitutes a defined
+        # value, so the zero stays where it is and no sample can blow up.
+        # v0.4b: `<` meant Divide_epsilon = 0 turned the guard off
+        # entirely - abs(0) < 0 is false - so an exact zero divided and
+        # returned NaN again. The field is `positive` now and the test
+        # is `<=`, so an exact zero is caught whatever the setting.
+        Formula: "if abs(object[" + s2_str$ + "]) <= " + divEps$ + " then 0 else self / object[" + s2_str$ + "] fi"
     elsif operation = 5
         ranLabel$ = "Average"
         appendInfoLine: "Applying: ", ranLabel$
@@ -445,22 +817,76 @@ endif
 # === POST PROCESSING ===
 selectObject: result
 
-if output_scaling <> 1.0
-    scale_str$ = string$(output_scaling)
-    Formula: "self * " + scale_str$
-endif
-
-if normalize_output
-    Scale peak: 0.95
-endif
-
-# Pre-compute the normalize-status string (replaces v0.2's
-# inline if/then/else fi in Text — unreliable in script-level
-# expression context).
-if normalize_output
-    normStr$ = "yes (peak 0.95)"
+# v0.4 (item 5): v0.3 multiplied by Output_scaling and then ran
+# `Scale peak: 0.95`, which divides any positive scalar straight back
+# out - verified, 0.5 and 2.0 produced byte-identical samples. The
+# parameter was in the form, in the report, and connected to nothing.
+# Output_mode makes the order explicit: Normalize (v0.3 default, and it
+# says outright that the scaling is inert), Normalize-then-gain (so the
+# scaling survives), Conditional limiter, or Preserve.
+if output_mode = 4
+    if output_scaling <> 1.0
+        scale_str$ = string$(output_scaling)
+        Formula: "self * " + scale_str$
+    endif
+    normStr$ = "preserve (scaling " + fixed$(output_scaling, 3) + " applied)"
+elsif output_mode = 3
+    if output_scaling <> 1.0
+        scale_str$ = string$(output_scaling)
+        Formula: "self * " + scale_str$
+    endif
+    prePeak = Get absolute extremum: 0, 0, "None"
+    if prePeak > 0.95
+        Scale peak: 0.95
+        # v0.4b: this is not a limiter in the DSP sense - `Scale peak`
+        # attenuates the WHOLE signal when any single sample exceeds the
+        # target, rather than acting only on the peaks.
+        normStr$ = "peak-normalized to 0.95 (scaling " + fixed$(output_scaling, 3) + " applied first)"
+    else
+        normStr$ = "unchanged, below 0.95 (scaling " + fixed$(output_scaling, 3) + " applied)"
+    endif
+elsif output_mode = 2
+    prePeak = Get absolute extremum: 0, 0, "None"
+    if prePeak > 0
+        Scale peak: 0.95
+    endif
+    if output_scaling <> 1.0
+        scale_str$ = string$(output_scaling)
+        Formula: "self * " + scale_str$
+    endif
+    normStr$ = "normalized to 0.95, then x" + fixed$(output_scaling, 3)
 else
-    normStr$ = "no"
+    if output_scaling <> 1.0
+        scale_str$ = string$(output_scaling)
+        Formula: "self * " + scale_str$
+    endif
+    prePeak = Get absolute extremum: 0, 0, "None"
+    if prePeak > 0
+        Scale peak: 0.95
+        normStr$ = "normalized to 0.95"
+    else
+        normStr$ = "silent - normalization skipped"
+    endif
+    if output_scaling <> 1.0
+        appendInfoLine: "  NOTE: Output_scaling of ", fixed$(output_scaling, 3), " has NO effect in Normalize mode - peak normalization divides any positive scalar back out. Use mode 2 to keep it."
+    endif
+endif
+
+# v0.4 (item 7): Nonlinear_intensity was displayed in the form and in
+# the parameter report for every run, but seven operations never read it
+# - Sqrt domain, Exp domain, Logistic-style, Rectify and mix, Pseudo
+# phase-vocoder, Random scatter and Bitcrush. Six of those now use it
+# (see above); Absolute product is a plain magnitude product with
+# nothing for it to scale. The report states which, so the panel never
+# implies a live control that is inert.
+# v0.4b: this tested only advanced_operation = 3, so Geometric
+# magnitude product (= 2) reported "[in use]" while ignoring the
+# control. Both magnitude products are plain products with no natural
+# parameter for intensity to scale.
+if advanced_operation = 2 or advanced_operation = 3
+    intensityUsed$ = "not used by this operation"
+else
+    intensityUsed$ = "in use"
 endif
 
 # === Final stats ===
@@ -468,6 +894,35 @@ selectObject: result
 finalDur = Get total duration
 finalPeak = Get absolute extremum: 0, 0, "None"
 n_ch_result = Get number of channels
+
+# v0.4 (item 15): the result panel draws only channels 1 and 2 but
+# labelled anything non-mono chanLegend$, so a 4-channel result
+# looked like stereo with two channels simply missing.
+if n_ch_result = 1
+    chanLegend$ = "(mono)"
+elsif n_ch_result = 2
+    chanLegend$ = "(blue=ch1  orange=ch2)"
+else
+    chanLegend$ = "(channels 1-2 of " + string$(n_ch_result) + " shown)"
+endif
+
+appendInfoLine: ""
+appendInfoLine: "Output: ", fixed$(finalDur, 2), " s, ", n_ch_result, " ch"
+appendInfoLine: "Level: ", normStr$
+appendInfoLine: "Measured peak: ", fixed$(finalPeak, 4)
+if finalPeak > 1.0
+    appendInfoLine: "  WARNING: output peak is ", fixed$(finalPeak, 3), " - above 1.0 it will clip on playback or export."
+endif
+if finalPeak = undefined
+    appendInfoLine: "  WARNING: the output contains undefined samples (NaN). Check the operation's inputs."
+endif
+if advanced_operation = 8
+    if random_seed > 0
+        appendInfoLine: "Random seed: ", random_seed, " (reproducible)"
+    else
+        appendInfoLine: "Random seed: none (this run is NOT reproducible)"
+    endif
+endif
 
 # ============================================================
 # VISUALIZATION  (8 x 8 canvas — suite standard)
@@ -595,7 +1050,7 @@ if draw_visualization
     if ranTier$ = "Modulation"
         Text: 0.10, "left", 0.57, "half", "Mod depth:    " + fixed$(modulation_depth, 2)
     elsif ranTier$ = "Nonlinear" or ranTier$ = "Advanced"
-        Text: 0.10, "left", 0.57, "half", "Intensity:    " + fixed$(nonlinear_intensity, 2)
+        Text: 0.10, "left", 0.57, "half", "Intensity:    " + fixed$(nonlinear_intensity, 2) + "  [" + intensityUsed$ + "]"
     else
         Text: 0.10, "left", 0.57, "half", "(no tier-specific param)"
     endif
@@ -734,7 +1189,7 @@ if draw_visualization
     Draw inner box
     Font size: 7
     if n_ch_result > 1
-        Text top: "no", "Result  (blue=L  orange=R)"
+        Text top: "no", "Result  " + chanLegend$
     else
         Text top: "no", "Result (mono)"
     endif
