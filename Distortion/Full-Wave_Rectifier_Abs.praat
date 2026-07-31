@@ -3,16 +3,30 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4b (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Full-Wave Rectifier — applies abs() to the input, flipping
-#   negative samples to positive. Classic analog effect that
-#   doubles the perceived fundamental frequency and introduces
-#   strong even harmonics (2f, 4f, 6f...). The output is
-#   characteristically buzzy and aggressive.
+#   negative samples to positive. The output is characteristically
+#   buzzy and aggressive.
+#
+#   For a SYMMETRIC PERIODIC input, where x(t + T/2) = -x(t), the
+#   rectified signal repeats at twice the rate and the spectrum
+#   becomes DC plus strong even harmonics (2f, 4f, 6f...). That is
+#   the textbook case and it is where "doubles the fundamental"
+#   comes from. It does not generalise: a signal that never goes
+#   below zero is unchanged, one with a DC offset is not
+#   half-wave symmetric, complex material produces intermodulation
+#   rather than a clean even series, and noise has no single
+#   fundamental to double. Expect broad nonlinear enrichment on
+#   real material.
+#
+#   NOTE on DC: abs() makes every sample non-negative, so any
+#   non-silent output carries a large positive mean - for a sine at
+#   peak A it is 2A/pi, i.e. 63.7% of the amplitude range at any
+#   level. Dc_handling decides whether that stays.
 #
 #   Stereo input is processed per-channel — both channels
 #   rectified independently. Output preserves the input's
@@ -22,6 +36,81 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4b:
+#   - FIXED (ordering): Scale_peak was validated BEFORE the presets
+#     were applied, so a stale manual value of 1.5 aborted the
+#     script even when the chosen preset was about to replace it
+#     with 0.95. Validated after the presets, and only when a mode
+#     actually consults it.
+#   - FIXED: the transfer curve carried levelScale but NOT the
+#     mean-removal shift, so under Dc_handling = "Remove final mean"
+#     it drew a V rising from the origin while the audio produced
+#     (|x| - meanRaw) * levelScale - a V whose vertex sits BELOW
+#     zero, with roughly the quieter half of the output negative.
+#     The shift is applied, the axis is computed from both ends of
+#     the curve and its vertex instead of being pinned at -0.3, and
+#     the title names both stages.
+#   - FIXED: the parameter panel and the summary bar still asserted
+#     "Doubles perceived fundamental" and "doubles fundamental +
+#     even harmonics" unconditionally - contradicting the header
+#     and Info text that v0.4 had just qualified. Both now name the
+#     symmetric-periodic condition.
+#   - RENAMED the presets again. v0.4's Standard / Reduced /
+#     Full-scale LEVEL promised an output level, but Scale_peak is
+#     only consulted by the limiter and normalize modes: under
+#     Output_level = Preserve all three produce identical audio and
+#     differ only in the object name. They are now Target 0.95 /
+#     0.80 / 1.00, and the script says when the target goes unused.
+#     Object names change to _rectified_Target095 etc.
+#
+# Changelog v0.4:
+#   - FIXED (the spectrum panel was not isolating rectification):
+#     it compared the UNSCALED original against the NORMALIZED
+#     result, so what it showed was harmonic change plus a global
+#     gain change. With a source peak of 0.1 and a 0.95 target that
+#     gain alone is +19.6 dB - nearly the whole visible difference,
+#     presented as the harmonic effect of abs(). Both sides are now
+#     built from signals at a matched peak, with the rectified side
+#     taken BEFORE the output level stage; Spectrum_reference can
+#     select absolute levels instead.
+#   - FIXED: the transfer panel drew y = |x| while the audio went
+#     on through peak scaling, so for a quiet source the real
+#     mapping was (target/P)*|x| - a much steeper V than shown. The
+#     curve carries the run's level scaling, the axis follows it,
+#     and the title states which stage it represents.
+#   - FIXED: every time panel drew from 0, assuming the Sound's
+#     domain starts there. On a Sound extracted with times
+#     preserved the zoom panel was querying 0..0.02 s, a window
+#     holding none of its data. All axes and queries now use the
+#     real domain.
+#   - FIXED: the parameter panel showed Scale_peak, the TARGET,
+#     labelled "Peak". It now shows the measured output peak with
+#     the target alongside.
+#   - NEW Dc_handling. abs() makes every sample non-negative, so
+#     any non-silent output carries a large positive mean - 2A/pi
+#     for a sine at peak A, which is 63.7% of the amplitude range
+#     at every level. That consumes headroom, dominates the low end
+#     of the spectrum panel, and makes splices jump. It is a real
+#     part of full-wave rectification and stays the default;
+#     removing the mean leaves the even harmonics intact. The mean
+#     is now measured and reported either way.
+#   - Output_level replaces the unconditional Scale peak, with a
+#     silent-input guard. Normalize remains the default.
+#   - Scale_peak is capped at 1.0; as `positive` it accepted 1.5 or
+#     4.0 as normalization targets.
+#   - RENAMED the presets Default / Soft / Maximum ->
+#     Standard level / Reduced level / Full-scale level. They never
+#     changed the rectification, which is always y = |x|; "Soft"
+#     was the same waveshaping at a lower peak. Output object names
+#     change accordingly (_rectified_StandardLevel etc).
+#   - CORRECTED the "doubles the perceived fundamental / even
+#     harmonics" claim, which holds for symmetric periodic input
+#     and not in general - an already-positive signal is unchanged,
+#     a DC-offset one is not half-wave symmetric, complex material
+#     intermodulates, and noise has no fundamental to double.
+#   - The waveform legend no longer says "blue=L orange=R" on files
+#     with more than two channels.
 #
 # Changelog v0.3:
 #   - Audio pipeline UNCHANGED. Output is bit-identical to v0.2
@@ -50,20 +139,32 @@
 #   - Added info output
 # ============================================================
 
-form Full-Wave Rectifier v0.3
+form Full-Wave Rectifier v0.4b
     comment Select a Sound object first
     
     comment === Preset ===
     optionmenu Preset: 1
-        option Default (0.95 peak)
-        option Soft (0.8 peak)
-        option Maximum (1.0 peak)
-        option Custom (use setting below)
+        option Standard level (0.95 peak)
+        option Reduced level (0.8 peak)
+        option Full-scale level (1.0 peak)
+        option Custom (use settings below)
+    
+    comment === DC handling ===
+    optionmenu Dc_handling: 1
+        option Raw rectification (v0.2/v0.3)
+        option Remove final mean
     
     comment === Output ===
+    optionmenu Output_level: 3
+        option Preserve source level
+        option Conditional limiter to target
+        option Normalize to target
     positive Scale_peak 0.95
     boolean Show_spectrum 0
     comment (ON shows harmonic enrichment, but adds analysis time)
+    optionmenu Spectrum_reference: 1
+        option Match levels (isolates harmonic change)
+        option Absolute levels (as rendered)
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -81,32 +182,68 @@ duration = Get total duration
 sr = Get sampling frequency
 input_n_channels = Get number of channels
 
+# v0.4 (item 3): every panel drew from 0, but a Sound's start time is an
+# independent property that merely defaults to 0 - a Sound extracted with
+# times preserved sits at xmin..xmin+duration, and the zoom panel was
+# querying 0..0.02 s, a window containing none of its data.
+xminOrig = Get start time
+xmaxOrig = Get end time
+
 # === Apply Presets ===
+# v0.4 (item 8): these were named Default / Soft / Maximum, which implies
+# they change the rectification. They do not - the shaping is always
+# y = |x|, and the only difference is the peak target, so "Soft" was not
+# a gentler rectifier but the same waveshaping at a lower level.
+# v0.4b: the v0.4 names (Standard / Reduced / Full-scale LEVEL) went too
+# far the other way - they promise an output level, but Scale_peak is
+# only consulted by the limiter and normalize modes. Under
+# Output_level = Preserve all three presets produce identical audio and
+# differ only in the object name. They are now named for the target they
+# set, and the script says when that target goes unused.
 if preset = 1
     scale_peak = 0.95
-    presetName$ = "Default"
+    presetName$ = "Target095"
 elsif preset = 2
     scale_peak = 0.8
-    presetName$ = "Soft"
+    presetName$ = "Target080"
 elsif preset = 3
     scale_peak = 1.0
-    presetName$ = "Maximum"
+    presetName$ = "Target100"
 else
     presetName$ = "Custom"
 endif
 
+# v0.4b (item 1): this ran BEFORE the presets, so a stale manual
+# Scale_peak of 1.5 aborted the script even when the chosen preset was
+# about to replace it with 0.95. Validated after the presets, and only
+# when a mode actually uses the value.
+if output_level <> 1
+    if scale_peak > 1
+        exitScript: "Scale_peak must not exceed 1.0 (it is a full-scale target)."
+    endif
+endif
+
 # === Info ===
-writeInfoLine: "=== Full-Wave Rectifier v0.3 ==="
-appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch)"
+writeInfoLine: "=== Full-Wave Rectifier v0.4b ==="
+appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Scale peak: ", fixed$(scale_peak, 3)
 appendInfoLine: ""
 appendInfoLine: "Effect: y = |x|  (negative -> positive)"
-appendInfoLine: "Result: 2x perceived fundamental, even harmonics"
+
+# v0.4 (item 8): v0.3 stated flatly that rectification "doubles the
+# perceived fundamental" and gives "even harmonics (2f, 4f, 6f...)".
+# That holds for a symmetric periodic signal, where x(t + T/2) = -x(t)
+# so |x| repeats at twice the rate. It does NOT hold generally: a signal
+# already non-negative is unchanged, one with a DC offset is not
+# half-wave symmetric, complex material produces intermodulation rather
+# than a clean even-harmonic series, and noise has no single fundamental
+# to double.
+appendInfoLine: "Result: for symmetric periodic input, the repetition rate doubles (DC + strong even harmonics)."
+appendInfoLine: "        Complex or already-positive material gets broader nonlinear enrichment instead."
 appendInfoLine: ""
 
 # ============================================================
-# PROCESSING  (identical to v0.2)
+# PROCESSING
 # ============================================================
 
 appendInfoLine: "Applying rectification..."
@@ -117,13 +254,127 @@ result = selected("Sound")
 
 selectObject: result
 Formula: ~ abs(self)
-Scale peak: scale_peak
+
+meanRaw = Get mean: 0, 0, 0
+appendInfoLine: "  Mean after abs(): ", fixed$(meanRaw, 4), " (DC component)"
+
+# v0.4 (item 6): abs() makes every sample non-negative, so any non-silent
+# result carries a large positive mean. For a sine at peak A the mean is
+# 2A/pi - 63.7% of the amplitude range, whatever the level. That DC eats
+# headroom, dominates the 0 Hz end of the spectrum panel, and makes
+# splices jump. It is a genuine part of full-wave rectification and so
+# stays the default, but removing it leaves the even harmonics intact.
+if dc_handling = 2
+    selectObject: result
+    Subtract mean
+    meanAfter = Get mean: 0, 0, 0
+    dcDesc$ = "mean removed"
+    appendInfoLine: "  Mean after removal: ", fixed$(meanAfter, 6)
+else
+    dcDesc$ = "raw (DC retained)"
+endif
+
+# v0.4 (item 1): the spectrum panel compared the UNSCALED original with
+# the NORMALIZED result, so the difference it showed was harmonic change
+# plus a global gain change. With a source peak of 0.1 and a 0.95 target
+# that gain alone is +19.6 dB - nearly the whole visible difference,
+# attributed to rectification. A copy is taken here, before the output
+# level stage, so the comparison can be made at matched levels.
+selectObject: result
+specSource = Copy: "FWR_spec_source"
+
+# === Output level ===
+# v0.4 (item 7): v0.3 always ran Scale peak, which made all three presets
+# level controls over an unchanging waveshaper and lifted any quiet
+# source to the target. Normalize stays the default so v0.3 renders are
+# reproducible.
+# (item 5): a silent input gives a peak of 0, which v0.3 handed to
+# Scale peak regardless.
+selectObject: result
+prePeak = Get absolute extremum: 0, 0, "None"
+appendInfoLine: "  Peak before output stage: ", fixed$(prePeak, 4)
+
+levelScale = 1
+if output_level = 1
+    levelDesc$ = "preserved"
+    if preset < 4
+        appendInfoLine: "  NOTE: Output_level is Preserve, so the preset's target of ", fixed$(scale_peak, 2), " is not used - all three presets give identical audio in this mode."
+    endif
+elsif output_level = 2
+    if prePeak > scale_peak
+        selectObject: result
+        Scale peak: scale_peak
+        levelScale = scale_peak / prePeak
+        levelDesc$ = "limited to " + fixed$(scale_peak, 2)
+    else
+        levelDesc$ = "unchanged"
+    endif
+else
+    if prePeak > 0
+        selectObject: result
+        Scale peak: scale_peak
+        levelScale = scale_peak / prePeak
+        levelDesc$ = "normalized to " + fixed$(scale_peak, 2)
+    else
+        levelDesc$ = "silent input - peak scaling skipped"
+    endif
+endif
+appendInfoLine: "  Output level: ", levelDesc$
 
 # === Final stats ===
 selectObject: result
 finalDur = Get total duration
 finalPeak = Get absolute extremum: 0, 0, "None"
+finalMean = Get mean: 0, 0, 0
 nResultCh = Get number of channels
+appendInfoLine: "  Measured output peak: ", fixed$(finalPeak, 4), " | mean: ", fixed$(finalMean, 4)
+
+# Vertical extent and title for the transfer panel.
+# v0.4b (item 2): the curve carried levelScale but NOT the mean-removal
+# shift, so under Dc_handling = "Remove final mean" it drew a V rising
+# from the origin while the audio actually produced
+# (|x| - meanRaw) * levelScale - a V whose vertex sits BELOW zero, with
+# roughly the quieter half of the output negative. The shift is applied
+# here, and the axis is computed from both ends of the curve and its
+# vertex rather than being pinned at -0.3.
+if dc_handling = 2
+    curveShift = meanRaw
+else
+    curveShift = 0
+endif
+curveVertex = (0 - curveShift) * levelScale
+curveEnd = (1 - curveShift) * levelScale
+
+yHiV = curveEnd * 1.2
+if yHiV < 1.2
+    yHiV = 1.2
+endif
+yLoV = curveVertex * 1.2
+if yLoV > -0.3
+    yLoV = -0.3
+endif
+# kept for any code still reading the old single-bound name
+yLimV = yHiV
+
+if dc_handling = 2 and levelScale <> 1
+    curveTitle$ = "Rectification incl. mean removal + level scaling"
+elsif dc_handling = 2
+    curveTitle$ = "Rectification incl. mean removal"
+elsif levelScale <> 1
+    curveTitle$ = "Rectification incl. this render's level scaling"
+else
+    curveTitle$ = "Static rectification function (V-shape)"
+endif
+
+# v0.4 (item 9): processing covers every channel, but the waveform panel
+# draws only the first two.
+if input_n_channels = 1
+    chanLegend$ = "(mono)"
+elsif input_n_channels = 2
+    chanLegend$ = "(blue=ch1  orange=ch2)"
+else
+    chanLegend$ = "(first 2 of " + string$(input_n_channels) + " channels shown)"
+endif
 
 # ============================================================
 # VISUALIZATION  (8 x 8 canvas — suite standard)
@@ -138,7 +389,12 @@ if draw_visualization
     if show_spectrum
         appendInfoLine: "Computing spectra for visualization..."
         
-        # Original spectrum (use mono for fair comparison)
+        # v0.4 (item 1): both sides are now built from signals at a
+        # matched peak, so the panel shows the harmonic change rather
+        # than the harmonic change plus the normalization gain. The
+        # rectified side comes from specSource, the copy taken BEFORE
+        # the output level stage. Choose "Absolute levels" to see the
+        # rendered levels instead.
         selectObject: original
         if input_n_channels > 1
             specSrcOrig = Convert to mono
@@ -146,25 +402,50 @@ if draw_visualization
             selectObject: original
             specSrcOrig = Copy: "specSrcOrig"
         endif
+        
+        selectObject: specSource
+        if nResultCh > 1
+            specSrcRes = Convert to mono
+        else
+            selectObject: specSource
+            specSrcRes = Copy: "specSrcRes"
+        endif
+        
+        if spectrum_reference = 1
+            selectObject: specSrcOrig
+            oPk = Get absolute extremum: 0, 0, "None"
+            if oPk > 0
+                Scale peak: 0.95
+            endif
+            selectObject: specSrcRes
+            rPk = Get absolute extremum: 0, 0, "None"
+            if rPk > 0
+                Scale peak: 0.95
+            endif
+            specRefDesc$ = "matched levels"
+        else
+            # As rendered: the original stays as it is, the rectified
+            # side carries the run's actual level scaling.
+            if levelScale <> 1
+                selectObject: specSrcRes
+                Formula: ~ self * levelScale
+            endif
+            specRefDesc$ = "absolute levels"
+        endif
+        
         selectObject: specSrcOrig
         specOrig = To Spectrum: "yes"
         Rename: "specOrig"
         specOrigID = selected("Spectrum")
         removeObject: specSrcOrig
         
-        # Result spectrum
-        selectObject: result
-        if nResultCh > 1
-            specSrcRes = Convert to mono
-        else
-            selectObject: result
-            specSrcRes = Copy: "specSrcRes"
-        endif
         selectObject: specSrcRes
         specRect = To Spectrum: "yes"
         Rename: "specRect"
         specRectID = selected("Spectrum")
         removeObject: specSrcRes
+    else
+        specRefDesc$ = ""
     endif
     
     # ----------------------------------------------------------
@@ -180,7 +461,8 @@ if draw_visualization
     Text: 0.5, "centre", -0.22, "half",
         ... originalName$
         ... + "  |  " + presetName$
-        ... + "  |  Scale peak: " + fixed$(scale_peak, 3)
+        ... + "  |  Level: " + levelDesc$
+        ... + "  |  DC: " + dcDesc$
         ... + "  |  Effect: y = |x|"
         ... + "  |  " + string$(input_n_channels) + " ch input -> " + string$(nResultCh) + " ch output"
     
@@ -191,14 +473,14 @@ if draw_visualization
     Select outer viewport: 0, 4.2, 0.75, 4.60
     Select inner viewport: 0.55, 4.00, 0.95, 4.40
     
-    Axes: -1.2, 1.2, -0.3, 1.2
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, -0.3, 1.2
+    Axes: -1.2, 1.2, yLoV, yHiV
+    Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, yLoV, yHiV
     
     # Grid
     Colour: "{0.85, 0.85, 0.88}"
     Line width: 1
     Draw line: -1.2, 0, 1.2, 0
-    Draw line: 0, -0.3, 0, 1.2
+    Draw line: 0, yLoV, 0, yHiV
     
     # Linear y=x reference (positive side) — what NO rectification would look like
     Dotted line
@@ -208,19 +490,24 @@ if draw_visualization
     Solid line
     
     # The abs() transfer function — V shape
+    # v0.4 (item 2): the V was drawn as y = |x| while the audio went on
+    # through the output level stage, so with a quiet source normalized
+    # to 0.95 the real mapping was (0.95/P)*|x| - a far steeper V than
+    # the one shown. The curve now carries the run's actual level
+    # scaling, and the panel title says which stage it represents.
     Colour: "{0.40, 0.65, 0.45}"
     Line width: 2.5
     # Negative half: flipped to positive
-    Draw line: -1, 1, 0, 0
+    Draw line: -1, curveEnd, 0, curveVertex
     # Positive half: unchanged
-    Draw line: 0, 0, 1, 1
+    Draw line: 0, curveVertex, 1, curveEnd
     Line width: 1
     
     # Annotations
     Font size: 5
     Colour: "{0.30, 0.55, 0.30}"
-    Text: -0.5, "centre", 0.55, "half", " |x| "
-    Text: 0.5, "centre", 0.55, "half", " x "
+    Text: -0.5, "centre", (0.5 - curveShift) * levelScale, "half", " |x| "
+    Text: 0.5, "centre", (0.5 - curveShift) * levelScale, "half", " x "
     
     # Identity reference label
     Font size: 5
@@ -315,7 +602,7 @@ if draw_visualization
         
         Font size: 11
         Colour: "{0.30, 0.45, 0.78}"
-        Text: 0.10, "left", 0.54, "half", "Peak:    " + fixed$(scale_peak, 3)
+        Text: 0.10, "left", 0.54, "half", "Peak:    " + fixed$(finalPeak, 3) + " (target " + fixed$(scale_peak, 2) + ")"
         Text: 0.10, "left", 0.46, "half", "Channels: " + string$(nResultCh)
         Text: 0.10, "left", 0.38, "half", "Duration: " + fixed$(finalDur, 2) + " s"
         
@@ -325,8 +612,9 @@ if draw_visualization
         
         Font size: 8
         Colour: "{0.55, 0.55, 0.55}"
-        Text: 0.10, "left", 0.19, "half", "Doubles perceived fundamental"
-        Text: 0.10, "left", 0.11, "half", "Adds strong even harmonics"
+        Text: 0.10, "left", 0.19, "half", "Symmetric periodic in: 2x rate,"
+        Text: 0.10, "left", 0.12, "half", "DC + even harmonics"
+        Text: 0.10, "left", 0.05, "half", "Complex in: broad enrichment"
         
         Font size: 6
         Colour: "{0.78, 0.50, 0.30}"
@@ -345,7 +633,7 @@ if draw_visualization
     
     Font size: 7
     Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Transfer function (V-shape)"
+    Text: 2.10, "centre", 7.30, "half", curveTitle$
     if show_spectrum
         Text: 6.10, "centre", 7.30, "half", "Spectrum: original vs rectified"
     else
@@ -361,15 +649,20 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.68, 5.55
     Select inner viewport: 0.55, 7.72, 4.75, 5.48
     
+    # v0.4 (item 3): this queried and drew 0..zoomDur, i.e. it assumed
+    # the time domain starts at 0. On a Sound extracted with times
+    # preserved that window holds no data at all.
     zoomDur = 0.02
     if zoomDur > duration
         zoomDur = duration
     endif
     
     selectObject: original
-    origPeak = Get absolute extremum: 0, zoomDur, "None"
+    zoomStart = xminOrig
+    zoomEnd = xminOrig + zoomDur
+    origPeak = Get absolute extremum: zoomStart, zoomEnd, "None"
     selectObject: result
-    resPeak = Get absolute extremum: 0, zoomDur, "None"
+    resPeak = Get absolute extremum: zoomStart, zoomEnd, "None"
     zoomMax = origPeak
     if resPeak > zoomMax
         zoomMax = resPeak
@@ -379,10 +672,10 @@ if draw_visualization
     endif
     zAmpViz = zoomMax * 1.15
     
-    Axes: 0, zoomDur, -zAmpViz, zAmpViz
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, zoomDur, -zAmpViz, zAmpViz
+    Axes: zoomStart, zoomEnd, -zAmpViz, zAmpViz
+    Paint rectangle: "{0.97, 0.97, 0.97}", zoomStart, zoomEnd, -zAmpViz, zAmpViz
     Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, zoomDur, 0
+    Draw line: zoomStart, 0, zoomEnd, 0
     
     # Original (gray, behind)
     selectObject: original
@@ -391,12 +684,12 @@ if draw_visualization
         zOrig = selected("Sound")
         Colour: "{0.65, 0.65, 0.65}"
         Line width: 1
-        Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
         removeObject: zOrig
     else
         Colour: "{0.65, 0.65, 0.65}"
         Line width: 1
-        Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
     endif
     
     # Rectified (green, on top)
@@ -406,12 +699,12 @@ if draw_visualization
         zRes = selected("Sound")
         Colour: "{0.40, 0.65, 0.45}"
         Line width: 1.3
-        Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
         removeObject: zRes
     else
         Colour: "{0.40, 0.65, 0.45}"
         Line width: 1.3
-        Draw: 0, zoomDur, -zAmpViz, zAmpViz, "no", "Curve"
+        Draw: zoomStart, zoomEnd, -zAmpViz, zAmpViz, "no", "Curve"
     endif
     Line width: 1
     
@@ -435,10 +728,10 @@ if draw_visualization
     endif
     ampViz = outPeakViz * 1.15
     
-    Axes: 0, finalDur, -ampViz, ampViz
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -ampViz, ampViz
+    Axes: xminOrig, xmaxOrig, -ampViz, ampViz
+    Paint rectangle: "{0.97, 0.97, 0.97}", xminOrig, xmaxOrig, -ampViz, ampViz
     Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, finalDur, 0
+    Draw line: xminOrig, 0, xmaxOrig, 0
     
     selectObject: result
     if nResultCh = 1
@@ -468,7 +761,7 @@ if draw_visualization
     Draw inner box
     Font size: 7
     if nResultCh > 1
-        Text top: "no", "Output (full file)  (blue=L  orange=R)"
+        Text top: "no", "Output (full file)  " + chanLegend$
     else
         Text top: "no", "Output (full file, mono)"
     endif
@@ -495,12 +788,13 @@ if draw_visualization
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Operation: y = |x|"
-        ... + "  |  Scale peak: " + fixed$(scale_peak, 3)
+        ... + "  |  Level: " + levelDesc$
+        ... + "  |  DC: " + dcDesc$
         ... + "  |  Channels: " + string$(input_n_channels) + " -> " + string$(nResultCh)
     
     Text: 0.02, "left", 0.28, "half",
         ... "Spectrum panel: " + spectrumStr$
-        ... + "  |  Effect: doubles fundamental + even harmonics"
+        ... + "  |  Effect: 2x rate + even harmonics (symmetric periodic input only)"
         ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
     
     Colour: "Black"
@@ -516,6 +810,10 @@ if draw_visualization
     endif
 endif
 
+# v0.4: the pre-level-stage copy used for the spectrum comparison is
+# removed here, so it is cleaned up whether or not the visualization ran.
+removeObject: specSource
+
 # === Final Info ===
 selectObject: result
 
@@ -523,7 +821,8 @@ appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 appendInfoLine: "Duration: ", fixed$(finalDur, 2), " s"
-appendInfoLine: "Peak: ", fixed$(finalPeak, 4)
+appendInfoLine: "Peak: ", fixed$(finalPeak, 4), " (target ", fixed$(scale_peak, 3), ")"
+appendInfoLine: "Mean (DC): ", fixed$(finalMean, 4), "  [", dcDesc$, "]"
 
 if play_result
     selectObject: result
