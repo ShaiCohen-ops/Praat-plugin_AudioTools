@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4b (2026)
+# Version: 0.4c (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -54,6 +54,15 @@
 #   - Fixed formula syntax
 #   - Added visualization
 #   - Improved cleanup
+#
+# Changelog v0.4c:
+#   - FIXED: an attempt to split the long form into two `form...endform`
+#     blocks failed ("Unknown variable: random_seed") because Praat only
+#     supports one `form` per script run. The settings now open in two
+#     dialogs: the initial form (Circuit/Resonance/Dry-Wet) plus a second
+#     beginPause/endPause window (Spatial/Output/Debug) that pops up right
+#     after Sound selection is validated. Same fields, same defaults, same
+#     variable names - just split across two shorter windows.
 #
 # Changelog v0.4b:
 #   All three blockers below are v0.4 regressions.
@@ -119,10 +128,10 @@
 #     iteration counts, where a broadband seed has not yet been filtered out).
 # ============================================================
 
-form Sidechain Feedback VCA v0.4b
+form Sidechain Feedback VCA v0.4c (1/2) - Circuit & Resonance
     comment Select a Sound object - it CONTROLS the feedback circuit
     comment (use Dry/Wet below to blend the original sound back in)
-    
+
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -130,7 +139,7 @@ form Sidechain Feedback VCA v0.4b
         option Aggressive Feedback
         option Slow Evolution
         option Chaotic Burst
-    
+
     comment === Circuit Behavior ===
     positive Base_Feedback 0.8
     real Input_Sensitivity 0.5
@@ -156,33 +165,12 @@ form Sidechain Feedback VCA v0.4b
     comment === Synthetic high frequencies / air (0 = off) ===
     real High_Freq_Add 0.3
     comment (negative behaves as off; the exciter runs only when this is > 0)
-
-    comment === Spatial Mode ===
-    optionmenu Spatial_Mode 2
-        option Mono
-        option Stereo Wide
-        option Rotating
-        option Binaural
-    positive Interaural_delay_ms 0.68
-    comment (Binaural mode; v0.3 used a fixed 30 samples)
-    optionmenu Multichannel_policy: 1
-        option Downmix to mono, then duplicate
-        option Use the first two channels
-        option Refuse more than 2 channels
-
-    comment === Output ===
-    optionmenu Output_mode: 1
-        option Normalize each stage to 0.95 (v0.2/v0.3)
-        option Normalize only at the end
-        option Preserve loop level (output gain only)
-    positive Output_Gain 1.0
-    integer Random_seed 0
-    comment (0 or below = unpredictable; positive = reproducible)
-    boolean Draw_visualization 1
-    boolean Play_result 1
-    comment === Debug (logs per-stage levels to the Info window) ===
-    boolean Debug 1
 endform
+
+# NOTE: Praat only allows ONE "form ... endform" block per script run (that's
+# why a second `form` here failed with "Unknown variable"). A second dialog
+# further down uses beginPause/endPause instead, which Praat does allow to
+# pop up more than once during a single script execution.
 
 # === Check Input ===
 if numberOfSelected("Sound") <> 1
@@ -191,6 +179,34 @@ endif
 
 original = selected("Sound")
 input_Name$ = selected$("Sound")
+
+# === Second dialog (Spatial, Output & Debug) ===
+beginPause: "Sidechain Feedback VCA v0.4c (2/2) - Spatial, Output & Debug"
+    comment: "=== Spatial Mode ==="
+    optionmenu: "Spatial_Mode", 2
+        option: "Mono"
+        option: "Stereo Wide"
+        option: "Rotating"
+        option: "Binaural"
+    positive: "Interaural_delay_ms", "0.68"
+    comment: "(Binaural mode; v0.3 used a fixed 30 samples)"
+    optionmenu: "Multichannel_policy", 1
+        option: "Downmix to mono, then duplicate"
+        option: "Use the first two channels"
+        option: "Refuse more than 2 channels"
+    comment: "=== Output ==="
+    optionmenu: "Output_mode", 1
+        option: "Normalize each stage to 0.95 (v0.2/v0.3)"
+        option: "Normalize only at the end"
+        option: "Preserve loop level (output gain only)"
+    positive: "Output_Gain", "1.0"
+    integer: "Random_seed", "0"
+    comment: "(0 or below = unpredictable; positive = reproducible)"
+    boolean: "Draw_visualization", 1
+    boolean: "Play_result", 1
+    comment: "=== Debug (logs per-stage levels to the Info window) ==="
+    boolean: "Debug", 1
+clicked = endPause: "Continue", 1
 
 selectObject: original
 duration = Get total duration
@@ -344,7 +360,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Sidechain Feedback VCA v0.4b ==="
+writeInfoLine: "=== Sidechain Feedback VCA v0.4c ==="
 appendInfoLine: "Controller: ", input_Name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
