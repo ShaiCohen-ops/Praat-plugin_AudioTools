@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,111 @@
 #   Advanced Envelope Application with multiple envelope types,
 #   curve shapes, modifiers, and comprehensive visualization.
 #
+# Changelog v1.2:
+#
+#   All items below were verified against real Praat behaviour
+#   (headless Praat, `--run`), not just read from the source.
+#
+#   1. FIXED: "Exponential" silently became Linear whenever either
+#      endpoint was at/near zero, because the old formula
+#      (`start*(end/start)^progress`) is undefined at 0 and fell
+#      back to a straight line -- exactly the two most common uses
+#      of an exponential envelope (0->1 or 1->0). v1.2 always uses a
+#      normalized exponential SHAPE (`(1-exp(-k*progress))/(1-exp(-k))`,
+#      the same family already used by `applyCurve`) to interpolate
+#      between start_level and end_level, which is well-defined at
+#      either endpoint being zero.
+#   2. FIXED: `Invert` used `peak_level - amp` instead of `1 - amp`.
+#      `peak_level` doesn't participate in Linear, Exponential, Sine,
+#      or Step at all, so e.g. a Linear 0->1 ramp with the default
+#      Peak_level=1 but a lower `peak_level` value from some other
+#      envelope's leftover setting inverted to the wrong range and
+#      got clipped. Inversion is now `1 - amp` (the envelope's
+#      declared 0-1 range), clamped to [0, 1].
+#   3. FIXED: Trapezoid / ASR / Percussive / ADSR didn't fit their
+#      stage times to the sound's duration. The old code zeroed only
+#      the sustain/flat portion when stages didn't fit, leaving
+#      Attack/Decay/Release uncompressed -- e.g. an 80ms Attack +
+#      80ms Release on a 100ms sound never finished its Release and
+#      ended at ~75% of peak instead of 0. v1.2 proportionally
+#      compresses Attack/Decay/Release (and any explicitly-requested,
+#      i.e. non-auto, Sustain) to fit inside the sound's duration
+#      when their sum exceeds it, and reports the adjustment.
+#   4. FIXED (wording): the form said "Times (seconds, 0=auto)" for
+#      the whole group, but only Sustain=0 means auto -- Attack=0 /
+#      Decay=0 / Release=0 mean an instant/skipped stage. Relabelled
+#      to "Times in seconds (Sustain: 0 = auto)".
+#   5. FIXED: "Step" wasn't a step. Every envelope type is sampled at
+#      grid points (~500/s) and painted as piecewise-LINEAR segments
+#      between them; for Step, the segment straddling the midpoint
+#      got a short ramp between start_level and end_level instead of
+#      an instant jump (~2ms smear at 1s duration, more for longer
+#      sounds). v1.2 special-cases Step after the general grid is
+#      painted: it overwrites the envelope with a single time-based
+#      formula that jumps exactly at the midpoint, using the same
+#      (already mirror/invert-correct) boundary levels the grid
+#      already computed.
+#   6. FIXED (precision): the v1.1 changelog claimed fades "reach
+#      true zero", but Praat's sample grid is centered inside
+#      [xmin,xmax] (first sample at xmin+0.5*dx, last at
+#      xmax-0.5*dx), so a mathematically-exact ramp to 0 at t=duration
+#      still lands about 1.13e-5 short of zero at 44.1kHz/1s --
+#      verified directly. v1.2 explicitly forces the envelope's
+#      first and last SAMPLES (via `Set value at sample number`) to
+#      the exact requested boundary levels, so the actual first/last
+#      audio sample is exactly right, not just approximately so.
+#   7. FIXED: the ADSR visualization panel used `.sus` (a
+#      procedure-local-style name) at script level, outside any
+#      procedure -- undocumented/fragile even where it happens to
+#      run. Renamed to a plain global, `visualSustain`.
+#   8. CHANGED: `Normalize` (now `Peak_normalize_output`) defaults to
+#      OFF and is more clearly named. `Scale peak` after envelope
+#      multiplication re-amplifies the result back up to the target
+#      peak, which silently overrides the absolute levels the
+#      envelope was just asked to produce (e.g. a constant
+#      Peak_level=0.5 envelope no longer actually attenuates the
+#      output once normalized back up). The info header now notes
+#      when it's active and that it changes absolute envelope levels.
+#
+#   Smaller fixes noted in the same audit:
+#     - Gaussian is now normalized to reach exactly 0 at both edges
+#       of the file (it previously started/ended at ~13.5% of peak,
+#       since sigma=duration/4 doesn't fully decay by the edges).
+#     - Percussive's release now goes through the same `applyCurve`
+#       (Curve dropdown) as its attack, instead of an always-on
+#       power-law tied to Curve_amount that ignored the Curve
+#       selection -- so "Curve: Linear" now actually gives a linear
+#       release, as the interface promises.
+#     - Tremolo's `depth` is now unambiguous: 0 = constant
+#       Peak_level, 1 = swings all the way down to 0 at each trough,
+#       with Peak_level always reached at each peak. (The old
+#       start/end-average "base", with a magic `< 0.1 -> 0.5`
+#       fallback, made 50% depth actually produce a 0.25-0.75 range
+#       instead of the expected ~0.5-1.0.) The envelope's control-
+#       point grid is also densified for high tremolo rates so the
+#       modulation itself doesn't get aliased away.
+#     - `applyCurve`'s Exponential branch had an inconsistent guard
+#       (`curve_amount > 0` to enter, but `.maxVal > 0.001` to
+#       normalize) that left small positive Curve_amount values
+#       producing tiny, un-normalized output instead of a proper
+#       0->1 shape. Replaced with one consistent, much smaller
+#       threshold with a linear fallback below it.
+#     - Attack / Decay / Release / Sustain are now clamped to >= 0,
+#       and Start/End/Peak/Sustain_level are clamped to [0, 1] (the
+#       interface already claimed this range; it wasn't enforced).
+#     - Every stage-time division (t/attack, etc.) is now guarded
+#       against a zero-length stage, so an intentional Attack=0
+#       ("instant" attack, a legitimate and common setting) no
+#       longer risks a division-by-zero and instead jumps straight
+#       to the post-stage level, exactly as a zero-length stage should.
+#     - Smoothing is now a genuine multi-tap moving average spread
+#       across the ~5ms window (evenly-spaced taps on each side,
+#       edges clamped) instead of exactly two lone taps sitting at
+#       the far edge of the window, which produced a crude 3-level
+#       staircase around any sharp edge (e.g. Step) rather than an
+#       actual smooth transition. Verified with an impulse test.
+#
+# ------------------------------------------------------------
 # Changelog v1.1:
 #   - FIXED: info header was invisible -- eight consecutive
 #     writeInfoLine calls each CLEAR the Info window, so only the
@@ -42,7 +147,7 @@
 #   - Enhanced visualization with stage labels
 # ============================================================
 
-form Envelope Application v1.1
+form Envelope Application v1.2
     optionmenu Preset 1
         option Custom
         option Fade In
@@ -70,7 +175,7 @@ form Envelope Application v1.1
     real End_level 1.0
     real Peak_level 1.0
     real Sustain_level 0.7
-    comment === Times (seconds, 0=auto) ===
+    comment === Times in seconds (Sustain: 0 = auto) ===
     real Attack 0.02
     real Decay 0.1
     real Sustain 0
@@ -88,10 +193,12 @@ form Envelope Application v1.1
     boolean Mirror 0
     integer Smoothing 0
     comment === Output ===
-    boolean Normalize 1
+    boolean Peak_normalize_output 0
     boolean Visualize 1
     boolean Play 1
 endform
+
+epsilon = 0.000001
 
 # === INPUT VALIDATION ===
 if numberOfSelected("Sound") <> 1
@@ -154,6 +261,7 @@ elsif preset = 7
 elsif preset = 8
     # Tremolo
     envelope_type = 11
+    peak_level = 1
     tremolo_rate_Hz = 6
     tremolo_depth = 0.4
     presetName$ = "Tremolo"
@@ -166,6 +274,87 @@ elsif preset = 9
     presetName$ = "Gate"
 else
     presetName$ = "Custom"
+endif
+
+# === VALIDATE / SANITIZE NUMERIC SETTINGS ===
+# v1.2: the interface claims Start/End/Peak/Sustain_level are 0-1 and
+# that Attack/Decay/Sustain/Release are non-negative, but neither was
+# enforced. Out-of-range values are clamped and reported.
+settingsWarning$ = ""
+
+if start_level < 0
+    start_level = 0
+    settingsWarning$ = settingsWarning$ + "  - Start_level was negative and has been clamped to 0." + newline$
+elsif start_level > 1
+    start_level = 1
+    settingsWarning$ = settingsWarning$ + "  - Start_level was above 1 and has been clamped to 1." + newline$
+endif
+
+if end_level < 0
+    end_level = 0
+    settingsWarning$ = settingsWarning$ + "  - End_level was negative and has been clamped to 0." + newline$
+elsif end_level > 1
+    end_level = 1
+    settingsWarning$ = settingsWarning$ + "  - End_level was above 1 and has been clamped to 1." + newline$
+endif
+
+if peak_level < 0
+    peak_level = 0
+    settingsWarning$ = settingsWarning$ + "  - Peak_level was negative and has been clamped to 0." + newline$
+elsif peak_level > 1
+    peak_level = 1
+    settingsWarning$ = settingsWarning$ + "  - Peak_level was above 1 and has been clamped to 1." + newline$
+endif
+
+if sustain_level < 0
+    sustain_level = 0
+    settingsWarning$ = settingsWarning$ + "  - Sustain_level was negative and has been clamped to 0." + newline$
+elsif sustain_level > 1
+    sustain_level = 1
+    settingsWarning$ = settingsWarning$ + "  - Sustain_level was above 1 and has been clamped to 1." + newline$
+endif
+
+if attack < 0
+    attack = 0
+    settingsWarning$ = settingsWarning$ + "  - Attack was negative and has been clamped to 0." + newline$
+endif
+if decay < 0
+    decay = 0
+    settingsWarning$ = settingsWarning$ + "  - Decay was negative and has been clamped to 0." + newline$
+endif
+if sustain < 0
+    sustain = 0
+    settingsWarning$ = settingsWarning$ + "  - Sustain was negative and has been clamped to 0 (auto)." + newline$
+endif
+if release < 0
+    release = 0
+    settingsWarning$ = settingsWarning$ + "  - Release was negative and has been clamped to 0." + newline$
+endif
+
+# === FIT STAGE TIMES TO SOUND DURATION ===
+# v1.2: for the stage-based envelope types, proportionally compress
+# Attack/Decay/Release (and an explicitly-requested, non-auto,
+# Sustain) so they fit inside the sound's duration when their sum
+# exceeds it. Otherwise the envelope silently never reaches its
+# final stage (e.g. Release never completing) instead of always
+# spanning the whole sound as its shape promises.
+if envelope_type = 5 or envelope_type = 8 or envelope_type = 9 or envelope_type = 10
+    if envelope_type = 10
+        stageSum = attack + decay + max(0, sustain) + release
+    elsif envelope_type = 8
+        stageSum = attack + max(0, sustain) + release
+    else
+        stageSum = attack + release
+    endif
+
+    if stageSum > duration and stageSum > epsilon
+        stageScale = duration / stageSum
+        attack = attack * stageScale
+        decay = decay * stageScale
+        release = release * stageScale
+        sustain = sustain * stageScale
+        settingsWarning$ = settingsWarning$ + "  - Stage times (" + fixed$(stageSum, 3) + "s) exceeded the sound's duration (" + fixed$(duration, 3) + "s) -- scaled to " + fixed$(stageScale * 100, 0) + "% to fit." + newline$
+    endif
 endif
 
 # === GET ENVELOPE TYPE NAME ===
@@ -197,17 +386,34 @@ endif
 # v1.1: writeInfoLine clears the Info window on EVERY call --
 # the old header (eight writeInfoLine calls) erased itself.
 writeInfoLine: "=============================================="
-appendInfoLine: "  ENVELOPE APPLICATION v1.1"
+appendInfoLine: "  ENVELOPE APPLICATION v1.2"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", sound_name$, " (", fixed$(duration, 3), "s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Envelope: ", envName$
+if peak_normalize_output
+    appendInfoLine: "Note: Peak_normalize_output is ON -- the final Scale peak"
+    appendInfoLine: "  step will re-amplify the result, so the envelope's"
+    appendInfoLine: "  absolute levels (e.g. a constant 0.5 envelope) will NOT"
+    appendInfoLine: "  be preserved in the output's actual peak amplitude."
+endif
+if settingsWarning$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Settings adjusted:"
+    appendInfoLine: settingsWarning$
+endif
 appendInfoLine: ""
 
 # ============================================================
 # PROCEDURE: Apply curve shape to linear phase (0-1)
 # ============================================================
+# v1.2: the Exponential branch's normalization guard used to be
+# inconsistent (entry gated on curve_amount > 0, but normalization
+# gated on a separate, coarser .maxVal > 0.001 threshold), which left
+# small positive Curve_amount values producing tiny, un-normalized
+# output. Now uses one small, consistent epsilon with a linear
+# fallback below it (which is also the correct mathematical limit).
 
 procedure applyCurve: .phase
     if curve = 1
@@ -215,12 +421,9 @@ procedure applyCurve: .phase
         applyCurve.result = .phase
     elsif curve = 2
         # Exponential
-        if curve_amount > 0
-            applyCurve.result = 1 - exp(-curve_amount * .phase)
+        if curve_amount > 0.000001
             .maxVal = 1 - exp(-curve_amount)
-            if .maxVal > 0.001
-                applyCurve.result = applyCurve.result / .maxVal
-            endif
+            applyCurve.result = (1 - exp(-curve_amount * .phase)) / .maxVal
         else
             applyCurve.result = .phase
         endif
@@ -233,26 +436,34 @@ endproc
 # ============================================================
 # PROCEDURE: Calculate envelope amplitude at time t
 # ============================================================
+# v1.2: every stage-time division (t/attack, (t-attack)/decay, etc.)
+# is now guarded against a zero-length stage. Attack/Decay/Release=0
+# is a legitimate "instant" setting (e.g. a hard-gated Attack), not
+# an error, and should jump straight to the post-stage level instead
+# of dividing by (near) zero.
 
 procedure getEnvelopeValue: .t, .dur
     .progress = .t / .dur
-    
+
     if envelope_type = 1
         # Linear
         .amp = start_level + (end_level - start_level) * .progress
-        
+
     elsif envelope_type = 2
-        # Exponential
-        if start_level > 0.001 and end_level > 0.001
-            .amp = start_level * (end_level / start_level) ^ .progress
+        # Exponential -- normalized shape (see applyCurve), so it is
+        # well-defined even when start_level or end_level is 0.
+        if curve_amount > 0.000001
+            .maxVal = 1 - exp(-curve_amount)
+            .shape = (1 - exp(-curve_amount * .progress)) / .maxVal
         else
-            .amp = start_level + (end_level - start_level) * .progress
+            .shape = .progress
         endif
-        
+        .amp = start_level + (end_level - start_level) * .shape
+
     elsif envelope_type = 3
         # Sine (S-curve)
         .amp = start_level + (end_level - start_level) * (1 - cos(.progress * pi)) / 2
-        
+
     elsif envelope_type = 4
         # Triangle (peak in middle)
         if .progress < 0.5
@@ -260,132 +471,186 @@ procedure getEnvelopeValue: .t, .dur
         else
             .amp = peak_level * (1 - (.progress - 0.5) / 0.5)
         endif
-        
+
     elsif envelope_type = 5
         # Trapezoid
         .flatDur = .dur - attack - release
         if .flatDur < 0
             .flatDur = 0
         endif
-        
+
         if .t < attack
-            .phase = .t / attack
-            @applyCurve: .phase
-            .amp = peak_level * applyCurve.result
+            if attack < epsilon
+                .amp = peak_level
+            else
+                .phase = .t / attack
+                @applyCurve: .phase
+                .amp = peak_level * applyCurve.result
+            endif
         elsif .t < attack + .flatDur
             .amp = peak_level
         elsif .t < attack + .flatDur + release
-            .phase = (.t - attack - .flatDur) / release
-            @applyCurve: .phase
-            .amp = peak_level * (1 - applyCurve.result)
+            if release < epsilon
+                .amp = 0
+            else
+                .phase = (.t - attack - .flatDur) / release
+                @applyCurve: .phase
+                .amp = peak_level * (1 - applyCurve.result)
+            endif
         else
             .amp = 0
         endif
-        
+
     elsif envelope_type = 6
-        # Gaussian
+        # Gaussian, normalized so it reaches exactly 0 at both edges
+        # of the file (the raw exp() tail was still at ~13.5% of
+        # peak at the edges with sigma = duration/4).
         .center = .dur / 2
         .sigma = .dur / 4
-        .amp = peak_level * exp(-0.5 * ((.t - .center) / .sigma) ^ 2)
-        
+        .raw = exp(-0.5 * ((.t - .center) / .sigma) ^ 2)
+        .edgeRaw = exp(-0.5 * (.center / .sigma) ^ 2)
+        if .edgeRaw < 0.999
+            .amp = peak_level * (.raw - .edgeRaw) / (1 - .edgeRaw)
+        else
+            .amp = peak_level * .raw
+        endif
+
     elsif envelope_type = 7
-        # Step
+        # Step (the hard jump itself is re-rendered exactly after
+        # the main grid loop, below; this value is only used to
+        # supply the flat level on each side of the jump)
         .stepTime = .dur / 2
         if .t < .stepTime
             .amp = start_level
         else
             .amp = end_level
         endif
-        
+
     elsif envelope_type = 8
         # ASR
         .sus = sustain
-        if .sus = 0
+        if .sus < epsilon
             .sus = .dur - attack - release
             if .sus < 0
                 .sus = 0
             endif
         endif
-        
+
         if .t < attack
-            .phase = .t / attack
-            @applyCurve: .phase
-            .amp = peak_level * applyCurve.result
+            if attack < epsilon
+                .amp = peak_level
+            else
+                .phase = .t / attack
+                @applyCurve: .phase
+                .amp = peak_level * applyCurve.result
+            endif
         elsif .t < attack + .sus
             .amp = peak_level
         elsif .t < attack + .sus + release
-            .phase = (.t - attack - .sus) / release
-            @applyCurve: .phase
-            .amp = peak_level * (1 - applyCurve.result)
+            if release < epsilon
+                .amp = 0
+            else
+                .phase = (.t - attack - .sus) / release
+                @applyCurve: .phase
+                .amp = peak_level * (1 - applyCurve.result)
+            endif
         else
             .amp = 0
         endif
-        
+
     elsif envelope_type = 9
-        # Percussive
+        # Percussive. v1.2: release now goes through applyCurve, the
+        # same as attack, instead of an always-on power law tied to
+        # Curve_amount that ignored the Curve dropdown entirely.
         .total = attack + release
-        
+
         if .t < attack
-            .phase = .t / attack
-            @applyCurve: .phase
-            .amp = peak_level * applyCurve.result
+            if attack < epsilon
+                .amp = peak_level
+            else
+                .phase = .t / attack
+                @applyCurve: .phase
+                .amp = peak_level * applyCurve.result
+            endif
         elsif .t < .total
-            .phase = (.t - attack) / release
-            .amp = peak_level * (1 - .phase) ^ (abs(curve_amount) / 2)
+            if release < epsilon
+                .amp = 0
+            else
+                .phase = (.t - attack) / release
+                @applyCurve: .phase
+                .amp = peak_level * (1 - applyCurve.result)
+            endif
         else
             .amp = 0
         endif
-        
+
     elsif envelope_type = 10
         # ADSR
         .sus = sustain
-        if .sus = 0
+        if .sus < epsilon
             .sus = .dur - attack - decay - release
             if .sus < 0
                 .sus = 0
             endif
         endif
         .susAmp = sustain_level * peak_level
-        
+
         if .t < attack
-            .phase = .t / attack
-            @applyCurve: .phase
-            .amp = peak_level * applyCurve.result
+            if attack < epsilon
+                .amp = peak_level
+            else
+                .phase = .t / attack
+                @applyCurve: .phase
+                .amp = peak_level * applyCurve.result
+            endif
         elsif .t < attack + decay
-            .phase = (.t - attack) / decay
-            @applyCurve: .phase
-            .amp = peak_level - (peak_level - .susAmp) * applyCurve.result
+            if decay < epsilon
+                .amp = .susAmp
+            else
+                .phase = (.t - attack) / decay
+                @applyCurve: .phase
+                .amp = peak_level - (peak_level - .susAmp) * applyCurve.result
+            endif
         elsif .t < attack + decay + .sus
             .amp = .susAmp
         elsif .t < attack + decay + .sus + release
-            .phase = (.t - attack - decay - .sus) / release
-            @applyCurve: .phase
-            .amp = .susAmp * (1 - applyCurve.result)
+            if release < epsilon
+                .amp = 0
+            else
+                .phase = (.t - attack - decay - .sus) / release
+                @applyCurve: .phase
+                .amp = .susAmp * (1 - applyCurve.result)
+            endif
         else
             .amp = 0
         endif
-        
+
     else
-        # Tremolo
-        .base = (start_level + end_level) / 2
-        if .base < 0.1
-            .base = 0.5
-        endif
-        .mod = tremolo_depth * .base
-        .amp = .base + .mod * sin(2 * pi * tremolo_rate_Hz * .t)
+        # Tremolo. v1.2: depth is now unambiguous -- 0 = constant
+        # Peak_level, 1 = swings all the way down to 0 at each
+        # trough, Peak_level is always reached at each peak.
+        .lfo = 0.5 + 0.5 * sin(2 * pi * tremolo_rate_Hz * .t)
+        .amp = peak_level * (1 - tremolo_depth * (1 - .lfo))
         if .amp < 0
             .amp = 0
         endif
     endif
-    
+
     # Apply modifiers
     if invert
-        .amp = peak_level - .amp
+        # v1.2: invert the envelope's declared 0-1 range (1 - amp),
+        # not peak_level - amp (peak_level doesn't even participate
+        # in Linear/Exponential/Sine/Step, so the old formula could
+        # invert into the wrong range and get clipped away).
+        .amp = 1 - .amp
         if .amp < 0
             .amp = 0
         endif
+        if .amp > 1
+            .amp = 1
+        endif
     endif
-    
+
     getEnvelopeValue.result = .amp
 endproc
 
@@ -397,6 +662,13 @@ appendInfoLine: "Creating envelope..."
 
 # Create envelope sound
 numPoints = min(10000, max(200, round(duration * 500)))
+if envelope_type = 11
+    # Tremolo: make sure the grid resolves the modulation rate
+    # itself (>=30 points per cycle), not just the ~500 Hz default
+    # control-point rate, which under-represented faster tremolo.
+    numPoints = max(numPoints, round(duration * tremolo_rate_Hz * 30))
+    numPoints = min(numPoints, 100000)
+endif
 timeStep = duration / numPoints
 
 Create Sound from formula: "envelope_temp", 1, 0, duration, sr, "0"
@@ -433,23 +705,66 @@ for i from 0 to numPoints - 1
     Formula (part): t1, t2, 1, 1, ~ a1 + (a2 - a1) * (x - t1) / (t2 - t1)
 endfor
 
+# v1.2: Step is re-rendered as a true instantaneous jump, not the
+# short ramp the general piecewise-linear grid above just painted
+# across whichever grid cell happens to straddle the midpoint. Reuses
+# envAmp[0] / envAmp[numPoints], which already correctly reflect
+# Mirror and Invert from the loop above.
+if envelope_type = 7
+    stepLevelA = envAmp[0]
+    stepLevelB = envAmp[numPoints]
+    stepBoundary = duration / 2
+    selectObject: envelope_sound
+    Formula: ~ if x < stepBoundary then stepLevelA else stepLevelB fi
+endif
+
 # Apply smoothing
 if smoothing > 0
     appendInfoLine: "  Smoothing (", smoothing, " passes)..."
-    smoothSamples = max(2, round(sr * 0.005))
-    
-    # v1.1: each pass averages a FROZEN copy. The old in-place
-    # version read self[col - k] AFTER it had been overwritten
-    # (already-smoothed) while self[col + k] was still raw:
-    # an asymmetric recursive smear, not a 3-tap average.
+
+    # v1.2: a genuine multi-tap moving average spread evenly across
+    # the ~5ms window (edges clamped), instead of v1.1's two lone
+    # taps sitting at the far edge of the window (which produced a
+    # crude 3-level staircase around any sharp edge, e.g. Step,
+    # rather than an actual smooth transition).
+    halfWindowSamples = max(2, round(sr * 0.005))
+    tapsPerSide = min(halfWindowSamples, 15)
+    tapStride = max(1, round(halfWindowSamples / tapsPerSide))
+
     for pass to smoothing
         selectObject: envelope_sound
         smoothSrc = Copy: "smooth_src"
         selectObject: envelope_sound
-        Formula: ~ if col > smoothSamples and col < ncol - smoothSamples then (object[smoothSrc, col - smoothSamples] + object[smoothSrc, col] + object[smoothSrc, col + smoothSamples]) / 3 else self fi
-        removeObject: smoothSrc
+        accum = Copy: "smooth_accum"
+        Formula: ~ object[smoothSrc, col]
+
+        for k to tapsPerSide
+            offset = k * tapStride
+            selectObject: accum
+            Formula: ~ self + (if col - offset >= 1 then object[smoothSrc, col - offset] else object[smoothSrc, 1] fi) + (if col + offset <= ncol then object[smoothSrc, col + offset] else object[smoothSrc, ncol] fi)
+        endfor
+
+        selectObject: accum
+        Formula: ~ self / (2 * tapsPerSide + 1)
+
+        selectObject: envelope_sound
+        Formula: ~ object[accum, col]
+
+        removeObject: smoothSrc, accum
     endfor
 endif
+
+# v1.2: force the envelope's first and last SAMPLES to the exact
+# requested boundary levels. Praat's sample grid is centered inside
+# [xmin,xmax] (first sample at xmin+0.5*dx, last at xmax-0.5*dx), so
+# even a mathematically exact ramp to 0 lands a hair short of true
+# zero at the actual sample positions (verified: ~1.13e-5 residual
+# at 44.1kHz/1s) -- not exactly zero, despite the v1.1 changelog's
+# claim. This anchors the real first/last audio sample exactly.
+selectObject: envelope_sound
+envNumSamples = Get number of samples
+Set value at sample number: 1, 1, envAmp[0]
+Set value at sample number: 1, envNumSamples, envAmp[numPoints]
 
 # ============================================================
 # APPLY ENVELOPE BY DIRECT MULTIPLICATION
@@ -463,8 +778,8 @@ endif
 # baked into bare Multiply -- a unity envelope on a 0.5-peak
 # signal amplified it 1.8x. (AmplitudeTier: Multiply hardcodes
 # the same rescale with no way to disable it, so no tier at
-# all.) Direct multiplication is exact, reaches true zero, and
-# the drawn envelope is now literally the applied envelope.
+# all.) Direct multiplication is exact and the drawn envelope is
+# now literally the applied envelope.
 
 appendInfoLine: "Applying envelope..."
 
@@ -479,7 +794,7 @@ selectObject: sound
 result = Copy: sound_name$ + "_" + envName$
 Formula: ~ self * object[envId, min(col, envNx)]
 
-if normalize
+if peak_normalize_output
     selectObject: result
     Scale peak: 0.95
 endif
@@ -519,18 +834,21 @@ if visualize
     
     if envelope_type = 10
         # ADSR stage markers
-        .sus = sustain
-        if .sus = 0
-            .sus = duration - attack - decay - release
-            if .sus < 0
-                .sus = 0
+        # v1.2: renamed from the script-level `.sus` (a dotted,
+        # procedure-local-style name used outside any procedure) to
+        # a plain global, visualSustain.
+        visualSustain = sustain
+        if visualSustain < epsilon
+            visualSustain = duration - attack - decay - release
+            if visualSustain < 0
+                visualSustain = 0
             endif
         endif
         
         Paint rectangle: "{0.85, 0.95, 0.85}", 0, attack, 0, 1.1
         Paint rectangle: "{0.95, 0.95, 0.85}", attack, attack + decay, 0, 1.1
-        Paint rectangle: "{0.85, 0.85, 0.95}", attack + decay, attack + decay + .sus, 0, 1.1
-        Paint rectangle: "{0.95, 0.85, 0.85}", attack + decay + .sus, duration, 0, 1.1
+        Paint rectangle: "{0.85, 0.85, 0.95}", attack + decay, attack + decay + visualSustain, 0, 1.1
+        Paint rectangle: "{0.95, 0.85, 0.85}", attack + decay + visualSustain, duration, 0, 1.1
         
         Font size: 6
         Colour: "{0.3, 0.6, 0.3}"
@@ -538,9 +856,9 @@ if visualize
         Colour: "{0.6, 0.6, 0.3}"
         Text: attack + decay / 2, "centre", 1.05, "half", "D"
         Colour: "{0.3, 0.3, 0.6}"
-        Text: attack + decay + .sus / 2, "centre", 1.05, "half", "S"
+        Text: attack + decay + visualSustain / 2, "centre", 1.05, "half", "S"
         Colour: "{0.6, 0.3, 0.3}"
-        Text: attack + decay + .sus + release / 2, "centre", 1.05, "half", "R"
+        Text: attack + decay + visualSustain + release / 2, "centre", 1.05, "half", "R"
     else
         Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, 1.1
     endif
