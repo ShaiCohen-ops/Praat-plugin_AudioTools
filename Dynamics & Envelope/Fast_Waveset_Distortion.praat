@@ -1,31 +1,166 @@
 # ============================================================
 # Praat AudioTools - Fast Waveset Distortion.praat
+#  chops audio into fixed-size time chunks, not content-aware
+#  wavesets between zero crossings, so the old name overclaimed)
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.7 (2026)
+# Version: 1.9 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Fast waveset-inspired audio distortion with stereo processing.
-#   Processes L/R differently for wide stereo image.
-#   Applies Hann windowing to eliminate clicks.
+#   Fast fixed-size chunk audio distortion with stereo processing.
+#   True stereo input is processed as independent L/R channels;
+#   mono input is decorrelated into a synthetic stereo pair. Both
+#   channels share the same chunk grid and the same structural
+#   decisions (repeat count, gap period, chunk order, stretch
+#   factor); stereo width comes from non-length-altering differences
+#   (a small gain offset, a short pre-delay, and - for Ring Mod /
+#   Tremolo - a phase offset) so L and R never drift out of sync.
+#   Chunk boundaries are crossfaded with Praat's raised-cosine
+#   overlap-add ("Concatenate with overlap"), not just faded to
+#   silence and butt-spliced. This is a complementary-power
+#   crossfade (fadeOut + fadeIn = 1), not an equal-power one
+#   (fadeOut^2 + fadeIn^2 <> 1).
 #
 #   ENGINEERING NOTES:
-#   - The chunk[], order[], result, and n_chunks identifiers are
-#     used as SCRIPT-LEVEL (global) variables for inter-procedure
+#   - The chunk[], seq[], order[], result, and n_chunks identifiers
+#     are used as SCRIPT-LEVEL (global) variables for inter-procedure
 #     communication, even though they are written inside
 #     processAudio. This is intentional for this two-call flow
 #     (one call for L channel, one for R) — each call overwrites
-#     the array entries 1..n_chunks with its own chunk IDs and
-#     cleans them up before returning. Fragile if extended to
-#     more than two calls per session; consider passing IDs
-#     explicitly if doing so.
+#     the array entries with its own IDs and cleans them up before
+#     returning. Fragile if extended to more than two calls per
+#     session; consider passing IDs explicitly if doing so.
 #   - The procedure communicates the final result Sound to the
 #     caller via selection state, not return value.
-#   - Concatenate-based assembly is O(N^2) in sample count but
-#     algorithmically inherent given Praat's Sound primitives.
+#   - Assembly now selects the full ordered chunk/repeat sequence
+#     once and calls Concatenate (with overlap) a single time,
+#     which is O(N) rather than the old per-chunk Concatenate loop.
+#
+# Changelog v1.9:
+#   - FIXED: Random Shuffle didn't actually shuffle. Concatenate (and
+#     Concatenate with overlap) assemble objects in Objects-window
+#     creation order, not selection order, so pointing seq[] at the
+#     existing chunk[] objects in a shuffled index order had no
+#     audible effect - they still concatenated in original 1..N
+#     order. Shuffle now makes fresh copies of the chunks in the
+#     shuffled order (so their creation order matches the desired
+#     sequence order), then frees the originals.
+#   - FIXED: Stutter applied a Hann fade-in/out to every repeat via
+#     applyWindow AND then relied on Concatenate with overlap's own
+#     raised-cosine crossfade at the same boundaries, stacking two
+#     fades and dropping the crossfade midpoint to ~-6 dB for
+#     otherwise-equal neighbouring repeats. applyWindow is no longer
+#     called from Stutter; only the single overlap-add crossfade
+#     remains.
+#   - FIXED: Stereo_spread used to scale Amount and Chunk_ms
+#     separately per channel, which could change the repeat count,
+#     gap period, chunk grid, or stretch factor between L and R -
+#     at extreme settings this desynced L and R by several seconds
+#     and the old min-duration trim silently deleted the difference.
+#     L and R now always share one chunk grid and one set of
+#     structural decisions; Stereo_spread instead drives a small
+#     post-processing gain offset and a short pre-delay on the R
+#     channel (silence-padded, not trimmed), plus a phase offset
+#     between L and R for Ring Mod / Tremolo.
+#   - FIXED: Dry/Wet mixing trimmed the wet signal down to the dry
+#     signal's length for any Mix < 1, so Mix = 1.00 kept the full
+#     extended result (e.g. after Stutter/Stretch) while Mix = 0.99
+#     abruptly cut it back to the source length. The shorter side
+#     (dry or wet) is now silence-padded up to the longer side's
+#     length instead of trimming the longer one, so output length no
+#     longer jumps as Mix crosses 1.0, and the tail of whichever
+#     signal is longer is naturally scaled by its own mix weight
+#     rather than deleted.
+#   - FIXED (docs/labels only): the crossfade produced by Praat's
+#     "Concatenate with overlap" is a raised-cosine (complementary-
+#     power) crossfade, not equal-power - fadeOut + fadeIn = 1, but
+#     fadeOut^2 + fadeIn^2 <> 1. Header, panel labels and this
+#     changelog now say "raised-cosine" throughout instead of
+#     "equal-power".
+#   - FIXED: a short trailing remainder chunk (e.g. 1 ms left over
+#     from the chunk grid) forced .overlap = min(fade_sec,
+#     shortest_member * 0.4) down to a fraction of a millisecond for
+#     the ENTIRE sequence, silently ignoring the requested Fade_ms
+#     everywhere, not just at the last boundary. A trailing remainder
+#     shorter than half a chunk is now merged into the previous
+#     chunk instead of forming its own tiny chunk, and if the
+#     requested fade still has to be reduced to fit the shortest
+#     member, that is now logged to the Info window.
+#   - FIXED: the Bitcrush mode description shown in the visualization
+#     said "quantization to max(2, round(16/amount)) levels", which
+#     is off by roughly a factor of 2 (the formula spans +/- levels
+#     around zero). Label now says "steps per polarity (~2L+1 total
+#     values)" to match the actual formula.
+#   - FIXED: Ring Mod frequency, Tremolo frequency/depth, and
+#     Pumping gain could all go negative at negative Amount values -
+#     Ring Mod/Tremolo frequency going negative is harmless (sin is
+#     odd) but Tremolo depth going negative turned attenuation into
+#     periodic amplification, and Pumping's gain_hi going negative
+#     flipped polarity every other chunk instead of just changing
+#     volume. All three are now clamped to their intended ranges
+#     (frequency >= 0, depth in 0-0.9, Pumping gains always positive).
+#   - FIXED: the 20,000-chunk safety cap was checked against the
+#     number of SOURCE chunks, but Stutter expands each source chunk
+#     into 2-8 repeats before assembly, so Stutter could still spawn
+#     up to 160,000 temporary Sound objects per channel. The cap is
+#     now divided by Stutter's repeat count before being applied, so
+#     the actual object count stays bounded regardless of mode.
+#   - NOTE (not changed): every crossfade shortens the assembled
+#     result by the overlap duration at each boundary (Praat: output
+#     duration = sum of chunk durations - overlap per boundary), so
+#     even effects that don't intend to change timing (e.g. Reverse,
+#     Bitcrush, Tremolo) will end up a little shorter than the
+#     source. This is inherent to the single-pass Concatenate with
+#     overlap approach and is not eliminated in v1.9; the Info window
+#     now reports input vs. output duration explicitly so the effect
+#     is visible rather than silent.
+#
+# Changelog v1.8:
+#   - FIXED: Dry/Wet mix used object[id, x, y] (row/col indexing)
+#     with time and channel values instead of indices. Now uses
+#     object[id, row, col] against a grid-matched, length-matched
+#     dry signal, and Mix is clamped to 0-1.
+#   - FIXED: Time Stretch and Time Compress (and therefore the
+#     Slow Motion / Fast Forward presets) were swapped - Stretch
+#     was shortening audio, Compress was lengthening it. Formulas
+#     swapped; both are varispeed (pitch shifts with speed).
+#   - RENAMED: script and internal labels from "Waveset" to
+#     "Chunk" - no zero-crossing/waveset detection was ever
+#     implemented, only fixed-length slicing.
+#   - FIXED: stereo input is now split into real L/R channels
+#     instead of being downmixed to mono and duplicated; mono
+#     input is still decorrelated into synthetic stereo, and
+#     >2-channel input is downmixed with an explicit log message.
+#   - FIXED: inputs with a non-zero start time (xmin <> 0) are
+#     shifted to start at 0 internally before any chunking, mix,
+#     or drawing math that assumed a 0-based time axis.
+#   - FIXED: chunk boundaries now use a real equal-power crossfade
+#     (Concatenate with overlap) instead of independent Hann
+#     fade-to-zero on each chunk followed by a hard splice, which
+#     produced periodic gating rather than a smooth join.
+#   - FIXED: Stutter mode double-applied the Hann window to
+#     repeats 2..R of the very first chunk (window applied once
+#     to the master, then again to each copy). All repeats of all
+#     chunks are now windowed exactly once, from an unwindowed
+#     master copy.
+#   - FIXED: Bitcrush level count was labeled as "L levels" but
+#     actually produced roughly 2L+1 quantization steps. Comment
+#     and formula intent now match (levels counts steps per polarity).
+#   - ADDED: per-mode validation - Mix clamped 0-1, Fade_ms clamped
+#     >= 0, Stereo_spread clamped above -0.95, Bitcrush guarded
+#     against Amount = 0, Pumping guarded against a zero/singular
+#     gain, Ring Mod / Tremolo frequencies clamped below Nyquist,
+#     Chunk_ms floored to at least 2 samples and capped so a single
+#     run cannot spawn an unreasonable number of chunk objects.
+#   - RENAMED: "Sidechain Pump" preset to "Alternating Pump" - the
+#     effect alternates gain by chunk parity; it never used a
+#     sidechain signal, envelope follower, or transient detector.
+#   - Assembly rewritten to build the full ordered sequence and
+#     concatenate once per channel instead of looping Concatenate
+#     per chunk (was O(N^2), now O(N)).
 #
 # Changelog v1.7:
 #   - Audio pipeline UNCHANGED. Output is bit-identical to v1.6
@@ -63,7 +198,7 @@
 #   Select a Sound object and run this script.
 # ============================================================
 
-form Fast Waveset Distortion v1.7
+form Fast Chunk Distortion v1.9
     optionmenu Preset: 1
         option Custom
         option Glitch Stutter
@@ -72,7 +207,7 @@ form Fast Waveset Distortion v1.7
         option Random Shuffle
         option Slow Motion
         option Fast Forward
-        option Sidechain Pump
+        option Alternating Pump
         option Robot Voice
         option Lo-Fi Crush
         option Wobble Tremolo
@@ -81,8 +216,8 @@ form Fast Waveset Distortion v1.7
         option 2. Gaps (silence chunks)
         option 3. Reverse chunks
         option 4. Shuffle order
-        option 5. Time stretch
-        option 6. Time compress
+        option 5. Time stretch (slower, varispeed - pitch drops)
+        option 6. Time compress (faster, varispeed - pitch rises)
         option 7. Pumping (alt. volume)
         option 8. Ring modulator
         option 9. Bitcrush
@@ -147,13 +282,13 @@ elsif preset = 7
     stereo_spread = 0.1
     presetName$ = "FastForward"
 elsif preset = 8
-    # Sidechain Pump
+    # Alternating Pump (not a real sidechain/envelope-follower effect)
     mode = 7
     amount = 4.0
     chunk_ms = 125
     fade_ms = 10
     stereo_spread = 0.05
-    presetName$ = "SidechainPump"
+    presetName$ = "AlternatingPump"
 elsif preset = 9
     # Robot Voice
     mode = 8
@@ -187,14 +322,72 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Select a Sound object."
 endif
 
-original = selected("Sound")
+original_raw = selected("Sound")
 name$ = selected$("Sound")
 sr = Get sampling frequency
 dur = Get total duration
 n_channels = Get number of channels
 
+# Work on a copy shifted to start at t = 0 if the input's time domain
+# doesn't already start at 0. Every downstream chunk/mix/draw call in
+# this script assumes a 0-based time axis (0 -> duration).
+selectObject: original_raw
+xmin_orig = Get start time
+if xmin_orig <> 0
+    original = Copy: name$ + "_t0"
+    Shift times to: "start time", 0
+    appendInfoLine: "Note: input start time was ", fixed$(xmin_orig, 4), " s, not 0 - shifted internally for processing."
+else
+    original = original_raw
+endif
+
+selectObject: original
+dur = Get total duration
+
+# --- Clamp parameters that had no validation ---
+if mix < 0
+    mix = 0
+elsif mix > 1
+    mix = 1
+endif
+
+if fade_ms < 0
+    fade_ms = 0
+endif
+
+if stereo_spread <= -0.95
+    stereo_spread = -0.95
+endif
+
+# Floor chunk size to at least 2 samples, and if the resulting chunk
+# count would be unreasonably large, grow the chunk size instead of
+# letting the script spawn tens of thousands of Sound objects.
+min_chunk_ms = 1000 * 2 / sr
+if chunk_ms < min_chunk_ms
+    chunk_ms = min_chunk_ms
+endif
+
+# Stutter turns each SOURCE chunk into 2-8 temporary repeat copies
+# before assembly, so the object-count cap has to be checked against
+# (source chunks x repeats), not just source chunks, or Stutter can
+# still spawn up to 160,000 temporary Sound objects per channel.
+stutter_multiplier = 1
+if mode = 1
+    stutter_multiplier = max(2, min(8, round(amount)))
+endif
+
+max_chunks_allowed = 20000
+max_source_chunks_allowed = max(1, floor(max_chunks_allowed / stutter_multiplier))
+if dur / (chunk_ms / 1000) > max_source_chunks_allowed
+    chunk_ms = 1000 * dur / max_source_chunks_allowed
+    appendInfoLine: "Note: Chunk_ms was too small for this file's length (and mode); raised to ", fixed$(chunk_ms, 3), " ms to keep the total object count reasonable."
+endif
+
 # Ensure fade doesn't exceed half chunk
 fade_ms = min(fade_ms, chunk_ms / 2 - 1)
+if fade_ms < 0
+    fade_ms = 0
+endif
 fade_sec = fade_ms / 1000
 
 # Pre-compute chunk grid for display
@@ -216,10 +409,10 @@ elsif mode = 4
     modeDesc$ = "Chunks reordered randomly (ascending Fisher-Yates)"
 elsif mode = 5
     modeShort$ = "Stretch"
-    modeDesc$ = "Each chunk slowed by factor = max(1.1, amount/2) via SR override"
+    modeDesc$ = "Each chunk slowed (lengthened) by factor = max(1.1, amount/2), varispeed - pitch drops too"
 elsif mode = 6
     modeShort$ = "Compress"
-    modeDesc$ = "Each chunk sped up by factor = max(1.1, amount/2) via SR override"
+    modeDesc$ = "Each chunk sped up (shortened) by factor = max(1.1, amount/2), varispeed - pitch rises too"
 elsif mode = 7
     modeShort$ = "Pumping"
     modeDesc$ = "Alternating gain per chunk (odd = hi, even = lo)"
@@ -228,13 +421,13 @@ elsif mode = 8
     modeDesc$ = "Each chunk multiplied by sin(2pi*f*t), f = 50 + amount*80 Hz"
 elsif mode = 9
     modeShort$ = "Bitcrush"
-    modeDesc$ = "Per-chunk quantization to max(2, round(16/amount)) levels"
+    modeDesc$ = "Per-chunk quantization to max(2, round(16/amount)) steps per polarity (~2L+1 total values)"
 elsif mode = 10
     modeShort$ = "Tremolo"
     modeDesc$ = "Per-chunk tremolo at 2 + amount*3 Hz, depth min(0.9, amount*0.15)"
 endif
 
-writeInfoLine: "=== Fast Waveset Distortion v1.7 ==="
+writeInfoLine: "=== Fast Chunk Distortion v1.9 ==="
 appendInfoLine: "Input: ", name$, " | ", fixed$(dur, 2), "s | ", n_channels, " ch"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode: ", mode$
@@ -243,36 +436,112 @@ appendInfoLine: "Stereo spread: ", stereo_spread, " | Mix: ", fixed$(mix, 2)
 appendInfoLine: "Chunks: ", n_chunks_disp, " (", fixed$(chunk_sec_disp * 1000, 1), " ms each)"
 appendInfoLine: ""
 
-# === CONVERT TO MONO FOR PROCESSING ===
-selectObject: original
-mono = Convert to mono
-Rename: "mono_source"
+# === PREPARE L/R SOURCES ===
+# True stereo input: process the real L and R channels independently.
+# Mono input: decorrelate into a synthetic stereo pair (there is no
+# real second channel to draw from).
+# >2 channels: downmix to mono first (ambiguous otherwise), logged
+# explicitly so this isn't a silent surprise.
+if n_channels = 2
+    selectObject: original
+    left_source = Extract one channel: 1
+    Rename: "left_source"
+    selectObject: original
+    right_source = Extract one channel: 2
+    Rename: "right_source"
+    appendInfoLine: "Input is stereo - processing the real L and R channels independently."
+else
+    selectObject: original
+    source_mono = Convert to mono
+    Rename: "mono_source"
+    selectObject: source_mono
+    left_source = Copy: "left_source"
+    selectObject: source_mono
+    right_source = Copy: "right_source"
+    removeObject: source_mono
+    if n_channels = 1
+        appendInfoLine: "Input is mono - generating a decorrelated stereo output from the same source."
+    else
+        appendInfoLine: "Input has ", n_channels, " channels - downmixed to mono, then decorrelated into stereo."
+    endif
+endif
+
+# === STEREO WIDTH PARAMETERS ===
+# L and R now share the SAME chunk grid and the SAME structural
+# decisions (repeat count, gap period, chunk order, stretch factor) -
+# Stereo_spread no longer scales Amount or Chunk_ms per channel,
+# because that could desync L and R by seconds at extreme settings
+# (the old min-duration trim then silently deleted the difference).
+# Instead Stereo_spread drives three non-length-altering differences
+# applied to the R channel only: a phase offset (Ring Mod / Tremolo
+# modes), a small gain offset, and a short pre-delay (silence-padded,
+# not trimmed, so no content is lost).
+phase_offset_R = stereo_spread * pi * 0.5
+gain_R = 1 + stereo_spread * 0.15
+predelay_R_sec = abs(stereo_spread) * 0.004
 
 # === PROCESS LEFT CHANNEL ===
 appendInfoLine: "Processing LEFT channel..."
-selectObject: mono
-left_source = Copy: "left_source"
 
-amount_L = amount
-chunk_ms_L = chunk_ms
 tag$ = "L"
-
-@processAudio: left_source, mode, amount_L, chunk_ms_L, fade_sec, tag$
+@processAudio: left_source, mode, amount, chunk_ms, fade_sec, tag$, 0
 left_result = selected("Sound")
 
 # === PROCESS RIGHT CHANNEL ===
 appendInfoLine: "Processing RIGHT channel..."
-selectObject: mono
-right_source = Copy: "right_source"
 
-amount_R = amount * (1 + stereo_spread * 0.5)
-chunk_ms_R = chunk_ms * (1 + stereo_spread)
 tag$ = "R"
-
-@processAudio: right_source, mode, amount_R, chunk_ms_R, fade_sec, tag$
+@processAudio: right_source, mode, amount, chunk_ms, fade_sec, tag$, phase_offset_R
 right_result = selected("Sound")
 
+# Small gain offset on R for stereo width
+selectObject: right_result
+Formula: "self * gain_R"
+
+# Short R pre-delay: pad the FRONT of R with silence and the END of
+# L with an equal amount of silence, so both channels stay the same
+# final length without cutting any content from either one (the old
+# per-channel chunk-grid divergence used to trim real audio off the
+# end of whichever channel came out longer).
+if predelay_R_sec > 0
+    # Concatenate assembles objects in OBJECTS-WINDOW CREATION ORDER,
+    # not selection order. predelay_snd used to be created AFTER
+    # right_result already existed, so the real creation order was
+    # "right_result, then predelay_snd" and Concatenate silently
+    # built "right + silence" instead of the intended pre-delay
+    # "silence + right". Fix: create the silence first, then make a
+    # FRESH copy of the right-channel audio after it, so the copy's
+    # (later) creation order - not right_result's original, earlier
+    # one - is what Concatenate actually sees.
+    selectObject: right_result
+    r_sr = Get sampling frequency
+    r_channels = Get number of channels
+    predelay_snd = Create Sound from formula: "predelay", r_channels, 0, predelay_R_sec, r_sr, "0"
+    selectObject: right_result
+    right_copy_for_delay = Copy: "right_copy_for_delay"
+    selectObject: predelay_snd
+    plusObject: right_copy_for_delay
+    right_delayed = Concatenate
+    removeObject: predelay_snd, right_copy_for_delay, right_result
+    right_result = right_delayed
+    Rename: "right_result_delayed"
+
+    selectObject: left_result
+    l_sr = Get sampling frequency
+    l_channels = Get number of channels
+    posttail_snd = Create Sound from formula: "posttail", l_channels, 0, predelay_R_sec, l_sr, "0"
+    selectObject: left_result
+    plusObject: posttail_snd
+    left_padded = Concatenate
+    removeObject: posttail_snd, left_result
+    left_result = left_padded
+    Rename: "left_result_padded"
+endif
+
 # === MATCH DURATIONS ===
+# After sharing one chunk grid, L and R should already match almost
+# exactly; this only reconciles sub-sample/rounding differences
+# (e.g. from Stretch/Compress resampling), not structural ones.
 selectObject: left_result
 dur_L = Get total duration
 selectObject: right_result
@@ -295,38 +564,133 @@ if dur_R > min_dur
 endif
 
 # === COMBINE TO STEREO ===
+# Combine to stereo also goes by OBJECTS-WINDOW CREATION ORDER (top
+# = left channel), not selection order - and that order can already
+# have been scrambled by whichever of left_result/right_result
+# needed duration-trimming just above (only one side gets a fresh,
+# later-created object when the durations already matched). To
+# guarantee L->left and R->right no matter what happened upstream,
+# make fresh copies right here, in the exact order needed.
 selectObject: left_result
-plusObject: right_result
-stereo_result = Combine to stereo
-Rename: name$ + "_WSD_" + presetName$
+left_final = Copy: "left_final"
+selectObject: right_result
+right_final = Copy: "right_final"
+removeObject: left_result, right_result
 
-removeObject: left_result, right_result, mono
+selectObject: left_final
+plusObject: right_final
+stereo_result = Combine to stereo
+Rename: name$ + "_FCD_" + presetName$
+
+removeObject: left_final, right_final
 
 # === MIX WITH ORIGINAL ===
+# mix is already clamped to 0-1 in validation above.
 if mix < 1
     selectObject: stereo_result
+    result_sr = Get sampling frequency
     result_dur = Get total duration
-    
+
     selectObject: original
     if n_channels = 1
         orig_stereo = Convert to stereo
-    else
+    elsif n_channels = 2
         orig_stereo = Copy: "orig_stereo"
+    else
+        # >2 channels: match the WET path's treatment exactly -
+        # downmix to mono, then decorrelate into stereo - instead of
+        # the Formula step below silently reading only the raw first
+        # two channels of "original" (channels the wet signal never
+        # actually used, since wet was built from the full downmix).
+        selectObject: original
+        orig_mono_dry = Convert to mono
+        selectObject: orig_mono_dry
+        orig_stereo = Convert to stereo
+        removeObject: orig_mono_dry
     endif
-    
-    orig_dur = Get total duration
-    use_dur = min(result_dur, orig_dur)
-    
-    if orig_dur > use_dur
-        orig_part = Extract part: 0, use_dur, "rectangular", 1, "no"
+
+    # Match sampling rate to the wet result before touching length,
+    # so row/col indices line up between the two objects.
+    orig_sr = Get sampling frequency
+    if orig_sr <> result_sr
+        orig_resampled = Resample: result_sr, 50
         removeObject: orig_stereo
-        orig_stereo = orig_part
+        orig_stereo = orig_resampled
     endif
-    
+
+    orig_dur = Get total duration
+    use_dur = max(result_dur, orig_dur)
+
+    # Pad the SHORTER side with trailing silence instead of trimming
+    # the longer one. The old code trimmed both sides down to
+    # min(result_dur, orig_dur), so Mix = 1.00 kept the full extended
+    # wet result (e.g. after Stutter/Stretch) while ANY Mix < 1
+    # abruptly cut it back to the dry source length - a sharp,
+    # audible discontinuity right at the Mix = 1 boundary. Padding
+    # instead means: wherever the padded side is silence, that side
+    # contributes 0 to the mix, so the tail of whichever signal is
+    # actually longer is naturally scaled by its own mix weight
+    # (self * mix, or dry * (1 - mix)) rather than deleted outright.
+    if result_dur < use_dur - 0.0001
+        pad_dur = use_dur - result_dur
+        selectObject: stereo_result
+        pad_sr = Get sampling frequency
+        pad_ch = Get number of channels
+        silence_wet = Create Sound from formula: "silence_wet", pad_ch, 0, pad_dur, pad_sr, "0"
+        selectObject: stereo_result
+        plusObject: silence_wet
+        stereo_padded = Concatenate
+        removeObject: stereo_result, silence_wet
+        stereo_result = stereo_padded
+        Rename: "wet_padded"
+    endif
+
+    if orig_dur < use_dur - 0.0001
+        pad_dur = use_dur - orig_dur
+        selectObject: orig_stereo
+        pad_sr = Get sampling frequency
+        pad_ch = Get number of channels
+        silence_dry = Create Sound from formula: "silence_dry", pad_ch, 0, pad_dur, pad_sr, "0"
+        selectObject: orig_stereo
+        plusObject: silence_dry
+        orig_padded = Concatenate
+        removeObject: orig_stereo, silence_dry
+        orig_stereo = orig_padded
+        Rename: "dry_padded"
+    endif
+
+    # Two independent builds can still differ by a sample due to
+    # rounding - force an exact common sample count before indexing
+    # (this trim is sub-millisecond, not a structural truncation).
+    selectObject: stereo_result
+    nx_result = Get number of samples
+    selectObject: orig_stereo
+    nx_orig = Get number of samples
+
+    if nx_orig <> nx_result
+        nx_common = min(nx_orig, nx_result)
+        common_dur = nx_common / result_sr
+        if nx_result > nx_common
+            selectObject: stereo_result
+            stereo_trimmed = Extract part: 0, common_dur, "rectangular", 1, "no"
+            removeObject: stereo_result
+            stereo_result = stereo_trimmed
+        endif
+        if nx_orig > nx_common
+            selectObject: orig_stereo
+            orig_trimmed = Extract part: 0, common_dur, "rectangular", 1, "no"
+            removeObject: orig_stereo
+            orig_stereo = orig_trimmed
+        endif
+    endif
+
+    # [] means index by (row, col) in Praat, not by (time, channel).
+    # row = channel, col = sample number; using the old (x, y) time/
+    # channel values here read the wrong data or crashed outright.
     selectObject: stereo_result
     orig_str$ = string$(orig_stereo)
-    Formula: "self * mix + object[" + orig_str$ + ", x, y] * (1 - mix)"
-    
+    Formula: "self * mix + object[" + orig_str$ + ", row, col] * (1 - mix)"
+
     removeObject: orig_stereo
 endif
 
@@ -335,6 +699,13 @@ selectObject: stereo_result
 if normalize_output
     Scale peak: 0.95
 endif
+
+# stereo_result may carry an intermediate name (e.g. "wet_padded" or
+# "dry_padded") left over from the Mix<1 padding/trimming steps
+# above - restore the documented "<name>_FCD_<preset>" output name
+# now that this object is final, so the promised name is never lost.
+selectObject: stereo_result
+Rename: name$ + "_FCD_" + presetName$
 
 output = stereo_result
 final_dur = Get total duration
@@ -356,7 +727,7 @@ if show_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##FAST WAVESET DISTORTION##"
+    Text: 0.5, "centre", 0.68, "half", "##FAST CHUNK DISTORTION##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -449,7 +820,7 @@ if show_visualization
     Colour: "{0.70, 0.45, 0.20}"
     Text: 0.10, "left", 0.59, "half", string$(n_chunks_disp) + " chunks"
     Text: 0.10, "left", 0.52, "half", "Size: " + fixed$(chunk_ms, 0) + " ms (" + fixed$(chunk_sec_disp * 1000, 1) + " ms)"
-    Text: 0.10, "left", 0.45, "half", "Fade: " + fixed$(fade_ms, 1) + " ms (Hann)"
+    Text: 0.10, "left", 0.45, "half", "Fade: " + fixed$(fade_ms, 1) + " ms (raised-cosine)"
     
     Font size: 9
     Colour: "{0.30, 0.30, 0.30}"
@@ -659,51 +1030,66 @@ if show_visualization
     Line width: 1
 endif
 
+# original was a t=0-shifted working copy, not the user's own object
+if original <> original_raw
+    removeObject: original
+endif
+
 selectObject: output
 
 appendInfoLine: ""
 appendInfoLine: "Original: ", fixed$(dur, 2), "s (", n_channels, " ch)"
 appendInfoLine: "Output:   ", fixed$(final_dur, 2), "s (stereo)"
 appendInfoLine: ""
-appendInfoLine: "Done! -> ", name$, "_WSD_", presetName$
-
-# ============================================================
-# APPLY HANN WINDOW FADES TO CHUNK
-# ============================================================
-procedure applyWindow: .snd, .fade_sec
-    selectObject: .snd
-    .chunk_dur = Get total duration
-    
-    if .fade_sec > 0 and .fade_sec < .chunk_dur / 2
-        # Fade in: Hann window rise (0 to 1)
-        Formula (part): 0, .fade_sec, 1, 1, "self * (0.5 - 0.5 * cos(pi * x / .fade_sec))"
-        
-        # Fade out: Hann window fall (1 to 0)
-        .fade_start = .chunk_dur - .fade_sec
-        Formula (part): .fade_start, .chunk_dur, 1, 1, "self * (0.5 + 0.5 * cos(pi * (x - .fade_start) / .fade_sec))"
-    endif
-endproc
+appendInfoLine: "Done! -> ", name$, "_FCD_", presetName$
 
 # ============================================================
 # MAIN PROCESSING PROCEDURE
-# Uses script-level (global) variables chunk[], order[], result,
-# and n_chunks for inter-procedure communication. This is safe
-# for the two-call flow used by this script (L then R) — each
-# call overwrites entries 1..n_chunks and removes them before
-# returning. Fragile if extended.
+# Uses script-level (global) variables chunk[], seq[], order[],
+# result, and n_chunks for inter-procedure communication. This is
+# safe for the two-call flow used by this script (L then R) — each
+# call overwrites entries with its own IDs and removes them before
+# returning. Fragile if extended to more than two calls per session.
+#
+# Every mode builds seq[1..n_seq]: the ordered list of Sound IDs to
+# assemble. Assembly then selects that whole list once and calls
+# Concatenate (with overlap) exactly one time - O(N), and a real
+# raised-cosine crossfade at each boundary instead of independent
+# fade-to-zero windows butt-spliced together.
+#
+# .phase_offset (radians) is added inside the Ring Mod / Tremolo
+# formulas only, so the L and R calls can share one carrier/rate and
+# still differ in stereo width without diverging in chunk grid,
+# repeat count, or length.
 # ============================================================
-procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$
+procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$, .phase_offset
     selectObject: .source
     .sr = Get sampling frequency
     .dur = Get total duration
+    .nyquist = .sr / 2 - 1
     
     .chunk_sec = .chunk_ms / 1000
     .n_chunks = ceiling(.dur / .chunk_sec)
     
+    # A trailing remainder shorter than half a chunk is merged into
+    # the previous chunk instead of becoming its own tiny chunk: a
+    # very short last member would otherwise force the single-pass
+    # overlap down to ~40% of ITS OWN duration for the whole
+    # sequence (see .overlap below), silently shrinking the
+    # requested Fade_ms everywhere, not just at the last boundary.
+    .last_chunk_sec = .dur - (.n_chunks - 1) * .chunk_sec
+    if .n_chunks > 1 and .last_chunk_sec < .chunk_sec * 0.5
+        .n_chunks = .n_chunks - 1
+    endif
+    
     # Extract chunks into GLOBAL array
     for c from 1 to .n_chunks
         .t1 = (c - 1) * .chunk_sec
-        .t2 = min(c * .chunk_sec, .dur)
+        if c = .n_chunks
+            .t2 = .dur
+        else
+            .t2 = c * .chunk_sec
+        endif
         
         if .t2 > .t1
             selectObject: .source
@@ -715,32 +1101,22 @@ procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$
     endfor
     
     n_chunks = .n_chunks
+    .n_seq = 0
     
-    # Process by mode
+    # Process by mode - each branch fills seq[1..n_seq] with the
+    # ordered Sound IDs to assemble.
     if .mode = 1
-        # STUTTER
+        # STUTTER - each chunk repeated .reps times with decay.
+        # Repeats are no longer separately Hann-windowed here: the
+        # single-pass Concatenate with overlap below already
+        # crossfades every boundary in the assembled sequence,
+        # including between repeats of the same chunk. Windowing
+        # each repeat AND crossfading it produced a stacked fade
+        # (~-6 dB dip) at every repeat boundary.
         .reps = max(2, min(8, round(.amount)))
         
-        selectObject: chunk[1]
-        @applyWindow: chunk[1], .fade_sec
-        result = Copy: "result_" + .tag$
-        
-        for .r from 2 to .reps
-            selectObject: chunk[1]
-            .temp = Copy: "temp"
-            .decay = 0.85 ^ (.r - 1)
-            Formula: "self * .decay"
-            @applyWindow: .temp, .fade_sec
-            selectObject: result
-            plusObject: .temp
-            .new_result = Concatenate
-            removeObject: result, .temp
-            result = .new_result
-        endfor
-        
-        for c from 2 to n_chunks
+        for c from 1 to n_chunks
             if chunk[c] <> 0
-                @applyWindow: chunk[c], .fade_sec
                 for .r from 1 to .reps
                     selectObject: chunk[c]
                     .temp = Copy: "temp"
@@ -748,17 +1124,23 @@ procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$
                         .decay = 0.85 ^ (.r - 1)
                         Formula: "self * .decay"
                     endif
-                    selectObject: result
-                    plusObject: .temp
-                    .new_result = Concatenate
-                    removeObject: result, .temp
-                    result = .new_result
+                    .n_seq = .n_seq + 1
+                    seq[.n_seq] = .temp
                 endfor
             endif
         endfor
         
+        # Masters were only ever copied from, never used directly -
+        # free them now so they don't leak.
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                removeObject: chunk[c]
+                chunk[c] = 0
+            endif
+        endfor
+        
     elsif .mode = 2
-        # GAPS
+        # GAPS - every Nth chunk silenced in place, others untouched
         .skip_n = max(2, round(.amount))
         
         for c from 1 to n_chunks
@@ -766,85 +1148,113 @@ procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$
                 if c mod .skip_n = 0
                     selectObject: chunk[c]
                     Formula: "0"
-                else
-                    @applyWindow: chunk[c], .fade_sec
                 endif
-            endif
-        endfor
-        
-        selectObject: chunk[1]
-        result = Copy: "result_" + .tag$
-        for c from 2 to n_chunks
-            if chunk[c] <> 0
-                selectObject: result
-                plusObject: chunk[c]
-                .new_result = Concatenate
-                removeObject: result
-                result = .new_result
+                .n_seq = .n_seq + 1
+                seq[.n_seq] = chunk[c]
             endif
         endfor
         
     elsif .mode = 3
-        # REVERSE
+        # REVERSE - each chunk reversed, chunk order preserved
         for c from 1 to n_chunks
             if chunk[c] <> 0
                 selectObject: chunk[c]
                 Reverse
-                @applyWindow: chunk[c], .fade_sec
-            endif
-        endfor
-        
-        selectObject: chunk[1]
-        result = Copy: "result_" + .tag$
-        for c from 2 to n_chunks
-            if chunk[c] <> 0
-                selectObject: result
-                plusObject: chunk[c]
-                .new_result = Concatenate
-                removeObject: result
-                result = .new_result
+                .n_seq = .n_seq + 1
+                seq[.n_seq] = chunk[c]
             endif
         endfor
         
     elsif .mode = 4
-        # SHUFFLE
-        for c from 1 to n_chunks
-            order[c] = c
-        endfor
-        # Ascending Fisher-Yates (Praat for-loops only increment)
-        for c from 1 to n_chunks - 1
-            .j = randomInteger(c, n_chunks)
-            .tmp = order[c]
-            order[c] = order[.j]
-            order[.j] = .tmp
-        endfor
+        # SHUFFLE - L and R must share the SAME chunk order (see the
+        # "Both channels share the same chunk order and structural
+        # decisions" contract above). processAudio is called once per
+        # channel, and a fresh randomInteger() draw per call would
+        # give L and R independent orders, desyncing the stereo image
+        # chunk-by-chunk. L is always processed before R (see the
+        # PROCESS LEFT/RIGHT CHANNEL calls), so: generate the order
+        # once during the L call and stash it in a GLOBAL array;
+        # during the R call, reuse that same array instead of drawing
+        # new random numbers.
+        if .tag$ = "L"
+            for c from 1 to n_chunks
+                order[c] = c
+            endfor
+            # Ascending Fisher-Yates (Praat for-loops only increment)
+            for c from 1 to n_chunks - 1
+                .j = randomInteger(c, n_chunks)
+                .tmp = order[c]
+                order[c] = order[.j]
+                order[.j] = .tmp
+            endfor
+            for c from 1 to n_chunks
+                sharedShuffleOrder[c] = order[c]
+            endfor
+        else
+            for c from 1 to n_chunks
+                order[c] = sharedShuffleOrder[c]
+            endfor
+        endif
         
-        # Apply windows to all chunks
+        # Concatenate (and Concatenate with overlap) assemble objects
+        # in their Objects-window CREATION order, not selection
+        # order - so just pointing seq[] at the existing chunk[]
+        # objects in shuffled index order has no audible effect,
+        # since those objects were all created in original 1..N
+        # order. Instead, make a fresh copy of each chunk AT THE
+        # POINT it's added to seq[], so the copies' creation order
+        # matches the shuffled sequence order, then free the
+        # now-unused originals.
         for c from 1 to n_chunks
-            if chunk[c] <> 0
-                @applyWindow: chunk[c], .fade_sec
+            .idx = order[c]
+            if chunk[.idx] <> 0
+                selectObject: chunk[.idx]
+                .shuffled_copy = Copy: "chunk_" + .tag$ + "_shuf_" + string$(c)
+                .n_seq = .n_seq + 1
+                seq[.n_seq] = .shuffled_copy
             endif
         endfor
         
-        .first_idx = order[1]
-        if chunk[.first_idx] <> 0
-            selectObject: chunk[.first_idx]
-            result = Copy: "result_" + .tag$
-        endif
-        
-        for c from 2 to n_chunks
-            .idx = order[c]
-            if chunk[.idx] <> 0
-                selectObject: result
-                plusObject: chunk[.idx]
-                .new_result = Concatenate
-                removeObject: result
-                result = .new_result
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                removeObject: chunk[c]
+                chunk[c] = 0
             endif
         endfor
         
     elsif .mode = 5
-        # STRETCH
+        # STRETCH - slow down / lengthen (varispeed, pitch drops).
+        # Resample UP then override the sampling frequency back down
+        # to the original chunk rate: playing more samples at the
+        # original rate takes longer. (v1.7 had this backwards - it
+        # used chunk_sr / factor here, which shortens the chunk.)
+        .factor = max(1.1, .amount / 2)
+        
+        for c from 1 to n_chunks
+            if chunk[c] <> 0
+                selectObject: chunk[c]
+                .chunk_sr = Get sampling frequency
+                .new_sr = .chunk_sr * .factor
+                if .new_sr <= 192000
+                    Resample: .new_sr, 50
+                    .new_chunk = selected("Sound")
+                    removeObject: chunk[c]
+                    selectObject: .new_chunk
+                    Override sampling frequency: .chunk_sr
+                    chunk[c] = .new_chunk
+                    Rename: "chunk_" + .tag$ + "_" + string$(c)
+                endif
+                .n_seq = .n_seq + 1
+                seq[.n_seq] = chunk[c]
+            endif
+        endfor
+        
+    elsif .mode = 6
+        # COMPRESS - speed up / shorten (varispeed, pitch rises).
+        # Resample DOWN then override back up: fewer samples played
+        # at the original rate takes less time. (v1.7 had this
+        # backwards - it used chunk_sr * factor here, which lengthens
+        # the chunk.)
         .factor = max(1.1, .amount / 2)
         
         for c from 1 to n_chunks
@@ -861,59 +1271,21 @@ procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$
                     chunk[c] = .new_chunk
                     Rename: "chunk_" + .tag$ + "_" + string$(c)
                 endif
-                @applyWindow: chunk[c], .fade_sec
-            endif
-        endfor
-        
-        selectObject: chunk[1]
-        result = Copy: "result_" + .tag$
-        for c from 2 to n_chunks
-            if chunk[c] <> 0
-                selectObject: result
-                plusObject: chunk[c]
-                .new_result = Concatenate
-                removeObject: result
-                result = .new_result
-            endif
-        endfor
-        
-    elsif .mode = 6
-        # COMPRESS
-        .factor = max(1.1, .amount / 2)
-        
-        for c from 1 to n_chunks
-            if chunk[c] <> 0
-                selectObject: chunk[c]
-                .chunk_sr = Get sampling frequency
-                .new_sr = .chunk_sr * .factor
-                if .new_sr <= 96000
-                    Resample: .new_sr, 50
-                    .new_chunk = selected("Sound")
-                    removeObject: chunk[c]
-                    selectObject: .new_chunk
-                    Override sampling frequency: .chunk_sr
-                    chunk[c] = .new_chunk
-                    Rename: "chunk_" + .tag$ + "_" + string$(c)
-                endif
-                @applyWindow: chunk[c], .fade_sec
-            endif
-        endfor
-        
-        selectObject: chunk[1]
-        result = Copy: "result_" + .tag$
-        for c from 2 to n_chunks
-            if chunk[c] <> 0
-                selectObject: result
-                plusObject: chunk[c]
-                .new_result = Concatenate
-                removeObject: result
-                result = .new_result
+                .n_seq = .n_seq + 1
+                seq[.n_seq] = chunk[c]
             endif
         endfor
         
     elsif .mode = 7
-        # PUMPING
-        .gain_hi = 1 + (.amount - 1) * 0.5
+        # PUMPING - alternating gain by chunk parity. Built from
+        # abs(.amount) so a negative Amount changes magnitude only,
+        # never sign: the old formula let gain_hi go negative at
+        # negative Amount, which flips polarity every other chunk
+        # (an inversion) rather than just a volume change.
+        .gain_hi = 1 + (abs(.amount) - 1) * 0.5
+        if .gain_hi < 0.05
+            .gain_hi = 0.05
+        endif
         .gain_lo = 1 / .gain_hi
         
         for c from 1 to n_chunks
@@ -924,101 +1296,139 @@ procedure processAudio: .source, .mode, .amount, .chunk_ms, .fade_sec, .tag$
                 else
                     Formula: "self * .gain_lo"
                 endif
-                @applyWindow: chunk[c], .fade_sec
-            endif
-        endfor
-        
-        selectObject: chunk[1]
-        result = Copy: "result_" + .tag$
-        for c from 2 to n_chunks
-            if chunk[c] <> 0
-                selectObject: result
-                plusObject: chunk[c]
-                .new_result = Concatenate
-                removeObject: result
-                result = .new_result
+                .n_seq = .n_seq + 1
+                seq[.n_seq] = chunk[c]
             endif
         endfor
         
     elsif .mode = 8
-        # RING MOD
+        # RING MOD - carrier clamped to 0..Nyquist (a negative
+        # Amount used to be able to push the carrier below 0 Hz;
+        # harmless for sin() but not a meaningful frequency, so it's
+        # clamped for clarity). .phase_offset gives L/R stereo width
+        # without changing chunk grid, repeat count, or length.
         .ring_freq = 50 + .amount * 80
+        if .ring_freq > .nyquist
+            .ring_freq = .nyquist
+        endif
+        if .ring_freq < 0
+            .ring_freq = 0
+        endif
         
         for c from 1 to n_chunks
             if chunk[c] <> 0
                 selectObject: chunk[c]
-                Formula: "self * sin(2 * pi * .ring_freq * x)"
-                @applyWindow: chunk[c], .fade_sec
-            endif
-        endfor
-        
-        selectObject: chunk[1]
-        result = Copy: "result_" + .tag$
-        for c from 2 to n_chunks
-            if chunk[c] <> 0
-                selectObject: result
-                plusObject: chunk[c]
-                .new_result = Concatenate
-                removeObject: result
-                result = .new_result
+                Formula: "self * sin(2 * pi * .ring_freq * x + .phase_offset)"
+                .n_seq = .n_seq + 1
+                seq[.n_seq] = chunk[c]
             endif
         endfor
         
     elsif .mode = 9
-        # BITCRUSH
-        .levels = max(2, round(16 / .amount))
+        # BITCRUSH - guarded against Amount = 0 (division by zero).
+        # .levels is the number of steps per polarity: the actual
+        # quantized value count is roughly 2*.levels + 1 (it spans
+        # both the positive and negative half of the signal, plus
+        # zero), not .levels as the old label implied.
+        .safe_amount = .amount
+        if .safe_amount = 0
+            .safe_amount = 0.01
+        endif
+        .levels = max(2, round(16 / abs(.safe_amount)))
         
         for c from 1 to n_chunks
             if chunk[c] <> 0
                 selectObject: chunk[c]
                 Formula: "round(self * .levels) / .levels"
-                @applyWindow: chunk[c], .fade_sec
-            endif
-        endfor
-        
-        selectObject: chunk[1]
-        result = Copy: "result_" + .tag$
-        for c from 2 to n_chunks
-            if chunk[c] <> 0
-                selectObject: result
-                plusObject: chunk[c]
-                .new_result = Concatenate
-                removeObject: result
-                result = .new_result
+                .n_seq = .n_seq + 1
+                seq[.n_seq] = chunk[c]
             endif
         endfor
         
     elsif .mode = 10
-        # TREMOLO
+        # TREMOLO - rate clamped to 0..Nyquist, depth clamped to
+        # 0..0.9. The old depth formula (min(0.9, amount*0.15)) let
+        # a negative Amount push depth negative, which turns the
+        # (1 - depth * ...) attenuation term into periodic
+        # AMPLIFICATION instead of tremolo. .phase_offset gives L/R
+        # stereo width without changing chunk grid or length.
         .trem_freq = 2 + .amount * 3
+        if .trem_freq > .nyquist
+            .trem_freq = .nyquist
+        endif
+        if .trem_freq < 0
+            .trem_freq = 0
+        endif
         .trem_depth = min(0.9, .amount * 0.15)
+        if .trem_depth < 0
+            .trem_depth = 0
+        endif
         
         for c from 1 to n_chunks
             if chunk[c] <> 0
                 selectObject: chunk[c]
-                Formula: "self * (1 - .trem_depth * (0.5 + 0.5 * sin(2 * pi * .trem_freq * x)))"
-                @applyWindow: chunk[c], .fade_sec
-            endif
-        endfor
-        
-        selectObject: chunk[1]
-        result = Copy: "result_" + .tag$
-        for c from 2 to n_chunks
-            if chunk[c] <> 0
-                selectObject: result
-                plusObject: chunk[c]
-                .new_result = Concatenate
-                removeObject: result
-                result = .new_result
+                Formula: "self * (1 - .trem_depth * (0.5 + 0.5 * sin(2 * pi * .trem_freq * x + .phase_offset)))"
+                .n_seq = .n_seq + 1
+                seq[.n_seq] = chunk[c]
             endif
         endfor
     endif
     
-    # Cleanup chunks
-    for c from 1 to n_chunks
-        if chunk[c] <> 0
-            removeObject: chunk[c]
+    # === SINGLE-PASS ASSEMBLY ===
+    # Select the whole ordered sequence and concatenate once (O(N),
+    # not the old per-chunk Concatenate loop, which was O(N^2)).
+    # Concatenate with overlap crossfades each boundary with a
+    # raised-cosine curve instead of relying on fade-to-zero windows
+    # meeting at a hard splice.
+    
+    # Guard the overlap time against the shortest member of the
+    # sequence, since post-effect chunk durations vary (Stretch/
+    # Compress change length). A short trailing remainder chunk is
+    # already merged into the previous chunk above so it can no
+    # longer be the culprit here, but Stretch/Compress or an
+    # unusually short source can still produce a short member.
+    .min_seq_dur = 1000000
+    for .i from 1 to .n_seq
+        selectObject: seq[.i]
+        .d = Get total duration
+        if .d < .min_seq_dur
+            .min_seq_dur = .d
         endif
+    endfor
+    
+    .overlap = .fade_sec
+    if .overlap > .min_seq_dur * 0.4
+        .overlap = .min_seq_dur * 0.4
+    endif
+    if .overlap < 0
+        .overlap = 0
+    endif
+    
+    if .overlap < .fade_sec - 0.0001
+        appendInfoLine: "Note (", .tag$, "): requested fade ", fixed$(.fade_sec * 1000, 2), " ms reduced to effective overlap ", fixed$(.overlap * 1000, 2), " ms (limited by the shortest segment in the sequence)."
+    endif
+    
+    if .n_seq = 1
+        selectObject: seq[1]
+        result = Copy: "result_" + .tag$
+    else
+        selectObject: seq[1]
+        for .i from 2 to .n_seq
+            plusObject: seq[.i]
+        endfor
+        if .overlap > 0
+            result = Concatenate with overlap: .overlap
+        else
+            result = Concatenate
+        endif
+        Rename: "result_" + .tag$
+    endif
+    
+    # Cleanup the sequence objects (this also covers chunk[] entries
+    # that were reused directly in seq[], for every mode except
+    # Stutter, whose masters were already freed above)
+    for .i from 1 to .n_seq
+        removeObject: seq[.i]
     endfor
     
     removeObject: .source
