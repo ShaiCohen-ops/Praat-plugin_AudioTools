@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,117 @@
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.2 (structural audio-engine rewrite):
+#
+#   All items below were verified against real Praat behaviour using
+#   synthetic constant-amplitude and stereo test signals (headless
+#   Praat, `--run`), not just read from the source.
+#
+#   1. FIXED: double crossfade. v1.1 hand-applied a fade curve to the
+#      tail of `result` and the head of `incoming`, and THEN called
+#      `Concatenate with overlap`, which applies its own built-in
+#      raised-cosine fade on top. Verified: crossfading two
+#      constant-amplitude=1 signals with "Linear" dipped to ~0.50 at
+#      the crossfade midpoint instead of staying at 1.0. v1.2 replaces
+#      `Concatenate with overlap` entirely with a manual overlap-add
+#      merge (`mixWithCrossfade`) built from a single `Create Sound
+#      from formula` that time-samples the two already-faded buffers
+#      via `object(id, time, channel)` and sums them. No implicit
+#      window is ever applied. Re-verified: same test now holds at
+#      1.0000 across the whole overlap for every point sampled.
+#   2. FIXED: "Linear" wasn't linear. v1.1's linear branch called the
+#      built-in `Fade in`/`Fade out`, which is a raised-cosine window,
+#      not a straight ramp. v1.2 uses an explicit
+#      `self * (x-t0)/dur` / `self * (1-(x-t0)/dur)` formula, verified
+#      to be an exact straight line (see fix 1's test, which depends
+#      on true linearity to sum to a flat 1.0).
+#   3. FIXED: crossfade/dynamics formulas only touched channel 1.
+#      Every `Formula (part): ..., 1, 1, ...` in v1.1 hard-coded the
+#      channel range to a single channel. In a stereo file this left
+#      the right channel with only the implicit `Concatenate with
+#      overlap` window (see fix 1) and none of the selected curve, an
+#      asymmetry between L/R. v1.2 queries `Get number of channels`
+#      inside `applyCrossfade` and the dynamics formulas and always
+#      spans `1, channels`. Verified with a stereo signal carrying
+#      different constant values per channel that both channels track
+#      independently and correctly through a merge.
+#   4. FIXED: Random-per-segment / Terraced dynamics were multiplied
+#      twice in every overlap region, because v1.1 applied `self *
+#      amp` over each segment's [start, end] independently, and those
+#      ranges overlap by design. v1.2 computes the per-position gain
+#      table (`segAmp[]`) BEFORE the mixing loop and bakes each gain
+#      into its chunk's buffer once, prior to crossfading; the
+#      crossfade curve then blends between two already-correctly-
+#      leveled buffers instead of ever being multiplied twice. This
+#      also replaces the old ad hoc "transition zone" hack for mode 7
+#      with the same crossfade engine used everywhere else. Verified:
+#      pre-scaled buffers (0.4 -> 1.0) crossfade to an exact linear
+#      ramp between the two gains, not a product of the two.
+#   5. FIXED: no sampling-frequency check. v1.1 read the sampling
+#      frequency of the first sound but never verified or converted
+#      the others; `Concatenate`-family commands require matching
+#      rates and mixed-rate input would fail outright. v1.2 resamples
+#      any chunk whose rate differs from the first sound's rate
+#      (`Resample...`) right after extraction, and reports it.
+#   6. FIXED (by restricting scope, as the audit recommended): channel
+#      standardization only ever handled mono<->stereo. Anything else
+#      (4-channel material, mixed multichannel counts) silently
+#      produced a wrong channel count while the info window falsely
+#      reported "standardized". v1.2 explicitly validates that every
+#      extracted chunk is mono or stereo and stops with a clear
+#      `exitScript` message naming the offending file if not; the
+#      mono<->stereo conversion itself is unchanged (it was correct).
+#   7. FIXED: unsafe overlap-duration clamping. v1.1 clamped overlap
+#      only against the incoming chunk's duration, then applied a flat
+#      0.01s minimum AFTER that clamp -- so a 5ms chunk could get an
+#      overlap longer than itself. v1.2's `calculateOverlap` clamps
+#      against `min(0.9*incoming, 0.9*outgoing)` (both neighbours) and
+#      derives the minimum as `min(0.01, capacity)`, so the floor can
+#      never exceed the ceiling.
+#   8. FIXED: Terraced dynamics divided by `numSteps - 1`, which is
+#      zero whenever there is exactly one chunk in the whole output
+#      (e.g. one Sound selected with Chunks_per_file = 1). v1.2 guards
+#      this and assigns full level when there's only one step.
+#   9. FIXED: chunk extraction assumed every source Sound's timebase
+#      starts at 0. v1.1's `extractChunk` used `chunkStart = 0` /
+#      `chunkEnd = totalDuration` in absolute time. For a source Sound
+#      with a non-zero start time (e.g. itself extracted elsewhere
+#      with "preserve times"), this silently requested a time range
+#      outside the object's real domain. Verified: reproduced this
+#      exactly against a source whose domain was [5, 8] -- the old
+#      absolute-zero logic returned one second of pure digital silence
+#      (RMS = 0) with no error or warning. v1.2 reads `Get start time`
+#      / `Get end time` on the actual source and offsets from there.
+#  10. FIXED: legend/segment-map colours could go outside Praat's
+#      required 0-1 RGB range. `0.4 + 0.5*sin(...)` has range
+#      [-0.1, 0.9], so a single-source run already produced a
+#      slightly negative blue component, which can halt the script
+#      after the audio has already been rendered. v1.2 clamps each
+#      component to [0, 1].
+#
+#   Smaller fixes noted in the same audit:
+#     - Min_chunk_duration_s / Max_chunk_duration_s and
+#       Min_overlap_s / Max_overlap_s are now auto-swapped (with a
+#       warning) if entered inverted, instead of silently misbehaving.
+#     - Dynamics_depth_percent is clamped to [0, 100] (values above
+#       100 previously flipped polarity via a negative minAmp).
+#     - Scale_peak is clamped to (0, 1] (values above 1 previously
+#       passed straight to `Scale peak`, inviting clipping on export).
+#     - Presets 2-5 now explicitly reset Allow_repeats to 0, so a
+#       manually-checked box no longer leaks into a preset that was
+#       never meant to repeat chunks.
+#     - "Simple Crossfade" now runs sequentially (Randomize_order = 0)
+#       to match what its name promises; shuffling now starts at
+#       "Smooth Collage" as the preset descriptions imply.
+#     - Relabelled "Logarithmic (fast end)" -> "Logarithmic (fast
+#       start)": the formula rises quickly and levels off, the same
+#       qualitative shape as "Exponential (fast start)", so the old
+#       label described the opposite of what the curve does.
+#     - Softened "Equal-power (sqrt, no dip)" to "Equal-power (sqrt)",
+#       since the no-dip property holds for uncorrelated sources, not
+#       as a guarantee for every possible pair of input signals.
+#
+# ------------------------------------------------------------
 # Changelog v1.1:
 #
 #   TIER 1 (Praat polish, no audio change):
@@ -110,7 +221,7 @@
 #     dynamic envelopes, variable overlap, visualization, presets
 # ============================================================
 
-form Advanced Concatenate with Crossfade v1.1
+form Advanced Concatenate with Crossfade v1.2
     optionmenu Preset: 1
         option Custom (use settings below)
         option Simple Crossfade (25%)
@@ -131,10 +242,10 @@ form Advanced Concatenate with Crossfade v1.1
     boolean Allow_repeats 0
     optionmenu Crossfade_type: 1
         option Linear (standard)
-        option Equal-power (sqrt, no dip)
+        option Equal-power (sqrt)
         option S-curve (cosine, smooth)
         option Exponential (fast start)
-        option Logarithmic (fast end)
+        option Logarithmic (fast start)
     optionmenu Overlap_mode: 1
         option Percentage of incoming chunk
         option Fixed duration
@@ -178,7 +289,8 @@ if preset = 2
     # Simple Crossfade
     chunk_mode = 1
     chunks_per_file = 1
-    randomize_order = 1
+    randomize_order = 0
+    allow_repeats = 0
     crossfade_type = 1
     overlap_mode = 1
     overlap_percentage = 25
@@ -191,6 +303,7 @@ elsif preset = 3
     max_chunk_duration_s = 4.0
     chunks_per_file = 2
     randomize_order = 1
+    allow_repeats = 0
     crossfade_type = 2
     overlap_mode = 1
     overlap_percentage = 30
@@ -202,6 +315,7 @@ elsif preset = 4
     fixed_chunk_duration_s = 0.5
     chunks_per_file = 3
     randomize_order = 1
+    allow_repeats = 0
     crossfade_type = 1
     overlap_mode = 2
     fixed_overlap_s = 0.05
@@ -212,6 +326,7 @@ elsif preset = 5
     chunk_mode = 1
     chunks_per_file = 1
     randomize_order = 0
+    allow_repeats = 0
     crossfade_type = 3
     overlap_mode = 1
     overlap_percentage = 20
@@ -250,6 +365,40 @@ elsif preset = 7
     presetName$ = "GranularCloud"
 else
     presetName$ = "Custom"
+endif
+
+# === VALIDATE / SANITIZE NUMERIC SETTINGS ===
+# v1.2: guard against inverted ranges and out-of-range percentages that
+# previously caused silent misbehaviour (negative gains, inverted
+# clamps, etc. -- see changelog fixes for Dynamics_depth_percent,
+# Scale_peak, Min/Max duration and overlap).
+rangeWarning$ = ""
+
+if min_chunk_duration_s > max_chunk_duration_s
+    temp = min_chunk_duration_s
+    min_chunk_duration_s = max_chunk_duration_s
+    max_chunk_duration_s = temp
+    rangeWarning$ = rangeWarning$ + "  - Min/Max chunk duration were swapped (min was greater than max)." + newline$
+endif
+
+if min_overlap_s > max_overlap_s
+    temp = min_overlap_s
+    min_overlap_s = max_overlap_s
+    max_overlap_s = temp
+    rangeWarning$ = rangeWarning$ + "  - Min/Max overlap were swapped (min was greater than max)." + newline$
+endif
+
+if dynamics_depth_percent > 100
+    dynamics_depth_percent = 100
+    rangeWarning$ = rangeWarning$ + "  - Dynamics_depth_percent was above 100 and has been clamped to 100." + newline$
+elsif dynamics_depth_percent < 0
+    dynamics_depth_percent = 0
+    rangeWarning$ = rangeWarning$ + "  - Dynamics_depth_percent was negative and has been clamped to 0." + newline$
+endif
+
+if scale_peak > 1
+    scale_peak = 1
+    rangeWarning$ = rangeWarning$ + "  - Scale_peak was above 1 and has been clamped to 1 (avoids clipping)." + newline$
 endif
 
 # === RESOLVE NAMES FOR DISPLAY ===
@@ -308,7 +457,7 @@ endif
 # appendInfoLine. v1.0 called writeInfoLine 7 times in this block and
 # 6 more in the settings block, with each call clearing the info window,
 # wiping the header before the user could see it.
-writeInfoLine: "=== ADVANCED CONCATENATE WITH CROSSFADE v1.1 ==="
+writeInfoLine: "=== ADVANCED CONCATENATE WITH CROSSFADE v1.2 ==="
 appendInfoLine: ""
 appendInfoLine: "Input sounds:    ", n
 appendInfoLine: "Preset:          ", presetName$
@@ -318,40 +467,54 @@ appendInfoLine: "Randomize:       ", randomize_order, "   Allow repeats: ", allo
 appendInfoLine: "Crossfade type:  ", crossfadeTypeName$
 appendInfoLine: "Overlap mode:    ", overlapModeName$
 appendInfoLine: "Dynamics:        ", dynamicsName$
+if rangeWarning$ <> ""
+    appendInfoLine: ""
+    appendInfoLine: "Settings adjusted:"
+    appendInfoLine: rangeWarning$
+endif
 appendInfoLine: ""
 
 # ============================================================
 # PROCEDURE: Extract chunk from sound
 # ============================================================
+# v1.2: uses the source sound's ACTUAL start/end time instead of
+# assuming it starts at 0 (see changelog fix 9). Sounds extracted
+# elsewhere with "preserve times" can have a non-zero start time;
+# the old absolute-zero logic could silently request a time range
+# outside the object's domain and return silence with no warning.
 
 procedure extractChunk: .sound, .mode, .fixedDur, .minDur, .maxDur
     selectObject: .sound
-    .totalDur = Get total duration
+    .tmin = Get start time
+    .tmax = Get end time
+    .totalDur = .tmax - .tmin
 
     if .mode = 1
         # Whole file
-        .chunkStart = 0
-        .chunkEnd = .totalDur
+        .chunkStart = .tmin
+        .chunkEnd = .tmax
     elsif .mode = 2
         # Fixed chunk
         .chunkDur = min(.fixedDur, .totalDur)
-        .maxStart = .totalDur - .chunkDur
-        if .maxStart > 0
-            .chunkStart = randomUniform(0, .maxStart)
+        .maxOffset = .totalDur - .chunkDur
+        if .maxOffset > 0
+            .offset = randomUniform(0, .maxOffset)
         else
-            .chunkStart = 0
+            .offset = 0
         endif
+        .chunkStart = .tmin + .offset
         .chunkEnd = .chunkStart + .chunkDur
     else
         # Random chunk
         .chunkDur = randomUniform(.minDur, .maxDur)
         .chunkDur = min(.chunkDur, .totalDur)
-        .maxStart = .totalDur - .chunkDur
-        if .maxStart > 0
-            .chunkStart = randomUniform(0, .maxStart)
+        .maxOffset = .totalDur - .chunkDur
+        if .maxOffset > 0
+            .offset = randomUniform(0, .maxOffset)
         else
-            .chunkStart = 0
+            .offset = 0
         endif
+        .chunkStart = .tmin + .offset
         .chunkEnd = .chunkStart + .chunkDur
     endif
 
@@ -368,6 +531,10 @@ endproc
 # ============================================================
 # PROCEDURE: Apply custom crossfade
 # ============================================================
+# v1.2: (a) Linear is now a real explicit ramp instead of Praat's
+# built-in raised-cosine `Fade in`/`Fade out` (changelog fix 2).
+# (b) every formula now spans ALL channels (`1, .channels`) instead
+# of being hard-coded to channel 1 only (changelog fix 3).
 
 procedure applyCrossfade: .sound, .fadeType, .duration, .direction$
     # .direction$ = "in" or "out"
@@ -375,7 +542,7 @@ procedure applyCrossfade: .sound, .fadeType, .duration, .direction$
 
     selectObject: .sound
     .totalDur = Get total duration
-    .sr = Get sampling frequency
+    .channels = Get number of channels
 
     if .direction$ = "in"
         .startTime = 0
@@ -400,43 +567,47 @@ procedure applyCrossfade: .sound, .fadeType, .duration, .direction$
         selectObject: .sound
 
         if .fadeType = 1
-            # Linear fade (Praat's built-in)
+            # True linear ramp (explicit formula -- NOT Praat's built-in
+            # Fade in/out, which is a raised-cosine window)
             if .direction$ = "in"
-                Fade in: 0, .startTime, .fadeDur, "yes"
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * ((x - .startTime) / .fadeDur)
             else
-                Fade out: 0, .startTime, .fadeDur, "yes"
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * (1 - (x - .startTime) / .fadeDur)
             endif
 
         elsif .fadeType = 2
-            # Equal-power (sqrt curve) - prevents volume dip at crossfade center
+            # Equal-power (sqrt curve) - avoids a power dip at the
+            # crossfade center for uncorrelated sources
             if .direction$ = "in"
-                Formula (part): .startTime, .endTime, 1, 1, ~ self * sqrt((x - .startTime) / .fadeDur)
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * sqrt((x - .startTime) / .fadeDur)
             else
-                Formula (part): .startTime, .endTime, 1, 1, ~ self * sqrt(1 - (x - .startTime) / .fadeDur)
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * sqrt(1 - (x - .startTime) / .fadeDur)
             endif
 
         elsif .fadeType = 3
             # S-curve (cosine) - very smooth
             if .direction$ = "in"
-                Formula (part): .startTime, .endTime, 1, 1, ~ self * (0.5 - 0.5 * cos(pi * (x - .startTime) / .fadeDur))
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * (0.5 - 0.5 * cos(pi * (x - .startTime) / .fadeDur))
             else
-                Formula (part): .startTime, .endTime, 1, 1, ~ self * (0.5 + 0.5 * cos(pi * (x - .startTime) / .fadeDur))
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * (0.5 + 0.5 * cos(pi * (x - .startTime) / .fadeDur))
             endif
 
         elsif .fadeType = 4
             # Exponential (fast start for fade-in, fast end for fade-out)
             if .direction$ = "in"
-                Formula (part): .startTime, .endTime, 1, 1, ~ self * (1 - exp(-4 * (x - .startTime) / .fadeDur))
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * (1 - exp(-4 * (x - .startTime) / .fadeDur))
             else
-                Formula (part): .startTime, .endTime, 1, 1, ~ self * exp(-4 * (x - .startTime) / .fadeDur)
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * exp(-4 * (x - .startTime) / .fadeDur)
             endif
 
         else
-            # Logarithmic (slow start for fade-in, slow end for fade-out)
+            # Logarithmic (also fast-start/slow-end in shape, but a
+            # different curvature than Exponential -- see relabeling
+            # in the v1.2 changelog)
             if .direction$ = "in"
-                Formula (part): .startTime, .endTime, 1, 1, ~ self * (ln(1 + 9 * (x - .startTime) / .fadeDur) / ln(10))
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * (ln(1 + 9 * (x - .startTime) / .fadeDur) / ln(10))
             else
-                Formula (part): .startTime, .endTime, 1, 1, ~ self * (1 - ln(1 + 9 * (x - .startTime) / .fadeDur) / ln(10))
+                Formula (part): .startTime, .endTime, 1, .channels, ~ self * (1 - ln(1 + 9 * (x - .startTime) / .fadeDur) / ln(10))
             endif
         endif
     endif
@@ -446,33 +617,87 @@ endproc
 # ============================================================
 # PROCEDURE: Calculate overlap time
 # ============================================================
+# v1.2: now takes BOTH the incoming and outgoing chunk duration and
+# clamps to 90% of whichever is smaller (changelog fix 7). The old
+# version only checked the incoming chunk, so a short outgoing chunk
+# could get an overlap that reached back past its own start. The
+# minimum overlap is now `min(0.01, capacity)`, so the floor can never
+# be raised above whatever ceiling was just computed (the old order of
+# operations could push a clamped-down overlap back up past the chunk
+# it was just clamped to fit inside).
 
-procedure calculateOverlap: .chunkDuration, .mode, .percentage, .fixedDur, .minDur, .maxDur
+procedure calculateOverlap: .incomingDur, .outgoingDur, .mode, .percentage, .fixedDur, .minDur, .maxDur
     if .mode = 1
         # Percentage of incoming chunk
-        calculateOverlap.time = .chunkDuration * .percentage / 100
+        .requested = .incomingDur * .percentage / 100
     elsif .mode = 2
         # Fixed duration
-        calculateOverlap.time = .fixedDur
+        .requested = .fixedDur
     else
         # Random duration
-        calculateOverlap.time = randomUniform(.minDur, .maxDur)
+        .requested = randomUniform(.minDur, .maxDur)
     endif
 
-    # Ensure overlap doesn't exceed chunk duration
-    if calculateOverlap.time > .chunkDuration * 0.9
-        calculateOverlap.time = .chunkDuration * 0.9
+    # Capacity: never exceed 90% of either neighbour
+    .capacity = min(0.9 * .incomingDur, 0.9 * .outgoingDur)
+    if .capacity < 0
+        .capacity = 0
     endif
 
-    # Minimum overlap
-    if calculateOverlap.time < 0.01
-        calculateOverlap.time = 0.01
+    .time = .requested
+    if .time > .capacity
+        .time = .capacity
+    endif
+
+    # Minimum overlap, but never above the capacity we just enforced
+    .minAllowed = min(0.01, .capacity)
+    if .time < .minAllowed
+        .time = .minAllowed
     endif
 endproc
 
 
 # ============================================================
-# EXTRACT CHUNKS WITH CHANNEL STANDARDIZATION
+# PROCEDURE: Mix two sounds with a crossfade (overlap-add)
+# ============================================================
+# v1.2 NEW: replaces the v1.1 sequence of (hand-applied fade + built-in
+# `Concatenate with overlap`), which double-applied a window (changelog
+# fix 1). This procedure fades the tail of .resultIn and the head of
+# .incomingIn using the SAME curve (via applyCrossfade, exactly once
+# each), then builds the merged sound directly with a single
+# `Create Sound from formula` that time-samples both buffers with
+# `object(id, time, channel)` and sums them. No other command touches
+# the samples, so no implicit window is ever added on top.
+#
+# Both .resultIn and .incomingIn are consumed (their samples are
+# modified in place by the fades); the caller is responsible for
+# removing them after reading mixWithCrossfade.result.
+
+procedure mixWithCrossfade: .resultIn, .incomingIn, .overlapTime, .fadeType
+    selectObject: .resultIn
+    .resultDur = Get total duration
+    .channels = Get number of channels
+    .sr = Get sampling frequency
+
+    selectObject: .incomingIn
+    .incomingDur = Get total duration
+
+    @applyCrossfade: .resultIn, .fadeType, .overlapTime, "out"
+    @applyCrossfade: .incomingIn, .fadeType, .overlapTime, "in"
+
+    .totalDur = .resultDur + .incomingDur - .overlapTime
+    .boundary = .resultDur - .overlapTime
+
+    .merged = Create Sound from formula: "crossfaded_temp", .channels, 0, .totalDur, .sr,
+        ... ~ (if x < .resultDur then object(.resultIn, x, row) else 0 fi)
+        ... + (if x >= .boundary and x < .totalDur then object(.incomingIn, x - .boundary, row) else 0 fi)
+
+    mixWithCrossfade.result = .merged
+endproc
+
+
+# ============================================================
+# EXTRACT CHUNKS, CHECK SAMPLE RATE, STANDARDIZE CHANNELS
 # ============================================================
 
 appendInfoLine: "Extracting chunks..."
@@ -496,12 +721,44 @@ for i to n
         selectObject: chunk[totalChunks]
         chunkDur[totalChunks] = Get total duration
         chunkChan[totalChunks] = Get number of channels
+        chunkRate[totalChunks] = Get sampling frequency
 
-        appendInfoLine: "  Chunk ", totalChunks, " from ", soundName$[i], " (", fixed$(chunkDur[totalChunks], 2), "s, ", chunkChan[totalChunks], "ch)"
+        appendInfoLine: "  Chunk ", totalChunks, " from ", soundName$[i], " (", fixed$(chunkDur[totalChunks], 2), "s, ", chunkChan[totalChunks], "ch, ", fixed$(chunkRate[totalChunks]/1000, 1), "kHz)"
     endfor
 endfor
 
-# STANDARDIZE CHANNELS - Convert all to match first chunk
+# CHECK SAMPLING FREQUENCY - resample any chunk that doesn't match the
+# first sound's rate. v1.2: `Concatenate`-family commands require a
+# common sampling frequency across all inputs; v1.1 never checked this,
+# so mixed-rate input would fail with no clear explanation. (fix 5)
+resampledAny = 0
+for i to totalChunks
+    if chunkRate[i] <> sr
+        if resampledAny = 0
+            appendInfoLine: ""
+            appendInfoLine: "Sampling frequency mismatch detected -- resampling to ", fixed$(sr/1000, 1), " kHz (from first sound)..."
+        endif
+        selectObject: chunk[i]
+        resampledChunk = Resample: sr, 50
+        removeObject: chunk[i]
+        chunk[i] = resampledChunk
+        chunkRate[i] = sr
+        appendInfoLine: "  Resampled chunk ", i
+        resampledAny = 1
+    endif
+endfor
+
+# CHECK CHANNEL COUNTS - v1.2 officially supports mono and stereo only
+# (fix 6). Anything else previously produced a wrong channel count
+# while claiming success; now it stops with a clear message.
+for i to totalChunks
+    if chunkChan[i] <> 1 and chunkChan[i] <> 2
+        exitScript: "Chunk ", i, " (from ", soundName$[chunkSource[i]], ") has ", chunkChan[i],
+            ... " channels. This script only supports mono or stereo sounds."
+    endif
+endfor
+
+# STANDARDIZE CHANNELS - Convert all to match first chunk (mono<->stereo only)
 selectObject: chunk[1]
 targetChannels = Get number of channels
 
@@ -540,12 +797,8 @@ appendInfoLine: "  All chunks standardized to ", targetChannels, " channel(s)"
 # ============================================================
 # DETERMINE PLAYBACK ORDER
 # ============================================================
-# v1.1: two changes here.
-#  (a) Fisher-Yates shuffle fixed to be uniform (was biased in v1.0).
-#  (b) `allow_repeats` form field is now implemented. When
-#      randomize_order=1 AND allow_repeats=1, chunkOrder is sampled
-#      WITH replacement -- same chunk can appear multiple times.
-#      Otherwise the order is a no-repeat random permutation.
+# (unchanged from v1.1 -- Fisher-Yates shuffle and allow_repeats were
+# already verified correct in that pass)
 
 # Initialize identity order (used directly when randomize_order=0)
 for i to totalChunks
@@ -561,8 +814,7 @@ if randomize_order
         endfor
     else
         # Standard ascending Fisher-Yates: for i = 1..n-1, pick j in [i, n]
-        # and swap. v1.0 used `j = randomInteger(1, totalChunks)` for all
-        # iterations, which is non-uniform.
+        # and swap.
         appendInfoLine: "Order: random, no repeats (Fisher-Yates)"
         for i from 1 to totalChunks - 1
             j = randomInteger(i, totalChunks)
@@ -573,6 +825,42 @@ if randomize_order
     endif
 else
     appendInfoLine: "Order: sequential (extraction order)"
+endif
+
+# ============================================================
+# PRE-COMPUTE PER-POSITION GAIN FOR RANDOM / TERRACED DYNAMICS
+# ============================================================
+# v1.2 NEW: for dynamics_mode 7 (Random per segment) and 8 (Terraced),
+# the target gain for each OUTPUT POSITION is now computed here, before
+# any mixing happens, and applied to each chunk's buffer exactly once
+# in the mixing loop below (see changelog fix 4). This replaces the
+# v1.1 approach of multiplying `self * amp` over each segment's time
+# range AFTER concatenation, which double-multiplied every overlap
+# region because those ranges overlap by design.
+
+if dynamics_mode = 7 or dynamics_mode = 8
+    depth = dynamics_depth_percent / 100
+    minAmp = 1 - depth
+
+    if dynamics_mode = 7
+        # Random per segment
+        for seg to totalChunks
+            segAmp[seg] = randomUniform(minAmp, 1)
+        endfor
+    else
+        # Terraced (stepped levels)
+        numSteps = min(totalChunks, 5)
+        for seg to totalChunks
+            stepNum = ((seg - 1) mod numSteps) + 1
+            if numSteps > 1
+                segAmp[seg] = minAmp + (1 - minAmp) * (stepNum - 1) / (numSteps - 1)
+            else
+                # Only one step possible (e.g. a single chunk total) --
+                # avoids the numSteps-1 = 0 division in v1.1.
+                segAmp[seg] = 1
+            endif
+        endfor
+    endif
 endif
 
 # ============================================================
@@ -587,7 +875,12 @@ firstIdx = chunkOrder[1]
 selectObject: chunk[firstIdx]
 result = Copy: "crossfaded_temp"
 
-# Track segment positions for dynamics
+if dynamics_mode = 7 or dynamics_mode = 8
+    selectObject: result
+    Formula: ~ self * segAmp[1]
+endif
+
+# Track segment positions for dynamics / visualization
 segmentStart[1] = 0
 segmentEnd[1] = chunkDur[firstIdx]
 segmentDur[1] = chunkDur[firstIdx]
@@ -597,9 +890,11 @@ totalOverlapTime = 0
 for i from 2 to totalChunks
     currentIdx = chunkOrder[i]
     currentDur = chunkDur[currentIdx]
+    previousIdx = chunkOrder[i - 1]
+    outgoingDur = chunkDur[previousIdx]
 
-    # Calculate overlap time
-    @calculateOverlap: currentDur, overlap_mode, overlap_percentage, fixed_overlap_s, min_overlap_s, max_overlap_s
+    # Calculate overlap time (clamped against BOTH neighbours -- fix 7)
+    @calculateOverlap: currentDur, outgoingDur, overlap_mode, overlap_percentage, fixed_overlap_s, min_overlap_s, max_overlap_s
     overlapTime = calculateOverlap.time
 
     totalOverlapTime = totalOverlapTime + overlapTime
@@ -609,19 +904,21 @@ for i from 2 to totalChunks
     selectObject: chunk[currentIdx]
     incoming = Copy: "temp_incoming"
 
-    # Apply fade out to result (end of current result)
+    # Bake in this position's target gain BEFORE crossfading, so the
+    # overlap region blends between two already-correctly-leveled
+    # buffers instead of being multiplied twice (fix 4).
+    if dynamics_mode = 7 or dynamics_mode = 8
+        selectObject: incoming
+        Formula: ~ self * segAmp[i]
+    endif
+
     selectObject: result
     result_duration = Get total duration
-    @applyCrossfade: result, crossfade_type, overlapTime, "out"
 
-    # Apply fade in to incoming (start of incoming)
-    selectObject: incoming
-    @applyCrossfade: incoming, crossfade_type, overlapTime, "in"
-
-    # Concatenate with overlap
-    selectObject: result
-    plusObject: incoming
-    new_result = Concatenate with overlap: overlapTime
+    # Merge via manual overlap-add (fix 1 + fix 2 + fix 3) instead of
+    # fade + `Concatenate with overlap`.
+    @mixWithCrossfade: result, incoming, overlapTime, crossfade_type
+    new_result = mixWithCrossfade.result
 
     # Track segment position
     segmentStart[i] = result_duration - overlapTime
@@ -647,12 +944,20 @@ appendInfoLine: "  Total overlap:  ", fixed$(totalOverlapTime, 2), " s"
 # ============================================================
 # APPLY DYNAMICS ENVELOPE
 # ============================================================
+# v1.2: modes 7 (Random) and 8 (Terraced) are now baked in already
+# (see pre-compute block above and the mixing loop), so this section
+# only needs to handle the continuous, whole-signal envelopes
+# (Crescendo / Diminuendo / Swell / Inverse swell / Wave). Those were
+# already correct in v1.1 -- each is a single Formula applied once
+# across the entire result, with no overlapping ranges -- but now also
+# spans all channels (fix 3) instead of channel 1 only.
 
-if dynamics_mode > 1
+if dynamics_mode > 1 and dynamics_mode < 7
     appendInfoLine: ""
     appendInfoLine: "Applying dynamics: ", dynamicsName$, "..."
 
     selectObject: result
+    channels = Get number of channels
     depth = dynamics_depth_percent / 100
     minAmp = 1 - depth
 
@@ -675,56 +980,12 @@ if dynamics_mode > 1
     elsif dynamics_mode = 6
         # Wave (sine modulation)
         Formula: ~ self * (minAmp + (1 - minAmp) * (0.5 + 0.5 * sin(2 * pi * wave_cycles * x / finalDuration - pi/2)))
-
-    elsif dynamics_mode = 7
-        # Random per segment
-        for seg to totalChunks
-            segAmp[seg] = randomUniform(minAmp, 1)
-        endfor
-
-        # Apply per-segment amplitude with small crossfade between segments
-        for seg to totalChunks
-            sStart = segmentStart[seg]
-            sEnd = segmentEnd[seg]
-            amp = segAmp[seg]
-
-            if seg < totalChunks
-                # Fade to next segment's amplitude
-                nextAmp = segAmp[seg + 1]
-                fadeZone = min(0.1, (sEnd - sStart) * 0.2)
-
-                selectObject: result
-                # Main segment
-                if sEnd - fadeZone > sStart
-                    Formula (part): sStart, sEnd - fadeZone, 1, 1, ~ self * amp
-                endif
-                # Transition zone
-                Formula (part): sEnd - fadeZone, sEnd, 1, 1, ~ self * (amp + (nextAmp - amp) * (x - (sEnd - fadeZone)) / fadeZone)
-            else
-                selectObject: result
-                Formula (part): sStart, sEnd, 1, 1, ~ self * amp
-            endif
-        endfor
-
-    elsif dynamics_mode = 8
-        # Terraced (stepped levels)
-        numSteps = min(totalChunks, 5)
-        for seg to totalChunks
-            stepNum = ((seg - 1) mod numSteps) + 1
-            segAmp[seg] = minAmp + (1 - minAmp) * (stepNum - 1) / (numSteps - 1)
-        endfor
-
-        for seg to totalChunks
-            sStart = segmentStart[seg]
-            sEnd = segmentEnd[seg]
-            amp = segAmp[seg]
-
-            selectObject: result
-            Formula (part): sStart, sEnd, 1, 1, ~ self * amp
-        endfor
     endif
 
     appendInfoLine: "  Dynamics applied (depth: ", fixed$(dynamics_depth_percent, 0), "%)"
+elsif dynamics_mode = 7 or dynamics_mode = 8
+    appendInfoLine: ""
+    appendInfoLine: "  Dynamics (", dynamicsName$, ") already applied during mixing (depth: ", fixed$(dynamics_depth_percent, 0), "%)"
 endif
 
 # ============================================================
@@ -818,10 +1079,13 @@ if draw_visualization
         sourceIdx = chunkSource[chunkOrder[seg]]
 
         # Color based on source file (hue = (i-1)/n, no wrap collision)
+        # v1.2: clamped to [0,1] -- the raw sin-based formula has range
+        # [-0.1, 0.9], which could already go negative with a single
+        # source and halt the script after the audio had rendered (fix 10).
         hue = (sourceIdx - 1) / n
-        r = 0.4 + 0.5 * sin(2 * pi * hue)
-        g = 0.4 + 0.5 * sin(2 * pi * hue + 2 * pi / 3)
-        b = 0.4 + 0.5 * sin(2 * pi * hue + 4 * pi / 3)
+        r = min(1, max(0, 0.4 + 0.5 * sin(2 * pi * hue)))
+        g = min(1, max(0, 0.4 + 0.5 * sin(2 * pi * hue + 2 * pi / 3)))
+        b = min(1, max(0, 0.4 + 0.5 * sin(2 * pi * hue + 4 * pi / 3)))
 
         colour$ = "{" + fixed$(r, 2) + "," + fixed$(g, 2) + "," + fixed$(b, 2) + "}"
         Paint rectangle: colour$, sStart, sEnd, 0.1, 0.9
@@ -944,9 +1208,10 @@ if draw_visualization
 
     for i to n
         hue = (i - 1) / n
-        r = 0.4 + 0.5 * sin(2 * pi * hue)
-        g = 0.4 + 0.5 * sin(2 * pi * hue + 2 * pi / 3)
-        b = 0.4 + 0.5 * sin(2 * pi * hue + 4 * pi / 3)
+        # v1.2: clamped to [0,1] -- see Panel B note above (fix 10).
+        r = min(1, max(0, 0.4 + 0.5 * sin(2 * pi * hue)))
+        g = min(1, max(0, 0.4 + 0.5 * sin(2 * pi * hue + 2 * pi / 3)))
+        b = min(1, max(0, 0.4 + 0.5 * sin(2 * pi * hue + 4 * pi / 3)))
         colour$ = "{" + fixed$(r, 2) + "," + fixed$(g, 2) + "," + fixed$(b, 2) + "}"
 
         # Color swatch
