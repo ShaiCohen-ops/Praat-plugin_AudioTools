@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,10 +13,17 @@
 #   and applies a shaping envelope across the full output.
 #
 #   Envelope types:
-#     Linear      -- straight rise and fall
-#     Cosine      -- smooth curved fade in/out
-#     Triangle    -- rise to peak then continuous linear fall
-#     Gentle arch -- cosine rise, flat sustain, cosine fall
+#     Linear             -- straight rise, unity sustain, straight fall
+#     Cosine             -- half-cosine rise, unity sustain, half-cosine fall
+#     Triangle           -- rise to peak over Fade in, then one continuous
+#                           linear fall to zero at the end of the file.
+#                           Fade out is NOT used by this shape.
+#     Arch (symmetric)   -- fixed sin^2 hill spanning the whole output,
+#                           zero at both ends, instantaneous peak at the
+#                           midpoint. Fade in / Fade out are NOT used.
+#     Gentle arch        -- smootherstep rise, unity sustain, smootherstep
+#                           fall, both governed by Fade in / Fade out.
+#                           Flatter at the corners than Cosine.
 #
 #   Performance note:
 #     Assembly is incremental: one copy in RAM at a time.
@@ -24,6 +31,37 @@
 #     No sample-by-sample loops.
 #
 # Changelog:
+#   1.2 (2026) -- Repetitions is now a natural number. It was `positive`,
+#                 so 4.5 built four copies while the duration, the report
+#                 and the ENVELOPE were computed from 4.5 - the envelope
+#                 ran past the end of the audio and a linear fade-out
+#                 stopped at about 0.72 instead of reaching zero. The
+#                 envelope is now built from the assembled Sound's own
+#                 measured duration, so it cannot disagree with the audio.
+#              -- "Gentle arch" split in two. The old curve was a fixed
+#                 symmetric sin^2 hill that ignored Fade in / Fade out
+#                 entirely; it is preserved unchanged as "Arch (symmetric)"
+#                 and honestly labelled. The new "Gentle arch" is what the
+#                 description always promised: rise, flat sustain, fall,
+#                 driven by the fade percentages. Preset "Long Fade" now
+#                 selects it, so its 30%/30% finally do something.
+#              -- Triangle reports "not used" for Fade out instead of
+#                 displaying a value that never reaches the curve.
+#              -- Normalization renamed Peak_normalize_output and turned
+#                 OFF by default. It was on, so Peak_level_percent only
+#                 described a stage that was then divided back out: a 50%
+#                 peak request on a 0.5 source came out at 0.99.
+#              -- Crossfade clamping fixed. The 1 ms floor was applied
+#                 after the 0.9 x source clamp, so a 0.5 ms source got an
+#                 overlap longer than itself and crashed Concatenate with
+#                 overlap. The floor is now two samples, the ceiling is
+#                 applied last, and both are reported.
+#              -- Peak level no longer resets 0 to 100 silently; the field
+#                 is `positive` and values above 100% are reported as
+#                 amplification.
+#              -- Output time domain shifted to start at 0 (with a single
+#                 repetition the source's xmin used to survive and the
+#                 envelope, which reckons from 0, was misaligned).
 #   1.1 (2026) -- rewritten for speed
 #   1.0 (2026) -- initial release
 # ============================================================
@@ -48,21 +86,23 @@ form Sound Duplicator
         option Pulse Burst
         option Long Fade
     comment === Duplication ===
-    positive Number_of_repetitions 4
+    natural Number_of_repetitions 4
     comment === Crossfade ===
     positive Crossfade_duration_ms 50
     comment === Overall Envelope ===
     optionmenu Envelope_type: 1
         option Linear
         option Cosine
-        option Triangle
-        option Gentle arch
+        option Triangle (Fade out unused)
+        option Arch (symmetric, fades unused)
+        option Gentle arch (fades + sustain)
     real Fade_in_percent 10
     real Fade_out_percent 15
-    real Peak_level_percent 100
+    positive Peak_level_percent 100
+    comment (above 100% amplifies before any normalization)
     comment === Output ===
     boolean Draw_visualization 1
-    boolean Normalize_output 1
+    boolean Peak_normalize_output 0
     boolean Play_result 1
 endform
 
@@ -105,7 +145,8 @@ elsif preset = 6
 elsif preset = 7
     number_of_repetitions = 3
     crossfade_duration_ms  = 150
-    envelope_type          = 4
+    # v1.2: was 4 (the symmetric arch), which ignored these percentages.
+    envelope_type          = 5
     fade_in_percent        = 30
     fade_out_percent       = 30
     peak_level_percent     = 100
@@ -118,22 +159,46 @@ srcSR       = Get sampling frequency
 srcChannels = Get number of channels
 
 # === Validate settings ===
-if number_of_repetitions < 1
-    number_of_repetitions = 1
+# Repetitions must be a whole number: the assembly loop can only run an
+# integer number of times, so every derived quantity is computed from the
+# rounded value and nothing downstream can disagree with the audio.
+n = round(number_of_repetitions)
+if n < 1
+    n = 1
 endif
-n = number_of_repetitions
+number_of_repetitions = n
 
+# Crossfade. Order matters: the floor is expressed in SAMPLES, and the
+# upper clamp is applied LAST so that the overlap is always shorter than
+# the source. v1.1 applied a fixed 1 ms floor after the 0.9 x source
+# clamp, which on a 0.5 ms source produced an overlap longer than the
+# material being overlapped.
 if crossfade_duration_ms < 0
     crossfade_duration_ms = 0
 endif
 xfSec = crossfade_duration_ms / 1000.0
-if xfSec > srcDur * 0.90
-    xfSec = srcDur * 0.90
-    crossfade_duration_ms = xfSec * 1000.0
+minOverlap = 2 / srcSR
+maxOverlap = 0.90 * srcDur
+
+if n > 1 and maxOverlap < minOverlap
+    exitScript: "Source is too short to crossfade: " + fixed$(srcDur * 1000, 4) +
+    ... " ms is under 3 samples at " + fixed$(srcSR, 0) + " Hz. Use a longer Sound, " +
+    ... "or set Number_of_repetitions to 1."
 endif
-if xfSec < 0.001
-    xfSec = 0.001
+
+xfRequested_ms = crossfade_duration_ms
+xfFloored = 0
+xfCeilinged = 0
+if xfSec < minOverlap
+    xfSec = minOverlap
+    xfFloored = 1
 endif
+if xfSec > maxOverlap
+    xfSec = maxOverlap
+    xfCeilinged = 1
+endif
+# Report the value that was actually used, not the one that was asked for.
+crossfade_duration_ms = xfSec * 1000.0
 
 if fade_in_percent < 0
     fade_in_percent = 0
@@ -150,9 +215,9 @@ endif
 if fade_in_percent + fade_out_percent > 100
     fade_out_percent = 100 - fade_in_percent
 endif
-if peak_level_percent <= 0
-    peak_level_percent = 100
-endif
+
+# Peak level: the form type already rejects zero and negatives, so no
+# silent reset to 100% here. Values above 100% are legal and amplify.
 peakAmp = peak_level_percent / 100.0
 
 # === Envelope string ===
@@ -162,34 +227,43 @@ elsif envelope_type = 2
     envStr$ = "Cosine"
 elsif envelope_type = 3
     envStr$ = "Triangle"
+elsif envelope_type = 4
+    envStr$ = "ArchSymmetric"
 else
     envStr$ = "GentleArch"
 endif
 
-# === Calculate output duration ===
-totalDur    = n * srcDur - (n - 1) * xfSec
-fiSec       = totalDur * fade_in_percent  / 100.0
-foSec       = totalDur * fade_out_percent / 100.0
-foStart     = totalDur - foSec
-sustainDur  = totalDur - fiSec - foSec
-if sustainDur < 0
-    sustainDur = 0
+# Which fade fields this shape actually reads
+usesFadeIn = 1
+usesFadeOut = 1
+if envelope_type = 3
+    usesFadeOut = 0
+elsif envelope_type = 4
+    usesFadeIn = 0
+    usesFadeOut = 0
 endif
+
+# === Predicted output duration (verified against the real one later) ===
+predictedDur = n * srcDur - (n - 1) * xfSec
 
 # === Info ===
 clearinfo
-writeInfoLine:  "=== Sound Duplicator v1.1 ==="
+writeInfoLine:  "=== Sound Duplicator v1.2 ==="
 appendInfoLine: "Source:          ", srcName$
 appendInfoLine: "Source duration: ", fixed$(srcDur, 4), " s"
 appendInfoLine: "Sample rate:     ", srcSR, " Hz"
 appendInfoLine: "Channels:        ", srcChannels
 appendInfoLine: "Repetitions:     ", n
-appendInfoLine: "Crossfade:       ", fixed$(crossfade_duration_ms, 1), " ms"
-appendInfoLine: "Output duration: ", fixed$(totalDur, 4), " s"
+appendInfoLine: "Crossfade:       ", fixed$(crossfade_duration_ms, 3), " ms"
+if xfFloored
+    appendInfoLine: "                 (raised from ", fixed$(xfRequested_ms, 3),
+    ... " ms to the 2-sample minimum)"
+endif
+if xfCeilinged
+    appendInfoLine: "                 (lowered from ", fixed$(xfRequested_ms, 3),
+    ... " ms to 90% of the source)"
+endif
 appendInfoLine: "Envelope:        ", envStr$
-appendInfoLine: "Fade in:         ", fixed$(fade_in_percent, 1), " %  (", fixed$(fiSec, 3), " s)"
-appendInfoLine: "Fade out:        ", fixed$(fade_out_percent, 1), " %  (", fixed$(foSec, 3), " s)"
-appendInfoLine: "Peak level:      ", fixed$(peak_level_percent, 1), " %"
 appendInfoLine: ""
 
 # === Build duplicated sound ===
@@ -214,37 +288,117 @@ for rep from 2 to n
 endfor
 
 appendInfoLine: ""
-appendInfoLine: "  Done.  Crossfade: ", fixed$(xfSec * 1000, 1), " ms"
+
+# Normalize the time domain. With a single repetition there is no
+# concatenation, so a source with xmin <> 0 would otherwise keep its own
+# start time while the envelope below reckons x from zero.
+selectObject: resultSound
+Shift times to: "start time", 0
+
+# === Envelope parameters from the MEASURED duration ===
+# Not from the predicted one: this is what kept the v1.1 envelope from
+# ending with the audio.
+selectObject: resultSound
+totalDur = Get total duration
+
+appendInfoLine: "  Done.  Crossfade: ", fixed$(xfSec * 1000, 3), " ms"
+appendInfoLine: "  Output duration: ", fixed$(totalDur, 4), " s (predicted ",
+... fixed$(predictedDur, 4), " s)"
+if abs(totalDur - predictedDur) > 2 / srcSR
+    appendInfoLine: "  WARNING: measured and predicted duration differ by more than two samples."
+endif
+
+fiSec   = totalDur * fade_in_percent  / 100.0
+foSec   = totalDur * fade_out_percent / 100.0
+foStart = totalDur - foSec
+fallDur = totalDur - fiSec
+if fallDur < 1e-9
+    fallDur = 1e-9
+endif
+# Denominators are clamped away from zero so the formula is safe even if
+# a branch is evaluated eagerly.
+fiDen = max(fiSec, 1e-9)
+foDen = max(foSec, 1e-9)
+
+appendInfoLine: "Fade in:         ", fixed$(fade_in_percent, 1), " %  (", fixed$(fiSec, 3), " s)"
+if usesFadeOut
+    appendInfoLine: "Fade out:        ", fixed$(fade_out_percent, 1), " %  (", fixed$(foSec, 3), " s)"
+else
+    appendInfoLine: "Fade out:        not used by ", envStr$
+endif
+if envelope_type = 3
+    appendInfoLine: "                 (Triangle falls continuously from the peak to the"
+    appendInfoLine: "                  end of the file: ", fixed$(fallDur, 3), " s)"
+endif
+if envelope_type = 4
+    appendInfoLine: "                 (Arch (symmetric) uses neither fade: it is a fixed hill"
+    appendInfoLine: "                  over the whole output, peaking at the midpoint.)"
+endif
+appendInfoLine: "Peak level:      ", fixed$(peak_level_percent, 1), " %"
+if peak_level_percent > 100
+    appendInfoLine: "                 (above 100% - this amplifies and may clip)"
+endif
+appendInfoLine: ""
+
+# === Build the envelope shape expression ===
+# One string, used for BOTH the audio and the drawn curve, so the panel
+# cannot drift away from what was applied.
+fi$    = fixed$(fiSec, 9)
+fo$    = fixed$(foSec, 9)
+fs$    = fixed$(foStart, 9)
+td$    = fixed$(totalDur, 9)
+fiDen$ = fixed$(fiDen, 12)
+foDen$ = fixed$(foDen, 12)
+fall$  = fixed$(fallDur, 12)
+
+if envelope_type = 1
+    # Linear: straight rise, unity sustain, straight fall
+    shape$ = "if x < " + fi$ + " and " + fi$ + " > 0 then x / " + fiDen$ +
+    ... " else (if x > " + fs$ + " and " + fo$ + " > 0 then (" + td$ + " - x) / " + foDen$ +
+    ... " else 1 fi) fi"
+
+elsif envelope_type = 2
+    # Cosine: half-cosine rise, unity sustain, half-cosine fall
+    shape$ = "if x < " + fi$ + " and " + fi$ + " > 0 then 0.5 - 0.5 * cos(pi * x / " + fiDen$ +
+    ... ") else (if x > " + fs$ + " and " + fo$ + " > 0 then 0.5 - 0.5 * cos(pi * (" + td$ +
+    ... " - x) / " + foDen$ + ") else 1 fi) fi"
+
+elsif envelope_type = 3
+    # Triangle: linear rise over fiSec, then one continuous linear fall
+    # from the peak all the way to zero at totalDur. There is no separate
+    # fade-out zone - the fall IS the fade-out, which is why Fade out is
+    # reported as unused rather than quietly ignored.
+    shape$ = "if x < " + fi$ + " and " + fi$ + " > 0 then x / " + fiDen$ +
+    ... " else max(0, 1 - (x - " + fi$ + ") / " + fall$ + ") fi"
+
+elsif envelope_type = 4
+    # Arch (symmetric): the v1.1 "Gentle arch" curve, unchanged. A fixed
+    # sin^2 hill over the whole output - 50% rise, instantaneous peak,
+    # 50% fall - written as 0.5 - 0.5*cos(2*pi*x/T) to avoid Praat
+    # operator precedence issues with ^.
+    shape$ = "0.5 - 0.5 * cos(2 * pi * x / " + td$ + ")"
+
+else
+    # Gentle arch: smootherstep rise, unity sustain, smootherstep fall,
+    # both driven by the fade percentages. 6t^5 - 15t^4 + 10t^3 in Horner
+    # form (no ^ operator); zero first AND second derivative at both ends,
+    # so the corners are flatter than Cosine.
+    tin$  = "(x / " + fiDen$ + ")"
+    tout$ = "((" + td$ + " - x) / " + foDen$ + ")"
+    sIn$  = tin$ + " * " + tin$ + " * " + tin$ + " * (" + tin$ + " * (6 * " + tin$ + " - 15) + 10)"
+    sOut$ = tout$ + " * " + tout$ + " * " + tout$ + " * (" + tout$ + " * (6 * " + tout$ + " - 15) + 10)"
+    shape$ = "if x < " + fi$ + " and " + fi$ + " > 0 then (" + sIn$ +
+    ... ") else (if x > " + fs$ + " and " + fo$ + " > 0 then (" + sOut$ +
+    ... ") else 1 fi) fi"
+endif
+
+envFormula$ = fixed$(peakAmp, 9) + " * (" + shape$ + ")"
 
 # === Apply overall envelope via single Formula: call ===
-# x is time in seconds from start of the output sound.
-# All parameters are interpolated into the formula string.
 appendInfoLine: "[2/3] Applying ", envStr$, " envelope..."
 
 selectObject: resultSound
-
-if envelope_type = 1
-    Formula: "self * 'peakAmp' * (if x < 'fiSec' and 'fiSec' > 0 then x / 'fiSec' else (if x > 'foStart' and 'foSec' > 0 then ('totalDur' - x) / 'foSec' else 1 fi) fi)"
-
-elsif envelope_type = 2
-    Formula: "self * 'peakAmp' * (if x < 'fiSec' and 'fiSec' > 0 then 0.5 - 0.5 * cos(pi * x / 'fiSec') else (if x > 'foStart' and 'foSec' > 0 then 0.5 - 0.5 * cos(pi * ('totalDur' - x) / 'foSec') else 1 fi) fi)"
-
-elsif envelope_type = 3
-    # Triangle: linear rise over fiSec, then continuous linear fall
-    # from peak at fiSec all the way to zero at totalDur.
-    # No separate fadeout zone -- the fall IS the fadeout.
-    fallDur = totalDur - fiSec
-    if fallDur < 0.001
-        fallDur = 0.001
-    endif
-    Formula: "self * 'peakAmp' * (if x < 'fiSec' and 'fiSec' > 0 then x / 'fiSec' else (if 'fallDur' > 0 then max(0, 1 - (x - 'fiSec') / 'fallDur') else 1 fi) fi)"
-
-else
-    # Gentle arch: smooth hill peaking at the midpoint, zero at both ends.
-    # Uses 0.5 - 0.5*cos(2*pi*x/T) which equals sin^2(pi*x/T) but avoids
-    # Praat operator precedence issues with the ^ exponent.
-    Formula: "self * 'peakAmp' * (0.5 - 0.5 * cos(2 * pi * x / 'totalDur'))"
-endif
+Formula: "self * (" + envFormula$ + ")"
 
 appendInfoLine: "  Done."
 
@@ -257,12 +411,16 @@ outName$ = srcName$ + "_dup" + string$(n) + "_xf" + xfLabel$ + "_" + envStr$
 selectObject: resultSound
 Rename: outName$
 
-if normalize_output = 1
-    Scale peak: 0.99
-    appendInfoLine: "  Normalized to 0.99 peak."
+prePeak = Get absolute extremum: 0, 0, "None"
+normGain = 1
+if peak_normalize_output = 1
+    if prePeak > 0
+        Scale peak: 0.99
+        normGain = 0.99 / prePeak
+    endif
 endif
-
 selectObject: resultSound
+outPeak = Get absolute extremum: 0, 0, "None"
 finalDur = Get total duration
 
 appendInfoLine: ""
@@ -270,9 +428,20 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:          ", outName$
 appendInfoLine: "Duration:        ", fixed$(finalDur, 4), " s"
 appendInfoLine: "Repetitions:     ", n
-appendInfoLine: "Crossfade:       ", fixed$(crossfade_duration_ms, 1), " ms"
+appendInfoLine: "Crossfade:       ", fixed$(crossfade_duration_ms, 3), " ms"
 appendInfoLine: "Envelope:        ", envStr$
-appendInfoLine: "Normalized:      ", normalize_output
+appendInfoLine: "Peak before normalization: ", fixed$(prePeak, 4)
+if peak_normalize_output = 1
+    appendInfoLine: "Normalization:   ON  (x", fixed$(normGain, 4), " -> ", fixed$(outPeak, 4), ")"
+    appendInfoLine: "                 This is a constant gain over the whole file, so the"
+    appendInfoLine: "                 absolute level set by Peak level (", fixed$(peak_level_percent, 0),
+    ... "%) does not survive it."
+else
+    appendInfoLine: "Normalization:   off"
+    if outPeak > 1
+        appendInfoLine: "                 WARNING: peak exceeds 1.0 and will clip on playback or save."
+    endif
+endif
 
 # === Visualization ===
 if draw_visualization = 1
@@ -341,36 +510,29 @@ if draw_visualization = 1
     # ---- Envelope curve ----
     Select outer viewport: 0, 8, 3.18, 4.18
     Select inner viewport: 0.6, 7.7, 3.25, 4.11
-    Axes: 0, finalDur, -0.05, 1.15
-    Paint rectangle: "{0.96, 0.96, 0.98}", 0, finalDur, -0.05, 1.15
 
-    # Create a tiny 100 Hz Sound whose samples encode the envelope shape.
-    # Drawing it with Draw: is a single C-level call -- no Praat loop.
-    envSR  = 500
-    fallDurViz = finalDur - fiSec
-    if fallDurViz < 0.001
-        fallDurViz = 0.001
+    envTop = 1.15 * peakAmp
+    if peak_normalize_output = 1
+        envTop = envTop * normGain
     endif
-    envSnd = Create Sound from formula: "env_curve", 1, 0, finalDur, envSR,
-        ... "(if 'envelope_type' = 4 then "
-        ... +   "0.5 - 0.5 * cos(2 * pi * x / 'finalDur') "
-        ... + "else (if 'envelope_type' = 3 then "
-        ... +   "(if x < 'fiSec' and 'fiSec' > 0 then x / 'fiSec' "
-        ... +   "else max(0, 1 - (x - 'fiSec') / 'fallDurViz') fi) "
-        ... + "else (if x < 'fiSec' and 'fiSec' > 0 then "
-        ... +   "(if 'envelope_type' = 2 "
-        ... +     "then 0.5 - 0.5 * cos(pi * x / 'fiSec') "
-        ... +     "else x / 'fiSec' fi) "
-        ... +   "else (if x > 'foStart' and 'foSec' > 0 then "
-        ... +     "(if 'envelope_type' = 2 "
-        ... +       "then 0.5 - 0.5 * cos(pi * ('finalDur' - x) / 'foSec') "
-        ... +       "else ('finalDur' - x) / 'foSec' fi) "
-        ... +   "else 1 fi) fi) fi) fi) * 'peakAmp'"
+    Axes: 0, finalDur, -0.05, envTop
+    Paint rectangle: "{0.96, 0.96, 0.98}", 0, finalDur, -0.05, envTop
+
+    # Same expression string that was applied to the audio, sampled at
+    # 500 Hz and drawn with one C-level call. If normalization ran, the
+    # constant is folded in, so this panel is the total applied gain.
+    envSR = 500
+    if peak_normalize_output = 1 and normGain <> 1
+        envDrawFormula$ = fixed$(normGain, 12) + " * (" + envFormula$ + ")"
+    else
+        envDrawFormula$ = envFormula$
+    endif
+    envSnd = Create Sound from formula: "env_curve", 1, 0, finalDur, envSR, envDrawFormula$
 
     selectObject: envSnd
     Colour: "{0.18, 0.52, 0.72}"
     Line width: 2
-    Draw: 0, 0, -0.05, 1.15 * peakAmp, "no", "Curve"
+    Draw: 0, 0, -0.05, envTop, "no", "Curve"
     removeObject: envSnd
 
     Line width: 1
@@ -379,7 +541,21 @@ if draw_visualization = 1
     Font size: 7
     Text left: "yes", "Amp"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", envStr$ + " envelope  |  peak: " + fixed$(peak_level_percent, 0) + "%  |  in: " + fixed$(fade_in_percent, 0) + "%  out: " + fixed$(fade_out_percent, 0) + "%"
+
+    if usesFadeIn and usesFadeOut
+        envCaption$ = envStr$ + " envelope  |  peak: " + fixed$(peak_level_percent, 0) +
+        ... "%  |  in: " + fixed$(fade_in_percent, 0) + "%  out: " + fixed$(fade_out_percent, 0) + "%"
+    elsif usesFadeIn
+        envCaption$ = envStr$ + " envelope  |  peak: " + fixed$(peak_level_percent, 0) +
+        ... "%  |  in: " + fixed$(fade_in_percent, 0) + "%  out: not used"
+    else
+        envCaption$ = envStr$ + " envelope  |  peak: " + fixed$(peak_level_percent, 0) +
+        ... "%  |  fades not used by this shape"
+    endif
+    if peak_normalize_output = 1 and normGain <> 1
+        envCaption$ = envCaption$ + "  |  x" + fixed$(normGain, 2) + " norm"
+    endif
+    Text top: "no", envCaption$
 
     # ---- Summary panel ----
     Select outer viewport: 0, 8, 4.25, 5.35
@@ -398,14 +574,22 @@ if draw_visualization = 1
         ... + "  |  " + string$(srcSR) + " Hz"
     Text: 0.02, "left", 0.44, "half",
         ... "Copies: " + string$(n)
-        ... + "  |  Crossfade: " + fixed$(crossfade_duration_ms, 1) + " ms"
+        ... + "  |  Crossfade: " + fixed$(crossfade_duration_ms, 2) + " ms"
         ... + "  |  Output: " + fixed$(finalDur, 3) + " s"
+        ... + "  |  Peak: " + fixed$(outPeak, 3)
+    if usesFadeOut
+        fadeText$ = "  |  Fade in: " + fixed$(fade_in_percent, 0) + "%" +
+        ... "  |  Fade out: " + fixed$(fade_out_percent, 0) + "%"
+    elsif usesFadeIn
+        fadeText$ = "  |  Fade in: " + fixed$(fade_in_percent, 0) + "%  |  Fade out: n/a"
+    else
+        fadeText$ = "  |  Fades: n/a"
+    endif
     Text: 0.02, "left", 0.23, "half",
         ... "Envelope: " + envStr$
-        ... + "  |  Fade in: " + fixed$(fade_in_percent, 0) + "%"
-        ... + "  |  Fade out: " + fixed$(fade_out_percent, 0) + "%"
-        ... + "  |  Peak: " + fixed$(peak_level_percent, 0) + "%"
-        ... + "  |  Norm: " + string$(normalize_output)
+        ... + fadeText$
+        ... + "  |  Peak level: " + fixed$(peak_level_percent, 0) + "%"
+        ... + "  |  Norm: " + string$(peak_normalize_output)
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
