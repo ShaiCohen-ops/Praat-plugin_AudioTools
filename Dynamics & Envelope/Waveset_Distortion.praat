@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2025) - Loudness-based deletion added (CDP distort_del)
+# Version: 1.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -35,14 +35,71 @@
 #   - Delete Weakest: same grouping, but only the quietest waveset is
 #     removed and all others are kept. Produces subtle noise-reduction /
 #     cleaning at the waveset level.
-#   Both modes measure energy the same way CDP does: integrate |sample|
-#   over the full waveset (Praat: Get energy, a monotone proxy).
+#   Both modes measure loudness the way CDP does: sum |sample| over the
+#   full waveset. (v1.2 and v1.3 used Get energy, which is sum x^2 and
+#   ranks differently; corrected in v1.4.)
+#
+#   v1.4 fixes what a runtime review found:
+#   - Multichannel input is now an explicit choice, and it is reported.
+#     v1.3 folded every stereo file to mono SILENTLY, so the output was
+#     always 1 channel with no mention of it, and anti-phase material
+#     (L = s, R = -s) cancelled to silence and died with "Not enough
+#     zero crossings found." Folding stays the default so existing
+#     workflows keep running, but it now prints what it did and falls
+#     back to channel 1 when the fold cancels. "Use channel 1 only" and
+#     "Stop" are the other options. Waveset segmentation is a mono
+#     operation either way - zero crossings of one channel are not zero
+#     crossings of another - so the output is always single-channel.
+#   - The material before the first crossing and after the last is kept.
+#     v1.3 processed only the span between them and discarded the rest:
+#     Reverse on a 50 ms 80 Hz sine returned 24.99 ms, and a file of
+#     100 ms silence + 400 ms tone came back starting with the tone at
+#     time 0. Preserve_length did not put it back; it padded the end.
+#   - Telescope's fallback path ran at all. "Get number of points - 1"
+#     was parsed as a command name and aborted the script on noise, on
+#     40 Hz and 70 Hz sines, and on anything unpitched in 75-600 Hz;
+#     the same branch also removed telePitch twice.
+#   - Compress no longer depends on the sampling rate. The virtual rate
+#     was capped at 96 kHz, so at 96 kHz a x2 compress did almost
+#     nothing and at 192 kHz it STRETCHED (200 ms -> 391 ms). It now
+#     resamples down and overrides back, which needs no high rate.
+#   - Keep/Delete rank by sum |x| as CDP does, not by Get energy
+#     (sum x^2). The two disagree: [1,0,0,0] beats [0.4,0.4,0.4] on
+#     energy and loses on CDP's measure.
+#   - Peak normalization is now a choice, default a safety ceiling that
+#     only attenuates. v1.3 always ran Scale peak, so a file peaking at
+#     0.01 came out at 0.95, about +39.6 dB.
+#   - Repeat_decay renamed Repeat_level_multiplier, since values above 1
+#     grow rather than decay, and mode-dependent validation added.
+#   - Telescope reports pitch periods rather than zero-crossing
+#     wavesets, and Amount is shown only for the modes that read it.
+#
+#   v1.5, after the follow-up review confirmed the v1.4 fixes:
+#   - Telescope is no longer gated behind zero crossings. v1.4 always ran
+#     To PointProcess (zeroes) first and exited on "Not enough zero
+#     crossings found" before the pitch detector was ever reached, so a
+#     plainly pitched 0.5 + 0.2*sin(2*pi*220t) - periodic, but never
+#     crossing zero - was rejected. Telescope now tries pitch first and
+#     only falls back to zero crossings, failing only if both come up
+#     short.
+#   - Modes 1-9 accept 2 crossings, which already bound one complete
+#     waveset. v1.4 demanded 3.
+#   - The fallback is reported as what it is. v1.4 printed "N pitch
+#     periods" even when those N were zero-crossing wavesets.
+#   - Skip, Reverse, Randomize and Amplitude change no durations, so
+#     their output length is now matched to the source exactly. Extract
+#     and concatenate rounded each boundary to the sample grid and the
+#     error accumulated (1 s in, 1.000204 s out - nine samples).
+#   - The menu entry is "Pitch-Synchronous Telescope (CDP-inspired)":
+#     the main path uses pitch-synchronous boundaries, which is not what
+#     CDP's distort_tel does, though the fallback path is CDP-style.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
+#   Waveset processing is mono: see Multichannel_handling.
 # ============================================================
 
-form Waveset Distortion v1.3
+form Waveset Distortion v1.5
     optionmenu Preset: 1
         option Custom
         option Waveset Repeat (stutter)
@@ -55,7 +112,13 @@ form Waveset Distortion v1.3
         option Waveset Amplitude
         option Keep Strongest (CDP)
         option Delete Weakest (CDP)
-        option Telescope (CDP distort_tel)
+        option Pitch-Synchronous Telescope (CDP-inspired)
+    comment === Input ===
+    optionmenu Multichannel_handling: 1
+        option Fold to mono
+        option Use channel 1 only
+        option Stop (refuse multichannel input)
+    comment (waveset boundaries are per-channel: output is always mono)
     comment === Parameters ===
     optionmenu Type: 1
         option Repeat
@@ -67,10 +130,11 @@ form Waveset Distortion v1.3
         option Amplitude
         option Keep Strongest
         option Delete Weakest
-        option Telescope
+        option Pitch-Sync Telescope
     positive Amount 2.0
     comment --- Repeat only ---
-    positive Repeat_decay 0.8
+    positive Repeat_level_multiplier 0.8
+    comment (per repetition: 1 = no change, below 1 decays, above 1 grows)
     comment --- Randomize / Keep-Delete / Telescope: group size ---
     positive Group_size 4
     comment --- Telescope only ---
@@ -78,8 +142,15 @@ form Waveset Distortion v1.3
         option Longest cycle (CDP default)
         option Mean cycle length
     boolean Preserve_length 0
+    comment (matches total seconds only: trims the tail if long, pads if short)
+    boolean Keep_head_and_tail 1
+    comment (material before the first and after the last zero crossing)
     comment === Output ===
-    positive Scale_peak 0.95
+    optionmenu Output_level_mode: 2
+        option None (leave level as processed)
+        option Safety ceiling (attenuate only if above)
+        option Peak normalize (always scale to ceiling)
+    positive Ceiling_peak 0.95
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -165,6 +236,49 @@ if (type = 8 or type = 9 or type = 10) and groupSz < 2
     groupSz = 2
 endif
 
+# --- Mode-dependent validation ---
+# Amount means something different in every mode, so it is checked per mode.
+if type = 1
+    repeatCount = round(amount)
+    if repeatCount < 1
+        exitScript: "Repeat needs Amount of at least 1 (got " + fixed$(amount, 2) +
+        ... "). Amount is a copy count and is rounded: 2.5 gives 3 copies."
+    endif
+    if repeatCount > 64
+        exitScript: "Repeat count of " + string$(repeatCount) +
+        ... " is beyond the practical limit of 64 copies per waveset."
+    endif
+elsif type = 2
+    if amount < 1
+        exitScript: "Skip needs Amount of at least 1 (got " + fixed$(amount, 2) +
+        ... "). The silencing probability is 1 / Amount, so anything below 1 " +
+        ... "silences every waveset."
+    endif
+elsif type = 4 or type = 5
+    if amount <= 0 or amount > 100
+        exitScript: "Stretch/Compress needs Amount greater than 0 and at most 100 (got " +
+        ... fixed$(amount, 3) + ")."
+    endif
+elsif type = 7
+    if amount <= 0
+        exitScript: "Amplitude needs Amount greater than 0 (got " + fixed$(amount, 3) +
+        ... "); alternate wavesets are scaled by Amount and by 1 / Amount."
+    endif
+endif
+
+if ceiling_peak <= 0 or ceiling_peak > 1
+    exitScript: "Ceiling_peak must be greater than 0 and at most 1 (got " +
+    ... fixed$(ceiling_peak, 3) + ")."
+endif
+
+# Does this mode actually read Amount?
+usesAmount = 1
+if type = 3 or type = 6 or type = 8 or type = 9 or type = 10
+    usesAmount = 0
+endif
+
+maxWavesets = 100000
+
 # Type name
 if type = 1
     typeName$ = "Repeat"
@@ -192,19 +306,23 @@ elsif type = 10
     else
         teleModeName$ = "mean"
     endif
-    typeName$ = "Telescope (group=" + string$(groupSz) + ", " + teleModeName$ + ")"
+    typeName$ = "Pitch-Sync Telescope (group=" + string$(groupSz) + ", " + teleModeName$ + ")"
 else
     typeName$ = "Amplitude"
 endif
 
 clearinfo
-writeInfoLine: "=== Waveset Distortion v1.3 ==="
+writeInfoLine: "=== Waveset Distortion v1.5 ==="
 appendInfoLine: "Input: ", soundName$, " (", fixed$(original_duration, 2), " s, ",
     ... sampling_rate, " Hz)"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Type: ", typeName$, "  Amount: ", fixed$(amount, 1)
+if usesAmount
+    appendInfoLine: "Type: ", typeName$, "  Amount: ", fixed$(amount, 1)
+else
+    appendInfoLine: "Type: ", typeName$, "  (Amount is not used by this mode)"
+endif
 if type = 1
-    appendInfoLine: "Repeat decay: ", fixed$(repeat_decay, 2)
+    appendInfoLine: "Repeat level multiplier: ", fixed$(repeat_level_multiplier, 2)
 endif
 if type = 6 and groupSz > 1
     appendInfoLine: "Group size: ", groupSz, " wavesets per group (CDP distort_shuf)"
@@ -226,26 +344,174 @@ startTime = stopwatch
 
 appendInfoLine: "[1/3] Finding zero crossings..."
 
+# Waveset segmentation is a mono operation: a zero crossing in one
+# channel is not a zero crossing in another, so there is no shared set of
+# boundaries for a multichannel file. v1.3 folded silently, which threw
+# away the spatial image and, on anti-phase material, the signal itself.
 selectObject: sound
+srcPeak = Get absolute extremum: 0, 0, "None"
+
 if numChannels > 1
-    monoWork = Convert to mono
+    if multichannel_handling = 3
+        exitScript: "This Sound has " + string$(numChannels) + " channels, and " +
+        ... "Multichannel_handling is set to Stop." + newline$ + newline$ +
+        ... "Waveset processing is defined on a single channel: a zero crossing in one " +
+        ... "channel is not one in another, so there is no shared set of boundaries. " +
+        ... "Set Multichannel_handling to ""Fold to mono"" or ""Use channel 1 only"", or " +
+        ... "process each channel separately and recombine them yourself."
+    elsif multichannel_handling = 1
+        selectObject: sound
+        monoWork = Convert to mono
+        selectObject: monoWork
+        foldPeak = Get absolute extremum: 0, 0, "None"
+        if foldPeak < 0.1 * srcPeak
+            # Channels are largely out of phase and cancelled each other.
+            appendInfoLine: "  WARNING: folding to mono cancelled the signal (fold peak ",
+            ... fixed$(foldPeak, 5), " against source peak ", fixed$(srcPeak, 5), ")."
+            appendInfoLine: "           Using channel 1 instead."
+            removeObject: monoWork
+            selectObject: sound
+            monoWork = Extract one channel: 1
+            channelNote$ = "channel 1 (fold cancelled)"
+        else
+            channelNote$ = "folded to mono"
+        endif
+    else
+        selectObject: sound
+        monoWork = Extract one channel: 1
+        channelNote$ = "channel 1 only"
+    endif
+    appendInfoLine: "  Multichannel input (", numChannels, " ch): ", channelNote$
 else
+    selectObject: sound
     monoWork = Copy: "mono_work"
+    channelNote$ = "mono"
 endif
 
 selectObject: monoWork
-ppZeroes = To PointProcess (zeroes): 1, "yes", "no"
+srcStart = Get start time
+srcEnd = Get end time
 
-selectObject: ppZeroes
-n_crossings = Get number of points
+# --- Boundary detection ---
+# Telescope segments on PITCH periods, so it tries the pitch detector
+# FIRST and only falls back to zero crossings. v1.4 always ran the
+# zero-crossing pass up front and exited on "Not enough zero crossings
+# found" before Telescope ever reached To Pitch: a clearly pitched
+# 0.5 + 0.2*sin(2*pi*220t) never crosses zero and was rejected outright.
+ppZeroes = 0
+n_crossings = 0
+n_wavesets = 0
+telescopeUsedFallback = 0
+telePitch = 0
+telePP = 0
+telePP_use = 0
+n_periods = 0
 
-if n_crossings < 3
-    removeObject: ppZeroes, monoWork
-    exitScript: "Not enough zero crossings found."
+if type = 10
+    appendInfoLine: "  Detecting pitch periods..."
+    selectObject: monoWork
+    telePitch = To Pitch: 0.01, 75, 600
+    selectObject: telePitch
+    plusObject: monoWork
+    telePP = To PointProcess (cc)
+    selectObject: telePP
+    n_pulses = Get number of points
+
+    if n_pulses >= groupSz + 1
+        telePP_use = telePP
+        n_periods = n_pulses - 1
+        appendInfoLine: "  Pitch periods: ", n_periods
+    else
+        appendInfoLine: "  Not enough pitched periods for telescope (", n_pulses, " pulses)."
+        appendInfoLine: "  Falling back to zero-crossing wavesets."
+        selectObject: monoWork
+        ppZeroes = To PointProcess (zeroes): 1, "yes", "no"
+        selectObject: ppZeroes
+        n_crossings = Get number of points
+        if n_crossings < 2
+            removeObject: telePitch, telePP, ppZeroes, monoWork
+            exitScript: "Telescope found neither enough pitch periods (" + string$(n_pulses) +
+            ... " pulses, needs " + string$(groupSz + 1) + ") nor enough zero crossings (" +
+            ... string$(n_crossings) + ", needs 2)."
+        endif
+        telePP_use = ppZeroes
+        n_periods = n_crossings - 1
+        telescopeUsedFallback = 1
+        appendInfoLine: "  Zero-crossing wavesets: ", n_periods
+    endif
+    n_boundaries = n_periods + 1
+    segCountForCheck = n_periods
+else
+    selectObject: monoWork
+    ppZeroes = To PointProcess (zeroes): 1, "yes", "no"
+    selectObject: ppZeroes
+    n_crossings = Get number of points
+
+    # Two crossings already bound one complete waveset; v1.4 demanded three.
+    if n_crossings < 2
+        removeObject: ppZeroes, monoWork
+        exitScript: "Not enough zero crossings found (" + string$(n_crossings) +
+        ... "; at least 2 are needed to bound one waveset)."
+    endif
+
+    n_wavesets = n_crossings - 1
+    appendInfoLine: "  Crossings: ", n_crossings, " (", n_wavesets, " wavesets)"
+    boundaryPP = ppZeroes
+    n_boundaries = n_crossings
+    segCountForCheck = n_wavesets
 endif
 
-n_wavesets = n_crossings - 1
-appendInfoLine: "  Crossings: ", n_crossings, " (", n_wavesets, " wavesets)"
+if segCountForCheck > maxWavesets
+    if ppZeroes <> 0
+        removeObject: ppZeroes
+    endif
+    if telePitch <> 0
+        removeObject: telePitch, telePP
+    endif
+    removeObject: monoWork
+    exitScript: "This Sound has " + string$(segCountForCheck) + " segments, beyond the limit of " +
+    ... string$(maxWavesets) + ". Use a shorter selection."
+endif
+
+if type = 10
+    boundaryPP = telePP_use
+endif
+
+# ============================================================
+# HEAD AND TAIL
+# ============================================================
+# Everything before the first boundary and after the last one, cut from
+# whichever PointProcess this run actually segments on. v1.3 dropped
+# both: Reverse on a 50 ms 80 Hz sine returned 24.99 ms, and a file that
+# opened with silence came back opening with the tone.
+selectObject: boundaryPP
+firstCross = Get time from index: 1
+lastCross = Get time from index: n_boundaries
+
+headDur = firstCross - srcStart
+tailDur = srcEnd - lastCross
+headWS = 0
+tailWS = 0
+
+if keep_head_and_tail
+    if headDur > 0.5 / sampling_rate
+        selectObject: monoWork
+        Extract part: srcStart, firstCross, "rectangular", 1, "no"
+        headWS = selected("Sound")
+        Rename: "ws_head"
+    endif
+    if tailDur > 0.5 / sampling_rate
+        selectObject: monoWork
+        Extract part: lastCross, srcEnd, "rectangular", 1, "no"
+        tailWS = selected("Sound")
+        Rename: "ws_tail"
+    endif
+    appendInfoLine: "  Head kept: ", fixed$(headDur * 1000, 2), " ms | Tail kept: ",
+    ... fixed$(tailDur * 1000, 2), " ms"
+else
+    appendInfoLine: "  Head/tail discarded: ", fixed$((headDur + tailDur) * 1000, 2),
+    ... " ms of the source is dropped (Keep_head_and_tail is off)"
+endif
 
 # ============================================================
 # TYPE 10: TELESCOPE (CDP distort_tel) — separate code path
@@ -274,29 +540,10 @@ appendInfoLine: "  Crossings: ", n_crossings, " (", n_wavesets, " wavesets)"
 if type = 10
     appendInfoLine: "[2/3] Telescoping (group=", groupSz, ", ref=", teleModeName$, ")..."
 
-    # Pitch-synchronous boundary detection
-    appendInfoLine: "  Detecting pitch periods..."
-    selectObject: monoWork
-    telePitch = To Pitch: 0.01, 75, 600
-    selectObject: telePitch
-    plusObject: monoWork
-    telePP = To PointProcess (cc)
-    selectObject: telePP
-    n_pulses = Get number of points
+    # Boundaries were resolved in STEP 1 (pitch first, zero crossings as
+    # fallback), and the head and tail were cut from whichever of the two
+    # this run is segmenting on.
 
-    if n_pulses < groupSz + 1
-        removeObject: telePitch, telePP
-        appendInfoLine: "  Not enough pitched periods for telescope."
-        appendInfoLine: "  Falling back to zero-crossing wavesets."
-        # Fall back: use ppZeroes as before
-        telePP_use = ppZeroes
-        selectObject: telePP_use
-        n_periods = Get number of points - 1
-    else
-        telePP_use = telePP
-        n_periods = n_pulses - 1
-        appendInfoLine: "  Pitch periods: ", n_periods
-    endif
 
     n_full_groups = floor(n_periods / groupSz)
     remainder = n_periods - n_full_groups * groupSz
@@ -443,13 +690,12 @@ if type = 10
         result = resultPart[1]
     endif
 
-    # Cleanup telescope objects
-    if telePP_use = telePP
-        removeObject: telePitch, telePP
-    else
-        removeObject: telePitch
+    # Cleanup telescope objects (single site, both paths).
+    # ppZeroes only exists when the pitch detector came up short.
+    removeObject: telePitch, telePP
+    if ppZeroes <> 0
+        removeObject: ppZeroes
     endif
-    removeObject: ppZeroes, monoWork
 
 else
 
@@ -460,17 +706,32 @@ else
 # STEP 2: MEASURE WAVESET ENERGIES (types 8 and 9 only)
 
 if type = 8 or type = 9
-    appendInfoLine: "  Measuring waveset energies..."
+    appendInfoLine: "  Measuring waveset loudness (CDP sum |x|)..."
+    # CDP's DISTDEL_CYCLEVAL accumulates absolute sample magnitudes, i.e.
+    # sum |x|. v1.3 used Get energy, which is sum x^2 - a different
+    # ranking, not a monotone proxy: [1, 0, 0, 0] wins on energy (1.0 vs
+    # 0.48) and loses on CDP's measure (1.0 vs 1.2) against
+    # [0.4, 0.4, 0.4].
+    # One rectified copy serves every waveset, so no per-waveset Extract
+    # is needed: mean |x| over the span, times the span, is proportional
+    # to the sum.
+    selectObject: monoWork
+    absWork = Copy: "abs_work"
+    Formula: "abs(self)"
+
     for ws from 1 to n_wavesets
         selectObject: ppZeroes
         t1 = Get time from index: ws
         t2 = Get time from index: ws + 1
-        selectObject: monoWork
-        Extract part: t1, t2, "rectangular", 1, "no"
-        wsTmp = selected("Sound")
-        wsEnergy[ws] = Get energy: 0, 0
-        removeObject: wsTmp
+        selectObject: absWork
+        wsMeanAbs = Get mean: t1, t2
+        if wsMeanAbs = undefined
+            wsMeanAbs = 0
+        endif
+        wsEnergy[ws] = wsMeanAbs * (t2 - t1)
     endfor
+
+    removeObject: absWork
 endif
 
 # ============================================================
@@ -614,7 +875,7 @@ for wsIdx from 1 to n_wavesets
                 selectObject: wsSound
                 Copy: "ws_copy"
                 repCopy = selected("Sound")
-                decay = repeat_decay ^ r
+                decay = repeat_level_multiplier ^ r
                 Formula: "self * " + fixed$(decay, 6)
                 selectObject: wsRepeated
                 plusObject: repCopy
@@ -653,12 +914,17 @@ for wsIdx from 1 to n_wavesets
         wsSound = wsNew
 
     elsif type = 5
-        # COMPRESS (SR override)
+        # COMPRESS. Resample DOWN to sr / amount, then override the rate
+        # back to sr: the sample count drops by the factor and the
+        # duration follows, with no virtual rate involved.
+        # v1.3 overrode UP to sr * amount and clamped that at 96 kHz, so
+        # the achieved factor was 96000 / sr whenever sr * amount passed
+        # the cap: at 96 kHz a x2 compress did nothing, and at 192 kHz it
+        # stretched (200 ms became 391 ms).
         selectObject: wsSound
         wsSR = Get sampling frequency
-        newSR = min(96000, round(wsSR * amount))
-        Override sampling frequency: newSR
-        Resample: wsSR, 50
+        lowSR = max(100, wsSR / amount)
+        Resample: lowSR, 50
         wsNew = selected("Sound")
         removeObject: wsSound
         selectObject: wsNew
@@ -747,12 +1013,96 @@ else
     result = resultPart[1]
 endif
 
-removeObject: ppZeroes, monoWork
+removeObject: ppZeroes
 
 endif
 # ============================================================
 # end of type=10 / types 1-9 branch
 # ============================================================
+
+# ============================================================
+# REATTACH HEAD AND TAIL
+# ============================================================
+# Concatenate follows OBJECT-LIST order, not selection order, so the
+# three segments are re-created here in the order they must play. The
+# originals were made before processing and would otherwise sort ahead
+# of the processed middle.
+
+if keep_head_and_tail and (headWS <> 0 or tailWS <> 0)
+    segCount = 0
+    if headWS <> 0
+        selectObject: headWS
+        segCount = segCount + 1
+        seg[segCount] = Copy: "seg_1_head"
+    endif
+    selectObject: result
+    segCount = segCount + 1
+    seg[segCount] = Copy: "seg_2_mid"
+    if tailWS <> 0
+        selectObject: tailWS
+        segCount = segCount + 1
+        seg[segCount] = Copy: "seg_3_tail"
+    endif
+
+    selectObject: seg[1]
+    for sgi from 2 to segCount
+        plusObject: seg[sgi]
+    endfor
+    Concatenate
+    rejoined = selected("Sound")
+    for sgi from 1 to segCount
+        removeObject: seg[sgi]
+    endfor
+    removeObject: result
+    result = rejoined
+endif
+
+if headWS <> 0
+    removeObject: headWS
+endif
+if tailWS <> 0
+    removeObject: tailWS
+endif
+removeObject: monoWork
+
+# ============================================================
+# EXACT LENGTH FOR TIME-PRESERVING MODES
+# ============================================================
+# Skip, Reverse, Randomize and Amplitude all reuse every waveset and
+# change no durations, so the output should equal the source exactly.
+# Extracting and re-concatenating rounds each boundary to the sample
+# grid, which accumulated a few samples of drift (1.000204 s from a 1 s
+# source, i.e. nine samples). Enforce the match rather than leaving it.
+timePreserving = 0
+if type = 2 or type = 3 or type = 6 or type = 7
+    timePreserving = 1
+endif
+
+lengthEnforced = 0
+if timePreserving and keep_head_and_tail and not preserve_length
+    selectObject: result
+    resDur = Get total duration
+    driftSamples = round((resDur - original_duration) * sampling_rate)
+    if abs(driftSamples) > 0
+        if resDur > original_duration
+            Extract part: 0, original_duration, "rectangular", 1, "no"
+            trimmed = selected("Sound")
+            removeObject: result
+            result = trimmed
+        else
+            padDur = original_duration - resDur
+            Create Sound from formula: "pad", 1, 0, padDur, sampling_rate, "0"
+            padSound = selected("Sound")
+            selectObject: result
+            plusObject: padSound
+            Concatenate
+            padded = selected("Sound")
+            removeObject: result, padSound
+            result = padded
+        endif
+        lengthEnforced = driftSamples
+    endif
+endif
 
 # ============================================================
 # PRESERVE LENGTH (optional)
@@ -784,10 +1134,34 @@ endif
 # ============================================================
 
 selectObject: result
-Scale peak: scale_peak
+pre_level_peak = Get absolute extremum: 0, 0, "None"
+level_gain = 1
+level_action$ = "none"
+
+if output_level_mode = 2
+    # Attenuate only if above the ceiling; a quiet file stays quiet.
+    # v1.3 always ran Scale peak, so a source peaking at 0.01 came out
+    # at 0.95 - about +39.6 dB of gain for a process that does not
+    # inherently change level.
+    if pre_level_peak > ceiling_peak and pre_level_peak > 0
+        Scale peak: ceiling_peak
+        level_gain = ceiling_peak / pre_level_peak
+        level_action$ = "ceiling applied"
+    else
+        level_action$ = "ceiling not needed"
+    endif
+elsif output_level_mode = 3
+    if pre_level_peak > 0
+        Scale peak: ceiling_peak
+        level_gain = ceiling_peak / pre_level_peak
+        level_action$ = "peak normalized"
+    endif
+endif
+
 Rename: soundName$ + "_WSD_" + presetName$
 resultID = selected("Sound")
 resultDur = Get total duration
+out_peak = Get absolute extremum: 0, 0, "None"
 
 processingTime = stopwatch
 
@@ -808,9 +1182,14 @@ if draw_visualization
     Text: 0.5, "centre", 0.65, "half", "##Waveset Distortion##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
+    if usesAmount
+        titleAmount$ = " x" + fixed$(amount, 1)
+    else
+        titleAmount$ = ""
+    endif
     Text: 0.5, "centre", -0.25, "half",
         ... soundName$ + "  |  " + presetName$
-        ... + "  |  " + typeName$ + " x" + fixed$(amount, 1)
+        ... + "  |  " + typeName$ + titleAmount$
 
     Select outer viewport: 0, 8, 0.52, 1.52
     Select inner viewport: 0.55, 7.65, 0.57, 1.47
@@ -829,6 +1208,10 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "Input"
+    if numChannels > 1
+        Text top: "no", "Input channel 1 of " + string$(numChannels) + "  (processed as " +
+        ... channelNote$ + ")"
+    endif
 
     Select outer viewport: 0, 8, 1.56, 2.56
     Select inner viewport: 0.55, 7.65, 1.61, 2.51
@@ -885,12 +1268,35 @@ if draw_visualization
     Text: 0.02, "left", 0.78, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
+    if usesAmount
+        amountStr$ = "  |  Amount: " + fixed$(amount, 1)
+    else
+        amountStr$ = "  |  Amount: n/a"
+    endif
+    if type = 10
+        if telescopeUsedFallback
+            segStr$ = "  |  ZC wavesets: " + string$(n_periods) + " (fallback)"
+        else
+            segStr$ = "  |  Periods: " + string$(n_periods)
+        endif
+    else
+        segStr$ = "  |  Wavesets: " + string$(n_wavesets)
+    endif
+    if output_level_mode = 1
+        levelStr$ = "none"
+    elsif output_level_mode = 2
+        levelStr$ = "ceiling " + fixed$(ceiling_peak, 2) + " (" + level_action$ + ")"
+    else
+        levelStr$ = "normalized to " + fixed$(ceiling_peak, 2)
+    endif
     Text: 0.02, "left", 0.42, "half",
         ... "Type: " + typeName$
-        ... + "  |  Amount: " + fixed$(amount, 1)
-        ... + "  |  Wavesets: " + string$(n_wavesets)
+        ... + amountStr$
+        ... + segStr$
         ... + "  |  In: " + fixed$(original_duration, 2) + "s"
         ... + "  ->  Out: " + fixed$(resultDur, 2) + "s"
+        ... + "  |  Ch: " + channelNote$
+        ... + "  |  Level: " + levelStr$
         ... + "  |  Time: " + fixed$(processingTime, 1) + "s"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -908,7 +1314,44 @@ selectObject: resultID
 
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
-appendInfoLine: "Wavesets: ", n_wavesets
+if type = 10
+    # v1.3 printed the zero-crossing waveset count here even though
+    # Telescope had segmented on pitch periods; v1.4 then called the
+    # fallback's zero-crossing wavesets "pitch periods". Report what was
+    # actually used.
+    if telescopeUsedFallback
+        appendInfoLine: "Segments: ", n_periods, " zero-crossing wavesets (Telescope fallback)"
+    else
+        appendInfoLine: "Segments: ", n_periods, " pitch periods (Telescope)"
+    endif
+else
+    appendInfoLine: "Wavesets: ", n_wavesets
+endif
+if keep_head_and_tail
+    appendInfoLine: "Head/tail: ", fixed$(headDur * 1000, 2), " ms + ",
+    ... fixed$(tailDur * 1000, 2), " ms restored around the processed span"
+endif
+if lengthEnforced <> 0
+    appendInfoLine: "Length matched to the source (this mode does not change time):",
+    ... " corrected ", lengthEnforced, " sample(s) of extract/concatenate drift"
+endif
+if preserve_length
+    appendInfoLine: "Preserve length: on - total seconds match the source, but the"
+    appendInfoLine: "  material inside is not realigned (long output is trimmed at the"
+    appendInfoLine: "  end, short output is padded with silence at the end)"
+endif
+appendInfoLine: "Peak before output stage: ", fixed$(pre_level_peak, 4)
+if output_level_mode = 1
+    appendInfoLine: "Output stage: none"
+elsif output_level_mode = 2
+    appendInfoLine: "Output stage: safety ceiling ", fixed$(ceiling_peak, 2), " - ", level_action$
+else
+    appendInfoLine: "Output stage: peak normalize to ", fixed$(ceiling_peak, 2),
+    ... " (x", fixed$(level_gain, 4), ")"
+endif
+if output_level_mode <> 3 and out_peak > 1
+    appendInfoLine: "WARNING: output peak exceeds 1.0 and will clip when saved to integer PCM."
+endif
 appendInfoLine: "In: ", fixed$(original_duration, 2), "s -> Out: ", fixed$(resultDur, 2), "s"
 appendInfoLine: "Time: ", fixed$(processingTime, 1), " s"
 appendInfoLine: "Created: ", selected$("Sound")
