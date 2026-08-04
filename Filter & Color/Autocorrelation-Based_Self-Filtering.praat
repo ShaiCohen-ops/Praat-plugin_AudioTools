@@ -1,17 +1,27 @@
 # ============================================================
 # Praat AudioTools - Autocorrelation-Based_Self-Filtering.praat
-# Version: 0.6 (2025) - Fixed IR centering (lag-0 at time 0, not acDur/2)
+# Author: Shai Cohen
+# Affiliation: Department of Music, Bar-Ilan University, Israel
+# Email: shai.cohen@biu.ac.il
+# Version: 1.2 (2026) - Spatial Stereo Widening & Parameter Decorrelation
+# License: MIT License
+# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Description:
+#   Self-filtering using time-varying frame autocorrelation kernels.
+#   Implements normalized autocorrelation color tails, true dry/wet crossfade,
+#   automatic RMS makeup gain matching, and Spatial Stereo Decorrelation.
 # ============================================================
 
 # === Input Validation ===
 if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object."
+    exitScript: "Validation Error: Please select exactly one Sound object."
 endif
 
 sound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Autocorrelation-Based Self-Filtering v0.5
+form Autocorrelation-Based Self-Filtering v1.2
     optionmenu Preset: 1
         option Manual
         option Tight/Metallic
@@ -19,385 +29,515 @@ form Autocorrelation-Based Self-Filtering v0.5
         option Loose/Ambient
         option Extreme Resonance
         option Subtle Enhancement
-    comment === Processing ===
+    comment === Processing Parameters ===
     positive Window_duration 0.15
     positive Max_lag 0.02
-    real Dry_wet_mix 0.7
-    comment === Output ===
+    positive Resonance_gain 1.15
+    real Dry_wet_mix 0.55
+    comment === Stereo Spatialization ===
+    boolean Spatial_stereo_widening 1
+    comment === Gain & Loudness Control ===
+    boolean Match_RMS_to_input 1
+    positive Max_makeup_gain_dB 6.0
+    boolean Peak_normalize_output 0
     positive Scale_peak 0.95
+    comment === Display & Playback ===
     boolean Play_after_processing 1
     boolean Draw_visualization 1
 endform
 
 # ============================================================
-# Presets (with longer windows to avoid clicks)
+# Apply Presets
 # ============================================================
 if preset = 2
     # Tight/Metallic
     window_duration = 0.10
     max_lag = 0.008
-    dry_wet_mix = 0.8
+    resonance_gain = 1.30
+    dry_wet_mix = 0.55
     presetName$ = "TightMetallic"
 elsif preset = 3
     # Medium/Resonant
     window_duration = 0.15
-    max_lag = 0.02
-    dry_wet_mix = 0.7
+    max_lag = 0.020
+    resonance_gain = 1.15
+    dry_wet_mix = 0.55
     presetName$ = "MediumResonant"
 elsif preset = 4
     # Loose/Ambient
     window_duration = 0.25
-    max_lag = 0.05
-    dry_wet_mix = 0.6
+    max_lag = 0.050
+    resonance_gain = 0.95
+    dry_wet_mix = 0.50
     presetName$ = "LooseAmbient"
 elsif preset = 5
     # Extreme Resonance
     window_duration = 0.20
-    max_lag = 0.08
-    dry_wet_mix = 0.9
+    max_lag = 0.080
+    resonance_gain = 2.20
+    dry_wet_mix = 0.70
     presetName$ = "ExtremeResonance"
 elsif preset = 6
     # Subtle Enhancement
     window_duration = 0.12
     max_lag = 0.015
-    dry_wet_mix = 0.4
+    resonance_gain = 0.60
+    dry_wet_mix = 0.40
     presetName$ = "SubtleEnhancement"
 else
     presetName$ = "Manual"
 endif
 
 # ============================================================
-# Setup
+# Setup & Parameter Validation
 # ============================================================
 clearinfo
-writeInfoLine: "=== Autocorrelation Self-Filtering v0.5 ==="
-appendInfoLine: "Preset: ", presetName$
+writeInfoLine: "=== Autocorrelation Self-Filtering v1.2 (Stereo Spatialization) ==="
+appendInfoLine: "Preset:          ", presetName$
+appendInfoLine: "Input:           ", originalName$
 appendInfoLine: ""
 
 selectObject: sound
+origXmin = Get start time
+origXmax = Get end time
 duration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
+origRms = Get root-mean-square: 0, 0
 
-# MINIMUM WINDOW to avoid clicks (at least 100ms)
-minWindow = 0.10
+# Sanity checks
+if dry_wet_mix < 0.0 or dry_wet_mix > 1.0
+    exitScript: "Validation Error: Dry/Wet mix must be between 0.0 and 1.0."
+endif
+
+if peak_normalize_output and scale_peak > 1.0
+    exitScript: "Validation Error: Scale peak must be <= 1.0 to prevent clipping."
+endif
+
+minWindow = 0.04
 if window_duration < minWindow
-    appendInfoLine: "Note: Window increased from ", fixed$(window_duration * 1000, 0), " ms to ", fixed$(minWindow * 1000, 0), " ms to avoid clicks"
+    appendInfoLine: "Note: Window increased from ", fixed$(window_duration * 1000, 0), " ms to ", fixed$(minWindow * 1000, 0), " ms for stability."
     window_duration = minWindow
 endif
 
-if window_duration > duration / 2
-    window_duration = duration / 2
+if duration < window_duration
+    exitScript: "Validation Error: Input sound duration (", fixed$(duration, 3), "s) is shorter than window duration."
 endif
+
 if max_lag > window_duration / 2
     max_lag = window_duration / 2
+    appendInfoLine: "Note: Max lag clamped to half window duration (", fixed$(max_lag * 1000, 1), " ms)."
 endif
 
 hopDuration = window_duration / 2
-numFrames = floor((duration - window_duration) / hopDuration) + 1
-if numFrames < 1
-    numFrames = 1
-endif
+padTime = window_duration
+numFrames = ceiling((duration + padTime) / hopDuration)
 
-appendInfoLine: "Window: ", fixed$(window_duration * 1000, 0), " ms"
-appendInfoLine: "IR lag: ", fixed$(max_lag * 1000, 1), " ms"
-appendInfoLine: "Dry/wet: ", fixed$(dry_wet_mix * 100, 0), "%"
-appendInfoLine: "Frames: ", numFrames
+appendInfoLine: "Duration:        ", fixed$(duration, 3), " s"
+appendInfoLine: "Window:          ", fixed$(window_duration * 1000, 0), " ms"
+appendInfoLine: "Base Max Lag:    ", fixed$(max_lag * 1000, 1), " ms"
+appendInfoLine: "Resonance Gain:  ", fixed$(resonance_gain, 2)
+appendInfoLine: "Dry/Wet Mix:     ", fixed$(dry_wet_mix * 100, 0), "%"
+appendInfoLine: "Stereo Widening: ", if spatial_stereo_widening then "Enabled" else "Disabled" endif
+appendInfoLine: "Input Channels:  ", numChannels
+appendInfoLine: "Frames:          ", numFrames
 appendInfoLine: ""
 
-# For visualization
 exampleIR = 0
-exampleIRduration = 0
 capturedIR = 0
 
 # ============================================================
-# Process single channel
+# Procedure: Process Single Channel with Per-Channel Lag
 # ============================================================
-procedure processChannel: .inputSound, .outputName$
-    selectObject: .inputSound
-    .inputDuration = Get total duration
-    .inputId$ = string$(.inputSound)
+procedure processSingleChannel: .chanSound, .outChanName$, .lagVal
+    selectObject: .chanSound
+    .cDur = Get total duration
+    .chanId$ = string$(.chanSound)
     
-    # Create output buffer
-    Create Sound from formula: .outputName$, 1, 0, .inputDuration, sampleRate, "0"
-    .outputSound = selected("Sound")
-    .outputId$ = string$(.outputSound)
+    # 1. Create Padded Work Copy
+    .paddedSound = Create Sound from formula: "padded_input", 1, 0, .cDur + 2 * padTime, sampleRate, "0"
+    Formula (part): padTime, padTime + .cDur, 1, 1, "Object_" + .chanId$ + "(x - padTime)"
     
+    # 2. Create Accumulation Buffers
+    .wetBuffer = Create Sound from formula: "wet_buffer", 1, 0, .cDur + 2 * padTime, sampleRate, "0"
+    .normBuffer = Create Sound from formula: "norm_buffer", 1, 0, .cDur + 2 * padTime, sampleRate, "0"
+    
+    # 3. Process Overlapping Frames
     for iFrame from 1 to numFrames
         frameStart = (iFrame - 1) * hopDuration
         frameEnd = frameStart + window_duration
         
-        if frameEnd > .inputDuration
-            frameEnd = .inputDuration
+        # Extract frame slice
+        selectObject: .paddedSound
+        .frameSound = Extract part: frameStart, frameEnd, "Hanning", 1, "no"
+        
+        # Remove DC Offset per frame
+        selectObject: .frameSound
+        .frameMean = Get mean: 1, 0, 0
+        Formula: "self - " + string$(.frameMean)
+        
+        # Compute Autocorrelation
+        Autocorrelate: "sum", "zero"
+        .acSound = selected("Sound")
+        
+        # Extract IR centered around zero-lag using .lagVal
+        acStart = Get start time
+        acEnd = Get end time
+        acCenter = (acStart + acEnd) / 2
+        
+        irStart = acCenter - .lagVal
+        irEnd = acCenter + .lagVal
+        
+        selectObject: .acSound
+        .irSound = Extract part: irStart, irEnd, "Hanning", 1, "no"
+        
+        # --- SPECTRAL PEAK NORMALIZATION ---
+        
+        # A. Find exact discrete zero-lag sample index
+        selectObject: .irSound
+        .exactSample = Get sample number from time: .lagVal
+        .zeroLagSample = round(.exactSample)
+        
+        # B. Zero out center sample to isolate pure color tail
+        Formula: "if col = " + string$(.zeroLagSample) + " then 0 else self endif"
+        
+        # C. Compute Spectral Peak magnitude max_f |H_colour(f)|
+        selectObject: .irSound
+        .specObj = To Spectrum: "yes"
+        .specMat = To Matrix
+        
+        Formula: "if row = 1 then sqrt(self[1, col]^2 + self[2, col]^2) else 0 endif"
+        
+        .specSound = To Sound
+        .specPeak = Get maximum: 0, 0, "None"
+        removeObject: .specObj, .specMat, .specSound
+        
+        # D. Normalize color tail by (Spectral Peak * sampleRate)
+        selectObject: .irSound
+        .normDivisor = .specPeak * sampleRate
+        if .normDivisor > 1e-9
+            Formula: "self / " + string$(.normDivisor)
         endif
         
-        actualFrameDur = frameEnd - frameStart
+        # E. Scale Color Tail by Resonance Gain
+        Formula: string$(resonance_gain) + " * self"
         
-        if actualFrameDur >= 0.02
-            # Extract frame with Hann window
-            selectObject: .inputSound
-            .frameSound = Extract part: frameStart, frameEnd, "Hanning", 1, "no"
-            .frameId$ = string$(.frameSound)
-            
-            # Compute autocorrelation
-            selectObject: .frameSound
-            Autocorrelate: "sum", "zero"
-            .acSound = selected("Sound")
-            
-            # Extract IR from center
-            selectObject: .acSound
-            acStart = Get start time
-            acEnd = Get end time
-            acCenter = (acStart + acEnd) / 2
-
-            irStart = acCenter - max_lag
-            irEnd = acCenter + max_lag
-            if irStart < acStart
-                irStart = acStart
-            endif
-            if irEnd > acEnd
-                irEnd = acEnd
-            endif
-            
-            selectObject: .acSound
-            Extract part: irStart, irEnd, "Hanning", 1, "no"
-            .irSound = selected("Sound")
-            
-            # Normalize IR
+        # Capture middle frame IR for visualization
+        if iFrame = floor(numFrames / 2) + 1 and capturedIR = 0
             selectObject: .irSound
-            irMaxVal = Get maximum: 0, 0, "None"
-            if irMaxVal > 0
-                irMaxVal$ = string$(irMaxVal)
-                Formula: "self / " + irMaxVal$
-            endif
-            
-            # Capture example IR (middle frame)
-            if iFrame = floor(numFrames / 2) + 1 and capturedIR = 0
-                selectObject: .irSound
-                exampleIR = Copy: "example_IR"
-                exampleIRduration = Get total duration
-                capturedIR = 1
-            endif
-            
-            # Convolve frame with its IR
-            selectObject: .frameSound
-            plusObject: .irSound
-            Convolve: "sum", "zero"
-            .convSound = selected("Sound")
-            
-            # Extract center portion
-            selectObject: .convSound
-            convDur = Get total duration
-            convCenter = convDur / 2
-            
-            extractStart = convCenter - actualFrameDur / 2
-            extractEnd = convCenter + actualFrameDur / 2
-            
-            if extractStart < 0
-                extractStart = 0
-            endif
-            if extractEnd > convDur
-                extractEnd = convDur
-            endif
-            
-            Extract part: extractStart, extractEnd, "rectangular", 1, "no"
-            .trimmedConv = selected("Sound")
-            
-            # Normalize frame
-            selectObject: .trimmedConv
-            frameMax = Get maximum: 0, 0, "None"
-            frameMin = Get minimum: 0, 0, "None"
-            frameAbsMax = max(abs(frameMax), abs(frameMin))
-            if frameAbsMax > 0.001
-                frameAbsMax$ = string$(frameAbsMax)
-                Formula: "self / " + frameAbsMax$ + " * 0.7"
-            endif
-            
-            .trimmedId$ = string$(.trimmedConv)
-            
-            # Add to output buffer
-            frameStart$ = string$(frameStart)
-            actualFrameDur$ = string$(actualFrameDur)
-            
-            selectObject: .outputSound
-            Formula: "if x >= " + frameStart$ + " and x < " + frameStart$ + " + " + actualFrameDur$ + " then self + Object_" + .trimmedId$ + "(x - " + frameStart$ + ") else self endif"
-            
-            # Cleanup
-            removeObject: .frameSound, .acSound, .irSound, .convSound, .trimmedConv
+            exampleIR = Copy: "example_IR"
+            Shift times by: -.lagVal
+            capturedIR = 1
         endif
         
-        if iFrame mod 10 = 0
-            appendInfo: "."
-        endif
+        # Convolve frame with pure Normalized Color IR
+        selectObject: .frameSound
+        plusObject: .irSound
+        Convolve: "sum", "zero"
+        .convSound = selected("Sound")
+        
+        # Trim convolution output to exact window duration
+        convDur = Get total duration
+        convCenter = convDur / 2
+        extStart = convCenter - window_duration / 2
+        extEnd = convCenter + window_duration / 2
+        
+        selectObject: .convSound
+        .trimmedConv = Extract part: extStart, extEnd, "Hanning", 1, "no"
+        
+        # Accumulate into buffers using LOCALIZED Formula (part)
+        .trimmedId$ = string$(.trimmedConv)
+        selectObject: .wetBuffer
+        Formula (part): frameStart, frameEnd, 1, 1, "self + Object_" + .trimmedId$ + "(x - " + string$(frameStart) + ")"
+        
+        selectObject: .normBuffer
+        Formula (part): frameStart, frameEnd, 1, 1, "self + (0.5 * (1 - cos(2 * pi * (x - " + string$(frameStart) + ") / " + string$(window_duration) + ")))^2"
+        
+        # Cleanup frame objects
+        removeObject: .frameSound, .acSound, .irSound, .convSound, .trimmedConv
     endfor
     
-    # Normalize wet signal
-    selectObject: .outputSound
-    wetMax = Get maximum: 0, 0, "None"
-    wetMin = Get minimum: 0, 0, "None"
-    wetAbsMax = max(abs(wetMax), abs(wetMin))
-    if wetAbsMax > 0
-        wetAbsMax$ = string$(wetAbsMax)
-        Formula: "self / " + wetAbsMax$
-    endif
+    # 4. Normalize Wet Buffer by Window Weights
+    selectObject: .wetBuffer
+    .normId$ = string$(.normBuffer)
+    Formula: "if Object_" + .normId$ + "(x) > 1e-6 then self / Object_" + .normId$ + "(x) else 0 endif"
     
-    # Mix with dry
-    dryMix$ = string$(1 - dry_wet_mix)
-    wetMix$ = string$(dry_wet_mix)
+    # 5. Extract exact unpadded duration
+    selectObject: .wetBuffer
+    .wetTrimmed = Extract part: padTime, padTime + .cDur, "rectangular", 1, "no"
     
-    selectObject: .outputSound
-    Formula: dryMix$ + " * Object_" + .inputId$ + "(x) + " + wetMix$ + " * self"
+    # 6. Apply True Dry/Wet Linear Crossfade
+    .wetTrimmedId$ = string$(.wetTrimmed)
     
-    selectObject: .outputSound
+    .finalChan = Create Sound from formula: .outChanName$, 1, 0, .cDur, sampleRate, 
+        ... string$(1.0 - dry_wet_mix) + " * Object_" + .chanId$ + "(x) + " + string$(dry_wet_mix) + " * Object_" + .wetTrimmedId$ + "(x)"
+    
+    # Cleanup channel working buffers
+    removeObject: .paddedSound, .wetBuffer, .normBuffer, .wetTrimmed
 endproc
 
 # ============================================================
-# Visualization
+# Main Processing Logic (Stereo Spatialization Routing)
+# ============================================================
+appendInfoLine: "Processing audio..."
+
+selectObject: sound
+workCopy = Copy: "work_copy"
+Shift times to: "start time", 0
+
+if numChannels = 1 and spatial_stereo_widening
+    # --- MONO TO STEREO SPATIAL WIDENING ---
+    selectObject: workCopy
+    chanInput[1] = Extract one channel: 1
+    chanInput[2] = Copy: "chan_2_copy"
+    
+    # Channel 1 (Left): Standard Lag
+    lagCh1 = max_lag
+    # Channel 2 (Right): Decorrelated Lag (+12%)
+    lagCh2 = min(window_duration / 2, max_lag * 1.12)
+    
+    @processSingleChannel: chanInput[1], "proc_chan_1", lagCh1
+    chanOutput[1] = selected("Sound")
+    
+    @processSingleChannel: chanInput[2], "proc_chan_2", lagCh2
+    chanOutput[2] = selected("Sound")
+    
+    outChannels = 2
+
+elsif numChannels = 2 and spatial_stereo_widening
+    # --- STEREO INPUT WIDENING ---
+    for iChan from 1 to 2
+        selectObject: workCopy
+        Extract one channel: iChan
+        chanInput[iChan] = selected("Sound")
+    endfor
+    
+    lagCh1 = max_lag
+    lagCh2 = min(window_duration / 2, max_lag * 1.08)
+    
+    @processSingleChannel: chanInput[1], "proc_chan_1", lagCh1
+    chanOutput[1] = selected("Sound")
+    
+    @processSingleChannel: chanInput[2], "proc_chan_2", lagCh2
+    chanOutput[2] = selected("Sound")
+    
+    outChannels = 2
+
+else
+    # --- STANDARD MULTI-CHANNEL / MONO PROCESSING ---
+    for iChan from 1 to numChannels
+        selectObject: workCopy
+        Extract one channel: iChan
+        chanInput[iChan] = selected("Sound")
+        
+        @processSingleChannel: chanInput[iChan], "proc_chan_" + string$(iChan), max_lag
+        chanOutput[iChan] = selected("Sound")
+    endfor
+    outChannels = numChannels
+endif
+
+# Recombine Channels
+if outChannels = 1
+    selectObject: chanOutput[1]
+    finalOutput = Copy: originalName$ + "_autocorr_" + presetName$
+else
+    selectObject: chanOutput[1]
+    for iChan from 2 to outChannels
+        plusObject: chanOutput[iChan]
+    endfor
+    Combine to stereo
+    finalOutput = selected("Sound")
+    Rename: originalName$ + "_autocorr_" + presetName$
+endif
+
+# Restore original time bounds
+selectObject: finalOutput
+Shift times to: "start time", origXmin
+
+# ============================================================
+# Automatic RMS Makeup Gain (Equal-Loudness Alignment)
+# ============================================================
+selectObject: finalOutput
+rawOutRms = Get root-mean-square: 0, 0
+
+appliedMakeupDb = 0.0
+if match_RMS_to_input and rawOutRms > 1e-6 and origRms > 1e-6
+    targetGainRatio = origRms / rawOutRms
+    rawGainDb = 20 * log10(targetGainRatio)
+    
+    clampedGainDb = min(rawGainDb, max_makeup_gain_dB)
+    appliedGainScale = 10^(clampedGainDb / 20)
+    appliedMakeupDb = clampedGainDb
+    
+    selectObject: finalOutput
+    Formula: "self * " + string$(appliedGainScale)
+    
+    appendInfoLine: "RMS Matching Applied:"
+    appendInfoLine: "  Input RMS:    ", fixed$(origRms, 4)
+    appendInfoLine: "  Raw Out RMS:  ", fixed$(rawOutRms, 4), " (", fixed$(20 * log10(max(1e-6, rawOutRms)), 2), " dB)"
+    appendInfoLine: "  Makeup Gain:  +", fixed$(appliedMakeupDb, 2), " dB"
+    appendInfoLine: ""
+endif
+
+# Optional Output Peak Scaling
+if peak_normalize_output
+    selectObject: finalOutput
+    Scale peak: scale_peak
+    appendInfoLine: "Output Peak Normalized to: ", fixed$(scale_peak, 2)
+endif
+
+# Clean up channel arrays and work copy
+removeObject: workCopy
+for iChan from 1 to outChannels
+    removeObject: chanInput[iChan], chanOutput[iChan]
+endfor
+
+# ============================================================
+# Visualization Procedure
 # ============================================================
 procedure drawVisualization
     Erase all
     
-    # Title
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Autocorrelation Self-Filtering: " + originalName$ + " [" + presetName$ + "]"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.8
-    Select inner viewport: 0.6, 7.6, 0.75, 1.7
+    # 1. Measure Individual Sound Peaks
     selectObject: sound
-    Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
+    origMax = Get maximum: 0, 0, "None"
+    origMin = Get minimum: 0, 0, "None"
+    origAbs = max(abs(origMax), abs(origMin)) * 1.1
+    if origAbs = 0
+        origAbs = 1.0
+    endif
     
-    # Output waveform
-    Select outer viewport: 0, 8, 1.9, 3.1
-    Select inner viewport: 0.6, 7.6, 2.05, 3.0
     selectObject: finalOutput
-    Colour: "{0.3, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    outMax = Get maximum: 0, 0, "None"
+    outMin = Get minimum: 0, 0, "None"
+    outAbs = max(abs(outMax), abs(outMin)) * 1.1
+    if outAbs = 0
+        outAbs = 1.0
+    endif
+    
+    # 2. Main Title
+    Select outer viewport: 0, 8, 0, 0.4
+    Font size: 11
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Autocorrelation Self-Filtering (v1.2): " + originalName$ + " [" + presetName$ + "]"
+    
+    # 3. Original Waveform
+    Select outer viewport: 0, 8, 0.5, 1.7
+    Select inner viewport: 0.8, 7.6, 0.65, 1.6
+    selectObject: sound
+    Colour: "{0.4, 0.4, 0.4}"
+    Draw: origXmin, origXmax, -origAbs, origAbs, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 8
-    Text left: "yes", "Output"
+    Text left: "yes", "Original (pk:" + fixed$(origAbs / 1.1, 2) + ")"
+    
+    # 4. Output Waveform
+    Select outer viewport: 0, 8, 1.8, 3.0
+    Select inner viewport: 0.8, 7.6, 1.95, 2.9
+    selectObject: finalOutput
+    Colour: "{0.2, 0.4, 0.7}"
+    Draw: origXmin, origXmax, -outAbs, outAbs, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 8
+    Text left: "yes", "Output (pk:" + fixed$(outAbs / 1.1, 2) + ")"
     Text bottom: "yes", "Time (s)"
     
-    # Example IR
+    # 5. IR Plot
     if exampleIR <> 0
-        Select outer viewport: 0, 4, 3.3, 5.0
-        Select inner viewport: 0.6, 3.6, 3.5, 4.9
+        Select outer viewport: 0, 4, 3.2, 5.0
+        Select inner viewport: 0.8, 3.6, 3.4, 4.8
         
         selectObject: exampleIR
-        irMax = Get maximum: 0, 0, "None"
-        irMin = Get minimum: 0, 0, "None"
-        irAbsMax = max(abs(irMax), abs(irMin))
-        if irAbsMax = 0
-            irAbsMax = 1
+        irM = Get maximum: 0, 0, "None"
+        irMn = Get minimum: 0, 0, "None"
+        irAbs = max(abs(irM), abs(irMn)) * 1.1
+        if irAbs = 0
+            irAbs = 1.0
         endif
         
         Colour: "{0.2, 0.6, 0.3}"
-        Draw: 0, 0, -irAbsMax * 1.1, irAbsMax * 1.1, "no", "Curve"
+        Draw: -max_lag, max_lag, -irAbs, irAbs, "no", "Curve"
+        
+        Colour: "{0.8, 0.2, 0.2}"
+        Dotted line
+        Draw line: 0, -irAbs, 0, irAbs
+        Solid line
+        
         Colour: "Black"
         Draw inner box
         Font size: 8
-        Text left: "yes", "IR"
+        Text left: "yes", "IR Gain"
         Text bottom: "yes", "Lag (s)"
-        Text top: "no", "Example Autocorrelation IR"
+        Text top: "no", "Example Color Kernel"
     endif
     
-    # Stats
-    Select outer viewport: 4, 8, 3.3, 5.0
-    Select inner viewport: 4.4, 7.6, 3.5, 4.9
+    # 6. Parameters & Stats Summary
+    Select outer viewport: 4, 8, 3.2, 5.0
+    Select inner viewport: 4.4, 7.6, 3.4, 4.8
     
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.1, "left", 0.85, "half", "Window: " + fixed$(window_duration * 1000, 0) + " ms"
-    Text: 0.1, "left", 0.65, "half", "IR lag: " + fixed$(max_lag * 1000, 1) + " ms"
-    Text: 0.1, "left", 0.45, "half", "Dry/wet: " + fixed$(dry_wet_mix * 100, 0) + "%"
-    Text: 0.1, "left", 0.25, "half", "Frames: " + string$(numFrames)
+    Font size: 8
+    Colour: "{0.2, 0.2, 0.2}"
+    Text: 0.08, "left", 0.84, "half", "Window duration: " + fixed$(window_duration * 1000, 0) + " ms"
+    Text: 0.08, "left", 0.70, "half", "Max lag limit:    " + fixed$(max_lag * 1000, 1) + " ms"
+    Text: 0.08, "left", 0.56, "half", "Resonance gain:  " + fixed$(resonance_gain, 2)
+    Text: 0.08, "left", 0.42, "half", "Dry/Wet mixture:  " + fixed$(dry_wet_mix * 100, 0) + "%"
+    Text: 0.08, "left", 0.28, "half", "RMS Makeup Gain:  +" + fixed$(appliedMakeupDb, 2) + " dB"
+    Text: 0.08, "left", 0.14, "half", "Output Channels: " + string$(outChannels)
     
     Colour: "Black"
     Draw inner box
     Font size: 10
 endproc
 
-# ============================================================
-# Main processing
-# ============================================================
-appendInfoLine: "Processing"
-
-if numChannels = 1
-    selectObject: sound
-    inputMono = Copy: "input_mono"
-    @processChannel: inputMono, "output_mono"
-    outputMono = selected("Sound")
-    
-    selectObject: outputMono
-    Scale peak: scale_peak
-    Rename: originalName$ + "_autocorr_" + presetName$
-    finalOutput = selected("Sound")
-    
-    removeObject: inputMono
-
-else
-    selectObject: sound
-    Extract one channel: 1
-    inputLeft = selected("Sound")
-    
-    selectObject: sound
-    Extract one channel: 2
-    inputRight = selected("Sound")
-    
-    appendInfo: "L"
-    @processChannel: inputLeft, "output_L"
-    outputLeft = selected("Sound")
-    
-    appendInfoLine: ""
-    appendInfo: "R"
-    @processChannel: inputRight, "output_R"
-    outputRight = selected("Sound")
-    
-    selectObject: outputLeft
-    plusObject: outputRight
-    Combine to stereo
-    finalOutput = selected("Sound")
-    
-    Scale peak: scale_peak
-    Rename: originalName$ + "_autocorr_" + presetName$
-    
-    removeObject: inputLeft, inputRight, outputLeft, outputRight
-endif
-
-appendInfoLine: " done"
-
-# Visualization
 if draw_visualization
     @drawVisualization
 endif
 
-# Cleanup
 if exampleIR <> 0
     removeObject: exampleIR
 endif
 
-# Output
-selectObject: sound
-plusObject: finalOutput
+# ============================================================
+# Safety Check & Playback
+# ============================================================
+selectObject: finalOutput
+finalOutputName$ = selected$("Sound")
 
+outMaxVal = Get maximum: 0, 0, "None"
+outMinVal = Get minimum: 0, 0, "None"
+outPeakAbs = max(abs(outMaxVal), abs(outMinVal))
+finalRms = Get root-mean-square: 0, 0
+
+appendInfoLine: "Done!"
 appendInfoLine: ""
-appendInfoLine: "=== COMPLETE ==="
-appendInfoLine: "Output: ", selected$("Sound")
+appendInfoLine: "============================================"
+appendInfoLine: " Output sound: ", finalOutputName$
+appendInfoLine: " Channels:     ", outChannels
+appendInfoLine: " Duration:     ", fixed$(duration, 3), " s"
+appendInfoLine: " Peak Level:   ", fixed$(outPeakAbs, 3), " (", fixed$(20 * log10(max(1e-6, outPeakAbs)), 2), " dBFS)"
+appendInfoLine: " RMS Level:    ", fixed$(finalRms, 4), " (", fixed$(20 * log10(max(1e-6, finalRms)), 2), " dBFS)"
+appendInfoLine: "============================================"
 
-if play_after_processing
-    selectObject: finalOutput
-    Play
+if outPeakAbs > 1.0
+    appendInfoLine: "⚠️ WARNING: Output peak exceeds 0 dBFS (" + fixed$(20 * log10(outPeakAbs), 2) + " dBFS)!"
+    if play_after_processing
+        appendInfoLine: "-> Applying temporary safety attenuation (scaling to 0.99) for playback."
+        selectObject: finalOutput
+        tempPlayCopy = Copy: "temp_play_safety"
+        Scale peak: 0.99
+        Play
+        removeObject: tempPlayCopy
+    endif
+else
+    if play_after_processing
+        selectObject: finalOutput
+        Play
+    endif
 endif
 
 selectObject: finalOutput
