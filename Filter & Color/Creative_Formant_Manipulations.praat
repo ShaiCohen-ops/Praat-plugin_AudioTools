@@ -1,1101 +1,705 @@
 # ============================================================
-# Praat AudioTools - Creative_Formant_Manipulations.praat
-# Author: Shai Cohen
-# Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.3 (2026)
-# License: MIT License
-# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Praat AudioTools - Creative Formant Manipulations v2.2
+# Spectral-envelope landmark processor
 #
-# Description:
-#   Formant manipulation using LPC source-filter decomposition.
-#
-#   Transparency note: LPC analysis and resynthesis is NOT transparent
-#   even at neutral settings. Measured on a synthetic vowel with
-#   Rotation_semitones = 0, artifact reduction off and Dry/wet = 1:
-#   correlation with the input 0.905, level-matched SNR 6.58 dB. That
-#   is inherent to source-filter resynthesis, not a defect, but this
-#   tool always colours the sound.
-#
-# Improvements in v1.1:
-#   - LPC order 20 (was 16) for cleaner modeling
-#   - Pre-emphasis 35 Hz (was 50) for less noise
-#   - Partial reversal (F1<->F3, F2<->F4) instead of full reversal
-#   - Constrained scrambling (preserves energy distribution)
-#   - Wider bandwidths for extreme manipulations
-#
-# Changelog v1.3 - Parselmouth-verified again. The v1.2 infrastructure
-# work passed: relative time (correlation > 0.99999996 between the same
-# signal at 0-1 s and 5-6 s), Dry/wet = 0 as true bypass (peak error
-# 2.3e-13), four channels kept with their time domain, mono and
-# identical-stereo output now identical, continuous Crossfade, and all
-# the new validation. Two effects were still not doing what they said:
-#   - REVERSAL WAS NOT A SPECTRAL FLIP. A FormantGrid filter's response
-#     depends on the SET of resonances, not on which tier holds which,
-#     so swapping tier labels F1<->F3 and F2<->F4 left every frequency
-#     where it was. A control version that skipped the swap and applied
-#     only the per-tier bandwidth multipliers matched v1.2 at
-#     correlation 0.999999999, max difference 0.0000233: the effect was
-#     asymmetric bandwidth broadening. Frequencies are now mirrored
-#     logarithmically about [Reversal_mirror_low_hz, Max_formant_hz],
-#     bandwidth is scaled by the same ratio to hold Q, and the mirrored
-#     set is re-sorted ascending before it goes back into the tiers.
-#   - SCRAMBLING WAS NOT RANDOM. For the same reason, permuting tiers
-#     within a frame changed nothing: seed 777 against 778, and hold
-#     times of 20 / 60 / 200 ms, gave sample-identical output (max
-#     difference 0, correlation 1.0), and an identity mapping gave the
-#     same result again. Its only audible effect was a blanket 2x
-#     bandwidth widening. It now takes the whole formant set from a
-#     different frame of the file, chosen at random per hold block and
-#     morphed between successive choices, so the frequency set really
-#     changes and seed and hold time both matter.
-#   - The level match ran BEFORE artifact reduction, so the high cut
-#     undid it: at 100% wet with matching on, output against input
-#     measured about 0 dB at a 4500 Hz cut but -5.36 dB at 3000,
-#     -52.21 dB at 2000, -56.26 dB at 1000 and -58.58 dB at 500 Hz.
-#     Artifact reduction now runs first and the match is genuinely last
-#     before the mix.
-#   - Output_level_mode defaults to the safety ceiling, and playback
-#     uses a scaled temporary copy when the peak exceeds 1.0 rather than
-#     playing a clipping signal. From a 0.9-peak input, Wobble measured
-#     1.590 and Vowel Morph 2.176.
-#
-# Changelog v1.2 - reviewed by running the script under Parselmouth,
-# so the figures below are measurements.
-#   - RELATIVE TIME EVERYWHERE. Crossfade and Freezing compared absolute
-#     frame times against ranges built from 0..duration, so on a Sound
-#     living at 5-7 s no frame ever matched: Crossfade and Freeze output
-#     were identical to plain LPC resynthesis to within 5e-15. The LFO
-#     used absolute time too, so shifting the same Sound by 137 ms and
-#     shifting the result back gave a correlation of only 0.702. All
-#     work now happens on a copy shifted to 0 and the result is returned
-#     to the source's own domain.
-#   - THE ENERGY COMPENSATION DID NOTHING. "self * 3.5" followed by
-#     Scale peak is exactly Scale peak: removing the multiply changed
-#     the output by 4.4e-16. The Intensity matching in the mono path was
-#     cancelled the same way by Scale peak: 0.99 - deleting the whole
-#     Intensity calculation changed the result by 5.6e-16. Both are
-#     replaced by one real RMS match against the dry channel, applied
-#     once, with nothing after it to undo it.
-#   - DRY/WET IS NOW A CONSISTENT RATIO. The wet signal was normalized
-#     to 0.99 before mixing while the dry stayed at source level, so the
-#     same 25% wet gave correlation 0.517 / 0.741 / 0.925 for input
-#     peaks of 0.05 / 0.20 / 0.60. Mono and stereo also used different
-#     gain paths: the same material processed both ways differed by
-#     0.039 RMS at 50% wet. Both levels are natural now, the mix is a
-#     true crossfade, Dry/wet = 0 is real bypass, and any output
-#     normalization is optional and last.
-#   - Crossfade is continuous. progress ran 0 to 1 and then snapped back
-#     to 0 at each cycle boundary: F1 measured 966 Hz just before the
-#     boundary at 0.667 s and 707 Hz just after, a 259 Hz jump inside
-#     one frame. The trajectory is now a raised cosine, 0 -> 1 -> 0,
-#     with no reset.
-#   - Scrambling is reproducible and slower-moving. It re-randomized
-#     every 3 ms frame with no seed, picked each track independently so
-#     formants could duplicate or vanish, and five identical runs gave
-#     RMS 0.029-0.050 with maximum sample jumps of 0.387-0.901. It now
-#     takes an optional seed, draws a true permutation (no duplicates)
-#     and holds each mapping for a settable time.
-#   - Every channel is processed and kept. Any non-mono input took a
-#     hard-coded two-channel branch, so 4-channel material came back as
-#     2 channels with nothing said about it. This also removes the
-#     duplicated stereo gain path that disagreed with the mono one.
-#   - Artifact reduction is split and its high cut is a parameter. The
-#     fixed stop band from max_formant_hz * 0.95 measured 23.8 dB of
-#     attenuation above 5.2 kHz at default settings - a heavy low-pass,
-#     not a gentle de-click. De-click and high cut are now separate
-#     choices, and the de-click no longer reads self[col-1] at the first
-#     sample or self[col+1] at the last.
-#   - Validation: minimum duration for To LPC / To FormantPath (80 ms
-#     failed, 100 ms worked), max_formant_hz x 1.22 against Nyquist
-#     (To FormantPath searches four ceilings 5% apart, so the default
-#     5500 Hz needs about 13.4 kHz of sample rate), positive scaling
-#     factors (Scale_bandwidth < 0 was a run-time error), Dry/wet in
-#     0..1, and LFO depth at most 100%.
-#   - Visualization: axes follow the work copy, the formant panel scales
-#     to the formants actually drawn instead of a fixed 3500 Hz, the
-#     spectrograms follow Max_formant_hz instead of a fixed 5000 Hz, and
-#     the two waveform panels share a Y range so gain changes show.
-#   - Non-ASCII characters replaced with ASCII for console portability.
+# No LPC resynthesis. No FormantGrid filtering.
+# FormantPath is used ONLY to estimate spectral landmarks.
+# The original complex STFT spectrum is multiplied by a smooth,
+# real-valued gain curve, so phase is preserved bin by bin.
+# Static whole-file spectral filtering: one FFT per channel.
+# Formant medians use Praat's native quantile query (no O(N^2) sorting).
 # ============================================================
 
-# === Input Validation ===
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
 sound = selected("Sound")
-originalName$ = selected$("Sound")
+original_name$ = selected$("Sound")
 
-form Creative Formant Manipulations v1.3
-    optionmenu Preset: 1
+form Creative Formant Manipulations v2.2
+    optionmenu preset 1
         option Manual
-        option Robot Voice
-        option Chipmunk
-        option Giant
-        option Alien
-        option Wobble
-        option Vowel Morph
-    optionmenu Manipulation_type: 1
-        option Rotation (vowel morphing)
-        option Reversal (spectral flip)
-        option Scrambling (randomize)
-        option Scaling (gender shift)
-        option LFO Modulation
-        option Crossfade (temporal blend)
-        option Freezing (hold vowels)
-    positive Max_formant_hz 5500
-    real Rotation_semitones 3.0
-    positive Scale_frequency 0.8
-    positive Scale_bandwidth 1.2
-    positive Lfo_rate 2.0
-    positive Lfo_depth 6.0
-    positive Freeze_interval 0.3
-    positive Freeze_duration 0.15
-    comment === Reversal ===
-    positive Reversal_mirror_low_hz 200
-    comment (frequencies are mirrored between this and Max_formant_hz)
-    comment === Scrambling ===
-    positive Scramble_hold_ms 60
-    integer Random_seed 0
-    comment (0 = unseeded; any other value makes the run reproducible)
-    comment === Output ===
-    real Dry_wet_mix 1.0
-    boolean Match_input_level 1
-    optionmenu Artifact_reduction: 2
-        option None
-        option De-click only
-        option De-click + high cut
-    positive High_cut_hz 5225
-    optionmenu Output_level_mode: 2
-        option None (natural level)
-        option Safety ceiling (attenuate only if above)
-        option Peak normalize (always scale to ceiling)
-    positive Ceiling_peak 0.95
-    boolean Play_after_processing 1
-    boolean Draw_visualization 1
+        option Vocal Lift
+        option Giant Dark
+        option F2 Laser
+        option Wide Alien
+        option Compact Vowel
+    optionmenu manipulation_type 1
+        option Global formant shift
+        option F2 focus
+        option Formant spacing
+    positive max_formant_hz 5500
+    comment Manual parameters:
+    positive global_ratio 1.30
+    positive f2_ratio 1.45
+    positive spacing_factor 1.30
+    positive strength_db 15
+    positive dry_wet_mix 1.0
+    optionmenu output_level_mode 1
+        option Natural level
+        option Safety ceiling
+        option Peak normalize
+    positive ceiling_peak 0.95
+    boolean draw_visualization 1
+    boolean play_result 1
 endform
 
-# ============================================================
+# ------------------------------------------------------------
 # Presets
-# ============================================================
+# ------------------------------------------------------------
 if preset = 2
-    manipulation_type = 7
-    freeze_interval = 0.08
-    freeze_duration = 0.08
-    presetName$ = "Robot"
+    manipulation_type = 1
+    global_ratio = 1.22
+    strength_db = 12
+    dry_wet_mix = 1.0
+    preset_name$ = "VocalLift"
 elsif preset = 3
-    manipulation_type = 4
-    scale_frequency = 1.4
-    scale_bandwidth = 0.8
-    presetName$ = "Chipmunk"
+    manipulation_type = 1
+    global_ratio = 0.72
+    strength_db = 18
+    dry_wet_mix = 1.0
+    preset_name$ = "GiantDark"
 elsif preset = 4
-    manipulation_type = 4
-    scale_frequency = 0.7
-    scale_bandwidth = 1.3
-    presetName$ = "Giant"
-elsif preset = 5
     manipulation_type = 2
-    dry_wet_mix = 0.8
-    presetName$ = "Alien"
+    f2_ratio = 1.75
+    strength_db = 24
+    dry_wet_mix = 1.0
+    preset_name$ = "F2Laser"
+elsif preset = 5
+    manipulation_type = 3
+    spacing_factor = 1.65
+    strength_db = 20
+    dry_wet_mix = 1.0
+    preset_name$ = "WideAlien"
 elsif preset = 6
-    manipulation_type = 5
-    lfo_rate = 4.0
-    lfo_depth = 8.0
-    presetName$ = "Wobble"
-elsif preset = 7
-    manipulation_type = 6
-    presetName$ = "VowelMorph"
+    manipulation_type = 3
+    spacing_factor = 0.62
+    strength_db = 18
+    dry_wet_mix = 1.0
+    preset_name$ = "CompactVowel"
 else
-    presetName$ = "Manual"
+    preset_name$ = "Manual"
 endif
 
-# ============================================================
-# Fixed analysis parameters
-# ============================================================
-time_step = 0.003
-max_formants = 5
-window_length = 0.030
-lpc_order = 20
-preEmphasis = 35
-crossfade_cycles = 3
+if manipulation_type = 1
+    manipulation_name$ = "Global formant shift"
+elsif manipulation_type = 2
+    manipulation_name$ = "F2 focus"
+else
+    manipulation_name$ = "Formant spacing"
+endif
 
-# ============================================================
-# Setup and validation
-# ============================================================
+# ------------------------------------------------------------
+# Fixed engine settings
+# ------------------------------------------------------------
+time_step_s = 0.005
+window_length = 0.030
+max_formants = 5
+pre_emphasis = 35
+grain_ms = 50
+hop_divisor = 4
+
+# These are ENVELOPE region widths, not LPC resonator Q values.
+region_floor_1 = 180
+region_floor_2 = 260
+region_floor_3 = 360
+region_floor_4 = 450
+region_floor_5 = 550
+region_fraction = 0.24
+
+# ------------------------------------------------------------
+# Input / validation
+# ------------------------------------------------------------
 selectObject: sound
 duration = Get total duration
-sampleRate = Get sampling frequency
-numChannels = Get number of channels
-originalXmin = Get start time
-nyquist = sampleRate / 2
+sample_rate = Get sampling frequency
+num_channels = Get number of channels
+original_xmin = Get start time
+nyquist = sample_rate / 2
+input_peak = Get absolute extremum: 0, 0, "None"
 
-# To FormantPath searches four ceilings above the middle one, 5% apart,
-# so the highest ceiling it actually uses is about max_formant x 1.22.
-# Checking only max_formant < Nyquist is not enough: the default
-# 5500 Hz needs roughly 13.4 kHz of sample rate.
-if max_formant_hz * 1.22 >= nyquist
-    exitScript: "Max_formant_hz " + fixed$(max_formant_hz, 0) + " Hz needs a sample rate of " +
-    ... "at least " + fixed$(max_formant_hz * 1.22 * 2, 0) + " Hz. To FormantPath searches " +
-    ... "four ceilings 5% apart above the value you give, so the highest is about " +
-    ... fixed$(max_formant_hz * 1.22, 0) + " Hz against a Nyquist of " + fixed$(nyquist, 0) +
-    ... " Hz. Lower Max_formant_hz or resample the Sound."
+if duration < 0.20
+    exitScript: "Sound must be at least 200 ms for stable formant analysis."
 endif
-
-# LPC and FormantPath both need several analysis windows. 80 ms failed
-# in testing and 100 ms worked; four windows is a safe floor.
-minDur = window_length * 4
-if duration < minDur
-    exitScript: "Sound is too short: " + fixed$(duration * 1000, 1) + " ms. The " +
-    ... fixed$(window_length * 1000, 0) + " ms LPC window needs at least " +
-    ... fixed$(minDur * 1000, 0) + " ms of audio."
-endif
-
 if dry_wet_mix < 0 or dry_wet_mix > 1
-    exitScript: "Dry_wet_mix must be between 0 and 1 (got " + fixed$(dry_wet_mix, 3) + ")."
+    exitScript: "dry_wet_mix must be between 0 and 1."
 endif
-if lfo_depth > 100
-    exitScript: "Lfo_depth is a percentage and must be at most 100 (got " +
-    ... fixed$(lfo_depth, 1) + "). Above 100 the modulation factor goes negative."
+if strength_db <= 0 or strength_db > 36
+    exitScript: "strength_db must be greater than 0 and at most 36 dB."
+endif
+if global_ratio <= 0 or f2_ratio <= 0 or spacing_factor <= 0
+    exitScript: "All frequency ratios must be greater than zero."
 endif
 if ceiling_peak <= 0 or ceiling_peak > 1
-    exitScript: "Ceiling_peak must be greater than 0 and at most 1 (got " +
-    ... fixed$(ceiling_peak, 3) + ")."
+    exitScript: "ceiling_peak must be greater than 0 and at most 1."
 endif
-if artifact_reduction = 3
-    if high_cut_hz >= nyquist
-        high_cut_hz = nyquist - 100
+
+# FormantPath searches ceilings above the requested value.
+max_formant_hz = min(max_formant_hz, (nyquist - 50) / 1.22)
+if max_formant_hz < 1000
+    exitScript: "Sample rate is too low for useful formant analysis."
+endif
+
+# True bypass before any analysis/FFT.
+neutral = 0
+if manipulation_type = 1 and abs(global_ratio - 1) < 0.000001
+    neutral = 1
+elsif manipulation_type = 2 and abs(f2_ratio - 1) < 0.000001
+    neutral = 1
+elsif manipulation_type = 3 and abs(spacing_factor - 1) < 0.000001
+    neutral = 1
+endif
+if dry_wet_mix = 0 or neutral = 1
+    selectObject: sound
+    out = Copy: original_name$ + "_CFM_Bypass"
+    selectObject: out
+    if output_level_mode = 2
+        p = Get absolute extremum: 0, 0, "None"
+        if p > ceiling_peak
+            Scale peak: ceiling_peak
+        endif
+    elsif output_level_mode = 3
+        p = Get absolute extremum: 0, 0, "None"
+        if p > 0
+            Scale peak: ceiling_peak
+        endif
     endif
-endif
-
-if random_seed <> 0
-    random_initializeWithSeedUnsafelyButPredictably: random_seed
-endif
-
-scrambleHold = scramble_hold_ms / 1000
-
-# Manipulation name
-if manipulation_type = 1
-    manipName$ = "Rotation"
-elsif manipulation_type = 2
-    manipName$ = "Reversal"
-elsif manipulation_type = 3
-    manipName$ = "Scrambling"
-elsif manipulation_type = 4
-    manipName$ = "Scaling"
-elsif manipulation_type = 5
-    manipName$ = "LFO"
-elsif manipulation_type = 6
-    manipName$ = "Crossfade"
-else
-    manipName$ = "Freeze"
+    if play_result
+        Play
+    endif
+    selectObject: out
+    exitScript: ""
 endif
 
 clearinfo
-writeInfoLine: "=== Creative Formant Manipulations v1.3 ==="
-appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Effect: ", manipName$
-appendInfoLine: "Input:  ", originalName$, " (", fixed$(duration, 3), " s, ",
-    ... numChannels, " ch, ", sampleRate, " Hz)"
-appendInfoLine: "LPC order ", lpc_order, ", pre-emphasis ", preEmphasis, " Hz"
-appendInfoLine: "NOTE: LPC resynthesis is not transparent even at neutral settings."
-appendInfoLine: ""
+writeInfoLine: "=== Creative Formant Manipulations v2.2 ==="
+appendInfoLine: "Method: spectral-envelope landmarks, magnitude only, original phase."
+appendInfoLine: "No LPC resynthesis and no FormantGrid filtering."
+appendInfoLine: "Optimized static engine: native formant medians + one FFT per channel."
+appendInfoLine: "Input: ", original_name$, " | ", fixed$(duration, 3), " s | ", num_channels,
+    ... " ch | ", sample_rate, " Hz"
+appendInfoLine: "Preset: ", preset_name$
 
-# ============================================================
-# Work copy at time 0
-# ============================================================
-# Frame times come back in the Sound's own coordinates, while the LFO,
-# Crossfade and Freeze ranges are all built from 0. v1.1 mixed the two,
-# so on a Sound at 5-7 s the time-based effects simply never fired.
+# ------------------------------------------------------------
+# Work copy at time zero
+# ------------------------------------------------------------
 selectObject: sound
-workSound = Copy: "cfm_work"
+work_sound = Copy: "cfm_work"
 Shift times to: "start time", 0
 
-if numChannels > 1
-    selectObject: workSound
-    soundMono = Convert to mono
+# Analysis channel: mono fold unless it cancels, then loudest real channel.
+if num_channels > 1
+    selectObject: work_sound
+    analysis_sound = Convert to mono
+    fold_rms = Get root-mean-square: 0, 0
+    if fold_rms = undefined or fold_rms < 0.0000001
+        removeObject: analysis_sound
+        best_rms = -1
+        pick_ch = 1
+        for ch from 1 to num_channels
+            selectObject: work_sound
+            probe = Extract one channel: ch
+            r = Get root-mean-square: 0, 0
+            removeObject: probe
+            if r > best_rms
+                best_rms = r
+                pick_ch = ch
+            endif
+        endfor
+        selectObject: work_sound
+        analysis_sound = Extract one channel: pick_ch
+        appendInfoLine: "Analysis: mono fold cancelled; using channel ", pick_ch
+    else
+        appendInfoLine: "Analysis: mono fold"
+    endif
 else
-    selectObject: workSound
-    soundMono = Copy: "mono_work"
+    selectObject: work_sound
+    analysis_sound = Copy: "cfm_analysis"
 endif
 
-# ============================================================
-# STEP 1: Analyze formants (shared across channels)
-# ============================================================
-appendInfoLine: "[1/4] Analyzing formants..."
+selectObject: analysis_sound
+analysis_rms = Get root-mean-square: 0, 0
+if analysis_rms = undefined or analysis_rms < 0.0000001
+    removeObject: analysis_sound, work_sound
+    exitScript: "The analysis signal is silent."
+endif
 
-selectObject: soundMono
-formantPath = To FormantPath (burg): time_step, max_formants, max_formant_hz,
-    ... window_length, preEmphasis, 0.05, 4
-formantObj = Extract Formant
+# ------------------------------------------------------------
+# Formant landmarks - analysis only
+# ------------------------------------------------------------
+appendInfoLine: "Analyzing formant landmarks..."
+selectObject: analysis_sound
+formant_path = To FormantPath (burg): time_step_s, max_formants, max_formant_hz,
+    ... window_length, pre_emphasis, 0.05, 4
+formant_obj = Extract Formant
+selectObject: formant_obj
+num_frames = Get number of frames
 
-selectObject: formantObj
-numFrames = Get number of frames
-appendInfoLine: "  Frames: ", numFrames
-
-# Cache formant data
-for i from 1 to numFrames
-    selectObject: formantObj
-    frameTime_'i' = Get time from frame number: i
-    numFormantsInFrame_'i' = Get number of formants: i
-
-    for f from 1 to max_formants
-        formantFreq_'i'_'f' = undefined
-        formantBand_'i'_'f' = undefined
-        origFormantFreq_'i'_'f' = undefined
-        origFormantBand_'i'_'f' = undefined
-    endfor
-
-    nf = numFormantsInFrame_'i'
-    for f from 1 to nf
-        ft = frameTime_'i'
-        formantFreq_'i'_'f' = Get value at time: f, ft, "hertz", "Linear"
-        formantBand_'i'_'f' = Get bandwidth at time: f, ft, "hertz", "Linear"
-        origFormantFreq_'i'_'f' = formantFreq_'i'_'f'
-        origFormantBand_'i'_'f' = formantBand_'i'_'f'
-    endfor
+# Fast robust static landmarks: use Praat's native median query.
+# v2.1 copied every frame into script variables and insertion-sorted them,
+# which made runtime grow quadratically with file duration.
+for fn from 1 to max_formants
+    selectObject: formant_obj
+    formant_'fn' = Get quantile: fn, 0, 0, "Hertz", 0.5
 endfor
 
-selectObject: formantObj
-formantGrid = Down to FormantGrid
+removeObject: formant_path, formant_obj, analysis_sound
 
-# ============================================================
-# STEP 2: Apply manipulation
-# ============================================================
-appendInfoLine: "[2/4] Applying ", manipName$, "..."
-
-selectObject: formantGrid
-
-# --- ROTATION ---
-if manipulation_type = 1
-    factor = 2 ^ (rotation_semitones / 12)
-    for i from 1 to numFrames
-        nf = numFormantsInFrame_'i'
-        ft = frameTime_'i'
-        for f from 1 to nf
-            hz = formantFreq_'i'_'f'
-            if hz <> undefined
-                newHz = hz * factor
-                if newHz > 0 and newHz < max_formant_hz
-                    Remove formant points between: f, ft - 0.0001, ft + 0.0001
-                    Add formant point: f, ft, newHz
-                    formantFreq_'i'_'f' = newHz
-                endif
-            endif
-        endfor
-    endfor
-
-# --- REVERSAL (true log mirror of the frequencies) ---
-elsif manipulation_type = 2
-    # A FormantGrid filter's response depends on the SET of resonances,
-    # not on which tier holds which. v1.2 swapped tier LABELS
-    # (F1<->F3, F2<->F4) and left every frequency exactly where it was,
-    # so the only audible effect was the per-tier bandwidth multiplier:
-    # a control version that skipped the swap entirely and applied only
-    # those multipliers matched the v1.2 output at correlation
-    # 0.999999999, max difference 0.0000233. That is asymmetric
-    # bandwidth broadening, not a spectral flip.
-    #
-    # The frequencies themselves are mirrored now, logarithmically
-    # about the band [mirror_low, max_formant]:
-    #   new = exp(ln(low) + ln(high) - ln(old))
-    # Bandwidth is scaled by the same ratio, which holds Q constant, and
-    # the mirrored set is re-sorted ascending before it goes back into
-    # the tiers.
-    appendInfoLine: "  Log mirror about ", fixed$(reversal_mirror_low_hz, 0), "-",
-        ... fixed$(max_formant_hz, 0), " Hz"
-    logSum = ln(reversal_mirror_low_hz) + ln(max_formant_hz)
-
-    for i from 1 to numFrames
-        ft = frameTime_'i'
-        nf = numFormantsInFrame_'i'
-
-        nKeep = 0
-        for f from 1 to nf
-            hz = origFormantFreq_'i'_'f'
-            bw = origFormantBand_'i'_'f'
-            if hz <> undefined and hz > 0
-                newHz = exp(logSum - ln(hz))
-                if newHz > 20 and newHz < max_formant_hz
-                    if bw = undefined or bw <= 0
-                        bw = 100
-                    endif
-                    newBw = bw * (newHz / hz)
-                    if newBw < 20
-                        newBw = 20
-                    endif
-                    if newBw > 3000
-                        newBw = 3000
-                    endif
-                    nKeep = nKeep + 1
-                    sortF_'nKeep' = newHz
-                    sortB_'nKeep' = newBw
-                endif
-            endif
-        endfor
-
-        # Insertion sort, ascending by frequency (at most 5 items).
-        # Written without a compound while condition, because Praat does
-        # not guarantee short-circuit evaluation and sortF_'0' would be
-        # an undefined variable.
-        for a from 2 to nKeep
-            keyF = sortF_'a'
-            keyB = sortB_'a'
-            b = a - 1
-            placed = 0
-            while placed = 0
-                if b < 1
-                    placed = 1
-                else
-                    if sortF_'b' > keyF
-                        b1 = b + 1
-                        sortF_'b1' = sortF_'b'
-                        sortB_'b1' = sortB_'b'
-                        b = b - 1
-                    else
-                        placed = 1
-                    endif
-                endif
-            endwhile
-            b1 = b + 1
-            sortF_'b1' = keyF
-            sortB_'b1' = keyB
-        endfor
-
-        for f from 1 to nKeep
-            newHz = sortF_'f'
-            newBw = sortB_'f'
-            Remove formant points between: f, ft - 0.0001, ft + 0.0001
-            Add formant point: f, ft, newHz
-            Remove bandwidth points between: f, ft - 0.0001, ft + 0.0001
-            Add bandwidth point: f, ft, newBw
-            formantFreq_'i'_'f' = newHz
-            formantBand_'i'_'f' = newBw
-        endfor
-    endfor
-
-# --- SCRAMBLING (random vowel mosaic across TIME) ---
-elsif manipulation_type = 3
-    # v1.2 permuted the tier order within a frame, which for the same
-    # reason as Reversal changed nothing: seed 777 against 778, and hold
-    # times of 20 / 60 / 200 ms, all produced sample-identical output
-    # (max difference 0, correlation 1.0), and replacing the permutation
-    # with an identity mapping changed nothing either. Its only audible
-    # effect was the blanket 2x bandwidth widening.
-    #
-    # Scrambling now takes the whole formant set from a DIFFERENT frame
-    # of the file, chosen at random per hold block, and morphs between
-    # successive choices so the tracks do not jump. The frequency set
-    # genuinely changes, so seed and hold time both matter.
-    if random_seed <> 0
-        appendInfoLine: "  Seed: ", random_seed, " (reproducible)"
-    else
-        appendInfoLine: "  Unseeded: successive runs will differ"
+valid_formants = 0
+for fn from 1 to max_formants
+    if formant_'fn' <> undefined and formant_'fn' > 0
+        valid_formants = valid_formants + 1
+        appendInfoLine: "  F", fn, " = ", fixed$(formant_'fn', 1), " Hz"
     endif
-    appendInfoLine: "  Donor frame held ", fixed$(scramble_hold_ms, 0), " ms"
+endfor
+if valid_formants < 2
+    removeObject: work_sound
+    exitScript: "Fewer than two reliable formant landmarks were found."
+endif
 
-    blendDur = min(scrambleHold * 0.5, 0.03)
-    prevDonor = 1
-    curDonor = 1
-    blockStart = 0
-    nextRegen = -1
-    blockCount = 0
+# ------------------------------------------------------------
+# Target landmarks
+# ------------------------------------------------------------
+# F2 is the pivot for spacing mode. If unavailable, use F1.
+if formant_2 <> undefined
+    pivot_hz = formant_2
+else
+    pivot_hz = formant_1
+endif
 
-    for i from 1 to numFrames
-        ft = frameTime_'i'
-        nf = numFormantsInFrame_'i'
-
-        if ft >= nextRegen
-            prevDonor = curDonor
-            curDonor = randomInteger(1, numFrames)
-            blockStart = ft
-            nextRegen = ft + scrambleHold
-            blockCount = blockCount + 1
-        endif
-
-        if blendDur > 0
-            p = (ft - blockStart) / blendDur
-            if p > 1
-                p = 1
+for fn from 1 to max_formants
+    old_'fn' = formant_'fn'
+    target_'fn' = formant_'fn'
+    active_'fn' = 0
+    if formant_'fn' <> undefined and formant_'fn' > 0
+        if manipulation_type = 1
+            target_'fn' = formant_'fn' * global_ratio
+            active_'fn' = 1
+        elsif manipulation_type = 2
+            if fn = 2
+                target_'fn' = formant_'fn' * f2_ratio
+                active_'fn' = 1
             endif
         else
-            p = 1
-        endif
-        w = 0.5 - 0.5 * cos(pi * p)
-
-        for f from 1 to nf
-            aF = origFormantFreq_'prevDonor'_'f'
-            bF = origFormantFreq_'curDonor'_'f'
-            aB = origFormantBand_'prevDonor'_'f'
-            bB = origFormantBand_'curDonor'_'f'
-            if aF = undefined
-                aF = bF
-                aB = bB
-            endif
-            if bF = undefined
-                bF = aF
-                bB = aB
-            endif
-            if aF <> undefined and bF <> undefined
-                newHz = aF + w * (bF - aF)
-                if aB = undefined or bB = undefined
-                    newBw = 100
-                else
-                    newBw = aB + w * (bB - aB)
-                endif
-                if newBw < 20
-                    newBw = 20
-                endif
-                if newHz > 0 and newHz < max_formant_hz
-                    Remove formant points between: f, ft - 0.0001, ft + 0.0001
-                    Add formant point: f, ft, newHz
-                    Remove bandwidth points between: f, ft - 0.0001, ft + 0.0001
-                    Add bandwidth point: f, ft, newBw
-                    formantFreq_'i'_'f' = newHz
-                    formantBand_'i'_'f' = newBw
-                endif
-            endif
-        endfor
-    endfor
-    appendInfoLine: "  ", blockCount, " donor frames over the file"
-
-# --- SCALING ---
-elsif manipulation_type = 4
-    for i from 1 to numFrames
-        nf = numFormantsInFrame_'i'
-        ft = frameTime_'i'
-        for f from 1 to nf
-            hz = formantFreq_'i'_'f'
-            bw = formantBand_'i'_'f'
-            if hz <> undefined
-                newHz = hz * scale_frequency
-                newBw = bw * scale_bandwidth
-                if newHz > 0 and newHz < max_formant_hz
-                    Remove formant points between: f, ft - 0.0001, ft + 0.0001
-                    Add formant point: f, ft, newHz
-                    Remove bandwidth points between: f, ft - 0.0001, ft + 0.0001
-                    Add bandwidth point: f, ft, newBw
-                    formantFreq_'i'_'f' = newHz
-                    formantBand_'i'_'f' = newBw
-                endif
-            endif
-        endfor
-    endfor
-
-# --- LFO MODULATION ---
-elsif manipulation_type = 5
-    for i from 1 to numFrames
-        nf = numFormantsInFrame_'i'
-        ft = frameTime_'i'
-        # ft is relative to the start of the Sound, so the LFO phase no
-        # longer depends on where the Sound sits on the timeline.
-        modFactor = 1 + (lfo_depth / 100) * sin(2 * pi * lfo_rate * ft)
-        for f from 1 to nf
-            hz = formantFreq_'i'_'f'
-            if hz <> undefined
-                newHz = hz * modFactor
-                if newHz > 0 and newHz < max_formant_hz
-                    Remove formant points between: f, ft - 0.0001, ft + 0.0001
-                    Add formant point: f, ft, newHz
-                    formantFreq_'i'_'f' = newHz
-                endif
-            endif
-        endfor
-    endfor
-
-# --- CROSSFADE ---
-elsif manipulation_type = 6
-    # Raised cosine, 0 -> 1 -> 0 per cycle, so the trajectory is
-    # continuous across cycle boundaries. v1.1 ramped 0 to 1 and snapped
-    # back: F1 measured 966 Hz just before the boundary at 0.667 s and
-    # 707 Hz just after, a 259 Hz jump inside a single frame.
-    cycleDur = duration / crossfade_cycles
-    for i from 1 to numFrames
-        ft = frameTime_'i'
-        phase = ft / cycleDur
-        progress = 0.5 - 0.5 * cos(2 * pi * phase)
-
-        nf = numFormantsInFrame_'i'
-        for f from 1 to nf
-            origHz = origFormantFreq_'i'_'f'
-            if f < max_formants
-                targetF = f + 1
-                if targetF <= nf
-                    targetHz = origFormantFreq_'i'_'targetF'
-                else
-                    targetHz = origHz
-                endif
-            else
-                targetHz = origHz
-            endif
-
-            if origHz <> undefined and targetHz <> undefined
-                newHz = origHz + progress * (targetHz - origHz)
-                if newHz > 0 and newHz < max_formant_hz
-                    Remove formant points between: f, ft - 0.0001, ft + 0.0001
-                    Add formant point: f, ft, newHz
-                    formantFreq_'i'_'f' = newHz
-                endif
-            endif
-        endfor
-    endfor
-
-# --- FREEZING ---
-elsif manipulation_type = 7
-    currTime = 0
-    while currTime < duration
-        freezeTime = currTime + freeze_duration / 2
-
-        freezeIdx = 0
-        minDist = 99999
-        for i from 1 to numFrames
-            ft = frameTime_'i'
-            dist = abs(ft - freezeTime)
-            if dist < minDist
-                minDist = dist
-                freezeIdx = i
-            endif
-        endfor
-
-        if freezeIdx > 0
-            nfFreeze = numFormantsInFrame_'freezeIdx'
-            for k from 1 to numFrames
-                ft = frameTime_'k'
-                if ft >= currTime and ft < currTime + freeze_duration
-                    for f from 1 to max_formants
-                        if f <= nfFreeze
-                            hzFreeze = origFormantFreq_'freezeIdx'_'f'
-                            if hzFreeze <> undefined
-                                Remove formant points between: f, ft - 0.0001, ft + 0.0001
-                                Add formant point: f, ft, hzFreeze
-                                formantFreq_'k'_'f' = hzFreeze
-                            endif
-                        endif
-                    endfor
-                endif
-            endfor
+            target_'fn' = pivot_hz + (formant_'fn' - pivot_hz) * spacing_factor
+            active_'fn' = 1
         endif
 
-        currTime = currTime + freeze_interval
-    endwhile
+        if target_'fn' < 80
+            target_'fn' = 80
+        endif
+        if target_'fn' > nyquist - 80
+            target_'fn' = nyquist - 80
+        endif
+    endif
+endfor
+
+appendInfoLine: "Targets:"
+for fn from 1 to max_formants
+    if active_'fn' = 1
+        appendInfoLine: "  F", fn, ": ", fixed$(old_'fn', 1), " -> ", fixed$(target_'fn', 1), " Hz"
+    endif
+endfor
+
+# ------------------------------------------------------------
+# Build ONE static spectral gain expression.
+# This is deliberate: nothing in the spectral curve changes with time,
+# so the engine cannot create tremolo from moving poles or trajectories.
+# ------------------------------------------------------------
+expr$ = ""
+terms = 0
+for fn from 1 to max_formants
+    if active_'fn' = 1 and old_'fn' <> undefined and abs(target_'fn' - old_'fn') > 0.5
+        if fn = 1
+            floor_w = region_floor_1
+        elsif fn = 2
+            floor_w = region_floor_2
+        elsif fn = 3
+            floor_w = region_floor_3
+        elsif fn = 4
+            floor_w = region_floor_4
+        else
+            floor_w = region_floor_5
+        endif
+        width = max(floor_w, old_'fn' * region_fraction)
+        if width > 900
+            width = 900
+        endif
+
+        # Strong but smooth redistribution: a broad dip at the original
+        # landmark and a broad lift at its destination.
+        if terms > 0
+            expr$ = expr$ + " + "
+        endif
+        expr$ = expr$ + fixed$(strength_db, 4) + " * (exp(-0.5*((x-" +
+            ... fixed$(target_'fn', 3) + ")/" + fixed$(width, 3) + ")^2) - exp(-0.5*((x-" +
+            ... fixed$(old_'fn', 3) + ")/" + fixed$(width, 3) + ")^2))"
+        terms = terms + 1
+    endif
+endfor
+
+if terms = 0
+    removeObject: work_sound
+    selectObject: sound
+    out = Copy: original_name$ + "_CFM_Bypass"
+    selectObject: out
+    exitScript: ""
 endif
 
-# ============================================================
-# STEP 3: Resynthesize every channel through the same grid
-# ============================================================
-# One gain path for mono and multichannel alike. v1.1 had two, which
-# disagreed: the same material processed as mono and as identical
-# stereo differed by 0.039 RMS at 50% wet.
-appendInfoLine: "[3/4] Resynthesizing ", numChannels, " channel(s)..."
+# Clamp the SUM, not each formant separately.
+shape_limit$ = fixed$(strength_db, 4)
 
-gridId$ = string$(formantGrid)
+# ------------------------------------------------------------
+# FAST STATIC SPECTRAL ENGINE
+# ------------------------------------------------------------
+# The landmark mapping above is deliberately static for the whole Sound.
+# Therefore the spectral gain curve is also time-invariant: thousands of
+# 50-ms STFT grains are unnecessary. One complex FFT per channel applies
+# the same smooth magnitude curve while preserving the original phase.
+# The Gaussian regions are broad, so the resulting impulse response is short.
+procedure process_channel: .input_sound
+    selectObject: .input_sound
+    .in_dur = Get total duration
 
-for ch from 1 to numChannels
-    if numChannels = 1
-        selectObject: workSound
-        dryCh[ch] = Copy: "dry_ch"
+    selectObject: .input_sound
+    .spec = To Spectrum: "yes"
+    selectObject: .spec
+    Formula: "self * 10^(min(" + shape_limit$ + ",max(-" + shape_limit$ + "," + expr$ + "))/20)"
+
+    selectObject: .spec
+    .back_full = To Sound
+    removeObject: .spec
+
+    # To Spectrum can zero-pad to an FFT-friendly size. Restore the exact
+    # original channel duration after inverse transformation.
+    selectObject: .back_full
+    .out = Extract part: 0, .in_dur, "rectangular", 1, "no"
+    removeObject: .back_full
+    selectObject: .out
+endproc
+
+# ------------------------------------------------------------
+# Process every channel with the same landmark mapping
+# ------------------------------------------------------------
+for ch from 1 to num_channels
+    if num_channels = 1
+        selectObject: work_sound
+        dry_ch[ch] = Copy: "cfm_dry"
     else
-        selectObject: workSound
-        dryCh[ch] = Extract one channel: ch
+        selectObject: work_sound
+        dry_ch[ch] = Extract one channel: ch
     endif
 
-    selectObject: dryCh[ch]
-    lpcCh = To LPC (burg): lpc_order, window_length, time_step, preEmphasis
-    selectObject: dryCh[ch]
-    plusObject: lpcCh
-    srcCh = Filter (inverse)
+    @process_channel: dry_ch[ch]
+    wet_ch[ch] = selected("Sound")
 
-    selectObject: srcCh
-    plusObject: formantGrid
-    wetCh[ch] = Filter
-    removeObject: lpcCh, srcCh
-
-    # --- Artifact reduction FIRST ---
-    # v1.2 matched the level and then filtered, so the high cut undid
-    # the match: with Match_input_level on and 100% wet, output level
-    # against input measured about 0 dB at a 4500 Hz cut but -5.36 dB at
-    # 3000, -52.21 dB at 2000, -56.26 dB at 1000 and -58.58 dB at
-    # 500 Hz. Anything that changes the level has to run before the
-    # thing that measures it.
-    if artifact_reduction > 1
-        selectObject: wetCh[ch]
-        nSampCh = Get number of samples
-        if artifact_reduction = 3
-            selectObject: wetCh[ch]
-            hiCut = Filter (stop Hann band): high_cut_hz, nyquist, 100
-            removeObject: wetCh[ch]
-            wetCh[ch] = hiCut
-            selectObject: wetCh[ch]
-            nSampCh = Get number of samples
-        endif
-        # De-click over the interior only: v1.1 read self[col-1] at the
-        # first sample and self[col+1] at the last.
-        if nSampCh > 2
-            selectObject: wetCh[ch]
-            Formula (part): 1.5 / sampleRate, (nSampCh - 1.5) / sampleRate, 1, 1,
-                ... "if abs(self - self[col-1]) > 0.5 then (self[col-1] + self[col+1]) / 2 else self fi"
-        endif
-    endif
-
-    # --- Real level match, applied once, with nothing after it ---
-    # v1.1 multiplied by a constant 3.5 and then ran Scale peak, which
-    # is exactly Scale peak: removing the multiply changed the output by
-    # 4.4e-16. The Intensity match was cancelled the same way.
-    if match_input_level
-        selectObject: dryCh[ch]
-        dryRms = Get root-mean-square: 0, 0
-        selectObject: wetCh[ch]
-        wetRms = Get root-mean-square: 0, 0
-        if wetRms > 0 and dryRms > 0
-            matchGain = dryRms / wetRms
-            # Clamp to +/- 24 dB so a near-silent resynthesis cannot
-            # explode
-            if matchGain > 15.849
-                matchGain = 15.849
-            endif
-            if matchGain < 0.0631
-                matchGain = 0.0631
-            endif
-            selectObject: wetCh[ch]
-            Formula: "self * " + string$(matchGain)
-            if ch = 1
-                appendInfoLine: "  Level match ch1: x", fixed$(matchGain, 4),
-                    ... " (", fixed$(20 * log10(matchGain), 1), " dB)"
-                if matchGain > 15.8 or matchGain < 0.064
-                    appendInfoLine: "    (clamped at +/- 24 dB)"
-                endif
-            endif
-        endif
-    endif
-
-    # --- Dry/wet, both at natural level ---
     if dry_wet_mix < 1
-        selectObject: wetCh[ch]
-        Formula: string$(dry_wet_mix) + " * self + " + string$(1 - dry_wet_mix) +
-            ... " * object(" + string$(dryCh[ch]) + ", x)"
+        selectObject: wet_ch[ch]
+        Formula: "self*" + string$(dry_wet_mix) + " + object[" + string$(dry_ch[ch]) +
+            ... ",1,col]*" + string$(1-dry_wet_mix)
     endif
 endfor
 
-# --- Assemble ---
-if numChannels = 1
-    selectObject: wetCh[1]
-    finalOutput = Copy: "cfm_out"
-    removeObject: wetCh[1]
+if num_channels = 1
+    selectObject: wet_ch[1]
+    output = Copy: "cfm_output"
+    removeObject: wet_ch[1]
 else
-    selectObject: wetCh[1]
-    outDurCh = Get total duration
-    Create Sound from formula: "cfm_out", numChannels, 0, outDurCh, sampleRate, "0"
-    finalOutput = selected("Sound")
-    for ch from 1 to numChannels
-        selectObject: finalOutput
-        Formula (part): 0, outDurCh, ch, ch,
-            ... "object[" + string$(wetCh[ch]) + ", 1, col]"
+    selectObject: wet_ch[1]
+    out_dur = Get total duration
+    Create Sound from formula: "cfm_output", num_channels, 0, out_dur, sample_rate, "0"
+    output = selected("Sound")
+    for ch from 1 to num_channels
+        selectObject: output
+        Formula (part): 0, out_dur, ch, ch,
+            ... "object[" + string$(wet_ch[ch]) + ",1,col]"
     endfor
-    for ch from 1 to numChannels
-        removeObject: wetCh[ch]
+    for ch from 1 to num_channels
+        removeObject: wet_ch[ch]
     endfor
 endif
 
-for ch from 1 to numChannels
-    removeObject: dryCh[ch]
+for ch from 1 to num_channels
+    removeObject: dry_ch[ch]
 endfor
 
-# ============================================================
-# STEP 4: Output level stage (optional, and last)
-# ============================================================
-appendInfoLine: "[4/4] Finalizing..."
-
-selectObject: finalOutput
-pre_level_peak = Get absolute extremum: 0, 0, "None"
-level_gain = 1
-level_action$ = "none"
-
+# ------------------------------------------------------------
+# Output level
+# ------------------------------------------------------------
+selectObject: output
+pre_peak = Get absolute extremum: 0, 0, "None"
 if output_level_mode = 2
-    if pre_level_peak > ceiling_peak and pre_level_peak > 0
+    if pre_peak > ceiling_peak
         Scale peak: ceiling_peak
-        level_gain = ceiling_peak / pre_level_peak
-        level_action$ = "ceiling applied"
-    else
-        level_action$ = "ceiling not needed"
     endif
 elsif output_level_mode = 3
-    if pre_level_peak > 0
+    if pre_peak > 0
         Scale peak: ceiling_peak
-        level_gain = ceiling_peak / pre_level_peak
-        level_action$ = "peak normalized"
     endif
 endif
 
-selectObject: finalOutput
+selectObject: output
 out_peak = Get absolute extremum: 0, 0, "None"
+out_dur = Get total duration
+out_sr = Get sampling frequency
+out_ch = Get number of channels
 
-# ============================================================
-# VISUALIZATION  (drawn at t = 0, before the domain is restored)
-# ============================================================
+# ------------------------------------------------------------
+# VISUALIZATION — adapted from the original CFM suite layout
+# ------------------------------------------------------------
 if draw_visualization
-    appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
-    Erase all
-
-    # Shared Y range for the two waveform panels, so a level change is
-    # visible instead of being auto-scaled away.
-    selectObject: workSound
-    origPeakViz = Get absolute extremum: 0, 0, "None"
-    vizMax = max(origPeakViz, out_peak)
-    if vizMax < 0.001
-        vizMax = 0.001
+    # Use channel 1 for a stable before/after display. On long Sounds, draw
+    # only a representative central excerpt so visualization time and memory
+    # do not scale with the full recording length. Processing is unaffected.
+    viz_max_seconds = 8
+    viz_start = 0
+    viz_end = duration
+    viz_excerpt = 0
+    if duration > viz_max_seconds
+        viz_start = (duration - viz_max_seconds) / 2
+        viz_end = viz_start + viz_max_seconds
+        viz_excerpt = 1
     endif
-    vizAmp = vizMax * 1.15
 
-    # Highest formant actually drawn, so shifted formants stay on screen
-    drawMaxFreq = 3500
-    for i from 1 to numFrames
-        for f from 1 to 3
-            fq = formantFreq_'i'_'f'
-            if fq <> undefined and fq > drawMaxFreq
-                drawMaxFreq = fq
-            endif
-            fq = origFormantFreq_'i'_'f'
-            if fq <> undefined and fq > drawMaxFreq
-                drawMaxFreq = fq
-            endif
-        endfor
+    selectObject: work_sound
+    if num_channels > 1
+        viz_orig_full = Extract one channel: 1
+    else
+        viz_orig_full = Copy: "cfm_viz_orig_full"
+    endif
+    selectObject: viz_orig_full
+    if viz_excerpt
+        viz_orig = Extract part: viz_start, viz_end, "rectangular", 1, "no"
+        removeObject: viz_orig_full
+    else
+        viz_orig = viz_orig_full
+    endif
+
+    selectObject: output
+    if out_ch > 1
+        viz_proc_full = Extract one channel: 1
+    else
+        viz_proc_full = Copy: "cfm_viz_proc_full"
+    endif
+    selectObject: viz_proc_full
+    if viz_excerpt
+        viz_proc = Extract part: viz_start, viz_end, "rectangular", 1, "no"
+        removeObject: viz_proc_full
+    else
+        viz_proc = viz_proc_full
+    endif
+
+    selectObject: viz_orig
+    orig_peak_viz = Get absolute extremum: 0, 0, "None"
+    selectObject: viz_proc
+    proc_peak_viz = Get absolute extremum: 0, 0, "None"
+    viz_max = max(orig_peak_viz, proc_peak_viz)
+    if viz_max < 0.001
+        viz_max = 0.001
+    endif
+    viz_amp = viz_max * 1.15
+
+    draw_max_freq = 3500
+    for fn from 1 to max_formants
+        if old_'fn' <> undefined and old_'fn' > draw_max_freq
+            draw_max_freq = old_'fn'
+        endif
+        if target_'fn' <> undefined and target_'fn' > draw_max_freq
+            draw_max_freq = target_'fn'
+        endif
     endfor
-    drawMaxFreq = min(drawMaxFreq * 1.05, max_formant_hz)
+    draw_max_freq = min(max_formant_hz, draw_max_freq * 1.08)
+    if draw_max_freq < 1200
+        draw_max_freq = min(max_formant_hz, 1200)
+    endif
+    spec_ceil = min(nyquist, max(5000, max_formant_hz))
 
-    specCeil = min(nyquist, max(5000, max_formant_hz))
+    # Spectrograms first, then paint them below.
+    selectObject: viz_orig
+    To Spectrogram: 0.005, spec_ceil, 0.002, 20, "Gaussian"
+    orig_spec = selected("Spectrogram")
+    selectObject: viz_proc
+    To Spectrogram: 0.005, spec_ceil, 0.002, 20, "Gaussian"
+    proc_spec = selected("Spectrogram")
 
-    # Title
-    Select outer viewport: 0, 8, 0, 0.5
-    Select inner viewport: 0, 8, 0, 0.5
+    Erase all
+    Select outer viewport: 0, 8, 0, 8
+
+    # TITLE
+    Select outer viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Creative Formant Manipulations##"
+    Text: 0.5, "centre", 0.68, "half", "##Creative Formant Manipulations##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", 0.2, "half",
-        ... originalName$ + "  |  " + presetName$ + "  |  " + manipName$
-        ... + "  |  dry/wet " + fixed$(dry_wet_mix, 2)
-        ... + "  |  " + string$(numChannels) + " ch"
+    Text: 0.5, "centre", 0.06, "half",
+        ... original_name$ + "  |  " + preset_name$ + "  |  " + manipulation_name$
+        ... + "  |  strength " + fixed$(strength_db, 1) + " dB"
+        ... + "  |  mix " + fixed$(dry_wet_mix, 2)
+        ... + "  |  " + string$(num_channels) + " ch"
+    if viz_excerpt
+        Font size: 6
+        Colour: "{0.45, 0.45, 0.55}"
+        Text: 0.5, "centre", -0.25, "half",
+            ... "Visualization: central " + fixed$(viz_max_seconds, 1) + " s excerpt (processing used the full Sound)"
+    endif
 
-    # Original waveform
-    Select outer viewport: 0, 4, 0.6, 2.0
-    Select inner viewport: 0.6, 3.7, 0.7, 1.95
-    selectObject: workSound
-    Colour: "{0.60, 0.60, 0.60}"
-    Draw: 0, 0, -vizAmp, vizAmp, "no", "Curve"
+    # A — ORIGINAL WAVEFORM
+    Select outer viewport: 0, 4, 0.65, 1.95
+    Select inner viewport: 0.55, 3.75, 0.78, 1.88
+    selectObject: viz_orig
+    Colour: "{0.58, 0.58, 0.62}"
+    Draw: 0, 0, -viz_amp, viz_amp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Original"
-    Text top: "no", "Waveform (shared scale)"
+    Text top: "no", "A  Original waveform (shared scale)"
+    Text left: "yes", "Amplitude"
 
-    # Processed waveform
-    Select outer viewport: 4, 8, 0.6, 2.0
-    Select inner viewport: 4.4, 7.7, 0.7, 1.95
-    selectObject: finalOutput
-    Colour: "{0.30, 0.70, 0.50}"
-    Draw: 0, 0, -vizAmp, vizAmp, "no", "Curve"
+    # B — PROCESSED WAVEFORM
+    Select outer viewport: 4, 8, 0.65, 1.95
+    Select inner viewport: 4.35, 7.75, 0.78, 1.88
+    selectObject: viz_proc
+    Colour: "{0.22, 0.64, 0.40}"
+    Draw: 0, 0, -viz_amp, viz_amp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Processed"
+    Text top: "no", "B  Processed waveform (shared scale)"
     Text bottom: "yes", "Time (s)"
 
-    # FORMANT TRAJECTORIES
-    Select outer viewport: 0, 8, 2.1, 4.0
-    Select inner viewport: 0.6, 7.7, 2.2, 3.95
+    # C — LANDMARK MAP: measured landmarks vs spectral-envelope targets
+    Select outer viewport: 0, 8, 2.08, 3.75
+    Select inner viewport: 0.65, 7.72, 2.25, 3.67
+    Axes: 0.5, 5.5, 0, draw_max_freq
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0.5, 5.5, 0, draw_max_freq
 
-    Axes: 0, duration, 0, drawMaxFreq
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, drawMaxFreq
-
-    Colour: "{0.70, 0.70, 0.70}"
+    Colour: "{0.86, 0.86, 0.89}"
     Dotted line
-    for f from 1 to 3
-        for i from 1 to numFrames - 1
-            i_next = i + 1
-            t1 = frameTime_'i'
-            t2 = frameTime_'i_next'
-            freq1 = origFormantFreq_'i'_'f'
-            freq2 = origFormantFreq_'i_next'_'f'
-            if freq1 <> undefined and freq2 <> undefined
-                Draw line: t1, freq1, t2, freq2
-            endif
-        endfor
-    endfor
+    grid_hz = 500
+    gh = grid_hz
+    while gh < draw_max_freq
+        Draw line: 0.5, gh, 5.5, gh
+        gh = gh + grid_hz
+    endwhile
     Solid line
 
-    formant_colors$# = {"{0.30, 0.60, 0.90}", "{0.90, 0.50, 0.30}", "{0.30, 0.80, 0.50}"}
-    for f from 1 to 3
-        Colour: formant_colors$#[f]
-        Line width: 2
-        for i from 1 to numFrames - 1
-            i_next = i + 1
-            t1 = frameTime_'i'
-            t2 = frameTime_'i_next'
-            freq1 = formantFreq_'i'_'f'
-            freq2 = formantFreq_'i_next'_'f'
-            if freq1 <> undefined and freq2 <> undefined
-                Draw line: t1, freq1, t2, freq2
-            endif
-        endfor
-        Line width: 1
+    formant_colours$# = {"{0.25, 0.55, 0.88}", "{0.90, 0.48, 0.24}", "{0.22, 0.70, 0.43}", "{0.58, 0.38, 0.78}", "{0.78, 0.30, 0.48}"}
+    for fn from 1 to max_formants
+        if old_'fn' <> undefined and old_'fn' > 0
+            # Connector shows how far this envelope landmark is moved.
+            Colour: "{0.68, 0.68, 0.72}"
+            Line width: 1
+            Draw line: fn, old_'fn', fn, target_'fn'
+            Paint circle: "{0.68, 0.68, 0.72}", fn, old_'fn', 0.07
+
+            Colour: formant_colours$#[fn]
+            Paint circle: formant_colours$#[fn], fn, target_'fn', 0.10
+            Font size: 6
+            Text: fn + 0.10, "left", target_'fn', "half",
+                ... "F" + string$(fn) + "  " + fixed$(old_'fn', 0) + " -> " + fixed$(target_'fn', 0)
+        endif
     endfor
 
     Colour: "Black"
+    Line width: 1
     Draw inner box
     Font size: 7
+    Text top: "no", "C  Spectral-envelope landmark mapping (grey = measured, colour = target)"
     Text left: "yes", "Frequency (Hz)"
-    Text top: "no", "Formant trajectories (grey = original, colour = modified)"
-    Text bottom: "yes", "Time (s)"
+    Text bottom: "yes", "Formant landmark index"
+    Marks bottom every: 1, 1, "yes", "yes", "no"
+    Marks left every: 1, 500, "yes", "yes", "no"
 
-    Font size: 5
-    Colour: "{0.30, 0.60, 0.90}"
-    Text: duration * 0.95, "right", drawMaxFreq * 0.15, "half", "F1"
-    Colour: "{0.90, 0.50, 0.30}"
-    Text: duration * 0.95, "right", drawMaxFreq * 0.45, "half", "F2"
-    Colour: "{0.30, 0.80, 0.50}"
-    Text: duration * 0.95, "right", drawMaxFreq * 0.72, "half", "F3"
-
-    # Original spectrogram
-    Select outer viewport: 0, 4, 4.1, 6.0
-    Select inner viewport: 0.6, 3.7, 4.2, 5.95
-
-    selectObject: workSound
-    if numChannels > 1
-        spec_source = Extract one channel: 1
-    else
-        spec_source = Copy: "spec_source"
-    endif
-    To Spectrogram: 0.005, specCeil, 0.002, 20, "Gaussian"
-    orig_spec = selected("Spectrogram")
-    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
-
+    # D — ORIGINAL SPECTROGRAM
+    Select outer viewport: 0, 4, 3.90, 5.90
+    Select inner viewport: 0.55, 3.75, 4.08, 5.82
+    selectObject: orig_spec
+    Paint: 0, 0, 0, spec_ceil, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Freq (Hz)"
-    Text top: "no", "Original spectrogram (to " + fixed$(specCeil, 0) + " Hz)"
+    Text top: "no", "D  Original spectrogram"
+    Text left: "yes", "Frequency (Hz)"
 
-    removeObject: orig_spec, spec_source
-
-    # Processed spectrogram
-    Select outer viewport: 4, 8, 4.1, 6.0
-    Select inner viewport: 4.4, 7.7, 4.2, 5.95
-
-    selectObject: finalOutput
-    if numChannels > 1
-        spec_proc = Extract one channel: 1
-    else
-        spec_proc = Copy: "spec_proc"
-    endif
-    To Spectrogram: 0.005, specCeil, 0.002, 20, "Gaussian"
-    proc_spec = selected("Spectrogram")
-    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
-
+    # E — PROCESSED SPECTROGRAM
+    Select outer viewport: 4, 8, 3.90, 5.90
+    Select inner viewport: 4.35, 7.75, 4.08, 5.82
+    selectObject: proc_spec
+    Paint: 0, 0, 0, spec_ceil, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Freq (Hz)"
+    Text top: "no", "E  Processed spectrogram"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Processed spectrogram (to " + fixed$(specCeil, 0) + " Hz)"
 
-    removeObject: proc_spec, spec_proc
-
-    # Summary panel
-    Select outer viewport: 0, 8, 6.1, 7.0
-    Select inner viewport: 0.6, 7.7, 6.2, 6.95
+    # RESULT / ENGINE STRIP
+    Select outer viewport: 0, 8, 6.10, 7.45
+    Select inner viewport: 0.55, 7.72, 6.20, 7.35
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-
-    if artifact_reduction = 1
-        artStr$ = "none"
-    elsif artifact_reduction = 2
-        artStr$ = "de-click"
-    else
-        artStr$ = "de-click + high cut " + fixed$(high_cut_hz, 0) + " Hz"
-    endif
-    if output_level_mode = 1
-        levelStr$ = "natural"
-    elsif output_level_mode = 2
-        levelStr$ = "ceiling " + fixed$(ceiling_peak, 2) + " (" + level_action$ + ")"
-    else
-        levelStr$ = "normalized to " + fixed$(ceiling_peak, 2)
-    endif
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Colour: "{0.80, 0.80, 0.82}"
+    Draw line: 0.50, 0.08, 0.50, 0.92
 
     Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.85, "half", "##Summary##"
+    Colour: "{0.35, 0.35, 0.45}"
+    Text: 0.02, "left", 0.82, "half", "PROCESS"
     Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.58, "half",
-        ... "Effect: " + manipName$
-        ... + "  |  Frames: " + string$(numFrames)
-        ... + "  |  LPC order: " + string$(lpc_order)
-        ... + "  |  Pre-emphasis: " + string$(preEmphasis) + " Hz"
-        ... + "  |  Max formant: " + fixed$(max_formant_hz, 0) + " Hz"
-        ... + "  |  Duration: " + fixed$(duration, 2) + " s"
+    Colour: "{0.22, 0.22, 0.22}"
+    Text: 0.02, "left", 0.55, "half",
+        ... "Static spectral-envelope FFT  |  original phase preserved"
     Text: 0.02, "left", 0.28, "half",
-        ... "Dry/wet: " + fixed$(dry_wet_mix, 2)
-        ... + "  |  Level match: " + string$(match_input_level)
-        ... + "  |  Artifacts: " + artStr$
-        ... + "  |  Peak in: " + fixed$(origPeakViz, 3)
-        ... + "  |  Peak out: " + fixed$(out_peak, 3)
-        ... + "  |  Output: " + levelStr$
+        ... "one FFT per channel  |  " + string$(valid_formants) + " landmarks"
+
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.45}"
+    Text: 0.53, "left", 0.82, "half", "RESULT"
+    Font size: 6
+    Colour: "{0.22, 0.22, 0.22}"
+    Text: 0.53, "left", 0.55, "half",
+        ... "peak " + fixed$(input_peak, 3) + " -> " + fixed$(out_peak, 3)
+    Text: 0.53, "left", 0.28, "half",
+        ... fixed$(duration, 3) + " s  |  " + string$(out_ch) + " ch  |  " + fixed$(out_sr, 0) + " Hz"
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
     Colour: "Black"
+
+    removeObject: orig_spec, proc_spec, viz_orig, viz_proc
 endif
 
-# ============================================================
-# Restore the source time domain and finish
-# ============================================================
-selectObject: finalOutput
-if originalXmin <> 0
-    Shift times to: "start time", originalXmin
+# Restore the source time domain only after the picture has been drawn at t=0.
+selectObject: output
+if original_xmin <> 0
+    Shift times to: "start time", original_xmin
 endif
-Rename: originalName$ + "_" + manipName$ + "_" + presetName$
-finalName$ = selected$("Sound")
+Rename: original_name$ + "_CFM2_" + preset_name$
+out_name$ = selected$("Sound")
 
-removeObject: soundMono, formantPath, formantObj, formantGrid, workSound
+removeObject: work_sound
 
 appendInfoLine: ""
-appendInfoLine: "=== Complete ==="
-appendInfoLine: "Output: ", finalName$
-appendInfoLine: "  Peak before output stage: ", fixed$(pre_level_peak, 4)
-if output_level_mode = 1
-    appendInfoLine: "  Output stage: none (natural level)"
-elsif output_level_mode = 2
-    appendInfoLine: "  Output stage: safety ceiling ", fixed$(ceiling_peak, 2), " - ", level_action$
-else
-    appendInfoLine: "  Output stage: peak normalize to ", fixed$(ceiling_peak, 2),
-        ... " (x", fixed$(level_gain, 4), ")"
-    appendInfoLine: "  NOTE: this makes Dry/wet a level-dependent ratio again."
-endif
-if output_level_mode <> 3 and out_peak > 1
-    appendInfoLine: "  WARNING: peak exceeds 1.0 and will clip when saved to integer PCM."
-endif
+appendInfoLine: "Output: ", out_name$
+appendInfoLine: "Duration: ", fixed$(duration, 6), " -> ", fixed$(out_dur, 6), " s"
+appendInfoLine: "Channels: ", num_channels, " -> ", out_ch
+appendInfoLine: "Sample rate: ", sample_rate, " -> ", out_sr, " Hz"
+appendInfoLine: "Peak: ", fixed$(input_peak, 5), " -> ", fixed$(out_peak, 5)
 
-if play_after_processing
+if play_result
+    selectObject: output
     if out_peak > 1
-        # Play a scaled copy rather than a clipping one. With the output
-        # stage off, Wobble and Vowel Morph measured peaks of 1.590 and
-        # 2.176 from a 0.9-peak input; the file itself is left untouched.
-        appendInfoLine: "Playing a scaled copy (peak ", fixed$(out_peak, 3),
-            ... " exceeds 1.0; the Sound object keeps its level)..."
-        selectObject: finalOutput
-        playCopy = Copy: "play_safe"
+        play_copy = Copy: "cfm_play_safe"
         Scale peak: 0.95
         Play
-        removeObject: playCopy
+        removeObject: play_copy
     else
-        appendInfoLine: "Playing result..."
-        selectObject: finalOutput
         Play
     endif
 endif
 
-selectObject: finalOutput
+selectObject: output

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.5 (2026)
+# Version: 3.0 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,7 +18,8 @@
 #                    rising to T1 and resolving over T2
 #     Intensity    - envelope peaking at 0.618 T
 #     Spectral     - see Spectral_scaling_mode below; the default
-#                    warps FORMANTS and preserves duration and pitch
+#                    warps the measured SPECTRAL ENVELOPE landmarks and
+#                    preserves duration, pitch and complex-spectrum phase
 #     Filtering    - band centred on the spectral centre of gravity,
 #                    edges at cog / phi^k and cog * phi^k
 #     Panning      - a mono-derived AUTO-PAN whose excursion blooms at
@@ -28,37 +29,6 @@
 #                    measured L/R correlation is 0.99 / 0.95 / 0.85 for
 #                    the three presets, with Side 22.0 / 15.6 /
 #                    10.5 dB below Mid.
-#
-# Changelog v2.5 - Parselmouth-verified again. The v2.4 architecture
-# passed: formant warp keeps duration and pitch (F2 900 -> 1056 / 1242
-# / 1443 Hz for the three presets), varispeed is explicit and the time
-# structure recomputed from it, channels and anti-phase survive, xmin
-# holds (correlation 0.99999999999 between the same signal at 0 s and
-# 5.137 s), bypass is sample-identical even with Peak normalize, and
-# the filter and pan speed are genuinely phi-derived. Three things
-# remained:
-#   - THE AUTO-PAN NORMALIZED EVERY CHANNEL TO 0.9. The tiers held
-#     70 + 20*log10(gain) and were applied with Multiply: "yes", which
-#     SCALES the result. Measured: a 0.1998-peak mono input came out at
-#     0.9 / 0.9 in all three presets, panning off gave peak 0.210 and
-#     panning on gave exactly 0.900, and a stereo pair 12 dB apart
-#     (0.20 / 0.05) came out 0.90 / 0.90 - the balance erased. The
-#     tiers now hold plain relative dB, 20*log10(gain), and all four
-#     Multiply calls pass "no", so 0 dB is unity and the pan only
-#     moves the signal between channels.
-#   - The length requirement is enforced only when something will be
-#     analysed. v2.4 checked it before the bypass test, so a 50 ms file
-#     with every component off was refused for a pitch analysis it was
-#     never going to run. The analysis phase is skipped entirely in
-#     that case.
-#   - Change gender is not bit-reproducible: two runs on the same input
-#     correlate at about 0.99 with a maximum sample difference near
-#     0.17. That is inside Praat's resynthesis, not this script - every
-#     other stage is deterministic. Now stated in the code and in the
-#     report so it is a known property rather than a surprise.
-#   - The left plot panel is labelled "Processing input (post-
-#     varispeed)" when varispeed ran, since it then shows the shortened
-#     transposed signal rather than the original.
 #
 # Changelog v2.4 - reviewed by running the script under Parselmouth,
 # so the figures below are measurements.
@@ -110,11 +80,23 @@
 #   - Object_N[col] and an inline if/then/else/fi inside a string
 #     replaced with object[id, row, col] and a precomputed string.
 #
+# Changelog v3.0:
+#   - Replaced Change gender formant resynthesis with a static spectral-
+#     envelope landmark warp. FormantPath is ANALYSIS ONLY; measured F1-F5
+#     are broad spectral landmarks, never resonator poles. The complex
+#     spectrum keeps its original phase and receives a smooth magnitude
+#     redistribution from each measured landmark to its phi-scaled target.
+#   - The formant mapping is time-invariant, so one FFT per channel is used
+#     rather than a grain loop. This keeps long-file processing fast.
+#   - Golden auto-pan no longer normalizes left and right independently:
+#     tiers contain relative dB gains and Multiply uses no scaling.
+#   - True no-component bypass runs before duration-dependent analysis.
+#
 # Usage:
 #   Select a Sound object and run.
 # ============================================================
 
-form Golden Ratio Processor v2.5
+form Golden Ratio Processor v3.0
     optionmenu Preset: 1
         option Subtle (gentle phi influence)
         option Standard (moderate phi scaling)
@@ -124,7 +106,7 @@ form Golden Ratio Processor v2.5
     boolean Apply_intensity_structure 1
     optionmenu Spectral_scaling_mode: 2
         option Off
-        option Formant warp (keeps duration and pitch)
+        option Spectral formant warp (keeps duration and pitch)
         option Varispeed (shortens and transposes by phi)
     boolean Apply_spectral_filtering 1
     boolean Apply_golden_panning 1
@@ -181,8 +163,6 @@ endif
 if ceiling_peak <= 0 or ceiling_peak > 1
     exitScript: "Ceiling_peak must be greater than 0 and at most 1."
 endif
-min_dur = 6.4 / pitch_floor_Hz
-
 # Is anything actually enabled?
 component_count = 0
 if apply_pitch_architecture
@@ -204,35 +184,36 @@ if apply_golden_panning
     component_count = component_count + 1
 endif
 
+# Analysis-based stages need enough audio, but a full bypass does not.
+min_dur = 6.4 / pitch_floor_Hz
+if component_count > 0 and input_duration < min_dur
+    exitScript: "Sound is too short: " + fixed$(input_duration * 1000, 1) + " ms. At a " +
+    ... "pitch floor of " + fixed$(pitch_floor_Hz, 0) + " Hz the analysis needs at least " +
+    ... fixed$(min_dur * 1000, 1) + " ms. Raise Pitch_floor_Hz or use a longer Sound."
+endif
+
 # ============================================================
 # Info header
 # ============================================================
 # v2.3 used writeInfoLine five times in a row here; each call CLEARS
 # the window, so only the last line ever survived.
 clearinfo
-writeInfoLine: "=== Golden Ratio Processor v2.5 ==="
+writeInfoLine: "=== Golden Ratio Processor v3.0 ==="
 appendInfoLine: "phi = ", fixed$(phi, 6)
 appendInfoLine: "Input: ", orig_name$, " (", fixed$(input_duration, 3), " s, ",
     ... n_channels, " ch, ", sample_rate, " Hz)"
 appendInfoLine: "Preset: ", presetName$, " (scaling strength ", fixed$(scaling_strength, 2), ")"
 appendInfoLine: ""
 
-# The length requirement belongs to the ANALYSIS, so it is only
-# enforced when something will actually be analysed. v2.4 checked it
-# first, so a 50 ms file with every component switched off was refused
-# for a pitch analysis it was never going to run.
 if component_count = 0
     appendInfoLine: "No components enabled: returning the input unchanged."
-    appendInfoLine: "  (Analysis skipped, so the ", fixed$(min_dur * 1000, 1),
-        ... " ms minimum does not apply.)"
-    appendInfoLine: ""
-else
-    if input_duration < min_dur
-        exitScript: "Sound is too short: " + fixed$(input_duration * 1000, 1) + " ms. At a " +
-        ... "pitch floor of " + fixed$(pitch_floor_Hz, 0) + " Hz the analysis needs at " +
-        ... "least " + fixed$(min_dur * 1000, 1) + " ms. Raise Pitch_floor_Hz, use a " +
-        ... "longer Sound, or switch every component off for a plain bypass."
+    selectObject: orig_id
+    bypass_out = Copy: orig_name$ + "_GoldenRatio_Bypass"
+    selectObject: bypass_out
+    if play_result
+        Play
     endif
+    exitScript: ""
 endif
 
 # ============================================================
@@ -282,99 +263,156 @@ climax_time = t1
 # ============================================================
 # v2.3 folded the AUDIO to mono, so stereo returned mono, 4 channels
 # returned mono, and anti-phase stereo cancelled to peak 0 / RMS 0.
-if component_count = 0
-    # Nothing to analyse for. Defaults keep the report and the
-    # plot well defined without touching To Pitch or To Intensity.
-    mono_id = 0
-    pitch_obj = 0
-    intensity_obj = 0
-    spectrum_obj = 0
-    mean_f0 = 200
-    f0_min = 160
-    f0_max = 240
-    mean_intensity = 0
-    intensity_stddev = 0
-    cog = 1000
-    mean_f2 = 1500
-else
-    appendInfoLine: "PHASE 1: Global analysis"
+appendInfoLine: "PHASE 1: Global analysis"
 
-    if n_channels > 1
+if n_channels > 1
+    selectObject: work_sound
+    mono_id = Convert to mono
+    selectObject: mono_id
+    mono_rms = Get root-mean-square: 0, 0
+    if mono_rms < 0.0000001
+        # The fold cancelled; fall back to the loudest channel.
+        removeObject: mono_id
+        best_rms = -1
+        pick_ch = 1
+        for ch from 1 to n_channels
+            selectObject: work_sound
+            probe = Extract one channel: ch
+            probe_rms = Get root-mean-square: 0, 0
+            removeObject: probe
+            if probe_rms > best_rms
+                best_rms = probe_rms
+                pick_ch = ch
+            endif
+        endfor
         selectObject: work_sound
-        mono_id = Convert to mono
+        mono_id = Extract one channel: pick_ch
+        appendInfoLine: "  Mono fold cancelled (anti-phase): analysing channel ", pick_ch
+    endif
+else
+    selectObject: work_sound
+    mono_id = Copy: "gr_mono"
+endif
+
+selectObject: mono_id
+pitch_obj = To Pitch: time_step_s, pitch_floor_Hz, pitch_ceiling_Hz
+mean_f0 = Get mean: 0, 0, "Hertz"
+if mean_f0 = undefined
+    mean_f0 = 200
+endif
+f0_min = Get minimum: 0, 0, "Hertz", "Parabolic"
+f0_max = Get maximum: 0, 0, "Hertz", "Parabolic"
+if f0_min = undefined
+    f0_min = mean_f0 * 0.8
+endif
+if f0_max = undefined
+    f0_max = mean_f0 * 1.2
+endif
+
+selectObject: mono_id
+intensity_obj = To Intensity: pitch_floor_Hz, time_step_s, "yes"
+mean_intensity = Get mean: 0, 0, "energy"
+intensity_stddev = Get standard deviation: 0, 0
+
+selectObject: mono_id
+spectrum_obj = To Spectrum: "yes"
+cog = Get centre of gravity: 2
+if cog = undefined or cog <= 0
+    cog = 1000
+endif
+
+# Spectral-envelope formant landmarks. FormantPath is ANALYSIS ONLY.
+# No measured pole or bandwidth is used directly as a synthesis filter.
+spectral_warp_available = 0
+mean_f2 = 1500
+target_f2 = mean_f2 * adjusted_ratio
+formant_shape_db = 5 + 15 * scaling_strength
+region_fraction = 0.24
+region_floor_1 = 180
+region_floor_2 = 260
+region_floor_3 = 360
+region_floor_4 = 450
+region_floor_5 = 550
+formant_expr$ = ""
+formant_terms = 0
+valid_formants = 0
+
+if spectral_scaling_mode = 2
+    formant_ceiling = min(5500, (nyquist - 50) / 1.22)
+    if formant_ceiling >= 1000
         selectObject: mono_id
-        mono_rms = Get root-mean-square: 0, 0
-        if mono_rms < 0.0000001
-            # The fold cancelled; fall back to the loudest channel.
-            removeObject: mono_id
-            best_rms = -1
-            pick_ch = 1
-            for ch from 1 to n_channels
-                selectObject: work_sound
-                probe = Extract one channel: ch
-                probe_rms = Get root-mean-square: 0, 0
-                removeObject: probe
-                if probe_rms > best_rms
-                    best_rms = probe_rms
-                    pick_ch = ch
+        formant_path = To FormantPath (burg): time_step_s, 5, formant_ceiling, 0.030, 35, 0.05, 4
+        formant_obj = Extract Formant
+        for fn from 1 to 5
+            selectObject: formant_obj
+            formant_'fn' = Get quantile: fn, 0, 0, "Hertz", 0.5
+            old_'fn' = formant_'fn'
+            target_'fn' = formant_'fn'
+            if formant_'fn' <> undefined and formant_'fn' > 0
+                valid_formants = valid_formants + 1
+                target_'fn' = formant_'fn' * adjusted_ratio
+                if target_'fn' > nyquist - 80
+                    target_'fn' = nyquist - 80
+                endif
+                if target_'fn' < 80
+                    target_'fn' = 80
+                endif
+            endif
+        endfor
+        removeObject: formant_path, formant_obj
+
+        if formant_2 <> undefined and formant_2 > 0
+            mean_f2 = formant_2
+            target_f2 = target_2
+        endif
+
+        if valid_formants >= 2
+            for fn from 1 to 5
+                if old_'fn' <> undefined and old_'fn' > 0 and abs(target_'fn' - old_'fn') > 0.5
+                    if fn = 1
+                        floor_w = region_floor_1
+                    elsif fn = 2
+                        floor_w = region_floor_2
+                    elsif fn = 3
+                        floor_w = region_floor_3
+                    elsif fn = 4
+                        floor_w = region_floor_4
+                    else
+                        floor_w = region_floor_5
+                    endif
+                    env_width = max(floor_w, old_'fn' * region_fraction)
+                    if env_width > 900
+                        env_width = 900
+                    endif
+                    if formant_terms > 0
+                        formant_expr$ = formant_expr$ + " + "
+                    endif
+                    formant_expr$ = formant_expr$ + fixed$(formant_shape_db, 4) +
+                        ... " * (exp(-0.5*((x-" + fixed$(target_'fn', 3) + ")/" +
+                        ... fixed$(env_width, 3) + ")^2) - exp(-0.5*((x-" +
+                        ... fixed$(old_'fn', 3) + ")/" + fixed$(env_width, 3) + ")^2))"
+                    formant_terms = formant_terms + 1
                 endif
             endfor
-            selectObject: work_sound
-            mono_id = Extract one channel: pick_ch
-            appendInfoLine: "  Mono fold cancelled (anti-phase): analysing channel ", pick_ch
+            if formant_terms > 0
+                spectral_warp_available = 1
+            endif
         endif
+    endif
+
+    if spectral_warp_available = 0
+        appendInfoLine: "  WARNING: insufficient reliable formant landmarks; spectral warp skipped."
     else
-        selectObject: work_sound
-        mono_id = Copy: "gr_mono"
+        appendInfoLine: "  Spectral landmarks: ", valid_formants, " | shape limit +/-",
+            ... fixed$(formant_shape_db, 1), " dB | one FFT per channel"
     endif
-
-    selectObject: mono_id
-    pitch_obj = To Pitch: time_step_s, pitch_floor_Hz, pitch_ceiling_Hz
-    mean_f0 = Get mean: 0, 0, "Hertz"
-    if mean_f0 = undefined
-        mean_f0 = 200
-    endif
-    f0_min = Get minimum: 0, 0, "Hertz", "Parabolic"
-    f0_max = Get maximum: 0, 0, "Hertz", "Parabolic"
-    if f0_min = undefined
-        f0_min = mean_f0 * 0.8
-    endif
-    if f0_max = undefined
-        f0_max = mean_f0 * 1.2
-    endif
-
-    selectObject: mono_id
-    intensity_obj = To Intensity: pitch_floor_Hz, time_step_s, "yes"
-    mean_intensity = Get mean: 0, 0, "energy"
-    intensity_stddev = Get standard deviation: 0, 0
-
-    selectObject: mono_id
-    spectrum_obj = To Spectrum: "yes"
-    cog = Get centre of gravity: 2
-    if cog = undefined or cog <= 0
-        cog = 1000
-    endif
-
-    # Formant target, now actually used by the warp
-    if spectral_scaling_mode = 2
-        selectObject: mono_id
-        formant_obj = To Formant (burg): time_step_s, 5, 5500, 0.025, 50
-        mean_f2 = Get mean: 2, 0, 0, "Hertz"
-        if mean_f2 = undefined
-            mean_f2 = 1500
-        endif
-        removeObject: formant_obj
-    else
-        mean_f2 = 1500
-    endif
-    target_f2 = mean_f2 * adjusted_ratio
-
-    appendInfoLine: "  Mean F0: ", fixed$(mean_f0, 1), " Hz (measured range ",
-        ... fixed$(f0_min, 1), "-", fixed$(f0_max, 1), " Hz)"
-    appendInfoLine: "  Mean intensity: ", fixed$(mean_intensity, 1), " dB"
-    appendInfoLine: "  Spectral centre of gravity: ", fixed$(cog, 1), " Hz"
-    appendInfoLine: ""
 endif
+
+appendInfoLine: "  Mean F0: ", fixed$(mean_f0, 1), " Hz (measured range ",
+    ... fixed$(f0_min, 1), "-", fixed$(f0_max, 1), " Hz)"
+appendInfoLine: "  Mean intensity: ", fixed$(mean_intensity, 1), " dB"
+appendInfoLine: "  Spectral centre of gravity: ", fixed$(cog, 1), " Hz"
+appendInfoLine: ""
 
 appendInfoLine: "PHASE 2: Golden time structure"
 appendInfoLine: "  Duration used: ", fixed$(total_duration, 3), " s"
@@ -420,7 +458,7 @@ if apply_pitch_architecture
         ... fixed$(lower_pitch_factor, 3)
 endif
 if spectral_scaling_mode = 2
-    appendInfoLine: "  Formant warp: x", fixed$(adjusted_ratio, 3), " (F2 ",
+    appendInfoLine: "  Spectral formant warp: x", fixed$(adjusted_ratio, 3), " (F2 landmark ",
         ... fixed$(mean_f2, 0), " -> ", fixed$(target_f2, 0), " Hz), duration preserved"
 elsif spectral_scaling_mode = 3
     appendInfoLine: "  Varispeed: x", fixed$(adjusted_ratio, 3), " (already applied)"
@@ -502,17 +540,22 @@ for ch from 1 to n_channels
             ... ") * ((x - " + climax$ + ") / " + t2$ + ")) - " + mean_int$ + ") / 20) fi"
     endif
 
-    # --- Formant warp (duration-preserving) ---
-    if spectral_scaling_mode = 2
-        # NOTE: Change gender is not bit-reproducible. Two runs on the
-        # same input at the same settings correlate at about 0.99 with a
-        # maximum sample difference near 0.17. The variation is inside
-        # Praat's resynthesis, not in this script's timing - every other
-        # stage here is deterministic. Use Varispeed or switch the warp
-        # off if you need identical renders.
+    # --- Static spectral-envelope formant warp (duration/pitch preserving) ---
+    # The same smooth real-valued gain multiplies real and imaginary FFT rows,
+    # so complex-spectrum phase is preserved. Nothing here is an LPC pole.
+    if spectral_scaling_mode = 2 and spectral_warp_available = 1
         selectObject: chan
-        warped = Change gender: pitch_floor_Hz, pitch_ceiling_Hz, adjusted_ratio, 0, 1, 1
-        removeObject: chan
+        warp_dur = Get total duration
+        warp_spec = To Spectrum: "yes"
+        selectObject: warp_spec
+        warp_limit$ = fixed$(formant_shape_db, 4)
+        Formula: "self * 10^(min(" + warp_limit$ + ",max(-" + warp_limit$ + "," + formant_expr$ + "))/20)"
+        selectObject: warp_spec
+        warp_full = To Sound
+        removeObject: warp_spec
+        selectObject: warp_full
+        warped = Extract part: 0, warp_dur, "rectangular", 1, "no"
+        removeObject: warp_full, chan
         chan = warped
     endif
 
@@ -613,14 +656,10 @@ if apply_golden_panning
         angle = pan * pi / 2
         gainL = cos(angle)
         gainR = sin(angle)
-        # Relative dB, so 0 dB is unity. v2.4 added a 70 dB offset and
-        # then used Multiply: "yes", which SCALES the result: every
-        # channel came out at peak 0.9 regardless of input level, and a
-        # stereo pair 12 dB apart (0.20 / 0.05) came out 0.90 / 0.90.
         selectObject: leftTier
-        Add point: t, 20 * log10(gainL + 0.0001)
+        Add point: t, 20 * log10(gainL + 0.000001)
         selectObject: rightTier
-        Add point: t, 20 * log10(gainR + 0.0001)
+        Add point: t, 20 * log10(gainR + 0.000001)
     endfor
 
     if n_channels = 1
@@ -716,7 +755,7 @@ if draw_visualization
     if spectral_scaling_mode = 1
         specStr$ = "no spectral warp"
     elsif spectral_scaling_mode = 2
-        specStr$ = "formant warp x" + fixed$(adjusted_ratio, 2)
+        specStr$ = "spectral-envelope warp x" + fixed$(adjusted_ratio, 2)
     else
         specStr$ = "varispeed x" + fixed$(adjusted_ratio, 2)
     endif
@@ -758,13 +797,7 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "Input"
-    # Named for what it is: after a varispeed this is the shortened,
-    # transposed signal the later stages actually saw, not the original.
-    if varispeed_done
-        Text top: "no", "Processing input (post-varispeed), " + string$(n_channels) + " ch"
-    else
-        Text top: "no", "Input, " + string$(n_channels) + " ch (shared scale)"
-    endif
+    Text top: "no", "Input, " + string$(n_channels) + " ch (shared scale)"
 
     # --- Auto-pan architecture ---
     Select outer viewport: 4, 8, 0.6, 2.0
@@ -884,10 +917,7 @@ endif
 Rename: orig_name$ + "_GoldenRatio_" + presetName$
 final_name$ = selected$("Sound")
 
-if pitch_obj <> 0
-    removeObject: pitch_obj, intensity_obj, spectrum_obj, mono_id
-endif
-removeObject: work_sound
+removeObject: pitch_obj, intensity_obj, spectrum_obj, mono_id, work_sound
 
 appendInfoLine: ""
 appendInfoLine: "=== Complete ==="
