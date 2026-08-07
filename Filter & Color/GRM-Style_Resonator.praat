@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,15 @@
 #   to 3675 Hz (44 cents flat); at 16 kHz it lands on 4000 Hz (103
 #   cents sharp). The per-band tuning error is reported. Exact tuning
 #   would need fractional-delay interpolation.
+#
+# Changelog v1.4:
+#   - Natural level is now truly natural: removed the internal wet-bus
+#     peak=4 guard. Safety is handled only by Output_level_mode.
+#   - Stereo wet processing no longer throws away one channel. Each input
+#     channel is band-filtered and resonated independently; no loudest-
+#     channel source selection is used. Mono still fans out to the panner.
+#   - dryWet=0 is a true output bypass: original channel count and samples
+#     are preserved and the output-level stage is skipped.
 #
 # Changelog v1.3 - reviewed by running the script under Parselmouth,
 # so the figures below are measurements.
@@ -80,7 +89,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form GRM-Style Resonator v1.3
+form GRM-Style Resonator v1.4
     optionmenu Preset: 1
         option Custom
         option Harmonic (organ-like)
@@ -359,7 +368,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== GRM-Style Resonator v1.3 ==="
+writeInfoLine: "=== GRM-Style Resonator v1.4 ==="
 appendInfoLine: "Input: ", originalName$, " (", fixed$(inputDuration, 3), " s, ",
     ... numChannels, " ch, ", samplingRate, " Hz)"
 appendInfoLine: "Preset: ", presetName$, " | Bands: ", actualNumBands, " | ", resStr$
@@ -398,28 +407,17 @@ selectObject: workSound
 duration = Get total duration
 totalSamples = Get number of samples
 
-# Band source: a real channel, never a fold. An anti-phase stereo pair
-# cancelled to silence in v1.2 and produced a silent wet bus.
+# Band source: preserve the input channels. v1.3 selected only the
+# loudest channel for the entire wet bank, so material unique to the
+# other side disappeared at 100% wet. The filters and resonators now
+# operate on every input channel independently. No L+R fold is used,
+# so anti-phase stereo cannot cancel at the analysis/source stage.
+selectObject: workSound
+bandSource = Copy: "grm_bandsrc"
 if numChannels = 1
-    selectObject: workSound
-    bandSource = Copy: "grm_bandsrc"
-    srcStr$ = "mono"
+    srcStr$ = "mono (fanned to stereo panner)"
 else
-    bestRms = -1
-    pickCh = 1
-    for ch from 1 to numChannels
-        selectObject: workSound
-        probe = Extract one channel: ch
-        probeRms = Get root-mean-square: 0, 0
-        removeObject: probe
-        if probeRms > bestRms
-            bestRms = probeRms
-            pickCh = ch
-        endif
-    endfor
-    selectObject: workSound
-    bandSource = Extract one channel: pickCh
-    srcStr$ = "channel " + string$(pickCh)
+    srcStr$ = "stereo, channels processed independently"
 endif
 appendInfoLine: "Band source: ", srcStr$
 
@@ -492,9 +490,9 @@ for i from 1 to actualNumBands
                 d = delSamples * it
                 if d < totalSamples - 1
                     selectObject: bandSound
-                    Formula (part): (d + 0.25) / samplingRate, duration, 1, 1,
+                    Formula (part): (d + 0.25) / samplingRate, duration, 1, numChannels,
                         ... "self + " + string$(a) + " * object[" + dryBand$ +
-                        ... ", 1, col - " + string$(d) + "]"
+                        ... ", row, col - " + string$(d) + "]"
                 endif
             endfor
             removeObject: dryBand
@@ -524,7 +522,11 @@ for i from 1 to actualNumBands
     if stereo_Panning = 1
         pL[i] = 1.0
         pR[i] = 1.0
-        panningStr$ = "Dual mono"
+        if numChannels = 1
+            panningStr$ = "Dual mono"
+        else
+            panningStr$ = "Stereo preserved"
+        endif
     elsif stereo_Panning = 2
         if (i mod 2) = 1
             pL[i] = 1.0
@@ -594,46 +596,63 @@ wetSum = selected("Sound")
 for i from 1 to actualNumBands
     theBand = bandIDs[i]
     selectObject: wetSum
-    Formula (part): 0, duration, 1, 1,
-        ... "self + object[" + string$(theBand) + ", 1, col] * " + string$(pL[i])
-    Formula (part): 0, duration, 2, 2,
-        ... "self + object[" + string$(theBand) + ", 1, col] * " + string$(pR[i])
+    if numChannels = 1
+        # Mono source: traditional pan of each resonant band.
+        Formula (part): 0, duration, 1, 1,
+            ... "self + object[" + string$(theBand) + ", 1, col] * " + string$(pL[i])
+        Formula (part): 0, duration, 2, 2,
+            ... "self + object[" + string$(theBand) + ", 1, col] * " + string$(pR[i])
+    else
+        # Stereo source: preserve both channels. Panning coefficients act
+        # as per-band side gains rather than collapsing L/R to one source.
+        Formula (part): 0, duration, 1, 1,
+            ... "self + object[" + string$(theBand) + ", 1, col] * " + string$(pL[i])
+        Formula (part): 0, duration, 2, 2,
+            ... "self + object[" + string$(theBand) + ", 2, col] * " + string$(pR[i])
+    endif
 endfor
 
 selectObject: wetSum
 wetNaturalPeak = Get absolute extremum: 0, 0, "None"
 appendInfoLine: "  Natural wet peak: ", fixed$(wetNaturalPeak, 6)
 
-# Attenuate only. v1.2's Scale peak: 0.9 here meant gainDB had no
-# effect at all - -30, 0, +6 and +30 dB all gave identical output - and
-# a 0.000665-peak residue was amplified to full scale.
+# No internal wet normalization or ceiling. In Natural level, gainDB must
+# remain linear even for peaks above 4. Safety is applied only once, in
+# the explicit Output_level_mode below.
 wetGuard = 1
 if wetNaturalPeak > 4
-    wetGuard = 4 / wetNaturalPeak
-    selectObject: wetSum
-    Formula: "self * " + string$(wetGuard)
-    appendInfoLine: "  Wet bus attenuated x", fixed$(wetGuard, 5),
-        ... " to keep the summing stage bounded"
+    appendInfoLine: "  NOTE: natural wet peak exceeds 4.0; no internal attenuation applied"
 endif
 
 # --- 8. DRY/WET ---
-selectObject: workSound
-dry = Copy: "dry_temp"
-selectObject: dry
-dryCh = Get number of channels
-if dryCh = 1
-    Convert to stereo
-    stereoDry = selected("Sound")
-    removeObject: dry
-    dry = stereoDry
-endif
+# dryWet=0 is a true bypass: preserve samples, time domain and channel
+# count, and do not force a mono source into a two-channel object.
+if dryWet = 0
+    selectObject: workSound
+    output = Copy: "grm_bypass"
+    bypassed = 1
+    selectObject: wetSum
+    Remove
+else
+    bypassed = 0
+    selectObject: workSound
+    dry = Copy: "dry_temp"
+    selectObject: dry
+    dryCh = Get number of channels
+    if dryCh = 1
+        Convert to stereo
+        stereoDry = selected("Sound")
+        removeObject: dry
+        dry = stereoDry
+    endif
 
-selectObject: dry
-Formula: "self * " + string$(1 - dryWet) + " + object[" + string$(wetSum) +
-    ... ", row, col] * " + string$(dryWet)
-output = dry
-selectObject: wetSum
-Remove
+    selectObject: dry
+    Formula: "self * " + string$(1 - dryWet) + " + object[" + string$(wetSum) +
+        ... ", row, col] * " + string$(dryWet)
+    output = dry
+    selectObject: wetSum
+    Remove
+endif
 
 # --- 9. OUTPUT LEVEL ---
 selectObject: output
@@ -641,19 +660,23 @@ preLevelPeak = Get absolute extremum: 0, 0, "None"
 levelGain = 1
 levelAction$ = "natural level"
 
-if output_level_mode = 2
-    if preLevelPeak > finalPeak and preLevelPeak > 0
-        Scale peak: finalPeak
-        levelGain = finalPeak / preLevelPeak
-        levelAction$ = "ceiling applied"
-    else
-        levelAction$ = "ceiling not needed"
-    endif
-elsif output_level_mode = 3
-    if preLevelPeak > 0
-        Scale peak: finalPeak
-        levelGain = finalPeak / preLevelPeak
-        levelAction$ = "peak normalized"
+if bypassed
+    levelAction$ = "skipped - Dry/Wet is 0 (true bypass)"
+else
+    if output_level_mode = 2
+        if preLevelPeak > finalPeak and preLevelPeak > 0
+            Scale peak: finalPeak
+            levelGain = finalPeak / preLevelPeak
+            levelAction$ = "ceiling applied"
+        else
+            levelAction$ = "ceiling not needed"
+        endif
+    elsif output_level_mode = 3
+        if preLevelPeak > 0
+            Scale peak: finalPeak
+            levelGain = finalPeak / preLevelPeak
+            levelAction$ = "peak normalized"
+        endif
     endif
 endif
 
@@ -796,7 +819,7 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "Output"
-    Text top: "no", "Output (stereo, same scale as input)"
+    Text top: "no", "Output (same scale as input)"
     Text bottom: "yes", "Time (s)"
 
     # --- 5. GAIN PROFILE ---
