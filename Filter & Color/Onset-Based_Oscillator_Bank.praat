@@ -3,25 +3,26 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026)
+# Version: 2.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Onset-triggered resonator bank. Detects onsets via intensity
-#   derivative, extracts pitch, and synthesizes harmonic bursts with
-#   ADSR envelopes. Each onset triggers a multi-partial oscillator
+#   Onset-triggered resonator bank. Detects onsets from Intensity-rise
+#   candidates, refines their timing, extracts pitch, and synthesizes
+#   harmonic bursts with attack/decay envelopes. Each valid-pitch onset
+#   triggers a multi-partial oscillator
 #   with detuning, brightness control, and waveshaping.
 #
 # Features:
 #   - Intensity-based onset detection with configurable threshold
-#   - Pitch extraction with multiple fallback methods
+#   - Autocorrelation pitch extraction with value/mean/median fallbacks
 #   - Harmonic oscillator bank (1-32 partials) with detuning
-#   - ADSR envelopes with randomization
-#   - Waveshaping (sin^3) for brightness
+#   - Attack + exponential-decay envelopes with randomization
+#   - Cubic waveshaping for brightness, with Nyquist-safe 3rd harmonic
 #   - Velocity sensitivity (onset strength -> burst amplitude)
 #   - Speed modes for faster processing
-#   - Comprehensive visualization: onsets, pitches, bursts
+#   - Comprehensive visualization: onsets, valid pitches, bursts
 #   - 6 presets from gentle to dense
 #
 # Categories: Resynthesis, Pitch-Based Effects, Creative Effects
@@ -29,6 +30,16 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.2:
+#   - Locally refines Intensity onset candidates with short RMS windows.
+#   - Uses a 0-based mono analysis copy; restores the original start time.
+#   - Preserves arbitrary channel counts (wet bank is identical per channel).
+#   - Removes the fixed 500-onset limit.
+#   - Pitch ceiling follows the working sample rate up to 4 kHz.
+#   - Expands cubic waveshaping analytically and suppresses aliased 3rd harmonics.
+#   - Peak safety only attenuates; it never boosts quiet output.
+#   - Adds parameter clamps and correct stopwatch timing.
 #
 # Changelog v2.1:
 #
@@ -60,7 +71,7 @@
 #   preset, and random seed state.
 # ============================================================
 
-form Onset-Based Oscillator Bank v2.1
+form Onset-Based Oscillator Bank v2.2
     optionmenu Preset: 1
         option Custom
         option Gentle Resonance
@@ -74,7 +85,7 @@ form Onset-Based Oscillator Bank v2.1
     positive Min_interval_(s) 0.1
     boolean Velocity_sensitive 1
     integer Num_partials 12
-    positive Partial_spread 0.5
+    positive Partial_spread_(percent) 0.5
     positive Decay_(s) 1.5
     real Brightness 0.7
     optionmenu Speed_mode: 2
@@ -192,7 +203,7 @@ else
     speedStr$ = "Fast"
 endif
 
-startTime = stopwatch
+timerReset = stopwatch
 
 # ============================================================
 # INPUT VALIDATION
@@ -206,14 +217,35 @@ selectObject: sound
 name$ = selected$("Sound")
 totalDur = Get total duration
 origSR = Get sampling frequency
-# v2.1: consolidated numChan (was numChan + numChannels in v2.0)
+origStart = Get start time
+nOrigSamples = Get number of samples
 numChan = Get number of channels
 
 if totalDur < 0.1
     exitScript: "Sound too short (min 0.1s)."
 endif
 
-writeInfoLine: "=== Onset-Based Oscillator Bank v2.1 ==="
+# Keep public parameters inside the documented/safe operating range.
+if num_partials < 1
+    num_partials = 1
+elsif num_partials > 32
+    num_partials = 32
+endif
+if brightness < 0
+    brightness = 0
+elsif brightness > 1
+    brightness = 1
+endif
+if partial_spread > 5
+    partial_spread = 5
+endif
+if dry_wet_mix < 0
+    dry_wet_mix = 0
+elsif dry_wet_mix > 1
+    dry_wet_mix = 1
+endif
+
+writeInfoLine: "=== Onset-Based Oscillator Bank v2.2 ==="
 appendInfoLine: "Input:    ", name$
 appendInfoLine: "Preset:   ", presetName$
 appendInfoLine: "Speed:    ", speedStr$
@@ -235,24 +267,41 @@ selectObject: workingSound
 sampleRate = Get sampling frequency
 nyquistFreq = sampleRate / 2
 
+# Analysis is always mono and 0-based, so detected times do not depend
+# on the original Sound object's xmin.
+selectObject: workingSound
+if numChan > 1
+    analysisSound = Convert to mono
+else
+    analysisSound = Copy: "onset_analysis"
+endif
+selectObject: analysisSound
+Shift times to: "start time", 0
+
+pitchCeiling = min(4000, sampleRate / 4)
+if pitchCeiling < 200
+    pitchCeiling = 200
+endif
+
 # ============================================================
 # ONSET DETECTION
 # ============================================================
 appendInfo: "Stage 1: Detecting onsets... "
 
-selectObject: workingSound
+selectObject: analysisSound
 intensityObj = To Intensity: 50, 0, "yes"
 
 selectObject: intensityObj
 numFrames = Get number of frames
 
-# Allocate arrays
-onset_times# = zero#(500)
-onset_velocities# = zero#(500)
+# At most one accepted onset per Intensity frame: no fixed event cap.
+onset_times# = zero#(numFrames)
+onset_velocities# = zero#(numFrames)
 numOnsets = 0
 lastOnset = -1
 
 for iFrame from 3 to numFrames - 1
+    selectObject: intensityObj
     frameTime = Get time from frame number: iFrame
     currInt = Get value in frame: iFrame
     prev2Int = Get value in frame: iFrame - 2
@@ -260,16 +309,36 @@ for iFrame from 3 to numFrames - 1
     if currInt <> undefined and prev2Int <> undefined
         intDiff = (currInt - prev2Int) / 2
         if intDiff > onset_threshold and currInt > min_intensity
-            if frameTime - lastOnset > min_interval
+            # The symmetric Intensity window sees sharp attacks early.
+            # Refine each candidate by locating the strongest short-RMS rise.
+            candidateTime = frameTime
+            refinedTime = candidateTime
+            bestRise = 0
+            refineStart = max(0.005, candidateTime)
+            refineEnd = min(totalDur - 0.005, candidateTime + 0.080)
+            tref = refineStart
+            while tref <= refineEnd
+                selectObject: analysisSound
+                rmsPre = Get root-mean-square: tref - 0.005, tref
+                rmsPost = Get root-mean-square: tref, tref + 0.005
+                riseScore = rmsPost - rmsPre
+                if riseScore > bestRise
+                    bestRise = riseScore
+                    refinedTime = tref
+                endif
+                tref = tref + 0.002
+            endwhile
+
+            if refinedTime - lastOnset > min_interval
                 numOnsets += 1
-                onset_times#[numOnsets] = frameTime
-                
-                # Store velocity (normalized intensity jump)
+                onset_times#[numOnsets] = refinedTime
+
+                # Velocity is a normalized Intensity-rise score.
                 velocity = (intDiff - onset_threshold) / 10
                 velocity = min(1, max(0.3, velocity))
                 onset_velocities#[numOnsets] = velocity
-                
-                lastOnset = frameTime
+
+                lastOnset = refinedTime
             endif
         endif
     endif
@@ -296,7 +365,7 @@ onset_pitches# = zero#(numOnsets)
 for onsetIdx from 1 to numOnsets
     onsetTime = onset_times#[onsetIdx]
     
-    selectObject: workingSound
+    selectObject: analysisSound
     segStart = max(0, onsetTime - 0.02)
     segEnd = min(onsetTime + 0.12, totalDur)
     
@@ -304,7 +373,7 @@ for onsetIdx from 1 to numOnsets
         Extract part: segStart, segEnd, "rectangular", 1, "no"
         segment = selected("Sound")
         
-        To Pitch (ac): 0, 50, 15, "no", 0.01, 0.5, 0.01, 0.2, 0.1, 2500
+        To Pitch (ac): 0, 50, 15, "no", 0.01, 0.5, 0.01, 0.2, 0.1, pitchCeiling
         pitchObj = selected("Pitch")
         
         relTime = onsetTime - segStart
@@ -320,7 +389,7 @@ for onsetIdx from 1 to numOnsets
         removeObject: segment, pitchObj
         
         # Store valid pitch
-        if detectedPitch <> undefined and detectedPitch >= 50 and detectedPitch < 4000
+        if detectedPitch <> undefined and detectedPitch >= 50 and detectedPitch <= pitchCeiling
             onset_pitches#[onsetIdx] = detectedPitch
         else
             onset_pitches#[onsetIdx] = 0
@@ -386,25 +455,31 @@ for onsetIdx from 1 to numOnsets
                     wsBlend = waveshapeAmt * brightness
                     ampClean = ampVal * (1 - wsBlend)
                     ampWS = ampVal * wsBlend
-                    
+
                     attStr$ = fixed$(attackTime, 6)
                     decStr$ = fixed$(decayVal, 6)
                     freqStr$ = fixed$(partialFreq, 3)
-                    
-                    # Envelope
+
+                    # Attack + exponential-decay envelope.
                     env$ = "(if x<" + attStr$ + " then x/" + attStr$ + " else exp(-(x-" + attStr$ + ")/" + decStr$ + ") fi)"
-                    
-                    # Clean sine
-                    if ampClean > 0.001
-                        ampStr$ = fixed$(ampClean, 6)
+
+                    # sin^3(theta) = 3/4 sin(theta) - 1/4 sin(3 theta).
+                    # Expanding it explicitly lets us omit only the 3rd
+                    # harmonic when it would alias above Nyquist.
+                    fundAmp = ampClean + 0.75 * ampWS
+                    if fundAmp > 0.001
+                        ampStr$ = fixed$(fundAmp, 6)
                         formula$ = formula$ + "+" + ampStr$ + "*sin(2*pi*" + freqStr$ + "*x)*" + env$
                     endif
-                    
-                    # Waveshaped
-                    if ampWS > 0.001
-                        ampWSStr$ = fixed$(ampWS, 6)
-                        formula$ = formula$ + "+" + ampWSStr$ + "*(sin(2*pi*" + freqStr$ + "*x)^3)*" + env$
+
+                    thirdAmp = -0.25 * ampWS
+                    thirdFreq = 3 * partialFreq
+                    if abs(thirdAmp) > 0.001 and thirdFreq < nyquistFreq * 0.95
+                        thirdAmpStr$ = fixed$(thirdAmp, 6)
+                        thirdFreqStr$ = fixed$(thirdFreq, 3)
+                        formula$ = formula$ + "+" + thirdAmpStr$ + "*sin(2*pi*" + thirdFreqStr$ + "*x)*" + env$
                     endif
+
                 endif
             endfor
             
@@ -426,18 +501,23 @@ for onsetIdx from 1 to numOnsets
 endfor
 
 appendInfoLine: " ", validOnsets, " bursts"
+if validOnsets = 0
+    appendInfoLine: "  NOTE: onsets were detected, but none had a valid pitch; wet output is silent."
+endif
 
 # ============================================================
 # MIX AND FINALIZE
 # ============================================================
 appendInfo: "Stage 4: Mixing... "
 
-# Apply fadeout to wet signal
-if fadeout_duration > 0
+# Apply fadeout to wet signal. Clamp it so a large user value cannot
+# start the fade before time zero.
+fadeDurEffective = min(fadeout_duration, totalDurWithTail)
+if fadeDurEffective > 0
     selectObject: wetSignal
-    fadeStart = totalDurWithTail - fadeout_duration
+    fadeStart = totalDurWithTail - fadeDurEffective
     Formula (part): fadeStart, totalDurWithTail, 1, numChan,
-    ... "self * (1 - (x - " + fixed$(fadeStart, 6) + ") / " + fixed$(fadeout_duration, 6) + ")"
+    ... "self * (1 - (x - " + fixed$(fadeStart, 6) + ") / " + fixed$(fadeDurEffective, 6) + ")"
 endif
 
 # Upsample if needed
@@ -460,32 +540,40 @@ wetName$ = selected$("Sound")
 selectObject: sound
 origName$ = selected$("Sound")
 
-# Create extended output (original + tail)
-# v2.1: use the consolidated numChan (same as v2.0's numChannels here)
-if numChan = 1
-    output = Create Sound from formula: name$ + "_resonated_" + presetName$, 1, 0, totalDurWithTail, finalSR,
-    ... "if x < totalDur then Sound_'origName$'(x) else 0 fi"
-else
-    output = Create Sound from formula: name$ + "_resonated_" + presetName$, 2, 0, totalDurWithTail, finalSR,
-    ... "if x < totalDur then Sound_'origName$'(x, col) else 0 fi"
-endif
+# Create extended output (original + tail) at time 0. Copy the dry
+# path by sample index so a non-zero original xmin cannot break lookup.
+soundIdStr$ = string$(sound)
+output = Create Sound from formula: name$ + "_resonated_" + presetName$,
+    ... numChan, 0, totalDurWithTail, finalSR,
+    ... "if col <= 'nOrigSamples:0' then object[" + soundIdStr$ + ", row, col] else 0 fi"
 
-# Apply mix
+# Apply mix. The synthesized wet bank is identical in each channel;
+# the dry path retains each original channel independently.
+selectObject: wetSignal
+nWetSamples = Get number of samples
+wetIdStr$ = string$(wetSignal)
+
 selectObject: output
-
 if dry_wet_mix >= 0.99
-    Formula: "Sound_'wetName$'[]"
+    Formula: "if col <= 'nWetSamples:0' then object[" + wetIdStr$ + ", row, col] else 0 fi"
 elsif dry_wet_mix <= 0.01
-    # Keep original (with tail silence)
+    # Exact dry path (plus tail silence): do not normalize.
 else
-    wetStr$ = fixed$(dry_wet_mix, 4)
-    dryStr$ = fixed$(1 - dry_wet_mix, 4)
-    Formula: "self * " + dryStr$ + " + Sound_'wetName$'[] * " + wetStr$
+    wetStr$ = fixed$(dry_wet_mix, 6)
+    dryStr$ = fixed$(1 - dry_wet_mix, 6)
+    Formula: "self * " + dryStr$ + " + (if col <= 'nWetSamples:0' then object[" + wetIdStr$ + ", row, col] else 0 fi) * " + wetStr$
 endif
 
-Scale peak: 0.95
+# Safety attenuation only: never boost a quiet result.
+peakBeforeSafety = Get absolute extremum: 0, 0, "None"
+safetyScaled = 0
+if dry_wet_mix > 0.01 and peakBeforeSafety > 0.99
+    Scale peak: 0.99
+    safetyScaled = 1
+endif
 
-processingTime = stopwatch - startTime
+# stopwatch returns elapsed time since its previous invocation.
+processingTime = stopwatch
 
 # Get output stats for visualization / summary
 selectObject: output
@@ -540,7 +628,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##ONSET-BASED OSCILLATOR BANK##"
+    Text: 0.5, "centre", 0.68, "half", "##Onset-Based Oscillator Bank v2.2##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -556,9 +644,9 @@ if draw_visualization
     Select outer viewport: 0, 4.2, 0.75, 4.60
     Select inner viewport: 0.55, 4.00, 0.95, 4.40
 
-    selectObject: sound
+    selectObject: analysisSound
     Colour: "{0.65, 0.65, 0.65}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, totalDur, 0, 0, "no", "Curve"
 
     # Mark onsets: red = valid pitch, grey = no pitch
     maxAmp = Get maximum: 0, 0, "None"
@@ -697,7 +785,7 @@ if draw_visualization
         ... "##" + presetName$ + "##"
         ... + "  Onsets: " + string$(validOnsets) + " valid / " + string$(numOnsets) + " detected"
         ... + "  |  Partials: " + string$(num_partials)
-        ... + "  |  Spread: " + fixed$(partial_spread, 2)
+        ... + "  |  Spread: " + fixed$(partial_spread, 2) + "%"
         ... + "  |  Decay: " + fixed$(decayTime, 2) + " s"
 
     Text: 0.02, "left", 0.50, "half",
@@ -711,6 +799,7 @@ if draw_visualization
         ... speedStr$
         ... + "  |  Time: " + fixed$(processingTime, 2) + " s"
         ... + "  |  Out RMS: " + fixed$(rms_out, 4)
+        ... + "  |  Safety scale: " + string$(safetyScaled)
         ... + "  |  Output: " + name$ + "_resonated_" + presetName$
 
     Colour: "Black"
@@ -724,16 +813,18 @@ endif
 # ============================================================
 # CLEANUP
 # ============================================================
-removeObject: wetSignal
+removeObject: wetSignal, analysisSound
 
 if workingSound <> sound
     removeObject: workingSound
 endif
 
-# v2.1: select the output at end. v2.0 selected `sound` (the original),
-# inconsistent with the rest of the suite which ends on the generated
-# output.
+# Restore the input Sound's absolute time domain only after visualization,
+# which uses a normalized 0..duration axis.
 selectObject: output
+if origStart <> 0
+    Shift times by: origStart
+endif
 
 if play_result
     Play
