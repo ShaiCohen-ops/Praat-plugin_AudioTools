@@ -3,46 +3,30 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Spectral Band EQ — frequency-domain equalizer with
-#   bandpass, low-pass, high-pass, and parametric boost/cut
-#   modes. Uses raised cosine window functions applied to
-#   the Spectrum object for smooth, artifact-free shaping.
+#   Spectral Band EQ - zero-phase frequency-domain shaping with
+#   explicit bell, bandpass, low/high-pass, and low/high-shelf modes.
+#   Raised-cosine transitions are used to avoid hard spectral edges.
 #
-#   Modes:
-#     Bandpass:  raised cosine passband, zero outside
-#     Low pass:  flat below cutoff, cosine rolloff, zero above
-#     High pass: zero below, cosine rolloff, flat above cutoff
-#     EQ boost:  parametric gain increase in band
-#     EQ cut:    parametric gain reduction in band
+#   Parameter semantics:
+#     Parametric Bell : center = maximum boost/cut; bandwidth = full
+#                       raised-cosine span (gain returns to 0 dB at edges)
+#     Bandpass        : center + bandwidth define the FLAT passband;
+#                       transition width is applied outside both edges
+#     Low Pass        : center = flat-passband edge; transition above it
+#     High Pass       : center = flat-passband edge; transition below it
+#     Low Shelf       : gain is flat below center; transition to 0 dB above
+#     High Shelf      : gain is flat above center; transition from 0 dB below
 #
-#   For bandpass/EQ modes: center_frequency + bandwidth define
-#   the affected band symmetrically.
-#   For LP/HP modes: center_frequency = cutoff point,
-#   bandwidth = transition width of the rolloff.
+#   Processing is applied independently to every input channel. The original
+#   channel count, duration, sample rate, and start time are preserved.
 #
-#   Handles mono and stereo input (channels processed
-#   independently and recombined).
-#
-# Changelog v1.0 (from v0.1):
-#   - Added stereo support (per-channel processing)
-#   - Fixed Scale peak: only clamp if peak > 1.0 (cuts no
-#     longer boost overall level back up)
-#   - Fixed LP/HP presets: cutoff + transition width gives
-#     a proper flat passband
-#   - LP/HP frequency computation uses cutoff semantics
-#   - Added library-standard header and visualization
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline
-#   Analysis-Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Category: Spectral & Frequency Domain
+#   NOTE: This is whole-file, zero-phase spectral filtering. Smooth spectral
+#   transitions reduce hard-edge ringing but do not make the process causal.
 # ============================================================
 
 # ============================================================
@@ -59,29 +43,46 @@ originalDur = Get total duration
 sampleRate = Get sampling frequency
 nyquist = sampleRate / 2
 nChannels = Get number of channels
+originalStart = Get start time
+nSamples = Get number of samples
+
+if originalDur <= 0
+    exitScript: "The selected Sound is empty."
+endif
 
 # ============================================================
 # FORM
 # ============================================================
-form Spectral Band EQ v1.0
+form Spectral Band EQ v1.1
     optionmenu Preset: 1
         option Custom
-        option Telephone (300-3400 Hz)
-        option AM Radio (500-4500 Hz)
-        option Sub Bass Boost (+6dB < 100 Hz)
-        option Presence Boost (+4dB 2-5 kHz)
-        option Mud Cut (-6dB 200-500 Hz)
-        option Air Boost (+3dB > 10 kHz)
-        option Mid Scoop (-8dB 1-3 kHz)
-        option Low Pass (< 2 kHz)
-        option High Pass (> 500 Hz)
-    comment === Filter Parameters ===
-    positive Center_frequency_(Hz) 1000
-    positive Bandwidth_(Hz) 500
-    real Gain_(dB) 6.0
-    comment (positive=boost, negative=cut, -inf=remove)
-    comment For LP/HP: center = cutoff, bandwidth = transition
+        option Telephone Bandpass (300-3400 Hz)
+        option AM Radio Bandpass (500-4500 Hz)
+        option Sub Bass Shelf (+6 dB below 100 Hz)
+        option Presence Bell (+4 dB at 3.5 kHz)
+        option Mud Bell (-6 dB at 350 Hz)
+        option Air Shelf (+3 dB above 10 kHz)
+        option Mid Scoop Bell (-8 dB at 2 kHz)
+        option Low Pass (flat below 2 kHz)
+        option High Pass (flat above 500 Hz)
+    comment === Filter Mode ===
+    optionmenu Filter_mode: 1
+        option Parametric Bell
+        option Bandpass
+        option Low Pass
+        option High Pass
+        option Low Shelf
+        option High Shelf
+    comment === Frequency Parameters ===
+    positive Center_frequency_Hz 1000
+    positive Bandwidth_Hz 500
+    positive Transition_width_Hz 100
+    real Gain_dB 6.0
+    comment Bell: bandwidth = full cosine span. Bandpass: bandwidth = flat passband.
+    comment LP/HP/Shelf: center = passband/shelf edge; transition = rolloff width.
     comment === Output ===
+    real Safety_peak 0.99
+    comment (0 = off; otherwise only attenuates when peak exceeds this value)
     boolean Draw_response 1
     boolean Play_result 1
 endform
@@ -89,542 +90,480 @@ endform
 # ============================================================
 # PRESETS
 # ============================================================
+presetName$ = "Custom"
 if preset = 2
-    # Telephone bandpass
-    center_frequency = 1850
-    bandwidth = 3100
-    gain = -100
-    isPassFilter = 1
+    filter_mode = 2
+    center_frequency_Hz = 1850
+    bandwidth_Hz = 3100
+    transition_width_Hz = 150
+    gain_dB = 0
+    presetName$ = "TelephoneBandpass"
 elsif preset = 3
-    # AM Radio bandpass
-    center_frequency = 2500
-    bandwidth = 4000
-    gain = -100
-    isPassFilter = 1
+    filter_mode = 2
+    center_frequency_Hz = 2500
+    bandwidth_Hz = 4000
+    transition_width_Hz = 200
+    gain_dB = 0
+    presetName$ = "AMRadioBandpass"
 elsif preset = 4
-    # Sub Bass Boost
-    center_frequency = 50
-    bandwidth = 100
-    gain = 6
-    isPassFilter = 0
+    filter_mode = 5
+    center_frequency_Hz = 100
+    bandwidth_Hz = 100
+    transition_width_Hz = 80
+    gain_dB = 6
+    presetName$ = "SubBassShelf"
 elsif preset = 5
-    # Presence Boost
-    center_frequency = 3500
-    bandwidth = 3000
-    gain = 4
-    isPassFilter = 0
+    filter_mode = 1
+    center_frequency_Hz = 3500
+    bandwidth_Hz = 3000
+    transition_width_Hz = 100
+    gain_dB = 4
+    presetName$ = "PresenceBell"
 elsif preset = 6
-    # Mud Cut
-    center_frequency = 350
-    bandwidth = 300
-    gain = -6
-    isPassFilter = 0
+    filter_mode = 1
+    center_frequency_Hz = 350
+    bandwidth_Hz = 300
+    transition_width_Hz = 100
+    gain_dB = -6
+    presetName$ = "MudBell"
 elsif preset = 7
-    # Air Boost
-    center_frequency = 14000
-    bandwidth = 8000
-    gain = 3
-    isPassFilter = 0
+    filter_mode = 6
+    center_frequency_Hz = 10000
+    bandwidth_Hz = 8000
+    transition_width_Hz = 2000
+    gain_dB = 3
+    presetName$ = "AirShelf"
 elsif preset = 8
-    # Mid Scoop
-    center_frequency = 2000
-    bandwidth = 2000
-    gain = -8
-    isPassFilter = 0
+    filter_mode = 1
+    center_frequency_Hz = 2000
+    bandwidth_Hz = 2000
+    transition_width_Hz = 100
+    gain_dB = -8
+    presetName$ = "MidScoopBell"
 elsif preset = 9
-    # Low Pass < 2 kHz: flat below 2 kHz, 500 Hz rolloff
-    center_frequency = 2000
-    bandwidth = 500
-    gain = -100
-    isPassFilter = 2
+    filter_mode = 3
+    center_frequency_Hz = 2000
+    bandwidth_Hz = 500
+    transition_width_Hz = 500
+    gain_dB = 0
+    presetName$ = "LowPass"
 elsif preset = 10
-    # High Pass > 500 Hz: 500 Hz rolloff, flat above 500 Hz
-    center_frequency = 500
-    bandwidth = 500
-    gain = -100
-    isPassFilter = 3
-else
-    isPassFilter = 0
+    filter_mode = 4
+    center_frequency_Hz = 500
+    bandwidth_Hz = 500
+    transition_width_Hz = 500
+    gain_dB = 0
+    presetName$ = "HighPass"
 endif
 
 # ============================================================
 # VALIDATE & DERIVE
 # ============================================================
-if center_frequency >= nyquist
-    exitScript: "Center frequency must be below Nyquist ("
-        ... + string$(round(nyquist)) + " Hz)."
+warnLines$ = ""
+
+if center_frequency_Hz < 0
+    center_frequency_Hz = 0
+endif
+if center_frequency_Hz > nyquist
+    warnLines$ = warnLines$ + "  Center clamped to Nyquist." + newline$
+    center_frequency_Hz = nyquist
+endif
+if bandwidth_Hz < 1
+    bandwidth_Hz = 1
+endif
+if transition_width_Hz < 1
+    transition_width_Hz = 1
+endif
+if gain_dB < -120
+    gain_dB = -120
+endif
+if gain_dB > 36
+    gain_dB = 36
+endif
+if safety_peak < 0
+    safety_peak = 0
+endif
+if safety_peak > 1
+    safety_peak = 1
 endif
 
-# Calculate filter boundaries
-# For bandpass/EQ: symmetric around center
-# For LP: flat below center, rolloff from center to center+bandwidth
-# For HP: rolloff from center-bandwidth to center, flat above
-if isPassFilter = 2
-    # Low pass: center = cutoff
-    lowFreq = max(0, center_frequency)
-    highFreq = min(nyquist, center_frequency + bandwidth)
-elsif isPassFilter = 3
-    # High pass: center = cutoff
-    lowFreq = max(0, center_frequency - bandwidth)
-    highFreq = min(nyquist, center_frequency)
+linearGain = 10 ^ (gain_dB / 20)
+
+if filter_mode = 1
+    modeName$ = "Parametric Bell"
+    bandLow = max(0, center_frequency_Hz - bandwidth_Hz / 2)
+    bandHigh = min(nyquist, center_frequency_Hz + bandwidth_Hz / 2)
+    if bandHigh <= bandLow
+        exitScript: "The bell bandwidth does not overlap the sampled spectrum."
+    endif
+    bellCenter = (bandLow + bandHigh) / 2
+    bellHalf = (bandHigh - bandLow) / 2
+elsif filter_mode = 2
+    modeName$ = "Bandpass"
+    passLow = max(0, center_frequency_Hz - bandwidth_Hz / 2)
+    passHigh = min(nyquist, center_frequency_Hz + bandwidth_Hz / 2)
+    if passHigh <= passLow
+        exitScript: "The bandpass width does not overlap the sampled spectrum."
+    endif
+    stopLow = max(0, passLow - transition_width_Hz)
+    stopHigh = min(nyquist, passHigh + transition_width_Hz)
+elsif filter_mode = 3
+    modeName$ = "Low Pass"
+    passEdge = center_frequency_Hz
+    stopEdge = min(nyquist, center_frequency_Hz + transition_width_Hz)
+elsif filter_mode = 4
+    modeName$ = "High Pass"
+    passEdge = center_frequency_Hz
+    stopEdge = max(0, center_frequency_Hz - transition_width_Hz)
+elsif filter_mode = 5
+    modeName$ = "Low Shelf"
+    shelfEdge = center_frequency_Hz
+    unityEdge = min(nyquist, center_frequency_Hz + transition_width_Hz)
 else
-    # Bandpass / EQ: symmetric
-    lowFreq = max(0, center_frequency - bandwidth / 2)
-    highFreq = min(nyquist, center_frequency + bandwidth / 2)
-endif
-
-# Transition width for LP/HP
-transWidth = highFreq - lowFreq
-if transWidth < 1
-    transWidth = 1
-endif
-
-# Convert gain to linear
-if gain <= -100
-    linearGain = 0
-else
-    linearGain = 10 ^ (gain / 20)
+    modeName$ = "High Shelf"
+    shelfEdge = center_frequency_Hz
+    unityEdge = max(0, center_frequency_Hz - transition_width_Hz)
 endif
 
 # ============================================================
-# DRAW FREQUENCY RESPONSE
+# BUILD SPECTRUM FORMULA
+# ============================================================
+if filter_mode = 1
+    lo$ = fixed$(bandLow, 8)
+    hi$ = fixed$(bandHigh, 8)
+    ctr$ = fixed$(bellCenter, 8)
+    half$ = fixed$(bellHalf, 8)
+    gm1$ = fixed$(linearGain - 1, 12)
+    eqFormula$ = "if x < " + lo$ + " or x > " + hi$ + " then self else self * (1 + 0.5 * (1 + cos(pi * (x - " + ctr$ + ") / " + half$ + ")) * " + gm1$ + ") fi"
+elsif filter_mode = 2
+    pl$ = fixed$(passLow, 8)
+    ph$ = fixed$(passHigh, 8)
+    sl$ = fixed$(stopLow, 8)
+    sh$ = fixed$(stopHigh, 8)
+    twL = passLow - stopLow
+    twH = stopHigh - passHigh
+    if twL < 1e-9
+        twL = 1e-9
+    endif
+    if twH < 1e-9
+        twH = 1e-9
+    endif
+    twL$ = fixed$(twL, 12)
+    twH$ = fixed$(twH, 12)
+    eqFormula$ = "if x < " + sl$ + " or x > " + sh$ + " then 0 else (if x < " + pl$ + " then self * 0.5 * (1 - cos(pi * (x - " + sl$ + ") / " + twL$ + ")) else (if x <= " + ph$ + " then self else self * 0.5 * (1 + cos(pi * (x - " + ph$ + ") / " + twH$ + ")) fi) fi) fi"
+elsif filter_mode = 3
+    pe$ = fixed$(passEdge, 8)
+    se$ = fixed$(stopEdge, 8)
+    tw = stopEdge - passEdge
+    if tw < 1e-9
+        tw = 1e-9
+    endif
+    tw$ = fixed$(tw, 12)
+    eqFormula$ = "if x <= " + pe$ + " then self else (if x >= " + se$ + " then 0 else self * 0.5 * (1 + cos(pi * (x - " + pe$ + ") / " + tw$ + ")) fi) fi"
+elsif filter_mode = 4
+    pe$ = fixed$(passEdge, 8)
+    se$ = fixed$(stopEdge, 8)
+    tw = passEdge - stopEdge
+    if tw < 1e-9
+        tw = 1e-9
+    endif
+    tw$ = fixed$(tw, 12)
+    eqFormula$ = "if x >= " + pe$ + " then self else (if x <= " + se$ + " then 0 else self * 0.5 * (1 - cos(pi * (x - " + se$ + ") / " + tw$ + ")) fi) fi"
+elsif filter_mode = 5
+    se$ = fixed$(shelfEdge, 8)
+    ue$ = fixed$(unityEdge, 8)
+    tw = unityEdge - shelfEdge
+    if tw < 1e-9
+        tw = 1e-9
+    endif
+    tw$ = fixed$(tw, 12)
+    gm1$ = fixed$(linearGain - 1, 12)
+    eqFormula$ = "if x <= " + se$ + " then self * " + fixed$(linearGain, 12) + " else (if x >= " + ue$ + " then self else self * (1 + 0.5 * (1 + cos(pi * (x - " + se$ + ") / " + tw$ + ")) * " + gm1$ + ") fi) fi"
+else
+    se$ = fixed$(shelfEdge, 8)
+    ue$ = fixed$(unityEdge, 8)
+    tw = shelfEdge - unityEdge
+    if tw < 1e-9
+        tw = 1e-9
+    endif
+    tw$ = fixed$(tw, 12)
+    gm1$ = fixed$(linearGain - 1, 12)
+    eqFormula$ = "if x >= " + se$ + " then self * " + fixed$(linearGain, 12) + " else (if x <= " + ue$ + " then self else self * (1 + 0.5 * (1 - cos(pi * (x - " + ue$ + ") / " + tw$ + ")) * " + gm1$ + ") fi) fi"
+endif
+
+# ============================================================
+# PROCESSING
+# ============================================================
+# Work at time zero so Spectrum->Sound and object indexing are independent of
+# the input Sound's original time domain. Restore originalStart at the end.
+selectObject: originalID
+workID = Copy: "sbeq_work"
+selectObject: workID
+Shift times to: "start time", 0
+
+outputID = Create Sound from formula: "sbeq_out", nChannels, 0, originalDur, sampleRate, "0"
+
+for ch from 1 to nChannels
+    selectObject: workID
+    chID = Extract one channel: ch
+    selectObject: chID
+    spID = To Spectrum: "yes"
+    selectObject: spID
+    Formula: eqFormula$
+    filtID = To Sound
+
+    selectObject: outputID
+    Formula (part): 0, originalDur, ch, ch, "object['filtID:0', 1, col]"
+
+    removeObject: chID, spID, filtID
+endfor
+removeObject: workID
+
+selectObject: outputID
+if originalStart <> 0
+    Shift times by: originalStart
+endif
+outputName$ = originalName$ + "_spectralEQ_" + presetName$
+Rename: outputName$
+outputID = selected("Sound")
+
+# Safety attenuation only; never boost.
+selectObject: outputID
+peakOut = Get absolute extremum: 0, 0, "None"
+safetyApplied = 0
+if safety_peak > 0 and peakOut > safety_peak
+    Formula: "self * " + string$(safety_peak / peakOut)
+    safetyApplied = 1
+    peakOut = Get absolute extremum: 0, 0, "None"
+endif
+
+selectObject: originalID
+peakIn = Get absolute extremum: 0, 0, "None"
+
+# ============================================================
+# VISUALIZATION - AudioTools house style
 # ============================================================
 if draw_response
     Erase all
+    colIn$ = "{0.48, 0.48, 0.52}"
+    colOut$ = "{0.20, 0.42, 0.82}"
+    colAcc$ = "{0.42, 0.34, 0.72}"
+    colGrey$ = "{0.96, 0.96, 0.97}"
+    colGrid$ = "{0.86, 0.86, 0.88}"
 
-    # --- Viewport ---
-    Select outer viewport: 0, 8, 0, 5.5
-    Select inner viewport: 0.8, 7.5, 0.6, 4.8
+    # Title
+    Select outer viewport: 0, 8, 0, 0.55
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.75, "half", "##Spectral Band EQ v1.1##"
+    Font size: 7
+    Colour: colAcc$
+    Text: 0.5, "centre", 0.22, "half", originalName$ + " | " + modeName$ + " | " + presetName$
 
-    minDB = -24
-    maxDB = 12
-    Axes: 0, nyquist, minDB, maxDB
+    vizDur = min(originalDur, 8)
 
-    # Background
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, nyquist, minDB, maxDB
-
-    # Horizontal grid (every 6 dB)
-    Colour: "{0.85, 0.85, 0.85}"
-    dbLine = -18
-    while dbLine <= 6
-        Draw line: 0, dbLine, nyquist, dbLine
-        dbLine += 6
-    endwhile
-
-    # 0 dB reference
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw line: 0, 0, nyquist, 0
-
-    # Vertical grid
-    Colour: "{0.85, 0.85, 0.85}"
-    if nyquist > 15000
-        gridStep = 5000
-    elsif nyquist > 8000
-        gridStep = 2000
-    else
-        gridStep = 1000
-    endif
-    gridFreq = gridStep
-    while gridFreq < nyquist
-        Draw line: gridFreq, minDB, gridFreq, maxDB
-        gridFreq += gridStep
-    endwhile
-
-    # --- Filter band shading ---
-    if isPassFilter = 1
-        # Bandpass: shade passband
-        Paint rectangle: "{0.85, 0.92, 1.0}",
-            ... lowFreq, highFreq, minDB, maxDB
-    elsif isPassFilter = 2
-        # LP: shade passband (left of cutoff)
-        Paint rectangle: "{0.85, 0.95, 0.88}",
-            ... 0, lowFreq, minDB, maxDB
-        Paint rectangle: "{0.92, 0.92, 0.97}",
-            ... lowFreq, highFreq, minDB, maxDB
-    elsif isPassFilter = 3
-        # HP: shade passband (right of cutoff)
-        Paint rectangle: "{0.85, 0.95, 0.88}",
-            ... highFreq, nyquist, minDB, maxDB
-        Paint rectangle: "{0.92, 0.92, 0.97}",
-            ... lowFreq, highFreq, minDB, maxDB
-    else
-        # EQ: shade affected band
-        if gain >= 0
-            Paint rectangle: "{0.88, 0.95, 0.88}",
-                ... lowFreq, highFreq, 0, maxDB
-        else
-            Paint rectangle: "{0.98, 0.90, 0.88}",
-                ... lowFreq, highFreq, minDB, 0
-        endif
-    endif
-
-    # --- Draw response curve ---
-    Colour: "{0.2, 0.4, 0.85}"
-    Line width: 2.5
-
-    step = nyquist / 400
-    plotFreq = step
-
-    # First point
-    if isPassFilter = 1
-        if 0 < lowFreq
-            prevDB = minDB
-        else
-            prevDB = 0
-        endif
-    elsif isPassFilter = 2
-        prevDB = 0
-    elsif isPassFilter = 3
-        if lowFreq > 0
-            prevDB = minDB
-        else
-            prevDB = 0
-        endif
-    else
-        prevDB = 0
-    endif
-    prevX = 0
-
-    while plotFreq <= nyquist
-        if isPassFilter = 1
-            # Bandpass
-            if plotFreq < lowFreq or plotFreq > highFreq
-                responseDB = minDB
-            else
-                halfBW = (highFreq - lowFreq) / 2
-                ctr = (lowFreq + highFreq) / 2
-                if halfBW < 1
-                    halfBW = 1
-                endif
-                phase = pi * (plotFreq - ctr) / halfBW
-                response = 0.5 * (1 + cos(phase))
-                if response <= 0.001
-                    responseDB = minDB
-                else
-                    responseDB = 20 * log10(response)
-                    responseDB = max(minDB, responseDB)
-                endif
-            endif
-        elsif isPassFilter = 2
-            # Low pass
-            if plotFreq <= lowFreq
-                responseDB = 0
-            elsif plotFreq >= highFreq
-                responseDB = minDB
-            else
-                phase = pi * (plotFreq - lowFreq) / transWidth
-                response = 0.5 * (1 + cos(phase))
-                if response <= 0.001
-                    responseDB = minDB
-                else
-                    responseDB = 20 * log10(response)
-                    responseDB = max(minDB, responseDB)
-                endif
-            endif
-        elsif isPassFilter = 3
-            # High pass
-            if plotFreq >= highFreq
-                responseDB = 0
-            elsif plotFreq <= lowFreq
-                responseDB = minDB
-            else
-                phase = pi * (highFreq - plotFreq) / transWidth
-                response = 0.5 * (1 + cos(phase))
-                if response <= 0.001
-                    responseDB = minDB
-                else
-                    responseDB = 20 * log10(response)
-                    responseDB = max(minDB, responseDB)
-                endif
-            endif
-        else
-            # EQ boost/cut
-            if plotFreq < lowFreq or plotFreq > highFreq
-                responseDB = 0
-            else
-                halfBW = (highFreq - lowFreq) / 2
-                ctr = (lowFreq + highFreq) / 2
-                if halfBW < 1
-                    halfBW = 1
-                endif
-                phase = pi * (plotFreq - ctr) / halfBW
-                boostAmount = 0.5 * (1 + cos(phase))
-                if gain >= 0
-                    response = 1 + boostAmount * (linearGain - 1)
-                else
-                    response = 1 - boostAmount * (1 - linearGain)
-                endif
-                if response <= 0.001
-                    responseDB = minDB
-                else
-                    responseDB = 20 * log10(response)
-                    responseDB = max(minDB, min(maxDB, responseDB))
-                endif
-            endif
-        endif
-
-        Draw line: prevX, prevDB, plotFreq, responseDB
-        prevX = plotFreq
-        prevDB = responseDB
-        plotFreq += step
-    endwhile
-
-    Line width: 1
-
-    # --- Band edge markers ---
-    Colour: "{0.7, 0.7, 0.7}"
-    Dotted line
-    Draw line: lowFreq, minDB, lowFreq, maxDB
-    Draw line: highFreq, minDB, highFreq, maxDB
-    if isPassFilter = 0
-        # Center line for EQ
-        Draw line: center_frequency, minDB, center_frequency, maxDB
-    endif
-    Solid line
-
-    # --- Frame and labels ---
+    # Input waveform
+    Select outer viewport: 0, 4, 0.65, 1.95
+    Select inner viewport: 0.55, 3.85, 0.78, 1.88
+    selectObject: originalID
+    monoIn = Convert to mono
+    Colour: colIn$
+    Draw: originalStart, originalStart + vizDur, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-
-    Font size: 11
-    if isPassFilter = 1
-        titleText$ = "Bandpass: " + string$(round(lowFreq))
-            ... + " – " + string$(round(highFreq)) + " Hz"
-    elsif isPassFilter = 2
-        titleText$ = "Low Pass: cutoff "
-            ... + string$(round(center_frequency)) + " Hz"
-    elsif isPassFilter = 3
-        titleText$ = "High Pass: cutoff "
-            ... + string$(round(center_frequency)) + " Hz"
-    elsif gain >= 0
-        titleText$ = "Band Boost: +" + fixed$(gain, 1)
-            ... + " dB @ " + string$(round(center_frequency)) + " Hz"
-    else
-        titleText$ = "Band Cut: " + fixed$(gain, 1)
-            ... + " dB @ " + string$(round(center_frequency)) + " Hz"
-    endif
-    Text top: "yes", "##" + titleText$ + "##"
-
-    Font size: 8
-    Text bottom: "yes", "Frequency (Hz)"
-    Text left: "yes", "Gain (dB)"
-
-    # Parameter info
-    Colour: "{0.35, 0.35, 0.4}"
     Font size: 7
-    Axes: 0, 1, 0, 1
-    if isPassFilter = 2 or isPassFilter = 3
-        Text: 0.97, "right", 0.95, "half",
-            ... "Cutoff: " + string$(round(center_frequency)) + " Hz"
-        Text: 0.97, "right", 0.88, "half",
-            ... "Transition: " + string$(round(bandwidth)) + " Hz"
-    else
-        Text: 0.97, "right", 0.95, "half",
-            ... "Center: " + string$(round(center_frequency)) + " Hz"
-        Text: 0.97, "right", 0.88, "half",
-            ... "Width: " + string$(round(bandwidth)) + " Hz"
-        if isPassFilter = 0
-            Text: 0.97, "right", 0.81, "half",
-                ... "Gain: " + fixed$(gain, 1) + " dB"
-        endif
-    endif
-    Text: 0.97, "right", 0.05, "half",
-        ... originalName$ + " | "
-        ... + string$(round(sampleRate)) + " Hz | "
-        ... + string$(nChannels) + "ch"
+    Text top: "no", "Input"
+    Text bottom: "yes", "Time (s)"
 
-    # Axis marks
+    # Output waveform
+    Select outer viewport: 4, 8, 0.65, 1.95
+    Select inner viewport: 4.2, 7.7, 0.78, 1.88
+    selectObject: outputID
+    monoOut = Convert to mono
+    Colour: colOut$
+    Draw: originalStart, originalStart + vizDur, 0, 0, "no", "Curve"
     Colour: "Black"
-    Font size: 8
-    Axes: 0, nyquist, minDB, maxDB
-    if nyquist > 15000
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Output"
+    Text bottom: "yes", "Time (s)"
+
+    # Theoretical response
+    Select outer viewport: 0, 8, 2.05, 4.65
+    Select inner viewport: 0.75, 7.7, 2.22, 4.48
+    if gain_dB > 0
+        yMax = max(12, gain_dB + 3)
+    else
+        yMax = 6
+    endif
+    yMin = -36
+    Axes: 0, nyquist, yMin, yMax
+    Paint rectangle: colGrey$, 0, nyquist, yMin, yMax
+    Colour: colGrid$
+    dbGrid = -30
+    while dbGrid <= yMax
+        Draw line: 0, dbGrid, nyquist, dbGrid
+        dbGrid = dbGrid + 6
+    endwhile
+    Colour: "{0.65,0.65,0.68}"
+    Draw line: 0, 0, nyquist, 0
+
+    nPlot = 500
+    prevF = 0
+    prevG = 1
+    for ip from 0 to nPlot
+        f = nyquist * ip / nPlot
+        # Evaluate the same response used in processing.
+        if filter_mode = 1
+            if f < bandLow or f > bandHigh
+                g = 1
+            else
+                shape = 0.5 * (1 + cos(pi * (f - bellCenter) / bellHalf))
+                g = 1 + shape * (linearGain - 1)
+            endif
+        elsif filter_mode = 2
+            if f < stopLow or f > stopHigh
+                g = 0
+            elsif f < passLow
+                if passLow > stopLow
+                    g = 0.5 * (1 - cos(pi * (f - stopLow) / (passLow - stopLow)))
+                else
+                    g = 1
+                endif
+            elsif f <= passHigh
+                g = 1
+            else
+                if stopHigh > passHigh
+                    g = 0.5 * (1 + cos(pi * (f - passHigh) / (stopHigh - passHigh)))
+                else
+                    g = 1
+                endif
+            endif
+        elsif filter_mode = 3
+            if f <= passEdge
+                g = 1
+            elsif f >= stopEdge
+                g = 0
+            else
+                g = 0.5 * (1 + cos(pi * (f - passEdge) / (stopEdge - passEdge)))
+            endif
+        elsif filter_mode = 4
+            if f >= passEdge
+                g = 1
+            elsif f <= stopEdge
+                g = 0
+            else
+                g = 0.5 * (1 - cos(pi * (f - stopEdge) / (passEdge - stopEdge)))
+            endif
+        elsif filter_mode = 5
+            if f <= shelfEdge
+                g = linearGain
+            elsif f >= unityEdge
+                g = 1
+            else
+                shape = 0.5 * (1 + cos(pi * (f - shelfEdge) / (unityEdge - shelfEdge)))
+                g = 1 + shape * (linearGain - 1)
+            endif
+        else
+            if f >= shelfEdge
+                g = linearGain
+            elsif f <= unityEdge
+                g = 1
+            else
+                shape = 0.5 * (1 - cos(pi * (f - unityEdge) / (shelfEdge - unityEdge)))
+                g = 1 + shape * (linearGain - 1)
+            endif
+        endif
+        if g <= 1e-6
+            gdB = yMin
+        else
+            gdB = 20 * log10(g)
+            if gdB < yMin
+                gdB = yMin
+            endif
+            if gdB > yMax
+                gdB = yMax
+            endif
+        endif
+        if ip > 0
+            Colour: colAcc$
+            Line width: 2
+            Draw line: prevF, prevDB, f, gdB
+        endif
+        prevF = f
+        prevDB = gdB
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, 6, "yes", "yes", "no"
+    if nyquist >= 20000
         Marks bottom every: 1, 5000, "yes", "yes", "no"
-    elsif nyquist > 8000
+    elsif nyquist >= 10000
         Marks bottom every: 1, 2000, "yes", "yes", "no"
     else
         Marks bottom every: 1, 1000, "yes", "yes", "no"
     endif
-    Marks left every: 1, 6, "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Gain (dB)"
+    Text bottom: "yes", "Frequency (Hz)"
+    Text top: "no", "Theoretical spectral gain"
 
-    Line width: 1
+    # Summary strip
+    Select outer viewport: 0, 8, 4.8, 5.75
+    Select inner viewport: 0.55, 7.7, 4.86, 5.68
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94,0.94,0.95}", 0, 1, 0, 1
+    Colour: "{0.25,0.25,0.32}"
+    Font size: 6
+    Text: 0.02, "left", 0.76, "half", "##Mode##  " + modeName$ + "   center=" + fixed$(center_frequency_Hz, 1) + " Hz   bandwidth=" + fixed$(bandwidth_Hz, 1) + " Hz"
+    Text: 0.02, "left", 0.48, "half", "##Transition##  " + fixed$(transition_width_Hz, 1) + " Hz   gain=" + fixed$(gain_dB, 2) + " dB   channels=" + string$(nChannels) + "   SR=" + string$(round(sampleRate)) + " Hz"
+    Text: 0.02, "left", 0.20, "half", "##Peak##  " + fixed$(peakIn, 4) + " -> " + fixed$(peakOut, 4) + "   safety=" + fixed$(safety_peak, 2) + "   start=" + fixed$(originalStart, 3) + " s"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    removeObject: monoIn, monoOut
     Font size: 10
+    Colour: "Black"
+    Line width: 1
 endif
 
 # ============================================================
-# SPECTRAL PROCESSING
-# ============================================================
-
-# Build baked formula strings
-lowStr$ = fixed$(lowFreq, 2)
-highStr$ = fixed$(highFreq, 2)
-twStr$ = fixed$(transWidth, 2)
-
-if isPassFilter = 0
-    halfBW = (highFreq - lowFreq) / 2
-    if halfBW < 1
-        halfBW = 1
-    endif
-    ctr = (lowFreq + highFreq) / 2
-    centerStr$ = fixed$(ctr, 2)
-    halfBWStr$ = fixed$(halfBW, 2)
-endif
-
-# Build the Formula string once
-if isPassFilter = 1
-    halfBW = (highFreq - lowFreq) / 2
-    if halfBW < 1
-        halfBW = 1
-    endif
-    ctr = (lowFreq + highFreq) / 2
-    eqFormula$ = "if x < " + lowStr$ + " or x > " + highStr$
-        ... + " then 0 else self * 0.5 * (1 + cos(pi * (x - "
-        ... + fixed$(ctr, 2) + ") / " + fixed$(halfBW, 2) + ")) fi"
-elsif isPassFilter = 2
-    eqFormula$ = "if x <= " + lowStr$ + " then self"
-        ... + " else (if x >= " + highStr$ + " then 0"
-        ... + " else self * 0.5 * (1 + cos(pi * (x - " + lowStr$
-        ... + ") / " + twStr$ + ")) fi) fi"
-elsif isPassFilter = 3
-    eqFormula$ = "if x >= " + highStr$ + " then self"
-        ... + " else (if x <= " + lowStr$ + " then 0"
-        ... + " else self * 0.5 * (1 + cos(pi * (" + highStr$
-        ... + " - x) / " + twStr$ + ")) fi) fi"
-else
-    if gain >= 0
-        gainMinusOne$ = fixed$(linearGain - 1, 6)
-        eqFormula$ = "if x < " + lowStr$ + " or x > " + highStr$
-            ... + " then self else self * (1 + 0.5 * (1 + cos(pi * (x - "
-            ... + centerStr$ + ") / " + halfBWStr$ + ")) * "
-            ... + gainMinusOne$ + ") fi"
-    else
-        oneMinusGain$ = fixed$(1 - linearGain, 6)
-        eqFormula$ = "if x < " + lowStr$ + " or x > " + highStr$
-            ... + " then self else self * (1 - 0.5 * (1 + cos(pi * (x - "
-            ... + centerStr$ + ") / " + halfBWStr$ + ")) * "
-            ... + oneMinusGain$ + ") fi"
-    endif
-endif
-
-# --- Process per channel ---
-if nChannels = 1
-    selectObject: originalID
-    spectrumObj = To Spectrum: "yes"
-    selectObject: spectrumObj
-    Formula: eqFormula$
-    To Sound
-    filteredID = selected("Sound")
-    selectObject: filteredID
-    croppedID = Extract part: 0, originalDur, "rectangular", 1, "no"
-    removeObject: spectrumObj, filteredID
-else
-    # Stereo: process each channel independently
-    selectObject: originalID
-    ch1src = Extract one channel: 1
-    selectObject: originalID
-    ch2src = Extract one channel: 2
-
-    # Channel 1
-    selectObject: ch1src
-    sp1 = To Spectrum: "yes"
-    selectObject: sp1
-    Formula: eqFormula$
-    To Sound
-    filt1 = selected("Sound")
-    selectObject: filt1
-    crop1 = Extract part: 0, originalDur, "rectangular", 1, "no"
-    removeObject: sp1, filt1
-
-    # Channel 2
-    selectObject: ch2src
-    sp2 = To Spectrum: "yes"
-    selectObject: sp2
-    Formula: eqFormula$
-    To Sound
-    filt2 = selected("Sound")
-    selectObject: filt2
-    crop2 = Extract part: 0, originalDur, "rectangular", 1, "no"
-    removeObject: sp2, filt2
-
-    # Recombine
-    selectObject: crop1
-    plusObject: crop2
-    Combine to stereo
-    croppedID = selected("Sound")
-    removeObject: ch1src, ch2src, crop1, crop2
-endif
-
-# Name
-selectObject: croppedID
-Rename: originalName$ + "_eq"
-
-# Scale peak ONLY if clipping (boosts may exceed 1.0; cuts should not be gained up)
-selectObject: croppedID
-peakVal = Get maximum: 0, 0, "Sinc70"
-peakNeg = Get minimum: 0, 0, "Sinc70"
-if peakNeg < 0
-    peakNeg = -peakNeg
-endif
-if peakNeg > peakVal
-    peakVal = peakNeg
-endif
-if peakVal > 1.0
-    Scale peak: 0.95
-endif
-
-# ============================================================
-# INFO OUTPUT
+# INFO
 # ============================================================
 clearinfo
-writeInfoLine: "=================================================="
-writeInfoLine: "  SPECTRAL BAND EQ v1.0"
-writeInfoLine: "=================================================="
-appendInfoLine: ""
-appendInfoLine: "Source:     ", originalName$
-appendInfoLine: "Duration:   ", fixed$(originalDur, 3), " s"
-appendInfoLine: "Rate:       ", round(sampleRate), " Hz"
-appendInfoLine: "Channels:   ", nChannels
-appendInfoLine: ""
-if isPassFilter = 1
-    appendInfoLine: "Mode:       Bandpass"
-    appendInfoLine: "Passband:   ", round(lowFreq), " – ",
-        ... round(highFreq), " Hz"
-    appendInfoLine: "Center:     ", round(center_frequency), " Hz"
-    appendInfoLine: "Bandwidth:  ", round(bandwidth), " Hz"
-elsif isPassFilter = 2
-    appendInfoLine: "Mode:       Low Pass"
-    appendInfoLine: "Cutoff:     ", round(center_frequency), " Hz"
-    appendInfoLine: "Transition: ", round(bandwidth), " Hz"
-    appendInfoLine: "Flat:       0 – ", round(lowFreq), " Hz"
-    appendInfoLine: "Rolloff:    ", round(lowFreq), " – ",
-        ... round(highFreq), " Hz"
-elsif isPassFilter = 3
-    appendInfoLine: "Mode:       High Pass"
-    appendInfoLine: "Cutoff:     ", round(center_frequency), " Hz"
-    appendInfoLine: "Transition: ", round(bandwidth), " Hz"
-    appendInfoLine: "Rolloff:    ", round(lowFreq), " – ",
-        ... round(highFreq), " Hz"
-    appendInfoLine: "Flat:       ", round(highFreq), " – ",
-        ... round(nyquist), " Hz"
+writeInfoLine: "=== Spectral Band EQ v1.1 ==="
+appendInfoLine: "Source: ", originalName$, "   ", fixed$(originalDur, 3), " s   ", nChannels, " ch   ", round(sampleRate), " Hz"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Mode: ", modeName$
+appendInfoLine: "Center/edge: ", fixed$(center_frequency_Hz, 2), " Hz"
+if filter_mode = 1
+    appendInfoLine: "Bell span: ", fixed$(bandLow, 2), " - ", fixed$(bandHigh, 2), " Hz; peak gain ", fixed$(gain_dB, 2), " dB"
+elsif filter_mode = 2
+    appendInfoLine: "Flat passband: ", fixed$(passLow, 2), " - ", fixed$(passHigh, 2), " Hz"
+    appendInfoLine: "Transitions: ", fixed$(stopLow, 2), " - ", fixed$(passLow, 2), " Hz and ", fixed$(passHigh, 2), " - ", fixed$(stopHigh, 2), " Hz"
+elsif filter_mode = 3
+    appendInfoLine: "Flat passband: 0 - ", fixed$(passEdge, 2), " Hz; transition to ", fixed$(stopEdge, 2), " Hz"
+elsif filter_mode = 4
+    appendInfoLine: "Transition: ", fixed$(stopEdge, 2), " - ", fixed$(passEdge, 2), " Hz; flat above"
+elsif filter_mode = 5
+    appendInfoLine: "Low shelf: ", fixed$(gain_dB, 2), " dB through ", fixed$(shelfEdge, 2), " Hz; transition to ", fixed$(unityEdge, 2), " Hz"
 else
-    if gain >= 0
-        appendInfoLine: "Mode:       EQ Boost"
-    else
-        appendInfoLine: "Mode:       EQ Cut"
-    endif
-    appendInfoLine: "Gain:       ", fixed$(gain, 1), " dB"
-    appendInfoLine: "Center:     ", round(center_frequency), " Hz"
-    appendInfoLine: "Bandwidth:  ", round(bandwidth), " Hz"
-    appendInfoLine: "Band:       ", round(lowFreq), " – ",
-        ... round(highFreq), " Hz"
+    appendInfoLine: "High shelf: transition from ", fixed$(unityEdge, 2), " Hz; ", fixed$(gain_dB, 2), " dB from ", fixed$(shelfEdge, 2), " Hz upward"
 endif
-appendInfoLine: ""
-appendInfoLine: "Output:     ", originalName$ + "_eq"
-appendInfoLine: ""
-appendInfoLine: "=================================================="
+appendInfoLine: "Peak: ", fixed$(peakIn, 4), " -> ", fixed$(peakOut, 4)
+if safetyApplied
+    appendInfoLine: "Safety attenuation applied to final output."
+endif
+if warnLines$ <> ""
+    appendInfoLine: "Notes:"
+    appendInfo: warnLines$
+endif
+appendInfoLine: "Output: ", outputName$
 
+selectObject: outputID
 if play_result
-    selectObject: croppedID
     Play
 endif
-
-selectObject: croppedID
+selectObject: outputID
