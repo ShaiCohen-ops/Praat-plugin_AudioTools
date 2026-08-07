@@ -1,33 +1,37 @@
 # ============================================================
-# Praat AudioTools - Panning filter.praat
+# Praat AudioTools - Panning_filter.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Filtering or timbral modification script
+#   Spectral Panner - frequency-dependent stereo panning of a mono source.
+#   Frequencies below and above a smooth crossover are panned to opposite
+#   sides. The pan law is equal-power: L^2 + R^2 = 1 at every frequency.
 #
-# Changelog v0.2:
-#   - Crossover taper uses the actual (clamped) band span, so it stays
-#     continuous even at extreme crossover/width settings.
-#   - pan_depth clamped to 0..1 (>1 would phase-invert the off-side).
-#   - Visualization rebuilt to the AudioTools standard: 8-inch canvas,
-#     inner viewports, bold title, parameters in a grey summary panel
-#     instead of overlapping the response curves.
+#   Multichannel input is intentionally downmixed to mono before spectral
+#   panning; the output is always stereo. Existing stereo imaging is not
+#   preserved by this effect.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+# Changelog v0.3:
+#   - Replaced constant-sum low/high reconstruction with direct equal-power
+#     spectral panning. Centre is -3.01 dB per channel; total stereo power
+#     remains constant through the crossover.
+#   - Removed unconditional peak normalization. Output is attenuated only
+#     when required to keep its peak at or below 0.99; quiet signals are
+#     never boosted.
+#   - Preserves the input start time.
+#   - All multichannel inputs are explicitly downmixed to mono before the
+#     stereo spectral split (v0.2 handled only exactly-2-channel input).
+#   - Robust crossover edge validation near DC/Nyquist.
+#   - Visualization updated to AudioTools house style and plots the actual
+#     equal-power channel gains used by the processor.
 # ============================================================
 
-form Spectral Panner
+form Spectral Panner v0.3
     optionmenu Preset: 1
         option Custom
         option Subtle Split (800 Hz)
@@ -43,6 +47,7 @@ form Spectral Panner
         option Left
         option Right
     real Pan_depth 1.0
+    comment (0 = centre, 1 = full opposite-side split; equal-power law)
     comment === Output ===
     boolean Draw_response 1
     boolean Play_result 1
@@ -55,25 +60,32 @@ if preset = 2
     crossover_frequency = 800
     crossover_width = 150
     pan_depth = 0.7
+    presetName$ = "SubtleSplit"
 elsif preset = 3
     crossover_frequency = 500
     crossover_width = 100
     pan_depth = 1.0
+    presetName$ = "ClassicMid"
 elsif preset = 4
     crossover_frequency = 200
     crossover_width = 50
     pan_depth = 1.0
+    presetName$ = "DeepBassLeft"
 elsif preset = 5
     crossover_frequency = 2000
     crossover_width = 300
     pan_depth = 0.8
+    presetName$ = "HighSplit"
 elsif preset = 6
     crossover_frequency = 600
     crossover_width = 400
     pan_depth = 1.0
+    presetName$ = "WideSeparation"
+else
+    presetName$ = "Custom"
 endif
 
-# Clamp pan depth to a sane range (>1 would phase-invert the off-side).
+# Clamp pan depth. Values outside 0..1 do not have a useful panning meaning.
 if pan_depth > 1
     pan_depth = 1
 elsif pan_depth < 0
@@ -81,7 +93,7 @@ elsif pan_depth < 0
 endif
 
 # ============================================================
-# INPUT VALIDATION
+# INPUT VALIDATION + GEOMETRY
 # ============================================================
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
@@ -93,57 +105,139 @@ selectObject: originalID
 originalDur = Get total duration
 sampleRate = Get sampling frequency
 numChan = Get number of channels
-
+xminOriginal = Get start time
+peakIn = Get absolute extremum: 0, 0, "None"
 nyquist = sampleRate / 2
-if crossover_frequency >= nyquist * 0.9
-    exitScript: "Crossover frequency too high for this sample rate."
+
+if originalDur <= 0
+    exitScript: "Input Sound has zero duration."
+endif
+if crossover_frequency <= 0 or crossover_frequency >= nyquist
+    exitScript: "Crossover frequency must be above 0 Hz and below Nyquist (" + fixed$(nyquist, 1) + " Hz)."
+endif
+if crossover_width <= 0
+    exitScript: "Crossover width must be positive."
 endif
 
+lowEdge = max(crossover_frequency - crossover_width / 2, 0)
+highEdge = min(crossover_frequency + crossover_width / 2, nyquist)
+span = highEdge - lowEdge
+if span <= 0
+    exitScript: "Crossover width/frequency combination produced an empty transition band."
+endif
+
+lowEdgeStr$ = fixed$(lowEdge, 12)
+highEdgeStr$ = fixed$(highEdge, 12)
+spanStr$ = fixed$(span, 12)
+depthStr$ = fixed$(pan_depth, 12)
+
 # ============================================================
-# DRAW FREQUENCY RESPONSE
+# PREPARE MONO, ZERO-BASED WORKING SOURCE
+# ============================================================
+selectObject: originalID
+if numChan > 1
+    monoSound = Convert to mono
+else
+    monoSound = Copy: "specpan_mono"
+endif
+selectObject: monoSound
+Shift times to: "start time", 0
+
+# ============================================================
+# DIRECT EQUAL-POWER SPECTRAL PANNING
+# ============================================================
+# Smooth transition s(f): 0 below lowEdge, 1 above highEdge, raised-cosine
+# between. panPosition is -depth..+depth for low->Left, reversed otherwise.
+# Equal-power gains:
+#   angle = (panPosition + 1) * pi/4
+#   L = cos(angle), R = sin(angle)
+# Therefore L^2 + R^2 = 1 at every frequency.
+
+selectObject: monoSound
+spectrumFull = To Spectrum: "yes"
+
+if low_frequencies_to = 1
+    panExpr$ = "('depthStr$') * (2 * (if x <= 'lowEdgeStr$' then 0 else if x >= 'highEdgeStr$' then 1 else 0.5 - 0.5*cos(pi*(x-'lowEdgeStr$')/'spanStr$') fi fi) - 1)"
+    direction$ = "Low -> Left, High -> Right"
+else
+    panExpr$ = "('depthStr$') * (1 - 2 * (if x <= 'lowEdgeStr$' then 0 else if x >= 'highEdgeStr$' then 1 else 0.5 - 0.5*cos(pi*(x-'lowEdgeStr$')/'spanStr$') fi fi))"
+    direction$ = "Low -> Right, High -> Left"
+endif
+
+selectObject: spectrumFull
+spectrumLeft = Copy: "specpan_L"
+selectObject: spectrumLeft
+Formula: "self * cos((1 + " + panExpr$ + ") * pi / 4)"
+
+selectObject: spectrumFull
+spectrumRight = Copy: "specpan_R"
+selectObject: spectrumRight
+Formula: "self * sin((1 + " + panExpr$ + ") * pi / 4)"
+
+selectObject: spectrumLeft
+soundLeftFull = To Sound
+selectObject: spectrumRight
+soundRightFull = To Sound
+
+# Crop away FFT zero-padding and retain the exact source duration.
+selectObject: soundLeftFull
+leftChan = Extract part: 0, originalDur, "rectangular", 1, "no"
+Rename: "specpan_left"
+selectObject: soundRightFull
+rightChan = Extract part: 0, originalDur, "rectangular", 1, "no"
+Rename: "specpan_right"
+
+selectObject: leftChan
+plusObject: rightChan
+stereoOutput = Combine to stereo
+Rename: originalName$ + "_specpan"
+
+# Restore the source time domain.
+selectObject: stereoOutput
+if xminOriginal <> 0
+    Shift times by: xminOriginal
+endif
+
+# Safety attenuation only: never boost a quiet result.
+peakBeforeSafety = Get absolute extremum: 0, 0, "None"
+safetyGain = 1
+if peakBeforeSafety > 0.99
+    safetyGain = 0.99 / peakBeforeSafety
+    Formula: "self * " + fixed$(safetyGain, 12)
+endif
+peakOut = Get absolute extremum: 0, 0, "None"
+
+# ============================================================
+# VISUALIZATION - AUDIOTOOLS HOUSE STYLE
 # ============================================================
 if draw_response
     Erase all
-    Colour: "Black"
-
-    # Clamped crossover edges + the actual taper span (matches processing)
-    vLowEdge = max(crossover_frequency - crossover_width / 2, 1)
-    vHighEdge = min(crossover_frequency + crossover_width / 2, nyquist - 1)
-    vSpan = vHighEdge - vLowEdge
-    if vSpan < 1
-        vSpan = 1
-    endif
-
-    # Channel gains by pan direction
-    if low_frequencies_to = 1
-        vLowL = 0.5 + 0.5 * pan_depth
-        vLowR = 0.5 - 0.5 * pan_depth
-        vHighL = 0.5 - 0.5 * pan_depth
-        vHighR = 0.5 + 0.5 * pan_depth
-        leftLabel$ = "Left = low band"
-        rightLabel$ = "Right = high band"
-    else
-        vLowL = 0.5 - 0.5 * pan_depth
-        vLowR = 0.5 + 0.5 * pan_depth
-        vHighL = 0.5 + 0.5 * pan_depth
-        vHighR = 0.5 - 0.5 * pan_depth
-        leftLabel$ = "Left = high band"
-        rightLabel$ = "Right = low band"
-    endif
-
-    # ---- Title ----
-    Select inner viewport: 0.6, 7.7, 0.2, 0.7
-    Axes: 0, 1, 0, 1
-    Font size: 13
-    Text: 0.5, "Centre", 0.5, "Half", "##Spectral Panner - channel frequency response##"
-
-    # ---- Response panel ----
-    Select inner viewport: 0.6, 7.7, 0.9, 4.3
-    Axes: 0, nyquist, -0.05, 1.1
-
-    # grid
-    Colour: "{0.85, 0.85, 0.85}"
+    Helvetica
     Line width: 1
+
+    colLeft$ = "{0.20, 0.40, 0.80}"
+    colRight$ = "{0.52, 0.34, 0.72}"
+    colGrey$ = "{0.95, 0.95, 0.95}"
+    colGrid$ = "{0.84, 0.84, 0.84}"
+    colText$ = "{0.35, 0.35, 0.50}"
+
+    # ---- Header ----
+    Select outer viewport: 0, 8, 0, 0.70
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.76, "half", "##Spectral Panner v0.3##"
+    Font size: 7
+    Colour: colText$
+    Text: 0.5, "centre", 0.27, "half",
+        ... originalName$ + " | " + presetName$ + " | equal-power | " + direction$
+
+    # ---- Actual channel gain response ----
+    Select outer viewport: 0, 8, 0.75, 4.65
+    Select inner viewport: 0.75, 7.70, 0.95, 4.45
+    Axes: 0, nyquist, 0, 1.08
+    Paint rectangle: colGrey$, 0, nyquist, 0, 1.08
+
     if nyquist > 15000
         gridStep = 5000
     elsif nyquist > 8000
@@ -151,218 +245,128 @@ if draw_response
     else
         gridStep = 1000
     endif
+    Colour: colGrid$
     gridFreq = gridStep
     while gridFreq < nyquist
         Draw line: gridFreq, 0, gridFreq, 1
         gridFreq = gridFreq + gridStep
     endwhile
-    Draw line: 0, 0.5, nyquist, 0.5
+    Draw line: 0, sqrt(0.5), nyquist, sqrt(0.5)
 
-    # left channel (blue)
-    Colour: "{0.20, 0.40, 0.80}"
-    Line width: 2
-    step = nyquist / 200
-    prevX = 0
-    prevY = vLowL
-    plotFreq = step
-    while plotFreq <= nyquist
-        if plotFreq < vLowEdge
-            yVal = vLowL
-        elsif plotFreq > vHighEdge
-            yVal = vHighL
+    stepHz = nyquist / 320
+    prevF = 0
+    if low_frequencies_to = 1
+        p0 = -pan_depth
+    else
+        p0 = pan_depth
+    endif
+    prevL = cos((p0 + 1) * pi / 4)
+    prevR = sin((p0 + 1) * pi / 4)
+
+    for q from 1 to 320
+        f = q * stepHz
+        if f <= lowEdge
+            s = 0
+        elsif f >= highEdge
+            s = 1
         else
-            phase = pi * (plotFreq - vLowEdge) / vSpan
-            yVal = vLowL * (0.5 + 0.5 * cos(phase)) + vHighL * (0.5 - 0.5 * cos(phase))
+            s = 0.5 - 0.5 * cos(pi * (f - lowEdge) / span)
         endif
-        Draw line: prevX, prevY, plotFreq, yVal
-        prevX = plotFreq
-        prevY = yVal
-        plotFreq = plotFreq + step
-    endwhile
-
-    # right channel (red)
-    Colour: "{0.85, 0.25, 0.20}"
-    prevX = 0
-    prevY = vLowR
-    plotFreq = step
-    while plotFreq <= nyquist
-        if plotFreq < vLowEdge
-            yVal = vLowR
-        elsif plotFreq > vHighEdge
-            yVal = vHighR
+        if low_frequencies_to = 1
+            p = pan_depth * (2 * s - 1)
         else
-            phase = pi * (plotFreq - vLowEdge) / vSpan
-            yVal = vLowR * (0.5 + 0.5 * cos(phase)) + vHighR * (0.5 - 0.5 * cos(phase))
+            p = pan_depth * (1 - 2 * s)
         endif
-        Draw line: prevX, prevY, plotFreq, yVal
-        prevX = plotFreq
-        prevY = yVal
-        plotFreq = plotFreq + step
-    endwhile
+        gL = cos((p + 1) * pi / 4)
+        gR = sin((p + 1) * pi / 4)
 
-    # crossover band + centre line
+        Colour: colLeft$
+        Line width: 2
+        Draw line: prevF, prevL, f, gL
+        Colour: colRight$
+        Draw line: prevF, prevR, f, gR
+        prevF = f
+        prevL = gL
+        prevR = gR
+    endfor
+
     Line width: 1
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw line: vLowEdge, 0, vLowEdge, 1
-    Draw line: vHighEdge, 0, vHighEdge, 1
+    Colour: "{0.62, 0.62, 0.62}"
+    Draw line: lowEdge, 0, lowEdge, 1
+    Draw line: highEdge, 0, highEdge, 1
     Colour: "Black"
     Dotted line
     Draw line: crossover_frequency, 0, crossover_frequency, 1
     Solid line
-    Font size: 8
-    Text: crossover_frequency, "Centre", 1.04, "Half", string$(crossover_frequency) + " Hz"
 
-    # frame + axes
-    Colour: "Black"
-    Line width: 1
     Draw inner box
-    if nyquist > 15000
-        Marks bottom every: 1, 5000, "yes", "yes", "no"
-    elsif nyquist > 8000
-        Marks bottom every: 1, 2000, "yes", "yes", "no"
-    else
-        Marks bottom every: 1, 1000, "yes", "yes", "no"
-    endif
-    Marks left every: 1, 0.5, "yes", "yes", "no"
-    Font size: 8
+    Marks bottom every: 1, gridStep, "yes", "yes", "no"
+    Marks left every: 1, 0.25, "yes", "yes", "no"
+    Font size: 7
     Text bottom: "yes", "Frequency (Hz)"
-    Text left: "yes", "Channel gain"
+    Text left: "yes", "Linear channel gain"
+    Text top: "no", "Actual equal-power response"
 
-    # ---- Summary panel (grey) ----
-    Select inner viewport: 0.6, 7.7, 5.0, 6.0
+    Font size: 6
+    Colour: colLeft$
+    Text: nyquist * 0.02, "left", 1.01, "half", "Left"
+    Colour: colRight$
+    Text: nyquist * 0.11, "left", 1.01, "half", "Right"
+
+    # ---- Summary ----
+    Select outer viewport: 0, 8, 4.80, 6.15
+    Select inner viewport: 0.60, 7.70, 4.92, 6.05
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.93, 0.93}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "Black"
-    Line width: 1
     Draw inner box
-    Font size: 9
-    Text: 0.03, "Left", 0.70, "Half", "##Crossover## " + string$(crossover_frequency) + " Hz      ##Width## " + string$(crossover_width) + " Hz      ##Band## " + fixed$(vLowEdge, 0) + " to " + fixed$(vHighEdge, 0) + " Hz      ##Depth## " + fixed$(pan_depth * 100, 0) + "%"
-    Colour: "{0.20, 0.40, 0.80}"
-    Text: 0.03, "Left", 0.28, "Half", leftLabel$
-    Colour: "{0.85, 0.25, 0.20}"
-    Text: 0.45, "Left", 0.28, "Half", rightLabel$
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.78, "half",
+        ... "##Crossover##  " + fixed$(crossover_frequency, 1) + " Hz"
+        ... + "   band " + fixed$(lowEdge, 1) + "-" + fixed$(highEdge, 1) + " Hz"
+        ... + "   depth " + fixed$(pan_depth * 100, 0) + "%"
+    Text: 0.02, "left", 0.48, "half",
+        ... "##Input##  " + string$(numChan) + " ch -> mono analysis"
+        ... + "   SR " + fixed$(sampleRate, 0) + " Hz"
+        ... + "   start " + fixed$(xminOriginal, 3) + " s"
+        ... + "   duration " + fixed$(originalDur, 3) + " s"
+    Text: 0.02, "left", 0.18, "half",
+        ... "##Output##  stereo"
+        ... + "   peak " + fixed$(peakIn, 4) + " -> " + fixed$(peakOut, 4)
+        ... + "   safety gain " + fixed$(safetyGain, 4)
+        ... + "   " + direction$
+
+    Font size: 10
     Colour: "Black"
     Line width: 1
 endif
-
-# ============================================================
-# PREPARE MONO SOURCE
-# ============================================================
-selectObject: originalID
-
-if numChan = 2
-    monoSound = Convert to mono
-else
-    monoSound = Copy: "mono"
-endif
-
-# ============================================================
-# SPECTRAL PROCESSING
-# ============================================================
-selectObject: monoSound
-spectrumFull = To Spectrum: "yes"
-
-lowEdge = crossover_frequency - crossover_width / 2
-highEdge = crossover_frequency + crossover_width / 2
-lowEdge = max(lowEdge, 1)
-highEdge = min(highEdge, nyquist - 1)
-
-lowEdgeStr$ = fixed$(lowEdge, 2)
-highEdgeStr$ = fixed$(highEdge, 2)
-span = highEdge - lowEdge
-if span < 1
-    span = 1
-endif
-spanStr$ = fixed$(span, 2)
-
-# Lowpass spectrum
-selectObject: spectrumFull
-spectrumLow = Copy: "low"
-selectObject: spectrumLow
-Formula: "if x < " + lowEdgeStr$ + " then self else (if x > " + highEdgeStr$ + " then 0 else self * (0.5 + 0.5 * cos(pi * (x - " + lowEdgeStr$ + ") / " + spanStr$ + ")) fi) fi"
-
-# Highpass spectrum
-selectObject: spectrumFull
-spectrumHigh = Copy: "high"
-selectObject: spectrumHigh
-Formula: "if x > " + highEdgeStr$ + " then self else (if x < " + lowEdgeStr$ + " then 0 else self * (0.5 - 0.5 * cos(pi * (x - " + lowEdgeStr$ + ") / " + spanStr$ + ")) fi) fi"
-
-# Convert back to sound
-selectObject: spectrumLow
-soundLow = To Sound
-selectObject: spectrumHigh
-soundHigh = To Sound
-
-# Crop to original duration
-selectObject: soundLow
-soundLowCrop = Extract part: 0, originalDur, "rectangular", 1, "no"
-selectObject: soundHigh
-soundHighCrop = Extract part: 0, originalDur, "rectangular", 1, "no"
-Rename: "high_part"
-
-# ============================================================
-# CREATE STEREO OUTPUT
-# ============================================================
-if low_frequencies_to = 1
-    lowL = 0.5 + 0.5 * pan_depth
-    lowR = 0.5 - 0.5 * pan_depth
-    highL = 0.5 - 0.5 * pan_depth
-    highR = 0.5 + 0.5 * pan_depth
-else
-    lowL = 0.5 - 0.5 * pan_depth
-    lowR = 0.5 + 0.5 * pan_depth
-    highL = 0.5 + 0.5 * pan_depth
-    highR = 0.5 - 0.5 * pan_depth
-endif
-
-lowLStr$ = fixed$(lowL, 4)
-lowRStr$ = fixed$(lowR, 4)
-highLStr$ = fixed$(highL, 4)
-highRStr$ = fixed$(highR, 4)
-
-# Left channel
-selectObject: soundLowCrop
-leftChan = Copy: "L"
-selectObject: leftChan
-Formula: "self * " + lowLStr$ + " + Sound_high_part[] * " + highLStr$
-
-# Right channel
-selectObject: soundLowCrop
-rightChan = Copy: "R"
-selectObject: rightChan
-Formula: "self * " + lowRStr$ + " + Sound_high_part[] * " + highRStr$
-
-# Combine
-selectObject: leftChan
-plusObject: rightChan
-stereoOutput = Combine to stereo
-Rename: originalName$ + "_specpan"
 
 # ============================================================
 # CLEANUP
 # ============================================================
-removeObject: monoSound, spectrumFull, spectrumLow, spectrumHigh
-removeObject: soundLow, soundHigh, soundLowCrop, soundHighCrop
-removeObject: leftChan, rightChan
-
-selectObject: stereoOutput
-Scale peak: 0.95
+removeObject: monoSound, spectrumFull, spectrumLeft, spectrumRight
+removeObject: soundLeftFull, soundRightFull, leftChan, rightChan
 
 # ============================================================
-# INFO OUTPUT
+# INFO
 # ============================================================
-writeInfoLine: "Spectral Panner Complete"
-appendInfoLine: "========================"
-appendInfoLine: "Crossover: ", crossover_frequency, " Hz"
-appendInfoLine: "Width: ±", crossover_width/2, " Hz"
-appendInfoLine: "Depth: ", fixed$(pan_depth * 100, 0), "%"
-if low_frequencies_to = 1
-    appendInfoLine: "Low → Left, High → Right"
+clearinfo
+writeInfoLine: "=== Spectral Panner v0.3 ==="
+appendInfoLine: "Input: ", originalName$, "  (", numChan, " ch -> mono analysis, ", fixed$(sampleRate, 0), " Hz)"
+appendInfoLine: "Output: stereo  |  start ", fixed$(xminOriginal, 3), " s  |  duration ", fixed$(originalDur, 3), " s"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Crossover: ", fixed$(crossover_frequency, 1), " Hz  |  transition ", fixed$(lowEdge, 1), "-", fixed$(highEdge, 1), " Hz"
+appendInfoLine: "Pan depth: ", fixed$(pan_depth * 100, 0), "%  |  equal-power law"
+appendInfoLine: direction$
+appendInfoLine: "Peak: ", fixed$(peakIn, 4), " -> ", fixed$(peakOut, 4)
+if safetyGain < 1
+    appendInfoLine: "Safety attenuation: x", fixed$(safetyGain, 6), " (no normalization/boost applied)"
 else
-    appendInfoLine: "Low → Right, High → Left"
+    appendInfoLine: "Safety attenuation: none (no normalization/boost applied)"
 endif
 
+selectObject: stereoOutput
 if play_result
-    selectObject: stereoOutput
     Play
 endif
