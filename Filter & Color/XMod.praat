@@ -3,16 +3,42 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - ENHANCED VISUALIZATION
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Cross-modulation effects with comprehensive visualization.
-#   Ring Modulation, Amplitude Modulation, Rhythmic Gating.
+#   Cross-modulation effects: Ring Modulation, bipolar Amplitude
+#   Modulation, and Rhythmic/Envelope Gating. Oscillator modulators
+#   or a second Sound can be used. Carrier channel count, sample rate,
+#   duration, and start time are preserved.
+#
+# Notes:
+#   - Ring depth 0..1 crossfades dry -> ring; values >1 scale pure ring.
+#   - AM depth 0..1 crossfades dry -> unipolar AM. For a second Sound,
+#     the modulator is peak-normalized only as a CONTROL signal; its
+#     source object is never modified.
+#   - Gate attack and release are independent one-pole time constants.
+#     A second Sound drives the gate from its rectified peak-normalized
+#     envelope. A shorter second Sound is zero-padded; a longer one is
+#     trimmed to the carrier duration.
+#   - Safety_peak attenuates only when needed; it never boosts.
+#
+# Changelog v1.1:
+#   - Fixed AM depth=0 so it is an exact dry bypass (v1.0 was -6 dB).
+#   - Removed unconditional Scale peak normalization.
+#   - Preserved arbitrary carrier channel count and start time.
+#   - Fixed Second Sound path (v1.0 contained invalid Praat syntax).
+#   - Added sample-rate conversion and explicit trim/zero-pad handling
+#     for external modulators.
+#   - Implemented independent gate attack/release instead of one
+#     symmetric spectral smoothing value.
+#   - External gate now follows rectified modulator amplitude.
+#   - Renamed Sidechain preset to Sidechain-like Pump (oscillator based).
+#   - Updated visualization to AudioTools house style.
 # ============================================================
 
-form XMod - Cross Modulation v1.0
+form XMod - Cross Modulation v1.1
     optionmenu Preset: 1
         option Custom
         option Ring Mod - Metallic
@@ -22,7 +48,7 @@ form XMod - Cross Modulation v1.0
         option Gate - Fast Stutter
         option Gate - Slow Pulse
         option Gate - Helicopter
-        option Sidechain Style
+        option Sidechain-like Pump
     comment === Modulation Type ===
     optionmenu Mod_type: 1
         option Ring Modulation
@@ -35,16 +61,18 @@ form XMod - Cross Modulation v1.0
         option Triangle Oscillator
         option Sawtooth Oscillator
         option Second Sound (select 2 sounds)
-    comment === Oscillator Parameters ===
+    comment === Oscillator / Depth ===
     positive Mod_frequency_(Hz) 10
     real Mod_depth 1.0
-    comment (0-1 for AM/Gate, any value for Ring)
+    comment (AM/Gate 0..1; Ring 0..1 dry-to-ring, >1 scales pure ring)
     comment === Gate Envelope ===
     positive Attack_(ms) 5
     positive Release_(ms) 5
-    positive Duty_cycle 0.5
-    comment (0-1, ratio of ON time per cycle)
+    real Duty_cycle 0.5
+    comment (0..1; used by Square oscillator)
     comment === Output ===
+    real Safety_peak 0.99
+    comment (0 disables; otherwise attenuate only when peak exceeds this value)
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -111,19 +139,27 @@ elsif preset = 9
     duty_cycle = 0.3
     attack = 5
     release = 80
-    presetName$ = "Sidechain"
+    presetName$ = "SidechainLikePump"
 else
     presetName$ = "Custom"
 endif
+
+modTypeNames$[1] = "Ring Modulation"
+modTypeNames$[2] = "Amplitude Modulation"
+modTypeNames$[3] = "Rhythmic Gate"
+modSourceNames$[1] = "Sine"
+modSourceNames$[2] = "Square"
+modSourceNames$[3] = "Triangle"
+modSourceNames$[4] = "Sawtooth"
+modSourceNames$[5] = "Second Sound"
 
 # ============================================================
 # INPUT VALIDATION
 # ============================================================
 numSounds = numberOfSelected("Sound")
-
 if mod_source = 5
     if numSounds <> 2
-        exitScript: "Please select exactly 2 Sound objects for cross-modulation."
+        exitScript: "Please select exactly 2 Sound objects for Second Sound modulation."
     endif
     carrierID = selected("Sound", 1)
     modulatorSoundID = selected("Sound", 2)
@@ -132,6 +168,7 @@ else
         exitScript: "Please select exactly one Sound object."
     endif
     carrierID = selected("Sound")
+    modulatorSoundID = 0
 endif
 
 selectObject: carrierID
@@ -139,390 +176,339 @@ originalName$ = selected$("Sound")
 duration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
+carrierXmin = Get start time
+nCarrier = Get number of samples
+nyquist = sampleRate / 2
 
 if duration < 0.01
-    exitScript: "Sound too short."
+    exitScript: "Sound too short (minimum 0.01 s)."
 endif
 
-# Convert attack/release to seconds
+if mod_depth < 0
+    mod_depth = 0
+endif
+if mod_type <> 1 and mod_depth > 1
+    mod_depth = 1
+endif
+if duty_cycle < 0
+    duty_cycle = 0
+endif
+if duty_cycle > 1
+    duty_cycle = 1
+endif
+if safety_peak > 1
+    safety_peak = 1
+endif
+if safety_peak < 0
+    safety_peak = 0
+endif
+if mod_frequency >= nyquist
+    mod_frequency = max(0.01, nyquist * 0.95)
+endif
+
 attackSec = attack / 1000
 releaseSec = release / 1000
+attackAlpha = exp(-1 / max(attackSec * sampleRate, 1e-12))
+releaseAlpha = exp(-1 / max(releaseSec * sampleRate, 1e-12))
+
+writeInfoLine: "=== XMod - Cross Modulation v1.1 ==="
+appendInfoLine: "Carrier: ", originalName$
+appendInfoLine: "Duration: ", fixed$(duration, 3), " s   Start: ", fixed$(carrierXmin, 3), " s"
+appendInfoLine: "Channels: ", numChannels, "   SR: ", round(sampleRate), " Hz"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Type: ", modTypeNames$[mod_type]
+appendInfoLine: "Source: ", modSourceNames$[mod_source]
+appendInfoLine: "Depth: ", fixed$(mod_depth, 3)
+appendInfoLine: ""
 
 startTime = stopwatch
 
-writeInfoLine: "=== XMod - Cross Modulation v1.0 ==="
-appendInfoLine: "Carrier: ", originalName$
-appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
-appendInfoLine: ""
-
-modTypeNames$[1] = "Ring Modulation"
-modTypeNames$[2] = "Amplitude Modulation"
-modTypeNames$[3] = "Rhythmic Gate"
-
-modSourceNames$[1] = "Sine"
-modSourceNames$[2] = "Square"
-modSourceNames$[3] = "Triangle"
-modSourceNames$[4] = "Sawtooth"
-modSourceNames$[5] = "Second Sound"
-
 # ============================================================
-# PREPARE CARRIER
-# ============================================================
-selectObject: carrierID
-if numChannels > 1
-    carrierMono = Convert to mono
-else
-    carrierMono = Copy: "carrier"
-endif
-
-# ============================================================
-# CREATE OR PREPARE MODULATOR
+# CREATE / PREPARE MODULATOR ON CARRIER SAMPLE GRID
 # ============================================================
 if mod_source = 5
     selectObject: modulatorSoundID
-    modulatorDur = Get total duration
-    
-    if modulatorDur < duration
-        selectObject: modulatorSoundID
-        modulatorMono = Copy: "modulator"
+    modName$ = selected$("Sound")
+    modDurOrig = Get total duration
+    modSR = Get sampling frequency
+    modCh = Get number of channels
+    modXmin = Get start time
+
+    if modCh > 1
+        modRaw = Convert to mono
     else
-        selectObject: modulatorSoundID
-        modulatorMono = Extract part: 0, duration, "rectangular", 1, "no"
+        modRaw = Copy: "xmod_modraw"
     endif
-    
-    selectObject: modulatorMono
-    if Get number of channels > 1
-        tmpMod = Convert to mono
-        removeObject: modulatorMono
-        modulatorMono = tmpMod
+
+    selectObject: modRaw
+    if modXmin <> 0
+        Shift times by: -modXmin
     endif
-    
+    if modSR <> sampleRate
+        modResamp = Resample: sampleRate, 50
+        removeObject: modRaw
+        modRaw = modResamp
+    endif
+
+    selectObject: modRaw
+    nMod = Get number of samples
+    modDurWork = Get total duration
+
+    modulatorMono = Create Sound from formula: "xmod_modulator", 1, 0, duration, sampleRate,
+        ... "if col <= 'nMod:0' then object['modRaw:0', 1, col] else 0 fi"
+
     selectObject: modulatorMono
-    Scale peak: 1.0
-    Rename: "modulator"
-    
-    appendInfoLine: "Modulator: Second sound"
+    modPeak = Get absolute extremum: 0, 0, "None"
+    if modPeak < 1e-12
+        modPeak = 1
+    endif
+
+    appendInfoLine: "External modulator: ", modName$
+    appendInfoLine: "  Original duration: ", fixed$(modDurOrig, 3), " s"
+    if modDurOrig < duration
+        appendInfoLine: "  Shorter than carrier: zero-padded after its end."
+    elsif modDurOrig > duration
+        appendInfoLine: "  Longer than carrier: trimmed to carrier duration."
+    endif
+    if modSR <> sampleRate
+        appendInfoLine: "  Resampled: ", round(modSR), " -> ", round(sampleRate), " Hz"
+    endif
+
+    removeObject: modRaw
 else
-    appendInfoLine: "Modulator: ", modSourceNames$[mod_source], " @ ", mod_frequency, " Hz"
-    
-    freqStr$ = fixed$(mod_frequency, 6)
-    dutyStr$ = fixed$(duty_cycle, 6)
-    
+    freqStr$ = fixed$(mod_frequency, 12)
+    dutyStr$ = fixed$(duty_cycle, 12)
     if mod_source = 1
-        modulatorMono = Create Sound from formula: "modulator", 1, 0, duration, sampleRate,
-        ... "sin(2*pi*" + freqStr$ + "*x)"
+        modulatorMono = Create Sound from formula: "xmod_modulator", 1, 0, duration, sampleRate,
+            ... "sin(2*pi*" + freqStr$ + "*x)"
     elsif mod_source = 2
-        modulatorMono = Create Sound from formula: "modulator", 1, 0, duration, sampleRate,
-        ... "if ((" + freqStr$ + "*x) mod 1) < " + dutyStr$ + " then 1 else -1 fi"
+        modulatorMono = Create Sound from formula: "xmod_modulator", 1, 0, duration, sampleRate,
+            ... "if ((" + freqStr$ + "*x) mod 1) < " + dutyStr$ + " then 1 else -1 fi"
     elsif mod_source = 3
-        modulatorMono = Create Sound from formula: "modulator", 1, 0, duration, sampleRate,
-        ... "if ((" + freqStr$ + "*x) mod 1) < 0.5 then 4*((" + freqStr$ + "*x) mod 1)-1 else 3-4*((" + freqStr$ + "*x) mod 1) fi"
-    elsif mod_source = 4
-        modulatorMono = Create Sound from formula: "modulator", 1, 0, duration, sampleRate,
-        ... "2*((" + freqStr$ + "*x) mod 1)-1"
+        modulatorMono = Create Sound from formula: "xmod_modulator", 1, 0, duration, sampleRate,
+            ... "if ((" + freqStr$ + "*x) mod 1) < 0.5 then 4*((" + freqStr$ + "*x) mod 1)-1 else 3-4*((" + freqStr$ + "*x) mod 1) fi"
+    else
+        modulatorMono = Create Sound from formula: "xmod_modulator", 1, 0, duration, sampleRate,
+            ... "2*((" + freqStr$ + "*x) mod 1)-1"
     endif
+    modPeak = 1
+    appendInfoLine: "Oscillator: ", modSourceNames$[mod_source], " @ ", fixed$(mod_frequency, 3), " Hz"
 endif
+
+# ============================================================
+# OUTPUT: COPY CARRIER SO CHANNELS + TIME DOMAIN ARE PRESERVED
+# ============================================================
+selectObject: carrierID
+outputSound = Copy: originalName$ + "_xmod_" + presetName$
+
+modID$ = string$(modulatorMono)
+depthStr$ = fixed$(mod_depth, 12)
+modPeakStr$ = fixed$(modPeak, 12)
 
 # ============================================================
 # APPLY MODULATION
 # ============================================================
-appendInfoLine: ""
-appendInfoLine: "Applying modulation..."
-
-selectObject: carrierMono
-Rename: "carrier"
-
-selectObject: carrierMono
-outputSound = Copy: "output"
-
-depthStr$ = fixed$(mod_depth, 6)
-
 if mod_type = 1
-    # Ring Modulation
+    # Ring modulation. 0..1 = dry-to-ring crossfade; >1 = pure ring gain.
     selectObject: outputSound
-    Formula: "self * (Sound_modulator[] * " + depthStr$ + " + (1 - " + depthStr$ + "))"
-    
-elsif mod_type = 2
-    # Amplitude Modulation
-    selectObject: outputSound
-    Formula: "self * (1 + " + depthStr$ + " * Sound_modulator[]) / 2"
-    
-elsif mod_type = 3
-    # Rhythmic Gate with envelope
-    selectObject: modulatorMono
-    gateEnv = Copy: "envelope"
-    
-    selectObject: gateEnv
-    Formula: "(self + 1) / 2"
-    
-    smoothFreq = 1 / max(attackSec, releaseSec, 0.005)
-    smoothFreq = min(smoothFreq, sampleRate / 4)
-    smoothFreq = max(smoothFreq, 5)
-    
-    selectObject: gateEnv
-    To Spectrum: "yes"
-    envSpec = selected("Spectrum")
-    
-    smoothStr$ = fixed$(smoothFreq, 2)
-    selectObject: envSpec
-    Formula: "if x < " + smoothStr$ + " then self else self * exp(-((x-" + smoothStr$ + ")/" + smoothStr$ + ")^2) fi"
-    
-    smoothedEnv = To Sound
-    
-    selectObject: smoothedEnv
-    envCropped = Extract part: 0, duration, "rectangular", 1, "no"
-    
-    selectObject: envCropped
-    minEnv = Get minimum: 0, 0, "None"
-    maxEnv = Get maximum: 0, 0, "None"
-    
-    envRange = maxEnv - minEnv
-    if envRange < 0.001
-        envRange = 1
+    if mod_depth <= 1
+        Formula: "self * ((1 - " + depthStr$ + ") + " + depthStr$ + " * object[" + modID$ + ", 1, col])"
+    else
+        Formula: "self * " + depthStr$ + " * object[" + modID$ + ", 1, col]"
     endif
-    
-    minStr$ = fixed$(minEnv, 8)
-    rangeStr$ = fixed$(envRange, 8)
-    
-    selectObject: envCropped
-    Formula: "(self - " + minStr$ + ") / " + rangeStr$
-    Rename: "gateenv"
-    
+
+elsif mod_type = 2
+    # Bipolar modulator -> unipolar amplitude control. Depth 0 is exact dry.
+    # External modulators are normalized only as a control signal.
     selectObject: outputSound
-    Formula: "self * Sound_gateenv[] * " + depthStr$ + " + self * (1 - " + depthStr$ + ")"
-    
-    # Keep envelope for visualization
-    finalEnvelope = envCropped
-    
-    removeObject: gateEnv, envSpec, smoothedEnv
+    Formula: "self * ((1 - " + depthStr$ + ") + " + depthStr$ + " * (1 + object[" + modID$ + ", 1, col] / " + modPeakStr$ + ") / 2)"
+
+else
+    # Gate target. Oscillators are mapped [-1,1] -> [0,1].
+    # External Sound uses rectified peak-normalized amplitude.
+    if mod_source = 5
+        gateTarget = Create Sound from formula: "xmod_gate_target", 1, 0, duration, sampleRate,
+            ... "min(1, abs(object['modulatorMono:0', 1, col]) / 'modPeak:12')"
+    else
+        gateTarget = Create Sound from formula: "xmod_gate_target", 1, 0, duration, sampleRate,
+            ... "0.5 * (object['modulatorMono:0', 1, col] + 1)"
+    endif
+
+    # Independent attack/release smoothing in the sample domain.
+    gateEnvelope = Create Sound from formula: "xmod_gate_envelope", 1, 0, duration, sampleRate, "0"
+    targetID$ = string$(gateTarget)
+    attackAlphaStr$ = fixed$(attackAlpha, 15)
+    releaseAlphaStr$ = fixed$(releaseAlpha, 15)
+    selectObject: gateEnvelope
+    Formula: "if col = 1 then object[" + targetID$ + ", 1, col] else if object[" + targetID$ + ", 1, col] > self[col-1] then " + attackAlphaStr$ + " * self[col-1] + (1 - " + attackAlphaStr$ + ") * object[" + targetID$ + ", 1, col] else " + releaseAlphaStr$ + " * self[col-1] + (1 - " + releaseAlphaStr$ + ") * object[" + targetID$ + ", 1, col] fi fi"
+
+    envID$ = string$(gateEnvelope)
+    selectObject: outputSound
+    Formula: "self * ((1 - " + depthStr$ + ") + " + depthStr$ + " * object[" + envID$ + ", 1, col])"
 endif
 
 # ============================================================
-# FINALIZE
+# SAFETY ATTENUATION ONLY
 # ============================================================
 selectObject: outputSound
-Rename: originalName$ + "_xmod_" + presetName$
-Scale peak: 0.95
+peakOut = Get absolute extremum: 0, 0, "None"
+if mod_depth > 0 and safety_peak > 0 and peakOut > safety_peak
+    Scale peak: safety_peak
+    appendInfoLine: "Safety attenuation: peak ", fixed$(peakOut, 4), " -> ", fixed$(safety_peak, 4)
+endif
+selectObject: outputSound
+peakFinal = Get absolute extremum: 0, 0, "None"
 
 processingTime = stopwatch - startTime
 
 # ============================================================
-# ENHANCED VISUALIZATION
+# VISUALIZATION - AudioTools house style
 # ============================================================
-
 if draw_visualization
-    appendInfoLine: "Drawing visualization..."
-    
+    selectObject: carrierID
+    if numChannels > 1
+        vizIn = Convert to mono
+    else
+        vizIn = Copy: "xmod_vizin"
+    endif
+    selectObject: outputSound
+    if numChannels > 1
+        vizOut = Convert to mono
+    else
+        vizOut = Copy: "xmod_vizout"
+    endif
+
     Erase all
-    
+
     # Title
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 14
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "XMod: " + originalName$ + " [" + modTypeNames$[mod_type] + "]"
-    
-    # === ROW 1: WAVEFORMS ===
-    # Original waveform
-    Select outer viewport: 0, 4, 0.6, 1.5
-    Select inner viewport: 0.5, 3.7, 0.7, 1.4
-    selectObject: carrierMono
-    Colour: "{0.7, 0.7, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text top: "no", "Original (Carrier)"
-    Text left: "yes", "Amp"
-    
-    # Processed waveform
-    Select outer viewport: 4, 8, 0.6, 1.5
-    Select inner viewport: 4.5, 7.7, 0.7, 1.4
-    selectObject: outputSound
-    Colour: "{0.2, 0.5, 0.8}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text top: "no", "Processed"
-    Text left: "yes", "Amp"
-    
-    # === ROW 2: MODULATOR ===
-    Select outer viewport: 0, 8, 1.7, 2.8
-    Select inner viewport: 0.6, 7.6, 1.8, 2.7
-    
-    # Display 3-5 cycles or max 0.5s
-    displayDur = max(3 / mod_frequency, 0.15)
-    displayDur = min(displayDur, 0.5, duration)
-    
-    Axes: 0, displayDur, -1.2, 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, displayDur, -1.2, 1.2
-    
-    # Zero line
-    Colour: "{0.8, 0.8, 0.8}"
-    Draw line: 0, 0, displayDur, 0
-    
-    # Draw modulator waveform
-    if mod_source <> 5
-        Colour: "{0.9, 0.5, 0.2}"
-        Line width: 2
-        
-        step = displayDur / 500
-        period = 1 / mod_frequency
-        
-        plotTime = 0
-        phase = 0
-        
-        # Calculate initial value
-        if mod_source = 1
-            modVal = sin(2 * pi * phase)
-        elsif mod_source = 2
-            cyclePos = phase - floor(phase)
-            modVal = if cyclePos < duty_cycle then 1 else -1 fi
-        elsif mod_source = 3
-            cyclePos = phase - floor(phase)
-            modVal = if cyclePos < 0.5 then 4 * cyclePos - 1 else 3 - 4 * cyclePos fi
-        elsif mod_source = 4
-            cyclePos = phase - floor(phase)
-            modVal = 2 * cyclePos - 1
-        endif
-        
-        prevTime = 0
-        prevVal = modVal
-        
-        plotTime = step
-        while plotTime <= displayDur
-            phase = plotTime * mod_frequency
-            
-            if mod_source = 1
-                modVal = sin(2 * pi * phase)
-            elsif mod_source = 2
-                cyclePos = phase - floor(phase)
-                modVal = if cyclePos < duty_cycle then 1 else -1 fi
-            elsif mod_source = 3
-                cyclePos = phase - floor(phase)
-                modVal = if cyclePos < 0.5 then 4 * cyclePos - 1 else 3 - 4 * cyclePos fi
-            elsif mod_source = 4
-                cyclePos = phase - floor(phase)
-                modVal = 2 * cyclePos - 1
-            endif
-            
-            Draw line: prevTime, prevVal, plotTime, modVal
-            prevTime = plotTime
-            prevVal = modVal
-            plotTime = plotTime + step
-        endwhile
-    else
-        # External modulator - draw actual sound
-        selectObject: modulatorMono
-        Colour: "{0.9, 0.5, 0.2}"
-        Line width: 2
-        Draw: 0, displayDur, 0, 0, "no", "Curve"
-    endif
-    
-    # Gate envelope overlay
-    if mod_type = 3
-        selectObject: finalEnvelope
-        Colour: "{0.3, 0.7, 0.4}"
-        Line width: 1.5
-        Dotted line
-        Draw: 0, displayDur, 0, 1.2, "no", "Curve"
-        Solid line
-    endif
-    
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text top: "no", "Modulator: " + modSourceNames$[mod_source]
-    Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # === ROW 3: SPECTROGRAMS ===
-    # Original spectrogram
-    Select outer viewport: 0, 4, 3.0, 4.4
-    Select inner viewport: 0.5, 3.7, 3.1, 4.3
-    selectObject: carrierMono
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
-    origSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: origSpec
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Original Spectrum"
-    Text left: "yes", "Freq (Hz)"
-    
-    # Processed spectrogram
-    Select outer viewport: 4, 8, 3.0, 4.4
-    Select inner viewport: 4.5, 7.7, 3.1, 4.3
-    selectObject: outputSound
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
-    procSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: procSpec
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Processed Spectrum"
-    Text left: "yes", "Freq (Hz)"
-    Text bottom: "yes", "Time (s)"
-    
-    # === INFO PANEL ===
-    Select outer viewport: 0, 8, 4.6, 5.3
-    Select inner viewport: 0.5, 7.7, 4.65, 5.25
-    
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    
-    Font size: 8
-    Colour: "{0.3, 0.3, 0.3}"
-    
-    # Build info string
-    if mod_source <> 5
-        infoStr$ = "Frequency: " + fixed$(mod_frequency, 1) + " Hz | Depth: " + fixed$(mod_depth * 100, 0) + "%"
-    else
-        infoStr$ = "External Modulator | Depth: " + fixed$(mod_depth * 100, 0) + "%"
-    endif
-    
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.72, "half", "##XMod##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.25, "half", originalName$ + " | " + presetName$ + " | " + modTypeNames$[mod_type] + " | " + modSourceNames$[mod_source]
+
+    # Input waveform
+    Select outer viewport: 0, 8, 0.72, 1.48
+    Select inner viewport: 0.55, 7.70, 0.80, 1.40
+    selectObject: vizIn
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Input"
+
+    # Output waveform
+    Select outer viewport: 0, 8, 1.52, 2.28
+    Select inner viewport: 0.55, 7.70, 1.60, 2.20
+    selectObject: vizOut
+    Colour: "{0.25, 0.50, 0.82}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Output"
+    Text bottom: "yes", "Time (s)"
+
+    # Modulator / gate envelope
+    displayDur = min(duration, 0.6)
+    Select outer viewport: 0, 8, 2.46, 3.58
+    Select inner viewport: 0.55, 7.70, 2.54, 3.50
+    Axes: 0, displayDur, -1.05, 1.05
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, displayDur, -1.05, 1.05
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw line: 0, 0, displayDur, 0
+    selectObject: modulatorMono
+    Colour: "{0.45, 0.40, 0.70}"
+    Draw: 0, displayDur, -1, 1, "no", "Curve"
     if mod_type = 3
-        infoStr$ = infoStr$ + " | Duty: " + fixed$(duty_cycle * 100, 0) + "% | A/R: " + fixed$(attack, 0) + "/" + fixed$(release, 0) + "ms"
+        selectObject: gateEnvelope
+        Colour: "{0.25, 0.50, 0.82}"
+        Line width: 2
+        Draw: 0, displayDur, 0, 1.05, "no", "Curve"
+        Line width: 1
     endif
-    
-    infoStr$ = infoStr$ + " | Time: " + fixed$(processingTime, 2) + "s"
-    
-    Text: 0.5, "centre", 0.5, "half", infoStr$
-    
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Control"
+    Text bottom: "yes", "Time (s)"
+
+    # Spectrogram pair
+    maxDisplayHz = min(5000, nyquist)
+    Select outer viewport: 0, 4, 3.76, 5.02
+    Select inner viewport: 0.55, 3.82, 3.84, 4.94
+    selectObject: vizIn
+    To Spectrogram: 0.03, maxDisplayHz, 0.01, 20, "Gaussian"
+    specIn = selected("Spectrogram")
+    Paint: 0, 0, 0, maxDisplayHz, 100, "yes", 50, 6, 0, "no"
+    removeObject: specIn
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Input spectrum"
+
+    Select outer viewport: 4, 8, 3.76, 5.02
+    Select inner viewport: 4.28, 7.70, 3.84, 4.94
+    selectObject: vizOut
+    To Spectrogram: 0.03, maxDisplayHz, 0.01, 20, "Gaussian"
+    specOut = selected("Spectrogram")
+    Paint: 0, 0, 0, maxDisplayHz, 100, "yes", 50, 6, 0, "no"
+    removeObject: specOut
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Output spectrum"
+
+    # Summary
+    Select outer viewport: 0, 8, 5.12, 5.97
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
-    Font size: 10
-    
-    # Cleanup envelope if exists
-    if mod_type = 3
-        removeObject: finalEnvelope
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    if mod_source = 5
+        sourceDetail$ = "external Sound"
+    else
+        sourceDetail$ = fixed$(mod_frequency, 2) + " Hz"
     endif
+    Text: 0.02, "left", 0.80, "half", "##Mode##  " + modTypeNames$[mod_type] + "   ##Source##  " + modSourceNames$[mod_source] + " (" + sourceDetail$ + ")"
+    Text: 0.02, "left", 0.50, "half", "##Depth##  " + fixed$(mod_depth, 3) + "   ##Channels##  " + string$(numChannels) + "   ##SR##  " + fixed$(sampleRate, 0) + " Hz"
+    if mod_type = 3
+        Text: 0.02, "left", 0.18, "half", "##Gate##  attack " + fixed$(attack, 1) + " ms   release " + fixed$(release, 1) + " ms   duty " + fixed$(duty_cycle * 100, 0) + "%   peak " + fixed$(peakFinal, 4)
+    else
+        Text: 0.02, "left", 0.18, "half", "##Output##  peak " + fixed$(peakFinal, 4) + "   safety " + fixed$(safety_peak, 3) + "   time " + fixed$(processingTime, 3) + " s"
+    endif
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+
+    removeObject: vizIn, vizOut
 endif
 
-# Cleanup
-removeObject: carrierMono, modulatorMono
+# ============================================================
+# CLEANUP / OUTPUT
+# ============================================================
+removeObject: modulatorMono
+if mod_type = 3
+    removeObject: gateTarget, gateEnvelope
+endif
 
-# ============================================================
-# OUTPUT
-# ============================================================
 appendInfoLine: ""
 appendInfoLine: "=== Complete ==="
-appendInfoLine: "Processing time: ", fixed$(processingTime, 2), " seconds"
-appendInfoLine: "Type: ", modTypeNames$[mod_type]
-appendInfoLine: "Source: ", modSourceNames$[mod_source]
-if mod_source <> 5
-    appendInfoLine: "Frequency: ", mod_frequency, " Hz"
-endif
-appendInfoLine: "Depth: ", fixed$(mod_depth * 100, 0), "%"
 appendInfoLine: "Output: ", originalName$, "_xmod_", presetName$
+appendInfoLine: "Peak: ", fixed$(peakFinal, 4)
+appendInfoLine: "Processing time: ", fixed$(processingTime, 3), " s"
+if mod_type = 3
+    appendInfoLine: "Gate attack/release: ", fixed$(attack, 2), " / ", fixed$(release, 2), " ms"
+endif
 
+selectObject: outputSound
 if play_result
-    selectObject: outputSound
     Play
 endif
-
-selectObject: carrierID
-
+selectObject: outputSound
