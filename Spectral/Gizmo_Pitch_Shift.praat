@@ -2,7 +2,7 @@
 # Praat AudioTools - Gizmo_Pitch_Shift.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.0 (2026) - Vectorised phase vocoder, presets, visualization
+# Version: 1.1 (2026) - Exact-frame phase vocoder, validated pitch tracking
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,7 +24,7 @@ sound_name$ = selected$("Sound")
 # FORM
 ####################################################################
 
-form Gizmo Pitch Shift v1.0
+form Gizmo Pitch Shift v1.1
     optionmenu Preset 1
         option Custom
         option Fifth up (+7 st, 80 ms)
@@ -33,7 +33,7 @@ form Gizmo Pitch Shift v1.0
         option Minor third up (+3 st, Hamming)
         option Detune shimmer (+0.2 st, 50% wet)
         option Smeared drone (-5 st, Gaussian 250 ms)
-        option Transient safe (+7 st, 23 ms, 87.5% overlap)
+        option Transient-focused (+7 st, 23 ms, 87.5% overlap)
     real Semitones 7.0
     real Frame_length_s 0.08
     real Hop_fraction 0.25
@@ -103,13 +103,14 @@ elsif preset = 7
     dry_wet_mix = 1.0
     presetName$ = "SmearedDrone"
 elsif preset = 8
-    # Transient safe - short frame, 87.5% overlap
+    # Transient-focused - short frame, 87.5% overlap. This reduces
+    # phase-vocoder time smear; it does not guarantee transient transparency.
     semitones = 7.0
     frame_length_s = 0.023
     hop_fraction = 0.125
     window_type = 1
     dry_wet_mix = 1.0
-    presetName$ = "TransientSafe"
+    presetName$ = "TransientFocused"
 else
     presetName$ = "Custom"
 endif
@@ -164,11 +165,22 @@ duration_s = Get total duration
 ratio = 2 ^ (semitones / 12)
 
 nGrainRaw = frame_length_s * fs
-nGrain = 2 ^ round(log2(nGrainRaw))
+nGrain = round(nGrainRaw)
+
+# Keep an even number of samples so the last real-spectrum bin is the
+# Nyquist bin and can correctly remain purely real. Praat can transform
+# arbitrary even frame lengths without zero-padding, so there is no need
+# to snap the user's requested frame to a power of two.
+if nGrain mod 2 <> 0
+    nGrain = nGrain + 1
+endif
+
 if nGrain < 64
+    warnLines$ = warnLines$ + "  Frame length raised to 64 samples (" + fixed$(64 / fs * 1000, 3) + " ms)." + newline$
     nGrain = 64
 endif
 if nGrain > 32768
+    warnLines$ = warnLines$ + "  Frame length limited to 32768 samples (" + fixed$(32768 / fs * 1000, 3) + " ms)." + newline$
     nGrain = 32768
 endif
 
@@ -217,17 +229,16 @@ else
     windowName$ = "Gaussian"
 endif
 
-frameSnapRatio = actualFrame_s / frame_length_s
-if frameSnapRatio > 1.25 or frameSnapRatio < 0.8
-    warnLines$ = warnLines$ + "  Frame snapped from " + fixed$(frame_length_s * 1000, 1)
-        ... + " ms to " + fixed$(actualFrame_s * 1000, 1) + " ms (power-of-two FFT)." + newline$
+frameError_ms = (actualFrame_s - frame_length_s) * 1000
+if abs(frameError_ms) > 0.05
+    warnLines$ = warnLines$ + "  Frame rounded to an even sample count: " + fixed$(actualFrame_s * 1000, 3) + " ms." + newline$
 endif
 
 ####################################################################
 # REPORT HEADER
 ####################################################################
 
-writeInfoLine: "=== Gizmo Pitch Shift v1.0 ==="
+writeInfoLine: "=== Gizmo Pitch Shift v1.1 ==="
 appendInfoLine: "Input: ", sound_name$, "   ", fixed$(duration_s, 3), " s, ", nCh, " ch, ",
     ... fixed$(fs, 0), " Hz"
 appendInfoLine: "Preset: ", presetName$
@@ -337,8 +348,8 @@ for ch from 1 to nCh
         selectObject: grainId
         Formula: "object['padId:0', 1, col + 'off:0'] * object['winId:0', 1, col]"
 
-        # --- forward FFT --------------------------------------------
-        specId = To Spectrum: "yes"
+        # --- forward FFT, exact frame length (no zero-padding) -------
+        specId = To Spectrum: "no"
 
         # --- magnitude and phase, one vector pass -------------------
         selectObject: polId
@@ -531,8 +542,8 @@ for b to nBands
 endfor
 
 # --- pitch verification ----------------------------------------------
-pitchFloor = 60
-pitchCeil = 1500
+pitchFloor = 40
+pitchCeil = 5000
 if pitchCeil > fs / 2 - 50
     pitchCeil = fs / 2 - 50
 endif
@@ -569,9 +580,11 @@ if draw_visualization
 
     Erase all
 
-    colIn$ = "{0.20, 0.40, 0.80}"
-    colOut$ = "{0.80, 0.20, 0.40}"
-    colAcc$ = "{0.20, 0.65, 0.35}"
+    # AudioTools house style: input neutral grey, processed output blue,
+    # restrained blue-purple accent, light diagnostic backgrounds.
+    colIn$ = "{0.45, 0.45, 0.45}"
+    colOut$ = "{0.20, 0.45, 0.80}"
+    colAcc$ = "{0.45, 0.35, 0.70}"
     colGrey$ = "{0.97, 0.97, 0.97}"
     colFaint$ = "{0.88, 0.88, 0.88}"
     colLabel$ = "{0.45, 0.45, 0.45}"
@@ -581,9 +594,9 @@ if draw_visualization
     # === TITLE ======================================================
     Select outer viewport: 0, 8, 0, 0.45
     Axes: 0, 1, 0, 1
-    Font size: 14
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", -1.7, "half", "##Gizmo Pitch Shift v1.0##"
+    Text: 0.5, "centre", -1.7, "half", "##Gizmo Pitch Shift v1.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.20, "half",
@@ -714,7 +727,7 @@ if draw_visualization
     Colour: colLabel$
     Text: mapShown * 0.03, "left", mapYMax * 0.94, "half", "grey = identity"
     if ratio > 1
-        Colour: colOut$
+        Colour: colAcc$
         Text: mapShown * 0.03, "left", mapYMax * 0.86, "half",
             ... "source above " + fixed$(survivingHz, 0) + " Hz discarded"
     endif
@@ -807,7 +820,7 @@ if draw_visualization
 
     # individual w^2 windows at the working hop
     hopFracDraw = hop / nGrain
-    Colour: "{0.75, 0.80, 0.90}"
+    Colour: "{0.78, 0.82, 0.90}"
     startPos = -1
     while startPos < colaSpan
         prevY = 0
@@ -863,7 +876,7 @@ if draw_visualization
     Text bottom: "yes", "Frames"
     Font size: 6
     Colour: colAcc$
-    Text: colaSpan * 0.02, "left", 1.25, "half", "green = accumulated envelope (divided out)"
+    Text: colaSpan * 0.02, "left", 1.25, "half", "accent = accumulated envelope (divided out)"
 
     # === PANEL: PITCH VERIFICATION ==================================
     Select outer viewport: 4, 8, 3.65, 5.35
