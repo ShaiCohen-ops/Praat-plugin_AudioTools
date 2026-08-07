@@ -1,55 +1,66 @@
 # ============================================================
-# Praat AudioTools - Wah-Wah Effect
+# Praat AudioTools - Wah-Wah_Effect.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Wah-Wah Effect
+#   Offline stereo/multichannel spectral wah. A time-varying Hann-band
+#   response is applied in an STFT overlap-add engine. The center frequency
+#   can follow a sine LFO or the source amplitude envelope.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
+#   Resonance is a spectral peak multiplier at the current center frequency
+#   (1 = no extra peak). It is not an analog-pedal Q model.
 #
-# Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#   Channel behavior:
+#     - mono input -> stereo output (L/R LFO phase offset)
+#     - 2+ channel input -> channel count preserved; LFO phase offsets are
+#       distributed from 0 to Stereo_offset cycles across channels
+#     - Envelope Follower uses the same envelope-derived center on all channels
 #
-# Changelog v0.2:
-#   - Fixed visualization label clipping; removed a non-ASCII en-dash.
-#
-# Changelog v0.3:
-#   - Added Wet_dry_percent control (mix the wah against the dry original).
-#   - Rebuilt the visualization in the AudioTools house style: 8-inch canvas,
-#     title + input + output + frequency-sweep panels with inner-viewport
-#     margins, and a grey summary panel.
+# Changelog v0.4:
+#   - Replaced hard segment processing with continuous sqrt-Hann STFT/OLA.
+#   - Added real Envelope Follower mode; Auto-Wah now follows source level.
+#   - Removed unconditional peak normalization; added attenuation-only safety.
+#   - Wet=0 is an exact dry bypass (mono is duplicated to stereo by design).
+#   - Preserves non-zero start times and arbitrary multichannel input.
+#   - Clarified Resonance as a spectral peak multiplier, not analog Q.
+#   - Renamed misleading Talk Box / Crying Baby style labels.
 # ============================================================
 
-form Wah-Wah Effect
+form Wah-Wah Effect v0.4
     optionmenu Preset: 1
         option Custom
         option Classic Wah (slow)
         option Funky Wah (fast)
-        option Auto-Wah (envelope)
-        option Crying Baby
-        option Talk Box Style
+        option Auto-Wah (envelope follower)
+        option Crying Wah
+        option Talk-Box-like Sweep
         option Subtle Sweep
-    comment === Wah Parameters ===
+    comment === Modulation ===
+    optionmenu Modulation_mode: 1
+        option Sine LFO
+        option Envelope Follower
     positive Wah_rate_(Hz) 1.5
+    positive Envelope_attack_(ms) 12
+    positive Envelope_release_(ms) 100
+    positive Envelope_range_(dB) 30
+    comment === Wah Parameters ===
     positive Min_frequency_(Hz) 300
     positive Max_frequency_(Hz) 2000
     positive Bandwidth_(Hz) 400
-    positive Resonance 2.0
-    comment (1=flat, higher=more resonant peak)
-    comment === Stereo ===
-    real Stereo_offset 0.1
-    comment (phase offset between L/R, 0-0.5)
-    comment === Mix ===
+    positive Resonance_peak 2.0
+    comment (1 = flat passband center; higher = extra spectral peak)
+    comment === Spatial Modulation ===
+    real Stereo_offset_(cycles) 0.10
+    comment (LFO mode only; 0-0.5 cycles distributed across output channels)
+    comment === Mix / Safety ===
     real Wet_dry_percent 75
-    comment (100 = full wah, 0 = dry only)
+    real Safety_peak 0.99
+    comment (Safety_peak <= 0 disables safety attenuation; never boosts)
     comment === Output ===
     boolean Draw_response 1
     boolean Play_result 1
@@ -59,73 +70,73 @@ endform
 # PRESETS
 # ============================================================
 if preset = 2
-    # Classic Wah (slow)
+    modulation_mode = 1
     wah_rate = 0.8
     min_frequency = 400
     max_frequency = 1800
     bandwidth = 350
-    resonance = 2.5
-    stereo_offset = 0.1
+    resonance_peak = 2.5
+    stereo_offset = 0.10
+    presetName$ = "Classic Wah"
 elsif preset = 3
-    # Funky Wah (fast)
+    modulation_mode = 1
     wah_rate = 3.5
     min_frequency = 350
     max_frequency = 2500
     bandwidth = 300
-    resonance = 3.0
+    resonance_peak = 3.0
     stereo_offset = 0.15
+    presetName$ = "Funky Wah"
 elsif preset = 4
-    # Auto-Wah (envelope follower style - we simulate with faster rate)
-    wah_rate = 2.0
+    modulation_mode = 2
     min_frequency = 250
     max_frequency = 2200
     bandwidth = 400
-    resonance = 2.0
-    stereo_offset = 0.05
+    resonance_peak = 2.0
+    stereo_offset = 0
+    envelope_attack = 8
+    envelope_release = 90
+    envelope_range = 30
+    presetName$ = "Auto-Wah"
 elsif preset = 5
-    # Crying Baby
+    modulation_mode = 1
     wah_rate = 1.2
     min_frequency = 500
     max_frequency = 2800
     bandwidth = 250
-    resonance = 4.0
+    resonance_peak = 4.0
     stereo_offset = 0.08
+    presetName$ = "Crying Wah"
 elsif preset = 6
-    # Talk Box Style
+    modulation_mode = 1
     wah_rate = 0.6
     min_frequency = 300
     max_frequency = 3500
     bandwidth = 500
-    resonance = 1.8
-    stereo_offset = 0.2
+    resonance_peak = 1.8
+    stereo_offset = 0.20
+    presetName$ = "Talk-Box-like Sweep"
 elsif preset = 7
-    # Subtle Sweep
+    modulation_mode = 1
     wah_rate = 0.4
     min_frequency = 500
     max_frequency = 1500
     bandwidth = 600
-    resonance = 1.5
+    resonance_peak = 1.5
     stereo_offset = 0.05
+    presetName$ = "Subtle Sweep"
+else
+    presetName$ = "Custom"
 endif
 
-if preset = 1
-    presetName$ = "Custom"
-elsif preset = 2
-    presetName$ = "Classic Wah"
-elsif preset = 3
-    presetName$ = "Funky Wah"
-elsif preset = 4
-    presetName$ = "Auto-Wah"
-elsif preset = 5
-    presetName$ = "Crying Baby"
-elsif preset = 6
-    presetName$ = "Talk Box"
+if modulation_mode = 1
+    modulationName$ = "Sine LFO"
 else
-    presetName$ = "Subtle Sweep"
+    modulationName$ = "Envelope Follower"
 endif
 
 # ============================================================
-# INPUT VALIDATION
+# INPUT VALIDATION / PARAMETER LIMITS
 # ============================================================
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
@@ -134,333 +145,555 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 selectObject: originalID
-totalDuration = Get total duration
 sampleRate = Get sampling frequency
+nSrc = Get number of samples
 numChannels = Get number of channels
+xmin0 = Get start time
+totalDuration = Get total duration
 nyquist = sampleRate / 2
 
-if max_frequency >= nyquist * 0.9
-    max_frequency = nyquist * 0.8
+if totalDuration < 0.05
+    exitScript: "Sound too short (minimum 0.05 s)."
 endif
 
-if totalDuration < 0.1
-    exitScript: "Sound too short (min 0.1s)."
+if wet_dry_percent < 0
+    wet_dry_percent = 0
+endif
+if wet_dry_percent > 100
+    wet_dry_percent = 100
+endif
+wetAmt = wet_dry_percent / 100
+
+if stereo_offset < 0
+    stereo_offset = 0
+endif
+if stereo_offset > 0.5
+    stereo_offset = 0.5
 endif
 
-# Calculate number of segments based on wah rate
-# At least 20 segments per wah cycle for smooth sweep
-segmentsPerCycle = 24
-totalCycles = totalDuration * wah_rate
-numSegments = max(10, round(totalCycles * segmentsPerCycle))
-numSegments = min(numSegments, 500)
-segmentDur = totalDuration / numSegments
+if resonance_peak < 1
+    resonance_peak = 1
+endif
+if resonance_peak > 12
+    resonance_peak = 12
+endif
 
-writeInfoLine: "=== Wah-Wah Effect ==="
-appendInfoLine: "Rate: ", fixed$(wah_rate, 2), " Hz"
-appendInfoLine: "Frequency range: ", round(min_frequency), " - ", round(max_frequency), " Hz"
-appendInfoLine: "Segments: ", numSegments
-appendInfoLine: ""
+if min_frequency > max_frequency
+    tmpFreq = min_frequency
+    min_frequency = max_frequency
+    max_frequency = tmpFreq
+endif
+maxSafeFreq = max(20, nyquist - 2 * sampleRate / max(64, round(0.04 * sampleRate)))
+if max_frequency > maxSafeFreq
+    max_frequency = maxSafeFreq
+endif
+if min_frequency > max_frequency
+    min_frequency = max(20, max_frequency * 0.5)
+endif
+if min_frequency < 20
+    min_frequency = 20
+endif
+if bandwidth > nyquist * 1.5
+    bandwidth = nyquist * 1.5
+endif
+if bandwidth < 20
+    bandwidth = 20
+endif
 
-
+if envelope_attack < 0.1
+    envelope_attack = 0.1
+endif
+if envelope_release < 0.1
+    envelope_release = 0.1
+endif
+if envelope_range < 6
+    envelope_range = 6
+endif
+if envelope_range > 80
+    envelope_range = 80
+endif
 
 # ============================================================
-# PREPARE SOURCE
+# WORKING SOURCE / CHANNEL GEOMETRY
 # ============================================================
 selectObject: originalID
-if numChannels > 1
-    monoSource = Convert to mono
+workSource = Copy: "wah_work"
+selectObject: workSource
+Shift times to: "start time", 0
+
+if numChannels = 1
+    outCh = 2
+    channelNote$ = "mono -> stereo"
 else
-    monoSource = Copy: "mono"
+    outCh = numChannels
+    channelNote$ = string$(numChannels) + " channels preserved"
+endif
+
+selectObject: workSource
+if numChannels > 1
+    analysisMono = Convert to mono
+else
+    analysisMono = Copy: "wah_analysis"
 endif
 
 # ============================================================
-# PROCESS WAH-WAH
+# STFT GEOMETRY
 # ============================================================
-appendInfoLine: "Processing..."
+nWin = round(0.04 * sampleRate)
+if nWin < 64
+    nWin = 64
+endif
+if (nWin mod 2) = 1
+    nWin = nWin + 1
+endif
+hopN = round(nWin / 4)
+if hopN < 1
+    hopN = 1
+endif
+actualWindow_s = nWin / sampleRate
+hop_s = hopN / sampleRate
+binWidth = sampleRate / nWin
+padN = nWin
+padDur = padN / sampleRate
 
-# Create output channels
-leftOut = Create Sound from formula: "leftOut", 1, 0, totalDuration, sampleRate, "0"
-rightOut = Create Sound from formula: "rightOut", 1, 0, totalDuration, sampleRate, "0"
-
-for seg from 1 to numSegments
-    # Segment time boundaries
-    segStart = (seg - 1) * segmentDur
-    segEnd = seg * segmentDur
-    segMid = (segStart + segEnd) / 2
-    
-    # Calculate wah position (0-1) based on sine wave
-    phaseL = wah_rate * segMid
-    phaseR = wah_rate * segMid + stereo_offset
-    
-    wahPosL = 0.5 + 0.5 * sin(2 * pi * phaseL)
-    wahPosR = 0.5 + 0.5 * sin(2 * pi * phaseR)
-    
-    # Calculate center frequencies
-    centerL = min_frequency + wahPosL * (max_frequency - min_frequency)
-    centerR = min_frequency + wahPosR * (max_frequency - min_frequency)
-    
-    # Calculate filter bounds
-    lowL = max(20, centerL - bandwidth / 2)
-    highL = min(nyquist - 100, centerL + bandwidth / 2)
-    lowR = max(20, centerR - bandwidth / 2)
-    highR = min(nyquist - 100, centerR + bandwidth / 2)
-    
-    # Ensure valid range
-    if highL <= lowL
-        highL = lowL + 100
-    endif
-    if highR <= lowR
-        highR = lowR + 100
-    endif
-    
-    # Extract segment with small overlap for crossfade
-    overlapDur = min(0.01, segmentDur * 0.1)
-    extractStart = max(0, segStart - overlapDur)
-    extractEnd = min(totalDuration, segEnd + overlapDur)
-    
-    selectObject: monoSource
-    segSound = Extract part: extractStart, extractEnd, "Hanning", 1, "no"
-    
-    # Process Left channel
-    selectObject: segSound
-    segLeft = Filter (pass Hann band): lowL, highL, bandwidth * 0.25
-    
-    # Apply resonance boost at center frequency
-    if resonance > 1
-        selectObject: segLeft
-        To Spectrum: "yes"
-        specL = selected("Spectrum")
-        
-        # Boost around center frequency
-        boostWidth = bandwidth * 0.3
-        centerLStr$ = fixed$(centerL, 2)
-        boostWidthStr$ = fixed$(boostWidth, 2)
-        resStr$ = fixed$(resonance, 3)
-        
-        selectObject: specL
-        Formula: "self * (1 + (" + resStr$ + " - 1) * exp(-((x - " + centerLStr$ + ")/" + boostWidthStr$ + ")^2))"
-        
-        resynthL = To Sound
-        removeObject: specL
-        
-        # Replace segLeft with resonant version
-        removeObject: segLeft
-        segLeft = resynthL
-    endif
-    
-    # Process Right channel
-    selectObject: segSound
-    segRight = Filter (pass Hann band): lowR, highR, bandwidth * 0.25
-    
-    if resonance > 1
-        selectObject: segRight
-        To Spectrum: "yes"
-        specR = selected("Spectrum")
-        
-        centerRStr$ = fixed$(centerR, 2)
-        
-        selectObject: specR
-        Formula: "self * (1 + (" + resStr$ + " - 1) * exp(-((x - " + centerRStr$ + ")/" + boostWidthStr$ + ")^2))"
-        
-        resynthR = To Sound
-        removeObject: specR
-        
-        removeObject: segRight
-        segRight = resynthR
-    endif
-    
-    # Crop to actual segment duration (remove overlap tails)
-    offsetInExtract = segStart - extractStart
-    
-    selectObject: segLeft
-    Rename: "segL"
-    selectObject: segRight
-    Rename: "segR"
-    
-    # Add to output channels
-    segStartStr$ = fixed$(segStart, 8)
-    offsetStr$ = fixed$(offsetInExtract, 8)
-    
-    selectObject: leftOut
-    Formula (part): segStart, segEnd, 1, 1, "self + Sound_segL(x - " + segStartStr$ + " + " + offsetStr$ + ")"
-    
-    selectObject: rightOut
-    Formula (part): segStart, segEnd, 1, 1, "self + Sound_segR(x - " + segStartStr$ + " + " + offsetStr$ + ")"
-    
-    # Cleanup segment objects
-    removeObject: segSound, segLeft, segRight
-    
-    # Progress
-    if seg mod 20 = 0
-        appendInfoLine: "  ", seg, "/", numSegments
-    endif
-endfor
+# Frame centers: 0, hop, 2hop, ... plus exact final center if needed.
+gridFrames = floor(totalDuration / hop_s) + 1
+lastGridCenter = (gridFrames - 1) * hop_s
+extraEndFrame = 0
+if totalDuration - lastGridCenter > 0.5 / sampleRate
+    extraEndFrame = 1
+endif
+totalFrames = gridFrames + extraEndFrame
 
 # ============================================================
-# COMBINE TO STEREO
+# MODULATION TRAJECTORY
 # ============================================================
-appendInfoLine: "Finalizing..."
+if modulation_mode = 2
+    # First pass: frame RMS, then map dB relative to the file maximum into 0..1.
+    maxRMS = 0
+    for f from 1 to totalFrames
+        if f <= gridFrames
+            centerTime = (f - 1) * hop_s
+        else
+            centerTime = totalDuration
+        endif
+        a1 = max(0, centerTime - actualWindow_s / 2)
+        a2 = min(totalDuration, centerTime + actualWindow_s / 2)
+        selectObject: analysisMono
+        if a2 > a1
+            thisRMS = Get root-mean-square: a1, a2
+        else
+            thisRMS = 0
+        endif
+        envRMS[f] = thisRMS
+        if thisRMS > maxRMS
+            maxRMS = thisRMS
+        endif
+    endfor
 
-selectObject: leftOut
-plusObject: rightOut
-stereoOut = Combine to stereo
-Rename: originalName$ + "_wahwah"
-
-# Wet/dry mix against the dry original
-if wet_dry_percent < 100
-    wetAmt = wet_dry_percent / 100
-    dryAmt = 1 - wetAmt
-    selectObject: originalID
-    if numChannels = 1
-        dryStereo = Convert to stereo
+    if maxRMS <= 1e-15
+        for f from 1 to totalFrames
+            envRaw[f] = 0
+            envSmooth[f] = 0
+        endfor
     else
-        dryStereo = Copy: "dryStereo"
+        for f from 1 to totalFrames
+            rel = envRMS[f] / maxRMS
+            if rel < 1e-12
+                rel = 1e-12
+            endif
+            relDb = 20 * log10(rel)
+            raw = (relDb + envelope_range) / envelope_range
+            if raw < 0
+                raw = 0
+            endif
+            if raw > 1
+                raw = 1
+            endif
+            envRaw[f] = raw
+        endfor
+
+        attackTau = envelope_attack / 1000
+        releaseTau = envelope_release / 1000
+        attackCoef = 1 - exp(-hop_s / attackTau)
+        releaseCoef = 1 - exp(-hop_s / releaseTau)
+        envSmooth[1] = envRaw[1]
+        for f from 2 to totalFrames
+            if envRaw[f] > envSmooth[f-1]
+                coef = attackCoef
+            else
+                coef = releaseCoef
+            endif
+            envSmooth[f] = envSmooth[f-1] + coef * (envRaw[f] - envSmooth[f-1])
+        endfor
     endif
-    selectObject: stereoOut
-    Formula: "self * " + string$(wetAmt) + " + object[" + string$(dryStereo) + ", row, col] * " + string$(dryAmt)
-    removeObject: dryStereo
 endif
 
-# Normalize
-selectObject: stereoOut
-Scale peak: 0.95
+# ============================================================
+# REPORT
+# ============================================================
+clearinfo
+writeInfoLine: "=============================================="
+writeInfoLine: "  WAH-WAH EFFECT v0.4"
+writeInfoLine: "=============================================="
+appendInfoLine: "Input: ", originalName$, " | ", fixed$(totalDuration, 3), " s | ", numChannels, " ch | ", fixed$(sampleRate, 0), " Hz | start ", fixed$(xmin0, 3)
+appendInfoLine: "Output channels: ", channelNote$
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Modulation: ", modulationName$
+if modulation_mode = 1
+    appendInfoLine: "LFO: ", fixed$(wah_rate, 3), " Hz | stereo offset ", fixed$(stereo_offset, 3), " cycles"
+else
+    appendInfoLine: "Envelope: attack ", fixed$(envelope_attack, 1), " ms | release ", fixed$(envelope_release, 1), " ms | range ", fixed$(envelope_range, 1), " dB"
+endif
+appendInfoLine: "Range: ", fixed$(min_frequency, 1), " - ", fixed$(max_frequency, 1), " Hz | BW ", fixed$(bandwidth, 1), " Hz"
+appendInfoLine: "Resonance peak multiplier: ", fixed$(resonance_peak, 2)
+appendInfoLine: "STFT: ", nWin, " samples (", fixed$(actualWindow_s * 1000, 2), " ms), hop ", fixed$(hop_s * 1000, 2), " ms, ", totalFrames, " frames"
+appendInfoLine: "Wet: ", fixed$(wet_dry_percent, 1), "%"
+appendInfoLine: ""
 
-# Cleanup
-removeObject: monoSource, leftOut, rightOut
+# ============================================================
+# DRY-ONLY FAST PATH OR STFT WAH
+# ============================================================
+if wetAmt = 0
+    selectObject: workSource
+    if numChannels = 1
+        outputSound = Convert to stereo
+    else
+        outputSound = Copy: "wah_output"
+    endif
+else
+    outputSound = Create Sound from formula: "wah_output", outCh, 0, totalDuration, sampleRate, "0"
+    weightBuffer = Create Sound from formula: "wah_weight", 1, 0, totalDuration, sampleRate, "0"
+
+    # Analysis and synthesis windows are both sqrt-Hann. Their product is Hann.
+    for f from 1 to totalFrames
+        if f <= gridFrames
+            centerTime = (f - 1) * hop_s
+        else
+            centerTime = totalDuration
+        endif
+        frameStart = centerTime - actualWindow_s / 2
+        frameEnd = frameStart + actualWindow_s
+        addStart = max(0, frameStart)
+        addEnd = min(totalDuration, frameEnd)
+        if addEnd > addStart
+            selectObject: weightBuffer
+            Formula (part): addStart, addEnd, 1, 1, "self + sin(pi * (x - frameStart) / actualWindow_s) ^ 2"
+        endif
+    endfor
+    selectObject: weightBuffer
+    wMax = Get maximum: 0, 0, "None"
+    wMin = Get minimum: 0, 0, "None"
+    wEps = max(1e-12, wMax * 1e-10)
+    appendInfoLine: "OLA weight min/max: ", fixed$(wMin, 6), " / ", fixed$(wMax, 6)
+    appendInfoLine: "Processing..."
+
+    for ch from 1 to outCh
+        if numChannels = 1
+            srcCh = 1
+        else
+            srcCh = ch
+        endif
+
+        selectObject: workSource
+        chan = Extract one channel: srcCh
+        Rename: "wah_chan"
+        pad = Create Sound from formula: "wah_pad", 1, 0, (nSrc + 2 * padN) / sampleRate, sampleRate,
+            ... "if col > padN and col <= padN + nSrc then object[chan,1,col-padN] else 0 fi"
+
+        if outCh > 1
+            phaseOffset = stereo_offset * (ch - 1) / (outCh - 1)
+        else
+            phaseOffset = 0
+        endif
+
+        for f from 1 to totalFrames
+            if f <= gridFrames
+                centerTime = (f - 1) * hop_s
+            else
+                centerTime = totalDuration
+            endif
+
+            if modulation_mode = 1
+                wahPos = 0.5 + 0.5 * sin(2 * pi * (wah_rate * centerTime + phaseOffset))
+            else
+                wahPos = envSmooth[f]
+            endif
+            centerFreq = min_frequency + wahPos * (max_frequency - min_frequency)
+
+            lowEdge = max(0, centerFreq - bandwidth / 2)
+            highEdge = min(nyquist, centerFreq + bandwidth / 2)
+            transition = max(binWidth, bandwidth * 0.25)
+            resWidth = max(binWidth, bandwidth * 0.18)
+
+            frameStartPadded = padDur + centerTime - actualWindow_s / 2
+            selectObject: pad
+            frame = Extract part: frameStartPadded, frameStartPadded + actualWindow_s, "rectangular", 1, "no"
+            Rename: "wah_frame"
+            Formula: "self * sin(pi * (col - 0.5) / nWin)"
+
+            selectObject: frame
+            spec = To Spectrum: "no"
+
+            lowStr$ = fixed$(lowEdge, 8)
+            highStr$ = fixed$(highEdge, 8)
+            transStr$ = fixed$(transition, 8)
+            centerStr$ = fixed$(centerFreq, 8)
+            resWidthStr$ = fixed$(resWidth, 8)
+            resExtraStr$ = fixed$(resonance_peak - 1, 8)
+
+            selectObject: spec
+            Formula: "self * (if x < " + lowStr$ + " then if x <= " + lowStr$ + " - " + transStr$ + " then 0 else 0.5 - 0.5*cos(pi*(x-(" + lowStr$ + "-" + transStr$ + "))/" + transStr$ + ") fi else if x <= " + highStr$ + " then 1 else if x < " + highStr$ + " + " + transStr$ + " then 0.5 + 0.5*cos(pi*(x-" + highStr$ + ")/" + transStr$ + ") else 0 fi fi fi) * (1 + " + resExtraStr$ + " * exp(-0.5*((x-" + centerStr$ + ")/" + resWidthStr$ + ")^2))"
+
+            selectObject: spec
+            frameOut = To Sound
+            Override sampling frequency: sampleRate
+            Formula: "self * sin(pi * (col - 0.5) / nWin)"
+            Rename: "wah_frameout"
+
+            frameStart = centerTime - actualWindow_s / 2
+            selectObject: frameOut
+            Shift times to: "start time", frameStart
+            frameEnd = frameStart + actualWindow_s
+            addStart = max(0, frameStart)
+            addEnd = min(totalDuration, frameEnd)
+            if addEnd > addStart
+                selectObject: outputSound
+                Formula (part): addStart, addEnd, ch, ch, "self + Sound_wah_frameout(x)"
+            endif
+
+            removeObject: frame, spec, frameOut
+        endfor
+
+        removeObject: chan, pad
+        appendInfoLine: "  channel ", ch, "/", outCh, " done"
+    endfor
+
+    selectObject: outputSound
+    Formula: "if object[weightBuffer,1,col] > wEps then self / object[weightBuffer,1,col] else 0 fi"
+
+    # Dry/wet mix. Mono dry is duplicated because the effect output is stereo.
+    if wetAmt < 1
+        selectObject: workSource
+        if numChannels = 1
+            dryRef = Convert to stereo
+        else
+            dryRef = Copy: "wah_dry"
+        endif
+        selectObject: outputSound
+        Formula: "wetAmt * self + (1 - wetAmt) * object[dryRef,row,col]"
+        removeObject: dryRef
+    endif
+
+    removeObject: weightBuffer
+endif
+
+# ============================================================
+# SAFETY / TIME / NAMING
+# ============================================================
+selectObject: outputSound
+peakBeforeSafety = Get absolute extremum: 0, 0, "None"
+safetyApplied = 0
+if wetAmt > 0 and safety_peak > 0 and peakBeforeSafety > safety_peak
+    Formula: "self * safety_peak / peakBeforeSafety"
+    safetyApplied = 1
+endif
+peakFinal = Get absolute extremum: 0, 0, "None"
+
+Shift times to: "start time", xmin0
+Rename: originalName$ + "_wahwah"
+outputName$ = selected$("Sound")
+
+if safetyApplied
+    appendInfoLine: "Safety attenuation: peak ", fixed$(peakBeforeSafety, 4), " -> ", fixed$(peakFinal, 4)
+endif
+appendInfoLine: "Output peak: ", fixed$(peakFinal, 4)
+appendInfoLine: ""
 
 # ============================================================
 # VISUALIZATION (AudioTools house style)
 # ============================================================
 if draw_response
-    selectObject: originalID
+    selectObject: workSource
     if numChannels > 1
         origMono = Convert to mono
     else
-        origMono = Copy: "origMono"
+        origMono = Copy: "wah_viz_in"
     endif
-    selectObject: stereoOut
+    selectObject: outputSound
     resultMono = Convert to mono
 
     Erase all
+    Select outer viewport: 0, 8, 0, 8
 
-    # --- Title ---
-    Select outer viewport: 0, 8, 0.1, 0.5
+    # Title
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Wah-Wah Effect: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.72, "half", "##Wah-Wah Effect##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.22, "half", originalName$ + " | " + presetName$ + " | " + modulationName$
 
-    # --- Panel 1: Input ---
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    # Input waveform
+    Select outer viewport: 0, 8, 0.72, 1.52
+    Select inner viewport: 0.55, 7.75, 0.80, 1.46
     selectObject: origMono
-    Colour: "{0.50, 0.50, 0.50}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Input"
 
-    # --- Panel 2: Output ---
-    Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    # Output waveform
+    Select outer viewport: 0, 8, 1.56, 2.36
+    Select inner viewport: 0.55, 7.75, 1.64, 2.30
     selectObject: resultMono
-    Colour: "{0.20, 0.55, 0.75}"
+    Colour: "{0.25, 0.50, 0.82}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Wah " + fixed$(wet_dry_percent, 0) + "%"
+    Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
 
-    # --- Panel 3: Frequency sweep over time ---
-    Select outer viewport: 0, 8, 2.5, 3.8
-    Select inner viewport: 0.6, 7.6, 2.6, 3.7
-    Axes: 0, totalDuration, 0, nyquist * 0.5
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, totalDuration, 0, nyquist * 0.5
-
-    Colour: "{0.80, 0.80, 0.80}"
-    gridF = 500
-    while gridF < nyquist * 0.5
-        Draw line: 0, gridF, totalDuration, gridF
-        gridF = gridF + 500
-    endwhile
-
-    Colour: "{0.20, 0.40, 0.80}"
-    Line width: 2
-    step = totalDuration / 200
-    prevTime = 0
-    prevFreq = min_frequency + (0.5 + 0.5 * sin(0)) * (max_frequency - min_frequency)
-    plotTime = step
-    while plotTime <= totalDuration
-        phase = wah_rate * plotTime
-        wahPos = 0.5 + 0.5 * sin(2 * pi * phase)
-        centerFreq = min_frequency + wahPos * (max_frequency - min_frequency)
-        Draw line: prevTime, prevFreq, plotTime, centerFreq
-        prevTime = plotTime
-        prevFreq = centerFreq
-        plotTime = plotTime + step
-    endwhile
-
-    Colour: "{0.80, 0.25, 0.25}"
-    prevTime = 0
-    prevFreq = min_frequency + (0.5 + 0.5 * sin(2 * pi * stereo_offset)) * (max_frequency - min_frequency)
-    plotTime = step
-    while plotTime <= totalDuration
-        phase = wah_rate * plotTime + stereo_offset
-        wahPos = 0.5 + 0.5 * sin(2 * pi * phase)
-        centerFreq = min_frequency + wahPos * (max_frequency - min_frequency)
-        Draw line: prevTime, prevFreq, plotTime, centerFreq
-        prevTime = plotTime
-        prevFreq = centerFreq
-        plotTime = plotTime + step
-    endwhile
-
-    Colour: "{0.60, 0.60, 0.60}"
-    Line width: 1
-    Dotted line
+    # Frequency trajectory
+    Select outer viewport: 0, 8, 2.44, 4.34
+    Select inner viewport: 0.72, 7.70, 2.55, 4.25
+    yMax = min(nyquist, max_frequency + bandwidth)
+    if yMax <= min_frequency
+        yMax = min(nyquist, min_frequency + 1000)
+    endif
+    Axes: 0, totalDuration, 0, yMax
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, totalDuration, 0, yMax
+    Colour: "{0.85, 0.85, 0.85}"
     Draw line: 0, min_frequency, totalDuration, min_frequency
     Draw line: 0, max_frequency, totalDuration, max_frequency
-    Solid line
 
+    trajPts = 240
+    prevT = 0
+    if modulation_mode = 1
+        pL = 0.5 + 0.5 * sin(0)
+        pR = 0.5 + 0.5 * sin(2*pi*stereo_offset)
+        prevL = min_frequency + pL * (max_frequency - min_frequency)
+        prevR = min_frequency + pR * (max_frequency - min_frequency)
+        for q from 1 to trajPts
+            tt = totalDuration * q / trajPts
+            pL = 0.5 + 0.5 * sin(2*pi*wah_rate*tt)
+            pR = 0.5 + 0.5 * sin(2*pi*(wah_rate*tt + stereo_offset))
+            thisL = min_frequency + pL * (max_frequency - min_frequency)
+            thisR = min_frequency + pR * (max_frequency - min_frequency)
+            Colour: "{0.25, 0.50, 0.82}"
+            Draw line: prevT, prevL, tt, thisL
+            Colour: "{0.55, 0.40, 0.72}"
+            Draw line: prevT, prevR, tt, thisR
+            prevT = tt
+            prevL = thisL
+            prevR = thisR
+        endfor
+    else
+        prevF = min_frequency + envSmooth[1] * (max_frequency - min_frequency)
+        for f from 2 to totalFrames
+            if f <= gridFrames
+                tt = (f - 1) * hop_s
+            else
+                tt = totalDuration
+            endif
+            thisF = min_frequency + envSmooth[f] * (max_frequency - min_frequency)
+            Colour: "{0.25, 0.50, 0.82}"
+            Draw line: prevT, prevF, tt, thisF
+            prevT = tt
+            prevF = thisF
+        endfor
+    endif
     Colour: "Black"
     Draw inner box
-    Font size: 6
-    Text left: "yes", "Frequency (Hz)"
+    Font size: 7
+    Text left: "yes", "Center frequency (Hz)"
     Text bottom: "yes", "Time (s)"
-    Marks bottom every: 1, 0.5, "yes", "yes", "no"
-    Marks left every: 1, 500, "yes", "yes", "no"
-    Colour: "{0.20, 0.40, 0.80}"
-    Text: totalDuration * 0.88, "centre", nyquist * 0.46, "half", "L"
-    Colour: "{0.80, 0.25, 0.25}"
-    Text: totalDuration * 0.95, "centre", nyquist * 0.46, "half", "R"
+    if modulation_mode = 1
+        Colour: "{0.25, 0.50, 0.82}"
+        Text: totalDuration * 0.04, "left", yMax * 0.92, "half", "channel 1"
+        Colour: "{0.55, 0.40, 0.72}"
+        Text: totalDuration * 0.04, "left", yMax * 0.84, "half", "last channel / stereo offset"
+    else
+        Colour: "{0.35, 0.35, 0.52}"
+        Text: totalDuration * 0.04, "left", yMax * 0.92, "half", "envelope follower"
+    endif
 
-    # --- Summary panel (grey) ---
-    Select outer viewport: 0, 8, 3.9, 4.3
+    # Representative response at midpoint center
+    Select outer viewport: 0, 8, 4.42, 5.66
+    Select inner viewport: 0.72, 7.70, 4.52, 5.58
+    repCenter = (min_frequency + max_frequency) / 2
+    repLow = max(0, repCenter - bandwidth / 2)
+    repHigh = min(nyquist, repCenter + bandwidth / 2)
+    repTrans = max(binWidth, bandwidth * 0.25)
+    repResWidth = max(binWidth, bandwidth * 0.18)
+    respMax = max(1.2, resonance_peak * 1.1)
+    Axes: 0, min(nyquist, max_frequency + 2*bandwidth), 0, respMax
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, min(nyquist, max_frequency + 2*bandwidth), 0, respMax
+    nResp = 260
+    prevX = 0
+    prevY = 0
+    for q from 0 to nResp
+        ff = min(nyquist, max_frequency + 2*bandwidth) * q / nResp
+        if ff < repLow
+            if ff <= repLow - repTrans
+                bg = 0
+            else
+                bg = 0.5 - 0.5*cos(pi*(ff-(repLow-repTrans))/repTrans)
+            endif
+        elsif ff <= repHigh
+            bg = 1
+        elsif ff < repHigh + repTrans
+            bg = 0.5 + 0.5*cos(pi*(ff-repHigh)/repTrans)
+        else
+            bg = 0
+        endif
+        yy = bg * (1 + (resonance_peak-1)*exp(-0.5*((ff-repCenter)/repResWidth)^2))
+        if q > 0
+            Colour: "{0.55, 0.40, 0.72}"
+            Draw line: prevX, prevY, ff, yy
+        endif
+        prevX = ff
+        prevY = yy
+    endfor
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Linear gain"
+    Text bottom: "yes", "Frequency (Hz)"
+    Text top: "no", "Representative response at midpoint center"
+
+    # Summary
+    Select outer viewport: 0, 8, 5.76, 6.52
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "Black"
-    Draw inner box
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 7
+    Text: 0.02, "left", 0.76, "half", "##Wah summary##"
     Font size: 6
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.5, "centre", 0.5, "half", "Rate: " + fixed$(wah_rate, 1) + " Hz | Range: " + string$(round(min_frequency)) + "-" + string$(round(max_frequency)) + " Hz | BW: " + string$(round(bandwidth)) + " Hz | Res: " + fixed$(resonance, 1) + " | Stereo: " + fixed$(stereo_offset, 2) + " | Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
+    Colour: "{0.28, 0.28, 0.35}"
+    Text: 0.02, "left", 0.48, "half", "Range " + fixed$(min_frequency,0) + "-" + fixed$(max_frequency,0) + " Hz | BW " + fixed$(bandwidth,0) + " Hz | resonance x" + fixed$(resonance_peak,2) + " | wet " + fixed$(wet_dry_percent,0) + "%"
+    Text: 0.02, "left", 0.20, "half", modulationName$ + " | " + channelNote$ + " | STFT " + fixed$(actualWindow_s*1000,1) + " ms / hop " + fixed$(hop_s*1000,1) + " ms | peak " + fixed$(peakFinal,4)
+
     Font size: 10
     Colour: "Black"
-
+    Line width: 1
     removeObject: origMono, resultMono
 endif
 
 # ============================================================
-# OUTPUT
+# CLEANUP / OUTPUT
 # ============================================================
-appendInfoLine: ""
+removeObject: analysisMono, workSource
+selectObject: outputSound
 appendInfoLine: "Complete!"
-appendInfoLine: "Output: ", originalName$, "_wahwah"
+appendInfoLine: "Output: ", outputName$
 
 if play_result
-    selectObject: stereoOut
     Play
 endif
-
-# Leave the result selected
-selectObject: stereoOut
