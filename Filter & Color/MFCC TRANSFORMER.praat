@@ -3,16 +3,17 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2025) - ENHANCED with Visualization
+# Version: 2.3 (2026) - validated control mappings, timing, cleanup, house-style visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   MFCC-derived prosodic and amplitude modulation toolkit.
-#   NOW WITH COMPREHENSIVE VISUALIZATION!
+#   MFCC-derived control-mapping toolkit. MFCC coefficients are used as
+#   control signals for pitch, amplitude, and duration; this script does
+#   not reconstruct or directly edit the MFCC spectral envelope.
 # ============================================================
 
-form MFCC Transformer v2.2
+form MFCC Transformer v2.3
     comment ======== PRESETS ========
     optionmenu Preset 1
         option Custom
@@ -21,31 +22,31 @@ form MFCC Transformer v2.2
         option Direct: Pitch Focus
         option Reverse: Classic
         option Reverse: Dramatic
-        option Complexity: Moderate
-        option Complexity: Extreme
-        option Freeze: Sparse
-        option Freeze: Dense
-        option Scramble: Subtle
-        option Scramble: Wild
+        option Dispersion Stretch: Moderate
+        option Dispersion Stretch: Extreme
+        option Stable Stretch: Sparse
+        option Stable Stretch: Dense
+        option Control Scramble: Subtle
+        option Control Scramble: Wild
 
     comment ======== MANUAL SETTINGS (Custom only) ========
     optionmenu Algorithm 1
         option Direct Control
         option Reverse Control
-        option Complexity Stretch
-        option Freeze Moments
-        option Trajectory Scramble
+        option MFCC Dispersion Stretch
+        option Stable Moment Stretch
+        option MFCC Control Scramble
     
-    comment Control Ranges (Direct Control only):
+    comment Control Ranges (Direct Control only; C2 amplitude maps 0.5 to 1.0):
     real Pitch_range 0.6
     real Duration_range 0.3
     
     comment Other Algorithm Parameters:
-    positive Complexity_threshold 0.5
+    positive Dispersion_threshold 0.5
     positive Max_stretch_factor 2.0
-    positive Freeze_duration_(s) 0.2
-    positive Min_freeze_gap_(s) 0.1
-    positive Scramble_window_(frames) 10
+    positive Stable_hold_duration_(s) 0.2
+    positive Min_stable_gap_(s) 0.1
+    positive Control_scramble_window_(frames) 10
     
     comment === Performance ===
     optionmenu Speed_mode: 1
@@ -67,6 +68,8 @@ sound = selected("Sound")
 soundName$ = selected$("Sound")
 duration = Get total duration
 samplingFrequency = Get sampling frequency
+nChannels = Get number of channels
+originalStart = Get start time
 
 if duration < 0.1
     exitScript: "Sound is too short (minimum 0.1s required)."
@@ -86,12 +89,30 @@ endif
 
 startTime = stopwatch
 
+# Work on a private copy at time zero. This makes MFCC frame times and
+# Manipulation/PitchTier/DurationTier times share the same domain, while
+# preserving the original Sound and restoring its start time at the end.
+selectObject: sound
+workingSound = Copy: "mfcc_work"
+if originalStart <> 0
+    Shift times to: "start time", 0
+endif
+
+# Praat Manipulation/PSOLA resynthesis in this workflow is mono. Make the
+# channel policy explicit instead of silently collapsing a multichannel input.
+if nChannels > 1
+    Convert to mono
+    monoWork = selected("Sound")
+    removeObject: workingSound
+    workingSound = monoWork
+endif
+
 # Optional downsampling
-workingSound = sound
 if targetSR > 0 and samplingFrequency > targetSR
-    selectObject: sound
     Resample: targetSR, 50
-    workingSound = selected("Sound")
+    downsampled = selected("Sound")
+    removeObject: workingSound
+    workingSound = downsampled
     workingSR = targetSR
 else
     workingSR = samplingFrequency
@@ -115,13 +136,42 @@ c2_a_min = 0.5
 c2_a_max = 1.0
 c3_d_min = 1.0 - duration_range
 c3_d_max = 1.0 + duration_range
-comp_thresh = complexity_threshold
+comp_thresh = dispersion_threshold
 max_stretch = max_stretch_factor
 min_stretch = 0.5
-freeze_dur = freeze_duration
-min_gap = min_freeze_gap
+freeze_dur = stable_hold_duration
+min_gap = min_stable_gap
 sim_thresh = 0.3
-scramble_win = scramble_window
+scramble_win = control_scramble_window
+
+# Clamp parameters to domains that keep pitch and duration factors positive.
+if pitch_range < 0
+    pitch_range = 0
+elsif pitch_range > 0.95
+    pitch_range = 0.95
+endif
+if duration_range < 0
+    duration_range = 0
+elsif duration_range > 0.95
+    duration_range = 0.95
+endif
+if comp_thresh < 0.001
+    comp_thresh = 0.001
+elsif comp_thresh > 0.999
+    comp_thresh = 0.999
+endif
+if max_stretch < 1
+    max_stretch = 1
+endif
+if scramble_win < 1
+    scramble_win = 1
+endif
+
+# Recompute custom ranges after clamping.
+c1_p_min = 1.0 - pitch_range
+c1_p_max = 1.0 + pitch_range
+c3_d_min = 1.0 - duration_range
+c3_d_max = 1.0 + duration_range
 
 # Override with presets
 if preset$ = "Direct: Subtle"
@@ -160,34 +210,34 @@ elsif preset$ = "Reverse: Dramatic"
     c1_p_max = 1.5
     c3_d_min = 0.6
     c3_d_max = 1.4
-elsif preset$ = "Complexity: Moderate"
+elsif preset$ = "Dispersion Stretch: Moderate"
     algo = 3
     comp_thresh = 0.5
     max_stretch = 2.0
     min_stretch = 0.7
-elsif preset$ = "Complexity: Extreme"
+elsif preset$ = "Dispersion Stretch: Extreme"
     algo = 3
     comp_thresh = 0.4
     max_stretch = 4.0
     min_stretch = 0.5
-elsif preset$ = "Freeze: Sparse"
+elsif preset$ = "Stable Stretch: Sparse"
     algo = 4
     freeze_dur = 0.15
     sim_thresh = 0.2
     min_gap = 0.15
-elsif preset$ = "Freeze: Dense"
+elsif preset$ = "Stable Stretch: Dense"
     algo = 4
     freeze_dur = 0.2
     sim_thresh = 0.4
     min_gap = 0.1
-elsif preset$ = "Scramble: Subtle"
+elsif preset$ = "Control Scramble: Subtle"
     algo = 5
     scramble_win = 5
     c1_p_min = 0.8
     c1_p_max = 1.2
     c3_d_min = 0.9
     c3_d_max = 1.1
-elsif preset$ = "Scramble: Wild"
+elsif preset$ = "Control Scramble: Wild"
     algo = 5
     scramble_win = 30
     c1_p_min = 0.6
@@ -203,17 +253,22 @@ if algo = 1
 elsif algo = 2
     algo_name$ = "_Reversed"
 elsif algo = 3
-    algo_name$ = "_ComplexityStretch"
+    algo_name$ = "_MFCCDispersionStretch"
 elsif algo = 4
-    algo_name$ = "_FrozenMoments"
+    algo_name$ = "_StableMomentStretch"
 elsif algo = 5
-    algo_name$ = "_Scrambled"
+    algo_name$ = "_MFCCControlScramble"
 endif
 
-writeInfoLine: "=== MFCC Transformer v2.2 ==="
+writeInfoLine: "=== MFCC Transformer v2.3 ==="
 appendInfoLine: "Processing: ", soundName$
 appendInfoLine: "Speed: ", speedStr$
 appendInfoLine: "Algorithm: ", algo_name$
+if nChannels > 1
+    appendInfoLine: "Channels: ", nChannels, " -> mono (explicit downmix for MFCC/PSOLA)"
+else
+    appendInfoLine: "Channels: mono"
+endif
 appendInfoLine: ""
 
 # MFCC EXTRACTION
@@ -252,6 +307,7 @@ hasPitchTier = 0
 hasDurationTier = 0
 hasComplexity = 0
 hasFreezeData = 0
+hasAmplitudeTier = 0
 
 # ============================================================
 # ALGORITHM 1: DIRECT CONTROL
@@ -280,8 +336,33 @@ if algo = 1
         endfor
     endfor
     
-    # Create Manipulation
+    # Build the advertised C2 -> amplitude control. Praat's regular
+    # Sound & AmplitudeTier: Multiply command peak-normalizes the result,
+    # so apply the tier explicitly in a Formula to preserve the requested
+    # linear 0.5..1.0 gain mapping.
+    Create AmplitudeTier: "mfcc_amp_control", 0, duration
+    amplitudeTier = selected("AmplitudeTier")
+    amplitudeTierName$ = "mfcc_amp_control_" + fixed$(amplitudeTier, 0)
+    Rename: amplitudeTierName$
+    firstAmp = c2_a_min + c_scaled[1, 2] * (c2_a_max - c2_a_min)
+    lastAmp = c2_a_min + c_scaled[numFrames, 2] * (c2_a_max - c2_a_min)
+    Add point: 0, firstAmp
+    for i to numFrames
+        time = (i - 1) * t_step + win_len/2
+        if time > 0 and time < duration
+            ampFactor = c2_a_min + c_scaled[i, 2] * (c2_a_max - c2_a_min)
+            Add point: time, ampFactor
+        endif
+    endfor
+    Add point: duration, lastAmp
+
     selectObject: workingSound
+    directSource = Copy: "mfcc_direct_source"
+    ampFormula$ = "self * AmplitudeTier_" + amplitudeTierName$ + "(x)"
+    Formula: ampFormula$
+
+    # Create Manipulation from the amplitude-modulated source.
+    selectObject: directSource
     To Manipulation: 0.01, 75, 600
     manipulation = selected("Manipulation")
     
@@ -342,8 +423,10 @@ if algo = 1
     visualDurationTier = durationTier
     hasPitchTier = 1
     hasDurationTier = 1
+    hasAmplitudeTier = 1
+    visualAmplitudeTier = amplitudeTier
     
-    removeObject: manipulation, originalPitchTier
+    removeObject: manipulation, originalPitchTier, directSource
 
 # ============================================================
 # ALGORITHM 2: REVERSE CONTROL
@@ -445,11 +528,12 @@ elsif algo = 2
 # ALGORITHM 3: COMPLEXITY STRETCH
 # ============================================================
 elsif algo = 3
-    appendInfoLine: "Complexity Time-Stretch Mode"
+    appendInfoLine: "MFCC Dispersion Time-Stretch Mode"
     appendInfoLine: "  Threshold: ", comp_thresh
     appendInfoLine: "  Stretch range: ", min_stretch, " - ", max_stretch
     
-    # Calculate spectral complexity (variance across coefficients)
+    # Descriptor = within-frame dispersion across C1..C6. This is an
+    # artistic MFCC control descriptor, not a standardized complexity metric.
     for i to numFrames
         variance = 0
         mean = 0
@@ -523,12 +607,12 @@ elsif algo = 3
     removeObject: manipulation
 
 # ============================================================
-# ALGORITHM 4: FREEZE SPECTRAL MOMENTS
+# ALGORITHM 4: STABLE-MOMENT TIME STRETCH
 # ============================================================
 elsif algo = 4
-    appendInfoLine: "Freeze Spectral Moments Mode"
+    appendInfoLine: "Stable-Moment Time-Stretch Mode"
     appendInfoLine: "  Similarity threshold: ", sim_thresh
-    appendInfoLine: "  Freeze duration: ", freeze_dur, "s"
+    appendInfoLine: "  Hold/stretch region: ", freeze_dur, "s"
     appendInfoLine: "  Minimum gap: ", min_gap, "s"
     
     # Calculate frame-to-frame spectral distance
@@ -569,7 +653,7 @@ elsif algo = 4
         endif
     endfor
     
-    appendInfoLine: "  Found ", numFreezes, " freeze candidates"
+    appendInfoLine: "  Found ", numFreezes, " stable-region candidates"
     
     # Create Manipulation
     selectObject: workingSound
@@ -580,7 +664,9 @@ elsif algo = 4
     Extract duration tier
     durationTier = selected("DurationTier")
     
-    # Apply freeze points
+    # Apply local 5x duration regions around stable MFCC moments.
+    # This is a freeze-like time hold, not spectral-frame freezing.
+    appliedFreezes = 0
     selectObject: durationTier
     for f to numFreezes
         frameIndex = freeze_at[f]
@@ -591,6 +677,8 @@ elsif algo = 4
             Add point: freezeTime, 5.0
             Add point: freezeTime + freeze_dur, 5.0
             Add point: freezeTime + freeze_dur + 0.01, 1.0
+            appliedFreezes += 1
+            freeze_applied_at[appliedFreezes] = frameIndex
         endif
     endfor
     
@@ -610,13 +698,13 @@ elsif algo = 4
     
     removeObject: manipulation
     
-    appendInfoLine: "  Applied ", numFreezes, " freeze points"
+    appendInfoLine: "  Applied ", appliedFreezes, " stable stretch regions"
 
 # ============================================================
 # ALGORITHM 5: TRAJECTORY SCRAMBLE
 # ============================================================
 elsif algo = 5
-    appendInfoLine: "Trajectory Scramble Mode"
+    appendInfoLine: "MFCC Control Scramble Mode"
     appendInfoLine: "  Window size: ", scramble_win, " frames"
     appendInfoLine: "  Pitch range: ", c1_p_min, " - ", c1_p_max
     appendInfoLine: "  Duration range: ", c3_d_min, " - ", c3_d_max
@@ -696,7 +784,7 @@ elsif algo = 5
     for i to numFrames
         time = (i - 1) * t_step + win_len/2
         if time > 0 and time < duration
-            durationFactor = c3_d_min + (c_scaled[i, 2] * (c3_d_max - c3_d_min))
+            durationFactor = c3_d_min + (c_scaled[i, 3] * (c3_d_max - c3_d_min))
             Add point: time, durationFactor
         endif
     endfor
@@ -731,14 +819,17 @@ if targetSR > 0 and samplingFrequency > targetSR
     upsampled = selected("Sound")
     removeObject: result
     result = upsampled
-    
-    if workingSound <> sound
-        removeObject: workingSound
-    endif
 endif
 
+# Restore the original Sound time origin after all internal processing at t=0.
 selectObject: result
+if originalStart <> 0
+    Shift times by: originalStart
+endif
 Rename: soundName$ + algo_name$
+
+# The private working copy is no longer needed.
+removeObject: workingSound
 
 processingTime = stopwatch - startTime
 
@@ -755,13 +846,13 @@ if draw_visualization
     Select outer viewport: 0, 8, 0, 0.5
     Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "MFCC Transformer: " + soundName$ + " [" + algo_name$ + "]"
+    Text: 0.5, "centre", 0.5, "half", "##MFCC TRANSFORMER v2.3##"
     
     # Original vs Processed Waveforms
     Select outer viewport: 0, 4, 0.6, 1.6
     Select inner viewport: 0.5, 3.7, 0.7, 1.5
     selectObject: sound
-    Colour: "{0.7, 0.7, 0.7}"
+    Colour: "{0.50, 0.50, 0.50}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
@@ -772,7 +863,7 @@ if draw_visualization
     Select outer viewport: 4, 8, 0.6, 1.6
     Select inner viewport: 4.5, 7.7, 0.7, 1.5
     selectObject: result
-    Colour: "{0.2, 0.5, 0.8}"
+    Colour: "{0.25, 0.45, 0.78}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
@@ -800,15 +891,15 @@ if draw_visualization
     endfor
     
     Axes: 0, maxTime, minC * 1.1, maxC * 1.1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, maxTime, minC * 1.1, maxC * 1.1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, maxTime, minC * 1.1, maxC * 1.1
     
     # Draw C1, C2, C3
-    colors$ [1] = "{0.8, 0.3, 0.3}"
-    colors$ [2] = "{0.3, 0.7, 0.3}"
-    colors$ [3] = "{0.3, 0.3, 0.8}"
-    labels$ [1] = "C1→Pitch"
-    labels$ [2] = "C2→Amp"
-    labels$ [3] = "C3→Dur"
+    colors$ [1] = "{0.25, 0.45, 0.78}"
+    colors$ [2] = "{0.45, 0.40, 0.68}"
+    colors$ [3] = "{0.45, 0.55, 0.72}"
+    labels$ [1] = "C1"
+    labels$ [2] = "C2"
+    labels$ [3] = "C3"
     
     for coef to 3
         Colour: colors$ [coef]
@@ -827,7 +918,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "MFCC Coefficients (Control Signals)"
+    Text top: "no", "MFCC C1-C3 source features"
     Text left: "yes", "Value"
     Text bottom: "yes", "Time (s)"
     
@@ -850,9 +941,9 @@ if draw_visualization
         
         if numPitchPoints > 0
             Axes: 0, duration, 50, 400
-            Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 50, 400
+            Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 50, 400
             
-            Colour: "{0.8, 0.4, 0.2}"
+            Colour: "{0.45, 0.40, 0.68}"
             Line width: 2
             
             for p from 1 to numPitchPoints - 1
@@ -872,7 +963,7 @@ if draw_visualization
             Text bottom: "yes", "Time (s)"
         else
             Axes: 0, duration, 0, 1
-            Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, 1
+            Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1
             Colour: "Black"
             Draw inner box
             Font size: 7
@@ -901,9 +992,9 @@ if draw_visualization
             endfor
             
             Axes: 0, duration, minDur * 0.9, maxDur * 1.1
-            Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, minDur * 0.9, maxDur * 1.1
+            Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, minDur * 0.9, maxDur * 1.1
             
-            Colour: "{0.4, 0.6, 0.8}"
+            Colour: "{0.25, 0.45, 0.78}"
             Line width: 2
             
             for p from 1 to numDurPoints - 1
@@ -923,7 +1014,7 @@ if draw_visualization
             Text bottom: "yes", "Time (s)"
         else
             Axes: 0, duration, 0, 1
-            Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, 1
+            Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1
             Colour: "Black"
             Draw inner box
             Font size: 7
@@ -936,14 +1027,14 @@ if draw_visualization
         Select inner viewport: 0.6, 7.6, 3.5, 4.5
         
         Axes: 0, duration, 0, 1.1
-        Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, 1.1
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1.1
         
         Colour: "{0.8, 0.8, 0.8}"
         Dotted line
         Draw line: 0, comp_thresh, duration, comp_thresh
         Solid line
         
-        Colour: "{0.6, 0.4, 0.8}"
+        Colour: "{0.45, 0.40, 0.68}"
         Line width: 2
         
         for i from 1 to numFrames - 1
@@ -956,7 +1047,7 @@ if draw_visualization
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text top: "no", "Spectral Complexity (normalized)"
+        Text top: "no", "MFCC dispersion C1-C6 (normalized)"
         Text left: "yes", "Value"
         Text bottom: "yes", "Time (s)"
         
@@ -966,7 +1057,7 @@ if draw_visualization
         Select inner viewport: 0.6, 7.6, 3.5, 4.5
         
         Axes: 0, duration, 0, 1.1
-        Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, 1.1
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1.1
         
         Colour: "{0.8, 0.8, 0.8}"
         Dotted line
@@ -982,17 +1073,17 @@ if draw_visualization
             Draw line: t1, spectral_distance_norm[i], t2, spectral_distance_norm[i + 1]
         endfor
         
-        Colour: "{0.9, 0.3, 0.3}"
-        for f to numFreezes
-            freezeTime = (freeze_at[f] - 1) * t_step + win_len/2
-            Paint rectangle: "{0.9, 0.3, 0.3}", freezeTime, freezeTime + freeze_dur, 0, 1.1
+        Colour: "{0.78, 0.76, 0.88}"
+        for f to appliedFreezes
+            freezeTime = (freeze_applied_at[f] - 1) * t_step + win_len/2
+            Paint rectangle: "{0.78, 0.76, 0.88}", freezeTime, freezeTime + freeze_dur, 0, 1.1
         endfor
         
         Line width: 1
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text top: "no", "Spectral Distance (red = freeze zones)"
+        Text top: "no", "MFCC frame distance (shaded = stable stretch regions)"
         Text left: "yes", "Value"
         Text bottom: "yes", "Time (s)"
     endif
@@ -1002,7 +1093,7 @@ if draw_visualization
     Select inner viewport: 0.5, 7.7, 4.85, 5.25
     
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
     Font size: 8
     Colour: "{0.3, 0.3, 0.3}"
@@ -1012,16 +1103,18 @@ if draw_visualization
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
     
-    # Cleanup visualization tiers
-    if hasPitchTier
-        removeObject: visualPitchTier
-    endif
-    if hasDurationTier
-        removeObject: visualDurationTier
-    endif
 endif
 
-# Cleanup
+# Cleanup analysis and helper tiers regardless of whether visualization ran.
+if hasPitchTier
+    removeObject: visualPitchTier
+endif
+if hasDurationTier
+    removeObject: visualDurationTier
+endif
+if hasAmplitudeTier
+    removeObject: visualAmplitudeTier
+endif
 removeObject: mfcc, matrix
 
 appendInfoLine: ""
@@ -1035,5 +1128,5 @@ if play_result
     Play
 endif
 
-selectObject: sound
+selectObject: result
 
