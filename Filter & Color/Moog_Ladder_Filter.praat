@@ -3,13 +3,23 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - Fix automation-mode feedback (used self instead of ladder feedback)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Moog Ladder Filter using TPT (Topology-Preserving Transform)
-#   4-pole (24dB/oct) lowpass with resonance and automation
+#   Moog-style 4-pole resonant lowpass based on the linearized
+#   topology-preserving-transform (TPT) ladder transfer function.
+#   The four trapezoidal one-pole stages are closed by a zero-delay
+#   feedback loop and evaluated as the equivalent 4th-order IIR.
+#
+#   Static mode is the exact linear transfer of this digital ladder.
+#   Automation uses smoothly time-varying IIR coefficients (no chunk
+#   resets), which preserves state continuously during sweeps.
+#
+#   The optional output saturation is POST-filter saturation only;
+#   this is not a transistor-level nonlinear Moog circuit emulation.
+#   The asymptotic lowpass slope is 24 dB/octave.
 # ============================================================
 
 # === Input Validation ===
@@ -20,15 +30,15 @@ endif
 soundID = selected("Sound")
 soundName$ = selected$("Sound")
 
-form Moog Ladder Filter v0.3
+form Moog-Style TPT Ladder Filter v0.4
     optionmenu Preset: 1
         option Custom
         option Bass Filter (300 Hz, res 0.3)
         option Warm Pad (800 Hz, res 0.5)
-        option Vocal Formant (1500 Hz, res 0.65)
-        option Bright Sweep (2500 Hz, res 0.55)
+        option Vocal Resonance (1500 Hz, res 0.65)
+        option Bright Lowpass (2500 Hz, res 0.55)
         option Resonant Peak (1200 Hz, res 0.75)
-        option Telephone (2800 Hz, res 0.35)
+        option Telephone-Style Lowpass (2800 Hz, res 0.35)
         option Sub Bass (150 Hz, res 0.2)
         option Acid Bass (500 Hz, res 0.75)
         option Cutoff Sweep Up (200-3000 Hz)
@@ -37,7 +47,7 @@ form Moog Ladder Filter v0.3
     comment === Static Parameters ===
     positive Cutoff_frequency 1000
     real Resonance 0.7
-    comment (Resonance 0-1, higher = more peak)
+    comment (0-0.99; mapped to feedback k=4*resonance^1.5)
     comment === Automation Parameters ===
     positive Start_cutoff 200
     positive End_cutoff 3000
@@ -45,9 +55,10 @@ form Moog Ladder Filter v0.3
     real End_resonance 0.8
     comment === Output ===
     boolean DC_blocker 1
-    optionmenu Limiter_type: 1
+    optionmenu Limiter_type: 2
+        option Off (linear)
         option Soft (x/(1+|x|))
-        option Analog-style (tanh)
+        option Tanh
     real Output_trim_dB 0
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -56,51 +67,41 @@ endform
 # ============================================================
 # PRESETS
 # ============================================================
-
 use_automation = 0
 
 if preset = 2
-    # Bass Filter
     cutoff_frequency = 300
     resonance = 0.3
     presetName$ = "BassFilter"
 elsif preset = 3
-    # Warm Pad
     cutoff_frequency = 800
     resonance = 0.5
     presetName$ = "WarmPad"
 elsif preset = 4
-    # Vocal Formant
     cutoff_frequency = 1500
     resonance = 0.65
-    presetName$ = "VocalFormant"
+    presetName$ = "VocalResonance"
 elsif preset = 5
-    # Bright Sweep
     cutoff_frequency = 2500
     resonance = 0.55
-    presetName$ = "BrightSweep"
+    presetName$ = "BrightLowpass"
 elsif preset = 6
-    # Resonant Peak
     cutoff_frequency = 1200
     resonance = 0.75
     presetName$ = "ResonantPeak"
 elsif preset = 7
-    # Telephone
     cutoff_frequency = 2800
     resonance = 0.35
-    presetName$ = "Telephone"
+    presetName$ = "TelephoneLowpass"
 elsif preset = 8
-    # Sub Bass
     cutoff_frequency = 150
     resonance = 0.2
     presetName$ = "SubBass"
 elsif preset = 9
-    # Acid Bass
     cutoff_frequency = 500
     resonance = 0.75
     presetName$ = "AcidBass"
 elsif preset = 10
-    # Cutoff Sweep Up
     start_cutoff = 200
     end_cutoff = 3000
     start_resonance = 0.5
@@ -108,7 +109,6 @@ elsif preset = 10
     use_automation = 1
     presetName$ = "SweepUp"
 elsif preset = 11
-    # Cutoff Sweep Down
     start_cutoff = 3000
     end_cutoff = 200
     start_resonance = 0.5
@@ -116,7 +116,6 @@ elsif preset = 11
     use_automation = 1
     presetName$ = "SweepDown"
 elsif preset = 12
-    # Resonance Sweep
     start_cutoff = 800
     end_cutoff = 800
     start_resonance = 0.1
@@ -128,543 +127,445 @@ else
 endif
 
 # ============================================================
-# SETUP
+# SETUP + PARAMETER CLAMPS
 # ============================================================
-
 selectObject: soundID
 samplingFrequency = Get sampling frequency
 duration = Get total duration
 numberOfChannels = Get number of channels
+numberOfSamples = Get number of samples
+xmin0 = Get start time
 nyquist = samplingFrequency / 2
 
-# Output trim
-trimGain = 10 ^ (output_trim_dB / 20)
-
-# Clamp resonance
-if resonance > 0.99
-    resonance = 0.99
+if numberOfSamples < 8
+    exitScript: "Sound is too short (need at least 8 samples)."
 endif
+
+# Keep the bilinear prewarp safely below Nyquist.
+minCut = 5
+maxCut = 0.45 * samplingFrequency
+if maxCut > nyquist - 5
+    maxCut = nyquist - 5
+endif
+if maxCut < minCut
+    exitScript: "Sample rate is too low for this filter."
+endif
+
+if cutoff_frequency < minCut
+    cutoff_frequency = minCut
+elsif cutoff_frequency > maxCut
+    cutoff_frequency = maxCut
+endif
+if start_cutoff < minCut
+    start_cutoff = minCut
+elsif start_cutoff > maxCut
+    start_cutoff = maxCut
+endif
+if end_cutoff < minCut
+    end_cutoff = minCut
+elsif end_cutoff > maxCut
+    end_cutoff = maxCut
+endif
+
 if resonance < 0
     resonance = 0
+elsif resonance > 0.99
+    resonance = 0.99
+endif
+if start_resonance < 0
+    start_resonance = 0
+elsif start_resonance > 0.99
+    start_resonance = 0.99
+endif
+if end_resonance < 0
+    end_resonance = 0
+elsif end_resonance > 0.99
+    end_resonance = 0.99
 endif
 
+if output_trim_dB < -60
+    output_trim_dB = -60
+elsif output_trim_dB > 24
+    output_trim_dB = 24
+endif
+trimGain = 10 ^ (output_trim_dB / 20)
+
+# ============================================================
+# REPORT HEADER
+# ============================================================
 clearinfo
-writeInfoLine: "=== Moog Ladder Filter v0.3 ==="
-writeInfoLine: "Input: ", soundName$
-appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
-appendInfoLine: "Sample rate: ", samplingFrequency, " Hz"
-appendInfoLine: ""
+writeInfoLine: "=== Moog-Style TPT Ladder Filter v0.4 ==="
+appendInfoLine: "Input: ", soundName$, "  |  ", fixed$(duration, 3), " s  |  ", numberOfChannels, " ch"
+appendInfoLine: "Sample rate: ", fixed$(samplingFrequency, 0), " Hz"
 appendInfoLine: "Preset: ", presetName$
-
 if use_automation
-    appendInfoLine: "Mode: Automation"
-    appendInfoLine: "Cutoff: ", start_cutoff, " -> ", end_cutoff, " Hz"
-    appendInfoLine: "Resonance: ", fixed$(start_resonance, 2), " -> ", fixed$(end_resonance, 2)
+    appendInfoLine: "Mode: continuous automation"
+    appendInfoLine: "Pole cutoff: ", fixed$(start_cutoff, 1), " -> ", fixed$(end_cutoff, 1), " Hz"
+    appendInfoLine: "Resonance: ", fixed$(start_resonance, 3), " -> ", fixed$(end_resonance, 3)
 else
-    appendInfoLine: "Mode: Static"
-    appendInfoLine: "Cutoff: ", cutoff_frequency, " Hz"
-    appendInfoLine: "Resonance: ", fixed$(resonance, 2)
+    appendInfoLine: "Mode: static"
+    appendInfoLine: "Pole cutoff: ", fixed$(cutoff_frequency, 1), " Hz"
+    appendInfoLine: "Resonance: ", fixed$(resonance, 3)
 endif
-appendInfoLine: "Limiter: ", if limiter_type = 1 then "Soft" else "Tanh" fi
+if limiter_type = 1
+    limiterName$ = "Off (linear)"
+elsif limiter_type = 2
+    limiterName$ = "Soft x/(1+|x|)"
+else
+    limiterName$ = "Tanh"
+endif
+appendInfoLine: "Output saturation: ", limiterName$
+appendInfoLine: "Output trim: ", fixed$(output_trim_dB, 1), " dB"
 appendInfoLine: ""
 
 # ============================================================
-# AUTOMATION MODE
+# LINEARIZED TPT LADDER CORE
+#
+# One trapezoidal one-pole stage:
+#   H1(z) = G (1 + z^-1) / (1 - R z^-1)
+# where g=tan(pi*fc/fs), G=g/(1+g), R=(1-g)/(1+g).
+# Four stages with feedback k give:
+#   H(z) = B(z)^4 / (A(z)^4 + k B(z)^4)
+# This removes the zero-delay algebraic loop exactly in the linear model.
 # ============================================================
 
-if use_automation
-    appendInfoLine: "Processing with automation..."
-    
-    # Chunk size for parameter updates (10ms)
-    chunkDuration = 0.01
-    numberOfChunks = ceiling(duration / chunkDuration)
-    
-    appendInfoLine: "Chunks: ", numberOfChunks
-    
-    # Process each chunk and store IDs
-    for chunkIndex from 1 to numberOfChunks
-        # Calculate time range
-        t_start = (chunkIndex - 1) * chunkDuration
-        t_end = chunkIndex * chunkDuration
-        if t_end > duration
-            t_end = duration
-        endif
-        
-        # Interpolate parameters at chunk midpoint
-        t_mid = (t_start + t_end) / 2
-        progress = t_mid / duration
-        
-        # Exponential interpolation for cutoff (musical)
-        cutoff_frequency = start_cutoff * exp(ln(end_cutoff / start_cutoff) * progress)
-        
-        # Linear interpolation for resonance
-        resonance = start_resonance + (end_resonance - start_resonance) * progress
-        
-        # Extract chunk
-        selectObject: soundID
-        chunkID = Extract part: t_start, t_end, "rectangular", 1, "no"
-        
-        # Calculate TPT coefficients
-        fc = cutoff_frequency / samplingFrequency
-        wc = 2 * pi * fc
-        g = tan(wc / 2)
-        gg = g / (1 + g)
-        gg_comp = 1 - gg
-        
-        # Resonance with power curve
-        k = 4 * (resonance ^ 1.5)
-        
-        # Adaptive k cap for stability
-        k_max = 3.9
-        if g > 0.6
-            k_max = 3.9 - (g - 0.6) * 3.0
-            if k_max < 3.0
-                k_max = 3.0
-            endif
-        endif
-        if k > k_max
-            k = k_max
-        endif
-        
-        # Adaptive iterations
-        iterations = 2
-        if k > 3.0 or g > 0.5
-            iterations = 3
-        endif
-        if k > 3.4 and g > 0.5
-            iterations = 4
-        endif
-        
-        # Create filter stages
-        selectObject: chunkID
-        stage1 = Copy: "stage1"
-        stage2 = Copy: "stage2"
-        stage3 = Copy: "stage3"
-        stage4 = Copy: "stage4"
-        feedback = Copy: "feedback"
-        chunkResult = Copy: "chunk_result"
-        
-        selectObject: feedback
-        Formula: "0"
-        
-        # Build coefficient strings
-        k$ = string$(k)
-        gg$ = string$(gg)
-        ggc$ = string$(gg_comp)
-        chunkId$ = string$(chunkID)
-        
-        for iteration from 1 to iterations
-            # Stage 1: input - k*feedback (feedback = stage4 delayed),
-            # matching static mode. (Previously this used self[col-1] -
-            # stage1's own previous sample - which is NOT the ladder
-            # feedback and gave wrong/weak resonance in automated sweeps.)
-            fbId$ = string$(feedback)
-            selectObject: stage1
-            Formula: "Object_" + chunkId$ + "(x) - " + k$ + " * Object_" + fbId$ + "(x)"
-            Formula: "self[col] * " + gg$ + " + self[col-1] * " + ggc$
-            
-            stage1Id$ = string$(stage1)
-            selectObject: stage2
-            Formula: "Object_" + stage1Id$ + "(x)"
-            Formula: "self[col] * " + gg$ + " + self[col-1] * " + ggc$
-            
-            stage2Id$ = string$(stage2)
-            selectObject: stage3
-            Formula: "Object_" + stage2Id$ + "(x)"
-            Formula: "self[col] * " + gg$ + " + self[col-1] * " + ggc$
-            
-            stage3Id$ = string$(stage3)
-            selectObject: stage4
-            Formula: "Object_" + stage3Id$ + "(x)"
-            Formula: "self[col] * " + gg$ + " + self[col-1] * " + ggc$
-            
-            selectObject: feedback
-            stage4Id$ = string$(stage4)
-            Formula: "Object_" + stage4Id$ + "[col-1]"
-        endfor
-        
-        # Copy result and apply gain
-        trim$ = string$(trimGain)
-        selectObject: chunkResult
-        Formula: "Object_" + stage4Id$ + "(x) * " + trim$
-        
-        # Apply limiting
-        if limiter_type = 1
-            Formula: "self / (1 + abs(self))"
-        else
-            Formula: "tanh(0.8 * self)"
-        endif
-        
-        # Store chunk result ID
-        chunkResult_'chunkIndex' = chunkResult
-        
-        # Cleanup (keep chunkResult)
-        removeObject: stage1, stage2, stage3, stage4, feedback, chunkID
-    endfor
-    
-    # Concatenate all chunks
-    selectObject: chunkResult_1
-    for chunkIndex from 2 to numberOfChunks
-        cid = chunkResult_'chunkIndex'
-        plusObject: cid
-    endfor
-    resultID = Concatenate
-    Rename: soundName$ + "_moog_" + presetName$
-    
-    # Cleanup chunk results
-    for chunkIndex from 1 to numberOfChunks
-        cid = chunkResult_'chunkIndex'
-        removeObject: cid
-    endfor
-    
-    # DC blocker
-    if dC_blocker
-        selectObject: resultID
-        dcInput = Copy: "dc_input"
-        dcOutput = Copy: "dc_output"
-        
-        alpha_dc = exp(-2 * pi * 20 / samplingFrequency)
-        alpha_dc$ = string$(alpha_dc)
-        resultId$ = string$(resultID)
-        dcInId$ = string$(dcInput)
-        
-        selectObject: dcInput
-        Formula: "Object_" + resultId$ + "(x)"
-        
-        selectObject: dcOutput
-        Formula: "Object_" + dcInId$ + "[col] - Object_" + dcInId$ + "[col-1] + " + alpha_dc$ + " * self[col-1]"
-        
-        dcOutId$ = string$(dcOutput)
-        selectObject: resultID
-        Formula: "Object_" + dcOutId$ + "(x)"
-        
-        removeObject: dcInput, dcOutput
-    endif
+selectObject: soundID
+resultID = Copy: soundName$ + "_moog_" + presetName$
+soundId$ = string$(soundID)
 
-# ============================================================
-# STATIC MODE
-# ============================================================
+if use_automation = 0
+    g = tan(pi * cutoff_frequency / samplingFrequency)
+    gg0 = g / (1 + g)
+    rr = (1 - g) / (1 + g)
+    kk = 4 * (resonance ^ 1.5)
+    gg4 = gg0 ^ 4
+
+    b0 = gg4
+    b1 = 4 * gg4
+    b2 = 6 * gg4
+    b3 = 4 * gg4
+    b4 = gg4
+
+    d0 = 1 + kk * gg4
+    d1 = -4 * rr + 4 * kk * gg4
+    d2 = 6 * rr^2 + 6 * kk * gg4
+    d3 = -4 * rr^3 + 4 * kk * gg4
+    d4 = rr^4 + kk * gg4
+
+    appendInfoLine: "TPT: g=", fixed$(g, 6), "  G=", fixed$(gg0, 6), "  k=", fixed$(kk, 4)
+
+    selectObject: resultID
+    Formula: "(" + string$(b0) + "*object[" + soundId$ + ",row,col]"
+        ... + " + (if col>1 then " + string$(b1) + "*object[" + soundId$ + ",row,col-1] else 0 fi)"
+        ... + " + (if col>2 then " + string$(b2) + "*object[" + soundId$ + ",row,col-2] else 0 fi)"
+        ... + " + (if col>3 then " + string$(b3) + "*object[" + soundId$ + ",row,col-3] else 0 fi)"
+        ... + " + (if col>4 then " + string$(b4) + "*object[" + soundId$ + ",row,col-4] else 0 fi)"
+        ... + " - (if col>1 then " + string$(d1) + "*self[col-1] else 0 fi)"
+        ... + " - (if col>2 then " + string$(d2) + "*self[col-2] else 0 fi)"
+        ... + " - (if col>3 then " + string$(d3) + "*self[col-3] else 0 fi)"
+        ... + " - (if col>4 then " + string$(d4) + "*self[col-4] else 0 fi)) / " + string$(d0)
 
 else
-    appendInfoLine: "Processing (static mode)..."
-    
-    # Calculate TPT coefficients
-    fc = cutoff_frequency / samplingFrequency
-    wc = 2 * pi * fc
-    g = tan(wc / 2)
-    gg = g / (1 + g)
-    gg_comp = 1 - gg
-    
-    # Resonance with power curve
-    k = 4 * (resonance ^ 1.5)
-    
-    # Adaptive k cap
-    k_max = 3.9
-    if g > 0.6
-        k_max = 3.9 - (g - 0.6) * 3.0
-        if k_max < 3.0
-            k_max = 3.0
-        endif
-    endif
-    if k > k_max
-        k = k_max
-    endif
-    
-    appendInfoLine: "TPT coefficients: g=", fixed$(g, 4), " k=", fixed$(k, 2)
-    
-    # Adaptive iterations
-    iterations = 2
-    if k > 3.0 or g > 0.5
-        iterations = 3
-    endif
-    if k > 3.4 and g > 0.5
-        iterations = 4
-    endif
-    
-    appendInfoLine: "Iterations: ", iterations
-    
-    # Create working copies
-    selectObject: soundID
-    stage1 = Copy: "stage1"
-    stage2 = Copy: "stage2"
-    stage3 = Copy: "stage3"
-    stage4 = Copy: "stage4"
-    feedback = Copy: "feedback"
-    resultID = Copy: soundName$ + "_moog_" + presetName$
-    
-    selectObject: feedback
-    Formula: "0"
-    
-    # Build coefficient strings
-    k$ = string$(k)
-    gg$ = string$(gg)
-    ggc$ = string$(gg_comp)
-    soundId$ = string$(soundID)
-    
-    for iteration from 1 to iterations
-        # Stage 1: input - k*feedback, then lowpass
-        fbId$ = string$(feedback)
-        selectObject: stage1
-        Formula: "Object_" + soundId$ + "(x) - " + k$ + " * Object_" + fbId$ + "(x)"
-        Formula: "self[col] * " + gg$ + " + self[col-1] * " + ggc$
-        
-        # Stage 2
-        stage1Id$ = string$(stage1)
-        selectObject: stage2
-        Formula: "Object_" + stage1Id$ + "(x)"
-        Formula: "self[col] * " + gg$ + " + self[col-1] * " + ggc$
-        
-        # Stage 3
-        stage2Id$ = string$(stage2)
-        selectObject: stage3
-        Formula: "Object_" + stage2Id$ + "(x)"
-        Formula: "self[col] * " + gg$ + " + self[col-1] * " + ggc$
-        
-        # Stage 4
-        stage3Id$ = string$(stage3)
-        selectObject: stage4
-        Formula: "Object_" + stage3Id$ + "(x)"
-        Formula: "self[col] * " + gg$ + " + self[col-1] * " + ggc$
-        
-        # Update feedback
-        stage4Id$ = string$(stage4)
-        selectObject: feedback
-        Formula: "Object_" + stage4Id$ + "[col-1]"
-    endfor
-    
-    # Copy result with trim
-    trim$ = string$(trimGain)
+    appendInfoLine: "Building sample-continuous coefficient trajectories..."
+
+    # Controls are indexed by sample number, so non-zero Sound start times
+    # do not alter the automation trajectory or the result.
+    cutoffId = Create Sound from formula: "moog_cutoff_control", 1, 0, numberOfSamples / samplingFrequency,
+        ... samplingFrequency,
+        ... string$(start_cutoff) + " * exp(ln(" + string$(end_cutoff / start_cutoff) + ") * x / " + string$(duration) + ")"
+    resonanceId = Create Sound from formula: "moog_res_control", 1, 0, numberOfSamples / samplingFrequency,
+        ... samplingFrequency,
+        ... string$(start_resonance) + " + (" + string$(end_resonance - start_resonance) + ") * x / " + string$(duration)
+
+    selectObject: cutoffId
+    gg4Id = Copy: "moog_G4"
+    Formula: "(tan(pi*self/" + string$(samplingFrequency) + ") / (1 + tan(pi*self/" + string$(samplingFrequency) + "))) ^ 4"
+    selectObject: cutoffId
+    rrId = Copy: "moog_R"
+    Formula: "(1 - tan(pi*self/" + string$(samplingFrequency) + ")) / (1 + tan(pi*self/" + string$(samplingFrequency) + "))"
+    selectObject: resonanceId
+    kkId = Copy: "moog_k"
+    Formula: "4 * self ^ 1.5"
+
+    g4s$ = "object[" + string$(gg4Id) + ",1,col]"
+    rrs$ = "object[" + string$(rrId) + ",1,col]"
+    kks$ = "object[" + string$(kkId) + ",1,col]"
+
+    xsum$ = "object[" + soundId$ + ",row,col]"
+        ... + " + 4*(if col>1 then object[" + soundId$ + ",row,col-1] else 0 fi)"
+        ... + " + 6*(if col>2 then object[" + soundId$ + ",row,col-2] else 0 fi)"
+        ... + " + 4*(if col>3 then object[" + soundId$ + ",row,col-3] else 0 fi)"
+        ... + " + (if col>4 then object[" + soundId$ + ",row,col-4] else 0 fi)"
+
+    d1s$ = "(-4*" + rrs$ + " + 4*" + kks$ + "*" + g4s$ + ")"
+    d2s$ = "(6*" + rrs$ + "^2 + 6*" + kks$ + "*" + g4s$ + ")"
+    d3s$ = "(-4*" + rrs$ + "^3 + 4*" + kks$ + "*" + g4s$ + ")"
+    d4s$ = "(" + rrs$ + "^4 + " + kks$ + "*" + g4s$ + ")"
+    d0s$ = "(1 + " + kks$ + "*" + g4s$ + ")"
+
     selectObject: resultID
-    Formula: "Object_" + stage4Id$ + "(x) * " + trim$
-    
-    # Apply limiting
-    if limiter_type = 1
-        Formula: "self / (1 + abs(self))"
-    else
-        Formula: "tanh(0.8 * self)"
-    endif
-    
-    # DC blocker
-    if dC_blocker
-        selectObject: resultID
-        dcInput = Copy: "dc_input"
-        dcOutput = Copy: "dc_output"
-        
-        alpha_dc = exp(-2 * pi * 20 / samplingFrequency)
-        alpha_dc$ = string$(alpha_dc)
-        resultId$ = string$(resultID)
-        dcInId$ = string$(dcInput)
-        
-        selectObject: dcInput
-        Formula: "Object_" + resultId$ + "(x)"
-        
-        selectObject: dcOutput
-        Formula: "Object_" + dcInId$ + "[col] - Object_" + dcInId$ + "[col-1] + " + alpha_dc$ + " * self[col-1]"
-        
-        dcOutId$ = string$(dcOutput)
-        selectObject: resultID
-        Formula: "Object_" + dcOutId$ + "(x)"
-        
-        removeObject: dcInput, dcOutput
-    endif
-    
-    # Cleanup
-    removeObject: stage1, stage2, stage3, stage4, feedback
+    Formula: "(" + g4s$ + "*(" + xsum$ + ")"
+        ... + " - " + d1s$ + "*(if col>1 then self[col-1] else 0 fi)"
+        ... + " - " + d2s$ + "*(if col>2 then self[col-2] else 0 fi)"
+        ... + " - " + d3s$ + "*(if col>3 then self[col-3] else 0 fi)"
+        ... + " - " + d4s$ + "*(if col>4 then self[col-4] else 0 fi)) / " + d0s$
 endif
 
 # ============================================================
-# VISUALIZATION
+# OUTPUT GAIN + OPTIONAL SATURATION
 # ============================================================
+selectObject: resultID
+if trimGain <> 1
+    Formula: "self * " + string$(trimGain)
+endif
 
+if limiter_type = 2
+    Formula: "self / (1 + abs(self))"
+elsif limiter_type = 3
+    Formula: "tanh(self)"
+endif
+
+# DC blocker: y[n] = x[n] - x[n-1] + a*y[n-1]
+if dC_blocker
+    selectObject: resultID
+    dcInput = Copy: "moog_dc_input"
+    dcIn$ = string$(dcInput)
+    alpha_dc = exp(-2 * pi * 20 / samplingFrequency)
+    selectObject: resultID
+    Formula: "object[" + dcIn$ + ",row,col]"
+        ... + " - (if col>1 then object[" + dcIn$ + ",row,col-1] else 0 fi)"
+        ... + " + " + string$(alpha_dc) + "*(if col>1 then self[col-1] else 0 fi)"
+    removeObject: dcInput
+endif
+
+# Coefficient-object cleanup after processing.
+if use_automation
+    removeObject: cutoffId, resonanceId, gg4Id, rrId, kkId
+endif
+
+selectObject: soundID
+peakIn = Get absolute extremum: 0, 0, "None"
+selectObject: resultID
+peakOut = Get absolute extremum: 0, 0, "None"
+if limiter_type = 1 and peakOut > 1
+    appendInfoLine: "Warning: output peak ", fixed$(peakOut, 4), " exceeds +/-1.0 (linear mode; no normalization)."
+endif
+
+# ============================================================
+# VISUALIZATION - Praat AudioTools house style
+# ============================================================
 if draw_visualization
-    appendInfoLine: ""
-    appendInfoLine: "Drawing visualization..."
-    
-    # Create spectra for comparison
-    selectObject: soundID
-    origSpecID = To Spectrum: "yes"
-    
-    selectObject: resultID
-    resSpecID = To Spectrum: "yes"
-    
+    appendInfoLine: "Creating AudioTools visualization..."
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 14
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Moog Ladder Filter: " + soundName$ + " [" + presetName$ + "]"
-    
-    # Waveform comparison
-    Select outer viewport: 0, 8, 0.6, 2.0
-    Select inner viewport: 0.6, 7.6, 0.75, 1.85
-    
+    Select outer viewport: 0, 8, 0, 8
+
     selectObject: soundID
-    Colour: "{0.7, 0.7, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    selectObject: resultID
-    Colour: "{0.2, 0.5, 0.8}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 9
-    Text top: "no", "Waveform (gray=original, blue=filtered)"
-    Text left: "yes", "Amp"
-    
-    # Spectrum comparison
-    Select outer viewport: 0, 8, 2.2, 4.2
-    Select inner viewport: 0.6, 7.6, 2.4, 4.0
-    
-    selectObject: origSpecID
-    Colour: "{0.7, 0.7, 0.7}"
-    Line width: 1
-    Draw: 0, 8000, 0, 80, "no"
-    
-    selectObject: resSpecID
-    Colour: "{0.2, 0.5, 0.8}"
-    Line width: 2
-    Draw: 0, 8000, 0, 80, "no"
-    
-    # Mark cutoff frequency
-    if use_automation = 0
-        Colour: "{0.9, 0.3, 0.3}"
-        Line width: 1
-        Axes: 0, 8000, 0, 80
-        Dotted line
-        Draw line: cutoff_frequency, 0, cutoff_frequency, 80
-        Solid line
+    if numberOfChannels > 1
+        vizIn = Convert to mono
+    else
+        vizIn = Copy: "moog_viz_in"
     endif
-    
-    Line width: 1
+    selectObject: resultID
+    if numberOfChannels > 1
+        vizOut = Convert to mono
+    else
+        vizOut = Copy: "moog_viz_out"
+    endif
+
+    # Title
+    Select outer viewport: 0, 8, 0, 0.65
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.65, "half", "##Moog-Style TPT Ladder Filter##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    if use_automation
+        subtitle$ = soundName$ + "  |  " + presetName$ + "  |  cutoff " + fixed$(start_cutoff, 0) + "->" + fixed$(end_cutoff, 0) + " Hz  |  res " + fixed$(start_resonance, 2) + "->" + fixed$(end_resonance, 2)
+    else
+        subtitle$ = soundName$ + "  |  " + presetName$ + "  |  cutoff " + fixed$(cutoff_frequency, 0) + " Hz  |  res " + fixed$(resonance, 2)
+    endif
+    Text: 0.5, "centre", -0.25, "half", subtitle$
+
+    # Input waveform
+    Select outer viewport: 0, 8, 0.52, 1.32
+    Select inner viewport: 0.55, 7.65, 0.57, 1.27
+    selectObject: vizIn
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text top: "no", "Spectrum (gray=original, blue=filtered)"
-    Text left: "yes", "dB"
-    Text bottom: "yes", "Frequency (Hz)"
-    
-    # Filter response curve (theoretical)
-    Select outer viewport: 0, 4, 4.4, 6.0
-    Select inner viewport: 0.6, 3.6, 4.6, 5.8
-    
-    if use_automation = 0
-        # Draw idealized 24dB/oct slope
-        Axes: 1, 4, -60, 10
-        
-        Colour: "{0.9, 0.5, 0.2}"
-        Line width: 2
-        
-        # Passband
-        logCutoff = log10(cutoff_frequency)
-        Draw line: 1, 0, logCutoff, 0
-        
-        # Resonance peak
-        if resonance > 0.3
-            peakHeight = resonance * 15
-            Draw line: logCutoff, 0, logCutoff, peakHeight
-            Draw line: logCutoff, peakHeight, logCutoff + 0.1, 0
+    Font size: 7
+    Text left: "yes", "Input"
+
+    # Output waveform
+    Select outer viewport: 0, 8, 1.36, 2.16
+    Select inner viewport: 0.55, 7.65, 1.41, 2.11
+    selectObject: vizOut
+    Colour: "{0.25, 0.50, 0.82}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Output"
+    Text bottom: "yes", "Time (s)"
+
+    # Paired spectra
+    vizMaxHz = min(10000, nyquist)
+    if vizMaxHz > 100
+        Select outer viewport: 0, 4.1, 2.24, 3.64
+        Select inner viewport: 0.55, 3.85, 2.34, 3.54
+        selectObject: vizIn
+        specIn = To Spectrum: "yes"
+        Colour: "{0.55, 0.55, 0.55}"
+        Draw: 0, vizMaxHz, 0, 80, "yes"
+        removeObject: specIn
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text left: "yes", "dB"
+        Text bottom: "yes", "Hz"
+        Text top: "no", "Input spectrum"
+
+        Select outer viewport: 4.1, 8, 2.24, 3.64
+        Select inner viewport: 4.40, 7.65, 2.34, 3.54
+        selectObject: vizOut
+        specOut = To Spectrum: "yes"
+        Colour: "{0.25, 0.50, 0.82}"
+        Draw: 0, vizMaxHz, 0, 80, "yes"
+        removeObject: specOut
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text left: "yes", "dB"
+        Text bottom: "yes", "Hz"
+        Text top: "no", "Filtered spectrum"
+    endif
+
+    # Filter diagnostic panel
+    Select outer viewport: 0, 8, 3.72, 5.05
+    Select inner viewport: 0.60, 7.65, 3.82, 4.95
+    if use_automation
+        ymaxCut = max(start_cutoff, end_cutoff) * 1.12
+        yminCut = min(start_cutoff, end_cutoff) * 0.75
+        if yminCut < 0
+            yminCut = 0
         endif
-        
-        # Slope (-24dB/octave = -24dB per factor of 2 in frequency)
-        # In log10 terms: -24 / log10(2) per unit = -80dB/decade approximately
-        for i from 1 to 20
-            f1 = cutoff_frequency * (1.1 ^ (i - 1))
-            f2 = cutoff_frequency * (1.1 ^ i)
-            if f2 < 10000
-                log1 = log10(f1)
-                log2 = log10(f2)
-                db1 = -24 * log2(f1 / cutoff_frequency)
-                db2 = -24 * log2(f2 / cutoff_frequency)
-                if db1 > -60 and db2 > -60
-                    Draw line: log1, db1, log2, db2
+        Axes: 0, duration, yminCut, ymaxCut
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, yminCut, ymaxCut
+        Colour: "{0.25, 0.50, 0.82}"
+        Line width: 2
+        prevT = 0
+        prevC = start_cutoff
+        for q from 1 to 160
+            tt = duration * q / 160
+            cc = start_cutoff * exp(ln(end_cutoff / start_cutoff) * (tt / duration))
+            Draw line: prevT, prevC, tt, cc
+            prevT = tt
+            prevC = cc
+        endfor
+        Line width: 1
+        Colour: "Black"
+        Draw inner box
+        Font size: 7
+        Text left: "yes", "Cutoff (Hz)"
+        Text bottom: "yes", "Time (s)"
+        Text top: "no", "Continuous cutoff automation (filter state is not reset)"
+    else
+        loResp = max(20, cutoff_frequency / 8)
+        hiResp = min(nyquist * 0.95, cutoff_frequency * 16)
+        if hiResp <= loResp * 1.2
+            hiResp = min(nyquist * 0.95, loResp * 2)
+        endif
+        logLo = log10(loResp)
+        logHi = log10(hiResp)
+        Axes: logLo, logHi, -72, 30
+        Paint rectangle: "{0.97, 0.97, 0.97}", logLo, logHi, -72, 30
+        Colour: "{0.88, 0.88, 0.88}"
+        dbLine = -60
+        while dbLine <= 20
+            Draw line: logLo, dbLine, logHi, dbLine
+            dbLine = dbLine + 20
+        endwhile
+
+        # Evaluate the exact static transfer H(e^jw).
+        Colour: "{0.25, 0.50, 0.82}"
+        Line width: 2
+        prevX = undefined
+        prevDb = undefined
+        for q from 0 to 240
+            lf = logLo + (logHi - logLo) * q / 240
+            ff = 10 ^ lf
+            ww = 2 * pi * ff / samplingFrequency
+            # |B|^2 = G^8 * |1+e^-jw|^8 = G^8 * (2+2cos w)^4
+            bmag2 = gg4^2 * (2 + 2*cos(ww))^4
+            # D(q)=d0+d1 q+d2 q^2+d3 q^3+d4 q^4
+            dre = d0 + d1*cos(ww) + d2*cos(2*ww) + d3*cos(3*ww) + d4*cos(4*ww)
+            dim = -(d1*sin(ww) + d2*sin(2*ww) + d3*sin(3*ww) + d4*sin(4*ww))
+            dmag2 = dre^2 + dim^2
+            if bmag2 <= 0 or dmag2 <= 0
+                respDb = -72
+            else
+                respDb = 10 * log10(bmag2 / dmag2)
+                if respDb < -72
+                    respDb = -72
+                elsif respDb > 30
+                    respDb = 30
                 endif
             endif
+            if q > 0
+                Draw line: prevX, prevDb, lf, respDb
+            endif
+            prevX = lf
+            prevDb = respDb
         endfor
-        
         Line width: 1
-        Colour: "Black"
-        Draw inner box
-        Font size: 8
-        Text top: "no", "Filter Response (24dB/oct)"
-        Text left: "yes", "dB"
-        Text bottom: "yes", "log Freq"
-        
-        # Mark cutoff
-        Colour: "{0.9, 0.3, 0.3}"
+        Colour: "{0.45, 0.45, 0.45}"
         Dotted line
-        Draw line: logCutoff, -60, logCutoff, 10
+        Draw line: log10(cutoff_frequency), -72, log10(cutoff_frequency), 30
         Solid line
-        Font size: 7
-        Text: logCutoff, "centre", -55, "half", string$(cutoff_frequency) + " Hz"
-    else
-        # Draw automation envelope
-        Axes: 0, 1, 0, max(end_cutoff, start_cutoff) * 1.1
-        
-        Colour: "{0.9, 0.5, 0.2}"
-        Line width: 2
-        
-        # Draw cutoff sweep
-        for i from 0 to 50
-            p1 = i / 50
-            p2 = (i + 1) / 50
-            c1 = start_cutoff * exp(ln(end_cutoff / start_cutoff) * p1)
-            c2 = start_cutoff * exp(ln(end_cutoff / start_cutoff) * p2)
-            Draw line: p1, c1, p2, c2
-        endfor
-        
-        Line width: 1
         Colour: "Black"
         Draw inner box
-        Font size: 8
-        Text top: "no", "Cutoff Automation"
-        Text left: "yes", "Hz"
-        Text bottom: "yes", "Time (normalized)"
+        Font size: 7
+        Text left: "yes", "Gain (dB)"
+        Text bottom: "yes", "Frequency (Hz, log)"
+        Text top: "no", "Exact linear ladder response  |  asymptotic slope 24 dB/oct"
     endif
-    
-    # Info panel
-    Select outer viewport: 4, 8, 4.4, 6.0
-    Select inner viewport: 4.5, 7.7, 4.6, 5.85
-    
+
+    # Summary
+    Select outer viewport: 0, 8, 5.15, 5.90
+    Select inner viewport: 0.55, 7.65, 5.22, 5.84
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    
-    if use_automation
-        Text: 0.05, "left", 0.85, "half", "Mode: Automation"
-        Text: 0.05, "left", 0.65, "half", "Cutoff: " + string$(start_cutoff) + " -> " + string$(end_cutoff) + " Hz"
-        Text: 0.05, "left", 0.45, "half", "Resonance: " + fixed$(start_resonance, 2) + " -> " + fixed$(end_resonance, 2)
-    else
-        Text: 0.05, "left", 0.85, "half", "Mode: Static"
-        Text: 0.05, "left", 0.65, "half", "Cutoff: " + string$(cutoff_frequency) + " Hz"
-        Text: 0.05, "left", 0.45, "half", "Resonance: " + fixed$(resonance, 2) + " (k=" + fixed$(k, 2) + ")"
-    endif
-    
-    Text: 0.05, "left", 0.25, "half", "Limiter: " + if limiter_type = 1 then "Soft" else "Tanh" fi
-    Text: 0.05, "left", 0.08, "half", "DC Block: " + if dC_blocker then "On" else "Off" fi
-    
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.78, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.02, "left", 0.48, "half",
+        ... "Preset: " + presetName$ + "  |  Channels: " + string$(numberOfChannels)
+        ... + "  |  SR: " + fixed$(samplingFrequency, 0) + " Hz  |  Saturation: " + limiterName$
+    Text: 0.02, "left", 0.18, "half",
+        ... "Peak: " + fixed$(peakIn, 4) + " -> " + fixed$(peakOut, 4)
+        ... + "  |  DC blocker: " + if dC_blocker then "on" else "off" fi
+        ... + "  |  Trim: " + fixed$(output_trim_dB, 1) + " dB"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
-    
-    Font size: 10
-    
-    removeObject: origSpecID, resSpecID
+
+    removeObject: vizIn, vizOut
+    appendInfoLine: "Visualization complete."
 endif
 
 # ============================================================
 # OUTPUT
 # ============================================================
-
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
-appendInfoLine: ""
 appendInfoLine: "Created: ", soundName$, "_moog_", presetName$
+appendInfoLine: "Peak: ", fixed$(peakIn, 4), " -> ", fixed$(peakOut, 4)
+appendInfoLine: "Core: linearized TPT ladder; optional saturation is post-filter."
 
+selectObject: resultID
 if play_result
-    selectObject: resultID
     Play
 endif
-
-selectObject: soundID
