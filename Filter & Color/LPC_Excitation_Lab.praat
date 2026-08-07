@@ -3,12 +3,12 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2026)
+# Version: 2.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   LPC Excitation Lab v2.0 - Unified resynthesis engine that
+#   LPC Excitation Lab v2.1 - Unified resynthesis engine that
 #   drives LPC spectral envelopes with five excitation sources,
 #   now with cross-synthesis and per-method modulations.
 #
@@ -21,8 +21,8 @@
 #
 #   Three cross-synthesis modes:
 #     1. Off                      - single-Sound resynthesis (v1.0 behaviour)
-#     2. Sound2 as excitation     - Sound1's spectral envelope on Sound2's
-#                                   articulation. Classic cross-synthesis:
+#     2. Sound2 residual          - inverse-filter Sound2, then drive Sound1's
+#                                   spectral envelope with that residual. Classic cross-synthesis:
 #                                   "Sound1's vowel-color, Sound2's rhythm."
 #     3. Synth exc thru Sound2 fl - Synthetic excitation through Sound2's
 #                                   spectral envelope, with Sound1 providing
@@ -32,7 +32,7 @@
 #     Pitch Sweep   : Vibrato_rate_hz, Vibrato_depth_cents, Pitch_jitter_cents
 #     Pulse Train   : Pulse_jitter_pct (period drift), Pulse_shimmer_pct
 #                     (amplitude wobble)
-#     Time Stretch  : Density_mod_rate_hz, Density_mod_depth (noise volume LFO)
+#     Time Stretch  : Noise_AM_rate_hz, Noise_AM_depth (noise volume LFO)
 #     Chirp Burst   : Chirp_layers + Layer_ratios (stacked chirps for
 #                     inharmonic shimmer)
 #     Granular Noise: Grain_density_start/end (linear density curve),
@@ -45,6 +45,26 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.1:
+#   - FIX: processing is normalized to a 0-based time domain, then output is
+#     shifted back to Sound1's original start time. Non-zero start times work.
+#   - FIX: synthetic excitation now uses the input sample rate instead of a
+#     hardcoded 44.1 kHz.
+#   - FIX: Granular Noise density now increases grain rate as documented
+#     (grain step = grain_size / density).
+#   - FIX: mode 2 is labelled Sound2Residual; synthetic excitation controls
+#     are explicitly reported as ignored in that mode.
+#   - FIX: Time Stretch modulation controls renamed Noise_AM_* because they
+#     modulate noise amplitude, not event density.
+#   - FIX: chirp ratio parser falls back to the last supplied ratio when
+#     Chirp_layers exceeds the number of ratios.
+#   - FIX: chirp layers are clamped below Nyquist to avoid aliasing.
+#   - FIX: short inputs now fail early with a clear 64 ms minimum message.
+#   - NOTE: LPC processing/output is mono; multichannel inputs are averaged.
+#   - FIX: single-source Time Stretch now stretches and applies Sound1's
+#     intensity contour instead of skipping it.
+#   - NOTE: output is peak-normalized to 0.99 after the intensity contour.
 #
 # Changelog v2.0:
 #   - NEW: Cross-synthesis modes (Sound2 as excitation through Sound1's
@@ -60,10 +80,10 @@
 #       9. Density Cloud      - granular with density curve 0.2 -> 0.9
 #      10. Chirp Stack        - 4 stacked chirps at inharmonic ratios
 #      11. Cross-Synth        - Sound2 as excitation through Sound1 filter
-#     Original presets 1-6 unchanged.
-#   - In cross-synth modes, the intensity (amplitude) envelope comes
-#     from the sound providing articulation: Sound2 in mode 2,
-#     Sound1 in modes 1 and 3.
+#     Original preset parameter settings 1-6 unchanged.
+#   - In cross-synth modes, the intensity contour comes from the sound providing articulation:
+#     Sound2 in mode 2, Sound1 in modes 1 and 3. In single-source Time
+#     Stretch, the intensity tier is stretched with the LPC envelope.
 #   - Time Stretch only applies its LPC time-scaling when
 #     cross_synth_mode = 1; in modes 2/3 the time_stretch_factor
 #     is silently ignored (output duration is min(d1, d2)).
@@ -83,7 +103,7 @@
 # FORM  (single compact form, all params directly visible)
 # ============================================================
 
-form LPC Excitation Lab v2.0
+form LPC Excitation Lab v2.1
     optionmenu Preset: 1
         option Custom
         option Voiced Sweep
@@ -98,7 +118,7 @@ form LPC Excitation Lab v2.0
         option Cross-Synth (needs 2 Sounds)
     optionmenu Cross_synth_mode: 1
         option Off (single Sound)
-        option Sound2 as excitation, through Sound1 filter
+        option Sound2 residual through Sound1 filter
         option Synth excitation, through Sound2 filter
     optionmenu Excitation_method: 1
         option Pitch Sweep
@@ -115,8 +135,8 @@ form LPC Excitation Lab v2.0
     real Pulse_jitter_pct 0
     real Pulse_shimmer_pct 0
     positive Time_stretch_factor 3.0
-    real Density_mod_rate_hz 0
-    real Density_mod_depth 0
+    real Noise_am_rate_hz 0
+    real Noise_am_depth 0
     positive Chirp_start_hz 100
     positive Chirp_end_hz 4000
     natural Chirp_layers 1
@@ -227,7 +247,9 @@ endif
 if cross_synth_mode = 1
     modeName$ = "single"
 elsif cross_synth_mode = 2
-    modeName$ = "S2-as-exc"
+    modeName$ = "S2-residual-thru-S1"
+    # Synthetic excitation controls are ignored in this mode.
+    methodName$ = "Sound2Residual"
 else
     modeName$ = "synth-thru-S2"
 endif
@@ -261,26 +283,77 @@ endif
 selectObject: s1
 d1 = Get total duration
 sr = Get sampling frequency
+s1_xmin = Get start time
+s1_channels = Get number of channels
+
+if d1 <= 0
+    exitScript: "Sound1 has zero duration."
+endif
 
 if cross_synth_mode = 1
     d = d1
-    s1_use = s1
-    s2_use = 0
+    d2 = 0
+    s2_xmin = 0
+    s2_channels = 0
 else
     selectObject: s2
     d2 = Get total duration
     sr2 = Get sampling frequency
+    s2_xmin = Get start time
+    s2_channels = Get number of channels
     if sr2 <> sr
         exitScript: "Sample rates must match (S1: " + string$(sr) + " Hz, S2: " + string$(sr2) + " Hz)"
     endif
+    if d2 <= 0
+        exitScript: "Sound2 has zero duration."
+    endif
     d = min(d1, d2)
-    # Extract aligned-duration copies for processing
-    selectObject: s1
+endif
+
+# Intensity analysis at 100 Hz and the 25 ms LPC analysis both need enough
+# context. Fail explicitly instead of letting Praat emit a low-level error.
+if d < 0.064
+    exitScript: "LPC Excitation Lab requires at least 64 ms of audio."
+endif
+
+# LPC analysis/resynthesis is mono. Make owned mono working copies and
+# normalize their time domains to 0 so arbitrary Sound start times are safe.
+selectObject: s1
+if s1_channels > 1
+    s1_work = Convert to mono
+else
+    s1_work = Copy: "s1_work"
+endif
+selectObject: s1_work
+Shift times to: "start time", 0
+if d < d1
     s1_use = Extract part: 0, d, "rectangular", 1, "no"
-    Rename: "s1_trim"
+    removeObject: s1_work
+else
+    s1_use = s1_work
+endif
+selectObject: s1_use
+Rename: "s1_use"
+
+if cross_synth_mode = 1
+    s2_use = 0
+else
     selectObject: s2
-    s2_use = Extract part: 0, d, "rectangular", 1, "no"
-    Rename: "s2_trim"
+    if s2_channels > 1
+        s2_work = Convert to mono
+    else
+        s2_work = Copy: "s2_work"
+    endif
+    selectObject: s2_work
+    Shift times to: "start time", 0
+    if d < d2
+        s2_use = Extract part: 0, d, "rectangular", 1, "no"
+        removeObject: s2_work
+    else
+        s2_use = s2_work
+    endif
+    selectObject: s2_use
+    Rename: "s2_use"
 endif
 
 # Decide which sound provides the intensity (amplitude) envelope.
@@ -303,13 +376,20 @@ intensity_tier = Down to IntensityTier
 # ============================================================
 
 clearinfo
-writeInfoLine: "=== LPC Excitation Lab v2.0 ==="
+writeInfoLine: "=== LPC Excitation Lab v2.1 ==="
 appendInfoLine: "Source 1: ", sourceName$, " (", fixed$(d1, 3), " s)"
 if cross_synth_mode <> 1
     appendInfoLine: "Source 2: ", secondName$, " (", fixed$(d2, 3), " s)"
     appendInfoLine: "Effective duration: ", fixed$(d, 3), " s (min of S1, S2)"
 endif
 appendInfoLine: "SR: ", round(sr), " Hz"
+appendInfoLine: "Processing: mono LPC/resynthesis"
+if s1_channels > 1
+    appendInfoLine: "  Sound1 averaged from ", s1_channels, " channels"
+endif
+if cross_synth_mode <> 1 and s2_channels > 1
+    appendInfoLine: "  Sound2 averaged from ", s2_channels, " channels"
+endif
 appendInfoLine: "Cross-synth: ", modeName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Method: ", methodName$
@@ -326,7 +406,7 @@ if cross_synth_mode = 2
     # In mode 2, Sound2 IS the excitation. No synthetic build.
     excit_sound = s2_use
     excit_owned = 0
-    appendInfoLine: "  Using Sound2 as excitation (cross-synth mode 2)"
+    appendInfoLine: "  Using LPC residual of Sound2 as excitation (synthetic controls ignored)"
 else
     excit_owned = 1
     
@@ -389,7 +469,7 @@ else
             Add point: t, pitch_hz
         endfor
         
-        excit_sound = To Sound (pulse train): 44100, 1, 0.05, 2000, "no"
+        excit_sound = To Sound (pulse train): sr, 1, 0.05, 2000, "no"
         Rename: "Excitation_" + methodName$
         removeObject: pitch_tier_id
 
@@ -422,7 +502,7 @@ else
             endwhile
         endif
         
-        excit_sound = To Sound (pulse train): 44100, 1, 0.05, 2000
+        excit_sound = To Sound (pulse train): sr, 1, 0.05, 2000
         Rename: "Excitation_" + methodName$
         removeObject: pp_id
         
@@ -445,20 +525,24 @@ else
         else
             d_eff = d
         endif
-        appendInfoLine: "  Time Stretch: factor ", fixed$(time_stretch_factor, 2), "  ->  ", fixed$(d_eff, 3), " s"
-        if density_mod_depth > 0
-            appendInfoLine: "    Density modulation: ", fixed$(density_mod_rate_hz, 2), " Hz at depth ", fixed$(density_mod_depth, 2)
+        if cross_synth_mode = 1
+            appendInfoLine: "  Time Stretch: factor ", fixed$(time_stretch_factor, 2), "  ->  ", fixed$(d_eff, 3), " s"
+        else
+            appendInfoLine: "  Noise excitation: Time_stretch_factor ignored in cross-synth mode 3"
+        endif
+        if noise_am_depth > 0
+            appendInfoLine: "    Noise AM: ", fixed$(noise_am_rate_hz, 2), " Hz at depth ", fixed$(noise_am_depth, 2)
         endif
         
-        if density_mod_depth > 0
-            dmd_str$ = fixed$(density_mod_depth, 4)
-            dmr_str$ = fixed$(density_mod_rate_hz, 4)
+        if noise_am_depth > 0
+            dmd_str$ = fixed$(noise_am_depth, 4)
+            dmr_str$ = fixed$(noise_am_rate_hz, 4)
             excit_sound = Create Sound from formula: "Excitation_" + methodName$,
-                ... 1, 0, d_eff, 44100,
+                ... 1, 0, d_eff, sr,
                 ... "randomGauss(0, 0.1) * (1 + " + dmd_str$ + " * sin(2*pi*" + dmr_str$ + "*x))"
         else
             excit_sound = Create Sound from formula: "Excitation_" + methodName$,
-                ... 1, 0, d_eff, 44100,
+                ... 1, 0, d_eff, sr,
                 ... "randomGauss(0, 0.1)"
         endif
 
@@ -486,18 +570,28 @@ else
         
         f_start_1 = chirp_start_hz * ratio_1
         f_end_1 = chirp_end_hz * ratio_1
+        chirpNyq = sr / 2 * 0.95
+        if f_start_1 >= chirpNyq
+            f_start_1 = chirpNyq * 0.5
+        endif
+        if f_end_1 > chirpNyq
+            f_end_1 = chirpNyq
+        endif
+        if f_end_1 <= f_start_1
+            f_end_1 = min(chirpNyq, f_start_1 + 100)
+        endif
         k_1 = f_end_1 / f_start_1
         fStartStr$ = fixed$(f_start_1, 4)
         dStr$ = fixed$(d, 6)
         lnkStr$ = fixed$(ln(k_1), 8)
         kStr$ = fixed$(k_1, 6)
         excit_sound = Create Sound from formula: "Excitation_" + methodName$,
-            ... 1, 0, d, 44100,
+            ... 1, 0, d, sr,
             ... "sin(2*pi*" + fStartStr$ + "*" + dStr$ + "/" + lnkStr$ + "*((" + kStr$ + ")^(x/" + dStr$ + ")-1))"
         
         # Add additional layers (if any)
-        for L from 2 to n_layers
-            @parseRatioFromList: layer_ratios$, L
+        for ilayer from 2 to n_layers
+            @parseRatioFromList: layer_ratios$, ilayer
             ratio_L = parseRatioFromList.result
             if ratio_L <= 0
                 ratio_L = 1.0
@@ -505,8 +599,14 @@ else
             
             f_start_L = chirp_start_hz * ratio_L
             f_end_L = chirp_end_hz * ratio_L
+            if f_start_L >= chirpNyq
+                f_start_L = chirpNyq * 0.5
+            endif
+            if f_end_L > chirpNyq
+                f_end_L = chirpNyq
+            endif
             if f_end_L <= f_start_L
-                f_end_L = f_start_L + 1
+                f_end_L = min(chirpNyq, f_start_L + 100)
             endif
             k_L = f_end_L / f_start_L
             fStartStrL$ = fixed$(f_start_L, 4)
@@ -514,7 +614,7 @@ else
             kStrL$ = fixed$(k_L, 6)
             
             layer_chirp = Create Sound from formula: "chirp_layer_tmp",
-                ... 1, 0, d, 44100,
+                ... 1, 0, d, sr,
                 ... "sin(2*pi*" + fStartStrL$ + "*" + dStr$ + "/" + lnkStrL$ + "*((" + kStrL$ + ")^(x/" + dStr$ + ")-1))"
             layerStr$ = string$(layer_chirp)
             
@@ -554,7 +654,7 @@ else
         
         # Pre-allocate output buffer
         excit_sound = Create Sound from formula: "Excitation_" + methodName$,
-            ... 1, 0, d, 44100, "0"
+            ... 1, 0, d, sr, "0"
         
         # Loop: place grains with time-varying density
         tcur = 0
@@ -589,11 +689,11 @@ else
             endif
             if g_end > tcur + 0.001
                 grain = Create Sound from formula: "grain_tmp",
-                    ... 1, 0, g_end - tcur, 44100,
+                    ... 1, 0, g_end - tcur, sr,
                     ... "randomGauss(0, 0.15) * exp(-0.5*((x - " + fixed$(gs/2, 5) + ")/" + fixed$(gs/4, 5) + ")^2)"
                 
                 grainStr$ = string$(grain)
-                offsetStr$ = string$(round(tcur * 44100))
+                offsetStr$ = string$(round(tcur * sr))
                 
                 selectObject: excit_sound
                 Formula (part): tcur, g_end, 1, 1,
@@ -603,7 +703,7 @@ else
                 ng_total = ng_total + 1
             endif
             
-            grain_step = grain_size * cur_density
+            grain_step = grain_size / cur_density
             if grain_step < 0.001
                 grain_step = 0.001
             endif
@@ -666,25 +766,20 @@ selectObject: residual
 plusObject: lpc_a
 output_raw = Filter: "no"
 
-# Multiply by the intensity tier — but only when the time grids align.
-# Skip ONLY in mode 1 + Time Stretch (where output duration is d * factor,
-# which doesn't match the intensity tier's d). In all other cases the
-# output duration is d, which matches the intensity tier.
-skip_intensity = (cross_synth_mode = 1 and excitation_method = 3)
-
-if not skip_intensity
-    selectObject: output_raw
-    plusObject: intensity_tier
-    output = Multiply: "yes"
-    Rename: sourceName$ + "_" + methodName$ + "_" + presetName$
-    removeObject: output_raw
-    appendInfoLine: "  Intensity envelope applied (from ", intSourceName$, ")"
-else
-    output = output_raw
-    selectObject: output
-    Rename: sourceName$ + "_" + methodName$ + "_" + presetName$
-    appendInfoLine: "  Intensity envelope SKIPPED (mode 1 + Time Stretch)"
+# Apply the articulation/intensity contour in every mode. For single-source
+# Time Stretch, stretch the IntensityTier to the same duration as the LPC.
+if cross_synth_mode = 1 and excitation_method = 3
+    selectObject: intensity_tier
+    Scale times by: time_stretch_factor
+    appendInfoLine: "  Intensity envelope time-stretched by ", fixed$(time_stretch_factor, 2)
 endif
+
+selectObject: output_raw
+plusObject: intensity_tier
+output = Multiply: "yes"
+Rename: sourceName$ + "_" + methodName$ + "_" + presetName$
+removeObject: output_raw
+appendInfoLine: "  Intensity envelope applied (from ", intSourceName$, ")"
 
 selectObject: output
 Scale peak: 0.99
@@ -712,7 +807,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##LPC EXCITATION LAB##"
+    Text: 0.5, "centre", 0.70, "half", "##LPC EXCITATION LAB v2.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     
@@ -733,8 +828,8 @@ if draw_visualization
             modStr$ = modStr$ + " shim " + fixed$(pulse_shimmer_pct, 0) + "%"
         endif
     elsif excitation_method = 3
-        if density_mod_depth > 0
-            modStr$ = modStr$ + " den " + fixed$(density_mod_rate_hz, 1) + "Hz/" + fixed$(density_mod_depth, 2)
+        if noise_am_depth > 0
+            modStr$ = modStr$ + " AM " + fixed$(noise_am_rate_hz, 1) + "Hz/" + fixed$(noise_am_depth, 2)
         endif
     elsif excitation_method = 4
         if chirp_layers > 1
@@ -742,7 +837,7 @@ if draw_visualization
         endif
     elsif excitation_method = 5
         if grain_density_start <> grain_density_end
-            modStr$ = modStr$ + " den " + fixed$(grain_density_start, 2) + "->" + fixed$(grain_density_end, 2)
+            modStr$ = modStr$ + " AM " + fixed$(grain_density_start, 2) + "->" + fixed$(grain_density_end, 2)
         endif
         if grain_size_modulation_pct > 0
             modStr$ = modStr$ + " size+/-" + fixed$(grain_size_modulation_pct, 0) + "%"
@@ -785,7 +880,7 @@ if draw_visualization
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, excit_dur, 0
     
-    Colour: "{0.28, 0.52, 0.82}"
+    Colour: "{0.45, 0.45, 0.45}"
     Line width: 1
     Draw: 0, 0, -excit_amp, excit_amp, "no", "Curve"
     
@@ -815,7 +910,7 @@ if draw_visualization
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, res_dur, 0
     
-    Colour: "{0.78, 0.42, 0.20}"
+    Colour: "{0.38, 0.32, 0.62}"
     Line width: 1
     Draw: 0, 0, -res_amp, res_amp, "no", "Curve"
     
@@ -860,7 +955,7 @@ if draw_visualization
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, out_dur, 0
     
-    Colour: "{0.18, 0.62, 0.58}"
+    Colour: "{0.20, 0.45, 0.80}"
     Line width: 1
     Draw: 0, 0, -out_amp, out_amp, "no", "Curve"
     
@@ -868,11 +963,7 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 7
-    if skip_intensity
-        Text top: "no", "Output  (no intensity envelope — Time Stretch)"
-    else
-        Text top: "no", "Output  (LPC resynthesis + Intensity from " + intSourceName$ + ")"
-    endif
+    Text top: "no", "Output  (LPC resynthesis + Intensity from " + intSourceName$ + ")"
     Text left: "yes", "Amp"
     Text bottom: "yes", "Time (s)"
     
@@ -919,12 +1010,12 @@ if draw_visualization
     Draw line: 0, -40, maxF_disp, -40
     
     selectObject: spec_src
-    Colour: "{0.20, 0.55, 0.75}"
+    Colour: "{0.45, 0.45, 0.45}"
     Line width: 1.5
     Draw: 0, maxF_disp, -60, 0, "no"
     
     selectObject: spec_out
-    Colour: "{0.85, 0.45, 0.18}"
+    Colour: "{0.20, 0.45, 0.80}"
     Line width: 1.5
     Draw: 0, maxF_disp, -60, 0, "no"
     
@@ -940,9 +1031,9 @@ if draw_visualization
     Select inner viewport: 0, 8, 0, 8
     Axes: 0, 8, 0, 8
     Font size: 6
-    Colour: "{0.20, 0.55, 0.75}"
+    Colour: "{0.45, 0.45, 0.45}"
     Text: 1.5, "left", 2.18, "half", "— Filter source (" + filterSourceName$ + ")"
-    Colour: "{0.85, 0.45, 0.18}"
+    Colour: "{0.20, 0.45, 0.80}"
     Text: 4.0, "left", 2.18, "half", "— Output"
     Colour: "Black"
     Text: 5.7, "left", 2.18, "half", "Spectrum overlay (0-8 kHz)"
@@ -976,7 +1067,7 @@ if draw_visualization
     Text: 0.02, "left", 0.28, "half",
         ... srcStat$
         ... + "  |  Out: " + fixed$(finalDur, 2) + " s"
-        ... + "  |  Peak: " + fixed$(finalPeak, 3)
+        ... + "  |  Peak: " + fixed$(finalPeak, 3) + " (norm 0.99)"
         ... + "  |  SR: " + string$(round(sr)) + " Hz"
     
     Colour: "Black"
@@ -999,8 +1090,10 @@ if excit_owned = 1
     removeObject: excit_sound
 endif
 
-# Remove the trimmed copies if cross_synth used them
-if cross_synth_mode <> 1
+# Remove owned mono working copies.
+if cross_synth_mode = 1
+    removeObject: s1_use
+else
     removeObject: s1_use, s2_use
 endif
 
@@ -1008,6 +1101,10 @@ endif
 # FINAL INFO + SELECT
 # ============================================================
 
+selectObject: output
+if s1_xmin <> 0
+    Shift times by: s1_xmin
+endif
 selectObject: output
 
 appendInfoLine: ""
@@ -1034,6 +1131,7 @@ selectObject: output
 # Result lives in parseRatioFromList.result (a numeric value).
 procedure parseRatioFromList: .listStr$, .idx
     .result = 1.0
+    .last = 1.0
     .work$ = .listStr$ + ","
     .count = 0
     while length(.work$) > 0 and .count < .idx
@@ -1048,13 +1146,19 @@ procedure parseRatioFromList: .listStr$, .idx
             while length(.item$) > 0 and right$(.item$, 1) = " "
                 .item$ = left$(.item$, length(.item$) - 1)
             endwhile
+            .val = number(.item$)
+            if .val <> undefined and .val > 0
+                .last = .val
+            endif
             if .count = .idx
-                .result = number(.item$)
+                .result = .last
             endif
             .work$ = mid$(.work$, .commaPos + 1, length(.work$) - .commaPos)
         else
-            .count = .idx + 1
+            .work$ = ""
         endif
     endwhile
-    # If we exhausted the list before reaching .idx, fall back to last parsed value
+    if .count < .idx
+        .result = .last
+    endif
 endproc
