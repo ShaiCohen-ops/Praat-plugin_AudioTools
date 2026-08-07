@@ -102,15 +102,15 @@ sound5 = selected("Sound")
 appendInfoLine: "Step 5: Stereo Mix complete."
 
 # ==============================================================================
-# STEP 6: Golden Ratio Processor
+# STEP 6: Golden Ratio Processor v3.0 (spectral-envelope engine)
 # ==============================================================================
-appendInfoLine: "Step 6: Applying Golden Ratio Processing..."
+appendInfoLine: "Step 6: Applying Golden Ratio Processing v3.0..."
 selectObject: sound5
 
-runScript: path6$, "Subtle (gentle φ influence)", "no", "yes", "yes", "yes", "yes", "no", 75, 600, 0.01, 0, 0
+runScript: path6$, "Subtle (gentle phi influence)", "no", "yes", "Spectral formant warp (keeps duration and pitch)", "yes", "yes", "no", 75, 600, 0.01, "Natural level", 0.95, 0, 0
 
 sound6 = selected("Sound")
-appendInfoLine: "Step 6: Golden Ratio Processing complete."
+appendInfoLine: "Step 6: Golden Ratio Processing v3.0 complete."
 
 # ==============================================================================
 # PLAYBACK
