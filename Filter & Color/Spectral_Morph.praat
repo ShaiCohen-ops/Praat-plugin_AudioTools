@@ -3,30 +3,43 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.0 (2025)
+# Version: 3.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   CDP-like Spectral Morph v3.0 - true STFT spectral morphing
-#   between two sounds. Per-frame processing with log-space
-#   magnitude interpolation and sample-accurate overlap-add
-#   reconstruction.
-#
-#   Architecture:
-#   1. Time-warp shorter sound to match longer (Manipulation)
-#   2. Pre-allocate output buffer (zero-filled Sound)
-#   3. Frame-by-frame STFT:
-#      - Extract frame, apply Hann window
-#      - FFT both, morph via vectorized Formula
-#      - IFFT, write samples directly into output buffer
-#   4. Sample-accurate OLA: no Concatenate calls, no SR drift
-#   5. Multi-panel visualization
+#   STFT spectral morphing between two Sounds. The shorter source is
+#   mapped proportionally onto the longer output timeline frame by frame.
+#   Reconstruction uses periodic sqrt-Hann analysis/synthesis windows,
+#   endpoint padding, overlap-weight normalization, and no automatic
+#   peak normalization.
 #
 #   Morph modes:
-#   - Log magnitude: geometric A^(1-m) * B^m, preserves A phase
-#   - Full complex: linear re+im interpolation
+#   - Log magnitude: geometric magnitude interpolation; phase follows A
+#     where A has defined phase, with B-phase fallback for near-zero A bins.
+#   - Full complex: linear interpolation of real and imaginary FFT values.
 #
+#   Morph_max_freq_Hz is an actual DSP limit: bins above it remain from A.
+#   In Full-complex mode, m=0 is A and m=1 is B below the morph limit.
+#   In Log-magnitude mode, m=1 has B magnitude but A reference phase below
+#   the morph limit. Exact endpoint identity assumes equal source durations.
+#
+#   Channel handling:
+#   - Equal channel counts: channels are morphed pairwise.
+#   - Mono + multichannel: the mono source is reused for every output channel.
+#   - Other channel-count mismatches are rejected explicitly.
+#
+# Changelog v3.1:
+#   - Fixed endpoint OLA distortion and truncated tail with padded,
+#     weight-normalized reconstruction.
+#   - Removed input/output peak normalization and forced edge fades.
+#   - Morph_max_freq_Hz now affects DSP; higher bins preserve Sound A.
+#   - Correct geometric log-magnitude interpolation (no x30 ratio clamp).
+#   - Preserves/expands compatible multichannel layouts instead of silent mono.
+#   - Internal time domain normalized to 0; output start time follows Sound A.
+#   - Reduced-rate processing is resampled back to Sound A's sample rate.
+#   - Added attenuation-only Safety_peak.
+#   - Visualization redesigned to AudioTools house style.
 # Category: Time & Granular
 # ============================================================
 
@@ -41,7 +54,7 @@ soundB = selected("Sound", 2)
 nameA$ = selected$("Sound", 1)
 nameB$ = selected$("Sound", 2)
 
-form Spectral Morph v3
+form Spectral Morph v3.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -56,62 +69,57 @@ form Spectral Morph v3
     optionmenu Curve_type: 2
         option Linear
         option Cosine (smooth S-curve)
-    comment === Analysis ===
+    comment === Analysis / Morph Band ===
     positive Window_ms 60
-    positive Max_freq_Hz 8000
+    positive Morph_max_freq_Hz 8000
     optionmenu Speed_mode: 2
         option Full (native sample rate)
-        option 22050 Hz
-        option 11025 Hz
+        option 22050 Hz processing
+        option 11025 Hz processing
     comment === Morph Type ===
     optionmenu Morph_mode: 1
-        option Log magnitude (preserve A phase)
+        option Log magnitude (A-reference phase)
         option Full complex (blend phase too)
     comment === Output ===
+    real Safety_peak 0.99
     boolean Draw_visualization 1
     boolean Play_output 1
 endform
 
 # ============================================================
-# Apply Presets
+# PRESETS
 # ============================================================
-
 if preset = 2
-    # Tonal Sustained
     window_ms = 60
-    max_freq_Hz = 8000
+    morph_max_freq_Hz = 8000
     speed_mode = 2
     morph_mode = 1
     curve_type = 2
     presetName$ = "TonalSustained"
 elsif preset = 3
-    # Percussive
     window_ms = 30
-    max_freq_Hz = 10000
+    morph_max_freq_Hz = 10000
     speed_mode = 2
     morph_mode = 1
     curve_type = 1
     presetName$ = "Percussive"
 elsif preset = 4
-    # Voice Morph
     window_ms = 50
-    max_freq_Hz = 6000
+    morph_max_freq_Hz = 6000
     speed_mode = 2
     morph_mode = 1
     curve_type = 2
     presetName$ = "VoiceMorph"
 elsif preset = 5
-    # Texture Blend
     window_ms = 80
-    max_freq_Hz = 12000
+    morph_max_freq_Hz = 12000
     speed_mode = 1
     morph_mode = 2
     curve_type = 2
     presetName$ = "TextureBlend"
 elsif preset = 6
-    # Fast Preview
     window_ms = 120
-    max_freq_Hz = 5000
+    morph_max_freq_Hz = 5000
     speed_mode = 3
     morph_mode = 1
     curve_type = 1
@@ -121,135 +129,83 @@ else
 endif
 
 # ============================================================
-# Global Parameters
+# SOURCE METADATA + VALIDATION
 # ============================================================
-
-window_s = window_ms / 1000
-hop_s = window_s / 2
-
 selectObject: soundA
 srA = Get sampling frequency
 durA = Get total duration
 chA = Get number of channels
+xminA = Get start time
 
 selectObject: soundB
 srB = Get sampling frequency
 durB = Get total duration
 chB = Get number of channels
+xminB = Get start time
 
-# Target sample rate
+if durA <= 0 or durB <= 0
+    exitScript: "Both Sounds must contain audio."
+endif
+
+if chA = chB
+    outCh = chA
+    channelMode$ = "paired " + string$(outCh) + " ch"
+elsif chA = 1
+    outCh = chB
+    channelMode$ = "A mono duplicated to " + string$(outCh) + " ch"
+elsif chB = 1
+    outCh = chA
+    channelMode$ = "B mono duplicated to " + string$(outCh) + " ch"
+else
+    exitScript: "Channel counts must match, or one source must be mono."
+        ... + newline$ + "A has " + string$(chA) + " channels; B has " + string$(chB) + "."
+endif
+
+if window_ms < 2
+    window_ms = 2
+endif
+if window_ms > 1000
+    window_ms = 1000
+endif
+if safety_peak < 0
+    safety_peak = 0
+endif
+if safety_peak > 1
+    safety_peak = 1
+endif
+
+# Processing rate. Final output is restored to Sound A's rate.
 if speed_mode = 2
-    targetSR = 22050
+    processSR = 22050
 elsif speed_mode = 3
-    targetSR = 11025
+    processSR = 11025
 else
-    targetSR = srA
-    if srB > targetSR
-        targetSR = srB
-    endif
+    processSR = max(srA, srB)
 endif
 
-# Clamp max_freq to Nyquist
-nyquist = targetSR / 2
-if max_freq_Hz > nyquist - 100
-    max_freq_Hz = nyquist - 100
+nyquist = processSR / 2
+if morph_max_freq_Hz > nyquist
+    morph_max_freq_Hz = nyquist
+endif
+if morph_max_freq_Hz < 20
+    morph_max_freq_Hz = 20
 endif
 
-samplesPerFrame = round(window_s * targetSR)
-
-clearinfo
-writeInfoLine: "=============================================="
-writeInfoLine: "  Spectral Morph v3.0"
-writeInfoLine: "=============================================="
-appendInfoLine: ""
-appendInfoLine: "Sound A: ", nameA$, " (", fixed$(durA, 2), " s, ", srA, " Hz)"
-appendInfoLine: "Sound B: ", nameB$, " (", fixed$(durB, 2), " s, ", srB, " Hz)"
-appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Target SR: ", targetSR, " Hz"
-appendInfoLine: "Window: ", fixed$(window_ms, 0), " ms (", samplesPerFrame, " samples) | Hop: ", fixed$(hop_s * 1000, 0), " ms"
-appendInfoLine: ""
-
-# ============================================================
-# STEP 1: Prepare sounds
-# ============================================================
-appendInfoLine: "[1/4] Preparing sounds..."
-
-# Convert to mono
-selectObject: soundA
-if chA > 1
-    monoA = Convert to mono
-else
-    monoA = Copy: "monoA"
+# Exact even window length gives an exact 50% periodic-Hann geometry.
+nWin = round(window_ms / 1000 * processSR)
+if nWin < 64
+    nWin = 64
 endif
-
-selectObject: soundB
-if chB > 1
-    monoB = Convert to mono
-else
-    monoB = Copy: "monoB"
+if (nWin mod 2) = 1
+    nWin = nWin + 1
 endif
-
-# Resample
-selectObject: monoA
-currentSR_A = Get sampling frequency
-if currentSR_A <> targetSR
-    Resample: targetSR, 50
-    temp = selected("Sound")
-    removeObject: monoA
-    monoA = temp
-endif
-
-selectObject: monoB
-currentSR_B = Get sampling frequency
-if currentSR_B <> targetSR
-    Resample: targetSR, 50
-    temp = selected("Sound")
-    removeObject: monoB
-    monoB = temp
-endif
-
-# Duration: output = longer of the two, both mapped proportionally
-selectObject: monoA
-durA_final = Get total duration
-selectObject: monoB
-durB_final = Get total duration
-
-if durA_final >= durB_final
-    commonDuration = durA_final
-else
-    commonDuration = durB_final
-endif
-timeRatioA = durA_final / commonDuration
-timeRatioB = durB_final / commonDuration
-
-# Normalize both to equal peak
-selectObject: monoA
-Scale peak: 0.95
-selectObject: monoB
-Scale peak: 0.95
-
-appendInfoLine: "  A duration: ", fixed$(durA_final, 3), " s"
-appendInfoLine: "  B duration: ", fixed$(durB_final, 3), " s"
-appendInfoLine: "  Output duration: ", fixed$(commonDuration, 3), " s (longer of the two)"
-appendInfoLine: "  A maps: ", fixed$(timeRatioA, 4), " | B maps: ", fixed$(timeRatioB, 4)
-
-# Set morph region
-if end_morph_s <= start_morph_s or end_morph_s <= 0
-    end_morph_s = commonDuration
-endif
-if start_morph_s < 0
-    start_morph_s = 0
-endif
-if end_morph_s > commonDuration
-    end_morph_s = commonDuration
-endif
-morphRange = end_morph_s - start_morph_s
-if morphRange < 0.01
-    morphRange = 0.01
-endif
+hopN = nWin / 2
+actualWindow_s = nWin / processSR
+hop_s = hopN / processSR
+binWidth = processSR / nWin
 
 if morph_mode = 1
-    modeLabel$ = "Log magnitude (A phase)"
+    modeLabel$ = "Log magnitude (A-reference phase)"
 else
     modeLabel$ = "Full complex"
 endif
@@ -259,266 +215,422 @@ else
     curveLabel$ = "Linear"
 endif
 
-appendInfoLine: "  Morph: ", fixed$(start_morph_s, 2), " - ", fixed$(end_morph_s, 2), " s"
-appendInfoLine: "  Mode: ", modeLabel$, " | Curve: ", curveLabel$
+# ============================================================
+# PREPARE SOURCES
+# ============================================================
+clearinfo
+writeInfoLine: "=============================================="
+writeInfoLine: "  SPECTRAL MORPH v3.1"
+writeInfoLine: "=============================================="
+appendInfoLine: ""
+appendInfoLine: "A: ", nameA$, " | ", fixed$(durA, 3), " s | ", chA, " ch | ", fixed$(srA, 0), " Hz | start ", fixed$(xminA, 3)
+appendInfoLine: "B: ", nameB$, " | ", fixed$(durB, 3), " s | ", chB, " ch | ", fixed$(srB, 0), " Hz | start ", fixed$(xminB, 3)
+appendInfoLine: "Channels: ", channelMode$
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Mode: ", modeLabel$, " | Curve: ", curveLabel$
+appendInfoLine: "Process SR: ", processSR, " Hz | Output SR: ", fixed$(srA, 0), " Hz"
+appendInfoLine: "Window: ", nWin, " samples = ", fixed$(actualWindow_s * 1000, 2), " ms | Hop: ", fixed$(hop_s * 1000, 2), " ms"
+appendInfoLine: "Morph band: 0 - ", fixed$(morph_max_freq_Hz, 1), " Hz; higher bins preserve A"
 appendInfoLine: ""
 
-# ============================================================
-# STEP 2: FRAME-BY-FRAME STFT MORPH
-# ============================================================
-appendInfoLine: "[2/4] STFT morphing..."
+appendInfoLine: "[1/4] Preparing sources..."
 
-# Pre-allocate output buffer
-Create Sound from formula: "morph_buffer", 1, 0, commonDuration, targetSR, "0"
-outputBuffer = selected("Sound")
-
-# Compute frame count
-totalFrames = floor((commonDuration - window_s) / hop_s) + 1
-if totalFrames < 1
-    totalFrames = 1
+selectObject: soundA
+workA = Copy: "sm_workA"
+selectObject: workA
+Shift times to: "start time", 0
+if srA <> processSR
+    tmp = Resample: processSR, 50
+    removeObject: workA
+    workA = tmp
+    selectObject: workA
+    Rename: "sm_workA"
 endif
 
-appendInfoLine: "  Frames: ", totalFrames
-appendInfoLine: "  Window: ", fixed$(window_s * 1000, 1), " ms | Hop: ", fixed$(hop_s * 1000, 1), " ms"
-appendInfoLine: "  Processing..."
+selectObject: soundB
+workB = Copy: "sm_workB"
+selectObject: workB
+Shift times to: "start time", 0
+if srB <> processSR
+    tmp = Resample: processSR, 50
+    removeObject: workB
+    workB = tmp
+    selectObject: workB
+    Rename: "sm_workB"
+endif
 
-progressStep = floor(totalFrames / 10)
+selectObject: workA
+durA_final = Get total duration
+nA = Get number of samples
+selectObject: workB
+durB_final = Get total duration
+nB = Get number of samples
+
+commonDuration = max(durA_final, durB_final)
+timeRatioA = durA_final / commonDuration
+timeRatioB = durB_final / commonDuration
+
+# Morph region on the output-relative timeline.
+if end_morph_s <= start_morph_s or end_morph_s <= 0
+    start_morph_s = max(0, start_morph_s)
+    end_morph_s = commonDuration
+endif
+if start_morph_s < 0
+    start_morph_s = 0
+endif
+if start_morph_s > commonDuration
+    start_morph_s = commonDuration
+endif
+if end_morph_s > commonDuration
+    end_morph_s = commonDuration
+endif
+if end_morph_s < start_morph_s
+    end_morph_s = start_morph_s
+endif
+morphRange = end_morph_s - start_morph_s
+if morphRange < 1 / processSR
+    morphRange = 1 / processSR
+endif
+
+appendInfoLine: "  Working durations: A ", fixed$(durA_final, 4), " s | B ", fixed$(durB_final, 4), " s"
+appendInfoLine: "  Output timeline: ", fixed$(commonDuration, 4), " s"
+appendInfoLine: "  Morph region: ", fixed$(start_morph_s, 3), " - ", fixed$(end_morph_s, 3), " s"
+
+# Output and weight buffers.
+outputBuffer = Create Sound from formula: "sm_output", outCh, 0, commonDuration, processSR, "0"
+weightBuffer = Create Sound from formula: "sm_weight", 1, 0, commonDuration, processSR, "0"
+selectObject: outputBuffer
+nOut = Get number of samples
+
+# Frames are centered at 0, hop, 2*hop, ... plus an exact final center.
+gridFrames = floor(commonDuration / hop_s) + 1
+lastGridCenter = (gridFrames - 1) * hop_s
+extraEndFrame = 0
+if commonDuration - lastGridCenter > 0.5 / processSR
+    extraEndFrame = 1
+endif
+totalFrames = gridFrames + extraEndFrame
+
+# Build overlap-weight buffer once. Analysis and synthesis windows are both
+# sqrt-Hann, so the accumulated effective weight is Hann = sin^2(...).
+for f from 1 to totalFrames
+    if f <= gridFrames
+        centerOut = (f - 1) * hop_s
+    else
+        centerOut = commonDuration
+    endif
+    frameStart = centerOut - actualWindow_s / 2
+    frameEnd = frameStart + actualWindow_s
+    addStart = max(0, frameStart)
+    addEnd = min(commonDuration, frameEnd)
+    if addEnd > addStart
+        selectObject: weightBuffer
+        Formula (part): addStart, addEnd, 1, 1, "self + sin(pi * (x - frameStart) / actualWindow_s) ^ 2"
+    endif
+endfor
+
+selectObject: weightBuffer
+wMax = Get maximum: 0, 0, "None"
+wMin = Get minimum: 0, 0, "None"
+wEps = max(1e-12, wMax * 1e-10)
+
+appendInfoLine: "  Frames: ", totalFrames, " | OLA weight min/max ", fixed$(wMin, 6), "/", fixed$(wMax, 6)
+appendInfoLine: ""
+appendInfoLine: "[2/4] STFT morphing..."
+
+padN = nWin
+padDur = padN / processSR
+progressStep = floor(totalFrames / 8)
 if progressStep < 1
     progressStep = 1
 endif
 
-for f from 1 to totalFrames
-    frameStart = (f - 1) * hop_s
-    frameEnd = frameStart + window_s
-    if frameEnd > commonDuration
-        frameEnd = commonDuration
-    endif
-    if frameEnd - frameStart < 0.005
-        frameEnd = frameStart + 0.005
-    endif
-    if frameEnd > commonDuration
-        frameEnd = commonDuration
-    endif
-    
-    # --- Morph factor ---
-    frameMid = (frameStart + frameEnd) / 2
-    u = (frameMid - start_morph_s) / morphRange
-    if u < 0
-        u = 0
-    endif
-    if u > 1
-        u = 1
-    endif
-    if curve_type = 2
-        m = 0.5 - 0.5 * cos(pi * u)
+# ============================================================
+# PER-CHANNEL STFT MORPH
+# ============================================================
+for ch from 1 to outCh
+    if chA = 1
+        srcChA = 1
     else
-        m = u
+        srcChA = ch
     endif
-    
-    # --- Extract frame from A (mapped into output timeline) ---
-    frameAmid = frameMid * timeRatioA
-    frameAstart = frameAmid - window_s / 2
-    frameAend = frameAstart + window_s
-    
-    if frameAstart < 0
-        frameAstart = 0
-        frameAend = window_s
-    endif
-    if frameAend > durA_final
-        frameAend = durA_final
-        frameAstart = durA_final - window_s
-    endif
-    if frameAstart < 0
-        frameAstart = 0
-    endif
-    
-    selectObject: monoA
-    Extract part: frameAstart, frameAend, "rectangular", 1, "no"
-    frameA = selected("Sound")
-    
-    # --- Extract frame from B (mapped into output timeline) ---
-    frameBmid = frameMid * timeRatioB
-    frameBstart = frameBmid - window_s / 2
-    frameBend = frameBstart + window_s
-    
-    if frameBstart < 0
-        frameBstart = 0
-        frameBend = window_s
-    endif
-    if frameBend > durB_final
-        frameBend = durB_final
-        frameBstart = durB_final - window_s
-    endif
-    if frameBstart < 0
-        frameBstart = 0
-    endif
-    
-    selectObject: monoB
-    Extract part: frameBstart, frameBend, "rectangular", 1, "no"
-    frameB = selected("Sound")
-           
-    # --- Apply sqrt-Hann analysis window ---
-    selectObject: frameA
-    frameDur = Get total duration
-    Formula: "self * sin(pi * (x - xmin) / frameDur)"
-    
-    selectObject: frameB
-    Formula: "self * sin(pi * (x - xmin) / frameDur)"
-    
-    # --- FFT ---
-    selectObject: frameA
-    specA = To Spectrum: "no"
-    
-    selectObject: frameB
-    specB = To Spectrum: "no"
-    
-    # --- Morph spectrum ---
-    selectObject: specA
-    outSpec = Copy: "morph"
-    idA = specA
-    idB = specB
-    
-    selectObject: outSpec
-    if morph_mode = 1
-        Formula: "self * min((max(sqrt(object[idB,1,col]^2 + object[idB,2,col]^2), 1e-4) / max(sqrt(object[idA,1,col]^2 + object[idA,2,col]^2), 1e-4)), 30) ^ m"
+    if chB = 1
+        srcChB = 1
     else
-        Formula: "(1 - m) * object[idA, row, col] + m * object[idB, row, col]"
+        srcChB = ch
     endif
-    
-    # --- IFFT + sqrt-Hann synthesis window ---
-    selectObject: outSpec
-    To Sound
-    frameOut = selected("Sound")
-    Override sampling frequency: targetSR
-    
-    synthDur = Get total duration
-    Formula: "self * sin(pi * (x - xmin) / synthDur)"
-    
-    Rename: "morphfr"
-    
-    # Shift to correct time position
-    Shift times to: "start time", frameStart
-    
-    # --- OLA: add to output buffer ---
-    selectObject: outputBuffer
-    Formula (part): frameStart, frameEnd, 1, 1, "self + Sound_morphfr(x)"
-    
-    # Cleanup
-    removeObject: frameA, frameB, specA, specB, outSpec, frameOut
-    
-    # Progress
-    if f mod progressStep = 0
-        pct = round(f / totalFrames * 100)
-        appendInfoLine: "    ", pct, "% (frame ", f, "/", totalFrames, ")"
-    endif
+
+    selectObject: workA
+    chanA = Extract one channel: srcChA
+    Rename: "sm_chanA"
+    selectObject: workB
+    chanB = Extract one channel: srcChB
+    Rename: "sm_chanB"
+
+    # Fixed zero padding makes every extracted STFT frame exactly nWin samples,
+    # including the beginning/end and sources shorter than the analysis window.
+    padA = Create Sound from formula: "sm_padA", 1, 0, (nA + 2 * padN) / processSR, processSR,
+        ... "if col > padN and col <= padN + nA then object[chanA, 1, col - padN] else 0 fi"
+    padB = Create Sound from formula: "sm_padB", 1, 0, (nB + 2 * padN) / processSR, processSR,
+        ... "if col > padN and col <= padN + nB then object[chanB, 1, col - padN] else 0 fi"
+
+    for f from 1 to totalFrames
+        if f <= gridFrames
+            centerOut = (f - 1) * hop_s
+        else
+            centerOut = commonDuration
+        endif
+
+        # Morph factor uses the clamped output-relative frame center.
+        morphTime = min(commonDuration, max(0, centerOut))
+        u = (morphTime - start_morph_s) / morphRange
+        if u < 0
+            u = 0
+        endif
+        if u > 1
+            u = 1
+        endif
+        if curve_type = 2
+            m = 0.5 - 0.5 * cos(pi * u)
+        else
+            m = u
+        endif
+
+        # Proportional frame-time mapping into each source.
+        centerA = morphTime * timeRatioA
+        centerB = morphTime * timeRatioB
+        frameAstart = padDur + centerA - actualWindow_s / 2
+        frameBstart = padDur + centerB - actualWindow_s / 2
+
+        selectObject: padA
+        frameA = Extract part: frameAstart, frameAstart + actualWindow_s, "rectangular", 1, "no"
+        Rename: "sm_frameA"
+        Formula: "self * sin(pi * (col - 0.5) / nWin)"
+
+        selectObject: padB
+        frameB = Extract part: frameBstart, frameBstart + actualWindow_s, "rectangular", 1, "no"
+        Rename: "sm_frameB"
+        Formula: "self * sin(pi * (col - 0.5) / nWin)"
+
+        selectObject: frameA
+        specA = To Spectrum: "no"
+        selectObject: frameB
+        specB = To Spectrum: "no"
+
+        selectObject: specA
+        outSpec = Copy: "sm_morphspec"
+        idA = specA
+        idB = specB
+
+        selectObject: outSpec
+        if morph_mode = 1
+            # Geometric magnitude interpolation. At m=0 return A exactly.
+            # Above the morph-frequency limit, preserve A exactly.
+            Formula: "if (col - 1) * binWidth > morph_max_freq_Hz or m <= 0 then object[idA,row,col] else if sqrt(object[idA,1,col]^2+object[idA,2,col]^2) > max(1e-12, 0.001*sqrt(object[idB,1,col]^2+object[idB,2,col]^2)) then exp((1-m)*ln(max(sqrt(object[idA,1,col]^2+object[idA,2,col]^2),1e-12))+m*ln(max(sqrt(object[idB,1,col]^2+object[idB,2,col]^2),1e-12))) * object[idA,row,col] / sqrt(object[idA,1,col]^2+object[idA,2,col]^2) else if sqrt(object[idB,1,col]^2+object[idB,2,col]^2) > 1e-12 then exp((1-m)*ln(max(sqrt(object[idA,1,col]^2+object[idA,2,col]^2),1e-12))+m*ln(max(sqrt(object[idB,1,col]^2+object[idB,2,col]^2),1e-12))) * object[idB,row,col] / sqrt(object[idB,1,col]^2+object[idB,2,col]^2) else 0 fi fi fi"
+        else
+            Formula: "if (col - 1) * binWidth <= morph_max_freq_Hz then (1-m)*object[idA,row,col] + m*object[idB,row,col] else object[idA,row,col] fi"
+        endif
+
+        selectObject: outSpec
+        frameOut = To Sound
+        Override sampling frequency: processSR
+        Formula: "self * sin(pi * (col - 0.5) / nWin)"
+        Rename: "sm_morphfr"
+
+        # Place the frame on its output timeline, including negative edge frames.
+        frameStart = centerOut - actualWindow_s / 2
+        selectObject: frameOut
+        Shift times to: "start time", frameStart
+        frameEnd = frameStart + actualWindow_s
+        addStart = max(0, frameStart)
+        addEnd = min(commonDuration, frameEnd)
+        if addEnd > addStart
+            selectObject: outputBuffer
+            Formula (part): addStart, addEnd, ch, ch, "self + Sound_sm_morphfr(x)"
+        endif
+
+        removeObject: frameA, frameB, specA, specB, outSpec, frameOut
+
+        if ch = 1 and (f mod progressStep) = 0
+            appendInfoLine: "  ", round(100 * f / totalFrames), "%"
+        endif
+    endfor
+
+    removeObject: chanA, chanB, padA, padB
+    appendInfoLine: "  channel ", ch, "/", outCh, " done"
 endfor
 
-appendInfoLine: "  Done."
-
-# ============================================================
-# STEP 3: FINALIZE
-# ============================================================
-appendInfoLine: ""
-appendInfoLine: "[3/4] Finalizing..."
-
+# Exact overlap normalization.
 selectObject: outputBuffer
-Scale peak: 0.99
+Formula: "if object[weightBuffer,1,col] > wEps then self / object[weightBuffer,1,col] else 0 fi"
 
-# Fade in 5 ms
-fadeInDur = 0.005
-Formula: "if x < fadeInDur then self * (x / fadeInDur) else self fi"
-
-# Fade out 50 ms
-fadeOutDur = 0.05
-outDurFinal = Get total duration
-if fadeOutDur > outDurFinal * 0.1
-    fadeOutDur = outDurFinal * 0.1
+# Restore Sound A's sample rate after preview-rate processing.
+if processSR <> srA
+    finalOutput = Resample: srA, 50
+    removeObject: outputBuffer
+else
+    finalOutput = outputBuffer
 endif
-Formula: "if x > (xmax - fadeOutDur) then self * ((xmax - x) / fadeOutDur) else self fi"
 
-Rename: "Spectral_Morph"
-finalOutput = selected("Sound")
+selectObject: finalOutput
+Shift times to: "start time", xminA
+Rename: nameA$ + "_SpectralMorph_" + nameB$
+
+# Attenuation-only safety stage. No normalization/boosting.
+peakBeforeSafety = Get absolute extremum: 0, 0, "None"
+if safety_peak > 0 and peakBeforeSafety > safety_peak
+    safetyGain = safety_peak / peakBeforeSafety
+    Formula: "self * safetyGain"
+    appendInfoLine: "  Safety attenuation: peak ", fixed$(peakBeforeSafety, 4), " -> ", fixed$(safety_peak, 4)
+endif
+
+peakFinal = Get absolute extremum: 0, 0, "None"
 outputDuration = Get total duration
+finalSR = Get sampling frequency
 
-appendInfoLine: "  Output: ", fixed$(outputDuration, 2), " s"
+appendInfoLine: ""
+appendInfoLine: "[3/4] Finalized."
+appendInfoLine: "  Output: ", selected$("Sound")
+appendInfoLine: "  Duration: ", fixed$(outputDuration, 4), " s | ", outCh, " ch | ", fixed$(finalSR, 0), " Hz | start ", fixed$(xminA, 3)
+appendInfoLine: "  Peak: ", fixed$(peakFinal, 4), " (no normalization)"
 
 # ============================================================
-# STEP 4: VISUALIZATION
+# VISUALIZATION - AUDIOTOOLS HOUSE STYLE
 # ============================================================
-
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "[4/4] Visualization..."
-    
+
+    selectObject: workA
+    if chA > 1
+        vizA = Convert to mono
+    else
+        vizA = Copy: "sm_vizA"
+    endif
+    selectObject: workB
+    if chB > 1
+        vizB = Convert to mono
+    else
+        vizB = Copy: "sm_vizB"
+    endif
+    selectObject: finalOutput
+    if outCh > 1
+        vizOut = Convert to mono
+    else
+        vizOut = Copy: "sm_vizOut"
+    endif
+    selectObject: vizOut
+    Shift times to: "start time", 0
+
+    displayFreq = min(morph_max_freq_Hz, finalSR / 2)
+    if displayFreq < 1000
+        displayFreq = min(finalSR / 2, 1000)
+    endif
+
     Erase all
-    
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 8
+
+    # Title
+    Select outer viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Spectral Morph v3.0##"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.6, "half", nameA$ + " -> " + nameB$ + " | " + presetName$ + " | " + modeLabel$
-    
-    # === SOUND A ===
-    Select outer viewport: 0, 4, 0.6, 1.4
-    Select inner viewport: 0.6, 3.7, 0.7, 1.35
-    selectObject: monoA
-    Colour: "{0.3, 0.5, 0.8}"
+    Text: 0.5, "centre", 0.72, "half", "##Spectral Morph##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -1.20, "half", nameA$ + " -> " + nameB$ + " | " + presetName$ + " | " + modeLabel$
+
+    # A waveform
+    Select outer viewport: 0, 8, 0.72, 1.35
+    Select inner viewport: 0.55, 7.75, 0.78, 1.30
+    selectObject: vizA
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "A"
-    Text top: "no", nameA$
-    
-    # === SOUND B ===
-    Select outer viewport: 4, 8, 0.6, 1.4
-    Select inner viewport: 4.4, 7.7, 0.7, 1.35
-    selectObject: monoB
-    Colour: "{0.8, 0.4, 0.3}"
+
+    # B waveform
+    Select outer viewport: 0, 8, 1.38, 2.01
+    Select inner viewport: 0.55, 7.75, 1.44, 1.96
+    selectObject: vizB
+    Colour: "{0.48, 0.42, 0.62}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "B"
-    Text top: "no", nameB$
-    
-    # === MORPH CURVE ===
-    Select outer viewport: 0, 8, 1.5, 2.6
-    Select inner viewport: 0.6, 7.7, 1.6, 2.5
-    Axes: 0, commonDuration, -0.05, 1.1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, commonDuration, -0.05, 1.1
-    Paint rectangle: "{0.92, 0.95, 1.0}", start_morph_s, end_morph_s, -0.05, 1.1
-    
-    Colour: "{0.2, 0.2, 0.7}"
-    Line width: 2.5
-    vizPoints = 100
-    vizStep = commonDuration / vizPoints
+
+    # Output waveform
+    Select outer viewport: 0, 8, 2.04, 2.67
+    Select inner viewport: 0.55, 7.75, 2.10, 2.62
+    selectObject: vizOut
+    Colour: "{0.25, 0.50, 0.82}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Out"
+
+    # Paired input spectrograms
+    Select outer viewport: 0, 4, 2.74, 4.15
+    Select inner viewport: 0.55, 3.82, 2.84, 4.08
+    selectObject: vizA
+    To Spectrogram: 0.01, displayFreq, 0.003, 20, "Gaussian"
+    sgA = selected("Spectrogram")
+    Paint: 0, 0, 0, displayFreq, 100, "yes", 50, 6, 0, "no"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "A spectrum"
+    removeObject: sgA
+
+    Select outer viewport: 4, 8, 2.74, 4.15
+    Select inner viewport: 4.22, 7.75, 2.84, 4.08
+    selectObject: vizB
+    To Spectrogram: 0.01, displayFreq, 0.003, 20, "Gaussian"
+    sgB = selected("Spectrogram")
+    Paint: 0, 0, 0, displayFreq, 100, "yes", 50, 6, 0, "no"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "B spectrum"
+    removeObject: sgB
+
+    # Output spectrogram
+    Select outer viewport: 0, 8, 4.22, 5.55
+    Select inner viewport: 0.55, 7.75, 4.32, 5.48
+    selectObject: vizOut
+    To Spectrogram: 0.01, displayFreq, 0.003, 20, "Gaussian"
+    sgO = selected("Spectrogram")
+    Paint: 0, 0, 0, displayFreq, 100, "yes", 50, 6, 0, "no"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Hz"
+    Text top: "no", "Output spectrogram"
+    removeObject: sgO
+
+    # Morph curve
+    Select outer viewport: 0, 8, 5.62, 6.70
+    Select inner viewport: 0.55, 7.75, 5.72, 6.63
+    Axes: 0, commonDuration, 0, 1
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, commonDuration, 0, 1
+    Colour: "{0.35, 0.42, 0.68}"
+    Line width: 1.5
     prevT = 0
     prevU = (0 - start_morph_s) / morphRange
-    if prevU < 0
-        prevU = 0
-    endif
-    if prevU > 1
-        prevU = 1
-    endif
+    prevU = max(0, min(1, prevU))
     if curve_type = 2
         prevM = 0.5 - 0.5 * cos(pi * prevU)
     else
         prevM = prevU
     endif
-    for vp from 1 to vizPoints
-        curT = vp * vizStep
+    for q from 1 to 120
+        curT = commonDuration * q / 120
         curU = (curT - start_morph_s) / morphRange
-        if curU < 0
-            curU = 0
-        endif
-        if curU > 1
-            curU = 1
-        endif
+        curU = max(0, min(1, curU))
         if curve_type = 2
             curM = 0.5 - 0.5 * cos(pi * curU)
         else
@@ -529,127 +641,38 @@ if draw_visualization
         prevM = curM
     endfor
     Line width: 1
-    
-    Colour: "{0.3, 0.5, 0.8}"
-    Text: 0, "left", 1.05, "half", "A"
-    Colour: "{0.8, 0.4, 0.3}"
-    Text: commonDuration, "right", 1.05, "half", "B"
-    Colour: "{0.7, 0.7, 0.7}"
-    Dotted line
-    Draw line: 0, 0, commonDuration, 0
-    Draw line: 0, 1, commonDuration, 1
-    Solid line
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Morph (0-1)"
+    Text left: "yes", "B mix"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Morph Curve (" + curveLabel$ + ", per-frame)"
-    
-    # === SPECTROGRAM A ===
-    Select outer viewport: 0, 4, 2.7, 3.9
-    Select inner viewport: 0.6, 3.7, 2.8, 3.8
-    selectObject: monoA
-    To Spectrogram: 0.005, max_freq_Hz, 0.002, 20, "Gaussian"
-    specgramA = selected("Spectrogram")
-    Paint: 0, 0, 0, max_freq_Hz, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Hz"
-    Text top: "no", "A Spectrogram"
-    removeObject: specgramA
-    
-    # === SPECTROGRAM B ===
-    Select outer viewport: 4, 8, 2.7, 3.9
-    Select inner viewport: 4.4, 7.7, 2.8, 3.8
-    selectObject: monoB
-    To Spectrogram: 0.005, max_freq_Hz, 0.002, 20, "Gaussian"
-    specgramB = selected("Spectrogram")
-    Paint: 0, 0, 0, max_freq_Hz, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Hz"
-    Text top: "no", "B Spectrogram"
-    removeObject: specgramB
-    
-    # === OUTPUT WAVEFORM ===
-    Select outer viewport: 0, 8, 4.0, 4.8
-    Select inner viewport: 0.6, 7.7, 4.1, 4.75
-    selectObject: finalOutput
-    Colour: "{0.4, 0.6, 0.4}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Out"
-    Text top: "no", "Spectral Morph v3.0 | " + fixed$(outputDuration, 2) + " s"
-    
-    # === OUTPUT SPECTROGRAM ===
-    Select outer viewport: 0, 8, 4.9, 6.1
-    Select inner viewport: 0.6, 7.7, 5.0, 6.0
-    selectObject: finalOutput
-    To Spectrogram: 0.005, max_freq_Hz, 0.002, 20, "Gaussian"
-    specgramOut = selected("Spectrogram")
-    Paint: 0, 0, 0, max_freq_Hz, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output Spectrogram"
-    removeObject: specgramOut
-    
-    # === STATS ===
-    Select outer viewport: 0, 8, 6.2, 7.0
-    Select inner viewport: 0.6, 7.7, 6.3, 6.95
+
+    # Summary
+    Select outer viewport: 0, 8, 6.80, 7.55
+    Select inner viewport: 0.55, 7.75, 6.86, 7.48
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.85, "half", "##v3.0 Summary##"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.35}"
-    Text: 0.02, "left", 0.62, "half", "A: " + nameA$ + " (" + fixed$(durA, 2) + "s) | B: " + nameB$ + " (" + fixed$(durB, 2) + "s) | Out: " + fixed$(outputDuration, 2) + "s"
-    Text: 0.02, "left", 0.38, "half", modeLabel$ + " | " + curveLabel$ + " | " + string$(targetSR) + " Hz | " + fixed$(window_ms, 0) + "ms window | " + string$(totalFrames) + " frames"
-    Text: 0.02, "left", 0.15, "half", "Morph: " + fixed$(start_morph_s, 2) + "-" + fixed$(end_morph_s, 2) + "s | Preset: " + presetName$
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
-    
-    # === LEGEND ===
-    Select outer viewport: 0, 8, 7.05, 7.4
-    Axes: 0, 1, 0, 1
+    Font size: 7
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
     Font size: 6
-    Colour: "{0.3, 0.5, 0.8}"
-    Draw line: 0.05, 0.5, 0.09, 0.5
-    Colour: "Black"
-    Text: 0.10, "left", 0.5, "half", "Sound A"
-    Colour: "{0.8, 0.4, 0.3}"
-    Draw line: 0.25, 0.5, 0.29, 0.5
-    Colour: "Black"
-    Text: 0.30, "left", 0.5, "half", "Sound B"
-    Colour: "{0.4, 0.6, 0.4}"
-    Draw line: 0.45, 0.5, 0.49, 0.5
-    Colour: "Black"
-    Text: 0.50, "left", 0.5, "half", "Output"
-    Colour: "{0.2, 0.2, 0.7}"
-    Line width: 2
-    Draw line: 0.65, 0.5, 0.69, 0.5
-    Line width: 1
-    Colour: "Black"
-    Text: 0.70, "left", 0.5, "half", "Morph curve"
-    
+    Colour: "{0.28, 0.28, 0.34}"
+    Text: 0.02, "left", 0.52, "half", modeLabel$ + " | morph <= " + fixed$(morph_max_freq_Hz, 0) + " Hz | " + fixed$(actualWindow_s*1000, 1) + " ms | " + string$(totalFrames) + " frames"
+    Text: 0.02, "left", 0.24, "half", channelMode$ + " | process " + string$(processSR) + " Hz -> output " + fixed$(finalSR, 0) + " Hz | peak " + fixed$(peakFinal, 4)
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
+
+    removeObject: vizA, vizB, vizOut
+    appendInfoLine: "  Visualization complete."
 endif
 
 # ============================================================
-# CLEANUP
+# CLEANUP + OUTPUT
 # ============================================================
-
-removeObject: monoA, monoB
-
+removeObject: workA, workB, weightBuffer
 selectObject: finalOutput
 
 appendInfoLine: ""
