@@ -3,28 +3,37 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Phonetic Tremolo/Glitch Effect - classifies audio frames
-#   by phonetic type (vowel, fricative, silence) using acoustic
-#   features and applies different effects to each class.
-#   Vowels get tremolo, fricatives get time-shift glitch,
-#   silence gets gated.
+#   Acoustic-class tremolo/glitch processor. A mono analysis signal is
+#   classified framewise into vowel-like, fricative-like, silence, and
+#   other regions using Pitch, Intensity, Harmonicity, and structural
+#   Formant/Bandwidth cues. This is an acoustic proxy, not phoneme or
+#   speech recognition.
 #
-# Changelog v0.2:
-#   - Fixed input check
-#   - Fixed Formula (part) variable interpolation
-#   - Fixed time-shift syntax
-#   - Removed unnecessary rename
-#   - Added visualization
+#   Vowel-like regions receive sinusoidal tremolo. Fricative-like regions
+#   receive a causal delay glitch. Silence regions are attenuated/gated.
+#   Classification is shared across all channels; processing preserves the
+#   input channel count, sample rate, duration, and start time.
+#
+# v0.3 changes:
+#   - Separates analysis/classification from processing and merges adjacent
+#     frames of the same class into regions.
+#   - Adds short dry crossfades at class boundaries to reduce clicks.
+#   - Makes fricative shift causal (delay; reads past material, never future).
+#   - Uses local sound time for tremolo phase, independent of Sound xmin.
+#   - Removes hidden 1.5x fricative and 1.1x "other" gain boosts.
+#   - Adds exact 0% Dry/Wet bypass, attenuation-only Safety_peak, and
+#     user-visible Silence_gain.
+#   - Adds an intensity-only fast path when only silence gating is active.
+#   - Updates visualization to the AudioTools house text layout.
 # ============================================================
 
-# === Check Input ===
 if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object."
+    exitScript: "Error: Please select exactly one Sound object."
 endif
 
 original = selected("Sound")
@@ -37,496 +46,494 @@ sound_xmin = Get start time
 sound_xmax = Get end time
 numChannels = Get number of channels
 
-# === Form ===
 form Phonetic Tremolo/Glitch Effect
-    comment Select a Sound object first
-    
-    comment === Preset ===
-    optionmenu Preset 1
+    optionmenu Preset: 1
         option Custom (use settings below)
         option Subtle Vocal Texture
         option Hard Robot Glitch
         option Broken Radio (High Speed)
-        option Fricative Smear (Long Shift)
-        option Stutter Vowels
+        option Fricative Smear (Long Delay)
+        option Deep Vowel Tremolo
         option Clean Gated (Silence Removal)
-    
-    comment === Effect Parameters ===
-    positive Tremolo_rate_hz 8.0
-    positive Tremolo_depth 0.7
-    positive Shift_amount_seconds 0.015
-    
-    comment === Feature Extraction ===
-    positive Frame_step_seconds 0.01
-    positive Max_formant_hz 5500
-    
-    comment === Classification Thresholds ===
-    positive Vowel_hnr_threshold 5.0
-    positive Vowel_f1_min_hz 300
-    positive Fricative_hnr_max 3.0
-    positive Silence_intensity_threshold 45
-    
-    comment === Output ===
-    positive Scale_peak 0.95
-    boolean Draw_visualization 1
-    boolean Play_result 1
+
+    comment --- Effects ---
+    real Tremolo_rate_hz: 8.0
+    real Tremolo_depth: 0.7
+    real Fricative_delay_seconds: 0.015
+    real Silence_gain: 0.05
+    real Transition_ms: 2.0
+
+    comment --- Feature extraction ---
+    real Frame_step_seconds: 0.01
+    real Max_formant_hz: 5500
+
+    comment --- Classification thresholds ---
+    real Vowel_hnr_threshold: 5.0
+    real Vowel_f1_min_hz: 300
+    real Fricative_hnr_max: 3.0
+    real Silence_intensity_threshold: 45
+
+    comment --- Global ---
+    real Dry_wet_percent: 100
+    real Safety_peak: 0.99
+    boolean Draw_visualization: 1
+    boolean Play_result: 1
 endform
 
-# === Apply Presets ===
+# ============================================================
+# PRESETS
+# ============================================================
+presetName$ = preset$
 if preset = 2
-    # Subtle Vocal Texture
     tremolo_rate_hz = 4.0
     tremolo_depth = 0.3
-    shift_amount_seconds = 0.005
+    fricative_delay_seconds = 0.005
     silence_intensity_threshold = 40
-    presetName$ = "Subtle"
+    silence_gain = 0.10
 elsif preset = 3
-    # Hard Robot Glitch
     tremolo_rate_hz = 12.0
     tremolo_depth = 0.9
-    shift_amount_seconds = 0.03
+    fricative_delay_seconds = 0.030
     silence_intensity_threshold = 50
-    presetName$ = "Robot"
+    silence_gain = 0.02
 elsif preset = 4
-    # Broken Radio
     tremolo_rate_hz = 25.0
     tremolo_depth = 0.8
-    shift_amount_seconds = 0.01
+    fricative_delay_seconds = 0.010
     silence_intensity_threshold = 45
-    presetName$ = "Radio"
+    silence_gain = 0.03
 elsif preset = 5
-    # Fricative Smear
     tremolo_rate_hz = 6.0
     tremolo_depth = 0.2
-    shift_amount_seconds = 0.08
+    fricative_delay_seconds = 0.080
     fricative_hnr_max = 5.0
-    presetName$ = "Smear"
+    silence_gain = 0.05
 elsif preset = 6
-    # Stutter Vowels
     tremolo_rate_hz = 15.0
     tremolo_depth = 1.0
-    shift_amount_seconds = 0.0
-    presetName$ = "Stutter"
+    fricative_delay_seconds = 0.0
+    silence_gain = 0.05
 elsif preset = 7
-    # Clean Gated
     tremolo_rate_hz = 0.0
     tremolo_depth = 0.0
-    shift_amount_seconds = 0.0
+    fricative_delay_seconds = 0.0
     silence_intensity_threshold = 60
-    presetName$ = "Gated"
-else
-    presetName$ = "Custom"
+    silence_gain = 0.0
 endif
 
-# === Validation ===
+# ============================================================
+# VALIDATION / METADATA
+# ============================================================
 if duration <= 0
-    exitScript: "Sound has zero duration."
+    exitScript: "Error: Sound has zero duration."
 endif
 if duration < 0.05
-    exitScript: "Sound is too short for phonetic analysis (need at least 50 ms)."
+    exitScript: "Error: Sound is too short for acoustic classification (need at least 50 ms)."
 endif
-if frame_step_seconds <= 0
-    exitScript: "Frame_step_seconds must be positive."
-endif
-if tremolo_depth < 0
-    tremolo_depth = 0
-endif
-if tremolo_depth > 1
-    tremolo_depth = 1
-endif
-if scale_peak <= 0 or scale_peak > 1
-    scale_peak = 0.95
-endif
+
+frame_step_seconds = min(0.1, max(0.002, frame_step_seconds))
+tremolo_rate_hz = max(0, tremolo_rate_hz)
+tremolo_depth = min(1, max(0, tremolo_depth))
+fricative_delay_seconds = min(duration, max(0, fricative_delay_seconds))
+silence_gain = min(1, max(0, silence_gain))
+transition_ms = min(50, max(0, transition_ms))
+dry_wet_percent = min(100, max(0, dry_wet_percent))
+safety_peak = min(1, max(0, safety_peak))
 
 nyquist = sampling_rate / 2
 safeMaxFormant = min(max_formant_hz, nyquist - 50)
-if safeMaxFormant < 1200
-    exitScript: "Sample rate too low for reliable phonetic formant classification."
+if safeMaxFormant < 1200 and dry_wet_percent > 0 and (tremolo_depth > 0 or fricative_delay_seconds > 0 or draw_visualization)
+    exitScript: "Error: Sample rate is too low for the requested formant-based classification."
 endif
 
-# === Info ===
-writeInfoLine: "=== Phonetic Tremolo/Glitch Effect ==="
-appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s)"
+appendInfoLine: "=== Phonetic Tremolo/Glitch Effect v0.3 ==="
+appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: ""
-appendInfoLine: "Tremolo rate: ", tremolo_rate_hz, " Hz"
-appendInfoLine: "Tremolo depth: ", tremolo_depth
-appendInfoLine: "Shift amount: ", shift_amount_seconds * 1000, " ms"
-appendInfoLine: ""
-appendInfoLine: "Thresholds:"
-appendInfoLine: "  Vowel HNR > ", vowel_hnr_threshold
-appendInfoLine: "  Vowel F1 > ", vowel_f1_min_hz, " Hz"
-appendInfoLine: "  Fricative HNR < ", fricative_hnr_max
-appendInfoLine: "  Silence intensity < ", silence_intensity_threshold, " dB"
-appendInfoLine: "  Formant validity: ordered/spaced F1-F3 + plausible bandwidths"
-appendInfoLine: ""
+appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", fixed$(sampling_rate, 0), " Hz"
+appendInfoLine: "Classifier: acoustic proxy (vowel-like / fricative-like / silence / other)"
+appendInfoLine: "Dry/Wet: ", fixed$(dry_wet_percent, 1), "%"
 
 # ============================================================
-# ANALYSIS PHASE
+# EXACT BYPASS FAST PATH
 # ============================================================
-
-appendInfoLine: "Analyzing..."
-
-# Build a mono analysis signal only. Processing itself remains multichannel.
-# Use a fold-down unless it nearly cancels; then fall back to the loudest channel.
-if numChannels = 1
+if dry_wet_percent <= 0
     selectObject: original
-    Copy: original_name$ + "_analysis"
-    analysisSound = selected("Sound")
-    analysisSource$ = "mono input"
-else
-    selectObject: original
-    Convert to mono
-    analysisSound = selected("Sound")
-    Rename: original_name$ + "_analysis_fold"
-    monoPeak = Get absolute extremum: 0, 0, "None"
-
-    bestChannel = 1
-    bestPeak = -1
-    for ch from 1 to numChannels
-        selectObject: original
-        Extract one channel: ch
-        chTmp = selected("Sound")
-        chPeak = Get absolute extremum: 0, 0, "None"
-        if chPeak > bestPeak
-            bestPeak = chPeak
-            bestChannel = ch
-        endif
-        removeObject: chTmp
+    result = Copy: original_name$ + "_phonetic_bypass"
+    numFrames = max(1, ceiling(duration / frame_step_seconds))
+    classFrames# = zero#(numFrames)
+    for i from 1 to numFrames
+        classFrames#[i] = 4
     endfor
-
-    if bestPeak > 0 and monoPeak < 0.10 * bestPeak
-        removeObject: analysisSound
+    vowelCount = 0
+    fricativeCount = 0
+    silenceCount = 0
+    otherCount = numFrames
+    formantValidCount = 0
+    formantRejectedCount = 0
+    analysisSource$ = "bypassed"
+    fullAnalysis = 0
+else
+    # ========================================================
+    # ANALYSIS SOURCE
+    # ========================================================
+    if numChannels = 1
         selectObject: original
-        Extract one channel: bestChannel
+        Copy: original_name$ + "_analysis"
         analysisSound = selected("Sound")
-        Rename: original_name$ + "_analysis_ch" + string$(bestChannel)
-        analysisSource$ = "channel " + string$(bestChannel) + " (fold-down cancellation fallback)"
+        analysisSource$ = "mono input"
     else
-        analysisSource$ = "mono fold-down"
-    endif
-endif
-appendInfoLine: "  Analysis source: ", analysisSource$
+        selectObject: original
+        Convert to mono
+        analysisSound = selected("Sound")
+        Rename: original_name$ + "_analysis_fold"
+        monoPeak = Get absolute extremum: 0, 0, "None"
 
-# 1. Pitch Analysis
-selectObject: analysisSound
-To Pitch: frame_step_seconds, 75, min(600, nyquist - 50)
-pitch_id = selected("Pitch")
+        bestChannel = 1
+        bestPeak = -1
+        for ch from 1 to numChannels
+            selectObject: original
+            Extract one channel: ch
+            chTmp = selected("Sound")
+            chPeak = Get absolute extremum: 0, 0, "None"
+            if chPeak > bestPeak
+                bestPeak = chPeak
+                bestChannel = ch
+            endif
+            removeObject: chTmp
+        endfor
 
-# 2. Intensity Analysis
-selectObject: analysisSound
-To Intensity: 75, 0, "yes"
-intensity_id = selected("Intensity")
-
-# 3. Formant Analysis: landmarks only, never used as synthesis poles.
-selectObject: analysisSound
-To Formant (burg): frame_step_seconds, 5, safeMaxFormant, 0.025, 50
-formant_id = selected("Formant")
-
-# 4. Harmonicity (HNR) Analysis
-selectObject: analysisSound
-To Harmonicity (cc): frame_step_seconds, 75, 0.1, 1.0
-hnr_id = selected("Harmonicity")
-
-# Prepare Output Object
-selectObject: original
-Copy: original_name$ + "_glitch"
-output_id = selected("Sound")
-
-# Store classification for visualization
-numFrames = ceiling(duration / frame_step_seconds)
-if numFrames < 1
-    numFrames = 1
-endif
-maxVizFrames = min(numFrames, 500)
-vizClass# = zero#(maxVizFrames)
-vizTimes# = zero#(maxVizFrames)
-
-# Counters
-vowelCount = 0
-fricativeCount = 0
-silenceCount = 0
-otherCount = 0
-formantValidCount = 0
-formantRejectedCount = 0
-
-# ============================================================
-# PROCESSING LOOP
-# ============================================================
-
-appendInfoLine: "Processing ", numFrames, " frames..."
-
-for i from 1 to numFrames
-    t_start = sound_xmin + (i - 1) * frame_step_seconds
-    t_end = min(sound_xmin + i * frame_step_seconds, sound_xmax)
-    if t_start >= sound_xmax
-        t_start = sound_xmax
-    endif
-    if t_end < t_start
-        t_end = t_start
-    endif
-    t_mid = 0.5 * (t_start + t_end)
-
-    # Get features at current absolute time.
-    selectObject: pitch_id
-    f0_val = Get value at time: t_mid, "Hertz", "Linear"
-    if f0_val = undefined
-        f0_val = 0
-    endif
-
-    selectObject: intensity_id
-    int_val = Get value at time: t_mid, "cubic"
-    if int_val = undefined
-        int_val = -300
-    endif
-
-    selectObject: hnr_id
-    hnr_val = Get value at time: t_mid, "cubic"
-    if hnr_val = undefined
-        hnr_val = -100
-    endif
-
-    # Structural formant confidence. One F1 value is no longer enough.
-    selectObject: formant_id
-    f1_val = Get value at time: 1, t_mid, "Hertz", "Linear"
-    f2_val = Get value at time: 2, t_mid, "Hertz", "Linear"
-    f3_val = Get value at time: 3, t_mid, "Hertz", "Linear"
-    bw1_val = Get bandwidth at time: 1, t_mid, "Hertz", "Linear"
-    bw2_val = Get bandwidth at time: 2, t_mid, "Hertz", "Linear"
-    bw3_val = Get bandwidth at time: 3, t_mid, "Hertz", "Linear"
-
-    formantValid = 0
-    if f1_val <> undefined and f2_val <> undefined and f3_val <> undefined and bw1_val <> undefined and bw2_val <> undefined and bw3_val <> undefined
-        gap12 = f2_val - f1_val
-        gap23 = f3_val - f2_val
-        span13 = f3_val - f1_val
-        minSpan = 450
-        if f0_val > 0
-            minSpan = max(minSpan, 1.25 * f0_val)
-        endif
-
-        bandwidthOK = 0
-        if bw1_val > 0 and bw2_val > 0 and bw3_val > 0 and bw1_val < min(1000, 0.90 * f1_val) and bw2_val < min(1200, 0.70 * f2_val) and bw3_val < min(1500, 0.60 * f3_val)
-            bandwidthOK = 1
-        endif
-
-        if f1_val > vowel_f1_min_hz and f2_val > f1_val and f3_val > f2_val and gap12 >= 120 and gap23 >= 180 and span13 >= minSpan and f3_val < safeMaxFormant and bandwidthOK = 1
-            formantValid = 1
+        if bestPeak > 0 and monoPeak < 0.10 * bestPeak
+            removeObject: analysisSound
+            selectObject: original
+            Extract one channel: bestChannel
+            analysisSound = selected("Sound")
+            Rename: original_name$ + "_analysis_ch" + string$(bestChannel)
+            analysisSource$ = "channel " + string$(bestChannel) + " (fold-down cancellation fallback)"
+        else
+            analysisSource$ = "mono fold-down"
         endif
     endif
 
-    if formantValid = 1
-        formantValidCount = formantValidCount + 1
-    else
-        formantRejectedCount = formantRejectedCount + 1
+    # Intensity is always needed because silence is an effect class.
+    selectObject: analysisSound
+    To Intensity: 75, 0, "yes"
+    intensity_id = selected("Intensity")
+
+    # If tremolo and fricative delay are both disabled, non-silent class
+    # distinctions do not affect the sound. Skip Pitch/HNR/Formant unless
+    # visualization explicitly asks for the detailed classes.
+    fullAnalysis = 0
+    if tremolo_depth > 0 or fricative_delay_seconds > 0 or draw_visualization
+        fullAnalysis = 1
     endif
 
-    # Classify and apply effect to ALL channels.
-    selectObject: output_id
+    if fullAnalysis
+        selectObject: analysisSound
+        To Pitch: frame_step_seconds, 75, min(600, nyquist - 50)
+        pitch_id = selected("Pitch")
 
-    # --- CLASS 1: VOWEL (voiced, periodic, structurally credible envelope) ---
-    if int_val > silence_intensity_threshold and hnr_val > vowel_hnr_threshold and f0_val > 0 and formantValid = 1
-        # Continuous tremolo inside each accepted region (no framewise gain staircase).
-        Formula (part): t_start, t_end, 1, numChannels,
-            ... ~ self * (1.0 - tremolo_depth * (0.5 * (1.0 + sin(2 * pi * tremolo_rate_hz * x))))
-        classNum = 1
-        vowelCount = vowelCount + 1
+        selectObject: analysisSound
+        To Formant (burg): frame_step_seconds, 5, safeMaxFormant, 0.025, 50
+        formant_id = selected("Formant")
 
-    # --- CLASS 2: FRICATIVE (unvoiced, low HNR) ---
-    elsif int_val > silence_intensity_threshold and hnr_val < fricative_hnr_max and f0_val = 0
-        # Positive shift reads later material. Out-of-domain reads become zero in Praat.
-        Formula (part): t_start, t_end, 1, numChannels,
-            ... ~ self(x + shift_amount_seconds) * 1.5
-        classNum = 2
-        fricativeCount = fricativeCount + 1
-
-    # --- CLASS 3: SILENCE ---
-    elsif int_val < silence_intensity_threshold
-        Formula (part): t_start, t_end, 1, numChannels, ~ self * 0.05
-        classNum = 3
-        silenceCount = silenceCount + 1
-
-    # --- CLASS 4: OTHER ---
-    else
-        Formula (part): t_start, t_end, 1, numChannels, ~ self * 1.1
-        classNum = 4
-        otherCount = otherCount + 1
+        selectObject: analysisSound
+        To Harmonicity (cc): frame_step_seconds, 75, 0.1, 1.0
+        hnr_id = selected("Harmonicity")
     endif
 
-    # Store for visualization
-    vizIdx = floor((i - 1) / numFrames * maxVizFrames) + 1
-    if vizIdx >= 1 and vizIdx <= maxVizFrames
-        vizClass#[vizIdx] = classNum
-        vizTimes#[vizIdx] = t_mid
-    endif
-endfor
+    # ========================================================
+    # CLASSIFY FRAMES FIRST
+    # ========================================================
+    numFrames = max(1, ceiling(duration / frame_step_seconds))
+    classFrames# = zero#(numFrames)
+    midTimes# = zero#(numFrames)
 
-# ============================================================
-# CLEANUP ANALYSIS OBJECTS
-# ============================================================
+    vowelCount = 0
+    fricativeCount = 0
+    silenceCount = 0
+    otherCount = 0
+    formantValidCount = 0
+    formantRejectedCount = 0
 
-removeObject: pitch_id, intensity_id, formant_id, hnr_id, analysisSound
+    for i from 1 to numFrames
+        t_start = sound_xmin + (i - 1) * frame_step_seconds
+        t_end = min(sound_xmin + i * frame_step_seconds, sound_xmax)
+        t_mid = 0.5 * (t_start + t_end)
+        midTimes#[i] = t_mid
 
-# Scale_peak is now a safety ceiling: attenuate only, never amplify a weakened/gated file.
-selectObject: output_id
-outPeak = Get absolute extremum: 0, 0, "None"
-if outPeak > scale_peak
-    Scale peak: scale_peak
-endif
-Rename: original_name$ + "_phonetic_" + presetName$
-result = selected("Sound")
+        selectObject: intensity_id
+        int_val = Get value at time: t_mid, "cubic"
+        if int_val = undefined
+            int_val = -300
+        endif
 
-# === Stats ===
-appendInfoLine: ""
-appendInfoLine: "Classification results:"
-appendInfoLine: "  Vowels: ", vowelCount, " frames (", fixed$(vowelCount / numFrames * 100, 1), "%)"
-appendInfoLine: "  Fricatives: ", fricativeCount, " frames (", fixed$(fricativeCount / numFrames * 100, 1), "%)"
-appendInfoLine: "  Silence: ", silenceCount, " frames (", fixed$(silenceCount / numFrames * 100, 1), "%)"
-appendInfoLine: "  Other: ", otherCount, " frames (", fixed$(otherCount / numFrames * 100, 1), "%)"
-appendInfoLine: "  Structurally valid formant frames: ", formantValidCount, "/", numFrames,
-    ... " (", fixed$(100 * formantValidCount / numFrames, 1), "%)"
-appendInfoLine: "  Rejected formant frames: ", formantRejectedCount
-selectObject: result
-finalPeak = Get absolute extremum: 0, 0, "None"
-appendInfoLine: "  Output peak: ", fixed$(finalPeak, 6), " (ceiling ", scale_peak, ")"
+        if int_val < silence_intensity_threshold
+            classNum = 3
+            silenceCount = silenceCount + 1
+        elsif fullAnalysis = 0
+            classNum = 4
+            otherCount = otherCount + 1
+        else
+            selectObject: pitch_id
+            f0_val = Get value at time: t_mid, "Hertz", "Linear"
+            if f0_val = undefined
+                f0_val = 0
+            endif
 
-# === Visualization ===
-if draw_visualization
-    Erase all
+            selectObject: hnr_id
+            hnr_val = Get value at time: t_mid, "cubic"
+            if hnr_val = undefined
+                hnr_val = -100
+            endif
 
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Phonetic Tremolo/Glitch: " + original_name$ + " (" + presetName$ + ")"
+            selectObject: formant_id
+            f1_val = Get value at time: 1, t_mid, "Hertz", "Linear"
+            f2_val = Get value at time: 2, t_mid, "Hertz", "Linear"
+            f3_val = Get value at time: 3, t_mid, "Hertz", "Linear"
+            bw1_val = Get bandwidth at time: 1, t_mid, "Hertz", "Linear"
+            bw2_val = Get bandwidth at time: 2, t_mid, "Hertz", "Linear"
+            bw3_val = Get bandwidth at time: 3, t_mid, "Hertz", "Linear"
 
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
-    selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
+            formantValid = 0
+            if f1_val <> undefined and f2_val <> undefined and f3_val <> undefined and bw1_val <> undefined and bw2_val <> undefined and bw3_val <> undefined
+                gap12 = f2_val - f1_val
+                gap23 = f3_val - f2_val
+                span13 = f3_val - f1_val
+                minSpan = 450
+                if f0_val > 0
+                    minSpan = max(minSpan, 1.25 * f0_val)
+                endif
+                bandwidthOK = 0
+                if bw1_val > 0 and bw2_val > 0 and bw3_val > 0 and bw1_val < min(1000, 0.90 * f1_val) and bw2_val < min(1200, 0.70 * f2_val) and bw3_val < min(1500, 0.60 * f3_val)
+                    bandwidthOK = 1
+                endif
+                if f1_val > vowel_f1_min_hz and f2_val > f1_val and f3_val > f2_val and gap12 >= 120 and gap23 >= 180 and span13 >= minSpan and f3_val < safeMaxFormant and bandwidthOK = 1
+                    formantValid = 1
+                endif
+            endif
 
-    # Result waveform
-    Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
-    selectObject: result
-    Colour: "{0.6, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Text left: "yes", "Processed"
-    Text bottom: "yes", "Time (s)"
-
-    # Classification timeline (absolute Sound time, so xmin != 0 is correct)
-    Select outer viewport: 0, 8, 2.7, 3.7
-    Select inner viewport: 0.6, 7.6, 2.8, 3.6
-
-    Axes: sound_xmin, sound_xmax, 0, 5
-    Paint rectangle: "{0.95, 0.95, 0.95}", sound_xmin, sound_xmax, 0, 5
-
-    frameWidth = frame_step_seconds
-    for v from 1 to maxVizFrames
-        if vizTimes#[v] >= sound_xmin and vizTimes#[v] <= sound_xmax
-            classVal = vizClass#[v]
-            tPos = vizTimes#[v]
-            leftT = max(sound_xmin, tPos - frameWidth/2)
-            rightT = min(sound_xmax, tPos + frameWidth/2)
-
-            if classVal = 1
-                Paint rectangle: "{0.8, 0.5, 0.5}", leftT, rightT, 0, 4
-            elsif classVal = 2
-                Paint rectangle: "{0.5, 0.5, 0.8}", leftT, rightT, 0, 4
-            elsif classVal = 3
-                Paint rectangle: "{0.7, 0.7, 0.7}", leftT, rightT, 0, 4
+            if formantValid
+                formantValidCount = formantValidCount + 1
             else
-                Paint rectangle: "{0.5, 0.8, 0.5}", leftT, rightT, 0, 4
+                formantRejectedCount = formantRejectedCount + 1
+            endif
+
+            if hnr_val > vowel_hnr_threshold and f0_val > 0 and formantValid = 1
+                classNum = 1
+                vowelCount = vowelCount + 1
+            elsif hnr_val < fricative_hnr_max and f0_val = 0
+                classNum = 2
+                fricativeCount = fricativeCount + 1
+            else
+                classNum = 4
+                otherCount = otherCount + 1
             endif
         endif
+        classFrames#[i] = classNum
     endfor
 
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Class"
-    Text bottom: "yes", "Time (s)"
+    # ========================================================
+    # PROCESS MERGED CLASS REGIONS
+    # ========================================================
+    refName$ = "PTGref" + string$(original)
+    selectObject: original
+    Copy: refName$
+    refSound = selected("Sound")
 
-    # Legend
-    Select outer viewport: 0, 8, 3.9, 4.5
-    Select inner viewport: 0.6, 7.6, 4.0, 4.4
+    selectObject: original
+    Copy: original_name$ + "_phonetic_" + presetName$
+    output_id = selected("Sound")
 
-    Axes: 0, 8, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 8, 0, 1
+    globalWet = dry_wet_percent / 100
+    transitionSecUser = transition_ms / 1000
 
-    Paint rectangle: "{0.8, 0.5, 0.5}", 0.2, 0.6, 0.3, 0.7
-    Font size: 6
-    Colour: "Black"
-    Text: 0.8, "left", 0.5, "half", "Vowel (tremolo)"
+    regionStartFrame = 1
+    while regionStartFrame <= numFrames
+        regionClass = classFrames#[regionStartFrame]
+        regionEndFrame = regionStartFrame
+        while regionEndFrame < numFrames and classFrames#[regionEndFrame + 1] = regionClass
+            regionEndFrame = regionEndFrame + 1
+        endwhile
 
-    Paint rectangle: "{0.5, 0.5, 0.8}", 2.2, 2.6, 0.3, 0.7
-    Text: 2.8, "left", 0.5, "half", "Fricative (glitch)"
+        regionStart = sound_xmin + (regionStartFrame - 1) * frame_step_seconds
+        regionEnd = min(sound_xmax, sound_xmin + regionEndFrame * frame_step_seconds)
+        regionDur = max(0, regionEnd - regionStart)
+        fadeSec = min(transitionSecUser, 0.5 * regionDur)
 
-    Paint rectangle: "{0.7, 0.7, 0.7}", 4.2, 4.6, 0.3, 0.7
-    Text: 4.8, "left", 0.5, "half", "Silence (gate)"
+        # Edge crossfade coefficient e(x): 0 at region edges, 1 in the body.
+        # Each effect is blended against the untouched reference Sound.
+        if regionClass = 1 and tremolo_depth > 0 and tremolo_rate_hz > 0
+            selectObject: output_id
+            Formula (part): regionStart, regionEnd, 1, numChannels,
+                ... ~ Sound_'refName$'(x) * (1 - globalWet * (if fadeSec <= 0 then 1 else if x < regionStart + fadeSec then max(0,min(1,(x-regionStart)/fadeSec)) else if x > regionEnd - fadeSec then max(0,min(1,(regionEnd-x)/fadeSec)) else 1 fi fi fi) * tremolo_depth * (0.5 * (1 + sin(2*pi*tremolo_rate_hz*(x-sound_xmin)))))
+        elsif regionClass = 2 and fricative_delay_seconds > 0
+            selectObject: output_id
+            Formula (part): regionStart, regionEnd, 1, numChannels,
+                ... ~ Sound_'refName$'(x) * (1 - globalWet * (if fadeSec <= 0 then 1 else if x < regionStart + fadeSec then max(0,min(1,(x-regionStart)/fadeSec)) else if x > regionEnd - fadeSec then max(0,min(1,(regionEnd-x)/fadeSec)) else 1 fi fi fi)) + Sound_'refName$'(x-fricative_delay_seconds) * globalWet * (if fadeSec <= 0 then 1 else if x < regionStart + fadeSec then max(0,min(1,(x-regionStart)/fadeSec)) else if x > regionEnd - fadeSec then max(0,min(1,(regionEnd-x)/fadeSec)) else 1 fi fi fi)
+        elsif regionClass = 3 and silence_gain < 1
+            selectObject: output_id
+            Formula (part): regionStart, regionEnd, 1, numChannels,
+                ... ~ Sound_'refName$'(x) * (1 - globalWet * (if fadeSec <= 0 then 1 else if x < regionStart + fadeSec then max(0,min(1,(x-regionStart)/fadeSec)) else if x > regionEnd - fadeSec then max(0,min(1,(regionEnd-x)/fadeSec)) else 1 fi fi fi) * (1-silence_gain))
+        endif
 
-    Paint rectangle: "{0.5, 0.8, 0.5}", 6.2, 6.6, 0.3, 0.7
-    Text: 6.8, "left", 0.5, "half", "Other"
+        regionStartFrame = regionEndFrame + 1
+    endwhile
 
-    Colour: "Black"
-    Draw inner box
+    result = output_id
 
-    # Stats bar chart
-    Select outer viewport: 0, 8, 4.7, 5.5
-    Select inner viewport: 0.6, 7.6, 4.8, 5.4
-
-    Axes: 0, 4, 0, 100
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 4, 0, 100
-
-    vowelPct = vowelCount / numFrames * 100
-    fricPct = fricativeCount / numFrames * 100
-    silPct = silenceCount / numFrames * 100
-    otherPct = otherCount / numFrames * 100
-
-    Paint rectangle: "{0.8, 0.5, 0.5}", 0.2, 0.8, 0, vowelPct
-    Paint rectangle: "{0.5, 0.5, 0.8}", 1.2, 1.8, 0, fricPct
-    Paint rectangle: "{0.7, 0.7, 0.7}", 2.2, 2.8, 0, silPct
-    Paint rectangle: "{0.5, 0.8, 0.5}", 3.2, 3.8, 0, otherPct
-
-    Font size: 5
-    Text: 0.5, "centre", min(98, vowelPct + 5), "half", fixed$(vowelPct, 0) + "%"
-    Text: 1.5, "centre", min(98, fricPct + 5), "half", fixed$(fricPct, 0) + "%"
-    Text: 2.5, "centre", min(98, silPct + 5), "half", fixed$(silPct, 0) + "%"
-    Text: 3.5, "centre", min(98, otherPct + 5), "half", fixed$(otherPct, 0) + "%"
-
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "% Frames"
-
-    # Parameters
-    Select outer viewport: 0, 8, 5.6, 6.3
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    validPct$ = fixed$(100 * formantValidCount / numFrames, 1)
-    Text: 0.5, "centre", 0.72, "half", "Tremolo: " + fixed$(tremolo_rate_hz, 1) + " Hz @ " + fixed$(tremolo_depth * 100, 0) + "% | Shift: " + fixed$(shift_amount_seconds * 1000, 1) + " ms | Silence < " + fixed$(silence_intensity_threshold, 0) + " dB"
-    Text: 0.5, "centre", 0.24, "half", "Formant-valid frames: " + validPct$ + "% | Analysis: " + analysisSource$ + " | Output ceiling only (no forced normalize)"
-
-    Font size: 10
-    Colour: "Black"
+    # Cleanup analysis/reference objects.
+    removeObject: intensity_id, analysisSound, refSound
+    if fullAnalysis
+        removeObject: pitch_id, formant_id, hnr_id
+    endif
 endif
 
-# === Final Info ===
+# ============================================================
+# SAFETY / INFO
+# ============================================================
 selectObject: result
+peakBeforeSafety = Get absolute extremum: 0, 0, "None"
+if dry_wet_percent > 0 and safety_peak > 0 and peakBeforeSafety > safety_peak
+    Scale peak: safety_peak
+endif
+finalPeak = Get absolute extremum: 0, 0, "None"
 
-appendInfoLine: ""
+appendInfoLine: "Analysis source: ", analysisSource$
+if dry_wet_percent > 0
+    if fullAnalysis
+        appendInfoLine: "Analysis: Pitch + Intensity + Harmonicity + Formant structure"
+    else
+        appendInfoLine: "Analysis: intensity-only fast path"
+    endif
+endif
+appendInfoLine: "Classification: vowel-like ", vowelCount, " | fricative-like ", fricativeCount, " | silence ", silenceCount, " | other ", otherCount
+if fullAnalysis
+    appendInfoLine: "Formant-valid frames: ", formantValidCount, "/", numFrames
+endif
+appendInfoLine: "Peak before safety: ", fixed$(peakBeforeSafety, 6)
+appendInfoLine: "Output peak: ", fixed$(finalPeak, 6)
+if safety_peak > 0
+    appendInfoLine: "Safety ceiling: ", fixed$(safety_peak, 3)
+else
+    appendInfoLine: "Safety: disabled"
+endif
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 
+# ============================================================
+# VISUALIZATION - AudioTools house layout
+# ============================================================
+if draw_visualization
+    maxVizFrames = min(numFrames, 500)
+
+    Erase all
+    Select outer viewport: 0, 8, 0, 8
+    Black
+    Plain line
+
+    # ---- TITLE ----
+    Select outer viewport: 0, 8, 0, 0.65
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Phonetic Tremolo/Glitch##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half", original_name$ + "  |  " + presetName$ + "  |  acoustic-class proxy"
+
+    # ---- INPUT ----
+    Select outer viewport: 0, 4.2, 0.75, 2.25
+    Select inner viewport: 0.55, 4.00, 0.95, 2.13
+    selectObject: original
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Input"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # ---- OUTPUT ----
+    Select outer viewport: 4.2, 8, 0.75, 2.25
+    Select inner viewport: 4.55, 7.75, 0.95, 2.13
+    selectObject: result
+    Colour: "{0.25, 0.45, 0.80}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Output"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # ---- CLASS TIMELINE ----
+    Select outer viewport: 0, 8, 2.35, 3.65
+    Select inner viewport: 0.55, 7.75, 2.53, 3.53
+    Axes: sound_xmin, sound_xmax, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", sound_xmin, sound_xmax, 0, 1
+
+    for v from 1 to maxVizFrames
+        srcIdx = floor((v - 1) / maxVizFrames * numFrames) + 1
+        srcIdx = min(numFrames, max(1, srcIdx))
+        classVal = classFrames#[srcIdx]
+        leftT = sound_xmin + (srcIdx - 1) * frame_step_seconds
+        rightT = min(sound_xmax, leftT + frame_step_seconds)
+        if classVal = 1
+            Paint rectangle: "{0.60, 0.45, 0.75}", leftT, rightT, 0, 1
+        elsif classVal = 2
+            Paint rectangle: "{0.35, 0.50, 0.80}", leftT, rightT, 0, 1
+        elsif classVal = 3
+            Paint rectangle: "{0.72, 0.72, 0.72}", leftT, rightT, 0, 1
+        else
+            Paint rectangle: "{0.72, 0.76, 0.84}", leftT, rightT, 0, 1
+        endif
+    endfor
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Acoustic-class timeline"
+    Font size: 6
+    Text bottom: "yes", "Time (s)"
+
+    # ---- LEGEND + COUNTS ----
+    Select outer viewport: 0, 8, 3.75, 4.45
+    Select inner viewport: 0.55, 7.75, 3.83, 4.37
+    Axes: 0, 8, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 8, 0, 1
+    Paint rectangle: "{0.60, 0.45, 0.75}", 0.2, 0.55, 0.30, 0.70
+    Paint rectangle: "{0.35, 0.50, 0.80}", 2.15, 2.50, 0.30, 0.70
+    Paint rectangle: "{0.72, 0.72, 0.72}", 4.10, 4.45, 0.30, 0.70
+    Paint rectangle: "{0.72, 0.76, 0.84}", 5.95, 6.30, 0.30, 0.70
+    Colour: "Black"
+    Font size: 6
+    Text: 0.70, "left", 0.50, "half", "Vowel-like: " + string$(vowelCount)
+    Text: 2.65, "left", 0.50, "half", "Fricative-like: " + string$(fricativeCount)
+    Text: 4.60, "left", 0.50, "half", "Silence: " + string$(silenceCount)
+    Text: 6.45, "left", 0.50, "half", "Other: " + string$(otherCount)
+    Draw inner box
+
+    # ---- SUMMARY ----
+    Select outer viewport: 0, 8, 4.55, 5.45
+    Select inner viewport: 0.55, 7.75, 4.62, 5.38
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 7
+    Text: 0.02, "left", 0.78, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.48, "half", "Tremolo: " + fixed$(tremolo_rate_hz, 1) + " Hz @ " + fixed$(100*tremolo_depth, 0) + "%  |  fricative delay: " + fixed$(1000*fricative_delay_seconds, 1) + " ms  |  silence gain: " + fixed$(silence_gain, 2) + "  |  transition: " + fixed$(transition_ms, 1) + " ms"
+    Text: 0.02, "left", 0.20, "half", "Wet: " + fixed$(dry_wet_percent, 0) + "%  |  silence < " + fixed$(silence_intensity_threshold, 0) + " dB  |  analysis: " + analysisSource$ + "  |  " + fixed$(duration, 2) + " s / " + fixed$(sampling_rate, 0) + " Hz / " + string$(numChannels) + " ch"
+
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+endif
+
+selectObject: result
 if play_result
     Play
 endif
+selectObject: result

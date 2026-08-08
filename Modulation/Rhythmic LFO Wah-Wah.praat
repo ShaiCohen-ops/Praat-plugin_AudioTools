@@ -3,27 +3,36 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Rhythmic LFO Wah-Wah - tempo-synced bandpass filter sweep.
-#   Calculates BPM from selection duration or uses manual input.
-#   LFO rate syncs to musical note values (whole, half, quarter,
-#   eighth, etc.) with dotted and triplet feel options.
+#   Tempo-synchronised resonant wah based on a time-varying
+#   FormantGrid. The resonant centre follows a sine LFO whose cycle
+#   is derived from BPM, musical note value, and straight/dotted/
+#   triplet feel. BPM can be entered manually or inferred from a
+#   user-declared number of beats spanning the whole selected Sound.
 #
-# Changelog v0.2:
-#   - Added input check
-#   - Added presets
-#   - Added visualization
-#   - Added play option
-#   - Use pi constant
+#   Filtering uses Sound & FormantGrid: Filter (no scale), so source
+#   level relationships are not normalised away. Dry/Wet = 0 is an
+#   exact bypass. Safety_peak only attenuates when necessary.
+#
+# v0.3 changes:
+#   - Uses Filter (no scale) instead of the auto-scaling Filter command.
+#   - Removes unconditional Scale peak normalization.
+#   - Adds exact Dry/Wet bypass and attenuation-only Safety_peak.
+#   - Preserves arbitrary channels, sample rate, duration, and start time.
+#   - Builds the FormantGrid in the Sound's absolute time domain while
+#     calculating LFO phase in local time, making output start-time invariant.
+#   - Adds an exact t=0 control point and adaptive LFO control resolution.
+#   - Renames misleading Auto-Detect preset to Fit 4 Beats to Sound.
+#   - Clarifies dotted/triplet timing and validates frequency limits.
+#   - Updates visualization to the AudioTools house text layout.
 # ============================================================
 
-# === Check Input ===
 if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object."
+    exitScript: "Error: Please select exactly one Sound object."
 endif
 
 original = selected("Sound")
@@ -32,27 +41,26 @@ name$ = selected$("Sound")
 selectObject: original
 duration = Get total duration
 sr = Get sampling frequency
+sound_xmin = Get start time
+sound_xmax = Get end time
+numChannels = Get number of channels
 
-# === Form ===
 form Rhythmic LFO Wah-Wah
-    comment Select a Sound object first
-    
-    comment === Preset ===
-    optionmenu Preset 1
+    optionmenu Preset: 1
         option Custom (use settings below)
         option Funky Quarter (120 BPM)
         option Slow Half (80 BPM)
         option Fast Eighth (140 BPM)
         option Triplet Groove (100 BPM)
         option Dotted Eighth (110 BPM)
-        option Auto-Detect 4 Beats
-    
-    comment === BPM Calculation ===
-    comment Beats in selection (0 = use manual BPM):
-    real Beats_in_selection 0
-    positive Manual_BPM 120
-    
-    comment === Rhythm Settings ===
+        option Fit 4 Beats to Sound
+
+    comment --- Tempo ---
+    real Beats_in_sound: 0
+    comment 0 = use Manual_BPM; positive = beats spanning the whole Sound
+    positive Manual_BPM: 120
+
+    comment --- Rhythm ---
     optionmenu Note_value: 3
         option 1/1 (Whole Note)
         option 1/2 (Half Note)
@@ -62,87 +70,100 @@ form Rhythmic LFO Wah-Wah
         option 1/32 (Thirty-second Note)
     optionmenu Feel: 1
         option Straight
-        option Dotted (1.5x slower)
-        option Triplet (33% faster)
-        
-    comment === Wah Tone ===
-    positive Min_cutoff_Hz 400
-    positive Max_cutoff_Hz 2500
-    positive Bandwidth_Hz 150
-    
-    comment === Output ===
-    boolean Draw_visualization 1
-    boolean Play_result 1
+        option Dotted (duration x1.5)
+        option Triplet (duration x2/3)
+
+    comment --- Wah tone ---
+    positive Min_cutoff_Hz: 400
+    positive Max_cutoff_Hz: 2500
+    positive Bandwidth_Hz: 150
+
+    comment --- Output ---
+    real Dry_wet_percent: 100
+    real Safety_peak: 0.99
+    boolean Draw_visualization: 1
+    boolean Play_result: 1
 endform
 
-# === Apply Presets ===
+# ============================================================
+# PRESET OVERRIDES
+# ============================================================
 if preset = 2
-    # Funky Quarter
-    beats_in_selection = 0
+    beats_in_sound = 0
     manual_BPM = 120
     note_value = 3
     feel = 1
     min_cutoff_Hz = 400
     max_cutoff_Hz = 2500
-    presetName$ = "FunkyQtr"
+    bandwidth_Hz = 150
+    presetName$ = "Funky Quarter"
 elsif preset = 3
-    # Slow Half
-    beats_in_selection = 0
+    beats_in_sound = 0
     manual_BPM = 80
     note_value = 2
     feel = 1
     min_cutoff_Hz = 300
     max_cutoff_Hz = 2000
-    presetName$ = "SlowHalf"
+    bandwidth_Hz = 150
+    presetName$ = "Slow Half"
 elsif preset = 4
-    # Fast Eighth
-    beats_in_selection = 0
+    beats_in_sound = 0
     manual_BPM = 140
     note_value = 4
     feel = 1
     min_cutoff_Hz = 500
     max_cutoff_Hz = 3000
-    presetName$ = "FastEighth"
+    bandwidth_Hz = 150
+    presetName$ = "Fast Eighth"
 elsif preset = 5
-    # Triplet Groove
-    beats_in_selection = 0
+    beats_in_sound = 0
     manual_BPM = 100
     note_value = 3
     feel = 3
     min_cutoff_Hz = 400
     max_cutoff_Hz = 2200
-    presetName$ = "Triplet"
+    bandwidth_Hz = 150
+    presetName$ = "Triplet Groove"
 elsif preset = 6
-    # Dotted Eighth
-    beats_in_selection = 0
+    beats_in_sound = 0
     manual_BPM = 110
     note_value = 4
     feel = 2
     min_cutoff_Hz = 350
     max_cutoff_Hz = 2800
-    presetName$ = "DottedEighth"
+    bandwidth_Hz = 150
+    presetName$ = "Dotted Eighth"
 elsif preset = 7
-    # Auto-Detect 4 Beats
-    beats_in_selection = 4
+    beats_in_sound = 4
     note_value = 3
     feel = 1
     min_cutoff_Hz = 400
     max_cutoff_Hz = 2500
-    presetName$ = "Auto4"
+    bandwidth_Hz = 150
+    presetName$ = "Fit 4 Beats"
 else
     presetName$ = "Custom"
 endif
 
-# === Calculate BPM ===
-if beats_in_selection > 0
-    bpm = (beats_in_selection / duration) * 60
-    bpmSource$ = "detected"
+# ============================================================
+# VALIDATION / TEMPO
+# ============================================================
+if duration <= 0
+    exitScript: "Error: Sound has zero duration."
+endif
+
+if beats_in_sound > 0
+    bpm = 60 * beats_in_sound / duration
+    bpmSource$ = "fit " + fixed$(beats_in_sound, 2) + " beats / Sound"
 else
     bpm = manual_BPM
     bpmSource$ = "manual"
 endif
 
-# === Calculate LFO Speed ===
+if bpm <= 0 or bpm > 1200
+    exitScript: "Error: Resulting BPM must be > 0 and <= 1200."
+endif
+
 if note_value = 1
     beat_fraction = 4
     noteLabel$ = "1/1"
@@ -158,232 +179,251 @@ elsif note_value = 4
 elsif note_value = 5
     beat_fraction = 0.25
     noteLabel$ = "1/16"
-elsif note_value = 6
+else
     beat_fraction = 0.125
     noteLabel$ = "1/32"
 endif
 
-# Apply feel modifier
 if feel = 1
     feelLabel$ = "straight"
 elsif feel = 2
     beat_fraction = beat_fraction * 1.5
     feelLabel$ = "dotted"
-elsif feel = 3
+else
     beat_fraction = beat_fraction * (2/3)
     feelLabel$ = "triplet"
 endif
 
-# Duration of one cycle
 cycle_dur = (60 / bpm) * beat_fraction
 lfo_freq = 1 / cycle_dur
 
-# === Info ===
-writeInfoLine: "=== Rhythmic LFO Wah-Wah ==="
-appendInfoLine: "Source: ", name$, " (", fixed$(duration, 2), " s)"
+# Defensible filter bounds. A margin below Nyquist avoids a resonant centre
+# whose upper skirt is mostly outside the sampled band.
+nyquist = sr / 2
+maxAllowedCutoff = 0.45 * sr
+min_cutoff_Hz = max(20, min(min_cutoff_Hz, maxAllowedCutoff))
+max_cutoff_Hz = max(20, min(max_cutoff_Hz, maxAllowedCutoff))
+if min_cutoff_Hz > max_cutoff_Hz
+    swap = min_cutoff_Hz
+    min_cutoff_Hz = max_cutoff_Hz
+    max_cutoff_Hz = swap
+endif
+bandwidth_Hz = max(1, min(bandwidth_Hz, 0.45 * sr))
+dry_wet_percent = min(100, max(0, dry_wet_percent))
+safety_peak = min(1, max(0, safety_peak))
+
+writeInfoLine: "=== Rhythmic LFO Wah-Wah v0.3 ==="
+appendInfoLine: "Source: ", name$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: ""
-appendInfoLine: "BPM: ", fixed$(bpm, 1), " (", bpmSource$, ")"
-appendInfoLine: "Note value: ", noteLabel$, " ", feelLabel$
-appendInfoLine: "LFO rate: ", fixed$(lfo_freq, 2), " Hz"
-appendInfoLine: "Cycle duration: ", fixed$(cycle_dur * 1000, 1), " ms"
-appendInfoLine: ""
-appendInfoLine: "Filter range: ", min_cutoff_Hz, " - ", max_cutoff_Hz, " Hz"
-appendInfoLine: "Bandwidth: ", bandwidth_Hz, " Hz"
-appendInfoLine: ""
+appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", fixed$(sr, 0), " Hz"
+appendInfoLine: "BPM: ", fixed$(bpm, 3), " (", bpmSource$, ")"
+appendInfoLine: "Rhythm: ", noteLabel$, " ", feelLabel$, " | LFO: ", fixed$(lfo_freq, 4), " Hz"
+appendInfoLine: "Cycle: ", fixed$(1000 * cycle_dur, 3), " ms"
+appendInfoLine: "Resonance range: ", fixed$(min_cutoff_Hz, 1), " - ", fixed$(max_cutoff_Hz, 1), " Hz | BW: ", fixed$(bandwidth_Hz, 1), " Hz"
+appendInfoLine: "Dry/Wet: ", fixed$(dry_wet_percent, 1), "%"
 
-# === Create FormantGrid ===
-appendInfoLine: "Creating LFO wah curve..."
-
-Create FormantGrid: name$ + "_lfo", 0, duration, 1, 550, 600, 50, 50
-gridID = selected("FormantGrid")
-
-# Remove default points
-Remove formant points between: 1, 0, duration
-Remove bandwidth points between: 1, 0, duration
-
-# Generate sine wave curve
-time_step = 0.005
-n_steps = floor(duration / time_step)
-
-# Store for visualization
-maxVizPoints = min(n_steps, 300)
-vizTimes# = zero#(maxVizPoints)
-vizFreqs# = zero#(maxVizPoints)
-
-for i to n_steps
-    t = i * time_step
-    
-    # LFO oscillator
-    oscillator = sin(2 * pi * lfo_freq * t)
-    
-    # Normalize to 0-1
-    norm_val = (1 + oscillator) / 2
-    
-    # Map to frequency range
-    target_freq = min_cutoff_Hz + ((max_cutoff_Hz - min_cutoff_Hz) * norm_val)
-    
-    # Apply to grid
-    selectObject: gridID
-    Add formant point: 1, t, target_freq
-    Add bandwidth point: 1, t, bandwidth_Hz
-    
-    # Store for visualization
-    vizIdx = floor((i - 1) / n_steps * maxVizPoints) + 1
-    if vizIdx >= 1 and vizIdx <= maxVizPoints
-        vizTimes#[vizIdx] = t
-        vizFreqs#[vizIdx] = target_freq
-    endif
-endfor
-
-# === Apply Filter ===
-appendInfoLine: "Applying wah filter..."
-
-selectObject: original, gridID
-result = Filter
-Rename: name$ + "_wah_" + presetName$
-
-# Cleanup grid
-removeObject: gridID
-
-# Scale
-selectObject: result
-Scale peak: 0.95
-
-# === Visualization ===
-if draw_visualization
-    Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Rhythmic LFO Wah: " + name$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+# ============================================================
+# PROCESSING
+# ============================================================
+if dry_wet_percent <= 0
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
-    selectObject: result
-    Colour: "{0.7, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Text left: "yes", "Wah"
-    Text bottom: "yes", "Time (s)"
-    
-    # LFO / Filter frequency curve
-    Select outer viewport: 0, 8, 2.7, 4.0
-    Select inner viewport: 0.6, 7.6, 2.8, 3.9
-    
-    freqMargin = (max_cutoff_Hz - min_cutoff_Hz) * 0.1
-    Axes: 0, duration, min_cutoff_Hz - freqMargin, max_cutoff_Hz + freqMargin
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, min_cutoff_Hz - freqMargin, max_cutoff_Hz + freqMargin
-    
-    # Draw beat grid
-    Colour: "{0.85, 0.85, 0.85}"
-    beatDur = 60 / bpm
-    beatNum = 0
-    t = 0
-    while t < duration
-        Dotted line
-        Draw line: t, min_cutoff_Hz - freqMargin, t, max_cutoff_Hz + freqMargin
-        beatNum = beatNum + 1
-        t = beatNum * beatDur
-    endwhile
-    Solid line
-    
-    # Center line
-    centerFreq = (min_cutoff_Hz + max_cutoff_Hz) / 2
-    Colour: "{0.8, 0.8, 0.8}"
-    Dotted line
-    Draw line: 0, centerFreq, duration, centerFreq
-    Solid line
-    
-    # Draw LFO curve
-    Colour: "{0.7, 0.5, 0.5}"
-    Line width: 1.5
-    for v from 2 to maxVizPoints
-        if vizTimes#[v] > 0 and vizTimes#[v - 1] > 0
-            Draw line: vizTimes#[v - 1], vizFreqs#[v - 1], vizTimes#[v], vizFreqs#[v]
-        endif
+    result = Copy: name$ + "_wah_" + presetName$
+    controlPoints = 0
+else
+    # At least 32 control points per LFO cycle, while retaining the original
+    # 5 ms ceiling at slower rates. This prevents coarse high-rate staircasing.
+    controlStep = min(0.005, cycle_dur / 32)
+    controlStep = max(1 / sr, controlStep)
+    n_steps = ceiling(duration / controlStep)
+    controlPoints = n_steps + 1
+
+    centerFreq = 0.5 * (min_cutoff_Hz + max_cutoff_Hz)
+    selectObject: original
+    Create FormantGrid: name$ + "_lfo", sound_xmin, sound_xmax, 1, centerFreq, 600, bandwidth_Hz, 50
+    gridID = selected("FormantGrid")
+    Remove formant points between: 1, sound_xmin, sound_xmax
+    Remove bandwidth points between: 1, sound_xmin, sound_xmax
+
+    for i from 0 to n_steps
+        localT = min(duration, i * controlStep)
+        absT = sound_xmin + localT
+        oscillator = sin(2 * pi * lfo_freq * localT)
+        target_freq = min_cutoff_Hz + (max_cutoff_Hz - min_cutoff_Hz) * 0.5 * (1 + oscillator)
+        selectObject: gridID
+        Add formant point: 1, absT, target_freq
+        Add bandwidth point: 1, absT, bandwidth_Hz
     endfor
-    Line width: 1
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Filter (Hz)"
-    Text bottom: "yes", "Time (s) - beat grid shown"
-    
-    # Rhythm info box
-    Select outer viewport: 0, 8, 4.2, 5.0
-    Select inner viewport: 0.6, 7.6, 4.3, 4.9
-    
-    Axes: 0, 8, 0, 2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 8, 0, 2
-    
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    
-    # Note value visual
-    if note_value = 1
-        noteSymbol$ = "O (whole)"
-    elsif note_value = 2
-        noteSymbol$ = "d (half)"
-    elsif note_value = 3
-        noteSymbol$ = "q (quarter)"
-    elsif note_value = 4
-        noteSymbol$ = "e (eighth)"
-    elsif note_value = 5
-        noteSymbol$ = "s (16th)"
-    else
-        noteSymbol$ = "t (32nd)"
+
+    selectObject: original, gridID
+    result = Filter (no scale)
+    Rename: name$ + "_wah_" + presetName$
+    removeObject: gridID
+
+    # Praat's one-formant recursion is an all-pole resonator whose raw centre
+    # gain can be hundreds of times unity. Apply the exact steady-state
+    # centre-frequency normalization of that resonator, time-varying with the
+    # same LFO. This is filter calibration, not peak normalization.
+    resonanceR = exp(-pi * bandwidth_Hz / sr)
+    globalResR = resonanceR
+    globalMinF = min_cutoff_Hz
+    globalRangeF = max_cutoff_Hz - min_cutoff_Hz
+    globalLfoF = lfo_freq
+    globalSr = sr
+    globalXmin = sound_xmin
+
+    selectObject: original
+    Extract one channel: 1
+    gainControl = selected("Sound")
+    Rename: "wah_center_gain"
+    Formula: "(1-'globalResR') * sqrt(1 - 2*'globalResR'*cos(4*pi*('globalMinF' + 0.5*'globalRangeF'*(1+sin(2*pi*'globalLfoF'*(x-'globalXmin'))))/'globalSr') + 'globalResR'^2)"
+
+    globalGainControl = gainControl
+    selectObject: result
+    Formula: "self * object ['globalGainControl', 1, col]"
+    removeObject: gainControl
+
+    if dry_wet_percent < 100
+        wet = dry_wet_percent / 100
+        dry = 1 - wet
+        globalOriginal = original
+        selectObject: result
+        Formula: "'wet' * self + 'dry' * object ['globalOriginal', row, col]"
     endif
-    
-    Text: 1, "centre", 1.5, "half", "BPM: " + fixed$(bpm, 0)
-    Text: 3, "centre", 1.5, "half", "Note: " + noteLabel$
-    Text: 5, "centre", 1.5, "half", "Feel: " + feelLabel$
-    Text: 7, "centre", 1.5, "half", "LFO: " + fixed$(lfo_freq, 2) + " Hz"
-    
-    Text: 2, "centre", 0.5, "half", "(" + bpmSource$ + ")"
-    Text: 4, "centre", 0.5, "half", noteSymbol$
-    Text: 6, "centre", 0.5, "half", "Cycle: " + fixed$(cycle_dur * 1000, 0) + " ms"
-    
-    Colour: "Black"
-    Draw inner box
-    
-    # Stats
-    Select outer viewport: 0, 8, 5.1, 5.4
-    Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Range: " + fixed$(min_cutoff_Hz, 0) + "-" + fixed$(max_cutoff_Hz, 0) + " Hz | BW: " + fixed$(bandwidth_Hz, 0) + " Hz | Beats in file: ~" + fixed$(duration / beatDur, 1)
-    
-    Font size: 10
-    Colour: "Black"
 endif
 
-# === Final Info ===
+# Attenuation-only safety. Exact dry bypass is never changed by Safety_peak.
 selectObject: result
+peakBeforeSafety = Get absolute extremum: 0, 0, "None"
+if dry_wet_percent > 0 and safety_peak > 0 and peakBeforeSafety > safety_peak
+    Scale peak: safety_peak
+endif
+outputPeak = Get absolute extremum: 0, 0, "None"
 
-appendInfoLine: ""
+appendInfoLine: "Control points: ", controlPoints
+appendInfoLine: "Peak before safety: ", fixed$(peakBeforeSafety, 6)
+appendInfoLine: "Output peak: ", fixed$(outputPeak, 6)
+if safety_peak > 0
+    appendInfoLine: "Safety ceiling: ", fixed$(safety_peak, 3)
+else
+    appendInfoLine: "Safety: disabled"
+endif
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 
-# === Play ===
-if play_result
+# ============================================================
+# VISUALIZATION - AudioTools house text layout
+# ============================================================
+if draw_visualization
+    if safety_peak > 0
+        safeStr$ = fixed$(safety_peak, 2)
+    else
+        safeStr$ = "off"
+    endif
+
+    Erase all
+    Select outer viewport: 0, 8, 0, 8
+    Black
+    Plain line
+
+    # ---- TITLE ----
+    Select outer viewport: 0, 8, 0, 0.65
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Rhythmic LFO Wah-Wah##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half", name$ + "  |  " + presetName$ + "  |  " + noteLabel$ + " " + feelLabel$
+
+    # ---- INPUT ----
+    Select outer viewport: 0, 4.2, 0.75, 2.30
+    Select inner viewport: 0.55, 4.00, 0.95, 2.18
+    selectObject: original
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Input"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # ---- OUTPUT ----
+    Select outer viewport: 4.2, 8, 0.75, 2.30
+    Select inner viewport: 4.55, 7.75, 0.95, 2.18
     selectObject: result
-    Play
+    Colour: "{0.25, 0.45, 0.80}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Output"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # ---- LFO / RESONANCE TRAJECTORY ----
+    Select outer viewport: 0, 8, 2.40, 4.55
+    Select inner viewport: 0.55, 7.75, 2.62, 4.38
+    freqRange = max_cutoff_Hz - min_cutoff_Hz
+    freqMargin = max(10, 0.08 * max(1, freqRange))
+    Axes: 0, duration, min_cutoff_Hz - freqMargin, max_cutoff_Hz + freqMargin
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, min_cutoff_Hz - freqMargin, max_cutoff_Hz + freqMargin
+
+    # Beat grid, limited to avoid extremely dense graphics.
+    beatDur = 60 / bpm
+    if duration / beatDur <= 80
+        Colour: "{0.86, 0.86, 0.86}"
+        Dotted line
+        beatIndex = 0
+        beatT = 0
+        while beatT <= duration
+            Draw line: beatT, min_cutoff_Hz - freqMargin, beatT, max_cutoff_Hz + freqMargin
+            beatIndex = beatIndex + 1
+            beatT = beatIndex * beatDur
+        endwhile
+        Solid line
+    endif
+
+    Colour: "{0.48, 0.36, 0.72}"
+    Line width: 1.5
+    vizPoints = 400
+    for v from 2 to vizPoints
+        t1 = (v - 2) / (vizPoints - 1) * duration
+        t2 = (v - 1) / (vizPoints - 1) * duration
+        f1 = min_cutoff_Hz + freqRange * 0.5 * (1 + sin(2*pi*lfo_freq*t1))
+        f2 = min_cutoff_Hz + freqRange * 0.5 * (1 + sin(2*pi*lfo_freq*t2))
+        Draw line: t1, f1, t2, f2
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Resonance trajectory"
+    Font size: 6
+    Text left: "yes", "Hz"
+    Text bottom: "yes", "Local time (s)"
+
+    # ---- SUMMARY ----
+    Select outer viewport: 0, 8, 4.68, 5.55
+    Select inner viewport: 0.55, 7.75, 4.75, 5.48
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 7
+    Text: 0.02, "left", 0.78, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.48, "half", "BPM: " + fixed$(bpm, 2) + " (" + bpmSource$ + ")  |  note: " + noteLabel$ + " " + feelLabel$ + "  |  LFO: " + fixed$(lfo_freq, 3) + " Hz  |  cycle: " + fixed$(1000*cycle_dur, 1) + " ms"
+    Text: 0.02, "left", 0.20, "half", "Range: " + fixed$(min_cutoff_Hz, 0) + "-" + fixed$(max_cutoff_Hz, 0) + " Hz  |  BW: " + fixed$(bandwidth_Hz, 0) + " Hz  |  Wet: " + fixed$(dry_wet_percent, 0) + "%  |  safety: " + safeStr$ + "  |  " + fixed$(duration, 2) + " s / " + fixed$(sr, 0) + " Hz / " + string$(numChannels) + " ch"
+
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
 endif
 
+selectObject: result
+if play_result
+    Play
+endif
 selectObject: result
