@@ -3,28 +3,37 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Spectral-Driven Intensity Modulation - analyzes spectral
-#   features (flatness and roughness) across the sound and uses
-#   them to drive amplitude modulation. Noisy content gets deeper
-#   tremolo, complex content gets faster tremolo. Tonal/smooth
-#   content is protected with reduced modulation.
+#   Time-varying spectral-driven tremolo. Short analysis windows measure
+#   scale-invariant spectral flatness and normalized spectral spread.
+#   Flat/noisy windows receive deeper attenuation; spectrally broad windows
+#   receive faster modulation. Tonal/spectrally compact windows can be
+#   protected with reduced depth and rate.
 #
-# Changelog v0.2:
-#   - Added input check
-#   - Added form with parameters
-#   - Added presets
-#   - Removed goto
-#   - Added visualization
+#   Depth is a relative attenuation range: 0 dB to -Depth_dB. The effect
+#   never boosts as part of the tremolo itself. The same gain trajectory is
+#   applied to every input channel. Sample rate, start time, duration, and
+#   channel count are preserved.
+#
+# v0.3 changes:
+#   - Replaces level-dependent raw-power roughness with normalized spectral
+#     spread; flatness uses a power-relative floor and is level invariant.
+#   - Uses direct Spectrum cell access and exact-length FFTs for faster analysis.
+#   - Defines depth as attenuation-only dB modulation (0 to -Depth_dB).
+#   - Uses Multiply "no" with a relative-dB IntensityTier; removes normalization.
+#   - Adds Dry_wet_percent and attenuation-only Safety_peak.
+#   - Preserves arbitrary channels and non-zero Sound start times.
+#   - Adds anti-phase fold-down fallback for spectral analysis.
+#   - Uses adaptive control resolution for fast modulation.
+#   - Updates visualization to the AudioTools house layout.
 # ============================================================
 
-# === Check Input ===
 if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly one Sound object."
+    exitScript: "Error: Please select exactly one Sound object."
 endif
 
 original = selected("Sound")
@@ -33,487 +42,536 @@ originalName$ = selected$("Sound")
 selectObject: original
 duration = Get total duration
 sampling = Get sampling frequency
+soundStart = Get start time
+soundEnd = Get end time
+numChannels = Get number of channels
+nyquist = sampling / 2
 
-# === Form ===
 form Spectral-Driven Intensity Modulation
-    comment Select a Sound object first
-    
-    comment === Preset ===
-    optionmenu Preset 1
+    optionmenu Preset: 1
         option Custom (use settings below)
         option Subtle Texture
         option Moderate Dynamics
         option Strong Spectral Response
         option Voice Protection Mode
         option Maximum Effect
-    
-    comment === Analysis ===
-    natural Num_analysis_points 8
-    positive Window_size_seconds 0.2
-    positive Min_frequency_Hz 80
-    positive Max_frequency_Hz 5000
-    
-    comment === Modulation Mapping ===
-    positive Base_intensity_depth 20
-    positive Max_intensity_depth 50
-    positive Base_mod_speed 1.0
-    positive Max_mod_speed 5.0
-    
-    comment === Protection (tonal content) ===
-    positive Tonal_flatness_threshold 0.3
-    positive Smooth_roughness_threshold 0.02
-    real Tonal_depth_reduction 0.3
-    real Tonal_speed_reduction 0.7
-    
-    comment === Output ===
-    positive Time_step 0.01
-    boolean Draw_visualization 1
-    boolean Play_result 1
+
+    comment --- Analysis ---
+    natural Num_analysis_points: 8
+    positive Window_size_seconds: 0.2
+    positive Min_frequency_Hz: 80
+    positive Max_frequency_Hz: 5000
+
+    comment --- Modulation mapping ---
+    positive Base_depth_dB: 20
+    positive Max_depth_dB: 50
+    positive Base_mod_speed_Hz: 1.0
+    positive Max_mod_speed_Hz: 5.0
+
+    comment --- Tonal / compact-spectrum protection ---
+    positive Tonal_flatness_threshold: 0.3
+    positive Smooth_spread_threshold: 0.12
+    real Tonal_depth_reduction: 0.3
+    real Tonal_speed_reduction: 0.7
+
+    comment --- Output ---
+    positive Time_step: 0.01
+    real Dry_wet_percent: 100
+    real Safety_peak: 0.99
+    boolean Draw_visualization: 1
+    boolean Play_result: 1
 endform
 
-# === Apply Presets ===
+# ============================================================
+# PRESETS
+# ============================================================
 if preset = 2
-    # Subtle Texture
-    base_intensity_depth = 15
-    max_intensity_depth = 35
-    base_mod_speed = 0.8
-    max_mod_speed = 3.0
+    base_depth_dB = 12
+    max_depth_dB = 30
+    base_mod_speed_Hz = 0.8
+    max_mod_speed_Hz = 3.0
     presetName$ = "Subtle"
 elsif preset = 3
-    # Moderate Dynamics
-    base_intensity_depth = 20
-    max_intensity_depth = 45
-    base_mod_speed = 1.0
-    max_mod_speed = 4.0
+    base_depth_dB = 18
+    max_depth_dB = 42
+    base_mod_speed_Hz = 1.0
+    max_mod_speed_Hz = 4.0
     presetName$ = "Moderate"
 elsif preset = 4
-    # Strong Spectral Response
-    base_intensity_depth = 25
-    max_intensity_depth = 55
-    base_mod_speed = 1.5
-    max_mod_speed = 6.0
+    base_depth_dB = 22
+    max_depth_dB = 52
+    base_mod_speed_Hz = 1.5
+    max_mod_speed_Hz = 6.0
     presetName$ = "Strong"
 elsif preset = 5
-    # Voice Protection Mode
-    base_intensity_depth = 20
-    max_intensity_depth = 40
-    tonal_flatness_threshold = 0.4
-    smooth_roughness_threshold = 0.03
-    tonal_depth_reduction = 0.2
-    tonal_speed_reduction = 0.5
+    base_depth_dB = 16
+    max_depth_dB = 36
+    tonal_flatness_threshold = 0.40
+    smooth_spread_threshold = 0.18
+    tonal_depth_reduction = 0.20
+    tonal_speed_reduction = 0.50
     presetName$ = "VoicePro"
 elsif preset = 6
-    # Maximum Effect
-    base_intensity_depth = 30
-    max_intensity_depth = 60
-    base_mod_speed = 2.0
-    max_mod_speed = 8.0
-    tonal_depth_reduction = 0.6
+    base_depth_dB = 26
+    max_depth_dB = 60
+    base_mod_speed_Hz = 2.0
+    max_mod_speed_Hz = 8.0
+    tonal_depth_reduction = 0.60
     presetName$ = "Maximum"
 else
     presetName$ = "Custom"
 endif
 
-# === Info ===
-writeInfoLine: "=== Spectral-Driven Intensity Modulation ==="
-appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
+# ============================================================
+# VALIDATION
+# ============================================================
+if duration <= 0
+    exitScript: "Error: Sound duration must be positive."
+endif
+
+num_analysis_points = min(64, max(2, num_analysis_points))
+window_size_seconds = min(duration, max(0.005, window_size_seconds))
+
+min_frequency_Hz = max(0, min(min_frequency_Hz, 0.49 * sampling))
+max_frequency_Hz = max(0, min(max_frequency_Hz, 0.49 * sampling))
+if max_frequency_Hz <= min_frequency_Hz
+    exitScript: "Error: Max_frequency_Hz must be greater than Min_frequency_Hz after Nyquist clamping."
+endif
+
+base_depth_dB = min(80, max(0, base_depth_dB))
+max_depth_dB = min(80, max(base_depth_dB, max_depth_dB))
+base_mod_speed_Hz = min(50, max(0, base_mod_speed_Hz))
+max_mod_speed_Hz = min(50, max(base_mod_speed_Hz, max_mod_speed_Hz))
+tonal_flatness_threshold = min(1, max(0, tonal_flatness_threshold))
+smooth_spread_threshold = min(1, max(0, smooth_spread_threshold))
+tonal_depth_reduction = min(1, max(0, tonal_depth_reduction))
+tonal_speed_reduction = min(1, max(0, tonal_speed_reduction))
+time_step = min(0.05, max(0.0005, time_step))
+dry_wet_percent = min(100, max(0, dry_wet_percent))
+safety_peak = min(1, max(0, safety_peak))
+
+# Keep at least 32 control points per fastest requested modulation cycle.
+if max_mod_speed_Hz > 0
+    controlStep = min(time_step, 1 / (32 * max_mod_speed_Hz))
+else
+    controlStep = time_step
+endif
+
+appendInfoLine: "=== Spectral-Driven Intensity Modulation v0.3 ==="
+appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: ""
-appendInfoLine: "Analysis: ", num_analysis_points, " windows of ", window_size_seconds * 1000, " ms"
-appendInfoLine: "Frequency range: ", min_frequency_Hz, " - ", max_frequency_Hz, " Hz"
-appendInfoLine: ""
-appendInfoLine: "Intensity depth: ", base_intensity_depth, " - ", max_intensity_depth, " dB"
-appendInfoLine: "Modulation speed: ", base_mod_speed, " - ", max_mod_speed, " Hz"
+appendInfoLine: "Channels: ", numChannels, " | Sample rate: ", fixed$(sampling, 0), " Hz"
+appendInfoLine: "Analysis: ", num_analysis_points, " windows x ", fixed$(window_size_seconds * 1000, 1), " ms"
+appendInfoLine: "Range: ", fixed$(min_frequency_Hz, 0), " - ", fixed$(max_frequency_Hz, 0), " Hz"
+appendInfoLine: "Depth: ", fixed$(base_depth_dB, 1), " - ", fixed$(max_depth_dB, 1), " dB attenuation"
+appendInfoLine: "Rate: ", fixed$(base_mod_speed_Hz, 2), " - ", fixed$(max_mod_speed_Hz, 2), " Hz"
+appendInfoLine: "Dry/Wet: ", fixed$(dry_wet_percent, 1), "%"
 appendInfoLine: ""
 
-# === Analysis Phase ===
-appendInfoLine: "Analyzing spectral features..."
+# ============================================================
+# ANALYSIS SOURCE
+# ============================================================
+if numChannels = 1
+    selectObject: original
+    analysisSound = Copy: originalName$ + "_analysis"
+    analysisSource$ = "mono input"
+else
+    selectObject: original
+    Convert to mono
+    analysisSound = selected("Sound")
+    Rename: originalName$ + "_analysis_fold"
+    monoPeak = Get absolute extremum: 0, 0, "None"
 
+    bestChannel = 1
+    bestPeak = -1
+    for ch from 1 to numChannels
+        selectObject: original
+        Extract one channel: ch
+        chTmp = selected("Sound")
+        chPeak = Get absolute extremum: 0, 0, "None"
+        if chPeak > bestPeak
+            bestPeak = chPeak
+            bestChannel = ch
+        endif
+        removeObject: chTmp
+    endfor
+
+    if bestPeak > 0 and monoPeak < 0.10 * bestPeak
+        removeObject: analysisSound
+        selectObject: original
+        Extract one channel: bestChannel
+        analysisSound = selected("Sound")
+        Rename: originalName$ + "_analysis_ch" + string$(bestChannel)
+        analysisSource$ = "channel " + string$(bestChannel) + " (fold-down cancellation fallback)"
+    else
+        analysisSource$ = "mono fold-down"
+    endif
+endif
+
+selectObject: analysisSound
+if soundStart <> 0
+    Shift times by: -soundStart
+endif
+analysisPeak = Get absolute extremum: 0, 0, "None"
+
+appendInfoLine: "Analysis source: ", analysisSource$
+
+# ============================================================
+# WINDOWED SPECTRAL FEATURES
+# ============================================================
 analysisTimes# = zero#(num_analysis_points)
 flatness# = zero#(num_analysis_points)
-roughness# = zero#(num_analysis_points)
+spreadNorm# = zero#(num_analysis_points)
+centroid# = zero#(num_analysis_points)
 
 halfWindow = window_size_seconds / 2
+analysisSpan = max(0, duration - window_size_seconds)
 
 for point from 1 to num_analysis_points
-    # Calculate analysis time
-    analysisTimes#[point] = (point - 1) * duration / (num_analysis_points - 1)
-    
-    # Clamp to valid range
-    if analysisTimes#[point] < halfWindow
-        analysisTimes#[point] = halfWindow
-    endif
-    if analysisTimes#[point] > duration - halfWindow
-        analysisTimes#[point] = duration - halfWindow
-    endif
-    
-    beginTime = analysisTimes#[point] - halfWindow
-    endTime = analysisTimes#[point] + halfWindow
-    
-    if beginTime < 0
+    if analysisSpan > 0
+        analysisTimes#[point] = halfWindow + (point - 1) * analysisSpan / (num_analysis_points - 1)
+        beginTime = analysisTimes#[point] - halfWindow
+        endTime = analysisTimes#[point] + halfWindow
+    else
+        # Very short sound: reuse the whole sound at all analysis points but
+        # distribute the control timestamps over the valid output domain.
+        analysisTimes#[point] = (point - 1) * duration / (num_analysis_points - 1)
         beginTime = 0
-    endif
-    if endTime > duration
         endTime = duration
     endif
-    
-    # Extract window
-    selectObject: original
-    windowSound = Extract part: beginTime, endTime, "Hamming", 1, "no"
-    
-    # Get spectrum
-    selectObject: windowSound
-    To Spectrum: "yes"
-    spectrum = selected("Spectrum")
-    
-    # Calculate spectral features
-    lnSum = 0
-    linearSum = 0
-    validBins = 0
-    roughnessSum = 0
-    roughnessBins = 0
-    
-    selectObject: spectrum
-    nBins = Get number of bins
-    binWidth = Get bin width
-    
-    for bin from 1 to nBins
-        freq = (bin - 1) * binWidth
-        
-        if freq >= min_frequency_Hz and freq <= max_frequency_Hz
-            re = Get real value in bin: bin
-            im = Get imaginary value in bin: bin
-            power = re*re + im*im
-            power = max(power, 1e-12)
-            
-            lnSum = lnSum + ln(power)
-            linearSum = linearSum + power
-            
-            # Roughness: deviation from neighbors
-            if bin > 1 and bin < nBins
-                rePrev = Get real value in bin: bin-1
-                imPrev = Get imaginary value in bin: bin-1
-                powerPrev = rePrev*rePrev + imPrev*imPrev
-                
-                reNext = Get real value in bin: bin+1
-                imNext = Get imaginary value in bin: bin+1
-                powerNext = reNext*reNext + imNext*imNext
-                
-                roughnessSum = roughnessSum + abs(power - (powerPrev + powerNext)/2)
-                roughnessBins = roughnessBins + 1
-            endif
-            
-            validBins = validBins + 1
-        endif
-    endfor
-    
-    # Calculate final values
-    if validBins > 0 and roughnessBins > 0
-        flatness#[point] = exp(lnSum / validBins) / (linearSum / validBins)
-        roughness#[point] = roughnessSum / roughnessBins
+
+    if analysisPeak <= 1e-15
+        flatness#[point] = 0
+        spreadNorm#[point] = 0
+        centroid#[point] = 0
     else
-        flatness#[point] = 0.5
-        roughness#[point] = 0.02
+        selectObject: analysisSound
+        windowSound = Extract part: beginTime, endTime, "Hamming", 1, "no"
+        selectObject: windowSound
+        spectrum = To Spectrum: "no"
+
+        selectObject: spectrum
+        nBins = Get number of bins
+        binWidth = Get bin width
+        firstBin = max(1, ceiling(min_frequency_Hz / binWidth) + 1)
+        lastBin = min(nBins, floor(max_frequency_Hz / binWidth) + 1)
+        validBins = lastBin - firstBin + 1
+
+        if validBins < 2
+            removeObject: spectrum, windowSound, analysisSound
+            exitScript: "Error: Analysis range contains too few FFT bins."
+        endif
+
+        linearSum = 0
+        freqPowerSum = 0
+        freq2PowerSum = 0
+
+        for bin from firstBin to lastBin
+            freq = (bin - 1) * binWidth
+            re = object [spectrum, 1, bin]
+            im = object [spectrum, 2, bin]
+            power = re*re + im*im
+            linearSum = linearSum + power
+            freqPowerSum = freqPowerSum + freq * power
+            freq2PowerSum = freq2PowerSum + freq * freq * power
+        endfor
+
+        if linearSum <= 1e-300
+            flatness#[point] = 0
+            spreadNorm#[point] = 0
+            centroid#[point] = 0
+        else
+            meanPower = linearSum / validBins
+            relativeFloor = max(1e-300, meanPower * 1e-12)
+            lnSum = 0
+
+            for bin from firstBin to lastBin
+                re = object [spectrum, 1, bin]
+                im = object [spectrum, 2, bin]
+                power = max(relativeFloor, re*re + im*im)
+                lnSum = lnSum + ln(power)
+            endfor
+
+            flatness#[point] = exp(lnSum / validBins) / meanPower
+            flatness#[point] = min(1, max(0, flatness#[point]))
+
+            centroid#[point] = freqPowerSum / linearSum
+            spreadSquared = max(0, freq2PowerSum / linearSum - centroid#[point]^2)
+            spread = sqrt(spreadSquared)
+            analysisWidth = max_frequency_Hz - min_frequency_Hz
+            spreadNorm#[point] = min(1, sqrt(12) * spread / analysisWidth)
+        endif
+
+        removeObject: spectrum, windowSound
     endif
-    
-    appendInfoLine: "  Window ", point, " (", fixed$(analysisTimes#[point], 2), "s): flatness=", fixed$(flatness#[point], 3), " roughness=", fixed$(roughness#[point], 4)
-    
-    # Cleanup
-    removeObject: windowSound, spectrum
+
+    appendInfoLine: "  Window ", point, " @ ", fixed$(analysisTimes#[point], 3), " s: flatness=",
+        ... fixed$(flatness#[point], 4), " spread=", fixed$(spreadNorm#[point], 4)
 endfor
 
-# === Create Intensity Modulation ===
-appendInfoLine: ""
-appendInfoLine: "Creating intensity modulation..."
+removeObject: analysisSound
 
-selectObject: original
-workingSound = Copy: "working_" + originalName$
+# ============================================================
+# BUILD RELATIVE-dB GAIN TRAJECTORY
+# ============================================================
+numGridPoints = ceiling(duration / controlStep) + 1
+gainTier = Create IntensityTier: "spectral_gain", soundStart, soundEnd
 
-Create IntensityTier: "spectral_intensity", 0, duration
-intensityTier = selected("IntensityTier")
-
-numGridPoints = round(duration / time_step) + 1
-currentPhase = 0
-previousTime = 0
-
-# Store for visualization
 maxVizPoints = min(numGridPoints, 500)
 vizTimes# = zero#(maxVizPoints)
-vizIntensity# = zero#(maxVizPoints)
+vizGainDb# = zero#(maxVizPoints)
 vizFlatness# = zero#(maxVizPoints)
+vizSpread# = zero#(maxVizPoints)
 vizSpeed# = zero#(maxVizPoints)
 
+currentPhase = 0
+previousLocalTime = 0
+segment = 1
+
+avgFlat = 0
+avgSpread = 0
+avgDepth = 0
+avgSpeed = 0
+
 for i from 1 to numGridPoints
-    currentTime = (i - 1) * time_step
-    
-    # Find which segment we're in (without goto)
-    segment = num_analysis_points - 1
-    for p from 1 to num_analysis_points - 1
-        if currentTime >= analysisTimes#[p] and currentTime <= analysisTimes#[p + 1]
-            segment = p
-            p = num_analysis_points  ; exit loop
-        endif
-    endfor
-    
-    if currentTime < analysisTimes#[1]
-        segment = 1
-    endif
-    
-    # Interpolate spectral features
-    segmentStart = analysisTimes#[segment]
-    segmentEnd = analysisTimes#[segment + 1]
-    
-    if segmentStart = segmentEnd
-        progress = 0
+    localTime = min(duration, (i - 1) * controlStep)
+    absTime = soundStart + localTime
+
+    while segment < num_analysis_points - 1 and localTime > analysisTimes#[segment + 1]
+        segment = segment + 1
+    endwhile
+
+    if localTime <= analysisTimes#[1]
+        currentFlatness = flatness#[1]
+        currentSpread = spreadNorm#[1]
+    elsif localTime >= analysisTimes#[num_analysis_points]
+        currentFlatness = flatness#[num_analysis_points]
+        currentSpread = spreadNorm#[num_analysis_points]
     else
-        progress = (currentTime - segmentStart) / (segmentEnd - segmentStart)
+        segmentStart = analysisTimes#[segment]
+        segmentEnd = analysisTimes#[segment + 1]
+        if segmentEnd <= segmentStart
+            progress = 0
+        else
+            progress = (localTime - segmentStart) / (segmentEnd - segmentStart)
+        endif
+        currentFlatness = flatness#[segment] + progress * (flatness#[segment + 1] - flatness#[segment])
+        currentSpread = spreadNorm#[segment] + progress * (spreadNorm#[segment + 1] - spreadNorm#[segment])
     endif
-    
-    currentFlatness = flatness#[segment] + progress * (flatness#[segment + 1] - flatness#[segment])
-    currentRoughness = roughness#[segment] + progress * (roughness#[segment + 1] - roughness#[segment])
-    
-    # Map to modulation parameters
-    intensityDepth = base_intensity_depth + (currentFlatness * (max_intensity_depth - base_intensity_depth))
-    modulationSpeed = base_mod_speed + (currentRoughness * (max_mod_speed - base_mod_speed) * 100)
-    
-    # Limit speed
-    if modulationSpeed > max_mod_speed
-        modulationSpeed = max_mod_speed
-    endif
-    
-    # Protect tonal content
-    if currentFlatness < tonal_flatness_threshold and currentRoughness < smooth_roughness_threshold
-        intensityDepth = intensityDepth * tonal_depth_reduction
+
+    depthDb = base_depth_dB + currentFlatness * (max_depth_dB - base_depth_dB)
+    modulationSpeed = base_mod_speed_Hz + currentSpread * (max_mod_speed_Hz - base_mod_speed_Hz)
+
+    if currentFlatness < tonal_flatness_threshold and currentSpread < smooth_spread_threshold
+        depthDb = depthDb * tonal_depth_reduction
         modulationSpeed = modulationSpeed * tonal_speed_reduction
     endif
-    
-    # Update phase
+
     if i > 1
-        timeDelta = currentTime - previousTime
-        phaseDelta = 2 * pi * modulationSpeed * timeDelta
-        currentPhase = currentPhase + phaseDelta
-    else
-        currentPhase = 0
+        dt = localTime - previousLocalTime
+        currentPhase = currentPhase + 2*pi*modulationSpeed*dt
     endif
-    
-    # Calculate intensity
-    intensityVariation = intensityDepth * sin(currentPhase)
-    currentIntensity = 70 + intensityVariation
-    
-    # Clamp
-    if currentIntensity < 40
-        currentIntensity = 40
-    elsif currentIntensity > 100
-        currentIntensity = 100
-    endif
-    
-    # Add point
-    selectObject: intensityTier
-    Add point: currentTime, currentIntensity
-    
-    previousTime = currentTime
-    
-    # Store for visualization
+
+    # Attenuation-only tremolo. At phase zero gain is 0 dB, so the processed
+    # signal begins without an artificial level step.
+    gainDb = -0.5 * depthDb * (1 - cos(currentPhase))
+
+    selectObject: gainTier
+    Add point: absTime, gainDb
+
+    avgFlat = avgFlat + currentFlatness
+    avgSpread = avgSpread + currentSpread
+    avgDepth = avgDepth + depthDb
+    avgSpeed = avgSpeed + modulationSpeed
+    previousLocalTime = localTime
+
     vizIdx = floor((i - 1) / numGridPoints * maxVizPoints) + 1
     if vizIdx >= 1 and vizIdx <= maxVizPoints
-        vizTimes#[vizIdx] = currentTime
-        vizIntensity#[vizIdx] = currentIntensity
+        vizTimes#[vizIdx] = localTime
+        vizGainDb#[vizIdx] = gainDb
         vizFlatness#[vizIdx] = currentFlatness
+        vizSpread#[vizIdx] = currentSpread
         vizSpeed#[vizIdx] = modulationSpeed
     endif
 endfor
 
-# === Apply Modulation ===
-appendInfoLine: "Applying intensity modulation..."
+avgFlat = avgFlat / numGridPoints
+avgSpread = avgSpread / numGridPoints
+avgDepth = avgDepth / numGridPoints
+avgSpeed = avgSpeed / numGridPoints
 
-selectObject: workingSound, intensityTier
-result = Multiply: "yes"
-Rename: originalName$ + "_spectralMod_" + presetName$
+# ============================================================
+# APPLY / MIX / SAFETY
+# ============================================================
+if dry_wet_percent <= 0 or max_depth_dB <= 0
+    selectObject: original
+    result = Copy: originalName$ + "_spectralIntensity_" + presetName$
+else
+    selectObject: original, gainTier
+    wetSound = Multiply: "no"
+    Rename: originalName$ + "_spectralIntensityWet"
 
-# Cleanup
-removeObject: workingSound, intensityTier
+    if dry_wet_percent >= 100
+        result = wetSound
+        selectObject: result
+        Rename: originalName$ + "_spectralIntensity_" + presetName$
+    else
+        globalWet = dry_wet_percent / 100
+        globalDry = 1 - globalWet
+        globalOriginal = original
 
-# Scale
+        selectObject: wetSound
+        result = Copy: originalName$ + "_spectralIntensity_" + presetName$
+        Formula: "'globalWet' * self + 'globalDry' * object ['globalOriginal', row, col]"
+        removeObject: wetSound
+    endif
+endif
+
+removeObject: gainTier
+
 selectObject: result
-Scale peak: 0.95
+peakBeforeSafety = Get absolute extremum: 0, 0, "None"
+if dry_wet_percent > 0 and safety_peak > 0 and peakBeforeSafety > safety_peak
+    Scale peak: safety_peak
+endif
+outputPeak = Get absolute extremum: 0, 0, "None"
 
-# === Visualization ===
+appendInfoLine: ""
+appendInfoLine: "Average flatness: ", fixed$(avgFlat, 4)
+appendInfoLine: "Average normalized spread: ", fixed$(avgSpread, 4)
+appendInfoLine: "Average derived depth: ", fixed$(avgDepth, 2), " dB"
+appendInfoLine: "Average derived rate: ", fixed$(avgSpeed, 3), " Hz"
+appendInfoLine: "Control step: ", fixed$(controlStep * 1000, 3), " ms"
+appendInfoLine: "Peak before safety: ", fixed$(peakBeforeSafety, 6)
+appendInfoLine: "Output peak: ", fixed$(outputPeak, 6)
+
+# ============================================================
+# VISUALIZATION - AudioTools house layout
+# ============================================================
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, 8
+    Colour: "Black"
+    Font size: 10
+    Line width: 1
+
+    Select outer viewport: 0, 8, 0, 0.65
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Spectral-Driven Intensity: " + originalName$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    Text: 0.5, "centre", 0.68, "half", "##Spectral-Driven Intensity Modulation##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.52}"
+    Text: 0.5, "centre", -0.22, "half",
+        ... originalName$ + "  |  " + presetName$ + "  |  time-varying spectral analysis"
+
+    # Input
+    Select outer viewport: 0, 4.2, 0.75, 2.20
+    Select inner viewport: 0.55, 4.00, 0.95, 2.08
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    Font size: 7
+    Text top: "no", "Input"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # Output
+    Select outer viewport: 4.2, 8, 0.75, 2.20
+    Select inner viewport: 4.55, 7.75, 0.95, 2.08
     selectObject: result
-    Colour: "{0.6, 0.5, 0.7}"
+    Colour: "{0.22, 0.46, 0.82}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Text left: "yes", "Modulated"
-    Text bottom: "yes", "Time (s)"
-    
-    # Spectral flatness
-    Select outer viewport: 0, 4, 2.5, 3.5
-    Select inner viewport: 0.6, 3.8, 2.6, 3.4
-    
+    Font size: 7
+    Text top: "no", "Output"
+    Font size: 6
+    Text left: "yes", "Amp"
+
+    # Spectral drives
+    Select outer viewport: 0, 4.2, 2.30, 4.20
+    Select inner viewport: 0.55, 4.00, 2.52, 4.08
     Axes: 0, duration, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, 1
-    
-    # Tonal threshold line
-    Colour: "{0.8, 0.8, 0.8}"
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1
+    Colour: "{0.55, 0.55, 0.55}"
     Dotted line
     Draw line: 0, tonal_flatness_threshold, duration, tonal_flatness_threshold
+    Colour: "{0.48, 0.35, 0.74}"
     Solid line
-    
-    # Draw flatness curve
-    Colour: "{0.7, 0.5, 0.5}"
-    Line width: 1.5
+    Line width: 1.4
     for v from 2 to maxVizPoints
-        if vizTimes#[v] > 0 and vizTimes#[v - 1] > 0
+        if vizTimes#[v] > 0 and vizTimes#[v - 1] >= 0
             Draw line: vizTimes#[v - 1], vizFlatness#[v - 1], vizTimes#[v], vizFlatness#[v]
         endif
     endfor
+    Colour: "{0.22, 0.46, 0.82}"
     Line width: 1
-    
-    # Analysis points
-    Colour: "{0.5, 0.3, 0.3}"
-    for p from 1 to num_analysis_points
-        Paint circle: "{0.7, 0.5, 0.5}", analysisTimes#[p], flatness#[p], 0.03
-    endfor
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Flatness"
-    Text bottom: "yes", "Time"
-    
-    # Modulation speed
-    Select outer viewport: 4, 8, 2.5, 3.5
-    Select inner viewport: 4.4, 7.6, 2.6, 3.4
-    
-    Axes: 0, duration, 0, max_mod_speed * 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, max_mod_speed * 1.2
-    
-    # Draw speed curve
-    Colour: "{0.5, 0.5, 0.7}"
-    Line width: 1.5
     for v from 2 to maxVizPoints
-        if vizTimes#[v] > 0 and vizTimes#[v - 1] > 0
-            Draw line: vizTimes#[v - 1], vizSpeed#[v - 1], vizTimes#[v], vizSpeed#[v]
+        if vizTimes#[v] > 0 and vizTimes#[v - 1] >= 0
+            Draw line: vizTimes#[v - 1], vizSpread#[v - 1], vizTimes#[v], vizSpread#[v]
         endif
     endfor
-    Line width: 1
-    
     Colour: "Black"
     Draw inner box
-    Font size: 6
-    Text left: "yes", "Speed (Hz)"
-    Text bottom: "yes", "Time"
-    
-    # Intensity modulation curve
-    Select outer viewport: 0, 8, 3.7, 4.7
-    Select inner viewport: 0.6, 7.6, 3.8, 4.6
-    
-    Axes: 0, duration, 40, 100
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 40, 100
-    
-    # Center line
-    Colour: "{0.8, 0.8, 0.8}"
-    Dotted line
-    Draw line: 0, 70, duration, 70
-    Solid line
-    
-    # Draw intensity curve
-    Colour: "{0.5, 0.7, 0.5}"
-    Line width: 1.5
-    for v from 2 to maxVizPoints
-        if vizTimes#[v] > 0 and vizTimes#[v - 1] > 0
-            Draw line: vizTimes#[v - 1], vizIntensity#[v - 1], vizTimes#[v], vizIntensity#[v]
-        endif
-    endfor
-    Line width: 1
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Intensity"
-    Text bottom: "yes", "Time (s)"
-    
-    # Mapping explanation
-    Select outer viewport: 0, 8, 4.9, 5.5
-    Select inner viewport: 0.6, 7.6, 5.0, 5.4
-    
-    Axes: 0, 8, 0, 2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 8, 0, 2
-    
-    Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 2, "centre", 1.5, "half", "Flatness -> Depth"
-    Text: 2, "centre", 0.5, "half", "(noisy = deeper)"
-    Text: 6, "centre", 1.5, "half", "Roughness -> Speed"
-    Text: 6, "centre", 0.5, "half", "(complex = faster)"
-    
-    # Arrow from flatness to depth
-    Colour: "{0.7, 0.5, 0.5}"
-    Draw arrow: 0.8, 1, 1.2, 1
-    Draw arrow: 2.8, 1, 3.2, 1
-    
-    # Arrow from roughness to speed
-    Colour: "{0.5, 0.5, 0.7}"
-    Draw arrow: 4.8, 1, 5.2, 1
-    Draw arrow: 6.8, 1, 7.2, 1
-    
-    Colour: "Black"
-    Draw inner box
-    
-    # Stats
-    Select outer viewport: 0, 8, 5.6, 5.9
     Font size: 7
-    Colour: "{0.4, 0.4, 0.4}"
-    
-    # Calculate average flatness and roughness
-    avgFlat = 0
-    avgRough = 0
-    for p from 1 to num_analysis_points
-        avgFlat = avgFlat + flatness#[p]
-        avgRough = avgRough + roughness#[p]
+    Text top: "no", "Spectral drives"
+    Font size: 6
+    Text left: "yes", "0..1"
+    Text bottom: "yes", "Time (s)"
+
+    # Gain trajectory
+    Select outer viewport: 4.2, 8, 2.30, 4.20
+    Select inner viewport: 4.55, 7.75, 2.52, 4.08
+    Axes: 0, duration, -max(1, max_depth_dB), 0
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, -max(1, max_depth_dB), 0
+    Colour: "{0.48, 0.35, 0.74}"
+    Line width: 1.4
+    for v from 2 to maxVizPoints
+        if vizTimes#[v] > 0 and vizTimes#[v - 1] >= 0
+            Draw line: vizTimes#[v - 1], vizGainDb#[v - 1], vizTimes#[v], vizGainDb#[v]
+        endif
     endfor
-    avgFlat = avgFlat / num_analysis_points
-    avgRough = avgRough / num_analysis_points
-    
-    Text: 0.5, "centre", 0.5, "half", "Avg flatness: " + fixed$(avgFlat, 3) + " | Avg roughness: " + fixed$(avgRough, 4) + " | Depth: " + fixed$(base_intensity_depth, 0) + "-" + fixed$(max_intensity_depth, 0) + " dB | Speed: " + fixed$(base_mod_speed, 1) + "-" + fixed$(max_mod_speed, 1) + " Hz"
-    
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Gain modulation"
+    Font size: 6
+    Text left: "yes", "dB"
+    Text bottom: "yes", "Time (s)"
+
+    # Summary
+    Select outer viewport: 0, 8, 4.35, 5.25
+    Select inner viewport: 0.55, 7.75, 4.43, 5.18
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+    Font size: 7
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.28, 0.28, 0.28}"
+    Text: 0.02, "left", 0.50, "half",
+        ... "Flatness " + fixed$(avgFlat, 3) + "  |  spread " + fixed$(avgSpread, 3)
+        ... + "  |  depth " + fixed$(avgDepth, 1) + " dB  |  rate " + fixed$(avgSpeed, 2) + " Hz"
+    Text: 0.02, "left", 0.18, "half",
+        ... "Wet " + fixed$(dry_wet_percent, 0) + "%  |  safety " + fixed$(safety_peak, 2)
+        ... + "  |  " + fixed$(duration, 2) + " s / " + fixed$(sampling, 0) + " Hz / " + string$(numChannels) + " ch"
+
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
-# === Final Info ===
 selectObject: result
-
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 
-# === Play ===
 if play_result
-    selectObject: result
     Play
 endif
 
