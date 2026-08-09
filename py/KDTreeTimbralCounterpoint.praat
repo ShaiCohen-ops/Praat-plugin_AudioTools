@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -40,6 +40,17 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.2:
+#   - Sample-accurate track scheduler: start times and silence gaps are
+#     quantized to the target sample grid, eliminating zero-sample Sound
+#     creation caused by floating-point residue.
+#   - Track end times now follow the actual durations of concatenated
+#     objects rather than theoretical CSV times.
+#   - Short-sound analysis padding is sample-quantized and safely skips
+#     unrepresentable sub-sample padding.
+#   - Includes the multichannel, target-SR, concatenate-order, validation,
+#     envelope-analysis, cleanup and output-safety fixes from the 2026
+#     reconstruction hardening pass.
 # Changelog v1.1:
 #   - Audio pipeline UNCHANGED. Output bit-identical to v1.0
 #     for the same form parameters and same RNG state. Same
@@ -76,7 +87,7 @@
 #   - Initial unified cross-platform release.
 # ============================================================
 
-form KD-Tree Timbral Counterpoint v1.1
+form KD-Tree Timbral Counterpoint v1.2
     comment ── Target & Corpus ──
     sentence Corpus_folder /Users/username/Desktop/Corpus
     real Grain_size_ms 200
@@ -122,6 +133,24 @@ endif
 targetObj = selected("Sound")
 soundName$ = selected$("Sound")
 targetDur = Get total duration
+targetSR = Get sampling frequency
+
+# ---- PARAMETER VALIDATION ----
+if grain_size_ms <= 0
+    exitScript: "Grain size must be greater than 0 ms."
+endif
+if grain_overlap_percent < 0 or grain_overlap_percent >= 100
+    exitScript: "Grain overlap must be in the range 0 <= overlap < 100 percent."
+endif
+if number_of_voices < 1
+    exitScript: "Number of voices must be at least 1."
+endif
+if crossfade_duration < 0
+    exitScript: "Crossfade duration cannot be negative."
+endif
+if not folderExists(corpus_folder$)
+    exitScript: "Corpus folder not found: " + corpus_folder$
+endif
 
 # ---- OS-Specific Python Discovery ----
 if macintosh
@@ -190,14 +219,38 @@ else
     presetName$ = "Custom"
 endif
 
+if eff_randomness < 0 or eff_randomness > 1
+    exitScript: "Randomness amount must be between 0 and 1."
+endif
+if eff_mfcc_w < 0 or eff_pitch_w < 0 or eff_cent_w < 0 or eff_int_w < 0 or eff_hnr_w < 0
+    exitScript: "Feature weights cannot be negative."
+endif
+if eff_mfcc_w = 0 and eff_pitch_w = 0 and eff_cent_w = 0 and eff_int_w = 0 and eff_hnr_w = 0
+    exitScript: "At least one feature weight must be greater than zero."
+endif
+
 # Temp Paths
 tempTargCSV$  = temporaryDirectory$ + "/temp_kdtc_target.csv"
 tempCorpCSV$  = temporaryDirectory$ + "/temp_kdtc_corpus.csv"
 tempMatchCSV$ = temporaryDirectory$ + "/temp_kdtc_match.csv"
 tempStderr$   = temporaryDirectory$ + "/temp_kdtc_stderr.log"
 
-deleteFile: tempMatchCSV$
-deleteFile: tempStderr$
+procedure cleanUpTempFiles
+    if fileReadable(tempTargCSV$)
+        deleteFile: tempTargCSV$
+    endif
+    if fileReadable(tempCorpCSV$)
+        deleteFile: tempCorpCSV$
+    endif
+    if fileReadable(tempMatchCSV$)
+        deleteFile: tempMatchCSV$
+    endif
+    if fileReadable(tempStderr$)
+        deleteFile: tempStderr$
+    endif
+endproc
+
+@cleanUpTempFiles
 
 grain_sec = grain_size_ms / 1000
 hop = grain_sec * (1 - grain_overlap_percent / 100)
@@ -205,51 +258,72 @@ hop = grain_sec * (1 - grain_overlap_percent / 100)
 procedure extractFeatures: .sndObj, .fPath$, .csvTable, .isCorpus
     selectObject: .sndObj
     .dur = Get total duration
-    
+    .nCh = Get number of channels
+
+    # Use one consistent mono analysis signal for target and corpus material.
+    # This avoids channel-1-only ZCR/centroid behaviour and makes multichannel
+    # corpus files comparable to mono/stereo files in the feature space.
+    if .nCh > 1
+        Convert to mono
+        .monoObj = selected("Sound")
+        .baseAnalysisObj = .monoObj
+        .createdMonoObj = 1
+    else
+        .baseAnalysisObj = .sndObj
+        .createdMonoObj = 0
+    endif
+
     # Guard against sounds shorter than the analysis window minimum.
-    # To Intensity (pitchFloor=100) needs ≥ 6.4/100 = 0.064 s.
-    # To Pitch      (pitchFloor=75)  needs ≥ 3/75   ≈ 0.040 s.
-    # Use 0.1 s as a safe floor: pad with silence at the end if needed.
+    # To Intensity (pitchFloor=100) needs >= 6.4/100 = 0.064 s.
+    # To Pitch      (pitchFloor=75)  needs >= 3/75   ~= 0.040 s.
+    # Use 0.1 s as a safe floor: pad the mono analysis signal if needed.
     .minAnalysisDur = 0.1
     if .dur < .minAnalysisDur
         .padDur = .minAnalysisDur - .dur
-        selectObject: .sndObj
-        .nCh_pad = Get number of channels
-        .sr_pad  = Get sampling frequency
-        Create Sound from formula: "pad_sil", .nCh_pad, 0, .padDur, .sr_pad, "0"
-        .padSil = selected("Sound")
-        selectObject: .sndObj
-        plusObject: .padSil
-        Concatenate
-        .analysisObj = selected("Sound")
-        removeObject: .padSil
-        .createdAnalysisObj = 1
+        selectObject: .baseAnalysisObj
+        .sr_pad = Get sampling frequency
+        .padSamples = round(.padDur * .sr_pad)
+        if .padSamples >= 1
+            .padDurQ = .padSamples / .sr_pad
+            Create Sound from formula: "pad_sil", 1, 0, .padDurQ, .sr_pad, "0"
+            .padSil = selected("Sound")
+            selectObject: .baseAnalysisObj
+            plusObject: .padSil
+            Concatenate
+            .analysisObj = selected("Sound")
+            removeObject: .padSil
+            .createdAnalysisObj = 1
+        else
+            # Sub-sample padding is not representable as a Sound.
+            .analysisObj = .baseAnalysisObj
+            .createdAnalysisObj = 0
+        endif
     else
-        .analysisObj = .sndObj
+        .analysisObj = .baseAnalysisObj
         .createdAnalysisObj = 0
     endif
-    
+
     selectObject: .analysisObj
     To Pitch: 0, 75, 600
     .pitch = selected("Pitch")
-    
+
     selectObject: .analysisObj
     To MFCC: 12, 0.015, 0.005, 100, 100, 0
     .mfcc = selected("MFCC")
-    
+
     selectObject: .analysisObj
     To Intensity: 100, 0, "yes"
     .int = selected("Intensity")
-    
+
     selectObject: .analysisObj
     To Harmonicity (cc): 0.01, 75, 0.1, 1.0
     .harm = selected("Harmonicity")
-    
+
     .nGrains = floor((.dur - grain_sec) / hop) + 1
     if .nGrains < 1
         .nGrains = 1
     endif
-    
+
     for .iG from 1 to .nGrains
         .start = (.iG - 1) * hop
         .end = .start + grain_sec
@@ -257,13 +331,13 @@ procedure extractFeatures: .sndObj, .fPath$, .csvTable, .isCorpus
             .end = .dur
         endif
         .t_mid = .start + (.end - .start) / 2
-        
+
         selectObject: .pitch
         .pval = Get value at time: .t_mid, "Hertz", "Linear"
         if .pval = undefined
             .pval = 0
         endif
-        
+
         selectObject: .mfcc
         .nFrames = Get number of frames
         .raw_frame = Get frame from time: .t_mid
@@ -273,7 +347,7 @@ procedure extractFeatures: .sndObj, .fPath$, .csvTable, .isCorpus
         elsif .frame > .nFrames
             .frame = .nFrames
         endif
-        
+
         .m1 = Get value in frame: 1, .frame
         if .m1 = undefined
             .m1 = 0
@@ -298,20 +372,21 @@ procedure extractFeatures: .sndObj, .fPath$, .csvTable, .isCorpus
         if .m6 = undefined
             .m6 = 0
         endif
-        
+
         selectObject: .int
         .ival = Get mean: .start, .end, "energy"
         if .ival = undefined
             .ival = 0
         endif
-        
+
         selectObject: .harm
         .hval = Get mean: .start, .end
         if .hval = undefined
             .hval = -200
         endif
-        
-        selectObject: .sndObj
+
+        # Spectral centroid and ZCR use the same mono analysis signal.
+        selectObject: .analysisObj
         Extract part: .start, .end, "rectangular", 1, "no"
         .part = selected("Sound")
         To Spectrum: "yes"
@@ -320,15 +395,15 @@ procedure extractFeatures: .sndObj, .fPath$, .csvTable, .isCorpus
         if .cval = undefined
             .cval = 0
         endif
-        
+
         selectObject: .part
         To PointProcess (zeroes): 1, "yes", "no"
         .part_ppz = selected("PointProcess")
         .nz = Get number of points
         .zcr = .nz / max(0.001, .end - .start)
-        
+
         removeObject: .part_ppz, .part, .spec
-        
+
         selectObject: .csvTable
         Append row
         .r = Get number of rows
@@ -347,9 +422,13 @@ procedure extractFeatures: .sndObj, .fPath$, .csvTable, .isCorpus
         Set numeric value: .r, "hnr", .hval
         Set numeric value: .r, "zcr", .zcr
     endfor
+
     removeObject: .pitch, .mfcc, .int, .harm
     if .createdAnalysisObj
         removeObject: .analysisObj
+    endif
+    if .createdMonoObj
+        removeObject: .monoObj
     endif
 endproc
 
@@ -373,6 +452,7 @@ nFiles = Get number of strings
 # v1.1 fix: == changed to = (Praat's documented comparison operator)
 if nFiles = 0
     removeObject: fileList
+    @cleanUpTempFiles
     exitScript: "Error: No .wav files found in the specified Corpus folder: " + corpus_folder$
 endif
 
@@ -400,15 +480,23 @@ weightStr$ = string$(eff_mfcc_w) + "," + string$(eff_pitch_w) + "," + string$(ef
 cmd$ = pythonCmd$ + " """ + pythonScript$ + """ """ + tempTargCSV$ + """ """ + tempCorpCSV$ + """ """ + tempMatchCSV$ + """ --voices " + string$(number_of_voices) + " --ranks """ + eff_ranks$ + """ --weights """ + weightStr$ + """ --randomness " + string$(eff_randomness) + " --rep_penalty " + string$(repetition_penalty) + " 2> """ + tempStderr$ + """"
 runSystem_nocheck: cmd$
 
-if fileReadable(tempStderr$)
-    err_txt$ = readFile$(tempStderr$)
-    if length(err_txt$) > 10
-        exitScript: "PYTHON FATAL ERROR:" + newline$ + err_txt$
+if not fileReadable(tempMatchCSV$)
+    if fileReadable(tempStderr$)
+        err_txt$ = readFile$(tempStderr$)
+    else
+        err_txt$ = "(no Python stderr was captured)"
     endif
+    @cleanUpTempFiles
+    exitScript: "PYTHON ERROR:" + newline$ + err_txt$
 endif
 
-if not fileReadable(tempMatchCSV$)
-    exitScript: "CRITICAL: Python failed to generate the output CSV, and no logs were found."
+# Non-fatal Python warnings are shown but do not invalidate a valid mapping.
+if fileReadable(tempStderr$)
+    err_txt$ = readFile$(tempStderr$)
+    if length(err_txt$) > 0
+        appendInfoLine: "Python diagnostics:"
+        appendInfoLine: err_txt$
+    endif
 endif
 
 # 4. Audio Reconstruction 
@@ -454,40 +542,49 @@ for r from 1 to nRows
     grainTemp = selected("Sound")
     
     selectObject: grainTemp
-    fade = crossfade_duration
-    
-    # Cosine fade-in then fade-out, two separate Formula passes
-    # (recursive elsif inside Formula context is unreliable in Praat)
-    Formula: "if x < xmin + 'fade' then self * (0.5 - 0.5*cos(pi*(x-xmin)/'fade')) else self fi"
-    Formula: "if x > xmax - 'fade' then self * (0.5 - 0.5*cos(pi*(xmax-x)/'fade')) else self fi"
+    grainDur = Get total duration
+    fade = min(crossfade_duration, grainDur / 2)
+
+    # Cosine fade-in then fade-out, clamped so the two fades can never
+    # extend beyond the grain itself. A zero crossfade skips both formulas.
+    if fade > 0
+        Formula: "if x < xmin + 'fade' then self * (0.5 - 0.5*cos(pi*(x-xmin)/'fade')) else self fi"
+        Formula: "if x > xmax - 'fade' then self * (0.5 - 0.5*cos(pi*(xmax-x)/'fade')) else self fi"
+    endif
     Formula: "self * 'gain'"
-    
+
     angle = (pan + 1) * pi / 4
     lg = cos(angle)
     rg = sin(angle)
-    
+
+    # The reconstruction engine is stereo. Mono corpus grains are duplicated;
+    # multichannel grains are first downmixed to mono, then duplicated, so the
+    # KDTC pan law controls the final stereo position consistently.
     selectObject: grainTemp
     nChan = Get number of channels
     if nChan = 1
-        Copy: "grain_temp_dup"
-        grainTempDup = selected("Sound")
-        selectObject: grainTemp
-        plusObject: grainTempDup
-        Combine to stereo
+        Convert to stereo
         grainStereo = selected("Sound")
-        removeObject: grainTemp, grainTempDup
-    else
+        removeObject: grainTemp
+    elsif nChan = 2
         grainStereo = grainTemp
+    else
+        Convert to mono
+        grainMono = selected("Sound")
+        Convert to stereo
+        grainStereo = selected("Sound")
+        removeObject: grainTemp, grainMono
     endif
-    
+
     selectObject: grainStereo
     Formula: "if row = 1 then self * 'lg' else self * 'rg' fi"
 
-    # Normalise sample rate so Concatenate never sees mismatched rates
+    # Match the target sample rate so every reconstruction object is compatible
+    # and the output preserves the target's native sampling frequency.
     selectObject: grainStereo
     grainSR = Get sampling frequency
-    if grainSR <> 44100
-        Resample: 44100, 50
+    if grainSR <> targetSR
+        Resample: targetSR, 50
         grainResampled = selected("Sound")
         removeObject: grainStereo
         grainStereo = grainResampled
@@ -496,16 +593,25 @@ for r from 1 to nRows
     vg_idx[voice] = vg_idx[voice] + 1
     idx = vg_idx[voice]
 
+    # Quantize scheduling to the target sample grid. This prevents tiny
+    # positive floating-point gaps from becoming zero-sample Sound requests.
+    selectObject: grainStereo
+    grainDurActual = Get total duration
+    startSamples = round((t_start + delay / 1000) * targetSR)
+    if startSamples < 0
+        startSamples = 0
+    endif
+
     vg_obj[voice, idx] = grainStereo
-    vg_start[voice, idx] = t_start + delay / 1000
-    vg_dur[voice, idx] = c_end - c_start
+    vg_start[voice, idx] = startSamples / targetSR
+    vg_dur[voice, idx] = grainDurActual
 endfor
 
 if corpusAudio <> 0
     removeObject: corpusAudio
 endif
 
-Create Sound from formula: "KDTC_mix", 2, 0, targetDur + 2.0, 44100, "0"
+Create Sound from formula: "KDTC_mix", 2, 0, targetDur + 2.0, targetSR, "0"
 kdtcMix = selected("Sound")
 
 for v from 1 to number_of_voices
@@ -529,6 +635,7 @@ for v from 1 to number_of_voices
     endfor
     
     nTracks = 0
+    sampleTol = 0.5 / targetSR
     for i from 1 to nG
         g_start = vg_start[v, i]
         g_dur = vg_dur[v, i]
@@ -536,7 +643,8 @@ for v from 1 to number_of_voices
         
         assigned_t = 0
         for t from 1 to nTracks
-            if track_end[t] <= g_start
+            # Allow a half-sample numerical tolerance at touching boundaries.
+            if track_end[t] <= g_start + sampleTol
                 assigned_t = t
                 t = nTracks + 1
             endif
@@ -549,17 +657,32 @@ for v from 1 to number_of_voices
         endif
         
         t = assigned_t
-        sil_dur = g_start - track_end[t]
-        if sil_dur > 0.001
-            Create Sound from formula: "silence", 2, 0, sil_dur, 44100, "0"
+
+        # Convert the requested gap to an integer number of samples first.
+        # Praat cannot create a Sound whose duration rounds to zero samples.
+        gapSamples = round((g_start - track_end[t]) * targetSR)
+        if gapSamples >= 1
+            sil_dur = gapSamples / targetSR
+            Create Sound from formula: "silence", 2, 0, sil_dur, targetSR, "0"
             silTemp = selected("Sound")
             track_nParts[t] = track_nParts[t] + 1
             track_part[t, track_nParts[t]] = silTemp
+            track_end[t] = track_end[t] + sil_dur
         endif
-        
+
+        # Praat Concatenate follows Objects-list order, not selection order.
+        # Create a fresh copy at scheduling time so each track's object IDs are
+        # guaranteed to follow chronological order even though source grains
+        # were originally created in corpus-file order for caching efficiency.
+        selectObject: g_obj
+        Copy: "kdtc_track_grain"
+        gPart = selected("Sound")
+        gPartDur = Get total duration
+        removeObject: g_obj
+
         track_nParts[t] = track_nParts[t] + 1
-        track_part[t, track_nParts[t]] = g_obj
-        track_end[t] = g_start + g_dur
+        track_part[t, track_nParts[t]] = gPart
+        track_end[t] = track_end[t] + gPartDur
     endfor
     
     vName$ = "KDTC_voice_" + string$(v)
@@ -573,7 +696,7 @@ for v from 1 to number_of_voices
         vName$ = vName$ + "_ghost"
     endif
     
-    Create Sound from formula: vName$, 2, 0, targetDur + 2.0, 44100, "0"
+    Create Sound from formula: vName$, 2, 0, targetDur + 2.0, targetSR, "0"
     vSound = selected("Sound")
     
     for t from 1 to nTracks
@@ -621,7 +744,7 @@ fadeOutDur = 0.05
 # Detect true content boundary directly from the waveform
 # (same method as the Auto-Trim Silence tool — intensity-based TextGrid)
 selectObject: kdtcMix
-Extract one channel: 1
+Convert to mono
 kdtcMono = selected("Sound")
 tgSil = To TextGrid (silences): 100, 0, -35, 0.1, 0.05, "silent", "sounding"
 numSilIntervals = Get number of intervals: 1
@@ -684,7 +807,7 @@ if envelope_shaping > 1
     selectObject: targetObj
     nChTgt = Get number of channels
     if nChTgt > 1
-        Extract one channel: 1
+        Convert to mono
         tgtMono2 = selected("Sound")
     else
         Copy: "env_tgt_mono"
@@ -739,7 +862,7 @@ if envelope_shaping > 1
 
         # Build a gain sound: linear amplitude 0–1 matched to mix SR and duration
         Create Sound from formula: "amp_env", 1, 0, trimEnd, sr_mix,
-            ..."max(0, min(1, (Object_'tgtIntEnv'(x) - 'minIntDB') / ('maxIntDB' - 'minIntDB')))"
+            ..."if x > 'targetDur' then 0 else max(0, min(1, (Object_'tgtIntEnv'(x) - 'minIntDB') / ('maxIntDB' - 'minIntDB'))) fi"
         envSound = selected("Sound")
         removeObject: tgtIntEnv
     endif
@@ -779,6 +902,27 @@ if envelope_shaping > 1
 endif
 
 # ===========================================================================
+# Output safety: preserve voice balance while preventing mix clipping
+# ===========================================================================
+selectObject: kdtcMix
+mixPeak = Get absolute extremum: 0, 0, "Sinc70"
+safetyScale = 1
+if mixPeak > 0.99
+    safetyScale = 0.99 / mixPeak
+    selectObject: kdtcMix
+    Formula: "self * 'safetyScale'"
+
+    # Use the same factor on retained voices so their sum remains the mix.
+    if output_mode <> 1
+        for v from 1 to number_of_voices
+            selectObject: voiceSound[v]
+            Formula: "self * 'safetyScale'"
+        endfor
+    endif
+    appendInfoLine: "  Output safety scale applied: ", fixed$(safetyScale, 4)
+endif
+
+# ===========================================================================
 # Pre-compute envelope shaping label (used in viz and info output)
 # ===========================================================================
 envShapeLabel$ = ""
@@ -808,7 +952,7 @@ if draw_visualization
         selectObject: targetObj
         tgtChans_pre = Get number of channels
         if tgtChans_pre > 1
-            Extract one channel: 1
+            Convert to mono
             tmpTgt = selected("Sound")
         else
             Copy: "tmpTgt"
@@ -819,7 +963,7 @@ if draw_visualization
         specTgt = selected("Spectrogram")
 
         selectObject: kdtcMix
-        Extract one channel: 1
+        Convert to mono
         tmpMix = selected("Sound")
         To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
         specMix = selected("Spectrogram")
@@ -1062,10 +1206,7 @@ endif
 # ===========================================================================
 # Cleanup temps and utilities
 # ===========================================================================
-deleteFile: tempTargCSV$
-deleteFile: tempCorpCSV$
-deleteFile: tempMatchCSV$
-deleteFile: tempStderr$
+@cleanUpTempFiles
 removeObject: mapTable
 
 if output_mode = 2
