@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,21 @@
 #   Rhythmic Pitch Percussion - applies percussive pitch hits
 #   based on a rhythm pattern. Creates kick-drum-like pitch
 #   envelopes with polyrhythmic ghost hits and tension waves.
+#
+# Changelog v0.3:
+#   - Hit_strength is treated consistently as a Hz offset, matching the
+#     existing preset values and the v0.2 pitch-calculation changelog.
+#   - Rhythm_pattern parser validates at least one beat and only 0/1 tokens.
+#   - Full xmin/xmax-safe processing; PitchTier clearing no longer assumes 0.
+#   - Npoints is validated and bounded to avoid division-by-zero / runaway work.
+#   - Ghost_hits can be 0 and parameter ranges are validated.
+#   - Humanization is correlated per beat instead of random jitter at every point.
+#   - Analysis range is separated from synthesis safety (20 Hz .. 0.45*SR).
+#   - Stops cleanly when no usable voiced pitch is detected.
+#   - Preserves source channel count by applying one shared PitchTier
+#     independently to each source channel.
+#   - Peak protection is attenuation-only.
+#   - Visualization layout/style preserved; title/stats/xmin robustness fixed.
 #
 # Changelog v0.2:
 #   - Modern syntax
@@ -33,9 +48,10 @@ orig_sr = Get sampling frequency
 xmin = Get start time
 xmax = Get end time
 dur = xmax - xmin
+n_channels = Get number of channels
 
 # === Form ===
-form Rhythmic Pitch Percussion
+form Rhythmic Pitch Percussion v0.3
     comment Select a Sound object first
     
     comment === Preset ===
@@ -55,7 +71,7 @@ form Rhythmic Pitch Percussion
     positive Hit_strength 25
     positive Decay_rate 6
     positive Polyrhythm_factor 3
-    positive Ghost_hits 0.3
+    real Ghost_hits 0.3
     
     comment === Analysis ===
     positive Time_step 0.005
@@ -87,7 +103,7 @@ elsif preset = 3
     presetName$ = "Trap"
 elsif preset = 4
     # Dubstep Wobble
-    rhythm_pattern$ = "1_0_1_0_1_0_1_0_1_0_1_0_1_0_1_0"
+    rhythm_pattern$ = "1_0_1_0_1_0_1_0_1_0_1_0_1_0"
     hit_strength = 120
     decay_rate = 2
     polyrhythm_factor = 11
@@ -113,175 +129,286 @@ else
     presetName$ = "Custom"
 endif
 
+# === Validation ===
+if dur <= 0
+    exitScript: "The selected Sound has no positive duration."
+endif
+if hit_strength < 0
+    exitScript: "Hit_strength must be zero or greater."
+endif
+if decay_rate <= 0
+    exitScript: "Decay_rate must be greater than zero."
+endif
+if polyrhythm_factor <= 0
+    exitScript: "Polyrhythm_factor must be greater than zero."
+endif
+if ghost_hits < 0
+    exitScript: "Ghost_hits must be zero or greater."
+endif
+if time_step <= 0
+    exitScript: "Time_step must be greater than zero."
+endif
+if floor_pitch <= 0 or ceiling_pitch <= floor_pitch
+    exitScript: "Floor_pitch / Ceiling_pitch are invalid."
+endif
+if ceiling_pitch >= 0.45 * orig_sr
+    exitScript: "Ceiling_pitch must be below 45% of the source sampling frequency."
+endif
+if npoints < 2 or npoints > 20000
+    exitScript: "Npoints must be between 2 and 20000."
+endif
+
 # === Parse Rhythm Pattern ===
-# First pass: count beats
-tempRhythm$ = rhythm_pattern$ + "_"
-tempRhythm$ = replace$(tempRhythm$, "_", " ", 0)
-n_beats = 0
+# Count underscore-separated tokens robustly.
+if length(rhythm_pattern$) < 1
+    exitScript: "Rhythm_pattern cannot be empty."
+endif
 
-repeat
-    space_pos = index(tempRhythm$, " ")
-    if space_pos > 1
-        n_beats = n_beats + 1
-        tempRhythm$ = right$(tempRhythm$, length(tempRhythm$) - space_pos)
+n_beats = 1
+for ci from 1 to length(rhythm_pattern$)
+    if mid$(rhythm_pattern$, ci, 1) = "_"
+        n_beats += 1
     endif
-until space_pos <= 1
+endfor
 
-# Create numeric array
+if n_beats < 1
+    exitScript: "Rhythm_pattern must contain at least one beat."
+endif
+if n_beats > 512
+    exitScript: "Rhythm_pattern is too long (maximum 512 beats)."
+endif
+
 beatValues# = zero#(n_beats)
-
-# Second pass: store values
 rhythm$ = rhythm_pattern$ + "_"
-rhythm$ = replace$(rhythm$, "_", " ", 0)
-bIdx = 0
 
-repeat
-    space_pos = index(rhythm$, " ")
-    if space_pos > 1
-        bIdx = bIdx + 1
-        thisVal$ = left$(rhythm$, space_pos - 1)
-        beatValues#[bIdx] = number(thisVal$)
-        rhythm$ = right$(rhythm$, length(rhythm$) - space_pos)
+for bIdx from 1 to n_beats
+    sep = index(rhythm$, "_")
+    if sep <= 1
+        exitScript: "Rhythm_pattern contains an empty or malformed token."
     endif
-until space_pos <= 1
+
+    thisVal$ = left$(rhythm$, sep - 1)
+    thisVal = number(thisVal$)
+
+    if thisVal = undefined
+        exitScript: "Rhythm_pattern contains a non-numeric token: " + thisVal$
+    endif
+    if thisVal <> 0 and thisVal <> 1
+        exitScript: "Rhythm_pattern values must be exactly 0 or 1."
+    endif
+
+    beatValues#[bIdx] = thisVal
+    rhythm$ = right$(rhythm$, length(rhythm$) - sep)
+endfor
 
 # === Info ===
-writeInfoLine: "=== Rhythmic Pitch Percussion ==="
-appendInfoLine: "Source: ", originalName$, " (", fixed$(dur, 2), " s)"
+writeInfoLine: "=== Rhythmic Pitch Percussion v0.3 ==="
+appendInfoLine: "Source: ", originalName$, " (", fixed$(dur, 2), " s, ", n_channels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Pattern (", n_beats, " beats): ", rhythm_pattern$
-appendInfoLine: "Hit strength: ", hit_strength
+appendInfoLine: "Hit strength: ", hit_strength, " Hz"
 appendInfoLine: "Decay rate: ", decay_rate
 appendInfoLine: "Polyrhythm: ", polyrhythm_factor
 appendInfoLine: "Ghost hits: ", ghost_hits
 appendInfoLine: ""
 
-# === Create Working Copy and Manipulation ===
+# === Mono Pitch Analysis ===
 selectObject: original
-Copy: originalName$ + "_rhythm_tmp"
-tmpSound = selected("Sound")
-
-# === Get Median Pitch ===
-selectObject: tmpSound
-To Pitch: time_step, floor_pitch, ceiling_pitch
-tmpPitchObj = selected("Pitch")
-median_f0 = Get quantile: 0, 0, 0.5, "Hertz"
-
-if median_f0 = undefined
-    median_f0 = 200
-    appendInfoLine: "No pitch detected, using default: ", median_f0, " Hz"
+if n_channels > 1
+    analysisMono = Convert to mono
 else
-    appendInfoLine: "Median pitch: ", fixed$(median_f0, 1), " Hz"
+    analysisMono = Copy: "RPP_analysis"
 endif
 
-removeObject: tmpPitchObj
+selectObject: analysisMono
+tmpPitchObj = To Pitch: time_step, floor_pitch, ceiling_pitch
 
-# === Create Manipulation ===
-selectObject: tmpSound
-manipulation = To Manipulation: time_step, floor_pitch, ceiling_pitch
+selectObject: tmpPitchObj
+voiced_frames = Count voiced frames
+median_f0 = Get quantile: 0, 0, 0.5, "Hertz"
 
-selectObject: manipulation
-pitchTier = Extract pitch tier
-Rename: "rhythm_pitch"
+if voiced_frames < 1 or median_f0 = undefined or median_f0 <= 0
+    removeObject: tmpPitchObj, analysisMono
+    exitScript: "No usable voiced pitch was detected in the selected analysis range."
+endif
 
-selectObject: pitchTier
-Remove points between: 0, dur + 1
+appendInfoLine: "Median pitch: ", fixed$(median_f0, 1), " Hz"
+removeObject: tmpPitchObj, analysisMono
+
+# === Create New Pitch Tier ===
+Create PitchTier: "rhythm_pitch", xmin, xmax
+pitchTier = selected("PitchTier")
 
 beat_duration = dur / n_beats
 
 # Store for visualization
 maxVizPoints = min(npoints, 500)
+if maxVizPoints < 1
+    maxVizPoints = 1
+endif
 vizTimes# = zero#(maxVizPoints)
 vizShifts# = zero#(maxVizPoints)
+vizFilled# = zero#(maxVizPoints)
 vizStep = npoints / maxVizPoints
+
+# One humanization value per beat, not per PitchTier point.
+beatHuman# = zero#(n_beats)
+for hb from 1 to n_beats
+    beatHuman#[hb] = randomUniform(0.95, 1.05)
+endfor
+
+# One humanization value per polyrhythmic subdivision bucket.
+poly_count = ceiling(n_beats * polyrhythm_factor) + 1
+polyHuman# = zero#(poly_count)
+for ph from 1 to poly_count
+    polyHuman#[ph] = randomUniform(0.95, 1.05)
+endfor
 
 appendInfoLine: ""
 appendInfoLine: "Building percussive pitch curve..."
 
+synth_floor = 20
+synth_ceil = 0.45 * orig_sr
+limited_points = 0
+
 # === Build Rhythmic Pitch Curve ===
 for i from 0 to npoints - 1
     t = xmin + (i / (npoints - 1)) * dur
-    
+
     beat_pos = (t - xmin) / beat_duration
     current_beat = floor(beat_pos) + 1
     beat_phase = beat_pos - floor(beat_pos)
-    
-    if current_beat >= 1 and current_beat <= n_beats
-        beat_value = beatValues#[current_beat]
-    else
-        beat_value = 0
+
+    if current_beat > n_beats
+        current_beat = n_beats
+        beat_phase = 1
     endif
-    
-    pitch_shift = 0
-    
-    # Main hit envelope
+
+    beat_value = beatValues#[current_beat]
+
+    # Pitch offset in Hz around the source median F0.
+    pitch_offset_hz = 0
+
+    # Main hit envelope.
     if beat_value > 0
         attack = exp(-decay_rate * 3 * beat_phase)
         body = 0.6 * exp(-decay_rate * 0.8 * beat_phase)
         tail = 0.2 * exp(-decay_rate * 0.3 * beat_phase)
         envelope = attack + body + tail
-        
+
         fundamental_hit = hit_strength * envelope
         harmonic_hit = 0.4 * hit_strength * envelope * sin(beat_phase * 8 * pi)
-        
-        pitch_shift = pitch_shift + fundamental_hit + harmonic_hit
+
+        pitch_offset_hz += (fundamental_hit + harmonic_hit) * beatHuman#[current_beat]
     endif
-    
-    # Polyrhythmic ghost hits
+
+    # Polyrhythmic ghost hits.
     poly_beat_pos = beat_pos * polyrhythm_factor
     poly_phase = poly_beat_pos - floor(poly_beat_pos)
-    if poly_phase < 0.1
+    poly_index = floor(poly_beat_pos) + 1
+    if poly_index < 1
+        poly_index = 1
+    elsif poly_index > poly_count
+        poly_index = poly_count
+    endif
+
+    if ghost_hits > 0 and poly_phase < 0.1
         ghost_envelope = exp(-20 * poly_phase)
         ghost_hit = ghost_hits * hit_strength * ghost_envelope
-        pitch_shift = pitch_shift + ghost_hit
+        pitch_offset_hz += ghost_hit * polyHuman#[poly_index]
     endif
-    
-    # Tension wave
+
+    # Tension wave, now in Hz to match the rest of the engine.
     tension_base = sin(beat_pos * 2 * pi)
     tension_modulation = 1 + 0.3 * sin(beat_pos * 7 * pi)
-    tension_wave = 0.8 * tension_base * tension_modulation
-    pitch_shift = pitch_shift + tension_wave
-    
-    # Humanize
-    human_factor = randomUniform(0.95, 1.05)
-    pitch_shift = pitch_shift * human_factor
-    
-    # Store for visualization
-    vizIdx = floor(i / vizStep) + 1
-    if vizIdx >= 1 and vizIdx <= maxVizPoints
-        if vizTimes#[vizIdx] = 0
-            vizTimes#[vizIdx] = t
-            vizShifts#[vizIdx] = pitch_shift
-        endif
+    tension_wave_hz = 0.8 * tension_base * tension_modulation
+    pitch_offset_hz += tension_wave_hz
+
+    new_f0 = median_f0 + pitch_offset_hz
+
+    # Synthesis safety, independent of the analysis range.
+    if new_f0 < synth_floor
+        new_f0 = synth_floor
+        limited_points += 1
+    elsif new_f0 > synth_ceil
+        new_f0 = synth_ceil
+        limited_points += 1
     endif
-    
-    # Convert pitch shift (semitones) to actual frequency
-    new_f0 = median_f0 * exp((ln(2) / 12) * pitch_shift)
-    
-    # Clamp to range
-    if new_f0 < floor_pitch
-        new_f0 = floor_pitch
-    elsif new_f0 > ceiling_pitch
-        new_f0 = ceiling_pitch
-    endif
-    
+
     selectObject: pitchTier
     Add point: t, new_f0
+
+    # Visualization stores the actual Hz offset used.
+    vizIdx = floor(i / vizStep) + 1
+    if vizIdx < 1
+        vizIdx = 1
+    elsif vizIdx > maxVizPoints
+        vizIdx = maxVizPoints
+    endif
+    if vizFilled#[vizIdx] = 0
+        vizTimes#[vizIdx] = t
+        vizShifts#[vizIdx] = pitch_offset_hz
+        vizFilled#[vizIdx] = 1
+    endif
 endfor
 
-# === Replace Pitch Tier ===
-selectObject: manipulation, pitchTier
-Replace pitch tier
+if limited_points > 0
+    appendInfoLine: "Sampling-safe pitch limits applied: ", limited_points, " point(s)"
+endif
 
-# === Resynthesize ===
-appendInfoLine: "Resynthesizing..."
-selectObject: manipulation
-result = Get resynthesis (overlap-add)
-Rename: originalName$ + "_rhythm_" + presetName$
+# === Resynthesize each source channel with shared PitchTier ===
+appendInfoLine: "Resynthesizing ", n_channels, " channel(s)..."
+
+channelResults# = zero#(n_channels)
+
+for ch from 1 to n_channels
+    selectObject: original
+    if n_channels = 1
+        channelWork = Copy: "RPP_ch1"
+    else
+        channelWork = Extract one channel: ch
+        Rename: "RPP_ch" + string$(ch)
+    endif
+
+    selectObject: channelWork
+    manipulation = To Manipulation: time_step, floor_pitch, ceiling_pitch
+
+    selectObject: manipulation
+    plusObject: pitchTier
+    Replace pitch tier
+
+    selectObject: manipulation
+    channelResult = Get resynthesis (overlap-add)
+    Rename: "RPP_result_ch" + string$(ch)
+    channelResults#[ch] = channelResult
+
+    removeObject: manipulation, channelWork
+endfor
+
+# Rebuild exact source channel count / time domain.
+Create Sound from formula: "RPP_result_build", n_channels,
+    ... xmin, xmax, orig_sr, "0"
+result = selected("Sound")
+
+for ch from 1 to n_channels
+    selectObject: result
+    Formula (part): xmin, xmax, ch, ch,
+        ... "object[" + string$(channelResults#[ch]) + ", 1, col]"
+    removeObject: channelResults#[ch]
+endfor
 
 selectObject: result
-Scale peak: 0.95
+Rename: originalName$ + "_rhythm_" + presetName$
+
+# Attenuation-only peak safety.
+result_peak = Get absolute extremum: 0, 0, "None"
+if result_peak > 0.95
+    Scale peak: 0.95
+    safetyApplied = 1
+else
+    safetyApplied = 0
+endif
 
 # === Visualization ===
 if draw_visualization
@@ -289,6 +416,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Rhythmic Pitch Percussion: " + originalName$ + " (" + presetName$ + ")"
@@ -320,16 +448,27 @@ if draw_visualization
     Select inner viewport: 0.6, 7.6, 2.7, 3.9
     
     # Find range
-    minS = 0
-    maxS = vizShifts#[1]
-    for vp from 2 to maxVizPoints
-        if vizShifts#[vp] > maxS
-            maxS = vizShifts#[vp]
-        endif
-        if vizShifts#[vp] < minS
-            minS = vizShifts#[vp]
+    firstViz = 0
+    for vp from 1 to maxVizPoints
+        if vizFilled#[vp] = 1
+            if firstViz = 0
+                minS = vizShifts#[vp]
+                maxS = vizShifts#[vp]
+                firstViz = 1
+            else
+                if vizShifts#[vp] > maxS
+                    maxS = vizShifts#[vp]
+                endif
+                if vizShifts#[vp] < minS
+                    minS = vizShifts#[vp]
+                endif
+            endif
         endif
     endfor
+    if firstViz = 0
+        minS = -5
+        maxS = 5
+    endif
     
     sMargin = (maxS - minS) * 0.1
     if sMargin < 5
@@ -361,7 +500,7 @@ if draw_visualization
     Colour: "{0.7, 0.4, 0.4}"
     Line width: 1.5
     for vp from 2 to maxVizPoints
-        if vizTimes#[vp] > 0 and vizTimes#[vp - 1] > 0
+        if vizFilled#[vp] = 1 and vizFilled#[vp - 1] = 1
             Draw line: vizTimes#[vp - 1], vizShifts#[vp - 1], vizTimes#[vp], vizShifts#[vp]
         endif
     endfor
@@ -370,7 +509,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Pitch (st)"
+    Text left: "yes", "Pitch offset (Hz)"
     Text bottom: "yes", "Time (s)"
     
     # Rhythm pattern display
@@ -398,6 +537,7 @@ if draw_visualization
     
     # Stats
     Select outer viewport: 0, 8, 5.0, 5.3
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     
@@ -409,14 +549,14 @@ if draw_visualization
         endif
     endfor
     
-    Text: 0.5, "centre", 0.5, "half", "Beats: " + string$(n_beats) + " | Hits: " + string$(hitCount) + " | Strength: " + string$(hit_strength) + " | Decay: " + fixed$(decay_rate, 1) + " | Poly: " + string$(polyrhythm_factor)
+    Text: 0.5, "centre", 0.5, "half", "Beats: " + string$(n_beats) + " | Hits: " + string$(hitCount) + " | Strength: " + string$(hit_strength) + " Hz | Decay: " + fixed$(decay_rate, 1) + " | Poly: " + string$(polyrhythm_factor)
     
     Font size: 10
     Colour: "Black"
 endif
 
 # === Cleanup ===
-removeObject: tmpSound, manipulation, pitchTier
+removeObject: pitchTier
 
 # === Final Info ===
 selectObject: result
@@ -424,6 +564,8 @@ selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Channels preserved: ", n_channels
+appendInfoLine: "Peak safety applied: ", safetyApplied
 
 # === Play ===
 if play_result

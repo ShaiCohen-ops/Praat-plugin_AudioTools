@@ -3,20 +3,32 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Fractal Pitch Terrain - creates self-similar pitch landscapes
-#   using layered oscillators with golden ratio frequency scaling.
-#   Each layer adds finer detail, like Perlin noise for pitch.
-#   Combines sine and square waves with chaos components.
+#   using layered oscillators with multiplicative frequency scaling.
+#   The generated terrain is applied as a time-varying transposition
+#   of the source F0 contour, preserving the source melody/intonation.
 #
-# Changelog v0.2:
-#   - Modern syntax
-#   - Fixed input check
-#   - Added visualization
+# Changelog v0.3:
+#   - Preserves the detected source F0 contour instead of replacing it
+#     with a terrain around one median pitch.
+#   - Preserves the original number of channels.
+#   - Base_frequency and Drift_frequency now operate in real Hz
+#     using elapsed time in seconds.
+#   - Uses a fixed 100-Hz terrain control grid and includes endTime.
+#   - Fractal layers above the safe control-grid bandwidth are omitted
+#     rather than temporally aliasing into false low-frequency motion.
+#   - Normalize_depth is based on the actually active fractal layers.
+#   - Separates source pitch-analysis limits from target F0 safety limits.
+#   - Stops clearly if no usable source pitch is detected.
+#   - Adds parameter validation.
+#   - Visualization decimation always includes the exact endpoint and
+#     ignores unfilled slots in range calculations.
+#   - Final peak handling is attenuation-only.
 # ============================================================
 
 # === Check Input ===
@@ -32,11 +44,12 @@ orig_sr = Get sampling frequency
 xmin = Get start time
 xmax = Get end time
 dur = xmax - xmin
+nChannels = Get number of channels
 
 # === Form ===
-form Fractal Pitch Terrain
+form Fractal Pitch Terrain v0.3
     comment Select a Sound object first
-    
+
     comment === Preset ===
     optionmenu Preset 1
         option Manual (configure below)
@@ -47,37 +60,37 @@ form Fractal Pitch Terrain
         option Rhythmic Layers
         option Evolving Landscape
         option Extreme Chaos
-    
+
     comment === Fractal Parameters ===
     natural Iterations 6
     positive Base_frequency 1.5
     positive Amplitude_decay 0.55
     positive Chaos_factor 0.3
-    
+
     comment === Wave Mixing ===
     positive Sine_mix 0.7
     positive Square_mix 0.3
-    
+
     comment === Frequency Progression ===
     positive Frequency_multiplier 2.618
     comment (golden ratio squared)
     positive Phase_increment 0.33
-    
+
     comment === Pitch Scaling ===
     positive Pitch_depth 15
     positive Drift_amplitude 2
     positive Drift_frequency 0.7
     boolean Normalize_depth 1
-    
+
     comment === Time Evolution ===
     positive Time_evolution_power 2
     positive Time_evolution_strength 0.5
-    
+
     comment === Pitch Analysis ===
     positive Time_step 0.005
     positive Minimum_pitch 50
     positive Maximum_pitch 900
-    
+
     comment === Output ===
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -170,6 +183,44 @@ elsif preset = 8
     time_evolution_strength = 1.0
 endif
 
+# === Validate Parameters ===
+if amplitude_decay <= 0 or amplitude_decay > 1
+    exitScript: "Amplitude_decay must be greater than 0 and no greater than 1."
+endif
+if chaos_factor < 0
+    exitScript: "Chaos_factor must be non-negative."
+endif
+if sine_mix < 0 or square_mix < 0
+    exitScript: "Sine_mix and Square_mix must be non-negative."
+endif
+if sine_mix + square_mix + chaos_factor <= 0
+    exitScript: "At least one of Sine_mix, Square_mix, or Chaos_factor must be greater than zero."
+endif
+if frequency_multiplier <= 0
+    exitScript: "Frequency_multiplier must be greater than zero."
+endif
+if phase_increment < 0
+    exitScript: "Phase_increment must be non-negative."
+endif
+if pitch_depth < 0
+    exitScript: "Pitch_depth must be non-negative."
+endif
+if drift_amplitude < 0 or drift_frequency < 0
+    exitScript: "Drift_amplitude and Drift_frequency must be non-negative."
+endif
+if time_evolution_power < 0 or time_evolution_strength < 0
+    exitScript: "Time evolution parameters must be non-negative."
+endif
+if time_step <= 0
+    exitScript: "Time_step must be greater than zero."
+endif
+if minimum_pitch >= maximum_pitch
+    exitScript: "Minimum_pitch must be lower than Maximum_pitch."
+endif
+if maximum_pitch >= orig_sr / 2
+    exitScript: "Maximum_pitch must be below Nyquist (" + fixed$(orig_sr / 2, 1) + " Hz)."
+endif
+
 # === Get Preset Name ===
 if preset = 1
     presetName$ = "Manual"
@@ -189,206 +240,282 @@ else
     presetName$ = "Extreme"
 endif
 
+# === Fixed Control Grid ===
+controlStep = 0.01
+npoints = ceiling(dur / controlStep) + 1
+if npoints < 2
+    npoints = 2
+endif
+
+# A 100-Hz sampled control signal can represent modulation only below 50 Hz.
+# Keep a small safety margin to avoid control-rate temporal aliasing.
+maxTerrainHz = 45
+
+if base_frequency > maxTerrainHz
+    exitScript: "Base_frequency is above the safe 100-Hz terrain-control bandwidth (" + string$(maxTerrainHz) + " Hz)."
+endif
+
+# === Determine Active Fractal Layers and Normalization ===
+activeLayers = 0
+activeAmpSum = 0
+omittedLayers = 0
+testFrequency = base_frequency
+testAmplitude = 1
+
+for iter from 1 to iterations
+    if testFrequency <= maxTerrainHz
+        activeLayers += 1
+        activeAmpSum += testAmplitude
+    else
+        omittedLayers += 1
+    endif
+    testAmplitude = testAmplitude * amplitude_decay
+    testFrequency = testFrequency * frequency_multiplier
+endfor
+
+if activeLayers < 1
+    exitScript: "No fractal layer falls inside the safe terrain-control bandwidth."
+endif
+
+peakPerLayer = sine_mix + square_mix + chaos_factor
+normFactor = peakPerLayer * activeAmpSum
+if normFactor <= 0
+    normFactor = 1
+endif
+
+maxTimeFactor = 1 + time_evolution_strength
+
 # === Info ===
-writeInfoLine: "=== Fractal Pitch Terrain ==="
+writeInfoLine: "=== Fractal Pitch Terrain v0.3 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(dur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Channels preserved: ", nChannels
 appendInfoLine: ""
-appendInfoLine: "Iterations: ", iterations
+appendInfoLine: "Requested layers: ", iterations
+appendInfoLine: "Active layers: ", activeLayers
+if omittedLayers > 0
+    appendInfoLine: "Layers omitted above ", maxTerrainHz, " Hz control bandwidth: ", omittedLayers
+endif
 appendInfoLine: "Base freq: ", fixed$(base_frequency, 2), " Hz"
-appendInfoLine: "Freq multiplier: ", fixed$(frequency_multiplier, 3), " (φ²≈2.618)"
+appendInfoLine: "Freq multiplier: ", fixed$(frequency_multiplier, 3)
 appendInfoLine: "Amplitude decay: ", fixed$(amplitude_decay, 2)
 appendInfoLine: "Chaos: ", fixed$(chaos_factor, 2)
 appendInfoLine: "Wave mix: sin=", fixed$(sine_mix, 2), " sq=", fixed$(square_mix, 2)
 appendInfoLine: ""
 
-# === Calculate Number of Points ===
-npoints = round(dur / 0.01)
-if npoints < 200
-    npoints = 200
-endif
-if npoints > 2000
-    npoints = 2000
-endif
-
-# === Create Working Copy and Manipulation ===
+# === Mono Pitch Analysis Reference ===
 selectObject: original
-Copy: originalName$ + "_fractal_tmp"
-tmpSound = selected("Sound")
+if nChannels > 1
+    analysisMono = Convert to mono
+else
+    analysisMono = Copy: originalName$ + "_fractal_analysis"
+endif
 
-selectObject: tmpSound
-manipulation = To Manipulation: time_step, minimum_pitch, maximum_pitch
+selectObject: analysisMono
+analysisPitch = To Pitch: time_step, minimum_pitch, maximum_pitch
 
-# === Get Median Pitch ===
-selectObject: tmpSound
-To Pitch: time_step, minimum_pitch, maximum_pitch
-tmpPitch = selected("Pitch")
+selectObject: analysisPitch
 median_f0 = Get quantile: 0, 0, 0.5, "Hertz"
 
 if median_f0 = undefined
-    median_f0 = 200
-    appendInfoLine: "No pitch detected, using default: ", median_f0, " Hz"
-else
-    appendInfoLine: "Median pitch: ", fixed$(median_f0, 1), " Hz"
+    removeObject: analysisPitch, analysisMono
+    exitScript: "No usable pitch was detected." + newline$
+        ... + "Fractal Pitch Terrain requires voiced / periodic material."
 endif
 
-removeObject: tmpPitch
+appendInfoLine: "Median detected pitch: ", fixed$(median_f0, 1), " Hz"
+appendInfoLine: "Building fractal terrain..."
 
-# === Create Pitch Tier ===
-appendInfoLine: ""
-appendInfoLine: "Building fractal terrain (", iterations, " layers)..."
-
+# === Create Target Pitch Tier ===
 Create PitchTier: "fractal_pitch", xmin, xmax
 pitchTier = selected("PitchTier")
 
-# Store for visualization
+# === Visualization Storage ===
 maxVizPoints = min(npoints, 500)
 vizTimes# = zero#(maxVizPoints)
 vizShifts# = zero#(maxVizPoints)
 vizFilled# = zero#(maxVizPoints)
-vizLayers## = zero##(maxVizPoints, min(iterations, 6))
-vizStep = npoints / maxVizPoints
-
-# === Normalization factor ===
-# The raw layer sum overshoots ±1 (it's a sum of decaying layers), so
-# without normalising, pitch_depth does NOT equal the real semitone
-# excursion and the pitch rails against the min/max clamp. Dividing by
-# (peak-per-layer x sum-of-amplitudes) brings the sum into ~±1 so that
-# pitch_depth becomes the true depth in semitones.
-if amplitude_decay = 1
-    ampSum = iterations
-else
-    ampSum = (1 - amplitude_decay ^ iterations) / (1 - amplitude_decay)
-endif
-peakPerLayer = sine_mix + square_mix + chaos_factor
-normFactor = peakPerLayer * ampSum
-if normFactor <= 0
-    normFactor = 1
-endif
-maxTimeFactor = 1 + time_evolution_strength
+numVizLayers = min(activeLayers, 6)
+vizLayers## = zero##(maxVizPoints, numVizLayers)
 
 # === Build Fractal Pitch Terrain ===
+voicedPoints = 0
+limitedPitchPoints = 0
+targetMinHz = 20
+targetMaxHz = 0.45 * orig_sr
+
 for i from 0 to npoints - 1
-    t = xmin + (i / (npoints - 1)) * dur
-    u = (t - xmin) / dur
-    
+    if i = npoints - 1
+        t = xmax
+        u = 1
+    else
+        t = min(xmax, xmin + i * controlStep)
+        u = (t - xmin) / dur
+    endif
+    elapsed = t - xmin
+
     pitch_sum = 0
     current_amplitude = 1
     current_frequency = base_frequency
-    current_phase = 0
-    
-    # Store current viz index
-    vizIdx = floor(i / vizStep) + 1
-    if vizIdx > maxVizPoints
+    current_phase_cycles = 0
+    activeIndex = 0
+
+    # Deterministic visualization decimation; first and last samples map
+    # exactly to first and last visualization slots.
+    vizIdx = floor(i * (maxVizPoints - 1) / (npoints - 1)) + 1
+    if vizIdx < 1
+        vizIdx = 1
+    elsif vizIdx > maxVizPoints
         vizIdx = maxVizPoints
     endif
-    
-    # Fractal iteration layers
+
     for iter from 1 to iterations
-        wave_phase = (u + current_phase) * current_frequency * 2 * pi
-        sine_component = sin(wave_phase)
-        
-        # Square wave component
-        if sin(wave_phase) > 0
-            square_component = 1
-        else
-            square_component = -1
-        endif
-        
-        # Wave mixing
-        combined_wave = sine_mix * sine_component + square_mix * square_component
-        
-        # Chaos component
-        chaos_phase = wave_phase * 2.3
-        chaos_component = chaos_factor * sin(chaos_phase) * randomUniform(0.9, 1.1)
-        
-        layer_value = current_amplitude * (combined_wave + chaos_component)
-        pitch_sum = pitch_sum + layer_value
-        
-        # Store layer for visualization
-        if vizIdx >= 1 and vizIdx <= maxVizPoints and iter <= 6
-            if vizFilled#[vizIdx] = 0
-                vizLayers##[vizIdx, iter] = layer_value
+        if current_frequency <= maxTerrainHz
+            activeIndex += 1
+
+            # Frequency is now in real Hz: cycles = frequency * elapsed seconds.
+            wave_phase = 2 * pi * (current_frequency * elapsed + current_phase_cycles)
+            sine_component = sin(wave_phase)
+
+            if sine_component >= 0
+                square_component = 1
+            else
+                square_component = -1
+            endif
+
+            combined_wave = sine_mix * sine_component + square_mix * square_component
+
+            chaos_phase = wave_phase * 2.3
+            chaos_component = chaos_factor * sin(chaos_phase) * randomUniform(0.9, 1.1)
+
+            layer_value = current_amplitude * (combined_wave + chaos_component)
+            pitch_sum += layer_value
+
+            if activeIndex <= numVizLayers
+                if vizFilled#[vizIdx] = 0 or i = npoints - 1
+                    vizLayers##[vizIdx, activeIndex] = layer_value
+                endif
             endif
         endif
-        
-        # Update fractal parameters for next layer
+
         current_amplitude = current_amplitude * amplitude_decay
         current_frequency = current_frequency * frequency_multiplier
-        current_phase = current_phase + phase_increment * iter
+        current_phase_cycles = current_phase_cycles + phase_increment * iter
     endfor
-    
-    # Time evolution envelope
-    time_factor = 1 + time_evolution_strength * u ^ time_evolution_power
 
-    # Scale the layer sum into semitones. When normalising, the sum is
-    # divided to ~±1 and time_factor is referenced to its own maximum, so
-    # pitch_depth is the true peak depth and the terrain stays in range.
-    # (Toggle off to keep the original clamp-railing "extreme" character.)
+    # Time evolution.
+    time_factor = 1 + time_evolution_strength * (u ^ time_evolution_power)
+
     if normalize_depth
         pitch_st = pitch_depth * (pitch_sum / normFactor) * (time_factor / maxTimeFactor)
     else
         pitch_st = pitch_depth * pitch_sum * time_factor
     endif
-    
-    # Low-frequency drift
-    drift = drift_amplitude * sin(u * drift_frequency * pi) * u * u
-    pitch_st = pitch_st + drift
-    
-    # Store for visualization
-    if vizIdx >= 1 and vizIdx <= maxVizPoints
-        if vizFilled#[vizIdx] = 0
-            vizTimes#[vizIdx] = t
-            vizShifts#[vizIdx] = pitch_st
-            vizFilled#[vizIdx] = 1
+
+    # Drift frequency is now true Hz and starts at zero contribution.
+    drift = drift_amplitude * sin(2 * pi * drift_frequency * elapsed) * u * u
+    pitch_st += drift
+
+    if vizFilled#[vizIdx] = 0 or i = npoints - 1
+        vizTimes#[vizIdx] = t
+        vizShifts#[vizIdx] = pitch_st
+        vizFilled#[vizIdx] = 1
+    endif
+
+    # Preserve source melody/intonation: apply terrain as a transposition
+    # of the detected source F0 at this exact time.
+    selectObject: analysisPitch
+    source_f0 = Get value at time: t, "Hertz", "Linear"
+
+    if source_f0 <> undefined and source_f0 > 0
+        new_f0 = source_f0 * (2 ^ (pitch_st / 12))
+
+        if new_f0 < targetMinHz
+            new_f0 = targetMinHz
+            limitedPitchPoints += 1
+        elsif new_f0 > targetMaxHz
+            new_f0 = targetMaxHz
+            limitedPitchPoints += 1
         endif
+
+        selectObject: pitchTier
+        Add point: t, new_f0
+        voicedPoints += 1
     endif
-    
-    # Convert semitones to frequency
-    new_f0 = median_f0 * (2 ^ (pitch_st / 12))
-    
-    # Clamp to range
-    if new_f0 < minimum_pitch
-        new_f0 = minimum_pitch
-    elsif new_f0 > maximum_pitch
-        new_f0 = maximum_pitch
-    endif
-    
-    selectObject: pitchTier
-    Add point: t, new_f0
 endfor
 
-# === Replace Pitch Tier ===
-selectObject: manipulation, pitchTier
-Replace pitch tier
+if voicedPoints = 0
+    removeObject: pitchTier, analysisPitch, analysisMono
+    exitScript: "Pitch analysis produced no usable terrain control points."
+endif
 
-# === Resynthesize ===
-appendInfoLine: "Resynthesizing..."
-selectObject: manipulation
-result = Get resynthesis (overlap-add)
-Rename: originalName$ + "_fractal_" + presetName$
+appendInfoLine: "Pitch control points: ", voicedPoints
+if limitedPitchPoints > 0
+    appendInfoLine: "Sampling-safe target limits applied: ", limitedPitchPoints, " point(s)"
+endif
 
+# === Resynthesize All Original Channels ===
+appendInfoLine: "Resynthesizing ", nChannels, " channel(s)..."
+
+selectObject: original
+result = Copy: originalName$ + "_fractal_" + presetName$
+Formula: ~ 0
+
+for ch from 1 to nChannels
+    selectObject: original
+    if nChannels = 1
+        channelWork = Copy: originalName$ + "_fractal_ch1"
+    else
+        channelWork = Extract one channel: ch
+        Rename: originalName$ + "_fractal_ch" + string$(ch)
+    endif
+
+    selectObject: channelWork
+    channelManip = To Manipulation: time_step, minimum_pitch, maximum_pitch
+
+    selectObject: pitchTier
+    plusObject: channelManip
+    Replace pitch tier
+
+    selectObject: channelManip
+    channelRes = Get resynthesis (overlap-add)
+
+    selectObject: result
+    Formula (part): xmin, xmax, ch, ch, "object['channelRes:0', 1, col]"
+
+    removeObject: channelManip, channelWork, channelRes
+endfor
+
+removeObject: pitchTier, analysisPitch, analysisMono
+
+# === Attenuation-only Peak Safety ===
 selectObject: result
-Scale peak: 0.95
+finalPeak = Get absolute extremum: 0, 0, "None"
+if finalPeak > 0.95
+    Scale peak: 0.95
+    safetyApplied = 1
+else
+    safetyApplied = 0
+endif
 
 # === Visualization ===
 if draw_visualization
     Erase all
-    
+
     # --- Title ---
     Select outer viewport: 0, 8, 0, 0.33
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "##Fractal Pitch Terrain##"
-    
+
     # --- Subtitle ---
     Select outer viewport: 0, 8, 0.33, 0.5
     Axes: 0, 1, 0, 1
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.5, "half", originalName$ + " | " + presetName$
-    
+
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
     Select inner viewport: 0.6, 7.6, 0.7, 1.4
@@ -399,7 +526,7 @@ if draw_visualization
     Draw inner box
     Font size: 8
     Text left: "yes", "Original"
-    
+
     # Result waveform
     Select outer viewport: 0, 8, 1.6, 2.5
     Select inner viewport: 0.6, 7.6, 1.7, 2.4
@@ -410,38 +537,47 @@ if draw_visualization
     Draw inner box
     Text left: "yes", "Fractal"
     Text bottom: "yes", "Time (s)"
-    
-    # Fractal terrain curve (combined pitch shift)
+
+    # Fractal terrain curve
     Select outer viewport: 0, 8, 2.7, 4.0
     Select inner viewport: 0.6, 7.6, 2.9, 3.9
-    
-    # Find range
-    minShift = vizShifts#[1]
-    maxShift = vizShifts#[1]
-    for vp from 2 to maxVizPoints
-        if vizShifts#[vp] < minShift
-            minShift = vizShifts#[vp]
-        endif
-        if vizShifts#[vp] > maxShift
-            maxShift = vizShifts#[vp]
+
+    rangeStarted = 0
+    for vp from 1 to maxVizPoints
+        if vizFilled#[vp] = 1
+            if rangeStarted = 0
+                minShift = vizShifts#[vp]
+                maxShift = vizShifts#[vp]
+                rangeStarted = 1
+            else
+                if vizShifts#[vp] < minShift
+                    minShift = vizShifts#[vp]
+                endif
+                if vizShifts#[vp] > maxShift
+                    maxShift = vizShifts#[vp]
+                endif
+            endif
         endif
     endfor
-    
+
+    if rangeStarted = 0
+        minShift = -1
+        maxShift = 1
+    endif
+
     margin = (maxShift - minShift) * 0.1
     if margin < 2
         margin = 2
     endif
-    
+
     Axes: xmin, xmax, minShift - margin, maxShift + margin
     Paint rectangle: "{0.95, 0.95, 0.95}", xmin, xmax, minShift - margin, maxShift + margin
-    
-    # Zero line
+
     Colour: "{0.7, 0.7, 0.7}"
     Dotted line
     Draw line: xmin, 0, xmax, 0
     Solid line
-    
-    # Draw terrain
+
     Colour: "{0.4, 0.6, 0.5}"
     Line width: 1.5
     for vp from 2 to maxVizPoints
@@ -450,44 +586,54 @@ if draw_visualization
         endif
     endfor
     Line width: 1
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Pitch (st)"
     Text bottom: "yes", "Time (s)"
-    
+
     # Layer decomposition
     Select outer viewport: 0, 8, 4.2, 5.5
     Select inner viewport: 0.6, 7.6, 4.4, 5.4
-    
-    # Find layer range
-    layerMin = 0
-    layerMax = 0
-    numLayers = min(iterations, 6)
-    for ly from 1 to numLayers
+
+    layerStarted = 0
+    for ly from 1 to numVizLayers
         for vp from 1 to maxVizPoints
-            if vizLayers##[vp, ly] < layerMin
-                layerMin = vizLayers##[vp, ly]
-            endif
-            if vizLayers##[vp, ly] > layerMax
-                layerMax = vizLayers##[vp, ly]
+            if vizFilled#[vp] = 1
+                value = vizLayers##[vp, ly]
+                if layerStarted = 0
+                    layerMin = value
+                    layerMax = value
+                    layerStarted = 1
+                else
+                    if value < layerMin
+                        layerMin = value
+                    endif
+                    if value > layerMax
+                        layerMax = value
+                    endif
+                endif
             endif
         endfor
     endfor
-    
+
+    if layerStarted = 0
+        layerMin = -1
+        layerMax = 1
+    endif
+
     layerMargin = (layerMax - layerMin) * 0.1
     if layerMargin < 0.2
         layerMargin = 0.2
     endif
-    
+
     Axes: xmin, xmax, layerMin - layerMargin, layerMax + layerMargin
     Paint rectangle: "{0.95, 0.95, 0.95}", xmin, xmax, layerMin - layerMargin, layerMax + layerMargin
-    
-    # Draw each layer with different color
+
     layerColors$# = {"{0.8,0.4,0.4}", "{0.4,0.8,0.4}", "{0.4,0.4,0.8}", "{0.8,0.8,0.4}", "{0.8,0.4,0.8}", "{0.4,0.8,0.8}"}
-    
-    for ly from 1 to numLayers
+
+    for ly from 1 to numVizLayers
         Colour: layerColors$#[ly]
         for vp from 2 to maxVizPoints
             if vizFilled#[vp] = 1 and vizFilled#[vp - 1] = 1
@@ -495,22 +641,22 @@ if draw_visualization
             endif
         endfor
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Layers"
-    
-    # Layer legend
+
     Font size: 5
-    for ly from 1 to numLayers
+    for ly from 1 to numVizLayers
         Colour: layerColors$#[ly]
-        xPos = 0.02 + (ly - 1) * 0.12
-        Text: xPos, "left", 1.08, "half", "L" + string$(ly)
+        xPos = xmin + (xmax - xmin) * (0.02 + (ly - 1) * 0.12)
+        Text: xPos, "left", layerMax + layerMargin * 0.6, "half", "L" + string$(ly)
     endfor
-    
+
     # Stats
     Select outer viewport: 0, 8, 5.6, 5.9
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     if normalize_depth
@@ -518,14 +664,16 @@ if draw_visualization
     else
         depthLabel$ = "Depth: " + string$(pitch_depth) + "st x sum (raw)"
     endif
-    Text: 0.5, "centre", 0.5, "half", "Layers: " + string$(iterations) + " | Freq×" + fixed$(frequency_multiplier, 2) + " | Decay: " + fixed$(amplitude_decay, 2) + " | Chaos: " + fixed$(chaos_factor, 2) + " | " + depthLabel$
-    
+    Text: 0.5, "centre", 0.5, "half",
+        ... "Active layers: " + string$(activeLayers) +
+        ... " | Freq×" + fixed$(frequency_multiplier, 2) +
+        ... " | Decay: " + fixed$(amplitude_decay, 2) +
+        ... " | Chaos: " + fixed$(chaos_factor, 2) +
+        ... " | " + depthLabel$
+
     Font size: 10
     Colour: "Black"
 endif
-
-# === Cleanup ===
-removeObject: tmpSound, manipulation, pitchTier
 
 # === Final Info ===
 selectObject: result
@@ -533,6 +681,9 @@ selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Output channels: ", nChannels
+appendInfoLine: "Active fractal layers: ", activeLayers
+appendInfoLine: "Peak safety applied: ", safetyApplied
 
 # === Play ===
 if play_result

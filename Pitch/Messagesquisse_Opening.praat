@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - Messagesquisse_Opening.praat (v4.6)
+# Praat AudioTools - Messagesquisse_Opening.praat (v4.7a)
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.6 (2026)
+# Version: 4.7a (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,27 @@
 #   Boulez-inspired additive drone machine after Messagesquisse.
 #   Transforms a single cello tone into a six-layer hexachordal
 #   field using the SACHER pitch set and Morse-derived timing.
+#
+# Changelog v4.7a (2026):
+#   - FIX: removed a premature report reference to safetyApplied.
+#     The variable is only defined after final stereo peak analysis.
+#
+# Changelog v4.7 (2026):
+#   - FIX (Morse entry alignment): entry silence is now guaranteed to precede
+#     each shifted layer. Praat Concatenate follows Objects-list creation order,
+#     not selection order; the old entry-silence block could therefore place
+#     audio before silence. A fresh post-silence layer copy fixes the ordering.
+#   - FIX (non-zero input time domains): stores source xmin/xmax, converts
+#     score-relative source positions to absolute source times for extraction,
+#     and makes all internal working segments intentionally zero-based.
+#   - FIX (dry extraction): dry-path trimming/padding also respects source xmin.
+#   - SAFETY: validates source/target pitch frequencies against the current
+#     sampling rate and rejects invalid resample rates.
+#   - SPEED: skips the six-layer wet render entirely when Wet_mix = 0, and
+#     skips dry preparation when Dry_mix = 0.
+#   - OUTPUT: final peak handling is attenuation-only; quiet outputs are not
+#     boosted to 0.99.
+#   - VIS: the input waveform panel uses the source's real xmin/xmax domain.
 #
 # Changelog v4.6 (2026) — response to internal review:
 #   - FIX (presets clobbering Source_pitch_MIDI): the six preset
@@ -123,7 +144,9 @@ originalSound     = selected("Sound")
 soundName$        = selected$("Sound")
 
 selectObject: originalSound
-originalDuration  = Get total duration
+sourceXmin        = Get start time
+sourceXmax        = Get end time
+originalDuration  = sourceXmax - sourceXmin
 samplingFrequency = Get sampling frequency
 numChannels       = Get number of channels
 
@@ -148,7 +171,7 @@ auto_unit  = originalDuration / totalUnits
 # FORM
 # ============================================================
 
-form Messagesquisse Opening v4.6
+form Messagesquisse Opening v4.7a
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -306,6 +329,14 @@ dryMix = 1.0 - wetMix
 baseFreq       = 440.0 * (2 ^ ((midiNote + qtOffset - 69) / 12.0))
 sourcePitchFreq = 440.0 * (2 ^ ((sourceMidi - 69) / 12.0))
 
+if sourcePitchFreq <= 0 or sourcePitchFreq >= 0.45 * samplingFrequency
+    if numChannels > 1
+        removeObject: workSound
+    endif
+    exitScript: "Source_pitch_MIDI maps to an unsafe frequency (" + fixed$(sourcePitchFreq, 2) + " Hz)." + newline$
+        ... + "Choose a value below 45% of the sampling frequency."
+endif
+
 # MIDI note name (for display)
 noteNames$[0]  = "C"
 noteNames$[1]  = "C#"
@@ -365,6 +396,14 @@ pitchName$[6] = "D"
 
 for i from 1 to 6
     targetFreq[i] = baseFreq * (2 ^ (semitones#[i] / 12.0))
+    if targetFreq[i] <= 0 or targetFreq[i] >= 0.45 * samplingFrequency
+        if numChannels > 1
+            removeObject: workSound
+        endif
+        exitScript: "Target layer " + string$(i) + " is outside the safe output pitch range (" +
+            ... fixed$(targetFreq[i], 2) + " Hz)." + newline$
+            ... + "Lower Base_MIDI_note / Quartertone_offset_semitones."
+    endif
 endfor
 
 # ============================================================
@@ -409,7 +448,7 @@ endfor
 
 clearinfo
 appendInfoLine: "==================================================="
-appendInfoLine: "  Messagesquisse Opening v4.6"
+appendInfoLine: "  Messagesquisse Opening v4.7a"
 appendInfoLine: "==================================================="
 appendInfoLine: "Source   : ", soundName$, "  (", fixed$(originalDuration, 3), " s)"
 appendInfoLine: "Target reg: MIDI ", midiNote, "  (", noteName$, " = ", fixed$(baseFreq, 2), " Hz)"
@@ -445,252 +484,294 @@ accumR = selected("Sound")
 # LAYER GENERATION LOOP
 # ============================================================
 
-for i from 1 to 6
+if wetMix > 0.0
+    for i from 1 to 6
 
-    # 1. Calculate pitch factor (ratio of target to assumed source pitch).
-    # NOTE: this must be sourcePitchFreq, not baseFreq — dividing by
-    # baseFreq would cancel it out of the ratio entirely (since
-    # targetFreq[i] is itself baseFreq * an interval), which is why
-    # Base_MIDI_note previously had no audible effect on the register.
-    pf = targetFreq[i] / sourcePitchFreq
-    
-    # 2. Since sample rate scaling alters duration, extract a segment 
-    # proportional to the pitch factor so the final shifted duration is correct
-    reqDur = activeDur[i] * pf
+        # 1. Calculate pitch factor (ratio of target to assumed source pitch).
+        pf = targetFreq[i] / sourcePitchFreq
 
-    srcStart  = entry[i]
-    srcEnd    = srcStart + reqDur
-    needsLoop = 0
-
-    if srcStart >= originalDuration
-        srcStart = originalDuration - 0.01
-        if srcStart < 0
-            srcStart = 0
+        # Override sampling frequency must remain positive and computationally sane.
+        oSr = round(samplingFrequency * pf)
+        if oSr < 1000 or oSr > 2000000
+            removeObject: accumL, accumR
+            if numChannels > 1
+                removeObject: workSound
+            endif
+            exitScript: "Layer " + string$(i) + " requires an unsafe temporary sampling frequency (" +
+                ... string$(oSr) + " Hz)." + newline$
+                ... + "Choose a less extreme target/source register relationship."
         endif
-    endif
 
-    if srcEnd > originalDuration
-        needsLoop = 1
-        srcEnd    = originalDuration
-    endif
+        # 2. Sample-rate reinterpretation changes duration, so request a source
+        # segment scaled by pf to obtain activeDur[i] after pitch shifting.
+        reqDur = activeDur[i] * pf
 
-    # --- Extract source segment ---
-    selectObject: workSound
-    Extract part: srcStart, srcEnd, "Hanning", 1, "yes"
-    srcSegment = selected("Sound")
-    Rename: "SrcSeg_" + string$(i)
+        # Score-relative source position (seconds from source onset).
+        srcStartRel = entry[i]
+        srcEndRel   = srcStartRel + reqDur
+        needsLoop   = 0
 
-    segDur    = srcEnd - srcStart
-    remainingNeeded = reqDur - segDur
+        if srcStartRel >= originalDuration
+            srcStartRel = originalDuration - 0.01
+            if srcStartRel < 0
+                srcStartRel = 0
+            endif
+        endif
 
-    # --- Loop or pad if source overruns ---
-    if needsLoop = 1 and remainingNeeded > 0.001
+        if srcEndRel > originalDuration
+            needsLoop = 1
+            srcEndRel = originalDuration
+        endif
 
-        if loopShort = 1
-            nCopies  = ceiling(reqDur / segDur) + 1
-            
-            selectObject: srcSegment
-            Copy: "LoopBase"
-            loopBase = selected("Sound")
-            
-            for c from 2 to nCopies
+        # Convert relative score time to the source Sound's absolute domain.
+        srcStartAbs = sourceXmin + srcStartRel
+        srcEndAbs   = sourceXmin + srcEndRel
+
+        # --- Extract source segment ---
+        # Preserve times = no: every internal layer segment is intentionally
+        # zero-based from this point onward.
+        selectObject: workSound
+        Extract part: srcStartAbs, srcEndAbs, "Hanning", 1, "no"
+        srcSegment = selected("Sound")
+        Rename: "SrcSeg_" + string$(i)
+
+        segDur = Get total duration
+        remainingNeeded = reqDur - segDur
+
+        # --- Loop or pad if source overruns ---
+        if needsLoop = 1 and remainingNeeded > 0.001
+
+            if loopShort = 1
+                if segDur <= 0.000001
+                    removeObject: srcSegment, accumL, accumR
+                    if numChannels > 1
+                        removeObject: workSound
+                    endif
+                    exitScript: "A source segment became too short to loop."
+                endif
+
+                nCopies = ceiling(reqDur / segDur) + 1
+
+                selectObject: srcSegment
+                Copy: "LoopBase"
+                loopBase = selected("Sound")
+
+                for c from 2 to nCopies
+                    selectObject: loopBase
+                    plusObject: srcSegment
+                    Concatenate
+                    newLoop = selected("Sound")
+                    removeObject: loopBase
+                    loopBase = newLoop
+                endfor
+
                 selectObject: loopBase
-                plusObject: srcSegment
+                Extract part: 0, reqDur, "rectangular", 1, "no"
+                sourceReady = selected("Sound")
+                Rename: "SourceReady_" + string$(i)
+                removeObject: loopBase, srcSegment
+            else
+                Create Sound from formula: "SilPad_" + string$(i), 1,
+                    ... 0, remainingNeeded, samplingFrequency, "0"
+                silPad = selected("Sound")
+
+                # srcSegment was created before silPad, so Objects-list order is
+                # audio -> silence, which is the desired tail padding.
+                selectObject: srcSegment
+                plusObject: silPad
                 Concatenate
-                newLoop = selected("Sound")
-                removeObject: loopBase
-                loopBase = newLoop
-            endfor
-            
-            selectObject: loopBase
-            Extract part: 0, reqDur, "rectangular", 1, "yes"
-            sourceReady = selected("Sound")
-            Rename: "SourceReady_" + string$(i)
-            removeObject: loopBase
-            removeObject: srcSegment
+                sourceReady = selected("Sound")
+                Rename: "SourceReady_" + string$(i)
+                removeObject: silPad, srcSegment
+            endif
+
         else
-            Create Sound from formula: "SilPad_" + string$(i), 1,
-            ... 0, remainingNeeded, samplingFrequency, "0"
-            silPad = selected("Sound")
             selectObject: srcSegment
-            plusObject: silPad
-            Concatenate
-            sourceReady = selected("Sound")
-            Rename: "SourceReady_" + string$(i)
-            removeObject: silPad
-            removeObject: srcSegment
+            currentSegDur = Get total duration
+            if currentSegDur > reqDur + 0.001
+                Extract part: 0, reqDur, "rectangular", 1, "no"
+                sourceReady = selected("Sound")
+                Rename: "SourceReady_" + string$(i)
+                removeObject: srcSegment
+            else
+                sourceReady = srcSegment
+                selectObject: sourceReady
+                Rename: "SourceReady_" + string$(i)
+            endif
         endif
 
-    else
-        selectObject: srcSegment
-        currentSegDur = Get total duration
-        if currentSegDur > reqDur + 0.001
-            Extract part: 0, reqDur, "rectangular", 1, "yes"
-            sourceReady = selected("Sound")
-            Rename: "SourceReady_" + string$(i)
-            removeObject: srcSegment
-        else
-            sourceReady = srcSegment
-            selectObject: sourceReady
-            Rename: "SourceReady_" + string$(i)
-        endif
-    endif
+        # --- Pitch shift via Sample Rate Reinterpretation ---
+        selectObject: sourceReady
+        Override sampling frequency: oSr
+        shiftedLayerRaw = Resample: samplingFrequency, resamplePrecision
+        removeObject: sourceReady
 
-    # --- Pitch shift via Sample Rate Reinterpretation (from Undertone_Field) ---
-    oSr = round(samplingFrequency * pf)
-
-    selectObject: sourceReady
-    Override sampling frequency: oSr
-    shiftedLayerRaw = Resample: samplingFrequency, resamplePrecision
-    removeObject: sourceReady
-
-    # Trim or pad to exact activeDur[i] to ensure alignment
-    selectObject: shiftedLayerRaw
-    resampledDur = Get total duration
-    if resampledDur > activeDur[i] + 0.001
-        shiftedLayer = Extract part: 0, activeDur[i], "rectangular", 1, "no"
-        Rename: "Shifted_" + string$(i)
-        removeObject: shiftedLayerRaw
-    elsif resampledDur < activeDur[i] - 0.001
-        padDur = activeDur[i] - resampledDur
-        Create Sound from formula: "UT_pad", 1, 0, padDur, samplingFrequency, "0"
-        padID = selected("Sound")
+        # Trim or pad to exact activeDur[i] to ensure alignment.
         selectObject: shiftedLayerRaw
-        plusObject: padID
-        shiftedLayer = Concatenate
-        Rename: "Shifted_" + string$(i)
-        removeObject: shiftedLayerRaw, padID
-    else
-        shiftedLayer = shiftedLayerRaw
-        selectObject: shiftedLayer
-        Rename: "Shifted_" + string$(i)
-    endif
+        resampledDur = Get total duration
 
-    # --- Prepend entry-delay silence ---
-    entryTime = entry[i]
+        if resampledDur > activeDur[i] + 0.001
+            shiftedLayer = Extract part: 0, activeDur[i], "rectangular", 1, "no"
+            Rename: "Shifted_" + string$(i)
+            removeObject: shiftedLayerRaw
 
-    if entryTime > 0.001
-        Create Sound from formula: "SilEntry_" + string$(i), 1,
-        ... 0, entryTime, samplingFrequency, "0"
-        silEntry = selected("Sound")
-        selectObject: silEntry
-        plusObject: shiftedLayer
-        Concatenate
-        withDelay = selected("Sound")
-        Rename: "WithDelay_" + string$(i)
-        removeObject: silEntry
-        removeObject: shiftedLayer
-    else
-        withDelay = shiftedLayer
+        elsif resampledDur < activeDur[i] - 0.001
+            padDur = activeDur[i] - resampledDur
+            Create Sound from formula: "UT_pad", 1, 0, padDur, samplingFrequency, "0"
+            padID = selected("Sound")
+
+            # shiftedLayerRaw predates padID -> correct audio-then-silence order.
+            selectObject: shiftedLayerRaw
+            plusObject: padID
+            shiftedLayer = Concatenate
+            Rename: "Shifted_" + string$(i)
+            removeObject: shiftedLayerRaw, padID
+        else
+            shiftedLayer = shiftedLayerRaw
+            selectObject: shiftedLayer
+            Rename: "Shifted_" + string$(i)
+        endif
+
+        # --- Prepend entry-delay silence ---
+        entryTime = entry[i]
+
+        if entryTime > 0.001
+            Create Sound from formula: "SilEntry_" + string$(i), 1,
+                ... 0, entryTime, samplingFrequency, "0"
+            silEntry = selected("Sound")
+
+            # CRITICAL v4.7 ordering fix:
+            # Concatenate uses Objects-list creation order, not selection order.
+            # shiftedLayer existed before silEntry, so selecting silEntry first
+            # was not enough. Make a fresh shifted copy AFTER the silence.
+            selectObject: shiftedLayer
+            shiftedAfterSilence = Copy: "ShiftAfterSil_" + string$(i)
+
+            selectObject: silEntry
+            plusObject: shiftedAfterSilence
+            Concatenate
+            withDelay = selected("Sound")
+            Rename: "WithDelay_" + string$(i)
+
+            removeObject: silEntry, shiftedAfterSilence, shiftedLayer
+        else
+            withDelay = shiftedLayer
+            selectObject: withDelay
+            Rename: "WithDelay_" + string$(i)
+        endif
+
+        # --- Trim / pad end to totalDuration ---
         selectObject: withDelay
-        Rename: "WithDelay_" + string$(i)
-    endif
+        currentTotal = Get total duration
+        padNeeded = totalDuration - currentTotal
 
-    # --- Trim / pad end to totalDuration ---
-    selectObject: withDelay
-    currentTotal = Get total duration
-    padNeeded    = totalDuration - currentTotal
+        if padNeeded > 0.001
+            Create Sound from formula: "SilEnd_" + string$(i), 1,
+                ... 0, padNeeded, samplingFrequency, "0"
+            silEnd = selected("Sound")
 
-    if padNeeded > 0.001
-        Create Sound from formula: "SilEnd_" + string$(i), 1,
-        ... 0, padNeeded, samplingFrequency, "0"
-        silEnd = selected("Sound")
-        selectObject: withDelay
-        plusObject: silEnd
-        Concatenate
-        paddedLayer = selected("Sound")
-        Rename: layerName$[i]
-        removeObject: silEnd
-        removeObject: withDelay
-    elsif padNeeded < -0.001
-        selectObject: withDelay
-        Extract part: 0, totalDuration, "rectangular", 1, "yes"
-        paddedLayer = selected("Sound")
-        Rename: layerName$[i]
-        removeObject: withDelay
-    else
-        paddedLayer = withDelay
-        selectObject: paddedLayer
-        Rename: layerName$[i]
-    endif
+            # withDelay predates silEnd -> correct audio-then-silence order.
+            selectObject: withDelay
+            plusObject: silEnd
+            Concatenate
+            paddedLayer = selected("Sound")
+            Rename: layerName$[i]
+            removeObject: silEnd, withDelay
 
-    # --- Hanning fade-in at onset ---
-    fadeStart     = entryTime
-    fadeDurActual = fadeDur
-    fadeEnd       = fadeStart + fadeDurActual
+        elsif padNeeded < -0.001
+            selectObject: withDelay
+            Extract part: 0, totalDuration, "rectangular", 1, "no"
+            paddedLayer = selected("Sound")
+            Rename: layerName$[i]
+            removeObject: withDelay
+        else
+            paddedLayer = withDelay
+            selectObject: paddedLayer
+            Rename: layerName$[i]
+        endif
 
-    if fadeEnd > totalDuration
-        fadeEnd       = totalDuration
-        fadeDurActual = fadeEnd - fadeStart
-    endif
+        # --- Hanning fade-in at onset ---
+        fadeStart = entryTime
+        fadeDurActual = fadeDur
+        fadeEnd = fadeStart + fadeDurActual
 
-    if fadeDurActual > 0.001
-        selectObject: paddedLayer
-        # v4.5 FIX: was "cos(2 * pi * (x - fadeStart) / fadeDurActual)"
-        # which ramped 0 -> 1 -> 0 over the fade window (a brief
-        # pulse at each layer entry, not a fade-in). Corrected to
-        # "cos(pi * ... )" so the cosine arg ranges from 0 to pi
-        # and the multiplier ramps monotonically 0 -> 1.
-        Formula (part): fadeStart, fadeEnd, 1, 1,
-        ... "self * (0.5 - 0.5 * cos(pi * (x - fadeStart) / fadeDurActual))"
-    endif
+        if fadeEnd > totalDuration
+            fadeEnd = totalDuration
+            fadeDurActual = fadeEnd - fadeStart
+        endif
 
-    # --- Accumulate into stereo buffers ---
-    # v4.6 FIX: wet layers are now scaled by wetMix (previously always
-    # accumulated at full gain regardless of Wet_mix, so wetMix=0 still
-    # produced the full processed field on top of the dry signal).
-    selectObject: accumL
-    Formula: "self + object[paddedLayer] * panGainL[i] * wetMix"
+        if fadeDurActual > 0.001
+            selectObject: paddedLayer
+            Formula (part): fadeStart, fadeEnd, 1, 1,
+                ... "self * (0.5 - 0.5 * cos(pi * (x - fadeStart) / fadeDurActual))"
+        endif
 
-    selectObject: accumR
-    Formula: "self + object[paddedLayer] * panGainR[i] * wetMix"
+        # --- Accumulate into stereo buffers ---
+        selectObject: accumL
+        Formula: "self + object[paddedLayer] * panGainL[i] * wetMix"
 
-    removeObject: paddedLayer
+        selectObject: accumR
+        Formula: "self + object[paddedLayer] * panGainR[i] * wetMix"
 
-    appendInfoLine: "  ✓ ", layerName$[i], "  →  ", fixed$(targetFreq[i], 2), " Hz",
-    ... "   pan ", fixed$(panPos[i], 2),
-    ... "   L×", fixed$(panGainL[i], 3), "  R×", fixed$(panGainR[i], 3)
+        removeObject: paddedLayer
 
-endfor
-
-# ============================================================
-# DRY SIGNAL — original centred at 0.707, scaled by dryMix
-# ============================================================
-
-selectObject: workSound
-origActualDur = Get total duration
-dryPadNeeded  = totalDuration - origActualDur
-
-if dryPadNeeded > 0.001
-    Create Sound from formula: "DrySilEnd", 1,
-    ... 0, dryPadNeeded, samplingFrequency, "0"
-    silDryEnd = selected("Sound")
-    selectObject: workSound
-    plusObject: silDryEnd
-    Concatenate
-    dryMono = selected("Sound")
-    Rename: "DryMono"
-    removeObject: silDryEnd
-elsif dryPadNeeded < -0.001
-    selectObject: workSound
-    Extract part: 0, totalDuration, "rectangular", 1, "yes"
-    dryMono = selected("Sound")
-    Rename: "DryMono"
+        appendInfoLine: "  ✓ ", layerName$[i], "  →  ", fixed$(targetFreq[i], 2), " Hz",
+            ... "   pan ", fixed$(panPos[i], 2),
+            ... "   L×", fixed$(panGainL[i], 3), "  R×", fixed$(panGainR[i], 3)
+    endfor
 else
-    selectObject: workSound
-    Copy: "DryMono"
-    dryMono = selected("Sound")
+    appendInfoLine: "Wet mix = 0: skipped six-layer render."
 endif
+
+# ============================================================
+# DRY SIGNAL — source centred at 0.707, scaled by dryMix
+# ============================================================
 
 if dryMix > 0.0
+    # Build a zero-based dry working segment from the source's real time domain.
+    if originalDuration > totalDuration + 0.001
+        selectObject: workSound
+        Extract part: sourceXmin, sourceXmin + totalDuration, "rectangular", 1, "no"
+        dryMono = selected("Sound")
+        Rename: "DryMono"
+
+    elsif originalDuration < totalDuration - 0.001
+        selectObject: workSound
+        Extract part: sourceXmin, sourceXmax, "rectangular", 1, "no"
+        dryBase = selected("Sound")
+        Rename: "DryBase"
+
+        dryPadNeeded = totalDuration - originalDuration
+        Create Sound from formula: "DrySilEnd", 1,
+            ... 0, dryPadNeeded, samplingFrequency, "0"
+        silDryEnd = selected("Sound")
+
+        # dryBase predates silDryEnd -> correct audio-then-silence order.
+        selectObject: dryBase
+        plusObject: silDryEnd
+        Concatenate
+        dryMono = selected("Sound")
+        Rename: "DryMono"
+        removeObject: dryBase, silDryEnd
+    else
+        selectObject: workSound
+        Extract part: sourceXmin, sourceXmax, "rectangular", 1, "no"
+        dryMono = selected("Sound")
+        Rename: "DryMono"
+    endif
+
     dryCentreGain = 0.707
+
     selectObject: accumL
     Formula: "self + object[dryMono] * dryMix * dryCentreGain"
+
     selectObject: accumR
     Formula: "self + object[dryMono] * dryMix * dryCentreGain"
-endif
 
-removeObject: dryMono
+    removeObject: dryMono
+else
+    appendInfoLine: "Dry mix = 0: skipped dry-path preparation."
+endif
 
 if numChannels > 1
     removeObject: workSound
@@ -706,7 +787,13 @@ Combine to stereo
 finalStereo = selected("Sound")
 
 selectObject: finalStereo
-Scale peak: 0.99
+finalPeak = Get absolute extremum: 0, 0, "None"
+if finalPeak > 0.99
+    Scale peak: 0.99
+    safetyApplied = 1
+else
+    safetyApplied = 0
+endif
 
 Rename: "Messagesquisse_Opening"
 
@@ -786,10 +873,10 @@ if draw_visualization = 1
     endif
     ampMax = inPeak * 1.15
 
-    Axes: 0, originalDuration, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, originalDuration, -ampMax, ampMax
+    Axes: sourceXmin, sourceXmax, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", sourceXmin, sourceXmax, -ampMax, ampMax
     Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, originalDuration, 0
+    Draw line: sourceXmin, 0, sourceXmax, 0
     selectObject: originalSound
     Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
@@ -990,7 +1077,7 @@ if draw_visualization = 1
     Font size: 7
     Colour: "Black"
     Text: 0.01, "left", 0.82, "half",
-    ... "##Messagesquisse Opening v4.6  | SACHER Hexachord  |  Morse Temporal Structure##"
+    ... "##Messagesquisse Opening v4.7a  | SACHER Hexachord  |  Morse Temporal Structure##"
     Colour: "{0.35, 0.35, 0.60}"
     Text: 0.80, "left", 0.82, "half", "Preset: " + preset_name$
     Font size: 6
@@ -1038,6 +1125,7 @@ appendInfoLine: "Src pitch : MIDI ", sourceMidi, "  (assumed = ", fixed$(sourceP
 appendInfoLine: "Wet/Dry  : ", fixed$(wetMix*100,1), "% / ", fixed$(dryMix*100,1), "%"
 appendInfoLine: "Pan      : ", fixed$(pSpread*100,0), "% spread"
 appendInfoLine: "Preset   : ", preset_name$
+appendInfoLine: "Peak safety: ", safetyApplied
 
 # ============================================================
 # PLAY

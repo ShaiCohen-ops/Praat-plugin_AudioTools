@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,22 @@
 #   never metrically fixed. The spiral is both a formal structure
 #   and a perceptual metaphor: expansion, return, displacement.
 #
+# Changelog v1.1:
+#   - Full xmin/xmax-safe segmentation and tier domains.
+#   - Preserves the exact source channel count; mono is used for analysis only.
+#   - Pitch analysis uses an adaptive 40..min(1200, 0.45*SR) range.
+#   - Pitch synthesis safety is independent of analysis: 20 Hz .. 0.45*SR.
+#   - Unvoiced material keeps the duration spiral and skips pitch shifting
+#     instead of inventing a 150 Hz contour.
+#   - Presets now define both Hz and semitone pitch-step equivalents, so
+#     either Pitch_scaling mode remains meaningful.
+#   - Added validation for segment count, duration multiplier, pitch steps,
+#     jitter, sample rate, and extreme parameter combinations.
+#   - Exact identity path when duration=1, jitter=0, and active pitch step=0.
+#   - Peak protection is attenuation-only.
+#   - Visualization layout/style preserved; absolute segment boundaries and
+#     spiral marker-size safety corrected.
+#
 # Category: Time & Granular
 # ============================================================
 
@@ -31,7 +47,7 @@ sound = selected("Sound")
 name$ = selected$("Sound")
 
 # === USER PARAMETERS ===
-form Spiral Segmentation
+form Spiral Segmentation v1.1
     comment === Preset ===
     optionmenu Preset 1
         option Custom (manual settings)
@@ -73,6 +89,8 @@ form Spiral Segmentation
 endform
 
 # === APPLY PRESETS ===
+# Presets define both Hz and semitone step equivalents. Pitch_scaling remains
+# under user control, but either mode now receives a meaningful preset value.
 if preset > 1
     if preset = 2
         # Gentle Expansion
@@ -80,6 +98,7 @@ if preset > 1
         duration_multiplier = 1.12
         spiral_direction = 1
         pitch_step_Hz = 3
+        pitch_step_semitones = 0.25
         pitch_direction = 1
         jitter_amount = 0.05
         presetName$ = "Gentle Expansion"
@@ -89,6 +108,7 @@ if preset > 1
         duration_multiplier = 1.25
         spiral_direction = 2
         pitch_step_Hz = 8
+        pitch_step_semitones = 0.70
         pitch_direction = 2
         jitter_amount = 0.06
         presetName$ = "Accelerating Collapse"
@@ -98,6 +118,7 @@ if preset > 1
         duration_multiplier = 1.05
         spiral_direction = 1
         pitch_step_Hz = 15
+        pitch_step_semitones = 1.25
         pitch_direction = 1
         jitter_amount = 0.03
         presetName$ = "Pitch Ascent"
@@ -107,6 +128,7 @@ if preset > 1
         duration_multiplier = 1.05
         spiral_direction = 1
         pitch_step_Hz = 15
+        pitch_step_semitones = 1.25
         pitch_direction = 2
         jitter_amount = 0.03
         presetName$ = "Pitch Descent"
@@ -116,6 +138,7 @@ if preset > 1
         duration_multiplier = 1.18
         spiral_direction = 1
         pitch_step_Hz = 7
+        pitch_step_semitones = 0.60
         pitch_direction = 3
         jitter_amount = 0.25
         presetName$ = "Drunken Spiral"
@@ -125,6 +148,7 @@ if preset > 1
         duration_multiplier = 1.08
         spiral_direction = 1
         pitch_step_Hz = 2
+        pitch_step_semitones = 0.17
         pitch_direction = 1
         jitter_amount = 0.02
         presetName$ = "Tight Coil"
@@ -134,6 +158,7 @@ if preset > 1
         duration_multiplier = 1.35
         spiral_direction = 1
         pitch_step_Hz = 20
+        pitch_step_semitones = 1.65
         pitch_direction = 1
         jitter_amount = 0.1
         presetName$ = "Wide Orbit"
@@ -143,6 +168,7 @@ if preset > 1
         duration_multiplier = 1.2
         spiral_direction = 2
         pitch_step_Hz = 5
+        pitch_step_semitones = 0.43
         pitch_direction = 1
         jitter_amount = 0.08
         presetName$ = "Reverse Time Feel"
@@ -152,6 +178,7 @@ if preset > 1
         duration_multiplier = 1.1
         spiral_direction = 1
         pitch_step_Hz = 12
+        pitch_step_semitones = 1.00
         pitch_direction = 3
         jitter_amount = 0.4
         presetName$ = "Glitch Scatter"
@@ -161,6 +188,7 @@ if preset > 1
         duration_multiplier = 1.5
         spiral_direction = 1
         pitch_step_Hz = 1
+        pitch_step_semitones = 0.09
         pitch_direction = 2
         jitter_amount = 0.02
         presetName$ = "Meditative Stretch"
@@ -170,6 +198,7 @@ if preset > 1
         duration_multiplier = 1.3
         spiral_direction = 2
         pitch_step_Hz = 10
+        pitch_step_semitones = 0.85
         pitch_direction = 1
         jitter_amount = 0.15
         presetName$ = "Anxious Compression"
@@ -179,6 +208,7 @@ if preset > 1
         duration_multiplier = 1.4
         spiral_direction = 1
         pitch_step_Hz = 25
+        pitch_step_semitones = 2.00
         pitch_direction = 3
         jitter_amount = 0.12
         presetName$ = "Cosmic Drift"
@@ -188,11 +218,6 @@ else
 endif
 
 # === PITCH SCALING MODE ===
-# Hz mode adds a constant frequency offset per segment (original behaviour).
-# Semitone mode multiplies by a constant ratio per segment, so equal steps
-# are equal musical intervals — a perceptually uniform spiral in pitch.
-# (Presets leave Pitch_scaling at its default of 1 = Hz, so their feel is
-# unchanged; the semitone mode is opt-in from the form.)
 if pitch_scaling = 1
     pstep = pitch_step_Hz
     pitchUnit$ = "Hz"
@@ -201,20 +226,62 @@ else
     pitchUnit$ = "st"
 endif
 
-# === SETUP ===
+# === SETUP / VALIDATION ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  SPIRAL SEGMENTATION v1.0"
+writeInfoLine: "  SPIRAL SEGMENTATION v1.1"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 
 selectObject: sound
-totalDuration = Get total duration
+xmin = Get start time
+xmax = Get end time
+totalDuration = xmax - xmin
 sampleRate = Get sampling frequency
+n_channels = Get number of channels
+
+if totalDuration <= 0
+    exitScript: "The selected Sound has no positive duration."
+endif
+if number_of_segments < 1 or number_of_segments > 512
+    exitScript: "Number_of_segments must be between 1 and 512."
+endif
+if duration_multiplier < 1 or duration_multiplier > 10
+    exitScript: "Duration_multiplier must be between 1 and 10."
+endif
+if pitch_step_Hz < 0
+    exitScript: "Pitch_step_Hz must be zero or greater."
+endif
+if pitch_step_semitones < 0 or pitch_step_semitones > 48
+    exitScript: "Pitch_step_semitones must be between 0 and 48."
+endif
+if jitter_amount < 0 or jitter_amount > 2
+    exitScript: "Jitter_amount must be between 0 and 2."
+endif
+if sampleRate < 1000
+    exitScript: "The source sampling frequency is too low for safe processing."
+endif
+
+segmentDuration = totalDuration / number_of_segments
+if segmentDuration <= 0
+    exitScript: "The requested segmentation is invalid for this Sound."
+endif
+
+duration_identity = 0
+if duration_multiplier = 1 and jitter_amount = 0
+    duration_identity = 1
+endif
+
+identity_mode = 0
+if duration_identity and pstep = 0
+    identity_mode = 1
+endif
 
 appendInfoLine: "Input: ", name$
 appendInfoLine: "Duration: ", fixed$(totalDuration, 3), " s"
+appendInfoLine: "Time domain: ", fixed$(xmin, 3), " .. ", fixed$(xmax, 3), " s"
 appendInfoLine: "Sample rate: ", sampleRate, " Hz"
+appendInfoLine: "Channels: ", n_channels
 appendInfoLine: ""
 appendInfoLine: "Parameters:"
 appendInfoLine: "  Segments: ", number_of_segments
@@ -227,242 +294,272 @@ appendInfoLine: "  Jitter amount: ", jitter_amount
 appendInfoLine: ""
 
 # === CALCULATE SEGMENT BOUNDARIES ===
-# Each segment has equal duration in the original sound
-
-segmentDuration = totalDuration / number_of_segments
-
 appendInfoLine: "Original segment duration: ", fixed$(segmentDuration * 1000, 1), " ms"
 appendInfoLine: ""
 
-# Store original segment boundaries
 for i from 1 to number_of_segments
-    segStart[i] = (i - 1) * segmentDuration
-    segEnd[i] = i * segmentDuration
+    segStart[i] = xmin + (i - 1) * segmentDuration
+    if i = number_of_segments
+        segEnd[i] = xmax
+    else
+        segEnd[i] = xmin + i * segmentDuration
+    endif
 endfor
 
 # === CALCULATE SPIRAL DURATION FACTORS ===
-# durationFactor(i) = baseDurationMultiplier ^ i
-# This creates exponential scaling
-
 appendInfoLine: "Duration factors (spiral):"
-
-# Calculate total stretched duration for normalization info
 totalStretchedDuration = 0
 
 for i from 1 to number_of_segments
-    # Exponential spiral formula
     if spiral_direction = 1
-        # Expanding: segments get progressively longer
-        durationFactor[i] = duration_multiplier ^ (i - 1)
+        exponent = i - 1
     else
-        # Contracting: segments get progressively shorter
-        durationFactor[i] = duration_multiplier ^ (number_of_segments - i)
+        exponent = number_of_segments - i
     endif
-    
-    # Add stochastic jitter for non-metric feel
-    # Jitter is proportional to segment duration and jitter_amount
+
+    # Compute safely and cap the usable DurationTier factor at 10.
+    logFactor = exponent * ln(duration_multiplier)
+    if logFactor >= ln(10)
+        durationFactor[i] = 10
+    else
+        durationFactor[i] = exp(logFactor)
+    endif
+
     jitterOffset[i] = randomGauss(0, jitter_amount)
-    
-    # Apply jitter to duration factor (multiplicative)
     durationFactorJittered[i] = durationFactor[i] * (1 + jitterOffset[i])
-    
-    # Ensure factor stays positive and reasonable
+
     if durationFactorJittered[i] < 0.1
         durationFactorJittered[i] = 0.1
-    endif
-    if durationFactorJittered[i] > 10
+    elsif durationFactorJittered[i] > 10
         durationFactorJittered[i] = 10
     endif
-    
-    # Calculate stretched segment duration
+
     stretchedDuration[i] = segmentDuration * durationFactorJittered[i]
-    totalStretchedDuration = totalStretchedDuration + stretchedDuration[i]
-    
-    appendInfoLine: "  Segment ", i, ": factor=", fixed$(durationFactor[i], 3), 
-    ... " | jittered=", fixed$(durationFactorJittered[i], 3),
-    ... " | dur=", fixed$(stretchedDuration[i] * 1000, 1), "ms"
+    totalStretchedDuration += stretchedDuration[i]
+
+    appendInfoLine: "  Segment ", i, ": factor=", fixed$(durationFactor[i], 3),
+        ... " | jittered=", fixed$(durationFactorJittered[i], 3),
+        ... " | dur=", fixed$(stretchedDuration[i] * 1000, 1), " ms"
 endfor
 
 appendInfoLine: ""
-appendInfoLine: "Total output duration: ", fixed$(totalStretchedDuration, 3), " s"
-appendInfoLine: "Duration ratio: ", fixed$(totalStretchedDuration / totalDuration, 2), "x"
+appendInfoLine: "Estimated output duration: ", fixed$(totalStretchedDuration, 3), " s"
+appendInfoLine: "Estimated duration ratio: ", fixed$(totalStretchedDuration / totalDuration, 2), "x"
 appendInfoLine: ""
 
 # === CALCULATE PITCH SHIFTS ===
-# pitchShift(i) = pitchStepHz * i
-# Applied incrementally per segment
-
 appendInfoLine: "Pitch shifts (spiral):"
 
 for i from 1 to number_of_segments
     if pitch_direction = 1
-        # Rising: pitch increases with each segment
         pitchShift[i] = pstep * (i - 1)
     elsif pitch_direction = 2
-        # Falling: pitch decreases with each segment
         pitchShift[i] = -pstep * (i - 1)
     else
-        # Alternating: oscillates up and down
         if (i mod 2) = 1
             pitchShift[i] = pstep * floor((i - 1) / 2)
         else
             pitchShift[i] = -pstep * floor(i / 2)
         endif
     endif
-    
-    appendInfoLine: "  Segment ", i, ": ", fixed$(pitchShift[i], 1), " ", pitchUnit$
-endfor
 
+    appendInfoLine: "  Segment ", i, ": ", fixed$(pitchShift[i], 2), " ", pitchUnit$
+endfor
 appendInfoLine: ""
 
-# === CREATE MANIPULATION OBJECT ===
-appendInfoLine: "Creating manipulation object..."
+# === TRUE IDENTITY PATH ===
+safetyApplied = 0
+pitchAvailable = 0
+timeOnlyMode = 0
+analysisMono = 0
+analysisManip = 0
+originalPitchTier = 0
+durationTier = 0
+spiralPitchTier = 0
 
-selectObject: sound
-manipulation = To Manipulation: 0.01, 75, 600
+if identity_mode
+    selectObject: sound
+    result = Copy: name$ + "_spiral"
+    finalDuration = Get total duration
+    appendInfoLine: "Identity settings: exact audio copy (processing bypassed)."
 
-# === BUILD DURATION TIER ===
-# DurationTier specifies the local tempo (duration factor) at each point
+else
+    # === BUILD DURATION TIER ===
+    Create DurationTier: "spiral_duration", xmin, xmax
+    durationTier = selected("DurationTier")
 
-appendInfoLine: "Building duration tier..."
+    tierOffset = min(0.001, segmentDuration / 4)
 
-Create DurationTier: "spiral_duration", 0, totalDuration
-durationTier = selected("DurationTier")
-
-# Add points at segment boundaries with appropriate duration factors
-# We need to specify the duration factor (relative tempo) at each point
-
-# DurationTier points are placed just inside each segment. The offset
-# must be smaller than half a segment, or the start/end points invert
-# and corrupt the tier (happens for short sounds with many segments,
-# e.g. a 0.05 s sound split into 32). Clamp it to a quarter-segment.
-tierOffset = min(0.001, segmentDuration / 4)
-
-for i from 1 to number_of_segments
-    # Add point at segment start
-    selectObject: durationTier
-    Add point: segStart[i] + tierOffset, durationFactorJittered[i]
-
-    # Add point at segment end (same factor across the whole segment)
-    Add point: segEnd[i] - tierOffset, durationFactorJittered[i]
-endfor
-
-# === BUILD PITCH TIER ===
-# PitchTier specifies the F0 at each point
-# We extract original pitch and add our spiral offsets
-
-appendInfoLine: "Building pitch tier..."
-
-# First, get the original pitch tier from manipulation
-selectObject: manipulation
-Extract pitch tier
-originalPitchTier = selected("PitchTier")
-
-# Get number of points
-selectObject: originalPitchTier
-numPitchPoints = Get number of points
-
-# Create new pitch tier
-Create PitchTier: "spiral_pitch", 0, totalDuration
-spiralPitchTier = selected("PitchTier")
-
-# Copy original pitch points with spiral offset applied
-selectObject: originalPitchTier
-
-for p from 1 to numPitchPoints
-    selectObject: originalPitchTier
-    pointTime = Get time from index: p
-    pointPitch = Get value at index: p
-    
-    # Determine which segment this point belongs to
-    segmentIndex = 1
     for i from 1 to number_of_segments
-        if pointTime >= segStart[i] and pointTime < segEnd[i]
-            segmentIndex = i
-        endif
+        selectObject: durationTier
+        Add point: segStart[i] + tierOffset, durationFactorJittered[i]
+        Add point: segEnd[i] - tierOffset, durationFactorJittered[i]
     endfor
-    
-    # Apply pitch shift for this segment.
-    # Hz mode: add a frequency offset. Semitone mode: multiply by a ratio
-    # (2^(semitones/12)) so equal steps are equal musical intervals.
-    if pitch_scaling = 1
-        newPitch = pointPitch + pitchShift[segmentIndex]
+
+    # === MONO PITCH ANALYSIS ===
+    selectObject: sound
+    if n_channels > 1
+        analysisMono = Convert to mono
     else
-        newPitch = pointPitch * 2 ^ (pitchShift[segmentIndex] / 12)
+        analysisMono = Copy: "SS_analysis"
     endif
-    
-    # Ensure pitch stays in reasonable range
-    if newPitch < 50
-        newPitch = 50
-    endif
-    if newPitch > 800
-        newPitch = 800
-    endif
-    
-    # Add to new tier
-    selectObject: spiralPitchTier
-    Add point: pointTime, newPitch
-endfor
 
-# If no pitch points were found (unvoiced), add some reference points
-selectObject: spiralPitchTier
-numNewPoints = Get number of points
+    pitchFloor = 40
+    pitchCeil = min(1200, 0.45 * sampleRate)
 
-if numNewPoints = 0
-    appendInfoLine: "  No voiced regions detected - adding reference pitch contour"
-    
-    # Add pitch points at segment midpoints with spiral pattern
-    basePitch = 150
-    
-    for i from 1 to number_of_segments
-        segMid = (segStart[i] + segEnd[i]) / 2
-        if pitch_scaling = 1
-            newPitch = basePitch + pitchShift[i]
+    if pitchCeil > pitchFloor
+        selectObject: analysisMono
+        analysisManip = To Manipulation: 0.01, pitchFloor, pitchCeil
+
+        selectObject: analysisManip
+        originalPitchTier = Extract pitch tier
+
+        selectObject: originalPitchTier
+        numPitchPoints = Get number of points
+        if numPitchPoints > 0
+            pitchAvailable = 1
+        endif
+    endif
+
+    # === BUILD PITCH TIER WHEN VOICED MATERIAL EXISTS ===
+    if pitchAvailable
+        appendInfoLine: "Building source-relative spiral pitch tier..."
+
+        Create PitchTier: "spiral_pitch", xmin, xmax
+        spiralPitchTier = selected("PitchTier")
+
+        synthFloor = 20
+        synthCeil = 0.45 * sampleRate
+        limitedPitchPoints = 0
+
+        for p from 1 to numPitchPoints
+            selectObject: originalPitchTier
+            pointTime = Get time from index: p
+            pointPitch = Get value at index: p
+
+            segmentIndex = floor((pointTime - xmin) / segmentDuration) + 1
+            if segmentIndex < 1
+                segmentIndex = 1
+            elsif segmentIndex > number_of_segments
+                segmentIndex = number_of_segments
+            endif
+
+            if pitch_scaling = 1
+                newPitch = pointPitch + pitchShift[segmentIndex]
+            else
+                shiftSt = pitchShift[segmentIndex]
+                if shiftSt > 96
+                    newPitch = synthCeil
+                elsif shiftSt < -96
+                    newPitch = synthFloor
+                else
+                    newPitch = pointPitch * 2 ^ (shiftSt / 12)
+                endif
+            endif
+
+            if newPitch < synthFloor
+                newPitch = synthFloor
+                limitedPitchPoints += 1
+            elsif newPitch > synthCeil
+                newPitch = synthCeil
+                limitedPitchPoints += 1
+            endif
+
+            selectObject: spiralPitchTier
+            Add point: pointTime, newPitch
+        endfor
+
+        if limitedPitchPoints > 0
+            appendInfoLine: "Pitch safety limits applied: ", limitedPitchPoints, " point(s)"
+        endif
+    else
+        timeOnlyMode = 1
+        appendInfoLine: "No voiced pitch detected: applying duration spiral only."
+    endif
+
+    # If no pitch is available and duration is also identity, return exact copy.
+    if timeOnlyMode and duration_identity
+        selectObject: sound
+        result = Copy: name$ + "_spiral"
+        finalDuration = Get total duration
+        appendInfoLine: "No applicable transformation remained: exact audio copy."
+
+    else
+        # === RESYNTHESIZE EACH SOURCE CHANNEL ===
+        appendInfoLine: "Resynthesizing ", n_channels, " channel(s)..."
+        channelResults# = zero#(n_channels)
+
+        for ch from 1 to n_channels
+            selectObject: sound
+            if n_channels = 1
+                channelWork = Copy: "SS_ch1"
+            else
+                channelWork = Extract one channel: ch
+                Rename: "SS_ch" + string$(ch)
+            endif
+
+            selectObject: channelWork
+            manipulation = To Manipulation: 0.01, pitchFloor, pitchCeil
+
+            selectObject: manipulation
+            plusObject: durationTier
+            Replace duration tier
+
+            if pitchAvailable
+                selectObject: manipulation
+                plusObject: spiralPitchTier
+                Replace pitch tier
+            endif
+
+            selectObject: manipulation
+            channelResult = Get resynthesis (overlap-add)
+            Rename: "SS_result_ch" + string$(ch)
+            channelResults#[ch] = channelResult
+
+            removeObject: manipulation, channelWork
+        endfor
+
+        if n_channels = 1
+            result = channelResults#[1]
+            selectObject: result
+            Rename: name$ + "_spiral"
         else
-            newPitch = basePitch * 2 ^ (pitchShift[i] / 12)
+            selectObject: channelResults#[1]
+            result_xmin = Get start time
+            result_xmax = Get end time
+            result_sr = Get sampling frequency
+
+            Create Sound from formula: "SS_result_build", n_channels,
+                ... result_xmin, result_xmax, result_sr, "0"
+            result = selected("Sound")
+
+            for ch from 1 to n_channels
+                selectObject: result
+                Formula (part): result_xmin, result_xmax, ch, ch,
+                    ... "object[" + string$(channelResults#[ch]) + ", 1, col]"
+                removeObject: channelResults#[ch]
+            endfor
+
+            selectObject: result
+            Rename: name$ + "_spiral"
         endif
-        
-        if newPitch < 50
-            newPitch = 50
+
+        selectObject: result
+        finalDuration = Get total duration
+
+        resultPeak = Get absolute extremum: 0, 0, "None"
+        if resultPeak > 0.95
+            Scale peak: 0.95
+            safetyApplied = 1
         endif
-        if newPitch > 800
-            newPitch = 800
-        endif
-        
-        selectObject: spiralPitchTier
-        Add point: segMid, newPitch
-    endfor
+    endif
 endif
-
-# === REPLACE TIERS IN MANIPULATION ===
-appendInfoLine: "Applying spiral transformations..."
-
-# Replace duration tier
-selectObject: manipulation
-plusObject: durationTier
-Replace duration tier
-
-# Replace pitch tier
-selectObject: manipulation
-plusObject: spiralPitchTier
-Replace pitch tier
-
-# === RESYNTHESIZE ===
-appendInfoLine: "Resynthesizing..."
-
-selectObject: manipulation
-result = Get resynthesis (overlap-add)
-Rename: name$ + "_spiral"
-
-# Normalize
-Scale peak: 0.95
-
-# Get final duration
-finalDuration = Get total duration
 
 appendInfoLine: ""
 appendInfoLine: "Output: ", name$, "_spiral"
 appendInfoLine: "Final duration: ", fixed$(finalDuration, 3), " s"
+appendInfoLine: "Channels preserved: ", n_channels
+appendInfoLine: "Peak safety applied: ", safetyApplied
 
 # === VISUALIZATION ===
 if show_visualization
@@ -674,7 +771,7 @@ if show_visualization
             yPos = r * sin(theta)
             
             # Size by duration factor
-            markerSize = 0.06 + 0.04 * durationFactorJittered[i]
+            markerSize = min(0.16, 0.06 + 0.04 * durationFactorJittered[i])
             
             # Draw marker
             Paint rectangle: "{0.9, 0.7, 0.4}", xPos - markerSize, xPos + markerSize, yPos - markerSize, yPos + markerSize
@@ -755,7 +852,23 @@ if show_visualization
 endif
 
 # === CLEANUP ===
-removeObject: durationTier, originalPitchTier, spiralPitchTier, manipulation
+if identity_mode = 0
+    if durationTier <> 0
+        removeObject: durationTier
+    endif
+    if originalPitchTier <> 0
+        removeObject: originalPitchTier
+    endif
+    if spiralPitchTier <> 0
+        removeObject: spiralPitchTier
+    endif
+    if analysisManip <> 0
+        removeObject: analysisManip
+    endif
+    if analysisMono <> 0
+        removeObject: analysisMono
+    endif
+endif
 
 if not preserve_original
     removeObject: sound

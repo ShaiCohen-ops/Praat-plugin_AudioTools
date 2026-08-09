@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,20 @@
 #   Pitch Morphing Between Targets - interpolates between
 #   user-defined pitch waypoints with elastic curves, overshoot,
 #   tension, and vibrato. Creates expressive pitch sequences.
+#
+# Changelog v0.3:
+#   - Robust target parser: requires at least 2 finite numeric targets.
+#   - Overshoot, tension, and vibrato amount can be set to 0.
+#   - Tension is now a bounded semitone offset, not a multiplier.
+#   - Vibrato frequency is now true Hz, based on absolute time.
+#   - Overshoot is a bounded spring-like semitone deviation.
+#   - Analysis range is separated from synthesis safety limits.
+#   - Stops cleanly when no usable voiced pitch is detected.
+#   - Preserves the original channel count by applying one shared
+#     morph PitchTier independently to every source channel.
+#   - Supports arbitrary source xmin/xmax consistently.
+#   - Peak protection is attenuation-only.
+#   - Visualization layout/style is preserved; only coordinate bugs fixed.
 #
 # Changelog v0.2:
 #   - Modern syntax
@@ -32,6 +46,7 @@ orig_sr = Get sampling frequency
 xmin = Get start time
 xmax = Get end time
 dur = xmax - xmin
+n_channels = Get number of channels
 
 # === Form ===
 form Pitch Morphing Between Targets
@@ -54,11 +69,11 @@ form Pitch Morphing Between Targets
     
     comment === Morphing Behavior ===
     positive Morph_smoothness 1.5
-    positive Overshoot_factor 0.4
+    real Overshoot_factor 0.4
     
     comment === Dynamics ===
-    positive Tension_strength 0.1
-    positive Vibrato_amount 0.3
+    real Tension_strength 0.1
+    real Vibrato_amount 0.3
     positive Vibrato_frequency 25
     
     comment === Pitch Analysis ===
@@ -132,51 +147,84 @@ else
     presetName$ = "Manual"
 endif
 
+# === Validation ===
+if dur <= 0
+    exitScript: "The selected Sound has no positive duration."
+endif
+if morph_smoothness <= 0
+    exitScript: "Morph_smoothness must be greater than zero."
+endif
+if overshoot_factor < 0
+    exitScript: "Overshoot_factor must be zero or greater."
+endif
+if tension_strength < 0
+    exitScript: "Tension_strength must be zero or greater."
+endif
+if vibrato_amount < 0
+    exitScript: "Vibrato_amount must be zero or greater."
+endif
+if vibrato_frequency <= 0
+    exitScript: "Vibrato_frequency must be greater than zero."
+endif
+if time_step <= 0
+    exitScript: "Time_step must be greater than zero."
+endif
+if minimum_pitch <= 0 or maximum_pitch <= minimum_pitch
+    exitScript: "Minimum_pitch / Maximum_pitch are invalid."
+endif
+if maximum_pitch >= 0.45 * orig_sr
+    exitScript: "Maximum_pitch must be below 45% of the source sampling frequency."
+endif
+
 # === Parse Target Pitches ===
-# First pass: count targets
-tempTargets$ = target_pitches$ + "_"
-tempTargets$ = replace$(tempTargets$, "_", " ", 0)
-n_targets = 0
-
-repeat
-    space_pos = index(tempTargets$, " ")
-    if space_pos > 1
-        n_targets = n_targets + 1
-        tempTargets$ = right$(tempTargets$, length(tempTargets$) - space_pos)
+# Count underscore-separated tokens.
+n_targets = 1
+for ci from 1 to length(target_pitches$)
+    if mid$(target_pitches$, ci, 1) = "_"
+        n_targets += 1
     endif
-until space_pos <= 1
+endfor
 
-# Create array with known size
+if n_targets < 2
+    exitScript: "Target_pitches must contain at least two underscore-separated values."
+endif
+
 targetNum# = zero#(n_targets)
-
-# Second pass: parse and store directly into numeric array
 targets$ = target_pitches$ + "_"
-targets$ = replace$(targets$, "_", " ", 0)
-tIdx = 0
 
-repeat
-    space_pos = index(targets$, " ")
-    if space_pos > 1
-        tIdx = tIdx + 1
-        thisVal$ = left$(targets$, space_pos - 1)
-        targetNum#[tIdx] = number(thisVal$)
-        targets$ = right$(targets$, length(targets$) - space_pos)
+for tIdx from 1 to n_targets
+    sep = index(targets$, "_")
+    if sep <= 1
+        exitScript: "Target_pitches contains an empty or malformed value."
     endif
-until space_pos <= 1
+
+    thisVal$ = left$(targets$, sep - 1)
+    thisVal = number(thisVal$)
+
+    if thisVal = undefined
+        exitScript: "Target_pitches contains a non-numeric value: " + thisVal$
+    endif
+    if abs(thisVal) > 120
+        exitScript: "Target pitch values must stay between -120 and +120 semitones."
+    endif
+
+    targetNum#[tIdx] = thisVal
+    targets$ = right$(targets$, length(targets$) - sep)
+endfor
 
 # === Info ===
-writeInfoLine: "=== Pitch Morphing Between Targets ==="
-appendInfoLine: "Source: ", originalName$, " (", fixed$(dur, 2), " s)"
+writeInfoLine: "=== Pitch Morphing Between Targets v0.3 ==="
+appendInfoLine: "Source: ", originalName$, " (", fixed$(dur, 2), " s, ", n_channels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Targets (", n_targets, "): ", target_pitches$
 appendInfoLine: "Smoothness: ", morph_smoothness
 appendInfoLine: "Overshoot: ", overshoot_factor
 appendInfoLine: "Tension: ", tension_strength
-appendInfoLine: "Vibrato: ", vibrato_amount, " @ ", vibrato_frequency, " Hz"
+appendInfoLine: "Vibrato: ", vibrato_amount, " st @ ", vibrato_frequency, " Hz"
 appendInfoLine: ""
 
-# === Calculate Number of Points ===
+# === Number of Curve Points ===
 npoints = round(dur / 0.01)
 if npoints < 200
     npoints = 200
@@ -185,28 +233,27 @@ if npoints > 2000
     npoints = 2000
 endif
 
-# === Create Working Copy and Manipulation ===
+# === Mono analysis reference ===
 selectObject: original
-Copy: originalName$ + "_morph_tmp"
-tmpSound = selected("Sound")
-
-selectObject: tmpSound
-manipulation = To Manipulation: time_step, minimum_pitch, maximum_pitch
-
-# === Get Median Pitch ===
-selectObject: tmpSound
-To Pitch: time_step, minimum_pitch, maximum_pitch
-tmpPitch = selected("Pitch")
-median_f0 = Get quantile: 0, 0, 0.5, "Hertz"
-
-if median_f0 = undefined
-    median_f0 = 200
-    appendInfoLine: "No pitch detected, using default: ", median_f0, " Hz"
+if n_channels > 1
+    analysisMono = Convert to mono
 else
-    appendInfoLine: "Median pitch: ", fixed$(median_f0, 1), " Hz"
+    analysisMono = Copy: "PMBT_analysis"
 endif
 
-removeObject: tmpPitch
+selectObject: analysisMono
+tmpPitch = To Pitch: time_step, minimum_pitch, maximum_pitch
+selectObject: tmpPitch
+voiced_frames = Count voiced frames
+median_f0 = Get quantile: 0, 0, 0.5, "Hertz"
+
+if voiced_frames < 1 or median_f0 = undefined or median_f0 <= 0
+    removeObject: tmpPitch, analysisMono
+    exitScript: "No usable voiced pitch was detected in the selected analysis range."
+endif
+
+appendInfoLine: "Median pitch: ", fixed$(median_f0, 1), " Hz"
+removeObject: tmpPitch, analysisMono
 
 # === Create Pitch Tier ===
 appendInfoLine: ""
@@ -217,89 +264,154 @@ pitchTier = selected("PitchTier")
 
 # Store for visualization
 maxVizPoints = min(npoints, 500)
+if maxVizPoints < 1
+    maxVizPoints = 1
+endif
 vizTimes# = zero#(maxVizPoints)
 vizPitch# = zero#(maxVizPoints)
+vizFilled# = zero#(maxVizPoints)
 vizStep = npoints / maxVizPoints
+
+# Synthesis safety is independent from analysis range.
+synth_floor = 20
+synth_ceil = 0.45 * orig_sr
+limited_points = 0
 
 # === Build Morphing Pitch Curve ===
 for i from 0 to npoints - 1
     t = xmin + (i / (npoints - 1)) * dur
-    u = (t - xmin) / dur * (n_targets - 1)
-    
+    rel_t = t - xmin
+    u = (rel_t / dur) * (n_targets - 1)
+
     target_low = floor(u) + 1
     target_high = target_low + 1
-    
+
     if target_high > n_targets
         target_high = n_targets
         target_low = n_targets
     endif
-    
+
     fraction = u - floor(u)
-    
-    # Elastic interpolation curve
+    if target_low = n_targets
+        fraction = 0
+    endif
+
+    # Elastic interpolation curve.
     if fraction > 0 and fraction < 1
-        elastic_curve = fraction ^ morph_smoothness / (fraction ^ morph_smoothness + (1 - fraction) ^ morph_smoothness)
+        a = fraction ^ morph_smoothness
+        b = (1 - fraction) ^ morph_smoothness
+        elastic_curve = a / (a + b)
     elsif fraction <= 0
         elastic_curve = 0
     else
         elastic_curve = 1
     endif
-    
-    # Overshoot (spring bounce)
-    overshoot = overshoot_factor * sin(fraction * pi) * (1 - fraction) * fraction
-    smooth_fraction = elastic_curve + overshoot
-    
+
     pitch_low = targetNum#[target_low]
     pitch_high = targetNum#[target_high]
-    
-    # Tension effect based on pitch distance
     pitch_distance = abs(pitch_high - pitch_low)
-    tension = 1 + tension_strength * pitch_distance * sin(fraction * 3 * pi)
-    
-    # Interpolated pitch
-    interpolated_pitch = pitch_low + smooth_fraction * (pitch_high - pitch_low)
-    
-    # Vibrato (strongest in middle of transition)
-    vibrato = vibrato_amount * sin(fraction * vibrato_frequency * pi) * (1 - abs(2 * fraction - 1))
-    
-    # Final pitch in semitones
-    final_pitch_st = interpolated_pitch * tension + vibrato
-    
-    # Store for visualization
-    vizIdx = floor(i / vizStep) + 1
-    if vizIdx >= 1 and vizIdx <= maxVizPoints
-        if vizTimes#[vizIdx] = 0
-            vizTimes#[vizIdx] = t
-            vizPitch#[vizIdx] = final_pitch_st
-        endif
+
+    # Base interpolated semitone path.
+    base_pitch_st = pitch_low + elastic_curve * (pitch_high - pitch_low)
+
+    # Spring-like overshoot: bounded in semitones and zero at both ends.
+    overshoot_st = overshoot_factor * pitch_distance
+        ... * sin(2 * pi * fraction) * sin(pi * fraction)
+
+    # Tension: bounded semitone deviation around the path, never a multiplier.
+    tension_st = tension_strength * pitch_distance
+        ... * sin(3 * pi * fraction) * sin(pi * fraction)
+
+    # True-Hz vibrato, strongest in the middle of each transition.
+    transition_env = 1 - abs(2 * fraction - 1)
+    if target_low = n_targets
+        transition_env = 0
     endif
-    
-    # Convert semitones to frequency
+    vibrato_st = vibrato_amount
+        ... * sin(2 * pi * vibrato_frequency * rel_t) * transition_env
+
+    final_pitch_st = base_pitch_st + overshoot_st + tension_st + vibrato_st
+
+    # Convert semitones to frequency.
     new_f0 = median_f0 * (2 ^ (final_pitch_st / 12))
-    
-    # Clamp to range
-    if new_f0 < minimum_pitch
-        new_f0 = minimum_pitch
-    elsif new_f0 > maximum_pitch
-        new_f0 = maximum_pitch
+
+    if new_f0 < synth_floor
+        new_f0 = synth_floor
+        limited_points += 1
+    elsif new_f0 > synth_ceil
+        new_f0 = synth_ceil
+        limited_points += 1
     endif
-    
+
     selectObject: pitchTier
     Add point: t, new_f0
+
+    # Visualization stores the actual semitone curve and works for any xmin.
+    vizIdx = floor(i / vizStep) + 1
+    if vizIdx >= 1 and vizIdx <= maxVizPoints
+        if vizFilled#[vizIdx] = 0
+            vizTimes#[vizIdx] = t
+            vizPitch#[vizIdx] = final_pitch_st
+            vizFilled#[vizIdx] = 1
+        endif
+    endif
 endfor
 
-# === Replace Pitch Tier ===
-selectObject: manipulation, pitchTier
-Replace pitch tier
+if limited_points > 0
+    appendInfoLine: "Sampling-safe limits applied: ", limited_points, " curve point(s)"
+endif
 
-# === Resynthesize ===
-appendInfoLine: "Resynthesizing..."
-selectObject: manipulation
-result = Get resynthesis (overlap-add)
-Rename: originalName$ + "_morph_" + presetName$
+# === Resynthesize each original channel with the shared PitchTier ===
+appendInfoLine: "Resynthesizing ", n_channels, " channel(s)..."
+channelResults# = zero#(n_channels)
+
+for ch from 1 to n_channels
+    selectObject: original
+    if n_channels = 1
+        channelWork = Copy: "PMBT_ch1"
+    else
+        channelWork = Extract one channel: ch
+        Rename: "PMBT_ch" + string$(ch)
+    endif
+
+    selectObject: channelWork
+    manipulation = To Manipulation: time_step, minimum_pitch, maximum_pitch
+
+    selectObject: manipulation
+    plusObject: pitchTier
+    Replace pitch tier
+
+    selectObject: manipulation
+    channelResult = Get resynthesis (overlap-add)
+    Rename: "PMBT_result_ch" + string$(ch)
+    channelResults#[ch] = channelResult
+
+    removeObject: manipulation, channelWork
+endfor
+
+# Rebuild exact original channel count.
+Create Sound from formula: "PMBT_result_build", n_channels,
+    ... xmin, xmax, orig_sr, "0"
+result = selected("Sound")
+
+for ch from 1 to n_channels
+    selectObject: result
+    Formula (part): xmin, xmax, ch, ch,
+        ... "object[" + string$(channelResults#[ch]) + ", 1, col]"
+    removeObject: channelResults#[ch]
+endfor
 
 selectObject: result
-Scale peak: 0.95
+Rename: originalName$ + "_morph_" + presetName$
+
+# Attenuation-only peak protection.
+result_peak = Get absolute extremum: 0, 0, "None"
+if result_peak > 0.95
+    Scale peak: 0.95
+    safetyApplied = 1
+else
+    safetyApplied = 0
+endif
 
 # === Visualization ===
 if draw_visualization
@@ -307,6 +419,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Pitch Morphing: " + originalName$ + " (" + presetName$ + ")"
@@ -338,16 +451,28 @@ if draw_visualization
     Select inner viewport: 0.6, 7.6, 2.9, 4.4
     
     # Find range
-    minP = vizPitch#[1]
-    maxP = vizPitch#[1]
-    for vp from 2 to maxVizPoints
-        if vizPitch#[vp] < minP
-            minP = vizPitch#[vp]
-        endif
-        if vizPitch#[vp] > maxP
-            maxP = vizPitch#[vp]
+    firstViz = 0
+    for vp from 1 to maxVizPoints
+        if vizFilled#[vp] = 1
+            if firstViz = 0
+                minP = vizPitch#[vp]
+                maxP = vizPitch#[vp]
+                firstViz = 1
+            else
+                if vizPitch#[vp] < minP
+                    minP = vizPitch#[vp]
+                endif
+                if vizPitch#[vp] > maxP
+                    maxP = vizPitch#[vp]
+                endif
+            endif
         endif
     endfor
+
+    if firstViz = 0
+        minP = -3
+        maxP = 3
+    endif
     
     pMargin = (maxP - minP) * 0.15
     if pMargin < 3
@@ -376,7 +501,7 @@ if draw_visualization
     Colour: "{0.5, 0.4, 0.7}"
     Line width: 1.5
     for vp from 2 to maxVizPoints
-        if vizTimes#[vp] > 0 and vizTimes#[vp - 1] > 0
+        if vizFilled#[vp] = 1 and vizFilled#[vp - 1] = 1
             Draw line: vizTimes#[vp - 1], vizPitch#[vp - 1], vizTimes#[vp], vizPitch#[vp]
         endif
     endfor
@@ -390,10 +515,12 @@ if draw_visualization
     
     # Legend
     Font size: 6
+    legendX = xmin + 0.03 * dur
+    legendY = maxP + 0.55 * pMargin
     Colour: "{0.8, 0.5, 0.5}"
-    Text: 0.02, "left", 1.05, "half", "● Targets"
+    Text: legendX, "left", legendY, "half", "Targets"
     Colour: "{0.5, 0.4, 0.7}"
-    Text: 0.12, "left", 1.05, "half", "— Morph"
+    Text: legendX + 0.16 * dur, "left", legendY, "half", "Morph"
     
     # Target sequence display
     Select outer viewport: 0, 8, 4.7, 5.3
@@ -433,6 +560,7 @@ if draw_visualization
     
     # Stats
     Select outer viewport: 0, 8, 5.4, 5.7
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Targets: " + string$(n_targets) + " | Smooth: " + fixed$(morph_smoothness, 1) + " | Overshoot: " + fixed$(overshoot_factor, 2) + " | Vibrato: " + fixed$(vibrato_amount, 2)
@@ -442,7 +570,7 @@ if draw_visualization
 endif
 
 # === Cleanup ===
-removeObject: tmpSound, manipulation, pitchTier
+removeObject: pitchTier
 
 # === Final Info ===
 selectObject: result
@@ -450,6 +578,8 @@ selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Channels preserved: ", n_channels
+appendInfoLine: "Peak safety applied: ", safetyApplied
 
 # === Play ===
 if play_result

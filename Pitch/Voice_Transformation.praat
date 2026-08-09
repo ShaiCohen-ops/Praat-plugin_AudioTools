@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - Mono guard (stereo input no longer crashes To Manipulation)
+# Version: 0.4 (2026) - Multichannel-safe voice transformation
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,21 @@
 #   stretching, formant shifting, and bandpass filtering.
 #   Includes presets for common voice effects like chipmunk,
 #   robot, telephone, and radio voice.
+#
+# Changelog v0.4:
+#   - Corrected Change gender pitch-range factor: formant shifting now uses
+#     pitch-range factor 1.0 instead of 0 (which monotonized the pitch contour).
+#   - Full xmin/xmax-safe DurationTier and PitchTier handling.
+#   - Mono is used for shared pitch analysis only; processing preserves the
+#     exact original channel count.
+#   - Added parameter validation for pitch range, filter band, duration,
+#     formant ratio, semitone shift, time step and sampling frequency.
+#   - Adaptive spectrogram ceiling respects Nyquist.
+#   - No-pitch material still receives duration/formant/filter processing;
+#     requested pitch shifting is skipped cleanly if no voiced pitch exists.
+#   - Removed forced Scale intensity; peak protection is attenuation-only.
+#   - Visualization layout/style preserved; title/stats axes and time-domain
+#     coordinates corrected.
 #
 # Changelog v0.2:
 #   - Renamed from "globally change pitch and duration"
@@ -28,23 +43,11 @@ endif
 userSound = selected("Sound")
 origName$ = selected$("Sound")
 
-# To Manipulation / Change gender require a mono Sound; stereo input would
-# crash. Voice transformation (PSOLA pitch/formant) is inherently mono, so
-# work on a mono copy. The user's selected object is left untouched.
-selectObject: userSound
-nChannels = Get number of channels
-if nChannels > 1
-    original = Convert to mono
-else
-    original = Copy: origName$ + "_work"
-endif
-
-selectObject: original
-dur = Get total duration
-fs = Get sampling frequency
+# v0.4 keeps the selected Sound untouched. A mono analysis reference is
+# created later only when needed; audio processing is performed per channel.
 
 # === Form ===
-form Voice Transformation
+form Voice Transformation v0.4
     comment Select a Sound object first
     
     comment === Preset ===
@@ -163,9 +166,49 @@ else
     presetName$ = "Custom"
 endif
 
+# === Source metadata ===
+selectObject: userSound
+xmin = Get start time
+xmax = Get end time
+dur = xmax - xmin
+fs = Get sampling frequency
+nChannels = Get number of channels
+
+# === Validation ===
+if dur <= 0
+    exitScript: "The selected Sound has no positive duration."
+endif
+if fs < 1000
+    exitScript: "Sampling frequency is too low for safe voice processing."
+endif
+if pitch_floor <= 0 or pitch_ceiling <= pitch_floor
+    exitScript: "Pitch_floor / Pitch_ceiling are invalid."
+endif
+if pitch_ceiling >= 0.45 * fs
+    exitScript: "Pitch_ceiling must be below 45% of the source sampling frequency."
+endif
+if time_step <= 0 or time_step > 0.1
+    exitScript: "Time_step must be greater than 0 and no more than 0.1 s."
+endif
+if freq_cutoff_low < 0 or freq_cutoff_high <= freq_cutoff_low
+    exitScript: "Frequency filter limits are invalid."
+endif
+if freq_cutoff_high >= 0.49 * fs
+    exitScript: "Freq_cutoff_high must be below 49% of the source sampling frequency."
+endif
+if pitch_shift_semitones < -48 or pitch_shift_semitones > 48
+    exitScript: "Pitch_shift_semitones must be between -48 and +48."
+endif
+if formant_shift_ratio <= 0 or formant_shift_ratio > 4
+    exitScript: "Formant_shift_ratio must be greater than 0 and no more than 4."
+endif
+if duration_factor <= 0 or duration_factor > 4
+    exitScript: "Duration_factor must be greater than 0 and no more than 4."
+endif
+
 # === Info ===
-writeInfoLine: "=== Voice Transformation ==="
-appendInfoLine: "Source: ", origName$, " (", fixed$(dur, 2), " s)"
+writeInfoLine: "=== Voice Transformation v0.4 ==="
+appendInfoLine: "Source: ", origName$, " (", fixed$(dur, 2), " s, ", nChannels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Pitch shift: ", pitch_shift_semitones, " semitones"
@@ -174,75 +217,164 @@ appendInfoLine: "Duration: ", duration_factor, "x"
 appendInfoLine: "Band: ", freq_cutoff_low, "-", freq_cutoff_high, " Hz"
 appendInfoLine: ""
 
-# === Create Manipulation Object ===
-appendInfoLine: "Creating manipulation object..."
+# === Shared mono analysis reference ===
+selectObject: userSound
+if nChannels > 1
+    analysisMono = Convert to mono
+else
+    analysisMono = Copy: origName$ + "_analysis"
+endif
 
-selectObject: original
-manipulation = To Manipulation: time_step, pitch_floor, pitch_ceiling
+analysisManip = 0
+sourcePitchTier = 0
+shiftedPitchTier = 0
+durationTier = 0
+pitchAvailable = 0
+pitchSafetyCount = 0
+peakSafetyApplied = 0
 
-# === Modify Pitch ===
+# Analyze pitch only if a pitch shift is requested.
 if pitch_shift_semitones <> 0
-    appendInfoLine: "Applying pitch shift (", pitch_shift_semitones, " st)..."
-    
+    selectObject: analysisMono
+    analysisManip = To Manipulation: time_step, pitch_floor, pitch_ceiling
+
+    selectObject: analysisManip
+    sourcePitchTier = Extract pitch tier
+
+    selectObject: sourcePitchTier
+    nPitchPoints = Get number of points
+
+    if nPitchPoints > 0
+        pitchAvailable = 1
+
+        Create PitchTier: "voice_shifted_pitch", xmin, xmax
+        shiftedPitchTier = selected("PitchTier")
+
+        pitchRatio = 2 ^ (pitch_shift_semitones / 12)
+        synthFloor = 20
+        synthCeil = 0.45 * fs
+
+        for p from 1 to nPitchPoints
+            selectObject: sourcePitchTier
+            pointTime = Get time from index: p
+            pointPitch = Get value at index: p
+
+            newPitch = pointPitch * pitchRatio
+            if newPitch < synthFloor
+                newPitch = synthFloor
+                pitchSafetyCount += 1
+            elsif newPitch > synthCeil
+                newPitch = synthCeil
+                pitchSafetyCount += 1
+            endif
+
+            selectObject: shiftedPitchTier
+            Add point: pointTime, newPitch
+        endfor
+
+        if pitchSafetyCount > 0
+            appendInfoLine: "Pitch safety limits applied: ", pitchSafetyCount, " point(s)"
+        endif
+    else
+        appendInfoLine: "No voiced pitch detected: requested pitch shift will be skipped."
+    endif
+endif
+
+# Shared constant duration tier in the TRUE source time domain.
+if duration_factor <> 1
+    Create DurationTier: "voice_duration", xmin, xmax
+    durationTier = selected("DurationTier")
+    Add point: xmin, duration_factor
+    Add point: xmax, duration_factor
+endif
+
+# === Per-channel processing ===
+appendInfoLine: "Processing ", nChannels, " channel(s)..."
+channelResults# = zero#(nChannels)
+
+for ch from 1 to nChannels
+    selectObject: userSound
+    if nChannels = 1
+        channelWork = Copy: "VT_ch1"
+    else
+        channelWork = Extract one channel: ch
+        Rename: "VT_ch" + string$(ch)
+    endif
+
+    selectObject: channelWork
+    manipulation = To Manipulation: time_step, pitch_floor, pitch_ceiling
+
+    if pitch_shift_semitones <> 0 and pitchAvailable
+        selectObject: manipulation
+        plusObject: shiftedPitchTier
+        Replace pitch tier
+    endif
+
+    if duration_factor <> 1
+        selectObject: manipulation
+        plusObject: durationTier
+        Replace duration tier
+    endif
+
     selectObject: manipulation
-    pitchTier = Extract pitch tier
-    
-    pitchRatio = 2 ^ (pitch_shift_semitones / 12)
-    Formula: ~ self * pitchRatio
-    
-    selectObject: manipulation, pitchTier
-    Replace pitch tier
-    
-    removeObject: pitchTier
+    channelStage = Get resynthesis (overlap-add)
+    removeObject: manipulation, channelWork
+
+    # Formant stage.
+    if formant_shift_ratio <> 1
+        appendInfoLine: "  Channel ", ch, ": formant shift ", formant_shift_ratio, "x"
+        selectObject: channelStage
+
+        # Change gender:
+        # formant ratio, new pitch median=0 (preserve median),
+        # pitch range factor=1.0 (preserve contour range),
+        # duration factor=1.0 (duration already handled above).
+        formantShifted = Change gender: pitch_floor, pitch_ceiling,
+            ... formant_shift_ratio, 0, 1.0, 1.0
+
+        removeObject: channelStage
+        channelStage = formantShifted
+    endif
+
+    # Band-pass filter.
+    selectObject: channelStage
+    filteredChannel = Filter (pass Hann band): freq_cutoff_low, freq_cutoff_high, 100
+    removeObject: channelStage
+
+    Rename: "VT_result_ch" + string$(ch)
+    channelResults#[ch] = selected("Sound")
+endfor
+
+# === Rebuild original channel count ===
+if nChannels = 1
+    result = channelResults#[1]
+else
+    selectObject: channelResults#[1]
+    resultXmin = Get start time
+    resultXmax = Get end time
+    resultFs = Get sampling frequency
+
+    Create Sound from formula: "VT_result_build", nChannels,
+        ... resultXmin, resultXmax, resultFs, "0"
+    result = selected("Sound")
+
+    for ch from 1 to nChannels
+        selectObject: result
+        Formula (part): resultXmin, resultXmax, ch, ch,
+            ... "object[" + string$(channelResults#[ch]) + ", 1, col]"
+        removeObject: channelResults#[ch]
+    endfor
 endif
-
-# === Modify Duration ===
-if duration_factor <> 1.0
-    appendInfoLine: "Applying duration change (", duration_factor, "x)..."
-    
-    selectObject: manipulation
-    durTier = Extract duration tier
-    
-    selectObject: durTier
-    Add point: 0, duration_factor
-    
-    selectObject: manipulation, durTier
-    Replace duration tier
-    
-    removeObject: durTier
-endif
-
-# === Resynthesize ===
-appendInfoLine: "Resynthesizing..."
-
-selectObject: manipulation
-resynthSound = Get resynthesis (overlap-add)
-
-# === Apply Formant Shift ===
-if formant_shift_ratio <> 1.0
-    appendInfoLine: "Applying formant shift (", formant_shift_ratio, "x)..."
-    
-    selectObject: resynthSound
-    formantShifted = Change gender: pitch_floor, pitch_ceiling, formant_shift_ratio, 0, 0, 1.0
-    
-    removeObject: resynthSound
-    resynthSound = formantShifted
-endif
-
-# === Apply Frequency Filtering ===
-appendInfoLine: "Applying bandpass filter..."
-
-selectObject: resynthSound
-filtered = Filter (pass Hann band): freq_cutoff_low, freq_cutoff_high, 100
-
-removeObject: resynthSound
-result = filtered
 
 # === Finalize ===
 selectObject: result
 Rename: origName$ + "_" + presetName$
-Scale intensity: 70
-Scale peak: 0.95
+
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > 0.95
+    Scale peak: 0.95
+    peakSafetyApplied = 1
+endif
 
 newDur = Get total duration
 
@@ -252,14 +384,15 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Voice Transformation: " + origName$ + " → " + presetName$
+    Text: 0.5, "centre", 0.5, "half", "Voice Transformation: " + origName$ + " -> " + presetName$
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.8
     Select inner viewport: 0.6, 7.6, 0.7, 1.7
-    selectObject: original
+    selectObject: userSound
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
@@ -281,16 +414,18 @@ if draw_visualization
     # Spectrogram comparison
     Select outer viewport: 0, 4, 3.3, 4.8
     Select inner viewport: 0.6, 3.8, 3.5, 4.7
-    selectObject: original
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    specCeil = min(5000, 0.49 * fs)
+
+    selectObject: analysisMono
+    To Spectrogram: 0.03, specCeil, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     
     # Draw filter band
     Colour: "{0.8, 0.4, 0.4}"
     Dotted line
-    Draw line: 0, freq_cutoff_low, dur, freq_cutoff_low
-    Draw line: 0, freq_cutoff_high, dur, freq_cutoff_high
+    Draw line: xmin, freq_cutoff_low, xmax, freq_cutoff_low
+    Draw line: xmin, freq_cutoff_high, xmax, freq_cutoff_high
     Solid line
     
     removeObject: origSpec
@@ -303,10 +438,17 @@ if draw_visualization
     Select outer viewport: 4, 8, 3.3, 4.8
     Select inner viewport: 4.4, 7.6, 3.5, 4.7
     selectObject: result
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    if nChannels > 1
+        resultVizMono = Convert to mono
+    else
+        resultVizMono = Copy: "VT_result_viz"
+    endif
+
+    selectObject: resultVizMono
+    To Spectrogram: 0.03, specCeil, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: resSpec
+    removeObject: resSpec, resultVizMono
     Colour: "Black"
     Draw inner box
     Font size: 6
@@ -373,17 +515,29 @@ if draw_visualization
     
     # Stats
     Select outer viewport: 0, 8, 5.9, 6.2
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Duration: " + fixed$(dur, 2) + "s → " + fixed$(newDur, 2) + "s | Preset: " + presetName$
+    Text: 0.5, "centre", 0.5, "half", "Duration: " + fixed$(dur, 2) + "s -> " + fixed$(newDur, 2) + "s | Preset: " + presetName$
     
     Font size: 10
     Colour: "Black"
 endif
 
 # === Cleanup ===
-removeObject: manipulation
-removeObject: original
+if durationTier <> 0
+    removeObject: durationTier
+endif
+if shiftedPitchTier <> 0
+    removeObject: shiftedPitchTier
+endif
+if sourcePitchTier <> 0
+    removeObject: sourcePitchTier
+endif
+if analysisManip <> 0
+    removeObject: analysisManip
+endif
+removeObject: analysisMono
 
 # === Final Info ===
 selectObject: result
@@ -391,11 +545,12 @@ selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
-appendInfoLine: "Duration: ", fixed$(dur, 2), "s → ", fixed$(newDur, 2), "s"
+appendInfoLine: "Duration: ", fixed$(dur, 2), " s -> ", fixed$(newDur, 2), " s"
+appendInfoLine: "Channels preserved: ", nChannels
+appendInfoLine: "Peak safety applied: ", peakSafetyApplied
 
 # === Play ===
 if play_result
-    selectObject: result
     Play
 endif
 

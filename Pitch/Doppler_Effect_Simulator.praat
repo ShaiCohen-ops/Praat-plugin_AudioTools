@@ -3,13 +3,29 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 
+# Version: 1.3 (2026)
 # License: MIT License
 #
 # Description:
 #   Simulates a physical Doppler effect (moving source, stationary listener).
 #   Includes Presets and Visualization.
 #
+# Changelog v1.3:
+#   - Preserves the original channel count. Doppler pitch is analysed once
+#     from a mono reference, then the same target PitchTier is resynthesized
+#     independently on every source channel and recombined in channel order.
+#   - Fixes non-zero Sound start times. Time_at_closest_s is interpreted as
+#     seconds from the beginning of the selected Sound; presets use its true
+#     midpoint (startTime + duration/2).
+#   - Adds physical/technical validation: non-negative subsonic speed,
+#     positive closest distance, closest-time inside the Sound, valid pitch
+#     analysis range, and analysis ceiling below Nyquist.
+#   - PitchTier sampling now always includes the exact endTime.
+#   - Extreme target pitches are limited to a sampling-safe 20 Hz..0.45*SR
+#     range, with the number of limited control points reported.
+#   - Amplitude cue uses the corrected absolute closest-time coordinate.
+#   - Normalization checks for a non-silent result before scaling.
+#   - Visualization title and info box now set explicit normalized axes.
 # Changelog v1.2:
 #   - Fixed Praat syntax (elsif, =, #)
 #   - Fixed viewport widths
@@ -33,12 +49,13 @@ totalDuration = Get total duration
 startTime = Get start time
 endTime = Get end time
 sr = Get sampling frequency
+nChannels = Get number of channels
 
 # ==============================================================================
 #  2. USER FORM & PRESETS
 # ==============================================================================
 
-form Doppler Effect Simulator
+form Doppler Effect Simulator v1.3
     comment Select a Preset or use Custom settings
     optionmenu Preset 1
         option Custom
@@ -52,6 +69,7 @@ form Doppler Effect Simulator
     real Speed_m_s 25.0
     real Closest_distance_m 5.0
     real Time_at_closest_s 0.5
+    comment (seconds from the beginning of the selected Sound)
     
     comment Effect Settings
     boolean Apply_amplitude_cue 1
@@ -69,40 +87,41 @@ endform
 # --- Apply Presets ---
 # Variables: v (speed), d (distance), t_c (time closest)
 
-# Default to form values
+# Default to form values.
+# Time_at_closest_s is a RELATIVE offset from the Sound's start time.
 v = speed_m_s
 d = closest_distance_m
-t_c = time_at_closest_s
+t_c_offset = time_at_closest_s
 
 if preset = 2
     # Fast Car (City Street) ~50 km/h, close lane
     v = 15.0
     d = 4.0
-    t_c = totalDuration / 2
+    t_c_offset = totalDuration / 2
     presetName$ = "Fast Car"
 elsif preset = 3
     # Jet Flyover (High Altitude) subsonic jet, high altitude
     v = 250.0
     d = 100.0
-    t_c = totalDuration / 2
+    t_c_offset = totalDuration / 2
     presetName$ = "Jet Flyover"
 elsif preset = 4
     # Ambulance Passing (Close)
     v = 20.0
     d = 2.0
-    t_c = totalDuration / 2
+    t_c_offset = totalDuration / 2
     presetName$ = "Ambulance"
 elsif preset = 5
     # Slow Bicycle
     v = 5.0
     d = 1.0
-    t_c = totalDuration / 2
+    t_c_offset = totalDuration / 2
     presetName$ = "Bicycle"
 elsif preset = 6
     # Sci-Fi Warp (Extreme) Mach 1, extremely close
     v = 340.0
     d = 0.5
-    t_c = totalDuration / 2
+    t_c_offset = totalDuration / 2
     presetName$ = "Sci-Fi Warp"
 else
     presetName$ = "Custom"
@@ -111,10 +130,34 @@ endif
 # Speed of sound in air (m/s)
 c_sound = 343.0
 
+# === Validate Physics / Analysis Parameters ===
+if v < 0
+    exitScript: "Speed_m_s must be non-negative."
+endif
+if v >= c_sound
+    exitScript: "This simulator uses the classical subsonic moving-source model." + newline$
+        ... + "Speed_m_s must be lower than the speed of sound (" + string$(c_sound) + " m/s)."
+endif
+if d <= 0
+    exitScript: "Closest_distance_m must be greater than zero."
+endif
+if t_c_offset < 0 or t_c_offset > totalDuration
+    exitScript: "Time_at_closest_s must lie between 0 and the Sound duration (" + fixed$(totalDuration, 3) + " s)."
+endif
+if min_pitch_Hz >= max_pitch_Hz
+    exitScript: "Min_pitch_Hz must be lower than Max_pitch_Hz."
+endif
+if max_pitch_Hz >= sr / 2
+    exitScript: "Max_pitch_Hz must be below the Nyquist frequency (" + fixed$(sr / 2, 1) + " Hz)."
+endif
+
+# Convert relative closest-time offset to the Sound's absolute time domain.
+t_c = startTime + t_c_offset
+
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  DOPPLER EFFECT SIMULATOR v1.2"
+writeInfoLine: "  DOPPLER EFFECT SIMULATOR v1.3"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Input: ", originalName$, " (", fixed$(totalDuration, 2), "s)"
@@ -123,7 +166,9 @@ writeInfoLine: ""
 writeInfoLine: "=== Physics Parameters ==="
 writeInfoLine: "  Source speed: ", fixed$(v, 1), " m/s (", fixed$(v * 3.6, 1), " km/h)"
 writeInfoLine: "  Closest distance: ", fixed$(d, 1), " m"
-writeInfoLine: "  Time at closest: ", fixed$(t_c, 2), " s"
+writeInfoLine: "  Time at closest: ", fixed$(t_c_offset, 2), " s after Sound start"
+writeInfoLine: "  Absolute closest time: ", fixed$(t_c, 3), " s"
+writeInfoLine: "  Channels preserved: ", nChannels
 writeInfoLine: "  Speed of sound: ", fixed$(c_sound, 0), " m/s"
 writeInfoLine: ""
 
@@ -146,58 +191,138 @@ steps_vis = 100
 Create TableOfReal: "DopplerVisData", steps_vis, 4
 visTableID = selected("TableOfReal")
 
-# --- Step 3a: Pitch Manipulation ---
+# --- Step 3a: Pitch Analysis and Multichannel Resynthesis ---
 
+# Analyse pitch once from a mono reference.
 selectObject: originalSound
-To Manipulation: 0.01, min_pitch_Hz, max_pitch_Hz
-manipulationID = selected("Manipulation")
+if nChannels > 1
+    analysisMono = Convert to mono
+else
+    analysisMono = Copy: originalName$ + "_Doppler_analysis"
+endif
 
-selectObject: originalSound
-To Pitch: 0.0, min_pitch_Hz, max_pitch_Hz
-pitchID = selected("Pitch")
+selectObject: analysisMono
+pitchID = To Pitch: 0.0, min_pitch_Hz, max_pitch_Hz
+
+# Reject material for which this PSOLA-based implementation has no usable
+# voiced pitch contour.
+selectObject: pitchID
+medianPitch = Get quantile: 0, 0, 0.5, "Hertz"
+if medianPitch = undefined
+    removeObject: pitchID, analysisMono, visTableID
+    exitScript: "No usable pitch was detected." + newline$
+        ... + "This PSOLA-based Doppler simulator requires voiced / periodic material."
+endif
 
 Create PitchTier: "DopplerShift", startTime, endTime
 pitchTierID = selected("PitchTier")
 
-# PSOLA Calculation Loop
+# Sample the physical factor at a fixed 10-ms control interval, always adding
+# the exact Sound end time.
 timeStep = 0.01
-numSteps = floor(totalDuration / timeStep)
+numSteps = ceiling(totalDuration / timeStep)
+targetMinHz = 20
+targetMaxHz = 0.45 * sr
+limitedPitchPoints = 0
+voicedPitchPoints = 0
 
 for i from 0 to numSteps
-    t = startTime + (i * timeStep)
-    
-    # Physics Math
+    if i = numSteps
+        t = endTime
+    else
+        t = min(endTime, startTime + i * timeStep)
+    endif
+
+    # Moving source, stationary listener.
     t_rel = t - t_c
     x_dist = v * t_rel
     hyp_dist = sqrt(d^2 + x_dist^2)
-    
-    if hyp_dist > 0.0001
-        v_radial = v * (x_dist / hyp_dist)
-    else
-        v_radial = 0
-    endif
-    
+
+    v_radial = v * (x_dist / hyp_dist)
     factor = c_sound / (c_sound + v_radial)
-    
-    # Apply to PitchTier
+
     selectObject: pitchID
     val = Get value at time: t, "Hertz", "Linear"
-    if val <> undefined
+    if val <> undefined and val > 0
         newVal = val * factor
+
+        # Sampling-safe target range for extreme settings (notably Warp).
+        if newVal < targetMinHz
+            newVal = targetMinHz
+            limitedPitchPoints += 1
+        elsif newVal > targetMaxHz
+            newVal = targetMaxHz
+            limitedPitchPoints += 1
+        endif
+
         selectObject: pitchTierID
         Add point: t, newVal
+        voicedPitchPoints += 1
     endif
 endfor
 
-# Apply PitchTier
-selectObject: pitchTierID
-plusObject: manipulationID
-Replace pitch tier
+if voicedPitchPoints = 0
+    removeObject: pitchTierID, pitchID, analysisMono, visTableID
+    exitScript: "Pitch analysis produced no usable Doppler control points."
+endif
 
-selectObject: manipulationID
-Get resynthesis (overlap-add)
-dopplerSoundID = selected("Sound")
+appendInfoLine: "  Pitch control points: ", voicedPitchPoints
+if limitedPitchPoints > 0
+    appendInfoLine: "  Extreme target points limited for sampling safety: ", limitedPitchPoints
+endif
+
+# Resynthesize each original channel independently with the same target tier.
+channelResultIDs# = zero#(nChannels)
+
+for ch from 1 to nChannels
+    selectObject: originalSound
+    if nChannels = 1
+        channelWork = Copy: originalName$ + "_Doppler_ch1"
+    else
+        channelWork = Extract one channel: ch
+        Rename: originalName$ + "_Doppler_ch" + string$(ch)
+    endif
+
+    selectObject: channelWork
+    channelManip = To Manipulation: 0.01, min_pitch_Hz, max_pitch_Hz
+
+    selectObject: pitchTierID
+    plusObject: channelManip
+    Replace pitch tier
+
+    selectObject: channelManip
+    channelResult = Get resynthesis (overlap-add)
+    Rename: originalName$ + "_Doppler_tmp" + string$(ch)
+
+    channelResultIDs#[ch] = channelResult
+    removeObject: channelManip, channelWork
+endfor
+
+# Combine to stereo can combine any number of mono Sounds; with sequentially
+# created channel results, object creation order equals source channel order.
+if nChannels = 1
+    dopplerSoundID = channelResultIDs#[1]
+    selectObject: dopplerSoundID
+else
+    selectObject: channelResultIDs#[1]
+    for ch from 2 to nChannels
+        plusObject: channelResultIDs#[ch]
+    endfor
+    dopplerSoundID = Combine to stereo
+endif
+
+selectObject: dopplerSoundID
 Rename: originalName$ + "_Doppler"
+
+# Remove temporary per-channel resyntheses after the combined output exists.
+if nChannels > 1
+    for ch from 1 to nChannels
+        removeObject: channelResultIDs#[ch]
+    endfor
+endif
+
+# Analysis objects are no longer needed.
+removeObject: pitchID, pitchTierID, analysisMono
 
 # --- Step 3b: Amplitude Manipulation ---
 
@@ -219,8 +344,14 @@ if apply_amplitude_cue
 endif
 
 if normalize_output
-    Scale peak: 0.99
-    appendInfoLine: "  Normalized output"
+    selectObject: dopplerSoundID
+    outputPeak = Get absolute extremum: 0, 0, "None"
+    if outputPeak > 1e-15
+        Scale peak: 0.99
+        appendInfoLine: "  Normalized output to 0.99 peak"
+    else
+        appendInfoLine: "  Output is silent; normalization skipped"
+    endif
 endif
 
 # --- Step 3c: Fill Visualization Table & Calculate Bounds ---
@@ -278,6 +409,7 @@ if visualize
     
     # === TITLE ===
     Select outer viewport: 1, 8, 0, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "##Doppler Effect## | " + presetName$ + " | " + fixed$(v, 0) + " m/s @ " + fixed$(d, 1) + "m"
@@ -414,6 +546,7 @@ if visualize
     
     # --- D. Info Box ---
     Select outer viewport: 0, 8, 6.3, 6.8
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Approaching: +" + fixed$((max_shift_approach - 1) * 100, 1) + "% | Receding: -" + fixed$((1 - max_shift_recede) * 100, 1) + "% | Speed of sound: " + fixed$(c_sound, 0) + " m/s"
@@ -430,15 +563,13 @@ endif
 # Select final object
 selectObject: dopplerSoundID
 
-# Remove temp objects
-removeObject: manipulationID
-removeObject: pitchID
-removeObject: pitchTierID
+# Remove visualization data.
 removeObject: visTableID
 
 appendInfoLine: ""
 appendInfoLine: "=============================================="
 appendInfoLine: "  COMPLETE: ", originalName$, "_Doppler"
+appendInfoLine: "  Output channels: ", nChannels
 appendInfoLine: "=============================================="
 
 # Playback

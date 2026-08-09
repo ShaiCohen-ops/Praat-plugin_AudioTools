@@ -9,13 +9,13 @@
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # License:     MIT License
 # Category:    Pitch  /  Time & Granular
-# Version:     1.4 (2026)
+# Version:     1.5a (2026)
 # ------------------------------------------------------------
 # A gesture-based pitch / time / intensity transformation.
 #
-# Builds a 2-D prosodic feature map (time frames x control
-# parameters), applies an anisotropic 2-D convolution that
-# SMEARS and COUPLES prosodic dimensions (accent expansion,
+# Builds a prosodic feature map (time frames x control
+# parameters), applies anisotropic TEMPORAL convolution plus
+# cross-dimensional coupling (accent expansion,
 # pitch-glissando shaping, intensity->time coupling, local
 # time dilation around accents), then rebuilds the PitchTier
 # and DurationTier inside a Manipulation object, resynthesises,
@@ -32,6 +32,14 @@
 #        Output is left in the Objects window; nothing is saved.
 #
 # Changelog:
+#   1.5a - Fixed Praat formula object lookup: use numeric Sound object ID
+#          instead of an unsupported quoted object-name reference.
+#   1.5 - Preserves xmin/xmax and original channel count; true dry bypass;
+#         pitch constraints operate on TRANSFORMATION DELTA rather than
+#         absolute source melody; intensity is applied as transformed-minus-
+#         original dB; gain envelope is mapped through the duration warp;
+#         causal/trailing convolution bias fixed; avoids IntensityTier
+#         Multiply's automatic 0.9 peak normalization; expanded validation.
 #   1.4 - Fixed orphaned *_int object + un-applied gain: Sound+IntensityTier
 #         Multiply creates a NEW Sound, now captured as the output.
 #   1.3 - Renamed to Gesture Convolution Transform; experimental
@@ -161,6 +169,32 @@ else
     presetName$ = "Custom"
 endif
 
+# ---- parameter validation that does not depend on sample rate ----
+if effect_amount < 0 or effect_amount > 1
+    exitScript: "Effect_amount must be between 0 and 1."
+endif
+if output_gain < 0
+    exitScript: "Output_gain must be zero or greater."
+endif
+if time_smear_amount < 0 or time_smear_amount > 1
+    exitScript: "Time_smear_amount must be between 0 and 1."
+endif
+if accent_sensitivity < 0
+    exitScript: "Accent_sensitivity must be zero or greater."
+endif
+if max_pitch_jump_semitones < 0
+    exitScript: "Max_pitch_jump_semitones must be zero or greater."
+endif
+if min_duration_factor <= 0
+    exitScript: "Min_duration_factor must be greater than zero."
+endif
+if max_duration_factor < min_duration_factor
+    exitScript: "Max_duration_factor must be greater than or equal to Min_duration_factor."
+endif
+if pitch_floor >= pitch_ceiling
+    exitScript: "Pitch_floor must be lower than Pitch_ceiling."
+endif
+
 # ============================================================
 # SECTION 1 — INPUT VALIDATION
 # ============================================================
@@ -173,9 +207,13 @@ origName$ = selected$("Sound")
 
 selectObject: origID
 nChan = Get number of channels
+startTime = Get start time
+endTime = Get end time
+totalDur = endTime - startTime
+origSR = Get sampling frequency
 
-# Manipulation / pitch analysis require mono. Keep the original for the
-# final intensity reference; build a mono working copy for everything else.
+# Feature analysis is mono, but audio resynthesis is performed separately
+# on every original channel and rebuilt afterward.
 if nChan > 1
     workID = Convert to mono
     Rename: "gct_work_mono"
@@ -184,12 +222,18 @@ else
 endif
 
 selectObject: workID
-totalDur = Get total duration
-workSR   = Get sampling frequency
+workSR = Get sampling frequency
+
+if pitch_ceiling >= workSR / 2
+    removeObject: workID
+    exitScript: "Pitch_ceiling must be below Nyquist (" + fixed$(workSR / 2, 1) + " Hz)."
+endif
 
 clearinfo
-appendInfoLine: "=== Gesture Convolution Transform v1.4 ==="
+appendInfoLine: "=== Gesture Convolution Transform v1.5a ==="
 appendInfoLine: "Input: ", origName$, "  (", fixed$(totalDur, 3), " s)"
+appendInfoLine: "Channels preserved: ", nChan
+appendInfoLine: "Time domain: ", fixed$(startTime, 6), " ... ", fixed$(endTime, 6), " s"
 appendInfoLine: ""
 
 # ============================================================
@@ -197,11 +241,7 @@ appendInfoLine: ""
 # ============================================================
 appendInfoLine: "[1/7] Analysing prosody..."
 
-# Manipulation object (drives pitch + duration resynthesis)
-selectObject: workID
-manipID = To Manipulation: time_step, pitch_floor, pitch_ceiling
-
-# Pitch (for the feature map) — read from a PitchTier sampled on the grid
+# Pitch (for the feature map)
 selectObject: workID
 pitchObj = To Pitch: time_step, pitch_floor, pitch_ceiling
 
@@ -212,8 +252,7 @@ intObj = To Intensity: pitch_floor, time_step, "yes"
 # Number of frames on the common grid
 nFrames = floor(totalDur / time_step)
 if nFrames < 8
-    selectObject: pitchObj, intObj, manipID, workID
-    Remove
+    removeObject: pitchObj, intObj, workID
     exitScript: "Sound too short for this effect (need at least ~8 analysis frames)."
 endif
 
@@ -229,12 +268,15 @@ featRaw = Create simple Matrix: "featRaw", nFrames, nCols, "0"
 # Reference semitone base for pitch (median of voiced frames)
 selectObject: pitchObj
 medianF0 = Get quantile: 0, 0, 0.5, "Hertz"
-if medianF0 = undefined or medianF0 < pitch_floor
+if medianF0 = undefined or medianF0 <= 0
+    hasVoiced = 0
     medianF0 = pitch_floor
+    appendInfoLine: "  Frames: ", nFrames, "   No stable voiced F0; pitch stage will be skipped."
+else
+    hasVoiced = 1
+    appendInfoLine: "  Frames: ", nFrames, "   Median F0: ", fixed$(medianF0, 1), " Hz"
 endif
 stRef = medianF0
-
-appendInfoLine: "  Frames: ", nFrames, "   Median F0: ", fixed$(medianF0, 1), " Hz"
 
 # ============================================================
 # SECTION 3 — FEATURE-MAP CONSTRUCTION
@@ -243,7 +285,7 @@ appendInfoLine: "[2/7] Building feature map..."
 
 # Pass A: fill pitch (semitones), intensity (dB), voicing mask
 for i to nFrames
-    t = (i - 0.5) * time_step
+    t = startTime + (i - 0.5) * time_step
 
     selectObject: pitchObj
     f0 = Get value at time: t, "Hertz", "linear"
@@ -462,12 +504,12 @@ for i to nFrames
     for k from -halfWin to halfWin
         j = i + k
         if j >= 1 and j <= nFrames
-            # asymmetric weight: trailing samples (k>0) weighted more ->
-            # smears prosody FORWARD in time (gesture "overshoot")
-            if k >= 0
-                w = exp(-k / (halfWin + 1))
+            # Causal/trailing bias: past samples (k<0) carry forward
+            # strongly; future samples receive only a reduced look-ahead.
+            if k <= 0
+                w = exp(k / (halfWin + 1))
             else
-                w = 0.4 * exp(k / (halfWin + 1))
+                w = 0.4 * exp(-k / (halfWin + 1))
             endif
             selectObject: featNorm
             gv1 = Get value in cell: j, 1
@@ -625,162 +667,269 @@ for i to nFrames
     Set value: i, 4, dv
 endfor
 
-# ---- build PitchTier + DurationTier from featOut, with safety ----
-# Replace tiers inside a copy of the Manipulation object.
-selectObject: manipID
-pitchTier = Extract pitch tier
-durTier   = Create DurationTier: "gct_dur", 0, totalDur
+# ---- build target PitchTier + DurationTier from featOut ----
+# Pitch safety is applied to the TRANSFORMATION DELTA relative to the source
+# contour. This guarantees that effect_amount=0 does not flatten or clamp the
+# source melody merely because it lies far from the median reference.
 
-# Remove existing pitch points, we will write our own
-selectObject: pitchTier
-Remove points between: 0, totalDur
+pitchTier = Create PitchTier: "gct_pitch", startTime, endTime
+durTier   = Create DurationTier: "gct_dur", startTime, endTime
 
 maxShiftST = max_pitch_shift_semitones
-jumpRatio  = 2 ^ (max_pitch_jump_semitones / 12)
-prevF0 = medianF0
+targetMinHz = 20
+targetMaxHz = 0.45 * workSR
+
+durApplied# = zero#(nFrames)
+gainDeltaDb# = zero#(nFrames)
+warpCenterUnits# = zero#(nFrames)
+
+prevDeltaST = 0
+havePrevDelta = 0
+pitchPoints = 0
+limitedPitchPoints = 0
 
 for i to nFrames
-    t = (i - 0.5) * time_step
+    t = startTime + (i - 0.5) * time_step
 
     selectObject: featOut
     stVal   = Get value in cell: i, 1
     durFac  = Get value in cell: i, 4
+    outDb   = Get value in cell: i, 5
     voiced  = Get value in cell: i, 8
 
-    # ---- pitch safety ----
-    # clamp semitone shift relative to reference
-    if stVal > maxShiftST
-        stVal = maxShiftST
-    elsif stVal < -maxShiftST
-        stVal = -maxShiftST
-    endif
-    newF0 = stRef * 2^(stVal / 12)
+    selectObject: featRaw
+    origSt  = Get value in cell: i, 1
+    origDb  = Get value in cell: i, 5
 
-    # preserve unvoiced regions: only write pitch points where voiced
-    if voiced >= 0.5 and newF0 > 0
-        # limit frame-to-frame jump to max_pitch_jump_semitones
-        ratio = newF0 / prevF0
-        if ratio > jumpRatio
-            newF0 = prevF0 * jumpRatio
-        elsif ratio < 1 / jumpRatio
-            newF0 = prevF0 / jumpRatio
-        endif
-        if newF0 >= pitch_floor and newF0 <= pitch_ceiling
-            selectObject: pitchTier
-            Add point: t, newF0
-            prevF0 = newF0
-        endif
+    # ---- pitch: constrain only the transformation delta ----
+    deltaST = stVal - origSt
+    if deltaST > maxShiftST
+        deltaST = maxShiftST
+    elsif deltaST < -maxShiftST
+        deltaST = -maxShiftST
     endif
 
-    # ---- duration safety ----  clamp local factor
+    if voiced >= 0.5 and hasVoiced
+        # Limit abrupt changes in the EFFECT delta, not jumps already
+        # present in the source melody.
+        if havePrevDelta
+            deltaJump = deltaST - prevDeltaST
+            if deltaJump > max_pitch_jump_semitones
+                deltaST = prevDeltaST + max_pitch_jump_semitones
+            elsif deltaJump < -max_pitch_jump_semitones
+                deltaST = prevDeltaST - max_pitch_jump_semitones
+            endif
+        endif
+
+        sourceF0 = stRef * 2^(origSt / 12)
+        newF0 = sourceF0 * 2^(deltaST / 12)
+
+        if newF0 < targetMinHz
+            newF0 = targetMinHz
+            limitedPitchPoints += 1
+        elsif newF0 > targetMaxHz
+            newF0 = targetMaxHz
+            limitedPitchPoints += 1
+        endif
+
+        selectObject: pitchTier
+        Add point: t, newF0
+        pitchPoints += 1
+        prevDeltaST = deltaST
+        havePrevDelta = 1
+    endif
+
+    # ---- duration safety ----
     if durFac < min_duration_factor
         durFac = min_duration_factor
     elsif durFac > max_duration_factor
         durFac = max_duration_factor
     endif
+    durApplied#[i] = durFac
+
     selectObject: durTier
     Add point: t, durFac
+
+    # ---- intensity: transformed-minus-original dB ----
+    # At zero wet this is exactly 0 dB, i.e. unity gain.
+    gdb = outDb - origDb
+    if gdb > 12
+        gdb = 12
+    elsif gdb < -12
+        gdb = -12
+    endif
+    gainDeltaDb#[i] = gdb
 endfor
 
+# Explicit duration endpoints make the time map well defined across the
+# entire original Sound domain.
+selectObject: durTier
+Add point: startTime, durApplied#[1]
+Add point: endTime, durApplied#[nFrames]
+
+appendInfoLine: "  Pitch target points: ", pitchPoints
+if limitedPitchPoints > 0
+    appendInfoLine: "  Sampling-safe pitch limits applied: ", limitedPitchPoints
+endif
+
 # ============================================================
-# SECTION 7 — TIER RECONSTRUCTION + RESYNTHESIS
+# SECTION 7 — MULTICHANNEL TIER RECONSTRUCTION + RESYNTHESIS
 # ============================================================
 appendInfoLine: "[6/7] Rebuilding tiers and resynthesising..."
 
-selectObject: manipID, pitchTier
-Replace pitch tier
+dryBypass = 0
+if effect_amount = 0
+    # True dry identity: do not pass through PSOLA at all.
+    selectObject: origID
+    finalID = Copy: "Gesture_Convolution_Transform"
+    dryBypass = 1
+    appendInfoLine: "  Effect_amount = 0: exact dry bypass."
+else
+    channelResultIDs# = zero#(nChan)
 
-selectObject: manipID, durTier
-Replace duration tier
+    for ch from 1 to nChan
+        selectObject: origID
+        if nChan = 1
+            channelWork = Copy: "gct_ch1"
+        else
+            channelWork = Extract one channel: ch
+            Rename: "gct_ch" + string$(ch)
+        endif
 
-selectObject: manipID
-resynthID = Get resynthesis (overlap-add)
-Rename: "gct_resynth"
+        selectObject: channelWork
+        channelManip = To Manipulation: time_step, pitch_floor, pitch_ceiling
 
-# ---- post-resynthesis intensity shaping (CONTINUOUS envelope) ----
-# The transformed intensity (col 5) becomes a smooth gain applied via an
-# IntensityTier. An IntensityTier interpolates LINEARLY between breakpoints,
-# so multiplying it onto the sound is click-free - unlike writing gain at
-# isolated samples and leaving the rest at 1 (which is an impulse train).
-# We additionally box-smooth the per-frame gain over gain_smooth_ms before
-# laying down points, so even the breakpoints are gentle.
-selectObject: resynthID
-resynDur = Get total duration
+        if hasVoiced and pitchPoints > 0
+            selectObject: channelManip
+            plusObject: pitchTier
+            Replace pitch tier
+        endif
 
-gainWin = floor((gain_smooth_ms / 1000) / time_step / 2)
-if gainWin < 1
-    gainWin = 1
-endif
+        selectObject: channelManip
+        plusObject: durTier
+        Replace duration tier
 
-# Pre-compute smoothed linear gain per frame into a 1-col matrix.
-gainCol = Create simple Matrix: "gct_gaincol", nFrames, 1, "0"
-for i to nFrames
-    gsum = 0
-    gn = 0
-    for k from -gainWin to gainWin
-        j = i + k
-        if j >= 1 and j <= nFrames
-            selectObject: featOut
-            dbV = Get value in cell: j, 5
-            gdb = dbV - meanDB
-            if gdb > 12
-                gdb = 12
-            elsif gdb < -12
-                gdb = -12
+        selectObject: channelManip
+        channelRes = Get resynthesis (overlap-add)
+        Rename: "gct_res_ch" + string$(ch)
+        channelResultIDs#[ch] = channelRes
+
+        removeObject: channelManip, channelWork
+    endfor
+
+    if nChan = 1
+        finalID = channelResultIDs#[1]
+        selectObject: finalID
+    else
+        selectObject: channelResultIDs#[1]
+        for ch from 2 to nChan
+            plusObject: channelResultIDs#[ch]
+        endfor
+        finalID = Combine to stereo
+
+        # Combined output now owns the samples; remove temporary mono channels.
+        for ch from 1 to nChan
+            removeObject: channelResultIDs#[ch]
+        endfor
+        selectObject: finalID
+    endif
+
+    Rename: "Gesture_Convolution_Transform"
+
+    # ---- map intensity-delta envelope through the duration warp ----
+    # First smooth the dB delta on the ORIGINAL analysis grid.
+    gainWin = floor((gain_smooth_ms / 1000) / time_step / 2)
+    if gainWin < 1
+        gainWin = 1
+    endif
+
+    gainSmoothDb# = zero#(nFrames)
+    for i to nFrames
+        gsum = 0
+        gn = 0
+        for k from -gainWin to gainWin
+            j = i + k
+            if j >= 1 and j <= nFrames
+                gsum += gainDeltaDb#[j]
+                gn += 1
             endif
-            gl = 10^(gdb / 20)
-            gl = (1 - intensity_influence) + intensity_influence * gl
-            gsum += gl
-            gn += 1
+        endfor
+        gainSmoothDb#[i] = gsum / gn
+    endfor
+
+    # Approximate cumulative duration map from the actual clamped DurationTier
+    # control values, then normalize it to the REAL resynthesized duration.
+    warpTotal = 0
+    for i to nFrames
+        warpCenterUnits#[i] = warpTotal + 0.5 * durApplied#[i]
+        warpTotal += durApplied#[i]
+    endfor
+    if warpTotal <= 0
+        warpTotal = nFrames
+    endif
+
+    selectObject: finalID
+    outStart = Get start time
+    outEnd = Get end time
+    resynDur = outEnd - outStart
+
+    gainTime# = zero#(nFrames)
+    for i to nFrames
+        gainTime#[i] = outStart + (warpCenterUnits#[i] / warpTotal) * resynDur
+    endfor
+
+    # Build a mono linear-gain Sound on the exact final sample grid.
+    # We use Formula(part) rather than Sound+IntensityTier Multiply because
+    # the latter automatically peak-normalizes its result to 0.9.
+    selectObject: finalID
+    if nChan > 1
+        gainSound = Extract one channel: 1
+    else
+        gainSound = Copy: "gct_gain_source"
+    endif
+    selectObject: gainSound
+    Rename: "gct_gain"
+
+    firstGain = 10^(gainSmoothDb#[1] / 20)
+    Formula: "firstGain"
+
+    for i from 1 to nFrames - 1
+        t1 = gainTime#[i]
+        t2 = gainTime#[i + 1]
+        g1 = gainSmoothDb#[i]
+        g2 = gainSmoothDb#[i + 1]
+        if t2 > t1
+            Formula (part): t1, t2, 1, 1,
+                ... "10 ^ ((g1 + (g2 - g1) * (x - t1) / (t2 - t1)) / 20)"
         endif
     endfor
-    selectObject: gainCol
-    Set value: i, 1, gsum / gn
-endfor
 
-# Build an IntensityTier of the gain in dB (IntensityTier is a dB curve;
-# value 0 dB = unity gain). Convert linear gain -> dB for the tier points.
-gainTier = Create IntensityTier: "gct_gaintier", 0, resynDur
-for i to nFrames
-    t = (i - 0.5) * time_step
-    if t >= 0 and t <= resynDur
-        selectObject: gainCol
-        gl = Get value in cell: i, 1
-        if gl < 0.001
-            gl = 0.001
-        endif
-        gdbTier = 20 * log10(gl)
-        selectObject: gainTier
-        Add point: t, gdbTier
+    lastGain = 10^(gainSmoothDb#[nFrames] / 20)
+    if gainTime#[nFrames] < outEnd
+        Formula (part): gainTime#[nFrames], outEnd, 1, 1, "lastGain"
     endif
-endfor
 
-# Apply the gain envelope to the resynthesised sound (click-free multiply).
-# NOTE: Sound + IntensityTier "Multiply" creates a NEW Sound (named
-# <name>_int); it does NOT modify in place. Capture that result as the
-# real output and discard the pre-multiply copy, otherwise the gain would
-# never reach the output and a stray *_int object would be orphaned.
-selectObject: resynthID
-preGainID = Copy: "gct_pre_gain"
-plusObject: gainTier
-finalID = Multiply: "yes"
-removeObject: preGainID
+    # Apply the same warped gain gesture to every output channel.
+    selectObject: finalID
+    Formula: "self * object[" + string$(gainSound) + ", 1, col]"
+    removeObject: gainSound
+endif
 
-# ---- anti-clipping: scale peak just under 1 if needed ----
+# ---- requested global output gain, then attenuation-only clipping safety ----
 selectObject: finalID
+if output_gain <> 1.0
+    Formula: "self * output_gain"
+endif
+
 peak = Get absolute extremum: 0, 0, "None"
 if peak > 0.99
     Scale peak: 0.99
-endif
-# output gain (bounded so it can't push back into clipping)
-if output_gain <> 1.0
-    Formula: "self * output_gain"
-    peak2 = Get absolute extremum: 0, 0, "None"
-    if peak2 > 0.99
-        Scale peak: 0.99
-    endif
+    safetyApplied = 1
+else
+    safetyApplied = 0
 endif
 
+selectObject: finalID
 Rename: "Gesture_Convolution_Transform"
 
 # ============================================================
@@ -868,8 +1017,8 @@ if draw_visualization
     # ---- PANEL 1: pitch contour (orig grey vs transformed red) ----
     Select outer viewport: 0, 8, 0.7, 2.0
     Select inner viewport: 0.6, 7.7, 0.85, 1.9
-    Axes: 0, totalDur, stMin, stMax
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, totalDur, stMin, stMax
+    Axes: startTime, endTime, stMin, stMax
+    Paint rectangle: "{0.97, 0.97, 0.98}", startTime, endTime, stMin, stMax
     # original (grey)
     Colour: "{0.6, 0.6, 0.6}"
     Line width: 1
@@ -877,8 +1026,8 @@ if draw_visualization
         selectObject: featRaw
         y0 = Get value in cell: i - 1, 1
         y1 = Get value in cell: i, 1
-        t0 = (i - 1.5) * time_step
-        t1 = (i - 0.5) * time_step
+        t0 = startTime + (i - 1.5) * time_step
+        t1 = startTime + (i - 0.5) * time_step
         Draw line: t0, y0, t1, y1
     endfor
     # transformed (red)
@@ -888,8 +1037,8 @@ if draw_visualization
         selectObject: featOut
         y0 = Get value in cell: i - 1, 1
         y1 = Get value in cell: i, 1
-        t0 = (i - 1.5) * time_step
-        t1 = (i - 0.5) * time_step
+        t0 = startTime + (i - 1.5) * time_step
+        t1 = startTime + (i - 0.5) * time_step
         Draw line: t0, y0, t1, y1
     endfor
     Black
@@ -904,19 +1053,19 @@ if draw_visualization
     # ---- PANEL 2: local duration factor ----
     Select outer viewport: 0, 8, 2.1, 3.0
     Select inner viewport: 0.6, 7.7, 2.2, 2.9
-    Axes: 0, totalDur, durMin, durMax
-    Paint rectangle: "{0.97, 0.98, 0.97}", 0, totalDur, durMin, durMax
+    Axes: startTime, endTime, durMin, durMax
+    Paint rectangle: "{0.97, 0.98, 0.97}", startTime, endTime, durMin, durMax
     # unity reference line at 1.0
     Colour: "{0.7, 0.7, 0.7}"
-    Draw line: 0, 1, totalDur, 1
+    Draw line: startTime, 1, endTime, 1
     Colour: "{0.20, 0.45, 0.75}"
     Line width: 2
     for i from 2 to nFrames
         selectObject: featOut
         y0 = Get value in cell: i - 1, 4
         y1 = Get value in cell: i, 4
-        t0 = (i - 1.5) * time_step
-        t1 = (i - 0.5) * time_step
+        t0 = startTime + (i - 1.5) * time_step
+        t1 = startTime + (i - 0.5) * time_step
         Draw line: t0, y0, t1, y1
     endfor
     Black
@@ -931,8 +1080,8 @@ if draw_visualization
     # ---- PANEL 3: intensity + accent ----
     Select outer viewport: 0, 8, 3.1, 4.0
     Select inner viewport: 0.6, 7.7, 3.2, 3.9
-    Axes: 0, totalDur, dbMin, dbMax
-    Paint rectangle: "{0.98, 0.97, 0.97}", 0, totalDur, dbMin, dbMax
+    Axes: startTime, endTime, dbMin, dbMax
+    Paint rectangle: "{0.98, 0.97, 0.97}", startTime, endTime, dbMin, dbMax
     # intensity (transformed) in blue
     Colour: "{0.20, 0.45, 0.75}"
     Line width: 2
@@ -940,8 +1089,8 @@ if draw_visualization
         selectObject: featOut
         y0 = Get value in cell: i - 1, 5
         y1 = Get value in cell: i, 5
-        t0 = (i - 1.5) * time_step
-        t1 = (i - 0.5) * time_step
+        t0 = startTime + (i - 1.5) * time_step
+        t1 = startTime + (i - 0.5) * time_step
         Draw line: t0, y0, t1, y1
     endfor
     # accent (original) scaled into this panel, orange
@@ -953,8 +1102,8 @@ if draw_visualization
         a1 = Get value in cell: i, 7
         y0 = dbMin + (a0 / accMax) * (dbMax - dbMin)
         y1 = dbMin + (a1 / accMax) * (dbMax - dbMin)
-        t0 = (i - 1.5) * time_step
-        t1 = (i - 0.5) * time_step
+        t0 = startTime + (i - 1.5) * time_step
+        t1 = startTime + (i - 0.5) * time_step
         Draw line: t0, y0, t1, y1
     endfor
     Black
@@ -990,7 +1139,8 @@ if draw_visualization
     Black
     Text: 0.02, "left", 0.82, "half",
         ... "preset: " + presetName$ + "    frames: " + string$(nFrames) +
-        ... "    grid: " + fixed$(time_step * 1000, 0) + " ms"
+        ... "    grid: " + fixed$(time_step * 1000, 0) + " ms" +
+        ... "    channels: " + string$(nChan)
     Text: 0.02, "left", 0.50, "half",
         ... "pitch infl " + fixed$(pitch_influence, 2) +
         ... "    smear " + fixed$(time_smear_amount, 2) +
@@ -1009,10 +1159,10 @@ endif
 # ============================================================
 appendInfoLine: "[7/7] Cleaning up..."
 
-removeObject: workID, manipID, pitchObj, intObj
+removeObject: workID, pitchObj, intObj
 removeObject: featRaw, featNorm, featConv, featOut
-removeObject: pitchTier, durTier, resynthID
-removeObject: smoothCol1, smoothCol4, gainCol, gainTier
+removeObject: pitchTier, durTier
+removeObject: smoothCol1, smoothCol4
 
 selectObject: finalID
 if play_result
@@ -1022,4 +1172,7 @@ endif
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Output: Gesture_Convolution_Transform"
+appendInfoLine: "Output channels: ", nChan
+appendInfoLine: "Dry bypass: ", dryBypass
+appendInfoLine: "Peak safety applied: ", safetyApplied
 appendInfoLine: "(original left untouched in the Objects window)"

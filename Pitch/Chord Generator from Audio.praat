@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,21 @@
 #   pitch-shifting copies of the input audio. Supports triads
 #   and 7th chords with optional stereo spread.
 #
+# Changelog v0.3:
+#   - Keeps the existing design choice: multichannel input is folded to mono,
+#     then Create_stereo optionally builds a new stereo chord image.
+#   - Preserves the Sound time domain (xmin/xmax) through pitch shifting,
+#     DurationTier use, and output mixing; non-zero start times now work.
+#   - Replaces fixed 75-600 Hz Manipulation limits with adaptive analysis
+#     limits derived from source pitch and requested transposition.
+#   - Root/Third/Fifth/Seventh levels now act as linear gains rather than
+#     per-voice peak normalization targets.
+#   - Final output uses attenuation-only peak safety instead of always
+#     normalizing to 0.95.
+#   - Stereo_spread is clamped to 0..1 and now maps 1.0 to true hard L/R
+#     placement for the two outer chord voices.
+#   - Chord diagram labels are chord-aware (2nd/3rd/4th/5th/octave/etc.).
+#   - Adds parameter validation and explicit axes for title/stats panels.
 # Changelog v0.2:
 #   - Fixed mixing (was putting notes in separate channels!)
 #   - Added stereo spread option
@@ -19,7 +34,7 @@
 #   - Added presets
 # ============================================================
 
-form Chord Generator from Audio
+form Chord Generator from Audio v0.3
     comment Select a Sound object first
     
     comment === Chord Type ===
@@ -62,7 +77,16 @@ originalName$ = selected$("Sound")
 selectObject: original
 channels = Get number of channels
 fs = Get sampling frequency
-duration = Get total duration
+xmin = Get start time
+xmax = Get end time
+duration = xmax - xmin
+
+# === Validate Parameters ===
+root_level = max(0, min(1, root_level))
+third_level = max(0, min(1, third_level))
+fifth_level = max(0, min(1, fifth_level))
+seventh_level = max(0, min(1, seventh_level))
+stereo_spread = max(0, min(1, stereo_spread))
 
 # === Convert to Mono ===
 if channels > 1
@@ -71,6 +95,23 @@ if channels > 1
 else
     selectObject: original
     monoSound = Copy: "mono_source"
+endif
+
+# === Adaptive Pitch Analysis Bounds ===
+# Analyse once on the mono source. The pitch-shift helper will expand the
+# ceiling according to the requested transposition.
+selectObject: monoSound
+sourcePitch = To Pitch: 0.0, 40, 1200
+median_f0 = Get quantile: 0, 0, 0.5, "Hertz"
+removeObject: sourcePitch
+
+if median_f0 = undefined
+    analysis_floor = 40
+    analysis_ceiling_base = 1200
+    appendInfoLine: "Pitch analysis: no stable median detected; using broad bounds."
+else
+    analysis_floor = max(40, median_f0 / 4)
+    analysis_ceiling_base = max(600, median_f0 * 4)
 endif
 
 # === Define Chord Intervals ===
@@ -82,31 +123,43 @@ if chord_type = 1
     interval2 = 4
     interval3 = 7
     chordName$ = "Major"
+    note2Label$ = "Major 3rd"
+    note3Label$ = "Perfect 5th"
 elsif chord_type = 2
     # Minor
     interval2 = 3
     interval3 = 7
     chordName$ = "Minor"
+    note2Label$ = "Minor 3rd"
+    note3Label$ = "Perfect 5th"
 elsif chord_type = 3
     # Sus2
     interval2 = 2
     interval3 = 7
     chordName$ = "Sus2"
+    note2Label$ = "Major 2nd"
+    note3Label$ = "Perfect 5th"
 elsif chord_type = 4
     # Sus4
     interval2 = 5
     interval3 = 7
     chordName$ = "Sus4"
+    note2Label$ = "Perfect 4th"
+    note3Label$ = "Perfect 5th"
 elsif chord_type = 5
     # Diminished
     interval2 = 3
     interval3 = 6
     chordName$ = "Dim"
+    note2Label$ = "Minor 3rd"
+    note3Label$ = "Diminished 5th"
 elsif chord_type = 6
     # Augmented
     interval2 = 4
     interval3 = 8
     chordName$ = "Aug"
+    note2Label$ = "Major 3rd"
+    note3Label$ = "Augmented 5th"
 elsif chord_type = 7
     # Major 7th
     interval2 = 4
@@ -114,6 +167,9 @@ elsif chord_type = 7
     interval4 = 11
     has_seventh = 1
     chordName$ = "Maj7"
+    note2Label$ = "Major 3rd"
+    note3Label$ = "Perfect 5th"
+    note4Label$ = "Major 7th"
 elsif chord_type = 8
     # Minor 7th
     interval2 = 3
@@ -121,6 +177,9 @@ elsif chord_type = 8
     interval4 = 10
     has_seventh = 1
     chordName$ = "Min7"
+    note2Label$ = "Minor 3rd"
+    note3Label$ = "Perfect 5th"
+    note4Label$ = "Minor 7th"
 elsif chord_type = 9
     # Dominant 7th
     interval2 = 4
@@ -128,11 +187,16 @@ elsif chord_type = 9
     interval4 = 10
     has_seventh = 1
     chordName$ = "Dom7"
+    note2Label$ = "Major 3rd"
+    note3Label$ = "Perfect 5th"
+    note4Label$ = "Minor 7th"
 else
     # Power chord (5th)
     interval2 = 7
     interval3 = 12
     chordName$ = "Power"
+    note2Label$ = "Perfect 5th"
+    note3Label$ = "Octave"
 endif
 
 # === Info ===
@@ -153,35 +217,51 @@ semitone_ratio = 2 ^ (1/12)
 # === Create Root Note ===
 selectObject: monoSound
 rootNote = Copy: "root"
-Scale peak: root_level
+Formula: ~ self * root_level
 
 # === Pitch Shift Procedure ===
 procedure pitchShift: .sourceID, .semitones, .outName$
     selectObject: .sourceID
     .tmpCopy = Copy: "tmp_shift"
-    
+
     .ratio = semitone_ratio ^ .semitones
     .newFS = fs * .ratio
-    
+
+    # Speaker-change style pitch shift: temporary sampling-rate override plus
+    # inverse duration manipulation. Preserve xmin/xmax rather than assuming 0.
     Override sampling frequency: .newFS
-    .manip = To Manipulation: 0.01, 75, 600
+
+    .ceil = analysis_ceiling_base * .ratio
+    if .ceil < 600
+        .ceil = 600
+    endif
+    if .ceil > .newFS * 0.45
+        .ceil = .newFS * 0.45
+    endif
+    .floor = analysis_floor
+    if .floor >= .ceil
+        .floor = max(40, .ceil / 4)
+    endif
+
+    .manip = To Manipulation: 0.01, .floor, .ceil
     .durTier = Extract duration tier
-    
+
     selectObject: .durTier
-    Add point: 0, .ratio
-    
+    Add point: xmin, .ratio
+    Add point: xmax, .ratio
+
     selectObject: .manip, .durTier
     Replace duration tier
-    
+
     selectObject: .manip
     .resyn = Get resynthesis (overlap-add)
-    
+
     selectObject: .resyn
     .final = Resample: fs, 50
     Rename: .outName$
-    
+
     removeObject: .durTier, .manip, .tmpCopy, .resyn
-    
+
     .result = .final
 endproc
 
@@ -190,20 +270,20 @@ appendInfoLine: "Creating note 2 (+", interval2, " semitones)..."
 @pitchShift: monoSound, interval2, "note2"
 note2 = pitchShift.result
 selectObject: note2
-Scale peak: third_level
+Formula: ~ self * third_level
 
 appendInfoLine: "Creating note 3 (+", interval3, " semitones)..."
 @pitchShift: monoSound, interval3, "note3"
 note3 = pitchShift.result
 selectObject: note3
-Scale peak: fifth_level
+Formula: ~ self * fifth_level
 
 if has_seventh
     appendInfoLine: "Creating note 4 (+", interval4, " semitones)..."
     @pitchShift: monoSound, interval4, "note4"
     note4 = pitchShift.result
     selectObject: note4
-    Scale peak: seventh_level
+    Formula: ~ self * seventh_level
 endif
 
 # === Mix Notes Together ===
@@ -219,16 +299,16 @@ if create_stereo
     
     # Calculate pan positions
     rootPan = 0.5
-    note2Pan = 0.5 - stereo_spread * 0.4
-    note3Pan = 0.5 + stereo_spread * 0.4
+    note2Pan = 0.5 - stereo_spread * 0.5
+    note3Pan = 0.5 + stereo_spread * 0.5
     note4Pan = 0.5
     
     # Create L and R channels
     selectObject: monoSound
-    Create Sound from formula: "mix_L", 1, 0, duration, fs, "0"
+    Create Sound from formula: "mix_L", 1, xmin, xmax, fs, "0"
     mixL = selected("Sound")
     
-    Create Sound from formula: "mix_R", 1, 0, duration, fs, "0"
+    Create Sound from formula: "mix_R", 1, xmin, xmax, fs, "0"
     mixR = selected("Sound")
     
     # Add root (center)
@@ -279,9 +359,15 @@ else
     Rename: originalName$ + "_" + chordName$
 endif
 
-# Scale peak
+# Attenuation-only peak safety
 selectObject: result
-Scale peak: 0.95
+finalPeak = Get absolute extremum: 0, 0, "None"
+if finalPeak > 0.95
+    Scale peak: 0.95
+    safetyApplied = 1
+else
+    safetyApplied = 0
+endif
 
 # === Cleanup ===
 removeObject: monoSound, rootNote, note2, note3
@@ -295,6 +381,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Chord Generator: " + originalName$ + " → " + chordName$
@@ -344,18 +431,18 @@ if draw_visualization
     
     # Note 2
     Paint rectangle: "{0.5, 0.6, 0.8}", 1.6, 2.4, 0, interval2 + 0.5
-    Text: 2, "centre", interval2 + 1.5, "half", "3rd"
+    Text: 2, "centre", interval2 + 1.5, "half", note2Label$
     Text: 2, "centre", -0.8, "half", "+" + string$(interval2) + " st"
     
     # Note 3
     Paint rectangle: "{0.7, 0.5, 0.6}", 2.6, 3.4, 0, interval3 + 0.5
-    Text: 3, "centre", interval3 + 1.5, "half", "5th"
+    Text: 3, "centre", interval3 + 1.5, "half", note3Label$
     Text: 3, "centre", -0.8, "half", "+" + string$(interval3) + " st"
     
     # Note 4 (if 7th chord)
     if has_seventh
         Paint rectangle: "{0.8, 0.6, 0.5}", 3.6, 4.4, 0, interval4 + 0.5
-        Text: 4, "centre", interval4 + 1.5, "half", "7th"
+        Text: 4, "centre", interval4 + 1.5, "half", note4Label$
         Text: 4, "centre", -0.8, "half", "+" + string$(interval4) + " st"
     endif
     
@@ -397,6 +484,7 @@ if draw_visualization
     
     # Stats
     Select outer viewport: 0, 8, 5.5, 5.8
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     if create_stereo
@@ -415,6 +503,7 @@ selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Peak safety applied: ", safetyApplied
 
 # === Play ===
 if play_result

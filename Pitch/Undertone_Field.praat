@@ -2,7 +2,7 @@
 # Praat AudioTools - Undertone Field.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 3.1 (2025)
+# Version: 3.3 (2026)
 # License: MIT License
 #
 # Description:
@@ -31,6 +31,23 @@
 #   Gaussian    -- peak at middle partial
 #   Inverse     -- deeper = louder (spectralist bass build)
 #
+# Changelog v3.3:
+#   - Fixed micro-delay ordering: silence is now truly prepended before
+#     each delayed partial (Praat concatenates selected Sounds by object order).
+#   - Geometric mode is now genuinely microtonal: at stretch=0 denominators
+#     are 2, 2.5, 3.125, 3.906... rather than octave-only 2,4,8,16...
+#   - Effective pitch factors are derived from the actual overridden sample
+#     rate after safety clamping, so synthesis, reporting and visualization agree.
+#   - Presets explicitly select their intended Series_mode.
+#   - Custom denominator parser validates tokens and continues missing values
+#     upward by +1 instead of silently accepting malformed input.
+#   - The mono working source is explicitly rebased to 0 seconds, making all
+#     buffer, trim and tail operations safe for non-zero source time domains.
+#   - Numeric Sound object IDs use explicit channel indexing in formulas.
+#   - Final peak protection is attenuation-only (no automatic loudness boost).
+#   - Visualization keeps the existing design while fixing series labels,
+#     stereo-field left/right geometry, and waveform amplitude scaling.
+#
 # Category: Synthesis / Spectral / Composition
 # ============================================================
 
@@ -53,7 +70,7 @@ endif
 # FORM
 # ============================================================
 
-form Undertone SR Reinterpretation v3.1
+form Undertone SR Reinterpretation v3.3
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -89,7 +106,12 @@ form Undertone SR Reinterpretation v3.1
     real    Rolloff_dB 3.0
     comment === Filter ===
     positive Lowpass_Hz 2000.0
+    comment === Resonance Tail ===
+    real Tail_duration_s 1.5
+    comment (0 = no tail, 1-3 = undertones linger after source ends)
     comment === Output ===
+    boolean Mute_input 0
+    comment (mute original — hear only the undertone field)
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -101,52 +123,66 @@ endform
 if preset = 2
     number_of_undertones = 4
     stretch_factor       = 0.0
+    series_mode          = 1
     gain_curve           = 2
     base_gain_dB         = -12.0
     rolloff_dB           = 3.0
     lowpass_Hz           = 2000.0
+    tail_duration_s      = 1.5
 elsif preset = 3
     number_of_undertones = 5
     stretch_factor       = 0.20
+    series_mode          = 1
     gain_curve           = 4
     base_gain_dB         = -10.0
     rolloff_dB           = 2.0
     lowpass_Hz           = 1800.0
+    tail_duration_s      = 2.0
 elsif preset = 4
     number_of_undertones = 4
     stretch_factor       = -0.20
+    series_mode          = 1
     gain_curve           = 3
     base_gain_dB         = -14.0
     rolloff_dB           = 4.0
     lowpass_Hz           = 2500.0
+    tail_duration_s      = 1.0
 elsif preset = 5
     number_of_undertones = 6
     stretch_factor       = 0.0
+    series_mode          = 1
     gain_curve           = 5
     base_gain_dB         = -18.0
     rolloff_dB           = 2.0
     lowpass_Hz           = 1500.0
+    tail_duration_s      = 2.5
 elsif preset = 6
     number_of_undertones = 5
     stretch_factor       = 0.12
+    series_mode          = 5
     gain_curve           = 4
     base_gain_dB         = -9.0
     rolloff_dB           = 1.5
     lowpass_Hz           = 3000.0
+    tail_duration_s      = 2.0
 elsif preset = 7
     number_of_undertones = 4
     stretch_factor       = -0.10
+    series_mode          = 1
     gain_curve           = 3
     base_gain_dB         = -8.0
     rolloff_dB           = 6.0
     lowpass_Hz           = 1200.0
+    tail_duration_s      = 1.0
 elsif preset = 8
     number_of_undertones = 7
     stretch_factor       = 0.05
+    series_mode          = 5
     gain_curve           = 1
     base_gain_dB         = -20.0
     rolloff_dB           = 0.0
     lowpass_Hz           = 2000.0
+    tail_duration_s      = 3.0
 endif
 
 # ============================================================
@@ -182,36 +218,43 @@ else
 endif
 
 # ============================================================
-# CLAMPS
+# VALIDATION + 0-BASED WORKING TIME DOMAIN
 # ============================================================
 
-if number_of_undertones < 1
-    number_of_undertones = 1
+if number_of_undertones < 1 or number_of_undertones > 8
+    exitScript: "Number_of_undertones must be between 1 and 8."
 endif
-if number_of_undertones > 8
-    number_of_undertones = 8
-endif
-if stretch_factor < -0.5
-    stretch_factor = -0.5
-endif
-if stretch_factor > 0.5
-    stretch_factor = 0.5
-endif
-if lowpass_Hz > origFs / 2 - 100
-    lowpass_Hz = origFs / 2 - 100
-endif
-if lowpass_Hz < 50
-    lowpass_Hz = 50
+if stretch_factor < -0.5 or stretch_factor > 0.5
+    exitScript: "Stretch_factor must be between -0.5 and +0.5."
 endif
 if rolloff_dB < 0
-    rolloff_dB = 0
+    exitScript: "Rolloff_dB must be zero or greater."
 endif
-if micro_delay_ms < 0
-    micro_delay_ms = 0
+if micro_delay_ms < 0 or micro_delay_ms > 20
+    exitScript: "Micro_delay_ms must be between 0 and 20 ms."
 endif
-if micro_delay_ms > 20
-    micro_delay_ms = 20
+if tail_duration_s < 0 or tail_duration_s > 10
+    exitScript: "Tail_duration_s must be between 0 and 10 seconds."
 endif
+
+nyquistSafe = origFs / 2 - 100
+if nyquistSafe < 50
+    exitScript: "Sampling frequency is too low for the requested filter safety margin."
+endif
+if lowpass_Hz < 50 or lowpass_Hz > nyquistSafe
+    exitScript: "Lowpass_Hz must be between 50 Hz and Nyquist minus 100 Hz."
+endif
+
+# All synthesis buffers in this effect are intentionally 0-based.
+# Rebase only the mono working copy; the user's original Sound is untouched.
+selectObject: monoSrc
+monoXmin = Get start time
+if abs(monoXmin) > 1e-12
+    Shift times by: -monoXmin
+endif
+
+# Total output duration including resonance tail.
+totalDur = origDur + tail_duration_s
 
 # ============================================================
 # GAIN CURVE COMPUTATION
@@ -292,7 +335,7 @@ endif
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Undertone SR Reinterpretation v3.1"
+writeInfoLine:  "  Undertone SR Reinterpretation v3.3"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source    : ", srcName$, "  (", fixed$(origDur, 3), " s  ", nCh, "ch)"
@@ -315,7 +358,12 @@ appendInfoLine: "Stretch   : ", fixed$(stretch_factor, 3)
 appendInfoLine: "Gain curve: ", gainCurveName$,
     ... "  base=", fixed$(base_gain_dB, 1), " dB  rolloff=", fixed$(rolloff_dB, 1), " dB"
 appendInfoLine: "Low-pass  : ", fixed$(lowpass_Hz, 0), " Hz"
+appendInfoLine: "Tail      : ", fixed$(tail_duration_s, 1), " s"
+    ... + " (total: ", fixed$(totalDur, 2), " s)"
 appendInfoLine: "Output    : STEREO (equal-power pan arc)"
+if mute_input
+    appendInfoLine: "Input     : MUTED (undertones only)"
+endif
 appendInfoLine: ""
 appendInfoLine: "n   pitchFactor   overrideSr   gain(dB)   panL    panR"
 appendInfoLine: "----------------------------------------------------------"
@@ -325,85 +373,126 @@ overrideSr#  = zero#(number_of_undertones)
 denom#       = zero#(number_of_undertones)
 
 # ── SERIES MODE: build denominator array ──────────────────────
-# Integer:  denom(n) = (n+1)^(1+stretch)   → 2, 3, 4, 5...
-# Odd:      denom(n) = (2n+1)^(1+stretch)  → 3, 5, 7, 9...
-# Even:     denom(n) = (2n)^(1+stretch)    → 2, 4, 6, 8...
-# Custom:   parse comma-separated string, clamp to N values
-# Geometric:r = 2^(1+stretch), denom(n) = 2 * r^(n-1)
-#           → 2, 2^(1+s), 2^(2+2s)...  microtonal spacing
+# Integer:   denom(n) = (n+1)^(1+stretch)
+# Odd:       denom(n) = (2n+1)^(1+stretch)
+# Even:      denom(n) = (2n)^(1+stretch)
+# Custom:    validated comma/semicolon/space separated positive values
+# Geometric: denom(1)=2; ratio=1.25^(1+stretch)
+#            stretch=0 -> 2, 2.5, 3.125, 3.906... (microtonal)
 
 if series_mode = 4
-    # Parse custom_denominators$ into denom# array
-    # Walk string char by char, collect digit runs
     parseStr$ = custom_denominators$ + ","
-    numBuf$   = ""
-    parsedN   = 0
-    strLen    = length(parseStr$)
+    numBuf$ = ""
+    parsedN = 0
+    digitCount = 0
+    dotCount = 0
+    strLen = length(parseStr$)
 
     for ci from 1 to strLen
         ch$ = mid$(parseStr$, ci, 1)
+
         if ch$ = "," or ch$ = ";" or ch$ = " "
-            if length(numBuf$) > 0 and parsedN < number_of_undertones
-                parsedN = parsedN + 1
-                dv = number(numBuf$)
-                if dv < 1.01
-                    dv = 1.01
+            if length(numBuf$) > 0
+                if digitCount = 0 or dotCount > 1
+                    exitScript: "Malformed Custom_denominators token: " + numBuf$
                 endif
+
+                parsedN += 1
+                if parsedN > number_of_undertones
+                    exitScript: "Custom_denominators contains more values than Number_of_undertones."
+                endif
+
+                dv = number(numBuf$)
+                if dv <= 1
+                    exitScript: "Every custom denominator must be greater than 1."
+                endif
+
                 denom#[parsedN] = dv
                 numBuf$ = ""
+                digitCount = 0
+                dotCount = 0
             endif
-        elsif ch$ >= "0" and ch$ <= "9" or ch$ = "."
-            numBuf$ = numBuf$ + ch$
+        elsif ch$ >= "0" and ch$ <= "9"
+            numBuf$ += ch$
+            digitCount += 1
+        elsif ch$ = "."
+            numBuf$ += ch$
+            dotCount += 1
+            if dotCount > 1
+                exitScript: "Malformed Custom_denominators token: " + numBuf$
+            endif
+        else
+            exitScript: "Unsupported character in Custom_denominators: " + ch$
         endif
     endfor
-    # If user gave fewer values than N, repeat last value
-    if parsedN = 0
-        parsedN = 1
-        denom#[1] = 2
+
+    if parsedN < 1
+        exitScript: "Custom_denominators must contain at least one value."
     endif
+
+    # If fewer values than requested were supplied, continue upward by +1.
     for n from parsedN + 1 to number_of_undertones
-        denom#[n] = denom#[parsedN] + (n - parsedN)
+        denom#[n] = denom#[n - 1] + 1
     endfor
 
 elsif series_mode = 5
-    # Geometric: base ratio r = 2^(1 + stretch_factor)
-    # denom(1) = 2, denom(n) = 2 * r^(n-1)
-    geoR = 2 ^ (1 + stretch_factor)
+    geoR = 1.25 ^ (1 + stretch_factor)
     for n from 1 to number_of_undertones
         denom#[n] = 2 * (geoR ^ (n - 1))
     endfor
 
 else
-    # Integer, Odd, Even — use stretch exponent
     for n from 1 to number_of_undertones
         if series_mode = 1
-            # Integer: 2, 3, 4, 5...
             rawD = n + 1
         elsif series_mode = 2
-            # Odd denominators: 3, 5, 7, 9...
             rawD = 2 * n + 1
-        elsif series_mode = 3
-            # Even denominators: 2, 4, 6, 8...
+        else
             rawD = 2 * n
         endif
         denom#[n] = rawD ^ (1 + stretch_factor)
     endfor
 endif
 
-# Build pitchFactor# from denom#
+# Build nominal and EFFECTIVE pitch factors. Override sampling frequency is
+# integer-valued, so the actual factor is oSr/origFs after safety clamping.
+nominalPitchFactor# = zero#(number_of_undertones)
+pitchFactor# = zero#(number_of_undertones)
+overrideSr# = zero#(number_of_undertones)
+effectiveDenom# = zero#(number_of_undertones)
+srClampCount = 0
+
 for n from 1 to number_of_undertones
-    pf  = 1 / denom#[n]
-    oSr = round(origFs * pf)
+    nominalPf = 1 / denom#[n]
+    oSr = round(origFs * nominalPf)
+
     if oSr < 100
         oSr = 100
+        srClampCount += 1
     endif
-    pitchFactor#[n] = pf
-    overrideSr#[n]  = oSr
+    if oSr > origFs
+        oSr = origFs
+        srClampCount += 1
+    endif
+
+    effectivePf = oSr / origFs
+
+    nominalPitchFactor#[n] = nominalPf
+    pitchFactor#[n] = effectivePf
+    effectiveDenom#[n] = 1 / effectivePf
+    overrideSr#[n] = oSr
+
     appendInfoLine: n, "   denom=", fixed$(denom#[n], 3),
-        ... "  pf=", fixed$(pf, 4), "  Fs=", oSr,
+        ... "  nominal=", fixed$(nominalPf, 4),
+        ... "  effective=", fixed$(effectivePf, 4),
+        ... "  Fs=", oSr,
         ... "  ", fixed$(gainDb#[n], 1), " dB",
         ... "  L=", fixed$(panGainL#[n], 2), " R=", fixed$(panGainR#[n], 2)
 endfor
+
+if srClampCount > 0
+    appendInfoLine: "SR safety clamp affected ", srClampCount, " partial(s)."
+endif
 
 appendInfoLine: ""
 
@@ -414,18 +503,34 @@ appendInfoLine: ""
 appendInfoLine: "Generating undertones..."
 
 # L and R accumulation buffers (mono, will combine to stereo at end)
+# Buffers extend to totalDur; original source fills only origDur.
 # Original at centre: gainL = gainR = 1/sqrt(2)
 origCentreGain = 1 / sqrt(2)
 
-selectObject: monoSrc
-leftBuf = Copy: "UT_L"
-selectObject: leftBuf
-Formula: "self * " + fixed$(origCentreGain, 8)
+# Create extended buffers (silence for the full totalDur)
+Create Sound from formula: "UT_L", 1, 0, totalDur, origFs, "0"
+leftBuf = selected("Sound")
 
-selectObject: monoSrc
-rightBuf = Copy: "UT_R"
-selectObject: rightBuf
-Formula: "self * " + fixed$(origCentreGain, 8)
+Create Sound from formula: "UT_R", 1, 0, totalDur, origFs, "0"
+rightBuf = selected("Sound")
+
+# Add original source to the first origDur of each buffer
+# (skip if mute_input is on — output will be undertones only)
+if mute_input = 0
+    monoStr$ = string$(monoSrc)
+    origGStr$ = fixed$(origCentreGain, 8)
+    origDurStr$ = fixed$(origDur, 10)
+
+    selectObject: leftBuf
+    Formula (part): 0, origDur, 1, 1,
+        ... "object[" + monoStr$ + ", 1, col] * " + origGStr$
+
+    selectObject: rightBuf
+    Formula (part): 0, origDur, 1, 1,
+        ... "object[" + monoStr$ + ", 1, col] * " + origGStr$
+else
+    appendInfoLine: "Input MUTED — undertones only"
+endif
 
 for n from 1 to number_of_undertones
 
@@ -446,15 +551,16 @@ for n from 1 to number_of_undertones
     resampledID = Resample: origFs, 50
     removeObject: workCopy
 
-    # Step 4: Trim to original duration (resampled is (n+1)x longer)
+    # Step 4: Trim to totalDur (undertones ring into the tail region)
     selectObject: resampledID
     resampledDur = Get total duration
 
-    if resampledDur > origDur
-        trimmedID = Extract part: 0, origDur, "rectangular", 1, "no"
+    if resampledDur > totalDur
+        trimmedID = Extract part: 0, totalDur, "rectangular", 1, "no"
         removeObject: resampledID
     else
-        padDur = origDur - resampledDur
+        # Pad with silence if shorter than totalDur
+        padDur = totalDur - resampledDur
         Create Sound from formula: "UT_pad", 1, 0, padDur, origFs, "0"
         padID = selected("Sound")
         selectObject: resampledID
@@ -475,21 +581,29 @@ for n from 1 to number_of_undertones
     # Step 6b: Micro-delay decorrelation
     # Each partial gets a tiny independent delay (0..N * micro_delay_ms).
     # Breaks inter-partial phase coherence, reduces comb-filtering on mix.
-    # Implemented by padding silence at start and trimming end to origDur.
+    # Implemented by padding silence at start and trimming end to totalDur.
     if micro_delay_ms > 0.0001
         delayDur = (n - 1) * micro_delay_ms / 1000
         if delayDur > 0
+            # Praat Concatenate follows Objects-list creation order, not
+            # selection order. Create silence first, then a fresh audio copy.
             Create Sound from formula: "UT_delay", 1, 0, delayDur, origFs, "0"
             delayPad = selected("Sound")
+
+            selectObject: filteredID
+            delaySource = Copy: "UT_delay_source"
+
             selectObject: delayPad
-            plusObject: filteredID
+            plusObject: delaySource
             delayedID = Concatenate
-            removeObject: delayPad, filteredID
-            # Trim back to origDur
+
+            removeObject: delayPad, delaySource, filteredID
+
+            # Trim back to totalDur.
             selectObject: delayedID
             delayedDur = Get total duration
-            if delayedDur > origDur
-                trimDelID = Extract part: 0, origDur, "rectangular", 1, "no"
+            if delayedDur > totalDur
+                trimDelID = Extract part: 0, totalDur, "rectangular", 1, "no"
                 removeObject: delayedID
                 filteredID = trimDelID
             else
@@ -508,10 +622,10 @@ for n from 1 to number_of_undertones
     gR$ = fixed$(panGainR#[n], 8)
 
     selectObject: leftBuf
-    Formula: "self + object[" + filtID$ + "] * " + gL$
+    Formula: "self + object[" + filtID$ + ", 1, col] * " + gL$
 
     selectObject: rightBuf
-    Formula: "self + object[" + filtID$ + "] * " + gR$
+    Formula: "self + object[" + filtID$ + ", 1, col] * " + gR$
 
     removeObject: filteredID
 
@@ -537,8 +651,23 @@ removeObject: leftBuf, rightBuf, monoSrc
 
 selectObject: stereoMix
 peakVal = Get absolute extremum: 0, 0, "None"
-if peakVal > 0.001
+peakSafetyApplied = 0
+if peakVal > 0.99
     Scale peak: 0.99
+    peakSafetyApplied = 1
+endif
+
+# Apply exponential fade-out over the tail region
+# Envelope: exp(-k * (t - origDur)) where k gives -60 dB at tail end
+if tail_duration_s > 0.01
+    appendInfoLine: "Applying tail fade-out..."
+    fadeK = ln(1000) / tail_duration_s
+    origDurStr$ = fixed$(origDur, 10)
+    fadeKStr$ = fixed$(fadeK, 10)
+
+    selectObject: stereoMix
+    Formula (part): origDur, totalDur, 1, 2,
+        ... "self * exp(-" + fadeKStr$ + " * (x - " + origDurStr$ + "))"
 endif
 
 outputName$ = srcName$ + "_undertones_" + presetName$
@@ -556,10 +685,14 @@ if draw_visualization = 1
 
     selectObject: srcID
     srcPeak = Get absolute extremum: 0, 0, "None"
-    if srcPeak < 0.001
-        srcPeak = 0.001
+    selectObject: mixID
+    mixPeak = Get absolute extremum: 0, 0, "None"
+
+    ampBase = max(srcPeak, mixPeak)
+    if ampBase < 0.001
+        ampBase = 0.001
     endif
-    ampMax = srcPeak * 1.15
+    ampMax = ampBase * 1.15
 
     Erase all
 
@@ -568,7 +701,7 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Font size: 11
     Colour: "Black"
-    Text: 0.5, "centre", 0.73, "half", "##Undertone SR Reinterpretation v3.1  — Stereo##"
+    Text: 0.5, "centre", 0.73, "half", "##Undertone SR Reinterpretation v3.3  — Stereo##"
     Font size: 7.5
     Colour: "{0.35, 0.35, 0.45}"
     Text: 0.5, "centre", -0.08, "half",
@@ -578,6 +711,7 @@ if draw_visualization = 1
         ... + "  " + gainCurveName$
         ... + "  base=" + fixed$(base_gain_dB, 0) + "dB"
         ... + "  LP=" + fixed$(lowpass_Hz, 0) + "Hz"
+        ... + "  tail=" + fixed$(tail_duration_s, 1) + "s"
 
     # --- Panel 1: Input waveform ---
     Select outer viewport: 0, 8, 0.50, 1.30
@@ -615,6 +749,15 @@ if draw_visualization = 1
     Colour: "{0.40, 0.50, 0.75}"
     Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
     removeObject: vizL, vizR
+    # Tail boundary marker
+    if tail_duration_s > 0.01
+        Colour: "{0.80, 0.45, 0.25}"
+        Dashed line
+        Draw line: origDur, -ampMax, origDur, ampMax
+        Solid line
+        Font size: 5
+        Text: origDur, "left", ampMax * 0.85, "half", " tail"
+    endif
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -691,7 +834,7 @@ if draw_visualization = 1
         Font size: 5
         Colour: "{" + fixed$(cR * 0.55, 2) + "," + fixed$(cG * 0.55, 2) + "," + fixed$(cB * 0.55, 2) + "}"
         Text: n + 0.5, "centre", pf + 0.04, "half",
-            ... "1/" + fixed$((n + 1) ^ (1 + stretch_factor), 2)
+            ... "1/" + fixed$(effectiveDenom#[n], 2)
 
         # Pan indicator: L=100, R=100, proportional
         panPct = round(panAngle#[n] * 100)
@@ -728,16 +871,16 @@ if draw_visualization = 1
     Axes: -1.3, 1.3, -0.15, 1.25
     Paint rectangle: "{0.97, 0.97, 0.97}", -1.3, 1.3, -0.15, 1.25
 
-    # Draw arc (quarter circle from left to right)
+    # Draw a true L-centre-R semicircle.
     nArcPts = 30
     Colour: "{0.75, 0.75, 0.80}"
     Line width: 1
     for ai from 2 to nArcPts
-        a1 = (ai - 2) / (nArcPts - 1) * pi / 2
-        a2 = (ai - 1) / (nArcPts - 1) * pi / 2
-        x1 = cos(a1) * 2 - 1
+        a1 = (ai - 2) / (nArcPts - 1) * pi
+        a2 = (ai - 1) / (nArcPts - 1) * pi
+        x1 = -cos(a1)
         y1 = sin(a1)
-        x2 = cos(a2) * 2 - 1
+        x2 = -cos(a2)
         y2 = sin(a2)
         Draw line: x1, y1, x2, y2
     endfor
@@ -758,12 +901,10 @@ if draw_visualization = 1
     # Partial dots colored by register
     for n from 1 to number_of_undertones
         angle = panAngle#[n] * pi / 2
-        # Map from equal-power arc to x/y:
-        # L side: angle=0 -> x=-1, y=0
-        # R side: angle=pi/2 -> x=+1, y=0
-        # Centre: angle=pi/4 -> x=0, y=1
-        xp = (cos(angle) - sin(angle))
-        yp = (cos(angle) + sin(angle)) / sqrt(2)
+        # Map actual equal-power pan angle onto an L-centre-R semicircle:
+        # angle=0 -> L (-1,0); pi/4 -> C (0,1); pi/2 -> R (+1,0)
+        xp = -cos(2 * angle)
+        yp = sin(2 * angle)
 
         cFrac = (n - 1) / (number_of_undertones)
         cR = 0.85 - cFrac * 0.70
@@ -810,7 +951,9 @@ appendInfoLine: "  COMPLETE"
 appendInfoLine: "=================================================="
 appendInfoLine: "Output   : ", outputName$, "  (stereo)"
 appendInfoLine: "Duration : ", fixed$(mixDur, 3), " s"
+    ... + "  (source: ", fixed$(origDur, 3), " + tail: ", fixed$(tail_duration_s, 1), ")"
 appendInfoLine: "Preset   : ", presetName$
+appendInfoLine: "Peak safety: ", peakSafetyApplied
 appendInfoLine: "Channels : 2  (original centre, undertones spread L->R)"
 appendInfoLine: ""
 appendInfoLine: "Objects: original + ", outputName$

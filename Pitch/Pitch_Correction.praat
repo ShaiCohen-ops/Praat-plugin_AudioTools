@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4a (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,26 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4a:
+#   - FIX: removed unsupported PitchTier `Get quantile` call in Robot mode.
+#   - Robot reference pitch is now computed directly as the geometric mean
+#     of the original PitchTier points, using commands available for PitchTier.
+#
+# Changelog v0.4:
+#   - Allows Strength_percent = 0 and validates the effective range 0..100.
+#   - Adds validation for pitch analysis settings and source duration.
+#   - Analysis is performed on a mono reference while the output preserves
+#     the original channel count.
+#   - Keeps the original source PitchTier intact for visualization; Natural
+#     stylization no longer changes the curve labelled "Original".
+#   - Robot / Monotone now creates a true flat quantized target rather than
+#     relying on PitchTier Stylize.
+#   - Adds synthesis-safe pitch limiting after correction / transpose.
+#   - Handles non-zero source xmin correctly in the pitch visualization.
+#   - Separates out-of-scale points from actually changed pitch points.
+#   - Attenuation-only peak safety; quiet outputs are not normalized upward.
+#   - Visualization layout and styling are preserved.
 #
 # Changelog v0.3:
 #
@@ -86,11 +106,14 @@ original = selected("Sound")
 name$ = selected$("Sound")
 
 selectObject: original
-duration = Get total duration
+source_xmin = Get start time
+source_xmax = Get end time
+duration = source_xmax - source_xmin
 fs = Get sampling frequency
+n_channels = Get number of channels
 
 # === Form ===
-form Pitch Correction v0.3
+form Pitch Correction v0.4a
     comment Select a Sound object first
     optionmenu Preset: 1
         option Custom
@@ -122,7 +145,7 @@ form Pitch Correction v0.3
         option Lydian
         option Mixolydian
     integer Transpose_semitones 0
-    positive Strength_percent 100
+    real Strength_percent 100
     positive Pitch_time_step 0.01
     positive Min_pitch 75
     positive Max_pitch 600
@@ -133,6 +156,7 @@ endform
 # === Apply Presets ===
 strength = strength_percent
 smooth_amount = 0
+robot_mode = 0
 
 if preset = 2
     # Natural
@@ -145,18 +169,33 @@ elsif preset = 3
     smooth_amount = 0
     presetName$ = "Hard"
 elsif preset = 4
-    # Robot
+    # Robot / Monotone
     strength = 100
-    smooth_amount = 10.0
+    smooth_amount = 0
+    robot_mode = 1
     presetName$ = "Robot"
 else
     presetName$ = "Custom"
 endif
 
+# === Validation ===
+if duration <= 0
+    exitScript: "The selected Sound has no positive duration."
+endif
+if strength < 0 or strength > 100
+    exitScript: "Strength_percent must be between 0 and 100."
+endif
+if pitch_time_step <= 0
+    exitScript: "Pitch_time_step must be greater than zero."
+endif
+if min_pitch <= 0 or max_pitch <= min_pitch
+    exitScript: "Min_pitch / Max_pitch are invalid."
+endif
+if max_pitch >= 0.45 * fs
+    exitScript: "Max_pitch must be below 45% of the sampling frequency."
+endif
+
 # === Get Scale/Root Names ===
-# v0.3: single vector reused for both root display and chromatic
-# scale-pattern row (v0.2 had `rootNames$#` and `noteNames$#`
-# defined separately with identical content).
 noteNames$# = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
 rootName$ = noteNames$#[root_Note]
 
@@ -164,180 +203,306 @@ scaleNames$# = {"Chromatic", "Major", "Minor", "Harm Min", "Pent Maj", "Pent Min
 scaleName$ = scaleNames$#[scale_Type]
 
 # === Define Scale Patterns ===
-# Patterns: semitones 0-11, "1"=allowed, "0"=skip
 pat$ = "111111111111"
 
 if scale_Type = 2
-    # Major (W W H W W W H) -> 0 2 4 5 7 9 11
     pat$ = "101011010101"
 elsif scale_Type = 3
-    # Minor Natural -> 0 2 3 5 7 8 10
     pat$ = "101101011010"
 elsif scale_Type = 4
-    # Minor Harmonic -> 0 2 3 5 7 8 11
     pat$ = "101101011001"
 elsif scale_Type = 5
-    # Pentatonic Major -> 0 2 4 7 9
     pat$ = "101010010100"
 elsif scale_Type = 6
-    # Pentatonic Minor -> 0 3 5 7 10
     pat$ = "100101010010"
 elsif scale_Type = 7
-    # Dorian -> 0 2 3 5 7 9 10
     pat$ = "101101010110"
 elsif scale_Type = 8
-    # Phrygian -> 0 1 3 5 7 8 10
     pat$ = "110101011010"
 elsif scale_Type = 9
-    # Lydian -> 0 2 4 6 7 9 11
     pat$ = "101010110101"
 elsif scale_Type = 10
-    # Mixolydian -> 0 2 4 5 7 9 10
     pat$ = "101011010110"
 endif
 
 root_idx = root_Note - 1
 
 # === Info ===
-writeInfoLine: "=== Pitch Correction v0.3 ==="
-appendInfoLine: "Source: ", name$, " (", fixed$(duration, 2), " s)"
+writeInfoLine: "=== Pitch Correction v0.4a ==="
+appendInfoLine: "Source: ", name$, " (", fixed$(duration, 2), " s, ", n_channels, " ch)"
 appendInfoLine: "Key: ", rootName$, " ", scaleName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Strength: ", strength, "%"
 if smooth_amount > 0
-    appendInfoLine: "Smoothing: ", smooth_amount, " Hz"
+    appendInfoLine: "Natural stylization: ", smooth_amount, " Hz"
+endif
+if robot_mode
+    appendInfoLine: "Robot mode: flat quantized pitch"
 endif
 if transpose_semitones <> 0
     appendInfoLine: "Transpose: ", transpose_semitones, " st"
 endif
 appendInfoLine: ""
 
-# === Create Manipulation ===
-appendInfoLine: "Analyzing pitch..."
+# === Mono analysis reference ===
 selectObject: original
-manipulation = To Manipulation: pitch_time_step, min_pitch, max_pitch
+if n_channels > 1
+    analysis_mono = Convert to mono
+else
+    analysis_mono = Copy: "PC_analysis"
+endif
 
-selectObject: manipulation
-pitchTier = Extract pitch tier
+# === Create Manipulation / original PitchTier ===
+appendInfoLine: "Analyzing pitch..."
+selectObject: analysis_mono
+analysis_manip = To Manipulation: pitch_time_step, min_pitch, max_pitch
 
-# === Smoothing (for Robot effect) ===
+selectObject: analysis_manip
+pitchTierOriginal = Extract pitch tier
+
+selectObject: pitchTierOriginal
+n = Get number of points
+
+if n < 1
+    removeObject: analysis_manip, pitchTierOriginal, analysis_mono
+    exitScript: "No usable voiced pitch was detected in the selected analysis range."
+endif
+
+# Working tier begins as a copy; keep pitchTierOriginal untouched for display.
+selectObject: pitchTierOriginal
+pitchTierWork = Copy: "PC_work_tier"
+
+# Natural preset: gentle tier stylization before quantization.
 if smooth_amount > 0
-    selectObject: pitchTier
+    selectObject: pitchTierWork
     Stylize: smooth_amount, "Hz"
 endif
 
-# === Create Corrected Pitch Tier ===
-selectObject: pitchTier
-correctedTier = Copy: "Corrected"
+# Corrected tier is rebuilt from scratch to avoid remove/add index-order effects.
+Create PitchTier: "Corrected", source_xmin, source_xmax
+correctedTier = selected("PitchTier")
 
-selectObject: correctedTier
-n = Get number of points
-
-# Store for visualization
+# Visualization arrays
 maxVizPoints = min(n, 500)
+if maxVizPoints < 1
+    maxVizPoints = 1
+endif
 vizTimes# = zero#(maxVizPoints)
 vizOrigPitch# = zero#(maxVizPoints)
 vizCorrPitch# = zero#(maxVizPoints)
 vizStep = ceiling(n / maxVizPoints)
+if vizStep < 1
+    vizStep = 1
+endif
 
 appendInfoLine: "Correcting ", n, " pitch points..."
 
-corrected_count = 0
+out_of_scale_count = 0
+changed_points = 0
+limited_points = 0
+
+# Robot target: quantize the source median pitch once, then hold it flat.
+robot_target = 0
+if robot_mode
+    # PitchTier has no `Get quantile` command in current Praat.
+    # Compute a stable central pitch directly from the tier points.
+    robot_log_sum = 0
+    robot_valid_n = 0
+
+    for ri from 1 to n
+        selectObject: pitchTierOriginal
+        robot_val = Get value at index: ri
+        if robot_val <> undefined and robot_val > 0
+            robot_log_sum += log2(robot_val)
+            robot_valid_n += 1
+        endif
+    endfor
+
+    if robot_valid_n < 1
+        removeObject: analysis_manip, pitchTierOriginal, pitchTierWork, correctedTier, analysis_mono
+        exitScript: "Robot mode could not determine a valid source pitch."
+    endif
+
+    robot_source = 2 ^ (robot_log_sum / robot_valid_n)
+
+    midi_float_robot = 69 + 12 * log2(robot_source / 440)
+    midi_round_robot = round(midi_float_robot)
+
+    best_midi = midi_round_robot
+    best_dist = 1000
+    for delta from -6 to 6
+        cand = midi_round_robot + delta
+        cand_pc = (cand - root_idx) mod 12
+        if cand_pc < 0
+            cand_pc += 12
+        endif
+        if mid$(pat$, cand_pc + 1, 1) = "1"
+            dist = abs(cand - midi_float_robot)
+            if dist < best_dist
+                best_dist = dist
+                best_midi = cand
+            endif
+        endif
+    endfor
+
+    robot_target = 440 * (2 ^ ((best_midi - 69) / 12))
+    if transpose_semitones <> 0
+        robot_target *= 2 ^ (transpose_semitones / 12)
+    endif
+endif
+
+# Synthesis safety: independent from analysis range.
+synth_floor = 20
+synth_ceil = 0.45 * fs
 
 for i from 1 to n
-    selectObject: pitchTier
+    selectObject: pitchTierOriginal
     origVal = Get value at index: i
     time = Get time from index: i
 
-    if origVal > 50 and origVal < 1000
-        # A. Convert Hz to MIDI
-        midi_float = 69 + 12 * log2(origVal / 440)
+    # Use stylized value for Natural quantization; otherwise original.
+    selectObject: pitchTierWork
+    workVal = Get value at time: time
+
+    if workVal = undefined or workVal <= 0
+        workVal = origVal
+    endif
+
+    if robot_mode
+        target_val = robot_target
+    else
+        midi_float = 69 + 12 * log2(workVal / 440)
         midi_round = round(midi_float)
 
-        # B. Get pitch class relative to root (0-11)
         pc_raw = (midi_round - root_idx) mod 12
         if pc_raw < 0
-            pc_raw = pc_raw + 12
+            pc_raw += 12
         endif
 
-        # C. Check scale pattern
-        is_allowed$ = mid$(pat$, pc_raw + 1, 1)
+        if mid$(pat$, pc_raw + 1, 1) = "0"
+            out_of_scale_count += 1
+        endif
 
-        if is_allowed$ = "0"
-            # Note out of scale - find nearest
-            corrected_count = corrected_count + 1
-
-            # Check upper (+1)
-            pc_up = (pc_raw + 1) mod 12
-            allowed_up$ = mid$(pat$, pc_up + 1, 1)
-
-            # Check lower (-1)
-            pc_down = pc_raw - 1
-            if pc_down < 0
-                pc_down = 11
+        # Search the nearest allowed scale tone robustly.
+        best_midi = midi_round
+        best_dist = 1000
+        for delta from -6 to 6
+            cand = midi_round + delta
+            cand_pc = (cand - root_idx) mod 12
+            if cand_pc < 0
+                cand_pc += 12
             endif
-            allowed_down$ = mid$(pat$, pc_down + 1, 1)
-
-            # Snap to nearest allowed
-            if allowed_up$ = "1" and allowed_down$ = "0"
-                midi_round = midi_round + 1
-            elsif allowed_down$ = "1" and allowed_up$ = "0"
-                midi_round = midi_round - 1
-            elsif allowed_down$ = "1" and allowed_up$ = "1"
-                # Both valid - snap to closer
-                diff = midi_float - midi_round
-                if diff > 0
-                    midi_round = midi_round + 1
-                else
-                    midi_round = midi_round - 1
+            if mid$(pat$, cand_pc + 1, 1) = "1"
+                dist = abs(cand - midi_float)
+                if dist < best_dist
+                    best_dist = dist
+                    best_midi = cand
                 endif
             endif
-        endif
+        endfor
 
-        # D. Convert target MIDI back to Hz
-        target_val = 440 * (2 ^ ((midi_round - 69) / 12))
+        target_val = 440 * (2 ^ ((best_midi - 69) / 12))
 
-        # E. Apply transpose
         if transpose_semitones <> 0
-            target_val = target_val * (2 ^ (transpose_semitones / 12))
+            target_val *= 2 ^ (transpose_semitones / 12)
         endif
+    endif
 
-        # F. Blend with strength
-        final_val = origVal + (target_val - origVal) * (strength / 100)
+    # Strength is applied in log-frequency space for musically uniform interpolation.
+    if target_val > 0 and origVal > 0
+        orig_c = 1200 * log2(origVal)
+        targ_c = 1200 * log2(target_val)
+        final_c = orig_c + (targ_c - orig_c) * (strength / 100)
+        final_val = 2 ^ (final_c / 1200)
+    else
+        final_val = origVal
+    endif
 
-        # Store for visualization
-        vizIdx = ceiling(i / vizStep)
-        if vizIdx >= 1 and vizIdx <= maxVizPoints
-            if vizTimes#[vizIdx] = 0
-                vizTimes#[vizIdx] = time
-                vizOrigPitch#[vizIdx] = origVal
-                vizCorrPitch#[vizIdx] = final_val
-            endif
+    if final_val < synth_floor
+        final_val = synth_floor
+        limited_points += 1
+    elsif final_val > synth_ceil
+        final_val = synth_ceil
+        limited_points += 1
+    endif
+
+    if abs(1200 * log2(final_val / origVal)) > 0.01
+        changed_points += 1
+    endif
+
+    selectObject: correctedTier
+    Add point: time, final_val
+
+    vizIdx = ceiling(i / vizStep)
+    if vizIdx >= 1 and vizIdx <= maxVizPoints
+        if vizTimes#[vizIdx] = 0
+            vizTimes#[vizIdx] = time - source_xmin
+            vizOrigPitch#[vizIdx] = origVal
+            vizCorrPitch#[vizIdx] = final_val
         endif
-
-        selectObject: correctedTier
-        Remove point: i
-        Add point: time, final_val
     endif
 endfor
 
-appendInfoLine: "Notes corrected: ", corrected_count
+appendInfoLine: "Out-of-scale points: ", out_of_scale_count
+appendInfoLine: "Pitch points changed: ", changed_points
+if limited_points > 0
+    appendInfoLine: "Sampling-safe pitch limits applied: ", limited_points, " point(s)"
+endif
 
-# === Resynthesize ===
+# === Resynthesize all original channels ===
 appendInfoLine: ""
-appendInfoLine: "Resynthesizing..."
+appendInfoLine: "Resynthesizing ", n_channels, " channel(s)..."
 
-selectObject: manipulation, correctedTier
-Replace pitch tier
+channel_results# = zero#(n_channels)
 
-selectObject: manipulation
-result = Get resynthesis (overlap-add)
-# v0.3: output filename now includes preset suffix.
+for ch from 1 to n_channels
+    selectObject: original
+    if n_channels = 1
+        channel_work = Copy: "PC_ch1"
+    else
+        channel_work = Extract one channel: ch
+        Rename: "PC_ch" + string$(ch)
+    endif
+
+    selectObject: channel_work
+    channel_manip = To Manipulation: pitch_time_step, min_pitch, max_pitch
+
+    selectObject: channel_manip
+    plusObject: correctedTier
+    Replace pitch tier
+
+    selectObject: channel_manip
+    channel_result = Get resynthesis (overlap-add)
+    Rename: "PC_result_ch" + string$(ch)
+    channel_results#[ch] = channel_result
+
+    removeObject: channel_manip, channel_work
+endfor
+
+# Rebuild exact channel count using numeric object IDs.
+Create Sound from formula: "PC_result_build", n_channels,
+    ... source_xmin, source_xmax, fs, "0"
+result = selected("Sound")
+
+for ch from 1 to n_channels
+    selectObject: result
+    Formula (part): source_xmin, source_xmax, ch, ch,
+        ... "object[" + string$(channel_results#[ch]) + ", 1, col]"
+    removeObject: channel_results#[ch]
+endfor
+
 compositeName$ = name$ + "_" + rootName$ + scaleName$ + "_" + presetName$
+selectObject: result
 Rename: compositeName$
 
-selectObject: result
-Scale peak: 0.95
+# Attenuation-only peak safety.
+peak_out = Get absolute extremum: 0, 0, "None"
+if peak_out > 0.95
+    Scale peak: 0.95
+    safetyApplied = 1
+else
+    safetyApplied = 0
+endif
 rms_out = Get root-mean-square: 0, 0
 
 ###############################################################################
@@ -370,7 +535,7 @@ if draw_visualization
         ... + "  ->  " + rootName$ + " " + scaleName$
         ... + "  |  " + presetName$
         ... + "  |  Strength " + fixed$(strength, 0) + "%"
-        ... + "  |  " + string$(corrected_count) + " of " + string$(n) + " notes snapped"
+        ... + "  |  " + string$(changed_points) + " of " + string$(n) + " pitch points changed"
 
     # ----------------------------------------------------------
     # PANEL A: PITCH CORRECTION WITH SCALE GRID (signature, biggest)
@@ -554,7 +719,7 @@ if draw_visualization
         ... "Pitch analysis: step " + fixed$(pitch_time_step * 1000, 1) + " ms"
         ... + ",  range " + fixed$(min_pitch, 0) + "-" + fixed$(max_pitch, 0) + " Hz"
         ... + "  |  Points: " + string$(n)
-        ... + "  |  Corrected: " + string$(corrected_count) + "  (" + fixed$(100 * corrected_count / max(n, 1), 1) + "%)"
+        ... + "  |  Changed: " + string$(changed_points) + "  (" + fixed$(100 * changed_points / max(n, 1), 1) + "%)"
 
     Text: 0.02, "left", 0.18, "half",
         ... "Output: " + compositeName$
@@ -571,12 +736,15 @@ if draw_visualization
 endif
 
 # === Cleanup ===
-removeObject: manipulation, pitchTier, correctedTier
+removeObject: analysis_manip, pitchTierOriginal, pitchTierWork, correctedTier, analysis_mono
 
 # === Final Info ===
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", compositeName$
+appendInfoLine: "Channels preserved: ", n_channels
+appendInfoLine: "Pitch points changed: ", changed_points
+appendInfoLine: "Peak safety applied: ", safetyApplied
 appendInfoLine: "Out RMS: ", fixed$(rms_out, 6)
 
 # === Play ===

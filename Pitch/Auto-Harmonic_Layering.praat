@@ -3,83 +3,81 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.8 (2026)
+# Version: 1.9.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Auto-Harmonic Layering with pitch-aware chord selection.
-#   Detects looped/recurring melodic phrases via SSM, picks a
-#   chord type for each based on average pitch + (optionally)
-#   diatonic constraints, and mixes pitch-shifted layers back
-#   into the original with stereo spread and trapezoidal fades.
+#   Detects recurring pitched regions with a pitch self-similarity
+#   matrix (SSM), chooses harmony intervals from the region's
+#   average pitch and preset, and mixes pitch-shifted harmony
+#   voices back into the original with stereo spread and smooth
+#   trapezoidal fades. Diatonic presets estimate a global major
+#   or minor key from pitch-class statistics. Experimental mode
+#   chooses a chord type independently for each detected region.
+#
+# Notes:
+#   - Input may be mono or stereo; harmony analysis/resynthesis is mono.
+#   - Dry_level and Wet_level are linear gains. The result is NOT peak
+#     normalized, so their numerical meaning is preserved.
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v1.8:
+# Changelog v1.9.2:
+#   - FIXED runtime error in Table cell reads. `Get value:` is not
+#     a valid Table query command, so Praat parsed `Get` as a formula
+#     symbol. Reads now use documented direct Table access:
+#       object [tableID, rowIndex, "start_frame"]
+#       object [tableID, rowIndex, "length_frames"]
 #
-#   TIER 1 (Praat polish, audio bit-identical):
-#     - Dropped 5 decorative `comment === ... ===` form rows
-#       (PRESET / LOOP DETECTION / HARMONY MODE / MIXING / OUTPUT).
-#       Form: 13 rows -> 8 rows. All 3 optionmenus already had
-#       colons.
-#     - Visualization rewritten from custom 9-wide layout to
-#       suite 8-wide with suite styling:
-#         Title bar (suite light) + metadata subtitle
-#         Original waveform / Result waveform (side-by-side headline)
-#         Loop map with chord labels  (full width, signature panel)
-#         Light-grey 3-line summary  (suite standard)
+# Changelog v1.9.1:
+#   - FIXED runtime error: object[pitchID].x1 is not a supported
+#     object[] formula attribute. Uses the Pitch query commands
+#     Get time from frame: 1 and Get time step instead.
+#   - Replaced object[wetL].nx with Get number of samples for
+#     query-command consistency.
 #
-#   TIER 2 (real bugs, audio bit-identical):
-#     - FIXED: `writeInfoLine` clobbered the log in TWO places.
-#       Each `writeInfoLine` call CLEARS the info window before
-#       writing. v1.7 had:
-#         (1) Lines 127-129: three `writeInfoLine` calls for the
-#             boxed banner. Only the third line survived; the
-#             "╔══╗" top and "║ AUTO-HARMONIC ... ║" middle were
-#             wiped before the user could see them.
-#         (2) Lines 613-615: three more `writeInfoLine` calls in
-#             the COMPLETION block. These wiped the ENTIRE
-#             accumulated processing log (Phase 1, Phase 2,
-#             Phase 3 messages, per-loop chord assignments)
-#             right before showing the final summary.
-#       v1.8 uses exactly one `writeInfoLine` at the very top
-#       (line ~127) to clear the info window and write the title.
-#       Every subsequent line is `appendInfoLine`.
-#     - FIXED: stats text squished at far left. v1.7 line 600
-#       was `Text: 0.5, "centre", 0.5, "half", ...` inside a
-#       `0, 9, 4.1, 4.4` outer viewport, but no fresh `Axes:`
-#       was set -- so it inherited `Axes: 0, totalDuration, 0, 2`
-#       from the loop map panel above. The Text then landed at
-#       x = 0.5 SECONDS (far left of the viewport for any
-#       totalDuration > 1 s) and y = 0.5 in 0..2 axes (below
-#       middle of a 0.3-tall strip). The stats line was unreadable.
-#       v1.8 replaces this with the suite-standard light-grey
-#       Panel E (3 lines, explicit `Axes: 0, 1, 0, 1`).
-#     - FIXED: unicode box-drawing characters in info window.
-#       v1.7 used `╔══╗ ║ ║ ╚══╝` for banners (U+2500 range).
-#       These render correctly on most modern Praat installs but
-#       show as mojibake on some older Windows Praat builds.
-#       v1.8 uses plain ASCII `===` separators.
-#
-#   Audio output is bit-identical to v1.7.
-#
-# Changelog v1.7:
-#   - Replaced standard fades with a calculated trapezoidal
-#     amplitude envelope to eliminate clicking/jumping.
+# Changelog v1.9:
+#   - FIXED SSM candidate scoring: score is accumulated from matching
+#     cells, not from the first non-matching cell that ends a run.
+#   - FIXED end-of-diagonal runs: valid runs that reach the last SSM
+#     cell are now stored instead of silently discarded.
+#   - SSM tolerance is now expressed in semitones, so similarity has
+#     consistent musical meaning across low and high registers.
+#   - FIXED Experimental preset: it now actually chooses a random chord
+#     type independently for each detected region.
+#   - Diatonic presets now estimate major/minor key from a chroma
+#     histogram and keep both generated harmony voices in that scale.
+#   - FIXED voice leading: octave placement now minimizes motion between
+#     successive harmony voices while preserving chord pitch classes.
+#   - FIXED temporal voice-leading order: selected regions are sorted by
+#     start time before harmony generation.
+#   - FIXED pitch shifting: uses Manipulation -> PitchTier scaling ->
+#     overlap-add directly; removed sampling-rate/duration-tier workaround.
+#   - FIXED stereoSpread: 0 = centered voices, 1 = hard opposite sides,
+#     with constant-power panning in between.
+#   - FIXED harmony mixing: removed Combine-to-stereo/Convert-to-mono
+#     averaging that unintentionally weighted chord tones unequally.
+#   - Removed per-note Scale peak and final Scale peak normalization,
+#     which previously destroyed source dynamics and Dry/Wet semantics.
+#   - Stereo sources are downmixed only for pitch analysis/harmony
+#     synthesis; the original stereo channels remain the dry signal.
+#   - Removed a visualization comment that claimed a waveform underlay
+#     was drawn in the loop map when no Draw command actually existed.
 # ============================================================
 
-form Auto-Harmonic Layering v1.8
+form Auto-Harmonic Layering v1.9.2
     optionmenu Preset: 1
         option Subtle (Conservative harmonies)
         option Rich (Full chords, smooth)
         option Bold (Wider intervals)
-        option Diatonic (Stay in key)
+        option Diatonic (Automatic key)
         option Experimental (Random per loop)
-        option Custom
-    positive Num_loops_to_find 5
+        option Custom (Neutral analysis defaults)
+    natural Num_loops_to_find 5
     positive Min_loop_duration 0.4
     optionmenu Harmony_style: 1
         option Pitch-Aware (Analyzes melody)
@@ -104,17 +102,17 @@ if preset = 1
     presetName$ = "Subtle"
     pitchFloor = 75
     pitchCeiling = 600
-    toleranceHz = 40
-    stereoSpread = 0.5
-    fadeMs = 30
+    toleranceST = 0.45
+    stereoSpread = 0.35
+    fadeMs = 35
     useDiatonic = 0
     voiceLeading = 1
 elsif preset = 2
     presetName$ = "Rich"
     pitchFloor = 75
     pitchCeiling = 600
-    toleranceHz = 50
-    stereoSpread = 0.7
+    toleranceST = 0.75
+    stereoSpread = 0.70
     fadeMs = 50
     useDiatonic = 1
     voiceLeading = 1
@@ -122,8 +120,8 @@ elsif preset = 3
     presetName$ = "Bold"
     pitchFloor = 60
     pitchCeiling = 700
-    toleranceHz = 60
-    stereoSpread = 0.9
+    toleranceST = 1.00
+    stereoSpread = 0.90
     fadeMs = 20
     useDiatonic = 0
     voiceLeading = 0
@@ -131,8 +129,8 @@ elsif preset = 4
     presetName$ = "Diatonic"
     pitchFloor = 75
     pitchCeiling = 600
-    toleranceHz = 30
-    stereoSpread = 0.6
+    toleranceST = 0.60
+    stereoSpread = 0.60
     fadeMs = 60
     useDiatonic = 1
     voiceLeading = 1
@@ -140,8 +138,8 @@ elsif preset = 5
     presetName$ = "Experimental"
     pitchFloor = 50
     pitchCeiling = 800
-    toleranceHz = 70
-    stereoSpread = 0.8
+    toleranceST = 1.25
+    stereoSpread = 0.80
     fadeMs = 15
     useDiatonic = 0
     voiceLeading = 0
@@ -149,8 +147,8 @@ else
     presetName$ = "Custom"
     pitchFloor = 75
     pitchCeiling = 600
-    toleranceHz = 50
-    stereoSpread = 0.7
+    toleranceST = 0.75
+    stereoSpread = 0.70
     fadeMs = 30
     useDiatonic = 0
     voiceLeading = 1
@@ -159,7 +157,7 @@ endif
 fadeDuration = fadeMs / 1000
 
 # ===================================================================
-# PHASE 1: FIND LOOPS
+# PHASE 1: FIND RECURRING PITCHED REGIONS
 # ===================================================================
 
 if numberOfSelected("Sound") <> 1
@@ -172,130 +170,169 @@ originalName$ = selected$("Sound")
 selectObject: originalID
 totalDuration = Get total duration
 originalSR = Get sampling frequency
+numChannels = Get number of channels
 rms_orig = Get root-mean-square: 0, 0
 
-# v1.8: one writeInfoLine to clear + initialize. Everything else uses
-# appendInfoLine so the running log accumulates instead of being
-# clobbered. v1.7 had 3 writeInfoLines in a row here (lines 127-129)
-# and 3 more in the COMPLETION block (lines 613-615); only the LAST
-# of each block survived, wiping the rest of the log.
-writeInfoLine: "=== AUTO-HARMONIC LAYERING v1.8 ==="
+if numChannels < 1 or numChannels > 2
+    exitScript: "Auto-Harmonic Layering v1.9.1 supports mono or stereo Sound objects."
+endif
+
+# Use a mono analysis/harmony source. Preserve the original channels for dry mix.
+selectObject: originalID
+if numChannels = 1
+    analysisID = Copy: "AHL_analysisMono"
+else
+    analysisID = Convert to mono
+    Rename: "AHL_analysisMono"
+endif
+
+writeInfoLine: "=== AUTO-HARMONIC LAYERING v1.9.2 ==="
 appendInfoLine: ""
 appendInfoLine: "Source: ", originalName$, " (", fixed$(totalDuration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "--- Phase 1: Analyzing Pitch & Loops ---"
+appendInfoLine: "--- Phase 1: Analyzing Pitch & Recurrence ---"
 
-# 1. Extract Pitch
-selectObject: originalID
+# 1. Extract pitch from mono analysis signal.
+selectObject: analysisID
 timeStep = 0.05
 To Pitch: timeStep, pitchFloor, pitchCeiling
 pitchID = selected("Pitch")
 numFrames = Get number of frames
+pitchX1 = Get time from frame: 1
+pitchDx = Get time step
 
-# Store pitch values
+if numFrames < 2
+    removeObject: pitchID, analysisID
+    exitScript: "Sound is too short for recurrence analysis."
+endif
+
 pitchVals# = zero#(numFrames)
+voicedFrames = 0
 for i to numFrames
     val = Get value in frame: i, "Hertz"
     if val = undefined
         val = 0
+    else
+        voicedFrames += 1
     endif
     pitchVals#[i] = val
 endfor
 
-# 2. Create pitch matrix for SSM
-Create simple Matrix: "ThePitchData", numFrames, 1, "0"
-dataID = selected("Matrix")
+if voicedFrames = 0
+    removeObject: pitchID, analysisID
+    exitScript: "No voiced pitch was detected in the selected pitch range."
+endif
 
+# 2. Store pitch values in a Matrix for formula-based SSM construction.
+Create simple Matrix: "AHL_PitchData", numFrames, 1, "0"
+dataID = selected("Matrix")
 for i to numFrames
     Set value: i, 1, pitchVals#[i]
 endfor
 
-# 3. Build Self-Similarity Matrix
-appendInfoLine: "Building self-similarity matrix..."
-Create simple Matrix: "SSM", numFrames, numFrames, "0"
+# 3. Build pitch SSM. Similarity falls linearly from 1 to 0 across
+# toleranceST semitones. Unvoiced pairs are 0.
+appendInfoLine: "Building pitch self-similarity matrix..."
+Create simple Matrix: "AHL_SSM", numFrames, numFrames, "0"
 ssmID = selected("Matrix")
 
-Formula: "if Matrix_ThePitchData[row, 1] > 0 and Matrix_ThePitchData[col, 1] > 0 and abs(Matrix_ThePitchData[row, 1] - Matrix_ThePitchData[col, 1]) < " + string$(toleranceHz) + " then 1 - (abs(Matrix_ThePitchData[row, 1] - Matrix_ThePitchData[col, 1]) / " + string$(toleranceHz) + ") else 0 fi"
+Formula: "if Matrix_AHL_PitchData[row, 1] > 0 and Matrix_AHL_PitchData[col, 1] > 0 then if abs(12*log2(Matrix_AHL_PitchData[row, 1] / Matrix_AHL_PitchData[col, 1])) < " + string$(toleranceST) + " then 1 - abs(12*log2(Matrix_AHL_PitchData[row, 1] / Matrix_AHL_PitchData[col, 1])) / " + string$(toleranceST) + " else 0 fi else 0 fi"
 
-# 4. Find loop candidates
-Create Table with column names: "candidates", 0, "start_frame length_frames gap_frames score"
+# 4. Find diagonal runs away from the main diagonal. A run means that
+# two regions separated by 'gap' have similar frame-by-frame pitch.
+Create Table with column names: "AHL_candidates", 0, "start_frame length_frames gap_frames score"
 tableID = selected("Table")
 
-selectObject: ssmID
-frameRate = 1 / timeStep
-minLen = round(min_loop_duration * frameRate)
+frameRate = 1 / pitchDx
+minLen = max(1, ceiling(min_loop_duration * frameRate))
 maxGap = numFrames - minLen
 gap = minLen
 step = 1
-
 if numFrames > 2000
     step = 2
 endif
 
-appendInfoLine: "Searching for loops..."
+appendInfoLine: "Searching for recurring regions..."
 
+selectObject: ssmID
 while gap <= maxGap
     pathLen = 0
     pathStart = 0
+    pathScore = 0
     searchLimit = numFrames - gap
 
     for i to searchLimit
         j = i + gap
         val = Get value in cell: i, j
 
-        if val > 0.5
+        if val > 0
             if pathLen = 0
                 pathStart = i
+                pathScore = 0
             endif
             pathLen += 1
+            pathScore += val
         else
             if pathLen >= minLen
                 selectObject: tableID
                 Append row
-                row = Get number of rows
-                Set numeric value: row, "start_frame", pathStart
-                Set numeric value: row, "length_frames", pathLen
-                Set numeric value: row, "gap_frames", gap
-                Set numeric value: row, "score", pathLen * val
+                rowN = Get number of rows
+                Set numeric value: rowN, "start_frame", pathStart
+                Set numeric value: rowN, "length_frames", pathLen
+                Set numeric value: rowN, "gap_frames", gap
+                Set numeric value: rowN, "score", pathScore
                 selectObject: ssmID
             endif
             pathLen = 0
+            pathStart = 0
+            pathScore = 0
         endif
     endfor
+
+    # Flush a valid run that reaches the end of this diagonal.
+    if pathLen >= minLen
+        selectObject: tableID
+        Append row
+        rowN = Get number of rows
+        Set numeric value: rowN, "start_frame", pathStart
+        Set numeric value: rowN, "length_frames", pathLen
+        Set numeric value: rowN, "gap_frames", gap
+        Set numeric value: rowN, "score", pathScore
+        selectObject: ssmID
+    endif
+
     gap += step
 endwhile
 
-# 5. Select best non-overlapping loops
+# 5. Select strongest non-overlapping regions.
 selectObject: tableID
 nRows = Get number of rows
-
 if nRows = 0
-    removeObject: dataID, ssmID, tableID, pitchID
-    exitScript: "No loops found. Try adjusting parameters."
+    removeObject: dataID, ssmID, tableID, pitchID, analysisID
+    exitScript: "No recurring pitched regions found. Try a shorter minimum duration or another preset."
 endif
 
 Sort rows: "score"
 
-# Arrays for loop data
 maxLoops = num_loops_to_find
 loopStart# = zero#(maxLoops)
 loopEnd# = zero#(maxLoops)
 loopPitch# = zero#(maxLoops)
+loopMidi# = zero#(maxLoops)
 
 loopsFound = 0
 rowIndex = nRows
-
 while loopsFound < num_loops_to_find and rowIndex > 0
     selectObject: tableID
-    startF = Get value: rowIndex, "start_frame"
-    lenF = Get value: rowIndex, "length_frames"
+    startF = round(object [tableID, rowIndex, "start_frame"])
+    lenF = round(object [tableID, rowIndex, "length_frames"])
 
-    t1 = (startF - 1) * timeStep
-    dur = lenF * timeStep
-    t2 = t1 + dur
+    t1 = max(0, pitchX1 + (startF - 1) * pitchDx - 0.5 * pitchDx)
+    lastF = min(numFrames, startF + lenF - 1)
+    t2 = min(totalDuration, pitchX1 + (lastF - 1) * pitchDx + 0.5 * pitchDx)
+    dur = t2 - t1
 
-    # Check overlap
     isOverlap = 0
     for k to loopsFound
         if t1 < loopEnd#[k] and t2 > loopStart#[k]
@@ -303,120 +340,175 @@ while loopsFound < num_loops_to_find and rowIndex > 0
         endif
     endfor
 
-    if isOverlap = 0
-        loopsFound += 1
-        loopStart#[loopsFound] = t1
-        loopEnd#[loopsFound] = t2
-
-        # Calculate average pitch for this loop
-        sumPitch = 0
+    if isOverlap = 0 and t2 > t1
+        sumMidi = 0
         countPitch = 0
-        startFrame = round(t1 / timeStep) + 1
-        endFrame = round(t2 / timeStep)
-
-        for fr from startFrame to endFrame
-            if fr >= 1 and fr <= numFrames
-                if pitchVals#[fr] > 0
-                    sumPitch += pitchVals#[fr]
-                    countPitch += 1
-                endif
+        endF = min(numFrames, startF + lenF - 1)
+        for fr from startF to endF
+            if pitchVals#[fr] > 0
+                sumMidi += 69 + 12 * log2(pitchVals#[fr] / 440)
+                countPitch += 1
             endif
         endfor
 
         if countPitch > 0
-            loopPitch#[loopsFound] = sumPitch / countPitch
-        else
-            loopPitch#[loopsFound] = 200
+            loopsFound += 1
+            loopStart#[loopsFound] = t1
+            loopEnd#[loopsFound] = t2
+            loopMidi#[loopsFound] = sumMidi / countPitch
+            loopPitch#[loopsFound] = 440 * 2 ^ ((loopMidi#[loopsFound] - 69) / 12)
         endif
     endif
     rowIndex -= 1
 endwhile
 
-appendInfoLine: "Found ", loopsFound, " loops"
+if loopsFound = 0
+    removeObject: dataID, ssmID, tableID, pitchID, analysisID
+    exitScript: "Recurring regions were found, but none contained usable voiced pitch."
+endif
 
+# Sort selected regions chronologically. This matters for voice leading.
+if loopsFound > 1
+    for a to loopsFound - 1
+        for b from a + 1 to loopsFound
+            if loopStart#[b] < loopStart#[a]
+                temp = loopStart#[a]
+                loopStart#[a] = loopStart#[b]
+                loopStart#[b] = temp
+
+                temp = loopEnd#[a]
+                loopEnd#[a] = loopEnd#[b]
+                loopEnd#[b] = temp
+
+                temp = loopPitch#[a]
+                loopPitch#[a] = loopPitch#[b]
+                loopPitch#[b] = temp
+
+                temp = loopMidi#[a]
+                loopMidi#[a] = loopMidi#[b]
+                loopMidi#[b] = temp
+            endif
+        endfor
+    endfor
+endif
+
+appendInfoLine: "Found ", loopsFound, " non-overlapping recurring regions"
 removeObject: dataID, ssmID, tableID
 
 # ===================================================================
-# PHASE 2: PITCH-AWARE CHORD SELECTION
+# PHASE 2: KEY ESTIMATION + CHORD SELECTION
 # ===================================================================
 
 appendInfoLine: ""
-appendInfoLine: "--- Phase 2: Analyzing Harmony ---"
+appendInfoLine: "--- Phase 2: Selecting Harmony ---"
 
-chordType# = zero#(loopsFound)
+keyName$ = "n/a"
+keyMode$ = "n/a"
+keyTonic = 0
+keyMode = 1
+scaleMask# = zero#(12)
+
+# Lightweight Krumhansl-Schmuckler-style profile matching. We use
+# pitch-class counts from all voiced frames and choose the best of
+# 12 major + 12 minor rotations.
+if harmony_style = 1 and useDiatonic = 1
+    chromaCounts# = zero#(12)
+    for i to numFrames
+        if pitchVals#[i] > 0
+            midiFrame = round(69 + 12 * log2(pitchVals#[i] / 440))
+            pc = midiFrame mod 12
+            chromaCounts#[pc + 1] += 1
+        endif
+    endfor
+
+    majorProfile# = { 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 }
+    minorProfile# = { 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 }
+
+    bestScore = -1e30
+    for tonic from 0 to 11
+        scoreMaj = 0
+        scoreMin = 0
+        for pc from 0 to 11
+            rel = pc - tonic
+            if rel < 0
+                rel += 12
+            endif
+            scoreMaj += chromaCounts#[pc + 1] * majorProfile#[rel + 1]
+            scoreMin += chromaCounts#[pc + 1] * minorProfile#[rel + 1]
+        endfor
+        if scoreMaj > bestScore
+            bestScore = scoreMaj
+            keyTonic = tonic
+            keyMode = 1
+        endif
+        if scoreMin > bestScore
+            bestScore = scoreMin
+            keyTonic = tonic
+            keyMode = 2
+        endif
+    endfor
+
+    if keyTonic = 0
+        keyName$ = "C"
+    elsif keyTonic = 1
+        keyName$ = "C#"
+    elsif keyTonic = 2
+        keyName$ = "D"
+    elsif keyTonic = 3
+        keyName$ = "D#"
+    elsif keyTonic = 4
+        keyName$ = "E"
+    elsif keyTonic = 5
+        keyName$ = "F"
+    elsif keyTonic = 6
+        keyName$ = "F#"
+    elsif keyTonic = 7
+        keyName$ = "G"
+    elsif keyTonic = 8
+        keyName$ = "G#"
+    elsif keyTonic = 9
+        keyName$ = "A"
+    elsif keyTonic = 10
+        keyName$ = "A#"
+    else
+        keyName$ = "B"
+    endif
+
+    if keyMode = 1
+        keyMode$ = "major"
+    else
+        keyMode$ = "minor"
+    endif
+
+    for pc from 0 to 11
+        rel = pc - keyTonic
+        if rel < 0
+            rel += 12
+        endif
+        if keyMode = 1
+            if rel = 0 or rel = 2 or rel = 4 or rel = 5 or rel = 7 or rel = 9 or rel = 11
+                scaleMask#[pc + 1] = 1
+            endif
+        else
+            if rel = 0 or rel = 2 or rel = 3 or rel = 5 or rel = 7 or rel = 8 or rel = 10
+                scaleMask#[pc + 1] = 1
+            endif
+        endif
+    endfor
+
+    appendInfoLine: "Estimated key: ", keyName$, " ", keyMode$
+endif
+
 interval2# = zero#(loopsFound)
 interval3# = zero#(loopsFound)
 chordName$# = empty$#(loopsFound)
 
 for i to loopsFound
-    if harmony_style = 1
-        # Pitch-Aware mode
-        avgPitch = loopPitch#[i]
+    avgPitch = loopPitch#[i]
+    midiNote = round(loopMidi#[i])
+    chromaClass = midiNote mod 12
 
-        # Convert to MIDI note number
-        midiNote = round(69 + 12 * log2(avgPitch / 440))
-        # Get chroma class: 0=C, 1=C#, 2=D, etc.
-        chromaClass = midiNote mod 12
-
-        if useDiatonic = 1
-            # Diatonic harmonization (C major scale)
-            if chromaClass = 0 or chromaClass = 7
-                # C or G - use major
-                interval2#[i] = 4
-                interval3#[i] = 7
-                chordName$#[i] = "Maj"
-            elsif chromaClass = 2 or chromaClass = 9
-                # D or A - use minor
-                interval2#[i] = 3
-                interval3#[i] = 7
-                chordName$#[i] = "Min"
-            elsif chromaClass = 4
-                # E - use minor
-                interval2#[i] = 3
-                interval3#[i] = 7
-                chordName$#[i] = "Min"
-            elsif chromaClass = 5
-                # F - use major
-                interval2#[i] = 4
-                interval3#[i] = 7
-                chordName$#[i] = "Maj"
-            elsif chromaClass = 11
-                # B - use diminished
-                interval2#[i] = 3
-                interval3#[i] = 6
-                chordName$#[i] = "Dim"
-            else
-                # Default to fifth
-                interval2#[i] = 7
-                interval3#[i] = 12
-                chordName$#[i] = "5th"
-            endif
-        else
-            # Non-diatonic: choose based on pitch height
-            if avgPitch < 150
-                # Low pitch - use wider intervals
-                interval2#[i] = 7
-                interval3#[i] = 12
-                chordName$#[i] = "5th"
-            elsif avgPitch < 250
-                # Mid-low - minor
-                interval2#[i] = 3
-                interval3#[i] = 7
-                chordName$#[i] = "Min"
-            elsif avgPitch < 350
-                # Mid - major
-                interval2#[i] = 4
-                interval3#[i] = 7
-                chordName$#[i] = "Maj"
-            else
-                # High - octaves
-                interval2#[i] = 12
-                interval3#[i] = 19
-                chordName$#[i] = "Oct"
-            endif
-        endif
-    else
-        # Fixed chord type mode
+    if harmony_style = 2
         if fixed_chord_if_used = 1
             interval2#[i] = 12
             interval3#[i] = 24
@@ -438,157 +530,275 @@ for i to loopsFound
             interval3#[i] = 7
             chordName$#[i] = "Sus4"
         endif
+
+    elsif preset = 5
+        # Experimental really is random per detected region.
+        randomChord = randomInteger(1, 6)
+        if randomChord = 1
+            interval2#[i] = 12
+            interval3#[i] = 24
+            chordName$#[i] = "Oct"
+        elsif randomChord = 2
+            interval2#[i] = 7
+            interval3#[i] = 12
+            chordName$#[i] = "5th"
+        elsif randomChord = 3
+            interval2#[i] = 4
+            interval3#[i] = 7
+            chordName$#[i] = "Maj"
+        elsif randomChord = 4
+            interval2#[i] = 3
+            interval3#[i] = 7
+            chordName$#[i] = "Min"
+        elsif randomChord = 5
+            interval2#[i] = 5
+            interval3#[i] = 7
+            chordName$#[i] = "Sus4"
+        else
+            interval2#[i] = 3
+            interval3#[i] = 6
+            chordName$#[i] = "Dim"
+        endif
+
+    elsif useDiatonic = 1
+        # Choose scale tones nearest a third and a fifth above the
+        # melody pitch. Both generated voices are therefore in the
+        # estimated scale, even when the melody note itself is chromatic.
+        bestDist2 = 1e30
+        bestDist3 = 1e30
+        bestInt2 = 4
+        bestInt3 = 7
+        for candidateInt from 1 to 11
+            targetPc = (chromaClass + candidateInt) mod 12
+            if scaleMask#[targetPc + 1] = 1
+                dist2 = abs(candidateInt - 4)
+                if dist2 < bestDist2
+                    bestDist2 = dist2
+                    bestInt2 = candidateInt
+                endif
+                dist3 = abs(candidateInt - 7)
+                if dist3 < bestDist3
+                    bestDist3 = dist3
+                    bestInt3 = candidateInt
+                endif
+            endif
+        endfor
+        if bestInt3 = bestInt2
+            # Pick another in-key tone nearest a fifth if a tie occurred.
+            bestDist3 = 1e30
+            for candidateInt from 1 to 11
+                targetPc = (chromaClass + candidateInt) mod 12
+                if scaleMask#[targetPc + 1] = 1 and candidateInt <> bestInt2
+                    dist3 = abs(candidateInt - 7)
+                    if dist3 < bestDist3
+                        bestDist3 = dist3
+                        bestInt3 = candidateInt
+                    endif
+                endif
+            endfor
+        endif
+        interval2#[i] = bestInt2
+        interval3#[i] = bestInt3
+
+        if bestInt2 = 4 and bestInt3 = 7
+            chordName$#[i] = "Maj"
+        elsif bestInt2 = 3 and bestInt3 = 7
+            chordName$#[i] = "Min"
+        elsif bestInt2 = 3 and bestInt3 = 6
+            chordName$#[i] = "Dim"
+        elsif bestInt2 = 5 and bestInt3 = 7
+            chordName$#[i] = "Sus4"
+        else
+            chordName$#[i] = "Key"
+        endif
+
+    elsif preset = 3
+        # Bold preset uses genuinely wider/open intervals.
+        if avgPitch < 180
+            interval2#[i] = 7
+            interval3#[i] = 19
+            chordName$#[i] = "Open5"
+        elsif avgPitch < 320
+            interval2#[i] = 5
+            interval3#[i] = 12
+            chordName$#[i] = "Open4"
+        else
+            interval2#[i] = 12
+            interval3#[i] = 19
+            chordName$#[i] = "Oct5"
+        endif
+
+    else
+        # General pitch-aware mapping for Subtle / Custom.
+        if avgPitch < 150
+            interval2#[i] = 7
+            interval3#[i] = 12
+            chordName$#[i] = "5th"
+        elsif avgPitch < 250
+            interval2#[i] = 3
+            interval3#[i] = 7
+            chordName$#[i] = "Min"
+        elsif avgPitch < 350
+            interval2#[i] = 4
+            interval3#[i] = 7
+            chordName$#[i] = "Maj"
+        else
+            interval2#[i] = 12
+            interval3#[i] = 19
+            chordName$#[i] = "Oct5"
+        endif
+    endif
+endfor
+
+# True pitch-class-preserving voice leading. Only octave placement is
+# changed; chord quality/pitch classes stay intact.
+renderInt2# = zero#(loopsFound)
+renderInt3# = zero#(loopsFound)
+prevVoice2 = undefined
+prevVoice3 = undefined
+
+for i to loopsFound
+    base2 = interval2#[i]
+    base3 = interval3#[i]
+    renderInt2#[i] = base2
+    renderInt3#[i] = base3
+
+    if voiceLeading = 1 and i > 1
+        bestCost = 1e30
+        best2 = base2
+        best3 = base3
+        for oct2 from -1 to 1
+            cand2 = base2 + 12 * oct2
+            for oct3 from -1 to 1
+                cand3 = base3 + 12 * oct3
+                v2 = loopMidi#[i] + cand2
+                v3 = loopMidi#[i] + cand3
+                if cand2 <> 0 and cand3 <> 0 and cand2 <> cand3 and v2 < v3
+                    cost = abs(v2 - prevVoice2) + abs(v3 - prevVoice3)
+                    if cost < bestCost
+                        bestCost = cost
+                        best2 = cand2
+                        best3 = cand3
+                    endif
+                endif
+            endfor
+        endfor
+        renderInt2#[i] = best2
+        renderInt3#[i] = best3
     endif
 
-    appendInfoLine: "  Loop ", i, ": ", fixed$(loopPitch#[i], 1), " Hz -> ", chordName$#[i], " (", interval2#[i], ", ", interval3#[i], " st)"
+    prevVoice2 = loopMidi#[i] + renderInt2#[i]
+    prevVoice3 = loopMidi#[i] + renderInt3#[i]
+
+    appendInfoLine: "  Region ", i, ": ", fixed$(loopPitch#[i], 1), " Hz -> ", chordName$#[i], " (", renderInt2#[i], ", ", renderInt3#[i], " st)"
 endfor
 
 # ===================================================================
-# PHASE 3: GENERATE HARMONIES (SMOOTH ENVELOPE MIX)
+# PHASE 3: GENERATE + MIX HARMONY VOICES
 # ===================================================================
 
 appendInfoLine: ""
 appendInfoLine: "--- Phase 3: Generating Harmonies ---"
 
-# Create empty mix buffers (Full Duration)
+# Full-duration mono wet buffers.
 selectObject: originalID
-wetL = Create Sound from formula: "wetL", 1, 0, totalDuration, originalSR, "0"
-wetR = Create Sound from formula: "wetR", 1, 0, totalDuration, originalSR, "0"
+wetL = Create Sound from formula: "AHL_wetL", 1, 0, totalDuration, originalSR, "0"
+wetR = Create Sound from formula: "AHL_wetR", 1, 0, totalDuration, originalSR, "0"
+selectObject: wetL
+wetSamples = Get number of samples
 
 nEvents = 0
-prevInt2 = 0
-prevInt3 = 0
-
 for i to loopsFound
     t1 = loopStart#[i]
     t2 = loopEnd#[i]
 
-    # Extract loop segment
-    selectObject: originalID
+    # Harmonies are synthesized from the mono analysis source. The dry
+    # signal later retains the original mono/stereo channels.
+    selectObject: analysisID
     loopSegment = Extract part: t1, t2, "rectangular", 1.0, "no"
 
-    # Voice leading logic
-    int2 = interval2#[i]
-    int3 = interval3#[i]
+    int2 = renderInt2#[i]
+    int3 = renderInt3#[i]
 
-    if voiceLeading = 1 and i > 1
-        if abs(int2 - prevInt2) > 5
-            if int2 = 4 and int3 = 7
-                int2 = 3
-                int3 = 8
-            elsif int2 = 3 and int3 = 7
-                int2 = 4
-                int3 = 9
-            endif
-        endif
-    endif
-    prevInt2 = int2
-    prevInt3 = int3
-
-    # Generate chord
-    @generateSmoothChord: loopSegment, int2, int3, stereoSpread, fadeDuration
+    @generateSmoothChord: loopSegment, int2, int3, stereoSpread, pitchFloor, pitchCeiling
     harmL = generateSmoothChord.leftOut
     harmR = generateSmoothChord.rightOut
 
-    # === SMOOTH FADE ENVELOPE ===
-    # This formula creates a trapezoidal volume shape:
-    # 0 -> 1 (Fade In), Stay at 1, 1 -> 0 (Fade Out)
-
-    # Calculate safe fade duration (ensure we don't fade more than half the duration)
     selectObject: harmL
     durH = Get total duration
-    safeFade = fadeDuration
-    if safeFade > durH / 2
-        safeFade = durH / 2
+    nH = Get number of samples
+    safeFade = min(fadeDuration, durH / 2)
+
+    if safeFade > 0
+        fadeStr$ = fixed$(safeFade, 9)
+        durStr$ = fixed$(durH, 9)
+        selectObject: harmL
+        Formula: "self * (if x < " + fadeStr$ + " then x/" + fadeStr$ + " else if x > " + durStr$ + " - " + fadeStr$ + " then (" + durStr$ + " - x)/" + fadeStr$ + " else 1 fi fi)"
+        selectObject: harmR
+        Formula: "self * (if x < " + fadeStr$ + " then x/" + fadeStr$ + " else if x > " + durStr$ + " - " + fadeStr$ + " then (" + durStr$ + " - x)/" + fadeStr$ + " else 1 fi fi)"
     endif
 
-    fadeStr$ = fixed$(safeFade, 6)
-    durStr$ = fixed$(durH, 6)
-
-    selectObject: harmL
-    Formula: "self * (if x < " + fadeStr$ + " then x/" + fadeStr$ + " else if x > " + durStr$ + " - " + fadeStr$ + " then (" + durStr$ + " - x)/" + fadeStr$ + " else 1 fi fi)"
-
-    selectObject: harmR
-    Formula: "self * (if x < " + fadeStr$ + " then x/" + fadeStr$ + " else if x > " + durStr$ + " - " + fadeStr$ + " then (" + durStr$ + " - x)/" + fadeStr$ + " else 1 fi fi)"
-
-    # === ROBUST POSITIONING ===
-
-    selectObject: harmL
-    Rename: "HarmL"
-
-    selectObject: harmR
-    Rename: "HarmR"
-
-    # Calculate start sample index for the main track
+    # Add by exact sample index into full-duration buffers. Out-of-range
+    # tails are clipped at the destination end rather than indexing past it.
     startSample = round(t1 * originalSR) + 1
+    endSample = min(wetSamples, startSample + nH - 1)
 
-    # Mix Left
-    selectObject: wetL
-    # Formula (part): startTime, endTime, scaling, scaling, formula
-    Formula (part): t1, t1 + durH, 1, 1, "self + Sound_HarmL[col - " + string$(startSample) + " + 1]"
-
-    # Mix Right
-    selectObject: wetR
-    Formula (part): t1, t1 + durH, 1, 1, "self + Sound_HarmR[col - " + string$(startSample) + " + 1]"
+    if startSample <= wetSamples and endSample >= startSample
+        selectObject: wetL
+        Formula: "if col >= " + string$(startSample) + " and col <= " + string$(endSample) + " then self + object[" + string$(harmL) + ", 1, col - " + string$(startSample) + " + 1] else self fi"
+        selectObject: wetR
+        Formula: "if col >= " + string$(startSample) + " and col <= " + string$(endSample) + " then self + object[" + string$(harmR) + ", 1, col - " + string$(startSample) + " + 1] else self fi"
+        nEvents += 1
+    endif
 
     removeObject: loopSegment, harmL, harmR
-    nEvents += 1
-
-    appendInfoLine: "  Mixed loop ", i, " at ", fixed$(t1, 2), "s"
+    appendInfoLine: "  Mixed region ", i, " at ", fixed$(t1, 2), " s"
 endfor
 
-# Scale wet mix
+# Apply user wet gain once, after all harmony events are summed.
 selectObject: wetL
 Formula: "self * " + string$(wet_level)
-
 selectObject: wetR
 Formula: "self * " + string$(wet_level)
 
-# Create dry channels
-selectObject: originalID
-numChannels = Get number of channels
-
+# Create dry output channels while preserving original stereo content.
 if numChannels = 1
-    dryL = Copy: "dryL"
     selectObject: originalID
-    dryR = Copy: "dryR"
+    dryL = Copy: "AHL_dryL"
+    selectObject: originalID
+    dryR = Copy: "AHL_dryR"
 else
-    Extract one channel: 1
-    dryL = selected("Sound")
     selectObject: originalID
-    Extract one channel: 2
-    dryR = selected("Sound")
+    dryL = Extract one channel: 1
+    Rename: "AHL_dryL"
+    selectObject: originalID
+    dryR = Extract one channel: 2
+    Rename: "AHL_dryR"
 endif
 
-# Scale dry
 selectObject: dryL
 Formula: "self * " + string$(dry_level)
-
 selectObject: dryR
 Formula: "self * " + string$(dry_level)
 
-# MIX DRY + WET
+# Dry + wet. Use explicit row/column access so the operation is unambiguous.
 selectObject: dryL
-Formula: "self + object[" + string$(wetL) + "]"
-
+Formula: "self + object[" + string$(wetL) + ", 1, col]"
 selectObject: dryR
-Formula: "self + object[" + string$(wetR) + "]"
+Formula: "self + object[" + string$(wetR) + ", 1, col]"
 
-# Create final stereo
 selectObject: dryL, dryR
 Combine to stereo
 finalID = selected("Sound")
 compositeName$ = originalName$ + "_harmonized_" + presetName$
 Rename: compositeName$
-Scale peak: 0.95
 
-# Get output stats for visualization / summary
+# Do not normalize: Dry_level and Wet_level remain real linear gains.
 selectObject: finalID
 rms_out = Get root-mean-square: 0, 0
 durOut = Get total duration
 
-# Cleanup
-removeObject: pitchID, wetL, wetR, dryL, dryR
+removeObject: pitchID, analysisID, wetL, wetR, dryL, dryR
 
 ###############################################################################
 # VISUALIZATION  (8 x 8 canvas, suite styling)
@@ -670,16 +880,7 @@ if draw_visualization
     Axes: 0, totalDuration, 0, 2
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalDuration, 0, 2
 
-    # Draw waveform underlay in the background for time reference
-    Colour: "{0.78, 0.80, 0.85}"
-    Line width: 0.5
-    selectObject: originalID
-    # Note: this Draw uses Sound auto-scaling; the y range of axes (0,2)
-    # is independent. Draw the waveform mapped into 0.05..0.25 for visual
-    # reference at the bottom of the panel.
-    # (Using Draw inner box later will overlay the chord rectangles cleanly.)
-
-    # Now switch back to axes-coord drawing for loop rectangles + labels
+    # Draw loop rectangles and labels in time coordinates.
     Axes: 0, totalDuration, 0, 2
 
     for i to loopsFound
@@ -730,8 +931,10 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
 
     if harmony_style = 1
-        if useDiatonic = 1
-            harmDetail$ = "Pitch-Aware diatonic (C major)"
+        if preset = 5
+            harmDetail$ = "Experimental random per region"
+        elsif useDiatonic = 1
+            harmDetail$ = "Pitch-Aware diatonic (" + keyName$ + " " + keyMode$ + ")"
         else
             harmDetail$ = "Pitch-Aware non-diatonic"
         endif
@@ -761,8 +964,8 @@ if draw_visualization
         ... + "  |  Wet: " + fixed$(wet_level, 2)
         ... + "  |  Spread: " + fixed$(stereoSpread, 2)
         ... + "  |  Fade: " + string$(fadeMs) + " ms"
-        ... + "  |  Pitch range: " + fixed$(pitchFloor, 0) + "-" + fixed$(pitchCeiling, 0) + " Hz"
-        ... + "  |  Tolerance: " + fixed$(toleranceHz, 0) + " Hz"
+        ... + "  |  Pitch range: " + fixed$(pitchFloor, 0) + "-" + fixed$(pitchCeiling, 0) + " st"
+        ... + "  |  Tolerance: " + fixed$(toleranceST, 2) + " st"
 
     Text: 0.02, "left", 0.18, "half",
         ... "Output: " + compositeName$
@@ -788,7 +991,7 @@ selectObject: finalID
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:     ", compositeName$
-appendInfoLine: "Harmonized: ", nEvents, " loops with pitch-aware chords"
+appendInfoLine: "Harmonized: ", nEvents, " recurring regions"
 appendInfoLine: "RMS orig:   ", fixed$(rms_orig, 6)
 appendInfoLine: "RMS out:    ", fixed$(rms_out, 6)
 
@@ -799,109 +1002,67 @@ endif
 selectObject: finalID
 
 # ===================================================================
-# PROCEDURE: Generate Smooth Chord
+# PROCEDURE: Generate Smooth Chord (two harmony voices; dry carries root)
 # ===================================================================
 
-procedure generateSmoothChord: .srcID, .int2, .int3, .spread, .fade
+procedure generateSmoothChord: .srcID, .int2, .int3, .spread, .pitchFloor, .pitchCeiling
     selectObject: .srcID
     .fs = Get sampling frequency
-    .dur = Get total duration
 
-    .semitone = 2 ^ (1/12)
-
-    # Root
+    # Voice 2: canonical pitch-tier modification. This preserves duration
+    # and changes only voiced pitch targets used by overlap-add resynthesis.
     selectObject: .srcID
-    .root = Copy: "root"
-
-    # Note 2
-    selectObject: .srcID
-    .note2 = Copy: "n2_temp"
-    .ratio2 = .semitone ^ .int2
-    Override sampling frequency: .fs * .ratio2
-    .manip2 = To Manipulation: 0.01, 75, 600
-    .dur2 = Extract duration tier
-    selectObject: .dur2
-    Add point: 0, .ratio2
-    selectObject: .manip2, .dur2
-    Replace duration tier
+    .manip2 = To Manipulation: 0.01, .pitchFloor, .pitchCeiling
     selectObject: .manip2
-    .res2 = Get resynthesis (overlap-add)
-    selectObject: .res2
-    .n2 = Resample: .fs, 50
-    Scale peak: 0.7
-    removeObject: .note2, .manip2, .dur2, .res2
+    .tier2 = Extract pitch tier
+    .ratio2 = 2 ^ (.int2 / 12)
+    selectObject: .tier2
+    Formula: "self * " + string$(.ratio2)
+    selectObject: .manip2, .tier2
+    Replace pitch tier
+    selectObject: .manip2
+    .n2 = Get resynthesis (overlap-add)
+    removeObject: .manip2, .tier2
 
-    # Note 3
+    # Voice 3.
     selectObject: .srcID
-    .note3 = Copy: "n3_temp"
-    .ratio3 = .semitone ^ .int3
-    Override sampling frequency: .fs * .ratio3
-    .manip3 = To Manipulation: 0.01, 75, 600
-    .dur3 = Extract duration tier
-    selectObject: .dur3
-    Add point: 0, .ratio3
-    selectObject: .manip3, .dur3
-    Replace duration tier
+    .manip3 = To Manipulation: 0.01, .pitchFloor, .pitchCeiling
     selectObject: .manip3
-    .res3 = Get resynthesis (overlap-add)
-    selectObject: .res3
-    .n3 = Resample: .fs, 50
-    Scale peak: 0.5
-    removeObject: .note3, .manip3, .dur3, .res3
+    .tier3 = Extract pitch tier
+    .ratio3 = 2 ^ (.int3 / 12)
+    selectObject: .tier3
+    Formula: "self * " + string$(.ratio3)
+    selectObject: .manip3, .tier3
+    Replace pitch tier
+    selectObject: .manip3
+    .n3 = Get resynthesis (overlap-add)
+    removeObject: .manip3, .tier3
 
-    # Stereo panning
-    .panL2 = 1 - .spread * 0.6
-    .panR2 = 0.4 + .spread * 0.6
-    .panL3 = 0.4 + .spread * 0.6
-    .panR3 = 1 - .spread * 0.6
+    # Constant-power stereo panning.
+    # spread = 0 -> both voices centered (L=R=sqrt(1/2))
+    # spread = 1 -> voice 2 hard left, voice 3 hard right.
+    .spreadSafe = min(1, max(0, .spread))
+    .angle2 = (1 - .spreadSafe) * pi / 4
+    .angle3 = (1 + .spreadSafe) * pi / 4
+    .panL2 = cos(.angle2)
+    .panR2 = sin(.angle2)
+    .panL3 = cos(.angle3)
+    .panR3 = sin(.angle3)
 
-    # Build channels
-    selectObject: .root
-    .rootL = Copy: "rootL"
-    .rootR = Copy: "rootR"
+    # Preserve source dynamics. Relative chord-voice gains are linear
+    # multipliers; there is no per-note peak normalization.
+    .gain2 = 0.75
+    .gain3 = 0.60
 
     selectObject: .n2
-    .n2L = Copy: "n2L"
-    .n2R = Copy: "n2R"
+    .leftOut = Copy: "AHL_harmL"
+    Formula: "self * " + string$(.gain2 * .panL2) + " + object[" + string$(.n3) + ", 1, col] * " + string$(.gain3 * .panL3)
 
-    selectObject: .n3
-    .n3L = Copy: "n3L"
-    .n3R = Copy: "n3R"
+    selectObject: .n2
+    .rightOut = Copy: "AHL_harmR"
+    Formula: "self * " + string$(.gain2 * .panR2) + " + object[" + string$(.n3) + ", 1, col] * " + string$(.gain3 * .panR3)
 
-    # Pan
-    selectObject: .n2L
-    Formula: "self * " + string$(.panL2)
-    selectObject: .n2R
-    Formula: "self * " + string$(.panR2)
-    selectObject: .n3L
-    Formula: "self * " + string$(.panL3)
-    selectObject: .n3R
-    Formula: "self * " + string$(.panR3)
-
-    # Mix left
-    selectObject: .rootL, .n2L
-    .tmp1 = Combine to stereo
-    .mix1 = Convert to mono
-    removeObject: .tmp1
-    selectObject: .mix1, .n3L
-    .tmp2 = Combine to stereo
-    .leftOut = Convert to mono
-    Rename: "harmL"
-    removeObject: .tmp2, .mix1
-
-    # Mix right
-    selectObject: .rootR, .n2R
-    .tmp3 = Combine to stereo
-    .mix2 = Convert to mono
-    removeObject: .tmp3
-    selectObject: .mix2, .n3R
-    .tmp4 = Combine to stereo
-    .rightOut = Convert to mono
-    Rename: "harmR"
-    removeObject: .tmp4, .mix2
-
-    # Cleanup
-    removeObject: .root, .rootL, .rootR, .n2, .n2L, .n2R, .n3, .n3L, .n3R
+    removeObject: .n2, .n3
 
     .leftOut = .leftOut
     .rightOut = .rightOut

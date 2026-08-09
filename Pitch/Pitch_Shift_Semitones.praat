@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,17 @@
 #   Pitch Shift (Semitones) - shifts pitch by specified semitones
 #   while preserving duration using PSOLA resynthesis. Includes
 #   presets for common musical intervals.
+#
+# Changelog v0.3:
+#   - True identity path for 0 semitones (no PSOLA/resample/normalization).
+#   - Preserves the original channel count by processing each channel
+#     independently with the same shift.
+#   - Uses the actual time domain for DurationTier points (xmin/xmax safe).
+#   - Wider adaptive pitch-analysis range with sampling-rate safety checks.
+#   - Validates custom shifts / temporary sample rates before processing.
+#   - Peak protection is attenuation-only; quiet outputs are never boosted.
+#   - Visualization style/layout preserved; interval axis is dynamic and
+#     spectrogram ceiling respects the source Nyquist region.
 #
 # Changelog v0.2:
 #   - Added input check
@@ -30,10 +41,13 @@ originalName$ = selected$("Sound")
 
 selectObject: original
 fs = Get sampling frequency
-duration = Get total duration
+source_xmin = Get start time
+source_xmax = Get end time
+duration = source_xmax - source_xmin
+n_channels = Get number of channels
 
 # === Form ===
-form Pitch Shift (Semitones)
+form Pitch Shift (Semitones) v0.3
     comment Select a Sound object first
     
     comment === Interval Preset ===
@@ -117,68 +131,124 @@ else
     endif
 endif
 
+# === Validation ===
+if duration <= 0
+    exitScript: "The selected Sound has no positive duration."
+endif
+if semitones < -48 or semitones > 48
+    exitScript: "Custom Semitones must be between -48 and +48."
+endif
+
 # === Info ===
-writeInfoLine: "=== Pitch Shift ==="
-appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
+writeInfoLine: "=== Pitch Shift v0.3 ==="
+appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", n_channels, " ch)"
 appendInfoLine: "Shift: ", semitones, " semitones (", intervalName$, ")"
 appendInfoLine: ""
 
 # === Calculate Ratios ===
-semitone_ratio = 2 ^ (1/12)
-note_ratio = semitone_ratio ^ semitones
+note_ratio = 2 ^ (semitones / 12)
 newfs = fs * note_ratio
+
+if newfs < 1000 or newfs > 384000
+    exitScript: "This shift would require a temporary sampling frequency of " +
+        ... string$(round(newfs)) + " Hz. Use a smaller shift."
+endif
 
 appendInfoLine: "Pitch ratio: ", fixed$(note_ratio, 4)
 appendInfoLine: "Temp sample rate: ", round(newfs), " Hz"
 
-# Manipulation analyses the ALREADY-shifted sound (pitch x note_ratio),
-# so scale the analysis range by the same ratio. Otherwise large up-shifts
-# push the fundamental past a fixed 600 Hz ceiling and PSOLA mistracks.
-manipMin = 75 * note_ratio
-manipMax = 600 * note_ratio
-if manipMin < 40
-    manipMin = 40
+baseManipMin = 40
+baseManipMax = min(1200, 0.45 * fs)
+manipMin = baseManipMin * note_ratio
+manipMax = baseManipMax * note_ratio
+
+if manipMin < 20
+    manipMin = 20
 endif
+nyqSafe = 0.45 * newfs
+if manipMax > nyqSafe
+    manipMax = nyqSafe
+endif
+
+if manipMax <= manipMin
+    exitScript: "The requested shift leaves no safe pitch-analysis range."
+endif
+
 appendInfoLine: "Manipulation range: ", round(manipMin), "-", round(manipMax), " Hz"
 appendInfoLine: ""
 
-# === Copy and Override Sample Rate ===
-selectObject: original
-tmpSound = Copy: "tmp_src"
+safetyApplied = 0
 
-selectObject: tmpSound
-Override sampling frequency: newfs
+# === Exact identity for zero shift ===
+if abs(semitones) < 0.0000001
+    selectObject: original
+    result = Copy: originalName$ + "_" + intervalName$
+    appendInfoLine: "0 semitones: exact identity copy (processing bypassed)."
 
-# === Create Manipulation and Duration Tier ===
-appendInfoLine: "Creating manipulation..."
-selectObject: tmpSound
-manipulation = To Manipulation: 0.01, manipMin, manipMax
+else
+    appendInfoLine: "Processing ", n_channels, " channel(s)..."
+    channelResults# = zero#(n_channels)
 
-selectObject: manipulation
-durationTier = Extract duration tier
+    for ch from 1 to n_channels
+        selectObject: original
+        if n_channels = 1
+            channelSource = Copy: "PSS_ch1"
+        else
+            channelSource = Extract one channel: ch
+            Rename: "PSS_ch" + string$(ch)
+        endif
 
-selectObject: durationTier
-Add point: 0, note_ratio
+        selectObject: channelSource
+        Override sampling frequency: newfs
+        shifted_xmin = Get start time
+        shifted_xmax = Get end time
 
-# === Replace Duration Tier ===
-selectObject: manipulation, durationTier
-Replace duration tier
+        manipulation = To Manipulation: 0.01, manipMin, manipMax
 
-# === Resynthesize ===
-appendInfoLine: "Resynthesizing..."
-selectObject: manipulation
-resynthSound = Get resynthesis (overlap-add)
+        selectObject: manipulation
+        durationTier = Extract duration tier
 
-# === Resample to Original Rate ===
-selectObject: resynthSound
-result = Resample: fs, 50
-Rename: originalName$ + "_" + intervalName$
+        selectObject: durationTier
+        Add point: shifted_xmin, note_ratio
+        if shifted_xmax > shifted_xmin
+            Add point: shifted_xmax, note_ratio
+        endif
 
-selectObject: result
-Scale peak: 0.95
+        selectObject: manipulation
+        plusObject: durationTier
+        Replace duration tier
 
-# === Cleanup ===
-removeObject: durationTier, manipulation, tmpSound, resynthSound
+        selectObject: manipulation
+        resynthSound = Get resynthesis (overlap-add)
+
+        selectObject: resynthSound
+        channelResult = Resample: fs, 50
+        Rename: "PSS_result_ch" + string$(ch)
+        channelResults#[ch] = channelResult
+
+        removeObject: durationTier, manipulation, channelSource, resynthSound
+    endfor
+
+    Create Sound from formula: "PSS_result_build", n_channels,
+        ... source_xmin, source_xmax, fs, "0"
+    result = selected("Sound")
+
+    for ch from 1 to n_channels
+        selectObject: result
+        Formula (part): source_xmin, source_xmax, ch, ch,
+            ... "object[" + string$(channelResults#[ch]) + ", 1, col]"
+        removeObject: channelResults#[ch]
+    endfor
+
+    selectObject: result
+    Rename: originalName$ + "_" + intervalName$
+
+    outPeak = Get absolute extremum: 0, 0, "None"
+    if outPeak > 0.95
+        Scale peak: 0.95
+        safetyApplied = 1
+    endif
+endif
 
 # === Visualization ===
 if draw_visualization
@@ -196,7 +266,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.5, "half", originalName$ + " → " + intervalName$ + " (" + string$(semitones) + " st)"
+    Text: 0.5, "centre", 0.5, "half", originalName$ + " -> " + intervalName$ + " (" + string$(semitones) + " st)"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.9
@@ -227,10 +297,11 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     
     # Spectrogram comparison
+    specMax = min(5000, 0.45 * fs)
     Select outer viewport: 0, 4, 3.5, 5.0
     Select inner viewport: 0.6, 3.8, 3.7, 4.9
     selectObject: original
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, specMax, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     removeObject: origSpec
@@ -243,7 +314,7 @@ if draw_visualization
     Select outer viewport: 4, 8, 3.5, 5.0
     Select inner viewport: 4.4, 7.6, 3.7, 4.9
     selectObject: result
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, specMax, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     removeObject: resSpec
@@ -256,11 +327,13 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.2, 5.8
     Select inner viewport: 0.6, 7.6, 5.3, 5.7
     
-    Axes: -12, 12, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", -12, 12, 0, 1
-    
+    axisMin = min(-12, floor(semitones) - 2)
+    axisMax = max(12, ceiling(semitones) + 2)
+    Axes: axisMin, axisMax, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", axisMin, axisMax, 0, 1
+
     # Draw semitone markers
-    for st from -12 to 12
+    for st from ceiling(axisMin) to floor(axisMax)
         if st = 0
             Colour: "{0.3, 0.3, 0.3}"
             Line width: 2
@@ -303,6 +376,8 @@ selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Channels preserved: ", n_channels
+appendInfoLine: "Peak safety applied: ", safetyApplied
 
 # === Play ===
 if play_result

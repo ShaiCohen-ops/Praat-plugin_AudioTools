@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3a (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,6 +21,25 @@
 #   tracked and used as compositional events — not corrected.
 #   Harmony is source-derived, not score-imposed.
 #
+#
+# Changelog v0.3a (2026):
+#   - VISUAL CONSISTENCY: restored the v0.2 visualization language so this
+#     tool remains visually consistent with the rest of the AudioTools library.
+#     Engine/audio fixes from v0.3 are unchanged.
+#   - Pitch panel again shows field/anchor target curves in the established
+#     library style; comma graph scaling again follows the original convention.
+#
+# Changelog v0.3 (2026):
+#   - Drift, Oscillate, and Smear keep persistent state per voice.
+#   - Preset drift/oscillation parameters are passed into the behavior engine.
+#   - Smear is a real phrase-temporal smoother, weighted by instability.
+#   - Field B participates in Just Bloom / Septimal Shadow and default blending.
+#   - Phrase detection is safely capped at max_phrases.
+#   - Internal working audio is zero-based, supporting non-zero source xmin.
+#   - Tracks true peak comma and threshold-crossing wolf events.
+#   - Wolf emphasis is phrase-specific.
+#   - Adds level/spread/output validation and attenuation-only peak safety.
+#   - Visualization follows the actually generated behavior targets.
 #
 # Usage:
 #   Select exactly one Sound object and run this script.
@@ -42,9 +61,11 @@ original_id  = selected ("Sound")
 src_name$    = selected$ ("Sound")
 
 selectObject: original_id
-total_dur  = Get total duration
-src_sr     = Get sampling frequency
-n_channels = Get number of channels
+source_xmin = Get start time
+source_xmax = Get end time
+total_dur   = source_xmax - source_xmin
+src_sr      = Get sampling frequency
+n_channels  = Get number of channels
 
 # ============================================================
 # FORM
@@ -55,7 +76,7 @@ n_channels = Get number of channels
 #                5=31-TET  6=Harmonic Series  7=Septimal  8=User
 # Placement: 1=Align-start  2=Align-centre  3=Stretch-to-fit
 # ============================================================
-form Microtonal_Harmonic_Field_Engine v0.2
+form Microtonal_Harmonic_Field_Engine v0.3a
     comment === ENGINE PRESET ===
     optionmenu Preset_mode 1
         option Just Bloom
@@ -210,6 +231,40 @@ elsif engine_preset = 7
 endif
 
 # ============================================================
+# VALIDATION
+# ============================================================
+if companion_level < 0
+    exitScript: "Companion_level must be zero or greater."
+endif
+if original_level < 0
+    exitScript: "Original_level must be zero or greater."
+endif
+if stereo_spread < 0 or stereo_spread > 1
+    exitScript: "Stereo_spread must be between 0 and 1."
+endif
+if output_peak <= 0 or output_peak > 1
+    exitScript: "Output_peak must be greater than 0 and no greater than 1."
+endif
+if pitch_floor_Hz <= 0 or pitch_ceiling_Hz <= pitch_floor_Hz
+    exitScript: "Pitch analysis limits are invalid."
+endif
+if pitch_ceiling_Hz >= 0.45 * src_sr
+    exitScript: "Pitch ceiling must be below 45% of the sampling frequency."
+endif
+if act_drift_tau <= 0
+    exitScript: "Drift time constant must be greater than zero."
+endif
+if act_osc_rate < 0 or act_osc_depth < 0
+    exitScript: "Oscillation rate/depth must be non-negative."
+endif
+if smear_window_sec <= 0
+    exitScript: "Smear window must be greater than zero."
+endif
+if unstable_smear < 0 or unstable_smear > 1
+    exitScript: "Unstable smear amount must be between 0 and 1."
+endif
+
+# ============================================================
 # PARSE USER-DEFINED RATIOS
 # ============================================================
 user_n_int = 0
@@ -243,9 +298,14 @@ endif
 # ============================================================
 selectObject: original_id
 if n_channels > 1
-    src_work = Convert to mono
+    src_mono_tmp = Convert to mono
+    selectObject: src_mono_tmp
+    src_work = Extract part: source_xmin, source_xmax, "rectangular", 1, "no"
+    Rename: "MHFE_src_work"
+    removeObject: src_mono_tmp
 else
-    src_work = Copy: "MHFE_src_work"
+    src_work = Extract part: source_xmin, source_xmax, "rectangular", 1, "no"
+    Rename: "MHFE_src_work"
 endif
 
 selectObject: src_work
@@ -256,9 +316,10 @@ source_sr  = Get sampling frequency
 # INFO HEADER
 # ============================================================
 clearinfo
-writeInfoLine: "=== Microtonal Harmonic Field Engine v0.2 ==="
+writeInfoLine: "=== Microtonal Harmonic Field Engine v0.3a ==="
 appendInfoLine: "Source: ", src_name$, "  (", fixed$ (source_dur, 3), " s)"
 appendInfoLine: "Sample rate: ", source_sr, " Hz"
+appendInfoLine: "Source domain: ", fixed$(source_xmin, 6), " ... ", fixed$(source_xmax, 6), " s; internal: 0 ... ", fixed$(source_dur, 6), " s"
 
 @fieldName: act_field_A
 appendInfoLine: "Field A: ", fieldName.result$
@@ -372,13 +433,16 @@ for ph from 1 to max_phrases
     phrase_end   [ph] = 0
     anchor_cents [ph] = 0
     anchor_hz_p  [ph] = 0
-    field_mix_p  [ph] = 0
-    phrase_comma [ph] = 0
+    field_mix_p       [ph] = 0
+    phrase_comma      [ph] = 0
+    phrase_unstable_p [ph] = 0
+    phrase_wolf       [ph] = 0
 endfor
 
-n_phrases    = 0
-in_phrase    = 0
-silent_count = 0
+n_phrases         = 0
+in_phrase         = 0
+silent_count      = 0
+phrases_truncated = 0
 
 for t from 1 to n_frames
     if zone# [t] = 3
@@ -391,10 +455,12 @@ for t from 1 to n_frames
         endif
     else
         if in_phrase = 0
-            n_phrases += 1
-            if n_phrases <= max_phrases
+            if n_phrases < max_phrases
+                n_phrases += 1
                 phrase_start [n_phrases] = t
                 in_phrase = 1
+            else
+                phrases_truncated = 1
             endif
         endif
         silent_count = 0
@@ -406,6 +472,9 @@ if in_phrase = 1 and n_phrases > 0
 endif
 
 appendInfoLine: "Phrases detected: ", n_phrases
+if phrases_truncated
+    appendInfoLine: "Phrase limit reached: kept first ", max_phrases, " phrases."
+endif
 
 # ============================================================
 # FRAME-TO-PHRASE MAP
@@ -427,9 +496,12 @@ endfor
 # ============================================================
 # ANCHOR DETECTION AND COMMA TRACKING
 # ============================================================
-comma_total  = 0
-prev_a_cents = 0
-wolf_events  = 0
+comma_total      = 0
+comma_peak       = 0
+comma_peak_abs   = 0
+prev_a_cents     = 0
+wolf_events      = 0
+wolf_active_prev = 0
 
 for ph from 1 to n_phrases
     ps = phrase_start [ph]
@@ -476,17 +548,45 @@ for ph from 1 to n_phrases
 
     phrase_comma [ph] = comma_total
 
-    if abs (comma_total) >= comma_climax_threshold
-        wolf_events += 1
+    if abs (comma_total) > comma_peak_abs
+        comma_peak_abs = abs (comma_total)
+        comma_peak = comma_total
     endif
 
-    @computeFieldMix: ph, n_phrases, comma_total
+    unstable_count = 0
+    active_count = 0
+    for tt from ps to pe
+        if zone# [tt] = 1 or zone# [tt] = 2
+            active_count += 1
+            if zone# [tt] = 2
+                unstable_count += 1
+            endif
+        endif
+    endfor
+    if active_count > 0
+        phrase_unstable_p [ph] = unstable_count / active_count
+    else
+        phrase_unstable_p [ph] = 0
+    endif
+
+    wolf_active = 0
+    if abs (comma_total) >= comma_climax_threshold
+        wolf_active = 1
+        phrase_wolf [ph] = 1
+    endif
+    if wolf_active = 1 and wolf_active_prev = 0
+        wolf_events += 1
+    endif
+    wolf_active_prev = wolf_active
+
+    @computeFieldMix: ph, n_phrases, comma_total, phrase_unstable_p [ph]
     field_mix_p [ph] = computeFieldMix.result
 
     prev_a_cents = anchor_cents [ph]
 endfor
 
-appendInfoLine: "Peak comma:  ", fixed$ (comma_total, 1), " cents"
+appendInfoLine: "Peak comma:  ", fixed$ (comma_peak, 1), " cents"
+appendInfoLine: "Final comma: ", fixed$ (comma_total, 1), " cents"
 appendInfoLine: "Wolf events: ", wolf_events
 
 wolf_voice = 1
@@ -502,6 +602,11 @@ endif
 # ============================================================
 appendInfoLine: ""
 appendInfoLine: "--- Generating companion voices (resampling) ---"
+
+drift_state# = zero# (act_n_voices)
+osc_phase#   = zero# (act_n_voices)
+smear_state# = zero# (act_n_voices)
+voice_target_hz## = zero## (act_n_voices, max_phrases)
 
 for v from 1 to act_n_voices
     appendInfoLine: "Voice ", v, "..."
@@ -549,9 +654,18 @@ for v from 1 to act_n_voices
         endif
         tgt_hz_raw = anc_hz * 2 ^ (eff_int / 1200)
 
+        phrase_dur = t_end - t_start
+
         @applyBehavior: anc_hz, tgt_hz_raw, act_behavior,
-        ...    act_lean, 0, (t_end - t_start), 0
+        ...    act_lean, drift_state# [v], phrase_dur, osc_phase# [v],
+        ...    smear_state# [v], act_drift_tau, act_osc_rate, act_osc_depth,
+        ...    smear_window_sec, unstable_smear * phrase_unstable_p [ph]
+
         final_hz = applyBehavior.out_hz
+        drift_state# [v] = applyBehavior.drft_out
+        osc_phase# [v]   = applyBehavior.phase_out
+        smear_state# [v] = applyBehavior.smear_out
+        voice_target_hz## [v, ph] = final_hz
 
         if final_hz > 0 and anc_hz > 0
             speed_factor = final_hz / anc_hz
@@ -563,8 +677,7 @@ for v from 1 to act_n_voices
         # Extract source material scaled by speed_factor so that after
         # resampling the result is exactly phrase_dur long.
         # (Messagesquisse idiom: reqDur = activeDur * pitchFactor)
-        phrase_dur  = t_end - t_start
-        req_dur     = phrase_dur * speed_factor
+        req_dur = phrase_dur * speed_factor
         src_extract_end = t_start + req_dur
         if src_extract_end > source_dur
             src_extract_end = source_dur
@@ -735,7 +848,7 @@ for v from 1 to act_n_voices
         endif
 
         layer_g = layer_gain * act_comp_lvl
-        if v = wolf_voice and wolf_events > 0
+        if v = wolf_voice and phrase_wolf [ph] = 1
             layer_g = layer_g * wolf_emphasis
         endif
 
@@ -803,10 +916,17 @@ for v from 1 to act_n_voices
 endfor
 
 selectObject: result_id
-Scale peak: output_peak
+final_peak = Get absolute extremum: 0, 0, "None"
+if final_peak > output_peak
+    Scale peak: output_peak
+    safety_applied = 1
+else
+    safety_applied = 0
+endif
 Rename: src_name$ + "_MHFE_result"
 
 appendInfoLine: "Output: ", selected$ ("Sound")
+appendInfoLine: "Peak safety applied: ", safety_applied
 
 # ============================================================
 # VISUALIZATION
@@ -1015,8 +1135,10 @@ appendInfoLine: "Zone U:  ",
 ...    fixed$ (100.0 * (n_voiced - n_stable) / n_frames, 1), "%"
 appendInfoLine: "Zone N:  ",
 ...    fixed$ (100.0 * (n_frames - n_voiced) / n_frames, 1), "%"
-appendInfoLine: "Peak comma: ", fixed$ (comma_total, 1), " cents"
+appendInfoLine: "Peak comma: ", fixed$ (comma_peak, 1), " cents"
 appendInfoLine: "Wolf events: ", wolf_events
+appendInfoLine: "Phrase limit reached: ", phrases_truncated
+appendInfoLine: "Peak safety applied: ", safety_applied
 
 if play_result
     selectObject: result_id
@@ -1117,35 +1239,45 @@ endproc
 
 # ------------------------------------------------------------
 # computeFieldMix: determine Field A / B blend weight for a phrase
-#   Input:  .ph, .n_tot = phrase index and total phrase count
-#           .comma      = current cumulative comma in cents
-#   Output: .result  (0 = pure Field A, 1 = pure Field B)
 # ------------------------------------------------------------
-procedure computeFieldMix: .ph, .n_tot, .comma
+procedure computeFieldMix: .ph, .n_tot, .comma, .unstable
     .progress = (.ph - 1) / max (.n_tot - 1, 1)
+    .unstable = min (max (.unstable, 0), 1)
 
-    if engine_preset = 5
+    if engine_preset = 1
+        .result = 0.12 + 0.58 * .progress + 0.15 * .unstable
+    elsif engine_preset = 2
+        .result = 0.10 + 0.45 * .unstable + 0.15 * .progress
+    elsif engine_preset = 5
         .result = .progress
-
     elsif engine_preset = 6
         .result = 0.5 + 0.45 * sin (.progress * 2 * pi)
-
     elsif engine_preset = 7
         .result = 0
-
-    elsif abs (.comma) >= comma_climax_threshold
-        if comma_resolution = 1
-            .result = min (abs (.comma) / (comma_climax_threshold * 1.5), 1.0)
-        elsif comma_resolution = 3
-            .result = 1.0
-        elsif comma_resolution = 4
-            .result = 0.5
-        else
-            .result = 0.0
-        endif
     else
-        .result = 0.0
+        .comma_norm = min (abs (.comma) / max (comma_climax_threshold, 1), 1)
+        if comma_resolution = 1
+            .result = 0.5 * .comma_norm
+        elsif comma_resolution = 2
+            .result = 0.20 + 0.55 * .comma_norm + 0.20 * .unstable
+        elsif comma_resolution = 3
+            if abs (.comma) >= comma_climax_threshold
+                .result = 1
+            else
+                .result = 0
+            endif
+        elsif comma_resolution = 4
+            if abs (.comma) >= comma_climax_threshold
+                .result = 0.5
+            else
+                .result = 0
+            endif
+        else
+            .result = 0
+        endif
     endif
+
+    .result = min (max (.result, 0), 1)
 endproc
 
 # ------------------------------------------------------------
@@ -1264,67 +1396,70 @@ procedure getInterval: .sys, .v
 endproc
 
 # ------------------------------------------------------------
-# applyBehavior: compute companion Hz for one phrase
-#   Inputs:
-#     .src_hz   = source anchor Hz
-#     .tgt_hz   = harmonic target Hz
-#     .beh      = behavior code (1-6)
-#     .lean     = lean strength (0-1)
-#     .d_in     = drift IIR state (Hz) — pass 0 per phrase
-#     .dt       = phrase duration in seconds
-#     .phase    = oscillator phase (radians) — pass 0 per phrase
-#   Outputs:
-#     .out_hz    = companion pitch in Hz
-#     .drft_out  = updated drift state
-#     .phase_out = updated oscillator phase
-# Behavior codes:
-#   1 = Snap       exact target
-#   2 = Lean       blend source and target in log space
-#   3 = Drift      one-pole IIR approach to target
-#   4 = Oscillate  target +/- sinusoidal depth
-#   5 = Smear      same as Snap (spatial smear applied at mix)
-#   6 = Refuse     target + syntonic comma offset (21.5 cents)
+# applyBehavior: compute companion Hz for one phrase.
+# Persistent state is returned to the caller per voice.
 # ------------------------------------------------------------
 procedure applyBehavior: .src_hz, .tgt_hz, .beh, .lean,
-...    .d_in, .dt, .phase
+...    .d_in, .dt, .phase, .s_in, .drift_tau, .osc_rate, .osc_depth,
+...    .smear_tau, .smear_amt
+
     .drft_out  = .d_in
     .phase_out = .phase
+    .smear_out = .s_in
     .out_hz    = .tgt_hz
 
     if .src_hz <= 0 or .tgt_hz <= 0
-        .out_hz   = 0
+        .out_hz = 0
         .drft_out = 0
+        .smear_out = 0
 
     elsif .beh = 1
         .out_hz = .tgt_hz
 
     elsif .beh = 2
-        .src_c  = 6900 + 1200 * log2 (.src_hz / 440)
-        .tgt_c  = 6900 + 1200 * log2 (.tgt_hz / 440)
-        .bld_c  = .src_c + .lean * (.tgt_c - .src_c)
+        .src_c = 6900 + 1200 * log2 (.src_hz / 440)
+        .tgt_c = 6900 + 1200 * log2 (.tgt_hz / 440)
+        .bld_c = .src_c + min (max (.lean, 0), 1) * (.tgt_c - .src_c)
         .out_hz = 440 * 2 ^ ((.bld_c - 6900) / 1200)
 
     elsif .beh = 3
         if .d_in <= 0
-            .drft_out = .tgt_hz
-        else
-            .alpha    = 1 - exp (- .dt / drift_tau_sec)
-            .drft_out = .d_in + .alpha * (.tgt_hz - .d_in)
+            .drft_out = .src_hz
         endif
+        if .drift_tau <= 0
+            .alpha = 1
+        else
+            .alpha = 1 - exp (- max (.dt, 0) / .drift_tau)
+        endif
+        .drft_out = .drft_out + .alpha * (.tgt_hz - .drft_out)
         .out_hz = .drft_out
 
     elsif .beh = 4
-        .tgt_c     = 6900 + 1200 * log2 (.tgt_hz / 440)
-        .osc_c     = oscillate_depth_cents * sin (.phase)
-        .phase_out = .phase + 2 * pi * oscillate_rate_Hz * .dt
-        .out_hz    = 440 * 2 ^ ((.tgt_c + .osc_c - 6900) / 1200)
+        .tgt_c = 6900 + 1200 * log2 (.tgt_hz / 440)
+        .phase_mid = .phase + pi * .osc_rate * max (.dt, 0)
+        .osc_c = .osc_depth * sin (.phase_mid)
+        .phase_out = .phase + 2 * pi * .osc_rate * max (.dt, 0)
+        .phase_out = .phase_out - 2 * pi * floor (.phase_out / (2 * pi))
+        .out_hz = 440 * 2 ^ ((.tgt_c + .osc_c - 6900) / 1200)
 
     elsif .beh = 5
-        .out_hz = .tgt_hz
+        if .s_in <= 0
+            .smear_out = .src_hz
+        endif
+        if .smear_tau <= 0
+            .s_alpha = 1
+        else
+            .s_alpha = 1 - exp (- max (.dt, 0) / .smear_tau)
+        endif
+        .smear_out = .smear_out + .s_alpha * (.tgt_hz - .smear_out)
+        .amt = min (max (.smear_amt, 0), 1)
+        .raw_c = 6900 + 1200 * log2 (.tgt_hz / 440)
+        .sm_c  = 6900 + 1200 * log2 (.smear_out / 440)
+        .out_c = (1 - .amt) * .raw_c + .amt * .sm_c
+        .out_hz = 440 * 2 ^ ((.out_c - 6900) / 1200)
 
     elsif .beh = 6
-        .tgt_c  = 6900 + 1200 * log2 (.tgt_hz / 440)
+        .tgt_c = 6900 + 1200 * log2 (.tgt_hz / 440)
         .out_hz = 440 * 2 ^ ((.tgt_c + 21.5 - 6900) / 1200)
-
     endif
 endproc

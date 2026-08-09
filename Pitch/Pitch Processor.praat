@@ -2,7 +2,7 @@
 # Praat AudioTools - Pitch_Processor.praat
 # Author: Shai Cohen (Enhanced by Praat AudioTools)
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.0 (2025) - Enhanced Edition
+# Version: 1.1 (2026) - Enhanced Edition
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,9 +12,23 @@
 #   2. Time-Delayed Canon: Multi-voice canon with pitch steps
 #
 #   Uses sample rate override technique for pitch shifting:
-#   - Override sample rate = original_rate / (2 ^ (semitones / 12))
+#   - Override sample rate = original_rate * (2 ^ (semitones / 12))
 #   - Resample back to target rate
-#   - Sound plays at different speed/pitch
+#   - Positive semitones raise pitch; negative semitones lower pitch
+#
+# Improvements in v1.1:
+#   - Corrected detune direction: positive semitones now raise the right channel.
+#   - Converts the processing source to a zero-based mono working copy, so
+#     non-zero input xmin/xmax and multichannel inputs are handled consistently.
+#   - Canon delays are guaranteed to be silence-before-audio despite Praat's
+#     Objects-list Concatenate ordering.
+#   - Canon intensity is applied to the active voice before delay silence.
+#   - Canon voices are summed in a true mono accumulator; no iterative
+#     stereo-combine/mono-average normalization.
+#   - Attenuation-only peak safety; quiet material is never boosted.
+#   - Validates output/resample/override sample rates.
+#   - Keeps the established AudioTools six-panel visualization language;
+#     fixes the Canon Timeline / Technique Explanation viewport overlap.
 #
 # Improvements in v1.0:
 #   - Renamed Mode 1 to "Stereo Pitch Detune" (accurate)
@@ -26,7 +40,7 @@
 #   - Educational explanation of technique
 # ============================================================
 
-form Pitch Processor v1.0
+form Pitch Processor v1.1
     comment === Operation Mode ===
     choice Mode 1
         button Stereo Pitch Detune
@@ -58,10 +72,13 @@ form Pitch Processor v1.0
     boolean Play_after_processing 1
 endform
 
-if not selected("Sound")
-    exitScript: "Please select a Sound object first."
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
 
+# ============================================================
+# PRESETS
+# ============================================================
 if mode = 2
     if preset = 2
         number_of_voices = 4
@@ -90,35 +107,73 @@ else
     presetName$ = "Detune"
 endif
 
+# ============================================================
+# INPUT / VALIDATION
+# ============================================================
 orig$ = selected$("Sound")
 id_original = selected("Sound")
 id_final_output = 0
-
-clearinfo
-writeInfoLine: "=== Pitch Processor v1.0 ==="
-if mode = 1
-    writeInfoLine: "Mode: Stereo Pitch Detune"
-else
-    writeInfoLine: "Mode: Time-Delayed Canon"
-    writeInfoLine: "Preset: ", presetName$
-endif
-writeInfoLine: ""
+safety_applied = 0
 
 selectObject: id_original
+source_xmin = Get start time
+source_xmax = Get end time
+original_duration = source_xmax - source_xmin
 original_rate = Get sampling frequency
-original_duration = Get total duration
+original_channels = Get number of channels
 
+if original_duration <= 0
+    exitScript: "The selected Sound has no positive duration."
+endif
+if output_sample_rate < 8000 or output_sample_rate > 384000
+    exitScript: "Output_sample_rate must be between 8000 and 384000 Hz."
+endif
+if resample_precision < 1 or resample_precision > 1000
+    exitScript: "Resample_precision must be between 1 and 1000."
+endif
+if mode = 2 and number_of_voices > 32
+    exitScript: "Number_of_voices is limited to 32 for safe rendering."
+endif
+
+selectObject: id_original
+if original_channels > 1
+    tmp_mono = Convert to mono
+    selectObject: tmp_mono
+    source_work = Extract part: source_xmin, source_xmax, "rectangular", 1, "no"
+    Rename: "PP_source_work"
+    removeObject: tmp_mono
+else
+    source_work = Extract part: source_xmin, source_xmax, "rectangular", 1, "no"
+    Rename: "PP_source_work"
+endif
+
+clearinfo
+writeInfoLine: "=== Pitch Processor v1.1 ==="
+if mode = 1
+    appendInfoLine: "Mode: Stereo Pitch Detune"
+else
+    appendInfoLine: "Mode: Time-Delayed Canon"
+    appendInfoLine: "Preset: ", presetName$
+endif
+appendInfoLine: "Source: ", orig$, "  (", fixed$(original_duration, 3), " s)"
+appendInfoLine: "Source channels: ", original_channels, "  -> processing reference: mono"
+appendInfoLine: "Source domain: ", fixed$(source_xmin, 6), " ... ", fixed$(source_xmax, 6), " s"
+appendInfoLine: ""
+
+meanPitch = 0
 if draw_visualization
     appendInfoLine: "Analyzing original pitch..."
-    selectObject: id_original
-    originalMono = Convert to mono
-    To Pitch: 0.01, 75, 600
-    pitchObj = selected("Pitch")
-    meanPitch = Get mean: 0, 0, "Hertz"
-    if meanPitch = undefined
-        meanPitch = 0
+    analysis_ceiling = min(600, 0.45 * original_rate)
+    if analysis_ceiling > 75
+        selectObject: source_work
+        To Pitch: 0.01, 75, analysis_ceiling
+        pitchObj = selected("Pitch")
+        meanPitch = Get mean: 0, 0, "Hertz"
+        if meanPitch = undefined
+            meanPitch = 0
+        endif
+        removeObject: pitchObj
     endif
-    removeObject: pitchObj, originalMono
     appendInfoLine: "  Mean pitch: ", fixed$(meanPitch, 1), " Hz"
 endif
 
@@ -129,44 +184,82 @@ if mode = 1
     appendInfoLine: ""
     appendInfoLine: "Creating stereo detune..."
     appendInfoLine: "  Detune amount: ", fixed$(stereo_detune_semitones, 2), " semitones"
-    
+
     pitch_ratio = 2 ^ (stereo_detune_semitones / 12)
-    override_sample_rate = floor(original_rate / pitch_ratio + 0.5)
-    
+    override_sample_rate = round(original_rate * pitch_ratio)
+
+    if override_sample_rate < 100 or override_sample_rate > 655350
+        removeObject: source_work
+        exitScript: "Detune requires an unsafe override sample rate (" +
+            ... string$(override_sample_rate) + " Hz). Reduce Stereo_detune_semitones."
+    endif
+
     appendInfoLine: "  Pitch ratio: ", fixed$(pitch_ratio, 4)
     appendInfoLine: "  Override rate: ", override_sample_rate, " Hz"
-    appendInfoLine: ""
-    
-    selectObject: id_original
-    Copy: "temp_L_raw"
-    id_L_raw = selected("Sound")
-    Resample: output_sample_rate, resample_precision
-    id_L_final = selected("Sound")
-    
-    selectObject: id_original
-    Copy: "temp_R_raw"
-    id_R_raw = selected("Sound")
-    Override sampling frequency: override_sample_rate
-    Resample: output_sample_rate, resample_precision
-    id_R_final = selected("Sound")
 
-    selectObject: id_L_final
-    plusObject: id_R_final
-    Combine to stereo
+    selectObject: source_work
+    left_resampled = Resample: output_sample_rate, resample_precision
+    Rename: "PP_detune_left"
+
+    selectObject: source_work
+    right_raw = Copy: "PP_detune_right_raw"
+    Override sampling frequency: override_sample_rate
+    right_resampled = Resample: output_sample_rate, resample_precision
+    Rename: "PP_detune_right"
+    removeObject: right_raw
+
+    selectObject: left_resampled
+    dur_left = Get total duration
+    selectObject: right_resampled
+    dur_right = Get total duration
+    final_duration = max(dur_left, dur_right)
+
+    if dur_left < final_duration - 0.000001
+        pad_len = final_duration - dur_left
+        Create Sound from formula: "PP_pad_L", 1, 0, pad_len, output_sample_rate, "0"
+        pad_id = selected("Sound")
+        selectObject: left_resampled
+        plusObject: pad_id
+        left_ext = Concatenate
+        removeObject: left_resampled, pad_id
+        left_resampled = left_ext
+    endif
+
+    if dur_right < final_duration - 0.000001
+        pad_len = final_duration - dur_right
+        Create Sound from formula: "PP_pad_R", 1, 0, pad_len, output_sample_rate, "0"
+        pad_id = selected("Sound")
+        selectObject: right_resampled
+        plusObject: pad_id
+        right_ext = Concatenate
+        removeObject: right_resampled, pad_id
+        right_resampled = right_ext
+    endif
+
+    selectObject: left_resampled
+    left_ordered = Copy: "PP_L_ordered"
+    selectObject: right_resampled
+    right_ordered = Copy: "PP_R_ordered"
+    removeObject: left_resampled, right_resampled
+
+    selectObject: left_ordered
+    plusObject: right_ordered
+    id_final_output = Combine to stereo
     Rename: orig$ + "_detune_" + fixed$(stereo_detune_semitones, 1) + "ST"
-    id_final_output = selected("Sound")
-    
-    final_duration = Get total duration
-    
-    selectObject: id_L_raw
-    plusObject: id_R_raw
-    plusObject: id_L_final
-    plusObject: id_R_final
-    Remove
-    
-    if draw_visualization
-        vizLeftChannel = id_final_output
-        vizRightChannel = id_final_output
+
+    removeObject: left_ordered, right_ordered
+
+    selectObject: id_final_output
+    out_peak = Get absolute extremum: 0, 0, "None"
+    if out_peak > 0.99
+        Scale peak: 0.99
+        safety_applied = 1
+    endif
+
+    if stereo_detune_semitones >= 0
+        detuneLabel$ = "+" + fixed$(stereo_detune_semitones, 2)
+    else
+        detuneLabel$ = fixed$(stereo_detune_semitones, 2)
     endif
 endif
 
@@ -176,156 +269,135 @@ endif
 if mode = 2
     appendInfoLine: ""
     appendInfoLine: "Creating canon with ", number_of_voices, " voices..."
-    
+
     voice_info# = zero#(number_of_voices * 4)
-    
-    selectObject: id_original
-    Copy: "base"
-    id_base = selected("Sound")
-    f0 = Get sampling frequency
+    voice_ids# = zero#(number_of_voices)
+    voice_dur# = zero#(number_of_voices)
+
+    final_duration = 0
 
     for v from 1 to number_of_voices
         s = (v - 1) * semitone_step
         if wrap_to_octave
             s = s - 12 * floor(s / 12)
         endif
+
         factor = 2 ^ (s / 12)
-        f_override = floor(f0 * factor + 0.5)
-        
+        f_override = round(original_rate * factor)
+
+        if f_override < 100 or f_override > 655350
+            for vv from 1 to v - 1
+                if voice_ids#[vv] > 0
+                    removeObject: voice_ids#[vv]
+                endif
+            endfor
+            removeObject: source_work
+            exitScript: "Voice " + string$(v) + " requires an unsafe override sample rate (" +
+                ... string$(f_override) + " Hz). Reduce Semitone_step / Number_of_voices."
+        endif
+
         delay_time = (v - 1) * delay_between_entries
         intensity = start_intensity_dB + (v - 1) * intensity_step_dB
-        
+
         voice_info#[(v-1) * 4 + 1] = s
         voice_info#[(v-1) * 4 + 2] = delay_time
         voice_info#[(v-1) * 4 + 3] = intensity
         voice_info#[(v-1) * 4 + 4] = factor
-        
-        appendInfoLine: "  Voice ", v, ": +", s, " ST, delay ", fixed$(delay_time, 2), "s, ", fixed$(intensity, 1), " dB"
-        
-        selectObject: id_base
-        Copy: "voice_raw"
-        id_step1 = selected("Sound")
-        
+
+        appendInfoLine: "  Voice ", v, ": ", s, " ST, delay ",
+            ... fixed$(delay_time, 2), " s, ", fixed$(intensity, 1), " dB"
+
+        selectObject: source_work
+        voice_raw = Copy: "PP_voice_raw_" + string$(v)
         Override sampling frequency: f_override
-        Resample: output_sample_rate, resample_precision
-        id_step2 = selected("Sound")
-        
-        Convert to mono
-        Rename: "voice"
-        id_voice = selected("Sound")
-        
-        selectObject: id_step1
-        plusObject: id_step2
-        Remove
-        
-        d = (v - 1) * delay_between_entries
-        if d > 0
-            Create Sound from formula: "pad", 1, 0, d, output_sample_rate, "0"
+        voice_shifted = Resample: output_sample_rate, resample_precision
+        Rename: "PP_voice_active_" + string$(v)
+        removeObject: voice_raw
+
+        selectObject: voice_shifted
+        Scale intensity: intensity
+
+        active_dur = Get total duration
+        voice_ids#[v] = voice_shifted
+        voice_dur#[v] = active_dur
+
+        voice_end = delay_time + active_dur
+        if voice_end > final_duration
+            final_duration = voice_end
+        endif
+    endfor
+
+    if final_duration <= 0
+        for v from 1 to number_of_voices
+            removeObject: voice_ids#[v]
+        endfor
+        removeObject: source_work
+        exitScript: "Canon rendering produced no positive duration."
+    endif
+
+    Create Sound from formula: "PP_canon_mix", 1, 0, final_duration,
+        ... output_sample_rate, "0"
+    id_mix = selected("Sound")
+
+    for v from 1 to number_of_voices
+        id_voice = voice_ids#[v]
+        delay_time = voice_info#[(v-1) * 4 + 2]
+
+        if delay_time > 0.000001
+            Create Sound from formula: "PP_delay_" + string$(v), 1,
+                ... 0, delay_time, output_sample_rate, "0"
             id_pad = selected("Sound")
-            
+
+            selectObject: id_voice
+            ordered_voice = Copy: "PP_ordered_voice_" + string$(v)
+
             selectObject: id_pad
-            plusObject: id_voice
-            Concatenate
-            id_chain = selected("Sound")
-            
-            selectObject: id_pad
-            plusObject: id_voice
-            Remove
-            
-            selectObject: id_chain
-            Rename: "voice"
-            id_voice = selected("Sound")
-        endif
-        
-        gain_dB = start_intensity_dB + (v - 1) * intensity_step_dB
-        selectObject: id_voice
-        Scale intensity: gain_dB
-        
-        if v = 1
-            Rename: "mix"
-            id_mix = selected("Sound")
+            plusObject: ordered_voice
+            with_delay = Concatenate
+
+            removeObject: id_pad, ordered_voice, id_voice
         else
-            selectObject: id_mix
-            Resample: output_sample_rate, resample_precision
-            id_mix_new = selected("Sound")
-            if id_mix_new != id_mix
-                selectObject: id_mix
-                Remove
-                id_mix = id_mix_new
-            endif
-
-            selectObject: id_voice
-            Resample: output_sample_rate, resample_precision
-            id_voice_new = selected("Sound")
-            if id_voice_new != id_voice
-                selectObject: id_voice
-                Remove
-                id_voice = id_voice_new
-            endif
-
-            selectObject: id_mix
-            dur_mix = Get end time
-            selectObject: id_voice
-            dur_voice = Get end time
-            
-            if dur_mix < dur_voice
-                pad_len = dur_voice - dur_mix
-                Create Sound from formula: "pad_end", 1, 0, pad_len, output_sample_rate, "0"
-                id_pad_end = selected("Sound")
-                selectObject: id_mix
-                plusObject: id_pad_end
-                Concatenate
-                id_mix_ext = selected("Sound")
-                selectObject: id_mix
-                plusObject: id_pad_end
-                Remove
-                id_mix = id_mix_ext
-            endif
-            
-            if dur_voice < dur_mix
-                pad_len = dur_mix - dur_voice
-                Create Sound from formula: "pad_end", 1, 0, pad_len, output_sample_rate, "0"
-                id_pad_end = selected("Sound")
-                selectObject: id_voice
-                plusObject: id_pad_end
-                Concatenate
-                id_voice_ext = selected("Sound")
-                selectObject: id_voice
-                plusObject: id_pad_end
-                Remove
-                id_voice = id_voice_ext
-            endif
-            
-            selectObject: id_mix
-            plusObject: id_voice
-            Combine to stereo
-            id_stereo_temp = selected("Sound")
-            
-            Convert to mono
-            id_mix_sum = selected("Sound")
-            
-            selectObject: id_stereo_temp
-            Remove
-            selectObject: id_mix
-            plusObject: id_voice
-            Remove
-            
-            selectObject: id_mix_sum
-            Scale peak: 0.99
-            Rename: "mix"
-            id_mix = selected("Sound")
+            with_delay = id_voice
         endif
+
+        selectObject: with_delay
+        layer_dur = Get total duration
+        pad_end_len = final_duration - layer_dur
+
+        if pad_end_len > 0.000001
+            Create Sound from formula: "PP_endpad_" + string$(v), 1,
+                ... 0, pad_end_len, output_sample_rate, "0"
+            id_pad_end = selected("Sound")
+
+            selectObject: with_delay
+            plusObject: id_pad_end
+            full_layer = Concatenate
+            removeObject: with_delay, id_pad_end
+        elsif pad_end_len < -0.000001
+            selectObject: with_delay
+            full_layer = Extract part: 0, final_duration, "rectangular", 1, "no"
+            removeObject: with_delay
+        else
+            full_layer = with_delay
+        endif
+
+        selectObject: id_mix
+        Formula: "self + object[" + string$(full_layer) + ", 1, col]"
+        removeObject: full_layer
     endfor
 
     selectObject: id_mix
     Rename: orig$ + "_canon_" + presetName$
-    id_final_output = selected("Sound")
-    
-    final_duration = Get total duration
-    
-    selectObject: id_base
-    Remove
+    id_final_output = id_mix
+
+    out_peak = Get absolute extremum: 0, 0, "None"
+    if out_peak > 0.99
+        Scale peak: 0.99
+        safety_applied = 1
+    endif
 endif
+
+removeObject: source_work
 
 ################################################################################
 # VISUALIZATION
@@ -389,7 +461,7 @@ if draw_visualization
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text left: "yes", "Right (+" + fixed$(stereo_detune_semitones, 2) + " ST)"
+        Text left: "yes", "Right (" + detuneLabel$ + " ST)"
         Text bottom: "yes", "Time (s)"
         removeObject: rightCh
     else
@@ -471,7 +543,7 @@ if draw_visualization
         Colour: "{0.8, 0.5, 0.3}"
         Paint rectangle: "{0.8, 0.5, 0.3}", 0.55, 0.85, 0.5 + stereo_detune_semitones * 0.02, 0.7 + stereo_detune_semitones * 0.02
         Colour: "Black"
-        Text: 0.7, "centre", 0.6 + stereo_detune_semitones * 0.02, "half", "R: +" + fixed$(stereo_detune_semitones, 2) + " ST"
+        Text: 0.7, "centre", 0.6 + stereo_detune_semitones * 0.02, "half", "R: " + detuneLabel$ + " ST"
         
         Colour: "{0.7, 0.7, 0.7}"
         Dotted line
@@ -487,8 +559,8 @@ if draw_visualization
         endif
         
     else
-        Select outer viewport: 0, 8, 4.7, 6.5
-        Select inner viewport: 0.6, 7.7, 4.8, 6.4
+        Select outer viewport: 0, 4, 4.7, 6.5
+        Select inner viewport: 0.6, 3.7, 4.8, 6.4
         
         max_delay = (number_of_voices - 1) * delay_between_entries
         total_time = max_delay + original_duration
@@ -543,9 +615,9 @@ if draw_visualization
         Text: 0.05, "left", 0.8, "half", "Sample Rate Override Method:"
         Text: 0.05, "left", 0.7, "half", "1. Original rate: " + string$(original_rate) + " Hz"
         Text: 0.05, "left", 0.6, "half", "2. Pitch ratio: 2^(" + fixed$(stereo_detune_semitones, 2) + "/12) = " + fixed$(pitch_ratio, 4)
-        Text: 0.05, "left", 0.5, "half", "3. Override rate: " + string$(original_rate) + " / " + fixed$(pitch_ratio, 4) + " = " + string$(override_sample_rate) + " Hz"
+        Text: 0.05, "left", 0.5, "half", "3. Override rate: " + string$(original_rate) + " x " + fixed$(pitch_ratio, 4) + " = " + string$(override_sample_rate) + " Hz"
         Text: 0.05, "left", 0.4, "half", "4. Resample back to " + string$(output_sample_rate) + " Hz"
-        Text: 0.05, "left", 0.3, "half", "5. Sound plays faster/higher by ratio " + fixed$(pitch_ratio, 4)
+        Text: 0.05, "left", 0.3, "half", "5. Pitch changes by ratio " + fixed$(pitch_ratio, 4)
         
         Text: 0.05, "left", 0.15, "half", "Left channel: unmodified"
         Text: 0.05, "left", 0.05, "half", "Right channel: pitch-shifted via override"
@@ -560,7 +632,7 @@ if draw_visualization
         Text: 0.05, "left", 0.3, "half", "• Intensity step: " + fixed$(intensity_step_dB, 1) + " dB per voice"
         
         Text: 0.05, "left", 0.15, "half", "Each voice uses sample rate override:"
-        Text: 0.05, "left", 0.05, "half", "Override rate = " + string$(original_rate) + " / 2^(semitones/12)"
+        Text: 0.05, "left", 0.05, "half", "Override rate = " + string$(original_rate) + " x 2^(semitones/12)"
     endif
     
     Select outer viewport: 0, 8, 6.6, 7.2
@@ -597,6 +669,7 @@ else
     appendInfoLine: "Voices: ", number_of_voices
     appendInfoLine: "Duration: ", fixed$(final_duration, 2), " s"
 endif
+appendInfoLine: "Peak safety applied: ", safety_applied
 
 if play_after_processing
     appendInfoLine: "Playing result..."

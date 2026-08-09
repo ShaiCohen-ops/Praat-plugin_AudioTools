@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,22 @@
 #   falls using exponential curves. Steepness controls how
 #   quickly the pitch change occurs.
 #
+# Changelog v0.3:
+#   - Preserves the original pitch contour: the exponential curve is now a
+#     time-varying transposition of the detected source F0, not a replacement
+#     contour built around one median pitch.
+#   - Preserves the original channel count. Pitch is analysed once from a
+#     mono reference, then the same target PitchTier is resynthesized
+#     independently on every source channel and rebuilt in channel order.
+#   - Uses a fixed 100-Hz glide control rate independent of file duration.
+#   - Curve_steepness can be 0 for a truly linear glide.
+#   - Adds validation for analysis range and negative steepness.
+#   - Stops clearly when no usable pitch is detected instead of inventing
+#     a 200-Hz fallback.
+#   - Target pitch is limited only by a sampling-safe 20 Hz..0.45*SR range;
+#     the number of limited points is reported.
+#   - Visualization decimation now always includes the exact endpoint.
+#   - Final peak handling is attenuation-only; quiet outputs are not boosted.
 # Changelog v0.2:
 #   - Modern syntax
 #   - Added glide direction (up/down)
@@ -32,9 +48,10 @@ xmin = Get start time
 xmax = Get end time
 dur = xmax - xmin
 fs = Get sampling frequency
+nChannels = Get number of channels
 
 # === Form ===
-form Exponential Pitch Glide
+form Exponential Pitch Glide v0.3
     comment Select a Sound object first
     
     comment === Preset ===
@@ -56,7 +73,7 @@ form Exponential Pitch Glide
         option Up
         option Down
     positive Semitones_change 7
-    positive Curve_steepness 3
+    real Curve_steepness 3
     comment (higher = faster initial change)
     
     comment === Pitch Analysis ===
@@ -122,6 +139,20 @@ elsif preset = 11
     curve_steepness = 6
 endif
 
+# === Validate Parameters ===
+if curve_steepness < 0
+    exitScript: "Curve_steepness must be zero or greater."
+endif
+if minimum_pitch >= maximum_pitch
+    exitScript: "Minimum_pitch must be lower than Maximum_pitch."
+endif
+if maximum_pitch >= fs / 2
+    exitScript: "Maximum_pitch must be below the Nyquist frequency (" + fixed$(fs / 2, 1) + " Hz)."
+endif
+if time_step <= 0
+    exitScript: "Time_step must be greater than zero."
+endif
+
 # === Get Preset Name ===
 if preset = 1
     presetName$ = "Manual"
@@ -163,39 +194,36 @@ appendInfoLine: ""
 appendInfoLine: "Direction: ", dirName$
 appendInfoLine: "Semitones: ", semitones_change
 appendInfoLine: "Steepness: ", curve_steepness
+appendInfoLine: "Channels preserved: ", nChannels
 appendInfoLine: ""
 
-# === Calculate Number of Points ===
-npoints = round(dur / 0.01)
-if npoints < 200
-    npoints = 200
-endif
-if npoints > 2000
-    npoints = 2000
+# === Fixed Glide Control Grid ===
+control_step = 0.01
+npoints = ceiling(dur / control_step) + 1
+if npoints < 2
+    npoints = 2
 endif
 
-# === Create Working Copy and Manipulation ===
+# === Create Mono Pitch-Analysis Reference ===
 selectObject: original
-Copy: originalName$ + "_tmp"
-tmpSound = selected("Sound")
-
-selectObject: tmpSound
-manipulation = To Manipulation: time_step, minimum_pitch, maximum_pitch
-
-# === Get Median Pitch ===
-selectObject: tmpSound
-To Pitch: time_step, minimum_pitch, maximum_pitch
-tmpPitch = selected("Pitch")
-median_f0 = Get quantile: 0, 0, 0.5, "Hertz"
-
-if median_f0 = undefined
-    median_f0 = 200
-    appendInfoLine: "No pitch detected, using default: ", median_f0, " Hz"
+if nChannels > 1
+    analysisMono = Convert to mono
 else
-    appendInfoLine: "Median pitch: ", fixed$(median_f0, 1), " Hz"
+    analysisMono = Copy: originalName$ + "_glide_analysis"
 endif
 
-removeObject: tmpPitch
+selectObject: analysisMono
+analysisPitch = To Pitch: time_step, minimum_pitch, maximum_pitch
+
+selectObject: analysisPitch
+median_f0 = Get quantile: 0, 0, 0.5, "Hertz"
+if median_f0 = undefined
+    removeObject: analysisPitch, analysisMono
+    exitScript: "No usable pitch was detected in the selected Sound." + newline$
+        ... + "Exponential Pitch Glide requires voiced / periodic material."
+endif
+
+appendInfoLine: "Median detected pitch: ", fixed$(median_f0, 1), " Hz"
 
 # === Create Pitch Tier ===
 appendInfoLine: ""
@@ -209,61 +237,126 @@ maxVizPoints = min(npoints, 500)
 vizTimes# = zero#(maxVizPoints)
 vizShifts# = zero#(maxVizPoints)
 vizFilled# = zero#(maxVizPoints)
-vizStep = npoints / maxVizPoints
 
 # === Build Exponential Glide Curve ===
+voiced_points = 0
+limited_points = 0
+targetMinHz = 20
+targetMaxHz = 0.45 * fs
+
 for i from 0 to npoints - 1
-    t = xmin + (i / (npoints - 1)) * dur
-    
-    # Normalized position (0 to 1)
-    u = i / (npoints - 1)
-    
-    # Exponential curve (normalized 0 to 1)
+    # Fixed 10-ms control grid, exact endpoint on the final iteration.
+    if i = npoints - 1
+        t = xmax
+        u = 1
+    else
+        t = min(xmax, xmin + i * control_step)
+        u = (t - xmin) / dur
+    endif
+
+    # Exponential curve normalized exactly 0..1.
     if curve_steepness > 0.001
         expFactor = (1 - exp(-curve_steepness * u)) / (1 - exp(-curve_steepness))
     else
         expFactor = u
     endif
-    
-    # Calculate semitones shift (with direction)
+
     semitones_shift = signMultiplier * semitones_change * expFactor
-    
-    # Store for visualization
-    vizIdx = floor(i / vizStep) + 1
-    if vizIdx <= maxVizPoints and vizIdx >= 1
-        if vizFilled#[vizIdx] = 0
-            vizTimes#[vizIdx] = t
-            vizShifts#[vizIdx] = semitones_shift
-            vizFilled#[vizIdx] = 1
+
+    # Deterministic visualization decimation; both first and last samples
+    # map exactly to the first/last visualization slots.
+    if maxVizPoints = 1
+        vizIdx = 1
+    else
+        vizIdx = floor(i * (maxVizPoints - 1) / (npoints - 1)) + 1
+    endif
+    if vizIdx < 1
+        vizIdx = 1
+    elsif vizIdx > maxVizPoints
+        vizIdx = maxVizPoints
+    endif
+
+    if vizFilled#[vizIdx] = 0 or i = npoints - 1
+        vizTimes#[vizIdx] = t
+        vizShifts#[vizIdx] = semitones_shift
+        vizFilled#[vizIdx] = 1
+    endif
+
+    # Apply the glide as a transposition of the ORIGINAL detected F0.
+    selectObject: analysisPitch
+    source_f0 = Get value at time: t, "Hertz", "Linear"
+
+    if source_f0 <> undefined and source_f0 > 0
+        new_f0 = source_f0 * (2 ^ (semitones_shift / 12))
+
+        if new_f0 < targetMinHz
+            new_f0 = targetMinHz
+            limited_points += 1
+        elsif new_f0 > targetMaxHz
+            new_f0 = targetMaxHz
+            limited_points += 1
         endif
+
+        selectObject: pitchTier
+        Add point: t, new_f0
+        voiced_points += 1
     endif
-    
-    # Convert to frequency
-    new_f0 = median_f0 * (2 ^ (semitones_shift / 12))
-    
-    # Clamp to range
-    if new_f0 < minimum_pitch
-        new_f0 = minimum_pitch
-    elsif new_f0 > maximum_pitch
-        new_f0 = maximum_pitch
-    endif
-    
-    selectObject: pitchTier
-    Add point: t, new_f0
 endfor
 
-# === Replace Pitch Tier ===
-selectObject: manipulation, pitchTier
-Replace pitch tier
+if voiced_points = 0
+    removeObject: pitchTier, analysisPitch, analysisMono
+    exitScript: "Pitch analysis produced no usable glide control points."
+endif
 
-# === Resynthesize ===
-appendInfoLine: "Resynthesizing..."
-selectObject: manipulation
-result = Get resynthesis (overlap-add)
-Rename: originalName$ + "_glide" + dirName$
+appendInfoLine: "Pitch control points: ", voiced_points
+if limited_points > 0
+    appendInfoLine: "Sampling-safe target limits applied: ", limited_points, " point(s)"
+endif
 
+# === Resynthesize Every Source Channel with the Same Target PitchTier ===
+appendInfoLine: "Resynthesizing ", nChannels, " channel(s)..."
+
+# Build the final N-channel container in the source time domain and sample rate.
+result = Create Sound from formula: originalName$ + "_glide" + dirName$, nChannels, xmin, xmax, fs, "0"
+
+for ch from 1 to nChannels
+    selectObject: original
+    if nChannels = 1
+        channelWork = Copy: originalName$ + "_glide_ch1"
+    else
+        channelWork = Extract one channel: ch
+        Rename: originalName$ + "_glide_ch" + string$(ch)
+    endif
+
+    selectObject: channelWork
+    channelManip = To Manipulation: time_step, minimum_pitch, maximum_pitch
+
+    selectObject: pitchTier
+    plusObject: channelManip
+    Replace pitch tier
+
+    selectObject: channelManip
+    channelRes = Get resynthesis (overlap-add)
+
+    # Copy the mono resynthesis into its matching output channel.
+    selectObject: result
+    Formula (part): xmin, xmax, ch, ch, "object['channelRes:0', 1, col]"
+
+    removeObject: channelManip, channelWork, channelRes
+endfor
+
+# Analysis/control objects are no longer needed.
+removeObject: analysisPitch, analysisMono, pitchTier
+
+# Attenuation-only peak safety.
 selectObject: result
-Scale peak: 0.95
+finalPeak = Get absolute extremum: 0, 0, "None"
+if finalPeak > 0.95
+    Scale peak: 0.95
+    safetyApplied = 1
+else
+    safetyApplied = 0
+endif
 
 # === Visualization ===
 if draw_visualization
@@ -418,16 +511,15 @@ if draw_visualization
     Colour: "Black"
 endif
 
-# === Cleanup ===
-removeObject: tmpSound, manipulation, pitchTier
-
 # === Final Info ===
 selectObject: result
 
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
-appendInfoLine: "Final pitch: ", fixed$(median_f0 * (2 ^ (signMultiplier * semitones_change / 12)), 1), " Hz"
+appendInfoLine: "Nominal final shift: ", signMultiplier * semitones_change, " semitones"
+appendInfoLine: "Output channels: ", nChannels
+appendInfoLine: "Peak safety applied: ", safetyApplied
 
 # === Play ===
 if play_result

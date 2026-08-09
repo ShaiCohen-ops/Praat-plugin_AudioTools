@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2025)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,6 +23,23 @@
 #   presets cover distinct compositional aesthetics.  The
 #   seeded LCG ensures full reproducibility from seed.
 #
+# Changelog v0.6:
+#   - baseLoudness and loudnessVariation now affect the AUDIO, not only
+#     visualization. The PSOLA result is scaled to baseLoudness, then a
+#     phrase-level relative-dB IntensityTier applies the generated dynamics.
+#     A fixed attenuation-only 0.99 peak safety prevents playback clipping.
+#   - Fixed non-zero-start sounds: PitchTier, grammar time, phrase timing and
+#     resynthesis now use the Sound's actual startTime..endTime domain.
+#   - Grammar phrases can no longer run beyond endTime. The final phrase
+#     reserves time for onset+nucleus+coda; any short remainder becomes a
+#     held final pitch instead of producing out-of-domain tier points.
+#   - Wobble now ends exactly at its sampled nucleus endpoint rather than
+#     stepping past it.
+#   - randomSeed=0 is now genuinely unpredictable; non-zero seeds remain
+#     fully reproducible through the script's LCG.
+#   - Custom validation now rejects Pitch_base_lo_Hz >= Pitch_base_hi_Hz.
+#   - Generated pitch points are clamped to a 50 Hz floor, consistent with
+#     the coda floor, and the visualization range includes wobble depth.
 # Changelog v0.5:
 #   - Fixed conditionals: 30 'elif' -> 'elsif' (Praat keyword); the
 #     script could not run past the first 'elif'
@@ -41,7 +58,7 @@
 
 # Bimodal Contour Grammar: Sound Processing + Visual Presentation
 
-form Bimodal Contour Generator v0.5
+form Bimodal Contour Generator v0.6
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -60,7 +77,7 @@ form Bimodal Contour Generator v0.5
 
     comment === Random Seed ===
     integer randomSeed 0
-    comment (0 = use current time, any other number = fixed seed)
+    comment (0 = unpredictable auto seed, any other number = fixed/reproducible seed)
     
     comment === Color & Style ===
     optionmenu colorScheme 1
@@ -130,7 +147,11 @@ elsif preset = 6
     wobble_depth_Hz   = 4.0
 endif
 
-# Clamp grammar parameters
+# Validate / clamp grammar parameters
+if pitch_base_lo_Hz >= pitch_base_hi_Hz
+    exitScript: "Pitch_base_lo_Hz must be lower than Pitch_base_hi_Hz."
+endif
+
 if gesture_scale < 0.1
     gesture_scale = 0.1
 endif
@@ -169,7 +190,7 @@ duration = Get total duration
 startTime = Get start time
 endTime = Get end time
 
-writeInfoLine: "Bimodal Contour Grammar Generator v0.5"
+writeInfoLine: "Bimodal Contour Grammar Generator v0.6"
 appendInfoLine: "========================================================"
 appendInfoLine: "Sound: ", name$
 appendInfoLine: "Duration: ", fixed$ (duration, 3), " seconds"
@@ -182,16 +203,18 @@ appendInfoLine: "  Gesture scale: ", fixed$(gesture_scale, 2),
 
 # Set random seed
 if randomSeed = 0
-    # Derive a seed from the sound's end time (deterministic per sound)
-    seedValue = round(endTime * 1000000) mod 1000000
-    appendInfoLine: "Random seed: ", seedValue, " (auto-generated)"
+    # Genuine unpredictable auto seed. The grammar itself still uses the
+    # custom LCG below, so the printed seed can reproduce the exact result.
+    random_initializeSafelyAndUnpredictably ()
+    seedValue = randomInteger(1, 2147483646)
+    appendInfoLine: "Random seed: ", seedValue, " (auto-generated, unpredictable)"
 else
     # Use user-specified seed
     seedValue = randomSeed
     appendInfoLine: "Random seed: ", seedValue, " (user-specified)"
 endif
 
-# Initialize random number generator with seed
+# Initialize the grammar's deterministic LCG with the chosen seed.
 randomUniform.seed = seedValue
 appendInfoLine: ""
 
@@ -206,7 +229,7 @@ else
 endif
 
 # Create PitchTier for sound processing
-Create PitchTier: name$, 0, duration
+Create PitchTier: name$, startTime, endTime
 pt_id = selected("PitchTier")
 
 # Extract intensity for loudness modulation
@@ -218,10 +241,11 @@ Erase all
 Select outer viewport: 0, image_width/100, 0, image_height/100
 Font size: 10
 
-# Determine MIDI range from pitch parameters (incl. 50 Hz coda floor)
+# Determine MIDI range from pitch parameters (incl. coda floor + wobble)
 @hzToMidi: 50
 loMidiData = hzToMidi.midi
-@hzToMidi: pitch_base_hi_Hz + 50 * interval_scale
+viz_hi_hz = pitch_base_hi_Hz + 50 * interval_scale + wobble_depth_Hz
+@hzToMidi: viz_hi_hz
 hiMidiData = hzToMidi.midi
 currentMidiMin = floor(loMidiData) - 2
 currentMidiMax = ceiling(hiMidiData) + 2
@@ -271,10 +295,11 @@ endif
 # ========================================================================================
 # GLOBAL VARIABLES (shared across sound and visual)
 # ========================================================================================
-current_time = 0
-current_pitch = 150
-prev_time = 0
-prev_freq = 150
+current_time = startTime
+current_pitch = (pitch_base_lo_Hz + pitch_base_hi_Hz) / 2
+prev_time = startTime
+prev_freq = current_pitch
+grammar_end = endTime
 point_count = 0
 has_prev = 0
 
@@ -289,7 +314,7 @@ last_gesture_type$ = ""
 # MAIN EXECUTION - GENERATE GRAMMAR
 # ========================================================================================
 appendInfoLine: "Generating contour from grammar..."
-@generate_contour: duration
+@generate_contour: endTime
 
 appendInfoLine: "Total points generated: ", point_count
 
@@ -307,6 +332,49 @@ selectObject: manipID
 Get resynthesis (overlap-add)
 Rename: name$ + "_grammar"
 resynthID = selected("Sound")
+
+# Phrase-level dynamics (v0.6)
+# baseLoudness sets the overall RMS intensity target. Each generated phrase
+# contributes a relative dB offset around that target.
+selectObject: resynthID
+resynthPeakBeforeDynamics = Get absolute extremum: 0, 0, "None"
+
+if resynthPeakBeforeDynamics > 1e-15
+    Scale intensity: baseLoudness
+
+    if phrase_count > 0
+        Create IntensityTier: name$ + "_grammar_dynamics", startTime, endTime
+        dynamicsTier = selected("IntensityTier")
+
+        for i from 1 to phrase_count
+            phraseGain = phrase_intensity_'i' - baseLoudness
+            selectObject: dynamicsTier
+            Add point: phrase_start_'i', phraseGain
+            Add point: coda_end_'i', phraseGain
+        endfor
+
+        selectObject: resynthID
+        plusObject: dynamicsTier
+        dynamicSound = Multiply: "no"
+
+        removeObject: resynthID, dynamicsTier
+        resynthID = dynamicSound
+        selectObject: resynthID
+        Rename: name$ + "_grammar"
+    endif
+
+    # Attenuation-only playback safety. Never boosts a quiet result.
+    selectObject: resynthID
+    dynamicPeak = Get absolute extremum: 0, 0, "None"
+    if dynamicPeak > 0.99
+        Scale peak: 0.99
+        dynamicsSafetyApplied = 1
+    else
+        dynamicsSafetyApplied = 0
+    endif
+else
+    dynamicsSafetyApplied = 0
+endif
 
 # Cleanup manipulation + mono work copy
 removeObject: manipID
@@ -344,6 +412,9 @@ appendInfoLine: "  Preset: ", presetName$
 appendInfoLine: "  Random seed: ", seedValue
 appendInfoLine: "  Grammar points: ", point_count
 appendInfoLine: "  MIDI range: ", currentMidiMin, "-", currentMidiMax
+appendInfoLine: "  Audio loudness target: ", fixed$(baseLoudness, 1), " dB"
+appendInfoLine: "  Phrase loudness variation: ±", fixed$(loudnessVariation, 1), " dB"
+appendInfoLine: "  Peak safety applied: ", dynamicsSafetyApplied
 appendInfoLine: "  Line style: ", lineStyle$
 appendInfoLine: "  Color scheme: ", colorScheme$
 appendInfoLine: ""
@@ -462,7 +533,7 @@ Select outer viewport: 1, 8, imgH + 2.15, imgH + 2.50
 Axes: 0, 1, 0, 1
 Font size: 7
 Colour: "{0.40, 0.40, 0.40}"
-Text: 0, "left", 0.5, "half", "Source intensity  " + fixed$(intMin, 0) + " – " + fixed$(intMax, 0) + " dB   dashed = baseLoudness (" + fixed$(baseLoudness, 0) + " dB)"
+Text: 0, "left", 0.5, "half", "Source intensity  " + fixed$(intMin, 0) + " – " + fixed$(intMax, 0) + " dB   dashed = output base target (" + fixed$(baseLoudness, 0) + " dB)"
 
 # Drawing panel
 Select outer viewport: 0, 8, imgH + 2.50, imgH + 3.30
@@ -535,6 +606,7 @@ Text: 0.5, "centre", 0.42, "half",
     ... + "   GestScale: " + fixed$(gesture_scale, 2)
     ... + "   IntScale: " + fixed$(interval_scale, 2)
     ... + "   Wobble: ±" + fixed$(wobble_depth_Hz, 1) + " Hz"
+    ... + "   Loud: " + fixed$(baseLoudness, 0) + "±" + fixed$(loudnessVariation, 0) + " dB"
 Text: 0.5, "centre", 0.10, "half", "Onsets  JumpUp: " + string$(jumpUp_count) + "  GlissUp: " + string$(glissUp_count) + "     Nuclei  Plateau: " + string$(plateau_count) + "  Wobble: " + string$(wobble_count) + "     Codas  Fall: " + string$(fall_count) + "  DeepDrop: " + string$(deepDrop_count)
 
 Font size: 10
@@ -557,6 +629,12 @@ appendInfoLine: "Done! The grammar-generated sound is now selected."
 # BIMODAL PRIMITIVE: Add Point (CORE PROCEDURE)
 # ========================================================================================
 procedure addPoint: .t, .f
+    # Final safety guards.
+    .t = max(startTime, min(endTime, .t))
+    if .f < 50
+        .f = 50
+    endif
+
     # Convert Hz to MIDI for visualization
     @hzToMidi: .f
     .midi = hzToMidi.midi
@@ -659,43 +737,57 @@ endproc
 # ========================================================================================
 
 procedure generate_contour: .targetTime
-    while current_time < .targetTime - 0.2
+    grammar_end = .targetTime
+    while current_time < grammar_end - 1e-9
         @phrase
     endwhile
 endproc
 
 procedure phrase
-    # Determine base pitch from grammar parameters
-    @randomUniform: pitch_base_lo_Hz, pitch_base_hi_Hz
-    .base = randomUniform.result
-    current_pitch = .base
-    
-    # Vary intensity for this phrase
-    @randomUniform: -loudnessVariation, loudnessVariation
-    current_intensity = baseLoudness + randomUniform.result
-    
-    # v0.3: record phrase index and timing boundaries
-    phrase_count = phrase_count + 1
-    cur_ph = phrase_count
-    phrase_start_'cur_ph' = current_time
+    .remaining = grammar_end - current_time
+    .minimumPhrase = 0.35 * gesture_scale
 
-    @onset
-    onset_end_'cur_ph' = current_time
-    onset_type_'cur_ph'$ = last_gesture_type$
-    nuc_start_'cur_ph' = onset_end_'cur_ph'
+    # If there is not enough room for the minimum onset+nucleus+coda,
+    # hold the current pitch to the exact end.
+    if .remaining < .minimumPhrase
+        if point_count = 0
+            @addPoint: current_time, current_pitch
+        endif
+        current_time = grammar_end
+        @addPoint: current_time, current_pitch
+    else
+        @randomUniform: pitch_base_lo_Hz, pitch_base_hi_Hz
+        .base = randomUniform.result
+        current_pitch = .base
 
-    @nucleus
-    nuc_end_'cur_ph' = current_time
-    nuc_type_'cur_ph'$ = last_gesture_type$
-    coda_start_'cur_ph' = nuc_end_'cur_ph'
+        # Phrase dynamics now affect the output audio.
+        @randomUniform: -loudnessVariation, loudnessVariation
+        current_intensity = baseLoudness + randomUniform.result
 
-    @coda
-    coda_end_'cur_ph' = current_time
-    coda_type_'cur_ph'$ = last_gesture_type$
-    
-    # Breath pause
-    @randomUniform: 0.05 * gesture_scale, 0.1 * gesture_scale
-    current_time = current_time + randomUniform.result
+        phrase_count = phrase_count + 1
+        cur_ph = phrase_count
+        phrase_start_'cur_ph' = current_time
+        phrase_intensity_'cur_ph' = current_intensity
+
+        @onset
+        onset_end_'cur_ph' = current_time
+        onset_type_'cur_ph'$ = last_gesture_type$
+        nuc_start_'cur_ph' = onset_end_'cur_ph'
+
+        @nucleus
+        nuc_end_'cur_ph' = current_time
+        nuc_type_'cur_ph'$ = last_gesture_type$
+        coda_start_'cur_ph' = nuc_end_'cur_ph'
+
+        @coda
+        coda_end_'cur_ph' = current_time
+        coda_type_'cur_ph'$ = last_gesture_type$
+
+        if current_time < grammar_end
+            @randomUniform: 0.05 * gesture_scale, 0.1 * gesture_scale
+            current_time = min(grammar_end, current_time + randomUniform.result)
+        endif
+    endif
 endproc
 
 # ========================================================================================
@@ -705,11 +797,15 @@ endproc
 procedure onset
     @randomUniform: 0.05 * gesture_scale, 0.15 * gesture_scale
     .dur = randomUniform.result
+
+    # Reserve the minimum nucleus + coda duration.
+    .maxDur = grammar_end - current_time - 0.30 * gesture_scale
+    .dur = min(.dur, .maxDur)
+
     @randomInteger: 1, 2
     .choice = randomInteger.result
-    
+
     if .choice = 1
-        # JumpUp
         last_gesture_type$ = "JumpUp"
         @addPoint: current_time, current_pitch
         @randomUniform: 10 * interval_scale, 30 * interval_scale
@@ -717,7 +813,6 @@ procedure onset
         current_time = current_time + .dur
         @addPoint: current_time, current_pitch
     else
-        # GlissandoUp
         last_gesture_type$ = "GlissUp"
         @addPoint: current_time, current_pitch
         current_time = current_time + .dur
@@ -730,58 +825,62 @@ endproc
 procedure nucleus
     @randomUniform: 0.2 * gesture_scale, 0.5 * gesture_scale
     .dur = randomUniform.result
+
+    # Reserve the minimum coda duration.
+    .maxDur = grammar_end - current_time - 0.10 * gesture_scale
+    .dur = min(.dur, .maxDur)
     .endTime = current_time + .dur
+
     @randomInteger: 1, 2
     .choice = randomInteger.result
-    
+
     if .choice = 1
-        # Plateau
         last_gesture_type$ = "Plateau"
         @addPoint: current_time, current_pitch
         current_time = .endTime
         @addPoint: current_time, current_pitch
     else
-        # Wobble
         last_gesture_type$ = "Wobble"
-        while current_time < .endTime
-            .step = 0.05 * gesture_scale
-            if .step < 0.01
-                .step = 0.01
-            endif
+        .step = 0.05 * gesture_scale
+        if .step < 0.01
+            .step = 0.01
+        endif
+
+        while current_time < .endTime - 1e-9
             @randomUniform: -wobble_depth_Hz, wobble_depth_Hz
             .wobble = randomUniform.result
             @addPoint: current_time, current_pitch + .wobble
-            current_time = current_time + .step
+            current_time = min(.endTime, current_time + .step)
         endwhile
+
+        # Exact endpoint: prevents the old one-step overshoot.
+        @addPoint: current_time, current_pitch
     endif
 endproc
 
 procedure coda
     @randomUniform: 0.1 * gesture_scale, 0.2 * gesture_scale
-    .dur = randomUniform.result
-    
+    .dur = min(randomUniform.result, grammar_end - current_time)
+
     @randomUniform: 0, 1
     if randomUniform.result > 0.5
-        # Fall
         last_gesture_type$ = "Fall"
         @randomUniform: 20 * interval_scale, 40 * interval_scale
         .drop = randomUniform.result
     else
-        # DeepDrop
         last_gesture_type$ = "DeepDrop"
         @randomUniform: 50 * interval_scale, 80 * interval_scale
         .drop = randomUniform.result
     endif
-    
+
     @addPoint: current_time, current_pitch
     current_time = current_time + .dur
     current_pitch = current_pitch - .drop
-    
-    # Range clamping
+
     if current_pitch < 50
         current_pitch = 50
     endif
-    
+
     @addPoint: current_time, current_pitch
 endproc
 
