@@ -24,8 +24,7 @@ initial_sound = selected("Sound")
 initial_name$ = selected$("Sound")
 
 # === GET PLUGIN PATH ===
-preferencesDir$ = preferencesDirectory$
-pluginPath$ = preferencesDir$ + "/plugin_AudioTools/"
+pluginPath$ = "C:/Users/User/Praat/plugin_AudioTools/"
 
 # === CONFIGURATION ===
 overlap_sec = 0.15
