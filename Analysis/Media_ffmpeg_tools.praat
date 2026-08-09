@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -54,6 +54,17 @@
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.2:
+#   - Praat 7 audit: preserves the Sound selected for operation 6
+#     before temporary Strings file-list objects change the selection.
+#   - Quotes the ffmpeg executable path, so folders containing spaces
+#     work correctly on Windows, macOS and Linux.
+#   - Operation 6 now honours Use_duration_not_end for both the FFmpeg
+#     cut and the Praat Sound extraction.
+#   - Removed the ineffective folder-probe logic; missing folders now
+#     produce a clearer ffmpeg/folder diagnostic.
+#   - Praat 7 note: executing FFmpeg and writing files requires the
+#     script to be allowed Full Trust.
 # Changelog v1.1:
 #   - Fix: op 9 (burn subtitles) now auto-escapes the Windows
 #     drive-letter colon for FFmpeg's subtitles= filter
@@ -90,7 +101,7 @@
 #     workflow A/B/C support.
 # ============================================================
 
-form FFmpeg Media Tools v1.1
+form FFmpeg Media Tools v1.2
     comment === Folder containing ffmpeg(.exe) and your input file(s) ===
     comment     Windows example:   C:/ffmpeg
     comment     Mac / Linux:       /Users/shai/ffmpeg
@@ -136,6 +147,16 @@ form FFmpeg Media Tools v1.1
     comment === General ===
     boolean Dry_run 0
 endform
+
+# Preserve the Sound selected for operation 6 BEFORE any file-list helper
+# creates temporary Strings objects and changes the Praat selection.
+op6_sound = 0
+if operation = 6
+    if numberOfSelected("Sound") <> 1
+        exitScript: "Operation 6 requires exactly one Sound object selected before running the script."
+    endif
+    op6_sound = selected("Sound")
+endif
 
 # ============================================================
 # PROCEDURES  (defined before first use)
@@ -325,22 +346,9 @@ if right$(wf$, 1) = "/"
     wf$ = left$(wf$, length(wf$) - 1)
 endif
 
-# --- Folder existence check (NEW in v1.1) ---
-# Test by trying to list the folder. Praat's fileReadable doesn't
-# work on directories cross-platform, but Create Strings as file list
-# returns 0 strings for non-existent folders — and crucially does so
-# without an error.
-Create Strings as file list: "folder_probe", wf$ + "/*"
-folder_probe_n = Get number of strings
-Remove
-
-# A folder might legitimately contain no files (empty folder).
-# So we need a different check: try a wildcard that might match
-# anything, including hidden files. If the folder really doesn't
-# exist, Praat might show a different behavior depending on OS.
-# The cleanest cross-platform check is to look for the folder
-# separator on a probe: if the user typed nothing, that's also
-# a problem.
+# --- Folder path validation ---
+# An empty path is always invalid. A missing/non-readable folder is caught
+# immediately below by the ffmpeg executable check, with the attempted path.
 if length(wf$) = 0
     exitScript: "Folder path is empty. Fill in the Folder field."
 endif
@@ -369,8 +377,13 @@ if not fileReadable(ffmpeg$)
     exitScript: "FFmpeg not found at:" + newline$
         ... + "  " + ffmpeg$ + newline$
         ... + newline$
+        ... + "Check that the Folder exists and contains the FFmpeg executable." + newline$
         ... + platformHint$
 endif
+
+# Quote the executable itself as well as all media paths. This matters when
+# the FFmpeg folder contains spaces.
+ffmpeg_cmd$ = q$ + ffmpeg$ + q$
 
 # --- Auto-detect input files (NEW: refactored to one procedure) ---
 @findFirstFile: wf$, "mp4 MP4 mov MOV avi AVI mkv MKV m4v M4V webm WEBM"
@@ -419,7 +432,7 @@ elsif operation = 12
 endif
 
 clearinfo
-writeInfoLine: "=== FFmpeg Media Tools v1.1 ==="
+writeInfoLine: "=== FFmpeg Media Tools v1.2 ==="
 appendInfoLine: "Folder:   ", wf$
 appendInfoLine: "FFmpeg:   ", ffmpeg$
 appendInfoLine: "Video:    ", input_video$
@@ -448,7 +461,7 @@ if operation = 1
         shortest$ = " -shortest"
     endif
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_video$ + q$
         ... + " -i " + q$ + input_audio$ + q$
         ... + " -map 0:v:0 -map 1:a:0"
@@ -471,7 +484,7 @@ elsif operation = 2
         ac$ = " -ac 2"
     endif
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_video$ + q$
         ... + " -vn"
         ... + " -ar " + string$(round(sample_rate))
@@ -503,7 +516,7 @@ elsif operation = 3
         range$ = " -to " + end_time$
     endif
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -ss " + start_time$
         ... + " -i "  + q$ + input_video$ + q$
         ... + range$
@@ -521,7 +534,7 @@ elsif operation = 4
     size$ = string$(round(width)) + "x" + string$(round(height))
     fps$  = string$(round(frame_rate))
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_audio$ + q$
         ... + " -filter_complex " + q$
         ... + "[0:a]asplit=2[awav][aout];"
@@ -545,7 +558,7 @@ elsif operation = 5
     size$ = string$(round(width)) + "x" + string$(round(height))
     fps$  = string$(round(frame_rate))
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_audio$ + q$
         ... + " -filter_complex " + q$
         ... + "[0:a]asplit=2[aspec][aout];"
@@ -564,9 +577,9 @@ elsif operation = 6
     # ----------------------------------------------------------
     # Op 6: EXPORT PRAAT SELECTION AS VIDEO SEGMENT
     # ----------------------------------------------------------
-    if numberOfSelected("Sound") <> 1
-        exitScript: "Operation 6 requires exactly one Sound object selected."
-    endif
+    # Restore the Sound captured immediately after the form. Temporary
+    # Strings objects created during file auto-detection change selection.
+    selectObject: op6_sound
 
     @requireFile: input_video$, "video"
     @requireNonEmpty: start_time$, "Start time"
@@ -594,10 +607,16 @@ elsif operation = 6
 
     # (a) Cut the source video to the selected time range
     appendInfoLine: "Step (a): Cutting video segment..."
-    cmd_a$ = ffmpeg$ + " -y"
+    if use_duration_not_end
+        cut_range$ = " -t " + end_time$
+    else
+        cut_range$ = " -to " + end_time$
+    endif
+
+    cmd_a$ = ffmpeg_cmd$ + " -y"
         ... + " -ss " + start_time$
         ... + " -i "  + q$ + input_video$ + q$
-        ... + " -to " + end_time$
+        ... + cut_range$
         ... + " -c copy"
         ... + " " + q$ + cut_video$ + q$
 
@@ -609,7 +628,16 @@ elsif operation = 6
     @hmsToSec: start_time$
     sel_t1 = hmsToSec.seconds
     @hmsToSec: end_time$
-    sel_t2 = hmsToSec.seconds
+    end_or_duration = hmsToSec.seconds
+
+    if use_duration_not_end
+        if end_or_duration <= 0
+            exitScript: "Duration must be greater than zero."
+        endif
+        sel_t2 = sel_t1 + end_or_duration
+    else
+        sel_t2 = end_or_duration
+    endif
 
     selectObject: sel_sound
     snd_dur = Get total duration
@@ -638,7 +666,7 @@ elsif operation = 6
     # (c) Optionally replace the cut video's audio with the Praat WAV
     if replace_audio_in_cut
         appendInfoLine: "Step (c): Replacing cut video audio with Praat WAV..."
-        cmd_c$ = ffmpeg$ + " -y"
+        cmd_c$ = ffmpeg_cmd$ + " -y"
             ... + " -i " + q$ + cut_video$  + q$
             ... + " -i " + q$ + praat_wav$  + q$
             ... + " -map 0:v:0 -map 1:a:0"
@@ -658,7 +686,7 @@ elsif operation = 7
     @requireFile: input_image$, "image (jpg/png)"
     @requireFile: input_audio$, "audio"
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -loop 1"
         ... + " -i " + q$ + input_image$ + q$
         ... + " -i " + q$ + input_audio$ + q$
@@ -679,7 +707,7 @@ elsif operation = 8
     @requireFile: input_video$,    "video"
     @requireFile: input_subtitle$, "subtitle (srt/ass)"
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_video$    + q$
         ... + " -i " + q$ + input_subtitle$ + q$
         ... + " -map 0:v -map 0:a -map 1:s"
@@ -703,7 +731,7 @@ elsif operation = 9
     @escapeSubtitlesPath: input_subtitle$
     sub_path_filter$ = escapeSubtitlesPath.result$
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_video$ + q$
         ... + " -vf subtitles=" + q$ + sub_path_filter$ + q$
         ... + " -c:v libx264 -preset fast -crf 18"
@@ -726,7 +754,7 @@ elsif operation = 10
         hap_fmt$ = " -format hap_q"
     endif
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_video$ + q$
         ... + " -c:v hap"
         ... + hap_fmt$
@@ -741,7 +769,7 @@ elsif operation = 11
     # ----------------------------------------------------------
     @requireFile: input_video$, "video"
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_video$ + q$
         ... + " -vf fps=" + string$(target_fps)
         ... + " -c:v libx264 -preset fast -crf 18"
@@ -759,7 +787,7 @@ elsif operation = 12
     size$ = string$(round(width)) + "x" + string$(round(height))
     fps$  = string$(round(frame_rate))
 
-    cmd$ = ffmpeg$ + " -y"
+    cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_audio$ + q$
         ... + " -filter_complex " + q$
         ... + "[0:a]asplit=2[awav][aout];"
