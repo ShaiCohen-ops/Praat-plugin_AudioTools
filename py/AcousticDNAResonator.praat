@@ -99,7 +99,13 @@ pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/acoustic_dna_resonator.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/acoustic_dna_resonator.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: acoustic_dna_resonator.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempInput$   = temporaryDirectory$ + "/temp_dnares_input.wav"
