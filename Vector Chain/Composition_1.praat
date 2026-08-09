@@ -24,7 +24,6 @@ initial_sound = selected("Sound")
 initial_name$ = selected$("Sound")
 
 # === GET PLUGIN PATH ===
-# This finds the plugin folder regardless of where Praat is installed
 preferencesDir$ = preferencesDirectory$
 pluginPath$ = preferencesDir$ + "/plugin_AudioTools/"
 
@@ -34,8 +33,37 @@ final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
-path_body$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
+path_body$  = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
 path_outro$ = pluginPath$ + "Reverb/Crystalline_Cascade.praat"
+
+# Praat 7 / script-relative fallback
+if not fileReadable(path_intro$)
+    path_intro$ = defaultDirectory$ + "/../AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
+endif
+
+if not fileReadable(path_body$)
+    path_body$ = defaultDirectory$ + "/../Time & Granular/Percussive Audio Groove Creator.praat"
+endif
+
+if not fileReadable(path_outro$)
+    path_outro$ = defaultDirectory$ + "/../Reverb/Crystalline_Cascade.praat"
+endif
+
+path_intro$ = replace_regex$(path_intro$, "\\", "/", 0)
+path_body$  = replace_regex$(path_body$,  "\\", "/", 0)
+path_outro$ = replace_regex$(path_outro$, "\\", "/", 0)
+
+if not fileReadable(path_intro$)
+    exitScript: "Cannot find Neural_Ambient_Drone_Designer.praat"
+endif
+
+if not fileReadable(path_body$)
+    exitScript: "Cannot find Percussive Audio Groove Creator.praat"
+endif
+
+if not fileReadable(path_outro$)
+    exitScript: "Cannot find Crystalline_Cascade.praat"
+endif
 
 # === INFO HEADER ===
 clearinfo
