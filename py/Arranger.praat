@@ -81,6 +81,16 @@ endif
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/arranger.py"
 
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/arranger.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: arranger.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
+endif
+
 manifestFile$ = temporaryDirectory$ + "/temp_arranger_manifest.json"
 doneFile$     = temporaryDirectory$ + "/temp_arranger_done.json"
 resultFile$   = temporaryDirectory$ + "/temp_arranger_result.wav"
