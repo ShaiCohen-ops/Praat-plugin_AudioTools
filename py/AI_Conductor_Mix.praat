@@ -55,8 +55,18 @@ else
 endif
 
 # ---- PATHS ----
-pluginDir$      = preferencesDirectory$ + "/plugin_AudioTools/"
-pythonScript$   = pluginDir$ + "py/ai_conductor_mix.py"
+pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
+pythonScript$ = pluginDir$ + "py/ai_conductor_mix.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/ai_conductor_mix.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: ai_conductor_mix.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
+endif
 
 manifestFile$   = temporaryDirectory$ + "/conductor_manifest.txt"
 descriptorFile$ = temporaryDirectory$ + "/conductor_descriptors.txt"
@@ -64,10 +74,6 @@ mixPlanFile$    = temporaryDirectory$ + "/conductor_mix_plan.csv"
 resultWavFile$  = temporaryDirectory$ + "/conductor_result.wav"
 logFile$        = temporaryDirectory$ + "/conductor_log.txt"
 doneFile$       = temporaryDirectory$ + "/conductor_done.txt"
-
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
-endif
 
 # ---- FORM ----
 form AI Conductor Mix v3.1
