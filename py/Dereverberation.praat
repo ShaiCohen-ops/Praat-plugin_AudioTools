@@ -52,6 +52,10 @@ endif
 pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/dereverberation.py"
 
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/dereverberation.py"
+endif
+
 tempInput$    = temporaryDirectory$ + "/temp_dereverb_input.wav"
 tempOutput$   = temporaryDirectory$ + "/temp_dereverb_output.wav"
 probeMarker$  = temporaryDirectory$ + "/temp_dereverb_probe.ok"

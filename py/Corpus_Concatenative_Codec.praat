@@ -339,14 +339,11 @@ if not fileReadable(backend_script$)
         ... + "Expected at: " + pluginDir$ + "py/  or next to this script."
 endif
 
-# Corpus index lives directly under the Praat preferences folder's corpus/
-# subfolder unless an absolute path is given (a bare name like 'my_corpus'
-# resolves there) - e.g. C:\Users\User\Praat\corpus\my_corpus.json
+# Corpus index location
 if startsWith(corpus_index$, "/") or index(corpus_index$, ":") > 0
     corpusIndexPath$ = corpus_index$
 else
-    corpusDir$ = preferencesDirectory$ + "/corpus/"
-    createDirectory: corpusDir$
+    corpusDir$ = "C:/Users/User/Praat/corpus/"
     corpusIndexPath$ = corpusDir$ + corpus_index$
 endif
 # Normalise to forward slashes so the path PYTHON writes and the path PRAAT
