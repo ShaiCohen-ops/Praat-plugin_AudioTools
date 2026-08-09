@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.3 (2026)
+# Version: 5.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -33,6 +33,25 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v5.4:
+#   Correctness + dramaturgical-semantics pass.
+#   (1) CRITICAL: fixed iterative assembly order. Praat concatenates selected
+#   Sounds in Object-list order, not selection order; the older accumulated
+#   output could therefore come after the intended "next" timeline item.
+#   v5.4 creates each join item after the accumulator before concatenation.
+#   (2) Texture-aware crossfades are bounded by both adjacent item durations,
+#   not by the duration of the whole accumulated output.
+#   (3) Non-zero Sound time domains are handled explicitly. Structural times
+#   remain zero-based; Spectrogram queries and source extracts use sourceStart.
+#   (4) Harmonicity threshold default changed from 0.15 dB to 5 dB.
+#   (5) Rondo refrain selection no longer uses abs(HNR), which rewarded large
+#   negative/noise-dominated HNR; it now combines positive HNR and RMS salience.
+#   (6) A final novelty boundary is removed if it would leave a section shorter
+#   than Min_section_duration_s.
+#   (7) Arc_exaggeration > 1 now increases arc contrast instead of flattening it.
+#   (8) LOOP visualization flags are attached to actual generated loop copies.
+#   (9) Spectral-novelty bins use only min(5 kHz, Nyquist).
 #
 # Changelog v5.3:
 #   Capacity + edge-case pass. (1) max_timeline is now sized to hold
@@ -183,12 +202,12 @@
 #   - Context-aware silence placement
 # ============================================================
 
-form Dramaturgical Structure Composer v5.3
+form Dramaturgical Structure Composer v5.4
     positive Min_section_duration_s 8
     positive Max_section_duration_s 90
     comment Novelty threshold is relative (0-1 of peak); Harmonicity is HNR in dB
     real Novelty_threshold 0.25
-    real Harmonicity_threshold_dB 0.15
+    real Harmonicity_threshold_dB 5.0
     optionmenu Strategy: 2
         option Conservative (subtle)
         option Dramatic (major)
@@ -392,9 +411,15 @@ endif
 inputSound = selected("Sound")
 selectObject: inputSound
 inputName$ = selected$("Sound")
+sourceStart = Get start time
+sourceEnd = Get end time
 inputDuration = Get total duration
 inputChannels = Get number of channels
 sampleRate = Get sampling frequency
+nyquist = sampleRate / 2
+analysisMaxHz = min(5000, nyquist)
+effective_centroid_high_hz = min(spectral_centroid_high_hz, nyquist * 0.8)
+effective_centroid_low_hz = min(spectral_centroid_low_hz, effective_centroid_high_hz * 0.5)
 
 if inputDuration < 20
     exitScript: "Sound too short (< 20 s). Need longer material for structural analysis."
@@ -440,7 +465,7 @@ else
 endif
 
 writeInfoLine: "=============================================="
-appendInfoLine: "  Dramaturgical Structure Composer v5.3"
+appendInfoLine: "  Dramaturgical Structure Composer v5.4"
 appendInfoLine: "=============================================="
 appendInfoLine: "Input: ", inputName$
 appendInfoLine: "Duration: ", fixed$(inputDuration, 2), " s"
@@ -466,7 +491,7 @@ endif
 appendInfoLine: "[1/6] Detecting sections via spectral novelty..."
 
 selectObject: workSound
-spectrogram = To Spectrogram: 0.01, 5000, 0.05, 20, "Gaussian"
+spectrogram = To Spectrogram: 0.01, analysisMaxHz, 0.05, 20, "Gaussian"
 
 analysisStep = 0.1
 numAnalysisFrames = floor(inputDuration / analysisStep)
@@ -476,12 +501,13 @@ prevSpectrum# = zero# (100)
 
 for i from 1 to numAnalysisFrames
     t = i * analysisStep
+    analysisTime = sourceStart + t
     selectObject: spectrogram
     currentSpectrum# = zero# (100)
-    
+
     for freqBin from 1 to 100
-        freq = freqBin * 50
-        power = Get power at: t, freq
+        freq = freqBin * analysisMaxHz / 100
+        power = Get power at: analysisTime, freq
         if power = undefined
             power = 0
         endif
@@ -540,6 +566,15 @@ for i from 2 to numAnalysisFrames - 1
         endif
     endif
 endfor
+
+# Earlier accepted novelty boundaries are separated by Min duration, but a
+# boundary near the end can leave a too-short final remainder. Merge it back.
+if numSections > 1
+    lastCandidate = sectionBoundaries#[numSections]
+    if inputDuration - lastCandidate < min_section_duration_s
+        numSections = numSections - 1
+    endif
+endif
 
 numSections = numSections + 1
 sectionBoundaries#[numSections] = inputDuration
@@ -621,6 +656,7 @@ secTexture# = zero# (max_sections)
 secSound# = zero# (max_sections)
 
 globalMaxRms = 0
+globalMaxPositiveHarm = 0
 
 for s from 1 to numDetectedSections
     secStart#[s] = sectionBoundaries#[s]
@@ -634,7 +670,7 @@ for s from 1 to numDetectedSections
     # the stored section that goes into the assembly pipeline.
     # v5.0 extracted from workSound which was always mono.
     selectObject: inputSound
-    Extract part: secStart#[s], secEnd#[s], "rectangular", 1, "no"
+    Extract part: sourceStart + secStart#[s], sourceStart + secEnd#[s], "rectangular", 1, "no"
     sectionSound = selected("Sound")
     
     # v5.1: separate mono temp for analysis. computeSpectralCentroid
@@ -643,7 +679,7 @@ for s from 1 to numDetectedSections
     # For mono inputs the temp is skipped (sectionMono = sectionSound).
     if inputChannels > 1
         selectObject: workSound
-        Extract part: secStart#[s], secEnd#[s], "rectangular", 1, "no"
+        Extract part: sourceStart + secStart#[s], sourceStart + secEnd#[s], "rectangular", 1, "no"
         sectionMono = selected("Sound")
     else
         sectionMono = sectionSound
@@ -660,6 +696,9 @@ for s from 1 to numDetectedSections
     
     if secRms#[s] > globalMaxRms
         globalMaxRms = secRms#[s]
+    endif
+    if secHarm#[s] > globalMaxPositiveHarm
+        globalMaxPositiveHarm = secHarm#[s]
     endif
     
     selectObject: sectionMono
@@ -686,9 +725,9 @@ for s from 1 to numDetectedSections
         secTexture#[s] = 1
     elsif secRms#[s] < quietRmsThreshold
         secTexture#[s] = 2
-    elsif secCentroid#[s] > spectral_centroid_high_hz
+    elsif secCentroid#[s] > effective_centroid_high_hz
         secTexture#[s] = 3
-    elsif secCentroid#[s] < spectral_centroid_low_hz
+    elsif secCentroid#[s] < effective_centroid_low_hz
         secTexture#[s] = 4
     else
         secTexture#[s] = 5
@@ -838,9 +877,19 @@ elsif reorder_mode = 4
     appendInfoLine: "  Rondo: refrain + interleaved episodes"
     
     refrainIdx = 1
-    bestScore = 0
+    bestScore = -1
     for s from 1 to numDetectedSections
-        score = abs(secHarm#[s]) + abs(secCentroid#[s] - 1500) / 1500
+        if globalMaxRms > 0
+            rmsSalience = secRms#[s] / globalMaxRms
+        else
+            rmsSalience = 0
+        endif
+        if globalMaxPositiveHarm > 0
+            harmSalience = max(0, secHarm#[s]) / globalMaxPositiveHarm
+        else
+            harmSalience = 0
+        endif
+        score = 0.55 * rmsSalience + 0.45 * harmSalience
         if score > bestScore
             bestScore = score
             refrainIdx = s
@@ -1139,6 +1188,7 @@ for p from 1 to formLength
                 timelineType#[numTimelineItems] = 0
                 timelineSectionIdx#[numTimelineItems] = secId
                 timelineParam#[numTimelineItems] = 0
+                timelineLoopFlag#[numTimelineItems] = 1
             endif
         endfor
     endif
@@ -1174,8 +1224,9 @@ if silence_mode = 2
     # noise tails that broke Concatenate with overlap against
     # stereo timeline items.
     selectObject: inputSound
-    tailStart = max(0, inputDuration - 2.0)
-    Extract part: tailStart, inputDuration, "rectangular", 1, "no"
+    tailOffset = max(0, inputDuration - 2.0)
+    tailStart = sourceStart + tailOffset
+    Extract part: tailStart, sourceEnd, "rectangular", 1, "no"
     noiseTailRaw = selected("Sound")
     
     selectObject: noiseTailRaw
@@ -1354,13 +1405,6 @@ for t from 1 to numTimelineItems
     endif
 endfor
 
-# Mark consecutive same-section items as loop copies (for viz)
-for t from 2 to numTimelineItems
-    if timelineType#[t] = 0 and timelineType#[t-1] = 0 and timelineSectionIdx#[t] = timelineSectionIdx#[t-1]
-        timelineLoopFlag#[t] = 1
-    endif
-endfor
-
 # ============================================================
 # STEP 6: ASSEMBLE WITH TEXTURE-AWARE CROSSFADES
 # Track output start/end times for visualization
@@ -1378,34 +1422,40 @@ for t from 2 to numTimelineItems
     tPrev = t - 1
     fromTex = timelineTexture#[tPrev]
     toTex = timelineTexture#[t]
-    
+
     @getCrossfadeDuration: fromTex, toTex
     targetCrossfade = getCrossfadeDuration.duration
-    
+
     selectObject: finalOutput
     currentDur = Get total duration
+    selectObject: timelineSound#[tPrev]
+    prevDur = Get total duration
     selectObject: timelineSound#[t]
     nextDur = Get total duration
-    
-    minDur = min(currentDur, nextDur)
-    safeCrossfade = min(targetCrossfade, minDur * 0.4)
-    
-    if safeCrossfade > 0.002 and currentDur > safeCrossfade * 2 and nextDur > safeCrossfade * 2
+
+    # Keep each joint inside the two adjacent timeline items.
+    safeCrossfade = min(targetCrossfade, min(prevDur, nextDur) * 0.4)
+
+    # Praat concatenates by Object-list order. Copy the next item now, after
+    # finalOutput, so the join order is guaranteed: finalOutput -> nextForJoin.
+    selectObject: timelineSound#[t]
+    nextForJoin = Copy: "join_item_" + string$(t)
+
+    if safeCrossfade > 0.002 and prevDur > safeCrossfade * 2 and nextDur > safeCrossfade * 2
         timelineOutputStart#[t] = currentDur - safeCrossfade
-        selectObject: finalOutput, timelineSound#[t]
+        selectObject: finalOutput, nextForJoin
         Concatenate with overlap: safeCrossfade
         temp = selected("Sound")
-        removeObject: finalOutput
-        finalOutput = temp
     else
         timelineOutputStart#[t] = currentDur
-        selectObject: finalOutput, timelineSound#[t]
+        selectObject: finalOutput, nextForJoin
         Concatenate
         temp = selected("Sound")
-        removeObject: finalOutput
-        finalOutput = temp
     endif
-    
+
+    removeObject: finalOutput, nextForJoin
+    finalOutput = temp
+
     selectObject: finalOutput
     timelineOutputEnd#[t] = Get total duration
 endfor
@@ -1429,7 +1479,7 @@ selectObject: finalOutput
 outputDuration = Get total duration
 
 if apply_tension_arc
-    Formula: ~ self * (0.3 + 0.7 * (if x/outputDuration <= arc_peak_position then x/outputDuration/arc_peak_position else 1-(x/outputDuration-arc_peak_position)/(1-arc_peak_position) fi) ^ (1/arc_exaggeration))
+    Formula: ~ self * (0.3 + 0.7 * (if x/outputDuration <= arc_peak_position then x/outputDuration/arc_peak_position else 1-(x/outputDuration-arc_peak_position)/(1-arc_peak_position) fi) ^ arc_exaggeration)
     appendInfoLine: "  Tension arc applied (peak ", fixed$(arc_peak_position * 100, 0), "%, exag ", fixed$(arc_exaggeration, 1), ")"
 endif
 
@@ -1735,14 +1785,14 @@ if draw_visualization
             else
                 shape1 = 1.0 - (x1 - arc_peak_position) / (1.0 - arc_peak_position)
             endif
-            y1 = 0.3 + 0.7 * shape1 ^ (1.0 / arc_exaggeration)
+            y1 = 0.3 + 0.7 * shape1 ^ arc_exaggeration
             
             if x2 <= arc_peak_position
                 shape2 = x2 / arc_peak_position
             else
                 shape2 = 1.0 - (x2 - arc_peak_position) / (1.0 - arc_peak_position)
             endif
-            y2 = 0.3 + 0.7 * shape2 ^ (1.0 / arc_exaggeration)
+            y2 = 0.3 + 0.7 * shape2 ^ arc_exaggeration
             
             Draw line: x1, y1, x2, y2
         endfor

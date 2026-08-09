@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025) - Stereo output (dual-pass with small differences)
+# Version: 0.5 (2026) - Correct evolution scheduling + robust stereo
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,31 @@
 #   - Density Growth: grain density increases over time
 #   - Pitch Sweep: gradual pitch transposition
 #   - Statistical Shift: 3 regions with different characteristics
+#
+# Changelog v0.5:
+#   DSP / evolution correctness:
+#   - FIXED Density Growth. v0.4 generated candidates at the mean density and
+#     accepted them with probability currentDensity/meanDensity. Above the mean
+#     that probability saturated at 1, so e.g. 20->40 grains/s could never
+#     exceed about 30 grains/s. v0.5 places grains by inverting the cumulative
+#     integral of the requested linear density trajectory.
+#   - Position_randomness now randomizes SOURCE position only. v0.4 also used
+#     it as output-time jitter, which blurred the requested density evolution.
+#   - All evolution modes schedule grains inside valid output bounds instead of
+#     generating edge candidates and silently discarding them.
+#   - Statistical Shift now respects Grain_duration_min/max and uses
+#     Pitch_shift_semitones as its pitch-range control. ThreeRegion uses 8 st
+#     to preserve the former -4/+2/+8 regional character.
+#   - FIXED small pitch shifts. v0.4 skipped resampling whenever the factor was
+#     within 2% of unity (~0.34 st), so the stereo detune (max ~0.06 st) never
+#     happened. The threshold is now 0.005 semitones.
+#   - When pitch shifting is disabled, stored/visualized pitch shift is 0 so
+#     diagnostics match the rendered audio.
+#   - FIXED non-zero Sound time domains: source extraction uses sourceStart.
+#   - Removed the silent 500-grain cap. Requests above 5000 grains now stop
+#     with an explicit message instead of silently changing the density.
+#   - Added validation for densities, grain durations, randomization ranges,
+#     stereo width, and safe normalization for silent output.
 #
 # Changelog v0.4:
 #   - Stereo output: each grain is placed in the left channel as-is and in
@@ -37,7 +62,7 @@
 #   - Added evolution visualization
 # ============================================================
 
-form Evolving Granular
+form Evolving Granular v0.5
     comment Select a Sound object first
     
     comment === Preset ===
@@ -135,7 +160,7 @@ elsif preset = 6
     grain_duration_min = 0.03
     grain_duration_max = 0.15
     evolution_type = 3
-    pitch_shift_semitones = 5.0
+    pitch_shift_semitones = 8.0
     position_randomness = 0.35
     pitch_randomness = 2.5
     amplitude_randomness = 0.25
@@ -199,9 +224,39 @@ originalSound = selected("Sound")
 sound_name$ = selected$("Sound")
 
 selectObject: originalSound
+sourceStart = Get start time
+sourceEnd = Get end time
 duration = Get total duration
 sampling_rate = Get sampling frequency
 n_channels = Get number of channels
+
+# === Validate ===
+if initial_density <= 0 or final_density <= 0
+    exitScript: "Initial and final density must be > 0"
+endif
+if grain_duration_min <= 0 or grain_duration_max <= 0
+    exitScript: "Grain durations must be > 0"
+endif
+if grain_duration_max < grain_duration_min
+    exitScript: "Grain duration max must be >= grain duration min"
+endif
+if grain_duration_min > duration
+    exitScript: "Input sound is shorter than the minimum grain duration"
+endif
+if position_randomness < 0
+    exitScript: "Position randomness must be >= 0"
+endif
+if pitch_randomness < 0
+    exitScript: "Pitch randomness must be >= 0"
+endif
+if amplitude_randomness < 0
+    exitScript: "Amplitude randomness must be >= 0"
+endif
+if stereo_width < 0 or stereo_width > 1
+    exitScript: "Stereo width must be between 0 and 1"
+endif
+
+effective_grain_duration_max = min(grain_duration_max, duration)
 
 # Convert to mono if stereo (keep original for visualization)
 if n_channels > 1
@@ -219,17 +274,24 @@ appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Evolution: ", evolution_name$
 appendInfoLine: ""
 
-# Calculate total number of grains
+# Calculate requested grain count from the density integral.
 avg_density = (initial_density + final_density) / 2
-total_grains = round(avg_density * duration)
+total_grains = max(1, round(avg_density * duration))
 
-# Safety limit
-if total_grains > 500
-    total_grains = 500
+if total_grains > 5000
+    if n_channels > 1
+        removeObject: sourceSound
+    endif
+    exitScript: "This setting requests more than 5000 grains. Reduce density or use a shorter input."
 endif
 
 appendInfoLine: "Grains: ", total_grains
-appendInfoLine: "Density: ", fixed$(initial_density, 1), " -> ", fixed$(final_density, 1), " /sec"
+if evolution_type = 1
+    appendInfoLine: "Density trajectory: ", fixed$(initial_density, 1), " -> ", fixed$(final_density, 1), " /sec"
+else
+    appendInfoLine: "Mean scheduling density: ", fixed$(total_grains / duration, 1), " /sec"
+endif
+appendInfoLine: "Grain duration: ", fixed$(grain_duration_min * 1000, 1), " -> ", fixed$(effective_grain_duration_max * 1000, 1), " ms"
 appendInfoLine: ""
 
 # ===================================================================
@@ -248,87 +310,104 @@ for grain to total_grains
 endfor
 
 # Generate parameters based on evolution type
+# Density Growth uses inverse-transform placement for a linear intensity
+# lambda(u) = initial_density + (final_density-initial_density)*u.
+# The normalized cumulative integral is inverted at evenly spaced quantiles,
+# so the requested density trajectory is achieved without acceptance saturation.
+density_delta = final_density - initial_density
+density_integral = (initial_density + final_density) / 2
+duration_span = effective_grain_duration_max - grain_duration_min
+
 for grain to total_grains
-    normalized_time = (grain - 1) / total_grains
-    
-    if evolution_type = 1
-        # Density Growth
-        current_density = initial_density + (final_density - initial_density) * normalized_time
-        grain_center = normalized_time * duration + position_randomness * randomGauss(0, 1)
-        gDur = grain_duration_min + (grain_duration_max - grain_duration_min) * randomUniform(0, 1)
-        grain_start = grain_center - gDur / 2
-        
-        time_probability = current_density / ((initial_density + final_density) / 2)
-        
-        if randomUniform(0, 1) < time_probability and grain_start >= 0 and grain_start + gDur <= duration
-            source_pos = grain_start + position_randomness * randomGauss(0, 0.5)
-            source_pos = max(0, min(duration - gDur, source_pos))
-            pShift = pitch_randomness * randomGauss(0, 1)
-            amp_factor = 1 + amplitude_randomness * randomGauss(0, 1)
-            amp_factor = max(0.3, min(1.5, amp_factor))
-            
-            grainSourcePos[grain] = source_pos
-            grainOutputPos[grain] = grain_start
-            grainDur[grain] = gDur
-            grainPitchShift[grain] = pShift
-            grainAmp[grain] = amp_factor
-        endif
-        
-    elsif evolution_type = 2
-        # Pitch Sweep
-        grain_center = randomUniform(0, duration)
-        normalized_time = grain_center / duration
-        gDur = grain_duration_min + (grain_duration_max - grain_duration_min) * randomUniform(0, 1)
-        grain_start = grain_center - gDur / 2
-        
-        if grain_start >= 0 and grain_start + gDur <= duration
-            current_pitch_shift = pitch_shift_semitones * normalized_time
-            pShift = current_pitch_shift + pitch_randomness * randomGauss(0, 1)
-            source_pos = grain_start + position_randomness * randomGauss(0, 0.3)
-            source_pos = max(0, min(duration - gDur, source_pos))
-            amp_factor = (1.2 - normalized_time * 0.4) + amplitude_randomness * randomGauss(0, 1)
-            amp_factor = max(0.3, min(1.5, amp_factor))
-            
-            grainSourcePos[grain] = source_pos
-            grainOutputPos[grain] = grain_start
-            grainDur[grain] = gDur
-            grainPitchShift[grain] = pShift
-            grainAmp[grain] = amp_factor
-        endif
-        
+    if total_grains = 1
+        quantile = 0.5
     else
-        # Statistical Shift (3 regions)
-        grain_center = randomUniform(0, duration)
-        normalized_time = grain_center / duration
-        
+        quantile = (grain - 0.5) / total_grains
+    endif
+
+    if evolution_type = 1
+        # Density Growth: deterministic quantiles of the linear density law.
+        if abs(density_delta) < 0.000000001
+            u = quantile
+        else
+            targetIntegral = quantile * density_integral
+            discriminant = initial_density^2 + 2 * density_delta * targetIntegral
+            u = (-initial_density + sqrt(max(0, discriminant))) / density_delta
+        endif
+        u = min(1, max(0, u))
+
+        gDur = grain_duration_min + duration_span * randomUniform(0, 1)
+        maxStart = max(0, duration - gDur)
+        grain_start = u * maxStart
+
+        source_pos = grain_start + position_randomness * randomGauss(0, 0.5)
+        source_pos = max(0, min(duration - gDur, source_pos))
+        pShift = pitch_randomness * randomGauss(0, 1)
+        amp_factor = 1 + amplitude_randomness * randomGauss(0, 1)
+        amp_factor = max(0.3, min(1.5, amp_factor))
+
+    elsif evolution_type = 2
+        # Pitch Sweep: uniform stochastic time placement; pitch follows actual
+        # output position from 0 to Pitch_shift_semitones.
+        gDur = grain_duration_min + duration_span * randomUniform(0, 1)
+        event_center = randomUniform(0, duration)
+        maxStart = max(0, duration - gDur)
+        grain_start = min(maxStart, max(0, event_center - gDur / 2))
+        normalized_time = (grain_start + gDur / 2) / duration
+
+        current_pitch_shift = pitch_shift_semitones * normalized_time
+        pShift = current_pitch_shift + pitch_randomness * randomGauss(0, 1)
+        source_pos = grain_start + position_randomness * randomGauss(0, 0.3)
+        source_pos = max(0, min(duration - gDur, source_pos))
+        amp_factor = (1.2 - normalized_time * 0.4) + amplitude_randomness * randomGauss(0, 1)
+        amp_factor = max(0.3, min(1.5, amp_factor))
+
+    else
+        # Statistical Shift: three regions. Duration ranges are derived from
+        # the user's min/max controls; pitch regions scale with Pitch shift.
+        event_center = randomUniform(0, duration)
+        normalized_time = event_center / duration
+
         if normalized_time < 0.33
-            gDur = 0.08 + 0.1 * randomUniform(0, 1)
-            pShift = -4 + pitch_randomness * randomGauss(0, 1)
+            regionLow = grain_duration_min + 0.55 * duration_span
+            regionHigh = effective_grain_duration_max
+            gDur = regionLow + (regionHigh - regionLow) * randomUniform(0, 1)
+            baseShift = -0.5 * pitch_shift_semitones
+            pShift = baseShift + pitch_randomness * randomGauss(0, 1)
             amp_factor = 0.9 + amplitude_randomness * randomGauss(0, 1)
         elsif normalized_time < 0.66
-            gDur = 0.04 + 0.06 * randomUniform(0, 1)
-            pShift = 2 + pitch_randomness * 1.5 * randomGauss(0, 1)
+            regionLow = grain_duration_min + 0.25 * duration_span
+            regionHigh = grain_duration_min + 0.65 * duration_span
+            gDur = regionLow + (regionHigh - regionLow) * randomUniform(0, 1)
+            baseShift = 0.25 * pitch_shift_semitones
+            pShift = baseShift + pitch_randomness * 1.5 * randomGauss(0, 1)
             amp_factor = 0.7 + amplitude_randomness * randomGauss(0, 1)
         else
-            gDur = 0.02 + 0.04 * randomUniform(0, 1)
-            pShift = 8 + pitch_randomness * 2 * randomGauss(0, 1)
+            regionLow = grain_duration_min
+            regionHigh = grain_duration_min + 0.35 * duration_span
+            gDur = regionLow + (regionHigh - regionLow) * randomUniform(0, 1)
+            baseShift = pitch_shift_semitones
+            pShift = baseShift + pitch_randomness * 2 * randomGauss(0, 1)
             amp_factor = 0.5 + amplitude_randomness * randomGauss(0, 1)
         endif
-        
-        grain_start = grain_center - gDur / 2
-        
-        if grain_start >= 0 and grain_start + gDur <= duration
-            source_pos = grain_start + position_randomness * randomGauss(0, 0.5)
-            source_pos = max(0, min(duration - gDur, source_pos))
-            amp_factor = max(0.2, min(1.3, amp_factor))
-            
-            grainSourcePos[grain] = source_pos
-            grainOutputPos[grain] = grain_start
-            grainDur[grain] = gDur
-            grainPitchShift[grain] = pShift
-            grainAmp[grain] = amp_factor
-        endif
+
+        maxStart = max(0, duration - gDur)
+        grain_start = min(maxStart, max(0, event_center - gDur / 2))
+        source_pos = grain_start + position_randomness * randomGauss(0, 0.5)
+        source_pos = max(0, min(duration - gDur, source_pos))
+        amp_factor = max(0.2, min(1.3, amp_factor))
     endif
+
+    # If pitch processing is disabled, diagnostics must match rendered audio.
+    if not enable_pitch_shifting
+        pShift = 0
+    endif
+
+    grainSourcePos[grain] = source_pos
+    grainOutputPos[grain] = grain_start
+    grainDur[grain] = gDur
+    grainPitchShift[grain] = pShift
+    grainAmp[grain] = amp_factor
 endfor
 
 # Per-channel stereo decorrelation amounts (small differences)
@@ -387,7 +466,10 @@ endfor
 # ===================================================================
 
 selectObject: outputSound
-Scale peak: 0.95
+outputPeak = Get absolute extremum: 0, 0, "Sinc70"
+if outputPeak > 0
+    Scale peak: 0.95
+endif
 Rename: sound_name$ + "_" + preset_name$
 
 # ===================================================================
@@ -432,7 +514,7 @@ if draw_visualization
     # Find min/max for pitch and duration
     minPitch = 0
     maxPitch = 0
-    minDur = 1
+    minDur = duration
     maxDur = 0
     for grain to total_grains
         if grainDur[grain] > 0
@@ -501,7 +583,7 @@ if draw_visualization
     endfor
     
     # Trend line for pitch sweep
-    if evolution_type = 2
+    if evolution_type = 2 and enable_pitch_shifting
         Colour: "{0.8, 0.2, 0.2}"
         Line width: 2
         Draw line: 0, 0, duration, pitch_shift_semitones
@@ -693,11 +775,12 @@ selectObject: outputSound
 # ===================================================================
 procedure placeGrain: .chan, .srcPos, .gStart, .pShift, .amp, .gDur
     selectObject: sourceSound
-    Extract part: .srcPos, .srcPos + .gDur, "Hanning", 1, "no"
+    .absSrcStart = sourceStart + .srcPos
+    Extract part: .absSrcStart, .absSrcStart + .gDur, "Hanning", 1, "no"
     .gx = selected("Sound")
 
     .pf = 2 ^ (.pShift / 12)
-    if enable_pitch_shifting and abs(.pf - 1) > 0.02
+    if enable_pitch_shifting and abs(.pShift) > 0.005
         selectObject: .gx
         Override sampling frequency: sampling_rate * .pf
         Resample: sampling_rate, 50
@@ -709,13 +792,13 @@ procedure placeGrain: .chan, .srcPos, .gStart, .pShift, .amp, .gDur
     selectObject: .gx
     Formula: "self * " + string$(.amp)
     .actualDur = Get total duration
-    .gEnd = .gStart + .actualDur
-    if .gEnd > duration
-        .gEnd = duration
+    .gEnd = min(duration, .gStart + .actualDur)
+
+    if .gStart < duration and .gEnd > .gStart
+        .gxID$ = string$(.gx)
+        .gStart$ = fixed$(.gStart, 8)
+        selectObject: outputSound
+        Formula (part): .gStart, .gEnd, .chan, .chan, "self + object(" + .gxID$ + ", x - " + .gStart$ + ")"
     endif
-    .gxID$ = string$(.gx)
-    .gStart$ = fixed$(.gStart, 6)
-    selectObject: outputSound
-    Formula (part): .gStart, .gEnd, .chan, .chan, "self + object(" + .gxID$ + ", x - " + .gStart$ + ")"
     removeObject: .gx
 endproc

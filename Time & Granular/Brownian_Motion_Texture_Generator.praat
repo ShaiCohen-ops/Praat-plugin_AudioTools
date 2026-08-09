@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,8 +18,8 @@
 #     grain's nominal time plus a Gaussian step.
 #   - Spatial Brownian: pan position random-walks across [0, 1]
 #     with selectable boundary behavior (Clamp / Reflect / Reject).
-#   - Grains are drawn from random or sequential positions in the
-#     source.
+#   - Grains are drawn from random, sequential, or frozen-centre
+#     positions in the source.
 #   - With Allow_overlap = ON (default), dense settings produce
 #     true overlapping grain clouds (sum of grains where they
 #     overlap in time). With OFF, grains are serialized — matches
@@ -29,6 +29,34 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4:
+#   DSP / timing / correctness:
+#   - Temporal Brownian boundaries are now state-aware. v0.3 clipped
+#     displayed grain times to the canvas but let the hidden cumulative
+#     offset continue beyond the wall, causing long piles of grains at
+#     0 or at the end. Temporal Clamp / Reflect / Reject modes now keep
+#     the Brownian state itself inside the legal start-time interval.
+#   - The original Brownian path is preserved for visualization. v0.3
+#     sorted grainOutTime/grainPan in place before drawing, so the panel
+#     labelled "Brownian path" showed a monotonic sorted schedule instead
+#     of the generated walk. Rendering uses a sorted copy; diagnostics use
+#     the unsorted path.
+#   - Serialized mode now computes its exact schedule before allocating the
+#     output canvas. v0.3 could under-allocate and truncate late grains.
+#   - Final fade-out is applied after the final output duration is known.
+#   - Amplitude_scaling is meaningful again: final peak scaling is now a
+#     safety limiter only when peak > 0.95, instead of unconditional
+#     normalization that cancelled all global gain choices.
+#   - Removed the silent 500-grain density cap. Requested density is kept;
+#     an explicit 5000-grain guard prevents pathological workloads.
+#   - Added validation for output shorter than one grain and for edge-fade
+#     duration > half a grain (which could create a discontinuous envelope).
+#   - Sequential source traversal now includes both source endpoints.
+#   - Frozen Moment now actually freezes the source read position at centre,
+#     via a new Source_position_mode (Random / Sequential / Frozen centre).
+#   - Spatial Reject now truly rejects after repeated failed proposals
+#     instead of falling through to a random clamped step.
 #
 # Changelog v0.3:
 #   - HEADLINE: speed rewrite. v0.2 used Concatenate-with-silences
@@ -72,7 +100,7 @@
 #   - Added play option
 # ============================================================
 
-form Brownian Motion Texture v0.3
+form Brownian Motion Texture v0.4
     comment Select a Sound object first
     
     comment === Preset ===
@@ -91,12 +119,16 @@ form Brownian Motion Texture v0.3
     positive Density_grains_per_sec 20
     
     comment === Temporal Brownian Motion ===
-    positive Time_step_size_s 0.1
+    real Time_step_size_s 0.1
     real Time_drift 0.0
+    optionmenu Temporal_boundary_handling: 2
+        option Clamp (pins at time boundaries)
+        option Reflect (bounces off time boundaries)
+        option Reject (re-roll step if out of bounds)
     
     comment === Spatial Brownian Motion (Stereo) ===
     boolean Enable_spatial_brownian 1
-    positive Spatial_step_size 0.15
+    real Spatial_step_size 0.15
     real Spatial_drift 0.0
     optionmenu Boundary_handling: 1
         option Clamp (matches v0.2 — pins at edges)
@@ -105,9 +137,12 @@ form Brownian Motion Texture v0.3
     
     comment === Options ===
     positive Amplitude_scaling 0.7
-    boolean Random_grain_positions 1
-    positive Fade_duration_s 0.005
-    positive Fade_out_s 2.0
+    optionmenu Source_position_mode: 1
+        option Random
+        option Sequential
+        option Frozen centre
+    real Fade_duration_s 0.005
+    real Fade_out_s 2.0
     boolean Allow_overlap 1
     comment (ON: dense grain clouds overlap correctly. OFF: v0.2 serial behavior)
     boolean Draw_visualization 1
@@ -125,7 +160,7 @@ if preset = 2
     spatial_step_size = 0.2
     spatial_drift = 0.0
     amplitude_scaling = 0.5
-    random_grain_positions = 1
+    source_position_mode = 1
     fade_duration_s = 0.003
     fade_out_s = 2.0
     presetName$ = "DenseCloud"
@@ -139,7 +174,7 @@ elsif preset = 3
     spatial_step_size = 0.1
     spatial_drift = 0.0
     amplitude_scaling = 0.8
-    random_grain_positions = 1
+    source_position_mode = 1
     fade_duration_s = 0.01
     fade_out_s = 3.0
     presetName$ = "SparseField"
@@ -153,7 +188,7 @@ elsif preset = 4
     spatial_step_size = 0.3
     spatial_drift = 0.01
     amplitude_scaling = 0.6
-    random_grain_positions = 1
+    source_position_mode = 1
     fade_duration_s = 0.005
     fade_out_s = 2.5
     presetName$ = "WildDrift"
@@ -167,7 +202,7 @@ elsif preset = 5
     spatial_step_size = 0.08
     spatial_drift = 0.0
     amplitude_scaling = 0.6
-    random_grain_positions = 1
+    source_position_mode = 1
     fade_duration_s = 0.004
     fade_out_s = 2.0
     presetName$ = "SubtleShimmer"
@@ -181,7 +216,7 @@ elsif preset = 6
     spatial_step_size = 0.25
     spatial_drift = 0.0
     amplitude_scaling = 0.75
-    random_grain_positions = 0
+    source_position_mode = 2
     fade_duration_s = 0.006
     fade_out_s = 1.5
     presetName$ = "RhythmicPulse"
@@ -195,7 +230,7 @@ elsif preset = 7
     spatial_step_size = 0.12
     spatial_drift = 0.0
     amplitude_scaling = 0.85
-    random_grain_positions = 1
+    source_position_mode = 3
     fade_duration_s = 0.015
     fade_out_s = 4.0
     presetName$ = "FrozenMoment"
@@ -203,13 +238,29 @@ else
     presetName$ = "Custom"
 endif
 
-# Boundary-mode display name
-if boundary_handling = 1
-    boundaryName$ = "Clamp"
-elsif boundary_handling = 2
-    boundaryName$ = "Reflect"
+# Boundary-mode display names
+if temporal_boundary_handling = 1
+    temporalBoundaryName$ = "Clamp"
+elsif temporal_boundary_handling = 2
+    temporalBoundaryName$ = "Reflect"
 else
-    boundaryName$ = "Reject"
+    temporalBoundaryName$ = "Reject"
+endif
+
+if boundary_handling = 1
+    spatialBoundaryName$ = "Clamp"
+elsif boundary_handling = 2
+    spatialBoundaryName$ = "Reflect"
+else
+    spatialBoundaryName$ = "Reject"
+endif
+
+if source_position_mode = 1
+    sourceModeName$ = "Random"
+elsif source_position_mode = 2
+    sourceModeName$ = "Sequential"
+else
+    sourceModeName$ = "Frozen centre"
 endif
 
 # === Check Input ===
@@ -234,18 +285,45 @@ if input_duration < grain_duration_s
     removeObject: source
     exitScript: "Input sound shorter than grain duration"
 endif
+if output_duration_s < grain_duration_s
+    removeObject: source
+    exitScript: "Output duration must be at least one grain duration"
+endif
+if time_step_size_s < 0
+    removeObject: source
+    exitScript: "Time step size must be >= 0"
+endif
+if spatial_step_size < 0
+    removeObject: source
+    exitScript: "Spatial step size must be >= 0"
+endif
+if fade_duration_s < 0
+    removeObject: source
+    exitScript: "Grain fade duration must be >= 0"
+endif
+if fade_duration_s > grain_duration_s / 2
+    removeObject: source
+    exitScript: "Grain fade duration must not exceed half the grain duration"
+endif
+if fade_out_s < 0
+    removeObject: source
+    exitScript: "Final fade-out must be >= 0"
+endif
 
 # === Calculate Grain Count ===
-totalGrains = round(density_grains_per_sec * output_duration_s)
-if totalGrains > 500
-    totalGrains = 500
+# Preserve the requested density; do not silently cap it.
+totalGrains = max(1, round(density_grains_per_sec * output_duration_s))
+if totalGrains > 5000
+    removeObject: source
+    exitScript: "This setting requests more than 5000 grains. Reduce density or output duration."
 endif
+maxOutTime = output_duration_s - grain_duration_s
 
 # === Overlap Diagnostic ===
 overlap_factor = density_grains_per_sec * grain_duration_s
 
 # === Info Header ===
-writeInfoLine: "=== Brownian Motion Texture Generator v0.3 ==="
+writeInfoLine: "=== Brownian Motion Texture Generator v0.4 ==="
 appendInfoLine: "Source: ", input_name$, " (", fixed$(input_duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Output: ", output_duration_s, " s"
@@ -257,7 +335,9 @@ if overlap_factor > 0.95
         appendInfoLine: "Note: dense settings, but Allow_overlap=OFF — grains will be serialized (v0.2 behavior)"
     endif
 endif
-appendInfoLine: "Temporal step: ", time_step_size_s, " | Spatial step: ", spatial_step_size, " (", boundaryName$, ")"
+appendInfoLine: "Temporal step SD: ", time_step_size_s, " s | drift/grain: ", time_drift, " s (", temporalBoundaryName$, ")"
+appendInfoLine: "Spatial step SD: ", spatial_step_size, " | drift/grain: ", spatial_drift, " (", spatialBoundaryName$, ")"
+appendInfoLine: "Source positions: ", sourceModeName$
 appendInfoLine: ""
 
 # === Calculate Brownian Paths ===
@@ -267,57 +347,82 @@ time_offset = 0
 pan_position = 0.5
 
 for i to totalGrains
-    # Temporal Brownian
+    # Temporal Brownian: regular density grid + cumulative random-walk offset.
+    # Boundary handling updates the Brownian STATE, not only the displayed
+    # grain time, avoiding long artificial piles at 0 / maxOutTime.
     base_time = (i - 1) / density_grains_per_sec
-    time_step = randomGauss(time_drift, time_step_size_s)
-    time_offset = time_offset + time_step
-    
-    grainOutTime[i] = base_time + time_offset
-    if grainOutTime[i] < 0
-        grainOutTime[i] = 0
+    if base_time > maxOutTime
+        base_time = maxOutTime
     endif
-    if grainOutTime[i] > output_duration_s - grain_duration_s
-        grainOutTime[i] = output_duration_s - grain_duration_s
+
+    if maxOutTime <= 0
+        grain_time = 0
+        time_offset = -base_time
+    elsif temporal_boundary_handling = 1
+        # Clamp
+        time_step = randomGauss(time_drift, time_step_size_s)
+        candidate_time = base_time + time_offset + time_step
+        grain_time = min(maxOutTime, max(0, candidate_time))
+        time_offset = grain_time - base_time
+    elsif temporal_boundary_handling = 2
+        # Reflect. Mapping through a 2*range period handles arbitrarily
+        # large Gaussian overshoots without repeated while loops.
+        time_step = randomGauss(time_drift, time_step_size_s)
+        candidate_time = base_time + time_offset + time_step
+        period = 2 * maxOutTime
+        reflected_time = candidate_time - floor(candidate_time / period) * period
+        if reflected_time > maxOutTime
+            reflected_time = period - reflected_time
+        endif
+        grain_time = reflected_time
+        time_offset = grain_time - base_time
+    else
+        # Reject / re-roll. If the moving base has already pushed the
+        # no-step state outside the legal range, clamp state first.
+        base_candidate = base_time + time_offset
+        if base_candidate < 0 or base_candidate > maxOutTime
+            base_candidate = min(maxOutTime, max(0, base_candidate))
+            time_offset = base_candidate - base_time
+        endif
+        tries = 0
+        accepted = 0
+        while accepted = 0 and tries < 30
+            time_step = randomGauss(time_drift, time_step_size_s)
+            candidate_time = base_time + time_offset + time_step
+            if candidate_time >= 0 and candidate_time <= maxOutTime
+                grain_time = candidate_time
+                time_offset = grain_time - base_time
+                accepted = 1
+            endif
+            tries = tries + 1
+        endwhile
+        if accepted = 0
+            grain_time = min(maxOutTime, max(0, base_time + time_offset))
+            time_offset = grain_time - base_time
+        endif
     endif
-    
+    pathOutTime[i] = grain_time
+
     # Spatial Brownian — three boundary modes
     if enable_spatial_brownian
         if boundary_handling = 1
-            # Clamp (v0.2 behavior)
+            # Clamp
             spatial_step = randomGauss(spatial_drift, spatial_step_size)
-            pan_position = pan_position + spatial_step
-            if pan_position < 0
-                pan_position = 0
-            endif
-            if pan_position > 1
-                pan_position = 1
-            endif
+            pan_position = min(1, max(0, pan_position + spatial_step))
         elsif boundary_handling = 2
-            # Reflect — bounce off [0, 1] walls
+            # Reflect through a period of 2 pan units.
             spatial_step = randomGauss(spatial_drift, spatial_step_size)
-            new_pan = pan_position + spatial_step
-            iter = 0
-            while (new_pan < 0 or new_pan > 1) and iter < 10
-                if new_pan < 0
-                    new_pan = -new_pan
-                endif
-                if new_pan > 1
-                    new_pan = 2 - new_pan
-                endif
-                iter = iter + 1
-            endwhile
-            if new_pan < 0
-                new_pan = 0
+            candidate_pan = pan_position + spatial_step
+            reflected_pan = candidate_pan - floor(candidate_pan / 2) * 2
+            if reflected_pan > 1
+                reflected_pan = 2 - reflected_pan
             endif
-            if new_pan > 1
-                new_pan = 1
-            endif
-            pan_position = new_pan
+            pan_position = reflected_pan
         else
-            # Reject — re-roll step if it would exceed bounds
+            # Reject — re-roll step if it would exceed bounds.
             tries = 0
             accepted = 0
-            while accepted = 0 and tries < 20
+            while accepted = 0 and tries < 30
                 spatial_step = randomGauss(spatial_drift, spatial_step_size)
                 trial_pan = pan_position + spatial_step
                 if trial_pan >= 0 and trial_pan <= 1
@@ -326,34 +431,40 @@ for i to totalGrains
                 endif
                 tries = tries + 1
             endwhile
-            if accepted = 0
-                # Fall through to clamp after 20 rejections
-                pan_position = pan_position + randomGauss(spatial_drift, spatial_step_size)
-                if pan_position < 0
-                    pan_position = 0
-                endif
-                if pan_position > 1
-                    pan_position = 1
-                endif
-            endif
+            # If all proposals fail, keep the previous position: true reject.
         endif
     else
         pan_position = 0.5
     endif
-    grainPan[i] = pan_position
-    
+    pathPan[i] = pan_position
+
     # Source position
-    if random_grain_positions
-        grainSrcTime[i] = randomUniform(0, input_duration - grain_duration_s)
+    sourceSpan = input_duration - grain_duration_s
+    if source_position_mode = 1
+        pathSrcTime[i] = randomUniform(0, sourceSpan)
+    elsif source_position_mode = 2
+        if totalGrains = 1
+            pathSrcTime[i] = 0.5 * sourceSpan
+        else
+            pathSrcTime[i] = (i - 1) / (totalGrains - 1) * sourceSpan
+        endif
     else
-        grainSrcTime[i] = (i / totalGrains) * (input_duration - grain_duration_s)
+        pathSrcTime[i] = 0.5 * sourceSpan
     endif
+endfor
+
+# Copy the generated path into render arrays. These copies may be sorted;
+# pathOutTime/pathPan/pathSrcTime remain untouched for visualization.
+for i to totalGrains
+    grainOutTime[i] = pathOutTime[i]
+    grainPan[i] = pathPan[i]
+    grainSrcTime[i] = pathSrcTime[i]
 endfor
 
 # === Sort Grains by Output Time (insertion sort) ===
 # Replaces v0.2's bubble sort. For nearly-sorted Brownian sequences
 # (which is the typical case), insertion sort is near-linear.
-# Audio output is bit-identical to v0.2 — same final ordering.
+# Rendering order is chronological; the unsorted path is retained separately.
 appendInfoLine: "Sorting grains..."
 
 for i from 2 to totalGrains
@@ -372,24 +483,34 @@ for i from 2 to totalGrains
     grainSrcTime[j + 1] = keyS
 endfor
 
-# === Build output canvas (Tier 3 — single allocate, fill with grains) ===
-appendInfoLine: "Allocating output canvas..."
+# === Build exact render schedule and output canvas ===
+appendInfoLine: "Preparing render schedule..."
 
-# Output is at least output_duration_s, but we may exceed it slightly
-# in serialized mode (if grains are forced to play one after another).
-# In overlap mode, output is exactly output_duration_s.
-canvasDur = output_duration_s
-if not allow_overlap and overlap_factor > 0.95
-    # Serialized mode under dense settings: estimate worst-case length
-    # = sum of all grain durations. Cap at 2x output_duration to avoid
-    # absurd allocations.
-    canvasDur = totalGrains * grain_duration_s
-    if canvasDur > output_duration_s * 2
-        canvasDur = output_duration_s * 2
+# In overlap mode, sorted start times are written directly. In serialized
+# mode, compute the exact pushed-forward start time for every grain FIRST,
+# then allocate a canvas long enough to hold the schedule without truncation.
+if allow_overlap
+    canvasDur = output_duration_s
+else
+    currentTime = 0
+    for i to totalGrains
+        if grainOutTime[i] > currentTime
+            serialStart[i] = grainOutTime[i]
+        else
+            serialStart[i] = currentTime
+        endif
+        currentTime = serialStart[i] + grain_duration_s
+    endfor
+    canvasDur = max(output_duration_s, currentTime)
+    if canvasDur > output_duration_s + 1 / sampleRate
+        appendInfoLine: "Serial mode extends output to ", fixed$(canvasDur, 3), " s"
     endif
-    if canvasDur < output_duration_s
-        canvasDur = output_duration_s
-    endif
+endif
+
+estimatedStereoSamples = round(canvasDur * sampleRate) * 2
+if estimatedStereoSamples > 50000000
+    removeObject: source
+    exitScript: "Requested output would exceed 50 million stereo samples. Reduce duration, density, or use overlap mode."
 endif
 
 output = Create Sound from formula: input_name$ + "_brownian_" + presetName$,
@@ -398,27 +519,17 @@ output = Create Sound from formula: input_name$ + "_brownian_" + presetName$,
 sourceID$ = string$(source)
 
 # === Generate Grains ===
-# In allow_overlap mode: each grain writes to its grainOutTime[i]
-# directly, summing into the canvas if other grains are already there.
-# In serialized mode: track currentTime and place each grain after
-# the previous one (matching v0.2 behavior).
-
 appendInfoLine: "Writing grains..."
 
-currentTime = 0
 gainStr$ = fixed$(amplitude_scaling, 8)
+
 
 for i to totalGrains
     # Determine where to write this grain
     if allow_overlap
         writeStart = grainOutTime[i]
     else
-        # Serialized: place at max(currentTime, grainOutTime[i])
-        if grainOutTime[i] > currentTime
-            writeStart = grainOutTime[i]
-        else
-            writeStart = currentTime
-        endif
+        writeStart = serialStart[i]
     endif
     
     writeEnd = writeStart + grain_duration_s
@@ -458,11 +569,15 @@ for i to totalGrains
         #   if tRel < fade then 0.5 * (1 - cos(pi * tRel / fade))
         #   elif tRel > grainDur - fade then 0.5 * (1 - cos(pi * (grainDur - tRel) / fade))
         #   else 1
-        win$ = "(if (x - " + startStr$ + ") < " + fadeStr$ + " and " + fadeStr$ + " > 0"
-            ... + " then 0.5 * (1 - cos(pi * (x - " + startStr$ + ") / " + fadeStr$ + "))"
-            ... + " else if (x - " + startStr$ + ") > (" + durStr$ + " - " + fadeStr$ + ") and " + fadeStr$ + " > 0"
-            ... + " then 0.5 * (1 - cos(pi * (" + durStr$ + " - (x - " + startStr$ + ")) / " + fadeStr$ + "))"
-            ... + " else 1 fi fi)"
+        if fade_duration_s > 0
+            win$ = "(if (x - " + startStr$ + ") < " + fadeStr$
+                ... + " then 0.5 * (1 - cos(pi * (x - " + startStr$ + ") / " + fadeStr$ + "))"
+                ... + " else if (x - " + startStr$ + ") > (" + durStr$ + " - " + fadeStr$ + ")"
+                ... + " then 0.5 * (1 - cos(pi * (" + durStr$ + " - (x - " + startStr$ + ")) / " + fadeStr$ + "))"
+                ... + " else 1 fi fi)"
+        else
+            win$ = "1"
+        endif
         
         # Source reference. For output column col, source column is
         # col + offset. If col + offset is out of source range,
@@ -479,43 +594,31 @@ for i to totalGrains
             ... "self + " + gainStr$ + " * " + gainRStr$ + " * " + win$ + " * " + srcRef$
     endif
     
-    # Update currentTime for serialized mode
-    currentTime = writeStart + grain_duration_s
-    
     if i mod 50 = 0
         appendInfoLine: "  ", i, "/", totalGrains
     endif
 endfor
 
 # === Apply final fade-out ===
-if fade_out_s > 0
-    selectObject: output
-    outDur = Get total duration
-    if fade_out_s < outDur
-        fadeStartTime = outDur - fade_out_s
-        fadeStartStr$ = fixed$(fadeStartTime, 8)
-        outDurStr$ = fixed$(outDur, 8)
-        # Cosine fade-out across both channels
-        Formula: "self * if x < " + fadeStartStr$ + " then 1 else 0.5 * (1 + cos(pi * (x - " + fadeStartStr$ + ") / (" + outDurStr$ + " - " + fadeStartStr$ + "))) fi"
-    endif
-endif
-
-# === Trim canvas if it's longer than output_duration_s in serialized mode ===
-if not allow_overlap and canvasDur > output_duration_s
-    selectObject: output
-    actualEnd = currentTime
-    if actualEnd < canvasDur
-        Extract part: 0, actualEnd, "rectangular", 1, "no"
-        trimmedID = selected("Sound")
-        removeObject: output
-        output = trimmedID
-        Rename: input_name$ + "_brownian_" + presetName$
-    endif
-endif
-
-# === Normalize ===
 selectObject: output
-Scale peak: 0.95
+outDur = Get total duration
+effectiveFadeOut = min(fade_out_s, outDur)
+if effectiveFadeOut > 0
+    fadeStartTime = outDur - effectiveFadeOut
+    fadeStartStr$ = fixed$(fadeStartTime, 8)
+    fadeDurStr$ = fixed$(effectiveFadeOut, 8)
+    # Cosine fade-out across both channels, including the case where the
+    # requested fade spans the entire output.
+    Formula: "self * if x < " + fadeStartStr$ + " then 1 else 0.5 * (1 + cos(pi * (x - " + fadeStartStr$ + ") / " + fadeDurStr$ + ")) fi"
+endif
+
+# === Safety peak limiter ===
+# Do not normalize every result: that would cancel Amplitude_scaling.
+selectObject: output
+preLimitPeak = Get absolute extremum: 0, 0, "None"
+if preLimitPeak > 0.95
+    Scale peak: 0.95
+endif
 
 # === Cleanup source ===
 removeObject: source
@@ -531,6 +634,7 @@ nResultCh = Get number of channels
 # ============================================================
 
 if draw_visualization
+    vizGrainMax = max(2, totalGrains)
     Erase all
     
     # ----------------------------------------------------------
@@ -552,7 +656,7 @@ if draw_visualization
         ... input_name$
         ... + "  |  " + presetName$
         ... + "  |  " + string$(totalGrains) + " grains"
-        ... + "  |  " + boundaryName$
+        ... + "  |  T:" + temporalBoundaryName$ + "/S:" + spatialBoundaryName$
         ... + "  |  " + modeStr$
         ... + "  |  Density factor: " + fixed$(overlap_factor, 2)
     
@@ -562,31 +666,32 @@ if draw_visualization
     Select outer viewport: 0, 4.2, 0.75, 4.60
     Select inner viewport: 0.55, 4.00, 0.95, 4.40
     
-    Axes: 1, totalGrains, 0, output_duration_s
+    Axes: 1, vizGrainMax, 0, output_duration_s
     Paint rectangle: "{0.96, 0.96, 0.96}", 1, totalGrains, 0, output_duration_s
     
     # Reference: the "ideal" linear progression (no Brownian drift)
     Colour: "{0.65, 0.65, 0.70}"
     Dotted line
     Line width: 1.2
-    Draw line: 1, 0, totalGrains, output_duration_s
+    referenceEnd = min(maxOutTime, (totalGrains - 1) / density_grains_per_sec)
+    Draw line: 1, 0, totalGrains, referenceEnd
     Solid line
     Line width: 1
     Font size: 5
     Colour: "{0.45, 0.45, 0.45}"
-    Text: totalGrains * 0.99, "right", output_duration_s * 0.95, "half", "no-drift reference"
+    Text: totalGrains * 0.99, "right", min(output_duration_s * 0.95, referenceEnd + output_duration_s * 0.03), "half", "no-drift reference"
     
     # Brownian path
     Colour: "{0.85, 0.30, 0.30}"
     Line width: 1.3
     for i from 2 to totalGrains
-        Draw line: i - 1, grainOutTime[i - 1], i, grainOutTime[i]
+        Draw line: i - 1, pathOutTime[i - 1], i, pathOutTime[i]
     endfor
     Line width: 1
     
     # Per-grain dots, color by source position
     for i to totalGrains
-        srcRel = grainSrcTime[i] / max(input_duration, 0.001)
+        srcRel = pathSrcTime[i] / max(input_duration, 0.001)
         cR = 0.30 + srcRel * 0.55
         cG = 0.40
         cB = 0.78 - srcRel * 0.55
@@ -594,7 +699,7 @@ if draw_visualization
             cB = 0
         endif
         rgb$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
-        Paint circle (mm): rgb$, i, grainOutTime[i], 0.6
+        Paint circle (mm): rgb$, i, pathOutTime[i], 0.6
     endfor
     
     Colour: "Black"
@@ -609,7 +714,7 @@ if draw_visualization
     Select outer viewport: 4.2, 8, 0.75, 3.00
     Select inner viewport: 4.55, 7.75, 0.95, 2.85
     
-    Axes: 1, totalGrains, 0, 1
+    Axes: 1, vizGrainMax, 0, 1
     Paint rectangle: "{0.96, 0.96, 0.96}", 1, totalGrains, 0, 1
     
     # Center reference
@@ -629,20 +734,20 @@ if draw_visualization
         Colour: "{0.30, 0.65, 0.30}"
         Line width: 1.3
         for i from 2 to totalGrains
-            Draw line: i - 1, grainPan[i - 1], i, grainPan[i]
+            Draw line: i - 1, pathPan[i - 1], i, pathPan[i]
         endfor
         Line width: 1
         
         # Per-grain dots colored by pan
         for i to totalGrains
-            cR = 0.30 + grainPan[i] * 0.55
+            cR = 0.30 + pathPan[i] * 0.55
             cG = 0.55
-            cB = 0.78 - grainPan[i] * 0.55
+            cB = 0.78 - pathPan[i] * 0.55
             if cB < 0
                 cB = 0
             endif
             rgb$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
-            Paint circle (mm): rgb$, i, grainPan[i], 0.5
+            Paint circle (mm): rgb$, i, pathPan[i], 0.5
         endfor
     else
         Colour: "{0.55, 0.55, 0.55}"
@@ -674,7 +779,7 @@ if draw_visualization
     binDur = output_duration_s / nDensBins
     
     for i to totalGrains
-        b = floor(grainOutTime[i] / binDur) + 1
+        b = floor(pathOutTime[i] / binDur) + 1
         if b < 1
             b = 1
         endif
@@ -790,9 +895,10 @@ if draw_visualization
         ... + "  |  Grain dur: " + fixed$(grain_duration_s * 1000, 1) + " ms"
         ... + "  |  Time step: " + fixed$(time_step_size_s, 3) + "s"
         ... + "  |  Spatial step: " + fixed$(spatial_step_size, 3)
+        ... + "  |  Source: " + sourceModeName$
     
     Text: 0.02, "left", 0.28, "half",
-        ... "Boundary: " + boundaryName$
+        ... "Boundaries T/S: " + temporalBoundaryName$ + "/" + spatialBoundaryName$
         ... + "  |  Mode: " + modeStr$
         ... + "  |  Fade in/out: " + fixed$(fade_duration_s * 1000, 1) + " ms / " + fixed$(fade_out_s, 2) + " s"
         ... + "  |  Output: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,16 +19,33 @@
 #   EVAL: Evaluate against ranked/weighted constraints
 #   SELECT: Pick candidate with lowest violation score
 #
+# Changelog v0.4:
+#   - CRITICAL: DurationTier construction rewritten. A single point at the
+#     midpoint of each sounding interval caused Praat to linearly interpolate
+#     ratios across neighbouring intervals and silences. v0.4 builds an
+#     approximately piecewise-constant tier with transition points placed
+#     immediately around each sounding boundary, leaving silences at 1.0.
+#   - EVAL upgraded from three coarse candidates (original / target / 50-50)
+#     to the exact minimum of the weighted squared-violation objective:
+#         d* = (Wt * target + Wf * original) / (Wt + Wf)
+#     This is the closed-form Harmonic Grammar solution and makes the numeric
+#     weights behave continuously as advertised.
+#   - Stereo is preserved. Analysis still uses a mono fold, but mono and
+#     stereo channels are resynthesized separately with the same DurationTier
+#     and stereo outputs are recombined in their original L/R order.
+#   - Added validation for weights, pitch floor, segmentation values, and
+#     the no-sounding-interval case.
+#   - Uses DurationTier: Get target duration to report the exact duration
+#     implied by the tier before resynthesis.
+#   - Winner labels now describe faithful / target / weighted compromise
+#     correctly; visualization remains compatible with the three categories.
+#   - Non-zero Sound time domains are handled explicitly.
+#
 # Changelog v0.3:
 #   - Mono fold for analysis: To TextGrid (silences) and To Manipulation
-#     are mono-only; stereo input previously crashed. Output is mono
-#     (PSOLA resynthesis is inherently mono).
-#   - EVAL now uses squared violations (Harmonic Grammar style). Under
-#     the old linear (L1) violations the compromise candidate was the
-#     average of the two extremes and could never win; squared violations
-#     let the midpoint beat both, so all three candidates are reachable.
-#   - Viz fix: legend viewport was 0..18 on an 8-inch page (3 of 5 items
-#     fell off the right edge); now 0..8 with explicit axes.
+#     are mono-only; stereo input previously crashed. Output was mono.
+#   - EVAL used squared violations (Harmonic Grammar style).
+#   - Viz fix: legend viewport was 0..18 on an 8-inch page; corrected.
 #
 # Changelog v0.2:
 #   - Fixed elsif syntax
@@ -36,7 +53,7 @@
 #   - Improved info output
 # ============================================================
 
-form OT Duration Control
+form OT Duration Control v0.4
     comment Select a Sound object first
     
     comment === Preset ===
@@ -54,7 +71,7 @@ form OT Duration Control
     positive Target_duration_s 0.4
     
     comment === Auto-Segmentation ===
-    real Min_pitch_Hz 100
+    positive Min_pitch_Hz 100
     real Silence_threshold_dB -25.0
     real Min_silent_interval_s 0.1
     real Min_sounding_interval_s 0.1
@@ -97,15 +114,35 @@ if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
+# === Validate ===
+if weight_target_duration < 0 or weight_faithfulness < 0
+    exitScript: "Constraint weights must be >= 0."
+endif
+if weight_target_duration = 0 and weight_faithfulness = 0
+    exitScript: "At least one constraint weight must be > 0."
+endif
+if min_pitch_Hz <= 0 or min_pitch_Hz >= 600
+    exitScript: "Min pitch must be > 0 and < 600 Hz."
+endif
+if min_silent_interval_s < 0 or min_sounding_interval_s < 0
+    exitScript: "Minimum silence/sounding interval durations must be >= 0."
+endif
+
 sound = selected("Sound")
 sound_name$ = selected$("Sound")
 
 selectObject: sound
+sourceStart = Get start time
+sourceEnd = Get end time
 totalDuration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
 
-# Mono fold for analysis (To TextGrid/To Manipulation are mono-only)
+if numChannels > 2
+    exitScript: "This version supports mono or stereo Sound objects."
+endif
+
+# Mono fold is used only for segmentation. Stereo resynthesis is preserved.
 if numChannels > 1
     selectObject: sound
     analysisSound = Convert to mono
@@ -116,10 +153,10 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== OT Duration Control ==="
-appendInfoLine: "Source: ", sound_name$, " (", fixed$(totalDuration, 2), " s)"
+writeInfoLine: "=== Constraint-Based Duration Control v0.4 ==="
+appendInfoLine: "Source: ", sound_name$, " (", fixed$(totalDuration, 2), " s; ", numChannels, " ch)"
 appendInfoLine: ""
-appendInfoLine: "Constraints:"
+appendInfoLine: "Weighted constraints:"
 appendInfoLine: "  TARGET weight: ", weight_target_duration, " (target: ", target_duration_s, " s)"
 appendInfoLine: "  FAITHFULNESS weight: ", weight_faithfulness
 appendInfoLine: ""
@@ -146,12 +183,13 @@ endfor
 appendInfoLine: "Found ", numSounding, " sounding intervals"
 appendInfoLine: ""
 
-# === Create Manipulation Object ===
-selectObject: analysisSound
-manipulation = To Manipulation: 0.01, min_pitch_Hz, 600
-
-selectObject: manipulation
-durTier = Extract duration tier
+if numSounding < 1
+    removeObject: textGrid
+    if createdMono
+        removeObject: analysisSound
+    endif
+    exitScript: "No sounding intervals were detected. Adjust the silence-detection settings."
+endif
 
 # === Store Original Durations for Visualization ===
 intervalCount = 0
@@ -166,99 +204,157 @@ for i to numIntervals
     endif
 endfor
 
-# === OT Evaluation Loop ===
-appendInfoLine: "=== OT Evaluation ==="
-appendInfoLine: "Interval | Original | Winner | Ratio | Best Candidate"
-appendInfoLine: "---------|----------|--------|-------|---------------"
+# === Weighted Constraint Evaluation ===
+appendInfoLine: "=== Weighted Evaluation ==="
+appendInfoLine: "Interval | Original | New dur | Ratio | Solution"
+appendInfoLine: "---------|----------|---------|-------|--------------------"
 
 intervals_processed = 0
+weightSum = weight_target_duration + weight_faithfulness
 
 for i to numIntervals
     selectObject: textGrid
     label$ = Get label of interval: 1, i
-    
+
     if label$ = "sounding"
         intervals_processed += 1
-        
+
         startTime = Get start time of interval: 1, i
         endTime = Get end time of interval: 1, i
         currentDur = endTime - startTime
-        
-        # === GEN: Generate Candidates ===
-        # Candidate A: Faithful (keep original)
-        candA = currentDur
-        # Candidate B: Target (use target duration)
-        candB = target_duration_s
-        # Candidate C: Compromise (50/50 blend)
-        candC = (currentDur * 0.5) + (target_duration_s * 0.5)
-        
-        # === EVAL: Calculate Violation Scores (squared / Harmonic Grammar) ===
-        
-        # Candidate A (faithful): No faithfulness violation
-        violTarget_A = (candA - target_duration_s) ^ 2
-        violFaith_A = 0
-        score_A = (violTarget_A * weight_target_duration) + (violFaith_A * weight_faithfulness)
-        
-        # Candidate B (target): No target violation
-        violTarget_B = 0
-        violFaith_B = (candB - currentDur) ^ 2
-        score_B = (violTarget_B * weight_target_duration) + (violFaith_B * weight_faithfulness)
-        
-        # Candidate C (compromise): Partial violations
-        violTarget_C = (candC - target_duration_s) ^ 2
-        violFaith_C = (candC - currentDur) ^ 2
-        score_C = (violTarget_C * weight_target_duration) + (violFaith_C * weight_faithfulness)
-        
-        # === SELECT: Pick Winner ===
-        winnerDur = candA
-        bestScore = score_A
-        winnerName$ = "A (faithful)"
-        winnerType = 1
-        
-        if score_B < bestScore
-            winnerDur = candB
-            bestScore = score_B
+
+        # Exact minimizer of:
+        #   Wt * (d - target)^2 + Wf * (d - original)^2
+        winnerDur = (weight_target_duration * target_duration_s + weight_faithfulness * currentDur) / weightSum
+
+        # Classification is only for reporting/visualization.
+        if weight_target_duration = 0
+            winnerName$ = "A (faithful)"
+            winnerType = 1
+        elsif weight_faithfulness = 0
             winnerName$ = "B (target)"
             winnerType = 2
-        endif
-        if score_C < bestScore
-            winnerDur = candC
-            bestScore = score_C
-            winnerName$ = "C (compromise)"
+        else
+            winnerName$ = "C (weighted compromise)"
             winnerType = 3
         endif
-        
-        # Store for visualization
+
+        ratio = winnerDur / currentDur
+
+        # Store for visualization and DurationTier construction.
         intNewDur[intervals_processed] = winnerDur
         intWinnerType[intervals_processed] = winnerType
-        
-        # Calculate duration ratio
-        ratio = winnerDur / currentDur
-        
-        # Apply to duration tier
-        selectObject: durTier
-        midpoint = (startTime + endTime) / 2
-        Add point: midpoint, ratio
-        
-        # Log
-        appendInfoLine: "   ", intervals_processed, "    |  ", fixed$(currentDur, 3), "  |  ", fixed$(winnerDur, 3), " | ", fixed$(ratio, 2), "  | ", winnerName$
+        intRatio[intervals_processed] = ratio
+
+        appendInfoLine: "   ", intervals_processed, "    |  ", fixed$(currentDur, 3), "  |  ", fixed$(winnerDur, 3), " | ", fixed$(ratio, 3), " | ", winnerName$
     endif
 endfor
+
+# === Build Piecewise DurationTier ===
+# Praat linearly interpolates DurationTier values. To make each sounding
+# interval behave approximately as a constant ratio while preserving silences
+# at ratio 1.0, put pairs of points immediately around each boundary.
+Create DurationTier: "OT_duration", sourceStart, sourceEnd
+durTier = selected("DurationTier")
+
+# Baseline: unchanged duration outside sounding intervals.
+selectObject: durTier
+Add point: sourceStart, 1
+Add point: sourceEnd, 1
+
+soundingIndex = 0
+for i to numIntervals
+    selectObject: textGrid
+    label$ = Get label of interval: 1, i
+
+    if label$ = "sounding"
+        soundingIndex += 1
+        startTime = Get start time of interval: 1, i
+        endTime = Get end time of interval: 1, i
+        currentDur = endTime - startTime
+        ratio = intRatio[soundingIndex]
+
+        # A micro-transition makes the integral differ from the ideal
+        # piecewise-constant mapping only negligibly while avoiding a long
+        # interpolation ramp through neighbouring silence.
+        edgeEps = min(0.000001, currentDur / 4)
+
+        selectObject: durTier
+
+        if startTime > sourceStart
+            Add point: max(sourceStart, startTime - edgeEps), 1
+        endif
+        Add point: min(endTime, startTime + edgeEps), ratio
+
+        Add point: max(startTime, endTime - edgeEps), ratio
+        if endTime < sourceEnd
+            Add point: min(sourceEnd, endTime + edgeEps), 1
+        endif
+    endif
+endfor
+
+# Exact duration implied by the DurationTier integral.
+selectObject: durTier
+predictedDuration = Get target duration: sourceStart, sourceEnd
+appendInfoLine: ""
+appendInfoLine: "Duration implied by tier: ", fixed$(predictedDuration, 6), " s"
 
 # === Resynthesis ===
 appendInfoLine: ""
 appendInfoLine: "Resynthesizing..."
 
-selectObject: manipulation
-plusObject: durTier
-Replace duration tier
+if numChannels = 1
+    # Mono: resynthesize the original channel directly.
+    selectObject: sound
+    manipulation = To Manipulation: 0.01, min_pitch_Hz, 600
 
-selectObject: manipulation
-result = Get resynthesis (overlap-add)
-Rename: sound_name$ + "_OT"
+    selectObject: manipulation
+    plusObject: durTier
+    Replace duration tier
+
+    selectObject: manipulation
+    result = Get resynthesis (overlap-add)
+    Rename: sound_name$ + "_OT"
+
+    removeObject: manipulation
+else
+    # Stereo: analyze/resynthesize each original channel independently,
+    # using exactly the same DurationTier for temporal alignment.
+    selectObject: sound
+    Extract one channel: 1
+    channel1 = selected("Sound")
+
+    selectObject: channel1
+    manipulation1 = To Manipulation: 0.01, min_pitch_Hz, 600
+    selectObject: manipulation1
+    plusObject: durTier
+    Replace duration tier
+    selectObject: manipulation1
+    resultL = Get resynthesis (overlap-add)
+
+    selectObject: sound
+    Extract one channel: 2
+    channel2 = selected("Sound")
+
+    selectObject: channel2
+    manipulation2 = To Manipulation: 0.01, min_pitch_Hz, 600
+    selectObject: manipulation2
+    plusObject: durTier
+    Replace duration tier
+    selectObject: manipulation2
+    resultR = Get resynthesis (overlap-add)
+
+    # resultL was created before resultR, so Object-list order is L then R.
+    selectObject: resultL, resultR
+    Combine to stereo
+    result = selected("Sound")
+    Rename: sound_name$ + "_OT"
+
+    removeObject: manipulation1, manipulation2, channel1, channel2, resultL, resultR
+endif
 
 # === Cleanup ===
-removeObject: textGrid, manipulation, durTier
+removeObject: textGrid, durTier
 if createdMono
     removeObject: analysisSound
 endif
@@ -382,7 +478,9 @@ endif
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Original duration: ", fixed$(totalDuration, 2), " s"
-appendInfoLine: "Result duration: ", fixed$(resultDuration, 2), " s"
+appendInfoLine: "Predicted duration: ", fixed$(predictedDuration, 4), " s"
+appendInfoLine: "Result duration: ", fixed$(resultDuration, 4), " s"
+appendInfoLine: "Prediction error: ", fixed$((resultDuration - predictedDuration) * 1000, 2), " ms"
 appendInfoLine: "Intervals processed: ", intervals_processed
 appendInfoLine: "Created: ", selected$("Sound")
 

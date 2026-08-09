@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,29 @@
 #   multiple time scales. Each depth level adds echoes at
 #   geometrically decreasing intervals (2^depth), creating
 #   fractal-like temporal patterns.
+#
+# Changelog v0.4:
+#   DSP / correctness pass:
+#   - CRITICAL: kernel is now causal. v0.3 used taps from -width..+width,
+#     so half of the matrix read future samples (pre-echo/advance) although
+#     the effect is documented as delayed self-copies. v0.4 uses delayed
+#     taps only: x[n-kD].
+#   - Kernel delay scales are derived from the ORIGINAL Sound length, not
+#     the original+tail canvas. Tail_duration therefore changes only the
+#     available decay space and no longer retunes every delay.
+#   - Amplitude_reduction now controls only each NEW echo layer. In v0.3
+#     it multiplied the entire result at every depth and was then largely
+#     cancelled by final peak normalization.
+#   - Removed the duplicated zero-shift kernel tap. Each depth is now an
+#     explicit dry path plus a normalized bank of delayed taps.
+#   - Snapshot access uses object ID instead of the temporary object name.
+#   - Depths whose rounded delay is < 1 sample are skipped and reported.
+#   - Added validation for amplitude reduction, scale peak, tail/fade time,
+#     and a safe normalization path for silent input.
+#   - Fadeout is clamped to the actual result duration; 0 disables it.
+#   - Visualization spectrogram ceiling is min(5 kHz, Nyquist).
+#   - Reports the theoretical cumulative fractal delay span and whether the
+#     requested tail truncates that span.
 #
 # Changelog v0.3:
 #   - FIX (audio): the per-depth amplitude scaling was linear
@@ -37,7 +60,7 @@
 #   - Fixed Formula interpolation
 # ============================================================
 
-form Fractal Convolution
+form Fractal Convolution v0.4
     comment Select a Sound object first
     optionmenu Preset: 1
         option Custom
@@ -46,13 +69,13 @@ form Fractal Convolution
         option Heavy Fractal
         option Extreme Fractal
     
-    positive Tail_duration_s 2.0
+    real Tail_duration_s 2.0
     natural Fractal_depth 5
     natural Convolution_width 3
     positive Kernel_divisor 10
-    positive Amplitude_reduction 0.15
-    positive Scale_peak 0.90
-    positive Fadeout_duration_s 1.0
+    real Amplitude_reduction 0.15
+    real Scale_peak 0.90
+    real Fadeout_duration_s 1.0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -114,9 +137,45 @@ selectObject: original
 sampling_rate = Get sampling frequency
 channels = Get number of channels
 originalDuration = Get total duration
+originalSamples = Get number of samples
+nyquist = sampling_rate / 2
+vizMaxHz = min(5000, nyquist)
+
+# === Validate ===
+if tail_duration_s < 0
+    exitScript: "Tail duration must be >= 0 s"
+endif
+if fractal_depth < 1
+    exitScript: "Fractal depth must be at least 1"
+endif
+if convolution_width < 1
+    exitScript: "Convolution width must be at least 1"
+endif
+if kernel_divisor <= 0
+    exitScript: "Kernel divisor must be > 0"
+endif
+if fractal_depth > 30
+    exitScript: "Fractal depth must not exceed 30"
+endif
+if convolution_width > 64
+    exitScript: "Convolution width must not exceed 64"
+endif
+firstKernelSize = round(originalSamples / (kernel_divisor * 2))
+if firstKernelSize < 1
+    exitScript: "Kernel divisor is too large for this Sound: depth 1 would be shorter than one sample"
+endif
+if amplitude_reduction < 0 or amplitude_reduction >= 1
+    exitScript: "Amplitude reduction must be in the range 0 <= value < 1"
+endif
+if scale_peak <= 0 or scale_peak > 1
+    exitScript: "Scale peak must be > 0 and <= 1"
+endif
+if fadeout_duration_s < 0
+    exitScript: "Fadeout duration must be >= 0 s"
+endif
 
 # === Info ===
-writeInfoLine: "=== Fractal Convolution Matrix v0.3 ==="
+writeInfoLine: "=== Fractal Convolution Matrix v0.4 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(originalDuration, 2), " s)"
 appendInfoLine: ""
 appendInfoLine: "Fractal depth: ", fractal_depth
@@ -124,21 +183,24 @@ appendInfoLine: "Convolution width: ", convolution_width
 appendInfoLine: "Kernel divisor: ", kernel_divisor
 appendInfoLine: ""
 
-# === Create Silent Tail ===
-if channels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sampling_rate, "0"
+# === Create Processing Canvas ===
+# Tail duration supplies room for causal delayed copies. It must NOT be part
+# of the delay-scale calculation (which is based on originalSamples only).
+if tail_duration_s > 0
+    Create Sound from formula: "silent_tail", channels, 0, tail_duration_s, sampling_rate, "0"
+    silentTail = selected("Sound")
+
+    # original is older in the Object list than silentTail, so Praat's
+    # Object-list concatenation order is original -> tail.
+    selectObject: original, silentTail
+    Concatenate
+    extended = selected("Sound")
+    Rename: "extended"
+    removeObject: silentTail
 else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sampling_rate, "0"
+    selectObject: original
+    extended = Copy: "extended"
 endif
-silentTail = selected("Sound")
-
-# === Concatenate ===
-selectObject: original, silentTail
-Concatenate
-extended = selected("Sound")
-Rename: "extended"
-
-removeObject: silentTail
 
 # === Copy for Processing ===
 selectObject: extended
@@ -150,51 +212,83 @@ totalSamples = Get number of samples
 # === Main Fractal Processing Loop ===
 appendInfoLine: "Processing fractal depths..."
 appendInfoLine: ""
-appendInfoLine: "Depth | Scale | Kernel Size | Delays"
-appendInfoLine: "------|-------|-------------|-------"
+appendInfoLine: "Depth | Layer gain | Base delay | Max tap delay"
+appendInfoLine: "------|------------|------------|--------------"
+
+# Normalize the delayed-tap bank so Convolution_width changes texture/density
+# without automatically multiplying the total wet gain.
+kernelWeightSum = 0
+for kernel from 1 to convolution_width
+    kernelWeightSum = kernelWeightSum + 1 / (1 + kernel)
+endfor
+
+activeDepths = 0
+fractalSpanSamples = 0
 
 for depth from 1 to fractal_depth
     scaleFactor = 2 ^ depth
-    kernelSize = round(totalSamples / (kernel_divisor * scaleFactor))
-    
-    # Info
-    delayMs = kernelSize / sampling_rate * 1000
-    appendInfoLine: "  ", depth, "   |  ", scaleFactor, "   |    ", kernelSize, "     | ", fixed$(delayMs, 1), " ms"
-    
-    # Snapshot this depth's input so every tap reads a FIXED source
-    # (feedback-free FIR) instead of the accumulating in-place result.
-    selectObject: result
-    Copy: "fractal_snapshot"
-    snapshot = selected("Sound")
-    
-    # Fractal convolution kernel (taps read the snapshot)
-    selectObject: result
-    for kernel from -convolution_width to convolution_width
-        kernelWeight = 1 / (1 + abs(kernel))
-        kernelShift = kernel * kernelSize
-        depthFactor = depth + 2
-        
-        Formula: "self + if col + kernelShift >= 1 and col + kernelShift <= ncol then object['snapshot', row, col + kernelShift] * kernelWeight / depthFactor else 0 fi"
-    endfor
-    
-    removeObject: snapshot
-    
-    # Fractal amplitude scaling (geometric: deep levels truly decrease,
-    # stays in (0,1) instead of the old linear law going negative)
-    selectObject: result
-    ampScale = (1 - amplitude_reduction) ^ depth
-    Formula: "self * ampScale"
+    # IMPORTANT: delay scale is tied to the original source, not the tail.
+    kernelSize = round(originalSamples / (kernel_divisor * scaleFactor))
+
+    if kernelSize >= 1
+        activeDepths = activeDepths + 1
+        depthGain = (1 - amplitude_reduction) ^ depth
+        baseDelayMs = kernelSize / sampling_rate * 1000
+        maxTapDelaySamples = convolution_width * kernelSize
+        maxTapDelayMs = maxTapDelaySamples / sampling_rate * 1000
+        fractalSpanSamples = fractalSpanSamples + maxTapDelaySamples
+
+        appendInfoLine: "  ", depth, "   |   ", fixed$(depthGain, 4), "   |  ", fixed$(baseDelayMs, 2), " ms |  ", fixed$(maxTapDelayMs, 2), " ms"
+
+        # Snapshot the complete previous depth. This makes each stage a true
+        # FIR convolution layer and also creates the self-similar cascade:
+        # later depths convolve the echoes produced by earlier depths.
+        selectObject: result
+        snapshot = Copy: "fractal_snapshot"
+        snapshotStr$ = string$(snapshot)
+
+        # Start from the dry snapshot exactly once. The old zero-shift tap
+        # duplicated it. Then add ONLY causal delayed taps from the snapshot.
+        selectObject: result
+        Formula: "object[" + snapshotStr$ + ", row, col]"
+
+        for kernel from 1 to convolution_width
+            kernelWeight = 1 / (1 + kernel)
+            tapGain = depthGain * kernelWeight / kernelWeightSum
+            kernelShift = kernel * kernelSize
+
+            selectObject: result
+            Formula: "self + if col - " + string$(kernelShift) + " >= 1 then object[" + snapshotStr$ + ", row, col - " + string$(kernelShift) + "] * " + fixed$(tapGain, 12) + " else 0 fi"
+        endfor
+
+        removeObject: snapshot
+    else
+        appendInfoLine: "  ", depth, "   |  skipped (delay < 1 sample)"
+    endif
 endfor
+
+fractalSpan = fractalSpanSamples / sampling_rate
+appendInfoLine: ""
+appendInfoLine: "Active depth levels: ", activeDepths, "/", fractal_depth
+appendInfoLine: "Theoretical cumulative delay span: ", fixed$(fractalSpan, 3), " s"
+if tail_duration_s + 1 / sampling_rate < fractalSpan
+    appendInfoLine: "Note: tail is shorter than the full theoretical delay span; late fractal echoes are intentionally truncated."
+endif
 
 # === Scale Peak ===
 selectObject: result
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: scale_peak
+endif
 
 # === Apply Fadeout ===
 totalDuration = Get total duration
-fadeStart = totalDuration - fadeout_duration_s
-
-Formula: "if x > fadeStart then self * (0.5 + 0.5 * cos(pi * (x - fadeStart) / fadeout_duration_s)) else self fi"
+effectiveFadeout = min(fadeout_duration_s, totalDuration)
+if effectiveFadeout > 0
+    fadeStart = totalDuration - effectiveFadeout
+    Formula: "if x > fadeStart then self * (0.5 + 0.5 * cos(pi * (x - fadeStart) / effectiveFadeout)) else self fi"
+endif
 
 Rename: original_name$ + "_fractal_" + presetName$
 
@@ -264,7 +358,7 @@ if draw_visualization
         origMono = Copy: "fcm_orig_mono"
     endif
     selectObject: origMono
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     removeObject: origSpec, origMono
@@ -287,7 +381,7 @@ if draw_visualization
         resMono = Copy: "fcm_res_mono"
     endif
     selectObject: resMono
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     removeObject: resSpec, resMono
@@ -310,12 +404,13 @@ if draw_visualization
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + original_name$
-        ... + "  |  depth " + string$(fractal_depth)
+        ... + "  |  depth " + string$(activeDepths) + "/" + string$(fractal_depth)
         ... + "  |  width " + string$(convolution_width)
         ... + "  |  divisor " + string$(kernel_divisor)
-        ... + "  |  amp reduction " + fixed$(amplitude_reduction, 2)
+        ... + "  |  layer reduction " + fixed$(amplitude_reduction, 2)
     Text: 0.02, "left", 0.28, "half",
         ... "Tail " + fixed$(tail_duration_s, 1) + " s"
+        ... + "  |  fractal span " + fixed$(fractalSpan, 2) + " s"
         ... + "  |  scale peak " + fixed$(scale_peak, 2)
         ... + "  |  fadeout " + fixed$(fadeout_duration_s, 1) + " s"
         ... + "  |  " + fixed$(originalDuration, 2) + " s -> " + fixed$(vizDur, 2) + " s"

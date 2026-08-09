@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,18 +25,40 @@
 #   - Auto: searches forward first (then backward as fallback)
 #     from the 1-second mark for the first non-silent beat
 #
-# Algorithmic note (preserved from v0.2, not changed):
-#   The segment is extracted with a Hanning window across its
-#   full duration (relativeWidth=1.0). This means each repeat
-#   fades in from zero, peaks in the middle, and fades back to
-#   zero — soft puffs rather than crisp stutters. If you want
-#   sharper "DJ stutter" character, change "Hanning" to
-#   "rectangular" in the Extract part call.
+# Algorithmic note (v0.4):
+#   Beat Repeat now extracts the source slice RECTANGULARLY so
+#   the repeated audio preserves its attack and spectral content.
+#   The optional Fade_repeats control applies only short edge
+#   fades; it no longer sits on top of a full-duration Hann
+#   window. This gives the stutter presets the crisp character
+#   expected from a beat-repeat effect while retaining a smooth
+#   option for slower repeats.
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4:
+#   - DSP: source slice extraction changed from full-duration
+#     Hanning to rectangular. The old Hann window attenuated both
+#     ends of every repeated slice and produced soft "puffs"
+#     instead of a crisp DJ-style repeat. Fade_repeats remains
+#     available for short click-reducing edge fades.
+#   - FIXED non-zero Sound time domains. All analysis/extraction
+#     queries now use absolute source time; assembled output and
+#     visualization remain zero-based.
+#   - Selection now counts only rhythmically aligned beat starts
+#     from which the complete chosen note duration fits. This
+#     prevents late selections from being silently shifted
+#     backwards off the beat grid.
+#   - Added validation for BPM, repeat count, amplitude decay,
+#     fade duration, and note duration versus source duration.
+#   - Silence diagnostic wording now says "candidate slice"
+#     because RMS is measured over the actual repeat-slice length,
+#     not over an entire quarter-note beat.
+#   - Visualization normalizes a shifted/non-zero-domain source
+#     copy to a zero-based time domain before drawing.
 #
 # Changelog v0.3:
 #   - Audio output is bit-identical to v0.2 when
@@ -85,7 +107,7 @@
 #   - Added presets
 # ============================================================
 
-form Beat Repeat v0.3
+form Beat Repeat v0.4
     optionmenu Preset: 1
         option Custom
         option Stutter 1/16
@@ -178,17 +200,31 @@ sound = selected("Sound")
 sound_name$ = selected$("Sound")
 
 selectObject: sound
+sourceStart = Get start time
+sourceEnd = Get end time
 duration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
 
+# === Validate ===
+if bpm <= 0
+    exitScript: "BPM must be > 0"
+endif
+if num_repeats < 1
+    exitScript: "Number of repeats must be at least 1"
+endif
+if num_repeats > 512
+    exitScript: "Number of repeats must not exceed 512"
+endif
+if amplitude_decay < 0 or amplitude_decay > 1
+    exitScript: "Amplitude decay must be between 0 and 1"
+endif
+if fade_duration_s < 0
+    exitScript: "Fade duration must be >= 0"
+endif
+
 # === Calculate Timing ===
 secondsPerBeat = 60 / bpm
-totalBeats = floor(duration / secondsPerBeat)
-
-if totalBeats < 1
-    exitScript: "Sound is too short for one beat at " + string$(bpm) + " BPM (need at least " + fixed$(secondsPerBeat, 3) + " s)"
-endif
 
 # Note duration
 if note_value = 1
@@ -229,16 +265,26 @@ elsif note_value = 12
     note_name$ = "dotted 1/2"
 endif
 
+if noteDuration > duration
+    exitScript: "The selected note value (" + note_name$ + ", " + fixed$(noteDuration, 3) + " s) is longer than the source Sound (" + fixed$(duration, 3) + " s)"
+endif
+
+# Count only beat-grid starts from which the complete slice fits.
+totalBeats = floor((duration - noteDuration) / secondsPerBeat) + 1
+if totalBeats < 1
+    totalBeats = 1
+endif
+
 # === Info ===
-writeInfoLine: "=== Beat Repeat v0.3 ==="
+writeInfoLine: "=== Beat Repeat v0.4 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "BPM: ", bpm, " | Total beats: ", totalBeats
+appendInfoLine: "BPM: ", bpm, " | Valid beat starts: ", totalBeats
 appendInfoLine: "Note value: ", note_name$, " (", fixed$(noteDuration * 1000, 1), " ms)"
 appendInfoLine: ""
 
 # ============================================================
-# SILENCE DETECTION — pre-scan all beats
+# SILENCE DETECTION — pre-scan all candidate slices
 # ============================================================
 appendInfoLine: "Scanning beats for silence..."
 
@@ -252,13 +298,12 @@ silentCount = 0
 
 selectObject: sound
 for b from 1 to totalBeats
-    t1 = (b - 1) * secondsPerBeat
-    t2 = t1 + noteDuration
-    if t2 > duration
-        t2 = duration
-    endif
+    outT1 = (b - 1) * secondsPerBeat
+    outT2 = outT1 + noteDuration
+    t1 = sourceStart + outT1
+    t2 = sourceStart + outT2
     
-    if t2 - t1 < 0.001
+    if outT2 - outT1 < 0.001
         beatRMS#[b] = 0
         beatRMSdB#[b] = -120
         beatSilent#[b] = 1
@@ -283,7 +328,7 @@ for b from 1 to totalBeats
 endfor
 
 nonSilentCount = totalBeats - silentCount
-appendInfoLine: "  Silent beats: ", silentCount, "/", totalBeats, " (threshold: ", silence_threshold_dB, " dB)"
+appendInfoLine: "  Silent candidate slices: ", silentCount, "/", totalBeats, " (threshold: ", silence_threshold_dB, " dB re 1.0)"
 
 # ============================================================
 # BEAT SELECTION (silence-aware)
@@ -373,14 +418,8 @@ elsif beat_selection_mode = 2
     
 elsif beat_selection_mode = 3
     # ----- Beat range -----
-    rangeStart = beat_range_start
-    rangeEnd = beat_range_end
-    if rangeStart < 1
-        rangeStart = 1
-    endif
-    if rangeEnd > totalBeats
-        rangeEnd = totalBeats
-    endif
+    rangeStart = max(1, min(totalBeats, beat_range_start))
+    rangeEnd = max(1, min(totalBeats, beat_range_end))
     if rangeStart > rangeEnd
         temp = rangeStart
         rangeStart = rangeEnd
@@ -482,13 +521,9 @@ endif
 
 sourceStartTime = (selectedBeat - 1) * secondsPerBeat
 
-# Bounds check
+# Safety check (normally guaranteed by valid beat-start counting).
 if sourceStartTime + noteDuration > duration
-    sourceStartTime = duration - noteDuration
-    if sourceStartTime < 0
-        sourceStartTime = 0
-        noteDuration = duration
-    endif
+    sourceStartTime = max(0, duration - noteDuration)
 endif
 
 if beat_selection_mode = 3
@@ -508,7 +543,9 @@ appendInfoLine: "Extract from: ", fixed$(sourceStartTime, 3), " s"
 # EXTRACT SOURCE SEGMENT
 # ============================================================
 selectObject: sound
-segment = Extract part: sourceStartTime, sourceStartTime + noteDuration, "Hanning", 1.0, "no"
+sourceExtractStart = sourceStart + sourceStartTime
+sourceExtractEnd = sourceExtractStart + noteDuration
+segment = Extract part: sourceExtractStart, sourceExtractEnd, "rectangular", 1.0, "no"
 Rename: "segment"
 
 # Check level (post-extraction sanity check; the pre-scan
@@ -527,14 +564,16 @@ if fade_repeats = 1
     selectObject: segment
     segDur = Get total duration
     fadeDur = min(fade_duration_s, segDur * 0.3)
-    Fade in: 0, 0, fadeDur, "yes"
-    Fade out: 0, segDur - fadeDur, fadeDur, "yes"
+    if fadeDur > 0
+        Fade in: 0, 0, fadeDur, "yes"
+        Fade out: 0, segDur - fadeDur, fadeDur, "yes"
+    endif
 endif
 
 # === Extract Before Part ===
 selectObject: sound
 if beforeEnd > 0
-    before = Extract part: 0, beforeEnd, "rectangular", 1.0, "no"
+    before = Extract part: sourceStart, sourceStart + beforeEnd, "rectangular", 1.0, "no"
     hasBefore = 1
 else
     hasBefore = 0
@@ -569,7 +608,7 @@ repeatedDuration = Get total duration
 # === Extract After Part ===
 selectObject: sound
 if afterStart < duration
-    after = Extract part: afterStart, duration, "rectangular", 1.0, "no"
+    after = Extract part: sourceStart + afterStart, sourceEnd, "rectangular", 1.0, "no"
     hasAfter = 1
 else
     hasAfter = 0
@@ -673,8 +712,8 @@ if draw_visualization
         ... + "  |  " + silStr$
     
     # ----------------------------------------------------------
-    # PANEL A: BEAT ENERGY BAR CHART  (left, headline)
-    # The silence diagnostic: one bar per beat at height
+    # PANEL A: CANDIDATE-SLICE ENERGY BAR CHART  (left, headline)
+    # The silence diagnostic: one bar per valid beat start at height
     # = RMS-dB. Blue = non-silent, gray = silent. Selected
     # beat highlighted with orange. Range bounds (mode 3)
     # also shown as orange vertical lines.
@@ -768,7 +807,7 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text left: "yes", "RMS (dB)"
+    Text left: "yes", "RMS (dB re 1.0)"
     Text bottom: "yes", "Beat number"
     
     # ----------------------------------------------------------
@@ -825,10 +864,10 @@ if draw_visualization
     if skip_silence
         if silentCount > 0
             Colour: "{0.85, 0.45, 0.30}"
-            Text: 0.10, "left", 0.34, "half", string$(silentCount) + "/" + string$(totalBeats) + " beats silent (< " + fixed$(silence_threshold_dB, 0) + " dB)"
+            Text: 0.10, "left", 0.34, "half", string$(silentCount) + "/" + string$(totalBeats) + " slices silent (< " + fixed$(silence_threshold_dB, 0) + " dB)"
         else
             Colour: "{0.30, 0.55, 0.30}"
-            Text: 0.10, "left", 0.34, "half", "0 silent beats found"
+            Text: 0.10, "left", 0.34, "half", "0 silent slices found"
         endif
     else
         Colour: "{0.55, 0.55, 0.55}"
@@ -864,7 +903,7 @@ if draw_visualization
     
     Font size: 7
     Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Beat energy (blue = non-silent, gray = silent, orange = selected)"
+    Text: 2.10, "centre", 7.30, "half", "Candidate-slice energy (blue = active, gray = silent, orange = selected)"
     Text: 6.10, "centre", 7.30, "half", "Parameter report"
     
     # ----------------------------------------------------------

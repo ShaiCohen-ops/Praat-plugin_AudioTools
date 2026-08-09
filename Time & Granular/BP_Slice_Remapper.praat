@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,20 +14,41 @@
 #   Bohlen-Pierce-inspired geometric ratio series:
 #       ratio[n] = 3 ^ ((n-1) / N)   for n = 1 ... N
 #
-#   This yields an asymmetric temporal grid where each segment is
-#   geometrically wider than its predecessor.  In Accelerando mode
-#   early slices are shortest and later slices are longest.  In
-#   Decelerando mode the ordering is reversed.  The total duration
-#   is always preserved exactly.
+#   This yields an asymmetric temporal grid whose slice durations form
+#   a Bohlen-Pierce-inspired geometric series. The grid assigns widths
+#   to source positions; the remapper then sorts the extracted slices:
+#       Accelerando = long -> short
+#       Decelerando = short -> long
+#   so event rate genuinely accelerates or decelerates in the output.
 #
 #   Multiple-block presets divide the full sound into equal blocks
 #   first, then apply the same independent BP grid to each block.
-#
-#   Modes:
-#     Extract slices -- cut the source Sound at every BP boundary
+#   The grid itself preserves the complete source duration. Optional
+#   crossfaded joins shorten the rendered output by the overlap amount.
 
 #
 # Changelog:
+#   1.2 (2026):
+#   - FIX: non-zero Sound time domains. BP grid/visualization remain
+#     zero-based, while extraction uses absolute sourceStart + offset.
+#   - FIX: Overlap_factor now directly means the fraction of the
+#     shortest slice used as crossfade (0..0.45). v1.1 silently
+#     multiplied the entered value by 0.45.
+#   - FIX: optional overlap no longer claims duration preservation.
+#     The exact expected output shortening is calculated and reported.
+#   - FIX: removed the arbitrary 5-ms extraction threshold and 10-ms
+#     average-slice safety rule. Renderability is checked from the
+#     actual shortest BP slice against the sample period; accepted
+#     slices are never silently dropped.
+#   - FIX: safe normalization for all-zero output.
+#   - PERFORMANCE: each stereo side is now assembled with one concatenate
+#     after creating copies in sorted Object-list order, instead of repeatedly
+#     rebuilding a growing chain slice-by-slice.
+#   - VIZ: waveform copy is shifted to zero for correct overlay with
+#     BP boundaries when the input time domain does not start at zero.
+#   - Clarified Accelerando/Decelerando terminology: rendered order is
+#     long->short / short->long respectively.
+#
 #   1.1 (2026):
 #   - FIX (structural, output-preserving): v1.0's ordering was
 #     right BY DOUBLE ACCIDENT -- the sort ran opposite to its own
@@ -63,7 +84,7 @@ origSound = selected("Sound")
 origName$ = selected$("Sound")
 
 # === Form ===
-form BP Slicing Protocol - Temporal Grids
+form BP Slicing Protocol - Temporal Grids v1.2
     comment === Preset (number of equal blocks) ===
     optionmenu Preset: 1
         option 1 Block
@@ -108,8 +129,8 @@ endif
 if overlap_factor < 0
     overlap_factor = 0
 endif
-if overlap_factor > 0.95
-    overlap_factor = 0.95
+if overlap_factor > 0.45
+    overlap_factor = 0.45
 endif
 
 # === Direction and mode strings ===
@@ -129,25 +150,20 @@ endif
 
 # === Sound properties ===
 selectObject: origSound
-totalDur  = Get total duration
-origSR    = Get sampling frequency
-nChannels = Get number of channels
+sourceStart = Get start time
+sourceEnd   = Get end time
+totalDur    = Get total duration
+origSR      = Get sampling frequency
+nChannels   = Get number of channels
 
-# v1.1: slice a mono mixdown -- stereo slices made the final
-# Combine produce a 4-channel object
-if nChannels > 1
-    sliceSource = Convert to mono
-else
-    sliceSource = origSound
+if totalDur <= 0
+    exitScript: "Sound duration must be greater than zero."
+endif
+if origSR <= 0
+    exitScript: "Invalid sampling frequency."
 endif
 
-# === Safety check ===
-totalSlices    = numBlocks * num_slices
-minViableDur   = 0.010 * totalSlices
-if totalDur < minViableDur
-    exitScript: "Sound too short for " + string$(totalSlices) + " slices." + newline$
-        ... + "Minimum required: " + fixed$(minViableDur, 3) + " s"
-endif
+totalSlices = numBlocks * num_slices
 
 # === Compute BP ratio series ===
 # ratio[n] = 3 ^ ((n-1) / num_slices)   n = 1 ... num_slices
@@ -159,8 +175,27 @@ for n from 1 to num_slices
     totalRatio = totalRatio + bpR_'n'
 endfor
 
+# === Safety check from the actual shortest BP slice ===
+blockDur = totalDur / numBlocks
+minExpectedSlice = blockDur / totalRatio
+minRenderableDur = 2 / origSR
+if minExpectedSlice < minRenderableDur
+    exitScript: "Sound too short for this BP grid at the current sampling rate." + newline$
+        ... + "Shortest slice would be " + fixed$(minExpectedSlice * 1000, 4) + " ms; "
+        ... + "minimum renderable duration is " + fixed$(minRenderableDur * 1000, 4) + " ms."
+endif
+
+# v1.2: slice a mono mixdown -- stereo slices would make the final
+# Combine produce a 4-channel object. Do this only after validation so
+# failed runs do not leave an extra converted object behind.
+selectObject: origSound
+if nChannels > 1
+    sliceSource = Convert to mono
+else
+    sliceSource = origSound
+endif
+
 # === Build temporal grid ===
-blockDur    = totalDur / numBlocks
 minSliceDur = totalDur
 maxSliceDur = 0
 globalSl    = 0
@@ -272,40 +307,42 @@ endif
 
 nExtracted = 0
 for g from 1 to totalSlices
-    tS = gStart_'g'
-    tE = gEnd_'g'
-    if tS < 0
-        tS = 0
-    endif
-    if tE > totalDur
-        tE = totalDur
-    endif
+    tS = max(0, gStart_'g')
+    tE = min(totalDur, gEnd_'g')
     segDur = tE - tS
-    if segDur >= 0.005
-        selectObject: sliceSource
-        tmpSnd = Extract part: tS, tE, "rectangular", 1, "yes"
-        nExtracted = nExtracted + 1
-        extracted_'nExtracted' = tmpSnd
-        exDur_'nExtracted'     = segDur
-        sortIdxL_'nExtracted'  = nExtracted
-        sortIdxR_'nExtracted'  = nExtracted
+    if segDur < minRenderableDur
+        exitScript: "Internal BP slice became shorter than two samples."
     endif
+    selectObject: sliceSource
+    tmpSnd = Extract part: sourceStart + tS, sourceStart + tE, "rectangular", 1, "yes"
+    nExtracted = nExtracted + 1
+    extracted_'nExtracted' = tmpSnd
+    exDur_'nExtracted'     = segDur
+    sortIdxL_'nExtracted'  = nExtracted
+    sortIdxR_'nExtracted'  = nExtracted
 endfor
 
 appendInfoLine: "  Slices extracted: ", nExtracted
 
-# v1.1: crossfade duration for slice joins -- Overlap_factor was a
-# dead knob; it now crossfades each joint by a fraction of the
-# shortest extracted slice (0 = original butt-joins)
+# v1.2: Overlap_factor is the direct fraction of the shortest slice.
+# Praat's Concatenate with overlap shortens a chain by one overlap per
+# join, so report the exact expected output duration rather than claiming
+# that optional crossfades preserve duration.
 minExDur = 1e9
+sumExDur = 0
 for i from 1 to nExtracted
+    sumExDur = sumExDur + exDur_'i'
     if exDur_'i' < minExDur
         minExDur = exDur_'i'
     endif
 endfor
-xfadeDur = overlap_factor * minExDur * 0.45
+xfadeDur = overlap_factor * minExDur
+expectedOutDur = sumExDur - max(0, nExtracted - 1) * xfadeDur
 if xfadeDur > 0
-    appendInfoLine: "  Slice crossfades: ", fixed$(xfadeDur * 1000, 1), " ms"
+    appendInfoLine: "  Slice crossfades: ", fixed$(xfadeDur * 1000, 2), " ms/join"
+    appendInfoLine: "  Expected output: ", fixed$(expectedOutDur, 4), " s (crossfades shorten by ", fixed$((sumExDur - expectedOutDur) * 1000, 2), " ms)"
+else
+    appendInfoLine: "  Expected output: ", fixed$(sumExDur, 4), " s (duration preserved; no overlap)"
 endif
 
 # Bubble sort L (Direction from form)
@@ -356,64 +393,51 @@ if nExtracted > 1
     endfor
 endif
 
-# Build mono Left channel (sequential — Praat concatenates by object list order,
-# not selection order, so sorted output requires two-at-a-time approach)
-if nExtracted = 1
-    selectObject: extracted_1
-    monoL = Copy: "BP_L"
-elsif nExtracted > 1
-    p1 = sortIdxL_1
-    selectObject: extracted_'p1'
-    monoL = Copy: "BP_L"
-    for k from 2 to nExtracted
-        pk       = sortIdxL_'k'
-        oldChain = monoL
-        # v1.1: Concatenate orders by OBJECT LIST (creation) order,
-        # not selection order -- the chain, being newest, used to
-        # come LAST: every slice was PREPENDED. A fresh copy of the
-        # slice (newer than the chain) makes this a true append.
-        selectObject: extracted_'pk'
-        freshSlice = Copy: "sl"
-        selectObject: monoL
-        plusObject: freshSlice
-        if xfadeDur > 0
-            monoL = Concatenate with overlap: xfadeDur
-        else
-            monoL = Concatenate
-        endif
-        removeObject: oldChain, freshSlice
-    endfor
-    Rename: "BP_L"
+# Build mono Left channel efficiently.
+# Praat concatenates selected Sounds in Object-list order, not selection order.
+# Therefore create fresh slice copies IN the desired sorted order, then perform
+# one concatenate. This is equivalent to v1.1's iterative append but avoids
+# repeatedly copying an ever-growing chain.
+for k from 1 to nExtracted
+    pk = sortIdxL_'k'
+    selectObject: extracted_'pk'
+    freshL_'k' = Copy: "BP_L_part"
+endfor
+selectObject: freshL_1
+for k from 2 to nExtracted
+    plusObject: freshL_'k'
+endfor
+if xfadeDur > 0
+    monoL = Concatenate with overlap: xfadeDur
+else
+    monoL = Concatenate
 endif
+for k from 1 to nExtracted
+    removeObject: freshL_'k'
+endfor
+selectObject: monoL
+Rename: "BP_L"
 
-# Build mono Right channel
-if nExtracted = 1
-    selectObject: extracted_1
-    monoR = Copy: "BP_R"
-elsif nExtracted > 1
-    p1 = sortIdxR_1
-    selectObject: extracted_'p1'
-    monoR = Copy: "BP_R"
-    for k from 2 to nExtracted
-        pk       = sortIdxR_'k'
-        oldChain = monoR
-        # v1.1: Concatenate orders by OBJECT LIST (creation) order,
-        # not selection order -- the chain, being newest, used to
-        # come LAST: every slice was PREPENDED. A fresh copy of the
-        # slice (newer than the chain) makes this a true append.
-        selectObject: extracted_'pk'
-        freshSlice = Copy: "sl"
-        selectObject: monoR
-        plusObject: freshSlice
-        if xfadeDur > 0
-            monoR = Concatenate with overlap: xfadeDur
-        else
-            monoR = Concatenate
-        endif
-        removeObject: oldChain, freshSlice
-    endfor
-    Rename: "BP_R"
+# Build mono Right channel in the opposite sorted order.
+for k from 1 to nExtracted
+    pk = sortIdxR_'k'
+    selectObject: extracted_'pk'
+    freshR_'k' = Copy: "BP_R_part"
+endfor
+selectObject: freshR_1
+for k from 2 to nExtracted
+    plusObject: freshR_'k'
+endfor
+if xfadeDur > 0
+    monoR = Concatenate with overlap: xfadeDur
+else
+    monoR = Concatenate
 endif
+for k from 1 to nExtracted
+    removeObject: freshR_'k'
+endfor
+selectObject: monoR
+Rename: "BP_R"
 
 # Remove source slices
 for i from 1 to nExtracted
@@ -458,7 +482,10 @@ Rename: "BP_" + origName$
 
 if normalize_output = 1
     selectObject: resultSound
-    Scale peak: 0.99
+    resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+    if resultPeak > 0
+        Scale peak: 0.99
+    endif
 endif
 
 selectObject: resultSound
@@ -480,7 +507,7 @@ if draw_visualization = 1
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##BP Slicing Protocol v1.1 -- Temporal Grids##"
+    Text: 0.5, "centre", 0.72, "half", "##BP Slicing Protocol v1.2 -- Temporal Grids##"
     Font size: 8
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.24, "half",
@@ -572,6 +599,8 @@ if draw_visualization = 1
         tmpOrigViz = selected("Sound")
     endif
     selectObject: tmpOrigViz
+    # Visualization uses a zero-based BP grid, so align the waveform copy.
+    Shift times to: "start time", 0
     Colour: "{0.50, 0.50, 0.50}"
     Draw: 0, 0, 0, 0, "no", "Curve"
 
@@ -618,6 +647,7 @@ if draw_visualization = 1
         ... + "  |  Slices/block: " + string$(num_slices)
         ... + "  |  Total slices: " + string$(totalSlices)
         ... + "  |  Direction: " + dirStr$
+        ... + "  |  Xfade: " + fixed$(xfadeDur * 1000, 2) + " ms"
     Text: 0.02, "left", 0.24, "half",
         ... "Shortest: " + fixed$(minSliceDur * 1000, 2) + " ms"
         ... + "  |  Longest: " + fixed$(maxSliceDur * 1000, 2) + " ms"

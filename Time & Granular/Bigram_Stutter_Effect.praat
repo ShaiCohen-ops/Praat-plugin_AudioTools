@@ -2,7 +2,7 @@
 # Praat AudioTools - Bigram_Stutter_Effect.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.3 (2025)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,27 @@
 #   using n-gram (bigram) logic. Segments audio into windows
 #   and makes Markov chain decisions: repeat current segment
 #   (stutter) or advance to next segment.
+#
+# Changelog v1.4:
+#   DSP / timing / correctness:
+#   - FIXED target-duration planning for high overlap. Chain length is now
+#     derived from the actual concatenate hop (window-overlap), so output
+#     always reaches the requested target before final trimming.
+#   - Overlap must be strictly smaller than the window; zero overlap is now
+#     allowed and uses plain Concatenate.
+#   - Removed manual per-segment Fade in/out. Praat's Concatenate with
+#     overlap already performs its own raised-cosine crossfade; v1.3 was
+#     therefore windowing every join twice and unnecessarily dulling/pumping
+#     the result.
+#   - FIXED non-zero Sound time domains: extraction uses absolute source time.
+#   - Output steps are extracted directly in chain order, avoiding creation
+#     of a full source-segment pool when only a shorter target is requested.
+#   - Ping-Pong now truly alternates stutter events L/R while preserving the
+#     requested global stutter-event probability.
+#   - Offset decision visualization now reflects the actual delayed R chain.
+#   - Added mono/stereo validation, sample-rate guards, output complexity
+#     guard, safe normalization for silent output, and Nyquist-safe viz.
+#   - Final output is renamed after trimming so the requested name is stable.
 #
 # Changelog v1.3:
 #   - Batched the L/R output build: was incremental Concatenate-with-
@@ -24,7 +45,7 @@
 #   - Ensured stereoResult is properly selected after trimming
 # ============================================================
 
-form Bigram Stutter Effect v1.2
+form Bigram Stutter Effect v1.4
     comment Select a Sound object first
     
     comment === Preset ===
@@ -44,7 +65,7 @@ form Bigram Stutter Effect v1.2
     comment === Window Settings ===
     positive Window_size_ms 50
     real Stutter_probability_0_to_1 0.3
-    positive Overlap_ms 5
+    real Overlap_ms 5
     
     comment === Stereo Processing Mode ===
     optionmenu Stereo_mode 1
@@ -95,9 +116,11 @@ endif
 if stutter_probability_0_to_1 < 0 or stutter_probability_0_to_1 > 1
     exitScript: "Stutter probability must be between 0 and 1"
 endif
-
-if overlap_ms > window_size_ms
-    exitScript: "Overlap cannot be greater than window size"
+if overlap_ms < 0
+    exitScript: "Overlap must be >= 0 ms"
+endif
+if overlap_ms >= window_size_ms
+    exitScript: "Overlap must be smaller than window size"
 endif
 
 # === Get Input ===
@@ -105,24 +128,53 @@ soundID = selected("Sound")
 sound$ = selected$("Sound")
 
 selectObject: soundID
+sourceStart = Get start time
+sourceEnd = Get end time
 duration = Get total duration
 originalChannels = Get number of channels
 samplingFrequency = Get sampling frequency
 
+if originalChannels > 2
+    exitScript: "Bigram Stutter supports mono or stereo Sounds only"
+endif
+
 # === Convert to seconds ===
 windowSize = window_size_ms / 1000
 overlapSize = overlap_ms / 1000
+hopSize = windowSize - overlapSize
 stutter_probability = stutter_probability_0_to_1
 
-# === Calculate segments ===
-numberOfSegments = floor(duration / windowSize)
+minRenderable = 2 / samplingFrequency
+if windowSize < minRenderable
+    exitScript: "Window size is shorter than two samples at this sampling rate"
+endif
+if target_duration_s < minRenderable
+    exitScript: "Target duration is shorter than two samples at this sampling rate"
+endif
 
+# === Calculate source and output segments ===
+# Only complete source windows participate in the Markov chain.
+numberOfSegments = floor(duration / windowSize + 0.000000000001)
 if numberOfSegments < 2
     exitScript: "Sound is too short for the given window size. Please use a smaller window size."
 endif
 
+# N windows concatenated with overlap O have duration:
+#   windowSize + (N-1) * hopSize
+# Add one safety step at exact boundaries, then trim to the requested target.
+if target_duration_s <= windowSize
+    targetOutputSegments = 1
+else
+    targetOutputSegments = floor((target_duration_s - windowSize) / hopSize + 0.000000000001) + 2
+endif
+
+if targetOutputSegments > 20000
+    exitScript: "This setting requires more than 20000 output segments. Reduce target duration or overlap."
+endif
+plannedDuration = windowSize + (targetOutputSegments - 1) * hopSize
+
 # === Initialize Report ===
-writeInfoLine: "=== Bigram Stutter Effect v1.2 ==="
+writeInfoLine: "=== Bigram Stutter Effect v1.4 ==="
 appendInfoLine: "Source: ", sound$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Target duration: ", target_duration_s, " s"
 appendInfoLine: ""
@@ -135,6 +187,7 @@ appendInfoLine: "Overlap: ", overlap_ms, " ms"
 appendInfoLine: "Stereo mode: ", stereo_mode$
 appendInfoLine: "Original channels: ", originalChannels
 appendInfoLine: "Input segments: ", numberOfSegments
+appendInfoLine: "Output steps: ", targetOutputSegments, " (planned ", fixed$(plannedDuration, 3), " s before trim)"
 appendInfoLine: ""
 
 # ==================================================================
@@ -160,46 +213,35 @@ else
 endif
 
 # ==================================================================
-# BIGRAM LOGIC FOR LEFT CHANNEL (WITH TARGET DURATION)
+# BIGRAM / FIRST-ORDER MARKOV CHAINS
+# decisionType_[i] describes the transition AFTER output position i:
+#   0 = self-loop (stutter), 1 = advance.
 # ==================================================================
 appendInfoLine: ""
 appendInfoLine: "Building LEFT channel stutter pattern (Bigram logic)..."
 
 currentSegmentIndex_L = 1
-outputPosition_L = 1
-currentTime_L = 0
-maxOutputSegments = floor(target_duration_s / windowSize) * 5
-
-# Build the LEFT channel segment chain until reaching target duration
-while currentTime_L < target_duration_s and outputPosition_L <= maxOutputSegments
-    # Store current segment (wraps around if past end)
+for i to targetOutputSegments
     actualSegment = ((currentSegmentIndex_L - 1) mod numberOfSegments) + 1
-    segmentChain_L[outputPosition_L] = actualSegment
-    
-    randomValue = randomUniform(0, 1)
-    
-    if randomValue < stutter_probability
-        # STUTTER: Self-loop transition (stay on same segment)
-        decisionType_L[outputPosition_L] = 0
+    segmentChain_L[i] = actualSegment
+
+    if i < targetOutputSegments
+        randomValue = randomUniform(0, 1)
+        if randomValue < stutter_probability
+            decisionType_L[i] = 0
+        else
+            currentSegmentIndex_L += 1
+            decisionType_L[i] = 1
+        endif
     else
-        # ADVANCE: Forward transition
-        currentSegmentIndex_L += 1
-        decisionType_L[outputPosition_L] = 1
+        decisionType_L[i] = 1
     endif
-    
-    # Accumulate time
-    currentTime_L += windowSize - overlapSize
-    outputPosition_L += 1
-endwhile
+endfor
+totalOutputSegments_L = targetOutputSegments
 
-totalOutputSegments_L = outputPosition_L - 1
-
-# ==================================================================
-# BIGRAM LOGIC FOR RIGHT CHANNEL (MODE-DEPENDENT)
-# ==================================================================
 appendInfoLine: "Building RIGHT channel stutter pattern..."
 
-# Set probability for right channel based on stereo mode
+# Right probability for asymmetric mode.
 if stereo_mode = 5
     stutter_probability_R = stutter_probability * 0.5
     appendInfoLine: "  Asymmetric mode: R probability = ", fixed$(stutter_probability_R, 2)
@@ -207,131 +249,132 @@ else
     stutter_probability_R = stutter_probability
 endif
 
-currentSegmentIndex_R = 1
-outputPosition_R = 1
-currentTime_R = 0
-
-# Build RIGHT channel chain based on stereo mode
 if stereo_mode = 1
-    # Mono to Stereo - same pattern for both channels
+    # Same Markov decisions; source channel content can still differ in stereo input.
     appendInfoLine: "  Mode: Mono to Stereo (identical patterns)"
-    for i to totalOutputSegments_L
+    for i to targetOutputSegments
         segmentChain_R[i] = segmentChain_L[i]
         decisionType_R[i] = decisionType_L[i]
     endfor
-    totalOutputSegments_R = totalOutputSegments_L
-    
+
 elsif stereo_mode = 2
-    # Independent - completely different random pattern
     appendInfoLine: "  Mode: Independent (different random patterns)"
-    while currentTime_R < target_duration_s and outputPosition_R <= maxOutputSegments
+    currentSegmentIndex_R = 1
+    for i to targetOutputSegments
         actualSegment = ((currentSegmentIndex_R - 1) mod numberOfSegments) + 1
-        segmentChain_R[outputPosition_R] = actualSegment
-        
-        randomValue = randomUniform(0, 1)
-        
-        if randomValue < stutter_probability_R
-            decisionType_R[outputPosition_R] = 0
+        segmentChain_R[i] = actualSegment
+        if i < targetOutputSegments
+            randomValue = randomUniform(0, 1)
+            if randomValue < stutter_probability_R
+                decisionType_R[i] = 0
+            else
+                currentSegmentIndex_R += 1
+                decisionType_R[i] = 1
+            endif
         else
-            currentSegmentIndex_R += 1
-            decisionType_R[outputPosition_R] = 1
+            decisionType_R[i] = 1
         endif
-        
-        currentTime_R += windowSize - overlapSize
-        outputPosition_R += 1
-    endwhile
-    totalOutputSegments_R = outputPosition_R - 1
-    
+    endfor
+
 elsif stereo_mode = 3
-    # Complementary - when L stutters, R advances and vice versa
     appendInfoLine: "  Mode: Complementary (opposite behaviors)"
     currentSegmentIndex_R = 1
-    for i to totalOutputSegments_L
+    for i to targetOutputSegments
         actualSegment = ((currentSegmentIndex_R - 1) mod numberOfSegments) + 1
         segmentChain_R[i] = actualSegment
-        
-        if i < totalOutputSegments_L
-            if segmentChain_L[i] = segmentChain_L[i + 1]
-                # L stuttered, R advances
+        if i < targetOutputSegments
+            if decisionType_L[i] = 0
                 currentSegmentIndex_R += 1
                 decisionType_R[i] = 1
             else
-                # L advanced, R stutters
                 decisionType_R[i] = 0
             endif
         else
-            decisionType_R[i] = 0
-        endif
-    endfor
-    totalOutputSegments_R = totalOutputSegments_L
-    
-elsif stereo_mode = 4
-    # Offset - R delayed by 1 segment from L
-    appendInfoLine: "  Mode: Offset (R delayed by 1 segment)"
-    for i to totalOutputSegments_L
-        if i = 1
-            segmentChain_R[i] = segmentChain_L[i]
-        else
-            segmentChain_R[i] = segmentChain_L[i - 1]
-        endif
-        decisionType_R[i] = decisionType_L[i]
-    endfor
-    totalOutputSegments_R = totalOutputSegments_L
-    
-elsif stereo_mode = 5
-    # Asymmetric - R has different probability (lower)
-    appendInfoLine: "  Mode: Asymmetric (R less stutter)"
-    while currentTime_R < target_duration_s and outputPosition_R <= maxOutputSegments
-        actualSegment = ((currentSegmentIndex_R - 1) mod numberOfSegments) + 1
-        segmentChain_R[outputPosition_R] = actualSegment
-        
-        randomValue = randomUniform(0, 1)
-        
-        if randomValue < stutter_probability_R
-            decisionType_R[outputPosition_R] = 0
-        else
-            currentSegmentIndex_R += 1
-            decisionType_R[outputPosition_R] = 1
-        endif
-        
-        currentTime_R += windowSize - overlapSize
-        outputPosition_R += 1
-    endwhile
-    totalOutputSegments_R = outputPosition_R - 1
-    
-elsif stereo_mode = 6
-    # Ping-Pong - stutters alternate L/R
-    appendInfoLine: "  Mode: Ping-Pong (alternating stutters)"
-    currentSegmentIndex_R = 1
-    lastChannelThatStuttered = 0
-    
-    for i to totalOutputSegments_L
-        actualSegment = ((currentSegmentIndex_R - 1) mod numberOfSegments) + 1
-        segmentChain_R[i] = actualSegment
-        
-        l_stuttered = 0
-        if i < totalOutputSegments_L
-            if segmentChain_L[i] = segmentChain_L[i + 1]
-                l_stuttered = 1
-            endif
-        endif
-        
-        if l_stuttered = 1
-            currentSegmentIndex_R += 1
             decisionType_R[i] = 1
-            lastChannelThatStuttered = 1
-        else
-            if lastChannelThatStuttered = 1
+        endif
+    endfor
+
+elsif stereo_mode = 4
+    appendInfoLine: "  Mode: Offset (R delayed by 1 segment)"
+    segmentChain_R[1] = segmentChain_L[1]
+    if targetOutputSegments > 1
+        for i from 2 to targetOutputSegments
+            segmentChain_R[i] = segmentChain_L[i - 1]
+        endfor
+    endif
+    for i to targetOutputSegments
+        if i < targetOutputSegments
+            if segmentChain_R[i + 1] = segmentChain_R[i]
                 decisionType_R[i] = 0
-                lastChannelThatStuttered = 2
+            else
+                decisionType_R[i] = 1
+            endif
+        else
+            decisionType_R[i] = 1
+        endif
+    endfor
+
+elsif stereo_mode = 5
+    appendInfoLine: "  Mode: Asymmetric (R less stutter)"
+    currentSegmentIndex_R = 1
+    for i to targetOutputSegments
+        actualSegment = ((currentSegmentIndex_R - 1) mod numberOfSegments) + 1
+        segmentChain_R[i] = actualSegment
+        if i < targetOutputSegments
+            randomValue = randomUniform(0, 1)
+            if randomValue < stutter_probability_R
+                decisionType_R[i] = 0
             else
                 currentSegmentIndex_R += 1
                 decisionType_R[i] = 1
             endif
+        else
+            decisionType_R[i] = 1
         endif
     endfor
-    totalOutputSegments_R = totalOutputSegments_L
+
+elsif stereo_mode = 6
+    # Use the initial L random decisions as stutter-event opportunities,
+    # then assign each event alternately to L and R.
+    appendInfoLine: "  Mode: Ping-Pong (true alternating stutter events)"
+    for i to targetOutputSegments
+        eventMask[i] = decisionType_L[i]
+    endfor
+
+    currentSegmentIndex_L = 1
+    currentSegmentIndex_R = 1
+    nextStutterChannel = 1
+    for i to targetOutputSegments
+        segmentChain_L[i] = ((currentSegmentIndex_L - 1) mod numberOfSegments) + 1
+        segmentChain_R[i] = ((currentSegmentIndex_R - 1) mod numberOfSegments) + 1
+
+        if i < targetOutputSegments
+            if eventMask[i] = 0
+                if nextStutterChannel = 1
+                    decisionType_L[i] = 0
+                    currentSegmentIndex_R += 1
+                    decisionType_R[i] = 1
+                    nextStutterChannel = 2
+                else
+                    currentSegmentIndex_L += 1
+                    decisionType_L[i] = 1
+                    decisionType_R[i] = 0
+                    nextStutterChannel = 1
+                endif
+            else
+                currentSegmentIndex_L += 1
+                currentSegmentIndex_R += 1
+                decisionType_L[i] = 1
+                decisionType_R[i] = 1
+            endif
+        else
+            decisionType_L[i] = 1
+            decisionType_R[i] = 1
+        endif
+    endfor
 endif
+
+totalOutputSegments_R = targetOutputSegments
 
 # Count stutters
 uniqueSegments_L = 0
@@ -358,113 +401,61 @@ appendInfoLine: "Right channel: ", totalOutputSegments_R, " segments (", stutter
 # PROCESS LEFT CHANNEL
 # ==================================================================
 appendInfoLine: ""
-appendInfoLine: "Processing LEFT channel segments..."
+appendInfoLine: "Processing LEFT channel output steps..."
 
-selectObject: leftChannel
-
-# Extract and process L segments
-for i to numberOfSegments
-    startTime = (i - 1) * windowSize
-    endTime = min(i * windowSize, duration)
-    
-    selectObject: leftChannel
-    segment_L[i] = Extract part: startTime, endTime, "rectangular", 1.0, "no"
-    
-    selectObject: segment_L[i]
-    segDuration = Get total duration
-    fadeInDuration = min(overlapSize, segDuration / 2)
-    fadeOutDuration = min(overlapSize, segDuration / 2)
-    
-    Fade in: 0, 0, fadeInDuration, "yes"
-    Fade out: 0, segDuration, -fadeOutDuration, "yes"
-endfor
-
-# Build L channel output (batched: copy each chain step, concatenate once)
-nOutL = 0
+# Extract directly in chain order. Do not pre-fade: Concatenate with overlap
+# performs the crossfade itself. Object creation order equals playback order.
 for i to totalOutputSegments_L
     segmentIndex = segmentChain_L[i]
-    if segmentIndex >= 1 and segmentIndex <= numberOfSegments
-        nOutL += 1
-        selectObject: segment_L[segmentIndex]
-        seqL[nOutL] = Copy: "seqL_" + string$(nOutL)
-    endif
+    startTime = sourceStart + (segmentIndex - 1) * windowSize
+    endTime = startTime + windowSize
+    selectObject: leftChannel
+    seqL[i] = Extract part: startTime, endTime, "rectangular", 1.0, "no"
 endfor
 
-if nOutL = 1
-    selectObject: seqL[1]
-    result_L = Copy: "result_L_temp"
-    removeObject: seqL[1]
-else
-    selectObject: seqL[1]
-    for i from 2 to nOutL
+selectObject: seqL[1]
+if totalOutputSegments_L > 1
+    for i from 2 to totalOutputSegments_L
         plusObject: seqL[i]
     endfor
-    result_L = Concatenate with overlap: overlapSize
-    Rename: "result_L_temp"
-    for i to nOutL
-        removeObject: seqL[i]
-    endfor
 endif
-
-# Clean up L segments
-for i to numberOfSegments
-    removeObject: segment_L[i]
+if overlapSize > 0
+    result_L = Concatenate with overlap: overlapSize
+else
+    result_L = Concatenate
+endif
+Rename: "result_L_temp"
+for i to totalOutputSegments_L
+    removeObject: seqL[i]
 endfor
 
 # ==================================================================
 # PROCESS RIGHT CHANNEL
 # ==================================================================
-appendInfoLine: "Processing RIGHT channel segments..."
+appendInfoLine: "Processing RIGHT channel output steps..."
 
-selectObject: rightChannel
-
-# Extract and process R segments
-for i to numberOfSegments
-    startTime = (i - 1) * windowSize
-    endTime = min(i * windowSize, duration)
-    
-    selectObject: rightChannel
-    segment_R[i] = Extract part: startTime, endTime, "rectangular", 1.0, "no"
-    
-    selectObject: segment_R[i]
-    segDuration = Get total duration
-    fadeInDuration = min(overlapSize, segDuration / 2)
-    fadeOutDuration = min(overlapSize, segDuration / 2)
-    
-    Fade in: 0, 0, fadeInDuration, "yes"
-    Fade out: 0, segDuration, -fadeOutDuration, "yes"
-endfor
-
-# Build R channel output (batched: copy each chain step, concatenate once)
-nOutR = 0
 for i to totalOutputSegments_R
     segmentIndex = segmentChain_R[i]
-    if segmentIndex >= 1 and segmentIndex <= numberOfSegments
-        nOutR += 1
-        selectObject: segment_R[segmentIndex]
-        seqR[nOutR] = Copy: "seqR_" + string$(nOutR)
-    endif
+    startTime = sourceStart + (segmentIndex - 1) * windowSize
+    endTime = startTime + windowSize
+    selectObject: rightChannel
+    seqR[i] = Extract part: startTime, endTime, "rectangular", 1.0, "no"
 endfor
 
-if nOutR = 1
-    selectObject: seqR[1]
-    result_R = Copy: "result_R_temp"
-    removeObject: seqR[1]
-else
-    selectObject: seqR[1]
-    for i from 2 to nOutR
+selectObject: seqR[1]
+if totalOutputSegments_R > 1
+    for i from 2 to totalOutputSegments_R
         plusObject: seqR[i]
     endfor
-    result_R = Concatenate with overlap: overlapSize
-    Rename: "result_R_temp"
-    for i to nOutR
-        removeObject: seqR[i]
-    endfor
 endif
-
-# Clean up R segments
-for i to numberOfSegments
-    removeObject: segment_R[i]
+if overlapSize > 0
+    result_R = Concatenate with overlap: overlapSize
+else
+    result_R = Concatenate
+endif
+Rename: "result_R_temp"
+for i to totalOutputSegments_R
+    removeObject: seqR[i]
 endfor
 
 # ==================================================================
@@ -475,19 +466,24 @@ appendInfoLine: "Combining to stereo output..."
 
 selectObject: result_L, result_R
 stereoResult = Combine to stereo
-Rename: sound$ + "_BigramStutter"
 
-# Trim to exact target duration
+# Trim to the requested target duration and normalize time domain to 0.
 selectObject: stereoResult
 actualDuration = Get total duration
+resultStart = Get start time
 if actualDuration > target_duration_s
-    trimmedResult = Extract part: 0, target_duration_s, "rectangular", 1, "no"
+    trimmedResult = Extract part: resultStart, resultStart + target_duration_s, "rectangular", 1, "no"
     removeObject: stereoResult
     stereoResult = trimmedResult
 endif
 
 selectObject: stereoResult
-Scale peak: 0.95
+Shift times to: "start time", 0
+Rename: sound$ + "_BigramStutter"
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: 0.95
+endif
 
 # Clean up temporary channels
 removeObject: leftChannel, rightChannel, result_L, result_R
@@ -507,7 +503,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Bigram Stutter Effect v1.3##"
+    Text: 0.5, "centre", 0.5, "half", "##Bigram Stutter Effect v1.4##"
     
     # Subtitle (separate band so it can't collide with the title)
     Select outer viewport: 0, 8, 0.33, 0.5
@@ -598,6 +594,7 @@ if draw_visualization
     Text: maxVizSegments * 0.98, "right", 0.3, "half", "R Advance"
     
     # Spectrograms
+    vizMaxFreq = min(5000, 0.95 * samplingFrequency / 2)
     Select outer viewport: 0, 4, 4.9, 6.4
     Select inner viewport: 0.6, 3.7, 5.0, 6.35
     
@@ -610,9 +607,9 @@ if draw_visualization
         tmpOrig = selected("Sound")
     endif
     
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.005, vizMaxFreq, 0.002, 20, "Gaussian"
     origSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxFreq, 100, "yes", 50, 6, 0, "no"
     
     Colour: "Black"
     Draw inner box
@@ -629,9 +626,9 @@ if draw_visualization
     Extract one channel: 1
     tmpResult = selected("Sound")
     
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.005, vizMaxFreq, 0.002, 20, "Gaussian"
     resultSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxFreq, 100, "yes", 50, 6, 0, "no"
     
     Colour: "Black"
     Draw inner box

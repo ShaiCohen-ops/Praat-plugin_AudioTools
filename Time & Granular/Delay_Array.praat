@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,9 +14,26 @@
 #   a fraction of the file, so notch spacing is only divisor/duration Hz
 #   (sub-Hz..tens of Hz) -> perceptually broadband decorrelation, not
 #   tonal comb. Enable Use_ms_delay for short delays that give audible
-#   comb filtering. Samples that cannot be computed keep the original.
+#   comb filtering. Finite-signal boundaries use zero-padding.
 #
 # Multiple iterations create complex spectral interference patterns.
+#
+# Changelog v0.4:
+#   - FIR boundary handling corrected. Out-of-range delayed samples now use
+#     Praat's documented zero value, so every sample obeys the same
+#     x[n+D] - x[n] operator. v0.3 kept the original tail unfiltered,
+#     breaking the comb response near the end on every iteration.
+#   - Presets now define both divisor-mode and millisecond-mode delays.
+#     Previously every preset sounded identical when Use_ms_delay was ON.
+#   - Active delays are validated to be shorter than the Sound, preventing
+#     no-op / degenerate passes where there is no source overlap.
+#   - Number_of_iterations > 4 now reports an error instead of silently
+#     changing the requested value.
+#   - Scale_peak is validated to (0, 1]; silent results are not normalized.
+#   - Info reports comb spacing (first non-DC zero spacing) and displays the
+#     active delay mode instead of always labelling values as divisors.
+#   - Spectrum visualization is capped at Nyquist for low sample rates.
+#   - Added preset/mode names to output and visualization metadata.
 #
 # Changelog v0.3:
 #   - else-branch now keeps the original sample instead of zeroing it
@@ -37,7 +54,7 @@
 #   - Bounds checking
 # ============================================================
 
-form Delay Array
+form Delay Array v0.4
     comment Select a Sound object first
     
     comment === Preset ===
@@ -73,36 +90,67 @@ form Delay Array
 endform
 
 # === Apply Presets ===
+presetName$ = "Custom"
 if preset = 1
     divisor_1 = 2
     divisor_2 = 4
     divisor_3 = 8
     divisor_4 = 10
+    delay_1_ms = 2
+    delay_2_ms = 4
+    delay_3_ms = 8
+    delay_4_ms = 10
+    presetName$ = "Default"
 elsif preset = 2
     divisor_1 = 2
     divisor_2 = 3
     divisor_3 = 5
     divisor_4 = 7
+    delay_1_ms = 2
+    delay_2_ms = 3
+    delay_3_ms = 5
+    delay_4_ms = 7
+    presetName$ = "Fine"
 elsif preset = 3
     divisor_1 = 4
     divisor_2 = 8
     divisor_3 = 12
     divisor_4 = 16
+    delay_1_ms = 4
+    delay_2_ms = 8
+    delay_3_ms = 12
+    delay_4_ms = 16
+    presetName$ = "Coarse"
 elsif preset = 4
     divisor_1 = 2
     divisor_2 = 6
     divisor_3 = 12
     divisor_4 = 24
+    delay_1_ms = 2
+    delay_2_ms = 6
+    delay_3_ms = 12
+    delay_4_ms = 24
+    presetName$ = "Extreme"
 elsif preset = 5
     divisor_1 = 2
     divisor_2 = 4
     divisor_3 = 8
     divisor_4 = 16
+    delay_1_ms = 2
+    delay_2_ms = 4
+    delay_3_ms = 8
+    delay_4_ms = 16
+    presetName$ = "Harmonic"
 elsif preset = 6
     divisor_1 = 2
     divisor_2 = 3
     divisor_3 = 5
     divisor_4 = 11
+    delay_1_ms = 2
+    delay_2_ms = 3
+    delay_3_ms = 5
+    delay_4_ms = 11
+    presetName$ = "Prime"
 endif
 
 # === Check Input ===
@@ -118,9 +166,12 @@ totalSamples = Get number of samples
 sampleRate = Get sampling frequency
 duration = Get total duration
 
-# Clamp iterations to the number of available divisor/ms fields
+# Validate parameters
 if number_of_iterations > 4
-    number_of_iterations = 4
+    exitScript: "Number of iterations must be between 1 and 4."
+endif
+if scale_peak <= 0 or scale_peak > 1
+    exitScript: "Scale peak must be > 0 and <= 1."
 endif
 
 # Store divisors in array
@@ -135,15 +186,27 @@ msVal[2] = delay_2_ms
 msVal[3] = delay_3_ms
 msVal[4] = delay_4_ms
 
-# Precompute per-iteration delay (samples), >=1
+# Precompute per-iteration delay (samples), >=1 and < Sound length.
+if use_ms_delay
+    delayMode$ = "milliseconds"
+else
+    delayMode$ = "file divisor"
+endif
+
 for k to number_of_iterations
     if use_ms_delay
         delayArr[k] = round(msVal[k] / 1000 * sampleRate)
     else
+        if divisor[k] <= 1
+            exitScript: "Active divisors must be > 1 so the delay is shorter than the Sound."
+        endif
         delayArr[k] = floor(totalSamples / divisor[k])
     endif
     if delayArr[k] < 1
         delayArr[k] = 1
+    endif
+    if delayArr[k] >= totalSamples
+        exitScript: "Delay in iteration " + string$(k) + " is as long as or longer than the Sound."
     endif
 endfor
 
@@ -152,22 +215,37 @@ writeInfoLine: "=== Delay Array ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Samples: ", totalSamples
 appendInfoLine: ""
+appendInfoLine: "Preset: ", presetName$, " | Delay mode: ", delayMode$
 appendInfoLine: "Iterations: ", number_of_iterations
 appendInfoLine: ""
-appendInfoLine: "Iter | Divisor | Delay (samples) | Delay (ms) | Notch freq"
-appendInfoLine: "-----|---------|-----------------|------------|----------"
+if use_ms_delay
+    appendInfoLine: "Iter | Requested ms | Delay samples | Actual ms | Comb spacing"
+    appendInfoLine: "-----|--------------|---------------|-----------|-------------"
+else
+    appendInfoLine: "Iter | Divisor | Delay samples | Actual ms | Comb spacing"
+    appendInfoLine: "-----|---------|---------------|-----------|-------------"
+endif
 
 for k to number_of_iterations
     delaySamples = delayArr[k]
     delayMs = delaySamples / sampleRate * 1000
-    notchFreq = sampleRate / delaySamples
-    appendInfoLine: "  ", k, "  |    ", divisor[k], "    |      ", delaySamples, "       |   ", fixed$(delayMs, 1), "    |  ", fixed$(notchFreq, 1), " Hz"
+    combSpacing = sampleRate / delaySamples
+    if use_ms_delay
+        appendInfoLine: "  ", k, "  |    ", fixed$(msVal[k], 3), "     |     ", delaySamples, "      |  ", fixed$(delayMs, 3), "  |  ", fixed$(combSpacing, 2), " Hz"
+    else
+        appendInfoLine: "  ", k, "  |   ", fixed$(divisor[k], 3), "   |     ", delaySamples, "      |  ", fixed$(delayMs, 3), "  |  ", fixed$(combSpacing, 2), " Hz"
+    endif
 endfor
 appendInfoLine: ""
 
 # === Copy Sound ===
 selectObject: original
-Copy: original_name$ + "_delayArray"
+if use_ms_delay
+    modeTag$ = "ms"
+else
+    modeTag$ = "div"
+endif
+Copy: original_name$ + "_delayArray_" + presetName$ + "_" + modeTag$
 result = selected("Sound")
 
 # === Apply Delay Differencing ===
@@ -177,15 +255,20 @@ for k to number_of_iterations
     selectObject: result
     delaySamples = delayArr[k]
     
-    # Apply formula with bounds check (keep original where uncomputable)
-    Formula: "if col + delaySamples <= ncol then self[col + delaySamples] - self[col] else self[col] fi"
+    # Uniform FIR difference across the full Sound. Praat returns 0 for
+    # self[index] outside 1..ncol, giving principled zero-padding at the edge.
+    # Using a future sample also avoids accidental recursion during in-place Formula.
+    Formula: "self[col + delaySamples] - self[col]"
     
     appendInfoLine: "  Iteration ", k, " done"
 endfor
 
 # === Scale Peak ===
 selectObject: result
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: scale_peak
+endif
 
 # === Visualization ===
 if draw_visualization
@@ -221,6 +304,9 @@ if draw_visualization
     Text left: "yes", "Result"
     Text bottom: "yes", "Time (s)"
     
+    # Spectrum display ceiling
+    maxSpecHz = min(5000, sampleRate / 2)
+
     # Original spectrum
     Select outer viewport: 0, 4, 4.0, 5.6
     Select inner viewport: 0.6, 3.8, 4.2, 5.5
@@ -234,7 +320,7 @@ if draw_visualization
     To Spectrum: "yes"
     origSpectrum = selected("Spectrum")
     Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 5000, 0, 0, "no"
+    Draw: 0, maxSpecHz, 0, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -255,7 +341,7 @@ if draw_visualization
     To Spectrum: "yes"
     resSpectrum = selected("Spectrum")
     Colour: "{0.3, 0.6, 0.8}"
-    Draw: 0, 5000, 0, 0, "no"
+    Draw: 0, maxSpecHz, 0, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -268,11 +354,20 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 8
     Colour: "{0.4, 0.4, 0.4}"
-    divList$ = string$(divisor[1])
-    for k from 2 to number_of_iterations
-        divList$ = divList$ + ", " + string$(divisor[k])
-    endfor
-    Text: 0.5, "centre", 0.5, "half", "Divisors: " + divList$ + " | Iterations: " + string$(number_of_iterations)
+    if use_ms_delay
+        delayList$ = fixed$(msVal[1], 2)
+        for k from 2 to number_of_iterations
+            delayList$ = delayList$ + ", " + fixed$(msVal[k], 2)
+        endfor
+        legendMode$ = "ms delays: " + delayList$
+    else
+        delayList$ = fixed$(divisor[1], 2)
+        for k from 2 to number_of_iterations
+            delayList$ = delayList$ + ", " + fixed$(divisor[k], 2)
+        endfor
+        legendMode$ = "Divisors: " + delayList$
+    endif
+    Text: 0.5, "centre", 0.5, "half", presetName$ + " | " + legendMode$ + " | Iterations: " + string$(number_of_iterations)
     
     Font size: 10
     Colour: "Black"

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,29 +14,52 @@
 #   to bright or bright to dark.
 #
 # Algorithmic notes:
-#   - Grain extraction: random source-time selection, Extract part
-#     with chosen window shape.
-#   - Brightness measurement: spectral centroid (centre of gravity
-#     of Spectrum object, exponent 2).
-#   - Spectral exaggeration: bright grains get high-freq boost,
-#     dark grains get low-freq boost. Reinforces the natural
-#     brightness contrast for stronger spectral sweep effect.
-#   - "Pitch scatter" parameter is mislabeled in v0.2. The actual
-#     Formula `if x > 0 then self * shift_factor else self fi`
-#     applies a UNIFORM gain across all positive-frequency bins,
-#     which is amplitude scatter, not pitch shift. Per-grain
-#     loudness varies; pitch does not. v0.3 keeps the existing
-#     audio behavior (form field name preserved for backward
-#     compatibility with saved settings); the misnomer is flagged
-#     in Panel B's parameter report. If you want it renamed in
-#     a future v0.4, ask.
-#   - Sort: bubble sort O(N^2), fine for max 500 grains.
-#   - Concatenation: iterative pairwise Concatenate, also O(N^2).
+#   - Grain extraction: random zero-based source offsets, converted to the
+#     Sound's absolute time domain for Extract part.
+#   - Brightness measurement: spectral centroid (centre of gravity of the
+#     Spectrum object, exponent 2 = power weighting).
+#   - Spectral exaggeration: source-adaptive pivot. Grains above the pivot
+#     receive extra energy above their own centroid; grains below the pivot
+#     receive extra energy below their own centroid. Brightness is then
+#     measured again from the processed Spectrum before sorting.
+#   - Gain scatter: zero-mean Gaussian dB gain, applied after equal-peak
+#     normalization. This replaces the mislabeled/non-effective v0.3
+#     "Pitch scatter" control; no pitch shifting is claimed.
+#   - Sort: O(N^2), acceptable for the hard limit of 500 grains.
+#   - Concatenation: ordered output copies + one Concatenate pass.
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4:
+#   DSP / semantics / performance:
+#   - FIXED non-zero Sound time domains: random grain positions are stored
+#     as zero-based offsets but extraction uses sourceStart + offset.
+#   - Brightness after spectral exaggeration is now RE-MEASURED from the
+#     processed Spectrum instead of being faked with x1.3 / x0.7 factors.
+#   - Spectral exaggeration is source-adaptive: the mean valid centroid of
+#     the generated grain set is used as a brightness pivot. Brighter grains
+#     are boosted above their own centroid; darker grains below it.
+#   - FIXED reverse-grain bookkeeping: reversing a grain does not change its
+#     magnitude spectrum, so it no longer multiplies brightness by 0.9.
+#   - Renamed misleading Pitch_scatter to Gain_scatter_dB. The old control
+#     never shifted pitch; it uniformly scaled the whole Spectrum. v0.4
+#     applies a true zero-mean random gain in dB AFTER peak normalization,
+#     so the control is now both correctly named and audibly effective.
+#   - All grains use the same base peak target before gain scatter, removing
+#     the unintended brightness-to-loudness coupling of v0.3.
+#   - Renamed Grain_overlap to Analysis_overlap: it controls the nominal
+#     analysis hop used to derive grain count; source positions are random,
+#     so it was never a literal overlap between extracted grains.
+#   - FIXED unsorted brightness statistics: min/max are now computed over
+#     all grains instead of assuming first/last are extrema.
+#   - Replaced O(N^2) iterative output concatenation with one Concatenate:
+#     output grain/gap copies are created in final order and joined once.
+#   - Added validation for overlap, density, variation, gain scatter, gap,
+#     minimum renderable grain duration, and silent-result normalization.
+#   - Spectrogram ceiling now respects Nyquist.
 #
 # Changelog v0.3:
 #   - CRITICAL FIX: Removed duplicate `=== Done ===` block at
@@ -87,7 +110,7 @@
 #   - Renamed for clarity
 # ============================================================
 
-form Brightness Sorted Grains v0.3
+form Brightness Sorted Grains v0.4
     optionmenu Preset: 1
         option Custom
         option Gentle Sweep (few grains)
@@ -96,13 +119,13 @@ form Brightness Sorted Grains v0.3
         option Long Drones (slow evolution)
         option Extreme Sort (strong exaggeration)
     positive Grain_size_ms 150
-    positive Grain_size_variation_ms 50
+    real Grain_size_variation_ms 50
     optionmenu Grain_size_mode: 1
         option Fixed
         option Random
-    positive Grain_overlap 0.3
-    positive Density_factor 1.5
-    positive Pitch_scatter 0.2
+    real Analysis_overlap 0.3
+    real Density_factor 1.5
+    real Gain_scatter_dB 1.0
     boolean Reverse_grains 0
     optionmenu Window_type: 2
         option Rectangular
@@ -112,7 +135,7 @@ form Brightness Sorted Grains v0.3
     optionmenu Sort_direction: 1
         option Dark to bright
         option Bright to dark
-    positive Gap_between_grains_ms 50
+    real Gap_between_grains_ms 50
     boolean Exaggerate_spectral 1
     optionmenu Exaggeration_intensity: 2
         option Subtle
@@ -131,9 +154,9 @@ if preset = 2
     grain_size_ms = 200
     grain_size_variation_ms = 30
     grain_size_mode = 1
-    grain_overlap = 0.2
+    analysis_overlap = 0.2
     density_factor = 0.8
-    pitch_scatter = 0.1
+    gain_scatter_dB = 0.5
     reverse_grains = 0
     window_type = 2
     sort_grains = 1
@@ -147,9 +170,9 @@ elsif preset = 3
     grain_size_ms = 100
     grain_size_variation_ms = 40
     grain_size_mode = 2
-    grain_overlap = 0.5
+    analysis_overlap = 0.5
     density_factor = 2.5
-    pitch_scatter = 0.3
+    gain_scatter_dB = 1.5
     reverse_grains = 1
     window_type = 2
     sort_grains = 1
@@ -163,9 +186,9 @@ elsif preset = 4
     grain_size_ms = 50
     grain_size_variation_ms = 20
     grain_size_mode = 2
-    grain_overlap = 0.4
+    analysis_overlap = 0.4
     density_factor = 3.0
-    pitch_scatter = 0.4
+    gain_scatter_dB = 2.0
     reverse_grains = 0
     window_type = 3
     sort_grains = 1
@@ -179,9 +202,9 @@ elsif preset = 5
     grain_size_ms = 400
     grain_size_variation_ms = 100
     grain_size_mode = 2
-    grain_overlap = 0.6
+    analysis_overlap = 0.6
     density_factor = 0.5
-    pitch_scatter = 0.05
+    gain_scatter_dB = 0.25
     reverse_grains = 0
     window_type = 2
     sort_grains = 1
@@ -195,9 +218,9 @@ elsif preset = 6
     grain_size_ms = 120
     grain_size_variation_ms = 50
     grain_size_mode = 2
-    grain_overlap = 0.3
+    analysis_overlap = 0.3
     density_factor = 2.0
-    pitch_scatter = 0.5
+    gain_scatter_dB = 2.5
     reverse_grains = 1
     window_type = 2
     sort_grains = 1
@@ -231,7 +254,36 @@ else
     sound = selected("Sound")
 endif
 
+selectObject: sound
+sourceStart = Get start time
+sourceEnd = Get end time
+
 # === Validate Parameters ===
+if grain_size_ms <= 0
+    removeObject: sound
+    exitScript: "Grain size must be > 0 ms"
+endif
+if grain_size_variation_ms < 0
+    removeObject: sound
+    exitScript: "Grain size variation must be >= 0 ms"
+endif
+if analysis_overlap < 0 or analysis_overlap >= 1
+    removeObject: sound
+    exitScript: "Analysis overlap must be >= 0 and < 1"
+endif
+if density_factor <= 0
+    removeObject: sound
+    exitScript: "Density factor must be > 0"
+endif
+if gain_scatter_dB < 0
+    removeObject: sound
+    exitScript: "Gain scatter must be >= 0 dB"
+endif
+if gap_between_grains_ms < 0
+    removeObject: sound
+    exitScript: "Gap between grains must be >= 0 ms"
+endif
+
 if duration < grain_size_ms / 1000
     removeObject: sound
     exitScript: "Sound is shorter than grain size"
@@ -243,8 +295,16 @@ endif
 
 # === Calculate Grain Parameters ===
 base_grain_duration = grain_size_ms / 1000
-hop_time = base_grain_duration * (1 - grain_overlap)
-num_grains = round((duration / hop_time) * density_factor)
+minRenderableGrain = 2 / sample_rate
+if base_grain_duration < minRenderableGrain
+    removeObject: sound
+    exitScript: "Grain size is shorter than two samples at this sampling rate"
+endif
+
+# Analysis_overlap controls only the nominal analysis hop used to derive
+# the number of random grain draws. It is not an output crossfade.
+hop_time = base_grain_duration * (1 - analysis_overlap)
+num_grains = max(1, round((duration / hop_time) * density_factor))
 
 # Limit grain count for performance
 if num_grains > 500
@@ -279,7 +339,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Brightness Sorted Grains v0.3 ==="
+writeInfoLine: "=== Brightness Sorted Grains v0.4 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Target grains: ", num_grains
@@ -287,6 +347,8 @@ appendInfoLine: "Grain size: ", grain_size_ms, " ms"
 if grain_size_mode = 2
     appendInfoLine: "Size variation: +/- ", grain_size_variation_ms, " ms"
 endif
+appendInfoLine: "Analysis overlap: ", fixed$(analysis_overlap, 2), " | Density: ", fixed$(density_factor, 2)
+appendInfoLine: "Gain scatter: ", fixed$(gain_scatter_dB, 2), " dB SD"
 appendInfoLine: ""
 
 # === Arrays ===
@@ -296,122 +358,132 @@ grainOriginalBrightness# = zero#(num_grains)
 grainDurations# = zero#(num_grains)
 grainCount = 0
 
-# === Generate Grains ===
-appendInfoLine: "Generating grains..."
+# === Generate Grains: pass 1 (extract + measure original brightness) ===
+appendInfoLine: "Generating and analyzing grains..."
 
 for i from 1 to num_grains
-    # Calculate grain duration
     if grain_size_mode = 1
         grain_duration = base_grain_duration
     else
         variation_seconds = (grain_size_variation_ms / 1000) * randomUniform(-1, 1)
         grain_duration = base_grain_duration + variation_seconds
-        min_duration = base_grain_duration * 0.3
+        min_duration = max(minRenderableGrain, base_grain_duration * 0.3)
         max_duration = base_grain_duration * 2.0
         grain_duration = max(min_duration, min(max_duration, grain_duration))
     endif
-    
-    # Get source time
-    max_start = duration - grain_duration
+
+    grain_duration = min(grain_duration, duration)
+    max_start = max(0, duration - grain_duration)
+    source_offset = 0
     if max_start > 0
-        source_time = randomUniform(0, max_start)
-        
-        # Extract grain
-        selectObject: sound
-        Extract part: source_time, source_time + grain_duration, window_shape$, 1, "no"
-        grain = selected("Sound")
-        
-        # Get spectral centroid (brightness)
-        selectObject: grain
-        To Spectrum: "yes"
-        spectrum = selected("Spectrum")
-        centroid = Get centre of gravity: 2
-        if centroid = undefined
-            ; Silent or near-zero-energy grain: centre of gravity is 0/0.
-            ; Fall back to a neutral brightness so it doesn't poison
-            ; minB/maxB and the colour gradient downstream.
-            centroid = 0
-        endif
-        brightness = centroid
-        original_brightness = brightness
-        removeObject: spectrum
-        
-        # Spectral exaggeration
-        if exaggerate_spectral
-            selectObject: grain
-            To Spectrum: "yes"
-            spectrum = selected("Spectrum")
-            
-            if brightness > 1000
-                # Bright grains - emphasize high frequencies
-                Formula: "if x > 1000 then self * spectral_boost else self fi"
-                brightness = brightness * 1.3
-            else
-                # Dark grains - emphasize low frequencies
-                Formula: "if x < 800 then self * spectral_boost else self fi"
-                brightness = brightness * 0.7
-            endif
-            
-            To Sound
-            processed_grain = selected("Sound")
-            removeObject: spectrum, grain
-            grain = processed_grain
-        endif
-        
-        # Pitch scatter (mislabeled — actually a gain scatter, see header)
-        selectObject: grain
-        if original_brightness > 1500
-            grain_pitch_shift = randomGauss(0.5, pitch_scatter * 1.5)
-        elsif original_brightness < 800
-            grain_pitch_shift = randomGauss(-0.3, pitch_scatter * 0.8)
-        else
-            grain_pitch_shift = randomGauss(0, pitch_scatter)
-        endif
-        
-        if abs(grain_pitch_shift) > 0.01
-            selectObject: grain
-            To Spectrum: "yes"
-            spectrum_grain = selected("Spectrum")
-            shift_factor = 2^(grain_pitch_shift / 12)
-            Formula: "if x > 0 then self * shift_factor else self fi"
-            To Sound
-            shifted_grain = selected("Sound")
-            removeObject: spectrum_grain, grain
-            grain = shifted_grain
-        endif
-        
-        # Random reverse
-        selectObject: grain
-        if reverse_grains and randomUniform(0, 1) > 0.7
-            Reverse
-            brightness = brightness * 0.9
-        endif
-        
-        # Amplitude scaling based on brightness
-        selectObject: grain
-        if brightness > 1500
-            Scale peak: 0.35
-        elsif brightness < 800
-            Scale peak: 0.25
-        else
-            Scale peak: 0.3
-        endif
-        
-        # Store grain
-        grainCount += 1
-        grainIDs#[grainCount] = grain
-        grainBrightness#[grainCount] = brightness
-        grainOriginalBrightness#[grainCount] = original_brightness
-        grainDurations#[grainCount] = grain_duration
+        source_offset = randomUniform(0, max_start)
     endif
+    extractStart = sourceStart + source_offset
+    extractEnd = extractStart + grain_duration
+
+    selectObject: sound
+    Extract part: extractStart, extractEnd, window_shape$, 1, "no"
+    grain = selected("Sound")
+
+    selectObject: grain
+    To Spectrum: "yes"
+    spectrum = selected("Spectrum")
+    centroid = Get centre of gravity: 2
+    if centroid = undefined
+        centroid = 0
+    endif
+    removeObject: spectrum
+
+    grainCount += 1
+    grainIDs#[grainCount] = grain
+    grainOriginalBrightness#[grainCount] = centroid
+    grainBrightness#[grainCount] = centroid
+    grainDurations#[grainCount] = grain_duration
 endfor
 
 appendInfoLine: "Created ", grainCount, " grains"
 
+# Source-adaptive brightness pivot (ignore silent / undefined-centroid grains).
+brightnessSum = 0
+brightnessValidCount = 0
+for i from 1 to grainCount
+    if grainOriginalBrightness#[i] > 0
+        brightnessSum += grainOriginalBrightness#[i]
+        brightnessValidCount += 1
+    endif
+endfor
+if brightnessValidCount > 0
+    brightnessPivot = brightnessSum / brightnessValidCount
+else
+    brightnessPivot = 0
+endif
+appendInfoLine: "Brightness pivot: ", fixed$(brightnessPivot, 0), " Hz"
+
+# === Process grains: spectral exaggeration, reverse, level, gain scatter ===
+for i from 1 to grainCount
+    grain = grainIDs#[i]
+    original_brightness = grainOriginalBrightness#[i]
+    brightness = original_brightness
+
+    # Reinforce each grain away from the source-adaptive pivot, then measure
+    # the ACTUAL processed centroid. This keeps sorting physically grounded.
+    if exaggerate_spectral and original_brightness > 0 and brightnessPivot > 0
+        selectObject: grain
+        To Spectrum: "yes"
+        spectrum = selected("Spectrum")
+
+        if original_brightness >= brightnessPivot
+            Formula: "if x >= original_brightness then self * spectral_boost else self fi"
+        else
+            Formula: "if x <= original_brightness then self * spectral_boost else self fi"
+        endif
+
+        To Sound
+        processed_grain = selected("Sound")
+        removeObject: spectrum, grain
+        grain = processed_grain
+        grainIDs#[i] = grain
+
+        # Re-measure after filtering.
+        selectObject: grain
+        To Spectrum: "yes"
+        checkSpectrum = selected("Spectrum")
+        processedCentroid = Get centre of gravity: 2
+        if processedCentroid <> undefined
+            brightness = processedCentroid
+        endif
+        removeObject: checkSpectrum
+    endif
+
+    # Reverse changes temporal direction, not magnitude-spectrum brightness.
+    selectObject: grain
+    if reverse_grains and randomUniform(0, 1) > 0.7
+        Reverse
+    endif
+
+    # Normalize all non-silent grains to the same base peak so brightness is
+    # not confounded with loudness. Gain scatter is applied AFTER this.
+    selectObject: grain
+    grainPeak = Get absolute extremum: 0, 0, "Sinc70"
+    if grainPeak > 0
+        Scale peak: 0.30
+    endif
+
+    if gain_scatter_dB > 0 and grainPeak > 0
+        gainDB = randomGauss(0, gain_scatter_dB)
+        maxGainDB = min(12, 3 * gain_scatter_dB)
+        gainDB = min(maxGainDB, max(-maxGainDB, gainDB))
+        gainFactor = 10 ^ (gainDB / 20)
+        Formula: "self * gainFactor"
+    endif
+
+    grainBrightness#[i] = brightness
+endfor
+
 # === Sort Grains by Brightness ===
 if sort_grains and grainCount > 1
     appendInfoLine: ""
-    appendInfoLine: "Sorting by brightness..."
+    appendInfoLine: "Sorting by measured brightness..."
     
     # Bubble sort (simple, works fine for <500 grains)
     for i from 1 to grainCount
@@ -447,72 +519,67 @@ if sort_grains and grainCount > 1
     appendInfoLine: "Sorted: ", sortLabel$
 endif
 
-# === Create Silence for Gaps ===
+# === Concatenate Grains Efficiently ===
 gap_duration = gap_between_grains_ms / 1000
-if gap_duration > 0
-    silence = Create Sound from formula: "silence", 1, 0, gap_duration, sample_rate, "0"
-endif
 
-# === Concatenate Grains ===
 if grainCount > 0
     appendInfoLine: ""
     appendInfoLine: "Concatenating..."
-    
-    # Start with first grain
-    selectObject: grainIDs#[1]
-    temp_sound = Copy: "temp_concat"
-    
-    for i from 2 to grainCount
-        if grainIDs#[i] > 0
-            if gap_duration > 0
-                selectObject: temp_sound, silence
-                Concatenate
-                temp_with_gap = selected("Sound")
-                selectObject: temp_with_gap, grainIDs#[i]
-                Concatenate
-                new_temp = selected("Sound")
-                removeObject: temp_sound, temp_with_gap
-                temp_sound = new_temp
-            else
-                selectObject: temp_sound, grainIDs#[i]
-                Concatenate
-                new_temp = selected("Sound")
-                removeObject: temp_sound
-                temp_sound = new_temp
-            endif
-        endif
-    endfor
-    
-    selectObject: temp_sound
-    Copy: sound_name$ + "_brightness_sorted_" + presetName$
-    result = selected("Sound")
-    removeObject: temp_sound
-    
-    # Cleanup
-    if gap_duration > 0
-        removeObject: silence
-    endif
-    
+
+    # Create output parts in FINAL order. Praat concatenates selected Sounds
+    # in Object-list order, so creation order guarantees the intended chain.
+    maxParts = 2 * grainCount
+    outputPartIDs# = zero#(maxParts)
+    outputPartCount = 0
+
     for i from 1 to grainCount
-        if grainIDs#[i] > 0
-            removeObject: grainIDs#[i]
+        selectObject: grainIDs#[i]
+        Copy: "ordered_grain_" + string$(i)
+        outputPartCount += 1
+        outputPartIDs#[outputPartCount] = selected("Sound")
+
+        if gap_duration > 0 and i < grainCount
+            Create Sound from formula: "grain_gap_" + string$(i), 1, 0, gap_duration, sample_rate, "0"
+            outputPartCount += 1
+            outputPartIDs#[outputPartCount] = selected("Sound")
         endif
     endfor
-    
-    # Final scaling
+
+    selectObject: outputPartIDs#[1]
+    for i from 2 to outputPartCount
+        plusObject: outputPartIDs#[i]
+    endfor
+    Concatenate
+    result = selected("Sound")
+    Rename: sound_name$ + "_brightness_sorted_" + presetName$
+
+    # Remove ordered output copies and source grains.
+    for i from 1 to outputPartCount
+        removeObject: outputPartIDs#[i]
+    endfor
+    for i from 1 to grainCount
+        removeObject: grainIDs#[i]
+    endfor
+
+    # Safe final scaling.
     selectObject: result
-    Scale peak: 0.9
-    
-    # Get stats
-    selectObject: result
-    output_duration = Get total duration
-    
-    minBrightness = grainBrightness#[1]
-    maxBrightness = grainBrightness#[grainCount]
-    if sort_direction = 2
-        minBrightness = grainBrightness#[grainCount]
-        maxBrightness = grainBrightness#[1]
+    resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+    if resultPeak > 0
+        Scale peak: 0.9
     endif
+    output_duration = Get total duration
+
+    # Correct min/max statistics regardless of sort state.
+    minBrightness = grainBrightness#[1]
+    maxBrightness = grainBrightness#[1]
+    for i from 2 to grainCount
+        if grainBrightness#[i] < minBrightness
+            minBrightness = grainBrightness#[i]
+        endif
+        if grainBrightness#[i] > maxBrightness
+            maxBrightness = grainBrightness#[i]
+        endif
+    endfor
 endif
 
 # Cleanup mono copy
@@ -536,7 +603,9 @@ if draw_visualization and grainCount > 0
     else
         vizOrig = Copy: "viz_orig"
     endif
-    
+    selectObject: vizOrig
+    Shift times to: "start time", 0
+
     selectObject: result
     finalPeak = Get absolute extremum: 0, 0, "None"
     
@@ -571,11 +640,12 @@ if draw_visualization and grainCount > 0
     endif
     
     # Compute spectrograms only if user opted in
+    specMaxHz = min(5000, 0.95 * sample_rate / 2)
     if show_spectrograms
         selectObject: vizOrig
-        origSpec = To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+        origSpec = To Spectrogram: 0.03, specMaxHz, 0.01, 20, "Gaussian"
         selectObject: result
-        resSpec = To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+        resSpec = To Spectrogram: 0.03, specMaxHz, 0.01, 20, "Gaussian"
     endif
     
     # ----------------------------------------------------------
@@ -675,7 +745,7 @@ if draw_visualization and grainCount > 0
     else
         Text: 0.10, "left", 0.63, "half", "Variation: fixed"
     endif
-    Text: 0.10, "left", 0.57, "half", "Overlap: " + fixed$(grain_overlap, 2) + " | Density: " + fixed$(density_factor, 2)
+    Text: 0.10, "left", 0.57, "half", "Analysis overlap: " + fixed$(analysis_overlap, 2) + " | Density: " + fixed$(density_factor, 2)
     Text: 0.10, "left", 0.51, "half", "Window: " + window_shape$
     
     Font size: 9
@@ -687,7 +757,7 @@ if draw_visualization and grainCount > 0
     if sort_grains
         Text: 0.10, "left", 0.37, "half", "Direction: " + sortLabel$
     else
-        Text: 0.10, "left", 0.37, "half", "Sort: OFF (original order)"
+        Text: 0.10, "left", 0.37, "half", "Sort: OFF (random draw order)"
     endif
     if exaggerate_spectral
         Text: 0.10, "left", 0.31, "half", "Exaggeration: " + exaggerationLabel$ + " (x" + fixed$(spectral_boost, 2) + ")"
@@ -701,11 +771,10 @@ if draw_visualization and grainCount > 0
         Text: 0.10, "left", 0.19, "half", "Random reverse: OFF"
     endif
     
-    # Pitch scatter clarification
     Font size: 7
     Colour: "{0.55, 0.30, 0.20}"
-    Text: 0.05, "left", 0.10, "half", "Note: 'Pitch scatter' (" + fixed$(pitch_scatter, 2) + ") applies"
-    Text: 0.05, "left", 0.05, "half", "uniform spectrum gain, not pitch shift"
+    Text: 0.05, "left", 0.10, "half", "Gain scatter: " + fixed$(gain_scatter_dB, 2) + " dB SD"
+    Text: 0.05, "left", 0.05, "half", "Applied after equal-peak grain normalization"
     
     Colour: "Black"
     Draw inner box
@@ -787,7 +856,7 @@ if draw_visualization and grainCount > 0
         Select inner viewport: 0.55, 3.85, 5.69, 6.48
         
         selectObject: origSpec
-        Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+        Paint: 0, 0, 0, specMaxHz, 100, "yes", 50, 6, 0, "no"
         Colour: "Black"
         Draw inner box
         Font size: 7
@@ -800,7 +869,7 @@ if draw_visualization and grainCount > 0
         Select inner viewport: 4.10, 7.72, 5.69, 6.48
         
         selectObject: resSpec
-        Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+        Paint: 0, 0, 0, specMaxHz, 100, "yes", 50, 6, 0, "no"
         Colour: "Black"
         Draw inner box
         Font size: 7
@@ -850,6 +919,11 @@ if draw_visualization and grainCount > 0
     else
         specStr$ = "off"
     endif
+    if exaggerate_spectral
+        exaggerationSummary$ = exaggerationLabel$
+    else
+        exaggerationSummary$ = "OFF"
+    endif
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
@@ -859,11 +933,11 @@ if draw_visualization and grainCount > 0
         ... + "  |  Grains: " + string$(grainCount)
         ... + "  |  Brightness: " + fixed$(minBrightness, 0) + "-" + fixed$(maxBrightness, 0) + " Hz"
         ... + "  |  " + sortLabel$
-        ... + "  |  Exaggerate: " + exaggerationLabel$
+        ... + "  |  Exaggerate: " + exaggerationSummary$
     
     Text: 0.02, "left", 0.28, "half",
         ... "Size: " + fixed$(grain_size_ms, 0) + " ms"
-        ... + "  |  Overlap: " + fixed$(grain_overlap, 2)
+        ... + "  |  Analysis ovl: " + fixed$(analysis_overlap, 2)
         ... + "  |  Gap: " + fixed$(gap_between_grains_ms, 0) + " ms"
         ... + "  |  Window: " + window_shape$
         ... + "  |  In: " + fixed$(duration, 2) + " s"

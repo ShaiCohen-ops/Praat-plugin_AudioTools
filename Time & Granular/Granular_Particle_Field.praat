@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,24 @@
 #   and temporal control. Creates stereo particle clouds from
 #   source audio with envelope shaping, pitch variation,
 #   panning, and LFO modulation.
+#
+# Changelog v0.4:
+#   - FIXED output scheduling: Linear/Exponential no longer place the final
+#     grain exactly at outDur, where it contributes no audible samples.
+#     Starts are scheduled over a safe span that accounts for the longest
+#     possible varispeed-expanded grain.
+#   - FIXED non-zero Sound time domains. Structural source positions are
+#     zero-based offsets; extraction uses sourceStart + offset.
+#   - FIXED Position-derived panning: the legal source-start range now maps
+#     exactly to L..R instead of being compressed by division by inputDuration.
+#   - MAJOR speedup: mixing uses Formula (part) only over each grain's write
+#     range instead of two whole-output Formula passes per grain.
+#   - Gaussian envelope is edge-normalized to reach zero at both boundaries.
+#   - Sequential source traversal spans the actual legal grain-start range.
+#   - Added validation for grain count, output duration, pitch variation,
+#     fixed-pan mode, and minimum renderable durations.
+#   - Safe normalization skips all-zero output.
+#   - Added preset names to result object names and visualization metadata.
 #
 # Changelog v0.3:
 #   - Fixed pitch shift: was Resample (preserves pitch -> no-op); now
@@ -30,7 +48,7 @@
 #   - Added visualization
 # ============================================================
 
-form Particle Field Renderer
+form Particle Field Renderer v0.4
     comment Select a Sound object first
     
     comment === Preset ===
@@ -83,6 +101,7 @@ form Particle Field Renderer
 endform
 
 # === Apply Presets ===
+presetName$ = "Custom"
 if preset = 2
     # Dense Cloud
     number_of_grains = 300
@@ -93,6 +112,7 @@ if preset = 2
     time_distribution = 3
     grain_source = 2
     apply_pitch_shift = 0
+    presetName$ = "DenseCloud"
 elsif preset = 3
     # Sparse Field
     number_of_grains = 30
@@ -103,6 +123,7 @@ elsif preset = 3
     time_distribution = 1
     grain_source = 1
     apply_pitch_shift = 0
+    presetName$ = "SparseField"
 elsif preset = 4
     # Rhythmic Pulse
     number_of_grains = 80
@@ -115,6 +136,7 @@ elsif preset = 4
     time_distribution = 1
     grain_source = 1
     apply_pitch_shift = 0
+    presetName$ = "RhythmicPulse"
 elsif preset = 5
     # Shimmer
     number_of_grains = 150
@@ -128,6 +150,7 @@ elsif preset = 5
     apply_pitch_shift = 1
     pitch_shift_semitones = 0
     pitch_variation_semitones = 7.0
+    presetName$ = "Shimmer"
 elsif preset = 6
     # Long Resonance
     number_of_grains = 15
@@ -141,6 +164,7 @@ elsif preset = 6
     apply_pitch_shift = 1
     pitch_shift_semitones = 0
     pitch_variation_semitones = 3.0
+    presetName$ = "LongResonance"
 endif
 
 # === Check Input ===
@@ -149,10 +173,22 @@ if numberOfSelected("Sound") <> 1
 endif
 
 # === Validate ===
+if number_of_grains < 1
+    exitScript: "Number of grains must be at least 1"
+endif
+if number_of_grains > 5000
+    exitScript: "Number of grains must not exceed 5000"
+endif
 if grain_duration_s <= 0
     exitScript: "Grain duration must be > 0"
 endif
-if fixed_pan < 0 or fixed_pan > 1
+if output_duration_s < 0
+    exitScript: "Output duration must be 0 (use input duration) or > 0"
+endif
+if pitch_variation_semitones < 0
+    exitScript: "Pitch variation must be >= 0 semitones"
+endif
+if panning_mode = 3 and (fixed_pan < 0 or fixed_pan > 1)
     exitScript: "Fixed pan must be 0-1"
 endif
 if lFO_frequency <= 0 and apply_LFO
@@ -164,9 +200,16 @@ original = selected("Sound")
 original_name$ = selected$("Sound")
 
 selectObject: original
+sourceStart = Get start time
+sourceEnd = Get end time
 inputDuration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
+
+minRenderableDur = 2 / sampleRate
+if inputDuration < minRenderableDur
+    exitScript: "Input Sound is shorter than two samples"
+endif
 
 # Output duration
 if output_duration_s > 0
@@ -174,14 +217,34 @@ if output_duration_s > 0
 else
     outDur = inputDuration
 endif
+if outDur < minRenderableDur
+    exitScript: "Output duration is too short for this sampling rate"
+endif
+
+# A requested grain longer than the source becomes a full-source grain.
+baseGrainDur = min(grain_duration_s, inputDuration)
+maxSourceStart = max(0, inputDuration - baseGrainDur)
+
+# Down-shifting lengthens a varispeed grain. Reserve a common start span
+# based on the longest pitch outcome so deterministic distributions stay
+# monotonic and every scheduled grain can fit.
+if apply_pitch_shift
+    minSemitones = pitch_shift_semitones - pitch_variation_semitones
+    minPitchFactor = 2 ^ (minSemitones / 12)
+else
+    minPitchFactor = 1
+endif
+maxPossibleGrainDur = baseGrainDur / minPitchFactor
+outputGridSpan = max(0, outDur - maxPossibleGrainDur)
 
 # === Info ===
 writeInfoLine: "=== Particle Field Renderer ==="
-appendInfoLine: "Source: ", original_name$, " (", fixed$(inputDuration, 2), " s)"
+appendInfoLine: "Source: ", original_name$, " (", fixed$(inputDuration, 2), " s; ", presetName$, ")"
 appendInfoLine: ""
 appendInfoLine: "Grains: ", number_of_grains
 appendInfoLine: "Duration: ", fixed$(grain_duration_s * 1000, 1), " ms"
 appendInfoLine: "Output: ", fixed$(outDur, 2), " s"
+appendInfoLine: "Safe start span: 0-", fixed$(outputGridSpan, 3), " s"
 appendInfoLine: ""
 
 # === Convert to Mono for Processing ===
@@ -206,6 +269,7 @@ for i to number_of_grains
     grainTime[i] = 0
     grainPan[i] = 0.5
     grainAmp[i] = 1
+    grainPitchShift[i] = 0
 endfor
 
 # === Generate Grains ===
@@ -213,75 +277,74 @@ appendInfoLine: "Rendering grains..."
 progressStep = max(1, floor(number_of_grains / 10))
 
 for i to number_of_grains
-    # Output time distribution
+    # Draw pitch first because varispeed changes grain duration.
+    if apply_pitch_shift
+        semitones = pitch_shift_semitones + randomUniform(-pitch_variation_semitones, pitch_variation_semitones)
+        pitchFactor = 2 ^ (semitones / 12)
+    else
+        semitones = 0
+        pitchFactor = 1
+    endif
+
+    # Output time distribution. All deterministic starts share one safe span,
+    # so Linear and Exponential remain monotonic even with pitch variation.
     if time_distribution = 1
         # Linear
         if number_of_grains = 1
-            outputTime = 0.5 * outDur
+            outputTime = 0.5 * outputGridSpan
         else
-            outputTime = (i - 1) / (number_of_grains - 1) * outDur
+            outputTime = (i - 1) / (number_of_grains - 1) * outputGridSpan
         endif
     elsif time_distribution = 2
-        # Exponential
+        # Exponential: progressively denser toward the end.
         if number_of_grains = 1
-            outputTime = 0.5 * outDur
+            outputTime = 0.5 * outputGridSpan
         else
             t = (i - 1) / (number_of_grains - 1)
-            outputTime = outDur * (1 - exp(-3 * t)) / (1 - exp(-3))
+            outputTime = outputGridSpan * (1 - exp(-3 * t)) / (1 - exp(-3))
         endif
     else
         # Random
-        outputTime = randomUniform(0, outDur)
+        if outputGridSpan > 0
+            outputTime = randomUniform(0, outputGridSpan)
+        else
+            outputTime = 0
+        endif
     endif
-    
-    # Source time
+
+    # Source position is a zero-based offset. Extraction uses absolute time.
     if grain_source = 1
         # Sequential
         if number_of_grains = 1
-            sourceTime = 0.5 * inputDuration
+            sourceOffset = 0.5 * maxSourceStart
         else
-            sourceTime = (i - 1) / (number_of_grains - 1) * inputDuration
+            sourceOffset = (i - 1) / (number_of_grains - 1) * maxSourceStart
         endif
     else
         # Random
-        maxStart = inputDuration - grain_duration_s
-        if maxStart < 0
-            maxStart = 0
-        endif
-        sourceTime = randomUniform(0, maxStart)
-    endif
-    
-    # Clamp source time
-    if sourceTime < 0
-        sourceTime = 0
-    endif
-    if sourceTime + grain_duration_s > inputDuration
-        sourceTime = inputDuration - grain_duration_s
-        if sourceTime < 0
-            sourceTime = 0
+        if maxSourceStart > 0
+            sourceOffset = randomUniform(0, maxSourceStart)
+        else
+            sourceOffset = 0
         endif
     endif
-    
-    # Extract grain
+    sourceTime = sourceStart + sourceOffset
+
+    # Preserve times = no, so the extracted grain starts at time 0.
     selectObject: sourceSound
-    grainEnd = min(sourceTime + grain_duration_s, inputDuration)
+    grainEnd = sourceTime + baseGrainDur
     Extract part: sourceTime, grainEnd, "rectangular", 1, "no"
     grain = selected("Sound")
-    
-    # Get actual grain duration
-    grainDur = Get total duration
-    
-    # Apply pitch shift (varispeed: reinterpret samples at a new rate ->
-    # shifts pitch and changes grain length; mild aliasing on up-shifts)
+
+    # Varispeed: reinterpret the samples at a new sampling frequency.
     if apply_pitch_shift
-        semitones = pitch_shift_semitones + randomUniform(-pitch_variation_semitones, pitch_variation_semitones)
-        pitchFactor = 2^(semitones / 12)
-        
         selectObject: grain
         Override sampling frequency: sampleRate * pitchFactor
-        grainDur = Get total duration
     endif
-    
+
+    selectObject: grain
+    grainDur = Get total duration
+
     # Apply envelope
     selectObject: grain
     if envelope_shape = 1
@@ -289,7 +352,7 @@ for i to number_of_grains
         Formula: "self * 0.5 * (1 - cos(2*pi*x/grainDur))"
     elsif envelope_shape = 2
         # Gaussian
-        Formula: "self * exp(-0.5 * ((x - grainDur/2) / (grainDur/4))^2)"
+        Formula: "self * (exp(-0.5 * ((x - grainDur/2) / (grainDur/6))^2) - exp(-4.5)) / (1 - exp(-4.5))"
     endif
     # Rectangular = no envelope
     
@@ -304,7 +367,11 @@ for i to number_of_grains
     
     # Panning
     if panning_mode = 1
-        pan = sourceTime / inputDuration
+        if maxSourceStart > 0
+            pan = sourceOffset / maxSourceStart
+        else
+            pan = 0.5
+        endif
     elsif panning_mode = 2
         pan = randomUniform(0, 1)
     else
@@ -318,25 +385,26 @@ for i to number_of_grains
     grainTime[i] = outputTime
     grainPan[i] = pan
     grainAmp[i] = grainAmplitude
+    grainPitchShift[i] = semitones
     
-    # Add to mix buffers using Formula (FAST!)
+    # Shift the grain to its output position, then touch only the samples
+    # inside its write range. Formula (part) avoids whole-output passes.
     selectObject: grain
     Shift times to: "start time", outputTime
-    
+
     grainStr$ = string$(grain)
-    tStart$ = fixed$(outputTime, 6)
-    tEnd$ = fixed$(outputTime + grainDur, 6)
-    
-    # Add to left channel
-    selectObject: mixL
-    Formula: "if x >= " + tStart$ + " and x <= " + tEnd$ + " then self + object(" + grainStr$ + ", x) * gainL else self fi"
-    
-    # Add to right channel
-    selectObject: mixR
-    Formula: "if x >= " + tStart$ + " and x <= " + tEnd$ + " then self + object(" + grainStr$ + ", x) * gainR else self fi"
-    
+    writeEnd = min(outDur, outputTime + grainDur)
+
+    if writeEnd > outputTime
+        selectObject: mixL
+        Formula (part): outputTime, writeEnd, 1, 1, "self + object(" + grainStr$ + ", x) * gainL"
+
+        selectObject: mixR
+        Formula (part): outputTime, writeEnd, 1, 1, "self + object(" + grainStr$ + ", x) * gainR"
+    endif
+
     removeObject: grain
-    
+
     if i mod progressStep = 0
         appendInfoLine: "  ", floor(i / number_of_grains * 100), "%"
     endif
@@ -346,8 +414,11 @@ endfor
 selectObject: mixL, mixR
 Combine to stereo
 result = selected("Sound")
-Scale peak: 0.95
-Rename: original_name$ + "_particles"
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: 0.95
+endif
+Rename: original_name$ + "_particles_" + presetName$
 
 removeObject: mixL, mixR, sourceSound
 
@@ -359,7 +430,8 @@ if draw_visualization
     Select outer viewport: 1, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Particle Field: " + original_name$
+    Axes: 0, 1, 0, 1
+    Text: 0.5, "centre", 0.5, "half", "Particle Field: " + original_name$ + " [" + presetName$ + "]"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.8
@@ -419,7 +491,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(number_of_grains) + " | Duration: " + fixed$(grain_duration_s * 1000, 0) + "ms | Envelope: " + string$(envelope_shape)
+    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(number_of_grains) + " | Base grain: " + fixed$(baseGrainDur * 1000, 0) + " ms | Preset: " + presetName$
     
     Font size: 10
     Colour: "Black"
@@ -433,6 +505,9 @@ appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
 appendInfoLine: "Duration: ", fixed$(finalDuration, 2), " s"
+if apply_pitch_shift
+    appendInfoLine: "Pitch range: ", fixed$(pitch_shift_semitones - pitch_variation_semitones, 2), " to ", fixed$(pitch_shift_semitones + pitch_variation_semitones, 2), " semitones"
+endif
 
 # === Play ===
 if play_result
