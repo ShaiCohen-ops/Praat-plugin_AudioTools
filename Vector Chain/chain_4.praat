@@ -18,9 +18,13 @@ path3$ = "../Spatial & Surround/8-Channel_Comb_Delay.praat"
 # STEP 1: Metamodulator (Cubic Phase Distortion)
 # ==============================================================================
 selectObject: initial_sound
-# FIX: Changed Preset to "Cubic: Strong Distortion"
-# Args: Preset, Manual_Algo, F_carrier, F_start, F_end, Mod_factor, Mod_rate, Scale, Viz, Play
-runScript: path1$, "Cubic: Strong Distortion", "1. Cubic Phase Distortion", 200, 100, 800, 2.0, 5.0, 0.95, 0, 0, 0
+
+# Metamodulator v2.4 parameters (12 args):
+# Preset, Manual_Algorithm, Carrier_Frequency_Hz, Start_Frequency_Hz,
+# End_Frequency_Hz, Modulation_Factor, Modulation_Rate_Hz,
+# Dry_wet_percent, Safety_peak, Show_spectrogram,
+# Draw_visualization, Play_result
+runScript: path1$, "Cubic: Strong Distortion", "1. Cubic Phase Distortion", 200, 100, 800, 2.0, 5.0, 100, 0.95, 0, 0, 0
 
 # Select Output
 sound2 = selected("Sound")
@@ -30,7 +34,7 @@ appendInfoLine: "Step 1: Metamodulator (Cubic) complete."
 # STEP 2: Adaptive Grain Cloud Synthesis
 # ==============================================================================
 selectObject: sound2
-# Args: Preset, Grain_size, Overlap, Density, Pitch_scatter, Pos_scatter, 
+# Args: Preset, Grain_size, Overlap, Density, Pitch_scatter, Pos_scatter,
 #       Adaptive_dur, Rev_random, Out_dur_factor, Viz, Play
 runScript: path2$, "Dense Cloud", 50, 0.5, 2.0, 0.0, 0.2, 1, 0, 1.0, 0, 0
 
@@ -43,11 +47,6 @@ appendInfoLine: "Step 2: Grain Cloud complete."
 # ==============================================================================
 selectObject: sound3
 # Args: Preset, D1-D8, Reverse_even, Scale_peak, Output_format, Viz, Play
-# FIX: added Output_format (arg 12) to match 8-Channel_Comb_Delay v0.4 form.
-# Old call had 13 args; v0.4 requires 14. Output_format is an optionmenu,
-# so runScript needs its exact label string (like Preset below), not the
-# numeric index. "8 channels - octophonic..." preserves the original
-# all-8-channels behavior.
 runScript: path3$, "Linear (2,4,6,8,10,12,14,16)", 2, 4, 6, 8, 10, 12, 14, 16, 0, 0.99, "8 channels - octophonic (Ch1-Ch8)", 0, 1
 
 # Select Output

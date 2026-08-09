@@ -64,8 +64,37 @@ final_fade_sec = 4.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "Pitch/Spiral_Pitch_Dance.praat"
-path_body$ = pluginPath$ + "AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
+path_body$  = pluginPath$ + "AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
 path_outro$ = pluginPath$ + "Spatial & Surround/8-channel_speed_deviations.praat"
+
+# Praat 7 / script-relative fallback
+if not fileReadable(path_intro$)
+    path_intro$ = defaultDirectory$ + "/../Pitch/Spiral_Pitch_Dance.praat"
+endif
+
+if not fileReadable(path_body$)
+    path_body$ = defaultDirectory$ + "/../AI & Adaptive/Neural_Ambient_Drone_Designer.praat"
+endif
+
+if not fileReadable(path_outro$)
+    path_outro$ = defaultDirectory$ + "/../Spatial & Surround/8-channel_speed_deviations.praat"
+endif
+
+path_intro$ = replace_regex$(path_intro$, "\\", "/", 0)
+path_body$  = replace_regex$(path_body$,  "\\", "/", 0)
+path_outro$ = replace_regex$(path_outro$, "\\", "/", 0)
+
+if not fileReadable(path_intro$)
+    exitScript: "Cannot find Spiral_Pitch_Dance.praat"
+endif
+
+if not fileReadable(path_body$)
+    exitScript: "Cannot find Neural_Ambient_Drone_Designer.praat"
+endif
+
+if not fileReadable(path_outro$)
+    exitScript: "Cannot find 8-channel_speed_deviations.praat"
+endif
 
 # === INFO HEADER ===
 clearinfo

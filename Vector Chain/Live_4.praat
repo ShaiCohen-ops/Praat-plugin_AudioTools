@@ -1,30 +1,6 @@
 # ============================================================
 # Praat AudioTools - Live 4
-# Author: Shai Cohen
-# Affiliation: Department of Music, Bar-Ilan University, Israel
-# Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
-# License: MIT License
-# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
-#
-# Description:
-#   Live recording + Composition 4 processing chain
-#   Flow: Record → Cubic Phase → Grain Cloud → 8-Channel Comb
-#
-# Changelog v1.2:
-#   - Fixed runScript call to 8-Channel_Comb_Delay.praat to match v0.4
-#     form signature (added Output_format argument). Old call had 13
-#     args; v0.4 requires 14. Output_format = 1 (octophonic) preserves
-#     the 8-channel output the downstream nch>2 branch depends on.
-#
-# Changelog v1.1:
-#   - Fixed runScript call to Metamodulator.praat to match v2.3
-#     form signature (added Draw_visualization argument).
-#     Old call had 10 args; v2.3 requires 11.
-# ============================================================
-
-# ============================================================
-# USER FORM
+# Version: 1.3 (2026) - Praat 7 path fallback + Metamodulator v2.4
 # ============================================================
 
 form Live Recording - Composition 4 Settings
@@ -35,33 +11,25 @@ endform
 # PART 1: RECORDING & PREPARATION
 # ============================================================
 
-# 1. Record 
 Record Sound (fixed time): "Microphone", 1.0, 0.5, "44100", recording_time_seconds
 recorded = selected("Sound")
 Rename: "Recording_raw"
 
-# 2. Normalize
 Scale peak: 0.99
 
-# 3. Trim Silence
 Trim silences: 0.08, "yes", 100, 0, -35, 0.1, 0.05, "no", "Trim"
-
 trimmed = selected("Sound")
 Rename: "Recording"
 
-# 4. Clean up raw file
 selectObject: recorded
 Remove
-
-# 5. Select result for the next section
 selectObject: trimmed
 
 # ============================================================
 # PART 2: COMPOSITION 4 (AudioTools)
-# Flow: Cubic Phase → Grain Cloud → 8-Channel Comb
+# Flow: Cubic Phase -> Grain Cloud -> 8-Channel Comb
 # ============================================================
 
-# === INPUT SETUP ===
 initial_sound = selected("Sound")
 initial_name$ = selected$("Sound")
 
@@ -69,44 +37,64 @@ initial_name$ = selected$("Sound")
 preferencesDir$ = preferencesDirectory$
 pluginPath$ = preferencesDir$ + "/plugin_AudioTools/"
 
-# === CONFIGURATION ===
 overlap_sec = 0.1
 final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "Modulation/Metamodulator.praat"
-path_body$ = pluginPath$ + "Time & Granular/Adaptive_Grain_Cloud_Synthesis.praat"
+path_body$  = pluginPath$ + "Time & Granular/Adaptive_Grain_Cloud_Synthesis.praat"
 path_outro$ = pluginPath$ + "Spatial & Surround/8-Channel_Comb_Delay.praat"
 
-# === INFO HEADER ===
+# Praat 7 / script-relative fallback
+if not fileReadable(path_intro$)
+    path_intro$ = defaultDirectory$ + "/../Modulation/Metamodulator.praat"
+endif
+if not fileReadable(path_body$)
+    path_body$ = defaultDirectory$ + "/../Time & Granular/Adaptive_Grain_Cloud_Synthesis.praat"
+endif
+if not fileReadable(path_outro$)
+    path_outro$ = defaultDirectory$ + "/../Spatial & Surround/8-Channel_Comb_Delay.praat"
+endif
+
+path_intro$ = replace_regex$(path_intro$, "\\", "/", 0)
+path_body$  = replace_regex$(path_body$,  "\\", "/", 0)
+path_outro$ = replace_regex$(path_outro$, "\\", "/", 0)
+
+if not fileReadable(path_intro$)
+    exitScript: "Cannot find Metamodulator.praat"
+endif
+if not fileReadable(path_body$)
+    exitScript: "Cannot find Adaptive_Grain_Cloud_Synthesis.praat"
+endif
+if not fileReadable(path_outro$)
+    exitScript: "Cannot find 8-Channel_Comb_Delay.praat"
+endif
+
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  LIVE 4 - Cubic → Grain → Comb"
+writeInfoLine: "  LIVE 4 - Cubic -> Grain -> Comb"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Recording time: ", recording_time_seconds, " seconds"
 writeInfoLine: "Input: ", initial_name$
-writeInfoLine: "Plugin path: ", pluginPath$
 writeInfoLine: ""
 
-# ==============================================================================
-# PART 1: INTRO (Cubic Phase Distortion)
-# ==============================================================================
+# ============================================================
+# PART 1: INTRO (Metamodulator / Cubic Phase)
+# ============================================================
+
 selectObject: initial_sound
 appendInfoLine: "=== Part 1: Intro (Cubic Phase Distortion) ==="
 appendInfoLine: "  Generating..."
 
-# Metamodulator v2.3 parameters
-# Args: Preset, Manual_Algo, F_carrier, F_start, F_end, Mod_factor, Mod_rate,
-#       Scale_peak, Show_spectrogram, Draw_visualization, Play_result
-# FIX v1.1: added Draw_visualization (arg 10) to match Metamodulator v2.3 form
-runScript: path_intro$, "Cubic: Strong Distortion", "1. Cubic Phase Distortion", 200, 100, 800, 2.0, 5.0, 0.95, 0, 0, 0
+# Metamodulator v2.4 args:
+# Preset, Manual_Algorithm, Carrier, Start, End, Mod_factor, Mod_rate,
+# Dry_wet_percent, Safety_peak, Show_spectrogram, Draw_visualization, Play_result
+runScript: path_intro$, "Cubic: Strong Distortion", "1. Cubic Phase Distortion", 200, 100, 800, 2.0, 5.0, 100, 0.95, 0, 0, 0
 
-# Get the output
 sound_intro = selected("Sound")
 Rename: initial_name$ + "_Part1_Cubic"
 
-# Ensure stereo
 selectObject: sound_intro
 nch = Get number of channels
 if nch = 1
@@ -120,28 +108,23 @@ endif
 dur_intro = Get total duration
 appendInfoLine: "  Duration: ", fixed$(dur_intro, 2), " s"
 
-# Fade Out for crossfade
 selectObject: sound_intro
 Formula: "if x > (xmax - " + string$(overlap_sec) + ") then self * ((xmax - x) / " + string$(overlap_sec) + ") else self fi"
 
-# ==============================================================================
+# ============================================================
 # PART 2: BODY (Adaptive Grain Cloud Synthesis)
-# ==============================================================================
+# ============================================================
+
 selectObject: initial_sound
 appendInfoLine: ""
 appendInfoLine: "=== Part 2: Body (Grain Cloud Synthesis) ==="
 appendInfoLine: "  Generating..."
 
-# Adaptive Grain Cloud Synthesis parameters
-# Args: Preset, Grain_size, Overlap, Density, Pitch_scatter, Pos_scatter, 
-#       Adaptive_dur, Rev_random, Out_dur_factor, Viz, Play
 runScript: path_body$, "Dense Cloud", 50, 0.5, 2.0, 0.0, 0.2, 1, 0, 1.0, 0, 0
 
-# Get the output
 sound_body = selected("Sound")
 Rename: initial_name$ + "_Part2_GrainCloud"
 
-# Ensure stereo
 selectObject: sound_body
 nch = Get number of channels
 if nch = 1
@@ -155,56 +138,40 @@ endif
 dur_body = Get total duration
 appendInfoLine: "  Duration: ", fixed$(dur_body, 2), " s"
 
-# Fade In for crossfade
 selectObject: sound_body
 Formula: "if x < " + string$(overlap_sec) + " then self * (x / " + string$(overlap_sec) + ") else self fi"
-
-# Fade Out for crossfade
 Formula: "if x > (xmax - " + string$(overlap_sec) + ") then self * ((xmax - x) / " + string$(overlap_sec) + ") else self fi"
 
-# ==============================================================================
+# ============================================================
 # PART 3: OUTRO (8-Channel Comb Delay)
-# ==============================================================================
+# ============================================================
+
 selectObject: initial_sound
 appendInfoLine: ""
 appendInfoLine: "=== Part 3: Outro (8-Channel Comb Delay) ==="
 appendInfoLine: "  Generating..."
 
-# 8-Channel Comb Delay parameters
-# Args: Preset, D1-D8, Reverse_even, Scale_peak, Output_format, Viz, Play
-# FIX: added Output_format (arg 12) to match 8-Channel_Comb_Delay v0.4 form.
-# Old call had 13 args; v0.4 requires 14. Output_format is an optionmenu,
-# so runScript needs its exact label string (like Preset below), not the
-# numeric index. "8 channels - octophonic..." is required here since the
-# code below explicitly branches on nch > 2 to extract channels 1 & 2 out
-# of an 8-channel object.
 runScript: path_outro$, "Linear (2,4,6,8,10,12,14,16)", 2, 4, 6, 8, 10, 12, 14, 16, 0, 0.99, "8 channels - octophonic (Ch1-Ch8)", 0, 0
 
-# Get the output
 sound_outro_raw = selected("Sound")
 Rename: initial_name$ + "_Part3_Raw"
 
-# --- Trim trailing silence (stereo-safe method) ---
 selectObject: sound_outro_raw
 Convert to mono
 sound_outro_mono = selected("Sound")
-
 Trim silences: 0.1, "yes", 100, 0, -40, 0.1, 0.05, "no", "Trim"
 mono_trimmed_outro = selected("Sound")
 trimmed_dur = Get total duration
 removeObject: sound_outro_mono, mono_trimmed_outro
 
-# Crop original to trimmed duration
 selectObject: sound_outro_raw
 Extract part: 0, trimmed_dur, "rectangular", 1, "no"
 sound_outro = selected("Sound")
 Rename: initial_name$ + "_Part3_Comb"
 
-# Ensure stereo (8-channel may output multichannel - convert to stereo)
 selectObject: sound_outro
 nch = Get number of channels
 if nch > 2
-    # Extract first two channels as stereo
     Extract one channel: 1
     ch1 = selected("Sound")
     selectObject: sound_outro
@@ -228,24 +195,21 @@ endif
 dur_outro = Get total duration
 appendInfoLine: "  Duration: ", fixed$(dur_outro, 2), " s"
 
-# Clean up raw
 removeObject: sound_outro_raw
 
-# Fade In for crossfade
 selectObject: sound_outro
 Formula: "if x < " + string$(overlap_sec) + " then self * (x / " + string$(overlap_sec) + ") else self fi"
 
-# ==============================================================================
+# ============================================================
 # MIXING
-# ==============================================================================
+# ============================================================
+
 appendInfoLine: ""
 appendInfoLine: "=== Mixing Parts ==="
 
-# Get sample rate from intro
 selectObject: sound_intro
 fs = Get sampling frequency
 
-# Calculate start times
 start_1 = 0
 start_2 = dur_intro - overlap_sec
 start_3 = start_2 + dur_body - overlap_sec
@@ -256,7 +220,6 @@ appendInfoLine: "  Part 2 starts: ", fixed$(start_2, 2), " s"
 appendInfoLine: "  Part 3 starts: ", fixed$(start_3, 2), " s"
 appendInfoLine: "  Total duration: ", fixed$(total_dur, 2), " s"
 
-# --- Prepare Track 1 (Intro) ---
 silence_end1_dur = total_dur - dur_intro
 if silence_end1_dur > 0
     Create Sound from formula: "Silence_End1", 2, 0, silence_end1_dur, fs, "0"
@@ -272,7 +235,6 @@ else
     track1 = Copy: "Track_1_Aligned"
 endif
 
-# --- Prepare Track 2 (Body) ---
 Create Sound from formula: "Silence_Start2", 2, 0, start_2, fs, "0"
 silence_start2 = selected("Sound")
 
@@ -293,7 +255,6 @@ track2 = selected("Sound")
 Rename: "Track_2_Aligned"
 removeObject: silence_start2, silence_end2
 
-# --- Prepare Track 3 (Outro) ---
 Create Sound from formula: "Silence_Start3", 2, 0, start_3, fs, "0"
 silence_start3 = selected("Sound")
 selectObject: silence_start3
@@ -303,9 +264,7 @@ track3 = selected("Sound")
 Rename: "Track_3_Aligned"
 removeObject: silence_start3
 
-# --- Sum All Tracks ---
 appendInfoLine: "  Summing tracks..."
-
 selectObject: track1
 track2_str$ = string$(track2)
 track3_str$ = string$(track3)
@@ -315,21 +274,18 @@ final_name$ = initial_name$ + "_Composition4"
 Rename: final_name$
 final_sound = selected("Sound")
 
-# ==============================================================================
+# ============================================================
 # FINAL MASTERING
-# ==============================================================================
+# ============================================================
+
 appendInfoLine: ""
 appendInfoLine: "=== Final Mastering ==="
-
-# --- Trim trailing silence ---
 appendInfoLine: "  Trimming silence..."
 
 selectObject: final_sound
 Convert to mono
 mono_for_trim = selected("Sound")
-
 Trim silences: 0.1, "yes", 100, 0, -40, 0.1, 0.05, "no", "Trim"
-
 mono_trimmed_final = selected("Sound")
 trimmed_final_dur = Get total duration
 removeObject: mono_for_trim, mono_trimmed_final
@@ -341,95 +297,35 @@ removeObject: final_sound
 final_sound = trimmed_final
 Rename: final_name$
 
-# --- Apply final fade-out ---
 appendInfoLine: "  Applying fade-out (", fixed$(final_fade_sec, 1), " s)..."
-
 selectObject: final_sound
 final_dur = Get total duration
 fade_start = final_dur - final_fade_sec
-
 if fade_start > 0
     Formula: "if x > " + string$(fade_start) + " then self * ((xmax - x) / " + string$(final_fade_sec) + ") else self fi"
 endif
 
-# --- Normalize ---
 appendInfoLine: "  Normalizing..."
 Scale peak: 0.99
 
-# ==============================================================================
-# CLEANUP (Keep only final result)
-# ==============================================================================
+# ============================================================
+# CLEANUP
+# ============================================================
+
 appendInfoLine: ""
 appendInfoLine: "Cleaning up intermediate files..."
 
-# Safe cleanup using nocheck for each object
 nocheck removeObject: sound_intro
 nocheck removeObject: sound_body
 nocheck removeObject: sound_outro
 nocheck removeObject: track2
 nocheck removeObject: track3
-
-# Remove recording (we only keep final result)
 nocheck removeObject: initial_sound
 
-# Comprehensive cleanup - find and remove any remaining artifacts
-appendInfoLine: "  Searching for artifacts..."
-select all
-if numberOfSelected("Sound") > 0
-    n = numberOfSelected("Sound")
-    # Build array of names first to avoid selection issues
-    for j to n
-        name'j'$ = selected$("Sound", j)
-    endfor
-    # Now remove artifacts
-    for j to n
-        tempName$ = name'j'$
-        # Check if name contains artifact patterns and it's not our final sound
-        if tempName$ <> final_name$
-            isArtifact = 0
-            if index(tempName$, "Cubic") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "cubic") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Grain") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "grain") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Comb") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "comb") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Metamodulator") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "_Part") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Track_") > 0
-                isArtifact = 1
-            endif
-            if index(tempName$, "Recording") > 0 and tempName$ <> final_name$
-                isArtifact = 1
-            endif
-            
-            if isArtifact = 1
-                appendInfoLine: "    Removing artifact: ", tempName$
-                nocheck selectObject: "Sound " + tempName$
-                nocheck Remove
-            endif
-        endif
-    endfor
-endif
-
-# ==============================================================================
+# ============================================================
 # FINISH
-# ==============================================================================
+# ============================================================
+
 selectObject: final_sound
 final_dur = Get total duration
 final_nch = Get number of channels
@@ -445,8 +341,6 @@ appendInfoLine: "Channels: ", final_nch
 appendInfoLine: ""
 appendInfoLine: "Playing..."
 
-# Clear picture window
 Erase all
-
 selectObject: final_sound
 Play

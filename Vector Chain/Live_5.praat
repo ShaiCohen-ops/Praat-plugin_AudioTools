@@ -3,13 +3,18 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2026) - Praat 7 path compatibility
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Live recording + Composition 5 processing chain
-#   Flow: Record → Full-Wave Rectifier → Brownian Motion → 8-Channel Movements
+#   Flow: Record -> Full-Wave Rectifier -> Brownian Motion -> 8-Channel Movements
+#
+# v1.1:
+#   - Added Praat 7 / script-relative fallbacks for all child scripts.
+#   - Current child-script signatures retained for Full-Wave Rectifier v0.4b,
+#     Brownian Motion Texture v0.3, and 8-Channel Movements v0.5.
 # ============================================================
 
 # ============================================================
@@ -24,7 +29,7 @@ endform
 # PART 1: RECORDING & PREPARATION
 # ============================================================
 
-# 1. Record 
+# 1. Record
 Record Sound (fixed time): "Microphone", 1.0, 0.5, "44100", recording_time_seconds
 recorded = selected("Sound")
 Rename: "Recording_raw"
@@ -47,7 +52,7 @@ selectObject: trimmed
 
 # ============================================================
 # PART 2: COMPOSITION 5 (AudioTools)
-# Flow: Full-Wave Rectifier → Brownian Motion → 8-Channel Movements
+# Flow: Full-Wave Rectifier -> Brownian Motion -> 8-Channel Movements
 # ============================================================
 
 # === INPUT SETUP ===
@@ -64,18 +69,46 @@ final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "Distortion/Full-Wave_Rectifier_Abs.praat"
-path_body$ = pluginPath$ + "Time & Granular/Brownian_Motion_Texture_Generator.praat"
+path_body$  = pluginPath$ + "Time & Granular/Brownian_Motion_Texture_Generator.praat"
 path_outro$ = pluginPath$ + "Spatial & Surround/8-Channel_Movements.praat"
+
+# Praat 7 / script-relative fallback
+if not fileReadable(path_intro$)
+    path_intro$ = defaultDirectory$ + "/../Distortion/Full-Wave_Rectifier_Abs.praat"
+endif
+
+if not fileReadable(path_body$)
+    path_body$ = defaultDirectory$ + "/../Time & Granular/Brownian_Motion_Texture_Generator.praat"
+endif
+
+if not fileReadable(path_outro$)
+    path_outro$ = defaultDirectory$ + "/../Spatial & Surround/8-Channel_Movements.praat"
+endif
+
+path_intro$ = replace_regex$(path_intro$, "\\", "/", 0)
+path_body$  = replace_regex$(path_body$,  "\\", "/", 0)
+path_outro$ = replace_regex$(path_outro$, "\\", "/", 0)
+
+if not fileReadable(path_intro$)
+    exitScript: "Cannot find Full-Wave_Rectifier_Abs.praat"
+endif
+
+if not fileReadable(path_body$)
+    exitScript: "Cannot find Brownian_Motion_Texture_Generator.praat"
+endif
+
+if not fileReadable(path_outro$)
+    exitScript: "Cannot find 8-Channel_Movements.praat"
+endif
 
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  LIVE 5 - Rectifier → Brownian → Movements"
+writeInfoLine: "  LIVE 5 - Rectifier -> Brownian -> Movements"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Recording time: ", recording_time_seconds, " seconds"
 writeInfoLine: "Input: ", initial_name$
-writeInfoLine: "Plugin path: ", pluginPath$
 writeInfoLine: ""
 
 # ==============================================================================
@@ -85,14 +118,9 @@ selectObject: initial_sound
 appendInfoLine: "=== Part 1: Intro (Full-Wave Rectifier) ==="
 appendInfoLine: "  Generating..."
 
-# Full-Wave Rectifier parameters
-# Args (8): Preset, Dc_handling, Output_level, Scale_peak, Show_spectrum,
-#           Spectrum_reference, Viz, Play
-# FIX: v0.4/v0.4b added Dc_handling, Output_level and Spectrum_reference
-# (optionmenus, so exact label strings are required) and renamed the
-# Preset options. Old call had 5 args; v0.4b requires 8.
-# Dc_handling = "Raw rectification (v0.2/v0.3)" and Output_level =
-# "Normalize to target" reproduce the old, always-scale-to-peak behavior.
+# Full-Wave Rectifier v0.4b parameters (8 args)
+# Preset, Dc_handling, Output_level, Scale_peak, Show_spectrum,
+# Spectrum_reference, Draw_visualization, Play_result
 runScript: path_intro$, "Standard level (0.95 peak)", "Raw rectification (v0.2/v0.3)", "Normalize to target", 0.95, 0, "Match levels (isolates harmonic change)", 0, 0
 
 # Get the output
@@ -125,9 +153,10 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 2: Body (Brownian Motion Texture) ==="
 appendInfoLine: "  Generating..."
 
-# Brownian Motion Texture Generator parameters
-# Args (15): Preset, GrainDur, OutDur, Dens, TimeStep, TimeDrift, SpatEnable, 
-# SpatStep, SpatDrift, AmpScale, RandPos, FadeDur, FadeOut, Viz, Play
+# Brownian Motion Texture v0.3 parameters (17 args)
+# Preset, GrainDur, OutDur, Density, TimeStep, TimeDrift, SpatialEnable,
+# SpatialStep, SpatialDrift, BoundaryHandling, AmpScale, RandomPositions,
+# FadeDur, FadeOut, AllowOverlap, Draw, Play
 runScript: path_body$, "Dense Cloud", 0.05, 10.0, 20, 0.1, 0.0, 1, 0.15, 0.0, "Clamp (matches v0.2 — pins at edges)", 0.7, 1, 0.005, 2.0, 1, 0, 0
 
 # Get the output
@@ -163,18 +192,10 @@ appendInfoLine: ""
 appendInfoLine: "=== Part 3: Outro (8-Channel Movements) ==="
 appendInfoLine: "  Generating..."
 
-# 8-Channel Spatial Movements parameters (16 args)
+# 8-Channel Spatial Movements v0.5 parameters (16 args)
 # Pattern, Motion_speed, Frequency_hz, Fadein_time, Exponent, Path_radius,
 # Source_focus, Custom_x, Custom_y, Floor_db, Scale_peak, Number_of_points,
 # Random_seed, Output_format, Draw_visualization, Play_result
-#
-# FIX: v0.4/v0.5 dropped Min_volume, Max_volume and Amplitude (old
-# absolute-dB fields) in favor of Floor_db (relative dB) and Scale_peak
-# (peak target), inserted Path_radius and Source_focus after Exponent,
-# and added an Output_format optionmenu. Old call had 14 args; v0.5
-# requires 16. Pattern's label also changed to include the [SPATIAL]
-# tag. Output_format = octophonic is required since the code below
-# branches on nch > 2 to extract channels 1 & 2.
 runScript: path_outro$, "8. [SPATIAL] Circular rotation", 0.2, 2.0, 1.0, 1.0, 0.7, 2.0, 0.0, 0.0, -60.0, 0.95, 100, 1, "8 channels - octophonic (Ch1-Ch8)", 0, 0
 
 # Get the output
@@ -201,7 +222,6 @@ Rename: initial_name$ + "_Part3_Movements"
 selectObject: sound_outro
 nch = Get number of channels
 if nch > 2
-    # Extract first two channels as stereo
     Extract one channel: 1
     ch1 = selected("Sound")
     selectObject: sound_outro
@@ -359,14 +379,11 @@ Scale peak: 0.99
 appendInfoLine: ""
 appendInfoLine: "Cleaning up intermediate files..."
 
-# Safe cleanup using nocheck for each object
 nocheck removeObject: sound_intro
 nocheck removeObject: sound_body
 nocheck removeObject: sound_outro
 nocheck removeObject: track2
 nocheck removeObject: track3
-
-# Remove recording (we only keep final result)
 nocheck removeObject: initial_sound
 
 # Comprehensive cleanup - find and remove any remaining artifacts
@@ -374,14 +391,11 @@ appendInfoLine: "  Searching for artifacts..."
 select all
 if numberOfSelected("Sound") > 0
     n = numberOfSelected("Sound")
-    # Build array of names first to avoid selection issues
     for j to n
         name'j'$ = selected$("Sound", j)
     endfor
-    # Now remove artifacts
     for j to n
         tempName$ = name'j'$
-        # Check if name contains artifact patterns and it's not our final sound
         if tempName$ <> final_name$
             isArtifact = 0
             if index(tempName$, "Rectifier") > 0
@@ -414,7 +428,6 @@ if numberOfSelected("Sound") > 0
             if index(tempName$, "Recording") > 0 and tempName$ <> final_name$
                 isArtifact = 1
             endif
-            
             if isArtifact = 1
                 appendInfoLine: "    Removing artifact: ", tempName$
                 nocheck selectObject: "Sound " + tempName$
@@ -442,8 +455,6 @@ appendInfoLine: "Channels: ", final_nch
 appendInfoLine: ""
 appendInfoLine: "Playing..."
 
-# Clear picture window
 Erase all
-
 selectObject: final_sound
 Play

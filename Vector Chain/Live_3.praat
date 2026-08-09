@@ -64,8 +64,37 @@ final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "Filter & Color/Whisper_Morph.praat"
-path_body$ = pluginPath$ + "Pitch/Bimodal_Contour_Grammar.praat"
+path_body$  = pluginPath$ + "Pitch/Bimodal_Contour_Grammar.praat"
 path_outro$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
+
+# Praat 7 / script-relative fallback
+if not fileReadable(path_intro$)
+    path_intro$ = defaultDirectory$ + "/../Filter & Color/Whisper_Morph.praat"
+endif
+
+if not fileReadable(path_body$)
+    path_body$ = defaultDirectory$ + "/../Pitch/Bimodal_Contour_Grammar.praat"
+endif
+
+if not fileReadable(path_outro$)
+    path_outro$ = defaultDirectory$ + "/../Time & Granular/Percussive Audio Groove Creator.praat"
+endif
+
+path_intro$ = replace_regex$(path_intro$, "\\", "/", 0)
+path_body$  = replace_regex$(path_body$,  "\\", "/", 0)
+path_outro$ = replace_regex$(path_outro$, "\\", "/", 0)
+
+if not fileReadable(path_intro$)
+    exitScript: "Cannot find Whisper_Morph.praat"
+endif
+
+if not fileReadable(path_body$)
+    exitScript: "Cannot find Bimodal_Contour_Grammar.praat"
+endif
+
+if not fileReadable(path_outro$)
+    exitScript: "Cannot find Percussive Audio Groove Creator.praat"
+endif
 
 # === INFO HEADER ===
 clearinfo
@@ -87,7 +116,7 @@ appendInfoLine: "  Generating..."
 
 # Whisper Morph parameters:
 # Preset, Direction, Mix, Breathiness, Transition_sec, Curve, Visualize, Play
-runScript: path_intro$, "Gentle Whisper", "Dry to Wet (original -> whisper)", 1.0, 0.8, 6.0, "Smooth (cosine)", 0, 0
+runScript: path_intro$, "Gentle Whisper", "Dry to Wet (original -> whisper)", 1.0, 0.8, 0.0, 40, 0, "Smooth (cosine)", 0.99, 0, 0
 
 # Get the output
 sound_intro = selected("Sound")

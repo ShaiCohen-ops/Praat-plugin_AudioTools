@@ -80,8 +80,37 @@ final_fade_sec = 3.0
 
 # === DEFINE SCRIPT PATHS ===
 path_intro$ = pluginPath$ + "Filter & Color/Whisper_Morph.praat"
-path_body$ = pluginPath$ + "Pitch/Bimodal_Contour_Grammar.praat"
+path_body$  = pluginPath$ + "Pitch/Bimodal_Contour_Grammar.praat"
 path_outro$ = pluginPath$ + "Time & Granular/Percussive Audio Groove Creator.praat"
+
+# Praat 7 / script-relative fallback
+if not fileReadable(path_intro$)
+    path_intro$ = defaultDirectory$ + "/../Filter & Color/Whisper_Morph.praat"
+endif
+
+if not fileReadable(path_body$)
+    path_body$ = defaultDirectory$ + "/../Pitch/Bimodal_Contour_Grammar.praat"
+endif
+
+if not fileReadable(path_outro$)
+    path_outro$ = defaultDirectory$ + "/../Time & Granular/Percussive Audio Groove Creator.praat"
+endif
+
+path_intro$ = replace_regex$(path_intro$, "\\", "/", 0)
+path_body$  = replace_regex$(path_body$,  "\\", "/", 0)
+path_outro$ = replace_regex$(path_outro$, "\\", "/", 0)
+
+if not fileReadable(path_intro$)
+    exitScript: "Cannot find Whisper_Morph.praat"
+endif
+
+if not fileReadable(path_body$)
+    exitScript: "Cannot find Bimodal_Contour_Grammar.praat"
+endif
+
+if not fileReadable(path_outro$)
+    exitScript: "Cannot find Percussive Audio Groove Creator.praat"
+endif
 
 # === INFO HEADER ===
 clearinfo
@@ -137,8 +166,14 @@ whisper_lpc = randomUniform(0.8, 1.3)
 # Breathiness: 0.5-1.0
 whisper_breath = randomUniform(0.5, 1.0)
 
-# High frequency boost: 2.0-12.0 dB
-whisper_hf_boost = randomUniform(2.0, 12.0)
+# Brightness adjustment: 2.0-12.0 dB
+whisper_brightness = randomUniform(2.0, 12.0)
+
+# Gate range: 30-60 dB
+whisper_gate = randomUniform(30, 60)
+
+# Safety peak
+whisper_safety = 0.99
 
 # Morph curve: random choice
 whisper_curve_choice = randomInteger(1, 3)
@@ -154,13 +189,16 @@ appendInfoLine: "  Preset: ", whisper_preset$
 appendInfoLine: "  Morph type: ", whisper_morph$
 appendInfoLine: "  LPC order factor: ", fixed$(whisper_lpc, 2)
 appendInfoLine: "  Breathiness: ", fixed$(whisper_breath, 2)
-appendInfoLine: "  HF boost: ", fixed$(whisper_hf_boost, 1), " dB"
+appendInfoLine: "  Brightness: ", fixed$(whisper_brightness, 1), " dB"
+appendInfoLine: "  Gate range: ", fixed$(whisper_gate, 1), " dB"
 appendInfoLine: "  Curve: ", whisper_curve$
 
-# Whisper Morph parameters:
-# Preset, Morph_type, LPC_factor, Breathiness, HF_boost, Curve, Draw, Play
-runScript: path_intro$, whisper_preset$, whisper_morph$, whisper_lpc, 
-    ... whisper_breath, whisper_hf_boost, whisper_curve$, 0, 0
+# Whisper Morph v1.3 parameters:
+# Preset, Morph_type, LPC_factor, Breathiness, Brightness_adjust_dB,
+# Gate_range_dB, Random_seed, Morph_curve, Safety_peak, Draw, Play
+runScript: path_intro$, whisper_preset$, whisper_morph$, whisper_lpc,
+    ... whisper_breath, whisper_brightness, whisper_gate, random_seed,
+    ... whisper_curve$, whisper_safety, 0, 0
 
 # Get the output
 sound_intro = selected("Sound")

@@ -1,6 +1,7 @@
 # ============================================================
-# Praat AudioTools - Signal Chain 6 (Fixed)
+# Praat AudioTools - Signal Chain 6
 # Flow: Phase Shaper -> Phase Modulation Matrix -> BPM Panning
+# Praat 7 path compatibility update
 # ============================================================
 
 Erase all
@@ -15,7 +16,7 @@ initial_sound = selected("Sound")
 initial_name$ = selected$("Sound")
 appendInfoLine: "--- Starting AudioTools Chain 6 ---"
 
-# --- Define Paths (Absolute via preferencesDirectory$) ---
+# --- Define Paths (Praat 7 compatible) ---
 preferencesDir$ = preferencesDirectory$
 pluginPath$ = preferencesDir$ + "/plugin_AudioTools/"
 
@@ -23,14 +24,42 @@ path1$ = pluginPath$ + "Spectral/Phase_Shaper.praat"
 path2$ = pluginPath$ + "Time & Granular/Phase_Modulation_Matrix.praat"
 path3$ = pluginPath$ + "Spatial & Surround/BPM_Panning.praat"
 
+# Praat 7 / script-relative fallback
+if not fileReadable(path1$)
+    path1$ = defaultDirectory$ + "/../Spectral/Phase_Shaper.praat"
+endif
+if not fileReadable(path2$)
+    path2$ = defaultDirectory$ + "/../Time & Granular/Phase_Modulation_Matrix.praat"
+endif
+if not fileReadable(path3$)
+    path3$ = defaultDirectory$ + "/../Spatial & Surround/BPM_Panning.praat"
+endif
+
+path1$ = replace_regex$(path1$, "\\", "/", 0)
+path2$ = replace_regex$(path2$, "\\", "/", 0)
+path3$ = replace_regex$(path3$, "\\", "/", 0)
+
+if not fileReadable(path1$)
+    exitScript: "Cannot find Phase_Shaper.praat"
+endif
+if not fileReadable(path2$)
+    exitScript: "Cannot find Phase_Modulation_Matrix.praat"
+endif
+if not fileReadable(path3$)
+    exitScript: "Cannot find BPM_Panning.praat"
+endif
+
 # ==============================================================================
 # STEP 1: Phase Shaper
 # ==============================================================================
 selectObject: initial_sound
-# Parameters: Mode, Preset, Intensity, Wet_dry_percent, Trim_to_original, Stereo_output, Scale_peak, Draw_visualization, Play_result
+
+# Phase Shaper v0.4 parameters (9 args):
+# Mode, Preset, Intensity, Wet_dry_percent, Trim_to_original,
+# Stereo_output, Scale_peak, Draw_visualization, Play_result
 runScript: path1$, "Hyper-Dispersion (sweeping drone)", "Custom (use intensity below)", 1, 100, "no", "yes", 0.95, "yes", "no"
 
-# Capture output (Phase Shaper appends mode name)
+# Capture output
 sound2 = selected("Sound")
 appendInfoLine: "Step 1: Phase Shaper complete."
 
@@ -38,12 +67,10 @@ appendInfoLine: "Step 1: Phase Shaper complete."
 # STEP 2: Phase Modulation Matrix
 # ==============================================================================
 selectObject: sound2
-# FIX: Updated to the correct 16-argument signature for Phase_Modulation_Matrix v0.3.
-# v0.3 inserted Use_fixed_ms_depth + Fixed_depth_ms after Mod_depth_increment, and
-# renamed Spectral_tilt_base/rate -> Layer_gain_base/rate (the chain previously
-# passed the old 14-arg v0.2 signature, which misaligned from arg 9 onward).
-# Parameters: Preset, Layers, CarMin, CarMax, FixedCar, FixedFreq, ModBase, ModIncr,
-#             FixedMsDepth, DepthMs, Feedback, GainBase, GainRate, Scale, Draw, Play
+
+# Phase Modulation Matrix v0.3 parameters (16 args):
+# Preset, Layers, CarMin, CarMax, FixedCar, FixedFreq, ModBase, ModIncr,
+# FixedMsDepth, DepthMs, Feedback, GainBase, GainRate, Scale, Draw, Play
 runScript: path2$, "Default (balanced)", 5, 0.1, 0.5, "no", 0.3, 8, 2, "no", 20, 0.7, 1.1, 0.1, 0.93, "yes", "no"
 
 # Capture output
@@ -55,13 +82,10 @@ appendInfoLine: "Step 2: Phase Modulation Matrix complete."
 # ==============================================================================
 selectObject: sound3
 
-# FIX: Updated to the correct 11-argument signature for BPM_Panning v0.4.
-# v0.4 inserted Stereo_input, Output_normalisation and Peak_target between
-# Edge_transition_percent and Draw_visualization (the chain previously passed
-# the old 8-arg v0.3 signature, which misaligned from arg 7 onward).
-# Parameters: Tempo_bpm, Subdivision, Swing_percent, Accent_grid, Pattern,
-#             Edge_transition_percent, Stereo_input, Output_normalisation,
-#             Peak_target, Draw_visualization, Play_result
+# BPM Panning v0.4 parameters (11 args):
+# Tempo_bpm, Subdivision, Swing_percent, Accent_grid, Pattern,
+# Edge_transition_percent, Stereo_input, Output_normalisation,
+# Peak_target, Draw_visualization, Play_result
 runScript: path3$, 120, "1/16 (sixteenth notes)", 50, "1010100110101001", "1.  Ping-pong (hard L/R alternation)", 0.3, "Downmix to mono and pan (true panning)", "Peak (scale to target)", 0.95, 0, 1
 
 # Capture final output
