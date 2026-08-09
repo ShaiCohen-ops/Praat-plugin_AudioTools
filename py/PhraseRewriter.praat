@@ -47,6 +47,16 @@ pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 pythonScript$ = pluginDir$ + "py/phrase_rewriter.py"
 
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/phrase_rewriter.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: phrase_rewriter.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
+endif
+
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
@@ -56,11 +66,6 @@ tempOutput$  = tempDir$ + "temp_phraserw_output.wav"
 tempStats$   = tempDir$ + "temp_phraserw_stats.txt"
 probeScript$ = tempDir$ + "temp_phraserw_probe.py"
 probeMarker$ = tempDir$ + "temp_phraserw_probe.ok"
-
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
-endif
 
 # ---- INITIAL CLEANUP ----
 @cleanUpTempFiles

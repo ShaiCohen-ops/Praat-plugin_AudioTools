@@ -127,7 +127,13 @@ pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/identity_separation.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/identity_separation.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: identity_separation.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempInput$   = temporaryDirectory$ + "/temp_idsep_input.wav"

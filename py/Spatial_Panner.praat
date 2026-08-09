@@ -28,7 +28,19 @@ tempDirRaw$   = temporaryDirectory$ + "/"
 tempDir$      = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
 # File Paths
+
 pythonScript$ = pluginDir$ + "py/spatial_panner.py"
+
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/spatial_panner.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: spatial_panner.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
+endif
+
 tempInput$    = tempDir$ + "temp_spatial_input.wav"
 tempOutput$   = tempDir$ + "temp_spatial_output.wav"
 probePy$      = tempDir$ + "temp_spatial_probe.py"

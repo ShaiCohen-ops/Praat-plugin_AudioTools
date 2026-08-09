@@ -44,15 +44,21 @@ soundName$ = selected$("Sound")
 # ---- PATHS ----
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/latent_stft_decoder.py"
-tempInput$    = pluginDir$ + "temp_stftdec_input.wav"
-tempCSV$      = pluginDir$ + "temp_stftdec_events.csv"
-tempOutput$   = pluginDir$ + "temp_stftdec_output.wav"
-tempStats$    = pluginDir$ + "temp_stftdec_stats.txt"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/latent_stft_decoder.py"
 endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: latent_stft_decoder.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
+endif
+
+tempInput$   = temporaryDirectory$ + "/temp_stftdec_input.wav"
+tempCSV$     = temporaryDirectory$ + "/temp_stftdec_events.csv"
+tempOutput$  = temporaryDirectory$ + "/temp_stftdec_output.wav"
+tempStats$   = temporaryDirectory$ + "/temp_stftdec_stats.txt"
 
 # ---- FORM  (window 1 - core + VAE + STFT) ----
 form Latent STFT Decoder v1.2
@@ -488,57 +494,48 @@ removeObject: intMatrix, intSound, ppObj, eventTable
 
 appendInfoLine: "[3/5] Detecting Python..."
 
-probeMarker$ = pluginDir$ + "temp_stftdec_pyprobe.ok"
-
-if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
-    candidate2$ = "python"
-    candidate3$ = "py"
-    candidate4$ = ""
-endif
-
-pythonCmd$ = ""
-for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
+# ---- OS-Specific Python Discovery ----
+if macintosh
+    if fileReadable("/opt/homebrew/bin/python3")
+        pythonCmd$ = "/opt/homebrew/bin/python3"
+    elsif fileReadable("/Library/Frameworks/Python.framework/Versions/3.14/bin/python3")
+        pythonCmd$ = "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    elsif fileReadable("/usr/local/bin/python3")
+        pythonCmd$ = "/usr/local/bin/python3"
     else
-        tryCmd$ = candidate4$
+        pythonCmd$ = "python3"
     endif
-
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
-
-    probeCode$ = "import numpy,scipy,soundfile; open(r'" + probeMarker$ + "','w').write('ok')"
-    runSystem_nocheck: tryCmd$ + " -c """ + probeCode$ + """"
-
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        appendInfoLine: "  Python found: ", pythonCmd$
-    endif
-    if pythonCmd$ <> ""
-        iCand = nCandidates + 1
-    endif
-endfor
-
-if pythonCmd$ = ""
-    deleteFile: tempInput$
-    deleteFile: tempCSV$
-    exitScript: "Cannot find Python with required packages." + newline$
-        ... + "  pip install numpy scipy soundfile"
+elsif windows
+    pythonCmd$ = "python"
+else
+    pythonCmd$ = "python3"
 endif
+
+probeMarker$  = temporaryDirectory$ + "/temp_stftdec_pyprobe.ok"
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+
+if fileReadable(probeMarker$)
+    deleteFile: probeMarker$
+endif
+
+probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+runSystem_nocheck: probeCmd$
+
+if not fileReadable(probeMarker$)
+    if fileReadable(tempInput$)
+        deleteFile: tempInput$
+    endif
+    if fileReadable(tempCSV$)
+        deleteFile: tempCSV$
+    endif
+
+    exitScript: "Python dependency probe failed." + newline$
+        ... + "Python command: " + pythonCmd$ + newline$
+        ... + "Required packages: numpy scipy soundfile"
+endif
+
+deleteFile: probeMarker$
+appendInfoLine: "  Python found: ", pythonCmd$
 
 # ===========================================================================
 # Stage 4 — Call Python

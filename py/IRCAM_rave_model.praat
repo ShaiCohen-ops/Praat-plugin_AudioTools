@@ -53,7 +53,13 @@ pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/run_model_ts.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/run_model_ts.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: run_model_ts.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempInput$  = temporaryDirectory$ + "/temp_rave_input.wav"

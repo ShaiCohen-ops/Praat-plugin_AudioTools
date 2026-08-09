@@ -96,7 +96,17 @@ playStatusFile$  = tempDir$ + "temp_play_status.ok"
 playLogFile$     = tempDir$ + "temp_play_log.txt"
 probePy$         = tempDir$ + "temp_play_probe.py"
 probeMarker$     = tempDir$ + "temp_play_probe.ok"
-configFile$      = pluginDir$ + "play_device.cfg"
+configFile$ = pluginDir$ + "play_device.cfg"
+legacyConfigFile$ = defaultDirectory$ + "/../play_device.cfg"
+
+# Preserve an existing Praat 6-era setting when running from the old plugin location
+if not fileReadable(configFile$) and fileReadable(legacyConfigFile$)
+    configFile$ = legacyConfigFile$
+elsif not folderExists(pluginDir$)
+    configFile$ = legacyConfigFile$
+endif
+
+configFile$ = replace_regex$(configFile$, "\\", "/", 0)
 
 # Enforce forward slashes for all temporary paths passed to python
 pythonScriptJ$   = replace_regex$(pythonScript$, "\\", "/", 0)

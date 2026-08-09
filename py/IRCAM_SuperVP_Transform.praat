@@ -58,25 +58,32 @@ else
 endif
 
 # ---- PATHS ----
-pluginDir$      = preferencesDirectory$ + sep$ + "plugin_AudioTools" + sep$
-pythonScript$   = pluginDir$ + "py" + sep$ + "supervp_transform.py"
-inputWav1$      = pluginDir$ + "svp_input_1.wav"
-inputWav2$      = pluginDir$ + "svp_input_2.wav"
-f0File$         = pluginDir$ + "svp_f0.bpf"
-intensityFile$  = pluginDir$ + "svp_intensity.bpf"
-resultWavFile$  = pluginDir$ + "svp_result.wav"
-logFile$        = pluginDir$ + "svp_log.txt"
-doneFile$       = pluginDir$ + "svp_done.txt"
-
-createFolder: pluginDir$
-createFolder: pluginDir$ + "py"
+pluginDir$    = preferencesDirectory$ + sep$ + "plugin_AudioTools" + sep$
+pythonScript$ = pluginDir$ + "py" + sep$ + "supervp_transform.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$
+    pythonScript$ = defaultDirectory$ + sep$ + "supervp_transform.py"
 endif
 
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: supervp_transform.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py" + sep$ + newline$
+        ... + "or next to this script."
+endif
+
+# Working files belong in the system temporary directory
+tempDir$        = temporaryDirectory$ + sep$
+inputWav1$      = tempDir$ + "svp_input_1.wav"
+inputWav2$      = tempDir$ + "svp_input_2.wav"
+f0File$         = tempDir$ + "svp_f0.bpf"
+intensityFile$  = tempDir$ + "svp_intensity.bpf"
+resultWavFile$  = tempDir$ + "svp_result.wav"
+logFile$        = tempDir$ + "svp_log.txt"
+doneFile$       = tempDir$ + "svp_done.txt"
+
 # ---- DETECT PYTHON (3-candidate probe, runs once at startup) ----
-probeMarker$ = pluginDir$ + "svp_probe.ok"
+probeMarker$  = temporaryDirectory$ + "/svp_probe.ok"
+probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
 
 if windows
     nPyCandidates = 3

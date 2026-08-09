@@ -21,12 +21,18 @@ pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 
 pythonScript$ = pluginDir$ + "py/praat_spectral_gen.py"
-pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/praat_spectral_gen.py"
 endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: praat_spectral_gen.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
+endif
+
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)

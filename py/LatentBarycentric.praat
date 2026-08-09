@@ -85,7 +85,17 @@ pythonScript$ = pluginDir$ + "py/latent_barycentric.py"
 navPlanCSV$   = pluginDir$ + "py/latent_nav_plan.csv"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/latent_barycentric.py"
+endif
+
+if not fileReadable(navPlanCSV$)
+    navPlanCSV$ = defaultDirectory$ + "/latent_nav_plan.csv"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: latent_barycentric.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempPlanCSV$ = temporaryDirectory$ + "/temp_latbary_plan_placeholder.csv"

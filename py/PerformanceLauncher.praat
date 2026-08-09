@@ -82,20 +82,25 @@ endif
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/performance_launcher.py"
 
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/performance_launcher.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python performance script: performance_launcher.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
+endif
+
 manifestFile$ = temporaryDirectory$ + "/temp_launcher_manifest.json"
 errorFile$    = temporaryDirectory$ + "/temp_launcher_error.txt"
 logFile$      = temporaryDirectory$ + "/temp_launcher_log.txt"
 configFile$   = temporaryDirectory$ + "/temp_launcher_config.json"
-
 # JSON formatting requires unified forward slashes across all platforms
 manifestFileJ$ = replace_regex$ (manifestFile$, "\\", "/", 0)
 errorFileJ$    = replace_regex$ (errorFile$,    "\\", "/", 0)
 logFileJ$      = replace_regex$ (logFile$,      "\\", "/", 0)
 configFileJ$   = replace_regex$ (configFile$,   "\\", "/", 0)
-
-if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python performance script at: " + pythonScript$ + newline$ + "Verify installation paths."
-endif
 
 # ---- PYTHON DEPENDENCY VALIDATION ----
 probeOkFile$  = temporaryDirectory$ + "/temp_launcher_probe.ok"

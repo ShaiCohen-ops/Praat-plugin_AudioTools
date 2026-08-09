@@ -55,12 +55,18 @@ pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 
 pythonScript$ = pluginDir$ + "py/spectral_freeze.py"
-pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$
-        ... + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/spectral_freeze.py"
 endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: spectral_freeze.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
+endif
+
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)

@@ -63,7 +63,13 @@ pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/envelope_editor.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/envelope_editor.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: envelope_editor.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 bpFile$       = temporaryDirectory$ + "/temp_enved_breakpoints.json"

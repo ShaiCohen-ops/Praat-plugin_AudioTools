@@ -59,7 +59,13 @@ pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/internal_polyphony.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/internal_polyphony.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: internal_polyphony.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempInput$   = temporaryDirectory$ + "/temp_intpoly_input.wav"

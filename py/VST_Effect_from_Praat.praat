@@ -77,8 +77,19 @@ tempDone$   = tempDir$ + "vst_temp_done.txt"
 probePy$    = tempDir$ + "vst_temp_probe.py"
 probeMarker$= tempDir$ + "vst_temp_probe.ok"
 
-# The preferences file stays in the plugin directory so it persists across runs
-prefsFile$  = pluginDir$ + "last_vst_plugin.txt"
+# Persistent preference: remember the last-used VST plugin
+prefsFile$ = pluginDir$ + "last_vst_plugin.txt"
+legacyPrefsFile$ = defaultDirectory$ + "/../last_vst_plugin.txt"
+
+# Preserve an existing Praat 6-era preference when running
+# from the old plugin location under Praat 7
+if not fileReadable(prefsFile$) and fileReadable(legacyPrefsFile$)
+    prefsFile$ = legacyPrefsFile$
+elsif not folderExists(pluginDir$)
+    prefsFile$ = legacyPrefsFile$
+endif
+
+prefsFile$ = replace_regex$(prefsFile$, "\\", "/", 0)
 
 # Enforce forward slashes for all paths passed to python
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)

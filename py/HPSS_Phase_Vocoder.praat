@@ -60,7 +60,13 @@ pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/stretch.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/stretch.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: stretch.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempInput$   = temporaryDirectory$ + "/temp_hpss_input.wav"

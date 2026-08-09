@@ -57,11 +57,18 @@ else
 endif
 
 # ---- PATHS ----
+# ---- PATHS ----
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/hierarchical_recomposition.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/hierarchical_recomposition.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: hierarchical_recomposition.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempInput$   = temporaryDirectory$ + "/temp_hnr_input.wav"

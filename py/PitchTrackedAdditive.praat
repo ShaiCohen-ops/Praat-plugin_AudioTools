@@ -138,7 +138,13 @@ pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/pitch_tracked_additive.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: " + pythonScript$ + newline$ + "Please verify AudioTools installation."
+    pythonScript$ = defaultDirectory$ + "/pitch_tracked_additive.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: pitch_tracked_additive.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempInput$     = temporaryDirectory$ + "/temp_ptadd_input.wav"

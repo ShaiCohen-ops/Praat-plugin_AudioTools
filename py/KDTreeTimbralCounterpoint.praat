@@ -144,7 +144,13 @@ pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/kd_tree_timbral_counterpoint.py"
 
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script. Expected at: " + pythonScript$
+    pythonScript$ = defaultDirectory$ + "/kd_tree_timbral_counterpoint.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: kd_tree_timbral_counterpoint.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 # Apply preset overrides

@@ -61,8 +61,15 @@ endif
 
 pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/formant_swarm_granulator.py"
+
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python engine: " + pythonScript$
+    pythonScript$ = defaultDirectory$ + "/formant_swarm_granulator.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python engine: formant_swarm_granulator.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempInput$ = temporaryDirectory$ + "/temp_fsg_input.wav"

@@ -562,10 +562,18 @@ else
 endif
 
 # Engine scripts live in the plugin's py/ subfolder (AudioTools convention).
+# Engine scripts live in the plugin's py/ subfolder (AudioTools convention).
 pluginDir$ = preferencesDirectory$ + "/plugin_AudioTools/"
 engineScript$ = pluginDir$ + "py/fluid_event_fields.py"
+
 if not fileReadable (engineScript$)
-    exitScript: "Could not find fluid_event_fields.py in the plugin folder: ", pluginDir$ + "py/"
+    engineScript$ = defaultDirectory$ + "/fluid_event_fields.py"
+endif
+
+if not fileReadable (engineScript$)
+    exitScript: "Cannot find Python engine: fluid_event_fields.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py/" + newline$
+        ... + "or next to this script."
 endif
 
 tempDir$ = temporaryDirectory$ + "/"

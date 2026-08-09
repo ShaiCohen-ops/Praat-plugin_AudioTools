@@ -145,21 +145,34 @@ endform
 
 # ---- STAGE SETUP ----
 if stage = 1
-    stageScript$ = pluginDir$ + "Time & Granular/MDS_Space_Navigator.praat"
+    stageRel$    = "Time & Granular/MDS_Space_Navigator.praat"
     stageName$   = "mds"
     stageLabel$  = "MDS Space Navigator"
 elsif stage = 2
-    stageScript$ = pluginDir$ + "Time & Granular/Spectral_Freeze_&_Glitch.praat"
+    stageRel$    = "Time & Granular/Spectral_Freeze_&_Glitch.praat"
     stageName$   = "freeze"
     stageLabel$  = "Spectral Freeze & Glitch"
 elsif stage = 3
-    stageScript$ = pluginDir$ + "Reverb/Crystalline_Cascade.praat"
+    stageRel$    = "Reverb/Crystalline_Cascade.praat"
     stageName$   = "cascade"
     stageLabel$  = "Crystalline Cascade"
 elsif stage = 4
-    stageScript$ = pluginDir$ + "Spatial & Surround/4-Channel Canon.praat"
+    stageRel$    = "Spatial & Surround/4-Channel Canon.praat"
     stageName$   = "canon"
     stageLabel$  = "4-Channel Canon"
+endif
+
+stageScript$ = pluginDir$ + stageRel$
+
+if not fileReadable(stageScript$)
+    stageScript$ = defaultDirectory$ + "/../" + stageRel$
+endif
+
+stageScript$ = replace_regex$(stageScript$, "\\", "/", 0)
+
+if not fileReadable(stageScript$)
+    exitScript: "Stage script not found: " + stageRel$ + newline$
+        ... + "Expected in the AudioTools plugin folder."
 endif
 
 stageScript$ = replace_regex$(stageScript$, "\\", "/", 0)

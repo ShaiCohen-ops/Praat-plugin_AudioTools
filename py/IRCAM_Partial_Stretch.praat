@@ -36,15 +36,25 @@ else
 endif
 
 # ---- PATHS ----
-pluginDir$     = preferencesDirectory$ + sep$ + "plugin_AudioTools" + sep$
-pythonScript$  = pluginDir$ + "py" + sep$ + "partial_stretch.py"
-inputWav$      = pluginDir$ + "ps_input.wav"
-resultWav$     = pluginDir$ + "ps_result.wav"
-doneFile$      = pluginDir$ + "ps_done.txt"
-logFile$       = pluginDir$ + "ps_log.txt"
+pluginDir$    = preferencesDirectory$ + sep$ + "plugin_AudioTools" + sep$
+pythonScript$ = pluginDir$ + "py" + sep$ + "partial_stretch.py"
 
-createFolder: pluginDir$
-createFolder: pluginDir$ + "py" + sep$
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + sep$ + "partial_stretch.py"
+endif
+
+if not fileReadable(pythonScript$)
+    exitScript: "Cannot find Python script: partial_stretch.py" + newline$
+        ... + "Expected at: " + pluginDir$ + "py" + sep$ + newline$
+        ... + "or next to this script."
+endif
+
+# Working files belong in the system temporary directory
+tempDir$   = temporaryDirectory$ + sep$
+inputWav$  = tempDir$ + "ps_input.wav"
+resultWav$ = tempDir$ + "ps_result.wav"
+doneFile$  = tempDir$ + "ps_done.txt"
+logFile$   = tempDir$ + "ps_log.txt"
 
 if not fileReadable(pythonScript$)
     exitScript: "Cannot find Python script: " + pythonScript$
@@ -114,7 +124,7 @@ else
 endif
 
 # ---- DETECT PYTHON (3-candidate probe) ----
-probeMarker$ = pluginDir$ + "ps_probe.ok"
+probeMarker$ = tempDir$ + "ps_probe.ok"
 
 if windows
     nPyCandidates = 3
