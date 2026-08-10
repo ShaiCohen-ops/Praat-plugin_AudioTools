@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,21 @@
 #   patterns through phase-rotated bidirectional delays. Combines
 #   forward and backward sample offsets with cos/sin rotation,
 #   producing unique swirling, evolving textures.
+#
+# Changelog v0.4:
+#   - API COMPATIBILITY: public form parameters are byte-for-byte unchanged.
+#   - CRITICAL FIX: clamp superposition strength at EVERY state. v0.3 only
+#     clamped the initial value, so Custom decay > 1 could make a later
+#     sqrt(1-strength) invalid despite the v0.3 safety fix.
+#   - Added Custom-range validation for randomized superposition and phase.
+#   - State offsets are clamped to at least one sample and at most n-1,
+#     preventing accidental zero-delay states or impossible offsets.
+#   - Silent outputs are safe: Scale peak is skipped when the absolute
+#     extremum is zero, while non-silent output keeps the historical target.
+#   - Visualization spectrograms are capped at Nyquist.
+#   - Clarified internally that the cos/sin operation is a coefficient-space
+#     rotation of two delayed real taps (quantum-inspired), not a Hilbert
+#     analytic-signal phase rotation.
 #
 # Changelog v0.3:
 #   - Bidirectional delay is now true FIR: a pre-pass snapshot is
@@ -132,6 +147,23 @@ original_name$ = selected$("Sound")
 selectObject: original
 duration = Get total duration
 totalSamples = Get number of samples
+sampleRate = Get sampling frequency
+nyquist = sampleRate / 2
+vizMaxHz = min(5000, nyquist)
+
+# === Guards (v0.4; public parameters unchanged) ===
+if superposition_min > superposition_max
+    exitScript: "Superposition_min must be <= Superposition_max"
+endif
+if phase_shift_min > phase_shift_max
+    exitScript: "Phase_shift_min must be <= Phase_shift_max"
+endif
+if state_offset_base <= 0 or state_offset_increment <= 0
+    exitScript: "State offset base/increment must be > 0"
+endif
+if superposition_decay <= 0
+    exitScript: "Superposition decay must be > 0"
+endif
 
 # === Get Preset Name ===
 if preset = 1
@@ -193,8 +225,27 @@ for state from 1 to states
     endif
     
     stateOffset = round(totalSamples / (state_offset_base + state * state_offset_increment))
+    # Keep each state a genuine delayed state. Very small custom files/large
+    # divisors can otherwise round to zero; very small divisors can exceed n.
+    if stateOffset < 1
+        stateOffset = 1
+    endif
+    if totalSamples > 1 and stateOffset > totalSamples - 1
+        stateOffset = totalSamples - 1
+    endif
     
-    # Mixing coefficients (sqrt-law gain; exact energy conservation only when probAmplitude = 1)
+    # v0.3 clamped only before state 1. Clamp again here because a Custom
+    # decay > 1 can grow the strength between states.
+    if superpositionStrength < 0
+        superpositionStrength = 0
+    endif
+    if superpositionStrength > 1
+        superpositionStrength = 1
+    endif
+    
+    # Sqrt-law dry/wet coefficients. cos/sin rotate the two delayed real-tap
+    # coefficients; this is a quantum-inspired state-space metaphor rather
+    # than a Hilbert-transform phase rotation of the audio waveform.
     dryCoef = sqrt(1 - superpositionStrength)
     wetCoef = sqrt(superpositionStrength) * probAmplitude
     cosPhase = cos(phaseShift)
@@ -211,13 +262,20 @@ for state from 1 to states
         ... else self fi
     removeObject: snapshot
 
-    # Collapse probability (decay toward original)
+    # Collapse probability. Presets use decay < 1; Custom values > 1 are
+    # allowed by the historical positive field, but are safely saturated.
     superpositionStrength = superpositionStrength * superposition_decay
+    if superpositionStrength > 1
+        superpositionStrength = 1
+    endif
 endfor
 
 # === Scale Peak ===
 selectObject: result
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > 0
+    Scale peak: scale_peak
+endif
 
 # === Visualization ===
 if draw_visualization
@@ -263,7 +321,7 @@ if draw_visualization
         origMono = Copy: "orig_mono_viz"
     endif
     selectObject: origMono
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     removeObject: origSpec, origMono
@@ -284,7 +342,7 @@ if draw_visualization
         resMono = Copy: "res_mono_viz"
     endif
     selectObject: resMono
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     removeObject: resSpec, resMono

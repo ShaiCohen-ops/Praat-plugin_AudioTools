@@ -3,12 +3,36 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Paulstretch - extreme time stretching with phase randomization.
+#
+# Changelog v1.2 (internal DSP / compatibility pass):
+#   Public parameter signature is intentionally unchanged from v1.1; only the form title version is updated.
+#   - FIX C: zero-based working source. Inputs whose Sound domain does not
+#     start at 0 are now shifted on an internal copy before frame extraction.
+#   - FIX D: edge analysis windows. v1.1 windowed a truncated edge frame and
+#     only then zero-padded it; this made the first/last real sample sit at a
+#     Hann zero instead of at the correct part of a full centred window.
+#     v1.2 extracts rectangularly, pads first, then applies one full Hann.
+#   - FIX E: frame-centre alignment. Output frames are placed at
+#     iframe*hopOut - window/2 on an extended timeline, then trimmed exactly
+#     to inputDuration*stretchFactor. This removes the half-window latency.
+#   - FIX F: overlap-add normalization. A shared synthesis-Hann weight buffer
+#     is accumulated and each rendered channel is divided by it, preventing
+#     overlap-dependent gain / breathing for arbitrary legal overlaps.
+#   - FIX G: stereo phase control. L/R now reuse the SAME random phase draw
+#     for every frame/bin; Right adds Stereo_phase_offset*pi. Thus offset=0
+#     produces identical L/R, while larger values create a true controlled
+#     quadrature-style phase separation. v1.1 used independent random draws,
+#     so the parameter could not actually control inter-channel offset.
+#   - FIX H: final duration is exactly the requested stretched duration rather
+#     than target + ~50 ms. Peak scaling is now a safety ceiling only.
+#   - Added guards for overlap < 100%, effective window >= 4 samples, and
+#     finite frame counts. Visualization frequency is capped at Nyquist.
 #
 # Changelog v1.1 (audio CHANGES from v1.0 - both fixes are intentional):
 #
@@ -71,7 +95,7 @@
 #     the same phase value for both cos() and sin().
 # ============================================================
 
-form Paulstretch v1.1
+form Paulstretch v1.2
     comment === Preset ===
     optionmenu Preset 1
         option Custom
@@ -155,10 +179,27 @@ selectObject: original
 sampleRate = Get sampling frequency
 inputDuration = Get total duration
 numChannels = Get number of channels
+sourceStart = Get start time
+sourceEnd = Get end time
+
+# Runtime guards keep the external parameter list unchanged.
+if overlap_percent <= 0 or overlap_percent >= 100
+    exitScript: "Overlap percent must be > 0 and < 100"
+endif
+if stretch_factor <= 0
+    exitScript: "Stretch factor must be > 0"
+endif
+if window_size_s <= 0
+    exitScript: "Window size must be > 0"
+endif
+if stereo_phase_offset < 0
+    exitScript: "Stereo phase offset must be >= 0"
+endif
 
 startTime = stopwatch
 
-# Convert to Mono
+# Convert to mono for the Paulstretch engine, then force the INTERNAL copy to
+# a zero-based time domain. The selected original object is never modified.
 selectObject: original
 if numChannels > 1
     Convert to mono
@@ -167,6 +208,8 @@ else
     Copy: "mono_temp"
     sourceSound = selected("Sound")
 endif
+selectObject: sourceSound
+Shift times to: "start time", 0
 
 # === OPTIONAL DOWNSAMPLING ===
 if targetSR > 0 and sampleRate > targetSR
@@ -180,6 +223,8 @@ else
     workingSR = sampleRate
 endif
 
+selectObject: sourceSound
+workingDuration = Get total duration
 # === FIX A: round windowSamples UP to the next power of 2 ===
 # This prevents Praat's `To Spectrum: "yes"` from silently
 # zero-padding the FFT input. With windowSamples already pow2,
@@ -188,6 +233,9 @@ endif
 # overlap-add actually uses. No step discontinuity, no clicks.
 requestedWindowSizeS = window_size_s
 requestedWindowSamples = round(window_size_s * workingSR)
+if requestedWindowSamples < 4
+    exitScript: "Effective window must contain at least 4 samples"
+endif
 
 windowSamples = 1
 while windowSamples < requestedWindowSamples
@@ -200,12 +248,17 @@ overlapFrac = overlap_percent / 100
 hopOut = window_size_s * (1 - overlapFrac)
 hopIn = hopOut / stretch_factor
 outputDuration = inputDuration * stretch_factor
-nFrames = ceiling(outputDuration / hopOut) + 1
+nFrames = ceiling(workingDuration / hopIn) + 1
+if nFrames < 1 or nFrames > 250000
+    exitScript: "Requested stretch/window/overlap would require an impractical number of frames (" + string$(nFrames) + ")"
+endif
 
-microFadeDur = 0.003
+# Shared random seeds make L/R phase draws corresponding rather than
+# independent. The seeds themselves are unpredictable between runs.
+frameSeeds# = randomInteger#(nFrames, 1, 2000000000)
 
 # Info
-writeInfoLine: "=== Paulstretch v1.1 ==="
+writeInfoLine: "=== Paulstretch v1.2 ==="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Speed:  ", speedStr$
 appendInfoLine: "Source: ", original_name$, " (", fixed$(inputDuration, 2), " s)"
@@ -221,16 +274,17 @@ appendInfoLine: "Output:  ", fixed$(outputDuration, 2), " s"
 appendInfoLine: "Frames:  ", nFrames
 appendInfoLine: "Overlap: ", overlap_percent, "%"
 if create_stereo
-    appendInfoLine: "Mode:    STEREO (phase offset: ", stereo_phase_offset, ")"
+    appendInfoLine: "Mode:    STEREO (controlled phase offset: ", stereo_phase_offset, ")"
 else
     appendInfoLine: "Mode:    MONO"
 endif
 appendInfoLine: ""
 
 # Process Channel Procedure
-procedure processChannel: .outputID, .phaseScale, .channelName$
+# .writeNorm is 1 only for the first rendered channel. Both channels use the
+# same frame geometry, so one shared normalization track is sufficient.
+procedure processChannel: .outputID, .phaseOffset, .channelName$, .writeNorm
     appendInfoLine: "Processing ", .channelName$, " channel..."
-    
     .progressInterval = max(1, round(nFrames / 10))
     
     for .iframe from 0 to nFrames - 1
@@ -244,22 +298,22 @@ procedure processChannel: .outputID, .phaseScale, .channelName$
         
         selectObject: sourceSound
         .extractStart = max(0, .tStart)
-        .extractEnd = min(inputDuration, .tEnd)
+        .extractEnd = min(workingDuration, .tEnd)
         
         if .extractEnd > .extractStart
-            Extract part: .extractStart, .extractEnd, "Hanning", 1.0, "no"
+            # Edge correctness: extract rectangularly, place into the proper
+            # position of a full zero-padded frame, THEN apply the full Hann.
+            Extract part: .extractStart, .extractEnd, "rectangular", 1.0, "no"
             .frame = selected("Sound")
-            
             selectObject: .frame
             .durFrame = Get total duration
             
-            # Pad if needed
-            if abs(.durFrame - window_size_s) > 0.00001
+            if abs(.durFrame - window_size_s) > 0.5 / workingSR or .tStart < 0 or .tEnd > workingDuration
                 Create Sound from formula: "padded", 1, 0, window_size_s, workingSR, "0"
                 .padded = selected("Sound")
                 .offset = max(0, -.tStart)
-                .sOffset$ = fixed$(.offset, 6)
-                .sEnd$ = fixed$(.offset + .durFrame, 6)
+                .sOffset$ = fixed$(.offset, 9)
+                .sEnd$ = fixed$(min(window_size_s, .offset + .durFrame), 9)
                 .frameID = .frame
                 selectObject: .padded
                 Formula: "if x >= " + .sOffset$ + " and x <= " + .sEnd$ + " then object(" + string$(.frameID) + ", x - " + .sOffset$ + ") else 0 fi"
@@ -267,135 +321,139 @@ procedure processChannel: .outputID, .phaseScale, .channelName$
                 .frame = .padded
             endif
             
-            # FFT (input is already pow2 thanks to Fix A, so no auto-padding)
             selectObject: .frame
+            Multiply by window: "Hanning"
+            
+            # FFT (input sample count is power of two; no hidden padding).
             To Spectrum: "yes"
             .spectrum = selected("Spectrum")
-            
             To Matrix
             .matComplex = selected("Matrix")
-            
             selectObject: .matComplex
             .ncols = Get number of columns
             .matID = .matComplex
             
-            # === FIX B: phase randomization via auxiliary matrices ===
-            # v1.0's in-place Formula on .matComplex had two bugs:
-            #   (1) Row 2 read row 1 AFTER row 1 had been overwritten,
-            #       corrupting the magnitude term for the imag part.
-            #   (2) cos() and sin() called randomUniform() independently,
-            #       so real and imag got DIFFERENT random phases.
-            # v1.1 precomputes magnitudes and phases into separate
-            # matrices, then the main Formula reads them via object[]
-            # (so the original magnitudes survive) and uses the same
-            # phase value for cos() and sin() (so real/imag are a
-            # coherent rotation).
-
-            # Magnitudes -> row 1 of .magsMat (row 2 left alone, unused)
-            selectObject: .matComplex
+            # Preserve magnitudes in a frozen auxiliary matrix.
             Copy: "mags_aux"
             .magsMat = selected("Matrix")
             Formula: "if row = 1 then sqrt(object[.matID, 1, col]^2 + object[.matID, 2, col]^2) else self fi"
-
-            # Random phases -> row 1 of .phasesMat (one phase per column)
+            
+            # Use the SAME base random phase sequence for both rendered
+            # channels. Left offset=0; Right offset=Stereo_phase_offset*pi.
+            random_initializeWithSeedUnsafelyButPredictably(frameSeeds#[.iframe + 1])
             selectObject: .matComplex
             Copy: "phases_aux"
             .phasesMat = selected("Matrix")
-            Formula: "if row = 1 then randomUniform(-pi, pi) * .phaseScale else self fi"
-
-            # Apply: new_real = mag * cos(phase),  new_imag = mag * sin(phase)
-            # DC (col=1) and Nyquist (col=.ncols) preserved.
+            Formula: "if row = 1 then randomUniform(-pi, pi) + .phaseOffset * pi else self fi"
+            
             selectObject: .matComplex
             Formula: "if col = 1 or col = .ncols then self else if row = 1 then object[.magsMat, 1, col] * cos(object[.phasesMat, 1, col]) else object[.magsMat, 1, col] * sin(object[.phasesMat, 1, col]) fi fi"
-
             removeObject: .magsMat, .phasesMat
-
-            # IFFT
+            
             selectObject: .matComplex
             To Spectrum
             .spectrumMod = selected("Spectrum")
-            
             To Sound
             .processed = selected("Sound")
             
-            # Window (Fix A guarantees .processed duration == window_size_s,
-            # so the Hann zeros the edges of the actually-used range)
+            # Synthesis window. OLA normalization below divides by the sum
+            # of these exact synthesis windows.
             selectObject: .processed
             Multiply by window: "Hanning"
-            
-            # Micro-fades (kept for defensive zero-edge enforcement;
-            # post-Fix A, these are redundant with the Hann zeros but
-            # harmless -- they cost a microsecond and protect against
-            # any floating-point edge residue.)
-            .procDur = Get total duration
-            .fadeDur = min(microFadeDur, .procDur * 0.05)
-            if .fadeDur > 0.0005
-                Fade in: 0, 0, .fadeDur, "yes"
-                Fade out: 0, .procDur - .fadeDur, .fadeDur, "yes"
-            endif
-            
-            # Overlap-add (now click-free: every frame's contribution
-            # is zero at its iterated-range endpoint, since the Hann
-            # was applied over exactly window_size_s)
-            .tOut = .iframe * hopOut
-
-            selectObject: .processed
             .procNs = Get number of samples
-
+            
+            # Centre alignment: the centre of input frame .tIn maps to the
+            # centre at stretch*.tIn in output time.
+            .tOut = .iframe * hopOut - window_size_s / 2
+            
             selectObject: .outputID
             .s1 = Get sample number from time: .tOut
+            .s2 = .s1 + .procNs - 1
+            .outNs = Get number of samples
             if .s1 < 1
                 .s1 = 1
             endif
-            .s2 = .s1 + .procNs - 1
-            .outNs = Get number of samples
             if .s2 > .outNs
                 .s2 = .outNs
             endif
             .sOff = .s1 - 1
-
-            .tOutEnd = .tOut + window_size_s
-            if .tOutEnd > outputDuration + window_size_s
-                .tOutEnd = outputDuration + window_size_s
+            .writeStart = max(outputBufferStart, .tOut)
+            .writeEnd = min(outputBufferEnd, .tOut + window_size_s)
+            
+            if .writeEnd > .writeStart
+                # Correct the processed-object index if the frame starts
+                # before the buffer domain.
+                .procSkip = max(0, round((outputBufferStart - .tOut) * workingSR))
+                selectObject: .outputID
+                Formula (part): .writeStart, .writeEnd, 1, 1,
+                    ... "self + object[" + string$(.processed) + ", col - " + string$(.sOff) + " + " + string$(.procSkip) + "]"
+                
+                if .writeNorm
+                    selectObject: olaNorm
+                    Formula (part): .writeStart, .writeEnd, 1, 1,
+                        ... "self + object[" + string$(synthWindow) + ", col - " + string$(.sOff) + " + " + string$(.procSkip) + "]"
+                endif
             endif
-
-            Formula (part): .tOut, .tOutEnd, 1, 1,
-                ... "self + object[" + string$(.processed) + ", col - " + string$(.sOff) + "]"
             
             removeObject: .frame, .spectrum, .matComplex, .spectrumMod, .processed
         endif
     endfor
 endproc
 
+# Shared extended output timeline: the negative half-window lets the first
+# frame be centred at output time 0. The final object is trimmed to [0,target].
+outputBufferStart = -window_size_s / 2
+outputBufferEnd = outputDuration + window_size_s / 2
+
+# Exact synthesis Hann used both for audio and OLA normalization.
+Create Sound from formula: "synth_window", 1, 0, window_size_s, workingSR, "1"
+synthWindow = selected("Sound")
+Multiply by window: "Hanning"
+
+Create Sound from formula: "ola_norm", 1, outputBufferStart, outputBufferEnd, workingSR, "0"
+olaNorm = selected("Sound")
+
 # Process Left/Mono Channel
-Create Sound from formula: "output_L", 1, 0, outputDuration + window_size_s, workingSR, "0"
+Create Sound from formula: "output_L", 1, outputBufferStart, outputBufferEnd, workingSR, "0"
 outputL = selected("Sound")
 
 if create_stereo
-    @processChannel: outputL, 1.0, "LEFT"
+    @processChannel: outputL, 0.0, "LEFT", 1
 else
-    @processChannel: outputL, 1.0, "MONO"
+    @processChannel: outputL, 0.0, "MONO", 1
 endif
+
+# Normalize the overlap-add envelope. Keep uncovered / vanishing-weight edge
+# samples at zero rather than amplifying numerical residue.
+selectObject: outputL
+Formula: "if object[" + string$(olaNorm) + ", col] > 1e-6 then self / object[" + string$(olaNorm) + ", col] else 0 fi"
 
 # Process Right Channel
 if create_stereo
     appendInfoLine: ""
-    
-    Create Sound from formula: "output_R", 1, 0, outputDuration + window_size_s, workingSR, "0"
+    Create Sound from formula: "output_R", 1, outputBufferStart, outputBufferEnd, workingSR, "0"
     outputR = selected("Sound")
+    @processChannel: outputR, stereo_phase_offset, "RIGHT", 0
+    selectObject: outputR
+    Formula: "if object[" + string$(olaNorm) + ", col] > 1e-6 then self / object[" + string$(olaNorm) + ", col] else 0 fi"
     
-    phaseScale = 1 + stereo_phase_offset
-    @processChannel: outputR, phaseScale, "RIGHT"
-    
-    # Combine to stereo
     selectObject: outputL, outputR
     Combine to stereo
     result = selected("Sound")
-    
     removeObject: outputL, outputR
 else
     result = outputL
 endif
+
+removeObject: olaNorm, synthWindow
+random_initializeSafelyAndUnpredictably ()
+
+# Trim exactly to the requested stretched duration before optional upsampling.
+selectObject: result
+Extract part: 0, outputDuration, "rectangular", 1, "no"
+trimmed = selected("Sound")
+removeObject: result
+result = trimmed
 
 # === UPSAMPLE IF NEEDED ===
 if targetSR > 0 and sampleRate > targetSR
@@ -410,18 +468,11 @@ endif
 
 # Finalize
 selectObject: result
-Scale peak: 0.95
-
-# Trim excess
-resultDur = Get total duration
-if resultDur > outputDuration + 0.1
-    Extract part: 0, outputDuration + 0.05, "rectangular", 1, "no"
-    trimmed = selected("Sound")
-    removeObject: result
-    result = trimmed
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0.95
+    Formula: "self * 0.95 / resultPeak"
 endif
 
-selectObject: result
 if create_stereo
     Rename: original_name$ + "_PS_" + preset_name$ + "_stereo"
 else
@@ -432,8 +483,8 @@ removeObject: sourceSound
 
 selectObject: result
 finalDuration = Get total duration
-
 processingTime = stopwatch - startTime
+vizMaxHz = min(5000, sampleRate / 2)
 
 # Visualization
 if draw_visualization
@@ -513,9 +564,9 @@ if draw_visualization
         Copy: "vizSpecOrig"
         vizSpecOrig = selected("Sound")
     endif
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
     removeObject: origSpec, vizSpecOrig
     Colour: "Black"
     Draw inner box
@@ -539,9 +590,9 @@ if draw_visualization
     endif
     resDur = Get total duration
     showDur = min(10, resDur)
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
-    Paint: 0, showDur, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, showDur, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
     removeObject: resSpec, vizSpecOut
     Colour: "Black"
     Draw inner box

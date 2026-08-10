@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,13 +14,48 @@
 #   Dissonance Score per grain, then re-assembles the grains
 #   sorted from Chaos -> Clarity or Clarity -> Chaos.
 #
-#   Dissonance weights (IC = Interval Class):
+#   The score is a compositional Pitch-Class interval-class tension metric,
+#   not a psychoacoustic roughness/dissonance model. Spectral peaks are mapped
+#   to UNIQUE pitch classes before the following IC weights are applied.
+#
+#   Tension weights (IC = Interval Class):
 #     IC 1 (m2/M7) = 1.00  HIGH TENSION
 #     IC 6 (TT)    = 1.00  HIGH TENSION
 #     IC 2 (M2/m7) = 0.50  MEDIUM
 #     IC 3 (m3/M6) = 0.50  MEDIUM
 #     IC 4 (M3/m6) = 0.10  CONSONANT
 #     IC 5 (P4/P5) = 0.10  CONSONANT
+#
+# Changelog v1.3:
+#   - FIX: visualization cleanup could leave no Sound selected; the Final Info
+#     line then called selected$("Sound") and aborted after otherwise-successful
+#     rendering. Result name is now stored explicitly and result is reselected
+#     before final reporting/playback.
+#
+# Changelog v1.2:
+#   - CRITICAL Set-Theory fix: spectral Pitch Classes are deduplicated before
+#     interval-class scoring. v1.1 treated repeated PCs as a multiset; duplicate
+#     unisons added zero-weight pairs and biased tension scores downward.
+#   - CRITICAL assembly-order fix: v1.1 repeatedly selected an accumulated
+#     output together with older grain objects. Praat concatenates in Object-list
+#     order, not selection order, so later grains could be prepended. v1.2 makes
+#     fresh grain/gap copies in the desired order and concatenates once.
+#   - Spectral analysis upgraded from 100-Hz LTAS bins to Sound -> Spectrum ->
+#     Ltas (1-to-1), preserving Fourier frequency resolution for Pitch-Class
+#     classification.
+#   - Peak bands are now non-overlapping logarithmic bands across the requested
+#     analysis range; Number_of_peaks is validated to 2..12. v1.1's fifth band
+#     overlapped bands 3/4, and values >5 simply repeated the same band.
+#   - Added a relative peak threshold so noise-floor maxima are not promoted to
+#     Pitch-Class set members.
+#   - Stereo/multichannel audio is preserved: analysis uses a mono fold, while
+#     rendered grains are extracted from the original Sound.
+#   - Non-zero Sound time domains are handled explicitly with sourceStart.
+#   - Grain_overlap renamed Sampling_overlap: it controls how many random
+#     analysis/render grains are drawn, not overlap between output grains.
+#   - Removed arbitrary 10-ms minimum grain; minimum is tied to sample period.
+#   - Gap may be exactly zero; safe normalization skips silent output.
+#   - Visualization clamps frequency to Nyquist and avoids zero mark spacing.
 #
 # Changelog v1.1:
 #   - FAST: replaced bin-by-bin spectrum loop with
@@ -32,7 +67,7 @@
 #      distribution histogram, spectrogram, stats footer)
 # ============================================================
 
-form Harmonic Tension Sorted Grains
+form Harmonic Tension Sorted Grains v1.2
     comment Select a Sound object first
 
     comment === Preset ===
@@ -49,24 +84,26 @@ form Harmonic Tension Sorted Grains
 
     comment === Grain Parameters (Custom only) ===
     positive Grain_size_ms 100
-    positive Grain_size_variation_ms 20
+    real Grain_size_variation_ms 20
     optionmenu Grain_size_mode 1
         option Fixed
         option Random
 
     comment === Density ===
-    real    Grain_overlap_(0-0.8)  0.3
-    positive Max_grains            200
+    real    Sampling_overlap_(0-0.8)  0.3
+    natural Max_grains             200
 
     comment === Spectral Analysis ===
-    positive Number_of_peaks   4
-    positive Max_frequency_Hz  5000
+    natural Number_of_peaks      4
+    positive Min_frequency_Hz      80
+    positive Max_frequency_Hz      5000
+    real Peak_relative_threshold_dB 35
 
     comment === Sorting ===
     optionmenu Sort_direction 1
         option Chaos to Clarity  (descending dissonance)
         option Clarity to Chaos  (ascending dissonance)
-    positive Gap_between_grains_ms 10
+    real Gap_between_grains_ms 10
 
     comment === Output ===
     boolean Draw_visualization 1
@@ -80,7 +117,7 @@ if preset = 2
     grain_size_ms          = 80
     grain_size_variation_ms= 20
     grain_size_mode        = 2
-    grain_overlap          = 0.3
+    sampling_overlap          = 0.3
     max_grains             = 200
     number_of_peaks        = 4
     max_frequency_Hz       = 5000
@@ -92,7 +129,7 @@ elsif preset = 3
     grain_size_ms          = 150
     grain_size_variation_ms= 50
     grain_size_mode        = 2
-    grain_overlap          = 0.5
+    sampling_overlap          = 0.5
     max_grains             = 150
     number_of_peaks        = 4
     max_frequency_Hz       = 4000
@@ -104,7 +141,7 @@ elsif preset = 4
     grain_size_ms          = 60
     grain_size_variation_ms= 15
     grain_size_mode        = 2
-    grain_overlap          = 0.2
+    sampling_overlap          = 0.2
     max_grains             = 300
     number_of_peaks        = 5
     max_frequency_Hz       = 6000
@@ -116,7 +153,7 @@ elsif preset = 5
     grain_size_ms          = 200
     grain_size_variation_ms= 60
     grain_size_mode        = 2
-    grain_overlap          = 0.6
+    sampling_overlap          = 0.6
     max_grains             = 120
     number_of_peaks        = 3
     max_frequency_Hz       = 3000
@@ -128,7 +165,7 @@ elsif preset = 6
     grain_size_ms          = 30
     grain_size_variation_ms= 10
     grain_size_mode        = 2
-    grain_overlap          = 0.1
+    sampling_overlap          = 0.1
     max_grains             = 400
     number_of_peaks        = 3
     max_frequency_Hz       = 8000
@@ -140,7 +177,7 @@ elsif preset = 7
     grain_size_ms          = 400
     grain_size_variation_ms= 100
     grain_size_mode        = 2
-    grain_overlap          = 0.7
+    sampling_overlap          = 0.7
     max_grains             = 80
     number_of_peaks        = 4
     max_frequency_Hz       = 3000
@@ -152,7 +189,7 @@ elsif preset = 8
     grain_size_ms          = 100
     grain_size_variation_ms= 30
     grain_size_mode        = 2
-    grain_overlap          = 0.3
+    sampling_overlap          = 0.3
     max_grains             = 200
     number_of_peaks        = 4
     max_frequency_Hz       = 5000
@@ -164,7 +201,7 @@ elsif preset = 9
     grain_size_ms          = 50
     grain_size_variation_ms= 20
     grain_size_mode        = 2
-    grain_overlap          = 0.0
+    sampling_overlap          = 0.0
     max_grains             = 500
     number_of_peaks        = 5
     max_frequency_Hz       = 8000
@@ -187,26 +224,64 @@ original    = selected("Sound")
 sound_name$ = selected$("Sound")
 
 selectObject: original
+sourceStart  = Get start time
+sourceEnd    = Get end time
 duration     = Get total duration
 sample_rate  = Get sampling frequency
 num_channels = Get number of channels
+nyquist      = sample_rate / 2
 
-# === Convert to Mono (keep original for visualization) ===
+# === Validate ===
+if grain_size_ms <= 0
+    exitScript: "Grain size must be > 0 ms"
+endif
+if grain_size_variation_ms < 0
+    exitScript: "Grain-size variation must be >= 0 ms"
+endif
+if sampling_overlap < 0 or sampling_overlap > 0.8
+    exitScript: "Sampling overlap must be between 0 and 0.8"
+endif
+if max_grains < 2 or max_grains > 5000
+    exitScript: "Max grains must be between 2 and 5000"
+endif
+if number_of_peaks < 2 or number_of_peaks > 12
+    exitScript: "Number of peaks must be between 2 and 12"
+endif
+if min_frequency_Hz <= 0
+    exitScript: "Minimum analysis frequency must be > 0 Hz"
+endif
+if max_frequency_Hz <= min_frequency_Hz
+    exitScript: "Maximum analysis frequency must exceed minimum frequency"
+endif
+if peak_relative_threshold_dB < 0
+    exitScript: "Relative peak threshold must be >= 0 dB"
+endif
+if gap_between_grains_ms < 0
+    exitScript: "Gap between grains must be >= 0 ms"
+endif
+
+analysisMinHz = min_frequency_Hz
+analysisMaxHz = min(max_frequency_Hz, nyquist * 0.98)
+if analysisMaxHz <= analysisMinHz
+    exitScript: "Analysis frequency range is empty at this sampling rate"
+endif
+vizMaxHz = min(5000, nyquist)
+
+grain_dur_base = grain_size_ms / 1000
+minGrainDur = 2 / sample_rate
+if duration < min(grain_dur_base, minGrainDur)
+    exitScript: "Sound is too short for the requested grain analysis"
+endif
+
+# Mono is for spectral analysis only. Rendered grains come from original,
+# preserving the source channel count.
 if num_channels > 1
     selectObject: original
     Convert to mono
-    source = selected("Sound")
+    analysisSource = selected("Sound")
 else
     selectObject: original
-    Copy: "ht_src_temp"
-    source = selected("Sound")
-endif
-
-# === Validate ===
-grain_dur_base = grain_size_ms / 1000
-if duration < grain_dur_base
-    removeObject: source
-    exitScript: "Sound is shorter than grain size"
+    analysisSource = Copy: "ht_analysis_temp"
 endif
 
 # ============================================================
@@ -221,35 +296,23 @@ ic_weight[5] = 0.10
 ic_weight[6] = 1.00
 
 # ============================================================
-# === Frequency Bands for Fast Peak Finding ==================
+# === Spectral Peak Strategy =================================
 # ============================================================
-# Instead of iterating every spectrum bin (slow),
-# we call Get frequency of maximum once per band (fast).
-# Bands are logarithmically spaced across the audible range.
-band_lo[1] =   80
-band_hi[1] =  300
-band_lo[2] =  300
-band_hi[2] =  800
-band_lo[3] =  800
-band_hi[3] = 2000
-band_lo[4] = 2000
-band_hi[4] = 4500
-band_lo[5] = 1000
-band_hi[5] = max_frequency_Hz
+# The analysis range is divided into Number_of_peaks non-overlapping
+# logarithmic bands. Each band contributes at most one salient Pitch Class.
+# Duplicate Pitch Classes are removed before IC scoring, so pc_set is a set.
 
 # ============================================================
 # === Calculate Grain Count ==================================
 # ============================================================
-hop_time = grain_dur_base * (1 - grain_overlap)
-if hop_time < 0.005
-    hop_time = 0.005
-endif
+hop_time = grain_dur_base * (1 - sampling_overlap)
+hop_time = max(hop_time, 1 / sample_rate)
 num_grains = round(duration / hop_time)
 if num_grains > max_grains
     num_grains = max_grains
 endif
 if num_grains < 2
-    removeObject: source
+    removeObject: analysisSource
     exitScript: "Too few grains. Reduce grain size or increase sound duration."
 endif
 
@@ -264,7 +327,8 @@ if sort_direction = 1
 else
     appendInfoLine: "Sort: Clarity -> Chaos (ascending dissonance)"
 endif
-appendInfoLine: "Grains: ", num_grains, " | Size: ", grain_size_ms, " ms | Peaks: ", number_of_peaks
+appendInfoLine: "Grains: ", num_grains, " | Size: ", grain_size_ms, " ms | Peak bands: ", number_of_peaks
+appendInfoLine: "Analysis: ", fixed$(analysisMinHz, 1), "-", fixed$(analysisMaxHz, 1), " Hz | threshold: ", peak_relative_threshold_dB, " dB"
 appendInfoLine: ""
 appendInfoLine: "Analysing grains..."
 
@@ -285,94 +349,106 @@ for i from 1 to num_grains
     if grain_size_mode = 2
         variation = (grain_size_variation_ms / 1000) * randomUniform(-1, 1)
         gDur = grain_dur_base + variation
-        gDur = max(grain_dur_base * 0.3, min(grain_dur_base * 2.0, gDur))
+        gDur = max(minGrainDur, min(duration, gDur))
     else
-        gDur = grain_dur_base
+        gDur = min(duration, max(minGrainDur, grain_dur_base))
     endif
 
-    # --- Source position (random scatter across full file) ---
-    maxStart = duration - gDur
-    if maxStart < 0
-        maxStart = 0
+    # --- Source position (zero-based compositional offset) ---
+    maxStartOffset = max(0, duration - gDur)
+    if maxStartOffset > 0
+        srcOffset = randomUniform(0, maxStartOffset)
+    else
+        srcOffset = 0
     endif
-    srcPos = randomUniform(0, maxStart)
+    srcStart = sourceStart + srcOffset
+    srcEnd = min(sourceEnd, srcStart + gDur)
+    gDur = srcEnd - srcStart
 
-    if srcPos + gDur > duration
-        gDur = duration - srcPos
-    endif
-    if gDur < 0.01
-        gDur = 0.01
-    endif
+    # --- Analysis grain: mono, high-resolution spectrum ---
+    selectObject: analysisSource
+    Extract part: srcStart, srcEnd, "Hanning", 1, "no"
+    analysisGrain = selected("Sound")
 
-    # --- Extract grain with Hanning window ---
-    selectObject: source
-    Extract part: srcPos, srcPos + gDur, "Hanning", 1, "no"
-    grain = selected("Sound")
-
-    # --- Fast Spectral Analysis via Ltas ---
-    # Ltas supports Get frequency of maximum: fLo, fHi, "Parabolic"
-    # One native call per band — no bin loop needed.
-    selectObject: grain
-    To Ltas: 100
+    selectObject: analysisGrain
+    To Spectrum: "yes"
+    spectrum = selected("Spectrum")
+    To Ltas (1-to-1)
     ltas = selected("Ltas")
 
+    selectObject: ltas
+    globalPeakDb = Get maximum: analysisMinHz, analysisMaxHz, "Parabolic"
+
     n_valid_pc = 0
+    bandRatio = (analysisMaxHz / analysisMinHz) ^ (1 / number_of_peaks)
+
     for b from 1 to number_of_peaks
-        bIdx = b
-        if bIdx > 5
-            bIdx = 5
-        endif
-        bLo = band_lo[bIdx]
-        bHi = band_hi[bIdx]
-        if bHi > max_frequency_Hz
-            bHi = max_frequency_Hz
-        endif
-        if bLo >= bHi
-            bLo = bHi * 0.5
+        bLo = analysisMinHz * bandRatio ^ (b - 1)
+        if b = number_of_peaks
+            bHi = analysisMaxHz
+        else
+            bHi = analysisMinHz * bandRatio ^ b
         endif
 
         selectObject: ltas
+        peakDb = Get maximum: bLo, bHi, "Parabolic"
         peak_hz = Get frequency of maximum: bLo, bHi, "Parabolic"
 
-        if peak_hz > 20 and peak_hz <= max_frequency_Hz
-            # Hz -> MIDI -> Pitch Class
+        if peak_hz >= analysisMinHz and peak_hz <= analysisMaxHz and peakDb >= globalPeakDb - peak_relative_threshold_dB
             midi_val = 69 + 12 * log2(peak_hz / 440)
             pc = round(midi_val) mod 12
             if pc < 0
                 pc = pc + 12
             endif
-            n_valid_pc += 1
-            pc_set[n_valid_pc] = pc
+
+            # Set-theory means SET: keep each Pitch Class only once.
+            isDuplicate = 0
+            for u from 1 to n_valid_pc
+                if pc_set[u] = pc
+                    isDuplicate = 1
+                endif
+            endfor
+            if not isDuplicate
+                n_valid_pc += 1
+                pc_set[n_valid_pc] = pc
+            endif
         endif
     endfor
 
-    removeObject: ltas
+    removeObject: ltas, spectrum, analysisGrain
 
-    # --- Dissonance Score ---
-    score    = 0
-    n_pairs  = 0
-    for p from 1 to n_valid_pc - 1
-        for q from p + 1 to n_valid_pc
-            raw_iv = abs(pc_set[p] - pc_set[q]) mod 12
-            if raw_iv > 6
-                raw_iv = 12 - raw_iv
-            endif
-            score   += ic_weight[raw_iv]
-            n_pairs += 1
+    # --- Interval-Class tension score on UNIQUE Pitch Classes ---
+    score = 0
+    n_pairs = 0
+    if n_valid_pc >= 2
+        for p from 1 to n_valid_pc - 1
+            for q from p + 1 to n_valid_pc
+                raw_iv = abs(pc_set[p] - pc_set[q]) mod 12
+                if raw_iv > 6
+                    raw_iv = 12 - raw_iv
+                endif
+                score += ic_weight[raw_iv]
+                n_pairs += 1
+            endfor
         endfor
-    endfor
+    endif
     if n_pairs > 0
         score = score / n_pairs
     endif
 
-    grainCount              += 1
-    grainIDs#[grainCount]    = grain
-    grainScore#[grainCount]  = score
-    grainDurs#[grainCount]   = gDur
+    # --- Render grain: preserve original channel count ---
+    selectObject: original
+    Extract part: srcStart, srcEnd, "Hanning", 1, "no"
+    grain = selected("Sound")
+
+    grainCount += 1
+    grainIDs#[grainCount] = grain
+    grainScore#[grainCount] = score
+    grainDurs#[grainCount] = gDur
 
     if grainCount mod 25 = 0 or grainCount = num_grains
         appendInfoLine: "  Grain ", grainCount, "/", num_grains,
-            ..."  score=", fixed$(score, 3)
+            ..."  score=", fixed$(score, 3), "  PCs=", n_valid_pc
     endif
 endfor
 
@@ -420,60 +496,63 @@ else
 endif
 
 # ============================================================
-# === Concatenate Sorted Grains (fast, like Brightness) ======
+# === Assemble Sorted Grains in Deterministic Object Order ====
 # ============================================================
 appendInfoLine: ""
-appendInfoLine: "Concatenating..."
+appendInfoLine: "Assembling sorted output..."
 
 gap_dur = gap_between_grains_ms / 1000
-if gap_dur > 0
-    silence = Create Sound from formula: "gap", 1, 0, gap_dur, sample_rate, "0"
-endif
+maxConcatObjects = grainCount * 2
+concatIDs# = zero# (maxConcatObjects)
+concatCount = 0
 
-selectObject: grainIDs#[1]
-Copy: "ht_concat_temp"
-temp_snd = selected("Sound")
+# Fresh objects are created in the exact desired timeline order. Praat's
+# Concatenate follows Object-list creation order, so one final concatenate is
+# both faster and deterministic.
+for i from 1 to grainCount
+    selectObject: grainIDs#[i]
+    item = Copy: "ht_item_" + string$(i)
+    concatCount += 1
+    concatIDs#[concatCount] = item
 
-for i from 2 to grainCount
-    if gap_dur > 0
-        selectObject: temp_snd, silence
-        Concatenate
-        with_gap = selected("Sound")
-        selectObject: with_gap, grainIDs#[i]
-        Concatenate
-        new_temp = selected("Sound")
-        removeObject: temp_snd, with_gap
-        temp_snd = new_temp
-    else
-        selectObject: temp_snd, grainIDs#[i]
-        Concatenate
-        new_temp = selected("Sound")
-        removeObject: temp_snd
-        temp_snd = new_temp
+    if gap_dur > 0 and i < grainCount
+        gapItem = Create Sound from formula: "ht_gap_" + string$(i), num_channels, 0, gap_dur, sample_rate, "0"
+        concatCount += 1
+        concatIDs#[concatCount] = gapItem
     endif
 endfor
 
-if gap_dur > 0
-    removeObject: silence
-endif
+selectObject: concatIDs#[1]
+for c from 2 to concatCount
+    plusObject: concatIDs#[c]
+endfor
+Concatenate
+temp_snd = selected("Sound")
 
-# Cleanup grain objects
+# Cleanup fresh assembly items and original render grains.
+for c from 1 to concatCount
+    removeObject: concatIDs#[c]
+endfor
 for i from 1 to grainCount
     removeObject: grainIDs#[i]
 endfor
 
 # Finalize output
 selectObject: temp_snd
-Scale peak: 0.9
-Fade in: 0, 0, 0.02, "yes"
-out_dur = Get total duration
-if out_dur > 0.05
-    Fade out: 0, out_dur - 0.03, 0.03, "yes"
+outputPeak = Get absolute extremum: 0, 0, "Sinc70"
+if outputPeak > 0
+    Scale peak: 0.9
 endif
-Copy: "Set_Sorted_Grains"
+out_dur = Get total duration
+edgeFade = min(0.02, out_dur / 4)
+if edgeFade > 0
+    Fade in: 0, 0, edgeFade, "yes"
+    Fade out: 0, out_dur - edgeFade, edgeFade, "yes"
+endif
+Copy: sound_name$ + "_HTsorted_" + preset_name$
 result = selected("Sound")
-removeObject: temp_snd
-removeObject: source
+resultName$ = selected$("Sound")
+removeObject: temp_snd, analysisSource
 
 # ============================================================
 # === Compute Statistics =====================================
@@ -515,6 +594,7 @@ if draw_visualization and grainCount > 0
 
     # --- Title ---
     Select outer viewport: 0, 8, 0.05, 0.55
+    Axes: 0, 1, 0, 1
     Font size: 13
     Colour: "Black"
     if sort_direction = 1
@@ -626,7 +706,7 @@ if draw_visualization and grainCount > 0
     Colour: "Black"
     Draw inner box
     Marks left every: 1, 0.1, "yes", "yes", "no"
-    Marks bottom every: 1, round(grainCount / 8), "yes", "yes", "no"
+    Marks bottom every: 1, max(1, round(grainCount / 8)), "yes", "yes", "no"
     Font size: 7
     Text left:   "yes", "Tension Score"
     Text bottom: "yes", "Grain # (sorted order)"
@@ -710,7 +790,7 @@ if draw_visualization and grainCount > 0
     Select outer viewport: 4, 8, 4.72, 5.85
     Select inner viewport: 4.4, 7.6, 4.80, 5.78
     selectObject: result
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     spectrogram = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     removeObject: spectrogram
@@ -724,6 +804,7 @@ if draw_visualization and grainCount > 0
     # --- Stats Footer --------------------------------------
     # -------------------------------------------------------
     Select outer viewport: 0, 8, 5.9, 6.3
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.35, 0.35, 0.35}"
     Text: 0.5, "centre", 0.5, "half",
@@ -741,9 +822,10 @@ endif
 # ============================================================
 # === Final Info =============================================
 # ============================================================
+selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
-appendInfoLine: "Created:      Set_Sorted_Grains"
+appendInfoLine: "Created:      ", resultName$
 appendInfoLine: "Grains:       ", grainCount
 appendInfoLine: "Score range:  ", fixed$(minScore, 3), " - ", fixed$(maxScore, 3)
 appendInfoLine: "Mean tension: ", fixed$(mean_score, 3)

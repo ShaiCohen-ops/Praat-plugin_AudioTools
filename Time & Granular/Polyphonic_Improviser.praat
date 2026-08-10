@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.5 (2026)
+# Version: 2.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -28,6 +28,22 @@
 #     V4 Fourth : ratio 1.50           pan +0.75  enters at 3x delay
 #
 # Category: Composition
+#
+# Changelog v2.6:
+#   - API COMPATIBILITY: all public form parameters keep the same names,
+#     order, types and defaults as v2.5; output name remains *_poly_improv_v2.
+#   - CRITICAL FIX: global output duration is now the maximum ACTUAL end
+#     time across all transformed voices. v2.5 sized the master from Voice 1
+#     only, so slower voices (e.g. default V3 ratio 0.5) could be truncated.
+#   - FIX: the working source is shifted to time 0 before chunk extraction,
+#     so Sounds with non-zero xmin are handled correctly without changing
+#     the selected source object.
+#   - FIX: active-span visualization uses each voice's measured transformed
+#     OLA body duration rather than estimating it from Voice 1 / speed ratio.
+#   - HARDENING: final peak normalization is skipped for all-zero output.
+#   - The historical stereo output contract is preserved: source channels are
+#     downmixed to mono before the canon engine, then voices are constant-power
+#     panned to a stereo result. This is intentional and unchanged.
 #
 # Changelog v2.5:
 #   - The "Voice Details (V3, V4, amplitudes, pan)" dialog now appears
@@ -109,7 +125,7 @@ endif
 # FORM
 # ============================================================
 
-form Polyphonic Improviser v2.5
+form Polyphonic Improviser v2.6
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -462,6 +478,10 @@ else
     monoSrc = Copy: "pi_mono_src"
 endif
 
+# Internal chunk coordinates are zero-based. Keep the user's source untouched.
+selectObject: monoSrc
+Shift times to: "start time", 0
+
 chunkDur = srcDur / nChunks
 # v2.3: within-voice joins use a 40% equal-power overlap-add (legato),
 # not the old short linear crossfade. The Crossfade_ms form field is
@@ -477,7 +497,7 @@ endif
 
 clearinfo
 writeInfoLine:  "=================================================="
-appendInfoLine: "  Polyphonic Improviser v2.1  | Chunk Shuffle Canon"
+appendInfoLine: "  Polyphonic Improviser v2.6  | Chunk Shuffle Canon"
 appendInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Preset   : ", presetName$
@@ -564,20 +584,26 @@ appendInfoLine: "[3/5] Shuffling and assembling voices..."
 
 # Legato assembly uses the equal-power 40% overlap defined in SETUP (xfFrac).
 
-# v1PassDur = voice-1's actual OLA body length (chunks are uniform within
-# a voice, so body = dC + (nChunks-1)*hop, hop = dC*(1-xfFrac)). Used for
-# outDur and for the viz active-span estimate (which scales it by 1/ratio).
-selectObject: vChunk_1_1
-dC1 = Get total duration
-x1  = xfFrac * dC1
-if x1 > dC1 * 0.5
-    x1 = dC1 * 0.5
-endif
-hop1 = dC1 - x1
-v1PassDur = dC1 + (nChunks - 1) * hop1
+# Measure every transformed voice before allocating the common output buffer.
+# Chunks are uniform within a voice, so the OLA body is exact from one chunk.
+maxVoiceEnd = 0
+for v from 1 to numV
+    selectObject: vChunk_'v'_1
+    dCvMeasure = Get total duration
+    xvMeasure = xfFrac * dCvMeasure
+    if xvMeasure > dCvMeasure * 0.5
+        xvMeasure = dCvMeasure * 0.5
+    endif
+    hopMeasure = dCvMeasure - xvMeasure
+    vBodyDur_'v' = dCvMeasure + (nChunks - 1) * hopMeasure
+    vEndMeasure = entry_delay_s * (v - 1) + vBodyDur_'v'
+    if vEndMeasure > maxVoiceEnd
+        maxVoiceEnd = vEndMeasure
+    endif
+endfor
 
-lastEntry = entry_delay_s * (numV - 1)
-outDur = lastEntry + v1PassDur + 0.5
+# Keep the historical 0.5-s safety pad; the later silence trim removes it.
+outDur = maxVoiceEnd + 0.5
 
 for v from 1 to numV
     vEntryTime = entry_delay_s * (v - 1)
@@ -615,7 +641,7 @@ for v from 1 to numV
         xv = dCv * 0.5
     endif
     hopV = dCv - xv
-    bodyLenV = dCv + (nChunks - 1) * hopV
+    bodyLenV = vBodyDur_'v'
     masterLenV = vEntryTime + bodyLenV
 
     Create Sound from formula: "v_master", 1, 0, masterLenV, srcSr, "0"
@@ -716,7 +742,10 @@ finalOutput = Combine to stereo
 removeObject: vL_1, vR_1
 
 selectObject: finalOutput
-Scale peak: 0.95
+finalPeakBefore = Get absolute extremum: 0, 0, "Sinc70"
+if finalPeakBefore > 0
+    Scale peak: 0.95
+endif
 Rename: srcName$ + "_poly_improv_v2"
 finalDur = Get total duration
 
@@ -965,7 +994,7 @@ if draw_visualization = 1
 
     for v from 1 to numV
         vEnt = (entry_delay_s * (v - 1)) - trimOffset
-        vEndEst = vEnt + (v1PassDur / vSpeed_'v')
+        vEndEst = vEnt + vBodyDur_'v'
 
         if vEnt < 0
             vEnt = 0

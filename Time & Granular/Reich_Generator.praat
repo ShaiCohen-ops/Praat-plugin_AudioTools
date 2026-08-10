@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4.1 (2026)
+# Version: 0.4.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,28 @@
 #   Reich Generator (Auto-Phasing Tool) -- extracts a loop from a
 #   source recording and phases it against a pitch/tempo-drifting
 #   copy (and an optional static anchor voice), Steve Reich style.
+#
+# Changelog v0.4.2 (2026) - compatibility/hardening pass:
+#   - API COMPATIBILITY: the complete public form is byte-for-byte
+#     unchanged, and the final output naming contract is unchanged.
+#   - FIX: Random_seed=0 now explicitly returns Praat to safe/unpredictable
+#     RNG mode before this script draws random values. A caller that had
+#     previously installed a predictable global seed can no longer leak that
+#     deterministic state into a nominally fresh Reich render.
+#   - FIX: non-zero source time domains are handled through a zero-based
+#     private analysis copy; random loop positions no longer assume xmin=0.
+#   - FIX: quiet-but-valid sources are not rejected by an absolute 0.001 RMS
+#     gate. The historical gate is retained for normal-level material but is
+#     relaxed relative to the source RMS when the whole source is quiet.
+#   - FIX: Start_Offset is measured against the ACTUAL post-drift V2 loop
+#     duration. 50% now means exactly half of V2's loop (180 degrees), and
+#     Random is uniform over one actual V2 cycle. The phase wheel uses the
+#     same measured V2 duration, so picture and audio agree.
+#   - FIX: phase normalization after adding the start offset uses modulo/floor
+#     rather than a one-step >1 subtraction, making the monitor robust at
+#     exact wrap points.
+#   - HARDENING: Manual loop limits and flutter amount are validated before
+#     any random draw; temporary source-analysis objects are cleaned early.
 #
 # Changelog v0.4.1 (2026) — second review pass:
 #   - FIX: Classic Reich (the default preset) still forced
@@ -200,14 +222,9 @@ endif
 # Messagesquisse Opening, it's a mix-balance knob the user set for
 # their own source material, not a trait of the compositional preset.
 
-# Reproducibility: 0 = a fresh random sequence every run (default
-# Praat behaviour). Any other integer reseeds the generator so the
-# loop pick, offset, and flutter draws are exactly repeatable.
-if random_seed <> 0
-    seedResult = random_initializeWithSeedUnsafelyButPredictably (random_seed)
-endif
-
-
+# RNG initialization is deliberately deferred until after input/parameter
+# validation. This avoids leaving a caller in predictable RNG mode if the
+# script has to stop before it draws anything.
 
 # ============================================
 # 2. SOURCE EXTRACTION (CLEAN)
@@ -220,18 +237,71 @@ endif
 source_id = selected("Sound")
 source_name$ = selected$("Sound")
 selectObject: source_id
+source_xmin = Get start time
+source_xmax = Get end time
 total_src_dur = Get total duration
 
-# Guard: if the source is shorter than the requested loop length, then
-# randomUniform(0, total_src_dur - ldur) would go negative and Extract part
-# would read out of bounds (yielding padded/silent loops and the misleading
-# "Could not find non-silent audio" exit). Clamp the loop range to the
-# available material so short sources still work with shorter loops.
+# Public parameters are unchanged; validate the Manual values before any RNG
+# state is installed or any random draw occurs. Presets already provide valid
+# positive values.
+if p_min <= 0 or p_max <= 0
+    exitScript: "Min_loop_sec and Max_loop_sec must be > 0."
+endif
+if p_min > p_max
+    exitScript: "Min_loop_sec must be <= Max_loop_sec."
+endif
+if p_flut < 0
+    exitScript: "Flutter_Amount_st must be >= 0."
+endif
+
+# Private zero-based source copy. Extract part with preserve-times=no gives a
+# domain of 0..duration, so all existing random-loop math remains valid even
+# when the selected Sound itself starts at a non-zero time.
+selectObject: source_id
+Extract part: source_xmin, source_xmax, "rectangular", 1, "no"
+Rename: "Reich_Source_Work"
+source_work = selected("Sound")
+Convert to mono
+Rename: "Reich_Source_Analysis"
+source_analysis = selected("Sound")
+selectObject: source_work
+Remove
+source_work = 0
+
+selectObject: source_analysis
+source_rms = Get root-mean-square: 0, 0
+if source_rms <= 1e-12
+    removeObject: source_analysis
+    exitScript: "Selected Sound is silent."
+endif
+# Preserve v0.4.1's absolute 0.001 gate for normal-level material, but relax
+# it for globally quiet sources so final peak normalization can still make
+# them usable. The floor remains safely above numerical zero.
+activity_rms_floor = min(0.001, source_rms * 0.05)
+if activity_rms_floor < 1e-12
+    activity_rms_floor = 1e-12
+endif
+
+# Guard: if the source is shorter than the requested loop length, clamp the
+# range to available material. This preserves the established v0.2 behavior.
 if p_max > total_src_dur
     p_max = total_src_dur
 endif
 if p_min > p_max
     p_min = p_max
+endif
+if p_min <= 0
+    removeObject: source_analysis
+    exitScript: "Source is too short for a positive loop duration."
+endif
+
+# Explicit RNG policy. Praat's predictable seed persists globally until safe
+# initialization is called, so seed=0 must actively undo any predictable mode
+# inherited from a caller. Non-zero seeds remain exactly reproducible here.
+if random_seed <> 0
+    seedResult = random_initializeWithSeedUnsafelyButPredictably (random_seed)
+else
+    random_initializeSafelyAndUnpredictably ()
 endif
 
 found = 0
@@ -242,19 +312,13 @@ while found = 0 and attempts < 40
     ldur = randomUniform(p_min, p_max)
     st = randomUniform(0, total_src_dur - ldur)
     
-    selectObject: source_id
+    selectObject: source_analysis
     Extract part: st, st + ldur, "rectangular", 1, "no"
-    temp_part_id = selected("Sound")
-    
-    Convert to mono
     check_id = selected("Sound")
-    
-    selectObject: temp_part_id
-    Remove
     
     selectObject: check_id
     rms = Get root-mean-square: 0, 0
-    if rms > 0.001
+    if rms > activity_rms_floor
         # v0.3: snap loop bounds to zero crossings -- rectangular
         # random cuts clicked at every repetition
         .cd = Get total duration
@@ -279,8 +343,13 @@ while found = 0 and attempts < 40
 endwhile
 
 if found = 0
+    removeObject: source_analysis
+    random_initializeSafelyAndUnpredictably ()
     exitScript: "Could not find non-silent audio."
 endif
+
+# The loop is now independent; release the full analysis copy early.
+removeObject: source_analysis
 
 selectObject: loop_base
 base_sr = Get sampling frequency
@@ -361,6 +430,8 @@ Override sampling frequency: base_sr * drift_ratio
 Resample: base_sr, 50
 Rename: "V2_Drifting"
 v2_final = selected("Sound")
+selectObject: v2_final
+dur_v2 = Get total duration
 selectObject: v2_id
 Remove
 
@@ -432,10 +503,15 @@ endif
 
 offset_sec = 0
 if p_off$ = "50% (Anti-Phase)"
-    offset_sec = dur_base * 0.5
+    offset_sec = dur_v2 * 0.5
 elsif p_off$ = "Random"
-    offset_sec = randomUniform(0, dur_base)
+    offset_sec = randomUniform(0, dur_v2)
 endif
+
+# All random choices (loop pick, PitchTier flutter, start offset) are complete.
+# Return the global generator to Praat's safe/unpredictable mode so a seeded
+# Reich render does not make subsequently-called scripts deterministic.
+random_initializeSafelyAndUnpredictably ()
 
 # ============================================
 # 7. BUILD TRACKS
@@ -584,17 +660,14 @@ if create_polar_phase_wheel
         t = (i - 1) * sample_interval
         
         v1_loops = t / dur_base
-        v2_loops = t / (dur_base / drift_ratio)
+        v2_loops = t / dur_v2
         phase_raw = v2_loops - v1_loops
         phase_norm = phase_raw - floor(phase_raw)
         
         if offset_sec > 0
-             offset_ratio = offset_sec / dur_base
+             offset_ratio = offset_sec / dur_v2
              phase_norm = phase_norm + offset_ratio
-             # Expanded to prevent syntax error
-             if phase_norm > 1.0
-                 phase_norm = phase_norm - 1.0
-             endif
+             phase_norm = phase_norm - floor(phase_norm)
         endif
         
         # Cycle check (v0.3: wrapped flag -- the marker block below
@@ -663,15 +736,13 @@ if create_polar_phase_wheel
     # End Label
     t_final_val = actual_duration
     v1_calc_final = t_final_val / dur_base
-    v2_calc_final = t_final_val / (dur_base / drift_ratio)
+    v2_calc_final = t_final_val / dur_v2
     
     phase_final = v2_calc_final - v1_calc_final
     phase_norm_final = phase_final - floor(phase_final)
     if offset_sec > 0
-        phase_norm_final = phase_norm_final + offset_sec / dur_base
-        if phase_norm_final > 1.0
-             phase_norm_final = phase_norm_final - 1.0
-        endif
+        phase_norm_final = phase_norm_final + offset_sec / dur_v2
+        phase_norm_final = phase_norm_final - floor(phase_norm_final)
     endif
     
     final_degrees = phase_norm_final * 360

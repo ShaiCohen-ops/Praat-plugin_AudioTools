@@ -3,89 +3,100 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Magnetic Tape Degradation - simulates analog tape aging:
-#   - Hysteresis (magnetic memory effect)
-#   - Print-through (signal bleeding between tape layers)
-#   - High-frequency loss (tape loses HF over time)
-#   - Bias modulation (recorder bias oscillation)
+#   Magnetic Tape Degradation - a tape-like degradation processor with
+#   generation-by-generation memory smoothing, print-through ghosts,
+#   progressive high-frequency loss, and transport wow/flutter.
 #
+#   This is a compositional tape-degradation model rather than a calibrated
+#   physical tape-machine emulator. v0.3 keeps every stage stable and gives
+#   each control a direct, duration-independent meaning.
+#
+# Changelog v0.3:
+#   - CRITICAL HF-loss fix: v0.2 could amplify DC by almost 2x per generation
+#     and its HF factor became negative in strong presets. v0.3 uses a
+#     unity-DC, three-tap low-pass blend; repeated generations progressively
+#     remove HF without gain explosion or polarity inversion.
+#   - TRUE wow/flutter: v0.2's "bias modulation" was amplitude modulation at
+#     roughly one cycle per whole file. v0.3 uses time displacement with
+#     interpolated reads from a frozen pre-stage Sound, with independent wow
+#     and flutter rates/depths.
+#   - Print-through delay is now specified in milliseconds and no longer
+#     depends on file length, tail length, or sample count.
+#   - Print-through reads both pre- and post-ghosts from the same frozen signal,
+#     avoiding the left-to-right Formula asymmetry of v0.2.
+#   - Memory coefficients are normalized to unity DC gain and remain stable.
+#   - Full multichannel preservation: the silent tail uses the source channel
+#     count, not a hardcoded mono/stereo branch.
+#   - Non-zero Sound time domains are normalized to a zero-based processing
+#     copy before concatenation and modulation.
+#   - Scale_peak is a safety ceiling only; quiet degraded material is not
+#     automatically boosted to the ceiling.
+#   - Tail and fadeout may be zero; fadeout is safely bounded by output length.
+#   - Visualization spectra use mono analysis copies and stop at Nyquist.
 # ============================================================
 
 # --- 1. COMPACT STARTUP FORM ---
-form Tape Degradation (Compact)
-    comment PRESETS:
+form Tape Degradation v0.3
     optionmenu Preset 1
         option Custom
         option Subtle Tape
         option Medium Tape
         option Heavy Tape
         option Extreme Tape
-    
-    comment MAIN CONTROLS:
+
     natural Generations 6
-    positive Tail_duration_s 2.0
-    
-    comment OUTPUT:
+    real Tail_duration_s 2.0
+
     boolean Draw_visualization 1
     boolean Play_result 1
-    
-    comment ADVANCED:
+
     boolean Show_advanced_settings 0
 endform
 
-# --- 2. DEFINE DEFAULT PARAMETERS ---
-# (Used for "Custom" if Advanced is not opened)
-hysteresis_current = 0.7
-hysteresis_previous = 0.3
-print_through_initial = 0.25
-print_through_decay = 0.8
-print_offset_divisor = 100
-bias_min = 0.8
-bias_max = 1.2
-use_fixed_bias = 0
-fixed_bias = 1.0
-hf_loss_rate = 0.1
-hf_smoothing = 0.9
-bias_mod_center = 0.9
-bias_mod_depth = 0.1
+# --- 2. DEFAULT PARAMETERS ---
+hysteresis_current = 0.70
+hysteresis_previous = 0.30
+print_through_initial = 0.22
+print_through_decay = 0.80
+print_through_delay_ms = 120
+hf_loss_per_generation = 0.10
+wow_rate_Hz = 0.55
+wow_depth_ms = 1.20
+flutter_rate_Hz = 6.0
+flutter_depth_ms = 0.12
 scale_peak = 0.87
 fadeout_duration_s = 1.0
 
-# --- 3. SHOW ADVANCED SETTINGS (If Checked) ---
+# --- 3. ADVANCED SETTINGS ---
 if show_advanced_settings
-    beginPause: "Advanced Tape Physics"
-        comment: "Hysteresis (Memory Effect):"
-        positive: "Hysteresis current", hysteresis_current
-        positive: "Hysteresis previous", hysteresis_previous
-        
-        comment: "Print-Through (Ghosting):"
-        positive: "Print through initial", print_through_initial
-        positive: "Print through decay", print_through_decay
-        natural: "Print offset divisor", print_offset_divisor
-        
-        comment: "Tape Bias:"
-        positive: "Bias min", bias_min
-        positive: "Bias max", bias_max
-        boolean: "Use fixed bias", use_fixed_bias
-        positive: "Fixed bias", fixed_bias
-        
-        comment: "Signal Loss:"
-        positive: "Hf loss rate", hf_loss_rate
-        positive: "Hf smoothing", hf_smoothing
-        
-        comment: "Bias Modulation (Wow/Flutter):"
-        positive: "Bias mod center", bias_mod_center
-        positive: "Bias mod depth", bias_mod_depth
-        
-        comment: "Output Envelope:"
-        positive: "Scale peak", scale_peak
-        positive: "Fadeout duration s", fadeout_duration_s
-        
+    beginPause: "Advanced Tape Degradation"
+        comment: "Memory / hysteresis-like smoothing:"
+        real: "Hysteresis current", hysteresis_current
+        real: "Hysteresis previous", hysteresis_previous
+
+        comment: "Print-through ghosting:"
+        real: "Print through initial", print_through_initial
+        real: "Print through decay", print_through_decay
+        real: "Print through delay ms", print_through_delay_ms
+
+        comment: "Progressive high-frequency loss:"
+        real: "HF loss per generation", hf_loss_per_generation
+
+        comment: "Transport instability:"
+        real: "Wow rate Hz", wow_rate_Hz
+        real: "Wow depth ms", wow_depth_ms
+        real: "Flutter rate Hz", flutter_rate_Hz
+        real: "Flutter depth ms", flutter_depth_ms
+
+        comment: "Output:"
+        real: "Scale peak ceiling", scale_peak
+        real: "Fadeout duration s", fadeout_duration_s
+
     clicked = endPause: "Cancel", "OK", 2, 1
     if clicked = 1
         exitScript: "Cancelled."
@@ -95,198 +106,272 @@ endif
 # ==============================================================================
 # APPLY PRESETS
 # ==============================================================================
-# Note: Presets override custom settings, except for Generations/Tail
-# which are taken from the main form unless hardcoded below.
+presetName$ = "Custom"
 
 if preset = 2
     # Subtle Tape
     tail_duration_s = 1.5
     generations = 3
-    hysteresis_current = 0.65
-    hysteresis_previous = 0.35
-    print_through_initial = 0.12
+    hysteresis_current = 0.78
+    hysteresis_previous = 0.22
+    print_through_initial = 0.10
     print_through_decay = 0.85
-    print_offset_divisor = 120
-    bias_min = 0.92
-    bias_max = 1.08
-    use_fixed_bias = 0
-    hf_loss_rate = 0.06
-    hf_smoothing = 0.94
-    bias_mod_center = 0.95
-    bias_mod_depth = 0.05
+    print_through_delay_ms = 100
+    hf_loss_per_generation = 0.055
+    wow_rate_Hz = 0.45
+    wow_depth_ms = 0.55
+    flutter_rate_Hz = 6.2
+    flutter_depth_ms = 0.05
     scale_peak = 0.90
     fadeout_duration_s = 0.8
+    presetName$ = "SubtleTape"
 elsif preset = 3
     # Medium Tape
-    # (Uses defaults mostly, but explicitly set here for clarity)
     tail_duration_s = 2.0
     generations = 6
-    hysteresis_current = 0.7
-    hysteresis_previous = 0.3
-    print_through_initial = 0.25
-    print_through_decay = 0.8
-    print_offset_divisor = 100
-    bias_min = 0.8
-    bias_max = 1.2
-    use_fixed_bias = 0
-    hf_loss_rate = 0.1
-    hf_smoothing = 0.9
-    bias_mod_center = 0.9
-    bias_mod_depth = 0.1
+    hysteresis_current = 0.70
+    hysteresis_previous = 0.30
+    print_through_initial = 0.22
+    print_through_decay = 0.80
+    print_through_delay_ms = 120
+    hf_loss_per_generation = 0.10
+    wow_rate_Hz = 0.55
+    wow_depth_ms = 1.20
+    flutter_rate_Hz = 6.0
+    flutter_depth_ms = 0.12
     scale_peak = 0.87
     fadeout_duration_s = 1.0
+    presetName$ = "MediumTape"
 elsif preset = 4
     # Heavy Tape
     tail_duration_s = 2.8
     generations = 10
-    hysteresis_current = 0.75
-    hysteresis_previous = 0.25
-    print_through_initial = 0.35
-    print_through_decay = 0.75
-    print_offset_divisor = 85
-    bias_min = 0.7
-    bias_max = 1.3
-    use_fixed_bias = 0
-    hf_loss_rate = 0.15
-    hf_smoothing = 0.85
-    bias_mod_center = 0.85
-    bias_mod_depth = 0.15
+    hysteresis_current = 0.62
+    hysteresis_previous = 0.38
+    print_through_initial = 0.32
+    print_through_decay = 0.76
+    print_through_delay_ms = 160
+    hf_loss_per_generation = 0.14
+    wow_rate_Hz = 0.65
+    wow_depth_ms = 2.1
+    flutter_rate_Hz = 5.5
+    flutter_depth_ms = 0.20
     scale_peak = 0.85
     fadeout_duration_s = 1.4
+    presetName$ = "HeavyTape"
 elsif preset = 5
     # Extreme Tape
     tail_duration_s = 4.0
     generations = 15
-    hysteresis_current = 0.8
-    hysteresis_previous = 0.2
-    print_through_initial = 0.45
-    print_through_decay = 0.7
-    print_offset_divisor = 70
-    bias_min = 0.6
-    bias_max = 1.5
-    use_fixed_bias = 0
-    hf_loss_rate = 0.2
-    hf_smoothing = 0.8
-    bias_mod_center = 0.8
-    bias_mod_depth = 0.2
+    hysteresis_current = 0.55
+    hysteresis_previous = 0.45
+    print_through_initial = 0.42
+    print_through_decay = 0.70
+    print_through_delay_ms = 220
+    hf_loss_per_generation = 0.18
+    wow_rate_Hz = 0.72
+    wow_depth_ms = 3.8
+    flutter_rate_Hz = 5.0
+    flutter_depth_ms = 0.35
     scale_peak = 0.82
     fadeout_duration_s = 1.8
+    presetName$ = "ExtremeTape"
 endif
 
 # ==============================================================================
-# MAIN SCRIPT EXECUTION
+# VALIDATE + SETUP
 # ==============================================================================
-
-# === Check Input ===
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object"
+endif
+
+if generations < 1 or generations > 50
+    exitScript: "Generations must be between 1 and 50"
+endif
+if tail_duration_s < 0
+    exitScript: "Tail duration must be >= 0"
+endif
+if hysteresis_current <= 0 or hysteresis_previous < 0
+    exitScript: "Hysteresis current must be > 0 and previous must be >= 0"
+endif
+if print_through_initial < 0 or print_through_initial > 1
+    exitScript: "Print-through initial must be between 0 and 1"
+endif
+if print_through_decay < 0 or print_through_decay > 1
+    exitScript: "Print-through decay must be between 0 and 1"
+endif
+if print_through_delay_ms <= 0
+    exitScript: "Print-through delay must be > 0 ms"
+endif
+if hf_loss_per_generation < 0 or hf_loss_per_generation >= 1
+    exitScript: "HF loss per generation must be >= 0 and < 1"
+endif
+if wow_rate_Hz < 0 or wow_depth_ms < 0 or flutter_rate_Hz < 0 or flutter_depth_ms < 0
+    exitScript: "Wow/flutter rates and depths must be >= 0"
+endif
+if scale_peak <= 0 or scale_peak > 1
+    exitScript: "Scale peak ceiling must be > 0 and <= 1"
+endif
+if fadeout_duration_s < 0
+    exitScript: "Fadeout duration must be >= 0"
 endif
 
 original = selected("Sound")
 original_name$ = selected$("Sound")
 
 selectObject: original
+sourceStart = Get start time
+sourceEnd = Get end time
 sampling_rate = Get sampling frequency
 channels = Get number of channels
 originalDuration = Get total duration
+nyquist = sampling_rate / 2
+spectrumMaxHz = min(8000, nyquist)
 
-# === Determine Bias ===
-if use_fixed_bias
-    bias = fixed_bias
-else
-    bias = randomUniform(bias_min, bias_max)
-endif
+# Normalize memory weights to unity DC gain.
+memorySum = hysteresis_current + hysteresis_previous
+memoryCurrent = hysteresis_current / memorySum
+memoryPrevious = hysteresis_previous / memorySum
+
+printDelaySec = print_through_delay_ms / 1000
+wowDepthSec = wow_depth_ms / 1000
+flutterDepthSec = flutter_depth_ms / 1000
 
 # === Info ===
-writeInfoLine: "=== Magnetic Tape Degradation ==="
-appendInfoLine: "Source: ", original_name$, " (", fixed$(originalDuration, 2), " s)"
-appendInfoLine: ""
+writeInfoLine: "=== Magnetic Tape Degradation v0.3 ==="
+appendInfoLine: "Source: ", original_name$, " (", fixed$(originalDuration, 2), " s; ", channels, " ch)"
+appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Generations: ", generations
-appendInfoLine: "Hysteresis: ", hysteresis_current, " / ", hysteresis_previous
-appendInfoLine: "Print-through: ", print_through_initial, " (decay ", print_through_decay, ")"
-appendInfoLine: "HF loss: ", hf_loss_rate, " | Smoothing: ", hf_smoothing
-appendInfoLine: "Bias: ", fixed$(bias, 3)
+appendInfoLine: "Memory weights: ", fixed$(memoryCurrent, 3), " / ", fixed$(memoryPrevious, 3)
+appendInfoLine: "Print-through: ", fixed$(print_through_initial, 3), " @ ", fixed$(print_through_delay_ms, 1), " ms; decay ", fixed$(print_through_decay, 3)
+appendInfoLine: "HF loss/generation: ", fixed$(hf_loss_per_generation, 3)
+appendInfoLine: "Wow: ", fixed$(wow_rate_Hz, 2), " Hz @ ", fixed$(wow_depth_ms, 2), " ms"
+appendInfoLine: "Flutter: ", fixed$(flutter_rate_Hz, 2), " Hz @ ", fixed$(flutter_depth_ms, 2), " ms"
 appendInfoLine: ""
 
-# === Create Silent Tail ===
-if channels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sampling_rate, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sampling_rate, "0"
-endif
-silentTail = selected("Sound")
+# ==============================================================================
+# ZERO-BASED SOURCE + TAIL
+# ==============================================================================
+selectObject: original
+sourceZero = Copy: "tape_source"
+Shift times to: "start time", 0
 
-# === Concatenate ===
-selectObject: original, silentTail
-Concatenate
-extended = selected("Sound")
+if tail_duration_s > 0
+    Create Sound from formula: "silent_tail", channels, 0, tail_duration_s, sampling_rate, "0"
+    silentTail = selected("Sound")
+    selectObject: sourceZero, silentTail
+    Concatenate
+    extended = selected("Sound")
+    removeObject: sourceZero, silentTail
+else
+    selectObject: sourceZero
+    extended = Copy: "extended"
+    removeObject: sourceZero
+endif
 Rename: "extended"
 
-removeObject: silentTail
-
-# === Copy for Processing ===
 selectObject: extended
-Copy: "tape_work"
-result = selected("Sound")
+result = Copy: "tape_work"
+totalDuration = Get total duration
 
-totalSamples = Get number of samples
-
-# === Initialize Print-Through ===
+# ==============================================================================
+# MAIN GENERATION LOOP
+# ==============================================================================
+appendInfoLine: "Processing generations..."
 printThrough = print_through_initial
 
-# === Main Tape Degradation Loop ===
-appendInfoLine: "Processing generations..."
-
 for gen from 1 to generations
+    appendInfoLine: "  Gen ", gen, ": print=", fixed$(printThrough, 3), " HF=", fixed$(hf_loss_per_generation, 3)
+
+    # ------------------------------------------------------------------
+    # 1) Hysteresis-like magnetic memory.
+    # A normalized one-pole memory stage: stable because memoryPrevious < 1,
+    # and DC gain is exactly one after coefficient normalization.
+    # ------------------------------------------------------------------
     selectObject: result
-    
-    # Calculate parameters for this generation
-    hfLossFactor = 1 - hf_loss_rate * gen
-    printOffset = round(totalSamples / print_offset_divisor)
-    
-    appendInfoLine: "  Gen ", gen, ": HF=", fixed$(hfLossFactor, 2), " Print=", fixed$(printThrough, 3)
-    
-    # Tape hysteresis effect (with bounds check)
-    Formula: "if col > 1 then hysteresis_current * self + hysteresis_previous * self[col-1] else self fi"
-    
-    # Print-through effect (with bounds check)
-    Formula: "if col > printOffset and col + printOffset <= ncol then self + printThrough * (self[col - printOffset] + self[col + printOffset])/2 else self fi"
-    
-    # High-frequency loss per generation (with bounds check)
-    Formula: "if col > 1 and col < ncol then self * hfLossFactor + hf_smoothing * (self[col-1] + self[col+1])/2 else self fi"
-    
-    # Bias modulation
-    Formula: "self * (bias_mod_center + bias_mod_depth * sin(2 * pi * bias * col / totalSamples))"
-    
-    # Decay print-through for next generation
+    Formula: "if col > 1 then memoryCurrent * self + memoryPrevious * self[row, col - 1] else self fi"
+
+    # ------------------------------------------------------------------
+    # 2) Print-through: symmetric pre/post ghosts from one frozen snapshot.
+    # Divide by (1 + printThrough) so DC gain remains one.
+    # ------------------------------------------------------------------
+    if printThrough > 0
+        selectObject: result
+        printFrozen = Copy: "print_frozen"
+        printID$ = string$(printFrozen)
+        selectObject: result
+        Formula: "(object(" + printID$ + ", x, row) + printThrough * 0.5 * (object(" + printID$ + ", x - printDelaySec, row) + object(" + printID$ + ", x + printDelaySec, row))) / (1 + printThrough)"
+        removeObject: printFrozen
+    endif
+
+    # ------------------------------------------------------------------
+    # 3) Progressive high-frequency loss.
+    # Blend with [0.25, 0.5, 0.25] smoothing. Both branches have DC gain 1,
+    # so this removes HF without generation-dependent amplitude explosion.
+    # ------------------------------------------------------------------
+    if hf_loss_per_generation > 0
+        selectObject: result
+        hfFrozen = Copy: "hf_frozen"
+        hfID$ = string$(hfFrozen)
+        selectObject: result
+        Formula: "(1 - hf_loss_per_generation) * object[" + hfID$ + ", row, col] + hf_loss_per_generation * (0.25 * object[" + hfID$ + ", row, col - 1] + 0.5 * object[" + hfID$ + ", row, col] + 0.25 * object[" + hfID$ + ", row, col + 1])"
+        removeObject: hfFrozen
+    endif
+
+    # ------------------------------------------------------------------
+    # 4) Wow/flutter: time displacement, not amplitude modulation.
+    # Each generation receives independent phases, like a new transport pass.
+    # Positional object() reads are linearly interpolated by Praat.
+    # ------------------------------------------------------------------
+    if (wow_rate_Hz > 0 and wow_depth_ms > 0) or (flutter_rate_Hz > 0 and flutter_depth_ms > 0)
+        wowPhase = randomUniform(0, 2 * pi)
+        flutterPhase = randomUniform(0, 2 * pi)
+        selectObject: result
+        speedFrozen = Copy: "speed_frozen"
+        speedID$ = string$(speedFrozen)
+        selectObject: result
+        Formula: "object(" + speedID$ + ", min(totalDuration, max(0, x + wowDepthSec * sin(2*pi*wow_rate_Hz*x + wowPhase) + flutterDepthSec * sin(2*pi*flutter_rate_Hz*x + flutterPhase))), row)"
+        removeObject: speedFrozen
+    endif
+
     printThrough = printThrough * print_through_decay
 endfor
 
-# === Scale Peak ===
+# ==============================================================================
+# OUTPUT SAFETY + FADE
+# ==============================================================================
 selectObject: result
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > scale_peak
+    Formula: "self * scale_peak / resultPeak"
+endif
 
-# === Apply Fadeout ===
-totalDuration = Get total duration
-fadeStart = totalDuration - fadeout_duration_s
+if fadeout_duration_s > 0
+    effectiveFade = min(fadeout_duration_s, totalDuration)
+    if effectiveFade > 0
+        fadeStart = totalDuration - effectiveFade
+        Formula: "if x > fadeStart then self * (0.5 + 0.5 * cos(pi * (x - fadeStart) / effectiveFade)) else self fi"
+    endif
+endif
 
-Formula: "if x > fadeStart then self * (0.5 + 0.5 * cos(pi * (x - fadeStart) / fadeout_duration_s)) else self fi"
+Rename: original_name$ + "_tape_" + presetName$
+resultName$ = selected$("Sound")
 
-Rename: original_name$ + "_tape"
-
-# === Cleanup ===
 removeObject: extended
 
-# === Visualization ===
+# ==============================================================================
+# VISUALIZATION
+# ==============================================================================
 if draw_visualization
     Erase all
-    
+
     # Title
     Select outer viewport: 1, 8, 0.2, 0.6
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Magnetic Tape Degradation: " + original_name$
-    
+
     # Original waveform
     Select outer viewport: 0, 8, 0.8, 2.2
     Select inner viewport: 0.6, 7.6, 0.9, 2.1
@@ -296,9 +381,8 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 8
-    Select outer viewport: 0.1, 8, 0.5, 2.5
     Text left: "yes", "Original"
-    
+
     # Result waveform
     Select outer viewport: 0, 8, 2.3, 3.7
     Select inner viewport: 0.6, 7.6, 2.4, 3.6
@@ -309,57 +393,74 @@ if draw_visualization
     Draw inner box
     Text left: "yes", "Tape"
     Text bottom: "yes", "Time (s)"
-    
-    # Original spectrum
+
+    # Original spectrum (mono analysis copy for any channel count)
     Select outer viewport: 0, 4, 3.9, 5.5
     Select inner viewport: 0.6, 3.8, 4.1, 5.4
     selectObject: original
+    if channels > 1
+        vizOrig = Convert to mono
+    else
+        vizOrig = Copy: "viz_orig"
+    endif
     To Spectrum: "yes"
     origSpec = selected("Spectrum")
+    removeObject: vizOrig
     Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 8000, 0, 0, "no"
+    Draw: 0, spectrumMaxHz, 0, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "dB"
     Text bottom: "yes", "Original (Hz)"
     removeObject: origSpec
-    
-    # Result spectrum (shows HF loss)
+
+    # Result spectrum
     Select outer viewport: 4, 8, 3.9, 5.5
     Select inner viewport: 4.4, 7.6, 4.1, 5.4
     selectObject: result
+    if channels > 1
+        vizResult = Convert to mono
+    else
+        vizResult = Copy: "viz_result"
+    endif
     To Spectrum: "yes"
     resSpec = selected("Spectrum")
+    removeObject: vizResult
     Colour: "{0.6, 0.4, 0.2}"
-    Draw: 0, 8000, 0, 0, "no"
+    Draw: 0, spectrumMaxHz, 0, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "dB"
-    Text bottom: "yes", "Tape (Hz) - HF loss visible"
+    Text bottom: "yes", "Tape (Hz) - progressive HF loss"
     removeObject: resSpec
-    
+
     # Legend
-    Select outer viewport: 0, 8, 5.6, 5.9
+    Select outer viewport: 0, 8, 5.6, 6.05
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 2.5, "centre", 0.5, "half", "Generations: " + string$(generations) + " | Hysteresis: " + fixed$(hysteresis_current, 2) + "/" + fixed$(hysteresis_previous, 2) + " | HF loss: " + fixed$(hf_loss_rate, 2)
+    Text: 0.5, "centre", 0.72, "half", "Generations: " + string$(generations) + " | Memory: " + fixed$(memoryCurrent, 2) + "/" + fixed$(memoryPrevious, 2) + " | HF/gen: " + fixed$(hf_loss_per_generation, 2)
+    Text: 0.5, "centre", 0.28, "half", "Print: " + fixed$(print_through_delay_ms, 0) + " ms | Wow: " + fixed$(wow_rate_Hz, 2) + " Hz / " + fixed$(wow_depth_ms, 2) + " ms | Flutter: " + fixed$(flutter_rate_Hz, 1) + " Hz / " + fixed$(flutter_depth_ms, 2) + " ms"
     Font size: 10
     Colour: "Black"
 endif
 
-# === Final Info ===
+# ==============================================================================
+# FINAL INFO
+# ==============================================================================
 selectObject: result
 finalDuration = Get total duration
+finalPeak = Get absolute extremum: 0, 0, "Sinc70"
 
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Original: ", fixed$(originalDuration, 2), " s"
 appendInfoLine: "Result: ", fixed$(finalDuration, 2), " s"
-appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Final peak: ", fixed$(finalPeak, 4)
+appendInfoLine: "Created: ", resultName$
 
-# === Play ===
 if play_result
     selectObject: result
     Play

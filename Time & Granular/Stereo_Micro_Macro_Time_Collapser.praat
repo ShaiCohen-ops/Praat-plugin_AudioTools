@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - Enhanced with Visualization
+# Version: 1.1 (2026) - Stereo/source-domain correctness pass
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,6 +21,23 @@
 #   4. Stereo decorrelation with per-channel jitter & pitch shift
 #   5. Interleave and crossfade assembly
 #   6. Multi-panel visualization
+#
+# Changelog v1.1:
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged.
+#     Output object name remains Stereo_Collapser_Output.
+#   - FIX: analysis and synthesis work copies are shifted to time 0, so
+#     non-zero Sound time domains are handled correctly.
+#   - FIX: stereo inputs now retain their original L/R source channels for
+#     synthesis. Analysis remains a common mono contour; mono input is still
+#     duplicated to two independently transformed channels.
+#   - FIX: Probabilistic interleave order is generated once and shared by L/R.
+#     Stereo decorrelation now comes from per-channel transform jitter/pitch,
+#     not from unrelated event sequences in the two channels.
+#   - FIX: detected burst ends are clamped to the source duration.
+#   - SAFE NORMALIZATION: silent segments/output skip peak/intensity scaling.
+#   - CROSSFADE: minimum usable overlap is sample-rate-aware rather than a
+#     hard-coded 2 ms threshold.
+#   - VISUALIZATION: spectrogram ceiling is capped at Nyquist.
 #
 # ============================================================
 
@@ -177,6 +194,12 @@ sampleRate = Get sampling frequency
 if inputDuration < 0.1
     exitScript: "Sound too short (< 0.1 s). Cannot analyze."
 endif
+if micro_burst_min_ms > micro_burst_max_ms
+    exitScript: "Micro_burst_min_ms must not exceed Micro_burst_max_ms."
+endif
+if slow_variance_threshold < 0
+    exitScript: "Slow_variance_threshold must be >= 0."
+endif
 
 writeInfoLine: "Micro <-> Macro STEREO Collapser"
 appendInfoLine: "Preset: ", presetName$
@@ -185,7 +208,7 @@ appendInfoLine: "Duration: ", fixed$(inputDuration, 3), " s"
 appendInfoLine: "Target output: ", fixed$(target_output_duration_s, 1), " s (cap: ", fixed$(max_output_duration_s, 0), " s)"
 
 # ============================================================
-# Convert to mono for analysis (Common Analysis)
+# Prepare common mono analysis + per-channel synthesis sources
 # ============================================================
 selectObject: inputSound
 if inputChannels > 1
@@ -193,6 +216,32 @@ if inputChannels > 1
 else
     analysisMono = Copy: "analysis_mono"
 endif
+selectObject: analysisMono
+analysisStart = Get start time
+Shift times by: -analysisStart
+
+# Preserve the original first two channels for synthesis. For mono input,
+# duplicate the source; channel-specific jitter/pitch still creates width.
+selectObject: inputSound
+if inputChannels = 1
+    synthesisLeft = Copy: "synthesis_left"
+    selectObject: inputSound
+    synthesisRight = Copy: "synthesis_right"
+else
+    synthesisLeft = Extract one channel: 1
+    selectObject: inputSound
+    synthesisRight = Extract one channel: 2
+    if inputChannels > 2
+        appendInfoLine: "Input has ", inputChannels, " channels; synthesis uses channels 1-2."
+    endif
+endif
+
+selectObject: synthesisLeft
+sourceStartL = Get start time
+Shift times by: -sourceStartL
+selectObject: synthesisRight
+sourceStartR = Get start time
+Shift times by: -sourceStartR
 
 # ============================================================
 # Extract intensity contour
@@ -243,6 +292,9 @@ while t < inputDuration - microBurstMin_s
         endwhile
         
         label endBurst
+        if tEnd > inputDuration
+            tEnd = inputDuration
+        endif
         burstDur = tEnd - tStart
         
         if burstDur >= microBurstMin_s and burstDur <= microBurstMax_s
@@ -359,16 +411,28 @@ endif
 appendInfoLine: ""
 appendInfoLine: "[4/6] Generating Stereo Channels..."
 
+# Segment order is shared across both channels. In Probabilistic mode it is
+# generated after channel-1 transforms, preserving the existing RNG sequence.
+totalSegments = numBursts + numSlowRegions
+segmentOrder# = zero# (totalSegments)
+segmentType# = zero# (totalSegments)
+segIdx = 0
+
 # We loop twice: channel 1 (Left), channel 2 (Right)
 for channel to 2
     appendInfoLine: "  Processing Channel ", channel, "..."
+    if channel = 1
+        processingSource = synthesisLeft
+    else
+        processingSource = synthesisRight
+    endif
     
     # 1. TRANSFORM SEGMENTS (with unique jitter per channel)
     for i to numBursts
         tStart = burstStart_'i'
         tEnd = burstEnd_'i'
         
-        selectObject: analysisMono
+        selectObject: processingSource
         burstSeg = Extract part: tStart, tEnd, "rectangular", 1, "no"
         segDur = Get total duration
         
@@ -420,10 +484,13 @@ for channel to 2
         endif
         
         selectObject: burstTransformed_'i'
-        if segment_normalization = 1
-            Scale peak: 0.95
-        elsif segment_normalization = 2
-            Scale intensity: segment_intensity_target_dB
+        segmentPeak = Get absolute extremum: 0, 0, "Sinc70"
+        if segmentPeak > 0
+            if segment_normalization = 1
+                Scale peak: 0.95
+            elsif segment_normalization = 2
+                Scale intensity: segment_intensity_target_dB
+            endif
         endif
         removeObject: burstSeg
     endfor
@@ -432,7 +499,7 @@ for channel to 2
         tStart = slowStart_'i'
         tEnd = slowEnd_'i'
         
-        selectObject: analysisMono
+        selectObject: processingSource
         slowSeg = Extract part: tStart, tEnd, "rectangular", 1, "no"
         segDur = Get total duration
         
@@ -484,92 +551,94 @@ for channel to 2
         endif
         
         selectObject: slowTransformed_'i'
-        if segment_normalization = 1
-            Scale peak: 0.95
-        elsif segment_normalization = 2
-            Scale intensity: segment_intensity_target_dB
+        segmentPeak = Get absolute extremum: 0, 0, "Sinc70"
+        if segmentPeak > 0
+            if segment_normalization = 1
+                Scale peak: 0.95
+            elsif segment_normalization = 2
+                Scale intensity: segment_intensity_target_dB
+            endif
         endif
         removeObject: slowSeg
     endfor
 
     # 2. INTERLEAVE & ASSEMBLE
-    totalSegments = numBursts + numSlowRegions
-    segmentOrder# = zero# (totalSegments)
-    segmentType# = zero# (totalSegments)
-    segIdx = 0
-
-    if interleave_mode = 1
-        burstIdx = 1
-        slowIdx = 1
-        while burstIdx <= numBursts or slowIdx <= numSlowRegions
-            if burstIdx <= numBursts
-                segIdx = segIdx + 1
-                segmentOrder#[segIdx] = burstIdx
-                segmentType#[segIdx] = 1
-                burstIdx = burstIdx + 1
-            endif
-            if slowIdx <= numSlowRegions
-                segIdx = segIdx + 1
-                segmentOrder#[segIdx] = slowIdx
-                segmentType#[segIdx] = 2
-                slowIdx = slowIdx + 1
-            endif
-        endwhile
-    elsif interleave_mode = 2
-        burstIdx = 1
-        slowIdx = 1
-        for i to totalSegments
-            if randomUniform(0, 1) < 0.5 and burstIdx <= numBursts
-                segIdx = segIdx + 1
-                segmentOrder#[segIdx] = burstIdx
-                segmentType#[segIdx] = 1
-                burstIdx = burstIdx + 1
-            elsif slowIdx <= numSlowRegions
-                segIdx = segIdx + 1
-                segmentOrder#[segIdx] = slowIdx
-                segmentType#[segIdx] = 2
-                slowIdx = slowIdx + 1
-            elsif burstIdx <= numBursts
-                segIdx = segIdx + 1
-                segmentOrder#[segIdx] = burstIdx
-                segmentType#[segIdx] = 1
-                burstIdx = burstIdx + 1
-            endif
-        endfor
-    else
-        allEvents# = zero# (totalSegments)
-        allTypes# = zero# (totalSegments)
-        allIdx# = zero# (totalSegments)
-        for i to numBursts
-            allEvents#[i] = burstStart_'i'
-            allTypes#[i] = 1
-            allIdx#[i] = i
-        endfor
-        for i to numSlowRegions
-            allEvents#[numBursts + i] = slowStart_'i'
-            allTypes#[numBursts + i] = 2
-            allIdx#[numBursts + i] = i
-        endfor
-        for i to totalSegments - 1
-            for j to totalSegments - i
-                if allEvents#[j] > allEvents#[j + 1]
-                    temp = allEvents#[j]
-                    allEvents#[j] = allEvents#[j + 1]
-                    allEvents#[j + 1] = temp
-                    temp = allTypes#[j]
-                    allTypes#[j] = allTypes#[j + 1]
-                    allTypes#[j + 1] = temp
-                    temp = allIdx#[j]
-                    allIdx#[j] = allIdx#[j + 1]
-                    allIdx#[j + 1] = temp
+    # Generate the pool order once; channel 2 reuses the exact same sequence.
+    if channel = 1
+        segIdx = 0
+        if interleave_mode = 1
+            burstIdx = 1
+            slowIdx = 1
+            while burstIdx <= numBursts or slowIdx <= numSlowRegions
+                if burstIdx <= numBursts
+                    segIdx = segIdx + 1
+                    segmentOrder#[segIdx] = burstIdx
+                    segmentType#[segIdx] = 1
+                    burstIdx = burstIdx + 1
+                endif
+                if slowIdx <= numSlowRegions
+                    segIdx = segIdx + 1
+                    segmentOrder#[segIdx] = slowIdx
+                    segmentType#[segIdx] = 2
+                    slowIdx = slowIdx + 1
+                endif
+            endwhile
+        elsif interleave_mode = 2
+            burstIdx = 1
+            slowIdx = 1
+            for i to totalSegments
+                if randomUniform(0, 1) < 0.5 and burstIdx <= numBursts
+                    segIdx = segIdx + 1
+                    segmentOrder#[segIdx] = burstIdx
+                    segmentType#[segIdx] = 1
+                    burstIdx = burstIdx + 1
+                elsif slowIdx <= numSlowRegions
+                    segIdx = segIdx + 1
+                    segmentOrder#[segIdx] = slowIdx
+                    segmentType#[segIdx] = 2
+                    slowIdx = slowIdx + 1
+                elsif burstIdx <= numBursts
+                    segIdx = segIdx + 1
+                    segmentOrder#[segIdx] = burstIdx
+                    segmentType#[segIdx] = 1
+                    burstIdx = burstIdx + 1
                 endif
             endfor
-        endfor
-        for i to totalSegments
-            segIdx = i
-            segmentOrder#[i] = allIdx#[i]
-            segmentType#[i] = allTypes#[i]
-        endfor
+        else
+            allEvents# = zero# (totalSegments)
+            allTypes# = zero# (totalSegments)
+            allIdx# = zero# (totalSegments)
+            for i to numBursts
+                allEvents#[i] = burstStart_'i'
+                allTypes#[i] = 1
+                allIdx#[i] = i
+            endfor
+            for i to numSlowRegions
+                allEvents#[numBursts + i] = slowStart_'i'
+                allTypes#[numBursts + i] = 2
+                allIdx#[numBursts + i] = i
+            endfor
+            for i to totalSegments - 1
+                for j to totalSegments - i
+                    if allEvents#[j] > allEvents#[j + 1]
+                        temp = allEvents#[j]
+                        allEvents#[j] = allEvents#[j + 1]
+                        allEvents#[j + 1] = temp
+                        temp = allTypes#[j]
+                        allTypes#[j] = allTypes#[j + 1]
+                        allTypes#[j + 1] = temp
+                        temp = allIdx#[j]
+                        allIdx#[j] = allIdx#[j + 1]
+                        allIdx#[j + 1] = temp
+                    endif
+                endfor
+            endfor
+            for i to totalSegments
+                segIdx = i
+                segmentOrder#[i] = allIdx#[i]
+                segmentType#[i] = allTypes#[i]
+            endfor
+        endif
     endif
 
     # 3. CONCATENATE (loop through segment pool until target duration)
@@ -608,7 +677,8 @@ for channel to 2
             minDur = min(currentDur, nextDur)
             safeCrossfade = min(crossfade_s, minDur * 0.3)
             
-            if safeCrossfade > 0.002 and currentDur > safeCrossfade * 2 and nextDur > safeCrossfade * 2
+            minCrossfade = 2 / sampleRate
+            if safeCrossfade >= minCrossfade and currentDur > safeCrossfade * 2 and nextDur > safeCrossfade * 2
                 selectObject: outputSound, nextSeg
                 Concatenate with overlap: safeCrossfade
                 temp = selected("Sound")
@@ -696,10 +766,13 @@ endif
 selectObject: finalChannel_1, finalChannel_2
 Combine to stereo
 Rename: "Stereo_Collapser_Output"
-if output_normalization = 1
-    Scale peak: 0.99
-elsif output_normalization = 2
-    Scale intensity: output_intensity_target_dB
+outputPeak = Get absolute extremum: 0, 0, "Sinc70"
+if outputPeak > 0
+    if output_normalization = 1
+        Scale peak: 0.99
+    elsif output_normalization = 2
+        Scale intensity: output_intensity_target_dB
+    endif
 endif
 finalOutput = selected("Sound")
 
@@ -798,10 +871,11 @@ if draw_visualization
     Select outer viewport: 0, 8, 3.0, 4.3
     Select inner viewport: 0.6, 7.7, 3.1, 4.2
     
+    vizMaxFreq = min(5000, sampleRate / 2)
     selectObject: analysisMono
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.005, vizMaxFreq, 0.002, 20, "Gaussian"
     origSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxFreq, 100, "yes", 50, 6, 0, "no"
     
     Colour: "Black"
     Draw inner box
@@ -839,9 +913,9 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 5.3, 6.4
     
     selectObject: finalChannel_1
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.005, vizMaxFreq, 0.002, 20, "Gaussian"
     resultSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxFreq, 100, "yes", 50, 6, 0, "no"
     
     Colour: "Black"
     Draw inner box
@@ -998,7 +1072,7 @@ endif
 # Cleanup & Finish
 # ============================================================
 
-removeObject: analysisMono, intensityObj, finalChannel_1, finalChannel_2
+removeObject: analysisMono, intensityObj, finalChannel_1, finalChannel_2, synthesisLeft, synthesisRight
 
 selectObject: finalOutput
 dur = Get total duration

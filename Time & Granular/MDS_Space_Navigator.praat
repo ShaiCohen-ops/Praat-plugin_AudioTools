@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,7 +18,28 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis—Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
-
+#
+# Changelog v0.3 (2026):
+#   - COMPATIBILITY: the complete form/API is unchanged byte-for-byte.
+#     Parameter names, order, types and defaults remain exactly v0.2.
+#   - CRITICAL: fixed reordered-audio assembly. Praat concatenates selected
+#     Sounds in Object-list order, not selection order. Because extracted
+#     segments were older than the growing final Sound, the next word could
+#     be prepended. v0.3 copies each next segment after the accumulator before
+#     concatenating, guaranteeing the requested sequence.
+#   - Multi-channel preservation: mono conversion is analysis-only. Rendered
+#     segments are extracted from the original Sound and silence gaps use the
+#     original channel count. Mono input remains mono; stereo and N-channel
+#     input remain N-channel.
+#   - Number_of_MFCC_Coefficients now actually controls Sound: To MFCC; v0.2
+#     hard-coded 12 despite exposing this parameter.
+#   - Added an explicit exactly-one-Sound selection guard.
+#   - Degenerate all-zero distance matrices get a tiny deterministic MDS-only
+#     tie-break geometry so the visualization/order stage can still run; raw
+#     feature distances and nearest-neighbour decisions remain unchanged.
+#   - Output duration accounting and visualization boundaries remain based on
+#     the exact segment durations plus the requested inter-word silences.
+#
 # Formant, Pitch, or MFCC Word Similarity with AUTO SEGMENTATION + CONCATENATION
 # Select only a Sound - script will auto-segment and reorder by similarity
 # MDS Audio Chain
@@ -52,18 +73,22 @@ form Audio Word Sorting
     boolean Play_result 1
 endform
 
-# ===== CHECK SELECTION AND CONVERT TO MONO =====
+# ===== CHECK SELECTION AND CREATE ANALYSIS COPY =====
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object"
+endif
+
 original_sound = selected("Sound")
 original_sound_name$ = selected$("Sound")
 
 writeInfoLine: "Checking audio format..."
 
-# Convert to mono if needed
+# Convert to mono for ANALYSIS only; rendering uses original_sound.
 selectObject: original_sound
 n_channels = Get number of channels
 
 if n_channels > 1
-    appendInfoLine: "Converting from ", n_channels, " channels to mono..."
+    appendInfoLine: "Creating mono analysis copy from ", n_channels, " channels (render stays multichannel)..."
     sound = Convert to mono
     sound_name$ = selected$("Sound")
 else
@@ -116,6 +141,7 @@ if n_words < 2
 endif
 
 appendInfoLine: newline$, "Segmented into ", n_words, " words"
+appendInfoLine: "Render channels: ", n_channels
 
 # ==========================================
 # ===== FEATURE EXTRACTION & DISTANCE ======
@@ -191,7 +217,7 @@ elsif similarity_metric = 3
         tmp_part = Extract part: word_start[i], word_end[i], "rectangular", 1, "no"
         
         # Calculate MFCC for this word
-        tmp_mfcc = To MFCC: 12, 0.015, 0.005, 100, 100, 0
+        tmp_mfcc = To MFCC: number_of_MFCC_Coefficients, 0.015, 0.005, 100, 100, 0
         
         # Convert to TableOfReal: "no" means DO NOT include frame numbers
         tmp_table = To TableOfReal: "no"
@@ -221,12 +247,33 @@ elsif similarity_metric = 3
 endif
 
 # ===== CREATE DISTANCE MATRIX OBJECT =====
+# Detect the fully-degenerate case (e.g. every Pitch value undefined -> 0).
+# Monotone MDS has no geometry to recover from an all-zero dissimilarity
+# matrix, so only the MDS copy receives a tiny deterministic tie-break.
+maxRawDistance = 0
+for i to n_words
+    for j to n_words
+        if dist[i,j] > maxRawDistance
+            maxRawDistance = dist[i,j]
+        endif
+    endfor
+endfor
+mdsTieBreak = 0
+if maxRawDistance <= 1e-12
+    mdsTieBreak = 1
+    appendInfoLine: "All feature distances are tied; using deterministic MDS-only tie-break geometry."
+endif
+
 tableofreal = Create TableOfReal: "distances", n_words, n_words
 for i to n_words
     Set row label (index): i, word_label$[i]
     Set column label (index): i, word_label$[i]
     for j to n_words
-        Set value: i, j, dist[i,j]
+        mdsValue = dist[i,j]
+        if mdsTieBreak and i <> j
+            mdsValue = abs(i - j) * 1e-6
+        endif
+        Set value: i, j, mdsValue
     endfor
 endfor
 
@@ -315,7 +362,7 @@ appendInfoLine: newline$, "Reordering and concatenating..."
 # Extract all segments to objects
 for pos to n_words
     word_idx = order[pos]
-    selectObject: sound
+    selectObject: original_sound
     segment_obj[pos] = Extract part: word_start[word_idx], word_end[word_idx], "rectangular", 1, "no"
 endfor
 
@@ -324,22 +371,24 @@ selectObject: segment_obj[1]
 final_sound = Copy: original_sound_name$ + "_reordered"
 
 for pos from 2 to n_words
-    # Create silence
-    silence_temp = Create Sound from formula: "silence_temp", 1, 0, silence_between_words_s, sample_rate, "0"
+    # Create silence with the ORIGINAL channel count. It is created after the
+    # accumulator, so Object-list order is final_sound -> silence_temp.
+    silence_temp = Create Sound from formula: "silence_temp", n_channels, 0, silence_between_words_s, sample_rate, "0"
     
-    # Append Silence
-    selectObject: final_sound
-    plusObject: silence_temp
+    selectObject: final_sound, silence_temp
     old_chain = final_sound
     final_sound = Concatenate
     removeObject: old_chain, silence_temp
     
-    # Append Next Word
-    selectObject: final_sound
-    plusObject: segment_obj[pos]
+    # segment_obj[pos] is older than the growing accumulator. Praat ignores
+    # selection order when concatenating, so make a fresh copy AFTER
+    # final_sound; this guarantees final_sound -> next_segment.
+    selectObject: segment_obj[pos]
+    next_segment = Copy: "join_word_" + string$(pos)
+    selectObject: final_sound, next_segment
     old_chain = final_sound
     final_sound = Concatenate
-    removeObject: old_chain
+    removeObject: old_chain, next_segment
 endfor
 
 selectObject: final_sound

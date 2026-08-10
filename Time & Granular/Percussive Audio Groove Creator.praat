@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,23 @@
 #   Percussive Audio Groove Creator - detects bass drums, hi-hats,
 #   and snares from audio using spectral classification, then
 #   creates new groove patterns in various styles.
+#
+# Changelog v0.4:
+#   - API COMPATIBILITY: the complete public form is unchanged from v0.3
+#     (same parameter names, order, types, defaults, and output naming).
+#   - FIX: analysis now uses a zero-based mono copy, so non-zero Sound start
+#     times no longer break onset bounds or segment extraction.
+#   - FIX: spectral classification respects Nyquist. High/mid band queries
+#     are skipped when the sample rate cannot represent those bands.
+#   - FIX: per-type event arrays can hold all maxEvents. v0.3 counted beyond
+#     the 200-entry arrays and could later index empty/out-of-range entries.
+#   - FIX: Half-time now places the backbeat on beat 3 of each bar, instead
+#     of beat 5 of an 8-beat cycle (which produced no snare in a 1-bar form).
+#   - FIX: Double-time and Sparse-Minimal hi-hat branches are reachable.
+#   - HARDENING: validates tempo/density/shape, clamps envelope attack/release
+#     against each hit duration, and avoids Scale peak on silent hit/output.
+#   - VIS: detected-event markers remain aligned when the original Sound has
+#     a non-zero start time.
 #
 # Changelog v0.3:
 #   - Visualization fix: three text panels (title, detection legend,
@@ -74,9 +91,23 @@ original = selected("Sound")
 soundName$ = selected$("Sound")
 
 selectObject: original
+sourceStart = Get start time
+sourceEnd = Get end time
 duration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
+nyquist = sampleRate / 2
+
+# Internal guards only; public parameters are unchanged.
+if tempo_BPM <= 0
+    exitScript: "Tempo BPM must be > 0"
+endif
+if groove_density < 0 or groove_density > 1
+    exitScript: "Groove density must be between 0 and 1"
+endif
+if shape_intensity <= 0
+    exitScript: "Shape intensity must be > 0"
+endif
 
 # === Info ===
 writeInfoLine: "=== Percussive Groove Creator ==="
@@ -93,6 +124,9 @@ else
     Copy: "mono_temp"
     soundMono = selected("Sound")
 endif
+
+selectObject: soundMono
+Shift times to: "start time", 0
 
 # === Create Intensity for Onset Detection ===
 selectObject: soundMono
@@ -142,9 +176,28 @@ for frame from 3 to numberOfFrames - 2
                         # Analyze frequency content
                         spectrum = To Spectrum: "yes"
                         
-                        lowEnergy = Get band energy: 20, 250
-                        midEnergy = Get band energy: 250, 4000
-                        highEnergy = Get band energy: 4000, 18000
+                        # Query only frequency regions that exist below Nyquist.
+                        lowEnergy = 0
+                        midEnergy = 0
+                        highEnergy = 0
+                        if nyquist > 20
+                            lowTop = min(250, nyquist)
+                            if lowTop > 20
+                                lowEnergy = Get band energy: 20, lowTop
+                            endif
+                        endif
+                        if nyquist > 250
+                            midTop = min(4000, nyquist)
+                            if midTop > 250
+                                midEnergy = Get band energy: 250, midTop
+                            endif
+                        endif
+                        if nyquist > 4000
+                            highTop = min(18000, nyquist)
+                            if highTop > 4000
+                                highEnergy = Get band energy: 4000, highTop
+                            endif
+                        endif
                         
                         totalEnergy = lowEnergy + midEnergy + highEnergy
                         
@@ -199,11 +252,7 @@ endfor
 
 removeObject: intensity, intensityMatrix
 
-if numChannels > 1
-    removeObject: soundMono
-else
-    removeObject: soundMono
-endif
+removeObject: soundMono
 
 if numberOfEvents = 0
     exitScript: "No percussive events detected. Try lowering the onset threshold."
@@ -213,7 +262,7 @@ appendInfoLine: ""
 appendInfoLine: "Total detected: ", numberOfEvents, " events"
 
 # === Organize by Type ===
-maxPerType = 200
+maxPerType = maxEvents
 bassDrums# = zero#(maxPerType)
 hiHats# = zero#(maxPerType)
 snares# = zero#(maxPerType)
@@ -268,6 +317,9 @@ beatDuration = 60.0 / tempo_BPM
 patternDuration = bars * 4 * beatDuration
 sixteenthDur = beatDuration / 4
 totalSixteenths = bars * 4 * 4
+if patternDuration < 2 / sampleRate
+    exitScript: "Tempo is too high for this sample rate and pattern length"
+endif
 
 appendInfoLine: "Creating ", bars, "-bar groove at ", tempo_BPM, " BPM..."
 appendInfoLine: "Pattern duration: ", fixed$(patternDuration, 2), " s"
@@ -347,31 +399,34 @@ procedure getHitType: .beat, .sixteenth, .pattern, .density
         endif
         
     elsif .pattern = 4
-        # Half-time Feel
-        if .beatMod8 = 0 and .sixteenth = 1
+        # Half-time Feel: kick on beat 1, backbeat on beat 3 of each bar.
+        if .beatMod4 = 0 and .sixteenth = 1
             .result = 1
-        elsif .beatMod8 = 4 and .sixteenth = 1
+        elsif .beatMod4 = 2 and .sixteenth = 1
             if .probability < .density
                 .result = 3
             endif
-        elsif .sixteenth = 1
+        elsif .sixteenth = 1 or .sixteenth = 3
             if .probability < .density * 0.6
                 .result = 2
             endif
         endif
         
     elsif .pattern = 5
-        # Double-time Feel
+        # Double-time Feel. If the main kick/snare does not fire, allow the
+        # same sixteenth position to fall back to a hi-hat.
         if .sixteenth = 1 or .sixteenth = 3
             if .probability < .density
                 .result = 1
+            elsif randomUniform(0, 1) < .density * 0.8
+                .result = 2
             endif
-        elsif .sixteenth = 2 or .sixteenth = 4
+        else
             if .probability < .density * 0.8
                 .result = 3
+            elsif randomUniform(0, 1) < .density * 0.8
+                .result = 2
             endif
-        elsif .probability < .density
-            .result = 2
         endif
         
     elsif .pattern = 6
@@ -386,7 +441,7 @@ procedure getHitType: .beat, .sixteenth, .pattern, .density
             if .probability < .density * 0.5
                 .result = 3
             endif
-        elsif (.beat - 1) mod 2 = 0 and .sixteenth = 1
+        elsif .sixteenth = 3
             if .probability < .density * 0.4
                 .result = 2
             endif
@@ -410,18 +465,23 @@ procedure placeHit: .patternID, .position, .soundID, .sampleRate, .clipMax, .att
         .soundDur = .clipMax
     endif
     
-    # Create envelope
+    # Create envelope. Keep attack and release from overlapping pathologically
+    # on very short clips; public attack/release parameters are unchanged.
+    .attackUsed = min(.attack, .soundDur * 0.45)
+    .releaseUsed = min(.release, .soundDur * 0.45)
     selectObject: .tempSound
-    .envFormula$ = "if x < .attack then (x/.attack)^(1/.shape) else if x > .soundDur - .release then ((.soundDur - x)/.release)^.shape else 1 fi fi"
-    
+    .envFormula$ = "if x < " + fixed$(.attackUsed, 12) + " then (x/" + fixed$(.attackUsed, 12) + ")^(1/" + fixed$(.shape, 12) + ") else if x > " + fixed$(.soundDur - .releaseUsed, 12) + " then ((" + fixed$(.soundDur, 12) + " - x)/" + fixed$(.releaseUsed, 12) + ")^" + fixed$(.shape, 12) + " else 1 fi fi"
     .envelope = Create Sound from formula: "env", 1, 0, .soundDur, .sampleRate, .envFormula$
     
     selectObject: .tempSound
     Formula: "self * object[.envelope]"
     removeObject: .envelope
     
-    # Random velocity
-    Scale peak: 0.7
+    # Random velocity. Do not try to normalize an all-zero hit.
+    .hitPeak = Get absolute extremum: 0, 0, "Sinc70"
+    if .hitPeak > 0
+        Scale peak: 0.7
+    endif
     .velocity = 0.6 + randomUniform(0, 0.4)
     Formula: "self * .velocity"
     
@@ -554,7 +614,12 @@ endif
 
 # === Finalize ===
 selectObject: result
-Scale peak: 0.95
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: 0.95
+else
+    appendInfoLine: "WARNING: Groove pattern rendered silence (detected types did not match generated hits)."
+endif
 if create_stereo
     Rename: soundName$ + "_groove_" + string$(bars) + "bar_stereo"
 else
@@ -588,7 +653,7 @@ if draw_visualization
     
     # Mark detected events
     for i to numberOfEvents
-        t = eventTime#[i]
+        t = sourceStart + eventTime#[i]
         eType = eventType#[i]
         
         if eType = 1

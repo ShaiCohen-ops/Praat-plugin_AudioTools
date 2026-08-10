@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2026)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,31 @@
 #
 #   A. SETUP:  select 1 Sound, run - the script opens the editor.
 #   B. CREATE: select the Sound AND the PointProcess, run again.
+#
+# Changelog v0.3 (2026):
+#   - API COMPATIBILITY: all public form parameters keep the same names,
+#     order, types and defaults as v0.2.
+#   - FIX: Gap mode now creates fresh segment/gap assembly copies in the
+#     intended chronological order before Concatenate. Praat concatenates
+#     selected Sounds in Object-list order, not selection order, so v0.2's
+#     separately-created gaps could all appear after the segments.
+#   - FIX: gap Sounds use the source/segment channel count instead of always
+#     being mono; stereo and multichannel sources therefore concatenate.
+#   - FIX: Fade_type=Linear is now genuinely linear. v0.2 called Praat's
+#     Fade in/out for both Linear and Raised cosine, but those commands use
+#     raised-cosine ramps.
+#   - FIX: Raised-cosine overlap no longer double-fades every segment before
+#     Concatenate with overlap. In overlap mode, Praat's own crossfade handles
+#     internal joins; the user-selected edge fade is applied only to the two
+#     outside edges of the completed montage.
+#   - FIX: pitchShift and pitch-preserving Microscope now preserve arbitrary
+#     channel counts. v0.2 handled at most two channels and could collapse
+#     3+ channel sources to stereo or mono.
+#   - FIX: Random_seed=0 now generates and reports an actual reproducible
+#     seed for the take, rather than reporting only 0 after unpredictable init.
+#   - HARDENING: transition amount is clamped against the shortest processed
+#     segment; zero/silent outputs remain safe; montage timing visualization
+#     follows the exact assembly duration.
 #
 # Changelog v0.2 (2026):
 #   - FIX: the fade could be longer than the segment. Points near either
@@ -97,7 +122,7 @@
 #     source duration, processed duration and any mutation.
 # ============================================================
 
-form Peephole Montage Settings v0.2
+form Peephole Montage Settings v0.3
     comment Window extraction
     positive Window_length_(s) 0.5
     boolean Asymmetric_windows 0
@@ -249,14 +274,15 @@ if pp_name$ <> "peephole_marks"
 endif
 
 if random_seed > 0
-    random_initializeWithSeedUnsafelyButPredictably (random_seed)
-    seedApplied = 1
+    seedUsed = random_seed
 else
     random_initializeSafelyAndUnpredictably ()
-    seedApplied = 0
+    seedUsed = randomInteger(1, 2147483646)
 endif
+random_initializeWithSeedUnsafelyButPredictably (seedUsed)
+seedApplied = 1
 
-writeInfoLine: "=== PEEPHOLE MONTAGE v0.2 - PHASE 2 ==="
+writeInfoLine: "=== PEEPHOLE MONTAGE v0.3 - PHASE 2 ==="
 appendInfoLine: "Source: ", sound_name$, "  (", fixed$(xmax - xmin, 3), " s, ",
     ... srcChannels, " ch @ ", sample_rate, " Hz)"
 if domainNote$ <> ""
@@ -290,22 +316,30 @@ appendInfoLine: "Style: ", styleName$, "   marks: ", n_points
 procedure applyEdges: .seg
     selectObject: .seg
     .d = Get total duration
+    .t0 = Get start time
+    .t1 = Get end time
     .f = fade_duration
     if .f > .d * 0.45
         .f = .d * 0.45
     endif
-    if .f > 0 and fade_type > 1
+
+    # Concatenate with overlap already applies raised-cosine fades at every
+    # internal joint. Do not double-fade individual segments in that mode.
+    if transition_mode = 2
+        .f = 0
+    elsif .f > 0 and fade_type > 1
         if fade_type = 2
+            # True linear ramps.
+            .inEnd = .t0 + .f
+            .outStart = .t1 - .f
             selectObject: .seg
-            Fade in: 0, 0, .f, "yes"
-            selectObject: .seg
-            Fade out: 0, .d, -.f, "yes"
+            Formula: "if x < " + fixed$(.inEnd, 12) + " then self * (x - " + fixed$(.t0, 12) + ") / " + fixed$(.f, 12) + " else if x > " + fixed$(.outStart, 12) + " then self * (" + fixed$(.t1, 12) + " - x) / " + fixed$(.f, 12) + " else self fi fi"
         else
-            # Raised cosine, the same half-cycle Praat's own Fade in uses
+            # Praat Fade in/out uses a raised-cosine half-cycle.
             selectObject: .seg
-            Fade in: 0, 0, .f, "yes"
+            Fade in: 0, .t0, .f, "yes"
             selectObject: .seg
-            Fade out: 0, .d, -.f, "yes"
+            Fade out: 0, .t1, -.f, "yes"
         endif
     endif
     applyEdges.used = .f
@@ -317,49 +351,36 @@ procedure pitchShift: .snd, .semitones
     .ratio = 2 ^ (.semitones / 12)
     selectObject: .snd
     .nch = Get number of channels
+
+    # Process each channel independently but with the SAME pitch ratio.
+    # Fresh channel results are created in channel order and then combined.
+    for .ch from 1 to .nch
+        selectObject: .snd
+        .c[.ch] = Extract one channel: .ch
+        selectObject: .c[.ch]
+        .m[.ch] = To Manipulation: 0.01, pitch_floor, pitch_ceiling
+        .pt[.ch] = Extract pitch tier
+        selectObject: .pt[.ch]
+        Multiply frequencies: 0, 1e12, .ratio
+        selectObject: .m[.ch]
+        plusObject: .pt[.ch]
+        Replace pitch tier
+        selectObject: .m[.ch]
+        .r[.ch] = Get resynthesis (overlap-add)
+        removeObject: .m[.ch], .pt[.ch], .c[.ch]
+    endfor
+
     if .nch = 1
-        selectObject: .snd
-        .m = To Manipulation: 0.01, pitch_floor, pitch_ceiling
-        .pt = Extract pitch tier
-        selectObject: .pt
-        Multiply frequencies: 0, 1e12, .ratio
-        selectObject: .m
-        plusObject: .pt
-        Replace pitch tier
-        selectObject: .m
-        pitchShift.result = Get resynthesis (overlap-add)
-        removeObject: .m, .pt
+        pitchShift.result = .r[1]
     else
-        selectObject: .snd
-        .c1 = Extract one channel: 1
-        selectObject: .snd
-        .c2 = Extract one channel: 2
-        selectObject: .c1
-        .m1 = To Manipulation: 0.01, pitch_floor, pitch_ceiling
-        .p1 = Extract pitch tier
-        selectObject: .p1
-        Multiply frequencies: 0, 1e12, .ratio
-        selectObject: .m1
-        plusObject: .p1
-        Replace pitch tier
-        selectObject: .m1
-        .r1 = Get resynthesis (overlap-add)
-        removeObject: .m1, .p1, .c1
-        selectObject: .c2
-        .m2 = To Manipulation: 0.01, pitch_floor, pitch_ceiling
-        .p2 = Extract pitch tier
-        selectObject: .p2
-        Multiply frequencies: 0, 1e12, .ratio
-        selectObject: .m2
-        plusObject: .p2
-        Replace pitch tier
-        selectObject: .m2
-        .r2 = Get resynthesis (overlap-add)
-        removeObject: .m2, .p2, .c2
-        selectObject: .r1
-        plusObject: .r2
+        selectObject: .r[1]
+        for .ch from 2 to .nch
+            plusObject: .r[.ch]
+        endfor
         pitchShift.result = Combine to stereo
-        removeObject: .r1, .r2
+        for .ch from 1 to .nch
+            removeObject: .r[.ch]
+        endfor
     endif
 endproc
 
@@ -382,29 +403,32 @@ procedure microscope: .seg, .factor
     selectObject: .seg
     .nch = Get number of channels
 
-    # v0.2: at factor 1 the PSOLA round trip cannot change the length
-    # but can still alter the signal, so it is skipped.
+    # At factor 1 the PSOLA round trip cannot improve anything and may alter
+    # the signal, so bypass it.
     if abs(.factor - 1) < 1e-9
         selectObject: .seg
         microscope.result = Copy: "ms_passthrough"
         microscope.usedPsola = 0
     elsif microscope_preserve_pitch
-        if .nch = 2 and microscope_downmix_stereo = 0
-            # Each channel gets its own pitch analysis here, which can
-            # leave small timing differences between them. Downmix first
-            # if the material is strongly correlated.
-            selectObject: .seg
-            .c1 = Extract one channel: 1
-            selectObject: .seg
-            .c2 = Extract one channel: 2
-            @stretchMono: .c1, .factor
-            .s1 = stretchMono.result
-            @stretchMono: .c2, .factor
-            .s2 = stretchMono.result
-            selectObject: .s1
-            plusObject: .s2
+        if .nch > 1 and microscope_downmix_stereo = 0
+            # Preserve arbitrary channel counts. Each channel is analysed
+            # independently, as v0.2 already did for stereo.
+            for .ch from 1 to .nch
+                selectObject: .seg
+                .c[.ch] = Extract one channel: .ch
+                @stretchMono: .c[.ch], .factor
+                .s[.ch] = stretchMono.result
+                removeObject: .c[.ch]
+            endfor
+
+            selectObject: .s[1]
+            for .ch from 2 to .nch
+                plusObject: .s[.ch]
+            endfor
             microscope.result = Combine to stereo
-            removeObject: .c1, .c2, .s1, .s2
+            for .ch from 1 to .nch
+                removeObject: .s[.ch]
+            endfor
         else
             .use = .seg
             .made = 0
@@ -421,10 +445,7 @@ procedure microscope: .seg, .factor
         endif
         microscope.usedPsola = 1
     else
-        # v0.2: varispeed, which is what "do not preserve pitch" means.
-        # v0.1 called "To Sound (PSOLA): 75, 600, 1/factor, 1.0" on a
-        # Sound - a Manipulation command with an argument list that
-        # matches nothing on Sound.
+        # Varispeed: pitch and speed move together, all channels preserved.
         selectObject: .seg
         .sr = Get sampling frequency
         .tmp = Copy: "ms_vari"
@@ -641,32 +662,42 @@ endif
 # ASSEMBLE
 ###############################################################################
 stopwatch
+ovlUsed = 0
+
 if transition_mode = 3 and nSeg > 1
-    # Gap: a silent spacer between peepholes.
+    # Gap mode. Build NEW assembly objects in the exact desired object-list
+    # order: segment1, gap, segment2, gap, ... . Selection order alone does
+    # not determine Concatenate order in Praat.
     selectObject: segID[1]
     gapSr = Get sampling frequency
-    selectObject: segID[1]
-    nAsm = 1
-    asmID[1] = segID[1]
-    for k from 2 to nSeg
-        Create Sound from formula: "peep_gap" + string$(k), 1, 0,
-            ... transition_amount, gapSr, "0"
+    gapNch = Get number of channels
+
+    nAsm = 0
+    for k from 1 to nSeg
+        selectObject: segID[k]
         nAsm = nAsm + 1
-        asmID[nAsm] = selected("Sound")
-        gapMade[k] = asmID[nAsm]
-        nAsm = nAsm + 1
-        asmID[nAsm] = segID[k]
+        asmID[nAsm] = Copy: "asm_seg" + string$(k)
+
+        if k < nSeg
+            Create Sound from formula: "peep_gap" + string$(k), gapNch, 0,
+                ... transition_amount, gapSr, "0"
+            nAsm = nAsm + 1
+            asmID[nAsm] = selected("Sound")
+        endif
     endfor
+
     selectObject: asmID[1]
     for k from 2 to nAsm
         plusObject: asmID[k]
     endfor
     result = Concatenate
-    for k from 2 to nSeg
-        removeObject: gapMade[k]
+
+    for k from 1 to nAsm
+        removeObject: asmID[k]
     endfor
+
 elsif transition_mode = 2 and nSeg > 1
-    # Raised-cosine overlap. Clamped so it cannot swallow a short segment.
+    # Raised-cosine overlap. Clamp so no short segment is swallowed.
     ovl = transition_amount
     minSeg = segOutDur[1]
     for k from 2 to nSeg
@@ -677,6 +708,7 @@ elsif transition_mode = 2 and nSeg > 1
     if ovl > minSeg * 0.4
         ovl = minSeg * 0.4
     endif
+
     selectObject: segID[1]
     for k from 2 to nSeg
         plusObject: segID[k]
@@ -684,7 +716,30 @@ elsif transition_mode = 2 and nSeg > 1
     Concatenate with overlap: ovl
     result = selected("Sound")
     ovlUsed = ovl
+
+    # Internal joins are already raised-cosine crossfades. Apply the user's
+    # selected edge fade only to the OUTSIDE edges of the finished montage.
+    if fade_type > 1 and fade_duration > 0
+        selectObject: result
+        .fd = Get total duration
+        .ft0 = Get start time
+        .ft1 = Get end time
+        .ff = min(fade_duration, .fd * 0.45)
+        if .ff > 0
+            if fade_type = 2
+                .finEnd = .ft0 + .ff
+                .foutStart = .ft1 - .ff
+                Formula: "if x < " + fixed$(.finEnd, 12) + " then self * (x - " + fixed$(.ft0, 12) + ") / " + fixed$(.ff, 12) + " else if x > " + fixed$(.foutStart, 12) + " then self * (" + fixed$(.ft1, 12) + " - x) / " + fixed$(.ff, 12) + " else self fi fi"
+            else
+                Fade in: 0, .ft0, .ff, "yes"
+                Fade out: 0, .ft1, -.ff, "yes"
+            endif
+        endif
+    endif
+
 else
+    # Butt joint (or a single segment): segment objects were created in
+    # chronological order already.
     selectObject: segID[1]
     for k from 2 to nSeg
         plusObject: segID[k]
@@ -765,34 +820,40 @@ appendInfoLine: ""
 
 if fade_type = 1
     appendInfoLine: "Edges: none"
+    minFade = 0
+    maxFade = 0
 else
     if fade_type = 2
         fadeName$ = "linear"
     else
         fadeName$ = "raised cosine"
     endif
-    minFade = segFade[1]
-    maxFade = segFade[1]
-    for k from 2 to nSeg
-        if segFade[k] < minFade
-            minFade = segFade[k]
-        endif
-        if segFade[k] > maxFade
-            maxFade = segFade[k]
-        endif
-    endfor
-    appendInfoLine: "Edges: ", fadeName$, ", requested ",
-        ... fixed$(fade_duration * 1000, 1), " ms"
-    appendInfoLine: "  applied ", fixed$(minFade * 1000, 2), " to ",
-        ... fixed$(maxFade * 1000, 2), " ms, clamped to 0.45 of each segment"
-    appendInfoLine: "  Applied AFTER the style processing, so the figure above is the"
-    appendInfoLine: "  fade in the OUTPUT. v0.1 faded before the time-stretch, so at"
-    appendInfoLine: "  Microscope factor ", fixed$(microscope_time_factor, 2),
-        ... " a ", fixed$(fade_duration * 1000, 0), " ms fade came out ",
-        ... fixed$(fade_duration * 1000 * microscope_time_factor, 0), " ms."
-    appendInfoLine: "  The Hamming option is gone: it started at 0.54-0.46 = 0.08 rather"
-    appendInfoLine: "  than 0, and its fade-out branch carried a stray /2, so the two"
-    appendInfoLine: "  ends were 0.08 and 0.04 - it could not prevent a click."
+
+    if transition_mode = 2
+        minFade = min(fade_duration, finalDur * 0.45)
+        maxFade = minFade
+        appendInfoLine: "Edges: ", fadeName$, ", requested ",
+            ... fixed$(fade_duration * 1000, 1), " ms"
+        appendInfoLine: "  overlap mode: applied only at the OUTSIDE montage edges;"
+        appendInfoLine: "  internal joins use Concatenate with overlap's raised-cosine crossfade."
+    else
+        minFade = segFade[1]
+        maxFade = segFade[1]
+        for k from 2 to nSeg
+            if segFade[k] < minFade
+                minFade = segFade[k]
+            endif
+            if segFade[k] > maxFade
+                maxFade = segFade[k]
+            endif
+        endfor
+        appendInfoLine: "Edges: ", fadeName$, ", requested ",
+            ... fixed$(fade_duration * 1000, 1), " ms"
+        appendInfoLine: "  applied ", fixed$(minFade * 1000, 2), " to ",
+            ... fixed$(maxFade * 1000, 2), " ms, clamped to 0.45 of each segment"
+    endif
+    appendInfoLine: "  Applied AFTER the style processing, so the requested duration is"
+    appendInfoLine: "  measured in the output rather than before Microscope stretching."
 endif
 if transition_mode = 1
     appendInfoLine: "Joins: butt, each peephole fading to silence and the next rising"
@@ -806,10 +867,9 @@ appendInfoLine: ""
 
 if montage_style = 3
     appendInfoLine: "Unreliable narrator:"
-    if seedApplied = 1
-        appendInfoLine: "  Seed ", random_seed, " - this take is reproducible."
-    else
-        appendInfoLine: "  Seed 0 - unpredictable, this take cannot be recovered."
+    appendInfoLine: "  Seed ", seedUsed, " - this take is reproducible."
+    if random_seed = 0
+        appendInfoLine: "  (Random_seed was 0; copy the seed above into the form to reproduce it.)"
     endif
     flips = 0
     for k from 1 to nSeg
@@ -841,9 +901,9 @@ elsif montage_style = 4
         appendInfoLine: "  Pitch-preserving PSOLA, ", fixed$(pitch_floor, 0), "-",
             ... fixed$(pitch_ceiling, 0), " Hz. Suited to periodic or monophonic"
         appendInfoLine: "  material; polyphonic or noisy sources will show artefacts."
-        if srcChannels = 2 and microscope_downmix_stereo = 0
-            appendInfoLine: "  Stereo: each channel is analysed separately, which can leave"
-            appendInfoLine: "  small timing differences between them. Downmix first if the"
+        if srcChannels > 1 and microscope_downmix_stereo = 0
+            appendInfoLine: "  Multichannel: each channel is analysed separately, which can leave"
+            appendInfoLine: "  small timing differences between channels. Downmix first if the"
             appendInfoLine: "  material is strongly correlated."
         endif
     else
@@ -1097,7 +1157,7 @@ if draw_visualization
         ... + "  |  " + joinTag$
         ... + "  |  " + string$(clippedCount) + " clipped window(s)"
         ... + "  |  " + string$(skipped) + " mark(s) skipped"
-        ... + "  |  seed " + string$(random_seed)
+        ... + "  |  seed " + string$(seedUsed)
 
     Text: 0.02, "left", 0.20, "half",
         ... "Gain: " + normMode$

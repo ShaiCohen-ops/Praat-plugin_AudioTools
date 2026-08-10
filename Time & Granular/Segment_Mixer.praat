@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,25 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4:
+#   - API COMPATIBILITY: public form, parameter order/types/defaults and
+#     output naming contract are unchanged from v0.3.
+#   - CRITICAL FIX: removed the 10 ms silent seed buffers. v0.3 prepended
+#     10 ms of silence to BOTH channels, shifting every segment and making
+#     the output 10 ms longer than the requested segment sequence.
+#   - CRITICAL FIX: working copies are shifted to a zero-based time domain
+#     after mono conversion/resampling. v0.3 addressed every source as
+#     0..duration even when its Sound xmin was non-zero.
+#   - FIX: Attenuation_divisor now has an audible effect. v0.3 divided all
+#     segments by the divisor, then independently peak-normalised L and R
+#     to 0.99, mathematically cancelling the global attenuation. v0.4 uses
+#     one stereo safety ceiling only when the combined output exceeds 0.99.
+#     This also preserves the intended L/R balance.
+#   - FIX: visualisation RGB values are constrained to a valid 0..1 range;
+#     the previous sinusoidal palette could produce negative components.
+#   - HARDENING: silent outputs are peak-safe; first-segment assembly does
+#     not depend on a dummy Sound object.
 #
 # Changelog v0.3:
 #
@@ -180,7 +199,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Segment Mixer v0.3 ==="
+writeInfoLine: "=== Segment Mixer v0.4 ==="
 appendInfoLine: "Files:     ", numberOfSelectedSounds
 appendInfoLine: "Preset:    ", presetName$
 appendInfoLine: "Segment:   ", fixed$(segment_duration_s, 3), " s"
@@ -231,6 +250,11 @@ for i to numberOfSelectedSounds
         selectObject: monoSounds#[i]
         Rename: "mono_work_" + string$(i)
     endif
+
+    # Internal coordinates are always 0..duration. Preserve the source audio
+    # but make that coordinate convention true even for Sounds with xmin != 0.
+    selectObject: monoSounds#[i]
+    Shift times to: "start time", 0
 endfor
 
 appendInfoLine: "Target SR: ", fixed$(targetSR, 0), " Hz"
@@ -242,12 +266,11 @@ for i to numberOfSelectedSounds
 endfor
 appendInfoLine: ""
 
-# === Create Initial Buffers ===
-Create Sound from formula: "temp_left", 1, 0, 0.01, targetSR, "0"
-leftID = selected("Sound")
-
-Create Sound from formula: "temp_right", 1, 0, 0.01, targetSR, "0"
-rightID = selected("Sound")
+# === Initialize Assembly ===
+# v0.4: no dummy Sound. v0.3 seeded each side with 10 ms of silence,
+# which became an audible/temporal prefix in the final result.
+leftID = 0
+rightID = 0
 
 # === Store Segment Info for Visualization ===
 maxSegments = numberOfSelectedSounds * repeat_cycles
@@ -300,14 +323,21 @@ for cycle to repeat_cycles
         Formula: "self * min(1, x / effFade)"
         Formula: "self * min(1, (xmax - x) / effFade)"
 
-        # Concatenate to left channel
-        selectObject: leftID, leftSeg
-        Concatenate
-        newLeft = selected("Sound")
-        removeObject: leftID, leftSeg
-        leftID = newLeft
-        selectObject: leftID
-        Rename: "temp_left"
+        # Concatenate to left channel. The first segment becomes the
+        # accumulator directly so no leading dummy silence is introduced.
+        if leftID = 0
+            leftID = leftSeg
+            selectObject: leftID
+            Rename: "temp_left"
+        else
+            selectObject: leftID, leftSeg
+            Concatenate
+            newLeft = selected("Sound")
+            removeObject: leftID, leftSeg
+            leftID = newLeft
+            selectObject: leftID
+            Rename: "temp_left"
+        endif
 
         # === RIGHT SEGMENT (based on strategy) ===
         if right_part_strategy = 1
@@ -355,14 +385,20 @@ for cycle to repeat_cycles
         Formula: "self * min(1, x / effFade)"
         Formula: "self * min(1, (xmax - x) / effFade)"
 
-        # Concatenate to right channel
-        selectObject: rightID, rightSeg
-        Concatenate
-        newRight = selected("Sound")
-        removeObject: rightID, rightSeg
-        rightID = newRight
-        selectObject: rightID
-        Rename: "temp_right"
+        # Concatenate to right channel, again without a dummy prefix.
+        if rightID = 0
+            rightID = rightSeg
+            selectObject: rightID
+            Rename: "temp_right"
+        else
+            selectObject: rightID, rightSeg
+            Concatenate
+            newRight = selected("Sound")
+            removeObject: rightID, rightSeg
+            rightID = newRight
+            selectObject: rightID
+            Rename: "temp_right"
+        endif
 
         # Store for visualization
         segmentIdx += 1
@@ -379,15 +415,17 @@ endfor
 totalSegments = segmentIdx
 
 # === Finalize ===
-selectObject: leftID
-Scale peak: 0.99
-
-selectObject: rightID
-Scale peak: 0.99
-
 selectObject: leftID, rightID
 Combine to stereo
 result = selected("Sound")
+
+# Preserve Attenuation_divisor and stereo balance. Only attenuate if the
+# combined stereo signal would exceed the safety ceiling.
+selectObject: result
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0.99
+    Scale peak: 0.99
+endif
 
 # v0.3: output filename now includes preset + R-strategy suffix.
 compositeName$ = "stereo_mix_" + string$(numberOfSelectedSounds) + "files_"
@@ -453,11 +491,11 @@ if draw_visualization
         fileIdx = segmentFile#[s]
         if fileIdx >= 1 and fileIdx <= numberOfSelectedSounds
             # v0.3: hue ranges 0..(N-1)/N instead of 0..1, so no
-            # wrap-around (first and last files no longer collide).
+            # wrap-around; v0.4 also keeps RGB components in 0..1.
             hue = (fileIdx - 1) / numberOfSelectedSounds
-            r = 0.3 + 0.5 * sin(hue * 2 * pi)
-            g = 0.3 + 0.5 * sin(hue * 2 * pi + 2)
-            b = 0.3 + 0.5 * sin(hue * 2 * pi + 4)
+            r = 0.5 + 0.4 * sin(hue * 2 * pi)
+            g = 0.5 + 0.4 * sin(hue * 2 * pi + 2)
+            b = 0.5 + 0.4 * sin(hue * 2 * pi + 4)
             barColor$ = "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"
             Paint rectangle: barColor$, s - 0.9, s - 0.1, 0.1, 0.9
         endif
@@ -492,9 +530,9 @@ if draw_visualization
         fileIdx = segmentFile#[s]
         if fileIdx >= 1 and fileIdx <= numberOfSelectedSounds
             hue = (fileIdx - 1) / numberOfSelectedSounds
-            r = 0.3 + 0.5 * sin(hue * 2 * pi)
-            g = 0.3 + 0.5 * sin(hue * 2 * pi + 2)
-            b = 0.3 + 0.5 * sin(hue * 2 * pi + 4)
+            r = 0.5 + 0.4 * sin(hue * 2 * pi)
+            g = 0.5 + 0.4 * sin(hue * 2 * pi + 2)
+            b = 0.5 + 0.4 * sin(hue * 2 * pi + 4)
             barColor$ = "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"
             Paint rectangle: barColor$, s - 0.9, s - 0.1, 0.1, 0.9
         endif
@@ -555,9 +593,9 @@ if draw_visualization
 
     for i to numberOfSelectedSounds
         hue = (i - 1) / numberOfSelectedSounds
-        r = 0.3 + 0.5 * sin(hue * 2 * pi)
-        g = 0.3 + 0.5 * sin(hue * 2 * pi + 2)
-        b = 0.3 + 0.5 * sin(hue * 2 * pi + 4)
+        r = 0.5 + 0.4 * sin(hue * 2 * pi)
+        g = 0.5 + 0.4 * sin(hue * 2 * pi + 2)
+        b = 0.5 + 0.4 * sin(hue * 2 * pi + 4)
         barColor$ = "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"
 
         # Color swatch

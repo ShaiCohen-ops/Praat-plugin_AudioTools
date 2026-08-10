@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,26 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5:
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged from v0.4.
+#     Output naming remains mosaic_<N>f_<R>r_<preset>_<strategy>.
+#   - FIX: overlap partition math corrected. The old denominator caused the
+#     later regions to overshoot the source and be clipped whenever overlap
+#     was non-zero. Regions now exactly span the available source interval.
+#   - FIX: working copies are zero-based before all 0..duration extraction.
+#     Sources with non-zero xmin no longer cut from the wrong time range.
+#   - FIX: removed the 10 ms silent sentinel at the start of both output
+#     channels. Accumulators now start with the first real region.
+#   - FIX: final L/R ordering is explicit before Combine to stereo, avoiding
+#     possible channel swaps caused by Object-list ordering of rebuilt buffers.
+#   - FIX: final peak scaling is applied once to the combined stereo result,
+#     preserving the L/R balance created by width and bleed processing.
+#   - FIX: fade time is clamped to half of each processed segment so short
+#     segments still receive click-protection instead of no fade at all.
+#   - FIX: negative custom Pitch_shift_semitones now creates the same symmetric
+#     random range as the corresponding positive magnitude.
+#   - VISUALIZATION: palette RGB values are clamped to [0,1].
 #
 # Changelog v0.4:
 #
@@ -288,10 +308,11 @@ else
     tempo_scale_min = 100
     tempo_scale_max = 100
 
-    # Expand simple pitch_shift_semitones to min/max range
-    if pitch_shift_semitones > 0
-        pitch_shift_min_semitones = -pitch_shift_semitones
-        pitch_shift_max_semitones = pitch_shift_semitones
+    # Expand simple pitch_shift_semitones to a symmetric random range.
+    pitchRange = abs(pitch_shift_semitones)
+    if pitchRange > 0
+        pitch_shift_min_semitones = -pitchRange
+        pitch_shift_max_semitones = pitchRange
     else
         pitch_shift_min_semitones = 0
         pitch_shift_max_semitones = 0
@@ -402,14 +423,24 @@ for i to numberOfSelectedSounds
     else
         monoSounds#[i] = workID
     endif
+
+    # All downstream region math is relative to 0..duration. Keep the original
+    # source untouched, but zero-base the private work copy when needed.
+    selectObject: monoSounds#[i]
+    workStart = Get start time
+    if abs(workStart) > 1e-12
+        workEnd = Get end time
+        zeroBased = Extract part: workStart, workEnd, "rectangular", 1, "no"
+        removeObject: monoSounds#[i]
+        monoSounds#[i] = zeroBased
+    endif
 endfor
 
-# === Create Initial Buffers ===
-Create Sound from formula: "temp_left", 1, 0, 0.01, maxSR, "0"
-leftID = selected("Sound")
-
-Create Sound from formula: "temp_right", 1, 0, 0.01, maxSR, "0"
-rightID = selected("Sound")
+# === Output Accumulators ===
+# Start empty; the first real region becomes the accumulator. This avoids
+# the historical 10 ms silence prefix in both channels.
+leftID = 0
+rightID = 0
 
 # === Store Region Assignments for Visualization ===
 totalRegions = numberOfSelectedSounds * regions_per_file
@@ -445,8 +476,11 @@ for i to numberOfSelectedSounds
         overlapFactor = 0.5
     endif
 
-    # Effective step size with overlap
-    step_duration = (total_duration - timeOffset) / (regions_per_file * overlapFactor - (1 - overlapFactor))
+    # Effective region duration with overlap. For N regions separated by
+    # overlapFactor * regionDuration, total span is
+    # regionDuration * (1 + (N - 1) * overlapFactor).
+    partitionDenom = 1 + (regions_per_file - 1) * overlapFactor
+    step_duration = (total_duration - timeOffset) / partitionDenom
     region_duration = step_duration
 
     appendInfoLine: "  File ", i, ": ", regions_per_file, " regions x ", fixed$(region_duration * 1000, 0), "ms"
@@ -666,35 +700,44 @@ for i to numberOfSelectedSounds
             Scale peak: ampMult * 0.95
         endif
 
-        # Apply fades and attenuation
+        # Apply attenuation and a fade that always fits the processed segment.
         segDur = Get total duration
-        if segDur > 2 * fade_time_s
-            attStr$ = string$(attenuation_divisor)
-            Formula: "self / " + attStr$
-            fadeStr$ = string$(fade_time_s)
+        attStr$ = string$(attenuation_divisor)
+        Formula: "self / " + attStr$
+        effFade = min(fade_time_s, segDur / 2)
+        if effFade > 0
+            fadeStr$ = string$(effFade)
             Formula: "self * min(1, x / " + fadeStr$ + ")"
             Formula: "self * min(1, (xmax - x) / " + fadeStr$ + ")"
-        else
-            attStr$ = string$(attenuation_divisor)
-            Formula: "self / " + attStr$
         endif
 
-        # Add to appropriate channel
+        # Add to appropriate channel. The first real region starts the
+        # accumulator; later regions concatenate after it.
         if isLeftChannel = 1
-            selectObject: leftID, regionSeg
-            Concatenate
-            newLeft = selected("Sound")
-            removeObject: leftID
-            leftID = newLeft
-            Rename: "temp_left"
+            if leftID = 0
+                selectObject: regionSeg
+                leftID = Copy: "temp_left"
+            else
+                selectObject: leftID, regionSeg
+                Concatenate
+                newLeft = selected("Sound")
+                removeObject: leftID
+                leftID = newLeft
+                Rename: "temp_left"
+            endif
             leftCount += 1
         else
-            selectObject: rightID, regionSeg
-            Concatenate
-            newRight = selected("Sound")
-            removeObject: rightID
-            rightID = newRight
-            Rename: "temp_right"
+            if rightID = 0
+                selectObject: regionSeg
+                rightID = Copy: "temp_right"
+            else
+                selectObject: rightID, regionSeg
+                Concatenate
+                newRight = selected("Sound")
+                removeObject: rightID
+                rightID = newRight
+                Rename: "temp_right"
+            endif
             rightCount += 1
         endif
 
@@ -732,6 +775,22 @@ endfor
 appendInfoLine: ""
 appendInfoLine: "Left channel:  ", leftCount, " regions"
 appendInfoLine: "Right channel: ", rightCount, " regions"
+
+# If a strategy happened to assign every region to one side, create the other
+# side as matching silence rather than relying on a sentinel prefix.
+if leftID = 0 and rightID = 0
+    exitScript: "No valid regions could be assembled."
+endif
+if leftID = 0
+    selectObject: rightID
+    refDur = Get total duration
+    leftID = Create Sound from formula: "temp_left", 1, 0, refDur, maxSR, "0"
+endif
+if rightID = 0
+    selectObject: leftID
+    refDur = Get total duration
+    rightID = Create Sound from formula: "temp_right", 1, 0, refDur, maxSR, "0"
+endif
 
 # === Equalize Channel Lengths ===
 selectObject: leftID
@@ -810,15 +869,24 @@ if cross_channel_bleed_percent > 0
 endif
 
 # === Finalize ===
+# Fresh copies created in explicit L-then-R order make the channel order
+# deterministic for Combine to stereo regardless of accumulator object IDs.
 selectObject: leftID
-Scale peak: 0.99
-
+leftOrdered = Copy: "left_final_order"
 selectObject: rightID
-Scale peak: 0.99
+rightOrdered = Copy: "right_final_order"
 
-selectObject: leftID, rightID
+selectObject: leftOrdered, rightOrdered
 Combine to stereo
 result = selected("Sound")
+removeObject: leftOrdered, rightOrdered
+
+# Normalize the stereo object once so width/bleed-created L/R balance survives.
+selectObject: result
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: 0.99
+endif
 
 # v0.4: output filename now includes preset + strategy suffix.
 compositeName$ = "mosaic_" + string$(numberOfSelectedSounds) + "f_"
@@ -893,9 +961,9 @@ if draw_visualization
 
             # v0.4: hue ranges 0..(N-1)/N instead of 0..1, so no wrap.
             hue = (fileIdx - 1) / numberOfSelectedSounds
-            red = 0.3 + 0.5 * sin(hue * 2 * pi)
-            grn = 0.3 + 0.5 * sin(hue * 2 * pi + 2)
-            blu = 0.3 + 0.5 * sin(hue * 2 * pi + 4)
+            red = min(1, max(0, 0.3 + 0.5 * sin(hue * 2 * pi)))
+            grn = min(1, max(0, 0.3 + 0.5 * sin(hue * 2 * pi + 2)))
+            blu = min(1, max(0, 0.3 + 0.5 * sin(hue * 2 * pi + 4)))
             barColor$ = "{" + fixed$(red, 2) + ", " + fixed$(grn, 2) + ", " + fixed$(blu, 2) + "}"
 
             Paint rectangle: barColor$, leftPos - 0.9, leftPos - 0.1, fileIdx - 0.4, fileIdx + 0.4
@@ -925,9 +993,9 @@ if draw_visualization
             fileIdx = regionFile#[r]
 
             hue = (fileIdx - 1) / numberOfSelectedSounds
-            red = 0.3 + 0.5 * sin(hue * 2 * pi)
-            grn = 0.3 + 0.5 * sin(hue * 2 * pi + 2)
-            blu = 0.3 + 0.5 * sin(hue * 2 * pi + 4)
+            red = min(1, max(0, 0.3 + 0.5 * sin(hue * 2 * pi)))
+            grn = min(1, max(0, 0.3 + 0.5 * sin(hue * 2 * pi + 2)))
+            blu = min(1, max(0, 0.3 + 0.5 * sin(hue * 2 * pi + 4)))
             barColor$ = "{" + fixed$(red, 2) + ", " + fixed$(grn, 2) + ", " + fixed$(blu, 2) + "}"
 
             Paint rectangle: barColor$, rightPos - 0.9, rightPos - 0.1, fileIdx - 0.4, fileIdx + 0.4
@@ -984,9 +1052,9 @@ if draw_visualization
 
     for i to numberOfSelectedSounds
         hue = (i - 1) / numberOfSelectedSounds
-        red = 0.3 + 0.5 * sin(hue * 2 * pi)
-        grn = 0.3 + 0.5 * sin(hue * 2 * pi + 2)
-        blu = 0.3 + 0.5 * sin(hue * 2 * pi + 4)
+        red = min(1, max(0, 0.3 + 0.5 * sin(hue * 2 * pi)))
+        grn = min(1, max(0, 0.3 + 0.5 * sin(hue * 2 * pi + 2)))
+        blu = min(1, max(0, 0.3 + 0.5 * sin(hue * 2 * pi + 4)))
         barColor$ = "{" + fixed$(red, 2) + ", " + fixed$(grn, 2) + ", " + fixed$(blu, 2) + "}"
 
         # Color swatch

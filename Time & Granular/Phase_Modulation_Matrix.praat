@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,26 @@
 #   effects through layered sinusoidal sample displacement. Each
 #   layer modulates at a different frequency with feedback,
 #   creating rich, swirling textures.
+#
+# Changelog v0.4:
+#   - API COMPATIBILITY: the public form is byte-for-byte unchanged.
+#   - CRITICAL FIX: Carrier_freq is now truly interpreted in Hz. v0.3 used
+#     sin(2*pi*f*col/totalSamples), which produces f cycles across the entire
+#     file (actual rate = f/duration), not f cycles per second.
+#   - Smooth displacement: displaced reads now use continuous Sound-time
+#     interpolation object(id,time,channel) instead of rounded sample indices,
+#     removing sample-quantized staircase modulation.
+#   - Duration-relative depth keeps its historical fraction-of-duration
+#     meaning but is computed directly in seconds; fixed-ms depth is unchanged.
+#   - Layer_gain_base/rate now scale the displaced layer contribution.
+#     In v0.3 the gain multiplied the entire linear result, then final peak
+#     normalization cancelled that scalar, making the controls effectively
+#     inaudible. Public parameter names/defaults are unchanged.
+#   - Layer gain is clamped at zero internally so high custom layer counts
+#     cannot introduce unintended polarity inversion.
+#   - Added guards for carrier ranges and layer count; silent output is
+#     normalization-safe.
+#   - Visualization frequency range is capped at Nyquist.
 #
 # Changelog v0.3:
 #   - Feedback now feed-forward (FIR): displaced reads taken from a
@@ -130,6 +150,41 @@ selectObject: original
 sampleRate = Get sampling frequency
 duration = Get total duration
 totalSamples = Get number of samples
+channels = Get number of channels
+nyquist = sampleRate / 2
+vizMaxHz = min(5000, nyquist)
+
+# === Guards (v0.4; public parameters unchanged) ===
+if modulation_layers < 1
+    exitScript: "Modulation layers must be at least 1"
+endif
+if modulation_layers > 128
+    exitScript: "Modulation layers must not exceed 128"
+endif
+if carrier_freq_min <= 0 or carrier_freq_max <= 0
+    exitScript: "Carrier frequencies must be > 0"
+endif
+if carrier_freq_min > carrier_freq_max
+    exitScript: "Carrier_freq_min must be <= Carrier_freq_max"
+endif
+if fixed_carrier_freq <= 0
+    exitScript: "Fixed carrier frequency must be > 0"
+endif
+if mod_depth_base <= 0 or mod_depth_increment <= 0
+    exitScript: "Modulation depth base/increment must be > 0"
+endif
+if fixed_depth_ms <= 0
+    exitScript: "Fixed depth must be > 0 ms"
+endif
+if feedback_base <= 0
+    exitScript: "Feedback base must be > 0"
+endif
+if layer_gain_base <= 0 or layer_gain_rate <= 0
+    exitScript: "Layer gain base/rate must be > 0"
+endif
+if scale_peak <= 0 or scale_peak > 1
+    exitScript: "Scale peak must be > 0 and <= 1"
+endif
 
 # === Get Preset Name ===
 if preset = 1
@@ -176,45 +231,59 @@ appendInfoLine: "Processing layers..."
 
 for layer from 1 to modulation_layers
     selectObject: result
-    
-    # Dynamic modulation depth
+
+    # Dynamic modulation depth, expressed in seconds.
     if use_fixed_ms_depth
-        modDepth = (fixed_depth_ms / 1000) * sampleRate
+        modDepthSeconds = fixed_depth_ms / 1000
     else
-        modDepth = totalSamples / (mod_depth_base + layer * mod_depth_increment)
+        # Historical fraction-of-duration behaviour, explicit in seconds.
+        modDepthSeconds = duration / (mod_depth_base + layer * mod_depth_increment)
     endif
+
+    # Keep v0.3's layer-frequency structure (2x, 3x, 4x ... carrier), but
+    # interpret every value in actual cycles per second.
     modulatorFreq = carrierFreq * (layer + 1)
-    
-    # Feedback decreases with layer
+
+    # Historical "Feedback" field is a feed-forward displaced-tap gain.
     layerFeedback = feedback_base / layer
-    
-    # Layer gain compensation
-    gainFactor = layer_gain_base - layer_gain_rate * layer
-    
-    appendInfoLine: "  Layer ", layer, ": depth=", floor(modDepth), " freq=", fixed$(modulatorFreq, 3), " fb=", fixed$(layerFeedback, 2)
-    
-    # Snapshot this layer's input so displaced reads are feed-forward (FIR)
+
+    # Make Layer_gain audible: scale only the displaced contribution.
+    layerGain = layer_gain_base - layer_gain_rate * layer
+    if layerGain < 0
+        layerGain = 0
+    endif
+    wetGain = layerFeedback * layerGain
+
+    appendInfoLine: "  Layer ", layer, ": depth=", fixed$(modDepthSeconds * 1000, 2),
+        ... " ms freq=", fixed$(modulatorFreq, 3), " Hz fb=", fixed$(layerFeedback, 2),
+        ... " layerGain=", fixed$(layerGain, 3)
+
+    # Snapshot this layer's input so displaced reads are feed-forward.
     selectObject: result
     Copy: "pm_snapshot"
     snapshot = selected("Sound")
-    
-    # Phase modulation with feedback (FIR read from snapshot, with bounds checking)
+
+    # True time-domain modulation:
+    # delay(t) = depth * sin(2*pi*f*t)
+    # object(snapshot,time,row) linearly interpolates between Sound samples.
+    # Preserve the historical edge behaviour: if the displaced read leaves
+    # the domain, retain only the current dry sample.
     selectObject: result
-    Formula: ~ if (col + round(modDepth * sin(2 * pi * modulatorFreq * col / totalSamples))) >= 1 
-        ... and (col + round(modDepth * sin(2 * pi * modulatorFreq * col / totalSamples))) <= ncol 
-        ... then self + object[snapshot, row, col + round(modDepth * sin(2 * pi * modulatorFreq * col / totalSamples))] * layerFeedback 
+    Formula: ~ if x + modDepthSeconds * sin(2 * pi * modulatorFreq * (x - xmin)) >= xmin
+        ... and x + modDepthSeconds * sin(2 * pi * modulatorFreq * (x - xmin)) <= xmax
+        ... then self + object(snapshot,
+        ... x + modDepthSeconds * sin(2 * pi * modulatorFreq * (x - xmin)), row) * wetGain
         ... else self fi
-    
+
     removeObject: snapshot
-    selectObject: result
-    
-    # Layer gain compensation
-    Formula: ~ self * gainFactor
 endfor
 
 # === Scale Peak ===
 selectObject: result
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: scale_peak
+endif
 
 # === Visualization ===
 if draw_visualization
@@ -258,7 +327,7 @@ if draw_visualization
     else
         origMono = Copy: "origMono"
     endif
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     origSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     removeObject: origSpec, origMono
@@ -278,7 +347,7 @@ if draw_visualization
     else
         resMono = Copy: "resMono"
     endif
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.03, vizMaxHz, 0.01, 20, "Gaussian"
     resSpec = selected("Spectrogram")
     Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
     removeObject: resSpec, resMono

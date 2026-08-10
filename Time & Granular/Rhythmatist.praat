@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2025) 
+# Version: 2.3 (2026) 
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,6 +32,27 @@
 #   BPM quantize active when Bpm_value > 0
 #   Pitch transposition active when Pitch_levels > 1
 #   Stereo panning active when Stereo_width > 0
+#
+# v2.3 changelog:
+#   * API COMPATIBILITY: the entire public form is byte-for-byte unchanged.
+#   * CRITICAL FIX: extracted segments are now zero-based (Preserve times=no).
+#     v2.2 preserved each segment's original time domain, but transposeByRatio
+#     later trimmed every segment at 0..segmentDuration; segment 2+ therefore
+#     read outside their own domains when pitch processing was active.
+#   * FIX: a private zero-based processing copy is always created, so sources
+#     whose Sound domain starts at a non-zero time are handled correctly.
+#   * FIX: Sy now creates n-1 independent random interior splits directly.
+#     v2.2 generated n random points and then dropped the largest one, biasing
+#     the distribution toward the start of the file. SRC uses the same
+#     corrected n-segment convention for its Sy stratum.
+#   * FIX: BPM snapping never manufactures a boundary at/after the sound end
+#     when the source is shorter than two grid units. Endpoints and duplicate
+#     snapped boundaries are removed cleanly.
+#   * HARDENING: all final boundaries are separated from neighbours/endpoints
+#     by at least one sample period; tiny random intervals are merged instead
+#     of being silently discarded during extraction.
+#   * HARDENING: split-complexity guard prevents pathological custom values
+#     from creating tens of thousands of indexed variables/objects.
 #
 # v2.2 changelog:
 #   * Form compacted from ~40 rows to ~21 rows. Feature booleans
@@ -167,14 +188,23 @@ sound      = selected("Sound")
 soundName$ = selected$("Sound")
 
 selectObject: sound
-nCh     = Get number of channels
-t_total = Get total duration
+nCh        = Get number of channels
+sampleRate = Get sampling frequency
+sourceStart = Get start time
+t_total    = Get total duration
+samplePeriod = 1 / sampleRate
 
 if stereo_width > 1.0
     stereo_width = 1.0
 endif
 if pitch_levels < 1
     pitch_levels = 1
+endif
+if stereo_width < 0
+    stereo_width = 0
+endif
+if pitch_step_semitones < -96 or pitch_step_semitones > 96
+    exitScript: "Pitch step must be between -96 and +96 semitones"
 endif
 
 # ============================================================
@@ -208,6 +238,8 @@ endif
 
 # ============================================================
 # TRIM TO GRID (always applied when BPM is active)
+# A private zero-based processing copy is ALWAYS created. This makes every
+# downstream boundary/segment calculation independent of the source xmin.
 # ============================================================
 
 createdTrim = 0
@@ -215,17 +247,19 @@ if bpm_quantize
     n_grid_units = floor(t_total / grid_interval_s)
     target_dur   = n_grid_units * grid_interval_s
     if target_dur > 0 and target_dur < t_total - 1e-6
-        selectObject: sound
-        Extract part: 0, target_dur, "rectangular", 1, "no"
-        processingSound = selected("Sound")
-        Rename: soundName$ + "_gridtrim"
-        createdTrim = 1
         t_total = target_dur
-    else
-        processingSound = sound
+        createdTrim = 1
     endif
 else
-    processingSound = sound
+    n_grid_units = 0
+endif
+
+selectObject: sound
+processingSound = Extract part: sourceStart, sourceStart + t_total, "rectangular", 1, "no"
+if createdTrim
+    Rename: soundName$ + "_gridtrim"
+else
+    Rename: soundName$ + "_rhythmatist_work"
 endif
 
 # ============================================================
@@ -265,7 +299,7 @@ endif
 # INFO HEADER
 # ============================================================
 
-writeInfoLine:  "=== RHYTHMATIST v2.2 ==="
+writeInfoLine:  "=== RHYTHMATIST v2.3 ==="
 appendInfoLine: "Source:  ", soundName$, "  (", fixed$(t_total, 3), " s)"
 appendInfoLine: "Series:  ", seriesLabel$
 if bpm_quantize
@@ -287,7 +321,23 @@ appendInfoLine: ""
 # BUILD NORMALISED SPLIT-POINT ARRAY
 # ============================================================
 
-maxPts = 500
+# Upper bound on interior split points before de-duplication.
+if series_type = 1
+    expectedPts = su_n - 1
+elsif series_type = 2
+    expectedPts = sc_a + sc_b - 2
+elsif series_type = 3
+    expectedPts = sy_n - 1
+elsif series_type = 4
+    expectedPts = sd_n - 1
+else
+    expectedPts = (src_su - 1) + (src_sca - 1) + (src_scb - 1) + (src_sy - 1) + (src_sd - 1)
+endif
+if expectedPts > 5000
+    exitScript: "Too many requested split points (maximum 5000 before de-duplication)"
+endif
+
+maxPts = max(1, expectedPts + 2)
 for i from 1 to maxPts
     tk[i] = -1
 endfor
@@ -349,11 +399,12 @@ elsif series_type = 2
     @deduplicate
 
 elsif series_type = 3
-    for k from 1 to sy_n
-        v = randomUniform(0, 1)
-        @insertSorted: v
-    endfor
-    nPts -= 1
+    if sy_n > 1
+        for k from 1 to sy_n - 1
+            v = randomUniform(0, 1)
+            @insertSorted: v
+        endfor
+    endif
 
 elsif series_type = 4
     t_d = 0
@@ -378,10 +429,12 @@ elsif series_type = 5
     for k from 1 to src_scb - 1
         @insertSorted: k / src_scb
     endfor
-    for k from 1 to src_sy
-        v = randomUniform(0, 1)
-        @insertSorted: v
-    endfor
+    if src_sy > 1
+        for k from 1 to src_sy - 1
+            v = randomUniform(0, 1)
+            @insertSorted: v
+        endfor
+    endif
     t_d = 0
     for k from 1 to src_sd
         dd[k] = randomUniform(0, 1)
@@ -417,37 +470,50 @@ endfor
 # ============================================================
 
 if bpm_quantize
-    for i from 1 to nPts
-        snapped = round(boundary[i] / grid_interval_s) * grid_interval_s
-        min_b = grid_interval_s
-        max_b = t_total - grid_interval_s
-        if max_b < min_b
-            max_b = min_b
-        endif
-        if snapped < min_b
-            snapped = min_b
-        endif
-        if snapped > max_b
-            snapped = max_b
-        endif
-        boundary[i] = snapped
-    endfor
-    newN   = 0
-    prev_b = -1
-    for i from 1 to nPts
-        if abs(boundary[i] - prev_b) > 1e-6
-            newN += 1
-            boundary_tmp[newN] = boundary[i]
-            prev_b = boundary[i]
-        endif
-    endfor
-    nPts = newN
-    for i from 1 to nPts
-        boundary[i] = boundary_tmp[i]
-        tk[i]       = boundary[i] / t_total
-    endfor
-    nSegments = nPts + 1
+    # If there are fewer than two grid units, no interior grid boundary exists.
+    if n_grid_units < 2
+        nPts = 0
+    else
+        newN = 0
+        prev_b = -1
+        for i from 1 to nPts
+            snapped = round(boundary[i] / grid_interval_s) * grid_interval_s
+            # Keep only true interior points. Rounding is monotonic because the
+            # incoming boundaries are sorted, so one pass can also de-duplicate.
+            if snapped > samplePeriod * 0.5 and snapped < t_total - samplePeriod * 0.5
+                if newN = 0 or abs(snapped - prev_b) > samplePeriod * 0.5
+                    newN += 1
+                    boundary_tmp[newN] = snapped
+                    prev_b = snapped
+                endif
+            endif
+        endfor
+        nPts = newN
+        for i from 1 to nPts
+            boundary[i] = boundary_tmp[i]
+            tk[i] = boundary[i] / t_total
+        endfor
+    endif
 endif
+
+# Final one-sample boundary sanitation for ALL series. This merges accidental
+# sub-sample random intervals instead of silently dropping their audio later.
+newN = 0
+prev_b = 0
+for i from 1 to nPts
+    b = boundary[i]
+    if b - prev_b >= samplePeriod and t_total - b >= samplePeriod
+        newN += 1
+        boundary_tmp[newN] = b
+        prev_b = b
+    endif
+endfor
+nPts = newN
+for i from 1 to nPts
+    boundary[i] = boundary_tmp[i]
+    tk[i] = boundary[i] / t_total
+endfor
+nSegments = nPts + 1
 
 # === Report split points ===
 appendInfoLine: "--- Split points ---"
@@ -550,9 +616,11 @@ for seg from 1 to nSegments
         segEnd = t_total
     endif
 
-    if segEnd - segStart > 0.001
+    if segEnd - segStart >= samplePeriod * 0.5
         selectObject: workingSound
-        Extract part: segStart, segEnd, "rectangular", 1, "yes"
+        # Internal processing segments must start at zero because pitch/trim
+        # procedures address them as 0..segmentDuration.
+        Extract part: segStart, segEnd, "rectangular", 1, "no"
         nCreated += 1
         partId[nCreated]   = selected("Sound")
         segIndex[nCreated] = seg
@@ -721,7 +789,7 @@ if draw_visualization
     Select outer viewport: 1, 8, 0.2, 0.7
     Font size: 14
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "RHYTHMATIST v2.2: " + soundName$
+    Text: 0.5, "centre", 0.5, "half", "RHYTHMATIST v2.3: " + soundName$
 
     # Subtitle
     Select outer viewport: 1, 8, 0.6, 1.0
@@ -907,9 +975,7 @@ appendInfoLine: "Created:   ", selected$("Sound")
 # CLEANUP TRIMMED SOURCE
 # ============================================================
 
-if createdTrim = 1
-    removeObject: processingSound
-endif
+removeObject: processingSound
 
 # ============================================================
 # PLAY

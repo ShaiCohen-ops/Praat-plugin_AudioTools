@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,24 @@
 #   randomly decides whether to fold (average past/present/future)
 #   or apply a uniform amplitude variation, creating evolving
 #   diffuse sounds.
+#
+# Changelog v0.5:
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged from v0.4.
+#     Output naming remains <input>_folded_<preset>.
+#   - FIX: Amplitude_min / Amplitude_max now have audible effect. v0.4
+#     applied a uniform gain per AMP pass, then unconditionally normalized
+#     the final peak. Because every fold pass is linear, all uniform AMP
+#     gains reduce to one global scalar and were cancelled exactly by final
+#     peak normalization. v0.5 treats Scale_peak as a maximum output peak:
+#     it scales DOWN only when needed and never boosts a quieter result.
+#   - HARDENING: all user min/max pairs are canonicalized internally, so
+#     reversed Custom ranges do not break randomUniform calls.
+#   - HARDENING: probability thresholds are clamped to [0,1], matching the
+#     randomUniform(0,1) decision mask. Presets are unchanged.
+#   - FIX: foldDistance and backwardDistance are clamped to at least one
+#     sample; extreme Custom divisors can no longer collapse to a zero-delay
+#     pseudo-fold.
+#   - SAFE NORMALIZATION: digital silence is left untouched.
 #
 # Changelog v0.4 (musical fixes -- output is intentionally cleaner
 # than v0.2/v0.3 on the Aggressive and Micro Glitch presets):
@@ -153,6 +171,16 @@ elsif preset = 4
     fold_backward_divisor = 3
 endif
 
+# === Internal Parameter Canonicalization (public form unchanged) ===
+thresholdVarLow = min(threshold_var_min, threshold_var_max)
+thresholdVarHigh = max(threshold_var_min, threshold_var_max)
+thresholdLimitLow = max(0, min(1, min(threshold_limit_min, threshold_limit_max)))
+thresholdLimitHigh = max(0, min(1, max(threshold_limit_min, threshold_limit_max)))
+foldDivisorLow = min(fold_distance_min, fold_distance_max)
+foldDivisorHigh = max(fold_distance_min, fold_distance_max)
+ampLow = min(amplitude_min, amplitude_max)
+ampHigh = max(amplitude_min, amplitude_max)
+
 # === Check Input ===
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object"
@@ -165,6 +193,9 @@ selectObject: original
 sampleRate = Get sampling frequency
 duration = Get total duration
 totalSamples = Get number of samples
+if totalSamples < 3
+    exitScript: "Sound must contain at least 3 samples for time folding."
+endif
 
 # === Get Preset Name ===
 if preset = 1
@@ -199,7 +230,7 @@ thresholds# = zero#(fold_iterations)
 foldDistances# = zero#(fold_iterations)
 
 # === Initialize Adaptive Threshold ===
-adaptiveThreshold = initial_threshold
+adaptiveThreshold = max(thresholdLimitLow, min(thresholdLimitHigh, initial_threshold))
 
 # === Main Folding Processing Loop ===
 appendInfoLine: "Processing folds..."
@@ -209,7 +240,7 @@ for fold from 1 to fold_iterations
     
     # Evolve threshold (except first iteration)
     if fold > 1
-        thresholdChange = randomUniform(threshold_var_min, threshold_var_max)
+        thresholdChange = randomUniform(thresholdVarLow, thresholdVarHigh)
         # Randomly add or subtract
         if randomUniform(0, 1) > 0.5
             adaptiveThreshold = adaptiveThreshold + thresholdChange
@@ -217,15 +248,15 @@ for fold from 1 to fold_iterations
             adaptiveThreshold = adaptiveThreshold - thresholdChange
         endif
         # Clamp to limits
-        adaptiveThreshold = max(threshold_limit_min, min(threshold_limit_max, adaptiveThreshold))
+        adaptiveThreshold = max(thresholdLimitLow, min(thresholdLimitHigh, adaptiveThreshold))
     endif
     
     thresholds#[fold] = adaptiveThreshold
     
     # Random fold distance for this iteration
-    foldDivisor = randomUniform(fold_distance_min, fold_distance_max)
-    foldDistance = round(totalSamples / foldDivisor)
-    backwardDistance = round(foldDistance / fold_backward_divisor)
+    foldDivisor = randomUniform(foldDivisorLow, foldDivisorHigh)
+    foldDistance = max(1, round(totalSamples / foldDivisor))
+    backwardDistance = max(1, round(foldDistance / fold_backward_divisor))
     
     foldDistances#[fold] = foldDistance / sampleRate * 1000
     
@@ -233,8 +264,8 @@ for fold from 1 to fold_iterations
     probMask = randomUniform(0, 1)
     
     # Amplitude variation range
-    ampMin = amplitude_min
-    ampMax = amplitude_max
+    ampMin = ampLow
+    ampMax = ampHigh
     
     # v0.4 MUSICAL FIX 1 (gain): clamp avgDiv to >= 3. The FOLD branch
     # is a feedback IIR with DC gain 2/(avgDiv-1) per iteration:
@@ -321,13 +352,18 @@ if debug_output
     finalRmsRaw = Get root-mean-square: 0, 0
     appendInfoLine: ""
     appendInfoLine: "[DEBUG] Before Scale peak: peak=", fixed$(finalPeakRaw, 3), "  rms=", fixed$(finalRmsRaw, 4)
-    appendInfoLine: "[DEBUG] (peak >> 1.0 indicates compounding gain from avgDiv < 3 across iterations)"
+    appendInfoLine: "[DEBUG] (peak > 1 can also result from intentional AMP gains; final stage only limits peaks above Scale_peak)"
     appendInfoLine: ""
 endif
 
-# === Scale Peak ===
+# === Peak Ceiling ===
+# Uniform AMP gains must survive to the output; unconditional normalization
+# would cancel them exactly because all processing above is linear.
 selectObject: result
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > scale_peak
+    Scale peak: scale_peak
+endif
 
 ###############################################################################
 # VISUALIZATION  (8 x 8 canvas, suite styling)
@@ -358,7 +394,7 @@ if draw_visualization
         ... original_name$
         ... + "  |  " + presetName$
         ... + "  |  " + string$(fold_iterations) + " iterations"
-        ... + "  |  threshold " + fixed$(threshold_limit_min, 2) + "-" + fixed$(threshold_limit_max, 2)
+        ... + "  |  threshold " + fixed$(thresholdLimitLow, 2) + "-" + fixed$(thresholdLimitHigh, 2)
         ... + "  |  avg divisor " + string$(fold_average_divisor)
 
     # ----------------------------------------------------------
@@ -477,13 +513,13 @@ if draw_visualization
         ... + "  " + original_name$
         ... + "  |  " + string$(fold_iterations) + " iterations"
         ... + "  |  init threshold " + fixed$(initial_threshold, 2)
-        ... + "  |  threshold limits " + fixed$(threshold_limit_min, 2) + "-" + fixed$(threshold_limit_max, 2)
+        ... + "  |  threshold limits " + fixed$(thresholdLimitLow, 2) + "-" + fixed$(thresholdLimitHigh, 2)
         ... + "  |  avg div " + string$(fold_average_divisor)
 
     Text: 0.02, "left", 0.28, "half",
-        ... "Fold divisor range: " + fixed$(fold_distance_min, 1) + "-" + fixed$(fold_distance_max, 1)
+        ... "Fold divisor range: " + fixed$(foldDivisorLow, 1) + "-" + fixed$(foldDivisorHigh, 1)
         ... + "  |  Backward div: " + string$(fold_backward_divisor)
-        ... + "  |  Amp var: " + fixed$(amplitude_min, 2) + "-" + fixed$(amplitude_max, 2)
+        ... + "  |  Amp var: " + fixed$(ampLow, 2) + "-" + fixed$(ampHigh, 2)
         ... + "  |  Out: " + original_name$ + "_folded_" + presetName$
 
     Colour: "Black"

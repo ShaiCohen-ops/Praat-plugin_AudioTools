@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.1 (2025)
+# Version: 4.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,10 +22,10 @@
 #
 #   Acoustic classification logic:
 #     Ø:  intensity < int_null
-#     χ:  intensity rise >= int_chi (between consecutive frames)
+#     χ:  intensity rise rate >= chi_rise_dB_per_s
 #     θ:  HNR > hnr_theta AND F0 present
 #     ϕ:  hnr_psi <= HNR <= hnr_theta AND F0 present
-#     ω:  HNR >= hnr_psi AND F0 absent (structured but non-pitched)
+#     ω:  HNR >= hnr_psi AND F0 absent (heuristic structured/non-single-pitch candidate)
 #     ψ:  HNR < hnr_psi (noisy, breathy)
 #
 #   Outputs:
@@ -37,6 +37,31 @@
 #         Lsets ∧ Ø(dur): with proportional silence durations
 #     - 5-panel visualization of timbral-textural layers
 #     - Category dominance analysis
+#
+# Changelog v4.2 (from v4.1):
+#   - FIXED non-zero Sound time domains: analysis/rendering now work from a
+#     zero-based source copy, while the user's original Sound remains untouched.
+#   - MULTICHANNEL PRESERVATION: atoms are extracted from the original-channel
+#     source; silence gaps use the same channel count. v4.1 forced every atom
+#     to mono and therefore collapsed stereo/multichannel output.
+#   - TRUE SEGMENT PARTITION: after phi bridging, adjacent categories are
+#     canonicalized to non-overlapping intervals whose boundary is the midpoint
+#     between the last frame-centre of the left label and the first frame-centre
+#     of the right label. Category durations now sum exactly to source duration,
+#     and candidate atoms no longer contain audio already assigned to a neighbour.
+#   - Modernized pitch analysis to To Pitch (raw autocorrelation) and exposed
+#     Max_pitch_Hz; high-F0 material is no longer silently forced unvoiced by a
+#     hard-coded 600-Hz ceiling.
+#   - Chi onset detection is step-invariant: threshold is now dB/s rather than
+#     dB per analysis frame, so changing Win_step does not change its meaning.
+#   - Proposition parser accepts English names AND Llogic glyphs (Ø ψ θ χ ϕ/φ ω),
+#     normalizes them to canonical internal labels, and rejects unknown symbols.
+#   - Crossfade may be zero and is capped safely to < half the shortest atom.
+#     When gaps are requested, their created duration compensates for the two
+#     overlap joins so Gap_base remains the actual atom-to-atom separation.
+#   - Dominance is ranked by occupied duration rather than raw segment count.
+#   - Added guards for analysis thresholds, cycles, proposition length, and
+#     candidate/sequence limits; no more silent truncation at 10,000 frames.
 #
 # Changelog v4.1 (from v4.0):
 #   - Fixed phi gap-bridging: now re-merges adjacent identical
@@ -79,7 +104,7 @@ originalSound = selected("Sound")
 soundName$ = selected$("Sound")
 
 # ── 1. FORM ─────────────────────────────────────────────────
-form Llogic Symbolic Granular Recomposition v4.1
+form Llogic Symbolic Granular Recomposition v4.2
     optionmenu Preset: 1
         option Custom
         option Breath to Tone
@@ -93,12 +118,13 @@ form Llogic Symbolic Granular Recomposition v4.1
     positive Win_len 0.030
     positive Win_step 0.030
     positive Min_pitch 100
+    positive Max_pitch_Hz 1200
     positive Hnr_psi 5.0
     positive Hnr_theta 18.0
     positive Int_null 25.0
-    positive Int_chi 8.0
-    positive Crossfade 0.030
-    positive Cycles 3
+    positive Chi_rise_dB_per_s 267
+    real Crossfade 0.030
+    natural Cycles 3
     optionmenu Selection_mode: 2
         option Longest only
         option Rotate through candidates
@@ -141,8 +167,10 @@ elsif preset = 8
     proposition$ = "null, psi, phi, theta, chi, omega, phi, psi, null"
 endif
 
-# ── 3. CLAMP & DERIVE ──────────────────────────────────────
-# Prevent gaps: step must not exceed window length
+# ── 3. VALIDATE & DERIVE ───────────────────────────────────
+if win_len <= 0 or win_step <= 0
+    exitScript: "Win_len and Win_step must be > 0."
+endif
 if win_step > win_len
     win_step = win_len
 endif
@@ -155,8 +183,23 @@ endif
 if min_pitch < 30
     min_pitch = 30
 endif
-if min_pitch > 300
-    min_pitch = 300
+if max_pitch_Hz <= min_pitch
+    exitScript: "Max_pitch_Hz must be greater than Min_pitch."
+endif
+if hnr_theta <= hnr_psi
+    exitScript: "Hnr_theta must be greater than Hnr_psi."
+endif
+if chi_rise_dB_per_s <= 0
+    exitScript: "Chi rise threshold must be > 0 dB/s."
+endif
+if crossfade < 0
+    exitScript: "Crossfade must be >= 0."
+endif
+if cycles < 1 or cycles > 100
+    exitScript: "Cycles must be between 1 and 100."
+endif
+if fade_in < 0 or fade_out < 0
+    exitScript: "Fade durations must be >= 0."
 endif
 
 # Silence duration thresholds (absolute, in seconds)
@@ -167,19 +210,46 @@ silMed = 0.40
 selectObject: originalSound
 duration = Get total duration
 sr = Get sampling frequency
+sourceStart = Get start time
+sourceChannels = Get number of channels
 
+if duration < win_len
+    exitScript: "Audio is shorter than Win_len."
+endif
+if max_pitch_Hz >= sr / 2
+    max_pitch_Hz = 0.45 * sr
+endif
+if max_pitch_Hz <= min_pitch
+    exitScript: "Pitch range is invalid for this sampling rate."
+endif
+
+# Work in a zero-based time domain so all structural offsets are 0..duration.
+# Keep all channels for rendering; the original user object is untouched.
 selectObject: originalSound
+sourceZero = Copy: "Llogic_source"
+Shift times to: "start time", 0
+
+# Praat's intensity calculation supports multichannel energy. Pitch/HNR are
+# analysed on a mono fold, but rendering never uses this analysis copy.
+selectObject: sourceZero
 intObj = To Intensity: min_pitch, win_step, "yes"
 
-selectObject: originalSound
+selectObject: sourceZero
+if sourceChannels > 1
+    analysisMono = Convert to mono
+else
+    analysisMono = Copy: "Llogic_analysis"
+endif
+
+selectObject: analysisMono
 hnrObj = To Harmonicity (cc): win_step, min_pitch, 0.1, 1.0
 
-selectObject: originalSound
-pitchObj = To Pitch (ac): 0, min_pitch, 15, "no", 0.03, 0.45,
-    ... 0.01, 0.35, 0.14, 600
+selectObject: analysisMono
+pitchObj = To Pitch (raw autocorrelation): 0, min_pitch, max_pitch_Hz,
+    ... 15, "no", 0.03, 0.45, 0.01, 0.35, 0.14
 
 # ── 5. CLASSIFY WINDOWS ────────────────────────────────────
-maxSegs = 10000
+maxSegs = 100000
 for i from 1 to maxSegs
     segStart[i] = 0
     segEnd[i] = 0
@@ -224,6 +294,7 @@ while t <= duration - win_len / 2 + 0.0001
         intPrev = intVal
     endif
     intRise = intVal - intPrev
+    intRiseRate = intRise / win_step
 
     # ── CLASSIFY (6 Lsets categories) ──
     # Ø (null):  silence — low intensity
@@ -235,7 +306,7 @@ while t <= duration - win_len / 2 + 0.0001
 
     if intVal < int_null
         label$ = "null"
-    elsif intRise >= int_chi
+    elsif intRiseRate >= chi_rise_dB_per_s
         label$ = "chi"
     elsif hasF0 = 1 and hnrVal > hnr_theta
         label$ = "theta"
@@ -249,7 +320,8 @@ while t <= duration - win_len / 2 + 0.0001
 
     nSegs += 1
     if nSegs > maxSegs
-        nSegs = maxSegs
+        removeObject: pitchObj, hnrObj, intObj, analysisMono, sourceZero
+        exitScript: "Too many analysis frames (>100000). Increase Win_step or shorten the source."
     endif
     segStart[nSegs] = tStart
     segEnd[nSegs] = tEnd
@@ -353,6 +425,31 @@ if nBridged > 0
     endfor
 endif
 
+# ── 6c. CANONICAL NON-OVERLAPPING PARTITION ─────────────────
+# When Win_step < Win_len, analysis windows overlap. The merged raw extents then
+# overlap too. Convert them to a true partition: each label-change boundary is
+# halfway between the last frame centre on the left and the first frame centre
+# on the right, which equals (leftRawEnd + rightRawStart)/2 for equal windows.
+if nMerged > 0
+    for i from 1 to nMerged
+        rawStart[i] = mStart[i]
+        rawEnd[i] = mEnd[i]
+    endfor
+    mStart[1] = 0
+    for i from 1 to nMerged - 1
+        boundary = 0.5 * (rawEnd[i] + rawStart[i + 1])
+        if boundary < mStart[i]
+            boundary = mStart[i]
+        endif
+        if boundary > duration
+            boundary = duration
+        endif
+        mEnd[i] = boundary
+        mStart[i + 1] = boundary
+    endfor
+    mEnd[nMerged] = duration
+endif
+
 # ── 7. SILENCE DURATION CLASSIFICATION ─────────────────────
 # Tag null segments as Ø(S), Ø(M), or Ø(L)
 for i from 1 to nMerged
@@ -374,7 +471,7 @@ endfor
 # Boundaries are placed at each segment START (strictly
 # increasing), so the tier tiles [0, duration] gaplessly even
 # if window overlap made segEnd values overlap.
-selectObject: originalSound
+selectObject: sourceZero
 classGrid = To TextGrid: "Llogic", ""
 prevBt = 0
 for i from 2 to nMerged
@@ -440,6 +537,10 @@ for i from 1 to nMerged
     endif
     if iDur >= minDur and lbl$ <> ""
         nCand += 1
+        if nCand > maxCand
+            removeObject: pitchObj, hnrObj, intObj, analysisMono, sourceZero
+            exitScript: "Too many candidate segments (>5000)."
+        endif
         candLabel$[nCand] = lbl$
         candStart[nCand] = iStart
         candEnd[nCand] = iEnd
@@ -551,6 +652,29 @@ endif
 if nSymbols = 0
     exitScript: "No valid symbols in proposition."
 endif
+if nSymbols > maxSym
+    exitScript: "Proposition contains more than 50 symbols."
+endif
+
+# Accept both English names and actual Llogic glyphs; canonicalize internally.
+for s from 1 to nSymbols
+    tok$ = symbol$[s]
+    if tok$ = "Ø" or tok$ = "ø" or tok$ = "null" or tok$ = "NULL"
+        symbol$[s] = "null"
+    elsif tok$ = "ψ" or tok$ = "psi" or tok$ = "PSI"
+        symbol$[s] = "psi"
+    elsif tok$ = "θ" or tok$ = "theta" or tok$ = "THETA"
+        symbol$[s] = "theta"
+    elsif tok$ = "χ" or tok$ = "chi" or tok$ = "CHI"
+        symbol$[s] = "chi"
+    elsif tok$ = "ϕ" or tok$ = "φ" or tok$ = "phi" or tok$ = "PHI"
+        symbol$[s] = "phi"
+    elsif tok$ = "ω" or tok$ = "omega" or tok$ = "OMEGA"
+        symbol$[s] = "omega"
+    else
+        exitScript: "Unknown Llogic proposition symbol: " + tok$
+    endif
+endfor
 
 # ── 12. BUILD RANKED CANDIDATE LISTS PER LABEL ─────────────
 # For each label, collect all candidates sorted longest-first.
@@ -621,16 +745,9 @@ for cyc from 1 to cycles
             endif
             cIdx = rankIdx[s * 100 + chosenRank]
 
-            selectObject: originalSound
+            selectObject: sourceZero
             atomSnd = Extract part: candStart[cIdx], candEnd[cIdx],
                 ... "rectangular", 1, "no"
-            selectObject: atomSnd
-            nch = Get number of channels
-            if nch > 1
-                atomMono = Convert to mono
-                removeObject: atomSnd
-                atomSnd = atomMono
-            endif
             Rename: req$ + "_c" + string$(cyc) + "_r" + string$(chosenRank)
             atomBank[cyc * 100 + s] = atomSnd
         else
@@ -732,7 +849,7 @@ endfor
 
 # ── 15. ASSEMBLE WITH GAPS & ENVELOPES ─────────────────────
 if nSeq = 0
-    removeObject: pitchObj, hnrObj, intObj
+    removeObject: pitchObj, hnrObj, intObj, analysisMono, sourceZero
     exitScript: "No sequence built."
 endif
 
@@ -748,13 +865,25 @@ for i from 1 to nSeq
 endfor
 
 if nTotalAtoms = 0
-    removeObject: pitchObj, hnrObj, intObj
+    removeObject: pitchObj, hnrObj, intObj, analysisMono, sourceZero
     exitScript: "No atoms to concatenate."
 endif
 
 # Get sample rate from first atom
 selectObject: cycleAtomId[1]
 sr = Get sampling frequency
+
+# Global safe overlap: Concatenate with overlap uses one overlap value at
+# every join, so cap it against the shortest atom to avoid invalid joins.
+minAtomDur = 1e30
+for i from 1 to nTotalAtoms
+    selectObject: cycleAtomId[i]
+    d = Get total duration
+    if d < minAtomDur
+        minAtomDur = d
+    endif
+endfor
+safeCrossfade = min(crossfade, 0.45 * minAtomDur)
 
 # Build final sequence: for each position make a fresh copy so
 # repeated references (Stutter, Palindrome etc.) are distinct objects
@@ -804,14 +933,17 @@ for i from 1 to nTotalAtoms
         else
             gapDur = gap_base * (0.5 + randomUniform(0, 1))
         endif
-        if gapDur < 0.010
-            gapDur = 0.010
+        if gapDur < 0
+            gapDur = 0
         endif
-        silSnd = Create Sound from formula: "gap", 1, 0, gapDur, sr, "0"
+        # The gap participates in two overlap joins. Add 2*x so the next atom
+        # still begins exactly gapDur seconds after the previous atom's end.
+        renderedGapDur = gapDur + 2 * safeCrossfade
+        silSnd = Create Sound from formula: "gap", sourceChannels, 0, renderedGapDur, sr, "0"
         nAssemble += 1
         assembleId[nAssemble] = silSnd
         assembleLabel$[nAssemble] = "gap"
-        assembleDur[nAssemble] = gapDur
+        assembleDur[nAssemble] = renderedGapDur
     endif
 endfor
 
@@ -821,7 +953,11 @@ for i from 2 to nAssemble
     plusObject: assembleId[i]
 endfor
 if nAssemble > 1
-    Concatenate with overlap: crossfade
+    if safeCrossfade > 0
+        Concatenate with overlap: safeCrossfade
+    else
+        Concatenate
+    endif
 else
     Copy: "result"
 endif
@@ -883,60 +1019,62 @@ if totalCatDur < 0.0001
     totalCatDur = duration
 endif
 
-# Build dominance string (sorted by count, descending)
-# Simple: list present categories by count
+# Build dominance string (sorted by occupied duration, descending).
+# Duration is a more faithful meaning of category dominance than the number of
+# merged segments (many tiny onsets should not outrank one long sustained set).
 domStr$ = ""
-domCounts = 0
-
-# Find max 6 iterations for sorting. A category is "used up"
-# by setting its count to -1, so it cannot be picked again.
+workPsiDur = psiDur
+workThetaDur = thetaDur
+workNullDur = nullDur
+workChiDur = chiDur
+workPhiDur = phiDur
+workOmegaDur = omegaDur
 for rank from 1 to 6
     bestLab$ = ""
-    bestN = -1
-    if psiCount > bestN
+    bestDur = -1
+    if psiDur >= 0 and workPsiDur > bestDur
         bestLab$ = "ψ"
-        bestN = psiCount
+        bestDur = workPsiDur
     endif
-    if thetaCount > bestN
+    if workThetaDur > bestDur
         bestLab$ = "θ"
-        bestN = thetaCount
+        bestDur = workThetaDur
     endif
-    if chiCount > bestN
+    if workChiDur > bestDur
         bestLab$ = "χ"
-        bestN = chiCount
+        bestDur = workChiDur
     endif
-    if phiCount > bestN
+    if workPhiDur > bestDur
         bestLab$ = "ϕ"
-        bestN = phiCount
+        bestDur = workPhiDur
     endif
-    if omegaCount > bestN
+    if workOmegaDur > bestDur
         bestLab$ = "ω"
-        bestN = omegaCount
+        bestDur = workOmegaDur
     endif
-    if nullCount > bestN
+    if workNullDur > bestDur
         bestLab$ = "Ø"
-        bestN = nullCount
+        bestDur = workNullDur
     endif
-    if bestN > 0
+    if bestDur > 0
         if domStr$ = ""
             domStr$ = bestLab$
         else
             domStr$ = domStr$ + " > " + bestLab$
         endif
     endif
-    # Mark the selected category as used
     if bestLab$ = "ψ"
-        psiCount = -1
+        workPsiDur = -1
     elsif bestLab$ = "θ"
-        thetaCount = -1
+        workThetaDur = -1
     elsif bestLab$ = "χ"
-        chiCount = -1
+        workChiDur = -1
     elsif bestLab$ = "ϕ"
-        phiCount = -1
+        workPhiDur = -1
     elsif bestLab$ = "ω"
-        omegaCount = -1
+        workOmegaDur = -1
     elsif bestLab$ = "Ø"
-        nullCount = -1
+        workNullDur = -1
     endif
 endfor
 
@@ -1010,7 +1148,7 @@ endif
 if draw_visualization
 
     # Get waveform amplitude range
-    selectObject: originalSound
+    selectObject: sourceZero
     nCh = Get number of channels
     if nCh > 1
         vizMono = Convert to mono
@@ -1042,7 +1180,7 @@ if draw_visualization
     Font size: 11
     Colour: "Black"
     Text: 0.5, "centre", 0.75, "half",
-        ... "##Llogic System v4.1##"
+        ... "##Llogic System v4.2##"
     Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.05, "half",
@@ -1175,8 +1313,8 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "dB"
     Text top: "no", "Intensity — Ø(<"
-        ... + fixed$(int_null, 0) + " dB) | χ(rise≥"
-        ... + fixed$(int_chi, 0) + " dB)"
+        ... + fixed$(int_null, 0) + " dB) | χ(rise rate≥"
+        ... + fixed$(chi_rise_dB_per_s, 0) + " dB/s)"
     Text bottom: "yes", "Time (s)"
 
     # === PANEL 4: Lsets distribution bar ===
@@ -1357,14 +1495,14 @@ if draw_visualization
 endif
 
 # ── 18. CLEANUP ────────────────────────────────────────────
-removeObject: pitchObj, hnrObj, intObj
+removeObject: pitchObj, hnrObj, intObj, analysisMono, sourceZero
 
 # ── 19. INFO OUTPUT ────────────────────────────────────────
 selectObject: resynthSound
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: "  LLOGIC SYSTEM v4.1"
+writeInfoLine: "  LLOGIC SYSTEM v4.2"
 writeInfoLine: "  Based on: Logic of Sound and Silence"
 writeInfoLine: "  (Rakhat-Bi Abdyssagin)"
 writeInfoLine: "=================================================="
@@ -1374,11 +1512,11 @@ appendInfoLine: "Duration:  ", fixed$(duration, 3), " s"
 appendInfoLine: "Segments:  ", nMerged, " merged from ", nSegs, " windows"
 appendInfoLine: "Win/Step:  ", fixed$(win_len, 3), " / ",
     ... fixed$(win_step, 3), " s"
-appendInfoLine: "Min pitch: ", fixed$(min_pitch, 0), " Hz"
+appendInfoLine: "Pitch range: ", fixed$(min_pitch, 0), "-", fixed$(max_pitch_Hz, 0), " Hz"
 appendInfoLine: ""
 appendInfoLine: "── CLASSIFICATION THRESHOLDS ──"
 appendInfoLine: "  Ø (null):  intensity < ", fixed$(int_null, 1), " dB"
-appendInfoLine: "  χ (chi):   intensity rise ≥ ", fixed$(int_chi, 1), " dB"
+appendInfoLine: "  χ (chi):   intensity rise rate ≥ ", fixed$(chi_rise_dB_per_s, 1), " dB/s"
 appendInfoLine: "  θ (theta): HNR > ", fixed$(hnr_theta, 1),
     ... " AND F0 present"
 appendInfoLine: "  ϕ (phi):   ", fixed$(hnr_psi, 1), " ≤ HNR ≤ ",
@@ -1418,7 +1556,7 @@ appendInfoLine: "  ω  (omega): ", omegaCount,
     ... " segments, ", fixed$(omegaDur, 3), " s (",
     ... fixed$(omegaDur / totalCatDur * 100, 1), "%)"
 appendInfoLine: ""
-appendInfoLine: "── DOMINANCE ──"
+appendInfoLine: "── DOMINANCE BY DURATION ──"
 appendInfoLine: "  ", domStr$
 appendInfoLine: ""
 appendInfoLine: "── LPC ──"
@@ -1483,6 +1621,8 @@ endif
 appendInfoLine: "  Mode: ", arrName$
 appendInfoLine: "  Cycles: ", cycles
 appendInfoLine: "  Total atoms in sequence: ", nSeq
+appendInfoLine: "  Output channels: ", sourceChannels
+appendInfoLine: "  Requested/effective crossfade: ", fixed$(crossfade, 4), " / ", fixed$(safeCrossfade, 4), " s"
 appendInfoLine: ""
 appendInfoLine: "Output: ", soundName$ + "_Llogic_result"
 appendInfoLine: ""

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025) - True overlap-add + reworked visualization
+# Version: 0.5 (2026) - domain-safe grains + hardened fractal timing
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,28 @@
 #   Extracts grains from a source sound at fractal time positions
 #   (recursive binary subdivision with mirror symmetry), then
 #   overlap-adds them onto a pre-allocated output buffer.
+#
+# Changelog v0.5:
+#   - API COMPATIBILITY: public form fields, order, types and defaults are
+#     unchanged; output prefix remains Fractal_Granular_.
+#   - CRITICAL FIX: source reads are now zero-based internally. v0.4 computed
+#     read_start in 0..duration but extracted directly from the original Sound,
+#     which fails or reads the wrong region when the source xmin is non-zero.
+#   - Grain duration is internally clamped to the available source duration and
+#     to at least two samples, preventing negative random/scan ranges and the
+#     Hanning nx-1 denominator from becoming zero.
+#   - Sequential Scan now spans the entire legal source-start range: the last
+#     event reaches source_duration-grain_duration (num_events-1 denominator).
+#     v0.4 divided by num_events and never reached the end.
+#   - Fractal generation is capacity-guarded (max 5000 events) and generation
+#     jitter is limited to 45% of the local subdivision shift, so deep custom
+#     generations cannot reverse child/parent ordering when shift < jitter.
+#   - Fixed short-output geometry: center buffer and seed offset scale down when
+#     Total_duration is very short instead of creating a seed outside the
+#     available left half.
+#   - Plateau (Trapezoid) is now genuinely trapezoidal with linear attack and
+#     release. v0.4 used Praat Fade in/out, whose ramps are raised cosine.
+#   - Peak normalization is silent-safe.
 #
 # Changelog v0.4:
 #   - Fix (correctness): replaced sequential silence+grain
@@ -60,6 +82,8 @@ source_id = selected("Sound")
 source_dur = Get total duration
 source_sr = Get sampling frequency
 source_ch = Get number of channels
+source_t0 = Get start time
+source_t1 = Get end time
 source_name$ = selected$("Sound")
 
 # --- FORM ---
@@ -127,17 +151,72 @@ elsif preset = 6
     read_mode = 2
 endif
 
+# === INTERNAL VALIDATION / DOMAIN-SAFE SOURCE ===
+if total_duration <= 0
+    exitScript: "Total duration must be > 0 s"
+endif
+if grain_duration <= 0
+    exitScript: "Grain duration must be > 0 s"
+endif
+if generations < 0
+    exitScript: "Generations must be >= 0"
+endif
+
+# max_events=5000 below supports at most 2^(11+1)=4096 events in the
+# worst-case full binary tree after mirroring. Guard before array writes.
+if generations > 11
+    exitScript: "Generations > 11 can exceed the 5000-event safety limit"
+endif
+
+source_sample_period = 1 / source_sr
+if source_dur < 2 * source_sample_period
+    exitScript: "Source is too short: at least two samples are required"
+endif
+
+effective_grain_duration = grain_duration
+if effective_grain_duration > source_dur
+    effective_grain_duration = source_dur
+endif
+if effective_grain_duration < 2 * source_sample_period
+    effective_grain_duration = 2 * source_sample_period
+endif
+if effective_grain_duration > source_dur
+    effective_grain_duration = source_dur
+endif
+
+# The synthesis code uses 0..duration source coordinates. Make that true
+# without modifying the user's original Sound.
+createdSourceWork = 0
+if abs(source_t0) > 1e-12
+    selectObject: source_id
+    source_work = Extract part: source_t0, source_t1, "rectangular", 1, "no"
+    Rename: "rfg_source_zero"
+    createdSourceWork = 1
+else
+    source_work = source_id
+endif
+
 # === INITIALIZATION ===
 clearinfo
 writeInfoLine: "Granulating '", source_name$, "' (", source_ch, " ch) into Fractal..."
+if abs(effective_grain_duration - grain_duration) > 1e-12
+    appendInfoLine: "NOTE: effective grain duration clamped to ", fixed$(effective_grain_duration, 6), " s for this source."
+endif
 uid$ = string$(randomInteger(10000, 99999))
 
 # Derived params
 pivot_time = total_duration / 2
-center_buffer = 0.05
+# Preserve the historical 50 ms / 100 ms values for normal renders, but
+# scale them down safely for very short custom durations.
+center_buffer = min(0.05, total_duration * 0.10)
 jitter = 0.005
 amp_decay = 0.15
-seed_offset = 0.1
+
+half_dur = pivot_time - center_buffer
+seed_offset = min(0.1, half_dur * 0.25)
+if seed_offset < 0
+    seed_offset = 0
+endif
 
 # Arrays for timing
 max_events = 5000
@@ -150,7 +229,6 @@ event_gens# = zero#(max_events)
 event_parents# = zero#(max_events)
 
 # --- STEP 1: GENERATE LEFT HALF (FRACTAL) ---
-half_dur = pivot_time - center_buffer
 num_events = 1
 event_times#[1] = seed_offset
 event_gens#[1] = 0
@@ -158,12 +236,16 @@ event_parents#[1] = 0
 
 for gen from 1 to generations
     shift = half_dur / (2 ^ gen)
+    gen_jitter = min(jitter, shift * 0.45)
     current_count = num_events
     for i from 1 to current_count
         parent_t = event_times#[i]
-        new_t = parent_t + shift + randomUniform(-jitter, jitter)
+        new_t = parent_t + shift + randomUniform(-gen_jitter, gen_jitter)
         
         if new_t <= half_dur
+            if num_events >= max_events
+                exitScript: "Fractal event limit exceeded (5000)"
+            endif
             num_events = num_events + 1
             event_times#[num_events] = new_t
             event_gens#[num_events] = gen
@@ -181,6 +263,9 @@ for i from 1 to left_count
     gen = event_gens#[i]
     t_right = total_duration - t_left
     
+    if num_events >= max_events
+        exitScript: "Fractal event limit exceeded while mirroring (5000)"
+    endif
     num_events = num_events + 1
     event_times#[num_events] = t_right
     event_gens#[num_events] = gen
@@ -216,7 +301,11 @@ output_id = Create Sound from formula: "fractal_out", source_ch, 0, total_durati
 out_ns = Get number of samples
 
 if read_mode = 2
-    scan_step = (source_dur - grain_duration) / num_events
+    if num_events > 1
+        scan_step = (source_dur - effective_grain_duration) / (num_events - 1)
+    else
+        scan_step = 0
+    endif
     scan_cursor = 0
 endif
 
@@ -229,34 +318,36 @@ for i from 1 to num_events
     
     # B. Pick source location
     if read_mode = 1
-        read_start = randomUniform(0, source_dur - grain_duration)
+        read_start = randomUniform(0, source_dur - effective_grain_duration)
     else
         read_start = scan_cursor
         scan_cursor = scan_cursor + scan_step
     endif
-    if read_start > source_dur - grain_duration
-        read_start = source_dur - grain_duration
+    if read_start > source_dur - effective_grain_duration
+        read_start = source_dur - effective_grain_duration
     endif
     if read_start < 0
         read_start = 0
     endif
-    read_end = read_start + grain_duration
+    read_end = read_start + effective_grain_duration
     
-    # C. Extract grain
-    selectObject: source_id
+    # C. Extract grain from the zero-based internal source copy.
+    selectObject: source_work
     grain = Extract part: read_start, read_end, "rectangular", 1, "no"
     
     # D. Apply window + amplitude on the grain itself
     if window_shape = 1
-        # Hanning bell
+        # Hanning bell (effective grain is guaranteed to contain >=2 samples).
         nx = Get number of samples
         Formula: "self * " + string$(amp_factor) + " * (sin(pi * (col-1) / (" + string$(nx) + " - 1)))^2"
     else
-        # Trapezoid plateau
-        Formula: "self * " + string$(amp_factor)
-        fade_dur = 0.2 * grain_duration
-        Fade in: 0, 0, fade_dur, "yes"
-        Fade out: 0, grain_duration - fade_dur, fade_dur, "yes"
+        # True trapezoid: linear 20% attack, 60% plateau, linear 20% release.
+        # Praat Fade in/out is raised-cosine, so implement the label literally.
+        fade_dur = 0.2 * effective_grain_duration
+        grain_end = effective_grain_duration
+        Formula: ~ if x < fade_dur then self * amp_factor * x / fade_dur
+            ... else if x > grain_end - fade_dur then self * amp_factor * (grain_end - x) / fade_dur
+            ... else self * amp_factor fi fi
     endif
     
     # E. Overlap-add into the output buffer.
@@ -310,7 +401,10 @@ endif
 
 if normalize
     selectObject: final_id
-    Scale peak: 0.95
+    final_peak = Get absolute extremum: 0, 0, "Sinc70"
+    if final_peak > 0
+        Scale peak: 0.95
+    endif
 endif
 
 # --- STEP 6: VISUALIZATION ---
@@ -656,7 +750,7 @@ if draw_visualization
         ... "Events: " + string$(num_events)
         ... + " (" + string$(left_count) + " + " + string$(left_count) + " mirrored)"
         ... + "  |  Generations: " + string$(generations)
-        ... + "  |  Grain: " + fixed$(grain_duration * 1000, 0) + " ms"
+        ... + "  |  Grain: " + fixed$(effective_grain_duration * 1000, 0) + " ms"
         ... + "  |  Window: " + window_name$
         ... + "  |  Read: " + read_name$
         ... + "  |  Total: " + fixed$(total_duration, 2) + " s"
@@ -667,6 +761,10 @@ endif
 
 appendInfoLine: ""
 appendInfoLine: "Done. Output sound: ", num_events, " events overlap-added across ", fixed$(total_duration, 2), " s."
+
+if createdSourceWork = 1
+    removeObject: source_work
+endif
 
 selectObject: final_id
 Play

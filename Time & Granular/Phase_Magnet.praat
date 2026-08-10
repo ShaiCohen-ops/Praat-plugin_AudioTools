@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.7 (2026)
+# Version: 1.8 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,28 @@
 #   together by alternating between them at phase-compatible splice
 #   points. A "magnetism" parameter keeps the cursors proportionally
 #   aligned.
+#
+# Changelog v1.8:
+#   - API COMPATIBILITY: the public form is unchanged byte-for-byte.
+#   - FIX: Same-slope zero crossing is distinct again. v1.7 routed modes 1
+#     and 2 through the same nearest-zero-crossing code and never checked
+#     slope direction. v1.8 first uses the native nearest-ZC query, then
+#     performs a bounded local probe only when a same-slope crossing is
+#     required.
+#   - FIX: processing copies are explicitly zero-based. Get nearest zero
+#     crossing expects a time inside the Sound time domain; v1.7 converted
+#     sample indices to times as if both inputs started at 0.
+#   - FIX: Formula(part) source addressing now uses the output sample column
+#     directly. v1.7 converted sample-centre time back to an index with
+#     round(), which could shift reads by one sample.
+#   - FIX: anchor acceptance uses Patience_ms and the requested segment
+#     bounds instead of a hard-coded +2000-sample allowance whose duration
+#     changed with sample rate.
+#   - HARDENING: explicit validation for percentage/timing parameters and an
+#     output-capacity guard prevent invalid custom settings or pathological
+#     backward cursor corrections from writing past the preallocated buffer.
+#   - COMPATIBILITY: output remains mono (channel 1 of each source), as in
+#     v1.7; source names and output naming are unchanged.
 #
 # Changelog v1.7:
 #   - TIER 3 (performance): the real bottleneck was the splice search,
@@ -122,10 +144,29 @@ elsif preset$ = "Chaotic Scatter"
 endif
 
 # ------------------------------------------------------------------------------
-# 1. Validate selection & lengths
+# 1. Validate selection & parameters
 # ------------------------------------------------------------------------------
 if numberOfSelected ("Sound") <> 2
     exitScript: "Please select exactly two Sound objects, then run Phase Magnet."
+endif
+
+if crossfade_length_ms < 0
+    exitScript: "Crossfade length must be >= 0 ms."
+endif
+if patience_ms < 0
+    exitScript: "Patience must be >= 0 ms."
+endif
+if magnetism < 0 or magnetism > 100
+    exitScript: "Magnetism must be between 0 and 100."
+endif
+if randomness < 0 or randomness > 100
+    exitScript: "Randomness must be between 0 and 100."
+endif
+if minimum_segment_ms <= 0 or maximum_segment_ms <= 0
+    exitScript: "Segment durations must be > 0 ms."
+endif
+if maximum_segment_ms < minimum_segment_ms
+    exitScript: "Maximum segment duration must be >= minimum segment duration."
 endif
 
 id_A = selected ("Sound", 1)
@@ -133,45 +174,56 @@ id_B = selected ("Sound", 2)
 
 selectObject: id_A
 name_A$ = selected$ ("Sound")
-sr_A  = Get sampling frequency
-n_A   = Get number of samples
-dur_A = Get total duration
+sr_A = Get sampling frequency
 
 selectObject: id_B
 name_B$ = selected$ ("Sound")
-sr_B  = Get sampling frequency
-n_B   = Get number of samples
-dur_B = Get total duration
+sr_B = Get sampling frequency
 
-writeInfoLine: "=== Phase Magnet v1.7 ==="
+writeInfoLine: "=== Phase Magnet v1.8 ==="
 
 # ------------------------------------------------------------------------------
-# 2. Handle sample-rate mismatch
+# 2. Create zero-based mono processing copies and handle sample-rate mismatch
 # ------------------------------------------------------------------------------
+# v1.7 already processed row/channel 1 only. Keep that output contract, but
+# make it explicit and zero-based so sample-index <-> time conversions are valid.
+selectObject: id_A
+id_A_work = Extract one channel: 1
+Shift times to: "start time", 0
+selectObject: id_A_work
+n_A = Get number of samples
+dur_A = Get total duration
+
+selectObject: id_B
+id_B_mono = Extract one channel: 1
+Shift times to: "start time", 0
+
 resampled_B = 0
-id_B_work   = id_B
-
+id_B_work = id_B_mono
 if sr_A <> sr_B
     appendInfoLine: "  Note: resampling B from ", sr_B, " to ", sr_A, " Hz..."
-    selectObject: id_B
-    id_B_work   = Resample: sr_A, 50
+    selectObject: id_B_mono
+    id_B_work = Resample: sr_A, 50
+    removeObject: id_B_mono
     resampled_B = 1
-    selectObject: id_B_work
-    n_B   = Get number of samples
-    dur_B = Get total duration
 endif
+
+selectObject: id_B_work
+n_B = Get number of samples
+dur_B = Get total duration
 
 sr = sr_A
 dt = 1.0 / sr
 
-# Convert parameters to samples
-xf_len   = max (2, round (crossfade_length_ms / 1000.0 * sr))
+# Convert parameters to samples. Keep the historical minimum two-sample fade.
+xf_len = max (2, round (crossfade_length_ms / 1000.0 * sr))
 patience = max (1, round (patience_ms / 1000.0 * sr))
-min_seg  = max (xf_len + 2, round (minimum_segment_ms / 1000.0 * sr))
-max_seg  = max (min_seg + 2, round (maximum_segment_ms / 1000.0 * sr))
+min_seg = max (xf_len + 2, round (minimum_segment_ms / 1000.0 * sr))
+max_seg = max (min_seg + 2, round (maximum_segment_ms / 1000.0 * sr))
 magnetism_f = magnetism / 100.0
 
 if n_A <= xf_len + max_seg or n_B <= xf_len + max_seg
+    removeObject: id_A_work, id_B_work
     exitScript: "One or both sounds are too short for the chosen settings."
 endif
 
@@ -193,10 +245,10 @@ n_seg   = 0
 
 appendInfoLine: "Phase Magnet: Rendering [", preset$, "] via native zero-crossing splicing..."
 
-while pos_A <= n_A - xf_len - max_seg and pos_B <= n_B - xf_len - max_seg
+while pos_A <= n_A - xf_len - max_seg and pos_B <= n_B - xf_len - max_seg and out_pos <= out_n - max_seg - xf_len - 2
     
     if active = 1
-        curr_src = id_A
+        curr_src = id_A_work
         curr_n   = n_A
         curr_pos = pos_A
         other_src = id_B_work
@@ -206,7 +258,7 @@ while pos_A <= n_A - xf_len - max_seg and pos_B <= n_B - xf_len - max_seg
         curr_src = id_B_work
         curr_n   = n_B
         curr_pos = pos_B
-        other_src = id_A
+        other_src = id_A_work
         other_n   = n_A
         other_pos = pos_A
     endif
@@ -225,8 +277,9 @@ while pos_A <= n_A - xf_len - max_seg and pos_B <= n_B - xf_len - max_seg
         zc_anchor = Get nearest zero crossing: 1, anchor_time
         if zc_anchor <> undefined
             cand = round (zc_anchor * sr) + 1
-            anchor_hi = min (curr_n - xf_len - 2, (curr_pos + target_seg) + 2000)
-            if cand >= curr_pos + min_seg and cand <= anchor_hi
+            anchor_lo = max (curr_pos + min_seg, curr_pos + target_seg - patience)
+            anchor_hi = min (curr_n - xf_len - 2, curr_pos + max_seg, curr_pos + target_seg + patience)
+            if cand >= anchor_lo and cand <= anchor_hi
                 idx = cand
                 found_anchor = 1
             endif
@@ -283,21 +336,26 @@ while pos_A <= n_A - xf_len - max_seg and pos_B <= n_B - xf_len - max_seg
     # --------------------------------------------------------------------------
     # NATIVE VECTOR OPERATION 1: Copy Steady Part
     # --------------------------------------------------------------------------
-    t_start = (out_pos - 1.5) * dt
-    t_end   = (out_pos + seg_len - 0.5) * dt
-    base_t  = (out_pos - 1) * dt
+    steady_first = out_pos
+    steady_last = out_pos + seg_len - 1
+    t_start = (steady_first - 1) * dt
+    t_end   = steady_last * dt
     
     selectObject: out_id
-    Formula (part): t_start, t_end, 1, 1, "object[" + string$(curr_src) + ", 1, " + string$(curr_pos) + " + round((x - " + string$(base_t) + ") / " + string$(dt) + ")]"
+    Formula (part): t_start, t_end, 1, 1, "object[" + string$(curr_src) + ", 1, " + string$(curr_pos - out_pos) + " + col]"
 
     # --------------------------------------------------------------------------
     # NATIVE VECTOR OPERATION 2: Compiled C++ Crossfade Blend
     # --------------------------------------------------------------------------
-    xf_t_start = (out_pos + seg_len - 1.5) * dt
-    xf_t_end   = (out_pos + seg_len + xf_len - 0.5) * dt
-    base_out_t = (out_pos + seg_len - 1) * dt
+    xf_first = out_pos + seg_len
+    xf_last = xf_first + xf_len - 1
+    xf_t_start = (xf_first - 1) * dt
+    xf_t_end   = xf_last * dt
     
-    formula_str$ = "sqrt(max(0, 1.0 - ((x - " + string$(base_out_t) + ") / (" + string$(xf_len * dt) + ")))) * object[" + string$(curr_src) + ", 1, " + string$(curr_pos + seg_len) + " + round((x - " + string$(base_out_t) + ") / " + string$(dt) + ")] + sqrt(max(0, ((x - " + string$(base_out_t) + ") / (" + string$(xf_len * dt) + ")))) * object[" + string$(other_src) + ", 1, " + string$(chosen_other_splice) + " + round((x - " + string$(base_out_t) + ") / " + string$(dt) + ")]"
+    # Equal-power crossfade. u runs from 0 to (xf_len-1)/xf_len across the
+    # written samples, reaching exactly 1 at the last crossfade sample.
+    u_expr$ = "((col - " + string$(xf_first) + ") / " + string$(xf_len - 1) + ")"
+    formula_str$ = "sqrt(max(0, 1 - " + u_expr$ + ")) * object[" + string$(curr_src) + ", 1, " + string$(curr_pos + seg_len - xf_first) + " + col] + sqrt(max(0, " + u_expr$ + ")) * object[" + string$(other_src) + ", 1, " + string$(chosen_other_splice - xf_first) + " + col]"
     
     Formula (part): xf_t_start, xf_t_end, 1, 1, formula_str$
 
@@ -337,14 +395,12 @@ trimmed_id = Extract part: 0, actual_dur, "rectangular", 1, "no"
 Rename: "PhaseMagnet_" + name_A$ + "_" + name_B$
 removeObject: out_id
 
-# Visualization (before removing the working copy of B, which it draws)
+# Visualization (draws the original inputs and the trimmed output)
 if draw_visualization
     @drawViz
 endif
 
-if resampled_B
-    removeObject: id_B_work
-endif
+removeObject: id_A_work, id_B_work
 
 selectObject: trimmed_id
 appendInfoLine: "Phase Magnet complete! Processed ", actual_samples, " samples."
@@ -356,8 +412,9 @@ endif
 
 # ==============================================================================
 # PROCEDURE: findSpliceFast (native zero-crossing matcher)
-#   Modes 1 & 2 (zero-crossing): one Get nearest zero crossing call.
-#   Mode 3 (amplitude): bounded scan (no native equivalent).
+#   Mode 1: one native nearest-zero-crossing query.
+#   Mode 2: native nearest-ZC plus bounded same-slope probing when needed.
+#   Mode 3: bounded amplitude scan (no native equivalent).
 #   Reads globals sr, dt, matching_mode. Returns result_sample.
 # ==============================================================================
 procedure findSpliceFast: .src_id, .src_n, .exp_pos, .pat, .from_amp, .from_slope, .xf_len
@@ -367,28 +424,122 @@ procedure findSpliceFast: .src_id, .src_n, .exp_pos, .pat, .from_amp, .from_slop
     if .lo >= .hi
         result_sample = max (2, min (.src_n - .xf_len - 2, .exp_pos))
 
-    elsif matching_mode = 1 or matching_mode = 2
-        # Native zero-crossing lookup: nearest clean splice point to the
-        # magnetism-predicted position. Replaces the per-sample scoring scan.
+    elsif matching_mode = 1
+        # Nearest zero crossing, native and fast.
         selectObject: .src_id
         .exp_time = (.exp_pos - 1) * dt
         .zc_time = Get nearest zero crossing: 1, .exp_time
         if .zc_time = undefined
             result_sample = .exp_pos
         else
-            result_sample = round (.zc_time * sr) + 1
-            # If the nearest crossing falls outside the patience window,
-            # fall back to the expected position (matches the old
-            # "no candidate in window" behaviour).
-            if result_sample < .lo or result_sample > .hi
+            .cand = round (.zc_time * sr) + 1
+            if .cand < .lo or .cand > .hi
                 result_sample = .exp_pos
+            else
+                result_sample = .cand
             endif
+        endif
+
+    elsif matching_mode = 2
+        # Same-slope zero crossing. v1.7 accidentally made this identical to
+        # mode 1. Start with the native nearest crossing, then probe locally
+        # only if its crossing direction differs from the source anchor.
+        .best_dist = 1e30
+        .best = .exp_pos
+        .found = 0
+        .fallback = .exp_pos
+        selectObject: .src_id
+        .zc0 = Get nearest zero crossing: 1, (.exp_pos - 1) * dt
+        if .zc0 <> undefined
+            .cand0 = round (.zc0 * sr) + 1
+            if .cand0 >= .lo and .cand0 <= .hi
+                .fallback = .cand0
+            endif
+        endif
+
+        # Fine probes cover +/-100 ms at 1-ms spacing; beyond that, if the
+        # user requested more patience, use 10-ms probes. Each probe itself
+        # uses Praat's native nearest-zero-crossing query.
+        .fine_step = max (1, round (0.001 * sr))
+        .fine_radius = min (.pat, round (0.100 * sr))
+        .fine_n = ceiling (.fine_radius / .fine_step)
+
+        for .q from 0 to .fine_n
+            .off = .q * .fine_step
+            for .sgn from -1 to 1
+                if .q = 0
+                    .probe_ok = (.sgn = 0)
+                else
+                    .probe_ok = (.sgn <> 0)
+                endif
+                if .probe_ok
+                    .probe = .exp_pos + .sgn * .off
+                    if .probe >= .lo and .probe <= .hi
+                        .zc = Get nearest zero crossing: 1, (.probe - 1) * dt
+                        if .zc <> undefined
+                            .cand = round (.zc * sr) + 1
+                            if .cand >= .lo and .cand <= .hi
+                                .vL = Get value at sample number: 1, max(1, .cand - 1)
+                                .vR = Get value at sample number: 1, min(.src_n, .cand + 1)
+                                .slp = .vR - .vL
+                                if .from_slope = 0 or (.slp > 0 and .from_slope > 0) or (.slp < 0 and .from_slope < 0)
+                                    .dd = abs (.cand - .exp_pos)
+                                    if .dd < .best_dist
+                                        .best_dist = .dd
+                                        .best = .cand
+                                        .found = 1
+                                    endif
+                                endif
+                            endif
+                        endif
+                    endif
+                endif
+            endfor
+        endfor
+
+        if .found = 0 and .pat > .fine_radius
+            .coarse_step = max (1, round (0.010 * sr))
+            .coarse_n = ceiling ((.pat - .fine_radius) / .coarse_step)
+            for .q from 1 to .coarse_n
+                .off = .fine_radius + .q * .coarse_step
+                for .sgn from -1 to 1
+                    if .sgn <> 0
+                        .probe = .exp_pos + .sgn * .off
+                        if .probe >= .lo and .probe <= .hi
+                            .zc = Get nearest zero crossing: 1, (.probe - 1) * dt
+                            if .zc <> undefined
+                                .cand = round (.zc * sr) + 1
+                                if .cand >= .lo and .cand <= .hi
+                                    .vL = Get value at sample number: 1, max(1, .cand - 1)
+                                    .vR = Get value at sample number: 1, min(.src_n, .cand + 1)
+                                    .slp = .vR - .vL
+                                    if .from_slope = 0 or (.slp > 0 and .from_slope > 0) or (.slp < 0 and .from_slope < 0)
+                                        .dd = abs (.cand - .exp_pos)
+                                        if .dd < .best_dist
+                                            .best_dist = .dd
+                                            .best = .cand
+                                            .found = 1
+                                        endif
+                                    endif
+                                endif
+                            endif
+                        endif
+                    endif
+                endfor
+            endfor
+        endif
+
+        if .found
+            result_sample = .best
+        else
+            # Preserve zero-crossing behaviour even if no matching direction
+            # exists in the patience window.
+            result_sample = .fallback
         endif
 
     else
         # Mode 3: nearest amplitude match. No native command, so scan -- but
-        # bound the half-window to <= 100 ms so large patience values cannot
-        # blow the search up.
+        # keep the historical <=100-ms half-window performance bound.
         .cap = round (0.1 * sr)
         .ws = max (2, .exp_pos - min (.pat, .cap))
         .we = min (.src_n - .xf_len - 2, .exp_pos + min (.pat, .cap))
@@ -478,7 +629,7 @@ procedure drawViz
     # ---- INPUT B (right) ----
     Select outer viewport: 4.2, 8, 0.75, 2.30
     Select inner viewport: 4.55, 7.75, 0.95, 2.18
-    selectObject: id_B_work
+    selectObject: id_B
     Colour: "{0.90, 0.55, 0.20}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"

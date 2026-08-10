@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026)
+# Version: 2.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,6 +27,26 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.2:
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged from v2.1;
+#     output naming remains <source>_grains_<preset>.
+#   - CRITICAL FIX: Stereo Shuffle now assembles the right channel in the
+#     requested permutation. Selecting objects in shuffled order is not enough
+#     because Praat Concatenate follows Object-list order. v2.2 uses a fresh
+#     iterative accumulator, making the permutation explicit.
+#   - FIX: stereo inputs now use channel 1 for L and channel 2 for R in stereo
+#     output modes. v2.1 extracted only the left input channel and synthesized
+#     both outputs from it despite claiming stereo-input preservation. Mono
+#     output from stereo input now uses a mono conversion rather than L only.
+#   - FIX: zero-base private working copies before 0..duration extraction, so
+#     Sounds with non-zero xmin are handled correctly without touching source.
+#   - FIX: Grain_length_s == source duration is valid (single legal start at 0);
+#     mode-5 wrapping cannot divide/loop on a zero-length start range.
+#   - HARDENING: Number_of_grains is canonicalized internally to floor(N)>=1;
+#     final peak normalization is skipped for digital silence.
+#   - VISUAL FIX: shuffled right-channel reversal colour follows the actual
+#     shuffled grain rather than the unshuffled display position.
 #
 # Changelog v2.1:
 #   - CRITICAL FIX: Fisher-Yates shuffle for mode 4 ("Stereo
@@ -171,6 +191,10 @@ sampleRate = Get sampling frequency
 numChannels = Get number of channels
 
 # === Validate Parameters ===
+number_of_grains = floor(number_of_grains)
+if number_of_grains < 1
+    exitScript: "Number of grains must be at least 1"
+endif
 if grain_length_s > totalDuration
     exitScript: "Grain length (" + fixed$(grain_length_s, 2) + "s) exceeds sound duration (" + fixed$(totalDuration, 2) + "s)"
 endif
@@ -198,19 +222,52 @@ else
 endif
 
 # === Prepare Source Sound ===
-# For stereo input, extract L channel for processing
+# Private working copies only. Stereo output preserves the first two source
+# channels; mono output uses a mono conversion for multichannel input.
+sourceSoundL = 0
+sourceSoundR = 0
+
 selectObject: original
-if numChannels > 1
-    Extract left channel
-    sourceSound = selected("Sound")
+if output_mode = 1
+    if numChannels > 1
+        Convert to mono
+        sourceSoundL = selected("Sound")
+    else
+        Copy: "source_temp"
+        sourceSoundL = selected("Sound")
+    endif
 else
-    Copy: "source_temp"
-    sourceSound = selected("Sound")
+    if numChannels > 1
+        Extract one channel: 1
+        sourceSoundL = selected("Sound")
+        selectObject: original
+        Extract one channel: 2
+        sourceSoundR = selected("Sound")
+    else
+        Copy: "source_temp"
+        sourceSoundL = selected("Sound")
+        sourceSoundR = sourceSoundL
+    endif
+endif
+
+# All grain positions below are relative to 0..totalDuration. Shift only the
+# private working Sound(s), never the user's original Sound.
+selectObject: sourceSoundL
+sourceStartL = Get start time
+if sourceStartL <> 0
+    Shift times by: -sourceStartL
+endif
+if sourceSoundR > 0 and sourceSoundR <> sourceSoundL
+    selectObject: sourceSoundR
+    sourceStartR = Get start time
+    if sourceStartR <> 0
+        Shift times by: -sourceStartR
+    endif
 endif
 
 # === Info ===
 clearinfo
-writeInfoLine: "=== Sound to Grain v2.1 ==="
+writeInfoLine: "=== Sound to Grain v2.2 ==="
 appendInfoLine: "Source: ", soundName$, " (", fixed$(totalDuration, 2), " s)"
 appendInfoLine: "Input:  ", numChannels, " channel(s)"
 appendInfoLine: "Preset: ", presetName$
@@ -254,7 +311,8 @@ endif
 grainCount = 0
 maxStart = totalDuration - grain_length_s
 
-if maxStart <= 0
+# maxStart = 0 is valid: the only legal grain begins at time 0.
+if maxStart < 0
     exitScript: "Sound too short for grain length"
 endif
 
@@ -265,11 +323,15 @@ for grain from 1 to number_of_grains
     grainCount = grain
     
     # LEFT CHANNEL GRAIN
-    leftStartTime = randomUniform(0, maxStart)
+    if maxStart > 0
+        leftStartTime = randomUniform(0, maxStart)
+    else
+        leftStartTime = 0
+    endif
     leftEndTime = leftStartTime + grain_length_s
     leftGrainStarts#[grainCount] = leftStartTime
     
-    selectObject: sourceSound
+    selectObject: sourceSoundL
     Extract part: leftStartTime, leftEndTime, windowShape$, 1, "no"
     leftGrain = selected("Sound")
     
@@ -285,20 +347,35 @@ for grain from 1 to number_of_grains
     # RIGHT CHANNEL GRAIN (for stereo modes)
     if output_mode >= 2
         if output_mode = 2
-            # Mode 2: Same grain as left
-            selectObject: leftGrain
-            Copy: "R_" + string$(grainCount)
-            rightGrain = selected("Sound")
-            rightReversed#[grainCount] = leftReversed#[grainCount]
+            # Mode 2: same source position/reversal in L and R. For stereo
+            # input, preserve the corresponding source channel.
             rightGrainStarts#[grainCount] = leftGrainStarts#[grainCount]
+            rightReversed#[grainCount] = leftReversed#[grainCount]
+            if sourceSoundR = sourceSoundL
+                selectObject: leftGrain
+                Copy: "R_" + string$(grainCount)
+                rightGrain = selected("Sound")
+            else
+                selectObject: sourceSoundR
+                Extract part: leftStartTime, leftEndTime, windowShape$, 1, "no"
+                rightGrain = selected("Sound")
+                if leftReversed#[grainCount] = 1
+                    Reverse
+                endif
+                Rename: "R_" + string$(grainCount)
+            endif
             
         elsif output_mode = 3
             # Mode 3: DIFFERENT RANDOM POSITION
-            rightStartTime = randomUniform(0, maxStart)
+            if maxStart > 0
+                rightStartTime = randomUniform(0, maxStart)
+            else
+                rightStartTime = 0
+            endif
             rightEndTime = rightStartTime + grain_length_s
             rightGrainStarts#[grainCount] = rightStartTime
             
-            selectObject: sourceSound
+            selectObject: sourceSoundR
             Extract part: rightStartTime, rightEndTime, windowShape$, 1, "no"
             rightGrain = selected("Sound")
             
@@ -316,7 +393,7 @@ for grain from 1 to number_of_grains
             rightStartTime = leftStartTime
             rightGrainStarts#[grainCount] = leftStartTime
             
-            selectObject: sourceSound
+            selectObject: sourceSoundR
             Extract part: rightStartTime, leftEndTime, windowShape$, 1, "no"
             rightGrain = selected("Sound")
             
@@ -332,15 +409,18 @@ for grain from 1 to number_of_grains
             # Mode 5: TIME OFFSET
             rightStartTime = leftStartTime + time_offset_s
             
-            # Wrap around if needed
-            while rightStartTime > maxStart
-                rightStartTime = rightStartTime - maxStart
-            endwhile
+            # Wrap into the legal source-start range. maxStart=0 means the
+            # full source is one grain, so the only legal start is 0.
+            if maxStart > 0
+                rightStartTime = rightStartTime - floor(rightStartTime / maxStart) * maxStart
+            else
+                rightStartTime = 0
+            endif
             
             rightEndTime = rightStartTime + grain_length_s
             rightGrainStarts#[grainCount] = rightStartTime
             
-            selectObject: sourceSound
+            selectObject: sourceSoundR
             Extract part: rightStartTime, rightEndTime, windowShape$, 1, "no"
             rightGrain = selected("Sound")
             
@@ -363,56 +443,76 @@ appendInfoLine: "Extracted ", grainCount, " grains"
 if grainCount > 0
     appendInfoLine: "Concatenating..."
     
-    # Left channel - normal order
+    # Left channel: fresh iterative copies make sequence order explicit.
     selectObject: leftGrainIDs#[1]
-    for g from 2 to grainCount
-        plusObject: leftGrainIDs#[g]
-    endfor
-    Concatenate
+    Copy: "left_build"
     leftChannel = selected("Sound")
+    for g from 2 to grainCount
+        selectObject: leftGrainIDs#[g]
+        Copy: "left_next"
+        nextGrain = selected("Sound")
+        selectObject: leftChannel
+        plusObject: nextGrain
+        Concatenate
+        newLeft = selected("Sound")
+        removeObject: leftChannel, nextGrain
+        leftChannel = newLeft
+    endfor
+    selectObject: leftChannel
     Rename: "left_channel"
     
-    # Right channel (if stereo)
+    # Right channel (if stereo). Mode 4 uses grainOrder explicitly; every
+    # appended grain is copied AFTER the accumulator so Object-list order
+    # matches the requested shuffled order.
     if output_mode >= 2
         if output_mode = 4
-            # SHUFFLED ORDER - use grainOrder array
-            selectObject: rightGrainIDs#[grainOrder#[1]]
-            for g from 2 to grainCount
-                plusObject: rightGrainIDs#[grainOrder#[g]]
-            endfor
+            firstRightIndex = grainOrder#[1]
         else
-            # Normal order
-            selectObject: rightGrainIDs#[1]
-            for g from 2 to grainCount
-                plusObject: rightGrainIDs#[g]
-            endfor
+            firstRightIndex = 1
         endif
-        
-        Concatenate
+        selectObject: rightGrainIDs#[firstRightIndex]
+        Copy: "right_build"
         rightChannel = selected("Sound")
+        
+        for g from 2 to grainCount
+            if output_mode = 4
+                rightIndex = grainOrder#[g]
+            else
+                rightIndex = g
+            endif
+            selectObject: rightGrainIDs#[rightIndex]
+            Copy: "right_next"
+            nextGrain = selected("Sound")
+            selectObject: rightChannel
+            plusObject: nextGrain
+            Concatenate
+            newRight = selected("Sound")
+            removeObject: rightChannel, nextGrain
+            rightChannel = newRight
+        endfor
+        selectObject: rightChannel
         Rename: "right_channel"
         
-        # Combine to stereo
-        selectObject: leftChannel, rightChannel
+        selectObject: leftChannel
+        plusObject: rightChannel
         Combine to stereo
         result = selected("Sound")
-        
         removeObject: leftChannel, rightChannel
     else
         result = leftChannel
     endif
     
-    # Rename result
+    # Rename result (external naming contract unchanged)
     selectObject: result
     Rename: soundName$ + "_grains_" + presetName$
     
-    # Scale
-    Scale peak: 0.95
+    # Preserve historical normalization, but avoid scaling digital silence.
+    preScalePeak = Get absolute extremum: 0, 0, "None"
+    if preScalePeak > 0
+        Scale peak: 0.95
+    endif
     
-    # Get output duration
     outputDuration = Get total duration
-    
-    # Get output peak
     finalPeak = Get absolute extremum: 0, 0, "None"
 endif
 
@@ -424,7 +524,10 @@ for g from 1 to grainCount
     endif
 endfor
 
-removeObject: sourceSound
+removeObject: sourceSoundL
+if sourceSoundR > 0 and sourceSoundR <> sourceSoundL
+    removeObject: sourceSoundR
+endif
 
 # === Count Reversals ===
 leftRevCount = 0
@@ -540,7 +643,12 @@ if draw_visualization and grainCount > 0
             endT = startT + grain_length_s
             yPos = g
             
-            if rightReversed#[g] = 1
+            if output_mode = 4
+                reversalIndex = grainOrder#[g]
+            else
+                reversalIndex = g
+            endif
+            if rightReversed#[reversalIndex] = 1
                 barColor$ = "{0.85, 0.65, 0.40}"
             else
                 barColor$ = "{0.45, 0.75, 0.55}"

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2025)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,25 @@
 #   corruption artifact. Despite the "Spectral" name, no FFT/spectral
 #   processing is performed. Creates CD-skip, buffer-glitch, and broken
 #   playback effects.
+#
+# Changelog v0.6:
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged.
+#     Output naming remains <source>_glitch.
+#   - FIX: each freeze point now reads from a pre-pass snapshot. v0.5 read
+#     the first repeat directly from result while modifying it; later repeats
+#     then re-read the already-tapered first repeat and applied the taper a
+#     second time. All repeats now use one truly frozen source grain.
+#   - FIX: non-zero Sound start times are handled correctly in RMS analysis
+#     and visualization coordinates; audio sample indexing remains unchanged.
+#   - FIX: 1-based sample bounds are now valid for very short files and for
+#     extreme custom duration/divisor values. Freeze zones and their source
+#     repeat segments are guaranteed to stay inside the Sound.
+#   - FIX: loop taper reaches exactly zero at both grain edges (when enabled)
+#     instead of leaving a small residual on the last sample.
+#   - SAFE NORMALIZATION: Scale_peak is skipped for digital silence.
+#   - HARDENING: reversed min/max length factors are rejected; practical
+#     freeze-point limit prevents accidental thousands of whole-file passes.
+#   - VISUALIZATION: normalized title axes; length colour is RGB-safe.
 #
 # Changelog v0.5:
 #   - Loop-wrap declick: a short raised-cosine taper (Smoothing_ms,
@@ -130,6 +149,17 @@ selectObject: original
 sampleRate = Get sampling frequency
 duration = Get total duration
 totalSamples = Get number of samples
+sourceStart = Get start time
+sourceEnd = Get end time
+numChannels = Get number of channels
+
+# === Internal Guards (public form unchanged) ===
+if freeze_length_min_factor > freeze_length_max_factor
+    exitScript: "Freeze_length_min_factor must be <= Freeze_length_max_factor."
+endif
+if freeze_points > 5000
+    exitScript: "Freeze_points must not exceed 5000."
+endif
 
 # === Get Preset Name ===
 if preset = 1
@@ -160,10 +190,29 @@ result = selected("Sound")
 
 # === Calculate Base Freeze Duration ===
 freezeDuration = floor(totalSamples / freeze_duration_divisor)
+if freezeDuration < 1
+    freezeDuration = 1
+endif
+
+# Precompute legal freeze-length range in samples.
+minLenGlobal = floor(freezeDuration * freeze_length_min_factor)
+maxLenGlobal = floor(freezeDuration * freeze_length_max_factor)
+if minLenGlobal < 1
+    minLenGlobal = 1
+endif
+if maxLenGlobal < minLenGlobal
+    maxLenGlobal = minLenGlobal
+endif
+if minLenGlobal > totalSamples
+    minLenGlobal = totalSamples
+endif
+if maxLenGlobal > totalSamples
+    maxLenGlobal = totalSamples
+endif
 
 # === Overall level reference for silence avoidance ===
 selectObject: original
-overallRMS = Get root-mean-square: 0, duration
+overallRMS = Get root-mean-square: sourceStart, sourceEnd
 if overallRMS = undefined or overallRMS <= 0
     overallRMS = 0.0001
 endif
@@ -184,37 +233,43 @@ freezeApplied# = zero#(freeze_points)
 appendInfoLine: "Processing freeze points..."
 
 for point from 1 to freeze_points
-    # Position / length bounds
-    minPos = floor(freezeDuration)
-    maxPos = totalSamples - floor(freezeDuration)
-    if maxPos <= minPos
-        maxPos = minPos + 1
+    # Pick a complete freeze zone first, then choose a legal 1-based source
+    # position that keeps the whole zone inside the Sound.
+    freezeLength = randomInteger(minLenGlobal, maxLenGlobal)
+    repeatSegment = floor(freezeLength / freeze_repeat_divisor)
+    if repeatSegment < 1
+        repeatSegment = 1
     endif
-    minLen = floor(freezeDuration * freeze_length_min_factor)
-    maxLen = floor(freezeDuration * freeze_length_max_factor)
-    if minLen < 1
-        minLen = 1
+    if repeatSegment > freezeLength
+        repeatSegment = freezeLength
     endif
-    if maxLen <= minLen
-        maxLen = minLen + 1
+
+    safeMaxPos = totalSamples - freezeLength + 1
+    minPos = freezeDuration
+    maxPos = totalSamples - freezeDuration + 1
+    if minPos < 1
+        minPos = 1
     endif
-    
-    # Pick a freeze whose loop-source region is not silent (re-roll if it is)
+    if maxPos > safeMaxPos
+        maxPos = safeMaxPos
+    endif
+    if minPos > safeMaxPos or maxPos < minPos
+        minPos = 1
+        maxPos = safeMaxPos
+    endif
+
+    # Pick a freeze whose loop-source region is not silent (re-roll position
+    # only; length/repeat structure stays fixed for this freeze point).
     attempt = 0
     foundLoud = 0
     repeat
         attempt += 1
         freezePos = randomInteger(minPos, maxPos)
-        freezeLength = randomInteger(minLen, maxLen)
-        repeatSegment = floor(freezeLength / freeze_repeat_divisor)
-        if repeatSegment < 1
-            repeatSegment = 1
-        endif
         if avoid_silence = 1
-            t1 = freezePos / sampleRate
-            t2 = (freezePos + repeatSegment) / sampleRate
-            if t2 > duration
-                t2 = duration
+            t1 = sourceStart + (freezePos - 1) / sampleRate
+            t2 = sourceStart + (freezePos - 1 + repeatSegment) / sampleRate
+            if t2 > sourceEnd
+                t2 = sourceEnd
             endif
             selectObject: original
             segRMS = Get root-mean-square: t1, t2
@@ -228,7 +283,7 @@ for point from 1 to freeze_points
             foundLoud = 1
         endif
     until (foundLoud = 1) or (attempt >= max_position_attempts)
-    
+
     if (avoid_silence = 1) and (foundLoud = 0)
         # No non-silent region found; skip this point rather than loop silence
         freezeApplied#[point] = 0
@@ -237,27 +292,34 @@ for point from 1 to freeze_points
         appendInfoLine: "  Point ", point, ": skipped (no non-silent region)"
     else
         freezeApplied#[point] = 1
-        freezePositions#[point] = freezePos / sampleRate
+        freezePositions#[point] = (freezePos - 1) / sampleRate
         freezeLengths#[point] = freezeLength / sampleRate
         appendInfoLine: "  Point ", point, ": pos=", fixed$(freezePositions#[point], 3), "s len=", fixed$(freezeLengths#[point] * 1000, 1), "ms"
         
-        # Clamp taper to this grain (need >=1 sample, at most half the grain)
+        # Clamp taper to this repeated grain. Two samples are required to
+        # define an exact 0..1 raised-cosine edge.
         locSmooth = smoothSamples
         if locSmooth > floor(repeatSegment / 2)
             locSmooth = floor(repeatSegment / 2)
         endif
         doSmooth = smooth_loop_wraps
-        if locSmooth < 1
-            locSmooth = 1
+        if locSmooth < 2
             doSmooth = 0
         endif
-        
-        # Freeze and repeat segment (stutter), with raised-cosine taper on
-        # each grain's edges to declick the loop-wrap boundaries
+
+        # Snapshot BEFORE modifying this freeze point. Every repeat reads the
+        # same frozen grain instead of recursively re-reading the tapered
+        # first repeat from result. Channel row is preserved.
         selectObject: result
-        Formula: ~ if col >= freezePos and col < freezePos + freezeLength 
-            ... then self[freezePos + ((col - freezePos) mod repeatSegment)] * ( if doSmooth = 0 then 1 else if ((col - freezePos) mod repeatSegment) < locSmooth then (0.5 - 0.5 * cos(pi * ((col - freezePos) mod repeatSegment) / locSmooth)) else if ((col - freezePos) mod repeatSegment) >= repeatSegment - locSmooth then (0.5 - 0.5 * cos(pi * (repeatSegment - ((col - freezePos) mod repeatSegment)) / locSmooth)) else 1 fi fi fi ) 
+        Copy: "glitch_snapshot"
+        snapshot = selected("Sound")
+
+        selectObject: result
+        Formula: ~ if col >= freezePos and col < freezePos + freezeLength
+            ... then object[snapshot, row, freezePos + ((col - freezePos) mod repeatSegment)] * ( if doSmooth = 0 then 1 else if ((col - freezePos) mod repeatSegment) < locSmooth then (0.5 - 0.5 * cos(pi * ((col - freezePos) mod repeatSegment) / (locSmooth - 1))) else if ((col - freezePos) mod repeatSegment) >= repeatSegment - locSmooth then (0.5 - 0.5 * cos(pi * (repeatSegment - 1 - ((col - freezePos) mod repeatSegment)) / (locSmooth - 1))) else 1 fi fi fi )
             ... else self fi
+
+        removeObject: snapshot
         
         # Add amplitude-modulation artifacts (time-domain, whole-file; compounds per point)
         Formula: ~ self * (1 + artifact_amplitude * sin(2 * pi * point * col / totalSamples))
@@ -268,7 +330,10 @@ appliedCount = sum(freezeApplied#)
 
 # === Scale Peak ===
 selectObject: result
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: scale_peak
+endif
 
 # === Visualization ===
 if draw_visualization
@@ -276,6 +341,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 1, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Spectral Freeze & Glitch: " + original_name$ + " (" + presetName$ + ")"
@@ -348,7 +414,7 @@ if draw_visualization
             # Color intensity by length
             avgLen = (freeze_length_min_factor + freeze_length_max_factor) / 2
             lenNorm = (freezeLengths#[p] * sampleRate / freezeDuration) / avgLen
-            r = 0.5 + 0.3 * lenNorm
+            r = min(1, max(0, 0.5 + 0.3 * lenNorm))
             g = 0.3
             b = 0.5
             barColor$ = "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}"

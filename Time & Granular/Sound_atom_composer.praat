@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Folder field with blank-to-dialog fallback
+# Version: 1.3.5 (2026) - parser compatibility fix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,62 @@
 #
 # Usage:
 #   Run this script and select a folder containing audio clips.
+#
+# Changelog v1.3.5:
+#   - PARSER FIX: renamed the temporary loop index `fi` to `fileScan`.
+#     In Praat formula expressions, `fi` is a reserved token that closes
+#     `if ... then ... else ... fi`, so `bankStart#[fi]` cannot be parsed
+#     as vector indexing.
+#   - No public form, preset, output-name, or DSP parameter changes.
+#
+# Changelog v1.3.4:
+#   - PARSER FIX: restored compact vector indexing (`name#[i]`) everywhere.
+#     The original v1.2 already used this form successfully; v1.3.2/1.3.3
+#     mistakenly changed it to `name# [i]`, which this Praat build rejects
+#     in scalar expressions such as `x = vector# [i]`.
+#   - No public form, preset, output-name, or DSP parameter changes.
+#
+# Changelog v1.3.1:
+#   - FIX: v1.3 used invalid `Shift times to: 0`. The command expects
+#     a string option first, so current Praat stopped at runtime. v1.3.1
+#     reads the numeric start time and uses `Shift times by` instead.
+#
+# Changelog v1.3.2:
+#   - RUNTIME FIX: source-bank bookkeeping now uses explicit numeric vectors
+#     (fileDur#, bankStart#, bankEnd#) with Praat vector indexing syntax.
+#   - ATTEMPTED parser normalization inserted a space before [index];
+#     superseded by v1.3.4 after this proved incompatible with the target Praat build.
+#   - No public form, preset, output-name, or DSP parameter changes.
+#
+# Changelog v1.3.3:
+#   - ATTEMPTED parser workaround copied vector elements to scalar
+#     temporaries; superseded by v1.3.4 because the spaced vector read itself
+#     still failed in the target Praat build.
+#   - No public form or output-name changes.
+#
+# Changelog v1.3:
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged from v1.2.
+#     Output object name remains "Granular_Output".
+#   - FIX: Min_freq / Max_freq now actually control the Pitch analysis.
+#     v1.2 hard-coded 75..600 Hz despite exposing defaults of 50..4000 Hz.
+#   - FIX: unvoiced Pitch frames are no longer relabelled as an invented
+#     100 Hz F0. Only genuinely voiced frames enter the pitch-filtered atom
+#     dictionary.
+#   - FIX: SourceBank order is now explicitly the alphabetical file-list
+#     order even after resampling. Praat Concatenate follows Object-list
+#     order, and resampled files receive newer object IDs.
+#   - FIX: atoms are rejected if their forward source read would cross a
+#     boundary between two input files; grains no longer splice unrelated
+#     files inside the concatenated source bank.
+#   - FIX: output-edge grains are clipped and rendered instead of being
+#     discarded wholesale when their end reaches/passes Output_duration.
+#     Negative right-channel jitter is clipped safely at time 0.
+#   - FIX: Gaussian grains are edge-zeroed, eliminating the old ~0.135
+#     amplitude discontinuity at nominal grain boundaries.
+#   - FIX: Amplitude_scale is no longer cancelled by unconditional final
+#     peak normalization. Final scaling is now a 0.99 safety ceiling only.
+#   - HARDENING: Max_atoms is floored internally to an integer >= 1;
+#     analysis ceiling is capped below Nyquist; SourceBank is shifted to 0.
 #
 # Changelog v1.2:
 #   - Added a "Folder" form field (mirrors Timbral_Similarity_Browser):
@@ -122,6 +178,15 @@ else
     preset$ = "Custom"
 endif
 
+# Internal validation / canonicalization (public parameters unchanged)
+if min_freq >= max_freq
+    exitScript: "Min_freq must be smaller than Max_freq."
+endif
+maxAtomsInt = floor(max_atoms)
+if maxAtomsInt < 1
+    maxAtomsInt = 1
+endif
+
 writeInfoLine: "=== Sound Atom Composer ==="
 appendInfoLine: "Preset: ", preset$
 appendInfoLine: ""
@@ -215,6 +280,10 @@ for i to nRows
 endfor
 
 # 6. Resample any files that don't match maxSR
+fileDur# = zero#(nRows)
+bankStart# = zero#(nRows)
+bankEnd# = zero#(nRows)
+
 for i to nRows
     selectObject: id_list#[i]
     thisSR = Get sampling frequency
@@ -224,29 +293,58 @@ for i to nRows
         removeObject: id_list#[i]
         id_list#[i] = newID
     endif
+    selectObject: id_list#[i]
+    fileDur#[i] = Get total duration
 endfor
 
-# 7. Select all sounds for concatenation
-for i to nRows
-    currentID = id_list#[i]
-    if i = 1
-        selectObject: currentID
-    else
-        plusObject: currentID
-    endif
+# Requested frequency range, capped below Nyquist.
+analysisPitchFloor = min_freq
+analysisPitchCeiling = min(max_freq, 0.49 * maxSR)
+if analysisPitchCeiling <= analysisPitchFloor
+    for i to nRows
+        removeObject: id_list#[i]
+    endfor
+    removeObject: "Strings fileList", "Table loadedSounds"
+    exitScript: "Requested pitch range is above the usable Nyquist range for these files."
+endif
+
+# 7. Build SourceBank in explicit file-list order.
+# Resampling can create newer object IDs, while Concatenate follows Object-list
+# order rather than selection order. Fresh copies make intended order explicit.
+bankStart#[1] = 0
+bankEnd#[1] = fileDur#[1]
+selectObject: id_list#[1]
+bankID = Copy: "bank_accum"
+
+for i from 2 to nRows
+    bankStart#[i] = bankEnd#[i - 1]
+    bankEnd#[i] = bankStart#[i] + fileDur#[i]
+
+    selectObject: id_list#[i]
+    bankPart = Copy: "bank_part"
+
+    selectObject: bankID
+    plusObject: bankPart
+    Concatenate
+    newBank = selected("Sound")
+    removeObject: bankID, bankPart
+    bankID = newBank
 endfor
 
-# 8. Concatenate and Rename to a Safe Identifier
-Concatenate
+# 8. Rename / zero-base the bank for time-addressed object() reads.
+selectObject: bankID
 Rename: "SourceBankTemp"
 sourceBankID = selected("Sound")
+bankStartTime = Get start time
+Shift times by: -bankStartTime
 
-# Store source bank ID as string for Formula references
 sourceBankStr$ = string$(sourceBankID)
 
 selectObject: sourceBankID
 sourceDuration = Get total duration
 appendInfoLine: "  Source bank duration: ", fixed$(sourceDuration, 2), " s"
+appendInfoLine: "  Effective pitch analysis: ", fixed$(analysisPitchFloor, 1),
+    ... "-", fixed$(analysisPitchCeiling, 1), " Hz"
 
 # 10. Cleanup Individual Files
 for i to nRows
@@ -270,11 +368,11 @@ appendInfoLine: "  Source Bank created. Analyzing..."
 ################################################################################
 
 selectObject: sourceBankID
-To Intensity: 75, time_step, "yes"
+To Intensity: analysisPitchFloor, time_step, "yes"
 intensityID = selected("Intensity")
 
 selectObject: sourceBankID
-To Pitch: time_step, 75, 600
+To Pitch: time_step, analysisPitchFloor, analysisPitchCeiling
 pitchID = selected("Pitch")
 
 Create Table with column names: "atomDictionary", 0, "time duration frequency amplitude"
@@ -283,28 +381,58 @@ selectObject: pitchID
 numFrames = Get number of frames
 atom_counter = 0
 
+atomDurRequested = max(time_step * atom_duration_multiplier, 2 / maxSR)
+
 for iframe to numFrames
     selectObject: pitchID
     time = Get time from frame: iframe
     f0 = Get value in frame: iframe, "Hertz"
-    
+
+    voiced = 1
     if f0 = undefined
-        f0 = 100 
+        voiced = 0
     endif
-    
-    selectObject: intensityID
-    energy = Get value at time: time, "Cubic"
-    
-    if energy > min_energy and f0 >= min_freq and f0 <= max_freq
-        selectObject: "Table atomDictionary"
-        Append row
-        atom_counter = atom_counter + 1
-        row = Get number of rows
-        
-        Set numeric value: row, "time", time
-        Set numeric value: row, "duration", time_step * atom_duration_multiplier
-        Set numeric value: row, "frequency", f0
-        Set numeric value: row, "amplitude", energy
+
+    if voiced
+        selectObject: intensityID
+        energy = Get value at time: time, "Cubic"
+
+        # Synthesis reads forward from srcTime by atomDurRequested. Reject
+        # candidates whose read would cross from one source file into another.
+        fileIndex = 0
+        fileEnd = 0
+        for fileScan from 1 to nRows
+            candidateStart = bankStart#[fileScan]
+            candidateEnd = bankEnd#[fileScan]
+            if time >= candidateStart
+                if time < candidateEnd
+                    fileIndex = fileScan
+                    fileEnd = candidateEnd
+                endif
+            endif
+        endfor
+
+        insideOneFile = 0
+        if fileIndex > 0
+            sourceReadEnd = time + atomDurRequested
+            if sourceReadEnd <= fileEnd + 1e-12
+                insideOneFile = 1
+            endif
+        endif
+
+        if insideOneFile and energy > min_energy
+            if f0 >= min_freq and f0 <= max_freq
+                selectObject: "Table atomDictionary"
+                Append row
+                atom_counter = atom_counter + 1
+                row = Get number of rows
+
+                Set numeric value: row, "time", time
+                Set numeric value: row, "duration", atomDurRequested
+                Set numeric value: row, "frequency", f0
+                Set numeric value: row, "amplitude", energy
+            endif
+        endif
     endif
 endfor
 
@@ -340,8 +468,8 @@ else
     appendInfoLine: "  Order: Sequential"
 endif
 
-if numAtoms > max_atoms
-    numAtoms = max_atoms
+if numAtoms > maxAtomsInt
+    numAtoms = maxAtomsInt
     appendInfoLine: "  Using first ", numAtoms, " atoms (limited by max_atoms)"
 else
     appendInfoLine: "  Using all ", numAtoms, " atoms"
@@ -368,12 +496,7 @@ rightID = selected("Sound")
 playRate = 2 ^ (transpose_semitones / 12)
 
 # Store atom placement info for visualization
-for i from 1 to numAtoms
-    atomOutputTime[i] = 0
-    atomPan[i] = 0.5
-    atomFreq[i] = 100
-    atomAmp[i] = 60
-endfor
+gaussianEdge = exp(-2)
 
 for i from 1 to numAtoms
     selectObject: "Table atomDictionary"
@@ -381,55 +504,55 @@ for i from 1 to numAtoms
     dur = Get value: i, "duration"
     freq = Get value: i, "frequency"
     amp = Get value: i, "amplitude"
-    
-    # Safe division (numAtoms already checked > 0)
+
     dstTime = (i - 1) * (output_duration / numAtoms)
     jitter = randomGauss(0, 0.01)
-    
+
     dstStartL = dstTime
     dstStartR = dstTime + jitter
-    
     effDur = dur / playRate
-    
     dstEndL = dstStartL + effDur
     dstEndR = dstStartR + effDur
-    
+
     pan = randomUniform(0, 1)
     gainL = (1 - pan) * amplitude_scale
     gainR = pan * amplitude_scale
-    
-    # Store for visualization
-    atomOutputTime[i] = dstTime
-    atomPan[i] = pan
-    atomFreq[i] = freq
-    atomAmp[i] = amp
-    
-    if dstEndL < output_duration
+
+    atomOutputTime [i] = dstTime
+    atomPan [i] = pan
+    atomFreq [i] = freq
+    atomAmp [i] = amp
+
+    # Render the intersection with the output domain instead of discarding
+    # the whole atom if only its tail exceeds Output_duration.
+    renderStartL = max(0, dstStartL)
+    renderEndL = min(output_duration, dstEndL)
+    if renderEndL - renderStartL >= 2 / samplingFreq
+        renderDurL = renderEndL - renderStartL
+        midL = (renderStartL + renderEndL) / 2
+        widthL = renderDurL / 4
+
         selectObject: leftID
-        midL = dstStartL + (effDur / 2)
-        width = effDur / 4
-        
-        # FIXED: Use object() syntax instead of Sound_SourceBankTemp
-        cmd$ = "self + " + fixed$(gainL, 6) 
-        cmd$ = cmd$ + " * object(" + sourceBankStr$ + ", " + fixed$(srcTime, 6) + " + (x - " + fixed$(dstStartL, 6) + ") * " + fixed$(playRate, 6) + ") "
-        cmd$ = cmd$ + " * exp(-0.5 * ((x - " + fixed$(midL, 6) + ") / " + fixed$(width, 6) + ")^2)"
-        
-        Formula (part): dstStartL, dstEndL, 1, 1, cmd$
+        cmd$ = "self + " + fixed$(gainL, 6)
+        cmd$ = cmd$ + " * object(" + sourceBankStr$ + ", " + fixed$(srcTime, 9) + " + (x - " + fixed$(dstStartL, 9) + ") * " + fixed$(playRate, 9) + ") "
+        cmd$ = cmd$ + " * ((exp(-0.5 * ((x - " + fixed$(midL, 9) + ") / " + fixed$(widthL, 9) + ")^2) - " + fixed$(gaussianEdge, 12) + ") / (1 - " + fixed$(gaussianEdge, 12) + "))"
+        Formula (part): renderStartL, renderEndL, 1, 1, cmd$
     endif
 
-    if dstEndR < output_duration
+    renderStartR = max(0, dstStartR)
+    renderEndR = min(output_duration, dstEndR)
+    if renderEndR - renderStartR >= 2 / samplingFreq
+        renderDurR = renderEndR - renderStartR
+        midR = (renderStartR + renderEndR) / 2
+        widthR = renderDurR / 4
+
         selectObject: rightID
-        midR = dstStartR + (effDur / 2)
-        width = effDur / 4
-        
-        # FIXED: Use object() syntax instead of Sound_SourceBankTemp
-        cmd$ = "self + " + fixed$(gainR, 6) 
-        cmd$ = cmd$ + " * object(" + sourceBankStr$ + ", " + fixed$(srcTime, 6) + " + (x - " + fixed$(dstStartR, 6) + ") * " + fixed$(playRate, 6) + ") "
-        cmd$ = cmd$ + " * exp(-0.5 * ((x - " + fixed$(midR, 6) + ") / " + fixed$(width, 6) + ")^2)"
-        
-        Formula (part): dstStartR, dstEndR, 1, 1, cmd$
+        cmd$ = "self + " + fixed$(gainR, 6)
+        cmd$ = cmd$ + " * object(" + sourceBankStr$ + ", " + fixed$(srcTime, 9) + " + (x - " + fixed$(dstStartR, 9) + ") * " + fixed$(playRate, 9) + ") "
+        cmd$ = cmd$ + " * ((exp(-0.5 * ((x - " + fixed$(midR, 9) + ") / " + fixed$(widthR, 9) + ")^2) - " + fixed$(gaussianEdge, 12) + ") / (1 - " + fixed$(gaussianEdge, 12) + "))"
+        Formula (part): renderStartR, renderEndR, 1, 1, cmd$
     endif
-    
+
     if i mod 50 = 0
         appendInfoLine: "  Atom ", i, " / ", numAtoms
     endif
@@ -441,7 +564,10 @@ Combine to stereo
 Rename: "Granular_Output"
 finalID = selected("Sound")
 
-Scale peak: 0.99
+finalPeak = Get absolute extremum: 0, 0, "Sinc70"
+if finalPeak > 0.99
+    Scale peak: 0.99
+endif
 
 selectObject: leftID
 plusObject: rightID
@@ -457,7 +583,7 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 1, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0.1, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
@@ -497,11 +623,11 @@ if draw_visualization
     maxAmp = 0
     
     for i to numAtoms
-        if atomAmp[i] > maxAmp
-            maxAmp = atomAmp[i]
+        if atomAmp [i] > maxAmp
+            maxAmp = atomAmp [i]
         endif
-        if atomAmp[i] < minAmp
-            minAmp = atomAmp[i]
+        if atomAmp [i] < minAmp
+            minAmp = atomAmp [i]
         endif
     endfor
     
@@ -512,7 +638,7 @@ if draw_visualization
     for i to numAtoms
         # Normalize amplitude to color range
         if maxAmp > minAmp
-            normAmp = (atomAmp[i] - minAmp) / (maxAmp - minAmp)
+            normAmp = (atomAmp [i] - minAmp) / (maxAmp - minAmp)
         else
             normAmp = 0.5
         endif
@@ -524,7 +650,7 @@ if draw_visualization
         
         dotColor$ = "{" + fixed$(red, 2) + ", " + fixed$(green, 2) + ", " + fixed$(blue, 2) + "}"
         
-        Paint circle (mm): dotColor$, atomOutputTime[i], atomFreq[i], 0.8
+        Paint circle (mm): dotColor$, atomOutputTime [i], atomFreq [i], 0.8
     endfor
     
     Colour: "Black"
@@ -550,7 +676,7 @@ if draw_visualization
     for i to numAtoms
         # Color by frequency
         if maxFreqViz > minFreqViz
-            normFreq = (atomFreq[i] - minFreqViz) / (maxFreqViz - minFreqViz)
+            normFreq = (atomFreq [i] - minFreqViz) / (maxFreqViz - minFreqViz)
         else
             normFreq = 0.5
         endif
@@ -562,7 +688,7 @@ if draw_visualization
         
         dotColor$ = "{" + fixed$(red, 2) + ", " + fixed$(green, 2) + ", " + fixed$(blue, 2) + "}"
         
-        Paint circle (mm): dotColor$, atomOutputTime[i], atomPan[i], 0.8
+        Paint circle (mm): dotColor$, atomOutputTime [i], atomPan [i], 0.8
     endfor
     
     # Center line (mono position)
@@ -592,7 +718,7 @@ if draw_visualization
     # Calculate statistics
     avgFreq = 0
     for i to numAtoms
-        avgFreq = avgFreq + atomFreq[i]
+        avgFreq = avgFreq + atomFreq [i]
     endfor
     avgFreq = avgFreq / numAtoms
     

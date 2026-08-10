@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,14 +11,37 @@
 #   In-Place Paulstretch Slicer - extracts random segments,
 #   applies Paulstretch (phase-randomized time stretching),
 #   and places them back at original positions. Creates
-#   ethereal, frozen texture effects. Slices alternate L-R
-#   to produce a stereo result (dry mono on both channels,
-#   wet slices split into the alternating channel).
+#   ethereal, frozen texture effects. Wet slices are distributed
+#   round-robin across output channels. Stereo/multichannel sources
+#   preserve their original dry channel layout; mono sources retain
+#   the historical stereo L-R alternating output.
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5:
+#   - TRUE MULTICHANNEL OUTPUT. v0.4 collapsed every source to mono and
+#     always rebuilt stereo. v0.5 preserves the original dry channel layout;
+#     wet Paulstretch slices are mono textures distributed round-robin across
+#     all source channels. Mono sources retain the historical stereo output.
+#   - FIXED non-zero input time domains by creating a zero-based source copy
+#     before all slice extraction and visualization.
+#   - Paulstretch OLA now accumulates a synthesis-window normalization buffer
+#     and divides by it after overlap-add, preventing overlap-percent-dependent
+#     amplitude pumping.
+#   - paulstretchFast now returns exactly segmentDuration * stretchFactor; the
+#     previous internal +window buffer leaked into slice duration, placement,
+#     fades and visualization.
+#   - Removed per-slice and per-wet-channel peak normalization. Those stages
+#     boosted quiet source regions and altered L/R balance. Peak control is now
+#     downward-only safety limiting, so Dry_wet_mix remains meaningful.
+#   - Final output is trimmed to the actual latest wet-slice end (or original
+#     duration), replacing the arbitrary original+2-second truncation.
+#   - Fades are clamped to half the stretched slice instead of silently doing
+#     nothing when a requested fade is too long.
+#   - Added guards for overlap, slice count, fades and effective FFT window.
 #
 # Changelog v0.4 (audio CHANGES from v0.3 -- both fixes intentional):
 #
@@ -121,7 +144,7 @@
 #   - Added presets
 # ============================================================
 
-form In-Place Paulstretch Slicer v0.4
+form In-Place Paulstretch Slicer v0.5
     optionmenu Preset: 1
         option Custom
         option Subtle Shimmer
@@ -129,14 +152,14 @@ form In-Place Paulstretch Slicer v0.4
         option Extreme Stretch
         option Glitch Clouds
         option Ambient Wash
-    positive Number_of_slices 4
+    natural Number_of_slices 4
     real Min_duration_s 0.1
     real Max_duration_s 0.5
     positive Stretch_factor 4.0
     positive Window_size_s 0.25
-    positive Overlap_percent 50
-    positive Fade_in_s 0.05
-    positive Fade_out_s 0.1
+    real Overlap_percent 50
+    real Fade_in_s 0.05
+    real Fade_out_s 0.1
     real Dry_wet_mix 0.5
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -216,11 +239,16 @@ original = selected("Sound")
 original_name$ = selected$("Sound")
 
 selectObject: original
+sourceStart = Get start time
+sourceEnd = Get end time
 totalDuration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
 
 # === Validate ===
+if number_of_slices < 1 or number_of_slices > 256
+    exitScript: "Number of slices must be 1-256"
+endif
 if min_duration_s <= 0 or max_duration_s <= 0
     exitScript: "Durations must be positive"
 endif
@@ -230,6 +258,18 @@ endif
 if max_duration_s > totalDuration
     exitScript: "Max duration cannot exceed sound duration"
 endif
+if stretch_factor <= 0
+    exitScript: "Stretch factor must be > 0"
+endif
+if window_size_s <= 0
+    exitScript: "Window size must be > 0"
+endif
+if overlap_percent < 0 or overlap_percent >= 100
+    exitScript: "Overlap percent must be >= 0 and < 100"
+endif
+if fade_in_s < 0 or fade_out_s < 0
+    exitScript: "Fade durations must be >= 0"
+endif
 
 # Clamp dry/wet
 if dry_wet_mix < 0
@@ -238,9 +278,31 @@ elsif dry_wet_mix > 1
     dry_wet_mix = 1
 endif
 
+# Preserve source geometry. Mono keeps the historical stereo output.
+if numChannels = 1
+    outputChannels = 2
+else
+    outputChannels = numChannels
+endif
+
+# Zero-based source copy. All structural times below are offsets from 0.
+selectObject: original
+sourceZero = Copy: "ps_source_zero"
+Shift times to: "start time", 0
+
+# Wet texture analysis is mono, while the dry path remains multichannel.
+selectObject: sourceZero
+if numChannels > 1
+    Convert to mono
+    sourceSound = selected("Sound")
+else
+    Copy: "source_mono"
+    sourceSound = selected("Sound")
+endif
+
 # === Info ===
-writeInfoLine: "=== In-Place Paulstretch Slicer v0.4 ==="
-appendInfoLine: "Source: ", original_name$, " (", fixed$(totalDuration, 2), " s)"
+writeInfoLine: "=== In-Place Paulstretch Slicer v0.5 ==="
+appendInfoLine: "Source: ", original_name$, " (", fixed$(totalDuration, 2), " s; ", numChannels, " ch -> ", outputChannels, " ch output)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Slices: ", number_of_slices
@@ -255,6 +317,9 @@ while ps_effectiveSamples < ps_requestedSamples
     ps_effectiveSamples = ps_effectiveSamples * 2
 endwhile
 ps_effectiveWinSize = ps_effectiveSamples / sampleRate
+if ps_effectiveSamples < 4
+    exitScript: "Effective Paulstretch window must contain at least 4 samples"
+endif
 if abs(ps_effectiveWinSize - window_size_s) > 0.0005
     appendInfoLine: "Window: ", fixed$(ps_effectiveWinSize, 4), " s (", ps_effectiveSamples,
         ... " samples; pow2-rounded up from request of ", fixed$(window_size_s, 4), " s)"
@@ -265,38 +330,17 @@ endif
 appendInfoLine: "Dry/Wet: ", fixed$(dry_wet_mix * 100, 0), "% wet"
 appendInfoLine: ""
 
-# === Calculate Padding ===
+# === Calculate Render Buffer ===
 maxStretchedDuration = max_duration_s * stretch_factor
-paddingDuration = maxStretchedDuration
+# Conservative workspace; final result is trimmed to the actual latest slice.
+paddingDuration = max(maxStretchedDuration, ps_effectiveWinSize)
 paddedDuration = totalDuration + paddingDuration
 
-# === Convert to Mono for Processing ===
-selectObject: original
-if numChannels > 1
-    Convert to mono
-    sourceSound = selected("Sound")
-else
-    Copy: "source_mono"
-    sourceSound = selected("Sound")
-endif
+# === Create multichannel wet buffer ===
+Create Sound from formula: "wet_multi", outputChannels, 0, paddedDuration, sampleRate, "0"
+wetMulti = selected("Sound")
 
-# === Create Dry Channel (padded original) ===
-Create Sound from formula: "pad", 1, 0, paddingDuration, sampleRate, "0"
-padSound = selected("Sound")
-
-selectObject: sourceSound, padSound
-Concatenate
-dryMono = selected("Sound")
-Rename: "dry_mono"
-
-removeObject: padSound
-
-# === Create Wet Channels (L and R, empty) ===
-Create Sound from formula: "wet_L", 1, 0, paddedDuration, sampleRate, "0"
-wetL = selected("Sound")
-
-Create Sound from formula: "wet_R", 1, 0, paddedDuration, sampleRate, "0"
-wetR = selected("Sound")
+maxRenderedEnd = totalDuration
 
 # === Store slice info for visualization ===
 for i to number_of_slices
@@ -320,44 +364,39 @@ procedure paulstretchFast: .inputID, .stretch, .winSize, .overlapPct
     selectObject: .inputID
     .dur = Get total duration
     .sr = Get sampling frequency
-    
-    # v0.4 Fix A: round .winSamples UP to next pow2 so that
-    # `To Spectrum: "yes"` doesn't auto-pad the FFT input.
-    # With pow2 input, IFFT roundtrip preserves duration, so the
-    # synthesis Hann window applied via `Multiply by window`
-    # zeros the edges of the actually-used overlap-add range
-    # (Fix A: see header changelog).
-    .requestedWinSize = .winSize
+
+    # Pow2 FFT window (v0.4 correctness fix retained).
     .requestedWinSamples = round(.winSize * .sr)
     .winSamples = 1
     while .winSamples < .requestedWinSamples
         .winSamples = .winSamples * 2
     endwhile
     .winSize = .winSamples / .sr
-    
+
     .overlapFrac = .overlapPct / 100
     .hopOut = .winSize * (1 - .overlapFrac)
     .hopIn = .hopOut / .stretch
     .outDur = .dur * .stretch
+    .bufferDur = .outDur + .winSize
     .nFrames = ceiling(.outDur / .hopOut) + 1
-    
-    # Output buffer
-    .outID = Create Sound from formula: "ps_out", 1, 0, .outDur + .winSize, .sr, "0"
-    
-    # Process frames
+
+    # Audio accumulator + synthesis-window normalization accumulator.
+    .outID = Create Sound from formula: "ps_out", 1, 0, .bufferDur, .sr, "0"
+    .normID = Create Sound from formula: "ps_norm", 1, 0, .bufferDur, .sr, "0"
+
     for .i from 0 to .nFrames - 1
         .tIn = .i * .hopIn
         .tMidStart = .tIn - .winSize / 2
         .tMidEnd = .tIn + .winSize / 2
-        
+
         selectObject: .inputID
         .exStart = max(0, .tMidStart)
         .exEnd = min(.dur, .tMidEnd)
-        
+
         if .exEnd > .exStart
             .frame = Extract part: .exStart, .exEnd, "rectangular", 1, "no"
-            
-            # Pad frame if needed
+
+            # Center-pad partial boundary frames to the FFT window.
             .durFrame = Get total duration
             if abs(.durFrame - .winSize) > 0.00001
                 .padded = Create Sound from formula: "pad", 1, 0, .winSize, .sr, "0"
@@ -365,73 +404,79 @@ procedure paulstretchFast: .inputID, .stretch, .winSize, .overlapPct
                 if .tMidStart < 0
                     .offset = abs(.tMidStart)
                 endif
-                .sOff$ = fixed$(.offset, 6)
+                .sOff$ = fixed$(.offset, 9)
                 .fid = .frame
-                # v0.3: Formula (part) avoids iterating over
-                # the rest of the padded buffer that just
-                # returns self.
-                Formula (part): .offset, .offset + .durFrame, 1, 1, "self + object(" + string$(.fid) + ", x - " + .sOff$ + ")"
+                Formula (part): .offset, min(.winSize, .offset + .durFrame), 1, 1, "self + object(" + string$(.fid) + ", x - " + .sOff$ + ")"
                 removeObject: .frame
                 .frame = .padded
             endif
-            
-            # Window
+
+            # Analysis window.
             selectObject: .frame
             Multiply by window: "Hanning"
-            
-            # Phase Randomization
+
+            # Randomize phase while preserving the ORIGINAL magnitude spectrum.
             .spec = To Spectrum: "yes"
             selectObject: .spec
             .matC = To Matrix
             selectObject: .matC
             .matP = Copy: "phases"
             Formula: "randomUniform(-pi, pi)"
-            
-            # v0.4 Fix B: precompute magnitudes into a separate
-            # Matrix BEFORE running the in-place randomization on
-            # .matC. v0.3 used `sqrt(self[1,col]^2 + self[2,col]^2)`
-            # inside the .matC Formula, which was corrupted by the
-            # in-place evaluation order: when row=2 was processed,
-            # `self[1,col]` had already been overwritten by the
-            # row=1 branch (with mag*cos(phase)). So the magnitude
-            # used for the imag part was wrong.
-            # v0.4 reads `object[.mid, 1, col]` for both rows --
-            # .matM is never modified during the .matC Formula, so
-            # row 2 sees the correct ORIGINAL magnitude.
+
             selectObject: .matC
             .matM = Copy: "mags"
             .cid = .matC
             Formula: "if row = 1 then sqrt(object[.cid, 1, col]^2 + object[.cid, 2, col]^2) else self fi"
-            
+
             selectObject: .matC
             .pid = .matP
             .mid = .matM
             Formula: "if (col=1 or col=ncol) then self else (if row=1 then object[.mid,1,col] * cos(object[.pid,1,col]) else object[.mid,1,col] * sin(object[.pid,1,col]) fi) fi"
-            
+
             .specMod = To Spectrum
             selectObject: .specMod
             .proc = To Sound
-            
-            # Window again
+
+            # Synthesis window.
             selectObject: .proc
             Multiply by window: "Hanning"
-            
-            # Overlap Add
+
             .tOut = .i * .hopOut
             Shift times to: "start time", .tOut
-            
-            selectObject: .outID
-            .procID = .proc
-            # v0.3: Formula (part) over [tOut, tOut + winSize]
-            # only — the hot loop inside the inner loop. Was
-            # iterating over the entire .outID per frame
-            # (~88% wasted iterations).
-            Formula (part): .tOut, .tOut + .winSize, 1, 1, "self + object(" + string$(.procID) + ", x)"
-            
+            .writeEnd = min(.bufferDur, .tOut + .winSize)
+
+            if .writeEnd > .tOut
+                .procID = .proc
+                selectObject: .outID
+                Formula (part): .tOut, .writeEnd, 1, 1, "self + object(" + string$(.procID) + ", x)"
+
+                # Accumulate the same synthesis Hann used above. Dividing by
+                # this after OLA makes overlap percentage gain-neutral.
+                .tOut$ = fixed$(.tOut, 12)
+                .win$ = fixed$(.winSize, 12)
+                selectObject: .normID
+                Formula (part): .tOut, .writeEnd, 1, 1, "self + 0.5 - 0.5*cos(2*pi*(x-" + .tOut$ + ")/" + .win$ + ")"
+            endif
+
             removeObject: .frame, .spec, .matC, .matP, .matM, .specMod, .proc
         endif
     endfor
-    
+
+    # OLA normalization.
+    .normStr$ = string$(.normID)
+    selectObject: .outID
+    Formula: "if object[" + .normStr$ + ",1,col] > 1e-9 then self / object[" + .normStr$ + ",1,col] else 0 fi"
+    removeObject: .normID
+
+    # Internal OLA workspace includes one extra window. Return the requested
+    # musical duration exactly, not duration+window.
+    selectObject: .outID
+    if .outDur < .bufferDur
+        .trimmed = Extract part: 0, .outDur, "rectangular", 1, "no"
+        removeObject: .outID
+        .outID = .trimmed
+    endif
+
     selectObject: .outID
 endproc
 
@@ -455,13 +500,16 @@ for i to number_of_slices
     sliceStart[i] = winStart
     sliceEnd[i] = winEnd
     
-    # Determine channel (alternate L-R)
-    if i mod 2 = 1
-        sliceChannel[i] = 1
-        chanLabel$ = "L"
+    # Round-robin wet channel assignment. Stereo remains L/R alternating.
+    sliceChannel[i] = ((i - 1) mod outputChannels) + 1
+    if outputChannels = 2
+        if sliceChannel[i] = 1
+            chanLabel$ = "L"
+        else
+            chanLabel$ = "R"
+        endif
     else
-        sliceChannel[i] = 2
-        chanLabel$ = "R"
+        chanLabel$ = "Ch" + string$(sliceChannel[i])
     endif
     
     appendInfoLine: "  Slice ", i, " [", chanLabel$, "]: ", fixed$(winStart, 2), "s - ", fixed$(winEnd, 2), "s (", fixed$(segLen, 2), "s)"
@@ -481,17 +529,22 @@ for i to number_of_slices
     stretchedDur = Get total duration
     sliceStretchedDur[i] = stretchedDur
     
-    # Apply fade in/out to slice
-    if fade_in_s > 0 and fade_in_s < stretchedDur / 2
-        Formula (part): 0, fade_in_s, 1, 1, "self * (0.5 - 0.5 * cos(pi * x / fade_in_s))"
+    # Apply requested fades, clamped safely to half the stretched slice.
+    effectiveFadeIn = min(fade_in_s, stretchedDur / 2)
+    effectiveFadeOut = min(fade_out_s, stretchedDur / 2)
+    if effectiveFadeIn > 0
+        Formula (part): 0, effectiveFadeIn, 1, 1, "self * (0.5 - 0.5 * cos(pi * x / effectiveFadeIn))"
     endif
-    if fade_out_s > 0 and fade_out_s < stretchedDur / 2
-        fadeOutStart = stretchedDur - fade_out_s
-        Formula (part): fadeOutStart, stretchedDur, 1, 1, "self * (0.5 + 0.5 * cos(pi * (x - fadeOutStart) / fade_out_s))"
+    if effectiveFadeOut > 0
+        fadeOutStart = stretchedDur - effectiveFadeOut
+        Formula (part): fadeOutStart, stretchedDur, 1, 1, "self * (0.5 + 0.5 * cos(pi * (x - fadeOutStart) / effectiveFadeOut))"
     endif
-    
-    # Normalize slice
-    Scale peak: 0.95
+
+    # Safety ceiling only: never boost a quiet source slice.
+    slicePeak = Get absolute extremum: 0, 0, "Sinc70"
+    if slicePeak > 0.95
+        Formula: "self * 0.95 / slicePeak"
+    endif
     
     # Calculate placement (centered on original position)
     originalCenter = winStart + (segLen / 2)
@@ -507,68 +560,56 @@ for i to number_of_slices
     
     psStr$ = string$(psID)
     
-    if sliceChannel[i] = 1
-        selectObject: wetL
-    else
-        selectObject: wetR
+    writeEnd = min(paddedDuration, targetStart + stretchedDur)
+    selectObject: wetMulti
+    if writeEnd > targetStart
+        Formula (part): targetStart, writeEnd, sliceChannel[i], sliceChannel[i], "self + object(" + psStr$ + ", x)"
     endif
-    # v0.3: Formula (part) — only [targetStart, targetStart +
-    # stretchedDur] is written. wetL/wetR are paddedDuration
-    # long; placement occupies a small fraction.
-    Formula (part): targetStart, targetStart + stretchedDur, 1, 1, "self + object(" + psStr$ + ", x)"
-    
+    if targetStart + stretchedDur > maxRenderedEnd
+        maxRenderedEnd = targetStart + stretchedDur
+    endif
+
     # Cleanup
     removeObject: segID, psID
 endfor
 
-# === Normalize Wet Channels ===
-selectObject: wetL
-Scale peak: 0.95
-
-selectObject: wetR
-Scale peak: 0.95
-
 # ===================================================================
-# MIX OUTPUT (Stereo: dry on both + wet L-R)
+# MIX OUTPUT (preserve source channels; mono source -> historical stereo)
 # ===================================================================
-
 appendInfoLine: ""
-appendInfoLine: "Mixing stereo output..."
+appendInfoLine: "Mixing ", outputChannels, "-channel output..."
 
 dryAmp = 1 - dry_wet_mix
 wetAmp = dry_wet_mix
+sourceZeroStr$ = string$(sourceZero)
+wetStr$ = string$(wetMulti)
 
-# Create Left channel: dry + wetL
-Create Sound from formula: "outL", 1, 0, paddedDuration, sampleRate, "0"
-outL = selected("Sound")
+if numChannels = 1
+    result = Create Sound from formula: original_name$ + "_PSslice_" + presetName$,
+        ... outputChannels, 0, paddedDuration, sampleRate,
+        ... "object[" + sourceZeroStr$ + ",1,col] * dryAmp + object[" + wetStr$ + ",row,col] * wetAmp"
+else
+    result = Create Sound from formula: original_name$ + "_PSslice_" + presetName$,
+        ... outputChannels, 0, paddedDuration, sampleRate,
+        ... "object[" + sourceZeroStr$ + ",row,col] * dryAmp + object[" + wetStr$ + ",row,col] * wetAmp"
+endif
 
-dryStr$ = string$(dryMono)
-wetLStr$ = string$(wetL)
-Formula: "object(" + dryStr$ + ", x) * dryAmp + object(" + wetLStr$ + ", x) * wetAmp"
+# Downward-only safety ceiling preserves Dry_wet_mix and source dynamics.
+selectObject: result
+mixPeak = Get absolute extremum: 0, 0, "Sinc70"
+if mixPeak > 0.95
+    Formula: "self * 0.95 / mixPeak"
+endif
 
-# Create Right channel: dry + wetR
-Create Sound from formula: "outR", 1, 0, paddedDuration, sampleRate, "0"
-outR = selected("Sound")
-
-wetRStr$ = string$(wetR)
-Formula: "object(" + dryStr$ + ", x) * dryAmp + object(" + wetRStr$ + ", x) * wetAmp"
-
-# Combine to stereo
-selectObject: outL, outR
-Combine to stereo
-result = selected("Sound")
-Scale peak: 0.95
-Rename: original_name$ + "_PSslice_" + presetName$
-
-# Cleanup mono channels
-removeObject: outL, outR
-
-# === Trim to reasonable length ===
+# Trim to actual content end, not an arbitrary original+2 seconds.
+actualEnd = max(totalDuration, maxRenderedEnd)
+if actualEnd > paddedDuration
+    actualEnd = paddedDuration
+endif
 selectObject: result
 resultDur = Get total duration
-if resultDur > totalDuration + 2
-    Extract part: 0, totalDuration + 2, "rectangular", 1, "no"
-    trimmed = selected("Sound")
+if actualEnd < resultDur - 1 / sampleRate
+    trimmed = Extract part: 0, actualEnd, "rectangular", 1, "no"
     removeObject: result
     result = trimmed
     selectObject: result
@@ -576,23 +617,29 @@ if resultDur > totalDuration + 2
 endif
 
 # === Cleanup ===
-removeObject: sourceSound, dryMono, wetL, wetR
+removeObject: sourceSound, sourceZero, wetMulti
 
 # Capture final stats
 selectObject: result
 finalDuration = Get total duration
 finalPeak = Get absolute extremum: 0, 0, "None"
+resultChannels = Get number of channels
 
-# Count channel distribution for summary
+# Count first two channels for stereo-style visualization labels.
 leftSliceCount = 0
 rightSliceCount = 0
 for i to number_of_slices
     if sliceChannel[i] = 1
         leftSliceCount += 1
-    else
+    elsif sliceChannel[i] = 2
         rightSliceCount += 1
     endif
 endfor
+if outputChannels = 2
+    channelSummary$ = string$(leftSliceCount) + " L / " + string$(rightSliceCount) + " R"
+else
+    channelSummary$ = string$(outputChannels) + " output channels (wet round-robin)"
+endif
 
 # ============================================================
 # VISUALIZATION  (8 x 8 canvas — suite standard)
@@ -612,15 +659,16 @@ if draw_visualization
     else
         vizOriginal = Copy: "viz_original"
     endif
+    selectObject: vizOriginal
+    Shift times to: "start time", 0
     
     selectObject: result
     resNumCh = Get number of channels
-    if resNumCh = 2
-        vizResultL = Extract one channel: 1
-        selectObject: result
+    vizResultL = Extract one channel: 1
+    selectObject: result
+    if resNumCh >= 2
         vizResultR = Extract one channel: 2
     else
-        vizResultL = Copy: "viz_resultL"
         vizResultR = Copy: "viz_resultR"
     endif
     
@@ -669,9 +717,9 @@ if draw_visualization
     Text: 0.5, "centre", -0.22, "half",
         ... original_name$
         ... + "  |  " + presetName$
-        ... + "  |  " + string$(number_of_slices) + " slices (" + string$(leftSliceCount) + " L / " + string$(rightSliceCount) + " R)"
+        ... + "  |  " + string$(number_of_slices) + " slices (" + channelSummary$ + ")"
         ... + "  |  " + fixed$(stretch_factor, 1) + "x stretch"
-        ... + "  |  " + fixed$(window_size_s * 1000, 0) + " ms win"
+        ... + "  |  " + fixed$(ps_effectiveWinSize * 1000, 0) + " ms effective win"
         ... + "  |  " + fixed$(overlap_percent, 0) + "% overlap"
         ... + "  |  " + fixed$(dry_wet_mix * 100, 0) + "% wet"
     
@@ -741,10 +789,14 @@ if draw_visualization
         # Slice number + channel label inside the row
         Font size: 5
         Colour: borderColor$
-        if sliceChannel[i] = 1
-            chLabel$ = "L"
+        if outputChannels = 2
+            if sliceChannel[i] = 1
+                chLabel$ = "L"
+            else
+                chLabel$ = "R"
+            endif
         else
-            chLabel$ = "R"
+            chLabel$ = "Ch" + string$(sliceChannel[i])
         endif
         labelX = sliceTargetStart[i] - maxTime * 0.005
         if labelX < maxTime * 0.005
@@ -780,7 +832,7 @@ if draw_visualization
     Text: 0.05, "left", 0.80, "half", "Slices:"
     Font size: 9
     Colour: "{0.20, 0.50, 0.82}"
-    Text: 0.10, "left", 0.74, "half", string$(number_of_slices) + " total (" + string$(leftSliceCount) + " on L, " + string$(rightSliceCount) + " on R)"
+    Text: 0.10, "left", 0.74, "half", string$(number_of_slices) + " total | " + channelSummary$
     Text: 0.10, "left", 0.68, "half", "Duration: " + fixed$(min_duration_s * 1000, 0) + " - " + fixed$(max_duration_s * 1000, 0) + " ms (random)"
     
     Font size: 9
@@ -788,7 +840,7 @@ if draw_visualization
     Text: 0.05, "left", 0.60, "half", "Paulstretch:"
     Font size: 9
     Colour: "{0.55, 0.30, 0.78}"
-    Text: 0.10, "left", 0.54, "half", fixed$(stretch_factor, 1) + "x stretch | window " + fixed$(window_size_s * 1000, 0) + " ms"
+    Text: 0.10, "left", 0.54, "half", fixed$(stretch_factor, 1) + "x stretch | effective window " + fixed$(ps_effectiveWinSize * 1000, 0) + " ms"
     Text: 0.10, "left", 0.48, "half", "Overlap: " + fixed$(overlap_percent, 0) + "% | hop in/out by stretch"
     
     Font size: 9
@@ -804,7 +856,7 @@ if draw_visualization
     Font size: 9
     Colour: "{0.20, 0.50, 0.30}"
     Text: 0.10, "left", 0.20, "half", "Dry " + fixed$((1 - dry_wet_mix) * 100, 0) + "% | Wet " + fixed$(dry_wet_mix * 100, 0) + "%"
-    Text: 0.10, "left", 0.14, "half", "Output: stereo (dry on both, wet L/R alternating)"
+    Text: 0.10, "left", 0.14, "half", "Output: " + string$(outputChannels) + " ch; dry preserved, wet round-robin"
     
     Font size: 9
     Colour: "{0.30, 0.55, 0.30}"
@@ -822,7 +874,7 @@ if draw_visualization
     
     Font size: 7
     Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Slice mapping  (outer = original, inner = stretched, red = L, blue = R)"
+    Text: 2.10, "centre", 7.30, "half", "Slice mapping  (outer = original, inner = stretched; colour families alternate by channel)"
     Text: 6.10, "centre", 7.30, "half", "Parameter report"
     
     # ----------------------------------------------------------
@@ -869,7 +921,7 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Original waveform with slice regions  (red bands = L slices, blue = R)"
+    Text top: "no", "Original waveform with slice regions  (colour families alternate by wet channel)"
     Text left: "yes", "Amp"
     Text bottom: "yes", "Time (s)"
     
@@ -925,7 +977,7 @@ if draw_visualization
     Axes: 0, 8, 0, 8
     Font size: 7
     Colour: "Black"
-    Text: 4.0, "centre", 7.95, "half", "Result stereo (L top, R bottom)"
+    Text: 4.0, "centre", 7.95, "half", "Result channels 1/2 (top/bottom)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR  (suite standard — light grey)
@@ -940,16 +992,16 @@ if draw_visualization
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
         ... + "  " + original_name$
-        ... + "  |  Slices: " + string$(number_of_slices) + " (" + string$(leftSliceCount) + " L / " + string$(rightSliceCount) + " R)"
+        ... + "  |  Slices: " + string$(number_of_slices) + " (" + channelSummary$ + ")"
         ... + "  |  Dur range: " + fixed$(min_duration_s * 1000, 0) + "-" + fixed$(max_duration_s * 1000, 0) + " ms"
         ... + "  |  Stretch: " + fixed$(stretch_factor, 1) + "x"
-        ... + "  |  Window: " + fixed$(window_size_s * 1000, 0) + " ms / " + fixed$(overlap_percent, 0) + "%"
+        ... + "  |  Window: " + fixed$(ps_effectiveWinSize * 1000, 0) + " ms eff. / " + fixed$(overlap_percent, 0) + "%"
     
     Text: 0.02, "left", 0.28, "half",
         ... "Fades: in " + fixed$(fade_in_s * 1000, 0) + " ms / out " + fixed$(fade_out_s * 1000, 0) + " ms"
         ... + "  |  Mix: " + fixed$((1 - dry_wet_mix) * 100, 0) + "% dry / " + fixed$(dry_wet_mix * 100, 0) + "% wet"
         ... + "  |  In: " + fixed$(totalDuration, 2) + " s"
-        ... + "  |  Out: " + fixed$(finalDuration, 2) + " s (stereo)"
+        ... + "  |  Out: " + fixed$(finalDuration, 2) + " s (" + string$(resultChannels) + " ch)"
         ... + "  |  Peak: " + fixed$(finalPeak, 3)
     
     Colour: "Black"
@@ -969,7 +1021,7 @@ selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Output: ", selected$("Sound")
-appendInfoLine: "Duration: ", fixed$(finalDuration, 2), " s"
+appendInfoLine: "Duration: ", fixed$(finalDuration, 2), " s | Channels: ", resultChannels
 appendInfoLine: "Dry/Wet: ", fixed$((1 - dry_wet_mix) * 100, 0), "% / ", fixed$(dry_wet_mix * 100, 0), "%"
 
 # === Play ===

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2025)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,18 @@
 #     Milliseconds - fixed short delays for audible tonal comb filtering.
 #     Tempo-synced - delays set as note values (1/2..1/32, incl. dotted)
 #                    at Manual_bpm; D = beats * (60/bpm) * sampleRate.
+#
+# Changelog v0.6:
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged from v0.5.
+#     Output name remains <source>_stereo_split.
+#   - ROBUSTNESS: mono->stereo preparation now tracks temporary Sounds by ID
+#     rather than by generic names (left_tmp/right_tmp), preventing collisions
+#     with pre-existing objects in caller scripts.
+#   - SAFE NORMALIZATION: Scale peak is skipped for digital silence.
+#   - MULTICHANNEL: inputs with >2 channels still intentionally produce stereo
+#     from channels 1/2, but this is now reported explicitly in the Info window.
+#   - VISUALIZATION: spectrum upper bound is capped at Nyquist instead of a
+#     hard-coded 5 kHz; title panel resets normalized axes explicitly.
 #
 # Changelog v0.5:
 #   - Added Wet_dry mix (0 = dry, 1 = fully wet). Each channel is mixed
@@ -188,18 +200,26 @@ appendInfoLine: ""
 if numChannels = 1
     selectObject: original
     Copy: "left_tmp"
+    leftTmpID = selected("Sound")
     selectObject: original
     Copy: "right_tmp"
-    selectObject: "Sound left_tmp", "Sound right_tmp"
+    rightTmpID = selected("Sound")
+
+    # Use object IDs, not generic names: caller scripts may already contain
+    # objects called left_tmp/right_tmp. Copies are created L then R, so their
+    # Object-list order also preserves the intended stereo channel order.
+    selectObject: leftTmpID, rightTmpID
     Combine to stereo
     sourceSound = selected("Sound")
-    # Clean up the temporary mono copies
-    removeObject: "Sound left_tmp", "Sound right_tmp"
+    removeObject: leftTmpID, rightTmpID
     appendInfoLine: "Converted mono to stereo for processing"
 else
     selectObject: original
     Copy: "stereo_temp"
     sourceSound = selected("Sound")
+    if numChannels > 2
+        appendInfoLine: "Input has ", numChannels, " channels; using channels 1 and 2 for stereo output"
+    endif
 endif
 
 # === Calculate Delays ===
@@ -325,7 +345,11 @@ Combine to stereo
 result = selected("Sound")
 Rename: original_name$ + "_stereo_split"
 
-Scale peak: scale_peak
+# Keep the existing normalization contract, but avoid scaling digital silence.
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: scale_peak
+endif
 
 # === Cleanup ===
 removeObject: leftChannel, rightChannel, leftDry, rightDry, sourceSound
@@ -336,6 +360,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 1, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Stereo Delay Splitter: " + original_name$ + " (" + presetName$ + ")"
@@ -362,6 +387,9 @@ if draw_visualization
     Text left: "yes", "Stereo Split"
     Text bottom: "yes", "Time (s)"
     
+    # Spectrum display range: never request frequencies above Nyquist.
+    vizMaxHz = min(5000, sampleRate / 2)
+
     # Original spectrum
     Select outer viewport: 0, 4, 3.7, 5.3
     Select inner viewport: 0.6, 3.8, 3.9, 5.2
@@ -374,7 +402,7 @@ if draw_visualization
     endif
     To Spectrum: "yes"
     origSpec = selected("Spectrum")
-    Draw: 0, 5000, 0, 80, "no"
+    Draw: 0, vizMaxHz, 0, 80, "no"
     removeObject: origSpec, specMono
     Colour: "{0.8, 0.5, 0.6}"
     Draw inner box
@@ -389,7 +417,7 @@ if draw_visualization
     resMono = Convert to mono
     To Spectrum: "yes"
     resSpec = selected("Spectrum")
-    Draw: 0, 5000, 0, 80, "no"
+    Draw: 0, vizMaxHz, 0, 80, "no"
     removeObject: resSpec, resMono
     Colour: "Black"
     Draw inner box

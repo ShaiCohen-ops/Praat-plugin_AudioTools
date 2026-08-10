@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,19 @@
 #   despite the script name. Default delay timing is a fraction of the
 #   file (totalSamples/(delay_base+fib)); enable Use_fixed_ms for delays
 #   anchored to an absolute base time, with the same Fibonacci ratios.
+#
+# Changelog v0.4:
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged.
+#     Output name remains <source>_fibonacci_echo.
+#   - FIX: fraction-of-file delays now use the original source length.
+#     v0.3 calculated them after appending the tail, so Tail_duration_s
+#     unintentionally changed the echo timing itself.
+#   - STABILITY: unsafe custom recursive feedback settings are scaled
+#     internally so the maximum feedback coefficient stays below 0.98.
+#     All built-in presets remain unchanged.
+#   - SAFE NORMALIZATION: Scale_peak is skipped for digital silence.
+#   - HARDENING: Scale_peak must be <= 1 and Cascade_levels <= 40.
+#   - VISUALIZATION: title panel now sets normalized axes explicitly.
 #
 # Changelog v0.3:
 #   - Added optional fixed-ms delay mode (Use_fixed_ms, off by default):
@@ -115,6 +128,14 @@ sampleRate = Get sampling frequency
 duration = Get total duration
 numChannels = Get number of channels
 
+# === Internal Guards (public parameters unchanged) ===
+if cascade_levels > 40
+    exitScript: "Cascade_levels must not exceed 40."
+endif
+if scale_peak > 1
+    exitScript: "Scale_peak must be <= 1."
+endif
+
 # === Get Preset Name ===
 if preset = 1
     presetName$ = "Default"
@@ -150,6 +171,10 @@ else
     sourceSound = selected("Sound")
 endif
 
+# Capture original source length before silence is appended.
+selectObject: sourceSound
+sourceSamples = Get number of samples
+
 # === Create Silence Tail ===
 silence = Create Sound from formula: "tail", 1, 0, tail_duration_s, sampleRate, "0"
 
@@ -161,7 +186,7 @@ Rename: original_name$ + "_fibonacci_echo"
 
 removeObject: sourceSound, silence
 
-# Get new total samples (with tail)
+# Get output sample count (source + tail); used by the shimmer LFO.
 selectObject: result
 totalSamples = Get number of samples
 
@@ -200,7 +225,8 @@ for level from 1 to cascade_levels
     if use_fixed_ms
         delayShift = round(fixed_base_ms / 1000 * sampleRate * (delay_base + 1) / (delay_base + fibCurrent))
     else
-        delayShift = round(totalSamples / (delay_base + fibCurrent))
+        # Tail length must not alter the echo timing.
+        delayShift = round(sourceSamples / (delay_base + fibCurrent))
     endif
     if delayShift < 1
         delayShift = 1
@@ -214,18 +240,33 @@ for level from 1 to cascade_levels
     # Echo shimmer (time-varying gain, not spectral)
     shimmerCenter = shimmer_center
     shimmerDepth = shimmer_depth
-    
+
+    # Recursive stability ceiling. Since center/depth are positive, the
+    # maximum possible absolute shimmer multiplier is center + depth.
+    feedbackSafety = 1
+    maxFeedback = currentDecay * (shimmerCenter + shimmerDepth)
+    if maxFeedback >= 0.98
+        feedbackSafety = 0.98 / maxFeedback
+    endif
+
     appendInfoLine: "  Level ", level, ": fib=", fibCurrent, " delay=", fixed$(delayMs#[level], 1), "ms decay=", fixed$(currentDecay, 3)
-    
-    # Recursive feedback echo with time-varying gain (shimmer) and bounds checking
-    Formula: ~ if col - delayShift >= 1 
-        ... then self + self[col - delayShift] * currentDecay * (shimmerCenter + shimmerDepth * cos(level * 2 * pi * col / totalSamples))
+    if feedbackSafety < 1
+        appendInfoLine: "    stability scaling=", fixed$(feedbackSafety, 4), " (max feedback 0.98)"
+    endif
+
+    # Intentional recursive feedback: self[col-delay] reads already-modified
+    # earlier samples during left-to-right Sound formula evaluation.
+    Formula: ~ if col - delayShift >= 1
+        ... then self + self[col - delayShift] * currentDecay * feedbackSafety * (shimmerCenter + shimmerDepth * cos(level * 2 * pi * col / totalSamples))
         ... else self fi
 endfor
 
 # === Scale Peak ===
 selectObject: result
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: scale_peak
+endif
 
 # === Visualization ===
 if draw_visualization
@@ -233,6 +274,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 1, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Spectral Echo Cascade: " + original_name$ + " (" + presetName$ + ")"
