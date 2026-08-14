@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,16 @@
 #   forward and backward through the audio timeline. Two modes:
 #   Stutter (always play forward) creates rhythmic repetition,
 #   Scrub (reverse when moving back) creates tape manipulation.
+#
+# Changelog v0.4:
+#   - API compatibility: public form is byte-for-byte unchanged.
+#   - Fixed non-zero source xmin by processing a private zero-based copy.
+#   - Preserves original mono/stereo/multichannel channel count.
+#   - Hardened Segment_duration_variation so generated durations stay positive.
+#   - Effective overlap is capped below the shortest generated grain length.
+#   - Safe peak normalization skips digital silence.
+#   - Visualization title uses explicit normalized axes.
+#   - Progress display is clamped to 100%.
 #
 # Changelog v0.3:
 #   - Stitching now batched: grains collected and concatenated in a
@@ -129,6 +139,27 @@ if zigzag_time_s >= totalDuration
     exitScript: "ZigZag time must be less than sound duration."
 endif
 
+# Private zero-based processing copy; original object/time domain stay untouched.
+selectObject: original
+workSource = Copy: "zigzag_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
+
+# Keep every randomized grain duration strictly positive.
+safeDurationVariation = segment_duration_variation
+if safeDurationVariation >= 1
+    safeDurationVariation = 0.99
+endif
+
+# Amplitude jitter is intended as a positive gain range around unity.
+safeAmplitudeVariation = amplitude_variation
+if safeAmplitudeVariation >= 1
+    safeAmplitudeVariation = 0.99
+endif
+
 # === Get Preset/Mode Names ===
 if preset = 1
     presetName$ = "Tape Scrub"
@@ -181,6 +212,7 @@ segDirections# = zero#(maxSegments)
 currentPosition = 0.0
 direction = 1
 segmentCount = 0
+minGrainDuration = totalDuration
 
 while currentPosition < totalDuration and segmentCount < maxSegments
     segmentCount += 1
@@ -188,7 +220,7 @@ while currentPosition < totalDuration and segmentCount < maxSegments
     # === Determine Segment ===
     if direction = 1
         # FORWARD SEGMENT
-        var = randomUniform(1.0 - segment_duration_variation, 1.0 + segment_duration_variation)
+        var = randomUniform(1.0 - safeDurationVariation, 1.0 + safeDurationVariation)
         currentSegDuration = segment_duration * var
         
         startTime = currentPosition
@@ -199,7 +231,7 @@ while currentPosition < totalDuration and segmentCount < maxSegments
         endif
         
         # Extract
-        selectObject: original
+        selectObject: workSource
         grain = Extract part: startTime, endTime, windowName$, 1, "no"
         
         # Store for visualization
@@ -213,7 +245,7 @@ while currentPosition < totalDuration and segmentCount < maxSegments
         
     else
         # BACKWARD SEGMENT
-        var = randomUniform(1.0 - segment_duration_variation, 1.0 + segment_duration_variation)
+        var = randomUniform(1.0 - safeDurationVariation, 1.0 + safeDurationVariation)
         currentSegDuration = segment_duration * var
         
         backwardDistance = currentSegDuration * backward_distance_factor
@@ -234,7 +266,7 @@ while currentPosition < totalDuration and segmentCount < maxSegments
         endif
         
         # Extract
-        selectObject: original
+        selectObject: workSource
         grain = Extract part: startTime, endTime, windowName$, 1, "no"
         
         # Scrub mode: reverse backward segments
@@ -252,9 +284,15 @@ while currentPosition < totalDuration and segmentCount < maxSegments
         direction = 1
     endif
     
-    # === Amplitude Jitter ===
+    # Track shortest actual extracted grain for safe batch overlap.
     selectObject: grain
-    ampFactor = randomUniform(1.0 - amplitude_variation, 1.0 + amplitude_variation)
+    thisGrainDuration = Get total duration
+    if thisGrainDuration < minGrainDuration
+        minGrainDuration = thisGrainDuration
+    endif
+
+    # === Amplitude Jitter ===
+    ampFactor = randomUniform(1.0 - safeAmplitudeVariation, 1.0 + safeAmplitudeVariation)
     Formula: ~ self * ampFactor
     
     # === Store grain for batched concatenation ===
@@ -263,11 +301,23 @@ while currentPosition < totalDuration and segmentCount < maxSegments
     # Progress
     if segmentCount mod 100 = 0
         perc = round((currentPosition / totalDuration) * 100)
+        if perc > 100
+            perc = 100
+        endif
         appendInfoLine: "  Segment ", segmentCount, " (", perc, "%)"
     endif
 endwhile
 
 # === Batched Concatenation (single pass; equivalent to pairwise) ===
+effectiveOverlap = segment_overlap_s
+if minGrainDuration > 0
+    maxSafeOverlap = minGrainDuration * 0.99
+    if effectiveOverlap > maxSafeOverlap
+        effectiveOverlap = maxSafeOverlap
+        appendInfoLine: "  Overlap reduced to ", fixed$(effectiveOverlap * 1000, 3), " ms to fit shortest grain."
+    endif
+endif
+
 if segmentCount = 1
     masterID = grainID[1]
 else
@@ -275,8 +325,8 @@ else
     for i from 2 to segmentCount
         plusObject: grainID[i]
     endfor
-    if segment_overlap_s > 0
-        masterID = Concatenate with overlap: segment_overlap_s
+    if effectiveOverlap > 0
+        masterID = Concatenate with overlap: effectiveOverlap
     else
         masterID = Concatenate
     endif
@@ -285,10 +335,15 @@ else
     endfor
 endif
 
+removeObject: workSource
+
 # === Finalize ===
 selectObject: masterID
 Rename: soundName$ + "_zigzag_" + modeName$
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "Sinc70"
+if resultPeak > 0
+    Scale peak: scale_peak
+endif
 result = selected("Sound")
 
 selectObject: result
@@ -300,6 +355,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "ZigZag Effect: " + soundName$ + " (" + presetName$ + ", " + modeName$ + ")"
