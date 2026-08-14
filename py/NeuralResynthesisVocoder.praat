@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.7 (2026) - House-style colour accents; collision fixes
+# Version: 2.8 (2026) - Experimental preservation mode + F0/duration/content controls
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,12 @@
 #     temperature - scales unit-vector magnitude (not sampling temp),
 #     quantization - rounds soft units to q levels (unit bitcrush),
 #     noise - injects Gaussian noise into the units.
+#
+#   Experimental preservation controls:
+#     duration - exact global output length lock in the Python engine,
+#     F0       - Praat PitchTier replacement + overlap-add post correction,
+#     articulation units - protects the HuBERT content trajectory by
+#                    bypassing latent noise/rounding (unit gain may remain).
 #
 #   Note: the pipeline is speech-trained and runs at 16 kHz internally
 #   (output band-limited to 8 kHz). Non-speech input is "speech-ified" -
@@ -39,9 +45,12 @@ sound_id = selected("Sound")
 sound_name$ = selected$("Sound")
 selectObject: sound_id
 original_sr = Get sampling frequency
+original_dur = Get total duration
+original_start = Get start time
+original_channels = Get number of channels
 
 # ---- FORM INTERFACE WITH EXTREME PRESETS ----
-form Neural Audio Resynthesis Vocoder v2.7
+form Neural Audio Resynthesis Vocoder v2.8
     comment ── Synthesis Configuration ──
     optionmenu Preset: 2
         option Custom Settings
@@ -53,6 +62,7 @@ form Neural Audio Resynthesis Vocoder v2.7
         option Extreme Unit Gain x2.5 (off-manifold)
         option Noise Injection (high noise, low gain)
         option Combined Extreme (gain 0.1, q=128, noise 0.5)
+        option Experimental Gibberish Preservation
         
     comment ── Latent Unit Operations (applied to HuBERT-Soft units) ──
     comment (Temperature: 1.0 = unchanged. 0.3-0.9 = softer/darker,
@@ -63,6 +73,16 @@ form Neural Audio Resynthesis Vocoder v2.7
     integer Codebook_Quantization_Steps 0
     comment (Noise: 0.0 = off. 0.02-0.1 = subtle texture, 0.3-0.6 = stormy)
     real Noise_injection_scale 0.0
+
+    comment ── Experimental Preservation (for reiterant/gibberish input) ──
+    boolean Preserve_exact_duration 0
+    comment (Locks total output duration to input; HuBERT frame timing already carries internal timing.)
+    boolean Preserve_F0_contour 0
+    comment (Praat post-correction: source PitchTier replaces neural-output PitchTier.)
+    boolean Preserve_articulation_units 0
+    comment (Protects HuBERT content trajectory; bypasses unit noise/rounding.)
+    positive Pitch_floor_Hz 65
+    positive Pitch_ceiling_Hz 500
     
     comment ── Audio Playback ──
     boolean Play_result 1
@@ -110,6 +130,24 @@ elsif preset = 9
     temperature = 0.1
     codebook_Quantization_Steps = 128
     noise_injection_scale = 0.5
+elsif preset = 10
+    # Experimental chain: Reiterant/Gibberish -> Neural resynthesis.
+    # Keep HuBERT content units clean, lock duration, then restore source F0.
+    temperature = 1.0
+    codebook_Quantization_Steps = 0
+    noise_injection_scale = 0.0
+    preserve_exact_duration = 1
+    preserve_F0_contour = 1
+    preserve_articulation_units = 1
+endif
+
+# F0 replacement assumes aligned time domains, so duration lock is mandatory.
+if preserve_F0_contour = 1
+    preserve_exact_duration = 1
+endif
+
+if pitch_floor_Hz >= pitch_ceiling_Hz
+    exitScript: "Pitch floor must be lower than pitch ceiling."
 endif
 
 # ---- HOUSE-STYLE PRESET COLOUR MAP (visualization accent) ----
@@ -132,6 +170,8 @@ elsif preset = 8
     presetColor$ = "{0.35, 0.75, 0.65}"
 elsif preset = 9
     presetColor$ = "{0.6, 0.15, 0.2}"
+elsif preset = 10
+    presetColor$ = "{0.30, 0.55, 0.70}"
 else
     presetColor$ = "{0.45, 0.45, 0.45}"
 endif
@@ -185,6 +225,10 @@ appendInfoLine: "=== Praat AudioTools - Neural Audio Resynthesis Vocoder ==="
 appendInfoLine: "Input Sound: ", sound_name$
 appendInfoLine: "Preset Selected: ", preset$
 appendInfoLine: "Parameters applied -> Temp: ", fixed$(temperature, 2), " | Quantization: ", codebook_Quantization_Steps, " | Noise Scale: ", fixed$(noise_injection_scale, 3)
+appendInfoLine: "Preservation -> Duration: ", preserve_exact_duration, " | F0: ", preserve_F0_contour, " | Articulation units: ", preserve_articulation_units
+if preserve_F0_contour = 1
+    appendInfoLine: "F0 analysis range: ", fixed$(pitch_floor_Hz, 0), " - ", fixed$(pitch_ceiling_Hz, 0), " Hz"
+endif
 appendInfoLine: ""
 
 selectObject: sound_id
@@ -199,6 +243,12 @@ args$ = args$ + " --output " + q$ + tempOutput$ + q$
 args$ = args$ + " --temp " + string$(temperature)
 args$ = args$ + " --quant " + string$(codebook_Quantization_Steps)
 args$ = args$ + " --noise " + string$(noise_injection_scale)
+if preserve_exact_duration = 1
+    args$ = args$ + " --preserve-duration"
+endif
+if preserve_articulation_units = 1
+    args$ = args$ + " --preserve-articulation"
+endif
 cmd$ = pythonCmd$ + " " + q$ + pythonScript$ + q$ + args$
 
 appendInfoLine: "[1/3] Running Neural Vocoder Engine (this blocks Praat until done)..."
@@ -219,6 +269,75 @@ if fileReadable(tempOutput$)
         removeObject: raw_output_id
     else
         result_id = raw_output_id
+    endif
+
+    # --------------------------------------------------------
+    # Experimental F0 preservation (Praat-side post correction)
+    # --------------------------------------------------------
+    if preserve_F0_contour = 1
+        appendInfoLine: "Applying source F0 contour to neural output..."
+
+        # Build a zero-based mono reference from the INPUT. WAV export strips
+        # xmin, so the neural output is zero-based as well.
+        selectObject: sound_id
+        if original_channels > 1
+            Extract one channel: 1
+            source_ch1 = selected("Sound")
+            rms1 = Get root-mean-square: 0, 0
+
+            selectObject: sound_id
+            Extract one channel: 2
+            source_ch2 = selected("Sound")
+            rms2 = Get root-mean-square: 0, 0
+
+            if rms2 > rms1
+                selectObject: source_ch2
+                source_ref = Copy: "nv_source_ref"
+            else
+                selectObject: source_ch1
+                source_ref = Copy: "nv_source_ref"
+            endif
+
+            removeObject: source_ch1, source_ch2
+        else
+            source_ref = Copy: "nv_source_ref"
+        endif
+
+        selectObject: source_ref
+        source_ref_start = Get start time
+        if source_ref_start <> 0
+            Shift times by: -source_ref_start
+        endif
+
+        source_manip = To Manipulation: 0.01, pitch_floor_Hz, pitch_ceiling_Hz
+        source_pitch_tier = Extract pitch tier
+        selectObject: source_pitch_tier
+        n_pitch_points = Get number of points
+
+        if n_pitch_points >= 2
+            selectObject: result_id
+            result_start = Get start time
+            if result_start <> 0
+                Shift times by: -result_start
+            endif
+
+            output_manip = To Manipulation: 0.01, pitch_floor_Hz, pitch_ceiling_Hz
+            selectObject: output_manip, source_pitch_tier
+            Replace pitch tier
+
+            selectObject: output_manip
+            f0_corrected = Get resynthesis (overlap-add)
+
+            removeObject: result_id
+            result_id = f0_corrected
+            appendInfoLine: "  F0 contour restored from input PitchTier (", n_pitch_points, " points)."
+
+            removeObject: output_manip
+        else
+            appendInfoLine: "  WARNING: insufficient voiced pitch points; F0 preservation skipped."
+        endif
+
+        removeObject: source_manip, source_pitch_tier, source_ref
     endif
 
     selectObject: result_id
@@ -300,9 +419,9 @@ if fileReadable(tempOutput$)
         Colour: "{0.25, 0.25, 0.25}"
         Text: 0.03, "left", 0.64, "half", "Preset: " + preset$
         Text: 0.03, "left", 0.46, "half", "Temperature (unit gain): " + fixed$(temperature, 2) + "    Quantization: " + string$(codebook_Quantization_Steps) + "    Noise: " + fixed$(noise_injection_scale, 3)
-        Text: 0.03, "left", 0.28, "half", "Source: " + sound_name$ + "    Output rate: " + string$(original_sr) + " Hz"
+        Text: 0.03, "left", 0.28, "half", "Preserve duration/F0/articulation: " + string$(preserve_exact_duration) + "/" + string$(preserve_F0_contour) + "/" + string$(preserve_articulation_units)
         Colour: "{0.4, 0.4, 0.5}"
-        Text: 0.03, "left", 0.10, "half", "Pipeline is speech-trained; non-speech input is 'speech-ified' (a feature, not a bug)."
+        Text: 0.03, "left", 0.10, "half", "Experimental chain: gibberish units can be protected while Praat restores timing-aligned F0."
         Black
         Draw rectangle: 0, 1, 0, 1
 

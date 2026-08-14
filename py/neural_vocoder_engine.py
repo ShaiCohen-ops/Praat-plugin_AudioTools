@@ -3,8 +3,9 @@
 # Praat AudioTools - neural_vocoder_engine.py
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 2.4 (2026) - Model caching + honest latent-op naming + CPU patch
-#                        + torch_hub_cache relocated to Praat prefs root
+# Version: 2.5 (2026) - Experimental preservation controls
+#                        + exact-duration lock + HuBERT content protection
+#                        + model caching + CPU patch
 # ============================================================
 #
 # NOTE ON THE LATENT OPERATIONS (what the parameters actually do):
@@ -54,6 +55,10 @@ def main():
     parser.add_argument('--temp', type=float, default=1.0)
     parser.add_argument('--quant', type=int, default=0)
     parser.add_argument('--noise', type=float, default=0.0)
+    parser.add_argument('--preserve-duration', action='store_true',
+                        help='Force output to the exact 16-kHz input sample count by end trim/pad.')
+    parser.add_argument('--preserve-articulation', action='store_true',
+                        help='Protect the HuBERT content trajectory: keep unit direction and disable noise/rounding; unit gain may still scale magnitude.')
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
@@ -109,7 +114,9 @@ def main():
     # Load audio using the proven SoundFile & TorchAudio method
     data, sr = sf.read(args.input)
     if len(data.shape) > 1:
-        data = np.mean(data, axis=1) # Force mono
+        # Avoid phase-cancelling stereo fold-down: use the stronger channel.
+        channel_rms = np.sqrt(np.mean(np.square(data), axis=0))
+        data = data[:, int(np.argmax(channel_rms))]
         
     waveform = torch.from_numpy(data).float().unsqueeze(0)
 
@@ -127,21 +134,34 @@ def main():
     with torch.no_grad():
         # A. Extract hidden representations
         units = hubert.units(wav_tensor)
-        
+        original_units = units.clone()
+
         # --- APPLY PARAMETERS PASSED FROM THE PRAAT INTERFACE ---
 
-        # 1. Unit-gain scaling (scales unit-vector MAGNITUDE; not sampling temp)
+        # 1. Unit-gain scaling (scales unit-vector MAGNITUDE; not sampling temp).
+        # This leaves the direction of each unit vector unchanged.
         if args.temp != 1.0:
             units = units * args.temp
 
-        # 2. Gaussian noise injection on the units
-        if args.noise > 0.0:
-            noise = torch.randn_like(units) * args.noise
-            units = units + noise
+        if args.preserve_articulation:
+            # Experimental content/articulation protection for the gibberish chain.
+            # HuBERT-Soft is a content encoder.  We therefore protect the
+            # framewise content trajectory by retaining the original unit
+            # direction and allowing ONLY a scalar magnitude change.
+            # Noise and rounding are intentionally bypassed in this mode.
+            if args.temp == 1.0:
+                units = original_units
+            else:
+                units = original_units * args.temp
+        else:
+            # 2. Gaussian noise injection on the units
+            if args.noise > 0.0:
+                noise = torch.randn_like(units) * args.noise
+                units = units + noise
 
-        # 3. Soft-unit rounding (bitcrush on continuous units; not VQ/codebook)
-        if args.quant > 0:
-            units = torch.round(units * args.quant) / args.quant
+            # 3. Soft-unit rounding (bitcrush on continuous units; not VQ/codebook)
+            if args.quant > 0:
+                units = torch.round(units * args.quant) / args.quant
 
         # --------------------------------------------------------
         # 4. ACOUSTIC MAP GENERATION & WAVEFORM GENERATION
@@ -150,6 +170,18 @@ def main():
         output_tensor = vocoder(mel)
         
         output_wav = output_tensor.squeeze().cpu().numpy()
+
+        # Exact-duration lock. HuBERT/acoustic generation is already frame
+        # aligned to the input, so mismatches should normally be small.
+        # End trim/pad preserves the alignment of all earlier articulation
+        # events instead of globally resampling (which would also shift F0).
+        if args.preserve_duration:
+            target_samples = int(waveform.shape[-1])
+            current_samples = int(output_wav.shape[-1])
+            if current_samples > target_samples:
+                output_wav = output_wav[:target_samples]
+            elif current_samples < target_samples:
+                output_wav = np.pad(output_wav, (0, target_samples - current_samples), mode='constant')
 
     # --------------------------------------------------------
     # 5. WORKSPACE DISK EXPORT
