@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,6 +24,17 @@
 #   - Fixed selection and formula syntax
 #   - Added wet/dry mix control
 #   - Added visualization
+#
+# Changelog v0.4:
+#   - Public form/defaults, output naming, and final selection are unchanged.
+#   - Corrected Wet/Dry semantics: 0% = dry only, 100% = comb effect only.
+#   - Custom fundamental delay bounds are ordered and clamped to >= 2 samples;
+#     equal bounds no longer call randomUniform(min=max).
+#   - Dynamic harmonic delays below 2 samples are treated as above-Nyquist
+#     and become inactive instead of zero/one-sample self-gain artifacts.
+#   - Each tooth checks its actual morphing delay before self[col-delay].
+#   - Extremely short Sounds (<2 samples) are rejected before beta interpolation.
+#   - Final peak handling is a safety ceiling only; quiet output is not boosted.
 #
 # Changelog v0.3:
 #   - Reworked into an inharmonic comb with a linear beta morph:
@@ -85,6 +96,10 @@ originalDur = Get total duration
 sr = Get sampling frequency
 nSamples = Get number of samples
 
+if nSamples < 2
+    exitScript: "Sound must contain at least 2 samples."
+endif
+
 # === Apply Presets ===
 if preset = 2
     # Subtle Comb
@@ -126,6 +141,14 @@ else
     presetName$ = "Custom"
 endif
 
+fundDelayMin = max(2, round(fundamental_delay_min_samp))
+fundDelayMax = max(2, round(fundamental_delay_max_samp))
+if fundDelayMin > fundDelayMax
+    tmpDelay = fundDelayMin
+    fundDelayMin = fundDelayMax
+    fundDelayMax = tmpDelay
+endif
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -137,7 +160,11 @@ wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
 # Generate fundamental delay
-fundamental_delay = round(randomUniform(fundamental_delay_min_samp, fundamental_delay_max_samp))
+if fundDelayMin = fundDelayMax
+    fundamental_delay = fundDelayMin
+else
+    fundamental_delay = round(randomUniform(fundDelayMin, fundDelayMax))
+endif
 
 # Pre-calculate weights, phases, and start/end delays (for the morph + viz)
 betaSpan = beta_end - beta_start
@@ -146,6 +173,12 @@ for h from 1 to number_of_harmonics
     harmPhase[h] = randomUniform(0, 2 * pi)
     harmDelayStart[h] = round(fundamental_delay / (h ^ beta_start))
     harmDelayEnd[h] = round(fundamental_delay / (h ^ beta_end))
+    if harmDelayStart[h] < 2
+        harmDelayStart[h] = 0
+    endif
+    if harmDelayEnd[h] < 2
+        harmDelayEnd[h] = 0
+    endif
 endfor
 
 # Calculate fundamental frequency
@@ -163,7 +196,7 @@ appendInfoLine: "Beta morph: ", fixed$(beta_start, 2), " -> ", fixed$(beta_end, 
 appendInfoLine: "Modulation period: ", modulation_period, " samples"
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
-appendInfoLine: "Tooth delays (start -> end samples):"
+appendInfoLine: "Tooth delays (start -> end samples; 0 = above Nyquist/inactive):"
 for h from 1 to number_of_harmonics
     appendInfoLine: "  h=", h, ": ", harmDelayStart[h], " -> ", harmDelayEnd[h], " samp, weight=", fixed$(harmWeight[h], 4)
 endfor
@@ -195,22 +228,26 @@ for h from 1 to number_of_harmonics
     mod_str$ = string$(modulation_period)
     h_str$ = string$(h)
     
+    delay_expr$ = "round(" + fund_str$ + " / (" + h_str$ + " ^ (" + bstart_str$ + " + " + bspan_str$ + " * (col-1)/(ncol-1))))"
+
     selectObject: wetSignal
-    Formula: "if col > " + fund_str$ + " then self + " + weight_str$ + " * self[col - round(" + fund_str$ + " / (" + h_str$ + " ^ (" + bstart_str$ + " + " + bspan_str$ + " * (col-1)/(ncol-1))))] * cos(" + phase_str$ + " + 2*pi*col*" + h_str$ + "/" + mod_str$ + ") else self fi"
+    Formula: "if " + delay_expr$ + " >= 2 then if col > " + delay_expr$ + " then self + " + weight_str$ + " * self[col - " + delay_expr$ + "] * cos(" + phase_str$ + " + 2*pi*col*" + h_str$ + "/" + mod_str$ + ") else self fi else self fi"
 endfor
 
-# Apply wet/dry mix
-if dry_level > 0
-    wet_str$ = string$(wet_level)
-    dry_str$ = string$(dry_level)
-    orig_str$ = string$(original)
-    
-    selectObject: wetSignal
-    Formula: "self * " + wet_str$ + " + object[" + orig_str$ + ", row, col] * " + dry_str$
-endif
+# Apply true dry/effect crossfade.
+# wetSignal currently contains dry + comb resonance.
+wet_str$ = string$(wet_level)
+dry_str$ = string$(dry_level)
+orig_str$ = string$(original)
 
 selectObject: wetSignal
-Scale peak: scale_peak
+Formula: "object[" + orig_str$ + ", row, col] * " + dry_str$ + " + (self - object[" + orig_str$ + ", row, col]) * " + wet_str$
+
+# Safety ceiling only: never boost quiet material.
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > scale_peak
+    Scale peak: scale_peak
+endif
 Rename: originalName$ + "_comb_" + presetName$
 result = selected("Sound")
 

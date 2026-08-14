@@ -3,14 +3,14 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Ray Tracing Room Acoustics - physically accurate 3D room
-#   simulation using ray tracing. Implements inverse square
-#   law, air absorption, wall absorption, and Sabine RT60.
+#   Ray Tracing Room Acoustics - geometric 3D room approximation
+#   using ray tracing. Implements spherical-spreading amplitude,
+#   air absorption, wall absorption, and Sabine RT60.
 #   Uses Fibonacci sphere for even ray distribution. Creates
 #   impulse response and convolves with input.
 #
@@ -18,6 +18,22 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4:
+#   - Public form/defaults, output naming and final selection are unchanged.
+#   - Fixed coordinate convention to x=width, y=depth, z=height, matching the
+#     preset source/listener values (e.g. z=1.5 m as source/listener height).
+#   - Corrected reflection attenuation order: listener hits are evaluated before
+#     the next wall loss; air absorption is no longer double-counted.
+#   - The source-to-first-wall segment is no longer counted as a reflection.
+#   - Wall_absorption is treated as an energy coefficient; pressure-amplitude
+#     reflection uses sqrt(1-alpha).
+#   - Custom geometry, source/listener positions and ray/reflection counts are
+#     sanitized internally without changing the public form.
+#   - IR duration includes direct propagation delay; diffuse tail is causal,
+#     deterministic, and restores Praat's global RNG afterwards.
+#   - Wet/Dry cell routing is explicit and IR/output normalization is ceiling-only.
+#   - Visualization uses X-Y top view and Y-Z side view consistently.
 #
 # Changelog v0.3:
 #   - Audio output is bit-identical to v0.2 for the same form
@@ -280,23 +296,83 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
+# Internal geometry/stability guards; built-in presets remain unchanged.
+if room_width_m < 0.1
+    room_width_m = 0.1
+endif
+if room_depth_m < 0.1
+    room_depth_m = 0.1
+endif
+if room_height_m < 0.1
+    room_height_m = 0.1
+endif
+
+effectiveRays = round(number_of_rays)
+if effectiveRays < 1
+    effectiveRays = 1
+endif
+
+effectiveReflections = round(max_reflections)
+if effectiveReflections < 1
+    effectiveReflections = 1
+endif
+
+wallAbsEff = wall_absorption
+if wallAbsEff < 0
+    wallAbsEff = 0
+elsif wallAbsEff > 0.99
+    wallAbsEff = 0.99
+endif
+wallReflectionAmp = sqrt(1 - wallAbsEff)
+
+airAbsEff = max(0, air_absorption)
+speedEff = max(1, speed_of_sound)
+tailEff = max(2 / sr, reverb_tail_s)
+
+diffuseEff = diffuse_level
+if diffuseEff < 0
+    diffuseEff = 0
+elsif diffuseEff > 1
+    diffuseEff = 1
+endif
+
+minRoomDim = min(room_width_m, min(room_depth_m, room_height_m))
+coordEps = max(0.000001, minRoomDim * 0.000001)
+
+# Coordinate convention: x=width, y=depth, z=height.
+source_x = min(room_width_m - coordEps, max(coordEps, source_x))
+source_y = min(room_depth_m - coordEps, max(coordEps, source_y))
+source_z = min(room_height_m - coordEps, max(coordEps, source_z))
+listener_x = min(room_width_m - coordEps, max(coordEps, listener_x))
+listener_y = min(room_depth_m - coordEps, max(coordEps, listener_y))
+listener_z = min(room_height_m - coordEps, max(coordEps, listener_z))
+
+listenerRadiusEff = listener_radius_m
+if listenerRadiusEff < 0.001
+    listenerRadiusEff = 0.001
+endif
+maxListenerRadius = 0.49 * minRoomDim
+if listenerRadiusEff > maxListenerRadius
+    listenerRadiusEff = maxListenerRadius
+endif
+
 # === Info ===
-writeInfoLine: "=== Ray Tracing Room Acoustics v0.3 ==="
+writeInfoLine: "=== Ray Tracing Room Acoustics v0.4 ==="
 appendInfoLine: "Source: ", originalName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Room: ", room_width_m, " x ", room_depth_m, " x ", room_height_m, " m (W x D x H)"
-appendInfoLine: "Source: (", fixed$(source_x, 1), ", ", fixed$(source_y, 1), ", ", fixed$(source_z, 1), ")"
-appendInfoLine: "Listener: (", fixed$(listener_x, 1), ", ", fixed$(listener_y, 1), ", ", fixed$(listener_z, 1), ")"
-appendInfoLine: "Rays: ", number_of_rays, " x ", max_reflections, " reflections"
-appendInfoLine: "Wall absorption: ", wall_absorption
+appendInfoLine: "Source (x=width,y=depth,z=height): (", fixed$(source_x, 1), ", ", fixed$(source_y, 1), ", ", fixed$(source_z, 1), ")"
+appendInfoLine: "Listener (x=width,y=depth,z=height): (", fixed$(listener_x, 1), ", ", fixed$(listener_y, 1), ", ", fixed$(listener_z, 1), ")"
+appendInfoLine: "Rays: ", effectiveRays, " x ", effectiveReflections, " max reflections"
+appendInfoLine: "Wall absorption: ", wallAbsEff
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
 
 # === Calculate RT60 (Sabine's Formula) ===
 volume = room_width_m * room_height_m * room_depth_m
 surface_area = 2 * (room_width_m * room_height_m + room_width_m * room_depth_m + room_height_m * room_depth_m)
-rt60 = 0.161 * volume / (wall_absorption * surface_area + 0.001)
+rt60 = 0.161 * volume / (wallAbsEff * surface_area + 0.001)
 
 if rt60 > 5.0
     rt60 = 5.0
@@ -308,22 +384,26 @@ appendInfoLine: "RT60 (Sabine): ", fixed$(rt60, 2), " s"
 appendInfoLine: "Volume: ", fixed$(volume, 1), " m^3"
 appendInfoLine: ""
 
-# === Create Impulse Response ===
-ir_duration = rt60 + reverb_tail_s
+# === Direct Sound / Impulse Response geometry ===
+direct_distance = sqrt((listener_x - source_x)^2 + (listener_y - source_y)^2 + (listener_z - source_z)^2)
+direct_delay = direct_distance / speedEff
+direct_amplitude = 1.0 / (1.0 + direct_distance) * exp(-airAbsEff * direct_distance)
+
+# Full RT60 + requested tail occurs AFTER direct arrival.
+ir_duration = direct_delay + rt60 + tailEff
 Create Sound from formula: "room_ir", 1, 0, ir_duration, sr, "0"
 irSound = selected("Sound")
 
-# === Direct Sound (Inverse Square Law) ===
-direct_distance = sqrt((listener_x - source_x)^2 + (listener_y - source_y)^2 + (listener_z - source_z)^2)
-direct_delay = direct_distance / speed_of_sound
-direct_amplitude = 1.0 / (1.0 + direct_distance) * exp(-air_absorption * direct_distance)
+selectObject: irSound
+irSamples = Get number of samples
 
 direct_sample = round(direct_delay * sr)
 if direct_sample < 1
     direct_sample = 1
+elsif direct_sample > irSamples
+    direct_sample = irSamples
 endif
 
-selectObject: irSound
 Set value at sample number: 1, direct_sample, direct_amplitude
 
 appendInfoLine: "Direct sound: ", fixed$(direct_delay * 1000, 1), " ms, amp=", fixed$(direct_amplitude, 3)
@@ -344,15 +424,16 @@ total_reflection_energy = 0
 # Max 60 vizRays, only every 3rd drawn -> ~20 rays
 vizMaxRays = 60
 vizPathsX# = zero#(vizMaxRays * 5)
+vizPathsY# = zero#(vizMaxRays * 5)
 vizPathsZ# = zero#(vizMaxRays * 5)
 vizPathLen# = zero#(vizMaxRays)
 
-for ray from 1 to number_of_rays
+for ray from 1 to effectiveRays
     # Fibonacci sphere distribution (even coverage)
     golden_ratio = (1 + sqrt(5)) / 2
     theta = 2 * pi * ray / golden_ratio
     
-    z_val = 1 - 2 * (ray - 0.5) / number_of_rays
+    z_val = 1 - 2 * (ray - 0.5) / effectiveRays
     if z_val > 1
         z_val = 1
     elsif z_val < -1
@@ -377,12 +458,13 @@ for ray from 1 to number_of_rays
     # Cache start point for viz
     if ray <= vizMaxRays
         vizPathsX#[(ray - 1) * 5 + 1] = pos_x
+        vizPathsY#[(ray - 1) * 5 + 1] = pos_y
         vizPathsZ#[(ray - 1) * 5 + 1] = pos_z
         vizPathLen#[ray] = 1
     endif
     
     # Trace reflections
-    for reflection from 1 to max_reflections
+    for reflection from 1 to effectiveReflections
         if exitRay = 0
             # Find intersection with 6 walls
             if dir_x > 0.0001
@@ -397,7 +479,7 @@ for ray from 1 to number_of_rays
             endif
             
             if dir_y > 0.0001
-                t_top = (room_height_m - pos_y) / dir_y
+                t_top = (room_depth_m - pos_y) / dir_y
             else
                 t_top = 1e10
             endif
@@ -408,7 +490,7 @@ for ray from 1 to number_of_rays
             endif
             
             if dir_z > 0.0001
-                t_back = (room_depth_m - pos_z) / dir_z
+                t_back = (room_height_m - pos_z) / dir_z
             else
                 t_back = 1e10
             endif
@@ -426,50 +508,51 @@ for ray from 1 to number_of_rays
             new_y = pos_y + dir_y * t_wall
             new_z = pos_z + dir_z * t_wall
             
-            # Path length and energy
+            # Path geometry. 'energy' is pressure-amplitude gain at the START
+            # of this segment, after all previous wall and air losses.
             segment_distance = sqrt((new_x - pos_x)^2 + (new_y - pos_y)^2 + (new_z - pos_z)^2)
-            total_path_length = total_path_length + segment_distance
-            energy = energy * (1 - wall_absorption) * exp(-air_absorption * segment_distance)
-            
-            # Check if ray passes near listener
+
+            # Evaluate listener arrival before applying the wall loss that ends
+            # this segment. Iteration 1 is source->first wall, so only iteration
+            # 2 onward represents at least one completed reflection.
             dx_seg = new_x - pos_x
             dy_seg = new_y - pos_y
             dz_seg = new_z - pos_z
             seg_length_sq = dx_seg^2 + dy_seg^2 + dz_seg^2
-            
-            if seg_length_sq > 0
+
+            if reflection >= 2 and seg_length_sq > 0
                 t_closest = ((listener_x - pos_x) * dx_seg + (listener_y - pos_y) * dy_seg + (listener_z - pos_z) * dz_seg) / seg_length_sq
-            else
-                t_closest = 0
-            endif
-            
-            if t_closest >= 0 and t_closest <= 1
-                closest_x = pos_x + t_closest * dx_seg
-                closest_y = pos_y + t_closest * dy_seg
-                closest_z = pos_z + t_closest * dz_seg
-                dist_to_listener = sqrt((listener_x - closest_x)^2 + (listener_y - closest_y)^2 + (listener_z - closest_z)^2)
-                
-                if dist_to_listener < listener_radius_m and energy > 0.001
-                    path_to_reflection = total_path_length - (1 - t_closest) * segment_distance
-                    total_acoustic_path = path_to_reflection + dist_to_listener
-                    
-                    amplitude = energy / (1.0 + total_acoustic_path) * exp(-air_absorption * total_acoustic_path)
-                    delay_time = total_acoustic_path / speed_of_sound
-                    sample_pos = round(delay_time * sr)
-                    
-                    if sample_pos > direct_sample and sample_pos < ir_duration * sr
-                        # v0.3 PERFORMANCE FIX: Get/Set instead of
-                        # Formula (part) for 1-sample range.
-                        # Bit-identical arithmetic to v0.2.
-                        selectObject: irSound
-                        current_val = Get value at sample number: 1, sample_pos
-                        Set value at sample number: 1, sample_pos, current_val + amplitude
-                        reflection_count = reflection_count + 1
-                        total_reflection_energy = total_reflection_energy + amplitude
+
+                if t_closest >= 0 and t_closest <= 1
+                    closest_x = pos_x + t_closest * dx_seg
+                    closest_y = pos_y + t_closest * dy_seg
+                    closest_z = pos_z + t_closest * dz_seg
+                    dist_to_listener = sqrt((listener_x - closest_x)^2 + (listener_y - closest_y)^2 + (listener_z - closest_z)^2)
+
+                    if dist_to_listener < listenerRadiusEff and energy > 0.001
+                        along_segment = t_closest * segment_distance
+                        total_acoustic_path = total_path_length + along_segment + dist_to_listener
+                        new_air_path = along_segment + dist_to_listener
+
+                        amplitude = energy * exp(-airAbsEff * new_air_path) / (1.0 + total_acoustic_path)
+                        delay_time = total_acoustic_path / speedEff
+                        sample_pos = round(delay_time * sr)
+
+                        if sample_pos > direct_sample and sample_pos <= irSamples
+                            selectObject: irSound
+                            current_val = Get value at sample number: 1, sample_pos
+                            Set value at sample number: 1, sample_pos, current_val + amplitude
+                            reflection_count = reflection_count + 1
+                            total_reflection_energy = total_reflection_energy + amplitude
+                        endif
                     endif
                 endif
             endif
-            
+
+            # Advance to the wall, then apply THIS wall and segment losses.
+            total_path_length = total_path_length + segment_distance
+            energy = energy * exp(-airAbsEff * segment_distance) * wallReflectionAmp
+
             # Reflect direction
             if t_wall = t_right or t_wall = t_left
                 dir_x = -dir_x
@@ -490,6 +573,7 @@ for ray from 1 to number_of_rays
             if ray <= vizMaxRays and reflection <= 4
                 idx = (ray - 1) * 5 + reflection + 1
                 vizPathsX#[idx] = pos_x
+                vizPathsY#[idx] = pos_y
                 vizPathsZ#[idx] = pos_z
                 vizPathLen#[ray] = reflection + 1
             endif
@@ -508,14 +592,25 @@ appendInfoLine: "Direct/Reverb ratio: ", fixed$(direct_amplitude / (total_reflec
 appendInfoLine: ""
 
 # === Add Diffuse Reverb Tail ===
-appendInfoLine: "Adding diffuse tail..."
+appendInfoLine: "Adding causal diffuse tail..."
 selectObject: irSound
 rt60_str$ = string$(rt60)
-diff_str$ = string$(diffuse_level)
-Formula: "self + " + diff_str$ + " * randomGauss(0, 1) * exp(-6.9 * x / " + rt60_str$ + ")"
+diff_str$ = string$(diffuseEff)
+direct_str$ = string$(direct_delay)
 
-Scale peak: 0.99
-appendInfoLine: "IR duration: ", fixed$(ir_duration, 2), " s"
+researchSeed = 20260814
+random_initializeWithSeedUnsafelyButPredictably (researchSeed)
+if diffuseEff > 0
+    Formula: "if x >= " + direct_str$ + " then self + " + diff_str$ + " * randomGauss(0, 1) * exp(-6.9 * (x - " + direct_str$ + ") / " + rt60_str$ + ") else self fi"
+endif
+random_initializeSafelyAndUnpredictably ()
+
+irPeak = Get absolute extremum: 0, 0, "None"
+if irPeak > 0.99
+    Scale peak: 0.99
+endif
+
+appendInfoLine: "IR duration: ", fixed$(ir_duration, 2), " s | Seed: ", researchSeed
 appendInfoLine: ""
 
 # === Convolve ===
@@ -549,13 +644,16 @@ if dry_level > 0
     dry_id_str$ = string$(dryExt)
     
     selectObject: wetSound
-    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + "] * " + dry_str$
+    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + ", row, col] * " + dry_str$
     
     removeObject: dryExt
 endif
 
 selectObject: wetSound
-Scale peak: 0.95
+finalPrePeak = Get absolute extremum: 0, 0, "None"
+if finalPrePeak > 0.95
+    Scale peak: 0.95
+endif
 Rename: originalName$ + "_raytraced_" + presetName$
 result = selected("Sound")
 
@@ -627,11 +725,11 @@ if draw_visualization
         ... + "  |  " + presetName$
         ... + "  |  " + fixed$(room_width_m, 1) + " x " + fixed$(room_depth_m, 1) + " x " + fixed$(room_height_m, 1) + " m"
         ... + "  |  RT60 " + fixed$(rt60, 2) + " s"
-        ... + "  |  " + string$(number_of_rays) + " rays x " + string$(max_reflections)
+        ... + "  |  " + string$(effectiveRays) + " rays x " + string$(effectiveReflections)
         ... + "  |  " + fixed$(wet_dry_percent, 0) + "% wet"
     
     # ----------------------------------------------------------
-    # PANEL A: TOP VIEW (X-Z plane)  (left, headline)
+    # PANEL A: TOP VIEW (X-Y plane)  (left, headline)
     # PRESERVED v0.2 CAD-style dark aesthetic
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
@@ -679,13 +777,13 @@ if draw_visualization
     # Draw rays from cached paths (every 3rd of first 60 — ~20 rays)
     Line width: 1
     for vizRay from 1 to vizMaxRays
-        if vizRay mod 3 = 0 and vizRay <= number_of_rays
+        if vizRay mod 3 = 0 and vizRay <= effectiveRays
             nPts = vizPathLen#[vizRay]
             for p from 1 to nPts - 1
                 px1 = vizPathsX#[(vizRay - 1) * 5 + p]
-                pz1 = vizPathsZ#[(vizRay - 1) * 5 + p]
+                py1 = vizPathsY#[(vizRay - 1) * 5 + p]
                 px2 = vizPathsX#[(vizRay - 1) * 5 + p + 1]
-                pz2 = vizPathsZ#[(vizRay - 1) * 5 + p + 1]
+                py2 = vizPathsY#[(vizRay - 1) * 5 + p + 1]
                 
                 # Color fades with reflection number
                 intensity = 0.8 - (p - 1) * 0.15
@@ -693,7 +791,7 @@ if draw_visualization
                     intensity = 0.2
                 endif
                 Colour: "{" + fixed$(0.3 + intensity * 0.3, 2) + ", " + fixed$(0.5 + intensity * 0.3, 2) + ", " + fixed$(0.3 + intensity * 0.2, 2) + "}"
-                Draw line: px1, pz1, px2, pz2
+                Draw line: px1, py1, px2, py2
             endfor
         endif
     endfor
@@ -702,27 +800,27 @@ if draw_visualization
     Line width: 2
     Colour: accentColor$
     Dashed line
-    Draw line: source_x, source_z, listener_x, listener_z
+    Draw line: source_x, source_y, listener_x, listener_y
     Solid line
     
     # Source marker
     Colour: sourceColor$
-    Paint circle (mm): sourceColor$, source_x, source_z, 3.5
+    Paint circle (mm): sourceColor$, source_x, source_y, 3.5
     Line width: 1.5
     Colour: "{1, 0.5, 0.4}"
-    Draw circle (mm): source_x, source_z, 5
+    Draw circle (mm): source_x, source_y, 5
     
     # Listener marker
     Colour: listenerColor$
-    Paint circle (mm): listenerColor$, listener_x, listener_z, 3.5
+    Paint circle (mm): listenerColor$, listener_x, listener_y, 3.5
     Line width: 1.5
     Colour: "{0.4, 0.7, 1}"
-    Draw circle (mm): listener_x, listener_z, 5
+    Draw circle (mm): listener_x, listener_y, 5
     
     Line width: 1
     
     # ----------------------------------------------------------
-    # PANEL B: SIDE VIEW (Z-Y plane)  (right, headline)
+    # PANEL B: SIDE VIEW (Y-Z plane)  (right, headline)
     # PRESERVED v0.2 CAD-style dark aesthetic
     # ----------------------------------------------------------
     Select outer viewport: 4.2, 8, 0.75, 4.60
@@ -772,25 +870,25 @@ if draw_visualization
     Colour: "{0.35, 0.35, 0.4}"
     Draw line: 0, room_height_m, room_depth_m, room_height_m
     
-    # Source (Z-Y plane)
+    # Source (Y-Z plane)
     Colour: sourceColor$
-    Paint circle (mm): sourceColor$, source_z, source_y, 3.5
+    Paint circle (mm): sourceColor$, source_y, source_z, 3.5
     Line width: 1.5
     Colour: "{1, 0.5, 0.4}"
-    Draw circle (mm): source_z, source_y, 5
+    Draw circle (mm): source_y, source_z, 5
     
     # Listener
     Colour: listenerColor$
-    Paint circle (mm): listenerColor$, listener_z, listener_y, 3.5
+    Paint circle (mm): listenerColor$, listener_y, listener_z, 3.5
     Line width: 1.5
     Colour: "{0.4, 0.7, 1}"
-    Draw circle (mm): listener_z, listener_y, 5
+    Draw circle (mm): listener_y, listener_z, 5
     
     # Direct path
     Line width: 2
     Colour: accentColor$
     Dashed line
-    Draw line: source_z, source_y, listener_z, listener_y
+    Draw line: source_y, source_z, listener_y, listener_z
     Solid line
     Line width: 1
     
@@ -803,8 +901,8 @@ if draw_visualization
     
     Font size: 7
     Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Top view  (X-Z plane, room from above)"
-    Text: 6.10, "centre", 7.30, "half", "Side view  (Z-Y plane, room from side)"
+    Text: 2.10, "centre", 7.30, "half", "Top view  (X-Y plane, room from above)"
+    Text: 6.10, "centre", 7.30, "half", "Side view  (Y-Z plane, room from side)"
     
     # ----------------------------------------------------------
     # PANEL C: IMPULSE RESPONSE WAVEFORM
@@ -825,12 +923,13 @@ if draw_visualization
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, ir_duration, 0
     
-    # RT60 reference line (vertical, gray dashed)
+    # RT60 reference line: decay time measured from direct arrival.
+    rt60Marker = direct_delay + rt60
     Colour: "{0.70, 0.70, 0.75}"
     Line width: 1
     Dashed line
-    if rt60 < ir_duration
-        Draw line: rt60, -irAmp, rt60, irAmp
+    if rt60Marker < ir_duration
+        Draw line: rt60Marker, -irAmp, rt60Marker, irAmp
     endif
     Solid line
     
@@ -850,9 +949,9 @@ if draw_visualization
     Font size: 5
     Colour: "{0.55, 0.45, 0.15}"
     Text: direct_delay + ir_duration * 0.01, "left", irAmp * 0.85, "half", "direct"
-    if rt60 < ir_duration
+    if rt60Marker < ir_duration
         Colour: "{0.55, 0.55, 0.55}"
-        Text: rt60 + ir_duration * 0.01, "left", irAmp * 0.85, "half", "RT60"
+        Text: rt60Marker + ir_duration * 0.01, "left", irAmp * 0.85, "half", "RT60"
     endif
     
     Colour: "Black"
@@ -926,11 +1025,11 @@ if draw_visualization
         ... + "  " + originalName$
         ... + "  |  Room: " + fixed$(room_width_m, 1) + " x " + fixed$(room_depth_m, 1) + " x " + fixed$(room_height_m, 1) + " m  (" + fixed$(volume, 0) + " m^3)"
         ... + "  |  RT60: " + fixed$(rt60, 2) + " s"
-        ... + "  |  Wall abs: " + fixed$(wall_absorption, 2)
-        ... + "  |  Air abs: " + fixed$(air_absorption, 4)
+        ... + "  |  Wall abs: " + fixed$(wallAbsEff, 2)
+        ... + "  |  Air abs: " + fixed$(airAbsEff, 4)
     
     Text: 0.02, "left", 0.28, "half",
-        ... "Rays: " + string$(number_of_rays) + " x " + string$(max_reflections)
+        ... "Rays: " + string$(effectiveRays) + " x " + string$(effectiveReflections)
         ... + "  |  Hits: " + string$(reflection_count)
         ... + "  |  Direct: " + fixed$(direct_delay * 1000, 1) + " ms (amp " + fixed$(direct_amplitude, 3) + ")"
         ... + "  |  Wet: " + fixed$(wet_dry_percent, 0) + "%"
@@ -957,8 +1056,8 @@ appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", originalName$, "_raytraced_", presetName$
 appendInfoLine: ""
 appendInfoLine: "Physics implemented:"
-appendInfoLine: "  - TRUE 3D ray tracing (all 6 walls)"
-appendInfoLine: "  - Inverse square law (1/r)"
+appendInfoLine: "  - 3D geometric ray tracing (all 6 walls)"
+appendInfoLine: "  - Spherical-spreading pressure amplitude (~1/r)"
 appendInfoLine: "  - Air absorption"
 appendInfoLine: "  - Wall absorption"
 appendInfoLine: "  - Sabine RT60"

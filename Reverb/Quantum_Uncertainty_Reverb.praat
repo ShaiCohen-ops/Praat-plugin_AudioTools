@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,15 +16,23 @@
 #   or spreads into multiple superposed substates based on
 #   probability threshold.
 #
+# Changelog v0.4:
+#   - Public form/defaults, output naming and final selection are unchanged.
+#   - The stored state arrays are now the ACTUAL left/mono render plan:
+#     visualization and collapse statistics describe the rendered realization.
+#   - Rendering is deterministic via an internal research seed; Praat's global
+#     RNG is restored after left/mono and decorrelated-right plans are built.
+#   - Corrected Wet/Dry semantics: 0% = dry only, 100% = quantum effect only.
+#   - Exact-channel silent tails support arbitrary multichannel inputs.
+#   - Substate delays are clamped to >= 2 samples and Custom decay/collapse/base
+#     values are sanitized to stable ranges.
+#   - Fadeout is constrained to the appended tail and cannot attenuate source.
+#   - Stereo normalization occurs only after L/R combination; peak handling is
+#     a ceiling only, so quiet material is not boosted.
+#
 # Changelog v0.3:
 #   - Viz: set world axes explicitly before title & parameters text
 #     (parameters line was inheriting the state-diagram axes -> mis-placed)
-#   - NOTE (known, intentionally left): the pre-generated state arrays and
-#     the printed collapsed/superposed counts come from a SEPARATE random
-#     realization than the rendered audio (processing loops draw fresh
-#     randoms). The diagram/stats are a representative sample, not a literal
-#     map of this render. Audio is unaffected.
-#
 # Changelog v0.2:
 #   - Fixed selection and formula syntax
 #   - Added wet/dry mix control
@@ -158,38 +166,170 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-# Pre-generate state data for visualization
+# Internal geometry/stability guards; built-in presets are already valid.
+effectiveStates = round(quantum_states)
+if effectiveStates < 1
+    effectiveStates = 1
+endif
+effectiveSubstates = round(substates)
+if effectiveSubstates < 1
+    effectiveSubstates = 1
+endif
+
+tailEff = max(2 / sr, tail_duration_s)
+uncertaintyEff = max(0, uncertainty_stddev)
+
+collapseEff = collapse_threshold
+if collapseEff < 0
+    collapseEff = 0
+elsif collapseEff > 1
+    collapseEff = 1
+endif
+
+subJitterEff = max(0, substate_jitter_s)
+
+baseAmpEff = base_amplitude
+if baseAmpEff < 0
+    baseAmpEff = 0
+elsif baseAmpEff > 0.99
+    baseAmpEff = 0.99
+endif
+
+timeMeanEff = max(0, time_mean_s)
+minDelayEff = max(2 / sr, min_delay_s)
+
+decayMinEff = state_decay_min
+if decayMinEff < 0
+    decayMinEff = 0
+elsif decayMinEff > 1
+    decayMinEff = 1
+endif
+decayRangeEff = max(0, state_decay_range)
+
+fadeEff = fadeout_duration_s
+if fadeEff < 0
+    fadeEff = 0
+endif
+if fadeEff > tailEff
+    fadeEff = tailEff
+endif
+
+# Deterministic render plan. The left/mono arrays below also drive the figure.
+researchSeed = 20260814
+random_initializeWithSeedUnsafelyButPredictably (researchSeed)
+
 collapsedCount = 0
 superposedCount = 0
 
-for state from 1 to quantum_states
-    time_uncertainty = randomGauss(time_mean_s, uncertainty_stddev)
-    stateTime[state] = abs(time_uncertainty) + min_delay_s
+for state from 1 to effectiveStates
+    if uncertaintyEff > 0
+        time_uncertainty = randomGauss(timeMeanEff, uncertaintyEff)
+    else
+        time_uncertainty = timeMeanEff
+    endif
+
+    stateTime[state] = max(2 / sr, abs(time_uncertainty) + minDelayEff)
     stateAmpPrecision[state] = 1 / (1 + abs(time_uncertainty))
-    stateDecay[state] = state_decay_min + state_decay_range * (quantum_states - state) / quantum_states
-    
+    stateDecay[state] = decayMinEff + decayRangeEff * (effectiveStates - state) / effectiveStates
+    if stateDecay[state] < 0
+        stateDecay[state] = 0
+    elsif stateDecay[state] > 1
+        stateDecay[state] = 1
+    endif
+
     probability = randomUniform(0, 1)
-    if probability > collapse_threshold
+    if probability > collapseEff
         stateCollapsed[state] = 1
         collapsedCount = collapsedCount + 1
+        stateAmp[state] = baseAmpEff * stateAmpPrecision[state] * stateDecay[state] * 0.8
+        if stateAmp[state] > 0.99
+            stateAmp[state] = 0.99
+        endif
     else
         stateCollapsed[state] = 0
         superposedCount = superposedCount + 1
+        for sub from 1 to effectiveSubstates
+            idx = (state - 1) * effectiveSubstates + sub
+            subJitterNow = 0
+            if subJitterEff > 0
+                subJitterNow = randomGauss(0, subJitterEff)
+            endif
+            stateSubDelay[idx] = max(2 / sr, abs(time_uncertainty) + subJitterNow + minDelayEff)
+            stateSubAmp[idx] = baseAmpEff * stateAmpPrecision[state] * stateDecay[state] * 0.5 / sub
+            if stateSubAmp[idx] > 0.99
+                stateSubAmp[idx] = 0.99
+            endif
+        endfor
     endif
 endfor
+
+# Deterministic decorrelated right plan for stereo input.
+rightCollapseEff = collapseEff - 0.03
+if rightCollapseEff < 0
+    rightCollapseEff = 0
+elsif rightCollapseEff > 1
+    rightCollapseEff = 1
+endif
+
+rightBaseEff = max(0, baseAmpEff - 0.02)
+rightMinDelayEff = max(2 / sr, minDelayEff * 1.25)
+rightTimeMeanEff = timeMeanEff * 0.89
+rightUncertaintyEff = uncertaintyEff * 1.09
+rightSubJitterEff = subJitterEff * 1.2
+
+for state from 1 to effectiveStates
+    if rightUncertaintyEff > 0
+        r_uncertainty = randomGauss(rightTimeMeanEff, rightUncertaintyEff)
+    else
+        r_uncertainty = rightTimeMeanEff
+    endif
+
+    rightTime[state] = max(2 / sr, abs(r_uncertainty) + rightMinDelayEff)
+    rightPrecision[state] = 1 / (1 + abs(r_uncertainty))
+    rightDecay[state] = max(0, decayMinEff - 0.05) + (decayRangeEff + 0.05) * (effectiveStates - state) / effectiveStates
+    if rightDecay[state] > 1
+        rightDecay[state] = 1
+    endif
+
+    probability = randomUniform(0, 1)
+    if probability > rightCollapseEff
+        rightCollapsed[state] = 1
+        rightAmp[state] = rightBaseEff * rightPrecision[state] * rightDecay[state] * 0.75
+        if rightAmp[state] > 0.99
+            rightAmp[state] = 0.99
+        endif
+    else
+        rightCollapsed[state] = 0
+        for sub from 1 to effectiveSubstates
+            idx = (state - 1) * effectiveSubstates + sub
+            subJitterNow = 0
+            if rightSubJitterEff > 0
+                subJitterNow = randomGauss(0, rightSubJitterEff)
+            endif
+            rightSubDelay[idx] = max(2 / sr, abs(r_uncertainty) + subJitterNow + rightMinDelayEff)
+            rightSubAmp[idx] = rightBaseEff * rightPrecision[state] * rightDecay[state] * 0.45 / sub
+            if rightSubAmp[idx] > 0.99
+                rightSubAmp[idx] = 0.99
+            endif
+        endfor
+    endif
+endfor
+
+# Do not leak the fixed research seed into caller scripts.
+random_initializeSafelyAndUnpredictably ()
 
 # === Info ===
 writeInfoLine: "=== Quantum Uncertainty Reverb ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "Quantum states: ", quantum_states
-appendInfoLine: "Uncertainty σ: ", uncertainty_stddev
-appendInfoLine: "Collapse threshold: ", collapse_threshold
-appendInfoLine: "Collapsed states: ", collapsedCount, " (", fixed$(collapsedCount / quantum_states * 100, 1), "%)"
-appendInfoLine: "Superposed states: ", superposedCount, " (", fixed$(superposedCount / quantum_states * 100, 1), "%)"
-appendInfoLine: "Substates per superposition: ", substates
-appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
+appendInfoLine: "Quantum states: ", effectiveStates
+appendInfoLine: "Uncertainty σ: ", uncertaintyEff
+appendInfoLine: "Collapse threshold: ", collapseEff
+appendInfoLine: "Collapsed states (L/mono plan): ", collapsedCount, " (", fixed$(collapsedCount / effectiveStates * 100, 1), "%)"
+appendInfoLine: "Superposed states (L/mono plan): ", superposedCount, " (", fixed$(superposedCount / effectiveStates * 100, 1), "%)"
+appendInfoLine: "Substates per superposition: ", effectiveSubstates
+appendInfoLine: "Wet/Dry: ", wet_dry_percent, "% | Seed: ", researchSeed
 appendInfoLine: ""
 
 # ============================================================
@@ -198,14 +338,10 @@ appendInfoLine: ""
 
 appendInfoLine: "Processing..."
 
-totalDur = originalDur + tail_duration_s
+totalDur = originalDur + tailEff
 
-# Create silent tail
-if numChannels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
-endif
+# Create silent tail with the exact source channel count.
+Create Sound from formula: "silent_tail", numChannels, 0, tailEff, sr, "0"
 silentTail = selected("Sound")
 
 # Concatenate
@@ -227,171 +363,140 @@ if numChannels = 2
     Extract one channel: 2
     rightChannel = selected("Sound")
     
-    # Process left
+    # Process left from the exact state plan used by the visualization.
     selectObject: leftChannel
     Copy: "reverb_left"
     reverbLeft = selected("Sound")
-    
-    for state from 1 to quantum_states
-        time_uncertainty = randomGauss(time_mean_s, uncertainty_stddev)
-        amplitude_precision = 1 / (1 + abs(time_uncertainty))
-        state_decay = state_decay_min + state_decay_range * (quantum_states - state) / quantum_states
-        probability = randomUniform(0, 1)
-        
-        if probability > collapse_threshold
-            # COLLAPSED STATE: single echo
-            delay = abs(time_uncertainty) + min_delay_s
-            amp = base_amplitude * amplitude_precision * state_decay * 0.8
-            
-            delay_str$ = string$(delay)
-            amp_str$ = string$(amp)
-            
+
+    for state from 1 to effectiveStates
+        if stateCollapsed[state] = 1
+            delay_str$ = string$(stateTime[state])
+            amp_str$ = string$(stateAmp[state])
             selectObject: reverbLeft
             Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
         else
-            # SUPERPOSITION: multiple substates
-            for sub from 1 to substates
-                sub_delay = abs(time_uncertainty) + randomGauss(0, substate_jitter_s) + min_delay_s
-                sub_amp = base_amplitude * amplitude_precision * state_decay * 0.5 / sub
-                
-                delay_str$ = string$(sub_delay)
-                amp_str$ = string$(sub_amp)
-                
+            for sub from 1 to effectiveSubstates
+                idx = (state - 1) * effectiveSubstates + sub
+                delay_str$ = string$(stateSubDelay[idx])
+                amp_str$ = string$(stateSubAmp[idx])
                 selectObject: reverbLeft
                 Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
             endfor
         endif
     endfor
-    
-    # Process right (different random seeds for decorrelation)
+
+    # Process right from a deterministic decorrelated state plan.
     selectObject: rightChannel
     Copy: "reverb_right"
     reverbRight = selected("Sound")
-    
-    for state from 1 to quantum_states
-        time_uncertainty = randomGauss(time_mean_s * 0.89, uncertainty_stddev * 1.09)
-        amplitude_precision = 1 / (1 + abs(time_uncertainty))
-        state_decay = (state_decay_min - 0.05) + (state_decay_range + 0.05) * (quantum_states - state) / quantum_states
-        probability = randomUniform(0, 1)
-        
-        if probability > (collapse_threshold - 0.03)
-            delay = abs(time_uncertainty) + min_delay_s * 1.25
-            amp = (base_amplitude - 0.02) * amplitude_precision * state_decay * 0.75
-            
-            delay_str$ = string$(delay)
-            amp_str$ = string$(amp)
-            
+
+    for state from 1 to effectiveStates
+        if rightCollapsed[state] = 1
+            delay_str$ = string$(rightTime[state])
+            amp_str$ = string$(rightAmp[state])
             selectObject: reverbRight
             Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
         else
-            for sub from 1 to substates
-                sub_delay = abs(time_uncertainty) + randomGauss(0, substate_jitter_s * 1.2) + min_delay_s * 1.25
-                sub_amp = (base_amplitude - 0.02) * amplitude_precision * state_decay * 0.45 / sub
-                
-                delay_str$ = string$(sub_delay)
-                amp_str$ = string$(sub_amp)
-                
+            for sub from 1 to effectiveSubstates
+                idx = (state - 1) * effectiveSubstates + sub
+                delay_str$ = string$(rightSubDelay[idx])
+                amp_str$ = string$(rightSubAmp[idx])
                 selectObject: reverbRight
                 Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
             endfor
         endif
     endfor
-    
-    # Apply wet/dry
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        left_str$ = string$(leftChannel)
-        right_str$ = string$(rightChannel)
-        
-        selectObject: reverbLeft
-        Formula: "self * " + wet_str$ + " + object[" + left_str$ + "] * " + dry_str$
-        
-        selectObject: reverbRight
-        Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
-    endif
-    
-    # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
+
+    # True dry/effect crossfade. reverbLeft/Right = dry + quantum resonance.
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+    left_str$ = string$(leftChannel)
+    right_str$ = string$(rightChannel)
+
     selectObject: reverbLeft
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    Scale peak: 0.95
-    
+    Formula: "object[" + left_str$ + ", row, col] * " + dry_str$ + " + (self - object[" + left_str$ + ", row, col]) * " + wet_str$
+
     selectObject: reverbRight
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    Scale peak: 0.95
-    
-    # Combine
+    Formula: "object[" + right_str$ + ", row, col] * " + dry_str$ + " + (self - object[" + right_str$ + ", row, col]) * " + wet_str$
+
+    # Fade is constrained to the appended tail only.
+    if fadeEff > 0
+        fade_start = totalDur - fadeEff
+        fade_str$ = string$(fadeEff)
+        start_str$ = string$(fade_start)
+
+        selectObject: reverbLeft
+        Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+
+        selectObject: reverbRight
+        Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+    endif
+
+    # Combine first; then one stereo ceiling preserves L/R balance.
     selectObject: reverbLeft, reverbRight
     Combine to stereo
     result = selected("Sound")
     Rename: originalName$ + "_quantum_" + presetName$
-    
-    # Cleanup
+
+    selectObject: result
+    resultPeak = Get absolute extremum: 0, 0, "None"
+    if resultPeak > 0.95
+        Scale peak: 0.95
+    endif
+
     removeObject: leftChannel, rightChannel, reverbLeft, reverbRight, extendedSound
 
 else
     # === MONO PROCESSING ===
-    appendInfoLine: "  Processing mono..."
+    appendInfoLine: "  Processing mono/multichannel..."
     
     selectObject: extendedSound
     Copy: "reverb_mono"
     reverbMono = selected("Sound")
     
-    for state from 1 to quantum_states
-        time_uncertainty = randomGauss(time_mean_s, uncertainty_stddev)
-        amplitude_precision = 1 / (1 + abs(time_uncertainty))
-        state_decay = state_decay_min + state_decay_range * (quantum_states - state) / quantum_states
-        probability = randomUniform(0, 1)
-        
-        if probability > collapse_threshold
-            delay = abs(time_uncertainty) + min_delay_s
-            amp = base_amplitude * amplitude_precision * state_decay * 0.8
-            
-            delay_str$ = string$(delay)
-            amp_str$ = string$(amp)
-            
+    for state from 1 to effectiveStates
+        if stateCollapsed[state] = 1
+            delay_str$ = string$(stateTime[state])
+            amp_str$ = string$(stateAmp[state])
             selectObject: reverbMono
             Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
         else
-            for sub from 1 to substates
-                sub_delay = abs(time_uncertainty) + randomGauss(0, substate_jitter_s) + min_delay_s
-                sub_amp = base_amplitude * amplitude_precision * state_decay * 0.5 / sub
-                
-                delay_str$ = string$(sub_delay)
-                amp_str$ = string$(sub_amp)
-                
+            for sub from 1 to effectiveSubstates
+                idx = (state - 1) * effectiveSubstates + sub
+                delay_str$ = string$(stateSubDelay[idx])
+                amp_str$ = string$(stateSubAmp[idx])
                 selectObject: reverbMono
                 Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
             endfor
         endif
     endfor
-    
-    # Apply wet/dry
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        ext_str$ = string$(extendedSound)
-        
-        selectObject: reverbMono
-        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + "] * " + dry_str$
-    endif
-    
-    # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
+
+    # True dry/effect crossfade; row/col preserves arbitrary channel count.
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+    ext_str$ = string$(extendedSound)
+
     selectObject: reverbMono
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    
-    Scale peak: 0.95
+    Formula: "object[" + ext_str$ + ", row, col] * " + dry_str$ + " + (self - object[" + ext_str$ + ", row, col]) * " + wet_str$
+
+    # Fade is constrained to the appended tail only.
+    if fadeEff > 0
+        fade_start = totalDur - fadeEff
+        fade_str$ = string$(fadeEff)
+        start_str$ = string$(fade_start)
+
+        selectObject: reverbMono
+        Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+    endif
+
+    selectObject: reverbMono
+    resultPeak = Get absolute extremum: 0, 0, "None"
+    if resultPeak > 0.95
+        Scale peak: 0.95
+    endif
     Rename: originalName$ + "_quantum_" + presetName$
     result = reverbMono
-    
+
     removeObject: extendedSound
 endif
 
@@ -451,12 +556,13 @@ if draw_visualization
             Colour: "{0.3, 0.5, 0.8}"
             Paint circle: "{0.3, 0.5, 0.8}", delay, y, maxTime * 8 * precision
         else
-            # Superposition: spread of points
+            # Superposition: exact stored substate delays from this render.
             Colour: "{0.8, 0.5, 0.3}"
-            for sub from 1 to substates
-                subOffset = randomGauss(0, substate_jitter_s) * 1000
+            for sub from 1 to effectiveSubstates
+                idx = (state - 1) * effectiveSubstates + sub
+                subDelayMs = stateSubDelay[idx] * 1000
                 subSize = maxTime * 5 * precision / sub
-                Paint circle: "{0.8, 0.5, 0.3}", delay + subOffset, y, subSize
+                Paint circle: "{0.8, 0.5, 0.3}", subDelayMs, y, subSize
             endfor
         endif
     endfor
@@ -470,16 +576,16 @@ if draw_visualization
     # Legend
     Font size: 5
     Colour: "{0.3, 0.5, 0.8}"
-    Text: maxTime * 850, "centre", quantum_states * 0.95, "half", "● Collapsed (" + string$(collapsedCount) + ")"
+    Text: maxTime * 850, "centre", effectiveStates * 0.95, "half", "● Collapsed (" + string$(collapsedCount) + ")"
     Colour: "{0.8, 0.5, 0.3}"
-    Text: maxTime * 850, "centre", quantum_states * 0.85, "half", "● Superposed (" + string$(superposedCount) + ")"
+    Text: maxTime * 850, "centre", effectiveStates * 0.85, "half", "● Superposed (" + string$(superposedCount) + ")"
     
     # Parameters
     Select outer viewport: 0, 8, 4.1, 4.5
     Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "States: " + string$(quantum_states) + " | Uncertainty: σ=" + fixed$(uncertainty_stddev, 2) + " | Threshold: " + fixed$(collapse_threshold, 2) + " | Substates: " + string$(substates)
+    Text: 0.5, "centre", 0.5, "half", "States: " + string$(effectiveStates) + " | Uncertainty: σ=" + fixed$(uncertaintyEff, 2) + " | Threshold: " + fixed$(collapseEff, 2) + " | Substates: " + string$(effectiveSubstates) + " | Seed: " + string$(researchSeed)
     
     Font size: 10
     Colour: "Black"

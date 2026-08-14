@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,25 @@
 #   Ligeti Micropolyphonic Choir Machine - dense, slowly-evolving
 #   textures via N pitch-detuned, time-offset, fade-enveloped voices
 #   summed into a single output buffer.
+#
+# Changelog v1.2 (2026):
+#   - Public form/defaults, preset identities, output naming and final
+#     selection are unchanged.
+#   - Fixed Time_offset_range_s semantics: both flat and Gaussian modes now
+#     use the advertised +/-time_range support. v1.1 flat mode accidentally
+#     used only +/-time_range/2.
+#   - Stereo-spread wet synthesis now uses one explicit mono choir source;
+#     non-spread multichannel mode preserves corresponding source channels.
+#   - Cross-object Formula reads now specify row+col explicitly.
+#   - 3+ channel dry padding uses the dry object's actual channel count,
+#     avoiding Concatenate channel-count failures.
+#   - Custom Number_of_voices is rounded to an integer >=2; duration variation
+#     is clamped below 1 so dur_factor cannot become zero/negative.
+#   - Attack/release fade is capped at half the rendered voice length to avoid
+#     overlapping/pathological envelopes on very short voices.
+#   - Working downsample/mono intermediates are cleaned consistently.
+#   - Normalize_output is silence-safe; normalization behavior is otherwise
+#     unchanged.
 #
 # Changelog v1.1 (2026):
 #   Speed-focused refactor. Output is mathematically equivalent to
@@ -156,8 +175,28 @@ else
     presetName$ = "Custom"
 endif
 
+# Internal guards for Custom/caller-supplied values.
+n_voices = round(n_voices)
 if n_voices < 2
-    exitScript: "Need at least 2 voices."
+    n_voices = 2
+endif
+if time_range < 0
+    time_range = 0
+endif
+if pitch_max < 0
+    pitch_max = abs(pitch_max)
+endif
+if dur_var < 0
+    dur_var = 0
+endif
+if dur_var >= 1
+    dur_var = 0.95
+endif
+if gain < 0
+    gain = 0
+endif
+if fade < 0
+    fade = 0
 endif
 
 # Set target sample rate and resample precision per speed mode.
@@ -207,16 +246,33 @@ appendInfoLine: "Pitch range: ±", pitch_max, " cents"
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
 
-# === OPTIONAL DOWNSAMPLING ===
+# === OPTIONAL DOWNSAMPLING / CHOIR SOURCE PREP ===
 workingSound = original
+workingIsTemporary = 0
 if targetSR > 0 and sampleRate > targetSR
     appendInfoLine: "[SPEED] Downsampling to ", targetSR, " Hz"
     selectObject: original
     Resample: targetSR, 50
     workingSound = selected("Sound")
+    workingIsTemporary = 1
     workingSR = targetSR
 else
     workingSR = sampleRate
+endif
+
+# A panned choir is conceptually a set of mono voices positioned in stereo.
+# Convert once here instead of implicitly reading channel 1 from every voice.
+selectObject: workingSound
+workingChannels = Get number of channels
+if use_stereo = 1 and workingChannels > 1
+    Convert to mono
+    monoWork = selected("Sound")
+    if workingIsTemporary = 1
+        removeObject: workingSound
+    endif
+    workingSound = monoWork
+    workingIsTemporary = 1
+    workingChannels = 1
 endif
 
 # Store voice data for visualization
@@ -264,7 +320,9 @@ for voice from 1 to n_voices
     current_pitch_cents = 0
     
     if structure$ = "uniform"
-        if dist_shape$ = "gaussian"
+        if pitch_max <= 0
+            current_pitch_cents = 0
+        elsif dist_shape$ = "gaussian"
             r1 = randomUniform(-1, 1)
             r2 = randomUniform(-1, 1)
             current_pitch_cents = ((r1 + r2) / 2) * pitch_max
@@ -296,7 +354,9 @@ for voice from 1 to n_voices
     # When this rounds to ~1, the resample is skipped entirely.
     pitch_ratio = 2 ^ (current_pitch_cents / 1200)
 
-    if dist_shape$ = "gaussian"
+    if dur_var <= 0
+        dur_factor = 1
+    elsif dist_shape$ = "gaussian"
         raw_rand = (randomUniform(-1, 1) + randomUniform(-1, 1)) / 2
         dur_factor = 1 + (raw_rand * dur_var)
     else
@@ -340,12 +400,14 @@ for voice from 1 to n_voices
     endif
     
     # === 7. TIME OFFSET ===
-    if dist_shape$ = "gaussian"
+    if time_range <= 0
+        offset = 0
+    elsif dist_shape$ = "gaussian"
         r1 = randomUniform(-0.5, 0.5)
         r2 = randomUniform(-0.5, 0.5)
         offset = (r1 + r2) * time_range
     else
-        offset = randomUniform(-time_range/2, time_range/2)
+        offset = randomUniform(-time_range, time_range)
     endif
     
     voiceOffset[voice] = offset
@@ -380,6 +442,17 @@ for voice from 1 to n_voices
     selectObject: voiceCopy
     voiceNs = Get number of samples
 
+    # A symmetric attack/release should not overlap on short rendered voices.
+    if fade > 0 and voiceNs > 1
+        maxFadeSamples = floor(voiceNs / 2)
+        if fade_samples > maxFadeSamples
+            fade_samples = maxFadeSamples
+        endif
+        if fade_samples < 1
+            fade_samples = 1
+        endif
+    endif
+
     selectObject: output
     s1 = Get sample number from time: voiceMixStart
     if s1 < 1
@@ -403,10 +476,9 @@ for voice from 1 to n_voices
     voiceNsStr$ = string$(voiceNs)
     fadeNsStr$ = string$(fade_samples)
 
-    # Build the voice-read-with-envelope expression once.
+    # Build the envelope/gain suffix once; channel routing is explicit below.
     if fade > 0
-        vRead$ = "object[" + voiceIdStr$ + ", col - " + sOffStr$ + "]"
-            ... + " * (if (col - " + sOffStr$ + ") < " + fadeNsStr$
+        vSuffix$ = " * (if (col - " + sOffStr$ + ") < " + fadeNsStr$
             ... + " then (col - " + sOffStr$ + ") / " + fadeNsStr$
             ... + " else if (" + voiceNsStr$ + " - (col - " + sOffStr$
             ... + ") + 1) < " + fadeNsStr$
@@ -415,11 +487,12 @@ for voice from 1 to n_voices
             ... + " else 1 fi fi)"
             ... + " * " + gainStr$
     else
-        vRead$ = "object[" + voiceIdStr$ + ", col - " + sOffStr$ + "]"
-            ... + " * " + gainStr$
+        vSuffix$ = " * " + gainStr$
     endif
 
     if use_stereo = 1
+        # workingSound/voiceCopy is explicitly mono in stereo-spread mode.
+        vRead$ = "object[" + voiceIdStr$ + ", 1, col - " + sOffStr$ + "]" + vSuffix$
         l_gain = sqrt((1 - pan_pos) / 2)
         r_gain = sqrt((1 + pan_pos) / 2)
         selectObject: output
@@ -428,13 +501,15 @@ for voice from 1 to n_voices
         Formula (part): voiceMixStart, voiceEnd_t, 2, 2,
             ... "self + " + vRead$ + " * " + string$(r_gain)
     elsif outChannels > 1
-        # Non-panned stereo: equal to both channels
+        # Preserve corresponding source channels when stereo spreading is off.
         selectObject: output
         for ch from 1 to outChannels
+            vRead$ = "object[" + voiceIdStr$ + ", " + string$(ch) + ", col - " + sOffStr$ + "]" + vSuffix$
             Formula (part): voiceMixStart, voiceEnd_t, ch, ch,
                 ... "self + " + vRead$
         endfor
     else
+        vRead$ = "object[" + voiceIdStr$ + ", 1, col - " + sOffStr$ + "]" + vSuffix$
         selectObject: output
         Formula (part): voiceMixStart, voiceEnd_t, 1, 1,
             ... "self + " + vRead$
@@ -454,9 +529,11 @@ if targetSR > 0 and sampleRate > targetSR
     removeObject: output
     output = upsampledID
     
-    if workingSound <> original
-        removeObject: workingSound
-    endif
+endif
+
+# workingSound is no longer needed after all voice copies have been rendered.
+if workingIsTemporary = 1
+    removeObject: workingSound
 endif
 
 # Apply Wet/Dry Mix
@@ -482,8 +559,9 @@ if dry_level > 0
     
     selectObject: dryExt
     curr_dur = Get total duration
+    dryChannels = Get number of channels
     if curr_dur < finalOutputDur
-        Create Sound from formula: "sil_dry", outChannels, 0, finalOutputDur - curr_dur, sampleRate, "0"
+        Create Sound from formula: "sil_dry", dryChannels, 0, finalOutputDur - curr_dur, sampleRate, "0"
         sil_dry = selected("Sound")
         selectObject: dryExt, sil_dry
         Concatenate
@@ -497,15 +575,18 @@ if dry_level > 0
     dry_id_str$ = string$(dryExt)
     
     selectObject: output
-    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + "] * " + dry_str$
+    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + ", row, col] * " + dry_str$
     
     removeObject: dryExt
 endif
 
-# Normalize
+# Normalize (same requested behavior, but silence-safe)
 selectObject: output
 if normalize_output = 1
-    Scale peak: 0.95
+    outputPeak = Get absolute extremum: 0, 0, "None"
+    if outputPeak > 0
+        Scale peak: 0.95
+    endif
 endif
 
 Rename: originalName$ + "_ligeti_" + presetName$

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -35,6 +35,28 @@
 #   - Stereo output from any source: a mono input is duplicated to two channels
 #     before processing, so the decorrelated L/R reverb produces a wide stereo
 #     tail with a mono-compatible (centred) dry signal.
+# Changelog v0.5:
+#   - Public form/defaults, output naming, and final selection are unchanged.
+#   - Corrected Wet/Dry semantics: 0% = dry only, 100% = harmonic-decay
+#     reflections only. The internal processed buffer still contains dry +
+#     reflections; the mixer explicitly removes the embedded dry component.
+#   - Added a private zero-based work copy for non-zero source xmin.
+#   - Fixed 3+ channel input: silent tail now matches the source channel count;
+#     the shared-processing branch applies every echo to every channel.
+#   - Fadeout is limited to the reverb tail, so Custom values can no longer
+#     fade the original source before it ends.
+#   - Echo delay generation is evaluated safely in the log domain when the
+#     power-law pattern must be scaled to the tail, preventing overflow for
+#     pathological Custom spread values while preserving the same curve.
+#   - Echo delays are kept at least two samples long, avoiding near-zero-delay
+#     self-gain artifacts after extreme pattern compression.
+#   - Individual recursive echo gains are capped below unity for stability;
+#     built-in presets are unaffected in normal operation.
+#   - Echo processing uses Formula (part) only from each delay onward, preserving
+#     the same recurrence while avoiding work on samples that cannot change.
+#   - Final Scale peak is a safety ceiling only, so quiet dry/effect output is
+#     not boosted and Wet/Dry endpoints remain level-faithful.
+#
 # ============================================================
 
 form Harmonic Decay Reverb
@@ -87,6 +109,15 @@ originalDur = Get total duration
 sr = Get sampling frequency
 numChannels = Get number of channels
 
+# Private zero-based processing copy; caller's original Sound is untouched.
+selectObject: original
+workSource = Copy: "harmonic_decay_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
+
 # === Apply Presets ===
 if preset = 2
     # Subtle Harmonic
@@ -136,6 +167,9 @@ else
     presetName$ = "Custom"
 endif
 
+# Keep fadeout entirely inside the appended reverb tail.
+effectiveFadeoutDuration = min(fadeout_duration_s, tail_duration_s)
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -146,29 +180,44 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-# Pre-calculate delays and amplitudes for visualization
+# Pre-calculate delays and amplitudes for visualization.
+# Evaluate the decision to scale in the log domain, so tiny Custom spread
+# values cannot overflow k^power before the tail-fit step has a chance to run.
 harmonic_power = 1 / harmonic_spread
+usableSpan = tail_duration_s * 0.95
+minEchoDelay = 2 / sr
+logRawMaxDelay = ln(base_delay_s) + harmonic_power * ln(number_of_echoes)
+logUsableSpan = ln(usableSpan)
+delayScale = 1
+patternNeedsScaling = 0
+if logRawMaxDelay > logUsableSpan
+    patternNeedsScaling = 1
+    logScale = logUsableSpan - logRawMaxDelay
+    if logScale > -700
+        delayScale = exp(logScale)
+    else
+        delayScale = 0
+    endif
+endif
+
 for k from 1 to number_of_echoes
-    echoDelay[k] = base_delay_s * (k ^ harmonic_power)
+    if patternNeedsScaling
+        # Algebraically identical to base*k^power*delayScale, but overflow-safe.
+        echoDelay[k] = usableSpan * exp(harmonic_power * (ln(k) - ln(number_of_echoes)))
+    else
+        echoDelay[k] = base_delay_s * exp(harmonic_power * ln(k))
+    endif
+    if echoDelay[k] < minEchoDelay
+        echoDelay[k] = minEchoDelay
+    endif
+
     echoAmp[k] = (decay_factor ^ k) * randomGauss(amplitude_mean, amplitude_stddev)
     if echoAmp[k] < 0
         echoAmp[k] = 0.01
+    elsif echoAmp[k] > 0.99
+        echoAmp[k] = 0.99
     endif
 endfor
-
-# Keep every echo audible: power-law spacing (especially spread < 1) can push
-# the last echoes past the tail, where self(x - delay) reads before t=0 and is
-# silent. If that happens, scale the whole pattern to fit the tail - preserving
-# the power-law shape while using every echo.
-rawMaxDelay = echoDelay[number_of_echoes]
-usableSpan = tail_duration_s * 0.95
-delayScale = 1
-if rawMaxDelay > usableSpan
-    delayScale = usableSpan / rawMaxDelay
-    for k from 1 to number_of_echoes
-        echoDelay[k] = echoDelay[k] * delayScale
-    endfor
-endif
 
 # Find max delay for info
 maxDelay = echoDelay[number_of_echoes]
@@ -202,16 +251,12 @@ appendInfoLine: "Processing..."
 
 totalDur = originalDur + tail_duration_s
 
-# Create silent tail
-if numChannels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
-endif
+# Create silent tail with exactly the source channel count.
+Create Sound from formula: "silent_tail", numChannels, 0, tail_duration_s, sr, "0"
 silentTail = selected("Sound")
 
-# Concatenate
-selectObject: original, silentTail
+# workSource was created before silentTail, so Object-list order is source then tail.
+selectObject: workSource, silentTail
 Concatenate
 extendedSound = selected("Sound")
 removeObject: silentTail
@@ -254,7 +299,7 @@ if numChannels = 2
         amp_str$ = string$(amp)
         
         selectObject: reverbLeft
-        Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
+        Formula (part): delay, totalDur, 1, 1, "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
     endfor
     
     # Process right (slightly different random amplitudes for decorrelation)
@@ -267,41 +312,47 @@ if numChannels = 2
         amp = (decay_factor ^ k) * randomGauss(amplitude_mean * 0.95, amplitude_stddev)
         if amp < 0
             amp = 0.01
+        elsif amp > 0.99
+            amp = 0.99
         endif
         
         delay_str$ = string$(delay)
         amp_str$ = string$(amp)
         
         selectObject: reverbRight
-        Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
+        Formula (part): delay, totalDur, 1, 1, "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
     endfor
     
-    # Apply wet/dry
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        left_str$ = string$(leftChannel)
-        right_str$ = string$(rightChannel)
-        
-        selectObject: reverbLeft
-        Formula: "self * " + wet_str$ + " + object[" + left_str$ + ", row, col] * " + dry_str$
-        
-        selectObject: reverbRight
-        Formula: "self * " + wet_str$ + " + object[" + right_str$ + ", row, col] * " + dry_str$
-    endif
+    # True dry/effect crossfade. reverbLeft/Right currently contain dry + reflections.
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+    left_str$ = string$(leftChannel)
+    right_str$ = string$(rightChannel)
+
+    selectObject: reverbLeft
+    Formula: "object[" + left_str$ + ", row, col] * " + dry_str$ + " + (self - object[" + left_str$ + ", row, col]) * " + wet_str$
+
+    selectObject: reverbRight
+    Formula: "object[" + right_str$ + ", row, col] * " + dry_str$ + " + (self - object[" + right_str$ + ", row, col]) * " + wet_str$
     
     # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
+    fade_start = totalDur - effectiveFadeoutDuration
+    fade_str$ = string$(effectiveFadeoutDuration)
     start_str$ = string$(fade_start)
     
     selectObject: reverbLeft
     Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    Scale peak: 0.95
-    
+    leftPeak = Get absolute extremum: 0, 0, "None"
+    if leftPeak > 0.95
+        Scale peak: 0.95
+    endif
+
     selectObject: reverbRight
     Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    Scale peak: 0.95
+    rightPeak = Get absolute extremum: 0, 0, "None"
+    if rightPeak > 0.95
+        Scale peak: 0.95
+    endif
     
     # Combine
     selectObject: reverbLeft, reverbRight
@@ -313,8 +364,8 @@ if numChannels = 2
     removeObject: leftChannel, rightChannel, reverbLeft, reverbRight, extendedSound
 
 else
-    # === MONO PROCESSING ===
-    appendInfoLine: "  Processing mono..."
+    # === MULTICHANNEL SHARED PROCESSING ===
+    appendInfoLine: "  Processing ", numChannels, "-channel shared-decay mode..."
     
     selectObject: extendedSound
     Copy: "reverb_mono"
@@ -328,33 +379,36 @@ else
         amp_str$ = string$(amp)
         
         selectObject: reverbMono
-        Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
+        Formula (part): delay, totalDur, 1, numChannels, "self + " + amp_str$ + " * self(x - " + delay_str$ + ")"
     endfor
     
-    # Apply wet/dry
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        ext_str$ = string$(extendedSound)
-        
-        selectObject: reverbMono
-        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + ", row, col] * " + dry_str$
-    endif
+    # True dry/effect crossfade. reverbMono contains dry + reflections.
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+    ext_str$ = string$(extendedSound)
+
+    selectObject: reverbMono
+    Formula: "object[" + ext_str$ + ", row, col] * " + dry_str$ + " + (self - object[" + ext_str$ + ", row, col]) * " + wet_str$
     
     # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
+    fade_start = totalDur - effectiveFadeoutDuration
+    fade_str$ = string$(effectiveFadeoutDuration)
     start_str$ = string$(fade_start)
     
     selectObject: reverbMono
     Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
     
-    Scale peak: 0.95
+    sharedPeak = Get absolute extremum: 0, 0, "None"
+    if sharedPeak > 0.95
+        Scale peak: 0.95
+    endif
     Rename: originalName$ + "_harmonic_" + presetName$
     result = reverbMono
     
     removeObject: extendedSound
 endif
+
+removeObject: workSource
 
 # ============================================================
 # VISUALIZATION

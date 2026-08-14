@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,6 +36,22 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4:
+#   - Public form and output naming are unchanged.
+#   - Private zero-based work copy fixes non-zero source xmin.
+#   - Fixed 3+ channel input: silent tail now matches the source
+#     channel count; non-stereo multichannel sources retain all channels.
+#   - Clarified actual Praat semantics of Pulse_amplitude / Pulse_width /
+#     Pulse_period: pulse-train adaptation factor, adaptation time, and
+#     sinc interpolation depth respectively.
+#   - Pulse_period is converted internally to an integer interpolation
+#     depth, as required by the pulse-train synthesis parameter.
+#   - Explicit row/column cross-object reads preserve channel routing
+#     in the shared-IR multichannel path.
+#   - Safe peak normalization skips digital silence.
+#   - Visualization uses the zero-based source and reports multichannel
+#     shared-IR mode accurately.
 #
 # Changelog v0.3:
 #   - Audio pipeline UNCHANGED. Output is bit-identical to v0.2
@@ -106,6 +122,15 @@ originalDur = Get total duration
 sr = Get sampling frequency
 numChannels = Get number of channels
 
+# Private zero-based work copy; never shift the caller's original Sound.
+selectObject: original
+workSource = Copy: "chaotic_bloom_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
+
 # === Apply Presets ===
 if preset = 1
     # Default (balanced)
@@ -147,6 +172,20 @@ else
     presetName$ = "Custom"
 endif
 
+# PointProcess: To Sound (pulse train) interprets the public Pulse_* fields as:
+#   Pulse_amplitude -> adaptation factor
+#   Pulse_width     -> adaptation time (s)
+#   Pulse_period    -> sinc interpolation depth (samples)
+# Keep the public names unchanged for caller compatibility.
+pulseInterpolationDepth = round(pulse_period)
+if pulseInterpolationDepth < 1
+    pulseInterpolationDepth = 1
+endif
+rightInterpolationDepth = round(pulseInterpolationDepth * 1.04)
+if rightInterpolationDepth < 1
+    rightInterpolationDepth = 1
+endif
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -164,7 +203,9 @@ appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Poisson density: ", poisson_density, " impulses/s"
 appendInfoLine: "Tail duration: ", tail_duration_s, " s"
-appendInfoLine: "Pulse width: ", pulse_width
+appendInfoLine: "Pulse-train adaptation factor: ", pulse_amplitude
+appendInfoLine: "Pulse-train adaptation time: ", pulse_width, " s"
+appendInfoLine: "Pulse-train interpolation depth: ", pulseInterpolationDepth, " samples"
 appendInfoLine: "Convolution mix: ", convolution_mix
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
@@ -181,14 +222,11 @@ irDuration = 6
 # Create extended sound with tail
 totalDur = originalDur + tail_duration_s
 
-if numChannels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
-endif
+Create Sound from formula: "silent_tail", numChannels, 0, tail_duration_s, sr, "0"
 silentTail = selected("Sound")
 
-selectObject: original, silentTail
+# workSource is older than silentTail, so object-list order is dry then tail.
+selectObject: workSource, silentTail
 Concatenate
 extendedSound = selected("Sound")
 removeObject: silentTail
@@ -211,7 +249,7 @@ if numChannels = 2
     Create Poisson process: "chaos_L", 0, irDuration, poisson_density
     poissonL = selected("PointProcess")
     
-    To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulse_period
+    To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulseInterpolationDepth
     irSoundL = selected("Sound")
     
     # Apply envelope: sin² fade × exponential decay × shimmer
@@ -230,7 +268,7 @@ if numChannels = 2
     Create Poisson process: "chaos_R", 0, irDuration, poisson_density * 1.07
     poissonR = selected("PointProcess")
     
-    To Sound (pulse train): sr, pulse_amplitude, pulse_width * 0.875, pulse_period * 1.04
+    To Sound (pulse train): sr, pulse_amplitude, pulse_width * 0.875, rightInterpolationDepth
     irSoundR = selected("Sound")
     
     # Slightly different envelope for decorrelation
@@ -303,7 +341,11 @@ if numChannels = 2
     selectObject: finalLeft, finalRight
     Combine to stereo
     result = selected("Sound")
-    Scale peak: scale_peak
+    selectObject: result
+    resultPeak = Get absolute extremum: 0, 0, "None"
+    if resultPeak > 0
+        Scale peak: scale_peak
+    endif
     Rename: originalName$ + "_bloom_" + presetName$
     
     # Store IR for visualization
@@ -319,14 +361,18 @@ if numChannels = 2
     removeObject: extendedSound
 
 else
-    # === MONO PROCESSING ===
-    appendInfoLine: "  Processing mono..."
+    # === MONO / MULTICHANNEL SHARED-IR PROCESSING ===
+    if numChannels = 1
+        appendInfoLine: "  Processing mono..."
+    else
+        appendInfoLine: "  Processing ", numChannels, "-channel shared-IR mode..."
+    endif
     
     # Create IR
     Create Poisson process: "chaos_mono", 0, irDuration, poisson_density
     poissonMono = selected("PointProcess")
     
-    To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulse_period
+    To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulseInterpolationDepth
     irSound = selected("Sound")
     
     # Apply envelope
@@ -351,9 +397,12 @@ else
     wet_str$ = string$(wet_level)
     dry_str$ = string$(dry_level)
     
-    Formula: "self * " + dry_str$ + " + object[" + conv_str$ + "] * " + wet_str$
-    
-    Scale peak: scale_peak
+    Formula: "self * " + dry_str$ + " + object[" + conv_str$ + ", row, col] * " + wet_str$
+
+    resultPeak = Get absolute extremum: 0, 0, "None"
+    if resultPeak > 0
+        Scale peak: scale_peak
+    endif
     Rename: originalName$ + "_bloom_" + presetName$
     result = selected("Sound")
     
@@ -386,7 +435,7 @@ if draw_visualization
     Plain line
     
     # Mono copies of original and result for waveform display
-    selectObject: original
+    selectObject: workSource
     if numChannels > 1
         vizOrig = Convert to mono
     else
@@ -524,10 +573,14 @@ if draw_visualization
         Font size: 7
         Colour: "{0.55, 0.30, 0.20}"
         Text: 0.05, "left", 0.02, "half", "Stereo pan crossfade: 2.0 Hz L, 1.8 Hz R"
-    else
+    elsif numChannels = 1
         Font size: 7
         Colour: "{0.30, 0.55, 0.30}"
         Text: 0.05, "left", 0.02, "half", "Mono: no pan crossfade"
+    else
+        Font size: 7
+        Colour: "{0.30, 0.55, 0.30}"
+        Text: 0.05, "left", 0.02, "half", "Multichannel: shared IR, no pan crossfade"
     endif
     
     Colour: "Black"
@@ -651,8 +704,10 @@ if draw_visualization
     
     if numChannels = 2
         stereoStr$ = "stereo pan crossfade (2.0/1.8 Hz)"
-    else
+    elsif numChannels = 1
         stereoStr$ = "mono"
+    else
+        stereoStr$ = string$(numChannels) + "ch shared IR"
     endif
     
     Font size: 6
@@ -661,7 +716,7 @@ if draw_visualization
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Poisson: " + fixed$(poisson_density, 0) + "/s"
-        ... + "  |  Pulse: w " + fixed$(pulse_width, 3) + " | A " + fixed$(pulse_amplitude, 2) + " | T " + fixed$(pulse_period, 0)
+        ... + "  |  Pulse train: adapt " + fixed$(pulse_amplitude, 2) + " | t " + fixed$(pulse_width, 3) + " | depth " + string$(pulseInterpolationDepth)
         ... + "  |  IR: " + fixed$(irDuration, 1) + " s"
         ... + "  |  Tail: " + fixed$(tail_duration_s, 2) + " s"
     
@@ -687,6 +742,8 @@ endif
 if draw_visualization = 0
     removeObject: irForViz
 endif
+
+removeObject: workSource
 
 # === Final Info ===
 selectObject: result

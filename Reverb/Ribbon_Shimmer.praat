@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - Fixed wet/dry mix object[id,col]; speedup (trimmed inaudible taps); house-style viz + full-length result
+# Version: 0.4 (2026) - Tap-bank/mix/geometry repair
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,19 @@
 #   early reflections that thin out over time. HF sparkle via
 #   differentiation adds "air". Polarity alternation creates
 #   rich phase texture.
+#
+# Changelog v0.4:
+#   - Public form/defaults, output naming and final selection are unchanged.
+#   - The shimmer engine is now a true feed-forward tapped-delay bank driven
+#     by the source, matching the documented/visualized tap pattern; the old
+#     recursive self(x-delay) loop created undocumented cross-echoes.
+#   - Correct Wet/Dry semantics: 0% = dry only, 100% = shimmer taps only.
+#   - The exact jittered left tap plan is shown in the visualization.
+#   - Deterministic internal seed for tap jitter; Praat global RNG is restored.
+#   - Fadeout is constrained to the appended tail and cannot attenuate source.
+#   - Exact-channel silent tails support arbitrary multichannel input.
+#   - Custom delay bounds/decay/base/sparkle/count are sanitized.
+#   - Final normalization is a ceiling only; quiet material is not boosted.
 #
 # Changelog v0.2:
 #   - Added input check
@@ -127,31 +140,106 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-# Pre-calculate delays for visualization
-for k from 1 to min(number_of_delays, 100)
-    u = k / number_of_delays
-    echoDelay[k] = min_delay_s * ((max_delay_s / min_delay_s) ^ u)
-    echoAmp[k] = base_amplitude * (decay_factor ^ k)
+# Internal geometry/stability guards; built-in presets remain unchanged.
+effectiveDelays = round(number_of_delays)
+if effectiveDelays < 1
+    effectiveDelays = 1
+endif
+
+minDelayEff = max(2 / sr, min_delay_s)
+maxDelayEff = max(2 / sr, max_delay_s)
+if minDelayEff > maxDelayEff
+    tmpDelay = minDelayEff
+    minDelayEff = maxDelayEff
+    maxDelayEff = tmpDelay
+endif
+
+baseAmpEff = base_amplitude
+if baseAmpEff < 0
+    baseAmpEff = 0
+elsif baseAmpEff > 0.99
+    baseAmpEff = 0.99
+endif
+
+decayEff = decay_factor
+if decayEff < 0
+    decayEff = 0
+elsif decayEff > 1
+    decayEff = 1
+endif
+
+sparkleEff = sparkle_amount
+if sparkleEff < 0
+    sparkleEff = 0
+elsif sparkleEff > 2
+    sparkleEff = 2
+endif
+
+tailEff = max(2 / sr, tail_duration_s)
+fadeEff = fadeout_duration_s
+if fadeEff < 0
+    fadeEff = 0
+endif
+if fadeEff > tailEff
+    fadeEff = tailEff
+endif
+
+# Build the literal render plans once. The left plan is also the QC diagram.
+researchSeed = 20260814
+random_initializeWithSeedUnsafelyButPredictably (researchSeed)
+
+for k from 1 to effectiveDelays
+    u = k / effectiveDelays
+    nominalDelay = minDelayEff * ((maxDelayEff / minDelayEff) ^ u)
+    jitterNow = randomUniform(-0.003, 0.003)
+    leftDelay[k] = max(2 / sr, nominalDelay + jitterNow)
+    leftAmp[k] = baseAmpEff * (decayEff ^ k)
     if k mod 3 = 0
+        leftAmp[k] = -leftAmp[k]
         echoPol[k] = -1
     else
         echoPol[k] = 1
     endif
+    echoDelay[k] = leftDelay[k]
+    echoAmp[k] = abs(leftAmp[k])
 endfor
 
-# Sample period for HF calculation
-samplePeriod = 1 / sr
+minD_R = max(2 / sr, minDelayEff * 1.13)
+maxD_R = max(2 / sr, maxDelayEff * 0.98)
+if minD_R > maxD_R
+    tmpDelay = minD_R
+    minD_R = maxD_R
+    maxD_R = tmpDelay
+endif
+baseAmp_R = baseAmpEff * 0.96
+decay_R = max(0, decayEff - 0.005)
+sparkleR = sparkleEff * 0.8
 
+for k from 1 to effectiveDelays
+    u = k / effectiveDelays
+    nominalDelay = minD_R * ((maxD_R / minD_R) ^ u)
+    jitterNow = randomUniform(-0.002, 0.002)
+    rightDelay[k] = max(2 / sr, nominalDelay + jitterNow)
+    rightAmp[k] = baseAmp_R * (decay_R ^ k)
+    if k mod 4 = 0
+        rightAmp[k] = -rightAmp[k]
+    endif
+endfor
+
+random_initializeSafelyAndUnpredictably ()
+
+# Sample period for HF differentiation.
+samplePeriod = 1 / sr
 # === Info ===
 writeInfoLine: "=== Ribbon Shimmer ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "Delays: ", number_of_delays
-appendInfoLine: "Delay range: ", min_delay_s * 1000, " - ", max_delay_s * 1000, " ms (exponential)"
-appendInfoLine: "Decay factor: ", decay_factor
-appendInfoLine: "HF sparkle: ", sparkle_amount
-appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
+appendInfoLine: "Delays: ", effectiveDelays
+appendInfoLine: "Delay range: ", minDelayEff * 1000, " - ", maxDelayEff * 1000, " ms (exponential)"
+appendInfoLine: "Decay factor: ", decayEff
+appendInfoLine: "HF sparkle: ", sparkleEff
+appendInfoLine: "Wet/Dry: ", wet_dry_percent, "% | Seed: ", researchSeed
 appendInfoLine: ""
 
 # ============================================================
@@ -160,14 +248,10 @@ appendInfoLine: ""
 
 appendInfoLine: "Processing..."
 
-totalDur = originalDur + tail_duration_s
+totalDur = originalDur + tailEff
 
-# Create silent tail
-if numChannels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
-endif
+# Create silent tail with the exact source channel count.
+Create Sound from formula: "silent_tail", numChannels, 0, tailEff, sr, "0"
 silentTail = selected("Sound")
 
 # Concatenate
@@ -177,7 +261,7 @@ extendedSound = selected("Sound")
 removeObject: silentTail
 
 sp_str$ = string$(samplePeriod)
-sparkle_str$ = string$(sparkle_amount)
+sparkle_str$ = string$(sparkleEff)
 
 if numChannels = 2
     # === STEREO PROCESSING ===
@@ -192,106 +276,74 @@ if numChannels = 2
     Extract one channel: 2
     rightChannel = selected("Sound")
     
-    # Process left channel
+    # Feed-forward left tap bank: zero effect buffer, source-driven taps.
     selectObject: leftChannel
     Copy: "shimmer_left"
     shimmerLeft = selected("Sound")
-    
-    for k from 1 to number_of_delays
-        u = k / number_of_delays
-        delay = min_delay_s * ((max_delay_s / min_delay_s) ^ u)
-        
-        if k mod 3 = 0
-            a = base_amplitude * (decay_factor ^ k) * (-1)
-        else
-            a = base_amplitude * (decay_factor ^ k)
-        endif
-        
-        jitter = randomUniform(-0.003, 0.003)
-        totalDelay = delay + jitter
-        
-        delay_str$ = string$(totalDelay)
-        a_str$ = string$(a)
-        
+    Formula: "0"
+    left_str$ = string$(leftChannel)
+
+    for k from 1 to effectiveDelays
+        delay_str$ = string$(leftDelay[k])
+        a_str$ = string$(leftAmp[k])
+
         selectObject: shimmerLeft
-        Formula: "if x > " + delay_str$ + " then self + " + a_str$ + " * (self(x - " + delay_str$ + ") + " + sparkle_str$ + " * (self(x - " + delay_str$ + ") - self(x - " + delay_str$ + " - " + sp_str$ + "))) else self fi"
-        
-        if k mod 40 = 0
-            Scale peak: 0.98
-        endif
+        Formula: "self + " + a_str$ + " * (object(" + left_str$ + ", x - " + delay_str$ + ", 1) + " + sparkle_str$ + " * (object(" + left_str$ + ", x - " + delay_str$ + ", 1) - object(" + left_str$ + ", x - " + delay_str$ + " - " + sp_str$ + ", 1)))"
     endfor
-    
-    Scale peak: 0.98
-    
-    # Process right channel (different parameters for decorrelation)
+
+    # Feed-forward right tap bank with decorrelated deterministic plan.
     selectObject: rightChannel
     Copy: "shimmer_right"
     shimmerRight = selected("Sound")
-    
-    # Slightly different parameters for right channel
-    minD_R = min_delay_s * 1.13
-    maxD_R = max_delay_s * 0.98
-    baseAmp_R = base_amplitude * 0.96
-    decay_R = decay_factor - 0.005
-    sparkleR_str$ = string$(sparkle_amount * 0.8)
-    
-    for k from 1 to number_of_delays
-        u = k / number_of_delays
-        delay = minD_R * ((maxD_R / minD_R) ^ u)
-        
-        if k mod 4 = 0
-            a = baseAmp_R * (decay_R ^ k) * (-1)
-        else
-            a = baseAmp_R * (decay_R ^ k)
-        endif
-        
-        jitter = randomUniform(-0.002, 0.002)
-        totalDelay = delay + jitter
-        
-        delay_str$ = string$(totalDelay)
-        a_str$ = string$(a)
-        
+    Formula: "0"
+    right_str$ = string$(rightChannel)
+    sparkleR_str$ = string$(sparkleR)
+
+    for k from 1 to effectiveDelays
+        delay_str$ = string$(rightDelay[k])
+        a_str$ = string$(rightAmp[k])
+
         selectObject: shimmerRight
-        Formula: "if x > " + delay_str$ + " then self + " + a_str$ + " * (self(x - " + delay_str$ + ") + " + sparkleR_str$ + " * (self(x - " + delay_str$ + ") - self(x - " + delay_str$ + " - " + sp_str$ + "))) else self fi"
-        
-        if k mod 25 = 0
-            Scale peak: 0.98
-        endif
+        Formula: "self + " + a_str$ + " * (object(" + right_str$ + ", x - " + delay_str$ + ", 1) + " + sparkleR_str$ + " * (object(" + right_str$ + ", x - " + delay_str$ + ", 1) - object(" + right_str$ + ", x - " + delay_str$ + " - " + sp_str$ + ", 1)))"
     endfor
-    
-    Scale peak: 0.98
-    
-    # Apply wet/dry
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        left_str$ = string$(leftChannel)
-        right_str$ = string$(rightChannel)
-        
-        selectObject: shimmerLeft
-        Formula: "self * " + wet_str$ + " + object[" + left_str$ + ", col] * " + dry_str$
-        
-        selectObject: shimmerRight
-        Formula: "self * " + wet_str$ + " + object[" + right_str$ + ", col] * " + dry_str$
-    endif
-    
-    # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
+
+    # True dry/effect crossfade. shimmerLeft/Right are effect-only buffers.
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+    left_str$ = string$(leftChannel)
+    right_str$ = string$(rightChannel)
+
     selectObject: shimmerLeft
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    
+    Formula: "self * " + wet_str$ + " + object[" + left_str$ + ", row, col] * " + dry_str$
+
     selectObject: shimmerRight
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    
-    # Combine
+    Formula: "self * " + wet_str$ + " + object[" + right_str$ + ", row, col] * " + dry_str$
+
+    # Fade only within the appended tail.
+    if fadeEff > 0
+        fade_start = totalDur - fadeEff
+        fade_str$ = string$(fadeEff)
+        start_str$ = string$(fade_start)
+
+        selectObject: shimmerLeft
+        Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+
+        selectObject: shimmerRight
+        Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+    endif
+
+    # Combine first, then one safety ceiling to preserve L/R balance.
     selectObject: shimmerLeft, shimmerRight
     Combine to stereo
     result = selected("Sound")
     Rename: originalName$ + "_ribbon_" + presetName$
-    
+
+    selectObject: result
+    resultPeak = Get absolute extremum: 0, 0, "None"
+    if resultPeak > 0.98
+        Scale peak: 0.98
+    endif
+
     # Cleanup
     removeObject: leftChannel, rightChannel, shimmerLeft, shimmerRight, extendedSound
 
@@ -302,54 +354,43 @@ else
     selectObject: extendedSound
     Copy: "shimmer_mono"
     shimmerMono = selected("Sound")
-    
-    for k from 1 to number_of_delays
-        u = k / number_of_delays
-        delay = min_delay_s * ((max_delay_s / min_delay_s) ^ u)
-        
-        if k mod 3 = 0
-            a = base_amplitude * (decay_factor ^ k) * (-1)
-        else
-            a = base_amplitude * (decay_factor ^ k)
-        endif
-        
-        jitter = randomUniform(-0.003, 0.003)
-        totalDelay = delay + jitter
-        
-        delay_str$ = string$(totalDelay)
-        a_str$ = string$(a)
-        
+    Formula: "0"
+    ext_str$ = string$(extendedSound)
+
+    for k from 1 to effectiveDelays
+        delay_str$ = string$(leftDelay[k])
+        a_str$ = string$(leftAmp[k])
+
         selectObject: shimmerMono
-        Formula: "if x > " + delay_str$ + " then self + " + a_str$ + " * (self(x - " + delay_str$ + ") + " + sparkle_str$ + " * (self(x - " + delay_str$ + ") - self(x - " + delay_str$ + " - " + sp_str$ + "))) else self fi"
-        
-        if k mod 40 = 0
-            Scale peak: 0.98
-        endif
+        Formula: "self + " + a_str$ + " * (object(" + ext_str$ + ", x - " + delay_str$ + ", row) + " + sparkle_str$ + " * (object(" + ext_str$ + ", x - " + delay_str$ + ", row) - object(" + ext_str$ + ", x - " + delay_str$ + " - " + sp_str$ + ", row)))"
     endfor
-    
-    Scale peak: 0.98
-    
-    # Apply wet/dry
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        ext_str$ = string$(extendedSound)
-        
-        selectObject: shimmerMono
-        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + ", col] * " + dry_str$
-    endif
-    
-    # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
+
+    # True dry/effect crossfade; row/col preserves arbitrary channels.
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+    ext_str$ = string$(extendedSound)
+
     selectObject: shimmerMono
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    
+    Formula: "self * " + wet_str$ + " + object[" + ext_str$ + ", row, col] * " + dry_str$
+
+    # Fade only within the appended tail.
+    if fadeEff > 0
+        fade_start = totalDur - fadeEff
+        fade_str$ = string$(fadeEff)
+        start_str$ = string$(fade_start)
+
+        selectObject: shimmerMono
+        Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+    endif
+
+    selectObject: shimmerMono
+    resultPeak = Get absolute extremum: 0, 0, "None"
+    if resultPeak > 0.98
+        Scale peak: 0.98
+    endif
     Rename: originalName$ + "_ribbon_" + presetName$
     result = shimmerMono
-    
+
     removeObject: extendedSound
 endif
 
@@ -372,7 +413,7 @@ if draw_visualization
     Text: 0.5, "centre", 0.66, "half", "##Ribbon Shimmer##  |  " + presetName$
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.24, "half", originalName$ + "   |   " + string$(number_of_delays) + " delays   |   wet/dry " + fixed$(wet_dry_percent, 0) + "%"
+    Text: 0.5, "centre", -1.24, "half", originalName$ + "   |   " + string$(effectiveDelays) + " delays   |   wet/dry " + fixed$(wet_dry_percent, 0) + "%"
 
     # === DRY WAVEFORM ===
     Select outer viewport: 0, 8, 0.7, 2.5
@@ -412,14 +453,14 @@ if draw_visualization
     # === DELAY / ECHO PATTERN ===
     Select outer viewport: 0, 8, 4.5, 6.9
     Select inner viewport: 0.6, 7.6, 4.6, 6.8
-    maxDelayMs = max_delay_s * 1000 * 1.1
-    maxAmp = base_amplitude * 1.2
+    maxDelayMs = maxDelayEff * 1000 * 1.1
+    maxAmp = max(0.05, baseAmpEff * 1.2)
     Axes: 0, maxDelayMs, -maxAmp, maxAmp
     Paint rectangle: "{0.96, 0.96, 0.97}", 0, maxDelayMs, -maxAmp, maxAmp
     Colour: "{0.85, 0.85, 0.85}"
     Draw line: 0, 0, maxDelayMs, 0
 
-    numShow = min(number_of_delays, 100)
+    numShow = min(effectiveDelays, 100)
     radius = maxDelayMs * 0.006
     for k from 1 to numShow
         delayMs = echoDelay[k] * 1000
@@ -438,10 +479,10 @@ if draw_visualization
     Colour: "{0.7, 0.7, 0.7}"
     Dotted line
     prevX = 0
-    prevY = base_amplitude
+    prevY = baseAmpEff
     for k from 1 to numShow
         delayMs = echoDelay[k] * 1000
-        env = base_amplitude * (decay_factor ^ k)
+        env = baseAmpEff * (decayEff ^ k)
         Draw line: prevX, prevY, delayMs, env
         prevX = delayMs
         prevY = env
@@ -467,9 +508,9 @@ if draw_visualization
     Text: 0.02, "left", 0.70, "half", "##Shimmer Parameters##"
     Font size: 8
     Colour: "{0.25, 0.25, 0.25}"
-    Text: 0.02, "left", 0.40, "half", "Delays: " + string$(number_of_delays) + "    Range: " + fixed$(min_delay_s * 1000, 0) + "–" + fixed$(max_delay_s * 1000, 0) + " ms    Decay: " + fixed$(decay_factor, 3) + "    Sparkle: " + fixed$(sparkle_amount, 2)
+    Text: 0.02, "left", 0.40, "half", "Delays: " + string$(effectiveDelays) + "    Range: " + fixed$(minDelayEff * 1000, 0) + "–" + fixed$(maxDelayEff * 1000, 0) + " ms    Decay: " + fixed$(decayEff, 3) + "    Sparkle: " + fixed$(sparkleEff, 2)
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.02, "left", 0.12, "half", "Output: " + fixed$(resultDur, 2) + " s  (original " + fixed$(originalDur, 2) + " s + " + fixed$(tail_duration_s, 2) + " s tail)    Wet/dry: " + fixed$(wet_dry_percent, 0) + "%"
+    Text: 0.02, "left", 0.12, "half", "Output: " + fixed$(resultDur, 2) + " s  (original " + fixed$(originalDur, 2) + " s + " + fixed$(tailEff, 2) + " s tail)    Wet/dry: " + fixed$(wet_dry_percent, 0) + "%"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 

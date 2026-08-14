@@ -3,27 +3,36 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 reviewed (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Temporal Erosion - convolution reverb with logarithmic
-#   decay envelope and random amplitude "erosion". Unlike
-#   Spectral_Decay's exponential chirp, this uses logarithmic
-#   decay (faster initial drop, slower tail) with Gaussian
-#   random modulation for organic, "weathered" texture.
+#   Temporal Erosion - convolution reverb based on a dense Poisson
+#   impulse response, a logarithmic decay envelope, and bounded
+#   sample-wise Gaussian amplitude roughening. The logarithmic
+#   envelope drops quickly at first and then decays more gradually.
 #
-# Changelog v0.2:
-#   - Added input check
-#   - Fixed selection and formula syntax
-#   - Fixed wet/dry mixing (proper formula-based)
-#   - Added visualization
+# Review changes v0.3:
+#   - Corrected wet/dry reads to documented time-based object().
+#   - Fade is applied to the wet tail before wet/dry mixing.
+#   - Removed output/per-channel peak normalization.
+#   - Normalizes IR discrete energy before convolution, preserving
+#     a linear and more consistent wet/dry relationship.
+#   - Uses one common IR-energy gain for stereo, preserving L/R balance.
+#   - Bounds Gaussian erosion multipliers to [0, 2].
+#   - Right logarithmic envelope now reaches zero like the left.
+#   - Hann-band filtering is applied to the IR before convolution.
+#   - Cutoffs and smoothing adapt safely to Nyquist.
+#   - 0% wet uses a true dry-only fast path.
+#   - Output duration is source + requested tail; convolution is
+#     sampled into a fixed output canvas, trimming/padding as needed.
+#   - Visualization updated to the Praat AudioTools house style.
 # ============================================================
 
 form Temporal Erosion
     comment Select a Sound object first
-    
+
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -31,32 +40,35 @@ form Temporal Erosion
         option Medium Erosion
         option Heavy Erosion
         option Extreme Erosion
-    
+
     comment === IR Parameters ===
     positive Tail_duration_s 3.0
     positive Impulse_duration_s 5.0
     positive Poisson_density 2500
-    
+
     comment === Filtering ===
     positive Low_cutoff_Hz 100
     positive High_cutoff_Hz 8000
     positive Smoothing_Hz 100
-    
+
     comment === Erosion ===
-    positive Erosion_randomness 0.3
-    comment (standard deviation of Gaussian amplitude variation)
-    
+    real Erosion_randomness 0.3
+    comment (Gaussian roughness standard deviation; 0 = no roughening)
+
     comment === Mix ===
     real Wet_dry_percent 50
     comment (0 = dry only, 100 = wet only)
-    
+
     comment === Output ===
     positive Fadeout_duration_s 1.2
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
-# === Check Input ===
+# ============================================================
+# INPUT AND PRESET SETUP
+# ============================================================
+
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
@@ -66,12 +78,20 @@ originalName$ = selected$("Sound")
 
 selectObject: original
 originalDur = Get total duration
+originalStart = Get start time
 sr = Get sampling frequency
 numChannels = Get number of channels
 
+if numChannels <> 1 and numChannels <> 2
+    exitScript: "Temporal Erosion currently supports mono or stereo Sound objects only."
+endif
+
+if sr < 1000
+    exitScript: "Sampling frequency is too low for Temporal Erosion."
+endif
+
 # === Apply Presets ===
 if preset = 2
-    # Subtle Erosion
     tail_duration_s = 2.0
     impulse_duration_s = 3.0
     poisson_density = 1500
@@ -83,7 +103,6 @@ if preset = 2
     wet_dry_percent = 35
     presetName$ = "Subtle"
 elsif preset = 3
-    # Medium Erosion
     tail_duration_s = 3.0
     impulse_duration_s = 5.0
     poisson_density = 2500
@@ -95,7 +114,6 @@ elsif preset = 3
     wet_dry_percent = 50
     presetName$ = "Medium"
 elsif preset = 4
-    # Heavy Erosion
     tail_duration_s = 4.0
     impulse_duration_s = 7.0
     poisson_density = 4000
@@ -107,7 +125,6 @@ elsif preset = 4
     wet_dry_percent = 65
     presetName$ = "Heavy"
 elsif preset = 5
-    # Extreme Erosion
     tail_duration_s = 5.0
     impulse_duration_s = 10.0
     poisson_density = 6000
@@ -122,26 +139,75 @@ else
     presetName$ = "Custom"
 endif
 
-# Clamp wet/dry
+# === Validate / derive parameters ===
 if wet_dry_percent < 0
     wet_dry_percent = 0
 elsif wet_dry_percent > 100
     wet_dry_percent = 100
 endif
 
+if erosion_randomness < 0
+    erosion_randomness = 0
+endif
+
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
+nyquist = sr / 2
+maxFilterHz = 0.95 * nyquist
 
-# === Info ===
+effectiveLow = low_cutoff_Hz
+effectiveHigh = min(high_cutoff_Hz, maxFilterHz)
+
+if effectiveLow >= effectiveHigh
+    exitScript: "Low cutoff must be below the effective high cutoff (95% of Nyquist)."
+endif
+
+# Keep the Hann transition inside the usable spectrum and prevent
+# an excessively wide lower transition from reaching through DC.
+effectiveSmoothing = min(smoothing_Hz, effectiveLow, nyquist - effectiveHigh, 0.5 * (effectiveHigh - effectiveLow))
+if effectiveSmoothing <= 0
+    exitScript: "The effective filter smoothing is zero; please adjust the cutoff frequencies."
+endif
+
+# Slightly decorrelated right-channel filter, bounded independently.
+rightLow = effectiveLow * 1.2
+rightHigh = min(high_cutoff_Hz * 0.94, maxFilterHz)
+if rightLow >= rightHigh
+    rightLow = effectiveLow
+    rightHigh = effectiveHigh
+endif
+
+rightSmoothing = min(smoothing_Hz * 0.9, rightLow, nyquist - rightHigh, 0.5 * (rightHigh - rightLow))
+if rightSmoothing <= 0
+    rightSmoothing = effectiveSmoothing
+endif
+
+fadeDuration = min(fadeout_duration_s, tail_duration_s)
+fadeStart = originalDur + tail_duration_s - fadeDuration
+totalDur = originalDur + tail_duration_s
+
+# The manual documents 2000 samples as a typical interpolation depth.
+sincDepth = 2000
+adaptationTime = 0.02
+
+# ============================================================
+# INFO
+# ============================================================
+
 writeInfoLine: "=== Temporal Erosion ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "IR duration: ", impulse_duration_s, " s"
-appendInfoLine: "Poisson density: ", poisson_density, " events/s"
-appendInfoLine: "Erosion randomness: ", erosion_randomness
-appendInfoLine: "Bandpass: ", low_cutoff_Hz, " - ", high_cutoff_Hz, " Hz"
-appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
+appendInfoLine: "IR duration: ", fixed$(impulse_duration_s, 2), " s"
+appendInfoLine: "Poisson density: ", fixed$(poisson_density, 0), " events/s"
+appendInfoLine: "Expected events (L): ", fixed$(impulse_duration_s * poisson_density, 0)
+appendInfoLine: "Erosion sigma: ", fixed$(erosion_randomness, 2), " (bounded multiplier 0..2)"
+appendInfoLine: "Effective L band: ", fixed$(effectiveLow, 0), " - ", fixed$(effectiveHigh, 0), " Hz"
+if numChannels = 2
+    appendInfoLine: "Effective R band: ", fixed$(rightLow, 0), " - ", fixed$(rightHigh, 0), " Hz"
+endif
+appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
+appendInfoLine: "Output tail: ", fixed$(tail_duration_s, 2), " s"
 appendInfoLine: ""
 
 # ============================================================
@@ -150,347 +216,356 @@ appendInfoLine: ""
 
 appendInfoLine: "Processing..."
 
-totalDur = originalDur + tail_duration_s
-
-# Create silent tail
-if numChannels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
-endif
-silentTail = selected("Sound")
-
-# Concatenate
-selectObject: original, silentTail
-Concatenate
-extendedSound = selected("Sound")
-removeObject: silentTail
-
-# Erosion randomness string
-erosion_str$ = string$(erosion_randomness)
-
-if numChannels = 2
-    # === STEREO PROCESSING ===
-    appendInfoLine: "  Processing stereo..."
-    
-    # Extract channels
-    selectObject: extendedSound
-    Extract one channel: 1
-    leftChannel = selected("Sound")
-    
-    selectObject: extendedSound
-    Extract one channel: 2
-    rightChannel = selected("Sound")
-    
-    # === LEFT CHANNEL ===
-    # Create Poisson IR for left
-    Create Poisson process: "poisson_left", 0, impulse_duration_s, poisson_density
-    poissonLeft = selected("PointProcess")
-    To Sound (pulse train): sr, 1, 0.02, 4000
-    irLeft = selected("Sound")
-    
-    # Apply logarithmic decay with erosion
-    Formula: "self * (1 - log10(1 + 9*(x-xmin)/(xmax-xmin))) * randomGauss(1, " + erosion_str$ + ")"
-    
-    # Convolve left
-    selectObject: leftChannel, irLeft
-    Convolve: "sum", "zero"
-    convLeft = selected("Sound")
-    
-    # Bandpass filter
-    Filter (pass Hann band): low_cutoff_Hz, high_cutoff_Hz, smoothing_Hz
-    filtLeft = selected("Sound")
-    removeObject: convLeft
-    
-    # === RIGHT CHANNEL ===
-    # Create Poisson IR for right (slightly different)
-    Create Poisson process: "poisson_right", 0, impulse_duration_s * 0.96, poisson_density * 0.92
-    poissonRight = selected("PointProcess")
-    To Sound (pulse train): sr, 1, 0.018, 3800
-    irRight = selected("Sound")
-    
-    erosion_R = erosion_randomness * 1.17
-    erosion_R_str$ = string$(erosion_R)
-    Formula: "self * (1 - log10(1 + 8.5*(x-xmin)/(xmax-xmin))) * randomGauss(1, " + erosion_R_str$ + ")"
-    
-    # Convolve right
-    selectObject: rightChannel, irRight
-    Convolve: "sum", "zero"
-    convRight = selected("Sound")
-    
-    # Bandpass filter (slightly different)
-    Filter (pass Hann band): low_cutoff_Hz * 1.2, high_cutoff_Hz * 0.94, smoothing_Hz * 0.9
-    filtRight = selected("Sound")
-    removeObject: convRight
-    
-    # Normalize wet signals
-    selectObject: filtLeft
-    Scale peak: 0.92
-    
-    selectObject: filtRight
-    Scale peak: 0.92
-    
-    # Apply wet/dry mix
-    wet_str$ = string$(wet_level)
-    dry_str$ = string$(dry_level)
-    left_str$ = string$(leftChannel)
-    right_str$ = string$(rightChannel)
-    
-    selectObject: filtLeft
-    Formula: "self * " + wet_str$ + " + object[" + left_str$ + "] * " + dry_str$
-    
-    selectObject: filtRight
-    Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
-    
-    # Apply fadeout - handle duration mismatch
-    selectObject: filtLeft
-    wetDur = Get total duration
-    
-    if wetDur > totalDur
-        selectObject: filtLeft
-        Extract part: 0, totalDur, "rectangular", 1, "no"
-        filtLeftTrim = selected("Sound")
-        removeObject: filtLeft
-        filtLeft = filtLeftTrim
-        
-        selectObject: filtRight
-        Extract part: 0, totalDur, "rectangular", 1, "no"
-        filtRightTrim = selected("Sound")
-        removeObject: filtRight
-        filtRight = filtRightTrim
-    endif
-    
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
-    selectObject: filtLeft
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    Scale peak: 0.95
-    
-    selectObject: filtRight
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    Scale peak: 0.95
-    
-    # Combine to stereo
-    selectObject: filtLeft, filtRight
-    Combine to stereo
+if wet_level = 0
+    # True dry-only fast path: no IR, convolution, filtering, or scaling.
+    selectObject: original
+    Copy: originalName$ + "_erosion_" + presetName$
     result = selected("Sound")
-    Rename: originalName$ + "_erosion_" + presetName$
-    
-    # Cleanup
-    removeObject: leftChannel, rightChannel, extendedSound
-    removeObject: poissonLeft, poissonRight, irLeft, irRight
-    removeObject: filtLeft, filtRight
 
 else
-    # === MONO PROCESSING ===
-    appendInfoLine: "  Processing mono..."
-    
-    # Create Poisson IR
-    Create Poisson process: "poisson_mono", 0, impulse_duration_s, poisson_density
-    poissonMono = selected("PointProcess")
-    To Sound (pulse train): sr, 1, 0.02, 4000
-    irMono = selected("Sound")
-    
-    # Apply logarithmic decay with erosion
-    Formula: "self * (1 - log10(1 + 9*(x-xmin)/(xmax-xmin))) * randomGauss(1, " + erosion_str$ + ")"
-    
-    # Convolve
-    selectObject: extendedSound, irMono
-    Convolve: "sum", "zero"
-    convMono = selected("Sound")
-    
-    # Bandpass filter
-    Filter (pass Hann band): low_cutoff_Hz, high_cutoff_Hz, smoothing_Hz
-    filtMono = selected("Sound")
-    removeObject: convMono
-    
-    Scale peak: 0.92
-    
-    # Apply wet/dry mix
+    erosion_str$ = string$(erosion_randomness)
+    original_start_str$ = string$(originalStart)
     wet_str$ = string$(wet_level)
     dry_str$ = string$(dry_level)
-    ext_str$ = string$(extendedSound)
-    
-    selectObject: filtMono
-    
-    # Handle duration mismatch
-    wetDur = Get total duration
-    if wetDur > totalDur
-        Extract part: 0, totalDur, "rectangular", 1, "no"
-        filtMonoTrim = selected("Sound")
-        removeObject: filtMono
-        filtMono = filtMonoTrim
+    fade_start_str$ = string$(fadeStart)
+    fade_str$ = string$(fadeDuration)
+
+    if numChannels = 2
+        # ====================================================
+        # STEREO
+        # ====================================================
+
+        selectObject: original
+        Extract one channel: 1
+        leftChannel = selected("Sound")
+
+        selectObject: original
+        Extract one channel: 2
+        rightChannel = selected("Sound")
+
+        # ---- Left IR ----
+        Create Poisson process: "erosion_poisson_left", 0, impulse_duration_s, poisson_density
+        poissonLeft = selected("PointProcess")
+
+        To Sound (pulse train): sr, 1, adaptationTime, sincDepth
+        irLeftRaw = selected("Sound")
+
+        # Logarithmic envelope reaches exactly zero at xmax.
+        # Gaussian roughening is bounded to preserve amplitude semantics.
+        Formula: "self * (1 - log10(1 + 9*(x-xmin)/(xmax-xmin))) * min(2, max(0, randomGauss(1, " + erosion_str$ + ")))"
+
+        Filter (pass Hann band): effectiveLow, effectiveHigh, effectiveSmoothing
+        irLeft = selected("Sound")
+        removeObject: irLeftRaw
+
+        # ---- Right IR ----
+        Create Poisson process: "erosion_poisson_right", 0, impulse_duration_s * 0.96, poisson_density * 0.92
+        poissonRight = selected("PointProcess")
+
+        To Sound (pulse train): sr, 1, adaptationTime, sincDepth
+        irRightRaw = selected("Sound")
+
+        erosionR = erosion_randomness * 1.17
+        erosion_R_str$ = string$(erosionR)
+        Formula: "self * (1 - log10(1 + 9*(x-xmin)/(xmax-xmin))) * min(2, max(0, randomGauss(1, " + erosion_R_str$ + ")))"
+
+        Filter (pass Hann band): rightLow, rightHigh, rightSmoothing
+        irRight = selected("Sound")
+        removeObject: irRightRaw
+
+        # Normalize discrete IR energy with ONE common stereo gain.
+        # For "sum" convolution, sum(h^2)=1 gives approximately unity
+        # white-noise RMS gain. Praat energy is sum(h^2)/sr.
+        selectObject: irLeft
+        energyLeft = Get energy: 0, 0
+
+        selectObject: irRight
+        energyRight = Get energy: 0, 0
+
+        maxIrEnergy = max(energyLeft, energyRight)
+        if maxIrEnergy <= 0
+            exitScript: "Generated impulse response has zero energy."
+        endif
+
+        irGain = 1 / sqrt(maxIrEnergy * sr)
+        ir_gain_str$ = string$(irGain)
+
+        selectObject: irLeft
+        Formula: "self * " + ir_gain_str$
+
+        selectObject: irRight
+        Formula: "self * " + ir_gain_str$
+
+        # Convolution.
+        appendInfoLine: "  Convolving left..."
+        selectObject: leftChannel, irLeft
+        Convolve: "sum", "zero"
+        convLeft = selected("Sound")
+
+        appendInfoLine: "  Convolving right..."
+        selectObject: rightChannel, irRight
+        Convolve: "sum", "zero"
+        convRight = selected("Sound")
+
+        # Fixed wet canvases: map convolution start to output time zero;
+        # object() supplies zero outside the convolution's time domain.
+        selectObject: convLeft
+        convLeftStart = Get start time
+        conv_left_id_str$ = string$(convLeft)
+        conv_left_start_str$ = string$(convLeftStart)
+
+        Create Sound from formula: "erosion_wet_left", 1, 0, totalDur, sr, "object(" + conv_left_id_str$ + ", x + " + conv_left_start_str$ + ", 1)"
+        wetLeft = selected("Sound")
+
+        selectObject: convRight
+        convRightStart = Get start time
+        conv_right_id_str$ = string$(convRight)
+        conv_right_start_str$ = string$(convRightStart)
+
+        Create Sound from formula: "erosion_wet_right", 1, 0, totalDur, sr, "object(" + conv_right_id_str$ + ", x + " + conv_right_start_str$ + ", 1)"
+        wetRight = selected("Sound")
+
+        # Fade WET only, and only inside the requested tail.
+        selectObject: wetLeft
+        Formula: "if x > " + fade_start_str$ + " then self * (0.5 + 0.5*cos(pi*(x-" + fade_start_str$ + ")/" + fade_str$ + ")) else self fi"
+
+        selectObject: wetRight
+        Formula: "if x > " + fade_start_str$ + " then self * (0.5 + 0.5*cos(pi*(x-" + fade_start_str$ + ")/" + fade_str$ + ")) else self fi"
+
+        # True wet/dry mix, preserving the original stereo dry path.
+        original_id_str$ = string$(original)
+
+        selectObject: wetLeft
+        Formula: "self * " + wet_str$ + " + object(" + original_id_str$ + ", x + " + original_start_str$ + ", 1) * " + dry_str$
+
+        selectObject: wetRight
+        Formula: "self * " + wet_str$ + " + object(" + original_id_str$ + ", x + " + original_start_str$ + ", 2) * " + dry_str$
+
+        selectObject: wetLeft, wetRight
+        Combine to stereo
+        result = selected("Sound")
+        Rename: originalName$ + "_erosion_" + presetName$
+
+        # One common down-only safety gain after stereo combination.
+        selectObject: result
+        resultPeak = Get absolute extremum: 0, 0, "none"
+        if resultPeak > 0.98
+            Scale peak: 0.98
+        endif
+
+        removeObject: leftChannel, rightChannel
+        removeObject: poissonLeft, poissonRight, irLeft, irRight
+        removeObject: convLeft, convRight, wetLeft, wetRight
+
+    else
+        # ====================================================
+        # MONO
+        # ====================================================
+
+        Create Poisson process: "erosion_poisson_mono", 0, impulse_duration_s, poisson_density
+        poissonMono = selected("PointProcess")
+
+        To Sound (pulse train): sr, 1, adaptationTime, sincDepth
+        irMonoRaw = selected("Sound")
+
+        Formula: "self * (1 - log10(1 + 9*(x-xmin)/(xmax-xmin))) * min(2, max(0, randomGauss(1, " + erosion_str$ + ")))"
+
+        Filter (pass Hann band): effectiveLow, effectiveHigh, effectiveSmoothing
+        irMono = selected("Sound")
+        removeObject: irMonoRaw
+
+        # Normalize discrete IR energy before convolution.
+        selectObject: irMono
+        irEnergy = Get energy: 0, 0
+        if irEnergy <= 0
+            exitScript: "Generated impulse response has zero energy."
+        endif
+
+        irGain = 1 / sqrt(irEnergy * sr)
+        ir_gain_str$ = string$(irGain)
+        Formula: "self * " + ir_gain_str$
+
+        appendInfoLine: "  Convolving mono..."
+        selectObject: original, irMono
+        Convolve: "sum", "zero"
+        convMono = selected("Sound")
+
+        selectObject: convMono
+        convMonoStart = Get start time
+        conv_mono_id_str$ = string$(convMono)
+        conv_mono_start_str$ = string$(convMonoStart)
+
+        Create Sound from formula: "erosion_wet_mono", 1, 0, totalDur, sr, "object(" + conv_mono_id_str$ + ", x + " + conv_mono_start_str$ + ", 1)"
+        wetMono = selected("Sound")
+
+        # Fade WET only.
+        selectObject: wetMono
+        Formula: "if x > " + fade_start_str$ + " then self * (0.5 + 0.5*cos(pi*(x-" + fade_start_str$ + ")/" + fade_str$ + ")) else self fi"
+
+        # True wet/dry mix.
+        original_id_str$ = string$(original)
+        Formula: "self * " + wet_str$ + " + object(" + original_id_str$ + ", x + " + original_start_str$ + ", 1) * " + dry_str$
+
+        Rename: originalName$ + "_erosion_" + presetName$
+        result = wetMono
+
+        selectObject: result
+        resultPeak = Get absolute extremum: 0, 0, "none"
+        if resultPeak > 0.98
+            Scale peak: 0.98
+        endif
+
+        removeObject: poissonMono, irMono, convMono
     endif
-    
-    selectObject: filtMono
-    Formula: "self * " + wet_str$ + " + object[" + ext_str$ + "] * " + dry_str$
-    
-    # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    
-    Scale peak: 0.95
-    Rename: originalName$ + "_erosion_" + presetName$
-    result = filtMono
-    
-    # Cleanup
-    removeObject: extendedSound, poissonMono, irMono
 endif
+
+selectObject: result
+resultDur = Get total duration
 
 # ============================================================
-# VISUALIZATION
+# VISUALIZATION - PRAAT AUDIOTOOLS HOUSE STYLE
 # ============================================================
 
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+
+    # Main title.
+    Select outer viewport: 0, 8, 0.05, 0.38
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Temporal Erosion: " + originalName$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    Text: 0.5, "centre", 0.58, "half", "Temporal Erosion | " + presetName$
+
+    # Metadata.
+    Select outer viewport: 0, 8, 0.36, 0.58
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.35}"
+    Text: 0.5, "centre", 0.5, "half", originalName$ + " | Poisson IR " + fixed$(poisson_density, 0) + "/s | Wet " + fixed$(wet_dry_percent, 0) + "%"
+
+    # Dry waveform.
+    Select outer viewport: 0, 8, 0.65, 1.35
+    Select inner viewport: 0.65, 7.65, 0.72, 1.28
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.65, 0.65, 0.65}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 7
+    Font size: 6
     Text left: "yes", "Dry"
-    
-    # Result waveform
-    Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+
+    # Output waveform including the complete tail.
+    Select outer viewport: 0, 8, 1.42, 2.12
+    Select inner viewport: 0.65, 7.65, 1.49, 2.05
     selectObject: result
-    Colour: "{0.6, 0.5, 0.5}"
-    Draw: 0, originalDur, 0, 0, "no", "Curve"
+    Colour: "{0.68, 0.48, 0.48}"
+    Draw: 0, resultDur, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Erosion " + fixed$(wet_dry_percent, 0) + "%"
+    Font size: 6
+    Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
-    
-    # Decay curve comparison
-    Select outer viewport: 0, 4, 2.5, 4.0
-    Select inner viewport: 0.5, 3.7, 2.7, 3.85
-    
-    Axes: 0, 1, 0, 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1.2
-    
-    # Logarithmic decay (this script)
-    Colour: "{0.7, 0.4, 0.4}"
+
+    # ---- Left analysis panel: logarithmic decay ----
+    Select outer viewport: 0.15, 3.95, 2.35, 3.88
+    Select inner viewport: 0.65, 3.68, 2.62, 3.68
+    Axes: 0, 1, 0, 1.12
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1.12
+
+    Colour: "{0.72, 0.42, 0.42}"
     Line width: 2
-    
     prevX = 0
     prevY = 1
-    for i from 1 to 50
-        t = i / 50
-        env = 1 - ln(1 + 9 * t) / ln(10)
-        if env < 0
-            env = 0
-        endif
+    for i from 1 to 80
+        t = i / 80
+        env = 1 - log10(1 + 9 * t)
         Draw line: prevX, prevY, t, env
         prevX = t
         prevY = env
     endfor
-    
-    # Exponential decay (for comparison)
-    Colour: "{0.5, 0.5, 0.7}"
-    Dotted line
-    prevX = 0
-    prevY = 1
-    for i from 1 to 50
-        t = i / 50
-        env = exp(-3 * t)
-        Draw line: prevX, prevY, t, env
-        prevX = t
-        prevY = env
-    endfor
-    Solid line
-    
+
     Line width: 1
     Colour: "Black"
     Draw inner box
     Font size: 6
     Text left: "yes", "Amplitude"
-    Text bottom: "yes", "Normalized time"
-    
-    # Legend
-    Font size: 5
-    Colour: "{0.7, 0.4, 0.4}"
-    Text: 0.7, "centre", 1.1, "half", "— Log: 1-log₁₀(1+9t)"
-    Colour: "{0.5, 0.5, 0.7}"
-    Text: 0.7, "centre", 0.95, "half", "-- Exp: e^(-3t)"
-    
-    # Title
+    Text bottom: "yes", "Normalized IR time"
+
+    Select outer viewport: 0.15, 3.95, 2.24, 2.48
+    Axes: 0, 1, 0, 1
     Font size: 8
     Colour: "Black"
-    Select outer viewport: 0, 4, 2.35, 2.55
-    Text: 0.5, "centre", 0.5, "half", "DECAY COMPARISON"
-    
-    # Bandpass filter
-    Select outer viewport: 4, 8, 2.5, 4.0
-    Select inner viewport: 4.5, 7.7, 2.7, 3.85
-    
-    Axes: 0, sr / 2 / 1000, 0, 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, sr / 2 / 1000, 0, 1.2
-    
-    # Draw bandpass shape
-    Colour: "{0.5, 0.7, 0.6}"
+    Text: 0.5, "centre", 0.5, "half", "Logarithmic decay envelope"
+
+    # ---- Right analysis panel: effective Hann bands ----
+    Select outer viewport: 4.05, 7.85, 2.35, 3.88
+    Select inner viewport: 4.48, 7.62, 2.62, 3.68
+    Axes: 0, nyquist / 1000, 0, 1.12
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, nyquist / 1000, 0, 1.12
+
+    lowK = effectiveLow / 1000
+    highK = effectiveHigh / 1000
+    smoothK = effectiveSmoothing / 1000
+
+    Colour: "{0.45, 0.65, 0.55}"
     Line width: 2
-    
-    lowK = low_cutoff_Hz / 1000
-    highK = high_cutoff_Hz / 1000
-    smoothK = smoothing_Hz / 1000
-    
     Draw line: 0, 0, lowK - smoothK, 0
     Draw line: lowK - smoothK, 0, lowK, 1
     Draw line: lowK, 1, highK, 1
     Draw line: highK, 1, highK + smoothK, 0
-    Draw line: highK + smoothK, 0, sr / 2 / 1000, 0
-    
+    Draw line: highK + smoothK, 0, nyquist / 1000, 0
+
+    if numChannels = 2
+        rightLowK = rightLow / 1000
+        rightHighK = rightHigh / 1000
+        rightSmoothK = rightSmoothing / 1000
+
+        Colour: "{0.50, 0.55, 0.72}"
+        Dashed line
+        Draw line: 0, 0, rightLowK - rightSmoothK, 0
+        Draw line: rightLowK - rightSmoothK, 0, rightLowK, 1
+        Draw line: rightLowK, 1, rightHighK, 1
+        Draw line: rightHighK, 1, rightHighK + rightSmoothK, 0
+        Draw line: rightHighK + rightSmoothK, 0, nyquist / 1000, 0
+        Solid line
+    endif
+
     Line width: 1
-    
-    # Fill passband
-    Paint rectangle: "{0.8, 0.9, 0.85}", lowK, highK, 0, 1
-    
     Colour: "Black"
     Draw inner box
     Font size: 6
     Text left: "yes", "Gain"
     Text bottom: "yes", "Frequency (kHz)"
-    
-    # Title
+
+    Select outer viewport: 4.05, 7.85, 2.24, 2.48
+    Axes: 0, 1, 0, 1
     Font size: 8
-    Select outer viewport: 4, 8, 2.35, 2.55
-    Text: 0.5, "centre", 0.5, "half", "BANDPASS FILTER"
-    
-    # Parameters
-    Select outer viewport: 0, 8, 4.1, 4.5
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "IR spectral window"
+
+    # Summary panel.
+    Select outer viewport: 0.35, 7.65, 3.98, 4.50
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.35}"
     Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "IR: " + fixed$(impulse_duration_s, 1) + "s | Density: " + string$(poisson_density) + " | Erosion σ: " + fixed$(erosion_randomness, 2) + " | Band: " + string$(low_cutoff_Hz) + "-" + string$(high_cutoff_Hz) + "Hz"
-    
+    Text: 0.5, "centre", 0.68, "half", "IR " + fixed$(impulse_duration_s, 1) + " s | Tail " + fixed$(tail_duration_s, 1) + " s | Density " + fixed$(poisson_density, 0) + "/s | Erosion sigma " + fixed$(erosion_randomness, 2)
+    Text: 0.5, "centre", 0.30, "half", "Band " + fixed$(effectiveLow, 0) + "-" + fixed$(effectiveHigh, 0) + " Hz | Fade " + fixed$(fadeDuration, 1) + " s | Output " + fixed$(resultDur, 2) + " s"
+
     Font size: 10
     Colour: "Black"
 endif
 
-# === Final Info ===
-selectObject: result
+# ============================================================
+# FINAL INFO / PLAY
+# ============================================================
 
+selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Output duration: ", fixed$(resultDur, 3), " s"
 
-# === Play ===
 if play_result
     selectObject: result
     Play

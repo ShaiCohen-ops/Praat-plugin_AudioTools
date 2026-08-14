@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,6 +22,21 @@
 #   - Added presets
 #   - Added wet/dry mix control
 #   - Added visualization
+#
+# Changelog v0.4:
+#   - Public form/defaults, output naming, and final selection are unchanged.
+#   - Added a private zero-based work copy so non-zero source xmin does not
+#     break Formula(part) time windows; output xmin is restored for callers.
+#   - Custom depth is limited by sample count and capped at 12 internally,
+#     preventing segment_samples=0 and pathological segment counts.
+#   - Final segment at each layer includes integer-division remainder samples.
+#   - Custom delay bounds are ordered and clamped to at least one sample;
+#     equal delay bounds are handled without calling randomUniform.
+#   - Custom Feedback_base is capped internally at 0.99 to prevent unstable
+#     recursive growth inside the left-to-right Formula pass.
+#   - Safe Scale peak skips digital silence while preserving non-silent
+#     normalization behaviour.
+#   - Caller-visible final selected object remains the result.
 #
 # Changelog v0.3:
 #   - FIX: only the left channel was processed (Formula part was channel 1
@@ -79,6 +94,19 @@ originalDur = Get total duration
 sr = Get sampling frequency
 nSamples = Get number of samples
 numChannels = Get number of channels
+originalStart = Get start time
+
+if nSamples < 2
+    exitScript: "Sound must contain at least 2 samples."
+endif
+
+# Private zero-based processing copy; caller's original Sound is untouched.
+selectObject: original
+workSource = Copy: "fractal_feedback_work"
+selectObject: workSource
+if originalStart <> 0
+    Shift times by: -originalStart
+endif
 
 # === Apply Presets ===
 if preset = 2
@@ -113,6 +141,21 @@ else
     presetName$ = "Custom"
 endif
 
+# Internal guards; built-in presets are already inside these limits.
+maxDepthBySamples = floor(ln(nSamples) / ln(2))
+effectiveDepth = min(depth_layers, maxDepthBySamples)
+if effectiveDepth > 12
+    effectiveDepth = 12
+endif
+if effectiveDepth < 1
+    effectiveDepth = 1
+endif
+
+effectiveFeedbackBase = feedback_base
+if effectiveFeedbackBase > 0.99
+    effectiveFeedbackBase = 0.99
+endif
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -124,12 +167,17 @@ wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
 # Convert ms to samples
-delay_min_samp = round(delay_min_ms / 1000 * sr)
-delay_max_samp = round(delay_max_ms / 1000 * sr)
+delay_min_samp = max(1, round(delay_min_ms / 1000 * sr))
+delay_max_samp = max(1, round(delay_max_ms / 1000 * sr))
+if delay_min_samp > delay_max_samp
+    tmpDelay = delay_min_samp
+    delay_min_samp = delay_max_samp
+    delay_max_samp = tmpDelay
+endif
 
 # Calculate total segments for info
 totalSegments = 0
-for layer from 1 to depth_layers
+for layer from 1 to effectiveDepth
     totalSegments = totalSegments + 2^layer
 endfor
 
@@ -138,20 +186,27 @@ writeInfoLine: "=== Fractal Feedback ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "Depth layers: ", depth_layers
+appendInfoLine: "Depth layers: ", effectiveDepth
+if effectiveDepth <> depth_layers
+    appendInfoLine: "  (requested ", depth_layers, "; internally limited)"
+endif
 appendInfoLine: "Total segments: ", totalSegments
-appendInfoLine: "Delay range: ", delay_min_ms, "-", delay_max_ms, " ms"
-appendInfoLine: "Feedback base: ", feedback_base
+appendInfoLine: "Delay range: ", fixed$(delay_min_samp * 1000 / sr, 3), "-", fixed$(delay_max_samp * 1000 / sr, 3), " ms"
+appendInfoLine: "Feedback base: ", effectiveFeedbackBase
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
 
 # Store delay info for visualization
 segIndex = 0
-for layer from 1 to depth_layers
+for layer from 1 to effectiveDepth
     divisions = 2 ^ layer
     for seg from 1 to divisions
         segIndex = segIndex + 1
-        segDelay[segIndex] = round(randomUniform(delay_min_samp, delay_max_samp))
+        if delay_min_samp = delay_max_samp
+            segDelay[segIndex] = delay_min_samp
+        else
+            segDelay[segIndex] = round(randomUniform(delay_min_samp, delay_max_samp))
+        endif
     endfor
 endfor
 
@@ -161,18 +216,18 @@ endfor
 
 appendInfoLine: "Processing..."
 
-# Create wet signal (copy of original)
-selectObject: original
+# Create wet signal from the zero-based private source.
+selectObject: workSource
 Copy: "wet_signal"
 wetSignal = selected("Sound")
 
 # Process each layer
 segIndex = 0
 
-for layer from 1 to depth_layers
+for layer from 1 to effectiveDepth
     divisions = 2 ^ layer
     segment_samples = floor(nSamples / divisions)
-    feedback = feedback_base / layer
+    feedback = effectiveFeedbackBase / layer
     
     appendInfoLine: "  Layer ", layer, ": ", divisions, " segments, feedback=", fixed$(feedback, 3)
     
@@ -181,11 +236,13 @@ for layer from 1 to depth_layers
         
         # Segment boundaries (in samples)
         segStart = (seg - 1) * segment_samples + 1
-        segEnd = seg * segment_samples
-        if segEnd > nSamples
+        if seg = divisions
             segEnd = nSamples
+        else
+            segEnd = seg * segment_samples
         endif
-        
+        this_segment_samples = segEnd - segStart + 1
+
         # Convert to time
         tStart = (segStart - 1) / sr
         tEnd = segEnd / sr
@@ -196,7 +253,7 @@ for layer from 1 to depth_layers
         # Build formula strings
         delay_str$ = string$(delay_samp)
         feedback_str$ = string$(feedback)
-        segSize_str$ = string$(segment_samples)
+        segSize_str$ = string$(this_segment_samples)
         segStart_str$ = string$(segStart)
         
         # Apply delayed feedback with sinusoidal window
@@ -210,16 +267,24 @@ endfor
 if dry_level > 0
     wet_str$ = string$(wet_level)
     dry_str$ = string$(dry_level)
-    orig_str$ = string$(original)
+    orig_str$ = string$(workSource)
     
     selectObject: wetSignal
     Formula: "self * " + wet_str$ + " + object[" + orig_str$ + ", row, col] * " + dry_str$
 endif
 
 selectObject: wetSignal
-Scale peak: scale_peak
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > 0
+    Scale peak: scale_peak
+endif
+if originalStart <> 0
+    Shift times by: originalStart
+endif
 Rename: originalName$ + "_fractal_" + presetName$
 result = selected("Sound")
+
+removeObject: workSource
 
 # ============================================================
 # VISUALIZATION
@@ -262,13 +327,13 @@ if draw_visualization
     Select outer viewport: 0, 8, 2.5, 4.2
     Select inner viewport: 0.6, 7.6, 2.6, 4.1
     
-    Axes: 0, originalDur, 0, depth_layers + 0.5
+    Axes: 0, originalDur, 0, effectiveDepth + 0.5
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, originalDur, 0, depth_layers + 0.5
     
     # Draw fractal layers
-    for layer from 1 to depth_layers
+    for layer from 1 to effectiveDepth
         divisions = 2 ^ layer
-        y = depth_layers - layer + 1
+        y = effectiveDepth - layer + 1
         
         # Color based on layer
         r = 0.4 + layer * 0.1
@@ -310,7 +375,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Layers: " + string$(depth_layers) + " | Segments: " + string$(totalSegments) + " | Feedback base: " + fixed$(feedback_base, 2) + " (÷layer)"
+    Text: 0.5, "centre", 0.5, "half", "Layers: " + string$(effectiveDepth) + " | Segments: " + string$(totalSegments) + " | Feedback base: " + fixed$(effectiveFeedbackBase, 2) + " (÷layer)"
     
     Font size: 10
     Colour: "Black"

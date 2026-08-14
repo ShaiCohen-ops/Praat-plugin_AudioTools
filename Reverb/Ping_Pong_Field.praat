@@ -3,13 +3,27 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Convolution rewrite by Claude (Fixed)
+# Version: 0.4 (2026) - Stereo/mix/geometry repair
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Ping-Pong Field - stereo ping-pong delay effect with
 #   high-frequency sparkle enhancement.
+#
+# v0.4 repair:
+#   - Public form/defaults, output naming and final selection are unchanged.
+#   - Mono input now returns the stereo ping-pong field that the script already
+#     computed instead of discarding the right convolution.
+#   - 3+ channel input is safely downmixed to mono for the stereo field.
+#   - Custom delay bounds are ordered; jitter/offset cannot create negative or
+#     zero-sample IR taps; right-channel narrow ranges are sanitized.
+#   - Decay is constrained to a true decay [0,1]; right-channel derived values
+#     cannot become negative.
+#   - Fadeout is constrained to the appended tail and cannot attenuate source.
+#   - Dry/effect mixing uses explicit row/column reads.
+#   - Stereo is peak-limited only after L/R are combined, preserving channel
+#     balance and avoiding unnecessary gain on quiet material.
 #
 # v0.3 Performance rewrite:
 #   Instead of applying N Formula passes over the full audio,
@@ -131,16 +145,53 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
+# Internal geometry guards. Built-in presets already lie inside these bounds.
+effectiveEchoes = round(number_of_echoes)
+if effectiveEchoes < 1
+    effectiveEchoes = 1
+endif
+
+minDelayEff = max(2 / sr, min_delay_s)
+maxDelayEff = max(2 / sr, max_delay_s)
+if minDelayEff > maxDelayEff
+    tmpDelay = minDelayEff
+    minDelayEff = maxDelayEff
+    maxDelayEff = tmpDelay
+endif
+
+jitterEff = max(0, jitter_s)
+offsetEff = max(0, ping_pong_offset_s)
+baseAmpEff = max(0, base_amplitude)
+decayEff = decay_factor
+if decayEff < 0
+    decayEff = 0
+elsif decayEff > 1
+    decayEff = 1
+endif
+sparkleEff = max(0, hF_sparkle)
+
+tailEff = tail_duration_s
+if tailEff < 2 / sr
+    tailEff = 2 / sr
+endif
+fadeEff = fadeout_duration_s
+if fadeEff < 0
+    fadeEff = 0
+endif
+if fadeEff > tailEff
+    fadeEff = tailEff
+endif
+
 # Pre-calculate echo parameters for visualization
-for k from 1 to min(number_of_echoes, 50)
-    t = min_delay_s + (max_delay_s - min_delay_s) * k / number_of_echoes
+for k from 1 to min(effectiveEchoes, 50)
+    t = minDelayEff + (maxDelayEff - minDelayEff) * k / effectiveEchoes
     if k mod 2 = 0
-        off = ping_pong_offset_s
+        off = offsetEff
     else
-        off = -ping_pong_offset_s
+        off = -offsetEff
     endif
-    echoDelay[k] = t + off
-    echoAmp[k] = base_amplitude * (decay_factor ^ k)
+    echoDelay[k] = max(2 / sr, t + off)
+    echoAmp[k] = baseAmpEff * (decayEff ^ k)
     if k mod 4 < 2
         echoSgn[k] = 1
     else
@@ -153,11 +204,11 @@ writeInfoLine: "=== Ping-Pong Field (convolution) ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "Echoes: ", number_of_echoes
-appendInfoLine: "Delay range: ", min_delay_s * 1000, "-", max_delay_s * 1000, " ms"
-appendInfoLine: "Ping-pong offset: +/-", ping_pong_offset_s * 1000, " ms"
-appendInfoLine: "HF sparkle: ", hF_sparkle
-appendInfoLine: "Decay factor: ", decay_factor
+appendInfoLine: "Echoes: ", effectiveEchoes
+appendInfoLine: "Delay range: ", minDelayEff * 1000, "-", maxDelayEff * 1000, " ms"
+appendInfoLine: "Ping-pong offset: +/-", offsetEff * 1000, " ms"
+appendInfoLine: "HF sparkle: ", sparkleEff
+appendInfoLine: "Decay factor: ", decayEff
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
 appendInfoLine: "Building impulse responses..."
@@ -166,10 +217,10 @@ appendInfoLine: "Building impulse responses..."
 # PROCESSING
 # ============================================================
 
-totalDur = originalDur + tail_duration_s
+totalDur = originalDur + tailEff
 
 # IR covers the full delay range (echoes only, no direct signal spike)
-irDur = max_delay_s + jitter_s + ping_pong_offset_s + 2 / sr
+irDur = maxDelayEff + jitterEff + offsetEff + 2 / sr
 
 # -------------------------------------------------------
 # BUILD LEFT IR
@@ -177,29 +228,36 @@ irDur = max_delay_s + jitter_s + ping_pong_offset_s + 2 / sr
 Create Sound from formula: "ir_left", 1, 0, irDur, sr, "0"
 irLeft = selected("Sound")
 
-for k from 1 to number_of_echoes
-    t = min_delay_s + (max_delay_s - min_delay_s) * k / number_of_echoes
+for k from 1 to effectiveEchoes
+    t = minDelayEff + (maxDelayEff - minDelayEff) * k / effectiveEchoes
     if k mod 2 = 0
-        off = ping_pong_offset_s
+        off = offsetEff
     else
-        off = -ping_pong_offset_s
+        off = -offsetEff
     endif
-    delay = t + off + randomUniform(-jitter_s, jitter_s)
+    jitterNow = 0
+    if jitterEff > 0
+        jitterNow = randomUniform(-jitterEff, jitterEff)
+    endif
+    delay = t + off + jitterNow
+    if delay < 2 / sr
+        delay = 2 / sr
+    endif
     if k mod 4 < 2
         sgn = 1
     else
         sgn = -1
     endif
-    a = base_amplitude * (decay_factor ^ k) * (0.9 + 0.2 * randomUniform(0, 1)) * sgn
+    a = baseAmpEff * (decayEff ^ k) * (0.9 + 0.2 * randomUniform(0, 1)) * sgn
     col_main = round(delay * sr)
     col_pre  = col_main - 1
     if col_main >= 1
         selectObject: irLeft
-        Formula: "if col = " + string$(col_main) + " then self + " + string$(a * (1 + hF_sparkle)) + " else self fi"
+        Formula: "if col = " + string$(col_main) + " then self + " + string$(a * (1 + sparkleEff)) + " else self fi"
     endif
     if col_pre >= 1
         selectObject: irLeft
-        Formula: "if col = " + string$(col_pre) + " then self + " + string$(-a * hF_sparkle) + " else self fi"
+        Formula: "if col = " + string$(col_pre) + " then self + " + string$(-a * sparkleEff) + " else self fi"
     endif
 endfor
 
@@ -211,24 +269,36 @@ appendInfoLine: "  Left IR done."
 Create Sound from formula: "ir_right", 1, 0, irDur, sr, "0"
 irRight = selected("Sound")
 
-minD_R = min_delay_s + 0.002
-maxD_R = max_delay_s - 0.02
+minD_R = max(2 / sr, minDelayEff + 0.002)
+maxD_R = max(2 / sr, maxDelayEff - 0.02)
+if maxD_R < minD_R
+    maxD_R = minD_R
+endif
+rightBase = max(0, baseAmpEff - 0.01)
+rightDecay = max(0, decayEff - 0.01)
 
-for k from 1 to number_of_echoes
-    t = minD_R + (maxD_R - minD_R) * k / number_of_echoes
+for k from 1 to effectiveEchoes
+    t = minD_R + (maxD_R - minD_R) * k / effectiveEchoes
     if k mod 2 = 0
-        off = -ping_pong_offset_s * 0.83
+        off = -offsetEff * 0.83
     else
-        off = ping_pong_offset_s * 0.83
+        off = offsetEff * 0.83
     endif
-    delay = t + off + randomUniform(-jitter_s * 0.875, jitter_s * 0.875)
+    jitterNow = 0
+    if jitterEff > 0
+        jitterNow = randomUniform(-jitterEff * 0.875, jitterEff * 0.875)
+    endif
+    delay = t + off + jitterNow
+    if delay < 2 / sr
+        delay = 2 / sr
+    endif
     if k mod 3 < 1.5
         sgn = 1
     else
         sgn = -1
     endif
-    a = (base_amplitude - 0.01) * ((decay_factor - 0.01) ^ k) * (0.85 + 0.3 * randomUniform(0, 1)) * sgn
-    sparkleR = hF_sparkle * 0.83
+    a = rightBase * (rightDecay ^ k) * (0.85 + 0.3 * randomUniform(0, 1)) * sgn
+    sparkleR = sparkleEff * 0.83
     col_main = round(delay * sr)
     col_pre  = col_main - 1
     if col_main >= 1
@@ -255,7 +325,7 @@ if numChannels = 2
     Extract one channel: 2
     dryR = selected("Sound")
 
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
+    Create Sound from formula: "silent_tail", 1, 0, tailEff, sr, "0"
     silentTail = selected("Sound")
 
     selectObject: dryL, silentTail
@@ -269,10 +339,15 @@ if numChannels = 2
     removeObject: dryR
 else
     selectObject: original
-    Copy: "dry_mono"
-    dryMono = selected("Sound")
+    if numChannels > 1
+        Convert to mono
+        dryMono = selected("Sound")
+    else
+        Copy: "dry_mono"
+        dryMono = selected("Sound")
+    endif
 
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
+    Create Sound from formula: "silent_tail", 1, 0, tailEff, sr, "0"
     silentTail = selected("Sound")
 
     selectObject: dryMono, silentTail
@@ -280,7 +355,7 @@ else
     dryLext = selected("Sound")
     removeObject: dryMono
 
-    # Copy for right channel convolution (same source, different IR)
+    # Same mono source drives two decorrelated IRs, yielding a true stereo field.
     selectObject: dryLext
     Copy: "dry_right_ext"
     dryRext = selected("Sound")
@@ -327,44 +402,44 @@ wet_str$ = string$(wet_level)
 dry_str$ = string$(dry_level)
 
 selectObject: echoesL
-Formula: "self * " + wet_str$ + " + object[" + string$(dryLext) + "] * " + dry_str$
+Formula: "self * " + wet_str$ + " + object[" + string$(dryLext) + ", row, col] * " + dry_str$
 wetLeft = echoesL
 
 selectObject: echoesR
-Formula: "self * " + wet_str$ + " + object[" + string$(dryRext) + "] * " + dry_str$
+Formula: "self * " + wet_str$ + " + object[" + string$(dryRext) + ", row, col] * " + dry_str$
 wetRight = echoesR
 
 removeObject: dryLext, dryRext
 
 # -------------------------------------------------------
-# NORMALISE AND FADEOUT
+# FADEOUT — constrained to the appended tail
 # -------------------------------------------------------
-fade_start = totalDur - fadeout_duration_s
-fs$ = string$(fade_start)
-fd$ = string$(fadeout_duration_s)
+if fadeEff > 0
+    fade_start = totalDur - fadeEff
+    fs$ = string$(fade_start)
+    fd$ = string$(fadeEff)
 
-selectObject: wetLeft
-Scale peak: 0.98
-Formula: "if x > " + fs$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + fs$ + ") / " + fd$ + ")) else self fi"
-
-selectObject: wetRight
-Scale peak: 0.98
-Formula: "if x > " + fs$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + fs$ + ") / " + fd$ + ")) else self fi"
-
-# -------------------------------------------------------
-# COMBINE
-# -------------------------------------------------------
-if numChannels = 2
-    selectObject: wetLeft, wetRight
-    Combine to stereo
-    result = selected("Sound")
-    Rename: originalName$ + "_pingpong_" + presetName$
-    removeObject: wetLeft, wetRight
-else
-    removeObject: wetRight
     selectObject: wetLeft
-    Rename: originalName$ + "_pingpong_" + presetName$
-    result = wetLeft
+    Formula: "if x > " + fs$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + fs$ + ") / " + fd$ + ")) else self fi"
+
+    selectObject: wetRight
+    Formula: "if x > " + fs$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + fs$ + ") / " + fd$ + ")) else self fi"
+endif
+
+# -------------------------------------------------------
+# COMBINE — Ping-Pong Field is a stereo effect for every input topology.
+# -------------------------------------------------------
+selectObject: wetLeft, wetRight
+Combine to stereo
+result = selected("Sound")
+Rename: originalName$ + "_pingpong_" + presetName$
+removeObject: wetLeft, wetRight
+
+# Safety ceiling only, applied once to the stereo object so L/R balance survives.
+selectObject: result
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > 0.98
+    Scale peak: 0.98
 endif
 
 
@@ -404,17 +479,20 @@ if draw_visualization
     Select outer viewport: 0, 8, 2.5, 4.0
     Select inner viewport: 0.6, 7.6, 2.6, 3.9
 
-    maxDelay = max_delay_s * 1.1
+    maxDelay = maxDelayEff * 1.1
     Axes: 0, maxDelay * 1000, -1.2, 1.2
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, maxDelay * 1000, -1.2, 1.2
 
     Colour: "{0.85, 0.85, 0.85}"
     Draw line: 0, 0, maxDelay * 1000, 0
 
-    numShow = min(number_of_echoes, 50)
+    numShow = min(effectiveEchoes, 50)
     for k from 1 to numShow
         delayMs = echoDelay[k] * 1000
-        amp = echoAmp[k] / base_amplitude
+        amp = 0
+        if baseAmpEff > 0
+            amp = echoAmp[k] / baseAmpEff
+        endif
         sgn = echoSgn[k]
 
         if k mod 2 = 0
@@ -448,7 +526,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.1, 4.5
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Echoes: " + string$(number_of_echoes) + " | Delay: " + fixed$(min_delay_s * 1000, 0) + "-" + fixed$(max_delay_s * 1000, 0) + "ms | Offset: +/-" + fixed$(ping_pong_offset_s * 1000, 1) + "ms | Sparkle: " + fixed$(hF_sparkle, 2)
+    Text: 0.5, "centre", 0.5, "half", "Echoes: " + string$(effectiveEchoes) + " | Delay: " + fixed$(minDelayEff * 1000, 0) + "-" + fixed$(maxDelayEff * 1000, 0) + "ms | Offset: +/-" + fixed$(offsetEff * 1000, 1) + "ms | Sparkle: " + fixed$(sparkleEff, 2)
 
     Font size: 10
     Colour: "Black"

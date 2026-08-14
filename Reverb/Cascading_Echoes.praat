@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,6 +32,17 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4:
+#   - Public form and output naming are unchanged.
+#   - Private zero-based work copy fixes non-zero source xmin.
+#   - Full multichannel support: odd channels use L taps, even use R taps.
+#   - Silent tail now matches the source channel count.
+#   - Custom delay ranges are ordered; all delays are >= 1 sample.
+#   - Decay values are capped at 1.0; iterations at 256 internally.
+#   - Safe normalization skips digital silence.
+#   - Visualization uses the zero-based copy and reports multichannel mode.
+#   - Warns if tail duration is shorter than the longest generated delay.
 #
 # Changelog v0.3:
 #   - Audio pipeline UNCHANGED. Output is bit-identical to v0.2
@@ -105,6 +116,15 @@ originalDur = Get total duration
 sr = Get sampling frequency
 numChannels = Get number of channels
 
+# Private zero-based work copy; original Sound is never shifted.
+selectObject: original
+workSource = Copy: "cascading_echoes_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
+
 # === Apply Presets ===
 if preset = 1
     # Default (balanced)
@@ -154,6 +174,27 @@ else
     presetName$ = "Custom"
 endif
 
+# Internal safety guards; built-in presets are already within these limits.
+if iterations > 256
+    iterations = 256
+endif
+if delay_min_ms > delay_max_ms
+    tmpDelay = delay_min_ms
+    delay_min_ms = delay_max_ms
+    delay_max_ms = tmpDelay
+endif
+if stereo_delay_min_ms > stereo_delay_max_ms
+    tmpDelay = stereo_delay_min_ms
+    stereo_delay_min_ms = stereo_delay_max_ms
+    stereo_delay_max_ms = tmpDelay
+endif
+if decay_left > 1
+    decay_left = 1
+endif
+if decay_right > 1
+    decay_right = 1
+endif
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -165,17 +206,24 @@ wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
 # Convert ms to samples
-delay_min_samp = round(delay_min_ms / 1000 * sr)
-delay_max_samp = round(delay_max_ms / 1000 * sr)
-stereo_min_samp = round(stereo_delay_min_ms / 1000 * sr)
-stereo_max_samp = round(stereo_delay_max_ms / 1000 * sr)
+delay_min_samp = max(1, round(delay_min_ms / 1000 * sr))
+delay_max_samp = max(delay_min_samp, round(delay_max_ms / 1000 * sr))
+stereo_min_samp = max(1, round(stereo_delay_min_ms / 1000 * sr))
+stereo_max_samp = max(stereo_min_samp, round(stereo_delay_max_ms / 1000 * sr))
 
 # Store delay values for visualization
+maxGeneratedDelay = 0
 for k from 1 to iterations
     delayL[k] = round(randomUniform(delay_min_samp, delay_max_samp))
     delayR[k] = round(randomUniform(stereo_min_samp, stereo_max_samp))
     ampL[k] = decay_left ^ k
     ampR[k] = decay_right ^ k
+    if delayL[k] > maxGeneratedDelay
+        maxGeneratedDelay = delayL[k]
+    endif
+    if delayR[k] > maxGeneratedDelay
+        maxGeneratedDelay = delayR[k]
+    endif
 endfor
 
 # === Info ===
@@ -188,6 +236,9 @@ appendInfoLine: "Delay range (L): ", delay_min_ms, "-", delay_max_ms, " ms"
 appendInfoLine: "Delay range (R): ", stereo_delay_min_ms, "-", stereo_delay_max_ms, " ms"
 appendInfoLine: "Decay (L/R): ", decay_left, " / ", decay_right
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
+if tail_duration_s * sr < maxGeneratedDelay
+    appendInfoLine: "WARNING: tail shorter than longest generated delay; late echo content will be truncated."
+endif
 appendInfoLine: ""
 appendInfoLine: "Echo taps:"
 for k from 1 to iterations
@@ -202,17 +253,14 @@ appendInfoLine: ""
 appendInfoLine: "Processing..."
 
 # Create extended sound with tail
-selectObject: original
+selectObject: workSource
 totalDur = originalDur + tail_duration_s
 
-if numChannels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
-endif
+Create Sound from formula: "silent_tail", numChannels, 0, tail_duration_s, sr, "0"
 silentTail = selected("Sound")
 
-selectObject: original, silentTail
+# workSource was created before silentTail, so Object-list order is dry then tail.
+selectObject: workSource, silentTail
 Concatenate
 extendedSound = selected("Sound")
 removeObject: silentTail
@@ -281,10 +329,16 @@ if numChannels = 2
     
     # Normalize (per-channel — preserves "Wide Stereo Delay" character)
     selectObject: leftWet
-    Scale peak: 0.95
-    
+    leftPeak = Get absolute extremum: 0, 0, "None"
+    if leftPeak > 0
+        Scale peak: 0.95
+    endif
+
     selectObject: rightWet
-    Scale peak: 0.95
+    rightPeak = Get absolute extremum: 0, 0, "None"
+    if rightPeak > 0
+        Scale peak: 0.95
+    endif
     
     # Combine to stereo
     selectObject: leftWet, rightWet
@@ -295,7 +349,7 @@ if numChannels = 2
     # Cleanup
     removeObject: leftChannel, rightChannel, leftWet, rightWet, extendedSound
     
-else
+elsif numChannels = 1
     # === MONO PROCESSING ===
     
     # Create wet signal (start as copy)
@@ -327,11 +381,54 @@ else
     
     # Normalize
     selectObject: monoWet
-    Scale peak: 0.95
+    monoPeak = Get absolute extremum: 0, 0, "None"
+    if monoPeak > 0
+        Scale peak: 0.95
+    endif
     Rename: originalName$ + "_echo_" + presetName$
     result = monoWet
-    
+
     # Cleanup
+    removeObject: extendedSound
+
+else
+    # === MULTICHANNEL PROCESSING (3+ channels) ===
+    # Odd channels use L taps; even channels use R taps.
+    selectObject: extendedSound
+    Copy: "multi_wet"
+    multiWet = selected("Sound")
+    ext_str$ = string$(extendedSound)
+
+    for k from 1 to iterations
+        delayL_str$ = string$(delayL[k])
+        delayR_str$ = string$(delayR[k])
+        ampL_str$ = string$(ampL[k])
+        ampR_str$ = string$(ampR[k])
+
+        selectObject: multiWet
+        Formula: "self + if row mod 2 = 1 then "
+            ... + ampL_str$ + " * (if col > " + delayL_str$
+            ... + " then object[" + ext_str$ + ", row, col - " + delayL_str$ + "] else 0 fi)"
+            ... + " else "
+            ... + ampR_str$ + " * (if col > " + delayR_str$
+            ... + " then object[" + ext_str$ + ", row, col - " + delayR_str$ + "] else 0 fi)"
+            ... + " fi"
+    endfor
+
+    if dry_level > 0
+        selectObject: multiWet
+        Formula: "self * " + string$(wet_level)
+            ... + " + object[" + ext_str$ + ", row, col] * " + string$(dry_level)
+    endif
+
+    # One common normalization preserves inter-channel balance.
+    selectObject: multiWet
+    multiPeak = Get absolute extremum: 0, 0, "None"
+    if multiPeak > 0
+        Scale peak: 0.95
+    endif
+    Rename: originalName$ + "_echo_" + presetName$
+    result = multiWet
     removeObject: extendedSound
 endif
 
@@ -368,7 +465,7 @@ if draw_visualization
     endif
     
     # Mono copies of original and result for waveform display
-    selectObject: original
+    selectObject: workSource
     if numChannels > 1
         vizOrig = Convert to mono
     else
@@ -545,6 +642,10 @@ if draw_visualization
         Font size: 6
         Colour: "{0.55, 0.30, 0.20}"
         Text: 0.05, "left", 0.03, "half", "Note: per-channel Scale peak (Wide Stereo character)"
+    elsif numChannels > 2
+        Font size: 6
+        Colour: "{0.55, 0.30, 0.20}"
+        Text: 0.05, "left", 0.03, "half", "Note: odd channels use L taps; even channels use R taps"
     endif
     
     Colour: "Black"
@@ -668,8 +769,10 @@ if draw_visualization
     
     if numChannels = 2
         stereoStr$ = "stereo (per-ch peak)"
-    else
+    elsif numChannels = 1
         stereoStr$ = "mono"
+    else
+        stereoStr$ = string$(numChannels) + "ch (odd=L taps, even=R taps)"
     endif
     
     Font size: 6
@@ -700,6 +803,8 @@ if draw_visualization
     # Cleanup viz objects
     removeObject: vizOrig, vizProc
 endif
+
+removeObject: workSource
 
 # === Final Info ===
 selectObject: result

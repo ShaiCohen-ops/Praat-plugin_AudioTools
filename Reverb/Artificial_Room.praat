@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,23 @@
 #   Eyring formula, generates synthetic impulse response with
 #   early reflections and frequency-dependent decay tail.
 #   Includes 20 acoustic materials and 4 room presets.
+#
+# Changelog v0.4 (2026):
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged and
+#     output naming remains <input>_room_<preset>.
+#   - FIX: multichannel dry mix now applies to every channel, not only Ch1.
+#   - FIX: private zero-based input copy makes convolution/mixing correct
+#     for Sounds whose xmin is not zero.
+#   - PHYSICS: late-tail exponential now realizes the requested RT60 exactly:
+#       tau = RT60 / ln(1000)
+#     instead of RT60/6 (which reached only about -52.1 dB at RT60).
+#   - FIX: IR_predelay now delays the late reverberant field as well as
+#     the early reflections; IR length includes the predelay.
+#   - FIX: preserve-tail length uses the actual convolution duration
+#     (N+M-1 samples) instead of requesting one sample beyond it.
+#   - HARDENING: octave-band synthesis is clipped/skipped at Nyquist.
+#   - SAFE NORMALIZATION: skip Scale peak on digital silence.
+#   - VIZ: IR spectrogram frequency ceiling is Nyquist-safe.
 #
 # Changelog v0.2:
 #   - Added wet/dry mix control
@@ -58,6 +75,21 @@ selectObject: inputID
 inputName$ = selected$("Sound")
 fs = Get sampling frequency
 inputDur = Get total duration
+inputChannels = Get number of channels
+
+# Private zero-based copy. Convolution output start time is the sum of the
+# input and IR start times, so zero-basing prevents non-zero xmin from
+# shifting/truncating the requested wet output region.
+selectObject: inputID
+inputWork = Copy: "room_input_work"
+selectObject: inputWork
+inputStart = Get start time
+if inputStart <> 0
+    Shift times by: -inputStart
+endif
+
+nyquistHz = fs / 2
+safeNyquistHz = nyquistHz * 0.999
 
 # ==============================================================================
 # 1) Materials and absorption data
@@ -575,6 +607,9 @@ procedure calculateRT60: .band
     if .alphaBar > 0.98
         .alphaBar = 0.98
     endif
+    if .alphaBar < 0.000001
+        .alphaBar = 0.000001
+    endif
     
     # Eyring formula: RT60 = 0.161 * V / (-S * ln(1 - alpha))
     .rt60 = 0.161 * v / (stotal * (-ln(1 - .alphaBar)))
@@ -631,8 +666,9 @@ elsif iR_length_factor > 4.0
     iR_length_factor = 4.0
 endif
 
-ir_length = maxT * iR_length_factor
 pre_delay = iR_predelay_ms / 1000
+decay_length = maxT * iR_length_factor
+ir_length = pre_delay + decay_length
 
 # ==============================================================================
 # 7) Info Output
@@ -662,8 +698,9 @@ appendInfoLine: ""
 appendInfoLine: "IR length: ", fixed$(ir_length, 2), " s"
 appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
 if preserve_tail
+    expectedConvDur = inputDur + ir_length - 1 / fs
     appendInfoLine: "Tail: preserved (output extends to ",
-        ... fixed$(inputDur + ir_length, 2), " s)"
+        ... fixed$(expectedConvDur, 2), " s)"
 else
     appendInfoLine: "Tail: truncated to input length"
 endif
@@ -754,34 +791,45 @@ for k from 1 to nPlacedTaps
     removeObject: tapSound
 endfor
 
-# Late reverb (filtered noise with exponential decay per band)
+# Late reverb (filtered noise with exact RT60 exponential decay per band)
+# For an amplitude envelope exp(-t/tau), -60 dB means amplitude = 0.001,
+# therefore tau = RT60 / ln(1000), not RT60/6.
 for b from 1 to 6
-    tau = t60[b] / 6
-    tau_str$ = string$(tau)
-    
-    Create Sound from formula: "IR_noise", 1, 0, ir_length, fs, "randomGauss(0, 1) * exp(-x / " + tau_str$ + ")"
-    noiseSound = selected("Sound")
-    
-    # Filter to band
-    Filter (pass Hann band): low[b], high[b], 100
-    filteredNoise = selected("Sound")
-    
-    # Attenuate high frequencies
-    if cen[b] >= 2000
-        fac_str$ = string$(10^(-0.75 / 20))
-        Formula: "self * " + fac_str$
+    bandLow = low[b]
+    bandHigh = min(high[b], safeNyquistHz)
+
+    # Skip octave bands that lie entirely above Nyquist.
+    if bandLow < safeNyquistHz and bandHigh > bandLow
+        tau = t60[b] / ln(1000)
+        tau_str$ = string$(tau)
+        pre_str$ = string$(pre_delay)
+
+        # Predelay applies to the whole reverberant field, not just early taps.
+        noiseExpr$ = "if x >= " + pre_str$ + " then randomGauss(0, 1) * exp(-(x - " + pre_str$ + ") / " + tau_str$ + ") else 0 fi"
+        Create Sound from formula: "IR_noise", 1, 0, ir_length, fs, noiseExpr$
+        noiseSound = selected("Sound")
+
+        Filter (pass Hann band): bandLow, bandHigh, 100
+        filteredNoise = selected("Sound")
+
+        if cen[b] >= 2000
+            fac_str$ = string$(10^(-0.75 / 20))
+            Formula: "self * " + fac_str$
+        endif
+
+        filt_str$ = string$(filteredNoise)
+        selectObject: irBase
+        Formula: "self + object[" + filt_str$ + "]"
+
+        removeObject: noiseSound, filteredNoise
     endif
-    
-    # Add to base
-    filt_str$ = string$(filteredNoise)
-    selectObject: irBase
-    Formula: "self + object[" + filt_str$ + "]"
-    
-    removeObject: noiseSound, filteredNoise
 endfor
 
 selectObject: irBase
-Scale peak: 0.6
+irPeak = Get absolute extremum: 0, 0, "Sinc70"
+if irPeak > 0
+    Scale peak: 0.6
+endif
 Rename: "IR_" + presetName$
 irFinal = selected("Sound")
 
@@ -791,44 +839,48 @@ irFinal = selected("Sound")
 
 appendInfoLine: "Convolving..."
 
-# v0.3: Determine output length based on tail preservation choice.
-# preserve_tail=1 keeps the full reverb tail past the input end;
-# preserve_tail=0 truncates to input length (v0.2 behavior).
-if preserve_tail
-    out_length = inputDur + ir_length
-else
-    out_length = inputDur
-endif
-
-selectObject: inputID, irFinal
+# Convolve the private zero-based input with the mono IR.
+# Praat preserves all input channels when the other convolution operand is mono.
+selectObject: inputWork, irFinal
 Convolve: "sum", "zero"
 wetSound = selected("Sound")
 
-# Convolve produces a sound of length inputDur + ir_length - 1/fs.
-# Trim to the chosen output length.
+# The exact convolution has N+M-1 samples. Use its measured duration rather
+# than asking Extract part for one sample beyond the available result.
 selectObject: wetSound
+convDur = Get total duration
+if preserve_tail
+    out_length = convDur
+else
+    out_length = min(inputDur, convDur)
+endif
+
 Extract part: 0, out_length, "rectangular", 1, "no"
 wetTrimmed = selected("Sound")
 removeObject: wetSound
 
-# v0.3: Always apply wet gain (v0.2 skipped this when wet=100%,
-# leaving the raw convolution at unspecified gain). Apply dry
-# only over the input region [0, inputDur] — the tail past
-# inputDur has no dry contribution.
+# Wet gain applies to the full output. Dry is added only during the original
+# input span, independently for every channel.
 wet_str$ = string$(wet_level)
 selectObject: wetTrimmed
 Formula: "self * " + wet_str$
 
 if dry_level > 0.001
     dry_str$ = string$(dry_level)
-    input_str$ = string$(inputID)
-    selectObject: wetTrimmed
-    Formula (part): 0, inputDur, 1, 1,
-        ... "self + object[" + input_str$ + ", 1, col] * " + dry_str$
+    input_str$ = string$(inputWork)
+    dryEnd = min(inputDur, out_length)
+    for dryChannel from 1 to inputChannels
+        selectObject: wetTrimmed
+        Formula (part): 0, dryEnd, dryChannel, dryChannel,
+            ... "self + object[" + input_str$ + ", " + string$(dryChannel) + ", col] * " + dry_str$
+    endfor
 endif
 
 selectObject: wetTrimmed
-Scale peak: 0.95
+mixPeak = Get absolute extremum: 0, 0, "Sinc70"
+if mixPeak > 0
+    Scale peak: 0.95
+endif
 Rename: inputName$ + "_room_" + presetName$
 result = selected("Sound")
 
@@ -951,9 +1003,10 @@ if draw_visualization
     Select inner viewport: 0.55, 7.65, 4.10, 5.13
 
     selectObject: irFinal
-    To Spectrogram: 0.04, 5000, 0.005, 20, "Gaussian"
+    specMaxHz = min(5000, safeNyquistHz)
+    To Spectrogram: 0.04, specMaxHz, 0.005, 20, "Gaussian"
     irSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, specMaxHz, 100, "yes", 50, 6, 0, "no"
     removeObject: irSpec
 
     Colour: "Black"
@@ -1012,6 +1065,7 @@ endif
 if keep_IR = 0
     removeObject: irFinal
 endif
+removeObject: inputWork
 
 # ==============================================================================
 # 12) Final

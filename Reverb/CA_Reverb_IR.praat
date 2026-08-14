@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,24 @@
 #   (Schroeder-idealized) reverberation, structured rules give
 #   self-similar metallic resonators that no physical room could
 #   produce.
+#
+# Changelog v0.4 (2026):
+#   - Public form and output naming are unchanged.
+#   - Fixed Praat RNG initialization syntax and restore safe RNG state
+#     after all CA/sign/rotation randomness has been generated.
+#   - IR/sample rate now follows the selected source instead of forcing
+#     every source/output through 44.1 kHz.
+#   - CA evolution is computed in one recursive Matrix Formula pass
+#     (row-major), reducing O(G^2*W) work to O(G*W) with identical
+#     elementary-CA state evolution.
+#   - Ir_duration now maps to the requested sample count exactly; the
+#     final CA generation may be only partially represented in the IR.
+#   - Added a practical CA-width ceiling to prevent pathological memory
+#     allocation from extreme Custom values.
+#   - Safe IR normalization skips digital silence.
+#   - Wet/dry mix uses a safety ceiling instead of always boosting the
+#     mixed output to peak 0.99; 0% wet now preserves the dry signal.
+#   - Visualization spectrum is capped at Nyquist.
 #
 # Changelog v0.3 (2026):
 #   - FIX (the "muffled" sound): dead cells mapped to -1, so the
@@ -78,7 +96,8 @@ endif
 dryID = selected("Sound")
 dryName$ = selected$("Sound")
 
-sampleRate = 44100
+selectObject: dryID
+sampleRate = Get sampling frequency
 
 # ---- Presets --------------------------------------------------
 if preset = 1
@@ -133,6 +152,8 @@ elsif ir_duration > 10
 endif
 if ca_width < 16
     ca_width = 16
+elsif ca_width > 8192
+    ca_width = 8192
 endif
 if rule < 0
     rule = 0
@@ -147,15 +168,18 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-random_initializeWithSeedUnsafelyButPredictably: random_seed
+random_initializeWithSeedUnsafelyButPredictably (random_seed)
 
 width = round(ca_width)
 rule = round(rule)
 
 # ---- Geometry --------------------------------------------------
 targetSamples = round(ir_duration * sampleRate)
+if targetSamples < 1
+    targetSamples = 1
+endif
 numGenerations = ceiling(targetSamples / width)
-totalSamples = numGenerations * width
+totalSamples = targetSamples
 actualDuration = totalSamples / sampleRate
 
 clearinfo
@@ -186,25 +210,21 @@ else
     Formula: "if row = 1 then (if randomUniform(0, 1) < 0.5 then 1 else 0 fi) else self fi"
 endif
 
-# Row-by-row evolution. Matrix objects do not support
-# "Formula (part)" (verified on 6.4.42), so each generation is a
-# whole-matrix Formula with a row guard. Reads of self[row-1,...]
-# land on rows finished in EARLIER calls -- correct, not the
-# in-place pattern. Boundary is periodic.
-for g from 2 to numGenerations
-    selectObject: caID
-    Formula: "if row = 'g' then
-        ... if col = 1 then
-        ...   floor('rule' / 2 ^ (self[row-1,'width']*4 + self[row-1,1]*2 + self[row-1,2])) mod 2
-        ... else if col = 'width' then
-        ...   floor('rule' / 2 ^ (self[row-1,'width'-1]*4 + self[row-1,'width']*2 + self[row-1,1])) mod 2
-        ... else
-        ...   floor('rule' / 2 ^ (self[row-1,col-1]*4 + self[row-1,col]*2 + self[row-1,col+1])) mod 2
-        ... fi fi
-        ... else
-        ...   self
-        ... fi"
-endfor
+# Matrix Formula is evaluated row-major. Keeping row 1 unchanged and
+# reading only self[row-1,...] therefore computes each later generation
+# from the already-completed previous row in ONE pass. This is the same
+# elementary-CA recurrence as v0.3, without re-scanning the whole matrix
+# once per generation. Boundary is periodic.
+selectObject: caID
+Formula: "if row = 1 then
+    ... self
+    ... else if col = 1 then
+    ...   floor('rule' / 2 ^ (self[row-1,'width']*4 + self[row-1,1]*2 + self[row-1,2])) mod 2
+    ... else if col = 'width' then
+    ...   floor('rule' / 2 ^ (self[row-1,'width'-1]*4 + self[row-1,'width']*2 + self[row-1,1])) mod 2
+    ... else
+    ...   floor('rule' / 2 ^ (self[row-1,col-1]*4 + self[row-1,col]*2 + self[row-1,col+1])) mod 2
+    ... fi fi fi"
 
 appendInfoLine: "CA evolution complete."
 
@@ -240,6 +260,9 @@ else
 endif
 removeObject: sgnID
 
+# Do not leak a predictable RNG state into caller scripts or later Praat work.
+random_initializeSafelyAndUnpredictably ()
+
 # residual LF safety (density fluctuations)
 selectObject: irID
 filteredIR = Filter (stop Hann band): 0, 25, 12
@@ -260,7 +283,10 @@ if endLevel > 0.1
 endif
 fadeDur = min(0.03, actualDuration * 0.1)
 Fade out: 0, actualDuration, -fadeDur, "yes"
-Scale peak: 0.99
+irPeak = Get absolute extremum: 0, 0, "None"
+if irPeak > 0
+    Scale peak: 0.99
+endif
 
 appendInfoLine: "Impulse response ready."
 
@@ -275,38 +301,37 @@ endif
 selectObject: dryID
 dryRate = Get sampling frequency
 dryDur = Get total duration
+dryConvID = dryID
 
-if dryRate <> sampleRate
-    appendInfoLine: "Resampling dry sound from ", dryRate, " Hz to ", sampleRate, " Hz."
-    selectObject: dryID
-    resampledID = Resample: sampleRate, 50
-    dryConvID = resampledID
+if wet_level <= 0
+    # Exact dry endpoint: no reverb and no forced loudness normalization.
+    selectObject: dryConvID
+    wetID = Copy: "CAreverb_dry"
 else
-    dryConvID = dryID
-endif
+    selectObject: dryConvID
+    plusObject: irID
+    wetID = Convolve: "peak 0.99", "zero"
 
-selectObject: dryConvID
-plusObject: irID
-wetID = Convolve: "peak 0.99", "zero"
+    # ---- wet/dry mix (the dry ends where it ends; the tail stays
+    #      pure wet -- out-of-range object[] reads return 0)
+    if dry_level > 0
+        dryStr$ = string$(dryConvID)
+        selectObject: wetID
+        Formula: "self * " + string$(wet_level)
+            ... + " + object[" + dryStr$ + ", row, col] * " + string$(dry_level)
 
-# ---- wet/dry mix (the dry ends where it ends; the tail stays
-#      pure wet -- out-of-range object[] reads return 0)
-if dry_level > 0
-    dryStr$ = string$(dryConvID)
-    selectObject: wetID
-    Formula: "self * " + string$(wet_level)
-        ... + " + object[" + dryStr$ + ", row, col] * " + string$(dry_level)
-    Scale peak: 0.99
+        # Safety ceiling only: preserve wet/dry balance and source level.
+        mixPeak = Get absolute extremum: 0, 0, "None"
+        if mixPeak > 0.99
+            Scale peak: 0.99
+        endif
+    endif
 endif
 
 selectObject: wetID
 Rename: dryName$ + "_CAreverb_" + presetName$
 wetDur = Get total duration
 wetCh = Get number of channels
-
-if dryConvID <> dryID
-    removeObject: dryConvID
-endif
 
 appendInfoLine: "Convolution complete: ", dryName$, "_CAreverb_", presetName$,
     ... " (", fixed$(wetDur, 2), " s, ", wetCh, " ch)"
@@ -362,13 +387,14 @@ if draw_visualization
     Select inner viewport: 4.45, 7.65, 2.13, 3.2
     selectObject: irID
     vizIrSpec = To Spectrum: "yes"
+    vizMaxHz = min(10000, sampleRate / 2)
     Colour: "{0.80, 0.45, 0.25}"
-    Draw: 0, 10000, 0, 80, "no"
+    Draw: 0, vizMaxHz, 0, 80, "no"
     removeObject: vizIrSpec
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "IR spectrum (0-10 kHz)"
+    Text top: "no", "IR spectrum (to " + fixed$(vizMaxHz / 1000, 1) + " kHz)"
     Text left: "yes", "dB"
 
     # --- Panel D: wet output waveform ---

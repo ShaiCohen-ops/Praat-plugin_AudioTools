@@ -3,22 +3,32 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 reviewed (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Universal Convolution Generator - 9 impulse response
-#   algorithms in one interface: Accelerando, Bouncing Ball,
-#   Bursts & Taps, Euclidean Rhythm, Fibonacci, Golden Angle,
-#   Random Walk, Stereo Fibonacci, and Swing. Each algorithm
-#   generates a unique impulse pattern for convolution.
+#   Universal Convolution Generator - nine algorithmic impulse-
+#   response generators in one interface: Accelerando, Bouncing
+#   Ball, Bursts & Taps, Euclidean Rhythm, Fibonacci, Golden Angle,
+#   Random Walk, Stereo Fibonacci, and Swing.
 #
-# Changelog v0.2:
-#   - Fixed name-based references (all ID-based)
-#   - Added wet/dry mix control
-#   - Added visualization
-#   - Uses input sample rate by default
+# Review changes v0.3:
+#   - Corrected PointProcess: To Sound (pulse train) semantics:
+#     sampling rate, adaptation factor, adaptation time, sinc depth.
+#   - Removed repeated peak normalization from IR and wet signal.
+#   - IRs are normalized by discrete energy before convolution so
+#     algorithms with many taps do not become automatically louder.
+#   - Stereo IR normalization uses one common gain, preserving L/R.
+#   - Wet/dry uses documented time/channel object() reads.
+#   - 0% wet is a true dry-only path with no output normalization.
+#   - Final peak protection is down-only and applied once.
+#   - Preserves stereo dry signal; mono + Stereo Fibonacci yields
+#     a stereo wet field with the mono dry signal centred.
+#   - Added optional reproducible random seed.
+#   - Added guards for invalid algorithm parameter ranges.
+#   - Visualization shows the ACTUAL tap pattern used by the DSP.
+#   - Visualization updated to Praat AudioTools house style.
 # ============================================================
 
 # === Check Input First ===
@@ -28,11 +38,22 @@ endif
 
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
+
 selectObject: originalID
 inputSR = Get sampling frequency
 inputDur = Get total duration
+inputStart = Get start time
+inputChannels = Get number of channels
+inputEnd = inputStart + inputDur
 
-# --- STEP 1: Main Selection Window ---
+if inputChannels <> 1 and inputChannels <> 2
+    exitScript: "Universal Convolution Generator currently supports mono or stereo Sound objects only."
+endif
+
+# ---------------------------------------------------------------------------
+# STEP 1: Main selection
+# ---------------------------------------------------------------------------
+
 beginPause: "Universal Convolver - Step 1"
     comment: "Select your generation algorithm:"
     optionmenu: "Algorithm", 1
@@ -45,42 +66,73 @@ beginPause: "Universal Convolver - Step 1"
         option: "Random Walk"
         option: "Stereo Fibonacci"
         option: "Swing"
-    
+
     comment: "General Settings:"
     positive: "Duration", 2.0
     real: "Wet_dry_percent", 70
-    
+    integer: "Random_seed", 0
+    comment: "Random seed: 0 = different stochastic pattern each run"
+
     comment: "Output:"
     boolean: "Draw_visualization", 1
     boolean: "Play_after_processing", 1
 endPause: "Next >>", 1
 
-# Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
 elsif wet_dry_percent > 100
     wet_dry_percent = 100
 endif
+
+if random_seed < 0
+    random_seed = 0
+endif
+
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
+duration_seconds = duration
+sr = inputSR
 
-# --- STEP 2: Context-Aware Parameter Window ---
+# PointProcess pulse rendering settings. With adaptation factor = 1,
+# adaptation time does not attenuate pulses; sinc depth controls
+# band-limited sub-sample interpolation.
+adaptationFactor = 1
+adaptationTime = 0.05
+sincDepth = 2000
+
+# ---------------------------------------------------------------------------
+# STEP 2: Algorithm-specific parameters
+# ---------------------------------------------------------------------------
+
+usesRandom = 0
 
 if algorithm$ = "Accelerando"
     beginPause: "Settings: Accelerando"
-        comment: "Pulses that accelerate (gaps shrink)"
+        comment: "Pulses accelerate as successive gaps shrink"
         positive: "First_hit_time", 0.10
         natural: "Number_of_pulses", 24
         positive: "Gap_shrink_ratio", 0.85
     endPause: "Run", 1
-    
+
     accel_first = first_hit_time
     accel_pulses = number_of_pulses
     accel_shrink = gap_shrink_ratio
 
+    if accel_first >= duration_seconds
+        exitScript: "Accelerando: First hit time must be shorter than IR duration."
+    endif
+    if accel_shrink >= 1
+        exitScript: "Accelerando: Gap shrink ratio must be greater than 0 and smaller than 1."
+    endif
+    if accel_pulses > 5000
+        exitScript: "Accelerando: Number of pulses is limited to 5000."
+    endif
+
+    algoParams$ = "First " + fixed$(accel_first, 3) + " s | Pulses " + string$(accel_pulses) + " | Gap ratio " + fixed$(accel_shrink, 3)
+
 elsif algorithm$ = "Bouncing Ball"
     beginPause: "Settings: Bouncing Ball"
-        comment: "Physics-based bouncing pattern"
+        comment: "Restitution-controlled shrinking bounce intervals"
         positive: "First_bounce_time", 0.10
         positive: "Gravity", 9.81
         positive: "Initial_velocity", 3.0
@@ -92,9 +144,20 @@ elsif algorithm$ = "Bouncing Ball"
     ball_velocity = initial_velocity
     ball_bounce = bounce_coefficient
 
+    if ball_first >= duration_seconds
+        exitScript: "Bouncing Ball: First bounce must be shorter than IR duration."
+    endif
+    if ball_bounce >= 1
+        exitScript: "Bouncing Ball: Bounce coefficient must be greater than 0 and smaller than 1."
+    endif
+
+    algoParams$ = "First " + fixed$(ball_first, 3) + " s | g " + fixed$(ball_gravity, 2) + " | v0 " + fixed$(ball_velocity, 2) + " | restitution " + fixed$(ball_bounce, 2)
+
 elsif algorithm$ = "Bursts and Taps"
+    usesRandom = 1
+
     beginPause: "Settings: Bursts & Taps"
-        comment: "Random bursts with tap accents"
+        comment: "Random Gaussian bursts around independently chosen centres"
         positive: "Tap_1_time", 0.15
         positive: "Tap_2_time", 1.20
         natural: "Number_of_bursts", 3
@@ -108,9 +171,15 @@ elsif algorithm$ = "Bursts and Taps"
     burst_points = points_per_burst
     burst_std = burst_stddev
 
+    if burst_num * burst_points > 5000
+        exitScript: "Bursts & Taps: total burst points are limited to 5000."
+    endif
+
+    algoParams$ = "Taps " + fixed$(burst_tap1, 2) + "/" + fixed$(burst_tap2, 2) + " s | Bursts " + string$(burst_num) + " x " + string$(burst_points) + " | sigma " + fixed$(burst_std, 3) + " s"
+
 elsif algorithm$ = "Euclidean Rhythm"
     beginPause: "Settings: Euclidean"
-        comment: "Bjorklund algorithm: K pulses in N steps"
+        comment: "Evenly distributed K-pulse Euclidean rhythm in N steps"
         natural: "Total_steps", 16
         natural: "Active_pulses", 5
     endPause: "Run", 1
@@ -118,21 +187,38 @@ elsif algorithm$ = "Euclidean Rhythm"
     euclid_steps = total_steps
     euclid_pulses = active_pulses
 
+    if euclid_pulses > euclid_steps
+        exitScript: "Euclidean Rhythm: Active pulses cannot exceed total steps."
+    endif
+    if euclid_steps > 10000
+        exitScript: "Euclidean Rhythm: Total steps are limited to 10000."
+    endif
+
+    algoParams$ = "Euclidean E(" + string$(euclid_pulses) + "," + string$(euclid_steps) + ")"
+
 elsif algorithm$ = "Fibonacci (Mono)"
+    usesRandom = 1
+
     beginPause: "Settings: Fibonacci"
-        comment: "Impulses at Fibonacci sequence times"
-        natural: "Number_of_impulses", 12
+        comment: "Fibonacci-positioned impulses with optional timing jitter"
+        natural: "Fibonacci_terms", 12
         positive: "Scale_divisor", 100.0
         positive: "Jitter_stddev", 0.01
     endPause: "Run", 1
 
-    fib_num = number_of_impulses
+    fib_num = fibonacci_terms
     fib_scale = scale_divisor
     fib_jitter = jitter_stddev
 
+    if fib_num > 80
+        exitScript: "Fibonacci: Number of impulses is limited to 80."
+    endif
+
+    algoParams$ = "Requested " + string$(fib_num) + " | Scale " + fixed$(fib_scale, 1) + " | Jitter sigma " + fixed$(fib_jitter, 3) + " s"
+
 elsif algorithm$ = "Golden Angle Drift"
     beginPause: "Settings: Golden Angle"
-        comment: "Golden ratio distribution"
+        comment: "Low-discrepancy golden-ratio distribution"
         natural: "Number_of_impulses", 24
         positive: "Margin_s", 0.10
     endPause: "Run", 1
@@ -140,9 +226,20 @@ elsif algorithm$ = "Golden Angle Drift"
     golden_num = number_of_impulses
     golden_margin = margin_s
 
+    if 2 * golden_margin >= duration_seconds
+        exitScript: "Golden Angle: Margin must be smaller than half the IR duration."
+    endif
+    if golden_num > 5000
+        exitScript: "Golden Angle: Number of impulses is limited to 5000."
+    endif
+
+    algoParams$ = "Impulses " + string$(golden_num) + " | Margin " + fixed$(golden_margin, 3) + " s"
+
 elsif algorithm$ = "Random Walk"
+    usesRandom = 1
+
     beginPause: "Settings: Random Walk"
-        comment: "Gap varies by random walk"
+        comment: "Successive gaps follow a bounded random walk"
         positive: "Initial_gap", 0.18
         positive: "Gap_variation", 0.015
     endPause: "Run", 1
@@ -150,10 +247,14 @@ elsif algorithm$ = "Random Walk"
     walk_gap = initial_gap
     walk_var = gap_variation
 
+    algoParams$ = "Initial gap " + fixed$(walk_gap, 3) + " s | Step sigma " + fixed$(walk_var, 3) + " s"
+
 elsif algorithm$ = "Stereo Fibonacci"
+    usesRandom = 1
+
     beginPause: "Settings: Stereo Fibonacci"
-        comment: "Different Fibonacci seeds per channel"
-        natural: "Number_of_impulses", 12
+        comment: "Different Fibonacci seeds and jitter per channel"
+        natural: "Fibonacci_terms_per_channel", 12
         comment: "Left Channel Seeds:"
         natural: "Left_seed_1", 1
         natural: "Left_seed_2", 1
@@ -162,80 +263,130 @@ elsif algorithm$ = "Stereo Fibonacci"
         natural: "Right_seed_2", 3
     endPause: "Run", 1
 
-    sfib_num = number_of_impulses
+    sfib_num = fibonacci_terms_per_channel
     sfib_L1 = left_seed_1
     sfib_L2 = left_seed_2
     sfib_R1 = right_seed_1
     sfib_R2 = right_seed_2
 
+    if sfib_num > 80
+        exitScript: "Stereo Fibonacci: Number of impulses is limited to 80."
+    endif
+
+    algoParams$ = "Requested " + string$(sfib_num) + "/ch | L seeds " + string$(sfib_L1) + "," + string$(sfib_L2) + " | R seeds " + string$(sfib_R1) + "," + string$(sfib_R2)
+
 elsif algorithm$ = "Swing"
     beginPause: "Settings: Swing"
-        comment: "Jazz swing timing"
+        comment: "Alternating delayed timing around a tempo grid"
         positive: "Tempo_BPM", 120
         positive: "Swing_delay_s", 0.06
     endPause: "Run", 1
 
     swing_tempo = tempo_BPM
     swing_delay = swing_delay_s
+    swingBeat = 60 / swing_tempo
+
+    if swing_delay >= swingBeat
+        exitScript: "Swing: Swing delay must be shorter than one beat."
+    endif
+
+    algoParams$ = "Tempo " + fixed$(swing_tempo, 1) + " BPM | Alternate delay " + fixed$(swing_delay * 1000, 1) + " ms"
 endif
 
-# === Setup ===
-sr = inputSR
-duration_seconds = duration
-pulse_amplitude = 1
-pulse_width = 0.02
-pulse_period = 2000
+# ---------------------------------------------------------------------------
+# Random-state handling
+# ---------------------------------------------------------------------------
 
-# === Info ===
+if usesRandom = 1
+    if random_seed = 0
+        random_initializeSafelyAndUnpredictably ()
+        seedLabel$ = "random each run"
+    else
+        random_initializeWithSeedUnsafelyButPredictably (random_seed)
+        seedLabel$ = "seed " + string$(random_seed)
+    endif
+else
+    seedLabel$ = "deterministic"
+endif
+
+# ---------------------------------------------------------------------------
+# Generate ACTUAL tap pattern and keep tap times for visualization
+# ---------------------------------------------------------------------------
+
 writeInfoLine: "=== Universal Convolution Generator ==="
 appendInfoLine: "Source: ", originalName$
 appendInfoLine: "Algorithm: ", algorithm$
-appendInfoLine: "IR Duration: ", duration_seconds, " s"
-appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
+appendInfoLine: "IR duration: ", fixed$(duration_seconds, 3), " s"
+appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 1), "%"
+appendInfoLine: "Pattern: ", seedLabel$
 appendInfoLine: ""
-
-# === Prepare Source ===
-selectObject: originalID
-Copy: "source_copy"
-sourceCopy = selected("Sound")
-
-# Flag for stereo processing
-isStereo = 0
-
-# === Generate Impulse Response ===
 appendInfoLine: "Generating impulse pattern..."
+
+isStereo = 0
+nTaps = 0
+nLeft = 0
+nRight = 0
 
 if algorithm$ = "Accelerando"
     Create empty PointProcess: "pp_gen", 0, duration_seconds
     ppGen = selected("PointProcess")
-    
-    remain = duration_seconds - accel_first
-    den = 1 - accel_shrink ^ accel_pulses
-    g0 = remain * (1 - accel_shrink) / den
-    t = accel_first
-    i = 1
-    while i <= accel_pulses and t < duration_seconds
-        selectObject: ppGen
-        Add point: t
-        gap = g0 * accel_shrink ^ (i - 1)
-        t = t + gap
-        i = i + 1
-    endwhile
+
+    nTaps = 1
+    tapTime[nTaps] = accel_first
+    selectObject: ppGen
+    Add point: accel_first
+
+    if accel_pulses > 1
+        endTarget = duration_seconds - 0.5 / sr
+        if accel_first >= endTarget
+            removeObject: ppGen
+            exitScript: "Accelerando: First hit leaves no room for the requested number of pulses."
+        endif
+
+        span = endTarget - accel_first
+        if accel_shrink > 0.999999
+            firstGap = span / (accel_pulses - 1)
+        else
+            firstGap = span * (1 - accel_shrink) / (1 - accel_shrink ^ (accel_pulses - 1))
+        endif
+
+        t = accel_first
+        for i from 1 to accel_pulses - 1
+            gap = firstGap * accel_shrink ^ (i - 1)
+            t = t + gap
+            if t > 0 and t < duration_seconds
+                nTaps = nTaps + 1
+                tapTime[nTaps] = t
+                selectObject: ppGen
+                Add point: t
+            endif
+        endfor
+    endif
 
 elsif algorithm$ = "Bouncing Ball"
     Create empty PointProcess: "pp_gen", 0, duration_seconds
     ppGen = selected("PointProcess")
-    
+
     t = ball_first
     v = ball_velocity
+
     if t > 0 and t < duration_seconds
+        nTaps = nTaps + 1
+        tapTime[nTaps] = t
+        selectObject: ppGen
         Add point: t
     endif
+
     dt = 2 * v / ball_gravity
     count = 0
-    while (t + dt < duration_seconds) and (dt >= 0.001) and (count < 50)
+
+    while (t + dt < duration_seconds) and (dt >= 0.001) and (count < 500)
         t = t + dt
+        nTaps = nTaps + 1
+        tapTime[nTaps] = t
+        selectObject: ppGen
         Add point: t
+
         v = ball_bounce * v
         dt = 2 * v / ball_gravity
         count = count + 1
@@ -244,19 +395,37 @@ elsif algorithm$ = "Bouncing Ball"
 elsif algorithm$ = "Bursts and Taps"
     Create empty PointProcess: "pp_gen", 0, duration_seconds
     ppGen = selected("PointProcess")
-    
-    if burst_tap1 < duration_seconds
+
+    if burst_tap1 > 0 and burst_tap1 < duration_seconds
+        nTaps = nTaps + 1
+        tapTime[nTaps] = burst_tap1
+        selectObject: ppGen
         Add point: burst_tap1
     endif
-    if burst_tap2 < duration_seconds
+
+    if burst_tap2 > 0 and burst_tap2 < duration_seconds
+        nTaps = nTaps + 1
+        tapTime[nTaps] = burst_tap2
+        selectObject: ppGen
         Add point: burst_tap2
     endif
-    
+
+    burstMargin = min(0.05, 0.20 * duration_seconds)
+    centerLow = burstMargin
+    centerHigh = duration_seconds - burstMargin
+
     for b from 1 to burst_num
-        center = randomUniform(0.05, duration_seconds - 0.05)
+        if centerHigh > centerLow
+            center = randomUniform(centerLow, centerHigh)
+        else
+            center = 0.5 * duration_seconds
+        endif
+
         for i from 1 to burst_points
             u = center + randomGauss(0, burst_std)
             if u > 0 and u < duration_seconds
+                nTaps = nTaps + 1
+                tapTime[nTaps] = u
                 selectObject: ppGen
                 Add point: u
             endif
@@ -266,28 +435,37 @@ elsif algorithm$ = "Bursts and Taps"
 elsif algorithm$ = "Euclidean Rhythm"
     Create empty PointProcess: "pp_gen", 0, duration_seconds
     ppGen = selected("PointProcess")
-    
+
     step = duration_seconds / euclid_steps
+
     for i from 0 to euclid_steps - 1
         if ((i * euclid_pulses) mod euclid_steps) < euclid_pulses
+            t = i * step
+            nTaps = nTaps + 1
+            tapTime[nTaps] = t
             selectObject: ppGen
-            Add point: i * step
+            Add point: t
         endif
     endfor
 
 elsif algorithm$ = "Fibonacci (Mono)"
     Create empty PointProcess: "pp_gen", 0, duration_seconds
     ppGen = selected("PointProcess")
-    
+
     f1 = 1
     f2 = 1
+
     for i from 1 to fib_num
-        t_base = (f1 / fib_scale) * duration_seconds
-        t = t_base + randomGauss(0, fib_jitter)
+        tBase = (f1 / fib_scale) * duration_seconds
+        t = tBase + randomGauss(0, fib_jitter)
+
         if t > 0 and t < duration_seconds
+            nTaps = nTaps + 1
+            tapTime[nTaps] = t
             selectObject: ppGen
             Add point: t
         endif
+
         ft = f1 + f2
         f1 = f2
         f2 = ft
@@ -296,12 +474,16 @@ elsif algorithm$ = "Fibonacci (Mono)"
 elsif algorithm$ = "Golden Angle Drift"
     Create empty PointProcess: "pp_gen", 0, duration_seconds
     ppGen = selected("PointProcess")
-    
+
     phi = (sqrt(5) - 1) / 2
+
     for i from 1 to golden_num
         u = (i * phi) - floor(i * phi)
         t = golden_margin + u * (duration_seconds - 2 * golden_margin)
+
         if t > 0 and t < duration_seconds
+            nTaps = nTaps + 1
+            tapTime[nTaps] = t
             selectObject: ppGen
             Add point: t
         endif
@@ -310,18 +492,27 @@ elsif algorithm$ = "Golden Angle Drift"
 elsif algorithm$ = "Random Walk"
     Create empty PointProcess: "pp_gen", 0, duration_seconds
     ppGen = selected("PointProcess")
-    
-    t = 0.10
+
+    t = min(0.10, 0.10 * duration_seconds)
     gap = walk_gap
     count = 0
-    while (t < duration_seconds) and (count < 400)
-        Add point: t
+
+    while (t < duration_seconds) and (count < 5000)
+        if t > 0
+            nTaps = nTaps + 1
+            tapTime[nTaps] = t
+            selectObject: ppGen
+            Add point: t
+        endif
+
         gap = gap + randomGauss(0, walk_var)
+
         if gap < 0.01
             gap = 0.01
         elsif gap > 0.65
             gap = 0.65
         endif
+
         t = t + gap
         count = count + 1
     endwhile
@@ -329,299 +520,369 @@ elsif algorithm$ = "Random Walk"
 elsif algorithm$ = "Swing"
     Create empty PointProcess: "pp_gen", 0, duration_seconds
     ppGen = selected("PointProcess")
-    
+
     beat = 60 / swing_tempo
     t = beat
     i = 1
+
     while t < duration_seconds
         if (i mod 2) = 0
-            Add point: t + swing_delay
+            tDraw = t + swing_delay
         else
-            Add point: t
+            tDraw = t
         endif
+
+        if tDraw > 0 and tDraw < duration_seconds
+            nTaps = nTaps + 1
+            tapTime[nTaps] = tDraw
+            selectObject: ppGen
+            Add point: tDraw
+        endif
+
         t = t + beat
         i = i + 1
     endwhile
 
 elsif algorithm$ = "Stereo Fibonacci"
     isStereo = 1
-    
-    # Left channel
+
+    # Left
     Create empty PointProcess: "pp_left", 0, duration_seconds
     ppLeft = selected("PointProcess")
+
     f1 = sfib_L1
     f2 = sfib_L2
+
     for i from 1 to sfib_num
         t = (f1 / 100.0) * duration_seconds + randomGauss(0, 0.01)
+
         if t > 0 and t < duration_seconds
+            nLeft = nLeft + 1
+            leftTime[nLeft] = t
             selectObject: ppLeft
             Add point: t
         endif
+
         ft = f1 + f2
         f1 = f2
         f2 = ft
     endfor
-    
-    # Right channel
+
+    # Right
     Create empty PointProcess: "pp_right", 0, duration_seconds
     ppRight = selected("PointProcess")
+
     f1 = sfib_R1
     f2 = sfib_R2
+
     for i from 1 to sfib_num
         t = (f1 / 120.0) * duration_seconds + randomGauss(0, 0.02)
+
         if t > 0 and t < duration_seconds
+            nRight = nRight + 1
+            rightTime[nRight] = t
             selectObject: ppRight
             Add point: t
         endif
+
         ft = f1 + f2
         f1 = f2
         f2 = ft
     endfor
 endif
 
-# === Convert to Pulse Trains ===
+# Do not leave Praat's global RNG in a predictable state.
+if usesRandom = 1 and random_seed <> 0
+    random_initializeSafelyAndUnpredictably ()
+endif
+
 if isStereo = 0
-    selectObject: ppGen
-    To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulse_period
-    irSound = selected("Sound")
-    Scale peak: 0.99
-    removeObject: ppGen
-else
-    selectObject: ppLeft
-    To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulse_period
-    irLeft = selected("Sound")
-    Scale peak: 0.99
-    
-    selectObject: ppRight
-    To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulse_period
-    irRight = selected("Sound")
-    Scale peak: 0.99
-    
-    selectObject: irLeft, irRight
-    Combine to stereo
-    irSound = selected("Sound")
-    
-    removeObject: ppLeft, ppRight, irLeft, irRight
-endif
-
-# === Convolve ===
-appendInfoLine: "Convolving..."
-
-selectObject: sourceCopy, irSound
-Convolve: "sum", "zero"
-wetSound = selected("Sound")
-Scale peak: 0.95
-
-# === Apply Wet/Dry ===
-if dry_level > 0
-    selectObject: wetSound
-    wetDur = Get total duration
-    
-    selectObject: sourceCopy
-    dryDur = Get total duration
-    dryChannels = Get number of channels
-    
-    if dryDur < wetDur
-        # Extend dry - MATCH CHANNEL COUNT
-        Create Sound from formula: "sil_pad", dryChannels, 0, wetDur - dryDur, sr, "0"
-        silPad = selected("Sound")
-        selectObject: sourceCopy, silPad
-        Concatenate
-        dryExt = selected("Sound")
-        removeObject: silPad
-    else
-        selectObject: sourceCopy
-        Copy: "dry_ext"
-        dryExt = selected("Sound")
+    if nTaps < 1
+        removeObject: ppGen
+        exitScript: "These settings generated no valid impulse times inside the IR duration."
     endif
-    
-    wet_str$ = string$(wet_level)
-    dry_str$ = string$(dry_level)
-    dry_id_str$ = string$(dryExt)
-    
-    selectObject: wetSound
-    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + "] * " + dry_str$
-    
-    removeObject: dryExt
+    appendInfoLine: "Actual taps: ", nTaps
+else
+    if nLeft < 1 or nRight < 1
+        removeObject: ppLeft, ppRight
+        exitScript: "Stereo Fibonacci requires at least one valid tap in both channels. Adjust seeds, count, or duration."
+    endif
+    appendInfoLine: "Actual taps: L=", nLeft, " | R=", nRight
 endif
 
-selectObject: wetSound
-Scale peak: 0.98
-Rename: originalName$ + "_conv_" + algorithm$
-result = selected("Sound")
+# ---------------------------------------------------------------------------
+# DSP
+# ---------------------------------------------------------------------------
 
-# === Cleanup ===
-removeObject: sourceCopy, irSound
+if wet_level = 0
+    appendInfoLine: "Wet = 0%: bypassing IR rendering and convolution."
 
-# ============================================================
-# VISUALIZATION
-# ============================================================
+    if isStereo = 0
+        removeObject: ppGen
+    else
+        removeObject: ppLeft, ppRight
+    endif
+
+    selectObject: originalID
+    Copy: originalName$ + "_conv_" + algorithm$
+    result = selected("Sound")
+
+else
+    appendInfoLine: "Rendering band-limited impulse response..."
+
+    if isStereo = 0
+        selectObject: ppGen
+        To Sound (pulse train): sr, adaptationFactor, adaptationTime, sincDepth
+        irSound = selected("Sound")
+        removeObject: ppGen
+
+        # Unit discrete energy: sum(h^2) = 1.
+        selectObject: irSound
+        irEnergy = Get energy: 0, 0
+
+        if irEnergy <= 0
+            removeObject: irSound
+            exitScript: "Generated impulse response has zero energy."
+        endif
+
+        irGain = 1 / sqrt(irEnergy * sr)
+        irGainStr$ = string$(irGain)
+        Formula: "self * " + irGainStr$
+
+    else
+        selectObject: ppLeft
+        To Sound (pulse train): sr, adaptationFactor, adaptationTime, sincDepth
+        irLeft = selected("Sound")
+
+        selectObject: ppRight
+        To Sound (pulse train): sr, adaptationFactor, adaptationTime, sincDepth
+        irRight = selected("Sound")
+
+        removeObject: ppLeft, ppRight
+
+        # One common energy gain preserves the relative L/R pattern.
+        selectObject: irLeft
+        energyLeft = Get energy: 0, 0
+
+        selectObject: irRight
+        energyRight = Get energy: 0, 0
+
+        maxIrEnergy = max(energyLeft, energyRight)
+
+        if maxIrEnergy <= 0
+            removeObject: irLeft, irRight
+            exitScript: "Generated stereo impulse response has zero energy."
+        endif
+
+        irGain = 1 / sqrt(maxIrEnergy * sr)
+        irGainStr$ = string$(irGain)
+
+        selectObject: irLeft
+        Formula: "self * " + irGainStr$
+
+        selectObject: irRight
+        Formula: "self * " + irGainStr$
+
+        selectObject: irLeft, irRight
+        Combine to stereo
+        irSound = selected("Sound")
+
+        removeObject: irLeft, irRight
+    endif
+
+    appendInfoLine: "Convolving..."
+
+    # Praat permits mono/multichannel convolution; if one Sound is mono,
+    # its impulse response is applied to every channel of the other Sound.
+    selectObject: originalID, irSound
+    Convolve: "sum", "zero"
+    wetSound = selected("Sound")
+
+    removeObject: irSound
+
+    # True wet/dry mix. object() returns zero outside the dry Sound domain,
+    # so no explicit dry padding is needed.
+    if dry_level > 0
+        wetStr$ = string$(wet_level)
+        dryStr$ = string$(dry_level)
+        originalIdStr$ = string$(originalID)
+
+        selectObject: wetSound
+
+        if inputChannels = 1
+            Formula: "self * " + wetStr$ + " + object(" + originalIdStr$ + ", x, 1) * " + dryStr$
+        else
+            Formula: "self * " + wetStr$ + " + object(" + originalIdStr$ + ", x, row) * " + dryStr$
+        endif
+    endif
+
+    Rename: originalName$ + "_conv_" + algorithm$
+    result = selected("Sound")
+
+    # One down-only safety gain. Never amplify quiet material.
+    selectObject: result
+    resultPeak = Get absolute extremum: 0, 0, "none"
+
+    if resultPeak > 0.98
+        Scale peak: 0.98
+    endif
+endif
+
+# ---------------------------------------------------------------------------
+# Result metadata
+# ---------------------------------------------------------------------------
+
+selectObject: result
+resultDur = Get total duration
+resultStart = Get start time
+resultChannels = Get number of channels
+resultEnd = resultStart + resultDur
+resultPeak = Get absolute extremum: 0, 0, "none"
+
+timelineStart = min(inputStart, resultStart)
+timelineEnd = max(inputEnd, resultEnd)
+
+if isStereo = 0
+    tapSummary$ = string$(nTaps) + " taps"
+else
+    tapSummary$ = "L " + string$(nLeft) + " / R " + string$(nRight) + " taps"
+endif
+
+# ---------------------------------------------------------------------------
+# VISUALIZATION - PRAAT AUDIOTOOLS HOUSE STYLE
+# ---------------------------------------------------------------------------
 
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+
+    # Title.
+    Select outer viewport: 0, 8, 0.05, 0.38
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Universal Convolver: " + algorithm$ + " → " + originalName$
-    
-    # Original waveform
-    Select outer viewport: 0, 4, 0.6, 1.6
-    Select inner viewport: 0.5, 3.7, 0.75, 1.45
+    Text: 0.5, "centre", 0.58, "half", "Universal Convolution Generator | " + algorithm$
+
+    # Metadata.
+    Select outer viewport: 0, 8, 0.36, 0.58
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.35}"
+    Text: 0.5, "centre", 0.5, "half", originalName$ + " | IR " + fixed$(duration_seconds, 2) + " s | " + tapSummary$ + " | Wet " + fixed$(wet_dry_percent, 0) + "%"
+
+    # Dry waveform on the complete result timeline.
+    Select outer viewport: 0, 8, 0.65, 1.35
+    Select inner viewport: 0.65, 7.65, 0.72, 1.28
     selectObject: originalID
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.65, 0.65, 0.65}"
+    Draw: timelineStart, timelineEnd, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Original"
-    
-    # Result waveform
-    Select outer viewport: 4, 8, 0.6, 1.6
-    Select inner viewport: 4.5, 7.7, 0.75, 1.45
+    Text left: "yes", "Dry"
+
+    # Output waveform.
+    Select outer viewport: 0, 8, 1.42, 2.12
+    Select inner viewport: 0.65, 7.65, 1.49, 2.05
     selectObject: result
-    Colour: "{0.5, 0.6, 0.7}"
-    Draw: 0, inputDur * 1.5, 0, 0, "no", "Curve"
+    Colour: "{0.48, 0.60, 0.76}"
+    Draw: timelineStart, timelineEnd, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Convolved " + fixed$(wet_dry_percent, 0) + "%"
-    
-    # Algorithm diagram
-    Select outer viewport: 0, 8, 1.8, 3.3
-    Select inner viewport: 0.6, 7.6, 2.0, 3.15
-    
-    Axes: 0, duration_seconds, 0, 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration_seconds, 0, 1.2
-    
-    # Draw algorithm name
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: duration_seconds * 0.5, "centre", 1.1, "half", algorithm$
-    
-    # Show pattern schematic
-    Colour: "{0.5, 0.6, 0.8}"
-    Line width: 2
-    
-    if algorithm$ = "Accelerando"
-        # Show accelerating pattern
-        gap = 0.3
-        t = 0.1
-        for i from 1 to 12
-            Draw line: t, 0.1, t, 0.8
-            Paint circle (mm): "{0.5, 0.6, 0.8}", t, 0.8, 1.5
-            gap = gap * 0.82
-            t = t + gap
-        endfor
-        Font size: 5
-        Text: duration_seconds * 0.8, "centre", 0.5, "half", "gaps shrink"
-        
-    elsif algorithm$ = "Bouncing Ball"
-        # Show bouncing pattern
-        t = 0.1
-        dt = 0.35
-        for i from 1 to 10
-            Draw line: t, 0.1, t, 0.8
-            Paint circle (mm): "{0.5, 0.6, 0.8}", t, 0.8, 1.5
-            t = t + dt
-            dt = dt * 0.65
-        endfor
-        Font size: 5
-        Text: duration_seconds * 0.8, "centre", 0.5, "half", "physics bounce"
-        
-    elsif algorithm$ = "Euclidean Rhythm"
-        # Show euclidean pattern
-        step = duration_seconds / 16
-        for i from 0 to 15
-            t = i * step
-            if ((i * 5) mod 16) < 5
-                Draw line: t, 0.1, t, 0.8
-                Paint circle (mm): "{0.5, 0.6, 0.8}", t, 0.8, 1.5
-            else
-                Colour: "{0.85, 0.85, 0.85}"
-                Draw line: t, 0.2, t, 0.4
-                Colour: "{0.5, 0.6, 0.8}"
-            endif
-        endfor
-        Font size: 5
-        Text: duration_seconds * 0.8, "centre", 0.5, "half", "5 in 16"
-        
-    elsif algorithm$ = "Fibonacci (Mono)"
-        f1 = 1
-        f2 = 1
-        for i from 1 to 10
-            t = (f1 / 100) * duration_seconds
-            if t < duration_seconds
-                Draw line: t, 0.1, t, 0.8
-                Paint circle (mm): "{0.5, 0.6, 0.8}", t, 0.8, 1.5
-            endif
-            ft = f1 + f2
-            f1 = f2
-            f2 = ft
-        endfor
-        Font size: 5
-        Text: duration_seconds * 0.8, "centre", 0.5, "half", "1,1,2,3,5,8..."
-        
-    elsif algorithm$ = "Golden Angle Drift"
-        phi = (sqrt(5) - 1) / 2
-        for i from 1 to 15
-            u = (i * phi) - floor(i * phi)
-            t = 0.1 + u * (duration_seconds - 0.2)
-            Draw line: t, 0.1, t, 0.8
-            Paint circle (mm): "{0.5, 0.6, 0.8}", t, 0.8, 1.5
-        endfor
-        Font size: 5
-        Text: duration_seconds * 0.8, "centre", 0.5, "half", "φ distribution"
-        
-    elsif algorithm$ = "Swing"
-        beat = duration_seconds / 8
-        t = beat
-        for i from 1 to 7
-            if (i mod 2) = 0
-                tDraw = t + beat * 0.15
-            else
-                tDraw = t
-            endif
-            Draw line: tDraw, 0.1, tDraw, 0.8
-            Paint circle (mm): "{0.5, 0.6, 0.8}", tDraw, 0.8, 1.5
-            t = t + beat
-        endfor
-        Font size: 5
-        Text: duration_seconds * 0.8, "centre", 0.5, "half", "swing feel"
-        
-    else
-        # Generic pattern
-        for i from 1 to 10
-            t = randomUniform(0.05, duration_seconds - 0.05)
-            Draw line: t, 0.1, t, 0.8
-            Paint circle (mm): "{0.5, 0.6, 0.8}", t, 0.8, 1.5
-        endfor
-    endif
-    
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
+    Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
-    
-    # Parameters
-    Select outer viewport: 0, 8, 3.4, 3.7
-    Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "IR Duration: " + fixed$(duration_seconds, 1) + "s | Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
-    
+
+    # Actual tap-pattern title.
+    Select outer viewport: 0, 8, 2.24, 2.48
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Actual impulse pattern used by the DSP"
+
+    # Actual tap pattern.
+    Select outer viewport: 0, 8, 2.45, 3.82
+    Select inner viewport: 0.65, 7.65, 2.60, 3.68
+
+    if isStereo = 0
+        Axes: 0, duration_seconds, 0, 1.08
+        Paint rectangle: "{0.96, 0.96, 0.96}", 0, duration_seconds, 0, 1.08
+
+        Colour: "{0.82, 0.82, 0.82}"
+        Draw line: 0, 0.10, duration_seconds, 0.10
+
+        Colour: "{0.42, 0.58, 0.76}"
+        for i from 1 to nTaps
+            t = tapTime[i]
+            Draw line: t, 0.10, t, 0.80
+            Paint circle (mm): "{0.42, 0.58, 0.76}", t, 0.80, 1.2
+        endfor
+
+        Colour: "Black"
+        Draw inner box
+        Font size: 6
+        Text left: "yes", "Impulse"
+        Text bottom: "yes", "IR time (s)"
+
+    else
+        Axes: 0, duration_seconds, -1.10, 1.10
+        Paint rectangle: "{0.96, 0.96, 0.96}", 0, duration_seconds, -1.10, 1.10
+
+        Colour: "{0.82, 0.82, 0.82}"
+        Draw line: 0, 0, duration_seconds, 0
+
+        Colour: "{0.42, 0.58, 0.76}"
+        for i from 1 to nLeft
+            t = leftTime[i]
+            Draw line: t, 0.05, t, 0.78
+            Paint circle (mm): "{0.42, 0.58, 0.76}", t, 0.78, 1.2
+        endfor
+
+        Colour: "{0.78, 0.48, 0.42}"
+        for i from 1 to nRight
+            t = rightTime[i]
+            Draw line: t, -0.05, t, -0.78
+            Paint circle (mm): "{0.78, 0.48, 0.42}", t, -0.78, 1.2
+        endfor
+
+        Colour: "Black"
+        Draw inner box
+        Font size: 6
+        Text left: "yes", "L / R"
+        Text bottom: "yes", "IR time (s)"
+
+        Font size: 5
+        Colour: "{0.42, 0.58, 0.76}"
+        Text: duration_seconds * 0.98, "right", 0.95, "half", "LEFT " + string$(nLeft)
+        Colour: "{0.78, 0.48, 0.42}"
+        Text: duration_seconds * 0.98, "right", -0.95, "half", "RIGHT " + string$(nRight)
+    endif
+
+    # Summary panel.
+    Select outer viewport: 0.35, 7.65, 3.92, 4.50
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+
+    Colour: "{0.35, 0.35, 0.35}"
+    Font size: 5
+    Text: 0.5, "centre", 0.68, "half", algoParams$
+    Text: 0.5, "centre", 0.30, "half", tapSummary$ + " | " + seedLabel$ + " | IR energy-normalized | Output " + fixed$(resultDur, 2) + " s / " + string$(resultChannels) + " ch"
+
     Font size: 10
     Colour: "Black"
 endif
 
-# === Final Info ===
+# ---------------------------------------------------------------------------
+# FINAL INFO / PLAY
+# ---------------------------------------------------------------------------
+
 selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Output duration: ", fixed$(resultDur, 3), " s"
+appendInfoLine: "Output channels: ", resultChannels
+appendInfoLine: "Output peak: ", fixed$(resultPeak, 4)
 
-# === Play ===
 if play_after_processing
     selectObject: result
     Play

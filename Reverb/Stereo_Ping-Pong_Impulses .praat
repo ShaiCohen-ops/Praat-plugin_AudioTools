@@ -3,27 +3,36 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 reviewed (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Stereo Ping-Pong Impulses - convolution-based alternating
-#   L/R delay effect. Creates two impulse trains with offset
-#   timing, converts to pulse trains, and convolves with input.
-#   Different from formula-based ping-pong: uses convolution
-#   for cleaner, more rhythmic character.
+#   Convolution-based stereo ping-pong delay built from two
+#   alternating band-limited impulse trains. The wet signal is
+#   generated from a mono sum so that each tap occupies a clear
+#   left/right position; the dry path preserves the original
+#   stereo channels. Random timing jitter is generated once and
+#   reused by the processing, Info output, and visualization.
 #
-# Changelog v0.2:
-#   - Fixed name-based references (all ID-based)
-#   - Added wet/dry mix control
-#   - Added visualization
-#   - Better preset names
+# Review changes v0.3:
+#   - Corrected pulse-train UI terminology: the final argument of
+#     To Sound (pulse train) is sinc interpolation depth, not period.
+#   - Removed the ineffective "pulse width" control (adaptation
+#     factor is 1, so adaptation time does not change pulse height).
+#   - Preserves original stereo dry path instead of collapsing it.
+#   - 0% wet uses a true dry-only fast path.
+#   - Generates jittered tap times once; DSP and visualization match.
+#   - Bounds jitter to preserve L/R alternation.
+#   - Removed per-channel/IR Scale peak normalization.
+#   - Uses a single down-only clipping safeguard on the final stereo.
+#   - Uses time-based object() reads for correct dry alignment.
+#   - Visualization updated to the Praat AudioTools house style.
 # ============================================================
 
 form Stereo Ping-Pong Impulses
     comment Select a Sound object first
-    
+
     comment === Preset ===
     optionmenu Preset: 1
         option Default (balanced)
@@ -32,27 +41,29 @@ form Stereo Ping-Pong Impulses
         option Rapid Micro-Taps
         option Offbeat Start
         option Custom (use settings below)
-    
+
     comment === Timing ===
-    positive Duration_s 1.6
+    positive Impulse_train_duration_s 1.6
     positive Step_interval_s 0.22
-    positive Jitter_s 0.01
+    real Jitter_s 0.01
     positive Initial_delay_s 0.10
-    
-    comment === Pulse Parameters ===
-    positive Pulse_width_s 0.03
-    positive Pulse_period 2000
-    
+
+    comment === Impulse Rendering ===
+    natural Sinc_interpolation_depth 2000
+
     comment === Mix ===
     real Wet_dry_percent 60
     comment (0 = dry only, 100 = wet only)
-    
+
     comment === Output ===
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
-# === Check Input ===
+# ============================================================
+# INPUT AND PRESET SETUP
+# ============================================================
+
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
@@ -62,98 +73,160 @@ originalName$ = selected$("Sound")
 
 selectObject: original
 originalDur = Get total duration
+origStart = Get start time
 sr = Get sampling frequency
 numChannels = Get number of channels
+origEnd = origStart + originalDur
 
-# === Apply Presets ===
+if numChannels <> 1 and numChannels <> 2
+    exitScript: "Stereo Ping-Pong Impulses currently supports mono or stereo Sound objects only."
+endif
+
 if preset = 1
-    # Default (balanced)
-    duration_s = 1.6
+    impulse_train_duration_s = 1.6
     step_interval_s = 0.22
     jitter_s = 0.01
     initial_delay_s = 0.10
-    pulse_width_s = 0.03
-    pulse_period = 2000
+    sinc_interpolation_depth = 2000
     presetName$ = "Default"
 elsif preset = 2
-    # Tight Ping-Pong
-    duration_s = 1.0
+    impulse_train_duration_s = 1.0
     step_interval_s = 0.15
     jitter_s = 0.005
     initial_delay_s = 0.08
-    pulse_width_s = 0.02
-    pulse_period = 1500
+    sinc_interpolation_depth = 1500
     presetName$ = "Tight"
 elsif preset = 3
-    # Wide and Slow
-    duration_s = 2.5
+    impulse_train_duration_s = 2.5
     step_interval_s = 0.35
     jitter_s = 0.012
     initial_delay_s = 0.12
-    pulse_width_s = 0.04
-    pulse_period = 2600
+    sinc_interpolation_depth = 2600
     presetName$ = "Wide"
 elsif preset = 4
-    # Rapid Micro-Taps
-    duration_s = 1.2
+    impulse_train_duration_s = 1.2
     step_interval_s = 0.08
     jitter_s = 0.003
     initial_delay_s = 0.05
-    pulse_width_s = 0.015
-    pulse_period = 1200
+    sinc_interpolation_depth = 1200
     presetName$ = "Rapid"
 elsif preset = 5
-    # Offbeat Start
-    duration_s = 1.8
+    impulse_train_duration_s = 1.8
     step_interval_s = 0.22
     jitter_s = 0.02
     initial_delay_s = 0.17
-    pulse_width_s = 0.03
-    pulse_period = 2000
+    sinc_interpolation_depth = 2000
     presetName$ = "Offbeat"
 else
     presetName$ = "Custom"
 endif
 
-# Clamp wet/dry
+# Validate/clamp user controls.
+if jitter_s < 0
+    jitter_s = 0
+endif
+
 if wet_dry_percent < 0
     wet_dry_percent = 0
 elsif wet_dry_percent > 100
     wet_dry_percent = 100
 endif
 
+if sinc_interpolation_depth < 1
+    sinc_interpolation_depth = 1
+endif
+
+if initial_delay_s + step_interval_s >= impulse_train_duration_s
+    exitScript: "Impulse train duration must be longer than Initial delay + Step interval so that both L and R receive at least one tap."
+endif
+
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-# Count impulses for visualization
+# Bound jitter so independently jittered neighbouring L/R taps cannot
+# cross each other. Also keep the first left tap safely above time zero.
+effectiveJitter = jitter_s
+jitterLimit = 0.45 * step_interval_s
+if effectiveJitter > jitterLimit
+    effectiveJitter = jitterLimit
+endif
+
+firstTapLimit = 0.9 * initial_delay_s
+if effectiveJitter > firstTapLimit
+    effectiveJitter = firstTapLimit
+endif
+
+halfSample = 0.5 / sr
+
+# ============================================================
+# GENERATE ACTUAL TAP TIMES ONCE
+# ============================================================
+
 numLeftImp = 0
-numRightImp = 0
 t = initial_delay_s
-while t < duration_s
+while t < impulse_train_duration_s
+    jitterLow = -effectiveJitter
+    jitterHigh = effectiveJitter
+
+    if t + jitterLow < halfSample
+        jitterLow = halfSample - t
+    endif
+    if t + jitterHigh > impulse_train_duration_s - halfSample
+        jitterHigh = impulse_train_duration_s - halfSample - t
+    endif
+
+    if jitterHigh > jitterLow
+        u = t + randomUniform(jitterLow, jitterHigh)
+    else
+        u = t
+    endif
+
     numLeftImp = numLeftImp + 1
-    leftTime[numLeftImp] = t
+    leftTime[numLeftImp] = u
     t = t + 2 * step_interval_s
 endwhile
 
+numRightImp = 0
 t = initial_delay_s + step_interval_s
-while t < duration_s
+while t < impulse_train_duration_s
+    jitterLow = -effectiveJitter
+    jitterHigh = effectiveJitter
+
+    if t + jitterLow < halfSample
+        jitterLow = halfSample - t
+    endif
+    if t + jitterHigh > impulse_train_duration_s - halfSample
+        jitterHigh = impulse_train_duration_s - halfSample - t
+    endif
+
+    if jitterHigh > jitterLow
+        u = t + randomUniform(jitterLow, jitterHigh)
+    else
+        u = t
+    endif
+
     numRightImp = numRightImp + 1
-    rightTime[numRightImp] = t
+    rightTime[numRightImp] = u
     t = t + 2 * step_interval_s
 endwhile
 
-# === Info ===
+# ============================================================
+# INFO
+# ============================================================
+
 writeInfoLine: "=== Stereo Ping-Pong Impulses ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "IR duration: ", duration_s, " s"
-appendInfoLine: "Step interval: ", step_interval_s * 1000, " ms"
-appendInfoLine: "Initial delay: ", initial_delay_s * 1000, " ms"
-appendInfoLine: "Jitter: ±", jitter_s * 1000, " ms"
-appendInfoLine: "Left impulses: ", numLeftImp
-appendInfoLine: "Right impulses: ", numRightImp
-appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
+appendInfoLine: "Impulse-train span: ", fixed$(impulse_train_duration_s, 3), " s"
+appendInfoLine: "Step interval: ", fixed$(step_interval_s * 1000, 1), " ms"
+appendInfoLine: "Initial delay: ", fixed$(initial_delay_s * 1000, 1), " ms"
+appendInfoLine: "Requested jitter: ±", fixed$(jitter_s * 1000, 2), " ms"
+appendInfoLine: "Effective jitter: ±", fixed$(effectiveJitter * 1000, 2), " ms"
+appendInfoLine: "Sinc interpolation depth: ", sinc_interpolation_depth, " samples"
+appendInfoLine: "Left taps: ", numLeftImp
+appendInfoLine: "Right taps: ", numRightImp
+appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
 appendInfoLine: ""
 
 # ============================================================
@@ -162,207 +235,241 @@ appendInfoLine: ""
 
 appendInfoLine: "Processing..."
 
-# Convert to mono for processing
-selectObject: original
-if numChannels = 2
-    Convert to mono
-    monoSource = selected("Sound")
-else
-    Copy: "mono_source"
-    monoSource = selected("Sound")
-endif
-
-# === Build Left PointProcess ===
-Create empty PointProcess: "pp_left", 0, duration_s
-ppLeft = selected("PointProcess")
-
-t = initial_delay_s
-while t < duration_s
-    u = t + randomUniform(-jitter_s, jitter_s)
-    if u > 0 and u < duration_s
-        selectObject: ppLeft
-        Add point: u
-    endif
-    t = t + 2 * step_interval_s
-endwhile
-
-# === Build Right PointProcess ===
-Create empty PointProcess: "pp_right", 0, duration_s
-ppRight = selected("PointProcess")
-
-t = initial_delay_s + step_interval_s
-while t < duration_s
-    u = t + randomUniform(-jitter_s, jitter_s)
-    if u > 0 and u < duration_s
-        selectObject: ppRight
-        Add point: u
-    endif
-    t = t + 2 * step_interval_s
-endwhile
-
-# === Convert to Pulse Trains ===
-selectObject: ppLeft
-To Sound (pulse train): sr, 1, pulse_width_s, pulse_period
-impLeft = selected("Sound")
-Scale peak: 0.99
-
-selectObject: ppRight
-To Sound (pulse train): sr, 1, pulse_width_s, pulse_period
-impRight = selected("Sound")
-Scale peak: 0.99
-
-# === Convolve ===
-appendInfoLine: "  Convolving left..."
-selectObject: monoSource, impLeft
-Convolve: "sum", "zero"
-resLeft = selected("Sound")
-Scale peak: 0.95
-
-appendInfoLine: "  Convolving right..."
-selectObject: monoSource, impRight
-Convolve: "sum", "zero"
-resRight = selected("Sound")
-Scale peak: 0.95
-
-# === Apply Wet/Dry ===
-if dry_level > 0
-    # Extend mono source to match convolved length
-    selectObject: resLeft
-    wetDur = Get total duration
-    
-    selectObject: monoSource
-    dryDur = Get total duration
-    
-    if dryDur < wetDur
-        Create Sound from formula: "sil_pad", 1, 0, wetDur - dryDur, sr, "0"
-        silPad = selected("Sound")
-        selectObject: monoSource, silPad
-        Concatenate
-        dryExt = selected("Sound")
-        removeObject: silPad
+if wet_level = 0
+    # True dry-only fast path.
+    if numChannels = 2
+        selectObject: original
+        Copy: originalName$ + "_pingpong_" + presetName$
+        result = selected("Sound")
     else
-        selectObject: monoSource
-        Copy: "dry_ext"
-        dryExt = selected("Sound")
+        selectObject: original
+        Copy: "pingpong_dry_left"
+        dryLeft = selected("Sound")
+
+        selectObject: original
+        Copy: "pingpong_dry_right"
+        dryRight = selected("Sound")
+
+        selectObject: dryLeft, dryRight
+        Combine to stereo
+        result = selected("Sound")
+        Rename: originalName$ + "_pingpong_" + presetName$
+
+        removeObject: dryLeft, dryRight
     endif
-    
+
+else
+    # Preserve original dry channels. The wet source is mono so that
+    # alternating convolution taps have unambiguous stereo positions.
+    if numChannels = 2
+        selectObject: original
+        Extract one channel: 1
+        dryLeft = selected("Sound")
+
+        selectObject: original
+        Extract one channel: 2
+        dryRight = selected("Sound")
+
+        selectObject: original
+        Convert to mono
+        monoSource = selected("Sound")
+    else
+        selectObject: original
+        Copy: "pingpong_dry_left"
+        dryLeft = selected("Sound")
+
+        selectObject: original
+        Copy: "pingpong_dry_right"
+        dryRight = selected("Sound")
+
+        selectObject: original
+        Copy: "pingpong_mono_source"
+        monoSource = selected("Sound")
+    endif
+
+    # Build left PointProcess from the exact pre-generated times.
+    Create empty PointProcess: "pp_left", 0, impulse_train_duration_s
+    ppLeft = selected("PointProcess")
+    for i from 1 to numLeftImp
+        selectObject: ppLeft
+        Add point: leftTime[i]
+    endfor
+
+    # Build right PointProcess from the exact pre-generated times.
+    Create empty PointProcess: "pp_right", 0, impulse_train_duration_s
+    ppRight = selected("PointProcess")
+    for i from 1 to numRightImp
+        selectObject: ppRight
+        Add point: rightTime[i]
+    endfor
+
+    # Convert ideal pulse locations to band-limited sampled impulses.
+    # With adaptation factor = 1, adaptation time does not alter height.
+    adaptationTime = 0.05
+
+    selectObject: ppLeft
+    To Sound (pulse train): sr, 1, adaptationTime, sinc_interpolation_depth
+    impLeft = selected("Sound")
+
+    selectObject: ppRight
+    To Sound (pulse train): sr, 1, adaptationTime, sinc_interpolation_depth
+    impRight = selected("Sound")
+
+    # Convolution as a sum is appropriate here: each unit impulse
+    # triggers one delayed copy of the mono wet source.
+    appendInfoLine: "  Convolving left..."
+    selectObject: monoSource, impLeft
+    Convolve: "sum", "zero"
+    resLeft = selected("Sound")
+
+    appendInfoLine: "  Convolving right..."
+    selectObject: monoSource, impRight
+    Convolve: "sum", "zero"
+    resRight = selected("Sound")
+
+    # True wet/dry mix, with original stereo dry preserved.
     wet_str$ = string$(wet_level)
     dry_str$ = string$(dry_level)
-    dry_id_str$ = string$(dryExt)
-    
+    dry_left_id_str$ = string$(dryLeft)
+    dry_right_id_str$ = string$(dryRight)
+
     selectObject: resLeft
-    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + "] * " + dry_str$
-    
+    Formula: "self * " + wet_str$ + " + object(" + dry_left_id_str$ + ", x, 1) * " + dry_str$
+
     selectObject: resRight
-    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + "] * " + dry_str$
-    
-    removeObject: dryExt
+    Formula: "self * " + wet_str$ + " + object(" + dry_right_id_str$ + ", x, 1) * " + dry_str$
+
+    selectObject: resLeft, resRight
+    Combine to stereo
+    result = selected("Sound")
+    Rename: originalName$ + "_pingpong_" + presetName$
+
+    # One common down-only safeguard. Do not normalize quiet material.
+    selectObject: result
+    resultPeak = Get absolute extremum: 0, 0, "none"
+    if resultPeak > 1
+        Scale peak: 0.98
+    endif
+
+    removeObject: dryLeft, dryRight, monoSource, ppLeft, ppRight, impLeft, impRight, resLeft, resRight
 endif
 
-# === Combine to Stereo ===
-selectObject: resLeft, resRight
-Combine to stereo
-result = selected("Sound")
-Rename: originalName$ + "_pingpong_" + presetName$
-Scale peak: 0.98
-
-# === Cleanup ===
-removeObject: monoSource, ppLeft, ppRight, impLeft, impRight, resLeft, resRight
+selectObject: result
+resultDur = Get total duration
+resultStart = Get start time
+resultEnd = resultStart + resultDur
 
 # ============================================================
-# VISUALIZATION
+# VISUALIZATION - PRAAT AUDIOTOOLS HOUSE STYLE
 # ============================================================
 
 if draw_visualization
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+
+    # Main title.
+    Select outer viewport: 0, 8, 0.05, 0.38
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Stereo Ping-Pong Impulses: " + originalName$ + " (" + presetName$ + ")"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    Text: 0.5, "centre", 0.58, "half", "Stereo Ping-Pong Impulses | " + presetName$
+
+    # Compact metadata line.
+    Select outer viewport: 0, 8, 0.36, 0.58
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.35}"
+    Text: 0.5, "centre", 0.5, "half", originalName$ + " | " + string$(numLeftImp + numRightImp) + " taps | Wet " + fixed$(wet_dry_percent, 0) + "%"
+
+    # Dry waveform.
+    Select outer viewport: 0, 8, 0.65, 1.35
+    Select inner viewport: 0.65, 7.65, 0.72, 1.28
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "{0.65, 0.65, 0.65}"
+    Draw: origStart, resultEnd, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 7
+    Font size: 6
     Text left: "yes", "Dry"
-    
-    # Result waveform (show stereo)
-    Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+
+    # Output waveform.
+    Select outer viewport: 0, 8, 1.42, 2.12
+    Select inner viewport: 0.65, 7.65, 1.49, 2.05
     selectObject: result
-    Colour: "{0.5, 0.6, 0.8}"
-    Draw: 0, originalDur + duration_s * 0.5, 0, 0, "no", "Curve"
+    Colour: "{0.48, 0.60, 0.76}"
+    Draw: resultStart, resultEnd, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Ping-Pong " + fixed$(wet_dry_percent, 0) + "%"
+    Font size: 6
+    Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
-    
-    # Impulse pattern diagram
-    Select outer viewport: 0, 8, 2.5, 4.0
-    Select inner viewport: 0.6, 7.6, 2.6, 3.9
-    
-    Axes: 0, duration_s, -1.2, 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration_s, -1.2, 1.2
-    
-    # Center line
-    Colour: "{0.85, 0.85, 0.85}"
-    Draw line: 0, 0, duration_s, 0
-    
-    # Left impulses (top)
-    Colour: "{0.5, 0.7, 0.9}"
+
+    # Impulse-pattern panel title.
+    Select outer viewport: 0, 8, 2.24, 2.48
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Alternating impulse pattern"
+
+    # Actual jittered impulse pattern used by the DSP.
+    Select outer viewport: 0, 8, 2.45, 3.82
+    Select inner viewport: 0.65, 7.65, 2.60, 3.68
+    Axes: 0, impulse_train_duration_s, -1.2, 1.2
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, impulse_train_duration_s, -1.2, 1.2
+
+    Colour: "{0.83, 0.83, 0.83}"
+    Draw line: 0, 0, impulse_train_duration_s, 0
+
+    # Left taps.
+    Colour: "{0.42, 0.58, 0.76}"
     for i from 1 to numLeftImp
         t = leftTime[i]
-        Draw line: t, 0, t, 0.8
-        Paint circle (mm): "{0.5, 0.7, 0.9}", t, 0.8, 1.5
+        Draw line: t, 0.05, t, 0.80
+        Paint circle (mm): "{0.42, 0.58, 0.76}", t, 0.80, 1.3
     endfor
-    
-    # Right impulses (bottom)
-    Colour: "{0.9, 0.6, 0.5}"
+
+    # Right taps.
+    Colour: "{0.78, 0.48, 0.42}"
     for i from 1 to numRightImp
         t = rightTime[i]
-        Draw line: t, 0, t, -0.8
-        Paint circle (mm): "{0.9, 0.6, 0.5}", t, -0.8, 1.5
+        Draw line: t, -0.05, t, -0.80
+        Paint circle (mm): "{0.78, 0.48, 0.42}", t, -0.80, 1.3
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "L ← → R"
-    Text bottom: "yes", "Time (s)"
-    
-    # Labels
+    Text left: "yes", "L / R"
+    Text bottom: "yes", "Impulse time (s)"
+
     Font size: 5
-    Colour: "{0.5, 0.7, 0.9}"
-    Text: duration_s * 0.9, "centre", 1.0, "half", "LEFT (" + string$(numLeftImp) + ")"
-    Colour: "{0.9, 0.6, 0.5}"
-    Text: duration_s * 0.9, "centre", -1.0, "half", "RIGHT (" + string$(numRightImp) + ")"
-    
-    # Parameters
-    Select outer viewport: 0, 8, 4.1, 4.5
+    Colour: "{0.42, 0.58, 0.76}"
+    Text: impulse_train_duration_s * 0.96, "right", 0.98, "half", "LEFT  " + string$(numLeftImp)
+    Colour: "{0.78, 0.48, 0.42}"
+    Text: impulse_train_duration_s * 0.96, "right", -0.98, "half", "RIGHT  " + string$(numRightImp)
+
+    # Summary panel.
+    Select outer viewport: 0.35, 7.65, 3.92, 4.48
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.35}"
     Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "IR: " + fixed$(duration_s, 1) + "s | Step: " + fixed$(step_interval_s * 1000, 0) + "ms | Jitter: ±" + fixed$(jitter_s * 1000, 1) + "ms | Pulse: " + fixed$(pulse_width_s * 1000, 0) + "ms"
-    
+    Text: 0.5, "centre", 0.68, "half", "IR span " + fixed$(impulse_train_duration_s, 2) + " s | Step " + fixed$(step_interval_s * 1000, 0) + " ms | Initial " + fixed$(initial_delay_s * 1000, 0) + " ms"
+    Text: 0.5, "centre", 0.30, "half", "Jitter ±" + fixed$(effectiveJitter * 1000, 1) + " ms | Sinc depth " + string$(sinc_interpolation_depth) + " | Output " + fixed$(resultDur, 2) + " s"
+
     Font size: 10
     Colour: "Black"
 endif
 
-# === Final Info ===
-selectObject: result
+# ============================================================
+# FINAL INFO / PLAY
+# ============================================================
 
+selectObject: result
 appendInfoLine: ""
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Output duration: ", fixed$(resultDur, 3), " s"
 
-# === Play ===
 if play_result
     selectObject: result
     Play

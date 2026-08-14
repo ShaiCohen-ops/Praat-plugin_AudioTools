@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,6 +24,20 @@
 #   - Added wet/dry mix control
 #   - Added visualization
 #   - Removed goto statement
+#
+# Changelog v0.4:
+#   - Public form/defaults, output naming, and final selection are unchanged.
+#   - Added a private zero-based work copy so non-zero source xmin cannot
+#     break pitch scanning or convolution/trim timing.
+#   - Fixed 3+ channel input: every detected impulse is now written to every
+#     channel of the event-driven IR. Mono/stereo behaviour is unchanged.
+#   - Custom pitch-floor/ceiling values are ordered internally and equal
+#     bounds are separated safely before To Pitch.
+#   - Extremely short Custom impulses are clamped to a few samples so an
+#     event cannot disappear because its Formula(part) window hits no samples.
+#   - Safe final Scale peak skips digital silence while preserving the
+#     original non-silent normalization behaviour.
+#   - Private work objects are cleaned on both success and no-event exit.
 #
 # Changelog v0.3:
 #   - Fixed visualization: title and parameter line were centred against a
@@ -87,6 +101,15 @@ originalDur = Get total duration
 sr = Get sampling frequency
 numChannels = Get number of channels
 
+# Private zero-based processing copy; caller's original Sound is untouched.
+selectObject: original
+workSource = Copy: "feedback_aware_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
+
 # === Apply Presets ===
 if preset = 2
     # Sparse Intensity
@@ -126,6 +149,18 @@ else
     presetName$ = "Custom"
 endif
 
+# Internal guards; built-in presets are already within these limits.
+if pitch_floor_Hz > pitch_ceiling_Hz
+    tmpPitch = pitch_floor_Hz
+    pitch_floor_Hz = pitch_ceiling_Hz
+    pitch_ceiling_Hz = tmpPitch
+endif
+if pitch_ceiling_Hz <= pitch_floor_Hz
+    pitch_ceiling_Hz = pitch_floor_Hz + 1
+endif
+
+effectiveImpulseDuration = max(impulse_duration_s, 3 / sr)
+
 # Get parameter type string
 if parameter_type = 1
     paramType$ = "intensity"
@@ -151,7 +186,7 @@ appendInfoLine: ""
 appendInfoLine: "Parameter: ", paramType$
 appendInfoLine: "Threshold: ", detection_threshold, if paramType$ = "intensity" then " dB" else " Hz" fi
 appendInfoLine: "Min spacing: ", minimum_spacing_s, " s"
-appendInfoLine: "Impulse duration: ", impulse_duration_s * 1000, " ms"
+appendInfoLine: "Impulse duration: ", effectiveImpulseDuration * 1000, " ms"
 appendInfoLine: "Amplitude mapping: ", amplitude_mapping
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
@@ -163,7 +198,7 @@ appendInfoLine: ""
 appendInfoLine: "Step 1/4: Extracting ", paramType$, "..."
 
 if paramType$ = "intensity"
-    selectObject: original
+    selectObject: workSource
     To Intensity: 75, 0.001, "yes"
     intensityObj = selected("Intensity")
     
@@ -176,7 +211,7 @@ else
     # Pitch mode
     appendInfoLine: "  Pitch range: ", pitch_floor_Hz, "-", pitch_ceiling_Hz, " Hz"
     
-    selectObject: original
+    selectObject: workSource
     To Pitch: 0.001, pitch_floor_Hz, pitch_ceiling_Hz
     pitchObj = selected("Pitch")
 endif
@@ -272,6 +307,7 @@ if impulse_count = 0
     else
         removeObject: pitchObj
     endif
+    removeObject: workSource
     exitScript: "No impulses detected. Try lowering the threshold."
 endif
 
@@ -306,7 +342,7 @@ for i from 1 to impulse_count
     amp = normalized * amplitude_mapping
     
     # Calculate impulse window
-    halfDur = impulse_duration_s / 2
+    halfDur = effectiveImpulseDuration / 2
     impStart = time - halfDur
     impEnd = time + halfDur
     
@@ -320,15 +356,12 @@ for i from 1 to impulse_count
     # Build formula strings
     time_str$ = string$(time)
     amp_str$ = string$(amp)
-    sigma_str$ = string$(impulse_duration_s / 6)
+    sigma_str$ = string$(effectiveImpulseDuration / 6)
     
-    # Add Gaussian impulse
+    # Add the same event-driven IR to every channel. This preserves the
+    # v0.3 mono/stereo sound and fixes 3+ channel wet routing.
     selectObject: impulseTrain
-    Formula (part): impStart, impEnd, 1, 1, "self + " + amp_str$ + " * exp(-((x - " + time_str$ + ") / " + sigma_str$ + ")^2)"
-    
-    if numChannels = 2
-        Formula (part): impStart, impEnd, 2, 2, "self + " + amp_str$ + " * exp(-((x - " + time_str$ + ") / " + sigma_str$ + ")^2)"
-    endif
+    Formula (part): impStart, impEnd, 1, numChannels, "self + " + amp_str$ + " * exp(-((x - " + time_str$ + ") / " + sigma_str$ + ")^2)"
 endfor
 
 appendInfoLine: "  Impulse train generated"
@@ -339,7 +372,7 @@ appendInfoLine: "  Impulse train generated"
 
 appendInfoLine: "Step 4/4: Convolving..."
 
-selectObject: original, impulseTrain
+selectObject: workSource, impulseTrain
 Convolve: "sum", "zero"
 wetSound = selected("Sound")
 
@@ -363,7 +396,10 @@ Formula: "object[" + wet_id$ + ", row, col] * " + wet_str$ + " + self * " + dry_
 removeObject: wetTrimmed
 
 selectObject: result
-Scale peak: 0.95
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > 0
+    Scale peak: 0.95
+endif
 Rename: originalName$ + "_feedback_" + presetName$
 
 # ============================================================
@@ -469,6 +505,7 @@ endif
 # ============================================================
 
 removeObject: impulseTrain
+removeObject: workSource
 
 if paramType$ = "intensity"
     removeObject: paramTier

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,23 @@
 #   - Fixed selection and formula syntax
 #   - Added wet/dry mix control
 #   - Added visualization
+#
+# Changelog v0.4:
+#   - Public form/defaults, output naming, and final selection are unchanged.
+#   - Added a private zero-based work copy so non-zero source xmin does not
+#     break concatenation or Formula(part) grain timing.
+#   - Fixed 3+ channel input: silent tail now matches source channel count,
+#     and the shared-grain branch processes every channel instead of row 1 only.
+#   - Grain count is limited internally by available samples and a practical
+#     ceiling; grainSizeSamp can no longer become zero.
+#   - Final grain includes integer-division remainder samples.
+#   - Custom delay bounds are ordered, kept to at least one sample, and
+#     equal ranges avoid randomUniform(min=max).
+#   - Custom amplitude bounds are ordered and capped at unity internally,
+#     preventing recursive delayed reads from growing without bound.
+#   - Safe Scale peak skips digital silence while preserving the original
+#     non-silent normalization behavior.
+#   - Caller-visible final selected object remains the result.
 #
 # Changelog v0.3:
 #   - Fixed visualization: title and parameter line spilled off the left edge
@@ -77,6 +94,15 @@ sr = Get sampling frequency
 numChannels = Get number of channels
 nSamples = Get number of samples
 
+# Private zero-based processing copy; caller's original Sound is untouched.
+selectObject: original
+workSource = Copy: "granular_displacement_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
+
 # === Apply Presets ===
 if preset = 2
     # Subtle Granular
@@ -118,6 +144,15 @@ else
     presetName$ = "Custom"
 endif
 
+# Internal Custom guards; built-in presets are already within these limits.
+ampLo = min(amplitude_min, amplitude_max)
+ampHi = max(amplitude_min, amplitude_max)
+effectiveAmpMin = min(ampLo, 1)
+effectiveAmpMax = min(ampHi, 1)
+if effectiveAmpMin > effectiveAmpMax
+    effectiveAmpMin = effectiveAmpMax
+endif
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -128,22 +163,50 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-# Calculate grain parameters
-totalDur = originalDur + tail_duration_s
-totalSamples = round(totalDur * sr)
-grainSizeSamp = floor(totalSamples / number_of_grains)
-grainDur = grainSizeSamp / sr
+# Calculate grain parameters.
+# The created silent tail uses the same sampling frequency, so its sample
+# count is the rounded duration in samples.
+tailSamples = max(1, round(tail_duration_s * sr))
+totalSamples = nSamples + tailSamples
+totalDur = totalSamples / sr
 
-delay_min_samp = round(delay_min_ms / 1000 * sr)
-delay_max_samp = round(grainSizeSamp * delay_max_factor)
-if delay_max_samp < delay_min_samp
-    delay_max_samp = delay_min_samp
+effectiveGrains = min(number_of_grains, totalSamples)
+if effectiveGrains > 4096
+    effectiveGrains = 4096
+endif
+if effectiveGrains < 1
+    effectiveGrains = 1
 endif
 
-# Pre-generate random delays and amplitudes for visualization
-for g from 1 to number_of_grains
-    grainDelay[g] = round(randomUniform(delay_min_samp, delay_max_samp))
-    grainAmp[g] = randomUniform(amplitude_min, amplitude_max)
+grainSizeSamp = floor(totalSamples / effectiveGrains)
+grainDur = grainSizeSamp / sr
+
+delay_min_samp = max(1, round(delay_min_ms / 1000 * sr))
+delay_max_samp = max(1, round(grainSizeSamp * delay_max_factor))
+if delay_min_samp > delay_max_samp
+    tmpDelay = delay_min_samp
+    delay_min_samp = delay_max_samp
+    delay_max_samp = tmpDelay
+endif
+
+# Keep recursive delayed reads inside the available Sound.
+maxUsableDelay = max(1, totalSamples - 1)
+delay_min_samp = min(delay_min_samp, maxUsableDelay)
+delay_max_samp = min(delay_max_samp, maxUsableDelay)
+
+# Pre-generate random delays and amplitudes for visualization.
+for g from 1 to effectiveGrains
+    if delay_min_samp = delay_max_samp
+        grainDelay[g] = delay_min_samp
+    else
+        grainDelay[g] = round(randomUniform(delay_min_samp, delay_max_samp))
+    endif
+
+    if effectiveAmpMin = effectiveAmpMax
+        grainAmp[g] = effectiveAmpMin
+    else
+        grainAmp[g] = randomUniform(effectiveAmpMin, effectiveAmpMax)
+    endif
 endfor
 
 # === Info ===
@@ -151,18 +214,21 @@ writeInfoLine: "=== Granular Displacement ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
-appendInfoLine: "Grains: ", number_of_grains
+appendInfoLine: "Grains: ", effectiveGrains
+if effectiveGrains <> number_of_grains
+    appendInfoLine: "  (requested ", number_of_grains, "; internally limited)"
+endif
 appendInfoLine: "Grain duration: ", fixed$(grainDur * 1000, 1), " ms"
-appendInfoLine: "Delay range: ", delay_min_ms, "-", fixed$(delay_max_samp / sr * 1000, 1), " ms"
-appendInfoLine: "Amplitude range: ", amplitude_min, "-", amplitude_max
+appendInfoLine: "Delay range: ", fixed$(delay_min_samp / sr * 1000, 3), "-", fixed$(delay_max_samp / sr * 1000, 1), " ms"
+appendInfoLine: "Amplitude range: ", effectiveAmpMin, "-", effectiveAmpMax
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
 appendInfoLine: "Grain details:"
-for g from 1 to min(number_of_grains, 10)
+for g from 1 to min(effectiveGrains, 10)
     appendInfoLine: "  Grain ", g, ": delay=", fixed$(grainDelay[g] / sr * 1000, 1), "ms, amp=", fixed$(grainAmp[g], 2)
 endfor
-if number_of_grains > 10
-    appendInfoLine: "  ... (", number_of_grains - 10, " more)"
+if effectiveGrains > 10
+    appendInfoLine: "  ... (", effectiveGrains - 10, " more)"
 endif
 appendInfoLine: ""
 
@@ -172,16 +238,12 @@ appendInfoLine: ""
 
 appendInfoLine: "Processing..."
 
-# Create silent tail
-if numChannels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
-endif
+# Create silent tail with the source channel count.
+Create Sound from formula: "silent_tail", numChannels, 0, tail_duration_s, sr, "0"
 silentTail = selected("Sound")
 
-# Concatenate
-selectObject: original, silentTail
+# workSource was created before silentTail, so Object-list order is source then tail.
+selectObject: workSource, silentTail
 Concatenate
 extendedSound = selected("Sound")
 removeObject: silentTail
@@ -204,14 +266,15 @@ if numChannels = 2
     Copy: "wet_left"
     wetLeft = selected("Sound")
     
-    for g from 1 to number_of_grains
+    for g from 1 to effectiveGrains
         delay = grainDelay[g]
         amp = grainAmp[g]
         
         startSamp = (g - 1) * grainSizeSamp + 1
-        endSamp = g * grainSizeSamp
-        if endSamp > totalSamples
+        if g = effectiveGrains
             endSamp = totalSamples
+        else
+            endSamp = g * grainSizeSamp
         endif
         
         tStart = (startSamp - 1) / sr
@@ -229,20 +292,35 @@ if numChannels = 2
     Copy: "wet_right"
     wetRight = selected("Sound")
     
-    for g from 1 to number_of_grains
-        # Generate new random values for right channel (guard the swapped range)
+    for g from 1 to effectiveGrains
+        # Generate decorrelated right-channel values with valid ranges.
         rLo = delay_min_samp * 1.1
         rHi = delay_max_samp * 0.9
         if rHi < rLo
             rHi = rLo
         endif
-        delay = round(randomUniform(rLo, rHi))
-        amp = randomUniform(amplitude_min * 0.9, amplitude_max * 0.95)
+        if rLo = rHi
+            delay = round(rLo)
+        else
+            delay = round(randomUniform(rLo, rHi))
+        endif
+
+        rAmpLo = effectiveAmpMin * 0.9
+        rAmpHi = effectiveAmpMax * 0.95
+        if rAmpHi < rAmpLo
+            rAmpHi = rAmpLo
+        endif
+        if rAmpLo = rAmpHi
+            amp = rAmpLo
+        else
+            amp = randomUniform(rAmpLo, rAmpHi)
+        endif
         
         startSamp = (g - 1) * grainSizeSamp + 1
-        endSamp = g * grainSizeSamp
-        if endSamp > totalSamples
+        if g = effectiveGrains
             endSamp = totalSamples
+        else
+            endSamp = g * grainSizeSamp
         endif
         
         tStart = (startSamp - 1) / sr
@@ -269,12 +347,18 @@ if numChannels = 2
         Formula: "self * " + wet_str$ + " + object[" + right_str$ + ", row, col] * " + dry_str$
     endif
     
-    # Normalize
+    # Normalize (same as v0.3 for non-silent channels).
     selectObject: wetLeft
-    Scale peak: scale_peak
-    
+    leftPeak = Get absolute extremum: 0, 0, "None"
+    if leftPeak > 0
+        Scale peak: scale_peak
+    endif
+
     selectObject: wetRight
-    Scale peak: scale_peak
+    rightPeak = Get absolute extremum: 0, 0, "None"
+    if rightPeak > 0
+        Scale peak: scale_peak
+    endif
     
     # Combine
     selectObject: wetLeft, wetRight
@@ -286,21 +370,26 @@ if numChannels = 2
     removeObject: leftChannel, rightChannel, wetLeft, wetRight, extendedSound
 
 else
-    # === MONO PROCESSING ===
-    appendInfoLine: "  Processing mono..."
+    # === MONO / MULTICHANNEL SHARED-GRAIN PROCESSING ===
+    if numChannels = 1
+        appendInfoLine: "  Processing mono..."
+    else
+        appendInfoLine: "  Processing ", numChannels, "-channel shared-grain mode..."
+    endif
     
     selectObject: extendedSound
     Copy: "wet_mono"
     wetMono = selected("Sound")
     
-    for g from 1 to number_of_grains
+    for g from 1 to effectiveGrains
         delay = grainDelay[g]
         amp = grainAmp[g]
         
         startSamp = (g - 1) * grainSizeSamp + 1
-        endSamp = g * grainSizeSamp
-        if endSamp > totalSamples
+        if g = effectiveGrains
             endSamp = totalSamples
+        else
+            endSamp = g * grainSizeSamp
         endif
         
         tStart = (startSamp - 1) / sr
@@ -310,7 +399,7 @@ else
         amp_str$ = string$(amp)
         
         selectObject: wetMono
-        Formula (part): tStart, tEnd, 1, 1, "if col > " + delay_str$ + " then self + " + amp_str$ + " * self[col - " + delay_str$ + "] else self fi"
+        Formula (part): tStart, tEnd, 1, numChannels, "if col > " + delay_str$ + " then self + " + amp_str$ + " * self[col - " + delay_str$ + "] else self fi"
     endfor
     
     # Apply wet/dry
@@ -324,12 +413,17 @@ else
     endif
     
     selectObject: wetMono
-    Scale peak: scale_peak
+    sharedPeak = Get absolute extremum: 0, 0, "None"
+    if sharedPeak > 0
+        Scale peak: scale_peak
+    endif
     Rename: originalName$ + "_granular_" + presetName$
     result = wetMono
     
     removeObject: extendedSound
 endif
+
+removeObject: workSource
 
 # ============================================================
 # VISUALIZATION
@@ -376,9 +470,13 @@ if draw_visualization
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, totalDur, 0, 1.2
     
     # Draw grains with delay/amplitude info
-    for g from 1 to number_of_grains
+    for g from 1 to effectiveGrains
         gStart = (g - 1) * grainDur
-        gEnd = g * grainDur
+        if g = effectiveGrains
+            gEnd = totalDur
+        else
+            gEnd = g * grainDur
+        endif
         
         # Color by amplitude
         r = 0.5 + grainAmp[g] * 0.3
@@ -418,7 +516,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(number_of_grains) + " | Duration: " + fixed$(grainDur * 1000, 0) + "ms | Delay: " + string$(delay_min_ms) + "-" + fixed$(delay_max_samp / sr * 1000, 0) + "ms"
+    Text: 0.5, "centre", 0.5, "half", "Grains: " + string$(effectiveGrains) + " | Duration: " + fixed$(grainDur * 1000, 0) + "ms | Delay: " + fixed$(delay_min_samp / sr * 1000, 1) + "-" + fixed$(delay_max_samp / sr * 1000, 0) + "ms"
     
     Font size: 10
     Colour: "Black"

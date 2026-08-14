@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Real pulse shaping
+# Version: 0.4 (2026) - Real pulse shaping
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,21 @@
 #     Pulse_width_s    - grain length (only active when Pulse_tone_Hz > 0)
 #     Pulse_tone_Hz    - 0 = broadband clicks; > 0 = Hann-windowed tone
 #                        grains at this carrier frequency
+#
+# Changelog v0.4:
+#   - Public form/defaults and output naming are unchanged.
+#   - Added a private zero-based work copy so non-zero source xmin
+#     does not shift convolution/trim timing.
+#   - Hardened Custom IR geometry: burst margin stays below half the
+#     IR duration and sparse taps stay unique and inside the IR domain.
+#   - Tonal pulse carrier is capped below Nyquist and the tone kernel
+#     is guaranteed to contain several samples.
+#   - Mono IR convolution continues to preserve every source channel.
+#   - Explicit row/column cross-object reads make multichannel dry/wet
+#     mixing unambiguous.
+#   - Convolution trim uses the actual convolution duration.
+#   - Safe final normalization skips digital silence.
+#   - Visualization text panels use explicit normalized axes.
 #
 # Changelog v0.3:
 #   - Replaced the To Sound (pulse train) IR with explicit pulse shaping.
@@ -85,6 +100,15 @@ originalDur = Get total duration
 numChans = Get number of channels
 sr = Get sampling frequency
 
+# Private zero-based processing copy; the caller's original Sound is untouched.
+selectObject: original
+workSource = Copy: "bursts_taps_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
+
 # === Apply Presets ===
 if preset = 2
     # Subtle Bursts
@@ -138,6 +162,49 @@ else
     presetName$ = "Custom"
 endif
 
+# Internal geometry guards; built-in presets are already inside these limits.
+minIRDuration = 4 / sr
+if iR_duration_s < minIRDuration
+    iR_duration_s = minIRDuration
+endif
+
+maxBurstMargin = iR_duration_s * 0.49
+if burst_margin_s > maxBurstMargin
+    burst_margin_s = maxBurstMargin
+endif
+
+# Keep sparse taps strictly inside the PointProcess time domain.
+minTapTime = 1 / sr
+maxTapTime = iR_duration_s - 1 / sr
+if maxTapTime < minTapTime
+    maxTapTime = minTapTime
+endif
+tap_1_time_s = max(minTapTime, min(tap_1_time_s, maxTapTime))
+tap_2_time_s = max(minTapTime, min(tap_2_time_s, maxTapTime))
+
+# PointProcess points must be unique. If clamping collapses both taps to
+# the same sample-time, separate them by one sample.
+if abs(tap_2_time_s - tap_1_time_s) < 0.5 / sr
+    if tap_1_time_s + 1 / sr <= maxTapTime
+        tap_2_time_s = tap_1_time_s + 1 / sr
+    else
+        tap_2_time_s = tap_1_time_s - 1 / sr
+        if tap_2_time_s < minTapTime
+            tap_2_time_s = minTapTime
+        endif
+    endif
+endif
+
+# Tonal grains: avoid aliasing and guarantee a usable Hann kernel.
+effectivePulseToneHz = pulse_tone_Hz
+if effectivePulseToneHz > 0
+    maxToneHz = sr * 0.49
+    if effectivePulseToneHz > maxToneHz
+        effectivePulseToneHz = maxToneHz
+    endif
+endif
+effectivePulseWidth = max(pulse_width_s, 4 / sr)
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -162,7 +229,12 @@ appendInfoLine: ""
 appendInfoLine: "Sparse taps: ", fixed$(tap_1_time_s, 2), "s, ", fixed$(tap_2_time_s, 2), "s"
 appendInfoLine: "Bursts: ", number_of_bursts, " x ", points_per_burst, " points"
 appendInfoLine: "Burst spread (stddev): ", fixed$(burst_stddev_s, 3), " s"
-appendInfoLine: "IR duration: ", fixed$(iR_duration_s, 1), " s"
+appendInfoLine: "IR duration: ", fixed$(iR_duration_s, 3), " s"
+if effectivePulseToneHz > 0
+    appendInfoLine: "Pulse tone: ", fixed$(effectivePulseToneHz, 1), " Hz  width ", fixed$(effectivePulseWidth * 1000, 2), " ms"
+else
+    appendInfoLine: "Pulse tone: broadband clicks"
+endif
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
 appendInfoLine: "Burst centers:"
@@ -226,11 +298,11 @@ removeObject: ppTaps, ppBursts
 # === SHAPE EACH IMPULSE ===
 # tone = 0 -> broadband single-sample clicks (original character)
 # tone > 0 -> each impulse becomes a Hann-windowed tone grain of width seconds
-if pulse_tone_Hz > 0
+if effectivePulseToneHz > 0
     appendInfoLine: "  Shaping pulses into tone grains..."
-    kernelDur = pulse_width_s
+    kernelDur = effectivePulseWidth
     kc = kernelDur / 2
-    tone$ = string$(pulse_tone_Hz)
+    tone$ = string$(effectivePulseToneHz)
     kc$ = string$(kc)
     kdur$ = string$(kernelDur)
     Create Sound from formula: "pulse_kernel", 1, 0, kernelDur, sr, "(0.5 - 0.5 * cos(2*pi*x/" + kdur$ + ")) * cos(2*pi*" + tone$ + "*(x - " + kc$ + "))"
@@ -264,7 +336,7 @@ selectObject: irTaps
 if burstPoints > 0
     amp$ = string$(pulse_amplitude)
     irBursts$ = string$(irBursts)
-    Formula: "self + " + amp$ + " * object[" + irBursts$ + "]"
+    Formula: "self + " + amp$ + " * object[" + irBursts$ + ", row, col]"
     removeObject: irBursts
 endif
 Scale peak: 0.9
@@ -274,13 +346,14 @@ irSound = selected("Sound")
 # === CONVOLVE ===
 appendInfoLine: "  Convolving..."
 
-selectObject: original, irSound
+selectObject: workSource, irSound
 Convolve: "sum", "zero"
 wetSound = selected("Sound")
 
-# Trim to reasonable length
+# For discrete convolution the result has N + M - 1 samples.
 selectObject: wetSound
-totalDur = originalDur + iR_duration_s
+wetAvailableDur = Get total duration
+totalDur = min(originalDur + iR_duration_s, wetAvailableDur)
 Extract part: 0, totalDur, "rectangular", 1, "no"
 wetTrimmed = selected("Sound")
 removeObject: wetSound
@@ -290,7 +363,7 @@ if dry_level > 0
     appendInfoLine: "  Mixing wet/dry..."
     
     # Extend dry signal to match wet length
-    selectObject: original
+    selectObject: workSource
     Copy: "dry_extended"
     dryExtended = selected("Sound")
     
@@ -310,13 +383,16 @@ if dry_level > 0
     dry_full_str$ = string$(dryFull)
     
     selectObject: wetTrimmed
-    Formula: "self * " + wet_str$ + " + object[" + dry_full_str$ + "] * " + dry_str$
+    Formula: "self * " + wet_str$ + " + object[" + dry_full_str$ + ", row, col] * " + dry_str$
     
     removeObject: dryFull
 endif
 
 selectObject: wetTrimmed
-Scale peak: 0.95
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > 0
+    Scale peak: 0.95
+endif
 Rename: originalName$ + "_bursts_" + presetName$
 result = selected("Sound")
 
@@ -329,6 +405,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Bursts & Taps: " + originalName$ + " (" + presetName$ + ")"
@@ -413,6 +490,7 @@ if draw_visualization
     
     # Parameters
     Select outer viewport: 0, 8, 4.1, 4.5
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Bursts: " + string$(number_of_bursts) + " x " + string$(points_per_burst) + " pts | Spread: " + fixed$(burst_stddev_s * 1000, 0) + "ms | Taps: " + fixed$(tap_1_time_s * 1000, 0) + "ms, " + fixed$(tap_2_time_s * 1000, 0) + "ms"
@@ -429,6 +507,7 @@ else
     removeObject: irSound
 endif
 
+removeObject: workSource
 
 # === Final Info ===
 selectObject: result

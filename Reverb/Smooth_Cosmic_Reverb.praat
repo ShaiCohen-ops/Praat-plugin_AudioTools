@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - Simple_Experimental_Reverberation.praat
+# Praat AudioTools - Smooth_Cosmic_Reverb.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - Fixed wet/dry mix object[id,col]; relaxed scale-peak guards; house-style viz + full-length result
+# Version: 0.4 (2026) - Reviewed wet/dry path, feedback stability, bounded time rolloff, and peak protection
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,11 +14,14 @@
 #   Each echo has different tremolo patterns. HF enhancement
 #   decays over time. Creates ethereal, "cosmic" swimming reverb.
 #
-# Changelog v0.2:
-#   - Added input check
-#   - Fixed selection and formula syntax
-#   - Added wet/dry mix control
-#   - Added visualization
+# Changelog v0.4:
+#   - Corrected cross-object Sound indexing to object[id, row, col]
+#   - Removed in-loop peak normalization that altered feedback coefficients
+#   - Separated the direct path from the recursive reverb, so 0/100% wet-dry is literal
+#   - Applied fade-out to the wet tail only
+#   - Bounded time rolloff to the full output duration
+#   - Added feedback/delay/channel guards and down-only final peak protection
+#   - Clarified that recursive Formula stages behave as feedback-delay stages
 # ============================================================
 
 form Smooth Cosmic Reverb
@@ -73,6 +76,10 @@ selectObject: original
 originalDur = Get total duration
 sr = Get sampling frequency
 numChannels = Get number of channels
+
+if numChannels <> 1 and numChannels <> 2
+    exitScript: "Smooth Cosmic Reverb currently supports mono or stereo Sound objects only."
+endif
 
 # === Apply Presets ===
 if preset = 2
@@ -149,14 +156,26 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-# Pre-calculate delays for visualization
-for k from 1 to min(number_of_delays, 100)
-    echoDelay[k] = delay_start_s + delay_range_s * (k / number_of_delays) + delay_mod_depth_s * sin(k * 0.6)
-    echoAmp[k] = base_amplitude * (decay_factor ^ k) * (0.8 + amp_mod_depth * sin(k * mod_freq_factor))
-endfor
+if decay_factor >= 1
+    exitScript: "Decay_factor must be smaller than 1.0 for a stable decaying reverb."
+endif
+
+estimated_feedback = base_amplitude * decay_factor * (0.8 + amp_mod_depth) * 1.2
+if estimated_feedback >= 0.95
+    exitScript: "Settings may create unstable feedback. Reduce Base_amplitude and/or Amp_mod_depth."
+endif
 
 # Sample period
 samplePeriod = 1 / sr
+
+# Pre-calculate delays for visualization
+for k from 1 to min(number_of_delays, 100)
+    echoDelay[k] = delay_start_s + delay_range_s * (k / number_of_delays) + delay_mod_depth_s * sin(k * 0.6)
+    if echoDelay[k] < samplePeriod
+        echoDelay[k] = samplePeriod
+    endif
+    echoAmp[k] = base_amplitude * (decay_factor ^ k) * (0.8 + amp_mod_depth * sin(k * mod_freq_factor))
+endfor
 
 # === Info ===
 writeInfoLine: "=== Smooth Cosmic Reverb ==="
@@ -194,37 +213,46 @@ extendedSound = selected("Sound")
 removeObject: silentTail
 
 origDur_str$ = string$(originalDur)
+totalDur_str$ = string$(totalDur)
 sp_str$ = string$(samplePeriod)
 hf_str$ = string$(hF_enhancement)
 hfRate_str$ = string$(hF_decay_rate)
 
+# Keep the fade inside the added tail so the dry source is never attenuated.
+effective_fadeout = min(fadeout_duration_s, tail_duration_s)
+fade_start = totalDur - effective_fadeout
+fade_str$ = string$(effective_fadeout)
+start_str$ = string$(fade_start)
+
 if numChannels = 2
     # === STEREO PROCESSING ===
     appendInfoLine: "  Processing stereo..."
-    
-    # Extract channels
+
+    # Extract extended dry channels. These remain untouched and serve as the true dry path.
     selectObject: extendedSound
     Extract one channel: 1
     leftChannel = selected("Sound")
-    
+
     selectObject: extendedSound
     Extract one channel: 2
     rightChannel = selected("Sound")
-    
-    # Process left channel
+
+    # Process left channel as a cascade of recursive feedback-delay stages.
     selectObject: leftChannel
-    Copy: "cosmic_left"
+    Copy: "cosmic_left_wet"
     cosmicLeft = selected("Sound")
-    
+
     for k from 1 to number_of_delays
         delay = delay_start_s + delay_range_s * (k / number_of_delays) + delay_mod_depth_s * sin(k * 0.6)
+        if delay < samplePeriod
+            delay = samplePeriod
+        endif
         amp_mod = base_amplitude * (decay_factor ^ k) * (0.8 + amp_mod_depth * sin(k * mod_freq_factor))
-        
+
         delay_str$ = string$(delay)
         amp_str$ = string$(amp_mod)
-        
+
         selectObject: cosmicLeft
-        
         if k mod 8 = 0
             Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ") * (1 + 0.2*sin(x*40))"
         elsif k mod 12 = 0
@@ -236,37 +264,48 @@ if numChannels = 2
         else
             Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ") * (0.9 + 0.1*sin(x*60))"
         endif
-        
-        if k mod 25 = 0
-            Scale peak: 0.98
-        endif
     endfor
-    
-    # Time-based rolloff
-    Formula: "self * (0.9 + 0.1*(1 - x/" + origDur_str$ + "))"
-    Scale peak: 0.98
-    
-    # Process right channel (different parameters)
+
+    # Remove the unity direct path: what remains is wet-only reverb.
+    left_str$ = string$(leftChannel)
+    Formula: "self - object[" + left_str$ + ", 1, col]"
+    Formula: "self * (0.9 + 0.1*(1 - x/" + totalDur_str$ + "))"
+
+    # Non-recursive HF enhancement: read the first difference from a frozen copy.
+    Copy: "cosmic_left_preHF"
+    leftPreHF = selected("Sound")
+    leftPreHF_str$ = string$(leftPreHF)
+    selectObject: cosmicLeft
+    Formula: "object[" + leftPreHF_str$ + ", 1, col] + " + hf_str$ + " * (object[" + leftPreHF_str$ + ", 1, col] - object[" + leftPreHF_str$ + ", 1, col - 1]) * exp(-" + hfRate_str$ + "*x/" + totalDur_str$ + ")"
+    removeObject: leftPreHF
+
+    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+
+    # Process right channel with decorrelated parameters.
     selectObject: rightChannel
-    Copy: "cosmic_right"
+    Copy: "cosmic_right_wet"
     cosmicRight = selected("Sound")
-    
-    # Slightly different params for right
+
     delay_start_R = delay_start_s * 1.125
     delay_range_R = delay_range_s * 0.96
     delay_mod_R = delay_mod_depth_s * 0.875
     base_amp_R = base_amplitude * 0.91
     decay_R = decay_factor - 0.01
-    
+    if decay_R <= 0
+        decay_R = decay_factor * 0.9
+    endif
+
     for k from 1 to number_of_delays
         delay = delay_start_R + delay_range_R * (k / number_of_delays) + delay_mod_R * cos(k * 0.7)
+        if delay < samplePeriod
+            delay = samplePeriod
+        endif
         amp_mod = base_amp_R * (decay_R ^ k) * (0.75 + 0.25 * cos(k * 0.6))
-        
+
         delay_str$ = string$(delay)
         amp_str$ = string$(amp_mod)
-        
+
         selectObject: cosmicRight
-        
         if k mod 7 = 0
             Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ") * (1 + 0.18*cos(x*35))"
         elsif k mod 11 = 0
@@ -278,75 +317,65 @@ if numChannels = 2
         else
             Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ") * (0.85 + 0.15*cos(x*55))"
         endif
-        
-        if k mod 28 = 0
-            Scale peak: 0.98
-        endif
     endfor
-    
-    Formula: "self * (0.88 + 0.12*(1 - x/" + origDur_str$ + "))"
-    Scale peak: 0.98
-    
-    # Apply HF enhancement with decay
-    selectObject: cosmicLeft
-    Formula: "self + " + hf_str$ + " * (self - self(x - " + sp_str$ + ")) * exp(-" + hfRate_str$ + "*x/" + origDur_str$ + ")"
-    
+
+    right_str$ = string$(rightChannel)
+    Formula: "self - object[" + right_str$ + ", 1, col]"
+    Formula: "self * (0.88 + 0.12*(1 - x/" + totalDur_str$ + "))"
+
+    Copy: "cosmic_right_preHF"
+    rightPreHF = selected("Sound")
+    rightPreHF_str$ = string$(rightPreHF)
     selectObject: cosmicRight
-    Formula: "self + " + hf_str$ + " * (self - self(x - " + sp_str$ + ")) * exp(-" + hfRate_str$ + "*x/" + origDur_str$ + ")"
-    
-    # Apply wet/dry
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        left_str$ = string$(leftChannel)
-        right_str$ = string$(rightChannel)
-        
-        selectObject: cosmicLeft
-        Formula: "self * " + wet_str$ + " + object[" + left_str$ + ", col] * " + dry_str$
-        
-        selectObject: cosmicRight
-        Formula: "self * " + wet_str$ + " + object[" + right_str$ + ", col] * " + dry_str$
-    endif
-    
-    # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
+    Formula: "object[" + rightPreHF_str$ + ", 1, col] + " + hf_str$ + " * (object[" + rightPreHF_str$ + ", 1, col] - object[" + rightPreHF_str$ + ", 1, col - 1]) * exp(-" + hfRate_str$ + "*x/" + totalDur_str$ + ")"
+    removeObject: rightPreHF
+
+    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
+
+    # Literal wet/dry mix. 0% wet reproduces the dry channel unchanged.
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+
     selectObject: cosmicLeft
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    Scale peak: 0.98
-    
+    Formula: "self * " + wet_str$ + " + object[" + left_str$ + ", 1, col] * " + dry_str$
+
     selectObject: cosmicRight
-    Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    Scale peak: 0.98
-    
-    # Combine
+    Formula: "self * " + wet_str$ + " + object[" + right_str$ + ", 1, col] * " + dry_str$
+
+    # Combine first, then apply one shared down-only safety gain so stereo balance is preserved.
     selectObject: cosmicLeft, cosmicRight
     Combine to stereo
     result = selected("Sound")
     Rename: originalName$ + "_cosmic_" + presetName$
-    
-    # Cleanup
+
+    if wet_level > 0
+        peak = Get absolute extremum: 0, 0, "none"
+        if peak > 0.98
+            Scale peak: 0.98
+        endif
+    endif
+
     removeObject: leftChannel, rightChannel, cosmicLeft, cosmicRight, extendedSound
 
 else
     # === MONO PROCESSING ===
     appendInfoLine: "  Processing mono..."
-    
+
     selectObject: extendedSound
-    Copy: "cosmic_mono"
+    Copy: "cosmic_mono_wet"
     cosmicMono = selected("Sound")
-    
+
     for k from 1 to number_of_delays
         delay = delay_start_s + delay_range_s * (k / number_of_delays) + delay_mod_depth_s * sin(k * 0.6)
+        if delay < samplePeriod
+            delay = samplePeriod
+        endif
         amp_mod = base_amplitude * (decay_factor ^ k) * (0.8 + amp_mod_depth * sin(k * mod_freq_factor))
-        
+
         delay_str$ = string$(delay)
         amp_str$ = string$(amp_mod)
-        
+
         selectObject: cosmicMono
-        
         if k mod 8 = 0
             Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ") * (1 + 0.2*sin(x*40))"
         elsif k mod 10 = 0
@@ -356,42 +385,36 @@ else
         else
             Formula: "self + " + amp_str$ + " * self(x - " + delay_str$ + ") * (0.9 + 0.1*sin(x*60))"
         endif
-        
-        if k mod 25 = 0
-            Scale peak: 0.98
-        endif
     endfor
-    
-    # Time-based rolloff
-    Formula: "self * (0.9 + 0.1*(1 - x/" + origDur_str$ + "))"
-    
-    # HF enhancement with decay
-    Formula: "self + " + hf_str$ + " * (self - self(x - " + sp_str$ + ")) * exp(-" + hfRate_str$ + "*x/" + origDur_str$ + ")"
-    
-    Scale peak: 0.98
-    
-    # Apply wet/dry
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        ext_str$ = string$(extendedSound)
-        
-        selectObject: cosmicMono
-        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + ", col] * " + dry_str$
-    endif
-    
-    # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
+
+    # Isolate wet-only component before coloration and tail fade.
+    ext_str$ = string$(extendedSound)
+    Formula: "self - object[" + ext_str$ + ", 1, col]"
+    Formula: "self * (0.9 + 0.1*(1 - x/" + totalDur_str$ + "))"
+
+    Copy: "cosmic_mono_preHF"
+    monoPreHF = selected("Sound")
+    monoPreHF_str$ = string$(monoPreHF)
     selectObject: cosmicMono
+    Formula: "object[" + monoPreHF_str$ + ", 1, col] + " + hf_str$ + " * (object[" + monoPreHF_str$ + ", 1, col] - object[" + monoPreHF_str$ + ", 1, col - 1]) * exp(-" + hfRate_str$ + "*x/" + totalDur_str$ + ")"
+    removeObject: monoPreHF
+
     Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    
-    Scale peak: 0.98
+
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+    Formula: "self * " + wet_str$ + " + object[" + ext_str$ + ", 1, col] * " + dry_str$
+
     Rename: originalName$ + "_cosmic_" + presetName$
     result = cosmicMono
-    
+
+    if wet_level > 0
+        peak = Get absolute extremum: 0, 0, "none"
+        if peak > 0.98
+            Scale peak: 0.98
+        endif
+    endif
+
     removeObject: extendedSound
 endif
 
@@ -487,9 +510,9 @@ if draw_visualization
     Font size: 7
     Marks left: 3, "yes", "yes", "no"
     Text left: "yes", "Amplitude"
-    Text bottom: "yes", "Delay (ms) — sinusoidally modulated"
+    Text bottom: "yes", "Delay (ms) — stage delay, sinusoidally modulated"
     Font size: 9
-    Text top: "no", "##Modulated Echo Taps (colour = tremolo type)##"
+    Text top: "no", "##Modulated Feedback-Delay Stages (colour = modulation type)##"
 
     # === GREY SUMMARY PANEL ===
     Select outer viewport: 0, 8, 7.0, 8.0

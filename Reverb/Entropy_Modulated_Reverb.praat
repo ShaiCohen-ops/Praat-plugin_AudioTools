@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,21 @@
 #
 # ============================================================
 
+# Changelog v0.3:
+#   - Public form/defaults, output naming, and final selection are unchanged.
+#   - Added a private zero-based work copy for non-zero source xmin.
+#   - Fixed stereo/multichannel control routing: mono entropy/wet controls
+#     are read explicitly from row 1, while audio is read by row/column.
+#   - Cross-object Formula reads use object IDs, avoiding same-name collisions
+#     with temporary objects that may already exist in caller scripts.
+#   - Custom smoothing alpha and dynamic wet bounds are sanitized internally.
+#   - Entropy normalization guards the one-bin edge case.
+#   - Mix duration now uses the longer of dark and bright convolutions.
+#   - Dry and entropy controls are explicitly zero-padded to that duration.
+#   - Safe Scale peak guards digital silence while preserving the existing
+#     non-silent normalization behaviour.
+#   - Caller-visible final selection remains the original Sound.
+#
 form Entropy-Modulated Reverb v2.2 COMPATIBLE
     comment === Preset ===
     optionmenu Preset: 1
@@ -72,6 +87,16 @@ originalName$ = selected$("Sound")
 selectObject: original
 originalDur = Get total duration
 origSR = Get sampling frequency
+numChannels = Get number of channels
+
+# Private zero-based processing copy; the caller's original Sound is untouched.
+selectObject: original
+workSource = Copy: "entropy_reverb_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
 
 # === Apply Presets ===
 if preset = 2
@@ -126,6 +151,17 @@ else
     presetName$ = "Custom"
 endif
 
+# Internal guards; preset values are already within these limits.
+smoothing_alpha = min(1, max(0, smoothing_alpha))
+
+min_wet_amount = min(1, max(0, min_wet_amount))
+max_wet_amount = min(1, max(0, max_wet_amount))
+if min_wet_amount > max_wet_amount
+    tmpWet = min_wet_amount
+    min_wet_amount = max_wet_amount
+    max_wet_amount = tmpWet
+endif
+
 # Speed mode
 if speed_mode = 1
     analysisSR = 0
@@ -159,9 +195,9 @@ appendInfoLine: ""
 # ============================================================
 appendInfo: "Stage 1: Preparing analysis... "
 
-analysisSound = original
+analysisSound = workSource
 if analysisSR > 0 and origSR > analysisSR
-    selectObject: original
+    selectObject: workSource
     Resample: analysisSR, 50
     analysisSound = selected("Sound")
     sr = analysisSR
@@ -224,8 +260,12 @@ for iframe from 1 to num_frames
                 entropy = entropy - p * ln(p) / ln(2)
             endif
         endfor
-        max_entropy = ln(num_bins) / ln(2)
-        entropyVal#[iframe] = entropy / max_entropy
+        if num_bins > 1
+            max_entropy = ln(num_bins) / ln(2)
+            entropyVal#[iframe] = entropy / max_entropy
+        else
+            entropyVal#[iframe] = 0
+        endif
     else
         entropyVal#[iframe] = 0
     endif
@@ -284,13 +324,21 @@ appendInfo: "Stage 4: Creating reverb IRs... "
 Create Sound from formula: "ir_dark", 1, 0, reverb_time_dark_s, origSR, 
 ... "randomGauss(0,1) * exp(-x*5/" + string$(reverb_time_dark_s) + ") * exp(-x*" + string$(damping_dark) + "*10/" + string$(reverb_time_dark_s) + ")"
 irDark = selected("Sound")
-Scale peak: 0.9
+selectObject: irDark
+irDarkPeak = Get absolute extremum: 0, 0, "None"
+if irDarkPeak > 0
+    Scale peak: 0.9
+endif
 
 # Bright IR (short decay, less damping)
 Create Sound from formula: "ir_bright", 1, 0, reverb_time_bright_s, origSR, 
 ... "randomGauss(0,1) * exp(-x*8/" + string$(reverb_time_bright_s) + ") * exp(-x*" + string$(damping_bright) + "*3/" + string$(reverb_time_bright_s) + ")"
 irBright = selected("Sound")
-Scale peak: 0.9
+selectObject: irBright
+irBrightPeak = Get absolute extremum: 0, 0, "None"
+if irBrightPeak > 0
+    Scale peak: 0.9
+endif
 
 appendInfoLine: "done"
 
@@ -299,19 +347,30 @@ appendInfoLine: "done"
 # ============================================================
 appendInfo: "Stage 5: Convolving... "
 
-selectObject: original, irDark
+selectObject: workSource, irDark
 Convolve: "sum", "zero"
 reverbDark = selected("Sound")
-Scale peak: 0.95
+selectObject: reverbDark
+reverbDarkPeak = Get absolute extremum: 0, 0, "None"
+if reverbDarkPeak > 0
+    Scale peak: 0.95
+endif
 
-selectObject: original, irBright
+selectObject: workSource, irBright
 Convolve: "sum", "zero"
 reverbBright = selected("Sound")
-Scale peak: 0.95
+selectObject: reverbBright
+reverbBrightPeak = Get absolute extremum: 0, 0, "None"
+if reverbBrightPeak > 0
+    Scale peak: 0.95
+endif
 
-# Get max duration
+# Mix over the longer convolution. Built-in presets already have dark >= bright.
 selectObject: reverbDark
-maxDur = Get total duration
+darkDur = Get total duration
+selectObject: reverbBright
+brightDur = Get total duration
+maxDur = max(darkDur, brightDur)
 
 appendInfoLine: "done"
 
@@ -329,31 +388,23 @@ if analysisSR > 0 and origSR > analysisSR
     entropySnd = entResampled
 endif
 
-# Extend/trim all to same length
-selectObject: original
-Extract part: 0, maxDur, "rectangular", 1, "yes"
-dryExt = selected("Sound")
-
-selectObject: reverbBright
-Extract part: 0, maxDur, "rectangular", 1, "yes"
-brightExt = selected("Sound")
-
-selectObject: entropySnd
-Extract part: 0, maxDur, "rectangular", 1, "yes"
-entExt = selected("Sound")
-
-# Get names for formula
-selectObject: reverbDark
-darkName$ = selected$("Sound")
-
-selectObject: brightExt
-brightName$ = selected$("Sound")
-
+# Extend controls and dry signal explicitly to the longer reverb duration.
+# Out-of-range object[] cells evaluate as zero.
+dryExt = Create Sound from formula: "entropy_dry_extended", numChannels, 0, maxDur, origSR, "0"
+workID$ = string$(workSource)
 selectObject: dryExt
-dryName$ = selected$("Sound")
+Formula: "object[" + workID$ + ", row, col]"
 
+entExt = Create Sound from formula: "entropy_control_extended", 1, 0, maxDur, origSR, "0"
+entropyID$ = string$(entropySnd)
 selectObject: entExt
-entName$ = selected$("Sound")
+Formula: "object[" + entropyID$ + ", 1, col]"
+
+# Use object IDs so same-named caller objects cannot redirect Formula reads.
+darkID$ = string$(reverbDark)
+brightID$ = string$(reverbBright)
+dryID$ = string$(dryExt)
+entID$ = string$(entExt)
 
 # Create wet amount signal based on entropy
 selectObject: entExt
@@ -369,7 +420,7 @@ else
 endif
 
 selectObject: wetAmount
-wetName$ = selected$("Sound")
+wetID$ = string$(wetAmount)
 
 # OPTIMIZED: Create output with single formula
 selectObject: dryExt
@@ -382,14 +433,21 @@ result = selected("Sound")
 # Then apply overall wet/dry
 
 selectObject: result
-Formula: ~ (Sound_'dryName$'[] * (1 - Sound_'wetName$'[]) + (Sound_'darkName$'[] * (1 - Sound_'entName$'[]) + Sound_'brightName$'[] * Sound_'entName$'[]) * Sound_'wetName$'[])
+Formula: "object[" + dryID$ + ", row, col] * (1 - object[" + wetID$ + ", 1, col])"
+    ... + " + (object[" + darkID$ + ", row, col] * (1 - object[" + entID$ + ", 1, col])"
+    ... + " + object[" + brightID$ + ", row, col] * object[" + entID$ + ", 1, col])"
+    ... + " * object[" + wetID$ + ", 1, col]"
 
 # Apply overall wet/dry
 if overall_dry > 0
-    Formula: "self * " + string$(overall_wet) + " + Sound_" + dryName$ + "[] * " + string$(overall_dry)
+    Formula: "self * " + string$(overall_wet)
+        ... + " + object[" + dryID$ + ", row, col] * " + string$(overall_dry)
 endif
 
-Scale peak: 0.95
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > 0
+    Scale peak: 0.95
+endif
 
 processingTime = stopwatch - startTime
 
@@ -409,6 +467,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 1, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Entropy-Modulated Reverb: " + originalName$ + " [" + presetName$ + "]"
@@ -501,6 +560,7 @@ if draw_visualization
     
     # Parameters
     Select outer viewport: 0, 8, 4.7, 5.1
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", speedStr$ + " | Time: " + fixed$(processingTime, 2) + "s | Dark: " + fixed$(reverb_time_dark_s, 1) + "s | Bright: " + fixed$(reverb_time_bright_s, 1) + "s | Overall: " + fixed$(wet_dry_percent, 0) + "%"
@@ -514,12 +574,13 @@ endif
 # ============================================================
 
 removeObject: spec
-if analysisSound <> original
+if analysisSound <> workSource
     removeObject: analysisSound
 endif
 removeObject: entropySnd, irDark, irBright
 removeObject: reverbDark, reverbBright
-removeObject: dryExt, brightExt, entExt, wetAmount
+removeObject: dryExt, entExt, wetAmount
+removeObject: workSource
 
 # === Final Info ===
 selectObject: result

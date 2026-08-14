@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,10 @@
 #   iteration adds primary + secondary delays with amplitude
 #   modulation. Different from Fractal_Feedback which uses
 #   segment-based spatial processing.
+#
+# Changelog v0.3:
+#   - Viz: set world axes explicitly before title & parameters text
+#     (parameters line was inheriting the delay panel's axes -> mis-placed)
 #
 # Changelog v0.2:
 #   - Fixed selection syntax
@@ -319,6 +323,7 @@ if draw_visualization
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Fractal Feedback Reverb: " + originalName$ + " (" + presetName$ + ")"
@@ -401,6 +406,7 @@ if draw_visualization
     
     # Parameters
     Select outer viewport: 0, 8, 3.9, 4.3
+    Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Iterations: " + string$(iterations) + " | Chaos: " + fixed$(chaos_factor, 2) + " | Depth: " + string$(memory_depth) + " | Seed: " + fixed$(seed_delay_s * 1000, 0) + "ms"

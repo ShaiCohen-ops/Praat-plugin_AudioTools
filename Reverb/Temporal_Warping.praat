@@ -3,31 +3,38 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.2 reviewed (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Temporal warping effect with progressive time displacement.
-#   Creates diffusion/smearing effects by displacing samples
-#   through multiple warp stages.
+#   Progressive temporal warping through a parallel field of bounded,
+#   monotonic time-remapping trajectories. Each trajectory reads the
+#   original Sound at a smoothly delayed time; trajectories span from
+#   mild to maximum displacement and are mixed into a warped wet field.
+#   Warp_strength is the direct dry/warped-field mix, so the control is
+#   perceptually meaningful and the effect remains clearly audible.
 #
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
-#
-# Category: Time & Granular
+# Review changes v1.2:
+#   - Replaced the over-conservative cascaded crossfade architecture
+#     with a parallel bank of independent warped trajectories.
+#   - Warp_strength now directly mixes dry and warped fields.
+#   - Later/more-displaced trajectories receive progressively higher
+#     weights, making the temporal deformation audible at medium values.
+#   - Presets retuned for clearly differentiated audible results.
+#   - Each trajectory remains monotonic and reads the immutable original.
+#   - Wet tail is faded before dry/wet mixing.
+#   - Maximum displacement remains bounded by source duration and the
+#     requested displacement factor; no time folding or look-ahead.
+#   - Stereo sources preserve their original dry L/R channels; mono
+#     sources create two independently curved warped fields.
+#   - One common down-only peak safeguard remains after stereo combine.
+#   - Visualization reports actual path endpoint delays and curvature.
 # ============================================================
 
-# === INPUT VALIDATION ===
-if numberOfSelected("Sound") <> 1
-    exitScript: "Please select exactly ONE Sound object."
-endif
+form Temporal Warping
+    comment Select exactly one Sound object first
 
-originalSound = selected("Sound")
-original_sound$ = selected$("Sound")
-
-form Temporal Warping Effect v1.0
     comment === Preset ===
     optionmenu Preset 1
         option Custom
@@ -35,556 +42,477 @@ form Temporal Warping Effect v1.0
         option Medium Warp
         option Heavy Warp
         option Extreme Warp
-        option Spectral Smear
+        option Dense Smear
         option Time Stretch Feel
-    comment === Parameters ===
-    positive Tail_duration_(seconds) 3.0
-    positive Number_of_warp_stages 6
-    positive Max_displacement_factor 0.1
-    positive Warp_strength 0.3
-    positive Fadeout_duration_(seconds) 1.2
+
+    comment === Warp Parameters ===
+    positive Tail_duration_s 3.0
+    natural Number_of_warp_stages 6
+    real Max_displacement_factor 0.1
+    comment (maximum delayed path as a fraction of source duration)
+    real Warp_strength 0.3
+    comment (0 = dry/original, 1 = fully warped field)
+
     comment === Output ===
+    positive Fadeout_duration_s 1.2
     boolean Show_visualization 1
     boolean Play_result 1
 endform
 
-# === APPLY PRESET VALUES ===
+# ============================================================
+# INPUT AND PRESET SETUP
+# ============================================================
+
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
+endif
+
+originalSound = selected("Sound")
+originalName$ = selected$("Sound")
+
+selectObject: originalSound
+originalDuration = Get total duration
+originalStart = Get start time
+samplingRate = Get sampling frequency
+channels = Get number of channels
+
+if channels <> 1 and channels <> 2
+    exitScript: "Temporal Warping currently supports mono or stereo Sound objects only."
+endif
+
+if originalDuration <= 0
+    exitScript: "The selected Sound has zero duration."
+endif
+
+if samplingRate < 1000
+    exitScript: "Sampling frequency is too low for Temporal Warping."
+endif
+
+# === Apply preset values ===
 if preset = 2
-    # Subtle Warp
-    tail_duration = 2.0
+    tail_duration_s = 2.0
     number_of_warp_stages = 4
     max_displacement_factor = 0.05
-    warp_strength = 0.15
-    fadeout_duration = 1.0
-    presetName$ = "Subtle Warp"
+    warp_strength = 0.25
+    fadeout_duration_s = 1.0
+    presetName$ = "Subtle"
 elsif preset = 3
-    # Medium Warp
-    tail_duration = 3.0
+    tail_duration_s = 3.0
     number_of_warp_stages = 6
-    max_displacement_factor = 0.1
-    warp_strength = 0.3
-    fadeout_duration = 1.2
-    presetName$ = "Medium Warp"
+    max_displacement_factor = 0.12
+    warp_strength = 0.55
+    fadeout_duration_s = 1.2
+    presetName$ = "Medium"
 elsif preset = 4
-    # Heavy Warp
-    tail_duration = 4.0
+    tail_duration_s = 4.0
     number_of_warp_stages = 8
-    max_displacement_factor = 0.2
-    warp_strength = 0.5
-    fadeout_duration = 1.5
-    presetName$ = "Heavy Warp"
-elsif preset = 5
-    # Extreme Warp
-    tail_duration = 5.0
-    number_of_warp_stages = 12
-    max_displacement_factor = 0.35
-    warp_strength = 0.7
-    fadeout_duration = 2.0
-    presetName$ = "Extreme Warp"
-elsif preset = 6
-    # Spectral Smear
-    tail_duration = 4.0
-    number_of_warp_stages = 16
-    max_displacement_factor = 0.15
-    warp_strength = 0.4
-    fadeout_duration = 2.0
-    presetName$ = "Spectral Smear"
-elsif preset = 7
-    # Time Stretch Feel
-    tail_duration = 6.0
-    number_of_warp_stages = 10
     max_displacement_factor = 0.25
-    warp_strength = 0.6
-    fadeout_duration = 2.5
+    warp_strength = 0.75
+    fadeout_duration_s = 1.5
+    presetName$ = "Heavy"
+elsif preset = 5
+    tail_duration_s = 5.0
+    number_of_warp_stages = 12
+    max_displacement_factor = 0.45
+    warp_strength = 0.90
+    fadeout_duration_s = 2.0
+    presetName$ = "Extreme"
+elsif preset = 6
+    tail_duration_s = 4.0
+    number_of_warp_stages = 16
+    max_displacement_factor = 0.20
+    warp_strength = 0.80
+    fadeout_duration_s = 2.0
+    presetName$ = "Dense Smear"
+elsif preset = 7
+    tail_duration_s = 6.0
+    number_of_warp_stages = 10
+    max_displacement_factor = 0.35
+    warp_strength = 0.90
+    fadeout_duration_s = 2.5
     presetName$ = "Time Stretch Feel"
 else
     presetName$ = "Custom"
 endif
 
-# === SETUP ===
-clearinfo
-writeInfoLine: "=============================================="
-writeInfoLine: "  TEMPORAL WARPING v1.0"
-writeInfoLine: "=============================================="
-appendInfoLine: ""
-
-selectObject: originalSound
-original_duration = Get total duration
-sampling_rate = Get sampling frequency
-channels = Get number of channels
-
-appendInfoLine: "Input: ", original_sound$
-appendInfoLine: "Duration: ", fixed$(original_duration, 3), " s"
-appendInfoLine: "Sample rate: ", sampling_rate, " Hz"
-appendInfoLine: "Channels: ", channels
-appendInfoLine: "Preset: ", presetName$
-appendInfoLine: ""
-
-# Store warp stage data for visualization
-for stage from 1 to number_of_warp_stages
-    warp_factor_viz[stage] = stage / number_of_warp_stages
-    time_curve_viz[stage] = sin(pi * stage / number_of_warp_stages)
-    displacement_viz[stage] = max_displacement_factor * warp_factor_viz[stage] * time_curve_viz[stage]
-endfor
-
-# === CREATE EXTENDED SOUND ===
-appendInfoLine: "Creating extended sound with ", tail_duration, "s tail..."
-
-if channels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration, sampling_rate, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration, sampling_rate, "0"
-endif
-silentTail = selected("Sound")
-
-selectObject: originalSound
-plusObject: silentTail
-Concatenate
-Rename: "extended_sound"
-extendedSound = selected("Sound")
-
-# === APPLY WARPING ===
-appendInfoLine: "Applying ", number_of_warp_stages, " warp stages..."
-appendInfoLine: ""
-
-selectObject: extendedSound
-
-if channels = 2
-    # Process stereo
-    Extract one channel: 1
-    Rename: "left_channel"
-    leftChannel = selected("Sound")
-    
-    selectObject: extendedSound
-    Extract one channel: 2
-    Rename: "right_channel"
-    rightChannel = selected("Sound")
-    
-    # Process LEFT channel
-    selectObject: leftChannel
-    Copy: "soundObj_left"
-    soundObjLeft = selected("Sound")
-    
-    warp_stages = number_of_warp_stages
-    a = Get number of samples
-    
-    appendInfoLine: "Processing LEFT channel:"
-    for stage from 1 to warp_stages
-        warp_factor = stage / warp_stages
-        max_displacement = a * max_displacement_factor * warp_factor
-        time_curve = sin(pi * stage / warp_stages)
-        displacement = round(max_displacement * randomUniform(0.3, 1.0) * time_curve)
-        
-        Formula: "self * (1 - warp_factor * 0.1) + warp_factor * warp_strength * (if (col + displacement) > 0 and (col + displacement) <= ncol then self[col + displacement] - self[col] else 0 fi)"
-        
-        appendInfoLine: "  Stage ", stage, ": disp=", displacement, " samples (", fixed$(displacement / sampling_rate * 1000, 1), " ms)"
-    endfor
-    
-    Scale peak: 0.99
-    
-    # Process RIGHT channel (slightly different parameters for stereo width)
-    selectObject: rightChannel
-    Copy: "soundObj_right"
-    soundObjRight = selected("Sound")
-    
-    a = Get number of samples
-    
-    appendInfoLine: ""
-    appendInfoLine: "Processing RIGHT channel:"
-    for stage from 1 to warp_stages
-        warp_factor = stage / warp_stages
-        max_displacement = a * max_displacement_factor * 1.1 * warp_factor
-        time_curve = sin(pi * (stage + 0.5) / warp_stages)
-        displacement = round(max_displacement * randomUniform(0.25, 0.95) * time_curve)
-        
-        Formula: "self * (1 - warp_factor * 0.12) + warp_factor * (warp_strength * 0.93) * (if (col + displacement) > 0 and (col + displacement) <= ncol then self[col + displacement] - self[col] else 0 fi)"
-        
-        appendInfoLine: "  Stage ", stage, ": disp=", displacement, " samples (", fixed$(displacement / sampling_rate * 1000, 1), " ms)"
-    endfor
-    
-    Scale peak: 0.99
-    
-    # Combine to stereo
-    selectObject: soundObjLeft
-    plusObject: soundObjRight
-    Combine to stereo
-    Rename: "temporal_warping_stereo"
-    resultSound = selected("Sound")
-    
-    removeObject: soundObjLeft, soundObjRight
-    
-else
-    # Process mono
-    Copy: "soundObj"
-    soundObj = selected("Sound")
-    
-    warp_stages = number_of_warp_stages
-    a = Get number of samples
-    
-    appendInfoLine: "Processing MONO channel:"
-    for stage from 1 to warp_stages
-        warp_factor = stage / warp_stages
-        max_displacement = a * max_displacement_factor * warp_factor
-        time_curve = sin(pi * stage / warp_stages)
-        displacement = round(max_displacement * randomUniform(0.3, 1.0) * time_curve)
-        
-        Formula: "self * (1 - warp_factor * 0.1) + warp_factor * warp_strength * (if (col + displacement) > 0 and (col + displacement) <= ncol then self[col + displacement] - self[col] else 0 fi)"
-        
-        appendInfoLine: "  Stage ", stage, ": disp=", displacement, " samples (", fixed$(displacement / sampling_rate * 1000, 1), " ms)"
-    endfor
-    
-    Scale peak: 0.99
-    Convert to stereo
-    Rename: "temporal_warping_stereo"
-    resultSound = selected("Sound")
-    
-    removeObject: soundObj
+# === Validate / derive parameters ===
+if number_of_warp_stages < 1
+    exitScript: "Number of warp stages must be at least 1."
 endif
 
-# === APPLY FADEOUT ===
-appendInfoLine: ""
-appendInfoLine: "Applying fadeout (", fadeout_duration, "s)..."
-
-selectObject: resultSound
-total_duration = Get total duration
-fade_start = total_duration - fadeout_duration
-
-Formula: "if x > fade_start then self * (0.5 + 0.5 * cos(pi * (x - fade_start) / fadeout_duration)) else self fi"
-
-# === CLEANUP TEMPORARY OBJECTS ===
-removeObject: silentTail, extendedSound
-if channels = 2
-    removeObject: leftChannel, rightChannel
+if number_of_warp_stages > 64
+    exitScript: "Number of warp stages is limited to 64 for performance and stability."
 endif
+
+effectiveFactor = max_displacement_factor
+if effectiveFactor < 0
+    effectiveFactor = 0
+endif
+
+# For the warp curve used below, a factor <= 0.60 keeps a one-stage
+# custom setting safely monotonic even at the maximum curvature.
+if effectiveFactor > 0.60
+    effectiveFactor = 0.60
+endif
+
+effectiveStrength = warp_strength
+if effectiveStrength < 0
+    effectiveStrength = 0
+elsif effectiveStrength > 1
+    effectiveStrength = 1
+endif
+
+maxDisplacement = effectiveFactor * originalDuration
+
+effectiveTail = tail_duration_s
+if effectiveTail < maxDisplacement
+    effectiveTail = maxDisplacement
+endif
+
+totalDuration = originalDuration + effectiveTail
+fadeDuration = min(fadeout_duration_s, effectiveTail)
+fadeStart = totalDuration - fadeDuration
+
+# Warp_strength is used directly as the dry/warped-field mix.
+dryGain = 1 - effectiveStrength
+wetGain = effectiveStrength
 
 # ============================================================
-# VISUALIZATION
+# GENERATE ACTUAL STAGE PARAMETERS ONCE
+# ============================================================
+
+# Positive sine weights avoid the old zero-displacement final stage.
+# Independent bounded random factors are normalized so both channels
+# have exactly maxDisplacement as their maximum cumulative path delay.
+rawSumL = 0
+rawSumR = 0
+for stage from 1 to number_of_warp_stages
+    shapeWeight = sin(pi * stage / (number_of_warp_stages + 1))
+
+    rawL[stage] = shapeWeight * randomUniform(0.80, 1.20)
+    rawR[stage] = shapeWeight * randomUniform(0.80, 1.20)
+    rawSumL = rawSumL + rawL[stage]
+    rawSumR = rawSumR + rawR[stage]
+
+    # Bend modifies the local speed while keeping the normalized
+    # curve monotonic: curve'(u) = 1 + bend*cos(2*pi*u), |bend| < 1.
+    bendL[stage] = randomUniform(-0.35, 0.35)
+    bendR[stage] = randomUniform(-0.35, 0.35)
+endfor
+
+cumulativeL = 0
+cumulativeR = 0
+for stage from 1 to number_of_warp_stages
+    if maxDisplacement > 0
+        stageDelayL[stage] = maxDisplacement * rawL[stage] / rawSumL
+        stageDelayR[stage] = maxDisplacement * rawR[stage] / rawSumR
+    else
+        stageDelayL[stage] = 0
+        stageDelayR[stage] = 0
+    endif
+
+    cumulativeL = cumulativeL + stageDelayL[stage]
+    cumulativeR = cumulativeR + stageDelayR[stage]
+    cumulativeDelayL[stage] = cumulativeL
+    cumulativeDelayR[stage] = cumulativeR
+endfor
+
+# ============================================================
+# INFO
+# ============================================================
+
+writeInfoLine: "=== Temporal Warping ==="
+appendInfoLine: "Source: ", originalName$, " (", fixed$(originalDuration, 3), " s)"
+appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Sample rate: ", fixed$(samplingRate, 0), " Hz"
+appendInfoLine: "Input channels: ", channels
+appendInfoLine: "Warp stages: ", number_of_warp_stages
+appendInfoLine: "Requested displacement factor: ", fixed$(max_displacement_factor, 3)
+appendInfoLine: "Effective displacement factor: ", fixed$(effectiveFactor, 3)
+appendInfoLine: "Maximum warped-path delay: ", fixed$(maxDisplacement * 1000, 1), " ms"
+appendInfoLine: "Warp strength: ", fixed$(effectiveStrength, 3)
+appendInfoLine: "Dry/Warp mix: ", fixed$(dryGain, 3), " / ", fixed$(wetGain, 3)
+appendInfoLine: "Requested tail: ", fixed$(tail_duration_s, 3), " s"
+appendInfoLine: "Effective tail: ", fixed$(effectiveTail, 3), " s"
+appendInfoLine: "Fade: ", fixed$(fadeDuration, 3), " s"
+appendInfoLine: ""
+appendInfoLine: "Stage parameters:"
+for stage from 1 to number_of_warp_stages
+    appendInfoLine: "  ", stage, ": endpoint L=", fixed$(cumulativeDelayL[stage] * 1000, 2), " ms, R=", fixed$(cumulativeDelayR[stage] * 1000, 2), " ms, bend L/R=", fixed$(bendL[stage], 3), "/", fixed$(bendR[stage], 3)
+endfor
+appendInfoLine: ""
+appendInfoLine: "Processing..."
+
+# ============================================================
+# BUILD PARALLEL WARP FIELD
+# ============================================================
+
+orig_id_str$ = string$(originalSound)
+orig_start_str$ = string$(originalStart)
+orig_dur_str$ = string$(originalDuration)
+wet_gain_str$ = string$(wetGain)
+dry_gain_str$ = string$(dryGain)
+
+if effectiveStrength = 0
+    # True unchanged fast path.
+    selectObject: originalSound
+    Copy: originalName$ + "_temporal_warp_" + presetName$
+    resultSound = selected("Sound")
+
+else
+    # Accumulate independent warped trajectories. Their weights sum to 1.
+    Create Sound from formula: "warp_wet_left", 1, 0, totalDuration, samplingRate, "0"
+    wetLeft = selected("Sound")
+
+    Create Sound from formula: "warp_wet_right", 1, 0, totalDuration, samplingRate, "0"
+    wetRight = selected("Sound")
+
+    weightDenom = number_of_warp_stages * (number_of_warp_stages + 1)
+
+    for stage from 1 to number_of_warp_stages
+        # Later trajectories receive more weight because they carry more of
+        # the audible deformation. Sum(2*stage/(N*(N+1))) = 1.
+        pathWeight = 2 * stage / weightDenom
+        weight_str$ = string$(pathWeight)
+
+        # u follows output time through the original source interval and
+        # then remains at 1 in the tail. curve'(u) stays positive because
+        # |bend| <= 0.35, so every time map is monotonic.
+        u_expr$ = "min(1,max(0,x/" + orig_dur_str$ + "))"
+
+        # ---- LEFT trajectory ----
+        endpointL_str$ = string$(cumulativeDelayL[stage])
+        bendL_str$ = string$(bendL[stage])
+        curveL$ = "(" + u_expr$ + "+(" + bendL_str$ + ")*sin(2*pi*" + u_expr$ + ")/(2*pi))"
+
+        if channels = 2
+            sourceExprL$ = "object(" + orig_id_str$ + ",x-((" + endpointL_str$ + ")*" + curveL$ + ")+" + orig_start_str$ + ",1)"
+        else
+            sourceExprL$ = "object(" + orig_id_str$ + ",x-((" + endpointL_str$ + ")*" + curveL$ + ")+" + orig_start_str$ + ",1)"
+        endif
+
+        wet_left_id_str$ = string$(wetLeft)
+        Create Sound from formula: "warp_wet_left_next", 1, 0, totalDuration, samplingRate, "object(" + wet_left_id_str$ + ",x,1)+(" + weight_str$ + ")*(" + sourceExprL$ + ")"
+        nextWetLeft = selected("Sound")
+        removeObject: wetLeft
+        wetLeft = nextWetLeft
+
+        # ---- RIGHT trajectory ----
+        endpointR_str$ = string$(cumulativeDelayR[stage])
+        bendR_str$ = string$(bendR[stage])
+        curveR$ = "(" + u_expr$ + "+(" + bendR_str$ + ")*sin(2*pi*" + u_expr$ + ")/(2*pi))"
+
+        if channels = 2
+            sourceExprR$ = "object(" + orig_id_str$ + ",x-((" + endpointR_str$ + ")*" + curveR$ + ")+" + orig_start_str$ + ",2)"
+        else
+            sourceExprR$ = "object(" + orig_id_str$ + ",x-((" + endpointR_str$ + ")*" + curveR$ + ")+" + orig_start_str$ + ",1)"
+        endif
+
+        wet_right_id_str$ = string$(wetRight)
+        Create Sound from formula: "warp_wet_right_next", 1, 0, totalDuration, samplingRate, "object(" + wet_right_id_str$ + ",x,1)+(" + weight_str$ + ")*(" + sourceExprR$ + ")"
+        nextWetRight = selected("Sound")
+        removeObject: wetRight
+        wetRight = nextWetRight
+    endfor
+
+    # Fade WET tail only.
+    if fadeDuration > 0
+        fade_start_str$ = string$(fadeStart)
+        fade_dur_str$ = string$(fadeDuration)
+
+        selectObject: wetLeft
+        Formula: "if x > " + fade_start_str$ + " then self * (0.5 + 0.5*cos(pi*(x-" + fade_start_str$ + ")/" + fade_dur_str$ + ")) else self fi"
+
+        selectObject: wetRight
+        Formula: "if x > " + fade_start_str$ + " then self * (0.5 + 0.5*cos(pi*(x-" + fade_start_str$ + ")/" + fade_dur_str$ + ")) else self fi"
+    endif
+
+    # Direct strength control: dry/original vs parallel warped field.
+    wet_left_id_str$ = string$(wetLeft)
+    wet_right_id_str$ = string$(wetRight)
+
+    if channels = 2
+        dryExprL$ = "object(" + orig_id_str$ + ",x+" + orig_start_str$ + ",1)"
+        dryExprR$ = "object(" + orig_id_str$ + ",x+" + orig_start_str$ + ",2)"
+    else
+        dryExprL$ = "object(" + orig_id_str$ + ",x+" + orig_start_str$ + ",1)"
+        dryExprR$ = "object(" + orig_id_str$ + ",x+" + orig_start_str$ + ",1)"
+    endif
+
+    Create Sound from formula: "warp_out_left", 1, 0, totalDuration, samplingRate, "(" + dry_gain_str$ + ")*(" + dryExprL$ + ")+(" + wet_gain_str$ + ")*object(" + wet_left_id_str$ + ",x,1)"
+    outLeft = selected("Sound")
+
+    Create Sound from formula: "warp_out_right", 1, 0, totalDuration, samplingRate, "(" + dry_gain_str$ + ")*(" + dryExprR$ + ")+(" + wet_gain_str$ + ")*object(" + wet_right_id_str$ + ",x,1)"
+    outRight = selected("Sound")
+
+    selectObject: outLeft, outRight
+    Combine to stereo
+    resultSound = selected("Sound")
+    Rename: originalName$ + "_temporal_warp_" + presetName$
+
+    # One common down-only safeguard; no quiet-signal normalization.
+    selectObject: resultSound
+    resultPeak = Get absolute extremum: 0, 0, "none"
+    if resultPeak > 1
+        Scale peak: 0.98
+    endif
+
+    removeObject: wetLeft, wetRight, outLeft, outRight
+endif
+
+selectObject: resultSound
+resultDuration = Get total duration
+
+# ============================================================
+# VISUALIZATION - PRAAT AUDIOTOOLS HOUSE STYLE
 # ============================================================
 
 if show_visualization
-    appendInfoLine: ""
-    appendInfoLine: "Creating visualization..."
-    
     Erase all
-    
-    # Calculate display duration (show first portion if very long)
-    viz_duration = original_duration + tail_duration
-    if viz_duration > 20
-        viz_duration = 20
-    endif
-    
-    # --- TITLE ---
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 11
+
+    # Main title.
+    Select outer viewport: 0, 8, 0.05, 0.38
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Temporal Warping## | " + original_sound$ + " | " + presetName$
-    
-    # --- ORIGINAL WAVEFORM ---
-    Select outer viewport: 0, 8, 0.6, 1.7
-    Select inner viewport: 0.8, 7.8, 0.7, 1.6
-    
+    Text: 0.5, "centre", 0.58, "half", "Temporal Warping | " + presetName$
+
+    # Metadata line.
+    Select outer viewport: 0, 8, 0.36, 0.58
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.35}"
+    Text: 0.5, "centre", 0.5, "half", originalName$ + " | " + string$(number_of_warp_stages) + " paths | Strength " + fixed$(effectiveStrength, 2) + " | Max delay " + fixed$(maxDisplacement * 1000, 0) + " ms"
+
+    # Dry waveform on the full output time axis.
+    Select outer viewport: 0, 8, 0.65, 1.35
+    Select inner viewport: 0.65, 7.65, 0.72, 1.28
     selectObject: originalSound
-    Colour: "{0.4, 0.5, 0.7}"
-    Draw: 0, original_duration, 0, 0, "no", "Curve"
-    
-    # Mark original end
-    Colour: "{0.8, 0.4, 0.4}"
-    Line width: 1
-    Dotted line
-    Draw line: original_duration, -1, original_duration, 1
-    Solid line
-    
+    Colour: "{0.65, 0.65, 0.65}"
+    Draw: originalStart, originalStart + resultDuration, 0, 0, "no", "Curve"
     Colour: "Black"
-    Line width: 0.5
     Draw inner box
-    
-    Font size: 7
-    Select outer viewport: 0, 0.8, 0.6, 1.7
-    Axes: 0, 1, 0, 1
-    Colour: "{0.3, 0.4, 0.6}"
-    Text: 0.95, "right", 0.6, "half", "Original"
-    Font size: 5
-    Colour: "{0.5, 0.5, 0.55}"
-    Text: 0.95, "right", 0.3, "half", fixed$(original_duration, 2) + "s"
-    
-    # --- WARPED WAVEFORM ---
-    Select outer viewport: 0, 8, 1.8, 2.9
-    Select inner viewport: 0.8, 7.8, 1.9, 2.8
-    
+    Font size: 6
+    Text left: "yes", "Dry"
+
+    # Warped output waveform.
+    Select outer viewport: 0, 8, 1.42, 2.12
+    Select inner viewport: 0.65, 7.65, 1.49, 2.05
     selectObject: resultSound
-    Colour: "{0.5, 0.7, 0.4}"
-    Draw: 0, viz_duration, 0, 0, "no", "Curve"
-    
-    # Mark original end and fade start
-    Colour: "{0.8, 0.4, 0.4}"
-    Line width: 1
-    Dotted line
-    Draw line: original_duration, -1, original_duration, 1
-    
-    Colour: "{0.6, 0.6, 0.8}"
-    Draw line: fade_start, -1, fade_start, 1
-    Solid line
-    
+    Colour: "{0.48, 0.64, 0.52}"
+    Draw: 0, resultDuration, 0, 0, "no", "Curve"
     Colour: "Black"
-    Line width: 0.5
     Draw inner box
-    
-    Font size: 7
-    Select outer viewport: 0, 0.8, 1.8, 2.9
-    Axes: 0, 1, 0, 1
-    Colour: "{0.4, 0.6, 0.35}"
-    Text: 0.95, "right", 0.6, "half", "Warped"
-    Font size: 5
-    Colour: "{0.5, 0.5, 0.55}"
-    Text: 0.95, "right", 0.3, "half", fixed$(total_duration, 2) + "s"
-    
-    # --- SPECTROGRAMS COMPARISON ---
-    Select outer viewport: 0, 4, 3.0, 4.5
-    Select inner viewport: 0.8, 3.8, 3.1, 4.4
-    
-    selectObject: originalSound
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
-    spectrogramOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    
-    Colour: "Black"
-    Line width: 0.5
-    Draw inner box
-    
     Font size: 6
-    Select outer viewport: 0, 0.8, 3.0, 4.5
-    Axes: 0, 1, 0, 1
-    Colour: "{0.4, 0.4, 0.55}"
-    Text: 0.95, "right", 0.6, "half", "Original"
-    Font size: 5
-    Colour: "{0.5, 0.5, 0.55}"
-    Text: 0.95, "right", 0.3, "half", "Spectrum"
-    
-    Select outer viewport: 4, 8, 3.0, 4.5
-    Select inner viewport: 4.4, 7.8, 3.1, 4.4
-    
-    selectObject: resultSound
-    To Spectrogram: 0.03, 5000, 0.01, 20, "Gaussian"
-    spectrogramResult = selected("Spectrogram")
-    Paint: 0, viz_duration, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    
-    Colour: "Black"
-    Line width: 0.5
-    Draw inner box
-    
-    Font size: 6
-    Select outer viewport: 4, 4.4, 3.0, 4.5
-    Axes: 0, 1, 0, 1
-    Colour: "{0.4, 0.55, 0.4}"
-    Text: 0.95, "right", 0.6, "half", "Warped"
-    Font size: 5
-    Colour: "{0.5, 0.5, 0.55}"
-    Text: 0.95, "right", 0.3, "half", "Spectrum"
-    
-    removeObject: spectrogramOrig, spectrogramResult
-    
-    # --- WARP STAGES PLOT ---
-    Select outer viewport: 0, 4, 4.6, 5.8
-    Select inner viewport: 0.8, 3.8, 4.7, 5.7
-    
-    Axes: 0, number_of_warp_stages + 1, 0, 1.2
-    
-    # Background
-    Paint rectangle: "{0.97, 0.98, 0.99}", 0, number_of_warp_stages + 1, 0, 1.2
-    
-    # Draw time curve (sine envelope)
-    Colour: "{0.7, 0.8, 0.9}"
-    Line width: 2
-    for stage from 1 to number_of_warp_stages
-        if stage > 1
-            Draw line: stage - 1, time_curve_viz[stage - 1], stage, time_curve_viz[stage]
-        endif
-    endfor
-    
-    # Draw displacement factors as bars
-    for stage from 1 to number_of_warp_stages
-        barHeight = displacement_viz[stage] / max_displacement_factor
-        
-        # Color gradient based on stage
-        r = 0.3 + 0.5 * (stage / number_of_warp_stages)
-        g = 0.6 - 0.3 * (stage / number_of_warp_stages)
-        b = 0.8 - 0.4 * (stage / number_of_warp_stages)
-        
-        Paint rectangle: "{" + fixed$(r, 2) + ", " + fixed$(g, 2) + ", " + fixed$(b, 2) + "}", stage - 0.35, stage + 0.35, 0, barHeight
-        
-        Colour: "{0.3, 0.3, 0.4}"
-        Line width: 0.5
-        Draw rectangle: stage - 0.35, stage + 0.35, 0, barHeight
-    endfor
-    
-    Colour: "Black"
-    Line width: 0.5
-    Draw inner box
-    
-    Font size: 6
-    Text bottom: "yes", "Warp Stage"
-    Text left: "yes", "Displacement"
-    
-    Font size: 7
-    Select outer viewport: 0, 0.8, 4.6, 5.8
-    Axes: 0, 1, 0, 1
-    Colour: "{0.4, 0.5, 0.7}"
-    Text: 0.95, "right", 0.5, "half", "Stages"
-    
-    # --- FADEOUT ENVELOPE ---
-    Select outer viewport: 4, 8, 4.6, 5.8
-    Select inner viewport: 4.4, 7.8, 4.7, 5.7
-    
-    Axes: 0, total_duration, 0, 1.1
-    
-    Paint rectangle: "{0.98, 0.97, 0.98}", 0, total_duration, 0, 1.1
-    
-    # Draw envelope
-    Colour: "{0.6, 0.4, 0.7}"
-    Line width: 2
-    
-    numPoints = 100
-    for i from 1 to numPoints
-        t = (i - 1) * total_duration / (numPoints - 1)
-        
-        if t > fade_start
-            env = 0.5 + 0.5 * cos(pi * (t - fade_start) / fadeout_duration)
-        else
-            env = 1.0
-        endif
-        
-        if i > 1
-            Draw line: prevT, prevEnv, t, env
-        endif
-        
-        prevT = t
-        prevEnv = env
-    endfor
-    
-    # Mark fade start
-    Colour: "{0.8, 0.6, 0.6}"
-    Line width: 1
-    Dotted line
-    Draw line: fade_start, 0, fade_start, 1.1
-    Solid line
-    
-    Font size: 5
-    Colour: "{0.6, 0.4, 0.4}"
-    Text: fade_start, "centre", 1.05, "half", "Fade"
-    
-    Colour: "Black"
-    Line width: 0.5
-    Draw inner box
-    
-    Font size: 6
+    Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
-    Text left: "yes", "Amplitude"
-    
-    Font size: 7
-    Select outer viewport: 4, 4.4, 4.6, 5.8
-    Axes: 0, 1, 0, 1
-    Colour: "{0.5, 0.35, 0.6}"
-    Text: 0.95, "right", 0.5, "half", "Fadeout"
-    
-    # --- PARAMETERS & LEGEND ---
-    Select outer viewport: 0, 8, 5.9, 6.7
-    Axes: 0, 1, 0, 1
-    
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.4}"
-    
-    # Parameters
-    Text: 0.02, "left", 0.8, "half", "##Parameters##"
-    Font size: 5
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.02, "left", 0.55, "half", "Tail: " + fixed$(tail_duration, 1) + "s"
-    Text: 0.12, "left", 0.55, "half", "Stages: " + string$(number_of_warp_stages)
-    Text: 0.23, "left", 0.55, "half", "Disp: " + fixed$(max_displacement_factor, 2)
-    Text: 0.34, "left", 0.55, "half", "Strength: " + fixed$(warp_strength, 2)
-    Text: 0.47, "left", 0.55, "half", "Fadeout: " + fixed$(fadeout_duration, 1) + "s"
-    
-    # Legend
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.4}"
-    Text: 0.62, "left", 0.8, "half", "##Legend##"
-    
-    Font size: 5
-    Colour: "{0.8, 0.4, 0.4}"
-    Line width: 1
-    Dotted line
-    Draw line: 0.62, 0.55, 0.66, 0.55
-    Solid line
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.67, "left", 0.55, "half", "Original end"
-    
-    Colour: "{0.6, 0.6, 0.8}"
-    Dotted line
-    Draw line: 0.80, 0.55, 0.84, 0.55
-    Solid line
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.85, "left", 0.55, "half", "Fade start"
-    
-    # Info
-    Text: 0.02, "left", 0.2, "half", "Max displacement: " + fixed$(max_displacement_factor * original_duration * 1000, 0) + " ms"
-    Text: 0.30, "left", 0.2, "half", "Output duration: " + fixed$(total_duration, 2) + "s (" + fixed$((total_duration / original_duration - 1) * 100, 0) + "% longer)"
-    
-    # --- TIME AXIS ---
-    Select outer viewport: 0, 8, 6.7, 7.0
-    Select inner viewport: 0.8, 7.8, 6.75, 6.95
-    
-    Axes: 0, viz_duration, 0, 1
-    
-    Colour: "{0.3, 0.3, 0.4}"
-    Line width: 1
-    Draw line: 0, 0.7, viz_duration, 0.7
-    
-    Font size: 5
-    tickStep = 1
-    if viz_duration > 10
-        tickStep = 2
+
+    # ---- Left analysis panel: actual per-stage displacement ----
+    Select outer viewport: 0.15, 3.95, 2.35, 3.88
+    Select inner viewport: 0.65, 3.68, 2.62, 3.68
+
+    maxStageDelay = 0
+    for stage from 1 to number_of_warp_stages
+        maxStageDelay = max(maxStageDelay, cumulativeDelayL[stage], cumulativeDelayR[stage])
+    endfor
+    if maxStageDelay <= 0
+        maxStageDelay = 0.001
     endif
-    if viz_duration > 20
-        tickStep = 5
-    endif
-    
-    t = 0
-    while t <= viz_duration
-        Draw line: t, 0.7, t, 0.3
-        Text: t, "centre", 0.1, "half", string$(t)
-        t = t + tickStep
-    endwhile
-    
+
+    Axes: 0.5, number_of_warp_stages + 0.5, 0, maxStageDelay * 1150
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0.5, number_of_warp_stages + 0.5, 0, maxStageDelay * 1150
+
+    Colour: "{0.42, 0.58, 0.76}"
+    Line width: 1.5
+    for stage from 1 to number_of_warp_stages
+        Draw line: stage, 0, stage, cumulativeDelayL[stage] * 1000
+        Paint circle (mm): "{0.42, 0.58, 0.76}", stage, cumulativeDelayL[stage] * 1000, 1.1
+    endfor
+
+    Colour: "{0.78, 0.48, 0.42}"
+    for stage from 1 to number_of_warp_stages
+        Paint circle (mm): "{0.78, 0.48, 0.42}", stage, cumulativeDelayR[stage] * 1000, 1.1
+    endfor
+
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
     Font size: 6
-    Text: viz_duration / 2, "centre", -0.5, "half", "Time (s)"
-    
+    Text left: "yes", "Delay (ms)"
+    Text bottom: "yes", "Warp path"
+
+    Select outer viewport: 0.15, 3.95, 2.24, 2.48
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Warp-path endpoint delay"
+
+    # ---- Right analysis panel: actual curvature parameters ----
+    Select outer viewport: 4.05, 7.85, 2.35, 3.88
+    Select inner viewport: 4.48, 7.62, 2.62, 3.68
+    Axes: 0.5, number_of_warp_stages + 0.5, -0.40, 0.40
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0.5, number_of_warp_stages + 0.5, -0.40, 0.40
+
+    Colour: "{0.82, 0.82, 0.82}"
+    Draw line: 0.5, 0, number_of_warp_stages + 0.5, 0
+
+    Colour: "{0.42, 0.58, 0.76}"
+    for stage from 1 to number_of_warp_stages
+        Paint circle (mm): "{0.42, 0.58, 0.76}", stage, bendL[stage], 1.1
+    endfor
+
+    Colour: "{0.78, 0.48, 0.42}"
+    for stage from 1 to number_of_warp_stages
+        Paint circle (mm): "{0.78, 0.48, 0.42}", stage, bendR[stage], 1.1
+    endfor
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Bend"
+    Text bottom: "yes", "Warp path"
+
+    Select outer viewport: 4.05, 7.85, 2.24, 2.48
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Stereo path curvature"
+
+    # Small legend between analysis panels and summary.
+    Select outer viewport: 0, 8, 3.86, 4.02
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: "{0.42, 0.58, 0.76}"
+    Text: 0.46, "right", 0.5, "half", "LEFT"
+    Colour: "{0.78, 0.48, 0.42}"
+    Text: 0.54, "left", 0.5, "half", "RIGHT"
+
+    # Summary panel.
+    Select outer viewport: 0.35, 7.65, 4.05, 4.55
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Colour: "{0.35, 0.35, 0.35}"
+    Font size: 6
+    Text: 0.5, "centre", 0.68, "half", "Factor " + fixed$(effectiveFactor, 3) + " | Max path delay " + fixed$(maxDisplacement * 1000, 0) + " ms | Dry/Warp " + fixed$(dryGain, 2) + "/" + fixed$(wetGain, 2)
+    Text: 0.5, "centre", 0.30, "half", "Tail " + fixed$(effectiveTail, 2) + " s | Fade " + fixed$(fadeDuration, 2) + " s | Output " + fixed$(resultDuration, 2) + " s"
+
     Font size: 10
     Line width: 1
     Colour: "Black"
-    
-    appendInfoLine: "  Visualization complete"
 endif
 
 # ============================================================
-# OUTPUT
+# FINAL INFO / PLAY
 # ============================================================
 
-appendInfoLine: ""
-appendInfoLine: "=============================================="
-appendInfoLine: "  COMPLETE"
-appendInfoLine: "=============================================="
-appendInfoLine: ""
-appendInfoLine: "  Input duration: ", fixed$(original_duration, 3), " s"
-appendInfoLine: "  Output duration: ", fixed$(total_duration, 3), " s"
-appendInfoLine: "  Added tail: ", fixed$(tail_duration, 1), " s"
-appendInfoLine: ""
-appendInfoLine: "  Output: temporal_warping_stereo"
-appendInfoLine: ""
-
 selectObject: resultSound
+appendInfoLine: ""
+appendInfoLine: "=== Done ==="
+appendInfoLine: "Created: ", selected$("Sound")
+appendInfoLine: "Output duration: ", fixed$(resultDuration, 3), " s"
 
 if play_result
-    appendInfoLine: "Playing..."
     Play
 endif
 
-appendInfoLine: "Done!"
+selectObject: resultSound

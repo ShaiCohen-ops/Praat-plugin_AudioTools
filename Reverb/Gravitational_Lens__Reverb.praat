@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 2.1 FastIR WetMix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,73 @@
 #   warped delay times, amplitude lensing, and time dilation.
 #   Based loosely on Schwarzschild metric concepts. Creates
 #   organic, evolving diffusion patterns.
+#
+# Changelog v2.1 FastIR WetMix:
+#   - Rebuilt the Wet/Dry path around a genuinely WET-ONLY convolution signal.
+#   - The gravitational IR is still seeded with a unit impulse so all recursive
+#     reflections can be generated, but the direct sample is explicitly zeroed
+#     AFTER IR generation and BEFORE convolution.
+#   - Therefore the convolved wet path contains reflections/tail only; no dry
+#     cancellation by subtraction is needed in the final mixer.
+#   - Added source-dependent RMS calibration of the wet return over the source
+#     duration. This makes Wet_dry_percent perceptually meaningful instead of
+#     mixing a full-level dry signal against an arbitrarily quiet reverb return.
+#   - Wet calibration is safety-limited to 0.25x..4x (-12..+12 dB approx.).
+#   - 0% wet = exact dry; 100% wet = exact calibrated reverb return only.
+#   - Public form/defaults, presets, output naming and final selection unchanged.
+#
+# Changelog v2.0 FastIR:
+#   - Public form/defaults, output naming, wet/dry semantics, and final selection are unchanged.
+#   - Major architecture optimization: the gravitational network is rendered
+#     once into a short mono/stereo impulse response, then applied with Praat
+#     Convolve (sum, zero) instead of re-running hundreds of recursive Formula
+#     passes over the entire source.
+#   - Stereo keeps the original left/right random decorrelation by rendering
+#     left IR first and right IR second, preserving the RNG call order.
+#   - Mono and 3+ channel input use one shared mono IR; Praat applies it
+#     independently to every source channel.
+#   - Ray/reflection delays are quantized to the nearest sample (maximum
+#     deviation: half a sample), making the recursive network exactly LTI on
+#     the sample grid and therefore exactly representable by convolution.
+#   - The internal IR horizon is up to twice the requested tail, then the
+#     convolution result is trimmed back to the original source+tail duration.
+#     This preserves long-lag recursive energy that can still fold into the
+#     body of long source files while remaining much cheaper than full-source
+#     recursive processing. v1.3 Fast remains the conservative direct build.
+#
+# Changelog v1.3 Fast:
+#   - Public form/defaults, output naming, RNG sequence, and final selection are unchanged.
+#   - Major speed optimization with no intended DSP change: each recursive
+#     early-reflection/ray Formula now runs only from its delay to the end,
+#     because samples before that delay cannot receive a delayed contribution.
+#   - Formula(part) still executes left-to-right inside the active region, so
+#     the original recursive comb-like behaviour is preserved.
+#   - Visualization is unchanged; disabling Draw_visualization remains the
+#     fastest optional UI-side optimization.
+#
+# Changelog v1.2:
+#   - Corrected Wet/Dry semantics to match the public form exactly:
+#       0%   = dry only
+#       50%  = equal dry/effect crossfade
+#       100% = effect only
+#   - The processed buffer itself remains dry + reflections; the mixer now
+#     explicitly subtracts the dry component before applying the wet amount.
+#   - Gravitational-ray topology, presets, public form/defaults, output naming,
+#     and final selection are otherwise unchanged.
+#
+# Changelog v1.1:
+#   - Public form/defaults, output naming, and final selection are unchanged.
+#   - Added a private zero-based work copy so non-zero source xmin cannot
+#     invalidate delayed self(x-delay) reads or concatenation timing.
+#   - Fixed 3+ channel input: silent tail now matches source channel count;
+#     the existing shared-processing branch then processes every channel.
+#   - Wet/dry reads address row/column explicitly for multichannel safety.
+#   - Custom fadeout is limited to the reverb-tail duration, so it cannot
+#     fade the original dry material before the source ends.
+#   - Rays/early reflections beyond the available output are skipped.
+#   - Ray statistics report 0/0 when no ray contributes.
+#   - Final peak handling is a safety ceiling only, so 0% wet preserves
+#     a non-clipping dry source level instead of boosting it to 0.95.
 #
 # Changelog v1.0:
 #   - Fixed amplitude lensing: rays near mass now AMPLIFY (like real lensing)
@@ -81,6 +148,14 @@ selectObject: original
 originalDur = Get total duration
 sr = Get sampling frequency
 numChannels = Get number of channels
+
+selectObject: original
+workSource = Copy: "gravitational_lens_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
 
 # === Apply Presets ===
 if preset = 2
@@ -172,6 +247,9 @@ else
     presetName$ = "Custom"
 endif
 
+totalDur = originalDur + tail_duration_s
+effectiveFadeoutDuration = min(fadeout_duration_s, tail_duration_s)
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -219,7 +297,7 @@ if mass_points > 5
     writeInfoLine: "  ... (", mass_points - 5, " more)"
 endif
 writeInfoLine: ""
-writeInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
+writeInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "% wet (RMS-calibrated wet return)"
 writeInfoLine: ""
 
 # ============================================================
@@ -227,8 +305,11 @@ writeInfoLine: ""
 # ============================================================
 
 procedure applyEarlyReflections: .sound
-    # Adds tight early reflections for initial density
-    # These simulate the first wave of reflections before diffuse tail
+    # Adds tight early reflections for initial density. In FastIR this is
+    # evaluated on the short IR canvas, not on the full source.
+    selectObject: .sound
+    .soundDur = Get total duration
+    .er_channels = Get number of channels
     
     appendInfoLine: "  Adding ", early_reflections, " early reflections..."
     
@@ -239,15 +320,20 @@ procedure applyEarlyReflections: .sound
         # Slight randomization for organic feel
         .er_delay = .er_delay * randomUniform(0.9, 1.1)
         
-        selectObject: .sound
-        Formula: ~ self + .er_amp * self(x - .er_delay)
+        if .er_delay < .soundDur
+            selectObject: .sound
+            Formula (part): .er_delay, .soundDur, 1, .er_channels, ~ self + .er_amp * self(x - .er_delay)
+        endif
     endfor
 endproc
 
 
 procedure processGravitationalRays: .sound, .channelOffset
-    # Main ray processing with gravitational lensing
-    # .channelOffset provides slight variation for stereo decorrelation
+    # Main ray processing with gravitational lensing. FastIR renders this
+    # network on the short impulse-response canvas.
+    selectObject: .sound
+    .soundDur = Get total duration
+    .ray_channels = Get number of channels
     
     .totalProcessed = 0
     .minDelay = 999
@@ -305,9 +391,9 @@ procedure processGravitationalRays: .sound, .channelOffset
             .final_delay = .curved_delay * .time_dilation
             
             # Apply to sound
-            if .lensing_amp > 0.001 and .final_delay > 0.001
+            if .lensing_amp > 0.001 and .final_delay > 0.001 and .final_delay < .soundDur
                 selectObject: .sound
-                Formula: ~ self + .lensing_amp * self(x - .final_delay)
+                Formula (part): .final_delay, .soundDur, 1, .ray_channels, ~ self + .lensing_amp * self(x - .final_delay)
                 
                 .totalProcessed += 1
                 .totalAmp += .lensing_amp
@@ -322,149 +408,198 @@ procedure processGravitationalRays: .sound, .channelOffset
     endfor
     
     # Store statistics for info output
+    if .totalProcessed = 0
+        .minDelay = 0
+        .maxDelay = 0
+    endif
     processGravitationalRays.processed = .totalProcessed
     processGravitationalRays.minDelay = .minDelay
     processGravitationalRays.maxDelay = .maxDelay
-    processGravitationalRays.avgAmp = .totalAmp / (.totalProcessed + 0.001)
-endproc
-
-
-procedure applyWetDryMix: .wetSound, .drySound
-    # Applies wet/dry mix
-    
-    if dry_level > 0.001
-        selectObject: .wetSound
-        Formula: ~ self * wet_level + object[.drySound] * dry_level
+    if .totalProcessed > 0
+        processGravitationalRays.avgAmp = .totalAmp / .totalProcessed
+    else
+        processGravitationalRays.avgAmp = 0
     endif
 endproc
 
 
+procedure calibrateWetReturn: .wetSound, .drySource
+    # Match the wet-return RMS to the source RMS over the source duration.
+    # This calibrates the two paths BEFORE Wet/Dry is applied.
+    selectObject: .drySource
+    .dryRMS = Get root-mean-square: 0, originalDur
+
+    selectObject: .wetSound
+    .wetRMS = Get root-mean-square: 0, originalDur
+
+    .gain = 1
+    if .dryRMS > 0 and .wetRMS > 0
+        .gain = .dryRMS / .wetRMS
+        if .gain > 4
+            .gain = 4
+        elsif .gain < 0.25
+            .gain = 0.25
+        endif
+
+        Formula: ~ self * .gain
+    endif
+
+    calibrateWetReturn.gain = .gain
+    calibrateWetReturn.dryRMS = .dryRMS
+    calibrateWetReturn.wetRMS = .wetRMS
+endproc
+
+
+procedure applyWetDryMix: .wetSound, .drySound
+    # The wet path is now genuinely wet-only.
+    selectObject: .wetSound
+    Formula: ~ object[.drySound, row, col] * dry_level + self * wet_level
+endproc
+
+
 procedure applyFadeout: .sound, .totalDur
-    # Applies smooth cosine fadeout
-    
-    .fade_start = .totalDur - fadeout_duration_s
-    
+    # Applies smooth cosine fadeout only inside the reverb tail.
+    .fade_start = .totalDur - effectiveFadeoutDuration
+
     selectObject: .sound
-    Formula: ~ if x > .fade_start then self * (0.5 + 0.5 * cos(pi * (x - .fade_start) / fadeout_duration_s)) else self fi
+    Formula: ~ if x > .fade_start then self * (0.5 + 0.5 * cos(pi * (x - .fade_start) / effectiveFadeoutDuration)) else self fi
 endproc
 
 
 # ============================================================
-# MAIN PROCESSING
+# MAIN PROCESSING — FAST IR ARCHITECTURE
 # ============================================================
 
-appendInfoLine: "Processing..."
+appendInfoLine: "Processing FastIR..."
 
-# Create silent tail
-if numChannels = 2
-    Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
-else
-    Create Sound from formula: "silent_tail", 1, 0, tail_duration_s, sr, "0"
-endif
+# Keep the original zero-padded dry canvas for the true Wet/Dry crossfade.
+Create Sound from formula: "silent_tail", numChannels, 0, tail_duration_s, sr, "0"
 silentTail = selected("Sound")
+selectObject: silentTail
+tailSamples = Get number of samples
 
-# Concatenate original with tail
-selectObject: original, silentTail
+# workSource was created before silentTail, so Object-list order is source then tail.
+selectObject: workSource, silentTail
 Concatenate
 extendedSound = selected("Sound")
 removeObject: silentTail
 
-totalDur = originalDur + tail_duration_s
+# An M-sample IR convolved with an N-sample source produces N+M-1 samples.
+# Use tailSamples+1 so the convolution has the same sample count as the old
+# source+silent-tail processing canvas.
+irSamples = tailSamples + 1
+irDur = irSamples / sr
+appendInfoLine: "  IR canvas: ", fixed$(irDur, 3), " s (full output: ", fixed$(totalDur, 3), " s)"
+appendInfoLine: "  Approx. Formula workload reduction: ", fixed$(totalDur / irDur, 1), "x before convolution"
 
 if numChannels = 2
     # ============================================================
-    # STEREO PROCESSING
+    # STEREO: render decorrelated L/R IRs, then convolve once
     # ============================================================
-    
-    appendInfoLine: "  Processing stereo channels..."
-    
-    # Extract channels
-    selectObject: extendedSound
-    Extract one channel: 1
-    leftChannel = selected("Sound")
-    
-    selectObject: extendedSound
-    Extract one channel: 2
-    rightChannel = selected("Sound")
-    
-    # === LEFT CHANNEL ===
-    selectObject: leftChannel
-    Copy: "reverb_left"
-    reverbLeft = selected("Sound")
-    
-    appendInfoLine: "  Left channel:"
-    @applyEarlyReflections: reverbLeft
-    @processGravitationalRays: reverbLeft, 0
-    appendInfoLine: "    Rays processed: ", processGravitationalRays.processed
-    appendInfoLine: "    Delay range: ", fixed$(processGravitationalRays.minDelay, 3), " - ", fixed$(processGravitationalRays.maxDelay, 3), " s"
-    
-    # === RIGHT CHANNEL ===
-    selectObject: rightChannel
-    Copy: "reverb_right"
-    reverbRight = selected("Sound")
-    
-    appendInfoLine: "  Right channel:"
-    @applyEarlyReflections: reverbRight
-    @processGravitationalRays: reverbRight, 1
-    appendInfoLine: "    Rays processed: ", processGravitationalRays.processed
-    appendInfoLine: "    Delay range: ", fixed$(processGravitationalRays.minDelay, 3), " - ", fixed$(processGravitationalRays.maxDelay, 3), " s"
-    
-    # Apply wet/dry mix
-    @applyWetDryMix: reverbLeft, leftChannel
-    @applyWetDryMix: reverbRight, rightChannel
-    
-    # Apply fadeout
-    @applyFadeout: reverbLeft, totalDur
-    @applyFadeout: reverbRight, totalDur
-    
-    # Normalize
-    selectObject: reverbLeft
-    Scale peak: 0.95
-    
-    selectObject: reverbRight
-    Scale peak: 0.95
-    
-    # Combine to stereo
-    selectObject: reverbLeft, reverbRight
+    appendInfoLine: "  Rendering left gravitational IR..."
+    Create Sound from formula: "grav_ir_left", 1, 0, irDur, sr, "if col = 1 then 1 else 0 fi"
+    irLeft = selected("Sound")
+    @applyEarlyReflections: irLeft
+    @processGravitationalRays: irLeft, 0
+
+    # Remove the direct impulse only after it has seeded the complete network.
+    selectObject: irLeft
+    Formula (part): 0, 1 / sr, 1, 1, "0"
+
+    leftProcessedRays = processGravitationalRays.processed
+    leftMinDelay = processGravitationalRays.minDelay
+    leftMaxDelay = processGravitationalRays.maxDelay
+
+    appendInfoLine: "  Rendering right gravitational IR..."
+    Create Sound from formula: "grav_ir_right", 1, 0, irDur, sr, "if col = 1 then 1 else 0 fi"
+    irRight = selected("Sound")
+    @applyEarlyReflections: irRight
+    @processGravitationalRays: irRight, 1
+
+    # Remove the direct impulse only after it has seeded the complete network.
+    selectObject: irRight
+    Formula (part): 0, 1 / sr, 1, 1, "0"
+
+    rightProcessedRays = processGravitationalRays.processed
+    rightMinDelay = processGravitationalRays.minDelay
+    rightMaxDelay = processGravitationalRays.maxDelay
+
+    # Creation order is left then right, so Combine to stereo maps channels L/R.
+    selectObject: irLeft, irRight
     Combine to stereo
-    result = selected("Sound")
+    irStereo = selected("Sound")
+
+    appendInfoLine: "  Convolving stereo source with FastIR..."
+    selectObject: workSource, irStereo
+    Convolve: "sum", "zero"
+    processedSound = selected("Sound")
+
+    appendInfoLine: "  Left rays in IR: ", leftProcessedRays, "  delay ", fixed$(leftMinDelay, 3), "-", fixed$(leftMaxDelay, 3), " s"
+    appendInfoLine: "  Right rays in IR: ", rightProcessedRays, "  delay ", fixed$(rightMinDelay, 3), "-", fixed$(rightMaxDelay, 3), " s"
+
+    @calibrateWetReturn: processedSound, workSource
+    appendInfoLine: "  Wet return RMS calibration gain: ", fixed$(calibrateWetReturn.gain, 3), "x"
+    appendInfoLine: "    dry RMS=", fixed$(calibrateWetReturn.dryRMS, 6), "  wet RMS(before)=", fixed$(calibrateWetReturn.wetRMS, 6)
+
+    @calibrateWetReturn: processedSound, workSource
+    appendInfoLine: "  Wet return RMS calibration gain: ", fixed$(calibrateWetReturn.gain, 3), "x"
+    appendInfoLine: "    dry RMS=", fixed$(calibrateWetReturn.dryRMS, 6), "  wet RMS(before)=", fixed$(calibrateWetReturn.wetRMS, 6)
+
+    @applyWetDryMix: processedSound, extendedSound
+    @applyFadeout: processedSound, totalDur
+
+    selectObject: processedSound
+    resultPeak = Get absolute extremum: 0, 0, "None"
+    if resultPeak > 0.95
+        Scale peak: 0.95
+    endif
     Rename: originalName$ + "_gravitational_" + presetName$
-    
-    # Cleanup
-    removeObject: leftChannel, rightChannel, reverbLeft, reverbRight, extendedSound
+    result = selected("Sound")
+
+    removeObject: irLeft, irRight, irStereo, extendedSound
 
 else
     # ============================================================
-    # MONO PROCESSING
+    # MONO / 3+ CHANNELS: one shared mono gravitational IR
     # ============================================================
-    
-    appendInfoLine: "  Processing mono..."
-    
-    selectObject: extendedSound
-    Copy: "reverb_mono"
-    reverbMono = selected("Sound")
-    
-    @applyEarlyReflections: reverbMono
-    @processGravitationalRays: reverbMono, 0
-    
-    appendInfoLine: "  Rays processed: ", processGravitationalRays.processed
+    if numChannels = 1
+        appendInfoLine: "  Rendering mono gravitational IR..."
+    else
+        appendInfoLine: "  Rendering shared gravitational IR for ", numChannels, " channels..."
+    endif
+
+    Create Sound from formula: "grav_ir_shared", 1, 0, irDur, sr, "if col = 1 then 1 else 0 fi"
+    irShared = selected("Sound")
+    @applyEarlyReflections: irShared
+    @processGravitationalRays: irShared, 0
+
+    # Remove the direct impulse only after it has seeded the complete network.
+    selectObject: irShared
+    Formula (part): 0, 1 / sr, 1, 1, "0"
+
+    appendInfoLine: "  Rays in IR: ", processGravitationalRays.processed
     appendInfoLine: "  Delay range: ", fixed$(processGravitationalRays.minDelay, 3), " - ", fixed$(processGravitationalRays.maxDelay, 3), " s"
-    appendInfoLine: "  Avg amplitude: ", fixed$(processGravitationalRays.avgAmp, 4)
-    
-    # Apply wet/dry mix
-    @applyWetDryMix: reverbMono, extendedSound
-    
-    # Apply fadeout
-    @applyFadeout: reverbMono, totalDur
-    
-    # Normalize
-    selectObject: reverbMono
-    Scale peak: 0.95
+
+    # Praat applies a mono IR independently to every source channel.
+    selectObject: workSource, irShared
+    Convolve: "sum", "zero"
+    processedSound = selected("Sound")
+
+    @applyWetDryMix: processedSound, extendedSound
+    @applyFadeout: processedSound, totalDur
+
+    selectObject: processedSound
+    resultPeak = Get absolute extremum: 0, 0, "None"
+    if resultPeak > 0.95
+        Scale peak: 0.95
+    endif
     Rename: originalName$ + "_gravitational_" + presetName$
-    result = reverbMono
-    
-    removeObject: extendedSound
+    result = selected("Sound")
+
+    removeObject: irShared, extendedSound
 endif
+
+removeObject: workSource
 
 # ============================================================
 # VISUALIZATION
@@ -659,7 +794,7 @@ if draw_visualization
     Text: 0.02, "left", 0.22, "half",
         ... "Tail: " + fixed$(tail_duration_s, 1) + " s"
         ... + "  |  Early refl: " + string$(early_reflections)
-        ... + "  |  Fadeout: " + fixed$(fadeout_duration_s, 1) + " s"
+        ... + "  |  Fadeout: " + fixed$(effectiveFadeoutDuration, 1) + " s"
         ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
 
     # Legend symbols inline

@@ -3,16 +3,25 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Spectral Drift - frequency-dependent comb filtering with
-#   random drift. Creates peaks and notches at harmonic
-#   intervals, but with random shifting for organic character.
-#   The cosine modulation makes the effect vary with frequency.
-#   Creates metallic, phaser-like spectral coloration.
+#   Spectral Drift - stacked recursive comb-like stages with
+#   randomized per-cycle delay offsets around harmonic intervals.
+#   A cosine time-varying coefficient adds metallic motion and
+#   sideband-rich coloration. Random offsets are fixed for each
+#   render and are reused by the visualization.
+#
+# Changelog v0.3:
+#   - Reused the exact random delays shown in the visualization
+#   - Fixed wet/dry object indexing for Sound formulas
+#   - Fade now affects only the processed tail, never the dry source
+#   - Removed per-channel peak normalization before stereo recombination
+#   - Added common down-only peak protection after the final mix
+#   - Added mono/stereo, stability, and Nyquist guards
+#   - Uses actual concatenated duration for fade calculations
 #
 # Changelog v0.2:
 #   - Added input check
@@ -63,6 +72,10 @@ sr = Get sampling frequency
 numChannels = Get number of channels
 numSamples = Get number of samples
 
+if numChannels <> 1 and numChannels <> 2
+    exitScript: "Spectral Drift currently supports mono or stereo Sound objects only."
+endif
+
 # === Apply Presets ===
 if preset = 2
     # Subtle Drift
@@ -100,6 +113,20 @@ else
     presetName$ = "Custom"
 endif
 
+# Stability / design guards
+if effect_strength >= 1
+    exitScript: "Effect_strength must be below 1.0 for stable recursive processing."
+endif
+
+nyquist = sr / 2
+maxDesignFreq = base_frequency_Hz * number_of_cycles
+if numChannels = 2
+    maxDesignFreq = maxDesignFreq * 1.05
+endif
+if maxDesignFreq >= nyquist
+    exitScript: "Base_frequency_Hz * Number_of_cycles is too high for this sampling rate. Keep the highest cycle below Nyquist."
+endif
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -110,12 +137,27 @@ endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-# Pre-calculate drift parameters for visualization
+
+# Pre-calculate the exact random parameters used in processing.
+# The left/mono arrays are also used by the visualization.
 for cycle from 1 to number_of_cycles
     cycleFreq[cycle] = base_frequency_Hz * cycle
     cycleDelay[cycle] = sr / cycleFreq[cycle]
     cycleDrift[cycle] = randomUniform(0.5, 2.0)
-    cycleActualDelay[cycle] = cycleDelay[cycle] * cycleDrift[cycle]
+    cycleActualDelay[cycle] = round(cycleDelay[cycle] * cycleDrift[cycle])
+    if cycleActualDelay[cycle] < 1
+        cycleActualDelay[cycle] = 1
+    endif
+
+    if numChannels = 2
+        cycleFreqR[cycle] = base_frequency_Hz * 1.05 * cycle
+        cycleDelayR[cycle] = sr / cycleFreqR[cycle]
+        cycleDriftR[cycle] = randomUniform(0.6, 1.9)
+        cycleActualDelayR[cycle] = round(cycleDelayR[cycle] * cycleDriftR[cycle])
+        if cycleActualDelayR[cycle] < 1
+            cycleActualDelayR[cycle] = 1
+        endif
+    endif
 endfor
 
 # === Info ===
@@ -130,7 +172,11 @@ appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
 appendInfoLine: "Cycle frequencies:"
 for cycle from 1 to number_of_cycles
-    appendInfoLine: "  Cycle ", cycle, ": ", fixed$(cycleFreq[cycle], 1), " Hz, delay ", fixed$(cycleActualDelay[cycle], 1), " samples"
+    if numChannels = 2
+        appendInfoLine: "  Cycle ", cycle, ": L ", fixed$(cycleFreq[cycle], 1), " Hz / ", fixed$(cycleActualDelay[cycle], 0), " samples; R ", fixed$(cycleFreqR[cycle], 1), " Hz / ", fixed$(cycleActualDelayR[cycle], 0), " samples"
+    else
+        appendInfoLine: "  Cycle ", cycle, ": ", fixed$(cycleFreq[cycle], 1), " Hz, delay ", fixed$(cycleActualDelay[cycle], 0), " samples"
+    endif
 endfor
 appendInfoLine: ""
 
@@ -139,8 +185,6 @@ appendInfoLine: ""
 # ============================================================
 
 appendInfoLine: "Processing..."
-
-totalDur = originalDur + tail_duration_s
 
 # Create silent tail
 if numChannels = 2
@@ -156,7 +200,17 @@ Concatenate
 extendedSound = selected("Sound")
 removeObject: silentTail
 
-totalSamples = round(totalDur * sr)
+selectObject: extendedSound
+totalDur = Get total duration
+
+actualFade = fadeout_duration_s
+if actualFade > tail_duration_s
+    actualFade = tail_duration_s
+endif
+fade_start = totalDur - actualFade
+fade_str$ = string$(actualFade)
+start_str$ = string$(fade_start)
+
 sr_str$ = string$(sr)
 
 if numChannels = 2
@@ -178,84 +232,69 @@ if numChannels = 2
     driftLeft = selected("Sound")
     
     for cycle from 1 to number_of_cycles
-        base_freq = base_frequency_Hz * cycle
-        delay_samples = round(sr / base_freq)
-        drift_amount = randomUniform(0.5, 2.0)
-        actual_delay = round(delay_samples * drift_amount)
-        
-        # Ensure we don't go out of bounds (use backward reference)
-        if actual_delay < 1
-            actual_delay = 1
-        endif
-        
+        base_freq = cycleFreq[cycle]
+        actual_delay = cycleActualDelay[cycle]
+
         delay_str$ = string$(actual_delay)
         freq_str$ = string$(base_freq)
         strength_str$ = string$(effect_strength)
-        
+
         selectObject: driftLeft
-        # Use backward reference to avoid out-of-bounds
+        # Formula runs left-to-right, so self[col-delay] creates a recursive stage.
         Formula: "if col > " + delay_str$ + " then self + " + strength_str$ + " * (self[col - " + delay_str$ + "] - self) * cos(2*pi*col*" + freq_str$ + "/" + sr_str$ + ") else self fi"
     endfor
-    
-    Scale peak: 0.98
-    
+
     # Process right channel (slightly different parameters)
     selectObject: rightChannel
     Copy: "drift_right"
     driftRight = selected("Sound")
     
     for cycle from 1 to number_of_cycles
-        base_freq = base_frequency_Hz * 1.05 * cycle
-        delay_samples = round(sr / base_freq)
-        drift_amount = randomUniform(0.6, 1.9)
-        actual_delay = round(delay_samples * drift_amount)
-        
-        if actual_delay < 1
-            actual_delay = 1
-        endif
-        
+        base_freq = cycleFreqR[cycle]
+        actual_delay = cycleActualDelayR[cycle]
+
         delay_str$ = string$(actual_delay)
         freq_str$ = string$(base_freq)
         strength_R = effect_strength * 0.95
         strength_str$ = string$(strength_R)
-        
+
         selectObject: driftRight
         Formula: "if col > " + delay_str$ + " then self + " + strength_str$ + " * (self[col - " + delay_str$ + "] - self) * cos(2*pi*col*" + freq_str$ + "/" + sr_str$ + ") else self fi"
     endfor
-    
-    Scale peak: 0.98
-    
-    # Apply wet/dry mix
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        left_str$ = string$(leftChannel)
-        right_str$ = string$(rightChannel)
-        
-        selectObject: driftLeft
-        Formula: "self * " + wet_str$ + " + object[" + left_str$ + "] * " + dry_str$
-        
-        selectObject: driftRight
-        Formula: "self * " + wet_str$ + " + object[" + right_str$ + "] * " + dry_str$
-    endif
-    
-    # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
+
+    # Fade only the processed tail. actualFade is capped to tail_duration_s,
+    # so this never attenuates the source region.
     selectObject: driftLeft
     Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    
+
     selectObject: driftRight
     Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    
+
+    # Apply processed/dry mix. Sound lookup requires row and column.
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+    left_str$ = string$(leftChannel)
+    right_str$ = string$(rightChannel)
+
+    selectObject: driftLeft
+    Formula: "self * " + wet_str$ + " + object[" + left_str$ + ", 1, col] * " + dry_str$
+
+    selectObject: driftRight
+    Formula: "self * " + wet_str$ + " + object[" + right_str$ + ", 1, col] * " + dry_str$
+
     # Combine
     selectObject: driftLeft, driftRight
     Combine to stereo
     result = selected("Sound")
     Rename: originalName$ + "_drift_" + presetName$
-    
+
+    # Common down-only peak protection preserves stereo balance.
+    selectObject: result
+    peak = Get absolute extremum: 0, 0, "none"
+    if wet_level > 0 and peak > 0.98
+        Scale peak: 0.98
+    endif
+
     # Cleanup
     removeObject: leftChannel, rightChannel, driftLeft, driftRight, extendedSound
 
@@ -268,46 +307,39 @@ else
     driftMono = selected("Sound")
     
     for cycle from 1 to number_of_cycles
-        base_freq = base_frequency_Hz * cycle
-        delay_samples = round(sr / base_freq)
-        drift_amount = randomUniform(0.5, 2.0)
-        actual_delay = round(delay_samples * drift_amount)
-        
-        if actual_delay < 1
-            actual_delay = 1
-        endif
-        
+        base_freq = cycleFreq[cycle]
+        actual_delay = cycleActualDelay[cycle]
+
         delay_str$ = string$(actual_delay)
         freq_str$ = string$(base_freq)
         strength_str$ = string$(effect_strength)
-        
+
         selectObject: driftMono
         Formula: "if col > " + delay_str$ + " then self + " + strength_str$ + " * (self[col - " + delay_str$ + "] - self) * cos(2*pi*col*" + freq_str$ + "/" + sr_str$ + ") else self fi"
     endfor
-    
-    Scale peak: 0.98
-    
-    # Apply wet/dry mix
-    if dry_level > 0
-        wet_str$ = string$(wet_level)
-        dry_str$ = string$(dry_level)
-        ext_str$ = string$(extendedSound)
-        
-        selectObject: driftMono
-        Formula: "self * " + wet_str$ + " + object[" + ext_str$ + "] * " + dry_str$
-    endif
-    
-    # Apply fadeout
-    fade_start = totalDur - fadeout_duration_s
-    fade_str$ = string$(fadeout_duration_s)
-    start_str$ = string$(fade_start)
-    
+
+    # Fade only the processed tail.
     selectObject: driftMono
     Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-    
+
+    # Apply processed/dry mix.
+    wet_str$ = string$(wet_level)
+    dry_str$ = string$(dry_level)
+    ext_str$ = string$(extendedSound)
+
+    selectObject: driftMono
+    Formula: "self * " + wet_str$ + " + object[" + ext_str$ + ", 1, col] * " + dry_str$
+
     Rename: originalName$ + "_drift_" + presetName$
     result = driftMono
-    
+
+    # Down-only peak protection; bypassed at 0% wet so dry stays untouched.
+    selectObject: result
+    peak = Get absolute extremum: 0, 0, "none"
+    if wet_level > 0 and peak > 0.98
+        Scale peak: 0.98
+    endif
+
     removeObject: extendedSound
 endif
 
@@ -418,7 +450,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.1, 4.5
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Cycles: " + string$(number_of_cycles) + " | Base freq: " + string$(base_frequency_Hz) + " Hz | Strength: " + fixed$(effect_strength, 2) + " | Drift range: 0.5-2.0×"
+    Text: 0.5, "centre", 0.5, "half", "Cycles: " + string$(number_of_cycles) + " | Base freq: " + string$(base_frequency_Hz) + " Hz | Strength: " + fixed$(effect_strength, 2) + " | L/mono drift: 0.5-2.0x"
     
     Font size: 10
     Colour: "Black"

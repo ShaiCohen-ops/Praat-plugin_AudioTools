@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Visualization alignment fix
+# Version: 0.4 (2026) - Multichannel/domain hardening
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,24 @@
 #   that become sparser over time (like real room acoustics).
 #   L and R channels use different Fibonacci seeds and jitter
 #   for natural stereo decorrelation.
+#
+# Changelog v0.4:
+#   - Public form/defaults and output naming are unchanged.
+#   - Added a private zero-based work copy so non-zero source xmin
+#     does not shift convolution/trim timing.
+#   - Fixed 3+ channel input: build an N-channel Fibonacci IR by
+#     alternating the existing L/R IRs across channels. Mono and stereo
+#     retain the original v0.3 stereo behavior.
+#   - Dry extension now matches the actual output channel count.
+#   - Pulse_period is sanitized internally as integer interpolation depth
+#     for PointProcess: To Sound (pulse train); public field names stay
+#     unchanged for caller compatibility.
+#   - Added a practical 256-impulse ceiling for pathological Custom input.
+#   - Safe IR normalization skips silent pulse trains.
+#   - Convolution trim uses the actual N+M-1 result duration.
+#   - Final peak handling is a safety ceiling only; Wet=0% preserves the
+#     dry signal level instead of forcibly boosting it to 0.95.
+#   - Explicit row/column dry reads preserve multichannel routing.
 #
 # Changelog v0.3:
 #   - Visualization: title and bottom parameter line now set their own Axes
@@ -81,6 +99,16 @@ originalName$ = selected$("Sound")
 selectObject: original
 originalDur = Get total duration
 sr = Get sampling frequency
+numChans = Get number of channels
+
+# Private zero-based processing copy; the caller's original Sound is untouched.
+selectObject: original
+workSource = Copy: "fibonacci_work"
+selectObject: workSource
+workStart = Get start time
+if workStart <> 0
+    Shift times by: -workStart
+endif
 
 # === Apply Presets ===
 if preset = 2
@@ -147,6 +175,22 @@ else
     presetName$ = "Custom"
 endif
 
+# Internal guards; built-in presets are already within these limits.
+if number_of_impulses > 256
+    number_of_impulses = 256
+endif
+
+minIRDuration = 4 / sr
+if iR_duration_s < minIRDuration
+    iR_duration_s = minIRDuration
+endif
+
+# PointProcess: To Sound (pulse train) expects an integer interpolation depth.
+pulseInterpolationDepth = round(pulse_period)
+if pulseInterpolationDepth < 1
+    pulseInterpolationDepth = 1
+endif
+
 # Clamp wet/dry
 if wet_dry_percent < 0
     wet_dry_percent = 0
@@ -185,7 +229,9 @@ appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Left channel: seeds(", left_fib_start_1, ",", left_fib_start_2, ") scale=", left_scale_divisor, " jitter=", fixed$(left_jitter_s * 1000, 1), "ms"
 appendInfoLine: "Right channel: seeds(", right_fib_start_1, ",", right_fib_start_2, ") scale=", right_scale_divisor, " jitter=", fixed$(right_jitter_s * 1000, 1), "ms"
-appendInfoLine: "IR duration: ", fixed$(iR_duration_s, 1), " s"
+appendInfoLine: "IR duration: ", fixed$(iR_duration_s, 3), " s"
+appendInfoLine: "Pulse-train adaptation: factor=", fixed$(pulse_amplitude, 3),
+    ... " time=", fixed$(pulse_width, 4), " s  depth=", pulseInterpolationDepth
 appendInfoLine: "Wet/Dry: ", wet_dry_percent, "%"
 appendInfoLine: ""
 appendInfoLine: "Fibonacci tap times (no jitter):"
@@ -256,30 +302,65 @@ appendInfoLine: "    Added ", rightPoints, " points"
 appendInfoLine: "  Converting to pulse trains..."
 
 selectObject: ppLeft
-To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulse_period
+To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulseInterpolationDepth
 irLeft = selected("Sound")
-Scale peak: 0.9
+selectObject: irLeft
+irLeftPeak = Get absolute extremum: 0, 0, "None"
+if irLeftPeak > 0
+    Scale peak: 0.9
+endif
 
 selectObject: ppRight
-To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulse_period
+To Sound (pulse train): sr, pulse_amplitude, pulse_width, pulseInterpolationDepth
 irRight = selected("Sound")
-Scale peak: 0.9
+selectObject: irRight
+irRightPeak = Get absolute extremum: 0, 0, "None"
+if irRightPeak > 0
+    Scale peak: 0.9
+endif
 
-# === COMBINE TO STEREO IR ===
-selectObject: irLeft, irRight
-Combine to stereo
-irStereo = selected("Sound")
+# === BUILD OUTPUT IR ===
+# If both convolution operands are multichannel Praat requires equal channel
+# counts. Mono/stereo keep the original stereo IR; 3+ channels alternate L/R.
+if numChans <= 2
+    selectObject: irLeft, irRight
+    Combine to stereo
+    irStereo = selected("Sound")
+    irOutputChannels = 2
+else
+    for channelIndex from 1 to numChans
+        if channelIndex mod 2 = 1
+            selectObject: irLeft
+        else
+            selectObject: irRight
+        endif
+        irChanID[channelIndex] = Copy: "fib_ir_ch_" + string$(channelIndex)
+    endfor
+
+    selectObject: irChanID[1]
+    for channelIndex from 2 to numChans
+        plusObject: irChanID[channelIndex]
+    endfor
+    Combine to stereo
+    irStereo = selected("Sound")
+    irOutputChannels = numChans
+
+    for channelIndex from 1 to numChans
+        removeObject: irChanID[channelIndex]
+    endfor
+endif
 
 # === CONVOLVE ===
 appendInfoLine: "  Convolving..."
 
-selectObject: original, irStereo
+selectObject: workSource, irStereo
 Convolve: "sum", "zero"
 wetSound = selected("Sound")
 
-# Trim to reasonable length
-totalDur = originalDur + iR_duration_s
+# Discrete convolution contains N + M - 1 samples.
 selectObject: wetSound
+wetAvailableDur = Get total duration
+totalDur = min(originalDur + iR_duration_s, wetAvailableDur)
 Extract part: 0, totalDur, "rectangular", 1, "no"
 wetTrimmed = selected("Sound")
 removeObject: wetSound
@@ -288,30 +369,30 @@ removeObject: wetSound
 if dry_level > 0
     appendInfoLine: "  Mixing wet/dry..."
     
-    # Need stereo dry signal
-    selectObject: original
-    numCh = Get number of channels
-    
-    if numCh = 1
-        # Convert mono to stereo
-        selectObject: original
+    # Match the dry path to the convolution output channel count.
+    if numChans = 1
+        # Mono source + stereo IR produces stereo output.
+        selectObject: workSource
         Copy: "dry_L"
         dryL = selected("Sound")
-        selectObject: original
+        selectObject: workSource
         Copy: "dry_R"
         dryR = selected("Sound")
         selectObject: dryL, dryR
         Combine to stereo
         dryStereo = selected("Sound")
         removeObject: dryL, dryR
+        dryOutputChannels = 2
     else
-        selectObject: original
-        Copy: "dry_stereo"
+        # Stereo and 3+ channel inputs preserve their channel count.
+        selectObject: workSource
+        Copy: "dry_multichannel"
         dryStereo = selected("Sound")
+        dryOutputChannels = numChans
     endif
-    
+
     # Extend dry signal
-    Create Sound from formula: "silence_ext", 2, 0, iR_duration_s, sr, "0"
+    Create Sound from formula: "silence_ext", dryOutputChannels, 0, iR_duration_s, sr, "0"
     silenceExt = selected("Sound")
     
     selectObject: dryStereo, silenceExt
@@ -325,13 +406,16 @@ if dry_level > 0
     dry_full_str$ = string$(dryFull)
     
     selectObject: wetTrimmed
-    Formula: "self * " + wet_str$ + " + object[" + dry_full_str$ + "] * " + dry_str$
+    Formula: "self * " + wet_str$ + " + object[" + dry_full_str$ + ", row, col] * " + dry_str$
     
     removeObject: dryFull
 endif
 
 selectObject: wetTrimmed
-Scale peak: 0.95
+resultPeak = Get absolute extremum: 0, 0, "None"
+if resultPeak > 0.95
+    Scale peak: 0.95
+endif
 Rename: originalName$ + "_fibonacci_" + presetName$
 result = selected("Sound")
 
@@ -440,6 +524,7 @@ else
 endif
 
 removeObject: ppLeft, ppRight, irLeft, irRight
+removeObject: workSource
 
 # === Final Info ===
 selectObject: result
