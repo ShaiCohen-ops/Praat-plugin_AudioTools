@@ -1,10 +1,47 @@
 # ============================================================================
-# ReiterantProsodySynth_KlattGrid.praat  — Reiterant / "gibberish speech"
-#                                          prosody synth  •  KlattGrid edition
+# Prosodic_Reiterant_Speech.praat  — Reiterant / "gibberish speech"
+#                                    prosody synth  •  KlattGrid edition
 #
 # Part of Praat AudioTools plugin
 # Author: Shai Cohen, Department of Music, Bar-Ilan University
-# Version: 2.5 (2026)   |   License: MIT   |   PURE PRAAT (no Python)
+# Version: 2.6.2 (2026)   |   License: MIT   |   PURE PRAAT (no Python)
+#
+# WHAT IS NEW in v2.6.2
+#   VISUALIZATION-ONLY redesign. DSP and numerical QC are unchanged.
+#   1. Panel A shows the measured timing scaffold: speech regions, syllable
+#      boundaries, nuclei, and (when sparse enough) the actual reiterant labels.
+#   2. Panel B now visualizes the F0 mechanism itself: source, manipulated target,
+#      and synthesized output in semitones relative to the speaker median. This is
+#      the same log domain in which Pitch_strength is defined.
+#   3. Panel C compares intensity SHAPE after independently mean-centering source
+#      and output over the exact QC-eligible frames; the y-axis is symmetric.
+#   4. Default Panel D is a process diagram explaining the experimental mapping.
+#      The optional spectrogram remains available when Draw_spectrogram is enabled.
+#   5. All panel titles live in independent text strips; data viewports are
+#      reselected before drawing, preventing inherited-axis/text overflow bugs.
+#   6. The bottom QC area is now a three-column research dashboard rather than
+#      three long text lines.
+#
+# WHAT IS NEW in v2.6
+#   1. BLOCKER FIX: source Pitch dropouts no longer mute the synthetic signal
+#      frame-by-frame. V/UV gating is now opt-in and applies only to sustained
+#      unvoiced runs longer than a user-defined minimum (default 50 ms).
+#   2. Plosive closures are precomputed before the intensity envelope is built;
+#      generic envelope points are skipped through closure+VOT, so /ba/ and /de/
+#      now contain a real local silence interval. Release level follows local dB.
+#   3. Nasal pole+zero are explicitly controlled. /m/ and /n/ use separated
+#      onset zeros plus a ~270-Hz nasal pole; both pole and zero are parked at
+#      identical idle values before/after the onset to keep the vowel transparent.
+#   4. Presets now have an explicit contract. Presets set their synthesis defaults;
+#      a new Custom option honours the form controls literally. Default regains
+#      modest F0 microvariation instead of silently producing zero jitter.
+#   5. Research_seed is a form parameter; 0 requests an unpredictable run. Fixed
+#      non-zero seeds remain reproducible and Praat's RNG is restored afterwards.
+#   6. QC now separates source-vs-output F0 preservation from target-vs-output
+#      synthesis accuracy. Intensity QC reports correlation, regression slope,
+#      and offset-removed shape RMSE; the figure shows the offset-aligned contour.
+#   7. The t=0 open-phase seed no longer collides with a real intensity-derived
+#      OQ point when speech begins at time zero. Header/UI cleanup included.
 #
 # WHAT IS NEW in v2.5
 #   1. Research reproducibility: all stochastic syllable choices, F0
@@ -14,12 +51,12 @@
 #   2. Pitch_strength=0 is now a STRICT monotone endpoint: the target F0 is
 #      exactly the speaker median throughout voiced frames; syllabic F0
 #      microvariation cannot reintroduce an intonation contour at alpha=0.
-#   3. Source voiced/unvoiced decisions now gate the synthetic voicing-amplitude
-#      tier. Undefined source Pitch is no longer silently converted into a
-#      continuously voiced carried-forward F0 percept.
-#   4. Intensity mapping preserves source dB DIFFERENCES: the source envelope is
-#      shifted to a safe KlattGrid operating level instead of being stretched
-#      to a fixed 28-dB range.
+#   3. (Superseded in v2.6) Source V/UV decisions were used as a frame-wise
+#      voicing gate. Runtime testing showed tracker dropouts could punch holes
+#      into speech, so v2.6 makes sustained-run gating opt-in.
+#   4. Intensity mapping translates the source dB contour into the KlattGrid
+#      operating range without the old 28-dB range stretch. v2.6 QC explicitly
+#      measures contour correlation/slope because the synthesizer can reshape it.
 #   5. Numerical QC is computed for reiterant output even when the figure is
 #      disabled: target-vs-output F0 correlation and semitone RMSE, voiced/
 #      unvoiced agreement, speech/pause agreement, intensity-envelope
@@ -90,13 +127,13 @@
 #   how natural running speech works: the glottal source is mostly
 #   continuous, and the percept of syllable boundaries arises from resonator
 #   modulation, not from source switching.  Plosive closures (/ba/, /de/)
-#   still receive a brief, localised amplitude dip only for the VOT interval.
+#   receive a brief, localised closure plus VOT ramp, written explicitly.
 #
 #   v2 synthesises one CONTINUOUS KlattGrid for the entire utterance, giving:
 #     • Per-syllable F0 contour (extracted from the source Pitch object).
 #     • Per-syllable formant tiers (vowel body: F1/F2/F3/F4/F5 from the
 #       neutral vowel target for that consonant class).
-#     • Nasal antiformant (zero) at ~520 Hz during onset of /ma/ and /na/
+#     • Nasal pole + place-dependent antiformant during onset of /ma/ and /na/
 #       — approximates the nasal murmur spectral dip.
 #     • Plosive closure for /ba/ and /de/: a short silence gap
 #       (≥ 30 ms) + abrupt OQ-driven onset burst, no pre-onset voicing.
@@ -137,6 +174,7 @@ form Reiterant Prosody Synthesizer  (KlattGrid edition)
         option Natural Speech
         option Expressive
         option Minimal (fast)
+        option Custom (use controls below literally)
     comment === Parameters ===
     optionmenu Syllable_pattern: 1
         option ma
@@ -159,11 +197,15 @@ form Reiterant Prosody Synthesizer  (KlattGrid edition)
     real Output_peak 0.85
     comment --- Human/robotic continuum (0=robotic, 1=natural) ---
     real Naturalness 1.0
-    comment --- Fine controls (Naturalness scales these when > 0) ---
+    comment --- Fine controls (literal in Custom; presets set their own defaults) ---
     real Jitter_amount 0.0
     real Oq_flat 0.7
     comment --- Intonation gradient: 1=natural contour, 0=monotone at median ---
     real Pitch_strength 1.0
+    comment --- Research reproducibility / optional source V-UV gating ---
+    integer Research_seed 20260814
+    boolean Gate_long_unvoiced_runs 0
+    positive Minimum_unvoiced_gate_s 0.05
     boolean Draw_QC 1
     boolean Draw_spectrogram 0
     boolean Play_result 1
@@ -171,89 +213,73 @@ endform
 
 # ---------------------------------------------------------------------------
 # 0-pre. Apply Presets
-#   Presets supply defaults only. If the user changed a fine-control field
-#   away from its form default, that explicit value wins. This is the closest
-#   caller-compatible way to support "choose preset, then tweak" without
-#   changing the public form.
+#   v2.6 contract: Presets are complete synthesis defaults. Choose Custom to
+#   honour Naturalness/Jitter/OQ and segmentation controls literally.
+#   Pitch_strength remains independent because it is the experimental alpha.
 # ---------------------------------------------------------------------------
 if preset = 1
     presetName$ = "Default"
+    naturalness = 1.0
+    jitter_amount = 0.4
+    oq_flat = 0.70
+    silence_threshold_dB_below_peak = 25
+    minimum_pause_duration_s = 0.12
+    minimum_syllable_duration_s = 0.08
+    maximum_syllable_duration_s = 0.45
 elsif preset = 2
     presetName$ = "Robotic"
-    if naturalness = 1.0
-        naturalness = 0.0
-    endif
-    if oq_flat = 0.7
-        oq_flat = 0.5
-    endif
+    naturalness = 0.0
+    jitter_amount = 0.0
+    oq_flat = 0.50
+    silence_threshold_dB_below_peak = 25
+    minimum_pause_duration_s = 0.12
+    minimum_syllable_duration_s = 0.08
+    maximum_syllable_duration_s = 0.45
 elsif preset = 3
     presetName$ = "Natural Speech"
-    if jitter_amount = 0.0
-        jitter_amount = 0.4
-    endif
-    if oq_flat = 0.7
-        oq_flat = 0.75
-    endif
-    if silence_threshold_dB_below_peak = 25
-        silence_threshold_dB_below_peak = 20
-    endif
-    if minimum_pause_duration_s = 0.12
-        minimum_pause_duration_s = 0.10
-    endif
-    if minimum_syllable_duration_s = 0.08
-        minimum_syllable_duration_s = 0.07
-    endif
-    if maximum_syllable_duration_s = 0.45
-        maximum_syllable_duration_s = 0.40
-    endif
+    naturalness = 1.0
+    jitter_amount = 0.4
+    oq_flat = 0.75
+    silence_threshold_dB_below_peak = 20
+    minimum_pause_duration_s = 0.10
+    minimum_syllable_duration_s = 0.07
+    maximum_syllable_duration_s = 0.40
 elsif preset = 4
     presetName$ = "Expressive"
-    if jitter_amount = 0.0
-        jitter_amount = 0.8
-    endif
-    if oq_flat = 0.7
-        oq_flat = 0.85
-    endif
-    if silence_threshold_dB_below_peak = 25
-        silence_threshold_dB_below_peak = 18
-    endif
-    if minimum_pause_duration_s = 0.12
-        minimum_pause_duration_s = 0.08
-    endif
-    if minimum_syllable_duration_s = 0.08
-        minimum_syllable_duration_s = 0.06
-    endif
-    if maximum_syllable_duration_s = 0.45
-        maximum_syllable_duration_s = 0.50
-    endif
+    naturalness = 1.0
+    jitter_amount = 0.8
+    oq_flat = 0.85
+    silence_threshold_dB_below_peak = 18
+    minimum_pause_duration_s = 0.08
+    minimum_syllable_duration_s = 0.06
+    maximum_syllable_duration_s = 0.50
 elsif preset = 5
     presetName$ = "Minimal"
-    if naturalness = 1.0
-        naturalness = 0.3
-    endif
-    if oq_flat = 0.7
-        oq_flat = 0.6
-    endif
-    if silence_threshold_dB_below_peak = 25
-        silence_threshold_dB_below_peak = 30
-    endif
-    if minimum_pause_duration_s = 0.12
-        minimum_pause_duration_s = 0.15
-    endif
-    if minimum_syllable_duration_s = 0.08
-        minimum_syllable_duration_s = 0.10
-    endif
+    naturalness = 0.3
+    jitter_amount = 0.15
+    oq_flat = 0.60
+    silence_threshold_dB_below_peak = 30
+    minimum_pause_duration_s = 0.15
+    minimum_syllable_duration_s = 0.10
+    maximum_syllable_duration_s = 0.45
+else
+    presetName$ = "Custom"
 endif
 
 # ---------------------------------------------------------------------------
 # 0. Constants / tuning
 # ---------------------------------------------------------------------------
-synthSr   = 44100
 gstep     = 0.01
 targetSyl = 0.20
 
-# Research reproducibility. Kept internal to preserve the public form/API.
-researchSeed = 20260814
+# Research reproducibility: 0 = unpredictable run, non-zero = fixed seed.
+researchSeed = research_seed
+if researchSeed < 0
+    researchSeed = -researchSeed
+endif
+if minimum_unvoiced_gate_s < 0.02
+    minimum_unvoiced_gate_s = 0.02
+endif
 
 # Defensive guards for caller-supplied / Custom-like values.
 if minimum_pause_duration_s < 0
@@ -280,9 +306,9 @@ endif
 #     naturalness  0 = fully robotic (all stochastic variation suppressed)
 #                  1 = fully natural (full jitter/shimmer/OQ swing/drift)
 #
-#     Explicit fine-grained sliders are honoured when Naturalness = 1;
-#     at any lower value they are proportionally attenuated so the single
-#     Naturalness knob remains the dominant control.
+#     In Custom, Jitter_amount is literal and Naturalness scales the resulting
+#     stochastic variation. Presets set Jitter_amount explicitly, avoiding the
+#     old ambiguity where 0 could mean either "auto" or "zero".
 # ---------------------------------------------------------------------------
 if naturalness < 0
     naturalness = 0
@@ -394,7 +420,7 @@ if ceilingHz <= floorHz
     exitScript: "Pitch ceiling must be greater than pitch floor."
 endif
 
-writeInfoLine:  "=== Reiterant Prosody Synthesizer v2.4 (KlattGrid) ==="
+writeInfoLine:  "=== Reiterant Prosody Synthesizer v2.6 (KlattGrid) ==="
 appendInfoLine: "Source:      ", sourceName$
 appendInfoLine: "Preset:      ", presetName$
 appendInfoLine: "Pattern:     ", patternStr$
@@ -761,7 +787,7 @@ endif
 #      • An onset locus  (F1o..F2o) that transitions to the target
 #      • An onset fraction fo  (0..1 of syllable duration)
 #      • A plosive flag  plos (1 = silence gap + abrupt onset)
-#      • A nasal flag    nas  (1 = add antiformant zero at ~520 Hz)
+#      • A nasal flag    nas  (1 = add nasal pole + place-dependent zero)
 # ---------------------------------------------------------------------------
 #  Formant targets (Hz)     F1    F2    F3    F4    F5
 #  Bandwidths (Hz)          B1    B2    B3    B4    B5
@@ -806,9 +832,13 @@ appendInfoLine: "[3/6] Building continuous KlattGrid..."
 #       nTrachealFormants, nTrachealAntiFormants, nDeltaFormants, nFrication
 kg = Create KlattGrid: "rps_kg", 0, origDur, 6, 1, 1, 6, 1, 1, 1
 
-# Deterministic stimulus generation. Restore the global RNG after the last
-# random syllable/formant/shimmer draw so callers are not left with a seeded RNG.
-random_initializeWithSeedUnsafelyButPredictably (researchSeed)
+# Reproducible when seed is non-zero; unpredictable when seed = 0. Restore
+# Praat's global RNG after the last stochastic draw in either case.
+if researchSeed = 0
+    random_initializeSafelyAndUnpredictably ()
+else
+    random_initializeWithSeedUnsafelyButPredictably (researchSeed)
+endif
 
 # ---- 8a. F0 tier: sample source Pitch across entire duration ---------------
 #          The Pitch tier stays continuous for KlattGrid synthesis, while a
@@ -874,14 +904,51 @@ for i from 0 to nPtGlobal
     qcF0Time[nQcF0] = tg
     qcSourceVoiced[nQcF0] = sourceVoiced
     if sourceVoiced = 1
+        qcSourceF0[nQcF0] = sourceF0g
         qcTargetF0[nQcF0] = f0g
     else
+        qcSourceF0[nQcF0] = 0
         qcTargetF0[nQcF0] = 0
     endif
 
     selectObject: kg
     Add pitch point: tg, f0g
 endfor
+
+# ---- 8a-iib. Optional sustained source V/UV gate ----------------------------
+# Frame-wise Pitch dropouts are NOT used as an amplitude gate. If explicitly
+# enabled, only contiguous source-unvoiced runs >= minimum_unvoiced_gate_s are
+# allowed to mute the generic synthetic voicing envelope.
+nUvGate = 0
+gatedDuration = 0
+if gate_long_unvoiced_runs = 1
+    uvActive = 0
+    uvStart = 0
+    for qi from 1 to nQcF0
+        if qcSourceVoiced[qi] = 0 and uvActive = 0
+            uvActive = 1
+            uvStart = qcF0Time[qi]
+        elsif qcSourceVoiced[qi] = 1 and uvActive = 1
+            uvEnd = qcF0Time[qi]
+            if uvEnd - uvStart >= minimum_unvoiced_gate_s
+                nUvGate = nUvGate + 1
+                uvGateStart[nUvGate] = uvStart
+                uvGateEnd[nUvGate] = uvEnd
+                gatedDuration = gatedDuration + (uvEnd - uvStart)
+            endif
+            uvActive = 0
+        endif
+    endfor
+    if uvActive = 1
+        uvEnd = origDur
+        if uvEnd - uvStart >= minimum_unvoiced_gate_s
+            nUvGate = nUvGate + 1
+            uvGateStart[nUvGate] = uvStart
+            uvGateEnd[nUvGate] = uvEnd
+            gatedDuration = gatedDuration + (uvEnd - uvStart)
+        endif
+    endif
+endif
 
 # ---- 8a-ii. OQ (open quotient) tier ----------------------------------------
 #   OQ is mapped from local intensity: higher intensity → lower OQ (more closed,
@@ -894,7 +961,11 @@ if ampRange < 1
     ampRange = 1
 endif
 selectObject: kg
-Add open phase point: 0, oq_flat
+# If speech starts at t=0, the first loop point is the real intensity-derived
+# OQ value. Do not occupy t=0 with a default that would silently win.
+if nReg < 1 or regStart[1] > 0.0000001
+    Add open phase point: 0, oq_flat
+endif
 
 oqSampleStep = 0.015
 for r from 1 to nReg
@@ -941,9 +1012,10 @@ pauseBw   = 1000   ; bandwidth in silence / at region edges
 silenceDb = -80    ; voicing level outside speech regions
 ampRamp   = 0.010  ; 10 ms ramp at region edges
 
-# Intensity → voicing amplitude mapping
-# Preserve source dB DIFFERENCES exactly (until safety clamps) by applying a
-# single global offset: source peak -> 78 dB KlattGrid voicing amplitude.
+# Intensity -> voicing amplitude mapping
+# Translate the source dB contour with one global offset (source peak -> 78 dB).
+# Klatt filtering and source-parameter interaction can still reshape the output;
+# v2.6 therefore measures the realised contour correlation, slope and RMSE.
 ampHi = 78
 ampOffsetDb = ampHi - peakDb
 ampLo = threshDb + ampOffsetDb
@@ -958,12 +1030,16 @@ latOnFrac  = 0.25   ; lateral locus transition: first 25%
 plosClosed = 0.035  ; plosive closure gap (s); clamped to 25% of syl dur
 plosVOT    = 0.020  ; post-burst VOT ramp (s)
 
-# Approximate place-specific nasal antiformants (zeros). The values are
-# intentionally broad synthesis targets, not speaker-independent measurements.
-nasAF_m  = 650
-nasAFB_m = 100
-nasAF_n  = 1250
-nasAFB_n = 120
+# Approximate nasal pole + place-specific antiformants. The idle pole and zero
+# are parked at the SAME F/B so the nasal branch is effectively transparent.
+nasPoleF = 270
+nasPoleB = 90
+nasAF_m  = 900
+nasAFB_m = 120
+nasAF_n  = 1650
+nasAFB_n = 150
+nasIdleF = 4000
+nasIdleB = 2000
 
 # ---------------------------------------------------------------------------
 # 8b-i. Per-syllable vowel targets and consonant-class assignment
@@ -1008,6 +1084,28 @@ for k from 1 to nSyl
         cs$ = patternStr$
     endif
     sylCons$[k] = cs$
+
+    # Precompute plosive closure + VOT control interval BEFORE the generic
+    # amplitude envelope is written. Generic points inside this interval will
+    # be skipped, so they cannot fill the closure back in.
+    sylPlosive[k] = 0
+    sylPlosStart[k] = -1
+    sylPlosClosureEnd[k] = -1
+    sylPlosRelease[k] = -1
+    if cs$ = "ba" or cs$ = "de"
+        sd_pl = sylEnd[k] - sylStart[k]
+        closeDur_pl = plosClosed
+        if closeDur_pl > 0.25 * sd_pl
+            closeDur_pl = 0.25 * sd_pl
+        endif
+        sylPlosive[k] = 1
+        sylPlosStart[k] = sylStart[k]
+        sylPlosClosureEnd[k] = sylStart[k] + closeDur_pl
+        sylPlosRelease[k] = sylPlosClosureEnd[k] + plosVOT
+        if sylPlosRelease[k] > sylNucT[k]
+            sylPlosRelease[k] = sylNucT[k]
+        endif
+    endif
 
     if cs$ = "de"
         sylTgtF1[k] = vowF1_e
@@ -1081,8 +1179,8 @@ random_initializeSafelyAndUnpredictably ()
 
 # ---------------------------------------------------------------------------
 # 8b-ii. Intensity-driven voicing amplitude tier (sampled every 15 ms)
-#         Source V/UV decisions gate the SYNTHETIC voicing source; no original
-#         waveform is copied. Voiced-frame dB differences are preserved.
+#         Source Pitch dropouts are NOT an unconditional gate. Plosive control
+#         intervals are skipped here and written explicitly in 8b-iii.
 # ---------------------------------------------------------------------------
 ampSampleStep = 0.015
 selectObject: kg
@@ -1092,72 +1190,160 @@ nQcAmp = 0
 for r from 1 to nReg
     rs = regStart[r]
     re = regEnd[r]
+    selectObject: kg
     Add voicing amplitude point: rs, silenceDb
 
-    startAmp = ampLo
-    selectObject: pitchObj
-    startF0 = Get value at time: rs + ampRamp, "Hertz", "Linear"
-    if startF0 = undefined or startF0 <= 0
-        startAmp = silenceDb
+    # Region opening ramp: skip if it falls inside a precomputed plosive
+    # closure/VOT control interval.
+    rampT = rs + ampRamp
+    if rampT > re
+        rampT = re
     endif
-    selectObject: kg
-    Add voicing amplitude point: rs + ampRamp, startAmp
+    plosControlled = 0
+    for kp from 1 to nSyl
+        if sylPlosive[kp] = 1 and rampT >= sylPlosStart[kp] and rampT <= sylPlosRelease[kp]
+            plosControlled = 1
+        endif
+    endfor
+    if plosControlled = 0
+        selectObject: intObj
+        rampIv = Get value at time: rampT, "Cubic"
+        if rampIv = undefined
+            rampIv = threshDb
+        endif
+        rampAmp = rampIv + ampOffsetDb
+        for ks from 1 to nSyl
+            if rampT >= sylStart[ks] and rampT <= sylEnd[ks]
+                rampAmp = rampAmp + sylShimmerDb[ks]
+            endif
+        endfor
+        gateThis = 0
+        if gate_long_unvoiced_runs = 1
+            for gi from 1 to nUvGate
+                if rampT >= uvGateStart[gi] and rampT <= uvGateEnd[gi]
+                    gateThis = 1
+                endif
+            endfor
+        endif
+        if gateThis = 1
+            rampAmp = silenceDb
+        endif
+        if rampAmp < silenceDb + 1 and rampAmp <> silenceDb
+            rampAmp = silenceDb + 1
+        endif
+        if rampAmp > ampHi + 3
+            rampAmp = ampHi + 3
+        endif
+        selectObject: kg
+        Add voicing amplitude point: rampT, rampAmp
+    endif
 
     nAmpSteps = floor((re - rs - 2 * ampRamp) / ampSampleStep)
     for ai from 1 to nAmpSteps
         ta = rs + ampRamp + (ai - 1) * ampSampleStep
         if ta < re - ampRamp
-            selectObject: intObj
-            iv_a = Get value at time: ta, "Cubic"
-            if iv_a = undefined
-                iv_a = threshDb
-            endif
-
-            # Store the SOURCE intensity target for offset-invariant QC.
-            nQcAmp = nQcAmp + 1
-            qcAmpTime[nQcAmp] = ta
-            qcSourceIntensity[nQcAmp] = iv_a
-
-            # Preserve the source envelope by dB translation, not range stretch.
-            vAmp = iv_a + ampOffsetDb
-
-            # Apply syllabic shimmer as a small dB perturbation.
-            shimDb = 0
-            for ks from 1 to nSyl
-                if ta >= sylStart[ks] and ta <= sylEnd[ks]
-                    shimDb = sylShimmerDb[ks]
+            # Do not write generic envelope points through closure or VOT.
+            plosControlled = 0
+            for kp from 1 to nSyl
+                if sylPlosive[kp] = 1 and ta >= sylPlosStart[kp] and ta <= sylPlosRelease[kp]
+                    plosControlled = 1
                 endif
             endfor
-            vAmp = vAmp + shimDb
 
-            # Preserve source V/UV decisions by muting the synthetic glottal
-            # source when source Pitch marks this frame unvoiced.
-            selectObject: pitchObj
-            voicedF0_a = Get value at time: ta, "Hertz", "Linear"
-            if voicedF0_a = undefined or voicedF0_a <= 0
-                vAmp = silenceDb
-            endif
+            if plosControlled = 0
+                selectObject: intObj
+                iv_a = Get value at time: ta, "Cubic"
+                if iv_a = undefined
+                    iv_a = threshDb
+                endif
 
-            if vAmp < silenceDb + 1 and vAmp <> silenceDb
-                vAmp = silenceDb + 1
-            endif
-            if vAmp > ampHi + 3
-                vAmp = ampHi + 3
-            endif
+                vAmp = iv_a + ampOffsetDb
+                shimDb = 0
+                for ks from 1 to nSyl
+                    if ta >= sylStart[ks] and ta <= sylEnd[ks]
+                        shimDb = sylShimmerDb[ks]
+                    endif
+                endfor
+                vAmp = vAmp + shimDb
 
-            selectObject: kg
-            Add voicing amplitude point: ta, vAmp
+                # Optional sustained V/UV gating only. Short tracker dropouts are
+                # deliberately ignored because they are not reliable segment cues.
+                gateThis = 0
+                if gate_long_unvoiced_runs = 1
+                    for gi from 1 to nUvGate
+                        if ta >= uvGateStart[gi] and ta <= uvGateEnd[gi]
+                            gateThis = 1
+                        endif
+                    endfor
+                endif
+                if gateThis = 1
+                    vAmp = silenceDb
+                else
+                    # QC uses only points whose intensity contour is intended to
+                    # be preserved (not closures and not an optional V/UV mute).
+                    nQcAmp = nQcAmp + 1
+                    qcAmpTime[nQcAmp] = ta
+                    qcSourceIntensity[nQcAmp] = iv_a
+                endif
+
+                if vAmp < silenceDb + 1 and vAmp <> silenceDb
+                    vAmp = silenceDb + 1
+                endif
+                if vAmp > ampHi + 3
+                    vAmp = ampHi + 3
+                endif
+
+                selectObject: kg
+                Add voicing amplitude point: ta, vAmp
+            endif
         endif
     endfor
 
-    endAmp = ampLo
-    selectObject: pitchObj
-    endF0 = Get value at time: re - ampRamp, "Hertz", "Linear"
-    if endF0 = undefined or endF0 <= 0
-        endAmp = silenceDb
+    # Region closing ramp, with the same plosive/gating safeguards.
+    rampT = re - ampRamp
+    if rampT < rs
+        rampT = rs
     endif
+    plosControlled = 0
+    for kp from 1 to nSyl
+        if sylPlosive[kp] = 1 and rampT >= sylPlosStart[kp] and rampT <= sylPlosRelease[kp]
+            plosControlled = 1
+        endif
+    endfor
+    if plosControlled = 0
+        selectObject: intObj
+        rampIv = Get value at time: rampT, "Cubic"
+        if rampIv = undefined
+            rampIv = threshDb
+        endif
+        rampAmp = rampIv + ampOffsetDb
+        for ks from 1 to nSyl
+            if rampT >= sylStart[ks] and rampT <= sylEnd[ks]
+                rampAmp = rampAmp + sylShimmerDb[ks]
+            endif
+        endfor
+        gateThis = 0
+        if gate_long_unvoiced_runs = 1
+            for gi from 1 to nUvGate
+                if rampT >= uvGateStart[gi] and rampT <= uvGateEnd[gi]
+                    gateThis = 1
+                endif
+            endfor
+        endif
+        if gateThis = 1
+            rampAmp = silenceDb
+        endif
+        if rampAmp < silenceDb + 1 and rampAmp <> silenceDb
+            rampAmp = silenceDb + 1
+        endif
+        if rampAmp > ampHi + 3
+            rampAmp = ampHi + 3
+        endif
+        selectObject: kg
+        Add voicing amplitude point: rampT, rampAmp
+    endif
+
     selectObject: kg
-    Add voicing amplitude point: re - ampRamp, endAmp
     Add voicing amplitude point: re, silenceDb
 endfor
 selectObject: kg
@@ -1174,8 +1360,10 @@ selectObject: kg
 seedF1 = sylTgtF1[1]
 seedF2 = sylTgtF2[1]
 seedF3 = sylTgtF3[1]
-seedAF = 4000
-seedAFB = 2000
+seedAF = nasIdleF
+seedAFB = nasIdleB
+seedNF = nasIdleF
+seedNFB = nasIdleB
 if sylStart[1] <= 0.0000001
     seedCons$ = sylCons$[1]
     if seedCons$ = "ma"
@@ -1183,11 +1371,15 @@ if sylStart[1] <= 0.0000001
         seedF2 = 1000
         seedAF = nasAF_m
         seedAFB = nasAFB_m
+        seedNF = nasPoleF
+        seedNFB = nasPoleB
     elsif seedCons$ = "na"
         seedF1 = 300
         seedF2 = 1750
         seedAF = nasAF_n
         seedAFB = nasAFB_n
+        seedNF = nasPoleF
+        seedNFB = nasPoleB
     elsif seedCons$ = "la"
         seedF1 = 250
         seedF2 = 1100
@@ -1211,6 +1403,8 @@ Add oral formant bandwidth point: 2, 0, pauseBw
 Add oral formant bandwidth point: 3, 0, pauseBw
 Add oral formant bandwidth point: 4, 0, pauseBw
 Add oral formant bandwidth point: 5, 0, pauseBw
+Add nasal formant frequency point: 1, 0, seedNF
+Add nasal formant bandwidth point: 1, 0, seedNFB
 Add nasal antiformant frequency point: 1, 0, seedAF
 Add nasal antiformant bandwidth point: 1, 0, seedAFB
 
@@ -1259,44 +1453,65 @@ for k from 1 to nSyl
         if nasEnd < ts
             nasEnd = ts
         endif
-        Add nasal antiformant frequency point: 1, ts,            thisNasAF
-        Add nasal antiformant bandwidth point: 1, ts,            thisNasAFB
-        Add nasal antiformant frequency point: 1, nasEnd,         thisNasAF
-        Add nasal antiformant bandwidth point: 1, nasEnd,         thisNasAFB
-        Add nasal antiformant frequency point: 1, nasEnd + 0.005, 4000
-        Add nasal antiformant bandwidth point: 1, nasEnd + 0.005, 2000
+        # Park both pole and zero just before onset so interpolation across the
+        # preceding vowel remains neutral; then activate the nasal branch.
+        preNasPark = ts - 0.005
+        if preNasPark > 0
+            Add nasal formant frequency point: 1, preNasPark, nasIdleF
+            Add nasal formant bandwidth point: 1, preNasPark, nasIdleB
+            Add nasal antiformant frequency point: 1, preNasPark, nasIdleF
+            Add nasal antiformant bandwidth point: 1, preNasPark, nasIdleB
+        endif
+        Add nasal formant frequency point: 1, ts, nasPoleF
+        Add nasal formant bandwidth point: 1, ts, nasPoleB
+        Add nasal antiformant frequency point: 1, ts, thisNasAF
+        Add nasal antiformant bandwidth point: 1, ts, thisNasAFB
+        Add nasal formant frequency point: 1, nasEnd, nasPoleF
+        Add nasal formant bandwidth point: 1, nasEnd, nasPoleB
+        Add nasal antiformant frequency point: 1, nasEnd, thisNasAF
+        Add nasal antiformant bandwidth point: 1, nasEnd, thisNasAFB
+        postNasPark = nasEnd + 0.005
+        if postNasPark > te
+            postNasPark = te
+        endif
+        Add nasal formant frequency point: 1, postNasPark, nasIdleF
+        Add nasal formant bandwidth point: 1, postNasPark, nasIdleB
+        Add nasal antiformant frequency point: 1, postNasPark, nasIdleF
+        Add nasal antiformant bandwidth point: 1, postNasPark, nasIdleB
         Add oral formant frequency point: 1, ts, 300
         Add oral formant frequency point: 1, tn, sylTgtF1[k]
         Add oral formant frequency point: 2, ts, nasalF2Locus
         Add oral formant frequency point: 2, tn, sylTgtF2[k]
 
     elsif cs$ = "ba" or cs$ = "de"
-        # Plosive onset: closure silence gap then abrupt release
-        closeDur = plosClosed
-        if closeDur > 0.25 * sd
-            closeDur = 0.25 * sd
-        endif
-        closEnd = ts + closeDur
-        votEnd  = closEnd + plosVOT
-        if votEnd > tn
-            votEnd = tn
-        endif
-        # Local amplitude dip for closure (overrides intensity-envelope points)
-        Add voicing amplitude point: ts,      silenceDb
+        # Plosive onset: use the precomputed closure/VOT interval that was
+        # excluded from the generic envelope in 8b-ii.
+        closEnd = sylPlosClosureEnd[k]
+        votEnd = sylPlosRelease[k]
+        Add voicing amplitude point: ts, silenceDb
         Add voicing amplitude point: closEnd, silenceDb
-        releaseAmp = ampHi
-        selectObject: pitchObj
-        releaseF0 = Get value at time: votEnd, "Hertz", "Linear"
-        if releaseF0 = undefined or releaseF0 <= 0
-            releaseAmp = silenceDb
+
+        # Return to the LOCAL source-derived level, not a hard-coded 78 dB.
+        selectObject: intObj
+        releaseIv = Get value at time: votEnd, "Cubic"
+        if releaseIv = undefined
+            releaseIv = threshDb
+        endif
+        releaseAmp = releaseIv + ampOffsetDb + sylShimmerDb[k]
+        if releaseAmp < silenceDb + 1
+            releaseAmp = silenceDb + 1
+        endif
+        if releaseAmp > ampHi + 3
+            releaseAmp = ampHi + 3
         endif
         selectObject: kg
         Add voicing amplitude point: votEnd, releaseAmp
-        # F1 closure locus → vowel at tn
+
+        # F1 closure locus -> vowel at tn
         Add oral formant frequency point: 1, ts,      200
         Add oral formant frequency point: 1, closEnd, 200
         Add oral formant frequency point: 1, tn,      sylTgtF1[k]
-        # F2 locus: /ba/ → 800 Hz; /de/ → 1800 Hz
+        # F2 locus: /ba/ -> 800 Hz; /de/ -> 1800 Hz
         if cs$ = "ba"
             f2locus = 800
         else
@@ -1341,12 +1556,29 @@ for k from 1 to nSyl
         if nasEnd > tn
             nasEnd = tn - 0.005
         endif
-        Add nasal antiformant frequency point: 1, ts,            nasAF_m
-        Add nasal antiformant bandwidth point: 1, ts,            nasAFB_m
-        Add nasal antiformant frequency point: 1, nasEnd,         nasAF_m
-        Add nasal antiformant bandwidth point: 1, nasEnd,         nasAFB_m
-        Add nasal antiformant frequency point: 1, nasEnd + 0.005, 4000
-        Add nasal antiformant bandwidth point: 1, nasEnd + 0.005, 2000
+        preNasPark = ts - 0.005
+        if preNasPark > 0
+            Add nasal formant frequency point: 1, preNasPark, nasIdleF
+            Add nasal formant bandwidth point: 1, preNasPark, nasIdleB
+            Add nasal antiformant frequency point: 1, preNasPark, nasIdleF
+            Add nasal antiformant bandwidth point: 1, preNasPark, nasIdleB
+        endif
+        Add nasal formant frequency point: 1, ts, nasPoleF
+        Add nasal formant bandwidth point: 1, ts, nasPoleB
+        Add nasal antiformant frequency point: 1, ts, nasAF_m
+        Add nasal antiformant bandwidth point: 1, ts, nasAFB_m
+        Add nasal formant frequency point: 1, nasEnd, nasPoleF
+        Add nasal formant bandwidth point: 1, nasEnd, nasPoleB
+        Add nasal antiformant frequency point: 1, nasEnd, nasAF_m
+        Add nasal antiformant bandwidth point: 1, nasEnd, nasAFB_m
+        postNasPark = nasEnd + 0.005
+        if postNasPark > te
+            postNasPark = te
+        endif
+        Add nasal formant frequency point: 1, postNasPark, nasIdleF
+        Add nasal formant bandwidth point: 1, postNasPark, nasIdleB
+        Add nasal antiformant frequency point: 1, postNasPark, nasIdleF
+        Add nasal antiformant bandwidth point: 1, postNasPark, nasIdleB
         Add oral formant frequency point: 1, ts, 300
         Add oral formant frequency point: 1, tn, sylTgtF1[k]
         Add oral formant frequency point: 2, ts, 1000
@@ -1386,10 +1618,12 @@ Add oral formant bandwidth point: 2, origDur, pauseBw
 Add oral formant bandwidth point: 3, origDur, pauseBw
 Add oral formant bandwidth point: 4, origDur, pauseBw
 Add oral formant bandwidth point: 5, origDur, pauseBw
-Add nasal antiformant frequency point: 1, origDur, 4000
-Add nasal antiformant bandwidth point: 1, origDur, 2000
+Add nasal formant frequency point: 1, origDur, nasIdleF
+Add nasal formant bandwidth point: 1, origDur, nasIdleB
+Add nasal antiformant frequency point: 1, origDur, nasIdleF
+Add nasal antiformant bandwidth point: 1, origDur, nasIdleB
 
-appendInfoLine: "  v2.5: peak-timed nuclei + dB-faithful envelope + source V/UV gating + consonant onsets"
+appendInfoLine: "  v2.6: peak-timed nuclei + closure-safe envelope + optional sustained V/UV gate + nasal pole/zero"
 appendInfoLine: "        + jitter/shimmer/OQ/formant-drift (Naturalness=", fixed$(naturalness, 2), ")."
 
 # ---------------------------------------------------------------------------
@@ -1417,20 +1651,31 @@ outPitchQC = To Pitch: 0.01, floorHz, ceilingHz
 selectObject: resultFinal
 outIntQC = To Intensity: 100, 0, "yes"
 
-# ---- F0 target vs output, and voiced/unvoiced agreement --------------------
-nF0Pair = 0
-sumFX = 0
-sumFY = 0
-sumFXX = 0
-sumFYY = 0
-sumFXY = 0
-sumSemitoneErr2 = 0
+# ---- F0 preservation vs source + synthesis accuracy vs target ---------------
+# Source/output answers the preservation question. Target/output answers whether
+# the synthesizer actually hit the manipulated F0 target (important when alpha != 1).
+nF0SourcePair = 0
+sumSFX = 0
+sumSFY = 0
+sumSFXX = 0
+sumSFYY = 0
+sumSFXY = 0
+sumSourceSemitoneErr2 = 0
+
+nF0TargetPair = 0
+sumTFX = 0
+sumTFY = 0
+sumTFXX = 0
+sumTFYY = 0
+sumTFXY = 0
+sumTargetSemitoneErr2 = 0
+
 nVu = 0
 nVuAgree = 0
 
 for qi from 1 to nQcF0
     tq = qcF0Time[qi]
-    targetVoiced = qcSourceVoiced[qi]
+    sourceVoicedQ = qcSourceVoiced[qi]
 
     selectObject: outPitchQC
     outF0q = Get value at time: tq, "Hertz", "Linear"
@@ -1440,34 +1685,60 @@ for qi from 1 to nQcF0
     endif
 
     nVu = nVu + 1
-    if outVoiced = targetVoiced
+    if outVoiced = sourceVoicedQ
         nVuAgree = nVuAgree + 1
     endif
 
+    sourceF0q = qcSourceF0[qi]
     targetF0q = qcTargetF0[qi]
-    if targetVoiced = 1 and outVoiced = 1 and targetF0q > 0
-        fx = log2(targetF0q)
-        fy = log2(outF0q)
-        nF0Pair = nF0Pair + 1
-        sumFX = sumFX + fx
-        sumFY = sumFY + fy
-        sumFXX = sumFXX + fx * fx
-        sumFYY = sumFYY + fy * fy
-        sumFXY = sumFXY + fx * fy
-        semitoneErr = 12 * log2(outF0q / targetF0q)
-        sumSemitoneErr2 = sumSemitoneErr2 + semitoneErr * semitoneErr
+
+    if sourceVoicedQ = 1 and outVoiced = 1 and sourceF0q > 0
+        sfx = log2(sourceF0q)
+        sfy = log2(outF0q)
+        nF0SourcePair = nF0SourcePair + 1
+        sumSFX = sumSFX + sfx
+        sumSFY = sumSFY + sfy
+        sumSFXX = sumSFXX + sfx * sfx
+        sumSFYY = sumSFYY + sfy * sfy
+        sumSFXY = sumSFXY + sfx * sfy
+        sourceSemitoneErr = 12 * log2(outF0q / sourceF0q)
+        sumSourceSemitoneErr2 = sumSourceSemitoneErr2 + sourceSemitoneErr * sourceSemitoneErr
+    endif
+
+    if sourceVoicedQ = 1 and outVoiced = 1 and targetF0q > 0
+        tfx = log2(targetF0q)
+        tfy = log2(outF0q)
+        nF0TargetPair = nF0TargetPair + 1
+        sumTFX = sumTFX + tfx
+        sumTFY = sumTFY + tfy
+        sumTFXX = sumTFXX + tfx * tfx
+        sumTFYY = sumTFYY + tfy * tfy
+        sumTFXY = sumTFXY + tfx * tfy
+        targetSemitoneErr = 12 * log2(outF0q / targetF0q)
+        sumTargetSemitoneErr2 = sumTargetSemitoneErr2 + targetSemitoneErr * targetSemitoneErr
     endif
 endfor
 
-f0Corr = undefined
-f0RmseSt = undefined
-if nF0Pair > 1
-    fden1 = nF0Pair * sumFXX - sumFX * sumFX
-    fden2 = nF0Pair * sumFYY - sumFY * sumFY
-    if fden1 > 0 and fden2 > 0
-        f0Corr = (nF0Pair * sumFXY - sumFX * sumFY) / sqrt(fden1 * fden2)
+f0SourceCorr = undefined
+f0SourceRmseSt = undefined
+if nF0SourcePair > 1
+    sfden1 = nF0SourcePair * sumSFXX - sumSFX * sumSFX
+    sfden2 = nF0SourcePair * sumSFYY - sumSFY * sumSFY
+    if sfden1 > 0 and sfden2 > 0
+        f0SourceCorr = (nF0SourcePair * sumSFXY - sumSFX * sumSFY) / sqrt(sfden1 * sfden2)
     endif
-    f0RmseSt = sqrt(sumSemitoneErr2 / nF0Pair)
+    f0SourceRmseSt = sqrt(sumSourceSemitoneErr2 / nF0SourcePair)
+endif
+
+f0TargetCorr = undefined
+f0TargetRmseSt = undefined
+if nF0TargetPair > 1
+    tfden1 = nF0TargetPair * sumTFXX - sumTFX * sumTFX
+    tfden2 = nF0TargetPair * sumTFYY - sumTFY * sumTFY
+    if tfden1 > 0 and tfden2 > 0
+        f0TargetCorr = (nF0TargetPair * sumTFXY - sumTFX * sumTFY) / sqrt(tfden1 * tfden2)
+    endif
+    f0TargetRmseSt = sqrt(sumTargetSemitoneErr2 / nF0TargetPair)
 endif
 
 vuAgreementPct = 0
@@ -1504,10 +1775,15 @@ for qi from 1 to nQcAmp
 endfor
 
 ampCorr = undefined
+ampSlope = undefined
 ampRmseOffsetDb = undefined
+meanADiff = 0
 if nAmpPair > 1
     aden1 = nAmpPair * sumAXX - sumAX * sumAX
     aden2 = nAmpPair * sumAYY - sumAY * sumAY
+    if aden1 > 0
+        ampSlope = (nAmpPair * sumAXY - sumAX * sumAY) / aden1
+    endif
     if aden1 > 0 and aden2 > 0
         ampCorr = (nAmpPair * sumAXY - sumAX * sumAY) / sqrt(aden1 * aden2)
     endif
@@ -1528,29 +1804,51 @@ endif
 outSpeechThreshDb = outPeakDb - silence_threshold_dB_below_peak
 nSp = 0
 nSpAgree = 0
+nSpExcluded = 0
 nSpSteps = ceiling(origDur / gstep)
 for qi from 0 to nSpSteps
     tq = qi * gstep
     if tq > origDur
         tq = origDur
     endif
-    selectObject: intObj
-    srcSpDb = Get value at time: tq, "Cubic"
-    srcSp = 0
-    if srcSpDb <> undefined and srcSpDb >= threshDb
-        srcSp = 1
+
+    # Exclude deliberately synthetic mute intervals (plosive closure/VOT and
+    # optional sustained V/UV gates) from PROSODIC speech/pause preservation QC.
+    spEligible = 1
+    for kp from 1 to nSyl
+        if sylPlosive[kp] = 1 and tq >= sylPlosStart[kp] and tq <= sylPlosRelease[kp]
+            spEligible = 0
+        endif
+    endfor
+    if gate_long_unvoiced_runs = 1
+        for gi from 1 to nUvGate
+            if tq >= uvGateStart[gi] and tq <= uvGateEnd[gi]
+                spEligible = 0
+            endif
+        endfor
     endif
 
-    selectObject: outIntQC
-    outSpDb = Get value at time: tq, "Cubic"
-    outSp = 0
-    if outSpDb <> undefined and outSpDb >= outSpeechThreshDb
-        outSp = 1
-    endif
+    if spEligible = 1
+        selectObject: intObj
+        srcSpDb = Get value at time: tq, "Cubic"
+        srcSp = 0
+        if srcSpDb <> undefined and srcSpDb >= threshDb
+            srcSp = 1
+        endif
 
-    nSp = nSp + 1
-    if srcSp = outSp
-        nSpAgree = nSpAgree + 1
+        selectObject: outIntQC
+        outSpDb = Get value at time: tq, "Cubic"
+        outSp = 0
+        if outSpDb <> undefined and outSpDb >= outSpeechThreshDb
+            outSp = 1
+        endif
+
+        nSp = nSp + 1
+        if srcSp = outSp
+            nSpAgree = nSpAgree + 1
+        endif
+    else
+        nSpExcluded = nSpExcluded + 1
     endif
 endfor
 
@@ -1568,7 +1866,7 @@ appendInfoLine: ""
 appendInfoLine: "===================== QC SUMMARY ====================="
 appendInfoLine: "Preset:                     ", presetName$
 appendInfoLine: "Pattern:                    ", patternStr$
-appendInfoLine: "Synthesis engine:           KlattGrid v2.5 (research-preservation pass)"
+appendInfoLine: "Synthesis engine:           KlattGrid v2.6 (corrective research pass)"
 appendInfoLine: "Source duration:            ", fixed$(origDur, 3), " s"
 appendInfoLine: "Output duration:            ", fixed$(outDur, 3), " s"
 appendInfoLine: "Speech regions:             ", nReg
@@ -1580,35 +1878,91 @@ appendInfoLine: "Jitter scale:               ", fixed$(jitterScale, 4), "  (syll
 appendInfoLine: "Shimmer scale:              ", fixed$(shimmerScale, 4), "  (per-syl amp fraction)"
 appendInfoLine: "OQ flat / swing:            ", fixed$(oq_flat, 2), " / ", fixed$(oqSwing, 2)
 appendInfoLine: "Formant drift F1/F2:        ", fixed$(fDriftF1, 3), " / ", fixed$(fDriftF2, 3)
-appendInfoLine: "Research seed:              ", researchSeed
+if researchSeed = 0
+    appendInfoLine: "Research seed:              unseeded / unpredictable"
+else
+    appendInfoLine: "Research seed:              ", researchSeed
+endif
+if gate_long_unvoiced_runs = 1
+    appendInfoLine: "Sustained V/UV gating:      ON, min run ", fixed$(minimum_unvoiced_gate_s * 1000, 0), " ms; intervals ", nUvGate, "; total ", fixed$(gatedDuration * 1000, 1), " ms"
+else
+    appendInfoLine: "Sustained V/UV gating:      OFF (recommended for prosody-only stimuli)"
+endif
 appendInfoLine: "Duration error:             ", fixed$(durationErrorMs, 3), " ms"
-if f0Corr <> undefined
-    appendInfoLine: "Target/output F0 corr:      ", fixed$(f0Corr, 4), " (log2-Hz)"
+if f0SourceCorr <> undefined
+    appendInfoLine: "Source/output F0 corr:      ", fixed$(f0SourceCorr, 4), " (log2-Hz preservation)"
 else
-    appendInfoLine: "Target/output F0 corr:      undefined (insufficient paired voiced frames)"
+    appendInfoLine: "Source/output F0 corr:      undefined (insufficient paired voiced frames)"
 endif
-if f0RmseSt <> undefined
-    appendInfoLine: "Target/output F0 RMSE:      ", fixed$(f0RmseSt, 4), " semitones"
+if f0SourceRmseSt <> undefined
+    appendInfoLine: "Source/output F0 RMSE:      ", fixed$(f0SourceRmseSt, 4), " semitones"
+endif
+if f0TargetCorr <> undefined
+    appendInfoLine: "Target/output F0 corr:      ", fixed$(f0TargetCorr, 4), " (synthesis accuracy)"
 else
-    appendInfoLine: "Target/output F0 RMSE:      undefined"
+    appendInfoLine: "Target/output F0 corr:      undefined"
 endif
-appendInfoLine: "Voiced/unvoiced agreement:  ", fixed$(vuAgreementPct, 2), "%"
+if f0TargetRmseSt <> undefined
+    appendInfoLine: "Target/output F0 RMSE:      ", fixed$(f0TargetRmseSt, 4), " semitones"
+endif
+appendInfoLine: "Pitch V/UV agreement:       ", fixed$(vuAgreementPct, 2), "% (diagnostic only)"
 if ampCorr <> undefined
-    appendInfoLine: "Intensity-envelope corr:    ", fixed$(ampCorr, 4), " (speech samples)"
+    appendInfoLine: "Intensity-contour corr:     ", fixed$(ampCorr, 4), " (preservation samples)"
 else
-    appendInfoLine: "Intensity-envelope corr:    undefined"
+    appendInfoLine: "Intensity-contour corr:     undefined"
+endif
+if ampSlope <> undefined
+    appendInfoLine: "Intensity dB slope:         ", fixed$(ampSlope, 4), " (1.0 = difference-preserving)"
 endif
 if ampRmseOffsetDb <> undefined
     appendInfoLine: "Intensity shape RMSE:       ", fixed$(ampRmseOffsetDb, 3), " dB (global level removed)"
 else
     appendInfoLine: "Intensity shape RMSE:       undefined"
 endif
-appendInfoLine: "Speech/pause agreement:     ", fixed$(speechPauseAgreementPct, 2), "%"
-appendInfoLine: "Original waveform not used as audible output."
+appendInfoLine: "Speech/pause agreement:     ", fixed$(speechPauseAgreementPct, 2), "% (designed mute frames excluded: ", nSpExcluded, ")"
+appendInfoLine: "NOTE: final Scale peak fixes global output level; absolute source/output dB offset is not a preservation metric."
+appendInfoLine: "Original waveform not used as audible reiterant output."
 appendInfoLine: "EXPERIMENTAL — requires perceptual intelligibility testing."
 appendInfoLine: "Compare against stricter hum / low-pass / vocoding controls."
 appendInfoLine: "======================================================"
 appendInfoLine: "[6/6] Done."
+
+# Compact QC strings for the picture summary.
+if f0SourceCorr <> undefined
+    qcF0Source$ = fixed$(f0SourceCorr, 3)
+else
+    qcF0Source$ = "n/a"
+endif
+if f0TargetCorr <> undefined
+    qcF0Target$ = fixed$(f0TargetCorr, 3)
+else
+    qcF0Target$ = "n/a"
+endif
+if f0TargetRmseSt <> undefined
+    qcF0TargetRmse$ = fixed$(f0TargetRmseSt, 2)
+else
+    qcF0TargetRmse$ = "n/a"
+endif
+if ampCorr <> undefined
+    qcAmpCorr$ = fixed$(ampCorr, 3)
+else
+    qcAmpCorr$ = "n/a"
+endif
+if ampSlope <> undefined
+    qcAmpSlope$ = fixed$(ampSlope, 2)
+else
+    qcAmpSlope$ = "n/a"
+endif
+if ampRmseOffsetDb <> undefined
+    qcAmpRmse$ = fixed$(ampRmseOffsetDb, 2)
+else
+    qcAmpRmse$ = "n/a"
+endif
+if researchSeed = 0
+    qcSeed$ = "unseeded"
+else
+    qcSeed$ = string$(researchSeed)
+endif
 
 if draw_QC = 1
     @drawQC
@@ -1634,21 +1988,23 @@ label FINISHED
 # @drawQC
 # ---------------------------------------------------------------------------
 procedure drawQC
-    # Scientific multi-panel acoustic figure.
-    # Shared, aligned time axis across panels; numbered/gridded axes with units;
-    # source-vs-output overlays on F0 and intensity demonstrate prosody
-    # preservation (the validation argument).  Opt-in spectrogram via the form.
+    # v2.6.2 visualization-only redesign.
+    # The figure explains the experimental mechanism as well as validating it.
+    # Every comparison uses the same axes, measured DSP/QC data, and explicit
+    # viewport resets so Picture-window state cannot leak between panels.
 
-    # ---- palette ----
-    srcCol$  = "{0.20, 0.20, 0.24}"
-    outCol$  = "{0.15, 0.42, 0.80}"
-    wavS$    = "{0.50, 0.50, 0.55}"
-    wavO$    = "{0.15, 0.42, 0.80}"
-    bg$      = "{0.975, 0.975, 0.978}"
-    refCol$  = "{0.62, 0.62, 0.62}"
-    sylCol$  = "{0.80, 0.45, 0.45}"
+    # ---- restrained AudioTools palette ----
+    srcCol$    = "{0.20, 0.20, 0.24}"
+    targetCol$ = "{0.72, 0.42, 0.34}"
+    outCol$    = "{0.15, 0.42, 0.80}"
+    wavS$      = "{0.50, 0.50, 0.55}"
+    bg$        = "{0.975, 0.975, 0.978}"
+    speechBg$  = "{0.945, 0.960, 0.975}"
+    refCol$    = "{0.62, 0.62, 0.62}"
+    sylCol$    = "{0.80, 0.45, 0.45}"
+    qcBg$      = "{0.945, 0.945, 0.948}"
 
-    # ---- shared time tick step (nice round value) ----
+    # ---- shared time ticks ----
     if origDur <= 2
         tTick = 0.2
     elsif origDur <= 5
@@ -1658,19 +2014,11 @@ procedure drawQC
     else
         tTick = 2
     endif
-    # F0 tick step
-    if (ceilingHz - floorHz) <= 350
-        f0Tick = 50
-    else
-        f0Tick = 100
-    endif
-    dbTick = 10
 
-    # ---- reuse OUTPUT analyses already computed for numerical QC ----
     outPitch = outPitchQC
     outInt = outIntQC
 
-    # layout: left/right margins leave room for numbered y axes
+    # Stable page geometry. Title strips are independent from data viewports.
     lpL = 0.95
     lpR = 7.70
 
@@ -1681,218 +2029,482 @@ procedure drawQC
     Line width: 1
 
     # ==========================================================
-    # TITLE
+    # HEADER
     # ==========================================================
-    Select outer viewport: 0, 8, 0, 0.55
+    Select inner viewport: 0.60, 7.70, 0.05, 0.30
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##Reiterant prosody synthesis — acoustic QC##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.35, "half",
-        ... sourceName$
-        ... + "   |   preset " + presetName$
-        ... + "   |   /" + patternStr$ + "/"
+    Text: 0.5, "centre", 0.52, "half", "##Reiterant prosody synthesis | acoustic validation##"
+
+    Select inner viewport: 0.60, 7.70, 0.32, 0.55
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.45}"
+    Text: 0.5, "centre", 0.52, "half",
+        ... "preset " + presetName$
+        ... + "   |   pattern /" + patternStr$ + "/"
+        ... + "   |   alpha " + fixed$(pitch_strength, 2)
         ... + "   |   Nat " + fixed$(naturalness, 2)
-        ... + "   |   Intonation " + fixed$(pitch_strength, 2)
-        ... + "   |   " + string$(nSyl) + " syllables / " + string$(nReg) + " regions"
+        ... + "   |   " + string$(nSyl) + " syllables / " + string$(nReg) + " speech regions"
 
     # ==========================================================
-    # PANEL A — source waveform + syllable structure
+    # PANEL A TITLE — measured timing scaffold
     # ==========================================================
-    Select inner viewport: lpL, lpR, 0.80, 2.05
+    Select inner viewport: lpL, lpR, 0.62, 0.79
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.00, "left", 0.50, "half", "##A  Timing scaffold##"
+    Font size: 5.5
+    Colour: "{0.40, 0.40, 0.44}"
+    Text: 0.24, "left", 0.50, "half", "speech regions | syllable bounds | detected nuclei"
+
+    # ==========================================================
+    # PANEL A DATA
+    # ==========================================================
+    Select inner viewport: lpL, lpR, 0.82, 1.95
     selectObject: srcMono
     sPk = Get absolute extremum: 0, 0, "None"
     if sPk = undefined or sPk <= 0
         sPk = 1
     endif
+    sRange = 1.08 * sPk
+
     Axes: 0, 1, 0, 1
     Paint rectangle: bg$, 0, 1, 0, 1
-    Axes: 0, origDur, -sPk, sPk
+    Axes: 0, origDur, -sRange, sRange
+
+    # Speech regions are the large-scale timing structure.
+    for r from 1 to nReg
+        Paint rectangle: speechBg$, regStart[r], regEnd[r], -sRange, sRange
+    endfor
+
     Marks bottom every: 1, tTick, "no", "yes", "yes"
-    # zero line
     Colour: refCol$
     Draw line: 0, 0, origDur, 0
-    # waveform
+
     selectObject: srcMono
     Colour: wavS$
-    Draw: 0, origDur, -sPk, sPk, "no", "Curve"
-    # syllable boundaries (dotted) + nucleus ticks
-    Axes: 0, origDur, -sPk, sPk
+    Draw: 0, origDur, -sRange, sRange, "no", "Curve"
+
+    # Syllable boundaries and measured nuclei.
+    Select inner viewport: lpL, lpR, 0.82, 1.95
+    Axes: 0, origDur, -sRange, sRange
     Colour: sylCol$
     Dotted line
     for k from 1 to nSyl
-        Draw line: sylStart[k], -0.92 * sPk, sylStart[k], 0.92 * sPk
+        Draw line: sylStart[k], -0.92 * sRange, sylStart[k], 0.92 * sRange
     endfor
     Plain line
     Colour: "Black"
     for k from 1 to nSyl
-        Draw line: sylNucT[k], 0.78 * sPk, sylNucT[k], sPk
+        Draw line: sylNucT[k], 0.72 * sRange, sylNucT[k], 0.92 * sRange
     endfor
+
+    # Labels are useful only while they remain readable.
+    if nSyl <= 14
+        Font size: 5
+        Colour: "{0.35, 0.35, 0.35}"
+        for k from 1 to nSyl
+            Text: sylNucT[k], "centre", 0.58 * sRange, "half", sylCons$[k]
+        endfor
+    endif
+
     Colour: "Black"
     Draw inner box
-    Axes: 0, 1, 0, 1
-    Font size: 8
-    Text: 0.012, "left", 0.88, "half", "##A##"
-    Font size: 6
-    Text: 0.11, "left", 0.88, "half", "source waveform — dotted = syllable bounds, ticks = nuclei"
     Text left: "yes", "amplitude"
 
     # ==========================================================
-    # PANEL B — F0 (Hz): source vs output overlay
+    # PANEL B TITLE — actual F0 transformation mechanism
     # ==========================================================
-    Select inner viewport: lpL, lpR, 2.45, 3.70
+    Select inner viewport: lpL, lpR, 2.10, 2.28
     Axes: 0, 1, 0, 1
-    Paint rectangle: bg$, 0, 1, 0, 1
-    Axes: 0, origDur, floorHz, ceilingHz
-    Marks left every: 1, f0Tick, "yes", "yes", "yes"
-    Marks bottom every: 1, tTick, "no", "yes", "yes"
-    # median reference
-    Colour: refCol$
-    Dotted line
-    Draw line: 0, medianF0, origDur, medianF0
-    Plain line
-    # source then output
-    selectObject: pitchObj
-    Colour: srcCol$
-    Draw: 0, origDur, floorHz, ceilingHz, "no"
-    selectObject: outPitch
-    Colour: outCol$
-    Draw: 0, origDur, floorHz, ceilingHz, "no"
+    Font size: 7
     Colour: "Black"
-    Draw inner box
-    Axes: 0, 1, 0, 1
-    Font size: 8
-    Text: 0.012, "left", 0.88, "half", "##B##"
-    Font size: 6
-    Text: 0.11, "left", 0.88, "half", "F0 (Hz) — dotted = median " + fixed$(medianF0, 0) + " Hz"
+    Text: 0.00, "left", 0.50, "half", "##B  F0 transformation | semitones re median##"
+    Font size: 5.5
     Colour: srcCol$
-    Text: 0.84, "left", 0.90, "half", "source"
+    Text: 0.69, "left", 0.50, "half", "source"
+    Colour: targetCol$
+    Text: 0.79, "left", 0.50, "half", "target"
     Colour: outCol$
-    Text: 0.84, "left", 0.74, "half", "output"
-    Black
-    Text left: "yes", "F0 (Hz)"
+    Text: 0.89, "left", 0.50, "half", "output"
+
+    # Find a symmetric semitone range from the ACTUAL source, target and output.
+    stAbsMax = 2
+    for qi from 1 to nQcF0
+        if qcSourceVoiced[qi] = 1 and qcSourceF0[qi] > 0 and qcTargetF0[qi] > 0
+            srcStRange = 12 * log2(qcSourceF0[qi] / medianF0)
+            tgtStRange = 12 * log2(qcTargetF0[qi] / medianF0)
+            stAbsMax = max(stAbsMax, abs(srcStRange))
+            stAbsMax = max(stAbsMax, abs(tgtStRange))
+
+            selectObject: outPitch
+            outF0Range = Get value at time: qcF0Time[qi], "Hertz", "Linear"
+            if outF0Range <> undefined and outF0Range > 0
+                outStRange = 12 * log2(outF0Range / medianF0)
+                stAbsMax = max(stAbsMax, abs(outStRange))
+            endif
+        endif
+    endfor
+    stRange = ceiling(stAbsMax + 1)
+    if stRange < 3
+        stRange = 3
+    endif
+    if stRange <= 6
+        stTick = 2
+    elsif stRange <= 12
+        stTick = 4
+    else
+        stTick = 6
+    endif
 
     # ==========================================================
-    # PANEL C — intensity (dB): source vs output overlay
+    # PANEL B DATA
     # ==========================================================
-    Select inner viewport: lpL, lpR, 4.10, 5.35
-    intFloor = threshDb - 5
-    intCeil  = peakDb + 3
+    Select inner viewport: lpL, lpR, 2.32, 3.50
     Axes: 0, 1, 0, 1
     Paint rectangle: bg$, 0, 1, 0, 1
-    Axes: 0, origDur, intFloor, intCeil
-    Marks left every: 1, dbTick, "yes", "yes", "yes"
+    Axes: 0, origDur, -stRange, stRange
+    Marks left every: 1, stTick, "yes", "yes", "yes"
     Marks bottom every: 1, tTick, "no", "yes", "yes"
-    # speech threshold reference
+
+    # Median reference = 0 semitones.
     Colour: refCol$
     Dotted line
-    Draw line: 0, threshDb, origDur, threshDb
+    Draw line: 0, 0, origDur, 0
     Plain line
-    # source then output
-    selectObject: intObj
-    Colour: srcCol$
-    Draw: 0, origDur, intFloor, intCeil, "no"
-    selectObject: outInt
-    Colour: outCol$
-    Draw: 0, origDur, intFloor, intCeil, "no"
+
+    prevSrcValid = 0
+    prevTgtValid = 0
+    prevOutValid = 0
+    prevSrcT = 0
+    prevTgtT = 0
+    prevOutT = 0
+    prevSrcSt = 0
+    prevTgtSt = 0
+    prevOutSt = 0
+
+    for qi from 1 to nQcF0
+        tq = qcF0Time[qi]
+        srcValid = 0
+        tgtValid = 0
+        outValid = 0
+
+        if qcSourceVoiced[qi] = 1 and qcSourceF0[qi] > 0
+            srcSt = 12 * log2(qcSourceF0[qi] / medianF0)
+            srcValid = 1
+        endif
+        if qcSourceVoiced[qi] = 1 and qcTargetF0[qi] > 0
+            tgtSt = 12 * log2(qcTargetF0[qi] / medianF0)
+            tgtValid = 1
+        endif
+
+        selectObject: outPitch
+        outF0Draw = Get value at time: tq, "Hertz", "Linear"
+        if qcSourceVoiced[qi] = 1 and outF0Draw <> undefined and outF0Draw > 0
+            outSt = 12 * log2(outF0Draw / medianF0)
+            outValid = 1
+        endif
+
+        Select inner viewport: lpL, lpR, 2.32, 3.50
+        Axes: 0, origDur, -stRange, stRange
+
+        if srcValid = 1
+            if prevSrcValid = 1 and tq - prevSrcT <= 0.015
+                Colour: srcCol$
+                Draw line: prevSrcT, prevSrcSt, tq, srcSt
+            endif
+            prevSrcT = tq
+            prevSrcSt = srcSt
+        endif
+
+        if tgtValid = 1
+            if prevTgtValid = 1 and tq - prevTgtT <= 0.015
+                Colour: targetCol$
+                Draw line: prevTgtT, prevTgtSt, tq, tgtSt
+            endif
+            prevTgtT = tq
+            prevTgtSt = tgtSt
+        endif
+
+        if outValid = 1
+            if prevOutValid = 1 and tq - prevOutT <= 0.015
+                Colour: outCol$
+                Draw line: prevOutT, prevOutSt, tq, outSt
+            endif
+            prevOutT = tq
+            prevOutSt = outSt
+        endif
+
+        prevSrcValid = srcValid
+        prevTgtValid = tgtValid
+        prevOutValid = outValid
+    endfor
+
     Colour: "Black"
     Draw inner box
-    Axes: 0, 1, 0, 1
-    Font size: 8
-    Text: 0.012, "left", 0.88, "half", "##C##"
-    Font size: 6
-    Text: 0.11, "left", 0.88, "half", "intensity (dB) — dotted = speech threshold " + fixed$(threshDb, 0) + " dB"
-    Colour: srcCol$
-    Text: 0.84, "left", 0.90, "half", "source"
-    Colour: outCol$
-    Text: 0.84, "left", 0.74, "half", "output"
-    Black
-    Text left: "yes", "intensity (dB)"
+    Text left: "yes", "semitones"
 
     # ==========================================================
-    # PANEL D — output: spectrogram (opt-in) or waveform
+    # PANEL C TITLE — intensity shape, not absolute level
     # ==========================================================
-    Select inner viewport: lpL, lpR, 5.75, 7.00
+    Select inner viewport: lpL, lpR, 3.64, 3.82
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.00, "left", 0.50, "half", "##C  Intensity-shape preservation | mean removed##"
+    Font size: 5.5
+    Colour: srcCol$
+    Text: 0.79, "left", 0.50, "half", "source"
+    Colour: outCol$
+    Text: 0.89, "left", 0.50, "half", "output"
+
+    # Means are computed over exactly the same QC-eligible paired frames used
+    # for the numerical intensity metrics.
+    if nAmpPair > 1
+        meanSrcAmp = sumAX / nAmpPair
+        meanOutAmp = sumAY / nAmpPair
+    else
+        meanSrcAmp = 0
+        meanOutAmp = 0
+    endif
+
+    dbAbsMax = 5
+    if nAmpPair > 1
+        for qi from 1 to nQcAmp
+            tq = qcAmpTime[qi]
+            srcIq = qcSourceIntensity[qi]
+            selectObject: outInt
+            outIq = Get value at time: tq, "Cubic"
+            if outIq <> undefined and srcIq >= threshDb
+                srcRelRange = srcIq - meanSrcAmp
+                outRelRange = outIq - meanOutAmp
+                dbAbsMax = max(dbAbsMax, abs(srcRelRange))
+                dbAbsMax = max(dbAbsMax, abs(outRelRange))
+            endif
+        endfor
+    endif
+    dbRange = ceiling(dbAbsMax + 1)
+    if dbRange < 6
+        dbRange = 6
+    endif
+    if dbRange <= 10
+        dbShapeTick = 2
+    elsif dbRange <= 25
+        dbShapeTick = 5
+    else
+        dbShapeTick = 10
+    endif
+
+    # ==========================================================
+    # PANEL C DATA
+    # ==========================================================
+    Select inner viewport: lpL, lpR, 3.86, 5.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: bg$, 0, 1, 0, 1
+    Axes: 0, origDur, -dbRange, dbRange
+    Marks left every: 1, dbShapeTick, "yes", "yes", "yes"
+    Marks bottom every: 1, tTick, "no", "yes", "yes"
+
+    Colour: refCol$
+    Dotted line
+    Draw line: 0, 0, origDur, 0
+    Plain line
+
+    if nAmpPair > 1
+        prevAmpValid = 0
+        prevAmpT = 0
+        prevSrcRel = 0
+        prevOutRel = 0
+
+        for qi from 1 to nQcAmp
+            tq = qcAmpTime[qi]
+            srcIq = qcSourceIntensity[qi]
+            selectObject: outInt
+            outIq = Get value at time: tq, "Cubic"
+            ampValid = 0
+            if outIq <> undefined and srcIq >= threshDb
+                ampValid = 1
+                srcRel = srcIq - meanSrcAmp
+                outRel = outIq - meanOutAmp
+            endif
+
+            Select inner viewport: lpL, lpR, 3.86, 5.04
+            Axes: 0, origDur, -dbRange, dbRange
+
+            if ampValid = 1
+                # Do not bridge designed closures, pauses, or omitted QC frames.
+                if prevAmpValid = 1 and tq - prevAmpT <= 0.025
+                    Colour: srcCol$
+                    Draw line: prevAmpT, prevSrcRel, tq, srcRel
+                    Colour: outCol$
+                    Draw line: prevAmpT, prevOutRel, tq, outRel
+                endif
+                prevAmpT = tq
+                prevSrcRel = srcRel
+                prevOutRel = outRel
+            endif
+            prevAmpValid = ampValid
+        endfor
+    else
+        Select inner viewport: lpL, lpR, 3.86, 5.04
+        Axes: 0, 1, 0, 1
+        Font size: 6
+        Colour: "{0.45, 0.45, 0.45}"
+        Text: 0.5, "centre", 0.5, "half", "insufficient paired intensity frames"
+    endif
+
+    Select inner viewport: lpL, lpR, 3.86, 5.04
+    Axes: 0, origDur, -dbRange, dbRange
+    Colour: "Black"
+    Draw inner box
+    Text left: "yes", "relative dB"
+
+    # ==========================================================
+    # PANEL D TITLE
+    # ==========================================================
+    Select inner viewport: lpL, lpR, 5.18, 5.36
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
     if draw_spectrogram = 1
-        specMax = 5000
+        Text: 0.00, "left", 0.50, "half", "##D  Output spectral check##"
+    else
+        Text: 0.00, "left", 0.50, "half", "##D  Experimental mechanism | what is preserved and what is replaced##"
+    endif
+
+    # ==========================================================
+    # PANEL D DATA — optional spectrogram or explanatory process diagram
+    # ==========================================================
+    Select inner viewport: lpL, lpR, 5.40, 6.84
+
+    if draw_spectrogram = 1
         selectObject: resultFinal
+        outSrVis = Get sampling frequency
+        specMax = min(5000, 0.48 * outSrVis)
         spec = To Spectrogram: 0.005, specMax, 0.002, 20, "Gaussian"
         selectObject: spec
         Paint: 0, origDur, 0, specMax, 100, "yes", 50, 6, 0, "no"
         removeObject: spec
-        # overlay output F0 on the spectrogram
+
+        Select inner viewport: lpL, lpR, 5.40, 6.84
         Axes: 0, origDur, 0, specMax
         selectObject: outPitch
         Colour: outCol$
         Draw: 0, origDur, 0, specMax, "no"
-        Black
+
+        Select inner viewport: lpL, lpR, 5.40, 6.84
         Axes: 0, origDur, 0, specMax
+        Colour: "Black"
         Marks left every: 1, 1000, "yes", "yes", "no"
         Marks bottom every: 1, tTick, "yes", "yes", "no"
         Draw inner box
-        Axes: 0, 1, 0, 1
-        Font size: 8
-        Text: 0.012, "left", 0.88, "half", "##D##"
-        Font size: 6
-        Text: 0.11, "left", 0.88, "half", "output spectrogram (F0 overlaid)"
-        Text left: "yes", "freq (Hz)"
+        Text left: "yes", "frequency (Hz)"
+        Text bottom: "yes", "Time (s)"
     else
-        selectObject: resultFinal
-        oPk = Get absolute extremum: 0, 0, "None"
-        if oPk = undefined or oPk <= 0
-            oPk = 1
-        endif
         Axes: 0, 1, 0, 1
         Paint rectangle: bg$, 0, 1, 0, 1
-        Axes: 0, origDur, -oPk, oPk
-        Marks bottom every: 1, tTick, "yes", "yes", "yes"
-        Colour: refCol$
-        Draw line: 0, 0, origDur, 0
-        selectObject: resultFinal
-        Colour: wavO$
-        Draw: 0, origDur, -oPk, oPk, "no", "Curve"
+
+        # Process boxes.
+        Paint rectangle: "{0.92, 0.92, 0.93}", 0.03, 0.20, 0.43, 0.82
+        Paint rectangle: "{0.90, 0.94, 0.98}", 0.28, 0.46, 0.43, 0.82
+        Paint rectangle: "{0.98, 0.93, 0.91}", 0.54, 0.72, 0.43, 0.82
+        Paint rectangle: "{0.91, 0.95, 0.99}", 0.80, 0.97, 0.43, 0.82
+
+        Colour: "{0.35, 0.35, 0.38}"
+        Draw rectangle: 0.03, 0.20, 0.43, 0.82
+        Draw rectangle: 0.28, 0.46, 0.43, 0.82
+        Draw rectangle: 0.54, 0.72, 0.43, 0.82
+        Draw rectangle: 0.80, 0.97, 0.43, 0.82
+
+        Font size: 6
+        Colour: "Black"
+        Text: 0.115, "centre", 0.69, "half", "##SOURCE##"
+        Font size: 5
+        Text: 0.115, "centre", 0.55, "half", "timing | F0 | dB"
+
+        Font size: 6
+        Text: 0.37, "centre", 0.69, "half", "##PROSODY MAP##"
+        Font size: 5
+        Text: 0.37, "centre", 0.55, "half", "regions | nuclei | alpha"
+
+        Font size: 6
+        Text: 0.63, "centre", 0.69, "half", "##REITERANT KLATT##"
+        Font size: 5
+        Text: 0.63, "centre", 0.55, "half", "/" + patternStr$ + "/ scaffold"
+
+        Font size: 6
+        Text: 0.885, "centre", 0.69, "half", "##OUTPUT##"
+        Font size: 5
+        Text: 0.885, "centre", 0.55, "half", "prosody without words"
+
+        # Arrows and action labels.
+        Colour: "{0.35, 0.35, 0.38}"
+        Arrow size: 1.0
+        Draw arrow: 0.205, 0.625, 0.275, 0.625
+        Draw arrow: 0.465, 0.625, 0.535, 0.625
+        Draw arrow: 0.725, 0.625, 0.795, 0.625
+        Font size: 4.5
+        Colour: "{0.45, 0.45, 0.48}"
+        Text: 0.24, "centre", 0.74, "half", "measure"
+        Text: 0.50, "centre", 0.74, "half", "map"
+        Text: 0.76, "centre", 0.74, "half", "synth"
+
+        # Governing F0 formula in the same domain used by the DSP.
+        Font size: 6
+        Colour: "{0.28, 0.28, 0.32}"
+        Text: 0.5, "centre", 0.25, "half",
+            ... "log2(F0target/F0med) = alpha * log2(F0source/F0med)"
+        Font size: 5
+        Colour: "{0.45, 0.45, 0.48}"
+        Text: 0.5, "centre", 0.11, "half",
+            ... "segment identity is synthetic; timing, F0 target and intensity shape come from the source"
+
         Colour: "Black"
         Draw inner box
-        Axes: 0, 1, 0, 1
-        Font size: 8
-        Text: 0.012, "left", 0.88, "half", "##D##"
-        Font size: 6
-        Text: 0.11, "left", 0.88, "half", "synthesised output waveform"
-        Text left: "yes", "amplitude"
     endif
-    Font size: 7
-    Text bottom: "yes", "Time (s)"
 
     # ==========================================================
-    # SUMMARY STRIP
+    # THREE-COLUMN RESEARCH QC DASHBOARD
     # ==========================================================
-    Select inner viewport: lpL, lpR, 7.20, 7.80
+    Select inner viewport: lpL, lpR, 7.02, 7.78
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.80, "half",
-        ... "##Engine##  KlattGrid v2.5"
-        ... + "   |   ##Pitch##  " + fixed$(floorHz, 0) + "–" + fixed$(ceilingHz, 0) + " Hz"
-        ... + "   |   ##Median F0##  " + fixed$(medianF0, 0) + " Hz"
-        ... + "   |   ##Intonation alpha##  " + fixed$(pitch_strength, 2)
-        ... + "   |   ##Naturalness##  " + fixed$(naturalness, 2)
-    Text: 0.02, "left", 0.46, "half",
-        ... "##Jitter##  " + fixed$(jitterScale, 3)
-        ... + "   |   ##Shimmer##  " + fixed$(shimmerScale, 3)
-        ... + "   |   ##OQ##  " + fixed$(oq_flat, 2) + " ±" + fixed$(oqSwing, 2)
-        ... + "   |   ##fDrift F1/F2##  " + fixed$(fDriftF1, 3) + "/" + fixed$(fDriftF2, 3)
-        ... + "   |   ##Dur##  " + fixed$(origDur, 2) + " s -> " + fixed$(outDur, 2) + " s"
-    Text: 0.02, "left", 0.13, "half",
-        ... "EXPERIMENTAL — original waveform not used as audio — overlays show source vs output prosody — requires perceptual validation"
+    Paint rectangle: qcBg$, 0, 1, 0, 1
+    Colour: "{0.72, 0.72, 0.74}"
+    Draw line: 0.335, 0.08, 0.335, 0.92
+    Draw line: 0.67, 0.08, 0.67, 0.92
+
+    # Column 1: preservation.
+    Font size: 5.5
+    Colour: "{0.28, 0.28, 0.32}"
+    Text: 0.02, "left", 0.78, "half", "##PRESERVATION##"
+    Font size: 5.2
+    Text: 0.02, "left", 0.49, "half", "F0 source-output r  " + qcF0Source$
+    Text: 0.02, "left", 0.22, "half", "Intensity contour r  " + qcAmpCorr$
+
+    # Column 2: shape and timing.
+    Font size: 5.5
+    Text: 0.355, "left", 0.78, "half", "##SHAPE + TIMING##"
+    Font size: 5.2
+    Text: 0.355, "left", 0.49, "half", "dB slope " + qcAmpSlope$ + " | RMSE " + qcAmpRmse$ + " dB"
+    Text: 0.355, "left", 0.22, "half",
+        ... "speech/pause " + fixed$(speechPauseAgreementPct, 1) + " pct | dur err " + fixed$(durationErrorMs, 1) + " ms"
+
+    # Column 3: synthesis accuracy.
+    Font size: 5.5
+    Text: 0.69, "left", 0.78, "half", "##SYNTHESIS CHECK##"
+    Font size: 5.2
+    Text: 0.69, "left", 0.49, "half", "Target-output F0 r  " + qcF0Target$
+    Text: 0.69, "left", 0.22, "half", "RMSE " + qcF0TargetRmse$ + " st | seed " + qcSeed$
+
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # Output Pitch/Intensity objects are cleaned up by the caller after drawing.
-
+    # Reset global Picture defaults for subsequent script drawings.
     Font size: 10
     Colour: "Black"
+    Plain line
     Line width: 1
 endproc
