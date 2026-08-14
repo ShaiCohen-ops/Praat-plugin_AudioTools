@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,6 +27,20 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4:
+#   - API COMPATIBILITY: public form is byte-for-byte unchanged; output
+#     remains <input>_serial_<preset>.
+#   - FIX: zero-base the private mono source so source-position extraction
+#     is correct for Sounds whose xmin is not 0.
+#   - FIX/OPTIMIZATION: worst-case extraction length now uses the largest
+#     ACTUAL pitch ratio, not max(abs(cents)). Pitch-down-only ranges no
+#     longer trigger unnecessary source tiling.
+#   - HARDENING: source-loop crossfade is clamped to 25% of source duration
+#     and the loop build uses a mathematically sufficient iteration limit.
+#   - HARDENING: short events receive a proportional edge fade rather than
+#     skipping click protection entirely below 10 ms.
+#   - SAFE NORMALIZATION: final Scale peak is skipped for digital silence.
 #
 # Changelog v0.3:
 #   - Fix (HEADLINE, behavior): events are now played in series
@@ -147,6 +161,14 @@ if input_n_ch > 1
     input_mono = Convert to mono
 else
     input_mono = Copy: "input_mono"
+endif
+
+# All source positions below are expressed in a private 0..duration domain.
+# Preserve the user's original Sound and zero-base only this working copy.
+selectObject: input_mono
+inputWorkStart = Get start time
+if inputWorkStart <> 0
+    Shift times by: -inputWorkStart
 endif
 
 # ============================================================================
@@ -448,32 +470,51 @@ result = Create Sound from formula: input_name$ + "_serial_" + presetName$,
 # uses "Concatenate with overlap" so repeat boundaries are crossfaded
 # rather than spliced hard.
 
-abs_min_pc = abs(min_pitch_cents)
-abs_max_pc = abs(max_pitch_cents)
-max_abs_pc = abs_min_pc
-if abs_max_pc > max_abs_pc
-    max_abs_pc = abs_max_pc
+# Largest actual varispeed ratio occurs at the largest pitch value, because
+# 2^(cents/1200) is monotonic. v0.3 used max(abs(cents)), which badly
+# overestimated pitch-down-only ranges and built a tiled source unnecessarily.
+if max_pitch_cents > 1
+    max_pitch_ratio = 2 ^ (max_pitch_cents / 1200)
+elsif max_pitch_cents >= -1
+    # The processing branch treats |pitch| <= 1 cent as ratio 1.
+    max_pitch_ratio = 1
+else
+    max_pitch_ratio = 2 ^ (max_pitch_cents / 1200)
 endif
-max_pitch_ratio = 2 ^ (max_abs_pc / 1200)
 max_extract_needed = max_event_s * max_pitch_ratio
 
 use_shared_tile = 0
 if input_duration < max_extract_needed
     use_shared_tile = 1
-    tile_overlap = 0.005
-    # Target with generous margin: worst-case extract length, plus one
-    # full source cycle of slack for the wrapped start position, plus
-    # a few overlap-widths of slack since each overlap-concatenation
-    # shortens the result slightly.
+
+    # Keep the crossfade comfortably shorter than the source cycle. This is
+    # important for very short source Sounds; a fixed 5 ms overlap can exceed
+    # the material being repeated.
+    tile_overlap = min(0.005, input_duration * 0.25)
+    tile_growth = input_duration - tile_overlap
+    if tile_growth <= 0
+        exitScript: "Source is too short to build a stable loop."
+    endif
+
+    # Target with generous margin: worst-case extract length, plus one full
+    # source cycle for a wrapped start position, plus several crossfade widths.
     target_tile_dur = max_extract_needed + input_duration + tile_overlap * 4
+
+    # Every Concatenate-with-overlap step increases duration by exactly
+    # input_duration - tile_overlap, so derive a sufficient guard instead of
+    # the old fixed 1000-iteration cap (which could leave the tile too short).
+    tile_guard_limit = ceiling(max(0, target_tile_dur - input_duration) / tile_growth) + 2
+
     selectObject: input_mono
     tiled_shared = Copy: "tiled_shared"
     selectObject: tiled_shared
     cur_tile_dur = Get total duration
     tile_guard = 0
-    while cur_tile_dur < target_tile_dur and tile_guard < 1000
+    while cur_tile_dur < target_tile_dur and tile_guard < tile_guard_limit
         selectObject: input_mono
         extra_shared = Copy: "extra_shared"
+        # tiled_shared is older than extra_shared, so Object-list order is the
+        # intended accumulated loop followed by the new source cycle.
         selectObject: tiled_shared, extra_shared
         tiled_shared2 = Concatenate with overlap: tile_overlap
         removeObject: tiled_shared
@@ -483,6 +524,10 @@ if input_duration < max_extract_needed
         cur_tile_dur = Get total duration
         tile_guard += 1
     endwhile
+
+    if cur_tile_dur < target_tile_dur
+        exitScript: "Could not build a long enough looped source."
+    endif
 endif
 
 # ============================================================================
@@ -573,10 +618,12 @@ for i to num_events
         seg_dur_actual = actual_edur
     endif
     
-    # ---- Fade-in / fade-out (5 ms each) for click-free splicing ----
+    # ---- Fade-in / fade-out for click-free splicing ----
+    # Keep the historical 5 ms maximum, but scale it down for micro-events
+    # instead of disabling fades completely when duration <= 10 ms.
     selectObject: segment
-    fade_t = 0.005
-    if seg_dur_actual > 2 * fade_t
+    fade_t = min(0.005, seg_dur_actual * 0.40)
+    if fade_t > 1 / input_sr
         Formula: ~ self * (if x < fade_t then x / fade_t
             ... else (if x > seg_dur_actual - fade_t
             ... then (seg_dur_actual - x) / fade_t else 1 fi) fi)
@@ -652,7 +699,10 @@ endif
 # ============================================================================
 
 selectObject: result
-Scale peak: 0.99
+resultPeakBeforeScale = Get absolute extremum: 0, 0, "None"
+if resultPeakBeforeScale > 0
+    Scale peak: 0.99
+endif
 
 final_dur = Get total duration
 final_peak = Get absolute extremum: 0, 0, "None"
