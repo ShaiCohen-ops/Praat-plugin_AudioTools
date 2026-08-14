@@ -4,7 +4,30 @@
 #
 # Part of Praat AudioTools plugin
 # Author: Shai Cohen, Department of Music, Bar-Ilan University
-# Version: 2.4 (2026)   |   License: MIT   |   PURE PRAAT (no Python)
+# Version: 2.5 (2026)   |   License: MIT   |   PURE PRAAT (no Python)
+#
+# WHAT IS NEW in v2.5
+#   1. Research reproducibility: all stochastic syllable choices, F0
+#      microvariation, shimmer and formant drift use a fixed internal seed;
+#      Praat's global RNG is restored immediately after stimulus parameters
+#      have been generated.
+#   2. Pitch_strength=0 is now a STRICT monotone endpoint: the target F0 is
+#      exactly the speaker median throughout voiced frames; syllabic F0
+#      microvariation cannot reintroduce an intonation contour at alpha=0.
+#   3. Source voiced/unvoiced decisions now gate the synthetic voicing-amplitude
+#      tier. Undefined source Pitch is no longer silently converted into a
+#      continuously voiced carried-forward F0 percept.
+#   4. Intensity mapping preserves source dB DIFFERENCES: the source envelope is
+#      shifted to a safe KlattGrid operating level instead of being stretched
+#      to a fixed 28-dB range.
+#   5. Numerical QC is computed for reiterant output even when the figure is
+#      disabled: target-vs-output F0 correlation and semitone RMSE, voiced/
+#      unvoiced agreement, speech/pause agreement, intensity-envelope
+#      correlation and offset-corrected dB RMSE, plus duration error.
+#   6. The /la/ onset now actually uses latOnFrac (25% of syllable duration)
+#      instead of always stretching the lateral transition to the nucleus.
+#   7. Internal guards sanitize duration, pause and output-peak controls without
+#      changing the public form.
 #
 # WHAT IS NEW in v2.4
 #   1. Presets now act as defaults rather than blindly overwriting every fine
@@ -228,6 +251,29 @@ endif
 synthSr   = 44100
 gstep     = 0.01
 targetSyl = 0.20
+
+# Research reproducibility. Kept internal to preserve the public form/API.
+researchSeed = 20260814
+
+# Defensive guards for caller-supplied / Custom-like values.
+if minimum_pause_duration_s < 0
+    minimum_pause_duration_s = 0
+endif
+if minimum_syllable_duration_s <= 0
+    minimum_syllable_duration_s = 0.01
+endif
+if maximum_syllable_duration_s < minimum_syllable_duration_s
+    maximum_syllable_duration_s = minimum_syllable_duration_s
+endif
+if output_peak <= 0
+    output_peak = 0.85
+endif
+if output_peak > 1
+    output_peak = 1
+endif
+if silence_threshold_dB_below_peak < 1
+    silence_threshold_dB_below_peak = 1
+endif
 
 # ---------------------------------------------------------------------------
 # 0b. Naturalness continuum → derive per-feature scale factors
@@ -760,54 +806,79 @@ appendInfoLine: "[3/6] Building continuous KlattGrid..."
 #       nTrachealFormants, nTrachealAntiFormants, nDeltaFormants, nFrication
 kg = Create KlattGrid: "rps_kg", 0, origDur, 6, 1, 1, 6, 1, 1, 1
 
-# ---- 8a. F0 tier: sample source Pitch across entire duration ---------------
-#          Jitter is applied as per-syllable F0 offsets baked into the tier.
-#          Between syllable events the F0 follows the extracted Pitch smoothly;
-#          at each nucleus we add a stochastic fractional perturbation.
-lastF0_g = medianF0
-nPtGlobal = floor(origDur / 0.01) + 2
+# Deterministic stimulus generation. Restore the global RNG after the last
+# random syllable/formant/shimmer draw so callers are not left with a seeded RNG.
+random_initializeWithSeedUnsafelyButPredictably (researchSeed)
 
-# Pre-compute per-syllable jitter offsets (stored as F0 multipliers)
+# ---- 8a. F0 tier: sample source Pitch across entire duration ---------------
+#          The Pitch tier stays continuous for KlattGrid synthesis, while a
+#          separate sourceVoicedQC[] mask records the source V/UV decisions.
+#          At Pitch_strength=0 the target is STRICTLY medianF0 on voiced frames.
+lastF0_g = medianF0
+nPtGlobal = ceiling(origDur / 0.01)
+
+# Pre-compute per-syllable F0 microvariation (stored as multipliers).
 for k from 1 to nSyl
     if jitterScale > 0
-        # Gaussian-ish jitter via sum of two uniform draws (central limit approx)
         sylJitter[k] = 1.0 + jitterScale * (randomUniform(-1, 1) + randomUniform(-1, 1)) * 0.5
     else
         sylJitter[k] = 1.0
     endif
 endfor
 
+nQcF0 = 0
 for i from 0 to nPtGlobal
     tg = i * 0.01
     if tg > origDur
         tg = origDur
     endif
+
     selectObject: pitchObj
-    f0g = Get value at time: tg, "Hertz", "Linear"
-    if f0g = undefined or f0g <= 0
+    sourceF0g = Get value at time: tg, "Hertz", "Linear"
+    sourceVoiced = 1
+    if sourceF0g = undefined or sourceF0g <= 0
+        sourceVoiced = 0
         f0g = lastF0_g
     else
-        lastF0_g = f0g
+        f0g = sourceF0g
+        lastF0_g = sourceF0g
     endif
-    # Intonation gradient: interpolate the contour toward the median in the
-    # log (semitone) domain.  1 = natural contour, 0 = monotone at median F0.
-    if pitch_strength <> 1 and medianF0 > 0 and f0g > 0
+
+    # Intonation gradient in the log/semitone domain.
+    if pitch_strength = 0
+        f0g = medianF0
+    elsif pitch_strength <> 1 and medianF0 > 0 and f0g > 0
         f0g = medianF0 * (f0g / medianF0) ^ pitch_strength
     endif
-    # Apply jitter: find which syllable tg falls in (linear search; nSyl small)
+
+    # Syllabic microvariation is voice-quality detail, but MUST NOT destroy
+    # the experimentally defined strict-monotone alpha=0 endpoint.
     appliedJitter = 1.0
-    for k from 1 to nSyl
-        if tg >= sylStart[k] and tg <= sylEnd[k]
-            appliedJitter = sylJitter[k]
-        endif
-    endfor
+    if pitch_strength <> 0
+        for k from 1 to nSyl
+            if tg >= sylStart[k] and tg <= sylEnd[k]
+                appliedJitter = sylJitter[k]
+            endif
+        endfor
+    endif
     f0g = f0g * appliedJitter
+
     if f0g < floorHz
         f0g = floorHz
     endif
     if f0g > ceilingHz
         f0g = ceilingHz
     endif
+
+    nQcF0 = nQcF0 + 1
+    qcF0Time[nQcF0] = tg
+    qcSourceVoiced[nQcF0] = sourceVoiced
+    if sourceVoiced = 1
+        qcTargetF0[nQcF0] = f0g
+    else
+        qcTargetF0[nQcF0] = 0
+    endif
+
     selectObject: kg
     Add pitch point: tg, f0g
 endfor
@@ -871,10 +942,15 @@ silenceDb = -80    ; voicing level outside speech regions
 ampRamp   = 0.010  ; 10 ms ramp at region edges
 
 # Intensity → voicing amplitude mapping
-# source intensity range [threshDb .. peakDb] → KlattGrid [ampLo .. ampHi] dB
-ampLo  = 50
-ampHi  = 78
-# ampRange already defined before the OQ tier (section 8a-ii)
+# Preserve source dB DIFFERENCES exactly (until safety clamps) by applying a
+# single global offset: source peak -> 78 dB KlattGrid voicing amplitude.
+ampHi = 78
+ampOffsetDb = ampHi - peakDb
+ampLo = threshDb + ampOffsetDb
+if ampLo < silenceDb + 1
+    ampLo = silenceDb + 1
+endif
+# ampRange remains useful for normalized OQ/formant-drift controls.
 
 # Consonant-class timing
 nasOnFrac  = 0.20   ; nasal murmur: first 20% of syllable duration
@@ -1000,18 +1076,33 @@ for k from 1 to nSyl
     endif
 endfor
 
+# Do not leak the deterministic research seed into caller scripts.
+random_initializeSafelyAndUnpredictably ()
+
 # ---------------------------------------------------------------------------
 # 8b-ii. Intensity-driven voicing amplitude tier (sampled every 15 ms)
+#         Source V/UV decisions gate the SYNTHETIC voicing source; no original
+#         waveform is copied. Voiced-frame dB differences are preserved.
 # ---------------------------------------------------------------------------
 ampSampleStep = 0.015
 selectObject: kg
 Add voicing amplitude point: 0, silenceDb
 
+nQcAmp = 0
 for r from 1 to nReg
     rs = regStart[r]
     re = regEnd[r]
-    Add voicing amplitude point: rs,           silenceDb
-    Add voicing amplitude point: rs + ampRamp, ampLo
+    Add voicing amplitude point: rs, silenceDb
+
+    startAmp = ampLo
+    selectObject: pitchObj
+    startF0 = Get value at time: rs + ampRamp, "Hertz", "Linear"
+    if startF0 = undefined or startF0 <= 0
+        startAmp = silenceDb
+    endif
+    selectObject: kg
+    Add voicing amplitude point: rs + ampRamp, startAmp
+
     nAmpSteps = floor((re - rs - 2 * ampRamp) / ampSampleStep)
     for ai from 1 to nAmpSteps
         ta = rs + ampRamp + (ai - 1) * ampSampleStep
@@ -1021,16 +1112,16 @@ for r from 1 to nReg
             if iv_a = undefined
                 iv_a = threshDb
             endif
-            normA = (iv_a - threshDb) / ampRange
-            if normA < 0
-                normA = 0
-            endif
-            if normA > 1
-                normA = 1
-            endif
-            vAmp = ampLo + normA * (ampHi - ampLo)
-            # Apply shimmer: find which syllable ta belongs to and add its
-            # per-syllable dB offset (v2.2)
+
+            # Store the SOURCE intensity target for offset-invariant QC.
+            nQcAmp = nQcAmp + 1
+            qcAmpTime[nQcAmp] = ta
+            qcSourceIntensity[nQcAmp] = iv_a
+
+            # Preserve the source envelope by dB translation, not range stretch.
+            vAmp = iv_a + ampOffsetDb
+
+            # Apply syllabic shimmer as a small dB perturbation.
             shimDb = 0
             for ks from 1 to nSyl
                 if ta >= sylStart[ks] and ta <= sylEnd[ks]
@@ -1038,19 +1129,36 @@ for r from 1 to nReg
                 endif
             endfor
             vAmp = vAmp + shimDb
-            if vAmp < silenceDb + 1
+
+            # Preserve source V/UV decisions by muting the synthetic glottal
+            # source when source Pitch marks this frame unvoiced.
+            selectObject: pitchObj
+            voicedF0_a = Get value at time: ta, "Hertz", "Linear"
+            if voicedF0_a = undefined or voicedF0_a <= 0
+                vAmp = silenceDb
+            endif
+
+            if vAmp < silenceDb + 1 and vAmp <> silenceDb
                 vAmp = silenceDb + 1
             endif
             if vAmp > ampHi + 3
                 vAmp = ampHi + 3
             endif
+
             selectObject: kg
             Add voicing amplitude point: ta, vAmp
         endif
     endfor
+
+    endAmp = ampLo
+    selectObject: pitchObj
+    endF0 = Get value at time: re - ampRamp, "Hertz", "Linear"
+    if endF0 = undefined or endF0 <= 0
+        endAmp = silenceDb
+    endif
     selectObject: kg
-    Add voicing amplitude point: re - ampRamp, ampLo
-    Add voicing amplitude point: re,           silenceDb
+    Add voicing amplitude point: re - ampRamp, endAmp
+    Add voicing amplitude point: re, silenceDb
 endfor
 selectObject: kg
 Add voicing amplitude point: origDur, silenceDb
@@ -1176,7 +1284,14 @@ for k from 1 to nSyl
         # Local amplitude dip for closure (overrides intensity-envelope points)
         Add voicing amplitude point: ts,      silenceDb
         Add voicing amplitude point: closEnd, silenceDb
-        Add voicing amplitude point: votEnd,  ampHi
+        releaseAmp = ampHi
+        selectObject: pitchObj
+        releaseF0 = Get value at time: votEnd, "Hertz", "Linear"
+        if releaseF0 = undefined or releaseF0 <= 0
+            releaseAmp = silenceDb
+        endif
+        selectObject: kg
+        Add voicing amplitude point: votEnd, releaseAmp
         # F1 closure locus → vowel at tn
         Add oral formant frequency point: 1, ts,      200
         Add oral formant frequency point: 1, closEnd, 200
@@ -1192,13 +1307,24 @@ for k from 1 to nSyl
         Add oral formant frequency point: 2, tn,      sylTgtF2[k]
 
     elsif cs$ = "la"
-        # Lateral onset: smooth locus transition (no antiformant, no closure)
+        # Lateral onset: transition reaches the vowel target within latOnFrac
+        # of the syllable, then remains at the vowel target through the nucleus.
+        latEnd = ts + latOnFrac * sd
+        if latEnd > tn
+            latEnd = tn
+        endif
+        if latEnd < ts
+            latEnd = ts
+        endif
         Add oral formant frequency point: 1, ts, 250
+        Add oral formant frequency point: 1, latEnd, sylTgtF1[k]
         Add oral formant frequency point: 1, tn, sylTgtF1[k]
         Add oral formant frequency point: 2, ts, 1100
+        Add oral formant frequency point: 2, latEnd, sylTgtF2[k]
         Add oral formant frequency point: 2, tn, sylTgtF2[k]
         # Raised F3 during lateral onset
         Add oral formant frequency point: 3, ts, 2800
+        Add oral formant frequency point: 3, latEnd, sylTgtF3[k]
         Add oral formant frequency point: 3, tn, sylTgtF3[k]
 
     else
@@ -1263,7 +1389,7 @@ Add oral formant bandwidth point: 5, origDur, pauseBw
 Add nasal antiformant frequency point: 1, origDur, 4000
 Add nasal antiformant bandwidth point: 1, origDur, 2000
 
-appendInfoLine: "  v2.2: peak-timed nuclei + intensity-driven amplitude + consonant-class onsets"
+appendInfoLine: "  v2.5: peak-timed nuclei + dB-faithful envelope + source V/UV gating + consonant onsets"
 appendInfoLine: "        + jitter/shimmer/OQ/formant-drift (Naturalness=", fixed$(naturalness, 2), ")."
 
 # ---------------------------------------------------------------------------
@@ -1283,7 +1409,157 @@ resultFinal = selected("Sound")
 outDur = Get total duration
 Scale peak: output_peak
 
-appendInfoLine: "[5/6] Done — no intermediates to clean up."
+appendInfoLine: "[5/6] Computing numerical preservation QC..."
+
+# Analyse output once; drawQC reuses these objects.
+selectObject: resultFinal
+outPitchQC = To Pitch: 0.01, floorHz, ceilingHz
+selectObject: resultFinal
+outIntQC = To Intensity: 100, 0, "yes"
+
+# ---- F0 target vs output, and voiced/unvoiced agreement --------------------
+nF0Pair = 0
+sumFX = 0
+sumFY = 0
+sumFXX = 0
+sumFYY = 0
+sumFXY = 0
+sumSemitoneErr2 = 0
+nVu = 0
+nVuAgree = 0
+
+for qi from 1 to nQcF0
+    tq = qcF0Time[qi]
+    targetVoiced = qcSourceVoiced[qi]
+
+    selectObject: outPitchQC
+    outF0q = Get value at time: tq, "Hertz", "Linear"
+    outVoiced = 1
+    if outF0q = undefined or outF0q <= 0
+        outVoiced = 0
+    endif
+
+    nVu = nVu + 1
+    if outVoiced = targetVoiced
+        nVuAgree = nVuAgree + 1
+    endif
+
+    targetF0q = qcTargetF0[qi]
+    if targetVoiced = 1 and outVoiced = 1 and targetF0q > 0
+        fx = log2(targetF0q)
+        fy = log2(outF0q)
+        nF0Pair = nF0Pair + 1
+        sumFX = sumFX + fx
+        sumFY = sumFY + fy
+        sumFXX = sumFXX + fx * fx
+        sumFYY = sumFYY + fy * fy
+        sumFXY = sumFXY + fx * fy
+        semitoneErr = 12 * log2(outF0q / targetF0q)
+        sumSemitoneErr2 = sumSemitoneErr2 + semitoneErr * semitoneErr
+    endif
+endfor
+
+f0Corr = undefined
+f0RmseSt = undefined
+if nF0Pair > 1
+    fden1 = nF0Pair * sumFXX - sumFX * sumFX
+    fden2 = nF0Pair * sumFYY - sumFY * sumFY
+    if fden1 > 0 and fden2 > 0
+        f0Corr = (nF0Pair * sumFXY - sumFX * sumFY) / sqrt(fden1 * fden2)
+    endif
+    f0RmseSt = sqrt(sumSemitoneErr2 / nF0Pair)
+endif
+
+vuAgreementPct = 0
+if nVu > 0
+    vuAgreementPct = 100 * nVuAgree / nVu
+endif
+
+# ---- Intensity envelope preservation (speech samples; offset invariant) -----
+nAmpPair = 0
+sumAX = 0
+sumAY = 0
+sumAXX = 0
+sumAYY = 0
+sumAXY = 0
+sumADiff = 0
+sumADiff2 = 0
+
+for qi from 1 to nQcAmp
+    tq = qcAmpTime[qi]
+    srcIq = qcSourceIntensity[qi]
+    selectObject: outIntQC
+    outIq = Get value at time: tq, "Cubic"
+    if outIq <> undefined and srcIq >= threshDb
+        nAmpPair = nAmpPair + 1
+        sumAX = sumAX + srcIq
+        sumAY = sumAY + outIq
+        sumAXX = sumAXX + srcIq * srcIq
+        sumAYY = sumAYY + outIq * outIq
+        sumAXY = sumAXY + srcIq * outIq
+        ad = outIq - srcIq
+        sumADiff = sumADiff + ad
+        sumADiff2 = sumADiff2 + ad * ad
+    endif
+endfor
+
+ampCorr = undefined
+ampRmseOffsetDb = undefined
+if nAmpPair > 1
+    aden1 = nAmpPair * sumAXX - sumAX * sumAX
+    aden2 = nAmpPair * sumAYY - sumAY * sumAY
+    if aden1 > 0 and aden2 > 0
+        ampCorr = (nAmpPair * sumAXY - sumAX * sumAY) / sqrt(aden1 * aden2)
+    endif
+    meanADiff = sumADiff / nAmpPair
+    ampVarDiff = sumADiff2 / nAmpPair - meanADiff * meanADiff
+    if ampVarDiff < 0
+        ampVarDiff = 0
+    endif
+    ampRmseOffsetDb = sqrt(ampVarDiff)
+endif
+
+# ---- Speech/pause agreement using relative intensity thresholds -------------
+selectObject: outIntQC
+outPeakDb = Get maximum: 0, 0, "Parabolic"
+if outPeakDb = undefined
+    outPeakDb = 70
+endif
+outSpeechThreshDb = outPeakDb - silence_threshold_dB_below_peak
+nSp = 0
+nSpAgree = 0
+nSpSteps = ceiling(origDur / gstep)
+for qi from 0 to nSpSteps
+    tq = qi * gstep
+    if tq > origDur
+        tq = origDur
+    endif
+    selectObject: intObj
+    srcSpDb = Get value at time: tq, "Cubic"
+    srcSp = 0
+    if srcSpDb <> undefined and srcSpDb >= threshDb
+        srcSp = 1
+    endif
+
+    selectObject: outIntQC
+    outSpDb = Get value at time: tq, "Cubic"
+    outSp = 0
+    if outSpDb <> undefined and outSpDb >= outSpeechThreshDb
+        outSp = 1
+    endif
+
+    nSp = nSp + 1
+    if srcSp = outSp
+        nSpAgree = nSpAgree + 1
+    endif
+endfor
+
+speechPauseAgreementPct = 0
+if nSp > 0
+    speechPauseAgreementPct = 100 * nSpAgree / nSp
+endif
+
+durationErrorMs = 1000 * (outDur - origDur)
 
 # ---------------------------------------------------------------------------
 # 13. QC summary
@@ -1292,7 +1568,7 @@ appendInfoLine: ""
 appendInfoLine: "===================== QC SUMMARY ====================="
 appendInfoLine: "Preset:                     ", presetName$
 appendInfoLine: "Pattern:                    ", patternStr$
-appendInfoLine: "Synthesis engine:           KlattGrid v2.4 (syllabic microvariation/OQ/formant-drift)"
+appendInfoLine: "Synthesis engine:           KlattGrid v2.5 (research-preservation pass)"
 appendInfoLine: "Source duration:            ", fixed$(origDur, 3), " s"
 appendInfoLine: "Output duration:            ", fixed$(outDur, 3), " s"
 appendInfoLine: "Speech regions:             ", nReg
@@ -1304,6 +1580,30 @@ appendInfoLine: "Jitter scale:               ", fixed$(jitterScale, 4), "  (syll
 appendInfoLine: "Shimmer scale:              ", fixed$(shimmerScale, 4), "  (per-syl amp fraction)"
 appendInfoLine: "OQ flat / swing:            ", fixed$(oq_flat, 2), " / ", fixed$(oqSwing, 2)
 appendInfoLine: "Formant drift F1/F2:        ", fixed$(fDriftF1, 3), " / ", fixed$(fDriftF2, 3)
+appendInfoLine: "Research seed:              ", researchSeed
+appendInfoLine: "Duration error:             ", fixed$(durationErrorMs, 3), " ms"
+if f0Corr <> undefined
+    appendInfoLine: "Target/output F0 corr:      ", fixed$(f0Corr, 4), " (log2-Hz)"
+else
+    appendInfoLine: "Target/output F0 corr:      undefined (insufficient paired voiced frames)"
+endif
+if f0RmseSt <> undefined
+    appendInfoLine: "Target/output F0 RMSE:      ", fixed$(f0RmseSt, 4), " semitones"
+else
+    appendInfoLine: "Target/output F0 RMSE:      undefined"
+endif
+appendInfoLine: "Voiced/unvoiced agreement:  ", fixed$(vuAgreementPct, 2), "%"
+if ampCorr <> undefined
+    appendInfoLine: "Intensity-envelope corr:    ", fixed$(ampCorr, 4), " (speech samples)"
+else
+    appendInfoLine: "Intensity-envelope corr:    undefined"
+endif
+if ampRmseOffsetDb <> undefined
+    appendInfoLine: "Intensity shape RMSE:       ", fixed$(ampRmseOffsetDb, 3), " dB (global level removed)"
+else
+    appendInfoLine: "Intensity shape RMSE:       undefined"
+endif
+appendInfoLine: "Speech/pause agreement:     ", fixed$(speechPauseAgreementPct, 2), "%"
 appendInfoLine: "Original waveform not used as audible output."
 appendInfoLine: "EXPERIMENTAL — requires perceptual intelligibility testing."
 appendInfoLine: "Compare against stricter hum / low-pass / vocoding controls."
@@ -1319,7 +1619,7 @@ if play_result = 1
     Play
 endif
 
-removeObject: pitchObj, intObj, srcMono
+removeObject: pitchObj, intObj, srcMono, outPitchQC, outIntQC
 selectObject: resultFinal
 
 label FINISHED
@@ -1366,11 +1666,9 @@ procedure drawQC
     endif
     dbTick = 10
 
-    # ---- analyse the OUTPUT for the preservation overlay ----
-    selectObject: resultFinal
-    outPitch = To Pitch: 0.01, floorHz, ceilingHz
-    selectObject: resultFinal
-    outInt = To Intensity: 100, 0, "yes"
+    # ---- reuse OUTPUT analyses already computed for numerical QC ----
+    outPitch = outPitchQC
+    outInt = outIntQC
 
     # layout: left/right margins leave room for numbered y axes
     lpL = 0.95
@@ -1576,7 +1874,7 @@ procedure drawQC
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.80, "half",
-        ... "##Engine##  KlattGrid v2.4"
+        ... "##Engine##  KlattGrid v2.5"
         ... + "   |   ##Pitch##  " + fixed$(floorHz, 0) + "–" + fixed$(ceilingHz, 0) + " Hz"
         ... + "   |   ##Median F0##  " + fixed$(medianF0, 0) + " Hz"
         ... + "   |   ##Intonation alpha##  " + fixed$(pitch_strength, 2)
@@ -1592,8 +1890,7 @@ procedure drawQC
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # ---- cleanup analysis objects made for the figure ----
-    removeObject: outPitch, outInt
+    # Output Pitch/Intensity objects are cleaned up by the caller after drawing.
 
     Font size: 10
     Colour: "Black"
