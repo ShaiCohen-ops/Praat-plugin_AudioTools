@@ -3,68 +3,45 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (reviewed 2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Advanced Pulsar Synthesis engine inspired by Curtis Roads'
-#   pulsar synthesis technique (Roads, 2001). Generates sounds
-#   ranging from pitched tones through rhythmic pulsing to
-#   complex noise textures by controlling the ratio of pulsaret
-#   duty-cycle to inter-onset interval.
+#   Pulsar synthesis using a selected Sound as the pulsaret/timbre kernel.
+#   The engine separates four stages explicitly:
+#       1. onset process (periodic/chirped/jittered or Poisson),
+#       2. band-limited impulse train,
+#       3. convolution with the selected Sound,
+#       4. per-IOI Hann duty gate + global envelope / AM.
 #
-#   Implements two synthesis modes:
-#     MODE A — Periodic Pulsar Train (regular inter-onset intervals)
-#       - Constant or chirped pulse period
-#       - Convolution with a Sound loaded from the Praat Objects list
-#       - Hanning-windowed pulse shaping (duty cycle control)
+#   The duty cycle is the fraction of each realized inter-onset interval
+#   during which the convolved pulsaret remains active. The Hann gate is
+#   applied AFTER convolution, so changing duty cycle changes the sound.
 #
-#     MODE B — Stochastic Pulsar Cloud (Poisson-distributed onsets)
-#       - Inter-onset intervals drawn from exponential distribution
-#       - Density parameter controls mean onset rate (pulses/sec)
-#       - Convolution with a Sound loaded from the Praat Objects list
-#       - Hanning-windowed post-convolution shaping
+#   Visualization is mechanism-first rather than result-first:
+#       A. realized onset intervals versus the generating rule,
+#       B. actual duty-cycle gate inside a representative IOI,
+#       C. selected kernel plus global envelope / AM controls,
+#       D. measured output waveform, followed by process/QC summary.
 #
-#   Additional synthesis controls:
-#     - Pulsaret duty cycle: fraction of period occupied by waveform
-#     - Global amplitude envelope (cosine fade in/out)
-#     - Amplitude modulation (tremolo): rate + depth
-#     - Period chirp (MODE A): frequency glide over time
-#     - Stochastic pitch scatter (both modes): jitter on period
-#
-#   Visualization (8 × 5.9 inch canvas, matching Grisey engine):
-#     - Title row: preset + parameters
-#     - Waveform overview (full duration)
-#     - Zoom: start vs end waveforms
-#     - Spectrogram with pulse-onset markers
-#     - PointProcess overlay on waveform
-#     - Stats / summary panel
-#     - Legend
-#
-#   References:
-#     - Roads, C. (2001). Microsound. MIT Press.
-#     - Roads, C. (1978). Automated Granular Synthesis of Sound.
-#       Computer Music Journal.
-#     - Gabor, D. (1947). Acoustical Quanta and the Theory of
-#       Hearing. Nature.
-#     - Roads, C. & Wieneke, P. (1979). Grains, Clouds and
-#       Augmented Instruments. ICMC Proceedings.
+# References:
+#   Roads, C. (2001). Microsound. MIT Press.
+#   Roads, C. (1978). Automated Granular Synthesis of Sound.
+#   Gabor, D. (1947). Acoustical Quanta and the Theory of Hearing.
 #
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
-#   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Category: Generative & Synthesis Systems
 # ============================================================
 
 # ============================================================
-# FORM
+# COMPACT FORM
 # ============================================================
-form Pulsar Synthesis Engine v1.0
-    comment === Preset ===
-    optionmenu Preset: 2
+form Pulsar Synthesis Engine v1.1
+    optionmenu Preset 2
         option Custom
         option Periodic Tone (harmonic fundamental)
         option Rhythmic Pulse (sub-audio period)
@@ -72,38 +49,66 @@ form Pulsar Synthesis Engine v1.0
         option Chirp Sweep (gliding pitch)
         option Tremolo Web (AM texture)
         option Noise Burst (dense stochastic)
-    comment === Mode ===
-    optionmenu Synthesis_mode: 1
-        option Periodic (PointProcess Fill)
-        option Stochastic (Poisson Process)
-    comment === Timing ===
+
+    optionmenu Synthesis_mode 1
+        option Periodic
+        option Stochastic Poisson
+
     positive Duration_s 3
     positive Period_s 0.01
-    comment === Stochastic (Mode B only) ===
     positive Density_pulses_per_s 100
-    comment === Pulsaret Shape ===
     positive Duty_cycle 0.5
-    real Period_jitter_ratio 0.0
-    comment === Chirp (Periodic mode only) ===
-    boolean Enable_chirp 0
-    positive Chirp_end_period_s 0.005
-    comment === Amplitude Modulation ===
-    boolean Enable_am 0
-    real Am_rate_hz 4.0
-    real Am_depth 0.5
-    comment === Envelope ===
-    positive Fade_in_s 0.05
-    positive Fade_out_s 0.10
-    comment === Output ===
-    positive Sample_rate 44100
-    boolean Show_visualization 1
+
+    boolean Edit_details 0
+    boolean Normalize_output 1
+    boolean Draw_visualization 1
+    boolean Play_result 1
 endform
 
 # ============================================================
-# APPLY PRESETS
+# ADVANCED DEFAULTS
 # ============================================================
+period_jitter_ratio = 0.0
+enable_chirp = 0
+chirp_end_period_s = 0.005
+enable_am = 0
+am_rate_hz = 4.0
+am_depth = 0.5
+fade_in_s = 0.05
+fade_out_s = 0.10
+sample_rate_hz = 44100
+output_peak = 0.95
+random_seed = 0
 
-# Defaults (overridden by preset blocks)
+# ============================================================
+# OPTIONAL COMPACT ADVANCED PAGE
+# ============================================================
+if edit_details
+    beginPause: "Pulsar Synthesis - Details"
+        real: "Periodic IOI jitter ratio", period_jitter_ratio
+        boolean: "Enable periodic chirp", enable_chirp
+        positive: "Chirp end period (s)", chirp_end_period_s
+        boolean: "Enable amplitude modulation", enable_am
+        real: "AM rate (Hz)", am_rate_hz
+        real: "AM depth", am_depth
+        real: "Fade in (s)", fade_in_s
+        real: "Fade out (s)", fade_out_s
+        integer: "Sample rate (Hz)", sample_rate_hz
+        real: "Output peak", output_peak
+        integer: "Random seed (0 = unpredictable)", random_seed
+    endPause: "Run", 1
+endif
+
+# ============================================================
+# PRESETS
+# ============================================================
+presetName$ = "Custom"
+synthMode = synthesis_mode
+duration = duration_s
+basePeriod = period_s
+density = density_pulses_per_s
+dutyC = duty_cycle
+jitter = period_jitter_ratio
 enableChirp = enable_chirp
 chirpEndPeriod = chirp_end_period_s
 enableAM = enable_am
@@ -111,16 +116,14 @@ amRate = am_rate_hz
 amDepth = am_depth
 fadeIn = fade_in_s
 fadeOut = fade_out_s
-dutyC = duty_cycle
-jitter = period_jitter_ratio
-synthMode = synthesis_mode
-density = density_pulses_per_s
+sr = sample_rate_hz
+outPeak = output_peak
+seed = random_seed
 
 if preset = 2
-    # PERIODIC TONE: Short period -> audible pitch ~100 Hz
     presetName$ = "Periodic Tone"
     synthMode = 1
-    period_s = 0.01
+    basePeriod = 0.01
     dutyC = 0.5
     jitter = 0.0
     enableChirp = 0
@@ -132,10 +135,9 @@ if preset = 2
     fadeOut = 0.10
 
 elsif preset = 3
-    # RHYTHMIC PULSE: Long period -> sub-audio rhythm ~4 Hz
     presetName$ = "Rhythmic Pulse"
     synthMode = 1
-    period_s = 0.25
+    basePeriod = 0.25
     dutyC = 0.15
     jitter = 0.05
     enableChirp = 0
@@ -147,15 +149,12 @@ elsif preset = 3
     fadeOut = 0.05
 
 elsif preset = 4
-    # STOCHASTIC CLOUD: Poisson 100 pulses/s
     presetName$ = "Stochastic Cloud"
     synthMode = 2
-    period_s = 0.01
     density = 100
     dutyC = 0.5
     jitter = 0.0
     enableChirp = 0
-    chirpEndPeriod = 0.01
     enableAM = 0
     amRate = 0
     amDepth = 0
@@ -163,10 +162,9 @@ elsif preset = 4
     fadeOut = 0.10
 
 elsif preset = 5
-    # CHIRP SWEEP: Period glides 0.02 s -> 0.002 s (50 Hz -> 500 Hz)
     presetName$ = "Chirp Sweep"
     synthMode = 1
-    period_s = 0.02
+    basePeriod = 0.02
     dutyC = 0.5
     jitter = 0.01
     enableChirp = 1
@@ -178,15 +176,12 @@ elsif preset = 5
     fadeOut = 0.12
 
 elsif preset = 6
-    # TREMOLO WEB: AM at 6 Hz over a stochastic cloud
     presetName$ = "Tremolo Web"
     synthMode = 2
-    period_s = 0.008
     density = 150
     dutyC = 0.4
     jitter = 0.0
     enableChirp = 0
-    chirpEndPeriod = 0.008
     enableAM = 1
     amRate = 6.0
     amDepth = 0.7
@@ -194,675 +189,753 @@ elsif preset = 6
     fadeOut = 0.15
 
 elsif preset = 7
-    # NOISE BURST: Very dense Poisson, short duty cycle -> near-noise
     presetName$ = "Noise Burst"
     synthMode = 2
-    period_s = 0.005
     density = 400
     dutyC = 0.8
     jitter = 0.0
     enableChirp = 0
-    chirpEndPeriod = 0.005
     enableAM = 0
     amRate = 0
     amDepth = 0
     fadeIn = 0.01
     fadeOut = 0.04
-
-else
-    presetName$ = "Custom"
 endif
 
 # ============================================================
-# SETUP
+# VALIDATION / LABELS
 # ============================================================
-piVal = 3.14159265358979
-sr = sample_rate
-duration = duration_s
-basePeriod = period_s
+piVal = 3.141592653589793
 nyquist = sr / 2
 
-# Duty cycle: clamp to (0,1)
-if dutyC <= 0
-    dutyC = 0.01
+if duration <= 0 or duration > 120
+    exitScript: "Duration must be > 0 and <= 120 seconds."
 endif
-if dutyC >= 1
-    dutyC = 0.99
+if sr < 8000 or sr > 192000
+    exitScript: "Sample rate must be between 8000 and 192000 Hz."
+endif
+if basePeriod <= 0
+    exitScript: "Periodic period must be greater than zero."
+endif
+if density <= 0
+    exitScript: "Poisson density must be greater than zero."
+endif
+if dutyC <= 0 or dutyC > 1
+    exitScript: "Duty cycle must be > 0 and <= 1."
+endif
+if jitter < 0 or jitter > 0.95
+    exitScript: "Periodic IOI jitter ratio must be between 0 and 0.95."
+endif
+if chirpEndPeriod <= 0
+    exitScript: "Chirp end period must be greater than zero."
+endif
+if amRate < 0
+    exitScript: "AM rate cannot be negative."
+endif
+if amDepth < 0 or amDepth > 1
+    exitScript: "AM depth must be between 0 and 1."
+endif
+if fadeIn < 0 or fadeOut < 0
+    exitScript: "Fade times cannot be negative."
+endif
+if outPeak <= 0 or outPeak > 1
+    exitScript: "Output peak must be > 0 and <= 1."
+endif
+if seed < 0
+    exitScript: "Random seed must be 0 or a positive integer."
 endif
 
-# Fade clamp
-if fadeIn < 0.005
-    fadeIn = 0.005
+if fadeIn > duration * 0.45
+    fadeIn = duration * 0.45
 endif
-if fadeIn > duration * 0.4
-    fadeIn = duration * 0.4
-endif
-if fadeOut < 0.005
-    fadeOut = 0.005
-endif
-if fadeOut > duration * 0.4
-    fadeOut = duration * 0.4
+if fadeOut > duration * 0.45
+    fadeOut = duration * 0.45
 endif
 
-# Mode labels
 if synthMode = 1
     modeName$ = "Periodic"
+    minRequestedPeriod = basePeriod
+    if enableChirp = 1 and chirpEndPeriod < minRequestedPeriod
+        minRequestedPeriod = chirpEndPeriod
+    endif
+    if 1 / minRequestedPeriod > nyquist * 0.95
+        exitScript: "Requested periodic pulse rate exceeds 95% of Nyquist. Increase the period or sample rate."
+    endif
 else
-    modeName$ = "Stochastic"
+    modeName$ = "Stochastic Poisson"
+endif
+
+if seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (seed)
 endif
 
 # ============================================================
-# STORE INPUT SOUND REFERENCE
+# SELECTED INPUT SOUND / WORKING KERNEL
 # ============================================================
-# User must have a Sound selected before running.
-# That Sound will be used as the convolution kernel (pulsaret waveform).
 if numberOfSelected("Sound") <> 1
-    exitScript: "Pulsar Synthesis Engine: please select exactly ONE Sound object (the pulsaret / convolution kernel) before running."
+    exitScript: "Pulsar Synthesis Engine: select exactly ONE Sound object as the pulsaret/timbre kernel."
 endif
-tmp = selected("Sound")
+
+inputSound = selected("Sound")
+inputName$ = selected$("Sound")
+inputChannels = Get number of channels
+inputSR = Get sampling frequency
+inputStart = Get start time
+inputEnd = Get end time
+inputDuration = inputEnd - inputStart
+inputPeak = Get absolute extremum: 0, 0, "None"
+
+if inputDuration <= 0
+    exitScript: "The selected kernel Sound has no usable duration."
+endif
+if inputPeak = 0
+    exitScript: "The selected kernel Sound is silent."
+endif
+
+# Zero-shift a copy so convolution begins at each event time.
+selectObject: inputSound
+Extract part: inputStart, inputEnd, "rectangular", 1, "no"
+kernelWork = selected("Sound")
+Rename: "pulsar_kernel_work"
+
+if inputSR <> sr
+    Resample: sr, 50
+    kernelResampled = selected("Sound")
+    removeObject: kernelWork
+    kernelWork = kernelResampled
+    Rename: "pulsar_kernel_work"
+endif
+
+selectObject: kernelWork
+kernelDuration = Get total duration
+kernelPeak = Get absolute extremum: 0, 0, "None"
 
 # ============================================================
 # INFO HEADER
 # ============================================================
-writeInfoLine: "=== Pulsar Synthesis Engine v1.0 ==="
-appendInfoLine: ""
+writeInfoLine: "=== Pulsar Synthesis Engine v1.1 ==="
 appendInfoLine: "Preset:        ", presetName$
 appendInfoLine: "Mode:          ", modeName$
-appendInfoLine: "Duration:      ", fixed$(duration, 2), " s"
-appendInfoLine: "Base period:   ", fixed$(basePeriod, 5), " s  (",
-    ... fixed$(1 / basePeriod, 1), " Hz)"
-if synthMode = 2
-    appendInfoLine: "Density:       ", fixed$(density, 1), " pulses/s"
+appendInfoLine: "Duration:      ", fixed$(duration, 3), " s"
+if synthMode = 1
+    appendInfoLine: "Period:        ", fixed$(basePeriod * 1000, 3), " ms (", fixed$(1/basePeriod, 2), " Hz)"
+    if enableChirp = 1
+        appendInfoLine: "Chirp:         ", fixed$(basePeriod * 1000, 3), " -> ", fixed$(chirpEndPeriod * 1000, 3), " ms"
+    endif
+    appendInfoLine: "IOI jitter:    ", fixed$(jitter, 3)
+else
+    appendInfoLine: "Density:       ", fixed$(density, 2), " pulses/s; expected IOI ", fixed$(1000/density, 3), " ms"
 endif
-appendInfoLine: "Duty cycle:    ", fixed$(dutyC, 2)
-appendInfoLine: "Jitter:        ", fixed$(jitter, 3)
-if enableChirp = 1 and synthMode = 1
-    appendInfoLine: "Chirp end:     ", fixed$(chirpEndPeriod, 5), " s  (",
-        ... fixed$(1 / chirpEndPeriod, 1), " Hz)"
-endif
-if enableAM = 1
-    appendInfoLine: "AM:            ", fixed$(amRate, 2),
-        ... " Hz, depth ", fixed$(amDepth, 2)
-endif
-appendInfoLine: "Fade in:       ", fixed$(fadeIn, 3), " s"
-appendInfoLine: "Fade out:      ", fixed$(fadeOut, 3), " s"
+appendInfoLine: "Duty cycle:    ", fixed$(dutyC, 3)
+appendInfoLine: "Kernel:        ", inputName$, " | ", inputChannels, " ch | ", fixed$(kernelDuration*1000,2), " ms"
 appendInfoLine: "Sample rate:   ", sr, " Hz"
 appendInfoLine: ""
 
 # ============================================================
-# STEP 1: Build PointProcess (pulse onsets)
+# STEP 1: ONSET PROCESS
 # ============================================================
-appendInfoLine: "[1/5] Building pulse onset process..."
+appendInfoLine: "[1/5] Building onset process..."
+minIOI = 2 / sr
+timingClampCount = 0
 
 if synthMode = 1
-    # --- PERIODIC MODE ---
-    # Build the pulse train via Fill on an empty PointProcess.
-    # If chirp is on, we manually place pulses at chirped intervals.
+    Create empty PointProcess: "pulsar_pp", 0, duration
+    pp = selected("PointProcess")
 
-    if enableChirp = 1 and chirpEndPeriod > 0 and chirpEndPeriod <> basePeriod
-        # Chirped periodic train: period varies linearly from
-        # basePeriod (t=0) to chirpEndPeriod (t=duration).
-        # Place pulses one by one.
-        Create empty PointProcess: "pulsar_pp", 0, duration
-        pp = selected("PointProcess")
-
-        t_now = 0
-        pulseCount = 0
-        while t_now < duration
-            Add point: t_now
-            pulseCount = pulseCount + 1
-
-            # Linear interpolation of period at this moment
-            frac = t_now / duration
-            p_now = basePeriod + (chirpEndPeriod - basePeriod) * frac
-
-            # Optional jitter
-            if jitter > 0
-                jitterAmt = randomGauss(0, p_now * jitter)
-                p_now = p_now + jitterAmt
-                if p_now < 0.0001
-                    p_now = 0.0001
-                endif
-            endif
-
-            t_now = t_now + p_now
-        endwhile
-
-    elsif jitter > 0
-        # Periodic with jitter: place pulses manually
-        Create empty PointProcess: "pulsar_pp", 0, duration
-        pp = selected("PointProcess")
-
-        t_now = 0
-        pulseCount = 0
-        while t_now < duration
-            Add point: t_now
-            pulseCount = pulseCount + 1
-
-            p_now = basePeriod + randomGauss(0, basePeriod * jitter)
-            if p_now < 0.0001
-                p_now = 0.0001
-            endif
-            t_now = t_now + p_now
-        endwhile
-
-    else
-        # Clean periodic: use built-in Fill
-        Create empty PointProcess: "pulsar_pp", 0, duration
-        pp = selected("PointProcess")
+    if enableChirp = 0 and jitter = 0
         Fill: 0, 0, basePeriod
         pulseCount = Get number of points
+    else
+        t_now = 0
+        pulseCount = 0
+        while t_now < duration
+            Add point: t_now
+            pulseCount = pulseCount + 1
+
+            if enableChirp = 1
+                frac = t_now / duration
+                p_now = basePeriod + (chirpEndPeriod - basePeriod) * frac
+            else
+                p_now = basePeriod
+            endif
+
+            if jitter > 0
+                p_now = p_now + randomGauss(0, p_now * jitter)
+            endif
+            if p_now < minIOI
+                p_now = minIOI
+                timingClampCount = timingClampCount + 1
+            endif
+            t_now = t_now + p_now
+        endwhile
     endif
-
-    appendInfoLine: "  Placed ", pulseCount, " pulses (periodic)"
-
 else
-    # --- STOCHASTIC MODE (Poisson) ---
     Create Poisson process: "pulsar_pp", 0, duration, density
     pp = selected("PointProcess")
     pulseCount = Get number of points
-    appendInfoLine: "  Placed ", pulseCount, " pulses (Poisson, density=",
-        ... fixed$(density, 1), " /s)"
 endif
 
-appendInfoLine: "  Mean IOI: ", fixed$(duration / pulseCount * 1000, 2), " ms"
+# Realized IOI statistics
+sumIOI = 0
+sumIOI2 = 0
+minRealIOI = undefined
+maxRealIOI = undefined
+if pulseCount > 1
+    for k from 1 to pulseCount - 1
+        selectObject: pp
+        tk0 = Get time from index: k
+        tk1 = Get time from index: k + 1
+        dtk = tk1 - tk0
+        sumIOI = sumIOI + dtk
+        sumIOI2 = sumIOI2 + dtk * dtk
+        if k = 1 or dtk < minRealIOI
+            minRealIOI = dtk
+        endif
+        if k = 1 or dtk > maxRealIOI
+            maxRealIOI = dtk
+        endif
+    endfor
+    meanIOI = sumIOI / (pulseCount - 1)
+    varIOI = sumIOI2 / (pulseCount - 1) - meanIOI * meanIOI
+    if varIOI < 0
+        varIOI = 0
+    endif
+    sdIOI = sqrt(varIOI)
+    if meanIOI > 0
+        ioiCV = sdIOI / meanIOI
+    else
+        ioiCV = undefined
+    endif
+else
+    if synthMode = 1
+        meanIOI = basePeriod
+    else
+        meanIOI = 1 / density
+    endif
+    sdIOI = undefined
+    ioiCV = undefined
+    minRealIOI = meanIOI
+    maxRealIOI = meanIOI
+endif
+
+realizedRate = pulseCount / duration
+appendInfoLine: "  Pulses:       ", pulseCount
+if pulseCount > 1
+    appendInfoLine: "  Mean IOI:     ", fixed$(meanIOI*1000, 3), " ms"
+    appendInfoLine: "  IOI CV:       ", fixed$(ioiCV, 3)
+else
+    appendInfoLine: "  Mean IOI:     unavailable (fewer than two pulses)"
+endif
 appendInfoLine: ""
 
 # ============================================================
-# STEP 2: Convert PointProcess to pulse-train Sound
+# STEP 2: BAND-LIMITED IMPULSE TRAIN
 # ============================================================
-appendInfoLine: "[2/5] Generating pulse-train sound..."
-
+appendInfoLine: "[2/5] Creating band-limited impulse train..."
 selectObject: pp
-# adaptFactor=1.0: pulse amplitude adapts to local IOI (natural dynamics)
-# adaptTime=0.05 s; interpolationDepth=2000 samples (sinc interpolation)
+# Adaptation factor 1.0 means pulse heights are NOT attenuated after gaps.
 To Sound (pulse train): sr, 1, 0.05, 2000
 pulseTrain = selected("Sound")
-
-appendInfoLine: "  Pulse train created (", sr, " Hz)"
+appendInfoLine: "  PointProcess -> sinc-band-limited pulse train"
 appendInfoLine: ""
 
 # ============================================================
-# STEP 3: Apply Hanning window (duty-cycle shaping)
+# STEP 3: CONVOLUTION WITH SELECTED KERNEL
 # ============================================================
-appendInfoLine: "[3/5] Shaping pulsarets (duty cycle = ",
-    ... fixed$(dutyC, 2), ")..."
-
-# The Hanning window shortens each pulsaret relative to the IOI.
-# Praat's Multiply by window operates on the whole signal;
-# instead, we modulate the pulse train with a duty-cycle envelope
-# built from the PointProcess so each pulsaret fades within
-# dutyC * IOI.  We approximate this by multiplying by a
-# repeating raised-cosine gate derived from the PointProcess.
-
-# Duty-cycle gate: for each pulse at time t_k, the gate is a Hann
-# window CENTERED on the onset (peak = 1 at t_k, so the pulse energy
-# is preserved rather than zeroed):
-#   g(t) = 0.5*(1 - cos(2*pi*(t - (t_k - w/2)) / w))  for t in [t_k-w/2, t_k+w/2]
-#   g(t) = 0                                           otherwise
-# where  w = dutyC * IOI_k
-# We build this as a formula Sound, then multiply.
-
-durStr$ = fixed$(duration, 10)
-dutyStr$ = fixed$(dutyC, 8)
-piStr$ = fixed$(piVal, 14)
-
-# --- Build duty-cycle gate from PointProcess time table ---
-# For efficiency, use a formula that computes the gate sample-by-sample.
-# We iterate over all pulses and accumulate gate contributions.
-
+appendInfoLine: "[3/5] Convolving pulse train with selected kernel..."
 selectObject: pulseTrain
-Copy: "gate_tmp"
+plusObject: kernelWork
+# 'sum' is the appropriate discrete filtering convention for an impulse
+# train convolved with a finite impulse response / selected sound.
+Convolve: "sum", "zero"
+convolved = selected("Sound")
+
+# Convolution extends the time domain; return to requested duration and zero.
+Extract part: 0, duration, "rectangular", 1, "no"
+preGate = selected("Sound")
+removeObject: convolved
+appendInfoLine: "  Convolution complete; duration restored to ", fixed$(duration,3), " s"
+appendInfoLine: ""
+
+# ============================================================
+# STEP 4: TRUE PULSAR DUTY GATE (AFTER CONVOLUTION)
+# ============================================================
+appendInfoLine: "[4/5] Applying per-IOI Hann duty gate..."
+
+Create Sound from formula: "pulsar_duty_gate", 1, 0, duration, sr, "0"
 gateSnd = selected("Sound")
-Formula: "0"   ; zero out
+
+activeSum = 0
+activeCount = 0
+underResolvedGateCount = 0
+repIndex = 1
+if pulseCount > 1
+    repIndex = floor((pulseCount - 1) / 2) + 1
+endif
+repOnset = 0
+repIOI = meanIOI
+repActive = dutyC * repIOI
 
 for k from 1 to pulseCount
     selectObject: pp
     t_k = Get time from index: k
 
-    # Determine window width from next IOI (or remaining duration)
     if k < pulseCount
-        selectObject: pp
         t_next = Get time from index: k + 1
         ioi_k = t_next - t_k
-    else
+    elsif pulseCount > 1
+        t_prev = Get time from index: k - 1
+        ioi_k = t_k - t_prev
+    elsif synthMode = 1
         ioi_k = basePeriod
+    else
+        ioi_k = 1 / density
     endif
 
-    w_k = dutyC * ioi_k
-    if w_k < 1 / sr
-        w_k = 1 / sr
+    active_k = dutyC * ioi_k
+    # Keep the gate inside its realized IOI. Very short stochastic IOIs can
+    # be under-resolved; we report them rather than changing the onset model.
+    if active_k > ioi_k
+        active_k = ioi_k
+    endif
+    if active_k < 4 / sr
+        underResolvedGateCount = underResolvedGateCount + 1
+    endif
+    if active_k < 1 / sr
+        active_k = 1 / sr
+        if active_k > ioi_k
+            active_k = ioi_k
+        endif
     endif
 
-    # Window centered on the onset: [t_k - w/2, t_k + w/2]
-    winStart = t_k - w_k / 2
-    t_start = winStart
-    if t_start < 0
-        t_start = 0
-    endif
-    t_end = t_k + w_k / 2
-    if t_end > duration
-        t_end = duration
+    if k = repIndex
+        repOnset = t_k
+        repIOI = ioi_k
+        repActive = active_k
     endif
 
-    # Accumulate Hann pulsaret gate (peak = 1 at t_k)
-    winStartStr$ = fixed$(winStart, 10)
-    wkStr$ = fixed$(w_k, 10)
+    activeSum = activeSum + active_k
+    activeCount = activeCount + 1
 
-    selectObject: gateSnd
-    Formula (part): t_start, t_end, 1, 1,
-        ... "self + 0.5 * (1 - cos(2 * " + piStr$
-        ... + " * (x - " + winStartStr$ + ") / " + wkStr$ + "))"
+    gateEnd = t_k + active_k
+    if gateEnd > duration
+        gateEnd = duration
+    endif
 
-    # Progress every 50 pulses
-    kMod = k - floor(k / 50) * 50
-    if kMod = 0 or k = pulseCount
-        appendInfoLine: "  ... pulsaret ", k, " / ", pulseCount
+    if gateEnd > t_k and active_k > 0
+        tStr$ = fixed$(t_k, 12)
+        wStr$ = fixed$(active_k, 12)
+        selectObject: gateSnd
+        Formula (part): t_k, gateEnd, 1, 1,
+            ... "self + 0.5 * (1 - cos(2 * pi * (x - " + tStr$ + ") / " + wStr$ + "))"
     endif
 endfor
 
-# Apply gate to pulse train
-selectObject: pulseTrain
-Formula: "self * object[gateSnd]"
-
-removeObject: gateSnd
-
-appendInfoLine: "  Duty-cycle shaping complete."
-appendInfoLine: ""
-
-# ============================================================
-# STEP 4: Convolve with input Sound (pulsaret timbre)
-# ============================================================
-appendInfoLine: "[4/5] Convolving with pulsaret waveform..."
-
-# Select pulseTrain + input sound, then convolve
-selectObject: tmp
-plusObject: pulseTrain
-Convolve: "peak 0.99", "zero"
-convolved = selected("Sound")
-
-removeObject: pulseTrain
-
-appendInfoLine: "  Convolution done."
-appendInfoLine: ""
-
-# ============================================================
-# STEP 5: Envelope + AM + normalize
-# ============================================================
-appendInfoLine: "[5/5] Applying envelope, AM, normalization..."
-
-selectObject: convolved
-
-# Truncate to intended duration (convolution may extend it)
-Extract part: 0, duration, "rectangular", 1, "no"
-shaped = selected("Sound")
-removeObject: convolved
-
-# --- Cosine fade in/out ---
-fadeInStr$ = fixed$(fadeIn, 10)
-fadeOutStart = duration - fadeOut
-fadeOutStartStr$ = fixed$(fadeOutStart, 10)
-fadeOutStr$ = fixed$(fadeOut, 10)
-
-selectObject: shaped
-Formula: "self * (if x < " + fadeInStr$
-    ... + " then 0.5 - 0.5 * cos(" + piStr$
-    ... + " * x / " + fadeInStr$ + ")"
-    ... + " else (if x > " + fadeOutStartStr$
-    ... + " then 0.5 + 0.5 * cos(" + piStr$
-    ... + " * (x - " + fadeOutStartStr$
-    ... + ") / " + fadeOutStr$ + ")"
-    ... + " else 1 fi) fi)"
-
-appendInfoLine: "  Fade in: ", fixed$(fadeIn, 3), " s"
-appendInfoLine: "  Fade out: ", fixed$(fadeOut, 3), " s"
-
-# --- Amplitude Modulation (tremolo) ---
-if enableAM = 1
-    amRateStr$ = fixed$(amRate, 8)
-    amDepthStr$ = fixed$(amDepth, 8)
-
-    selectObject: shaped
-    Formula: "self * (1 + " + amDepthStr$
-        ... + " * sin(2 * " + piStr$ + " * "
-        ... + amRateStr$ + " * x))"
-
-    appendInfoLine: "  AM: ", fixed$(amRate, 2),
-        ... " Hz, depth ", fixed$(amDepth, 2)
+if activeCount > 0
+    meanActive = activeSum / activeCount
+else
+    meanActive = dutyC * meanIOI
+endif
+if meanActive > 0
+    kernelToActiveRatio = kernelDuration / meanActive
+else
+    kernelToActiveRatio = undefined
 endif
 
-# --- Normalize ---
-selectObject: shaped
-Scale peak: 0.95
+# Prevent any numerical overlap from exceeding unity.
+selectObject: gateSnd
+Formula: "min(self, 1)"
+
+selectObject: preGate
+Formula: "self * object[gateSnd,1,col]"
+gated = selected("Sound")
+
+appendInfoLine: "  Mean active window: ", fixed$(meanActive*1000, 3), " ms"
+appendInfoLine: "  Duty ratio:         ", fixed$(dutyC, 3)
+appendInfoLine: "  Kernel/mean-active: ", fixed$(kernelToActiveRatio, 3)
+if kernelToActiveRatio > 1
+    appendInfoLine: "  QC: kernel exceeds the mean duty window; post-convolution tails are intentionally clipped/gated."
+endif
+if underResolvedGateCount > 0
+    appendInfoLine: "  QC: ", underResolvedGateCount, " active windows use fewer than 4 samples."
+endif
+appendInfoLine: ""
+
+# ============================================================
+# STEP 5: GLOBAL ENVELOPE + AM + OUTPUT
+# ============================================================
+appendInfoLine: "[5/5] Applying global controls..."
+
+fadeInStr$ = fixed$(fadeIn, 12)
+fadeOutStart = duration - fadeOut
+fadeOutStartStr$ = fixed$(fadeOutStart, 12)
+fadeOutStr$ = fixed$(fadeOut, 12)
+
+selectObject: gated
+if fadeIn > 0 or fadeOut > 0
+    Formula: "self * (if x < " + fadeInStr$
+        ... + " and " + fadeInStr$ + " > 0 then 0.5 - 0.5*cos(pi*x/" + fadeInStr$ + ")"
+        ... + " else if x > " + fadeOutStartStr$
+        ... + " and " + fadeOutStr$ + " > 0 then 0.5 + 0.5*cos(pi*(x-" + fadeOutStartStr$ + ")/" + fadeOutStr$ + ")"
+        ... + " else 1 fi fi)"
+endif
+
+if enableAM = 1 and amDepth > 0 and amRate > 0
+    amRateStr$ = fixed$(amRate, 10)
+    amDepthStr$ = fixed$(amDepth, 10)
+    Formula: "self * (1 + " + amDepthStr$ + " * sin(2*pi*" + amRateStr$ + "*x))"
+endif
+
+preNormPeak = Get absolute extremum: 0, 0, "None"
+if normalize_output = 1 and preNormPeak > 0
+    Scale peak: outPeak
+endif
+
 finalName$ = "Pulsar_" + presetName$ + "_" + modeName$
 Rename: finalName$
 finalOutput = selected("Sound")
+finalPeak = Get absolute extremum: 0, 0, "None"
+finalRMS = Get root-mean-square: 0, 0
+outputChannels = Get number of channels
 
-appendInfoLine: "  Output: ", finalName$
+appendInfoLine: "  Pre-normalization peak: ", fixed$(preNormPeak, 6)
+appendInfoLine: "  Final peak:             ", fixed$(finalPeak, 6)
+appendInfoLine: "  RMS:                    ", fixed$(finalRMS, 6)
 appendInfoLine: ""
 
 # ============================================================
-# VISUALIZATION
+# VISUALIZATION: MECHANISM FIRST
 # ============================================================
-if show_visualization = 1
-    appendInfoLine: "[Viz] Building visualization..."
-    
+if draw_visualization = 1
+    appendInfoLine: "[Viz] Drawing process visualization..."
     Erase all
 
-    # Spectrogram parameters (narrow-band for partial resolution)
-    specWindow = 0.03
-    specMaxFreq = min(4000, nyquist)
+    # House layout: 8-inch width, explicit strips/panels, fixed scales.
+    left = 0.80
+    right = 7.55
 
-    selectObject: finalOutput
-    To Spectrogram: specWindow, specMaxFreq, 0.002, 20, "Gaussian"
-    specGram = selected("Spectrogram")
-
-    # ==========================================================
-    # TITLE (matches Grisey engine: outer 0,8 / 0,0.55)
-    # ==========================================================
-    Select outer viewport: 0, 8, 0, 0.85
+    # ----------------------------------------------------------
+    # TITLE
+    # ----------------------------------------------------------
+    Select inner viewport: 0.20, 7.80, 0.05, 0.33
     Axes: 0, 1, 0, 1
-    Font size: 12
+    Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.90, "half",
-        ... "##Pulsar Synthesis Engine v1.0##"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.28, "half",
-        ... presetName$ + " | " + modeName$ + " | T="
-        ... + fixed$(basePeriod * 1000, 2) + " ms"
-        ... + " | duty=" + fixed$(dutyC, 2)
-        ... + " | " + fixed$(duration, 1) + " s"
+    Text: 0.5, "centre", 0.64, "half", "##Pulsar Synthesis Engine v1.1##"
 
-    # ==========================================================
-    # WAVEFORM OVERVIEW (full duration) outer 0,8 / 0.6,2.2
-    # ==========================================================
-    Select outer viewport: 0, 8, 0.6, 2.2
-    Select inner viewport: 0.8, 7.5, 0.7, 2.15
-
-    selectObject: finalOutput
-    Colour: "{0.2, 0.45, 0.75}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-
-    # Overlay pulse onset markers (vertical tick lines at each pulse onset)
-    # Draw thin markers for first 200 pulses to avoid overplotting
-
-    ovAmp = Get maximum: 0, 0, "Sinc70"
-    ovMin = Get minimum: 0, 0, "Sinc70"
-    absOvAmp = ovAmp
-    if ovMin < 0
-        absOvMin = -ovMin
-    else
-        absOvMin = ovMin
-    endif
-    if absOvMin > absOvAmp
-        absOvAmp = absOvMin
-    endif
-    if absOvAmp < 0.001
-        absOvAmp = 0.001
-    endif
-
-    Axes: 0, duration, -absOvAmp, absOvAmp
-
-    maxMarkersToShow = 200
-    if pulseCount < maxMarkersToShow
-        maxMarkersToShow = pulseCount
-    endif
-
-    for k from 1 to maxMarkersToShow
-        selectObject: pp
-        tk = Get time from index: k
-        # Tick line: short vertical mark at 80% of amplitude range
-        Colour: "{0.8, 0.55, 0.15}"
-        Line width: 1
-        selectObject: finalOutput
-        Draw line: tk, absOvAmp * 0.6, tk, absOvAmp * 0.95
-    endfor
-
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
+    Select inner viewport: 0.35, 7.65, 0.37, 0.67
+    Axes: 0, 1, 0, 1
     Font size: 7
-    Text left: "yes", "Amp"
-    Text top: "no", "Waveform Overview with Pulse Onsets (orange)"
-    Marks bottom every: 1, 0.5, "yes", "yes", "no"
+    Colour: "{0.30,0.30,0.36}"
+    if synthMode = 1
+        timingText$ = "period " + fixed$(basePeriod*1000,2) + " ms"
+        if enableChirp = 1
+            timingText$ = timingText$ + " -> " + fixed$(chirpEndPeriod*1000,2) + " ms"
+        endif
+    else
+        timingText$ = "Poisson lambda=" + fixed$(density,1) + "/s"
+    endif
+    Text: 0.5, "centre", 0.62, "half",
+        ... presetName$ + " | " + timingText$ + " | duty=" + fixed$(dutyC,2)
+        ... + " | kernel=" + inputName$ + " | " + fixed$(duration,2) + " s"
 
-    # ==========================================================
-    # SPECTROGRAM (main panel) outer 0,8 / 2.3,4.1
-    # ==========================================================
-    Select outer viewport: 0, 8, 2.3, 4.1
-    Select inner viewport: 0.8, 7.5, 2.4, 4.05
+    # ----------------------------------------------------------
+    # PROCESS DIAGRAM
+    # ----------------------------------------------------------
+    Select inner viewport: 0.35, 7.65, 0.75, 0.98
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.20,0.25,0.34}"
+    Text: 0.50, "centre", 0.58, "half",
+        ... "ONSET PROCESS  ->  SINC IMPULSES  ->  CONVOLVE h(t)  ->  HANN DUTY GATE  ->  ENVELOPE / AM  ->  OUTPUT"
 
-    selectObject: specGram
-    Paint: 0, 0, 0, specMaxFreq, 100, "yes", 50, 6, 0, "no"
+    # ----------------------------------------------------------
+    # PANEL A TITLE: ACTUAL TIMING PROCESS
+    # ----------------------------------------------------------
+    Select inner viewport: 0.35, 7.65, 1.08, 1.28
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.0, "left", 0.55, "half", "##A  ONSET PROCESS##  | realized IOIs versus the generating rule"
 
-    # Overlay vertical onset lines on spectrogram
-    Axes: 0, duration, 0, specMaxFreq
+    Select inner viewport: left, right, 1.35, 2.30
+    ioiYMax = maxRealIOI * 1000 * 1.15
+    if synthMode = 2
+        expectedMs = 1000 / density
+        if expectedMs * 2.5 > ioiYMax
+            ioiYMax = expectedMs * 2.5
+        endif
+    else
+        requestedMax = basePeriod
+        if enableChirp = 1 and chirpEndPeriod > requestedMax
+            requestedMax = chirpEndPeriod
+        endif
+        if requestedMax * 1000 * 1.25 > ioiYMax
+            ioiYMax = requestedMax * 1000 * 1.25
+        endif
+    endif
+    if ioiYMax < 1
+        ioiYMax = 1
+    endif
+    Axes: 0, duration, 0, ioiYMax
+    Colour: "{0.90,0.90,0.92}"
+    Draw rectangle: 0, duration, 0, ioiYMax
 
-    for k from 1 to maxMarkersToShow
-        selectObject: pp
-        tk = Get time from index: k
-        Colour: "{0.85, 0.65, 0.20}"
-        Line width: 1
-        Draw line: tk, 0, tk, specMaxFreq * 0.08
-    endfor
-
-    # If chirp: overlay chirp frequency curve
-    if enableChirp = 1 and synthMode = 1
-        Colour: "{0.9, 0.3, 0.1}"
-        Line width: 2
-        nCurvePoints = 60
-        prevT = 0
-        prevF = 1 / basePeriod
-        for cp from 1 to nCurvePoints
-            t_cp = cp / nCurvePoints * duration
-            frac_cp = t_cp / duration
-            p_cp = basePeriod + (chirpEndPeriod - basePeriod) * frac_cp
-            f_cp = 1 / p_cp
-            if f_cp <= specMaxFreq and prevF <= specMaxFreq
-                Draw line: prevT, prevF, t_cp, f_cp
+    if pulseCount > 1
+        plotStep = floor(((pulseCount - 1) + 179) / 180)
+        if plotStep < 1
+            plotStep = 1
+        endif
+        prevSet = 0
+        for k from 1 to pulseCount - 1
+            usePoint = 0
+            k0 = k - 1
+            if k0 - floor(k0 / plotStep) * plotStep = 0
+                usePoint = 1
             endif
-            prevT = t_cp
-            prevF = f_cp
+            if usePoint = 1
+                selectObject: pp
+                ta = Get time from index: k
+                tb = Get time from index: k + 1
+                yms = (tb - ta) * 1000
+                if prevSet = 1
+                    Colour: "{0.18,0.45,0.72}"
+                    Line width: 1.5
+                    Draw line: prevT, prevY, ta, yms
+                endif
+                Colour: "{0.18,0.45,0.72}"
+                Draw circle: ta, yms, 0.035
+                prevT = ta
+                prevY = yms
+                prevSet = 1
+            endif
         endfor
     endif
 
+    # Model/reference line
+    if synthMode = 2
+        refMs = 1000 / density
+        Colour: "{0.80,0.35,0.18}"
+        Line width: 1.5
+        Draw line: 0, refMs, duration, refMs
+        Font size: 6
+        Text: duration * 0.99, "right", refMs, "bottom", "E[IOI] = 1/lambda"
+    elsif enableChirp = 1
+        Colour: "{0.80,0.35,0.18}"
+        Line width: 1.5
+        nCurve = 80
+        prevT = 0
+        prevPms = basePeriod * 1000
+        for c from 1 to nCurve
+            tc = c / nCurve * duration
+            pc = basePeriod + (chirpEndPeriod - basePeriod) * (tc / duration)
+            Draw line: prevT, prevPms, tc, pc * 1000
+            prevT = tc
+            prevPms = pc * 1000
+        endfor
+    else
+        refMs = basePeriod * 1000
+        Colour: "{0.80,0.35,0.18}"
+        Line width: 1.5
+        Draw line: 0, refMs, duration, refMs
+    endif
+
     Colour: "Black"
     Line width: 1
     Draw inner box
     Font size: 7
-    Text left: "yes", "Hz"
-    Text top: "no", "Spectrogram with Onset Markers"
-    Marks left every: 1, 500, "yes", "yes", "no"
+    Text left: "yes", "IOI (ms)"
+    Text bottom: "yes", "Time (s)"
+    Marks bottom every: 1, max(0.5, duration/6), "yes", "yes", "no"
 
-    removeObject: specGram
-
-    # ==========================================================
-    # WAVEFORM ZOOMS: Start vs End (outer 0,4 and 4,8 / 4.2,5.05)
-    # ==========================================================
-    zoomDur = 0.05
-    if zoomDur > duration * 0.15
-        zoomDur = duration * 0.15
-    endif
-    if zoomDur < 0.005
-        zoomDur = 0.005
-    endif
-
-    # Compute shared amplitude range for both panels
-    selectObject: finalOutput
-    sm1 = Get maximum: fadeIn, fadeIn + zoomDur, "Sinc70"
-    sm2 = Get minimum: fadeIn, fadeIn + zoomDur, "Sinc70"
-    zm1 = sm1
-    if sm2 < 0
-        sm2neg = -sm2
-    else
-        sm2neg = sm2
-    endif
-    if sm2neg > zm1
-        zm1 = sm2neg
-    endif
-
-    em1 = Get maximum: duration - fadeOut - zoomDur, duration - fadeOut, "Sinc70"
-    em2 = Get minimum: duration - fadeOut - zoomDur, duration - fadeOut, "Sinc70"
-    zm2 = em1
-    if em2 < 0
-        em2neg = -em2
-    else
-        em2neg = em2
-    endif
-    if em2neg > zm2
-        zm2 = em2neg
-    endif
-
-    if zm1 > zm2
-        zAmp = zm1 * 1.1
-    else
-        zAmp = zm2 * 1.1
-    endif
-    if zAmp < 0.001
-        zAmp = 0.001
-    endif
-
-    # Start zoom (harmonic / coherent state)
-    Select outer viewport: 0, 4, 4.2, 5.05
-    Select inner viewport: 0.8, 3.7, 4.25, 5.0
-
-    selectObject: finalOutput
-    Colour: "{0.3, 0.5, 0.8}"
-    Draw: fadeIn, fadeIn + zoomDur, -zAmp, zAmp, "no", "Curve"
-
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Start: " + fixed$(zoomDur * 1000, 0) + " ms"
-    Text left: "yes", "Amp"
-
-    # End zoom (evolved / stochastic state)
-    Select outer viewport: 4, 8, 4.2, 5.05
-    Select inner viewport: 4.4, 7.5, 4.25, 5.0
-
-    zoomEndStart = duration - fadeOut - zoomDur
-    zoomEndEnd = duration - fadeOut
-
-    selectObject: finalOutput
-    Colour: "{0.8, 0.4, 0.2}"
-    Draw: zoomEndStart, zoomEndEnd, -zAmp, zAmp, "no", "Curve"
-
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "End: " + fixed$(zoomDur * 1000, 0) + " ms"
-    Text left: "yes", "Amp"
-
-    # ==========================================================
-    # STATS PANEL (outer 0,8 / 5.1,5.6)
-    # ==========================================================
-    Select outer viewport: 0, 8, 5.1, 5.6
-    Select inner viewport: 0.6, 7.7, 5.15, 5.58
+    # ----------------------------------------------------------
+    # PANEL B: PULSAR GEOMETRY / ACTUAL DUTY GATE
+    # ----------------------------------------------------------
+    Select inner viewport: 0.35, 7.65, 2.45, 2.65
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.0, "left", 0.55, "half", "##B  PULSAR GEOMETRY##  | one realized IOI: active Hann pulsaret + silence"
+
+    Select inner viewport: left, right, 2.72, 3.62
+    repEnd = repOnset + repIOI
+    if repEnd > duration
+        repEnd = duration
+    endif
+    Axes: repOnset, repEnd, 0, 1.05
+    Colour: "{0.95,0.95,0.96}"
+    Paint rectangle: "{0.95,0.95,0.96}", repOnset, repEnd, 0, 1.05
+    selectObject: gateSnd
+    Colour: "{0.18,0.55,0.35}"
+    Line width: 2
+    Draw: repOnset, repEnd, 0, 1.05, "no", "Curve"
+    Axes: repOnset, repEnd, 0, 1.05
+    activeEnd = repOnset + repActive
+    if activeEnd > repEnd
+        activeEnd = repEnd
+    endif
+    Colour: "{0.75,0.32,0.18}"
+    Line width: 1
+    Draw line: activeEnd, 0, activeEnd, 1.0
+    Colour: "Black"
+    Draw inner box
     Font size: 7
+    Text left: "yes", "Gate"
+    Text bottom: "yes", "Time (s)"
+    Text: repOnset + 0.5 * repActive, "centre", 0.92, "half", "active = duty x IOI"
+    if repEnd > activeEnd
+        Text: activeEnd + 0.5 * (repEnd-activeEnd), "centre", 0.15, "half", "silence"
+    endif
+
+    # ----------------------------------------------------------
+    # PANEL C: INPUT KERNEL + POST CONTROLS
+    # ----------------------------------------------------------
+    Select inner viewport: 0.35, 7.65, 3.78, 3.98
+    Axes: 0, 1, 0, 1
+    Font size: 8
     Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "##Pulsar Synthesis Summary##"
+    Text: 0.0, "left", 0.55, "half", "##C  TIMBRE + POST CONTROL##  | selected h(t), global envelope and AM gain"
+
+    # Kernel waveform (left)
+    Select inner viewport: 0.80, 3.88, 4.05, 4.95
+    selectObject: kernelWork
+    kp = Get absolute extremum: 0, 0, "None"
+    if kp < 0.000001
+        kp = 1
+    endif
+    Colour: "{0.38,0.34,0.68}"
+    Draw: 0, kernelDuration, -kp, kp, "no", "Curve"
+    Axes: 0, kernelDuration, -kp, kp
+    Colour: "Black"
+    Draw inner box
     Font size: 6
-    Colour: "{0.3, 0.3, 0.35}"
+    Text top: "no", "Selected kernel h(t)"
+    Text bottom: "yes", "Time (s)"
 
-    Text: 0.02, "left", 0.65, "half",
-        ... "Mode: " + modeName$
-        ... + " | Preset: " + presetName$
-        ... + " | Duration: " + fixed$(duration, 2) + " s"
-        ... + " | SR: " + string$(sr) + " Hz"
-    Text: 0.02, "left", 0.42, "half",
-        ... "Period: " + fixed$(basePeriod * 1000, 3) + " ms"
-        ... + " (" + fixed$(1 / basePeriod, 1) + " Hz)"
-        ... + " | Duty: " + fixed$(dutyC, 2)
-        ... + " | Jitter: " + fixed$(jitter, 3)
-        ... + " | Pulses: " + string$(pulseCount)
-    if enableAM = 1
-        amInfoStr$ = "AM: " + fixed$(amRate, 2) + " Hz (depth " + fixed$(amDepth, 2) + ")"
-    else
-        amInfoStr$ = "AM: off"
+    # Post-control curves (right): E(t) and AM gain.
+    Select inner viewport: 4.20, 7.55, 4.05, 4.95
+    controlYMax = 1.05
+    if enableAM = 1 and 1 + amDepth > controlYMax
+        controlYMax = 1 + amDepth + 0.05
     endif
-    if enableChirp = 1 and synthMode = 1
-        chirpInfoStr$ = "Chirp: " + fixed$(1/basePeriod, 1) + " -> " + fixed$(1/chirpEndPeriod, 1) + " Hz"
-    else
-        chirpInfoStr$ = "Chirp: off"
+    Axes: 0, duration, 0, controlYMax
+    nCtrl = 160
+    prevT = 0
+    prevEnv = 0
+    if fadeIn = 0
+        prevEnv = 1
     endif
-    Text: 0.02, "left", 0.19, "half",
-        ... chirpInfoStr$
-        ... + " | " + amInfoStr$
-        ... + " | Fade in: " + fixed$(fadeIn, 3) + " s"
-        ... + " / out: " + fixed$(fadeOut, 3) + " s"
-
+    prevAM = 1
+    for c from 1 to nCtrl
+        tc = c / nCtrl * duration
+        envc = 1
+        if fadeIn > 0 and tc < fadeIn
+            envc = 0.5 - 0.5 * cos(piVal * tc / fadeIn)
+        elsif fadeOut > 0 and tc > duration - fadeOut
+            envc = 0.5 + 0.5 * cos(piVal * (tc - (duration-fadeOut)) / fadeOut)
+        endif
+        amc = 1
+        if enableAM = 1 and amRate > 0 and amDepth > 0
+            amc = 1 + amDepth * sin(2*piVal*amRate*tc)
+        endif
+        Colour: "{0.18,0.55,0.35}"
+        Line width: 1.5
+        Draw line: prevT, prevEnv, tc, envc
+        if enableAM = 1 and amRate > 0 and amDepth > 0
+            Colour: "{0.78,0.42,0.18}"
+            Draw line: prevT, prevAM, tc, amc
+        endif
+        prevT = tc
+        prevEnv = envc
+        prevAM = amc
+    endfor
     Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 6
+    Text top: "no", "Envelope (green) / AM gain (orange)"
+    Text bottom: "yes", "Time (s)"
+
+    # ----------------------------------------------------------
+    # PANEL D: MEASURED OUTPUT
+    # ----------------------------------------------------------
+    Select inner viewport: 0.35, 7.65, 5.10, 5.30
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.0, "left", 0.55, "half", "##D  MEASURED OUTPUT##  | verification after convolution, duty gate and global controls"
+
+    Select inner viewport: left, right, 5.37, 6.30
+    waveRange = finalPeak * 1.08
+    if waveRange < 0.001
+        waveRange = 0.001
+    endif
+    selectObject: finalOutput
+    Colour: "{0.20,0.45,0.75}"
+    Draw: 0, duration, -waveRange, waveRange, "no", "Curve"
+    Axes: 0, duration, -waveRange, waveRange
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amp"
+    Text bottom: "yes", "Time (s)"
+    Marks bottom every: 1, max(0.5, duration/6), "yes", "yes", "no"
+
+    # ----------------------------------------------------------
+    # QC / CONCEPT SUMMARY
+    # ----------------------------------------------------------
+    Select inner viewport: 0.50, 7.50, 6.48, 7.78
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.955,0.955,0.96}", 0, 1, 0, 1
     Draw rectangle: 0, 1, 0, 1
-
-    # ==========================================================
-    # LEGEND (outer 0,8 / 5.65,5.95)
-    # ==========================================================
-    Select outer viewport: 0, 8, 5.65, 5.95
-    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.88, "half", "##PROCESS / QC##"
     Font size: 6
+    Colour: "{0.27,0.27,0.32}"
 
-    Colour: "{0.2, 0.45, 0.75}"
-    Draw line: 0.02, 0.5, 0.06, 0.5
-    Colour: "Black"
-    Text: 0.07, "left", 0.5, "half", "Waveform"
-
-    Colour: "{0.8, 0.55, 0.15}"
-    Draw line: 0.20, 0.5, 0.24, 0.5
-    Colour: "Black"
-    Text: 0.25, "left", 0.5, "half", "Pulse onsets"
-
-    Colour: "{0.3, 0.5, 0.8}"
-    Draw line: 0.42, 0.5, 0.46, 0.5
-    Colour: "Black"
-    Text: 0.47, "left", 0.5, "half", "Start zoom"
-
-    Colour: "{0.8, 0.4, 0.2}"
-    Draw line: 0.60, 0.5, 0.64, 0.5
-    Colour: "Black"
-    Text: 0.65, "left", 0.5, "half", "End zoom"
-
-    if enableChirp = 1 and synthMode = 1
-        Colour: "{0.9, 0.3, 0.1}"
-        Draw line: 0.78, 0.5, 0.82, 0.5
-        Colour: "Black"
-        Text: 0.83, "left", 0.5, "half", "Chirp curve"
+    if synthMode = 1
+        modelStr$ = "Periodic onset model | target start " + fixed$(1/basePeriod,2) + " Hz"
+        if enableChirp = 1
+            modelStr$ = modelStr$ + " -> " + fixed$(1/chirpEndPeriod,2) + " Hz"
+        endif
+    else
+        modelStr$ = "Homogeneous Poisson onset model | target lambda " + fixed$(density,2) + "/s"
     endif
+    Text: 0.02, "left", 0.70, "half", modelStr$
 
-    Font size: 10
-    Colour: "Black"
-    Line width: 1
+    if pulseCount > 1
+        statStr$ = "REALIZED | " + string$(pulseCount) + " pulses | rate " + fixed$(realizedRate,2)
+            ... + "/s | mean IOI " + fixed$(meanIOI*1000,2) + " ms | CV " + fixed$(ioiCV,3)
+    else
+        statStr$ = "REALIZED | " + string$(pulseCount) + " pulse(s) | rate " + fixed$(realizedRate,2) + "/s"
+    endif
+    Text: 0.02, "left", 0.53, "half", statStr$
+
+    dutyStr$ = "PULSARET | Hann duty " + fixed$(dutyC,3) + " | mean active " + fixed$(meanActive*1000,2)
+        ... + " ms | kernel/active " + fixed$(kernelToActiveRatio,2) + " | under-resolved windows " + string$(underResolvedGateCount)
+    Text: 0.02, "left", 0.36, "half", dutyStr$
+
+    outputStr$ = "OUTPUT | " + string$(outputChannels) + " ch | peak " + fixed$(finalPeak,4)
+        ... + " | RMS " + fixed$(finalRMS,4) + " | pre-norm peak " + fixed$(preNormPeak,4)
+        ... + " | SR " + string$(sr) + " Hz"
+    Text: 0.02, "left", 0.19, "half", outputStr$
 
     appendInfoLine: "  Visualization complete."
     appendInfoLine: ""
 endif
 
 # ============================================================
-# CLEANUP + PLAY
+# CLEANUP + OPTIONAL PLAY
 # ============================================================
-removeObject: pp
+removeObject: pp, pulseTrain, kernelWork, gateSnd
 
 selectObject: finalOutput
-Play
+if play_result = 1
+    Play
+endif
 
 appendInfoLine: "=== Done ==="
 appendInfoLine: "Output: ", finalName$
 appendInfoLine: ""
-appendInfoLine: "--- Compositional Notes ---"
-appendInfoLine: "Pulsar synthesis spans the full perceptual continuum:"
-appendInfoLine: "  - Short period (< 20 ms) -> pitched tone region"
-appendInfoLine: "  - Medium period (20-200 ms) -> transition texture"
-appendInfoLine: "  - Long period (> 200 ms) -> rhythmic pulse / rhythm"
-appendInfoLine: "  - Duty cycle < 0.2 -> sparse clicks / sparser texture"
-appendInfoLine: "  - Duty cycle > 0.7 -> overlapping, washy texture"
-appendInfoLine: "  - Poisson mode -> stochastic cloud / granular noise"
-appendInfoLine: "  - Chirp sweep -> gliding pitch / spectral smear"
-appendInfoLine: "  - Combine with AM -> tremolo / formant-like modulation"
-appendInfoLine: ""
-appendInfoLine: "Suggested uses:"
-appendInfoLine: "  - Cross-synthesis: use musical sounds as pulsaret kernel"
-appendInfoLine: "  - Rhythm-to-pitch continuum exploration"
-appendInfoLine: "  - Stochastic textures for electroacoustic composition"
-appendInfoLine: "  - Layering with Grisey Spectral Becoming Engine output"
+appendInfoLine: "Pulsar mechanism: onset process -> band-limited impulses -> convolution -> Hann duty gate -> envelope/AM."

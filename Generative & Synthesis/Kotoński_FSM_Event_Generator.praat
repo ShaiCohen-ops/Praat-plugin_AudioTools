@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 conceptual + DSP review (2026)
+# Version: 1.6 conceptual + DSP review (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -72,6 +72,42 @@
 #   Noise band        local white-noise fragment through Hann pass-band filter
 #   Metallic transient three inharmonic decaying sinusoids
 #   Mixed             stochastic selection among the above
+#
+# v1.6 changes (visualization only; the audio path is unchanged)
+# ------------
+#   - Figure recast as a PARTYTURA REALIZACYJNA. The Etiuda score was published
+#     by PWM in 1963 as a realization score, and the documented method is a set
+#     of parameter SCALES: the cymbal stroke was filtered into six bands of
+#     different widths and transposed to eleven heights, with eleven-step
+#     scales ordering length and eleven ordering dynamics, and six scales
+#     differentiating articulation.
+#   - NEW PANEL I, TABLICE SKAL: the four scales drawn as ruled tables, one
+#     mark per event at its level. The engine's 11/11/11/6 grid was previously
+#     invisible in the figure although it is the whole basis of the Etude
+#     preset; the serial rotations (steps of 7, 3, 5 and 5) now read directly
+#     as diagonal lattices. For presets with no grid the realized values are
+#     binned to the same levels and the heading says so.
+#   - COLOUR CONVENTION, applied consistently: INK for what is modelled on the
+#     documented method (the parameter tables), COLOUR for what this engine
+#     invented and Kotonski did not use (the four finite-state classes). The
+#     eye can therefore separate the analogy from the machinery, which is the
+#     distinction the conceptual scope above insists on.
+#   - The event field is no longer drawn on a near-black ground with sub-pixel
+#     dots and hairlines, which rendered as an almost empty rectangle with no
+#     readable frequency labels. It is now light, with events as filled bars
+#     of guaranteed minimum width and proper log-frequency marks.
+#   - State plan and transition matrix placed side by side, with each matrix
+#     row carrying its sample count: at hold 11 over 121 events there are only
+#     ten transitions, so a cell reading 1.00 rests on n=2 or n=3.
+#   - Serial grid indices are now logged (pitchIdx#, durIdx#, ampIdx#, ioiIdx#)
+#     so the score can show the scales themselves, not only their consequences.
+#   - Every text label is drawn from its own anchored viewport: a second Text
+#     in the same strip lands displaced, because Text leaves the drawing frame
+#     on the outer viewport.
+#
+# Historical sources for the parameter scales: Polish Radio Experimental Studio
+# documentation via Unearthing the Music; PWM score publication data (1963,
+# 16 pages, Polish/English/German, issued with a 7-inch disc); POLMIC.
 #
 # v1.5 changes
 # ------------
@@ -431,6 +467,12 @@ bandwidth# = zero#(n_events)
 state# = zero#(n_events)
 pan# = zero#(n_events)
 articulation# = zero#(n_events)
+# Serial grid positions, logged so the realization score can show the scales
+# themselves rather than only their audible consequences.
+pitchIdx# = zero#(n_events)
+durIdx# = zero#(n_events)
+ampIdx# = zero#(n_events)
+ioiIdx# = zero#(n_events)
 
 stateType# = zero#(4)
 stateType#[1] = state1_type
@@ -657,6 +699,10 @@ for i from 1 to n_events
         dur#[i] = dMin+(dMax-dMin)*(durIndex-1)/10
         amp#[i] = ampMin+(ampMax-ampMin)*(ampIndex-1)/10
         articulation#[i] = articulationIndex
+        pitchIdx#[i] = pitchIndex
+        durIdx#[i] = durIndex
+        ampIdx#[i] = ampIndex
+        ioiIdx#[i] = ((2*(i-1)+3) mod 11)+1
 
         # Six articulation classes are mapped to three synthetic source classes
         # plus envelope tendency. This is an engine analogy, not Kotoński's
@@ -681,6 +727,10 @@ for i from 1 to n_events
         ioi#[i] = density_multiplier*randomUniform(ioiMin,ioiMax)
         amp#[i] = randomUniform(ampMin,ampMax)
         articulation#[i] = randomInteger(1,6)
+        pitchIdx#[i] = 0
+        durIdx#[i] = 0
+        ampIdx#[i] = 0
+        ioiIdx#[i] = 0
 
         if aela_mode
             type#[i] = 1
@@ -1068,64 +1118,270 @@ selectObject: master
 # ===========================================================================
 # VISUALIZATION
 # ===========================================================================
+# ===========================================================================
+# VISUALIZATION: PARTYTURA REALIZACYJNA
+#
+# The Etiuda score was published by PWM in 1963 as a realization score, and
+# the documented method is a set of parameter SCALES: the cymbal stroke was
+# filtered into six bands of different widths and transposed to eleven
+# heights, with eleven-step scales ordering length and dynamics and six
+# scales differentiating articulation. Panel I therefore shows the scales
+# themselves as ruled tables, which is what such a score actually contains,
+# rather than only their audible consequences.
+#
+# COLOUR CONVENTION, used consistently and for one reason:
+#   INK    = what is modelled on the documented historical method
+#            (the parameter tables of panel I)
+#   COLOUR = what this engine invented and Kotonski did not use
+#            (the four finite-state classes, panels II and III)
+# The eye can therefore separate the analogy from the machinery, which is the
+# distinction the script's own conceptual scope insists on.
+# ===========================================================================
 procedure drawVisualization
 
-    .left = 0.82
-    .right = 7.58
+    .lo = 0.88
+    .hi = 7.70
+    .ink$ = "{0.13,0.13,0.15}"
     .bg$ = "{0.975,0.975,0.978}"
-    .grid$ = "{0.82,0.82,0.84}"
-    .s1$ = "{0.18,0.67,0.82}"
-    .s2$ = "{0.30,0.72,0.38}"
-    .s3$ = "{0.88,0.68,0.18}"
-    .s4$ = "{0.88,0.39,0.17}"
+    .paper$ = "{0.995,0.993,0.987}"
+    .grid$ = "{0.84,0.84,0.86}"
+    .faint$ = "{0.45,0.45,0.50}"
+    .s1$ = "{0.18,0.55,0.75}"
+    .s2$ = "{0.28,0.62,0.36}"
+    .s3$ = "{0.84,0.62,0.18}"
+    .s4$ = "{0.78,0.34,0.20}"
+
+    .logLo = ln(max(20, 0.85 * frequency_min_Hz))
+    .logHi = ln(min(safeTop, 1.15 * frequency_max_Hz))
+    if .logHi <= .logLo
+        .logHi = .logLo + 1
+    endif
+
+    if total_dur <= 12
+        .tTick = 2
+    elsif total_dur <= 45
+        .tTick = 5
+    elsif total_dur <= 120
+        .tTick = 20
+    else
+        .tTick = 60
+    endif
+
+    # When the preset does not use a serial grid the tables would be empty, so
+    # the realized values are binned to the same number of levels and the
+    # heading says so. The layout stays comparable across presets.
+    if serial_grid_mode
+        .tableSrc$ = "serial grid, as generated"
+    else
+        .tableSrc$ = "realized values binned to the same levels; this preset uses no grid"
+    endif
+
+    .dMinR = 1e30
+    .dMaxR = -1e30
+    .aMinR = 1e30
+    .aMaxR = -1e30
+    .fMinR = 1e30
+    .fMaxR = -1e30
+    for .i to n_events
+        .dMinR = min(.dMinR, dur#[.i])
+        .dMaxR = max(.dMaxR, dur#[.i])
+        .aMinR = min(.aMinR, amp#[.i])
+        .aMaxR = max(.aMaxR, amp#[.i])
+        .fMinR = min(.fMinR, freq#[.i])
+        .fMaxR = max(.fMaxR, freq#[.i])
+    endfor
+    if .dMaxR <= .dMinR
+        .dMaxR = .dMinR + 1e-6
+    endif
+    if .aMaxR <= .aMinR
+        .aMaxR = .aMinR + 1e-6
+    endif
+    if .fMaxR <= .fMinR
+        .fMaxR = .fMinR + 1e-6
+    endif
+
+    tblP# = zero#(n_events)
+    tblD# = zero#(n_events)
+    tblA# = zero#(n_events)
+    for .i to n_events
+        if serial_grid_mode
+            tblP#[.i] = pitchIdx#[.i]
+            tblD#[.i] = durIdx#[.i]
+            tblA#[.i] = ampIdx#[.i]
+        else
+            tblP#[.i] = 1 + floor(10.999 * (ln(freq#[.i]) - ln(.fMinR))
+                ... / (ln(.fMaxR) - ln(.fMinR)))
+            tblD#[.i] = 1 + floor(10.999 * (dur#[.i] - .dMinR) / (.dMaxR - .dMinR))
+            tblA#[.i] = 1 + floor(10.999 * (amp#[.i] - .aMinR) / (.aMaxR - .aMinR))
+        endif
+        tblP#[.i] = max(1, min(11, tblP#[.i]))
+        tblD#[.i] = max(1, min(11, tblD#[.i]))
+        tblA#[.i] = max(1, min(11, tblA#[.i]))
+    endfor
 
     Erase all
+    Solid line
+    Line width: 1
 
-    # -----------------------------------------------------------------------
-    # HEADER
-    # -----------------------------------------------------------------------
-    Select inner viewport: 0.20,7.80,0.05,0.33
-    Axes: 0,1,0,1
+    # ======================= TITLE =======================
+    Select inner viewport: 0.60, 7.70, 0.05, 0.34
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5,"centre",0.55,"half",
-        ... "KOTONSKI-INSPIRED STATE-EVENT GENERATOR | " + preset_name$
+    Text: 0.5, "centre", 0.5, "half", "##PARTYTURA REALIZACYJNA — REALIZATION SCORE##"
 
-    Select inner viewport: 0.35,7.65,0.37,0.68
-    Axes: 0,1,0,1
-    Font size: 6
-    Colour: "{0.35,0.35,0.35}"
-    Text: 0.5,"centre",0.68,"half",
-        ... transition_name$ + " | hold "
-        ... + string$(state_hold_events) + " event(s) | "
-        ... + string$(n_events) + " events | " + spatial_name$
-    Text: 0.5,"centre",0.20,"half",
-        ... "state controller -> event material/register/IOI -> overlap montage -> measured audio"
+    Select inner viewport: 0.60, 7.70, 0.36, 0.52
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.30,0.30,0.42}"
+    Text: 0.5, "centre", 0.5, "half",
+        ... preset_name$ + "  |  " + transition_name$ + "  |  hold "
+        ... + string$(state_hold_events) + "  |  " + string$(n_events)
+        ... + " events  |  " + fixed$(total_dur, 1) + " s  |  " + spatial_name$
 
-    # -----------------------------------------------------------------------
-    # PANEL A: REALIZED STATE TRAJECTORY
-    # -----------------------------------------------------------------------
-    Select inner viewport: 0.35,7.65,0.78,1.00
-    Axes: 0,1,0,1
-    Font size: 8
+    Select inner viewport: 0.60, 7.70, 0.54, 0.68
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: .faint$
+    Text: 0.5, "centre", 0.5, "half",
+        ... "ink = modelled on the documented method (parameter tables)          "
+        ... + "colour = this engine's own finite-state machinery, which Kotonski did not use"
+
+    # ======================= I. THE PARAMETER TABLES =======================
+    Select inner viewport: 0.60, 7.70, 0.84, 1.00
+    Axes: 0, 1, 0, 1
+    Font size: 7
     Colour: "Black"
-    Text: 0.5,"centre",0.52,"half",
-        ... "A  REALIZED STATE TRAJECTORY | finite-state memory and transition decisions"
+    Text: 0.0, "left", 0.5, "half", "##I  TABLICE SKAL — THE PARAMETER SCALES##"
 
-    Select inner viewport: .left,.right,1.07,2.03
-    Axes: 0,total_dur,0.5,4.5
-    Paint rectangle: .bg$,0,total_dur,0.5,4.5
+    Select inner viewport: 0.60, 7.70, 0.84, 1.00
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: .faint$
+    Text: 1.0, "right", 0.5, "half",
+        ... "after the Etiuda method: eleven heights, eleven lengths, eleven dynamics, six articulations  |  "
+        ... + .tableSrc$
 
-    Colour: .grid$
-    Dotted line
-    for .s from 1 to 4
-        Draw line: 0,.s,total_dur,.s
+    # --- four ruled tables, one per scale ---
+    for .tbl to 4
+        if .tbl = 1
+            .ty0 = 1.06
+            .ty1 = 1.50
+            .nLev = 11
+            .name$ = "WYSOKOŚĆ / height"
+        elsif .tbl = 2
+            .ty0 = 1.58
+            .ty1 = 2.02
+            .nLev = 11
+            .name$ = "DŁUGOŚĆ / length"
+        elsif .tbl = 3
+            .ty0 = 2.10
+            .ty1 = 2.54
+            .nLev = 11
+            .name$ = "DYNAMIKA / dynamics"
+        else
+            .ty0 = 2.62
+            .ty1 = 2.86
+            .nLev = 6
+            .name$ = "ARTYKULACJA / articulation"
+        endif
+
+        Select inner viewport: .lo, .hi, .ty0, .ty1
+        Axes: 0, n_events, 0.5, .nLev + 1.75
+        Paint rectangle: .paper$, 0, n_events, 0.5, .nLev + 0.5
+
+        Select inner viewport: .lo, .hi, .ty0, .ty1
+        Axes: 0, n_events, 0.5, .nLev + 1.75
+        Colour: .grid$
+        Line width: 1
+        for .r to .nLev
+            Draw line: 0, .r, n_events, .r
+        endfor
+
+        # Each event marks its level. Filled cells rather than dots, so the
+        # marks survive at screen resolution as well as at 300 dpi.
+        Select inner viewport: .lo, .hi, .ty0, .ty1
+        Axes: 0, n_events, 0.5, .nLev + 1.75
+        .cw = max(0.35, n_events / 260)
+        for .i to n_events
+            if .tbl = 1
+                .lev = tblP#[.i]
+            elsif .tbl = 2
+                .lev = tblD#[.i]
+            elsif .tbl = 3
+                .lev = tblA#[.i]
+            else
+                .lev = articulation#[.i]
+            endif
+            if .lev >= 1 and .lev <= .nLev
+                Paint rectangle: .ink$, .i - 1, .i - 1 + .cw, .lev - 0.34, .lev + 0.34
+            endif
+        endfor
+
+        Select inner viewport: .lo, .hi, .ty0, .ty1
+        Axes: 0, n_events, 0.5, .nLev + 1.75
+        Font size: 5
+        Colour: "{0.40,0.40,0.46}"
+        Text: n_events * 0.995, "right", .nLev + 1.05, "half", .name$
+
+        Select inner viewport: .lo, .hi, .ty0, .ty1
+        Axes: 0, n_events, 0.5, .nLev + 1.75
+        Colour: "Black"
+        Line width: 1
+        Draw inner box
+        Font size: 4
+        if .nLev = 11
+            One mark left: 1, "no", "yes", "no", "1"
+            One mark left: 6, "no", "yes", "no", "6"
+            One mark left: 11, "no", "yes", "no", "11"
+        else
+            One mark left: 1, "no", "yes", "no", "1"
+            One mark left: 6, "no", "yes", "no", "6"
+        endif
+        if .tbl = 4
+            Font size: 5
+            Marks bottom every: 1, max(10, 10 * round(n_events / 120)), "yes", "yes", "no"
+            Font size: 6
+            Text bottom: "yes", "event number"
+        endif
     endfor
-    Plain line
 
-    for .i from 1 to n_events
+    # ======================= II. THE MONTAGE =======================
+    Select inner viewport: 0.60, 7.70, 3.16, 3.32
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.0, "left", 0.5, "half", "##II  MONTAŻ — THE TAPE MONTAGE##"
+
+    Select inner viewport: 0.60, 7.70, 3.16, 3.32
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: .faint$
+    Text: 1.0, "right", 0.5, "half",
+        ... "realized events on a log-frequency axis; bar height shows a noise band's width"
+
+    Select inner viewport: .lo, .hi, 3.38, 4.50
+    Axes: 0, total_dur, .logLo, .logHi
+    Paint rectangle: .bg$, 0, total_dur, .logLo, .logHi
+
+    Select inner viewport: .lo, .hi, 3.38, 4.50
+    Axes: 0, total_dur, .logLo, .logHi
+    Colour: .grid$
+    Line width: 1
+    .tick# = {50, 100, 200, 500, 1000, 2000, 5000, 10000}
+    for .k to 8
+        .ff = .tick#[.k]
+        if ln(.ff) >= .logLo and ln(.ff) <= .logHi
+            Draw line: 0, ln(.ff), total_dur, ln(.ff)
+        endif
+    endfor
+
+    Select inner viewport: .lo, .hi, 3.38, 4.50
+    Axes: 0, total_dur, .logLo, .logHi
+    Line width: 1
+    .minW = total_dur / 900
+    for .i to n_events
         .st = state#[.i]
-
         if .st = 1
             .col$ = .s1$
         elsif .st = 2
@@ -1135,304 +1391,241 @@ procedure drawVisualization
         else
             .col$ = .s4$
         endif
-
-        Colour: .col$
-        Paint circle (mm): .col$,startTime#[.i],.st,0.80
-
-        if .i < n_events
-            if state#[.i+1] <> .st
-                Line width: 1.0
-                Draw line:
-                    ... startTime#[.i],.st,
-                    ... startTime#[.i+1],state#[.i+1]
+        .t0 = startTime#[.i]
+        .t1 = min(total_dur, .t0 + dur#[.i])
+        if .t1 - .t0 < .minW
+            .t1 = .t0 + .minW
+        endif
+        .f = freq#[.i]
+        if .t0 < total_dur and ln(.f) > .logLo and ln(.f) < .logHi
+            if type#[.i] = 2
+                .flo = max(exp(.logLo), .f - bandwidth#[.i] / 2)
+                .fhi = min(exp(.logHi), .f + bandwidth#[.i] / 2)
+                if .fhi > .flo
+                    Paint rectangle: .col$, .t0, .t1, ln(.flo), ln(.fhi)
+                endif
+            else
+                .h = 0.012 * (.logHi - .logLo)
+                Paint rectangle: .col$, .t0, .t1, ln(.f) - .h, ln(.f) + .h
             endif
         endif
     endfor
 
+    Select inner viewport: .lo, .hi, 3.38, 4.50
+    Axes: 0, total_dur, .logLo, .logHi
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Marks left every: 1,1,"yes","yes","no"
-    Marks bottom: 5,"yes","yes","no"
-    Font size: 6
-    Text left: "yes","State"
-
-    # -----------------------------------------------------------------------
-    # PANEL B: ACTUAL EVENT FIELD ON LOG FREQUENCY AXIS
-    # -----------------------------------------------------------------------
-    Select inner viewport: 0.35,7.65,2.18,2.40
-    Axes: 0,1,0,1
-    Font size: 8
-    Colour: "Black"
-    Text: 0.5,"centre",0.52,"half",
-        ... "B  ACTUAL EVENT FIELD | tone, noise-band and metallic fragments on log-frequency axis"
-
-    .logLo = ln(max(20,0.90*minActualFreq))
-    .logHi = ln(min(safeTop,max(1000,1.15*maxActualFreq)))
-    if .logHi <= .logLo
-        .logHi = .logLo+0.5
-    endif
-
-    Select inner viewport: .left,.right,2.47,3.50
-    Axes: 0,total_dur,.logLo,.logHi
-    Paint rectangle: "{0.055,0.055,0.065}",0,total_dur,.logLo,.logHi
-
-    .eventStep = max(1,ceiling(n_events/1400))
-
-    for .i from 1 to n_events
-        if ((.i-1) mod .eventStep)=0
-            .st = state#[.i]
-
-            if .st = 1
-                .col$ = .s1$
-            elsif .st = 2
-                .col$ = .s2$
-            elsif .st = 3
-                .col$ = .s3$
-            else
-                .col$ = .s4$
-            endif
-
-            Colour: .col$
-            .t0 = startTime#[.i]
-            .t1 = min(total_dur,.t0+dur#[.i])
-            .f = freq#[.i]
-
-            if type#[.i] = 1
-                Draw line: .t0,ln(.f),.t1,ln(.f)
-
-            elsif type#[.i] = 2
-                .lo = max(20,.f-bandwidth#[.i]/2)
-                .hi = min(safeTop,.f+bandwidth#[.i]/2)
-                .lo = max(exp(.logLo),.lo)
-                .hi = min(exp(.logHi),.hi)
-
-                if .hi > .lo
-                    Draw line: .t0,ln(.lo),.t0,ln(.hi)
-                    Draw line: .t0,ln(.f),.t1,ln(.f)
-                endif
-
-            else
-                Paint circle (mm): .col$,.t0,ln(.f),0.95
-                Draw line: .t0,ln(.f),.t1,ln(.f)
-            endif
-        endif
-    endfor
-
-    Colour: "White"
-    Draw inner box
-    Marks bottom: 5,"yes","yes","no"
-
-    # Manual log-frequency labels.
     Font size: 5
-    .tick# = {50,100,200,500,1000,2000,5000,10000}
-    for .k from 1 to 8
+    for .k to 8
         .ff = .tick#[.k]
-        if .ff >= exp(.logLo) and .ff <= exp(.logHi)
-            Colour: "{0.55,0.55,0.58}"
-            Draw line: 0,ln(.ff),0.012*total_dur,ln(.ff)
-            Colour: "White"
-
+        if ln(.ff) >= .logLo and ln(.ff) <= .logHi
             if .ff >= 1000
-                .lab$ = fixed$(.ff/1000,0) + "k"
+                .lab$ = fixed$(.ff / 1000, 0) + "k"
             else
-                .lab$ = fixed$(.ff,0)
+                .lab$ = fixed$(.ff, 0)
             endif
+            One mark left: ln(.ff), "no", "yes", "no", .lab$
+        endif
+    endfor
+    Marks bottom every: 1, .tTick, "yes", "yes", "no"
+    Font size: 6
+    Text left: "yes", "Frequency (Hz)"
 
-            Text: -0.012*total_dur,"right",ln(.ff),"half",.lab$
+    # ======================= III. STATE PLAN =======================
+    Select inner viewport: 0.60, 7.70, 4.70, 4.86
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.0, "left", 0.5, "half", "##III  PLAN STANÓW — THE STATE PLAN##"
+
+    Select inner viewport: 0.60, 7.70, 4.70, 4.86
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: .faint$
+    Text: 1.0, "right", 0.5, "half",
+        ... "this engine's own controller, not a documented Kotonski procedure"
+
+    Select inner viewport: .lo, 5.05, 4.92, 5.62
+    Axes: 0, n_events, 0.5, 4.5
+    Paint rectangle: .bg$, 0, n_events, 0.5, 4.5
+
+    Select inner viewport: .lo, 5.05, 4.92, 5.62
+    Axes: 0, n_events, 0.5, 4.5
+    .cw2 = max(0.35, n_events / 260)
+    for .i to n_events
+        .st = state#[.i]
+        if .st = 1
+            .col$ = .s1$
+        elsif .st = 2
+            .col$ = .s2$
+        elsif .st = 3
+            .col$ = .s3$
+        else
+            .col$ = .s4$
+        endif
+        Paint rectangle: .col$, .i - 1, .i - 1 + .cw2, .st - 0.38, .st + 0.38
+    endfor
+
+    Select inner viewport: .lo, 5.05, 4.92, 5.62
+    Axes: 0, n_events, 0.5, 4.5
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 5
+    for .r to 4
+        One mark left: .r, "no", "yes", "no", "S" + string$(.r)
+    endfor
+    Marks bottom every: 1, max(10, 10 * round(n_events / 120)), "yes", "yes", "no"
+    Font size: 6
+    Text bottom: "yes", "event number"
+
+    # --- transition counts ---
+    for .a to 4
+        .rowN[.a] = 0
+        for .b to 4
+            .mtx[.a, .b] = 0
+        endfor
+    endfor
+    for .i from 2 to n_events
+        .a = state#[.i - 1]
+        .b = state#[.i]
+        if .a <> .b
+            .mtx[.a, .b] = .mtx[.a, .b] + 1
+            .rowN[.a] = .rowN[.a] + 1
         endif
     endfor
 
-    # -----------------------------------------------------------------------
-    # PANEL C: EMPIRICAL TRANSITION DECISION MATRIX
-    # -----------------------------------------------------------------------
-    Select inner viewport: 0.35,7.65,3.66,3.88
-    Axes: 0,1,0,1
-    Font size: 8
-    Colour: "Black"
-    Text: 0.5,"centre",0.52,"half",
-        ... "C  STATE-TRANSITION DECISIONS | empirical probability per decision point"
-
-    Select inner viewport: 1.70,6.65,3.95,5.00
-    Axes: 0,1,0,1
-    Paint rectangle: .bg$,0,1,0,1
-
-    .x0 = 0.18
-    .x1 = 0.82
-    .y0 = 0.10
-    .y1 = 0.90
-    .cw = (.x1-.x0)/4
-    .ch = (.y1-.y0)/4
-
-    for .s from 1 to 4
-        for .j from 1 to 4
-            .p = empiricalTransition##[.s,.j]
-            .r = 1-0.72*.p
-            .g = 1-0.45*.p
-            .b = 1-0.10*.p
-            .col$ = "{" + fixed$(.r,3) + ","
-                ... + fixed$(.g,3) + "," + fixed$(.b,3) + "}"
-
-            .xa = .x0+(.j-1)*.cw
-            .xb = .xa+.cw
-            .yb = .y1-(.s-1)*.ch
-            .ya = .yb-.ch
-            Paint rectangle: .col$,.xa,.xb,.ya,.yb
-
-            Font size: 5
-            Colour: "Black"
-            Text: 0.5*(.xa+.xb),"centre",
-                ... 0.5*(.ya+.yb),"half",fixed$(.p,2)
+    Select inner viewport: 5.75, 7.15, 4.92, 5.62
+    Axes: 0, 4, 0, 4
+    for .a to 4
+        for .b to 4
+            if .rowN[.a] > 0
+                .p = .mtx[.a, .b] / .rowN[.a]
+            else
+                .p = 0
+            endif
+            .g = 1 - 0.78 * .p
+            .g$ = fixed$(.g, 3)
+            Paint rectangle: "{" + .g$ + "," + .g$ + "," + .g$ + "}",
+                ... .b - 1, .b, 4 - .a, 4 - .a + 1
         endfor
     endfor
 
-    Colour: "{0.45,0.45,0.48}"
-    Draw rectangle: .x0,.x1,.y0,.y1
-    Font size: 5
+    Select inner viewport: 5.75, 7.15, 4.92, 5.62
+    Axes: 0, 4, 0, 4
+    Colour: .grid$
+    Line width: 1
+    for .k from 0 to 4
+        Draw line: .k, 0, .k, 4
+        Draw line: 0, .k, 4, .k
+    endfor
     Colour: "Black"
-
-    for .s from 1 to 4
-        .yc = .y1-(.s-0.5)*.ch
-        .xc = .x0+(.s-0.5)*.cw
-        Text: .x0-0.03,"right",.yc,"half","S" + string$(.s)
-        Text: .xc,"centre",.y0-0.04,"half","S" + string$(.s)
+    Draw rectangle: 0, 4, 0, 4
+    Font size: 4
+    for .a to 4
+        for .b to 4
+            if .rowN[.a] > 0
+                .p = .mtx[.a, .b] / .rowN[.a]
+            else
+                .p = 0
+            endif
+            if .p > 0.005
+                if .p > 0.6
+                    Colour: "White"
+                else
+                    Colour: "Black"
+                endif
+                Text: .b - 0.5, "centre", 4 - .a + 0.5, "half", fixed$(.p, 2)
+            endif
+        endfor
+    endfor
+    Font size: 4
+    Colour: .faint$
+    for .a to 4
+        Text: -0.12, "right", 4 - .a + 0.5, "half",
+            ... "S" + string$(.a) + " n=" + string$(.rowN[.a])
+        Text: .a - 0.5, "centre", -0.30, "half", "S" + string$(.a)
     endfor
 
-    Text: 0.5,"centre",0.02,"half",
-        ... "rows=current state   columns=next state   decisions="
-        ... + string$(transitionDecisionCount)
-
-    # -----------------------------------------------------------------------
-    # REPRESENTATIVE OUTPUT CHANNEL
-    # -----------------------------------------------------------------------
-    if channelCount = 1
-        selectObject: master
-        Copy: "kotonski_display_" + uid$
-        .disp = selected("Sound")
-    else
-        selectObject: master
-        Extract one channel: 1
-        .leftDisp = selected("Sound")
-        .leftRms = Get root-mean-square: 0,0
-
-        selectObject: master
-        Extract one channel: 2
-        .rightDisp = selected("Sound")
-        .rightRms = Get root-mean-square: 0,0
-
-        if .rightRms > .leftRms
-            removeObject: .leftDisp
-            .disp = .rightDisp
-        else
-            removeObject: .rightDisp
-            .disp = .leftDisp
-        endif
-    endif
-
-    # -----------------------------------------------------------------------
-    # PANEL D: MEASURED SPECTROGRAM
-    # -----------------------------------------------------------------------
-    Select inner viewport: 0.35,7.65,5.16,5.38
-    Axes: 0,1,0,1
-    Font size: 8
+    # ======================= IV. THE SOUND =======================
+    Select inner viewport: 0.60, 7.70, 5.90, 6.06
+    Axes: 0, 1, 0, 1
+    Font size: 7
     Colour: "Black"
-    Text: 0.5,"centre",0.52,"half",
-        ... "D  MODEL -> MEASUREMENT | measured spectrogram + sampled event-center guides"
+    Text: 0.0, "left", 0.5, "half", "##IV  TAŚMA — THE TAPE AS MEASURED##"
 
-    .specMax = min(safeTop,max(2500,1.20*maxActualFreq))
-    .specStep = max(0.002,total_dur/1200)
+    Select inner viewport: 0.60, 7.70, 5.90, 6.06
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: .faint$
+    Text: 1.0, "right", 0.5, "half", "spectrogram of the rendered output"
 
-    selectObject: .disp
-    To Spectrogram: 0.025,.specMax,.specStep,20,"Gaussian"
-    .spec = selected("Spectrogram")
+    .specTop = min(safeTop, exp(.logHi))
+    .specStep = max(0.004, total_dur / 1100)
+    selectObject: master
+    .spec = To Spectrogram: 0.03, .specTop, .specStep, 20, "Gaussian"
 
-    Select inner viewport: .left,.right,5.45,6.50
+    Select inner viewport: .lo, .hi, 6.12, 6.98
     selectObject: .spec
-    Paint: 0,0,0,.specMax,100,"yes",50,6,0,"no"
+    Paint: 0, 0, 0, .specTop, 100, 1, 45, 6, 0, 0
     removeObject: .spec
 
-    Axes: 0,total_dur,0,.specMax
-    Colour: "{0.18,0.54,0.82}"
-    Line width: 0.7
-
-    .guideStep = max(1,ceiling(n_events/220))
-    for .i from 1 to n_events
-        if ((.i-1) mod .guideStep)=0 and freq#[.i] <= .specMax
-            Draw line:
-                ... startTime#[.i],freq#[.i],
-                ... min(total_dur,startTime#[.i]+dur#[.i]),freq#[.i]
-        endif
-    endfor
-
+    Select inner viewport: .lo, .hi, 6.12, 6.98
+    Axes: 0, total_dur, 0, .specTop
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Marks left: 4,"yes","yes","no"
-    Marks bottom: 5,"yes","yes","no"
+    Font size: 5
+    Marks left: 4, "yes", "yes", "no"
+    Marks bottom every: 1, .tTick, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes","Frequency (Hz)"
-    Text bottom: "yes","Time (s)"
+    Text left: "yes", "Frequency (Hz)"
+    Text bottom: "yes", "Time (s)"
 
-    removeObject: .disp
-
-    # -----------------------------------------------------------------------
-    # SUMMARY / QC
-    # -----------------------------------------------------------------------
-    Select inner viewport: 0.50,7.50,6.72,7.82
-    Axes: 0,1,0,1
-    Paint rectangle: "{0.93,0.93,0.935}",0,1,0,1
-
-    Font size: 6
-    Colour: "{0.25,0.25,0.25}"
-
+    # ======================= QC =======================
     if serial_grid_mode
-        .concept$ = "Etude analogy: synthetic 11-level parameter grid; not concrete-source reconstruction"
+        .concept$ = "Etiuda analogy: synthetic eleven-level parameter grid; NOT a reconstruction of the concrete-source process"
     elsif microstructure_mode
-        .concept$ = "Microstructures analogy: overlapping synthetic fragment montage; not glass/wood/metal source reconstruction"
+        .concept$ = "Mikrostruktury analogy: overlapping synthetic fragment montage; NOT a reconstruction of the glass/wood/metal recordings"
     elsif aela_mode
-        .concept$ = "Aela analogy: pure sine events on preserved 25-Hz grid inside aleatoric state graph"
+        .concept$ = "Aela analogy: pure sine events on a preserved 25-Hz grid inside an aleatoric state graph"
     else
         .concept$ = "engine-specific finite-state electronic event field"
     endif
 
-    Text: 0.02,"left",0.79,"half",
-        ... "CONCEPT  |  " + .concept$
-
-    Text: 0.02,"left",0.57,"half",
-        ... "EVENTS  |  tone/noise/metal "
-        ... + string$(toneCount) + "/" + string$(noiseCount)
-        ... + "/" + string$(metalCount)
-        ... + "  |  density " + fixed$(realizedDensity,2) + "/s"
-        ... + "  |  overlap load " + fixed$(overlapLoad,2)
-
     if aela_mode
-        .samplingText$ = "25-Hz grid upper limit " + fixed$(effective_max_Hz,0)
-            ... + " Hz"
+        .samplingText$ = "25-Hz grid upper limit " + fixed$(effective_max_Hz, 0) + " Hz"
     else
-        .samplingText$ = "frequency scale " + fixed$(frequency_scale,4)
+        .samplingText$ = "frequency scale " + fixed$(frequency_scale, 4)
     endif
 
-    Text: 0.02,"left",0.35,"half",
-        ... "SAMPLING  |  safe top " + fixed$(safeTop,0)
-        ... + " Hz  |  " + .samplingText$
-        ... + "  |  " + seedLabel$
+    Select inner viewport: 0.60, 7.70, 7.24, 7.86
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.93,0.93,0.935}", 0, 1, 0, 1
 
-    if protectionApplied
-        .level$ = "down-only protection applied"
-    else
-        .level$ = "level preserved"
-    endif
+    Select inner viewport: 0.60, 7.70, 7.24, 7.86
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: "{0.25,0.25,0.25}"
+    Text: 0.02, "left", 0.80, "half", "CONCEPT  |  " + .concept$
+    Text: 0.02, "left", 0.50, "half",
+        ... "EVENTS  |  tone/noise/metal " + string$(toneCount) + "/"
+        ... + string$(noiseCount) + "/" + string$(metalCount)
+        ... + "  |  density " + fixed$(realizedDensity, 2) + "/s"
+        ... + "  |  overlap load " + fixed$(overlapLoad, 2)
+        ... + "  |  safe top " + fixed$(safeTop, 0) + " Hz  |  " + .samplingText$
+    Text: 0.02, "left", 0.20, "half",
+        ... "OUTPUT  |  pre-peak " + fixed$(preProtectPeak, 3) + "  |  pre-RMS "
+        ... + fixed$(preProtectRMS, 4) + "  |  " + seedLabel$
 
-    Text: 0.02,"left",0.13,"half",
-        ... "OUTPUT  |  pre-peak " + fixed$(preProtectPeak,3)
-        ... + "  |  pre-RMS " + fixed$(preProtectRMS,4)
-        ... + "  |  final peak " + fixed$(finalPeak,3)
-        ... + "  |  " + .level$
-
+    Select inner viewport: 0.60, 7.70, 7.24, 7.86
+    Axes: 0, 1, 0, 1
     Colour: "{0.52,0.52,0.54}"
-    Draw rectangle: 0,1,0,1
+    Line width: 1
+    Draw rectangle: 0, 1, 0, 1
 
     Colour: "Black"
-    Font size: 10
     Line width: 1
+    Font size: 10
 endproc

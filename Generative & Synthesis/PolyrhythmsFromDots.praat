@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,6 +27,22 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v0.5:
+#   - Visualization redesigned around the actual algorithm:
+#       A common LCM lattice and exact dot placement
+#       B dot kernel and stereo routing
+#       C bar assembly and repetition
+#       D measured stereo output as final confirmation only
+#   - Coincidences are now detected exactly with integer arithmetic,
+#     not with an arbitrary 10 ms tolerance.
+#   - Main form shortened; dot duration, sample rate and output peak moved
+#     to an optional Edit details page.
+#   - Removed the old global Amplitude control: it was mathematically
+#     cancelled by fixed peak normalization and therefore had no effect.
+#   - Added sample-rate/Nyquist and minimum-kernel validation.
+#   - Added reduced-ratio, exact-grid and output QC reporting.
+#   - Spectrogram removed from the visualization because it described
+#     the result rather than the polyrhythmic construction process.
 # Changelog v0.4:
 #   - NEW: Repeat_count form field (default 1). Concatenates the
 #     single-bar pattern N times to produce an N-bar output.
@@ -52,8 +68,8 @@
 #     added envelope, added visualization
 # ============================================================
 
-form Polyrhythms From Dots v0.4
-    optionmenu Preset: 1
+form Polyrhythms From Dots v0.5
+    optionmenu Preset 1
         option Custom
         option 3 vs 4 (Waltz)
         option 5 vs 7 (Complex)
@@ -66,15 +82,20 @@ form Polyrhythms From Dots v0.4
     integer Dots_line_1 5 (= top line, left-panned)
     integer Dots_line_2 7 (= bottom line, right-panned)
     positive Bar_duration_s 2.0
-    positive Dot_duration_s 0.05
     natural Repeat_count 1
     positive Base_frequency_Hz 220
-    integer Sample_rate_Hz 44100
-    positive Amplitude 0.5
-    boolean Show_spectrogram 0
+    boolean Edit_details 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# ---------------------------------------------------------------------------
+# ADVANCED DEFAULTS
+# ---------------------------------------------------------------------------
+dot_duration_s = 0.05
+sample_rate_Hz = 44100
+amplitude = 1.0
+output_peak = 0.9
 
 # === Apply Presets ===
 preset_name$ = "Custom"
@@ -131,32 +152,54 @@ elsif preset = 9
     preset_name$ = "5vs9_MathRock"
 endif
 
+# ---------------------------------------------------------------------------
+# OPTIONAL COMPACT DETAILS PAGE
+# ---------------------------------------------------------------------------
+if edit_details
+    beginPause: "Polyrhythms From Dots v0.5 - Dot / Audio Details"
+        positive: "Dot duration (s)", dot_duration_s
+        integer: "Sample rate (Hz)", sample_rate_Hz
+        real: "Output peak (0..1)", output_peak
+    endPause: "Run", 1
+endif
+
+# === Validate Parameters ===
+if dots_line_1 < 1 or dots_line_2 < 1
+    exitScript: "Dots per line must be at least 1."
+endif
+if repeat_count < 1
+    exitScript: "Repeat count must be at least 1."
+endif
+if repeat_count > 64
+    exitScript: "Repeat count must not exceed 64."
+endif
+if sample_rate_Hz < 1000
+    exitScript: "Sample rate must be at least 1000 Hz."
+endif
+if dot_duration_s * sample_rate_Hz < 4
+    exitScript: "Dot duration must span at least 4 samples at the selected sample rate."
+endif
+if output_peak <= 0 or output_peak > 1
+    exitScript: "Output peak must be greater than 0 and no more than 1."
+endif
+
+nyquist_Hz = sample_rate_Hz / 2
+freq2 = base_frequency_Hz * 1.5
+if freq2 >= 0.95 * nyquist_Hz
+    exitScript: "Highest oscillator frequency (", fixed$(freq2, 1), " Hz) must stay below 95% of Nyquist (", fixed$(0.95 * nyquist_Hz, 1), " Hz). Lower Base frequency or raise Sample rate."
+endif
+
 # === Constants ===
 uid$ = string$(randomInteger(10000, 99999))
 twoPi = 2 * pi
 
-# Ensure at least 1 dot per line
-if dots_line_1 < 1
-    dots_line_1 = 1
-endif
-if dots_line_2 < 1
-    dots_line_2 = 1
-endif
-
-# Clamp repeat count to a sane range
-if repeat_count < 1
-    repeat_count = 1
-endif
-if repeat_count > 64
-    repeat_count = 64
-endif
-
 # Calculate spacing
 spacing1 = bar_duration_s / dots_line_1
 spacing2 = bar_duration_s / dots_line_2
-
-# Second line frequency (perfect fifth above)
-freq2 = base_frequency_Hz * 1.5
+smallestSpacing_s = min(spacing1, spacing2)
+if smallestSpacing_s * sample_rate_Hz < 1
+    exitScript: "The densest dot spacing is shorter than one sample. Reduce Dots per line, increase Bar duration, or raise Sample rate."
+endif
 
 # Compute GCD and LCM of the two dot counts (for the parameter report)
 @computeGcd: dots_line_1, dots_line_2
@@ -164,7 +207,7 @@ gcdDots = computeGcd.result
 lcmDots = (dots_line_1 * dots_line_2) / gcdDots
 
 # === Info ===
-writeInfoLine: "=== Polyrhythms From Dots v0.4 ==="
+writeInfoLine: "=== Polyrhythms From Dots v0.5 ==="
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Rhythm: ", dots_line_1, " vs ", dots_line_2
 appendInfoLine: "GCD: ", gcdDots, "  |  LCM: ", lcmDots
@@ -196,7 +239,7 @@ for i to dots_line_1
         d = bar_duration_s - t
     endif
     
-    if d > 0.005
+    if d > 0
         t$ = fixed$(t, 6)
         d$ = fixed$(d, 6)
         f$ = fixed$(base_frequency_Hz, 1)
@@ -223,7 +266,7 @@ for i to dots_line_2
         d = bar_duration_s - t
     endif
     
-    if d > 0.005
+    if d > 0
         t$ = fixed$(t, 6)
         d$ = fixed$(d, 6)
         f$ = fixed$(freq2, 1)
@@ -257,7 +300,7 @@ removeObject: leftSound, rightSound
 # block, which has the same peak as the single bar anyway since
 # the bars are bit-identical copies.
 selectObject: outputSound
-Scale peak: 0.9
+Scale peak: output_peak
 
 # === Repeat the pattern N times (if requested) ===
 if repeat_count > 1
@@ -296,17 +339,16 @@ selectObject: outputSound
 finalDur = Get total duration
 finalPeak = Get absolute extremum: 0, 0, "None"
 
-# Count coincidences between the two dot patterns (within 10 ms tolerance)
-# This is the per-bar count, not multiplied by repeats.
-coincidenceCount = 0
-for i to dots_line_1
-    for j to dots_line_2
-        coDiff = abs(dotTime1[i] - dotTime2[j])
-        if coDiff < 0.01
-            coincidenceCount = coincidenceCount + 1
-        endif
-    endfor
-endfor
+# Exact coincidences of two equal-division grids occur GCD(n1,n2) times
+# over the half-open bar [0,T).  Use the number-theoretic result directly
+# rather than an O(n1*n2) pairwise scan.
+coincidenceCount = gcdDots
+
+reduced1 = dots_line_1 / gcdDots
+reduced2 = dots_line_2 / gcdDots
+latticeStep_s = bar_duration_s / lcmDots
+selectObject: outputSound
+finalRms = Get root-mean-square: 0, 0
 
 # === Visualization ===
 if draw_visualization
@@ -343,328 +385,325 @@ procedure computeGcd: .a, .b
 endproc
 
 # ==============================================================================
-# Procedure: drawVisualization  (8 x 8 canvas — suite standard)
+# Procedure: drawVisualization  (8 x 8 process-oriented canvas)
 # ==============================================================================
 procedure drawVisualization
-    
+
     Erase all
     Black
     Plain line
-    
-    # ----------------------------------------------------------
-    # Compute spectrogram ONLY if user opted in
-    # ----------------------------------------------------------
-    if show_spectrogram
-        selectObject: outputSound
-        Extract one channel: 1
-        specMono = selected("Sound")
-        maxSpecFreq = freq2 * 2
-        To Spectrogram: 0.01, maxSpecFreq, 0.005, 20, "Gaussian"
-        polySpec = selected("Spectrogram")
-    endif
-    
-    # Repeat-count label used in several places
+
     if repeat_count > 1
         repeatStr$ = "x" + string$(repeat_count) + " bars"
-        barPlural$ = "s"
     else
         repeatStr$ = "single bar"
-        barPlural$ = ""
     endif
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+
+    # Choose a readable thinning factor for very fine LCM lattices.
+    gridStride = ceiling(lcmDots / 32)
+    if gridStride < 1
+        gridStride = 1
+    endif
+
+    # ------------------------------------------------------------------
+    # HEADER / PROCESS FLOW
+    # ------------------------------------------------------------------
+    Select outer viewport: 0, 8, 0, 0.78
+    Select inner viewport: 0.30, 7.70, 0.08, 0.72
     Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.95, 0.96}", 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##POLYRHYTHMS FROM DOTS##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... preset_name$
-        ... + "  |  " + string$(dots_line_1) + " vs " + string$(dots_line_2)
-        ... + "  |  bar " + fixed$(bar_duration_s, 2) + " s"
-        ... + "  |  " + repeatStr$
-        ... + "  |  line 1 = " + fixed$(base_frequency_Hz, 0) + " Hz"
-        ... + "  |  line 2 = " + fixed$(freq2, 0) + " Hz"
-        ... + "  |  dot " + fixed$(dot_duration_s * 1000, 0) + " ms"
+    Text: 0.5, "centre", 0.74, "half", "##POLYRHYTHMS FROM DOTS##"
+    Font size: 6
+    Colour: "{0.30, 0.30, 0.38}"
+    Text: 0.5, "centre", 0.30, "half",
+        ... "n1:n2 -> delta1=T/n1, delta2=T/n2 -> exact LCM lattice -> windowed tones -> stereo sum -> peak scale -> repeat bars -> output"
 
-    # ----------------------------------------------------------
-    # PANEL A: POLYRHYTHM DOT DIAGRAM  (left, headline)
-    # Shows ONE bar — the pattern. The repeat count is reflected
-    # in the panel title but the dot positions are per-bar.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-    
-    Axes: -0.06 * bar_duration_s, bar_duration_s * 1.04, -0.2, 1.2
-    Paint rectangle: "{0.97, 0.97, 0.99}", -0.06 * bar_duration_s, bar_duration_s * 1.04, -0.2, 1.2
-    
-    # Time axis line
-    Colour: "{0.7, 0.7, 0.7}"
+    # ------------------------------------------------------------------
+    # PANEL A: COMMON TEMPORAL LATTICE + ACTUAL DOT LOCATIONS
+    # ------------------------------------------------------------------
+    Select outer viewport: 0, 4.20, 0.88, 3.65
+    Select inner viewport: 0.60, 4.00, 1.18, 3.45
+    Axes: 0, bar_duration_s, -0.20, 1.20
+    Paint rectangle: "{0.98, 0.98, 0.99}", 0, bar_duration_s, -0.20, 1.20
+
+    # LCM grid: every event of both lines falls on this lattice.
+    Colour: "{0.88, 0.88, 0.90}"
     Line width: 1
-    Draw line: 0, 0.5, bar_duration_s, 0.5
-    
-    # Dotted vertical lines at coincidences (drawn BEFORE the dots so
-    # the dots sit on top)
+    for k from 0 to lcmDots
+        if k mod gridStride = 0
+            gx = k * latticeStep_s
+            Draw line: gx, -0.10, gx, 1.08
+        endif
+    endfor
+
+    # Exact coincidences: k*T/GCD, k = 0..GCD-1.
     Colour: "{0.55, 0.35, 0.78}"
+    Line width: 1.5
+    for .k from 0 to gcdDots - 1
+        .tx = .k * bar_duration_s / gcdDots
+        Draw line: .tx, 0.18, .tx, 0.82
+    endfor
+
+    Colour: "{0.20, 0.50, 0.82}"
     Line width: 1
-    Dotted line
+    Draw line: 0, 0.85, bar_duration_s, 0.85
     for .i to dots_line_1
-        for .j to dots_line_2
-            .diff = abs(dotTime1[.i] - dotTime2[.j])
-            if .diff < 0.01
-                Draw line: dotTime1[.i], 0.15, dotTime1[.i], 0.85
-            endif
-        endfor
+        Paint circle (mm): "{0.20, 0.50, 0.82}", dotTime1[.i], 0.85, 2.8
+    endfor
+
+    Colour: "{0.82, 0.50, 0.20}"
+    Draw line: 0, 0.15, bar_duration_s, 0.15
+    for .i to dots_line_2
+        Paint circle (mm): "{0.82, 0.50, 0.20}", dotTime2[.i], 0.15, 2.8
+    endfor
+
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Lines"
+    Text bottom: "yes", "Time (s)"
+
+    Select outer viewport: 0, 4.20, 0.80, 1.12
+    Select inner viewport: 0.60, 4.00, 0.82, 1.08
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    if gridStride = 1
+        gridNote$ = "all lattice lines shown"
+    else
+        gridNote$ = "display every " + string$(gridStride) + " lattice cells"
+    endif
+    Text: 0.5, "centre", 0.5, "half", "A  Common lattice: delta = T / LCM; purple = exact coincidences; " + gridNote$
+
+    # ------------------------------------------------------------------
+    # PANEL B: DOT KERNEL -> STEREO ROUTING
+    # ------------------------------------------------------------------
+    Select outer viewport: 4.20, 8, 0.88, 3.65
+    Select inner viewport: 4.55, 7.72, 1.18, 3.45
+
+    # Plot the actual kernel duration and actual oscillator frequencies.
+    # Amplitude is normalized only for shape readability; the nominal scalar
+    # amplitude is normalized only for kernel-shape readability; output level is set later by Output peak.
+    .nPlot = 320
+    .needed = ceiling(12 * freq2 * dot_duration_s)
+    if .needed > .nPlot
+        .nPlot = .needed
+    endif
+    if .nPlot > 1600
+        .nPlot = 1600
+    endif
+
+    Axes: 0, dot_duration_s, -1.15, 1.15
+    Paint rectangle: "{0.98, 0.98, 0.99}", 0, dot_duration_s, -1.15, 1.15
+
+    .prevX = 0
+    .prevEnv = 0
+    Colour: "{0.65, 0.75, 0.88}"
+    Line width: 1
+    for .q from 1 to .nPlot
+        .tau = .q * dot_duration_s / .nPlot
+        .u = .tau / dot_duration_s
+        .env = (1 - cos(twoPi * .u)) / 2
+        Draw line: .prevX, 0.55 + 0.38 * .prevEnv, .tau, 0.55 + 0.38 * .env
+        Draw line: .prevX, 0.55 - 0.38 * .prevEnv, .tau, 0.55 - 0.38 * .env
+        .prevX = .tau
+        .prevEnv = .env
+    endfor
+
+    .prevX = 0
+    .prevEnv = 0
+    Colour: "{0.88, 0.73, 0.58}"
+    for .q from 1 to .nPlot
+        .tau = .q * dot_duration_s / .nPlot
+        .u = .tau / dot_duration_s
+        .env = (1 - cos(twoPi * .u)) / 2
+        Draw line: .prevX, -0.55 + 0.38 * .prevEnv, .tau, -0.55 + 0.38 * .env
+        Draw line: .prevX, -0.55 - 0.38 * .prevEnv, .tau, -0.55 - 0.38 * .env
+        .prevX = .tau
+        .prevEnv = .env
+    endfor
+
+    .prevX = 0
+    .prevY1 = 0.55
+    .prevY2 = -0.55
+    Colour: "{0.20, 0.50, 0.82}"
+    Line width: 1.2
+    for .q from 1 to .nPlot
+        .tau = .q * dot_duration_s / .nPlot
+        .u = .tau / dot_duration_s
+        .env = (1 - cos(twoPi * .u)) / 2
+        .y1 = 0.55 + 0.34 * .env * sin(twoPi * base_frequency_Hz * .tau)
+        Draw line: .prevX, .prevY1, .tau, .y1
+        .prevX = .tau
+        .prevY1 = .y1
+    endfor
+
+    Colour: "{0.82, 0.50, 0.20}"
+    .prevX = 0
+    for .q from 1 to .nPlot
+        .tau = .q * dot_duration_s / .nPlot
+        .u = .tau / dot_duration_s
+        .env = (1 - cos(twoPi * .u)) / 2
+        .y2 = -0.55 + 0.34 * .env * sin(twoPi * freq2 * .tau)
+        Draw line: .prevX, .prevY2, .tau, .y2
+        .prevX = .tau
+        .prevY2 = .y2
+    endfor
+
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 6
+    Text bottom: "yes", "Local dot time (s)"
+    Text: 0.02 * dot_duration_s, "left", 1.02, "half", "g1: " + fixed$(base_frequency_Hz, 1) + " Hz"
+    Text: 0.02 * dot_duration_s, "left", -1.02, "half", "g2: " + fixed$(freq2, 1) + " Hz"
+    Text: 0.98 * dot_duration_s, "right", 0.18, "half", "L = 0.9 g1 + 0.3 g2"
+    Text: 0.98 * dot_duration_s, "right", -0.18, "half", "R = 0.3 g1 + 0.9 g2"
+    Select outer viewport: 4.20, 8, 0.80, 1.12
+    Select inner viewport: 4.55, 7.72, 0.82, 1.08
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Text: 0.5, "centre", 0.5, "half", "B  Each dot -> raised-cosine tone -> fixed stereo routing"
+
+    # ------------------------------------------------------------------
+    # PANEL C: BAR ASSEMBLY -> REPETITION
+    # ------------------------------------------------------------------
+    Select outer viewport: 0, 8, 3.78, 5.45
+    Select inner viewport: 0.60, 7.72, 4.05, 5.25
+
+    .barsShown = repeat_count
+    if .barsShown > 8
+        .barsShown = 8
+    endif
+    .schedDur = .barsShown * bar_duration_s
+    Axes: 0, .schedDur, -0.15, 1.15
+    Paint rectangle: "{0.98, 0.98, 0.99}", 0, .schedDur, -0.15, 1.15
+
+    # Bar boundaries represent the concatenate stage.
+    Colour: "{0.78, 0.78, 0.82}"
+    Dotted line
+    for .r from 0 to .barsShown
+        .bx = .r * bar_duration_s
+        Draw line: .bx, -0.10, .bx, 1.08
     endfor
     Solid line
-    Line width: 1
-    
-    # Line 1 dots (top, blue)
-    for .i to dots_line_1
-        .t = dotTime1[.i]
-        Paint circle (mm): "{0.20, 0.50, 0.82}", .t, 0.85, 3.5
+
+    for .r from 0 to .barsShown - 1
+        .off = .r * bar_duration_s
+        Colour: "{0.20, 0.50, 0.82}"
+        for .i to dots_line_1
+            .tx = .off + dotTime1[.i]
+            Draw line: .tx, 0.62, .tx, 0.98
+        endfor
+        Colour: "{0.82, 0.50, 0.20}"
+        for .i to dots_line_2
+            .tx = .off + dotTime2[.i]
+            Draw line: .tx, 0.02, .tx, 0.38
+        endfor
     endfor
-    
-    # Line 2 dots (bottom, orange)
-    for .i to dots_line_2
-        .t = dotTime2[.i]
-        Paint circle (mm): "{0.82, 0.50, 0.20}", .t, 0.15, 3.5
-    endfor
-    
-    # Line-count labels at left edge
-    Colour: "{0.20, 0.50, 0.82}"
-    Font size: 9
-    Text: -0.03 * bar_duration_s, "right", 0.85, "half", string$(dots_line_1)
-    Colour: "{0.82, 0.50, 0.20}"
-    Text: -0.03 * bar_duration_s, "right", 0.15, "half", string$(dots_line_2)
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 6
-    Marks bottom every: 1, bar_duration_s / 4, "yes", "yes", "no"
     Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL B: PARAMETER REPORT  (right, headline)
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
-    
+    if repeat_count > .barsShown
+        Text: .schedDur * 0.99, "right", 1.05, "half", "first " + string$(.barsShown) + " of " + string$(repeat_count) + " identical bars shown"
+    else
+        Text: .schedDur * 0.99, "right", 1.05, "half", "one synthesized bar, then exact concatenation x" + string$(repeat_count)
+    endif
+
+    Select outer viewport: 0, 8, 3.68, 4.00
+    Select inner viewport: 0.60, 7.72, 3.70, 3.96
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.93, "half", "Ratio:"
-    
-    Font size: 13
-    Colour: "{0.55, 0.35, 0.78}"
-    Text: 0.10, "left", 0.84, "half", "##" + string$(dots_line_1) + " : " + string$(dots_line_2) + "##"
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.74, "half", "Math:"
-    
-    Font size: 10
-    Colour: "{0.30, 0.55, 0.30}"
-    Text: 0.10, "left", 0.67, "half", "GCD:           " + string$(gcdDots)
-    Text: 0.10, "left", 0.60, "half", "LCM:           " + string$(lcmDots) + " subdivisions"
-    Text: 0.10, "left", 0.53, "half", "Coincidences:  " + string$(coincidenceCount) + " / bar"
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.45, "half", "Timing:"
-    
-    Font size: 10
-    Colour: "{0.20, 0.50, 0.82}"
-    Text: 0.10, "left", 0.38, "half", "Spacing 1:  " + fixed$(spacing1 * 1000, 1) + " ms"
-    Colour: "{0.82, 0.50, 0.20}"
-    Text: 0.10, "left", 0.32, "half", "Spacing 2:  " + fixed$(spacing2 * 1000, 1) + " ms"
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.10, "left", 0.26, "half", "Bar:        " + fixed$(bar_duration_s, 2) + " s"
-    Text: 0.10, "left", 0.20, "half", "Dot:        " + fixed$(dot_duration_s * 1000, 1) + " ms"
-    Text: 0.10, "left", 0.14, "half", "Total:      " + fixed$(finalDur, 2) + " s (" + string$(repeat_count) + " bar" + barPlural$ + ")"
-    
-    Font size: 9
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.05, "left", 0.06, "half", "Pitches:"
-    
-    Font size: 9
-    Colour: "{0.20, 0.50, 0.82}"
-    Text: 0.10, "left", 0.01, "half", "L1 = " + fixed$(base_frequency_Hz, 1) + " Hz"
-    Colour: "{0.82, 0.50, 0.20}"
-    Text: 0.55, "left", 0.01, "half", "L2 = " + fixed$(freq2, 1) + " Hz"
-    
-    Colour: "Black"
-    Draw inner box
-    
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
-    
     Font size: 7
-    Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half",
-        ... "Dot diagram — one bar  (blue = line 1, orange = line 2, purple = coincidences)"
-    Text: 6.10, "centre", 7.30, "half", "Parameter report"
-    
-    # ----------------------------------------------------------
-    # PANEL C: STEREO L/R WAVEFORM  (full repeated output)
-    # L blue, R orange.  Bar boundaries marked as light vertical lines
-    # when repeated.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
-    
+    Text: 0.5, "centre", 0.5, "half", "C  Event schedule -> one stereo bar -> normalize -> concatenate identical copies"
+
+    # ------------------------------------------------------------------
+    # PANEL D: MEASURED OUTPUT CONFIRMATION
+    # ------------------------------------------------------------------
+    Select outer viewport: 0, 8, 5.58, 6.82
+    Select inner viewport: 0.60, 7.72, 5.83, 6.62
+
     selectObject: outputSound
     Extract one channel: 1
-    leftDisp = selected("Sound")
+    .leftDisp = selected("Sound")
     selectObject: outputSound
     Extract one channel: 2
-    rightDisp = selected("Sound")
-    
-    selectObject: leftDisp
-    wp_L = Get absolute extremum: 0, 0, "None"
-    selectObject: rightDisp
-    wp_R = Get absolute extremum: 0, 0, "None"
-    wp_max = wp_L
-    if wp_R > wp_max
-        wp_max = wp_R
-    endif
-    if wp_max < 0.001
-        wp_max = 0.001
-    endif
-    wp_amp = wp_max * 1.15
-    
-    Axes: 0, finalDur, -wp_amp, wp_amp
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -wp_amp, wp_amp
-    Colour: "{0.82, 0.82, 0.82}"
+    .rightDisp = selected("Sound")
+
+    Axes: 0, finalDur, -1, 1
+    Paint rectangle: "{0.98, 0.98, 0.99}", 0, finalDur, -1, 1
+    Colour: "{0.84, 0.84, 0.84}"
     Draw line: 0, 0, finalDur, 0
-    
-    # Bar-boundary markers (light vertical dotted lines) when repeated
+
     if repeat_count > 1
-        Colour: "{0.78, 0.78, 0.85}"
-        Line width: 1
+        Colour: "{0.80, 0.80, 0.86}"
         Dotted line
-        for br from 1 to repeat_count - 1
-            barLineX = br * bar_duration_s
-            Draw line: barLineX, -wp_amp, barLineX, wp_amp
+        for .r from 1 to repeat_count - 1
+            .bx = .r * bar_duration_s
+            Draw line: .bx, -1, .bx, 1
         endfor
         Solid line
     endif
-    
-    # L channel
-    selectObject: leftDisp
-    Colour: "{0.25, 0.50, 0.82}"
+
+    selectObject: .leftDisp
+    Colour: "{0.20, 0.50, 0.82}"
     Line width: 1
-    Draw: 0, finalDur, -wp_amp, wp_amp, "no", "Curve"
-    
-    # R channel
-    selectObject: rightDisp
-    Colour: "{0.82, 0.50, 0.25}"
-    Line width: 1
-    Draw: 0, finalDur, -wp_amp, wp_amp, "no", "Curve"
-    
-    removeObject: leftDisp, rightDisp
-    
+    Draw: 0, finalDur, -1, 1, "no", "Curve"
+    selectObject: .rightDisp
+    Colour: "{0.82, 0.50, 0.20}"
+    Draw: 0, finalDur, -1, 1, "no", "Curve"
+
+    removeObject: .leftDisp, .rightDisp
+
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 7
-    if repeat_count > 1
-        Text top: "no", "Stereo waveform — " + string$(repeat_count) + " bars  (blue = L, orange = R; dotted = bar boundaries)"
-    else
-        Text top: "no", "Stereo waveform  (blue = L, orange = R)"
-    endif
+    Font size: 6
     Text left: "yes", "Amp"
     Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL D: SPECTROGRAM (opt-in) or placeholder
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
-    
-    if show_spectrogram
-        selectObject: polySpec
-        Paint: 0, 0, 0, maxSpecFreq, 100, "yes", 50, 6, 0, "no"
-        
-        # Mark the two pitch lines
-        Axes: 0, finalDur, 0, maxSpecFreq
-        Colour: "{0.50, 0.75, 1.00}"
-        Line width: 1
-        Dotted line
-        Draw line: 0, base_frequency_Hz, finalDur, base_frequency_Hz
-        Colour: "{1.00, 0.70, 0.40}"
-        Draw line: 0, freq2, finalDur, freq2
-        Solid line
-        Line width: 1
-        
-        Colour: "Black"
-        Draw inner box
-        Font size: 7
-        Text top: "no", "Spectrogram (dotted lines mark L1 = " + fixed$(base_frequency_Hz, 0) + " Hz, L2 = " + fixed$(freq2, 0) + " Hz)"
-        Text left: "yes", "Freq (Hz)"
-        Text bottom: "yes", "Time (s)"
-    else
-        Axes: 0, 1, 0, 1
-        Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
-        Font size: 8
-        Colour: "{0.50, 0.50, 0.50}"
-        Text: 0.5, "centre", 0.5, "half", "Spectrogram disabled (Show_spectrogram = OFF)"
-        Colour: "Black"
-        Draw inner box
-    endif
-    
-    # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR  (suite standard — light grey)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+
+    Select outer viewport: 0, 8, 5.48, 5.80
+    Select inner viewport: 0.60, 7.72, 5.50, 5.76
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Text: 0.5, "centre", 0.5, "half", "D  Measured output confirmation (blue = L, orange = R; fixed amplitude scale)"
+
+    # ------------------------------------------------------------------
+    # PROCESS / QC SUMMARY
+    # ------------------------------------------------------------------
+    Select outer viewport: 0, 8, 6.94, 7.82
+    Select inner viewport: 0.45, 7.75, 7.02, 7.72
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
-    if show_spectrogram
-        specStr$ = "shown"
-    else
-        specStr$ = "off"
-    endif
-    
+    Colour: "{0.25, 0.25, 0.28}"
     Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + preset_name$ + "##"
-        ... + "  Ratio: " + string$(dots_line_1) + " : " + string$(dots_line_2)
-        ... + "  |  GCD: " + string$(gcdDots)
-        ... + "  |  LCM: " + string$(lcmDots) + " subdivisions"
-        ... + "  |  Coincidences/bar: " + string$(coincidenceCount)
-        ... + "  |  Bar: " + fixed$(bar_duration_s, 2) + " s"
-        ... + "  |  Repeats: " + string$(repeat_count)
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "Line 1: " + fixed$(base_frequency_Hz, 0) + " Hz / " + fixed$(spacing1 * 1000, 1) + " ms"
-        ... + "  |  Line 2: " + fixed$(freq2, 0) + " Hz / " + fixed$(spacing2 * 1000, 1) + " ms"
-        ... + "  |  Dot: " + fixed$(dot_duration_s * 1000, 1) + " ms"
-        ... + "  |  Total: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
-        ... + "  |  Spec: " + specStr$
-    
+    Text: 0.02, "left", 0.76, "half",
+        ... "##Model##  " + string$(dots_line_1) + " : " + string$(dots_line_2)
+        ... + " -> reduced " + string$(reduced1) + " : " + string$(reduced2)
+        ... + "  |  delta1 " + fixed$(spacing1 * 1000, 2) + " ms"
+        ... + "  |  delta2 " + fixed$(spacing2 * 1000, 2) + " ms"
+        ... + "  |  lattice " + fixed$(latticeStep_s * 1000, 2) + " ms"
+    Text: 0.02, "left", 0.48, "half",
+        ... "##Exact structure##  GCD " + string$(gcdDots)
+        ... + "  |  LCM " + string$(lcmDots)
+        ... + "  |  coincidences/bar " + string$(coincidenceCount)
+        ... + "  |  events/bar " + string$(dots_line_1 + dots_line_2)
+        ... + "  |  repeats " + string$(repeat_count)
+    Text: 0.02, "left", 0.20, "half",
+        ... "##Synthesis QC##  dot " + fixed$(dot_duration_s * 1000, 2) + " ms (" + fixed$(dot_duration_s * sample_rate_Hz, 1) + " samples)"
+        ... + "  |  min spacing " + fixed$(smallestSpacing_s * sample_rate_Hz, 1) + " samples"
+        ... + "  |  f1/f2 " + fixed$(base_frequency_Hz, 1) + "/" + fixed$(freq2, 1) + " Hz"
+        ... + "  |  total " + fixed$(finalDur, 2) + " s"
+        ... + "  |  peak target/measured " + fixed$(output_peak, 3) + "/" + fixed$(finalPeak, 3)
+        ... + "  |  RMS " + fixed$(finalRms, 3)
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
-    
+
     Font size: 10
     Colour: "Black"
     Line width: 1
-    
-    # Cleanup spectrogram objects if computed
-    if show_spectrogram
-        removeObject: polySpec, specMono
-    endif
 endproc

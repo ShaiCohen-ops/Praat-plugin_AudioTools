@@ -3,7 +3,29 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026)
+# Version: 2.4 (2026)
+#
+# Changelog v2.4 (2026):
+#   - FIX (tuning): compensates the fractional delay for the phase
+#     delay of the stiffness allpass and loop low-pass at each target
+#     F0. This removes the increasingly flat pitch error of the old
+#     fixed -0.5-sample correction, especially in the upper voices.
+#   - FIX (audio analysis): a single stable pitch track now transposes
+#     the manual SATB ranges to the detected pitch class; the old code
+#     suppressed that transposition whenever any Sound was analyzed.
+#     The sampled values are described as pitch-track anchors rather
+#     than simultaneous multi-pitch detection.
+#   - FIX (stereo): final wet+dry normalization is joint after stereo
+#     combination; no independent L/R peak scaling remains.
+#   - Added reproducible Random seed and explicit validation of rates,
+#     transposition, output ceiling, body-mode bandwidth, and waveguide
+#     temporal resolution.
+#   - Compact main form with optional Reverb / Render Details page.
+#   - Visualization rebuilt as process explanation: SATB string geometry
+#     -> tuned delay loop -> modelled soundboard transfer ->
+#     realized Poisson reverb events -> measured stereo output.
+#   - Terminology corrected: the reverb is independent L/R (dual-mono)
+#     stereo convolution, not four-IR true-stereo convolution.
 #
 # Changelog v2.3 (2026):
 #   - Internal_rate default raised 5512.5 -> 11025 Hz. The old
@@ -39,14 +61,14 @@
 #   chord using digital waveguide synthesis with per-string
 #   allpass fractional delay, stiffness dispersion, LP damping,
 #   and bridge coupling — processed through an 8-mode soundboard
-#   resonator bank, spectral-split stereo imaging, and a true-
-#   stereo Poisson-process spectral decay reverb.
+#   resonator bank, spectral-split stereo imaging, and an independent-L/R
+#   Poisson-process spectral decay reverb.
 #
 # v2.1 Audio Analysis Pipeline:
 #   If a Sound object is selected before running, the script
 #   analyzes it and automatically derives synthesis parameters:
 #     - Root pitch / F0    → Transpose_semitones (key center)
-#     - Up to 4 pitches    → Constrain SATB note ranges
+#     - Pitch-track anchors → Heuristically constrain SATB note ranges
 #     - Duration           → Duration_s
 #     - HNR                → Randomize_depth
 #     - Spectral centroid  → High_cutoff_Hz + reverb brightness
@@ -57,44 +79,63 @@
 #
 # ============================================================
 
-form Synthesize Random SATB Klang Machine
-    comment === Input Mode ===
-    comment (Select a Sound object before running to use audio analysis)
+form Synthesize Random SATB Klang Machine v2.4
+    comment === Source / Musical Control ===
     boolean Use_selected_sound 1
-    comment (If unchecked, manual parameters below are used)
-
     real Duration_s 8.0
-    comment --- CPU / Bandwidth (measured: 8 s piece renders in ---
-    comment --- ~11 s at 11025 Hz, ~39 s at 22050; Nyquist = rate/2) ---
-    positive Internal_rate 11025
-    positive Final_rate 44100
     integer Transpose_semitones 0
 
-    comment === Spectral Decay Reverb ===
     optionmenu Preset 3
-        option Custom (use settings below)
+        option Custom
         option Subtle Decay
         option Medium Decay
         option Heavy Decay
         option Extreme Decay
-    positive Tail_duration_s 2.0
-    positive Impulse_duration_s 3.0
-    positive Poisson_density 2000
-    positive Decay_base 110
-    positive Low_cutoff_Hz 100
-    positive High_cutoff_Hz 4000
-    positive Smoothing_Hz 100
-    real Wet_dry_percent 50
-    positive Fadeout_duration_s 1.2
 
-    comment === Output ===
     optionmenu Randomize_depth 2
-        option None (standard waveguide)
-        option Subtle (slight per-voice variation)
-        option Wild (imaginary instrument space)
+        option None
+        option Subtle
+        option Wild
+
+    boolean Edit_reverb_render_details 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# ---------------------------------------------------------------------------
+# ADVANCED DEFAULTS
+# ---------------------------------------------------------------------------
+internal_rate = 11025
+final_rate = 44100
+tail_duration_s = 2.0
+impulse_duration_s = 3.0
+poisson_density = 2000
+decay_base = 110
+low_cutoff_Hz = 100
+high_cutoff_Hz = 4000
+smoothing_Hz = 100
+wet_dry_percent = 50
+fadeout_duration_s = 1.2
+output_peak = 0.98
+random_seed = 0
+
+if edit_reverb_render_details
+    beginPause: "Waveguide Klangmaschine v2.4 - Reverb / Render Details"
+        positive: "Internal waveguide rate (Hz)", internal_rate
+        positive: "Final output rate (Hz)", final_rate
+        positive: "Tail duration (s)", tail_duration_s
+        positive: "Impulse duration (s)", impulse_duration_s
+        positive: "Poisson density (events/s)", poisson_density
+        positive: "Decay base", decay_base
+        positive: "Low cutoff (Hz)", low_cutoff_Hz
+        positive: "High cutoff (Hz)", high_cutoff_Hz
+        positive: "Filter smoothing (Hz)", smoothing_Hz
+        real: "Wet mix (%)", wet_dry_percent
+        positive: "Fadeout duration (s)", fadeout_duration_s
+        real: "Output peak (0..1)", output_peak
+        integer: "Random seed (0 = unpredictable)", random_seed
+    endPause: "Run", 1
+endif
 
 # =============================================================
 # AUDIO ANALYSIS PIPELINE
@@ -154,21 +195,20 @@ if use_selected_sound
             appendInfoLine: "  Root pitch:       ", fixed$(root_hz, 1), " Hz  → MIDI ", root_midi
         endif
 
-        # Transpose to align root pitch to nearest C, then compute offset
+        # Represent the detected pitch class as the shortest signed shift
+        # away from C. This is used only when the pitch track supplies fewer
+        # than two distinct anchors; with >=2 anchors the SATB ranges are
+        # already placed in absolute MIDI space and no second shift is needed.
         root_pc = root_midi mod 12
-        nearest_c_midi = root_midi - root_pc
-        transpose_semitones = nearest_c_midi - 60
-
-        if transpose_semitones < -12
-            transpose_semitones = transpose_semitones + 12
-        endif
-        if transpose_semitones > 12
+        transpose_semitones = root_pc
+        if transpose_semitones > 6
             transpose_semitones = transpose_semitones - 12
         endif
-        appendInfoLine: "  Transpose offset: ", transpose_semitones, " semitones (key-center alignment)"
+        appendInfoLine: "  Pitch-class shift:", transpose_semitones, " semitones from C reference"
 
-        # Attempt multi-pitch detection by sampling pitch at 8 time points
-        # and collecting distinct MIDI values for SATB range narrowing
+        # Heuristic pitch-track analysis: sample monophonic F0 at 8 time points
+        # and collect distinct MIDI anchors for SATB range narrowing. This is
+        # NOT simultaneous polyphonic multi-pitch detection.
         pitchDur = Get total duration
         step = pitchDur / 9
         p_count = 0
@@ -220,9 +260,9 @@ if use_selected_sound
         endfor
 
         analysis_pitch_count = p_count
-        appendInfoLine: "  Detected pitches: ", p_count
+        appendInfoLine: "  Pitch-track anchors: ", p_count
 
-        # If we found multiple pitches, constrain SATB ranges around them.
+        # If the pitch track supplies multiple anchors, constrain SATB ranges around them.
         # Sort detected pitches low→high and assign to Bass/Tenor/Alto/Soprano.
         # Each voice range is narrowed to ±5 semitones around the detected pitch.
         if p_count >= 2
@@ -289,44 +329,53 @@ if use_selected_sound
                 soprano_hi = p4 + spread
             endif
 
-            # Clamp to SATB physical ranges
-            if bass_lo < 28
-                bass_lo = 28
-            endif
-            if bass_hi > 60
-                bass_hi = 60
-            endif
-            if tenor_lo < 40
-                tenor_lo = 40
-            endif
-            if tenor_hi > 69
-                tenor_hi = 69
-            endif
-            if alto_lo < 48
-                alto_lo = 48
-            endif
-            if alto_hi > 74
-                alto_hi = 74
-            endif
-            if soprano_lo < 55
-                soprano_lo = 55
-            endif
-            if soprano_hi > 88
-                soprano_hi = 88
-            endif
+            # Clamp BOTH endpoints to physical SATB ranges.  The old code
+            # clamped only the low endpoint at the bottom and the high endpoint
+            # at the top; an anchor far outside a voice range could therefore
+            # leave lo > hi and the subsequent +1 repair escaped the range.
+            bass_lo = max(28, min(59, bass_lo))
+            bass_hi = max(29, min(60, bass_hi))
+            tenor_lo = max(40, min(68, tenor_lo))
+            tenor_hi = max(41, min(69, tenor_hi))
+            alto_lo = max(48, min(73, alto_lo))
+            alto_hi = max(49, min(74, alto_hi))
+            soprano_lo = max(55, min(87, soprano_lo))
+            soprano_hi = max(56, min(88, soprano_hi))
 
-            # Guarantee at least 1-semitone range
+            # Guarantee an ordered, non-empty range without leaving the
+            # physical voice limits.
             if bass_lo >= bass_hi
-                bass_hi = bass_lo + 1
+                bass_lo = max(28, min(59, p1))
+                bass_hi = min(60, bass_lo + 1)
             endif
             if tenor_lo >= tenor_hi
-                tenor_hi = tenor_lo + 1
+                if p_count >= 3
+                    tenor_anchor = p2
+                else
+                    tenor_anchor = p1
+                endif
+                tenor_lo = max(40, min(68, tenor_anchor))
+                tenor_hi = min(69, tenor_lo + 1)
             endif
             if alto_lo >= alto_hi
-                alto_hi = alto_lo + 1
+                if p_count >= 4
+                    alto_anchor = p3
+                else
+                    alto_anchor = p2
+                endif
+                alto_lo = max(48, min(73, alto_anchor))
+                alto_hi = min(74, alto_lo + 1)
             endif
             if soprano_lo >= soprano_hi
-                soprano_hi = soprano_lo + 1
+                if p_count >= 4
+                    soprano_anchor = p4
+                elsif p_count = 3
+                    soprano_anchor = p3
+                else
+                    soprano_anchor = p2
+                endif
+                soprano_lo = max(55, min(87, soprano_anchor))
+                soprano_hi = min(88, soprano_lo + 1)
             endif
 
             appendInfoLine: "  SATB ranges constrained from detected pitches:"
@@ -522,10 +571,124 @@ if use_selected_sound
 endif
 
 # =============================================================
+# VALIDATION / REPRODUCIBILITY
+# =============================================================
+if duration_s <= 0 or duration_s > 120
+    exitScript: "Duration must be > 0 and <= 120 seconds."
+endif
+if internal_rate < 8000 or internal_rate > 96000
+    exitScript: "Internal waveguide rate must be between 8000 and 96000 Hz."
+endif
+if final_rate < 8000 or final_rate > 192000
+    exitScript: "Final output rate must be between 8000 and 192000 Hz."
+endif
+if transpose_semitones < -12 or transpose_semitones > 12
+    exitScript: "Transpose must be between -12 and +12 semitones."
+endif
+if tail_duration_s <= 0 or impulse_duration_s <= 0
+    exitScript: "Tail and impulse durations must be positive."
+endif
+if poisson_density <= 0 or poisson_density > 20000
+    exitScript: "Poisson density must be > 0 and <= 20000 events/s."
+endif
+if decay_base <= 1
+    exitScript: "Decay base must be greater than 1."
+endif
+if smoothing_Hz <= 0
+    exitScript: "Filter smoothing must be positive."
+endif
+if wet_dry_percent < 0 or wet_dry_percent > 100
+    exitScript: "Wet mix must be between 0 and 100 percent."
+endif
+if output_peak <= 0 or output_peak > 1
+    exitScript: "Output peak must be > 0 and <= 1."
+endif
+if random_seed < 0
+    exitScript: "Random seed must be 0 or a positive integer."
+endif
+if fadeout_duration_s <= 0
+    exitScript: "Fadeout duration must be positive."
+endif
+
+# The manual ranges can reach MIDI 28 with -12 transposition.  Ensure the
+# highest possible fundamental still has enough samples per loop for the
+# strike / pickup geometry and the phase-compensated delay stages.
+if audio_was_analyzed and analysis_pitch_count >= 2
+    highest_midi_for_rate = soprano_hi
+else
+    highest_midi_for_rate = soprano_hi + transpose_semitones
+endif
+highest_f_for_rate = 440 * (2 ^ ((highest_midi_for_rate - 69) / 12))
+if internal_rate / highest_f_for_rate < 8
+    min_rate_needed = ceiling(8 * highest_f_for_rate)
+    exitScript: "Internal rate is too low for the highest possible SATB note. Use at least " + string$(min_rate_needed) + " Hz."
+endif
+
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    appendInfoLine: "Random seed:       ", random_seed, " (reproducible)"
+else
+    appendInfoLine: "Random seed:       unpredictable"
+endif
+
+# Phase-delay compensated first-order fractional delay.  The old fixed
+# -0.5-sample correction ignored the phase delay added by the stiffness
+# allpass and loop low-pass, so upper notes ran progressively flat.
+procedure tunedWaveguideDelay: .freq, .damp, .stiff, .rate
+    .omega = 2 * pi * .freq / .rate
+    .period = .rate / .freq
+
+    .num_phase = arctan2(-sin(.omega), .stiff + cos(.omega))
+    .den_phase = arctan2(-.stiff * sin(.omega), 1 + .stiff * cos(.omega))
+    .phase_ap = .num_phase - .den_phase
+    if .phase_ap > 0
+        .phase_ap = .phase_ap - 2 * pi
+    endif
+    .pd_stiff = -.phase_ap / .omega
+
+    .pd_lp = arctan2(.damp * sin(.omega), 1 - .damp * cos(.omega)) / .omega
+    .remaining = .period - .pd_stiff - .pd_lp
+    .l_int = floor(.remaining)
+    .target_frac_pd = .remaining - .l_int
+
+    .lo = 0.000000001
+    .hi = 0.999999999
+    for .iter to 30
+        .q = (.lo + .hi) / 2
+        .cc = (1 - .q) / (1 + .q)
+        .np = arctan2(-sin(.omega), .cc + cos(.omega))
+        .dp = arctan2(-.cc * sin(.omega), 1 + .cc * cos(.omega))
+        .ph = .np - .dp
+        if .ph > 0
+            .ph = .ph - 2 * pi
+        endif
+        .pd = -.ph / .omega
+        if .pd < .target_frac_pd
+            .lo = .q
+        else
+            .hi = .q
+        endif
+    endfor
+    .frac = (.lo + .hi) / 2
+    .c = (1 - .frac) / (1 + .frac)
+
+    .np = arctan2(-sin(.omega), .c + cos(.omega))
+    .dp = arctan2(-.c * sin(.omega), 1 + .c * cos(.omega))
+    .ph = .np - .dp
+    if .ph > 0
+        .ph = .ph - 2 * pi
+    endif
+    .pd_frac = -.ph / .omega
+    .total_pd = .l_int + .pd_frac + .pd_stiff + .pd_lp
+    .predicted_f = .rate / .total_pd
+    .error_cents = 1200 * log2(.predicted_f / .freq)
+endproc
+
+# =============================================================
 # 1. GLOBAL SETUP & RANDOMIZED PARAMETERS
 # =============================================================
 Erase all
-appendInfoLine: "KLANG MACHINE v2.3: Generating New Patch..."
+appendInfoLine: "KLANG MACHINE v2.4: Generating New Patch..."
 if audio_was_analyzed
     appendInfoLine: "(Parameters derived from audio analysis)"
 endif
@@ -665,13 +828,55 @@ if depth_frac > 0
         ... fixed$(body_bw8, 1), "  g=", fixed$(body_g8, 3)
 endif
 
+# Validate the actual randomized body before constructing filters.  Clamping
+# resonances to Nyquist changes the instrument; reject that configuration
+# instead of silently moving a mode.
+max_body_f = body_f1
+if body_f2 > max_body_f
+    max_body_f = body_f2
+endif
+if body_f3 > max_body_f
+    max_body_f = body_f3
+endif
+if body_f4 > max_body_f
+    max_body_f = body_f4
+endif
+if body_f5 > max_body_f
+    max_body_f = body_f5
+endif
+if body_f6 > max_body_f
+    max_body_f = body_f6
+endif
+if body_f7 > max_body_f
+    max_body_f = body_f7
+endif
+if body_f8 > max_body_f
+    max_body_f = body_f8
+endif
+if max_body_f >= 0.45 * internal_rate
+    needed_body_rate = ceiling(max_body_f / 0.45)
+    exitScript: "Internal rate is too low for the randomized soundboard modes. Use at least " + string$(needed_body_rate) + " Hz for this seed/depth."
+endif
+
 # =============================================================
 # 2. VOICE LOOP (Generate 4 SATB notes — constrained if analyzed)
 # =============================================================
+# Parameters retained for process visualization / QC
+voice_midi# = zero#(4)
+voice_freq# = zero#(4)
+voice_velocity# = zero#(4)
+voice_onset_ms# = zero#(4)
+voice_strike# = zero#(4)
+voice_loop_gain# = zero#(4)
+voice_damp# = zero#(4)
+voice_stiff# = zero#(4)
+voice_delay_samples# = zero#(4)
+voice_tuning_error_cents# = zero#(4)
+
 for voice from 1 to 4
     # When audio was analyzed, SATB ranges are already centered on detected pitches,
     # so transpose_semitones must not be added again (it would double-apply the shift).
-    if audio_was_analyzed
+    if audio_was_analyzed and analysis_pitch_count >= 2
         effective_transpose = 0
     else
         effective_transpose = transpose_semitones
@@ -869,21 +1074,34 @@ for voice from 1 to 4
         f3 = base_freq + detune
     endif
 
-    d1 = (internal_rate / f1) - 0.5
-    l_int1 = floor(d1)
-    l_frac1 = d1 - l_int1
+    @tunedWaveguideDelay: f1, damp1, stiff_c, internal_rate
+    l_int1 = tunedWaveguideDelay.l_int
+    l_frac1 = tunedWaveguideDelay.frac
+    c1 = tunedWaveguideDelay.c
+    tuning_error1 = tunedWaveguideDelay.error_cents
 
-    d2 = (internal_rate / f2) - 0.5
-    l_int2 = floor(d2)
-    l_frac2 = d2 - l_int2
+    @tunedWaveguideDelay: f2, damp2, stiff_c, internal_rate
+    l_int2 = tunedWaveguideDelay.l_int
+    l_frac2 = tunedWaveguideDelay.frac
+    c2 = tunedWaveguideDelay.c
+    tuning_error2 = tunedWaveguideDelay.error_cents
 
-    d3 = (internal_rate / f3) - 0.5
-    l_int3 = floor(d3)
-    l_frac3 = d3 - l_int3
+    @tunedWaveguideDelay: f3, damp3, stiff_c, internal_rate
+    l_int3 = tunedWaveguideDelay.l_int
+    l_frac3 = tunedWaveguideDelay.frac
+    c3 = tunedWaveguideDelay.c
+    tuning_error3 = tunedWaveguideDelay.error_cents
 
-    c1 = (1.0 - l_frac1) / (1.0 + l_frac1)
-    c2 = (1.0 - l_frac2) / (1.0 + l_frac2)
-    c3 = (1.0 - l_frac3) / (1.0 + l_frac3)
+    voice_midi#[voice] = midi_note
+    voice_freq#[voice] = base_freq
+    voice_velocity#[voice] = voice_vel
+    voice_onset_ms#[voice] = onset_delay_s * 1000
+    voice_strike#[voice] = strike_a
+    voice_loop_gain#[voice] = loop_gain
+    voice_damp#[voice] = damp_lp
+    voice_stiff#[voice] = stiff_c
+    voice_delay_samples#[voice] = l_int1 + l_frac1
+    voice_tuning_error_cents#[voice] = tuning_error1
 
     xs_contact1 = round(strike_a * l_int1)
     if xs_contact1 < 2
@@ -1239,7 +1457,13 @@ endfor
 # =============================================================
 # 5. NORMALIZE & FADE
 # =============================================================
-peak_val = max(max(out#), -min(out#))
+peak_val = 0
+for n to total_samples
+    av = abs(out#[n])
+    if av > peak_val
+        peak_val = av
+    endif
+endfor
 if peak_val > 1.0e-6
     norm_gain = 0.88 / peak_val
 else
@@ -1287,7 +1511,7 @@ Rename: "Random_Klang_Stereo"
 removeObject: resampled_id, left_id, right_id
 
 # =============================================================
-# 7. SPECTRAL DECAY REVERB (TRUE STEREO CONVOLUTION)
+# 7. SPECTRAL DECAY REVERB (INDEPENDENT L/R CONVOLUTION)
 # =============================================================
 original = final_stereo_id
 originalName$ = "KlangMachine"
@@ -1373,13 +1597,22 @@ if wet_dry_percent < 0
 elsif wet_dry_percent > 100
     wet_dry_percent = 100
 endif
+if high_cutoff_Hz >= 0.48 * sr
+    exitScript: "Final reverb high cutoff must stay below 48% of the output sample rate."
+endif
+if low_cutoff_Hz <= 0 or high_cutoff_Hz <= low_cutoff_Hz
+    exitScript: "Final reverb cutoff range is invalid."
+endif
 wet_level = wet_dry_percent / 100
 dry_level = 1 - wet_level
 
-appendInfoLine: "=== Applying True-Stereo Spectral Decay Reverb ==="
+appendInfoLine: "=== Applying Independent-L/R Spectral Decay Reverb ==="
 appendInfoLine: "Preset: ", presetName$
 
 totalDur = originalDur + tail_duration_s
+if fadeout_duration_s > totalDur
+    fadeout_duration_s = totalDur
+endif
 Create Sound from formula: "silent_tail", 2, 0, tail_duration_s, sr, "0"
 silentTail = selected("Sound")
 selectObject: original, silentTail
@@ -1399,6 +1632,18 @@ rightChannel = selected("Sound")
 
 Create Poisson process: "poisson_left", 0, impulse_duration_s, poisson_density
 poissonLeft = selected("PointProcess")
+poisson_left_total = Get number of points
+poisson_plot_capacity = 96
+poisson_left_plot_count = min(poisson_plot_capacity, poisson_left_total)
+poisson_left_plot# = zero#(poisson_plot_capacity)
+if poisson_left_plot_count = 1
+    poisson_left_plot#[1] = Get time from index: 1
+elsif poisson_left_plot_count > 1
+    for pk to poisson_left_plot_count
+        pidx = round(1 + (pk - 1) * (poisson_left_total - 1) / (poisson_left_plot_count - 1))
+        poisson_left_plot#[pk] = Get time from index: pidx
+    endfor
+endif
 To Sound (pulse train): sr, 1, 0.035, 2800
 irLeft = selected("Sound")
 Formula: "self * " + decay_str$ + "^(-(x-xmin)/(xmax-xmin)) * (1 + 0.7*sin(2*pi*x*150 + (x-xmin)*20))"
@@ -1413,6 +1658,17 @@ decay_R = decay_base * 0.95
 decay_R_str$ = string$(decay_R)
 Create Poisson process: "poisson_right", 0, impulse_duration_s * 0.93, poisson_density * 0.95
 poissonRight = selected("PointProcess")
+poisson_right_total = Get number of points
+poisson_right_plot_count = min(poisson_plot_capacity, poisson_right_total)
+poisson_right_plot# = zero#(poisson_plot_capacity)
+if poisson_right_plot_count = 1
+    poisson_right_plot#[1] = Get time from index: 1
+elsif poisson_right_plot_count > 1
+    for pk to poisson_right_plot_count
+        pidx = round(1 + (pk - 1) * (poisson_right_total - 1) / (poisson_right_plot_count - 1))
+        poisson_right_plot#[pk] = Get time from index: pidx
+    endfor
+endif
 To Sound (pulse train): sr, 1, 0.032, 2600
 irRight = selected("Sound")
 Formula: "self * " + decay_R_str$ + "^(-(x-xmin)/(xmax-xmin)) * (1 + 0.65*sin(2*pi*x*140 + (x-xmin)*22))"
@@ -1423,7 +1679,7 @@ Filter (pass Hann band): low_cutoff_Hz * 1.2, high_cutoff_Hz * 0.95, smoothing_H
 filtRight = selected("Sound")
 removeObject: convRight
 
-# v2.3: JOINT wet scaling -- independent per-channel peaks
+# v2.4: JOINT wet scaling -- independent per-channel peaks
 # rebalanced the deliberately spectral-split stereo
 selectObject: filtLeft
 wpL = Get absolute extremum: 0, 0, "None"
@@ -1469,14 +1725,13 @@ endif
 
 selectObject: filtLeft
 Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-Scale peak: 0.98
 selectObject: filtRight
 Formula: "if x > " + start_str$ + " then self * (0.5 + 0.5 * cos(pi * (x - " + start_str$ + ") / " + fade_str$ + ")) else self fi"
-Scale peak: 0.98
 
 selectObject: filtLeft, filtRight
 Combine to stereo
 result = selected("Sound")
+Scale peak: output_peak
 Rename: originalName$ + "_spectral_" + presetName$
 
 removeObject: leftChannel, rightChannel, extendedSound
@@ -1484,7 +1739,7 @@ removeObject: poissonLeft, poissonRight, irLeft, irRight
 removeObject: filtLeft, filtRight, original
 
 # =============================================================
-# 8. VISUALIZATION
+# 8. VISUALIZATION — PROCESS, NOT JUST RESULT
 # =============================================================
 procedure midiName: .midi, .result$
     .octave = floor(.midi / 12) - 1
@@ -1518,87 +1773,444 @@ procedure midiName: .midi, .result$
 endproc
 
 if draw_visualization
-appendInfoLine: "Drawing Visualization..."
-@midiName: bass_note, ""
-bass_name$ = midiName.result$
-@midiName: tenor_note, ""
-tenor_name$ = midiName.result$
-@midiName: alto_note, ""
-alto_name$ = midiName.result$
-@midiName: soprano_note, ""
-soprano_name$ = midiName.result$
+    appendInfoLine: "Drawing process visualization..."
+    @midiName: bass_note, ""
+    bass_name$ = midiName.result$
+    @midiName: tenor_note, ""
+    tenor_name$ = midiName.result$
+    @midiName: alto_note, ""
+    alto_name$ = midiName.result$
+    @midiName: soprano_note, ""
+    soprano_name$ = midiName.result$
 
-Select outer viewport: 0, 8, 0, 0.55
-Font size: 11
-Colour: "Black"
-if audio_was_analyzed
-    Text special: 0.5, "centre", 0.5, "half", "Helvetica", 11, "0",
-        ... "##Waveguide Klangmaschine v2.3 — " + presetName$ + " [from audio]##"
-else
-    Text special: 0.5, "centre", 0.5, "half", "Helvetica", 11, "0",
-        ... "##Waveguide Klangmaschine v2.3 — " + presetName$ + " Reverb##"
-endif
+    Erase all
 
-Select outer viewport: 0.6, 7.7, 0.6, 5.3
-Axes: 0, 100, 0, 100
-Solid line
+    # Header strip
+    Select outer viewport: 0, 8, 0.05, 0.48
+    Select inner viewport: 0, 8, 0.05, 0.48
+    Axes: 0, 1, 0, 1
+    Font size: 11
+    Colour: "Black"
+    Text special: 0.5, "centre", 0.68, "half", "Helvetica", 11, "0", "##Waveguide Klangmaschine v2.4##"
+    Font size: 7
+    Colour: "{0.35,0.35,0.38}"
+    if audio_was_analyzed
+        Text: 0.5, "centre", 0.18, "half", presetName$ + " | parameters partly derived from selected audio"
+    else
+        Text: 0.5, "centre", 0.18, "half", presetName$ + " | stochastic SATB realization"
+    endif
 
-x1 = 15 + ((bass_note - 40) / 15) * 20
-x2 = 65 + ((tenor_note - 52) / 12) * 20
-y1 = 15 + ((alto_note - 53) / 19) * 20
-y2 = 65 + ((soprano_note - 60) / 24) * 20
+    # Process strip
+    Select outer viewport: 0.35, 7.65, 0.52, 0.88
+    Select inner viewport: 0.35, 7.65, 0.52, 0.88
+    Axes: 0, 1, 0, 1
+    Font size: 6.5
+    Colour: "{0.28,0.28,0.31}"
+    Text: 0.5, "centre", 0.5, "half", "hammer -> tuned delay -> dispersion/loss -> 8-mode soundboard -> stereo split -> Poisson IR -> output"
 
-Paint rectangle: "White", 0, 100, 0, 100
-Paint rectangle: "Red", x2, 100, y2, 100
-Paint rectangle: "Blue", 0, x1, 0, y1
-Paint rectangle: "Yellow", x2, 100, 0, y1
+    # ---------------------------------------------------------
+    # A. SATB STRING REALIZATION / GEOMETRY
+    # ---------------------------------------------------------
+    Select outer viewport: 0.25, 3.92, 0.98, 3.28
+    Select inner viewport: 0.62, 3.75, 1.20, 3.10
+    Axes: 0, 1, 0.5, 4.5
+    Paint rectangle: "{0.975,0.975,0.975}", 0, 1, 0.5, 4.5
+    Colour: "{0.78,0.78,0.78}"
+    for vr from 1 to 4
+        Draw line: 0.05, vr, 0.95, vr
+    endfor
 
-Line width: 8
-Colour: "Black"
-Draw line: 0, 0, 100, 0
-Draw line: 100, 0, 100, 100
-Draw line: 100, 100, 0, 100
-Draw line: 0, 100, 0, 0
+    for vr from 1 to 4
+        strike_x = 0.08 + 0.78 * voice_strike#[vr]
+        pickup_x = 0.08 + 0.78 * (1 - voice_strike#[vr])
+        Colour: "{0.16,0.31,0.52}"
+        Line width: 2
+        Draw line: 0.08, vr, 0.86, vr
+        Line width: 1
+        Colour: "{0.75,0.30,0.18}"
+        Draw line: strike_x, vr - 0.16, strike_x, vr + 0.16
+        Colour: "{0.18,0.52,0.36}"
+        Draw line: pickup_x, vr - 0.13, pickup_x, vr + 0.13
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
 
-Draw line: x1, 0, x1, 100
-Draw line: x2, 0, x2, 100
-Draw line: 0, y1, 100, y1
-Draw line: 0, y2, 100, y2
+    # Re-enter data viewport after box
+    Select inner viewport: 0.62, 3.75, 1.20, 3.10
+    Axes: 0, 1, 0.5, 4.5
+    Font size: 6.4
+    Colour: "Black"
+    Text: 0.01, "right", 1, "half", "B " + bass_name$ + "  " + fixed$(voice_freq#[1], 1) + "Hz"
+    Text: 0.01, "right", 2, "half", "T " + tenor_name$ + "  " + fixed$(voice_freq#[2], 1) + "Hz"
+    Text: 0.01, "right", 3, "half", "A " + alto_name$ + "  " + fixed$(voice_freq#[3], 1) + "Hz"
+    Text: 0.01, "right", 4, "half", "S " + soprano_name$ + "  " + fixed$(voice_freq#[4], 1) + "Hz"
 
-Draw line: x1, y2 + 5, x2, y2 + 5
-Draw line: x1 - 5, y1, x1 - 5, y2
-Line width: 1
+    # title strip A
+    Select outer viewport: 0.25, 3.92, 0.90, 1.16
+    Select inner viewport: 0.25, 3.92, 0.90, 1.16
+    Axes: 0, 1, 0, 1
+    Font size: 7.5
+    Colour: "Black"
+    Text: 0.5, "centre", 0.55, "half", "A | Four SATB voices: strike position -> tuned loop -> pickup"
 
-Font size: 8
-Colour: "White"
-Text special: x1 / 2, "centre", y1 / 2, "half",
-    ... "Helvetica", 8, "0", "B: " + bass_name$
-Colour: "Black"
-Text special: (x1 + x2) / 2, "centre", (y1 + y2) / 2, "half",
-    ... "Helvetica", 9, "0", "T: " + tenor_name$
-Colour: "{0.3,0.3,0.3}"
-Text special: x1 / 2, "centre", (y2 + 100) / 2, "half",
-    ... "Helvetica", 8, "0", "A: " + alto_name$
-Colour: "White"
-Text special: (x2 + 100) / 2, "centre", (y2 + 100) / 2, "half",
-    ... "Helvetica", 8, "0", "S: " + soprano_name$
+    # A-note strip
+    Select outer viewport: 0.45, 3.80, 3.12, 3.42
+    Select inner viewport: 0.45, 3.80, 3.12, 3.42
+    Axes: 0, 1, 0, 1
+    Font size: 5.2
+    Colour: "{0.35,0.35,0.38}"
+    maxTuneErr = 0
+    for vr to 4
+        if abs(voice_tuning_error_cents#[vr]) > maxTuneErr
+            maxTuneErr = abs(voice_tuning_error_cents#[vr])
+        endif
+    endfor
+    Text: 0.5, "centre", 0.70, "half", "red=hammer | green=pickup | strings/note=" + string$(strings) + " | detune=" + fixed$(detune, 2) + " Hz"
+    Text: 0.5, "centre", 0.22, "half", "phase-compensated model tuning error <= " + fixed$(maxTuneErr, 3) + " cent"
 
-Select outer viewport: 0, 8, 5.5, 5.9
-Axes: 0, 1, 0, 1
-Font size: 6
-Colour: "{0.4, 0.4, 0.4}"
-Text special: 0.5, "centre", 0.5, "half", "Helvetica", 6, "0",
-    ... bass_name$ + " / " + tenor_name$ + " / "
-    ... + alto_name$ + " / " + soprano_name$
-    ... + "  |  Vel=" + fixed$(velocity, 2)
-    ... + "  Strings=" + string$(strings)
-    ... + "  Detune=" + fixed$(detune, 1)
-    ... + "  Body=" + fixed$(resonance, 2)
-    ... + "  |  " + presetName$
-    ... + "  |  Rnd: " + depth_name$
+    # ---------------------------------------------------------
+    # B. REPRESENTATIVE WAVEGUIDE LOOP (TENOR)
+    # ---------------------------------------------------------
+    Select outer viewport: 4.08, 7.75, 0.98, 3.42
+    Select inner viewport: 4.30, 7.55, 1.20, 3.12
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.975,0.975,0.975}", 0, 1, 0, 1
+    Colour: "{0.18,0.18,0.20}"
+    Line width: 1.5
+    Draw line: 0.08, 0.58, 0.25, 0.58
+    Draw line: 0.39, 0.58, 0.50, 0.58
+    Draw line: 0.64, 0.58, 0.73, 0.58
+    Draw line: 0.86, 0.58, 0.94, 0.58
+    Draw line: 0.94, 0.58, 0.94, 0.27
+    Draw line: 0.94, 0.27, 0.18, 0.27
+    Draw line: 0.18, 0.27, 0.18, 0.49
+    Line width: 1
 
-Font size: 10
-Colour: "Black"
+    Colour: "{0.82,0.90,0.97}"
+    Paint rectangle: "{0.82,0.90,0.97}", 0.25, 0.39, 0.48, 0.68
+    Colour: "{0.91,0.86,0.96}"
+    Paint rectangle: "{0.91,0.86,0.96}", 0.50, 0.64, 0.48, 0.68
+    Colour: "{0.88,0.94,0.86}"
+    Paint rectangle: "{0.88,0.94,0.86}", 0.73, 0.86, 0.48, 0.68
+    Colour: "Black"
+    Draw rectangle: 0.25, 0.39, 0.48, 0.68
+    Draw rectangle: 0.50, 0.64, 0.48, 0.68
+    Draw rectangle: 0.73, 0.86, 0.48, 0.68
+    Font size: 5.7
+    Text: 0.08, "centre", 0.66, "half", "hammer"
+    Text: 0.32, "centre", 0.58, "half", "integer +"
+    Text: 0.32, "centre", 0.52, "half", "frac delay"
+    Text: 0.57, "centre", 0.58, "half", "stiffness"
+    Text: 0.57, "centre", 0.52, "half", "allpass"
+    Text: 0.795, "centre", 0.58, "half", "loss LP"
+    Text: 0.56, "centre", 0.20, "half", "feedback + bridge coupling"
+
+    tenor_period = internal_rate / voice_freq#[2]
+    Font size: 5.3
+    Colour: "{0.30,0.30,0.33}"
+    Text: 0.5, "centre", 0.12, "half", tenor_name$ + ": target=" + fixed$(tenor_period, 3) + " samp | core=" + fixed$(voice_delay_samples#[2], 3) + " samp"
+    Text: 0.5, "centre", 0.035, "half", "damp=" + fixed$(voice_damp#[2], 3) + " | stiff=" + fixed$(voice_stiff#[2], 4) + " | feedback=" + fixed$(voice_loop_gain#[2], 5)
+
+    Select outer viewport: 4.08, 7.75, 0.90, 1.16
+    Select inner viewport: 4.08, 7.75, 0.90, 1.16
+    Axes: 0, 1, 0, 1
+    Font size: 7.5
+    Colour: "Black"
+    Text: 0.5, "centre", 0.55, "half", "B | Phase-compensated digital waveguide loop"
+
+    # ---------------------------------------------------------
+    # C. SOUNDBOARD TRANSFER MODEL
+    # ---------------------------------------------------------
+    Select outer viewport: 0.25, 7.75, 3.55, 5.68
+    Select inner viewport: 0.72, 7.52, 3.80, 5.43
+    fPlotMin = 40
+    fPlotMax = min(5000, 0.45 * internal_rate)
+    xLogMin = ln(fPlotMin)
+    xLogMax = ln(fPlotMax)
+    Axes: xLogMin, xLogMax, -36, 2
+    Paint rectangle: "{0.985,0.985,0.985}", xLogMin, xLogMax, -36, 2
+
+    # Find normalization of the exact eight-resonator transfer function.
+    respMax = 0.000000001
+    for qi from 0 to 220
+        qf = exp(xLogMin + (xLogMax - xLogMin) * qi / 220)
+        qw = 2 * pi * qf / internal_rate
+        c1w = cos(qw)
+        s1w = sin(qw)
+        c2w = cos(2 * qw)
+        s2w = sin(2 * qw)
+        sumRe = 0.25
+        sumIm = 0
+        for mode to 8
+            if mode = 1
+                aa1 = ba1_1
+                aa2 = ba2_1
+                bb = bsc1
+            elsif mode = 2
+                aa1 = ba1_2
+                aa2 = ba2_2
+                bb = bsc2
+            elsif mode = 3
+                aa1 = ba1_3
+                aa2 = ba2_3
+                bb = bsc3
+            elsif mode = 4
+                aa1 = ba1_4
+                aa2 = ba2_4
+                bb = bsc4
+            elsif mode = 5
+                aa1 = ba1_5
+                aa2 = ba2_5
+                bb = bsc5
+            elsif mode = 6
+                aa1 = ba1_6
+                aa2 = ba2_6
+                bb = bsc6
+            elsif mode = 7
+                aa1 = ba1_7
+                aa2 = ba2_7
+                bb = bsc7
+            else
+                aa1 = ba1_8
+                aa2 = ba2_8
+                bb = bsc8
+            endif
+            denRe = 1 - aa1 * c1w - aa2 * c2w
+            denIm = aa1 * s1w + aa2 * s2w
+            denSq = denRe * denRe + denIm * denIm
+            sumRe = sumRe + resonance * bb * denRe / denSq
+            sumIm = sumIm - resonance * bb * denIm / denSq
+        endfor
+        mag = sqrt(sumRe * sumRe + sumIm * sumIm)
+        if mag > respMax
+            respMax = mag
+        endif
+    endfor
+
+    prevX = xLogMin
+    prevY = -36
+    Colour: "{0.16,0.31,0.52}"
+    Line width: 1.5
+    for qi from 0 to 220
+        qf = exp(xLogMin + (xLogMax - xLogMin) * qi / 220)
+        qw = 2 * pi * qf / internal_rate
+        c1w = cos(qw)
+        s1w = sin(qw)
+        c2w = cos(2 * qw)
+        s2w = sin(2 * qw)
+        sumRe = 0.25
+        sumIm = 0
+        for mode to 8
+            if mode = 1
+                aa1 = ba1_1
+                aa2 = ba2_1
+                bb = bsc1
+            elsif mode = 2
+                aa1 = ba1_2
+                aa2 = ba2_2
+                bb = bsc2
+            elsif mode = 3
+                aa1 = ba1_3
+                aa2 = ba2_3
+                bb = bsc3
+            elsif mode = 4
+                aa1 = ba1_4
+                aa2 = ba2_4
+                bb = bsc4
+            elsif mode = 5
+                aa1 = ba1_5
+                aa2 = ba2_5
+                bb = bsc5
+            elsif mode = 6
+                aa1 = ba1_6
+                aa2 = ba2_6
+                bb = bsc6
+            elsif mode = 7
+                aa1 = ba1_7
+                aa2 = ba2_7
+                bb = bsc7
+            else
+                aa1 = ba1_8
+                aa2 = ba2_8
+                bb = bsc8
+            endif
+            denRe = 1 - aa1 * c1w - aa2 * c2w
+            denIm = aa1 * s1w + aa2 * s2w
+            denSq = denRe * denRe + denIm * denIm
+            sumRe = sumRe + resonance * bb * denRe / denSq
+            sumIm = sumIm - resonance * bb * denIm / denSq
+        endfor
+        mag = sqrt(sumRe * sumRe + sumIm * sumIm)
+        ydb = 20 * log10(max(0.000000001, mag / respMax))
+        if ydb < -36
+            ydb = -36
+        endif
+        xx = ln(qf)
+        if qi > 0
+            Draw line: prevX, prevY, xx, ydb
+        endif
+        prevX = xx
+        prevY = ydb
+    endfor
+    Line width: 1
+
+    # Mark actual randomized modes.
+    Colour: "{0.70,0.30,0.18}"
+    modeFreq# = zero#(8)
+    modeFreq#[1] = body_f1
+    modeFreq#[2] = body_f2
+    modeFreq#[3] = body_f3
+    modeFreq#[4] = body_f4
+    modeFreq#[5] = body_f5
+    modeFreq#[6] = body_f6
+    modeFreq#[7] = body_f7
+    modeFreq#[8] = body_f8
+    for mode to 8
+        if modeFreq#[mode] >= fPlotMin and modeFreq#[mode] <= fPlotMax
+            mx = ln(modeFreq#[mode])
+            Draw line: mx, -36, mx, -31
+        endif
+    endfor
+
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, 12, "yes", "yes", "no"
+    # custom log ticks
+    Select inner viewport: 0.72, 7.52, 3.80, 5.43
+    Axes: xLogMin, xLogMax, -36, 2
+    Font size: 5.8
+    tickF# = zero#(7)
+    tickF#[1] = 50
+    tickF#[2] = 100
+    tickF#[3] = 200
+    tickF#[4] = 500
+    tickF#[5] = 1000
+    tickF#[6] = 2000
+    tickF#[7] = 5000
+    for tk to 7
+        tf = tickF#[tk]
+        if tf >= fPlotMin and tf <= fPlotMax
+            tx = ln(tf)
+            Colour: "{0.72,0.72,0.72}"
+            Draw line: tx, -36, tx, -34.5
+            Colour: "Black"
+            if tf >= 1000
+                Text: tx, "centre", -38.2, "half", fixed$(tf/1000, 0) + "k"
+            else
+                Text: tx, "centre", -38.2, "half", string$(tf)
+            endif
+        endif
+    endfor
+
+    Select outer viewport: 0.25, 7.75, 3.47, 3.75
+    Select inner viewport: 0.25, 7.75, 3.47, 3.75
+    Axes: 0, 1, 0, 1
+    Font size: 7.5
+    Colour: "Black"
+    Text: 0.5, "centre", 0.55, "half", "C | Exact 8-mode soundboard transfer model (normalized dB)"
+
+    # ---------------------------------------------------------
+    # D. REALIZED POISSON REVERB + MEASURED OUTPUT
+    # ---------------------------------------------------------
+    Select outer viewport: 0.25, 3.92, 5.86, 7.62
+    Select inner viewport: 0.62, 3.72, 6.12, 7.38
+    reverbPlotDur = impulse_duration_s
+    Axes: 0, reverbPlotDur, 0, 1.05
+    Paint rectangle: "{0.985,0.985,0.985}", 0, reverbPlotDur, 0, 1.05
+    # decay reference
+    Colour: "{0.45,0.45,0.48}"
+    prevT=0
+    prevEnv=1
+    for qq from 1 to 100
+        tt = reverbPlotDur * qq / 100
+        env = decay_base ^ (-tt / reverbPlotDur)
+        Draw line: prevT, prevEnv, tt, env
+        prevT=tt
+        prevEnv=env
+    endfor
+    # actual left Poisson events (decimated only for display)
+    Colour: "{0.16,0.31,0.52}"
+    for pk to poisson_left_plot_count
+        tt = poisson_left_plot#[pk]
+        env = decay_base ^ (-tt / reverbPlotDur)
+        Draw line: tt, 0, tt, env
+    endfor
+    Colour: "Black"
+    Draw inner box
+    Marks bottom every: 1, max(0.25, reverbPlotDur/4), "yes", "yes", "no"
+
+    Select outer viewport: 0.25, 3.92, 5.78, 6.06
+    Select inner viewport: 0.25, 3.92, 5.78, 6.06
+    Axes: 0,1,0,1
+    Font size: 7.5
+    Colour: "Black"
+    Text: 0.5, "centre", 0.55, "half", "D | Realized Poisson decay IR (L; sampled events)"
+
+    Select outer viewport: 0.45, 3.82, 7.38, 7.72
+    Select inner viewport: 0.45, 3.82, 7.38, 7.72
+    Axes: 0,1,0,1
+    Font size: 5.2
+    Colour: "{0.35,0.35,0.38}"
+    Text: 0.5, "centre", 0.70, "half", "realized: L=" + string$(poisson_left_total) + " | R=" + string$(poisson_right_total) + " events"
+    Text: 0.5, "centre", 0.22, "half", "target=" + fixed$(poisson_density,0) + "/s | decay base=" + fixed$(decay_base,0) + " | wet=" + fixed$(wet_dry_percent,0) + "%"
+
+    # Measured stereo output, same amplitude scale.
+    selectObject: result
+    outputPeakMeasured = Get absolute extremum: 0, 0, "None"
+    outputRmsMeasured = Get root-mean-square: 0, 0
+    Extract one channel: 1
+    vizLeft = selected("Sound")
+    selectObject: result
+    Extract one channel: 2
+    vizRight = selected("Sound")
+
+    Select outer viewport: 4.08, 7.75, 5.86, 7.62
+    Select inner viewport: 4.36, 7.55, 6.08, 6.66
+    selectObject: vizLeft
+    Draw: 0, 0, -1, 1, "no", "curve"
+    Select inner viewport: 4.36, 7.55, 6.80, 7.38
+    selectObject: vizRight
+    Draw: 0, 0, -1, 1, "no", "curve"
+
+    Select outer viewport: 4.08, 7.75, 5.78, 6.06
+    Select inner viewport: 4.08, 7.75, 5.78, 6.06
+    Axes: 0,1,0,1
+    Font size: 7.5
+    Colour: "Black"
+    Text: 0.5, "centre", 0.55, "half", "E | Measured stereo output (L / R, same -1..1 scale)"
+
+    Select outer viewport: 4.20, 7.65, 7.40, 7.72
+    Select inner viewport: 4.20, 7.65, 7.40, 7.72
+    Axes: 0,1,0,1
+    Font size: 5.2
+    Colour: "{0.35,0.35,0.38}"
+    Text: 0.5, "centre", 0.70, "half", "peak=" + fixed$(outputPeakMeasured,3) + " | RMS=" + fixed$(outputRmsMeasured,4) + " | " + fixed$(final_rate,0) + " Hz"
+    Text: 0.5, "centre", 0.22, "half", "wet + dry stereo normalized jointly after channel combination"
+
+    removeObject: vizLeft, vizRight
+
+    # QC bar: six short fields, independent viewport.
+    Select outer viewport: 0.25, 7.75, 7.78, 8.32
+    Select inner viewport: 0.25, 7.75, 7.78, 8.32
+    Axes: 0, 3, 0, 2
+    Paint rectangle: "{0.965,0.965,0.965}", 0,3,0,2
+    Font size: 5.6
+    Colour: "{0.25,0.25,0.28}"
+    seedText$ = "random"
+    if random_seed > 0
+        seedText$ = string$(random_seed)
+    endif
+    Text: 0.08, "left", 1.48, "half", "Chord: " + bass_name$ + " " + tenor_name$ + " " + alto_name$ + " " + soprano_name$
+    Text: 1.08, "left", 1.48, "half", "Loop: " + fixed$(internal_rate,0) + " Hz | err<=" + fixed$(maxTuneErr,3) + "c"
+    Text: 2.08, "left", 1.48, "half", "Body: 8 modes | amount=" + fixed$(resonance,2)
+    Text: 0.08, "left", 0.50, "half", "Reverb: " + presetName$ + " | " + fixed$(wet_dry_percent,0) + "% wet"
+    Text: 1.08, "left", 0.50, "half", "Stereo: split + independent L/R IR"
+    Text: 2.08, "left", 0.50, "half", "Seed: " + seedText$ + " | peak=" + fixed$(outputPeakMeasured,3)
+
+    Colour: "Black"
+    Font size: 10
+    selectObject: result
 endif
 
 appendInfoLine: "=== Done ==="

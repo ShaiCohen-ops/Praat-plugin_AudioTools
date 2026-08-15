@@ -3,75 +3,230 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025) - Pan direction + fast column stats
+# Version: 0.4.1 form runtime fix (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Description:
-#   Converts an image to percussive sound by scanning columns
-#   left-to-right and generating clicks based on pixel data.
+# PERCUSSIVE IMAGE SONIFICATION
 #
-#   Sonification mapping:
-#   - Column position → Time (left-to-right scan)
-#   - Brightness (avg RGB) → Click rate (bright = faster)
-#   - Brightness → Pitch (bright = higher, 800-2000 Hz)
-#   - Brightness → Volume (bright = louder)
-#   - Red-Blue balance → Stereo pan (red=left, blue=right)
+# CONCEPTUAL MODEL
+# ----------------
+# This script is a deterministic parameter-mapping sonification of a selected
+# Praat Photo. It does NOT attempt object recognition or semantic image-to-audio
+# translation. It preserves explicit spatial/data relations:
 #
-# Usage:
-#   Select a Photo object in Praat, then run this script.
+#   image X position
+#       -> linear scan time
 #
-# Changelog v0.2:
-#   - Fixed stereo panning (was broken)
-#   - Fixed click volume bug (earlier clicks were attenuated)
-#   - Optimized min/max using built-in commands
-#   - Added visualization
-#   - Modern syntax
+#   image vertical band
+#       -> logarithmic percussion register
 #
-# Changelog v0.3:
-#   - Pan direction now matches the documented mapping (red=left, blue=right).
-#   - Column brightness/pan stats use a cumulative-sum Formula instead of a
-#     per-pixel loop (~20x faster on large images).
+#   perceptual luminance
+#       -> event strength
+#
+#   local 2-D luminance contrast
+#       -> high-frequency / inharmonic attack content
+#
+#   red-vs-blue chromatic balance
+#       -> equal-power stereo position
+#          red -> left, neutral -> centre, blue -> right
+#
+# This makes the mapping inspectable and reproducible: the same Photo and
+# parameters always produce the same event map and the same Sound.
+#
+# WHY v0.3 WAS CONCEPTUALLY INCONSISTENT
+# --------------------------------------
+# v0.3 simultaneously claimed:
+#
+#   Column position -> Time
+#   Brightness      -> Click interval
+#
+# But the next column was advanced only after the brightness-dependent click
+# interval. Therefore column X did NOT have a fixed temporal location. Bright
+# images were scanned faster, columns could wrap and repeat, and two images
+# with the same geometry could have different X->time mappings.
+#
+# v0.4 fixes this by assigning every horizontal image bin a fixed onset time.
+# Brightness no longer changes the scan clock.
+#
+# 2-D FEATURE EXTRACTION
+# ----------------------
+# The Photo is reduced to Horizontal_bins x Vertical_bands cells. RGB integral
+# images provide O(1) mean colour per cell after two cumulative Matrix passes.
+#
+# Luminance uses the standard linear-RGB weighting:
+#
+#   Y = 0.2126 R + 0.7152 G + 0.0722 B
+#
+# Here it is used as a transparent perceptual weighting of the normalized Photo
+# channels; this is not a colour-managed photometric conversion.
+#
+# Local edge energy is the normalized magnitude of differences to the previous
+# horizontal and vertical cells:
+#
+#   E = sqrt(DeltaX(Y)^2 + DeltaY(Y)^2)
+#
+# It is a coarse cell-grid contrast descriptor, not an edge detector claiming
+# pixel-level computer-vision accuracy.
+#
+# EVENT TRIGGER
+# -------------
+# A cell becomes audible if:
+#
+#   activity = max(luminance, Edge_emphasis * normalizedEdge)
+#
+# exceeds Activity_threshold.
+#
+# Thus dark but strong boundaries can remain audible while a black/featureless
+# image remains silent.
+#
+# PERCUSSIVE SOURCE
+# -----------------
+# Every active cell creates one deterministic decaying inharmonic hit. Edge
+# energy increases upper-partial strength; it does NOT move the onset time.
+# Simultaneous active vertical bands in one scan column are energy-compensated
+# by 1/sqrt(number of active bands), preventing image height/density from
+# becoming an accidental master-volume control.
+#
+# FREQUENCY / SAMPLING
+# --------------------
+# Vertical position maps logarithmically from Min_pitch_Hz to Max_pitch_Hz.
+# The source contains partial ratios up to 3.11, so one common frequency scale
+# is applied when required to keep the complete source below 0.45*Fs.
+#
+# VISUALIZATION
+# -------------
+#   A binned image luminance map used by the sonification
+#   B actual audible event field (time x frequency, colour indicates pan)
+#   C scan descriptors: mean luminance / edge / pan by X bin
+#   D measured output spectrogram + sampled event-frequency guides
+#   mapping / activity / sampling / output QC
+#
+# v0.4.1 runtime fix
+# ------------------
+#   - Corrected Praat form syntax for numeric fields: initial values are string
+#     arguments (e.g. positive: "Duration (s)", "4.0").
+#   - Boolean initial values remain numeric, as allowed by Praat.
+#   - No sonification mapping, event logic, DSP or visualization changed.
+#
+# v0.4.2 runtime fixes
+# --------------------
+#   - Renamed illegal variable e (Euler constant in Praat) to edgeMagnitude.
+#   - No mapping, DSP or visualization semantics changed.
+#
+# v0.4 changes
+# ------------
+#   - fixed X->time mapping; brightness no longer changes scan speed
+#   - preserves vertical image structure instead of collapsing each column to
+#     one mean value
+#   - perceptual luminance weighting instead of unweighted RGB mean
+#   - 2-D local contrast drives percussive spectral sharpness
+#   - conventional equal-power pan: red left, blue right
+#   - deterministic sound; no random noise source
+#   - RGB integral images for efficient regional means
+#   - direct stereo Formula(part) rendering, one pass per active X bin
+#   - polyphony energy compensation per scan column
+#   - Nyquist-aware common pitch scaling
+#   - master amplitude semantics preserved; final peak protection is down-only
+#   - visualization rebuilt from the actual extracted image features/events
+#
+# Sonification principle:
+#   transformation of data relations into audible relations should preserve
+#   interpretable correspondences rather than only produce image-conditioned
+#   musical material.
 # ============================================================
 
-form Percussive Image Sonification
-    comment === Timing ===
-    positive Duration_s 4.0
-    integer Sample_rate_Hz 44100
-    
-    comment === Click Parameters ===
-    positive Min_click_interval_s 0.08
-    positive Max_click_interval_s 0.3
-    positive Click_duration_s 0.05
-    
-    comment === Output ===
-    boolean Draw_visualization 1
-    boolean Play_result 1
+form: "Percussive Image Sonification v0.4.1"
+    comment: "Select one Photo object before running."
+
+    positive: "Duration (s)", "4.0"
+    integer: "Sample rate (Hz)", "44100"
+
+    integer: "Horizontal scan bins", "72"
+    integer: "Vertical bands", "12"
+
+    positive: "Minimum pitch (Hz)", "180"
+    positive: "Maximum pitch (Hz)", "3600"
+    positive: "Hit duration (s)", "0.055"
+
+    real: "Activity threshold (0..1)", "0.14"
+    real: "Edge emphasis (0..1)", "0.65"
+    real: "Colour pan strength (0..1)", "0.90"
+    real: "Master amplitude", "0.58"
+
+    boolean: "Invert vertical pitch", 0
+    boolean: "Peak protection", 1
+    boolean: "Draw visualization", 1
+    boolean: "Play result", 1
 endform
 
-# === Check for Photo selection ===
+# ---------------------------------------------------------------------------
+# PHOTO SELECTION / VALIDATION
+# ---------------------------------------------------------------------------
 nPhotos = numberOfSelected("Photo")
 if nPhotos = 0
-    exitScript: "Please select a Photo object first."
+    exitScript: "Please select one Photo object first."
 endif
 
 photoID = selected("Photo")
-
-# === Constants ===
-uid$ = string$(randomInteger(10000, 99999))
-twoPi = 2 * pi
-
-# === Info ===
-writeInfoLine: "=== Percussive Image Sonification ==="
-appendInfoLine: "Duration: ", duration_s, " s"
-appendInfoLine: "Click interval: ", min_click_interval_s, " - ", max_click_interval_s, " s"
-appendInfoLine: ""
-
-# === Extract RGB Channels ===
-appendInfoLine: "Extracting color channels..."
-
-selectObject: photoID
 photoName$ = selected$("Photo")
+
+if duration <= 0 or duration > 180
+    exitScript: "Duration must be > 0 and <= 180 seconds."
+endif
+if sample_rate < 8000 or sample_rate > 192000
+    exitScript: "Sample rate must be between 8000 and 192000 Hz."
+endif
+if horizontal_scan_bins < 1 or horizontal_scan_bins > 256
+    exitScript: "Horizontal scan bins must be between 1 and 256."
+endif
+if vertical_bands < 1 or vertical_bands > 32
+    exitScript: "Vertical bands must be between 1 and 32."
+endif
+if minimum_pitch <= 0 or maximum_pitch <= minimum_pitch
+    exitScript: "Pitch range must satisfy 0 < minimum < maximum."
+endif
+if hit_duration <= 0 or hit_duration > duration
+    exitScript: "Hit duration must be > 0 and <= total duration."
+endif
+if activity_threshold < 0 or activity_threshold > 1
+    exitScript: "Activity threshold must be between 0 and 1."
+endif
+if edge_emphasis < 0 or edge_emphasis > 1
+    exitScript: "Edge emphasis must be between 0 and 1."
+endif
+if colour_pan_strength < 0 or colour_pan_strength > 1
+    exitScript: "Colour pan strength must be between 0 and 1."
+endif
+if master_amplitude <= 0 or master_amplitude > 2
+    exitScript: "Master amplitude must be > 0 and <= 2."
+endif
+
+sr = sample_rate
+safeTop = 0.45*sr
+partialRatioMax = 3.11
+
+frequencyScale =
+    ... min(1,safeTop/(partialRatioMax*maximum_pitch))
+
+effectiveMinPitch = minimum_pitch*frequencyScale
+effectiveMaxPitch = maximum_pitch*frequencyScale
+
+if effectiveMinPitch < 20
+    exitScript: "Nyquist scaling would move the minimum pitch below 20 Hz. Reduce Maximum pitch or raise Minimum pitch."
+endif
+
+uid$ = string$(randomInteger(10000,99999))
+
+# ---------------------------------------------------------------------------
+# EXTRACT RGB MATRICES
+# ---------------------------------------------------------------------------
+clearinfo
+writeInfoLine: "=============================================="
+writeInfoLine: "  PERCUSSIVE IMAGE SONIFICATION v0.4.1"
+writeInfoLine: "=============================================="
+appendInfoLine: "Photo: ", photoName$
+appendInfoLine: "Extracting RGB matrices..."
 
 selectObject: photoID
 Extract red
@@ -85,21 +240,25 @@ selectObject: photoID
 Extract blue
 blueID = selected("Matrix")
 
-# === Get Image Dimensions ===
 selectObject: redID
 nrows = Get number of rows
 ncols = Get number of columns
 
-appendInfoLine: "Image size: ", ncols, " x ", nrows, " pixels"
-
-if ncols <= 0 or nrows <= 0
-    removeObject: redID, greenID, blueID
-    exitScript: "Invalid image dimensions."
+if nrows < 1 or ncols < 1
+    removeObject: redID,greenID,blueID
+    exitScript: "Invalid Photo dimensions."
 endif
 
-# === Get Min/Max Using Built-in Commands (FAST) ===
-appendInfoLine: "Analyzing brightness range..."
+nXBins = min(horizontal_scan_bins,ncols)
+nYBands = min(vertical_bands,nrows)
+numCells = nXBins*nYBands
 
+appendInfoLine: "Photo dimensions: ", ncols, " x ", nrows
+appendInfoLine: "Analysis grid: ", nXBins, " x ", nYBands
+
+# ---------------------------------------------------------------------------
+# RAW CHANNEL SCALE BEFORE INTEGRATION
+# ---------------------------------------------------------------------------
 selectObject: redID
 minRed = Get minimum
 maxRed = Get maximum
@@ -112,231 +271,753 @@ selectObject: blueID
 minBlue = Get minimum
 maxBlue = Get maximum
 
-overallMin = min(minRed, min(minGreen, minBlue))
-overallMax = max(maxRed, max(maxGreen, maxBlue))
-valueRange = overallMax - overallMin
-if valueRange = 0
-    valueRange = 1
+channelBlack = min(minRed,min(minGreen,minBlue))
+channelWhite = max(maxRed,max(maxGreen,maxBlue))
+channelRange = channelWhite-channelBlack
+
+if channelRange <= 1e-15
+    channelRange = 1
 endif
 
-appendInfoLine: "Value range: ", fixed$(overallMin, 2), " to ", fixed$(overallMax, 2)
+appendInfoLine: "Raw channel range: ",
+    ... fixed$(channelBlack,4), " to ",
+    ... fixed$(channelWhite,4)
 
-# === Compute Per-Column Brightness and Pan ===
-appendInfoLine: "Computing column statistics..."
-
-# Cumulative sum DOWN each column: after this Formula, the last row (nrows)
-# holds the column total, so one pass replaces the per-pixel inner loop.
-# (The matrices are discarded afterward, so overwriting them is fine.)
+# ---------------------------------------------------------------------------
+# 2-D INTEGRAL IMAGES
+# ---------------------------------------------------------------------------
+# Praat Matrix Formula modification is row-major: each row is processed
+# left-to-right. First integrate across columns, then down rows.
 selectObject: redID
-Formula: "if row > 1 then self + self[row - 1, col] else self endif"
+Formula: "if col>1 then self+self[row,col-1] else self fi"
+Formula: "if row>1 then self+self[row-1,col] else self fi"
+
 selectObject: greenID
-Formula: "if row > 1 then self + self[row - 1, col] else self endif"
+Formula: "if col>1 then self+self[row,col-1] else self fi"
+Formula: "if row>1 then self+self[row-1,col] else self fi"
+
 selectObject: blueID
-Formula: "if row > 1 then self + self[row - 1, col] else self endif"
+Formula: "if col>1 then self+self[row,col-1] else self fi"
+Formula: "if row>1 then self+self[row-1,col] else self fi"
 
-for col to ncols
-    selectObject: redID
-    rAvg = Get value in cell: nrows, col
-    rNorm = (rAvg / nrows - overallMin) / valueRange
+# ---------------------------------------------------------------------------
+# CELL FEATURES
+# ---------------------------------------------------------------------------
+cellLuminance# = zero#(numCells)
+cellRed# = zero#(numCells)
+cellBlue# = zero#(numCells)
+cellPan# = zero#(numCells)
+cellEdgeRaw# = zero#(numCells)
+cellEdge# = zero#(numCells)
+cellActivity# = zero#(numCells)
+cellActive# = zero#(numCells)
+cellFrequency# = zero#(numCells)
 
-    selectObject: greenID
-    gAvg = Get value in cell: nrows, col
-    gNorm = (gAvg / nrows - overallMin) / valueRange
+columnMeanLuminance# = zero#(nXBins)
+columnMeanEdge# = zero#(nXBins)
+columnMeanPan# = zero#(nXBins)
+activePerColumn# = zero#(nXBins)
 
-    selectObject: blueID
-    bAvg = Get value in cell: nrows, col
-    bNorm = (bAvg / nrows - overallMin) / valueRange
+sumLuminance = 0
+sumPan = 0
 
-    brightness[col] = (rNorm + gNorm + bNorm) / 3
-    pan[col] = 0.5 + 0.5 * (rNorm - bNorm)
-    pan[col] = max(0, min(1, pan[col]))
+# Regional means from four integral-image corners.
+for xb from 1 to nXBins
+    c1 = floor((xb-1)*ncols/nXBins)+1
+    c2 = floor(xb*ncols/nXBins)
+    c2 = max(c1,c2)
+
+    for yb from 1 to nYBands
+        r1 = floor((yb-1)*nrows/nYBands)+1
+        r2 = floor(yb*nrows/nYBands)
+        r2 = max(r1,r2)
+
+        area = (r2-r1+1)*(c2-c1+1)
+
+        sumR = object[redID,r2,c2]
+        sumG = object[greenID,r2,c2]
+        sumB = object[blueID,r2,c2]
+
+        if c1 > 1
+            sumR = sumR-object[redID,r2,c1-1]
+            sumG = sumG-object[greenID,r2,c1-1]
+            sumB = sumB-object[blueID,r2,c1-1]
+        endif
+
+        if r1 > 1
+            sumR = sumR-object[redID,r1-1,c2]
+            sumG = sumG-object[greenID,r1-1,c2]
+            sumB = sumB-object[blueID,r1-1,c2]
+        endif
+
+        if c1 > 1 and r1 > 1
+            sumR = sumR+object[redID,r1-1,c1-1]
+            sumG = sumG+object[greenID,r1-1,c1-1]
+            sumB = sumB+object[blueID,r1-1,c1-1]
+        endif
+
+        rMean = sumR/area
+        gMean = sumG/area
+        bMean = sumB/area
+
+        rNorm = max(0,min(1,(rMean-channelBlack)/channelRange))
+        gNorm = max(0,min(1,(gMean-channelBlack)/channelRange))
+        bNorm = max(0,min(1,(bMean-channelBlack)/channelRange))
+
+        luminance =
+            ... 0.2126*rNorm+0.7152*gNorm+0.0722*bNorm
+
+        # Conventional pan coordinate:
+        # 0 = left, 0.5 = centre, 1 = right.
+        # Relative R/B balance avoids forcing neutral greys away from centre.
+        rbDen = max(0.08,rNorm+bNorm)
+        blueMinusRed = (bNorm-rNorm)/rbDen
+        pan =
+            ... 0.5+0.48*colour_pan_strength*blueMinusRed
+        pan = max(0.02,min(0.98,pan))
+
+        idx = (xb-1)*nYBands+yb
+
+        cellLuminance#[idx] = luminance
+        cellRed#[idx] = rNorm
+        cellBlue#[idx] = bNorm
+        cellPan#[idx] = pan
+
+        sumLuminance = sumLuminance+luminance
+        sumPan = sumPan+pan
+    endfor
 endfor
 
-# === Create Stereo Output Sound ===
-appendInfoLine: ""
-appendInfoLine: "Generating clicks..."
+meanLuminance = sumLuminance/numCells
+meanPan = sumPan/numCells
 
-leftSound = Create Sound from formula: "left_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
-rightSound = Create Sound from formula: "right_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
+# ---------------------------------------------------------------------------
+# 2-D CELL-GRID CONTRAST
+# ---------------------------------------------------------------------------
+maxEdgeRaw = 0
 
-# === Generate Clicks ===
-currentTime = 0
-col = 1
-clickCount = 0
+for xb from 1 to nXBins
+    for yb from 1 to nYBands
+        idx = (xb-1)*nYBands+yb
+        lum = cellLuminance#[idx]
 
-while currentTime < duration_s
-    brightnessVal = brightness[col]
-    panVal = pan[col]
-    
-    # Map brightness to parameters
-    clickInterval = max_click_interval_s - brightnessVal * (max_click_interval_s - min_click_interval_s)
-    clickVolume = 0.3 + brightnessVal * 0.7
-    
-    # Frequencies based on brightness
-    baseFreq = 800 + brightnessVal * 1200
-    midFreq = baseFreq * 2.5
-    highFreq = baseFreq * 4
-    
-    tStart = currentTime
-    
-    # Build click formula
-    sStart$ = fixed$(tStart, 6)
-    sDur$ = fixed$(click_duration_s, 6)
-    sBase$ = fixed$(baseFreq, 1)
-    sMid$ = fixed$(midFreq, 1)
-    sHigh$ = fixed$(highFreq, 1)
-    
-    # Envelope: raised cosine (Hann window)
-    envPart$ = "((1 - cos(twoPi * (x - " + sStart$ + ") / " + sDur$ + ")) * 0.5)"
-    
-    # Click: sum of 3 harmonics
-    tonePart$ = "(0.6 * sin(twoPi * " + sBase$ + " * (x - " + sStart$ + ")) + 0.3 * sin(twoPi * " + sMid$ + " * (x - " + sStart$ + ")) + 0.1 * sin(twoPi * " + sHigh$ + " * (x - " + sStart$ + ")))"
-    
-    # Click formula - NO self here, just returns the click or 0
-    clickFormula$ = "if x >= " + sStart$ + " and x < " + sStart$ + " + " + sDur$ + " then " + envPart$ + " * " + tonePart$ + " else 0 fi"
-    
-    # Apply to LEFT channel: self + volume * click  (red -> left, per the mapping)
-    leftVol = panVal * clickVolume
-    selectObject: leftSound
-    Formula: "self + " + fixed$(leftVol, 4) + " * (" + clickFormula$ + ")"
-    
-    # Apply to RIGHT channel: self + volume * click
-    rightVol = (1 - panVal) * clickVolume
-    selectObject: rightSound
-    Formula: "self + " + fixed$(rightVol, 4) + " * (" + clickFormula$ + ")"
-    
-    clickCount = clickCount + 1
-    currentTime = currentTime + clickInterval
-    col = col + 1
-    if col > ncols
-        col = 1
+        dxLum = 0
+        dyLum = 0
+
+        if xb > 1
+            leftIdx = (xb-2)*nYBands+yb
+            dxLum = lum-cellLuminance#[leftIdx]
+        endif
+
+        if yb > 1
+            belowIdx = (xb-1)*nYBands+yb-1
+            dyLum = lum-cellLuminance#[belowIdx]
+        endif
+
+        edgeMagnitude = sqrt(dxLum*dxLum+dyLum*dyLum)
+        cellEdgeRaw#[idx] = edgeMagnitude
+        maxEdgeRaw = max(maxEdgeRaw,edgeMagnitude)
+    endfor
+endfor
+
+if maxEdgeRaw < 1e-12
+    maxEdgeRaw = 1
+endif
+
+# ---------------------------------------------------------------------------
+# ACTIVITY / PITCH / COLUMN SUMMARY
+# ---------------------------------------------------------------------------
+eventCount = 0
+activeColumns = 0
+sumEdge = 0
+
+for xb from 1 to nXBins
+    colLumSum = 0
+    colEdgeSum = 0
+    colPanSum = 0
+    activeThisColumn = 0
+
+    for yb from 1 to nYBands
+        idx = (xb-1)*nYBands+yb
+
+        edge = min(1,cellEdgeRaw#[idx]/maxEdgeRaw)
+        lum = cellLuminance#[idx]
+        activity = max(lum,edge_emphasis*edge)
+
+        if nYBands = 1
+            verticalPos = 0.5
+        else
+            verticalPos = (yb-1)/(nYBands-1)
+        endif
+
+        if invert_vertical_pitch
+            verticalPos = 1-verticalPos
+        endif
+
+        f =
+            ... effectiveMinPitch*
+            ... (effectiveMaxPitch/effectiveMinPitch)^verticalPos
+
+        cellEdge#[idx] = edge
+        cellActivity#[idx] = activity
+        cellFrequency#[idx] = f
+
+        if activity >= activity_threshold
+            cellActive#[idx] = 1
+            activeThisColumn = activeThisColumn+1
+            eventCount = eventCount+1
+        endif
+
+        colLumSum = colLumSum+lum
+        colEdgeSum = colEdgeSum+edge
+        colPanSum = colPanSum+cellPan#[idx]
+        sumEdge = sumEdge+edge
+    endfor
+
+    activePerColumn#[xb] = activeThisColumn
+    columnMeanLuminance#[xb] = colLumSum/nYBands
+    columnMeanEdge#[xb] = colEdgeSum/nYBands
+    columnMeanPan#[xb] = colPanSum/nYBands
+
+    if activeThisColumn > 0
+        activeColumns = activeColumns+1
     endif
-endwhile
+endfor
 
-appendInfoLine: "Generated ", clickCount, " clicks"
+meanEdge = sumEdge/numCells
+activeCellFraction = eventCount/numCells
 
-# === Combine to Stereo ===
-selectObject: leftSound
-plusObject: rightSound
-outputSound = Combine to stereo
-Rename: "sonification_" + uid$
+# ---------------------------------------------------------------------------
+# FIXED X -> TIME MAPPING
+# ---------------------------------------------------------------------------
+if nXBins = 1
+    scanStep = 0
+    scanSpan = 0
+else
+    scanSpan = max(0,duration-hit_duration)
+    scanStep = scanSpan/(nXBins-1)
+endif
 
-removeObject: leftSound, rightSound
+# ---------------------------------------------------------------------------
+# CREATE STEREO OUTPUT
+# ---------------------------------------------------------------------------
+outputSound = Create Sound from formula:
+    ... "PercussiveImage_" + uid$,
+    ... 2,0,duration,sr,"0"
 
-# === Fade in/out ===
+# ---------------------------------------------------------------------------
+# RENDER ONE LOCAL FORMULA PASS PER ACTIVE X BIN
+# ---------------------------------------------------------------------------
+for xb from 1 to nXBins
+    activeBands = activePerColumn#[xb]
+
+    if activeBands > 0
+        if nXBins = 1
+            t0 = 0
+        else
+            t0 = (xb-1)*scanStep
+        endif
+
+        t1 = min(duration,t0+hit_duration)
+        eventDur = max(1/sr,t1-t0)
+
+        attack = min(0.003,0.18*eventDur)
+
+        t0$ = fixed$(t0,9)
+        dur$ = fixed$(eventDur,9)
+        attack$ = fixed$(max(1/sr,attack),9)
+        age$ = "(x-" + t0$ + ")"
+
+        # Fast rise, exponential decay, cosine terminal taper.
+        env$ =
+            ... "((1-exp(-" + age$ + "/" + attack$ + "))"
+            ... + "*exp(-4.5*" + age$ + "/" + dur$ + ")"
+            ... + "*(0.5+0.5*cos(pi*" + age$ + "/" + dur$ + ")))"
+
+        leftTerms$ = "0"
+        rightTerms$ = "0"
+
+        polyphonyGain = 1/sqrt(activeBands)
+
+        for yb from 1 to nYBands
+            idx = (xb-1)*nYBands+yb
+
+            if cellActive#[idx]
+                f = cellFrequency#[idx]
+                edge = cellEdge#[idx]
+                strength = cellActivity#[idx]
+                pan = cellPan#[idx]
+
+                a2 = 0.38
+                a3 = 0.10+0.28*edge
+                a4 = 0.03+0.19*edge
+
+                sourceNorm =
+                    ... sqrt(2)/
+                    ... sqrt(1+a2*a2+a3*a3+a4*a4)
+
+                phase2 = 0.37*pi
+                phase3 = 0.61*pi
+                phase4 = 0.83*pi
+
+                wave$ =
+                    ... "(" + fixed$(sourceNorm,9)
+                    ... + "*sin(2*pi*" + fixed$(f,6)
+                    ... + "*" + age$ + ")"
+                    ... + "+" + fixed$(sourceNorm*a2,9)
+                    ... + "*sin(2*pi*" + fixed$(1.73*f,6)
+                    ... + "*" + age$ + "+" + fixed$(phase2,9) + ")"
+                    ... + "+" + fixed$(sourceNorm*a3,9)
+                    ... + "*sin(2*pi*" + fixed$(2.37*f,6)
+                    ... + "*" + age$ + "+" + fixed$(phase3,9) + ")"
+                    ... + "+" + fixed$(sourceNorm*a4,9)
+                    ... + "*sin(2*pi*" + fixed$(3.11*f,6)
+                    ... + "*" + age$ + "+" + fixed$(phase4,9) + "))"
+
+                amp =
+                    ... master_amplitude*polyphonyGain*
+                    ... strength
+
+                gL = sqrt(1-pan)
+                gR = sqrt(pan)
+
+                leftTerms$ =
+                    ... leftTerms$ + "+"
+                    ... + fixed$(amp*gL,9)
+                    ... + "*" + wave$ + "*" + env$
+
+                rightTerms$ =
+                    ... rightTerms$ + "+"
+                    ... + fixed$(amp*gR,9)
+                    ... + "*" + wave$ + "*" + env$
+            endif
+        endfor
+
+        selectObject: outputSound
+        Formula (part): t0,t1,1,2,
+            ... "self+if row=1 then (" + leftTerms$
+            ... + ") else (" + rightTerms$ + ") fi"
+    endif
+endfor
+
+# ---------------------------------------------------------------------------
+# SHORT COMMON FADE / FINAL LEVEL
+# ---------------------------------------------------------------------------
+edgeFade = min(0.015,0.10*duration)
+if edgeFade > 0
+    fadeOutStart = duration-edgeFade
+
+    selectObject: outputSound
+    Formula:
+        ... "if x<edgeFade then self*(x/edgeFade)"
+        ... + " else if x>fadeOutStart then "
+        ... + "self*((duration-x)/edgeFade)"
+        ... + " else self fi fi"
+endif
+
 selectObject: outputSound
-Formula: "if x < 0.02 then self * (x / 0.02) else self fi"
-Formula: "if x > duration_s - 0.05 then self * ((duration_s - x) / 0.05) else self fi"
+preProtectPeak = Get absolute extremum: 0,0,"None"
+preProtectRMS = Get root-mean-square: 0,0
+protectionApplied = 0
 
-# === Normalize ===
-selectObject: outputSound
-Scale peak: 0.9
+if peak_protection and preProtectPeak > 0.92
+    Scale peak: 0.92
+    protectionApplied = 1
+endif
 
-# === Visualization ===
+Rename: "Percussive_Image_" + uid$
+outputSound = selected("Sound")
+
+finalPeak = Get absolute extremum: 0,0,"None"
+finalRMS = Get root-mean-square: 0,0
+
+# ---------------------------------------------------------------------------
+# INFO / QC
+# ---------------------------------------------------------------------------
+appendInfoLine: ""
+appendInfoLine: "=== MAPPING / REALIZATION ==="
+appendInfoLine: "X bins -> fixed linear scan time: ", nXBins
+appendInfoLine: "Vertical bands -> logarithmic pitch: ", nYBands
+appendInfoLine: "Requested/effective pitch range: ",
+    ... fixed$(minimum_pitch,1), "-", fixed$(maximum_pitch,1),
+    ... " / ", fixed$(effectiveMinPitch,1), "-",
+    ... fixed$(effectiveMaxPitch,1), " Hz"
+appendInfoLine: "Common frequency scale: ",
+    ... fixed$(frequencyScale,6)
+appendInfoLine: "Mean luminance / normalized edge: ",
+    ... fixed$(meanLuminance,4), " / ",
+    ... fixed$(meanEdge,4)
+appendInfoLine: "Audible cells: ", eventCount, " / ", numCells,
+    ... " (", fixed$(100*activeCellFraction,1), "%)"
+appendInfoLine: "Active X bins: ", activeColumns, " / ", nXBins
+appendInfoLine: "Mean stereo pan coordinate: ",
+    ... fixed$(meanPan,4), " (0=left, 1=right)"
+appendInfoLine: "Pre-protection peak/RMS: ",
+    ... fixed$(preProtectPeak,4), " / ",
+    ... fixed$(preProtectRMS,4)
+appendInfoLine: "Final peak/RMS: ",
+    ... fixed$(finalPeak,4), " / ",
+    ... fixed$(finalRMS,4)
+appendInfoLine: "Peak protection applied: ", protectionApplied
+
+if eventCount = 0
+    appendInfoLine: "QC: no cells exceeded Activity threshold; output is silent."
+endif
+
+# ---------------------------------------------------------------------------
+# VISUALIZATION
+# ---------------------------------------------------------------------------
 if draw_visualization
-    appendInfoLine: ""
-    appendInfoLine: "Drawing visualization..."
     @drawVisualization
 endif
 
-# === Cleanup ===
-removeObject: redID, greenID, blueID
+# RGB integral matrices no longer needed.
+removeObject: redID,greenID,blueID
 
-# === Play ===
+# ---------------------------------------------------------------------------
+# PLAY / FINAL SELECTION
+# ---------------------------------------------------------------------------
+selectObject: outputSound
 if play_result
-    selectObject: outputSound
     Play
 endif
 
-# === Final Selection ===
 selectObject: outputSound
 
-appendInfoLine: ""
-appendInfoLine: "=== Done ==="
-appendInfoLine: "Created: ", selected$("Sound")
 
-# ==============================================================================
-# Procedure: drawVisualization
-# ==============================================================================
+# ===========================================================================
+# VISUALIZATION
+# ===========================================================================
 procedure drawVisualization
-    
+
+    .left = 0.82
+    .right = 7.58
+    .bg$ = "{0.975,0.975,0.978}"
+    .grid$ = "{0.82,0.82,0.84}"
+
     Erase all
-    
-    # === Title ===
-    Select outer viewport: 0, 7, 0.2, 0.7
-    Select inner viewport: 0, 7, 0.2, 0.7
-    Axes: 0, 1, 0, 1
-    Font size: 14
+
+    # -----------------------------------------------------------------------
+    # HEADER / PROCESS
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.20,7.80,0.05,0.34
+    Axes: 0,1,0,1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.7, "half", "Percussive Image Sonification"
-    Font size: 10
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.2, "half", photoName$ + " | " + string$(ncols) + "x" + string$(nrows) + " | " + string$(clickCount) + " clicks"
-    
-    # === Brightness Profile ===
-    Select outer viewport: 0, 7, 0.8, 2.3
-    Colour: "{0.95, 0.95, 0.95}"
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    
-    Select inner viewport: 0.5, 6.5, 0.9, 2.2
-    Axes: 0, ncols, 0, 1
-    
-    # Draw brightness curve
-    Colour: "{0.3, 0.3, 0.3}"
-    Line width: 1
-    for .c from 2 to ncols
-        Draw line: .c - 1, brightness[.c - 1], .c, brightness[.c]
-    endfor
-    
-    # Draw pan curve
-    Colour: "{0.8, 0.3, 0.3}"
-    for .c from 2 to ncols
-        Draw line: .c - 1, pan[.c - 1], .c, pan[.c]
-    endfor
-    
-    Colour: "Black"
-    Draw inner box
+    Text: 0.5,"centre",0.56,"half",
+        ... "PERCUSSIVE IMAGE SONIFICATION | " + photoName$
+
+    Select inner viewport: 0.30,7.70,0.38,0.72
+    Axes: 0,1,0,1
+    Font size: 6
+    Colour: "{0.34,0.34,0.36}"
+    Text: 0.5,"centre",0.70,"half",
+        ... "Photo -> RGB integral grid -> luminance / contrast / R-B balance -> percussive events"
+    Text: 0.5,"centre",0.20,"half",
+        ... "X -> fixed time | vertical band -> log pitch | luminance -> strength | edge -> attack spectrum | R/B -> pan"
+
+    # -----------------------------------------------------------------------
+    # PANEL A: BINNED IMAGE LUMINANCE
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.35,7.65,0.82,1.03
+    Axes: 0,1,0,1
     Font size: 8
-    Marks left: 3, "yes", "yes", "no"
-    Text left: "yes", "Value"
-    Text bottom: "yes", "Column (black=brightness, red=pan)"
-    
-    # === Spectrogram ===
-    Select outer viewport: 0, 7, 2.5, 5.0
-    Colour: "{0.85, 0.85, 0.85}"
+    Colour: "Black"
+    Text: 0.5,"centre",0.50,"half",
+        ... "A  BINNED IMAGE DATA | luminance values actually used by the sonification"
+
+    Select inner viewport: .left,.right,1.10,2.33
+    Axes: 0,nXBins,0,nYBands
+
+    for .xb from 1 to nXBins
+        for .yb from 1 to nYBands
+            .idx = (.xb-1)*nYBands+.yb
+            .lum = cellLuminance#[.idx]
+            .col$ =
+                ... "{" + fixed$(.lum,3) + ","
+                ... + fixed$(.lum,3) + ","
+                ... + fixed$(.lum,3) + "}"
+
+            Paint rectangle:
+                ... .col$,
+                ... .xb-1,.xb,.yb-1,.yb
+        endfor
+    endfor
+
+    Colour: "Black"
     Draw inner box
-    
-    Select inner viewport: 0.5, 6.5, 2.6, 4.9
-    
+    Marks bottom: 5,"yes","yes","no"
+    Marks left: min(6,nYBands),"yes","yes","no"
+    Font size: 6
+    Text left: "yes","Vertical image band"
+    Text bottom: "yes","Horizontal scan bin"
+
+    # -----------------------------------------------------------------------
+    # PANEL B: ACTUAL AUDIBLE EVENT FIELD
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.35,7.65,2.49,2.70
+    Axes: 0,1,0,1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5,"centre",0.50,"half",
+        ... "B  ACTUAL AUDIBLE EVENTS | time x pitch; colour shows red-left / blue-right pan"
+
+    .logLo = ln(max(20,0.92*effectiveMinPitch))
+    .logHi = ln(1.08*effectiveMaxPitch)
+
+    Select inner viewport: .left,.right,2.77,3.82
+    Axes: 0,duration,.logLo,.logHi
+    Paint rectangle:
+        ... "{0.055,0.055,0.065}",
+        ... 0,duration,.logLo,.logHi
+
+    .eventDrawStep =
+        ... max(1,ceiling(max(1,eventCount)/1500))
+    .drawn = 0
+
+    for .xb from 1 to nXBins
+        if nXBins = 1
+            .t = 0
+        else
+            .t = (.xb-1)*scanStep
+        endif
+
+        for .yb from 1 to nYBands
+            .idx = (.xb-1)*nYBands+.yb
+
+            if cellActive#[.idx]
+                .drawn = .drawn+1
+
+                if ((.drawn-1) mod .eventDrawStep)=0
+                    .pan = cellPan#[.idx]
+                    .strength = cellActivity#[.idx]
+                    .red = 0.15+0.78*(1-.pan)
+                    .blue = 0.15+0.78*.pan
+                    .green = 0.18
+
+                    .col$ =
+                        ... "{" + fixed$(.red,3) + ","
+                        ... + fixed$(.green,3) + ","
+                        ... + fixed$(.blue,3) + "}"
+
+                    .size = 0.45+1.15*.strength
+
+                    Paint circle (mm):
+                        ... .col$,.t,
+                        ... ln(cellFrequency#[.idx]),.size
+                endif
+            endif
+        endfor
+    endfor
+
+    Colour: "White"
+    Draw inner box
+    Marks bottom: 5,"yes","yes","no"
+
+    .tick# = {50,100,200,500,1000,2000,5000,10000}
+    Font size: 5
+    for .k from 1 to 8
+        .ff = .tick#[.k]
+
+        if .ff >= exp(.logLo) and .ff <= exp(.logHi)
+            Colour: "{0.55,0.55,0.58}"
+            Draw line:
+                ... 0,ln(.ff),0.012*duration,ln(.ff)
+
+            Colour: "White"
+            if .ff >= 1000
+                .lab$ = fixed$(.ff/1000,0) + "k"
+            else
+                .lab$ = fixed$(.ff,0)
+            endif
+
+            Text:
+                ... -0.012*duration,"right",
+                ... ln(.ff),"half",.lab$
+        endif
+    endfor
+
+    # -----------------------------------------------------------------------
+    # PANEL C: X-SCAN DESCRIPTORS
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.35,7.65,3.98,4.19
+    Axes: 0,1,0,1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5,"centre",0.50,"half",
+        ... "C  X-SCAN DESCRIPTORS | mean luminance, contrast and pan by horizontal bin"
+
+    Select inner viewport: .left,.right,4.26,5.14
+    Axes: 1,max(2,nXBins),0,1
+    Paint rectangle:
+        ... .bg$,1,max(2,nXBins),0,1
+
+    .xDrawStep = max(1,ceiling(nXBins/1000))
+
+    for .xb from 2 to nXBins
+        if ((.xb-1) mod .xDrawStep)=0
+            Colour: "{0.18,0.18,0.20}"
+            Draw line:
+                ... .xb-1,columnMeanLuminance#[.xb-1],
+                ... .xb,columnMeanLuminance#[.xb]
+
+            Colour: "{0.88,0.50,0.12}"
+            Draw line:
+                ... .xb-1,columnMeanEdge#[.xb-1],
+                ... .xb,columnMeanEdge#[.xb]
+
+            Colour: "{0.25,0.45,0.82}"
+            Draw line:
+                ... .xb-1,columnMeanPan#[.xb-1],
+                ... .xb,columnMeanPan#[.xb]
+        endif
+    endfor
+
+    Colour: "Black"
+    Draw inner box
+    Marks left: 3,"yes","yes","no"
+    Marks bottom: 5,"yes","yes","no"
+    Font size: 5
+    Text left: "yes","Normalized value"
+    Text: 1.02,"left",0.89,"half",
+        ... "black luminance  |  orange edge  |  blue pan"
+
+    # -----------------------------------------------------------------------
+    # REPRESENTATIVE OUTPUT CHANNEL
+    # -----------------------------------------------------------------------
     selectObject: outputSound
     Extract one channel: 1
-    .monoSpec = selected("Sound")
-    
-    selectObject: .monoSpec
-    To Spectrogram: 0.02, 5000, 0.005, 20, "Gaussian"
-    .spec = selected("Spectrogram")
-    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    
-    removeObject: .monoSpec, .spec
-    
-    Select inner viewport: 0.5, 6.5, 2.6, 4.9
-    Axes: 0, duration_s, 0, 5000
-    Colour: "White"
-    Marks left: 4, "yes", "yes", "no"
-    Marks bottom every: 1, 1, "yes", "yes", "no"
+    .leftDisp = selected("Sound")
+    .leftRms = Get root-mean-square: 0,0
+
+    selectObject: outputSound
+    Extract one channel: 2
+    .rightDisp = selected("Sound")
+    .rightRms = Get root-mean-square: 0,0
+
+    if .rightRms > .leftRms
+        removeObject: .leftDisp
+        .disp = .rightDisp
+    else
+        removeObject: .rightDisp
+        .disp = .leftDisp
+    endif
+
+    # -----------------------------------------------------------------------
+    # PANEL D: MEASURED SPECTROGRAM
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.35,7.65,5.30,5.51
+    Axes: 0,1,0,1
     Font size: 8
-    Text bottom: "yes", "Time (s)"
-    Text left: "yes", "Frequency (Hz)"
-    
-    # === Mapping Legend ===
-    Select outer viewport: 0, 7, 5.1, 5.6
-    Select inner viewport: 0, 7, 5.1, 5.6
-    Axes: 0, 1, 0, 1
-    Font size: 8
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.5, "centre", 0.5, "half", "Brightness -> click rate + pitch + volume | Red-Blue -> stereo pan"
-    
-    Font size: 10
     Colour: "Black"
+    Text: 0.5,"centre",0.50,"half",
+        ... "D  MODEL -> MEASUREMENT | measured spectrogram + sampled actual event pitches"
+
+    .specMax =
+        ... min(safeTop,max(2500,
+        ... 3.20*effectiveMaxPitch))
+    .specStep = max(0.002,duration/1200)
+
+    selectObject: .disp
+    To Spectrogram:
+        ... 0.020,.specMax,.specStep,20,"Gaussian"
+    .spec = selected("Spectrogram")
+
+    Select inner viewport: .left,.right,5.58,6.53
+    selectObject: .spec
+    Paint:
+        ... 0,0,0,.specMax,
+        ... 100,"yes",50,6,0,"no"
+    removeObject: .spec
+
+    Axes: 0,duration,0,.specMax
+    Colour: "{0.10,0.72,0.90}"
+    Line width: 0.55
+
+    .guideStep =
+        ... max(1,ceiling(max(1,eventCount)/220))
+    .guideCount = 0
+
+    for .xb from 1 to nXBins
+        if nXBins = 1
+            .t = 0
+        else
+            .t = (.xb-1)*scanStep
+        endif
+
+        for .yb from 1 to nYBands
+            .idx = (.xb-1)*nYBands+.yb
+
+            if cellActive#[.idx]
+                .guideCount = .guideCount+1
+
+                if ((.guideCount-1) mod .guideStep)=0
+                    .f = cellFrequency#[.idx]
+                    if .f <= .specMax
+                        Draw line:
+                            ... .t,.f,
+                            ... min(duration,.t+hit_duration),
+                            ... .f
+                    endif
+                endif
+            endif
+        endfor
+    endfor
+
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Marks left: 4,"yes","yes","no"
+    Marks bottom: 5,"yes","yes","no"
+    Font size: 6
+    Text left: "yes","Frequency (Hz)"
+    Text bottom: "yes","Time (s)"
+
+    removeObject: .disp
+
+    # -----------------------------------------------------------------------
+    # SUMMARY / QC
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.50,7.50,6.72,7.84
+    Axes: 0,1,0,1
+    Paint rectangle:
+        ... "{0.93,0.93,0.935}",0,1,0,1
+
+    Font size: 6
+    Colour: "{0.25,0.25,0.25}"
+
+    Text: 0.02,"left",0.80,"half",
+        ... "MAPPING  |  X=time | Y=log pitch | luminance=strength | 2-D edge=upper partials | R/B=pan"
+
+    Text: 0.02,"left",0.58,"half",
+        ... "ACTIVITY  |  audible cells "
+        ... + string$(eventCount) + "/" + string$(numCells)
+        ... + " (" + fixed$(100*activeCellFraction,1) + "%)"
+        ... + "  |  active X bins " + string$(activeColumns)
+        ... + "/" + string$(nXBins)
+
+    Text: 0.02,"left",0.36,"half",
+        ... "SAMPLING  |  F " + fixed$(effectiveMinPitch,0)
+        ... + "-" + fixed$(effectiveMaxPitch,0) + " Hz"
+        ... + "  |  highest modeled partial "
+        ... + fixed$(partialRatioMax*effectiveMaxPitch,0) + " Hz"
+        ... + "  |  scale " + fixed$(frequencyScale,4)
+
+    if protectionApplied
+        .level$ = "down-only protection applied"
+    else
+        .level$ = "level preserved"
+    endif
+
+    Text: 0.02,"left",0.14,"half",
+        ... "OUTPUT  |  pre-peak " + fixed$(preProtectPeak,3)
+        ... + "  |  RMS " + fixed$(preProtectRMS,4)
+        ... + "  |  " + .level$
+
+    Colour: "{0.52,0.52,0.54}"
+    Draw rectangle: 0,1,0,1
+
+    Colour: "Black"
+    Font size: 10
     Line width: 1
 endproc
