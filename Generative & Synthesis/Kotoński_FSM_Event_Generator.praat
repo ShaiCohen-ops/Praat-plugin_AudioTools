@@ -75,6 +75,12 @@
 #
 # v1.6 changes (visualization only; the audio path is unchanged)
 # ------------
+#   - Figure is now a SCORE PAGE and nothing else: no transition matrix, no
+#     spectrogram, no QC block. Every system shares ONE time axis, so a
+#     vertical cut through the page reads as a single event across every
+#     parameter. The realization data that a score carries in its head-block
+#     (event count, duration, density, material tally, controller, seed) sits
+#     under the title; the rest is in the key.
 #   - Figure recast as a PARTYTURA REALIZACYJNA. The Etiuda score was published
 #     by PWM in 1963 as a realization score, and the documented method is a set
 #     of parameter SCALES: the cymbal stroke was filtered into six bands of
@@ -1121,30 +1127,27 @@ selectObject: master
 # ===========================================================================
 # VISUALIZATION: PARTYTURA REALIZACYJNA
 #
-# The Etiuda score was published by PWM in 1963 as a realization score, and
-# the documented method is a set of parameter SCALES: the cymbal stroke was
-# filtered into six bands of different widths and transposed to eleven
-# heights, with eleven-step scales ordering length and dynamics and six
-# scales differentiating articulation. Panel I therefore shows the scales
-# themselves as ruled tables, which is what such a score actually contains,
-# rather than only their audible consequences.
+# One score page, not an analysis sheet. Every system shares a single time
+# axis, as the systems of a realization score do, so a vertical cut through
+# the page reads as one event: where it sits, how long, how loud, how
+# articulated. The documented Etiuda method is a set of parameter SCALES --
+# the cymbal stroke filtered into six bands of different widths and
+# transposed to eleven heights, with eleven-step scales ordering length and
+# eleven ordering dynamics, and six differentiating articulation -- so the
+# scales are score content and appear as ruled systems, not as a side panel.
 #
-# COLOUR CONVENTION, used consistently and for one reason:
-#   INK    = what is modelled on the documented historical method
-#            (the parameter tables of panel I)
-#   COLOUR = what this engine invented and Kotonski did not use
-#            (the four finite-state classes, panels II and III)
-# The eye can therefore separate the analogy from the machinery, which is the
-# distinction the script's own conceptual scope insists on.
+# COLOUR CONVENTION, used for one reason only:
+#   INK    = modelled on the documented historical method (the scale systems)
+#   COLOUR = this engine's own finite-state machinery, which Kotonski did
+#            not use (the montage and the state ribbon)
 # ===========================================================================
 procedure drawVisualization
 
-    .lo = 0.88
+    .lo = 1.18
     .hi = 7.70
     .ink$ = "{0.13,0.13,0.15}"
-    .bg$ = "{0.975,0.975,0.978}"
     .paper$ = "{0.995,0.993,0.987}"
-    .grid$ = "{0.84,0.84,0.86}"
+    .grid$ = "{0.86,0.86,0.88}"
     .faint$ = "{0.45,0.45,0.50}"
     .s1$ = "{0.18,0.55,0.75}"
     .s2$ = "{0.28,0.62,0.36}"
@@ -1167,13 +1170,14 @@ procedure drawVisualization
         .tTick = 60
     endif
 
-    # When the preset does not use a serial grid the tables would be empty, so
-    # the realized values are binned to the same number of levels and the
-    # heading says so. The layout stays comparable across presets.
+    # Marks are given real extent so they survive at screen resolution, not
+    # only in a 300-dpi export.
+    .mw = max(total_dur / 420, total_dur / 420)
+
     if serial_grid_mode
-        .tableSrc$ = "serial grid, as generated"
+        .src$ = "serial grid as generated"
     else
-        .tableSrc$ = "realized values binned to the same levels; this preset uses no grid"
+        .src$ = "realized values binned to the same levels; this preset uses no grid"
     endif
 
     .dMinR = 1e30
@@ -1223,148 +1227,52 @@ procedure drawVisualization
     Solid line
     Line width: 1
 
-    # ======================= TITLE =======================
-    Select inner viewport: 0.60, 7.70, 0.05, 0.34
+    # ============================ HEAD ============================
+    Select inner viewport: 0.60, 7.70, 0.08, 0.36
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##PARTYTURA REALIZACYJNA — REALIZATION SCORE##"
+    Text: 0.5, "centre", 0.5, "half", "##PARTYTURA REALIZACYJNA##"
 
-    Select inner viewport: 0.60, 7.70, 0.36, 0.52
+    Select inner viewport: 0.60, 7.70, 0.38, 0.54
     Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.30,0.30,0.42}"
-    Text: 0.5, "centre", 0.5, "half",
-        ... preset_name$ + "  |  " + transition_name$ + "  |  hold "
-        ... + string$(state_hold_events) + "  |  " + string$(n_events)
-        ... + " events  |  " + fixed$(total_dur, 1) + " s  |  " + spatial_name$
+    Text: 0.5, "centre", 0.5, "half", preset_name$
 
-    Select inner viewport: 0.60, 7.70, 0.54, 0.68
+    # Realization data, as a score's head-block rather than a QC panel.
+    Select inner viewport: 0.60, 7.70, 0.58, 0.74
     Axes: 0, 1, 0, 1
     Font size: 5
     Colour: .faint$
     Text: 0.5, "centre", 0.5, "half",
-        ... "ink = modelled on the documented method (parameter tables)          "
-        ... + "colour = this engine's own finite-state machinery, which Kotonski did not use"
+        ... string$(n_events) + " zdarzeń / events   ·   "
+        ... + fixed$(total_dur, 1) + " s   ·   "
+        ... + fixed$(realizedDensity, 2) + " /s   ·   "
+        ... + "ton/szum/metal " + string$(toneCount) + "/" + string$(noiseCount)
+        ... + "/" + string$(metalCount) + "   ·   "
+        ... + transition_name$ + ", hold " + string$(state_hold_events)
+        ... + "   ·   " + spatial_name$ + "   ·   " + seedLabel$
 
-    # ======================= I. THE PARAMETER TABLES =======================
-    Select inner viewport: 0.60, 7.70, 0.84, 1.00
+    # ============================ MONTAGE ============================
+    Select inner viewport: 0.60, 7.70, 0.94, 1.10
     Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.0, "left", 0.5, "half", "##I  TABLICE SKAL — THE PARAMETER SCALES##"
+    Text: 0.0, "left", 0.5, "half", "##MONTAŻ##"
 
-    Select inner viewport: 0.60, 7.70, 0.84, 1.00
+    Select inner viewport: 0.60, 7.70, 0.94, 1.10
     Axes: 0, 1, 0, 1
     Font size: 5
     Colour: .faint$
     Text: 1.0, "right", 0.5, "half",
-        ... "after the Etiuda method: eleven heights, eleven lengths, eleven dynamics, six articulations  |  "
-        ... + .tableSrc$
+        ... "bar height = bandwidth of a noise band; colour = state class"
 
-    # --- four ruled tables, one per scale ---
-    for .tbl to 4
-        if .tbl = 1
-            .ty0 = 1.06
-            .ty1 = 1.50
-            .nLev = 11
-            .name$ = "WYSOKOŚĆ / height"
-        elsif .tbl = 2
-            .ty0 = 1.58
-            .ty1 = 2.02
-            .nLev = 11
-            .name$ = "DŁUGOŚĆ / length"
-        elsif .tbl = 3
-            .ty0 = 2.10
-            .ty1 = 2.54
-            .nLev = 11
-            .name$ = "DYNAMIKA / dynamics"
-        else
-            .ty0 = 2.62
-            .ty1 = 2.86
-            .nLev = 6
-            .name$ = "ARTYKULACJA / articulation"
-        endif
-
-        Select inner viewport: .lo, .hi, .ty0, .ty1
-        Axes: 0, n_events, 0.5, .nLev + 1.75
-        Paint rectangle: .paper$, 0, n_events, 0.5, .nLev + 0.5
-
-        Select inner viewport: .lo, .hi, .ty0, .ty1
-        Axes: 0, n_events, 0.5, .nLev + 1.75
-        Colour: .grid$
-        Line width: 1
-        for .r to .nLev
-            Draw line: 0, .r, n_events, .r
-        endfor
-
-        # Each event marks its level. Filled cells rather than dots, so the
-        # marks survive at screen resolution as well as at 300 dpi.
-        Select inner viewport: .lo, .hi, .ty0, .ty1
-        Axes: 0, n_events, 0.5, .nLev + 1.75
-        .cw = max(0.35, n_events / 260)
-        for .i to n_events
-            if .tbl = 1
-                .lev = tblP#[.i]
-            elsif .tbl = 2
-                .lev = tblD#[.i]
-            elsif .tbl = 3
-                .lev = tblA#[.i]
-            else
-                .lev = articulation#[.i]
-            endif
-            if .lev >= 1 and .lev <= .nLev
-                Paint rectangle: .ink$, .i - 1, .i - 1 + .cw, .lev - 0.34, .lev + 0.34
-            endif
-        endfor
-
-        Select inner viewport: .lo, .hi, .ty0, .ty1
-        Axes: 0, n_events, 0.5, .nLev + 1.75
-        Font size: 5
-        Colour: "{0.40,0.40,0.46}"
-        Text: n_events * 0.995, "right", .nLev + 1.05, "half", .name$
-
-        Select inner viewport: .lo, .hi, .ty0, .ty1
-        Axes: 0, n_events, 0.5, .nLev + 1.75
-        Colour: "Black"
-        Line width: 1
-        Draw inner box
-        Font size: 4
-        if .nLev = 11
-            One mark left: 1, "no", "yes", "no", "1"
-            One mark left: 6, "no", "yes", "no", "6"
-            One mark left: 11, "no", "yes", "no", "11"
-        else
-            One mark left: 1, "no", "yes", "no", "1"
-            One mark left: 6, "no", "yes", "no", "6"
-        endif
-        if .tbl = 4
-            Font size: 5
-            Marks bottom every: 1, max(10, 10 * round(n_events / 120)), "yes", "yes", "no"
-            Font size: 6
-            Text bottom: "yes", "event number"
-        endif
-    endfor
-
-    # ======================= II. THE MONTAGE =======================
-    Select inner viewport: 0.60, 7.70, 3.16, 3.32
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.0, "left", 0.5, "half", "##II  MONTAŻ — THE TAPE MONTAGE##"
-
-    Select inner viewport: 0.60, 7.70, 3.16, 3.32
-    Axes: 0, 1, 0, 1
-    Font size: 5
-    Colour: .faint$
-    Text: 1.0, "right", 0.5, "half",
-        ... "realized events on a log-frequency axis; bar height shows a noise band's width"
-
-    Select inner viewport: .lo, .hi, 3.38, 4.50
+    Select inner viewport: .lo, .hi, 1.16, 3.20
     Axes: 0, total_dur, .logLo, .logHi
-    Paint rectangle: .bg$, 0, total_dur, .logLo, .logHi
+    Paint rectangle: .paper$, 0, total_dur, .logLo, .logHi
 
-    Select inner viewport: .lo, .hi, 3.38, 4.50
+    Select inner viewport: .lo, .hi, 1.16, 3.20
     Axes: 0, total_dur, .logLo, .logHi
     Colour: .grid$
     Line width: 1
@@ -1376,10 +1284,8 @@ procedure drawVisualization
         endif
     endfor
 
-    Select inner viewport: .lo, .hi, 3.38, 4.50
+    Select inner viewport: .lo, .hi, 1.16, 3.20
     Axes: 0, total_dur, .logLo, .logHi
-    Line width: 1
-    .minW = total_dur / 900
     for .i to n_events
         .st = state#[.i]
         if .st = 1
@@ -1393,8 +1299,8 @@ procedure drawVisualization
         endif
         .t0 = startTime#[.i]
         .t1 = min(total_dur, .t0 + dur#[.i])
-        if .t1 - .t0 < .minW
-            .t1 = .t0 + .minW
+        if .t1 - .t0 < .mw
+            .t1 = .t0 + .mw
         endif
         .f = freq#[.i]
         if .t0 < total_dur and ln(.f) > .logLo and ln(.f) < .logHi
@@ -1405,13 +1311,13 @@ procedure drawVisualization
                     Paint rectangle: .col$, .t0, .t1, ln(.flo), ln(.fhi)
                 endif
             else
-                .h = 0.012 * (.logHi - .logLo)
+                .h = 0.010 * (.logHi - .logLo)
                 Paint rectangle: .col$, .t0, .t1, ln(.f) - .h, ln(.f) + .h
             endif
         endif
     endfor
 
-    Select inner viewport: .lo, .hi, 3.38, 4.50
+    Select inner viewport: .lo, .hi, 1.16, 3.20
     Axes: 0, total_dur, .logLo, .logHi
     Colour: "Black"
     Line width: 1
@@ -1428,31 +1334,89 @@ procedure drawVisualization
             One mark left: ln(.ff), "no", "yes", "no", .lab$
         endif
     endfor
-    Marks bottom every: 1, .tTick, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Frequency (Hz)"
+    Text left: "yes", "Hz"
 
-    # ======================= III. STATE PLAN =======================
-    Select inner viewport: 0.60, 7.70, 4.70, 4.86
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.0, "left", 0.5, "half", "##III  PLAN STANÓW — THE STATE PLAN##"
+    # ==================== THE FOUR SCALE SYSTEMS ====================
+    # Plotted against TIME, not event number, so a vertical cut through the
+    # page reads as one event across every parameter.
+    for .sys to 4
+        if .sys = 1
+            .y0 = 3.40
+            .y1 = 3.90
+            .nLev = 11
+            .name$ = "WYSOKOŚĆ"
+        elsif .sys = 2
+            .y0 = 4.04
+            .y1 = 4.54
+            .nLev = 11
+            .name$ = "DŁUGOŚĆ"
+        elsif .sys = 3
+            .y0 = 4.68
+            .y1 = 5.18
+            .nLev = 11
+            .name$ = "DYNAMIKA"
+        else
+            .y0 = 5.32
+            .y1 = 5.74
+            .nLev = 6
+            .name$ = "ARTYKUL."
+        endif
 
-    Select inner viewport: 0.60, 7.70, 4.70, 4.86
-    Axes: 0, 1, 0, 1
-    Font size: 5
-    Colour: .faint$
-    Text: 1.0, "right", 0.5, "half",
-        ... "this engine's own controller, not a documented Kotonski procedure"
+        Select inner viewport: .lo, .hi, .y0, .y1
+        Axes: 0, total_dur, 0.5, .nLev + 0.5
+        Paint rectangle: .paper$, 0, total_dur, 0.5, .nLev + 1.9
 
-    Select inner viewport: .lo, 5.05, 4.92, 5.62
-    Axes: 0, n_events, 0.5, 4.5
-    Paint rectangle: .bg$, 0, n_events, 0.5, 4.5
+        Select inner viewport: .lo, .hi, .y0, .y1
+        Axes: 0, total_dur, 0.5, .nLev + 0.5
+        Colour: .grid$
+        Line width: 1
+        for .r to .nLev
+            Draw line: 0, .r, total_dur, .r
+        endfor
 
-    Select inner viewport: .lo, 5.05, 4.92, 5.62
-    Axes: 0, n_events, 0.5, 4.5
-    .cw2 = max(0.35, n_events / 260)
+        Select inner viewport: .lo, .hi, .y0, .y1
+        Axes: 0, total_dur, 0.5, .nLev + 0.5
+        for .i to n_events
+            if .sys = 1
+                .lev = tblP#[.i]
+            elsif .sys = 2
+                .lev = tblD#[.i]
+            elsif .sys = 3
+                .lev = tblA#[.i]
+            else
+                .lev = articulation#[.i]
+            endif
+            .t0 = startTime#[.i]
+            if .lev >= 1 and .lev <= .nLev and .t0 < total_dur
+                Paint rectangle: .ink$, .t0, min(total_dur, .t0 + .mw),
+                    ... .lev - 0.34, .lev + 0.34
+            endif
+        endfor
+
+        Select inner viewport: .lo, .hi, .y0, .y1
+        Axes: 0, total_dur, 0.5, .nLev + 0.5
+        Colour: "Black"
+        Line width: 1
+        Draw inner box
+        Font size: 4
+        One mark left: 1, "no", "yes", "no", "1"
+        if .nLev = 11
+            One mark left: 11, "no", "yes", "no", "11"
+        else
+            One mark left: 6, "no", "yes", "no", "6"
+        endif
+        Font size: 5
+        Text left: "yes", .name$
+    endfor
+
+    # ==================== STATE RIBBON + TIME RULER ====================
+    Select inner viewport: .lo, .hi, 5.88, 6.06
+    Axes: 0, total_dur, 0, 1
+    Paint rectangle: .paper$, 0, total_dur, 0, 1
+
+    Select inner viewport: .lo, .hi, 5.88, 6.06
+    Axes: 0, total_dur, 0, 1
     for .i to n_events
         .st = state#[.i]
         if .st = 1
@@ -1464,166 +1428,109 @@ procedure drawVisualization
         else
             .col$ = .s4$
         endif
-        Paint rectangle: .col$, .i - 1, .i - 1 + .cw2, .st - 0.38, .st + 0.38
-    endfor
-
-    Select inner viewport: .lo, 5.05, 4.92, 5.62
-    Axes: 0, n_events, 0.5, 4.5
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 5
-    for .r to 4
-        One mark left: .r, "no", "yes", "no", "S" + string$(.r)
-    endfor
-    Marks bottom every: 1, max(10, 10 * round(n_events / 120)), "yes", "yes", "no"
-    Font size: 6
-    Text bottom: "yes", "event number"
-
-    # --- transition counts ---
-    for .a to 4
-        .rowN[.a] = 0
-        for .b to 4
-            .mtx[.a, .b] = 0
-        endfor
-    endfor
-    for .i from 2 to n_events
-        .a = state#[.i - 1]
-        .b = state#[.i]
-        if .a <> .b
-            .mtx[.a, .b] = .mtx[.a, .b] + 1
-            .rowN[.a] = .rowN[.a] + 1
+        .t0 = startTime#[.i]
+        if .i < n_events
+            .t1 = startTime#[.i + 1]
+        else
+            .t1 = total_dur
+        endif
+        if .t1 > .t0 and .t0 < total_dur
+            Paint rectangle: .col$, .t0, min(total_dur, .t1), 0.12, 0.88
         endif
     endfor
 
-    Select inner viewport: 5.75, 7.15, 4.92, 5.62
-    Axes: 0, 4, 0, 4
-    for .a to 4
-        for .b to 4
-            if .rowN[.a] > 0
-                .p = .mtx[.a, .b] / .rowN[.a]
-            else
-                .p = 0
-            endif
-            .g = 1 - 0.78 * .p
-            .g$ = fixed$(.g, 3)
-            Paint rectangle: "{" + .g$ + "," + .g$ + "," + .g$ + "}",
-                ... .b - 1, .b, 4 - .a, 4 - .a + 1
-        endfor
-    endfor
-
-    Select inner viewport: 5.75, 7.15, 4.92, 5.62
-    Axes: 0, 4, 0, 4
-    Colour: .grid$
-    Line width: 1
-    for .k from 0 to 4
-        Draw line: .k, 0, .k, 4
-        Draw line: 0, .k, 4, .k
-    endfor
-    Colour: "Black"
-    Draw rectangle: 0, 4, 0, 4
-    Font size: 4
-    for .a to 4
-        for .b to 4
-            if .rowN[.a] > 0
-                .p = .mtx[.a, .b] / .rowN[.a]
-            else
-                .p = 0
-            endif
-            if .p > 0.005
-                if .p > 0.6
-                    Colour: "White"
-                else
-                    Colour: "Black"
-                endif
-                Text: .b - 0.5, "centre", 4 - .a + 0.5, "half", fixed$(.p, 2)
-            endif
-        endfor
-    endfor
-    Font size: 4
-    Colour: .faint$
-    for .a to 4
-        Text: -0.12, "right", 4 - .a + 0.5, "half",
-            ... "S" + string$(.a) + " n=" + string$(.rowN[.a])
-        Text: .a - 0.5, "centre", -0.30, "half", "S" + string$(.a)
-    endfor
-
-    # ======================= IV. THE SOUND =======================
-    Select inner viewport: 0.60, 7.70, 5.90, 6.06
-    Axes: 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.0, "left", 0.5, "half", "##IV  TAŚMA — THE TAPE AS MEASURED##"
-
-    Select inner viewport: 0.60, 7.70, 5.90, 6.06
-    Axes: 0, 1, 0, 1
-    Font size: 5
-    Colour: .faint$
-    Text: 1.0, "right", 0.5, "half", "spectrogram of the rendered output"
-
-    .specTop = min(safeTop, exp(.logHi))
-    .specStep = max(0.004, total_dur / 1100)
-    selectObject: master
-    .spec = To Spectrogram: 0.03, .specTop, .specStep, 20, "Gaussian"
-
-    Select inner viewport: .lo, .hi, 6.12, 6.98
-    selectObject: .spec
-    Paint: 0, 0, 0, .specTop, 100, 1, 45, 6, 0, 0
-    removeObject: .spec
-
-    Select inner viewport: .lo, .hi, 6.12, 6.98
-    Axes: 0, total_dur, 0, .specTop
+    Select inner viewport: .lo, .hi, 5.88, 6.06
+    Axes: 0, total_dur, 0, 1
     Colour: "Black"
     Line width: 1
     Draw inner box
     Font size: 5
-    Marks left: 4, "yes", "yes", "no"
+    Text left: "yes", "STAN"
     Marks bottom every: 1, .tTick, "yes", "yes", "no"
     Font size: 6
-    Text left: "yes", "Frequency (Hz)"
-    Text bottom: "yes", "Time (s)"
+    Text bottom: "yes", "czas / time (s)"
 
-    # ======================= QC =======================
-    if serial_grid_mode
-        .concept$ = "Etiuda analogy: synthetic eleven-level parameter grid; NOT a reconstruction of the concrete-source process"
-    elsif microstructure_mode
-        .concept$ = "Mikrostruktury analogy: overlapping synthetic fragment montage; NOT a reconstruction of the glass/wood/metal recordings"
-    elsif aela_mode
-        .concept$ = "Aela analogy: pure sine events on a preserved 25-Hz grid inside an aleatoric state graph"
-    else
-        .concept$ = "engine-specific finite-state electronic event field"
-    endif
-
-    if aela_mode
-        .samplingText$ = "25-Hz grid upper limit " + fixed$(effective_max_Hz, 0) + " Hz"
-    else
-        .samplingText$ = "frequency scale " + fixed$(frequency_scale, 4)
-    endif
-
-    Select inner viewport: 0.60, 7.70, 7.24, 7.86
+    # ============================ KEY ============================
+    Select inner viewport: 0.60, 7.70, 6.62, 6.78
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93,0.93,0.935}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "Black"
+    Text: 0.0, "left", 0.5, "half", "##OBJAŚNIENIA / KEY##"
 
-    Select inner viewport: 0.60, 7.70, 7.24, 7.86
+    Select inner viewport: 0.60, 7.70, 6.62, 6.78
     Axes: 0, 1, 0, 1
     Font size: 5
-    Colour: "{0.25,0.25,0.25}"
-    Text: 0.02, "left", 0.80, "half", "CONCEPT  |  " + .concept$
-    Text: 0.02, "left", 0.50, "half",
-        ... "EVENTS  |  tone/noise/metal " + string$(toneCount) + "/"
-        ... + string$(noiseCount) + "/" + string$(metalCount)
-        ... + "  |  density " + fixed$(realizedDensity, 2) + "/s"
-        ... + "  |  overlap load " + fixed$(overlapLoad, 2)
-        ... + "  |  safe top " + fixed$(safeTop, 0) + " Hz  |  " + .samplingText$
-    Text: 0.02, "left", 0.20, "half",
-        ... "OUTPUT  |  pre-peak " + fixed$(preProtectPeak, 3) + "  |  pre-RMS "
-        ... + fixed$(preProtectRMS, 4) + "  |  " + seedLabel$
+    Colour: .faint$
+    Text: 1.0, "right", 0.5, "half",
+        ... "WYSOKOŚĆ height · DŁUGOŚĆ length · DYNAMIKA dynamics · ARTYKUL. articulation   |   " + .src$
 
-    Select inner viewport: 0.60, 7.70, 7.24, 7.86
+    Select inner viewport: 1.18, 4.60, 6.84, 7.14
+    Axes: 0, 4, 0, 1
+    for .st to 4
+        if .st = 1
+            .col$ = .s1$
+            .lab$ = "punkty / points"
+        elsif .st = 2
+            .col$ = .s2$
+            .lab$ = "pasma / bands"
+        elsif .st = 3
+            .col$ = .s3$
+            .lab$ = "fragmenty / micro"
+        else
+            .col$ = .s4$
+            .lab$ = "pole / dense"
+        endif
+        Paint rectangle: .col$, .st - 1 + 0.02, .st - 1 + 0.20, 0.30, 0.78
+        Colour: .ink$
+        Line width: 1
+        Draw rectangle: .st - 1 + 0.02, .st - 1 + 0.20, 0.30, 0.78
+        Font size: 5
+        Colour: "Black"
+        Text: .st - 1 + 0.25, "left", 0.54, "half", "S" + string$(.st)
+        Font size: 4
+        Colour: .faint$
+        Text: .st - 1 + 0.25, "left", 0.16, "half", .lab$
+    endfor
+
+    if serial_grid_mode
+        .concept$ = "analogia do Etiudy: syntetyczna siatka jedenastostopniowa — NIE rekonstrukcja procesu konkretnego"
+        .conceptEn$ = "Etiuda analogy: a synthetic eleven-level grid, not a reconstruction of the concrete-source process"
+    elsif microstructure_mode
+        .concept$ = "analogia do Mikrostruktur: montaż nakładających się fragmentów syntetycznych"
+        .conceptEn$ = "Mikrostruktury analogy: overlapping synthetic fragments, not the glass/wood/metal recordings"
+    elsif aela_mode
+        .concept$ = "analogia do Aeli: tony sinusoidalne na siatce 25 Hz"
+        .conceptEn$ = "Aela analogy: sine tones on a preserved 25-Hz grid"
+    else
+        .concept$ = "pole zdarzeń sterowane automatem skończonym"
+        .conceptEn$ = "engine-specific finite-state event field"
+    endif
+
+    Select inner viewport: 4.70, 7.70, 6.86, 7.02
     Axes: 0, 1, 0, 1
-    Colour: "{0.52,0.52,0.54}"
-    Line width: 1
-    Draw rectangle: 0, 1, 0, 1
+    Font size: 5
+    Colour: "{0.30,0.30,0.35}"
+    Text: 1.0, "right", 0.5, "half",
+        ... "tusz = metoda udokumentowana   ·   kolor = automat tego programu"
+
+    Select inner viewport: 4.70, 7.70, 7.04, 7.20
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: .faint$
+    Text: 1.0, "right", 0.5, "half",
+        ... "ink = the documented method   ·   colour = this engine's own controller"
+
+    Select inner viewport: 0.60, 7.70, 7.34, 7.50
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: "{0.30,0.30,0.35}"
+    Text: 0.0, "left", 0.5, "half", .concept$
+
+    Select inner viewport: 0.60, 7.70, 7.52, 7.68
+    Axes: 0, 1, 0, 1
+    Font size: 5
+    Colour: .faint$
+    Text: 0.0, "left", 0.5, "half", .conceptEn$
 
     Colour: "Black"
     Line width: 1
