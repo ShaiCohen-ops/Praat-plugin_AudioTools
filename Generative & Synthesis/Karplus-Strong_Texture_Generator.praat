@@ -3,826 +3,1099 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 reviewed (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Description:
-#   Karplus-Strong plucked string synthesis.
-#   Physical modeling algorithm: noise burst → filtered delay line.
+# KARPLUS-STRONG TEXTURE GENERATOR
 #
-#   Recurrence simplified to a 2-tap weighted sum:
-#     y[n] = damping * (c1 * y[n-N] + c2 * y[n-N-1])
-#     where c1 = 0.5 + 0.5 * brightness
-#           c2 = 0.5 - 0.5 * brightness
-#           N  = round(sample_rate / pitch)
-#     Brightness 0 = canonical lowpass average; 1 = pure delay
-#     (no filter), max sustain of high frequencies.
+# A two-level design:
 #
-# Changelog v0.3:
-#   - Speed (HEADLINE): KS feedback loop vectorized. v0.2's
-#     per-sample Get/Set value at sample number was ~3 round-
-#     trips × ~265k samples per channel = ~800k Praat object
-#     queries per channel. Replaced with Formula (part) passes
-#     batched at the delay-line length. Within one delay
-#     period, every output sample reads from the previous
-#     delay period (already fully written), so a single
-#     Formula (part) pass over N samples computes them all
-#     simultaneously without serial dependency. Realistic
-#     speedup: 30-100x depending on pitch (longer delays =
-#     more samples per pass = bigger win). 3-second 220 Hz
-#     run goes from ~5 s to ~0.1 s.
-#   - Fix: Haas-effect right channel was producing silence.
-#     v0.2's `self[col - delaySamplesHaas]` formula reads
-#     in-place from cells already overwritten in the same
-#     pass (col 1000 reads col 339, but col 339 was already
-#     zeroed when col 339 read out-of-range col -322). Result:
-#     entire right channel was silent; what played as "Haas"
-#     was just hard-left mono. Fixed by reading from a
-#     separate source matrix via cross-reference (same
-#     pattern used in 8-Channel_Spectral_Shift v0.5).
-#   - Fix/change: detuned stereo is now truly correlated.
-#     v0.2 generated TWO independent random excitations and
-#     processed each through a different delay length, so
-#     the L and R channels were uncorrelated voices — sounds
-#     diffuse rather than chorus-like. v0.3 generates ONE
-#     excitation and processes it through two delay lines,
-#     producing the beating/chorus effect that "detuned"
-#     implies. Audible difference: more focused stereo image,
-#     audible beats at the detune frequency.
-#   - Visualization rewritten to suite 8x8 standard
-#     (matching 22.2 Stem Renderer, 8-ch I Ching, 8-ch
-#     Movements, 4-ch Canon, 8-ch Spectral Shift, etc.).
-#     Panels:
-#       A: Decay envelope (RMS over time, log-y) — shows
-#          what damping does. Theoretical exponential decay
-#          envelope overlaid as a reference curve.
-#       B: Full-range spectrogram with harmonic lines.
-#       C: KS signal-flow block diagram with actual values
-#          labelled.
-#       D: Full output waveform (was attack-only in v0.2).
-#       E: Summary stats bar.
-# Changelog v0.2:
-#   - Fixed KS algorithm (was subtraction, now correct averaging)
-#   - Added presets, spatial modes, visualization
+#   LEVEL 1 - PLUCKED-STRING RESONATOR
+#   ----------------------------------
+#   Each note is a Karplus-Strong / digital-waveguide-like feedback loop.
+#   The loop uses two independent ingredients:
+#
+#     a) brightness loss filter
+#          B(z) = (1-S) + S z^-1
+#          S = 0.5*(1-Brightness)
+#
+#        Brightness=0 -> canonical two-point average (S=.5)
+#        Brightness=1 -> no additional averaging loss (S=0)
+#
+#     b) fractional-delay interpolator
+#          F(z) = (1-r) + r z^-1
+#
+#   Cascading these gives a compact 3-tap loop recurrence:
+#
+#     y[n] = rho * (a0*y[n-N] + a1*y[n-N-1] + a2*y[n-N-2])
+#
+#     a0 = (1-S)(1-r)
+#     a1 = (1-S)r + S(1-r)
+#     a2 = Sr
+#
+#   where rho=Damping. N and r are chosen so the LOW-FREQUENCY phase
+#   delay N+r+S equals Fs/f0. This decouples tuning compensation from the
+#   brightness control much better than v0.3, where changing Brightness also
+#   changed the effective pitch.
+#
+#   This is an efficient extended KS approximation. It does NOT claim to be a
+#   complete physical string model: stiffness/dispersion, body resonances,
+#   pickup position and nonlinear bridge coupling are not simulated.
+#
+#   The excitation is a seeded white-noise section inside the initial delay
+#   buffer. Excitation_fill=1 is closest to the classic full random buffer;
+#   smaller values create a more localized/windowed excitation. This parameter
+#   is therefore described as BUFFER FILL, not as literal pluck position.
+#
+#   LEVEL 2 - TEXTURE SCHEDULER
+#   ---------------------------
+#   Unlike v0.3, the presets labelled stream/strum/cascade/drone/cloud now
+#   genuinely generate multiple KS events. Texture_mode controls the schedule:
+#
+#     Single Pluck
+#     Regular Re-plucks
+#     Poisson Pluck Stream
+#     Strummed Cluster
+#     Ascending Cascade
+#     Re-excited Drone
+#
+#   Event tails are estimated from the fundamental loop decay and capped by
+#   Max_tail_s. Mixing gain is compensated from the ACTUAL scheduled overlap.
+#
+# v0.4 reviewed:
+#   - true texture/event layer instead of misleading single-pluck presets
+#   - mechanism-faithful preset names
+#   - fractional-delay compensation separated from brightness filter
+#   - pitch no longer uses round(Fs/f) blindly
+#   - one recursive Formula pass per KS voice (left-to-right Praat Formula)
+#     instead of hundreds of delay-period Formula(part) passes
+#   - classic full-buffer excitation available as Excitation_fill=1
+#   - explicit Random_seed and reproducible event/excitation generation
+#   - real regular / Poisson / strum / cascade / drone schedules
+#   - event-level equal-power stereo spread
+#   - correlated detuned stereo uses one shared excitation per event
+#   - micro-delay stereo reads from the original mono voice, not in-place self
+#   - fixed object access syntax and Combine-to-stereo assignment pattern
+#   - validation for stability, delay length and frequency headroom
+#   - one final down-only peak protector; no unconditional normalization
+#   - visualization shows the algorithm rather than only decoration:
+#       A actual scheduled event field
+#       B loop gain per round trip for the first event
+#       C measured first-event decay vs theoretical f0 / 5th-partial decay
+#       D measured output spectrogram + actual event-fundamental guides
+#       bottom tuning / overlap / level / process QC
+#
+# Conceptual references:
+#   Karplus & Strong (1983), Digital Synthesis of Plucked-String and Drum Timbres
+#   Jaffe & Smith (1983), Extensions of the Karplus-Strong Plucked-String Algorithm
 # ============================================================
 
-form Karplus-Strong Synthesis
-    comment === Preset ===
+form Karplus-Strong Texture Generator v0.4
     optionmenu Preset 1
-        option Custom (use settings below)
-        option Plucked String
-        option Guitar Strum
-        option Harp Glissando
-        option Metallic Pluck
-        option Sitar Drone
-        option Steel Drum
-        option Banjo Bright
-        option Dulcimer Shimmer
-        option Prepared Piano
-        option Frozen Resonance
-    
-    comment === Basic Settings ===
-    positive Duration_s 3.0
+        option Custom
+        option Canonical Single Pluck
+        option Warm Re-pluck Stream
+        option Ascending String Cascade
+        option Long Metallic Pluck
+        option Re-excited Low Drone
+        option Bright Short Pluck
+        option Detuned Shimmer Pair
+        option Prepared Detuned Cluster
+        option Sparse Resonant Cloud
+
+    positive Duration_s 6.0
     integer Sample_rate_Hz 44100
-    positive Pitch_Hz 220
-    
-    comment === KS Parameters ===
-    real Damping 0.995 (= 0.9-0.9999)
-    real Brightness 0.5 (= 0-1, lowpass mix)
-    positive Excitation_ms 5
-    
-    comment === Output ===
+    positive Base_pitch_Hz 220
+
+    optionmenu Texture_mode 1
+        option Single Pluck
+        option Regular Re-plucks
+        option Poisson Pluck Stream
+        option Strummed Cluster
+        option Ascending Cascade
+        option Re-excited Drone
+
+    real Damping 0.996
+    real Brightness 0.35
+    real Excitation_fill 1.0
+
     optionmenu Spatial_mode 1
         option Mono
-        option Stereo (detuned)
-        option Stereo (delayed)
-    real Detune_cents 8.6
-    real Haas_delay_ms 15
-    boolean Normalize_output 1
+        option Stereo Event Spread
+        option Stereo Detuned Pair
+        option Stereo Micro-Delay
+
+    boolean Edit_texture_details 0
+    boolean Peak_protection 1
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
-# === Apply Presets ===
+# ---------------------------------------------------------------------------
+# ADVANCED DEFAULTS
+# ---------------------------------------------------------------------------
+event_rate_Hz = 2.0
+voice_count = 7
+pitch_span_semitones = 12.0
+pitch_jitter_cents = 4.0
+strum_span_ms = 180
+max_tail_s = 6.0
+detune_cents = 7.0
+micro_delay_ms = 8.0
+random_seed = 0
+
+# ---------------------------------------------------------------------------
+# PRESETS
+# ---------------------------------------------------------------------------
 preset_name$ = "Custom"
 
 if preset = 2
-    pitch_Hz = 220
+    duration_s = 4
+    base_pitch_Hz = 220
+    texture_mode = 1
     damping = 0.996
-    brightness = 0.5
-    excitation_ms = 5
-    preset_name$ = "PluckedString"
+    brightness = 0.0
+    excitation_fill = 1.0
+    spatial_mode = 1
+    max_tail_s = 4
+    preset_name$ = "Canonical Single Pluck"
+
 elsif preset = 3
-    pitch_Hz = 110
+    duration_s = 10
+    base_pitch_Hz = 110
+    texture_mode = 2
     damping = 0.995
-    brightness = 0.6
-    excitation_ms = 8
-    preset_name$ = "GuitarStrum"
+    brightness = 0.35
+    excitation_fill = 0.90
+    event_rate_Hz = 1.8
+    pitch_jitter_cents = 5
+    spatial_mode = 2
+    max_tail_s = 4.5
+    preset_name$ = "Warm Re-pluck Stream"
+
 elsif preset = 4
-    pitch_Hz = 440
-    damping = 0.998
-    brightness = 0.4
-    excitation_ms = 3
-    preset_name$ = "HarpGlissando"
+    duration_s = 9
+    base_pitch_Hz = 220
+    texture_mode = 5
+    damping = 0.9975
+    brightness = 0.28
+    excitation_fill = 1.0
+    voice_count = 10
+    pitch_span_semitones = 19
+    event_rate_Hz = 1.5
+    pitch_jitter_cents = 2
+    spatial_mode = 2
+    max_tail_s = 5
+    preset_name$ = "Ascending String Cascade"
+
 elsif preset = 5
-    pitch_Hz = 330
-    damping = 0.9995
-    brightness = 0.8
-    excitation_ms = 2
-    preset_name$ = "MetallicPluck"
+    duration_s = 6
+    base_pitch_Hz = 330
+    texture_mode = 1
+    damping = 0.9993
+    brightness = 0.84
+    excitation_fill = 0.70
+    spatial_mode = 1
+    max_tail_s = 6
+    preset_name$ = "Long Metallic Pluck"
+
 elsif preset = 6
-    pitch_Hz = 130
-    damping = 0.997
-    brightness = 0.5
-    excitation_ms = 15
-    preset_name$ = "SitarDrone"
+    duration_s = 14
+    base_pitch_Hz = 130
+    texture_mode = 6
+    damping = 0.9982
+    brightness = 0.32
+    excitation_fill = 0.85
+    event_rate_Hz = 0.72
+    pitch_jitter_cents = 2.5
+    spatial_mode = 3
+    detune_cents = 3.5
+    max_tail_s = 7
+    preset_name$ = "Re-excited Low Drone"
+
 elsif preset = 7
-    pitch_Hz = 523
-    damping = 0.994
-    brightness = 0.7
-    excitation_ms = 4
-    preset_name$ = "SteelDrum"
-elsif preset = 8
-    pitch_Hz = 294
+    duration_s = 3
+    base_pitch_Hz = 294
+    texture_mode = 1
     damping = 0.990
-    brightness = 0.9
-    excitation_ms = 3
-    preset_name$ = "BanjoBright"
-elsif preset = 9
-    pitch_Hz = 392
+    brightness = 0.92
+    excitation_fill = 0.75
+    spatial_mode = 1
+    max_tail_s = 3
+    preset_name$ = "Bright Short Pluck"
+
+elsif preset = 8
+    duration_s = 8
+    base_pitch_Hz = 392
+    texture_mode = 1
     damping = 0.9985
-    brightness = 0.4
-    excitation_ms = 6
-    preset_name$ = "DulcimerShimmer"
+    brightness = 0.42
+    excitation_fill = 1.0
+    spatial_mode = 3
+    detune_cents = 8.6
+    max_tail_s = 8
+    preset_name$ = "Detuned Shimmer Pair"
+
+elsif preset = 9
+    duration_s = 8
+    base_pitch_Hz = 185
+    texture_mode = 4
+    damping = 0.994
+    brightness = 0.55
+    excitation_fill = 0.62
+    voice_count = 8
+    pitch_span_semitones = 9
+    strum_span_ms = 260
+    pitch_jitter_cents = 8
+    spatial_mode = 2
+    max_tail_s = 5
+    preset_name$ = "Prepared Detuned Cluster"
+
 elsif preset = 10
-    pitch_Hz = 185
-    damping = 0.993
-    brightness = 0.6
-    excitation_ms = 10
-    preset_name$ = "PreparedPiano"
-elsif preset = 11
-    pitch_Hz = 261
-    damping = 0.9999
-    brightness = 0.3
-    excitation_ms = 20
-    preset_name$ = "FrozenResonance"
+    duration_s = 18
+    base_pitch_Hz = 261
+    texture_mode = 3
+    damping = 0.9997
+    brightness = 0.22
+    excitation_fill = 1.0
+    event_rate_Hz = 0.42
+    pitch_span_semitones = 7
+    pitch_jitter_cents = 14
+    spatial_mode = 4
+    micro_delay_ms = 11
+    max_tail_s = 8
+    preset_name$ = "Sparse Resonant Cloud"
 endif
 
-# === Constants ===
-uid$ = string$(randomInteger(10000, 99999))
-
-# Vectorized KS recurrence coefficients (precomputed once)
-# y[n] = damping * (c1 * y[n-N] + c2 * y[n-N-1])
-c1 = 0.5 + 0.5 * brightness
-c2 = 0.5 - 0.5 * brightness
-
-# Delay line lengths
-delaySamples = round(sample_rate_Hz / pitch_Hz)
-excitationSamples = round(excitation_ms * sample_rate_Hz / 1000)
-if excitationSamples > delaySamples
-    excitationSamples = delaySamples
-endif
-totalSamples = round(duration_s * sample_rate_Hz)
-
-# Right-channel detune (for spatial mode 2)
-# detune in cents -> frequency ratio
-detuneRatio = 2 ^ (detune_cents / 1200)
-delaySamplesR = round(sample_rate_Hz / (pitch_Hz * detuneRatio))
-if delaySamplesR < 2
-    delaySamplesR = 2
+# ---------------------------------------------------------------------------
+# OPTIONAL ADVANCED PAGE
+# ---------------------------------------------------------------------------
+if edit_texture_details
+    beginPause: "Karplus-Strong Texture - Scheduler / Spatial Details"
+        positive: "Event rate (events/s)", event_rate_Hz
+        integer: "Voice/event count", voice_count
+        real: "Pitch span (semitones)", pitch_span_semitones
+        real: "Pitch jitter (cents)", pitch_jitter_cents
+        real: "Strum span (ms)", strum_span_ms
+        positive: "Maximum event tail (s)", max_tail_s
+        real: "Stereo detune (cents)", detune_cents
+        real: "Micro-delay (ms)", micro_delay_ms
+        integer: "Random seed (0 = unpredictable)", random_seed
+    endPause: "Run", 1
 endif
 
-# Haas delay
-haasSamples = round(haas_delay_ms * sample_rate_Hz / 1000)
-if haasSamples < 1
-    haasSamples = 1
+# ---------------------------------------------------------------------------
+# VALIDATION / LABELS
+# ---------------------------------------------------------------------------
+if duration_s <= 0 or duration_s > 120
+    exitScript: "Duration must be > 0 and <= 120 seconds."
+endif
+if sample_rate_Hz < 8000 or sample_rate_Hz > 192000
+    exitScript: "Sample rate must be between 8000 and 192000 Hz."
+endif
+if base_pitch_Hz < 20
+    exitScript: "Base pitch must be at least 20 Hz."
+endif
+if damping <= 0 or damping >= 1
+    exitScript: "Damping must be greater than 0 and strictly less than 1."
+endif
+if brightness < 0 or brightness > 1
+    exitScript: "Brightness must be between 0 and 1."
+endif
+if excitation_fill <= 0 or excitation_fill > 1
+    exitScript: "Excitation fill must be > 0 and <= 1."
+endif
+if event_rate_Hz <= 0 or event_rate_Hz > 40
+    exitScript: "Event rate must be > 0 and <= 40 events/s."
+endif
+if voice_count < 1 or voice_count > 32
+    exitScript: "Voice/event count must be between 1 and 32."
+endif
+if pitch_span_semitones < 0 or pitch_span_semitones > 48
+    exitScript: "Pitch span must be between 0 and 48 semitones."
+endif
+if abs(pitch_jitter_cents) > 200
+    exitScript: "Pitch jitter must not exceed 200 cents."
+endif
+if strum_span_ms < 0 or strum_span_ms > 5000
+    exitScript: "Strum span must be between 0 and 5000 ms."
+endif
+if max_tail_s <= 0 or max_tail_s > 30
+    exitScript: "Maximum event tail must be > 0 and <= 30 seconds."
+endif
+if abs(detune_cents) > 100
+    exitScript: "Stereo detune must not exceed 100 cents."
+endif
+if micro_delay_ms < 0 or micro_delay_ms > 40
+    exitScript: "Micro-delay must be between 0 and 40 ms."
+endif
+if random_seed < 0
+    exitScript: "Random seed must be 0 or a positive integer."
 endif
 
-# === Info ===
-writeInfoLine: "=== Karplus-Strong Synthesis v0.3 ==="
-appendInfoLine: "Preset: ", preset_name$
-appendInfoLine: "Pitch: ", pitch_Hz, " Hz   |   Sample rate: ", sample_rate_Hz, " Hz"
-appendInfoLine: "Delay line: ", delaySamples, " samples"
-appendInfoLine: "Damping: ", fixed$(damping, 4), "   |   Brightness: ", fixed$(brightness, 2)
-appendInfoLine: "  -> c1 = ", fixed$(c1, 3), "   c2 = ", fixed$(c2, 3)
-appendInfoLine: "Excitation: ", excitation_ms, " ms (", excitationSamples, " samples)"
-appendInfoLine: "Output samples: ", totalSamples
-appendInfoLine: ""
+if texture_mode = 1
+    texture_name$ = "Single Pluck"
+elsif texture_mode = 2
+    texture_name$ = "Regular Re-plucks"
+elsif texture_mode = 3
+    texture_name$ = "Poisson Pluck Stream"
+elsif texture_mode = 4
+    texture_name$ = "Strummed Cluster"
+elsif texture_mode = 5
+    texture_name$ = "Ascending Cascade"
+else
+    texture_name$ = "Re-excited Drone"
+endif
 
-# ============================================================
-# VECTORIZED KS PROCEDURE
-# ============================================================
-# Generates one mono KS string into a Sound object.
-# Returns the new Sound's ID in .out.
-#
-# How vectorization works:
-#   The recurrence y[n] = damping * (c1 * y[n-N] + c2 * y[n-N-1])
-#   has a serial dependency only across delay periods, not within
-#   one. Within samples [n .. n+N-1] every read is from the prior
-#   period [n-N .. n-1], which is already fully written. So we
-#   can compute one delay period at a time with a single Formula
-#   (part) pass, advancing by N samples between passes.
-#
-#   Total Formula passes: ceil(totalSamples / delaySamples)
-#   For 3 s @ 220 Hz @ 44.1k: ceil(132300 / 200) = 662 passes
-#   vs 264,300 individual Get/Set calls in v0.2.
-# ============================================================
-procedure synthKS: .name$, .delayN
-    .out = Create Sound from formula: .name$, 1, 0, duration_s, sample_rate_Hz,
-        ... "if col <= excitationSamples then randomGauss(0, 0.5) else 0 fi"
-    
-    selectObject: .out
-    .ns = Get number of samples
-    .sr = sample_rate_Hz
-    
-    # Start writing from sample (delayN + 2). Earlier samples
-    # are either excitation noise (col <= excitationSamples) or
-    # zeros (between excitation and delayN+2), which is the
-    # correct initial condition for the delay line.
-    .startSamp = .delayN + 2
-    
-    # Process one delay-period chunk at a time
-    .curSamp = .startSamp
-    while .curSamp <= .ns
-        .endSamp = .curSamp + .delayN - 1
-        if .endSamp > .ns
-            .endSamp = .ns
-        endif
-        
-        # Convert sample range to time range for Formula (part) bounds
-        .tLo = (.curSamp - 1) / .sr
-        .tHi = .endSamp / .sr
-        
-        # The recurrence reads from delayN and delayN+1 samples back.
-        # Both reads are guaranteed to be in the prior period (already
-        # written) because we advance by exactly delayN samples per pass.
-        .dN = .delayN
-        .dN1 = .delayN + 1
-        Formula (part): .tLo, .tHi, 1, 1,
-            ... "damping * (" + fixed$(c1, 8) + " * self[col - " + string$(.dN) + "]"
-            ... + " + " + fixed$(c2, 8) + " * self[col - " + string$(.dN1) + "])"
-        
-        .curSamp = .curSamp + .delayN
-    endwhile
-    
-    # Soft fade-out (last 50 ms) to prevent end-click
-    .fadeT = 0.05
-    if duration_s > 2 * .fadeT
-        selectObject: .out
-        Formula: "if x > duration_s - " + fixed$(.fadeT, 4)
-            ... + " then self * ((duration_s - x) / " + fixed$(.fadeT, 4) + ")"
-            ... + " else self fi"
+if spatial_mode = 1
+    spatial_name$ = "Mono"
+elsif spatial_mode = 2
+    spatial_name$ = "Stereo Event Spread"
+elsif spatial_mode = 3
+    spatial_name$ = "Stereo Detuned Pair"
+else
+    spatial_name$ = "Stereo Micro-Delay"
+endif
+
+sr = sample_rate_Hz
+safeTop = 0.20*sr
+uid$ = string$(randomInteger(10000,99999))
+
+# Conservative maximum scheduled pitch.
+if texture_mode = 4 or texture_mode = 5
+    maxScheduledPitch = base_pitch_Hz*2^(0.5*pitch_span_semitones/12)
+else
+    maxScheduledPitch = base_pitch_Hz*2^(abs(pitch_jitter_cents)/1200)
+endif
+if spatial_mode = 3
+    maxScheduledPitch = maxScheduledPitch*2^(abs(detune_cents)/1200)
+endif
+
+if maxScheduledPitch > safeTop
+    exitScript: "Highest scheduled pitch exceeds 0.20*sample rate. Reduce pitch/span/detune or increase sample rate."
+endif
+
+# ---------------------------------------------------------------------------
+# RANDOMNESS
+# ---------------------------------------------------------------------------
+seedWasFixed = 0
+if random_seed > 0
+    random_initializeWithSeedUnsafelyButPredictably (random_seed)
+    seedWasFixed = 1
+    seed_label$ = "seed " + string$(random_seed)
+else
+    seed_label$ = "seed random"
+endif
+
+# ---------------------------------------------------------------------------
+# LOOP MODEL HELPER
+# ---------------------------------------------------------------------------
+procedure computeLoop: .pitchHz
+    .s = 0.5*(1-brightness)
+    .desiredDelay = sample_rate_Hz/.pitchHz
+
+    # Low-frequency phase delay of brightness filter is approximately S.
+    # Put the remaining fractional delay into an independent linear
+    # interpolator, so brightness does not silently retune the note.
+    .n = floor(.desiredDelay-.s)
+    .frac = .desiredDelay-.s-.n
+
+    if .n < 3
+        exitScript: "Pitch is too high for a stable/meaningful KS delay at this sample rate."
+    endif
+
+    .a0 = (1-.s)*(1-.frac)
+    .a1 = (1-.s)*.frac+.s*(1-.frac)
+    .a2 = .s*.frac
+
+    # Fundamental and 5th-partial theoretical loop decay.
+    .w1 = 2*pi*.pitchHz/sample_rate_Hz
+    .mB1 = sqrt(((1-.s)+.s*cos(.w1))^2+(.s*sin(.w1))^2)
+    .mF1 = sqrt(((1-.frac)+.frac*cos(.w1))^2+(.frac*sin(.w1))^2)
+    .g1 = damping*.mB1*.mF1
+    .decay1 = .pitchHz*20*log10(max(1e-12,.g1))
+
+    .f5 = min(5*.pitchHz,0.45*sample_rate_Hz)
+    .w5 = 2*pi*.f5/sample_rate_Hz
+    .mB5 = sqrt(((1-.s)+.s*cos(.w5))^2+(.s*sin(.w5))^2)
+    .mF5 = sqrt(((1-.frac)+.frac*cos(.w5))^2+(.frac*sin(.w5))^2)
+    .g5 = damping*.mB5*.mF5
+    .decay5 = .pitchHz*20*log10(max(1e-12,.g5))
+
+    if .decay1 < -0.000001
+        .t60 = -60/.decay1
+    else
+        .t60 = 999
     endif
 endproc
 
-# ============================================================
-# SYNTHESIZE
-# ============================================================
-appendInfoLine: "Synthesizing..."
-stopwatch
+# ---------------------------------------------------------------------------
+# SCHEDULE ACTUAL EVENTS
+# ---------------------------------------------------------------------------
+eventCount = 0
 
-if spatial_mode = 1
-    # --- Mono ---
-    @synthKS: "ks_L_" + uid$, delaySamples
-    leftID = synthKS.out
-    
-    selectObject: leftID
-    Rename: "ks_" + preset_name$
-    outputSound = leftID
+if texture_mode = 1
+    eventCount = 1
+    eventOnset[1] = 0
+    eventPitch[1] = base_pitch_Hz
+    eventWeight[1] = 1
 
-elsif spatial_mode = 2
-    # --- Stereo (detuned) — TRUE CORRELATED VERSION (v0.3) ---
-    # Generate ONE excitation and process it through two delay
-    # lines. This produces the chorus / beating effect that
-    # "detuned" actually means. v0.2 generated independent
-    # excitations, which sounds diffuse instead of chorused.
-    appendInfoLine: "  Detuned stereo (correlated, ", fixed$(detune_cents, 1), " cents)"
-    
-    # Build a shared excitation as a small Sound, then copy it
-    # into both channels' synthesis buffers.
-    sharedSeed = Create Sound from formula: "ks_seed_" + uid$, 1, 0, duration_s, sample_rate_Hz,
-        ... "if col <= excitationSamples then randomGauss(0, 0.5) else 0 fi"
-    
-    # Left channel
-    selectObject: sharedSeed
-    Copy: "ks_L_" + uid$
-    leftID = selected("Sound")
-    selectObject: leftID
-    nsL = Get number of samples
-    curL = delaySamples + 2
-    while curL <= nsL
-        endL = curL + delaySamples - 1
-        if endL > nsL
-            endL = nsL
-        endif
-        tLoL = (curL - 1) / sample_rate_Hz
-        tHiL = endL / sample_rate_Hz
-        dNL = delaySamples
-        dNL1 = delaySamples + 1
-        Formula (part): tLoL, tHiL, 1, 1,
-            ... "damping * (" + fixed$(c1, 8) + " * self[col - " + string$(dNL) + "]"
-            ... + " + " + fixed$(c2, 8) + " * self[col - " + string$(dNL1) + "])"
-        curL = curL + delaySamples
+elsif texture_mode = 2
+    t = 0
+    while t < duration_s and eventCount < 64
+        eventCount = eventCount+1
+        eventOnset[eventCount] = t
+        eventPitch[eventCount] = base_pitch_Hz*
+            ... 2^(randomUniform(-pitch_jitter_cents,pitch_jitter_cents)/1200)
+        eventWeight[eventCount] = randomUniform(0.88,1.08)
+        t = t+1/event_rate_Hz
     endwhile
-    selectObject: leftID
-    Formula: "if x > duration_s - 0.05 then self * ((duration_s - x) / 0.05) else self fi"
-    
-    # Right channel — different delay = detuned pitch
-    selectObject: sharedSeed
-    Copy: "ks_R_" + uid$
-    rightID = selected("Sound")
-    selectObject: rightID
-    nsR = Get number of samples
-    curR = delaySamplesR + 2
-    while curR <= nsR
-        endR = curR + delaySamplesR - 1
-        if endR > nsR
-            endR = nsR
+
+elsif texture_mode = 3
+    t = 0
+    while t < duration_s and eventCount < 64
+        u = max(1e-12,randomUniform(0,1))
+        t = t-ln(u)/event_rate_Hz
+        if t < duration_s
+            eventCount = eventCount+1
+            eventOnset[eventCount] = t
+            # Cloud uses both jitter and the requested pitch span.
+            spread = 0.5*pitch_span_semitones
+            eventPitch[eventCount] = base_pitch_Hz*
+                ... 2^(randomUniform(-spread,spread)/12)*
+                ... 2^(randomUniform(-pitch_jitter_cents,pitch_jitter_cents)/1200)
+            eventWeight[eventCount] = randomUniform(0.78,1.10)
         endif
-        tLoR = (curR - 1) / sample_rate_Hz
-        tHiR = endR / sample_rate_Hz
-        dNR = delaySamplesR
-        dNR1 = delaySamplesR + 1
-        Formula (part): tLoR, tHiR, 1, 1,
-            ... "damping * (" + fixed$(c1, 8) + " * self[col - " + string$(dNR) + "]"
-            ... + " + " + fixed$(c2, 8) + " * self[col - " + string$(dNR1) + "])"
-        curR = curR + delaySamplesR
     endwhile
-    selectObject: rightID
-    Formula: "if x > duration_s - 0.05 then self * ((duration_s - x) / 0.05) else self fi"
-    
-    # Combine
-    selectObject: leftID
-    plusObject: rightID
-    stereoSound = Combine to stereo
-    Rename: "ks_" + preset_name$
-    
-    removeObject: sharedSeed, leftID, rightID
-    outputSound = stereoSound
+
+elsif texture_mode = 4
+    eventCount = voice_count
+    for ev from 1 to eventCount
+        if eventCount = 1
+            pos = 0.5
+        else
+            pos = (ev-1)/(eventCount-1)
+        endif
+        eventOnset[ev] = (strum_span_ms/1000)*pos
+        semis = (pos-0.5)*pitch_span_semitones
+        eventPitch[ev] = base_pitch_Hz*2^(semis/12)*
+            ... 2^(randomUniform(-pitch_jitter_cents,pitch_jitter_cents)/1200)
+        eventWeight[ev] = 0.90+0.10*sin(pi*pos)
+    endfor
+
+elsif texture_mode = 5
+    eventCount = voice_count
+    cascadeSpan = min(0.78*duration_s,max(0.5,(voice_count-1)/event_rate_Hz))
+    for ev from 1 to eventCount
+        if eventCount = 1
+            pos = 0.5
+        else
+            pos = (ev-1)/(eventCount-1)
+        endif
+        eventOnset[ev] = cascadeSpan*pos
+        semis = (pos-0.5)*pitch_span_semitones
+        eventPitch[ev] = base_pitch_Hz*2^(semis/12)*
+            ... 2^(randomUniform(-pitch_jitter_cents,pitch_jitter_cents)/1200)
+        eventWeight[ev] = 0.82+0.18*pos
+    endfor
 
 else
-    # --- Stereo (delayed / Haas) — IN-PLACE BUG FIX (v0.3) ---
-    # Generate one mono signal, then for the right channel use
-    # cross-Sound reference to read the original samples instead
-    # of in-place self-reads, which v0.2 used and which produced
-    # silence (every read hit a cell already zeroed out).
-    appendInfoLine: "  Haas-effect stereo (", fixed$(haas_delay_ms, 1), " ms)"
-    
-    @synthKS: "ks_L_" + uid$, delaySamples
-    leftID = synthKS.out
-    
-    # Build right channel as a delayed copy of left.
-    # Read from leftID (untouched) into a fresh empty Sound.
-    rightID = Create Sound from formula: "ks_R_" + uid$, 1, 0, duration_s, sample_rate_Hz, "0"
-    selectObject: rightID
-    nsHaas = Get number of samples
-    Formula: "if col > " + string$(haasSamples)
-        ... + " then object[" + string$(leftID) + ", col - " + string$(haasSamples) + "]"
-        ... + " else 0 fi"
-    
-    selectObject: leftID
-    plusObject: rightID
-    stereoSound = Combine to stereo
-    Rename: "ks_" + preset_name$
-    
-    removeObject: leftID, rightID
-    outputSound = stereoSound
+    t = 0
+    while t < duration_s and eventCount < 64
+        eventCount = eventCount+1
+        eventOnset[eventCount] = t
+        eventPitch[eventCount] = base_pitch_Hz*
+            ... 2^(randomUniform(-pitch_jitter_cents,pitch_jitter_cents)/1200)
+        eventWeight[eventCount] = randomUniform(0.72,1.0)
+        t = t+1/event_rate_Hz
+    endwhile
 endif
+
+if eventCount < 1
+    if seedWasFixed
+        random_initializeSafelyAndUnpredictably ()
+    endif
+    exitScript: "No events were scheduled."
+endif
+
+# Event-tail estimate and overlap compensation.
+sumTail = 0
+minEventPitch = 1e9
+maxEventPitch = 0
+
+for ev from 1 to eventCount
+    @computeLoop: eventPitch[ev]
+    remaining = duration_s-eventOnset[ev]
+    eventTail[ev] = min(remaining,max(0.20,min(max_tail_s,1.05*computeLoop.t60)))
+    sumTail = sumTail+eventTail[ev]
+    minEventPitch = min(minEventPitch,eventPitch[ev])
+    maxEventPitch = max(maxEventPitch,eventPitch[ev])
+endfor
+
+meanOverlap = sumTail/duration_s
+eventMixGain = 0.72/sqrt(max(1,meanOverlap))
+
+# First-event model values for info + visualization.
+@computeLoop: eventPitch[1]
+firstDelayN = computeLoop.n
+firstFrac = computeLoop.frac
+firstS = computeLoop.s
+firstA0 = computeLoop.a0
+firstA1 = computeLoop.a1
+firstA2 = computeLoop.a2
+firstDecay = computeLoop.decay1
+firstDecay5 = computeLoop.decay5
+firstT60 = computeLoop.t60
+
+# ---------------------------------------------------------------------------
+# INFO
+# ---------------------------------------------------------------------------
+clearinfo
+writeInfoLine: "=============================================="
+writeInfoLine: "  KARPLUS-STRONG TEXTURE GENERATOR v0.4"
+writeInfoLine: "=============================================="
+appendInfoLine: "Preset: ", preset_name$
+appendInfoLine: "Texture: ", texture_name$
+appendInfoLine: "Events: ", eventCount
+appendInfoLine: "Pitch range: ", fixed$(minEventPitch,2), " - ", fixed$(maxEventPitch,2), " Hz"
+appendInfoLine: "Damping / brightness: ", fixed$(damping,5), " / ", fixed$(brightness,3)
+appendInfoLine: "Excitation buffer fill: ", fixed$(excitation_fill,3)
+appendInfoLine: "First event delay: N=", firstDelayN,
+    ... " + frac ", fixed$(firstFrac,5), " + filter delay ~", fixed$(firstS,3)
+appendInfoLine: "First-event nominal period samples: ", fixed$(sample_rate_Hz/eventPitch[1],5)
+appendInfoLine: "First-event theoretical T60(f0): ", fixed$(firstT60,2), " s"
+appendInfoLine: "Actual scheduled mean overlap: ", fixed$(meanOverlap,3)
+appendInfoLine: "Overlap compensation gain: ", fixed$(eventMixGain,4)
+appendInfoLine: "Spatial: ", spatial_name$
+appendInfoLine: "Randomness: ", seed_label$
+appendInfoLine: ""
+
+# ---------------------------------------------------------------------------
+# OUTPUT ACCUMULATOR
+# ---------------------------------------------------------------------------
+if spatial_mode = 1
+    outputSound = Create Sound from formula:
+        ... "ks_texture_" + uid$,1,0,duration_s,sample_rate_Hz,"0"
+else
+    outputSound = Create Sound from formula:
+        ... "ks_texture_" + uid$,2,0,duration_s,sample_rate_Hz,"0"
+endif
+
+# ---------------------------------------------------------------------------
+# ONE-PASS RECURSIVE KS VOICE
+# ---------------------------------------------------------------------------
+procedure synthKS: .name$,.pitchHz,.voiceDur,.seedID
+    @computeLoop: .pitchHz
+
+    .n = computeLoop.n
+    .frac = computeLoop.frac
+    .a0 = computeLoop.a0
+    .a1 = computeLoop.a1
+    .a2 = computeLoop.a2
+    .seedN = max(1,round(excitation_fill*.n))
+
+    .out = Create Sound from formula:
+        ... .name$,1,0,.voiceDur,sample_rate_Hz,"0"
+
+    if .seedID > 0
+        .noiseExpr$ = "object[" + string$(.seedID) + ",1,col]"
+    else
+        .noiseExpr$ = "randomGauss(0,0.42)"
+    endif
+
+    selectObject: .out
+    Formula: "if col<=" + string$(.seedN)
+        ... + " then " + .noiseExpr$
+        ... + " else if col<=" + string$(.n+2)
+        ... + " then 0 else " + fixed$(damping,12) + "*("
+        ... + fixed$(.a0,12) + "*self[col-" + string$(.n) + "]+"
+        ... + fixed$(.a1,12) + "*self[col-" + string$(.n+1) + "]+"
+        ... + fixed$(.a2,12) + "*self[col-" + string$(.n+2) + "]) fi fi"
+
+    # Only a very short edge taper. It prevents a hard truncation without
+    # imposing a musical envelope on the modeled decay.
+    .edge = min(0.008,0.10*.voiceDur)
+    if .edge > 0
+        .edgeStart = .voiceDur-.edge
+        Formula: "if x>" + fixed$(.edgeStart,9)
+            ... + " then self*(0.5+0.5*cos(pi*(x-"
+            ... + fixed$(.edgeStart,9) + ")/" + fixed$(.edge,9)
+            ... + ")) else self fi"
+    endif
+endproc
+
+# ---------------------------------------------------------------------------
+# RENDER / MIX EVENTS
+# ---------------------------------------------------------------------------
+appendInfoLine: "Rendering one-pass recursive KS events..."
+stopwatch
+vizVoice = 0
+
+for ev from 1 to eventCount
+    onset = eventOnset[ev]
+    pitchNow = eventPitch[ev]
+    tail = eventTail[ev]
+    weight = eventWeight[ev]
+
+    if tail > 1/sample_rate_Hz
+        if spatial_mode = 3
+            # Correlated detuned pair: one short shared excitation buffer.
+            rightPitch = pitchNow*2^(detune_cents/1200)
+            @computeLoop: pitchNow
+            nL = computeLoop.n
+            @computeLoop: rightPitch
+            nR = computeLoop.n
+            seedSamples = max(nL,nR)+2
+            seedDur = seedSamples/sample_rate_Hz
+
+            seedID = Create Sound from formula:
+                ... "ks_seed_" + uid$ + "_" + string$(ev),
+                ... 1,0,seedDur,sample_rate_Hz,"randomGauss(0,0.42)"
+
+            @synthKS: "ks_L_" + uid$ + "_" + string$(ev),pitchNow,tail,seedID
+            leftID = synthKS.out
+            @synthKS: "ks_R_" + uid$ + "_" + string$(ev),rightPitch,tail,seedID
+            rightID = synthKS.out
+
+            if ev = 1
+                selectObject: leftID
+                Copy: "ks_first_event_" + uid$
+                vizVoice = selected("Sound")
+            endif
+
+            t1 = min(duration_s,onset+tail)
+            gain = eventMixGain*weight*sqrt(0.5)
+            selectObject: outputSound
+            Formula (part): onset,t1,1,2,
+                ... "self+if row=1 then " + fixed$(gain,9)
+                ... + "*object(" + string$(leftID) + ",x-"
+                ... + fixed$(onset,9) + ",1) else " + fixed$(gain,9)
+                ... + "*object(" + string$(rightID) + ",x-"
+                ... + fixed$(onset,9) + ",1) fi"
+
+            removeObject: leftID,rightID,seedID
+
+        else
+            @synthKS: "ks_voice_" + uid$ + "_" + string$(ev),pitchNow,tail,0
+            voiceID = synthKS.out
+
+            if ev = 1
+                selectObject: voiceID
+                Copy: "ks_first_event_" + uid$
+                vizVoice = selected("Sound")
+            endif
+
+            if spatial_mode = 1
+                t1 = min(duration_s,onset+tail)
+                gain = eventMixGain*weight
+                selectObject: outputSound
+                Formula (part): onset,t1,1,1,
+                    ... "self+" + fixed$(gain,9) + "*object("
+                    ... + string$(voiceID) + ",x-" + fixed$(onset,9) + ",1)"
+
+            elsif spatial_mode = 2
+                if eventCount = 1
+                    pan = 0.5
+                else
+                    pan = 0.05+0.90*(ev-1)/(eventCount-1)
+                endif
+                gL = eventMixGain*weight*sqrt(1-pan)
+                gR = eventMixGain*weight*sqrt(pan)
+                t1 = min(duration_s,onset+tail)
+
+                selectObject: outputSound
+                Formula (part): onset,t1,1,2,
+                    ... "self+if row=1 then " + fixed$(gL,9)
+                    ... + "*object(" + string$(voiceID) + ",x-"
+                    ... + fixed$(onset,9) + ",1) else " + fixed$(gR,9)
+                    ... + "*object(" + string$(voiceID) + ",x-"
+                    ... + fixed$(onset,9) + ",1) fi"
+
+            else
+                delaySec = micro_delay_ms/1000
+                g = eventMixGain*weight*sqrt(0.5)
+                t1 = min(duration_s,onset+tail+delaySec)
+
+                selectObject: outputSound
+                Formula (part): onset,t1,1,2,
+                    ... "self+if row=1 then " + fixed$(g,9)
+                    ... + "*object(" + string$(voiceID) + ",x-"
+                    ... + fixed$(onset,9) + ",1) else " + fixed$(g,9)
+                    ... + "*object(" + string$(voiceID) + ",x-"
+                    ... + fixed$(onset+delaySec,9) + ",1) fi"
+            endif
+
+            removeObject: voiceID
+        endif
+    endif
+endfor
 
 synthElapsed = stopwatch
-appendInfoLine: "  (synthesis: ", fixed$(synthElapsed, 3), " s)"
+appendInfoLine: "Synthesis time: ", fixed$(synthElapsed,3), " s"
 
-# === Normalize ===
-if normalize_output
-    selectObject: outputSound
-    Scale peak: 0.9
-endif
-
-# === Final stats for visualization ===
+# ---------------------------------------------------------------------------
+# FINAL LEVEL
+# ---------------------------------------------------------------------------
 selectObject: outputSound
-finalDur = Get total duration
-finalPeak = Get absolute extremum: 0, 0, "None"
-nResultCh = Get number of channels
+preProtectPeak = Get absolute extremum: 0,0,"None"
+preProtectRMS = Get root-mean-square: 0,0
+protectionApplied = 0
 
-# ============================================================
-# VISUALIZATION  (8 x 8 canvas — suite standard)
-# ============================================================
-
-if draw_visualization
-    
-    Erase all
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##KARPLUS-STRONG TEXTURE GENERATOR##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... "Preset: " + preset_name$
-        ... + "  |  " + fixed$(pitch_Hz, 1) + " Hz"
-        ... + "  |  Damp: " + fixed$(damping, 4)
-        ... + "  |  Bright: " + fixed$(brightness, 2)
-        ... + "  |  N = " + string$(delaySamples) + " samp"
-        ... + "  |  " + fixed$(finalDur, 2) + " s"
-    
-    # ----------------------------------------------------------
-    # PANEL A: DECAY ENVELOPE  (left, headline)
-    # RMS over time on log-y. Theoretical exponential decay from
-    # damping^cycles is overlaid as a reference. Tells the user
-    # at a glance how sustained the sound is and whether the
-    # decay matches the damping parameter.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-    
-    # Compute RMS in 50 ms windows from the actual output
-    rmsWinSec = 0.05
-    nRMSWin = round(finalDur / rmsWinSec)
-    if nRMSWin < 4
-        nRMSWin = 4
-    endif
-    if nRMSWin > 200
-        nRMSWin = 200
-    endif
-    rmsHopSec = finalDur / nRMSWin
-    
-    # We need a mono representation for RMS measurement.
-    # If stereo, use channel 1 as a proxy (cheaper than full mix).
-    if nResultCh = 1
-        rmsSrc = outputSound
-        rmsSrcOwned = 0
-    else
-        selectObject: outputSound
-        rmsSrc = Extract one channel: 1
-        rmsSrcOwned = 1
-    endif
-    
-    rmsT# = zero# (nRMSWin)
-    rmsV# = zero# (nRMSWin)
-    rmsMax = 0.000001
-    selectObject: rmsSrc
-    for k from 1 to nRMSWin
-        tStart = (k - 1) * rmsHopSec
-        tEnd = tStart + rmsWinSec
-        if tEnd > finalDur
-            tEnd = finalDur
-        endif
-        thisRMS = Get root-mean-square: tStart, tEnd
-        if thisRMS = undefined or thisRMS < 0
-            thisRMS = 0
-        endif
-        rmsT#[k] = (tStart + tEnd) / 2
-        rmsV#[k] = thisRMS
-        if thisRMS > rmsMax
-            rmsMax = thisRMS
-        endif
-    endfor
-    if rmsSrcOwned = 1
-        removeObject: rmsSrc
-    endif
-    
-    # Convert to dB (relative to peak, floor at -60)
-    dbFloor = -60
-    rmsDb# = zero# (nRMSWin)
-    for k from 1 to nRMSWin
-        if rmsV#[k] > 0.000001
-            v = 20 * log10(rmsV#[k] / rmsMax)
-            if v < dbFloor
-                v = dbFloor
-            endif
-        else
-            v = dbFloor
-        endif
-        rmsDb#[k] = v
-    endfor
-    
-    Axes: 0, finalDur, dbFloor, 3
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, finalDur, dbFloor, 3
-    
-    # Reference grid: -10 dB lines
-    Colour: "{0.88, 0.88, 0.88}"
-    Line width: 1
-    gv = -10
-    while gv >= dbFloor
-        Draw line: 0, gv, finalDur, gv
-        gv = gv - 10
-    endwhile
-    Colour: "{0.78, 0.78, 0.82}"
-    Draw line: 0, 0, finalDur, 0
-    
-    # --- Theoretical exponential decay overlay ---
-    # Each delay-line cycle, the loop multiplies by `damping`.
-    # In dB: per cycle = 20*log10(damping). Cycles per second = pitch.
-    # So decay rate dB/s = pitch * 20*log10(damping).
-    # (Note: brightness adds a frequency-dependent decay on top
-    # of this, but the lowest mode decays at approximately the
-    # damping rate, which is what we plot here.)
-    decayPerCycleDb = 20 * log10(damping)
-    decayDbPerSec = pitch_Hz * decayPerCycleDb
-    Colour: "{0.55, 0.20, 0.55}"
-    Dotted line
-    Line width: 1.5
-    if decayDbPerSec < -0.01
-        # Only draw if there's actual decay
-        Draw line: 0, 0, finalDur, finalDur * decayDbPerSec
-    endif
-    Solid line
-    Line width: 1
-    Font size: 5
-    Colour: "{0.55, 0.20, 0.55}"
-    if decayDbPerSec < -0.01
-        Text: finalDur * 0.95, "right", -5, "half",
-            ... "theory: " + fixed$(decayDbPerSec, 1) + " dB/s"
-    else
-        Text: finalDur * 0.5, "centre", -5, "half", "no decay (damping ≈ 1)"
-    endif
-    
-    # --- Measured RMS curve ---
-    Colour: "{0.85, 0.40, 0.20}"
-    Line width: 1.5
-    for k from 2 to nRMSWin
-        Draw line: rmsT#[k - 1], rmsDb#[k - 1], rmsT#[k], rmsDb#[k]
-    endfor
-    Line width: 1
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "RMS (dB rel peak)"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL B: SPECTROGRAM with HARMONIC LINES  (right, upper)
-    # Full range up to Nyquist/2 so harmonics are visible.
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.55, 7.75, 0.90, 2.85
-    
-    # Build a mono representation
-    if nResultCh = 1
-        specSrc = outputSound
-        specSrcOwned = 0
-    else
-        selectObject: outputSound
-        specSrc = Extract one channel: 1
-        specSrcOwned = 1
-    endif
-    
-    # Spectrogram up to Nyquist/2 (or a hard cap of 11025 Hz for clarity)
-    specMaxFreq = sample_rate_Hz / 4
-    if specMaxFreq > 11025
-        specMaxFreq = 11025
-    endif
-    
-    selectObject: specSrc
-    To Spectrogram: 0.03, specMaxFreq, 0.005, 20, "Gaussian"
-    specID = selected("Spectrogram")
-    Paint: 0, 0, 0, 0, 100, "yes", 50, 6, 0, "no"
-    removeObject: specID
-    if specSrcOwned = 1
-        removeObject: specSrc
-    endif
-    
-    # Overlay harmonic lines
-    Axes: 0, finalDur, 0, specMaxFreq
-    Colour: "{1, 0.85, 0.30}"
-    Dotted line
-    Line width: 1
-    h = 1
-    while pitch_Hz * h < specMaxFreq and h <= 16
-        Draw line: 0, pitch_Hz * h, finalDur, pitch_Hz * h
-        h = h + 1
-    endwhile
-    Solid line
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 5
-    Marks left every: 1, 1000, "yes", "yes", "no"
-    Font size: 6
-    Text left: "yes", "Freq (Hz)"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL C: KS BLOCK DIAGRAM  (right, lower)
-    # Educational diagram showing the signal flow with current
-    # parameter values labelled. Helps users understand what
-    # they're tweaking.
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.40, 7.85, 3.15, 4.55
-    
-    Axes: 0, 100, 0, 100
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 100, 0, 100
-    
-    # Boxes (positions chosen for the canvas aspect)
-    # Excitation box (left)
-    Paint rectangle: "{0.85, 0.92, 0.82}", 4, 22, 55, 80
-    Colour: "{0.30, 0.45, 0.30}"
-    Line width: 1.2
-    Draw rectangle: 4, 22, 55, 80
-    Font size: 6
-    Colour: "{0.20, 0.35, 0.20}"
-    Text: 13, "centre", 70, "half", "##Excite##"
-    Font size: 5
-    Text: 13, "centre", 64, "half", "noise"
-    Text: 13, "centre", 58, "half", fixed$(excitation_ms, 1) + " ms"
-    
-    # Delay line box (centre)
-    Paint rectangle: "{0.82, 0.85, 0.95}", 30, 60, 55, 80
-    Colour: "{0.30, 0.40, 0.65}"
-    Draw rectangle: 30, 60, 55, 80
-    Font size: 6
-    Colour: "{0.20, 0.30, 0.55}"
-    Text: 45, "centre", 72, "half", "##Delay line##"
-    Font size: 5
-    Text: 45, "centre", 65, "half", "N = " + string$(delaySamples) + " samp"
-    Text: 45, "centre", 60, "half", "(" + fixed$(1000.0 / pitch_Hz, 2) + " ms)"
-    
-    # 2-tap filter box (right)
-    Paint rectangle: "{0.95, 0.88, 0.82}", 68, 96, 55, 80
-    Colour: "{0.65, 0.40, 0.30}"
-    Draw rectangle: 68, 96, 55, 80
-    Font size: 6
-    Colour: "{0.55, 0.30, 0.20}"
-    Text: 82, "centre", 72, "half", "##2-tap LP##"
-    Font size: 5
-    Text: 82, "centre", 65, "half", "c1=" + fixed$(c1, 2) + " c2=" + fixed$(c2, 2)
-    Text: 82, "centre", 60, "half", "(brightness)"
-    
-    # Damping (gain) box at bottom
-    Paint rectangle: "{0.95, 0.92, 0.82}", 35, 65, 18, 38
-    Colour: "{0.65, 0.55, 0.30}"
-    Draw rectangle: 35, 65, 18, 38
-    Font size: 6
-    Colour: "{0.55, 0.45, 0.20}"
-    Text: 50, "centre", 32, "half", "##× damping##"
-    Font size: 5
-    Text: 50, "centre", 24, "half", fixed$(damping, 4)
-    
-    Line width: 1
-    
-    # Arrows: excite → delay
-    Colour: "{0.40, 0.40, 0.50}"
-    Line width: 1.2
-    Draw line: 22, 67, 30, 67
-    # arrowhead
-    Draw line: 30, 67, 28, 65
-    Draw line: 30, 67, 28, 69
-    
-    # delay → filter
-    Draw line: 60, 67, 68, 67
-    Draw line: 68, 67, 66, 65
-    Draw line: 68, 67, 66, 69
-    
-    # filter → out (right edge)
-    Draw line: 96, 67, 99, 67
-    Font size: 5
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 97, "right", 73, "half", "out"
-    
-    # Feedback path: out -> damping -> back to delay input
-    # Goes down from filter output, left to damping, then back up to delay
-    Draw line: 82, 55, 82, 45
-    Draw line: 82, 45, 65, 38 / 2 + 8
-    # Simpler: take it down to damping, then back up to delay-in level
-    Draw line: 82, 55, 82, 45
-    Draw line: 82, 45, 65, 28
-    Draw line: 35, 28, 13, 28
-    Draw line: 13, 28, 13, 55
-    Draw line: 13, 55, 22, 67
-    # Arrowhead into delay (already drawn above for excite→delay; reuse position)
-    
-    # Feedback labels
-    Font size: 5
-    Colour: "{0.40, 0.40, 0.50}"
-    Text: 80, "right", 50, "half", "feedback"
-    
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text top: "no", "Signal flow"
-    
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
-    
-    Font size: 7
-    Colour: "Black"
-    Text: 2.20, "centre", 7.30, "half", "Decay envelope (orange = measured, dotted = theory)"
-    Text: 6.10, "centre", 7.30, "half", "Spectrogram + harmonics (upper) & block diagram (lower)"
-    
-    # ----------------------------------------------------------
-    # PANEL D: OUTPUT WAVEFORM  (full width, full duration)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
-    
-    selectObject: outputSound
-    outPeak = Get absolute extremum: 0, 0, "None"
-    if outPeak < 0.001
-        outPeak = 0.001
-    endif
-    ampViz = outPeak * 1.15
-    
-    Axes: 0, finalDur, -ampViz, ampViz
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -ampViz, ampViz
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, finalDur, 0
-    
-    selectObject: outputSound
-    if nResultCh = 1
-        Colour: "{0.20, 0.55, 0.55}"
-        Line width: 1
-        Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-    else
-        Extract one channel: 1
-        vCh1 = selected("Sound")
-        Colour: "{0.25, 0.50, 0.82}"
-        Line width: 1
-        Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-        removeObject: vCh1
-        
-        selectObject: outputSound
-        Extract one channel: 2
-        vCh2 = selected("Sound")
-        Colour: "{0.82, 0.45, 0.25}"
-        Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
-        removeObject: vCh2
-    endif
-    
-    Colour: "Black"
-    Line width: 1
-    Draw inner box
-    Font size: 7
-    if nResultCh = 1
-        Text top: "no", "Output waveform"
-    else
-        Text top: "no", "Output  (blue = L,  orange = R)"
-    endif
-    Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
-    if spatial_mode = 1
-        spatialName$ = "Mono"
-    elsif spatial_mode = 2
-        spatialName$ = "Stereo (detuned, " + fixed$(detune_cents, 1) + " ¢)"
-    else
-        spatialName$ = "Stereo (Haas, " + fixed$(haas_delay_ms, 1) + " ms)"
-    endif
-    
-    Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + preset_name$ + "##"
-        ... + "  Pitch: " + fixed$(pitch_Hz, 1) + " Hz"
-        ... + "  |  N = " + string$(delaySamples) + " samp"
-        ... + "  |  Damp: " + fixed$(damping, 4) + " (" + fixed$(decayDbPerSec, 1) + " dB/s)"
-        ... + "  |  Bright: " + fixed$(brightness, 2)
-        ... + "  |  Excite: " + fixed$(excitation_ms, 1) + " ms"
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "Mode: " + spatialName$
-        ... + "  |  SR: " + string$(sample_rate_Hz) + " Hz"
-        ... + "  |  Dur: " + fixed$(finalDur, 2) + " s (" + string$(totalSamples) + " samp)"
-        ... + "  |  Peak: " + fixed$(finalPeak, 3)
-        ... + "  |  Synth time: " + fixed$(synthElapsed, 2) + " s"
-    
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
-    Font size: 10
-    Colour: "Black"
-    Line width: 1
-    
+if peak_protection and preProtectPeak > 0.92
+    Scale peak: 0.92
+    protectionApplied = 1
 endif
 
-# === Play ===
+safeName$ = replace$(preset_name$," ","_",0)
+Rename: "KS_Texture_" + safeName$
+outputSound = selected("Sound")
+finalPeak = Get absolute extremum: 0,0,"None"
+finalRMS = Get root-mean-square: 0,0
+finalChannels = Get number of channels
+
+if seedWasFixed
+    random_initializeSafelyAndUnpredictably ()
+endif
+
+# ---------------------------------------------------------------------------
+# VISUALIZATION
+# ---------------------------------------------------------------------------
+if draw_visualization
+    @drawVisualization
+endif
+
+if vizVoice > 0
+    removeObject: vizVoice
+endif
+
+# ---------------------------------------------------------------------------
+# PLAY / FINAL INFO
+# ---------------------------------------------------------------------------
+selectObject: outputSound
+appendInfoLine: ""
+appendInfoLine: "Pre-protection peak/RMS: ", fixed$(preProtectPeak,4), " / ", fixed$(preProtectRMS,4)
+appendInfoLine: "Final peak/RMS: ", fixed$(finalPeak,4), " / ", fixed$(finalRMS,4)
+appendInfoLine: "Peak protection applied: ", protectionApplied
+appendInfoLine: "Created: ", selected$("Sound")
+
 if play_result
-    selectObject: outputSound
     Play
 endif
 
-# === Final ===
 selectObject: outputSound
-appendInfoLine: ""
-appendInfoLine: "=== Done ==="
-appendInfoLine: "Created: ", selected$("Sound")
+
+
+# ===========================================================================
+# VISUALIZATION
+# ===========================================================================
+procedure drawVisualization
+    .left = 0.78
+    .right = 7.58
+    .bg$ = "{0.975,0.975,0.978}"
+    .grid$ = "{0.82,0.82,0.84}"
+    .blue$ = "{0.18,0.43,0.72}"
+    .orange$ = "{0.80,0.42,0.20}"
+    .purple$ = "{0.52,0.30,0.62}"
+    .green$ = "{0.24,0.58,0.38}"
+
+    Erase all
+
+    # -----------------------------------------------------------------------
+    # HEADER
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.20,7.80,0.05,0.33
+    Axes: 0,1,0,1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5,"centre",0.55,"half","KARPLUS-STRONG TEXTURE GENERATOR | " + preset_name$
+
+    Select inner viewport: 0.35,7.65,0.37,0.67
+    Axes: 0,1,0,1
+    Font size: 6
+    Colour: "{0.35,0.35,0.35}"
+    Text: 0.5,"centre",0.68,"half",
+        ... texture_name$ + " | " + string$(eventCount) + " events | " + spatial_name$
+    Text: 0.5,"centre",0.20,"half",
+        ... "noise seed -> fractional-delay + brightness loop -> modeled decay -> event scheduler -> spatial mix"
+
+    # -----------------------------------------------------------------------
+    # A: ACTUAL EVENT FIELD
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.35,7.65,0.78,1.00
+    Axes: 0,1,0,1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5,"centre",0.52,"half",
+        ... "A  ACTUAL TEXTURE SCHEDULE | onset, pitch and rendered tail of every KS event"
+
+    .logLo = ln(max(20,0.90*minEventPitch))
+    .logHi = ln(min(safeTop,1.10*maxEventPitch))
+    if .logHi <= .logLo
+        .logHi = .logLo+0.5
+    endif
+
+    Select inner viewport: .left,.right,1.07,2.12
+    Axes: 0,duration_s,.logLo,.logHi
+    Paint rectangle: .bg$,0,duration_s,.logLo,.logHi
+
+    for .ev from 1 to eventCount
+        .h = (.ev-1)/max(1,eventCount-1)
+        .r = 0.18+0.58*.h
+        .g = 0.50-0.20*.h
+        .b = 0.78-0.42*.h
+        .col$ = "{" + fixed$(.r,3) + "," + fixed$(.g,3) + "," + fixed$(.b,3) + "}"
+        Colour: .col$
+        Draw line: eventOnset[.ev],ln(eventPitch[.ev]),
+            ... min(duration_s,eventOnset[.ev]+eventTail[.ev]),ln(eventPitch[.ev])
+        Paint circle (mm): .col$,eventOnset[.ev],ln(eventPitch[.ev]),0.8
+    endfor
+
+    Colour: "Black"
+    Draw inner box
+    Marks bottom: 5,"yes","yes","no"
+    Font size: 6
+    Text left: "yes","log pitch"
+
+    # -----------------------------------------------------------------------
+    # B: LOOP GAIN VS FREQUENCY
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.35,7.65,2.28,2.50
+    Axes: 0,1,0,1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5,"centre",0.52,"half",
+        ... "B  FEEDBACK LOOP | theoretical gain per round trip for first event"
+
+    .fMax = min(0.45*sample_rate_Hz,max(3000,10*eventPitch[1]))
+    .dbMin = -36
+
+    Select inner viewport: .left,.right,2.57,3.48
+    Axes: 0,.fMax,.dbMin,1
+    Paint rectangle: .bg$,0,.fMax,.dbMin,1
+
+    Colour: .grid$
+    Dotted line
+    .dbGrid = -30
+    while .dbGrid <= 0
+        Draw line: 0,.dbGrid,.fMax,.dbGrid
+        .dbGrid = .dbGrid+10
+    endwhile
+    Plain line
+
+    Colour: .purple$
+    Line width: 1.5
+    .prevF = 0
+    .prevDb = 20*log10(damping)
+    for .k from 1 to 160
+        .f = .k/160*.fMax
+        .w = 2*pi*.f/sample_rate_Hz
+        .mB = sqrt(((1-firstS)+firstS*cos(.w))^2+(firstS*sin(.w))^2)
+        .mF = sqrt(((1-firstFrac)+firstFrac*cos(.w))^2+(firstFrac*sin(.w))^2)
+        .g = damping*.mB*.mF
+        .db = max(.dbMin,20*log10(max(1e-12,.g)))
+        Draw line: .prevF,.prevDb,.f,.db
+        .prevF = .f
+        .prevDb = .db
+    endfor
+    Line width: 1
+
+    Colour: .orange$
+    Dotted line
+    .h = 1
+    while .h*eventPitch[1] < .fMax and .h <= 12
+        Draw line: .h*eventPitch[1],.dbMin,.h*eventPitch[1],1
+        .h = .h+1
+    endwhile
+    Plain line
+
+    Colour: "Black"
+    Draw inner box
+    Marks left: 4,"yes","yes","no"
+    Marks bottom: 5,"yes","yes","no"
+    Font size: 6
+    Text left: "yes","Loop gain (dB/pass)"
+
+    # -----------------------------------------------------------------------
+    # C: FIRST-EVENT MEASURED DECAY VS MODE THEORY
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.35,7.65,3.64,3.86
+    Axes: 0,1,0,1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5,"centre",0.52,"half",
+        ... "C  FIRST EVENT DECAY | measured RMS vs theoretical fundamental / 5th-partial loss"
+
+    .dbFloor = -60
+    .vDur = eventTail[1]
+    .nWin = max(8,min(140,round(.vDur/0.04)))
+    .hop = .vDur/.nWin
+    .rmsMax = 1e-9
+    .rmsT# = zero#(.nWin)
+    .rmsV# = zero#(.nWin)
+
+    selectObject: vizVoice
+    for .k from 1 to .nWin
+        .t0 = (.k-1)*.hop
+        .t1 = min(.vDur,.t0+max(0.025,.hop))
+        .rv = Get root-mean-square: .t0,.t1
+        if .rv = undefined or .rv < 0
+            .rv = 0
+        endif
+        .rmsT#[.k] = 0.5*(.t0+.t1)
+        .rmsV#[.k] = .rv
+        .rmsMax = max(.rmsMax,.rv)
+    endfor
+
+    Select inner viewport: .left,.right,3.93,4.91
+    Axes: 0,.vDur,.dbFloor,3
+    Paint rectangle: .bg$,0,.vDur,.dbFloor,3
+
+    Colour: .grid$
+    Dotted line
+    .dbGrid = -50
+    while .dbGrid <= 0
+        Draw line: 0,.dbGrid,.vDur,.dbGrid
+        .dbGrid = .dbGrid+10
+    endwhile
+    Plain line
+
+    Colour: .orange$
+    Line width: 1.5
+    .havePrev = 0
+    for .k from 1 to .nWin
+        if .rmsV#[.k] > 1e-9
+            .db = max(.dbFloor,20*log10(.rmsV#[.k]/.rmsMax))
+        else
+            .db = .dbFloor
+        endif
+        if .havePrev
+            Draw line: .prevT,.prevDb,.rmsT#[.k],.db
+        endif
+        .prevT = .rmsT#[.k]
+        .prevDb = .db
+        .havePrev = 1
+    endfor
+    Line width: 1
+
+    Colour: .blue$
+    Dotted line
+    Draw line: 0,0,.vDur,max(.dbFloor,firstDecay*.vDur)
+    Colour: .green$
+    Draw line: 0,0,.vDur,max(.dbFloor,firstDecay5*.vDur)
+    Plain line
+
+    Colour: "Black"
+    Draw inner box
+    Marks left: 4,"yes","yes","no"
+    Marks bottom: 5,"yes","yes","no"
+    Font size: 5
+    Text: 0.02*.vDur,"left",-5,"half","orange=measured  blue=f0 theory  green=5th theory"
+
+    # -----------------------------------------------------------------------
+    # D: MEASURED OUTPUT SPECTROGRAM
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.35,7.65,5.07,5.29
+    Axes: 0,1,0,1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5,"centre",0.52,"half",
+        ... "D  TEXTURE -> MEASUREMENT | output spectrogram + actual event fundamentals"
+
+    if finalChannels = 1
+        selectObject: outputSound
+        Copy: "ks_display_" + uid$
+        .disp = selected("Sound")
+    else
+        selectObject: outputSound
+        Extract one channel: 1
+        .leftDisp = selected("Sound")
+        .leftRms = Get root-mean-square: 0,0
+        selectObject: outputSound
+        Extract one channel: 2
+        .rightDisp = selected("Sound")
+        .rightRms = Get root-mean-square: 0,0
+        if .rightRms > .leftRms
+            removeObject: .leftDisp
+            .disp = .rightDisp
+        else
+            removeObject: .rightDisp
+            .disp = .leftDisp
+        endif
+    endif
+
+    .specMax = min(0.45*sample_rate_Hz,max(3000,7*maxEventPitch))
+    .specStep = max(0.002,duration_s/1200)
+    selectObject: .disp
+    To Spectrogram: 0.03,.specMax,.specStep,20,"Gaussian"
+    .spec = selected("Spectrogram")
+
+    Select inner viewport: .left,.right,5.36,6.45
+    selectObject: .spec
+    Paint: 0,0,0,.specMax,100,"yes",50,6,0,"no"
+    removeObject: .spec
+
+    Axes: 0,duration_s,0,.specMax
+    Colour: .blue$
+    Line width: 0.7
+    .guideStep = max(1,ceiling(eventCount/180))
+    for .ev from 1 to eventCount
+        if ((.ev-1) mod .guideStep)=0 and eventPitch[.ev] <= .specMax
+            Draw line: eventOnset[.ev],eventPitch[.ev],
+                ... min(duration_s,eventOnset[.ev]+eventTail[.ev]),eventPitch[.ev]
+        endif
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks left: 4,"yes","yes","no"
+    Marks bottom: 5,"yes","yes","no"
+    Font size: 6
+    Text left: "yes","Frequency (Hz)"
+    Text bottom: "yes","Time (s)"
+
+    removeObject: .disp
+
+    # -----------------------------------------------------------------------
+    # QC SUMMARY
+    # -----------------------------------------------------------------------
+    Select inner viewport: 0.50,7.50,6.70,7.82
+    Axes: 0,1,0,1
+    Paint rectangle: "{0.93,0.93,0.935}",0,1,0,1
+    Font size: 6
+    Colour: "{0.25,0.25,0.25}"
+
+    Text: 0.02,"left",0.80,"half",
+        ... "LOOP  |  N=" + string$(firstDelayN)
+        ... + "  frac=" + fixed$(firstFrac,4)
+        ... + "  S=" + fixed$(firstS,3)
+        ... + "  coeffs=" + fixed$(firstA0,3) + "/" + fixed$(firstA1,3) + "/" + fixed$(firstA2,3)
+
+    Text: 0.02,"left",0.58,"half",
+        ... "DECAY  |  f0 " + fixed$(firstDecay,2) + " dB/s"
+        ... + "  |  5th " + fixed$(firstDecay5,2) + " dB/s"
+        ... + "  |  T60(f0) " + fixed$(firstT60,2) + " s"
+
+    Text: 0.02,"left",0.36,"half",
+        ... "TEXTURE  |  events " + string$(eventCount)
+        ... + "  |  mean overlap " + fixed$(meanOverlap,2)
+        ... + "  |  gain " + fixed$(eventMixGain,3)
+        ... + "  |  " + seed_label$
+
+    if protectionApplied
+        .level$ = "down-only protection"
+    else
+        .level$ = "level preserved"
+    endif
+
+    Text: 0.02,"left",0.14,"half",
+        ... "OUTPUT  |  pre-peak " + fixed$(preProtectPeak,3)
+        ... + "  |  final peak " + fixed$(finalPeak,3)
+        ... + "  |  RMS " + fixed$(finalRMS,4)
+        ... + "  |  synth " + fixed$(synthElapsed,2) + " s  |  " + .level$
+
+    Colour: "{0.52,0.52,0.54}"
+    Draw rectangle: 0,1,0,1
+    Colour: "Black"
+    Font size: 10
+endproc
