@@ -1,5 +1,6 @@
 # ============================================================
 # Praat AudioTools - Custom Generative Chain
+# Version: 1.1 - Kotoński FSM v1.5 compatibility
 # ============================================================
 
 Erase all
@@ -19,6 +20,7 @@ appendInfoLine: "--- Starting Custom Generative Chain ---"
 # --- Define Paths (Relative) ---
 # Assumes this script is in "plugin_AudioTools/_Chains/"
 path1$ = "../AI & Adaptive/HMM_Timbre_Sequencing.praat"
+# This stable plugin path should contain the reviewed v1.5 implementation.
 path2$ = "../Generative & Synthesis/Kotoński_FSM_Event_Generator.praat"
 path3$ = "../Generative & Synthesis/Risset's_Mutations.praat"
 path4$ = "../Generative & Synthesis/Stockhausen_Studie_II_Generator.praat"
@@ -61,13 +63,36 @@ sound1 = selected("Sound")
 appendInfoLine: "Step 1: HMM Timbre Sequencing complete."
 
 # ==============================================================================
-# STEP 2: Kotoński FSM Event Generator
+# STEP 2: Kotoński-Inspired State-Event Generator v1.5
 # ==============================================================================
-appendInfoLine: "Step 2: Generating Kotoński FSM Events..."
-runScript: path2$, "6. Custom (compositional control below)", 30, 44100, 120, 0.6, 10, 15, "Palindrome: 1->2->3->4->3->2->1", "Event-based (every N events)", 25, 80, 8000, 1, "Noise", "Noise", "Mixed", "Tones", 800, 0, 0
+appendInfoLine: "Step 2: Generating Kotoński-inspired finite-state event field..."
+
+# v1.5 has a new compact 12-argument main form. The older chain call passed
+# state durations, transition mode, frequency bounds and material labels that
+# no longer belong to the main runScript signature. Advanced state/sound
+# parameters now live on an optional pause page, which must remain OFF inside
+# an unattended chain.
+#
+# Chain mapping retained here:
+#   old Custom preset         -> Custom Finite-State Field
+#   duration                  -> 30 s
+#   events                    -> 120
+#   global amplitude          -> 0.60
+#   palindrome state motion   -> Palindrome
+#   event-based state change  -> State_hold_events = 10
+#   downstream Stereo Mixer   -> Kotoński stage stays Mono
+#   advanced page             -> off (non-interactive chain)
+#   peak protection           -> on
+#   visualization / playback  -> off
+#
+# v1.5 main-form signature:
+#   Preset, Duration_s, Sample_rate_Hz, Num_events, Global_amplitude,
+#   Transition_logic, State_hold_events, Spatial_mode,
+#   Edit_state_sound_details, Peak_protection, Draw_visualization, Play_result
+runScript: path2$, "Custom Finite-State Field", 30, 44100, 120, 0.60, "Palindrome", 10, "Mono", 0, 1, 0, 0
 
 sound2 = selected("Sound")
-appendInfoLine: "Step 2: Kotoński Generator complete."
+appendInfoLine: "Step 2: Kotoński-inspired v1.5 field complete."
 
 # ==============================================================================
 # STEP 3: Risset's Mutations
