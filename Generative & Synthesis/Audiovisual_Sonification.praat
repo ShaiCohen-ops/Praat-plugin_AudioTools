@@ -3,21 +3,21 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.0 (2026)
+# Version: 5.1.1 reviewed (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Unified Audiovisual Engine — two modes in one script.
 #
-#   MODE 1 — AV PRESETS  (signal analysis → real-time visuals)
+#   MODE 1 — AV PRESETS  (generated signal/control → measured real-time visuals)
 #     1. TRUE ANALYSIS: RMS -> Size         (amplitude-driven circle)
 #     2. TRUE ANALYSIS: Pitch -> Y-Pos      (pitch-tracker dot)
-#     3. Tone -> Sharpness                  (The Morphing Star)
-#     4. Voices -> Swarm                    (The Particle System)
-#     5. Phase -> Rotation                  (The Hypnotic Spiral)
+#     3. FM Index -> Star Sharpness          (The Morphing Star)
+#     4. Instantaneous Voice Freq -> Swarm   (The Particle System)
+#     5. Phase Modulation -> Rotation        (The Hypnotic Spiral)
 #     6. FM Index -> Geometry               (The Trochoid Spirograph)
-#     7. Stereo Waveform -> Path            (Lissajous + Phosphor Trails)
+#     7. Stereo Waveform -> Path             (measured L/R Lissajous)
 #
 #   MODE 2 — POLY COMPOSITION  (multi-voice generative engine)
 #     Shapes:     Circle, Triangle, Square, Pentagon, Hexagon,
@@ -36,6 +36,23 @@
 #   • Build {r,g,b} colour strings via string$() concatenation,
 #     never via '.var' interpolation.
 #
+#
+# v5.1 reviewed:
+#   - Replaced 80-ms chunk-by-chunk Play with one continuous `asynchronous Play`
+#     per run; Demo animation is paced with sleep(). This removes hundreds of
+#     temporary Sound objects and avoids device restart gaps/clicks.
+#   - Uses ceiling() frame coverage so the final audio tail is not omitted.
+#   - Added duration/master-volume guards and reproducible initial-phase seed.
+#   - Preset 2 now uses click-safe local-note phase/envelopes before Pitch QC.
+#   - Preset 4 uses mathematically correct integrated slow FM (bounded deviation).
+#   - Presets 3/5/6 visualise the exact synthesis control that drives the sound.
+#   - Preset 7 draws the actual stereo waveform relation sampled from the master
+#     Sound, instead of an unrelated low-frequency 3:2 surrogate.
+#   - RMS radius uses measured, run-specific normalization; Pitch Y mapping uses
+#     the measured tracked range and holds the last valid value through dropouts.
+#   - Poly mode is now stereo: visual X position drives equal-power stereo pan.
+#   - Poly AM/additive/pulse oscillators now honour per-voice phase consistently.
+#   - Global 10-ms edge fade prevents start/end clicks before peak scaling.
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: Unified Audiovisual Engine.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
@@ -54,27 +71,28 @@ number_of_voices  = 3
 total_duration    = 4
 master_volume     = 0.85
 show_trails       = 1
-randomize_seed    = 1
+randomize_initial_phase = 1
+random_seed        = 0
 
 # ============================================================
 # FORM (persistent — re-opens after each run)
 # ============================================================
 repeat
 
-beginPause: "AudioTools v5 — Select Mode & Configure"
+beginPause: "AudioTools v5.1 — Select Mode & Configure"
 
     comment: "════  MODE  ════"
     optionmenu: "Mode", mode
-        option: "AV Presets  (signal analysis → visuals)"
+        option: "AV Presets  (generated signal/control → measured visuals)"
         option: "Poly Composition  (multi-voice generative)"
 
     comment: "────  AV PRESETS — ignored in Poly mode  ────"
     optionmenu: "Preset", preset
         option: "1. TRUE ANALYSIS: RMS -> Size"
         option: "2. TRUE ANALYSIS: Pitch -> Y-Position"
-        option: "3. Tone -> Sharpness (The Morphing Star)"
-        option: "4. Voices -> Swarm (The Particle System)"
-        option: "5. Phase -> Rotation (The Hypnotic Spiral)"
+        option: "3. FM Index -> Star Sharpness (The Morphing Star)"
+        option: "4. Voice Frequency -> Swarm (The Particle System)"
+        option: "5. Phase Modulation -> Rotation (The Hypnotic Spiral)"
         option: "6. FM Index -> Geometry (The Trochoid Spirograph)"
         option: "7. Stereo Waveform -> Path (Lissajous)"
 
@@ -86,7 +104,7 @@ beginPause: "AudioTools v5 — Select Mode & Configure"
         option: "Pentagon  (5 sides)"
         option: "Hexagon  (6 sides)"
         option: "Star  (5-pointed)"
-        option: "Plane  (filled square)"
+        option: "Plane  (filled tile + rotating outline)"
         option: "Points"
         option: "Lines  (from centre)"
     optionmenu: "Color palette", color_palette
@@ -114,8 +132,9 @@ beginPause: "AudioTools v5 — Select Mode & Configure"
     comment: "════  SHARED PARAMETERS  ════"
     real: "Total duration", total_duration
     real: "Master volume", master_volume
-    boolean: "Show trails", show_trails
-    boolean: "Randomize seed", randomize_seed
+    boolean: "Show trails (Poly mode)", show_trails
+    boolean: "Randomize initial phase", randomize_initial_phase
+    integer: "Random seed (0 = unpredictable)", random_seed
 
 clicked = endPause: "Quit", "Run", 2, 1
 
@@ -126,15 +145,46 @@ endif
 # ============================================================
 # SHARED SETUP
 # ============================================================
-totalDur     = total_duration
-frame_step   = 0.08        ; ~12 fps
-sr           = 44100
-total_frames = floor(totalDur / frame_step)
+totalDur   = total_duration
+frame_step = 0.08        ; ~12.5 fps
+sr         = 44100
 
-time_offset = 0
-if randomize_seed
-    time_offset = randomUniform(0, 100)
+if totalDur <= 0
+    exitScript: "Total duration must be greater than zero."
 endif
+if totalDur > 300
+    exitScript: "Total duration is limited to 300 seconds for a real-time Demo animation."
+endif
+if master_volume < 0
+    master_volume = 0
+endif
+if master_volume > 0.98
+    master_volume = 0.98
+endif
+if random_seed < 0
+    exitScript: "Random seed must be 0 (unpredictable) or a positive integer."
+endif
+
+total_frames = ceiling(totalDur / frame_step)
+if total_frames < 1
+    total_frames = 1
+endif
+
+# Optional randomized initial phase/time offset, with reproducibility.
+time_offset = 0
+seedWasFixed = 0
+if randomize_initial_phase
+    if random_seed > 0
+        random_initializeWithSeedUnsafelyButPredictably (random_seed)
+        seedWasFixed = 1
+    endif
+    time_offset = randomUniform(0, 100)
+    if seedWasFixed
+        random_initializeSafelyAndUnpredictably ()
+    endif
+endif
+
+edgeFade = min(0.010, totalDur / 4)
 
 # ============================================================
 # ════════════════════════════════════════════════════════════
@@ -148,15 +198,15 @@ if mode = 1
     elsif preset = 2
         title$ = "Fundamental Frequency -> Y-Pos"
     elsif preset = 3
-        title$ = "LFO -> Star Coordinate Space"
+        title$ = "FM Index -> Star Sharpness"
     elsif preset = 4
-        title$ = "Multi-Voice Particle Swarm"
+        title$ = "Instantaneous Voice Frequency -> Swarm"
     elsif preset = 5
-        title$ = "Phase Lock -> Polar Rotation"
+        title$ = "Phase Modulation -> Polar Rotation"
     elsif preset = 6
         title$ = "FM Index -> Trochoid Geometry"
     elsif preset = 7
-        title$ = "Stereo Phase -> Lissajous Path"
+        title$ = "Measured Stereo Waveform -> Lissajous"
     endif
 
     # ----------------------------------------------------------
@@ -178,14 +228,18 @@ if mode = 1
         Formula: "0.8 * sin(2*pi*150*(x+time_offset)) * (0.5 + 0.5 * sin(2*pi*1.5*(x+time_offset)))"
 
     elsif preset = 2
-        Formula: "0.6 * sin(2*pi * (200 + 600 * ((floor((x+time_offset)*8)*7) mod 5)/4) * x) * exp(-(((x+time_offset)*8) - floor((x+time_offset)*8)) / 0.1)"
+        # 8 notes/s. Local note phase plus a sine envelope makes every note
+        # start and end at zero, so pitch changes do not create discontinuities.
+        Formula: "0.65 * sin(pi * (((x+time_offset)*8) - floor((x+time_offset)*8))) * sin(2*pi * (200 + 600 * ((floor((x+time_offset)*8)*7) mod 5)/4) * ((((x+time_offset)*8) - floor((x+time_offset)*8)) / 8))"
 
     elsif preset = 3
         Formula: "0.5 * sin(2*pi*300*x + (5 * (0.5 - 0.5*cos(2*pi*0.5*(x+time_offset)))) * sin(2*pi*600*x))"
 
     elsif preset = 4
+        # Exact integral of f(t)=200*v + 100*sin(2*pi*0.1*v*t).
+        # Unlike f(t)*t, this keeps the intended +/-100-Hz deviation bounded.
         for v from 1 to 5
-            Formula: "self + 0.15 * sin(2*pi * (200 * v + 100 * sin(2*pi*(0.1*v)*(x+time_offset))) * x)"
+            Formula: "self + 0.15 * sin(2*pi*(200*v)*x - (100/(0.1*v))*cos(2*pi*(0.1*v)*(x+time_offset)))"
         endfor
 
     elsif preset = 5
@@ -200,13 +254,17 @@ if mode = 1
     endif
 
     selectObject: masterSound
-    Scale peak: master_volume
+    if edgeFade > 0
+        fadeOutStart = totalDur - edgeFade
+        Formula: "if x < edgeFade then self * (x/edgeFade) else if x > fadeOutStart then self * ((totalDur-x)/edgeFade) else self fi fi"
+    endif
+    if master_volume > 0
+        Scale peak: master_volume
+    else
+        Formula: "0"
+    endif
 
-    # Initialize Lissajous phosphor trail (preset 7)
-    for h from 1 to 20
-        hist_x[h] = 50
-        hist_y[h] = 50
-    endfor
+    total_samples = Get number of samples
 
     # ----------------------------------------------------------
     # AV PHASE 2: PRE-COMPUTE ANALYSIS DATA
@@ -220,11 +278,12 @@ if mode = 1
     demoShow()
 
     samples_per_frame = round(frame_step * sr)
+    rmsMax = 0
     if preset = 1 or preset = 2
         selectObject: masterSound
         for frame from 0 to total_frames - 1
             .start_sample = frame * samples_per_frame + 1
-            .end_sample   = .start_sample + samples_per_frame - 1
+            .end_sample   = min(total_samples, .start_sample + samples_per_frame - 1)
             .sum_sq = 0
             .count  = 0
             .s = .start_sample
@@ -234,48 +293,90 @@ if mode = 1
                 .count  = .count + 1
                 .s = .s + 10
             endwhile
-            rms_cache[frame] = sqrt(.sum_sq / .count)
+            if .count > 0
+                rms_cache[frame] = sqrt(.sum_sq / .count)
+            else
+                rms_cache[frame] = 0
+            endif
+            if rms_cache[frame] > rmsMax
+                rmsMax = rms_cache[frame]
+            endif
         endfor
     else
         for frame from 0 to total_frames - 1
             rms_cache[frame] = 0
         endfor
     endif
+    if rmsMax <= 0
+        rmsMax = 1
+    endif
 
+    pitchMin = 1e30
+    pitchMax = 0
     if preset = 2
         demo Paint rectangle: "Black", 0, 100, 0, 100
         demo Colour: "White"
         demo Text: 50, "centre", 60, "half", "Running pitch tracker..."
         demoShow()
         selectObject: masterSound
-        fullPitch = To Pitch: 0, 75, 1000
+        fullPitch = To Pitch: 0.005, 75, 1000
+        lastPitch = 200
         for frame from 0 to total_frames - 1
-            t = frame * frame_step
-            pv = Get value at time: t + (frame_step / 2), "Hertz", "Linear"
-            if pv = undefined
-                pitch_cache[frame] = 200
+            t = min(totalDur, frame * frame_step + frame_step / 2)
+            pv = Get value at time: t, "Hertz", "Linear"
+            if pv = undefined or pv <= 0
+                pv = lastPitch
             else
-                pitch_cache[frame] = pv
+                lastPitch = pv
             endif
+            pitch_cache[frame] = pv
+            pitchMin = min(pitchMin, pv)
+            pitchMax = max(pitchMax, pv)
         endfor
         removeObject: fullPitch
+        if pitchMax <= pitchMin
+            pitchMin = 200
+            pitchMax = 800
+        endif
     endif
 
-    demo Paint rectangle: "Black", 0, 100, 0, 100
-    demo Colour: "White"
-    demo Text: 50, "centre", 60, "half", "Pre-slicing audio chunks..."
-    demoShow()
-    for frame from 0 to total_frames - 1
-        t     = frame * frame_step
-        t_end = t + frame_step
+    # Preset 7: precompute a short *measured* L/R waveform path per frame.
+    # The plotted Lissajous therefore comes from the exact master Sound.
+    liss_points = 32
+    liss_window = 0.020
+    if preset = 7
         selectObject: masterSound
-        chunk_id[frame] = Extract part: t, t_end, "rectangular", 1, "no"
-    endfor
+        lissScale = 45 / max(master_volume, 0.01)
+        for frame from 0 to total_frames - 1
+            .centreT = min(totalDur, frame * frame_step + frame_step / 2)
+            .startT = max(0, min(totalDur - liss_window, .centreT - liss_window / 2))
+            if .startT < 0
+                .startT = 0
+            endif
+            for .j from 1 to liss_points
+                .sampleT = .startT + (.j - 1) * liss_window / (liss_points - 1)
+                .sampleNo = round(.sampleT * sr) + 1
+                .sampleNo = max(1, min(total_samples, .sampleNo))
+                .idx = frame * liss_points + .j
+                .leftSample = Get value at sample number: 1, .sampleNo
+                .rightSample = Get value at sample number: 2, .sampleNo
+                liss_x[.idx] = 50 + lissScale * .leftSample
+                liss_y[.idx] = 50 + lissScale * .rightSample
+            endfor
+        endfor
+    endif
 
+    # Continuous audio playback: the whole Sound is started once. Praat's
+    # asynchronous directive lets the Demo animation continue while it plays.
     # ----------------------------------------------------------
-    # AV PHASE 3: REAL-TIME PLAYBACK
+    # AV PHASE 3: CONTINUOUS AUDIO + REAL-TIME ANIMATION
     # ----------------------------------------------------------
+    selectObject: masterSound
+    asynchronous Play
+    lateFrames = 0
+
     for frame from 0 to total_frames - 1
+        stopwatch
         t        = frame * frame_step
         t_end    = t + frame_step
         t_offset = t + time_offset
@@ -290,21 +391,25 @@ if mode = 1
         demo Paint rectangle: "Black", 0, 100, 0, 100
 
         if preset = 1
-            .radius = 5 + (rms_val * 120)
+            .rmsNorm = min(1, rms_val / rmsMax)
+            .radius = 6 + 30 * .rmsNorm
             .color$ = "White"
-            if rms_val > 0.35
+            if .rmsNorm > 0.70
                 .color$ = "Red"
             endif
             demo Paint circle (mm): .color$, 50, 50, .radius
 
         elsif preset = 2
-            .y_pos = 20 + ((pitch_val - 200) / 600) * 60
+            .pitchNorm = (pitch_val - pitchMin) / (pitchMax - pitchMin)
+            .pitchNorm = max(0, min(1, .pitchNorm))
+            .y_pos = 15 + 70 * .pitchNorm
             demo Colour: "{0.2, 0.2, 0.2}"
             demo Draw line: 0, .y_pos, 100, .y_pos
             demo Paint circle (mm): "Cyan", 50, .y_pos, 5
 
         elsif preset = 3
-            .mod   = 0.5 - 0.5 * cos(2*pi * 0.5 * t_offset)
+            .mod = 0.5 - 0.5 * cos(2*pi * 0.5 * t_offset)
+            .fmIndex = 5 * .mod
             .outer = 40
             .inner = 15 + (25 * (1 - .mod))
             demo Line width: 3
@@ -318,9 +423,13 @@ if mode = 1
             endfor
 
         elsif preset = 4
+            # Each particle's vertical position is the instantaneous frequency
+            # of the corresponding audio voice; X remains a slow identity orbit.
             for .v from 1 to 5
-                .x = 50 + 40 * cos(2*pi * (0.15 * .v) * t_offset + .v)
-                .y = 50 + 40 * sin(2*pi * (0.1  * .v) * t_offset + .v)
+                .instF = 200 * .v + 100 * sin(2*pi * (0.1*.v) * t_offset)
+                .x = 50 + 38 * cos(2*pi * (0.08*.v) * t_offset + .v)
+                .y = 10 + 80 * ((.instF - 100) / 1000)
+                .y = max(8, min(92, .y))
                 pos_x[.v] = .x
                 pos_y[.v] = .y
             endfor
@@ -334,8 +443,9 @@ if mode = 1
             endfor
 
         elsif preset = 5
-            .lfo   = sin(2*pi * 0.2 * t_offset)
-            .theta = (t_offset * 2) + (2 * pi * .lfo)
+            .lfo = sin(2*pi * 0.2 * t_offset)
+            .pmPhase = 4 * pi * .lfo
+            .theta = (t_offset * 2) + .pmPhase
             for .j from 1 to 40
                 .r        = .j * 1.0
                 .angle    = .j * 0.15 + .theta
@@ -349,10 +459,11 @@ if mode = 1
             endfor
 
         elsif preset = 6
-            .a     = 1.0
-            .b     = 2.0 + 1.5 * sin(2*pi * 0.4 * t_offset)
+            .fmIndex = 6 * sin(2*pi * 0.4 * t_offset)
+            .a = 1.0
+            .b = 2.0 + 0.25 * .fmIndex
             demo Line width: 2
-            .c_val = abs(sin(2*pi * 0.4 * t_offset))
+            .c_val = abs(.fmIndex) / 6
             c_val  = .c_val
             demo Colour: "{1.0, 'c_val', 0.5}"
             .last_x = 0
@@ -373,52 +484,60 @@ if mode = 1
             endwhile
 
         elsif preset = 7
-            ; Lissajous 3:2 (matches 220/330 Hz audio — perfect fifth)
-            .phase_drift = pi/4 + 0.3 * sin(2*pi * 0.05 * t_offset)
-            .new_x = 50 + 45 * sin(2*pi * 3.0 * t_offset)
-            .new_y = 50 + 45 * sin(2*pi * 2.0 * t_offset + .phase_drift)
-            for .h from 1 to 19
-                .idx = 21 - .h
-                hist_x[.idx] = hist_x[.idx - 1]
-                hist_y[.idx] = hist_y[.idx - 1]
+            # Measured L/R waveform relation over a 20-ms window.
+            demo Line width: 2
+            demo Colour: "{0.2, 0.85, 0.95}"
+            for .j from 2 to liss_points
+                .idx1 = frame * liss_points + .j - 1
+                .idx2 = frame * liss_points + .j
+                demo Draw line: liss_x[.idx1], liss_y[.idx1], liss_x[.idx2], liss_y[.idx2]
             endfor
-            hist_x[1] = .new_x
-            hist_y[1] = .new_y
-            for .h from 1 to 20
-                .fade    = 1.0 - (.h / 20)
-                if .fade < 0.05
-                    .fade = 0.05
-                endif
-                fade_val = .fade
-                demo Paint circle (mm): "{0.2, 'fade_val', 0.8}", hist_x[.h], hist_y[.h], 3 * fade_val
-            endfor
-            demo Paint circle (mm): "White", .new_x, .new_y, 4
+            .midIdx = frame * liss_points + round(liss_points / 2)
+            demo Paint circle (mm): "White", liss_x[.midIdx], liss_y[.midIdx], 3.5
 
         endif
 
-        ; HUD
+        ; HUD: report the actual control / measurement shown.
         demo Font size: 10
         demo Colour: "{0.6, 0.6, 0.6}"
         demo Text: 2, "left", 98, "half", title$
-        .hud$ = "t = " + fixed$(t, 2) + "s   |   RMS = " + fixed$(rms_val, 3)
-        if preset = 2
-            .hud$ = .hud$ + "   |   PITCH = " + fixed$(pitch_val, 1) + " Hz"
+        .hud$ = "t = " + fixed$(t, 2) + " s"
+        if preset = 1
+            .hud$ = .hud$ + "   |   measured RMS = " + fixed$(rms_val, 3)
+        elsif preset = 2
+            .hud$ = .hud$ + "   |   measured F0 = " + fixed$(pitch_val, 1) + " Hz"
+        elsif preset = 3
+            .hud$ = .hud$ + "   |   FM index = " + fixed$(.fmIndex, 2)
+        elsif preset = 4
+            .hud$ = .hud$ + "   |   Y = instantaneous voice frequency"
         elsif preset = 5
-            .hud$ = .hud$ + "   |   LFO PHASE = " + fixed$(.lfo, 2)
+            .hud$ = .hud$ + "   |   PM phase = " + fixed$(.pmPhase, 2) + " rad"
+        elsif preset = 6
+            .hud$ = .hud$ + "   |   FM index = " + fixed$(.fmIndex, 2)
+        elsif preset = 7
+            .hud$ = .hud$ + "   |   path = measured L/R samples"
         endif
         demo Text: 2, "left", 94, "half", .hud$
         demoShow()
 
-        selectObject: chunk_id[frame]
-        Play
-        removeObject: chunk_id[frame]
+        .renderTime = stopwatch
+        .frameBudget = min(frame_step, totalDur - t)
+        .sleepTime = .frameBudget - .renderTime
+        if .sleepTime > 0
+            sleep(.sleepTime)
+        else
+            lateFrames = lateFrames + 1
+        endif
     endfor
 
     removeObject: masterSound
     demo Paint rectangle: "Black", 0, 100, 0, 100
     demo Font size: 14
     demo Colour: "White"
-    demo Text: 50, "centre", 50, "half", "System Terminated."
+    demo Text: 50, "centre", 54, "half", "AV run complete."
+    demo Font size: 8
+    demo Colour: "{0.55, 0.55, 0.55}"
+    demo Text: 50, "centre", 45, "half", "late visual frames: " + string$(lateFrames)
     demoShow()
 
 # ============================================================
@@ -467,52 +586,64 @@ elsif mode = 2
     demo Text: 50, "centre", 55, "half", "Synthesising voices..."
     demoShow()
 
-    masterSound = Create Sound from formula: "poly", 1, 0, totalDur, sr, "0"
-    selectObject: masterSound
+    # Stereo master. The same X trajectory used by the visual movement controls
+    # equal-power pan, giving Poly mode a real audiovisual correspondence.
+    masterSound = Create Sound from formula: "poly", 2, 0, totalDur, sr, "0"
 
     for v from 1 to n_voices
-        vf  = voice_freq[v]
-        vp  = voice_phase[v]
-        amp = 0.8 / n_voices
+        vf = voice_freq[v]
+        vp = voice_phase[v]
+        voiceAmp = 0.8 / sqrt(n_voices)
 
         if synthesis_type = 1
-            Formula: "self + 'amp' * sin(2*pi * 'vf' * (x + 'time_offset') + 'vp')"
-
+            voiceFormula$ = "sin(2*pi*vf*(x+time_offset) + vp)"
         elsif synthesis_type = 2
-            Formula: "self + 'amp' * sin(2*pi * 'vf' * (x + 'time_offset') + 3 * sin(2*pi * 'vf' * 2 * (x + 'time_offset')) + 'vp')"
-
+            voiceFormula$ = "sin(2*pi*vf*(x+time_offset) + 3*sin(2*pi*(2*vf)*(x+time_offset) + 2*vp) + vp)"
         elsif synthesis_type = 3
-            Formula: "self + 'amp' * (0.5 + 0.5 * sin(2*pi * 4 * (x + 'time_offset') + 'vp')) * sin(2*pi * 'vf' * (x + 'time_offset'))"
-
+            voiceFormula$ = "(0.5 + 0.5*sin(2*pi*4*(x+time_offset) + vp)) * sin(2*pi*vf*(x+time_offset) + vp)"
         elsif synthesis_type = 4
-            Formula: "self + 'amp' * (0.55 * sin(2*pi * 'vf' * (x + 'time_offset')) + 0.25 * sin(2*pi * 'vf' * 2 * (x + 'time_offset')) + 0.13 * sin(2*pi * 'vf' * 3 * (x + 'time_offset')) + 0.07 * sin(2*pi * 'vf' * 4 * (x + 'time_offset')) + 'vp' * 0)"
-
-        elsif synthesis_type = 5
-            Formula: "self + 'amp' * (sin(2*pi * 'vf' * (x + 'time_offset')) + 0.5 * sin(2*pi * 'vf' * 2 * (x + 'time_offset')) + 0.33 * sin(2*pi * 'vf' * 3 * (x + 'time_offset')) + 0.25 * sin(2*pi * 'vf' * 4 * (x + 'time_offset')) + 0.2 * sin(2*pi * 'vf' * 5 * (x + 'time_offset')) + 0.17 * sin(2*pi * 'vf' * 6 * (x + 'time_offset')))"
-
+            voiceFormula$ = "0.55*sin(2*pi*vf*(x+time_offset)+vp) + 0.25*sin(2*pi*(2*vf)*(x+time_offset)+2*vp) + 0.13*sin(2*pi*(3*vf)*(x+time_offset)+3*vp) + 0.07*sin(2*pi*(4*vf)*(x+time_offset)+4*vp)"
+        else
+            voiceFormula$ = "sin(2*pi*vf*(x+time_offset)+vp) + 0.5*sin(2*pi*(2*vf)*(x+time_offset)+2*vp) + 0.33*sin(2*pi*(3*vf)*(x+time_offset)+3*vp) + 0.25*sin(2*pi*(4*vf)*(x+time_offset)+4*vp) + 0.2*sin(2*pi*(5*vf)*(x+time_offset)+5*vp) + 0.17*sin(2*pi*(6*vf)*(x+time_offset)+6*vp)"
         endif
+
+        voiceSound = Create Sound from formula: "av_voice", 1, 0, totalDur, sr, voiceFormula$
+        selectObject: voiceSound
+        Formula: "self * voiceAmp"
+
+        # Pan trajectory = visual X coordinate / 100, with safe margins.
+        if movement = 1
+            panExpr$ = "0.5 + 0.35*cos(2*pi*0.4*(x+time_offset) + vp)"
+        elsif movement = 2
+            panExpr$ = "0.5 + 0.01*(12 + 28*abs(sin(2*pi*0.25*(x+time_offset) + vp*0.4)))*cos(2*pi*0.5*(x+time_offset) + vp)"
+        elsif movement = 3
+            panExpr$ = "0.5 + 0.38*sin(2*pi*(0.30 + 0.04*v)*(x+time_offset) + vp)"
+        elsif movement = 4
+            panExpr$ = "0.5 + 0.38*sin(2*pi*0.35*(x+time_offset) + vp)"
+        else
+            panExpr$ = "0.5 + 0.01*(8 + 35*(0.5 + 0.5*sin(2*pi*0.28*(x+time_offset) + vp)))*cos(vp)"
+        endif
+
+        sourceVoiceID = voiceSound
+        selectObject: masterSound
+        Formula: "self + object[sourceVoiceID, 1, col] * (if row = 1 then sqrt(1 - (" + panExpr$ + ")) else sqrt(" + panExpr$ + ") fi)"
+        removeObject: voiceSound
     endfor
 
     selectObject: masterSound
-    Scale peak: master_volume
+    if edgeFade > 0
+        fadeOutStart = totalDur - edgeFade
+        Formula: "if x < edgeFade then self * (x/edgeFade) else if x > fadeOutStart then self * ((totalDur-x)/edgeFade) else self fi fi"
+    endif
+    if master_volume > 0
+        Scale peak: master_volume
+    else
+        Formula: "0"
+    endif
 
     # ----------------------------------------------------------
-    # POLY PHASE 2: PRE-SLICE AUDIO CHUNKS
+    # POLY PHASE 2: VISUAL STATE
     # ----------------------------------------------------------
-    demo Paint rectangle: "Black", 0, 100, 0, 100
-    demo Colour: "White"
-    demo Text: 50, "centre", 60, "half", "Pre-slicing audio..."
-    demo Font size: 10
-    demo Colour: "{0.5, 0.5, 0.5}"
-    demo Text: 50, "centre", 40, "half", "(ensures smooth playback)"
-    demoShow()
-
-    for frame from 0 to total_frames - 1
-        t_s = frame * frame_step
-        t_e = t_s + frame_step
-        selectObject: masterSound
-        chunk_id[frame] = Extract part: t_s, t_e, "rectangular", 1, "no"
-    endfor
 
     # Init per-voice trail arrays
     # trail_x'v'[h]: h=1 newest, h=trail_len oldest
@@ -525,9 +656,14 @@ elsif mode = 2
     endfor
 
     # ----------------------------------------------------------
-    # POLY PHASE 3: REAL-TIME PLAYBACK
+    # POLY PHASE 3: CONTINUOUS AUDIO + REAL-TIME ANIMATION
     # ----------------------------------------------------------
+    selectObject: masterSound
+    asynchronous Play
+    lateFrames = 0
+
     for frame from 0 to total_frames - 1
+        stopwatch
         t     = frame * frame_step
         t_off = t + time_offset
 
@@ -727,21 +863,29 @@ elsif mode = 2
         ; HUD
         demo Font size: 9
         demo Colour: "{0.45, 0.45, 0.45}"
-        demo Text: 2, "left", 98, "half", "Poly Composition  |  voices: " + string$(n_voices)
+        demo Text: 2, "left", 98, "half", "Poly Composition  |  voices: " + string$(n_voices) + "  |  visual X -> stereo pan"
         demo Text: 2, "left", 94, "half", "t = " + fixed$(t, 2) + " s"
         demoShow()
 
-        selectObject: chunk_id[frame]
-        Play
-        removeObject: chunk_id[frame]
+        .renderTime = stopwatch
+        .frameBudget = min(frame_step, totalDur - t)
+        .sleepTime = .frameBudget - .renderTime
+        if .sleepTime > 0
+            sleep(.sleepTime)
+        else
+            lateFrames = lateFrames + 1
+        endif
 
-    endfor   ; end playback loop
+    endfor   ; end animation loop
 
     removeObject: masterSound
     demo Paint rectangle: "Black", 0, 100, 0, 100
     demo Font size: 14
     demo Colour: "White"
-    demo Text: 50, "centre", 50, "half", "Composition complete."
+    demo Text: 50, "centre", 54, "half", "Composition complete."
+    demo Font size: 8
+    demo Colour: "{0.55, 0.55, 0.55}"
+    demo Text: 50, "centre", 45, "half", "late visual frames: " + string$(lateFrames)
     demoShow()
 
 endif   ; end mode branch
