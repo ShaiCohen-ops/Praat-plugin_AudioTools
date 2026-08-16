@@ -3,45 +3,49 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Frequency-dependent tremolo (spectral comb: gain varies as
-#   cos^2 over frequency below the cutoff)
+#   A SPECTRAL tremolo / comb-colour effect. This is not conventional
+#   time-domain tremolo: the gain is static in time and oscillates over
+#   FREQUENCY below a cutoff. Above the cutoff a constant gain is used.
+#
+#       g(f) = g_min + depth * cos^2(pi*f / spacing)   , f < cutoff
+#            = high_gain                              , f >= cutoff
+#
+#   spacing is the peak-to-peak spacing of the spectral gain comb in Hz.
+#   The whole-file FFT implementation and its resulting colour/ringing are
+#   deliberately retained as part of the instrument.
+#
+# Changelog v0.4 (2026):
+#   - MUSICAL CLARITY: renamed the old Tremolo_rate control to Spectral
+#     spacing (Hz). The old law cos(f/rate)^2 has period pi*rate, so presets
+#     are converted exactly and the mono/full-quality spectral response is
+#     unchanged for equivalent settings.
+#   - FIX (stereo): Praat To Spectrum on a multichannel Sound averages the
+#     channels. Stereo, especially anti-phase material, could therefore be
+#     attenuated or cancelled before processing. Mono and stereo inputs are
+#     now handled explicitly; L/R are processed independently with the same
+#     gain law and recombined without changing their balance.
+#   - QUALITY: Full Quality is now the default. The 22 kHz and 11 kHz speed
+#     modes are explicitly labelled by their 11 kHz / 5.5 kHz bandwidth;
+#     they are musical bandwidth reductions, not transparent speed switches.
+#   - FIX: a requested cutoff above the working Nyquist now means "all of the
+#     retained band is comb-shaped" instead of the old arbitrary 0.9*Nyquist
+#     clamp that left the top 10% under high_gain.
+#   - FIX: info reports requested vs effective cutoff after any resampling.
+#   - FORM: zero minimum/depth/high gain are legal; output peak is bounded.
+#   - VIZ: retained the existing story, but corrected the parts that could
+#     mislead: representative stereo channel instead of L/R averaging,
+#     adaptive frequency range, readable frequency marks, shared waveform
+#     amplitude scale, and the exact spectral-spacing law.
 #
 # Changelog v0.3 (2026):
-#   - FIX (audible): the spectral Formula wrote self[1, col] --
-#     row 1 (the REAL part) -- into BOTH spectrum rows, so the
-#     imaginary row was overwritten with scaled real values:
-#     phase destroyed on every run, Hermitian structure broken,
-#     output smeared. Now self * gain (each row scaled), a pure
-#     magnitude EQ as intended.
-#   - FIX: the cutoff and rate were compared against col (FFT BIN
-#     index) while every label, the info report, the Nyquist
-#     validation, and the gain-curve panel say HERTZ. "8000 Hz"
-#     landed at ~2.6 kHz on a 3 s file, and the effective cutoff
-#     and comb spacing CHANGED WITH INPUT DURATION. Both now use
-#     x (frequency in Hz, verified on 6.4.42): duration-
-#     independent, and the drawn gain curve finally matches the
-#     applied gain.
-#   - FIX: the FFT pad was never trimmed -- output was longer
-#     than the input (up to ~20%, with a silent-ish tail). Now
-#     trimmed to the working duration before upsampling.
-#   - FIX: info header erased itself (repeated writeInfoLine).
-#   - VIZ: the "Original"/"Amp" labels of the left waveform panel
-#     were drawn on a stray full-width viewport strip, landing
-#     across both panels; now placed like the right panel's.
-#   - Form title said v1.0 while the header said v0.2; unified.
-#   - NOTE: v0.2's output was a phase-mangled variant with
-#     duration-dependent comb spacing. v0.3 sounds different --
-#     cleaner and as documented. Verified on 6.4.42 that "endif"
-#     is legal in formula expressions (the script did run).
-#
-# Usage:
-#   Select a Sound object in Praat and run this script.
-#   Adjust parameters via the form dialog.
+#   - FIX: preserve complex Spectrum rows with self*gain.
+#   - FIX: cutoff/rate use frequency x in Hz, not FFT-bin col.
+#   - FIX: trim FFT padding back to the working duration.
 # ============================================================
 
 # === Input Validation ===
@@ -52,7 +56,7 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Dynamic Tremolo Effect v0.3
+form Dynamic Spectral Tremolo v0.4
     optionmenu Preset: 1
         option Custom
         option Classic Tremolo
@@ -64,101 +68,100 @@ form Dynamic Tremolo Effect v0.3
         option Bass Wobble
         option Spectral Sweep
     comment === Performance ===
-    optionmenu Speed_mode: 2
-        option Full Quality (original sample rate)
-        option Balanced (downsample to 22 kHz)
-        option Fast (downsample to 11 kHz)
-    comment === Tremolo Parameters ===
-    positive Low_freq_cutoff 8000
-    comment (Frequencies below this get tremolo)
-    positive Tremolo_depth_min 0.3
-    positive Tremolo_depth_max 0.7
-    comment (Modulation range: min to min+max)
-    positive Tremolo_rate 500
-    comment (Higher = slower tremolo cycle)
-    comment === High Frequency ===
-    positive High_freq_gain 0.8
-    comment (Gain for frequencies above cutoff)
+    optionmenu Speed_mode: 1
+        option Full Quality (original bandwidth)
+        option Balanced (22 kHz render / 11 kHz bandwidth)
+        option Fast (11 kHz render / 5.5 kHz bandwidth)
+    comment === Spectral Tremolo ===
+    positive Low_freq_cutoff_Hz 8000
+    real Minimum_gain 0.3
+    real Modulation_depth 0.7
+    positive Spectral_spacing_Hz 1570.796327
+    comment (spacing = peak-to-peak distance of the spectral comb)
+    real High_freq_gain 0.8
+    comment (constant gain above the cutoff)
     comment === Output ===
-    positive Scale_peak 0.9
+    real Output_peak 0.9
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
 # ============================================================
-# PRESETS
+# PRESETS -- spacing = pi * the v0.3 "rate", preserving the response
 # ============================================================
 
 if preset = 2
-    low_freq_cutoff = 8000
-    tremolo_depth_min = 0.3
-    tremolo_depth_max = 0.7
-    tremolo_rate = 500
+    low_freq_cutoff_Hz = 8000
+    minimum_gain = 0.3
+    modulation_depth = 0.7
+    spectral_spacing_Hz = pi * 500
     high_freq_gain = 0.8
     presetName$ = "ClassicTremolo"
 elsif preset = 3
-    low_freq_cutoff = 8000
-    tremolo_depth_min = 0.2
-    tremolo_depth_max = 0.9
-    tremolo_rate = 400
+    low_freq_cutoff_Hz = 8000
+    minimum_gain = 0.2
+    modulation_depth = 0.9
+    spectral_spacing_Hz = pi * 400
     high_freq_gain = 0.7
     presetName$ = "DeepTremolo"
 elsif preset = 4
-    low_freq_cutoff = 10000
-    tremolo_depth_min = 0.5
-    tremolo_depth_max = 0.3
-    tremolo_rate = 600
+    low_freq_cutoff_Hz = 10000
+    minimum_gain = 0.5
+    modulation_depth = 0.3
+    spectral_spacing_Hz = pi * 600
     high_freq_gain = 0.9
     presetName$ = "SubtleShimmer"
 elsif preset = 5
-    low_freq_cutoff = 6000
-    tremolo_depth_min = 0.3
-    tremolo_depth_max = 0.6
-    tremolo_rate = 150
+    low_freq_cutoff_Hz = 6000
+    minimum_gain = 0.3
+    modulation_depth = 0.6
+    spectral_spacing_Hz = pi * 150
     high_freq_gain = 0.8
     presetName$ = "FastFlutter"
 elsif preset = 6
-    low_freq_cutoff = 8000
-    tremolo_depth_min = 0.2
-    tremolo_depth_max = 0.8
-    tremolo_rate = 1000
+    low_freq_cutoff_Hz = 8000
+    minimum_gain = 0.2
+    modulation_depth = 0.8
+    spectral_spacing_Hz = pi * 1000
     high_freq_gain = 0.85
     presetName$ = "SlowPulse"
 elsif preset = 7
-    low_freq_cutoff = 4000
-    tremolo_depth_min = 0.4
-    tremolo_depth_max = 0.5
-    tremolo_rate = 500
+    low_freq_cutoff_Hz = 4000
+    minimum_gain = 0.4
+    modulation_depth = 0.5
+    spectral_spacing_Hz = pi * 500
     high_freq_gain = 0.4
     presetName$ = "HighCutTremolo"
 elsif preset = 8
-    low_freq_cutoff = 2000
-    tremolo_depth_min = 0.2
-    tremolo_depth_max = 0.8
-    tremolo_rate = 300
+    low_freq_cutoff_Hz = 2000
+    minimum_gain = 0.2
+    modulation_depth = 0.8
+    spectral_spacing_Hz = pi * 300
     high_freq_gain = 1.0
     presetName$ = "BassWobble"
 elsif preset = 9
-    low_freq_cutoff = 12000
-    tremolo_depth_min = 0.1
-    tremolo_depth_max = 0.9
-    tremolo_rate = 800
+    low_freq_cutoff_Hz = 12000
+    minimum_gain = 0.1
+    modulation_depth = 0.9
+    spectral_spacing_Hz = pi * 800
     high_freq_gain = 0.6
     presetName$ = "SpectralSweep"
 else
     presetName$ = "Custom"
 endif
 
-# Set target sample rate
-if speed_mode = 1
-    targetSR = 0
-    speedStr$ = "Full Quality"
-elsif speed_mode = 2
-    targetSR = 22050
-    speedStr$ = "Balanced"
-else
-    targetSR = 11025
-    speedStr$ = "Fast"
+# Musically useful zero values are legal; negative gain controls are not.
+if minimum_gain < 0
+    exitScript: "Minimum gain must be >= 0."
+endif
+if modulation_depth < 0
+    exitScript: "Modulation depth must be >= 0."
+endif
+if high_freq_gain < 0
+    exitScript: "High-frequency gain must be >= 0."
+endif
+if output_peak <= 0 or output_peak > 1
+    exitScript: "Output peak must be > 0 and <= 1."
 endif
 
 # ============================================================
@@ -168,286 +171,410 @@ endif
 selectObject: originalID
 duration = Get total duration
 sampleRate = Get sampling frequency
-nyquist = sampleRate / 2
-
-# Validate cutoff
-if low_freq_cutoff > nyquist
-    low_freq_cutoff = nyquist * 0.9
+nChannels = Get number of channels
+if nChannels > 2
+    exitScript: "Dynamic Spectral Tremolo currently supports mono or stereo Sound objects."
 endif
 
-startTime = stopwatch
+if speed_mode = 1
+    targetSR = 0
+    speedStr$ = "Full Quality"
+elsif speed_mode = 2
+    targetSR = 22050
+    speedStr$ = "Balanced / 11 kHz bandwidth"
+else
+    targetSR = 11025
+    speedStr$ = "Fast / 5.5 kHz bandwidth"
+endif
 
+# Prepare mono/stereo working channels explicitly. This avoids Praat's
+# multichannel To Spectrum averaging and preserves stereo relationships.
+if nChannels = 1
+    selectObject: originalID
+    workingL = Copy: "trem_work_M"
+    workingR = 0
+else
+    selectObject: originalID
+    workingL = Extract one channel: 1
+    Rename: "trem_work_L"
+    selectObject: originalID
+    workingR = Extract one channel: 2
+    Rename: "trem_work_R"
+endif
+
+# Optional bandwidth-reducing speed render.
+didDownsample = 0
+if targetSR > 0 and sampleRate > targetSR
+    selectObject: workingL
+    tmpL = Resample: targetSR, 50
+    removeObject: workingL
+    workingL = tmpL
+    if nChannels = 2
+        selectObject: workingR
+        tmpR = Resample: targetSR, 50
+        removeObject: workingR
+        workingR = tmpR
+    endif
+    workingSR = targetSR
+    didDownsample = 1
+else
+    workingSR = sampleRate
+endif
+workingNyquist = workingSR / 2
+requestedCutoff = low_freq_cutoff_Hz
+effectiveCutoff = min(requestedCutoff, workingNyquist)
+
+# Formula constants used by the processing procedure.
+cutoffStr$ = fixed$(effectiveCutoff, 9)
+minStr$ = fixed$(minimum_gain, 9)
+depthStr$ = fixed$(modulation_depth, 9)
+spacingStr$ = fixed$(spectral_spacing_Hz, 9)
+rateEquivalent = spectral_spacing_Hz / pi
+rateEqStr$ = fixed$(rateEquivalent, 9)
+highStr$ = fixed$(high_freq_gain, 9)
+
+startTime = stopwatch
 clearinfo
-writeInfoLine: "╔══════════════════════════════════════════════════════════════╗"
-appendInfoLine: "║        DYNAMIC TREMOLO v0.3                                 ║"
-appendInfoLine: "╚══════════════════════════════════════════════════════════════╝"
-appendInfoLine: "Input: ", originalName$
-appendInfoLine: "Speed: ", speedStr$
-appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
-appendInfoLine: "Sample rate: ", sampleRate, " Hz"
-appendInfoLine: ""
+writeInfoLine: "=== DYNAMIC SPECTRAL TREMOLO v0.4 ==="
+appendInfoLine: "Input: ", originalName$, "  |  channels: ", nChannels
+appendInfoLine: "Duration: ", fixed$(duration, 3), " s  |  source SR: ", sampleRate, " Hz"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Cutoff: ", low_freq_cutoff, " Hz"
-appendInfoLine: "Depth: ", tremolo_depth_min, " to ", tremolo_depth_min + tremolo_depth_max
-appendInfoLine: "Rate: ", tremolo_rate
-appendInfoLine: "High freq gain: ", high_freq_gain
+appendInfoLine: "Render: ", speedStr$, "  |  working SR: ", workingSR, " Hz"
+if effectiveCutoff < requestedCutoff
+    appendInfoLine: "Cutoff: requested ", fixed$(requestedCutoff, 0), " Hz -> effective ", fixed$(effectiveCutoff, 1), " Hz (working Nyquist)"
+else
+    appendInfoLine: "Cutoff: ", fixed$(effectiveCutoff, 1), " Hz"
+endif
+appendInfoLine: "Gain range below cutoff: ", fixed$(minimum_gain, 3), " .. ", fixed$(minimum_gain + modulation_depth, 3)
+appendInfoLine: "Spectral peak spacing: ", fixed$(spectral_spacing_Hz, 2), " Hz"
+appendInfoLine: "High-band gain: ", fixed$(high_freq_gain, 3)
+appendInfoLine: "Law: g(f)=g_min + depth*cos^2(pi*f/spacing); static in time"
 appendInfoLine: ""
+appendInfo: "Processing spectral tremolo..."
 
 # ============================================================
 # PROCESS
 # ============================================================
 
-# Copy for processing
-selectObject: originalID
-Copy: "working"
-workingID = selected("Sound")
-
-# === OPTIONAL DOWNSAMPLING ===
-if targetSR > 0 and sampleRate > targetSR
-    appendInfoLine: "[SPEED] Downsampling to ", targetSR, " Hz..."
-    selectObject: workingID
-    Resample: targetSR, 50
-    resampledID = selected("Sound")
-    removeObject: workingID
-    workingID = resampledID
-    workingSR = targetSR
-    workingNyquist = workingSR / 2
-    
-    # Adjust cutoff if needed
-    if low_freq_cutoff > workingNyquist
-        low_freq_cutoff = workingNyquist * 0.9
-    endif
+@processChannel: workingL, "L"
+processedL = processChannel.outID
+if nChannels = 2
+    @processChannel: workingR, "R"
+    processedR = processChannel.outID
+    selectObject: processedL
+    plusObject: processedR
+    resultID = Combine to stereo
+    removeObject: processedL, processedR
 else
-    workingSR = sampleRate
+    resultID = processedL
 endif
 
-appendInfo: "Processing tremolo..."
+# Working source copies are no longer needed.
+if nChannels = 2
+    removeObject: workingL, workingR
+else
+    removeObject: workingL
+endif
 
-# Convert to spectrum
-selectObject: workingID
-To Spectrum: "yes"
-spectrumID = selected("Spectrum")
-
-# Build formula strings
-cutoffStr$ = string$(low_freq_cutoff)
-minStr$ = fixed$(tremolo_depth_min, 6)
-maxStr$ = fixed$(tremolo_depth_max, 6)
-rateStr$ = fixed$(tremolo_rate, 6)
-highStr$ = fixed$(high_freq_gain, 6)
-
-# Apply dynamic tremolo
-selectObject: spectrumID
-# v0.3: x = frequency in Hz (cutoff and rate are genuinely Hz;
-# col was the bin index, making both duration-dependent), and
-# self * gain scales each spectrum row (self[1, col] wrote the
-# real part into the imaginary row -- phase destruction).
-Formula: "if x < " + cutoffStr$ + " then self * (" + minStr$ + " + " + maxStr$ + " * cos(x / " + rateStr$ + ")^2) else self * " + highStr$ + " endif"
-
-# Convert back to sound
-selectObject: workingID
-workingDur = Get total duration
-selectObject: spectrumID
-To Sound
-padded = selected("Sound")
-# v0.3: trim the FFT pad (output used to be up to ~20% longer
-# than the input, with a silent-ish tail)
-Extract part: 0, workingDur, "rectangular", 1, "no"
-resultID = selected("Sound")
-removeObject: padded
-
-# === UPSAMPLE IF NEEDED ===
-if targetSR > 0 and sampleRate > targetSR
-    appendInfoLine: " upsampling..."
+# Return to the original sample rate if a speed render was used.
+if didDownsample
     selectObject: resultID
-    Resample: sampleRate, 50
-    upsampledID = selected("Sound")
+    tmpOut = Resample: sampleRate, 50
     removeObject: resultID
-    resultID = upsampledID
+    resultID = tmpOut
 endif
 
-# Rename and scale
+# Joint peak scaling preserves stereo balance. Silence remains silence.
 selectObject: resultID
-Rename: originalName$ + "_tremolo_" + presetName$
-Scale peak: scale_peak
+resultPeakRaw = Get absolute extremum: 0, 0, "None"
+if resultPeakRaw > 1e-12
+    Scale peak: output_peak
+endif
+Rename: originalName$ + "_spectralTremolo_" + presetName$
 
 appendInfoLine: " done"
-
 processingTime = stopwatch - startTime
 
 # ============================================================
-# VISUALIZATION (OPTIMIZED)
+# VISUALIZATION -- existing story retained, corrected where misleading
 # ============================================================
 
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
-    
-    # Get spectra for comparison
-    selectObject: originalID
-    To Spectrum: "yes"
-    origSpecID = selected("Spectrum")
-    
-    selectObject: resultID
-    To Spectrum: "yes"
-    resSpecID = selected("Spectrum")
-    
+
+    # Representative measured channel. For stereo, use the stronger source
+    # channel rather than averaging L/R, which can cancel anti-phase material.
+    if nChannels = 2
+        selectObject: originalID
+        vizOrigL = Extract one channel: 1
+        selectObject: vizOrigL
+        rmsVizL = Get root-mean-square: 0, 0
+        selectObject: originalID
+        vizOrigR = Extract one channel: 2
+        selectObject: vizOrigR
+        rmsVizR = Get root-mean-square: 0, 0
+        if rmsVizR > rmsVizL
+            vizChannel = 2
+            vizOrig = vizOrigR
+            removeObject: vizOrigL
+            vizChan$ = "R"
+        else
+            vizChannel = 1
+            vizOrig = vizOrigL
+            removeObject: vizOrigR
+            vizChan$ = "L"
+        endif
+        selectObject: resultID
+        vizResult = Extract one channel: vizChannel
+    else
+        vizOrig = originalID
+        vizResult = resultID
+        vizChan$ = "mono"
+    endif
+
+    selectObject: vizOrig
+    origSpecID = To Spectrum: "yes"
+    selectObject: vizResult
+    resSpecID = To Spectrum: "yes"
+
+    selectObject: vizOrig
+    peakOrigViz = Get absolute extremum: 0, 0, "None"
+    selectObject: vizResult
+    peakResViz = Get absolute extremum: 0, 0, "None"
+    wavePeak = 1.05 * max(peakOrigViz, peakResViz)
+    if wavePeak < 1e-9
+        wavePeak = 1
+    endif
+
+    # The spectrum panel must include the effective cutoff when possible.
+    vizFreqMax = max(10000, effectiveCutoff * 1.20)
+    vizFreqMax = min(sampleRate / 2, vizFreqMax)
+    if vizFreqMax <= 5000
+        freqTick = 1000
+    elsif vizFreqMax <= 12000
+        freqTick = 2000
+    else
+        freqTick = 4000
+    endif
+
     Erase all
-    
+
     # Title
-    Select outer viewport: 1, 8, 0, 0.5
-    Font size: 14
+    Select outer viewport: 0, 8, 0, 0.48
+    Select inner viewport: 0, 8, 0, 0.48
+    Axes: 0, 1, 0, 1
+    Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Dynamic Tremolo: " + originalName$ + " [" + presetName$ + "]"
-    
-    # Original waveform
-    Select outer viewport: 0, 4, 0.6, 2.0
-    Select inner viewport: 0.5, 3.7, 0.75, 1.85
-    
-    selectObject: originalID
-    Colour: "{0.7, 0.7, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 8
-    Text top: "no", "Original"
-    Text left: "yes", "Amp"
-    
-    # Processed waveform
-    Select outer viewport: 4, 8, 0.6, 2.0
-    Select inner viewport: 4.5, 7.7, 0.75, 1.85
-    
-    selectObject: resultID
-    Colour: "{0.2, 0.5, 0.8}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Text: 0.5, "centre", 0.62, "half", "Dynamic Spectral Tremolo: " + originalName$ + " [" + presetName$ + "]"
+    Font size: 6
+    Colour: "{0.35,0.35,0.42}"
+    Text: 0.5, "centre", 0.12, "half", "static spectral comb gain; representative measured channel: " + vizChan$
+
+    # Original waveform -- same scale as processed
+    Select outer viewport: 0, 4, 0.58, 2.00
+    Select inner viewport: 0.55, 3.72, 0.74, 1.82
+    selectObject: vizOrig
+    Colour: "{0.68,0.68,0.70}"
+    Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
+    Select inner viewport: 0.55, 3.72, 0.74, 1.82
+    Axes: 0, duration, -wavePeak, wavePeak
     Colour: "Black"
     Draw inner box
-    Text top: "no", "With Tremolo"
+    Font size: 7
+    Text top: "no", "Source"
     Text left: "yes", "Amp"
-    
+
+    # Processed waveform -- shared scale
+    Select outer viewport: 4, 8, 0.58, 2.00
+    Select inner viewport: 4.55, 7.72, 0.74, 1.82
+    selectObject: vizResult
+    Colour: "{0.24,0.50,0.80}"
+    Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
+    Select inner viewport: 4.55, 7.72, 0.74, 1.82
+    Axes: 0, duration, -wavePeak, wavePeak
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Spectral tremolo output"
+    Text left: "yes", "Amp"
+
     # Spectrum comparison
-    Select outer viewport: 0, 8, 2.2, 4.0
-    Select inner viewport: 0.6, 7.6, 2.4, 3.8
-    
+    Select outer viewport: 0, 8, 2.12, 3.96
+    Select inner viewport: 0.68, 7.70, 2.30, 3.68
     selectObject: origSpecID
-    Colour: "{0.7, 0.7, 0.7}"
+    Colour: "{0.68,0.68,0.70}"
     Line width: 1
-    Draw: 0, 10000, 0, 80, "no"
-    
+    Draw: 0, vizFreqMax, 0, 80, "no"
     selectObject: resSpecID
-    Colour: "{0.2, 0.5, 0.8}"
-    Line width: 2
-    Draw: 0, 10000, 0, 80, "no"
-    
-    # Mark cutoff
-    Axes: 0, 10000, 0, 80
-    Colour: "{0.9, 0.3, 0.3}"
-    Line width: 1
+    Colour: "{0.24,0.50,0.80}"
+    Line width: 1.5
+    Draw: 0, vizFreqMax, 0, 80, "no"
+    Select inner viewport: 0.68, 7.70, 2.30, 3.68
+    Axes: 0, vizFreqMax, 0, 80
+    Colour: "{0.86,0.28,0.25}"
     Dotted line
-    Draw line: low_freq_cutoff, 0, low_freq_cutoff, 80
+    if effectiveCutoff <= vizFreqMax
+        Draw line: effectiveCutoff, 0, effectiveCutoff, 80
+    endif
     Solid line
-    
-    Line width: 1
     Colour: "Black"
     Draw inner box
-    Font size: 9
-    Text top: "no", "Spectrum (gray=original, blue=tremolo)"
+    Font size: 5
+    Marks left every: 1, 20, "yes", "yes", "no"
+    nTicks = floor(vizFreqMax / freqTick)
+    for q from 0 to nTicks
+        fMark = q * freqTick
+        if fMark >= 1000
+            fLab$ = fixed$(fMark/1000,1) + "k"
+        else
+            fLab$ = fixed$(fMark,0)
+        endif
+        One mark bottom: fMark, "no", "yes", "no", fLab$
+    endfor
+    Font size: 7
+    Text top: "no", "Measured spectrum: gray source, blue output"
     Text left: "yes", "dB"
-    Text bottom: "yes", "Frequency (Hz)"
-    
-    # Tremolo modulation curve (OPTIMIZED: 200 points instead of 500)
-    Select outer viewport: 0, 8, 4.2, 5.8
-    Select inner viewport: 0.6, 7.6, 4.4, 5.6
-    
-    maxFreq = low_freq_cutoff * 1.2
-    Axes: 0, maxFreq, 0, 1.2
-    
-    # Draw tremolo curve
-    Colour: "{0.9, 0.5, 0.2}"
+
+    Select outer viewport: 0, 8, 3.96, 4.14
+    Select inner viewport: 0, 8, 3.96, 4.14
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.35,0.35,0.42}"
+    if effectiveCutoff < requestedCutoff
+        Text: 0.5, "centre", 0.5, "half", "frequency in Hz | effective cutoff " + fixed$(effectiveCutoff,0) + " Hz (requested " + fixed$(requestedCutoff,0) + ") | speed mode bandwidth-limited"
+    else
+        Text: 0.5, "centre", 0.5, "half", "frequency in Hz | cutoff " + fixed$(effectiveCutoff,0) + " Hz | same measured channel before/after"
+    endif
+
+    # Exact gain law -- this is the core mechanism panel.
+    Select outer viewport: 0, 8, 4.22, 5.82
+    Select inner viewport: 0.68, 7.70, 4.40, 5.52
+    gainPlotMaxF = min(workingNyquist, max(effectiveCutoff * 1.20, min(10000, workingNyquist)))
+    if gainPlotMaxF <= 0
+        gainPlotMaxF = workingNyquist
+    endif
+    gainTop = 1.10 * max(high_freq_gain, minimum_gain + modulation_depth)
+    if gainTop < 1
+        gainTop = 1
+    endif
+    Axes: 0, gainPlotMaxF, 0, gainTop
+    Colour: "{0.96,0.96,0.97}"
+    Paint rectangle: "{0.96,0.96,0.97}", 0, gainPlotMaxF, 0, gainTop
+    Colour: "{0.90,0.48,0.20}"
     Line width: 2
-    
-    numPoints = 200
+    numPoints = 300
     for i from 0 to numPoints - 1
-        f1 = maxFreq * i / numPoints
-        f2 = maxFreq * (i + 1) / numPoints
-        
-        if f1 < low_freq_cutoff
-            gain1 = tremolo_depth_min + tremolo_depth_max * cos(f1 / tremolo_rate)^2
+        f1 = gainPlotMaxF * i / numPoints
+        f2 = gainPlotMaxF * (i + 1) / numPoints
+        if f1 < effectiveCutoff
+            gain1 = minimum_gain + modulation_depth * cos(pi*f1/spectral_spacing_Hz)^2
         else
             gain1 = high_freq_gain
         endif
-        
-        if f2 < low_freq_cutoff
-            gain2 = tremolo_depth_min + tremolo_depth_max * cos(f2 / tremolo_rate)^2
+        if f2 < effectiveCutoff
+            gain2 = minimum_gain + modulation_depth * cos(pi*f2/spectral_spacing_Hz)^2
         else
             gain2 = high_freq_gain
         endif
-        
         Draw line: f1, gain1, f2, gain2
     endfor
-    
-    # Mark cutoff on tremolo curve
-    Colour: "{0.9, 0.3, 0.3}"
     Line width: 1
     Dotted line
-    Draw line: low_freq_cutoff, 0, low_freq_cutoff, 1.2
+    Colour: "{0.86,0.28,0.25}"
+    if effectiveCutoff <= gainPlotMaxF
+        Draw line: effectiveCutoff, 0, effectiveCutoff, gainTop
+    endif
     Solid line
-    
-    Line width: 1
+    Select inner viewport: 0.68, 7.70, 4.40, 5.52
+    Axes: 0, gainPlotMaxF, 0, gainTop
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text top: "no", "Frequency-Dependent Gain (tremolo modulation)"
-    Text left: "yes", "Gain"
-    Text bottom: "yes", "Frequency (Hz)"
-    
-    # Legend
+    Font size: 5
+    if gainPlotMaxF <= 5000
+        gainTick = 1000
+    elsif gainPlotMaxF <= 12000
+        gainTick = 2000
+    else
+        gainTick = 4000
+    endif
+    nGTicks = floor(gainPlotMaxF/gainTick)
+    for q from 0 to nGTicks
+        fMark = q*gainTick
+        if fMark >= 1000
+            fLab$ = fixed$(fMark/1000,1) + "k"
+        else
+            fLab$ = fixed$(fMark,0)
+        endif
+        One mark bottom: fMark, "no", "yes", "no", fLab$
+    endfor
+    Marks left every: 1, 0.25, "yes", "yes", "no"
     Font size: 7
-    Colour: "{0.9, 0.3, 0.3}"
-    Text: low_freq_cutoff, "centre", 1.15, "half", "cutoff"
-    
-    # Info panel
-    Select outer viewport: 0, 8, 5.9, 6.4
-    Select inner viewport: 0.5, 7.7, 5.95, 6.35
-    
+    Text top: "no", "Frequency-dependent gain law"
+    Text left: "yes", "Gain"
+
+    Select outer viewport: 0, 8, 5.82, 6.06
+    Select inner viewport: 0, 8, 5.82, 6.06
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.5, "half", "Cutoff: " + string$(low_freq_cutoff) + " Hz"
-    Text: 0.25, "left", 0.5, "half", "Depth: " + fixed$(tremolo_depth_min, 2) + "-" + fixed$(tremolo_depth_min + tremolo_depth_max, 2)
-    Text: 0.48, "left", 0.5, "half", "Rate: " + fixed$(tremolo_rate, 0)
-    Text: 0.65, "left", 0.5, "half", speedStr$
-    Text: 0.82, "left", 0.5, "half", "Time: " + fixed$(processingTime, 2) + "s"
-    
+    Font size: 6
+    Colour: "{0.35,0.35,0.42}"
+    Text: 0.5, "centre", 0.5, "half", "g(f)=g_min + depth*cos^2(pi*f/spacing) below cutoff | spacing=" + fixed$(spectral_spacing_Hz,1) + " Hz | above cutoff gain=" + fixed$(high_freq_gain,2)
+
+    # Compact QC strip
+    Select outer viewport: 0, 8, 6.14, 6.72
+    Select inner viewport: 0.18, 7.82, 6.18, 6.68
+    Axes: 0, 3, 0, 1
+    Colour: "{0.96,0.96,0.97}"
+    Paint rectangle: "{0.96,0.96,0.97}", 0, 3, 0, 1
+    Colour: "{0.82,0.82,0.84}"
+    Draw line: 1,0,1,1
+    Draw line: 2,0,2,1
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
-    Font size: 10
-    
+    Draw rectangle: 0,3,0,1
+    Font size: 6
+    Text: 0.05,"left",0.5,"half","gain " + fixed$(minimum_gain,2) + ".." + fixed$(minimum_gain+modulation_depth,2) + " | cutoff " + fixed$(effectiveCutoff,0) + " Hz"
+    Text: 1.05,"left",0.5,"half","spacing " + fixed$(spectral_spacing_Hz,1) + " Hz | " + speedStr$
+    selectObject: resultID
+    finalPeak = Get absolute extremum: 0,0,"None"
+    finalRms = Get root-mean-square: 0,0
+    Text: 2.05,"left",0.5,"half","peak " + fixed$(finalPeak,3) + " | RMS " + fixed$(finalRms,3) + " | " + fixed$(processingTime,2) + " s"
+
     removeObject: origSpecID, resSpecID
+    if nChannels = 2
+        removeObject: vizOrig, vizResult
+    endif
 endif
-
-# ============================================================
-# CLEANUP
-# ============================================================
-
-removeObject: spectrumID, workingID
 
 # ============================================================
 # OUTPUT
 # ============================================================
 
+selectObject: resultID
 appendInfoLine: ""
-appendInfoLine: "╔══════════════════════════════════════════════════════════════╗"
-appendInfoLine: "║                      COMPLETE                                ║"
-appendInfoLine: "╚══════════════════════════════════════════════════════════════╝"
+appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Processing time: ", fixed$(processingTime, 2), " seconds"
-appendInfoLine: "Output: ", originalName$, "_tremolo_", presetName$
+appendInfoLine: "Output: ", selected$("Sound")
 
 if play_result
-    selectObject: resultID
     Play
 endif
-
 selectObject: resultID
- 
+
+# ============================================================
+# PROCEDURES
+# ============================================================
+
+procedure processChannel: .soundID, .label$
+    selectObject: .soundID
+    .dur = Get total duration
+    To Spectrum: "yes"
+    .spec = selected("Spectrum")
+    selectObject: .spec
+    Formula: "if x < " + cutoffStr$ + " then self * (" + minStr$ + " + " + depthStr$ + " * cos(x/" + rateEqStr$ + ")^2) else self * " + highStr$ + " fi"
+    To Sound
+    .padded = selected("Sound")
+    selectObject: .padded
+    Extract part: 0, .dur, "rectangular", 1, "no"
+    .outID = selected("Sound")
+    Rename: "trem_proc_" + .label$
+    removeObject: .padded, .spec
+endproc

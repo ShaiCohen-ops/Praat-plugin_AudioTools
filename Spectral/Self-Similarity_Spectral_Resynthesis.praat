@@ -3,8 +3,51 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.2.1 (2026)
+# Version: 3.4.1 (2026)
 #
+# Changelog v3.4.1 (2026):
+#   - FORM: compact main page now contains only Preset, Creative mode, Spatial
+#     mode, Edit details, Visualization, and Play. Analysis/SSM/gain/output
+#     engineering controls moved to an optional Details pause window.
+#   - UX: Custom defaults are initialized explicitly before preset loading;
+#     named preset values are applied BEFORE Edit details opens, so the Details
+#     window always shows the values that will actually render.
+#   - AUDIO: no DSP or preset calibration changes from v3.4.
+# Changelog v3.4 (2026):
+#   - PRESETS/MUSICAL BALANCE: recalibrated the six named presets as one
+#     progression. Gentle stays subtle; Ghost is moderate; Glitch/Brutal retain
+#     clear gating/novelty character without the old -36/-48 dB near-mutes;
+#     Chaotic Tremolo now uses the intended 3-level quantizer instead of a hard
+#     gate that collapsed it to two levels. Spectral Mosaic is unchanged.
+#   - ADAPTIVE SCORE SCALING: gain mapping now centers the score by its mean and
+#     standard deviation, then uses a bounded logistic map. v3.3 min-max scaling
+#     let a few outlier frames pin almost the whole file near one extreme, making
+#     some presets nearly inert and others destructive on different sources.
+#   - FIX/SEMANTICS: Add_chaos (0..1) is now applied in normalized similarity
+#     units, so the same preset depth means the same thing across source files.
+#   - ROBUSTNESS: a nearly flat similarity curve maps to neutral 0.5 rather than
+#     dividing by an arbitrary tiny range; chaos presets can still animate it.
+#   - QC: Info reports score spread and the pre-envelope dB gain range so an
+#     unexpectedly flat or aggressive response is visible without guessing.
+# Changelog v3.3 (2026):
+#   - FIX: stereo/multichannel analysis no longer uses Convert to mono, which
+#     could cancel anti-phase material before MFCC extraction. The strongest-RMS
+#     source channel now drives the similarity analysis.
+#   - FIX/QUALITY: Self-Mosaic now copies blocks from the full-rate ORIGINAL
+#     source with its channel layout preserved (Mono spatial mode remains mono).
+#     This fixes silent anti-phase mosaics and prevents unnecessary stereo loss.
+#   - MEMORY: Stage 4 no longer allocates two extra frames x frames threshold/count
+#     matrices. Scores are accumulated row-by-row from the existing SSM, reducing
+#     peak memory substantially while preserving the same score law.
+#   - FIX: Hard Quantized now really has three levels (0, 0.5, 1) rather than
+#     floor(x*3)/3, which could produce four levels.
+#   - CLARITY: Speed mode renamed Analysis bandwidth; lowering analysis SR changes
+#     MFCC bandwidth and is not guaranteed to be faster because the SSM cost is
+#     driven mainly by frame count. Full-rate audio output is preserved.
+#   - ROBUSTNESS: parameter validation, explicit short-source diagnostic, safe
+#     post-gain peak cap, and zero-valued threshold/mask smoothing are legal.
+#   - VIZ: removed the misleading similarity-threshold line from the SCORE panel;
+#     that threshold applies to raw SSM cells before averaging, not to score values.
 # Changelog v3.2.1 (2026):
 #   - UX: every named preset overrides the Creative_mode menu as
 #     part of its recipe (SpectralMosaic IS mosaic mode, etc.) --
@@ -41,7 +84,7 @@
 #   4. Per-frame score = mean of cells > threshold (or variant
 #      per creative_mode)
 #   5. Optional smoothing of score curve
-#   6. Map score -> dB gain via contrast curve
+#   6. Center/scale score -> contrast curve -> dB gain
 #   7. Apply gain as time-varying envelope to the source
 #
 # Changelog v3.2 (2026):
@@ -144,17 +187,8 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Self-Similarity Resynthesis v3.2.1
-    comment === CREATIVE MODE ===
-    optionmenu Creative_mode: 1
-        option Standard (Similarity Boost)
-        option Inverted (Novelty Extractor)
-        option Diagonal Recurrence
-        option Hard Quantized (3 levels)
-        option Self-Mosaic (Frame Substitution)
-    comment (used with the Custom preset; named presets choose their own mode)
-    
-    comment === PRESETS ===
+form Self-Similarity Resynthesis v3.4.1
+    comment === MUSICAL CONTROLS ===
     optionmenu Preset: 2
         option Custom
         option Gentle Resynthesis
@@ -163,34 +197,15 @@ form Self-Similarity Resynthesis v3.2.1
         option Brutal Novelty
         option Spectral Mosaic
         option Chaotic Tremolo
-    
-    comment === Performance ===
-    optionmenu Speed_mode: 2
-        option Full Quality (original sample rate)
-        option Balanced (downsample to 16 kHz)
-        option Fast (downsample to 8 kHz)
-    
-    comment === Analysis Parameters ===
-    positive Time_step_(s) 0.01
-    positive Analysis_frame_length_(s) 0.03
-    positive Number_of_MFCCs 8
-    
-    comment === Self-Similarity ===
-    positive Similarity_threshold 0.5
-    
-    comment === Spectral Masking ===
-    positive Contrast_power 2.0
-    positive High_similarity_boost_(dB) 4
-    real Low_similarity_attenuation_(dB) -8
-    natural Mask_smoothing_frames 8
-    real Envelope_smoothing_ms 50
-    
-    comment === Experimental Controls ===
-    real Add_chaos_(0-1) 0.0
-    boolean Hard_threshold_gate 0
-    real Gate_threshold_(0-1) 0.5
-    
-    comment === Spatial Processing ===
+
+    optionmenu Creative_mode: 1
+        option Standard (Similarity Boost)
+        option Inverted (Novelty Extractor)
+        option Diagonal Recurrence
+        option Hard Quantized (3 levels)
+        option Self-Mosaic (Frame Substitution)
+    comment (Creative mode is used directly with Custom; named presets set their own.)
+
     optionmenu Spatial_mode: 2
         option Mono (envelope on mono mix)
         option Preserve Stereo (same envelope both channels)
@@ -198,13 +213,34 @@ form Self-Similarity Resynthesis v3.2.1
         option Rotating (panning effect)
         option Soft Modulation (50% wet floor)
         option True Mid-Side (envelope on M, preserve S)
-    
-    comment === Output ===
-    real Output_gain_(dB) 0
-    boolean Normalize_output 1
+
+    comment === RENDER ===
+    boolean Edit_details 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# ============================================================
+# HIDDEN DEFAULTS / DETAILS STATE
+# ============================================================
+# These are the old v3.4 form defaults. They are explicit so the compact main
+# form does not change Custom behavior. Named presets then overwrite their recipe
+# values, and Edit details opens only afterwards.
+speed_mode = 2
+time_step = 0.01
+analysis_frame_length = 0.03
+number_of_MFCCs = 8
+similarity_threshold = 0.5
+contrast_power = 2.0
+high_similarity_boost = 4
+low_similarity_attenuation = -8
+mask_smoothing_frames = 8
+envelope_smoothing_ms = 50
+add_chaos = 0.0
+hard_threshold_gate = 0
+gate_threshold = 0.5
+output_gain = 0
+normalize_output = 1
 
 # ============================================================
 # PRESETS  (numeric matching — fixed in v3.0)
@@ -224,39 +260,39 @@ if preset = 2
     analysis_frame_length = 0.03
     number_of_MFCCs = 8
     similarity_threshold = 0.5
-    contrast_power = 2.0
-    mask_smoothing_frames = 10
+    contrast_power = 1.5
+    mask_smoothing_frames = 8
     hard_threshold_gate = 0
     high_similarity_boost = 4
-    low_similarity_attenuation = -8
+    low_similarity_attenuation = -4
     add_chaos = 0
-    envelope_smoothing_ms = 80
+    envelope_smoothing_ms = 60
     presetName$ = "Gentle"
 elsif preset = 3
     creative_mode = 2
     time_step = 0.005
     analysis_frame_length = 0.02
     number_of_MFCCs = 6
-    similarity_threshold = 0.6
-    contrast_power = 6.0
+    similarity_threshold = 0.55
+    contrast_power = 2.0
     mask_smoothing_frames = 1
     hard_threshold_gate = 1
-    gate_threshold = 0.6
-    high_similarity_boost = 18
-    low_similarity_attenuation = -36
+    gate_threshold = 0.5
+    high_similarity_boost = 4
+    low_similarity_attenuation = -10
     add_chaos = 0.05
-    envelope_smoothing_ms = 2
+    envelope_smoothing_ms = 4
     presetName$ = "GlitchGating"
 elsif preset = 4
     creative_mode = 1
     time_step = 0.008
     analysis_frame_length = 0.025
     similarity_threshold = 0.4
-    contrast_power = 3.0
-    mask_smoothing_frames = 8
-    high_similarity_boost = 15
-    low_similarity_attenuation = -20
-    envelope_smoothing_ms = 25
+    contrast_power = 2.0
+    mask_smoothing_frames = 2
+    high_similarity_boost = 10
+    low_similarity_attenuation = -12
+    envelope_smoothing_ms = 18
     presetName$ = "GhostRemix"
 elsif preset = 5
     creative_mode = 2
@@ -264,13 +300,14 @@ elsif preset = 5
     analysis_frame_length = 0.02
     number_of_MFCCs = 5
     similarity_threshold = 0.3
-    contrast_power = 8.0
+    contrast_power = 2.0
     mask_smoothing_frames = 0
     hard_threshold_gate = 1
-    gate_threshold = 0.7
-    high_similarity_boost = 24
-    low_similarity_attenuation = -48
-    envelope_smoothing_ms = 1
+    gate_threshold = 0.5
+    high_similarity_boost = 5
+    low_similarity_attenuation = -12
+    add_chaos = 0.08
+    envelope_smoothing_ms = 3
     presetName$ = "BrutalNovelty"
 elsif preset = 6
     creative_mode = 5
@@ -284,17 +321,44 @@ elsif preset = 7
     time_step = 0.003
     analysis_frame_length = 0.015
     number_of_MFCCs = 4
-    contrast_power = 10.0
+    contrast_power = 1.5
     mask_smoothing_frames = 0
-    hard_threshold_gate = 1
+    hard_threshold_gate = 0
     gate_threshold = 0.5
-    add_chaos = 0.25
-    high_similarity_boost = 20
-    low_similarity_attenuation = -40
-    envelope_smoothing_ms = 1
+    add_chaos = 0.35
+    high_similarity_boost = 8
+    low_similarity_attenuation = -12
+    envelope_smoothing_ms = 4
     presetName$ = "ChaoticTremolo"
 else
     presetName$ = "Custom"
+endif
+
+# ============================================================
+# OPTIONAL DETAILS - values shown AFTER preset loading
+# ============================================================
+if edit_details
+    beginPause: "Self-Similarity Resynthesis v3.4.1 - Details"
+        optionmenu: "Analysis bandwidth", speed_mode
+        option: "Full-band (original sample rate)"
+        option: "16 kHz analysis"
+        option: "8 kHz analysis"
+        positive: "Time step (s)", time_step
+        positive: "Analysis frame length (s)", analysis_frame_length
+        integer: "Number of MFCCs", number_of_MFCCs
+        real: "Similarity threshold (0..1)", similarity_threshold
+        positive: "Contrast power", contrast_power
+        positive: "High similarity boost (dB)", high_similarity_boost
+        real: "Low similarity attenuation (dB)", low_similarity_attenuation
+        integer: "Mask smoothing frames", mask_smoothing_frames
+        real: "Envelope smoothing (ms)", envelope_smoothing_ms
+        real: "Add chaos (0..1)", add_chaos
+        boolean: "Hard threshold gate", hard_threshold_gate
+        real: "Gate threshold (0..1)", gate_threshold
+        real: "Output gain (dB)", output_gain
+        boolean: "Normalize output", normalize_output
+    endPause: "Render", 1
+    speed_mode = analysis_bandwidth
 endif
 
 # === Resolve mode name strings (fix for v2.2 _$ bug) ===
@@ -336,22 +400,22 @@ endif
 # ============================================================
 if speed_mode = 1
     targetSR = 0
-    speedStr$ = "Full Quality"
+    speedStr$ = "Full-band"
 elsif speed_mode = 2
     targetSR = 16000
-    speedStr$ = "Balanced"
+    speedStr$ = "16 kHz analysis"
 else
     targetSR = 8000
-    speedStr$ = "Fast"
+    speedStr$ = "8 kHz analysis"
 endif
 
 startTime = stopwatch
 
 clearinfo
-writeInfoLine: "=== Self-Similarity Resynthesis v3.2.1 ==="
+writeInfoLine: "=== Self-Similarity Resynthesis v3.4.1 ==="
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Mode: ", creativeName$
-appendInfoLine: "Speed: ", speedStr$
+appendInfoLine: "Analysis bandwidth: ", speedStr$
 appendInfoLine: "Spatial: ", spatialName$
 appendInfoLine: "Preset: ", presetName$
 if creativeOverridden
@@ -370,21 +434,76 @@ origDur = Get total duration
 
 appendInfoLine: "Channels: ", num_channels
 
-# Analysis is always mono
+# Analysis uses one representative channel. Do NOT average channels: an
+# anti-phase stereo source can cancel to silence before MFCC extraction.
 analysisID = originalID
+analysisChannel = 1
 if num_channels > 1
-    selectObject: originalID
-    Convert to mono
-    analysisID = selected("Sound")
     wasStereo = 1
+    analysisID = 0
+    bestAnalysisRms = -1
+    for ch from 1 to num_channels
+        selectObject: originalID
+        tempAnalysisCh = Extract one channel: ch
+        selectObject: tempAnalysisCh
+        tempAnalysisRms = Get root-mean-square: 0, 0
+        if tempAnalysisRms > bestAnalysisRms
+            if analysisID <> 0
+                removeObject: analysisID
+            endif
+            analysisID = tempAnalysisCh
+            analysisChannel = ch
+            bestAnalysisRms = tempAnalysisRms
+        else
+            removeObject: tempAnalysisCh
+        endif
+    endfor
+    selectObject: analysisID
+    Rename: "ssm_analysis_ch" + string$(analysisChannel)
+    appendInfoLine: "Analysis driver: channel ", analysisChannel,
+        ... " (highest RMS ", fixed$(bestAnalysisRms, 4), ")"
 else
     wasStereo = 0
+endif
+
+# Validate the effective recipe after preset overrides.
+if time_step <= 0
+    exitScript: "Time step must be greater than 0."
+endif
+if analysis_frame_length <= 0
+    exitScript: "Analysis frame length must be greater than 0."
+endif
+if number_of_MFCCs < 1
+    exitScript: "Number of MFCCs must be at least 1."
+endif
+if similarity_threshold < 0 or similarity_threshold > 1
+    exitScript: "Similarity threshold must be between 0 and 1."
+endif
+if contrast_power <= 0
+    exitScript: "Contrast power must be greater than 0."
+endif
+if mask_smoothing_frames < 0
+    exitScript: "Mask smoothing frames must be 0 or greater."
+endif
+if envelope_smoothing_ms < 0
+    exitScript: "Envelope smoothing must be 0 ms or greater."
+endif
+if add_chaos < 0 or add_chaos > 1
+    exitScript: "Chaos amount must be between 0 and 1."
+endif
+if gate_threshold < 0 or gate_threshold > 1
+    exitScript: "Gate threshold must be between 0 and 1."
+endif
+# Praat's MFCC analysis requires enough audio for its analysis window.
+# For this effect a single tiny frame is not meaningful self-similarity anyway.
+if origDur < 2 * analysis_frame_length
+    exitScript: "Source is too short for this analysis frame length. Use at least " + fixed$(2 * analysis_frame_length, 3) + " s or reduce Analysis frame length."
 endif
 
 # Downsample analysis copy if requested
 workingID = analysisID
 if targetSR > 0 and origSR > targetSR
-    appendInfoLine: "[SPEED] Downsampling to ", targetSR, " Hz for analysis"
+    appendInfoLine: "[ANALYSIS] Resampling analysis driver to ", targetSR, " Hz"
     selectObject: analysisID
     Resample: targetSR, 50
     workingID = selected("Sound")
@@ -488,50 +607,31 @@ appendInfoLine: "done"
 # ============================================================
 appendInfo: "Stage 4 (scoring, vectorized)... "
 
-# Build a thresholded copy: keeps SSM value where row != col AND value > threshold
-Create simple Matrix: "ssm_thresh", actual_frames, actual_frames, "0"
-threshID = selected("Matrix")
-selectObject: threshID
-Formula: "if row <> col and object[" + string$(ssmID) + ", row, col] > " + fixed$(similarity_threshold, 6)
-    ... + " then object[" + string$(ssmID) + ", row, col] else 0 fi"
-
-# Count matrix: 1 where the cell contributed
-Create simple Matrix: "ssm_count", actual_frames, actual_frames, "0"
-countID = selected("Matrix")
-selectObject: countID
-Formula: "if row <> col and object[" + string$(ssmID) + ", row, col] > " + fixed$(similarity_threshold, 6)
-    ... + " then 1 else 0 fi"
-
-# Score vector: actual_frames × 1
+# Score vector: actual_frames × 1. v3.3 computes each thresholded row
+# directly from the existing SSM instead of allocating TWO additional
+# frames×frames matrices. The score law is unchanged; peak memory is not.
 Create simple Matrix: "ssm_scores", actual_frames, 1, "0"
 scoreID = selected("Matrix")
-
-# Per-row: sum the thresholded row, divide by count if > 0
-# This is one row-sum per row, but those are individual operations.
-# We compute them by extracting each row's contribution via Formula
-# into a 1×frames helper, then Get sum on the helper.
 selectObject: scoreID
 Formula: "0"
 
-# Strategy: extract each row of threshID and countID into a 1×frames
-# helper matrix via Formula (the helper's `row` is always 1, but the
-# `col` walks the source's chosen row), then Get sum on the helper.
-# Script-level loop variable is r_idx — Praat's Matrix Formula
-# reserves `row` and `col` for the current cell, so a script variable
-# of the same name causes "row is ambiguous" errors.
 Create simple Matrix: "ssm_rowtemp", 1, actual_frames, "0"
 rowtempID = selected("Matrix")
 Create simple Matrix: "ssm_counttemp", 1, actual_frames, "0"
 counttempID = selected("Matrix")
+ssmStr$ = string$(ssmID)
+threshStr$ = fixed$(similarity_threshold, 6)
 
 for r_idx from 1 to actual_frames
-    # Copy threshID's row r_idx into rowtempID (a 1×frames vector)
+    rStr$ = string$(r_idx)
     selectObject: rowtempID
-    Formula: "object[" + string$(threshID) + ", " + string$(r_idx) + ", col]"
+    Formula: "if col <> " + rStr$ + " and object[" + ssmStr$ + ", " + rStr$ + ", col] > " + threshStr$
+        ... + " then object[" + ssmStr$ + ", " + rStr$ + ", col] else 0 fi"
     rowSum = Get sum
     
     selectObject: counttempID
-    Formula: "object[" + string$(countID) + ", " + string$(r_idx) + ", col]"
+    Formula: "if col <> " + rStr$ + " and object[" + ssmStr$ + ", " + rStr$ + ", col] > " + threshStr$
+        ... + " then 1 else 0 fi"
     rowCount = Get sum
     
     if rowCount > 0
@@ -571,7 +671,7 @@ for r_idx from 1 to actual_frames
     Set value: r_idx, 1, score
 endfor
 
-removeObject: rowtempID, counttempID, threshID, countID
+removeObject: rowtempID, counttempID
 appendInfoLine: "done"
 
 # ============================================================
@@ -632,33 +732,45 @@ appendInfo: "Stage 6 (gain mapping)... "
 selectObject: scoreID
 s_min = Get minimum
 s_max = Get maximum
-if s_max - s_min < 0.0001
-    s_max = s_min + 0.0001
+s_sum = Get sum
+s_mean = s_sum / actual_frames
+
+# Measure score spread. Centered scaling is less hostage to one isolated min/max
+# frame than v3.3's file-wide min-max normalization.
+Create simple Matrix: "ssm_score_deviation", actual_frames, 1, "0"
+scoreDevID = selected("Matrix")
+meanStr$ = fixed$(s_mean, 10)
+selectObject: scoreDevID
+Formula: "(object[" + string$(scoreID) + ", row, 1] - " + meanStr$ + ")^2"
+scoreSqSum = Get sum
+s_std = sqrt(scoreSqSum / actual_frames)
+removeObject: scoreDevID
+
+flat_similarity = 0
+if s_std < 0.000001
+    flat_similarity = 1
 endif
 
 Create simple Matrix: "ssm_gain", actual_frames, 1, "0"
 gainID = selected("Matrix")
 
-# Build gain in dB. Steps: chaos -> normalize -> gate -> quantize -> contrast
+# Build gain in dB. v3.4 named presets are calibrated around this centered mapping:
+# score mean -> 0.5, approximately one standard deviation -> 0.18 / 0.82.
+# This keeps a few extreme frames from forcing the rest of the file to one end.
 selectObject: gainID
-
-# Step 1: copy raw scores, optionally with chaos
 chaosStr$ = fixed$(add_chaos, 6)
-sMinStr$ = fixed$(s_min, 8)
-sMaxStr$ = fixed$(s_max, 8)
-if add_chaos > 0
-    Formula: "object[" + string$(scoreID) + ", row, 1]"
-        ... + " + randomUniform(-1, 1) * " + chaosStr$
-    # Clamp to [s_min, s_max]
-    Formula: "if self < " + sMinStr$ + " then " + sMinStr$
-        ... + " else if self > " + sMaxStr$ + " then " + sMaxStr$ + " else self fi fi"
+if flat_similarity
+    Formula: "0.5"
 else
-    Formula: "object[" + string$(scoreID) + ", row, 1]"
+    stdStr$ = fixed$(s_std, 10)
+    Formula: "1 / (1 + exp(-1.5 * (object[" + string$(scoreID) + ", row, 1] - " + meanStr$ + ") / " + stdStr$ + "))"
 endif
 
-# Step 2: normalize to [0,1]
-sRangeStr$ = fixed$(s_max - s_min, 8)
-Formula: "(self - " + sMinStr$ + ") / " + sRangeStr$
+# Chaos is in normalized 0..1 similarity units, independent of raw score spread.
+if add_chaos > 0
+    Formula: "self + randomUniform(-1, 1) * " + chaosStr$
+    Formula: "if self < 0 then 0 else if self > 1 then 1 else self fi fi"
+endif
 
 # Step 3: optional hard gate
 if hard_threshold_gate
@@ -668,7 +780,7 @@ endif
 
 # Step 4: optional quantization (creative_mode = 4)
 if creative_mode = 4
-    Formula: "floor(self * 3) / 3"
+    Formula: "round(self * 2) / 2"
 endif
 
 # Step 5: contrast curve, then map to dB range
@@ -679,7 +791,20 @@ Formula: fixed$(low_similarity_attenuation, 4)
     ... + " + (self ^ " + contrastStr$ + ")"
     ... + " * (" + boostStr$ + " - (" + attenStr$ + "))"
 
+selectObject: gainID
+gainMinDb = Get minimum
+gainMaxDb = Get maximum
+gainSumDb = Get sum
+gainMeanDb = gainSumDb / actual_frames
 appendInfoLine: "done"
+appendInfoLine: "Score mean/std: ", fixed$(s_mean, 4), " / ", fixed$(s_std, 4)
+if flat_similarity
+    appendInfoLine: "NOTE: similarity score is nearly flat; centered map uses neutral 0.5."
+endif
+if creative_mode <> 5
+    appendInfoLine: "Gain map pre-envelope (min / mean / max): ",
+        ... fixed$(gainMinDb, 1), " / ", fixed$(gainMeanDb, 1), " / ", fixed$(gainMaxDb, 1), " dB"
+endif
 
 # ============================================================
 # STAGE 7: RESYNTHESIS
@@ -693,15 +818,30 @@ if creative_mode = 5
     # Per-sample Get/Set replaced by Formula (part) block copy.
     appendInfo: " [mosaic]... "
     
-    # v3.2: blocks copy from the FULL-RATE mono source. workingID
-    # may be the 16/8 kHz analysis copy (Balanced/Fast) -- copying
-    # from it lowpassed the whole mosaic at 8/4 kHz.
-    selectObject: analysisID
+    # v3.3: the SSM is driven by one representative channel, but block
+    # substitution should not throw away the original stereo/multichannel image.
+    # Mono spatial mode explicitly requests mono; every other spatial selection
+    # preserves the source channels in Mosaic mode (envelope-specific spatial
+    # transforms do not apply because Mosaic has no gain envelope).
+    if spatial_mode = 1
+        mosaicSourceID = analysisID
+        mosaicChannels = 1
+        mosaicSpatial$ = "Mono"
+    else
+        mosaicSourceID = originalID
+        mosaicChannels = num_channels
+        mosaicSpatial$ = "Preserve source channels"
+        if spatial_mode > 2
+            appendInfoLine: "NOTE: Self-Mosaic has no gain envelope; spatial mode ", spatialName$,
+                ... " falls back to preserving source channels."
+        endif
+    endif
+    selectObject: mosaicSourceID
     workingNS = Get number of samples
     workingDur = Get total duration
     mosaicSR = Get sampling frequency
     
-    Create Sound from formula: "Mosaic", 1, 0, workingDur, mosaicSR, "0"
+    Create Sound from formula: "Mosaic", mosaicChannels, 0, workingDur, mosaicSR, "0"
     outID = selected("Sound")
     
     frame_samples = round(time_step * mosaicSR)
@@ -745,8 +885,8 @@ if creative_mode = 5
             tHi = targetEnd / mosaicSR
             
             selectObject: outID
-            Formula (part): tLo, tHi, 1, 1,
-                ... "0.7 * object[" + string$(analysisID) + ", col + " + string$(sOff) + "]"
+            Formula (part): tLo, tHi, 1, mosaicChannels,
+                ... "0.7 * object[" + string$(mosaicSourceID) + ", col + " + string$(sOff) + "]"
         endif
     endfor
     
@@ -855,16 +995,11 @@ else
     envName$ = selected$("Sound")
     removeObject: envSound
     
-    # Prepare source sound at original SR
-    if targetSR > 0 and origSR > targetSR
-        selectObject: originalID
-        Resample: origSR, 50
-        sourceSound = selected("Sound")
-    else
-        selectObject: originalID
-        Copy: "ssm_source"
-        sourceSound = selected("Sound")
-    endif
+    # Prepare source sound at original SR. Analysis may be downsampled, but
+    # audio rendering always starts from the untouched full-rate source.
+    selectObject: originalID
+    Copy: "ssm_source"
+    sourceSound = selected("Sound")
     
     if spatial_mode = 1
         # Mono
@@ -1037,11 +1172,22 @@ appendInfoLine: "done"
 selectObject: outID
 
 if normalize_output
-    Scale peak: 0.95
+    preNormPeak = Get absolute extremum: 0, 0, "None"
+    if preNormPeak > 1e-15
+        Scale peak: 0.95
+    endif
 endif
 
 if output_gain <> 0
     Scale: 10 ^ (output_gain / 20)
+endif
+
+# Positive post-normalization gain can otherwise create samples beyond full scale.
+postGainPeak = Get absolute extremum: 0, 0, "None"
+if postGainPeak > 1
+    appendInfoLine: "NOTE: post-gain peak ", fixed$(postGainPeak, 3),
+        ... " exceeded 1.0; peak-safe scaled to 0.999."
+    Scale peak: 0.999
 endif
 
 processingTime = stopwatch - startTime
@@ -1065,7 +1211,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##SELF-SIMILARITY SPECTRAL RESYNTHESIS v3.2##"
+    Text: 0.5, "centre", 0.72, "half", "##SELF-SIMILARITY SPECTRAL RESYNTHESIS v3.4.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.26, "half",
@@ -1162,19 +1308,8 @@ if draw_visualization
     Axes: 0, actual_frames, sMinV - sPad, sMaxV + sPad
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, actual_frames, sMinV - sPad, sMaxV + sPad
     
-    # Threshold reference
-    if creative_mode = 1 or creative_mode = 3
-        Colour: "{0.55, 0.20, 0.55}"
-        Dotted line
-        Line width: 1.3
-        Draw line: 0, similarity_threshold, actual_frames, similarity_threshold
-        Solid line
-        Line width: 1
-        Font size: 5
-        Colour: "{0.55, 0.20, 0.55}"
-        Text: actual_frames * 0.99, "right", similarity_threshold, "bottom",
-            ... "thresh = " + fixed$(similarity_threshold, 2)
-    endif
+    # Similarity threshold applies to raw SSM cells BEFORE row averaging,
+    # so drawing it as a horizontal SCORE threshold would be misleading.
     
     # Score line — sample at most 400 points
     drawN = actual_frames
@@ -1345,6 +1480,7 @@ if draw_visualization
         ... + "  |  Frames: " + string$(actual_frames)
         ... + "  |  MFCCs: " + string$(actual_coeffs)
         ... + "  |  Step: " + fixed$(time_step * 1000, 1) + " ms"
+        ... + "  |  Score scale: centered"
     
     Text: 0.02, "left", 0.28, "half",
         ... "Threshold: " + fixed$(similarity_threshold, 2)

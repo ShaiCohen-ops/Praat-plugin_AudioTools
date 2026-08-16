@@ -3,14 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Subtle Random Texture — spectral coloring with smooth random
-#   resonances.  Creates organic shimmer, formant-like coloring,
-#   or evolving timbral shifts.
+#   Subtle Random Texture — per-copy phase-preserving spectral
+#   colouring with smooth random Gaussian gain features. Creates organic
+#   shimmer, formant-like colouring, or evolving timbral shifts.
+#   In evolving mode, several static full-file FFT colourations are
+#   blended in time with triangular weights that sum to unity.
 #
 #   v1.0 rewrote the DSP:
 #   - OLD: per-bin independent random gain = sounded like noise
@@ -19,6 +21,25 @@
 #     Processed as N full-file FFT copies with different random
 #     parameters per segment, then blended with triangular weights
 #     that form a perfect partition of unity.
+#
+#   v1.3.1 (2026):
+#   - VIZ: standardized Picture width/height and 2x2 panel geometry
+#     to the AudioTools house layout used by Spectral Swirl and
+#     Stepped Notch Filter. DSP is unchanged.
+#   - VIZ: compressed the process law to one isolated strip and
+#     standardized title/panel/summary typography.
+#
+#   v1.3 (2026):
+#   - AUDIT: wet=0 is now a true dry bypass (no peak scaling).
+#   - AUDIT: >2-channel input is rejected instead of silently
+#     discarding channels 3+.
+#   - DOC: frequency range is explicitly the random CENTRE range;
+#     Gaussian tails may extend outside it.
+#   - VIZ: mechanism-first 2x2 layout: actual random envelopes,
+#     exact triangular blend weights, realized gain trajectories,
+#     and measured pure-wet spectral consequence.
+#   - VIZ: all frequency plots use logarithmic frequency and
+#     measured/calculated ranges; no theoretical-average random plot.
 #
 #   v1.2 (2026):
 #   - VIZ: title strip uses an explicit inner viewport (the
@@ -50,7 +71,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Subtle Random Texture v1.2
+form Subtle Random Texture v1.3.1
     optionmenu Preset: 1
         option Custom
         option Subtle Shimmer (gentle spectral coloring)
@@ -64,13 +85,15 @@ form Subtle Random Texture v1.2
     positive Bandwidth_Hz 100
     positive Depth 2.0
     comment (0.5 = subtle, 2.0 = clear, 5.0 = extreme)
-    comment === Frequency Range ===
+    comment === Resonance-centre Range ===
     positive Low_freq_Hz 80
     positive High_freq_Hz 10000
+    comment (Gaussian tails may extend outside the centre range)
     comment === Time Variation ===
     natural Time_segments 4
     comment (1 = static, 4-8 = evolving shimmer)
     comment === Mix ===
+    comment (Stereo input: L/R receive independent random envelopes)
     real Wet_dry_percent 100
     comment === Output ===
     positive Scale_peak 0.95
@@ -158,22 +181,30 @@ duration = Get total duration
 n_channels = Get number of channels
 nyquist = original_sr / 2
 
+if n_channels > 2
+    exitScript: "Subtle Random Texture currently supports mono or stereo input. This version will not discard channels 3+."
+endif
+
+if nyquist <= 120
+    exitScript: "Sampling rate is too low for the requested spectral texture."
+endif
+
 if high_freq_Hz > nyquist - 100
     high_freq_Hz = nyquist - 100
 endif
 if low_freq_Hz >= high_freq_Hz
-    low_freq_Hz = 80
+    low_freq_Hz = max(20, 0.25 * high_freq_Hz)
 endif
 
 clearinfo
-writeInfoLine: "=== Subtle Random Texture v1.2 ==="
+writeInfoLine: "=== Subtle Random Texture v1.3 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Resonances: ", number_of_resonances
 appendInfoLine: "Bandwidth: ", bandwidth_Hz, " Hz"
 appendInfoLine: "Depth: ", fixed$(depth, 2)
-appendInfoLine: "Freq range: ", low_freq_Hz, " - ", high_freq_Hz, " Hz"
+appendInfoLine: "Centre range: ", low_freq_Hz, " - ", high_freq_Hz, " Hz"
 appendInfoLine: "Time segments: ", time_segments
 appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
 
@@ -212,8 +243,9 @@ endfor
 # PROCEDURE: Apply smooth random spectral envelope
 # ============================================================
 #
-# Smooth gain curve as a sum of Gaussian peaks/dips at random
-# centre frequencies.  Sounds like natural room resonances.
+# Smooth, phase-preserving gain curve as a sum of Gaussian
+# peaks/dips at random centre frequencies. This is spectral
+# colouration, not a physical room-resonance model.
 #
 # gain(f) = 1 + SUM_r[ amp_r * exp( -((f - fc_r) / bw)^2 ) ]
 #
@@ -279,8 +311,8 @@ procedure applyRandomResonances: .spectrumID
     .boostDB = 20 * log10(1 + .maxBoost)
     .cutGain = max(0.05, 1 - .maxCut)
     .cutDB = 20 * log10(.cutGain)
-    appendInfoLine: "    Peak effect: +" + fixed$(.boostDB, 1) + " dB boost, "
-        ... + fixed$(.cutDB, 1) + " dB cut"
+    appendInfoLine: "    Largest single feature: +" + fixed$(.boostDB, 1) + " dB boost, "
+        ... + fixed$(.cutDB, 1) + " dB floor-limited cut"
 endproc
 
 # ============================================================
@@ -304,8 +336,8 @@ procedure processOneChannel: .inputChannelID
     .chSR = Get sampling frequency
 
     if time_segments <= 1
-        # ---- STATIC: single FFT round-trip (perfect reconstruction) ----
-        appendInfoLine: "  Static mode — single FFT..."
+        # ---- STATIC: single full-file FFT colouration ----
+        appendInfoLine: "  Static mode — single full-file FFT colouration..."
         selectObject: .inputChannelID
         Copy: "ch_work"
         .chCopy = selected("Sound")
@@ -419,9 +451,6 @@ appendInfoLine: ""
 
 if n_channels >= 2
     # ---- STEREO: process each channel independently ----
-    if n_channels > 2
-        appendInfoLine: "NOTE: input has ", n_channels, " channels; only 1-2 (L/R) are processed."
-    endif
     appendInfoLine: "Processing LEFT channel..."
     selectObject: originalID
     Extract one channel: 1
@@ -461,6 +490,16 @@ else
 endif
 
 # ============================================================
+# PURE-WET REFERENCE FOR MEASUREMENT
+# ============================================================
+
+if draw_visualization
+    selectObject: wetSound
+    Copy: "SRT_pure_wet_viz"
+    vizWetID = selected("Sound")
+endif
+
+# ============================================================
 # WET/DRY MIX
 # ============================================================
 
@@ -496,249 +535,562 @@ endif
 # FINALIZE
 # ============================================================
 
-selectObject: wetSound
-Scale peak: scale_peak
+if wet_level <= 0
+    # True bypass: preserve the original samples and level exactly.
+    removeObject: wetSound
+    selectObject: originalID
+    Copy: originalName$ + "_" + presetName$
+    wetSound = selected("Sound")
+else
+    selectObject: wetSound
+    Scale peak: scale_peak
+    Rename: originalName$ + "_" + presetName$
+endif
+resultID = wetSound
 
 # Debug: final levels
 selectObject: originalID
 dbg_inRMS = Get root-mean-square: 0, 0
-selectObject: wetSound
+selectObject: resultID
 dbg_outRMS = Get root-mean-square: 0, 0
 appendInfoLine: ""
-appendInfoLine: "[DEBUG] Input RMS: ", fixed$(dbg_inRMS, 4),
+appendInfoLine: "[QC] Input RMS: ", fixed$(dbg_inRMS, 4),
     ... "  Output RMS: ", fixed$(dbg_outRMS, 4),
     ... "  Ratio: ", fixed$(dbg_outRMS / (dbg_inRMS + 1e-10), 4)
-Rename: originalName$ + "_" + presetName$
-resultID = selected("Sound")
+if wet_level <= 0
+    appendInfoLine: "[QC] Wet=0: true dry bypass; peak scaling skipped."
+endif
 
 # ============================================================
-# VISUALIZATION
+# VISUALIZATION — v1.3 mechanism-first layout
 # ============================================================
 
 if draw_visualization
-    Erase all
-    Select outer viewport: 0, 8, 0, 8
-
     # ----------------------------------------------------------
-    # Title
+    # Prepare representative channel objects. The stored random
+    # envelope set is channel 1; for stereo, channel 2 has an
+    # independent random realization by design.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.45
-    Select inner viewport: 0, 8, 0, 0.45
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Subtle Random Texture v1.2##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", 0.24, "half",
-        ... originalName$ + "  |  " + presetName$
-        ... + "  |  " + string$(number_of_resonances) + " resonances"
-        ... + "  |  depth=" + fixed$(depth, 2)
-
-    # ----------------------------------------------------------
-    # Input waveform
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0.52, 1.32
-    Select inner viewport: 0.55, 7.65, 0.57, 1.27
     selectObject: originalID
-    Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Input"
-
-    # ----------------------------------------------------------
-    # Output waveform
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 1.36, 2.16
-    Select inner viewport: 0.55, 7.65, 1.41, 2.11
-    selectObject: resultID
-    Colour: "{0.35, 0.58, 0.72}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Output"
-    Text bottom: "yes", "Time (s)"
-
-    # ----------------------------------------------------------
-    # Spectral gain curves — ALL segments overlaid
-    # Dark → light gradient shows progression segment 1..N.
-    # For stereo, only the LEFT channel's curves are plotted;
-    # the right channel has its own independent random draws
-    # (by design, for decorrelation) and is not shown.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 2.24, 3.54
-    Select inner viewport: 0.55, 7.65, 2.34, 3.44
-
-    # Axis range
-    gainMin = max(0, 1.0 - depth * 1.1)
-    gainMax = 1.0 + depth * 1.1
-    if gainMax < 2.0
-        gainMax = 2.0
+    if n_channels > 1
+        Extract one channel: 1
+        vizSrc = selected("Sound")
+    else
+        Copy: "SRT_viz_source"
+        vizSrc = selected("Sound")
     endif
 
-    Axes: 0, high_freq_Hz * 1.1, gainMin, gainMax
-    Paint rectangle: "{0.96, 0.96, 0.96}",
-        ... 0, high_freq_Hz * 1.1, gainMin, gainMax
+    selectObject: vizWetID
+    wetVizNch = Get number of channels
+    if wetVizNch > 1
+        Extract one channel: 1
+        vizWet = selected("Sound")
+    else
+        Copy: "SRT_viz_wet"
+        vizWet = selected("Sound")
+    endif
 
-    # Unity line
-    Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 1, high_freq_Hz * 1.1, 1
+    # ----------------------------------------------------------
+    # Exact blend-unity QC: the same triangular laws used by DSP.
+    # ----------------------------------------------------------
+    unityMaxErr = 0
+    if time_segments <= 1
+        unityMaxErr = 0
+    else
+        for q from 0 to 100
+            tq = duration * q / 100
+            wsum = 0
+            if time_segments = 2
+                wsum = (1 - tq / duration) + (tq / duration)
+            else
+                qhop = duration / (time_segments - 1)
+                for s from 1 to time_segments
+                    qcentre = (s - 1) * qhop
+                    wsum = wsum + max(0, 1 - abs(tq - qcentre) / qhop)
+                endfor
+            endif
+            qerr = abs(wsum - 1)
+            if qerr > unityMaxErr
+                unityMaxErr = qerr
+            endif
+        endfor
+    endif
+    appendInfoLine: "[QC] Triangular blend max unity error: ", fixed$(unityMaxErr, 12)
 
-    # Clamp floor line
-    Colour: "{0.90, 0.75, 0.75}"
-    Dotted line
-    Draw line: 0, 0.05, high_freq_Hz * 1.1, 0.05
-    Solid line
-
-    # ---- Draw each stored segment's gain curve, dark to light ----
-    nPlotPts = 300
-    freqStep = high_freq_Hz / nPlotPts
-
-    # For each segment s, compute its curve and draw with a colour
-    # that darkens with segment index. Older segments are muted blue
-    # (r=0.10, g=0.25, b=0.55); newer segments pale blue
-    # (r=0.55, g=0.70, b=0.90). When storeCapSeg=1 the curve is
-    # drawn with the "newest" colour for consistency.
-    for s from 1 to storeCapSeg
-        if storeCapSeg > 1
-            t01 = (s - 1) / (storeCapSeg - 1)
-        else
-            t01 = 1
-        endif
-        rCol = 0.10 + 0.45 * t01
-        gCol = 0.25 + 0.45 * t01
-        bCol = 0.55 + 0.35 * t01
-        Colour: "{" + fixed$(rCol, 2) + "," + fixed$(gCol, 2) + "," + fixed$(bCol, 2) + "}"
-
-        # Last segment drawn more prominently
-        if s = storeCapSeg
-            Line width: 2.2
-        else
-            Line width: 1.2
-        endif
-
-        prevFreq = 0
-        prevGain = 1
-        for pt from 1 to nPlotPts
-            freq = (pt - 0.5) * freqStep
-            gainVal = 1.0
+    # ----------------------------------------------------------
+    # Precompute ACTUAL stored envelope curves in dB on a log grid.
+    # These are the exact random draws used for channel 1.
+    # ----------------------------------------------------------
+    vizFLo = max(50, low_freq_Hz * 0.6)
+    vizFHi = min(nyquist * 0.97, high_freq_Hz * 1.25)
+    if vizFHi <= vizFLo
+        vizFLo = max(20, 0.1 * nyquist)
+        vizFHi = 0.95 * nyquist
+    endif
+    logFLo = log10(vizFLo)
+    logFHi = log10(vizFHi)
+    envPts = 100
+    envDbMinAll = 1e9
+    envDbMaxAll = -1e9
+    for p from 1 to envPts
+        fracP = (p - 1) / (envPts - 1)
+        lf = logFLo + fracP * (logFHi - logFLo)
+        fHz = 10^lf
+        envX[p] = lf
+        localMin = 1e9
+        localMax = -1e9
+        for s from 1 to storeCapSeg
+            g = 1
             for r from 1 to number_of_resonances
-                gainVal = gainVal + allResAmp[s, r]
-                    ... * exp(-((freq - allResFC[s, r]) / bandwidth_Hz)^2)
+                g = g + allResAmp[s, r] * exp(-((fHz - allResFC[s, r]) / bandwidth_Hz)^2)
             endfor
-            if gainVal < 0.05
-                gainVal = 0.05
+            if g < 0.05
+                g = 0.05
             endif
-            if pt > 1
-                Draw line: prevFreq, prevGain, freq, gainVal
+            gDb = 20 * log10(g)
+            if s = 1
+                envFirst[p] = gDb
             endif
-            prevFreq = freq
-            prevGain = gainVal
+            if s = storeCapSeg
+                envLast[p] = gDb
+            endif
+            if gDb < localMin
+                localMin = gDb
+            endif
+            if gDb > localMax
+                localMax = gDb
+            endif
+        endfor
+        envMin[p] = localMin
+        envMax[p] = localMax
+        if localMin < envDbMinAll
+            envDbMinAll = localMin
+        endif
+        if localMax > envDbMaxAll
+            envDbMaxAll = localMax
+        endif
+    endfor
+    envAbs = max(abs(envDbMinAll), abs(envDbMaxAll))
+    envY = max(6, 5 * ceiling(envAbs / 5))
+
+    # ----------------------------------------------------------
+    # Probe-frequency trajectories from the exact blend law.
+    # Since every static FFT copy preserves phase, a stationary
+    # component at f is multiplied by SUM_s w_s(t) G_s(f).
+    # ----------------------------------------------------------
+    probe1 = 10^(log10(low_freq_Hz) + 0.20 * (log10(high_freq_Hz) - log10(low_freq_Hz)))
+    probe2 = 10^(log10(low_freq_Hz) + 0.50 * (log10(high_freq_Hz) - log10(low_freq_Hz)))
+    probe3 = 10^(log10(low_freq_Hz) + 0.80 * (log10(high_freq_Hz) - log10(low_freq_Hz)))
+    trajPts = 101
+    trajMin = 1e9
+    trajMax = -1e9
+    for q from 1 to trajPts
+        tq = duration * (q - 1) / (trajPts - 1)
+        trajT[q] = tq
+        for k from 1 to 3
+            if k = 1
+                pf = probe1
+            elsif k = 2
+                pf = probe2
+            else
+                pf = probe3
+            endif
+            effG = 0
+            for s from 1 to storeCapSeg
+                gs = 1
+                for r from 1 to number_of_resonances
+                    gs = gs + allResAmp[s, r] * exp(-((pf - allResFC[s, r]) / bandwidth_Hz)^2)
+                endfor
+                if gs < 0.05
+                    gs = 0.05
+                endif
+                if time_segments <= 1
+                    ws = 1
+                elsif time_segments = 2
+                    if s = 1
+                        ws = 1 - tq / duration
+                    else
+                        ws = tq / duration
+                    endif
+                else
+                    thop = duration / (time_segments - 1)
+                    tc = (s - 1) * thop
+                    ws = max(0, 1 - abs(tq - tc) / thop)
+                endif
+                effG = effG + ws * gs
+            endfor
+            effDb = 20 * log10(max(0.05, effG))
+            trajDb[k, q] = effDb
+            if effDb < trajMin
+                trajMin = effDb
+            endif
+            if effDb > trajMax
+                trajMax = effDb
+            endif
         endfor
     endfor
-    Line width: 1
+    trajPad = max(2, 0.12 * (trajMax - trajMin + 1e-9))
+    trajYMin = trajMin - trajPad
+    trajYMax = trajMax + trajPad
 
-    # ---- Resonance-centre ticks for the LAST segment only ----
-    # (Showing ticks for all segments turns the panel into a dot
-    # storm; the ticks should help read the curve in focus, which
-    # is the heavy line = last segment.)
-    for r from 1 to number_of_resonances
-        fcLast = allResFC[storeCapSeg, r]
-        ampLast = allResAmp[storeCapSeg, r]
-        if fcLast > 0 and fcLast <= high_freq_Hz
-            tickY = 1.0 + ampLast
-            if tickY < 0.05
-                tickY = 0.05
-            endif
-            if ampLast > 0
-                Paint circle (mm): "{0.22, 0.65, 0.32}", fcLast, tickY, 1.2
-            else
-                Paint circle (mm): "{0.75, 0.30, 0.30}", fcLast, tickY, 1.2
+    # ----------------------------------------------------------
+    # Measured pure-wet spectral consequence using local LTAS
+    # averages. This is a measurement, not a theoretical envelope.
+    # ----------------------------------------------------------
+    selectObject: vizSrc
+    To Spectrum: "yes"
+    srcSpecViz = selected("Spectrum")
+    To Ltas (1-to-1)
+    srcLtas = selected("Ltas")
+    removeObject: srcSpecViz
+
+    selectObject: vizWet
+    To Spectrum: "yes"
+    wetSpecViz = selected("Spectrum")
+    To Ltas (1-to-1)
+    wetLtas = selected("Ltas")
+    removeObject: wetSpecViz
+
+    measPts = 70
+    srcMaxDb = -1e9
+    for p from 1 to measPts
+        fracP = (p - 1) / (measPts - 1)
+        lf = logFLo + fracP * (logFHi - logFLo)
+        fHz = 10^lf
+        bwLo = max(1, fHz / 1.045)
+        bwHi = min(nyquist, fHz * 1.045)
+        selectObject: srcLtas
+        sDb = Get mean: bwLo, bwHi, "dB"
+        selectObject: wetLtas
+        wDb = Get mean: bwLo, bwHi, "dB"
+        measX[p] = lf
+        measSrc[p] = sDb
+        measDiff[p] = wDb - sDb
+        if sDb > srcMaxDb
+            srcMaxDb = sDb
+        endif
+    endfor
+    measAbs = 0
+    for p from 1 to measPts
+        if measSrc[p] > srcMaxDb - 55
+            if abs(measDiff[p]) > measAbs
+                measAbs = abs(measDiff[p])
             endif
         endif
     endfor
-
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Gain"
-    Text bottom: "yes", "Frequency (Hz)"
-
-    # Panel title reflects how many curves are shown + stereo caveat
-    if time_segments = 1
-        envTitle$ = "Spectral envelope  (green = boost, red = cut)"
-    else
-        envTitle$ = "Spectral envelope  ("
-            ... + string$(time_segments)
-            ... + " curves overlaid, dark=first  light=last;"
-            ... + " ticks mark last curve)"
-    endif
-    if n_channels >= 2
-        envTitle$ = envTitle$ + "  [L channel]"
-    endif
-    Text top: "no", envTitle$
-
-    # ----------------------------------------------------------
-    # Output spectrogram
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 3.62, 4.82
-    Select inner viewport: 0.55, 7.65, 3.70, 4.74
-    selectObject: resultID
-    nChRes = Get number of channels
-    if nChRes > 1
-        Extract one channel: 1
-        vizSpec = selected("Sound")
-    else
-        Copy: "vizSpec"
-        vizSpec = selected("Sound")
-    endif
-    To Spectrogram: 0.02, 5000, 0.005, 20, "Gaussian"
-    specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    removeObject: specOut, vizSpec
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    if time_segments > 1
-        Text top: "no", "Output spectrogram  (" + string$(time_segments) + " evolving segments)"
-    else
-        Text top: "no", "Output spectrogram  (static)"
+    measY = max(3, 3 * ceiling(measAbs / 3))
+    if measY > 30
+        measY = 30
     endif
 
     # ----------------------------------------------------------
-    # Summary panel
+    # Picture layout — 2x2; one claim per panel.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.92, 5.62
-    Select inner viewport: 0.55, 7.65, 4.98, 5.56
+    Erase all
+    Select outer viewport: 0, 8.1, 0, 5.3
+
+    # Title strip
+    Select outer viewport: 0.4, 7.8, 0.04, 0.25
+    Select inner viewport: 0.4, 7.8, 0.04, 0.25
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Font size: 7
+    Font size: 13
     Colour: "Black"
-    Text: 0.02, "left", 0.78, "half", "##Summary##"
-    Font size: 6
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.48, "half",
-        ... "Preset: " + presetName$
-        ... + "  |  Resonances: " + string$(number_of_resonances)
-        ... + "  |  BW: " + string$(bandwidth_Hz) + " Hz"
-        ... + "  |  Depth: " + fixed$(depth, 2)
-        ... + "  |  Range: " + string$(low_freq_Hz) + "-" + string$(high_freq_Hz) + " Hz"
-    Text: 0.02, "left", 0.18, "half",
-        ... "Segments: " + string$(time_segments)
-        ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
-        ... + "  |  Duration: " + fixed$(duration, 2) + " s"
-        ... + "  |  SR: " + string$(original_sr) + " Hz"
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Text: 0.5, "centre", 0.70, "half", "Subtle Random Texture v1.3.1"
+    Font size: 6.5
+    Colour: "{0.35,0.35,0.35}"
+    if n_channels = 2
+        titleNote$ = presetName$ + "  |  channel 1 realization shown; R is independently randomized"
+    else
+        titleNote$ = presetName$ + "  |  actual random realization"
+    endif
+    Text: 0.5, "centre", 0.08, "half", titleNote$
 
+    # Process strip
+    Select outer viewport: 0.4, 7.8, 0.28, 0.46
+    Select inner viewport: 0.4, 7.8, 0.28, 0.46
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.96,0.96,0.96}", 0, 1, 0, 1
+    Font size: 6.5
+    Colour: "{0.20,0.20,0.20}"
+    Text: 0.5, "centre", 0.50, "half", "FFT copies -> phase-preserving random G_s(f) -> IFFT -> triangular blend;  sum w_s(t) = 1"
+
+    # ---------- A: actual envelopes ----------
+    Select outer viewport: 0.3, 3.95, 0.60, 2.60
+    # title strip A
+    Select outer viewport: 0.3, 3.95, 0.60, 0.88
+    Axes: 0,1,0,1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.55, "half", "A  ACTUAL RANDOM ENVELOPES"
+    # plot A
+    Select inner viewport: 0.72, 3.72, 1.02, 2.36
+    Axes: logFLo, logFHi, -envY, envY
+    Paint rectangle: "{0.97,0.97,0.97}", logFLo, logFHi, -envY, envY
+    Colour: "{0.78,0.78,0.78}"
+    Draw line: logFLo, 0, logFHi, 0
+    # measured min/max range as vertical whiskers
+    Line width: 1
+    for p from 1 to envPts
+        if p mod 3 = 1
+            Colour: "{0.82,0.86,0.90}"
+            Draw line: envX[p], envMin[p], envX[p], envMax[p]
+        endif
+    endfor
+    # first curve
+    Colour: "{0.45,0.45,0.45}"
+    for p from 2 to envPts
+        Draw line: envX[p-1], envFirst[p-1], envX[p], envFirst[p]
+    endfor
+    # last curve
+    Colour: "{0.12,0.42,0.68}"
+    Line width: 2
+    for p from 2 to envPts
+        Draw line: envX[p-1], envLast[p-1], envX[p], envLast[p]
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, max(3, envY/3), "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Gain (dB)"
+    # Manual logarithmic frequency marks
+    if vizFLo <= 50 and 50 <= vizFHi
+        One mark bottom: log10(50), "no", "yes", "no", "50"
+    endif
+    if vizFLo <= 100 and 100 <= vizFHi
+        One mark bottom: log10(100), "no", "yes", "no", "100"
+    endif
+    if vizFLo <= 200 and 200 <= vizFHi
+        One mark bottom: log10(200), "no", "yes", "no", "200"
+    endif
+    if vizFLo <= 500 and 500 <= vizFHi
+        One mark bottom: log10(500), "no", "yes", "no", "500"
+    endif
+    if vizFLo <= 1000 and 1000 <= vizFHi
+        One mark bottom: log10(1000), "no", "yes", "no", "1k"
+    endif
+    if vizFLo <= 2000 and 2000 <= vizFHi
+        One mark bottom: log10(2000), "no", "yes", "no", "2k"
+    endif
+    if vizFLo <= 5000 and 5000 <= vizFHi
+        One mark bottom: log10(5000), "no", "yes", "no", "5k"
+    endif
+    if vizFLo <= 10000 and 10000 <= vizFHi
+        One mark bottom: log10(10000), "no", "yes", "no", "10k"
+    endif
+    if vizFLo <= 20000 and 20000 <= vizFHi
+        One mark bottom: log10(20000), "no", "yes", "no", "20k"
+    endif
+    Text bottom: "yes", "Frequency (Hz, log)"
+    # concise legend inside plot
+    Font size: 6
+    Colour: "{0.45,0.45,0.45}"
+    Text: logFLo + 0.04*(logFHi-logFLo), "left", envY*0.82, "half", "first"
+    Colour: "{0.12,0.42,0.68}"
+    Text: logFLo + 0.18*(logFHi-logFLo), "left", envY*0.82, "half", "last"
+    Colour: "{0.55,0.60,0.65}"
+    Text: logFLo + 0.31*(logFHi-logFLo), "left", envY*0.82, "half", "range"
+
+    # ---------- B: exact blend weights ----------
+    Select outer viewport: 4.05, 7.75, 0.60, 2.60
+    Select outer viewport: 4.05, 7.75, 0.60, 0.88
+    Axes: 0,1,0,1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.55, "half", "B  EXACT TIME BLEND"
+    Select inner viewport: 4.46, 7.53, 1.02, 2.36
+    Axes: 0, duration, 0, 1.08
+    Paint rectangle: "{0.97,0.97,0.97}", 0, duration, 0, 1.08
+    if time_segments <= 1
+        Colour: "{0.12,0.42,0.68}"
+        Line width: 2
+        Draw line: 0, 1, duration, 1
+    else
+        # Individual triangular weights
+        Line width: 1
+        for s from 1 to time_segments
+            Colour: "{0.68,0.72,0.76}"
+            if time_segments = 2
+                if s = 1
+                    Draw line: 0, 1, duration, 0
+                else
+                    Draw line: 0, 0, duration, 1
+                endif
+            else
+                bhop = duration / (time_segments - 1)
+                bc = (s - 1) * bhop
+                bL = max(0, bc - bhop)
+                bR = min(duration, bc + bhop)
+                if bc > 0
+                    Draw line: bL, 0, bc, 1
+                endif
+                if bc < duration
+                    Draw line: bc, 1, bR, 0
+                endif
+            endif
+        endfor
+        # Exact sum line sampled from the same law
+        Colour: "{0.12,0.42,0.68}"
+        Line width: 2
+        prevT = 0
+        prevS = 1
+        for q from 1 to 100
+            tq = duration * q / 100
+            wsum = 0
+            if time_segments = 2
+                wsum = (1 - tq/duration) + tq/duration
+            else
+                bhop = duration / (time_segments - 1)
+                for s from 1 to time_segments
+                    bc = (s - 1) * bhop
+                    wsum = wsum + max(0, 1 - abs(tq - bc) / bhop)
+                endfor
+            endif
+            Draw line: prevT, prevS, tq, wsum
+            prevT = tq
+            prevS = wsum
+        endfor
+    endif
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, 0.5, "yes", "yes", "no"
+    Marks bottom every: 1, max(0.1, duration/4), "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Weight"
+    Text bottom: "yes", "Time (s)"
+    Font size: 6
+    Text top: "no", "sum residual = " + fixed$(unityMaxErr, 12)
+
+    # ---------- C: realized gain trajectories ----------
+    Select outer viewport: 0.3, 3.95, 2.82, 4.82
+    Select outer viewport: 0.3, 3.95, 2.82, 3.10
+    Axes: 0,1,0,1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.55, "half", "C  REALIZED GAIN OVER TIME"
+    Select inner viewport: 0.72, 3.72, 3.22, 4.56
+    Axes: 0, duration, trajYMin, trajYMax
+    Paint rectangle: "{0.97,0.97,0.97}", 0, duration, trajYMin, trajYMax
+    Colour: "{0.78,0.78,0.78}"
+    if trajYMin < 0 and trajYMax > 0
+        Draw line: 0, 0, duration, 0
+    endif
+    # 3 probe trajectories
+    Colour: "{0.45,0.45,0.45}"
+    for q from 2 to trajPts
+        Draw line: trajT[q-1], trajDb[1,q-1], trajT[q], trajDb[1,q]
+    endfor
+    Colour: "{0.12,0.42,0.68}"
+    Line width: 2
+    for q from 2 to trajPts
+        Draw line: trajT[q-1], trajDb[2,q-1], trajT[q], trajDb[2,q]
+    endfor
+    Line width: 1
+    Colour: "{0.55,0.32,0.20}"
+    for q from 2 to trajPts
+        Draw line: trajT[q-1], trajDb[3,q-1], trajT[q], trajDb[3,q]
+    endfor
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, max(1, (trajYMax-trajYMin)/4), "yes", "yes", "no"
+    Marks bottom every: 1, max(0.1, duration/4), "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Gain (dB)"
+    Text bottom: "yes", "Time (s)"
+    Font size: 6
+    Colour: "{0.45,0.45,0.45}"
+    Text: duration*0.03, "left", trajYMax - 0.10*(trajYMax-trajYMin), "half", fixed$(probe1,0)+" Hz"
+    Colour: "{0.12,0.42,0.68}"
+    Text: duration*0.25, "left", trajYMax - 0.10*(trajYMax-trajYMin), "half", fixed$(probe2,0)+" Hz"
+    Colour: "{0.55,0.32,0.20}"
+    Text: duration*0.47, "left", trajYMax - 0.10*(trajYMax-trajYMin), "half", fixed$(probe3,0)+" Hz"
+
+    # ---------- D: measured pure-wet consequence ----------
+    Select outer viewport: 4.05, 7.75, 2.82, 4.82
+    Select outer viewport: 4.05, 7.75, 2.82, 3.10
+    Axes: 0,1,0,1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.55, "half", "D  MEASURED PURE-WET CHANGE"
+    Select inner viewport: 4.46, 7.53, 3.22, 4.56
+    Axes: logFLo, logFHi, -measY, measY
+    Paint rectangle: "{0.97,0.97,0.97}", logFLo, logFHi, -measY, measY
+    Colour: "{0.75,0.75,0.75}"
+    Draw line: logFLo, 0, logFHi, 0
+    Colour: "{0.12,0.42,0.68}"
+    Line width: 1.5
+    havePrev = 0
+    for p from 1 to measPts
+        if measSrc[p] > srcMaxDb - 55
+            yy = measDiff[p]
+            if yy > measY
+                yy = measY
+            elsif yy < -measY
+                yy = -measY
+            endif
+            if havePrev
+                Draw line: prevMX, prevMY, measX[p], yy
+            endif
+            prevMX = measX[p]
+            prevMY = yy
+            havePrev = 1
+        else
+            havePrev = 0
+        endif
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, max(3, measY/3), "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Wet - source (dB)"
+    if vizFLo <= 50 and 50 <= vizFHi
+        One mark bottom: log10(50), "no", "yes", "no", "50"
+    endif
+    if vizFLo <= 100 and 100 <= vizFHi
+        One mark bottom: log10(100), "no", "yes", "no", "100"
+    endif
+    if vizFLo <= 200 and 200 <= vizFHi
+        One mark bottom: log10(200), "no", "yes", "no", "200"
+    endif
+    if vizFLo <= 500 and 500 <= vizFHi
+        One mark bottom: log10(500), "no", "yes", "no", "500"
+    endif
+    if vizFLo <= 1000 and 1000 <= vizFHi
+        One mark bottom: log10(1000), "no", "yes", "no", "1k"
+    endif
+    if vizFLo <= 2000 and 2000 <= vizFHi
+        One mark bottom: log10(2000), "no", "yes", "no", "2k"
+    endif
+    if vizFLo <= 5000 and 5000 <= vizFHi
+        One mark bottom: log10(5000), "no", "yes", "no", "5k"
+    endif
+    if vizFLo <= 10000 and 10000 <= vizFHi
+        One mark bottom: log10(10000), "no", "yes", "no", "10k"
+    endif
+    if vizFLo <= 20000 and 20000 <= vizFHi
+        One mark bottom: log10(20000), "no", "yes", "no", "20k"
+    endif
+    Text bottom: "yes", "Frequency (Hz, log)"
+    Font size: 6
+    Colour: "{0.35,0.35,0.35}"
+    Text top: "no", "local LTAS averages; display capped at +/-" + fixed$(measY,0) + " dB"
+
+    # Bottom summary strip
+    Select outer viewport: 0.4, 7.7, 4.96, 5.22
+    Select inner viewport: 0.4, 7.7, 4.96, 5.22
+    Axes: 0,1,0,1
+    Paint rectangle: "{0.94,0.94,0.94}", 0,1,0,1
+    Font size: 6.3
+    Colour: "{0.25,0.25,0.25}"
+    Text: 0.5, "centre", 0.52, "half", "centres=" + fixed$(low_freq_Hz,0) + "-" + fixed$(high_freq_Hz,0) + " Hz  |  BW=" + fixed$(bandwidth_Hz,0) + " Hz  |  N=" + string$(number_of_resonances) + "  |  segments=" + string$(time_segments) + "  |  wet=" + fixed$(wet_dry_percent,0) + "%  |  RMS out/in=" + fixed$(dbg_outRMS/(dbg_inRMS+1e-10),2)
+
+    # Restore defaults / cleanup visualization objects.
     Font size: 10
     Colour: "Black"
     Line width: 1
+    removeObject: srcLtas, wetLtas, vizSrc, vizWet, vizWetID
 endif
 
 # ============================================================

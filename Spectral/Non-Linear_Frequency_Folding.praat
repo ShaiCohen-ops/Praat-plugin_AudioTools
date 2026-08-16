@@ -3,7 +3,28 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
+#
+# Changelog v0.6 (2026):
+#   - FIX/SEMANTICS: the former default "magnitude on original phase" was not
+#     a true forward-time spectral fold. It copied folded magnitudes onto the
+#     destination bins' pre-existing phases; newly populated bins therefore
+#     inherited arbitrary/near-zero destination phase structure and an
+#     asymmetric AM test did not preserve its temporal envelope. New default
+#     "spectral inversion (forward time)" reflects COMPLEX bins and conjugates
+#     them. For a reflected band this is the forward-time counterpart of the
+#     literal complex reflection: source energy is genuinely relocated and the
+#     band envelope keeps its time direction. The v0.5 magnitude/phase hybrid
+#     is retained as an explicit legacy texture, and literal complex reflection
+#     remains available for time-reversed-band character.
+#   - FIX: real-signal Nyquist bins are kept real in both complex fold modes.
+#   - FORM: Stereo width now accepts the documented value 0; Low-frequency
+#     threshold accepts 0; output peak is validated. Stereo wording corrected:
+#     the +/- phase offsets decorrelate the two combs but are not mathematically
+#     complementary point by point.
+#   - VIZ correctness only: frequency plots respect the actual Nyquist, the
+#     fold map no longer draws false connecting lines across its discontinuous
+#     cell boundaries, and the active fold-phase mode is stated.
 #
 # Changelog v0.5 (2026):
 #   - ADDED stereo output with spectral width. The fold map is
@@ -75,12 +96,14 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Non-linear frequency folding - wraps frequencies around
-#   a folding point and modulates with sine/cosine pattern.
+#   Cellwise frequency reflection around integer multiples of a folding
+#   period, followed by a squared sine/cosine spectral gain pattern.
+#   Forward-time spectral inversion, legacy destination-phase texture,
+#   and literal complex reflection (reversed-band character) are available.
 #   Creates "knotted" spectral textures.
 # ============================================================
 
-form Non-Linear Frequency Folding v0.5
+form Non-Linear Frequency Folding v0.6
     comment === PRESETS ===
     optionmenu Preset: 1
         option Custom
@@ -93,10 +116,12 @@ form Non-Linear Frequency Folding v0.5
     
     comment === FOLDING PARAMETERS ===
     optionmenu Fold_phase: 1
-        option magnitude on original phase (forward time)
+        option spectral inversion (conjugated bins; forward time)
+        option legacy magnitude on destination phase (v0.5 texture)
         option complex bins (mirrored bands play time-reversed)
     boolean Fast_fourier 1
-    positive Low_freq_threshold 100
+    comment (on = zero-padded fast FFT character; off = exact-length FFT)
+    real Low_freq_threshold 100
     positive Folding_period 1000
     positive Sine_modulation_divisor 300
     positive Cosine_modulation_divisor 150
@@ -106,9 +131,9 @@ form Non-Linear Frequency Folding v0.5
         option match input
         option mono
         option stereo (wide)
-    positive Stereo_width 0.6
-    comment (0 = dual mono ... 1 = fully complementary combs)
-    positive Scale_peak 0.88
+    real Stereo_width 0.6
+    comment (0 = same comb L/R ... 1 = maximum +/- pi/4 comb phase spread)
+    real Scale_peak 0.88
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -164,9 +189,20 @@ originalName$ = selected$("Sound")
 original_sr = Get sampling frequency
 original_duration = Get total duration
 num_channels = Get number of channels
+original_nyquist = original_sr / 2
+
+if low_freq_threshold < 0 or low_freq_threshold > original_nyquist
+    exitScript: "Low-frequency threshold must be between 0 Hz and Nyquist."
+endif
+if stereo_width < 0 or stereo_width > 1
+    exitScript: "Stereo width must be between 0 and 1."
+endif
+if scale_peak <= 0 or scale_peak > 1
+    exitScript: "Scale peak must be greater than 0 and at most 1."
+endif
 
 clearinfo
-writeInfoLine: "=== Non-Linear Frequency Folding v0.5 ==="
+writeInfoLine: "=== Non-Linear Frequency Folding v0.6 ==="
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Duration: ", fixed$(original_duration, 1), " s"
 appendInfoLine: "Sample rate: ", original_sr, " Hz"
@@ -174,6 +210,14 @@ appendInfoLine: ""
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Folding period: ", folding_period
 appendInfoLine: "Low freq threshold: ", low_freq_threshold
+if fold_phase = 1
+    foldModeName$ = "spectral inversion / conjugated reflection (forward time)"
+elsif fold_phase = 2
+    foldModeName$ = "legacy magnitude on destination phase"
+else
+    foldModeName$ = "literal complex reflection (reversed-band character)"
+endif
+appendInfoLine: "Fold phase: ", foldModeName$
 appendInfoLine: ""
 
 # ===================================================================
@@ -191,11 +235,8 @@ else
         outCh = 2
     endif
 endif
-if stereo_width > 1
-    stereo_width = 1
-endif
 appendInfoLine: "Output: ", outCh, " channel(s)",
-    ... if outCh = 2 then " | width " + fixed$(stereo_width, 2) else "" fi
+    ... if outCh = 2 then " | comb phase spread " + fixed$(stereo_width, 2) else "" fi
 
 # channel sources: per-channel folding for stereo input + stereo
 # out; otherwise a mono mixdown (folded once, or twice with offset
@@ -237,24 +278,23 @@ perStr$ = string$(folding_period)
 sdivStr$ = string$(sine_modulation_divisor)
 cdivStr$ = string$(cosine_modulation_divisor)
 
-# v0.3.1: two phase modes. The fold map is descending in alternating
-# segments, and frequency-mirrored COMPLEX bins are, by X(-f) =
-# conj(X(f)), TIME-REVERSED audio in those bands. "complex" keeps
-# that (the mathematically literal fold; reversed transients are its
-# signature). "magnitude on original phase" relocates only the
-# folded bin's magnitude onto each bin's own phase: energy moves,
-# time flows forward. Both read exclusively from the frozen copy.
+# v0.6: three phase characters. The cellwise reflection f -> 2*n*P-f
+# reverses the order of complex bins inside each reflected cell. Reading those
+# bins literally gives the reversed-band character. Conjugating the reflected
+# complex bins gives spectral inversion while retaining forward time for the
+# band envelope. The v0.5 magnitude-on-destination-phase hybrid is retained
+# as a legacy texture. All modes read exclusively from the frozen copy.
 
 # ===================================================================
-# PROCESS (WITH OR WITHOUT CHUNKING)
+# PROCESS - WHOLE FILE
 # ===================================================================
 
 selectObject: workingID
 total_duration = Get total duration
 
-# WHOLE FILE PROCESSING (v0.5: one pass per output channel; at
-# stereo width w the modulation comb gets phase -w*pi/4 in L and
-# +w*pi/4 in R -- complementary combs at w = 1)
+# Whole-file processing: one pass per output channel. At stereo width w the
+# modulation pattern gets phase -w*pi/4 in L and +w*pi/4 in R. These are
+# increasingly decorrelated offset combs; they are not pointwise complements.
 appendInfo: "Processing spectrum..."
 for pass to outCh
     if perChannelIn
@@ -279,6 +319,9 @@ for pass to outCh
     phStr$ = string$(modPhase)
     
     selectObject: passSrc
+    passSamples = Get number of samples
+    hasNyquist = fast_fourier or (passSamples mod 2 = 0)
+    hasNyquist$ = string$(hasNyquist)
     To Spectrum: fast_fourier
     specID = selected("Spectrum")
     dxBin = Get bin width
@@ -288,15 +331,25 @@ for pass to outCh
     selectObject: specID
     foldIdx$ = "abs(x - 2 * round(x / " + perStr$ + ") * " + perStr$ + ") / " + dxStr$ + " + 1"
     modTerm$ = "(sin(x / " + sdivStr$ + " + " + phStr$ + ") + cos(x / " + cdivStr$ + " + " + phStr$ + ")) ^ 2"
-    if fold_phase = 2
-        Formula: "if x < " + thrStr$ + " then self else object[" + frozenStr$
-        ... + ", row, " + foldIdx$ + "] * " + modTerm$ + " endif"
-    else
+    if fold_phase = 1
+        # Proper forward-time spectral inversion: conjugate the reflected bin.
+        # At an even-N Nyquist bin the imaginary component must remain zero.
+        Formula: "if x < " + thrStr$ + " then self else if row=1 then object[" + frozenStr$
+        ... + ", 1, " + foldIdx$ + "] * " + modTerm$
+        ... + " else if " + hasNyquist$ + " and col=ncol then 0 else -object[" + frozenStr$
+        ... + ", 2, " + foldIdx$ + "] * " + modTerm$ + " fi fi fi"
+    elsif fold_phase = 2
+        # v0.5 texture: folded magnitude on the destination bin's existing phase.
         Formula: "if x < " + thrStr$ + " then self else "
         ... + "sqrt(object[" + frozenStr$ + ", 1, " + foldIdx$ + "]^2 + object[" + frozenStr$ + ", 2, " + foldIdx$ + "]^2)"
         ... + " * object[" + frozenStr$ + ", row, col]"
         ... + " / sqrt(object[" + frozenStr$ + ", 1, col]^2 + object[" + frozenStr$ + ", 2, col]^2 + 1e-12)"
         ... + " * " + modTerm$ + " endif"
+    else
+        # Literal complex reflection: preserves the v0.5 time-reversed-band mode.
+        Formula: "if x < " + thrStr$ + " then self else if row=2 and " + hasNyquist$
+        ... + " and col=ncol then 0 else object[" + frozenStr$
+        ... + ", row, " + foldIdx$ + "] * " + modTerm$ + " fi fi"
     endif
     removeObject: frozenSpec
     
@@ -363,12 +416,20 @@ if draw_visualization
     Draw inner box
     Text top: "no", "Frequency Folded"
     
+    vizMaxFreq = min(5000, original_nyquist)
+
     # Original spectrogram
     Select outer viewport: 0, 4, 2.0, 3.8
     selectObject: originalID
-    origSpecID = To Spectrogram: 0.01, 5000, 0.002, 20, "Gaussian"
+    if num_channels > 1
+        vizOrigMonoID = Extract one channel: 1
+    else
+        vizOrigMonoID = Copy: "viz_orig_mono"
+    endif
+    origSpecID = To Spectrogram: 0.01, vizMaxFreq, 0.002, 20, "Gaussian"
+    removeObject: vizOrigMonoID
     selectObject: origSpecID
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxFreq, 100, "yes", 50, 6, 0, "no"
     Font size: 8
     Text top: "no", "Original Spectrogram"
     removeObject: origSpecID
@@ -382,10 +443,10 @@ if draw_visualization
     else
         vizMonoID = Copy: "viz_mono"
     endif
-    resSpecID = To Spectrogram: 0.01, 5000, 0.002, 20, "Gaussian"
+    resSpecID = To Spectrogram: 0.01, vizMaxFreq, 0.002, 20, "Gaussian"
     removeObject: vizMonoID
     selectObject: resSpecID
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxFreq, 100, "yes", 50, 6, 0, "no"
     Text top: "no", "Folded Spectrogram"
     removeObject: resSpecID
     
@@ -393,36 +454,50 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.0, 5.4
     Select inner viewport: 0.6, 7.6, 4.2, 5.2
     
-    maxFreq = 5000
+    maxFreq = vizMaxFreq
     Axes: 0, maxFreq, 0, maxFreq
     
     # Draw folding mapping
     Colour: "{0.9, 0.5, 0.2}"
     Line width: 2
     
-    step = 50
-    prevF = 0
-    # Low freq: identity mapping
-    if low_freq_threshold > 0
-        Draw line: 0, 0, low_freq_threshold, low_freq_threshold
-        prevF = low_freq_threshold
+    step = min(50, folding_period / 20)
+    if step <= 0
+        step = 1
     endif
-    
-    # Folded region
-    f = low_freq_threshold + step
-    while f <= maxFreq
-        # Folding formula: abs(f - 2 * round(f / period) * period)
-        folded = abs(f - 2 * round(f / folding_period) * folding_period)
-        if folded < 0
-            folded = 0
-        endif
-        if folded > maxFreq
-            folded = maxFreq
-        endif
-        Draw line: prevF, abs(prevF - 2 * round(prevF / folding_period) * folding_period), f, folded
-        prevF = f
-        f = f + step
-    endwhile
+    # Low region is literal identity.
+    identityEnd = min(low_freq_threshold, maxFreq)
+    if identityEnd > 0
+        Draw line: 0, 0, identityEnd, identityEnd
+    endif
+
+    # Folded region. Break the polyline whenever round(f/P) changes: the
+    # algorithm has a genuine discontinuity there and must not be visualized
+    # as a continuous diagonal sweep.
+    if low_freq_threshold < maxFreq
+        prevF = low_freq_threshold
+        prevFold = abs(prevF - 2 * round(prevF / folding_period) * folding_period)
+        prevCell = round(prevF / folding_period)
+        f = low_freq_threshold + step
+        while f <= maxFreq + 0.5*step
+            if f > maxFreq
+                f = maxFreq
+            endif
+            cell = round(f / folding_period)
+            folded = abs(f - 2 * cell * folding_period)
+            if cell = prevCell
+                Draw line: prevF, prevFold, f, folded
+            endif
+            prevF = f
+            prevFold = folded
+            prevCell = cell
+            if f >= maxFreq
+                f = maxFreq + step
+            else
+                f = f + step
+            endif
+        endwhile
+    endif
     
     # Mark folding period
     Colour: "{0.5, 0.5, 0.5}"
@@ -443,7 +518,7 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 9
-    Text top: "no", "Frequency Folding Map (green=threshold, gray=folding periods)"
+    Text top: "no", "Cellwise Frequency Reflection Map (green=threshold, gray=period markers)"
     Text left: "yes", "Output (Hz)"
     Text bottom: "yes", "Input Frequency (Hz)"
     
@@ -454,12 +529,14 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.5, "half", "Folding: " + string$(folding_period) + " Hz"
-    Text: 0.22, "left", 0.5, "half", "Threshold: " + string$(low_freq_threshold) + " Hz"
-    Text: 0.45, "left", 0.5, "half", "Sin div: " + string$(sine_modulation_divisor)
-    Text: 0.65, "left", 0.5, "half", "Cos div: " + string$(cosine_modulation_divisor)
+    Text: 0.02, "left", 0.68, "half", "P: " + string$(folding_period) + " Hz | threshold " + string$(low_freq_threshold) + " Hz"
+    Text: 0.36, "left", 0.68, "half", "sin/cos divisors: " + string$(sine_modulation_divisor) + " / " + string$(cosine_modulation_divisor)
+    Text: 0.02, "left", 0.25, "half", "phase: " + foldModeName$
+    if outCh = 2
+        Text: 0.67, "left", 0.25, "half", "stereo spread " + fixed$(stereo_width,2)
+    endif
     
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1

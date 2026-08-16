@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - Fix imag-magnitude overwrite bug; spectrogram viewports
+# Version: 0.4.1 (2026) - original-rate processing only
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,14 +11,40 @@
 #   Spectral phase/magnitude swap. Splits the sound at a chosen point;
 #   takes the PHASE from the early segment and the MAGNITUDE from the
 #   late segment, recombining them into a new spectrum. Creates time-
-#   smeared, "history-swapped" textures. Stereo via a small split offset.
+#   smeared, "history-swapped" textures. Stereo is synthesized by a small
+#   split offset between L/R. Two phase mappings are available: the v0.3
+#   duration-warp character and a frequency-aligned mapping that follows the
+#   actual zero-padded FFT grids.
+#
+# Changelog v0.4.1 (2026):
+#   - PERFORMANCE/QUALITY: removed Balanced/Fast resampling modes. Full-rate
+#     processing is both faster in practice on the tested material and preserves
+#     the complete source bandwidth. DSP is identical to v0.4 Full Quality.
+#
+# Changelog v0.4 (2026):
+#   - MUSICAL PRIORITY: v0.3 duration-ratio phase warp remains available and
+#     is the default character; exact physical-frequency alignment is added
+#     as an alternate rather than silently replacing the sound.
+#   - FIX: exact mode maps bins using the ACTUAL early/late FFT bin widths.
+#     Fast FFT zero-padding means segment-duration ratio is not generally the
+#     correct frequency-bin ratio.
+#   - FIX: stereo/multichannel input is no longer averaged to mono before
+#     analysis; the strongest-RMS channel drives the intentionally synthetic
+#     stereo output, avoiding anti-phase cancellation.
+#   - FORM/ROBUSTNESS: split/offset/tail/fade/output validation; zero stereo
+#     offset and zero tail/fade are legal. Silent output scaling is safe.
+#   - CLARITY: tail is explicitly the maximum retained FFT-generated tail;
+#     actual retained tail depends on available zero-padding and is reported.
+#   - VIZ: only corrected where misleading: shared waveform scale, analysis-
+#     driver spectrogram, Nyquist-safe plot range, and actual retained-tail
+#     proportion rather than a fixed decorative 70/30 split.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
 #   Adjust parameters via the form dialog.
 # ============================================================
 
-form Phase History Swap v0.3
+form Phase History Swap v0.4.1
     optionmenu Preset: 1
         option Custom
         option Subtle Swap (50%)
@@ -31,22 +57,21 @@ form Phase History Swap v0.3
         option Wide Stereo (50% + 5%)
         option Narrow Focus (50% + 0.5%)
         option Asymmetric (40% + 3%)
-    comment === Performance ===
-    optionmenu Speed_mode: 2
-        option Full Quality (original sample rate)
-        option Balanced (downsample to 22 kHz)
-        option Fast (downsample to 11 kHz)
+    comment === Phase Mapping ===
+    optionmenu Phase_mapping: 1
+        option Warped history (v0.3 character)
+        option Frequency-aligned swap
     comment === Custom Settings ===
-    positive Split_at_percent 50
-    positive Stereo_offset_percent 1.0
-    comment (Left = Split, Right = Split + Offset)
+    real Split_at_percent 50
+    real Stereo_offset_percent 1.0
+    comment (Left = Split; Right = Split + Offset; 0 offset is allowed)
     comment === Tail & Fade ===
-    positive Tail_duration_seconds 0.5
-    comment (Extra time for natural decay)
-    positive Fade_out_seconds 0.3
-    comment (Fade to zero at the end)
+    real Tail_duration_seconds 0.5
+    comment (Maximum retained FFT-generated tail; actual tail is reported)
+    real Fade_out_seconds 0.3
+    comment (0 = off; otherwise fade to zero at the end)
     comment === Output ===
-    positive Scale_peak 0.95
+    real Scale_peak 0.95
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -96,16 +121,10 @@ else
     presetName$ = "Custom"
 endif
 
-# Set target sample rate
-if speed_mode = 1
-    targetSR = 0
-    speedStr$ = "Full Quality"
-elsif speed_mode = 2
-    targetSR = 22050
-    speedStr$ = "Balanced"
+if phase_mapping = 1
+    mappingName$ = "Warped history (v0.3)"
 else
-    targetSR = 11025
-    speedStr$ = "Fast"
+    mappingName$ = "Frequency-aligned"
 endif
 
 # === SETUP ===
@@ -120,78 +139,93 @@ numChannels = Get number of channels
 orig_sr = Get sampling frequency
 orig_dur = Get total duration
 
+if split_at_percent <= 0 or split_at_percent >= 100
+    exitScript: "Split percent must be greater than 0 and less than 100."
+endif
+if stereo_offset_percent < 0
+    exitScript: "Stereo offset percent must be 0 or greater."
+endif
+if tail_duration_seconds < 0
+    exitScript: "Tail duration must be 0 seconds or greater."
+endif
+if fade_out_seconds < 0
+    exitScript: "Fade-out duration must be 0 seconds or greater."
+endif
+if scale_peak <= 0 or scale_peak > 1
+    exitScript: "Scale peak must be greater than 0 and at most 1."
+endif
+
+offset_split = split_at_percent + stereo_offset_percent
+offset_split = max(1, min(99, offset_split))
+
 startTime = stopwatch
 
 clearinfo
 writeInfoLine: "╔══════════════════════════════════════════════════════════════╗"
-writeInfoLine: "║    PHASE HISTORY SWAP v0.3                                  ║"
+writeInfoLine: "║    PHASE HISTORY SWAP v0.4.1                                ║"
 writeInfoLine: "╚══════════════════════════════════════════════════════════════╝"
 appendInfoLine: "Input: ", originalName$
-appendInfoLine: "Speed: ", speedStr$
+appendInfoLine: "Processing: original sample rate (full bandwidth)"
+appendInfoLine: "Phase mapping: ", mappingName$
 appendInfoLine: "Duration: ", fixed$(orig_dur, 2), " s"
-appendInfoLine: "Tail: ", fixed$(tail_duration_seconds, 2), " s"
+appendInfoLine: "Requested max tail: ", fixed$(tail_duration_seconds, 2), " s"
 appendInfoLine: "Fade: ", fixed$(fade_out_seconds, 2), " s"
 appendInfoLine: ""
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Left split: ", split_at_percent, "%"
-appendInfoLine: "Right split: ", split_at_percent + stereo_offset_percent, "%"
+appendInfoLine: "Right split: ", offset_split, "%"
 appendInfoLine: ""
 
-# Prepare mono source
+# Prepare one mono analysis driver. The effect intentionally creates a new
+# synthetic stereo image; for multichannel input choose the strongest-RMS
+# channel instead of averaging, so anti-phase material cannot disappear.
+analysisChannel = 1
 if numChannels > 1
-    selectObject: originalID
-    Convert to mono
-    workingID = selected("Sound")
+    workingID = 0
+    bestRms = -1
+    for ch from 1 to numChannels
+        selectObject: originalID
+        tempCh = Extract one channel: ch
+        selectObject: tempCh
+        tempRms = Get root-mean-square: 0, 0
+        if tempRms > bestRms
+            if workingID <> 0
+                removeObject: workingID
+            endif
+            workingID = tempCh
+            bestRms = tempRms
+            analysisChannel = ch
+        else
+            removeObject: tempCh
+        endif
+    endfor
+    selectObject: workingID
+    Rename: "phase_history_driver_ch" + string$(analysisChannel)
+    appendInfoLine: "Analysis driver: channel ", analysisChannel,
+        ... " (highest RMS ", fixed$(bestRms, 4), ")"
 else
     selectObject: originalID
     Copy: "working"
     workingID = selected("Sound")
 endif
 
-# === OPTIONAL DOWNSAMPLING ===
-if targetSR > 0 and orig_sr > targetSR
-    appendInfoLine: "[SPEED] Downsampling to ", targetSR, " Hz..."
-    selectObject: workingID
-    Resample: targetSR, 50
-    resampledID = selected("Sound")
-    removeObject: workingID
-    workingID = resampledID
-    workingSR = targetSR
-else
-    workingSR = orig_sr
-endif
+# Always process at the original sample rate.
+workingSR = orig_sr
 
 # Process LEFT channel
 appendInfo: "Processing left channel..."
-@FastPhaseSwap: workingID, split_at_percent, workingSR, tail_duration_seconds
+@FastPhaseSwap: workingID, split_at_percent, workingSR, tail_duration_seconds, phase_mapping
 leftID = selected("Sound")
+leftTail = retainedTailFromProc
 appendInfoLine: " done"
 
 # Process RIGHT channel
-offset_split = split_at_percent + stereo_offset_percent
-offset_split = max(1, min(99, offset_split))
-
 appendInfo: "Processing right channel..."
-@FastPhaseSwap: workingID, offset_split, workingSR, tail_duration_seconds
+@FastPhaseSwap: workingID, offset_split, workingSR, tail_duration_seconds, phase_mapping
 rightID = selected("Sound")
+rightTail = retainedTailFromProc
 appendInfoLine: " done"
-
-# === UPSAMPLE IF NEEDED ===
-if targetSR > 0 and orig_sr > targetSR
-    appendInfoLine: "[SPEED] Upsampling to ", orig_sr, " Hz..."
-    
-    selectObject: leftID
-    Resample: orig_sr, 50
-    leftID_up = selected("Sound")
-    removeObject: leftID
-    leftID = leftID_up
-    
-    selectObject: rightID
-    Resample: orig_sr, 50
-    rightID_up = selected("Sound")
-    removeObject: rightID
-    rightID = rightID_up
-endif
+appendInfoLine: "Retained FFT tail L/R: ", fixed$(leftTail, 3), "/", fixed$(rightTail, 3), " s"
 
 # Match durations
 selectObject: leftID
@@ -252,7 +286,10 @@ endif
 
 # Finalize
 selectObject: resultID
-Scale peak: scale_peak
+resultPeakBefore = Get absolute extremum: 0, 0, "None"
+if resultPeakBefore > 1e-15
+    Scale peak: scale_peak
+endif
 
 processingTime = stopwatch - startTime
 
@@ -271,23 +308,33 @@ if draw_visualization
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Phase History Swap: " + originalName$ + " [" + presetName$ + "]"
     
-    # Original waveform
+    # Analysis driver and result waveform use one amplitude scale.
+    selectObject: workingID
+    driverPeakViz = Get absolute extremum: 0, 0, "None"
+    selectObject: resultID
+    resultPeakViz = Get absolute extremum: 0, 0, "None"
+    wavePeakViz = 1.05 * max(driverPeakViz, resultPeakViz)
+    if wavePeakViz < 1e-12
+        wavePeakViz = 1
+    endif
+
+    # Analysis-driver waveform
     Select outer viewport: 0, 4, 0.6, 1.8
     Select inner viewport: 0.5, 3.7, 0.7, 1.7
-    selectObject: originalID
+    selectObject: workingID
     Colour: "{0.7, 0.7, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -wavePeakViz, wavePeakViz, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 8
-    Text top: "no", "Original"
+    Text top: "no", "Analysis driver"
     
     # Processed waveform
     Select outer viewport: 4, 8, 0.6, 1.8
     Select inner viewport: 4.5, 7.7, 0.7, 1.7
     selectObject: resultID
     Colour: "{0.2, 0.5, 0.8}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -wavePeakViz, wavePeakViz, "no", "Curve"
     
     # Mark fade start
     selectObject: resultID
@@ -296,7 +343,7 @@ if draw_visualization
     if fade_start_mark > 0
         Colour: "{0.9, 0.7, 0.3}"
         Line width: 1
-        Draw line: fade_start_mark, -1, fade_start_mark, 1
+        Draw line: fade_start_mark, -wavePeakViz, fade_start_mark, wavePeakViz
     endif
     
     Colour: "Black"
@@ -304,38 +351,40 @@ if draw_visualization
     Font size: 8
     Text top: "no", "Phase Swapped (orange = fade)"
     
-    # Original spectrogram
+    vizFreqMax = min(5000, workingSR / 2)
+
+    # Analysis-driver spectrogram
     Select outer viewport: 0, 4, 2.0, 3.8
     Select inner viewport: 0.5, 3.7, 2.15, 3.65
-    selectObject: originalID
-    To Spectrogram: 0.01, 5000, 0.002, 20, "Gaussian"
+    selectObject: workingID
+    To Spectrogram: 0.01, vizFreqMax, 0.002, 20, "Gaussian"
     origSpecID = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizFreqMax, 100, "yes", 50, 6, 0, "no"
     
     # Mark split point
     split_time = orig_dur * (split_at_percent / 100)
     Colour: "{0.9, 0.3, 0.3}"
     Line width: 2
-    Draw line: split_time, 0, split_time, 5000
+    Draw line: split_time, 0, split_time, vizFreqMax
     Line width: 1
     
     Font size: 8
     Colour: "Black"
-    Text top: "no", "Original (red = split)"
+    Text top: "no", "Analysis driver (red = split)"
     removeObject: origSpecID
     
     # Processed spectrogram
     Select outer viewport: 4, 8, 2.0, 3.8
     Select inner viewport: 4.5, 7.7, 2.15, 3.65
     selectObject: resultID
-    To Spectrogram: 0.01, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.01, vizFreqMax, 0.002, 20, "Gaussian"
     resSpecID = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizFreqMax, 100, "yes", 50, 6, 0, "no"
     
     if fade_start_mark > 0
         Colour: "{0.9, 0.7, 0.3}"
         Line width: 2
-        Draw line: fade_start_mark, 0, fade_start_mark, 5000
+        Draw line: fade_start_mark, 0, fade_start_mark, vizFreqMax
         Line width: 1
     endif
     
@@ -362,8 +411,10 @@ if draw_visualization
     Colour: "{0.6, 0.4, 0.2}"
     Draw rectangle: split_ratio, 1, 0.55, 0.95
     
-    # Result + tail
-    result_ratio = 0.7
+    # Result core + ACTUAL retained FFT tail (left-channel reference).
+    leftCoreDur = orig_dur * (1 - split_ratio)
+    result_ratio = leftCoreDur / max(result_dur, 1e-12)
+    result_ratio = max(0, min(1, result_ratio))
     Paint rectangle: "{0.8, 0.85, 0.95}", 0, result_ratio, 0.05, 0.45
     Colour: "{0.2, 0.4, 0.7}"
     Draw rectangle: 0, result_ratio, 0.05, 0.45
@@ -380,7 +431,7 @@ if draw_visualization
     Text: (1 + split_ratio) / 2, "centre", 0.75, "half", "LATE"
     Text: (1 + split_ratio) / 2, "centre", 0.65, "half", "(Magnitude)"
     Text: result_ratio / 2, "centre", 0.25, "half", "OUTPUT"
-    Text: (1 + result_ratio) / 2, "centre", 0.25, "half", "TAIL+FADE"
+    Text: (1 + result_ratio) / 2, "centre", 0.25, "half", "FFT TAIL+FADE"
     
     Colour: "{0.5, 0.5, 0.5}"
     Draw arrow: 0.5, 0.52, 0.5, 0.48
@@ -388,7 +439,7 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 9
-    Text top: "no", "Phase Swap Process"
+    Text top: "no", "Phase Swap Process — " + mappingName$
     
     # Info panel
     Select outer viewport: 0, 8, 5.3, 5.9
@@ -399,10 +450,10 @@ if draw_visualization
     
     Font size: 9
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.5, "half", "Split L: " + fixed$(split_at_percent, 1) + "%"
-    Text: 0.22, "left", 0.5, "half", "Split R: " + fixed$(split_at_percent + stereo_offset_percent, 1) + "%"
-    Text: 0.45, "left", 0.5, "half", speedStr$
-    Text: 0.65, "left", 0.5, "half", "Time: " + fixed$(processingTime, 2) + "s"
+    Text: 0.02, "left", 0.5, "half", "Split L/R: " + fixed$(split_at_percent, 1) + "/" + fixed$(offset_split, 1) + "%"
+    Text: 0.30, "left", 0.5, "half", mappingName$
+    Text: 0.58, "left", 0.5, "half", "Full-rate " + fixed$(orig_sr,0) + " Hz"
+    Text: 0.78, "left", 0.5, "half", "Tail L/R: " + fixed$(leftTail, 2) + "/" + fixed$(rightTail, 2) + " s"
     
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -426,11 +477,12 @@ if play_result
     selectObject: resultID
     Play
 endif
+selectObject: resultID
 
 # =======================================================
 # PROCEDURE: Phase Swap with Tail
 # =======================================================
-procedure FastPhaseSwap: .src_id, .split_pct, .target_sr, .tail_dur
+procedure FastPhaseSwap: .src_id, .split_pct, .target_sr, .tail_dur, .mapping
     selectObject: .src_id
     .tot_dur = Get total duration
     .split_time = .tot_dur * (.split_pct / 100)
@@ -449,6 +501,7 @@ procedure FastPhaseSwap: .src_id, .split_pct, .target_sr, .tail_dur
     selectObject: .early
     To Spectrum: "yes"
     .spec_e = selected("Spectrum")
+    .bw_e = Get bin width
     To Matrix
     .mat_e = selected("Matrix")
     .id_e = .mat_e
@@ -459,22 +512,28 @@ procedure FastPhaseSwap: .src_id, .split_pct, .target_sr, .tail_dur
     selectObject: .late
     To Spectrum: "yes"
     .spec_l = selected("Spectrum")
+    .bw_l = Get bin width
     To Matrix
     .mat_l = selected("Matrix")
     .id_l = .mat_l
     removeObject: .late, .spec_l
     
-    # Frequency alignment ratio
-    .dur_ratio = .split_time / .late_dur
-    
-    # Build formula strings
-    .s_ratio$ = fixed$(.dur_ratio, 10)
+    # Phase-bin mapping. Legacy preserves the v0.3 duration-ratio warp.
+    # Exact mode uses the actual FFT bin widths after fast zero-padding:
+    # (earlyCol-1)*bw_e = (lateCol-1)*bw_l.
+    if .mapping = 1
+        .map_ratio = .split_time / .late_dur
+        .s_ratio$ = fixed$(.map_ratio, 10)
+        .c_raw$ = "round(col * " + .s_ratio$ + ")"
+    else
+        .map_ratio = .bw_l / .bw_e
+        .s_ratio$ = fixed$(.map_ratio, 12)
+        .c_raw$ = "round((col - 1) * " + .s_ratio$ + ") + 1"
+    endif
+
     .s_nc_e$ = fixed$(.nc_e, 0)
     .s_id_e$ = fixed$(.id_e, 0)
     .s_id_l$ = fixed$(.id_l, 0)
-    
-    # Column mapping with clamping
-    .c_raw$ = "round(col * " + .s_ratio$ + ")"
     .c_safe$ = "(if " + .c_raw$ + " < 1 then 1 else (if " + .c_raw$ + " > " + .s_nc_e$ + " then " + .s_nc_e$ + " else " + .c_raw$ + " endif) endif)"
     
     # Lookup early real/imag
@@ -496,9 +555,15 @@ procedure FastPhaseSwap: .src_id, .split_pct, .target_sr, .tail_dur
     .s_id_mag$ = fixed$(.mag_l, 0)
     .mag_ref$ = "object[" + .s_id_mag$ + ", 1, col]"
 
-    # Apply: magnitude (from untouched copy) * cos/sin(phase from early)
+    # Apply magnitude from late + phase from early. Keep the legacy formula
+    # bit-for-bit in mapping mode 1. In exact mode force DC/Nyquist imaginary
+    # components to zero, as required by a real time-domain signal.
     selectObject: .mat_l
-    Formula: "if row = 1 then " + .mag_ref$ + " * cos(" + .target_phase$ + ") else " + .mag_ref$ + " * sin(" + .target_phase$ + ") endif"
+    if .mapping = 1
+        Formula: "if row = 1 then " + .mag_ref$ + " * cos(" + .target_phase$ + ") else " + .mag_ref$ + " * sin(" + .target_phase$ + ") endif"
+    else
+        Formula: "if row = 1 then " + .mag_ref$ + " * cos(" + .target_phase$ + ") else if col=1 or col=ncol then 0 else " + .mag_ref$ + " * sin(" + .target_phase$ + ") fi fi"
+    endif
 
     # Reconstruct
     To Spectrum
@@ -528,6 +593,11 @@ procedure FastPhaseSwap: .src_id, .split_pct, .target_sr, .tail_dur
     else
         .final_id = .snd_out
     endif
+
+    selectObject: .final_id
+    .final_dur = Get total duration
+    .retained_tail = max(0, .final_dur - .late_dur)
+    retainedTailFromProc = .retained_tail
     
     # Cleanup
     removeObject: .mat_e, .mat_l, .spec_out, .mag_l

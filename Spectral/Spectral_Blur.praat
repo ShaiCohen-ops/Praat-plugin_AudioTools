@@ -3,7 +3,22 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2026)
+# Version: 2.3 (2026)
+#
+# Changelog v2.3 (2026):
+#   - FIX: multichannel inputs no longer lose channels above R. Every source
+#     channel is processed independently and recombined; mono/stereo behavior
+#     is unchanged.
+#   - MUSICAL/FFT CLARITY: Tail behavior is explicit. The v2.2 Extended FFT
+#     tail remains the default character (padding before the FFT can change the
+#     FFT lattice and therefore the blur texture). A new Stable core mode keeps
+#     the original FFT lattice and retains only the internal FFT-generated tail,
+#     so changing Tail cannot retune the core blur.
+#   - FORM/ROBUSTNESS: Blur passes are integer; output peak validated to (0,1].
+#   - VIZ: input/output waveforms now share one amplitude scale and all
+#     spectrogram ranges are Nyquist-safe.
+#   - CLARITY: this is full-file magnitude smoothing with original FFT phase,
+#     not phase smearing. Its time-domain spread is zero-phase/time-symmetric.
 #
 # Changelog v2.2 (2026):
 #   - ADDED tail + fade-out. The blur makes the signal no longer
@@ -35,19 +50,20 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Spectral blur effect via frequency-bin smoothing.
-#   Smooths complex Spectrum bins to create dreamy, smeared
-#   textures while preserving phase continuity.
+#   Spectral blur effect via full-file frequency-bin MAGNITUDE smoothing.
+#   The original complex-spectrum phase is retained while the global magnitude
+#   curve is diffused across neighboring FFT bins. The corresponding time-domain
+#   spread is zero-phase/time-symmetric rather than a causal reverberant decay.
 #
 #   v2.0 fixes the v1.0 architecture:
 #   - OLD: chunked Spectrogram (power only, phase discarded)
 #     then per-chunk phase reconstruction then concatenation
 #     = audible clicks at every chunk boundary
 #   - NEW: single full-file FFT on the complex Spectrum
-#     then smooth frequency bins (real+imag together)
-#     then single iFFT.  Zero artifacts, zero phase loss.
+#     then smooth magnitude bins and scale real+imag together
+#     then single iFFT.  No chunk-boundary joins; original FFT phase retained.
 #
-#   Stereo channels processed independently.
+#   All source channels are processed independently.
 #
 # Usage:
 #   Select a Sound object in Praat and run this script.
@@ -60,7 +76,7 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Spectral Blur v2.2
+form Spectral Blur v2.3
     optionmenu Preset: 1
         option Standard Blur (smooth smear)
         option Ethereal Pad (heavy, dreamy)
@@ -69,7 +85,7 @@ form Spectral Blur v2.2
         option Extreme Wash (maximum blur)
         option Custom
     comment === Blur Parameters ===
-    positive Blur_passes 10
+    integer Blur_passes 10
     comment (3 = subtle, 10 = clear, 30+ = extreme)
     optionmenu Blur_type: 2
         option Narrow (3-bin kernel)
@@ -79,10 +95,13 @@ form Spectral Blur v2.2
     real Wet_dry_percent 100
     comment === Tail & Fade ===
     real Tail_seconds 1.0
-    comment (extra room after the input; the blur spills into it organically)
+    optionmenu Tail_behavior: 1
+        option Extended FFT tail (v2.2 character)
+        option Stable core (retain internal FFT tail)
+    comment (Extended can change the FFT texture; Stable keeps the core blur fixed)
     real Fade_out_seconds 0.5
     comment === Output ===
-    positive Scale_peak 0.95
+    real Scale_peak 0.95
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -117,7 +136,7 @@ else
     presetName$ = "Custom"
 endif
 
-# Clamps
+# Validation / clamps
 if blur_passes < 1
     blur_passes = 1
 endif
@@ -136,6 +155,15 @@ if tail_seconds < 0
 endif
 if fade_out_seconds < 0
     fade_out_seconds = 0
+endif
+if scale_peak <= 0 or scale_peak > 1
+    exitScript: "Scale peak must be greater than 0 and at most 1."
+endif
+
+if tail_behavior = 1
+    tailName$ = "Extended FFT tail (v2.2)"
+else
+    tailName$ = "Stable core"
 endif
 
 # Kernel name
@@ -156,13 +184,14 @@ numChannels = Get number of channels
 startTime = stopwatch
 
 clearinfo
-writeInfoLine: "=== Spectral Blur v2.2 ==="
+writeInfoLine: "=== Spectral Blur v2.3 ==="
 appendInfoLine: "Input: ", originalName$, " (", fixed$(totalDuration, 2), " s, ",
     ... sampleRate, " Hz, ", numChannels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Blur passes: ", blur_passes
 appendInfoLine: "Kernel: ", blurName$
 appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
+appendInfoLine: "Tail behavior: ", tailName$
 appendInfoLine: ""
 
 # ============================================================
@@ -185,6 +214,18 @@ procedure blurSpectrum: .specID, .nPasses, .kernelSize
     selectObject: .specID
     .nBins = Get number of bins
     .specStr$ = string$(.specID)
+    blurSpectrum.nBins = .nBins
+    .binHz = (sampleRate / 2) / max(1, .nBins - 1)
+    if .kernelSize = 1
+        .kernelVar = 0.5
+    elsif .kernelSize = 2
+        .kernelVar = 1.0
+    else
+        .kernelVar = 1.5
+    endif
+    # Repeated binomial kernels add variances: sigma_bins = sqrt(P*variance).
+    # This is an interior-bin approximation; FFT-edge bins are held unchanged.
+    blurSpectrum.sigmaHz = .binHz * sqrt(.nPasses * .kernelVar)
 
     # Step 1: Extract magnitude into a 1-row Matrix
     Create simple Matrix: "origMag", 1, .nBins, "0"
@@ -266,39 +307,66 @@ procedure processChannel: .channelID
     selectObject: .channelID
     .chDur = Get total duration
     .chSR = Get sampling frequency
-    .outDur = .chDur + tail_seconds
 
-    # v2.2: append tail silence BEFORE the FFT so the spectral
-    # smear spills into real tail room (out-of-range object[]
-    # reads return 0, so the formula pads implicitly)
-    if tail_seconds > 0
-        .chStr$ = string$(.channelID)
-        Create Sound from formula: "tailpad", 1, 0, .outDur, .chSR,
-            ... "object[" + .chStr$ + ", col]"
-        .padded = selected("Sound")
+    if tail_behavior = 1
+        # Extended FFT tail (v2.2): explicitly pad BEFORE the FFT. This keeps
+        # the existing long-tail character, but the larger padded FFT can change
+        # the bin lattice and therefore the blur heard inside the source duration.
+        .outDur = .chDur + tail_seconds
+        if tail_seconds > 0
+            .chStr$ = string$(.channelID)
+            Create Sound from formula: "tailpad", 1, 0, .outDur, .chSR,
+                ... "object[" + .chStr$ + ", col]"
+            .fftInput = selected("Sound")
+        else
+            selectObject: .channelID
+            Copy: "tailpad"
+            .fftInput = selected("Sound")
+        endif
     else
-        Copy: "tailpad"
-        .padded = selected("Sound")
+        # Stable core: do NOT change the FFT input length. To Spectrum: yes
+        # already zero-pads internally to a fast FFT length; after the iFFT we
+        # may retain up to Tail_seconds from that existing padding. Thus Tail
+        # cannot alter the core FFT lattice or blur character.
+        selectObject: .channelID
+        Copy: "stableCoreInput"
+        .fftInput = selected("Sound")
+        .outDur = .chDur
     endif
 
-    # Full-file FFT
-    selectObject: .padded
+    selectObject: .fftInput
     To Spectrum: "yes"
     .wetSpec = selected("Spectrum")
-    removeObject: .padded
+    removeObject: .fftInput
 
-    # Apply blur (magnitude smoothing in-place, phase preserved)
     @blurSpectrum: .wetSpec, blur_passes, blur_type
+    .blurSigmaHz = blurSpectrum.sigmaHz
+    .fftBins = blurSpectrum.nBins
 
-    # iFFT
     selectObject: .wetSpec
     To Sound
     .wetSound = selected("Sound")
     removeObject: .wetSpec
 
-    # Trim FFT padding (keep input + tail)
     selectObject: .wetSound
     .rDur = Get total duration
+
+    if tail_behavior = 2
+        .availableTail = .rDur - .chDur
+        if .availableTail < 0
+            .availableTail = 0
+        endif
+        .retainedTail = tail_seconds
+        if .retainedTail > .availableTail
+            .retainedTail = .availableTail
+        endif
+        .outDur = .chDur + .retainedTail
+    else
+        .retainedTail = tail_seconds
+    endif
+
+    # Trim FFT padding to the requested/available output duration.
+    selectObject: .wetSound
     if .rDur > .outDur
         Extract part: 0, .outDur, "rectangular", 1, "no"
         .trimmed = selected("Sound")
@@ -306,6 +374,9 @@ procedure processChannel: .channelID
         .wetSound = .trimmed
     endif
 
+    processChannel.retainedTail = .retainedTail
+    processChannel.blurSigmaHz = .blurSigmaHz
+    processChannel.fftBins = .fftBins
     processChannel.result = .wetSound
 endproc
 
@@ -315,37 +386,45 @@ endproc
 
 appendInfoLine: "Processing..."
 
-if numChannels >= 2
-    # Stereo: process each channel independently
-    appendInfoLine: "  Channel 1 (L)..."
+wetIDs# = zero#(numChannels)
+retainedTail = 0
+blurSigmaHz = 0
+fftBinsUsed = 0
+for ch from 1 to numChannels
+    appendInfoLine: "  Channel ", ch, "..."
     selectObject: originalID
-    Extract one channel: 1
-    chL = selected("Sound")
-    @processChannel: chL
-    wetL = processChannel.result
-    removeObject: chL
+    if numChannels = 1
+        chWork = Copy: "blur_work"
+    else
+        chWork = Extract one channel: ch
+    endif
+    @processChannel: chWork
+    wetIDs#[ch] = processChannel.result
+    retainedTail = processChannel.retainedTail
+    blurSigmaHz = processChannel.blurSigmaHz
+    fftBinsUsed = processChannel.fftBins
+    removeObject: chWork
+endfor
 
-    appendInfoLine: "  Channel 2 (R)..."
-    selectObject: originalID
-    Extract one channel: 2
-    chR = selected("Sound")
-    @processChannel: chR
-    wetR = processChannel.result
-    removeObject: chR
-
-    selectObject: wetL
-    plusObject: wetR
+if numChannels = 1
+    wetSound = wetIDs#[1]
+else
+    selectObject: wetIDs#[1]
+    for ch from 2 to numChannels
+        plusObject: wetIDs#[ch]
+    endfor
     Combine to stereo
     wetSound = selected("Sound")
-    removeObject: wetL, wetR
-else
-    # Mono
-    selectObject: originalID
-    Copy: "blur_work"
-    monoWork = selected("Sound")
-    @processChannel: monoWork
-    wetSound = processChannel.result
-    removeObject: monoWork
+    for ch from 1 to numChannels
+        removeObject: wetIDs#[ch]
+    endfor
+endif
+
+appendInfoLine: "Retained tail: ", fixed$(retainedTail, 4), " s"
+appendInfoLine: "FFT bins: ", fftBinsUsed, "   Approx blur sigma: ", fixed$(blurSigmaHz, 3), " Hz"
+if tail_behavior = 2 and retainedTail + 1e-9 < tail_seconds
+    appendInfoLine: "NOTE: Stable core retained the available internal FFT tail (",
+        ... fixed$(retainedTail, 4), " s of ", fixed$(tail_seconds, 4), " s requested)."
 endif
 
 # ============================================================
@@ -383,16 +462,27 @@ endif
 # FINALIZE
 # ============================================================
 
-# v2.2: raised-cosine fade at the very end
+# Raised-cosine fade at the very end. In Stable-core mode, when a positive
+# tail was requested, do not let a requested fade longer than the actually
+# retained FFT tail reach backward into the source core. Tail=0 still means
+# the user explicitly asked to fade the source ending itself.
+appliedFade = 0
 if fade_out_seconds > 0
     selectObject: wetSound
     outDurF = Get total duration
     fd = fade_out_seconds
+    if tail_behavior = 2 and tail_seconds > 0 and fd > retainedTail
+        fd = retainedTail
+    endif
     if fd > outDurF
         fd = outDurF
     endif
-    Fade out: 0, outDurF, -fd, "yes"
+    if fd > 0
+        Fade out: 0, outDurF, -fd, "yes"
+        appliedFade = fd
+    endif
 endif
+appendInfoLine: "Applied fade: ", fixed$(appliedFade, 4), " s"
 
 selectObject: wetSound
 Scale peak: scale_peak
@@ -415,16 +505,28 @@ if draw_visualization
     # Title
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 0.45
+    Select inner viewport: 0, 8, 0, 0.45
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.65, "half", "##Spectral Blur##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
+    Text: 0.5, "centre", 0.18, "half",
         ... originalName$ + "  |  " + presetName$
         ... + "  |  " + string$(blur_passes) + " passes"
         ... + "  |  " + blurName$
+
+    # Shared waveform scale for an honest before/after comparison.
+    selectObject: originalID
+    inVizPeak = Get absolute extremum: 0, 0, "None"
+    selectObject: resultID
+    outVizPeak = Get absolute extremum: 0, 0, "None"
+    waveVizPeak = 1.05 * max(inVizPeak, outVizPeak)
+    if waveVizPeak < 1e-12
+        waveVizPeak = 1
+    endif
+    vizFreqMax = min(5000, sampleRate / 2)
 
     # ----------------------------------------------------------
     # Input waveform
@@ -440,7 +542,7 @@ if draw_visualization
         vizInCh = selected("Sound")
     endif
     Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -waveVizPeak, waveVizPeak, "no", "Curve"
     removeObject: vizInCh
     Colour: "Black"
     Draw inner box
@@ -458,17 +560,17 @@ if draw_visualization
         Extract one channel: 1
         vizOutL = selected("Sound")
         Colour: "{0.25, 0.50, 0.82}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        Draw: 0, 0, -waveVizPeak, waveVizPeak, "no", "Curve"
         selectObject: resultID
         Extract one channel: 2
         vizOutR = selected("Sound")
         Colour: "{0.82, 0.45, 0.25}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        Draw: 0, 0, -waveVizPeak, waveVizPeak, "no", "Curve"
         removeObject: vizOutL, vizOutR
     else
         selectObject: resultID
         Colour: "{0.35, 0.58, 0.72}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        Draw: 0, 0, -waveVizPeak, waveVizPeak, "no", "Curve"
     endif
     Colour: "Black"
     Draw inner box
@@ -489,9 +591,9 @@ if draw_visualization
         Copy: "vizSpecIn"
         vizSpecIn = selected("Sound")
     endif
-    To Spectrogram: 0.02, 5000, 0.005, 20, "Gaussian"
+    To Spectrogram: 0.02, vizFreqMax, 0.005, 20, "Gaussian"
     specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizFreqMax, 100, "yes", 50, 6, 0, "no"
     removeObject: specOrig, vizSpecIn
     Colour: "Black"
     Draw inner box
@@ -513,9 +615,9 @@ if draw_visualization
         Copy: "vizSpecOut"
         vizSpecOut = selected("Sound")
     endif
-    To Spectrogram: 0.02, 5000, 0.005, 20, "Gaussian"
+    To Spectrogram: 0.02, vizFreqMax, 0.005, 20, "Gaussian"
     specRes = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizFreqMax, 100, "yes", 50, 6, 0, "no"
     removeObject: specRes, vizSpecOut
     Colour: "Black"
     Draw inner box
@@ -541,6 +643,8 @@ if draw_visualization
         ... + "  |  Passes: " + string$(blur_passes)
         ... + "  |  Kernel: " + blurName$
         ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "  |  Tail/Fade: " + fixed$(retainedTail, 3) + "/" + fixed$(appliedFade, 3) + "s"
+        ... + "  |  sigma: " + fixed$(blurSigmaHz, 2) + " Hz"
         ... + "  |  Time: " + fixed$(processingTime, 1) + " s"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1

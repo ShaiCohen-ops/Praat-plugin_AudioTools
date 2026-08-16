@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.2 (2026)
+# Version: 5.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,23 @@
 #   dry. IRs are harvested live from the source material and
 #   crossfaded on an adaptive schedule, so the convolution
 #   character evolves continuously with the source.
+#
+# Changelog v5.3 (2026):
+#   - FIX: source Sounds with a non-zero start time are now processed correctly.
+#     All grain/IR harvest times remain musical relative times, but extraction is
+#     offset by the Sound x-min. v5.2 could render silence for shifted-time Sounds.
+#   - FIX: frame scheduling now covers the complete source. If the regular hop grid
+#     leaves a short uncovered suffix, one final grain is anchored to the source end.
+#   - FORM/CORRECTNESS: sieve moduli, update interval and crossfade length are integer
+#     grain counts and are validated as such; hop must be > 0. Tail and IR high-pass
+#     may be 0, with 0-Hz IR HP meaning no high-pass.
+#   - FORM: removed IR RMS dB from the user controls. Every wet grain is RMS-matched
+#     to its source grain after convolution, so scalar IR-RMS normalization cancels
+#     out and the old control was effectively inaudible/dead. Legacy preset values
+#     remain internally for numerical continuity.
+#   - CLARITY: simultaneous sieve hits route to A first (existing sound, now stated).
+#   - VIZ: no redesign; source panel now marks the actual initial/adaptive IR harvest
+#     positions, and the spectrogram range is Nyquist-safe.
 #
 # Changelog v5.2 (2026):
 #   - FIX: sieve remainders >= modulus (e.g. rem 5, mod 3) made a
@@ -71,31 +88,34 @@ form Self-Adaptive Sieve Convolution
     comment === Grain Parameters ===
     positive Segment_ms 50
     real Hop_fraction 0.5
-    positive Tail_ms 100
+    real Tail_ms 100
 
     comment === IR Parameters ===
     positive Ir_ms 300
-    real Ir_rms_db -18
-    positive Ir_hp_hz 500
+    real Ir_hp_hz 500
     real Dry_gain 0.8
 
     comment === Sieve A (grain n routed when n mod m = r) ===
-    positive Sieve_a_mod 3
+    integer Sieve_a_mod 3
     integer Sieve_a_rem 0
 
     comment === Sieve B (grain n routed when n mod m = r) ===
-    positive Sieve_b_mod 5
+    integer Sieve_b_mod 5
     integer Sieve_b_rem 2
 
     comment === Adaptive IR Updates ===
     boolean Adaptive_updates 1
-    positive Update_interval 100
-    positive Crossfade_grains 10
+    integer Update_interval 100
+    integer Crossfade_grains 10
 
     comment === Output ===
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Internal IR conditioning level. This is intentionally not a form control:
+# wet grains are RMS-matched after convolution, so this scalar cancels musically.
+ir_condition_db = -18
 
 # ============================================================
 # APPLY PRESETS (write to the same form variables, so the rest
@@ -106,7 +126,7 @@ if preset = 2
     hop_fraction     = 0.5
     tail_ms          = 60
     ir_ms            = 150
-    ir_rms_db        = -18
+    ir_condition_db  = -18
     ir_hp_hz         = 500
     dry_gain         = 0.8
     sieve_a_mod      = 3
@@ -121,7 +141,7 @@ elsif preset = 3
     hop_fraction     = 0.5
     tail_ms          = 150
     ir_ms            = 500
-    ir_rms_db        = -18
+    ir_condition_db  = -18
     ir_hp_hz         = 300
     dry_gain         = 0.7
     sieve_a_mod      = 2
@@ -136,7 +156,7 @@ elsif preset = 4
     hop_fraction     = 0.25
     tail_ms          = 40
     ir_ms            = 80
-    ir_rms_db        = -20
+    ir_condition_db  = -20
     ir_hp_hz         = 600
     dry_gain         = 0.9
     sieve_a_mod      = 3
@@ -151,7 +171,7 @@ elsif preset = 5
     hop_fraction     = 0.75
     tail_ms          = 200
     ir_ms            = 600
-    ir_rms_db        = -16
+    ir_condition_db  = -16
     ir_hp_hz         = 200
     dry_gain         = 0.75
     sieve_a_mod      = 4
@@ -166,7 +186,7 @@ elsif preset = 6
     hop_fraction     = 0.5
     tail_ms          = 100
     ir_ms            = 300
-    ir_rms_db        = -18
+    ir_condition_db  = -18
     ir_hp_hz         = 500
     dry_gain         = 0.8
     sieve_a_mod      = 2
@@ -181,7 +201,7 @@ elsif preset = 7
     hop_fraction     = 0.5
     tail_ms          = 120
     ir_ms            = 350
-    ir_rms_db        = -18
+    ir_condition_db  = -18
     ir_hp_hz         = 500
     dry_gain         = 0.85
     sieve_a_mod      = 7
@@ -196,7 +216,7 @@ elsif preset = 8
     hop_fraction     = 0.6
     tail_ms          = 150
     ir_ms            = 400
-    ir_rms_db        = -17
+    ir_condition_db  = -17
     ir_hp_hz         = 400
     dry_gain         = 0.7
     sieve_a_mod      = 3
@@ -243,11 +263,32 @@ selectObject: source_id
 src_dur = Get total duration
 src_sr  = Get sampling frequency
 src_ch  = Get number of channels
+src_t0  = Get start time
 
-writeInfoLine:  "=== Self-Adaptive Sieve Convolution v5.2 ==="
+if hop_fraction <= 0
+    exitScript: "Hop fraction must be greater than 0."
+endif
+if tail_ms < 0
+    exitScript: "Tail duration must be 0 ms or greater."
+endif
+if ir_hp_hz < 0 or ir_hp_hz >= src_sr / 2
+    exitScript: "IR high-pass must be at least 0 Hz and below Nyquist."
+endif
+if sieve_a_mod < 1 or sieve_b_mod < 1
+    exitScript: "Sieve moduli must be positive integers."
+endif
+if update_interval < 1
+    exitScript: "Update interval must be at least 1 grain."
+endif
+if crossfade_grains < 1
+    exitScript: "Crossfade length must be at least 1 grain."
+endif
+
+writeInfoLine:  "=== Self-Adaptive Sieve Convolution v5.3 ==="
 appendInfoLine: "Source: ", source_name$, "  (", fixed$(src_dur, 3), " s  ", src_sr, " Hz  ", src_ch, " ch)"
 appendInfoLine: "Sieve A: n mod ", m1, " = ", i1,
     ... "   Sieve B: n mod ", m2, " = ", i2
+appendInfoLine: "Routing rule: A has priority when both sieves hit the same grain."
 if i1 <> i1_orig or i2 <> i2_orig
     appendInfoLine: "NOTE: remainder(s) folded into range (were ", i1_orig, " / ", i2_orig, ")"
 endif
@@ -322,19 +363,25 @@ procedure harvestIR: .start_t, .label$
     endif
 
     selectObject: source_id
-    new_ir_id = Extract part: .start_t, .end_t, "Hanning", 1, "no"
+    .abs_start = src_t0 + .start_t
+    .abs_end = src_t0 + .end_t
+    new_ir_id = Extract part: .abs_start, .abs_end, "Hanning", 1, "no"
     Rename: "IR_raw_" + .label$
 
-    # High-pass to remove tonal content
+    # Optional high-pass to reduce tonal carry-over. 0 Hz = bypass.
+    if ir_hp_freq > 0
+        selectObject: new_ir_id
+        Filter (pass Hann band): ir_hp_freq, 0, 100
+        filtered_id = selected("Sound")
+        removeObject: new_ir_id
+        new_ir_id = filtered_id
+    endif
     selectObject: new_ir_id
-    Filter (pass Hann band): ir_hp_freq, 0, 100
-    filtered_id = selected("Sound")
-    removeObject: new_ir_id
-    new_ir_id = filtered_id
     Rename: "IR_" + .label$
 
-    # RMS-normalise so IR energy is consistent
-    @rmsNormalise: new_ir_id, ir_rms_db
+    # Internal scalar conditioning. Wet-grain RMS matching later cancels this
+    # scalar musically; retained only for numerical continuity with older presets.
+    @rmsNormalise: new_ir_id, ir_condition_db
 
     # Edge fades to avoid clicks
     .fi = 0.005
@@ -498,9 +545,15 @@ appendInfoLine: "Output buffer: ", fixed$(out_dur, 3),
 # ============================================================
 # MAIN LOOP
 # ============================================================
-n_segments = floor((src_dur - segment_duration) / hop_duration) + 1
-if n_segments < 1
+if src_dur <= segment_duration
     n_segments = 1
+else
+    n_segments = floor((src_dur - segment_duration) / hop_duration) + 1
+    last_regular_end = (n_segments - 1) * hop_duration + segment_duration
+    # Add one end-anchored grain only when the regular grid leaves >= one sample.
+    if last_regular_end < src_dur - 0.5 / src_sr
+        n_segments = n_segments + 1
+    endif
 endif
 appendInfoLine: ""
 appendInfoLine: "Grains to process: ", n_segments
@@ -519,6 +572,9 @@ nIrUpdates = 0
 for n from 0 to n_segments - 1
 
     t_start = n * hop_duration
+    if t_start + segment_duration > src_dur
+        t_start = max(0, src_dur - segment_duration)
+    endif
     t_end   = t_start + segment_duration
     if t_end > src_dur
         t_end = src_dur
@@ -530,7 +586,7 @@ for n from 0 to n_segments - 1
 
         # Extract grain — Hanning window applied by Extract part
         selectObject: source_id
-        grain_id = Extract part: t_start, t_end, "Hanning", 1, "no"
+        grain_id = Extract part: src_t0 + t_start, src_t0 + t_end, "Hanning", 1, "no"
         Rename: "grain_raw"
 
         # Measure dry RMS for gain-matching wet grains
@@ -802,7 +858,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Self-Adaptive Sieve Convolution v5.2##"
+    Text: 0.5, "centre", 0.72, "half", "##Self-Adaptive Sieve Convolution v5.3##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.24, "half",
@@ -816,12 +872,37 @@ if draw_visualization
     Select outer viewport: 0, 8, 0.55, 1.85
     Select inner viewport: 0.6, 7.7, 0.65, 1.80
     selectObject: source_id
+    srcPeakViz = Get absolute extremum: 0, 0, "None"
+    if srcPeakViz < 1e-12
+        srcPeakViz = 1
+    endif
+    srcPeakViz = 1.05 * srcPeakViz
     Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -srcPeakViz, srcPeakViz, "no", "Curve"
+    Select inner viewport: 0.6, 7.7, 0.65, 1.80
+    Axes: src_t0, src_t0 + src_dur, -srcPeakViz, srcPeakViz
+
+    # Initial and adaptive IR harvest positions on the source itself.
+    Line width: 1
+    Colour: "{0.80, 0.30, 0.30}"
+    Draw line: src_t0 + start_A, -srcPeakViz, src_t0 + start_A, srcPeakViz
+    Colour: "{0.30, 0.70, 0.30}"
+    Draw line: src_t0 + start_B, -srcPeakViz, src_t0 + start_B, srcPeakViz
+    Line width: 0.6
+    for u from 1 to nIrUpdates
+        if irUpdateKinds#[u] = 1
+            Colour: "{0.60, 0.15, 0.15}"
+        else
+            Colour: "{0.15, 0.50, 0.15}"
+        endif
+        Draw line: src_t0 + irUpdateTimes#[u], -srcPeakViz, src_t0 + irUpdateTimes#[u], srcPeakViz
+    endfor
+    Line width: 1
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Source"
+    Text top: "no", "Source (red/green = IR harvest positions)"
 
     # --- Output waveform ---
     Select outer viewport: 0, 8, 1.90, 3.40
@@ -838,6 +919,9 @@ if draw_visualization
     Line width: 0.6
     for n from 0 to n_segments - 1
         t_s = n * hop_duration
+        if t_s + segment_duration > src_dur
+            t_s = max(0, src_dur - segment_duration)
+        endif
         if grain_type#[n + 1] = 1
             Colour: "{0.80, 0.30, 0.30}"
             Draw line: t_s, -0.98, t_s, -0.88
@@ -882,9 +966,10 @@ if draw_visualization
         Copy: "spec_src_tmp"
         tmp_mono_id = selected("Sound")
     endif
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
+    vizFreqMax = min(5000, src_sr / 2)
+    To Spectrogram: 0.03, vizFreqMax, 0.002, 20, "Gaussian"
     spectrogram_id = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizFreqMax, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -926,7 +1011,6 @@ if draw_visualization
         ... "Hop: " + fixed$(hop_duration * 1000, 1) + "ms"
         ... + "   |   Tail: " + string$(tail_ms) + "ms"
         ... + "   |   IR HP: " + string$(ir_hp_hz) + " Hz"
-        ... + "   |   IR RMS: " + fixed$(ir_rms_db, 1) + " dB"
         ... + "   |   Dry gain: " + fixed$(dry_gain, 2)
     Text: 0.04, "left", 0.18, "half",
         ... "Adaptive: " + string$(adaptive_updates)

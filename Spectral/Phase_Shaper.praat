@@ -2,14 +2,28 @@
 # Praat AudioTools - Phase Shaper.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 0.4 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 #
 # Description:
 #   Convolution-based sound design using custom impulse responses.
-#   Generates various IRs (chirps, noise, resonators, glitches)
-#   and convolves them with the input to create extreme textures.
-#   Effects include dispersion, freeze, rhythmic smearing, and more.
+#   The historical name "Phase Shaper" is creative rather than literal: the
+#   processor does not directly edit spectral phase. It builds an IR (chirps,
+#   noise, resonators, glitches) and convolves that IR with the source, so both
+#   magnitude and phase follow the IR transfer function. Effects include
+#   dispersion, freeze-like smearing, rhythmic tails, resonances and glitches.
+#
+# Changelog v0.5:
+#   - FIX: native stereo is no longer collapsed to mono when Stereo_output is on.
+#     Praat can convolve a multichannel Sound directly with a mono IR, so L/R
+#     relationships (including anti-phase material) are now preserved.
+#   - FIX: wet/dry mixing is row-aware for multichannel material.
+#   - CLARITY: Stereo_output now means preserve native stereo, or create the
+#     existing 15-ms pseudo-stereo delay when the input is mono.
+#   - ROBUSTNESS: Scale_peak is validated to (0,1]; flagged random/noise IRs
+#     have their measured DC removed whenever non-zero, not only above 0.001.
+#   - VIZ: existing process view retained; input/output use one amplitude scale
+#     and the IR spectrum plot never extends above Nyquist.
 #
 # Changelog v0.4:
 #   - Fixed pseudo-stereo branch (invalid Get/object[] args -> crash on
@@ -23,7 +37,7 @@
 #   Select a Sound object in Praat and run this script.
 # ============================================================
 
-form Phase Shaper
+form Phase Shaper v0.5
     comment === Select Mode ===
     optionmenu Mode: 1
         option Hyper-Dispersion (sweeping drone)
@@ -69,6 +83,10 @@ selectObject: original
 original_sr = Get sampling frequency
 original_dur = Get total duration
 num_channels = Get number of channels
+
+if scale_peak <= 0 or scale_peak > 1
+    exitScript: "Scale peak must be greater than 0 and at most 1."
+endif
 
 # === APPLY PRESET ===
 if preset = 2
@@ -151,24 +169,40 @@ else
     suffix$ = "_tape"
 endif
 
-# Handle stereo - keep copy for dry signal
-if num_channels > 1
+# Prepare wet and dry paths.
+# With Stereo_output enabled, preserve native multichannel relationships:
+# Praat convolves every channel of a multichannel source with the same mono IR.
+# If Stereo_output is disabled, explicitly collapse the source to mono.
+if num_channels > 1 and stereo_output
+    selectObject: original
+    sound = Copy: "working"
+    selectObject: original
+    dry_sound = Copy: "dry"
+    appendStereoMode$ = "native channels preserved"
+elsif num_channels > 1
     selectObject: original
     sound = Convert to mono
     selectObject: original
     dry_sound = Convert to mono
+    appendStereoMode$ = "mono output requested"
 else
     selectObject: original
     sound = Copy: "working"
     selectObject: original
     dry_sound = Copy: "dry"
+    if stereo_output
+        appendStereoMode$ = "mono -> 15 ms pseudo-stereo"
+    else
+        appendStereoMode$ = "mono"
+    endif
 endif
 
-writeInfoLine: "=== Phase Shaper v0.4 ==="
+writeInfoLine: "=== Phase Shaper v0.5 ==="
 appendInfoLine: "Mode: ", mode_name$
 appendInfoLine: "Preset: ", preset_name$
 appendInfoLine: "Intensity: ", fixed$(intensity, 2)
 appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
+appendInfoLine: "Channel mode: ", appendStereoMode$
 appendInfoLine: ""
 
 # === GENERATE IMPULSE RESPONSE ===
@@ -324,7 +358,7 @@ ir_id = selected("Sound")
 if needs_dc_removal
     selectObject: ir_id
     dc_mean = Get mean: 0, 0
-    if abs(dc_mean) > 0.001
+    if abs(dc_mean) > 1e-15
         Formula: "self - " + string$(dc_mean)
     endif
 endif
@@ -362,39 +396,44 @@ if dry_level > 0
     selectObject: convolved
     current_dur = Get total duration
     
-    # Extend dry sound if convolved is longer
+    # Extend dry sound if convolved is longer, preserving all dry channels.
     selectObject: dry_sound
     dry_dur = Get total duration
-    
+    dry_channels_for_pad = Get number of channels
+    dry_samples = Get number of samples
+    dry_id_for_pad$ = string$(dry_sound)
+
     if current_dur > dry_dur and not trim_to_original
-        # Pad dry sound with silence
-        silence_dur = current_dur - dry_dur
-        Create Sound from formula: "silence", 1, 0, silence_dur, original_sr, "0"
-        silence_id = selected("Sound")
-        selectObject: dry_sound
-        plusObject: silence_id
-        extended_dry = Concatenate
-        removeObject: dry_sound, silence_id
+        Create Sound from formula: "dry_extended", dry_channels_for_pad, 0, current_dur, original_sr,
+            ... "if col <= " + string$(dry_samples) + " then object[" + dry_id_for_pad$ + ", row, col] else 0 fi"
+        extended_dry = selected("Sound")
+        removeObject: dry_sound
         dry_sound = extended_dry
     endif
-    
+
     # Mix: result = wet * convolved + dry * original
     wet_str$ = string$(wet_level)
     dry_str$ = string$(dry_level)
     dry_id_str$ = string$(dry_sound)
     
     selectObject: convolved
-    Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + "] * " + dry_str$
+    wet_channels = Get number of channels
+    selectObject: dry_sound
+    dry_channels = Get number of channels
+    selectObject: convolved
+    if wet_channels = dry_channels
+        Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + ", row, col] * " + dry_str$
+    else
+        # Defensive fallback; normal routing above keeps channel counts matched.
+        Formula: "self * " + wet_str$ + " + object[" + dry_id_str$ + ", 1, col] * " + dry_str$
+    endif
 endif
 
 # === STEREO OUTPUT ===
-if stereo_output and num_channels > 1
-    selectObject: convolved
-    mono_result = convolved
-    convolved = Convert to stereo
-    removeObject: mono_result
-elsif stereo_output and num_channels = 1
-    # Create pseudo-stereo: left = dry copy, right = same delayed slightly.
+# Native stereo/multichannel input has already remained multichannel through
+# convolution and wet/dry mixing. Only mono input needs synthetic stereo.
+if stereo_output and num_channels = 1
+    # Create pseudo-stereo: left = exact wet/dry result, right = same delayed slightly.
     selectObject: convolved
     ps_dur = Get total duration
     delay_samples = round(0.015 * original_sr)
@@ -450,12 +489,22 @@ if draw_visualization
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Phase Shaper: " + mode_name$ + " (" + preset_name$ + ")"
     
+    # Input/output waveform comparison uses one amplitude scale.
+    selectObject: original
+    input_peak_viz = Get absolute extremum: 0, 0, "None"
+    selectObject: result
+    output_peak_viz = Get absolute extremum: 0, 0, "None"
+    wave_peak_viz = 1.05 * max(input_peak_viz, output_peak_viz)
+    if wave_peak_viz < 1e-12
+        wave_peak_viz = 1
+    endif
+
     # --- Original waveform ---
     Select outer viewport: 0, 8, 0.6, 1.6
     Select inner viewport: 0.5, 7.5, 0.7, 1.5
     selectObject: original
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -wave_peak_viz, wave_peak_viz, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 8
@@ -477,9 +526,10 @@ if draw_visualization
     # --- IR spectrum ---
     Select outer viewport: 0, 8, 2.8, 3.8
     Select inner viewport: 0.5, 7.5, 2.9, 3.7
+    ir_plot_max = min(8000, nyquist)
     selectObject: ir_spectrum
     Colour: "{0.8, 0.4, 0.2}"
-    Draw: 0, 8000, 0, 0, "no"
+    Draw: 0, ir_plot_max, 0, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 8
@@ -492,7 +542,7 @@ if draw_visualization
     Select inner viewport: 0.5, 7.5, 4.0, 4.8
     selectObject: result
     Colour: "{0.3, 0.7, 0.4}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -wave_peak_viz, wave_peak_viz, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 8
@@ -509,7 +559,7 @@ if draw_visualization
         ... " | Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%" +
         ... " | IR dur: " + fixed$(ir_dur, 2) + "s" +
         ... " | Trim: " + if trim_to_original then "yes" else "no" fi +
-        ... " | Stereo: " + if stereo_output then "yes" else "no" fi
+        ... " | Channels: " + appendStereoMode$
     
     Font size: 10
     Colour: "Black"
@@ -532,6 +582,7 @@ appendInfoLine: "Output: ", selected$("Sound")
 appendInfoLine: "Duration: ", fixed$(result_dur, 3), " s"
 appendInfoLine: "Channels: ", result_ch
 appendInfoLine: "Wet/Dry: ", fixed$(wet_dry_percent, 0), "%"
+appendInfoLine: "Channel mode: ", appendStereoMode$
 
 # === PLAY ===
 if play_result
