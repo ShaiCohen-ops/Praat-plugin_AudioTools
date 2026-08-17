@@ -3,33 +3,56 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Climax Profile Matcher - analyzes a Source sound to detect
-#   "climax" sections (regions of peak intensity, high pitch,
-#   bright spectral tilt, and strong harmonicity), then modifies
-#   a Target sound to match those climax characteristics.
+#   Climax Profile Matcher - detects high-energy / high-register /
+#   bright / harmonic regions in a Source, measures their acoustic
+#   profile, then transfers selected GLOBAL characteristics to a
+#   Target: RMS level, spectral balance, and harmonicity colour.
+#
+#   IMPORTANT: this is profile-guided global matching, not temporal
+#   envelope cloning. Pitch and formants are measured as diagnostics
+#   but are not transformed (to avoid formant/pitch-structure damage).
 #
 #   Pipeline:
-#   1. Frame-by-frame analysis of Source: intensity, pitch,
-#      spectral centroid, harmonicity
-#   2. Detect climax regions via percentile thresholds
-#   3. Extract climax acoustic profile (avg intensity, pitch,
-#      pitch range, centroid, LTAS, formants F1-F3)
-#   4. Analyze Target globally for same descriptors
-#   5. Compute acoustic deltas and apply transformations:
-#      intensity envelope matching, pitch shifting, spectral
-#      tilt correction, LTAS-based EQ, harmonicity shaping
-#   6. Multi-panel visualization
+#   1. Frame-by-frame Source analysis: intensity, pitch, brightness, HNR
+#   2. Detect climax regions using robust thresholds and duration
+#   3. Measure climax RMS level, spectral centroid/LTAS shape, HNR
+#      plus diagnostic pitch/formants
+#   4. Analyze Target with the same measurements
+#   5. Transfer global level, spectral tilt/LTAS shape, harmonicity colour
+#   6. Measure the actual output and visualize requested vs achieved change
 #
 #   Output: one new Sound object named
 #   "Target_matched_to_Source_Climax"
 #
 # Category: AI & Adaptive
 #
+#
+# Changelog v1.3 (2026):
+#   - PROMISE FIX: documents the real operation: global profile transfer,
+#     not intensity-envelope cloning or pitch/formant transfer.
+#   - FIX: LTAS EQ now preserves the SIGN of the selected spectral-shape
+#     delta. v1.2 used abs(delta) and therefore always BOOSTED, even when
+#     the Source climax required a cut.
+#   - FIX: LTAS matching is mean-removed before EQ, so loudness differences
+#     are not mistaken for timbral EQ differences.
+#   - FIX: level transfer is now a direct dB gain on every channel, preserving
+#     stereo balance and matching the representative analysis channel.
+#   - FIX: Source-climax F1/F2/F3 and HNR averages use their own valid-frame
+#     counts instead of dividing sparse measurements by all climax frames.
+#   - FIX: Pitch upper-percent threshold is now an actual voiced-pitch
+#     percentile rather than a linear fraction of min..max range.
+#   - FIX: undefined HNR frames no longer become 0 dB and bias climax scores.
+#   - STEREO: analysis uses the strongest RMS channel rather than phase-
+#     cancelling mono fold-down; processing still preserves every channel.
+#   - FORM: removed the unused Processing_chunk_s / Crossfade_ms controls.
+#   - VIZ: AudioTools 2x2 house layout; shows detection law, requested vs
+#     achieved profile transfer, mean-removed LTAS proof, and target/output
+#     waveforms on the same scale.
 # Changelog v1.2 (2026):
 #   - FIX (critical): the intensity transfer -- the headline
 #     feature of a climax matcher -- was destroyed before output.
@@ -86,7 +109,7 @@ targetSound = selected("Sound", 2)
 sourceName$ = selected$("Sound", 1)
 targetName$ = selected$("Sound", 2)
 
-form Climax Profile Matcher v1.2
+form Climax Profile Matcher v1.3
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -110,9 +133,9 @@ form Climax Profile Matcher v1.2
     real Spectral_tilt_transfer 0.6
     real Eq_transfer 0.5
     real Harmonicity_transfer 0.3
-    comment === Processing (reserved - not yet used) ===
-    positive Processing_chunk_s 30
-    positive Crossfade_ms 20
+    comment (heuristic periodic/noisy colour, not exact HNR matching)
+    comment === Diagnostics ===
+    comment (Pitch/formants are measured, not transformed)
     comment === Output ===
     boolean Draw_visualization 1
     boolean Play_output 1
@@ -180,12 +203,17 @@ elsif harmonicity_transfer < 0
     harmonicity_transfer = 0
 endif
 
+# Clamp analysis thresholds to meaningful ranges.
+intensity_percentile = max(1, min(99, intensity_percentile))
+pitch_upper_percent = max(1, min(100, pitch_upper_percent))
+brightness_threshold = max(0, min(1, brightness_threshold))
+harmonicity_threshold = max(0, min(1, harmonicity_threshold))
+
 # ============================================================
 # Global Parameters
 # ============================================================
 
 frameStep = frame_step_ms / 1000
-crossfade_s = crossfade_ms / 1000
 minClimaxDur = min_climax_duration_ms / 1000
 
 selectObject: sourceSound
@@ -200,7 +228,7 @@ tgtSR = Get sampling frequency
 
 clearinfo
 writeInfoLine: "=============================================="
-appendInfoLine: "  Climax Profile Matcher v1.2"
+appendInfoLine: "  Climax Profile Matcher v1.3"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", sourceName$, " (", fixed$(srcDuration, 2), " s, ", srcSR, " Hz, ", srcChannels, " ch)"
@@ -209,22 +237,64 @@ appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
 
 # ============================================================
-# Prepare mono copies for analysis
+# Prepare representative analysis channels
 # ============================================================
+# Preserve multichannel processing, but avoid phase-cancelling fold-down
+# during analysis. Choose the strongest RMS channel once for Source/Target.
 
 selectObject: sourceSound
 if srcChannels > 1
-    srcMono = Convert to mono
+    srcBestChannel = 1
+    srcBestRMS = -1
+    for ch from 1 to srcChannels
+        selectObject: sourceSound
+        Extract one channel: ch
+        tmpCh = selected("Sound")
+        rms = Get root-mean-square: 0, 0
+        if rms > srcBestRMS
+            srcBestRMS = rms
+            srcBestChannel = ch
+        endif
+        removeObject: tmpCh
+    endfor
+    selectObject: sourceSound
+    Extract one channel: srcBestChannel
+    srcMono = selected("Sound")
+    Rename: "src_analysis"
 else
-    srcMono = Copy: "src_mono"
+    srcBestChannel = 1
+    srcMono = Copy: "src_analysis"
 endif
 
 selectObject: targetSound
 if tgtChannels > 1
-    tgtMono = Convert to mono
+    tgtBestChannel = 1
+    tgtBestRMS = -1
+    for ch from 1 to tgtChannels
+        selectObject: targetSound
+        Extract one channel: ch
+        tmpCh = selected("Sound")
+        rms = Get root-mean-square: 0, 0
+        if rms > tgtBestRMS
+            tgtBestRMS = rms
+            tgtBestChannel = ch
+        endif
+        removeObject: tmpCh
+    endfor
+    selectObject: targetSound
+    Extract one channel: tgtBestChannel
+    tgtMono = selected("Sound")
+    Rename: "tgt_analysis"
 else
-    tgtMono = Copy: "tgt_mono"
+    tgtBestChannel = 1
+    tgtMono = Copy: "tgt_analysis"
 endif
+
+selectObject: srcMono
+srcAnalysisRMS = Get root-mean-square: 0, 0
+sourceSilent = srcAnalysisRMS < 1e-10
+appendInfoLine: "Analysis channels: Source ch ", srcBestChannel, " | Target ch ", tgtBestChannel
+appendInfoLine: ""
 
 # ============================================================
 # STEP 1: ANALYZE SOURCE (frame-by-frame)
@@ -246,11 +316,13 @@ srcPitchObj = To Pitch: frameStep, pitch_floor_Hz, pitch_ceiling_Hz
 selectObject: srcMono
 srcHarmonicityObj = To Harmonicity (cc): frameStep, pitch_floor_Hz, 0.1, 1.0
 
+srcFormantMaxHz = min(max_formant_Hz, srcSR * 0.48)
 selectObject: srcMono
-srcFormantObj = To Formant (burg): frameStep, 5, max_formant_Hz, 0.025, 50
+srcFormantObj = To Formant (burg): frameStep, 5, srcFormantMaxHz, 0.025, 50
 
+srcSpecMaxHz = min(8000, srcSR * 0.48)
 selectObject: srcMono
-srcSpectrogramObj = To Spectrogram: 0.025, 8000, frameStep, 20, "Gaussian"
+srcSpectrogramObj = To Spectrogram: 0.025, srcSpecMaxHz, frameStep, 20, "Gaussian"
 
 # --- Extract features per frame ---
 srcTime# = zero# (srcNumFrames)
@@ -282,7 +354,7 @@ for i from 1 to srcNumFrames
     # Harmonicity
     selectObject: srcHarmonicityObj
     h = Get value at time: t, "Cubic"
-    srcHNR#[i] = if h <> undefined then h else 0 fi
+    srcHNR#[i] = if h <> undefined then h else -200 fi
     
     # Formants
     selectObject: srcFormantObj
@@ -298,7 +370,7 @@ for i from 1 to srcNumFrames
     totalPower = 0
     weightedSum = 0
     freq = 100
-    while freq <= 8000
+    while freq <= srcSpecMaxHz
         pw = Get power at: t, freq
         if pw <> undefined and pw > 0
             totalPower = totalPower + pw
@@ -380,8 +452,7 @@ endproc
 intThreshold = findPercentile.result
 appendInfoLine: "  Intensity threshold (P", intensity_percentile, "): ", fixed$(intThreshold, 1), " dB"
 
-# Pitch threshold (upper N%)
-# First find voiced pitch range
+# Pitch threshold: TRUE upper-N-percent voiced-pitch percentile
 pitchMin = 9999
 pitchMax = 0
 nVoiced = 0
@@ -396,12 +467,16 @@ for i from 1 to srcNumFrames
         endif
     endif
 endfor
-if pitchMax = 0
-    pitchMax = 300
-    pitchMin = 100
+if nVoiced > 0
+    pitchPct = max(0, min(100, 100 - pitch_upper_percent))
+    @findPercentile: srcPitch#, srcNumFrames, pitchPct, 0
+    pitchThreshold = findPercentile.result
+else
+    pitchMin = 0
+    pitchMax = 0
+    pitchThreshold = 1e30
 endif
-pitchThreshold = pitchMax - (pitchMax - pitchMin) * pitch_upper_percent / 100
-appendInfoLine: "  Pitch range: ", fixed$(pitchMin, 0), " - ", fixed$(pitchMax, 0), " Hz, threshold: ", fixed$(pitchThreshold, 0), " Hz"
+appendInfoLine: "  Voiced pitch: ", fixed$(pitchMin, 0), " - ", fixed$(pitchMax, 0), " Hz | top ", fixed$(pitch_upper_percent, 0), "% threshold: ", fixed$(pitchThreshold, 0), " Hz"
 
 # Normalize centroid and HNR for thresholding
 centroidMin = 99999
@@ -415,14 +490,20 @@ for i from 1 to srcNumFrames
     if srcCentroid#[i] < centroidMin
         centroidMin = srcCentroid#[i]
     endif
-    if srcHNR#[i] > hnrMax
-        hnrMax = srcHNR#[i]
-    endif
-    if srcHNR#[i] < hnrMin and srcHNR#[i] > -200
-        hnrMin = srcHNR#[i]
+    if srcHNR#[i] > -199
+        if srcHNR#[i] > hnrMax
+            hnrMax = srcHNR#[i]
+        endif
+        if srcHNR#[i] < hnrMin
+            hnrMin = srcHNR#[i]
+        endif
     endif
 endfor
 centroidRange = centroidMax - centroidMin + 0.001
+if hnrMin = 99999 or hnrMax <= hnrMin
+    hnrMin = -20
+    hnrMax = 20
+endif
 hnrRange = hnrMax - hnrMin + 0.001
 
 # --- Scan for climax frames ---
@@ -448,10 +529,12 @@ for i from 1 to srcNumFrames
         score = score + 1
     endif
     
-    # Harmonicity above threshold (normalized)
-    normHNR = (srcHNR#[i] - hnrMin) / hnrRange
-    if normHNR >= harmonicity_threshold
-        score = score + 1
+    # Harmonicity above threshold (normalized; only when HNR is defined)
+    if srcHNR#[i] > -199
+        normHNR = (srcHNR#[i] - hnrMin) / hnrRange
+        if normHNR >= harmonicity_threshold
+            score = score + 1
+        endif
     endif
     
     climaxScore#[i] = score
@@ -478,8 +561,8 @@ for i from 1 to srcNumFrames
                 numClimax = numClimax + 1
                 clxStartFrame_'numClimax' = climaxStart
                 clxEndFrame_'numClimax' = i - 1
-                clxStartTime_'numClimax' = srcTime#[climaxStart]
-                clxEndTime_'numClimax' = srcTime#[i - 1]
+                clxStartTime_'numClimax' = max(0, srcTime#[climaxStart] - frameStep / 2)
+                clxEndTime_'numClimax' = min(srcDuration, srcTime#[i - 1] + frameStep / 2)
             endif
             inClimax = 0
         endif
@@ -492,8 +575,8 @@ if inClimax = 1
         numClimax = numClimax + 1
         clxStartFrame_'numClimax' = climaxStart
         clxEndFrame_'numClimax' = srcNumFrames
-        clxStartTime_'numClimax' = srcTime#[climaxStart]
-        clxEndTime_'numClimax' = srcTime#[srcNumFrames]
+        clxStartTime_'numClimax' = max(0, srcTime#[climaxStart] - frameStep / 2)
+        clxEndTime_'numClimax' = min(srcDuration, srcTime#[srcNumFrames] + frameStep / 2)
     endif
 endif
 
@@ -504,7 +587,7 @@ for c from 1 to numClimax
 endfor
 
 # Fallback: if no climaxes found, use top 10% intensity frames
-if numClimax = 0
+if numClimax = 0 and not sourceSilent
     appendInfoLine: "  WARNING: No climaxes detected. Using top-intensity fallback."
     @findPercentile: srcIntensity#, srcNumFrames, 90, 0
     fallbackThreshold = findPercentile.result
@@ -518,27 +601,37 @@ if numClimax = 0
             endif
         else
             if inClimax = 1
-                numClimax = numClimax + 1
-                clxStartFrame_'numClimax' = climaxStart
-                clxEndFrame_'numClimax' = i - 1
-                clxStartTime_'numClimax' = srcTime#[climaxStart]
-                clxEndTime_'numClimax' = srcTime#[i - 1]
+                climaxLen = i - climaxStart
+                if climaxLen >= minClimaxFrames
+                    numClimax = numClimax + 1
+                    clxStartFrame_'numClimax' = climaxStart
+                    clxEndFrame_'numClimax' = i - 1
+                    clxStartTime_'numClimax' = max(0, srcTime#[climaxStart] - frameStep / 2)
+                    clxEndTime_'numClimax' = min(srcDuration, srcTime#[i - 1] + frameStep / 2)
+                endif
                 inClimax = 0
             endif
         endif
     endfor
     if inClimax = 1
-        numClimax = numClimax + 1
-        clxStartFrame_'numClimax' = climaxStart
-        clxEndFrame_'numClimax' = srcNumFrames
-        clxStartTime_'numClimax' = srcTime#[climaxStart]
-        clxEndTime_'numClimax' = srcTime#[srcNumFrames]
+        climaxLen = srcNumFrames - climaxStart + 1
+        if climaxLen >= minClimaxFrames
+            numClimax = numClimax + 1
+            clxStartFrame_'numClimax' = climaxStart
+            clxEndFrame_'numClimax' = srcNumFrames
+            clxStartTime_'numClimax' = max(0, srcTime#[climaxStart] - frameStep / 2)
+            clxEndTime_'numClimax' = min(srcDuration, srcTime#[srcNumFrames] + frameStep / 2)
+        endif
     endif
     appendInfoLine: "  Fallback found ", numClimax, " regions"
 endif
 
+if sourceSilent
+    numClimax = 0
+    appendInfoLine: "  Source is digital silence: no climax profile can be measured."
+endif
 if numClimax = 0
-    appendInfoLine: "  No climax regions found even with fallback — output will be unmodified."
+    appendInfoLine: "  No usable climax regions found — output will be unmodified."
 endif
 
 # ============================================================
@@ -557,6 +650,10 @@ clxAvgF1 = 0
 clxAvgF2 = 0
 clxAvgF3 = 0
 clxTotalFrames = 0
+clxHNRCount = 0
+clxF1Count = 0
+clxF2Count = 0
+clxF3Count = 0
 
 for c from 1 to numClimax
     sf = clxStartFrame_'c'
@@ -565,7 +662,10 @@ for c from 1 to numClimax
         clxTotalFrames = clxTotalFrames + 1
         clxAvgIntensity = clxAvgIntensity + srcIntensity#[i]
         clxAvgCentroid = clxAvgCentroid + srcCentroid#[i]
-        clxAvgHNR = clxAvgHNR + srcHNR#[i]
+        if srcHNR#[i] > -199
+            clxAvgHNR = clxAvgHNR + srcHNR#[i]
+            clxHNRCount = clxHNRCount + 1
+        endif
         
         if srcPitch#[i] > 0
             clxAvgPitch = clxAvgPitch + srcPitch#[i]
@@ -579,12 +679,15 @@ for c from 1 to numClimax
         
         if srcF1#[i] > 0
             clxAvgF1 = clxAvgF1 + srcF1#[i]
+            clxF1Count = clxF1Count + 1
         endif
         if srcF2#[i] > 0
             clxAvgF2 = clxAvgF2 + srcF2#[i]
+            clxF2Count = clxF2Count + 1
         endif
         if srcF3#[i] > 0
             clxAvgF3 = clxAvgF3 + srcF3#[i]
+            clxF3Count = clxF3Count + 1
         endif
     endfor
 endfor
@@ -592,10 +695,10 @@ endfor
 if clxTotalFrames > 0
     clxAvgIntensity = clxAvgIntensity / clxTotalFrames
     clxAvgCentroid = clxAvgCentroid / clxTotalFrames
-    clxAvgHNR = clxAvgHNR / clxTotalFrames
-    clxAvgF1 = clxAvgF1 / clxTotalFrames
-    clxAvgF2 = clxAvgF2 / clxTotalFrames
-    clxAvgF3 = clxAvgF3 / clxTotalFrames
+    clxAvgHNR = if clxHNRCount > 0 then clxAvgHNR / clxHNRCount else 0 fi
+    clxAvgF1 = if clxF1Count > 0 then clxAvgF1 / clxF1Count else 0 fi
+    clxAvgF2 = if clxF2Count > 0 then clxAvgF2 / clxF2Count else 0 fi
+    clxAvgF3 = if clxF3Count > 0 then clxAvgF3 / clxF3Count else 0 fi
 endif
 
 # Count voiced climax frames for pitch average
@@ -662,18 +765,34 @@ if numClimax > 0
     endfor
 
     selectObject: clxConcat
+    clxLevel_dB = Get intensity (dB)
+    clxSpecForCOG = To Spectrum: "yes"
+    clxCOG_Hz = Get centre of gravity: 2
+    removeObject: clxSpecForCOG
+    selectObject: clxConcat
     srcClimaxLTAS = To Ltas: 100
     removeObject: clxConcat
 else
-    # Fallback: use entire source
+    # No usable climax profile: diagnostics use entire source, transforms skip later.
+    selectObject: srcMono
+    clxLevel_dB = Get intensity (dB)
+    clxSpecForCOG = To Spectrum: "yes"
+    clxCOG_Hz = Get centre of gravity: 2
+    removeObject: clxSpecForCOG
     selectObject: srcMono
     srcClimaxLTAS = To Ltas: 100
 endif
 
+if clxLevel_dB = undefined
+    clxLevel_dB = 0
+endif
+if clxCOG_Hz = undefined
+    clxCOG_Hz = 0
+endif
 appendInfoLine: "  Climax Profile:"
-appendInfoLine: "    Intensity: ", fixed$(clxAvgIntensity, 1), " dB"
+appendInfoLine: "    RMS level: ", fixed$(clxLevel_dB, 1), " dB | mean frame intensity: ", fixed$(clxAvgIntensity, 1), " dB"
 appendInfoLine: "    Pitch: ", fixed$(clxAvgPitch, 1), " Hz (range: ", fixed$(clxPitchMin, 0), "-", fixed$(clxPitchMax, 0), " Hz)"
-appendInfoLine: "    Centroid: ", fixed$(clxAvgCentroid, 0), " Hz"
+appendInfoLine: "    Spectral COG: ", fixed$(clxCOG_Hz, 0), " Hz | mean frame centroid: ", fixed$(clxAvgCentroid, 0), " Hz"
 appendInfoLine: "    HNR: ", fixed$(clxAvgHNR, 1), " dB"
 appendInfoLine: "    Formants: F1=", fixed$(clxAvgF1, 0), " F2=", fixed$(clxAvgF2, 0), " F3=", fixed$(clxAvgF3, 0), " Hz"
 
@@ -698,11 +817,13 @@ tgtPitchObj = To Pitch: frameStep, pitch_floor_Hz, pitch_ceiling_Hz
 selectObject: tgtMono
 tgtHarmonicityObj = To Harmonicity (cc): frameStep, pitch_floor_Hz, 0.1, 1.0
 
+tgtFormantMaxHz = min(max_formant_Hz, tgtSR * 0.48)
 selectObject: tgtMono
-tgtFormantObj = To Formant (burg): frameStep, 5, max_formant_Hz, 0.025, 50
+tgtFormantObj = To Formant (burg): frameStep, 5, tgtFormantMaxHz, 0.025, 50
 
+tgtSpecMaxHz = min(8000, tgtSR * 0.48)
 selectObject: tgtMono
-tgtSpectrogramObj = To Spectrogram: 0.025, 8000, frameStep, 20, "Gaussian"
+tgtSpectrogramObj = To Spectrogram: 0.025, tgtSpecMaxHz, frameStep, 20, "Gaussian"
 
 # Extract frame-by-frame features
 tgtTime# = zero# (tgtNumFrames)
@@ -719,7 +840,10 @@ tgtSumF1 = 0
 tgtSumF2 = 0
 tgtSumF3 = 0
 tgtVoicedCount = 0
-tgtFormantCount = 0
+tgtHNRCount = 0
+tgtF1Count = 0
+tgtF2Count = 0
+tgtF3Count = 0
 
 for i from 1 to tgtNumFrames
     t = (i - 0.5) * frameStep
@@ -743,8 +867,11 @@ for i from 1 to tgtNumFrames
     
     selectObject: tgtHarmonicityObj
     h = Get value at time: t, "Cubic"
-    tgtHNR#[i] = if h <> undefined then h else 0 fi
-    tgtSumHNR = tgtSumHNR + tgtHNR#[i]
+    tgtHNR#[i] = if h <> undefined then h else -200 fi
+    if tgtHNR#[i] > -199
+        tgtSumHNR = tgtSumHNR + tgtHNR#[i]
+        tgtHNRCount = tgtHNRCount + 1
+    endif
     
     selectObject: tgtFormantObj
     f1 = Get value at time: 1, t, "Hertz", "Linear"
@@ -752,16 +879,22 @@ for i from 1 to tgtNumFrames
     f3 = Get value at time: 3, t, "Hertz", "Linear"
     if f1 <> undefined and f1 > 0
         tgtSumF1 = tgtSumF1 + f1
-        tgtSumF2 = tgtSumF2 + (if f2 <> undefined then f2 else 0 fi)
-        tgtSumF3 = tgtSumF3 + (if f3 <> undefined then f3 else 0 fi)
-        tgtFormantCount = tgtFormantCount + 1
+        tgtF1Count = tgtF1Count + 1
+    endif
+    if f2 <> undefined and f2 > 0
+        tgtSumF2 = tgtSumF2 + f2
+        tgtF2Count = tgtF2Count + 1
+    endif
+    if f3 <> undefined and f3 > 0
+        tgtSumF3 = tgtSumF3 + f3
+        tgtF3Count = tgtF3Count + 1
     endif
     
     selectObject: tgtSpectrogramObj
     totalPower = 0
     weightedSum = 0
     freq = 100
-    while freq <= 8000
+    while freq <= tgtSpecMaxHz
         pw = Get power at: t, freq
         if pw <> undefined and pw > 0
             totalPower = totalPower + pw
@@ -781,10 +914,10 @@ endfor
 tgtAvgIntensity = tgtSumInt / tgtNumFrames
 tgtAvgPitch = if tgtVoicedCount > 0 then tgtSumPitch / tgtVoicedCount else 150 fi
 tgtAvgCentroid = tgtSumCentroid / tgtNumFrames
-tgtAvgHNR = tgtSumHNR / tgtNumFrames
-tgtAvgF1 = if tgtFormantCount > 0 then tgtSumF1 / tgtFormantCount else 500 fi
-tgtAvgF2 = if tgtFormantCount > 0 then tgtSumF2 / tgtFormantCount else 1500 fi
-tgtAvgF3 = if tgtFormantCount > 0 then tgtSumF3 / tgtFormantCount else 2500 fi
+tgtAvgHNR = if tgtHNRCount > 0 then tgtSumHNR / tgtHNRCount else 0 fi
+tgtAvgF1 = if tgtF1Count > 0 then tgtSumF1 / tgtF1Count else 0 fi
+tgtAvgF2 = if tgtF2Count > 0 then tgtSumF2 / tgtF2Count else 0 fi
+tgtAvgF3 = if tgtF3Count > 0 then tgtSumF3 / tgtF3Count else 0 fi
 
 # Target pitch range
 tgtPitchMin = 9999
@@ -805,14 +938,19 @@ if tgtPitchMin = 9999
 endif
 tgtPitchRange = tgtPitchMax - tgtPitchMin
 
-# Target LTAS
+# Target whole-file level, spectral COG and LTAS
+selectObject: tgtMono
+tgtLevel_dB = Get intensity (dB)
+tgtSpecForCOG = To Spectrum: "yes"
+tgtCOG_Hz = Get centre of gravity: 2
+removeObject: tgtSpecForCOG
 selectObject: tgtMono
 tgtLTAS = To Ltas: 100
 
 appendInfoLine: "  Target Profile:"
-appendInfoLine: "    Intensity: ", fixed$(tgtAvgIntensity, 1), " dB"
+appendInfoLine: "    RMS level: ", fixed$(tgtLevel_dB, 1), " dB | mean frame intensity: ", fixed$(tgtAvgIntensity, 1), " dB"
 appendInfoLine: "    Pitch: ", fixed$(tgtAvgPitch, 1), " Hz (range: ", fixed$(tgtPitchMin, 0), "-", fixed$(tgtPitchMax, 0), " Hz)"
-appendInfoLine: "    Centroid: ", fixed$(tgtAvgCentroid, 0), " Hz"
+appendInfoLine: "    Spectral COG: ", fixed$(tgtCOG_Hz, 0), " Hz | mean frame centroid: ", fixed$(tgtAvgCentroid, 0), " Hz"
 appendInfoLine: "    HNR: ", fixed$(tgtAvgHNR, 1), " dB"
 appendInfoLine: "    Formants: F1=", fixed$(tgtAvgF1, 0), " F2=", fixed$(tgtAvgF2, 0), " F3=", fixed$(tgtAvgF3, 0), " Hz"
 
@@ -822,10 +960,10 @@ appendInfoLine: "    Formants: F1=", fixed$(tgtAvgF1, 0), " F2=", fixed$(tgtAvgF
 appendInfoLine: ""
 appendInfoLine: "[5/7] Computing acoustic deltas..."
 
-deltaIntensity_dB = clxAvgIntensity - tgtAvgIntensity
+deltaIntensity_dB = clxLevel_dB - tgtLevel_dB
 deltaPitch_Hz = clxAvgPitch - tgtAvgPitch
 deltaPitchRange = clxPitchRange - tgtPitchRange
-deltaCentroid_Hz = clxAvgCentroid - tgtAvgCentroid
+deltaCentroid_Hz = clxCOG_Hz - tgtCOG_Hz
 deltaHNR_dB = clxAvgHNR - tgtAvgHNR
 deltaF1 = clxAvgF1 - tgtAvgF1
 deltaF2 = clxAvgF2 - tgtAvgF2
@@ -841,40 +979,84 @@ endif
 # Spectral tilt direction: positive = brighter climax
 if deltaCentroid_Hz > 0
     tiltDirection$ = "brighter"
-else
+elsif deltaCentroid_Hz < 0
     tiltDirection$ = "darker"
+else
+    tiltDirection$ = "none"
 endif
 
-# LTAS difference (sample at key bands)
-selectObject: srcClimaxLTAS
-srcLTAS_250 = Get value at frequency: 250, "Nearest"
-srcLTAS_500 = Get value at frequency: 500, "Nearest"
-srcLTAS_1k = Get value at frequency: 1000, "Nearest"
-srcLTAS_2k = Get value at frequency: 2000, "Nearest"
-srcLTAS_4k = Get value at frequency: 4000, "Nearest"
-srcLTAS_8k = Get value at frequency: 8000, "Nearest"
+# No climax profile => no meaningful deltas. Keep diagnostics clean; Step 6 bypasses.
+if numClimax = 0
+    deltaIntensity_dB = 0
+    deltaPitch_Hz = 0
+    deltaPitchRange = 0
+    deltaCentroid_Hz = 0
+    deltaHNR_dB = 0
+    deltaF1 = 0
+    deltaF2 = 0
+    deltaF3 = 0
+    pitchShift_st = 0
+    tiltDirection$ = "none"
+endif
 
-selectObject: tgtLTAS
-tgtLTAS_250 = Get value at frequency: 250, "Nearest"
-tgtLTAS_500 = Get value at frequency: 500, "Nearest"
-tgtLTAS_1k = Get value at frequency: 1000, "Nearest"
-tgtLTAS_2k = Get value at frequency: 2000, "Nearest"
-tgtLTAS_4k = Get value at frequency: 4000, "Nearest"
-tgtLTAS_8k = Get value at frequency: 8000, "Nearest"
-
-dLTAS_250 = srcLTAS_250 - tgtLTAS_250
-dLTAS_500 = srcLTAS_500 - tgtLTAS_500
-dLTAS_1k = srcLTAS_1k - tgtLTAS_1k
-dLTAS_2k = srcLTAS_2k - tgtLTAS_2k
-dLTAS_4k = srcLTAS_4k - tgtLTAS_4k
-dLTAS_8k = srcLTAS_8k - tgtLTAS_8k
+# LTAS SHAPE difference at key bands (mean-removed to separate timbre from level)
+nBands = 6
+bandFreq# = zero# (nBands)
+bandFreq#[1] = 250
+bandFreq#[2] = 500
+bandFreq#[3] = 1000
+bandFreq#[4] = 2000
+bandFreq#[5] = 4000
+bandFreq#[6] = 8000
+srcBand# = zero# (nBands)
+tgtBand# = zero# (nBands)
+bandValid# = zero# (nBands)
+commonLtasMax = min(srcSR / 2, tgtSR / 2)
+validBandCount = 0
+srcBandMean = 0
+tgtBandMean = 0
+for b from 1 to nBands
+    fBand = bandFreq#[b]
+    if fBand <= commonLtasMax
+        selectObject: srcClimaxLTAS
+        binNum = Get bin number from frequency: fBand
+        binNum = round(binNum)
+        nLtasBins = Get number of bins
+        binNum = max(1, min(nLtasBins, binNum))
+        srcBand#[b] = Get value in bin: binNum
+        selectObject: tgtLTAS
+        binNum = Get bin number from frequency: fBand
+        binNum = round(binNum)
+        nLtasBins = Get number of bins
+        binNum = max(1, min(nLtasBins, binNum))
+        tgtBand#[b] = Get value in bin: binNum
+        if srcBand#[b] <> undefined and tgtBand#[b] <> undefined
+            bandValid#[b] = 1
+            validBandCount = validBandCount + 1
+            srcBandMean = srcBandMean + srcBand#[b]
+            tgtBandMean = tgtBandMean + tgtBand#[b]
+        endif
+    endif
+endfor
+if validBandCount > 0
+    srcBandMean = srcBandMean / validBandCount
+    tgtBandMean = tgtBandMean / validBandCount
+endif
+dLtasShape# = zero# (nBands)
+for b from 1 to nBands
+    if bandValid#[b] and numClimax > 0
+        dLtasShape#[b] = (srcBand#[b] - srcBandMean) - (tgtBand#[b] - tgtBandMean)
+    else
+        dLtasShape#[b] = 0
+    endif
+endfor
 
 appendInfoLine: "  Deltas (Source climax - Target):"
-appendInfoLine: "    Intensity: ", fixed$(deltaIntensity_dB, 1), " dB"
-appendInfoLine: "    Pitch: ", fixed$(deltaPitch_Hz, 1), " Hz (", fixed$(pitchShift_st, 2), " st)"
-appendInfoLine: "    Centroid: ", fixed$(deltaCentroid_Hz, 0), " Hz (", tiltDirection$, ")"
-appendInfoLine: "    HNR: ", fixed$(deltaHNR_dB, 1), " dB"
-appendInfoLine: "    LTAS diffs: 250=", fixed$(dLTAS_250, 1), " 500=", fixed$(dLTAS_500, 1), " 1k=", fixed$(dLTAS_1k, 1), " 2k=", fixed$(dLTAS_2k, 1), " 4k=", fixed$(dLTAS_4k, 1), " 8k=", fixed$(dLTAS_8k, 1)
+appendInfoLine: "    RMS level: ", fixed$(deltaIntensity_dB, 1), " dB"
+appendInfoLine: "    Pitch diagnostic: ", fixed$(deltaPitch_Hz, 1), " Hz (", fixed$(pitchShift_st, 2), " st; NOT transferred)"
+appendInfoLine: "    Spectral COG: ", fixed$(deltaCentroid_Hz, 0), " Hz (", tiltDirection$, ")"
+appendInfoLine: "    HNR: ", fixed$(deltaHNR_dB, 1), " dB (heuristic transfer)"
+appendInfoLine: "    LTAS shape deltas are mean-removed before EQ (level handled separately)."
 
 # ============================================================
 # STEP 6: APPLY TRANSFORMATIONS TO TARGET
@@ -902,7 +1084,7 @@ endif
 # plus the final one overwrote it completely: the output always
 # peaked at 0.99 regardless of Intensity_transfer.
 
-appendInfoLine: "  [B] Pitch: disabled (preserves formant structure)"
+appendInfoLine: "  [B] Pitch/formants: diagnostics only; no transformation"
 
 # --- 6C: SPECTRAL TILT CORRECTION ---
 if spectral_tilt_transfer > 0 and abs(deltaCentroid_Hz) > 50
@@ -912,7 +1094,8 @@ if spectral_tilt_transfer > 0 and abs(deltaCentroid_Hz) > 50
     if deltaCentroid_Hz > 0
         # Need to brighten: boost high band
         emphLow = 500 + (1 - spectral_tilt_transfer) * 1500
-        emphHigh = min(12000, 5000 + spectral_tilt_transfer * 7000)
+        emphHigh = min(tgtSR * 0.48, 5000 + spectral_tilt_transfer * 7000)
+        emphLow = min(emphLow, max(80, emphHigh - 200))
         
         # Create blended version: partial filter application
         selectObject: result
@@ -941,7 +1124,7 @@ if spectral_tilt_transfer > 0 and abs(deltaCentroid_Hz) > 50
     else
         # Need to darken: emphasize low band
         emphLow = max(80, 100 * (1 - spectral_tilt_transfer))
-        emphHigh = 3000 - spectral_tilt_transfer * 1500
+        emphHigh = min(tgtSR * 0.48, 3000 - spectral_tilt_transfer * 1500)
         
         selectObject: result
         resultCopy = Copy: "tilt_dry"
@@ -966,78 +1149,61 @@ if spectral_tilt_transfer > 0 and abs(deltaCentroid_Hz) > 50
         appendInfoLine: "  [C] Spectral tilt: darkened (emphasis ", fixed$(emphLow, 0), "-", fixed$(emphHigh, 0), " Hz)"
     endif
     
-    selectObject: result
-    Scale peak: 0.99
 else
     appendInfoLine: "  [C] Spectral tilt: no change needed"
 endif
 
-# --- 6D: LTAS-BASED EQ SHAPING ---
-if eq_transfer > 0
-    selectObject: result
-    
-    # Determine which bands need boosting/cutting
-    # Apply gentle emphasis via additive filtered layers
-    
-    # Find the band with the largest positive delta (needs boost)
+# --- 6D: LTAS-SHAPE EQ SHAPING ---
+eqAppliedBand = 0
+eqAppliedDelta = 0
+eqGain = 0
+if eq_transfer > 0 and validBandCount > 0
+    # Pick the strongest MEAN-REMOVED shape mismatch, preserving its sign.
+    maxDeltaAbs = 0
+    selectedDelta = 0
     maxBand = 0
-    maxDelta = 0
-    if abs(dLTAS_250) > maxDelta
-        maxDelta = abs(dLTAS_250)
-        maxBand = 250
-    endif
-    if abs(dLTAS_1k) > maxDelta
-        maxDelta = abs(dLTAS_1k)
-        maxBand = 1000
-    endif
-    if abs(dLTAS_2k) > maxDelta
-        maxDelta = abs(dLTAS_2k)
-        maxBand = 2000
-    endif
-    if abs(dLTAS_4k) > maxDelta
-        maxDelta = abs(dLTAS_4k)
-        maxBand = 4000
-    endif
-    
-    if maxBand > 0 and maxDelta > 2
-        # Apply targeted bandpass boost/cut
-        selectObject: result
+    for b from 1 to nBands
+        if bandValid#[b] and abs(dLtasShape#[b]) > maxDeltaAbs
+            maxDeltaAbs = abs(dLtasShape#[b])
+            selectedDelta = dLtasShape#[b]
+            maxBand = bandFreq#[b]
+        endif
+    endfor
+
+    if maxBand > 0 and maxDeltaAbs > 2
         bandwidth = max(200, maxBand * 0.5)
         lowFreq = max(80, maxBand - bandwidth)
-        highFreq = min(12000, maxBand + bandwidth)
-        
+        highFreq = min(tgtSR * 0.48, maxBand + bandwidth)
+
+        selectObject: result
         resultCopy = Copy: "eq_dry"
-        
         selectObject: result
         Filter (pass Hann band): lowFreq, highFreq, bandwidth * 0.3
         eqBand = selected("Sound")
-        
-        # Scale the filtered band by delta magnitude and weight
-        eqGain = eq_transfer * maxDelta / 40
+
+        # Signed additive band correction. Positive delta -> boost; negative -> cut.
+        eqGain = eq_transfer * selectedDelta / 40
         eqGain = max(-0.4, min(0.4, eqGain))
-        
-        # v1.1: Single Formula EQ add using object[<id>, col]
-        # indexed read instead of three-step Sound_'name$'(x) pattern.
-        # Math: dry + filtered_band * eqGain.
-        # The dry signal is unchanged (full level); the filtered band
-        # is added at small gain (max ±0.4) on top.
         bandID_str$ = string$(eqBand)
         eqGain_str$ = fixed$(eqGain, 6)
         selectObject: resultCopy
-        Formula: "self + object[" + bandID_str$
-            ... + ", row, col] * " + eqGain_str$
-        
+        Formula: "self + object[" + bandID_str$ + ", row, col] * " + eqGain_str$
+
         removeObject: eqBand, result
         result = resultCopy
-        selectObject: result
-        Scale peak: 0.99
-        
-        appendInfoLine: "  [D] EQ: boosted ", maxBand, " Hz band by ", fixed$(eqGain * 100, 1), "%"
+        eqAppliedBand = maxBand
+        eqAppliedDelta = selectedDelta
+        if eqGain >= 0
+            eqAction$ = "boost"
+        else
+            eqAction$ = "cut"
+        endif
+        appendInfoLine: "  [D] EQ: ", eqAction$, " near ", maxBand, " Hz | shape delta ", fixed$(selectedDelta, 1), " dB | gain ", fixed$(eqGain, 3)
     else
-        appendInfoLine: "  [D] EQ: differences too small, skipped"
+        appendInfoLine: "  [D] EQ: mean-removed shape differences too small, skipped"
     endif
 else
-    appendInfoLine: "  [D] EQ: disabled"
+    appendInfoLine: "  [D] EQ: disabled or no common LTAS bands"
 endif
 
 # --- 6E: HARMONICITY SHAPING ---
@@ -1046,7 +1212,7 @@ if harmonicity_transfer > 0 and deltaHNR_dB > 1
     selectObject: result
     
     # Gentle high-frequency attenuation to reduce noisiness
-    cutoff = 8000 + (1 - harmonicity_transfer) * 4000
+    cutoff = min(tgtSR * 0.48, 8000 + (1 - harmonicity_transfer) * 4000)
     
     resultCopy = Copy: "hnr_dry"
     
@@ -1073,37 +1239,37 @@ if harmonicity_transfer > 0 and deltaHNR_dB > 1
     satAmount = harmonicity_transfer * 0.3
     Formula: "self * (1 - satAmount) + tanh(self * 3) / 3 * satAmount"
     
-    Scale peak: 0.99
-    appendInfoLine: "  [E] Harmonicity: +", fixed$(deltaHNR_dB * harmonicity_transfer, 1), " dB (filtered + mild saturation)"
+    appendInfoLine: "  [E] Harmonicity colour: more periodic (filter + mild saturation; heuristic, not an exact HNR match)"
 elsif harmonicity_transfer > 0 and deltaHNR_dB < -1
     # Decrease harmonicity: add subtle noise
     selectObject: result
     noiseAmount = harmonicity_transfer * abs(deltaHNR_dB) / 40
     noiseAmount = min(0.15, noiseAmount)
     Formula: "self * (1 - noiseAmount) + randomGauss(0, 0.1) * noiseAmount"
-    Scale peak: 0.99
-    appendInfoLine: "  [E] Harmonicity: reduced (added ", fixed$(noiseAmount * 100, 1), "% noise)"
+    appendInfoLine: "  [E] Harmonicity colour: noisier (added ", fixed$(noiseAmount * 100, 1), "% noise; heuristic)"
 else
     appendInfoLine: "  [E] Harmonicity: no change needed"
 endif
 
-# --- 6A (v1.2: runs LAST): INTENSITY MATCHING ---
+# --- 6A (v1.3: runs LAST): RMS LEVEL SHIFT ---
+# Apply the requested dB shift directly to every channel. This preserves
+# stereo balance and keeps the representative analysis channel coherent.
+requestedLevelShift_dB = 0
 if intensity_transfer > 0 and abs(deltaIntensity_dB) > 0.5
-    targetIntensity = clxAvgIntensity * intensity_transfer + tgtAvgIntensity * (1 - intensity_transfer)
+    requestedLevelShift_dB = deltaIntensity_dB * intensity_transfer
+    levelGain = 10 ^ (requestedLevelShift_dB / 20)
+    levelGain_str$ = fixed$(levelGain, 10)
     selectObject: result
-    Scale intensity: targetIntensity
+    Formula: "self * " + levelGain_str$
     peakNow = Get absolute extremum: 0, 0, "None"
     if peakNow > 0.99
         Scale peak: 0.99
-        achievedIntensity = Get intensity (dB)
-        appendInfoLine: "  [A] Intensity: target ", fixed$(targetIntensity, 1),
-            ... " dB limited by headroom -> ", fixed$(achievedIntensity, 1), " dB"
+        appendInfoLine: "  [A] RMS level: requested ", fixed$(requestedLevelShift_dB, 1), " dB; headroom clamp applied"
     else
-        appendInfoLine: "  [A] Intensity: applied ", fixed$(deltaIntensity_dB * intensity_transfer, 1),
-            ... " dB shift (level ", fixed$(targetIntensity, 1), " dB)"
+        appendInfoLine: "  [A] RMS level: applied ", fixed$(requestedLevelShift_dB, 1), " dB"
     endif
 else
-    appendInfoLine: "  [A] Intensity: no change needed"
+    appendInfoLine: "  [A] RMS level: no change needed"
 endif
 
 # --- Final output ---
@@ -1112,14 +1278,26 @@ endif
 selectObject: result
 Rename: "Target_matched_to_Source_Climax"
 finalPeakChk = Get absolute extremum: 0, 0, "None"
-if finalPeakChk > 0.99
+if numClimax > 0 and finalPeakChk > 0.99
     Scale peak: 0.99
 endif
 finalOutput = selected("Sound")
 outputDuration = Get total duration
+# Measure output level on the SAME representative Target channel used for analysis.
+if tgtChannels > 1
+    selectObject: finalOutput
+    Extract one channel: tgtBestChannel
+    finalLevelTmp = selected("Sound")
+    finalLevel_dB = Get intensity (dB)
+    removeObject: finalLevelTmp
+else
+    selectObject: finalOutput
+    finalLevel_dB = Get intensity (dB)
+endif
 
 appendInfoLine: ""
 appendInfoLine: "  Output: Target_matched_to_Source_Climax (", fixed$(outputDuration, 2), " s)"
+appendInfoLine: "  Measured output RMS level (analysis ch): ", fixed$(finalLevel_dB, 1), " dB"
 
 # ============================================================
 # VISUALIZATION
@@ -1127,279 +1305,298 @@ appendInfoLine: "  Output: Target_matched_to_Source_Climax (", fixed$(outputDura
 
 if draw_visualization
     appendInfoLine: ""
-    appendInfoLine: "[7/7] Creating visualization..."
-    
-    Erase all
-    
-    # === TITLE ===
-    # v1.2: explicit inner viewport == outer strip (outer-only
-    # form compresses the mapping via font margins; the two text
-    # lines collided)
-    Select outer viewport: 0, 8, 0, 0.5
-    Select inner viewport: 0, 8, 0, 0.5
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Climax Profile Matcher v1.2##"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.24, "half", sourceName$ + " → " + targetName$ + " | " + presetName$ + " | " + string$(numClimax) + " climax regions"
-    
-    # === SOURCE WAVEFORM WITH CLIMAX HIGHLIGHTS ===
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.7, 0.7, 1.45
-    
-    Axes: 0, srcDuration, -1, 1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDuration, -1, 1
-    
-    # Highlight climax regions
-    for c from 1 to numClimax
-        Paint rectangle: "{1.0, 0.88, 0.82}", clxStartTime_'c', clxEndTime_'c', -1, 1
-    endfor
-    
-    selectObject: srcMono
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Source"
-    Text top: "no", sourceName$ + " | " + fixed$(srcDuration, 2) + " s | " + string$(numClimax) + " climax(es)"
-    
-    # === SOURCE TENSION FEATURES ===
-    Select outer viewport: 0, 8, 1.6, 2.9
-    Select inner viewport: 0.6, 7.7, 1.7, 2.8
-    
-    Axes: 0, srcDuration, 0, 1.1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDuration, 0, 1.1
-    
-    # Highlight climax regions
-    for c from 1 to numClimax
-        Paint rectangle: "{1.0, 0.88, 0.82}", clxStartTime_'c', clxEndTime_'c', 0, 1.1
-    endfor
-    
-    # Normalize features for display
-    # Intensity
-    Colour: "{0.9, 0.5, 0.3}"
-    Line width: 1
-    for i from 2 to srcNumFrames
-        i1 = max(0, min(1, (srcIntensity#[i-1] - 30) / 60))
-        i2 = max(0, min(1, (srcIntensity#[i] - 30) / 60))
-        Draw line: srcTime#[i-1], i1, srcTime#[i], i2
-    endfor
-    
-    # Pitch (normalized)
-    Colour: "{0.3, 0.6, 0.8}"
-    for i from 2 to srcNumFrames
-        if srcPitch#[i-1] > 0 and srcPitch#[i] > 0
-            p1 = max(0, min(1, (srcPitch#[i-1] - pitchMin) / (pitchMax - pitchMin + 1)))
-            p2 = max(0, min(1, (srcPitch#[i] - pitchMin) / (pitchMax - pitchMin + 1)))
-            Draw line: srcTime#[i-1], p1, srcTime#[i], p2
+    appendInfoLine: "[7/7] Measuring output + creating visualization..."
+
+    # Representative output channel corresponding to Target analysis channel.
+    selectObject: finalOutput
+    if tgtChannels > 1
+        Extract one channel: tgtBestChannel
+        outVizMono = selected("Sound")
+    else
+        outVizMono = Copy: "out_viz"
+    endif
+
+    # Output spectral COG / LTAS.
+    selectObject: outVizMono
+    outSpecForCOG = To Spectrum: "yes"
+    outCOG_Hz = Get centre of gravity: 2
+    removeObject: outSpecForCOG
+    selectObject: outVizMono
+    outLTAS = To Ltas: 100
+
+    # Output HNR measured with the same analysis family (coarser query loop is enough for QC).
+    selectObject: outVizMono
+    outHnrObj = To Harmonicity (cc): frameStep, pitch_floor_Hz, 0.1, 1.0
+    outHnrSum = 0
+    outHnrCount = 0
+    outFrames = max(1, floor(tgtDuration / frameStep))
+    for i from 1 to outFrames
+        t = min(tgtDuration - 0.001, (i - 0.5) * frameStep)
+        selectObject: outHnrObj
+        h = Get value at time: t, "Cubic"
+        if h <> undefined and h > -199
+            outHnrSum = outHnrSum + h
+            outHnrCount = outHnrCount + 1
         endif
     endfor
-    
-    # HNR (normalized)
-    Colour: "{0.5, 0.7, 0.4}"
-    for i from 2 to srcNumFrames
-        h1 = max(0, min(1, (srcHNR#[i-1] - hnrMin) / hnrRange))
-        h2 = max(0, min(1, (srcHNR#[i] - hnrMin) / hnrRange))
-        Draw line: srcTime#[i-1], h1, srcTime#[i], h2
+    outAvgHNR = if outHnrCount > 0 then outHnrSum / outHnrCount else 0 fi
+    removeObject: outHnrObj
+
+    # Output LTAS at the same bands, then mean-remove.
+    outBand# = zero# (nBands)
+    outBandMean = 0
+    outValidCount = 0
+    for b from 1 to nBands
+        if bandValid#[b]
+            fBand = bandFreq#[b]
+            selectObject: outLTAS
+            binNum = Get bin number from frequency: fBand
+        binNum = round(binNum)
+            nLtasBins = Get number of bins
+            binNum = max(1, min(nLtasBins, binNum))
+            outBand#[b] = Get value in bin: binNum
+            if outBand#[b] <> undefined
+                outBandMean = outBandMean + outBand#[b]
+                outValidCount = outValidCount + 1
+            endif
+        endif
     endfor
-    
-    # Climax score (bold)
-    Colour: "{0.8, 0.2, 0.2}"
-    Line width: 2
+    if outValidCount > 0
+        outBandMean = outBandMean / outValidCount
+    endif
+    outShapeDelta# = zero# (nBands)
+    for b from 1 to nBands
+        if bandValid#[b]
+            outShapeDelta#[b] = (outBand#[b] - outBandMean) - (tgtBand#[b] - tgtBandMean)
+        endif
+    endfor
+
+    # Requested/achieved profile fractions (0 = original Target, 1 = full Source-climax delta).
+    levelReqFrac = if numClimax > 0 and abs(deltaIntensity_dB) > 0.5 then intensity_transfer else 0 fi
+    cogReqFrac = if numClimax > 0 and abs(deltaCentroid_Hz) > 50 then spectral_tilt_transfer else 0 fi
+    hnrReqFrac = if numClimax > 0 and abs(deltaHNR_dB) > 1 then harmonicity_transfer else 0 fi
+    levelFrac = 0
+    if abs(deltaIntensity_dB) > 0.1
+        levelFrac = (finalLevel_dB - tgtLevel_dB) / deltaIntensity_dB
+    endif
+    cogFrac = 0
+    if abs(deltaCentroid_Hz) > 1
+        cogFrac = (outCOG_Hz - tgtCOG_Hz) / deltaCentroid_Hz
+    endif
+    hnrFrac = 0
+    if abs(deltaHNR_dB) > 0.1
+        hnrFrac = (outAvgHNR - tgtAvgHNR) / deltaHNR_dB
+    endif
+    fracMin = min(-0.25, min(min(levelReqFrac, levelFrac), min(min(cogReqFrac, cogFrac), min(hnrReqFrac, hnrFrac))) - 0.15)
+    fracMax = max(1.25, max(max(levelReqFrac, levelFrac), max(max(cogReqFrac, cogFrac), max(hnrReqFrac, hnrFrac))) + 0.15)
+    fracMin = max(-1.0, fracMin)
+    fracMax = min(2.0, fracMax)
+
+    # Common waveform scale for Target / final output.
+    selectObject: tgtMono
+    tMax = Get maximum: 0, 0, "Sinc70"
+    tMin = Get minimum: 0, 0, "Sinc70"
+    selectObject: outVizMono
+    oMax = Get maximum: 0, 0, "Sinc70"
+    oMin = Get minimum: 0, 0, "Sinc70"
+    waveY = max(0.001, 1.08 * max(max(abs(tMax), abs(tMin)), max(abs(oMax), abs(oMin))))
+
+    Erase all
+
+    # House title strip.
+    Select outer viewport: 0, 8, 0.00, 0.38
+    Select inner viewport: 0, 8, 0.00, 0.38
+    Axes: 0, 1, 0, 1
+    Font size: 13
+    Colour: "Black"
+    Text: 0.5, "centre", 0.58, "half", "Climax Profile Matcher v1.3"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.40}"
+    Text: 0.5, "centre", 0.14, "half", sourceName$ + " -> " + targetName$ + " | " + presetName$ + " | " + string$(numClimax) + " climax region(s)"
+
+    # Process strip.
+    Select outer viewport: 0, 8, 0.40, 0.72
+    Select inner viewport: 0, 8, 0.40, 0.72
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.25, 0.25, 0.30}"
+    Text: 0.5, "centre", 0.52, "half", "detect Source climax -> measure level / COG / LTAS shape / HNR -> transform Target -> re-measure output"
+
+    # ===== A: DETECTION LAW =====
+    Select outer viewport: 0.0, 4.0, 0.78, 2.78
+    Select inner viewport: 0.48, 3.78, 1.08, 2.52
+    Axes: 0, srcDuration, 0, 1.05
+    Paint rectangle: "{0.985, 0.985, 0.985}", 0, srcDuration, 0, 1.05
+    for c from 1 to numClimax
+        Paint rectangle: "{1.0, 0.90, 0.84}", clxStartTime_'c', clxEndTime_'c', 0, 1.05
+    endfor
+    Colour: "{0.75, 0.75, 0.75}"
+    Dotted line
+    Draw line: 0, climaxMinScore / 4, srcDuration, climaxMinScore / 4
+    Solid line
+    Colour: "{0.78, 0.20, 0.20}"
+    Line width: 1.5
     for i from 2 to srcNumFrames
         Draw line: srcTime#[i-1], climaxScore#[i-1] / 4, srcTime#[i], climaxScore#[i] / 4
     endfor
     Line width: 1
-    
-    # Threshold line
-    Colour: "{0.8, 0.2, 0.2}"
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, 0.25, "yes", "yes", "no"
+    Marks bottom every: 1, max(0.5, srcDuration / 4), "yes", "yes", "no"
+    Text left: "yes", "criteria fraction"
+    Text bottom: "yes", "Time (s)"
+    Select outer viewport: 0.0, 4.0, 0.78, 1.02
+    Select inner viewport: 0.0, 4.0, 0.78, 1.02
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.55, "half", "A  CLIMAX DETECTION"
+
+    # ===== B: PROFILE TRANSFER FRACTION =====
+    Select outer viewport: 4.0, 8.0, 0.78, 2.78
+    Select inner viewport: 4.48, 7.78, 1.08, 2.52
+    Axes: 0, 4, fracMin, fracMax
+    Paint rectangle: "{0.985, 0.985, 0.985}", 0, 4, fracMin, fracMax
+    Colour: "{0.78, 0.78, 0.78}"
+    Draw line: 0, 0, 4, 0
     Dotted line
-    Draw line: 0, climaxMinScore / 4, srcDuration, climaxMinScore / 4
+    Draw line: 0, 1, 4, 1
     Solid line
-    
+    # Orange = requested weight; blue = measured fraction actually achieved.
+    Paint rectangle: "{0.90, 0.55, 0.32}", 0.62, 0.90, 0, levelReqFrac
+    Paint rectangle: "{0.30, 0.52, 0.78}", 0.92, 1.20, 0, levelFrac
+    Paint rectangle: "{0.90, 0.55, 0.32}", 1.62, 1.90, 0, cogReqFrac
+    Paint rectangle: "{0.30, 0.52, 0.78}", 1.92, 2.20, 0, cogFrac
+    Paint rectangle: "{0.90, 0.55, 0.32}", 2.62, 2.90, 0, hnrReqFrac
+    Paint rectangle: "{0.30, 0.52, 0.78}", 2.92, 3.20, 0, hnrFrac
     Colour: "Black"
     Draw inner box
+    Marks left every: 1, 0.5, "yes", "yes", "no"
     Font size: 7
-    Text left: "yes", "Norm. (0–1)"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Source Features & Climax Detection"
-    
-    # === LTAS COMPARISON ===
-    Select outer viewport: 0, 4, 3.0, 4.3
-    Select inner viewport: 0.6, 3.7, 3.1, 4.2
-    
-    selectObject: srcClimaxLTAS
-    Colour: "{0.9, 0.4, 0.3}"
+    Text: 0.91, "centre", fracMin + 0.05 * (fracMax-fracMin), "bottom", "Level"
+    Text: 1.91, "centre", fracMin + 0.05 * (fracMax-fracMin), "bottom", "COG"
+    Text: 2.91, "centre", fracMin + 0.05 * (fracMax-fracMin), "bottom", "HNR"
+    Select outer viewport: 4.0, 8.0, 0.78, 1.02
+    Select inner viewport: 4.0, 8.0, 0.78, 1.02
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.55, "half", "B  REQUESTED vs ACHIEVED"
+
+    # ===== C: SPECTRAL-SHAPE PROOF =====
+    Select outer viewport: 0.0, 4.0, 2.90, 4.90
+    Select inner viewport: 0.48, 3.78, 3.20, 4.64
+    maxShape = 3
+    for b from 1 to nBands
+        if bandValid#[b]
+            maxShape = max(maxShape, abs(dLtasShape#[b]))
+            maxShape = max(maxShape, abs(outShapeDelta#[b]))
+        endif
+    endfor
+    maxShape = min(18, maxShape * 1.15)
+    Axes: 0.5, 6.5, -maxShape, maxShape
+    Paint rectangle: "{0.985, 0.985, 0.985}", 0.5, 6.5, -maxShape, maxShape
+    Colour: "{0.72, 0.72, 0.72}"
+    Draw line: 0.5, 0, 6.5, 0
+    # Desired Source-climax minus Target shape.
+    Colour: "{0.90, 0.55, 0.32}"
     Line width: 1.5
-    Draw: 0, 8000, -20, 40, "no", "Curve"
-    
-    selectObject: tgtLTAS
-    Colour: "{0.3, 0.5, 0.8}"
-    Draw: 0, 8000, -20, 40, "no", "Curve"
+    prevSet = 0
+    for b from 1 to nBands
+        if bandValid#[b]
+            if prevSet
+                Draw line: prevB, prevV, b, dLtasShape#[b]
+            endif
+            Paint circle (mm): "{0.90, 0.55, 0.32}", b, dLtasShape#[b], 1.2
+            prevB = b
+            prevV = dLtasShape#[b]
+            prevSet = 1
+        endif
+    endfor
+    # Measured Output minus Target shape.
+    Colour: "{0.30, 0.52, 0.78}"
+    prevSet = 0
+    for b from 1 to nBands
+        if bandValid#[b]
+            if prevSet
+                Draw line: prevB, prevV, b, outShapeDelta#[b]
+            endif
+            Paint circle (mm): "{0.30, 0.52, 0.78}", b, outShapeDelta#[b], 1.2
+            prevB = b
+            prevV = outShapeDelta#[b]
+            prevSet = 1
+        endif
+    endfor
     Line width: 1
-    
+    Select inner viewport: 0.48, 3.78, 3.20, 4.64
+    Axes: 0.5, 6.5, -maxShape, maxShape
     Colour: "Black"
     Draw inner box
+    Marks left every: 1, max(2, round(maxShape/3)), "yes", "yes", "no"
     Font size: 7
-    Text left: "yes", "dB/Hz"
-    Text bottom: "yes", "Frequency (Hz)"
-    Text top: "no", "LTAS: Source Climax vs Target"
-    
-    # === ACOUSTIC PROFILE COMPARISON (bar chart) ===
-    Select outer viewport: 4, 8, 3.0, 4.3
-    Select inner viewport: 4.4, 7.7, 3.1, 4.2
-    
-    Axes: 0, 6, 0, 1.15
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 6, 0, 1.15
-    
-    barW = 0.35
-    
-    # Normalize values for display (relative to max)
-    maxDisp = max(max(clxAvgIntensity, tgtAvgIntensity), 1)
-    maxDispP = max(max(clxAvgPitch, tgtAvgPitch), 1)
-    maxDispC = max(max(clxAvgCentroid, tgtAvgCentroid), 1)
-    maxDispH = max(max(abs(clxAvgHNR), abs(tgtAvgHNR)), 1)
-    maxDispF = max(max(clxAvgF1, tgtAvgF1), 1)
-    
-    # Intensity pair
-    Paint rectangle: "{0.9, 0.5, 0.3}", 0.5 - barW, 0.5, 0, clxAvgIntensity / maxDisp
-    Paint rectangle: "{0.3, 0.5, 0.8}", 0.5, 0.5 + barW, 0, tgtAvgIntensity / maxDisp
-    
-    # Pitch pair
-    Paint rectangle: "{0.9, 0.5, 0.3}", 1.5 - barW, 1.5, 0, clxAvgPitch / maxDispP
-    Paint rectangle: "{0.3, 0.5, 0.8}", 1.5, 1.5 + barW, 0, tgtAvgPitch / maxDispP
-    
-    # Centroid pair
-    Paint rectangle: "{0.9, 0.5, 0.3}", 2.5 - barW, 2.5, 0, clxAvgCentroid / maxDispC
-    Paint rectangle: "{0.3, 0.5, 0.8}", 2.5, 2.5 + barW, 0, tgtAvgCentroid / maxDispC
-    
-    # HNR pair
-    clxHnrNorm = max(0, clxAvgHNR) / maxDispH
-    tgtHnrNorm = max(0, tgtAvgHNR) / maxDispH
-    Paint rectangle: "{0.9, 0.5, 0.3}", 3.5 - barW, 3.5, 0, clxHnrNorm
-    Paint rectangle: "{0.3, 0.5, 0.8}", 3.5, 3.5 + barW, 0, tgtHnrNorm
-    
-    # F1 pair
-    Paint rectangle: "{0.9, 0.5, 0.3}", 4.5 - barW, 4.5, 0, clxAvgF1 / maxDispF
-    Paint rectangle: "{0.3, 0.5, 0.8}", 4.5, 4.5 + barW, 0, tgtAvgF1 / maxDispF
-    
+    Text: 1, "centre", -maxShape * 0.93, "half", "250"
+    Text: 2, "centre", -maxShape * 0.93, "half", "500"
+    Text: 3, "centre", -maxShape * 0.93, "half", "1k"
+    Text: 4, "centre", -maxShape * 0.93, "half", "2k"
+    Text: 5, "centre", -maxShape * 0.93, "half", "4k"
+    Text: 6, "centre", -maxShape * 0.93, "half", "8k"
+    Text left: "yes", "shape dB"
+    Select outer viewport: 0.0, 4.0, 2.90, 3.14
+    Select inner viewport: 0.0, 4.0, 2.90, 3.14
+    Axes: 0, 1, 0, 1
+    Font size: 9
     Colour: "Black"
-    Draw inner box
-    Font size: 5
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.5, "centre", -0.06, "half", "Int"
-    Text: 1.5, "centre", -0.06, "half", "Pitch"
-    Text: 2.5, "centre", -0.06, "half", "Cent"
-    Text: 3.5, "centre", -0.06, "half", "HNR"
-    Text: 4.5, "centre", -0.06, "half", "F1"
-    
-    Font size: 6
-    Colour: "Black"
-    Text top: "no", "Acoustic Profiles"
-    
-    # === ORIGINAL TARGET SPECTROGRAM ===
-    Select outer viewport: 0, 4, 4.4, 5.5
-    Select inner viewport: 0.6, 3.7, 4.5, 5.4
-    
+    Text: 0.02, "left", 0.55, "half", "C  MEAN-REMOVED LTAS PROOF"
+
+    # ===== D: TARGET / OUTPUT SAME-SCALE WAVEFORMS =====
+    Select outer viewport: 4.0, 8.0, 2.90, 4.90
+    # top waveform
+    Select inner viewport: 4.48, 7.78, 3.20, 3.78
     selectObject: tgtMono
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
-    tgtSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, tgtDuration, -waveY, waveY, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Freq (Hz)"
-    Text top: "no", "Target (original)"
-    
-    removeObject: tgtSpec
-    
-    # === RESULT SPECTROGRAM ===
-    Select outer viewport: 4, 8, 4.4, 5.5
-    Select inner viewport: 4.4, 7.7, 4.5, 5.4
-    
-    selectObject: finalOutput
-    if tgtChannels > 1
-        Extract one channel: 1
-        vizOut = selected("Sound")
-    else
-        vizOut = Copy: "viz_out"
-    endif
-    
-    selectObject: vizOut
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
-    outSpec = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    # bottom waveform
+    Select inner viewport: 4.48, 7.78, 3.94, 4.52
+    selectObject: outVizMono
+    Colour: "{0.30, 0.52, 0.78}"
+    Draw: 0, tgtDuration, -waveY, waveY, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Freq (Hz)"
+    Marks bottom every: 1, max(0.5, tgtDuration / 4), "yes", "yes", "no"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Target (matched)"
-    
-    removeObject: outSpec, vizOut
-    
-    # === STATS PANEL ===
-    Select outer viewport: 0, 8, 5.6, 6.7
-    Select inner viewport: 0.6, 7.7, 5.7, 6.6
-    
+    # labels in separate narrow strip to avoid collisions
+    Select outer viewport: 4.0, 8.0, 2.90, 3.14
+    Select inner viewport: 4.0, 8.0, 2.90, 3.14
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.55, "half", "D  TARGET / MATCHED (same amplitude scale)"
+    Select outer viewport: 4.05, 4.46, 3.20, 4.52
+    Select inner viewport: 4.05, 4.46, 3.20, 4.52
+    Axes: 0, 1, 0, 1
     Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "##Transfer Summary##"
-    
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.35}"
-    
-    Text: 0.02, "left", 0.72, "half", "Intensity: d=" + fixed$(deltaIntensity_dB, 1) + " dB (w=" + fixed$(intensity_transfer, 2) + ") | Pitch shift: disabled"
-    Text: 0.02, "left", 0.55, "half", "Centroid: d=" + fixed$(deltaCentroid_Hz, 0) + " Hz (" + tiltDirection$ + ", w=" + fixed$(spectral_tilt_transfer, 2) + ") | HNR: d=" + fixed$(deltaHNR_dB, 1) + " dB (w=" + fixed$(harmonicity_transfer, 2) + ")"
-    Text: 0.02, "left", 0.38, "half", "EQ (w=" + fixed$(eq_transfer, 2) + "): 250=" + fixed$(dLTAS_250, 1) + " 1k=" + fixed$(dLTAS_1k, 1) + " 2k=" + fixed$(dLTAS_2k, 1) + " 4k=" + fixed$(dLTAS_4k, 1) + " 8k=" + fixed$(dLTAS_8k, 1) + " dB"
-    Text: 0.02, "left", 0.21, "half", "Climax F1=" + fixed$(clxAvgF1, 0) + " F2=" + fixed$(clxAvgF2, 0) + " F3=" + fixed$(clxAvgF3, 0) + " | Target F1=" + fixed$(tgtAvgF1, 0) + " F2=" + fixed$(tgtAvgF2, 0) + " F3=" + fixed$(tgtAvgF3, 0)
-    
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
-    # === LEGEND ===
-    Select outer viewport: 0, 8, 6.75, 7.1
+    Colour: "{0.45, 0.45, 0.45}"
+    Text: 0.95, "right", 0.78, "half", "Tgt"
+    Colour: "{0.30, 0.52, 0.78}"
+    Text: 0.95, "right", 0.22, "half", "Out"
+
+    # Footer summary.
+    Select outer viewport: 0, 8, 4.98, 5.30
+    Select inner viewport: 0, 8, 4.98, 5.30
     Axes: 0, 1, 0, 1
-    Font size: 6
-    
-    Colour: "{0.9, 0.5, 0.3}"
-    Draw line: 0.02, 0.5, 0.06, 0.5
-    Colour: "Black"
-    Text: 0.07, "left", 0.5, "half", "Intensity"
-    
-    Colour: "{0.3, 0.6, 0.8}"
-    Draw line: 0.16, 0.5, 0.20, 0.5
-    Colour: "Black"
-    Text: 0.21, "left", 0.5, "half", "Pitch"
-    
-    Colour: "{0.5, 0.7, 0.4}"
-    Draw line: 0.28, 0.5, 0.32, 0.5
-    Colour: "Black"
-    Text: 0.33, "left", 0.5, "half", "HNR"
-    
-    Colour: "{0.8, 0.2, 0.2}"
-    Line width: 2
-    Draw line: 0.40, 0.5, 0.44, 0.5
-    Line width: 1
-    Colour: "Black"
-    Text: 0.45, "left", 0.5, "half", "Climax score"
-    
-    Paint rectangle: "{1.0, 0.88, 0.82}", 0.58, 0.61, 0.3, 0.7
-    Text: 0.62, "left", 0.5, "half", "Climax region"
-    
-    Paint rectangle: "{0.9, 0.5, 0.3}", 0.77, 0.80, 0.3, 0.7
-    Text: 0.81, "left", 0.5, "half", "Src"
-    Paint rectangle: "{0.3, 0.5, 0.8}", 0.86, 0.89, 0.3, 0.7
-    Text: 0.90, "left", 0.5, "half", "Tgt"
-    
+    Font size: 7
+    Colour: "{0.30, 0.30, 0.35}"
+    eqText$ = if eqAppliedBand > 0 then "EQ " + string$(eqAppliedBand) + "Hz g=" + fixed$(eqGain, 2) else "EQ skipped" fi
+    Text: 0.5, "centre", 0.52, "half", "Level " + fixed$(tgtLevel_dB,1) + " -> " + fixed$(finalLevel_dB,1) + " dB | COG " + fixed$(tgtCOG_Hz,0) + " -> " + fixed$(outCOG_Hz,0) + " Hz | HNR " + fixed$(tgtAvgHNR,1) + " -> " + fixed$(outAvgHNR,1) + " dB | " + eqText$
+
+    removeObject: outLTAS, outVizMono
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # ============================================================

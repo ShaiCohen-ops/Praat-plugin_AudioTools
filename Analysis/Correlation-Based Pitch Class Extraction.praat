@@ -1,540 +1,1071 @@
 # ============================================================
-# Praat AudioTools - Correlation-Based_Pitch_Class_Extraction.praat
+# Praat AudioTools - Correlation-Based Pitch Class Extraction
 # Author: Shai Cohen
-# Affiliation: Department of Music, Bar-Ilan University, Israel
-# Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2025) - Added summary table
+# Version: 0.7 (2026)
 # License: MIT License
-# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Correlation-Based Pitch Class Extraction (Matched Filter)
+#   Pitch-guided matched-filter activation extraction.
+#   A stable detected MIDI-note segment is used as a tapered waveform
+#   template. Cross-correlation is converted from lag-domain into an
+#   input-time activation curve, then intersected with measured pitch
+#   evidence so unrelated correlation sidelobes do not masquerade as
+#   note occurrences.
 #
-# Changelog v0.6:
-#   - Added summary table in Info window
-#   - Shows note, MIDI, frequency, template duration, peak count
+#   The legacy exact-MIDI mode remains the default. An optional
+#   pitch-class mode folds octave-specific activations by taking their
+#   pointwise maximum, using one template per detected octave.
+#
+# Changelog v0.7:
+#   - FIX: continuity is measured on the full Pitch frame timeline;
+#     unvoiced gaps no longer join separate note occurrences.
+#   - FIX: correlation output is time-aligned to the input and made
+#     non-negative; legacy raw negative-lag correlations are optional.
+#   - FIX: the analysis/correlation channel is the strongest-RMS input
+#     channel, avoiding stereo fold-down cancellation.
+#   - Templates are centre-cropped to a bounded stable duration and
+#     Hann tapered, rather than using arbitrarily long note regions.
+#   - Correlation activation is intersected with pitch evidence.
+#   - Added true pitch-class folding across octaves via max-combination
+#     of octave-specific matched-filter activations.
+#   - Added mechanism-first 2x2 visualization and event timeline.
 # ============================================================
 
-# === Input Validation ===
-if numberOfSelected("Sound") = 0
-    exitScript: "Please select a Sound object first."
+# === Input validation ===
+if numberOfSelected("Sound") <> 1
+    exitScript: "Please select exactly one Sound object."
 endif
 
-original_sound = selected("Sound")
-original_name$ = selected$("Sound")
+originalSound = selected("Sound")
+originalName$ = selected$("Sound")
 
-form Correlation-Based Pitch Class Extraction v0.6
-    comment === Pitch Analysis ===
-    real Pitch_floor_Hz 75
-    real Pitch_ceiling_Hz 600
+form Correlation-Based Pitch Class Extraction v0.7
+    comment === Pitch analysis ===
+    positive Pitch_floor_Hz 75
+    positive Pitch_ceiling_Hz 600
     optionmenu Method: 1
         option Accurate (cc)
         option Standard (ac)
-    comment === Target Note ===
-    comment Leave MIDI=0 to extract ALL detected notes
+    comment === Extraction scope ===
+    optionmenu Scope: 1
+        option Exact MIDI notes (legacy)
+        option Pitch classes (fold octaves)
+    comment Leave both target fields empty/zero to extract all detected candidates
     integer Target_MIDI_note 0
-    comment Or specify note name (e.g. C4, F#3)
-    word Target_note_name 
-    comment === Post-processing ===
+    word Target_note_name
+    positive Pitch_tolerance_cents 50
+    comment === Matched-filter template ===
+    positive Minimum_stable_ms 60
+    positive Maximum_template_ms 200
+    comment === Activation gate ===
     boolean Apply_gate_function 1
-    real Gate_threshold_dB -40
-    boolean Normalize_result 1
+    real Gate_threshold_dB -18
+    boolean Normalize_activation 1
     real Peak_amplitude 0.99
-    comment === Output ===
+    comment === Output / visualization ===
+    boolean Draw_visualization 1
     boolean Keep_templates 0
-    boolean Keep_correlations 0
+    boolean Keep_raw_correlations 0
 endform
 
-# === Setup ===
-selectObject: original_sound
+# --- Parameter validation / clamping ---
+if pitch_ceiling_Hz <= pitch_floor_Hz
+    exitScript: "Pitch ceiling must be greater than pitch floor."
+endif
+if pitch_tolerance_cents > 100
+    pitch_tolerance_cents = 100
+endif
+if pitch_tolerance_cents < 1
+    pitch_tolerance_cents = 1
+endif
+if minimum_stable_ms < 10
+    minimum_stable_ms = 10
+endif
+if maximum_template_ms < minimum_stable_ms
+    maximum_template_ms = minimum_stable_ms
+endif
+if gate_threshold_dB > 0
+    gate_threshold_dB = 0
+elsif gate_threshold_dB < -120
+    gate_threshold_dB = -120
+endif
+if peak_amplitude <= 0
+    peak_amplitude = 0.99
+elsif peak_amplitude > 0.999
+    peak_amplitude = 0.999
+endif
+
+minStable = minimum_stable_ms / 1000
+maxTemplate = maximum_template_ms / 1000
+gateRatio = 10 ^ (gate_threshold_dB / 20)
+
+# ============================================================
+# STEP 0: REPRESENTATIVE ANALYSIS CHANNEL
+# ============================================================
+selectObject: originalSound
 duration = Get total duration
 sampleRate = Get sampling frequency
+nChannels = Get number of channels
+sourceSamples = Get number of samples
+
+analysisSound = 0
+analysisChannel = 1
+bestRMS = -1
+
+if nChannels = 1
+    analysisSound = Copy: "cpc_analysis"
+    Shift times to: "start time", 0
+    bestRMS = Get root-mean-square: 0, 0
+else
+    for ch from 1 to nChannels
+        selectObject: originalSound
+        Extract one channel: ch
+        chID = selected("Sound")
+        rms = Get root-mean-square: 0, 0
+        if rms > bestRMS
+            if analysisSound <> 0
+                removeObject: analysisSound
+            endif
+            analysisSound = chID
+            analysisChannel = ch
+            bestRMS = rms
+        else
+            removeObject: chID
+        endif
+    endfor
+    selectObject: analysisSound
+    Shift times to: "start time", 0
+endif
 
 clearinfo
-writeInfoLine: "=== Correlation-Based Pitch Class Extraction v0.6 ==="
-appendInfoLine: "Input: ", original_name$
-appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
+writeInfoLine: "=== Correlation-Based Pitch Class Extraction v0.7 ==="
+appendInfoLine: "Input: ", originalName$
+appendInfoLine: "Duration: ", fixed$(duration, 3), " s | ", sampleRate, " Hz | ", nChannels, " ch"
+appendInfoLine: "Analysis channel: ", analysisChannel, " (strongest RMS)"
+if scope = 1
+    appendInfoLine: "Scope: exact MIDI notes (octave-specific)"
+else
+    appendInfoLine: "Scope: pitch classes folded across octaves"
+endif
 appendInfoLine: ""
 
 # ============================================================
-# STEP 1: PITCH ANALYSIS
+# STEP 1: PITCH ANALYSIS ON REPRESENTATIVE CHANNEL
 # ============================================================
-appendInfoLine: "[1/6] Analyzing fundamental frequency..."
-selectObject: original_sound
-
+appendInfoLine: "[1/7] Analyzing fundamental frequency..."
+selectObject: analysisSound
 if method = 1
     pitch = To Pitch (cc): 0, pitch_floor_Hz, 15, "no", 0.03, 0.45, 0.01, 0.35, 0.14, pitch_ceiling_Hz
 else
     pitch = To Pitch: 0, pitch_floor_Hz, pitch_ceiling_Hz
 endif
 
-# ============================================================
-# STEP 2: EXTRACT DETECTED PITCHES
-# ============================================================
-appendInfoLine: "[2/6] Extracting detected pitches..."
-
 selectObject: pitch
-n_frames = Get number of frames
+nFrames = Get number of frames
+pitchDX = Get time step
 
-pitchCount = 0
-for i from 1 to n_frames
-    f0 = Get value in frame: i, "Hertz"
-    if f0 <> undefined
-        pitchCount = pitchCount + 1
-        pitch_value_'pitchCount' = f0
-        pitch_time_'pitchCount' = Get time from frame number: i
+frameTime# = zero# (nFrames)
+f0# = zero# (nFrames)
+midi# = zero# (nFrames)
+voiced# = zero# (nFrames)
+
+midiMinFound = 999
+midiMaxFound = -999
+voicedCount = 0
+
+for i from 1 to nFrames
+    selectObject: pitch
+    tt = Get time from frame number: i
+    ff = Get value in frame: i, "Hertz"
+    frameTime#[i] = tt
+    if ff <> undefined and ff > 0
+        voiced#[i] = 1
+        f0#[i] = ff
+        mm = 69 + 12 * ln(ff / 440) / ln(2)
+        midi#[i] = mm
+        voicedCount += 1
+        if mm < midiMinFound
+            midiMinFound = mm
+        endif
+        if mm > midiMaxFound
+            midiMaxFound = mm
+        endif
+    else
+        voiced#[i] = 0
+        f0#[i] = 0
+        midi#[i] = 0
     endif
 endfor
 
-appendInfoLine: "  Found ", pitchCount, " voiced frames"
-
-if pitchCount = 0
-    removeObject: pitch
+appendInfoLine: "  Frames: ", nFrames, " | voiced: ", voicedCount
+if voicedCount = 0
+    removeObject: pitch, analysisSound
     exitScript: "No pitch detected. Try adjusting pitch floor/ceiling."
 endif
 
 # ============================================================
-# STEP 3: CLUSTER PITCHES INTO NOTE CLASSES
+# STEP 2: UNIQUE OCTAVE-SPECIFIC MIDI NOTES
 # ============================================================
-appendInfoLine: "[3/6] Clustering into note classes..."
+appendInfoLine: "[2/7] Building measured MIDI-note candidates..."
 
-for i from 1 to pitchCount
-    pv = pitch_value_'i'
-    midi_note_'i' = round(12 * log2(pv / 440) + 69)
-endfor
-
-# Find unique MIDI notes
 uniqueCount = 0
-for i from 1 to pitchCount
-    note = midi_note_'i'
-    isUnique = 1
-    for j from 1 to uniqueCount
-        existingNote = unique_midi_'j'
-        if note = existingNote
-            isUnique = 0
+for i from 1 to nFrames
+    if voiced#[i] = 1
+        note = round(midi#[i])
+        isUnique = 1
+        for j from 1 to uniqueCount
+            if note = uniqueMidi_'j'
+                isUnique = 0
+            endif
+        endfor
+        if isUnique = 1
+            uniqueCount += 1
+            uniqueMidi_'uniqueCount' = note
         endif
-    endfor
-    if isUnique
-        uniqueCount = uniqueCount + 1
-        unique_midi_'uniqueCount' = note
     endif
 endfor
 
-# Sort unique notes
+# Sort MIDI notes ascending
 for i from 1 to uniqueCount - 1
     for j from i + 1 to uniqueCount
-        vi = unique_midi_'i'
-        vj = unique_midi_'j'
-        if vi > vj
-            unique_midi_'i' = vj
-            unique_midi_'j' = vi
+        if uniqueMidi_'i' > uniqueMidi_'j'
+            tmp = uniqueMidi_'i'
+            uniqueMidi_'i' = uniqueMidi_'j'
+            uniqueMidi_'j' = tmp
         endif
     endfor
 endfor
 
-appendInfoLine: "  Found ", uniqueCount, " unique pitch classes"
-appendInfoLine: ""
-
-# Create note names and calculate average frequencies
-for i from 1 to uniqueCount
-    midi = unique_midi_'i'
-    note_class = (midi - 12) mod 12
-    octave = floor((midi - 12) / 12)
-    
-    if note_class = 0
-        nn$ = "C"
-    elsif note_class = 1
-        nn$ = "Cs"
-    elsif note_class = 2
-        nn$ = "D"
-    elsif note_class = 3
-        nn$ = "Ds"
-    elsif note_class = 4
-        nn$ = "E"
-    elsif note_class = 5
-        nn$ = "F"
-    elsif note_class = 6
-        nn$ = "Fs"
-    elsif note_class = 7
-        nn$ = "G"
-    elsif note_class = 8
-        nn$ = "Gs"
-    elsif note_class = 9
-        nn$ = "A"
-    elsif note_class = 10
-        nn$ = "As"
-    elsif note_class = 11
-        nn$ = "B"
-    endif
-    
-    unique_note_name_'i'$ = nn$ + string$(octave)
-    
-    # Display name with sharp symbol
-    if note_class = 1
-        display_name$ = "C#"
-    elsif note_class = 3
-        display_name$ = "D#"
-    elsif note_class = 6
-        display_name$ = "F#"
-    elsif note_class = 8
-        display_name$ = "G#"
-    elsif note_class = 10
-        display_name$ = "A#"
+# Measure support and average frequency for each candidate
+for u from 1 to uniqueCount
+    target = uniqueMidi_'u'
+    support = 0
+    sumHz = 0
+    for i from 1 to nFrames
+        if voiced#[i] = 1 and abs((midi#[i] - target) * 100) <= pitch_tolerance_cents
+            support += 1
+            sumHz += f0#[i]
+        endif
+    endfor
+    uniqueSupport_'u' = support
+    if support > 0
+        uniqueFreq_'u' = sumHz / support
     else
-        display_name$ = nn$
+        uniqueFreq_'u' = 440 * 2 ^ ((target - 69) / 12)
     endif
-    unique_display_'i'$ = display_name$ + string$(octave)
-    
-    # Calculate average frequency
-    count = 0
-    sum = 0
-    for j from 1 to pitchCount
-        mn = midi_note_'j'
-        if mn = midi
-            count = count + 1
-            pv = pitch_value_'j'
-            sum = sum + pv
-        endif
-    endfor
-    unique_freq_'i' = sum / count
+    @midiToName: target
+    uniqueName_'u'$ = midiToName.full$
+    uniquePC_'u' = midiToName.pc
 endfor
 
-# Display detected notes
-appendInfoLine: "Detected notes:"
-for i from 1 to uniqueCount
-    dn$ = unique_display_'i'$
-    midi = unique_midi_'i'
-    freq = unique_freq_'i'
-    appendInfoLine: "  ", dn$, " (MIDI ", midi, ", ~", fixed$(freq, 1), " Hz)"
-endfor
-appendInfoLine: ""
+appendInfoLine: "  Detected ", uniqueCount, " octave-specific MIDI candidate(s)"
 
 # ============================================================
-# STEP 4: DETERMINE WHICH NOTES TO EXTRACT
+# STEP 3: TARGET PARSING / CANDIDATE FILTER
 # ============================================================
-appendInfoLine: "[4/6] Determining target notes..."
+appendInfoLine: "[3/7] Determining target set..."
 
-extractAll = 0
+manualTarget = 0
+targetMidiParsed = 0
+targetPCParsed = -1
+
 if target_note_name$ <> ""
-    # Parse note name to MIDI
-    tn$ = replace$(target_note_name$, "#", "s", 0)
-    tn$ = replace$(tn$, "♯", "s", 0)
-    
-    len = length(tn$)
-    if len >= 2
-        if len >= 3 and mid$(tn$, 2, 1) = "s"
-            notePart$ = left$(tn$, 2)
-            octavePart$ = right$(tn$, len - 2)
-        else
-            notePart$ = left$(tn$, 1)
-            octavePart$ = right$(tn$, len - 1)
-        endif
-        
-        notePart$ = replace$(notePart$, "c", "C", 0)
-        notePart$ = replace$(notePart$, "d", "D", 0)
-        notePart$ = replace$(notePart$, "e", "E", 0)
-        notePart$ = replace$(notePart$, "f", "F", 0)
-        notePart$ = replace$(notePart$, "g", "G", 0)
-        notePart$ = replace$(notePart$, "a", "A", 0)
-        notePart$ = replace$(notePart$, "b", "B", 0)
-        
-        if notePart$ = "C"
-            pc = 0
-        elsif notePart$ = "Cs"
-            pc = 1
-        elsif notePart$ = "D"
-            pc = 2
-        elsif notePart$ = "Ds"
-            pc = 3
-        elsif notePart$ = "E"
-            pc = 4
-        elsif notePart$ = "F"
-            pc = 5
-        elsif notePart$ = "Fs"
-            pc = 6
-        elsif notePart$ = "G"
-            pc = 7
-        elsif notePart$ = "Gs"
-            pc = 8
-        elsif notePart$ = "A"
-            pc = 9
-        elsif notePart$ = "As"
-            pc = 10
-        elsif notePart$ = "B"
-            pc = 11
-        else
-            pc = -1
-        endif
-        
-        if pc >= 0
-            oct = number(octavePart$)
-            target_MIDI_note = (oct + 1) * 12 + pc
-            appendInfoLine: "  Parsed '", target_note_name$, "' as MIDI ", target_MIDI_note
-        else
-            extractAll = 1
+    @parseNoteName: target_note_name$
+    if parseNoteName.ok = 0
+        removeObject: pitch, analysisSound
+        exitScript: "Could not parse target note name. Use names such as C4, F#3, Bb3, or C in pitch-class mode."
+    endif
+    targetPCParsed = parseNoteName.pc
+    if parseNoteName.hasOctave = 1
+        targetMidiParsed = parseNoteName.midi
+    endif
+    manualTarget = 1
+elsif target_MIDI_note <> 0
+    targetMidiParsed = target_MIDI_note
+    targetPCParsed = target_MIDI_note mod 12
+    if targetPCParsed < 0
+        targetPCParsed += 12
+    endif
+    manualTarget = 1
+endif
+
+if scope = 1 and manualTarget = 1 and targetMidiParsed = 0
+    removeObject: pitch, analysisSound
+    exitScript: "Exact-MIDI scope requires an octave (for example C4) or a non-zero Target MIDI note."
+endif
+
+numExactToProcess = 0
+for u from 1 to uniqueCount
+    include = 0
+    if manualTarget = 0
+        include = 1
+    elsif scope = 1
+        if uniqueMidi_'u' = targetMidiParsed
+            include = 1
         endif
     else
-        extractAll = 1
-    endif
-elsif target_MIDI_note = 0
-    extractAll = 1
-    appendInfoLine: "  Extracting ALL detected notes"
-else
-    appendInfoLine: "  Target MIDI: ", target_MIDI_note
-endif
-
-# Build list of notes to extract
-if extractAll = 1
-    numToExtract = uniqueCount
-    for i from 1 to uniqueCount
-        extract_midi_'i' = unique_midi_'i'
-        extract_name_'i'$ = unique_note_name_'i'$
-        extract_display_'i'$ = unique_display_'i'$
-        extract_freq_'i' = unique_freq_'i'
-    endfor
-else
-    found = 0
-    for i from 1 to uniqueCount
-        if unique_midi_'i' = target_MIDI_note
-            found = 1
-            numToExtract = 1
-            extract_midi_1 = unique_midi_'i'
-            extract_name_1$ = unique_note_name_'i'$
-            extract_display_1$ = unique_display_'i'$
-            extract_freq_1 = unique_freq_'i'
+        if uniquePC_'u' = targetPCParsed
+            include = 1
         endif
-    endfor
-    
-    if found = 0
-        removeObject: pitch
-        exitScript: "Target note not found. See Info window for available notes."
     endif
+    if include = 1
+        numExactToProcess += 1
+        processUniqueIndex_'numExactToProcess' = u
+    endif
+endfor
+
+if numExactToProcess = 0
+    removeObject: pitch, analysisSound
+    exitScript: "Requested target was not found in the measured pitch track."
 endif
-
-appendInfoLine: "  Will extract ", numToExtract, " note(s)"
-appendInfoLine: ""
+appendInfoLine: "  Octave-specific templates to evaluate: ", numExactToProcess
 
 # ============================================================
-# STEP 5: EXTRACT EACH TARGET NOTE
+# STEP 4: STABLE TEMPLATE + MATCHED-FILTER ACTIVATION PER MIDI NOTE
 # ============================================================
+appendInfoLine: "[4/7] Building stable templates and matched-filter activations..."
 
-numExtracted = 0
+numExactExtracted = 0
+keptTemplateCount = 0
+keptCorrCount = 0
 
-for n from 1 to numToExtract
-    targetMidi = extract_midi_'n'
-    targetName$ = extract_name_'n'$
-    targetFreq = extract_freq_'n'
-    
-    appendInfoLine: "[5/6] Processing ", targetName$, " (MIDI ", targetMidi, ")..."
-    
-    # Find longest continuous segment
-    best_start = 0
-    best_end = 0
-    best_duration = 0
-    current_start_idx = 0
-    in_segment = 0
-    
-    for i from 1 to pitchCount
-        mn = midi_note_'i'
-        if mn = targetMidi
-            if in_segment = 0
-                current_start_idx = i
-                in_segment = 1
+for p from 1 to numExactToProcess
+    u = processUniqueIndex_'p'
+    targetMidi = uniqueMidi_'u'
+    targetName$ = uniqueName_'u'$
+    targetFreq = uniqueFreq_'u'
+
+    # Find longest truly continuous matching run on FULL Pitch timeline.
+    bestStart = 0
+    bestEnd = 0
+    bestDur = 0
+    inRun = 0
+    runStart = 0
+
+    for i from 1 to nFrames
+        match = 0
+        if voiced#[i] = 1 and abs((midi#[i] - targetMidi) * 100) <= pitch_tolerance_cents
+            match = 1
+        endif
+
+        if match = 1
+            if inRun = 0
+                runStart = max(0, frameTime#[i] - pitchDX / 2)
+                inRun = 1
             endif
         else
-            if in_segment = 1
-                iPrev = i - 1
-                startT = pitch_time_'current_start_idx'
-                endT = pitch_time_'iPrev'
-                segDur = endT - startT
-                if segDur > best_duration
-                    best_duration = segDur
-                    best_start = startT
-                    best_end = endT
+            if inRun = 1
+                ip = i - 1
+                runEnd = min(duration, frameTime#[ip] + pitchDX / 2)
+                runDur = runEnd - runStart
+                if runDur > bestDur
+                    bestDur = runDur
+                    bestStart = runStart
+                    bestEnd = runEnd
                 endif
-                in_segment = 0
+                inRun = 0
             endif
         endif
     endfor
-    
-    if in_segment = 1
-        startT = pitch_time_'current_start_idx'
-        endT = pitch_time_'pitchCount'
-        segDur = endT - startT
-        if segDur > best_duration
-            best_duration = segDur
-            best_start = startT
-            best_end = endT
+    if inRun = 1
+        runEnd = min(duration, frameTime#[nFrames] + pitchDX / 2)
+        runDur = runEnd - runStart
+        if runDur > bestDur
+            bestDur = runDur
+            bestStart = runStart
+            bestEnd = runEnd
         endif
     endif
-    
-    if best_duration > 0
-        padding = 0.05
-        template_start = max(0, best_start - padding)
-        template_end = min(duration, best_end + padding)
-        templateDur = template_end - template_start
-        
-        # Extract template
-        selectObject: original_sound
-        template = Extract part: template_start, template_end, "rectangular", 1.0, "no"
-        Rename: original_name$ + "_" + targetName$ + "_template"
-        
-        # Cross-correlation
-        selectObject: original_sound
+
+    if bestDur < minStable
+        appendInfoLine: "  ", targetName$, ": skipped; longest stable run ", fixed$(bestDur * 1000, 0), " ms < minimum ", fixed$(minimum_stable_ms, 0), " ms"
+    else
+        # Centre-crop the stable run to a bounded template duration.
+        templateDur = min(bestDur, maxTemplate)
+        centre = (bestStart + bestEnd) / 2
+        templateStart = max(0, centre - templateDur / 2)
+        templateEnd = min(duration, templateStart + templateDur)
+        if templateEnd - templateStart < templateDur
+            templateStart = max(0, templateEnd - templateDur)
+        endif
+        templateDur = templateEnd - templateStart
+
+        selectObject: analysisSound
+        template = Extract part: templateStart, templateEnd, "rectangular", 1, "no"
+        Rename: originalName$ + "_" + targetName$ + "_template"
+
+        # Hann taper avoids hard-edge correlation energy.
+        td$ = fixed$(templateDur, 12)
+        Formula: "self * (0.5 - 0.5*cos(2*pi*x/" + td$ + "))"
+
+        # Raw lag-domain cross-correlation.
+        selectObject: analysisSound
         plusObject: template
         corr = Cross-correlate: "peak 0.99", "zero"
-        Rename: original_name$ + "_" + targetName$ + "_corr"
-        
-        selectObject: corr
-        corr_max = Get maximum: 0, 0, "None"
-        
-        # Gate and create result
-        if apply_gate_function
-            threshold_linear = 10^(gate_threshold_dB / 20) * corr_max
-            threshLin$ = string$(threshold_linear)
-            result = Copy: original_name$ + "_" + targetName$ + "_result"
-            Formula: "if abs(self) < " + threshLin$ + " then 0 else self endif"
-        else
-            result = Copy: original_name$ + "_" + targetName$ + "_result"
-        endif
-        
-        # Normalize
-        if normalize_result
-            selectObject: result
-            Scale peak: peak_amplitude
-        endif
-        
-        # Count peaks in result (simple zero-crossing count for positive peaks)
-        selectObject: result
-        resultDur = Get total duration
-        peakCount = 0
-        wasAbove = 0
-        peakThreshold = 0.1 * peak_amplitude
-        
-        # Sample at ~100 Hz for peak detection
-        stepSize = 0.01
-        t = 0
-        while t < resultDur
-            val = Get value at time: 1, t, "Sinc70"
-            if val = undefined
-                val = 0
+        Rename: originalName$ + "_" + targetName$ + "_raw_correlation"
+
+        # Convert the physically useful negative-lag half into INPUT TIME.
+        # For source sample col k, correlation sample = Nsource + 1 - k.
+        corrStr$ = string$(corr)
+        nSrc$ = string$(sourceSamples)
+        activationRaw = Create Sound from formula: originalName$ + "_" + targetName$ + "_activation_raw", 1, 0, duration, sampleRate,
+            ... "abs(object[" + corrStr$ + ", 1, " + nSrc$ + " + 1 - col])"
+
+        # Build a sample-rate pitch-eligibility gate from ALL matching runs.
+        pitchGate = Create Sound from formula: "pitch_gate_" + targetName$, 1, 0, duration, sampleRate, "0"
+        inGate = 0
+        gateStart = 0
+        for i from 1 to nFrames
+            match = 0
+            if voiced#[i] = 1 and abs((midi#[i] - targetMidi) * 100) <= pitch_tolerance_cents
+                match = 1
             endif
-            
-            if val > peakThreshold
-                if wasAbove = 0
-                    peakCount = peakCount + 1
-                    wasAbove = 1
+            if match = 1
+                if inGate = 0
+                    gateStart = max(0, frameTime#[i] - pitchDX / 2)
+                    inGate = 1
                 endif
             else
-                wasAbove = 0
+                if inGate = 1
+                    ip = i - 1
+                    gateEnd = min(duration, frameTime#[ip] + pitchDX / 2)
+                    selectObject: pitchGate
+                    Formula (part): gateStart, gateEnd, 1, 1, "1"
+                    inGate = 0
+                endif
             endif
-            t = t + stepSize
-        endwhile
-        
-        # Store data for summary
-        numExtracted = numExtracted + 1
-        result_'numExtracted' = result
-        summary_display_'numExtracted'$ = extract_display_'n'$
-        summary_midi_'numExtracted' = targetMidi
-        summary_freq_'numExtracted' = targetFreq
-        summary_templDur_'numExtracted' = templateDur
-        summary_peaks_'numExtracted' = peakCount
-        
-        # Cleanup intermediate objects
-        if keep_templates = 0
-            removeObject: template
-        else
-            template_'numExtracted' = template
+        endfor
+        if inGate = 1
+            gateEnd = min(duration, frameTime#[nFrames] + pitchDX / 2)
+            selectObject: pitchGate
+            Formula (part): gateStart, gateEnd, 1, 1, "1"
         endif
-        
-        if keep_correlations = 0
+
+        gateStr$ = string$(pitchGate)
+        selectObject: activationRaw
+        Formula: "self * object[" + gateStr$ + ", 1, col]"
+        rawMax = Get maximum: 0, 0, "None"
+
+        if rawMax > 0
+            threshold = rawMax * gateRatio
+        else
+            threshold = 1
+        endif
+
+        selectObject: activationRaw
+        activation = Copy: originalName$ + "_" + targetName$ + "_activation"
+        if apply_gate_function
+            thr$ = fixed$(threshold, 15)
+            Formula: "if self < " + thr$ + " then 0 else self fi"
+        endif
+        if normalize_activation
+            maxAfter = Get maximum: 0, 0, "None"
+            if maxAfter > 0
+                Scale peak: peak_amplitude
+            endif
+        endif
+
+        numExactExtracted += 1
+        exactActivation_'numExactExtracted' = activation
+        exactTemplate_'numExactExtracted' = template
+        exactCorr_'numExactExtracted' = corr
+        exactMidi_'numExactExtracted' = targetMidi
+        exactPC_'numExactExtracted' = targetMidi mod 12
+        if exactPC_'numExactExtracted' < 0
+            exactPC_'numExactExtracted' += 12
+        endif
+        exactName_'numExactExtracted'$ = targetName$
+        exactFreq_'numExactExtracted' = targetFreq
+        exactSupport_'numExactExtracted' = uniqueSupport_'u'
+        exactTemplateDur_'numExactExtracted' = templateDur
+        exactRawMax_'numExactExtracted' = rawMax
+
+        removeObject: activationRaw, pitchGate
+
+        appendInfoLine: "  ", targetName$, ": stable ", fixed$(bestDur * 1000, 0), " ms | template ", fixed$(templateDur * 1000, 0), " ms"
+
+        if keep_templates
+            keptTemplateCount += 1
+            keptTemplate_'keptTemplateCount' = template
+        endif
+        if keep_raw_correlations
+            keptCorrCount += 1
+            keptCorr_'keptCorrCount' = corr
+        else
             removeObject: corr
-        else
-            corr_'numExtracted' = corr
+            exactCorr_'numExactExtracted' = 0
         endif
-        
-    else
-        appendInfoLine: "  WARNING: No continuous segment found, skipping"
     endif
 endfor
 
-# ============================================================
-# CLEANUP
-# ============================================================
-appendInfoLine: ""
-appendInfoLine: "[6/6] Cleaning up..."
-removeObject: pitch
-
-# ============================================================
-# SUMMARY TABLE
-# ============================================================
-appendInfoLine: ""
-appendInfoLine: "============================================================"
-appendInfoLine: "SUMMARY"
-appendInfoLine: "============================================================"
-appendInfoLine: ""
-appendInfoLine: "Note      MIDI    Avg Hz    Template    Peaks"
-appendInfoLine: "----      ----    ------    --------    -----"
-
-for n from 1 to numExtracted
-    dn$ = summary_display_'n'$
-    midi = summary_midi_'n'
-    freq = summary_freq_'n'
-    tDur = summary_templDur_'n'
-    peaks = summary_peaks_'n'
-    
-    # Pad note name to 8 chars
-    while length(dn$) < 8
-        dn$ = dn$ + " "
-    endwhile
-    
-    # Format MIDI (4 chars)
-    midi$ = string$(midi)
-    while length(midi$) < 4
-        midi$ = midi$ + " "
-    endwhile
-    
-    # Format frequency (8 chars)
-    freq$ = fixed$(freq, 1)
-    while length(freq$) < 8
-        freq$ = freq$ + " "
-    endwhile
-    
-    # Format template duration (8 chars)
-    tDur$ = fixed$(tDur * 1000, 0) + " ms"
-    while length(tDur$) < 10
-        tDur$ = tDur$ + " "
-    endwhile
-    
-    appendInfoLine: dn$, "  ", midi$, "    ", freq$, "  ", tDur$, "  ", peaks
-endfor
-
-appendInfoLine: ""
-appendInfoLine: "============================================================"
-appendInfoLine: "Total: ", numExtracted, " notes extracted"
-appendInfoLine: "============================================================"
-
-# ============================================================
-# OUTPUT
-# ============================================================
-if numExtracted > 0
-    selectObject: result_1
-    for n from 2 to numExtracted
-        plusObject: result_'n'
-    endfor
-    
-    if keep_templates
-        for n from 1 to numExtracted
-            plusObject: template_'n'
-        endfor
-    endif
-    
-    if keep_correlations
-        for n from 1 to numExtracted
-            plusObject: corr_'n'
-        endfor
-    endif
-else
-    selectObject: original_sound
-    appendInfoLine: "No notes extracted."
+if numExactExtracted = 0
+    removeObject: pitch, analysisSound
+    exitScript: "No candidate had a stable segment long enough to build a template."
 endif
+
+# ============================================================
+# STEP 5: BUILD FINAL OUTPUT SET (EXACT NOTES OR FOLDED PITCH CLASSES)
+# ============================================================
+appendInfoLine: "[5/7] Building final activation set..."
+
+numOutputs = 0
+
+if scope = 1
+    for ex from 1 to numExactExtracted
+        numOutputs += 1
+        outID_'numOutputs' = exactActivation_'ex'
+        outName_'numOutputs'$ = exactName_'ex'$
+        outMidi_'numOutputs' = exactMidi_'ex'
+        outPC_'numOutputs' = exactPC_'ex'
+        outFreq_'numOutputs' = exactFreq_'ex'
+        outSupport_'numOutputs' = exactSupport_'ex'
+        outTemplateDur_'numOutputs' = exactTemplateDur_'ex'
+    endfor
+else
+    # Unique pitch classes represented by successfully built templates.
+    pcCount = 0
+    for ex from 1 to numExactExtracted
+        pc = exactPC_'ex'
+        exists = 0
+        for q from 1 to pcCount
+            if pc = pcList_'q'
+                exists = 1
+            endif
+        endfor
+        if exists = 0
+            pcCount += 1
+            pcList_'pcCount' = pc
+        endif
+    endfor
+    # Sort pitch classes.
+    for a from 1 to pcCount - 1
+        for b from a + 1 to pcCount
+            if pcList_'a' > pcList_'b'
+                tmp = pcList_'a'
+                pcList_'a' = pcList_'b'
+                pcList_'b' = tmp
+            endif
+        endfor
+    endfor
+
+    for q from 1 to pcCount
+        pc = pcList_'q'
+        combined = 0
+        supportSum = 0
+        maxTDur = 0
+        octaveList$ = ""
+        first = 1
+        for ex from 1 to numExactExtracted
+            if exactPC_'ex' = pc
+                if combined = 0
+                    selectObject: exactActivation_'ex'
+                    combined = Copy: "pitchclass_activation"
+                else
+                    otherStr$ = string$(exactActivation_'ex')
+                    selectObject: combined
+                    Formula: "max(self, object[" + otherStr$ + ", 1, col])"
+                endif
+                supportSum += exactSupport_'ex'
+                if exactTemplateDur_'ex' > maxTDur
+                    maxTDur = exactTemplateDur_'ex'
+                endif
+                if first = 1
+                    octaveList$ = exactName_'ex'$
+                    first = 0
+                else
+                    octaveList$ = octaveList$ + "," + exactName_'ex'$
+                endif
+            endif
+        endfor
+
+        @pcToName: pc
+        selectObject: combined
+        Rename: originalName$ + "_" + pcToName.name$ + "_pitchclass_activation"
+
+        numOutputs += 1
+        outID_'numOutputs' = combined
+        outName_'numOutputs'$ = pcToName.name$
+        outMidi_'numOutputs' = -1
+        outPC_'numOutputs' = pc
+        outFreq_'numOutputs' = 0
+        outSupport_'numOutputs' = supportSum
+        outTemplateDur_'numOutputs' = maxTDur
+        outOctaves_'numOutputs'$ = octaveList$
+    endfor
+
+    # Exact-note activations are intermediates in folded mode.
+    for ex from 1 to numExactExtracted
+        removeObject: exactActivation_'ex'
+    endfor
+endif
+
+# Count activation events on the Pitch time grid and store intervals for visualization.
+eventCountTotal = 0
+repOut = 1
+repSupport = -1
+for o from 1 to numOutputs
+    if outSupport_'o' > repSupport
+        repSupport = outSupport_'o'
+        repOut = o
+    endif
+
+    selectObject: outID_'o'
+    active = 0
+    localEvents = 0
+    eventStart = 0
+    lastActiveTime = 0
+    # Correlation of periodic tones can dip briefly between adjacent peaks.
+    # Merge short gaps, but preserve real note/silence separations.
+    mergeGap = max(0.03, min(0.12, outTemplateDur_'o' * 0.25))
+    for i from 1 to nFrames
+        vv = Get value at time: 1, frameTime#[i], "Sinc70"
+        if vv = undefined
+            vv = 0
+        endif
+        now = 0
+        if vv > 0
+            now = 1
+        endif
+        if now = 1
+            if active = 0
+                eventStart = max(0, frameTime#[i] - pitchDX / 2)
+                active = 1
+            endif
+            lastActiveTime = frameTime#[i]
+        elsif active = 1
+            if frameTime#[i] - lastActiveTime > mergeGap
+                eventEnd = min(duration, lastActiveTime + pitchDX / 2)
+                localEvents += 1
+                eventCountTotal += 1
+                eventOut_'eventCountTotal' = o
+                eventStart_'eventCountTotal' = eventStart
+                eventEnd_'eventCountTotal' = eventEnd
+                active = 0
+            endif
+        endif
+    endfor
+    if active = 1
+        eventEnd = min(duration, lastActiveTime + pitchDX / 2)
+        localEvents += 1
+        eventCountTotal += 1
+        eventOut_'eventCountTotal' = o
+        eventStart_'eventCountTotal' = eventStart
+        eventEnd_'eventCountTotal' = eventEnd
+    endif
+    outEvents_'o' = localEvents
+endfor
+
+# ============================================================
+# STEP 6: INFO SUMMARY
+# ============================================================
+appendInfoLine: "[6/7] Summary..."
+appendInfoLine: ""
+appendInfoLine: "Note/PC     MIDI    Avg Hz     Template    Support    Events"
+appendInfoLine: "-------     ----    ------     --------    -------    ------"
+for o from 1 to numOutputs
+    label$ = outName_'o'$
+    while length(label$) < 10
+        label$ = label$ + " "
+    endwhile
+    if outMidi_'o' >= 0
+        midiTxt$ = string$(outMidi_'o')
+        hzTxt$ = fixed$(outFreq_'o', 1)
+    else
+        midiTxt$ = "PC"
+        hzTxt$ = "multi"
+    endif
+    while length(midiTxt$) < 4
+        midiTxt$ = midiTxt$ + " "
+    endwhile
+    while length(hzTxt$) < 8
+        hzTxt$ = hzTxt$ + " "
+    endwhile
+    tdTxt$ = fixed$(outTemplateDur_'o' * 1000, 0) + " ms"
+    while length(tdTxt$) < 10
+        tdTxt$ = tdTxt$ + " "
+    endwhile
+    appendInfoLine: label$, "  ", midiTxt$, "    ", hzTxt$, "  ", tdTxt$, "  ", outSupport_'o', "        ", outEvents_'o'
+    if scope = 2
+        appendInfoLine: "             templates: ", outOctaves_'o'$
+    endif
+endfor
+appendInfoLine: ""
+appendInfoLine: "Outputs: ", numOutputs, " activation curve(s) | matched events: ", eventCountTotal
+
+# ============================================================
+# STEP 7: VISUALIZATION
+# ============================================================
+if draw_visualization
+    appendInfoLine: "[7/7] Drawing visualization..."
+    Erase all
+
+    # House geometry: width 8, compact 2x2, independent title strips.
+    # Main title.
+    Select outer viewport: 0, 8, 0, 0.42
+    Select inner viewport: 0, 8, 0, 0.42
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.70, "half", "Correlation-Based Pitch Activation v0.7"
+    Font size: 7
+    Colour: "{0.35,0.35,0.40}"
+    Text: 0.5, "centre", 0.18, "half", originalName$ + " | analysis ch " + string$(analysisChannel) + " | " + string$(numOutputs) + " output(s)"
+
+    # Process strip.
+    Select outer viewport: 0.25, 7.75, 0.44, 0.78
+    Select inner viewport: 0.25, 7.75, 0.44, 0.78
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25,0.25,0.30}"
+    Text: 0.5, "centre", 0.5, "half", "Pitch -> stable run -> Hann template -> cross-correlation -> align |r(-t)| -> pitch gate -> activation"
+
+    # MIDI display bounds.
+    vizMidiMin = floor(midiMinFound) - 2
+    vizMidiMax = ceiling(midiMaxFound) + 2
+    if vizMidiMax <= vizMidiMin
+        vizMidiMax = vizMidiMin + 12
+    endif
+
+    # ----- A title -----
+    Select outer viewport: 0.25, 3.9, 0.86, 1.12
+    Select inner viewport: 0.25, 3.9, 0.86, 1.12
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.0, "left", 0.5, "half", "A  MEASURED CONTINUOUS PITCH"
+
+    # ----- A data -----
+    Select outer viewport: 0.25, 3.9, 1.12, 2.72
+    Select inner viewport: 0.62, 3.75, 1.20, 2.58
+    Axes: 0, duration, vizMidiMin - 0.5, vizMidiMax + 0.5
+    Colour: "{0.96,0.96,0.96}"
+    Paint rectangle: "{0.96,0.96,0.96}", 0, duration, vizMidiMin - 0.5, vizMidiMax + 0.5
+    for m from vizMidiMin to vizMidiMax
+        pc = m mod 12
+        if pc < 0
+            pc += 12
+        endif
+        if pc = 0
+            Colour: "{0.72,0.72,0.72}"
+            Line width: 1.2
+        else
+            Colour: "{0.88,0.88,0.88}"
+            Line width: 0.5
+        endif
+        Draw line: 0, m, duration, m
+    endfor
+    Colour: "{0.18,0.40,0.72}"
+    Line width: 1.5
+    for i from 2 to nFrames
+        if voiced#[i-1] = 1 and voiced#[i] = 1
+            if frameTime#[i] - frameTime#[i-1] < pitchDX * 1.6
+                Draw line: frameTime#[i-1], midi#[i-1], frameTime#[i], midi#[i]
+            endif
+        endif
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "MIDI"
+    Text bottom: "yes", "Time (s)"
+
+    # ----- B title -----
+    Select outer viewport: 4.1, 7.75, 0.86, 1.12
+    Select inner viewport: 4.1, 7.75, 0.86, 1.12
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.0, "left", 0.5, "half", "B  REPRESENTATIVE MATCHED-FILTER ACTIVATION"
+
+    # ----- B data -----
+    repID = outID_'repOut'
+    repLabel$ = outName_'repOut'$
+    selectObject: repID
+    repMax = Get maximum: 0, 0, "None"
+    if repMax <= 0
+        repMax = 1
+    endif
+    Select outer viewport: 4.1, 7.75, 1.12, 2.72
+    Select inner viewport: 4.48, 7.60, 1.20, 2.58
+    Axes: 0, duration, 0, repMax * 1.08
+    Colour: "{0.97,0.97,0.97}"
+    Paint rectangle: "{0.97,0.97,0.97}", 0, duration, 0, repMax * 1.08
+    # Event blocks for representative output.
+    for ev from 1 to eventCountTotal
+        if eventOut_'ev' = repOut
+            Paint rectangle: "{0.91,0.95,1.0}", eventStart_'ev', eventEnd_'ev', 0, repMax * 1.08
+        endif
+    endfor
+    selectObject: repID
+    Colour: "{0.18,0.40,0.72}"
+    Line width: 1.5
+    Draw: 0, duration, 0, repMax * 1.08, "no", "Curve"
+    if apply_gate_function
+        if normalize_activation
+            thresholdDisplay = peak_amplitude * gateRatio
+        else
+            thresholdDisplay = repMax * gateRatio
+        endif
+        Colour: "{0.65,0.30,0.30}"
+        Dotted line
+        Draw line: 0, thresholdDisplay, duration, thresholdDisplay
+        Solid line
+    endif
+    Colour: "Black"
+    Line width: 1
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Activation"
+    Text bottom: "yes", "Time (s)"
+    # In-panel label, kept below title strip.
+    Select inner viewport: 4.48, 7.60, 1.20, 2.58
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25,0.25,0.30}"
+    Text: 0.02, "left", 0.92, "half", repLabel$ + " | " + fixed$(outTemplateDur_'repOut' * 1000, 0) + " ms template | " + string$(outEvents_'repOut') + " event(s)"
+
+    # ----- C title -----
+    Select outer viewport: 0.25, 3.9, 2.88, 3.14
+    Select inner viewport: 0.25, 3.9, 2.88, 3.14
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.0, "left", 0.5, "half", "C  PITCH-EVIDENCE SUPPORT"
+
+    # ----- C data -----
+    maxSupport = 1
+    for o from 1 to numOutputs
+        if outSupport_'o' > maxSupport
+            maxSupport = outSupport_'o'
+        endif
+    endfor
+    Select outer viewport: 0.25, 3.9, 3.14, 4.72
+    Select inner viewport: 0.62, 3.75, 3.22, 4.56
+    Axes: 0.4, numOutputs + 0.6, 0, 1.08
+    Colour: "{0.97,0.97,0.97}"
+    Paint rectangle: "{0.97,0.97,0.97}", 0.4, numOutputs + 0.6, 0, 1.08
+    for o from 1 to numOutputs
+        h = outSupport_'o' / maxSupport
+        Paint rectangle: "{0.40,0.58,0.78}", o - 0.30, o + 0.30, 0, h
+        if numOutputs <= 10
+            Colour: "Black"
+            Font size: 5
+            Text: o, "centre", -0.06, "half", outName_'o'$
+        endif
+    endfor
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text left: "yes", "Relative frames"
+    if numOutputs > 10
+        Text bottom: "yes", "Outputs (labels omitted >10)"
+    endif
+
+    # ----- D title -----
+    Select outer viewport: 4.1, 7.75, 2.88, 3.14
+    Select inner viewport: 4.1, 7.75, 2.88, 3.14
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.0, "left", 0.5, "half", "D  MATCHED EVENT TIMELINE"
+
+    # ----- D data -----
+    rowsShown = min(numOutputs, 10)
+    Select outer viewport: 4.1, 7.75, 3.14, 4.72
+    Select inner viewport: 4.52, 7.60, 3.22, 4.56
+    Axes: 0, duration, 0.5, rowsShown + 0.5
+    Colour: "{0.97,0.97,0.97}"
+    Paint rectangle: "{0.97,0.97,0.97}", 0, duration, 0.5, rowsShown + 0.5
+    for r from 1 to rowsShown
+        Colour: "{0.88,0.88,0.88}"
+        Draw line: 0, r, duration, r
+    endfor
+    for ev from 1 to eventCountTotal
+        oo = eventOut_'ev'
+        if oo <= rowsShown
+            Paint rectangle: "{0.30,0.55,0.78}", eventStart_'ev', eventEnd_'ev', oo - 0.28, oo + 0.28
+        endif
+    endfor
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text bottom: "yes", "Time (s)"
+    # Left row labels in a dedicated strip to avoid overlap.
+    Select outer viewport: 4.1, 4.50, 3.14, 4.72
+    Select inner viewport: 4.1, 4.50, 3.22, 4.56
+    Axes: 0, 1, 0.5, rowsShown + 0.5
+    Font size: 5
+    for r from 1 to rowsShown
+        Colour: "Black"
+        Text: 0.95, "right", r, "half", outName_'r'$
+    endfor
+
+    # Footer summary.
+    Select outer viewport: 0.25, 7.75, 4.90, 5.32
+    Select inner viewport: 0.25, 7.75, 4.90, 5.32
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.30,0.30,0.35}"
+    if scope = 1
+        scopeTxt$ = "exact MIDI"
+    else
+        scopeTxt$ = "pitch-class fold"
+    endif
+    Text: 0.5, "centre", 0.5, "half", "Scope: " + scopeTxt$ + " | tolerance " + fixed$(pitch_tolerance_cents, 0) + " cents | template <= " + fixed$(maximum_template_ms, 0) + " ms | gate " + fixed$(gate_threshold_dB, 0) + " dB | events " + string$(eventCountTotal)
+
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+endif
+
+# ============================================================
+# CLEANUP / FINAL SELECTION
+# ============================================================
+removeObject: pitch, analysisSound
+
+# Templates are kept until after visualization because they are part of
+# the measured process. Remove them now unless explicitly requested.
+if keep_templates = 0
+    for ex from 1 to numExactExtracted
+        removeObject: exactTemplate_'ex'
+    endfor
+endif
+
+# Select final activation outputs plus optional raw process objects.
+selectObject: outID_1
+for o from 2 to numOutputs
+    plusObject: outID_'o'
+endfor
+if keep_templates
+    for k from 1 to keptTemplateCount
+        plusObject: keptTemplate_'k'
+    endfor
+endif
+if keep_raw_correlations
+    for k from 1 to keptCorrCount
+        plusObject: keptCorr_'k'
+    endfor
+endif
+
+appendInfoLine: ""
+appendInfoLine: "=== COMPLETE ==="
+appendInfoLine: "Created ", numOutputs, " time-aligned activation curve(s)."
+
+# ============================================================
+# HELPERS
+# ============================================================
+procedure midiToName: .midi
+    .pc = .midi mod 12
+    if .pc < 0
+        .pc += 12
+    endif
+    .oct = floor(.midi / 12) - 1
+    @pcToName: .pc
+    .full$ = pcToName.name$ + string$(.oct)
+endproc
+
+procedure pcToName: .pc
+    if .pc = 0
+        .name$ = "C"
+    elsif .pc = 1
+        .name$ = "C#"
+    elsif .pc = 2
+        .name$ = "D"
+    elsif .pc = 3
+        .name$ = "D#"
+    elsif .pc = 4
+        .name$ = "E"
+    elsif .pc = 5
+        .name$ = "F"
+    elsif .pc = 6
+        .name$ = "F#"
+    elsif .pc = 7
+        .name$ = "G"
+    elsif .pc = 8
+        .name$ = "G#"
+    elsif .pc = 9
+        .name$ = "A"
+    elsif .pc = 10
+        .name$ = "A#"
+    else
+        .name$ = "B"
+    endif
+endproc
+
+procedure parseNoteName: .input$
+    .ok = 0
+    .hasOctave = 0
+    .midi = 0
+    .pc = -1
+    .s$ = replace$(.input$, "#", "s", 0)
+    .s$ = replace$(.s$, "b", "b", 0)
+    .len = length(.s$)
+    if .len >= 1
+        .letter$ = left$(.s$, 1)
+        if .letter$ = "c"
+            .letter$ = "C"
+        elsif .letter$ = "d"
+            .letter$ = "D"
+        elsif .letter$ = "e"
+            .letter$ = "E"
+        elsif .letter$ = "f"
+            .letter$ = "F"
+        elsif .letter$ = "g"
+            .letter$ = "G"
+        elsif .letter$ = "a"
+            .letter$ = "A"
+        elsif .letter$ = "b"
+            .letter$ = "B"
+        endif
+        .acc$ = ""
+        .pos = 2
+        if .len >= 2
+            .c2$ = mid$(.s$, 2, 1)
+            if .c2$ = "s" or .c2$ = "b"
+                .acc$ = .c2$
+                .pos = 3
+            endif
+        endif
+
+        if .letter$ = "C"
+            .base = 0
+        elsif .letter$ = "D"
+            .base = 2
+        elsif .letter$ = "E"
+            .base = 4
+        elsif .letter$ = "F"
+            .base = 5
+        elsif .letter$ = "G"
+            .base = 7
+        elsif .letter$ = "A"
+            .base = 9
+        elsif .letter$ = "B"
+            .base = 11
+        else
+            .base = -99
+        endif
+
+        if .base >= 0
+            if .acc$ = "s"
+                .base += 1
+            elsif .acc$ = "b"
+                .base -= 1
+            endif
+            .pc = .base mod 12
+            if .pc < 0
+                .pc += 12
+            endif
+            .ok = 1
+
+            if .pos <= .len
+                .octText$ = right$(.s$, .len - .pos + 1)
+                .oct = number(.octText$)
+                if .oct <> undefined
+                    .hasOctave = 1
+                    .midi = (.oct + 1) * 12 + .pc
+                endif
+            endif
+        endif
+    endif
+endproc

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,8 +11,9 @@
 #   Praat front-end for twelve FFmpeg video/audio operations.
 #   The user points the script at one folder that contains:
 #     - ffmpeg (or ffmpeg.exe on Windows)
-#     - the input video and/or audio file (one of each)
-#   All paths are resolved automatically. Output files are
+#     - the input media files
+#   Inputs can be named explicitly or resolved automatically (AUTO).
+#   Output files are
 #   written to the same folder with descriptive suffixes.
 #   The full FFmpeg command is printed to the Info window.
 #
@@ -40,7 +41,9 @@
 #
 # Usage:
 #   Place ffmpeg(.exe) and your input file(s) in one folder.
-#   Type that folder path in the form. Output is written there.
+#   Type that folder path in the form. With multiple video/audio files,
+#   set Video_file / Audio_file explicitly instead of AUTO.
+#   Output is written to the same folder.
 #   Use forward slashes in the path (works on all platforms).
 #   For operation 6, select exactly one Sound object first.
 #
@@ -54,6 +57,40 @@
 #   Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.4:
+#   - Praat 7: requests Full Trust before external FFmpeg/file operations.
+#   - Windows: fixes cmd.exe /c parsing for FFmpeg paths while preserving
+#     quoted media filenames that contain spaces.
+#   - Operation 2 again opens the extracted WAV automatically in Praat.
+#   - Keeps the v1.3 timing, container, subtitle, H.264 and input-selection fixes.
+#
+# Changelog v1.3:
+#   - FIX: stale/zero-byte outputs cannot be mistaken for success; an
+#     existing target is removed first and a shell marker is written only
+#     when FFmpeg exits with status 0.
+#   - FIX: ops 3/6 parse and validate the time fields in Praat, then pass
+#     a numeric -t duration to FFmpeg. Malformed/negative ranges no longer
+#     reach the shell or create -ss/-to ambiguity.
+#   - FIX: op 6 uses an accurate re-encoded video cut before Praat-audio
+#     replacement. Stream-copy keyframe preroll can no longer misalign an
+#     exact Praat Sound range with the replacement video.
+#   - FIX: op 6 interprets its Sound range relative to that Sound's own
+#     start time; clipping is reported and video duration follows the
+#     achieved Praat range when replacement audio is enabled.
+#   - FIX: op 3 stream-copy output keeps the input container extension.
+#   - FIX: soft-subtitle audio mapping is optional; MP4 operations that
+#     already re-encode video use AAC audio for broader compatibility.
+#   - FEATURE: optional Video_file / Audio_file fields make repeated runs
+#     deterministic; AUTO preserves v1.2 folder scanning.
+#   - FIX: the extension scanner now advances through the full extension
+#     list; v1.2 used two-argument mid$ as if it meant substring-to-end,
+#     so formats later in a list (e.g. PNG after JPG) could be missed.
+#   - FEATURE: op 12 now stacks a waveform and scrolling logarithmic
+#     spectrum instead of duplicating the waveform-only operation.
+#   - QUALITY: H.264 outputs use yuv420p and even dimensions; generated
+#     visualizers quantize requested dimensions, while arbitrary source
+#     video/image paths trim at most one edge pixel when needed.
+#   - AUTOMATION: FFmpeg runs with -nostdin -hide_banner -loglevel error.
 # Changelog v1.2:
 #   - Praat 7 audit: preserves the Sound selected for operation 6
 #     before temporary Strings file-list objects change the selection.
@@ -101,11 +138,14 @@
 #     workflow A/B/C support.
 # ============================================================
 
-form FFmpeg Media Tools v1.2
+form FFmpeg Media Tools v1.4
     comment === Folder containing ffmpeg(.exe) and your input file(s) ===
     comment     Windows example:   C:/ffmpeg
     comment     Mac / Linux:       /Users/shai/ffmpeg
     sentence Folder C:/ffmpeg
+    comment === Optional explicit inputs (AUTO = scan folder) ===
+    sentence Video_file AUTO
+    sentence Audio_file AUTO
     comment === Select operation ===
     optionmenu Operation: 1
         option  1  Replace audio in video
@@ -127,9 +167,9 @@ form FFmpeg Media Tools v1.2
     optionmenu Channels: 2
         option Mono
         option Stereo
-    comment === Op 3 and Op 6: Cut times  (HH:MM:SS.mmm) ===
+    comment === Op 3 and Op 6: time range  (HH:MM:SS.mmm) ===
     sentence Start_time 00:00:00.000
-    sentence End_time 00:00:10.000
+    sentence End_time_or_duration 00:00:10.000
     boolean Use_duration_not_end 0
     comment === Op 4, 5, 12: Visualization dimensions ===
     positive Width 1920
@@ -148,6 +188,11 @@ form FFmpeg Media Tools v1.2
     boolean Dry_run 0
 endform
 
+# Praat 7 requires explicit trust for scripts that write files or run commands.
+if praatVersion >= 7000
+    trustRequest = askForTrust()
+endif
+
 # Preserve the Sound selected for operation 6 BEFORE any file-list helper
 # creates temporary Strings objects and changes the Praat selection.
 op6_sound = 0
@@ -163,11 +208,14 @@ endif
 # ============================================================
 
 procedure requireFile: .path$, .label$
-    # Exit with a clear message if no matching file was found in the folder.
+    # Exit clearly for both auto-detection misses and invalid explicit names.
     if .path$ = ""
         exitScript: "No " + .label$ + " file found in:" + newline$
             ... + "  " + wf$ + newline$
-            ... + "Place one " + .label$ + " file there and run again."
+            ... + "Place one " + .label$ + " file there, or use an explicit filename."
+    endif
+    if not fileReadable(.path$)
+        exitScript: "Required " + .label$ + " file is not readable:" + newline$ + "  " + .path$
     endif
 endproc
 
@@ -179,28 +227,45 @@ procedure requireNonEmpty: .val$, .label$
 endproc
 
 procedure runFFmpeg: .cmd$, .outPath$
-    # Print the full FFmpeg command, execute it via the system shell
-    # (unless dry-run is enabled), then verify the output file was
-    # created.
-    # Uses runSystem_nocheck so FFmpeg errors do not crash Praat;
-    # instead the missing-output warning directs the user to a terminal.
     appendInfoLine: "Command:"
     appendInfoLine: "  ", .cmd$
     if dry_run = 1
         appendInfoLine: "Dry run: not executed."
         appendInfoLine: ""
+        .ok = 0
     else
-        appendInfoLine: "Running FFmpeg..."
-        runSystem_nocheck: .cmd$
         if fileReadable(.outPath$)
+            deleteFile: .outPath$
+        endif
+        appendInfoLine: "Running FFmpeg..."
+        .launchCmd$ = .cmd$
+        if windows and ffmpegNeedsOuterQuote
+            .launchCmd$ = q$ + .cmd$ + q$
+        endif
+        runSystem_nocheck: .launchCmd$
+        .ok = 0
+        if fileReadable(.outPath$)
+            .ok = 1
             appendInfoLine: "Output created: ", .outPath$
         else
             appendInfoLine: "WARNING: Output file not found: ", .outPath$
-            appendInfoLine: "  Check the folder path and input files."
-            appendInfoLine: "  Paste the command above into a terminal to see"
-            appendInfoLine: "  the full FFmpeg error output."
+            appendInfoLine: "  Paste the command above into a terminal to see the FFmpeg diagnostic."
         endif
         appendInfoLine: ""
+    endif
+endproc
+
+procedure makeEvenDimensions: .w, .h
+    .w2 = floor(.w)
+    .h2 = floor(.h)
+    if .w2 mod 2 <> 0
+        .w2 = .w2 - 1
+    endif
+    if .h2 mod 2 <> 0
+        .h2 = .h2 - 1
+    endif
+    if .w2 < 2 or .h2 < 2
+        exitScript: "Width and Height must be at least 2 pixels."
     endif
 endproc
 
@@ -220,49 +285,67 @@ procedure getBasename: .path$
 endproc
 
 procedure hmsToSec: .hms$
-    # Parse HH:MM:SS.mmm, MM:SS.mmm, or SS.mmm and return decimal
-    # seconds in hmsToSec.seconds. Validates inputs against undefined
-    # so a malformed time format produces a clear error instead of
-    # letting NaN propagate into FFmpeg arguments.
+    # Strict parser for HH:MM:SS.mmm, MM:SS.mmm, or SS.mmm.
+    # Reject shell/meta characters before number(), which can accept a
+    # numeric prefix and otherwise hide malformed trailing text.
+    if length(.hms$) = 0
+        exitScript: "Time field is empty."
+    endif
+    for .ci to length(.hms$)
+        .ch$ = mid$(.hms$, .ci, 1)
+        if index("0123456789.:", .ch$) = 0
+            exitScript: "Time contains an invalid character: '" + .hms$ + "'"
+        endif
+    endfor
+
     .nColons = 0
     for .ci to length(.hms$)
         if mid$(.hms$, .ci, 1) = ":"
-            .nColons += 1
+            .nColons = .nColons + 1
         endif
     endfor
 
     if .nColons = 2
         .c1 = index(.hms$, ":")
         .h$ = left$(.hms$, .c1 - 1)
-        .rest$ = mid$(.hms$, .c1 + 1, length(.hms$))
+        .rest$ = mid$(.hms$, .c1 + 1, length(.hms$) - .c1)
         .c2 = index(.rest$, ":")
         .m$ = left$(.rest$, .c2 - 1)
-        .s$ = mid$(.rest$, .c2 + 1, length(.rest$))
+        .s$ = mid$(.rest$, .c2 + 1, length(.rest$) - .c2)
         .h = number(.h$)
         .m = number(.m$)
         .s = number(.s$)
         if .h = undefined or .m = undefined or .s = undefined
-            exitScript: "Time format must be HH:MM:SS.mmm or SS.mmm. Got: '" + .hms$ + "'"
+            exitScript: "Invalid time: '" + .hms$ + "'"
+        endif
+        if .m < 0 or .m >= 60 or .s < 0 or .s >= 60
+            exitScript: "For HH:MM:SS, minutes and seconds must be below 60: '" + .hms$ + "'"
         endif
         .seconds = .h * 3600 + .m * 60 + .s
     elsif .nColons = 1
         .c1 = index(.hms$, ":")
         .m$ = left$(.hms$, .c1 - 1)
-        .s$ = mid$(.hms$, .c1 + 1, length(.hms$))
+        .s$ = mid$(.hms$, .c1 + 1, length(.hms$) - .c1)
         .m = number(.m$)
         .s = number(.s$)
         if .m = undefined or .s = undefined
-            exitScript: "Time format must be HH:MM:SS.mmm or SS.mmm. Got: '" + .hms$ + "'"
+            exitScript: "Invalid time: '" + .hms$ + "'"
+        endif
+        if .m < 0 or .s < 0 or .s >= 60
+            exitScript: "For MM:SS, seconds must be below 60: '" + .hms$ + "'"
         endif
         .seconds = .m * 60 + .s
     elsif .nColons = 0
         .s = number(.hms$)
         if .s = undefined
-            exitScript: "Time format must be HH:MM:SS.mmm or SS.mmm. Got: '" + .hms$ + "'"
+            exitScript: "Invalid time: '" + .hms$ + "'"
         endif
         .seconds = .s
     else
-        exitScript: "Time format must be HH:MM:SS.mmm or SS.mmm. Got: '" + .hms$ + "'"
+        exitScript: "Time format must be HH:MM:SS.mmm, MM:SS.mmm, or SS.mmm. Got: '" + .hms$ + "'"
+    endif
+    if .seconds < 0
+        exitScript: "Time values must be non-negative. Got: '" + .hms$ + "'"
     endif
 endproc
 
@@ -278,7 +361,7 @@ procedure findFirstFile: .folder$, .extensions$
     while length(.rem$) > 0 and .result$ = ""
         # Strip leading whitespace
         while length(.rem$) > 0 and left$(.rem$, 1) = " "
-            .rem$ = mid$(.rem$, 2)
+            .rem$ = mid$(.rem$, 2, length(.rem$) - 1)
         endwhile
         if length(.rem$) = 0
             # done
@@ -289,7 +372,7 @@ procedure findFirstFile: .folder$, .extensions$
                 .rem$ = ""
             else
                 .ext$ = left$(.rem$, .sp - 1)
-                .rem$ = mid$(.rem$, .sp + 1)
+                .rem$ = mid$(.rem$, .sp + 1, length(.rem$) - .sp)
             endif
             if length(.ext$) > 0
                 Create Strings as file list: "ff_list", .folder$ + "/*." + .ext$
@@ -340,57 +423,57 @@ q$ = """"
 # FOLDER SETUP  -  validation, ffmpeg discovery, file detection
 # ============================================================
 
-# Normalize folder: strip trailing slash if present.
+# One working folder contains ffmpeg(.exe) and the media files.
 wf$ = folder$
-if right$(wf$, 1) = "/"
-    wf$ = left$(wf$, length(wf$) - 1)
+if length(wf$) > 1
+    lastChar$ = right$(wf$, 1)
+    if lastChar$ = "/" or lastChar$ = "\"
+        wf$ = left$(wf$, length(wf$) - 1)
+    endif
 endif
-
-# --- Folder path validation ---
-# An empty path is always invalid. A missing/non-readable folder is caught
-# immediately below by the ffmpeg executable check, with the attempted path.
 if length(wf$) = 0
     exitScript: "Folder path is empty. Fill in the Folder field."
 endif
 
-# --- ffmpeg executable check (NEW in v1.1) ---
 if windows
     ffmpeg$ = wf$ + "/ffmpeg.exe"
 else
     ffmpeg$ = wf$ + "/ffmpeg"
 endif
-
 if not fileReadable(ffmpeg$)
-    if windows
-        platformHint$ = "Windows: download from https://www.gyan.dev/ffmpeg/builds/" + newline$
-            ... + "  Extract ffmpeg.exe and place it in the folder above."
-    elsif macintosh
-        platformHint$ = "macOS: download from https://evermeet.cx/ffmpeg/" + newline$
-            ... + "  Or: brew install ffmpeg" + newline$
-            ... + "  Place the 'ffmpeg' binary in the folder above."
-    else
-        platformHint$ = "Linux: apt install ffmpeg  (Debian/Ubuntu)" + newline$
-            ... + "  Or: dnf install ffmpeg  (Fedora)" + newline$
-            ... + "  Or download from https://ffmpeg.org/download.html" + newline$
-            ... + "  Place the 'ffmpeg' binary in the folder above."
-    endif
-    exitScript: "FFmpeg not found at:" + newline$
-        ... + "  " + ffmpeg$ + newline$
-        ... + newline$
-        ... + "Check that the Folder exists and contains the FFmpeg executable." + newline$
-        ... + platformHint$
+    exitScript: "FFmpeg not found at:" + newline$ + "  " + ffmpeg$ + newline$
+        ... + "Check that the Folder exists and contains the FFmpeg executable."
 endif
 
-# Quote the executable itself as well as all media paths. This matters when
-# the FFmpeg folder contains spaces.
-ffmpeg_cmd$ = q$ + ffmpeg$ + q$
+# Praat 7 on Windows launches runSystem through cmd.exe /c. If the executable
+# path has no whitespace, leave the first token unquoted; media paths remain quoted.
+# If the executable path itself needs quotes, runFFmpeg adds an outer quote pair.
+ffmpegNeedsOuterQuote = 0
+if windows
+    if index(ffmpeg$, " ") = 0 and index(ffmpeg$, tab$) = 0
+        ffmpeg_cmd$ = ffmpeg$ + " -nostdin -hide_banner -loglevel error"
+    else
+        ffmpeg_cmd$ = q$ + ffmpeg$ + q$ + " -nostdin -hide_banner -loglevel error"
+        ffmpegNeedsOuterQuote = 1
+    endif
+else
+    ffmpeg_cmd$ = q$ + ffmpeg$ + q$ + " -nostdin -hide_banner -loglevel error"
+endif
 
 # --- Auto-detect input files (NEW: refactored to one procedure) ---
-@findFirstFile: wf$, "mp4 MP4 mov MOV avi AVI mkv MKV m4v M4V webm WEBM"
-input_video$ = findFirstFile.result$
+if video_file$ = "AUTO" or video_file$ = "auto" or video_file$ = ""
+    @findFirstFile: wf$, "mp4 MP4 mov MOV avi AVI mkv MKV m4v M4V webm WEBM"
+    input_video$ = findFirstFile.result$
+else
+    input_video$ = wf$ + "/" + video_file$
+endif
 
-@findFirstFile: wf$, "wav WAV mp3 MP3 aiff AIFF flac FLAC m4a M4A"
-input_audio$ = findFirstFile.result$
+if audio_file$ = "AUTO" or audio_file$ = "auto" or audio_file$ = ""
+    @findFirstFile: wf$, "wav WAV mp3 MP3 aiff AIFF flac FLAC m4a M4A"
+    input_audio$ = findFirstFile.result$
+else
+    input_audio$ = wf$ + "/" + audio_file$
+endif
 
 @findFirstFile: wf$, "jpg JPG jpeg JPEG png PNG bmp BMP tiff TIFF"
 input_image$ = findFirstFile.result$
@@ -404,13 +487,22 @@ vbase$ = getBasename.result$
 @getBasename: input_audio$
 abase$ = getBasename.result$
 
+vext$ = ".mp4"
+if input_video$ <> ""
+    vdot = rindex(input_video$, ".")
+    vslash = rindex(input_video$, "/")
+    if vdot > vslash
+        vext$ = mid$(input_video$, vdot, length(input_video$))
+    endif
+endif
+
 output_file$ = ""
 if operation = 1
     output_file$ = wf$ + "/" + vbase$ + "_replaced_audio.mp4"
 elsif operation = 2
     output_file$ = wf$ + "/" + vbase$ + "_extracted.wav"
 elsif operation = 3
-    output_file$ = wf$ + "/" + vbase$ + "_cut.mp4"
+    output_file$ = wf$ + "/" + vbase$ + "_cut" + vext$
 elsif operation = 4
     output_file$ = wf$ + "/" + abase$ + "_waveform.mp4"
 elsif operation = 5
@@ -431,10 +523,11 @@ elsif operation = 12
     output_file$ = wf$ + "/" + abase$ + "_contact.mp4"
 endif
 
+final_output$ = output_file$
+
 clearinfo
-writeInfoLine: "=== FFmpeg Media Tools v1.2 ==="
+writeInfoLine: "=== FFmpeg Media Tools v1.4 ==="
 appendInfoLine: "Folder:   ", wf$
-appendInfoLine: "FFmpeg:   ", ffmpeg$
 appendInfoLine: "Video:    ", input_video$
 appendInfoLine: "Audio:    ", input_audio$
 appendInfoLine: "Output:   ", output_file$
@@ -493,36 +586,47 @@ elsif operation = 2
         ... + " " + q$ + output_file$ + q$
 
     @runFFmpeg: cmd$, output_file$
-
-    if dry_run = 0 and fileReadable(output_file$)
+    if dry_run = 0 and runFFmpeg.ok
         appendInfoLine: "Loading extracted audio into Praat..."
         Read from file: output_file$
         appendInfoLine: "Loaded: ", selected$("Sound")
+        appendInfoLine: ""
     endif
 
 elsif operation = 3
     # ----------------------------------------------------------
     # Op 3: CUT VIDEO WITHOUT RE-ENCODING (stream copy)
-    # NOTE: stream-copy cuts are NOT frame-accurate — FFmpeg
-    # seeks to the nearest keyframe before the requested start.
+    # The start can land at an earlier keyframe; use op 6 when exact
+    # A/V alignment matters.
     # ----------------------------------------------------------
     @requireFile: input_video$, "video"
     @requireNonEmpty: start_time$, "Start time"
-    @requireNonEmpty: end_time$,   "End time / Duration"
+    @requireNonEmpty: end_time_or_duration$, "End time / Duration"
 
+    @hmsToSec: start_time$
+    cutStart = hmsToSec.seconds
+    @hmsToSec: end_time_or_duration$
+    cutEndOrDur = hmsToSec.seconds
     if use_duration_not_end
-        range$ = " -t "  + end_time$
+        cutDur = cutEndOrDur
     else
-        range$ = " -to " + end_time$
+        cutDur = cutEndOrDur - cutStart
     endif
+    if cutDur <= 0
+        exitScript: "Cut duration must be greater than zero."
+    endif
+    cutStart$ = fixed$(cutStart, 6)
+    cutDur$ = fixed$(cutDur, 6)
+    appendInfoLine: "Requested stream-copy range: start ", cutStart$, " s | duration ", cutDur$, " s"
+    appendInfoLine: "Note: stream copy can preserve preroll from an earlier keyframe."
 
     cmd$ = ffmpeg_cmd$ + " -y"
-        ... + " -ss " + start_time$
-        ... + " -i "  + q$ + input_video$ + q$
-        ... + range$
+        ... + " -ss " + cutStart$
+        ... + " -i " + q$ + input_video$ + q$
+        ... + " -t " + cutDur$
+        ... + " -map 0"
         ... + " -c copy"
         ... + " " + q$ + output_file$ + q$
-
     @runFFmpeg: cmd$, output_file$
 
 elsif operation = 4
@@ -531,7 +635,13 @@ elsif operation = 4
     # ----------------------------------------------------------
     @requireFile: input_audio$, "audio"
 
-    size$ = string$(round(width)) + "x" + string$(round(height))
+    @makeEvenDimensions: width, height
+    vidW = makeEvenDimensions.w2
+    vidH = makeEvenDimensions.h2
+    if vidW <> round(width) or vidH <> round(height)
+        appendInfoLine: "Video dimensions adjusted to even values: ", vidW, "x", vidH
+    endif
+    size$ = string$(vidW) + "x" + string$(vidH)
     fps$  = string$(round(frame_rate))
 
     cmd$ = ffmpeg_cmd$ + " -y"
@@ -542,9 +652,10 @@ elsif operation = 4
         ... + ":mode=line:rate=" + fps$
         ... + "[vout]" + q$
         ... + " -map [vout] -map [aout]"
-        ... + " -c:v libx264 -preset fast -crf 18"
+        ... + " -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p"
         ... + " -c:a aac -b:a 192k"
         ... + " -r " + fps$
+        ... + " -shortest"
         ... + " " + q$ + output_file$ + q$
 
     @runFFmpeg: cmd$, output_file$
@@ -555,7 +666,13 @@ elsif operation = 5
     # ----------------------------------------------------------
     @requireFile: input_audio$, "audio"
 
-    size$ = string$(round(width)) + "x" + string$(round(height))
+    @makeEvenDimensions: width, height
+    vidW = makeEvenDimensions.w2
+    vidH = makeEvenDimensions.h2
+    if vidW <> round(width) or vidH <> round(height)
+        appendInfoLine: "Video dimensions adjusted to even values: ", vidW, "x", vidH
+    endif
+    size$ = string$(vidW) + "x" + string$(vidH)
     fps$  = string$(round(frame_rate))
 
     cmd$ = ffmpeg_cmd$ + " -y"
@@ -564,119 +681,115 @@ elsif operation = 5
         ... + "[0:a]asplit=2[aspec][aout];"
         ... + "[aspec]showspectrum=s=" + size$
         ... + ":slide=scroll:mode=combined"
-        ... + ":color=intensity:scale=log[vout]" + q$
+        ... + ":color=intensity:scale=log,fps=" + fps$ + "[vout]" + q$
         ... + " -map [vout] -map [aout]"
-        ... + " -c:v libx264 -preset fast -crf 18"
+        ... + " -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p"
         ... + " -c:a aac -b:a 192k"
         ... + " -r " + fps$
+        ... + " -shortest"
         ... + " " + q$ + output_file$ + q$
 
     @runFFmpeg: cmd$, output_file$
 
 elsif operation = 6
     # ----------------------------------------------------------
-    # Op 6: EXPORT PRAAT SELECTION AS VIDEO SEGMENT
+    # Op 6: EXPORT PRAAT SOUND RANGE AS VIDEO SEGMENT
+    # Re-encodes the cut video for accurate timing, then optionally
+    # replaces its audio with the matching Praat Sound range.
     # ----------------------------------------------------------
-    # Restore the Sound captured immediately after the form. Temporary
-    # Strings objects created during file auto-detection change selection.
     selectObject: op6_sound
-
     @requireFile: input_video$, "video"
     @requireNonEmpty: start_time$, "Start time"
-    @requireNonEmpty: end_time$,   "End time"
-
+    @requireNonEmpty: end_time_or_duration$, "End time / Duration"
     sel_sound = selected("Sound")
 
-    # Derive intermediate paths from the output path
-    dotPos = rindex(output_file$, ".")
-    if dotPos > 0
-        out_base$ = left$(output_file$, dotPos - 1)
-        out_ext$  = mid$(output_file$, dotPos, length(output_file$))
-    else
-        out_base$ = output_file$
-        out_ext$  = ".mp4"
-    endif
-
-    cut_video$ = out_base$ + "_cut" + out_ext$
-    praat_wav$ = out_base$ + "_praat_sel.wav"
-
-    appendInfoLine: "Intermediate files:"
-    appendInfoLine: "  ", cut_video$
-    appendInfoLine: "  ", praat_wav$
-    appendInfoLine: ""
-
-    # (a) Cut the source video to the selected time range
-    appendInfoLine: "Step (a): Cutting video segment..."
-    if use_duration_not_end
-        cut_range$ = " -t " + end_time$
-    else
-        cut_range$ = " -to " + end_time$
-    endif
-
-    cmd_a$ = ffmpeg_cmd$ + " -y"
-        ... + " -ss " + start_time$
-        ... + " -i "  + q$ + input_video$ + q$
-        ... + cut_range$
-        ... + " -c copy"
-        ... + " " + q$ + cut_video$ + q$
-
-    @runFFmpeg: cmd_a$, cut_video$
-
-    # (b) Export the Sound's time range as a WAV file
-    appendInfoLine: "Step (b): Exporting Praat selection as WAV..."
-
     @hmsToSec: start_time$
-    sel_t1 = hmsToSec.seconds
-    @hmsToSec: end_time$
-    end_or_duration = hmsToSec.seconds
-
+    reqStart = hmsToSec.seconds
+    @hmsToSec: end_time_or_duration$
+    reqEndOrDur = hmsToSec.seconds
     if use_duration_not_end
-        if end_or_duration <= 0
-            exitScript: "Duration must be greater than zero."
-        endif
-        sel_t2 = sel_t1 + end_or_duration
+        reqDur = reqEndOrDur
     else
-        sel_t2 = end_or_duration
+        reqDur = reqEndOrDur - reqStart
+    endif
+    if reqDur <= 0
+        exitScript: "Operation 6 duration must be greater than zero."
     endif
 
     selectObject: sel_sound
-    snd_dur = Get total duration
-
-    if sel_t1 < 0
-        sel_t1 = 0
+    sndXmin = Get start time
+    sndXmax = Get end time
+    sndFs = Get sampling frequency
+    sndDur = sndXmax - sndXmin
+    relT1 = reqStart
+    relT2 = reqStart + reqDur
+    if relT2 > sndDur
+        relT2 = sndDur
     endif
-    if sel_t2 > snd_dur
-        sel_t2 = snd_dur
+    if relT1 >= relT2
+        exitScript: "Requested range does not overlap the selected Sound."
     endif
-    if sel_t1 >= sel_t2
-        exitScript: "Start time is not before end time within the selected Sound."
-    endif
-
-    if dry_run = 1
-        appendInfoLine: "Dry run: skipping Praat WAV export step."
-        appendInfoLine: ""
-    else
-        selectObject: sel_sound
-        part_snd = Extract part: sel_t1, sel_t2, "rectangular", 1.0, "yes"
-        Save as WAV file: praat_wav$
-        removeObject: part_snd
-        appendInfoLine: "  Saved: ", praat_wav$
+    soundT1 = sndXmin + relT1
+    soundT2 = sndXmin + relT2
+    actualDur = relT2 - relT1
+    if abs(actualDur - reqDur) > 0.5 / sndFs
+        appendInfoLine: "Praat range clipped to Sound end: actual duration ", fixed$(actualDur, 6), " s"
     endif
 
-    # (c) Optionally replace the cut video's audio with the Praat WAV
+    videoDur = reqDur
     if replace_audio_in_cut
-        appendInfoLine: "Step (c): Replacing cut video audio with Praat WAV..."
+        videoDur = actualDur
+    endif
+
+    dotPos = rindex(output_file$, ".")
+    out_base$ = left$(output_file$, dotPos - 1)
+    if replace_audio_in_cut
+        cut_video$ = out_base$ + "_cut.mp4"
+    else
+        cut_video$ = output_file$
+    endif
+    praat_wav$ = out_base$ + "_praat_sel.wav"
+
+    appendInfoLine: "Range: video start ", fixed$(reqStart, 6), " s | duration ", fixed$(videoDur, 6), " s"
+    appendInfoLine: "Praat Sound relative range: ", fixed$(relT1, 6), "-", fixed$(relT2, 6), " s | object xmin ", fixed$(sndXmin, 6), " s"
+
+    appendInfoLine: "Step (a): Creating accurate video segment..."
+    cmd_a$ = ffmpeg_cmd$ + " -y"
+        ... + " -i " + q$ + input_video$ + q$
+        ... + " -ss " + fixed$(reqStart, 6)
+        ... + " -t " + fixed$(videoDur, 6)
+        ... + " -map 0:v:0 -map 0:a?"
+        ... + " -vf " + q$ + "scale=trunc(iw/2)*2:trunc(ih/2)*2" + q$
+        ... + " -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p"
+        ... + " -c:a aac -b:a 192k"
+        ... + " " + q$ + cut_video$ + q$
+    @runFFmpeg: cmd_a$, cut_video$
+
+    if replace_audio_in_cut
+        appendInfoLine: "Step (b): Exporting Praat Sound range as WAV..."
+        if dry_run = 1
+            appendInfoLine: "Dry run: skipping Praat WAV export step."
+            appendInfoLine: ""
+        else
+            selectObject: sel_sound
+            part_snd = Extract part: soundT1, soundT2, "rectangular", 1.0, "yes"
+            Save as WAV file: praat_wav$
+            removeObject: part_snd
+            appendInfoLine: "  Saved: ", praat_wav$
+        endif
+
+        appendInfoLine: "Step (c): Replacing segment audio with Praat WAV..."
         cmd_c$ = ffmpeg_cmd$ + " -y"
-            ... + " -i " + q$ + cut_video$  + q$
-            ... + " -i " + q$ + praat_wav$  + q$
+            ... + " -i " + q$ + cut_video$ + q$
+            ... + " -i " + q$ + praat_wav$ + q$
             ... + " -map 0:v:0 -map 1:a:0"
-            ... + " -c:v copy -c:a aac -b:a 192k"
-            ... + " -shortest"
+            ... + " -c:v copy -c:a aac -b:a 192k -shortest"
             ... + " " + q$ + output_file$ + q$
         @runFFmpeg: cmd_c$, output_file$
+        final_output$ = output_file$
     else
-        appendInfoLine: "Replace audio skipped; final output is the cut video:"
-        appendInfoLine: "  ", cut_video$
+        final_output$ = cut_video$
+        appendInfoLine: "Audio replacement disabled; final output is the accurate cut."
     endif
 
 elsif operation = 7
@@ -691,6 +804,7 @@ elsif operation = 7
         ... + " -i " + q$ + input_image$ + q$
         ... + " -i " + q$ + input_audio$ + q$
         ... + " -map 0:v -map 1:a"
+        ... + " -vf " + q$ + "scale=trunc(iw/2)*2:trunc(ih/2)*2" + q$
         ... + " -c:v libx264 -preset fast -crf 18"
         ... + " -tune stillimage"
         ... + " -pix_fmt yuv420p"
@@ -710,8 +824,8 @@ elsif operation = 8
     cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_video$    + q$
         ... + " -i " + q$ + input_subtitle$ + q$
-        ... + " -map 0:v -map 0:a -map 1:s"
-        ... + " -c:v copy -c:a copy"
+        ... + " -map 0:v:0 -map 0:a? -map 1:s:0"
+        ... + " -c:v copy -c:a aac -b:a 192k"
         ... + " -c:s mov_text"
         ... + " " + q$ + output_file$ + q$
 
@@ -733,9 +847,9 @@ elsif operation = 9
 
     cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_video$ + q$
-        ... + " -vf subtitles=" + q$ + sub_path_filter$ + q$
-        ... + " -c:v libx264 -preset fast -crf 18"
-        ... + " -c:a copy"
+        ... + " -vf " + q$ + "subtitles=" + sub_path_filter$ + ",scale=trunc(iw/2)*2:trunc(ih/2)*2" + q$
+        ... + " -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p"
+        ... + " -c:a aac -b:a 192k"
         ... + " " + q$ + output_file$ + q$
 
     @runFFmpeg: cmd$, output_file$
@@ -771,9 +885,9 @@ elsif operation = 11
 
     cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_video$ + q$
-        ... + " -vf fps=" + string$(target_fps)
-        ... + " -c:v libx264 -preset fast -crf 18"
-        ... + " -c:a copy"
+        ... + " -vf " + q$ + "fps=" + string$(target_fps) + ",scale=trunc(iw/2)*2:trunc(ih/2)*2" + q$
+        ... + " -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p"
+        ... + " -c:a aac -b:a 192k"
         ... + " " + q$ + output_file$ + q$
 
     @runFFmpeg: cmd$, output_file$
@@ -781,28 +895,42 @@ elsif operation = 11
 elsif operation = 12
     # ----------------------------------------------------------
     # Op 12: ANALYSIS CONTACT VIDEO
+    # Top = waveform; bottom = scrolling logarithmic spectrum.
     # ----------------------------------------------------------
     @requireFile: input_audio$, "audio"
 
-    size$ = string$(round(width)) + "x" + string$(round(height))
-    fps$  = string$(round(frame_rate))
+    @makeEvenDimensions: width, height
+    vidW = makeEvenDimensions.w2
+    vidH = makeEvenDimensions.h2
+    halfH = floor(vidH / 2)
+    if halfH < 2
+        exitScript: "Height is too small for a two-panel analysis video."
+    endif
+    vidH = 2 * halfH
+    if vidW <> round(width) or vidH <> round(height)
+        appendInfoLine: "Video dimensions adjusted for encoder/stack: ", vidW, "x", vidH
+    endif
+    panelSize$ = string$(vidW) + "x" + string$(halfH)
+    fps$ = string$(round(frame_rate))
 
     cmd$ = ffmpeg_cmd$ + " -y"
         ... + " -i " + q$ + input_audio$ + q$
         ... + " -filter_complex " + q$
-        ... + "[0:a]asplit=2[awav][aout];"
-        ... + "[awav]showwaves=s=" + size$
-        ... + ":mode=p2p:rate=" + fps$
-        ... + ":colors=0x00cccc[vout]" + q$
+        ... + "[0:a]asplit=3[awav][aspec][aout];"
+        ... + "[awav]showwaves=s=" + panelSize$ + ":mode=p2p:rate=" + fps$ + ":colors=0x00cccc[wv];"
+        ... + "[aspec]showspectrum=s=" + panelSize$ + ":slide=scroll:mode=combined:color=intensity:scale=log,fps=" + fps$ + "[sp];"
+        ... + "[wv][sp]vstack=inputs=2[vout]" + q$
         ... + " -map [vout] -map [aout]"
-        ... + " -c:v libx264 -preset fast -crf 18"
-        ... + " -c:a aac -b:a 192k"
-        ... + " -r " + fps$
+        ... + " -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p"
+        ... + " -c:a aac -b:a 192k -r " + fps$
+        ... + " -shortest"
         ... + " " + q$ + output_file$ + q$
-
     @runFFmpeg: cmd$, output_file$
 
 endif
 
 appendInfoLine: ""
+if operation = 6
+    appendInfoLine: "Final output: ", final_output$
+endif
 appendInfoLine: "=== DONE ==="

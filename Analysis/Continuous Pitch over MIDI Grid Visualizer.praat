@@ -1,7 +1,30 @@
 # ========================================================================================
 # Praat AudioTools - Continuous_Pitch_over_MIDI_Grid_Visualizer.praat
 # Author: Shai Cohen
-# Version: 2.1 (2025) - Fixed array syntax
+# Version: 2.2 (2026)
+# License: MIT License
+#
+# Description:
+#   Visualizes measured continuous F0 on a 12-TET MIDI reference grid.
+#   The pitch curve is NOT quantized: m = 69 + 12*log2(f/440).
+#   Unvoiced frames remain gaps. Loudness may control colour, width,
+#   or dot size. Diagnostic panels show cents deviation from the nearest
+#   equal-tempered note and the measured intensity/voicing context.
+#
+# Changelog v2.2:
+#   - Analysis is performed on the strongest-RMS channel for multichannel input,
+#     avoiding phase-cancelling fold-downs while preserving the original Sound.
+#   - Smoothing is now voiced-segment aware: it never borrows values across an
+#     unvoiced gap.
+#   - Rebuilt visualization in the AudioTools 8-unit house width with explicit
+#     title strips and separate data viewports.
+#   - Added measured cents-deviation and intensity/voicing diagnostic panels.
+#   - Fixed Grayscale Loudness so louder frames are darker/more visible.
+#   - Renamed misleading "Octave Spiral" colour mode to
+#     "PitchClass + Octave Brightness" (it is a colour mapping, not a spiral).
+#   - Adaptive time-grid spacing prevents dense vertical clutter on long sounds.
+#   - Added Play_sound option; playback is no longer unconditional.
+#   - Added validation for manual MIDI and intensity mapping ranges.
 # ========================================================================================
 
 # === Input Validation ===
@@ -12,45 +35,67 @@ endif
 soundID = selected("Sound")
 sound$ = selected$("Sound")
 
-form Continuous Pitch MIDI Grid Visualizer v2.1
+form Continuous Pitch MIDI Grid Visualizer v2.2
     comment === Analysis ===
-    positive Pitch_floor 75
-    positive Pitch_ceiling 600
-    positive Time_step 0.01
-    comment === MIDI Range ===
+    positive Pitch_floor_Hz 75
+    positive Pitch_ceiling_Hz 600
+    positive Time_step_s 0.01
+    comment (multichannel: strongest-RMS channel is analyzed)
+    comment === MIDI Reference Range ===
     boolean Auto_midi_range 1
     integer Manual_midi_min 48
     integer Manual_midi_max 84
     positive Midi_padding 3
-    comment === Smoothing ===
+    comment === Smoothing (continuous MIDI pitch) ===
     optionmenu Smoothing: 1
         option No smoothing
         option Median 3-frame
         option Median 5-frame
-        option Moving average
-    comment === Color Scheme ===
+        option Moving average 3-frame
+    comment === Colour Encoding ===
     optionmenu Color_scheme: 1
         option Pitch+Loudness Rainbow
         option PitchClass+Loudness Wheel
         option Grayscale Loudness
         option Intensity Heatmap
-        option Octave Spiral
-    comment === Line Style ===
+        option PitchClass + Octave Brightness
+    comment === Mark Style ===
     optionmenu Line_style: 1
         option Thin continuous line
         option Thickness varies with loudness
         option Dots with size varies with loudness
-    positive Min_dot_size 0.8
-    positive Max_dot_size 3.5
+    positive Min_dot_size_mm 0.8
+    positive Max_dot_size_mm 3.5
     comment === Display ===
     boolean Show_all_semitones 1
     boolean Show_note_labels 1
     boolean Show_time_grid 0
-    comment === Intensity ===
-    positive Intensity_min_db 40
-    positive Intensity_max_db 80
+    comment === Loudness Mapping ===
+    positive Intensity_min_dB 40
+    positive Intensity_max_dB 80
     boolean Use_log_loudness 1
+    comment === Output ===
+    boolean Play_sound 0
 endform
+
+# --- Validation ---
+if pitch_ceiling_Hz <= pitch_floor_Hz
+    pitch_ceiling_Hz = pitch_floor_Hz * 2
+endif
+if time_step_s <= 0
+    time_step_s = 0.01
+endif
+if manual_midi_max <= manual_midi_min
+    manual_midi_max = manual_midi_min + 12
+endif
+if intensity_max_dB <= intensity_min_dB
+    intensity_max_dB = intensity_min_dB + 20
+endif
+if max_dot_size_mm < min_dot_size_mm
+    tempDot = max_dot_size_mm
+    max_dot_size_mm = min_dot_size_mm
+    min_dot_size_mm = tempDot
+endif
 
 # ========================================================================================
 # HELPER PROCEDURES
@@ -65,24 +110,26 @@ procedure hzToMidi: .hz
 endproc
 
 procedure mapToRange: .value, .fromMin, .fromMax, .toMin, .toMax
-    .value = max(.fromMin, min(.fromMax, .value))
-    .result = .toMin + (.value - .fromMin) / (.fromMax - .fromMin) * (.toMax - .toMin)
+    if .fromMax <= .fromMin
+        .result = (.toMin + .toMax) / 2
+    else
+        .value2 = max(.fromMin, min(.fromMax, .value))
+        .result = .toMin + (.value2 - .fromMin) / (.fromMax - .fromMin) * (.toMax - .toMin)
+    endif
 endproc
 
-procedure logCompress: .db, .minDb, .maxDb
-    .normalized = (.db - .minDb) / (.maxDb - .minDb)
-    .normalized = max(0, min(1, .normalized))
-    if .normalized > 0
-        .result = (log10(.normalized * 9 + 1)) / log10(10)
-    else
-        .result = 0
+procedure loudnessNorm: .db
+    .norm = (.db - intensity_min_dB) / (intensity_max_dB - intensity_min_dB)
+    .norm = max(0, min(1, .norm))
+    if use_log_loudness
+        .norm = log10(.norm * 9 + 1)
     endif
+    .result = .norm
 endproc
 
 procedure getMidiNoteName: .midi
     .noteClass = .midi - 12 * floor(.midi / 12)
     .octave = floor(.midi / 12) - 1
-    
     if .noteClass = 0
         .noteName$ = "C"
     elsif .noteClass = 1
@@ -105,117 +152,20 @@ procedure getMidiNoteName: .midi
         .noteName$ = "A"
     elsif .noteClass = 10
         .noteName$ = "A#"
-    elsif .noteClass = 11
+    else
         .noteName$ = "B"
     endif
-    
     .fullName$ = .noteName$ + string$(.octave)
-endproc
-
-procedure medianFilter3: .i
-    if .i = 1 or .i = numFrames
-        .result = midiNote_'.i'
-    else
-        .iPrev = .i - 1
-        .iNext = .i + 1
-        .valPrev = midiNote_'.iPrev'
-        .valCurr = midiNote_'.i'
-        .valNext = midiNote_'.iNext'
-        
-        if .valPrev <> undefined and .valCurr <> undefined and .valNext <> undefined
-            .a = .valPrev
-            .b = .valCurr
-            .c = .valNext
-            
-            if .a <= .b and .b <= .c
-                .result = .b
-            elsif .a <= .c and .c <= .b
-                .result = .c
-            elsif .b <= .a and .a <= .c
-                .result = .a
-            elsif .b <= .c and .c <= .a
-                .result = .c
-            elsif .c <= .a and .a <= .b
-                .result = .a
-            else
-                .result = .b
-            endif
-        else
-            .result = midiNote_'.i'
-        endif
-    endif
-endproc
-
-procedure medianFilter5: .i
-    if .i <= 2 or .i >= numFrames - 1
-        .result = midiNote_'.i'
-    else
-        # Collect up to 5 values
-        .count = 0
-        for .offset from -2 to 2
-            .idx = .i + .offset
-            .val = midiNote_'.idx'
-            if .val <> undefined
-                .count = .count + 1
-                .sortVal_'.count' = .val
-            endif
-        endfor
-        
-        if .count >= 3
-            # Bubble sort
-            for .pass from 1 to .count - 1
-                for .k from 1 to .count - .pass
-                    .k1 = .k + 1
-                    .v1 = .sortVal_'.k'
-                    .v2 = .sortVal_'.k1'
-                    if .v1 > .v2
-                        .sortVal_'.k' = .v2
-                        .sortVal_'.k1' = .v1
-                    endif
-                endfor
-            endfor
-            .medianIdx = floor(.count / 2) + 1
-            .result = .sortVal_'.medianIdx'
-        else
-            .result = midiNote_'.i'
-        endif
-    endif
-endproc
-
-procedure movingAverage: .i
-    if .i = 1 or .i = numFrames
-        .result = midiNote_'.i'
-    else
-        .count = 0
-        .sum = 0
-        for .offset from -1 to 1
-            .idx = .i + .offset
-            .val = midiNote_'.idx'
-            if .val <> undefined
-                .sum = .sum + .val
-                .count = .count + 1
-            endif
-        endfor
-        if .count > 0
-            .result = .sum / .count
-        else
-            .result = midiNote_'.i'
-        endif
-    endif
 endproc
 
 procedure pitchClassToRGB: .midi, .brightness
     .noteClass = .midi - 12 * floor(.midi / 12)
-    .hue = .noteClass / 12.0
-    
-    .h = .hue * 360
-    .s = 0.8
+    .h = (.noteClass / 12.0) * 360
+    .s = 0.80
     .v = .brightness
-    
     .c = .v * .s
     .x = .c * (1 - abs(((.h / 60) mod 2) - 1))
     .m = .v - .c
-    
     if .h < 60
         .r = .c
         .g = .x
@@ -241,7 +191,6 @@ procedure pitchClassToRGB: .midi, .brightness
         .g = 0
         .b = .x
     endif
-    
     .red = .r + .m
     .green = .g + .m
     .blue = .b + .m
@@ -249,16 +198,12 @@ endproc
 
 procedure pitchHeightToRGB: .midi, .brightness
     @mapToRange: .midi, currentMidiMin, currentMidiMax, 0, 1
-    .hue = mapToRange.result
-    
-    .h = (1 - .hue) * 240
-    .s = 0.9
+    .h = (1 - mapToRange.result) * 240
+    .s = 0.90
     .v = .brightness
-    
     .c = .v * .s
     .x = .c * (1 - abs(((.h / 60) mod 2) - 1))
     .m = .v - .c
-    
     if .h < 60
         .r = .c
         .g = .x
@@ -284,47 +229,39 @@ procedure pitchHeightToRGB: .midi, .brightness
         .g = 0
         .b = .x
     endif
-    
     .red = .r + .m
     .green = .g + .m
     .blue = .b + .m
 endproc
 
-procedure octaveSpiralRGB: .midi, .brightness
+procedure octaveBrightnessRGB: .midi, .brightness
     .noteClass = .midi - 12 * floor(.midi / 12)
     .octave = floor(.midi / 12) - 1
-    
-    .hue = (.noteClass / 12.0) * 360
-    
-    .octaveFactor = (.octave - 2) / 6.0
-    .octaveFactor = max(0, min(1, .octaveFactor))
-    
-    .finalBrightness = .brightness * (0.4 + 0.6 * .octaveFactor)
-    
+    .h = (.noteClass / 12.0) * 360
+    @mapToRange: .midi, currentMidiMin, currentMidiMax, 0, 1
+    .heightNorm = mapToRange.result
+    .v = .brightness * (0.45 + 0.55 * .heightNorm)
     .s = 0.85
-    .v = .finalBrightness
-    
     .c = .v * .s
-    .x = .c * (1 - abs(((.hue / 60) mod 2) - 1))
+    .x = .c * (1 - abs(((.h / 60) mod 2) - 1))
     .m = .v - .c
-    
-    if .hue < 60
+    if .h < 60
         .r = .c
         .g = .x
         .b = 0
-    elsif .hue < 120
+    elsif .h < 120
         .r = .x
         .g = .c
         .b = 0
-    elsif .hue < 180
+    elsif .h < 180
         .r = 0
         .g = .c
         .b = .x
-    elsif .hue < 240
+    elsif .h < 240
         .r = 0
         .g = .x
         .b = .c
-    elsif .hue < 300
+    elsif .h < 300
         .r = .x
         .g = 0
         .b = .c
@@ -333,86 +270,260 @@ procedure octaveSpiralRGB: .midi, .brightness
         .g = 0
         .b = .x
     endif
-    
     .red = .r + .m
     .green = .g + .m
     .blue = .b + .m
 endproc
 
+procedure chooseColour: .midi, .db
+    @loudnessNorm: .db
+    .loud = loudnessNorm.result
+    .brightness = 0.30 + 0.70 * .loud
+    if color_scheme = 1
+        @pitchHeightToRGB: .midi, .brightness
+        .r = pitchHeightToRGB.red
+        .g = pitchHeightToRGB.green
+        .b = pitchHeightToRGB.blue
+    elsif color_scheme = 2
+        @pitchClassToRGB: .midi, .brightness
+        .r = pitchClassToRGB.red
+        .g = pitchClassToRGB.green
+        .b = pitchClassToRGB.blue
+    elsif color_scheme = 3
+        # Louder = darker, so high loudness remains visible on white.
+        .shade = 0.82 - 0.72 * .loud
+        .r = .shade
+        .g = .shade
+        .b = .shade
+    elsif color_scheme = 4
+        .heat = .loud
+        if .heat < 0.33
+            .r = 0
+            .g = .heat * 3
+            .b = 1 - .heat * 3
+        elsif .heat < 0.66
+            .local = (.heat - 0.33) * 3
+            .r = .local
+            .g = 1
+            .b = 0
+        else
+            .local = (.heat - 0.66) * 3
+            .r = 1
+            .g = 1 - .local
+            .b = 0
+        endif
+    else
+        @octaveBrightnessRGB: .midi, .brightness
+        .r = octaveBrightnessRGB.red
+        .g = octaveBrightnessRGB.green
+        .b = octaveBrightnessRGB.blue
+    endif
+    .colour$ = "{" + fixed$(.r, 5) + ", " + fixed$(.g, 5) + ", " + fixed$(.b, 5) + "}"
+    .loudNorm = .loud
+endproc
+
 # ========================================================================================
-# MAIN SCRIPT
+# MAIN ANALYSIS
 # ========================================================================================
 
 selectObject: soundID
 duration = Get total duration
 startTime = Get start time
 endTime = Get end time
+nChannels = Get number of channels
 
 clearinfo
-writeInfoLine: "=== Continuous Pitch MIDI Grid Visualizer v2.1 ==="
+writeInfoLine: "=== Continuous Pitch MIDI Grid Visualizer v2.2 ==="
 appendInfoLine: "Sound: ", sound$
-appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
-appendInfoLine: ""
+appendInfoLine: "Duration: ", fixed$(duration, 3), " s | Channels: ", nChannels
 
-# ========================================================================================
-# STEP 1: Extract Pitch and Intensity
-# ========================================================================================
+# --- Strongest-RMS analysis channel ---
+analysisChannel = 1
+strongestRMS = -1
+if nChannels > 1
+    for ch from 1 to nChannels
+        selectObject: soundID
+        Extract one channel: ch
+        tmpCh = selected("Sound")
+        rmsCh = Get root-mean-square: 0, 0
+        if rmsCh > strongestRMS
+            strongestRMS = rmsCh
+            analysisChannel = ch
+        endif
+        removeObject: tmpCh
+    endfor
+    selectObject: soundID
+    Extract one channel: analysisChannel
+    analysisSound = selected("Sound")
+    appendInfoLine: "Analysis channel: ", analysisChannel, " (strongest RMS)"
+else
+    analysisSound = soundID
+    strongestRMS = Get root-mean-square: 0, 0
+    appendInfoLine: "Analysis channel: mono"
+endif
 
-appendInfoLine: "Extracting pitch..."
-selectObject: soundID
-pitchID = To Pitch: time_step, pitch_floor, pitch_ceiling
-
-appendInfoLine: "Extracting intensity..."
-selectObject: soundID
-intensityID = To Intensity: pitch_floor, time_step, "yes"
-
-# ========================================================================================
-# STEP 2: Collect Data
-# ========================================================================================
-
-appendInfoLine: "Collecting data..."
+appendInfoLine: "Extracting pitch and intensity..."
+selectObject: analysisSound
+pitchID = To Pitch: time_step_s, pitch_floor_Hz, pitch_ceiling_Hz
+selectObject: analysisSound
+intensityID = To Intensity: pitch_floor_Hz, time_step_s, "yes"
 
 selectObject: pitchID
 numFrames = Get number of frames
+if numFrames < 2
+    exitScript: "Pitch analysis produced too few frames. Increase duration or reduce Time step."
+endif
 
-midiMinFound = 1000
-midiMaxFound = 0
+voicedCount = 0
+intFoundMin = 1e9
+intFoundMax = -1e9
 
 for i from 1 to numFrames
     selectObject: pitchID
     t_'i' = Get time from frame number: i
     f0_'i' = Get value in frame: i, "Hertz"
-    
-    f0val = f0_'i'
-    if f0val <> undefined
-        @hzToMidi: f0val
+    if f0_'i' <> undefined and f0_'i' > 0
+        @hzToMidi: f0_'i'
+        midiRaw_'i' = hzToMidi.midi
         midiNote_'i' = hzToMidi.midi
-        quantizedMidi_'i' = round(hzToMidi.midi)
         voiced_'i' = 1
-        
-        if midiNote_'i' < midiMinFound
-            midiMinFound = midiNote_'i'
-        endif
-        if midiNote_'i' > midiMaxFound
-            midiMaxFound = midiNote_'i'
-        endif
+        voicedCount += 1
     else
+        midiRaw_'i' = undefined
         midiNote_'i' = undefined
-        quantizedMidi_'i' = undefined
         voiced_'i' = 0
     endif
-    
+
     selectObject: intensityID
     intensity_'i' = Get value at time: t_'i', "Cubic"
     if intensity_'i' = undefined
-        intensity_'i' = intensity_min_db
+        intensity_'i' = intensity_min_dB
+    endif
+    if intensity_'i' < intFoundMin
+        intFoundMin = intensity_'i'
+    endif
+    if intensity_'i' > intFoundMax
+        intFoundMax = intensity_'i'
     endif
 endfor
 
-# Set MIDI range
-if auto_midi_range and midiMinFound < 1000
+# --- Voiced-segment-aware smoothing ---
+if smoothing > 1
+    appendInfoLine: "Smoothing: ", smoothing$
+    for i from 1 to numFrames
+        smoothedMidi_'i' = midiNote_'i'
+    endfor
+
+    for i from 1 to numFrames
+        if voiced_'i' = 1
+            if smoothing = 2
+                if i > 1 and i < numFrames
+                    im1 = i - 1
+                    ip1 = i + 1
+                    if voiced_'im1' = 1 and voiced_'ip1' = 1
+                        a = midiNote_'im1'
+                        b = midiNote_'i'
+                        c = midiNote_'ip1'
+                        if a > b
+                            temp = a
+                            a = b
+                            b = temp
+                        endif
+                        if b > c
+                            temp = b
+                            b = c
+                            c = temp
+                        endif
+                        if a > b
+                            temp = a
+                            a = b
+                            b = temp
+                        endif
+                        smoothedMidi_'i' = b
+                    endif
+                endif
+            elsif smoothing = 3
+                if i > 2 and i < numFrames - 1
+                    im2 = i - 2
+                    im1 = i - 1
+                    ip1 = i + 1
+                    ip2 = i + 2
+                    if voiced_'im2' = 1 and voiced_'im1' = 1 and voiced_'ip1' = 1 and voiced_'ip2' = 1
+                        sort_1 = midiNote_'im2'
+                        sort_2 = midiNote_'im1'
+                        sort_3 = midiNote_'i'
+                        sort_4 = midiNote_'ip1'
+                        sort_5 = midiNote_'ip2'
+                        for pass from 1 to 4
+                            for k from 1 to 5 - pass
+                                k1 = k + 1
+                                if sort_'k' > sort_'k1'
+                                    temp = sort_'k'
+                                    sort_'k' = sort_'k1'
+                                    sort_'k1' = temp
+                                endif
+                            endfor
+                        endfor
+                        smoothedMidi_'i' = sort_3
+                    endif
+                endif
+            else
+                if i > 1 and i < numFrames
+                    im1 = i - 1
+                    ip1 = i + 1
+                    if voiced_'im1' = 1 and voiced_'ip1' = 1
+                        smoothedMidi_'i' = (midiNote_'im1' + midiNote_'i' + midiNote_'ip1') / 3
+                    endif
+                endif
+            endif
+        endif
+    endfor
+
+    for i from 1 to numFrames
+        if voiced_'i' = 1
+            midiNote_'i' = smoothedMidi_'i'
+        endif
+    endfor
+else
+    appendInfoLine: "Smoothing: none"
+endif
+
+# --- Measured MIDI range and deviation statistics after smoothing ---
+midiMinFound = 1000
+midiMaxFound = -1000
+sumAbsCents = 0
+maxAbsCents = 0
+if voicedCount > 0
+    for i from 1 to numFrames
+        if voiced_'i' = 1
+            m = midiNote_'i'
+            if m < midiMinFound
+                midiMinFound = m
+            endif
+            if m > midiMaxFound
+                midiMaxFound = m
+            endif
+            cents_'i' = 100 * (m - round(m))
+            absC = abs(cents_'i')
+            sumAbsCents += absC
+            if absC > maxAbsCents
+                maxAbsCents = absC
+            endif
+        else
+            cents_'i' = undefined
+        endif
+    endfor
+    meanAbsCents = sumAbsCents / voicedCount
+else
+    meanAbsCents = 0
+endif
+
+if auto_midi_range and voicedCount > 0
     currentMidiMin = floor(midiMinFound) - midi_padding
     currentMidiMax = ceiling(midiMaxFound) + midi_padding
+    if currentMidiMax <= currentMidiMin
+        currentMidiMax = currentMidiMin + 12
+    endif
     appendInfoLine: "Auto MIDI range: ", currentMidiMin, " - ", currentMidiMax
 else
     currentMidiMin = manual_midi_min
@@ -420,266 +531,295 @@ else
     appendInfoLine: "Manual MIDI range: ", currentMidiMin, " - ", currentMidiMax
 endif
 
-# ========================================================================================
-# STEP 3: Apply Smoothing
-# ========================================================================================
+voicedPercent = 100 * voicedCount / numFrames
+appendInfoLine: "Voiced frames: ", voicedCount, "/", numFrames, " (", fixed$(voicedPercent, 1), "%)"
+if voicedCount > 0
+    appendInfoLine: "Measured continuous MIDI span: ", fixed$(midiMinFound, 2), " - ", fixed$(midiMaxFound, 2)
+    appendInfoLine: "Mean |deviation from nearest 12-TET note|: ", fixed$(meanAbsCents, 1), " cents"
+endif
 
-if smoothing > 1
-    appendInfoLine: "Applying smoothing..."
-    
-    # Copy to smoothed array
-    for i from 1 to numFrames
-        smoothedMidi_'i' = midiNote_'i'
-    endfor
-    
-    # Apply filter
-    for i from 1 to numFrames
-        v = voiced_'i'
-        if v = 1
-            if smoothing = 2
-                @medianFilter3: i
-                smoothedMidi_'i' = medianFilter3.result
-            elsif smoothing = 3
-                @medianFilter5: i
-                smoothedMidi_'i' = medianFilter5.result
-            elsif smoothing = 4
-                @movingAverage: i
-                smoothedMidi_'i' = movingAverage.result
-            endif
-        endif
-    endfor
-    
-    # Copy back
-    for i from 1 to numFrames
-        v = voiced_'i'
-        if v = 1
-            midiNote_'i' = smoothedMidi_'i'
-        endif
-    endfor
+# Adaptive time-grid step
+if duration <= 1
+    timeGridStep = 0.1
+elsif duration <= 2.5
+    timeGridStep = 0.25
+elsif duration <= 5
+    timeGridStep = 0.5
+elsif duration <= 10
+    timeGridStep = 1
+elsif duration <= 20
+    timeGridStep = 2
+elsif duration <= 50
+    timeGridStep = 5
+else
+    timeGridStep = 10
 endif
 
 # ========================================================================================
-# STEP 4: Setup Picture Window
+# VISUALIZATION
 # ========================================================================================
 
 Erase all
-Select outer viewport: 0, 10, 0, 6
-Font size: 10
 
-# ========================================================================================
-# STEP 5: Draw MIDI Grid
-# ========================================================================================
+# --- Title strip ---
+Select outer viewport: 0, 8, 0.0, 0.50
+Select inner viewport: 0, 8, 0.0, 0.50
+Axes: 0, 1, 0, 1
+Colour: "Black"
+Font size: 13
+Text: 0.5, "centre", 0.68, "half", "Continuous Pitch over MIDI Grid"
+Font size: 7
+Colour: "{0.35, 0.35, 0.40}"
+subtitle$ = sound$ + " | ch " + string$(analysisChannel) + " | m = 69 + 12 log2(f/440) | 12-TET grid is a reference, not quantization"
+Text: 0.5, "centre", 0.20, "half", subtitle$
 
-appendInfoLine: "Drawing grid..."
+# --- Main panel title ---
+Select outer viewport: 0, 8, 0.55, 0.82
+Select inner viewport: 0, 8, 0.55, 0.82
+Axes: 0, 1, 0, 1
+Font size: 8
+Colour: "Black"
+Text: 0.01, "left", 0.5, "half", "A  MEASURED CONTINUOUS F0 ON MIDI REFERENCE GRID"
 
+# --- Main panel data ---
+Select inner viewport: 0.78, 7.72, 0.88, 3.25
 Axes: startTime, endTime, currentMidiMin - 0.5, currentMidiMax + 0.5
+Colour: "{0.985, 0.985, 0.985}"
+Paint rectangle: "{0.985, 0.985, 0.985}", startTime, endTime, currentMidiMin - 0.5, currentMidiMax + 0.5
 
-# Horizontal grid lines
+# Horizontal 12-TET reference lines
 for midiLine from currentMidiMin to currentMidiMax
-    @getMidiNoteName: midiLine
     noteClass = midiLine - 12 * floor(midiLine / 12)
-    
-    drawLine = 0
-    
     if noteClass = 0
         Colour: "{0.65, 0.65, 0.65}"
-        Line width: 2
-        drawLine = 1
-    elsif (midiLine mod 12) = 0
-        Colour: "{0.75, 0.75, 0.75}"
-        Line width: 1.2
-        drawLine = 1
+        Line width: 1.5
+        Draw line: startTime, midiLine, endTime, midiLine
     elsif show_all_semitones
-        Colour: "{0.92, 0.92, 0.92}"
-        Line width: 0.4
-        drawLine = 1
-    endif
-    
-    if drawLine = 1
+        Colour: "{0.90, 0.90, 0.90}"
+        Line width: 0.5
         Draw line: startTime, midiLine, endTime, midiLine
     endif
 endfor
 
-# Vertical time grid
+# Adaptive vertical time grid
 if show_time_grid
-    Colour: "{0.95, 0.95, 0.95}"
-    Line width: 0.3
-    
-    timeMarker = ceiling(startTime / 0.1) * 0.1
-    while timeMarker <= endTime
-        Draw line: timeMarker, currentMidiMin - 0.5, timeMarker, currentMidiMax + 0.5
-        timeMarker = timeMarker + 0.1
+    firstGrid = ceiling(startTime / timeGridStep) * timeGridStep
+    gridT = firstGrid
+    Colour: "{0.91, 0.91, 0.91}"
+    Line width: 0.5
+    while gridT <= endTime
+        Draw line: gridT, currentMidiMin - 0.5, gridT, currentMidiMax + 0.5
+        gridT += timeGridStep
     endwhile
 endif
 
-# ========================================================================================
-# STEP 6: Draw Note Labels
-# ========================================================================================
-
-if show_note_labels
-    Font size: 8
-    Colour: "{0.5, 0.5, 0.5}"
-    
-    for midiLine from currentMidiMin to currentMidiMax
-        noteClass = midiLine - 12 * floor(midiLine / 12)
-        
-        if noteClass = 0
-            @getMidiNoteName: midiLine
-            Text: startTime - duration * 0.02, "right", midiLine, "half", getMidiNoteName.fullName$
+# Pitch rendering: lines or dots, never across unvoiced gaps
+if line_style = 3
+    for i from 1 to numFrames
+        if voiced_'i' = 1
+            @chooseColour: midiNote_'i', intensity_'i'
+            col$ = chooseColour.colour$
+            @mapToRange: intensity_'i', intensity_min_dB, intensity_max_dB, min_dot_size_mm, max_dot_size_mm
+            dotSize = mapToRange.result
+            Paint circle: col$, t_'i', midiNote_'i', dotSize
         endif
     endfor
-    
-    Font size: 10
+else
+    for i from 1 to numFrames - 1
+        i1 = i + 1
+        if voiced_'i' = 1 and voiced_'i1' = 1
+            mCurr = midiNote_'i'
+            mNext = midiNote_'i1'
+            intMean = (intensity_'i' + intensity_'i1') / 2
+            mMean = (mCurr + mNext) / 2
+            @chooseColour: mMean, intMean
+            Colour: chooseColour.colour$
+            if line_style = 1
+                Line width: 1.4
+            else
+                @mapToRange: intMean, intensity_min_dB, intensity_max_dB, 0.6, 4.2
+                Line width: mapToRange.result
+            endif
+            Draw line: t_'i', mCurr, t_'i1', mNext
+        endif
+    endfor
 endif
 
-# ========================================================================================
-# STEP 7: Draw Pitch Curve
-# ========================================================================================
-
-appendInfoLine: "Drawing pitch curve..."
-
-for i from 1 to numFrames - 1
-    i1 = i + 1
-    v1 = voiced_'i'
-    v2 = voiced_'i1'
-    
-    if v1 = 1 and v2 = 1
-        tCurr = t_'i'
-        tNext = t_'i1'
-        mCurr = midiNote_'i'
-        mNext = midiNote_'i1'
-        intCurr = intensity_'i'
-        
-        # Calculate brightness from intensity
-        if use_log_loudness
-            @logCompress: intCurr, intensity_min_db, intensity_max_db
-            brightness = 0.3 + 0.7 * logCompress.result
-        else
-            @mapToRange: intCurr, intensity_min_db, intensity_max_db, 0.3, 1.0
-            brightness = mapToRange.result
-        endif
-        
-        # Choose color scheme
-        if color_scheme = 1
-            @pitchHeightToRGB: mCurr, brightness
-            r = pitchHeightToRGB.red
-            g = pitchHeightToRGB.green
-            b = pitchHeightToRGB.blue
-            
-        elsif color_scheme = 2
-            @pitchClassToRGB: mCurr, brightness
-            r = pitchClassToRGB.red
-            g = pitchClassToRGB.green
-            b = pitchClassToRGB.blue
-            
-        elsif color_scheme = 3
-            r = brightness
-            g = brightness
-            b = brightness
-            
-        elsif color_scheme = 4
-            @mapToRange: intCurr, intensity_min_db, intensity_max_db, 0, 1
-            heatValue = mapToRange.result
-            
-            if heatValue < 0.33
-                r = 0
-                g = heatValue * 3
-                b = 1 - heatValue * 3
-            elsif heatValue < 0.66
-                localVal = (heatValue - 0.33) * 3
-                r = localVal
-                g = 1
-                b = 0
-            else
-                localVal = (heatValue - 0.66) * 3
-                r = 1
-                g = 1 - localVal
-                b = 0
-            endif
-            
-        elsif color_scheme = 5
-            @octaveSpiralRGB: mCurr, brightness
-            r = octaveSpiralRGB.red
-            g = octaveSpiralRGB.green
-            b = octaveSpiralRGB.blue
-        endif
-        
-        colourString$ = "{" + string$(r) + ", " + string$(g) + ", " + string$(b) + "}"
-        Colour: colourString$
-        
-        # Apply line style
-        if line_style = 1
-            # Thin continuous line
-            Line width: 1.5
-            Draw line: tCurr, mCurr, tNext, mNext
-            
-        elsif line_style = 2
-            # Thickness varies with loudness
-            @mapToRange: intCurr, intensity_min_db, intensity_max_db, 0.5, 4.5
-            Line width: mapToRange.result
-            Draw line: tCurr, mCurr, tNext, mNext
-            
-        elsif line_style = 3
-            # Dots with size varies with loudness
-            @mapToRange: intCurr, intensity_min_db, intensity_max_db, min_dot_size, max_dot_size
-            dotSize = mapToRange.result
-            Paint circle: colourString$, tCurr, mCurr, dotSize
-        endif
-    endif
-endfor
-
-# ========================================================================================
-# STEP 8: Labels
-# ========================================================================================
-
+# Frame and time axis
+Select inner viewport: 0.78, 7.72, 0.88, 3.25
+Axes: startTime, endTime, currentMidiMin - 0.5, currentMidiMax + 0.5
 Colour: "Black"
 Line width: 1
-Font size: 12
-
-Text top: "yes", "Continuous Pitch over MIDI Grid: " + sound$
+Draw inner box
+Font size: 7
+Marks bottom: 5, "yes", "yes", "no"
 Text bottom: "yes", "Time (s)"
-Text left: "yes", "MIDI Note"
 
-# Get style names for display
-if color_scheme = 1
-    colorName$ = "Rainbow"
-elsif color_scheme = 2
-    colorName$ = "PitchClass"
-elsif color_scheme = 3
-    colorName$ = "Grayscale"
-elsif color_scheme = 4
-    colorName$ = "Heatmap"
-else
-    colorName$ = "OctaveSpiral"
+# Dedicated note-label strip (prevents labels colliding with data)
+if show_note_labels
+    Select inner viewport: 0.05, 0.72, 0.88, 3.25
+    Axes: 0, 1, currentMidiMin - 0.5, currentMidiMax + 0.5
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.35}"
+    labelEverySemitone = 0
+    if currentMidiMax - currentMidiMin <= 18 and show_all_semitones
+        labelEverySemitone = 1
+    endif
+    for midiLine from currentMidiMin to currentMidiMax
+        noteClass = midiLine - 12 * floor(midiLine / 12)
+        if labelEverySemitone or noteClass = 0
+            @getMidiNoteName: midiLine
+            Text: 0.96, "right", midiLine, "half", getMidiNoteName.fullName$
+        endif
+    endfor
 endif
 
-if line_style = 1
-    styleName$ = "Line"
-elsif line_style = 2
-    styleName$ = "VaryWidth"
-else
-    styleName$ = "Dots"
-endif
-
+# --- Panel B title ---
+Select outer viewport: 0, 4, 3.42, 3.68
+Select inner viewport: 0, 4, 3.42, 3.68
+Axes: 0, 1, 0, 1
 Font size: 8
-Select outer viewport: 0, 10, 0, 6
-Text: 9.8, "right", currentMidiMax, "top", colorName$
-if line_style = 3
-    Text: 9.8, "right", currentMidiMax - 2, "top", "Dots: " + fixed$(min_dot_size, 1) + "-" + fixed$(max_dot_size, 1)
-else
-    Text: 9.8, "right", currentMidiMax - 2, "top", styleName$
+Colour: "Black"
+Text: 0.02, "left", 0.5, "half", "B  DEVIATION FROM NEAREST 12-TET NOTE"
+
+# --- Panel B data: cents ---
+Select inner viewport: 0.60, 3.80, 3.74, 4.64
+Axes: startTime, endTime, -50, 50
+Colour: "{0.985, 0.985, 0.985}"
+Paint rectangle: "{0.985, 0.985, 0.985}", startTime, endTime, -50, 50
+Colour: "{0.72, 0.72, 0.72}"
+Draw line: startTime, 0, endTime, 0
+Dotted line
+Draw line: startTime, 25, endTime, 25
+Draw line: startTime, -25, endTime, -25
+Solid line
+Colour: "{0.25, 0.45, 0.72}"
+Line width: 1.2
+for i from 1 to numFrames - 1
+    i1 = i + 1
+    if voiced_'i' = 1 and voiced_'i1' = 1
+        Draw line: t_'i', cents_'i', t_'i1', cents_'i1'
+    endif
+endfor
+Colour: "Black"
+Line width: 1
+Draw inner box
+Font size: 6
+Marks left: 3, "yes", "yes", "no"
+Marks bottom: 4, "yes", "yes", "no"
+Text left: "yes", "cents"
+Text bottom: "yes", "Time (s)"
+
+# --- Panel C title ---
+Select outer viewport: 4, 8, 3.42, 3.68
+Select inner viewport: 4, 8, 3.42, 3.68
+Axes: 0, 1, 0, 1
+Font size: 8
+Colour: "Black"
+Text: 0.02, "left", 0.5, "half", "C  INTENSITY + VOICING CONTEXT"
+
+# --- Panel C data ---
+intYMin = min(intensity_min_dB, intFoundMin) - 2
+intYMax = max(intensity_max_dB, intFoundMax) + 2
+if intYMax <= intYMin
+    intYMax = intYMin + 20
+endif
+Select inner viewport: 4.62, 7.80, 3.74, 4.64
+Axes: startTime, endTime, intYMin, intYMax
+Colour: "{0.985, 0.985, 0.985}"
+Paint rectangle: "{0.985, 0.985, 0.985}", startTime, endTime, intYMin, intYMax
+
+# Shade unvoiced runs
+inGap = 0
+gapStart = startTime
+for i from 1 to numFrames
+    if voiced_'i' = 0 and inGap = 0
+        gapStart = t_'i' - time_step_s / 2
+        gapStart = max(startTime, gapStart)
+        inGap = 1
+    elsif voiced_'i' = 1 and inGap = 1
+        gapEnd = t_'i' - time_step_s / 2
+        Paint rectangle: "{0.92, 0.92, 0.92}", gapStart, gapEnd, intYMin, intYMax
+        inGap = 0
+    endif
+endfor
+if inGap = 1
+    Paint rectangle: "{0.92, 0.92, 0.92}", gapStart, endTime, intYMin, intYMax
 endif
 
+# Configured loudness-mapping bounds
+Colour: "{0.65, 0.65, 0.65}"
+Dotted line
+Draw line: startTime, intensity_min_dB, endTime, intensity_min_dB
+Draw line: startTime, intensity_max_dB, endTime, intensity_max_dB
+Solid line
+
+# Intensity curve
+Colour: "{0.78, 0.38, 0.20}"
+Line width: 1.2
+for i from 1 to numFrames - 1
+    i1 = i + 1
+    Draw line: t_'i', intensity_'i', t_'i1', intensity_'i1'
+endfor
+Colour: "Black"
+Line width: 1
+Draw inner box
+Font size: 6
+Marks left: 3, "yes", "yes", "no"
+Marks bottom: 4, "yes", "yes", "no"
+Text left: "yes", "dB"
+Text bottom: "yes", "Time (s)"
+
+# --- Footer summary ---
+Select outer viewport: 0, 8, 4.86, 5.28
+Select inner viewport: 0, 8, 4.86, 5.28
+Axes: 0, 1, 0, 1
+Font size: 7
+Colour: "{0.30, 0.30, 0.34}"
+if color_scheme = 1
+    colorName$ = "pitch-height hue + loudness"
+elsif color_scheme = 2
+    colorName$ = "pitch-class hue + loudness"
+elsif color_scheme = 3
+    colorName$ = "grayscale loudness"
+elsif color_scheme = 4
+    colorName$ = "intensity heatmap"
+else
+    colorName$ = "pitch-class hue + octave brightness"
+endif
+if line_style = 1
+    styleName$ = "line"
+elsif line_style = 2
+    styleName$ = "loudness width"
+else
+    styleName$ = "loudness dots"
+endif
+summary$ = "voiced " + fixed$(voicedPercent, 1) + "% | mean |cents| " + fixed$(meanAbsCents, 1) + " | smoothing: " + smoothing$ + " | " + styleName$ + " | " + colorName$
+Text: 0.5, "centre", 0.58, "half", summary$
+Font size: 6
+Colour: "{0.45, 0.45, 0.48}"
+Text: 0.5, "centre", 0.18, "half", "Grey in panel C = unvoiced; pitch lines are never connected across unvoiced gaps."
+
+# Reset picture state
+Font size: 10
+Colour: "Black"
+Line width: 1
+
 # ========================================================================================
-# CLEANUP
+# CLEANUP / OPTIONAL PLAYBACK
 # ========================================================================================
+
+removeObject: pitchID, intensityID
+if nChannels > 1
+    removeObject: analysisSound
+endif
+selectObject: soundID
 
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Frames: ", numFrames
-appendInfoLine: "MIDI range: ", currentMidiMin, " - ", currentMidiMax
+appendInfoLine: "MIDI display range: ", currentMidiMin, " - ", currentMidiMax
 
-removeObject: pitchID, intensityID
-
-selectObject: soundID
-Play
+if play_sound
+    Play
+endif

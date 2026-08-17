@@ -3,22 +3,31 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025) - Unified
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Unified segment extraction tool combining Manual, Percentage,
-#   Random Single, and Random Multiple extraction methods.
-#   Includes fades, attenuation, and visualization.
+#   Unified, sample-aligned segment extraction tool combining Manual,
+#   Percentage, Random Single, and Random Multiple extraction methods.
+#   Segments preserve channel count, sampling rate, and source level by
+#   default. Optional attenuation, sample-domain fades, and explicit peak
+#   normalization can be applied after extraction.
 #
-# Combines:
-#   - Extract_Segment_Manual.praat
-#   - Extract_Segment_Automatic.praat
-#   - Extract_Segment_Random.praat
+# v1.1:
+#   - FIX: attenuation is no longer cancelled by unconditional peak scaling.
+#   - CHANGE: Peak_ceiling is a safety ceiling by default; normalization is
+#     explicit via Normalize_to_peak.
+#   - FIX: manual/percentage times are relative to the Sound start and work
+#     correctly for Sounds whose time domain does not begin at 0.
+#   - FIX: extraction windows are snapped to actual source samples and all
+#     reported boundaries describe the samples that were really extracted.
+#   - FIX: fades are sample-domain ramps that reach digital zero at the first
+#     and last faded samples.
+#   - VIZ: AudioTools 2x2 mechanism-first layout with actual windows, dry vs
+#     processed comparison, applied gain envelope, and segment durations.
 # ============================================================
 
-# === Input Validation ===
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
@@ -26,7 +35,7 @@ endif
 sound = selected("Sound")
 soundName$ = selected$("Sound")
 
-form Extract Segment v1.0
+form Extract Segment v1.1
     optionmenu Preset: 1
         option Manual
         option Middle 50%
@@ -36,7 +45,7 @@ form Extract Segment v1.0
         option Multiple Random
     comment === Extraction Method ===
     optionmenu Method: 1
-        option Manual (start/end times)
+        option Manual (relative start/end seconds)
         option Percentage (start/end %)
         option Random Single (fixed duration)
         option Random Multiple (variable durations)
@@ -46,13 +55,16 @@ form Extract Segment v1.0
     comment === Random Single Parameters ===
     real Extraction_duration 2.0
     comment === Random Multiple Parameters ===
-    positive Number_of_segments 4
+    natural Number_of_segments 4
     real Min_duration 0.25
     real Max_duration 2.0
+    comment (random windows are independent and may overlap)
     comment === Processing ===
     real Fade_time 0.05
-    real Attenuation_divisor 1.0
-    positive Scale_peak 0.99
+    positive Attenuation_divisor 1.0
+    positive Peak_ceiling 0.99
+    boolean Normalize_to_peak 0
+    comment (Normalize off = preserve level; ceiling only reduces excessive peaks)
     comment === Output ===
     boolean Draw_visualization 1
     boolean Play_result 1
@@ -62,30 +74,25 @@ endform
 # Presets
 # ============================================================
 if preset = 2
-    # Middle 50%
     method = 2
     start_time_or_percent = 25
     end_time_or_percent = 75
     presetName$ = "Middle50"
 elsif preset = 3
-    # First Quarter
     method = 2
     start_time_or_percent = 0
     end_time_or_percent = 25
     presetName$ = "FirstQuarter"
 elsif preset = 4
-    # Last Quarter
     method = 2
     start_time_or_percent = 75
     end_time_or_percent = 100
     presetName$ = "LastQuarter"
 elsif preset = 5
-    # Random Slice
     method = 3
     extraction_duration = 2.0
     presetName$ = "RandomSlice"
 elsif preset = 6
-    # Multiple Random
     method = 4
     number_of_segments = 4
     min_duration = 0.25
@@ -96,352 +103,474 @@ else
 endif
 
 # ============================================================
-# Setup
+# Setup / validation
 # ============================================================
 selectObject: sound
+sourceStart = Get start time
+sourceEnd = Get end time
 totalDuration = Get total duration
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
+numSamples = Get number of samples
+samplePeriod = 1 / sampleRate
+
+if totalDuration <= 0 or numSamples < 1
+    exitScript: "The selected Sound contains no samples."
+endif
+
+if fade_time < 0
+    fade_time = 0
+endif
+if attenuation_divisor < 1
+    attenuation_divisor = 1
+endif
+if peak_ceiling > 1
+    peak_ceiling = 1
+endif
+if peak_ceiling <= 0
+    exitScript: "Peak ceiling must be greater than zero."
+endif
 
 clearinfo
-writeInfoLine: "=== Extract Segment v1.0 ==="
+writeInfoLine: "=== Extract Segment v1.1 ==="
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Input: ", soundName$, " (", fixed$(totalDuration, 3), " s)"
+appendInfoLine: "Input: ", soundName$, " | ", fixed$(totalDuration, 3), " s | ", sampleRate, " Hz | ", numChannels, " ch"
+if sourceStart <> 0
+    appendInfoLine: "Sound time domain: ", fixed$(sourceStart, 6), " - ", fixed$(sourceEnd, 6), " s"
+    appendInfoLine: "Manual times are interpreted relative to the Sound start."
+endif
 appendInfoLine: ""
 
 # ============================================================
-# Method 1: Manual (start/end times)
+# Resolve requested window(s) in relative time
 # ============================================================
 if method = 1
-    windowStart = start_time_or_percent
-    windowEnd = end_time_or_percent
-    
-    # Validation
-    if windowStart < 0
-        windowStart = 0
+    requestedStart = start_time_or_percent
+    requestedEnd = end_time_or_percent
+    requestedStart = max(0, requestedStart)
+    requestedEnd = min(totalDuration, requestedEnd)
+    if requestedStart >= requestedEnd
+        exitScript: "Start time must be less than end time after clamping to the Sound duration."
     endif
-    if windowEnd > totalDuration
-        windowEnd = totalDuration
-    endif
-    if windowStart >= windowEnd
-        exitScript: "Start time must be less than end time."
-    endif
-    
-    segmentDuration = windowEnd - windowStart
     methodName$ = "Manual"
-    appendInfoLine: "Method: Manual (", fixed$(windowStart, 3), " - ", fixed$(windowEnd, 3), " s)"
+    appendInfoLine: "Method: Manual | requested ", fixed$(requestedStart, 6), " - ", fixed$(requestedEnd, 6), " s relative"
 
-# ============================================================
-# Method 2: Percentage (start/end %)
-# ============================================================
 elsif method = 2
-    startPercent = start_time_or_percent
-    endPercent = end_time_or_percent
-    
-    # Validation
-    if startPercent < 0
-        startPercent = 0
-    endif
-    if endPercent > 100
-        endPercent = 100
-    endif
+    startPercent = max(0, start_time_or_percent)
+    endPercent = min(100, end_time_or_percent)
     if startPercent >= endPercent
         exitScript: "Start percentage must be less than end percentage."
     endif
-    
-    windowStart = totalDuration * (startPercent / 100)
-    windowEnd = totalDuration * (endPercent / 100)
-    segmentDuration = windowEnd - windowStart
+    requestedStart = totalDuration * startPercent / 100
+    requestedEnd = totalDuration * endPercent / 100
     methodName$ = "Percentage"
-    appendInfoLine: "Method: Percentage (", fixed$(startPercent, 0), "% - ", fixed$(endPercent, 0), "%)"
-    appendInfoLine: "  -> ", fixed$(windowStart, 3), " - ", fixed$(windowEnd, 3), " s"
+    appendInfoLine: "Method: Percentage | ", fixed$(startPercent, 2), "% - ", fixed$(endPercent, 2), "%"
 
-# ============================================================
-# Method 3: Random Single (fixed duration)
-# ============================================================
 elsif method = 3
     if extraction_duration <= 0
         exitScript: "Extraction duration must be positive."
     endif
-    if extraction_duration > totalDuration
-        exitScript: "Extraction duration (" + fixed$(extraction_duration, 2) + " s) exceeds total duration (" + fixed$(totalDuration, 2) + " s)."
+    desiredSamples = round(extraction_duration * sampleRate)
+    desiredSamples = max(1, desiredSamples)
+    if desiredSamples > numSamples
+        exitScript: "Extraction duration exceeds the available number of samples."
     endif
-    
-    maxStartTime = totalDuration - extraction_duration
-    windowStart = randomUniform(0, maxStartTime)
-    windowEnd = windowStart + extraction_duration
-    segmentDuration = extraction_duration
+    startSample = randomInteger(1, numSamples - desiredSamples + 1)
+    endSample = startSample + desiredSamples - 1
+    requestedStart = (startSample - 1) / sampleRate
+    requestedEnd = endSample / sampleRate
     methodName$ = "RandomSingle"
-    appendInfoLine: "Method: Random Single (", fixed$(extraction_duration, 2), " s)"
-    appendInfoLine: "  -> ", fixed$(windowStart, 3), " - ", fixed$(windowEnd, 3), " s"
+    appendInfoLine: "Method: Random Single | requested duration ", fixed$(extraction_duration, 6), " s"
 
-# ============================================================
-# Method 4: Random Multiple (variable durations)
-# ============================================================
 elsif method = 4
     if min_duration <= 0 or max_duration <= 0
-        exitScript: "Durations must be positive."
+        exitScript: "Random segment durations must be positive."
     endif
     if min_duration > max_duration
         exitScript: "Minimum duration cannot exceed maximum duration."
     endif
-    if max_duration > totalDuration
-        exitScript: "Maximum duration (" + fixed$(max_duration, 2) + " s) exceeds total duration (" + fixed$(totalDuration, 2) + " s)."
+    minSamples = max(1, round(min_duration * sampleRate))
+    maxSamples = max(minSamples, round(max_duration * sampleRate))
+    if maxSamples > numSamples
+        exitScript: "Maximum random duration exceeds the available number of samples."
     endif
-    
     methodName$ = "RandomMultiple"
-    appendInfoLine: "Method: Random Multiple (", number_of_segments, " segments)"
-    appendInfoLine: "  Duration range: ", fixed$(min_duration, 2), " - ", fixed$(max_duration, 2), " s"
-    appendInfoLine: ""
+    appendInfoLine: "Method: Random Multiple | ", number_of_segments, " independent windows (overlap allowed)"
+    appendInfoLine: "Sample-aligned duration range: ", minSamples, " - ", maxSamples, " samples"
+else
+    exitScript: "Invalid extraction method."
 endif
 
 # ============================================================
 # Extraction
 # ============================================================
 if method <= 3
-    # Single segment extraction
-    
-    # Validate fade time
-    if fade_time < 0
-        fade_time = 0
+    if method <= 2
+        # Select samples whose centres lie inside the requested interval.
+        startSample = ceiling(requestedStart * sampleRate + 0.5)
+        endSample = floor(requestedEnd * sampleRate + 0.5)
+        startSample = max(1, min(numSamples, startSample))
+        endSample = max(1, min(numSamples, endSample))
+        if endSample < startSample
+            exitScript: "The requested interval contains no source samples. Increase its duration."
+        endif
     endif
-    if fade_time > segmentDuration / 2
-        fade_time = segmentDuration / 2
-        appendInfoLine: "Note: Fade time reduced to ", fixed$(fade_time, 3), " s"
-    endif
-    
-    # Extract
+
+    # Exact sample-edge boundaries used by Extract part.
+    actualStartRel = (startSample - 1) / sampleRate
+    actualEndRel = endSample / sampleRate
+    actualStartAbs = sourceStart + actualStartRel
+    actualEndAbs = sourceStart + actualEndRel
+    segmentSamples = endSample - startSample + 1
+    segmentDuration = segmentSamples / sampleRate
+
     selectObject: sound
-    extracted = Extract part: windowStart, windowEnd, "rectangular", 1, "no"
-    
-    # Attenuation
-    if attenuation_divisor > 1
-        attDiv$ = string$(attenuation_divisor)
-        Formula: "self / " + attDiv$
+    extracted = Extract part: actualStartAbs, actualEndAbs, "rectangular", 1, "no"
+
+    if draw_visualization
+        dryFirst = Copy: "dry_reference"
+        selectObject: extracted
     endif
-    
-    # Fade in
-    if fade_time > 0
-        fadeTime$ = string$(fade_time)
-        Formula: "self * min(1, x / " + fadeTime$ + ")"
-        
-        # Fade out
-        Formula: "self * min(1, (xmax - x) / " + fadeTime$ + ")"
-    endif
-    
-    # Scale
-    Scale peak: scale_peak
+
+    @processSegment: extracted, fade_time, attenuation_divisor, peak_ceiling, normalize_to_peak
+    firstFadeSamples = processSegment.fadeSamples
+    firstPostScale = processSegment.postScale
+    firstPeak = processSegment.finalPeak
+    firstNSamples = processSegment.nSamples
+
+    selectObject: extracted
     Rename: soundName$ + "_" + methodName$ + "_" + presetName$
     outputSound = selected("Sound")
-    
-    # Store for visualization
-    segStart_1 = windowStart
-    segEnd_1 = windowEnd
+
+    segStart_1 = actualStartRel
+    segEnd_1 = actualEndRel
+    segDur_1 = segmentDuration
+    segSamples_1 = segmentSamples
     numExtracted = 1
-    
-    appendInfoLine: ""
-    appendInfoLine: "Extracted: ", fixed$(segmentDuration, 3), " s"
-    
+
+    appendInfoLine: "Actual: ", fixed$(actualStartRel, 6), " - ", fixed$(actualEndRel, 6), " s relative"
+    appendInfoLine: "Samples: ", startSample, " - ", endSample, " (", segmentSamples, " samples)"
+    if method <= 2
+        startErrSamples = (actualStartRel - requestedStart) * sampleRate
+        endErrSamples = (actualEndRel - requestedEnd) * sampleRate
+        appendInfoLine: "Boundary snap: start ", fixed$(startErrSamples, 2), " samples | end ", fixed$(endErrSamples, 2), " samples"
+    endif
+
 else
-    # Multiple segment extraction (method 4)
     appendInfoLine: "Extracting segments:"
-    
     for i from 1 to number_of_segments
-        # Random duration
-        segDur = randomUniform(min_duration, max_duration)
-        
-        # Random start
-        maxStart = totalDuration - segDur
-        segStart = randomUniform(0, maxStart)
-        segEnd = segStart + segDur
-        
-        # Store for visualization
-        segStart_'i' = segStart
-        segEnd_'i' = segEnd
+        segSamples = randomInteger(minSamples, maxSamples)
+        segStartSample = randomInteger(1, numSamples - segSamples + 1)
+        segEndSample = segStartSample + segSamples - 1
+        segStartRel = (segStartSample - 1) / sampleRate
+        segEndRel = segEndSample / sampleRate
+        segStartAbs = sourceStart + segStartRel
+        segEndAbs = sourceStart + segEndRel
+        segDur = segSamples / sampleRate
+
+        segStart_'i' = segStartRel
+        segEnd_'i' = segEndRel
         segDur_'i' = segDur
-        
-        # Extract
+        segSamples_'i' = segSamples
+
         selectObject: sound
-        seg = Extract part: segStart, segEnd, "rectangular", 1, "no"
-        
-        # Validate fade for this segment
-        segFade = fade_time
-        if segFade > segDur / 2
-            segFade = segDur / 2
+        seg = Extract part: segStartAbs, segEndAbs, "rectangular", 1, "no"
+
+        if draw_visualization and i = 1
+            dryFirst = Copy: "dry_reference"
+            selectObject: seg
         endif
-        
-        # Attenuation
-        if attenuation_divisor > 1
-            attDiv$ = string$(attenuation_divisor)
-            Formula: "self / " + attDiv$
+
+        @processSegment: seg, fade_time, attenuation_divisor, peak_ceiling, normalize_to_peak
+
+        if i = 1
+            firstFadeSamples = processSegment.fadeSamples
+            firstPostScale = processSegment.postScale
+            firstPeak = processSegment.finalPeak
+            firstNSamples = processSegment.nSamples
         endif
-        
-        # Fades
-        if segFade > 0
-            segFade$ = string$(segFade)
-            Formula: "self * min(1, x / " + segFade$ + ")"
-            Formula: "self * min(1, (xmax - x) / " + segFade$ + ")"
-        endif
-        
-        # Scale
-        Scale peak: scale_peak
+
+        selectObject: seg
         Rename: soundName$ + "_seg" + string$(i)
         segment_'i' = selected("Sound")
-        
-        appendInfoLine: "  Segment ", i, ": ", fixed$(segStart, 3), " - ", fixed$(segEnd, 3), " s (", fixed$(segDur, 2), " s)"
+
+        appendInfoLine: "  Seg ", i, ": ", fixed$(segStartRel, 6), " - ", fixed$(segEndRel, 6), " s | ", segSamples, " samples"
     endfor
-    
+
     numExtracted = number_of_segments
-    
-    # For output selection, use first segment
     outputSound = segment_1
+endif
+
+if normalize_to_peak and attenuation_divisor > 1
+    appendInfoLine: "Note: peak normalization is enabled, so it can compensate the absolute attenuation."
 endif
 
 # ============================================================
 # Visualization
 # ============================================================
 if draw_visualization
-    Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Extract Segment: " + soundName$ + " [" + presetName$ + "]"
-    
-    # Original waveform with extraction zones
-    Select outer viewport: 0, 8, 0.6, 2.8
-    Select inner viewport: 0.6, 7.6, 0.8, 2.6
-    
-    selectObject: sound
-    Colour: "{0.6, 0.6, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    # Get amplitude range for shading
-    selectObject: sound
-    maxAmp = Get maximum: 0, 0, "None"
-    minAmp = Get minimum: 0, 0, "None"
-    
-    Axes: 0, totalDuration, minAmp * 1.1, maxAmp * 1.1
-    
-    # Shade extraction zones
-    if method <= 3
-        # Single extraction
-        Paint rectangle: "{0.8, 0.9, 1.0}", segStart_1, segEnd_1, minAmp * 1.1, maxAmp * 1.1
-        
-        # Redraw waveform on top
+    # Choose a representative source channel without mono fold-down.
+    if numChannels = 1
         selectObject: sound
-        Colour: "{0.5, 0.5, 0.5}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        
-        # Highlight extracted portion
-        Colour: "{0.2, 0.4, 0.8}"
-        Line width: 2
-        Draw: segStart_1, segEnd_1, 0, 0, "no", "Curve"
-        Line width: 1
+        vizSource = Copy: "viz_source"
+        vizChannel = 1
     else
-        # Multiple extractions - different colors
-        for i from 1 to numExtracted
-            sStart = segStart_'i'
-            sEnd = segEnd_'i'
-            
-            # Cycle through colors - use explicit color for Paint rectangle
-            if i mod 4 = 1
-                Paint rectangle: "{0.8, 0.9, 1.0}", sStart, sEnd, minAmp * 1.1, maxAmp * 1.1
-            elsif i mod 4 = 2
-                Paint rectangle: "{0.9, 1.0, 0.8}", sStart, sEnd, minAmp * 1.1, maxAmp * 1.1
-            elsif i mod 4 = 3
-                Paint rectangle: "{1.0, 0.9, 0.8}", sStart, sEnd, minAmp * 1.1, maxAmp * 1.1
+        bestRms = -1
+        bestViz = 0
+        vizChannel = 1
+        for ch from 1 to numChannels
+            selectObject: sound
+            tmpCh = Extract one channel: ch
+            tmpRms = Get root-mean-square: 0, 0
+            if tmpRms > bestRms
+                if bestViz <> 0
+                    removeObject: bestViz
+                endif
+                bestRms = tmpRms
+                bestViz = tmpCh
+                vizChannel = ch
             else
-                Paint rectangle: "{0.9, 0.8, 1.0}", sStart, sEnd, minAmp * 1.1, maxAmp * 1.1
+                removeObject: tmpCh
             endif
         endfor
-        
-        # Redraw waveform
-        selectObject: sound
-        Colour: "{0.4, 0.4, 0.4}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        vizSource = bestViz
     endif
-    
+    selectObject: vizSource
+    Shift times to: "start time", 0
+
+    # First dry and processed segment, same representative channel.
+    selectObject: dryFirst
+    dryChannels = Get number of channels
+    if dryChannels > 1
+        dryViz = Extract one channel: vizChannel
+    else
+        dryViz = Copy: "dry_viz"
+    endif
+
+    selectObject: outputSound
+    outChannels = Get number of channels
+    if outChannels > 1
+        outViz = Extract one channel: vizChannel
+    else
+        outViz = Copy: "out_viz"
+    endif
+
+    # Exact gain envelope that transformed dryFirst -> outputSound.
+    gainDur = firstNSamples / sampleRate
+    attenBase = 1 / attenuation_divisor
+    totalFlatGain = attenBase * firstPostScale
+    fadeN$ = string$(firstFadeSamples)
+    flatGain$ = string$(totalFlatGain)
+    Create Sound from formula: "applied_gain_envelope", 1, 0, gainDur, sampleRate, "1"
+    gainViz = selected("Sound")
+    if firstFadeSamples <= 0
+        Formula: flatGain$
+    elsif firstFadeSamples = 1
+        Formula: "if col = 1 or col = ncol then 0 else " + flatGain$ + " fi"
+    else
+        denom$ = string$(firstFadeSamples - 1)
+        Formula: flatGain$ + " * min(1, min((col - 1) / " + denom$ + ", (ncol - col) / " + denom$ + "))"
+    endif
+
+    Erase all
+
+    # Title strip
+    Select outer viewport: 0.4, 7.8, 0.04, 0.25
+    Select inner viewport: 0.4, 7.8, 0.04, 0.25
+    Axes: 0, 1, 0, 1
+    Font size: 10
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Extract Segment v1.1 - " + presetName$
+
+    # Process strip
+    Select outer viewport: 0.4, 7.8, 0.28, 0.46
+    Select inner viewport: 0.4, 7.8, 0.28, 0.46
+    Axes: 0, 1, 0, 1
+    Font size: 6.5
+    Colour: "{0.35, 0.35, 0.35}"
+    Text: 0.5, "centre", 0.5, "half", "requested window -> sample-aligned extraction -> attenuation -> zero-ended fades -> optional normalize / safety ceiling"
+
+    # A title
+    Select outer viewport: 0.3, 3.95, 0.52, 0.68
+    Select inner viewport: 0.3, 3.95, 0.52, 0.68
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.02, "left", 0.5, "half", "A  SOURCE / ACTUAL WINDOWS"
+
+    # A data
+    selectObject: vizSource
+    srcAmp = Get absolute extremum: 0, 0, "None"
+    if srcAmp <= 0
+        srcAmp = 1
+    endif
+    srcAmp = srcAmp * 1.08
+    Select outer viewport: 0.3, 3.95, 0.70, 2.58
+    Select inner viewport: 0.58, 3.84, 0.78, 2.47
+    Axes: 0, totalDuration, -srcAmp, srcAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalDuration, -srcAmp, srcAmp
+    for i from 1 to numExtracted
+        Paint rectangle: "{0.88, 0.93, 0.98}", segStart_'i', segEnd_'i', -srcAmp, srcAmp
+    endfor
+    selectObject: vizSource
+    Colour: "{0.35, 0.35, 0.35}"
+    Line width: 1
+    Draw: 0, totalDuration, -srcAmp, srcAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Amplitude"
+    Marks bottom: 3, "yes", "yes", "no"
+    Font size: 6
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Original with extraction zone(s)"
-    
-    # Extracted waveform(s)
+    if numChannels > 1
+        Text: totalDuration * 0.98, "right", srcAmp * 0.88, "half", "display ch " + string$(vizChannel)
+    endif
+
+    # B title
+    Select outer viewport: 4.05, 7.75, 0.52, 0.68
+    Select inner viewport: 4.05, 7.75, 0.52, 0.68
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.02, "left", 0.5, "half", "B  DRY EXTRACT / PROCESSED OUTPUT (segment time)"
+
+    # B data
+    selectObject: dryViz
+    dryAmp = Get absolute extremum: 0, 0, "None"
+    selectObject: outViz
+    outAmp = Get absolute extremum: 0, 0, "None"
+    cmpAmp = max(dryAmp, outAmp)
+    if cmpAmp <= 0
+        cmpAmp = 1
+    endif
+    cmpAmp = cmpAmp * 1.08
+    firstDur = firstNSamples / sampleRate
+    Select outer viewport: 4.05, 7.75, 0.70, 2.58
+    Select inner viewport: 4.33, 7.64, 0.78, 2.47
+    Axes: 0, firstDur, -cmpAmp, cmpAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, firstDur, -cmpAmp, cmpAmp
+    selectObject: dryViz
+    Colour: "{0.55, 0.55, 0.55}"
+    Line width: 1
+    Draw: 0, firstDur, -cmpAmp, cmpAmp, "no", "Curve"
+    selectObject: outViz
+    Colour: "{0.15, 0.45, 0.75}"
+    Line width: 1.5
+    Draw: 0, firstDur, -cmpAmp, cmpAmp, "no", "Curve"
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks bottom: 3, "yes", "yes", "no"
+    Font size: 6
+    Colour: "{0.55, 0.55, 0.55}"
+    Text: firstDur * 0.04, "left", cmpAmp * 0.88, "half", "dry"
+    Colour: "{0.15, 0.45, 0.75}"
+    Text: firstDur * 0.18, "left", cmpAmp * 0.88, "half", "processed"
+
+    # C title
+    Select outer viewport: 0.3, 3.95, 2.68, 2.84
+    Select inner viewport: 0.3, 3.95, 2.68, 2.84
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.02, "left", 0.5, "half", "C  APPLIED GAIN ENVELOPE"
+
+    selectObject: gainViz
+    gainMax = Get maximum: 0, 0, "None"
+    gainY = max(1.05, gainMax * 1.08)
+    Select outer viewport: 0.3, 3.95, 2.86, 4.78
+    Select inner viewport: 0.58, 3.84, 2.94, 4.66
+    Axes: 0, firstDur, 0, gainY
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, firstDur, 0, gainY
+    Colour: "{0.75, 0.75, 0.75}"
+    Draw line: 0, 1, firstDur, 1
+    selectObject: gainViz
+    Colour: "{0.55, 0.25, 0.65}"
+    Line width: 1.5
+    Draw: 0, firstDur, 0, gainY, "no", "Curve"
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks bottom: 3, "yes", "yes", "no"
+    Marks left: 3, "yes", "yes", "no"
+    Font size: 6
+    Text bottom: "yes", "Time (s)"
+    Text left: "yes", "Gain"
+
+    # D title
+    Select outer viewport: 4.05, 7.75, 2.68, 2.84
+    Select inner viewport: 4.05, 7.75, 2.68, 2.84
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
     if method <= 3
-        # Single extracted
-        Select outer viewport: 0, 8, 3.0, 4.8
-        Select inner viewport: 0.6, 7.6, 3.2, 4.6
-        
-        selectObject: outputSound
-        Colour: "{0.2, 0.5, 0.8}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        Text: 0.02, "left", 0.5, "half", "D  SAMPLE / BOUNDARY METRICS"
+    else
+        Text: 0.02, "left", 0.5, "half", "D  SEGMENT DURATIONS"
+    endif
+
+    Select outer viewport: 4.05, 7.75, 2.86, 4.78
+    Select inner viewport: 4.33, 7.64, 2.94, 4.66
+    if method <= 3
+        # For a single extraction, boundary/sample metrics are more useful
+        # than a one-bar duration chart.
+        Axes: 0, 1, 0, 1
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+        Colour: "{0.25, 0.25, 0.25}"
+        Font size: 6.5
+        Text: 0.04, "left", 0.83, "half", "Requested: " + fixed$(requestedStart, 6) + " -> " + fixed$(requestedEnd, 6) + " s"
+        Text: 0.04, "left", 0.64, "half", "Actual:    " + fixed$(actualStartRel, 6) + " -> " + fixed$(actualEndRel, 6) + " s"
+        if method <= 2
+            Text: 0.04, "left", 0.45, "half", "Boundary snap: start " + fixed$(startErrSamples, 2) + " smp | end " + fixed$(endErrSamples, 2) + " smp"
+        else
+            Text: 0.04, "left", 0.45, "half", "Random start is generated directly on the source sample grid"
+        endif
+        Text: 0.04, "left", 0.26, "half", string$(segmentSamples) + " samples | " + fixed$(segmentDuration, 6) + " s | peak " + fixed$(firstPeak, 4)
         Colour: "Black"
         Draw inner box
-        Font size: 8
-        Text left: "yes", "Amplitude"
-        Text bottom: "yes", "Time (s)"
-        Text top: "no", "Extracted: " + fixed$(segmentDuration, 3) + " s"
     else
-        # Multiple segments - show first few
-        showCount = min(3, numExtracted)
-        panelHeight = 1.5 / showCount
-        
-        for i from 1 to showCount
-            yTop = 3.0 + (i - 1) * panelHeight
-            yBot = yTop + panelHeight - 0.1
-            
-            Select outer viewport: 0, 8, yTop, yBot
-            Select inner viewport: 0.6, 7.6, yTop + 0.1, yBot - 0.05
-            
-            selectObject: segment_'i'
-            
-            if i mod 4 = 1
-                Colour: "{0.2, 0.4, 0.8}"
-            elsif i mod 4 = 2
-                Colour: "{0.3, 0.6, 0.3}"
-            elsif i mod 4 = 3
-                Colour: "{0.8, 0.5, 0.2}"
-            else
-                Colour: "{0.6, 0.3, 0.7}"
+        maxSegDur = 0
+        for i from 1 to numExtracted
+            if segDur_'i' > maxSegDur
+                maxSegDur = segDur_'i'
             endif
-            
-            Draw: 0, 0, 0, 0, "no", "Curve"
-            Colour: "Black"
-            Draw inner box
-            Font size: 7
-            sDur = segDur_'i'
-            Text top: "no", "Seg " + string$(i) + " (" + fixed$(sDur, 2) + " s)"
         endfor
-        
-        if numExtracted > 3
-            Select outer viewport: 0, 8, 4.5, 4.8
-            Font size: 8
-            Colour: "{0.4, 0.4, 0.4}"
-            Text: 0.5, "centre", 0.5, "half", "... and " + string$(numExtracted - 3) + " more segment(s)"
+        if maxSegDur <= 0
+            maxSegDur = samplePeriod
+        endif
+        showDurCount = min(numExtracted, 12)
+        Axes: 0, maxSegDur * 1.08, 0.5, showDurCount + 0.5
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, maxSegDur * 1.08, 0.5, showDurCount + 0.5
+        for i from 1 to showDurCount
+            Colour: "{0.15, 0.45, 0.75}"
+            Line width: 2
+            Draw line: 0, i, segDur_'i', i
+            Colour: "Black"
+            Font size: 5.5
+            Text: maxSegDur * 0.02, "left", i + 0.18, "half", "#" + string$(i) + "  " + string$(segSamples_'i') + " smp"
+        endfor
+        Line width: 1
+        Colour: "Black"
+        Draw inner box
+        Marks bottom: 3, "yes", "yes", "no"
+        Font size: 6
+        Text bottom: "yes", "Duration (s)"
+        if numExtracted > showDurCount
+            Text: maxSegDur * 1.03, "right", showDurCount, "half", "+" + string$(numExtracted - showDurCount) + " more"
         endif
     endif
-    
-    # Stats panel
-    Select outer viewport: 0, 8, 5.0, 5.8
-    Select inner viewport: 0.6, 7.6, 5.1, 5.7
-    
+
+    # Summary strip
+    Select outer viewport: 0.4, 7.7, 4.96, 5.22
+    Select inner viewport: 0.4, 7.7, 4.96, 5.22
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
-    
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.05, "left", 0.7, "half", "Method: " + methodName$
-    Text: 0.05, "left", 0.3, "half", "Segments: " + string$(numExtracted)
-    Text: 0.5, "left", 0.7, "half", "Fade: " + fixed$(fade_time * 1000, 0) + " ms"
-    Text: 0.5, "left", 0.3, "half", "Atten: /" + fixed$(attenuation_divisor, 1)
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 10
+    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Font size: 6.5
+    Colour: "{0.25, 0.25, 0.25}"
+    normWord$ = if normalize_to_peak then "normalize" else "ceiling-only" fi
+    Text: 0.02, "left", 0.5, "half", methodName$ + " | n=" + string$(numExtracted) + " | fade=" + fixed$(firstFadeSamples / sampleRate * 1000, 1) + " ms | atten=/" + fixed$(attenuation_divisor, 2) + " | " + normWord$ + " " + fixed$(peak_ceiling, 2) + " | first=" + string$(firstNSamples) + " samples"
+
+    # Cleanup visualization-only objects.
+    removeObject: vizSource, dryViz, outViz, gainViz, dryFirst
 endif
 
 # ============================================================
@@ -449,31 +578,67 @@ endif
 # ============================================================
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
+if method <= 3
+    appendInfoLine: "Created 1 segment: ", soundName$, "_", methodName$, "_", presetName$
+else
+    appendInfoLine: "Created ", numExtracted, " segments"
+endif
+
+if play_result
+    selectObject: outputSound
+    Play
+endif
 
 if method <= 3
     selectObject: sound
     plusObject: outputSound
-    appendInfoLine: "Output: ", selected$("Sound")
 else
     selectObject: sound
     for i from 1 to numExtracted
         plusObject: segment_'i'
     endfor
-    appendInfoLine: "Created ", numExtracted, " segments"
 endif
 
-if play_result
-    if method <= 3
-        selectObject: outputSound
-        Play
-    else
-        selectObject: segment_1
-        Play
+# ============================================================
+# Procedure: processSegment
+# Applies attenuation, exact sample-domain fade, then either explicit
+# normalization or a safety ceiling. The same scalar is applied to all
+# channels, preserving inter-channel balance.
+# ============================================================
+procedure processSegment: .id, .fadeSec, .attenDiv, .ceiling, .normalize
+    selectObject: .id
+    .nSamples = Get number of samples
+    .sr = Get sampling frequency
+
+    # Attenuation first.
+    if .attenDiv > 1
+        .att$ = string$(.attenDiv)
+        Formula: "self / " + .att$
     endif
-endif
 
-if method <= 3
-    selectObject: outputSound
-else
-    selectObject: segment_1
-endif
+    # Fade length in whole samples, never exceeding half the segment.
+    .fadeSamples = round(.fadeSec * .sr)
+    .fadeSamples = max(0, min(.fadeSamples, floor(.nSamples / 2)))
+    if .fadeSamples = 1
+        Formula: "if col = 1 or col = ncol then 0 else self fi"
+    elsif .fadeSamples > 1
+        .denom$ = string$(.fadeSamples - 1)
+        Formula: "self * min(1, min((col - 1) / " + .denom$ + ", (ncol - col) / " + .denom$ + "))"
+    endif
+
+    .peakBefore = Get absolute extremum: 0, 0, "None"
+    .postScale = 1
+    if .normalize
+        if .peakBefore > 0
+            .postScale = .ceiling / .peakBefore
+            .scale$ = string$(.postScale)
+            Formula: "self * " + .scale$
+        endif
+    elsif .peakBefore > .ceiling
+        .postScale = .ceiling / .peakBefore
+        .scale$ = string$(.postScale)
+        Formula: "self * " + .scale$
+    endif
+
+    .finalPeak = Get absolute extremum: 0, 0, "None"
+endproc
