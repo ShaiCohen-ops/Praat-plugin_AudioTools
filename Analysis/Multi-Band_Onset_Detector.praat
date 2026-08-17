@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,14 +14,39 @@
 #   sustain (tonal) components for spectromorphological analysis.
 #
 #   Pipeline:
-#     1. Logarithmic filterbank splits signal into N bands
-#     2. Per-band rectification + smoothing -> band envelopes
-#     3. Summed envelope -> onset function (positive derivative)
-#     4. Sigmoid mask from onset function (soft gating)
+#     1. Logarithmic filterbank splits each channel into N bands
+#     2. Per-band rectification + smoothing -> phase-safe RMS-across-channel envelopes
+#     3. Positive 5-ms envelope change is computed PER BAND and summed
+#        (multi-band positive flux; band rises cannot be cancelled by band falls)
+#     4. Sigmoid mask from flux / adaptive local baseline
 #     5. Mask dilation via max-decay recursion (attack lookahead
-#        + release decay, peak-preserving, zero latency)
-#     6. Mask upsampled to original SR, applied at full quality
-#     7. Sustain = original - transient (perfect reconstruction)
+#        + release decay, peak-preserving, no output time shift)
+#     6. Mask upsampled to original SR and applied identically to every channel
+#     7. Sustain = original - transient (exact complementary split before
+#        optional transient output gain)
+#
+# Changelog v1.2:
+#   - TRUE MULTI-BAND NOVELTY: onset activity is now the SUM OF POSITIVE
+#     PER-BAND envelope changes. v1.1 differentiated the SUMMED envelope,
+#     so a rise in one band could be cancelled by a simultaneous fall in
+#     another band. The detector now matches its multi-band claim.
+#   - PHASE-SAFE MULTICHANNEL ANALYSIS: removed Convert to mono. Each band
+#     is analyzed per channel and pooled as RMS across channel envelopes,
+#     so antiphase stereo/multichannel transients cannot disappear.
+#   - Visualization uses the strongest-RMS input channel as the waveform
+#     representative instead of a potentially phase-cancelling fold-down.
+#   - Presets now set an analysis sample rate high enough for their stated
+#     frequency range. Full Mix can actually analyze to 16 kHz; Drums to
+#     12 kHz when the source sample rate permits.
+#   - Soft Transients preset corrected: its threshold is LOWER, not higher,
+#     because a higher dB threshold makes the detector less sensitive.
+#   - Custom Number_of_bands is constrained to 1..12 and envelope smoothing
+#     is clamped to a valid range for the actual analysis sample rate.
+#   - Clarified that the detector uses smoothed rectified-amplitude
+#     envelopes (not additive physical energy), and that transient gain
+#     intentionally breaks exact output-pair reconstruction after the split.
+#   - Visualization title/subtitle separated; onset panel now describes the
+#     measured per-band positive flux and mask panel includes attack/release.
 #
 # Changelog v1.1:
 #   - FIXED (critical): onset derivative was computed in place
@@ -61,7 +86,7 @@
 #   - Stereo support via per-channel processing
 #
 # Citation:
-#   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
+#   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -79,7 +104,7 @@ originalName$ = selected$("Sound")
 # ============================================================
 # FORM
 # ============================================================
-form Multi-Band Onset Detector v1.1
+form Multi-Band Onset Detector v1.2
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -119,6 +144,7 @@ if preset = 2
     high_frequency_Hz = 12000
     number_of_bands = 5
     envelope_smoothing_Hz = 80
+    working_sample_rate_Hz = 32000
 elsif preset = 3
     # Piano/Plucked: moderate attacks
     presetName$ = "Piano/Plucked"
@@ -130,6 +156,7 @@ elsif preset = 3
     high_frequency_Hz = 8000
     number_of_bands = 4
     envelope_smoothing_Hz = 50
+    working_sample_rate_Hz = 20000
 elsif preset = 4
     # Voice/Speech: consonant detection
     presetName$ = "Voice/Speech"
@@ -141,6 +168,7 @@ elsif preset = 4
     high_frequency_Hz = 6000
     number_of_bands = 4
     envelope_smoothing_Hz = 60
+    working_sample_rate_Hz = 16000
 elsif preset = 5
     # Full Mix: broadband, many bands
     presetName$ = "Full Mix"
@@ -152,17 +180,19 @@ elsif preset = 5
     high_frequency_Hz = 16000
     number_of_bands = 6
     envelope_smoothing_Hz = 50
+    working_sample_rate_Hz = 44100
 elsif preset = 6
-    # Soft Transients: very gentle detection
+    # Soft Transients: increased sensitivity to gradual/weak envelope rises
     presetName$ = "Soft Transients"
-    threshold_dB = 8.0
-    sigmoid_steepness = 1.5
+    threshold_dB = 2.5
+    sigmoid_steepness = 1.4
     attack_ms = 30
     release_ms = 100
     low_frequency_Hz = 100
     high_frequency_Hz = 8000
     number_of_bands = 4
     envelope_smoothing_Hz = 40
+    working_sample_rate_Hz = 20000
 else
     presetName$ = "Custom"
 endif
@@ -187,7 +217,24 @@ workingSR = working_sample_rate_Hz
 if workingSR > originalSR
     workingSR = originalSR
 endif
+if workingSR < 1000
+    exitScript: "Working sample rate is too low (minimum 1000 Hz)."
+endif
 workNyquist = workingSR / 2
+
+# Keep the custom form robust and the visualization readable.
+if number_of_bands < 1
+    number_of_bands = 1
+elsif number_of_bands > 12
+    number_of_bands = 12
+endif
+
+# The envelope smoother is a low-pass on rectified band amplitude.
+# Keep it comfortably below the analysis Nyquist.
+maxSmoothHz = workNyquist * 0.4
+if envelope_smoothing_Hz > maxSmoothHz
+    envelope_smoothing_Hz = maxSmoothHz
+endif
 
 # Clamp frequency range to the ANALYSIS nyquist (v1.1).
 # Band edges are computed once from this range, so clamping here
@@ -203,7 +250,7 @@ if low_frequency_Hz >= high_frequency_Hz
     exitScript: "Frequency range collapsed: raise Working_sample_rate_Hz or lower Low_frequency_Hz."
 endif
 
-writeInfoLine: "=== Multi-Band Onset Detector v1.1 ==="
+writeInfoLine: "=== Multi-Band Onset Detector v1.2 ==="
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "  ", fixed$(totalDur, 3), " s | ",
     ... originalSR, " Hz | ", nChannels, " ch"
@@ -218,25 +265,54 @@ appendInfoLine: "Attack: ", fixed$(attack_ms, 0),
 appendInfoLine: ""
 
 # ============================================================
-# STEP 1: Create working mono at analysis SR
+# STEP 1: Create phase-safe per-channel working sources
 # ============================================================
 appendInfoLine: "[1/6] Preprocessing..."
 
-selectObject: originalSound
-if nChannels > 1
-    monoFull = Convert to mono
-else
-    monoFull = Copy: "mono_full"
-endif
+representativeChannel = 1
 
-if workingSR < originalSR
-    selectObject: monoFull
-    workSound = Resample: workingSR, 50
-    appendInfoLine: "  Downsampled to ", workingSR, " Hz for analysis"
+if nChannels = 1
+    selectObject: originalSound
+    if workingSR < originalSR
+        workCh_1 = Resample: workingSR, 50
+        appendInfoLine: "  Downsampled to ", workingSR, " Hz for analysis"
+    else
+        workCh_1 = Copy: "work_ch1"
+        workingSR = originalSR
+    endif
 else
-    selectObject: monoFull
-    workSound = Copy: "work"
-    workingSR = originalSR
+    # Keep channels separate. A conventional mono fold-down can cancel
+    # antiphase transients completely.
+    selectObject: originalSound
+    Extract all channels
+    for c from 1 to nChannels
+        fullCh_'c' = selected("Sound", c)
+    endfor
+
+    strongestRMS = -1
+    for c from 1 to nChannels
+        selectObject: fullCh_'c'
+        thisRMS = Get root-mean-square: 0, 0
+        if thisRMS > strongestRMS
+            strongestRMS = thisRMS
+            representativeChannel = c
+        endif
+
+        if workingSR < originalSR
+            workCh_'c' = Resample: workingSR, 50
+        else
+            workCh_'c' = Copy: "work_ch" + string$(c)
+        endif
+    endfor
+
+    for c from 1 to nChannels
+        removeObject: fullCh_'c'
+    endfor
+
+    if workingSR < originalSR
+        appendInfoLine: "  Downsampled ", nChannels, " channels to ", workingSR, " Hz for analysis"
+    endif
+    appendInfoLine: "  Phase-safe channel pooling: RMS of per-channel band envelopes"
 endif
 
 # ============================================================
@@ -250,69 +326,78 @@ for bi from 0 to number_of_bands
     bandEdge_'bi' = low_frequency_Hz * (high_frequency_Hz / low_frequency_Hz) ^ (bi / number_of_bands)
 endfor
 
-# Combined envelope (sum of all band envelopes)
-selectObject: workSound
+# Combined envelope is retained for visualization/context only.
+selectObject: workCh_1
 combinedEnv = Copy: "combined_env"
 Formula: "0"
+
+# Multi-band onset function is accumulated directly from POSITIVE
+# per-band changes, so simultaneous energy redistribution across
+# frequency bands cannot cancel a new onset.
+selectObject: workCh_1
+onsetFunc = Copy: "onset_func"
+Formula: "0"
+
+onsetLag = round(workingSR * 0.005)
+if onsetLag < 1
+    onsetLag = 1
+endif
 
 # Per-band processing
 for bi from 1 to number_of_bands
     biM1 = bi - 1
     loEdge = bandEdge_'biM1'
     hiEdge = bandEdge_'bi'
-    
-    # Edges are guaranteed monotone and < workNyquist - 100
-    # by the up-front clamp in SETUP (v1.1).
-    
+
     appendInfoLine: "  Band ", bi, ": ",
         ... fixed$(loEdge, 0), "-", fixed$(hiEdge, 0), " Hz"
-    
-    # Filter to band
-    selectObject: workSound
-    filtered = Filter (pass Hann band): loEdge, hiEdge, 100
-    
-    # Rectify (abs)
-    Formula: "abs(self)"
-    
-    # Smooth to get envelope
-    bandEnv = Filter (pass Hann band): 0, envelope_smoothing_Hz, 20
-    
-    # Store for visualization
-    if show_visualization
+
+    # Phase-safe band envelope: filter/rectify/smooth each channel
+    # separately, then pool the channel envelopes by RMS.
+    selectObject: workCh_1
+    bandEnv = Copy: "band_env_" + string$(bi)
+    Formula: "0"
+
+    for c from 1 to nChannels
+        selectObject: workCh_'c'
+        filtered = Filter (pass Hann band): loEdge, hiEdge, 100
+
+        # Rectified amplitude, then low-pass smoothing.
+        Formula: "abs(self)"
+        chanEnv = Filter (pass Hann band): 0, envelope_smoothing_Hz, 20
+        chanEnvId = chanEnv
+
         selectObject: bandEnv
+        Formula: "self + object[chanEnvId]^2"
+
+        removeObject: filtered, chanEnv
+    endfor
+
+    selectObject: bandEnv
+    Formula: "sqrt(self / nChannels)"
+
+    # Store the measured aggregate envelope for visualization.
+    if show_visualization
         vizBandEnv_'bi' = Copy: "viz_band_" + string$(bi)
     endif
-    
-    # Add to combined
+
     bandEnvId = bandEnv
     selectObject: combinedEnv
     Formula: "self + object[bandEnvId]"
-    
-    removeObject: filtered, bandEnv
+
+    # Positive 5-ms novelty PER BAND.
+    bandSrc = bandEnv
+    selectObject: onsetFunc
+    Formula: "self + if col > onsetLag then max(0, object[bandSrc, col] - object[bandSrc, col - onsetLag]) else 0 endif"
+
+    removeObject: bandEnv
 endfor
 
 # ============================================================
-# STEP 3: Onset function (positive derivative)
+# STEP 3: Multi-band positive-flux onset function
 # ============================================================
 appendInfoLine: ""
-appendInfoLine: "[3/6] Onset function..."
-
-selectObject: combinedEnv
-onsetFunc = Copy: "onset_func"
-
-# Positive half-wave rectified derivative: captures energy increases.
-# v1.1: MUST difference the frozen source via object[] -- inside
-# Formula, self[col-1] reads the value just written (in-place,
-# left-to-right evaluation), which turned this into the recursion
-# y[n] = max(0, x[n] - y[n-1]): a Nyquist-rate zigzag, not a
-# derivative. Differencing over a 5 ms hop also decouples the
-# onset function's scale from the working sample rate.
-combinedEnvSrc = combinedEnv
-onsetLag = round(workingSR * 0.005)
-if onsetLag < 1
-    onsetLag = 1
-endif
-Formula: "if col > onsetLag then max(0, object[combinedEnvSrc, col] - object[combinedEnvSrc, col - onsetLag]) else 0 endif"
+appendInfoLine: "[3/6] Multi-band positive flux..."
 
 selectObject: onsetFunc
 onsetMax = Get maximum: 0, 0, "None"
@@ -320,7 +405,7 @@ if onsetMax < epsilon
     onsetMax = epsilon
 endif
 
-appendInfoLine: "  Peak onset energy: ", fixed$(onsetMax, 6)
+appendInfoLine: "  Peak multi-band flux: ", fixed$(onsetMax, 6)
 
 # ============================================================
 # STEP 4: Sigmoid mask (soft gating)
@@ -378,7 +463,8 @@ releaseSec = release_ms / 1000
 #   Reversed pass = attack LOOKAHEAD: mask pre-opens before each
 #                   onset (time constant attack_ms), so the very
 #                   first samples of the attack are kept.
-# Mask stays in [0, 1]; peaks are preserved exactly; zero latency.
+# Mask stays in [0, 1]; peaks are preserved exactly. The attack pass is
+# offline/noncausal lookahead, but it does not shift the output timeline.
 relCoef = exp(-1 / (releaseSec * workingSR))
 attCoef = exp(-1 / (attackSec * workingSR))
 
@@ -469,7 +555,7 @@ if nChannels = 1
 else
     # v1.1: generalized to ANY channel count (was: stereo only,
     # so >2-channel input crashed with undefined transId).
-    # The mono-derived mask is applied identically to every channel.
+    # The phase-safe aggregate mask is applied identically to every channel.
     selectObject: originalSound
     Extract all channels
     for c from 1 to nChannels
@@ -535,9 +621,13 @@ if transient_gain_dB <> 0
     gainStr$ = fixed$(gainLinear, 8)
     Formula: "self * " + gainStr$
     appendInfoLine: "  Transient gain: ", fixed$(transient_gain_dB, 1), " dB"
+    appendInfoLine: "  Note: exact transient+sustain reconstruction applies before this output gain."
 endif
 
-removeObject: mask, workSound, monoFull
+removeObject: mask
+for c from 1 to nChannels
+    removeObject: workCh_'c'
+endfor
 
 # ============================================================
 # STEP 7: Visualization
@@ -546,14 +636,16 @@ if show_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
     
-    # Prepare mono views of outputs for drawing
+    # Prepare phase-safe representative views for drawing.
+    # For multichannel material use the strongest-RMS input channel
+    # determined during preprocessing; do not fold channels to mono.
     if nChannels > 1
         selectObject: transId
-        vizTrans = Extract one channel: 1
+        vizTrans = Extract one channel: representativeChannel
         selectObject: sustId
-        vizSust = Extract one channel: 1
+        vizSust = Extract one channel: representativeChannel
         selectObject: originalSound
-        vizOrig = Convert to mono
+        vizOrig = Extract one channel: representativeChannel
     else
         selectObject: transId
         vizTrans = Copy: "viz_trans"
@@ -609,15 +701,19 @@ if show_visualization
     Erase all
     
     # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.28
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half",
-        ... "##Multi-Band Onset Detector v1.1##"
+    Text: 0.5, "centre", 0.5, "half",
+        ... "##Multi-Band Onset Detector v1.2##"
+
+    # Separate subtitle strip: never draw outside the title viewport.
+    Select outer viewport: 0, 8, 0.28, 0.5
+    Axes: 0, 1, 0, 1
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.6, "half",
+    Text: 0.5, "centre", 0.5, "half",
         ... originalName$ + " | " + presetName$
         ... + " | " + string$(number_of_bands) + " bands"
         ... + " | Thresh: " + fixed$(threshold_dB, 1) + " dB"
@@ -641,7 +737,7 @@ if show_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "Amp"
-    Text top: "no", "Original"
+    Text top: "no", if nChannels > 1 then "Original representative ch " + string$(representativeChannel) else "Original" fi
     
     # === ROW 2: Band envelopes + combined ===
     Select outer viewport: 0, 8, 1.5, 2.5
@@ -681,8 +777,8 @@ if show_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Energy"
-    Text top: "no", "Band Envelopes (coloured) + Combined (black)"
+    Text left: "yes", "Env"
+    Text top: "no", "Band envelopes (coloured) + summed context (black)"
     
     # === ROW 3: Onset function ===
     Select outer viewport: 0, 8, 2.6, 3.5
@@ -700,8 +796,8 @@ if show_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "dE/dt"
-    Text top: "no", "Onset Function (positive energy derivative)"
+    Text left: "yes", "Flux"
+    Text top: "no", "Onset function: summed positive per-band envelope flux"
     
     # === ROW 4: Sigmoid mask ===
     Select outer viewport: 0, 8, 3.6, 4.3
@@ -727,7 +823,7 @@ if show_visualization
     Draw inner box
     Font size: 7
     Text left: "yes", "Mask"
-    Text top: "no", "Transient Mask (sigmoid)"
+    Text top: "no", "Transient mask after sigmoid + attack/release shaping"
     
     # === ROW 5: Transient waveform ===
     Select outer viewport: 0, 4, 4.4, 5.3
@@ -768,7 +864,6 @@ if show_visualization
     Font size: 7
     Text left: "yes", "Amp"
     Text top: "no", "Sustain (" + fixed$(sustPct, 1) + "%)"
-    Text bottom: "yes", "Time (s)"
     
     # === STATS PANEL ===
     Select outer viewport: 0, 8, 5.4, 6.15
@@ -787,6 +882,7 @@ if show_visualization
         ... + string$(originalSR) + " Hz | "
         ... + string$(nChannels) + " ch"
         ... + " | Analysis SR: " + string$(workingSR) + " Hz"
+        ... + if nChannels > 1 then " | phase-safe RMS channel pooling" else "" fi
     Text: 0.02, "left", 0.38, "half",
         ... "Bands: " + string$(number_of_bands)
         ... + " (" + fixed$(low_frequency_Hz, 0)

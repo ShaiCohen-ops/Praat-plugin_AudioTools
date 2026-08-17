@@ -3,14 +3,24 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2025) - Enhanced visualization & analysis
+# Version: 2.1 (2026) - Audio-adapted Parsons contour with pitch-change segmentation
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Melodic Contour Extraction using Parsons Code with enhanced
+#   Audio-adapted melodic contour extraction using Parsons Code with enhanced
 #   visualization including graphical contour diagram, contour
-#   shape classification, and interval histogram.
+#   heuristic shape classification, and interval histogram.
+#
+# Changelog v2.1:
+#   - Adds pitch-change segmentation for legato singing/instruments; presets now choose
+#     silence-separated or pitch-change units according to source type.
+#   - Removes the non-functional Mode pitch-summary option (it previously returned the median).
+#   - Handles single-unit inputs without division-by-zero.
+#   - Makes the audio adaptation explicit: R means within the selected semitone tolerance;
+#     standard Parsons direction coding itself is U/D/R by relative pitch order.
+#   - Separates title/subtitle visualization bands and labels detected items as units, not notes.
+#   - Adds a hard unit cap with a warning instead of silently indexing past the arrays.
 #
 # Features v2.0:
 #   - Parsons Code extraction (* U D R)
@@ -34,7 +44,7 @@ sound = selected("Sound")
 name$ = selected$("Sound")
 
 # === USER PARAMETERS ===
-form Melodic Contour - Parsons Code v2.0
+form Melodic Contour - Parsons Code v2.1
     comment === Preset ===
     optionmenu Preset 1
         option Custom (manual settings)
@@ -43,7 +53,10 @@ form Melodic Contour - Parsons Code v2.0
         option Instrumental (very narrow)
         option Whistle/Flute (precise)
     
-    comment === Segmentation (Silence Detection) ===
+    comment === Segmentation ===
+    optionmenu Segmentation_method 1
+        option Silence-separated units
+        option Pitch-change units (legato)
     positive Min_pitch_Hz 100
     integer Silence_threshold_dB -25
     positive Min_silence_duration_s 0.10
@@ -54,11 +67,10 @@ form Melodic Contour - Parsons Code v2.0
     positive Pitch_ceiling_Hz 600
     
     comment === Contour Comparison ===
-    positive Threshold_semitones 1.0
+    real Threshold_semitones 1.0
     optionmenu Pitch_summary 1
         option Median (recommended)
         option Mean
-        option Mode (most frequent)
     
     comment === Output ===
     boolean Show_visualization 1
@@ -71,6 +83,7 @@ endform
 if preset > 1
     if preset = 2
         # Speech
+        segmentation_method = 1
         min_pitch_Hz = 75
         silence_threshold_dB = -25
         min_silence_duration_s = 0.15
@@ -81,6 +94,7 @@ if preset > 1
         presetName$ = "Speech"
     elsif preset = 3
         # Singing
+        segmentation_method = 2
         min_pitch_Hz = 100
         silence_threshold_dB = -30
         min_silence_duration_s = 0.08
@@ -91,6 +105,7 @@ if preset > 1
         presetName$ = "Singing"
     elsif preset = 4
         # Instrumental
+        segmentation_method = 2
         min_pitch_Hz = 80
         silence_threshold_dB = -35
         min_silence_duration_s = 0.05
@@ -101,6 +116,7 @@ if preset > 1
         presetName$ = "Instrumental"
     elsif preset = 5
         # Whistle/Flute
+        segmentation_method = 2
         min_pitch_Hz = 200
         silence_threshold_dB = -40
         min_silence_duration_s = 0.03
@@ -117,27 +133,40 @@ endif
 # === SETUP ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  MELODIC CONTOUR - PARSONS CODE v2.0"
+writeInfoLine: "  MELODIC CONTOUR - PARSONS CODE v2.1"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Sound: ", name$
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Threshold: ", threshold_semitones, " semitones"
+if segmentation_method = 1
+    segmentationName$ = "Silence-separated"
+else
+    segmentationName$ = "Pitch-change (legato)"
+endif
+appendInfoLine: "Segmentation: ", segmentationName$
+appendInfoLine: "Repeat tolerance: ", threshold_semitones, " semitones"
 appendInfoLine: ""
 
 selectObject: sound
 duration = Get total duration
 sampleRate = Get sampling frequency
 
+if pitch_ceiling_Hz <= pitch_floor_Hz
+    exitScript: "Pitch ceiling must be greater than pitch floor."
+endif
+if threshold_semitones < 0
+    exitScript: "Threshold semitones cannot be negative."
+endif
+
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
 appendInfoLine: "Sample rate: ", sampleRate, " Hz"
 appendInfoLine: ""
 
 # ============================================================
-# STEP 1: SEGMENTATION (Silence Detection)
+# STEP 1: COARSE SOUNDING-REGION DETECTION
 # ============================================================
 
-appendInfoLine: "STEP 1: Segmenting into notes/syllables..."
+appendInfoLine: "STEP 1: Detecting sounding regions..."
 
 selectObject: sound
 textgrid = To TextGrid (silences): min_pitch_Hz, 0, silence_threshold_dB, min_silence_duration_s, min_sounding_duration_s, "silent", "sounding"
@@ -156,7 +185,7 @@ for i from 1 to numIntervals
 endfor
 
 appendInfoLine: "  Total intervals: ", numIntervals
-appendInfoLine: "  Sounding segments: ", numSounding
+appendInfoLine: "  Sounding regions: ", numSounding
 appendInfoLine: ""
 
 if numSounding < 1
@@ -192,14 +221,15 @@ appendInfoLine: "  Range: ", fixed$(minPitch, 1), " - ", fixed$(maxPitch, 1), " 
 appendInfoLine: ""
 
 # ============================================================
-# STEP 3: ANALYZE EACH SEGMENT
+# STEP 3: BUILD PITCH UNITS
 # ============================================================
 
-appendInfoLine: "STEP 3: Analyzing melodic contour..."
+appendInfoLine: "STEP 3: Building pitch units..."
 appendInfoLine: ""
 
-# Arrays to store results
-maxNotes = 500
+# Arrays to store results. The cap is deliberate: visualization and TextGrid
+# output become impractical beyond this point, so truncate with an explicit warning.
+maxNotes = 1000
 for n from 1 to maxNotes
     note_start[n] = 0
     note_end[n] = 0
@@ -211,67 +241,164 @@ endfor
 
 noteCount = 0
 previousPitchST = undefined
-
-# Reference for semitone conversion (A4 = 440 Hz = MIDI 69)
+truncatedUnits = 0
 refA4 = 440
 
-for i from 1 to numIntervals
-    selectObject: textgrid
-    label$ = Get label of interval: 1, i
-    
-    if label$ = "sounding"
-        tStart = Get start time of interval: 1, i
-        tEnd = Get end time of interval: 1, i
-        
-        # Get pitch for this segment
+procedure addPitchUnit: .tStart, .tEnd
+    if .tEnd > .tStart
         selectObject: pitch
-        
         if pitch_summary = 1
-            pitchHz = Get quantile: tStart, tEnd, 0.5, "Hertz"
-        elsif pitch_summary = 2
-            pitchHz = Get mean: tStart, tEnd, "Hertz"
+            .pitchHz = Get quantile: .tStart, .tEnd, 0.5, "Hertz"
         else
-            pitchHz = Get quantile: tStart, tEnd, 0.5, "Hertz"
+            .pitchHz = Get mean: .tStart, .tEnd, "Hertz"
         endif
-        
-        if pitchHz <> undefined and pitchHz > 0
-            noteCount += 1
-            
-            note_start[noteCount] = tStart
-            note_end[noteCount] = tEnd
-            note_pitch_hz[noteCount] = pitchHz
-            
-            # Convert Hz to semitones
-            pitchST = 69 + 12 * ln(pitchHz / refA4) / ln(2)
-            note_pitch_st[noteCount] = pitchST
-            
-            # Determine Parsons code and interval
-            if previousPitchST = undefined
-                note_code$[noteCount] = "*"
-                note_interval_st[noteCount] = 0
-            else
-                diff = pitchST - previousPitchST
-                note_interval_st[noteCount] = diff
-                
-                if diff > threshold_semitones
-                    note_code$[noteCount] = "U"
-                elsif diff < -threshold_semitones
-                    note_code$[noteCount] = "D"
+
+        if .pitchHz <> undefined and .pitchHz > 0
+            if noteCount < maxNotes
+                noteCount = noteCount + 1
+                note_start[noteCount] = .tStart
+                note_end[noteCount] = .tEnd
+                note_pitch_hz[noteCount] = .pitchHz
+
+                .pitchST = 69 + 12 * ln(.pitchHz / refA4) / ln(2)
+                note_pitch_st[noteCount] = .pitchST
+
+                if previousPitchST = undefined
+                    note_code$[noteCount] = "*"
+                    note_interval_st[noteCount] = 0
                 else
-                    note_code$[noteCount] = "R"
+                    .diff = .pitchST - previousPitchST
+                    note_interval_st[noteCount] = .diff
+                    if .diff > threshold_semitones
+                        note_code$[noteCount] = "U"
+                    elsif .diff < -threshold_semitones
+                        note_code$[noteCount] = "D"
+                    else
+                        note_code$[noteCount] = "R"
+                    endif
                 endif
+                previousPitchST = .pitchST
+            else
+                truncatedUnits = 1
             endif
-            
-            previousPitchST = pitchST
         endif
     endif
-endfor
+endproc
 
-appendInfoLine: "  Notes analyzed: ", noteCount
+if segmentation_method = 1
+    # Classical coarse mode: every silence-separated sounding region contributes
+    # one pitch unit. This is useful for speech, syllabic singing and separated notes.
+    for i from 1 to numIntervals
+        selectObject: textgrid
+        label$ = Get label of interval: 1, i
+        if label$ = "sounding"
+            tStart = Get start time of interval: 1, i
+            tEnd = Get end time of interval: 1, i
+            @addPitchUnit: tStart, tEnd
+        endif
+    endfor
+else
+    # Legato mode: use the silence TextGrid only as a voiced/sounding mask, then
+    # split each sounding region when a pitch change persists. This prevents a
+    # legato melody from collapsing into one giant "note" merely because there
+    # are no silences between notes.
+    selectObject: pitch
+    nPitchFrames = Get number of frames
+    pitchStep = Get time step
+    changeThresholdST = max(0.50, threshold_semitones)
+    holdTime = max(0.03, min_sounding_duration_s * 0.5)
+    holdFrames = ceiling(holdTime / pitchStep)
+    if holdFrames < 2
+        holdFrames = 2
+    endif
+
+    appendInfoLine: "  Legato change threshold: ", fixed$(changeThresholdST, 2), " st"
+    appendInfoLine: "  Change persistence: ", fixed$(holdFrames * pitchStep, 3), " s"
+
+    for i from 1 to numIntervals
+        selectObject: textgrid
+        label$ = Get label of interval: 1, i
+        if label$ = "sounding"
+            tStart = Get start time of interval: 1, i
+            tEnd = Get end time of interval: 1, i
+
+            selectObject: pitch
+            firstFrameReal = Get frame number from time: tStart
+            firstFrame = round(firstFrameReal)
+            lastFrameReal = Get frame number from time: tEnd
+            lastFrame = round(lastFrameReal)
+            if firstFrame < 1
+                firstFrame = 1
+            endif
+            if lastFrame > nPitchFrames
+                lastFrame = nPitchFrames
+            endif
+
+            unitStart = tStart
+            haveReference = 0
+            referenceMeanST = 0
+            referenceCount = 0
+            candidateCount = 0
+            candidateStart = tStart
+            candidateSumST = 0
+
+            for iFrame from firstFrame to lastFrame
+                selectObject: pitch
+                frameHz = Get value in frame: iFrame, "Hertz"
+                if frameHz <> undefined and frameHz > 0
+                    frameST = 69 + 12 * ln(frameHz / refA4) / ln(2)
+
+                    if haveReference = 0
+                        haveReference = 1
+                        referenceMeanST = frameST
+                        referenceCount = 1
+                    else
+                        deltaFromReference = frameST - referenceMeanST
+                        if abs(deltaFromReference) > changeThresholdST
+                            if candidateCount = 0
+                                candidateStart = Get time from frame number: iFrame
+                                candidateSumST = 0
+                            endif
+                            candidateCount = candidateCount + 1
+                            candidateSumST = candidateSumST + frameST
+
+                            if candidateCount >= holdFrames
+                                boundary = candidateStart - 0.5 * pitchStep
+                                if boundary >= unitStart + min_sounding_duration_s
+                                    @addPitchUnit: unitStart, boundary
+                                    unitStart = boundary
+                                    referenceMeanST = candidateSumST / candidateCount
+                                    referenceCount = candidateCount
+                                else
+                                    referenceCount = referenceCount + 1
+                                    referenceMeanST = referenceMeanST + (frameST - referenceMeanST) / referenceCount
+                                endif
+                                candidateCount = 0
+                                candidateSumST = 0
+                            endif
+                        else
+                            candidateCount = 0
+                            candidateSumST = 0
+                            referenceCount = referenceCount + 1
+                            referenceMeanST = referenceMeanST + (frameST - referenceMeanST) / referenceCount
+                        endif
+                    endif
+                endif
+            endfor
+
+            @addPitchUnit: unitStart, tEnd
+        endif
+    endfor
+endif
+
+appendInfoLine: "  Pitch units analyzed: ", noteCount
+if truncatedUnits
+    appendInfoLine: "  WARNING: unit count exceeded ", maxNotes, "; analysis was truncated."
+endif
 appendInfoLine: ""
 
 if noteCount < 1
-    appendInfoLine: "ERROR: No pitched notes detected!"
+    appendInfoLine: "ERROR: No pitched units detected!"
     removeObject: textgrid, pitch
     exitScript()
 endif
@@ -321,15 +448,19 @@ endfor
 # Bin mapping: bin 13 = unison (0 st), bin 14 = +1 st, bin 12 = -1 st, etc.
 centerBin = 13
 
-# Count intervals
+# Count intervals. Edge bins collect values beyond the displayed ±12 st range.
+lowOverflowCount = 0
+highOverflowCount = 0
 for n from 2 to noteCount
     intST = round(note_interval_st[n])
     binIndex = centerBin + intST
     
     if binIndex < 1
         binIndex = 1
+        lowOverflowCount += 1
     elsif binIndex > maxBins
         binIndex = maxBins
+        highOverflowCount += 1
     endif
     
     intervalBins[binIndex] += 1
@@ -350,11 +481,15 @@ stepCount = 0
 directionChanges = 0
 prevDirection = 0
 
+repeatIntervalCount = 0
+
 for n from 2 to noteCount
     absDiff = abs(note_interval_st[n])
     totalIntervalMagnitude += absDiff
     
-    if absDiff > 2
+    if absDiff <= threshold_semitones
+        repeatIntervalCount += 1
+    elsif absDiff > 2
         leapCount += 1
     else
         stepCount += 1
@@ -378,19 +513,27 @@ for n from 2 to noteCount
     endif
 endfor
 
-avgIntervalSize = totalIntervalMagnitude / (noteCount - 1)
+if noteCount > 1
+    avgIntervalSize = totalIntervalMagnitude / (noteCount - 1)
+else
+    avgIntervalSize = 0
+endif
 
 appendInfoLine: "  Leaps (>2 st): ", leapCount
-appendInfoLine: "  Steps (≤2 st): ", stepCount
+appendInfoLine: "  Steps (>tolerance, ≤2 st): ", stepCount
+appendInfoLine: "  Repeats (within tolerance): ", repeatIntervalCount
 appendInfoLine: "  Direction changes: ", directionChanges
 appendInfoLine: "  Average interval: ", fixed$(avgIntervalSize, 2), " st"
+if lowOverflowCount > 0 or highOverflowCount > 0
+    appendInfoLine: "  Histogram overflow: < -12 st = ", lowOverflowCount, ", > +12 st = ", highOverflowCount
+endif
 appendInfoLine: ""
 
 # ============================================================
 # STEP 7: CONTOUR SHAPE CLASSIFICATION
 # ============================================================
 
-appendInfoLine: "STEP 6: Classifying contour shape..."
+appendInfoLine: "STEP 6: Classifying contour shape (heuristic)..."
 
 # Calculate contour features
 firstPitch = note_pitch_st[1]
@@ -446,8 +589,15 @@ overallDirection = lastPitch - firstPitch
 contourShape$ = "Undefined"
 contourDescription$ = ""
 
-# Static (very small range)
-if pitchRange < 3
+staticRangeThreshold = max(1.0, threshold_semitones)
+
+# Single unit has no directional contour to classify
+if noteCount = 1
+    contourShape$ = "SINGLE UNIT"
+    contourDescription$ = "Only one pitched unit; no directional contour"
+
+# Static/narrow contour (relative to the chosen audio tolerance)
+elsif pitchRange <= staticRangeThreshold
     contourShape$ = "STATIC"
     contourDescription$ = "Little melodic movement, monotone"
 
@@ -493,7 +643,9 @@ else
 endif
 
 # Melodic tendency (simpler)
-if countU > countD + 2
+if noteCount = 1
+    tendency$ = "UNDEFINED (single unit)"
+elsif countU > countD + 2
     tendency$ = "Generally ASCENDING"
 elsif countD > countU + 2
     tendency$ = "Generally DESCENDING"
@@ -515,10 +667,10 @@ appendInfoLine: ""
 
 if show_detailed_analysis
     appendInfoLine: "----------------------------------------------"
-    appendInfoLine: "  DETAILED NOTE ANALYSIS"
+    appendInfoLine: "  DETAILED PITCH-UNIT ANALYSIS"
     appendInfoLine: "----------------------------------------------"
     appendInfoLine: ""
-    appendInfoLine: "Note | Time (s)    | Pitch (Hz) | MIDI | Code | Interval"
+    appendInfoLine: "Unit | Time (s)    | Pitch (Hz) | MIDI | Code | Interval"
     appendInfoLine: "-----|-------------|------------|------|------|----------"
     
     for n from 1 to noteCount
@@ -552,15 +704,16 @@ appendInfoLine: "  PARSONS CODE RESULT"
 appendInfoLine: "----------------------------------------------"
 appendInfoLine: ""
 appendInfoLine: "  ##", parsonsCode$, "##"
+appendInfoLine: "  Audio-adapted: R = pitch change within ±", threshold_semitones, " st"
 appendInfoLine: ""
-appendInfoLine: "  Length: ", noteCount, " symbols"
+appendInfoLine: "  Length: ", noteCount, " symbols (including optional *)"
 if noteCount > 1
     appendInfoLine: "  Up (U): ", countU, " (", fixed$(countU / (noteCount - 1) * 100, 1), "%)"
     appendInfoLine: "  Down (D): ", countD, " (", fixed$(countD / (noteCount - 1) * 100, 1), "%)"
     appendInfoLine: "  Repeat (R): ", countR, " (", fixed$(countR / (noteCount - 1) * 100, 1), "%)"
 endif
 appendInfoLine: ""
-appendInfoLine: "  Contour Shape: ", contourShape$
+appendInfoLine: "  Contour Shape (heuristic): ", contourShape$
 appendInfoLine: "  Melodic Tendency: ", tendency$
 appendInfoLine: ""
 
@@ -572,7 +725,7 @@ if create_TextGrid_output
     appendInfoLine: "Creating annotated TextGrid..."
     
     selectObject: sound
-    outputTG = To TextGrid: "Notes Parsons Pitch", ""
+    outputTG = To TextGrid: "Units Parsons Pitch", ""
     
     currentTime = 0
     for n from 1 to noteCount
@@ -592,7 +745,7 @@ if create_TextGrid_output
         midTime = (note_start[n] + note_end[n]) / 2
         
         interval1 = Get interval at time: 1, midTime
-        nocheck Set interval text: 1, interval1, "N" + string$(n)
+        nocheck Set interval text: 1, interval1, "U" + string$(n)
         
         interval2 = Get interval at time: 2, midTime
         nocheck Set interval text: 2, interval2, note_code$[n]
@@ -621,15 +774,18 @@ if show_visualization
     
     Erase all
     
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.7
+    # === TITLE / SUBTITLE (separate bands) ===
+    Select outer viewport: 0, 8, 0, 0.34
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.75, "half", "##Melodic Contour - Parsons Code## | " + name$
-    Font size: 9
+    Text: 0.5, "centre", 0.5, "half", "##Melodic Contour - Parsons Code## | " + name$
+
+    Select outer viewport: 0, 8, 0.34, 0.68
+    Axes: 0, 1, 0, 1
+    Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.2, "centre", -1., "half", presetName$ + " | Threshold: " + fixed$(threshold_semitones, 1) + " st | Shape: " + contourShape$
+    Text: 0.5, "centre", 0.5, "half", presetName$ + " | " + segmentationName$ + " | tolerance: " + fixed$(threshold_semitones, 2) + " st | Shape: " + contourShape$
     
     # === PANEL 1: GRAPHICAL CONTOUR DIAGRAM (Parsons style) ===
     Select outer viewport: 0, 8, 0.8, 2.8
@@ -695,18 +851,20 @@ if show_visualization
             Draw line: n - 0.4, normalizedPitch, n - 0.4, prevNormalized
         endif
         
-        # Draw Parsons code below
-        Font size: 10
-        if note_code$[n] = "U"
-            Colour: "{0.2, 0.7, 0.3}"
-        elsif note_code$[n] = "D"
-            Colour: "{0.8, 0.3, 0.3}"
-        elsif note_code$[n] = "R"
-            Colour: "{0.6, 0.6, 0.2}"
-        else
-            Colour: "{0.4, 0.4, 0.8}"
+        # Draw Parsons symbols only when they remain readable.
+        if noteCount <= 60
+            Font size: 10
+            if note_code$[n] = "U"
+                Colour: "{0.2, 0.7, 0.3}"
+            elsif note_code$[n] = "D"
+                Colour: "{0.8, 0.3, 0.3}"
+            elsif note_code$[n] = "R"
+                Colour: "{0.6, 0.6, 0.2}"
+            else
+                Colour: "{0.4, 0.4, 0.8}"
+            endif
+            Text: n, "centre", -0.85, "half", note_code$[n]
         endif
-        Text: n, "centre", -0.85, "half", note_code$[n]
     endfor
     
     Line width: 1
@@ -714,7 +872,7 @@ if show_visualization
     Draw inner box
     
     Font size: 7
-    Text bottom: "yes", "Note number"
+    Text bottom: "yes", "Pitch-unit number"
     
     # Label
     Font size: 8
@@ -746,7 +904,45 @@ if show_visualization
         Draw line: 0, st, duration, st
     endfor
     
-    # Draw note boxes (piano roll style)
+    # Draw the measured F0 track behind the quantized pitch-unit boxes.
+    # This makes the visualization show the actual measurement that produced
+    # the units, rather than only the classification result.
+    selectObject: pitch
+    nPlotFrames = Get number of frames
+    plotStep = Get time step
+    plotStride = ceiling(nPlotFrames / 1800)
+    if plotStride < 1
+        plotStride = 1
+    endif
+    prevPlotValid = 0
+    prevPlotT = 0
+    prevPlotST = 0
+    Colour: "{0.55, 0.58, 0.65}"
+    Line width: 0.8
+    for iPlot from 1 to nPlotFrames
+        if (iPlot - 1) mod plotStride = 0
+            selectObject: pitch
+            plotHz = Get value in frame: iPlot, "Hertz"
+            if plotHz <> undefined and plotHz > 0
+                plotT = Get time from frame number: iPlot
+                plotST = 69 + 12 * ln(plotHz / refA4) / ln(2)
+                if plotST >= minPlotPitch and plotST <= maxPlotPitch
+                    if prevPlotValid and plotT - prevPlotT <= 1.6 * plotStride * plotStep
+                        Draw line: prevPlotT, prevPlotST, plotT, plotST
+                    endif
+                    prevPlotValid = 1
+                    prevPlotT = plotT
+                    prevPlotST = plotST
+                else
+                    prevPlotValid = 0
+                endif
+            else
+                prevPlotValid = 0
+            endif
+        endif
+    endfor
+
+    # Draw pitch-unit boxes (piano-roll style)
     for n from 1 to noteCount
         pitchST = note_pitch_st[n]
         
@@ -858,7 +1054,7 @@ if show_visualization
     Marks bottom every: 1, 3, "yes", "yes", "no"
     
     Font size: 7
-    Text bottom: "yes", "Interval (semitones)"
+    Text bottom: "yes", "Interval (semitones; edge bins include overflow)"
     
     Font size: 7
     Select outer viewport: 0, 0.7, 4.4, 6.2
@@ -992,7 +1188,7 @@ if show_visualization
     # Statistics
     Font size: 6
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.02, "left", 0.35, "half", "Notes: " + string$(noteCount)
+    Text: 0.02, "left", 0.35, "half", "Units: " + string$(noteCount)
     Text: 0.12, "left", 0.35, "half", "Range: " + fixed$(pitchRange, 1) + " st"
     Text: 0.26, "left", 0.35, "half", "Leaps: " + string$(leapCount)
     Text: 0.36, "left", 0.35, "half", "Steps: " + string$(stepCount)
@@ -1031,11 +1227,11 @@ appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "  PARSONS CODE: ", parsonsCode$
 appendInfoLine: ""
-appendInfoLine: "  CONTOUR SHAPE: ", contourShape$
+appendInfoLine: "  CONTOUR SHAPE (HEURISTIC): ", contourShape$
 appendInfoLine: "  ", contourDescription$
 appendInfoLine: ""
-appendInfoLine: "  Use this code to search melodic databases"
-appendInfoLine: "  or compare with other melodies."
+appendInfoLine: "  For database matching, remember that this is audio-adapted:"
+appendInfoLine: "  R means within the selected tolerance, not necessarily exact equality."
 appendInfoLine: ""
 
 if create_TextGrid_output

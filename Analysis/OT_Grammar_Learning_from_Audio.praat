@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026) — real learning rewrite
+# Version: 1.1 (2026) — reviewed learning/extraction fix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -37,17 +37,18 @@
 #
 #     Pair-corpus (good/bad folders):
 #       User picks a parent folder containing subfolders `good/`
-#       and `bad/`. Every good vs every bad melody becomes a
-#       winner/loser pair. This is the linguistically orthodox
-#       setup and produces a real stylistic grammar.
+#       and `bad/`. Good-vs-bad melodies become winner/loser
+#       pairs (up to the pair-corpus safety cap below). This is
+#       the linguistically orthodox setup and produces a real
+#       stylistic grammar.
 #
 #   What this script does NOT claim:
 #     - It does not learn from distributional statistics alone.
 #     - It does not discover new constraints; the constraint set
 #       is fixed (15 melodic constraints; see CONSTRAINT SET below).
-#     - It does not implement MaxEnt weight estimation. (GLA with
-#       zero noise approximates Harmonic Grammar; that is the
-#       closest thing on offer here.)
+#     - It does not implement MaxEnt or Harmonic Grammar weight
+#       estimation. With zero evaluation noise, GLA evaluation is
+#       deterministic OT ranking, not Harmonic Grammar.
 #
 # Usage:
 #   Single-file mode:   select one Sound, run script.
@@ -95,25 +96,29 @@ form OT Grammar Learning from Audio
         option D minor (natural)
         option A minor (harmonic)
         option Chromatic (no quantization)
-    boolean Quantize_to_scale 1
+    boolean Quantize_to_scale 0
     positive Min_note_duration_ms 80
     comment === GEN (candidate generator) ===
     optionmenu GEN_mode: 1
         option Neighbor-GEN (single file)
         option Pair-corpus (good/bad folders)
-    positive Perturbation_max_semitones 2
+    natural  Perturbation_max_semitones 2
     comment === Learning algorithm ===
     optionmenu Algorithm: 1
         option GLA (Gradual Learning Algorithm)
         option RCD (Recursive Constraint Demotion)
-    positive GLA_iterations 2000
-    real     GLA_plasticity 0.5
+    natural  GLA_iterations 2000
+    positive GLA_plasticity 0.5
     real     GLA_eval_noise 2.0
     positive GLA_initial_ranking_value 100
     comment === Output ===
     boolean Show_visualization 1
     boolean Create_output_table 1
 endform
+
+if gLA_eval_noise < 0
+    exitScript: "GLA evaluation noise must be zero or positive."
+endif
 
 clearinfo
 
@@ -161,7 +166,10 @@ endif
 # ============================================================
 # Scale pitch-class sets — corrected from v0.3.
 # Stored directly as PC arrays instead of parsing strings.
+# Keyed scales provide a tonic for cadence constraints; Chromatic
+# deliberately does not.
 # ============================================================
+scaleHasTonic = 1
 if scale = 1
     scaleName$ = "C major"
     scalePC# = {0, 2, 4, 5, 7, 9, 11}
@@ -214,6 +222,7 @@ else
     scaleName$ = "Chromatic"
     scalePC# = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
     tonicPC = 0
+    scaleHasTonic = 0
     quantize_to_scale = 0
 endif
 numScalePCs = size(scalePC#)
@@ -291,11 +300,12 @@ procedure extractMelodyFromSound: .sid, .minPitch, .maxPitch, .timeStep, .voicin
     selectObject: .pid
     .nFrames = Get number of frames
 
-    # 1. Raw frame-by-frame MIDI sequence (quantized if requested).
-    # We use a large preallocated buffer for frame-level data.
+    # 1. Raw voiced-frame MIDI sequence. Keep the original frame
+    # index so unvoiced gaps are not accidentally collapsed away.
     .rawMax = .nFrames + 8
     rawMidi# = zero#(.rawMax)
     rawTime# = zero#(.rawMax)
+    rawFrame# = zero#(.rawMax)
     .rawCount = 0
     for .fr to .nFrames
         .f0 = Get value in frame: .fr, "Hertz"
@@ -308,24 +318,31 @@ procedure extractMelodyFromSound: .sid, .minPitch, .maxPitch, .timeStep, .voicin
             .rawCount += 1
             rawMidi#[.rawCount] = .midi
             rawTime#[.rawCount] = Get time from frame number: .fr
+            rawFrame#[.rawCount] = .fr
         endif
     endfor
     removeObject: .pid
 
-    # 2. Median filter (odd-window, width = 3 frames, ~timeStep*3 sec).
-    # Suppresses single-frame octave errors and tiny rounding flickers.
+    # 2. Median filter (3 voiced samples) without filtering across
+    # a real unvoiced gap. One missing pitch frame may be bridged;
+    # longer gaps remain note boundaries.
     .medCount = .rawCount
     medMidi# = zero#(.rawMax)
+    .maxGapFrames = 2
     for .i from 1 to .medCount
-        .a = .i - 1
-        if .a < 1
-            .a = 1
+        .a = .i
+        if .i > 1
+            if rawFrame#[.i] - rawFrame#[.i - 1] <= .maxGapFrames
+                .a = .i - 1
+            endif
         endif
-        .b = .i + 1
-        if .b > .medCount
-            .b = .medCount
+        .b = .i
+        if .i < .medCount
+            if rawFrame#[.i + 1] - rawFrame#[.i] <= .maxGapFrames
+                .b = .i + 1
+            endif
         endif
-        # Three values, pick median.
+
         .v1 = rawMidi#[.a]
         .v2 = rawMidi#[.i]
         .v3 = rawMidi#[.b]
@@ -347,11 +364,13 @@ procedure extractMelodyFromSound: .sid, .minPitch, .maxPitch, .timeStep, .voicin
         medMidi#[.i] = .med
     endfor
 
-    # 3. Run-length collapse with minimum-duration gate.
-    # A run must span at least .minDurMs / 1000 seconds to become a note.
+    # 3. Run-length collapse with a minimum-duration gate. A long
+    # unvoiced gap is a boundary even when pitch resumes on the same
+    # MIDI note. The first run is NOT exempt from the duration gate.
     .noteCap = .rawMax
     pn_notes# = zero#(.noteCap)
     pn_times# = zero#(.noteCap)
+    pn_ends# = zero#(.noteCap)
     pn_count = 0
 
     .minDurSec = .minDurMs / 1000.0
@@ -360,16 +379,19 @@ procedure extractMelodyFromSound: .sid, .minPitch, .maxPitch, .timeStep, .voicin
         .boundary = 0
         if .i > .medCount
             .boundary = 1
+        elsif rawFrame#[.i] - rawFrame#[.i - 1] > .maxGapFrames
+            .boundary = 1
         elsif medMidi#[.i] <> medMidi#[.runStart]
             .boundary = 1
         endif
         if .boundary = 1
             .runEnd = .i - 1
-            .dur = rawTime#[.runEnd] - rawTime#[.runStart]
-            if .dur >= .minDurSec or pn_count = 0
+            .dur = rawTime#[.runEnd] - rawTime#[.runStart] + .timeStep
+            if .dur >= .minDurSec
                 pn_count += 1
                 pn_notes#[pn_count] = medMidi#[.runStart]
                 pn_times#[pn_count] = rawTime#[.runStart]
+                pn_ends#[pn_count] = rawTime#[.runEnd] + .timeStep
             endif
             .runStart = .i
         endif
@@ -378,28 +400,38 @@ endproc
 
 # Quantize a MIDI number to the nearest in-scale MIDI.
 procedure quantizePCtoScale: .midi
+    # Quantize in absolute MIDI space, not pitch-class space. This
+    # correctly handles octave boundaries (e.g. C -> B below, not B
+    # almost an octave above). Exact ties are resolved downward.
     .pc = .midi mod 12
-    .oct = (.midi - .pc) / 12
-    .bestDist = 99
-    .bestPC = .pc
+    .base = .midi - .pc
+    .bestDist = 1e12
+    .bestMidi = .midi
     for .j from 1 to numScalePCs
         .sp = scalePC#[.j]
-        .d1 = abs(.pc - .sp)
-        .d2 = abs(.pc - (.sp + 12))
-        .d3 = abs(.pc - (.sp - 12))
-        .d = .d1
-        if .d2 < .d
-            .d = .d2
-        endif
-        if .d3 < .d
-            .d = .d3
-        endif
-        if .d < .bestDist
+
+        .cand = .base + .sp - 12
+        .d = abs(.midi - .cand)
+        if .d < .bestDist or (.d = .bestDist and .cand < .bestMidi)
             .bestDist = .d
-            .bestPC = .sp
+            .bestMidi = .cand
+        endif
+
+        .cand = .base + .sp
+        .d = abs(.midi - .cand)
+        if .d < .bestDist or (.d = .bestDist and .cand < .bestMidi)
+            .bestDist = .d
+            .bestMidi = .cand
+        endif
+
+        .cand = .base + .sp + 12
+        .d = abs(.midi - .cand)
+        if .d < .bestDist or (.d = .bestDist and .cand < .bestMidi)
+            .bestDist = .d
+            .bestMidi = .cand
         endif
     endfor
-    .out = .oct * 12 + .bestPC
+    .out = .bestMidi
 endproc
 
 # ============================================================
@@ -482,29 +514,32 @@ procedure evalMelody: .noteArr#, .n
     endfor
     v#[8] = .ns
 
-    # Cadence (missing cadential approach == 1 violation)
-    if .n >= 2
-        .last = .noteArr#[.n] mod 12
-        .penult = .noteArr#[.n - 1] mod 12
-        .lt = (tonicPC - 1 + 12) mod 12
-        .sup = (tonicPC + 2) mod 12
-        .dom = (tonicPC + 7) mod 12
-        .hasCad = 0
-        if .last = tonicPC
-            if .penult = .lt or .penult = .sup or .penult = .dom
-                .hasCad = 1
+    # Cadence and tonic-ending constraints apply only when the
+    # selected scale actually defines a tonic. Chromatic mode leaves
+    # both constraints neutral instead of silently treating C as tonic.
+    if scaleHasTonic = 1
+        if .n >= 2
+            .last = .noteArr#[.n] mod 12
+            .penult = .noteArr#[.n - 1] mod 12
+            .lt = (tonicPC - 1 + 12) mod 12
+            .sup = (tonicPC + 2) mod 12
+            .dom = (tonicPC + 7) mod 12
+            .hasCad = 0
+            if .last = tonicPC
+                if .penult = .lt or .penult = .sup or .penult = .dom
+                    .hasCad = 1
+                endif
             endif
-        endif
-        if .hasCad = 0
+            if .hasCad = 0
+                v#[9] = 1
+            endif
+        else
             v#[9] = 1
         endif
-    else
-        v#[9] = 1
-    endif
 
-    # End on tonic
-    if (.noteArr#[.n] mod 12) <> tonicPC
-        v#[10] = 1
+        if (.noteArr#[.n] mod 12) <> tonicPC
+            v#[10] = 1
+        endif
     endif
 
     # Peak position
@@ -591,9 +626,12 @@ endproc
 # ============================================================
 # Extract the target (winner) melody from the selected sound
 # ============================================================
-writeInfoLine: "=== OT Grammar Learning from Audio v1.0 ==="
+writeInfoLine: "=== OT Grammar Learning from Audio v1.1 ==="
 appendInfoLine: "Source: ", soundName$
 appendInfoLine: "Instrument: ", instrumentName$, "  |  Scale: ", scaleName$
+if gEN_mode = 2 and quantize_to_scale
+    appendInfoLine: "NOTE: scale quantization is ON in Pair-corpus mode; *NON-SCALE will be neutralized by preprocessing."
+endif
 appendInfoLine: ""
 appendInfoLine: "[1/5] Extracting melody..."
 
@@ -606,9 +644,11 @@ endif
 # Copy winner-melody into persistent vectors.
 winner# = zero#(pn_count)
 winnerTimes# = zero#(pn_count)
+winnerEnds# = zero#(pn_count)
 for i from 1 to pn_count
     winner#[i] = pn_notes#[i]
     winnerTimes#[i] = pn_times#[i]
+    winnerEnds#[i] = pn_ends#[i]
 endfor
 nWinner = pn_count
 
@@ -642,20 +682,15 @@ appendInfoLine: "  Notes extracted: ", nWinner,
 appendInfoLine: ""
 appendInfoLine: "[2/5] Generating candidate pairs..."
 
-# We allocate a conservative maximum pair count. For neighbor-GEN
-# this is 4*nWinner (two perturbations * two sides). For pair-corpus,
-# we cap at 2000 to keep the training loop tractable.
-maxPairs = 2000
+# Neighbor-GEN now allocates enough room for every requested local
+# perturbation. Pair-corpus retains a 2000-pair safety cap.
+if gEN_mode = 1
+    maxPairs = 2 * perturbation_max_semitones * nWinner
+else
+    maxPairs = 2000
+endif
 pairWinV# = zero#(maxPairs * nConstraints)
 pairLoseV# = zero#(maxPairs * nConstraints)
-# Store one representative pair for the tableau
-sampleWinnerMax = 400
-sampleLoserMax = 400
-sampleWinner# = zero#(sampleWinnerMax)
-sampleLoser# = zero#(sampleLoserMax)
-nSampleWinner = 0
-nSampleLoser = 0
-sampleChangeIdx = 0
 
 nPairs = 0
 
@@ -688,25 +723,6 @@ if gEN_mode = 1
                     pairLoseV#[idxWin] = v#[c]
                 endfor
 
-                # Keep the first pair with distinct violation profile
-                # as the sample shown in the tableau.
-                if sampleChangeIdx = 0
-                    diffFlag = 0
-                    for c from 1 to nConstraints
-                        if winnerV#[c] <> v#[c]
-                            diffFlag = 1
-                        endif
-                    endfor
-                    if diffFlag = 1
-                        nSampleWinner = nWinner
-                        nSampleLoser = nWinner
-                        for k from 1 to nWinner
-                            sampleWinner#[k] = winner#[k]
-                            sampleLoser#[k]  = perturbed#[k]
-                        endfor
-                        sampleChangeIdx = noteIdx
-                    endif
-                endif
             endif
         endfor
     endfor
@@ -746,12 +762,6 @@ else
                 idxG = (nGoodValid - 1) * nConstraints + c
                 goodV#[idxG] = v#[c]
             endfor
-            if nGoodValid = 1
-                nSampleWinner = pn_count
-                for k from 1 to pn_count
-                    sampleWinner#[k] = localNotes#[k]
-                endfor
-            endif
         endif
     endfor
     removeObject: goodList
@@ -778,35 +788,48 @@ else
                 idxB = (nBadValid - 1) * nConstraints + c
                 badV#[idxB] = v#[c]
             endfor
-            if nBadValid = 1
-                nSampleLoser = pn_count
-                for k from 1 to pn_count
-                    sampleLoser#[k] = localNotes#[k]
-                endfor
-            endif
         endif
     endfor
     removeObject: badList
 
-    # Build all good x bad pairs (capped at maxPairs)
-    for gi from 1 to nGoodValid
-        for bi from 1 to nBadValid
-            if nPairs < maxPairs
-                nPairs += 1
-                for c from 1 to nConstraints
-                    idxW = (nPairs - 1) * nConstraints + c
-                    idxG = (gi - 1) * nConstraints + c
-                    idxB = (bi - 1) * nConstraints + c
-                    pairWinV#[idxW]  = goodV#[idxG]
-                    pairLoseV#[idxW] = badV#[idxB]
-                endfor
+    # Build good x bad pairs. If the Cartesian product exceeds the
+    # safety cap, use an evenly spaced deterministic subsample instead
+    # of taking the first 2000 lexicographic pairs (which would bias
+    # training toward the earliest good files).
+    totalCorpusPairs = nGoodValid * nBadValid
+    pairsToUse = totalCorpusPairs
+    if pairsToUse > maxPairs
+        pairsToUse = maxPairs
+    endif
+
+    for q from 1 to pairsToUse
+        if totalCorpusPairs <= maxPairs
+            linearPair = q - 1
+        else
+            linearPair = floor((q - 0.5) * totalCorpusPairs / pairsToUse)
+            if linearPair >= totalCorpusPairs
+                linearPair = totalCorpusPairs - 1
             endif
+        endif
+        gi = floor(linearPair / nBadValid) + 1
+        bi = (linearPair mod nBadValid) + 1
+
+        nPairs += 1
+        for c from 1 to nConstraints
+            idxW = (nPairs - 1) * nConstraints + c
+            idxG = (gi - 1) * nConstraints + c
+            idxB = (bi - 1) * nConstraints + c
+            pairWinV#[idxW]  = goodV#[idxG]
+            pairLoseV#[idxW] = badV#[idxB]
         endfor
     endfor
 
     appendInfoLine: "  GEN mode: Pair-corpus"
     appendInfoLine: "  Good/Bad files: ", nGoodValid, "/", nBadValid
-    appendInfoLine: "  Pairs generated: ", nPairs
+    appendInfoLine: "  Pairs generated: ", nPairs, " / ", totalCorpusPairs
+    if totalCorpusPairs > maxPairs
+        appendInfoLine: "  Pair-corpus cap active: deterministic even subsample of the full Cartesian product."
+    endif
 endif
 
 if nPairs < 1
@@ -816,6 +839,7 @@ endif
 # Count how many pairs have a non-trivial violation difference
 # (otherwise the learner has nothing to work with).
 nInformative = 0
+informativePair# = zero#(nPairs)
 for p from 1 to nPairs
     diffFlag = 0
     for c from 1 to nConstraints
@@ -826,9 +850,14 @@ for p from 1 to nPairs
     endfor
     if diffFlag = 1
         nInformative += 1
+        informativePair#[nInformative] = p
     endif
 endfor
 appendInfoLine: "  Informative pairs: ", nInformative, " / ", nPairs
+
+if nInformative < 1
+    exitScript: "All generated winner/loser pairs have identical violation profiles; there is no learning signal for this constraint set."
+endif
 
 # ============================================================
 # LEARN — run either GLA or RCD.
@@ -854,12 +883,9 @@ maxStratum = 0
 histLen = 0
 histCap = 200
 history# = zero#(histCap)
-histStep = 0
-if gLA_iterations > 0
-    histStep = gLA_iterations / histCap
-    if histStep < 1
-        histStep = 1
-    endif
+histStep = ceiling(gLA_iterations / histCap)
+if histStep < 1
+    histStep = 1
 endif
 
 if algorithm = 1
@@ -870,8 +896,9 @@ if algorithm = 1
         ... "  noise=", fixed$(gLA_eval_noise, 2)
 
     for it from 1 to gLA_iterations
-        # Sample a random pair
-        p = randomInteger(1, nPairs)
+        # Sample only a pair that contains an actual learning signal.
+        ip = randomInteger(1, nInformative)
+        p = informativePair#[ip]
 
         # Add Gaussian noise to each ranking value to get
         # the evaluation-time ranking. (Praat's randomGauss.)
@@ -917,15 +944,16 @@ if algorithm = 1
         endif
 
         # Sample error rate every histStep iterations
-        if (it mod histStep) = 0 and histLen < histCap
-            # Measure error rate on a sample of pairs
+        if ((it mod histStep) = 0 or it = gLA_iterations) and histLen < histCap
+            # Estimate stochastic error on informative pairs only.
             sampleSize = 50
-            if sampleSize > nPairs
-                sampleSize = nPairs
+            if sampleSize > nInformative
+                sampleSize = nInformative
             endif
             errs = 0
             for s from 1 to sampleSize
-                pp = randomInteger(1, nPairs)
+                ipp = randomInteger(1, nInformative)
+                pp = informativePair#[ipp]
                 bC = 0
                 bR = -1e12
                 for c from 1 to nConstraints
@@ -956,7 +984,7 @@ if algorithm = 1
         finalRV#[c] = rv#[c]
     endfor
 
-    appendInfoLine: "  GLA complete. Final error rate (approx): ",
+    appendInfoLine: "  GLA complete. Final stochastic error estimate (informative pairs): ",
         ... fixed$(history#[histLen], 3)
 
 else
@@ -980,10 +1008,10 @@ else
     stuck = 0
 
     while nResolved < nInformative and stuck = 0 and currentStratum <= maxStrata
-        # A constraint C can go in the current stratum iff
-        # (a) it prefers the winner in at least one unresolved pair, and
-        # (b) it does NOT prefer the loser in any unresolved pair.
-        # (Uninformative pairs never affect this test.)
+        # Standard RCD placement: a still-unranked constraint can go
+        # in the current stratum iff it does NOT prefer the loser in
+        # any unresolved informative pair. It may be tied on all such
+        # pairs; those constraints are genuinely undemoted at this stage.
         canPlace# = zero#(nConstraints)
         for c from 1 to nConstraints
             if stratum#[c] = 0
@@ -999,7 +1027,7 @@ else
                         endif
                     endif
                 endfor
-                if prefersW = 1 and prefersL = 0
+                if prefersL = 0
                     canPlace#[c] = 1
                 endif
             endif
@@ -1060,29 +1088,37 @@ else
         finalRV#[c] = (maxStratum - stratum#[c]) * 10.0
     endfor
 
-    # Error rate of the learned grammar (no noise)
+    # Error rate of the learned stratified grammar on informative
+    # pairs only. If a highest relevant stratum contains any
+    # loser-preferring constraint, the winner is not guaranteed and
+    # the pair counts as an error (important for inconsistent data).
     errs = 0
-    for p from 1 to nPairs
-        bC = 0
-        bR = -1e12
+    for ip from 1 to nInformative
+        p = informativePair#[ip]
+        topRV = -1e12
         for c from 1 to nConstraints
             idx = (p - 1) * nConstraints + c
             if pairWinV#[idx] <> pairLoseV#[idx]
-                if finalRV#[c] > bR
-                    bR = finalRV#[c]
-                    bC = c
+                if finalRV#[c] > topRV
+                    topRV = finalRV#[c]
                 endif
             endif
         endfor
-        if bC > 0
-            idx = (p - 1) * nConstraints + bC
-            if pairWinV#[idx] >= pairLoseV#[idx]
-                errs += 1
+        topHasLoserPreference = 0
+        for c from 1 to nConstraints
+            idx = (p - 1) * nConstraints + c
+            if pairWinV#[idx] <> pairLoseV#[idx] and finalRV#[c] = topRV
+                if pairWinV#[idx] > pairLoseV#[idx]
+                    topHasLoserPreference = 1
+                endif
             endif
+        endfor
+        if topHasLoserPreference = 1
+            errs += 1
         endif
     endfor
     histLen = 1
-    history#[1] = errs / nPairs
+    history#[1] = errs / nInformative
 
     appendInfoLine: "  RCD complete. Strata used: ", maxStratum
     appendInfoLine: "  Consistent with pairs: ", nResolved, " / ", nInformative
@@ -1090,7 +1126,7 @@ else
         appendInfoLine: "  NOTE: RCD could not fully resolve all pairs. "
         appendInfoLine: "        Remaining constraints assigned to bottom stratum."
     endif
-    appendInfoLine: "  Error rate on all pairs: ", fixed$(history#[1], 3)
+    appendInfoLine: "  Error rate on informative pairs: ", fixed$(history#[1], 3)
 endif
 
 # ============================================================
@@ -1099,6 +1135,9 @@ endif
 appendInfoLine: ""
 appendInfoLine: "[4/5] Final learned ranking"
 appendInfoLine: "  (high ranking value = dominates; low = dominated)"
+if algorithm = 2
+    appendInfoLine: "  (RCD constraints with equal ranking values are tied in one stratum.)"
+endif
 appendInfoLine: ""
 
 order# = zero#(nConstraints)
@@ -1247,21 +1286,22 @@ if show_visualization
     Line width: 2.0
     for i from 1 to nWinner
         t1 = winnerTimes#[i]
-        if i < nWinner
-            t2 = winnerTimes#[i + 1]
-        else
-            t2 = totalDur
-        endif
+        t2 = winnerEnds#[i]
         if t2 > totalDur
             t2 = totalDur
         endif
         Draw line: t1, winner#[i], t2, winner#[i]
         if i < nWinner
-            Colour: "{0.60, 0.60, 0.60}"
-            Line width: 0.6
-            Draw line: t2, winner#[i], t2, winner#[i + 1]
-            Colour: "{0.20, 0.40, 0.75}"
-            Line width: 2.0
+            # Draw a vertical transition only when the next accepted
+            # note is effectively contiguous; do not bridge silence.
+            if winnerTimes#[i + 1] - t2 <= timeStep
+                connectT = winnerTimes#[i + 1]
+                Colour: "{0.60, 0.60, 0.60}"
+                Line width: 0.6
+                Draw line: connectT, winner#[i], connectT, winner#[i + 1]
+                Colour: "{0.20, 0.40, 0.75}"
+                Line width: 2.0
+            endif
         endif
     endfor
 
@@ -1271,7 +1311,11 @@ if show_visualization
     Font size: 7
     Text left: "yes", "MIDI"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Extracted winner melody (green bands = in-scale, pink = chromatic)"
+    rollTitle$ = "Extracted winner melody (green bands = in-scale, pink = chromatic)"
+    if gEN_mode = 2
+        rollTitle$ = "Reference/template melody (pair-corpus training comes from folders)"
+    endif
+    Text top: "no", rollTitle$
 
     # ── Constraint ranking bar chart ──
     rkTop = 1.95
@@ -1340,7 +1384,7 @@ if show_visualization
         Draw inner box
         Font size: 7
         Text left: "yes", "Error rate"
-        Text bottom: "yes", "Epoch (x " + string$(histStep) + " iterations)"
+        Text bottom: "yes", "Sample point (about every " + string$(histStep) + " iterations)"
         Text top: "no", "GLA learning curve"
     else
         Axes: 0, 1, 0, 1

@@ -3,13 +3,13 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026)
+# Version: 1.3.2 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Scala Scale Archive auralizer. Loads a scale from a .scl file
-#   (external path or a small built-in list), maps scale degrees
+#   Scala Scale Archive auralizer. Loads a scale from the AudioTools
+#   Scala library, a native file chooser, or a curated list, then maps degrees
 #   to frequencies through an explicit tuning layer, synthesises
 #   tones with a separately-specified spectrum and envelope, and
 #   plays the scale in several modes (ascending, descending,
@@ -26,8 +26,8 @@
 #       scale.nDeg, scale.cents[], scale.ratios$[], scale.period
 #
 #   TUNING    (cents + fundamental -> Hz)
-#       tuneBuild: given fundamental, reference-degree offset,
-#       transposition, produces freqs[] per degree
+#       buildTuning: given fundamental, optional reference anchor,
+#       and period transposition, produces freqs[] per degree
 #
 #   SPECTRUM  (partial recipe)
 #       spec.nPartials, spec.mult[], spec.amp[]
@@ -38,7 +38,7 @@
 #       env.noteDur, env.gap
 #
 #   VOICING   (respace degrees across periods)
-#       closed vs open, compressed vs expanded
+#       closed vs open, compact vs expanded
 #       operates on scale degrees, produces (degree, shift) pairs
 #
 #   PLAYBACK  (sequences notes or builds chords)
@@ -46,40 +46,109 @@
 #
 # Scale selection
 # ---------------
-# Praat forms cannot interactively filter a 5401-file archive,
-# so selection has two paths:
+# v1.3 removes the need to paste long Windows paths. The main source
+# menu offers five paths:
 #
-#   (1) Built-in list: 16 curated scales + synthetic 12-TET.
-#   (2) External path: user pastes the full path to any .scl file.
-#       If given, overrides the built-in list.
+#   (1) Reuse last scale: default. Reopens the most recently used scale
+#       without showing a chooser, so DSP/playback parameters can be auditioned
+#       repeatedly. The remembered selection persists between script runs.
+#   (2) Choose from library: automatically locates AudioTools/Analysis/scl,
+#       asks for a short filename filter (e.g. bohlen, 07-19, slendro),
+#       then builds a dynamic option menu from the matching .scl files.
+#   (3) Browse external .scl: opens Praat's native read-file chooser.
+#   (4) Curated built-in: keeps the compact familiar preset list.
+#   (5) Synthetic 12-TET: needs no file.
 #
-# The user finds unusual scales in the archive via their OS
-# file browser (which is genuinely better for this than any form
-# dialog could be) and pastes the path.
+# Empty library filters are allowed only for small archives. In the full
+# Scala archive, the user is asked to narrow the filter rather than being
+# shown a several-thousand-item menu.
 #
 # Scala file conventions honoured
 # -------------------------------
 # * Lines starting with "!" are comments and skipped.
 # * First non-comment line = description (displayed).
 # * Next non-comment line = note count N.
-# * Following N non-comment lines = interval values, either
-#   cents (anything containing "." or a bare integer) or ratios
-#   (anything containing "/").
+# * Following N non-comment lines = interval values: a value with a
+#   decimal point is cents; otherwise it is a ratio (including a bare
+#   integer such as 2 = 2/1).
 # * The Nth interval is the period (not always 2/1).
-# * Files may be truncated; we detect this and warn.
+# * Malformed or truncated pitch data is rejected explicitly.
 # * CRLF line endings are stripped.
 #
 # Usage
 # -----
 # Run the script. Fill the form. Hear the result. The script
 # creates a single Sound object and leaves it selected.
+#
+# Changelog v1.3.1:
+#   - Fixed Scala-library discovery for Praat 7 on Windows when AudioTools is
+#     still installed in the legacy C:/Users/<user>/Praat location. The script
+#     now checks USERPROFILE/Praat in addition to preferencesDirectory$.
+#   - If automatic discovery still fails, opens a native folder chooser instead
+#     of exiting. The chooser accepts the scl folder itself, its Analysis parent,
+#     or the plugin_AudioTools root and resolves Analysis/scl automatically.
+#
+# Changelog v1.3.2:
+#   - Added persistent last-scale memory. The default source is now Reuse last
+#     scale, so rerunning the script to change tuning, playback, voicing,
+#     spectrum, or envelope parameters does not reopen the Scala chooser.
+#   - The remembered selection is stored in the Praat preferences apps folder,
+#     outside the plug-in tree, and survives Praat/script restarts.
+#   - If the remembered file was moved or deleted, the script falls back to the
+#     AudioTools library chooser instead of failing. Synthetic 12-TET is also
+#     remembered as a valid last selection.
+#
+# Changelog v1.3:
+#   - Added a dynamic Scala-library chooser. AudioTools/Analysis/scl is found
+#     automatically; the user filters by a short filename fragment and then
+#     chooses from a generated option menu. No full Windows path is required.
+#   - Added a native Browse path with chooseReadFile$ and kept a separate
+#     curated preset source plus synthetic 12-TET.
+#   - Library search handles 0/1/many matches explicitly and requires a
+#     narrower filter above 250 matches so the menu remains practical.
+#
+# Changelog v1.2:
+#   - Corrected Scala parsing: bare integers are ratios (e.g. 2 = 2/1),
+#     an empty description line is preserved, malformed/truncated pitch data
+#     now fails explicitly instead of silently inserting 0-cent degrees.
+#   - Tuning controls are now independent: reference anchoring is opt-in,
+#     degree 0 means implicit 1/1, and period transposition is applied after
+#     anchoring so it can no longer be cancelled by the reference setting.
+#   - Added Nyquist-aware partial filtering to prevent aliased harmonics.
+#   - Made Compact voicing a real minimum-span period-folding operation.
+#   - Fixed A/B archive lookup, inserted an audible A/B pause, restored the
+#     first scale after rendering B, and made naming/visualization report A/B.
+#   - Visualization uses symmetric waveform limits and safer Picture viewport
+#     resets; spectrogram bandwidth follows the actually synthesized range.
+#
+# Changelog v1.1:
+#   - External_scl_path now accepts EITHER a single .scl file OR the
+#     folder holding the archive. v1.0 passed whatever was typed
+#     straight to fileReadable(), which is false for a directory, so
+#     pasting an archive folder exited with "Scala file not found"
+#     naming a path that exists. With a folder, the filename comes from
+#     the Builtin_scale menu.
+#   - Backslash paths are normalized, and a trailing separator is
+#     stripped, so a path copied from Windows Explorer works as typed.
+#   - Added <preferences>/plugin_AudioTools/Analysis/scl to the search
+#     list, which is where the archive sits in a standard AudioTools
+#     install; v1.0 only looked one level higher.
+#   - Failures say which file was looked for and where, instead of
+#     echoing the folder back as if it were a missing file.
 # ============================================================
 
 form Scala Scale Auralizer
-    comment Leave 'External_scl_path' empty to use the built-in scale.
-    sentence External_scl_path
-    optionmenu Builtin_scale: 1
-        option 12-TET (synthetic)
+    comment === Scale source ===
+    optionmenu Scale_source: 1
+        option Reuse last scale (no chooser)
+        option Choose from AudioTools library
+        option Browse external .scl file
+        option Curated built-in scale
+        option Synthetic 12-TET
+
+    comment Reuse last scale is the default after the first successful selection.
+    comment Curated_scale is used only when Scale_source = Curated built-in.
+    optionmenu Curated_scale: 1
         option Pythagorean 12 (pyth_12)
         option Young-Lonnberg guitar (young-lm_guitar)
         option Werckmeister III (werck3)
@@ -93,7 +162,7 @@ form Scala Scale Auralizer
         option Alves pelog (alves_pelog)
         option Harrison 5 (harrison_5)
         option Harmonical (harmonical)
-        option Partch 43 (partch_43) [non-octave? no]
+        option Partch 43 (partch_43)
         option Bohlen-Pierce (bohlen-p) [non-octave, 3/1]
         option Carlos Alpha (carlos_alpha) [non-octave]
         option Carlos Beta (carlos_beta) [non-octave]
@@ -101,21 +170,24 @@ form Scala Scale Auralizer
 
     comment === Tuning ===
     positive Fundamental_Hz 220
-    integer Reference_degree 1
+    boolean Use_reference_anchor 0
+    comment Reference degree uses Scala indexing: 0 = implicit 1/1.
+    integer Reference_degree 0
     positive Reference_Hz 220
     integer Transpose_periods 0
 
     comment === Playback ===
     optionmenu Mode: 2
-        option Single tone (degree 1)
+        option Single tone (1/1 fundamental)
         option Ascending scale
         option Descending scale
         option Ping-pong
         option Arpeggio (broken chord of degree subset)
         option Sustained chord of degree subset
-        option Scale against drone on degree 1
+        option Scale against drone on 1/1
         option A/B compare (this scale vs second built-in)
-    sentence Subset_degrees 1 3 5
+    comment Subset degrees use Scala indices: 0 = 1/1, 1 = first .scl interval.
+    sentence Subset_degrees 0 2 4
     optionmenu Second_builtin_for_AB: 1
         option 12-TET (synthetic)
         option Pythagorean 12 (pyth_12)
@@ -127,7 +199,7 @@ form Scala Scale Auralizer
     optionmenu Voicing: 1
         option Closed (same period)
         option Open (alternate-degree period up)
-        option Compressed (all within one period)
+        option Compact (minimum-span period folding)
         option Expanded (span two periods)
 
     comment === Spectrum ===
@@ -162,90 +234,91 @@ clearinfo
 #   scale.ratios$[d] textual representation ("5/4" or "386.314")
 #   scale.period    cents value of the period (= scale.cents[N])
 #   scale.isOctave  1 if period within 1 cent of 1200, else 0
-#   scale.truncated 1 if file declared more degrees than it supplied
+#   scale.truncated 0 on every successful strict parse
 # ============================================================
 procedure parseScalaFile: .path$
     if not fileReadable(.path$)
         exitScript: "Scala file not found: " + .path$
     endif
 
-    # Read whole file as a Strings object so we can iterate lines
-    # without buffering dance.
     .strs = Read Strings from raw text file: .path$
     .nLines = Get number of strings
 
     scale.name$ = "(unnamed)"
     scale.nDeg = 0
-    .haveName = 0
+    scale.truncated = 0
+    .haveDescription = 0
     .haveCount = 0
     .degIdx = 0
 
     for .i from 1 to .nLines
         selectObject: .strs
         .raw$ = Get string: .i
-        # Strip trailing CR (Windows line endings from the archive)
-        # and normalize whitespace.
         .line$ = replace_regex$(.raw$, "[\r\n]+$", "", 0)
         .trim$ = replace_regex$(.line$, "^[ \t]+|[ \t]+$", "", 0)
 
-        # Skip comments
+        # A leading ! marks a comment at every stage.
         if left$(.trim$, 1) = "!"
-            # comment, ignore
-        elsif .trim$ = ""
-            # blank line, ignore
-        elsif .haveName = 0
-            # First non-comment line is the description
-            scale.name$ = .trim$
-            .haveName = 1
-        elsif .haveCount = 0
-            # Next is the note count. May have trailing comment or
-            # whitespace; take the first integer-looking token.
-            .tok$ = replace_regex$(.trim$, "^[ \t]*(\S+).*$", "\1", 0)
-            scale.nDeg = number(.tok$)
-            if scale.nDeg = undefined or scale.nDeg < 1
-                removeObject: .strs
-                exitScript: "Scala file has invalid note count: " + .trim$
-            endif
-            .haveCount = 1
-        else
-            # A scale-degree line. Take the first whitespace-
-            # separated token (ignore any trailing comment text).
-            .tok$ = replace_regex$(.trim$, "^[ \t]*(\S+).*$", "\1", 0)
+            # ignore
 
-            .degIdx = .degIdx + 1
-            if .degIdx <= scale.nDeg
-                @parseScalaValue: .tok$
-                if parseScalaValue.ok = 1
-                    scale.cents[.degIdx] = parseScalaValue.cents
-                    scale.ratios$[.degIdx] = .tok$
-                else
-                    appendInfoLine: "WARN: unparseable degree '",
-                        ... .tok$, "' at position ", .degIdx,
-                        ... "; substituting 0 cents"
-                    scale.cents[.degIdx] = 0
-                    scale.ratios$[.degIdx] = "?"
+        elsif .haveDescription = 0
+            # In the Scala format, the description line may intentionally be
+            # empty. It still counts as the description line; do not skip it.
+            if .trim$ <> ""
+                scale.name$ = .trim$
+            endif
+            .haveDescription = 1
+
+        elsif .haveCount = 0
+            # Be tolerant of blank separator lines here, but require the
+            # actual count token to be a positive integer. A zero-note .scl
+            # is legal Scala, but has no explicit period and therefore cannot
+            # drive this period-based auralizer.
+            if .trim$ <> ""
+                .tok$ = replace_regex$(.trim$, "^[ \t]*(\S+).*$", "\1", 0)
+                .countV = number(.tok$)
+                if .countV = undefined or .countV < 1 or abs(.countV - round(.countV)) > 0.0000001
+                    removeObject: .strs
+                    exitScript: "Scala file has invalid/unsupported note count: " + .trim$ + newline$ +
+                    ... "This auralizer requires at least one pitch value so the final value can define the period."
                 endif
+                scale.nDeg = round(.countV)
+                .haveCount = 1
+            endif
+
+        elsif .degIdx < scale.nDeg
+            # Blank lines between pitch entries are tolerated. For a real
+            # pitch line, only the first whitespace-delimited token matters.
+            if .trim$ <> ""
+                .tok$ = replace_regex$(.trim$, "^[ \t]*(\S+).*$", "\1", 0)
+                @parseScalaValue: .tok$
+                if parseScalaValue.ok = 0
+                    removeObject: .strs
+                    exitScript: "Invalid Scala pitch value at file line " + string$(.i) + ": " + .tok$
+                endif
+                .degIdx = .degIdx + 1
+                scale.cents[.degIdx] = parseScalaValue.cents
+                scale.ratios$[.degIdx] = .tok$
             endif
         endif
     endfor
 
     removeObject: .strs
 
-    # Detect truncation: declared N but got fewer degree lines.
-    scale.truncated = 0
+    if .haveDescription = 0 or .haveCount = 0
+        exitScript: "Scala file is incomplete: missing description or note count."
+    endif
     if .degIdx < scale.nDeg
         scale.truncated = 1
-        appendInfoLine: "WARN: .scl file declared ", scale.nDeg,
-            ... " degrees but only ", .degIdx, " were supplied."
-        appendInfoLine: "      Truncating to ", .degIdx, " degrees."
-        scale.nDeg = .degIdx
-    endif
-
-    if scale.nDeg < 1
-        exitScript: "Scala file produced zero usable degrees."
+        exitScript: "Scala file is truncated: declared " + string$(scale.nDeg) +
+        ... " pitch values but supplied only " + string$(.degIdx) + "."
     endif
 
     scale.period = scale.cents[scale.nDeg]
+    if scale.period <= 0
+        exitScript: "Scala period must be above 1/1 for this auralizer; parsed period = " + fixed$(scale.period, 6) + " cents."
+    endif
+
     scale.isOctave = 0
     if abs(scale.period - 1200.0) < 1.0
         scale.isOctave = 1
@@ -253,35 +326,41 @@ procedure parseScalaFile: .path$
 endproc
 
 # ------------------------------------------------------------
-# Parse a single scale-degree token into cents.
-# Accepts: "386.314" (cents), "5/4" (ratio), "1200" (cents),
-#          "2/1" (ratio).
-# Praat convention: if the token contains ".", it's cents; if "/",
-# it's a ratio; if a bare integer, it's cents (per Scala spec).
-# Returns parseScalaValue.ok (1/0) and parseScalaValue.cents.
+# Parse a single Scala scale-degree token into cents.
+# Official .scl rule:
+#   * contains a decimal point -> cents
+#   * otherwise -> ratio ("5/4" or a bare integer such as "2" = 2/1)
+# Cents may be negative; ratio numerator/denominator must be positive.
 # ------------------------------------------------------------
 procedure parseScalaValue: .tok$
     .ok = 0
     .cents = 0
-    if index(.tok$, "/") > 0
-        # Ratio N/M
-        .slashPos = index(.tok$, "/")
-        .num$ = left$(.tok$, .slashPos - 1)
-        .den$ = mid$(.tok$, .slashPos + 1, length(.tok$))
-        .numV = number(.num$)
-        .denV = number(.den$)
+
+    if index(.tok$, ".") > 0
+        .v = number(.tok$)
+        if .v <> undefined
+            .cents = .v
+            .ok = 1
+        endif
+    else
+        .numV = undefined
+        .denV = 1
+        if index(.tok$, "/") > 0
+            .slashPos = index(.tok$, "/")
+            .num$ = left$(.tok$, .slashPos - 1)
+            .den$ = mid$(.tok$, .slashPos + 1, length(.tok$))
+            .numV = number(.num$)
+            .denV = number(.den$)
+        else
+            # Bare integer: Scala ratio shorthand, e.g. 2 == 2/1.
+            .numV = number(.tok$)
+        endif
+
         if .numV <> undefined and .denV <> undefined
             if .numV > 0 and .denV > 0
                 .cents = 1200 * ln(.numV / .denV) / ln(2)
                 .ok = 1
             endif
-        endif
-    else
-        # Cents (float or integer)
-        .v = number(.tok$)
-        if .v <> undefined
-            .cents = .v
-            .ok = 1
         endif
     endif
 endproc
@@ -309,48 +388,46 @@ endproc
 # fill freqs[1..nDeg] with the Hz for each degree.
 #
 # Semantics:
-#   - Degree 1 is conventionally the tonic (1/1 above fundamental).
-#   - If reference_degree = 1 and reference_Hz = fundamental_Hz,
-#     the tuning is "anchored at the tonic".
-#   - If user picks another reference degree, we shift so that
-#     THAT degree plays at reference_Hz. Lets you calibrate the
-#     fifth to a fixed pitch, for example.
-#   - Transpose_periods shifts the whole scale by N periods.
+#   - Degree 0 is the implicit Scala 1/1; degree 1 is the first
+#     interval listed in the .scl file.
+#   - Fundamental_Hz sets degree 0 when reference anchoring is off.
+#   - With Use_reference_anchor on, the chosen degree is first aligned
+#     to Reference_Hz. Transpose_periods is then applied afterward.
+#   - Therefore anchoring and transposition remain independent controls.
 # ============================================================
-procedure buildTuning: .fund, .refDeg, .refHz, .transposePeriods
-    # Build freqs[0..nDeg] — index 0 is the fundamental (1/1).
-    # Apply period transposition uniformly.
-    .periodShift = .transposePeriods * scale.period
-
-    freqs[0] = .fund * 2 ^ (.periodShift / 1200.0)
-    for .d from 1 to scale.nDeg
-        freqs[.d] = .fund * 2 ^ ((scale.cents[.d] + .periodShift) / 1200.0)
-    endfor
-
-    # Reference-degree anchoring is a separate, OPTIONAL correction.
-    # We apply it only when the user has clearly requested it (i.e.,
-    # chose a reference degree other than 0, or set reference_Hz to
-    # something different from the fundamental). Otherwise applying
-    # it with the default values (ref_deg=0, ref_Hz=fund) would
-    # always cancel out any transposition the user chose, which is
-    # not what 'transpose' means.
-    .anchorRequested = 0
-    if .refDeg <> 0
-        .anchorRequested = 1
-    endif
-    if abs(.refHz - .fund) > 0.01
-        .anchorRequested = 1
+procedure buildTuning: .fund, .useAnchor, .refDeg, .refHz, .transposePeriods
+    if .fund <= 0
+        exitScript: "Fundamental_Hz must be positive."
     endif
 
-    if .anchorRequested = 1 and .refDeg >= 0 and .refDeg <= scale.nDeg
-        .currentRefHz = freqs[.refDeg]
-        if .currentRefHz > 0 and .refHz > 0
-            .shift = .refHz / .currentRefHz
-            for .d from 0 to scale.nDeg
-                freqs[.d] = freqs[.d] * .shift
-            endfor
+    # Build an untransposed tuning around the requested fundamental.
+    .anchorFactor = 1.0
+    if .useAnchor = 1
+        if .refDeg < 0 or .refDeg > scale.nDeg
+            exitScript: "Reference_degree is outside this scale: " + string$(.refDeg) +
+            ... " (allowed 0.." + string$(scale.nDeg) + ")"
         endif
+        if .refDeg = 0
+            .refCents = 0
+        else
+            .refCents = scale.cents[.refDeg]
+        endif
+        .unanchoredRef = .fund * 2 ^ (.refCents / 1200.0)
+        if .unanchoredRef <= 0 or .refHz <= 0
+            exitScript: "Invalid reference tuning."
+        endif
+        .anchorFactor = .refHz / .unanchoredRef
     endif
+
+    # Transposition is deliberately applied AFTER anchoring, so the two
+    # controls remain independent instead of the anchor cancelling transpose.
+    .transposeFactor = 2 ^ ((.transposePeriods * scale.period) / 1200.0)
+
+    freqs[0] = .fund * .anchorFactor * .transposeFactor
+    for .d from 1 to scale.nDeg
+        freqs[.d] = .fund * 2 ^ (scale.cents[.d] / 1200.0)
+        freqs[.d] = freqs[.d] * .anchorFactor * .transposeFactor
+    endfor
 endproc
 
 # ============================================================
@@ -413,6 +490,13 @@ procedure buildSpectrum: .mode
             spec.amp[.k] = spec.amp[.k] / .total
         endfor
     endif
+
+    spec.maxMult = 1
+    for .k from 1 to spec.nPartials
+        if spec.mult[.k] > spec.maxMult
+            spec.maxMult = spec.mult[.k]
+        endif
+    endfor
 endproc
 
 # ============================================================
@@ -432,21 +516,45 @@ procedure synthNote: .fHz, .duration, .attack, .release, .sampleRate, .label$
         .duration = 0.02
     endif
 
-    # Build the summed-partials formula string with literal values.
-    # sum_k amp_k * sin(2*pi * mult_k * fHz * x)
-    .formula$ = "0"
+    # Band-limit the partial recipe before synthesis. Without this, open or
+    # expanded voicings of wide-period scales can push upper harmonics above
+    # Nyquist and fold them back as aliases. Renormalize only the retained
+    # partials so a note does not become quieter merely because high partials
+    # were removed.
+    .nyquistGuard = .sampleRate * 0.48
+    .activeAmp = 0
     for .k from 1 to spec.nPartials
         .partialFreq = spec.mult[.k] * .fHz
-        .formula$ = .formula$ + " + " + fixed$(spec.amp[.k], 6)
-            ... + " * sin(2*pi*" + fixed$(.partialFreq, 6) + "*x)"
+        if .partialFreq > 0 and .partialFreq < .nyquistGuard
+            .activeAmp = .activeAmp + spec.amp[.k]
+        endif
     endfor
+
+    .formula$ = "0"
+    if .activeAmp > 0
+        for .k from 1 to spec.nPartials
+            .partialFreq = spec.mult[.k] * .fHz
+            if .partialFreq > 0 and .partialFreq < .nyquistGuard
+                .a = spec.amp[.k] / .activeAmp
+                .formula$ = .formula$ + " + " + fixed$(.a, 8)
+                ... + " * sin(2*pi*" + fixed$(.partialFreq, 8) + "*x)"
+            endif
+        endfor
+    endif
 
     synthNote.id = Create Sound from formula: .label$, 1, 0, .duration,
         ... .sampleRate, .formula$
 
-    # Apply attack + release envelope (linear ramps, fast)
+    # Linear attack and release. Form fields are positive, but retain the
+    # guards so future programmatic calls cannot divide by zero.
     .atkSec = .attack / 1000.0
     .relSec = .release / 1000.0
+    if .atkSec < 0.000001
+        .atkSec = 0.000001
+    endif
+    if .relSec < 0.000001
+        .relSec = 0.000001
+    endif
     if .atkSec > .duration * 0.5
         .atkSec = .duration * 0.5
     endif
@@ -455,10 +563,10 @@ procedure synthNote: .fHz, .duration, .attack, .release, .sampleRate, .label$
     endif
     .relStart = .duration - .relSec
 
-    .atk$ = fixed$(.atkSec, 6)
-    .rel$ = fixed$(.relSec, 6)
-    .rs$ = fixed$(.relStart, 6)
-    .dur$ = fixed$(.duration, 6)
+    .atk$ = fixed$(.atkSec, 8)
+    .rel$ = fixed$(.relSec, 8)
+    .rs$ = fixed$(.relStart, 8)
+    .dur$ = fixed$(.duration, 8)
 
     selectObject: synthNote.id
     Formula: "if x < " + .atk$
@@ -515,18 +623,78 @@ procedure voicingRespace: .style, .nList
     endfor
 
     if .style = 2
-        # Open: alternate-degree up one period
+        # Open: alternate voices up one period.
         for .i from 1 to .nList
             if (.i mod 2) = 0
                 periodOff[.i] = 1
             endif
         endfor
+
     elsif .style = 3
-        # Compressed: all within one period — no shift needed; our
-        # subset degrees are already in [0..nDeg] by construction.
+        # Compact: find the circular cut that gives the minimum span within
+        # one period, then choose a common register so voice 1 stays at its
+        # original period. This is meaningfully different from Closed.
+        if .nList > 1 and scale.period > 0
+            .bestSpan = 1000000000
+            .bestCut = 0
+
+            for .j from 1 to .nList
+                .dj = subset[.j]
+                if .dj = 0
+                    .cut = 0
+                else
+                    .cut = scale.cents[.dj]
+                endif
+
+                .minV = 1000000000
+                .maxV = -1000000000
+                for .i from 1 to .nList
+                    .di = subset[.i]
+                    if .di = 0
+                        .c = 0
+                    else
+                        .c = scale.cents[.di]
+                    endif
+                    .shifted = .c
+                    if .shifted < .cut
+                        .shifted = .shifted + scale.period
+                    endif
+                    if .shifted < .minV
+                        .minV = .shifted
+                    endif
+                    if .shifted > .maxV
+                        .maxV = .shifted
+                    endif
+                endfor
+                .span = .maxV - .minV
+                if .span < .bestSpan
+                    .bestSpan = .span
+                    .bestCut = .cut
+                endif
+            endfor
+
+            for .i from 1 to .nList
+                .di = subset[.i]
+                if .di = 0
+                    .c = 0
+                else
+                    .c = scale.cents[.di]
+                endif
+                if .c < .bestCut
+                    periodOff[.i] = 1
+                else
+                    periodOff[.i] = 0
+                endif
+            endfor
+
+            .baseOff = periodOff[1]
+            for .i from 1 to .nList
+                periodOff[.i] = periodOff[.i] - .baseOff
+            endfor
+        endif
+
     elsif .style = 4
-        # Expanded: spread across two periods.
-        # First half stays, second half shifts up one period.
+        # Expanded: first half stays, second half shifts up one period.
         .half = .nList / 2
         for .i from 1 to .nList
             if .i > .half
@@ -537,12 +705,13 @@ procedure voicingRespace: .style, .nList
 endproc
 
 # ============================================================
-# PARSE: Turn "1 3 5" into integer list subset[], length nSubset.
+# PARSE: Turn "0 2 4" into integer list subset[], length nSubset.
 # Skips tokens that are out of range for the current scale.
 # ============================================================
 procedure parseSubset: .str$
     nSubset = 0
-    .s$ = replace_regex$(.str$, "[,;]+", " ", 0)
+    .s$ = replace_regex$(.str$, "[,;\t]+", " ", 0)
+    .s$ = replace_regex$(.s$, " +", " ", 0)
     .s$ = replace_regex$(.s$, "^[ \t]+|[ \t]+$", "", 0)
 
     while length(.s$) > 0
@@ -558,7 +727,7 @@ procedure parseSubset: .str$
             .v = number(.tok$)
             if .v <> undefined
                 .vi = round(.v)
-                if .vi >= 0 and .vi <= scale.nDeg
+                if abs(.v - .vi) < 0.0000001 and .vi >= 0 and .vi <= scale.nDeg
                     nSubset = nSubset + 1
                     subset[nSubset] = .vi
                 endif
@@ -574,53 +743,212 @@ procedure parseSubset: .str$
 endproc
 
 # ============================================================
-# RESOLVE: Look up a built-in filename from its menu index.
-# Index 1 = synthetic 12-TET (no file), else the archive filename.
+# LIBRARY FOLDER: locate the Scala archive without requiring a user path.
+# Praat 6 and Praat 7 use different preferences folders on Windows, so we
+# search both the current preferences folder and the legacy USERPROFILE/Praat
+# location used by existing AudioTools installations.
+# ============================================================
+procedure locateScalaArchive
+    locateScalaArchive.found = 0
+    locateScalaArchive.dir$ = ""
+
+    # Current Praat preferences location (Praat 6 or 7, platform-dependent).
+    .candidate$ = preferencesDirectory$ + "/plugin_AudioTools/Analysis/scl"
+    if folderExists(.candidate$)
+        locateScalaArchive.dir$ = .candidate$
+        locateScalaArchive.found = 1
+    endif
+
+    if locateScalaArchive.found = 0
+        .candidate$ = preferencesDirectory$ + "/plugin_AudioTools/scl"
+        if folderExists(.candidate$)
+            locateScalaArchive.dir$ = .candidate$
+            locateScalaArchive.found = 1
+        endif
+    endif
+
+    # Windows legacy AudioTools location, e.g. C:/Users/User/Praat/... .
+    # This is important when Praat 7 stores its preferences in AppData/Roaming
+    # but the plug-in library still lives in the Praat 6-style folder.
+    if locateScalaArchive.found = 0
+        .userProfile$ = environment$("USERPROFILE")
+        if .userProfile$ <> ""
+            .userProfile$ = replace$(.userProfile$, "\", "/", 0)
+            .candidate$ = .userProfile$ + "/Praat/plugin_AudioTools/Analysis/scl"
+            if folderExists(.candidate$)
+                locateScalaArchive.dir$ = .candidate$
+                locateScalaArchive.found = 1
+            endif
+        endif
+    endif
+
+    if locateScalaArchive.found = 0
+        .userProfile$ = environment$("USERPROFILE")
+        if .userProfile$ <> ""
+            .userProfile$ = replace$(.userProfile$, "\", "/", 0)
+            .candidate$ = .userProfile$ + "/Praat/plugin_AudioTools/scl"
+            if folderExists(.candidate$)
+                locateScalaArchive.dir$ = .candidate$
+                locateScalaArchive.found = 1
+            endif
+        endif
+    endif
+
+    # Relative fallbacks for portable/development layouts.
+    if locateScalaArchive.found = 0
+        .candidate$ = defaultDirectory$ + "/scl"
+        if folderExists(.candidate$)
+            locateScalaArchive.dir$ = .candidate$
+            locateScalaArchive.found = 1
+        endif
+    endif
+
+    if locateScalaArchive.found = 0
+        .candidate$ = defaultDirectory$ + "/Analysis/scl"
+        if folderExists(.candidate$)
+            locateScalaArchive.dir$ = .candidate$
+            locateScalaArchive.found = 1
+        endif
+    endif
+endproc
+
+# ============================================================
+# LIBRARY CHOOSER: search by a short filename fragment, then show a
+# dynamically-generated option menu. At most 250 entries are shown at once;
+# a broad search is sent back to the filter dialog for refinement.
+# Output:
+#   chooseLibraryScale.cancelled = 1 if the user cancels
+#   chooseLibraryScale.filename$ = selected basename
+#   chooseLibraryScale.fullpath$ = selected full path
+# ============================================================
+procedure chooseLibraryScale: .archiveDir$
+    chooseLibraryScale.cancelled = 0
+    chooseLibraryScale.filename$ = ""
+    chooseLibraryScale.fullpath$ = ""
+
+    .allFiles$# = fileNames_caseInsensitive$# (.archiveDir$ + "/*.scl")
+    .nAll = size(.allFiles$#)
+    if .nAll < 1
+        exitScript: "No .scl files were found in:" + newline$ + "  " + .archiveDir$
+    endif
+
+    .filter$ = ""
+    .finished = 0
+    while .finished = 0
+        beginPause: "Scala library search"
+            comment: "Archive: " + .archiveDir$
+            comment: "There are " + string$(.nAll) + " .scl files. Type part of a filename."
+            comment: "Examples: bohlen, 07-19, slendro, carlos, pelog"
+            sentence: "Filter", .filter$
+        .clicked = endPause: "Cancel", "Search", 2, 1
+
+        if .clicked = 1
+            chooseLibraryScale.cancelled = 1
+            .finished = 1
+        else
+            .filter$ = filter$
+            .filterLower$ = lowerCase$(.filter$)
+            .nMatch = 0
+
+            for .i to .nAll
+                .name$ = .allFiles$#[.i]
+                .include = 0
+                if .filter$ = ""
+                    .include = 1
+                elsif index(lowerCase$(.name$), .filterLower$) > 0
+                    .include = 1
+                endif
+
+                if .include = 1
+                    .nMatch = .nMatch + 1
+                    if .nMatch <= 250
+                        .match$[.nMatch] = .name$
+                    endif
+                endif
+            endfor
+
+            if .nMatch = 0
+                pauseScript: "No Scala files match '" + .filter$ + "'. Try another filename fragment."
+
+            elsif .nMatch > 250
+                pauseScript: "The filter '" + .filter$ + "' matches " + string$(.nMatch) +
+                ... " files. Please narrow the search to 250 or fewer matches."
+
+            elsif .nMatch = 1
+                chooseLibraryScale.filename$ = .match$[1]
+                chooseLibraryScale.fullpath$ = .archiveDir$ + "/" + chooseLibraryScale.filename$
+                .finished = 1
+
+            else
+                beginPause: "Choose Scala scale"
+                    comment: string$(.nMatch) + " matches for '" + .filter$ + "'."
+                    optionmenu: "Library_choice", 1
+                    for .i to .nMatch
+                        option: .match$[.i]
+                    endfor
+                .pickClicked = endPause: "Cancel", "Back", "Load", 3, 1
+
+                if .pickClicked = 1
+                    chooseLibraryScale.cancelled = 1
+                    .finished = 1
+                elsif .pickClicked = 2
+                    # Return to the search/filter window, preserving .filter$.
+                else
+                    chooseLibraryScale.filename$ = library_choice$
+                    chooseLibraryScale.fullpath$ = .archiveDir$ + "/" + chooseLibraryScale.filename$
+                    .finished = 1
+                endif
+            endif
+        endif
+    endwhile
+endproc
+
+# ============================================================
+# RESOLVE: Look up a curated built-in filename from its menu index.
+# Curated indices 1..18 map directly to archive filenames.
 # ============================================================
 procedure resolveBuiltin: .idx, .archiveDir$
     resolveBuiltin.filename$ = ""
     resolveBuiltin.useSynthetic = 0
     if .idx = 1
-        resolveBuiltin.useSynthetic = 1
-    elsif .idx = 2
         resolveBuiltin.filename$ = "pyth_12.scl"
-    elsif .idx = 3
+    elsif .idx = 2
         resolveBuiltin.filename$ = "young-lm_guitar.scl"
-    elsif .idx = 4
+    elsif .idx = 3
         resolveBuiltin.filename$ = "werck3.scl"
-    elsif .idx = 5
+    elsif .idx = 4
         resolveBuiltin.filename$ = "kirnberger3.scl"
-    elsif .idx = 6
+    elsif .idx = 5
         resolveBuiltin.filename$ = "meanquar.scl"
-    elsif .idx = 7
+    elsif .idx = 6
         resolveBuiltin.filename$ = "ji_12.scl"
-    elsif .idx = 8
+    elsif .idx = 7
         resolveBuiltin.filename$ = "ji_7.scl"
-    elsif .idx = 9
+    elsif .idx = 8
         resolveBuiltin.filename$ = "indian_12.scl"
-    elsif .idx = 10
+    elsif .idx = 9
         resolveBuiltin.filename$ = "slendro.scl"
-    elsif .idx = 11
+    elsif .idx = 10
         resolveBuiltin.filename$ = "alves_slendro.scl"
-    elsif .idx = 12
+    elsif .idx = 11
         resolveBuiltin.filename$ = "alves_pelog.scl"
-    elsif .idx = 13
+    elsif .idx = 12
         resolveBuiltin.filename$ = "harrison_5.scl"
-    elsif .idx = 14
+    elsif .idx = 13
         resolveBuiltin.filename$ = "harmonical.scl"
-    elsif .idx = 15
+    elsif .idx = 14
         resolveBuiltin.filename$ = "partch_43.scl"
-    elsif .idx = 16
+    elsif .idx = 15
         resolveBuiltin.filename$ = "bohlen-p.scl"
-    elsif .idx = 17
+    elsif .idx = 16
         resolveBuiltin.filename$ = "carlos_alpha.scl"
-    elsif .idx = 18
+    elsif .idx = 17
         resolveBuiltin.filename$ = "carlos_beta.scl"
-    elsif .idx = 19
+    elsif .idx = 18
         resolveBuiltin.filename$ = "carlos_gamma.scl"
     endif
 
-    if resolveBuiltin.useSynthetic = 0 and .archiveDir$ <> ""
+    if .archiveDir$ <> ""
         resolveBuiltin.fullpath$ = .archiveDir$ + "/" + resolveBuiltin.filename$
     else
         resolveBuiltin.fullpath$ = ""
@@ -630,114 +958,258 @@ endproc
 # ============================================================
 # RESOLVE AB: 5-option subset for the A/B second scale.
 # ============================================================
-procedure resolveBuiltinAB: .idx, .archiveDir$
+procedure resolveBuiltinAB: .idx
     resolveBuiltinAB.useSynthetic = 0
-    resolveBuiltinAB.fullpath$ = ""
+    resolveBuiltinAB.filename$ = ""
     if .idx = 1
         resolveBuiltinAB.useSynthetic = 1
     elsif .idx = 2
-        resolveBuiltinAB.fullpath$ = .archiveDir$ + "/pyth_12.scl"
+        resolveBuiltinAB.filename$ = "pyth_12.scl"
     elsif .idx = 3
-        resolveBuiltinAB.fullpath$ = .archiveDir$ + "/partch_43.scl"
+        resolveBuiltinAB.filename$ = "partch_43.scl"
     elsif .idx = 4
-        resolveBuiltinAB.fullpath$ = .archiveDir$ + "/bohlen-p.scl"
+        resolveBuiltinAB.filename$ = "bohlen-p.scl"
     elsif .idx = 5
-        resolveBuiltinAB.fullpath$ = .archiveDir$ + "/carlos_alpha.scl"
+        resolveBuiltinAB.filename$ = "carlos_alpha.scl"
+    endif
+endproc
+
+# ============================================================
+# ARCHIVE LOOKUP: search a preferred folder first, then standard
+# AudioTools / working-directory locations.
+# ============================================================
+procedure findArchiveScale: .filename$, .preferredDir$
+    findArchiveScale.found = 0
+    findArchiveScale.fullpath$ = ""
+
+    if .preferredDir$ <> ""
+        .test$ = .preferredDir$ + "/" + .filename$
+        if fileReadable(.test$)
+            findArchiveScale.fullpath$ = .test$
+            findArchiveScale.found = 1
+        endif
+    endif
+
+    if findArchiveScale.found = 0
+        .dir$ = preferencesDirectory$ + "/plugin_AudioTools/Analysis/scl"
+        .test$ = .dir$ + "/" + .filename$
+        if fileReadable(.test$)
+            findArchiveScale.fullpath$ = .test$
+            findArchiveScale.found = 1
+        endif
+    endif
+    if findArchiveScale.found = 0
+        .dir$ = preferencesDirectory$ + "/plugin_AudioTools/scl"
+        .test$ = .dir$ + "/" + .filename$
+        if fileReadable(.test$)
+            findArchiveScale.fullpath$ = .test$
+            findArchiveScale.found = 1
+        endif
+    endif
+    if findArchiveScale.found = 0
+        .userProfile$ = environment$("USERPROFILE")
+        if .userProfile$ <> ""
+            .userProfile$ = replace$(.userProfile$, "\", "/", 0)
+            .dir$ = .userProfile$ + "/Praat/plugin_AudioTools/Analysis/scl"
+            .test$ = .dir$ + "/" + .filename$
+            if fileReadable(.test$)
+                findArchiveScale.fullpath$ = .test$
+                findArchiveScale.found = 1
+            endif
+        endif
+    endif
+    if findArchiveScale.found = 0
+        .userProfile$ = environment$("USERPROFILE")
+        if .userProfile$ <> ""
+            .userProfile$ = replace$(.userProfile$, "\", "/", 0)
+            .dir$ = .userProfile$ + "/Praat/plugin_AudioTools/scl"
+            .test$ = .dir$ + "/" + .filename$
+            if fileReadable(.test$)
+                findArchiveScale.fullpath$ = .test$
+                findArchiveScale.found = 1
+            endif
+        endif
+    endif
+    if findArchiveScale.found = 0
+        .dir$ = defaultDirectory$ + "/scl"
+        .test$ = .dir$ + "/" + .filename$
+        if fileReadable(.test$)
+            findArchiveScale.fullpath$ = .test$
+            findArchiveScale.found = 1
+        endif
+    endif
+    if findArchiveScale.found = 0
+        .test$ = defaultDirectory$ + "/" + .filename$
+        if fileReadable(.test$)
+            findArchiveScale.fullpath$ = .test$
+            findArchiveScale.found = 1
+        endif
     endif
 endproc
 
 # ============================================================
 # MAIN
 # ============================================================
-writeInfoLine: "=== Scala Scale Auralizer v1.0 ==="
+writeInfoLine: "=== Scala Scale Auralizer v1.3.2 ==="
 
 # Determine which source to use.
-# Priority: external_scl_path > built-in archive file > synthetic 12-TET
+# Scale_source:
+#   1 = reuse last, 2 = library search, 3 = native Browse,
+#   4 = curated built-in, 5 = synthetic 12-TET.
+#
+# Persistent state lives in Praat's preferences/apps area rather than inside
+# the plug-in tree. This lets the selected scale survive script/Praat restarts.
+stateAppsDir$ = preferencesDirectory$ + "/apps"
+stateDir$ = stateAppsDir$ + "/AudioTools"
+stateFile$ = stateDir$ + "/Scala_Scale_Auralizer_last_scale.txt"
+syntheticStateToken$ = "__AUDIOTOOLS_SYNTHETIC_12TET__"
+lastScaleToken$ = ""
+if fileReadable(stateFile$)
+    lastScaleToken$ = readFile$(stateFile$)
+    lastScaleToken$ = replace$(lastScaleToken$, "\r", "", 0)
+    lastScaleToken$ = replace$(lastScaleToken$, "\n", "", 0)
+endif
+
 loadedFromPath$ = ""
 archiveDir$ = ""
+selectedScaleFile$ = ""
+scaleLoaded = 0
+usedSynthetic = 0
 
-if external_scl_path$ <> ""
-    # External file was provided.
-    loadedFromPath$ = external_scl_path$
-    # Extract directory so A/B can find a peer file if needed.
-    .lastSlash = rindex(external_scl_path$, "/")
-    if .lastSlash > 0
-        archiveDir$ = left$(external_scl_path$, .lastSlash - 1)
+if scale_source = 1
+    # --- Fast path: reopen the previous scale without any chooser. ---
+    if lastScaleToken$ = syntheticStateToken$
+        @buildSynthetic12TET
+        usedSynthetic = 1
+        scaleLoaded = 1
+        appendInfoLine: "Reusing last scale: synthetic 12-TET."
+    elsif lastScaleToken$ <> "" and fileReadable(lastScaleToken$)
+        loadedFromPath$ = lastScaleToken$
+        lastSlashPos = rindex(loadedFromPath$, "/")
+        lastBackPos = rindex(loadedFromPath$, "\")
+        if lastBackPos > lastSlashPos
+            lastSlashPos = lastBackPos
+        endif
+        if lastSlashPos > 0
+            archiveDir$ = left$(loadedFromPath$, lastSlashPos - 1)
+            selectedScaleFile$ = mid$(loadedFromPath$, lastSlashPos + 1, length(loadedFromPath$))
+        else
+            selectedScaleFile$ = loadedFromPath$
+        endif
+        @parseScalaFile: loadedFromPath$
+        scaleLoaded = 1
+        appendInfoLine: "Reusing last Scala scale: ", selectedScaleFile$
+        appendInfoLine: "  ", loadedFromPath$
+    else
+        appendInfoLine: "No valid remembered Scala scale; opening the library chooser once."
+    endif
+
+elsif scale_source = 3
+    # --- Native file browser: no path typing. ---
+    loadedFromPath$ = chooseReadFile$: "Choose a Scala .scl file"
+    if loadedFromPath$ = ""
+        exitScript: "Scala file selection cancelled."
+    endif
+    if length(loadedFromPath$) < 5 or lowerCase$(right$(loadedFromPath$, 4)) <> ".scl"
+        exitScript: "Please choose a Scala .scl file."
+    endif
+    if not fileReadable(loadedFromPath$)
+        exitScript: "Scala file not readable:" + newline$ + "  " + loadedFromPath$
+    endif
+
+    loadedFromPath$ = replace$(loadedFromPath$, "\", "/", 0)
+    lastSlashPos = rindex(loadedFromPath$, "/")
+    if lastSlashPos > 0
+        archiveDir$ = left$(loadedFromPath$, lastSlashPos - 1)
+        selectedScaleFile$ = mid$(loadedFromPath$, lastSlashPos + 1, length(loadedFromPath$))
+    else
+        selectedScaleFile$ = loadedFromPath$
+    endif
+
+    @parseScalaFile: loadedFromPath$
+    scaleLoaded = 1
+    appendInfoLine: "Loaded from Browse:"
+    appendInfoLine: "  ", loadedFromPath$
+
+elsif scale_source = 4
+    # --- Compact curated list; locate its .scl automatically. ---
+    @resolveBuiltin: curated_scale, ""
+    @findArchiveScale: resolveBuiltin.filename$, ""
+    if findArchiveScale.found = 0
+        exitScript: "Could not locate curated Scala file:" + newline$ +
+        ... "  " + resolveBuiltin.filename$ + newline$ +
+        ... "Use Choose from library or Browse external .scl instead."
+    endif
+
+    loadedFromPath$ = replace$(findArchiveScale.fullpath$, "\", "/", 0)
+    selectedScaleFile$ = resolveBuiltin.filename$
+    lastSlashPos = rindex(loadedFromPath$, "/")
+    if lastSlashPos > 0
+        archiveDir$ = left$(loadedFromPath$, lastSlashPos - 1)
     endif
     @parseScalaFile: loadedFromPath$
-    appendInfoLine: "Loaded from external path:"
+    scaleLoaded = 1
+    appendInfoLine: "Loaded curated scale: ", selectedScaleFile$
     appendInfoLine: "  ", loadedFromPath$
-else
-    # Try archive-relative path for built-ins that need a .scl file.
-    # Heuristic: try a few common archive locations.
-    @resolveBuiltin: builtin_scale, ""
-    if resolveBuiltin.useSynthetic = 1
-        @buildSynthetic12TET
-        appendInfoLine: "Using synthetic 12-TET (no file needed)."
+
+elsif scale_source = 5
+    # --- Synthetic 12-TET: no file. ---
+    @buildSynthetic12TET
+    usedSynthetic = 1
+    scaleLoaded = 1
+    appendInfoLine: "Using synthetic 12-TET (no file needed)."
+endif
+
+# Library selection is explicit (source 2), and also the graceful fallback when
+# Reuse last scale has no state yet or its remembered file has disappeared.
+if scale_source = 2 or scaleLoaded = 0
+    @locateScalaArchive
+    if locateScalaArchive.found = 0
+        manualArchiveDir$ = chooseFolder$: "Choose the AudioTools Scala folder (scl)"
+        if manualArchiveDir$ = ""
+            exitScript: "Scala archive selection cancelled."
+        endif
+
+        manualArchiveDir$ = replace$(manualArchiveDir$, "\", "/", 0)
+        if folderExists(manualArchiveDir$ + "/Analysis/scl")
+            manualArchiveDir$ = manualArchiveDir$ + "/Analysis/scl"
+        elsif folderExists(manualArchiveDir$ + "/scl")
+            manualArchiveDir$ = manualArchiveDir$ + "/scl"
+        endif
+
+        manualFiles$# = fileNames_caseInsensitive$# (manualArchiveDir$ + "/*.scl")
+        if size(manualFiles$#) < 1
+            exitScript: "The selected folder contains no .scl files:" + newline$ +
+            ... "  " + manualArchiveDir$
+        endif
+        archiveDir$ = manualArchiveDir$
+        appendInfoLine: "Scala archive chosen manually: ", archiveDir$
     else
-        # Built-in requires a .scl file. The user must tell us the
-        # archive location via external_scl_path or we can try a few
-        # fallbacks. Prefer an educated guess.
-        candidateDirs$ = preferencesDirectory$ + "/plugin_AudioTools/scl"
-            ... + ":" + defaultDirectory$ + "/scl"
-            ... + ":" + defaultDirectory$
-
-        # Try each candidate. Customise the first entry below to
-        # point at your own Scala archive location — this is the
-        # fast path so your personal archive is checked first.
-        found = 0
-
-        # --- User-configurable archive path (edit this line) ---
-        testDir$ = "C:/Users/User/Downloads/scales/scl"
-        testFile$ = testDir$ + "/" + resolveBuiltin.filename$
-        if fileReadable(testFile$)
-            archiveDir$ = testDir$
-            found = 1
-        endif
-
-        # Standard AudioTools plugin location
-        if found = 0
-            testDir$ = preferencesDirectory$ + "/plugin_AudioTools/scl"
-            testFile$ = testDir$ + "/" + resolveBuiltin.filename$
-            if fileReadable(testFile$)
-                archiveDir$ = testDir$
-                found = 1
-            endif
-        endif
-        if found = 0
-            testDir$ = defaultDirectory$ + "/scl"
-            testFile$ = testDir$ + "/" + resolveBuiltin.filename$
-            if fileReadable(testFile$)
-                archiveDir$ = testDir$
-                found = 1
-            endif
-        endif
-        if found = 0
-            testDir$ = defaultDirectory$
-            testFile$ = testDir$ + "/" + resolveBuiltin.filename$
-            if fileReadable(testFile$)
-                archiveDir$ = testDir$
-                found = 1
-            endif
-        endif
-
-        if found = 0
-            appendInfoLine: "Could not locate built-in scale file:"
-            appendInfoLine: "  ", resolveBuiltin.filename$
-            appendInfoLine: "Searched:"
-            appendInfoLine: "  C:/Users/User/Downloads/scales/scl"
-            appendInfoLine: "  ", preferencesDirectory$, "/plugin_AudioTools/scl"
-            appendInfoLine: "  ", defaultDirectory$, "/scl"
-            appendInfoLine: "  ", defaultDirectory$
-            appendInfoLine: ""
-            appendInfoLine: "Falling back to synthetic 12-TET."
-            @buildSynthetic12TET
-        else
-            loadedFromPath$ = archiveDir$ + "/" + resolveBuiltin.filename$
-            @parseScalaFile: loadedFromPath$
-            appendInfoLine: "Loaded built-in: ", resolveBuiltin.filename$
-        endif
+        archiveDir$ = locateScalaArchive.dir$
     endif
+
+    @chooseLibraryScale: archiveDir$
+    if chooseLibraryScale.cancelled = 1
+        exitScript: "Scala scale selection cancelled."
+    endif
+
+    selectedScaleFile$ = chooseLibraryScale.filename$
+    loadedFromPath$ = replace$(chooseLibraryScale.fullpath$, "\", "/", 0)
+    @parseScalaFile: loadedFromPath$
+    scaleLoaded = 1
+    usedSynthetic = 0
+    appendInfoLine: "Scala library: ", archiveDir$
+    appendInfoLine: "Selected file: ", selectedScaleFile$
+endif
+
+# Remember only a successfully parsed/built selection. The state file contains
+# either one normalized .scl path or a private token for synthetic 12-TET.
+createFolder: stateAppsDir$
+createFolder: stateDir$
+if usedSynthetic = 1
+    writeFile: stateFile$, syntheticStateToken$
+elsif loadedFromPath$ <> ""
+    writeFile: stateFile$, replace$(loadedFromPath$, "\", "/", 0)
 endif
 
 appendInfoLine: ""
@@ -749,15 +1221,19 @@ if scale.isOctave = 1
 else
     appendInfoLine: "Period type: NON-OCTAVE"
 endif
-if scale.truncated = 1
-    appendInfoLine: "Note: file was truncated; scale uses only parsed degrees."
-endif
 appendInfoLine: ""
+
+# Safe defaults for comparison-only metadata; A/B mode overwrites these.
+compare.nDeg = 0
+compare.period = scale.period
+compare.isOctave = scale.isOctave
+compare.name$ = ""
+sceneName$ = scale.name$
 
 # ============================================================
 # Build tuning
 # ============================================================
-@buildTuning: fundamental_Hz, reference_degree, reference_Hz, transpose_periods
+@buildTuning: fundamental_Hz, use_reference_anchor, reference_degree, reference_Hz, transpose_periods
 
 # ============================================================
 # Build spectrum
@@ -808,10 +1284,7 @@ nSubset = 0
 nChord = 0
 
 if mode = 1
-    # Single tone on degree 1 (we present index 1 of the user-facing
-    # 1..N degrees, i.e. the first interval above fundamental; the
-    # fundamental itself would be degree 0).
-    # Use degree 0 (fundamental) for this mode.
+    # Single tone on the implicit Scala degree 0 = 1/1 fundamental.
     appendInfoLine: "Mode: Single tone (fundamental)"
     nSeq = 1
     seqFreqs[1] = freqs[0]
@@ -901,6 +1374,23 @@ elsif mode = 8
     # We'll render A, then re-setup for B, then render B and concatenate.
 endif
 
+# Track the highest note fundamental actually requested; visualization uses
+# this to choose a spectrogram ceiling that reflects the rendered spectrum.
+maxNoteFreq = 0
+if mode = 6
+    for i from 1 to nChord
+        if chordFreqs[i] > maxNoteFreq
+            maxNoteFreq = chordFreqs[i]
+        endif
+    endfor
+else
+    for i from 1 to nSeq
+        if seqFreqs[i] > maxNoteFreq
+            maxNoteFreq = seqFreqs[i]
+        endif
+    endfor
+endif
+
 # ============================================================
 # Render audio
 # ============================================================
@@ -962,8 +1452,7 @@ elsif mode = 7
     resultId = droneId
 
 elsif mode = 8
-    # A/B compare
-    # First render A (the sequence we already built).
+    # A/B compare. Render A, create the comparison pause, then load/render B.
     .seqDur_A = nSeq * (noteDur + noteGap)
     seqBufA = Create Sound from formula: "seq_A", 1, 0, .seqDur_A,
         ... sampleRate, "0"
@@ -984,30 +1473,63 @@ elsif mode = 8
         removeObject: .nid
     endfor
 
-    # Save A's scale state before clobbering for B.
+    # Save A's complete scale/tuning state before B overwrites globals.
     saved.nDeg = scale.nDeg
     saved.period = scale.period
     saved.isOctave = scale.isOctave
+    saved.truncated = scale.truncated
     saved.name$ = scale.name$
+    for d from 1 to scale.nDeg
+        saved.cents[d] = scale.cents[d]
+        saved.ratios$[d] = scale.ratios$[d]
+    endfor
+    for d from 0 to scale.nDeg
+        saved.freqs[d] = freqs[d]
+    endfor
 
-    # Load scale B.
-    @resolveBuiltinAB: second_builtin_for_AB, archiveDir$
+    # Create the gap BEFORE B so Sounds: Concatenate sees object-list order
+    # A -> gap -> B (Praat concatenates by object-list order).
+    abGapDur = noteGap * 4
+    if abGapDur < 0.35
+        abGapDur = 0.35
+    endif
+    abGapId = Create Sound from formula: "AB_pause", 1, 0, abGapDur,
+        ... sampleRate, "0"
+
+    # Resolve and load scale B. Search A's archive folder first, then the
+    # standard AudioTools locations, so A/B also works when A is synthetic.
+    @resolveBuiltinAB: second_builtin_for_AB
     if resolveBuiltinAB.useSynthetic = 1
         @buildSynthetic12TET
     else
-        if fileReadable(resolveBuiltinAB.fullpath$)
-            @parseScalaFile: resolveBuiltinAB.fullpath$
+        @findArchiveScale: resolveBuiltinAB.filename$, archiveDir$
+        if findArchiveScale.found = 1
+            @parseScalaFile: findArchiveScale.fullpath$
         else
-            appendInfoLine: "A/B: second scale file not found, using 12-TET."
+            appendInfoLine: "A/B: second scale file not found (", resolveBuiltinAB.filename$, "); using 12-TET."
             @buildSynthetic12TET
         endif
     endif
-    @buildTuning: fundamental_Hz, reference_degree, reference_Hz,
+    @buildTuning: fundamental_Hz, use_reference_anchor, reference_degree, reference_Hz,
         ... transpose_periods
+
+    compare.nDeg = scale.nDeg
+    compare.period = scale.period
+    compare.isOctave = scale.isOctave
+    compare.name$ = scale.name$
+    for d from 1 to scale.nDeg
+        compare.cents[d] = scale.cents[d]
+    endfor
+    for d from 0 to scale.nDeg
+        compare.freqs[d] = freqs[d]
+    endfor
 
     nSeqB = scale.nDeg + 1
     for i from 0 to scale.nDeg
         seqFreqsB[i + 1] = freqs[i]
+        if freqs[i] > maxNoteFreq
+            maxNoteFreq = freqs[i]
+        endif
     endfor
 
     .seqDur_B = nSeqB * (noteDur + noteGap)
@@ -1030,14 +1552,27 @@ elsif mode = 8
         removeObject: .nid
     endfor
 
-    # Concatenate A, silence gap, B into single result.
     selectObject: seqBufA
+    plusObject: abGapId
     plusObject: seqBufB
     resultId = Concatenate
-    removeObject: seqBufA, seqBufB
+    removeObject: seqBufA, abGapId, seqBufB
 
-    # Restore A's name for the summary (B's metadata will show below).
-    sceneName$ = saved.name$ + "  vs  " + scale.name$
+    # Restore A so the post-render table/visualization is not silently relabelled
+    # as B. Keep compare.* for the A/B overlay and summary.
+    scale.nDeg = saved.nDeg
+    scale.period = saved.period
+    scale.isOctave = saved.isOctave
+    scale.truncated = saved.truncated
+    scale.name$ = saved.name$
+    for d from 1 to scale.nDeg
+        scale.cents[d] = saved.cents[d]
+        scale.ratios$[d] = saved.ratios$[d]
+    endfor
+    for d from 0 to scale.nDeg
+        freqs[d] = saved.freqs[d]
+    endfor
+    sceneName$ = saved.name$ + "  vs  " + compare.name$
 
 else
     # Sequential modes (1-5): render notes into a buffer with gaps.
@@ -1066,6 +1601,11 @@ else
     resultId = seqBufId
 endif
 
+if maxNoteFreq >= sampleRate * 0.48
+    appendInfoLine: "WARN: at least one requested note fundamental reached the Nyquist guard;"
+    appendInfoLine: "      such notes cannot be represented at this sample rate and may be silent."
+endif
+
 # ============================================================
 # Output finalisation
 # ============================================================
@@ -1083,12 +1623,17 @@ endif
 if .absPeak > 0.98
     .safeGain = 0.95 / .absPeak
     Formula: "self * " + fixed$(.safeGain, 6)
+    .absPeak = .absPeak * .safeGain
     appendInfoLine: "Peak-limited (scaled by ",
         ... fixed$(.safeGain, 3), ")"
 endif
 
 # Rename the result
-.safeName$ = replace_regex$(scale.name$, "[^A-Za-z0-9_]+", "_", 0)
+.nameForOutput$ = scale.name$
+if mode = 8
+    .nameForOutput$ = sceneName$
+endif
+.safeName$ = replace_regex$(.nameForOutput$, "[^A-Za-z0-9_]+", "_", 0)
 if length(.safeName$) > 40
     .safeName$ = left$(.safeName$, 40)
 endif
@@ -1113,6 +1658,9 @@ if show_visualization
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     .titleLine$ = scale.name$
+    if mode = 8
+        .titleLine$ = sceneName$
+    endif
     if length(.titleLine$) > 80
         .titleLine$ = left$(.titleLine$, 77) + "..."
     endif
@@ -1120,59 +1668,100 @@ if show_visualization
         ... .titleLine$
         ... + "   |   " + string$(scale.nDeg) + " degrees"
         ... + "   |   period " + fixed$(scale.period, 1) + " cents"
-        ... + "   |   fund " + fixed$(fundamental_Hz, 1) + " Hz"
+        ... + "   |   1/1 " + fixed$(freqs[0], 1) + " Hz"
 
-    # Cents distribution: horizontal line with tick per degree
+    # Cents distribution. In A/B mode, show both scales on the same cent axis.
     Select outer viewport: 0, 8, 0.55, 2.00
     Select inner viewport: 0.6, 7.7, 0.65, 1.95
     .maxC = scale.period + 50
+    if mode = 8 and compare.period + 50 > .maxC
+        .maxC = compare.period + 50
+    endif
     if .maxC < 1300
         .maxC = 1300
     endif
     Axes: -20, .maxC, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.99}", -20, .maxC, 0, 1
 
-    # Period marker
-    Colour: "{0.82, 0.50, 0.15}"
-    Line width: 1.0
-    Draw line: scale.period, 0.05, scale.period, 0.95
-    Font size: 6
-    Text: scale.period, "centre", 0.98, "bottom",
-        ... "period " + fixed$(scale.period, 0) + "c"
-
-    # 1200-cent octave reference (grey dotted)
-    if scale.isOctave = 0
+    # Neutral octave reference where useful.
+    if scale.isOctave = 0 or (mode = 8 and compare.isOctave = 0)
         Colour: "{0.70, 0.70, 0.70}"
         Dotted line
-        Draw line: 1200, 0.05, 1200, 0.90
+        Draw line: 1200, 0.05, 1200, 0.95
         Solid line
-        Font size: 5
-        Text: 1200, "centre", 0.90, "bottom", "1200c"
     endif
 
-    # Draw degrees as vertical ticks with labels
-    Colour: "{0.20, 0.40, 0.75}"
-    Line width: 1.8
-    # Degree 0 (fundamental)
-    Draw line: 0, 0.15, 0, 0.85
-    Font size: 6
-    Text: 0, "centre", 0.10, "top", "0"
-    for d from 1 to scale.nDeg
-        .cx = scale.cents[d]
-        Draw line: .cx, 0.15, .cx, 0.85
-        if scale.nDeg <= 20
-            Text: .cx, "centre", 0.10, "top", string$(d)
-        elsif d mod 4 = 0
-            Text: .cx, "centre", 0.10, "top", string$(d)
-        endif
-    endfor
+    if mode = 8
+        # A (blue), lower lane.
+        Colour: "{0.20, 0.40, 0.75}"
+        Line width: 1.6
+        Draw line: 0, 0.10, 0, 0.43
+        for d from 1 to scale.nDeg
+            Draw line: scale.cents[d], 0.10, scale.cents[d], 0.43
+        endfor
+        # B (orange), upper lane.
+        Colour: "{0.82, 0.50, 0.15}"
+        Draw line: 0, 0.57, 0, 0.90
+        for d from 1 to compare.nDeg
+            Draw line: compare.cents[d], 0.57, compare.cents[d], 0.90
+        endfor
+    else
+        Colour: "{0.20, 0.40, 0.75}"
+        Line width: 1.8
+        Draw line: 0, 0.15, 0, 0.85
+        for d from 1 to scale.nDeg
+            Draw line: scale.cents[d], 0.15, scale.cents[d], 0.85
+        endfor
+        Colour: "{0.82, 0.50, 0.15}"
+        Line width: 1.0
+        Draw line: scale.period, 0.05, scale.period, 0.95
+    endif
+
     Line width: 1
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text top: "no", "Degrees on cent axis (blue) — orange line = period"
 
-    # Frequencies bar — each degree as a horizontal mark at its Hz
+    # Re-enter the inner viewport after box/text-affecting Picture commands,
+    # then add annotations only after all data geometry has been drawn.
+    Select inner viewport: 0.6, 7.7, 0.65, 1.95
+    Axes: -20, .maxC, 0, 1
+    Font size: 5
+    Colour: "{0.55, 0.55, 0.55}"
+    if scale.isOctave = 0 or (mode = 8 and compare.isOctave = 0)
+        Text: 1200, "centre", 0.96, "bottom", "1200c"
+    endif
+
+    if mode = 8
+        Font size: 6
+        Colour: "{0.20, 0.40, 0.75}"
+        Text: 10, "left", 0.26, "half", "A"
+        Colour: "{0.82, 0.50, 0.15}"
+        Text: 10, "left", 0.74, "half", "B"
+        Colour: "Black"
+        Text top: "no", "Intervals on shared cent axis: A blue / B orange"
+    else
+        Colour: "{0.82, 0.50, 0.15}"
+        Font size: 6
+        Text: scale.period, "centre", 0.98, "bottom",
+            ... "period " + fixed$(scale.period, 0) + "c"
+        Colour: "{0.20, 0.40, 0.75}"
+        Text: 0, "centre", 0.10, "top", "0"
+        if scale.nDeg <= 20
+            for d from 1 to scale.nDeg
+                Text: scale.cents[d], "centre", 0.10, "top", string$(d)
+            endfor
+        else
+            for d from 1 to scale.nDeg
+                if d mod 4 = 0
+                    Text: scale.cents[d], "centre", 0.10, "top", string$(d)
+                endif
+            endfor
+        endif
+        Colour: "Black"
+        Text top: "no", "Degrees on cent axis (blue) — orange line = period"
+    endif
+
+    # Degree-frequency panel for scale A (the primary scale).
     Select outer viewport: 0, 8, 2.10, 3.60
     Select inner viewport: 0.6, 7.7, 2.20, 3.55
 
@@ -1192,34 +1781,51 @@ if show_visualization
     Axes: 0, 1, .fMin * 0.95, .fMax * 1.05
     Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, .fMin * 0.95, .fMax * 1.05
 
-    .ny = scale.nDeg + 1
+    Colour: "{0.20, 0.40, 0.75}"
+    Line width: 2
     for d from 0 to scale.nDeg
         .xl = 0.05 + 0.90 * (d / (scale.nDeg + 0.01))
-        Colour: "{0.20, 0.40, 0.75}"
-        Line width: 2
         Draw line: .xl, .fMin * 0.95, .xl, freqs[d]
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+
+    Select inner viewport: 0.6, 7.7, 2.20, 3.55
+    Axes: 0, 1, .fMin * 0.95, .fMax * 1.05
+    for d from 0 to scale.nDeg
         if scale.nDeg <= 20 or d mod 3 = 0
+            .xl = 0.05 + 0.90 * (d / (scale.nDeg + 0.01))
             Font size: 5
             Colour: "{0.30, 0.30, 0.30}"
             Text special: .xl, "centre", .fMin * 0.93, "top",
                 ... "Helvetica", 5, "0", fixed$(freqs[d], 1)
         endif
     endfor
-    Line width: 1
     Colour: "Black"
-    Draw inner box
     Font size: 7
     Text left: "yes", "Hz"
-    Text top: "no", "Degree frequencies (Hz)"
+    if mode = 8
+        Text top: "no", "A: degree frequencies (Hz)"
+    else
+        Text top: "no", "Degree frequencies (Hz)"
+    endif
 
     # Output waveform
     Select outer viewport: 0, 8, 3.70, 5.00
     Select inner viewport: 0.6, 7.7, 3.80, 4.95
     selectObject: resultId
+    .plotPeak = .absPeak * 1.05
+    if .plotPeak < 0.05
+        .plotPeak = 0.05
+    endif
     Colour: "{0.20, 0.45, 0.75}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    .plotDur = Get total duration
+    Draw: 0, 0, 0 - .plotPeak, .plotPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
+    Select inner viewport: 0.6, 7.7, 3.80, 4.95
+    Axes: 0, .plotDur, 0 - .plotPeak, .plotPeak
     Font size: 7
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
@@ -1230,14 +1836,23 @@ if show_visualization
     selectObject: resultId
     Copy: "specTmp"
     .tmp = selected("Sound")
-    To Spectrogram: 0.03, 5000, 0.005, 20, "Gaussian"
+    .specTop = maxNoteFreq * spec.maxMult * 1.10
+    if .specTop < 5000
+        .specTop = 5000
+    endif
+    if .specTop > sampleRate * 0.48
+        .specTop = sampleRate * 0.48
+    endif
+    To Spectrogram: 0.03, .specTop, 0.005, 20, "Gaussian"
     .sp = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, .specTop, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
+    Select inner viewport: 0.6, 7.7, 5.20, 6.45
+    Axes: 0, 1, 0, .specTop
     Font size: 7
     Text left: "yes", "Hz"
-    Text special: 4.15, "centre", 5300, "bottom", "Helvetica", 7, "0", "Output spectrogram"
+    Text top: "no", "Output spectrogram"
     removeObject: .sp, .tmp
 
     # Summary panel
@@ -1245,6 +1860,10 @@ if show_visualization
     Select inner viewport: 0.6, 7.7, 6.65, 7.72
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+    Select inner viewport: 0.6, 7.7, 6.65, 7.72
+    Axes: 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
@@ -1289,7 +1908,7 @@ if show_visualization
     elsif voicing = 2
         .voicingName$ = "open"
     elsif voicing = 3
-        .voicingName$ = "compressed"
+        .voicingName$ = "compact"
     elsif voicing = 4
         .voicingName$ = "expanded"
     endif
@@ -1308,14 +1927,19 @@ if show_visualization
     if scale.isOctave = 1
         .octStr$ = "octave"
     endif
+    .anchorStr$ = "ref anchor off"
+    if use_reference_anchor = 1
+        .anchorStr$ = "ref deg " + string$(reference_degree) + " @ " + fixed$(reference_Hz, 2) + " Hz"
+    endif
     Text: 0.02, "left", 0.22, "half",
-        ... "Fundamental: " + fixed$(fundamental_Hz, 2) + " Hz"
-        ... + "   |   Ref deg " + string$(reference_degree)
-        ... + " @ " + fixed$(reference_Hz, 2) + " Hz"
+        ... "1/1: " + fixed$(freqs[0], 2) + " Hz"
+        ... + "   |   input fund " + fixed$(fundamental_Hz, 2) + " Hz"
+        ... + "   |   " + .anchorStr$
         ... + "   |   Transpose " + string$(transpose_periods) + " period(s)"
         ... + "   |   " + .octStr$
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    if mode = 8
+        Text: 0.98, "right", 0.88, "half", "B: " + compare.name$
+    endif
 
     Font size: 10
     Colour: "Black"

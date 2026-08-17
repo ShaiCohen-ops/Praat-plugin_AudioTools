@@ -3,499 +3,808 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Comprehensive stereo channel analysis tool. Measures channel
-#   correlation, Mid/Side balance, phase coherence, and spectral
-#   similarity between left and right channels.
+#   Stereo-channel analysis for correlation, Mid/Side balance,
+#   diffuse stereo spread, anti-phase risk, polarity agreement,
+#   broad-band spectral-shape similarity, and time-varying correlation.
 #
-# Changelog v0.2:
-#   - Added Pearson correlation coefficient
-#   - Added Mid/Side (M/S) energy analysis
-#   - Added stereo width metric
-#   - Added phase coherence measurement
-#   - Added time-varying correlation curve
-#   - Added visualization
-#   - Fixed syntax (!=, select, echo)
-#   - Vectorized for performance
-#
-# Usage:
-#   Select a stereo Sound object in Praat and run this script.
+# Changelog v0.3:
+#   - Added real spectral-shape similarity using nine broad log-spaced
+#     Spectrum energy bands; similarity is gain-invariant cosine similarity.
+#   - Renamed the old "phase coherence" metric to polarity agreement.
+#     Same-sign sample percentage is not phase coherence.
+#   - Added a separate phase-risk metric max(0,-correlation).
+#   - Added bounded diffuse stereo spread (0..1), separating decorrelated
+#     width from anti-phase and hard-panned imbalance.
+#   - Kept Side/Mid RMS and dB ratio as explicit M/S measurements instead
+#     of calling an unbounded Side/Mid ratio "stereo width".
+#   - Time-varying Pearson correlation no longer creates/extracts two Sound
+#     objects per window. L^2, R^2, and L*R are precomputed once.
+#   - Silent/constant windows are excluded instead of being assigned +1.
+#   - Analysis respects non-zero Sound origins and caps display windows for
+#     long files by adapting hop size, not analysis-window size.
+#   - L/R balance handles silent channels safely.
+#   - Near-identity threshold is relative to programme RMS instead of a
+#     fixed absolute threshold.
+#   - Visualization rebuilt in AudioTools 8x8 style with explicit waveform
+#     scaling, measured correlation trajectory, spectral band comparison,
+#     and concise stereo-state summary.
 # ============================================================
 
-form Stereo Channel Similarity Meter
-    comment === Analysis Options ===
+form Stereo Channel Similarity Meter v0.3
+    comment === Temporal analysis ===
     positive Window_size_seconds 0.1
-    comment (for time-varying analysis)
     boolean Show_visualization 1
     boolean Show_detailed_report 1
 endform
 
-# === INPUT VALIDATION ===
+# ============================================================
+# INPUT VALIDATION / METADATA
+# ============================================================
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
 sound = selected("Sound")
 soundName$ = selected$("Sound")
+displayName$ = replace$(soundName$, "_", " ", 0)
 
 selectObject: sound
 numberOfChannels = Get number of channels
-
 if numberOfChannels <> 2
     exitScript: "This is not a stereo file. It has " + string$(numberOfChannels) + " channel(s)."
 endif
 
-selectObject: sound
-duration = Get total duration
+sound_tmin = Get start time
+sound_tmax = Get end time
+duration = sound_tmax - sound_tmin
 samplingRate = Get sampling frequency
 totalSamples = Get number of samples
+nyquist = samplingRate / 2
 
-writeInfoLine: "=== Stereo Channel Similarity Meter v0.2 ==="
-appendInfoLine: "File: ", soundName$
-appendInfoLine: "Duration: ", fixed$(duration, 2), " s"
-appendInfoLine: "Sample rate: ", samplingRate, " Hz"
-appendInfoLine: ""
+if duration <= 0 or totalSamples < 2
+    exitScript: "The selected Sound is too short to analyse."
+endif
 
-# === EXTRACT CHANNELS ===
+# Use a physically valid minimum analysis window, but do not enlarge the
+# user's window otherwise. Very long files adapt only the display hop.
+window_size = window_size_seconds
+min_window = 32 / samplingRate
+if window_size < min_window
+    window_size = min_window
+endif
+if window_size > duration
+    window_size = duration
+endif
+
+# ============================================================
+# EXTRACT CHANNELS
+# ============================================================
 selectObject: sound
 channel1 = Extract one channel: 1
-Rename: "Left"
+Rename: "StereoSimilarity_Left"
 
 selectObject: sound
 channel2 = Extract one channel: 2
-Rename: "Right"
+Rename: "StereoSimilarity_Right"
 
-# === 1. GLOBAL PEARSON CORRELATION ===
-appendInfoLine: "Computing correlation..."
-
-# Get channel statistics
+# ============================================================
+# GLOBAL LEVEL / MOMENT STATISTICS
+# ============================================================
 selectObject: channel1
 mean_L = Get mean: 0, 0
-stdev_L = Get standard deviation: 0, 0
 rms_L = Get root-mean-square: 0, 0
 
 selectObject: channel2
 mean_R = Get mean: 0, 0
-stdev_R = Get standard deviation: 0, 0
 rms_R = Get root-mean-square: 0, 0
 
-# Compute correlation using formula
-# r = sum((L - mean_L)(R - mean_R)) / (n * stdev_L * stdev_R)
+var_L = rms_L * rms_L - mean_L * mean_L
+var_R = rms_R * rms_R - mean_R * mean_R
+if var_L < 0
+    var_L = 0
+endif
+if var_R < 0
+    var_R = 0
+endif
+sd_L = sqrt(var_L)
+sd_R = sqrt(var_R)
 
-# Create difference signals for computation
+# Precompute L^2, R^2 and L*R once. These objects make local Pearson
+# correlation cheap and avoid per-window extraction/copy/formula work.
 selectObject: channel1
-ch1_centered = Copy: "L_centered"
-Formula: "self - " + string$(mean_L)
+l_square = Copy: "StereoSimilarity_L2"
+Formula: "self * self"
 
 selectObject: channel2
-ch2_centered = Copy: "R_centered"
-Formula: "self - " + string$(mean_R)
+r_square = Copy: "StereoSimilarity_R2"
+Formula: "self * self"
 
-# Multiply centered channels
-selectObject: ch1_centered
-product = Copy: "product"
-ch2_str$ = string$(ch2_centered)
-Formula: "self * object[" + ch2_str$ + "]"
-
-# Get sum of products
-selectObject: product
-sum_product = Get mean: 0, 0
-sum_product = sum_product * totalSamples
-
-# Pearson correlation
-if stdev_L > 0 and stdev_R > 0
-    correlation = sum_product / (totalSamples * stdev_L * stdev_R)
-else
-    correlation = 0
-endif
-
-# Clamp to valid range
-if correlation > 1
-    correlation = 1
-elsif correlation < -1
-    correlation = -1
-endif
-
-removeObject: ch1_centered, ch2_centered, product
-
-# === 2. MID/SIDE ANALYSIS ===
-appendInfoLine: "Computing Mid/Side balance..."
-
-# Mid = (L + R) / 2, Side = (L - R) / 2
-ch1_str$ = string$(channel1)
 ch2_str$ = string$(channel2)
+selectObject: channel1
+lr_product = Copy: "StereoSimilarity_LR"
+Formula: "self * object[" + ch2_str$ + "]"
+mean_LR = Get mean: 0, 0
 
-Create Sound from formula: "Mid", 1, 0, duration, samplingRate, 
-    ... "(object[" + ch1_str$ + "] + object[" + ch2_str$ + "]) / 2"
-mid_sound = selected("Sound")
+cov_LR = mean_LR - mean_L * mean_R
+correlation_valid = 0
+correlation = 0
+if sd_L > 1e-12 and sd_R > 1e-12
+    correlation = cov_LR / (sd_L * sd_R)
+    if correlation > 1
+        correlation = 1
+    elsif correlation < -1
+        correlation = -1
+    endif
+    correlation_valid = 1
+endif
 
-Create Sound from formula: "Side", 1, 0, duration, samplingRate, 
-    ... "(object[" + ch1_str$ + "] - object[" + ch2_str$ + "]) / 2"
-side_sound = selected("Sound")
+# ============================================================
+# MID / SIDE AND STEREO-STATE METRICS
+# ============================================================
+# Preserve the original Sound time domain by copying a channel rather than
+# creating a new 0-based Sound from formula.
+selectObject: channel1
+mid_sound = Copy: "StereoSimilarity_Mid"
+Formula: "(self + object[" + ch2_str$ + "]) / 2"
 
-# Get RMS of Mid and Side
+selectObject: channel1
+side_sound = Copy: "StereoSimilarity_Side"
+Formula: "(self - object[" + ch2_str$ + "]) / 2"
+
 selectObject: mid_sound
 rms_Mid = Get root-mean-square: 0, 0
-
 selectObject: side_sound
 rms_Side = Get root-mean-square: 0, 0
 
-# Stereo width: ratio of Side to Mid energy
-if rms_Mid > 0.0001
-    stereo_width = rms_Side / rms_Mid
+eps_level = 1e-12
+if rms_Mid > eps_level
+    ms_ratio = rms_Side / rms_Mid
 else
-    stereo_width = 0
+    if rms_Side > eps_level
+        ms_ratio = 1e6
+    else
+        ms_ratio = 0
+    endif
 endif
 
-# M/S balance in dB
-if rms_Mid > 0.0001 and rms_Side > 0.0001
+if rms_Mid > eps_level and rms_Side > eps_level
     ms_balance_dB = 20 * log10(rms_Side / rms_Mid)
+elsif rms_Mid > eps_level
+    ms_balance_dB = -96
+elsif rms_Side > eps_level
+    ms_balance_dB = 96
 else
+    ms_balance_dB = 0
+endif
+if ms_balance_dB > 96
+    ms_balance_dB = 96
+elsif ms_balance_dB < -96
     ms_balance_dB = -96
 endif
 
-# === 3. CHANNEL BALANCE ===
-if rms_R > 0.0001
-    lr_balance = rms_L / rms_R
+# Balance factor: 1 for equal L/R level, 0 for a hard single-channel signal.
+level_sum = rms_L + rms_R
+if level_sum > eps_level
+    balance_factor = 2 * min(rms_L, rms_R) / level_sum
 else
-    lr_balance = 1
+    balance_factor = 0
 endif
 
-lr_balance_dB = 20 * log10(lr_balance)
+# Diffuse spread is intentionally distinct from anti-phase. Balanced,
+# decorrelated stereo approaches 1; centered mono, hard pan, and pure
+# anti-phase approach 0 for different reasons.
+if correlation_valid
+    diffuse_spread = balance_factor * (1 - abs(correlation))
+    phase_risk = max(0, -correlation)
+else
+    diffuse_spread = 0
+    phase_risk = 0
+endif
+if diffuse_spread < 0
+    diffuse_spread = 0
+elsif diffuse_spread > 1
+    diffuse_spread = 1
+endif
+if phase_risk > 1
+    phase_risk = 1
+endif
 
-# === 4. PHASE COHERENCE ===
-# Count samples where L and R have same sign
+# L/R balance in dB, robust to a silent channel.
+lr_balance_dB = 20 * log10((rms_L + eps_level) / (rms_R + eps_level))
+if lr_balance_dB > 96
+    lr_balance_dB = 96
+elsif lr_balance_dB < -96
+    lr_balance_dB = -96
+endif
+
+# ============================================================
+# POLARITY AGREEMENT + NEAR-IDENTITY DIAGNOSTICS
+# ============================================================
+programme_rms = max(rms_L, rms_R)
+sample_gate = max(1e-9, programme_rms * 0.001)
+identity_threshold = max(1e-9, programme_rms * 0.001)
+
 selectObject: channel1
-phase_check = Copy: "phase_check"
-Formula: "if self * object[" + ch2_str$ + "] >= 0 then 1 else 0 fi"
+active_mask = Copy: "StereoSimilarity_active"
+Formula: "if abs(self) >= " + string$(sample_gate) + " or abs(object[" + ch2_str$ + "]) >= " + string$(sample_gate) + " then 1 else 0 fi"
+active_fraction = Get mean: 0, 0
 
-selectObject: phase_check
-phase_coherence = Get mean: 0, 0
-
-removeObject: phase_check
-
-# === 5. SAMPLE IDENTITY (original metric, improved) ===
-# Count samples where |L - R| < threshold
 selectObject: channel1
-diff_check = Copy: "diff_check"
-Formula: "if abs(self - object[" + ch2_str$ + "]) < 0.001 then 1 else 0 fi"
+polarity_mask = Copy: "StereoSimilarity_polarity"
+Formula: "if abs(self) >= " + string$(sample_gate) + " or abs(object[" + ch2_str$ + "]) >= " + string$(sample_gate) + " then if self * object[" + ch2_str$ + "] >= 0 then 1 else 0 fi else 0 fi"
+polarity_fraction_all = Get mean: 0, 0
 
-selectObject: diff_check
+if active_fraction > 0
+    polarity_agreement = polarity_fraction_all / active_fraction
+else
+    polarity_agreement = 0
+endif
+if polarity_agreement > 1
+    polarity_agreement = 1
+endif
+
+selectObject: channel1
+identity_mask = Copy: "StereoSimilarity_identity"
+Formula: "if abs(self - object[" + ch2_str$ + "]) <= " + string$(identity_threshold) + " then 1 else 0 fi"
 identity_ratio = Get mean: 0, 0
 
-removeObject: diff_check
+removeObject: active_mask, polarity_mask, identity_mask
 
-# === 6. TIME-VARYING CORRELATION ===
-appendInfoLine: "Computing time-varying correlation..."
+# ============================================================
+# SPECTRAL-SHAPE SIMILARITY
+# ============================================================
+# Nine broad octave-like bands. We compare sqrt(band energy), which gives
+# an amplitude-like profile; cosine similarity removes overall gain.
+# Bands above Nyquist contribute zero.
+band_lo[1] = 0
+band_hi[1] = 100
+band_lo[2] = 100
+band_hi[2] = 200
+band_lo[3] = 200
+band_hi[3] = 400
+band_lo[4] = 400
+band_hi[4] = 800
+band_lo[5] = 800
+band_hi[5] = 1600
+band_lo[6] = 1600
+band_hi[6] = 3200
+band_lo[7] = 3200
+band_hi[7] = 6400
+band_lo[8] = 6400
+band_hi[8] = 12800
+band_lo[9] = 12800
+band_hi[9] = 20000
+n_bands = 9
 
-hop_size = window_size_seconds / 2
-n_windows = floor((duration - window_size_seconds) / hop_size) + 1
-if n_windows < 1
+for b to n_bands
+    spec_L[b] = 0
+    spec_R[b] = 0
+endfor
+
+selectObject: channel1
+spectrum_L = To Spectrum: "yes"
+for b to n_bands
+    lo = band_lo[b]
+    hi = band_hi[b]
+    if hi > nyquist
+        hi = nyquist
+    endif
+    if hi > lo
+        energy = Get band energy: lo, hi
+        if energy <> undefined
+            if energy > 0
+                spec_L[b] = sqrt(energy)
+            endif
+        endif
+    endif
+endfor
+
+selectObject: channel2
+spectrum_R = To Spectrum: "yes"
+for b to n_bands
+    lo = band_lo[b]
+    hi = band_hi[b]
+    if hi > nyquist
+        hi = nyquist
+    endif
+    if hi > lo
+        energy = Get band energy: lo, hi
+        if energy <> undefined
+            if energy > 0
+                spec_R[b] = sqrt(energy)
+            endif
+        endif
+    endif
+endfor
+
+spec_dot = 0
+spec_norm_L = 0
+spec_norm_R = 0
+spec_sum_L = 0
+spec_sum_R = 0
+for b to n_bands
+    spec_dot = spec_dot + spec_L[b] * spec_R[b]
+    spec_norm_L = spec_norm_L + spec_L[b] * spec_L[b]
+    spec_norm_R = spec_norm_R + spec_R[b] * spec_R[b]
+    spec_sum_L = spec_sum_L + spec_L[b]
+    spec_sum_R = spec_sum_R + spec_R[b]
+endfor
+
+spectral_similarity_valid = 0
+spectral_similarity = 0
+if spec_norm_L > 0 and spec_norm_R > 0
+    spectral_similarity = spec_dot / sqrt(spec_norm_L * spec_norm_R)
+    if spectral_similarity > 1
+        spectral_similarity = 1
+    elsif spectral_similarity < 0
+        spectral_similarity = 0
+    endif
+    spectral_similarity_valid = 1
+endif
+
+for b to n_bands
+    if spec_sum_L > 0
+        spec_plot_L[b] = spec_L[b] / spec_sum_L
+    else
+        spec_plot_L[b] = 0
+    endif
+    if spec_sum_R > 0
+        spec_plot_R[b] = spec_R[b] / spec_sum_R
+    else
+        spec_plot_R[b] = 0
+    endif
+endfor
+
+removeObject: spectrum_L, spectrum_R
+
+# ============================================================
+# TIME-VARYING PEARSON CORRELATION
+# ============================================================
+hop_size = window_size / 2
+max_windows = 6000
+if duration <= window_size
     n_windows = 1
+    hop_size = window_size
+else
+    n_windows_raw = floor((duration - window_size) / hop_size) + 1
+    if n_windows_raw > max_windows
+        n_windows = max_windows
+        hop_size = (duration - window_size) / (max_windows - 1)
+    else
+        n_windows = n_windows_raw
+    endif
 endif
 
 time_corr# = zero#(n_windows)
 time_points# = zero#(n_windows)
+time_valid# = zero#(n_windows)
+valid_windows = 0
+corr_gate = max(1e-9, programme_rms * 0.001)
 
 for w to n_windows
-    t_start = (w - 1) * hop_size
-    t_end = t_start + window_size_seconds
-    if t_end > duration
-        t_end = duration
+    if n_windows = 1
+        t_start = sound_tmin
+        t_end = sound_tmax
+    else
+        t_start = sound_tmin + (w - 1) * hop_size
+        t_end = t_start + window_size
+        if t_end > sound_tmax
+            t_end = sound_tmax
+        endif
     endif
-    
-    time_points#[w] = t_start + window_size_seconds / 2
-    
-    # Get local statistics
+    time_points#[w] = (t_start + t_end) / 2
+
     selectObject: channel1
     local_mean_L = Get mean: t_start, t_end
-    local_stdev_L = Get standard deviation: t_start, t_end
-    
     selectObject: channel2
     local_mean_R = Get mean: t_start, t_end
-    local_stdev_R = Get standard deviation: t_start, t_end
-    
-    # Extract windows
-    selectObject: channel1
-    win_L = Extract part: t_start, t_end, "rectangular", 1, "no"
-    Formula: "self - " + string$(local_mean_L)
-    
-    selectObject: channel2
-    win_R = Extract part: t_start, t_end, "rectangular", 1, "no"
-    Formula: "self - " + string$(local_mean_R)
-    
-    # Compute local correlation
-    win_R_str$ = string$(win_R)
-    selectObject: win_L
-    Formula: "self * object[" + win_R_str$ + "]"
-    local_sum = Get mean: 0, 0
-    local_n = Get number of samples
-    
-    if local_stdev_L > 0.0001 and local_stdev_R > 0.0001
-        time_corr#[w] = local_sum / (local_stdev_L * local_stdev_R)
-        if time_corr#[w] > 1
-            time_corr#[w] = 1
-        elsif time_corr#[w] < -1
-            time_corr#[w] = -1
+    selectObject: l_square
+    local_ms_L = Get mean: t_start, t_end
+    selectObject: r_square
+    local_ms_R = Get mean: t_start, t_end
+    selectObject: lr_product
+    local_mean_LR = Get mean: t_start, t_end
+
+    local_var_L = local_ms_L - local_mean_L * local_mean_L
+    local_var_R = local_ms_R - local_mean_R * local_mean_R
+    if local_var_L < 0
+        local_var_L = 0
+    endif
+    if local_var_R < 0
+        local_var_R = 0
+    endif
+    local_sd_L = sqrt(local_var_L)
+    local_sd_R = sqrt(local_var_R)
+    local_rms_L = sqrt(max(0, local_ms_L))
+    local_rms_R = sqrt(max(0, local_ms_R))
+
+    if local_rms_L >= corr_gate and local_rms_R >= corr_gate and local_sd_L > 1e-12 and local_sd_R > 1e-12
+        local_cov = local_mean_LR - local_mean_L * local_mean_R
+        cval = local_cov / (local_sd_L * local_sd_R)
+        if cval > 1
+            cval = 1
+        elsif cval < -1
+            cval = -1
         endif
+        time_corr#[w] = cval
+        time_valid#[w] = 1
+        valid_windows = valid_windows + 1
     else
-        time_corr#[w] = 1
-    endif
-    
-    removeObject: win_L, win_R
-endfor
-
-# Get correlation statistics
-min_corr = time_corr#[1]
-max_corr = time_corr#[1]
-for w to n_windows
-    if time_corr#[w] < min_corr
-        min_corr = time_corr#[w]
-    endif
-    if time_corr#[w] > max_corr
-        max_corr = time_corr#[w]
+        time_corr#[w] = 0
+        time_valid#[w] = 0
     endif
 endfor
 
-# === 7. INTERPRETATION ===
-# Correlation interpretation
-if correlation > 0.99
-    corr_desc$ = "Mono (channels nearly identical)"
-elsif correlation > 0.95
-    corr_desc$ = "Very narrow stereo"
-elsif correlation > 0.8
-    corr_desc$ = "Narrow stereo"
-elsif correlation > 0.5
-    corr_desc$ = "Normal stereo"
-elsif correlation > 0.2
-    corr_desc$ = "Wide stereo"
-elsif correlation > -0.2
-    corr_desc$ = "Very wide / decorrelated"
-else
-    corr_desc$ = "Out of phase (potential issue)"
-endif
-
-# Width interpretation
-if stereo_width < 0.05
-    width_desc$ = "Mono"
-elsif stereo_width < 0.2
-    width_desc$ = "Narrow"
-elsif stereo_width < 0.5
-    width_desc$ = "Normal"
-elsif stereo_width < 1.0
-    width_desc$ = "Wide"
-else
-    width_desc$ = "Very wide / M-S imbalanced"
-endif
-
-# === 8. VISUALIZATION ===
-if show_visualization
-    Erase all
-    
-    # --- Title ---
-    Select outer viewport: 0, 8, 0.0, 0.5
-    Font size: 14
-    Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Stereo Analysis: " + soundName$
-    
-    # --- Waveforms (L and R overlaid) ---
-    Select outer viewport: 0, 8, 0.6, 2.0
-    Select inner viewport: 0.4, 7.6, 0.7, 1.9
-    
-    selectObject: channel1
-    Colour: "{0.3, 0.5, 0.8}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    selectObject: channel2
-    Colour: "{0.8, 0.4, 0.3}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "L (blue) / R (red)"
-    Text bottom: "yes", "Time (s)"
-    
-    # --- Difference signal ---
-    Select outer viewport: 0, 4, 2.2, 3.2
-    Select inner viewport: 0.4, 3.8, 2.3, 3.1
-    
-    selectObject: side_sound
-    Colour: "{0.5, 0.7, 0.4}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Side (L-R)"
-    
-    # --- Mid signal ---
-    Select outer viewport: 4, 8, 2.2, 3.2
-    Select inner viewport: 4.4, 7.8, 2.3, 3.1
-    
-    selectObject: mid_sound
-    Colour: "{0.6, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Mid (L+R)"
-    Text bottom: "yes", "Time (s)"
-    
-    # --- Time-varying correlation ---
-    Select outer viewport: 0, 8, 3.4, 4.6
-    Select inner viewport: 0.4, 7.6, 3.5, 4.5
-    
-    Axes: 0, duration, -1, 1
-    Colour: "{0.95, 0.95, 0.95}"
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, -1, 1
-    
-    # Reference lines
-    Colour: "{0.8, 0.8, 0.8}"
-    Draw line: 0, 0, duration, 0
-    Colour: "{0.9, 0.9, 0.9}"
-    Draw line: 0, 0.5, duration, 0.5
-    Draw line: 0, -0.5, duration, -0.5
-    
-    # Correlation curve
-    Colour: "{0.2, 0.5, 0.8}"
-    Line width: 1.5
-    for w from 2 to n_windows
-        Draw line: time_points#[w-1], time_corr#[w-1], time_points#[w], time_corr#[w]
+if valid_windows > 0
+    first_valid = 0
+    for w to n_windows
+        if time_valid#[w] and first_valid = 0
+            min_corr = time_corr#[w]
+            max_corr = time_corr#[w]
+            first_valid = 1
+        elsif time_valid#[w]
+            if time_corr#[w] < min_corr
+                min_corr = time_corr#[w]
+            endif
+            if time_corr#[w] > max_corr
+                max_corr = time_corr#[w]
+            endif
+        endif
     endfor
-    
-    # Mean correlation line
-    Colour: "{0.8, 0.4, 0.2}"
-    Line width: 1
-    Dotted line
-    Draw line: 0, correlation, duration, correlation
-    Solid line
-    
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Correlation"
-    Text bottom: "yes", "Time (s)"
-    
-    # --- Meter display ---
-    Select outer viewport: 0, 8, 4.8, 5.8
-    Select inner viewport: 0.5, 7.5, 4.9, 5.7
-    
-    Axes: 0, 10, 0, 3
-    
-    # Correlation meter
-    Colour: "{0.9, 0.9, 0.9}"
-    Paint rectangle: "{0.9, 0.9, 0.9}", 0, 10, 2, 3
-    
-    # Fill based on correlation (0-10 scale, where 5 = 0 correlation)
-    meter_val = (correlation + 1) / 2 * 10
-    if correlation > 0.5
-        col$ = "{0.4, 0.7, 0.4}"
-    elsif correlation > 0
-        col$ = "{0.7, 0.7, 0.4}"
-    elsif correlation > -0.5
-        col$ = "{0.8, 0.6, 0.3}"
-    else
-        col$ = "{0.8, 0.3, 0.3}"
-    endif
-    Paint rectangle: col$, 0, meter_val, 2.1, 2.9
-    
-    Colour: "Black"
-    Line width: 1
-    Draw rectangle: 0, 10, 2, 3
-    Font size: 6
-    Text: 0, "left", 2.5, "half", " -1"
-    Text: 5, "centre", 2.5, "half", "0"
-    Text: 10, "right", 2.5, "half", "+1 "
-    Font size: 7
-    Text: 5, "centre", 3.3, "half", "Correlation: " + fixed$(correlation, 3) + " (" + corr_desc$ + ")"
-    
-    # Width meter
-    Colour: "{0.9, 0.9, 0.9}"
-    Paint rectangle: "{0.9, 0.9, 0.9}", 0, 10, 0.5, 1.5
-    
-    width_meter = min(10, stereo_width * 5)
-    Paint rectangle: "{0.4, 0.6, 0.8}", 0, width_meter, 0.6, 1.4
-    
-    Colour: "Black"
-    Line width: 1
-    Draw rectangle: 0, 10, 2, 3
-    Font size: 6
-    Text: 0, "left", 2.5, "half", " -1"
-    Text: 5, "centre", 2.5, "half", "0"
-    Text: 10, "right", 2.5, "half", "+1 "
-    Font size: 7
-    Text: 5, "centre", 3.3, "half", "Correlation: " + fixed$(correlation, 3) + " (" + corr_desc$ + ")"
-    
-    # Width meter
-    Colour: "{0.9, 0.9, 0.9}"
-    Paint rectangle: "{0.9, 0.9, 0.9}", 0, 10, 0.5, 1.5
-    
-    width_meter = min(10, stereo_width * 5)
-    Colour: "{0.4, 0.6, 0.8}"
-    Paint rectangle: "{0.4, 0.6, 0.8}", 0, width_meter, 0.6, 1.4
-    
-    Colour: "Black"
-    Draw rectangle: 0, 10, 0.5, 1.5
-    Font size: 6
-    Text: 0, "left", 1.0, "half", " 0"
-    Text: 5, "centre", 1.0, "half", "1"
-    Text: 10, "right", 1.0, "half", "2+ "
-    Font size: 7
-    Text: 5, "centre", 1.8, "half", "Stereo Width: " + fixed$(stereo_width, 2) + " (" + width_desc$ + ")"
-    
-    Font size: 10
-    Colour: "Black"
+else
+    min_corr = 0
+    max_corr = 0
 endif
 
-# === 9. REPORT ===
-appendInfoLine: "=== RESULTS ==="
+# ============================================================
+# INTERPRETATION
+# ============================================================
+if not correlation_valid
+    corr_desc$ = "Undefined (constant/silent channel)"
+elsif correlation > 0.99
+    corr_desc$ = "Nearly identical waveform"
+elsif correlation > 0.8
+    corr_desc$ = "Strongly correlated"
+elsif correlation > 0.4
+    corr_desc$ = "Moderately correlated"
+elsif correlation > -0.2
+    corr_desc$ = "Weakly correlated / decorrelated"
+elsif correlation > -0.7
+    corr_desc$ = "Negative correlation"
+else
+    corr_desc$ = "Strong anti-phase risk"
+endif
+
+if diffuse_spread < 0.08
+    spread_desc$ = "Low diffuse spread"
+elsif diffuse_spread < 0.30
+    spread_desc$ = "Moderate diffuse spread"
+elsif diffuse_spread < 0.65
+    spread_desc$ = "Wide / decorrelated"
+else
+    spread_desc$ = "Highly diffuse"
+endif
+
+if phase_risk < 0.05
+    phase_desc$ = "Low"
+elsif phase_risk < 0.30
+    phase_desc$ = "Moderate"
+elsif phase_risk < 0.70
+    phase_desc$ = "High"
+else
+    phase_desc$ = "Severe"
+endif
+
+if not spectral_similarity_valid
+    spectral_desc$ = "Undefined"
+elsif spectral_similarity >= 0.995
+    spectral_desc$ = "Nearly identical spectral shape"
+elsif spectral_similarity >= 0.97
+    spectral_desc$ = "Very similar spectral shape"
+elsif spectral_similarity >= 0.90
+    spectral_desc$ = "Similar spectral shape"
+elsif spectral_similarity >= 0.75
+    spectral_desc$ = "Moderately different spectral shape"
+else
+    spectral_desc$ = "Different spectral shape"
+endif
+
+# ============================================================
+# INFO REPORT
+# ============================================================
+writeInfoLine: "=== Stereo Channel Similarity Meter v0.3 ==="
+appendInfoLine: "File: ", soundName$
+appendInfoLine: "Duration: ", fixed$(duration, 3), " s"
+appendInfoLine: "Sample rate: ", samplingRate, " Hz"
+appendInfoLine: "Analysis window: ", fixed$(window_size * 1000, 1), " ms"
+appendInfoLine: "Correlation windows: ", n_windows, " (", valid_windows, " valid), hop ", fixed$(hop_size * 1000, 1), " ms"
 appendInfoLine: ""
-appendInfoLine: "--- Correlation ---"
-appendInfoLine: "Global correlation: ", fixed$(correlation, 4)
-appendInfoLine: "Interpretation: ", corr_desc$
-appendInfoLine: "Correlation range: ", fixed$(min_corr, 3), " to ", fixed$(max_corr, 3)
+
+appendInfoLine: "--- Waveform relationship ---"
+if correlation_valid
+    appendInfoLine: "Global Pearson correlation: ", fixed$(correlation, 4), "  |  ", corr_desc$
+else
+    appendInfoLine: "Global Pearson correlation: undefined  |  ", corr_desc$
+endif
+if valid_windows > 0
+    appendInfoLine: "Valid local-correlation range: ", fixed$(min_corr, 3), " to ", fixed$(max_corr, 3)
+else
+    appendInfoLine: "Valid local-correlation range: none (signal too quiet/constant in analysis windows)"
+endif
+appendInfoLine: "Polarity agreement (active samples): ", fixed$(polarity_agreement * 100, 1), "%"
+appendInfoLine: "Near-identical samples: ", fixed$(identity_ratio * 100, 1), "%  (|L-R| <= ", fixed$(identity_threshold, 7), ")"
 appendInfoLine: ""
-appendInfoLine: "--- Stereo Width ---"
-appendInfoLine: "Width (Side/Mid ratio): ", fixed$(stereo_width, 3)
-appendInfoLine: "M/S balance: ", fixed$(ms_balance_dB, 1), " dB"
-appendInfoLine: "Interpretation: ", width_desc$
-appendInfoLine: ""
-appendInfoLine: "--- Channel Balance ---"
-appendInfoLine: "L/R RMS ratio: ", fixed$(lr_balance, 3)
+
+appendInfoLine: "--- Stereo state ---"
+appendInfoLine: "Diffuse stereo spread: ", fixed$(diffuse_spread, 3), "  |  ", spread_desc$
+appendInfoLine: "Phase risk: ", fixed$(phase_risk, 3), "  |  ", phase_desc$
+appendInfoLine: "Side/Mid RMS ratio: ", fixed$(ms_ratio, 3)
+appendInfoLine: "Side/Mid balance: ", fixed$(ms_balance_dB, 1), " dB"
 appendInfoLine: "L/R balance: ", fixed$(lr_balance_dB, 1), " dB"
-appendInfoLine: "Left RMS: ", fixed$(rms_L, 4)
-appendInfoLine: "Right RMS: ", fixed$(rms_R, 4)
 appendInfoLine: ""
-appendInfoLine: "--- Phase ---"
-appendInfoLine: "Phase coherence: ", fixed$(phase_coherence * 100, 1), "%"
-appendInfoLine: "(% of time L and R have same polarity)"
-appendInfoLine: ""
-appendInfoLine: "--- Sample Identity ---"
-appendInfoLine: "Identical samples: ", fixed$(identity_ratio * 100, 1), "%"
-appendInfoLine: "(samples where |L-R| < 0.001)"
+
+appendInfoLine: "--- Spectral shape ---"
+if spectral_similarity_valid
+    appendInfoLine: "Broad-band spectral similarity: ", fixed$(spectral_similarity, 4), "  |  ", spectral_desc$
+else
+    appendInfoLine: "Broad-band spectral similarity: undefined"
+endif
 
 if show_detailed_report
     appendInfoLine: ""
-    appendInfoLine: "--- Detailed Statistics ---"
-    appendInfoLine: "Left mean: ", fixed$(mean_L, 6)
-    appendInfoLine: "Right mean: ", fixed$(mean_R, 6)
-    appendInfoLine: "Left stdev: ", fixed$(stdev_L, 4)
-    appendInfoLine: "Right stdev: ", fixed$(stdev_R, 4)
-    appendInfoLine: "Mid RMS: ", fixed$(rms_Mid, 4)
-    appendInfoLine: "Side RMS: ", fixed$(rms_Side, 4)
+    appendInfoLine: "--- Detailed statistics ---"
+    appendInfoLine: "Left mean: ", fixed$(mean_L, 7), "   RMS: ", fixed$(rms_L, 6), "   sigma: ", fixed$(sd_L, 6)
+    appendInfoLine: "Right mean: ", fixed$(mean_R, 7), "   RMS: ", fixed$(rms_R, 6), "   sigma: ", fixed$(sd_R, 6)
+    appendInfoLine: "Mid RMS: ", fixed$(rms_Mid, 6), "   Side RMS: ", fixed$(rms_Side, 6)
+    appendInfoLine: "Balanced-channel factor: ", fixed$(balance_factor, 4)
+    appendInfoLine: "Active-sample fraction: ", fixed$(active_fraction * 100, 1), "%"
+    appendInfoLine: ""
+    appendInfoLine: "Spectral bands (sqrt energy; L / R):"
+    for b to n_bands
+        band_end = min(band_hi[b], nyquist)
+        if band_end > band_lo[b]
+            appendInfoLine: "  ", fixed$(band_lo[b], 0), "-", fixed$(band_end, 0), " Hz: ", fixed$(spec_L[b], 6), " / ", fixed$(spec_R[b], 6)
+        endif
+    endfor
 endif
 
-appendInfoLine: ""
-appendInfoLine: "Done!"
+# ============================================================
+# VISUALIZATION
+# ============================================================
+if show_visualization
+    Erase all
 
-# === CLEANUP ===
-removeObject: channel1, channel2, mid_sound, side_sound
+    # Waveform scale shared by L and R.
+    selectObject: channel1
+    peak_L = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: channel2
+    peak_R = Get absolute extremum: 0, 0, "Sinc70"
+    wave_peak = max(peak_L, peak_R)
+    if wave_peak = undefined
+        wave_peak = 1
+    elsif wave_peak <= 0
+        wave_peak = 1
+    else
+        wave_peak = wave_peak * 1.03
+    endif
 
+    # === TITLE STRIP ===
+    Select outer viewport: 0, 8, 0.0, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 14
+    Colour: "Black"
+    Text: 0.5, "centre", 0.56, "half", "##Stereo Channel Similarity##"
+
+    Select outer viewport: 0, 8, 0.48, 0.82
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.45}"
+    Text: 0.5, "centre", 0.55, "half", displayName$ + "   |   " + fixed$(duration, 2) + " s   |   " + string$(samplingRate) + " Hz"
+
+    # === PANEL 1: L/R WAVEFORMS ON THE SAME SCALE ===
+    Select outer viewport: 0, 8, 0.90, 2.55
+    Select inner viewport: 0.70, 7.30, 1.10, 2.38
+    Axes: sound_tmin, sound_tmax, -wave_peak, wave_peak
+    Colour: "{0.97, 0.97, 0.98}"
+    Paint rectangle: "{0.97, 0.97, 0.98}", sound_tmin, sound_tmax, -wave_peak, wave_peak
+
+    Select inner viewport: 0.70, 7.30, 1.10, 2.38
+    Axes: sound_tmin, sound_tmax, -wave_peak, wave_peak
+    selectObject: channel1
+    Colour: "{0.20, 0.45, 0.78}"
+    Draw: sound_tmin, sound_tmax, -wave_peak, wave_peak, "no", "Curve"
+    selectObject: channel2
+    Colour: "{0.82, 0.35, 0.28}"
+    Draw: sound_tmin, sound_tmax, -wave_peak, wave_peak, "no", "Curve"
+
+    Select inner viewport: 0.70, 7.30, 1.10, 2.38
+    Axes: sound_tmin, sound_tmax, -wave_peak, wave_peak
+    Colour: "Black"
+    Draw inner box
+    Select inner viewport: 0.70, 7.30, 1.10, 2.38
+    Axes: sound_tmin, sound_tmax, -wave_peak, wave_peak
+    Font size: 7
+    Marks left: 2, "yes", "yes", "no"
+    Select inner viewport: 0.70, 7.30, 1.10, 2.38
+    Axes: sound_tmin, sound_tmax, -wave_peak, wave_peak
+    Text left: "yes", "Amplitude"
+    Select inner viewport: 0.70, 7.30, 1.10, 2.38
+    Axes: sound_tmin, sound_tmax, -wave_peak, wave_peak
+    Text bottom: "yes", "Time (s)"
+
+    Select outer viewport: 0, 8, 0.82, 1.08
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "##Left / Right Waveforms - shared amplitude scale##"
+
+    # === PANEL 2: TIME-VARYING CORRELATION ===
+    Select outer viewport: 0, 8, 2.72, 4.38
+    Select inner viewport: 0.70, 7.30, 2.95, 4.20
+    Axes: sound_tmin, sound_tmax, -1, 1
+    Colour: "{0.97, 0.97, 0.98}"
+    Paint rectangle: "{0.97, 0.97, 0.98}", sound_tmin, sound_tmax, -1, 1
+    Select inner viewport: 0.70, 7.30, 2.95, 4.20
+    Axes: sound_tmin, sound_tmax, -1, 1
+    Colour: "{0.80, 0.80, 0.85}"
+    Draw line: sound_tmin, 0, sound_tmax, 0
+
+    Colour: "{0.20, 0.45, 0.78}"
+    Line width: 1.5
+    for w from 2 to n_windows
+        if time_valid#[w - 1] and time_valid#[w]
+            Draw line: time_points#[w - 1], time_corr#[w - 1], time_points#[w], time_corr#[w]
+        endif
+    endfor
+    Line width: 1
+
+    if correlation_valid
+        Colour: "{0.82, 0.35, 0.28}"
+        Dotted line
+        Draw line: sound_tmin, correlation, sound_tmax, correlation
+        Solid line
+    endif
+
+    Select inner viewport: 0.70, 7.30, 2.95, 4.20
+    Axes: sound_tmin, sound_tmax, -1, 1
+    Colour: "Black"
+    Draw inner box
+    Select inner viewport: 0.70, 7.30, 2.95, 4.20
+    Axes: sound_tmin, sound_tmax, -1, 1
+    Font size: 7
+    Marks left: 4, "yes", "yes", "no"
+    Select inner viewport: 0.70, 7.30, 2.95, 4.20
+    Axes: sound_tmin, sound_tmax, -1, 1
+    Text left: "yes", "Pearson r"
+    Select inner viewport: 0.70, 7.30, 2.95, 4.20
+    Axes: sound_tmin, sound_tmax, -1, 1
+    Text bottom: "yes", "Time (s)"
+
+    Select outer viewport: 0, 8, 2.55, 2.90
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.5, "centre", 0.55, "half", "##Time-varying Correlation##   blue = valid windows   red = global r"
+
+    # === PANEL 3: SPECTRAL SHAPE ===
+    Select outer viewport: 0, 8, 4.55, 6.38
+    Select inner viewport: 0.70, 7.30, 4.82, 6.18
+    max_spec_plot = 0
+    for b to n_bands
+        if spec_plot_L[b] > max_spec_plot
+            max_spec_plot = spec_plot_L[b]
+        endif
+        if spec_plot_R[b] > max_spec_plot
+            max_spec_plot = spec_plot_R[b]
+        endif
+    endfor
+    if max_spec_plot <= 0
+        max_spec_plot = 1
+    else
+        max_spec_plot = max_spec_plot * 1.15
+    endif
+    Axes: 0.5, n_bands + 0.5, 0, max_spec_plot
+    Colour: "{0.97, 0.97, 0.98}"
+    Paint rectangle: "{0.97, 0.97, 0.98}", 0.5, n_bands + 0.5, 0, max_spec_plot
+
+    for b to n_bands
+        Select inner viewport: 0.70, 7.30, 4.82, 6.18
+        Axes: 0.5, n_bands + 0.5, 0, max_spec_plot
+        Colour: "{0.20, 0.45, 0.78}"
+        Paint rectangle: "{0.20, 0.45, 0.78}", b - 0.31, b - 0.03, 0, spec_plot_L[b]
+        Select inner viewport: 0.70, 7.30, 4.82, 6.18
+        Axes: 0.5, n_bands + 0.5, 0, max_spec_plot
+        Colour: "{0.82, 0.35, 0.28}"
+        Paint rectangle: "{0.82, 0.35, 0.28}", b + 0.03, b + 0.31, 0, spec_plot_R[b]
+    endfor
+
+    Select inner viewport: 0.70, 7.30, 4.82, 6.18
+    Axes: 0.5, n_bands + 0.5, 0, max_spec_plot
+    Colour: "Black"
+    Draw inner box
+    Select inner viewport: 0.70, 7.30, 4.82, 6.18
+    Axes: 0.5, n_bands + 0.5, 0, max_spec_plot
+    Font size: 7
+    Text left: "yes", "Normalized band amplitude"
+
+    # Manual frequency labels keep them readable and avoid scientific notation.
+    bandLabel$[1] = "<100"
+    bandLabel$[2] = "100-200"
+    bandLabel$[3] = "200-400"
+    bandLabel$[4] = "400-800"
+    bandLabel$[5] = "0.8-1.6k"
+    bandLabel$[6] = "1.6-3.2k"
+    bandLabel$[7] = "3.2-6.4k"
+    bandLabel$[8] = "6.4-12.8k"
+    bandLabel$[9] = "12.8-20k"
+    for b to n_bands
+        Select inner viewport: 0.70, 7.30, 4.82, 6.18
+        Axes: 0.5, n_bands + 0.5, 0, max_spec_plot
+        Font size: 5
+        Colour: "Black"
+        Text: b, "centre", -0.055 * max_spec_plot, "top", bandLabel$[b]
+    endfor
+
+    Select outer viewport: 0, 8, 4.38, 4.76
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "Black"
+    if spectral_similarity_valid
+        Text: 0.5, "centre", 0.55, "half", "##Broad-band Spectral Shape##   L=blue  R=red   cosine similarity = " + fixed$(spectral_similarity, 3)
+    else
+        Text: 0.5, "centre", 0.55, "half", "##Broad-band Spectral Shape##   similarity undefined"
+    endif
+
+    # === SUMMARY STRIP ===
+    Select outer viewport: 0, 8, 6.62, 7.92
+    Select inner viewport: 0.55, 7.45, 6.72, 7.82
+    Axes: 0, 1, 0, 1
+    Colour: "{0.94, 0.94, 0.95}"
+    Paint rectangle: "{0.94, 0.94, 0.95}", 0, 1, 0, 1
+
+    Select inner viewport: 0.55, 7.45, 6.72, 7.82
+    Axes: 0, 1, 0, 1
+    Font size: 9
+    Colour: "Black"
+    Text: 0.02, "left", 0.78, "half", "##Stereo state##"
+
+    Select inner viewport: 0.55, 7.45, 6.72, 7.82
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "{0.25, 0.25, 0.32}"
+    if correlation_valid
+        corrText$ = fixed$(correlation, 3)
+    else
+        corrText$ = "undef"
+    endif
+    if spectral_similarity_valid
+        specText$ = fixed$(spectral_similarity, 3)
+    else
+        specText$ = "undef"
+    endif
+    Text: 0.02, "left", 0.47, "half", "Correlation: " + corrText$ + "    Spectral: " + specText$ + "    Diffuse spread: " + fixed$(diffuse_spread, 3) + "    Phase risk: " + fixed$(phase_risk, 3)
+
+    Select inner viewport: 0.55, 7.45, 6.72, 7.82
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.38, 0.38, 0.45}"
+    Text: 0.02, "left", 0.18, "half", "M/S: " + fixed$(ms_balance_dB, 1) + " dB    L/R: " + fixed$(lr_balance_dB, 1) + " dB    Polarity agreement: " + fixed$(polarity_agreement * 100, 1) + "%    Valid windows: " + string$(valid_windows) + "/" + string$(n_windows)
+
+    Select inner viewport: 0.55, 7.45, 6.72, 7.82
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+endif
+
+# ============================================================
+# CLEANUP
+# ============================================================
+removeObject: l_square, r_square, lr_product, channel1, channel2, mid_sound, side_sound
 selectObject: sound
+appendInfoLine: ""
+appendInfoLine: "Done."

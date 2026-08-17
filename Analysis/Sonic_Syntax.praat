@@ -3,29 +3,58 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026)
+# Version: 2.2.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Phrase-boundary detection via dynamic programming over
-#   candidate silence intervals. Scoring combines pitch slope,
-#   silence depth/duration, and (optionally) real spectral flux.
-#   Input-adaptive parameter tuning derives pitch range, silence
-#   threshold, minimum boundary distance, pitch-slope weight, and
-#   insertion bonus from the input's own intensity distribution,
-#   spectral centroid, pitch variability, and intensity-peak
-#   spacing. This is NOT machine learning; it is heuristics over
-#   summary statistics. Label reflects that.
+#   candidate silence intervals. Scoring combines register-invariant
+#   pitch motion, silence depth/duration, and optional boundary-edge
+#   intensity contrast. Input-adaptive tuning derives pitch range,
+#   silence threshold, minimum boundary distance, pitch-motion weight,
+#   and boundary bias from the input's intensity distribution, robust
+#   pitch variability, and intensity-peak spacing. Spectral centroid
+#   is reported as a content descriptor rather than used to weight an
+#   unrelated intensity cue. This is NOT machine learning; it is
+#   heuristics over summary statistics.
+#
+# Changelog v2.2.1 (2026):
+#   - FIX: Intensity-peak prominence look-back now clamps when the
+#     requested window is equal to the current frame index as well as
+#     larger than it. This prevents intVals#[0] at early frames.
+#
+# Changelog v2.2 (2026):
+#   - FIX: Pitch-boundary evidence is measured in voiced windows BEFORE
+#     the silence, not at the silence midpoint where F0 is usually undefined.
+#     Motion is measured in semitones, so the score is register-invariant.
+#   - FIX: The DP objective no longer adds a large positive bonus per cut.
+#     The 0..100 control is recast as a centred boundary bias (50 neutral),
+#     with normalized evidence and a fixed selection cost.
+#   - FIX: Final cuts must leave at least the minimum segment duration at
+#     both the beginning and end of the sound.
+#   - FIX: Silence detection no longer removes every sounding island shorter
+#     than 1 s; the sounding-island filter is tied conservatively to the
+#     requested minimum phrase spacing.
+#   - FIX: Non-zero Sound start times are respected in scoring, DP,
+#     extraction, and visualization.
+#   - FIX: Stereo analysis uses the strongest-RMS channel instead of
+#     a potentially phase-cancelling mono fold-down.
+#   - FIX: Pitch variability uses a robust 10-90% span in semitones
+#     instead of Hz standard deviation.
+#   - NAME: The optional third cue is boundary-edge intensity contrast;
+#     it is not spectral flux.
+#   - VIZ: 8x8 AudioTools report with separate title/subtitle strips,
+#     explicit symmetric waveform scaling, and corrected labels.
 #
 # Changelog v2.1 (2026):
 #   - FIX: Temporal-density detection was reading frame-period
 #     intervals as "phrase intervals" (Down to IntensityTier
 #     produces a point per frame, not per peak). Replaced with
 #     explicit local-maximum extraction with prominence gate.
-#   - FIX: "Spectral flux" previously computed intensity change,
-#     not flux. Now computes real flux: frame-to-frame L2 distance
-#     of log-magnitude spectra.
+#   - NOTE: v2.1 documentation claimed real spectral flux, but the
+#     implementation still used local intensity change. v2.2 corrects
+#     the label and keeps the cue honestly intensity-domain.
 #   - FIX: Centering score was always zero because 'time' was
 #     defined as the midpoint it was then compared against.
 #     Replaced with silence-depth-and-length score, which rewards
@@ -40,7 +69,7 @@
 #     user muscle memory.
 # ============================================================
 
-form Sonic Syntax v2.0 - Adaptive
+form Sonic Syntax v2.2.1 - Adaptive
     comment === MODE ===
     optionmenu Analysis_mode: 1
         option Fully Adaptive (Recommended)
@@ -51,12 +80,13 @@ form Sonic Syntax v2.0 - Adaptive
     real Silence_threshold_dB -25
     positive Min_duration_between_cuts_s 0.5
     positive Weight_Pitch_Slope 2.0
-    positive Weight_Centering 1.0
-    positive Insertion_bonus 50.0
+    positive Weight_Silence_Depth 1.0
+    real Boundary_bias 50.0
+    comment (0=conservative, 50=neutral, 100=aggressive)
     
     comment === ANALYSIS TUNING ===
     positive Silent_interval_min_duration_s 0.05
-    boolean Use_spectral_flux 1
+    boolean Use_boundary_edge_contrast 1
     
     comment === OUTPUT ===
     boolean Create_TextGrid 1
@@ -68,16 +98,18 @@ form Sonic Syntax v2.0 - Adaptive
 endform
 
 ##############################################
-# PHASE 0: ADAPTIVE LEARNING
+# PHASE 0: INPUT-ADAPTIVE TUNING
 ##############################################
 
 clearinfo
-writeInfoLine: "=== Sonic Syntax v2.1 — Input-Adaptive Phrase Boundary Detection ==="
+writeInfoLine: "=== Sonic Syntax v2.2 — Input-Adaptive Phrase Boundary Detection ==="
 appendInfoLine: ""
 
 soundID = selected("Sound")
 soundName$ = selected$("Sound")
-totalDur = Get total duration
+soundStart = Get start time
+soundEnd = Get end time
+totalDur = soundEnd - soundStart
 sampleRate = Get sampling frequency
 numChannels = Get number of channels
 
@@ -85,25 +117,43 @@ appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Duration: ", fixed$(totalDur, 2), "s | SR: ", sampleRate, " Hz"
 appendInfoLine: ""
 
-# Convert to mono for analysis
+# Build a mono analysis copy without phase-cancelling fold-down.
+# For multichannel input, keep the channel with the highest RMS.
 if numChannels > 1
-    Convert to mono
-    workingSound = selected("Sound")
+    bestRms = -1
+    workingSound = 0
+    for ch from 1 to numChannels
+        selectObject: soundID
+        channelID = Extract one channel: ch
+        channelRms = Get root-mean-square: 0, 0
+        if channelRms > bestRms
+            if workingSound <> 0
+                removeObject: workingSound
+            endif
+            workingSound = channelID
+            bestRms = channelRms
+            analysisChannel = ch
+        else
+            removeObject: channelID
+        endif
+    endfor
+    appendInfoLine: "Analysis channel: ", analysisChannel, " (strongest RMS)"
 else
     selectObject: soundID
     Copy: "working"
     workingSound = selected("Sound")
+    analysisChannel = 1
 endif
 
 if analysis_mode <= 2
     appendInfoLine: "══════════════════════════════════════════════════════════════"
-    appendInfoLine: "LEARNING PHASE: Analyzing input characteristics..."
+    appendInfoLine: "TUNING PHASE: Analyzing input characteristics..."
     appendInfoLine: "══════════════════════════════════════════════════════════════"
     appendInfoLine: ""
 endif
 
 # ─────────────────────────────────────────
-# LEARNING 1: PITCH RANGE AUTO-DETECTION
+# TUNING 1: PITCH RANGE AUTO-DETECTION
 # ─────────────────────────────────────────
 
 if analysis_mode <= 2
@@ -139,7 +189,7 @@ else
 endif
 
 # ─────────────────────────────────────────
-# LEARNING 2: INTENSITY DISTRIBUTION
+# TUNING 2: INTENSITY DISTRIBUTION
 # ─────────────────────────────────────────
 
 if analysis_mode <= 2
@@ -149,27 +199,28 @@ if analysis_mode <= 2
     selectObject: workingSound
     intensityObj = To Intensity: 100, 0, "yes"
     
-    # Get intensity statistics
+    # Robust intensity statistics. Quantile range avoids letting
+    # one digital-zero frame dominate the adaptive classification.
     meanIntensity = Get mean: 0, 0, "dB"
     minIntensity = Get minimum: 0, 0, "Parabolic"
     maxIntensity = Get maximum: 0, 0, "Parabolic"
+    q10Intensity = Get quantile: 0, 0, 0.10
     q25 = Get quantile: 0, 0, 0.25
-    
-    # Adaptive threshold: between 25th percentile and minimum
-    # This adapts to both loud and quiet recordings
-    intensityRange = maxIntensity - minIntensity
-    
+    q95Intensity = Get quantile: 0, 0, 0.95
+
+    intensityRange = q95Intensity - q10Intensity
+
     if intensityRange > 30
         # High dynamic range material (speech, dynamic music)
         silenceThresholdAuto = q25 - 5
         contentType$ = "High dynamic range"
     elsif intensityRange > 15
         # Moderate dynamic range
-        silenceThresholdAuto = (minIntensity + q25) / 2
+        silenceThresholdAuto = (q10Intensity + q25) / 2
         contentType$ = "Moderate dynamic range"
     else
         # Compressed material
-        silenceThresholdAuto = minIntensity + intensityRange * 0.3
+        silenceThresholdAuto = q10Intensity + intensityRange * 0.3
         contentType$ = "Compressed/normalized"
     endif
     
@@ -188,10 +239,12 @@ if analysis_mode <= 2
     endif
 else
     silenceThreshold = silence_threshold_dB
+    intensityRange = 0
+    contentType$ = "(manual threshold)"
 endif
 
 # ─────────────────────────────────────────
-# LEARNING 3: SPECTRAL CONTENT ANALYSIS
+# ANALYSIS 3: SPECTRAL CONTENT ANALYSIS
 # ─────────────────────────────────────────
 
 if analysis_mode <= 2
@@ -207,13 +260,10 @@ if analysis_mode <= 2
     # Classify content
     if centroid < 1000
         materialType$ = "Low-frequency rich (bass-heavy)"
-        spectralWeight = 0.5
     elsif centroid < 2500
         materialType$ = "Balanced spectrum (speech-like)"
-        spectralWeight = 1.0
     else
         materialType$ = "High-frequency rich (bright)"
-        spectralWeight = 1.5
     endif
     
     appendInfoLine: "  ✓ Spectral centroid: ", fixed$(centroid, 0), " Hz"
@@ -221,11 +271,11 @@ if analysis_mode <= 2
     
     removeObject: spectrum
 else
-    spectralWeight = 1.0
+    materialType$ = "(not analyzed; manual mode)"
 endif
 
 # ─────────────────────────────────────────
-# LEARNING 4: TEMPORAL PATTERN DETECTION
+# TUNING 4: TEMPORAL PATTERN DETECTION
 # ─────────────────────────────────────────
 
 if analysis_mode <= 2
@@ -265,6 +315,7 @@ if analysis_mode <= 2
 
     # Walk frames, find local maxima.
     peakTimes# = zero#(.nFrames)
+    peakValues# = zero#(.nFrames)
     peakCount = 0
     .lastPeakTime = -1e9
 
@@ -285,8 +336,13 @@ if analysis_mode <= 2
         if .v > .vPrev and .v >= .vNext
             # Find the preceding valley within the last second or so
             # to measure prominence.
-            .lookBack = 100
-            if .f < .lookBack
+            .lookBack = round(1.0 / .frStep)
+            if .lookBack < 1
+                .lookBack = 1
+            endif
+            # Vector indices in Praat are 1-based. Clamp also on equality:
+            # if .lookBack = .f, the last access would otherwise be frame 0.
+            if .lookBack >= .f
                 .lookBack = .f - 1
             endif
             .valley = .v
@@ -302,6 +358,12 @@ if analysis_mode <= 2
                 if (.peakT - .lastPeakTime) >= .minPeakSpacing
                     peakCount = peakCount + 1
                     peakTimes#[peakCount] = .peakT
+                    peakValues#[peakCount] = .v
+                    .lastPeakTime = .peakT
+                elsif peakCount > 0 and .v > peakValues#[peakCount]
+                    # Within the refractory window, retain the stronger peak.
+                    peakTimes#[peakCount] = .peakT
+                    peakValues#[peakCount] = .v
                     .lastPeakTime = .peakT
                 endif
             endif
@@ -373,7 +435,7 @@ else
 endif
 
 # ─────────────────────────────────────────
-# LEARNING 5: PITCH VARIABILITY ANALYSIS
+# TUNING 5: PITCH VARIABILITY ANALYSIS
 # ─────────────────────────────────────────
 
 if analysis_mode <= 2
@@ -383,25 +445,35 @@ if analysis_mode <= 2
     selectObject: workingSound
     pitchForVariability = To Pitch (cc): 0, pitchFloor, 15, "no", 0.03, 0.45, 0.01, 0.35, 0.14, pitchCeiling
     
-    # Measure pitch variability
-    stdDev = Get standard deviation: 0, 0, "Hertz"
-    
-    if stdDev = undefined or stdDev < 5
-        pitchVariability$ = "Monotonous (low pitch variation)"
+    # Robust, register-invariant pitch variability: 10th-to-90th
+    # percentile span measured in semitones.
+    pitchQ10 = Get quantile: 0, 0, 0.10, "Hertz"
+    pitchQ90 = Get quantile: 0, 0, 0.90, "Hertz"
+    pitchSpanST = undefined
+    if pitchQ10 != undefined and pitchQ90 != undefined and pitchQ10 > 0 and pitchQ90 > pitchQ10
+        pitchSpanST = 12 * ln(pitchQ90 / pitchQ10) / ln(2)
+    endif
+
+    if pitchSpanST = undefined or pitchSpanST < 1.5
+        pitchVariability$ = "Low pitch variation"
         pitchSlopeWeight = 0.5
-    elsif stdDev < 20
+    elsif pitchSpanST < 4
         pitchVariability$ = "Moderate variation"
         pitchSlopeWeight = 1.5
-    elsif stdDev < 50
+    elsif pitchSpanST < 8
         pitchVariability$ = "High variation (expressive)"
         pitchSlopeWeight = 2.5
     else
         pitchVariability$ = "Very high variation (melodic)"
         pitchSlopeWeight = 3.0
     endif
-    
-    appendInfoLine: "  ✓ Pitch variability: ", fixed$(stdDev, 1), " Hz (", pitchVariability$, ")"
-    appendInfoLine: "    Adaptive pitch slope weight: ", fixed$(pitchSlopeWeight, 1)
+
+    if pitchSpanST = undefined
+        appendInfoLine: "  Pitch variability: unavailable"
+    else
+        appendInfoLine: "  ✓ Pitch variability span: ", fixed$(pitchSpanST, 2), " st (", pitchVariability$, ")"
+    endif
+    appendInfoLine: "    Adaptive pitch-motion weight: ", fixed$(pitchSlopeWeight, 1)
     
     removeObject: pitchForVariability
     
@@ -412,51 +484,54 @@ if analysis_mode <= 2
     endif
 else
     weightPitchSlope = weight_Pitch_Slope
+    pitchVariability$ = "(manual weight)"
 endif
 
 # ─────────────────────────────────────────
-# LEARNING 6: ADAPTIVE INSERTION BONUS
+# TUNING 6: ADAPTIVE BOUNDARY BIAS
 # ─────────────────────────────────────────
 
 if analysis_mode <= 2
     appendInfoLine: ""
-    appendInfoLine: "[6/6] Calculating optimal insertion bonus..."
+    appendInfoLine: "[6/6] Calculating boundary bias..."
     
     # Base on content density and dynamic range
     if intensityRange > 25 and medianInterval > 0.5
         # High dynamics + sparse = natural phrase structure
-        insertionBonusAdaptive = 30
+        boundaryBiasAdaptive = 30
         strategy$ = "Conservative (trust natural pauses)"
     elsif intensityRange < 15 and medianInterval < 0.5
         # Compressed + dense = need aggressive segmentation
-        insertionBonusAdaptive = 80
+        boundaryBiasAdaptive = 80
         strategy$ = "Aggressive (create structure)"
     else
-        insertionBonusAdaptive = 50
+        boundaryBiasAdaptive = 50
         strategy$ = "Balanced"
     endif
     
-    appendInfoLine: "  ✓ Insertion bonus: ", insertionBonusAdaptive, " (", strategy$, ")"
+    appendInfoLine: "  ✓ Boundary bias control: ", boundaryBiasAdaptive, " (", strategy$, ")"
     
     if analysis_mode = 1
-        insertionBonus = insertionBonusAdaptive
+        boundaryBiasControl = boundaryBiasAdaptive
     else
-        insertionBonus = insertion_bonus
+        boundaryBiasControl = boundary_bias
     endif
 else
-    insertionBonus = insertion_bonus
+    boundaryBiasControl = boundary_bias
+    strategy$ = "Manual"
 endif
+boundaryBiasControl = min(max(boundaryBiasControl, 0), 100)
 
-# Set centering weight
+# Set silence-depth weight
 if analysis_mode = 1
-    weightCentering = 1.0
+    weightSilence = 1.0
 else
-    weightCentering = weight_Centering
+    weightSilence = weight_Silence_Depth
 endif
 
 appendInfoLine: ""
 appendInfoLine: "══════════════════════════════════════════════════════════════"
-appendInfoLine: "PROCESSING with learned parameters..."
+appendInfoLine: "PROCESSING with tuned parameters..."
 appendInfoLine: "══════════════════════════════════════════════════════════════"
 appendInfoLine: ""
 
@@ -472,22 +547,10 @@ intensityID = To Intensity: 100, 0, "yes"
 selectObject: workingSound
 pitchID = To Pitch: 0, pitchFloor, pitchCeiling
 
-# Intensity-change vector — honestly named this time.
-# v2.0 called this "spectral flux" but actually computed intensity
-# differences. True spectral flux (L2 distance of log-magnitude
-# spectra frame-to-frame) would require a tight nested loop over
-# Spectrogram frames and bins, which is slow enough in pure Praat
-# scripting to make the feature impractical for long inputs. For
-# phrase-boundary detection near silences, the intensity-change
-# signal is nearly as informative as true flux: at a silence, the
-# energy drop dominates any spectral-content change in the same
-# frames. We keep the feature, rename it honestly, and drop the
-# unused spectrogram/matrix creation.
-intensityChangeMax = 0
-if use_spectral_flux
-    # Nothing to pre-compute here; we query the existing intensityID
-    # object directly in Phase 2.
-endif
+# Optional boundary-edge intensity contrast. This is deliberately
+# not called spectral flux: it measures how strongly the silent
+# interval is bracketed by sounding material on both sides.
+edgeContrastMax = 0
 
 # Detect Silences
 selectObject: intensityID
@@ -495,8 +558,11 @@ if silenceThreshold > 0
     silenceThreshold = -silenceThreshold
 endif
 
-silenceTG = To TextGrid (silences): silenceThreshold, 
-    ...silent_interval_min_duration_s, 1, "silent", "sounding"
+# Do not swallow musically meaningful short sounding events.
+# The old fixed value of 1 s merged many short notes/gestures into silence.
+minSoundingIsland = min(0.12, max(0.05, minDuration * 0.25))
+silenceTG = To TextGrid (silences): silenceThreshold,
+    ... silent_interval_min_duration_s, minSoundingIsland, "silent", "sounding"
 
 # Count Candidates
 nIntervals = Get number of intervals: 1
@@ -530,7 +596,6 @@ dpPrevIndex# = zero#(nCandidates)
 ##############################################
 
 currCand = 0
-pitchAnalysisWindow = 0.05
 
 for i to nIntervals
     selectObject: silenceTG
@@ -545,80 +610,78 @@ for i to nIntervals
         candTime#[currCand] = time
         candOrigIndex#[currCand] = i
 
-        # ── SCORE COMPONENT 1: PITCH SLOPE ──
-        # Falling pitch leading into the silence is a strong phrase-
-        # end cue (linguistic prosody; musical phrase endings often
-        # cadence downward as well).
-        selectObject: pitchID
-        pStart = Get value at time: time - pitchAnalysisWindow, "Hertz", "Linear"
-        pEnd = Get value at time: time, "Hertz", "Linear"
-
-        slopeScore = 0
-        if pStart != undefined and pEnd != undefined
-            slope = (pEnd - pStart) / pitchAnalysisWindow
-            # Falling slope = positive score
-            slopeScore = -slope * weightPitchSlope
+        # ── SCORE COMPONENT 1: PRE-BOUNDARY PITCH MOTION ──
+        # Measure voiced pitch motion BEFORE the silence, not at its
+        # midpoint (normally unvoiced). Semitone units make the cue
+        # register-invariant and useful for speech and melodic material.
+        pitchEvidence = 0
+        pitchMotionST = 0
+        farStart = max(soundStart, start - 0.26)
+        farEnd = max(soundStart, start - 0.14)
+        nearStart = max(soundStart, start - 0.12)
+        nearEnd = max(soundStart, start - 0.02)
+        if farEnd - farStart >= 0.03 and nearEnd - nearStart >= 0.03
+            selectObject: pitchID
+            pFar = Get mean: farStart, farEnd, "Hertz"
+            pNear = Get mean: nearStart, nearEnd, "Hertz"
+            if pFar != undefined and pNear != undefined and pFar > 0 and pNear > 0
+                pitchMotionST = abs(12 * ln(pNear / pFar) / ln(2))
+                pitchEvidence = min(pitchMotionST / 4.0, 1.0) * weightPitchSlope
+            endif
         endif
 
         # ── SCORE COMPONENT 2: SILENCE DEPTH × LENGTH ──
-        # v2.1 FIX: v2.0's "centering" component was always zero
-        # because 'time' was defined as (start+end)/2 and then
-        # compared against the same midpoint. Now we reward long,
-        # deep silences — a 0.8 s deep silence is a much stronger
-        # phrase-break cue than a 0.05 s shallow dip.
+        # Normalize both terms before combining them, so score scales
+        # are stable across recordings.
         silenceLen = end - start
         selectObject: intensityID
-        .intAtSilence = Get mean: start, end, "dB"
-        .intBefore    = Get mean: max(0, start - 0.15), start, "dB"
-        .intAfter     = Get mean: end, min(totalDur, end + 0.15), "dB"
-        silenceScore = 0
-        if .intAtSilence != undefined
-            # Silence depth: how far below the surrounding intensity
-            # this silence sits. Average of pre/post drops.
-            .dropPre = 0
-            .dropPost = 0
-            if .intBefore != undefined
-                .dropPre = .intBefore - .intAtSilence
+        intAtSilence = Get mean: start, end, "dB"
+        intBefore = undefined
+        intAfter = undefined
+        preStart = max(soundStart, start - 0.15)
+        postEnd = min(soundEnd, end + 0.15)
+        if start - preStart >= 0.02
+            intBefore = Get mean: preStart, start, "dB"
+        endif
+        if postEnd - end >= 0.02
+            intAfter = Get mean: end, postEnd, "dB"
+        endif
+        dropPre = 0
+        dropPost = 0
+        depth = 0
+        silenceEvidence = 0
+        if intAtSilence != undefined
+            if intBefore != undefined
+                dropPre = max(0, intBefore - intAtSilence)
             endif
-            if .intAfter != undefined
-                .dropPost = .intAfter - .intAtSilence
+            if intAfter != undefined
+                dropPost = max(0, intAfter - intAtSilence)
             endif
-            depth = (.dropPre + .dropPost) / 2
-            if depth < 0
-                depth = 0
-            endif
-            # Length factor: saturating sqrt so a 2 s silence isn't
-            # massively more valuable than a 0.5 s one.
-            lenFactor = sqrt(silenceLen)
-            silenceScore = depth * lenFactor * weightCentering * 5.0
+            depth = (dropPre + dropPost) / 2
+            depthNorm = min(max((depth - 3.0) / 15.0, 0), 1)
+            lenNorm = min(max(silenceLen / 0.50, 0), 1)
+            silenceEvidence = 2.0 * sqrt(depthNorm * lenNorm) * weightSilence
         endif
 
-        # ── SCORE COMPONENT 3: INTENSITY CHANGE (not flux) ──
-        # Honestly named. Measures the local intensity inflection at
-        # the candidate time (not across the whole silence). Cheap,
-        # correlated with boundary strength. True spectral flux
-        # would require a dense Spectrogram loop that is impractical
-        # in pure Praat scripting.
-        fluxScore = 0
-        if use_spectral_flux
-            selectObject: intensityID
-            intBefore = Get value at time: time - 0.05, "Cubic"
-            intAt = Get value at time: time, "Cubic"
-            intAfter = Get value at time: time + 0.05, "Cubic"
-
-            if intBefore != undefined and intAt != undefined and intAfter != undefined
-                dropBefore = intBefore - intAt
-                dropAfter = intAt - intAfter
-                avgDrop = (abs(dropBefore) + abs(dropAfter)) / 2
-                fluxScore = avgDrop * spectralWeight * 0.3
-                if avgDrop > intensityChangeMax
-                    intensityChangeMax = avgDrop
-                endif
+        # ── SCORE COMPONENT 3: BOUNDARY-EDGE CONTRAST ──
+        # Reward a silence clearly bracketed by sounding material on
+        # BOTH sides. This is an intensity cue, not spectral flux.
+        edgeEvidence = 0
+        if use_boundary_edge_contrast
+            bilateralDrop = min(dropPre, dropPost)
+            edgeEvidence = min(bilateralDrop / 12.0, 1.0)
+            if bilateralDrop > edgeContrastMax
+                edgeContrastMax = bilateralDrop
             endif
         endif
 
         # ── TOTAL SCORE ──
-        candScore#[currCand] = slopeScore + silenceScore + fluxScore + insertionBonus
+        # The old +30..+80 bonus made almost every admissible pause
+        # profitable. Keep the familiar 0..100 scale, but centre it:
+        # 50 = neutral. A fixed cost lets weak candidates stay unchosen.
+        selectionCost = 0.75
+        boundaryBiasTerm = (boundaryBiasControl - 50) / 60
+        candScore#[currCand] = pitchEvidence + silenceEvidence + edgeEvidence - selectionCost + boundaryBiasTerm
     endif
 endfor
 
@@ -642,7 +705,7 @@ for i to nCandidates
     localScore = candScore#[i]
     
     # Check if this can be first cut
-    if tCurr >= minDuration
+    if tCurr - soundStart >= minDuration
         if localScore > dpMaxScore#[i]
             dpMaxScore#[i] = localScore
             dpPrevIndex#[i] = 0
@@ -669,24 +732,23 @@ endfor
 # PHASE 4: BACKTRACKING
 ##############################################
 
-# Find best endpoint
+# Find best endpoint. A final cut must leave a full minimum-duration
+# segment at the end. Starting at zero permits the valid solution
+# "no cuts" if every candidate has weak evidence.
 bestEndNode = 0
-maxFinalScore = -1000000
+maxFinalScore = 0
 
 for i to nCandidates
-    if dpMaxScore#[i] > maxFinalScore
-        maxFinalScore = dpMaxScore#[i]
-        bestEndNode = i
+    if soundEnd - candTime#[i] >= minDuration
+        if dpMaxScore#[i] > maxFinalScore
+            maxFinalScore = dpMaxScore#[i]
+            bestEndNode = i
+        endif
     endif
 endfor
 
-if bestEndNode = 0
-    removeObject: intensityID, pitchID, silenceTG, workingSound
-    exitScript: "No valid path found."
-endif
-
-# Trace back
-finalCuts# = zero#(nCandidates)
+# Trace back (bestEndNode = 0 simply means no boundaries).
+finalCuts# = zero#(max(1, nCandidates))
 cutCount = 0
 curr = bestEndNode
 
@@ -761,33 +823,38 @@ endif
 # PHASE 6: ANALYSIS REPORT VISUALIZATION
 ##############################################
 
-if draw_analysis_report and analysis_mode <= 2
+if draw_analysis_report
     appendInfoLine: "Drawing analysis report..."
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
-    # ----- Title row -----
-    Select outer viewport: 0, 8, 0, 0.45
+    # ----- Title strip -----
+    Select outer viewport: 0, 8, 0, 0.34
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Sonic Syntax## — Input-Adaptive Report"
+    Text: 0.5, "centre", 0.50, "half", "##Sonic Syntax## — Input-Adaptive Phrase Boundaries"
+
+    # ----- Subtitle / metadata strip -----
+    Select outer viewport: 0, 8, 0.36, 0.70
+    Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", -1.22, "half",
+    Text: 0.5, "centre", 0.50, "half",
         ... soundName$
         ... + "   |   " + fixed$(totalDur, 2) + " s"
         ... + "   |   " + string$(cutCount) + " cuts"
         ... + "   |   mode " + string$(analysis_mode)
+        ... + "   |   ch " + string$(analysisChannel)
 
     # ----- Parameters panel (left) -----
-    Select outer viewport: 0, 4, 0.50, 1.95
-    Select inner viewport: 0.15, 3.90, 0.55, 1.90
+    Select outer viewport: 0, 4, 0.78, 2.02
+    Select inner viewport: 0.15, 3.90, 0.83, 1.97
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.96, 0.96, 0.98}", 0, 1, 0, 1
     Font size: 7
     Colour: "{0.20, 0.20, 0.35}"
-    Text: 0.04, "left", 0.92, "top", "##Learned Parameters##"
+    Text: 0.04, "left", 0.92, "top", "##Analysis Parameters##"
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
     Text: 0.04, "left", 0.78, "top",
@@ -797,19 +864,19 @@ if draw_analysis_report and analysis_mode <= 2
     Text: 0.04, "left", 0.58, "top",
         ... "Min cut distance: " + fixed$(minDuration, 2) + " s"
     Text: 0.04, "left", 0.48, "top",
-        ... "Pitch-slope weight: " + fixed$(weightPitchSlope, 2)
+        ... "Pitch-motion weight: " + fixed$(weightPitchSlope, 2)
     Text: 0.04, "left", 0.38, "top",
-        ... "Centering (now depth x len): " + fixed$(weightCentering, 2)
+        ... "Silence depth x length wt: " + fixed$(weightSilence, 2)
     Text: 0.04, "left", 0.28, "top",
-        ... "Insertion bonus: " + fixed$(insertionBonus, 1)
+        ... "Boundary bias control: " + fixed$(boundaryBiasControl, 1)
     Text: 0.04, "left", 0.18, "top",
         ... "Candidates: " + string$(nCandidates) + "   Cuts: " + string$(cutCount)
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     # ----- Content analysis panel (right) -----
-    Select outer viewport: 4, 8, 0.50, 1.95
-    Select inner viewport: 4.15, 7.85, 0.55, 1.90
+    Select outer viewport: 4, 8, 0.78, 2.02
+    Select inner viewport: 4.15, 7.85, 0.83, 1.97
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.96, 0.96, 0.98}", 0, 1, 0, 1
     Font size: 7
@@ -828,14 +895,17 @@ if draw_analysis_report and analysis_mode <= 2
     Draw rectangle: 0, 1, 0, 1
 
     # ----- Waveform with silence intervals + boundaries -----
-    Select outer viewport: 0, 8, 2.05, 3.45
-    Select inner viewport: 0.55, 7.70, 2.15, 3.40
-    selectObject: soundID
-    Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Select outer viewport: 0, 8, 2.12, 3.45
+    Select inner viewport: 0.55, 7.70, 2.20, 3.40
+    selectObject: workingSound
+    waveAbs = Get absolute extremum: soundStart, soundEnd, "none"
+    if waveAbs = undefined or waveAbs <= 0
+        waveAbs = 1
+    endif
+    waveY = waveAbs * 1.05
+    Axes: soundStart, soundEnd, -waveY, waveY
 
     # Shade silence intervals a light red
-    Axes: 0, totalDur, -1, 1
     selectObject: silenceTG
     .nIv = Get number of intervals: 1
     for .iv from 1 to .nIv
@@ -844,22 +914,22 @@ if draw_analysis_report and analysis_mode <= 2
         if .lbl$ = "silent"
             .st = Get start time of interval: 1, .iv
             .en = Get end time of interval: 1, .iv
-            Paint rectangle: "{1.00, 0.92, 0.90}", .st, .en, -1, 1
+            Paint rectangle: "{1.00, 0.92, 0.90}", .st, .en, -waveY, waveY
         endif
     endfor
 
-    # Redraw waveform on top of silence shading
-    selectObject: soundID
+    # Draw the actual analysis channel on top of the shading.
+    selectObject: workingSound
     Colour: "{0.30, 0.40, 0.60}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: soundStart, soundEnd, -waveY, waveY, "no", "Curve"
 
     # Mark final cuts (chosen boundaries) in red
-    Axes: 0, totalDur, -1, 1
+    Axes: soundStart, soundEnd, -waveY, waveY
     Colour: "{0.85, 0.20, 0.20}"
     Line width: 1.8
     for .k from 1 to cutCount
         .tc = finalCuts#[.k]
-        Draw line: .tc, -1, .tc, 1
+        Draw line: .tc, -waveY, .tc, waveY
     endfor
     Line width: 1
     Colour: "Black"
@@ -877,8 +947,8 @@ if draw_analysis_report and analysis_mode <= 2
     .iRange = .iMax - .iMin
     .yLo = .iMin - .iRange * 0.08
     .yHi = .iMax + .iRange * 0.08
-    Axes: 0, totalDur, .yLo, .yHi
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, totalDur, .yLo, .yHi
+    Axes: soundStart, soundEnd, .yLo, .yHi
+    Paint rectangle: "{0.97, 0.97, 0.99}", soundStart, soundEnd, .yLo, .yHi
 
     # The threshold used by To TextGrid (silences) is RELATIVE to
     # max intensity; to draw it we convert back to absolute dB.
@@ -886,13 +956,13 @@ if draw_analysis_report and analysis_mode <= 2
     # (silenceThreshold is negative, so this lands below max.)
     Colour: "{0.85, 0.30, 0.30}"
     Dotted line
-    Draw line: 0, .thrAbs, totalDur, .thrAbs
+    Draw line: soundStart, .thrAbs, soundEnd, .thrAbs
     Solid line
 
     # Draw the intensity contour
     selectObject: intensityID
     Colour: "{0.25, 0.40, 0.70}"
-    Draw: 0, 0, .yLo, .yHi, "no"
+    Draw: soundStart, soundEnd, .yLo, .yHi, "no"
 
     Colour: "Black"
     Draw inner box
@@ -918,10 +988,10 @@ if draw_analysis_report and analysis_mode <= 2
         .scoreMax = 1
     endif
 
-    Axes: 0, totalDur, -1.1, 1.1
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, totalDur, -1.1, 1.1
+    Axes: soundStart, soundEnd, -1.1, 1.1
+    Paint rectangle: "{0.97, 0.97, 0.99}", soundStart, soundEnd, -1.1, 1.1
     Colour: "{0.82, 0.82, 0.82}"
-    Draw line: 0, 0, totalDur, 0
+    Draw line: soundStart, 0, soundEnd, 0
 
     # Build a set for fast "is this candidate chosen?" lookup.
     # Praat doesn't have sets; we do a linear scan per candidate,
@@ -960,6 +1030,10 @@ if draw_analysis_report and analysis_mode <= 2
         ... "Per-candidate score   |   Green = chosen by DP solver   |   Grey = rejected"
 
     # ----- Summary panel -----
+    avgCutScore = 0
+    if cutCount > 0
+        avgCutScore = maxFinalScore / cutCount
+    endif
     Select outer viewport: 0, 8, 6.25, 7.55
     Select inner viewport: 0.55, 7.70, 6.32, 7.50
     Axes: 0, 1, 0, 1
@@ -972,18 +1046,18 @@ if draw_analysis_report and analysis_mode <= 2
     Text: 0.02, "left", 0.68, "half",
         ... "Total DP score: " + fixed$(maxFinalScore, 1)
         ... + "   |   Avg per cut: "
-        ... + fixed$(maxFinalScore / (cutCount + 1e-9), 1)
+        ... + fixed$(avgCutScore, 1)
         ... + "   |   Candidates " + string$(nCandidates)
         ... + " -> kept " + string$(cutCount)
     Text: 0.02, "left", 0.46, "half",
-        ... "Score components: pitch slope (wt=" + fixed$(weightPitchSlope, 1) + "), "
-        ... + "silence depth x length (wt=" + fixed$(weightCentering, 1) + "), "
-        ... + "intensity change (max seen = " + fixed$(intensityChangeMax, 1) + " dB)"
+        ... "Score: pitch motion (wt=" + fixed$(weightPitchSlope, 1) + "), "
+        ... + "silence depth x length (wt=" + fixed$(weightSilence, 1) + "), "
+        ... + "edge contrast (max bilateral = " + fixed$(edgeContrastMax, 1) + " dB)"
     Text: 0.02, "left", 0.24, "half",
         ... "Min cut spacing: " + fixed$(minDuration, 2) + " s"
-        ... + "   |   Insertion bonus: " + fixed$(insertionBonus, 1)
-        ... + "   |   Use spectral flux (intensity change): "
-        ... + string$(use_spectral_flux)
+        ... + "   |   Boundary bias: " + fixed$(boundaryBiasControl, 1)
+        ... + "   |   Edge contrast enabled: "
+        ... + string$(use_boundary_edge_contrast)
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
@@ -1006,4 +1080,18 @@ if create_TextGrid
     if extract_segments_as_sounds
         appendInfoLine: "Extracted sounds: ", nSeg, " phrases"
     endif
+endif
+
+# Leave a useful result selected after temporary analysis objects are removed.
+if create_TextGrid
+    if extract_segments_as_sounds
+        selectObject: extractedSounds#[1]
+        for i from 2 to nSeg
+            plusObject: extractedSounds#[i]
+        endfor
+    else
+        selectObject: tgOut
+    endif
+else
+    selectObject: soundID
 endif

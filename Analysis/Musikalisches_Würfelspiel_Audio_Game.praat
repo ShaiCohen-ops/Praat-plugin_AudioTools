@@ -1,63 +1,59 @@
 # ============================================================
 # Praat AudioTools - Musikalisches Würfelspiel (Musical Dice Game)
-# Author: Shai Cohen (improved by Praat AudioTools)
+# Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026)
+# Version: 1.2 (2026)
 # License: MIT License
 #
 # Description:
-#   Inspired by 18th-century Musikalisches Würfelspiel, this script
-#   reorders audio segments according to a functional pattern.
-#   
-#   IMPORTANT: This script uses TIMBRAL FEATURES (intensity, pitch,
-#   spectral brightness) as an ANALOGY to harmonic function, not actual
-#   harmonic analysis. Segments are classified by acoustic character:
-#   - T (Tonic-like): Dark, low, quiet
-#   - P (Predominant-like): Moderate
-#   - D (Dominant-like): Bright, high, loud
-#   - C (Cadence-like): Very dark/resolved
+#   A timbre-guided audio dice game. The source is divided into equal
+#   time slices. Each slice receives a composite "tension" score from
+#   intensity, log-pitch (when voiced), and spectral centre of gravity.
+#   Slices are rank-balanced into four game roles:
+#      T = tonic-like, P = predominant-like,
+#      D = dominant-like, C = cadence-like.
+#   These labels are an acoustic/compositional analogy. They are NOT
+#   harmonic analysis and do not identify tonal function.
 #
-# Improvements in v1.0:
-#   - No segment repetition (each used once max)
-#   - Optimized visualization with modes
-#   - Clearer conceptual explanation
-#   - Better presets
-#   - Performance optimizations
+#   The output follows a T-P-D-C role cycle (with a final C forced for
+#   incomplete cycles), while a dice-like random choice selects among
+#   source slices assigned to each role.
 #
-# Changelog v1.1 (2026):
-#   - FIX: First-unused-segment fallback loop (line 403) used
-#     loop-variable mutation (seg = numberOfSegments + 1) to break
-#     early. Replaced with the standard "found" flag pattern that
-#     was already partially set up. Loop-var mutation is fragile
-#     across Praat versions.
-#   - FIX: The diminuendo Formula referenced script variables
-#     (fadeStart, pieceDur, dimAmount) directly inside the Formula
-#     string, which works in modern Praat but is undocumented and
-#     not portable. Now uses string$() concatenation throughout.
-#     Also rewrote the inline if/then/else/fi conditional as a
-#     max(0, ...) expression — same envelope shape, cleaner Formula.
-#   - QUALITY: Classification now uses percentile-based thresholds
-#     (quartile cuts) instead of fixed z-score cutoffs (>0.5, >0,
-#     >-0.5). On uniform-timbre inputs the old fixed cutoffs left
-#     most segments in T/P with D/C nearly empty, which broke the
-#     T-P-D-C output pattern. Quartile cuts guarantee ~25% of
-#     segments in each category — pattern always fills.
-#   - QUALITY: Segments with undefined pitch (unvoiced, percussion,
-#     noise) no longer have a fictitious 200 Hz value injected into
-#     z-scoring. The pitch term is excluded from the tension score
-#     for those segments, with the weight sum re-normalized. Yields
-#     more meaningful classification on percussion/noise inputs.
+# Changelog v1.2:
+#   - Phase-safe multichannel workflow: analysis uses the strongest source
+#     channel, while output slices preserve ALL original channels.
+#   - Fixed anti-phase stereo cancellation caused by Convert to mono.
+#   - Replaced quartile-threshold classification with exact rank-balanced
+#     role allocation matched to the number of output T/P/D/C slots.
+#     Ties are broken by the game RNG, so identical material is not
+#     falsely claimed to contain acoustic distinctions.
+#   - Added Random seed (0 = unpredictable; nonzero = reproducible).
+#   - Pitch feature is normalized in semitone/log-frequency space rather
+#     than linear Hz; unvoiced slices still exclude pitch locally.
+#   - Custom feature weights may now be zero; all-zero weighting is rejected.
+#   - Custom expression parameters are validated (ritardando >= 1,
+#     diminuendo in 0..1).
+#   - Very short slices are prevented by reducing the requested slice count
+#     when necessary; inputs shorter than 0.24 s are rejected.
+#   - Cadential expression follows the actual C-role positions, including
+#     a forced final C for non-multiples of four.
+#   - Stereo/multichannel ritardando is processed channel-by-channel and
+#     recombined, preserving channel count instead of folding to mono.
+#   - Uses a 5 ms overlap when concatenating to reduce hard-cut clicks.
+#   - Visualization now shows measured source tension/roles and the actual
+#     source-to-output permutation instead of a decorative role grid only.
 # ============================================================
 
-# Input validation
+# ---- INPUT ----
 if numberOfSelected("Sound") <> 1
     exitScript: "Please select exactly one Sound object."
 endif
 
 soundID = selected("Sound")
-soundName$ = selected$("Sound")
+originalSoundName$ = selected$("Sound")
 
-form Musikalisches Würfelspiel v1.1
+# ---- FORM ----
+form Musikalisches Würfelspiel v1.2
     comment === PRESETS ===
     optionmenu Preset 1
         option Custom
@@ -66,41 +62,38 @@ form Musikalisches Würfelspiel v1.1
         option Romantic (16 segments, expressive)
         option Minimal (4 segments, simple)
         option Dense (32 segments, complex)
-    
-    comment === PHRASE STRUCTURE ===
-    positive Number_of_segments 16
-    
-    comment === FEATURE WEIGHTING ===
-    positive Intensity_weight 1.0
-    positive Spectral_weight 1.0
-    positive Pitch_weight 0.5
-    
-    comment === SEGMENT SELECTION ===
+
+    comment === SOURCE SLICING / DICE ===
+    natural Number_of_segments 16
+    integer Random_seed 0
     boolean Allow_segment_reuse 0
-    comment (If unchecked, each segment used max once)
-    
-    comment === MUSICAL EXPRESSION ===
+
+    comment === FEATURE WEIGHTING ===
+    real Intensity_weight 1.0
+    real Spectral_weight 1.0
+    real Pitch_weight 0.5
+
+    comment === CADENTIAL EXPRESSION ===
     boolean Apply_ritardando 1
-    positive Ritardando_moderate 1.15
-    positive Ritardando_final 1.3
+    real Ritardando_moderate 1.15
+    real Ritardando_final 1.3
     boolean Apply_diminuendo 1
-    positive Diminuendo_moderate 0.6
-    positive Diminuendo_final 0.4
-    
+    real Diminuendo_moderate 0.6
+    real Diminuendo_final 0.4
+
     comment === VISUALIZATION ===
     optionmenu Visualization_mode 1
         option Progressive (animate each step)
         option Final only (show result)
         option None (fastest)
-    
+
     comment === PLAYBACK ===
     boolean Play_during_processing 0
     boolean Play_final_result 1
 endform
 
-# Apply presets
+# ---- PRESETS ----
 if preset = 2
-    # Classical
     number_of_segments = 16
     intensity_weight = 1.0
     spectral_weight = 1.0
@@ -113,7 +106,6 @@ if preset = 2
     diminuendo_final = 0.4
     presetName$ = "Classical"
 elsif preset = 3
-    # Baroque
     number_of_segments = 8
     intensity_weight = 0.5
     spectral_weight = 0.8
@@ -124,7 +116,6 @@ elsif preset = 3
     apply_diminuendo = 0
     presetName$ = "Baroque"
 elsif preset = 4
-    # Romantic
     number_of_segments = 16
     intensity_weight = 1.5
     spectral_weight = 1.2
@@ -137,7 +128,6 @@ elsif preset = 4
     diminuendo_final = 0.3
     presetName$ = "Romantic"
 elsif preset = 5
-    # Minimal
     number_of_segments = 4
     intensity_weight = 1.0
     spectral_weight = 1.0
@@ -146,7 +136,6 @@ elsif preset = 5
     apply_diminuendo = 0
     presetName$ = "Minimal"
 elsif preset = 6
-    # Dense
     number_of_segments = 32
     intensity_weight = 1.0
     spectral_weight = 1.5
@@ -162,7 +151,7 @@ else
     presetName$ = "Custom"
 endif
 
-# Validate number of segments
+# ---- VALIDATION ----
 if number_of_segments < 4
     number_of_segments = 4
 endif
@@ -170,122 +159,251 @@ if number_of_segments > 64
     number_of_segments = 64
 endif
 
-numberOfSegments = number_of_segments
-
-# Convert to mono if needed
-selectObject: soundID
-numberOfChannels = Get number of channels
-if numberOfChannels > 1
-    selectObject: soundID
-    Convert to mono
-    monoSound = selected("Sound")
-    soundName$ = selected$("Sound")
-    convertedToMono = 1
-else
-    monoSound = soundID
-    convertedToMono = 0
+if intensity_weight < 0
+    intensity_weight = 0
+endif
+if spectral_weight < 0
+    spectral_weight = 0
+endif
+if pitch_weight < 0
+    pitch_weight = 0
+endif
+if intensity_weight + spectral_weight + pitch_weight <= 0
+    exitScript: "At least one feature weight must be greater than zero."
 endif
 
-# Get total duration and calculate segment duration
-selectObject: monoSound
+if ritardando_moderate < 1
+    ritardando_moderate = 1
+endif
+if ritardando_final < 1
+    ritardando_final = 1
+endif
+if ritardando_moderate > 3
+    ritardando_moderate = 3
+endif
+if ritardando_final > 3
+    ritardando_final = 3
+endif
+
+if diminuendo_moderate < 0
+    diminuendo_moderate = 0
+endif
+if diminuendo_moderate > 1
+    diminuendo_moderate = 1
+endif
+if diminuendo_final < 0
+    diminuendo_final = 0
+endif
+if diminuendo_final > 1
+    diminuendo_final = 1
+endif
+
+if random_seed = 0
+    random_initializeSafelyAndUnpredictably()
+    seedLabel$ = "random"
+else
+    if random_seed < 0
+        random_seed = -random_seed
+    endif
+    random_initializeWithSeedUnsafelyButPredictably(random_seed)
+    seedLabel$ = string$(random_seed)
+endif
+
+# ---- SOURCE PROPERTIES / PHASE-SAFE ANALYSIS CHANNEL ----
+selectObject: soundID
 duration = Get total duration
 sampleRate = Get sampling frequency
+numberOfChannels = Get number of channels
+
+minimumSliceDuration = 0.100
+if duration < 4 * minimumSliceDuration
+    exitScript: "The selected Sound is too short for four reliable analysis slices." + newline$
+        ... + "Please use at least 0.40 seconds of audio."
+endif
+
+requestedSegments = number_of_segments
+maxSegmentsByDuration = floor(duration / minimumSliceDuration)
+if maxSegmentsByDuration < 4
+    maxSegmentsByDuration = 4
+endif
+if number_of_segments > maxSegmentsByDuration
+    number_of_segments = maxSegmentsByDuration
+endif
+numberOfSegments = number_of_segments
 segmentDuration = duration / numberOfSegments
 
-# Create TableOfReal to store features
-Create TableOfReal: "features", numberOfSegments, 4
+analysisChannel = 1
+analysisSound = soundID
+analysisSoundIsCopy = 0
+
+if numberOfChannels > 1
+    bestRMS = -1
+    for ch from 1 to numberOfChannels
+        selectObject: soundID
+        Extract one channel: ch
+        probeChannel = selected("Sound")
+        rmsCh = Get root-mean-square: 0, 0
+        if rmsCh > bestRMS
+            bestRMS = rmsCh
+            analysisChannel = ch
+        endif
+        removeObject: probeChannel
+    endfor
+
+    selectObject: soundID
+    Extract one channel: analysisChannel
+    Rename: "wuerfel_analysis"
+    analysisSound = selected("Sound")
+    analysisSoundIsCopy = 1
+endif
+
+# ---- OUTPUT ROLE PATTERN ----
+# Normal cycle T-P-D-C. If the requested slice count does not complete a
+# four-slot phrase, force the final position to C so the game still closes.
+need_T = 0
+need_P = 0
+need_D = 0
+need_C = 0
+for position from 1 to numberOfSegments
+    remainder = (position - 1) mod 4
+    if remainder = 0
+        outputPattern_'position' = 1
+    elsif remainder = 1
+        outputPattern_'position' = 2
+    elsif remainder = 2
+        outputPattern_'position' = 3
+    else
+        outputPattern_'position' = 4
+    endif
+endfor
+if numberOfSegments mod 4 <> 0
+    outputPattern_'numberOfSegments' = 4
+endif
+
+for position from 1 to numberOfSegments
+    role = outputPattern_'position'
+    if role = 1
+        need_T = need_T + 1
+    elsif role = 2
+        need_P = need_P + 1
+    elsif role = 3
+        need_D = need_D + 1
+    else
+        need_C = need_C + 1
+    endif
+endfor
+
+# ---- FEATURE TABLE ----
+Create TableOfReal: "wuerfel_features", numberOfSegments, 4
 featuresID = selected("TableOfReal")
-Set column label (index): 1, "intensity"
-Set column label (index): 2, "pitch"
+Set column label (index): 1, "intensity_db"
+Set column label (index): 2, "pitch_st"
 Set column label (index): 3, "spectral_cog"
-Set column label (index): 4, "function"
+Set column label (index): 4, "role"
 
 clearinfo
 writeInfoLine: "========================================="
-writeInfoLine: "Musikalisches Würfelspiel v1.1"
+writeInfoLine: "Musikalisches Würfelspiel v1.2"
 writeInfoLine: "========================================="
 appendInfoLine: "Preset: ", presetName$
+appendInfoLine: "Source: ", originalSoundName$
+appendInfoLine: "Channels preserved: ", numberOfChannels
+if numberOfChannels > 1
+    appendInfoLine: "Analysis channel: ", analysisChannel, " (strongest RMS)"
+endif
+appendInfoLine: "Seed: ", seedLabel$
+if requestedSegments <> numberOfSegments
+    appendInfoLine: "Requested ", requestedSegments, " slices; reduced to ", numberOfSegments,
+        ... " to keep each analysis slice >= ", fixed$(minimumSliceDuration, 3), " s."
+endif
 appendInfoLine: ""
-appendInfoLine: "NOTE: This script uses timbral features"
-appendInfoLine: "(intensity, pitch, brightness) as an"
-appendInfoLine: "ANALOGY to functional harmony (T-P-D-C)."
-appendInfoLine: "It does NOT perform harmonic analysis."
-appendInfoLine: ""
-appendInfoLine: "Analyzing ", numberOfSegments, " segments..."
+appendInfoLine: "NOTE: T/P/D/C are timbral game roles, not harmonic analysis."
+appendInfoLine: "Analyzing ", numberOfSegments, " equal-time source slices..."
 
-# Extract segments and compute features
+# ---- EXTRACT SOURCE SLICES + FEATURES ----
 for i from 1 to numberOfSegments
     startTime = (i - 1) * segmentDuration
-    endTime = i * segmentDuration
-    
-    # Extract segment
-    selectObject: monoSound
+    if i = numberOfSegments
+        endTime = duration
+    else
+        endTime = i * segmentDuration
+    endif
+
+    # Preserve original channels in the material that will be recomposed.
+    selectObject: soundID
     Extract part: startTime, endTime, "rectangular", 1, "no"
     segmentID_'i' = selected("Sound")
-    Rename: "segment_" + string$(i)
-    
-    # Compute mean intensity
-    selectObject: segmentID_'i'
+    Rename: "wuerfel_segment_" + string$(i)
+
+    # Analyze only the representative channel, never a phase-cancelling fold-down.
+    selectObject: analysisSound
+    Extract part: startTime, endTime, "rectangular", 1, "no"
+    analysisSegment = selected("Sound")
+
+    # Intensity
     To Intensity: 75, 0, "yes"
     intensityID = selected("Intensity")
     meanIntensity = Get mean: 0, 0, "energy"
+    if meanIntensity = undefined
+        meanIntensity = -300
+    endif
     removeObject: intensityID
-    
-    # Compute mean pitch
-    # v1.1: track validity instead of injecting fictitious 200 Hz.
-    # Segments with undefined pitch (unvoiced, percussion, noise) will
-    # have the pitch term excluded from their tension-score computation
-    # rather than contaminating it with a placeholder.
-    selectObject: segmentID_'i'
+
+    # Pitch: use log-frequency/semitone space for normalization.
+    selectObject: analysisSegment
     To Pitch: 0, 75, 600
     pitchID = selected("Pitch")
-    meanPitch = Get mean: 0, 0, "Hertz"
-    if meanPitch = undefined
+    meanPitchHz = Get mean: 0, 0, "Hertz"
+    if meanPitchHz = undefined or meanPitchHz <= 0
         pitchValid_'i' = 0
-        meanPitch = 0
+        pitchFeature = 0
     else
         pitchValid_'i' = 1
+        pitchFeature = 12 * ln(meanPitchHz / 100) / ln(2)
     endif
     removeObject: pitchID
-    
-    # Compute spectral centre of gravity
-    selectObject: segmentID_'i'
+
+    # Spectral centre of gravity
+    selectObject: analysisSegment
     To Spectrum: "yes"
     spectrumID = selected("Spectrum")
     spectralCOG = Get centre of gravity: 2
+    if spectralCOG = undefined
+        spectralCOG = 0
+    endif
     removeObject: spectrumID
-    
-    # Store features
+    removeObject: analysisSegment
+
     selectObject: featuresID
     Set value: i, 1, meanIntensity
-    Set value: i, 2, meanPitch
+    Set value: i, 2, pitchFeature
     Set value: i, 3, spectralCOG
-    
+
     appendInfo: "."
     if i mod 8 = 0
         appendInfo: " ", i
     endif
 endfor
-
 appendInfoLine: ""
-appendInfoLine: "Classifying segments by timbre..."
 
-# Compute global means for z-score normalization.
-# v1.1: pitch mean uses only segments with valid pitch (Concern 3).
-# Intensity and centroid have a value for every segment.
+# ---- GLOBAL NORMALIZATION ----
 selectObject: featuresID
 totalIntensity = 0
 totalPitch = 0
 totalCOG = 0
 nValidPitch = 0
 for i from 1 to numberOfSegments
-    totalIntensity += Get value: i, 1
-    totalCOG += Get value: i, 3
+    thisIntensity = Get value: i, 1
+    thisCOG = Get value: i, 3
+    totalIntensity = totalIntensity + thisIntensity
+    totalCOG = totalCOG + thisCOG
     if pitchValid_'i' = 1
-        totalPitch += Get value: i, 2
-        nValidPitch += 1
+        thisPitch = Get value: i, 2
+        totalPitch = totalPitch + thisPitch
+        nValidPitch = nValidPitch + 1
     endif
 endfor
+
 meanIntensityGlobal = totalIntensity / numberOfSegments
 meanCOGGlobal = totalCOG / numberOfSegments
 if nValidPitch > 0
@@ -294,8 +412,6 @@ else
     meanPitchGlobal = 0
 endif
 
-# Calculate standard deviations.
-# v1.1: pitch SD uses only valid-pitch segments.
 sumSqIntensity = 0
 sumSqPitch = 0
 sumSqCOG = 0
@@ -303,13 +419,14 @@ for i from 1 to numberOfSegments
     selectObject: featuresID
     intensityVal = Get value: i, 1
     cogVal = Get value: i, 3
-    sumSqIntensity += (intensityVal - meanIntensityGlobal) ^ 2
-    sumSqCOG += (cogVal - meanCOGGlobal) ^ 2
+    sumSqIntensity = sumSqIntensity + (intensityVal - meanIntensityGlobal)^2
+    sumSqCOG = sumSqCOG + (cogVal - meanCOGGlobal)^2
     if pitchValid_'i' = 1
         pitchVal = Get value: i, 2
-        sumSqPitch += (pitchVal - meanPitchGlobal) ^ 2
+        sumSqPitch = sumSqPitch + (pitchVal - meanPitchGlobal)^2
     endif
 endfor
+
 sdIntensity = sqrt(sumSqIntensity / numberOfSegments)
 sdCOG = sqrt(sumSqCOG / numberOfSegments)
 if nValidPitch > 0
@@ -317,164 +434,144 @@ if nValidPitch > 0
 else
     sdPitch = 1
 endif
-
-# Prevent division by zero
-if sdIntensity = 0
+if sdIntensity < 1e-12
     sdIntensity = 1
 endif
-if sdPitch = 0
-    sdPitch = 1
-endif
-if sdCOG = 0
+if sdCOG < 1e-12
     sdCOG = 1
 endif
+if sdPitch < 1e-12
+    sdPitch = 1
+endif
 
-# v1.1: Two-pass classification using percentile-based (quartile)
-# thresholds instead of fixed z-score cutoffs (>0.5, >0, >-0.5).
-# Old fixed cutoffs left D/C nearly empty on uniform-timbre inputs,
-# breaking the T-P-D-C output pattern. Quartile cuts guarantee ~25%
-# of segments in each category.
-
-# Pass 1: compute and store all tension scores
+# ---- COMPOSITE TENSION SCORES ----
 tensionScores# = zero#(numberOfSegments)
+tieKeys# = zero#(numberOfSegments)
 for i from 1 to numberOfSegments
     selectObject: featuresID
     intensityVal = Get value: i, 1
     cogVal = Get value: i, 3
-
     zIntensity = (intensityVal - meanIntensityGlobal) / sdIntensity
     zCOG = (cogVal - meanCOGGlobal) / sdCOG
 
-    # v1.1: pitch term excluded for segments with no valid pitch.
-    # Weight sum is re-normalized to keep tension scores comparable
-    # across mixed-validity segment sets.
     if pitchValid_'i' = 1
         pitchVal = Get value: i, 2
         zPitch = (pitchVal - meanPitchGlobal) / sdPitch
-        tensionScore = (zIntensity * intensity_weight)
-            ... + (zPitch * pitch_weight)
-            ... + (zCOG * spectral_weight)
-        totalWeight = intensity_weight + pitch_weight + spectral_weight
+        numerator = zIntensity * intensity_weight
+            ... + zPitch * pitch_weight
+            ... + zCOG * spectral_weight
+        denominator = intensity_weight + pitch_weight + spectral_weight
     else
-        tensionScore = (zIntensity * intensity_weight)
-            ... + (zCOG * spectral_weight)
-        totalWeight = intensity_weight + spectral_weight
+        numerator = zIntensity * intensity_weight
+            ... + zCOG * spectral_weight
+        denominator = intensity_weight + spectral_weight
     endif
-    if totalWeight > 0
-        tensionScore = tensionScore / totalWeight
+
+    # If a slice is unvoiced and the user selected pitch-only weighting,
+    # it has no usable weighted feature. Give it a neutral score.
+    if denominator > 0
+        tensionScore = numerator / denominator
+    else
+        tensionScore = 0
     endif
     tensionScores#[i] = tensionScore
+    tieKeys#[i] = randomUniform(0, 1)
 endfor
 
-# Pass 2: derive quartile thresholds from sorted scores.
-sortedScores# = sort#(tensionScores#)
-q1_idx = round(numberOfSegments * 0.25)
-q2_idx = round(numberOfSegments * 0.50)
-q3_idx = round(numberOfSegments * 0.75)
-if q1_idx < 1
-    q1_idx = 1
-endif
-if q2_idx < 1
-    q2_idx = 1
-endif
-if q3_idx > numberOfSegments
-    q3_idx = numberOfSegments
-endif
-threshold_C = sortedScores#[q1_idx]
-threshold_T = sortedScores#[q2_idx]
-threshold_P = sortedScores#[q3_idx]
+# ---- EXACT ROLE ALLOCATION BY RANK ----
+# Rank slices from lowest to highest tension. Role pool sizes are taken from
+# the actual output role pattern, so without reuse there is always a
+# one-to-one role-matched permutation. Equal scores use the dice RNG as the
+# tie breaker rather than pretending there is an acoustic distinction.
+rankedSegments# = zero#(numberOfSegments)
+rankUsed# = zero#(numberOfSegments)
+for rank from 1 to numberOfSegments
+    bestSeg = 0
+    bestScore = 0
+    bestTie = 0
+    for i from 1 to numberOfSegments
+        if rankUsed#[i] = 0
+            thisScore = tensionScores#[i]
+            thisTie = tieKeys#[i]
+            if bestSeg = 0
+                bestSeg = i
+                bestScore = thisScore
+                bestTie = thisTie
+            elsif thisScore < bestScore
+                bestSeg = i
+                bestScore = thisScore
+                bestTie = thisTie
+            elsif abs(thisScore - bestScore) <= 1e-12 and thisTie < bestTie
+                bestSeg = i
+                bestScore = thisScore
+                bestTie = thisTie
+            endif
+        endif
+    endfor
+    rankedSegments#[rank] = bestSeg
+    rankUsed#[bestSeg] = 1
+endfor
 
-# Pass 3: assign function by quartile.
-# Top quartile (highest tension) → D (bright/dominant-like)
-# Upper-mid quartile             → P (predominant-like)
-# Lower-mid quartile             → T (tonic-like)
-# Bottom quartile (lowest)       → C (cadence-like, very dark)
-for i from 1 to numberOfSegments
-    score = tensionScores#[i]
-    if score > threshold_P
-        functionType = 3
-    elsif score > threshold_T
-        functionType = 2
-    elsif score > threshold_C
-        functionType = 1
-    else
+for rank from 1 to numberOfSegments
+    seg = rankedSegments#[rank]
+    if rank <= need_C
         functionType = 4
+    elsif rank <= need_C + need_T
+        functionType = 1
+    elsif rank <= need_C + need_T + need_P
+        functionType = 2
+    else
+        functionType = 3
     endif
     selectObject: featuresID
-    Set value: i, 4, functionType
+    Set value: seg, 4, functionType
 endfor
 
-# Count segments in each function
-selectObject: featuresID
-count_T = 0
-count_P = 0
-count_D = 0
-count_C = 0
-for i from 1 to numberOfSegments
-    func = Get value: i, 4
-    if func = 1
-        count_T += 1
-    elsif func = 2
-        count_P += 1
-    elsif func = 3
-        count_D += 1
-    else
-        count_C += 1
+appendInfoLine: "Role pools matched to output slots:"
+appendInfoLine: "  T: ", need_T, "   P: ", need_P, "   D: ", need_D, "   C: ", need_C
+
+# Visualization score range
+scoreMin = tensionScores#[1]
+scoreMax = tensionScores#[1]
+for i from 2 to numberOfSegments
+    if tensionScores#[i] < scoreMin
+        scoreMin = tensionScores#[i]
+    endif
+    if tensionScores#[i] > scoreMax
+        scoreMax = tensionScores#[i]
     endif
 endfor
+scoreRange = scoreMax - scoreMin
+if scoreRange < 0.2
+    scoreRange = 0.2
+endif
+scoreYmin = scoreMin - 0.12 * scoreRange
+scoreYmax = scoreMax + 0.12 * scoreRange
 
-appendInfoLine: "  T (Tonic-like): ", count_T, " segments"
-appendInfoLine: "  P (Predominant-like): ", count_P, " segments"
-appendInfoLine: "  D (Dominant-like): ", count_D, " segments"
-appendInfoLine: "  C (Cadence-like): ", count_C, " segments"
-
-# Define output pattern (T-P-D-C repeating)
-for i from 1 to numberOfSegments
-    remainder = (i - 1) mod 4
-    if remainder = 0
-        outputPattern_'i' = 1
-    elsif remainder = 1
-        outputPattern_'i' = 2
-    elsif remainder = 2
-        outputPattern_'i' = 3
-    else
-        outputPattern_'i' = 4
-    endif
-endfor
-
-# Initialize segment usage tracking
+# ---- DICE SELECTION ----
 if allow_segment_reuse = 0
     used# = zero#(numberOfSegments)
 endif
 
-# Pre-select segments for each position
-appendInfoLine: "Selecting segments (dice roll)..."
-
+fallbackCount = 0
+appendInfoLine: "Rolling the dice..."
 for position from 1 to numberOfSegments
     requiredFunction = outputPattern_'position'
-    
-    # Find all segments matching required function
     selectObject: featuresID
     matchCount = 0
     for seg from 1 to numberOfSegments
         segFunction = Get value: seg, 4
-        
-        # Check if segment matches function
         if segFunction = requiredFunction
-            # If not allowing reuse, also check if already used
             if allow_segment_reuse = 1
-                matchCount += 1
+                matchCount = matchCount + 1
                 matches_'matchCount' = seg
-            else
-                if used#[seg] = 0
-                    matchCount += 1
-                    matches_'matchCount' = seg
-                endif
+            elsif used#[seg] = 0
+                matchCount = matchCount + 1
+                matches_'matchCount' = seg
             endif
         endif
     endfor
-    
-    # Select random matching segment
+
     if matchCount > 0
         randomIndex = randomInteger(1, matchCount)
         chosenSegment_'position' = matches_'randomIndex'
@@ -482,13 +579,11 @@ for position from 1 to numberOfSegments
             used#[chosenSegment_'position'] = 1
         endif
     else
-        # Fallback: find any unused segment (or random if allowing reuse)
+        # This should be unreachable with rank-balanced pools; retain a safe
+        # fallback so a future edit cannot leave an uninitialized choice.
+        fallbackCount = fallbackCount + 1
+        found = 0
         if allow_segment_reuse = 0
-            # v1.1: replaced loop-var mutation early-break
-            # (seg = numberOfSegments + 1) with the standard
-            # found-flag pattern. Loop-var mutation works in modern
-            # Praat but is fragile across versions.
-            found = 0
             for seg from 1 to numberOfSegments
                 if found = 0 and used#[seg] = 0
                     chosenSegment_'position' = seg
@@ -496,16 +591,12 @@ for position from 1 to numberOfSegments
                     found = 1
                 endif
             endfor
-            # If all used, allow reuse
-            if found = 0
-                chosenSegment_'position' = randomInteger(1, numberOfSegments)
-            endif
-        else
+        endif
+        if found = 0
             chosenSegment_'position' = randomInteger(1, numberOfSegments)
         endif
     endif
-    
-    # Store function label
+
     if requiredFunction = 1
         requiredLabel_'position'$ = "T"
     elsif requiredFunction = 2
@@ -517,138 +608,173 @@ for position from 1 to numberOfSegments
     endif
 endfor
 
-appendInfoLine: "Processing with expression..."
-
-# Calculate grid dimensions
-gridSize = ceiling(sqrt(numberOfSegments))
-if gridSize * (gridSize - 1) >= numberOfSegments
-    gridRows = gridSize - 1
-    gridCols = gridSize
-else
-    gridRows = gridSize
-    gridCols = gridSize
+if fallbackCount > 0
+    appendInfoLine: "WARNING: ", fallbackCount, " role-selection fallback(s) occurred."
 endif
 
-# Procedure to draw visualization
-procedure drawVisualization: .currentStep, .total, .isComplete
-    Erase all
-    Select inner viewport: 0.5, 7.5, 0.5, 7.5
-    
-    Axes: 0, gridCols, 0, gridRows
-    Colour: "Black"
-    Line width: 1
-    
-    # Title
-    if .isComplete = 1
-        Text top: "yes", "Würfelspiel v1.1 Complete - " + presetName$
+# ---- VISUALIZATION ----
+procedure setRoleColour: .role
+    if .role = 1
+        Colour: "{0.22,0.42,0.72}"
+    elsif .role = 2
+        Colour: "{0.25,0.58,0.48}"
+    elsif .role = 3
+        Colour: "{0.78,0.34,0.28}"
     else
-        Text top: "yes", "Würfelspiel v1.1 - Step " + string$(.currentStep) + "/" + string$(.total)
-    endif
-    Text left: "yes", "Row"
-    Text bottom: "yes", "Column"
-    
-    # Draw grid
-    Colour: "Grey"
-    for i from 0 to gridCols
-        Draw line: i, 0, i, gridRows
-    endfor
-    for i from 0 to gridRows
-        Draw line: 0, i, gridCols, i
-    endfor
-    
-    # Draw cells
-    for position from 1 to numberOfSegments
-        row = floor((position - 1) / gridCols)
-        col = (position - 1) mod gridCols
-        
-        x1 = col
-        x2 = col + 1
-        y1 = gridRows - row - 1
-        y2 = gridRows - row
-        xCenter = (x1 + x2) / 2
-        yCenter = (y1 + y2) / 2
-        
-        if .isComplete = 1 or position <= .currentStep
-            # Already processed
-            selectedSeg = chosenSegment_'position'
-            funcLabel$ = requiredLabel_'position'$
-            
-            # Color by function
-            if funcLabel$ = "T"
-                Paint circle: "Purple", xCenter, yCenter, 0.35
-            elsif funcLabel$ = "P"
-                Paint circle: "Cyan", xCenter, yCenter, 0.35
-            elsif funcLabel$ = "D"
-                Paint circle: "Magenta", xCenter, yCenter, 0.35
-            else
-                Paint circle: "Pink", xCenter, yCenter, 0.35
-            endif
-            
-            # Draw text
-            Colour: "White"
-            if .isComplete = 0 and position = .currentStep
-                Line width: 3
-                Text: xCenter, "centre", yCenter + 0.15, "half", ">" + string$(selectedSeg)
-                Text: xCenter, "centre", yCenter - 0.15, "half", funcLabel$
-            else
-                Line width: 1
-                Text: xCenter, "centre", yCenter + 0.1, "half", string$(selectedSeg)
-                Text: xCenter, "centre", yCenter - 0.1, "half", funcLabel$
-            endif
-        else
-            # Not yet processed
-            Colour: "Grey"
-            Draw circle: xCenter, yCenter, 0.35
-        endif
-    endfor
-    
-    # Legend
-    Select inner viewport: 0.5, 7.5, 7.8, 8.5
-    Axes: 0, 1, 0, 1
-    Colour: "Black"
-    Line width: 1
-    Paint circle: "Purple", 0.05, 0.7, 0.015
-    Text: 0.08, "left", 0.7, "half", "T=Tonic-like (dark)"
-    Paint circle: "Cyan", 0.38, 0.7, 0.015
-    Text: 0.41, "left", 0.7, "half", "P=Predominant-like"
-    Paint circle: "Magenta", 0.05, 0.3, 0.015
-    Text: 0.08, "left", 0.3, "half", "D=Dominant-like (bright)"
-    Paint circle: "Pink", 0.38, 0.3, 0.015
-    Text: 0.41, "left", 0.3, "half", "C=Cadence-like (very dark)"
-    
-    if .isComplete = 1
-        expressionText$ = ""
-        if apply_ritardando = 1 and apply_diminuendo = 1
-            expressionText$ = " + rit. & dim."
-        elsif apply_ritardando = 1
-            expressionText$ = " + rit."
-        elsif apply_diminuendo = 1
-            expressionText$ = " + dim."
-        endif
-        Text: 0.5, "centre", 0.1, "half", "Pattern: T-P-D-C | " + soundName$ + expressionText$
+        Colour: "{0.38,0.38,0.42}"
     endif
 endproc
 
-# Progressive processing
+procedure drawVisualization: .currentStep, .total, .isComplete
+    Erase all
+
+    # Title
+    Select outer viewport: 0.4, 7.6, 0.04, 0.34
+    Axes: 0, 1, 0, 1
+    Font size: 11
+    Colour: "Black"
+    Text: 0.5, "centre", 0.58, "half", "##Musikalisches Würfelspiel##"
+
+    # Process strip
+    Select outer viewport: 0.5, 7.5, 0.38, 0.78
+    Axes: 0, 1, 0, 1
+    Font size: 6.5
+    Colour: "{0.35,0.35,0.38}"
+    Text: 0.5, "centre", 0.55, "half",
+        ... "equal slices  ->  I + log-pitch + spectral COG  ->  tension rank  ->  T/P/D/C pools  ->  dice permutation"
+
+    # Left title strip
+    Select outer viewport: 0.55, 3.85, 0.82, 1.08
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.5, "centre", 0.5, "half", "Source: measured composite tension and assigned role"
+
+    # Left panel
+    Select inner viewport: 0.65, 3.75, 1.12, 4.30
+    Axes: 0.5, numberOfSegments + 0.5, scoreYmin, scoreYmax
+    Colour: "{0.85,0.85,0.85}"
+    if scoreYmin < 0 and scoreYmax > 0
+        Draw line: 0.5, 0, numberOfSegments + 0.5, 0
+    endif
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text bottom: "yes", "Source slice"
+    Text left: "yes", "Composite tension"
+    if numberOfSegments <= 16
+        for i from 1 to numberOfSegments
+            One mark bottom: i, "yes", "yes", "no", string$(i)
+        endfor
+    endif
+    for i from 1 to numberOfSegments
+        selectObject: featuresID
+        role = Get value: i, 4
+        if role = 1
+            Paint circle (mm): "{0.22,0.42,0.72}", i, tensionScores#[i], 2.0
+        elsif role = 2
+            Paint circle (mm): "{0.25,0.58,0.48}", i, tensionScores#[i], 2.0
+        elsif role = 3
+            Paint circle (mm): "{0.78,0.34,0.28}", i, tensionScores#[i], 2.0
+        else
+            Paint circle (mm): "{0.38,0.38,0.42}", i, tensionScores#[i], 2.0
+        endif
+        @setRoleColour: role
+        dX = 0.10
+        dY = scoreRange * 0.025
+        Draw line: i - dX, tensionScores#[i] - dY, i + dX, tensionScores#[i] + dY
+        Draw line: i - dX, tensionScores#[i] + dY, i + dX, tensionScores#[i] - dY
+    endfor
+
+    # Right title strip
+    Select outer viewport: 4.15, 7.55, 0.82, 1.08
+    Axes: 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    if .isComplete = 1
+        Text: 0.5, "centre", 0.5, "half", "Output permutation (complete)"
+    else
+        Text: 0.5, "centre", 0.5, "half",
+            ... "Output permutation - step " + string$(.currentStep) + "/" + string$(.total)
+    endif
+
+    # Right panel
+    Select inner viewport: 4.28, 7.45, 1.12, 4.30
+    Axes: 0.5, numberOfSegments + 0.5, 0.5, numberOfSegments + 0.5
+    Colour: "Black"
+    Draw inner box
+    Font size: 6
+    Text bottom: "yes", "Output position"
+    Text left: "yes", "Source slice"
+    if numberOfSegments <= 16
+        for i from 1 to numberOfSegments
+            One mark bottom: i, "yes", "yes", "no", string$(i)
+            One mark left: i, "yes", "yes", "no", string$(i)
+        endfor
+    endif
+
+    lastPos = 0
+    lastSeg = 0
+    for position from 1 to numberOfSegments
+        if .isComplete = 1 or position <= .currentStep
+            seg = chosenSegment_'position'
+            role = outputPattern_'position'
+            if lastPos > 0
+                Colour: "{0.72,0.72,0.74}"
+                Draw line: lastPos, lastSeg, position, seg
+            endif
+            @setRoleColour: role
+            d = 0.18
+            Draw line: position - d, seg - d, position + d, seg + d
+            Draw line: position - d, seg + d, position + d, seg - d
+            lastPos = position
+            lastSeg = seg
+        endif
+    endfor
+
+    # Footer / legend (two strips, separated from axis captions)
+    Select outer viewport: 0.5, 7.5, 4.68, 4.95
+    Axes: 0, 1, 0, 1
+    Font size: 6.5
+    Colour: "{0.22,0.42,0.72}"
+    Text: 0.02, "left", 0.5, "half", "T"
+    Colour: "{0.25,0.58,0.48}"
+    Text: 0.07, "left", 0.5, "half", "P"
+    Colour: "{0.78,0.34,0.28}"
+    Text: 0.12, "left", 0.5, "half", "D"
+    Colour: "{0.38,0.38,0.42}"
+    Text: 0.17, "left", 0.5, "half", "C"
+    Colour: "Black"
+    summary$ = "roles " + string$(need_T) + "/" + string$(need_P) + "/" + string$(need_D) + "/" + string$(need_C)
+        ... + "  |  seed " + seedLabel$ + "  |  analysis ch " + string$(analysisChannel)
+        ... + "  |  5 ms joins"
+    Text: 0.26, "left", 0.5, "half", summary$
+
+    Select outer viewport: 0.5, 7.5, 4.98, 5.24
+    Axes: 0, 1, 0, 1
+    Font size: 6.3
+    Colour: "{0.30,0.30,0.32}"
+    Text: 0.5, "centre", 0.5, "half",
+        ... "T/P/D/C are compositional timbre roles; they are not detected harmonic functions."
+endproc
+
+# ---- BUILD OUTPUT PIECES ----
+appendInfoLine: "Processing selected slices..."
 for k from 1 to numberOfSegments
-    # Visualization
     if visualization_mode = 1
-        # Progressive
         @drawVisualization: k, numberOfSegments, 0
     endif
-    
-    # Process current segment
+
     chosenSeg = chosenSegment_'k'
     selectObject: segmentID_'chosenSeg'
-    Copy: "piece_" + string$(k)
+    Copy: "wuerfel_piece_" + string$(k)
     pieceID_'k' = selected("Sound")
-    
-    # Apply ritardando and diminuendo at phrase endings
-    if k mod 4 = 0
+
+    # Expression is applied to actual C-role slots, not merely every fourth index.
+    if outputPattern_'k' = 4
         selectObject: pieceID_'k'
         pieceDur = Get total duration
-        
-        # Determine effect strength
+
         if k = numberOfSegments
             ritFactor = ritardando_final
             dimAmount = diminuendo_final
@@ -656,114 +782,150 @@ for k from 1 to numberOfSegments
             ritFactor = ritardando_moderate
             dimAmount = diminuendo_moderate
         endif
-        
-        # Apply diminuendo
-        # v1.1: was using script variables fadeStart/pieceDur/dimAmount
-        # directly inside the Formula string and an inline if/then/else/fi
-        # conditional. Both work in modern Praat but are fragile across
-        # versions. Now uses string$() concatenation and a max(0, ...)
-        # expression — same envelope shape, more portable.
-        # Envelope: 1 for x < fadeStart, ramps linearly to dimAmount at x = pieceDur.
-        if apply_diminuendo = 1
-            selectObject: pieceID_'k'
+
+        # Diminuendo: last 30% ramps from 1 to dimAmount.
+        if apply_diminuendo = 1 and dimAmount < 1
             fadeStart = pieceDur * 0.7
-            fadeStart_str$ = fixed$(fadeStart, 8)
-            pieceDur_str$ = fixed$(pieceDur, 8)
-            dimAmount_str$ = fixed$(dimAmount, 8)
+            fadeStart_str$ = fixed$(fadeStart, 9)
+            pieceDur_str$ = fixed$(pieceDur, 9)
+            dimAmount_str$ = fixed$(dimAmount, 9)
+            selectObject: pieceID_'k'
             Formula: "self * (1 - max(0, (x - " + fadeStart_str$
                 ... + ") / (" + pieceDur_str$ + " - " + fadeStart_str$
                 ... + ")) * (1 - " + dimAmount_str$ + "))"
         endif
-        
-        # Apply ritardando
-        if apply_ritardando = 1
+
+        # Ritardando: process every channel independently with the same
+        # duration-tier law, then reconstruct the original channel count.
+        if apply_ritardando = 1 and ritFactor > 1
             selectObject: pieceID_'k'
-            pieceDur = Get total duration
-            fadeStart = pieceDur * 0.7
-            
-            To Manipulation: 0.01, 75, 600
-            manipID = selected("Manipulation")
-            Extract duration tier
-            durTierID = selected("DurationTier")
-            
-            Add point: 0, 1.0
-            Add point: fadeStart, 1.0
-            Add point: pieceDur, ritFactor
-            
-            selectObject: manipID
-            plusObject: durTierID
-            Replace duration tier
-            selectObject: manipID
-            Get resynthesis (overlap-add)
-            ritSound = selected("Sound")
-            
-            removeObject: manipID, durTierID
-            
-            selectObject: pieceID_'k'
-            Remove
-            selectObject: ritSound
-            Rename: "piece_" + string$(k)
-            pieceID_'k' = selected("Sound")
+            pieceChannels = Get number of channels
+
+            for ch from 1 to pieceChannels
+                selectObject: pieceID_'k'
+                Extract one channel: ch
+                monoPiece = selected("Sound")
+
+                To Manipulation: 0.01, 75, 600
+                manipID = selected("Manipulation")
+                Extract duration tier
+                durTierID = selected("DurationTier")
+                Add point: 0, 1.0
+                Add point: pieceDur * 0.7, 1.0
+                Add point: pieceDur, ritFactor
+
+                selectObject: manipID
+                plusObject: durTierID
+                Replace duration tier
+                selectObject: manipID
+                Get resynthesis (overlap-add)
+                ritChID_'ch' = selected("Sound")
+
+                removeObject: manipID, durTierID, monoPiece
+            endfor
+
+            selectObject: ritChID_1
+            stretchedDur = Get total duration
+            stretchedSR = Get sampling frequency
+
+            if pieceChannels = 1
+                selectObject: pieceID_'k'
+                Remove
+                selectObject: ritChID_1
+                Rename: "wuerfel_piece_" + string$(k)
+                pieceID_'k' = selected("Sound")
+            else
+                # Build a nested formula because Praat formulas support
+                # if/then/else/fi, not script-style elsif.
+                lastID = ritChID_'pieceChannels'
+                combineFormula$ = "object[" + string$(lastID) + ",1,col]"
+                if pieceChannels > 1
+                    for offset from 1 to pieceChannels - 1
+                        ch = pieceChannels - offset
+                        thisID = ritChID_'ch'
+                        combineFormula$ = "if row = " + string$(ch)
+                            ... + " then object[" + string$(thisID) + ",1,col]"
+                            ... + " else " + combineFormula$ + " fi"
+                    endfor
+                endif
+
+                Create Sound from formula: "wuerfel_piece_" + string$(k),
+                    ... pieceChannels, 0, stretchedDur, stretchedSR, combineFormula$
+                rebuiltPiece = selected("Sound")
+
+                selectObject: pieceID_'k'
+                Remove
+                for ch from 1 to pieceChannels
+                    removeObject: ritChID_'ch'
+                endfor
+                selectObject: rebuiltPiece
+                pieceID_'k' = selected("Sound")
+            endif
         endif
     endif
-    
-    # Play current segment
+
     if play_during_processing = 1
         selectObject: pieceID_'k'
         Play
     endif
-    
+
     appendInfo: "."
     if k mod 8 = 0
         appendInfo: " ", k
     endif
 endfor
-
 appendInfoLine: ""
-appendInfoLine: "Concatenating..."
 
-# Concatenate all pieces
+# ---- CONCATENATE WITH SHORT OVERLAP ----
+appendInfoLine: "Concatenating with 5 ms joins..."
 selectObject: pieceID_1
 for i from 2 to numberOfSegments
     plusObject: pieceID_'i'
 endfor
-Concatenate
+joinOverlap = 0.005
+if joinOverlap > segmentDuration * 0.10
+    joinOverlap = segmentDuration * 0.10
+endif
+Concatenate with overlap: joinOverlap
 outputSound = selected("Sound")
 Rename: "wuerfelspiel_" + presetName$
 
-# Final visualization
+# ---- FINAL VISUALIZATION ----
 if visualization_mode = 1 or visualization_mode = 2
     @drawVisualization: numberOfSegments, numberOfSegments, 1
 endif
 
-# Cleanup
+# ---- CLEANUP ----
 removeObject: featuresID
 for i from 1 to numberOfSegments
     removeObject: segmentID_'i', pieceID_'i'
 endfor
-
-if convertedToMono = 1
-    removeObject: monoSound
+if analysisSoundIsCopy = 1
+    removeObject: analysisSound
 endif
 
 selectObject: outputSound
+outputChannels = Get number of channels
+outputDuration = Get total duration
 
 appendInfoLine: ""
 appendInfoLine: "========================================="
-appendInfoLine: "COMPLETE!"
+appendInfoLine: "COMPLETE"
 appendInfoLine: "========================================="
 appendInfoLine: "Output: wuerfelspiel_", presetName$
-appendInfoLine: "Segments: ", numberOfSegments
-appendInfoLine: "Weights: I=", intensity_weight, " P=", pitch_weight, " S=", spectral_weight
+appendInfoLine: "Slices: ", numberOfSegments
+appendInfoLine: "Channels: ", outputChannels, " (input ", numberOfChannels, ")"
+appendInfoLine: "Duration: ", fixed$(outputDuration, 3), " s"
+appendInfoLine: "Weights I/S/P: ", intensity_weight, " / ", spectral_weight, " / ", pitch_weight
+appendInfoLine: "Role slots T/P/D/C: ", need_T, "/", need_P, "/", need_D, "/", need_C
+appendInfoLine: "Selection fallbacks: ", fallbackCount
 if allow_segment_reuse = 0
-    appendInfoLine: "Each segment used max once"
+    appendInfoLine: "Source use: permutation (no reuse)"
 else
-    appendInfoLine: "Segment reuse allowed"
+    appendInfoLine: "Source use: reuse allowed"
 endif
 
 if play_final_result = 1
     appendInfoLine: "Playing result..."
     Play
 endif
-
-appendInfoLine: ""
