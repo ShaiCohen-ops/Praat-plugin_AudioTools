@@ -33,12 +33,19 @@ Architecture:
     Stage 7 — Spatial Reconstruction:
     - VBAP (Vector Base Amplitude Panning) to N speakers
     - Distance-dependent amplitude attenuation
-    - Distance-dependent low-pass filtering (proximity effect)
-    - Optional distance-dependent reverb tail
+    - Distance-dependent low-pass filtering (far-field damping)
+    - Optional distance-dependent comb-filter reverberation
     - Independent per-agent spatial rendering
     - N-channel output file
 
 No external model downloads. No internet. No PyTorch/TensorFlow/sklearn.
+
+Changelog v1.3:
+    - Preserve the v1.2 agent/physics/spatial law for ordinary inputs.
+    - Make single-event latent geometry finite.
+    - Use phase-safe mono fold-down for multichannel source clips.
+    - Feed 5.1 LFE with a true ~120 Hz low-pass signal.
+    - Use circular azimuth statistics and export measured trajectories.
 
 Changelog v1.2:
     - 5.1: pan among real speakers only (L R C LS RS); the LFE is
@@ -343,7 +350,10 @@ def compute_latent_geometry(Z):
     periphery = dist_from_center / (np.max(dist_from_center) + 1e-8)
     dists = cdist(Z, Z, metric="euclidean")
     np.fill_diagonal(dists, np.inf)
-    median_dist = np.median(dists[dists < np.inf])
+    finite_d = dists[dists < np.inf]
+    # A one-event corpus has no pairwise distances. Keep the physics finite
+    # without changing the ordinary n>=2 path.
+    median_dist = float(np.median(finite_d)) if finite_d.size else 1.0
     return center, periphery, dists, median_dist
 
 
@@ -699,10 +709,25 @@ def distance_lowpass(signal, distance, sr):
     return lfilter(b, a, signal).astype(signal.dtype)
 
 
+def lfe_lowpass(signal, sr, cutoff_hz=120.0):
+    """Dedicated 5.1 LFE low-pass. LFE is non-directional bass content."""
+    import numpy as np
+    from scipy.signal import butter, lfilter
+
+    if len(signal) == 0:
+        return signal
+    nyq = 0.5 * float(sr)
+    cutoff = min(float(cutoff_hz), nyq * 0.45)
+    if cutoff <= 1.0 or nyq <= 2.0:
+        return signal.copy()
+    b, a = butter(2, cutoff / nyq, btype="low")
+    return lfilter(b, a, signal).astype(signal.dtype)
+
+
 def distance_reverb(signal, distance, sr, reverb_amount):
     """
-    Distance-dependent reverb tail using comb filters via lfilter.
-    More reverb for distant sources.
+    Distance-dependent comb-filter reverberation via lfilter.
+    More reverberant coloration for distant sources; output length is unchanged.
     """
     import numpy as np
     from scipy.signal import lfilter
@@ -749,7 +774,18 @@ def extract_event_clips(audio, events, sr):
         if audio.ndim == 1:
             clips.append(audio[s:e].copy())
         else:
-            clips.append(np.mean(audio[s:e], axis=1).copy())
+            seg = audio[s:e, :]
+            mono = np.mean(seg, axis=1)
+            if len(seg) > 0 and seg.shape[1] > 1:
+                ch_rms = np.sqrt(np.mean(seg.astype(np.float64) ** 2, axis=0))
+                strongest = int(np.argmax(ch_rms))
+                strongest_rms = float(ch_rms[strongest])
+                mono_rms = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2)))
+                # Preserve the ordinary mean fold-down, but avoid near-silence
+                # when channels are strongly anti-phase.
+                if strongest_rms > 1e-12 and mono_rms < 0.10 * strongest_rms:
+                    mono = seg[:, strongest]
+            clips.append(mono.copy())
     return clips
 
 
@@ -845,7 +881,7 @@ def reconstruct_spatial(clips, agent_histories, agents,
             # Special case for 5.1: route low frequencies to LFE
             if spatial_format == SPAT_51:
                 # LFE channel (index 3) gets a low-passed version
-                lfe_signal = distance_lowpass(processed, 0.95, sr)
+                lfe_signal = lfe_lowpass(processed, sr, 120.0)
                 lfe_gain = 0.15 * vol  # subtle LFE presence
 
             # Write to output channels
@@ -897,6 +933,40 @@ def reconstruct_spatial(clips, agent_histories, agents,
 # Stats
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _angular_difference_deg(a, b):
+    """Shortest unsigned angular difference in degrees."""
+    return abs(((float(a) - float(b) + 180.0) % 360.0) - 180.0)
+
+
+def _circular_mean_deg(values):
+    import numpy as np
+    if not values:
+        return 0.0
+    ang = np.deg2rad(np.asarray(values, dtype=float))
+    s = float(np.mean(np.sin(ang)))
+    c = float(np.mean(np.cos(ang)))
+    if abs(s) < 1e-12 and abs(c) < 1e-12:
+        mean = float(values[0]) % 360.0
+    else:
+        mean = float(np.rad2deg(np.arctan2(s, c)) % 360.0)
+    return 0.0 if mean >= 359.999999 else mean
+
+
+def _circular_span_deg(values):
+    """Width of the smallest circular arc containing all azimuths."""
+    import numpy as np
+    if len(values) <= 1:
+        return 0.0
+    a = np.sort(np.mod(np.asarray(values, dtype=float), 360.0))
+    gaps = np.diff(np.concatenate([a, [a[0] + 360.0]]))
+    return float(360.0 - np.max(gaps))
+
+
+def _circular_travel_deg(values):
+    return float(sum(_angular_difference_deg(values[i], values[i - 1])
+                     for i in range(1, len(values))))
+
+
 def write_stats(path, events, agents, agent_histories,
                 spatial_trajectories, Z, center, periphery,
                 losses, sr, out_duration, spatial_format,
@@ -929,12 +999,12 @@ def write_stats(path, events, agents, agent_histories,
             traj = spatial_trajectories[ai]
             azimuths = [t[0] for t in traj]
             distances = [t[1] for t in traj]
-            az_range = max(azimuths) - min(azimuths) if azimuths else 0
+            az_range = _circular_span_deg(azimuths)
             mean_dist = np.mean(distances) if distances else 0
 
-            # Spatial travel (total azimuth movement)
-            az_travel = sum(abs(azimuths[i] - azimuths[i - 1])
-                           for i in range(1, len(azimuths)))
+            # Spatial travel uses the shortest circular step, so 350 -> 10
+            # counts as 20 degrees rather than 340.
+            az_travel = _circular_travel_deg(azimuths)
 
             f.write("agent_%d_profile=%s\n" % (ai, profile_name))
             f.write("agent_%d_steps=%d\n" % (ai, n_steps))
@@ -944,8 +1014,19 @@ def write_stats(path, events, agents, agent_histories,
             f.write("agent_%d_az_travel=%.1f\n" % (ai, az_travel))
             f.write("agent_%d_mean_dist=%.3f\n" % (ai, mean_dist))
             # Mean azimuth for Praat spatial field visualization
-            mean_az = np.mean(azimuths) if azimuths else 180.0
+            mean_az = _circular_mean_deg(azimuths) if azimuths else 0.0
             f.write("agent_%d_mean_az=%.1f\n" % (ai, mean_az))
+
+            # Measured spatial trajectory for the Praat top-down plot.
+            stride = max(1, len(traj) // 60)
+            sampled = list(range(0, len(traj), stride))
+            if traj and (len(traj) - 1) not in sampled:
+                sampled.append(len(traj) - 1)
+            f.write("agent_%d_n_spat=%d\n" % (ai, len(sampled)))
+            for sj, ti in enumerate(sampled):
+                az, dist = traj[ti]
+                f.write("agent_%d_spat_%d=%.3f,%.4f\n" %
+                        (ai, sj, az, dist))
 
         f.write("total_unique_events=%d\n" % len(all_used))
 
@@ -1050,6 +1131,10 @@ def main():
 
     print("    Audio: %.2fs  SR=%d  Events=%d  Agents=%d" %
           (orig_dur, sr, len(events), num_agents))
+
+    if len(events) == 0:
+        print("ERROR: event table contains no usable events", file=sys.stderr)
+        sys.exit(1)
     print("    Spatial: %s (%dch) | Distance: %s | Reverb=%.2f" %
           (SPAT_NAMES[spat_format], n_channels,
            DIST_NAMES[dist_model], reverb_amt))
@@ -1102,8 +1187,8 @@ def main():
     for ai, (agent, traj) in enumerate(zip(agents, spatial_trajectories)):
         azimuths = [t[0] for t in traj]
         distances = [t[1] for t in traj]
-        print("    Agent %d: az=[%.0f°..%.0f°] dist=[%.2f..%.2f]" %
-              (ai, min(azimuths), max(azimuths),
+        print("    Agent %d: az_mean=%.0f° span=%.0f° dist=[%.2f..%.2f]" %
+              (ai, _circular_mean_deg(azimuths), _circular_span_deg(azimuths),
                min(distances), max(distances)))
 
     # ---- Spatial reconstruction ----
@@ -1131,8 +1216,7 @@ def main():
             traj_b = spatial_trajectories[bi]
             ml = min(len(traj_a), len(traj_b))
             if ml > 0:
-                sep = np.mean([min(abs(traj_a[s][0] - traj_b[s][0]),
-                                   360 - abs(traj_a[s][0] - traj_b[s][0]))
+                sep = np.mean([_angular_difference_deg(traj_a[s][0], traj_b[s][0])
                                for s in range(ml)])
                 print("    Spatial sep %d↔%d: %.0f°" % (ai, bi, sep))
 

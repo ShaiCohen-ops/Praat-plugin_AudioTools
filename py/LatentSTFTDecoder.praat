@@ -3,24 +3,25 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Staleness fix (delete stale output/stats before Python call)
+# Version: 1.4.1 (2026) - Musically focused two-layer interface with independent Processing/STFT profiles
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Latent STFT Decoder
 #
-#   Trains a convolutional Beta-VAE on log-magnitude STFT patches
-#   extracted from event-segmented audio, then navigates the latent
-#   space to synthesise new audio via decoded STFT patches.
+#   Trains a compact MLP Beta-VAE on downsampled log-magnitude STFT
+#   patches extracted from event-segmented audio, then navigates the
+#   latent space to synthesise new audio via decoded magnitude shapes.
 #
 #   Waveform reconstruction modes:
-#     borrow     — phase borrowed from nearest real event (default)
+#     borrow     — decoded magnitude shaped by a K-neighbour complex-STFT
+#                  mixture (phase comes from the real-event mixture)
 #     griffinlim — iterative Griffin-Lim phase reconstruction
 #
 #   Latent navigation modes:
 #     interpolate  — smooth cyclic interpolation through event latents
-#     random_walk  — random walk around the latent mean
+#     random_walk  — seeded walk from a real event, with occasional jumps
 #     drift        — directed coherent drift with momentum
 #
 # Dependencies (Python):
@@ -41,6 +42,11 @@ endif
 sound      = selected("Sound")
 soundName$ = selected$("Sound")
 
+# Praat 7+: allow script file/Python operations when trust is required.
+if praatVersion >= 7000
+    askForTrust()
+endif
+
 # ---- PATHS ----
 pluginDir$    = preferencesDirectory$ + "/plugin_AudioTools/"
 pythonScript$ = pluginDir$ + "py/latent_stft_decoder.py"
@@ -60,126 +66,185 @@ tempCSV$     = temporaryDirectory$ + "/temp_stftdec_events.csv"
 tempOutput$  = temporaryDirectory$ + "/temp_stftdec_output.wav"
 tempStats$   = temporaryDirectory$ + "/temp_stftdec_stats.txt"
 
-# ---- FORM  (window 1 - core + VAE + STFT) ----
-form Latent STFT Decoder v1.2
-    optionmenu Preset: 1
+# ---- MAIN FORM  (musical decisions only) ----
+form Latent STFT Decoder v1.4.1
+    optionmenu Processing_character: 2
+        option Fast
+        option Balanced
+        option Deep
         option Custom
-        option Quick (small, fast)
-        option Standard
-        option High quality
-    integer Latent_size 8
+    optionmenu STFT_character: 3
+        option Micro / Grain
+        option Transient
+        option Balanced
+        option Spectral
+        option Sustained
+        option Custom
+    optionmenu Navigation: 1
+        option Interpolate
+        option Random walk
+        option Drift
+    optionmenu Phase_reconstruction: 1
+        option Borrowed event phase
+        option Griffin-Lim
     real Duration_(0_=_original) 0
-    integer Seed 42
+    boolean Edit_details 0
     boolean Draw_visualization 1
     boolean Play_result 1
-    comment __ VAE Training ________________________________________________
-    real Beta_(KL_weight) 0.5
-    integer Epochs 30
-    integer Batch_size 8
-    comment __ STFT Settings ________________________________________________
-    integer N_fft 512
-    integer Hop_length 128
-    integer Patch_frames 32
 endform
 
-# ---- ADVANCED PARAMETERS  (window 2 - VAE grid + nav + output) ----
-beginPause: "Advanced Parameters - Latent STFT Decoder"
-    comment: "---- Preset override (overrides window 1 if changed) ----"
-    choice: "Preset2", 1
-        option: "keep window 1 preset"
-        option: "Quick (small, fast)"
-        option: "Standard"
-        option: "High quality"
-    comment: "---- VAE Grid  (smaller = faster; 32x16 is default) ----"
-    integer: "Vae_freq", 32
-    integer: "Vae_frames", 16
-    comment: "---- Latent Navigation ----"
-    choice: "Nav_mode", 1
-        option: "interpolate"
-        option: "random_walk"
-        option: "drift"
-    integer: "Nav_steps", 30
-    integer: "K_neighbors", 4
-    real: "Step_size", 0.30
-    real: "Temperature", 0.25
-    real: "P_jump", 0.05
-    real: "Visit_weight", 2.0
-    real: "Visit_decay", 0.92
-    comment: "---- Output Settings ----"
-    choice: "Normalize_mode", 3
-        option: "none"
-        option: "peak"
-        option: "rms"
-    choice: "Phase_mode", 1
-        option: "borrow"
-        option: "griffinlim"
-clicked = endPause: "Cancel", "OK", 2
-if clicked = 1
-    exitScript
+# ---------------------------------------------------------------------------
+# PROFILE DEFAULTS
+# The main form chooses musical character. Numerical DSP/ML parameters stay
+# hidden unless Custom/Edit details is requested.
+# ---------------------------------------------------------------------------
+
+# Common defaults (also starting values for Custom)
+latent_size  = 8
+beta         = 0.5
+epochs       = 30
+vae_freq     = 32
+vae_frames   = 16
+n_fft        = 512
+hop_length   = 128
+patch_frames = 32
+k_neighbors  = 4
+step_size    = 0.30
+temperature  = 0.25
+p_jump       = 0.05
+visit_weight = 2.0
+visit_decay  = 0.92
+normalize_mode = 3
+seed         = 42
+
+# Praat always supplies a concrete target duration; Python derives the actual
+# navigation step count from duration and the rendered STFT-segment geometry.
+nav_steps = 30
+
+# ---- PROCESSING CHARACTER  (VAE capacity/training only) ----
+if processing_character = 1
+    # Same VAE-side values as the former Quick preset.
+    latent_size = 6
+    beta        = 0.5
+    epochs      = 15
+    vae_freq    = 16
+    vae_frames  = 8
+    processingName$ = "Fast"
+elsif processing_character = 2
+    # Same VAE-side values as the former Standard preset.
+    latent_size = 8
+    beta        = 0.5
+    epochs      = 30
+    vae_freq    = 32
+    vae_frames  = 16
+    processingName$ = "Balanced"
+elsif processing_character = 3
+    # Same VAE-side values as the former High quality preset.
+    latent_size = 16
+    beta        = 0.5
+    epochs      = 60
+    vae_freq    = 48
+    vae_frames  = 24
+    processingName$ = "Deep"
+else
+    processingName$ = "Custom"
 endif
 
-# If window 2 preset was changed, it overrides window 1
-# preset2: 1=keep  2=Quick  3=Standard  4=HighQuality
-if preset2 > 1
-    preset = preset2
-endif
-
-# ---- PRESET APPLICATION ----
-if preset = 2
-    # Quick: tiny VAE grid, few epochs, small STFT — fastest option
-    latent_size  = 6
-    epochs       = 15
+# ---- STFT CHARACTER  (time/frequency behaviour only) ----
+if sTFT_character = 1
+    # Former Quick STFT geometry: short context, fast temporal renewal.
     n_fft        = 256
     hop_length   = 64
     patch_frames = 16
-    vae_freq     = 16
-    vae_frames   = 8
-    nav_steps    = 20
-    presetName$  = "Quick"
-elsif preset = 3
-    # Standard: balanced speed/quality
-    latent_size  = 8
-    epochs       = 30
+    stftName$    = "Micro/Grain"
+elsif sTFT_character = 2
+    # Same fine FFT/hop as Micro, but twice the temporal context.
+    n_fft        = 256
+    hop_length   = 64
+    patch_frames = 32
+    stftName$    = "Transient"
+elsif sTFT_character = 3
+    # Former Standard STFT geometry.
     n_fft        = 512
     hop_length   = 128
     patch_frames = 32
-    vae_freq     = 32
-    vae_frames   = 16
-    nav_steps    = 30
-    presetName$  = "Standard"
-elsif preset = 4
-    # High quality: larger VAE grid, more epochs
-    latent_size  = 16
-    epochs       = 60
+    stftName$    = "Balanced"
+elsif sTFT_character = 4
+    # Former High quality STFT geometry: larger spectral window/context.
     n_fft        = 1024
     hop_length   = 256
     patch_frames = 64
-    vae_freq     = 48
-    vae_frames   = 24
-    nav_steps    = 50
-    presetName$  = "HighQuality"
+    stftName$    = "Spectral"
+elsif sTFT_character = 5
+    # Same large FFT/context as Spectral, denser overlap for smoother sustain.
+    n_fft        = 1024
+    hop_length   = 128
+    patch_frames = 64
+    stftName$    = "Sustained"
 else
-    presetName$  = "Custom"
+    stftName$    = "Custom"
 endif
+
+# ---- MAP MUSICAL MENUS ----
+# navigation: 1=interpolate 2=random_walk 3=drift
+nav_mode = navigation
+
+# phase_reconstruction: 1=borrow 2=griffinlim
+phase_mode = phase_reconstruction
+
+# ---- OPTIONAL DETAILS ----
+# Custom profiles automatically open details; otherwise the second window is
+# skipped unless explicitly requested.
+openDetails = edit_details
+if processing_character = 4 or sTFT_character = 6
+    openDetails = 1
+endif
+
+if openDetails
+    beginPause: "Details - Latent STFT Decoder"
+        comment: "---- Learning / VAE ----"
+        integer: "Latent_size", latent_size
+        real: "Beta_(KL_weight)", beta
+        integer: "Epochs", epochs
+        integer: "Vae_freq", vae_freq
+        integer: "Vae_frames", vae_frames
+        comment: "---- STFT geometry ----"
+        integer: "N_fft", n_fft
+        integer: "Hop_length", hop_length
+        integer: "Patch_frames", patch_frames
+        comment: "---- Reconstruction / source continuity ----"
+        integer: "K_neighbors", k_neighbors
+        real: "Visit_weight", visit_weight
+        real: "Visit_decay", visit_decay
+        comment: "---- Motion (Random walk / Drift only) ----"
+        real: "Step_size", step_size
+        real: "Temperature", temperature
+        real: "P_jump", p_jump
+        comment: "---- Output / reproducibility ----"
+        choice: "Normalize_mode", normalize_mode
+            option: "none"
+            option: "peak"
+            option: "rms"
+        integer: "Seed", seed
+    clicked = endPause: "Cancel", "Render", 2
+    if clicked = 1
+        exitScript
+    endif
+endif
+
 
 # ---- CLAMP VALUES ----
 if latent_size < 2
     latent_size = 2
 endif
-if latent_size > 64
-    latent_size = 64
+if latent_size > 32
+    latent_size = 32
 endif
 if epochs < 5
     epochs = 5
 endif
 if epochs > 500
     epochs = 500
-endif
-if batch_size < 1
-    batch_size = 1
-endif
-if batch_size > 64
-    batch_size = 64
 endif
 if n_fft < 64
     n_fft = 64
@@ -290,9 +355,10 @@ endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Latent STFT Decoder v1.1 ==="
+writeInfoLine:  "=== Latent STFT Decoder v1.4.1 ==="
 appendInfoLine: "Input:       ", soundName$
-appendInfoLine: "Preset:      ", presetName$
+appendInfoLine: "Processing:  ", processingName$
+appendInfoLine: "STFT char.:  ", stftName$
 appendInfoLine: ""
 appendInfoLine: "Latent size: ", latent_size
 appendInfoLine: "Beta (KL):   ", fixed$(beta, 3)
@@ -301,7 +367,7 @@ appendInfoLine: "Duration:    ", if duration > 0 then fixed$(duration, 1) else "
 appendInfoLine: "Seed:        ", seed
 appendInfoLine: ""
 appendInfoLine: "STFT: n_fft=", n_fft, "  hop=", hop_length, "  patch_frames=", patch_frames
-appendInfoLine: "Nav:  mode=",  navModeStr$, "  steps=", nav_steps,
+appendInfoLine: "Nav:  mode=", navModeStr$, "  steps=auto from duration/STFT",
     ... "  step_size=", fixed$(step_size, 3), "  temp=", fixed$(temperature, 3)
 appendInfoLine: "Phase: ", phaseModeStr$, "  Normalize: ", normModeStr$
 appendInfoLine: ""
@@ -326,6 +392,11 @@ else
     Copy: "analysisMono"
     analysisMono = selected("Sound")
 endif
+
+# Event times exported to Python are relative to the file start (0..duration).
+# Shift only the analysis copy so non-zero Sound xmin cannot offset boundaries.
+selectObject: analysisMono
+Shift times to: "start time", 0
 
 selectObject: analysisMono
 pitchObj = To Pitch: 0.01, 75, 600
@@ -546,7 +617,7 @@ appendInfoLine: "  VAE: latent=", latent_size, "  epochs=", epochs,
     ... "  beta=", fixed$(beta, 3)
 appendInfoLine: "  STFT: n_fft=", n_fft, "  hop=", hop_length,
     ... "  frames=", patch_frames
-appendInfoLine: "  Nav: ", navModeStr$, "  steps=", nav_steps
+appendInfoLine: "  Nav: ", navModeStr$, "  steps=auto from duration/STFT"
 
 pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempInput$  + """"
@@ -758,30 +829,32 @@ if draw_visualization
 
     # === Title ===
     Select outer viewport: 0, 8, 0, 0.5
+    Select inner viewport: 0, 8, 0, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Latent STFT Decoder##"
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    subtitleStr$ = soundName$ + " | " + presetName$
+    Text: 0.5, "centre", 0.72, "half", "##Latent STFT Decoder v1.4.1##"
+    Font size: 8
+    Colour: "{0.34,0.38,0.48}"
+    subtitleStr$ = soundName$ + " | " + processingName$ + " / " + stftName$
         ... + " | " + navModeStr$ + " | latent=" + string$(latent_size)
         ... + " | n_fft=" + string$(n_fft)
-    Text: 0.5, "centre", -1.2, "half", subtitleStr$
+    Text: 0.5, "centre", 0.30, "half", subtitleStr$
 
     # === Input Waveform ===
     Select outer viewport: 0, 8, 0.55, 1.45
     Select inner viewport: 0.6, 7.7, 0.60, 1.40
     selectObject: sound
-    Colour: "{0.5, 0.5, 0.5}"
+    Colour: "{0.36,0.39,0.45}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Original"
-    Colour: "{0.8, 0.3, 0.3}"
-    Line width: 1
+    Select inner viewport: 0.6, 7.7, 0.60, 1.40
     Axes: 0, dur, -1, 1
+    Colour: "{0.55,0.65,0.82}"
+    Line width: 1
     for iEv from 1 to nEvents
         evBound = evS_'iEv'
         if evBound > 0 and evBound < dur
@@ -794,12 +867,12 @@ if draw_visualization
     Select outer viewport: 0, 8, 1.45, 2.35
     Select inner viewport: 0.6, 7.7, 1.50, 2.30
     selectObject: resultSound
-    Colour: "{0.2, 0.55, 0.75}"
+    Colour: "{0.20,0.40,0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "STFT dec"
+    Text left: "yes", "Decoded"
     Text bottom: "yes", "Time (s)"
 
     # === Input Spectrogram ===
@@ -837,7 +910,7 @@ if draw_visualization
     Font size: 6
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "STFT-decoded output spectrogram (L channel)"
+    Text top: "no", "Decoded magnitude + reconstructed phase (channel 1)"
     removeObject: specOut, tmpOut
 
     # === Latent Navigation Trajectory ===
@@ -914,15 +987,17 @@ if draw_visualization
         axMaxY = axMaxY + rangeY * 0.1
 
         Axes: axMinX, axMaxX, axMinY, axMaxY
-        Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
+        Paint rectangle: "{0.955,0.965,0.985}", axMinX, axMaxX, axMinY, axMaxY
 
-        # Event positions as grey circles
+        # Event positions as small axis-aware squares (safe across viewports).
+        markDX = (axMaxX - axMinX) * 0.008
+        markDY = (axMaxY - axMinY) * 0.012
         for iEP from 0 to nSEvPts - 1
-            Paint circle (mm): "{0.75, 0.75, 0.75}", sep_'iEP'_x, sep_'iEP'_y, 1.2
+            Paint rectangle: "{0.70,0.73,0.79}", sep_'iEP'_x - markDX, sep_'iEP'_x + markDX, sep_'iEP'_y - markDY, sep_'iEP'_y + markDY
         endfor
 
         # Trajectory path
-        Colour: "{0.2, 0.55, 0.75}"
+        Colour: "{0.20,0.40,0.75}"
         Line width: 2
         for iTP from 1 to nSTrajPts - 1
             iPrev = iTP - 1
@@ -930,11 +1005,13 @@ if draw_visualization
         endfor
         Line width: 1
 
-        # Start/end markers
+        # Start/end markers: blue start, slate-violet end.
         if nSTrajPts > 0
-            Paint circle (mm): "{0.2, 0.7, 0.3}", stp_0_x, stp_0_y, 2.0
+            bigDX = markDX * 1.8
+            bigDY = markDY * 1.8
+            Paint rectangle: "{0.20,0.40,0.75}", stp_0_x - bigDX, stp_0_x + bigDX, stp_0_y - bigDY, stp_0_y + bigDY
             iLast = nSTrajPts - 1
-            Paint circle (mm): "{0.8, 0.2, 0.2}", stp_'iLast'_x, stp_'iLast'_y, 2.0
+            Paint rectangle: "{0.46,0.39,0.64}", stp_'iLast'_x - bigDX, stp_'iLast'_x + bigDX, stp_'iLast'_y - bigDY, stp_'iLast'_y + bigDY
         endif
 
         Colour: "Black"
@@ -942,10 +1019,10 @@ if draw_visualization
         Font size: 6
         Text left: "yes", "PC2"
         Text bottom: "yes", "PC1"
-        Text top: "no", "Latent trajectory (" + navModeStat$ + " " + nStepsStat$ + " steps) — ##S##=start ##E##=end"
+        Text top: "no", "Measured latent trajectory | blue=start, violet=end"
     else
         Axes: 0, 1, 0, 1
-        Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
+        Paint rectangle: "{0.955,0.965,0.985}", 0, 1, 0, 1
         Font size: 7
         Colour: "{0.5, 0.5, 0.5}"
         Text: 0.5, "centre", 0.5, "half", "(trajectory data not available)"
@@ -957,24 +1034,24 @@ if draw_visualization
     Select outer viewport: 0, 8, 6.45, 8.0
     Select inner viewport: 0.6, 7.7, 6.50, 7.95
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.945,0.955,0.975}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.92, "half", "Summary:"
+    Text: 0.02, "left", 0.92, "half", "events -> STFT log-mag -> MLP beta-VAE -> latent path -> decoded magnitude + phase -> iSTFT"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
     Text: 0.02, "left", 0.76, "half",
         ... navModeStat$ + " " + nStepsStat$ + " steps | "
         ... + phaseModeStat$ + " | Events=" + nEvStat$
         ... + " | Dur: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s"
-    Colour: "{0.3, 0.5, 0.8}"
+    Colour: "{0.20,0.40,0.75}"
     Text: 0.02, "left", 0.58, "half",
         ... "STFT: fft=" + nFftStat$ + " hop=" + hopStat$
         ... + " frames=" + patchFStat$ + " bins=" + freqBinsStat$
         ... + " | Norm=" + normModeStat$
         ... + " | RMS: " + rmsInputStat$ + "->" + rmsOutputStat$
-    Colour: "{0.6, 0.3, 0.7}"
+    Colour: "{0.46,0.39,0.64}"
     Text: 0.02, "left", 0.40, "half",
         ... "VAE: lat=" + latentStat$ + " beta=" + betaStat$
         ... + " ep=" + epochsStat$
@@ -1013,8 +1090,9 @@ endif
 
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
-appendInfoLine: "Output:     ", soundName$, "_stftdec (stereo)"
-appendInfoLine: "Preset:     ", presetName$
+appendInfoLine: "Output:     ", soundName$, "_stftdec (dual mono)"
+appendInfoLine: "Processing: ", processingName$
+appendInfoLine: "STFT char.: ", stftName$
 appendInfoLine: ""
 appendInfoLine: "Events:     ", nEvStat$
 appendInfoLine: "Nav steps:  ", nStepsStat$, " | mode: ", navModeStat$

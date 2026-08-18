@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) — Unified Cross-Platform
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,6 +26,13 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.3:
+#   - Preserve the v1.2 agent/physics/spatial law for ordinary inputs
+#   - Fix single-event geometry and multichannel anti-phase fold-down
+#   - 5.1 LFE is now a true non-directional ~120 Hz bass feed
+#   - Circular azimuth statistics + measured trajectory visualization
+#   - Praat 7 trust guard and non-zero xmin-safe analysis
+#
 # Changelog v1.2:
 #   - 5.1: Python pans among real speakers only (LFE fed separately);
 #     front/center content is no longer routed into the LFE and lost
@@ -41,6 +48,11 @@ endif
 
 sound = selected("Sound")
 soundName$ = selected$("Sound")
+
+# Praat 7 full-trust guard: this script writes temp files and calls Python.
+if praatVersion >= 7000
+    askForTrust()
+endif
 
 # ---- OS-SPECIFIC PYTHON DISCOVERY ----
 if macintosh
@@ -113,7 +125,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Spat v1.2 — Agent-Based Spatialization
+form Latent Spat v1.3 — Agent-Based Spatialization
     optionmenu Preset: 1
         option Custom
         option Stereo duo
@@ -254,7 +266,7 @@ else
 endif
 
 # ---- INFO ----
-writeInfoLine:  "=== Latent Spat v1.2 — Agent-Based Spatialization ==="
+writeInfoLine:  "=== Latent Spat v1.3 — Agent-Based Spatialization ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -325,6 +337,11 @@ else
     Copy: "analysisMono"
     analysisMono = selected("Sound")
 endif
+
+# Exported WAV time starts at sample 0. Put the analysis copy on that same
+# time base so a non-zero Sound xmin cannot offset event boundaries.
+selectObject: analysisMono
+Shift times to: "start time", 0
 
 selectObject: analysisMono
 pitchObj = To Pitch: 0.01, 75, 600
@@ -572,6 +589,7 @@ for iA from 0 to 5
     agAzTravel_'iA'$ = "?"
     agMeanDist_'iA'$ = "?"
     agMeanAz_'iA'$ = "?"
+    agNSpat_'iA' = 0
 endfor
 
 for iA from 0 to 5
@@ -628,6 +646,29 @@ if fileReadable(tempStats$)
         agMeanDist_'iA'$ = parseStatLine.result$
         @parseStatLine: statsText$, "agent_" + string$(iA) + "_mean_az="
         agMeanAz_'iA'$ = parseStatLine.result$
+
+        @parseStatLine: statsText$, "agent_" + string$(iA) + "_n_spat="
+        nSpatRaw$ = parseStatLine.result$
+        agNSpat_'iA' = 0
+        if nSpatRaw$ <> "?"
+            agNSpat_'iA' = number(nSpatRaw$)
+        endif
+        if agNSpat_'iA' > 61
+            agNSpat_'iA' = 61
+        endif
+        for iP from 0 to agNSpat_'iA' - 1
+            @parseStatLine: statsText$, "agent_" + string$(iA) + "_spat_" + string$(iP) + "="
+            spatRaw$ = parseStatLine.result$
+            agSpat_'iA'_'iP'_az = 0
+            agSpat_'iA'_'iP'_dist = 0.55
+            if spatRaw$ <> "?"
+                comma = index(spatRaw$, ",")
+                if comma > 0
+                    agSpat_'iA'_'iP'_az = number(left$(spatRaw$, comma - 1))
+                    agSpat_'iA'_'iP'_dist = number(mid$(spatRaw$, comma + 1, length(spatRaw$) - comma))
+                endif
+            endif
+        endfor
     endfor
 
     for iA from 0 to number_of_agents - 2
@@ -652,34 +693,43 @@ if draw_visualization
     Select outer viewport: 0, 8, 0, 8
 
     # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.55
+    Select inner viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Latent Spat — Agent-Based Spatialization##"
-    Font size: 9
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + spatFormatStat$ + " " + nChannelsStat$ + "ch | " + distModelStat$
+    Text: 0.5, "centre", 0.72, "half", "##Latent Spat — Agent-Based Spatialization##"
+    Font size: 8
+    Colour: "{0.34,0.38,0.48}"
+    Text: 0.5, "centre", 0.22, "half", soundName$ + " | " + presetName$ + " | " + spatFormatStat$ + " " + nChannelsStat$ + "ch | latent agents -> azimuth/distance -> VBAP"
 
     # === Input Waveform ===
     Select outer viewport: 0, 8, 0.6, 1.5
     Select inner viewport: 0.6, 7.7, 0.65, 1.45
     selectObject: sound
-    Colour: "{0.5, 0.5, 0.5}"
+    Copy: "visOriginal"
+    visOriginal = selected("Sound")
+    Shift times to: "start time", 0
+    Colour: "{0.46,0.49,0.56}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Original"
-    Colour: "{0.8, 0.3, 0.3}"
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.7, 0.65, 1.45
     Axes: 0, dur, -1, 1
+    Colour: "{0.20,0.40,0.75}"
+    Line width: 1
     for iEv from 1 to nEvents
         evBound = evS_'iEv'
         if evBound > 0 and evBound < dur
             Draw line: evBound, -0.9, evBound, 0.9
         endif
     endfor
+    Colour: "Black"
     Text top: "no", string$(nEvents) + " events | " + fixed$(dur, 2) + " s"
+    removeObject: visOriginal
 
     # === Output Waveform (ch 1) ===
     Select outer viewport: 0, 8, 1.5, 2.4
@@ -687,7 +737,7 @@ if draw_visualization
     selectObject: resultSound
     Extract one channel: 1
     tmpCh1 = selected("Sound")
-    Colour: "{0.3, 0.5, 0.7}"
+    Colour: "{0.20,0.40,0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
@@ -696,68 +746,23 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     removeObject: tmpCh1
 
-    # === Spatial Field Display (top-down circle) ===
+    # === Measured Spatial Field (top-down) ===
     Select outer viewport: 0, 4, 2.5, 5.1
     Select inner viewport: 0.4, 3.8, 2.7, 4.9
-
     Axes: -1.5, 1.5, -1.5, 1.5
 
-    Paint rectangle: "{0.97, 0.97, 0.98}", -1.5, 1.5, -1.5, 1.5
-    Colour: "{0.85, 0.85, 0.90}"
+    Paint rectangle: "{0.965,0.975,0.990}", -1.5, 1.5, -1.5, 1.5
+    Colour: "{0.78,0.82,0.88}"
     Draw circle: 0, 0, 1.0
-    Colour: "{0.9, 0.9, 0.92}"
+    Colour: "{0.88,0.90,0.94}"
     Draw circle: 0, 0, 0.5
 
-    Colour: "Black"
-    Font size: 7
-    Text: 0, "centre", 0, "half", "+"
-
-    if spatial_format = 1
-        nSpk = 2
-        spkAz_1 = 330
-        spkAz_2 = 30
-    elsif spatial_format = 2
-        nSpk = 4
-        spkAz_1 = 315
-        spkAz_2 = 45
-        spkAz_3 = 225
-        spkAz_4 = 135
-    elsif spatial_format = 3
-        nSpk = 6
-        spkAz_1 = 330
-        spkAz_2 = 30
-        spkAz_3 = 0
-        spkAz_4 = 0
-        spkAz_5 = 240
-        spkAz_6 = 120
-    else
-        nSpk = 8
-        spkAz_1 = 0
-        spkAz_2 = 45
-        spkAz_3 = 90
-        spkAz_4 = 135
-        spkAz_5 = 180
-        spkAz_6 = 225
-        spkAz_7 = 270
-        spkAz_8 = 315
-    endif
-
-    Colour: "{0.6, 0.6, 0.6}"
-    Font size: 6
-    for iSpk from 1 to nSpk
-        thisAz = spkAz_'iSpk'
-        azRad = (90 - thisAz) * pi / 180
-        sx = 1.2 * cos(azRad)
-        sy = 1.2 * sin(azRad)
-        Draw rectangle: sx - 0.06, sx + 0.06, sy - 0.06, sy + 0.06
-    endfor
-
-    agCol_0$ = "{0.2, 0.4, 0.7}"
-    agCol_1$ = "{0.7, 0.3, 0.2}"
-    agCol_2$ = "{0.3, 0.6, 0.3}"
-    agCol_3$ = "{0.6, 0.4, 0.6}"
-    agCol_4$ = "{0.7, 0.6, 0.2}"
-    agCol_5$ = "{0.4, 0.6, 0.7}"
+    agCol_0$ = "{0.20,0.40,0.75}"
+    agCol_1$ = "{0.18,0.58,0.62}"
+    agCol_2$ = "{0.42,0.48,0.62}"
+    agCol_3$ = "{0.36,0.34,0.62}"
+    agCol_4$ = "{0.27,0.52,0.68}"
+    agCol_5$ = "{0.50,0.44,0.64}"
 
     agSymb_0$ = "C"
     agSymb_1$ = "F"
@@ -766,57 +771,149 @@ if draw_visualization
     agSymb_4$ = "F"
     agSymb_5$ = "S"
 
-    Font size: 8
+    # Draw the measured trajectory of each agent first. Distance is radial:
+    # close=centre, far=edge; azimuth 0 deg is front/top.
+    for iA from 0 to number_of_agents - 1
+        thisCol$ = agCol_'iA'$
+        nPath = agNSpat_'iA'
+        if nPath > 1
+            Colour: thisCol$
+            Line width: 1
+            for iP from 1 to nPath - 1
+                prevP = iP - 1
+                az0 = agSpat_'iA'_'prevP'_az
+                d0 = agSpat_'iA'_'prevP'_dist
+                az1 = agSpat_'iA'_'iP'_az
+                d1 = agSpat_'iA'_'iP'_dist
+                r0 = d0
+                r1 = d1
+                a0 = (90 - az0) * pi / 180
+                a1 = (90 - az1) * pi / 180
+                x0 = r0 * cos(a0)
+                y0 = r0 * sin(a0)
+                x1 = r1 * cos(a1)
+                y1 = r1 * sin(a1)
+                # Do not draw a chord across the whole room when the numeric
+                # azimuth representation crosses 0/360.
+                dAz = abs(az1 - az0)
+                if dAz > 180
+                    dAz = 360 - dAz
+                endif
+                if dAz < 90
+                    Draw line: x0, y0, x1, y1
+                endif
+            endfor
+        endif
+    endfor
+
+    # Directional speaker layout. LFE is deliberately not positioned at 0 deg:
+    # it is a non-directional bass feed, not a VBAP speaker.
+    if spatial_format = 1
+        nSpkDraw = 2
+        spkAz_1 = 330
+        spkAz_2 = 30
+        spkLab_1$ = "L"
+        spkLab_2$ = "R"
+    elsif spatial_format = 2
+        nSpkDraw = 4
+        spkAz_1 = 315
+        spkAz_2 = 45
+        spkAz_3 = 225
+        spkAz_4 = 135
+        spkLab_1$ = "FL"
+        spkLab_2$ = "FR"
+        spkLab_3$ = "RL"
+        spkLab_4$ = "RR"
+    elsif spatial_format = 3
+        nSpkDraw = 5
+        spkAz_1 = 330
+        spkAz_2 = 30
+        spkAz_3 = 0
+        spkAz_4 = 240
+        spkAz_5 = 120
+        spkLab_1$ = "L"
+        spkLab_2$ = "R"
+        spkLab_3$ = "C"
+        spkLab_4$ = "LS"
+        spkLab_5$ = "RS"
+    else
+        nSpkDraw = 8
+        spkAz_1 = 0
+        spkAz_2 = 45
+        spkAz_3 = 90
+        spkAz_4 = 135
+        spkAz_5 = 180
+        spkAz_6 = 225
+        spkAz_7 = 270
+        spkAz_8 = 315
+        spkLab_1$ = "F"
+        spkLab_2$ = "FR"
+        spkLab_3$ = "R"
+        spkLab_4$ = "RR"
+        spkLab_5$ = "B"
+        spkLab_6$ = "RL"
+        spkLab_7$ = "L"
+        spkLab_8$ = "FL"
+    endif
+
+    for iSpk from 1 to nSpkDraw
+        thisAz = spkAz_'iSpk'
+        azRad = (90 - thisAz) * pi / 180
+        sx = 1.18 * cos(azRad)
+        sy = 1.18 * sin(azRad)
+        Paint rectangle: "{0.70,0.74,0.80}", sx - 0.045, sx + 0.045, sy - 0.045, sy + 0.045
+    endfor
+
+    # Mean measured position for each agent.
     for iA from 0 to number_of_agents - 1
         thisCol$ = agCol_'iA'$
         thisSymb$ = agSymb_'iA'$
-
-        azRangeStr$ = agAzRange_'iA'$
-        azTravelStr$ = agAzTravel_'iA'$
-        distStr$ = agMeanDist_'iA'$
-
-        if distStr$ <> "?"
-            agDist = number(distStr$)
+        if agMeanDist_'iA'$ <> "?"
+            agDist = number(agMeanDist_'iA'$)
         else
-            agDist = 0.5
+            agDist = 0.55
         endif
-
-        azStr$ = agMeanAz_'iA'$
-        if azStr$ <> "?"
-            estAz = number(azStr$)
+        if agMeanAz_'iA'$ <> "?"
+            estAz = number(agMeanAz_'iA'$)
         else
-            if iA mod 3 = 0
-                estAz = 150
-            elsif iA mod 3 = 1
-                estAz = 300
-            else
-                estAz = 30
-            endif
+            estAz = 0
         endif
-
         azRad = (90 - estAz) * pi / 180
-        r = agDist * 1.0
-        ax = r * cos(azRad)
-        ay = r * sin(azRad)
-
-        Colour: thisCol$
-        Draw circle: ax, ay, 0.12
-        Colour: "White"
-        Text: ax, "centre", ay, "half", thisSymb$
+        ax = agDist * cos(azRad)
+        ay = agDist * sin(azRad)
+        Paint rectangle: thisCol$, ax - 0.055, ax + 0.055, ay - 0.055, ay + 0.055
     endfor
 
+    # Labels are drawn last so text/viewport state cannot affect data paths.
+    Select outer viewport: 0, 4, 2.5, 5.1
+    Select inner viewport: 0.4, 3.8, 2.7, 4.9
+    Axes: -1.5, 1.5, -1.5, 1.5
     Colour: "Black"
-    Draw inner box
+    Font size: 5
+    for iSpk from 1 to nSpkDraw
+        thisAz = spkAz_'iSpk'
+        azRad = (90 - thisAz) * pi / 180
+        tx = 1.36 * cos(azRad)
+        ty = 1.36 * sin(azRad)
+        Text: tx, "centre", ty, "half", spkLab_'iSpk'$
+    endfor
+    if spatial_format = 3
+        Colour: "{0.34,0.38,0.48}"
+        Text: -1.42, "left", -1.35, "half", "LFE <120 Hz (non-directional)"
+    endif
+    Colour: "Black"
     Font size: 6
-    Text top: "no", "Spatial field (top-down)"
-    Text bottom: "yes", "C=Cantus  F=Florid  S=Shadow"
+    Text: 0, "centre", 1.45, "half", "front"
+    Draw inner box
+    Text top: "no", "Measured spatial trajectories"
+    Text bottom: "yes", "radius = distance | square = mean agent position"
 
     # === Agent Spatial Stats ===
     Select outer viewport: 4, 8, 2.5, 5.1
     Select inner viewport: 4.2, 7.7, 2.7, 4.9
 
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.93, 0.96}", 0, 1, 0, 1
+    Paint rectangle: "{0.945,0.955,0.975}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
@@ -844,7 +941,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 5.3, 6.1
 
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.93, 0.93}", 0, 1, 0, 1
+    Paint rectangle: "{0.955,0.965,0.980}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
@@ -878,21 +975,21 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 6.5, 7.8
 
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.945,0.955,0.975}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
     Text: 0.02, "left", 0.92, "half", "Summary:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.75, "half", "Format: " + spatFormatStat$ + " (" + nChannelsStat$ + "ch) | Distance: " + distModelStat$ + " | Reverb=" + reverbStat$
-    Text: 0.02, "left", 0.55, "half", "Events: " + nEvStat$ + " | Unique used: " + totalUnique$ + " | Mean dur: " + meanEvDur$ + " s"
-    Text: 0.02, "left", 0.35, "half", "AE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
-    Text: 0.02, "left", 0.15, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | Output channels: " + string$(nChOut)
+    Text: 0.02, "left", 0.75, "half", "Agents -> latent PCA -> azimuth/distance -> " + spatFormatStat$ + " VBAP | " + distModelStat$
+    Text: 0.02, "left", 0.55, "half", "Events: " + nEvStat$ + " | Unique used: " + totalUnique$ + " | Mean dur: " + meanEvDur$ + " s | Reverb=" + reverbStat$
+    Text: 0.02, "left", 0.35, "half", "AE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size) + " | Rigidity=" + fixed$(counterpoint_rigidity, 2) + " | Speed=" + fixed$(speed, 2)
+    Text: 0.02, "left", 0.15, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | Output channels: " + string$(nChOut) + " | Seed=" + string$(seed)
 
     if warningStat$ <> "?" and warningStat$ <> ""
-        Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.02, "left", -0.02, "half", "Warning: " + warningStat$
+        Colour: "{0.70,0.20,0.20}"
+        Text: 0.62, "left", 0.15, "half", "Warning: " + warningStat$
     endif
 
     Colour: "Black"

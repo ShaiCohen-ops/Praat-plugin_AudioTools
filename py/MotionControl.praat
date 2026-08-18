@@ -3,35 +3,29 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Motion-Controlled Sound Transformation
+#   Motion Control: gesture-to-sound mapping with optional live preview.
 #
-#   Launches a Python worker that opens the webcam, captures 10 seconds
-#   of free-hand motion (after a 2-second background calibration), and
-#   extracts three normalised control channels via frame differencing
-#   and centroid tracking.  Praat reads the returned CSV and applies
-#   three parallel offline transformations to the selected Sound:
+#   The Python worker opens the webcam, calibrates a background model, captures
+#   motion, and derives normalized gesture sources: energy, vertical/horizontal
+#   position, speed, stillness, radius from centre, and acceleration. Four
+#   user-editable mapping slots route those sources to amplitude, pitch,
+#   spectral brightness, or equal-power stereo pan.
 #
-#     motion energy       →  amplitude envelope  (AmplitudeTier)
-#     vertical position   →  pitch contour        (Manipulation + PitchTier)
-#     horizontal position →  spectral brightness  (HPF modulation)
-#
-#   The pipeline is entirely file-based — no sockets, no OSC, no
-#   realtime streaming between Praat and Python.
+#   Python uses one shared mapping graph for live preview and offline render.
+#   Live source normalization is causal; offline normalization is take-relative,
+#   so live audio is a responsive rehearsal monitor rather than a sample-exact
+#   preview. The final pitch stage moves only original PitchTier points, so
+#   unvoiced material stays unvoiced. A failed camera capture bypasses transform.
 #
 #   Python dependencies:
 #     numpy, opencv-python
-#     Install:  pip install numpy opencv-python
-#
-#   Brightness method:
-#     A high-pass filtered copy of the sound (above ~2 kHz) is
-#     added or subtracted in proportion to the horizontal position.
-#     Right hand → add HPF → brighter; Left → subtract HPF → darker;
-#     Centre → no change.  This is time-varying and artifact-free.
+#     Optional live audio: sounddevice
+#     Install:  pip install numpy opencv-python sounddevice
 #
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
@@ -47,6 +41,12 @@ endif
 
 sound      = selected("Sound")
 soundName$ = selected$("Sound")
+
+# Praat 7 introduced full-trust checks for filesystem/system access. Praat 6.x
+# does not know askForTrust(), so never parse/call it there.
+if praatVersion >= 7000
+    askForTrust()
+endif
 
 # ---- OS-Specific Python Discovery ----
 if macintosh
@@ -83,6 +83,7 @@ tempControl$ = temporaryDirectory$ + "/temp_motctrl_control.csv"
 tempStats$   = temporaryDirectory$ + "/temp_motctrl_stats.txt"
 tempDone$    = temporaryDirectory$ + "/temp_motctrl_done.ok"
 tempProbe$   = temporaryDirectory$ + "/temp_motctrl_probe.ok"
+tempLiveWav$ = temporaryDirectory$ + "/temp_motctrl_live.wav"
 
 # Forward-slash version of probe path for the inline Python one-liner
 tempProbeJ$  = replace_regex$(tempProbe$, "\\", "/", 0)
@@ -101,6 +102,9 @@ procedure cleanUpTempFiles
     if fileReadable(tempProbe$)
         deleteFile: tempProbe$
     endif
+    if fileReadable(tempLiveWav$)
+        deleteFile: tempLiveWav$
+    endif
 endproc
 
 @cleanUpTempFiles
@@ -108,89 +112,317 @@ endproc
 # ===========================================================================
 # FORM
 # ===========================================================================
-form Motion-Controlled Sound Transformation v1.0
-    optionmenu Preset: 3
-        option Custom
-        option Subtle gesture
-        option Expressive performer
-        option Wild motion
+form Motion Control v1.4
+    optionmenu Performance_character: 2
+        option Subtle
+        option Expressive
+        option Spatial
+        option Spectral
+        option Kinetic
+        option Wild
         option Meditative
-    real    Pitch_range_st 6.0
-    real    Amplitude_min 0.20
-    real    Amplitude_max 1.00
-    real    Brightness_range 0.80
-    integer Smooth_frames 5
-    integer Control_fps 25
+        option Custom
+    boolean Live_audio_during_capture 1
+    optionmenu Live_response: 2
+        option Direct
+        option Smooth
+    boolean Edit_mappings 0
+    boolean Edit_details 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
-# ---- PRESETS ----
-# Each preset overrides ALL parameters for a consistent character.
-if preset = 2
-    # Small, refined gestures — gentle everything
-    pitch_range_st   = 3.0
-    amplitude_min    = 0.50
-    amplitude_max    = 1.00
-    brightness_range = 0.40
-    smooth_frames    = 9
-    control_fps      = 25
-    presetName$      = "SubtleGesture"
-elsif preset = 3
-    # Balanced expressive range — good starting point
-    pitch_range_st   = 6.0
-    amplitude_min    = 0.20
-    amplitude_max    = 1.00
-    brightness_range = 0.80
-    smooth_frames    = 5
-    control_fps      = 25
-    presetName$      = "ExpressivePerformer"
-elsif preset = 4
-    # Dramatic, wide-range, snappy response
-    pitch_range_st   = 12.0
-    amplitude_min    = 0.08
-    amplitude_max    = 1.00
-    brightness_range = 1.20
-    smooth_frames    = 3
-    control_fps      = 25
-    presetName$      = "WildMotion"
-elsif preset = 5
-    # Very slow, narrow, inertia-heavy — drone and sustained-tone work
-    pitch_range_st   = 2.0
-    amplitude_min    = 0.55
-    amplitude_max    = 0.90
-    brightness_range = 0.30
-    smooth_frames    = 18
-    control_fps      = 15
-    presetName$      = "Meditative"
+# Mapping source codes:
+# 1 Energy | 2 Vertical | 3 Horizontal | 4 Speed | 5 Stillness
+# 6 Radius | 7 Acceleration | 8 None
+# Destination codes:
+# 1 Amplitude | 2 Pitch | 3 Brightness | 4 Stereo pan | 5 None
+
+# ---- MUSICAL DEFAULTS ----
+pitch_span_st    = 12.0
+brightness_span  = 1.0
+brightness_cutoff_hz = 2000.0
+smooth_frames    = 5
+control_fps      = 25
+show_preview     = 1
+live_volume      = 0.80
+
+# Default mapping = Expressive
+map_source_1 = 1
+map_dest_1   = 1
+map_amount_1 = 0.80
+map_invert_1 = 0
+map_source_2 = 2
+map_dest_2   = 2
+map_amount_2 = 0.50
+map_invert_2 = 0
+map_source_3 = 3
+map_dest_3   = 3
+map_amount_3 = 0.80
+map_invert_3 = 0
+map_source_4 = 3
+map_dest_4   = 4
+map_amount_4 = 1.00
+map_invert_4 = 0
+
+if performance_character = 1
+    map_source_1 = 1
+    map_dest_1 = 1
+    map_amount_1 = 0.50
+    map_source_2 = 2
+    map_dest_2 = 2
+    map_amount_2 = 0.25
+    map_source_3 = 3
+    map_dest_3 = 3
+    map_amount_3 = 0.40
+    map_source_4 = 3
+    map_dest_4 = 4
+    map_amount_4 = 0.45
+    smooth_frames = 9
+    presetName$ = "Subtle"
+elsif performance_character = 2
+    presetName$ = "Expressive"
+elsif performance_character = 3
+    map_source_1 = 3
+    map_dest_1 = 4
+    map_amount_1 = 1.00
+    map_source_2 = 6
+    map_dest_2 = 1
+    map_amount_2 = 0.45
+    map_source_3 = 2
+    map_dest_3 = 3
+    map_amount_3 = 0.35
+    map_source_4 = 4
+    map_dest_4 = 2
+    map_amount_4 = 0.25
+    smooth_frames = 5
+    presetName$ = "Spatial"
+elsif performance_character = 4
+    map_source_1 = 3
+    map_dest_1 = 3
+    map_amount_1 = 0.80
+    map_source_2 = 2
+    map_dest_2 = 2
+    map_amount_2 = 0.35
+    map_source_3 = 1
+    map_dest_3 = 1
+    map_amount_3 = 0.55
+    map_source_4 = 6
+    map_dest_4 = 3
+    map_amount_4 = 0.35
+    smooth_frames = 6
+    presetName$ = "Spectral"
+elsif performance_character = 5
+    map_source_1 = 4
+    map_dest_1 = 2
+    map_amount_1 = 0.55
+    map_source_2 = 7
+    map_dest_2 = 3
+    map_amount_2 = 0.90
+    map_source_3 = 1
+    map_dest_3 = 1
+    map_amount_3 = 0.85
+    map_source_4 = 3
+    map_dest_4 = 4
+    map_amount_4 = 0.80
+    smooth_frames = 4
+    presetName$ = "Kinetic"
+elsif performance_character = 6
+    map_source_1 = 1
+    map_dest_1 = 1
+    map_amount_1 = 0.92
+    map_source_2 = 2
+    map_dest_2 = 2
+    map_amount_2 = 1.00
+    map_source_3 = 3
+    map_dest_3 = 3
+    map_amount_3 = 1.20
+    map_source_4 = 3
+    map_dest_4 = 4
+    map_amount_4 = 1.00
+    smooth_frames = 3
+    presetName$ = "Wild"
+elsif performance_character = 7
+    map_source_1 = 5
+    map_dest_1 = 1
+    map_amount_1 = 0.30
+    map_source_2 = 2
+    map_dest_2 = 2
+    map_amount_2 = 0.15
+    map_source_3 = 3
+    map_dest_3 = 4
+    map_amount_3 = 0.30
+    map_source_4 = 6
+    map_dest_4 = 3
+    map_amount_4 = 0.20
+    smooth_frames = 18
+    control_fps = 15
+    presetName$ = "Meditative"
 else
     presetName$ = "Custom"
 endif
 
+# ---- MAPPING EDITOR ----
+openMappings = edit_mappings
+if performance_character = 8
+    openMappings = 1
+endif
+
+if openMappings
+    # Screen-safe editor: one mapping slot per page.  Pause fields write to
+    # variables derived from their labels (source, destination, amount, invert),
+    # so copy them explicitly into the persistent map_* variables after each page.
+
+    beginPause: "Mapping 1/4 - Motion Control"
+        comment: "Slot 1 | Source -> destination | amount 1.0 = full range"
+        choice: "Source", map_source_1
+            option: "Motion energy"
+            option: "Vertical position"
+            option: "Horizontal position"
+            option: "Speed"
+            option: "Stillness"
+            option: "Radius from centre"
+            option: "Acceleration"
+            option: "None"
+        choice: "Destination", map_dest_1
+            option: "Amplitude"
+            option: "Pitch"
+            option: "Brightness"
+            option: "Stereo pan"
+            option: "None"
+        real: "Amount", map_amount_1
+        boolean: "Invert", map_invert_1
+    clicked = endPause: "Cancel", "Next", 2
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+    map_source_1 = source
+    map_dest_1 = destination
+    map_amount_1 = amount
+    map_invert_1 = invert
+
+    beginPause: "Mapping 2/4 - Motion Control"
+        comment: "Slot 2 | Source -> destination"
+        choice: "Source", map_source_2
+            option: "Motion energy"
+            option: "Vertical position"
+            option: "Horizontal position"
+            option: "Speed"
+            option: "Stillness"
+            option: "Radius from centre"
+            option: "Acceleration"
+            option: "None"
+        choice: "Destination", map_dest_2
+            option: "Amplitude"
+            option: "Pitch"
+            option: "Brightness"
+            option: "Stereo pan"
+            option: "None"
+        real: "Amount", map_amount_2
+        boolean: "Invert", map_invert_2
+    clicked = endPause: "Cancel", "Next", 2
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+    map_source_2 = source
+    map_dest_2 = destination
+    map_amount_2 = amount
+    map_invert_2 = invert
+
+    beginPause: "Mapping 3/4 - Motion Control"
+        comment: "Slot 3 | Source -> destination"
+        choice: "Source", map_source_3
+            option: "Motion energy"
+            option: "Vertical position"
+            option: "Horizontal position"
+            option: "Speed"
+            option: "Stillness"
+            option: "Radius from centre"
+            option: "Acceleration"
+            option: "None"
+        choice: "Destination", map_dest_3
+            option: "Amplitude"
+            option: "Pitch"
+            option: "Brightness"
+            option: "Stereo pan"
+            option: "None"
+        real: "Amount", map_amount_3
+        boolean: "Invert", map_invert_3
+    clicked = endPause: "Cancel", "Next", 2
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+    map_source_3 = source
+    map_dest_3 = destination
+    map_amount_3 = amount
+    map_invert_3 = invert
+
+    beginPause: "Mapping 4/4 - Motion Control"
+        comment: "Slot 4 | Source -> destination | duplicate destinations combine"
+        choice: "Source", map_source_4
+            option: "Motion energy"
+            option: "Vertical position"
+            option: "Horizontal position"
+            option: "Speed"
+            option: "Stillness"
+            option: "Radius from centre"
+            option: "Acceleration"
+            option: "None"
+        choice: "Destination", map_dest_4
+            option: "Amplitude"
+            option: "Pitch"
+            option: "Brightness"
+            option: "Stereo pan"
+            option: "None"
+        real: "Amount", map_amount_4
+        boolean: "Invert", map_invert_4
+    clicked = endPause: "Cancel", "Continue", 2
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+    map_source_4 = source
+    map_dest_4 = destination
+    map_amount_4 = amount
+    map_invert_4 = invert
+endif
+
+# ---- DETAILS ----
+if edit_details
+    beginPause: "Details - Motion Control"
+        comment: "Destination ranges"
+        comment: "Amount 1.0 uses these full destination ranges."
+        real: "Pitch_span_st", pitch_span_st
+        real: "Brightness_span", brightness_span
+        real: "Brightness cutoff hz", brightness_cutoff_hz
+        comment: "Gesture response / capture"
+        integer: "Smooth frames", smooth_frames
+        integer: "Control fps", control_fps
+        boolean: "Show preview", show_preview
+        real: "Live volume", live_volume
+    clicked = endPause: "Cancel", "Continue", 2
+    if clicked = 1
+        exitScript: "Cancelled."
+    endif
+endif
+
 # ---- CLAMP ----
-if pitch_range_st < 0
-    pitch_range_st = 0
+if pitch_span_st < 0
+    pitch_span_st = 0
 endif
-if pitch_range_st > 24
-    pitch_range_st = 24
+if pitch_span_st > 24
+    pitch_span_st = 24
 endif
-if amplitude_min < 0
-    amplitude_min = 0
+if brightness_span < 0
+    brightness_span = 0
 endif
-if amplitude_min > 1
-    amplitude_min = 1
+if brightness_span > 2
+    brightness_span = 2
 endif
-if amplitude_max < amplitude_min
-    amplitude_max = amplitude_min
+if brightness_cutoff_hz < 100
+    brightness_cutoff_hz = 100
 endif
-if amplitude_max > 2
-    amplitude_max = 2
-endif
-if brightness_range < 0
-    brightness_range = 0
-endif
-if brightness_range > 2
-    brightness_range = 2
+if brightness_cutoff_hz > 12000
+    brightness_cutoff_hz = 12000
 endif
 if smooth_frames < 1
     smooth_frames = 1
@@ -204,6 +436,83 @@ endif
 if control_fps > 100
     control_fps = 100
 endif
+if live_volume < 0
+    live_volume = 0
+endif
+if live_volume > 1.5
+    live_volume = 1.5
+endif
+for slot from 1 to 4
+    if map_amount_'slot' < 0
+        map_amount_'slot' = 0
+    endif
+    if map_amount_'slot' > 1.5
+        map_amount_'slot' = 1.5
+    endif
+endfor
+
+if live_response = 1
+    liveResponseStr$ = "direct"
+else
+    liveResponseStr$ = "smooth"
+endif
+
+# ---- HUMAN-READABLE MAPPING NAMES + ACTIVE DESTINATIONS ----
+ampActive = 0
+pitchActive = 0
+brightActive = 0
+panActive = 0
+for slot from 1 to 4
+    srcCode = map_source_'slot'
+    dstCode = map_dest_'slot'
+    if srcCode = 1
+        srcName$ = "Energy"
+    elsif srcCode = 2
+        srcName$ = "Vertical"
+    elsif srcCode = 3
+        srcName$ = "Horizontal"
+    elsif srcCode = 4
+        srcName$ = "Speed"
+    elsif srcCode = 5
+        srcName$ = "Stillness"
+    elsif srcCode = 6
+        srcName$ = "Radius"
+    elsif srcCode = 7
+        srcName$ = "Acceleration"
+    else
+        srcName$ = "None"
+    endif
+    if dstCode = 1
+        dstName$ = "Amplitude"
+        if map_amount_'slot' > 0 and srcCode <> 8
+            ampActive = 1
+        endif
+    elsif dstCode = 2
+        dstName$ = "Pitch"
+        if map_amount_'slot' > 0 and srcCode <> 8
+            pitchActive = 1
+        endif
+    elsif dstCode = 3
+        dstName$ = "Brightness"
+        if map_amount_'slot' > 0 and srcCode <> 8
+            brightActive = 1
+        endif
+    elsif dstCode = 4
+        dstName$ = "Pan"
+        if map_amount_'slot' > 0 and srcCode <> 8
+            panActive = 1
+        endif
+    else
+        dstName$ = "None"
+    endif
+    mapSource_'slot'$ = srcName$
+    mapDest_'slot'$ = dstName$
+endfor
+
+mapSpec$ = string$(map_source_1) + ":" + string$(map_dest_1) + ":" + fixed$(map_amount_1, 4) + ":" + string$(map_invert_1)
+ ... + "," + string$(map_source_2) + ":" + string$(map_dest_2) + ":" + fixed$(map_amount_2, 4) + ":" + string$(map_invert_2)
+ ... + "," + string$(map_source_3) + ":" + string$(map_dest_3) + ":" + fixed$(map_amount_3, 4) + ":" + string$(map_invert_3)
+ ... + "," + string$(map_source_4) + ":" + string$(map_dest_4) + ":" + fixed$(map_amount_4, 4) + ":" + string$(map_invert_4)
 
 # ---- ORIGINAL SOUND STATS ----
 selectObject: sound
@@ -212,21 +521,49 @@ sr        = Get sampling frequency
 nChannels = Get number of channels
 rms_orig  = Get root-mean-square: 0, 0
 
+# Webcam capture follows the Sound duration where practical. The Python worker
+# supports 3..60 s; for shorter/longer sounds the captured gesture is mapped
+# across the complete Sound duration below instead of truncating/freezing it.
+capture_sec = dur
+if capture_sec < 3
+    capture_sec = 3
+endif
+if capture_sec > 60
+    capture_sec = 60
+endif
+
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Motion-Controlled Sound Transformation v1.0 ==="
-appendInfoLine: "Input:   ", soundName$
-appendInfoLine: "Preset:  ", presetName$
+writeInfoLine:  "=== Motion Control v1.4 ==="
+appendInfoLine: "Input:       ", soundName$
+appendInfoLine: "Performance: ", presetName$
 appendInfoLine: ""
 appendInfoLine: "Mappings:"
-appendInfoLine: "  Motion energy       ->  Amplitude  [", fixed$(amplitude_min, 2),
- ... " .. ", fixed$(amplitude_max, 2), "]"
-appendInfoLine: "  Vertical position   ->  Pitch      +/-", fixed$(pitch_range_st, 1),
- ... " semitones"
-appendInfoLine: "  Horizontal position ->  Brightness  range ", fixed$(brightness_range, 2)
+for slot from 1 to 4
+    if map_source_'slot' <> 8 and map_dest_'slot' <> 5 and map_amount_'slot' > 0
+        invertMark$ = ""
+        if map_invert_'slot'
+            invertMark$ = " (inverted)"
+        endif
+        appendInfoLine: "  ", slot, ". ", mapSource_'slot'$, " -> ", mapDest_'slot'$,
+         ... "  amount ", fixed$(map_amount_'slot', 2), invertMark$
+    endif
+endfor
 appendInfoLine: ""
-appendInfoLine: "Capture: ", fixed$(dur, 2), " s  |  Control fps: ", control_fps,
- ... "  |  Smooth frames: ", smooth_frames
+appendInfoLine: "Destination semantics: X/Y are bipolar; Energy/Speed/Stillness/Radius/Acceleration are unipolar."
+appendInfoLine: "Pitch amount 1.0: X/Y +/-", fixed$(pitch_span_st, 1),
+ ... " st | unipolar 0..+", fixed$(pitch_span_st, 1), " st"
+appendInfoLine: "Brightness amount 1.0: X/Y +/-", fixed$(brightness_span, 2),
+ ... " | unipolar 0..+", fixed$(brightness_span, 2), " | negative side limited to -1"
+appendInfoLine: "Brightness HPF cutoff: ", fixed$(brightness_cutoff_hz, 0), " Hz | Amplitude mappings attenuate only (0..1)."
+appendInfoLine: "Capture: ", fixed$(capture_sec, 2), " s mapped to ", fixed$(dur, 2), " s sound",
+ ... "  |  Control fps: ", control_fps, "  |  Smooth frames: ", smooth_frames
+if live_audio_during_capture
+    appendInfoLine: "Live audio: ON  |  Response: ", liveResponseStr$,
+     ... "  |  Volume: ", fixed$(live_volume, 2)
+else
+    appendInfoLine: "Live audio: OFF"
+endif
 appendInfoLine: ""
 appendInfoLine: "Duration: ", fixed$(dur, 2), " s  |  SR: ", sr,
  ... " Hz  |  Channels: ", nChannels
@@ -259,27 +596,49 @@ appendInfoLine: "  +------------------------------------------+"
 appendInfoLine: "  |        WEBCAM CAPTURE STARTING           |"
 appendInfoLine: "  |                                          |"
 appendInfoLine: "  |  Phase 1 (2 s)  : hold completely still |"
-appendInfoLine: "  |  Phase 2 (", fixed$(dur, 0), " s) : move freely            |"
+appendInfoLine: "  |  Phase 2 (", fixed$(capture_sec, 1), " s) : move freely          |"
 appendInfoLine: "  |                                          |"
 appendInfoLine: "  |  A preview window will open if possible. |"
+if live_audio_during_capture
+    appendInfoLine: "  |  Live audio starts after calibration.    |"
+endif
 appendInfoLine: "  +------------------------------------------+"
 appendInfoLine: ""
 
 # Pause so the user can position themselves before capture begins
 pause Position yourself in front of the webcam, then click Continue.
- ... Phase 1: hold still 2 s (calibration). Phase 2: move 'round(dur)' s (recording).
+ ... Phase 1: hold still 2 s (calibration). Phase 2: move for the displayed capture duration.
+ ... If Live audio is on, playback begins when Phase 2 starts.
 
-# Build Python command
-# Arguments: control_csv  stats_txt  done_marker
-#            capture_sec  control_fps  smooth_frames  show_preview
+# Prepare source audio for the optional live preview. This temporary WAV is
+# playback-only; the final render still uses the selected Praat Sound object.
+if live_audio_during_capture
+    selectObject: sound
+    Save as WAV file: tempLiveWav$
+endif
+
+# Build Python command. The legacy numerical positions are retained for
+# compatibility; v1.3+ adds the shared mapping spec and destination ranges.
+# Arguments after live_volume: mapping_spec pitch_span_st brightness_span brightness_cutoff_hz
 pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempControl$ + """"
     ... + " """ + tempStats$ + """"
     ... + " """ + tempDone$ + """"
-    ... + " " + string$(round(dur))
+    ... + " " + fixed$(capture_sec, 4)
     ... + " " + string$(control_fps)
     ... + " " + string$(smooth_frames)
-    ... + " 1"
+    ... + " " + string$(show_preview)
+    ... + " " + string$(live_audio_during_capture)
+    ... + " """ + tempLiveWav$ + """"
+    ... + " " + fixed$(pitch_span_st, 4)
+    ... + " 0.0 1.0"
+    ... + " " + fixed$(brightness_span, 4)
+    ... + " " + liveResponseStr$
+    ... + " " + fixed$(live_volume, 4)
+    ... + " """ + mapSpec$ + """"
+    ... + " " + fixed$(pitch_span_st, 4)
+    ... + " " + fixed$(brightness_span, 4)
+    ... + " " + fixed$(brightness_cutoff_hz, 2)
 
 appendInfoLine: "  Launching: ", pythonCall$
 runSystem_nocheck: pythonCall$
@@ -292,8 +651,10 @@ if not fileReadable(tempDone$)
 endif
 
 doneText$ = readFile$(tempDone$)
+fallbackUsed = 0
 if index(doneText$, "fallback") > 0
-    appendInfoLine: "  NOTE: Webcam unavailable — neutral fallback data used."
+    fallbackUsed = 1
+    appendInfoLine: "  NOTE: Webcam unavailable/capture failed — source will be copied unchanged."
 else
     appendInfoLine: "  Motion capture complete."
 endif
@@ -318,8 +679,7 @@ if nCtrl < 2
     exitScript: "Control file has too few rows (" + string$(nCtrl) + ")."
 endif
 
-# Load all four columns into indexed scalar variables
-# ctrl_t_i  ctrl_e_i  ctrl_v_i  ctrl_h_i  (i = 1..nCtrl)
+# Load gesture sources plus mapped destination controls.
 for i from 1 to nCtrl
     selectObject: ctrlTable
     .val$ = Get value: i, "time"
@@ -330,11 +690,40 @@ for i from 1 to nCtrl
     ctrl_v_'i' = number(.val$)
     .val$ = Get value: i, "horizontal_pos"
     ctrl_h_'i' = number(.val$)
+    .val$ = Get value: i, "speed"
+    ctrl_speed_'i' = number(.val$)
+    .val$ = Get value: i, "stillness"
+    ctrl_still_'i' = number(.val$)
+    .val$ = Get value: i, "radius"
+    ctrl_radius_'i' = number(.val$)
+    .val$ = Get value: i, "acceleration"
+    ctrl_accel_'i' = number(.val$)
+    .val$ = Get value: i, "amplitude_gain"
+    ctrl_amp_'i' = number(.val$)
+    .val$ = Get value: i, "pitch_shift_st"
+    ctrl_pitch_'i' = number(.val$)
+    .val$ = Get value: i, "brightness_control"
+    ctrl_bright_'i' = max(-1, min(2, number(.val$)))
+    .val$ = Get value: i, "pan"
+    ctrl_pan_'i' = number(.val$)
 endfor
 removeObject: ctrlTable
 
+# Map the complete captured gesture over the complete Sound duration. This is
+# exactly ~1:1 for ordinary 3..60 s sounds; it also prevents short sounds from
+# using only the start of a 3 s capture and long sounds from freezing after 60 s.
+rawCtrlDur = ctrl_t_'nCtrl'
+if rawCtrlDur > 0.000001
+    ctrlTimeScale = dur / rawCtrlDur
+else
+    ctrlTimeScale = 1
+endif
+for i from 1 to nCtrl
+    ctrl_t_'i' = ctrl_t_'i' * ctrlTimeScale
+endfor
+
 appendInfoLine: "  Loaded ", nCtrl, " control frames"
-appendInfoLine: "  Control duration: ", fixed$(ctrl_t_'nCtrl', 2), " s"
+appendInfoLine: "  Capture timeline: ", fixed$(rawCtrlDur, 2), " s -> mapped to ", fixed$(dur, 2), " s"
 
 # ---- Read stats file ----
 py_dur$           = "?"
@@ -344,6 +733,8 @@ py_n_ctrl$        = "?"
 py_mean_motion$   = "?"
 py_max_motion$    = "?"
 py_tracking_conf$ = "?"
+py_live_status$   = "off"
+py_live_under$    = "0"
 py_warnings$      = "none"
 
 if fileReadable(tempStats$)
@@ -363,6 +754,10 @@ if fileReadable(tempStats$)
     py_max_motion$ = parseStatLine.result$
     @parseStatLine: statsText$, "tracking_confidence="
     py_tracking_conf$ = parseStatLine.result$
+    @parseStatLine: statsText$, "live_audio_status="
+    py_live_status$ = parseStatLine.result$
+    @parseStatLine: statsText$, "live_audio_underflows="
+    py_live_under$ = parseStatLine.result$
     @parseStatLine: statsText$, "warnings="
     py_warnings$ = parseStatLine.result$
 endif
@@ -370,253 +765,256 @@ endif
 appendInfoLine: "  Camera fps: ", py_cam_fps$,
  ... "  |  Raw frames: ", py_n_raw$
 appendInfoLine: "  Tracking confidence: ", py_tracking_conf$
+if live_audio_during_capture
+    appendInfoLine: "  Live audio:          ", py_live_status$,
+     ... "  |  stream notices: ", py_live_under$
+endif
+if fallbackUsed
+    appendInfoLine: "  Capture status:       FALLBACK / transform bypassed"
+endif
 if py_warnings$ <> "?" and py_warnings$ <> "none"
     appendInfoLine: "  WARNING: ", py_warnings$
 endif
 
 # ===========================================================================
-# Stage 4 — Prepare Working Copy (always mono)
+# Stage 4 — Prepare Working Copy (mono processing; bypass on camera fallback)
 # ===========================================================================
 appendInfoLine: "[4/6] Applying transformations..."
-
-selectObject: sound
-if nChannels > 1
-    appendInfoLine: "  (Stereo input: using channel 1)"
-    Extract one channel: 1
-    workSound = selected("Sound")
-else
-    Copy: "motctrl_work"
-    workSound = selected("Sound")
-endif
-
-selectObject: workSound
-workDur = Get total duration
-
-# Determine how many control points fall within the sound duration.
-# Control data is 10 s; sound may be shorter or longer.
 nCtrlEff = nCtrl
-for i from 1 to nCtrl
-    if ctrl_t_'i' > workDur + 0.001
-        if nCtrlEff = nCtrl
-            nCtrlEff = i - 1
+workDur = dur
+
+if fallbackUsed
+    appendInfoLine: "  Bypass: no valid camera performance; source copied unchanged."
+    selectObject: sound
+    Copy: soundName$ + "_motion"
+    resultSound = selected("Sound")
+else
+    selectObject: sound
+    if nChannels > 1
+        # Keep historical channel-1 behaviour in normal cases, but do not let a
+        # nearly silent first channel erase a multichannel source. Fall back to
+        # the strongest channel only when ch1 RMS is <10% of the strongest.
+        Extract one channel: 1
+        workSound = selected("Sound")
+        selectObject: workSound
+        ch1Rms = Get root-mean-square: 0, 0
+        strongestRms = ch1Rms
+        strongestCh = 1
+        removeObject: workSound
+        for ch from 2 to nChannels
+            selectObject: sound
+            Extract one channel: ch
+            testCh = selected("Sound")
+            testRms = Get root-mean-square: 0, 0
+            if testRms > strongestRms
+                strongestRms = testRms
+                strongestCh = ch
+            endif
+            removeObject: testCh
+        endfor
+        if strongestRms > 0 and ch1Rms < 0.1 * strongestRms
+            appendInfoLine: "  Multichannel: channel 1 nearly silent; using strongest channel ", strongestCh
+        else
+            strongestCh = 1
+            appendInfoLine: "  Multichannel: using channel 1 (compatibility path)"
         endif
+        selectObject: sound
+        Extract one channel: strongestCh
+        workSound = selected("Sound")
+    else
+        Copy: "motctrl_work"
+        workSound = selected("Sound")
     endif
-endfor
-if nCtrlEff < 2
-    nCtrlEff = min(nCtrl, 2)
+
+    # All control times are relative to 0; align the processing copy without
+    # changing sample data so non-zero-xmin Sounds use the correct control time.
+    selectObject: workSound
+    Shift times to: "start time", 0
+    workDur = Get total duration
+
+# ===========================================================================
+# Stage 4a — Mapped Pitch Contour (analysis sees the unmodulated source)
+# ===========================================================================
+# Only source PitchTier points are shifted, so unvoiced regions remain unvoiced.
+# Pitch intentionally precedes amplitude: gesture ducking must not change the
+# voicing decision made by To Manipulation.
+if pitchActive and pitch_span_st > 0
+    appendInfoLine: "  [4a] Pitch: mapped gesture control"
+    selectObject: workSound
+    noprogress To Manipulation: 0.01, 75, 600
+    manip = selected("Manipulation")
+    selectObject: manip
+    Extract pitch tier
+    origPitchTier = selected("PitchTier")
+    selectObject: origPitchTier
+    nOrigPitchPts = Get number of points
+
+    if nOrigPitchPts < 1
+        appendInfoLine: "       No voiced F0 points detected -> pitch stage bypassed."
+        removeObject: manip, origPitchTier
+        selectObject: workSound
+        Rename: "motctrl_pitch_result"
+        pitchTransformed = selected("Sound")
+    else
+        Create PitchTier: "motctrl_pitch_shifted", 0, workDur
+        shiftedPitchTier = selected("PitchTier")
+        ctrlIdx = 1
+        for iPt from 1 to nOrigPitchPts
+            selectObject: origPitchTier
+            tPitch = Get time from index: iPt
+            origF0 = Get value at index: iPt
+
+            searchDone = 0
+            while ctrlIdx < nCtrlEff and searchDone = 0
+                nextCtrl = ctrlIdx + 1
+                if ctrl_t_'nextCtrl' < tPitch
+                    ctrlIdx = ctrlIdx + 1
+                else
+                    searchDone = 1
+                endif
+            endwhile
+
+            if ctrlIdx < nCtrlEff
+                nextCtrl = ctrlIdx + 1
+                tA = ctrl_t_'ctrlIdx'
+                tB = ctrl_t_'nextCtrl'
+                pA = ctrl_pitch_'ctrlIdx'
+                pB = ctrl_pitch_'nextCtrl'
+                if tB > tA
+                    frac = (tPitch - tA) / (tB - tA)
+                    frac = max(0, min(1, frac))
+                    semiShift = pA + frac * (pB - pA)
+                else
+                    semiShift = pA
+                endif
+            else
+                semiShift = ctrl_pitch_'nCtrlEff'
+            endif
+
+            shiftedF0 = origF0 * (2 ^ (semiShift / 12.0))
+            shiftedF0 = max(40, min(900, shiftedF0))
+            selectObject: shiftedPitchTier
+            Add point: tPitch, shiftedF0
+        endfor
+
+        selectObject: manip
+        plusObject: shiftedPitchTier
+        Replace pitch tier
+        selectObject: manip
+        noprogress Get resynthesis (overlap-add)
+        pitchTransformed = selected("Sound")
+        Rename: "motctrl_pitch_result"
+        removeObject: manip, origPitchTier, shiftedPitchTier, workSound
+    endif
+else
+    appendInfoLine: "  [4a] Pitch: bypassed (no mapping)"
+    selectObject: workSound
+    Rename: "motctrl_pitch_result"
+    pitchTransformed = selected("Sound")
 endif
 
 # ===========================================================================
-# Stage 4a — Amplitude Envelope  (AmplitudeTier × Sound)
+# Stage 4b — Mapped Amplitude Envelope (no hidden normalization)
 # ===========================================================================
-# mapping: energy 0..1  ->  amplitude amplitude_min..amplitude_max  (linear)
-# An AmplitudeTier stores linear scale factors; 1.0 = no change.
-# ===========================================================================
-appendInfoLine: "  [4a] Amplitude: motion energy -> [",
- ... fixed$(amplitude_min, 2), " .. ", fixed$(amplitude_max, 2), "]"
+# Sound & AmplitudeTier: Multiply normalizes its output, so it cannot represent
+# an absolute gain law. Build a low-rate envelope Sound whose sample centres
+# coincide exactly with the control frames, then interpolate it in Formula.
+if ampActive
+    appendInfoLine: "  [4b] Amplitude: mapped gesture control (absolute gain)"
+    envFs = (nCtrlEff - 1) / workDur
+    envDt = 1 / envFs
+    Create Sound from formula: "motctrl_amp_env", 1, -0.5 * envDt, workDur + 0.5 * envDt, envFs, "1"
+    ampEnv = selected("Sound")
+    for i from 1 to nCtrlEff
+        selectObject: ampEnv
+        Set value at sample number: 1, i, ctrl_amp_'i'
+    endfor
 
-Create AmplitudeTier: "motctrl_amp", 0, workDur
-ampTier = selected("AmplitudeTier")
-
-# Boundary at t = 0
-ampScale0 = amplitude_min + ctrl_e_1 * (amplitude_max - amplitude_min)
-selectObject: ampTier
-Add point: 0, ampScale0
-
-# Interior control points (skip t=0 guard, add t <= workDur)
-for i from 1 to nCtrlEff
-    t = ctrl_t_'i'
-    if t > 0 and t <= workDur
-        ampScale = amplitude_min + ctrl_e_'i' * (amplitude_max - amplitude_min)
-        selectObject: ampTier
-        Add point: t, ampScale
-    endif
-endfor
-
-# Boundary at sound end
-ampScaleEnd = amplitude_min + ctrl_e_'nCtrlEff' * (amplitude_max - amplitude_min)
-selectObject: ampTier
-Add point: workDur, ampScaleEnd
-
-# Multiply the sound by the amplitude tier
-selectObject: workSound, ampTier
-Multiply
-ampTransformed = selected("Sound")
-Rename: "motctrl_amp_result"
-
-removeObject: ampTier, workSound
-
-# ===========================================================================
-# Stage 4b — Pitch Contour  (Manipulation + PitchTier)
-# ===========================================================================
-# mapping: vertical_pos 0..1 -> pitch shift   -pitch_range_st .. +pitch_range_st
-#          0.5 = no shift   1.0 = +N st (high hand = high pitch)
-#          Original F0 values are queried from the extracted PitchTier and
-#          multiplied by 2^(semitones/12).  Unvoiced regions are unchanged.
-# ===========================================================================
-appendInfoLine: "  [4b] Pitch: vertical position -> +/-",
- ... fixed$(pitch_range_st, 1), " semitones"
-
-selectObject: ampTransformed
-noprogress To Manipulation: 0.01, 75, 600
-manip = selected("Manipulation")
-
-selectObject: manip
-Extract pitch tier
-origPitchTier = selected("PitchTier")
-selectObject: origPitchTier
-nOrigPitchPts = Get number of points
-
-Create PitchTier: "motctrl_pitch_shifted", 0, workDur
-shiftedPitchTier = selected("PitchTier")
-
-# Reference F0 for unvoiced fallback (used when pitch is undefined)
-refF0 = 150.0
-
-# Boundary point at t ~ 0 (avoid exact 0 which can confuse the Manipulation)
-v0         = ctrl_v_1
-shift0_st  = (v0 - 0.5) * 2.0 * pitch_range_st
-selectObject: origPitchTier
-f0_0 = Get value at time: 0.01
-if f0_0 = undefined or f0_0 < 30
-    f0_0 = refF0
-endif
-shifted0 = f0_0 * (2 ^ (shift0_st / 12.0))
-shifted0 = max(40, min(900, shifted0))
-selectObject: shiftedPitchTier
-Add point: 0.001, shifted0
-
-# Main control points
-for i from 1 to nCtrlEff
-    t = ctrl_t_'i'
-    if t >= 0.002 and t <= workDur - 0.001
-        semiShift = (ctrl_v_'i' - 0.5) * 2.0 * pitch_range_st
-
-        selectObject: origPitchTier
-        origF0 = Get value at time: t
-        if origF0 = undefined or origF0 < 30
-            origF0 = refF0
-        endif
-
-        shiftedF0 = origF0 * (2 ^ (semiShift / 12.0))
-        shiftedF0 = max(40, min(900, shiftedF0))
-
-        selectObject: shiftedPitchTier
-        Add point: t, shiftedF0
-    endif
-endfor
-
-# Replace pitch tier in the Manipulation and resynthesize
-selectObject: manip
-plusObject: shiftedPitchTier
-Replace pitch tier
-
-selectObject: manip
-noprogress Get resynthesis (overlap-add)
-pitchTransformed = selected("Sound")
-Rename: "motctrl_pitch_result"
-
-removeObject: manip, origPitchTier, shiftedPitchTier, ampTransformed
-
-# ===========================================================================
-# Stage 4c — Spectral Brightness  (time-varying HPF modulation)
-# ===========================================================================
-# mapping: horizontal_pos 0..1 -> spectral tilt
-#          0.5 = neutral (no change)
-#          1.0 = add HPF * brightness_range  (brighter — right hand)
-#          0.0 = subtract HPF * brightness_range  (darker  — left hand)
-#
-# Implementation: a single high-pass filtered copy of the sound (HPF) is
-# created once, then scaled and added/subtracted time-variably using two
-# AmplitudeTiers (one for the positive / bright contribution, one for the
-# negative / dark contribution).  This avoids per-segment processing and
-# gives clean, click-free results.
-#
-# HPF cutoff: max(1000 Hz,  SR / 22)  — captures presence/air range.
-# ===========================================================================
-if brightness_range > 0
-    appendInfoLine: "  [4c] Brightness: horizontal position -> HPF modulation",
-     ... " (range=", fixed$(brightness_range, 2), ")"
-
-    nyq        = sr / 2.0
-    hpfCutoff  = max(1000.0, sr / 22.0)
-
-    # High-pass filter (Hann band-pass from hpfCutoff to Nyquist)
     selectObject: pitchTransformed
+    Copy: "motctrl_amp_result"
+    ampTransformed = selected("Sound")
+    ampEnvId = ampEnv
+    Formula: "self * object(ampEnvId, x)"
+    removeObject: ampEnv, pitchTransformed
+else
+    appendInfoLine: "  [4b] Amplitude: bypassed (no mapping)"
+    selectObject: pitchTransformed
+    Rename: "motctrl_amp_result"
+    ampTransformed = selected("Sound")
+endif
+
+# ===========================================================================
+# Stage 4c — Mapped Spectral Brightness (fixed-Hz high band)
+# ===========================================================================
+if brightActive and brightness_span > 0
+    nyq = sr / 2.0
+    hpfCutoff = min(brightness_cutoff_hz, nyq - 100.0)
+    hpfCutoff = max(20.0, hpfCutoff)
+    appendInfoLine: "  [4c] Brightness: mapped HPF contribution above ", fixed$(hpfCutoff, 0), " Hz"
+
+    selectObject: ampTransformed
     noprogress Filter (pass Hann band): hpfCutoff, nyq - 1.0, 100.0
     hpfSound = selected("Sound")
     Rename: "motctrl_hpf"
 
-    # Two amplitude tiers:
-    #   posHpfTier  = max(0,  (h - 0.5) * 2 * brightness_range)  bright side
-    #   negHpfTier  = max(0,  (0.5 - h) * 2 * brightness_range)  dark side
-    Create AmplitudeTier: "motctrl_pos_hpf", 0, workDur
-    posHpfTier = selected("AmplitudeTier")
-    Create AmplitudeTier: "motctrl_neg_hpf", 0, workDur
-    negHpfTier = selected("AmplitudeTier")
-
-    # Boundary at t = 0
-    h0    = ctrl_h_1
-    posV0 = max(0, (h0 - 0.5) * 2.0 * brightness_range)
-    negV0 = max(0, (0.5 - h0) * 2.0 * brightness_range)
-    selectObject: posHpfTier
-    Add point: 0, posV0
-    selectObject: negHpfTier
-    Add point: 0, negV0
-
-    # Interior control points
+    envFs = (nCtrlEff - 1) / workDur
+    envDt = 1 / envFs
+    Create Sound from formula: "motctrl_bright_env", 1, -0.5 * envDt, workDur + 0.5 * envDt, envFs, "0"
+    brightEnv = selected("Sound")
     for i from 1 to nCtrlEff
-        t = ctrl_t_'i'
-        if t > 0 and t <= workDur
-            h    = ctrl_h_'i'
-            posV = max(0, (h - 0.5) * 2.0 * brightness_range)
-            negV = max(0, (0.5 - h) * 2.0 * brightness_range)
-            selectObject: posHpfTier
-            Add point: t, posV
-            selectObject: negHpfTier
-            Add point: t, negV
-        endif
+        selectObject: brightEnv
+        Set value at sample number: 1, i, max(-1, min(2, ctrl_bright_'i'))
     endfor
 
-    # Boundary at sound end
-    hEnd    = ctrl_h_'nCtrlEff'
-    posVEnd = max(0, (hEnd - 0.5) * 2.0 * brightness_range)
-    negVEnd = max(0, (0.5 - hEnd) * 2.0 * brightness_range)
-    selectObject: posHpfTier
-    Add point: workDur, posVEnd
-    selectObject: negHpfTier
-    Add point: workDur, negVEnd
-
-    # Scale HPF sound by each tier separately
-    selectObject: hpfSound, posHpfTier
-    Multiply
-    posHpfScaled = selected("Sound")
-    Rename: "motctrl_hpf_bright"
-
-    selectObject: hpfSound, negHpfTier
-    Multiply
-    negHpfScaled = selected("Sound")
-    Rename: "motctrl_hpf_dark"
-
-    removeObject: hpfSound, posHpfTier, negHpfTier
-
-    # Combine:  result = pitchTransformed + posHpfScaled - negHpfScaled
-    # (at h=0.5: pos=neg=0, result = pitchTransformed unchanged)
-    selectObject: pitchTransformed
-    Copy: soundName$ + "_motion"
-    resultSound = selected("Sound")
-
-    posId = posHpfScaled
-    negId = negHpfScaled
-    Formula: "self + object['posId', 1, col] - object['negId', 1, col]"
-
-    removeObject: posHpfScaled, negHpfScaled, pitchTransformed
-
+    selectObject: ampTransformed
+    Copy: "motctrl_brightness_result"
+    monoTransformed = selected("Sound")
+    hpfId = hpfSound
+    brightEnvId = brightEnv
+    Formula: "self + object[hpfId, 1, col] * object(brightEnvId, x)"
+    removeObject: hpfSound, brightEnv, ampTransformed
 else
-    appendInfoLine: "  [4c] Brightness: skipped (range = 0)"
-    selectObject: pitchTransformed
+    appendInfoLine: "  [4c] Brightness: bypassed (no mapping)"
+    selectObject: ampTransformed
+    Rename: "motctrl_brightness_result"
+    monoTransformed = selected("Sound")
+endif
+
+# ===========================================================================
+# Stage 4d — Stereo Pan (equal-power, no per-channel normalization)
+# ===========================================================================
+if panActive
+    appendInfoLine: "  [4d] Stereo pan: equal-power mapped gesture control"
+    envFs = (nCtrlEff - 1) / workDur
+    envDt = 1 / envFs
+    Create Sound from formula: "motctrl_pan_env", 1, -0.5 * envDt, workDur + 0.5 * envDt, envFs, "0"
+    panEnv = selected("Sound")
+    for i from 1 to nCtrlEff
+        selectObject: panEnv
+        Set value at sample number: 1, i, max(-1, min(1, ctrl_pan_'i'))
+    endfor
+
+    selectObject: monoTransformed
+    Copy: "motctrl_pan_left"
+    panLeft = selected("Sound")
+    panEnvId = panEnv
+    Formula: "self * cos((object(panEnvId, x) + 1) * pi / 4)"
+
+    selectObject: monoTransformed
+    Copy: "motctrl_pan_right"
+    panRight = selected("Sound")
+    Formula: "self * sin((object(panEnvId, x) + 1) * pi / 4)"
+
+    selectObject: panLeft
+    plusObject: panRight
+    resultSound = Combine to stereo
     Rename: soundName$ + "_motion"
-    resultSound = pitchTransformed
+    removeObject: panEnv, panLeft, panRight, monoTransformed
+else
+    appendInfoLine: "  [4d] Stereo pan: bypassed (no mapping)"
+    selectObject: monoTransformed
+    Rename: soundName$ + "_motion"
+    resultSound = selected("Sound")
 endif
 
 # ---- Prevent clipping ----
@@ -627,6 +1025,7 @@ if peakAbs > 0.98
 endif
 
 appendInfoLine: "  Transformations complete."
+endif
 
 # ===========================================================================
 # Stage 5 — Result Stats
@@ -640,232 +1039,286 @@ appendInfoLine: "[5/6] Output: ", soundName$, "_motion"
 appendInfoLine: "  Duration: ", fixed$(dur_out, 2), " s"
 appendInfoLine: "  RMS: ", fixed$(rms_orig, 4), " -> ", fixed$(rms_out, 4)
 
+# Measured high-band proportion for brightness QC. This is level-normalized
+# (HF RMS / full-band RMS), so amplitude mapping does not masquerade as brightness.
+hfShapeOrig = 0
+hfShapeOut = 0
+if brightActive and brightness_span > 0 and not fallbackUsed
+    nyq = sr / 2.0
+    vizHpfCutoff = min(brightness_cutoff_hz, nyq - 100.0)
+    vizHpfCutoff = max(20.0, vizHpfCutoff)
+    selectObject: sound
+    noprogress Filter (pass Hann band): vizHpfCutoff, nyq - 1.0, 100.0
+    hfOrigSound = selected("Sound")
+    hfOrigRms = Get root-mean-square: 0, 0
+    removeObject: hfOrigSound
+    selectObject: resultSound
+    noprogress Filter (pass Hann band): vizHpfCutoff, nyq - 1.0, 100.0
+    hfOutSound = selected("Sound")
+    hfOutRms = Get root-mean-square: 0, 0
+    removeObject: hfOutSound
+    if rms_orig > 0
+        hfShapeOrig = hfOrigRms / rms_orig
+    endif
+    if rms_out > 0
+        hfShapeOut = hfOutRms / rms_out
+    endif
+    appendInfoLine: "  HF/full RMS shape: ", fixed$(hfShapeOrig, 3), " -> ", fixed$(hfShapeOut, 3),
+     ... "  (above ", fixed$(vizHpfCutoff, 0), " Hz)"
+endif
+
 # ===========================================================================
 # Stage 6 — Visualization
 # ===========================================================================
 if draw_visualization
     appendInfoLine: "[6/6] Drawing visualization..."
-
     Erase all
     Font size: 10
     Line width: 1
     Colour: "Black"
-
     ctrlDur = ctrl_t_'nCtrl'
 
-    # ========================================================================
-    # Title panel
-    # ========================================================================
+    # Picture-safe text: Praat markup interprets underscores and percent signs.
+    soundNameViz$ = replace$(soundName$, "_", "\_ ", 0)
+    warningsViz$ = replace$(py_warnings$, "%", " pct", 0)
+    warningsViz$ = replace$(warningsViz$, "_", "\_ ", 0)
+
+    # Shared relative-time waveform copies and one symmetric amplitude scale.
+    selectObject: sound
+    Copy: "motctrl_viz_input"
+    vizInput = selected("Sound")
+    Shift times to: "start time", 0
+    inputPeakViz = Get absolute extremum: 0, 0, "None"
+    selectObject: resultSound
+    Copy: "motctrl_viz_output"
+    vizOutput = selected("Sound")
+    Shift times to: "start time", 0
+    outputPeakViz = Get absolute extremum: 0, 0, "None"
+    waveY = max(0.001, 1.05 * max(inputPeakViz, outputPeakViz))
+    if waveY <= 0.25
+        waveStep = 0.1
+    elsif waveY <= 0.75
+        waveStep = 0.25
+    elsif waveY <= 1.5
+        waveStep = 0.5
+    else
+        waveStep = 1.0
+    endif
+    if dur <= 5
+        timeStep = 1
+    elsif dur <= 20
+        timeStep = 5
+    elsif dur <= 60
+        timeStep = 10
+    else
+        timeStep = 20
+    endif
+
+    # Title strip
     Select outer viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##Motion-Controlled Sound Transformation##"
+    Text: 0.5, "centre", 0.76, "half", "##Motion Control##"
     Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.40, "half",
-     ... soundName$ + "  |  " + presetName$
-     ... + "  |  Conf: " + py_tracking_conf$
-     ... + "  |  Cam fps: " + py_cam_fps$
-
-    # ========================================================================
-    # Original waveform
-    # ========================================================================
-    Select outer viewport: 0, 8, 0.6, 1.55
-    Select inner viewport: 0.7, 7.7, 0.65, 1.50
-
-    selectObject: sound
-    Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Original"
-    Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text top: "no", fixed$(dur, 2) + " s  |  " + string$(sr) + " Hz  |  "
-     ... + string$(nChannels) + " ch  |  RMS " + fixed$(rms_orig, 4)
-
-    # ========================================================================
-    # Transformed waveform
-    # ========================================================================
-    Select outer viewport: 0, 8, 1.55, 2.50
-    Select inner viewport: 0.7, 7.7, 1.60, 2.45
-
-    selectObject: resultSound
-    Colour: "{0.20, 0.35, 0.78}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Transformed"
-    Font size: 6
-    Colour: "{0.2, 0.3, 0.6}"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "RMS " + fixed$(rms_out, 4)
-
-    # ========================================================================
-    # Control channel 1: Motion Energy  (orange-red)
-    # ========================================================================
-    Select outer viewport: 0, 8, 2.6, 4.2
-    Select inner viewport: 0.7, 7.7, 2.68, 4.12
-
-    Axes: 0, ctrlDur, 0, 1
-    Paint rectangle: "{0.99, 0.96, 0.93}", 0, ctrlDur, 0, 1
-
-    # Grid
-    Colour: "{0.88, 0.88, 0.88}"
-    Line width: 1
-    Draw line: 0, 0.25, ctrlDur, 0.25
-    Draw line: 0, 0.50, ctrlDur, 0.50
-    Draw line: 0, 0.75, ctrlDur, 0.75
-
-    # Curve
-    Colour: "{0.82, 0.28, 0.07}"
-    Line width: 2.5
-    for i from 2 to nCtrlEff
-        iPrev = i - 1
-        Draw line: ctrl_t_'iPrev', ctrl_e_'iPrev',
-         ... ctrl_t_'i', ctrl_e_'i'
-    endfor
-
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Marks left every: 0.5, 1, "yes", "yes", "no"
-    Marks bottom every: 2, 1, "yes", "yes", "no"
-    Font size: 7
-    Text left: "yes", "Energy"
-    Colour: "{0.55, 0.12, 0.02}"
-    Text: ctrlDur * 0.02, "left", 0.90, "half",
-     ... "Motion energy  ->  Amplitude  [" + fixed$(amplitude_min, 2)
-     ... + " .. " + fixed$(amplitude_max, 2) + "]"
-
-    # ========================================================================
-    # Control channel 2: Vertical Position  (blue)
-    # ========================================================================
-    Select outer viewport: 0, 8, 4.2, 5.8
-    Select inner viewport: 0.7, 7.7, 4.28, 5.72
-
-    Axes: 0, ctrlDur, 0, 1
-    Paint rectangle: "{0.93, 0.95, 0.99}", 0, ctrlDur, 0, 1
-
-    # Grid
-    Colour: "{0.88, 0.88, 0.88}"
-    Line width: 1
-    Draw line: 0, 0.25, ctrlDur, 0.25
-    Draw line: 0, 0.75, ctrlDur, 0.75
-
-    # Centre reference (no-shift line at 0.5)
-    Colour: "{0.70, 0.75, 0.95}"
-    Dotted line
-    Draw line: 0, 0.5, ctrlDur, 0.5
-    Solid line
-
-    # Curve
-    Colour: "{0.15, 0.28, 0.85}"
-    Line width: 2.5
-    for i from 2 to nCtrlEff
-        iPrev = i - 1
-        Draw line: ctrl_t_'iPrev', ctrl_v_'iPrev',
-         ... ctrl_t_'i', ctrl_v_'i'
-    endfor
-
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Marks left every: 0.5, 1, "yes", "yes", "no"
-    Marks bottom every: 2, 1, "yes", "yes", "no"
-    Font size: 7
-    Text left: "yes", "V-pos"
-    Colour: "{0.08, 0.15, 0.60}"
-    Text: ctrlDur * 0.02, "left", 0.90, "half",
-     ... "Vertical position  ->  Pitch  +/-" + fixed$(pitch_range_st, 1)
-     ... + " st  (0.5 = no shift)"
-
-    # ========================================================================
-    # Control channel 3: Horizontal Position  (green)
-    # ========================================================================
-    Select outer viewport: 0, 8, 5.8, 7.4
-    Select inner viewport: 0.7, 7.7, 5.88, 7.32
-
-    Axes: 0, ctrlDur, 0, 1
-    Paint rectangle: "{0.93, 0.99, 0.94}", 0, ctrlDur, 0, 1
-
-    # Grid
-    Colour: "{0.88, 0.88, 0.88}"
-    Line width: 1
-    Draw line: 0, 0.25, ctrlDur, 0.25
-    Draw line: 0, 0.75, ctrlDur, 0.75
-
-    # Centre reference (neutral brightness at 0.5)
-    Colour: "{0.72, 0.92, 0.74}"
-    Dotted line
-    Draw line: 0, 0.5, ctrlDur, 0.5
-    Solid line
-
-    # Curve
-    Colour: "{0.10, 0.60, 0.25}"
-    Line width: 2.5
-    for i from 2 to nCtrlEff
-        iPrev = i - 1
-        Draw line: ctrl_t_'iPrev', ctrl_h_'iPrev',
-         ... ctrl_t_'i', ctrl_h_'i'
-    endfor
-
-    Line width: 1
-    Colour: "Black"
-    Draw inner box
-    Marks left every: 0.5, 1, "yes", "yes", "no"
-    Marks bottom every: 2, 1, "yes", "yes", "no"
-    Font size: 7
-    Text left: "yes", "H-pos"
-    Text bottom: "yes", "Time (s)"
-    Colour: "{0.04, 0.38, 0.12}"
-    Text: ctrlDur * 0.02, "left", 0.90, "half",
-     ... "Horizontal position  ->  Brightness  range " + fixed$(brightness_range, 2)
-     ... + "  (0.5 = neutral)"
-
-    # ========================================================================
-    # Stats / Summary panel
-    # ========================================================================
-    Select outer viewport: 0, 8, 7.4, 8.0
-    Select inner viewport: 0.7, 7.7, 7.44, 7.94
-
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-
-    Font size: 8
-    Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "Summary:"
-
-    Font size: 6.5
-    Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.65, "half",
-     ... "Preset: " + presetName$
-     ... + "  |  Sound: " + soundName$
-     ... + "  |  Duration: " + fixed$(dur, 2) + " s"
-    Text: 0.02, "left", 0.45, "half",
-     ... "Camera fps: " + py_cam_fps$
-     ... + "  |  Raw frames: " + py_n_raw$
-     ... + "  |  Ctrl frames: " + string$(nCtrl)
-     ... + "  |  Tracking: " + py_tracking_conf$
-    Text: 0.02, "left", 0.25, "half",
-     ... "Amplitude [" + fixed$(amplitude_min, 2) + ".." + fixed$(amplitude_max, 2) + "]"
-     ... + "  |  Pitch +/-" + fixed$(pitch_range_st, 1) + " st"
-     ... + "  |  Brightness " + fixed$(brightness_range, 2)
-     ... + "  |  Smooth " + string$(smooth_frames) + " fr"
-
-    if py_warnings$ <> "?" and py_warnings$ <> "none"
-        Colour: "{0.80, 0.18, 0.18}"
-        Text: 0.02, "left", 0.05, "half", "Warning: " + py_warnings$
+    Colour: "{0.4,0.4,0.5}"
+    Text: 0.5, "centre", 0.30, "half", soundNameViz$ + " | " + presetName$ + " | gesture mapping -> sound"
+    if fallbackUsed
+        Font size: 7
+        Colour: "{0.80,0.18,0.18}"
+        Text: 0.5, "centre", 0.02, "half", "FALLBACK: source copied unchanged; control curves below were not applied"
     endif
 
+    # Original waveform — same time and amplitude axes as output.
+    Select outer viewport: 0, 8, 0.60, 1.38
+    Select inner viewport: 0.6, 7.7, 0.65, 1.33
+    selectObject: vizInput
+    Colour: "{0.36,0.39,0.45}"
+    Draw: 0, dur, -waveY, waveY, "no", "Curve"
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Draw inner box
+    Marks left every: 1, waveStep, "yes", "yes", "no"
+    Marks bottom every: 1, timeStep, "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Original"
 
-    Font size: 10
+    # Output waveform — shared axes make level differences visible.
+    Select outer viewport: 0, 8, 1.38, 2.16
+    Select inner viewport: 0.6, 7.7, 1.43, 2.11
+    selectObject: vizOutput
+    Colour: "{0.20,0.40,0.75}"
+    Draw: 0, dur, -waveY, waveY, "no", "Curve"
     Colour: "Black"
+    Draw inner box
+    Marks left every: 1, waveStep, "yes", "yes", "no"
+    Marks bottom every: 1, timeStep, "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Mapped output"
+    Text bottom: "yes", "Time (s)"
+
+    # Destination 1: amplitude gain (attenuation only, 0..1).
+    Select outer viewport: 0, 8, 2.24, 3.25
+    Select inner viewport: 0.6, 7.7, 2.31, 3.18
+    Axes: 0, ctrlDur, 0, 1
+    Paint rectangle: "{0.965,0.972,0.985}", 0, ctrlDur, 0, 1
+    Colour: "{0.80,0.82,0.86}"
+    Draw line: 0, 1, ctrlDur, 1
+    Colour: "{0.28,0.54,0.52}"
+    Line width: 2.2
+    for i from 2 to nCtrlEff
+        iPrev = i - 1
+        Draw line: ctrl_t_'iPrev', ctrl_amp_'iPrev', ctrl_t_'i', ctrl_amp_'i'
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, 0.25, "yes", "yes", "no"
+    Marks bottom every: 1, timeStep, "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Amp gain"
+    Text top: "no", "Mapped amplitude (1 = unity; attenuation only)"
+
+    # Destination 2: pitch shift.
+    maxPitchCtl = 0
+    for i from 1 to nCtrlEff
+        if abs(ctrl_pitch_'i') > maxPitchCtl
+            maxPitchCtl = abs(ctrl_pitch_'i')
+        endif
+    endfor
+    pitchY = max(1, maxPitchCtl * 1.15)
+    if pitchY <= 3
+        pitchStep = 1
+    elsif pitchY <= 6
+        pitchStep = 2
+    elsif pitchY <= 12
+        pitchStep = 4
+    else
+        pitchStep = 6
+    endif
+    Select outer viewport: 0, 8, 3.25, 4.26
+    Select inner viewport: 0.6, 7.7, 3.32, 4.19
+    Axes: 0, ctrlDur, -pitchY, pitchY
+    Paint rectangle: "{0.955,0.968,0.988}", 0, ctrlDur, -pitchY, pitchY
+    Colour: "{0.78,0.82,0.92}"
+    Draw line: 0, 0, ctrlDur, 0
+    Colour: "{0.20,0.40,0.75}"
+    Line width: 2.2
+    for i from 2 to nCtrlEff
+        iPrev = i - 1
+        Draw line: ctrl_t_'iPrev', ctrl_pitch_'iPrev', ctrl_t_'i', ctrl_pitch_'i'
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, pitchStep, "yes", "yes", "no"
+    Marks bottom every: 1, timeStep, "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Pitch st"
+    Text top: "no", "Mapped pitch shift"
+
+    # Destination 3: brightness control + measured spectral-shape consequence.
+    maxBrightCtl = 0
+    for i from 1 to nCtrlEff
+        if abs(ctrl_bright_'i') > maxBrightCtl
+            maxBrightCtl = abs(ctrl_bright_'i')
+        endif
+    endfor
+    brightY = max(0.25, maxBrightCtl * 1.15)
+    if brightY <= 0.5
+        brightStep = 0.25
+    elsif brightY <= 1
+        brightStep = 0.5
+    else
+        brightStep = 1
+    endif
+    Select outer viewport: 0, 8, 4.26, 5.27
+    Select inner viewport: 0.6, 7.7, 4.33, 5.20
+    Axes: 0, ctrlDur, -brightY, brightY
+    Paint rectangle: "{0.962,0.978,0.985}", 0, ctrlDur, -brightY, brightY
+    Colour: "{0.78,0.84,0.88}"
+    Draw line: 0, 0, ctrlDur, 0
+    Colour: "{0.40,0.48,0.66}"
+    Line width: 2.2
+    for i from 2 to nCtrlEff
+        iPrev = i - 1
+        Draw line: ctrl_t_'iPrev', ctrl_bright_'iPrev', ctrl_t_'i', ctrl_bright_'i'
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, brightStep, "yes", "yes", "no"
+    Marks bottom every: 1, timeStep, "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Bright"
+    if brightActive and not fallbackUsed
+        Text top: "no", "HPF " + fixed$(brightness_cutoff_hz, 0) + " Hz | HF/full RMS " + fixed$(hfShapeOrig, 3) + " -> " + fixed$(hfShapeOut, 3)
+    else
+        Text top: "no", "Mapped spectral brightness (- darker / + brighter)"
+    endif
+
+    # Destination 4: stereo pan.
+    Select outer viewport: 0, 8, 5.27, 6.28
+    Select inner viewport: 0.6, 7.7, 5.34, 6.21
+    Axes: 0, ctrlDur, -1, 1
+    Paint rectangle: "{0.965,0.968,0.985}", 0, ctrlDur, -1, 1
+    Colour: "{0.80,0.80,0.88}"
+    Draw line: 0, 0, ctrlDur, 0
+    Colour: "{0.50,0.40,0.68}"
+    Line width: 2.2
+    for i from 2 to nCtrlEff
+        iPrev = i - 1
+        Draw line: ctrl_t_'iPrev', ctrl_pan_'iPrev', ctrl_t_'i', ctrl_pan_'i'
+    endfor
+    Line width: 1
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, 0.5, "yes", "yes", "no"
+    Marks bottom every: 1, timeStep, "yes", "yes", "no"
+    Font size: 7
+    Text left: "yes", "Pan"
+    Text bottom: "yes", "Time (s)"
+    Text top: "no", "Equal-power stereo position (-1 L / 0 C / +1 R)"
+
+    # Mapping / QC summary.
+    Select outer viewport: 0, 8, 6.38, 8.0
+    Select inner viewport: 0.6, 7.7, 6.43, 7.94
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94,0.94,0.94}", 0, 1, 0, 1
+    Font size: 8
+    Colour: "Black"
+    Text: 0.02, "left", 0.91, "half", "gesture sources -> mapping graph -> pitch -> amplitude -> brightness -> pan"
+    Font size: 6.3
+    Colour: "{0.30,0.30,0.34}"
+    yMap = 0.72
+    for slot from 1 to 4
+        if map_source_'slot' <> 8 and map_dest_'slot' <> 5 and map_amount_'slot' > 0
+            invText$ = ""
+            if map_invert_'slot'
+                invText$ = " inv"
+            endif
+            Text: 0.03, "left", yMap, "half", string$(slot) + ". " + mapSource_'slot'$ + " -> " + mapDest_'slot'$ + "  x" + fixed$(map_amount_'slot', 2) + invText$
+            yMap = yMap - 0.15
+        endif
+    endfor
+    Colour: "{0.38,0.42,0.52}"
+    Text: 0.58, "left", 0.72, "half", "Tracking " + py_tracking_conf$ + " | Cam " + py_cam_fps$ + " fps | Ctrl " + string$(nCtrl)
+    Text: 0.58, "left", 0.56, "half", "X/Y bipolar; dynamic sources unipolar | Bright floor -1"
+    Text: 0.58, "left", 0.40, "half", "Capture " + fixed$(rawCtrlDur, 2) + " s -> sound " + fixed$(dur, 2) + " s | time scale x" + fixed$(ctrlTimeScale, 3)
+    Text: 0.58, "left", 0.24, "half", "Brightness cutoff " + fixed$(brightness_cutoff_hz, 0) + " Hz | Amp 0..1"
+    if live_audio_during_capture
+        Text: 0.58, "left", 0.08, "half", "Live " + py_live_status$ + " | " + liveResponseStr$ + " | causal normalization"
+    endif
+    if py_warnings$ <> "?" and py_warnings$ <> "none"
+        Colour: "{0.80,0.18,0.18}"
+        Text: 0.03, "left", 0.05, "half", "Warning: " + warningsViz$
+    endif
+    Colour: "Black"
+    # Text commands can leave the Picture state on the outer viewport.
+    Select inner viewport: 0.6, 7.7, 6.43, 7.94
+    Axes: 0, 1, 0, 1
+    Draw inner box
+
+    removeObject: vizInput, vizOutput
 endif
 
 # ===========================================================================
@@ -885,17 +1338,33 @@ appendInfoLine: "  Camera fps:          ", py_cam_fps$
 appendInfoLine: "  Raw frames:          ", py_n_raw$
 appendInfoLine: "  Control frames:      ", nCtrl
 appendInfoLine: "  Tracking confidence: ", py_tracking_conf$
+if live_audio_during_capture
+    appendInfoLine: "  Live audio:          ", py_live_status$,
+     ... "  |  response: ", liveResponseStr$,
+     ... "  |  stream notices: ", py_live_under$
+endif
+if fallbackUsed
+    appendInfoLine: "  Capture status:       FALLBACK / transform bypassed"
+endif
 if py_warnings$ <> "?" and py_warnings$ <> "none"
     appendInfoLine: "  WARNING: ", py_warnings$
 endif
 appendInfoLine: ""
-appendInfoLine: "Transformations applied:"
-appendInfoLine: "  Amplitude   : energy -> [", fixed$(amplitude_min, 2),
- ... " .. ", fixed$(amplitude_max, 2), "]"
-appendInfoLine: "  Pitch       : vertical pos -> +/-", fixed$(pitch_range_st, 1),
- ... " semitones"
-appendInfoLine: "  Brightness  : horizontal pos -> HPF modulation range ",
- ... fixed$(brightness_range, 2)
+appendInfoLine: "Mappings used:"
+for slot from 1 to 4
+    if map_source_'slot' <> 8 and map_dest_'slot' <> 5 and map_amount_'slot' > 0
+        invText$ = ""
+        if map_invert_'slot'
+            invText$ = " (inverted)"
+        endif
+        appendInfoLine: "  ", slot, ". ", mapSource_'slot'$, " -> ", mapDest_'slot'$,
+         ... "  amount ", fixed$(map_amount_'slot', 2), invText$
+    endif
+endfor
+appendInfoLine: "  Pitch amount 1.0: X/Y +/-", fixed$(pitch_span_st, 1), " st; unipolar 0..+", fixed$(pitch_span_st, 1), " st"
+appendInfoLine: "  Brightness amount 1.0: X/Y +/-", fixed$(brightness_span, 2), "; unipolar 0..+", fixed$(brightness_span, 2)
+appendInfoLine: "  Brightness cutoff: ", fixed$(brightness_cutoff_hz, 0), " Hz; negative control limited to -1"
+appendInfoLine: "  Pan law: equal-power stereo when a Pan mapping is active"
 appendInfoLine: ""
 appendInfoLine: "Duration : ", fixed$(dur, 2), " s"
 appendInfoLine: "RMS      : ", fixed$(rms_orig, 4), " -> ", fixed$(rms_out, 4)

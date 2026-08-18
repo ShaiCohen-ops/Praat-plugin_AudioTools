@@ -1,6 +1,8 @@
 """
 latent_stft_decoder.py — VAE STFT Decoder (numpy-only, fast)
 
+Version 1.3 — corrected VAE reparameterization/KL gradients; robust mono/PCA/empty-input handling; neutral dual-mono output
+
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
 
@@ -29,8 +31,12 @@ Usage (called by Praat):
         --seed 42
         --nav_mode interpolate
         --nav_steps 30
-        --step_size 0.15
-        --temperature 0.20
+        --k_neighbors 4
+        --p_jump 0.05
+        --visit_weight 2.0
+        --visit_decay 0.92
+        --step_size 0.30
+        --temperature 0.25
         --cleanup
 """
 
@@ -231,8 +237,14 @@ class NumpySTFTVAE:
 
     def forward(self, X):
         mu, lv = self.encode(X)
-        std    = np.exp(0.5 * np.clip(lv, -6, 6))
-        Z      = mu + std * self.rng.randn(*std.shape)
+        # Reparameterization: z = mu + sigma * eps. Keep eps because the
+        # reconstruction gradient w.r.t. log-variance depends on it.
+        lv_safe = np.clip(lv, -6.0, 6.0)
+        std      = np.exp(0.5 * lv_safe)
+        eps      = self.rng.randn(*std.shape)
+        self._eps = eps
+        self._lv_reparam_mask = ((lv > -6.0) & (lv < 6.0)).astype(np.float64)
+        Z        = mu + std * eps
         return self.decode(Z), mu, lv, Z
 
     def train_step(self, X, lr, beta_kl, noise_std=0.10, l2=1e-5):
@@ -242,7 +254,11 @@ class NumpySTFTVAE:
 
         diff    = recon - X
         rc_loss = float(np.mean(diff ** 2))
-        kl_loss = float(max(0.0, 0.5 * np.mean(mu**2 + np.exp(lv) - lv - 1.0)))
+        # The reported KL is a mean over BOTH batch and latent dimensions.
+        # Use a numerically safe exponent; ordinary values are unchanged.
+        lv_kl   = np.clip(lv, -20.0, 20.0)
+        kl_loss = float(max(0.0, 0.5 * np.mean(
+            mu**2 + np.exp(lv_kl) - lv_kl - 1.0)))
 
         # decoder gradients
         sc   = 2.0 / (batch * self.input_dim)
@@ -253,9 +269,21 @@ class NumpySTFTVAE:
         dZ   = d1.dot(self.Wd1.T)
 
         # encoder gradients
-        std  = np.exp(0.5 * np.clip(lv, -6, 6))
-        dmu  = dZ + beta_kl * mu / batch
-        dlv  = dZ * std * 0.5 + beta_kl * 0.5 * (np.exp(lv) - 1.0) / batch
+        # d z / d logvar = 0.5 * sigma * eps.  The previous implementation
+        # omitted eps, so it was not the gradient of the sampled VAE forward
+        # pass.  KL is a mean over batch*latent_dim, so its gradient must be
+        # divided by BOTH dimensions to match the reported beta-weighted loss.
+        lv_safe = np.clip(lv, -6.0, 6.0)
+        std     = np.exp(0.5 * lv_safe)
+        kl_norm = float(batch * self.latent_dim)
+        dmu     = dZ + beta_kl * mu / kl_norm
+        dlv_recon = (dZ * self._eps * std * 0.5
+                     * self._lv_reparam_mask)
+        lv_kl   = np.clip(lv, -20.0, 20.0)
+        kl_mask = ((lv > -20.0) & (lv < 20.0)).astype(np.float64)
+        dlv_kl  = (beta_kl * 0.5 * (np.exp(lv_kl) - 1.0)
+                   / kl_norm * kl_mask)
+        dlv     = dlv_recon + dlv_kl
         dWmu = self._h1.T.dot(dmu);  dbmu = dmu.sum(0)
         dWlv = self._h1.T.dot(dlv);  dblv = dlv.sum(0)
         dh1  = (dmu.dot(self.Wmu.T) + dlv.dot(self.Wlv.T)) * self._relug(self._h1p)
@@ -569,7 +597,18 @@ def reconstruct_griffin_lim(vae_log_mag, full_patches, Z_events, z_query,
 # Stage 7 — Assemble Output
 # ═══════════════════════════════════════════════════════════════════════════
 
-def assemble_output(segments, sr, target_samples, xfade_sec=0.010):
+def assemble_output(segments, sr, target_samples, xfade_sec=0.010,
+                    resample_to_target=False):
+    """Crossfade segments and fit duration.
+
+    For normal Praat use, the caller generates enough decoded segments to cover
+    the requested duration; we then crop (or only rarely zero-pad) to the exact
+    sample count.  This avoids a hidden global resample/pitch shift.
+
+    resample_to_target=True preserves the historical direct-CLI behaviour for
+    duration=0, where --nav_steps is explicitly used as a manual structure
+    control and the resulting sequence is fitted to the original duration.
+    """
     if not segments:
         return np.zeros(target_samples, dtype=np.float32)
     xfade  = max(4, int(xfade_sec * sr))
@@ -590,8 +629,18 @@ def assemble_output(segments, sr, target_samples, xfade_sec=0.010):
         return np.zeros(target_samples, dtype=np.float32)
     if len(result) == target_samples:
         return result.copy()
-    from scipy.signal import resample
-    return resample(result, target_samples).astype(np.float32)
+    if resample_to_target:
+        from scipy.signal import resample
+        return resample(result, target_samples).astype(np.float32)
+    if len(result) > target_samples:
+        out = result[:target_samples].copy()
+        # The exact duration may cut through the last decoded segment. Apply a
+        # short local release only at this real hard truncation boundary.
+        rel = min(len(out), max(4, int(0.005 * sr)))
+        if rel > 1:
+            out[-rel:] *= np.linspace(1.0, 0.0, rel, dtype=np.float32)
+        return out
+    return np.pad(result, (0, target_samples - len(result))).astype(np.float32)
 
 
 def apply_normalization(audio, ref_rms, mode):
@@ -626,9 +675,13 @@ def write_stats(path, n_events, n_steps, nav_mode, phase_mode,
         all_pts = np.vstack([Z_ev, Z_tr])
         mean_pt = np.mean(all_pts, axis=0)
         centered = all_pts - mean_pt
-        if centered.shape[1] >= 2:
+        if centered.shape[1] >= 2 and centered.shape[0] >= 2:
             U, S, Vt = np.linalg.svd(centered, full_matrices=False)
-            proj = centered.dot(Vt[:2].T)
+            if Vt.shape[0] >= 2:
+                proj = centered.dot(Vt[:2].T)
+            else:
+                p1 = centered.dot(Vt[:1].T)[:, 0]
+                proj = np.column_stack([p1, np.zeros(len(centered))])
         else:
             proj = np.column_stack(
                 [centered[:, 0], np.zeros(len(centered))])
@@ -654,6 +707,8 @@ def write_stats(path, n_events, n_steps, nav_mode, phase_mode,
         f.write("freq_bins=%d\n"         % freq_bins)
         f.write("output_duration=%.3f\n" % out_dur)
         f.write("normalize_mode=%s\n"    % normalize_mode)
+        f.write("output_channels=2\n")
+        f.write("stereo_mode=dual_mono\n")
         f.write("rms_input=%.6f\n"       % ref_rms)
         f.write("rms_output=%.6f\n"      % out_rms)
         f.write("initial_loss=%.6f\n"    % (losses[0]  if losses else 0.0))
@@ -676,6 +731,21 @@ def write_stats(path, n_events, n_steps, nav_mode, phase_mode,
 
         if warnings_list:
             f.write("warning=%s\n" % "; ".join(warnings_list))
+
+
+def phase_safe_analysis_mono(audio):
+    """Return (analysis_mono, used_strongest_channel_fallback)."""
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim == 1:
+        return audio, False
+    mean_sig = np.mean(audio, axis=1).astype(np.float32)
+    mean_rms = float(np.sqrt(np.mean(mean_sig.astype(np.float64) ** 2)))
+    ch_rms = np.sqrt(np.mean(audio.astype(np.float64) ** 2, axis=0))
+    strongest = int(np.argmax(ch_rms))
+    strongest_rms = float(ch_rms[strongest])
+    if strongest_rms > 1e-12 and mean_rms < 0.10 * strongest_rms:
+        return audio[:, strongest].astype(np.float32, copy=True), True
+    return mean_sig, False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -743,17 +813,37 @@ def main():
     target_dur     = args.duration if args.duration > 0 else orig_dur
     target_samples = int(round(target_dur * sr))
 
-    seg_samples = max(1, args.patch_frames * args.hop_length)
-    nav_steps   = (max(4, int(math.ceil(target_samples / seg_samples)))
-                   if args.duration > 0 else max(4, args.nav_steps))
+    # scipy.signal.istft with boundary=True returns approximately
+    # (patch_frames - 1) * hop_length samples for our fixed-size STFT patch.
+    # Account for the actual overlap contribution when deriving the number of
+    # segments needed for an explicit target duration; otherwise a final global
+    # resample would silently shift pitch (especially in the Quick preset).
+    seg_out_samples = max(1, (args.patch_frames - 1) * args.hop_length)
+    xfade_samples   = max(4, int(0.010 * sr))
+    xfade_eff       = min(xfade_samples, seg_out_samples // 2)
+    step_contrib    = max(1, seg_out_samples - xfade_eff)
+    if args.duration > 0:
+        if target_samples <= seg_out_samples:
+            nav_steps = 4
+        else:
+            nav_steps = max(4, 1 + int(math.ceil(
+                (target_samples - seg_out_samples) / step_contrib)))
+    else:
+        nav_steps = max(4, args.nav_steps)
 
     print("    Audio: %.2fs  SR=%d  Events=%d  Nav steps=%d"
           % (orig_dur, sr, len(events), nav_steps))
+    if len(events) == 0:
+        print("ERROR: Event table contains no usable events", file=sys.stderr)
+        sys.exit(1)
     if len(events) < 2:
         warnings_list.append("Too few events (%d)" % len(events))
 
-    audio_mono = audio if audio.ndim == 1 else audio.mean(axis=1)
-    ref_rms    = float(np.sqrt(np.mean(audio_mono.astype(np.float64)**2)))
+    audio_mono, mono_fallback = phase_safe_analysis_mono(audio)
+    if mono_fallback:
+        warnings_list.append(
+            "Multichannel mean nearly cancelled; analysis used strongest channel")
+    ref_rms = float(np.sqrt(np.mean(audio_mono.astype(np.float64)**2)))
 
     # ── Stage 2 ────────────────────────────────────────────────────────────
     print("  [Py 2/9] Extracting STFT patches (n_fft=%d hop=%d frames=%d)..."
@@ -832,21 +922,21 @@ def main():
         prev_primary = primary
         segments.append(audio)
 
-    output = assemble_output(segments, sr, target_samples)
+    output = assemble_output(
+        segments, sr, target_samples, resample_to_target=(args.duration <= 0))
     if args.normalize_mode != "none":
         output = apply_normalization(output, ref_rms, args.normalize_mode)
 
     out_rms = float(np.sqrt(np.mean(output.astype(np.float64)**2)))
     out_dur = len(output) / sr
 
-    delay  = max(1, int(sr * 0.0003))
-    stereo = np.zeros((len(output), 2), dtype=np.float32)
-    stereo[:, 0]      = output
-    stereo[delay:, 1] = output[:len(output)-delay]
+    # This processor is not a spatializer. Preserve the historical 2-channel
+    # output contract without adding a fixed Haas delay/comb coloration.
+    stereo = np.column_stack([output, output]).astype(np.float32)
 
     # ── Stage 9 ────────────────────────────────────────────────────────────
     print("  [Py 9/9] Writing output + stats...")
-    sf.write(args.output_wav, stereo, sr)
+    sf.write(args.output_wav, stereo, sr, subtype="FLOAT")
     print("    Output: %.2fs stereo  peak=%.4f  rms=%.4f"
           % (out_dur, float(np.max(np.abs(stereo))), out_rms))
 
