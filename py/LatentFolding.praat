@@ -3,7 +3,15 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Symmetry is continuous (no dead zone); curvature linearized
+# Version: 1.4 (2026) - Correct manifold density, Möbius parity, click-safe OLA
+#
+# Changelog v1.4:
+#   - fold_density now means repeated folds/windings across the full latent range
+#     for Mirror, Möbius, and Torus; Mirror no longer collapses to span/density.
+#   - Möbius polarity is cell-parity based, so it changes only at real twists.
+#   - adaptive equal-power OLA replaces global median de-clicking; FLOAT output.
+#   - phase-safe analysis and streamlined event export (start/end only).
+#   - visualization uses world-coordinate markers; removed Paint circle (mm).
 #
 # Changelog v1.3:
 #   - symmetry is now a continuous control with no dead zone. Previously
@@ -103,7 +111,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Folding v1.3 — Topological Manifold
+form Latent Folding v1.4 — Topological Manifold
     optionmenu Preset: 1
         option Custom
         option Gentle mirror
@@ -244,7 +252,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Folding v1.3 — Topological Manifold ==="
+writeInfoLine:  "=== Latent Folding v1.4 — Topological Manifold ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -299,12 +307,6 @@ else
     Copy: "analysisMono"
     analysisMono = selected("Sound")
 endif
-
-selectObject: analysisMono
-pitchObj = To Pitch: 0.01, 75, 600
-
-selectObject: analysisMono
-harmObj = To Harmonicity (cc): 0.01, 75, 0.1, 1.0
 
 selectObject: analysisMono
 intObj = To Intensity: 100, 0.01, "yes"
@@ -401,73 +403,18 @@ appendInfoLine: "  Found ", nEvents, " events"
 # ===========================================================================
 # Stage 3 — Extract Features + Export
 # ===========================================================================
-appendInfoLine: "[3/5] Extracting features..."
+appendInfoLine: "[3/5] Exporting event boundaries..."
 
-Create Table with column names: "eventFeatures", nEvents, "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
+Create Table with column names: "eventFeatures", nEvents, "start_time end_time label"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
     t1 = evS_'iEv'
     t2 = evE_'iEv'
-    tMid = (t1 + t2) / 2
-
     selectObject: eventTable
     Set numeric value: iEv, "start_time", t1
     Set numeric value: iEv, "end_time", t2
     Set string value: iEv, "label", "ev" + string$(iEv)
-
-    selectObject: pitchObj
-    pMean = Get mean: t1, t2, "Hertz"
-    pStd = Get standard deviation: t1, t2, "Hertz"
-    if pMean = undefined or pMean = 0
-        pitchStab = 0
-    else
-        if pStd = undefined
-            pStd = 0
-        endif
-        pitchCV = pStd / (pMean + 0.001)
-        pitchStab = 1 - min(1, pitchCV)
-        if pitchStab < 0
-            pitchStab = 0
-        endif
-    endif
-    selectObject: eventTable
-    Set numeric value: iEv, "pitch_stability", pitchStab
-
-    selectObject: intObj
-    iMean = Get mean: t1, t2, "energy"
-    if iMean = undefined
-        iMean = 0
-    endif
-    iStart = Get value at time: t1, "Cubic"
-    if iStart = undefined
-        iStart = 0
-    endif
-    iPeak = Get maximum: t1, t2, "Parabolic"
-    if iPeak = undefined
-        iPeak = iStart
-    endif
-    tPeak = Get time of maximum: t1, t2, "Parabolic"
-    if tPeak = undefined
-        tPeak = tMid
-    endif
-    attackTime = tPeak - t1
-    if attackTime > 0.001
-        attackSlope = (iPeak - iStart) / attackTime
-    else
-        attackSlope = 0
-    endif
-    selectObject: eventTable
-    Set numeric value: iEv, "intensity_mean", iMean
-    Set numeric value: iEv, "attack_slope", attackSlope
-
-    selectObject: harmObj
-    hMean = Get mean: t1, t2
-    if hMean = undefined
-        hMean = 0
-    endif
-    selectObject: eventTable
-    Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
 appendInfoLine: "  Exporting temp files..."
@@ -476,7 +423,7 @@ Save as WAV file: tempInput$
 selectObject: eventTable
 Save as comma-separated file: tempCSV$
 
-removeObject: analysisMono, pitchObj, harmObj, intObj
+removeObject: analysisMono, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
 # ===========================================================================
@@ -720,7 +667,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 0.65, 1.65
     selectObject: sound
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -1, 1, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -740,7 +687,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 1.75, 2.75
     selectObject: resultSound
     Colour: "{0.5, 0.2, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -1, 1, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -865,9 +812,11 @@ if draw_visualization
 
         Axes: axMinX, axMaxX, axMinY, axMaxY
         Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
+        dotR = min(rangeX, rangeY) * 0.012
+        markR = min(rangeX, rangeY) * 0.022
 
         for iEP from 0 to nFEvPts - 1
-            Paint circle (mm): "{0.75, 0.75, 0.75}", fep_'iEP'_x, fep_'iEP'_y, 1.2
+            Paint circle: "{0.75, 0.75, 0.75}", fep_'iEP'_x, fep_'iEP'_y, dotR
         endfor
 
         Colour: "{0.5, 0.2, 0.5}"
@@ -881,18 +830,18 @@ if draw_visualization
         for iFM from 0 to nFoldMarkers - 1
             fmType$ = fm_'iFM'_type$
             if fmType$ = "twist"
-                Paint circle (mm): "{0.8, 0.3, 0.2}", fm_'iFM'_x, fm_'iFM'_y, 2.0
+                Paint circle: "{0.8, 0.3, 0.2}", fm_'iFM'_x, fm_'iFM'_y, markR
             elsif fmType$ = "wrap"
-                Paint circle (mm): "{0.2, 0.6, 0.8}", fm_'iFM'_x, fm_'iFM'_y, 2.0
+                Paint circle: "{0.2, 0.6, 0.8}", fm_'iFM'_x, fm_'iFM'_y, markR
             else
-                Paint circle (mm): "{0.3, 0.7, 0.4}", fm_'iFM'_x, fm_'iFM'_y, 2.0
+                Paint circle: "{0.3, 0.7, 0.4}", fm_'iFM'_x, fm_'iFM'_y, markR
             endif
         endfor
 
         if nFTrajPts > 0
-            Paint circle (mm): "{0.2, 0.7, 0.3}", ftp_0_x, ftp_0_y, 2.0
+            Paint circle: "{0.2, 0.7, 0.3}", ftp_0_x, ftp_0_y, markR
             iLast = nFTrajPts - 1
-            Paint circle (mm): "{0.8, 0.2, 0.2}", ftp_'iLast'_x, ftp_'iLast'_y, 2.0
+            Paint circle: "{0.8, 0.2, 0.2}", ftp_'iLast'_x, ftp_'iLast'_y, markR
         endif
 
         Colour: "Black"

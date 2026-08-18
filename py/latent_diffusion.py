@@ -956,10 +956,17 @@ def main():
     print("    Audio: %.2fs  SR=%d  Shape=%s" % (orig_dur, sr, audio.shape))
     print("    Events: %d" % len(events))
 
+    if len(events) == 0:
+        print("ERROR: Event table contains no usable events", file=sys.stderr)
+        sys.exit(1)
+
     if len(events) < n_clusters + 1:
         warnings.append("Too few events (%d) for %d clusters" %
                         (len(events), n_clusters))
-        n_clusters = max(2, len(events) - 1)
+        # Preserve the original >=2-cluster behaviour whenever possible, but
+        # a one-event source cannot support two clusters.  Allow one cluster
+        # only for that degenerate edge case; normal inputs are unchanged.
+        n_clusters = 1 if len(events) == 1 else max(2, len(events) - 1)
         print("    WARNING: reducing clusters to %d" % n_clusters)
 
     # ── Stage 2: Mel patches ─────────────────────────────────────────

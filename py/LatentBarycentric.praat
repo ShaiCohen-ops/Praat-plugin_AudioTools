@@ -3,7 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026) - Drift/settle move at temperature=0 (step_size decoupled)
+# Version: 1.5 (2026) - VAE gradient + pitch/energy/phase correctness
+#
+# Changelog v1.5:
+#   - Paired with Python v1.5: corrected VAE log-variance gradients; pitch-aware
+#     duration scaling; plan energy preserved under RMS/loudness normalization;
+#     phase-safe anti-phase fallback; phase-safe dual-mono output; FLOAT WAV.
+#   - Latent plot uses world-coordinate markers (not Paint circle (mm)).
+#   - Summary exposes RMS target, plan mean energy, mono strategy and stereo mode.
+#   - Auto-plan anchor strategy "last" now targets the last pre-return point
+#     instead of i-1 on every return step.
 #
 # Changelog v1.4:
 #   - Navigation: drift and settle steps now move even when temperature=0.
@@ -133,7 +142,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Barycentric Mutation v1.4
+form Latent Barycentric Mutation v1.5
     # ── Core settings ─────────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom
@@ -177,7 +186,7 @@ form Latent Barycentric Mutation v1.4
         option none
         option peak
         option rms
-        option loudness
+        option loudness (RMS proxy)
     comment ── Pitch preservation ──────────────────────────────────────
     optionmenu Pitch_mode: 2
         option off
@@ -356,7 +365,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Barycentric Mutation v1.4 ==="
+writeInfoLine:  "=== Latent Barycentric Mutation v1.5 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -698,7 +707,11 @@ outDurStat$     = "?"
 normModeStat$   = "?"
 pitchModeStat$  = "?"
 rmsInputStat$   = "?"
+rmsTargetStat$  = "?"
 rmsOutputStat$  = "?"
+planEnergyMean$ = "?"
+monoStrategy$   = "?"
+stereoRender$   = "?"
 finalLoss$      = "?"
 initialLoss$    = "?"
 meanEvDur$      = "?"
@@ -728,8 +741,16 @@ if fileReadable(tempStats$)
     pitchModeStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "rms_input="
     rmsInputStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "rms_target="
+    rmsTargetStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "rms_output="
     rmsOutputStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "plan_energy_mean="
+    planEnergyMean$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mono_strategy="
+    monoStrategy$ = parseStatLine.result$
+    @parseStatLine: statsText$, "stereo_render="
+    stereoRender$ = parseStatLine.result$
     @parseStatLine: statsText$, "output_duration="
     outDurStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "final_loss="
@@ -839,20 +860,23 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 0.65, 1.45
     selectObject: sound
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Original"
+    Draw: 0, 0, -1, 1, "no", "Curve"
+    # Draw event boundaries while the data-world viewport is definitely active.
+    Select outer viewport: 0, 8, 0.6, 1.5
+    Select inner viewport: 0.6, 7.7, 0.65, 1.45
+    Axes: 0, dur, -1, 1
     Colour: "{0.8, 0.3, 0.3}"
     Line width: 1
-    Axes: 0, dur, -1, 1
     for iEv from 1 to nEvents
         evBound = evS_'iEv'
         if evBound > 0 and evBound < dur
             Draw line: evBound, -0.9, evBound, 0.9
         endif
     endfor
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Original"
     Text top: "no", string$(nEvents) + " events | " + fixed$(dur, 2) + " s"
 
     # === Output Waveform ===
@@ -860,7 +884,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 1.55, 2.35
     selectObject: resultSound
     Colour: "{0.2, 0.5, 0.7}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -1, 1, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -986,9 +1010,12 @@ if draw_visualization
         Axes: axMinX, axMaxX, axMinY, axMaxY
         Paint rectangle: "{0.97, 0.97, 0.99}", axMinX, axMaxX, axMinY, axMaxY
 
-        dotR = rangeX * 0.015
+        dotR = min(rangeX, rangeY) * 0.018
+        if dotR <= 0
+            dotR = 0.01
+        endif
         for iEP from 0 to nEvPts - 1
-            Paint circle (mm): "{0.7, 0.7, 0.7}", ep_'iEP'_x, ep_'iEP'_y, 1.2
+            Paint circle: "{0.7, 0.7, 0.7}", ep_'iEP'_x, ep_'iEP'_y, dotR
         endfor
 
         Line width: 2
@@ -1009,9 +1036,10 @@ if draw_visualization
         Line width: 1
 
         if nTrajPts > 0
-            Paint circle (mm): "{0.2, 0.7, 0.3}", tp_0_x, tp_0_y, 1.8
+            dotR2 = dotR * 1.5
+            Paint circle: "{0.2, 0.7, 0.3}", tp_0_x, tp_0_y, dotR2
             iLast = nTrajPts - 1
-            Paint circle (mm): "{0.8, 0.2, 0.2}", tp_'iLast'_x, tp_'iLast'_y, 1.8
+            Paint circle: "{0.8, 0.2, 0.2}", tp_'iLast'_x, tp_'iLast'_y, dotR2
         endif
 
         Colour: "Black"
@@ -1044,10 +1072,10 @@ if draw_visualization
     Colour: "{0.3, 0.3, 0.3}"
     Text: 0.02, "left", 0.75, "half", "Events: " + nEvStat$ + " | Plan: " + nPlanSteps$ + " steps | Used: " + nExecSteps$ + " / " + nPlanSteps$ + " | Mean event dur: " + meanEvDur$ + " s"
     Text: 0.02, "left", 0.57, "half", "VAE loss: " + initialLoss$ + " -> " + finalLoss$ + " | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
-    Text: 0.02, "left", 0.39, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | Normalize: " + normModeStat$ + " | RMS: " + rmsInputStat$ + " -> " + rmsOutputStat$
-    Text: 0.02, "left", 0.21, "half", "Pitch: " + pitchModeStat$ + " | Plan source: " + planSourceStat$
+    Text: 0.02, "left", 0.39, "half", "Duration: " + fixed$(dur, 2) + "s -> " + outDurStat$ + "s | Normalize: " + normModeStat$ + " | RMS: " + rmsInputStat$ + " -> target " + rmsTargetStat$ + " -> " + rmsOutputStat$
+    Text: 0.02, "left", 0.21, "half", "Pitch: " + pitchModeStat$ + " | Energy mean: " + planEnergyMean$ + " | Mono: " + monoStrategy$
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.02, "left", 0.05, "half", "Phases: drift=" + modeDrift$ + " mutate=" + modeMutate$ + " return=" + modeReturn$ + " settle=" + modeSettle$
+    Text: 0.02, "left", 0.05, "half", "Phases: drift=" + modeDrift$ + " mutate=" + modeMutate$ + " return=" + modeReturn$ + " settle=" + modeSettle$ + " | " + stereoRender$
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
@@ -1085,7 +1113,11 @@ appendInfoLine: "Duration:   ", fixed$(dur, 2), " s -> ", outDurStat$, " s"
 appendInfoLine: "Normalize:  ", normModeStat$
 appendInfoLine: "Pitch mode: ", pitchModeStat$
 appendInfoLine: "RMS input:  ", rmsInputStat$
+appendInfoLine: "RMS target: ", rmsTargetStat$
 appendInfoLine: "RMS output: ", rmsOutputStat$
+appendInfoLine: "Plan energy mean: ", planEnergyMean$
+appendInfoLine: "Mono strategy:    ", monoStrategy$
+appendInfoLine: "Stereo render:    ", stereoRender$
 
 if warningStat$ <> "?" and warningStat$ <> ""
     appendInfoLine: "WARNING:    ", warningStat$

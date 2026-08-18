@@ -3,7 +3,17 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - counterpoint_rigidity now actually controls voice separation
+# Version: 1.4 (2026) - click-safe reconstruction + truthful process QC
+#
+# Changelog v1.4:
+#   - Reconstruction uses adaptive local equal-power splices; removed global
+#     median click smoothing that could erase genuine transients.
+#   - Short/simple sources with one latent event no longer propagate NaN scale.
+#   - Phase-safe multichannel event fold-down and 32-bit FLOAT output.
+#   - Timeline mirrors actual adaptive splice positions; visualization now
+#     emphasizes the real analysis->latent->physics->voice process.
+#   - Removed unused Pitch/Harmonicity/event-descriptor calculations in Praat;
+#     only intensity segmentation + start/end event times feed this engine.
 #
 # Changelog v1.3:
 #   - counterpoint_rigidity is now a real, monotonic control over how
@@ -116,7 +126,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form The Latent Counterpoint v1.3
+form The Latent Counterpoint v1.4
     optionmenu Preset: 1
         option Custom
         option Duo (2 voices)
@@ -197,7 +207,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== The Latent Counterpoint v1.3 ==="
+writeInfoLine:  "=== The Latent Counterpoint v1.4 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -256,12 +266,9 @@ else
     analysisMono = selected("Sound")
 endif
 
-selectObject: analysisMono
-pitchObj = To Pitch: 0.01, 75, 600
-
-selectObject: analysisMono
-harmObj = To Harmonicity (cc): 0.01, 75, 0.1, 1.0
-
+# Intensity is the only Praat analysis required here: it drives event
+# segmentation.  Pitch/HNR/attack descriptors were formerly exported but
+# never consumed by the Python engine, whose latent features are log-mel.
 selectObject: analysisMono
 intObj = To Intensity: 100, 0.01, "yes"
 
@@ -359,71 +366,16 @@ appendInfoLine: "  Found ", nEvents, " events"
 # ===========================================================================
 appendInfoLine: "[3/5] Extracting features..."
 
-Create Table with column names: "eventFeatures", nEvents, "start_time end_time label pitch_stability intensity_mean attack_slope hnr_mean"
+Create Table with column names: "eventFeatures", nEvents, "start_time end_time label"
 eventTable = selected("Table")
 
 for iEv from 1 to nEvents
     t1 = evS_'iEv'
     t2 = evE_'iEv'
-    tMid = (t1 + t2) / 2
-
     selectObject: eventTable
     Set numeric value: iEv, "start_time", t1
     Set numeric value: iEv, "end_time", t2
     Set string value: iEv, "label", "ev" + string$(iEv)
-
-    selectObject: pitchObj
-    pMean = Get mean: t1, t2, "Hertz"
-    pStd = Get standard deviation: t1, t2, "Hertz"
-    if pMean = undefined or pMean = 0
-        pitchStab = 0
-    else
-        if pStd = undefined
-            pStd = 0
-        endif
-        pitchCV = pStd / (pMean + 0.001)
-        pitchStab = 1 - min(1, pitchCV)
-        if pitchStab < 0
-            pitchStab = 0
-        endif
-    endif
-    selectObject: eventTable
-    Set numeric value: iEv, "pitch_stability", pitchStab
-
-    selectObject: intObj
-    iMean = Get mean: t1, t2, "energy"
-    if iMean = undefined
-        iMean = 0
-    endif
-    iStart = Get value at time: t1, "Cubic"
-    if iStart = undefined
-        iStart = 0
-    endif
-    iPeak = Get maximum: t1, t2, "Parabolic"
-    if iPeak = undefined
-        iPeak = iStart
-    endif
-    tPeak = Get time of maximum: t1, t2, "Parabolic"
-    if tPeak = undefined
-        tPeak = tMid
-    endif
-    attackTime = tPeak - t1
-    if attackTime > 0.001
-        attackSlope = (iPeak - iStart) / attackTime
-    else
-        attackSlope = 0
-    endif
-    selectObject: eventTable
-    Set numeric value: iEv, "intensity_mean", iMean
-    Set numeric value: iEv, "attack_slope", attackSlope
-
-    selectObject: harmObj
-    hMean = Get mean: t1, t2
-    if hMean = undefined
-        hMean = 0
-    endif
-    selectObject: eventTable
-    Set numeric value: iEv, "hnr_mean", hMean
 endfor
 
 appendInfoLine: "  Exporting temp files..."
@@ -432,7 +384,7 @@ Save as WAV file: tempInput$
 selectObject: eventTable
 Save as comma-separated file: tempCSV$
 
-removeObject: analysisMono, pitchObj, harmObj, intObj
+removeObject: analysisMono, intObj
 removeObject: intMatrix, intSound, ppObj, eventTable
 
 # ===========================================================================
@@ -495,6 +447,9 @@ initialLoss$ = "?"
 meanEvDur$ = "?"
 totalUnique$ = "?"
 warningStat$ = ""
+meanSep$ = "?"
+phaseSafe$ = "?"
+spliceMode$ = "?"
 
 for iA from 0 to 5
     agProfile_'iA'$ = "?"
@@ -536,6 +491,12 @@ if fileReadable(tempStats$)
     totalUnique$ = parseStatLine.result$
     @parseStatLine: statsText$, "warning="
     warningStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_separation_ratio="
+    meanSep$ = parseStatLine.result$
+    @parseStatLine: statsText$, "phase_safe_events="
+    phaseSafe$ = parseStatLine.result$
+    @parseStatLine: statsText$, "splice_mode="
+    spliceMode$ = parseStatLine.result$
 
     for iA from 0 to number_of_agents - 1
         @parseStatLine: statsText$, "agent_" + string$(iA) + "_profile="
@@ -619,82 +580,102 @@ if draw_visualization
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.5, "half", soundName$ + " | " + presetName$ + " | " + string$(number_of_agents) + " voices | Rigidity=" + fixed$(counterpoint_rigidity, 2)
 
-    # === Input Waveform ===
+    # === Input Waveform (analysis channel, fixed amplitude scale) ===
     Select outer viewport: 0, 8, 0.6, 1.5
     Select inner viewport: 0.6, 7.7, 0.65, 1.45
     selectObject: sound
+    if nChannels > 1
+        Extract one channel: 1
+        tmpInWave = selected("Sound")
+    else
+        Copy: "tmpInWave"
+        tmpInWave = selected("Sound")
+    endif
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, dur, -1, 1, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Original"
+    Text left: "yes", "Input ch1"
+    # Drawing text/box can change Picture viewport state; restore explicitly
+    # before drawing event boundaries in data coordinates.
+    Select inner viewport: 0.6, 7.7, 0.65, 1.45
+    Axes: 0, dur, -1, 1
     Colour: "{0.8, 0.3, 0.3}"
     Line width: 1
-    Axes: 0, dur, -1, 1
     for iEv from 1 to nEvents
         evBound = evS_'iEv'
         if evBound > 0 and evBound < dur
             Draw line: evBound, -0.9, evBound, 0.9
         endif
     endfor
-    Text top: "no", string$(nEvents) + " events | " + fixed$(dur, 2) + " s"
+    Font size: 7
+    Colour: "Black"
+    Text top: "no", string$(nEvents) + " events | " + fixed$(dur, 2) + " s | amp -1..1"
+    removeObject: tmpInWave
 
-    # === Output Waveform (stereo → L channel) ===
+    # === Output Waveform (left channel, same amplitude scale) ===
     Select outer viewport: 0, 8, 1.5, 2.4
     Select inner viewport: 0.6, 7.7, 1.55, 2.35
     selectObject: resultSound
-    Colour: "{0.4, 0.2, 0.6}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Extract one channel: 1
+    tmpOutWave = selected("Sound")
+    Colour: "{0.2, 0.4, 0.75}"
+    Draw: 0, durOut, -1, 1, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Counterpoint"
+    Text left: "yes", "Output L"
     Text bottom: "yes", "Time (s)"
+    Text top: "no", "amp -1..1 | adaptive equal-power splices"
+    removeObject: tmpOutWave
 
-    # === Original Spectrogram ===
+    # === Process Architecture ===
     Select outer viewport: 0, 8, 2.5, 3.7
     Select inner viewport: 0.6, 7.7, 2.6, 3.6
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrig = selected("Sound")
-    else
-        Copy: "tmpOrig"
-        tmpOrig = selected("Sound")
-    endif
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-    specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.96, 0.96, 0.98}", 0, 1, 0, 1
+    Font size: 7
     Colour: "Black"
-    Draw inner box
+    Text: 0.02, "left", 0.90, "half", "##Process Architecture##"
     Font size: 6
-    Text left: "yes", "Hz"
-    Text top: "no", "Original spectrogram"
-    removeObject: specOrig, tmpOrig
+    Colour: "{0.2, 0.4, 0.75}"
+    Text: 0.03, "left", 0.63, "half", "Events"
+    Text: 0.20, "left", 0.63, "half", "log-mel"
+    Text: 0.37, "left", 0.63, "half", "Autoencoder"
+    Text: 0.57, "left", 0.63, "half", "latent Z"
+    Text: 0.73, "left", 0.63, "half", "physics"
+    Text: 0.88, "left", 0.63, "half", "voices"
+    Colour: "{0.35, 0.35, 0.35}"
+    Line width: 1
+    Draw arrow: 0.11, 0.63, 0.18, 0.63
+    Draw arrow: 0.30, 0.63, 0.35, 0.63
+    Draw arrow: 0.49, 0.63, 0.55, 0.63
+    Draw arrow: 0.66, 0.63, 0.71, 0.63
+    Draw arrow: 0.82, 0.63, 0.87, 0.63
+    Colour: "{0.35, 0.35, 0.45}"
+    Text: 0.03, "left", 0.30, "half", "forces: inertia + profile attraction + mutual repulsion + jitter"
+    Text: 0.03, "left", 0.12, "half", "selection: nearest event + LRU memory + rigidity separation penalty"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
 
-    # === Output Spectrogram ===
+    # === Measured Counterpoint QC ===
     Select outer viewport: 0, 8, 3.7, 4.9
     Select inner viewport: 0.6, 7.7, 3.8, 4.8
-    selectObject: resultSound
-    outChans = Get number of channels
-    if outChans > 1
-        Extract one channel: 1
-        tmpOut = selected("Sound")
-    else
-        Copy: "tmpOut"
-        tmpOut = selected("Sound")
-    endif
-    To Spectrogram: 0.03, 5000, 0.002, 20, "Gaussian"
-    specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.95, 0.97, 0.98}", 0, 1, 0, 1
+    Font size: 7
     Colour: "Black"
-    Draw inner box
+    Text: 0.02, "left", 0.90, "half", "##Measured Counterpoint QC##"
     Font size: 6
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Counterpoint spectrogram (L channel)"
-    removeObject: specOut, tmpOut
+    Colour: "{0.2, 0.4, 0.75}"
+    Text: 0.03, "left", 0.66, "half", "Mean latent separation / corpus median: " + meanSep$
+    Colour: "{0.45, 0.35, 0.55}"
+    Text: 0.03, "left", 0.43, "half", "Splice: " + spliceMode$ + " | phase-safe event folds: " + phaseSafe$
+    Colour: "{0.35, 0.35, 0.35}"
+    Text: 0.03, "left", 0.20, "half", "Rigidity=" + fixed$(counterpoint_rigidity, 2) + " | Speed=" + fixed$(speed, 2) + " | Latent=" + string$(latent_size) + " | Seed=" + string$(seed)
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
 
     # === Agent Profiles Panel ===
     Select outer viewport: 0, 8, 5.0, 6.0
@@ -791,7 +772,7 @@ if draw_visualization
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
     Text: 0.02, "left", 0.68, "half", "Events: " + nEvStat$ + " | Unique used: " + totalUnique$ + " | Mean dur: " + meanEvDur$ + "s | AE: " + initialLoss$ + "->" + finalLoss$
-    Text: 0.02, "left", 0.44, "half", "Duration: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | Latent=" + string$(latent_size) + " Seed=" + string$(seed)
+    Text: 0.02, "left", 0.44, "half", "Duration: " + fixed$(dur, 2) + "s->" + outDurStat$ + "s | RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | Sep=" + meanSep$
 
     Colour: "{0.4, 0.4, 0.5}"
     unisonLine$ = "Unison: "
@@ -842,6 +823,8 @@ endfor
 appendInfoLine: ""
 appendInfoLine: "Duration: ", fixed$(dur, 2), " s -> ", outDurStat$, " s"
 appendInfoLine: "RMS: ", fixed$(rms_orig, 4), " -> ", fixed$(rms_out, 4)
+appendInfoLine: "Mean latent separation / median: ", meanSep$
+appendInfoLine: "Phase-safe event folds: ", phaseSafe$
 
 if warningStat$ <> "?" and warningStat$ <> ""
     appendInfoLine: ""

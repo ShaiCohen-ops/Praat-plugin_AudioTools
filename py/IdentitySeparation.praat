@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Resynthesis Correctness Pass
+# Version: 1.4 (2026) - Continuity + Analysis Pass
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -28,6 +28,23 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.4:
+#   - Modes A/B: backend removes artificial boundary amplitude holes.
+#     A uses a smooth equal-power pan trajectory over the raw classified
+#     timeline; B reconstructs the one-identity-at-a-time timeline directly.
+#   - C no longer pads crossfade-shortened recomposition with trailing silence;
+#     D/E continuous streams no longer loop crossfade-padding silence.
+#   - Final <1-hop source tail is assigned to the last identity event.
+#   - Conservative multichannel analysis fallback: channel 1 remains the
+#     analysis channel unless it is <10% of the strongest channel RMS.
+#     Praat and Python now use the same selected analysis channel.
+#   - Dependency probe uses importlib.find_spec instead of importing the
+#     heavy packages in a throwaway Python process.
+#   - Behavioral onset density is now peaks/second (label correctness only).
+#   - Input/output waveforms now share explicit time/amplitude scales.
+#   - Summary panel now exposes the real feature -> GMM -> event -> mode
+#     process plus mean posterior confidence.
 #
 # Changelog v1.3:
 #   Resynthesis correctness pass (most changes are in the Python
@@ -167,7 +184,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Acoustic Identity Separation v1.3
+form Acoustic Identity Separation v1.4
     optionmenu Preset: 1
         option Custom
         option Gentle (3 identities, layered)
@@ -248,7 +265,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Acoustic Identity Separation v1.3 ==="
+writeInfoLine:  "=== Acoustic Identity Separation v1.4 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -273,7 +290,7 @@ appendInfoLine: ""
 # ===========================================================================
 appendInfoLine: "[1/5] Detecting Python dependencies..."
 
-probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile, sklearn; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+probeCmd$ = pythonCmd$ + " -c ""import importlib.util; pkgs=['numpy','scipy','soundfile','sklearn']; assert all(importlib.util.find_spec(p) for p in pkgs); open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
 runSystem_nocheck: probeCmd$
 
 if not fileReadable(probeMarker$)
@@ -297,15 +314,52 @@ if nFrames < 10
     exitScript: "Sound is too short for analysis (need > 0.1 s)."
 endif
 
-# ---- Create analysis objects ----
-selectObject: sound
-
+# ---- Choose a representative analysis channel conservatively ----
+# Keep historical channel 1 whenever it carries normal energy.  Only fall back
+# to the strongest channel when channel 1 is nearly empty relative to the file,
+# so stereo material with asymmetric recording levels is not analysed as silence.
+analysisChannel = 1
+analysisFallback = 0
 if nChannels > 1
+    selectObject: sound
     Extract one channel: 1
+    tmpCh1 = selected("Sound")
+    rmsCh1 = Get root-mean-square: 0, 0
+    removeObject: tmpCh1
+
+    strongestChannel = 1
+    strongestRms = rmsCh1
+    for chTest from 2 to nChannels
+        selectObject: sound
+        Extract one channel: chTest
+        tmpChTest = selected("Sound")
+        thisRms = Get root-mean-square: 0, 0
+        if thisRms > strongestRms
+            strongestRms = thisRms
+            strongestChannel = chTest
+        endif
+        removeObject: tmpChTest
+    endfor
+
+    if strongestRms > 1e-9 and rmsCh1 < 0.10 * strongestRms
+        analysisChannel = strongestChannel
+        analysisFallback = 1
+    endif
+endif
+
+selectObject: sound
+if nChannels > 1
+    Extract one channel: analysisChannel
     analysisMono = selected("Sound")
 else
     Copy: "analysisMono"
     analysisMono = selected("Sound")
+endif
+
+if analysisFallback
+    appendInfoLine: "  Analysis channel fallback: ch", analysisChannel, " (ch1 nearly silent)"
+else
+    appendInfoLine: "  Analysis channel: ch", analysisChannel
 endif
 
 selectObject: analysisMono
@@ -409,6 +463,7 @@ pyCmd$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " " + outFmt$
     ... + " " + string$(seed)
     ... + " " + fixed$(hopSec, 4)
+    ... + " " + string$(analysisChannel)
 
 runSystem_nocheck: pyCmd$
 
@@ -451,6 +506,9 @@ nIdDisc$ = "?"
 nEventsID$ = "?"
 nTransitionsID$ = "?"
 meanEventDurID$ = "?"
+meanConfidenceID$ = "?"
+nFeaturesID$ = "?"
+analysisChannelStat$ = "?"
 
 # Read per-identity stats (up to 8 identities)
 for idxStat from 0 to 7
@@ -491,6 +549,12 @@ if fileReadable(tempStats$)
     nTransitionsID$ = parseStatLine.result$
     @parseStatLine: statsText$, "mean_event_dur="
     meanEventDurID$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_confidence="
+    meanConfidenceID$ = parseStatLine.result$
+    @parseStatLine: statsText$, "n_features="
+    nFeaturesID$ = parseStatLine.result$
+    @parseStatLine: statsText$, "analysis_channel="
+    analysisChannelStat$ = parseStatLine.result$
 
     for idxStat from 0 to number_of_identities - 1
         prefix$ = "id_" + string$(idxStat) + "_"
@@ -540,6 +604,49 @@ if fileReadable(tempStats$)
     endfor
 endif
 
+# ---- Visualization comparison references ----
+vizOutChannel = 1
+if outChans > 1
+    strongestOutRms = -1
+    for chViz from 1 to outChans
+        selectObject: resultSound
+        Extract one channel: chViz
+        tmpVizCh = selected("Sound")
+        thisOutRms = Get root-mean-square: 0, 0
+        if thisOutRms > strongestOutRms
+            strongestOutRms = thisOutRms
+            vizOutChannel = chViz
+        endif
+        removeObject: tmpVizCh
+    endfor
+endif
+
+selectObject: sound
+if nChannels > 1
+    Extract one channel: analysisChannel
+    tmpVizIn = selected("Sound")
+else
+    Copy: "tmpVizIn_idsep"
+    tmpVizIn = selected("Sound")
+endif
+peakVizIn = Get absolute extremum: 0, 0, "None"
+
+selectObject: resultSound
+if outChans > 1
+    Extract one channel: vizOutChannel
+    tmpVizOut = selected("Sound")
+else
+    Copy: "tmpVizOut_idsep"
+    tmpVizOut = selected("Sound")
+endif
+peakVizOut = Get absolute extremum: 0, 0, "None"
+peakViz = max(peakVizIn, peakVizOut)
+if peakViz < 0.001
+    peakViz = 0.001
+endif
+maxDurViz = max(dur, durOut)
+removeObject: tmpVizIn, tmpVizOut
+
 ###############################################################################
 # VISUALIZATION  (8 x 8 canvas, suite styling, custom layout for 6 panels)
 ###############################################################################
@@ -579,8 +686,16 @@ if draw_visualization
     Select inner viewport: 0.55, 4.00, 0.95, 1.75
 
     selectObject: sound
+    if nChannels > 1
+        Extract one channel: analysisChannel
+        tmpInWave = selected("Sound")
+    else
+        Copy: "tmpInWave_idsep"
+        tmpInWave = selected("Sound")
+    endif
     Colour: "{0.55, 0.55, 0.60}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, maxDurViz, -peakViz, peakViz, "no", "Curve"
+    removeObject: tmpInWave
     Colour: "Black"
     Line width: 1
     Draw inner box
@@ -595,19 +710,18 @@ if draw_visualization
     Select outer viewport: 4.2, 8, 0.75, 1.85
     Select inner viewport: 4.55, 7.75, 0.95, 1.75
 
-    # For multi-channel output, draw channel 1 only
+    # Draw the strongest output channel on the SAME time/amplitude scale.
+    selectObject: resultSound
     if outChans > 1
-        selectObject: resultSound
-        Extract one channel: 1
+        Extract one channel: vizOutChannel
         tmpOutWav = selected("Sound")
-        Colour: "{0.2, 0.5, 0.7}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        removeObject: tmpOutWav
     else
-        selectObject: resultSound
-        Colour: "{0.2, 0.5, 0.7}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        Copy: "tmpOutWav_idsep"
+        tmpOutWav = selected("Sound")
     endif
+    Colour: "{0.2, 0.5, 0.7}"
+    Draw: 0, maxDurViz, -peakViz, peakViz, "no", "Curve"
+    removeObject: tmpOutWav
     Colour: "Black"
     Line width: 1
     Draw inner box
@@ -624,7 +738,7 @@ if draw_visualization
 
     selectObject: sound
     if nChannels > 1
-        Extract one channel: 1
+        Extract one channel: analysisChannel
         tmpOrig = selected("Sound")
     else
         Copy: "tmpOrig"
@@ -652,7 +766,7 @@ if draw_visualization
 
     selectObject: resultSound
     if outChans > 1
-        Extract one channel: 1
+        Extract one channel: vizOutChannel
         tmpOut = selected("Sound")
     else
         Copy: "tmpOut"
@@ -809,25 +923,23 @@ if draw_visualization
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.82, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  Mode " + modeLetter$ + modeNote$
-        ... + "  |  " + string$(number_of_identities) + " identities"
-        ... + "  |  Events: " + nEventsID$
-        ... + "  |  Transitions: " + nTransitionsID$
-        ... + "  |  Mean event dur: " + meanEventDurID$ + " s"
+        ... "##PROCESS##  Praat voice/formant features + Python spectral descriptors"
+        ... + "  ->  RobustScaler  ->  GMM (" + string$(number_of_identities) + " IDs)"
+        ... + "  ->  identity runs  ->  Mode " + modeLetter$ + modeNote$
 
     Text: 0.02, "left", 0.50, "half",
-        ... "Input: " + string$(nChannels) + "ch  ->  Output: " + string$(outChans) + "ch"
-        ... + "  |  Format: " + outFmt$
-        ... + "  |  SR: " + string$(sr) + " Hz"
-        ... + "  |  Seed: " + string$(seed)
+        ... "Features: " + nFeaturesID$
+        ... + "  |  Mean posterior confidence: " + meanConfidenceID$
+        ... + "  |  Events: " + nEventsID$
+        ... + "  |  Transitions: " + nTransitionsID$
+        ... + "  |  Analysis ch: " + analysisChannelStat$
 
     Text: 0.02, "left", 0.18, "half",
-        ... "Output: " + compositeName$
-        ... + "  |  Duration: " + fixed$(dur, 2) + " s"
-        ... + "  |  RMS orig: " + fixed$(rms_orig, 4)
-        ... + "  |  RMS out: " + fixed$(rms_out, 4)
-        ... + "  |  Ratio: " + rmsRatio$
+        ... "QC  Input " + string$(nChannels) + "ch -> Output " + string$(outChans) + "ch"
+        ... + "  |  RMS " + fixed$(rms_orig, 4) + " -> " + fixed$(rms_out, 4)
+        ... + " (" + rmsRatio$ + ")"
+        ... + "  |  Mean event: " + meanEventDurID$ + " s"
+        ... + "  |  Seed: " + string$(seed)
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
@@ -856,6 +968,8 @@ appendInfoLine: "Identity separation:"
 appendInfoLine: "  Identities: ", nIdDisc$
 appendInfoLine: "  Events: ", nEventsID$, " (mean dur: ", meanEventDurID$, " s)"
 appendInfoLine: "  Transitions: ", nTransitionsID$
+appendInfoLine: "  Mean posterior confidence: ", meanConfidenceID$
+appendInfoLine: "  Analysis channel: ", analysisChannelStat$
 appendInfoLine: ""
 
 for idxInfo from 0 to number_of_identities - 1

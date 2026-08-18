@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-stretch.py — HPSS + Phase Vocoder Time-Stretching  v2.2
+stretch.py — HPSS + Phase Vocoder Time-Stretching  v2.3
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -14,6 +14,13 @@ Pipeline:
        (pitch- and transient-preserving — no rate-change detuning)
     6. Recombine H + P waveforms
     7. Write output WAV + stats
+
+Changelog v2.3:
+    - Stereo/multichannel percussive stretching now uses one linked WSOLA
+      alignment path for all channels, preventing independent channel offset
+      choices from destabilising the stereo image at stronger stretch factors.
+    - Very short percussive inputs (<128 samples) use a safe pad/trim path
+      instead of entering a 128-sample WSOLA window and crashing.
 
 Changelog v2.2:
     - Percussive band now stretched with WSOLA instead of resample().
@@ -211,7 +218,7 @@ def stretch_percussive(y_P, stretch_factor, target_len):
     n = len(y)
 
     # Trivial / passthrough cases
-    if n < 64 or abs(stretch_factor - 1.0) < 1e-6:
+    if n < 128 or abs(stretch_factor - 1.0) < 1e-6:
         if len(y) >= target_len:
             return y[:target_len]
         return np.concatenate([y, np.zeros(target_len - len(y))])
@@ -281,6 +288,100 @@ def stretch_percussive(y_P, stretch_factor, target_len):
     return out.astype(np.float64)
 
 
+def stretch_percussive_linked(y_P_multi, stretch_factor, target_len):
+    """Linked multichannel WSOLA for the percussive component.
+
+    One similarity-search path is derived from a phase-safe reference and the
+    SAME analysis offsets / OLA windows are applied to every channel.  This
+    preserves inter-channel timing and image stability.  Mono processing keeps
+    using stretch_percussive() so the established mono sound is unchanged.
+    """
+    import numpy as np
+
+    y = np.asarray(y_P_multi, dtype=np.float64)
+    if y.ndim == 1:
+        return stretch_percussive(y, stretch_factor, target_len)[:, None]
+    n, n_ch = y.shape
+
+    if n < 128 or abs(stretch_factor - 1.0) < 1e-6:
+        if n >= target_len:
+            return y[:target_len].copy()
+        return np.vstack([y, np.zeros((target_len - n, n_ch), dtype=np.float64)])
+
+    # Phase-safe reference: preserve the ordinary channel mean, but if that
+    # nearly cancels relative to the strongest channel, use that channel only.
+    mean_ref = y.mean(axis=1)
+    ch_rms = np.sqrt(np.mean(y * y, axis=0) + 1e-18)
+    strongest = int(np.argmax(ch_rms))
+    mean_rms = float(np.sqrt(np.mean(mean_ref * mean_ref) + 1e-18))
+    if ch_rms[strongest] > 1e-12 and mean_rms < 0.10 * ch_rms[strongest]:
+        ref_signal = y[:, strongest]
+    else:
+        ref_signal = mean_ref
+
+    W    = min(1024, max(128, (n // 16) // 2 * 2))
+    W    = min(W, n)
+    if W % 2:
+        W -= 1
+    W    = max(64, W)
+    Hs   = W // 2
+    L    = W - Hs
+    Ha   = max(1, int(round(Hs / stretch_factor)))
+    seek = max(1, W // 4)
+    win  = np.hanning(W)
+
+    out_len = target_len + W
+    out = np.zeros((out_len, n_ch), dtype=np.float64)
+    ow  = np.zeros(out_len, dtype=np.float64)
+
+    out[:W, :] += y[:W, :] * win[:, None]
+    ow[:W]     += win
+    prev = 0
+
+    m = 1
+    while True:
+        s_pos = m * Hs
+        if s_pos + W > out_len:
+            break
+        nominal = m * Ha
+
+        ref = ref_signal[prev + Hs: prev + Hs + L]
+        if len(ref) < L:
+            ref = np.pad(ref, (0, L - len(ref)))
+
+        lo = max(0, nominal - seek)
+        hi = min(n - W, nominal + seek)
+        if hi < lo:
+            break
+
+        seg = ref_signal[lo: hi + L]
+        if len(seg) < L:
+            best_off = lo
+        else:
+            cc   = np.correlate(seg, ref, mode="valid")
+            sq   = seg ** 2
+            csum = np.concatenate([[0.0], np.cumsum(sq)])
+            energy    = csum[L:] - csum[:-L]
+            cand_norm = np.sqrt(np.maximum(energy, 0.0)) + 1e-9
+            score     = cc / cand_norm[:len(cc)]
+            best_off  = lo + int(np.argmax(score))
+
+        frame = y[best_off: best_off + W, :]
+        if len(frame) < W:
+            frame = np.pad(frame, ((0, W - len(frame)), (0, 0)))
+
+        out[s_pos: s_pos + W, :] += frame * win[:, None]
+        ow[s_pos: s_pos + W]     += win
+        prev = best_off
+        m += 1
+
+    ow = np.maximum(ow, 1e-6)
+    out = (out / ow[:, None])[:target_len, :]
+    if len(out) < target_len:
+        out = np.vstack([out, np.zeros((target_len - len(out), n_ch), dtype=np.float64)])
+    return out.astype(np.float64)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Single-channel processing pipeline
 # ═══════════════════════════════════════════════════════════════════════════
@@ -308,7 +409,7 @@ def process_channel(y, sr, stretch_factor, n_fft=N_FFT, margin=MARGIN):
     S_H_s = phase_vocoder_stretch(S_H, stretch_factor, hop)
     y_H   = inverse_stft(S_H_s, hop, target_len=target_len)
 
-    # Percussive: resample
+    # Percussive: WSOLA
     y_P   = inverse_stft(S_P, hop, target_len=orig_len)
     y_P_s = stretch_percussive(y_P, stretch_factor, target_len)
 
@@ -377,17 +478,48 @@ def main():
     print("[HPSS-PV] N_FFT=%d  HOP=%d  MARGIN=%.1f" % (
         n_fft, n_fft // HOP_DIV, margin))
 
-    # Process each channel
+    # Process audio. Mono deliberately keeps the established v2.2 path.
     out_chs = []
     h_rms_total = 0.0
     p_rms_total = 0.0
-    for ch in range(n_ch):
-        print("[HPSS-PV] Channel %d/%d..." % (ch + 1, n_ch))
+    linked_wsola = 0
+
+    if n_ch == 1:
+        print("[HPSS-PV] Channel 1/1...")
         y_out, h_rms, p_rms = process_channel(
-            audio[:, ch], sr, stretch_factor, n_fft, margin)
+            audio[:, 0], sr, stretch_factor, n_fft, margin)
         out_chs.append(y_out)
-        h_rms_total += h_rms
-        p_rms_total += p_rms
+        h_rms_total = h_rms
+        p_rms_total = p_rms
+    else:
+        # Keep harmonic phase-vocoder processing per channel, but derive ONE
+        # WSOLA path for the percussive layer and apply it to all channels.
+        # This prevents left/right analysis offsets from drifting apart.
+        harmonic_chs = []
+        percussive_chs = []
+        hop = n_fft // HOP_DIV
+        for ch in range(n_ch):
+            print("[HPSS-PV] Channel %d/%d decomposition..." % (ch + 1, n_ch))
+            y = audio[:, ch]
+            S = forward_stft(y, n_fft, hop)
+            S_H, S_P = hpss_complex(S, margin=margin)
+            S_H_s = phase_vocoder_stretch(S_H, stretch_factor, hop)
+            y_H = inverse_stft(S_H_s, hop, target_len=target_len)
+            y_P = inverse_stft(S_P, hop, target_len=orig_len)
+            harmonic_chs.append(y_H)
+            percussive_chs.append(y_P)
+
+        P_multi = np.column_stack(percussive_chs)
+        P_stretched = stretch_percussive_linked(P_multi, stretch_factor, target_len)
+        linked_wsola = 1
+
+        for ch in range(n_ch):
+            y_H = harmonic_chs[ch]
+            y_P_s = P_stretched[:, ch]
+            ml = min(len(y_H), len(y_P_s))
+            out_chs.append((y_H[:ml] + y_P_s[:ml]).astype(np.float64))
+            h_rms_total += float(np.sqrt(np.mean(y_H[:ml] ** 2) + 1e-12))
+            p_rms_total += float(np.sqrt(np.mean(y_P_s[:ml] ** 2) + 1e-12))
 
     h_rms_mean = h_rms_total / n_ch
     p_rms_mean = p_rms_total / n_ch
@@ -412,7 +544,9 @@ def main():
         result = result[:, 0]
 
     # Write
-    sf.write(out_wav, result, sr)
+    # Keep the temporary interchange file floating-point; Praat will import it
+    # immediately, so there is no reason to add a PCM16 quantisation pass here.
+    sf.write(out_wav, result, sr, subtype="FLOAT")
     print("[HPSS-PV] Wrote: %s" % out_wav)
 
     # Stats
@@ -431,6 +565,7 @@ def main():
         "percussive_rms":    "%.6f" % p_rms_mean,
         "hp_ratio":          "%.4f" % (h_rms_mean / (p_rms_mean + 1e-9)),
         "channels":          n_ch,
+        "linked_wsola":      linked_wsola,
     }
     write_stats(stats_txt, stats)
     print("[HPSS-PV] Stats: %s" % stats_txt)

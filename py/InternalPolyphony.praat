@@ -2,8 +2,10 @@
 # Praat AudioTools - InternalPolyphony.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 2.6 (2026) - Unified Cross-Platform Version
 # License: MIT License
+# v2.4 frontend: short-source rescue retained; Python v2.4 prevents correlated
+# self-overlap when sparse Support/Halo pools contain too few unique fragments.
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
@@ -72,6 +74,7 @@ tempInput$   = temporaryDirectory$ + "/temp_intpoly_input.wav"
 tempOutput$  = temporaryDirectory$ + "/temp_intpoly_output.wav"
 tempReport$  = temporaryDirectory$ + "/temp_intpoly_report.json"
 tempCSV$     = temporaryDirectory$ + "/temp_intpoly_roles.csv"
+tempTrace$   = temporaryDirectory$ + "/temp_intpoly_trace.txt"
 probeMarker$ = temporaryDirectory$ + "/temp_intpoly_probe.ok"
 
 # Replace backslashes for the Python inline probe (Windows safety)
@@ -91,6 +94,9 @@ procedure cleanUpTempFiles
     if fileReadable(tempCSV$)
         deleteFile: tempCSV$
     endif
+    if fileReadable(tempTrace$)
+        deleteFile: tempTrace$
+    endif
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
@@ -99,7 +105,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Internal Polyphony v1.1
+form Internal Polyphony v2.6
     optionmenu Preset: 1
         option Custom
         option Reveal (subtle)
@@ -124,7 +130,6 @@ form Internal Polyphony v1.1
         option fracturedchoir
     real Voice_density 0.65
     real Min_fragment_sec 0.15
-    real Max_overlap 0.75
     real Expansion_factor 1.0
     comment __ Mix / Character _______________________________________________
     real Dry_wet 0.85
@@ -228,12 +233,6 @@ endif
 if min_fragment_sec < 0.05
     min_fragment_sec = 0.05
 endif
-if max_overlap < 0
-    max_overlap = 0
-endif
-if max_overlap > 1
-    max_overlap = 1
-endif
 if expansion_factor < 0.5
     expansion_factor = 0.5
 endif
@@ -270,10 +269,16 @@ selectObject: sound
 dur       = Get total duration
 sr        = Get sampling frequency
 nChannels = Get number of channels
+srcMax    = Get maximum: 0, 0, "None"
+srcMin    = Get minimum: 0, 0, "None"
+srcPeak   = max(abs(srcMax), abs(srcMin))
+if srcPeak <= 0
+    srcPeak = 1
+endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Internal Polyphony v1.1 ==="
+writeInfoLine:  "=== Internal Polyphony v2.6 ==="
 appendInfoLine: "Input:    ", soundName$
 appendInfoLine: "Preset:   ", presetName$
 appendInfoLine: ""
@@ -325,6 +330,7 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --output """   + tempOutput$ + """"
     ... + " --report """   + tempReport$ + """"
     ... + " --csv """      + tempCSV$    + """"
+    ... + " --trace """    + tempTrace$  + """"
     ... + " --components " + string$(num_components)
     ... + " --fft "        + string$(fft_window)
     ... + " --hop "        + string$(hop_size)
@@ -332,7 +338,6 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " --mode "       + polyModeStr$
     ... + " --density "    + fixed$(voice_density, 4)
     ... + " --minfrag "    + fixed$(min_fragment_sec, 4)
-    ... + " --maxoverlap " + fixed$(max_overlap, 4)
     ... + " --expand "     + fixed$(expansion_factor, 4)
     ... + " --drywet "     + fixed$(dry_wet, 4)
     ... + " --accent "     + fixed$(accent_prominence, 4)
@@ -359,6 +364,12 @@ resultSound = selected("Sound")
 selectObject: resultSound
 rms_out = Get root-mean-square: 0, 0
 durOut  = Get total duration
+outMax  = Get maximum: 0, 0, "None"
+outMin  = Get minimum: 0, 0, "None"
+outPeak = max(abs(outMax), abs(outMin))
+if outPeak <= 0
+    outPeak = 1
+endif
 selectObject: sound
 rms_in  = Get root-mean-square: 0, 0
 
@@ -371,8 +382,13 @@ outputPeak$     = "?"
 noveltyRatio$   = "?"
 overlapDensity$ = "?"
 stereoSpread$   = "?"
+voiceIndep$     = "?"
+rolesPresent$   = "?"
+nRolesPresent$  = "?"
 modeReport$     = "?"
 warningReport$  = ""
+shortRescue$    = "0"
+effectiveMinfrag$ = "?"
 
 nRoles = 6
 roleName_1$ = "support"
@@ -409,10 +425,20 @@ if fileReadable(tempReport$)
     overlapDensity$ = parseJsonField.result$
     @parseJsonField: reportText$, "stereo_spread"
     stereoSpread$ = parseJsonField.result$
+    @parseJsonField: reportText$, "voice_independence"
+    voiceIndep$ = parseJsonField.result$
+    @parseJsonField: reportText$, "roles_present"
+    rolesPresent$ = parseJsonField.result$
+    @parseJsonField: reportText$, "n_roles_present"
+    nRolesPresent$ = parseJsonField.result$
     @parseJsonField: reportText$, "mode"
     modeReport$ = parseJsonField.result$
     @parseJsonField: reportText$, "warning"
     warningReport$ = parseJsonField.result$
+    @parseJsonField: reportText$, "short_source_rescue"
+    shortRescue$ = parseJsonField.result$
+    @parseJsonField: reportText$, "effective_minfrag"
+    effectiveMinfrag$ = parseJsonField.result$
 
     if warningReport$ = "?"
         warningReport$ = ""
@@ -437,190 +463,390 @@ if fileReadable(tempReport$)
 endif
 
 ###############################################################################
-# VISUALIZATION
+# VISUALIZATION  (v2.6 - process idiom, simple)
+#
+#   SOURCE     what we started from        [source time]
+#   HARVEST    where each role was found   [source time]
+#   SCORE      where it was placed         [output time]
+#   OUTPUT     what came out               [output time]
+#
+# The two lane panels are drawn from the engine's process trace.
 ###############################################################################
 
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
+    gutL = 0.30
+    gutR = 1.50
+    datR = 7.74
+
+    ySrcT = 0.60
+    ySrcB = 1.28
+    yHarT = 1.50
+    yHarB = 3.90
+    yScoT = 4.42
+    yScoB = 6.82
+    yOutT = 7.04
+    yOutB = 7.72
+
+    rColR_1 = 0.25
+    rColG_1 = 0.45
+    rColB_1 = 0.75
+    rColR_2 = 0.30
+    rColG_2 = 0.65
+    rColB_2 = 0.40
+    rColR_3 = 0.80
+    rColG_3 = 0.35
+    rColB_3 = 0.25
+    rColR_4 = 0.65
+    rColG_4 = 0.35
+    rColB_4 = 0.75
+    rColR_5 = 0.45
+    rColG_5 = 0.45
+    rColB_5 = 0.45
+    rColR_6 = 0.80
+    rColG_6 = 0.65
+    rColB_6 = 0.15
+
+    # ---- read the process trace ----
+    traceOK   = 0
+    nFragRow  = 0
+    nPlaceRow = 0
+    srcDurT   = dur
+    tgtDurT   = durOut
+
+    for iR from 1 to nRoles
+        stageOff_'iR'   = 0
+        stageGain_'iR'  = 1
+        stageLaw_'iR'$  = ""
+        fragCount_'iR'  = 0
+        placeCount_'iR' = 0
+    endfor
+
+    if fileReadable(tempTrace$)
+        traceTable = Read Table from tab-separated file: tempTrace$
+        nTraceRow  = Get number of rows
+        if nTraceRow > 0
+            traceOK = 1
+        endif
+
+        for iRow from 1 to nTraceRow
+            selectObject: traceTable
+            kind$ = Get value: iRow, "kind"
+            rn$   = Get value: iRow, "role"
+
+            rIdx = 0
+            for iR from 1 to nRoles
+                cmp$ = roleName_'iR'$
+                if rn$ = cmp$
+                    rIdx = iR
+                endif
+            endfor
+
+            if kind$ = "meta"
+                mv = Get value: iRow, "t1"
+                if rn$ = "source"
+                    srcDurT = mv
+                elsif rn$ = "target"
+                    tgtDurT = mv
+                endif
+
+            elsif kind$ = "frag" and rIdx > 0
+                nFragRow += 1
+                fragRole[nFragRow] = rIdx
+                fragIdx [nFragRow] = Get value: iRow, "idx"
+                fragT0  [nFragRow] = Get value: iRow, "t0"
+                fragT1  [nFragRow] = Get value: iRow, "t1"
+                fragQ   [nFragRow] = Get value: iRow, "v1"
+                fragCount_'rIdx' += 1
+
+            elsif kind$ = "place" and rIdx > 0
+                nPlaceRow += 1
+                placeRole[nPlaceRow] = rIdx
+                placeIdx [nPlaceRow] = Get value: iRow, "idx"
+                placeT0  [nPlaceRow] = Get value: iRow, "t0"
+                placeT1  [nPlaceRow] = Get value: iRow, "t1"
+                placeG   [nPlaceRow] = Get value: iRow, "v1"
+                placeCount_'rIdx' += 1
+
+            elsif kind$ = "stage" and rIdx > 0
+                law$ = Get value: iRow, "law"
+                sOff = Get value: iRow, "t0"
+                sGn  = Get value: iRow, "v1"
+                if law$ = "entry-shift" or law$ = "canonic-delay"
+                        ... or law$ = "emergence-ramp"
+                    stageOff_'rIdx'  = sOff
+                    stageLaw_'rIdx'$ = law$
+                else
+                    stageGain_'rIdx' = stageGain_'rIdx' * sGn
+                endif
+            endif
+        endfor
+        removeObject: traceTable
+    endif
+
+    if srcDurT <= 0
+        srcDurT = dur
+    endif
+    if tgtDurT <= 0
+        tgtDurT = durOut
+    endif
+
+    # only a true delay relocates a block; a ramp only changes its level
+    for iR from 1 to nRoles
+        shiftOff_'iR' = 0
+        lw$ = stageLaw_'iR'$
+        if lw$ = "entry-shift" or lw$ = "canonic-delay"
+            shiftOff_'iR' = stageOff_'iR'
+        endif
+    endfor
+
+    @tickStep: srcDurT
+    srcTick = tickStep.result
+    @tickStep: tgtDurT
+    tgtTick = tickStep.result
+
     Erase all
     Select outer viewport: 0, 8, 0, 8
+    Line width: 1
 
-    # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    # =====================================================================
+    # Title
+    # =====================================================================
+    Select inner viewport: gutL, datR, 0.06, 0.48
     Axes: 0, 1, 0, 1
     Font size: 13
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Internal Polyphony##"
-    Font size: 8
+    Text: 0.5, "centre", 0.72, "half", "##Internal Polyphony##"
+    Font size: 7
     Colour: "{0.35, 0.35, 0.45}"
-    subtitleStr$ = soundName$ + " | " + presetName$ + " | " + polyModeStr$ + " | components=" + nComponents$
-    Text: 0.5, "centre", -1.2, "half", subtitleStr$
+    Text: 0.5, "centre", 0.22, "half",
+        ... replace$(soundName$, "_", "\_ ", 0) + "   |   " + polyModeStr$
+        ... + "   |   " + string$(nFragRow) + " fragments -> "
+        ... + string$(nPlaceRow) + " placements   |   seed " + string$(random_seed)
 
-    # === Input Waveform ===
-    Select outer viewport: 0, 8, 0.55, 1.40
-    Select inner viewport: 0.6, 7.7, 0.60, 1.35
+    # =====================================================================
+    # SOURCE
+    # =====================================================================
+    Select inner viewport: gutL, gutR, ySrcT, ySrcB
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.90, "right", 0.50, "half", "##SOURCE##"
+
+    Select inner viewport: gutR, datR, ySrcT, ySrcB
     selectObject: sound
     Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, srcDurT, -srcPeak, srcPeak, "no", "Curve"
+    Select inner viewport: gutR, datR, ySrcT, ySrcB
+    Axes: 0, srcDurT, -srcPeak, srcPeak
     Colour: "Black"
     Draw inner box
-    Font size: 7
-    Text left: "yes", "Original"
-    Text top: "no", "Input: " + fixed$(dur, 2) + " s | SR: " + string$(sr) + " Hz | RMS: " + fixed$(rms_in, 4)
 
-    # === Output Waveform ===
-    Select outer viewport: 0, 8, 1.40, 2.25
-    Select inner viewport: 0.6, 7.7, 1.45, 2.20
-    selectObject: resultSound
-    Colour: "{0.25, 0.50, 0.78}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Polyphony"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output: " + fixed$(durOut, 2) + " s | RMS: " + fixed$(rms_out, 4) + " | Novelty: " + noveltyRatio$
-
-    # === Input Spectrogram ===
-    Select outer viewport: 0, 8, 2.30, 3.40
-    Select inner viewport: 0.6, 7.7, 2.35, 3.35
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrigSpec = selected("Sound")
-    else
-        Copy: "tmpOrigSpec"
-        tmpOrigSpec = selected("Sound")
-    endif
-    To Spectrogram: 0.025, 5000, 0.002, 20, "Gaussian"
-    specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Hz"
-    Text top: "no", "Input spectrogram"
-    removeObject: specOrig, tmpOrigSpec
-
-    # === Output Spectrogram ===
-    Select outer viewport: 0, 8, 3.40, 4.50
-    Select inner viewport: 0.6, 7.7, 3.45, 4.45
-    selectObject: resultSound
-    Extract one channel: 1
-    tmpOutSpec = selected("Sound")
-    To Spectrogram: 0.025, 5000, 0.002, 20, "Gaussian"
-    specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    Colour: "Black"
-    Draw inner box
-    Font size: 6
-    Text left: "yes", "Hz"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output spectrogram (L channel)"
-    removeObject: specOut, tmpOutSpec
-
-    # === Role Activity Bars ===
-    Select outer viewport: 0, 8, 4.60, 6.10
-    Select inner viewport: 0.6, 7.7, 4.65, 6.05
-
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.97}", 0, 1, 0, 1
-
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.97, "half", "##Role Activity##"
-
-    rCol_1$ = "{0.25, 0.45, 0.75}"
-    rCol_2$ = "{0.30, 0.65, 0.40}"
-    rCol_3$ = "{0.80, 0.35, 0.25}"
-    rCol_4$ = "{0.65, 0.35, 0.75}"
-    rCol_5$ = "{0.55, 0.55, 0.55}"
-    rCol_6$ = "{0.80, 0.70, 0.20}"
-
-    barH = 0.10
-    barTopY = 0.88
-    barGap = 0.135
-
+    # =====================================================================
+    # HARVEST  [source time]
+    # =====================================================================
+    Select inner viewport: gutR, datR, yHarT, yHarB
+    Axes: 0, srcDurT, 0, nRoles
+    Paint rectangle: "{0.965, 0.965, 0.975}", 0, srcDurT, 0, nRoles
     for iR from 1 to nRoles
-        barY = barTopY - (iR - 1) * barGap
-        actVal = roleAct_'iR'
-        if actVal < 0
-            actVal = 0
+        if fragCount_'iR' = 0
+            Paint rectangle: "{0.925, 0.925, 0.935}", 0, srcDurT,
+                ... nRoles - iR + 0.05, nRoles - iR + 0.95
         endif
-        if actVal > 1
-            actVal = 1
-        endif
-
-        thisCol$ = rCol_'iR'$
-        Paint rectangle: "{0.88, 0.88, 0.92}", 0.14, 0.95, barY - barH, barY
-        if actVal > 0
-            fillRight = 0.14 + actVal * 0.81
-            Paint rectangle: thisCol$, 0.14, fillRight, barY - barH, barY
-        endif
-
-        Font size: 6
-        Colour: "Black"
-        rn$ = roleName_'iR'$
-        Text: 0.01, "left", barY - barH / 2, "half", rn$
-
-        Font size: 5
-        Colour: "{0.3, 0.3, 0.3}"
-        rdur$ = role_dur_'iR'$
-        rfrags$ = role_frags_'iR'$
-        ravgd$ = role_avgdur_'iR'$
-        if rdur$ = "?"
-            rdur$ = "--"
-        endif
-        if rfrags$ = "?"
-            rfrags$ = "--"
-        endif
-        if ravgd$ = "?"
-            ravgd$ = "--"
-        endif
-        Text: 0.96, "right", barY - barH / 2, "half", rdur$ + "s | " + rfrags$ + "f | " + ravgd$ + "s"
     endfor
 
+    for iF from 1 to nFragRow
+        rI = fragRole[iF]
+        x0 = fragT0[iF]
+        x1 = fragT1[iF]
+        wMin = srcDurT * 0.004
+        if x1 - x0 < wMin
+            x1 = x0 + wMin
+        endif
+        shade = 0.55 + 0.45 * (1 - fragIdx[iF] / (fragCount_'rI' + 1))
+        cR = 1 - shade * (1 - rColR_'rI')
+        cG = 1 - shade * (1 - rColG_'rI')
+        cB = 1 - shade * (1 - rColB_'rI')
+        Select inner viewport: gutR, datR, yHarT, yHarB
+        Axes: 0, srcDurT, 0, nRoles
+        Paint rectangle: "{'cR', 'cG', 'cB'}", x0, x1,
+            ... nRoles - rI + 0.18, nRoles - rI + 0.82
+    endfor
+
+    Select inner viewport: gutR, datR, yHarT, yHarB
+    Axes: 0, srcDurT, 0, nRoles
+    Colour: "{0.78, 0.78, 0.82}"
+    for iR from 1 to nRoles - 1
+        Draw line: 0, iR, srcDurT, iR
+    endfor
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Draw inner box
+    Marks bottom every: 1, srcTick, "yes", "yes", "no"
+    Select inner viewport: gutR, datR, yHarT, yHarB
+    Axes: 0, srcDurT, 0, nRoles
+    Font size: 6
+    Text bottom: "yes", "source time (s)"
 
-    # === Summary Panel ===
-    Select outer viewport: 0, 8, 6.20, 8.00
-    Select inner viewport: 0.6, 7.7, 6.25, 7.95
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.93, 0.95}", 0, 1, 0, 1
-
+    Select inner viewport: gutL, gutR, yHarT, yHarB
+    Axes: 0, 1, 0, nRoles
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.94, "half", "##Summary##"
+    Text: 0.90, "right", nRoles + 0.30, "half", "##HARVEST##"
+    for iR from 1 to nRoles
+        rn$ = roleName_'iR'$
+        yMid = nRoles - iR + 0.5
+        Font size: 6
+        if fragCount_'iR' > 0
+            Colour: "Black"
+            Text: 0.90, "right", yMid, "half",
+                ... rn$ + "   " + string$(fragCount_'iR')
+        else
+            Colour: "{0.62, 0.62, 0.62}"
+            Text: 0.90, "right", yMid, "half", rn$
+        endif
+    endfor
 
-    Font size: 6
-    Colour: "{0.25, 0.35, 0.60}"
-    Text: 0.02, "left", 0.80, "half", "Components: " + nComponents$ + " (effective: " + effectiveComp$ + ")  |  Decomp error: " + decompError$ + "  |  Mode: " + modeReport$
+    # =====================================================================
+    # SCORE  [output time]
+    # =====================================================================
+    Select inner viewport: gutR, datR, yScoT, yScoB
+    Axes: 0, tgtDurT, 0, nRoles
+    Paint rectangle: "{0.965, 0.965, 0.975}", 0, tgtDurT, 0, nRoles
+    for iR from 1 to nRoles
+        if placeCount_'iR' = 0
+            Paint rectangle: "{0.925, 0.925, 0.935}", 0, tgtDurT,
+                ... nRoles - iR + 0.05, nRoles - iR + 0.95
+        endif
+    endfor
 
-    Colour: "{0.20, 0.55, 0.35}"
-    Text: 0.02, "left", 0.65, "half", "RMS: " + fixed$(rms_in, 4) + " → " + fixed$(rms_out, 4) + "  |  Peak: " + outputPeak$ + "  |  Novelty: " + noveltyRatio$
+    for iP from 1 to nPlaceRow
+        rI = placeRole[iP]
+        gn = placeG[iP] * stageGain_'rI'
+        if stageLaw_'rI'$ = "emergence-ramp"
+            tMid  = (placeT0[iP] + placeT1[iP]) / 2
+            rSpan = tgtDurT - stageOff_'rI'
+            if rSpan <= 0
+                rFac = 1
+            else
+                rFac = (tMid - stageOff_'rI') / rSpan
+            endif
+            if rFac < 0
+                rFac = 0
+            endif
+            if rFac > 1
+                rFac = 1
+            endif
+            gn = gn * rFac ^ 1.5
+        endif
+        if gn > 1
+            gn = 1
+        endif
+        if gn < 0.06
+            gn = 0.06
+        endif
+        x0 = placeT0[iP] + shiftOff_'rI'
+        x1 = placeT1[iP] + shiftOff_'rI'
+        if x0 < tgtDurT
+            if x1 > tgtDurT
+                x1 = tgtDurT
+            endif
+            wMin = tgtDurT * 0.004
+            if x1 - x0 < wMin
+                x1 = x0 + wMin
+            endif
+            yB = nRoles - rI + 0.10
+            shade = 0.55 + 0.45 * (1 - placeIdx[iP] / (fragCount_'rI' + 1))
+            cR = 1 - shade * (1 - rColR_'rI')
+            cG = 1 - shade * (1 - rColG_'rI')
+            cB = 1 - shade * (1 - rColB_'rI')
+            Select inner viewport: gutR, datR, yScoT, yScoB
+            Axes: 0, tgtDurT, 0, nRoles
+            Paint rectangle: "{'cR', 'cG', 'cB'}", x0, x1, yB, yB + 0.78 * gn
+            Colour: "{0.30, 0.30, 0.35}"
+            Draw line: x0, yB, x0, yB + 0.78 * gn
+        endif
+    endfor
 
-    Colour: "{0.55, 0.30, 0.65}"
-    Text: 0.02, "left", 0.50, "half", "Overlap density: " + overlapDensity$ + "  |  Stereo spread: " + stereoSpread$ + "  |  Seed: " + string$(random_seed)
+    for iR from 1 to nRoles
+        if placeCount_'iR' > 0 and stageOff_'iR' > 0
+            cR = rColR_'iR'
+            cG = rColG_'iR'
+            cB = rColB_'iR'
+            Select inner viewport: gutR, datR, yScoT, yScoB
+            Axes: 0, tgtDurT, 0, nRoles
+            Colour: "{'cR', 'cG', 'cB'}"
+            Line width: 2
+            Draw line: stageOff_'iR', nRoles - iR + 0.02,
+                ... stageOff_'iR', nRoles - iR + 0.98
+            Line width: 1
+        endif
+    endfor
 
-    Colour: "{0.35, 0.35, 0.45}"
-    Text: 0.02, "left", 0.35, "half", "FFT: " + string$(fft_window) + "  hop: " + string$(hop_size) + "  |  Analysis: " + analysisModeStr$ + "  |  Density: " + fixed$(voice_density, 2) + "  |  Expand: " + fixed$(expansion_factor, 2)
-
-    Colour: "{0.45, 0.35, 0.25}"
-    Text: 0.02, "left", 0.20, "half", "Accent prom: " + fixed$(accent_prominence, 2) + "  |  Halo: " + fixed$(halo_amount, 2) + "  |  Width: " + fixed$(stereo_width, 2) + "  |  Dry/wet: " + fixed$(dry_wet, 2)
-
-    if warningReport$ <> "?" and warningReport$ <> ""
-        Colour: "{0.80, 0.20, 0.20}"
-        Text: 0.02, "left", 0.06, "half", "WARN: " + warningReport$
-    endif
-
+    Select inner viewport: gutR, datR, yScoT, yScoB
+    Axes: 0, tgtDurT, 0, nRoles
+    Colour: "{0.78, 0.78, 0.82}"
+    for iR from 1 to nRoles - 1
+        Draw line: 0, iR, tgtDurT, iR
+    endfor
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Draw inner box
+
+    Select inner viewport: gutL, gutR, yScoT, yScoB
+    Axes: 0, 1, 0, nRoles
+    Font size: 7
+    Colour: "Black"
+    Text: 0.90, "right", nRoles + 0.30, "half", "##SCORE##"
+    for iR from 1 to nRoles
+        rn$ = roleName_'iR'$
+        yMid = nRoles - iR + 0.5
+        Font size: 6
+        if placeCount_'iR' > 0
+            Colour: "Black"
+            Text: 0.90, "right", yMid, "half",
+                ... rn$ + "   " + string$(placeCount_'iR')
+        else
+            Colour: "{0.62, 0.62, 0.62}"
+            Text: 0.90, "right", yMid, "half", rn$
+        endif
+    endfor
+
+    # =====================================================================
+    # OUTPUT
+    # =====================================================================
+    Select inner viewport: gutR, datR, yOutT, yOutB
+    selectObject: resultSound
+    Colour: "{0.25, 0.50, 0.78}"
+    Draw: 0, tgtDurT, -outPeak, outPeak, "no", "Curve"
+    Select inner viewport: gutR, datR, yOutT, yOutB
+    Axes: 0, tgtDurT, -outPeak, outPeak
+    Colour: "Black"
+    Draw inner box
+    Marks bottom every: 1, tgtTick, "yes", "yes", "no"
+    Select inner viewport: gutR, datR, yOutT, yOutB
+    Axes: 0, tgtDurT, -outPeak, outPeak
+    Font size: 6
+    Text bottom: "yes", "output time (s)"
+
+    Select inner viewport: gutL, gutR, yOutT, yOutB
+    Axes: 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.90, "right", 0.50, "half", "##OUTPUT##"
+
+    if traceOK = 0
+        Select inner viewport: gutR, datR, yHarT, yHarB
+        Axes: 0, 1, 0, 1
+        Font size: 7
+        Colour: "{0.75, 0.35, 0.15}"
+        Text: 0.5, "centre", 0.5, "half",
+            ... "process trace unavailable"
+    endif
 
     Font size: 10
     Colour: "Black"
+    Line width: 1
 endif
 
 # ===========================================================================
@@ -642,6 +868,11 @@ appendInfoLine: "Output peak:      ", outputPeak$
 appendInfoLine: "Novelty ratio:    ", noveltyRatio$
 appendInfoLine: "Overlap density:  ", overlapDensity$
 appendInfoLine: "Stereo spread:    ", stereoSpread$
+if shortRescue$ = "1"
+    appendInfoLine: "Short-source rescue: YES (effective minfrag ", effectiveMinfrag$, " s)"
+endif
+appendInfoLine: "Voice independence:", voiceIndep$
+appendInfoLine: "Roles present:     ", nRolesPresent$, "/6  ", rolesPresent$
 appendInfoLine: ""
 appendInfoLine: "Role breakdown:"
 
@@ -680,6 +911,42 @@ endif
 # ===========================================================================
 # Procedures
 # ===========================================================================
+procedure tickStep2: .span
+    # Integer-count axis: aim for 4-8 numbered marks.
+    .result = 1
+    if .span > 30
+        .result = 10
+    elsif .span > 12
+        .result = 5
+    elsif .span > 6
+        .result = 2
+    endif
+endproc
+
+procedure tickStep: .span
+    # Round tick interval giving roughly 6-12 numbered marks on the axis.
+    .result = 1
+    if .span <= 0
+        .result = 1
+    elsif .span <= 0.6
+        .result = 0.05
+    elsif .span <= 1.5
+        .result = 0.1
+    elsif .span <= 3
+        .result = 0.25
+    elsif .span <= 8
+        .result = 0.5
+    elsif .span <= 20
+        .result = 1
+    elsif .span <= 45
+        .result = 5
+    elsif .span <= 120
+        .result = 10
+    else
+        .result = 30
+    endif
+endproc
+
 procedure parseJsonField: .text$, .key$
     .result$ = "?"
     .searchKey$ = """" + .key$ + """"

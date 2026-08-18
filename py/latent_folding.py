@@ -1,5 +1,6 @@
 """
 latent_folding.py — Latent Folding (Topological Manifold Navigation)
+Version: 1.4 (2026)
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -77,6 +78,19 @@ def load_event_table(csv_path):
             events.append(row)
     return events
 
+
+
+def phase_safe_mono(audio):
+    import numpy as np
+    if audio.ndim == 1:
+        return audio.astype(np.float32), 1
+    mean = np.mean(audio, axis=1).astype(np.float32)
+    ch_rms = np.sqrt(np.mean(audio.astype(np.float64)**2, axis=0))
+    best = int(np.argmax(ch_rms))
+    mean_rms = float(np.sqrt(np.mean(mean.astype(np.float64)**2)))
+    if ch_rms[best] > 1e-9 and mean_rms < 0.10 * float(ch_rms[best]):
+        return audio[:, best].astype(np.float32), best + 1
+    return mean, 0
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 2 — Log-Mel Patches
@@ -327,6 +341,19 @@ def compute_manifold_boundaries(Z):
     return center, z_min, z_max, z_range, axes, proj_min, proj_max
 
 
+
+def fold_cell_signature(z, boundaries_min, boundaries_max, fold_density):
+    """Integer topological cell per latent dimension, for crossing telemetry."""
+    import numpy as np
+    sig=[]
+    for d in range(len(z)):
+        span=boundaries_max[d]-boundaries_min[d]
+        if span < 1e-8:
+            sig.append(0)
+        else:
+            sig.append(int(np.floor((z[d]-boundaries_min[d])*max(1,fold_density)/span)))
+    return tuple(sig)
+
 def fold_mirror(z, boundaries_min, boundaries_max, fold_density):
     """
     Mirror reflection: when coordinate exceeds boundary, reflect.
@@ -342,67 +369,37 @@ def fold_mirror(z, boundaries_min, boundaries_max, fold_density):
         if span < 1e-8:
             continue
 
-        # Scale fold boundaries by density
-        fold_span = span / max(1, fold_density)
-        val = z_folded[d]
-
-        # Normalize to [0, fold_span] then reflect
-        rel = val - lo
-        # Number of half-periods
-        period = 2.0 * fold_span
-        if period > 1e-8:
-            phase = rel % period
-            if phase > fold_span:
-                z_folded[d] = lo + (period - phase)
-            else:
-                z_folded[d] = lo + phase
+        # fold_density is the number of mirror windings across the FULL span.
+        # Scale the coordinate before applying a triangle-wave reflection; this
+        # preserves the original latent range instead of collapsing it to span/density.
+        rel = (z_folded[d] - lo) * max(1, fold_density)
+        period = 2.0 * span
+        phase = rel % period
+        z_folded[d] = lo + (phase if phase <= span else period - phase)
     return z_folded
 
 
-def fold_mobius(z, center, axes, proj_min, proj_max, fold_density,
-               polarity):
-    """
-    Möbius twist: crossing a boundary flips the polarity of selected
-    latent dimensions. The 'twist' inverts acoustic identity —
-    bright→dark, noisy→tonal, etc.
-
-    polarity: +1 or -1, flips each time a boundary is crossed.
-    Returns: folded z, new polarity.
-    """
+def fold_mobius(z, center, axes, proj_min, proj_max, fold_density, polarity):
+    """Möbius orientation from cell parity; twist only on real cell changes."""
     import numpy as np
-
     z_folded = z.copy()
-    new_polarity = polarity
-
-    # Project onto principal axis
     z_c = z - center
     proj = z_c.dot(axes)
-
+    parity = 0
     for d in range(min(len(z), len(proj_min))):
-        lo = proj_min[d]
-        hi = proj_max[d]
+        lo, hi = proj_min[d], proj_max[d]
         span = hi - lo
         if span < 1e-8:
             continue
-
-        fold_span = span / max(1, fold_density)
-        val = proj[d]
-
-        # Check boundary crossings
-        n_crossings = int(abs(val - lo) / fold_span) if fold_span > 1e-8 else 0
-
-        if n_crossings % 2 == 1:
-            # Odd crossing: flip polarity for this dimension
-            new_polarity = -polarity
-
-    # Apply polarity: invert coordinates relative to center
+        cell = int(np.floor((proj[d] - lo) * max(1, fold_density) / span))
+        parity = (parity + cell) % 2
+    new_polarity = -1 if parity else 1
     if new_polarity < 0:
         z_folded = center + (center - z_folded)
-
     return z_folded, new_polarity
 
 
-def fold_torus(z, boundaries_min, boundaries_max):
+def fold_torus(z, boundaries_min, boundaries_max, fold_density=1):
     """
     Torus wrap: seamless loop where exceeding a boundary wraps to
     the other side. End of acoustic space = beginning.
@@ -416,7 +413,7 @@ def fold_torus(z, boundaries_min, boundaries_max):
         span = hi - lo
         if span < 1e-8:
             continue
-        z_folded[d] = lo + (z_folded[d] - lo) % span
+        z_folded[d] = lo + ((z_folded[d] - lo) * max(1, fold_density)) % span
     return z_folded
 
 
@@ -461,7 +458,9 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
     from scipy.spatial.distance import cdist
     dists = cdist(Z, Z, metric="euclidean")
     np.fill_diagonal(dists, np.inf)
-    median_dist = np.median(dists[dists < np.inf])
+    finite_d = dists[np.isfinite(dists)]
+    finite_d = finite_d[finite_d > 1e-12]
+    median_dist = float(np.median(finite_d)) if len(finite_d) else 1.0
 
     # Generate base trajectory along principal axis
     # with permutation-driven lateral drift
@@ -497,6 +496,8 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
     current_z = start_z.copy()
     polarity = 1  # for Möbius
     direction = 1.0  # +1 forward, -1 backward along principal axis
+    prev_mirror_sig = None
+    prev_torus_sig = None
 
     # Step size based on speed and latent scale
     proj_range = proj_max[0] - proj_min[0]
@@ -519,10 +520,11 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
 
         # --- Apply manifold fold ---
         if manifold_type == MANIFOLD_MIRROR:
+            sig = fold_cell_signature(raw_z, z_min, z_max, fold_density)
             folded_z = fold_mirror(raw_z, z_min, z_max, fold_density)
-            # Detect fold event
-            if np.max(np.abs(folded_z - raw_z)) > median_dist * 0.1:
+            if prev_mirror_sig is not None and sig != prev_mirror_sig:
                 fold_log.append((step, "mirror"))
+            prev_mirror_sig = sig
 
         elif manifold_type == MANIFOLD_MOBIUS:
             folded_z, new_polarity = fold_mobius(
@@ -533,10 +535,11 @@ def generate_folding_path(Z, events, manifold_type, fold_density,
                 polarity = new_polarity
 
         else:  # TORUS
-            folded_z = fold_torus(raw_z, z_min, z_max)
-            # Detect wrap event
-            if np.max(np.abs(folded_z - raw_z)) > median_dist * 0.1:
+            sig = fold_cell_signature(raw_z, z_min, z_max, fold_density)
+            folded_z = fold_torus(raw_z, z_min, z_max, fold_density)
+            if prev_torus_sig is not None and sig != prev_torus_sig:
                 fold_log.append((step, "wrap"))
+            prev_torus_sig = sig
 
         # --- Apply curvature blend ---
         final_z = apply_curvature_blend(raw_z, folded_z, curvature,
@@ -616,128 +619,53 @@ def extract_event_clips(audio, events, sr):
     return clips
 
 
-def reconstruct(clips, path_events, path_positions, Z, sr,
-                target_samples, curvature):
-    """
-    Build output timeline from path events.
-    Curvature affects crossfade behavior at fold boundaries:
-    high curvature = hard cuts, low curvature = longer crossfades.
-    """
+def reconstruct(clips, path_events, path_positions, Z, sr, target_samples, curvature):
+    """Sequential adaptive equal-power OLA; no global transient de-clicker."""
     import numpy as np
-
     xfade_base = max(4, int(XFADE_SEC * sr))
-    # Low curvature → longer crossfades (up to 4x)
-    xfade = int(xfade_base * (1.0 + (1.0 - curvature) * 3.0))
-
-    angle = np.linspace(0, np.pi / 2, xfade, dtype=np.float32)
-    fade_in = np.sin(angle)
-    fade_out = np.cos(angle)
-
+    desired_xf = int(xfade_base * (1.0 + (1.0 - curvature) * 3.0))
     multichannel = clips[0].ndim > 1
     n_ch = clips[0].shape[1] if multichannel else 1
-
-    # Estimate total length
-    total = sum(len(clips[idx]) for idx in path_events)
-    if multichannel:
-        output = np.zeros((total + xfade * 2, n_ch), dtype=np.float32)
-    else:
-        output = np.zeros(total + xfade * 2, dtype=np.float32)
-
+    shape = (sum(len(clips[i]) for i in path_events) + desired_xf * 2, n_ch) if multichannel else (sum(len(clips[i]) for i in path_events) + desired_xf * 2,)
+    output = np.zeros(shape, dtype=np.float32)
     wp = 0
+    prev_len = 0
     for ci, ev_idx in enumerate(path_events):
         clip = clips[ev_idx].copy().astype(np.float32)
         cl = len(clip)
-
-        if cl < xfade * 3:
-            end = wp + cl
-            if end > len(output):
-                pad = end - len(output)
-                if multichannel:
-                    output = np.pad(output, ((0, pad), (0, 0)))
-                else:
-                    output = np.pad(output, (0, pad))
-            output[wp:end] += clip
-            wp = end
-            continue
-
-        # Smoothing for large latent jumps
-        if ci > 0:
-            d = np.linalg.norm(Z[path_events[ci]] - Z[path_events[ci - 1]])
-            max_d = np.max(np.linalg.norm(Z - np.mean(Z, axis=0),
-                                          axis=1)) + 1e-8
-            d_frac = d / max_d
-            if d_frac > 0.6:
-                fade_len = min(cl, int(sr * 0.03 * (1 + (1 - curvature))))
-                if fade_len > 2:
-                    fade = np.linspace(0.2, 1.0, fade_len)
-                    if multichannel:
-                        for ch in range(n_ch):
-                            clip[:fade_len, ch] *= fade.astype(np.float32)
-                    else:
-                        clip[:fade_len] *= fade.astype(np.float32)
-
-        if ci > 0:
-            if multichannel:
-                for ch in range(n_ch):
-                    clip[:xfade, ch] *= fade_in
-            else:
-                clip[:xfade] *= fade_in
-        if ci < len(path_events) - 1:
-            if multichannel:
-                for ch in range(n_ch):
-                    clip[-xfade:, ch] *= fade_out
-            else:
-                clip[-xfade:] *= fade_out
-
-        end = wp + cl
-        if end > len(output):
-            pad = end - len(output)
-            if multichannel:
-                output = np.pad(output, ((0, pad), (0, 0)))
-            else:
-                output = np.pad(output, (0, pad))
-        output[wp:end] += clip
-        wp = end - xfade if ci < len(path_events) - 1 else end
-
-    output = output[:wp]
-
-    # Click smoothing (vectorized)
-    if len(output) > 4:
-        local_rms = max(0.001, np.sqrt(np.mean(output.flatten() ** 2)))
-        threshold = local_rms * 4.0
+        if ci == 0:
+            end = cl; output[:end] += clip; wp = end; prev_len = cl; continue
+        xf = min(desired_xf, max(2, cl // 3), max(2, prev_len // 3), wp)
+        ang = np.linspace(0, np.pi/2, xf, dtype=np.float32)
+        fo, fi = np.cos(ang), np.sin(ang)
+        start = wp - xf
         if multichannel:
-            for ch in range(n_ch):
-                diffs = np.abs(np.diff(output[:, ch]))
-                click_idx = np.where(diffs > threshold)[0]
-                for i in click_idx:
-                    if 0 < i < len(output) - 1:
-                        lo = max(0, i - 2)
-                        hi = min(len(output), i + 3)
-                        output[i, ch] = np.median(output[lo:hi, ch])
+            output[start:wp, :] *= fo[:,None]
+            clip[:xf, :] *= fi[:,None]
         else:
-            diffs = np.abs(np.diff(output))
-            click_idx = np.where(diffs > threshold)[0]
-            for i in click_idx:
-                if 0 < i < len(output) - 1:
-                    lo = max(0, i - 2)
-                    hi = min(len(output), i + 3)
-                    output[i] = np.median(output[lo:hi])
-
-    # Duration enforcement
+            output[start:wp] *= fo
+            clip[:xf] *= fi
+        end = start + cl
+        if end > len(output):
+            pad=end-len(output)
+            output=np.pad(output, ((0,pad),(0,0))) if multichannel else np.pad(output,(0,pad))
+        output[start:end] += clip
+        wp = end; prev_len = cl
+    output = output[:wp]
     if target_samples > 0:
         if len(output) > target_samples:
-            output = output[:target_samples]
+            output = output[:target_samples].copy()
         elif len(output) < target_samples:
-            pad = target_samples - len(output)
-            if multichannel:
-                output = np.pad(output, ((0, pad), (0, 0)))
-            else:
-                output = np.pad(output, (0, pad))
-
-    peak = np.max(np.abs(output))
-    if peak > 0.95:
-        output *= (0.95 / peak)
-
+            pad=target_samples-len(output)
+            output=np.pad(output,((0,pad),(0,0))) if multichannel else np.pad(output,(0,pad))
+    # release only at the actual file endpoint
+    rel = min(max(4, int(0.008*sr)), max(1, len(output)//4))
+    if rel > 1:
+        env = 0.5*(1+np.cos(np.linspace(0,np.pi,rel))).astype(np.float32)
+        if multichannel: output[-rel:,:] *= env[:,None]
+        else: output[-rel:] *= env
+    peak=float(np.max(np.abs(output))) if len(output) else 0.0
+    if peak>0.95: output *= 0.95/peak
     return output
 
 
@@ -748,7 +676,7 @@ def reconstruct(clips, path_events, path_positions, Z, sr,
 def write_stats(path, events, path_events, fold_log, Z,
                 losses, sr, out_duration, manifold_type,
                 fold_density, curvature, permutation_intensity,
-                symmetry, warnings, path_positions=None):
+                symmetry, warnings, path_positions=None, analysis_channel=0):
     import numpy as np
 
     n_events = len(events)
@@ -775,14 +703,33 @@ def write_stats(path, events, path_events, fold_log, Z,
     n_wraps = len([f for f in fold_log if f[1] == "wrap"])
     has_symmetry = any(f[1] == "symmetry_pivot" for f in fold_log)
 
-    # Palindromic check: compare first/second half event selection
+    # Topological symmetry fidelity in latent space (1 = exact inverted palindrome).
     palindromic_score = 0.0
-    if has_symmetry and n_steps > 4:
+    if has_symmetry and n_steps > 4 and path_positions is not None:
         half = n_steps // 2
-        first_half = set(path_events[:half])
-        second_half = set(path_events[half:])
-        diff = len(second_half - first_half)
-        palindromic_score = diff / max(1, len(second_half))
+        center_sym = np.mean(Z, axis=0)
+        Zc = Z - center_sym
+        cov = Zc.T.dot(Zc) / max(1, len(Z)-1)
+        _, vecs = np.linalg.eigh(cov)
+        axes_sym = vecs[:, ::-1]
+        p1 = axes_sym[:,0]
+        p2 = axes_sym[:,1] if Z.shape[1] > 1 else p1
+        errs=[]
+        for step in range(half, n_steps):
+            ms = 2*half - 1 - step
+            if 0 <= ms < len(path_positions):
+                target = center_sym + (center_sym - path_positions[ms])
+                if permutation_intensity > 0.1:
+                    ang = permutation_intensity * np.pi * 0.25
+                    ca, sa = np.cos(ang), np.sin(ang)
+                    zc = target - center_sym
+                    a1, a2 = np.dot(zc,p1), np.dot(zc,p2)
+                    b1, b2 = a1*ca-a2*sa, a1*sa+a2*ca
+                    target = center_sym + zc + p1*(b1-a1) + p2*(b2-a2)
+                errs.append(np.linalg.norm(path_positions[step]-target))
+        scale = float(np.mean(np.linalg.norm(Z-center_sym,axis=1))) + 1e-8
+        if errs:
+            palindromic_score = float(np.exp(-np.mean(errs)/scale))
 
     # ── PCA projection for visualization ──────────────────────────────
     ev_x = []
@@ -831,6 +778,7 @@ def write_stats(path, events, path_events, fold_log, Z,
         f.write("curvature=%.2f\n" % curvature)
         f.write("permutation=%.2f\n" % permutation_intensity)
         f.write("symmetry=%.2f\n" % symmetry)
+        f.write("analysis_channel=%d\n" % analysis_channel)
         f.write("n_fold_events=%d\n" % n_folds)
         f.write("n_mirrors=%d\n" % n_mirrors)
         f.write("n_twists=%d\n" % n_twists)
@@ -939,7 +887,7 @@ def main():
 
     # ---- Mel patches ----
     print("  [Py 2/7] Extracting log-mel patches...")
-    audio_mono = audio if audio.ndim == 1 else audio[:, 0]
+    audio_mono, analysis_channel = phase_safe_mono(audio)
     patches = extract_mel_patches(audio_mono.astype(np.float64), sr, events)
 
     # ---- Train AE ----
@@ -991,7 +939,7 @@ def main():
     output = reconstruct(clips, path_events, path_positions, Z, sr,
                          target_samples, curvature)
 
-    sf.write(out_wav, output, sr)
+    sf.write(out_wav, output, sr, subtype='FLOAT')
     out_dur = len(output) / sr if output.ndim == 1 else output.shape[0] / sr
 
     # ---- Stats ----
@@ -999,7 +947,7 @@ def main():
     write_stats(stats_file, events, path_events, fold_log, Z,
                 losses, sr, out_dur, manifold, fold_dens, curvature,
                 perm_int, symmetry, warnings,
-                path_positions=path_positions)
+                path_positions=path_positions, analysis_channel=analysis_channel)
 
     print("    Output: %.2fs | Peak: %.4f" %
           (out_dur, np.max(np.abs(output))))

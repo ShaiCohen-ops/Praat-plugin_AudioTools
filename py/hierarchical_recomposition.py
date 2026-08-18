@@ -2,9 +2,38 @@
 # =============================================================================
 # Hierarchical Neural Recomposition
 # Author: Shai Cohen — Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026)
+# Version: 1.4 (2026)
 # License: MIT
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.4:
+#   - Structural stereo spatialization for genuinely polyphonic presets only.
+#     RecursiveSpeechChoir places its independent voices across a fixed
+#     equal-power stereo field; braid operations occupy deterministic strands;
+#     EchoArchitecture alternates successive echo generations left/right.
+#   - Non-spatial presets keep the historical mono render path exactly.
+#   - Process telemetry now includes per-operation pan plus output-channel and
+#     spatialization QC so Praat can draw the audible stereo field.
+#
+# Changelog v1.3:
+#   - Process visualization telemetry: stats now include actual event boundaries,
+#     phrase spans, selected plan-slot means, and the render operations that were
+#     actually scheduled in this run. This is diagnostic-only and does not alter
+#     planning or audio rendering.
+#   - Choir mode exposes the combined scheduled operations from all voices for
+#     visualization while preserving the exact existing render path.
+#
+# Changelog v1.2:
+#   - Phase-safe mono analysis/render source: multichannel input still uses the
+#     ordinary channel mean when it is healthy, but if that mean collapses below
+#     10% of the strongest channel RMS (anti-phase cancellation), the strongest
+#     channel is used instead. Normal mono/stereo behaviour is unchanged.
+#   - Documentation now states the actual neural mechanism: the PyTorch hierarchy
+#     is seed-deterministic but randomly initialized on every run; no checkpoint
+#     is loaded and no training happens in this script.
+#   - Density and source_trace remain accepted as legacy positional arguments for
+#     old Praat frontends, but are explicitly documented as inactive. Source trace
+#     was deliberately removed earlier to avoid correlated comb-filter beating.
 #
 # Changelog v1.1:
 #   - Numpy fallback is now reachable: the torch nn.Module subclasses are
@@ -22,13 +51,15 @@
 #
 # Description:
 #   Multi-scale neural recomposition engine.
-#   Segments an input sound into events → phrases → sections,
-#   builds hierarchical embeddings via PyTorch, then generates
-#   a recomposition plan (ordering, overlap, density, memory)
-#   and renders a new piece from the original source material.
+#   Segments an input sound into events → phrases and computes section descriptors
+#   for diagnostics. A phrase-sequence hierarchy then builds seed-deterministic
+#   embeddings via a randomly initialized PyTorch network (no training/checkpoint),
+#   and generates a recomposition plan
+#   (ordering, overlap, memory) and renders a new piece from the source material.
 #
 # Dependencies:
-#   pip install numpy scipy soundfile torch
+#   Required: numpy scipy soundfile
+#   Optional: torch (seeded NumPy fallback is used when unavailable)
 #
 # Usage (from Praat via runSystem):
 #   python hierarchical_recomposition.py \
@@ -73,10 +104,26 @@ BaseModule = nn.Module if TORCH_OK else object
 # =============================================================================
 
 def load_audio(path):
-    """Load audio, convert to mono float32."""
+    """Load audio and return a phase-safe mono working signal.
+
+    Ordinary multichannel material keeps the historical arithmetic mean exactly.
+    Only when that mean nearly cancels (RMS < 10% of the strongest channel) do we
+    fall back to the strongest channel, preventing anti-phase stereo from becoming
+    silence before segmentation. Returns (mono, sr, strategy).
+    """
     audio, sr = sf.read(path, dtype='float32', always_2d=True)
-    mono = audio.mean(axis=1)
-    return mono, sr
+    if audio.shape[1] == 1:
+        return audio[:, 0].copy(), sr, "mono"
+
+    mono = audio.mean(axis=1).astype(np.float32)
+    ch_rms = np.sqrt(np.mean(audio.astype(np.float64) ** 2, axis=0) + 1e-20)
+    strong_idx = int(np.argmax(ch_rms))
+    strong_rms = float(ch_rms[strong_idx])
+    mean_rms = float(np.sqrt(np.mean(mono.astype(np.float64) ** 2) + 1e-20))
+
+    if strong_rms > 1e-9 and mean_rms < 0.10 * strong_rms:
+        return audio[:, strong_idx].copy(), sr, f"channel_{strong_idx + 1}_phase_safe"
+    return mono, sr, "channel_mean"
 
 
 def save_audio(path, audio, sr):
@@ -553,9 +600,9 @@ PRESETS = {
             'a multi-strand counterpoint from a single monophonic source.'
         ),
         'params': {
-            'target_duration': 1.2, 'density': 0.5, 'coherence': 0.7,
+            'target_duration': 1.2, 'coherence': 0.7,
             'contrast': 0.8, 'memory': 0.3, 'repetition': 0.4,
-            'fragmentation': 0.3, 'overlap': 0.6, 'source_trace': 0.9,
+            'fragmentation': 0.3, 'overlap': 0.6,
             'surprise': 0.2,
         },
         'ops': {'braid': True, 'polyphony': 2},
@@ -569,9 +616,9 @@ PRESETS = {
             'while continuously elongating — a spiral, not a loop.'
         ),
         'params': {
-            'target_duration': 1.5, 'density': 0.4, 'coherence': 0.6,
+            'target_duration': 1.5, 'coherence': 0.6,
             'contrast': 0.4, 'memory': 0.95, 'repetition': 0.7,
-            'fragmentation': 0.2, 'overlap': 0.4, 'source_trace': 0.85,
+            'fragmentation': 0.2, 'overlap': 0.4,
             'surprise': 0.15,
         },
         'ops': {'memory_depth': 4, 'recurrence': True},
@@ -585,9 +632,9 @@ PRESETS = {
             'ritual weight through obsessive variation.'
         ),
         'params': {
-            'target_duration': 1.3, 'density': 0.3, 'coherence': 0.9,
+            'target_duration': 1.3, 'coherence': 0.9,
             'contrast': 0.2, 'memory': 0.8, 'repetition': 0.9,
-            'fragmentation': 0.95, 'overlap': 0.1, 'source_trace': 0.95,
+            'fragmentation': 0.95, 'overlap': 0.1,
             'surprise': 0.05,
         },
         'ops': {'litany_cycles': 3, 'micro_events': True},
@@ -601,9 +648,9 @@ PRESETS = {
             'relationships, producing a dynamic formal weave.'
         ),
         'params': {
-            'target_duration': 1.1, 'density': 0.65, 'coherence': 0.5,
+            'target_duration': 1.1, 'coherence': 0.5,
             'contrast': 0.75, 'memory': 0.5, 'repetition': 0.5,
-            'fragmentation': 0.4, 'overlap': 0.7, 'source_trace': 0.8,
+            'fragmentation': 0.4, 'overlap': 0.7,
             'surprise': 0.35,
         },
         'ops': {'braid': True, 'n_strands': 3},
@@ -617,9 +664,9 @@ PRESETS = {
             'Form is built entirely by progressive dissolution.'
         ),
         'params': {
-            'target_duration': 1.4, 'density': 0.45, 'coherence': 0.6,
+            'target_duration': 1.4, 'coherence': 0.6,
             'contrast': 0.5, 'memory': 0.85, 'repetition': 0.8,
-            'fragmentation': 0.8, 'overlap': 0.2, 'source_trace': 0.9,
+            'fragmentation': 0.8, 'overlap': 0.2,
             'surprise': 0.1,
         },
         'ops': {'refrain': True, 'collapse_rate': 0.4},
@@ -633,9 +680,9 @@ PRESETS = {
             'a space-like architecture built from the source\'s own resonance.'
         ),
         'params': {
-            'target_duration': 1.6, 'density': 0.35, 'coherence': 0.55,
+            'target_duration': 1.6, 'coherence': 0.55,
             'contrast': 0.3, 'memory': 0.6, 'repetition': 0.6,
-            'fragmentation': 0.15, 'overlap': 0.8, 'source_trace': 0.95,
+            'fragmentation': 0.15, 'overlap': 0.8,
             'surprise': 0.2,
         },
         'ops': {'echo_depth': 3, 'echo_decay': 0.55},
@@ -649,9 +696,9 @@ PRESETS = {
             'sung back to itself from multiple temporal positions simultaneously.'
         ),
         'params': {
-            'target_duration': 1.0, 'density': 0.8, 'coherence': 0.75,
+            'target_duration': 1.0, 'coherence': 0.75,
             'contrast': 0.4, 'memory': 0.7, 'repetition': 0.65,
-            'fragmentation': 0.2, 'overlap': 0.9, 'source_trace': 0.99,
+            'fragmentation': 0.2, 'overlap': 0.9,
             'surprise': 0.1,
         },
         'ops': {'choir_voices': 4, 'phase_offset': True},
@@ -666,9 +713,9 @@ PRESETS = {
             'The hidden sonata is latent inside the source.'
         ),
         'params': {
-            'target_duration': 1.8, 'density': 0.5, 'coherence': 0.65,
+            'target_duration': 1.8, 'coherence': 0.65,
             'contrast': 0.7, 'memory': 0.9, 'repetition': 0.7,
-            'fragmentation': 0.5, 'overlap': 0.35, 'source_trace': 0.85,
+            'fragmentation': 0.5, 'overlap': 0.35,
             'surprise': 0.25,
         },
         'ops': {'sonata_form': True, 'recapitulation': True},
@@ -812,7 +859,9 @@ def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops
                 braid_cursor = cursor - sum(
                     len(events[ei]['audio']) / sr for ei in ev_indices
                 ) * 0.5
-                for bei in braid_evs[:3]:
+                n_strands = max(2, int(ops.get('n_strands', ops.get('polyphony', 2))))
+                strand_pans = np.linspace(-0.78, 0.78, n_strands)
+                for braid_i, bei in enumerate(braid_evs[:3]):
                     dur_s = len(events[bei]['audio']) / sr
                     ops_list.append({
                         'type':         'braid',
@@ -820,6 +869,7 @@ def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops
                         'start_time':   max(0.0, braid_cursor),
                         'gain':         0.6,
                         'crossfade_ms': 25,
+                        'pan':          float(strand_pans[braid_i % n_strands]),
                         'label':        f'braid(p{phrase_idx}+p{contrast_idx},e{bei})',
                     })
                     braid_cursor += dur_s * 0.7
@@ -835,12 +885,16 @@ def plan_event_ordering(events, feat_vecs, phrases, section_plan_np, params, ops
             src_ev     = ev_indices[0]
             ev_dur_s   = len(events[src_ev]['audio']) / sr
             for ech in range(1, echo_depth + 1):
+                # Successive generations alternate sides and widen gradually.
+                echo_spread = min(0.85, 0.28 + 0.18 * ech)
+                echo_pan = -echo_spread if ech % 2 else echo_spread
                 ops_list.append({
                     'type':         'echo',
                     'event_idx':    src_ev,
                     'start_time':   cursor + ev_dur_s * ech * 0.6,
                     'gain':         echo_decay ** ech,
                     'crossfade_ms': 15,
+                    'pan':          float(echo_pan),
                     'label':        f'echo{ech}(p{phrase_idx},e{src_ev})',
                 })
 
@@ -967,6 +1021,20 @@ def time_stretch_naive(audio, ratio):
     return np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
 
 
+def equal_power_pan_gains(pan):
+    """Return equal-power (left, right) gains for pan in [-1, +1]."""
+    p = float(np.clip(pan, -1.0, 1.0))
+    theta = (p + 1.0) * (math.pi / 4.0)
+    return float(math.cos(theta)), float(math.sin(theta))
+
+
+def pan_mono_buffer(audio, pan):
+    """Place an already-rendered mono buffer in stereo without changing it first."""
+    audio = np.asarray(audio, dtype=np.float32).reshape(-1)
+    gl, gr = equal_power_pan_gains(pan)
+    return np.column_stack((audio * gl, audio * gr)).astype(np.float32)
+
+
 def render_ops(ops_list, events, sr, target_dur_s, overlap_default_ms=20):
     """
     Render a sequence of operation dicts to an audio buffer.
@@ -1000,7 +1068,12 @@ def render_ops(ops_list, events, sr, target_dur_s, overlap_default_ms=20):
         for op in valid_ops
     )
     total_samples = int(max(max_time, target_dur_s) * sr) + sr
-    output = np.zeros(total_samples, dtype=np.float32)
+    spatial = any(abs(float(op.get('pan', 0.0))) > 1e-9 for op in valid_ops)
+    if spatial:
+        output = np.zeros((total_samples, 2), dtype=np.float32)
+    else:
+        # Preserve the exact historical mono code path for non-spatial presets.
+        output = np.zeros(total_samples, dtype=np.float32)
 
     # Build a list of (start_samp, end_samp) for overlap detection
     placements = []   # filled per-op below, used to decide crossfade length
@@ -1076,10 +1149,19 @@ def render_ops(ops_list, events, sr, target_dur_s, overlap_default_ms=20):
 
         # ── Write into buffer ─────────────────────────────────────────────
         if end_samp > len(output):
-            pad    = end_samp - len(output)
-            output = np.concatenate([output, np.zeros(pad, dtype=np.float32)])
+            pad = end_samp - len(output)
+            if spatial:
+                output = np.concatenate(
+                    [output, np.zeros((pad, 2), dtype=np.float32)], axis=0)
+            else:
+                output = np.concatenate([output, np.zeros(pad, dtype=np.float32)])
 
-        output[start_samp:end_samp] += raw
+        if spatial:
+            gl, gr = equal_power_pan_gains(op.get('pan', 0.0))
+            output[start_samp:end_samp, 0] += raw * gl
+            output[start_samp:end_samp, 1] += raw * gr
+        else:
+            output[start_samp:end_samp] += raw
         placements.append((start_samp, end_samp))
 
     # ── Trim to target duration ──────────────────────────────────────────
@@ -1087,7 +1169,12 @@ def render_ops(ops_list, events, sr, target_dur_s, overlap_default_ms=20):
     if len(output) > tgt:
         output = output[:tgt]
     elif len(output) < tgt:
-        output = np.concatenate([output, np.zeros(tgt - len(output), dtype=np.float32)])
+        pad = tgt - len(output)
+        if spatial:
+            output = np.concatenate(
+                [output, np.zeros((pad, 2), dtype=np.float32)], axis=0)
+        else:
+            output = np.concatenate([output, np.zeros(pad, dtype=np.float32)])
 
     # ── Soft-limiter: smooth tanh squash, then normalise to -1 dBFS ─────
     # This does NOT create amplitude modulation — it is a static memoryless
@@ -1126,14 +1213,14 @@ def parse_args(argv):
       [1] output_wav
       [2] stats_txt
       [3] target_duration_ratio   (0.5 – 3.0)
-      [4] density                 (0.0 – 1.0)
+      [4] density                 LEGACY / currently inactive
       [5] coherence               (0.0 – 1.0)
       [6] contrast                (0.0 – 1.0)
       [7] memory                  (0.0 – 1.0)
       [8] repetition              (0.0 – 1.0)
       [9] fragmentation           (0.0 – 1.0)
       [10] overlap                (0.0 – 1.0)
-      [11] source_trace           (0.0 – 1.0)
+      [11] source_trace           LEGACY / currently inactive
       [12] surprise               (0.0 – 1.0)
       [13] seed                   (integer)
       [14] preset_name            (string or "Custom")
@@ -1183,6 +1270,9 @@ def main():
     # Apply preset overrides
     params, ops = get_preset(preset_name, params)
 
+    # Legacy controls kept only for positional CLI compatibility. They are not
+    # part of the current renderer/planner (source_trace was deliberately removed).
+
     seed = cfg['seed']
     rng  = random.Random(seed)
     np_rng = np.random.RandomState(seed)
@@ -1192,9 +1282,9 @@ def main():
     print(f"[HNR] Preset: {preset_name} | Seed: {seed}", flush=True)
     print(f"[HNR] Loading audio: {cfg['input']}", flush=True)
 
-    audio, sr = load_audio(cfg['input'])
+    audio, sr, mono_strategy = load_audio(cfg['input'])
     dur_in    = len(audio) / sr
-    print(f"[HNR] Duration: {dur_in:.2f}s | SR: {sr}Hz", flush=True)
+    print(f"[HNR] Duration: {dur_in:.2f}s | SR: {sr}Hz | mono={mono_strategy}", flush=True)
 
     # ── Stage 1: Segmentation ────────────────────────────────────────────
     print("[1/6] Segmenting events...", flush=True)
@@ -1259,8 +1349,14 @@ def main():
     n_voices   = ops.get('choir_voices', 1)
     target_dur = dur_in * params['target_duration']
 
+    visual_ops = []
+    spatial_mode = "mono"
     if n_voices > 1:
+        # Render each voice through the historical mono renderer first, then
+        # distribute the completed voices with equal-power panning. This keeps
+        # each voice's internal sound identical and changes only its location.
         voice_buffers = []
+        voice_pans = np.linspace(-0.85, 0.85, n_voices)
         for v in range(n_voices):
             v_seed = seed + v * 137
             v_rng  = random.Random(v_seed)
@@ -1271,20 +1367,36 @@ def main():
             v_ops  = plan_event_ordering(
                 events, feat_vecs, phrases, v_plan, params, ops, v_rng, sr)
             offset = v * dur_in / n_voices * 0.3
+            voice_pan = float(voice_pans[v])
             for op in v_ops:
                 op['start_time'] += offset
                 op['gain']       *= (1.0 - v * 0.18)
-            buf = render_ops(v_ops, events, sr, target_dur)
-            voice_buffers.append(buf)
+                op['pan']         = voice_pan
+                op['voice']       = v + 1
+            visual_ops.extend(v_ops)
+            # Deliberately remove pan only for the per-voice render so the
+            # pre-pan voice buffer is sample-identical to v1.3.
+            mono_ops = [dict(op, pan=0.0) for op in v_ops]
+            buf = render_ops(mono_ops, events, sr, target_dur)
+            voice_buffers.append(pan_mono_buffer(buf, voice_pan))
 
         max_len = max(len(b) for b in voice_buffers)
-        output_audio = np.zeros(max_len, dtype=np.float32)
+        output_audio = np.zeros((max_len, 2), dtype=np.float32)
         for buf in voice_buffers:
-            output_audio[:len(buf)] += buf / n_voices
+            output_audio[:len(buf), :] += buf / n_voices
+        spatial_mode = f"choir_{n_voices}_voices"
     else:
-        plan_ops     = plan_event_ordering(
+        plan_ops = plan_event_ordering(
             events, feat_vecs, phrases, section_plan_np, params, ops, rng, sr)
+        visual_ops = plan_ops
         output_audio = render_ops(plan_ops, events, sr, target_dur)
+        if output_audio.ndim == 2:
+            if ops.get('echo_depth'):
+                spatial_mode = "echo_alternating"
+            elif ops.get('braid'):
+                spatial_mode = "braid_strands"
+            else:
+                spatial_mode = "operation_pan"
 
     # ── Source trace: removed ────────────────────────────────────────────
     # The review noted this layer is unnecessary: the recomposition already
@@ -1303,7 +1415,7 @@ def main():
     print(f"[HNR] Output written: {cfg['output']}", flush=True)
     print(f"[HNR] Output duration: {len(output_audio)/sr:.2f}s", flush=True)
 
-    # ── Write stats ──────────────────────────────────────────────────────
+    # ── Write stats + process-visualization telemetry ────────────────────
     stats = {
         'n_events':       n_ev,
         'n_phrases':      n_ph,
@@ -1313,10 +1425,108 @@ def main():
         'preset':         preset_name,
         'seed':           seed,
         'torch_used':     int(TORCH_OK),
+        'neural_model':   'seeded_random_untrained' if TORCH_OK else 'numpy_seeded_fallback',
+        'mono_strategy':  mono_strategy,
+        'spatial_mode':   spatial_mode,
+        'output_channels': (output_audio.shape[1] if output_audio.ndim == 2 else 1),
         'mean_density':   f'{np.mean([s["density"] for s in sections]):.3f}' if sections else '0',
         'mean_brightness':f'{np.mean([s["brightness"] for s in sections]):.3f}' if sections else '0',
         'plan_rows':      len(section_plan_np),
     }
+
+    # Actual plan values used by the scheduler (after user-parameter modulation).
+    for key in ('repetition', 'fragmentation', 'overlap', 'stretch',
+                'memory', 'braid', 'inversion', 'collapse'):
+        col = PLAN_SLOTS[key]
+        stats[f'plan_{key}_mean'] = f'{float(np.mean(section_plan_np[:, col])):.4f}'
+
+    # Map source events to their actual phrase membership.
+    event_phrase = np.full(n_ev, -1, dtype=int)
+    for pi, ph in enumerate(phrases):
+        for ei in ph['event_indices']:
+            if 0 <= ei < n_ev:
+                event_phrase[ei] = pi
+
+    # Source-event telemetry. Downsample only for drawing; phrase spans are
+    # reported separately so the hierarchy remains truthful on dense material.
+    max_event_viz = 120
+    if n_ev <= max_event_viz:
+        event_viz_idx = np.arange(n_ev, dtype=int)
+    else:
+        event_viz_idx = np.unique(
+            np.linspace(0, n_ev - 1, max_event_viz).astype(int))
+    stats['n_event_viz'] = len(event_viz_idx)
+    for j, ei in enumerate(event_viz_idx):
+        ev = events[int(ei)]
+        stats[f'event_{j}'] = (
+            f'{ev["start"]/sr:.6f},{ev["end"]/sr:.6f},'
+            f'{int(event_phrase[int(ei)])},{int(ei)}')
+
+    max_phrase_viz = 48
+    if n_ph <= max_phrase_viz:
+        phrase_viz_idx = np.arange(n_ph, dtype=int)
+    else:
+        phrase_viz_idx = np.unique(
+            np.linspace(0, n_ph - 1, max_phrase_viz).astype(int))
+    stats['n_phrase_viz'] = len(phrase_viz_idx)
+    for j, pi in enumerate(phrase_viz_idx):
+        ph = phrases[int(pi)]
+        inds = ph['event_indices']
+        if inds:
+            t0p = events[inds[0]]['start'] / sr
+            t1p = events[inds[-1]]['end'] / sr
+        else:
+            t0p = t1p = 0.0
+        stats[f'phrase_{j}'] = (
+            f'{t0p:.6f},{t1p:.6f},{len(inds)},{int(pi)}')
+
+    # Actual scheduled operations, including all voices in choir mode.
+    def _op_duration_seconds(op):
+        ei = int(op.get('event_idx', -1))
+        if ei < 0 or ei >= len(events):
+            return 0.0
+        n = len(events[ei]['audio'])
+        if op.get('type') == 'fragment':
+            n = max(1, int(n * float(op.get('slice_ratio', 0.3))))
+        stretch = float(op.get('stretch', 1.0))
+        if abs(stretch - 1.0) > 0.02:
+            n = max(1, int(n * stretch))
+        return n / sr
+
+    ops_sorted = sorted(visual_ops, key=lambda o: float(o.get('start_time', 0.0)))
+    op_counts = {}
+    for op in ops_sorted:
+        typ = str(op.get('type', 'other'))
+        op_counts[typ] = op_counts.get(typ, 0) + 1
+    stats['n_ops_total'] = len(ops_sorted)
+    pan_values = np.array([float(op.get('pan', 0.0)) for op in ops_sorted], dtype=float) \
+        if ops_sorted else np.array([0.0])
+    stats['pan_min'] = f'{float(np.min(pan_values)):.4f}'
+    stats['pan_max'] = f'{float(np.max(pan_values)):.4f}'
+    stats['n_spatial_ops'] = int(np.count_nonzero(np.abs(pan_values) > 1e-9))
+    for typ in ('place', 'repeat', 'fragment', 'recall', 'braid', 'echo', 'invert'):
+        stats[f'n_op_{typ}'] = op_counts.get(typ, 0)
+
+    max_op_viz = 90
+    audible_ops = []
+    for op in ops_sorted:
+        start = float(op.get('start_time', 0.0))
+        dur_op = _op_duration_seconds(op)
+        end = start + dur_op
+        if end > 0.0 and start < target_dur:
+            audible_ops.append((op, max(0.0, start), min(target_dur, end)))
+    if len(audible_ops) <= max_op_viz:
+        op_viz = audible_ops
+    else:
+        keep = np.unique(np.linspace(0, len(audible_ops) - 1, max_op_viz).astype(int))
+        op_viz = [audible_ops[int(i)] for i in keep]
+    stats['n_op_viz'] = len(op_viz)
+    for j, (op, t0o, t1o) in enumerate(op_viz):
+        stats[f'op_{j}'] = (
+            f'{op.get("type", "other")},{t0o:.6f},{t1o:.6f},'
+            f'{int(op.get("event_idx", -1))},{float(op.get("gain", 1.0)):.4f},'
+            f'{float(op.get("pan", 0.0)):.4f},{int(op.get("voice", 0))}')
+
     write_stats(cfg['stats'], stats)
     print("[HNR] Done.", flush=True)
 

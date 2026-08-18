@@ -3,6 +3,17 @@ latent_counterpoint.py — The Latent Counterpoint
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
+Version: 1.4 (2026)
+
+Changelog v1.4:
+    - Adaptive local equal-power splicing replaces global click smoothing;
+      genuine transients are no longer median-filtered as false clicks.
+    - Safe release at the rendered layer end prevents hard target truncation.
+    - Phase-safe multichannel fold-down falls back to the strongest channel
+      only when channel averaging nearly cancels.
+    - One/degenerate-event latent geometry now has a finite scale fallback.
+    - Polyphonic timeline stats mirror the actual adaptive splice positions.
+    - Output WAV is 32-bit FLOAT.
 
 Usage (called by Praat, not directly):
     python latent_counterpoint.py input.wav events.csv output.wav stats.txt
@@ -344,7 +355,12 @@ def compute_latent_geometry(Z):
 
     dists = cdist(Z, Z, metric="euclidean")
     np.fill_diagonal(dists, np.inf)
-    median_dist = np.median(dists[dists < np.inf])
+    finite = dists[np.isfinite(dists) & (dists > 1e-9)]
+    # Praat can legitimately fall back to a single event on short/simple
+    # sources.  In that case there is no inter-event distance to measure;
+    # use a finite unit scale so the physics remains deterministic instead
+    # of propagating NaNs.  The selected event is still the real event.
+    median_dist = float(np.median(finite)) if finite.size else 1.0
 
     return center, periphery, dists, median_dist
 
@@ -627,13 +643,39 @@ def extract_event_clips(audio, events, sr):
     return clips
 
 
+def _phase_safe_mono_clip(clip):
+    """Fold a clip to mono without destroying strongly anti-phase stereo."""
+    import numpy as np
+    clip = np.asarray(clip, dtype=np.float32)
+    if clip.ndim == 1:
+        return clip.copy(), False
+    if clip.shape[1] == 1:
+        return clip[:, 0].copy(), False
+
+    mean = np.mean(clip, axis=1).astype(np.float32)
+    mean_rms = float(np.sqrt(np.mean(mean.astype(np.float64) ** 2)))
+    ch_rms = np.sqrt(np.mean(clip.astype(np.float64) ** 2, axis=0))
+    strongest = int(np.argmax(ch_rms))
+    max_rms = float(ch_rms[strongest])
+    if max_rms > 1e-9 and mean_rms < 0.10 * max_rms:
+        return clip[:, strongest].copy().astype(np.float32), True
+    return mean, False
+
+
+def _splice_xfade_len(prev_len, cur_len, xfade):
+    """Adaptive crossfade length; long clips retain the legacy 8 ms splice."""
+    if prev_len <= 1 or cur_len <= 1:
+        return 0
+    return max(1, min(xfade, prev_len // 4, cur_len // 4))
+
+
 def reconstruct_polyphonic(clips, agent_histories, agents, sr,
                            target_samples, Z):
     """
     Sum the audio outputs of all agents into a stereo mix.
 
     Each agent:
-    - Concatenates its event sequence with crossfades
+    - Concatenates its event sequence with local equal-power crossfades
     - Gets independent volume scaling (based on profile)
     - Gets stereo panning (Cantus center, Florid right, Shadow left)
 
@@ -643,8 +685,15 @@ def reconstruct_polyphonic(clips, agent_histories, agents, sr,
 
     n_agents = len(agents)
     xfade = max(4, int(XFADE_SEC * sr))
-    multichannel = clips[0].ndim > 1
-    input_channels = clips[0].shape[1] if multichannel else 1
+
+    # Convert each event once. Ordinary multichannel material keeps the
+    # historical channel mean; only near-cancelling folds use a strong channel.
+    mono_clips = []
+    phase_safe_events = 0
+    for clip in clips:
+        mono, used_fallback = _phase_safe_mono_clip(clip)
+        mono_clips.append(mono)
+        phase_safe_events += int(used_fallback)
 
     # Always produce stereo output
     output = np.zeros((target_samples, 2), dtype=np.float32)
@@ -653,14 +702,14 @@ def reconstruct_polyphonic(clips, agent_histories, agents, sr,
     agent_configs = []
     for a in agents:
         if a.profile == AGENT_CANTUS:
-            vol = 0.6       # dominant voice
-            pan = 0.5       # center
+            vol = 0.6
+            pan = 0.5
         elif a.profile == AGENT_FLORID:
-            vol = 0.4       # lighter
-            pan = 0.75      # right-of-center
+            vol = 0.4
+            pan = 0.75
         elif a.profile == AGENT_SHADOW:
-            vol = 0.35      # quietest (shadow)
-            pan = 0.25      # left-of-center
+            vol = 0.35
+            pan = 0.25
         else:
             vol = 0.4
             pan = 0.5
@@ -670,26 +719,14 @@ def reconstruct_polyphonic(clips, agent_histories, agents, sr,
 
     for ai, (history, agent) in enumerate(zip(agent_histories, agents)):
         vol, pan = agent_configs[ai]
+        sequence = [mono_clips[ev_idx] for ev_idx in history]
 
-        # Build sequence of clips for this agent
-        sequence = []
-        for ev_idx in history:
-            clip = clips[ev_idx].copy().astype(np.float32)
-            if multichannel:
-                # Take mono for mixing (we'll pan later)
-                clip_mono = np.mean(clip, axis=1)
-            else:
-                clip_mono = clip
-            sequence.append(clip_mono)
-
-        # Concatenate with crossfade
+        # Concatenate with adaptive local crossfades.  No global click detector:
+        # transient peaks are musical data, not errors.
         layer = _concatenate_mono(sequence, xfade, target_samples)
-
-        # Apply volume
         layer *= vol
 
-        # Apply equal-power panning → stereo
-        # pan: 0=left, 0.5=center, 1=right
+        # Equal-power panning
         angle = pan * (np.pi / 2)
         gain_L = np.cos(angle)
         gain_R = np.sin(angle)
@@ -698,90 +735,74 @@ def reconstruct_polyphonic(clips, agent_histories, agents, sr,
         layer_stereo[:, 0] = layer * gain_L
         layer_stereo[:, 1] = layer * gain_R
 
-        # Fit to target length
         fit_len = min(len(layer_stereo), target_samples)
         output[:fit_len] += layer_stereo[:fit_len]
-
         agent_layers.append(layer)
 
-    # Normalize
+    # Normalize only for safety / legacy quiet-output behavior
     peak = np.max(np.abs(output))
     if peak > 0.95:
         output *= (0.95 / peak)
     elif peak > 0 and peak < 0.1:
-        # Very quiet — boost
         output *= (0.5 / peak)
 
-    return output, agent_layers
+    return output, agent_layers, phase_safe_events
 
 
 def _concatenate_mono(sequence, xfade, target_length):
-    """Concatenate mono clips with equal-power crossfade."""
+    """Sequential equal-power OLA with adaptive crossfade for short clips."""
     import numpy as np
 
     if not sequence:
         return np.zeros(max(1, target_length), dtype=np.float32)
 
-    angle = np.linspace(0, np.pi / 2, xfade, dtype=np.float32)
-    fade_in = np.sin(angle)
-    fade_out = np.cos(angle)
-
     total = sum(len(c) for c in sequence)
-    output = np.zeros(total + xfade * 2, dtype=np.float32)
-
+    output = np.zeros(total + max(4, xfade) * 2, dtype=np.float32)
     wp = 0
-    for ci, clip in enumerate(sequence):
+    prev_len = 0
+
+    for ci, src in enumerate(sequence):
+        clip = np.asarray(src, dtype=np.float32).copy()
         cl = len(clip)
-        if cl < xfade * 3:
-            end = wp + cl
-            if end > len(output):
-                output = np.pad(output, (0, end - len(output)))
-            output[wp:end] += clip
-            wp = end
+        if cl <= 0:
             continue
 
-        clip = clip.copy()
-        if ci > 0:
-            clip[:xfade] *= fade_in
-        if ci < len(sequence) - 1:
-            clip[-xfade:] *= fade_out
-
-        end = wp + cl
+        xf = 0 if ci == 0 else _splice_xfade_len(prev_len, cl, xfade)
+        start = max(0, wp - xf)
+        end = start + cl
         if end > len(output):
-            output = np.pad(output, (0, end - len(output)))
-        output[wp:end] += clip
-        wp = end - xfade if ci < len(sequence) - 1 else end
+            output = np.pad(output, (0, end - len(output) + max(4, xfade)))
 
-    output = output[:wp]
+        if xf > 0:
+            angle = np.linspace(0, np.pi / 2, xf, dtype=np.float32)
+            output[start:wp] *= np.cos(angle)
+            clip[:xf] *= np.sin(angle)
 
-    # Post-splice click smoothing
-    _smooth_clicks(output, xfade)
+        output[start:end] += clip
+        wp = end
+        prev_len = cl
 
-    # Duration enforcement
+    raw = output[:wp].copy()
+
+    # Enforce duration, but never hard-cut a non-zero waveform edge.  A short
+    # local release affects only the final few milliseconds, not internal attacks.
     if target_length > 0:
-        if len(output) > target_length:
-            output = output[:target_length]
-        elif len(output) < target_length:
-            output = np.pad(output, (0, target_length - len(output)))
+        if len(raw) >= target_length:
+            out = raw[:target_length].copy()
+        else:
+            out = np.zeros(target_length, dtype=np.float32)
+            out[:len(raw)] = raw
 
-    return output
+        signal_end = min(len(raw), target_length)
+        if signal_end > 1:
+            rel = min(max(4, xfade // 2), signal_end // 4)
+            if rel > 1:
+                release = np.cos(np.linspace(0, np.pi / 2, rel,
+                                             dtype=np.float32))
+                out[signal_end - rel:signal_end] *= release
+        return out
 
-
-def _smooth_clicks(output, xfade):
-    """Detect and smooth sample-level clicks (vectorized)."""
-    import numpy as np
-    if len(output) < 4:
-        return
-    local_rms = max(0.001, np.sqrt(np.mean(output ** 2)))
-    threshold = local_rms * 4.0
-    diffs = np.abs(np.diff(output))
-    click_indices = np.where(diffs > threshold)[0]
-
-    # Only iterate over actual click positions (typically very few)
-    for i in click_indices:
-        lo = max(0, i - 2)
-        hi = min(len(output), i + 3)
-        output[i] = np.median(output[lo:hi])
+    return raw
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -790,7 +811,7 @@ def _smooth_clicks(output, xfade):
 
 def write_stats(path, events, agents, agent_histories, Z, center,
                 periphery, losses, sr, out_duration, warnings,
-                clips=None):
+                clips=None, median_dist=1.0, phase_safe_events=0):
     """Write detailed stats report for Praat."""
     import numpy as np
 
@@ -803,6 +824,20 @@ def write_stats(path, events, agents, agent_histories, Z, center,
         f.write("output_duration=%.3f\n" % out_duration)
         f.write("final_loss=%.6f\n" % (losses[-1] if losses else 0))
         f.write("initial_loss=%.6f\n" % (losses[0] if losses else 0))
+        f.write("phase_safe_events=%d\n" % int(phase_safe_events))
+        f.write("splice_mode=adaptive_equal_power\n")
+
+        # Mean simultaneous latent separation, normalized by corpus scale.
+        sep_vals = []
+        max_steps = max([len(h) for h in agent_histories]) if agent_histories else 0
+        for st in range(max_steps):
+            chosen = [Z[h[st]] for h in agent_histories if st < len(h)]
+            for ia in range(len(chosen)):
+                for ib in range(ia + 1, len(chosen)):
+                    sep_vals.append(float(np.linalg.norm(chosen[ia] - chosen[ib])))
+        mean_sep_ratio = (float(np.mean(sep_vals)) / max(float(median_dist), 1e-9)
+                          if sep_vals else 0.0)
+        f.write("mean_separation_ratio=%.4f\n" % mean_sep_ratio)
 
         # Per-agent stats
         all_used = set()
@@ -869,16 +904,24 @@ def write_stats(path, events, agents, agent_histories, Z, center,
         if clips is not None:
             for ai, hist in enumerate(agent_histories):
                 blocks = []
-                t = 0.0
+                wp_samp = 0
+                prev_len = 0
+                target_samp = int(round(out_duration * sr)) if sr > 0 else 0
+                xfade_samp = max(4, int(XFADE_SEC * sr))
                 for si, ev_idx in enumerate(hist):
                     clip = clips[ev_idx]
                     clip_len = len(clip) if hasattr(clip, '__len__') else 0
-                    clip_dur = clip_len / sr if sr > 0 else 0
-                    if clip_dur < 0.001:
-                        clip_dur = 0.05  # floor for empty clips
-                    blocks.append((ev_idx, t, t + clip_dur))
-                    # Advance with crossfade overlap
-                    t += max(clip_dur - xfade_sec, clip_dur * 0.5)
+                    if clip_len <= 0:
+                        continue
+                    xf = 0 if si == 0 else _splice_xfade_len(prev_len, clip_len, xfade_samp)
+                    start_samp = max(0, wp_samp - xf)
+                    end_samp = start_samp + clip_len
+                    if target_samp > 0 and start_samp >= target_samp:
+                        break
+                    draw_end = min(end_samp, target_samp) if target_samp > 0 else end_samp
+                    blocks.append((ev_idx, start_samp / sr, draw_end / sr))
+                    wp_samp = end_samp
+                    prev_len = clip_len
 
                 # Run-length compress consecutive same-event blocks
                 compressed = []
@@ -1016,15 +1059,16 @@ def main():
     # ---- Reconstruct ----
     print("  [Py 7/7] Reconstructing polyphonic output...")
     clips = extract_event_clips(audio, events, sr)
-    output, agent_layers = reconstruct_polyphonic(
+    output, agent_layers, phase_safe_events = reconstruct_polyphonic(
         clips, agent_histories, agents, sr, target_samples, Z)
 
-    sf.write(out_wav, output, sr)
+    sf.write(out_wav, output, sr, subtype="FLOAT")
 
     out_dur = output.shape[0] / sr
     write_stats(stats_file, events, agents, agent_histories, Z,
                 center, periphery, losses, sr, out_dur, warnings,
-                clips=clips)
+                clips=clips, median_dist=median_dist,
+                phase_safe_events=phase_safe_events)
 
     # Check unison rates
     for ai in range(num_agents):

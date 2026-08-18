@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Delete stale temp output/stats before Python call
+# Version: 1.1.1 (2026) - compatibility/edge-case fixes only
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,6 +38,12 @@ endif
 
 sound = selected("Sound")
 soundName$ = selected$("Sound")
+
+# Praat 7.0+ requires explicit full trust before file writes/system calls.
+# Guarded so Praat 6.x follows the original path unchanged.
+if praatVersion >= 7000
+    askForTrust()
+endif
 
 # ---- OS-Specific Python Discovery ----
 if macintosh
@@ -98,7 +104,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Diffusion Resynthesis v1.1
+form Latent Diffusion Resynthesis v1.1.1
     optionmenu Preset: 1
         option Custom
         option Gentle crystallisation
@@ -234,7 +240,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Latent Diffusion Resynthesis v1.1 ==="
+writeInfoLine:  "=== Latent Diffusion Resynthesis v1.1.1 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
@@ -290,6 +296,12 @@ else
     Copy: "analysisMono"
     analysisMono = selected("Sound")
 endif
+
+# WAV sample indices are relative to the start of the file.  Work on a
+# zero-based analysis copy so event times remain correct for Sounds whose
+# xmin is not zero.  This changes only time coordinates, never samples.
+selectObject: analysisMono
+Shift times to: "start time", 0
 
 selectObject: analysisMono
 pitchObj = To Pitch: 0.01, 75, 600
@@ -722,6 +734,8 @@ if draw_visualization
     Font size: 7
     Colour: "Black"
     Text: 0.02, "left", 0.94, "half", "Diffusion:"
+    Select inner viewport: 0.6, 7.7, 5.05, 5.80
+    Axes: 0, 1, 0, 1
 
     barLeft  = 0.02
     barRight = 0.60
@@ -744,6 +758,8 @@ if draw_visualization
     Text: barLeft,  "left",  barBot - 0.10, "half", "T=" + fixed$(temperature_start, 2)
     Text: barRight, "right", barBot - 0.10, "half", "T=" + fixed$(temperature_end, 2)
     Text: (barLeft + barRight) / 2, "centre", barBot - 0.10, "half", "Annealing schedule"
+    Select inner viewport: 0.6, 7.7, 5.05, 5.80
+    Axes: 0, 1, 0, 1
     Draw rectangle: barLeft, barRight, barBot, barTop
 
     Font size: 6
@@ -766,6 +782,8 @@ if draw_visualization
     clCol7$ = "{0.45, 0.45, 0.25}"
 
     for ki from 0 to nCl - 1
+        Select inner viewport: 0.6, 7.7, 5.05, 5.80
+        Axes: 0, 1, 0, 1
         pctStr$ = clPctStat_'ki'$
         if pctStr$ = "?"
             pctVal = 0
@@ -784,7 +802,7 @@ if draw_visualization
     endfor
     Colour: "Black"
     Font size: 5
-    Text: (clBarLeft + clBarRight) / 2, "centre", clBarTop + 0.07, "half", "Clusters (% events)"
+    Text: (clBarLeft + clBarRight) / 2, "centre", clBarTop + 0.07, "half", "Clusters (\% events)"
 
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
@@ -792,6 +810,8 @@ if draw_visualization
     Text: 0.02, "left", 0.16, "half", "Latent spread=" + latentSpread$ + " | Events=" + nEvStat$ + " | Mean dur=" + meanEvDur$ + "s"
 
     Colour: "Black"
+    Select inner viewport: 0.6, 7.7, 5.05, 5.80
+    Axes: 0, 1, 0, 1
     Draw rectangle: 0, 1, 0, 1
 
     # === Morph-Chain Convergence Curves ===
@@ -886,10 +906,12 @@ if draw_visualization
 
     if warningStat$ <> "?" and warningStat$ <> ""
         Colour: "{0.8, 0.2, 0.2}"
-        Text: 0.02, "left", -0.06, "half", "Warning: " + warningStat$
+        Text: 0.02, "left", 0.02, "half", "Warning: " + warningStat$
     endif
 
     Colour: "Black"
+    Select inner viewport: 0.6, 7.7, 7.05, 7.90
+    Axes: 0, 1, 0, 1
     Draw rectangle: 0, 1, 0, 1
 
     Font size: 10

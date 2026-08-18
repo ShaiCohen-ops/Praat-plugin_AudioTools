@@ -1,5 +1,5 @@
 """
-latent_barycentric.py — Latent Barycentric Mutation Engine
+latent_barycentric.py — Latent Barycentric Mutation Engine  v1.5
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -26,6 +26,27 @@ Usage (called by Praat, not directly):
         --plan_eng_scale 1.0
         --plan_eng_jitter 0.05
         --plan_cleanup_policy python_cleanup
+
+
+Changelog v1.5:
+    - Corrected VAE log-variance backpropagation: reconstruction gradient now
+      includes the reparameterization epsilon term, KL gradients use the same
+      mean reduction as the reported KL loss, and log-variance exponentiation
+      is safely clipped. This fixes the learned latent geometry rather than
+      changing the navigation law.
+    - Pitch-preserving modes now keep pitch during per-step duration scaling;
+      the old np.interp duration resample pitch-shifted each mixed segment even
+      under preserve_f0 / preserve_spectral_envelope.
+    - RMS/loudness normalization now respects the plan's mean energy scale
+      instead of cancelling a uniform segment_energy_scale completely.
+    - Phase-safe mono extraction prevents anti-phase stereo cancellation in
+      event clips and RMS reference while preserving the historical channel
+      mean for ordinary stereo.
+    - Removed the fixed 0.3 ms Haas delay from the final stereo render; output
+      is phase-safe dual mono instead of a comb-filtering delayed duplicate.
+    - Output WAV is written as 32-bit FLOAT.
+    - Auto-plan anchor strategy "last" now uses the last pre-return position as
+      a stable anchor; the old i-1 anchor made the return pull identically zero.
 
 Architecture:
     Stage 1 — Load audio, event table; load or generate navigation plan
@@ -165,7 +186,8 @@ def generate_nav_plan(
     return_anchor_strategy values:
         "center"   — return_anchor=-1 (Python interprets as latent center)
         "step0"    — return_anchor=0
-        "last"     — return_anchor=i-1 (previous step)
+        "last"     — anchor the contiguous return phase to the last step
+                     before that phase (stable target, not the previous return step)
         "periodic" — return_anchor = last multiple of anchor_period before i
 
     Jitter (if > 0) adds per-step uniform random perturbation around the
@@ -195,6 +217,13 @@ def generate_nav_plan(
         return_anchor_strategy = "center"
 
     plan = []
+    # Stable anchor for the "last" strategy.  The old implementation used
+    # i-1 on every return step; because current_pos already equals step i-1,
+    # the return pull was exactly zero.  We instead freeze the last step before
+    # a contiguous return phase and keep returning toward that point.
+    last_non_return_idx = -1
+    last_return_anchor_idx = -1
+    previous_mode = None
 
     # Pre-scan to find settle phase boundaries (for progressive decay)
     settle_start_idx = None
@@ -248,7 +277,17 @@ def generate_nav_plan(
             elif return_anchor_strategy == "step0":
                 anchor = 0
             elif return_anchor_strategy == "last":
-                anchor = max(0, i - 1)
+                if previous_mode != "return":
+                    # Entering a return phase: freeze the most recent point
+                    # outside that phase.  For an all-return plan, step 0 is
+                    # established first and becomes the stable anchor.
+                    if last_non_return_idx >= 0:
+                        last_return_anchor_idx = last_non_return_idx
+                    elif i > 0:
+                        last_return_anchor_idx = 0
+                    else:
+                        last_return_anchor_idx = -1
+                anchor = last_return_anchor_idx
             else:  # "periodic"
                 # Last completed multiple of anchor_period before step i
                 if i == 0:
@@ -290,6 +329,9 @@ def generate_nav_plan(
             'segment_energy_scale':   round(step_eng_scale, 4),
             'cleanup_policy':         step_cleanup,
         })
+        if mode != "return":
+            last_non_return_idx = i
+        previous_mode = mode
 
     # Fix first and last relative_time to be exactly 0.0 / 1.0
     if plan:
@@ -447,10 +489,15 @@ class NumpyVAE:
     def forward(self, X):
         import numpy as np
         mu, lv = self.encode(X)
-        std   = np.exp(0.5 * np.clip(lv, -4, 4))
-        eps   = self.rng.randn(*std.shape)
-        Z     = mu + std * eps
-        recon = self.decode(Z)
+        lv_safe = np.clip(lv, -4.0, 4.0)
+        std     = np.exp(0.5 * lv_safe)
+        eps     = self.rng.randn(*std.shape)
+        # Keep the sampled epsilon for the exact reparameterization gradient.
+        # Also remember where clipping is active: outside [-4,4], d clip/d lv=0.
+        self._eps = eps
+        self._lv_clip_mask = ((lv >= -4.0) & (lv <= 4.0)).astype(np.float64)
+        Z       = mu + std * eps
+        recon   = self.decode(Z)
         return recon, mu, lv, Z
 
     def train_step(self, X, lr=0.001, beta_kl=0.05, noise_std=0.15, l2=1e-4):
@@ -463,8 +510,12 @@ class NumpyVAE:
         diff       = recon - X
         recon_loss = np.mean(diff ** 2)
 
-        # KL divergence: 0.5 * mean(μ² + σ² - log σ² - 1)
-        kl_loss = 0.5 * np.mean(mu ** 2 + np.exp(lv) - lv - 1.0)
+        # KL divergence: 0.5 * mean(mu^2 + sigma^2 - log sigma^2 - 1).
+        # Use the same clipped log-variance as the reparameterized forward path
+        # so the loss and its gradient remain numerically consistent.
+        lv_safe = np.clip(lv, -4.0, 4.0)
+        exp_lv  = np.exp(lv_safe)
+        kl_loss = 0.5 * np.mean(mu ** 2 + exp_lv - lv_safe - 1.0)
 
         loss = recon_loss + beta_kl * kl_loss
 
@@ -477,12 +528,17 @@ class NumpyVAE:
         dbd1  = np.sum(d_hd, axis=0)
         d_Z   = d_hd.dot(self.Wd1.T)
 
-        # Reparameterization gradients
-        std        = np.exp(0.5 * np.clip(lv, -4, 4))
+        # Reparameterization gradients. For Z = mu + exp(0.5*lv) * eps,
+        # dZ/dlv = 0.5 * std * eps (the old code omitted eps).  kl_loss is a
+        # mean over BOTH batch and latent dimensions, so its gradient carries
+        # the same /latent_dim factor.
+        std        = np.exp(0.5 * lv_safe)
+        clip_mask  = self._lv_clip_mask
         dmu_recon  = d_Z.copy()
-        dlv_recon  = d_Z * std * 0.5
-        dmu_kl     = beta_kl * mu / batch
-        dlv_kl     = beta_kl * 0.5 * (np.exp(lv) - 1.0) / batch
+        dlv_recon  = d_Z * std * 0.5 * self._eps * clip_mask
+        dmu_kl     = beta_kl * mu / (batch * self.latent_dim)
+        dlv_kl     = (beta_kl * 0.5 * (exp_lv - 1.0)
+                      / (batch * self.latent_dim)) * clip_mask
         dmu = dmu_recon + dmu_kl
         dlv = dlv_recon + dlv_kl
 
@@ -877,8 +933,13 @@ def execute_nav_plan(plan, Z, clips, audio, sr, target_samples, seed,
         # ── 5. Duration scaling ────────────────────────────────────────────
         if abs(dur_scale - 1.0) > 0.01:
             new_len = max(4, int(round(len(mixed) * dur_scale)))
-            t_src   = np.linspace(0, len(mixed) - 1, new_len)
-            mixed   = np.interp(t_src, np.arange(len(mixed)), mixed).astype(np.float32)
+            if pitch_mode in ("preserve_f0", "preserve_spectral_envelope"):
+                # Duration must not silently reintroduce rate-change detuning
+                # after a pitch-preserving clip preparation stage.
+                mixed = _phase_vocoder_stretch(mixed, new_len)
+            else:
+                t_src = np.linspace(0, len(mixed) - 1, new_len)
+                mixed = np.interp(t_src, np.arange(len(mixed)), mixed).astype(np.float32)
 
         # Energy scaling
         mixed *= eng_scale
@@ -944,10 +1005,10 @@ def execute_nav_plan(plan, Z, clips, audio, sr, target_samples, seed,
         mono  = np.interp(t_src, np.arange(raw_len), raw).astype(np.float32)
 
     # ── Stereo render ─────────────────────────────────────────────────────
-    delay  = max(1, int(sr * 0.0003))   # ~0.3 ms Haas width
-    stereo = np.zeros((target_samples, 2), dtype=np.float32)
-    stereo[:, 0] = mono
-    stereo[delay:, 1] = mono[:target_samples - delay]
+    # Keep the result phase-safe. The previous fixed ~0.3 ms Haas delay made
+    # the two channels different only by delay and therefore introduced a
+    # strong comb filter whenever the output was summed to mono.
+    stereo = np.column_stack([mono, mono]).astype(np.float32)
 
     # Peak safety ceiling (normalization happens in apply_loudness_compensation)
     peak = np.max(np.abs(stereo))
@@ -1011,6 +1072,26 @@ def apply_loudness_compensation(stereo, ref_rms, mode="rms"):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Phase-safe material mono
+# ═══════════════════════════════════════════════════════════════════════════
+
+def material_mono_phase_safe(audio):
+    """Return historical channel mean unless it collapses from phase cancellation."""
+    import numpy as np
+    a = np.asarray(audio, dtype=np.float32)
+    if a.ndim == 1:
+        return a.copy(), "mono"
+    mean = a.mean(axis=1).astype(np.float32)
+    ch_rms = np.sqrt(np.mean(a.astype(np.float64) ** 2, axis=0))
+    strongest = int(np.argmax(ch_rms))
+    strong_rms = float(ch_rms[strongest])
+    mean_rms = float(np.sqrt(np.mean(mean.astype(np.float64) ** 2)))
+    if strong_rms > 1e-9 and mean_rms < 0.10 * strong_rms:
+        return a[:, strongest].copy(), "channel-%d-phase-safe" % (strongest + 1)
+    return mean, "channel-mean"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Event clip extraction
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -1035,7 +1116,8 @@ def extract_clips(audio, events, sr):
 
 def write_stats(path, events, plan, losses, step_stats,
                 sr, out_duration, plan_source, normalize_mode,
-                ref_rms, out_rms, pitch_mode, warnings,
+                ref_rms, target_rms, out_rms, pitch_mode, warnings,
+                plan_energy_mean=1.0, mono_strategy="mono",
                 Z=None, anchor_positions=None):
     import numpy as np
 
@@ -1099,7 +1181,11 @@ def write_stats(path, events, plan, losses, step_stats,
         f.write("normalize_mode=%s\n"     % normalize_mode)
         f.write("pitch_mode=%s\n"         % pitch_mode)
         f.write("rms_input=%.6f\n"        % ref_rms)
+        f.write("rms_target=%.6f\n"       % target_rms)
         f.write("rms_output=%.6f\n"       % out_rms)
+        f.write("plan_energy_mean=%.6f\n" % plan_energy_mean)
+        f.write("mono_strategy=%s\n"       % mono_strategy)
+        f.write("stereo_render=dual-mono-phase-safe\n")
         f.write("final_loss=%.6f\n"       % (losses[-1] if losses else 0))
         f.write("initial_loss=%.6f\n"     % (losses[0]  if losses else 0))
         # Executed mode counts — used by Praat visualization
@@ -1254,9 +1340,11 @@ def main():
     if len(events) < 3:
         warnings_list.append("Too few events (%d)" % len(events))
 
-    # Compute input RMS for loudness compensation reference
-    audio_for_rms = audio if audio.ndim == 1 else audio.mean(axis=1)
-    input_rms = float(np.sqrt(np.mean(audio_for_rms.astype(np.float64) ** 2)))
+    # Compute a phase-safe material mono for clip extraction + loudness
+    # reference. Ordinary stereo preserves the historical channel mean; only
+    # pathological cancellation falls back to the strongest channel.
+    material_mono, mono_strategy = material_mono_phase_safe(audio)
+    input_rms = float(np.sqrt(np.mean(material_mono.astype(np.float64) ** 2)))
 
     # ── Stage 2: Mel patches ───────────────────────────────────────────────
     print("  [Py 2/7] Extracting log-mel patches...")
@@ -1290,7 +1378,7 @@ def main():
 
     # ── Stage 5: Extract clips ─────────────────────────────────────────────
     print("  [Py 5/7] Extracting event clips...")
-    clips = extract_clips(audio, events, sr)
+    clips = extract_clips(material_mono, events, sr)
     print("    %d clips, mean len %.0f samples" %
           (len(clips), np.mean([len(c) for c in clips])))
 
@@ -1305,20 +1393,31 @@ def main():
         len(step_stats), len(plan), output.shape[0] / sr, np.max(np.abs(output))))
 
     # ── Loudness compensation ──────────────────────────────────────────────
-    pre_rms  = float(np.sqrt(np.mean(output.astype(np.float64) ** 2)))
-    output   = apply_loudness_compensation(output, input_rms, args.normalize_mode)
+    pre_rms = float(np.sqrt(np.mean(output.astype(np.float64) ** 2)))
+    plan_energy_mean = float(np.mean([
+        float(row.get("segment_energy_scale", 1.0)) for row in plan
+    ])) if plan else 1.0
+    # RMS/loudness matching would otherwise cancel a uniform energy-scale
+    # control exactly. Reapply the plan's global energy intent as the target
+    # RMS while retaining per-step deviations/jitter already in the render.
+    if args.normalize_mode in ("rms", "loudness"):
+        target_rms = input_rms * plan_energy_mean
+    else:
+        target_rms = input_rms
+    output   = apply_loudness_compensation(output, target_rms, args.normalize_mode)
     post_rms = float(np.sqrt(np.mean(output.astype(np.float64) ** 2)))
-    print("    Normalize: %s | RMS %.4f → %.4f (input ref: %.4f)" % (
-        args.normalize_mode, pre_rms, post_rms, input_rms))
+    print("    Normalize: %s | RMS %.4f → %.4f (target: %.4f; input: %.4f)" % (
+        args.normalize_mode, pre_rms, post_rms, target_rms, input_rms))
 
     # ── Stage 7: Write output + stats ──────────────────────────────────────
     print("  [Py 7/7] Writing output + stats...")
-    sf.write(args.output_wav, output, sr)
+    sf.write(args.output_wav, output, sr, subtype="FLOAT")
     out_dur = output.shape[0] / sr
     write_stats(args.stats_txt, events, plan, losses,
                 step_stats, sr, out_dur, plan_source_label,
-                args.normalize_mode, input_rms, post_rms,
+                args.normalize_mode, input_rms, target_rms, post_rms,
                 args.pitch_mode, warnings_list,
+                plan_energy_mean=plan_energy_mean, mono_strategy=mono_strategy,
                 Z=Z, anchor_positions=anchor_positions)
 
     # ── Stage 8: Cleanup ───────────────────────────────────────────────────

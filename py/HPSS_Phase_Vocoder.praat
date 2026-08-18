@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2026) — WSOLA percussive stretch (pitch/transient preserving)
+# Version: 2.3 (2026) — linked multichannel WSOLA + process visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,6 +14,14 @@
 #   attacks are preserved, no metallic smearing and no detuning.
 #
 #   Python engine: stretch.py (numpy/scipy/soundfile, no librosa)
+#
+# Changelog v2.3:
+#   - Multichannel percussive branch uses linked WSOLA alignment to preserve
+#     inter-channel timing; mono rendering remains on the established path.
+#   - Very short WSOLA inputs are handled safely by the Python engine.
+#   - Python interchange WAV is 32-bit float (no extra PCM16 quantisation).
+#   - Visualization now shows the processing mechanism and uses a shared
+#     time/amplitude scale for the original/stretched waveforms.
 #
 # Changelog v2.2:
 #   - Engine (stretch.py): percussive band now uses WSOLA instead of
@@ -96,7 +104,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form HPSS Phase Vocoder v2.2
+form HPSS Phase Vocoder v2.3
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -179,7 +187,7 @@ rms_in    = Get root-mean-square: 0, 0
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== HPSS Phase Vocoder v2.2 ==="
+writeInfoLine:  "=== HPSS Phase Vocoder v2.3 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: ""
@@ -265,6 +273,7 @@ harmonicRmsStat$ = "?"
 percRmsStat$     = "?"
 hpRatioStat$     = "?"
 outPeakStat$     = "?"
+linkedWsolaStat$  = "?"
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
@@ -276,7 +285,22 @@ if fileReadable(tempStats$)
     hpRatioStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "output_peak="
     outPeakStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "linked_wsola="
+    linkedWsolaStat$ = parseStatLine.result$
 endif
+
+# Shared comparison scale for the visualization.  The two waveform panels
+# intentionally use the same X/Y axes so duration and level differences are
+# visually meaningful rather than independently autoscaled.
+selectObject: sound
+peakVizIn = Get absolute extremum: 0, 0, "None"
+selectObject: resultSound
+peakVizOut = Get absolute extremum: 0, 0, "None"
+peakViz = max(peakVizIn, peakVizOut)
+if peakViz < 0.001
+    peakViz = 0.001
+endif
+maxDurViz = max(dur, durOut)
 
 ###############################################################################
 # VISUALIZATION
@@ -306,7 +330,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 0.65, 1.40
     selectObject: sound
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, maxDurViz, -peakViz, peakViz, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -318,7 +342,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 1.55, 2.30
     selectObject: resultSound
     Colour: "{0.25, 0.55, 0.75}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, maxDurViz, -peakViz, peakViz, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -372,34 +396,97 @@ if draw_visualization
     Text top: "no", "Stretched spectrogram"
     removeObject: specOut, tmpOut
 
-    # === Summary panel ===
-    Select outer viewport: 0, 8, 5.2, 6.4
-    Select inner viewport: 0.6, 7.7, 5.3, 6.3
+    # === Process / measurement panel ===
+    Select outer viewport: 0, 8, 5.15, 7.45
+    Select inner viewport: 0.45, 7.75, 5.28, 7.35
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+
+    # Background and process boxes first; add text only after all world drawing
+    # so Praat Picture viewport state cannot leak into later geometry.
+    Paint rectangle: "{0.965, 0.965, 0.97}", 0, 1, 0, 1
+
+    Colour: "{0.25, 0.25, 0.30}"
+    Draw rectangle: 0.02, 0.16, 0.58, 0.86
+    Draw rectangle: 0.22, 0.36, 0.58, 0.86
+    Draw rectangle: 0.44, 0.63, 0.69, 0.91
+    Draw rectangle: 0.44, 0.63, 0.31, 0.53
+    Draw rectangle: 0.72, 0.88, 0.50, 0.78
+
+    # Flow arrows embody the actual split-process-recombine mechanism.
+    Draw arrow: 0.16, 0.72, 0.22, 0.72
+    Draw arrow: 0.36, 0.72, 0.44, 0.80
+    Draw arrow: 0.36, 0.72, 0.44, 0.42
+    Draw arrow: 0.63, 0.80, 0.72, 0.68
+    Draw arrow: 0.63, 0.42, 0.72, 0.60
+    Draw arrow: 0.88, 0.64, 0.96, 0.64
+
+    # Real H/P energy balance from this render.
+    hVal = 0
+    pVal = 0
+    if harmonicRmsStat$ <> "?"
+        hVal = number(harmonicRmsStat$)
+    endif
+    if percRmsStat$ <> "?"
+        pVal = number(percRmsStat$)
+    endif
+    hpMax = max(hVal, pVal)
+    if hpMax > 0
+        hBar = 0.15 * hVal / hpMax
+        pBar = 0.15 * pVal / hpMax
+        Colour: "{0.25, 0.55, 0.75}"
+        Paint rectangle: "{0.25, 0.55, 0.75}", 0.44, 0.44 + hBar, 0.64, 0.675
+        Colour: "{0.75, 0.42, 0.22}"
+        Paint rectangle: "{0.75, 0.42, 0.22}", 0.44, 0.44 + pBar, 0.26, 0.295
+    endif
+
+    # Text layer. Re-select the data viewport after painting shapes so later
+    # Text commands inherit the intended 0..1 coordinate system.
+    Select inner viewport: 0.45, 7.75, 5.28, 7.35
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Font size: 7
+    Text: 0.09, "centre", 0.72, "half", "STFT"
+    Font size: 5.5
+    Text: 0.09, "centre", 0.64, "half", "N=" + string$(fFT_size)
+    Text: 0.09, "centre", 0.60, "half", "hop=" + string$(round(fFT_size / 8))
 
     Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "##Summary##"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.68, "half",
-        ... "Preset: " + presetName$
-        ... + "  |  Stretch: x" + fixed$(stretch_factor, 2)
-        ... + "  |  In: " + fixed$(dur, 2) + "s  ->  Out: " + fixed$(durOut, 2) + "s"
-    Text: 0.02, "left", 0.48, "half",
-        ... "FFT: " + string$(fFT_size)
-        ... + "  |  HPSS margin: " + fixed$(hPSS_margin, 1)
-        ... + "  |  H/P ratio: " + hpRatioStat$
-    Text: 0.02, "left", 0.28, "half",
-        ... "Harmonic RMS: " + harmonicRmsStat$
-        ... + "  |  Percussive RMS: " + percRmsStat$
-        ... + "  |  Peak: " + outPeakStat$
-    Text: 0.02, "left", 0.08, "half",
-        ... "RMS: " + fixed$(rms_in, 4) + " -> " + fixed$(rms_out, 4)
+    Text: 0.29, "centre", 0.72, "half", "HPSS"
+    Font size: 5.5
+    Text: 0.29, "centre", 0.64, "half", "margin=" + fixed$(hPSS_margin, 1)
 
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Font size: 6.5
+    Text: 0.535, "centre", 0.83, "half", "H: phase vocoder"
+    Font size: 5.5
+    Text: 0.535, "centre", 0.74, "half", "RMS=" + harmonicRmsStat$
+
+    Font size: 6.5
+    Text: 0.535, "centre", 0.45, "half", "P: WSOLA"
+    Font size: 5.5
+    if nChannels > 1
+        Text: 0.535, "centre", 0.37, "half", "linked channels=" + linkedWsolaStat$
+    else
+        Text: 0.535, "centre", 0.37, "half", "mono path"
+    endif
+    Text: 0.535, "centre", 0.33, "half", "RMS=" + percRmsStat$
+
+    Font size: 6.5
+    Text: 0.80, "centre", 0.66, "half", "SUM + peak match"
+    Font size: 5.5
+    Text: 0.80, "centre", 0.57, "half", "peak=" + outPeakStat$
+
+    Font size: 6
+    Text: 0.98, "right", 0.64, "half", "OUTPUT"
+
+    # Bottom QC strip: actual measured duration and level.
+    Font size: 5.5
+    Colour: "{0.25, 0.25, 0.30}"
+    Text: 0.02, "left", 0.12, "half",
+        ... "x" + fixed$(stretch_factor, 2)
+        ... + "  |  duration " + fixed$(dur, 3) + " -> " + fixed$(durOut, 3) + " s"
+        ... + "  |  RMS " + fixed$(rms_in, 4) + " -> " + fixed$(rms_out, 4)
+        ... + "  |  H/P=" + hpRatioStat$
+
     Font size: 10
     Colour: "Black"
 

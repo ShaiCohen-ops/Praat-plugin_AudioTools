@@ -3,7 +3,7 @@ identity_separation.py — Acoustic Identity Separation & Resynthesis
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.3 (2026)
+Version: 1.4 (2026)
 
 Usage (called by Praat, not directly):
     python identity_separation.py input.wav features.csv output.wav
@@ -23,6 +23,30 @@ Architecture:
     Stage 5 — Identity-based audio separation into layers
     Stage 6 — Resynthesis (5 selectable modes)
     Stage 7 — Output
+
+Changelog v1.4:
+    Correctness / continuity pass with conservative stereo analysis fallback.
+    - Modes A/B no longer double-fade every identity boundary. Mode A now
+      reconstructs the raw classified timeline and applies a smooth equal-power
+      pan trajectory derived from the identity labels; Mode B reconstructs the
+      one-identity-at-a-time timeline directly. This removes artificial boundary
+      dips while preserving the discovered identity sequence.
+    - Mode C and the continuous material streams used by Modes D/E now
+      concatenate compactly. Mode C no longer pads the crossfade-shortened
+      recomposition with artificial trailing silence; D/E no longer loop that
+      padding as part of their source material. The previous helper padded each crossfade-shortened
+      identity block back to its raw length with silence, so those artificial
+      silent tails were periodically looped into morph/hybrid streams.
+    - The final classified event is extended to the true final sample, avoiding
+      loss of the <1 hop tail when duration is not an exact multiple of hop_sec.
+    - Optional analysis_channel CLI argument keeps Praat and Python spectral
+      analysis on the same representative input channel. Default remains channel 1
+      for backward compatibility.
+    - Behavioral `onset_density` is now a true peaks-per-second rate instead
+      of a raw peak count, removing a size bias in identity labels. This affects
+      characterization text only; resynthesis does not use the behavior label.
+    - Output WAVs are written as 32-bit FLOAT to avoid an unnecessary PCM16
+      quantization round-trip before Praat re-imports the result.
 
 Changelog v1.3:
     Resynthesis correctness pass. Mode A is bit-identical to v1.2.
@@ -317,7 +341,8 @@ BEHAVIOR_TYPES = [
 ]
 
 
-def characterize_identities(Z, praat_feats, spec_feats, n_identities):
+def characterize_identities(Z, praat_feats, spec_feats, n_identities,
+                            hop_sec=0.01):
     """
     Compute per-identity statistics and assign behavioral types.
 
@@ -359,10 +384,14 @@ def characterize_identities(Z, praat_feats, spec_feats, n_identities):
         else:
             pitch_stab = 0.0
 
-        # Compute onset density (flux peaks per second)
+        # Compute onset density as flux peaks per second.  v1.3 stored the raw
+        # peak COUNT under this name, which biased behavior labels toward large
+        # identities simply because they contained more frames.
         flux_k = flux[mask]
         flux_thresh = np.mean(flux_k) + np.std(flux_k)
         n_onsets = int(np.sum(flux_k > flux_thresh))
+        ident_dur_s = max(n_k * hop_sec, hop_sec)
+        onset_density = n_onsets / ident_dur_s
 
         # Intensity envelope variation
         int_k = intensity[mask]
@@ -379,7 +408,7 @@ def characterize_identities(Z, praat_feats, spec_feats, n_identities):
             "mean_intensity": float(np.mean(int_k)),
             "mean_centroid": float(np.mean(centroid[mask])),
             "voiced_ratio": float(np.mean(voiced[mask])),
-            "onset_density": n_onsets,
+            "onset_density": float(onset_density),
             "intensity_variation": float(int_var),
         }
 
@@ -547,6 +576,13 @@ def build_identity_events(Z, C, sr, hop_sec, n_samples):
             "duration": (end_samp - start_samp) / sr,
         })
 
+    # Praat's analysis grid uses a fixed hop and can end <1 hop before the true
+    # final sample.  Extend the last classified event to the file boundary so
+    # the resynthesis/layer export never drops that unclassified tail.
+    if events and events[-1]["end_sample"] < n_samples:
+        events[-1]["end_sample"] = n_samples
+        events[-1]["duration"] = (n_samples - events[-1]["start_sample"]) / sr
+
     return events
 
 
@@ -563,7 +599,7 @@ def extract_event_audio(audio, events):
 
 
 def build_identity_layers(events, clips, n_identities, n_samples,
-                          n_channels, sr=44100):
+                          n_channels, sr=44100, fade_edges=True):
     """
     Build per-identity audio layers: each layer contains only
     events belonging to that identity, placed at original time positions,
@@ -586,8 +622,11 @@ def build_identity_layers(events, clips, n_identities, n_samples,
         e = ev["end_sample"]
         clip_f = clip.astype(np.float32)
 
-        # Apply tiny fade-in/out for click prevention
-        fade_len = min(xfade, len(clip_f) // 4)
+        # Optional tiny fade-in/out for isolated-layer export.  Resynthesis
+        # Modes A/B deliberately use raw, non-faded layers so adjacent classified
+        # events reconstruct continuously instead of creating a dip at every
+        # identity boundary.
+        fade_len = min(xfade, len(clip_f) // 4) if fade_edges else 0
         if fade_len > 1:
             fade_in = np.linspace(0, 1, fade_len, dtype=np.float32)
             fade_out = np.linspace(1, 0, fade_len, dtype=np.float32)
@@ -618,8 +657,8 @@ def resynthesize(mode, events, clips, layers, identities,
     """
     mode = mode.upper()
     if mode == "A":
-        return _mode_a_layered(layers, n_samples, n_channels,
-                               n_identities)
+        return _mode_a_layered(layers, Z, sr, hop_sec, n_samples,
+                               n_channels, n_identities)
     elif mode == "B":
         return _mode_b_alternation(layers, Z, sr, hop_sec, n_samples,
                                    n_channels, n_identities)
@@ -637,87 +676,70 @@ def resynthesize(mode, events, clips, layers, identities,
                                n_identities)
 
 
-def _mode_a_layered(layers, n_samples, n_channels, n_id):
-    """
-    Mode A — Layered Reconstruction.
-    Sum all identity layers back together (= original order).
-    Spatial separation: pan identities across stereo field.
+def _sum_identity_layers(layers, n_samples, n_channels):
+    """Sum time-disjoint raw identity layers back to the classified timeline."""
+    import numpy as np
+    if n_channels == 1:
+        out = np.zeros(n_samples, dtype=np.float32)
+    else:
+        out = np.zeros((n_samples, n_channels), dtype=np.float32)
+    for layer in layers:
+        n_l = min(len(layer), n_samples)
+        out[:n_l] += layer[:n_l]
+    return out
 
-    Always outputs stereo regardless of input channel count -- the
-    point of this mode is the spatial spread of identities across
-    the L-R field, which requires a 2-channel output.
+
+def _mode_a_layered(layers, Z, sr, hop_sec, n_samples, n_channels, n_id):
+    """
+    Mode A — Layered Reconstruction with spatial identity separation.
+
+    The classified source timeline is reconstructed from RAW (non-faded)
+    identity layers, then its pan position follows the active identity.  The
+    discrete identity labels are smoothed around boundaries before equal-power
+    panning, so identity changes move through the stereo field without the
+    amplitude holes produced by independently fading time-disjoint layers.
+
+    As in v1.3, Mode A deliberately renders a stereo spatialization even for a
+    multichannel source; the source channels are collapsed to a representative
+    mono timeline before identity panning.
     """
     import numpy as np
+    from scipy.ndimage import gaussian_filter1d
 
-    # Always output stereo with spatial separation. v1.1 had
-    # `if n_channels >= 2 or True:` here -- the `or True` made the
-    # condition unconditional, so the if-branch always ran. Cleaned
-    # up; behavior is identical.
-    output = np.zeros((n_samples, 2), dtype=np.float32)
-    for i, layer in enumerate(layers):
-        # Pan position: spread identities evenly across L-R
-        pan = i / max(1, n_id - 1)  # 0=left, 1=right
-        gain_l = np.cos(pan * np.pi / 2).astype(np.float32)
-        gain_r = np.sin(pan * np.pi / 2).astype(np.float32)
+    reconstructed = _sum_identity_layers(layers, n_samples, n_channels)
+    mono = reconstructed if reconstructed.ndim == 1 else np.mean(reconstructed, axis=1)
 
-        mono = layer if layer.ndim == 1 else np.mean(layer, axis=1)
-        output[:len(mono), 0] += mono * gain_l
-        output[:len(mono), 1] += mono * gain_r
+    if Z is None or len(Z) == 0 or n_id <= 1:
+        pan_sample = np.full(n_samples, 0.5, dtype=np.float64)
+    else:
+        pan_frame = np.asarray(Z, dtype=np.float64) / max(1, n_id - 1)
+        sigma_frames = max(0.5, XFADE_SEC / max(hop_sec, 1e-6))
+        pan_frame = gaussian_filter1d(pan_frame, sigma=sigma_frames, mode="nearest")
+        frame_grid = np.linspace(0, n_samples - 1, len(pan_frame))
+        pan_sample = np.interp(np.arange(n_samples, dtype=np.float64),
+                               frame_grid, pan_frame)
+        pan_sample = np.clip(pan_sample, 0.0, 1.0)
 
+    gain_l = np.cos(pan_sample * np.pi / 2.0).astype(np.float32)
+    gain_r = np.sin(pan_sample * np.pi / 2.0).astype(np.float32)
+    output = np.column_stack([mono * gain_l, mono * gain_r]).astype(np.float32)
     _normalize_output(output)
     return output
 
 
 def _mode_b_alternation(layers, Z, sr, hop_sec, n_samples,
-                        n_channels, n_id):
+                         n_channels, n_id):
     """
     Mode B — Identity Alternation.
-    Only one identity is audible at any moment — the identity assigned
-    by the GMM for that time region.  At identity transitions, a short
-    constant-sum (equal-amplitude) crossfade is applied between the
-    outgoing and incoming layers — the per-identity gates are Gaussian-
-    smoothed and linearly renormalized to sum to 1 at every frame — so
-    that only the active identity's audio is heard cleanly.
+
+    Exactly one discovered identity owns each classified time region.  The raw
+    time-disjoint layers therefore already implement the intended alternation;
+    summing them reconstructs that one-identity-at-a-time timeline directly.
+    v1.3 additionally faded every event edge and then multiplied the sparse
+    layers by smoothed gates, producing artificial ~boundary-level attenuation
+    even though there was no overlapping material to crossfade.
     """
-    import numpy as np
-    from scipy.ndimage import gaussian_filter1d
-
-    # Build per-identity gate envelopes at frame rate
-    n_frames = len(Z)
-    gates = np.zeros((n_frames, n_id), dtype=np.float32)
-    for k in range(n_id):
-        gates[:, k] = (Z == k).astype(np.float32)
-
-    # Smooth gates to create crossfades at transitions
-    sigma_frames = max(1.0, XFADE_SEC / hop_sec)
-    for k in range(n_id):
-        gates[:, k] = gaussian_filter1d(gates[:, k], sigma=sigma_frames,
-                                        mode="nearest")
-
-    # Renormalize so gates sum to 1 at every frame (equal-power xfade)
-    row_sums = gates.sum(axis=1, keepdims=True) + 1e-12
-    gates /= row_sums
-
-    # Upsample gate envelopes from frame rate to sample rate
-    frame_times = np.linspace(0, n_samples - 1, n_frames)
-    sample_idx = np.arange(n_samples, dtype=np.float64)
-
-    if n_channels == 1:
-        output = np.zeros(n_samples, dtype=np.float32)
-    else:
-        output = np.zeros((n_samples, n_channels), dtype=np.float32)
-
-    for k in range(n_id):
-        w = np.interp(sample_idx, frame_times,
-                       gates[:, k]).astype(np.float32)
-        layer = layers[k]
-        n_l = min(len(layer), n_samples)
-        if layer.ndim == 1:
-            output[:n_l] += layer[:n_l] * w[:n_l]
-        else:
-            for ch in range(n_channels):
-                output[:n_l, ch] += layer[:n_l, ch] * w[:n_l]
-
+    output = _sum_identity_layers(layers, n_samples, n_channels)
     _normalize_output(output)
     return output
 
@@ -754,7 +776,8 @@ def _mode_c_recomposition(events, clips, identities, sr, n_samples,
     for k in id_order:
         all_clips.extend(groups[k])
 
-    output = _concatenate_clips(all_clips, sr, n_samples, n_channels)
+    output = _concatenate_clips(
+        all_clips, sr, n_samples, n_channels, compact=True)
     _normalize_output(output)
     return output
 
@@ -920,8 +943,12 @@ def _mode_e_hybridization(events, clips, identities, sr, n_samples,
     return output
 
 
-def _concatenate_clips(clips, sr, n_samples, n_channels):
-    """Concatenate clips with tiny crossfades, preserve duration."""
+def _concatenate_clips(clips, sr, n_samples, n_channels, compact=False):
+    """Concatenate clips with tiny crossfades.
+
+    compact=True returns the actual overlap-added material length.  The default
+    preserves the historical fixed-duration behavior used by Mode C.
+    """
     import numpy as np
 
     if not clips:
@@ -984,7 +1011,10 @@ def _concatenate_clips(clips, sr, n_samples, n_channels):
 
     output = output[:wp]
 
-    # Pad or truncate to original length
+    if compact:
+        return output
+
+    # Pad or truncate to requested length
     if len(output) > n_samples:
         output = output[:n_samples]
     elif len(output) < n_samples:
@@ -1110,7 +1140,7 @@ def _continuous_identity_streams(events, clips, n_identities,
         # Concatenate this identity's material (no truncation to a
         # fixed length here — we want the raw concatenated material).
         total = sum(len(c) for c in gk)
-        concat = _concatenate_clips(gk, sr, total, n_channels)
+        concat = _concatenate_clips(gk, sr, total, n_channels, compact=True)
         streams.append(_loop_to_length(concat, n_samples, sr))
     return streams
 
@@ -1128,7 +1158,9 @@ def _ensure_stereo(output):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def write_stats_file(path, identities, events, Z, n_identities, mode,
-                     hop_sec=0.01):
+                     hop_sec=0.01, analysis_channel=1, mean_confidence=0.0,
+                     n_features=0, output_format="stereo"):
+
     """Write summary statistics for Praat info panel."""
     import numpy as np
 
@@ -1161,6 +1193,10 @@ def write_stats_file(path, identities, events, Z, n_identities, mode,
     with open(path, "w") as f:
         f.write("mode=%s\n" % mode)
         f.write("n_identities=%d\n" % n_identities)
+        f.write("analysis_channel=%d\n" % analysis_channel)
+        f.write("mean_confidence=%.4f\n" % mean_confidence)
+        f.write("n_features=%d\n" % n_features)
+        f.write("output_format=%s\n" % output_format)
         f.write("n_events=%d\n" % n_events)
         f.write("transitions=%d\n" % transitions)
         f.write("mean_event_dur=%.3f\n" %
@@ -1187,10 +1223,10 @@ def write_stats_file(path, identities, events, Z, n_identities, mode,
 # ═══════════════════════════════════════════════════════════════════════════
 
 def main():
-    if len(sys.argv) != 10:
+    if len(sys.argv) not in (10, 11):
         print("Usage: python identity_separation.py "
               "input.wav features.csv output.wav stats.txt "
-              "mode n_identities output_format seed hop_sec",
+              "mode n_identities output_format seed hop_sec [analysis_channel]",
               file=sys.stderr)
         sys.exit(1)
 
@@ -1208,6 +1244,7 @@ def main():
     out_format   = sys.argv[7]   # "stereo" or "multi"
     seed         = int(sys.argv[8])
     hop_sec      = float(sys.argv[9])
+    analysis_channel = int(sys.argv[10]) if len(sys.argv) > 10 else 1
 
     n_identities = max(2, min(8, n_identities))
     np.random.seed(seed)
@@ -1234,7 +1271,12 @@ def main():
 
     # ---- Spectral features ----
     print("  [Py 2/6] Computing spectral features...")
-    audio_mono = audio if audio.ndim == 1 else audio[:, 0]
+    if audio.ndim == 1:
+        audio_mono = audio
+        analysis_channel = 1
+    else:
+        analysis_channel = max(1, min(n_channels, analysis_channel))
+        audio_mono = audio[:, analysis_channel - 1]
     spec_feats = compute_spectral_features(
         audio_mono.astype(np.float64), sr, times)
 
@@ -1249,8 +1291,8 @@ def main():
 
     # ---- Characterization ----
     print("  [Py 4/6] Characterizing identities...")
-    identities = characterize_identities(Z, praat_feats, spec_feats,
-                                         n_identities)
+    identities = characterize_identities(
+        Z, praat_feats, spec_feats, n_identities, hop_sec=hop_sec)
 
     for ident in identities:
         if ident["n_frames"] > 0:
@@ -1268,8 +1310,9 @@ def main():
         max(e["duration"] for e in events)))
 
     clips = extract_event_audio(audio, events)
-    layers = build_identity_layers(events, clips, n_identities,
-                                   n_samples, n_channels, sr)
+    layers = build_identity_layers(
+        events, clips, n_identities, n_samples, n_channels, sr,
+        fade_edges=(out_format == "multi"))
 
     # ---- Output ----
     if out_format == "multi" and n_identities > 1:
@@ -1291,7 +1334,7 @@ def main():
         peak = np.max(np.abs(multi))
         if peak > 0.95:
             multi *= (0.95 / peak)
-        sf.write(out_wav, multi, sr)
+        sf.write(out_wav, multi, sr, subtype="FLOAT")
         output = multi  # for the console summary below
     else:
         # ---- Resynthesis (only needed for non-multi output) ----
@@ -1302,11 +1345,13 @@ def main():
         # "stereo" format guarantees a 2-channel file for every mode.
         if out_format == "stereo":
             output = _ensure_stereo(output)
-        sf.write(out_wav, output, sr)
+        sf.write(out_wav, output, sr, subtype="FLOAT")
 
     # ---- Stats ----
-    write_stats_file(stats_file, identities, events, Z,
-                     n_identities, mode, hop_sec)
+    write_stats_file(
+        stats_file, identities, events, Z, n_identities, mode, hop_sec,
+        analysis_channel=analysis_channel, mean_confidence=float(np.mean(C)),
+        n_features=len(feat_names), output_format=out_format)
 
     # ---- Console summary ----
     transitions = int(np.sum(np.diff(Z) != 0))
