@@ -1,5 +1,3 @@
-#### 465 Scripts Across 13 Categories
-
 # Praat Plugin: AudioTools
 
 **Author:** [Shai Cohen](https://music.biu.ac.il/en/ShaiCohen)
