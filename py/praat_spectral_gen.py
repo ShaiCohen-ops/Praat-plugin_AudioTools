@@ -3,7 +3,7 @@
 # Praat AudioTools - praat_spectral_gen.py
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.0 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 #
 # Description:
@@ -16,11 +16,10 @@
 #     2. Build a bank of spectral profiles (per-frame magnitudes)
 #     3. Compute the mean temporal envelope (RMS over time)
 #     4. Generate white noise of target duration
-#     5. STFT the noise, replace each frame's magnitude with a
-#        randomly-sampled corpus profile (keeping noise phase)
-#     6. Inverse STFT → shaped noise
-#     7. Apply learned temporal envelope
-#     8. Normalize and save
+#     5. Separate level-independent spectral shape from RMS dynamics
+#     6. Shape independent stereo noise phases with a shared spectral trajectory
+#     7. Inverse STFT / overlap-add and apply learned temporal envelope
+#     8. Normalize globally and save FLOAT WAV
 #
 #   The output genuinely starts from noise but inherits the
 #   spectral character of the corpus. No neural networks,
@@ -40,13 +39,13 @@ import traceback
 import numpy as np
 import soundfile as sf
 try:
-    from scipy.signal import resample as scipy_resample
+    from scipy.signal import resample_poly
     HAS_SCIPY = True
 except ImportError:
     HAS_SCIPY = False
 
 
-VERSION = "1.1"
+VERSION = "1.3"
 
 
 def validated_chunk_size(chunk_size, hop_length):
@@ -54,6 +53,10 @@ def validated_chunk_size(chunk_size, hop_length):
     Ensure chunk_size is a power of 2 and at least 2× hop_length.
     Raises ValueError with a clear message if not.
     """
+    if hop_length < 1:
+        raise ValueError("hop_length must be at least 1")
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be positive")
     if chunk_size < 2 * hop_length:
         raise ValueError(
             f"chunk_size ({chunk_size}) must be at least 2 × hop_length "
@@ -72,6 +75,13 @@ def validated_chunk_size(chunk_size, hop_length):
 
 
 def load_corpus(folder, sr, min_dur, stats):
+    """Load corpus files and choose a cancellation-safe representative channel.
+
+    Per-file peak normalisation is intentional: this generator learns timbral
+    shape and normalized temporal morphology, not recording gain.
+    """
+    from math import gcd
+
     print("[1/5] Loading corpus...", flush=True)
 
     paths = []
@@ -84,44 +94,52 @@ def load_corpus(folder, sr, min_dur, stats):
 
     waveforms = []
     skipped = []
+    multichannel_files = 0
+    total_duration_s = 0.0
 
     for path in paths:
         try:
-            audio, file_sr = sf.read(path, always_2d=True)
+            audio, file_sr = sf.read(path, always_2d=True, dtype="float32")
             audio = np.asarray(audio, dtype=np.float32)
-            if audio.ndim > 1 and audio.shape[1] > 1:
-                audio = audio.mean(axis=1)
+            if audio.shape[1] > 1:
+                multichannel_files += 1
+                rms = np.sqrt(np.mean(audio.astype(np.float64) ** 2, axis=0))
+                best_ch = int(np.argmax(rms))
+                audio = audio[:, best_ch]
             else:
-                audio = audio.flatten()
+                audio = audio[:, 0]
 
             if len(audio) / file_sr < min_dur:
                 skipped.append((os.path.basename(path), "too short"))
                 continue
 
-            # Resample
             if file_sr != sr and HAS_SCIPY:
-                new_len = int(len(audio) * sr / file_sr)
-                audio = scipy_resample(audio, new_len).astype(np.float32)
+                g = gcd(int(sr), int(file_sr))
+                up, down = int(sr) // g, int(file_sr) // g
+                audio = resample_poly(audio, up, down).astype(np.float32)
             elif file_sr != sr:
-                # Linear interp fallback
                 ratio = sr / file_sr
-                new_len = int(len(audio) * ratio)
+                new_len = max(1, int(round(len(audio) * ratio)))
                 indices = np.linspace(0, len(audio) - 1, new_len)
                 audio = np.interp(indices, np.arange(len(audio)), audio).astype(np.float32)
 
-            # Normalize
-            peak = np.max(np.abs(audio))
+            peak = float(np.max(np.abs(audio))) if len(audio) else 0.0
             if peak > 1e-6:
                 audio = audio / peak * 0.95
 
-            waveforms.append(audio)
+            waveforms.append(audio.astype(np.float32))
+            total_duration_s += len(audio) / float(sr)
         except Exception as exc:
             skipped.append((os.path.basename(path), str(exc)))
 
     stats["files_used"] = len(waveforms)
     stats["files_skipped"] = len(skipped)
+    stats["multichannel_files"] = multichannel_files
+    stats["corpus_duration_used_s"] = round(total_duration_s, 3)
     stats["skipped_details"] = skipped
     print(f"  Loaded: {len(waveforms)}  Skipped: {len(skipped)}", flush=True)
+    if multichannel_files:
+        print(f"  Multichannel files: {multichannel_files} (strongest-RMS channel analysed)", flush=True)
     return waveforms
 
 
@@ -130,224 +148,268 @@ def load_corpus(folder, sr, min_dur, stats):
 # =============================================================================
 
 def analyse_corpus(waveforms, sr, n_fft, hop, chunk_size):
-    """
-    Compute spectral profile bank + temporal envelope from corpus.
+    """Build level-independent spectral shapes + a separate RMS envelope.
 
-    n_fft       — FFT size used for analysis (controls frequency resolution)
-    chunk_size  — frame size in samples (controls temporal resolution / grain).
-                  Profiles are built from chunk_size-wide frames; n_fft is used
-                  only for zero-padding when chunk_size < n_fft (rare).
-                  Typically chunk_size == n_fft; user can set them independently.
+    chunk_size controls the analysis window / temporal grain. n_fft controls
+    the canonical spectral grid. When they differ, magnitudes are interpolated
+    by *frequency in Hz*, never copied by bin index.
 
-    Returns:
-      profile_bank: list of magnitude vectors (n_freq,) — one per
-                    corpus frame across all files
-      envelope:     mean RMS envelope (normalised time 0..1)
-      n_freq:       number of frequency bins
+    Spectral profiles are RMS-normalised active frames. Temporal amplitude is
+    learned separately from all frame RMS values, so dynamics are not encoded
+    twice (once in profile magnitude and again in the learned envelope).
     """
     print("[2/5] Analysing corpus spectra...", flush=True)
-    print(f"  chunk_size={chunk_size}  ({chunk_size/sr*1000:.1f} ms)  "
-          f"n_fft={n_fft}", flush=True)
+    print(f"  chunk_size={chunk_size}  ({chunk_size/sr*1000:.1f} ms)  n_fft={n_fft}", flush=True)
 
     n_freq = n_fft // 2 + 1
-    window = np.hanning(chunk_size)
+    canonical_freq = np.fft.rfftfreq(n_fft, d=1.0 / sr)
+    analysis_fft = max(int(n_fft), int(chunk_size))
+    analysis_freq = np.fft.rfftfreq(analysis_fft, d=1.0 / sr)
+    window = np.hanning(chunk_size).astype(np.float32)
 
     profile_bank = []
     envelopes = []
+    silent_profiles_skipped = 0
 
     for audio in waveforms:
-        n_frames = max(1, (len(audio) - chunk_size) // hop + 1)
+        if len(audio) <= chunk_size:
+            n_frames = 1
+        else:
+            n_frames = int(math.ceil((len(audio) - chunk_size) / float(hop))) + 1
 
-        file_mags = []
         file_rms = []
-
+        file_profiles = []
         for i in range(n_frames):
             start = i * hop
             frame = audio[start:start + chunk_size]
             if len(frame) < chunk_size:
                 frame = np.pad(frame, (0, chunk_size - len(frame)))
 
-            windowed = frame * window
-            # Zero-pad to n_fft for FFT if chunk_size < n_fft,
-            # or truncate window output to n_fft if chunk_size > n_fft.
-            fft_input = np.zeros(n_fft, dtype=np.float32)
-            copy_len = min(chunk_size, n_fft)
-            fft_input[:copy_len] = windowed[:copy_len]
-            spectrum = np.fft.rfft(fft_input)
-            mag = np.abs(spectrum)
-            file_mags.append(mag)
-
-            rms = np.sqrt(np.mean(windowed ** 2))
+            rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
             file_rms.append(rms)
 
-        profile_bank.extend(file_mags)
+            windowed = frame * window
+            mag_hi = np.abs(np.fft.rfft(windowed, n=analysis_fft)).astype(np.float64)
+            if analysis_fft == n_fft:
+                mag = mag_hi
+            else:
+                mag = np.interp(canonical_freq, analysis_freq, mag_hi)
+            file_profiles.append(mag)
 
-        # Normalise envelope to [0, 1] time axis
         if file_rms:
-            envelopes.append(np.array(file_rms, dtype=np.float32))
+            file_rms_arr = np.asarray(file_rms, dtype=np.float32)
+            envelopes.append(file_rms_arr)
+            peak_rms = float(np.max(file_rms_arr))
+            active_floor = max(1e-8, peak_rms * 1e-3)  # -60 dB relative to file peak RMS
+            for rms, mag in zip(file_rms_arr, file_profiles):
+                if float(rms) <= active_floor:
+                    silent_profiles_skipped += 1
+                    continue
+                # Unit RMS in the magnitude domain = spectral shape only.
+                mag_rms = float(np.sqrt(np.mean(mag ** 2)))
+                if mag_rms > 1e-12:
+                    profile_bank.append((mag / mag_rms).astype(np.float32))
+                else:
+                    silent_profiles_skipped += 1
 
-    profile_bank = np.array(profile_bank, dtype=np.float32)
+    profile_bank = np.asarray(profile_bank, dtype=np.float32)
+    if profile_bank.size == 0:
+        raise ValueError("Corpus analysis produced no active spectral frames")
+    mean_profile = np.mean(profile_bank.astype(np.float64), axis=0).astype(np.float32)
 
-    # Build mean envelope (resample all to common length, average)
-    env_len = 200  # normalised envelope resolution
+    env_len = 200
     env_sum = np.zeros(env_len, dtype=np.float64)
     for env in envelopes:
         resampled = np.interp(
             np.linspace(0, 1, env_len),
-            np.linspace(0, 1, len(env)),
-            env
+            np.linspace(0, 1, len(env)), env
         )
+        # Per-file envelope shape, so one loud recording does not dominate.
+        ep = float(np.max(resampled))
+        if ep > 1e-12:
+            resampled = resampled / ep
         env_sum += resampled
     mean_envelope = (env_sum / max(1, len(envelopes))).astype(np.float32)
-
-    # Normalize envelope peak to 1
-    env_peak = np.max(mean_envelope)
+    env_peak = float(np.max(mean_envelope)) if len(mean_envelope) else 0.0
     if env_peak > 1e-8:
         mean_envelope = mean_envelope / env_peak
 
-    print(f"  Profile bank: {len(profile_bank)} frames  ({n_freq} bins)", flush=True)
+    print(f"  Profile bank: {len(profile_bank)} active frames  ({n_freq} canonical bins)", flush=True)
+    print(f"  Silent/near-silent profiles skipped: {silent_profiles_skipped}", flush=True)
+    print(f"  Analysis FFT: {analysis_fft} samples; canonical FFT grid: {n_fft}", flush=True)
     print(f"  Mean envelope: {env_len} points", flush=True)
-
-    return profile_bank, mean_envelope, n_freq
+    return profile_bank, mean_profile, mean_envelope, canonical_freq, silent_profiles_skipped
 
 
 # =============================================================================
 #  STAGE 3 — GENERATE
 # =============================================================================
 
-def generate(profile_bank, mean_envelope, n_freq, sr, n_fft, hop,
-             duration, seed, variation, chunk_size):
+def _profile_for_frame(profile_bank, mean_profile, std_profile, variation, rng):
+    """Variation law: 0 -> corpus mean, 1 -> full corpus-frame variation."""
+    v = float(np.clip(variation, 0.0, 1.0))
+    if v <= 0.0 or len(profile_bank) == 0:
+        return mean_profile
+
+    idx1 = int(rng.integers(0, len(profile_bank)))
+    candidate = profile_bank[idx1].astype(np.float32)
+    if len(profile_bank) > 1:
+        idx2 = int(rng.integers(0, len(profile_bank)))
+        blend = float(rng.uniform(0.0, 1.0))
+        candidate = candidate * (1.0 - blend) + profile_bank[idx2] * blend
+
+    profile = mean_profile * (1.0 - v) + candidate * v
+    jitter = std_profile * rng.normal(size=len(mean_profile)).astype(np.float32) * v * 0.30
+    return np.maximum(0.0, profile + jitter).astype(np.float32)
+
+
+def generate_stereo(profile_bank, mean_profile, mean_envelope, canonical_freq,
+                    sr, n_fft, hop, duration, seed, variation, chunk_size):
+    """Generate coherent stereo shaped noise.
+
+    Both channels share the same corpus-magnitude trajectory per frame, while
+    using independent noise phases.  This keeps the learned timbral motion
+    coherent and produces width without unrelated left/right profile flicker.
     """
-    Generate audio by shaping noise with corpus spectral profiles.
+    print("[3/5] Generating stereo from noise...", flush=True)
+    print(f"  chunk_size={chunk_size}  ({chunk_size/sr*1000:.1f} ms)  variation={variation:.2f}", flush=True)
 
-    chunk_size controls the synthesis grain size (temporal resolution).
-    n_fft controls the frequency resolution (must match analysis n_fft).
+    base_seed = None if seed is None else int(seed)
+    rng_profile = np.random.default_rng(base_seed)
+    rng_l = np.random.default_rng(None if base_seed is None else base_seed + 1009)
+    rng_r = np.random.default_rng(None if base_seed is None else base_seed + 2017)
 
-    For each output STFT frame:
-      1. Pick a random spectral profile from the bank
-      2. Blend it with a second random profile (for variation)
-      3. Keep the noise frame's phase (random phase = noise character)
-      4. Inverse FFT + overlap-add using chunk_size-wide windows
-    Then apply the learned temporal envelope.
-    """
-    print("[3/5] Generating from noise...", flush=True)
-    print(f"  chunk_size={chunk_size}  ({chunk_size/sr*1000:.1f} ms)", flush=True)
+    n_samples = max(1, int(round(duration * sr)))
+    window = np.hanning(chunk_size).astype(np.float64)
+    std_profile = np.std(profile_bank.astype(np.float64), axis=0).astype(np.float32)
+    synth_freq = np.fft.rfftfreq(chunk_size, d=1.0 / sr)
 
-    if seed is not None:
-        np.random.seed(seed)
-
-    n_samples = int(duration * sr)
-    window = np.hanning(chunk_size)
-
-    # Compute std of profile bank for jitter
-    std_profile = np.std(profile_bank, axis=0)
-    n_bank = len(profile_bank)
-
-    # Pre-roll / post-roll: one full chunk_size of headroom on each side so
-    # that the Hann window is fully summed before the first output sample,
-    # eliminating the near-zero win_sum that causes boundary clicks.
     pad = chunk_size
     total_samples = n_samples + 2 * pad
     n_out_frames = max(1, (total_samples - chunk_size) // hop + 1)
+    noise_l = rng_l.standard_normal(total_samples + chunk_size).astype(np.float32)
+    noise_r = rng_r.standard_normal(total_samples + chunk_size).astype(np.float32)
 
-    # Generate white noise for the padded length
-    noise = np.random.randn(total_samples + chunk_size).astype(np.float32)
-
-    # Output buffer for overlap-add (padded)
-    output  = np.zeros(total_samples + chunk_size, dtype=np.float64)
+    output = np.zeros((total_samples + chunk_size, 2), dtype=np.float64)
     win_sum = np.zeros(total_samples + chunk_size, dtype=np.float64)
 
     for i in range(n_out_frames):
         start = i * hop
+        profile = _profile_for_frame(profile_bank, mean_profile, std_profile,
+                                     variation, rng_profile)
+        # Hz-aware mapping from canonical n_fft grid to synthesis chunk bins.
+        profile_synth = np.interp(synth_freq, canonical_freq, profile).astype(np.float64)
 
-        # Window the noise frame at chunk_size, then zero-pad / truncate to
-        # n_fft so the FFT bin layout matches the profile bank exactly.
-        noise_frame = noise[start:start + chunk_size] * window
-        fft_input = np.zeros(n_fft, dtype=np.float32)
-        copy_len = min(chunk_size, n_fft)
-        fft_input[:copy_len] = noise_frame[:copy_len]
-        noise_spec = np.fft.rfft(fft_input)
-        noise_phase = np.angle(noise_spec)
-
-        # Pick a random corpus profile
-        idx1 = np.random.randint(0, n_bank)
-        profile = profile_bank[idx1].copy()
-
-        # Blend with a second profile for variety
-        if variation > 0 and n_bank > 1:
-            idx2 = np.random.randint(0, n_bank)
-            blend = np.random.uniform(0, variation)
-            profile = profile * (1 - blend) + profile_bank[idx2] * blend
-
-        # Add controlled randomness based on corpus variance
-        if variation > 0:
-            jitter = (std_profile
-                      * np.random.randn(n_freq).astype(np.float32)
-                      * variation * 0.3)
-            profile = np.maximum(0, profile + jitter)
-
-        # Reconstruct: corpus magnitude × noise phase → IFFT at chunk_size.
-        # The profile has n_freq = n_fft//2+1 bins. The IFFT target is
-        # chunk_size samples, which needs chunk_size//2+1 bins.
-        # • chunk_size <= n_fft: crop spectrum to chunk_size//2+1 bins.
-        # • chunk_size >  n_fft: zero-pad spectrum up to chunk_size//2+1 bins
-        #   (high-frequency bins are 0 — equivalent to low-pass filtering,
-        #   which is fine; the corpus spectral shape is preserved in the
-        #   low-frequency part).
-        n_out_bins = chunk_size // 2 + 1
-        shaped_spec_full = profile * np.exp(1j * noise_phase)   # n_freq bins
-        if n_out_bins <= n_freq:
-            shaped_spec_cs = shaped_spec_full[:n_out_bins]
-        else:
-            shaped_spec_cs = np.zeros(n_out_bins, dtype=np.complex64)
-            shaped_spec_cs[:n_freq] = shaped_spec_full
-        shaped_frame = np.fft.irfft(shaped_spec_cs, n=chunk_size)
-
-        # Overlap-add
-        output [start:start + chunk_size] += shaped_frame * window
+        for ch, noise in enumerate((noise_l, noise_r)):
+            noise_frame = noise[start:start + chunk_size] * window
+            noise_phase = np.angle(np.fft.rfft(noise_frame, n=chunk_size))
+            shaped_spec = profile_synth * np.exp(1j * noise_phase)
+            shaped_frame = np.fft.irfft(shaped_spec, n=chunk_size)
+            output[start:start + chunk_size, ch] += shaped_frame * window
         win_sum[start:start + chunk_size] += window ** 2
 
-    # Normalise overlap-add.
-    # The Hann window with 75% overlap (hop = chunk_size/4) sums to ~1.5 at
-    # steady state. Any sample whose win_sum is below 5% of that is in the
-    # pre-roll/post-roll headroom and should be silent rather than amplified.
-    threshold = 0.075   # 5% of ~1.5 steady-state win_sum
-    safe_mask = win_sum > threshold
-    output[safe_mask]  /= win_sum[safe_mask]
-    output[~safe_mask]  = 0.0
+    threshold = 0.075
+    safe = win_sum > threshold
+    output[safe, :] /= win_sum[safe, None]
+    output[~safe, :] = 0.0
+    output = output[pad:pad + n_samples, :].astype(np.float32)
 
-    # Slice out the pre-roll and the exact requested length
-    output = output[pad:pad + n_samples].astype(np.float32)
-
-    # Apply temporal envelope
     env_time = np.linspace(0, 1, n_samples)
     env_curve = np.interp(env_time, np.linspace(0, 1, len(mean_envelope)),
                           mean_envelope).astype(np.float32)
-
-    # Smooth the envelope to avoid artifacts
     smooth_n = max(1, int(0.02 * sr))
-    kernel = np.ones(smooth_n) / smooth_n
-    env_curve = np.convolve(env_curve, kernel, mode="same").astype(np.float32)
+    if smooth_n > 1 and n_samples > 2:
+        # O(N) centred moving average with edge padding.
+        left = smooth_n // 2
+        right = smooth_n - 1 - left
+        padded = np.pad(env_curve.astype(np.float64), (left, right), mode="edge")
+        cs = np.concatenate(([0.0], np.cumsum(padded)))
+        env_curve = ((cs[smooth_n:] - cs[:-smooth_n]) / smooth_n).astype(np.float32)
+    output *= env_curve[:, None]
 
-    output = output * env_curve
-
-    # Short fade-in / fade-out (10 ms) as a safety net against any residual
-    # discontinuity at the file boundaries.
     fade_samples = min(int(0.010 * sr), n_samples // 4)
-    fade_in  = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
-    fade_out = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
-    output[:fade_samples]  *= fade_in
-    output[-fade_samples:] *= fade_out
+    if fade_samples > 0:
+        fade_in = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+        fade_out = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+        output[:fade_samples, :] *= fade_in[:, None]
+        output[-fade_samples:, :] *= fade_out[:, None]
 
-    # Final normalize
-    peak = np.max(np.abs(output))
+    # Generator-level target: one global scalar keeps stereo balance intact.
+    peak = float(np.max(np.abs(output))) if output.size else 0.0
     if peak > 1e-6:
-        output = output / peak * 0.9
+        output *= np.float32(0.90 / peak)
 
-    print(f"  Generated: {n_samples} samples ({duration:.2f}s)  "
-          f"peak={np.max(np.abs(output)):.4f}", flush=True)
-
+    print(f"  Generated: {n_samples} samples ({duration:.2f}s)  peak={np.max(np.abs(output)):.4f}", flush=True)
     return output
+
+
+def _mean_mag_profile(audio, sr, canonical_freq, frame_size=2048, hop=512):
+    """Mean magnitude on canonical_freq for QC/visualisation."""
+    if audio.ndim > 1:
+        rms = np.sqrt(np.mean(audio.astype(np.float64) ** 2, axis=0))
+        audio = audio[:, int(np.argmax(rms))]
+    audio = np.asarray(audio, dtype=np.float32)
+    frame_size = min(frame_size, max(64, len(audio)))
+    if frame_size < 2:
+        return np.zeros_like(canonical_freq, dtype=np.float32)
+    window = np.hanning(frame_size)
+    mags = []
+    nframes = max(1, int(math.ceil(max(0, len(audio)-frame_size) / float(hop))) + 1)
+    fsrc = np.fft.rfftfreq(frame_size, d=1.0/sr)
+    for i in range(nframes):
+        fr = audio[i*hop:i*hop+frame_size]
+        if len(fr) < frame_size:
+            fr = np.pad(fr, (0, frame_size-len(fr)))
+        mag = np.abs(np.fft.rfft(fr*window))
+        mags.append(np.interp(canonical_freq, fsrc, mag))
+    return np.mean(np.asarray(mags), axis=0).astype(np.float32)
+
+
+def _rms_envelope(audio, n_points=200):
+    if audio.ndim > 1:
+        audio = audio[:, 0]
+    audio = np.asarray(audio, dtype=np.float64)
+    if len(audio) == 0:
+        return np.zeros(n_points, dtype=np.float32)
+    edges = np.linspace(0, len(audio), n_points + 1).astype(int)
+    vals = np.zeros(n_points, dtype=np.float64)
+    for i in range(n_points):
+        seg = audio[edges[i]:edges[i+1]]
+        if len(seg):
+            vals[i] = np.sqrt(np.mean(seg**2))
+    pk = vals.max() if len(vals) else 0.0
+    if pk > 1e-12:
+        vals /= pk
+    return vals.astype(np.float32)
+
+
+def write_analysis_csv(profile_path, envelope_path, canonical_freq, mean_profile,
+                       mean_envelope, output, sr):
+    out_profile = _mean_mag_profile(output, sr, canonical_freq,
+                                    frame_size=min(2048, max(64, len(output))), hop=512)
+    cp = mean_profile.astype(np.float64)
+    op = out_profile.astype(np.float64)
+    cp /= max(float(cp.max()), 1e-12)
+    op /= max(float(op.max()), 1e-12)
+    with open(profile_path, "w", encoding="utf-8") as f:
+        f.write("frequency_hz,corpus_mean,output_mean\n")
+        for hz, a, b in zip(canonical_freq, cp, op):
+            f.write(f"{hz:.9g},{a:.9g},{b:.9g}\n")
+
+    out_env = _rms_envelope(output, len(mean_envelope))
+    with open(envelope_path, "w", encoding="utf-8") as f:
+        f.write("time_norm,learned_envelope,output_rms\n")
+        for i, (a, b) in enumerate(zip(mean_envelope, out_env)):
+            x = i / max(1, len(mean_envelope)-1)
+            f.write(f"{x:.9g},{float(a):.9g},{float(b):.9g}\n")
+
+    # QC metrics
+    denom = np.linalg.norm(cp) * np.linalg.norm(op)
+    spectral_cos = float(np.dot(cp, op) / denom) if denom > 1e-12 else 0.0
+    env_a = mean_envelope.astype(np.float64)
+    env_b = out_env.astype(np.float64)
+    env_corr = float(np.corrcoef(env_a, env_b)[0,1]) if np.std(env_a)>1e-9 and np.std(env_b)>1e-9 else 0.0
+    return spectral_cos, env_corr
 
 
 # =============================================================================
@@ -381,16 +443,26 @@ def main():
                          ">= 2 × hop_length). Controls temporal grain: smaller = "
                          "more fluttery, larger = smoother. Defaults to n_fft.")
     ap.add_argument("--variation", type=float, default=0.5,
-                    help="0 = pure mean spectrum, 1 = max variation between profiles")
+                    help="0 = corpus mean profile, 1 = full corpus-frame variation")
+    ap.add_argument("--profile_csv", type=str, default=None)
+    ap.add_argument("--envelope_csv", type=str, default=None)
     args = ap.parse_args()
 
     # chunk_size defaults to n_fft; validate before doing any work
     chunk_size = args.chunk_size if args.chunk_size is not None else args.n_fft
     try:
         chunk_size = validated_chunk_size(chunk_size, args.hop_length)
+        if args.n_fft < 64:
+            raise ValueError("n_fft must be at least 64")
+        if args.sr < 8000:
+            raise ValueError("sample rate must be at least 8000 Hz")
+        if args.duration <= 0:
+            raise ValueError("duration must be > 0")
     except ValueError as exc:
         print(f"ERROR: {exc}", flush=True)
         sys.exit(1)
+
+    args.variation = float(np.clip(args.variation, 0.0, 1.0))
 
     print(f"=== Spectral Noise Shaping v{VERSION} ===", flush=True)
     print(f"Folder: {args.input_folder}", flush=True)
@@ -412,41 +484,35 @@ def main():
             write_stats(args.stats_txt, stats)
             sys.exit(1)
 
-        profile_bank, mean_envelope, n_freq = analyse_corpus(
+        profile_bank, mean_profile, mean_envelope, canonical_freq, silent_profiles_skipped = analyse_corpus(
             waveforms, args.sr, args.n_fft, args.hop_length, chunk_size
         )
         stats["profile_bank_size"] = len(profile_bank)
+        stats["silent_profiles_skipped"] = silent_profiles_skipped
+        stats["analysis_fft_size"] = max(args.n_fft, chunk_size)
 
-        # Generate LEFT channel
-        print("[3a/5] Generating LEFT channel...", flush=True)
-        seed_L = args.seed                              # user seed (or None)
-        seed_R = (args.seed + 1) if args.seed is not None else None  # always different
-        audio_L = generate(
-            profile_bank, mean_envelope, n_freq,
+        audio = generate_stereo(
+            profile_bank, mean_profile, mean_envelope, canonical_freq,
             args.sr, args.n_fft, args.hop_length,
-            args.duration, seed_L, args.variation, chunk_size
+            args.duration, args.seed, args.variation, chunk_size
         )
-
-        # Generate RIGHT channel — different seed guarantees different phase
-        print("[3b/5] Generating RIGHT channel...", flush=True)
-        audio_R = generate(
-            profile_bank, mean_envelope, n_freq,
-            args.sr, args.n_fft, args.hop_length,
-            args.duration, seed_R, args.variation, chunk_size
-        )
-
-        # Interleave into stereo array (n_samples, 2)
-        audio = np.stack([audio_L, audio_R], axis=1)
 
         print("[4/5] Writing output...", flush=True)
-        sf.write(args.output_wav, audio, args.sr)
+        sf.write(args.output_wav, audio, args.sr, subtype="FLOAT")
 
         elapsed = time.time() - t0
         stats["channels"] = 2
-        stats["seed_L"] = seed_L if seed_L is not None else "random"
-        stats["seed_R"] = seed_R if seed_R is not None else "random"
+        stats["stereo_profile_trajectory"] = "shared"
+        stats["stereo_noise_phase"] = "independent"
         stats["output_duration"] = round(audio.shape[0] / args.sr, 3)
         stats["output_peak"] = round(float(np.max(np.abs(audio))), 4)
+        if args.profile_csv and args.envelope_csv:
+            spectral_cos, env_corr = write_analysis_csv(
+                args.profile_csv, args.envelope_csv, canonical_freq, mean_profile,
+                mean_envelope, audio, args.sr
+            )
+            stats["spectral_profile_cosine"] = round(spectral_cos, 6)
+            stats["envelope_correlation"] = round(env_corr, 6)
         stats["total_time_s"] = round(elapsed, 2)
 
         print(f"[5/5] Done in {elapsed:.1f}s", flush=True)

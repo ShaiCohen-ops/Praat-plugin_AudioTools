@@ -3,21 +3,20 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026) - Unified Cross-Platform Version
+# Version: 2.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Thermodynamic audio transformation with AI state discovery.
-#   Analyzes acoustic structure → discovers phase regimes via ML →
-#   applies regime-dependent spectral transforms (Crystal/Fluid/Gas/Plasma).
+#   Thermodynamic event relocation with AI state discovery.
+#   Analyzes acoustic structure -> discovers phase regimes via ML ->
+#   segments complete time-domain events -> relocates/duplicates/evaporates
+#   events according to Crystal/Fluid/Gas/Plasma rules.
 #   Powered by Python (numpy, scipy, scikit-learn, soundfile).
 #
 #   Parameters:
 #   - Macro intensity: overall transformation strength (0-1)
 #   - Memory:          state machine inertia/hysteresis (0-1)
-#   - Diffusion:       spectral smearing in Fluid regime (0-1)
-#   - Crystallization: bias toward stable/Crystal regimes (0-1)
 #   - AI mode:         A=clustering  B=predictive  C=learned-entropy
 #   - AI strength:     AI influence on regime assignment (0-1)
 #   - Seed:            for full deterministic reproducibility
@@ -26,6 +25,35 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.3 (2026):
+#   - CORRECTNESS: exact Praat/STFT time-grid alignment; silence no longer
+#     reads as maximally flat/noisy spectral content.
+#   - CONTROL: Thermo_intensity=0 is identity (unless Convection is used);
+#     AI_strength=0 truly disables direct AI regime voting.
+#   - RELOCATION: Gas moves globally; Plasma anchoring is continuous in intensity.
+#   - MULTICHANNEL: strongest-RMS real channel is used for analysis.
+#   - RECONSTRUCTION: crossfade only discontinuous joins; contiguous source
+#     neighbours remain sample-contiguous. FLOAT output and true final audio tail.
+#   - PORTABILITY: unique temp files and captured Python log.
+#
+# Changelog v2.2 (2026):
+#   - FIX: Probe-failure detection. The OS-discovery block at the top
+#     always assigned pythonCmd$ to something non-empty, making the
+#     post-probe "if pythonCmd$ = """ exit unreachable. Total Python
+#     failure was silently masked. Now pythonCmd$ is cleared before
+#     the probe loop, and the early-discovery path (when present) is
+#     prepended as the highest-priority candidate.
+#   - PORTABILITY: Replaced the for-loop early-break that mutated the
+#     loop variable (iCand = nCandidates + 1) with the standard
+#     "found" flag pattern. Loop-var mutation works in current Praat
+#     but is fragile across versions.
+#   - SPEED (Python): ai_mode_b inference loop replaced with a single
+#     batched model.predict() call. Per-frame predictions had ~3000
+#     sklearn-call overheads on typical inputs.
+#   - SPEED (Python): vectorized spectral-rolloff per-frame loop and
+#     two pitch-derivative loops in compute_novelty_curve and
+#     construct_fields. Pure numpy now, no per-frame Python iteration.
 #
 # ============================================================
 
@@ -69,13 +97,15 @@ endif
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
-tempInput$   = tempDir$ + "temp_thermo_input.wav"
-tempCSV$     = tempDir$ + "temp_thermo_features.csv"
-tempOutput$  = tempDir$ + "temp_thermo_output.wav"
-tempRegimes$ = tempDir$ + "temp_thermo_regimes.txt"
-tempStats$   = tempDir$ + "temp_thermo_stats.txt"
-probePy$     = tempDir$ + "temp_thermo_probe.py"
-probeMarker$ = tempDir$ + "temp_thermo_probe.ok"
+runToken$    = string$(sound)
+tempInput$   = tempDir$ + "temp_thermo_" + runToken$ + "_input.wav"
+tempCSV$     = tempDir$ + "temp_thermo_" + runToken$ + "_features.csv"
+tempOutput$  = tempDir$ + "temp_thermo_" + runToken$ + "_output.wav"
+tempRegimes$ = tempDir$ + "temp_thermo_" + runToken$ + "_regimes.txt"
+tempStats$   = tempDir$ + "temp_thermo_" + runToken$ + "_stats.txt"
+tempLog$     = tempDir$ + "temp_thermo_" + runToken$ + "_python.log"
+probePy$     = tempDir$ + "temp_thermo_" + runToken$ + "_probe.py"
+probeMarker$ = tempDir$ + "temp_thermo_" + runToken$ + "_probe.ok"
 
 # Enforce forward slashes for all temporary paths passed to python
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
@@ -84,6 +114,7 @@ tempCSVJ$      = replace_regex$(tempCSV$, "\\", "/", 0)
 tempOutputJ$   = replace_regex$(tempOutput$, "\\", "/", 0)
 tempRegimesJ$  = replace_regex$(tempRegimes$, "\\", "/", 0)
 tempStatsJ$    = replace_regex$(tempStats$, "\\", "/", 0)
+tempLogJ$      = replace_regex$(tempLog$, "\\", "/", 0)
 probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
 probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
 
@@ -104,6 +135,9 @@ procedure cleanUpTempFiles
     if fileReadable(tempStats$)
         deleteFile: tempStats$
     endif
+    if fileReadable(tempLog$)
+        deleteFile: tempLog$
+    endif
     if fileReadable(probePy$)
         deleteFile: probePy$
     endif
@@ -115,7 +149,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Thermodynamic Transform v2.1
+form Thermodynamic Transform v2.3
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -184,6 +218,12 @@ else
     presetName$ = "Custom"
 endif
 
+# Keep displayed/reported controls identical to the clamped Python values.
+thermo_intensity = max(0, min(1, thermo_intensity))
+memory = max(0, min(1, memory))
+convection = max(0, min(1, convection))
+aI_strength = max(0, min(1, aI_strength))
+
 # Resolve AI mode letter
 if aI_mode = 1
     aiModeLetter$ = "A"
@@ -195,7 +235,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Thermodynamic Transform v2.1 (Event Relocation) ==="
+writeInfoLine:  "=== Thermodynamic Transform v2.3 (Event Relocation) ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -230,41 +270,63 @@ appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.
 appendFileLine: probePy$, "except ImportError:"
 appendFileLine: probePy$, "    sys.exit(1)"
 
+# v2.2: Save the OS-discovery value as candidate0 (highest priority),
+# then clear pythonCmd$ so the post-probe check can detect total failure.
+# The OS-discovery block above set pythonCmd$ to a path like
+# /opt/homebrew/bin/python3 if available — if that path passes the
+# probe, it's preferred over the generic "python3" name (which may
+# resolve to a different Python on Mac).
+earlyDiscovered$ = pythonCmd$
+pythonCmd$ = ""
+
 if windows
-    nCandidates = 4
-    candidate1$ = "python"
-    candidate2$ = "py"
-    candidate3$ = "py -3"
-    candidate4$ = "python3"
-else
-    nCandidates = 3
-    candidate1$ = "python3"
+    nCandidates = 5
+    candidate1$ = earlyDiscovered$
     candidate2$ = "python"
     candidate3$ = "py"
-    candidate4$ = ""
+    candidate4$ = "py -3"
+    candidate5$ = "python3"
+else
+    nCandidates = 4
+    candidate1$ = earlyDiscovered$
+    candidate2$ = "python3"
+    candidate3$ = "python"
+    candidate4$ = "py"
+    candidate5$ = ""
 endif
 
+# v2.2: replaced "iCand = nCandidates + 1" loop-var mutation with
+# the standard "found" flag pattern. Loop-var mutation works in
+# current Praat but is fragile across versions.
+found = 0
 for iCand from 1 to nCandidates
-    if iCand = 1
-        tryCmd$ = candidate1$
-    elsif iCand = 2
-        tryCmd$ = candidate2$
-    elsif iCand = 3
-        tryCmd$ = candidate3$
-    else
-        tryCmd$ = candidate4$
-    endif
+    if found = 0
+        if iCand = 1
+            tryCmd$ = candidate1$
+        elsif iCand = 2
+            tryCmd$ = candidate2$
+        elsif iCand = 3
+            tryCmd$ = candidate3$
+        elsif iCand = 4
+            tryCmd$ = candidate4$
+        else
+            tryCmd$ = candidate5$
+        endif
 
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
+        # Skip empty candidate slot (Linux candidate5)
+        if tryCmd$ <> ""
+            if fileReadable(probeMarker$)
+                deleteFile: probeMarker$
+            endif
 
-    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+            runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
 
-    if fileReadable(probeMarker$)
-        pythonCmd$ = tryCmd$
-        deleteFile: probeMarker$
-        iCand = nCandidates + 1 ; Break early
+            if fileReadable(probeMarker$)
+                pythonCmd$ = tryCmd$
+                deleteFile: probeMarker$
+                found = 1
+            endif
+        endif
     endif
 endfor
 
@@ -272,7 +334,7 @@ deleteFile: probePy$
 
 if pythonCmd$ = ""
     @cleanUpTempFiles
-    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile scikit-learn"
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: " + earlyDiscovered$ + ", python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile scikit-learn"
 endif
 
 appendInfoLine: "  Python found: ", pythonCmd$
@@ -293,14 +355,29 @@ endif
 # ---- Create analysis objects ----
 selectObject: sound
 
-# Work on channel 1 for analysis
+# Use the strongest real channel for analysis (avoid silent channel 1 / phase fold-down).
+analysisChannel = 1
 if nChannels > 1
-    Extract one channel: 1
+    bestChannelRMS = -1
+    for ch from 1 to nChannels
+        selectObject: sound
+        Extract one channel: ch
+        probeChannel = selected("Sound")
+        channelRMS = Get root-mean-square: 0, 0
+        if channelRMS > bestChannelRMS
+            bestChannelRMS = channelRMS
+            analysisChannel = ch
+        endif
+        removeObject: probeChannel
+    endfor
+    selectObject: sound
+    Extract one channel: analysisChannel
     analysisMono = selected("Sound")
 else
     Copy: "analysisMono"
     analysisMono = selected("Sound")
 endif
+appendInfoLine: "  Analysis channel: ", analysisChannel
 
 selectObject: analysisMono
 pitchObj = To Pitch: 0.01, 75, 600
@@ -383,7 +460,7 @@ appendInfoLine: "  Extracted ", nFrames, " frames at ", fixed$(hopSec * 1000, 0)
 appendInfoLine: "[2/5] Exporting temp files..."
 
 selectObject: sound
-Save as WAV file: tempInput$
+Save as 32-bit WAV file: tempInput$
 
 selectObject: featureTable
 Save as comma-separated file: tempCSV$
@@ -412,12 +489,16 @@ pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " " + string$(seed)
     ... + " " + fixed$(hopSec, 4)
 
-runSystem_nocheck: pythonCall$
+runSystem_nocheck: pythonCall$ + " > """ + tempLogJ$ + """ 2>&1"
 
 # ---- Verify output ----
 if not fileReadable(tempOutput$)
+    pythonError$ = "Python thermodynamic engine failed."
+    if fileReadable(tempLog$)
+        pythonError$ = pythonError$ + newline$ + newline$ + readFile$(tempLog$)
+    endif
     @cleanUpTempFiles
-    exitScript: "Python thermodynamic engine failed. Check terminal for error details."
+    exitScript: pythonError$
 endif
 
 # ===========================================================================
@@ -453,6 +534,10 @@ nRelocated$   = "?"
 nEvaporated$  = "?"
 nDuplicated$  = "?"
 meanEventDur$ = "?"
+analysisChannelStat$ = "?"
+nCrossfades$ = "?"
+nContiguous$ = "?"
+outputDurationStat$ = "?"
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
@@ -484,6 +569,14 @@ if fileReadable(tempStats$)
     nDuplicated$ = parseStatLine.result$
     @parseStatLine: statsText$, "mean_event_dur="
     meanEventDur$ = parseStatLine.result$
+    @parseStatLine: statsText$, "analysis_channel="
+    analysisChannelStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "crossfades="
+    nCrossfades$ = parseStatLine.result$
+    @parseStatLine: statsText$, "contiguous_joins="
+    nContiguous$ = parseStatLine.result$
+    @parseStatLine: statsText$, "output_duration="
+    outputDurationStat$ = parseStatLine.result$
 endif
 
 nRegimeFrames = 0
@@ -503,6 +596,35 @@ endif
 if draw_visualization
     appendInfoLine: "[5/5] Creating visualization..."
 
+    # Representative channels for honest before/after comparison.
+    selectObject: sound
+    if nChannels > 1
+        Extract one channel: analysisChannel
+        vizOrig = selected("Sound")
+    else
+        Copy: "vizOrig"
+        vizOrig = selected("Sound")
+    endif
+    selectObject: resultSound
+    outChannels = Get number of channels
+    outVizChannel = min(analysisChannel, outChannels)
+    if outChannels > 1
+        Extract one channel: outVizChannel
+        vizOut = selected("Sound")
+    else
+        Copy: "vizOut"
+        vizOut = selected("Sound")
+    endif
+    selectObject: vizOrig
+    peakOrigViz = Get absolute extremum: 0, 0, "none"
+    selectObject: vizOut
+    peakOutViz = Get absolute extremum: 0, 0, "none"
+    vizPeak = max(peakOrigViz, peakOutViz) * 1.05
+    if vizPeak < 0.01
+        vizPeak = 0.01
+    endif
+    freqCeil = min(8000, sr / 2)
+
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
@@ -511,17 +633,17 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Thermodynamic Event Relocation##"
+    Text: 0.5, "centre", 0.6, "half", "##Thermodynamic Event Relocation v2.3##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | AI: " + aiModeLetter$ + " | Seed: " + string$(seed)
+    Text: 0.5, "centre", -1.18, "half", soundName$ + " | " + presetName$ + " | AI: " + aiModeLetter$ + " | Seed: " + string$(seed)
 
     # === Input Waveform ===
     Select outer viewport: 0, 8, 0.6, 1.4
     Select inner viewport: 0.6, 7.7, 0.65, 1.35
-    selectObject: sound
+    selectObject: vizOrig
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -vizPeak, vizPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -531,9 +653,9 @@ if draw_visualization
     # === Output Waveform ===
     Select outer viewport: 0, 8, 1.4, 2.2
     Select inner viewport: 0.6, 7.7, 1.45, 2.15
-    selectObject: resultSound
+    selectObject: vizOut
     Colour: "{0.3, 0.6, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -vizPeak, vizPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -544,18 +666,10 @@ if draw_visualization
     Select outer viewport: 0, 8, 2.3, 3.5
     Select inner viewport: 0.6, 7.7, 2.4, 3.4
 
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrig = selected("Sound")
-    else
-        Copy: "tmpOrig"
-        tmpOrig = selected("Sound")
-    endif
-
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    selectObject: vizOrig
+    To Spectrogram: 0.005, freqCeil, 0.002, 20, "Gaussian"
     specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, freqCeil, 100, "yes", 50, 6, 0, "no"
 
     Colour: "Black"
     Draw inner box
@@ -563,24 +677,16 @@ if draw_visualization
     Text left: "yes", "Freq (Hz)"
     Text top: "no", "Original Spectrogram"
 
-    removeObject: specOrig, tmpOrig
+    removeObject: specOrig
 
     # === Transformed Spectrogram ===
     Select outer viewport: 0, 8, 3.5, 4.7
     Select inner viewport: 0.6, 7.7, 3.6, 4.6
 
-    selectObject: resultSound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOut = selected("Sound")
-    else
-        Copy: "tmpOut"
-        tmpOut = selected("Sound")
-    endif
-
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    selectObject: vizOut
+    To Spectrogram: 0.005, freqCeil, 0.002, 20, "Gaussian"
     specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, freqCeil, 100, "yes", 50, 6, 0, "no"
 
     Colour: "Black"
     Draw inner box
@@ -589,7 +695,7 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Transformed Spectrogram"
 
-    removeObject: specOut, tmpOut
+    removeObject: specOut
 
     # === Regime Timeline ===
     Select outer viewport: 0, 8, 4.8, 5.8
@@ -649,39 +755,23 @@ if draw_visualization
     Axes: 0, dur, 30, 90
     Paint rectangle: "{0.97, 0.97, 0.98}", 0, dur, 30, 90
 
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrigI = selected("Sound")
-    else
-        Copy: "tmpOrigI"
-        tmpOrigI = selected("Sound")
-    endif
-
+    selectObject: vizOrig
     To Intensity: 100, 0, "yes"
     intOrig = selected("Intensity")
     selectObject: intOrig
     Colour: "{0.6, 0.6, 0.6}"
     Line width: 2
     Draw: 0, 0, 0, 0, "no"
-    removeObject: intOrig, tmpOrigI
+    removeObject: intOrig
 
-    selectObject: resultSound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOutI = selected("Sound")
-    else
-        Copy: "tmpOutI"
-        tmpOutI = selected("Sound")
-    endif
-
+    selectObject: vizOut
     To Intensity: 100, 0, "yes"
     intOut = selected("Intensity")
     selectObject: intOut
     Colour: "{0.3, 0.6, 0.5}"
     Line width: 2
     Draw: 0, 0, 0, 0, "no"
-    removeObject: intOut, tmpOutI
+    removeObject: intOut
 
     Line width: 1
     Colour: "Black"
@@ -704,7 +794,7 @@ if draw_visualization
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
     Text: 0.02, "left", 0.55, "half", "Crystal: " + crystalPct$ + "% | Fluid: " + fluidPct$ + "% | Gas: " + gasPct$ + "% | Plasma: " + plasmaPct$ + "%"
-    Text: 0.02, "left", 0.3, "half", "Transitions: " + nTransitions$ + " | Mean S: " + meanEntropy$ + " | Peak S: " + peakEntropy$ + " | Mean T: " + meanTemp$
+    Text: 0.02, "left", 0.3, "half", "Transitions: " + nTransitions$ + " | Crossfades: " + nCrossfades$ + " | Contiguous joins: " + nContiguous$
 
     Font size: 7
     Colour: "Black"
@@ -717,6 +807,7 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    removeObject: vizOrig, vizOut
     Font size: 10
     Colour: "Black"
 else
@@ -740,6 +831,8 @@ appendInfoLine: ""
 appendInfoLine: "Event relocation:"
 appendInfoLine: "  Events: ", nEvents$, " (mean dur: ", meanEventDur$, " s)"
 appendInfoLine: "  Relocated: ", nRelocated$, " | Evaporated: ", nEvaporated$, " | Duplicated: ", nDuplicated$
+appendInfoLine: "  Crossfades: ", nCrossfades$, " | Contiguous joins: ", nContiguous$
+appendInfoLine: "  Analysis channel: ", analysisChannelStat$, " | Output duration: ", outputDurationStat$, " s"
 appendInfoLine: ""
 appendInfoLine: "Regime distribution:"
 appendInfoLine: "  Crystal: ", crystalPct$, "% | Fluid: ", fluidPct$, "% | Gas: ", gasPct$, "% | Plasma: ", plasmaPct$, "%"
@@ -748,7 +841,11 @@ appendInfoLine: "  Mean entropy: ", meanEntropy$, " | Peak: ", peakEntropy$
 appendInfoLine: ""
 appendInfoLine: "RMS original:    ", fixed$(rms_orig, 6)
 appendInfoLine: "RMS transformed: ", fixed$(rms_out, 6)
-appendInfoLine: "RMS ratio:       ", fixed$(rms_out / rms_orig, 3), "x"
+if rms_orig > 1e-12
+    appendInfoLine: "RMS ratio:       ", fixed$(rms_out / rms_orig, 3), "x"
+else
+    appendInfoLine: "RMS ratio:       n/a (silent input)"
+endif
 
 selectObject: resultSound
 

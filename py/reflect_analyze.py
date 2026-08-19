@@ -1,5 +1,5 @@
 """
-reflect_analyze.py — Self-Reflective Feedback Analysis Engine
+reflect_analyze.py — Self-Reflective Feedback Analysis Engine v1.2
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -14,7 +14,7 @@ Usage:
         [--status-file ok.txt]
         [--debug]
 
-Stage names:  mds | freeze
+Stage names:  mds | freeze | cascade | canon
 
 params_out.txt line format (fixed order, one value per line):
     MDS:    stop_flag, silence_threshold, min_sounding_interval,
@@ -36,11 +36,22 @@ import numpy as np
 # ═══════════════════════════════════════════════════════════════════════════
 
 def load_audio(wav_path):
+    """Load as samples x channels; never phase-cancel channels by averaging."""
     import soundfile as sf
-    audio, sr = sf.read(wav_path, always_2d=False)
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
-    return audio.astype(np.float32), int(sr)
+    audio, sr = sf.read(wav_path, always_2d=True, dtype="float32")
+    if audio.shape[0] == 0:
+        raise ValueError("input audio contains zero samples")
+    return np.asarray(audio, dtype=np.float32), int(sr)
+
+
+def _representative_channel(audio):
+    """Return the strongest-RMS real channel and its zero-based index."""
+    x = np.asarray(audio, dtype=np.float32)
+    if x.ndim == 1:
+        return x, 0
+    rms = np.sqrt(np.mean(x.astype(np.float64) ** 2, axis=0))
+    idx = int(np.argmax(rms)) if rms.size else 0
+    return x[:, idx], idx
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -48,141 +59,199 @@ def load_audio(wav_path):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _spectral_flux_curve(audio, sr, hop=512, n_fft=1024):
-    """Fast spectral flux over entire audio. Returns (times, flux)."""
+    """Amplitude-normalised positive spectral flux for anchor finding."""
     from scipy.signal import stft
-    _, times, S = stft(audio, fs=sr, nperseg=n_fft, noverlap=n_fft - hop,
-                       boundary="zeros", padded=True)
-    mag  = np.abs(S)
-    diff = np.diff(mag, axis=1)
-    flux = np.sum(np.maximum(diff, 0.0), axis=0)
-    return times[1:], flux          # flux is between consecutive frames
+    x = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if x.size < n_fft:
+        x = np.pad(x, (0, n_fft - x.size))
+    _, times, S = stft(x, fs=sr, nperseg=n_fft, noverlap=n_fft - hop,
+                       boundary=None, padded=False)
+    mag = np.abs(S)
+    if mag.shape[1] < 2:
+        return np.asarray([], dtype=float), np.asarray([], dtype=float)
+    pos = np.sum(np.maximum(np.diff(mag, axis=1), 0.0), axis=0)
+    den = np.sum(mag[:, :-1] + mag[:, 1:], axis=0) + 1e-12
+    return times[1:], pos / den
 
 
 def _top_peaks(values, times, n=3, min_dist_frac=0.10):
-    """
-    Find top-N peaks in `values` with minimum separation of
-    min_dist_frac * len(values) samples.
-    Returns list of peak times (float, seconds).
-    """
-    if len(values) == 0:
+    """Find top-N positive peaks; zero-only curves return no anchors."""
+    values = np.asarray(values, dtype=float)
+    times = np.asarray(times, dtype=float)
+    if values.size == 0 or times.size == 0 or float(np.max(values)) <= 0.0:
         return []
     min_dist = max(1, int(min_dist_frac * len(values)))
-    buf      = values.copy()
-    peaks    = []
-    for _ in range(n):
+    buf = values.copy()
+    peaks = []
+    for _ in range(min(n, len(values))):
         idx = int(np.argmax(buf))
+        if not np.isfinite(buf[idx]) or buf[idx] <= 0.0:
+            break
         peaks.append(float(times[idx]))
         lo = max(0, idx - min_dist)
         hi = min(len(buf), idx + min_dist + 1)
-        buf[lo:hi] = 0.0
+        buf[lo:hi] = -np.inf
     return peaks
 
 
 def build_preview(audio, sr):
     """
-    Build adaptive preview buffer:
-    - duration < 4s  → full audio
-    - 4–8s           → windows at 25% + 75%
-    - ≥ 8s           → windows at 25% + 50% + 75%
+    Build duration-aware preview WINDOWS, not one concatenated signal.
 
-    Window length = min(3s, 10% of duration).
-    Each base position is shifted to the nearest spectral-flux peak
-    within ±10% of duration (if one exists).
+    Keeping windows separate prevents artificial spectral-flux events at joins
+    between distant regions of the output.
     """
-    duration   = len(audio) / sr
-
+    x = np.asarray(audio, dtype=np.float32)
+    duration = x.shape[0] / float(sr)
     if duration < 4.0:
-        return audio
+        return [x]
 
+    rep, _ = _representative_channel(x)
     win_samples = max(int(0.5 * sr),
                       min(int(3.0 * sr), int(0.10 * duration * sr)))
-
-    # Adaptive shift anchors
-    flux_times, flux = _spectral_flux_curve(audio, sr)
-    top3 = _top_peaks(flux, flux_times, n=3) if len(flux_times) > 0 else []
-
+    flux_times, flux = _spectral_flux_curve(rep, sr)
+    top3 = _top_peaks(flux, flux_times, n=3) if len(flux_times) else []
     base_fracs = [0.25, 0.75] if duration < 8.0 else [0.25, 0.50, 0.75]
 
     windows = []
     for frac in base_fracs:
         center_t = frac * duration
-        # Shift to nearest flux peak within ±10% duration
-        for pt in top3:
-            if abs(pt - center_t) < 0.10 * duration:
-                center_t = pt
-                break
-
-        center_s = int(center_t * sr)
-        half     = win_samples // 2
-        start    = max(0, center_s - half)
-        end      = min(len(audio), start + win_samples)
+        nearby = [pt for pt in top3 if abs(pt - center_t) < 0.10 * duration]
+        if nearby:
+            center_t = min(nearby, key=lambda pt: abs(pt - center_t))
+        center_s = int(round(center_t * sr))
+        half = win_samples // 2
+        start = max(0, center_s - half)
+        end = min(x.shape[0], start + win_samples)
+        start = max(0, end - win_samples)
         if end > start:
-            windows.append(audio[start:end])
+            windows.append(x[start:end])
 
-    return np.concatenate(windows) if windows else audio
+    return windows if windows else [x]
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-# Metrics  (numpy + scipy only)
-# ═══════════════════════════════════════════════════════════════════════════
-
-def compute_metrics(audio, sr):
-    """
-    Returns dict with:
-        centroid_mean, centroid_var   — spectral centroid statistics
-        spectral_flatness             — mean Wiener entropy (0=tonal, 1=noise)
-        rms_energy_var                — variance of per-frame RMS
-        spectral_flux                 — mean positive spectral change
-    """
+def _compute_metrics_mono(audio, sr):
+    """Silence-aware metrics for one mono window."""
     from scipy.signal import stft
+    from numpy.lib.stride_tricks import as_strided
 
-    n_fft = 1024
-    hop   = 256
-    _, _, S = stft(audio, fs=sr, nperseg=n_fft, noverlap=n_fft - hop,
-                   boundary="zeros", padded=True)
-    mag   = np.abs(S) + 1e-10          # [F, T]
-    freqs = np.linspace(0.0, sr / 2.0, mag.shape[0])
+    x = np.asarray(audio, dtype=np.float32).reshape(-1)
+    n_fft, hop = 1024, 256
+    if x.size == 0:
+        return {
+            "centroid_mean": 0.0, "centroid_var": 0.0,
+            "spectral_flatness": 0.0, "rms_energy_var": 0.0,
+            "spectral_flux": 0.0, "active_fraction": 0.0,
+            "_rms_mean": 0.0,
+        }
+    if x.size < n_fft:
+        x = np.pad(x, (0, n_fft - x.size))
 
-    # Spectral centroid
-    total   = mag.sum(axis=0) + 1e-10
-    centroid = (freqs[:, np.newaxis] * mag).sum(axis=0) / total
+    freqs, _, S = stft(x, fs=sr, nperseg=n_fft, noverlap=n_fft - hop,
+                       boundary=None, padded=False)
+    mag = np.abs(S).astype(np.float64)
+
+    n_frames = max(1, 1 + (len(x) - n_fft) // hop)
+    usable = (n_frames - 1) * hop + n_fft
+    frames = as_strided(
+        x[:usable],
+        shape=(n_frames, n_fft),
+        strides=(hop * x.strides[0], x.strides[0]),
+    )
+    rms_vals = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1))
+    rms_max = float(np.max(rms_vals)) if rms_vals.size else 0.0
+    if rms_max <= 1e-12:
+        return {
+            "centroid_mean": 0.0, "centroid_var": 0.0,
+            "spectral_flatness": 0.0, "rms_energy_var": 0.0,
+            "spectral_flux": 0.0, "active_fraction": 0.0,
+            "_rms_mean": 0.0,
+        }
+
+    active = rms_vals >= max(rms_max * 1e-3, 1e-12)  # 60 dB below strongest
+    active_fraction = float(np.mean(active))
+    if not np.any(active):
+        active[:] = True
+
+    mag = mag[:, :len(active)]
+    mag_a = mag[:, active]
+    total = np.sum(mag_a, axis=0) + 1e-20
+    centroid = np.sum(freqs[:, None] * mag_a, axis=0) / total
     centroid_mean = float(np.mean(centroid))
-    centroid_var  = float(np.var(centroid))
+    centroid_var = float(np.var(centroid))
 
-    # Spectral flatness  (geometric mean / arithmetic mean per frame)
-    log_mag    = np.log(mag)
-    geom_mean  = np.exp(log_mag.mean(axis=0))
-    arith_mean = mag.mean(axis=0)
-    flatness   = float(np.mean(geom_mean / (arith_mean + 1e-10)))
-    flatness   = float(np.clip(flatness, 0.0, 1.0))
+    frame_floor = np.maximum(np.max(mag_a, axis=0, keepdims=True) * 1e-12, 1e-20)
+    safe_mag = np.maximum(mag_a, frame_floor)
+    geom = np.exp(np.mean(np.log(safe_mag), axis=0))
+    arith = np.mean(mag_a, axis=0) + 1e-20
+    flatness = float(np.clip(np.mean(geom / arith), 0.0, 1.0))
 
-    # RMS energy variance over short frames
-    frame_len = n_fft
-    n_rms_frames = max(1, (len(audio) - frame_len) // hop + 1)
-    # Truncate audio to fit exact frames, reshape, compute per-frame RMS
-    usable = n_rms_frames * hop + (frame_len - hop)
-    if usable <= len(audio) and n_rms_frames > 0:
-        # Use stride tricks for overlapping frames
-        from numpy.lib.stride_tricks import as_strided
-        itemsize = audio.strides[0]
-        frames = as_strided(audio[:usable],
-                            shape=(n_rms_frames, frame_len),
-                            strides=(hop * itemsize, itemsize))
-        rms_vals = np.sqrt(np.mean(frames.astype(np.float64) ** 2, axis=1))
-        rms_energy_var = float(np.var(rms_vals))
+    rms_active = rms_vals[active]
+    rms_energy_var = float(np.var(rms_active)) if rms_active.size else 0.0
+    rms_mean = float(np.mean(rms_active)) if rms_active.size else 0.0
+
+    if mag.shape[1] >= 2:
+        pos = np.sum(np.maximum(np.diff(mag, axis=1), 0.0), axis=0)
+        den = np.sum(mag[:, :-1] + mag[:, 1:], axis=0) + 1e-12
+        pair_active = active[:-1] | active[1:]
+        flux_vals = pos / den
+        spectral_flux = float(np.mean(flux_vals[pair_active])) if np.any(pair_active) else 0.0
     else:
-        rms_energy_var = 0.0
-
-    # Spectral flux (mean positive inter-frame difference)
-    diff = np.diff(mag, axis=1)
-    spectral_flux = float(np.mean(np.sum(np.maximum(diff, 0.0), axis=0)))
+        spectral_flux = 0.0
 
     return {
-        "centroid_mean":    centroid_mean,
-        "centroid_var":     centroid_var,
+        "centroid_mean": centroid_mean,
+        "centroid_var": centroid_var,
         "spectral_flatness": flatness,
-        "rms_energy_var":   rms_energy_var,
-        "spectral_flux":    spectral_flux,
+        "rms_energy_var": rms_energy_var,
+        "spectral_flux": spectral_flux,
+        "active_fraction": active_fraction,
+        "_rms_mean": rms_mean,
+    }
+
+
+def compute_metrics(preview_windows, sr):
+    """
+    Aggregate metrics across windows and channels without concatenating distant
+    regions and without cancellation-prone mono fold-down.
+    """
+    windows = [preview_windows] if isinstance(preview_windows, np.ndarray) else list(preview_windows)
+    records, weights = [], []
+
+    for w in windows:
+        arr = np.asarray(w, dtype=np.float32)
+        if arr.ndim == 1:
+            arr = arr[:, None]
+        for ch in range(arr.shape[1]):
+            m = _compute_metrics_mono(arr[:, ch], sr)
+            wt = max(m["_rms_mean"], 1e-12) * max(1, arr.shape[0])
+            records.append(m)
+            weights.append(wt)
+
+    if not records or sum(weights) <= 1e-9:
+        return {
+            "centroid_mean": 0.0, "centroid_var": 0.0,
+            "spectral_flatness": 0.0, "rms_energy_var": 0.0,
+            "spectral_flux": 0.0, "active_fraction": 0.0,
+        }
+
+    ww = np.asarray(weights, dtype=np.float64)
+    ww /= np.sum(ww)
+    means = np.asarray([r["centroid_mean"] for r in records], dtype=float)
+    vars_ = np.asarray([r["centroid_var"] for r in records], dtype=float)
+    centroid_mean = float(np.sum(ww * means))
+    centroid_var = float(max(0.0, np.sum(ww * (vars_ + means * means)) - centroid_mean ** 2))
+
+    def avg(key):
+        return float(np.sum(ww * np.asarray([r[key] for r in records], dtype=float)))
+
+    return {
+        "centroid_mean": centroid_mean,
+        "centroid_var": centroid_var,
+        "spectral_flatness": avg("spectral_flatness"),
+        "rms_energy_var": avg("rms_energy_var"),
+        "spectral_flux": avg("spectral_flux"),
+        "active_fraction": avg("active_fraction"),
     }
 
 
@@ -191,29 +260,36 @@ def compute_metrics(audio, sr):
 # ═══════════════════════════════════════════════════════════════════════════
 
 TOLERANCE_DEFAULTS = {
-    "centroid_mean":    0.03,
-    "centroid_var":     0.03,
+    "centroid_mean":     0.03,
+    "centroid_var":      0.03,
     "spectral_flatness": 0.02,
-    "rms_energy_var":   0.02,
-    "spectral_flux":    0.03,
+    "rms_energy_var":    0.02,
+    "spectral_flux":     0.03,
 }
 
+STABILITY_FLOORS = {
+    "centroid_mean":     50.0,
+    "centroid_var":      100.0,
+    "spectral_flatness": 0.01,
+    "rms_energy_var":    1e-6,
+    "spectral_flux":     0.002,
+}
+
+
 def check_early_stop(current, previous, tol_override=None):
-    """
-    Return True (stop) when ALL metric relative changes are below threshold.
-    """
+    """Stop when all metric changes are small on a symmetric relative scale."""
     if previous is None:
         return False
     tol = dict(TOLERANCE_DEFAULTS)
     if tol_override:
         tol.update(tol_override)
     for key, threshold in tol.items():
-        curr = current.get(key, 0.0)
-        prev = previous.get(key, 0.0)
-        denom = max(abs(prev), 1e-10)
+        curr = float(current.get(key, 0.0))
+        prev = float(previous.get(key, 0.0))
+        denom = max(abs(curr), abs(prev), STABILITY_FLOORS.get(key, 1e-10))
         if abs(curr - prev) / denom > threshold:
-            return False                 # still changing — keep going
-    return True                          # all stable — stop
+            return False
+    return True
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -252,7 +328,7 @@ def update_params_mds(params, metrics, prev_metrics):
     cvar       = metrics["centroid_var"]
     reason     = "stable"
 
-    LOW_FLUX   = 0.005
+    LOW_FLUX   = 0.002
     HIGH_FLUX  = 0.050
     LOW_CVAR   = 300.0
     HIGH_CVAR  = 8000.0
@@ -312,7 +388,7 @@ def update_params_freeze(params, metrics, prev_metrics):
     reason   = "stable"
 
     HIGH_FLATNESS = 0.15
-    LOW_FLUX      = 0.003
+    LOW_FLUX      = 0.001
 
     if flatness > HIGH_FLATNESS:
         # Too noisy: reduce artifact amplitude, fewer freeze points
@@ -400,13 +476,16 @@ def _canon_clamp(p):
     for k, (lo, hi) in _CANON_BOUNDS.items():
         if k in out:
             out[k] = max(lo, min(hi, out[k]))
-    # Enforce delay ordering: delay_2 < delay_3 < delay_4
-    d2 = out.get("delay_2", 0.3)
-    d3 = out.get("delay_3", 0.6)
-    d4 = out.get("delay_4", 0.9)
+
+    # Enforce delay_2 < delay_3 < delay_4 WITHOUT pushing values back outside
+    # the documented 5 s upper bound.
     step = 0.1
-    d3 = max(d3, d2 + step)
-    d4 = max(d4, d3 + step)
+    d2 = min(out.get("delay_2", 0.3), _CANON_BOUNDS["delay_2"][1] - 2 * step)
+    d3 = max(out.get("delay_3", 0.6), d2 + step)
+    d3 = min(d3, _CANON_BOUNDS["delay_3"][1] - step)
+    d4 = max(out.get("delay_4", 0.9), d3 + step)
+    d4 = min(d4, _CANON_BOUNDS["delay_4"][1])
+    out["delay_2"] = d2
     out["delay_3"] = d3
     out["delay_4"] = d4
     return out
@@ -417,8 +496,8 @@ def update_params_canon(params, metrics, prev_metrics):
     cvar = metrics["centroid_var"]
     reason = "stable"
 
-    LOW_FLUX  = 0.002
-    HIGH_FLUX = 0.060
+    LOW_FLUX  = 0.001
+    HIGH_FLUX = 0.050
 
     if flux < LOW_FLUX:
         # Too homogeneous: spread the pitch intervals and delays wider
@@ -429,11 +508,20 @@ def update_params_canon(params, metrics, prev_metrics):
         p["delay_4"]         = p.get("delay_4",          0.9) + 0.05
         reason = "flux_too_low: widened pitch intervals and delays"
     elif flux > HIGH_FLUX:
-        # Too chaotic: pull intervals and delays closer together
-        p["shift_percent_2"] = p.get("shift_percent_2",  6.0) - 2.0
-        p["shift_percent_3"] = p.get("shift_percent_3", 12.0) - 2.0
-        p["delay_2"]         = max(0.1, p.get("delay_2", 0.3) - 0.05)
-        reason = "flux_too_high: tightened pitch intervals"
+        # Too chaotic: pull pitch offsets monotonically TOWARD zero and shrink
+        # the total canon delay spread. Simple subtraction would cross zero and
+        # start widening the interval again after several iterations.
+        def toward_zero(v, step):
+            v = float(v)
+            return math.copysign(max(0.0, abs(v) - step), v) if v != 0 else 0.0
+
+        p["shift_percent_2"] = toward_zero(p.get("shift_percent_2",  6.0), 2.0)
+        p["shift_percent_3"] = toward_zero(p.get("shift_percent_3", 12.0), 2.0)
+        p["shift_percent_4"] = toward_zero(p.get("shift_percent_4", -5.5), 2.0)
+        p["delay_2"] = max(0.05, p.get("delay_2", 0.3) - 0.05)
+        p["delay_3"] = max(0.15, p.get("delay_3", 0.6) - 0.05)
+        p["delay_4"] = max(0.25, p.get("delay_4", 0.9) - 0.05)
+        reason = "flux_too_high: tightened pitch intervals + canon spread"
 
     return _canon_clamp(p), reason
 
@@ -529,36 +617,56 @@ def main():
 
     # ── Load audio + build preview ──────────────────────────────────────
     audio, sr = load_audio(args.wav_path)
-    preview   = build_preview(audio, sr)
-    duration  = len(audio) / sr
+    preview_windows = build_preview(audio, sr)
+    duration = audio.shape[0] / float(sr)
+    preview_dur = sum(w.shape[0] for w in preview_windows) / float(sr)
 
     if args.debug:
-        print("  Audio: %.2fs  SR=%d  Preview: %.2fs"
-              % (duration, sr, len(preview) / sr))
+        _, rep_idx = _representative_channel(audio)
+        print("  Audio: %.2fs  SR=%d  channels=%d  anchor_ch=%d"
+              % (duration, sr, audio.shape[1], rep_idx + 1))
+        print("  Preview: %d separate window(s), %.2fs total"
+              % (len(preview_windows), preview_dur))
 
     # ── Compute metrics ─────────────────────────────────────────────────
-    metrics = compute_metrics(preview, sr)
+    metrics = compute_metrics(preview_windows, sr)
 
     if args.debug:
         print("  Metrics: centroid=%.1f cvar=%.1f flatness=%.4f "
-              "rms_var=%.6f flux=%.6f"
+              "rms_var=%.6f flux=%.6f active=%.3f"
               % (metrics["centroid_mean"], metrics["centroid_var"],
                  metrics["spectral_flatness"], metrics["rms_energy_var"],
-                 metrics["spectral_flux"]))
+                 metrics["spectral_flux"], metrics.get("active_fraction", 0.0)))
 
-    # ── Early stop ──────────────────────────────────────────────────────
-    stop_flag = check_early_stop(metrics, prev_metrics,
-                                 tol_override=tolerance if tolerance else None)
+    # ── Reflective update + guarded early stop ───────────────────────────
+    # A stochastic stage can produce two similar metric snapshots by chance.
+    # Therefore "metrics stable" alone is insufficient: stop only when the
+    # controller ALSO proposes no parameter change.
+    metrics_stable = check_early_stop(
+        metrics, prev_metrics,
+        tol_override=tolerance if tolerance else None)
 
-    # ── Update params ───────────────────────────────────────────────────
     if stage == "mds":
-        new_params, reason = update_params_mds(params, metrics, prev_metrics)
+        candidate_params, reason = update_params_mds(params, metrics, prev_metrics)
     elif stage == "freeze":
-        new_params, reason = update_params_freeze(params, metrics, prev_metrics)
+        candidate_params, reason = update_params_freeze(params, metrics, prev_metrics)
     elif stage == "cascade":
-        new_params, reason = update_params_cascade(params, metrics, prev_metrics)
+        candidate_params, reason = update_params_cascade(params, metrics, prev_metrics)
     else:
-        new_params, reason = update_params_canon(params, metrics, prev_metrics)
+        candidate_params, reason = update_params_canon(params, metrics, prev_metrics)
+
+    keys = sorted(set(params) | set(candidate_params))
+    params_unchanged = all(
+        abs(float(candidate_params.get(k, 0.0)) - float(params.get(k, 0.0))) <= 1e-12
+        for k in keys
+    )
+    stop_flag = bool(metrics_stable and params_unchanged)
+
+    if stop_flag:
+        new_params = dict(params)
+        reason = "metrics_and_parameters_stabilised"
+    else:
+        new_params = candidate_params
 
     if args.debug:
         print("  Reason:", reason)

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Capture Python stdout/stderr to Info window on failure
+# Version: 1.4.1 (2026) - ASIO-safe callback streaming
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -29,6 +29,21 @@
 #      The list is queried live; your choice is remembered for next time.
 #   4. Python plays back the audio on the chosen device.
 #   5. Temp file is deleted automatically when playback ends.
+#
+# Changelog v1.4.1:
+#   - Python playback now uses callback + bounded queue streaming instead of
+#     blocking OutputStream.write(), fixing ASIO Pa_StopStream -9987 /
+#     "Wait timed out" failures observed on Studio USB ASIO Driver.
+#   - Bounded-memory playback is retained; PortAudio chooses the native callback
+#     block size (blocksize=0), while low/high select the device latency hint.
+#
+# Changelog v1.4:
+#   - Remember output devices by a stable fingerprint (name + host API +
+#     output channel count), not only by PortAudio index.
+#   - Device enumeration failures are surfaced in the Info window.
+#   - Successful Python warnings/debug output is displayed instead of discarded.
+#   - Temp files include the selected Sound object id to reduce run collisions.
+#   - Bundled Python v1.4 streams audio from disk instead of loading it all into RAM.
 #
 # Changelog v1.3:
 #   - On playback failure, the actual Python stdout/stderr is now captured to a
@@ -90,12 +105,13 @@ endif
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
-tempWav$         = tempDir$ + "temp_play.wav"
-deviceListFile$  = tempDir$ + "temp_play_devices.txt"
-playStatusFile$  = tempDir$ + "temp_play_status.ok"
-playLogFile$     = tempDir$ + "temp_play_log.txt"
-probePy$         = tempDir$ + "temp_play_probe.py"
-probeMarker$     = tempDir$ + "temp_play_probe.ok"
+tempTag$         = string$(sound)
+tempWav$         = tempDir$ + "temp_play_" + tempTag$ + ".wav"
+deviceListFile$  = tempDir$ + "temp_play_devices_" + tempTag$ + ".tsv"
+playStatusFile$  = tempDir$ + "temp_play_status_" + tempTag$ + ".ok"
+playLogFile$     = tempDir$ + "temp_play_log_" + tempTag$ + ".txt"
+probePy$         = tempDir$ + "temp_play_probe_" + tempTag$ + ".py"
+probeMarker$     = tempDir$ + "temp_play_probe_" + tempTag$ + ".ok"
 configFile$ = pluginDir$ + "play_device.cfg"
 legacyConfigFile$ = defaultDirectory$ + "/../play_device.cfg"
 
@@ -149,7 +165,7 @@ dur       = Get total duration
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Multichannel Playback v1.3 ==="
+writeInfoLine:  "=== Multichannel Playback v1.4.1 ==="
 appendInfoLine: "Sound:    ", soundName$
 appendInfoLine: "Channels: ", nChannels
 appendInfoLine: "SR:       ", sr, " Hz"
@@ -225,44 +241,78 @@ if fileReadable(deviceListFile$)
     deleteFile: deviceListFile$
 endif
 
-runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """ --devices-tsv """ + deviceListFileJ$ + """"
+# Capture enumeration output too; if PortAudio/ASIO discovery fails we need the
+# actual error rather than an empty device menu.
+runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """ --devices-tsv """ + deviceListFileJ$ + """ > """ + playLogFileJ$ + """ 2>&1"
+
+if not fileReadable(deviceListFile$)
+    appendInfoLine: ""
+    appendInfoLine: "--- Device query output ---"
+    if fileReadable(playLogFile$)
+        appendInfoLine: readFile$(playLogFile$)
+    else
+        appendInfoLine: "(no output was captured)"
+    endif
+    appendInfoLine: "---------------------------"
+    @cleanUpTempFiles
+    exitScript: "Could not enumerate output devices. See the Info window above."
+endif
 
 nDev = 0
-if fileReadable(deviceListFile$)
-    Read Strings from raw text file: deviceListFile$
-    strObj = selected("Strings")
-    nDev = Get number of strings
-    for i from 1 to nDev
-        selectObject: strObj
-        line$ = Get string: i
-        tabPos = index(line$, tab$)
-        if tabPos > 0
-            deviceId[i]     = number(left$(line$, tabPos - 1))
-            deviceLabel$[i] = right$(line$, length(line$) - tabPos)
+Read Strings from raw text file: deviceListFile$
+strObj = selected("Strings")
+nDev = Get number of strings
+for i from 1 to nDev
+    selectObject: strObj
+    line$ = Get string: i
+    tabPos1 = index(line$, tab$)
+    if tabPos1 > 0
+        deviceId[i] = number(left$(line$, tabPos1 - 1))
+        rest$ = right$(line$, length(line$) - tabPos1)
+        tabPos2 = index(rest$, tab$)
+        if tabPos2 > 0
+            deviceKey$[i]   = left$(rest$, tabPos2 - 1)
+            deviceLabel$[i] = right$(rest$, length(rest$) - tabPos2)
         else
-            deviceId[i]     = -1
-            deviceLabel$[i] = line$
+            # Backward-compatible fallback for an older two-column helper.
+            deviceKey$[i]   = "legacy-id-" + string$(deviceId[i])
+            deviceLabel$[i] = rest$
         endif
-    endfor
-    removeObject: strObj
-    deleteFile: deviceListFile$
+    else
+        deviceId[i]     = -1
+        deviceKey$[i]   = "invalid"
+        deviceLabel$[i] = line$
+    endif
+endfor
+removeObject: strObj
+deleteFile: deviceListFile$
+if fileReadable(playLogFile$)
+    deleteFile: playLogFile$
 endif
 
 appendInfoLine: "  ", nDev, " output device(s) found."
+if nDev = 0
+    @cleanUpTempFiles
+    exitScript: "No output-capable audio devices were found."
+endif
 appendInfoLine: ""
 
-# ---- Remembered default device (from last run) ----
-savedDevice = -1
+# ---- Remembered default device (stable key; read old numeric config too) ----
+savedDeviceKey$ = ""
+savedLegacyDevice = -1
 if fileReadable(configFile$)
-    savedDevice = number(readFile$(configFile$))
-    if savedDevice = undefined
-        savedDevice = -1
+    savedRaw$ = readFile$(configFile$)
+    savedNumber = number(savedRaw$)
+    if savedNumber <> undefined
+        savedLegacyDevice = savedNumber
+    else
+        savedDeviceKey$ = savedRaw$
     endif
 endif
 
 defaultIdx = 1
 for i from 1 to nDev
-    if deviceId[i] = savedDevice
+    if (savedDeviceKey$ <> "" and deviceKey$[i] = savedDeviceKey$) or (savedLegacyDevice >= 0 and deviceId[i] = savedLegacyDevice)
         defaultIdx = i + 1
     endif
 endfor
@@ -294,13 +344,16 @@ endif
 # ---- Map dropdown choice -> device id, and remember it ----
 if device = 1
     chosenDevice = -1
+    chosenDeviceKey$ = "SYSTEM_DEFAULT"
     appendInfoLine: "Device:   system default"
 else
     chosenDevice = deviceId[device - 1]
+    chosenDeviceKey$ = deviceKey$[device - 1]
     appendInfoLine: "Device:   ", deviceLabel$[device - 1]
 endif
 
-writeFile: configFile$, string$(chosenDevice)
+# Persist a stable fingerprint, not a volatile PortAudio index.
+writeFile: configFile$, chosenDeviceKey$
 
 # ---- Latency string ----
 if latency = 1
@@ -377,7 +430,19 @@ if not fileReadable(playStatusFile$)
     exitScript: "Python playback failed. See the Info window above for the Python error."
 else
     deleteFile: playStatusFile$
+    # On success, preserve useful warnings and requested debug information.
     if fileReadable(playLogFile$)
+        pyOutput$ = readFile$(playLogFile$)
+        if pyOutput$ <> ""
+            appendInfoLine: ""
+            if print_debug_info
+                appendInfoLine: "--- Python debug output ---"
+            else
+                appendInfoLine: "--- Python playback note ---"
+            endif
+            appendInfoLine: pyOutput$
+            appendInfoLine: "----------------------------"
+        endif
         deleteFile: playLogFile$
     endif
 endif

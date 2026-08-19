@@ -1,6 +1,6 @@
 """
 pitch_tracked_additive.py — IRCAM-style Pitch-Tracked Additive Resynthesizer
-Version: 1.4 (2026)
+Version: 1.5 (2026)
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -32,6 +32,26 @@ Research modes:   none (default; full artistic engine, unchanged), and
                   pause structure and duration preserved).
 
 No external model downloads. No internet. No PyTorch/TensorFlow/sklearn.
+
+Version 1.5 correctness / robustness changes:
+  - Analysis channel is explicit (--analysis_channel, 1-based), so Praat pitch/
+    intensity extraction and Python envelope/RMS/copy-original paths use the
+    same representative channel instead of channel-1 vs stereo-average.
+  - Non-original --duration now time-scales the complete F0 / voicing /
+    intensity trajectories to the requested duration instead of cropping or
+    holding the final analysis frame.
+  - F0 median/low-pass smoothing is performed independently inside each voiced
+    segment; pitch no longer bleeds across pauses.
+  - Voiced fades are constrained to voiced segments, fixing leakage from very
+    short voiced islands into surrounding unvoiced regions.
+  - 1/k and 1/k^2 use paired order ranks for ring/FM sidebands, so matching
+    upper/lower sidebands receive matching law weights.
+  - random_slow amplitude modulation is generated one partial at a time; the
+    engine no longer allocates a P x N amplitude matrix.
+  - Partial-frequency statistics are also computed one row at a time, keeping
+    the long-file memory design O(N) rather than accidentally rebuilding P x N.
+  - Oscillator phase keeps advancing while a voiced partial is temporarily
+    outside the render band, so re-entry does not resume from a frozen phase.
 """
 
 import sys
@@ -86,11 +106,15 @@ def load_csv_two_cols(path, col_a, col_b, col_c=None):
 # F0 + envelope interpolation/smoothing
 # ═══════════════════════════════════════════════════════════════════════════
 
-def interpolate_f0_to_samplerate(f0_rows, n_samples, sr):
+def interpolate_f0_to_samplerate(f0_rows, n_samples, sr, time_scale=1.0):
     """
-    f0_rows: list of (time, f0_hz, voiced) tuples.
-    Returns: (f0_arr, voiced_arr) — both length n_samples.
-    Unvoiced samples have f0=0, voiced=0.
+    f0_rows: list of (time, f0_hz, voiced) tuples on the SOURCE time axis.
+    Returns (f0_arr, voiced_arr), both length n_samples.
+
+    time_scale maps output sample time back to source-analysis time.  A value
+    source_duration / output_duration therefore stretches/compresses the full
+    tracked contour to the requested output duration.  time_scale=1 preserves
+    the historical same-duration behaviour.
     """
     import numpy as np
 
@@ -102,96 +126,101 @@ def interpolate_f0_to_samplerate(f0_rows, n_samples, sr):
     f0s   = np.array([r[1] for r in f0_rows], dtype=np.float64)
     vois  = np.array([r[2] for r in f0_rows], dtype=np.float64)
 
-    sample_times = np.arange(n_samples, dtype=np.float64) / sr
+    sample_times = (np.arange(n_samples, dtype=np.float64) / sr) * float(time_scale)
 
-    # Build voiced mask at sample rate (nearest-neighbor on voiced flag)
+    # Linear interpolation + threshold is equivalent to nearest-boundary
+    # switching for the binary voiced flag, while supporting time scaling.
     voiced_arr = np.interp(sample_times, times, vois)
     voiced_arr = (voiced_arr >= 0.5).astype(np.float64)
 
-    # For F0, only interpolate within voiced regions; unvoiced -> 0
     voiced_idx = np.where(vois > 0.5)[0]
     if len(voiced_idx) == 0:
-        return np.zeros(n_samples), voiced_arr
+        return np.zeros(n_samples, dtype=np.float64), voiced_arr
 
     voiced_times = times[voiced_idx]
     voiced_f0    = f0s[voiced_idx]
-
     f0_arr = np.interp(sample_times, voiced_times, voiced_f0,
                        left=voiced_f0[0], right=voiced_f0[-1])
-    # Zero out unvoiced regions
-    f0_arr = f0_arr * voiced_arr
+    f0_arr *= voiced_arr
     return f0_arr, voiced_arr
+
+
+def _true_runs(mask):
+    """Return half-open [start, end) runs where a boolean mask is True."""
+    import numpy as np
+    m = np.asarray(mask, dtype=np.int8)
+    if m.size == 0:
+        return []
+    edges = np.diff(np.concatenate(([0], m, [0])))
+    starts = np.where(edges == 1)[0]
+    ends   = np.where(edges == -1)[0]
+    return list(zip(starts.tolist(), ends.tolist()))
 
 
 def smooth_f0(f0_arr, voiced_arr, sr,
               median_window_ms=20.0, lowpass_cutoff_hz=12.0):
     """
-    Median-filter then low-pass smooth voiced F0 segments.
-    Unvoiced samples remain 0.
+    Median-filter then low-pass smooth EACH contiguous voiced segment.
+    Unvoiced samples remain exactly zero, and pitch information cannot bleed
+    across a pause into the next voiced segment.
     """
     import numpy as np
-    from scipy.signal import medfilt, butter, filtfilt
+    from scipy.ndimage import median_filter
+    from scipy.signal import butter, sosfiltfilt
 
-    out = f0_arr.copy()
-
-    # Operate only on voiced regions; preserve unvoiced as 0
-    voiced_mask = voiced_arr > 0.5
+    out = np.zeros_like(f0_arr, dtype=np.float64)
+    voiced_mask = np.asarray(voiced_arr) > 0.5
     if not np.any(voiced_mask):
         return out
 
-    # Median filter (odd window)
-    win = max(3, int(median_window_ms * 1e-3 * sr))
-    if win % 2 == 0:
-        win += 1
-    if win < len(out):
-        # Vectorised forward/backward fill of unvoiced gaps before median filter
-        filled = out.copy()
-        # Forward fill
-        voiced_vals = np.where(voiced_mask, filled, 0.0)
-        idx = np.where(voiced_mask, np.arange(len(filled)), 0)
-        np.maximum.accumulate(idx, out=idx)
-        mask_any = idx > 0
-        filled = np.where(mask_any, voiced_vals[idx], filled)
-        # Backward fill for leading unvoiced region
-        idx_rev = np.where(voiced_mask[::-1], np.arange(len(filled)), 0)
-        np.maximum.accumulate(idx_rev, out=idx_rev)
-        back_vals = filled[::-1]
-        filled[::-1] = np.where(idx_rev > 0, back_vals[idx_rev], filled[::-1])
-        filtered = medfilt(filled, kernel_size=win)
-    else:
-        filtered = out.copy()
+    base_win = max(3, int(median_window_ms * 1e-3 * sr))
+    if base_win % 2 == 0:
+        base_win += 1
 
-    # Low-pass smoothing (Butterworth, zero-phase)
     nyq = sr / 2.0
     cutoff = min(lowpass_cutoff_hz, nyq * 0.45)
-    if cutoff > 0.5 and len(filtered) > 16:
+    sos = None
+    if cutoff > 0.5:
         try:
-            b, a = butter(2, cutoff / nyq, btype="low")
-            filtered = filtfilt(b, a, filtered)
+            sos = butter(2, cutoff / nyq, btype="low", output="sos")
         except Exception:
-            pass  # Fall back to median-only
+            sos = None
 
-    # Re-apply voiced mask
-    out = filtered * voiced_mask.astype(np.float64)
-    # Safety: clamp non-finite
-    out[~np.isfinite(out)] = 0.0
-    out[out < 0] = 0.0
+    for start, end in _true_runs(voiced_mask):
+        seg = np.asarray(f0_arr[start:end], dtype=np.float64).copy()
+        L = len(seg)
+        if L == 0:
+            continue
+
+        # Nearest-edge median filtering avoids the zero-padding edge sag of
+        # scipy.signal.medfilt and never consults samples across a pause.
+        win = min(base_win, L if L % 2 == 1 else max(1, L - 1))
+        if win >= 3:
+            seg = median_filter(seg, size=win, mode="nearest")
+
+        if sos is not None and L > 16:
+            try:
+                seg = sosfiltfilt(sos, seg)
+            except Exception:
+                pass
+
+        seg[~np.isfinite(seg)] = 0.0
+        seg[seg < 0.0] = 0.0
+        out[start:end] = seg
+
     return out
 
 
-def interpolate_intensity_to_samplerate(int_rows, n_samples, sr):
-    """int_rows: list of (time, intensity_db). Returns array of length n_samples."""
+def interpolate_intensity_to_samplerate(int_rows, n_samples, sr, time_scale=1.0):
+    """Interpolate source-time intensity dB onto the requested output time axis."""
     import numpy as np
     if not int_rows:
         return np.zeros(n_samples, dtype=np.float64)
 
     times = np.array([r[0] for r in int_rows], dtype=np.float64)
     db    = np.array([r[1] for r in int_rows], dtype=np.float64)
-
-    sample_times = np.arange(n_samples, dtype=np.float64) / sr
-    out = np.interp(sample_times, times, db,
-                    left=db[0], right=db[-1])
-    return out
+    sample_times = (np.arange(n_samples, dtype=np.float64) / sr) * float(time_scale)
+    return np.interp(sample_times, times, db, left=db[0], right=db[-1])
 
 
 def db_to_envelope(db_arr, sr, ar_smoothing_ms):
@@ -349,11 +378,78 @@ def build_partial_freqs(f0_arr, num_partials, family,
     return freqs, weights
 
 
+def partial_count(num_partials, family):
+    """Actual oscillator count for a requested family."""
+    n = max(1, int(num_partials))
+    if family == "ring_sidebands":
+        return 2 * n
+    if family == "fm_sidebands":
+        return 1 + 2 * n
+    return n
+
+
+def partial_order_ranks(num_partials, family):
+    """
+    Order coordinate used by the abstract 1/k and 1/k^2 amplitude laws.
+
+    Ring/FM upper and lower sidebands of the SAME modulation order share a
+    rank.  This fixes the old flattened-array asymmetry where a lower sideband
+    was quieter merely because it appeared later in memory.
+    """
+    import numpy as np
+    n = max(1, int(num_partials))
+    if family == "ring_sidebands":
+        base = np.arange(1, n + 1, dtype=np.float64)
+        return np.concatenate([base, base])
+    if family == "fm_sidebands":
+        sb = np.arange(2, n + 2, dtype=np.float64)  # carrier rank=1, n-th SB rank=n+1
+        return np.concatenate([np.array([1.0]), sb, sb])
+    return np.arange(1, partial_count(n, family) + 1, dtype=np.float64)
+
+
+def partial_frequency_row(f0_arr, p_idx, num_partials, family,
+                          beta=1.03, freq_shift=0.0,
+                          ring_mod_hz=80.0, fm_ratio=2.0):
+    """Compute one instantaneous-frequency row without allocating P x N."""
+    import numpy as np
+    f0 = np.asarray(f0_arr, dtype=np.float32)
+    p_idx = int(p_idx)
+    n = max(1, int(num_partials))
+
+    if family == "harmonic":
+        return np.float32(p_idx + 1) * f0
+    if family == "odd_only":
+        return np.float32(2 * (p_idx + 1) - 1) * f0
+    if family == "even_only":
+        return np.float32(2 * (p_idx + 1)) * f0
+    if family == "subharmonic":
+        return f0 / np.float32(p_idx + 1)
+    if family == "inharmonic_power":
+        return np.float32(float(p_idx + 1) ** beta) * f0
+    if family == "frequency_shifted":
+        return np.abs(np.float32(p_idx + 1) * f0 + np.float32(freq_shift))
+    if family == "ring_sidebands":
+        half = n
+        base_k = float((p_idx % half) + 1)
+        base = np.float32(base_k) * f0
+        return (np.abs(base + np.float32(ring_mod_hz)) if p_idx < half
+                else np.abs(base - np.float32(ring_mod_hz)))
+    if family == "fm_sidebands":
+        mod = np.float32(fm_ratio) * f0
+        if p_idx == 0:
+            return np.abs(f0)
+        if p_idx <= n:
+            return np.abs(f0 + np.float32(p_idx) * mod)
+        order = p_idx - n
+        return np.abs(f0 - np.float32(order) * mod)
+    return np.float32(p_idx + 1) * f0
+
+
 def amplitude_law_weights(freqs_mean, num_partials_actual, law, sr,
                           tilt_db_per_oct=-6.0,
                           formant_center=1200.0,
                           formant_bw=500.0,
-                          seed=42, n_samples=0):
+                          seed=42, n_samples=0, order_ranks=None):
     """
     Returns either:
         - a (P,) static weight array, or
@@ -367,13 +463,19 @@ def amplitude_law_weights(freqs_mean, num_partials_actual, law, sr,
     rng = np.random.RandomState(seed)
     P = num_partials_actual
 
+    if order_ranks is None:
+        order_ranks = np.arange(1, P + 1, dtype=np.float64)
+    else:
+        order_ranks = np.asarray(order_ranks, dtype=np.float64)
+        if len(order_ranks) != P:
+            order_ranks = np.arange(1, P + 1, dtype=np.float64)
+    order_ranks = np.maximum(order_ranks, 1.0)
+
     if law == "1_over_k":
-        ks = np.arange(1, P + 1, dtype=np.float64)
-        return 1.0 / ks
+        return 1.0 / order_ranks
 
     if law == "1_over_k_squared":
-        ks = np.arange(1, P + 1, dtype=np.float64)
-        return 1.0 / (ks ** 2)
+        return 1.0 / (order_ranks ** 2)
 
     if law == "equal":
         return np.ones(P, dtype=np.float64)
@@ -414,46 +516,39 @@ def amplitude_law_weights(freqs_mean, num_partials_actual, law, sr,
 # ═══════════════════════════════════════════════════════════════════════════
 
 def synthesise_additive(f0_arr, voiced_arr, env_arr, sr,
-                        num_partials, family,
-                        beta, freq_shift,
-                        ring_mod_hz, fm_ratio, fm_index,
-                        amp_law, tilt_db_per_oct,
-                        formant_center, formant_bw,
-                        seed):
+                         num_partials, family,
+                         beta, freq_shift,
+                         ring_mod_hz, fm_ratio, fm_index,
+                         amp_law, tilt_db_per_oct,
+                         formant_center, formant_bw,
+                         seed):
     """
     Sample-accurate phase-accumulation additive synthesis.
 
-    Returns mono float32 array of length n_samples.
+    Peak working memory is O(N), not O(P*N): frequency rows and random-slow
+    amplitude LFOs are generated one partial at a time.
     """
     import numpy as np
     rng = np.random.RandomState(seed)
 
     n = len(f0_arr)
     if n == 0:
-        return np.zeros(0, dtype=np.float32)
+        return np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.float64)
 
-    nyq      = sr / 2.0
-    f_max    = nyq * 0.95
-    f_min    = 20.0
-    tpsr     = np.float32(2.0 * np.pi / sr)
+    nyq   = sr / 2.0
+    f_max = nyq * 0.95
+    f_min = 20.0
+    tpsr  = np.float32(2.0 * np.pi / sr)
 
-    voiced_mask = (voiced_arr > 0.5)
-    f0_32       = f0_arr.astype(np.float32)
-
-    # Build voiced fade mask and combined envelope (float32, length N)
-    fade_len  = max(8, int(0.005 * sr))
+    voiced_mask = np.asarray(voiced_arr) > 0.5
+    fade_len = max(8, int(0.005 * sr))
     fade_mask = _build_voiced_fade(voiced_mask, fade_len).astype(np.float32)
     master_env = (env_arr * fade_mask).astype(np.float32)
 
-    # ── Build partial descriptor arrays without the full (P,N) freq matrix ──
-    # We need: per-partial scalar multiplier of f0, plus the family offsets.
-    # For families that are simple k*f0 we store k; for ring/FM we enumerate
-    # the sideband offsets explicitly.
-
-    # Get the (P,N) freq matrix only to derive mean_f and base_w — but we
-    # do this on a *downsampled* f0 (every 64 samples) to keep it tiny.
-    stride    = 64
-    f0_ds     = f0_arr[::stride]
+    # Tiny downsampled matrix only for mean-frequency amplitude laws and the
+    # existing FM/ring family base weights.
+    stride = 64
+    f0_ds = f0_arr[::stride]
     freqs_ds, base_w = build_partial_freqs(
         f0_ds, num_partials, family,
         beta=beta, freq_shift=freq_shift,
@@ -462,14 +557,13 @@ def synthesise_additive(f0_arr, voiced_arr, env_arr, sr,
     )
     P = freqs_ds.shape[0]
 
-    # Mean frequency per partial (for amplitude law), from downsampled matrix
     if np.any(voiced_mask):
         voiced_ds = voiced_mask[::stride]
         if np.any(voiced_ds):
             fv = freqs_ds[:, voiced_ds]
-            in_band = (fv >= f_min) & (fv <= f_max)
-            f_masked = np.where(in_band, fv, np.nan)
-            with np.errstate(all='ignore'):
+            in_band_ds = (fv >= f_min) & (fv <= f_max)
+            f_masked = np.where(in_band_ds, fv, np.nan)
+            with np.errstate(all="ignore"):
                 mean_f = np.nanmean(f_masked, axis=1)
             mean_f = np.where(np.isfinite(mean_f), mean_f, 0.0)
         else:
@@ -477,134 +571,89 @@ def synthesise_additive(f0_arr, voiced_arr, env_arr, sr,
     else:
         mean_f = np.zeros(P, dtype=np.float64)
 
-    # Amplitude-law weights (P,) or (P, N)
-    amp_w = amplitude_law_weights(
-        mean_f, P, amp_law, sr,
-        tilt_db_per_oct=tilt_db_per_oct,
-        formant_center=formant_center,
-        formant_bw=formant_bw,
-        seed=seed, n_samples=n,
-    )
-    # Combine with family base weights
-    if amp_w.ndim == 1:
-        combined_amp = (amp_w * base_w).astype(np.float32)  # (P,) scalar per partial
-        time_varying_amp = False
+    ranks = partial_order_ranks(num_partials, family)
+    time_varying_amp = (amp_law == "random_slow")
+    if time_varying_amp:
+        # Same RNG draw order as the old vectorised P x N implementation, but
+        # only four P-length descriptor vectors are retained.
+        rng_amp = np.random.RandomState(seed)
+        lfo_f     = rng_amp.uniform(0.2, 2.0, size=P)
+        lfo_phase = rng_amp.uniform(0.0, 2.0 * np.pi, size=P)
+        lfo_depth = rng_amp.uniform(0.3, 1.0, size=P)
+        lfo_base  = rng_amp.uniform(0.3, 1.0, size=P)
+        t = np.arange(n, dtype=np.float64) / max(1.0, sr)
+        combined_amp = None
     else:
-        combined_amp = (amp_w * base_w[:, None]).astype(np.float32)  # (P, N)
-        time_varying_amp = True
+        amp_w = amplitude_law_weights(
+            mean_f, P, amp_law, sr,
+            tilt_db_per_oct=tilt_db_per_oct,
+            formant_center=formant_center,
+            formant_bw=formant_bw,
+            seed=seed, n_samples=0, order_ranks=ranks,
+        )
+        combined_amp = (amp_w * base_w).astype(np.float32)
 
     phase_offsets = rng.uniform(0, 2 * np.pi, size=P).astype(np.float32)
-
-    # ── Per-partial synthesis — never allocate (P, N) ────────────────────
-    # For each partial we compute its full-resolution freq array (N,) on the
-    # fly, accumulate phase, compute sin, scale, and add into y.
-    # Peak RAM: O(N) per partial, reused each iteration.
-
-    # Re-run build_partial_freqs at full resolution to get freq rows one at a
-    # time.  To avoid recomputing the whole matrix, we call it once and
-    # immediately iterate — but that still allocates (P,N).
-    # Instead, we replicate the per-partial formula inline for each family.
-
     voiced_f32 = voiced_mask.astype(np.float32)
     y = np.zeros(n, dtype=np.float32)
 
     for p_idx in range(P):
-        # Compute this partial's instantaneous frequency (N,) without keeping
-        # the full matrix.  Mirrors build_partial_freqs logic per-row.
-        if family == "harmonic":
-            k = float(p_idx + 1)
-            freq = np.float32(k) * f0_32
-        elif family == "odd_only":
-            k = float(2 * (p_idx + 1) - 1)
-            freq = np.float32(k) * f0_32
-        elif family == "even_only":
-            k = float(2 * (p_idx + 1))
-            freq = np.float32(k) * f0_32
-        elif family == "subharmonic":
-            k = float(p_idx + 1)
-            freq = f0_32 / np.float32(k)
-        elif family == "inharmonic_power":
-            k = float(p_idx + 1) ** beta
-            freq = np.float32(k) * f0_32
-        elif family == "frequency_shifted":
-            k = float(p_idx + 1)
-            freq = np.abs(np.float32(k) * f0_32 + np.float32(freq_shift))
-        elif family == "ring_sidebands":
-            # upper sidebands first (P partials), then lower (P partials)
-            half = P // 2
-            base_k = float((p_idx % half) + 1)
-            base_freq = np.float32(base_k) * f0_32
-            if p_idx < half:
-                freq = np.abs(base_freq + np.float32(ring_mod_hz))
-            else:
-                freq = np.abs(base_freq - np.float32(ring_mod_hz))
-        elif family == "fm_sidebands":
-            order_max = num_partials
-            mod = np.float32(fm_ratio) * f0_32
-            if p_idx == 0:
-                freq = np.abs(f0_32)
-            elif p_idx <= order_max:
-                freq = np.abs(f0_32 + np.float32(p_idx) * mod)
-            else:
-                n_lower = p_idx - order_max
-                freq = np.abs(f0_32 - np.float32(n_lower) * mod)
-        else:
-            k = float(p_idx + 1)
-            freq = np.float32(k) * f0_32
-
-        # Gate: zero freq where out of band or unvoiced
+        freq = partial_frequency_row(
+            f0_arr, p_idx, num_partials, family,
+            beta=beta, freq_shift=freq_shift,
+            ring_mod_hz=ring_mod_hz, fm_ratio=fm_ratio,
+        )
+        freq = np.nan_to_num(freq, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
         in_band = (freq >= np.float32(f_min)) & (freq <= np.float32(f_max))
-        safe_freq = freq * voiced_f32 * in_band.astype(np.float32)
 
-        # Phase accumulation and oscillator
-        phase = np.cumsum(safe_freq * tpsr) + phase_offsets[p_idx]
-        osc = np.sin(phase)
+        # Advance phase throughout each voiced region even when a partial is
+        # temporarily out of the audible/render band.  Only its AMPLITUDE is
+        # gated.  The old code froze phase out-of-band, causing arbitrary phase
+        # on re-entry.
+        phase_freq = freq * voiced_f32
+        phase = np.cumsum(phase_freq * tpsr, dtype=np.float64) + float(phase_offsets[p_idx])
+        osc = np.sin(phase).astype(np.float32)
+        osc *= in_band.astype(np.float32)
 
-        # Amplitude
         if time_varying_amp:
-            osc *= combined_amp[p_idx]          # (N,) row
+            slow = (lfo_base[p_idx]
+                    + lfo_depth[p_idx] * 0.5
+                    * np.sin(2.0 * np.pi * lfo_f[p_idx] * t + lfo_phase[p_idx]))
+            slow = np.clip(slow, 0.0, None).astype(np.float32)
+            osc *= slow * np.float32(base_w[p_idx])
         else:
-            osc *= combined_amp[p_idx]          # scalar
+            osc *= combined_amp[p_idx]
 
         y += osc
 
-    # Normalise by sqrt(P), apply envelope
     y /= max(1.0, math.sqrt(P))
     y *= master_env
-
     y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
     return y, mean_f
 
 
 def _build_voiced_fade(voiced_mask, fade_len):
     """
-    From a boolean voiced mask, construct a [0..1] fade envelope that
-    smoothly ramps in/out around voiced/unvoiced transitions.
+    Build a [0..1] fade envelope strictly INSIDE voiced runs.
+
+    Short voiced islands become a short triangular envelope rather than writing
+    a fade beyond the run into surrounding unvoiced samples.
     """
     import numpy as np
-    n = len(voiced_mask)
-    out = voiced_mask.astype(np.float64).copy()
+    voiced_mask = np.asarray(voiced_mask, dtype=bool)
+    out = np.zeros(len(voiced_mask), dtype=np.float64)
     if fade_len < 2:
-        return out
+        return voiced_mask.astype(np.float64)
 
-    # Find transitions
-    transitions = np.where(np.diff(out) != 0)[0]
-    ramp = np.linspace(0.0, 1.0, fade_len, dtype=np.float64)
-
-    for t in transitions:
-        # Transition between sample t and t+1
-        if out[t] == 0 and out[t + 1] == 1:
-            # Unvoiced -> voiced: fade in starting at t+1
-            start = t + 1
-            end = min(n, start + fade_len)
-            seg_len = end - start
-            out[start:end] = ramp[:seg_len]
-        elif out[t] == 1 and out[t + 1] == 0:
-            # Voiced -> unvoiced: fade out ending at t+1
-            end = t + 1
-            start = max(0, end - fade_len)
-            seg_len = end - start
-            out[start:end] = ramp[:seg_len][::-1]
+    denom = float(max(1, fade_len - 1))
+    for start, end in _true_runs(voiced_mask):
+        L = end - start
+        if L <= 0:
+            continue
+        idx = np.arange(L, dtype=np.float64)
+        fade_in  = np.minimum(1.0, idx / denom)
+        fade_out = np.minimum(1.0, (L - 1 - idx) / denom)
+        out[start:end] = np.minimum(fade_in, fade_out)
     return out
 
 
@@ -759,7 +808,8 @@ def write_stats(path, n_samples, sr, duration,
                 warnings,
                 partial_freq_table,
                 f0_trace=None,
-                research_info=None):
+                research_info=None,
+                analysis_channel=1):
     """
     f0_stats: dict with mean, median, min, max
     partial_freq_table: list of (min, max, mean) per partial (up to 16)
@@ -769,6 +819,7 @@ def write_stats(path, n_samples, sr, duration,
         f.write("n_samples=%d\n"      % n_samples)
         f.write("sample_rate=%d\n"    % sr)
         f.write("duration=%.3f\n"     % duration)
+        f.write("analysis_channel=%d\n" % int(analysis_channel))
         f.write("voiced_percent=%.2f\n" % voiced_percent)
         f.write("f0_mean_hz=%.3f\n"   % f0_stats["mean"])
         f.write("f0_median_hz=%.3f\n" % f0_stats["median"])
@@ -945,6 +996,9 @@ def main():
 
     parser.add_argument("--events_csv", default="")
     parser.add_argument("--duration", type=float, default=0.0)
+    parser.add_argument("--analysis_channel", type=int, default=1,
+                        help="1-based input channel used for RMS/original-waveform paths; "
+                             "Praat pitch/intensity analysis should use the same channel")
     parser.add_argument("--num_partials", type=int, default=16)
     parser.add_argument("--partial_family",
         choices=["harmonic", "odd_only", "even_only", "subharmonic",
@@ -1027,7 +1081,12 @@ def main():
         print("ERROR: Input audio is empty", file=sys.stderr)
         sys.exit(1)
 
-    audio_mono = audio if audio.ndim == 1 else audio.mean(axis=1).astype(np.float32)
+    if audio.ndim == 1:
+        analysis_channel = 1
+        audio_mono = audio
+    else:
+        analysis_channel = max(1, min(int(args.analysis_channel), audio.shape[1]))
+        audio_mono = audio[:, analysis_channel - 1].astype(np.float32)
     n_in = len(audio_mono)
     orig_dur = n_in / sr
 
@@ -1042,6 +1101,7 @@ def main():
         out_dur = orig_dur
     n_out = max(1, int(round(out_dur * sr)))
     duration_preserved = abs(out_dur - orig_dur) < 1e-3
+    time_scale = (orig_dur / out_dur) if out_dur > 0 else 1.0
 
     # Load F0
     if not os.path.exists(args.f0_csv):
@@ -1061,13 +1121,14 @@ def main():
     else:
         warnings_list.append("intensity_csv missing; using flat envelope")
 
-    print("    Audio: %.2fs SR=%d | Output: %.2fs | F0 frames: %d" %
-          (orig_dur, sr, out_dur, len(f0_rows)))
+    print("    Audio: %.2fs SR=%d | Output: %.2fs | F0 frames: %d | analysis ch=%d" %
+          (orig_dur, sr, out_dur, len(f0_rows), analysis_channel))
 
     # ── Stage 2: Build sample-rate F0 + envelope ──────────────────────────
     print("  [Py 2/6] Interpolating + smoothing F0 and envelope...")
 
-    f0_arr, voiced_arr = interpolate_f0_to_samplerate(f0_rows, n_out, sr)
+    f0_arr, voiced_arr = interpolate_f0_to_samplerate(
+        f0_rows, n_out, sr, time_scale=time_scale)
     f0_arr = smooth_f0(f0_arr, voiced_arr, sr,
                        median_window_ms=20.0,
                        lowpass_cutoff_hz=12.0)
@@ -1080,7 +1141,8 @@ def main():
 
     # Envelope
     if args.envelope_source == "intensity" and int_rows:
-        db_arr = interpolate_intensity_to_samplerate(int_rows, n_out, sr)
+        db_arr = interpolate_intensity_to_samplerate(
+            int_rows, n_out, sr, time_scale=time_scale)
         env_arr = db_to_envelope(db_arr, sr, args.ar_smoothing_ms)
     elif args.envelope_source == "rms":
         # Compute RMS envelope from original audio, then resample to n_out
@@ -1184,19 +1246,19 @@ def main():
     else:
         f0_stats = {"mean": 0, "median": 0, "min": 0, "max": 0}
 
-    # Partial frequency table (first 16)
-    freqs_full, _ = build_partial_freqs(
-        f0_arr, args.num_partials, args.partial_family,
-        beta=args.inharmonic_beta,
-        freq_shift=args.frequency_shift,
-        ring_mod_hz=args.ring_mod,
-        fm_ratio=args.fm_ratio, fm_index=args.fm_index,
-    )
-    P = freqs_full.shape[0]
+    # Partial frequency table (first 16), one row at a time: O(N) memory.
+    P = partial_count(args.num_partials, args.partial_family)
     nyq = sr / 2.0
     table = []
+    voiced_bool = voiced_arr > 0.5
     for p in range(min(16, P)):
-        row = freqs_full[p, voiced_arr > 0.5]
+        row_full = partial_frequency_row(
+            f0_arr, p, args.num_partials, args.partial_family,
+            beta=args.inharmonic_beta,
+            freq_shift=args.frequency_shift,
+            ring_mod_hz=args.ring_mod, fm_ratio=args.fm_ratio,
+        )
+        row = row_full[voiced_bool]
         row = row[(row >= 20.0) & (row <= nyq * 0.95)]
         if len(row) > 0:
             table.append((float(np.min(row)),
@@ -1248,6 +1310,7 @@ def main():
         partial_freq_table=table,
         f0_trace=trace,
         research_info=research_info,
+        analysis_channel=analysis_channel,
     )
 
     # ── QC summary ────────────────────────────────────────────────────────
@@ -1255,6 +1318,7 @@ def main():
     print("  -- QC summary --")
     print("    research_mode:            %s" % args.research_mode)
     print("    effective_carrier:        %s" % eff_carrier)
+    print("    analysis_channel:         %d" % analysis_channel)
     print("    duration:                 %.3f s (preserved: %s)"
           % (out_dur, "true" if duration_preserved else "false"))
     print("    voiced_percent:           %.1f%%" % voiced_pct)

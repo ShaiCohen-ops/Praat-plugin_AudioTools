@@ -2,7 +2,7 @@
 # Praat AudioTools Plugin
 # Script:      PerformanceLauncher.praat
 # Author:      Shai Cohen
-# Version:     1.4 (2026) — Version sync (engine ASIO auto-enable)
+# Version:     1.5 (2026) — live-safety and persistent performance config
 # License:     MIT License
 #
 # Description:
@@ -12,6 +12,14 @@
 #
 # Usage:
 #   Select one or more Sound objects, then run this script.
+#
+# Changelog v1.5:
+#   - Performance configuration moved out of the temporary directory into
+#     plugin_AudioTools so device/routing/gain/fade settings persist across runs.
+#   - Temporary log is reset at launch and removed after a clean close, but is
+#     left available after an engine crash for diagnosis.
+#   - Cue names are sanitized for JSON backslashes as well as quotation marks.
+#   - Version synced with the Python engine live-safety/routing/fade fixes.
 #
 # Changelog v1.4:
 #   - Version bump to match performance_launcher.py ASIO support
@@ -95,7 +103,7 @@ endif
 manifestFile$ = temporaryDirectory$ + "/temp_launcher_manifest.json"
 errorFile$    = temporaryDirectory$ + "/temp_launcher_error.txt"
 logFile$      = temporaryDirectory$ + "/temp_launcher_log.txt"
-configFile$   = temporaryDirectory$ + "/temp_launcher_config.json"
+configFile$   = pluginDir$ + "performance_launcher_config.json"
 # JSON formatting requires unified forward slashes across all platforms
 manifestFileJ$ = replace_regex$ (manifestFile$, "\\", "/", 0)
 errorFileJ$    = replace_regex$ (errorFile$,    "\\", "/", 0)
@@ -134,8 +142,12 @@ procedure cleanUpTempFiles
     endfor
 endproc
 
-# Clear residual metadata definitions
+# Clear residual temporary buffers from a previous run. The persistent
+# config file is intentionally not part of cleanUpTempFiles.
 @cleanUpTempFiles
+if fileReadable (logFile$)
+    deleteFile: logFile$
+endif
 
 # ---- PASS 1: Calculate Target Sample Rate & Max Channels ----
 totalDuration = 0
@@ -185,7 +197,7 @@ endfor
 nl$ = newline$
 manifest$ = "{" + nl$
 manifest$ = manifest$ + "  ""plugin_name"": ""Performance Launcher""," + nl$
-manifest$ = manifest$ + "  ""plugin_version"": ""1.4""," + nl$
+manifest$ = manifest$ + "  ""plugin_version"": ""1.5""," + nl$
 manifest$ = manifest$ + "  ""project_sample_rate"": " + string$ (targetSR) + "," + nl$
 manifest$ = manifest$ + "  ""project_max_channels"": " + string$ (maxChannels) + "," + nl$
 manifest$ = manifest$ + "  ""temp_dir"": """ + replace_regex$(temporaryDirectory$, "\\", "/", 0) + """," + nl$
@@ -196,7 +208,8 @@ manifest$ = manifest$ + "  ""debug"": 0," + nl$
 manifest$ = manifest$ + "  ""clips"": [" + nl$
 
 for i from 1 to nSounds
-    safeName'i'$ = replace_regex$ (soundName'i'$, """", "'", 0)
+    safeName'i'$ = replace_regex$ (soundName'i'$, "\\", "/", 0)
+    safeName'i'$ = replace_regex$ (safeName'i'$, """", "'", 0)
     manifest$ = manifest$ + "    {" + nl$
     manifest$ = manifest$ + "      ""id"": " + string$ (i - 1) + "," + nl$
     manifest$ = manifest$ + "      ""name"": """ + safeName'i'$ + """," + nl$
@@ -223,7 +236,7 @@ writeFile: manifestFile$, manifest$
 
 # ---- Execution Log Window Feed ----
 clearinfo
-appendInfoLine: "=== Performance Launcher 1.4 ==="
+appendInfoLine: "=== Performance Launcher 1.5 ==="
 appendInfoLine: "Loaded Cues: ", nSounds
 appendInfoLine: "Target System Rate: ", targetSR, " Hz"
 appendInfoLine: "Max File Channels:  ", maxChannels
@@ -248,4 +261,7 @@ if fileReadable (errorFile$)
 endif
 
 @cleanUpTempFiles
-appendInfoLine: "Launcher closed cleanly. Temporary buffers flushed."
+if fileReadable (logFile$)
+    deleteFile: logFile$
+endif
+appendInfoLine: "Launcher closed cleanly. Temporary buffers flushed; performance config retained."

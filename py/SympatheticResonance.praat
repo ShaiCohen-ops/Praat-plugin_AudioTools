@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2 (2026) - Review + multichannel/analysis repair
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -74,12 +74,14 @@ endif
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
-tempInput$   = tempDir$ + "temp_sr_input.wav"
-tempOutput$  = tempDir$ + "temp_sr_output.wav"
-tempStats$   = tempDir$ + "temp_sr_stats.txt"
-tempResCSV$  = tempDir$ + "temp_sr_resonances.csv"
-probePy$     = tempDir$ + "temp_sr_probe.py"
-probeMarker$ = tempDir$ + "temp_sr_probe.ok"
+runTag$ = "sr_" + string$(origSound) + "_" + string$(randomInteger(100000, 999999))
+tempInput$   = tempDir$ + runTag$ + "_input.wav"
+tempOutput$  = tempDir$ + runTag$ + "_output.wav"
+tempStats$   = tempDir$ + runTag$ + "_stats.txt"
+tempResCSV$  = tempDir$ + runTag$ + "_resonances.csv"
+tempLog$     = tempDir$ + runTag$ + "_python.log"
+probePy$     = tempDir$ + runTag$ + "_probe.py"
+probeMarker$ = tempDir$ + runTag$ + "_probe.ok"
 
 # Enforce forward slashes for all temporary paths passed to python
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
@@ -89,6 +91,7 @@ tempStatsJ$    = replace_regex$(tempStats$, "\\", "/", 0)
 tempResCSVJ$   = replace_regex$(tempResCSV$, "\\", "/", 0)
 probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
 probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+tempLogJ$     = replace_regex$(tempLog$, "\\", "/", 0)
 
 # ---- CLEANUP PROCEDURE ----
 procedure cleanUpTempFiles
@@ -110,12 +113,15 @@ procedure cleanUpTempFiles
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
+    if fileReadable(tempLog$)
+        deleteFile: tempLog$
+    endif
 endproc
 
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Sympathetic Resonance v1.1
+form Sympathetic Resonance v1.2
     optionmenu Preset: 1
         option Custom
         option Piano Frame
@@ -131,7 +137,11 @@ form Sympathetic Resonance v1.1
         option Wooden
         option Airy
     integer N_strings 32
-    positive Decay_s 5.0
+    comment N_strings is the maximum active resonator count.
+    optionmenu Pitch_basis: 1
+        option Measured peaks
+        option Cloud fill
+    positive Decay_ceiling_s 5.0
     positive Coupling 0.30
     comment Wet/dry  ( 0 = 100% resonance   1 = 100% dry original )
     real Wet_dry 0.0
@@ -139,38 +149,46 @@ form Sympathetic Resonance v1.1
     boolean Play_result 1
 endform
 
+decay_s = decay_ceiling_s
+
 # ---- PRESETS ----
 if preset = 2
+    pitch_basis = 1
     character = 1
     n_strings = 48
     decay_s   = 8.0
     coupling  = 0.35
     wet_dry   = 0.10
 elsif preset = 3
+    pitch_basis = 1
     character = 1
     n_strings = 64
     decay_s   = 14.0
     coupling  = 0.50
     wet_dry   = 0.0
 elsif preset = 4
+    pitch_basis = 1
     character = 4
     n_strings = 32
     decay_s   = 4.0
     coupling  = 0.20
     wet_dry   = 0.15
 elsif preset = 5
+    pitch_basis = 1
     character = 2
     n_strings = 64
     decay_s   = 20.0
     coupling  = 0.60
     wet_dry   = 0.0
 elsif preset = 6
+    pitch_basis = 1
     character = 3
     n_strings = 24
     decay_s   = 1.8
     coupling  = 0.40
     wet_dry   = 0.25
 elsif preset = 7
+    pitch_basis = 2
     character = 4
     n_strings = 56
     decay_s   = 9.0
@@ -206,6 +224,14 @@ else
     charStr$ = "airy"
 endif
 
+if pitch_basis = 2
+    pitchMode$ = "cloud"
+    pitchModeLabel$ = "Cloud fill"
+else
+    pitchMode$ = "measured"
+    pitchModeLabel$ = "Measured peaks"
+endif
+
 # ---- CLAMP PARAMETERS ----
 if n_strings < 4
     n_strings = 4
@@ -237,18 +263,33 @@ selectObject: origSound
 totalDur  = Get total duration
 origSR    = Get sampling frequency
 nChannels = Get number of channels
+analysisChannel = 1
+analysisRms = -1
+if nChannels > 1
+    for iCh from 1 to nChannels
+        selectObject: origSound
+        chProbe = Extract one channel: iCh
+        chRms = Get root-mean-square: 0, 0
+        if chRms > analysisRms
+            analysisRms = chRms
+            analysisChannel = iCh
+        endif
+        removeObject: chProbe
+    endfor
+endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Sympathetic Resonance v1.1 ==="
+writeInfoLine:  "=== Sympathetic Resonance v1.2 ==="
 appendInfoLine: "Source:    ", origName$
 appendInfoLine: "Preset:    ", presetName$
 appendInfoLine: "Character: ", charStr$
-appendInfoLine: "Strings:   ", n_strings
-appendInfoLine: "Decay:     ", fixed$(decay_s, 2), " s"
+appendInfoLine: "Max resonators: ", n_strings
+appendInfoLine: "Pitch basis:    ", pitchModeLabel$
+appendInfoLine: "Decay ceiling: ", fixed$(decay_s, 2), " s"
 appendInfoLine: "Coupling:  ", fixed$(coupling, 3)
 appendInfoLine: "Wet/dry:   ", fixed$(wet_dry, 3)
-appendInfoLine: "Duration:  ", fixed$(totalDur, 2), " s  |  SR: ", origSR, " Hz"
+appendInfoLine: "Duration:  ", fixed$(totalDur, 2), " s  |  SR: ", origSR, " Hz  |  analysis ch", analysisChannel
 appendInfoLine: ""
 
 # ===========================================================================
@@ -263,6 +304,7 @@ appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.
 appendFileLine: probePy$, "except ImportError:"
 appendFileLine: probePy$, "    sys.exit(1)"
 
+pythonCmd$ = ""
 if windows
     nCandidates = 4
     candidate1$ = "python"
@@ -316,7 +358,7 @@ appendInfoLine: "  Python found: ", pythonCmd$
 appendInfoLine: "[1/4] Exporting WAV..."
 
 selectObject: origSound
-Save as WAV file: tempInput$
+Save as 32-bit WAV file: tempInput$
 
 # ============================================================
 # Stage 2 -- Run Python engine
@@ -333,12 +375,17 @@ pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " --decay_s "       + fixed$(decay_s, 3)
     ... + " --coupling "      + fixed$(coupling, 4)
     ... + " --wet_dry "       + fixed$(wet_dry, 4)
+    ... + " --pitch_mode "    + pitchMode$
 
-runSystem_nocheck: pythonCall$
+runSystem_nocheck: pythonCall$ + " > """ + tempLogJ$ + """ 2>&1"
 
 if not fileReadable(tempOutput$)
+    err$ = "Python engine failed -- output WAV not found."
+    if fileReadable(tempLog$)
+        err$ = err$ + newline$ + newline$ + readFile$(tempLog$)
+    endif
     @cleanUpTempFiles
-    exitScript: "Python engine failed -- output WAV not found." + newline$ + "Check terminal for error messages."
+    exitScript: err$
 endif
 
 appendInfoLine: "  Engine complete."
@@ -366,6 +413,10 @@ statFlatness$ = "?"
 statScale$    = "?"
 statBPM$      = "?"
 statPitches$  = "?"
+statBaseCount$ = "?"
+statEffT60$ = "?"
+statTail$ = "?"
+statFlatFrames$ = "?"
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
@@ -375,6 +426,14 @@ if fileReadable(tempStats$)
     statFlatness$ = parseStatLine.result$
     @parseStatLine: statsText$, "top_pitches="
     statPitches$ = parseStatLine.result$
+    @parseStatLine: statsText$, "base_pitch_count="
+    statBaseCount$ = parseStatLine.result$
+    @parseStatLine: statsText$, "effective_t60_max_s="
+    statEffT60$ = parseStatLine.result$
+    @parseStatLine: statsText$, "tail_s="
+    statTail$ = parseStatLine.result$
+    @parseStatLine: statsText$, "flatness_active_frames="
+    statFlatFrames$ = parseStatLine.result$
 endif
 
 # Read resonances table for visualization
@@ -387,6 +446,8 @@ endif
 
 appendInfoLine: "  Strings active: ", statStrings$
 appendInfoLine: "  Spectral flatness: ", statFlatness$
+appendInfoLine: "  Base pitches: ", statBaseCount$, "  |  active resonators: ", statStrings$
+appendInfoLine: "  Effective max T60: ", statEffT60$, " s  |  rendered tail: ", statTail$, " s"
 
 ###############################################################################
 # VISUALIZATION
@@ -406,34 +467,74 @@ if draw_visualization
     Text: 0.5, "centre", 0.62, "half", "##Sympathetic Resonance##"
     Font size: 8
     Colour: "{0.38, 0.38, 0.52}"
-    Text: 0.5, "centre", -1.15, "half",
+    Text: 0.5, "centre", -0.8, "half",
         ... origName$ + "  |  " + charStr$
-        ... + "  |  strings: " + statStrings$
+        ... + "  |  " + pitchModeLabel$ + "  |  resonators: " + statStrings$
         ... + "  |  decay: " + fixed$(decay_s, 1) + " s"
         ... + "  |  flatness: " + statFlatness$
+
+    # Representative real channels for comparable waveform/spectrogram panels.
+    selectObject: origSound
+    if nChannels > 1
+        vizOrig = Extract one channel: analysisChannel
+    else
+        Copy: "sr_viz_orig"
+        vizOrig = selected("Sound")
+    endif
+
+    selectObject: resultSound
+    outChannels = Get number of channels
+    bestOutChannel = 1
+    bestOutRms = -1
+    for iCh from 1 to outChannels
+        selectObject: resultSound
+        outProbe = Extract one channel: iCh
+        outRms = Get root-mean-square: 0, 0
+        if outRms > bestOutRms
+            bestOutRms = outRms
+            bestOutChannel = iCh
+        endif
+        removeObject: outProbe
+    endfor
+    selectObject: resultSound
+    if outChannels > 1
+        vizOut = Extract one channel: bestOutChannel
+    else
+        Copy: "sr_viz_out"
+        vizOut = selected("Sound")
+    endif
+    selectObject: vizOrig
+    peakOrig = Get absolute extremum: 0, 0, "none"
+    selectObject: vizOut
+    peakOut = Get absolute extremum: 0, 0, "none"
+    wavePeak = 1.05 * max(peakOrig, peakOut)
+    if wavePeak < 0.000001
+        wavePeak = 1
+    endif
+    specCeil = min(8000, origSR / 2)
 
     # === Original waveform ===
     Select outer viewport: 0, 8, 0.55, 1.45
     Select inner viewport: 0.6, 7.7, 0.60, 1.40
-    selectObject: origSound
+    selectObject: vizOrig
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Original"
+    Text left: "yes", "Original ch" + string$(analysisChannel)
     Text top: "no", fixed$(totalDur, 2) + " s"
 
     # === Result waveform ===
     Select outer viewport: 0, 8, 1.50, 2.40
     Select inner viewport: 0.6, 7.7, 1.55, 2.35
-    selectObject: resultSound
+    selectObject: vizOut
     Colour: "{0.20, 0.62, 0.72}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Resonance"
+    Text left: "yes", "Resonance ch" + string$(bestOutChannel)
     Text bottom: "yes", "Time (s)"
 
     # === Resonant string bank ===
@@ -502,25 +603,17 @@ if draw_visualization
     Colour: "{0.80, 0.80, 0.80}"
     Text left: "yes", "Gain"
     Text bottom: "yes", "Log frequency  ( 20 Hz ... 20 kHz )"
-    Text top: "no", "Discovered resonant string bank  ( bar brightness = coupling gain )"
+    Text top: "no", "Resonator bank  ( bar height = relative resonator excitation gain )"
 
     # === Spectrogram of result ===
     Select outer viewport: 0, 8, 4.35, 5.85
     Select inner viewport: 0.6, 7.7, 4.42, 5.78
 
-    selectObject: resultSound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpRes = selected("Sound")
-    else
-        Copy: "tmpRes"
-        tmpRes = selected("Sound")
-    endif
-
-    To Spectrogram: 0.010, 6000, 0.004, 20, "Gaussian"
+    selectObject: vizOut
+    To Spectrogram: 0.010, specCeil, 0.004, 20, "Gaussian"
     specRes = selected("Spectrogram")
-    Paint: 0, 0, 0, 6000, 100, "yes", 45, 6, 0, "no"
-    removeObject: specRes, tmpRes
+    Paint: 0, 0, 0, specCeil, 100, "yes", 45, 6, 0, "no"
+    removeObject: specRes
 
     Colour: "Black"
     Draw inner box
@@ -541,19 +634,20 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.66, "half",
         ... "Source: " + origName$ + "  |  Preset: " + presetName$ + "  |  Char: " + charStr$
-        ... + "  |  Strings: " + statStrings$
+        ... + "  |  " + pitchModeLabel$ + "  |  base pitches: " + statBaseCount$ + "  |  resonators: " + statStrings$
     Text: 0.02, "left", 0.45, "half",
-        ... "Decay: " + fixed$(decay_s, 1) + " s"
+        ... "Decay ceiling: " + fixed$(decay_s, 1) + " s"
         ... + "  |  Coupling: " + fixed$(coupling, 2)
         ... + "  |  Wet/dry: " + fixed$(wet_dry, 2)
-        ... + "  |  Flatness: " + statFlatness$
+        ... + "  |  Flatness: " + statFlatness$ + "  |  max T60: " + statEffT60$ + " s"
     Text: 0.02, "left", 0.24, "half",
-        ... "Latent pitches (Hz): " + statPitches$
+        ... "Measured/synthetic base pitches (Hz): " + statPitches$
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     Font size: 10
     Colour: "Black"
+    removeObject: vizOrig, vizOut
 else
     appendInfoLine: "[4/4] Visualization skipped."
 endif
@@ -567,7 +661,8 @@ appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:    ", outName$
 appendInfoLine: "Duration:  ", fixed$(outDur, 2), " s"
-appendInfoLine: "Strings:   ", statStrings$
+appendInfoLine: "Resonators: ", statStrings$
+appendInfoLine: "Pitch basis: ", pitchModeLabel$ + "  |  base pitches: " + statBaseCount$
 appendInfoLine: "Flatness:  ", statFlatness$
 appendInfoLine: "Pitches:   ", statPitches$
 

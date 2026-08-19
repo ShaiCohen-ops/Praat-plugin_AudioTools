@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026)
+# Version: 1.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -46,6 +46,18 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.5:
+#   - Stereo analysis consistency: select the strongest-RMS input channel once
+#     and use it for Praat F0/intensity analysis, Python RMS/envelope/original
+#     paths, and the original visualization. Avoids phase-cancelling fold-downs.
+#   - Output_duration_s now time-scales the complete F0/voicing/intensity
+#     contour in the Python engine instead of cropping or holding the last frame.
+#   - Intensity analysis now uses Pitch_floor_Hz as Praat's minimum-pitch
+#     parameter instead of a hard-coded 100 Hz.
+#   - Python v1.5: voiced-segment-local F0 smoothing, short-segment fade fix,
+#     paired ring/FM 1/k weights, O(N) random_slow + stats memory, continuous
+#     phase through temporarily out-of-band partials.
 #
 # Changelog v1.4:
 #   - Removed the 'noise_unvoiced_hum' prosody carrier (poor sound
@@ -185,7 +197,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Pitch-Tracked Additive Resynthesizer v1.4
+form Pitch-Tracked Additive Resynthesizer v1.5
     optionmenu Preset: 1
         option custom
         option natural_voice
@@ -234,6 +246,7 @@ form Pitch-Tracked Additive Resynthesizer v1.4
     comment (carrier/max-partials/rolloff only apply when Research mode = prosody_only)
     comment (rolloff: 1_over_k_squared = strict/dull; 1_over_k = brighter, audible partials)
     real Output_duration_s 0
+    comment (0 = original duration; nonzero time-scales the full F0/intensity/voicing contour)
     boolean Show_spectrograms 0
     comment (ON shows time-frequency comparison, but adds analysis time)
     boolean Draw_visualization 1
@@ -471,7 +484,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Pitch-Tracked Additive Resynthesizer v1.4 ==="
+writeInfoLine:  "=== Pitch-Tracked Additive Resynthesizer v1.5 ==="
 appendInfoLine: "Input:           ", soundName$
 appendInfoLine: ""
 appendInfoLine: "Pitch range:     ", fixed$(pitch_floor_Hz, 1), " - ", fixed$(pitch_ceiling_Hz, 1), " Hz"
@@ -492,18 +505,43 @@ if research_mode = 2
 endif
 appendInfoLine: ""
 
-# ---- CAPTURE STATS ----
+# ---- CAPTURE STATS + REPRESENTATIVE ANALYSIS CHANNEL ----
 selectObject: sound
 dur       = Get total duration
 sr        = Get sampling frequency
 nChannels = Get number of channels
-rms_orig  = Get root-mean-square: 0, 0
+
+# Never fold stereo/multichannel to mono for analysis: opposite-phase channels
+# can cancel.  Pick the strongest RMS channel and use it consistently in Praat
+# and Python.
+analysisChannel = 1
+analysisRms = 0
+if nChannels > 1
+    for iCh from 1 to nChannels
+        selectObject: sound
+        Extract one channel: iCh
+        tmpCh = selected("Sound")
+        rmsCh = Get root-mean-square: 0, 0
+        if rmsCh > analysisRms
+            analysisRms = rmsCh
+            analysisChannel = iCh
+        endif
+        removeObject: tmpCh
+    endfor
+else
+    analysisRms = Get root-mean-square: 0, 0
+endif
+rms_orig = analysisRms
 
 if output_duration_s <= 0
     output_duration_s = dur
 endif
 
 appendInfoLine: "Duration: ", fixed$(dur, 2), " s | SR: ", sr, " Hz | Channels: ", nChannels
+appendInfoLine: "Analysis channel: ", analysisChannel, " (strongest RMS = ", fixed$(analysisRms, 5), ")"
+if abs(output_duration_s - dur) > 0.001
+    appendInfoLine: "Time scaling:     full analysis contour -> ", fixed$(output_duration_s, 3), " s"
+endif
 appendInfoLine: ""
 
 # ===========================================================================
@@ -529,7 +567,7 @@ appendInfoLine: "[2/5] Extracting pitch & intensity..."
 
 selectObject: sound
 if nChannels > 1
-    Extract one channel: 1
+    Extract one channel: analysisChannel
     analysisMono = selected("Sound")
 else
     Copy: "analysisMono"
@@ -598,7 +636,7 @@ appendInfoLine: "  F0 frames: ", nFrames, " (voiced: ", nVoiced, ")"
 
 # ---- Intensity ----
 selectObject: analysisMono
-intObj = To Intensity: 100, 0.005, "yes"
+intObj = To Intensity: pitch_floor_Hz, 0.005, "yes"
 
 intStep = 0.005
 nIntFrames = floor(dur / intStep) + 1
@@ -639,6 +677,7 @@ pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempStats$ + """"
     ... + " --events_csv """ + tempEvents$ + """"
     ... + " --duration "         + fixed$(output_duration_s, 4)
+    ... + " --analysis_channel " + string$(analysisChannel)
     ... + " --num_partials "     + string$(num_partials)
     ... + " --partial_family "   + partialFamilyStr$
     ... + " --amplitude_law "    + ampLawStr$
@@ -812,7 +851,7 @@ if draw_visualization
 
         selectObject: sound
         if nChannels > 1
-            Extract one channel: 1
+            Extract one channel: analysisChannel
             tmpOrig = selected("Sound")
         else
             Copy: "tmpOrig"
@@ -1003,13 +1042,22 @@ if draw_visualization
         Text left: "yes", "Hz"
     else
         selectObject: sound
+        if nChannels > 1
+            Extract one channel: analysisChannel
+            tmpOrigWave = selected("Sound")
+        else
+            Copy: "tmpOrigWave"
+            tmpOrigWave = selected("Sound")
+        endif
+        selectObject: tmpOrigWave
         Colour: "{0.50, 0.50, 0.50}"
         Draw: 0, 0, 0, 0, "no", "Curve"
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text top: "no", "Original waveform (" + fixed$(dur, 2) + " s)"
+        Text top: "no", "Original waveform ch " + string$(analysisChannel) + " (" + fixed$(dur, 2) + " s)"
         Text left: "yes", "Amp"
+        removeObject: tmpOrigWave
     endif
 
     # ----------------------------------------------------------

@@ -3,12 +3,12 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.2 (2026) - Unified Cross-Platform Version
+# Version: 3.3 (2026) - Unified Cross-Platform Version
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   Rhythmic Voice Flattener v3.2 - Compositional Voice Transformer
+#   Rhythmic Voice Flattener v3.3 - Compositional Voice Transformer
 #
 #   Takes a selected Sound (spoken or vocal audio), flattens its
 #   pitch contour to a single centre pitch, and rebuilds the audio
@@ -53,6 +53,21 @@
 #              silence architecture (inter + intra gesture),
 #              duration ratios, accent weights, gesture arrangement,
 #              repetition and motif scatter.
+#
+# Changelog v3.3:
+#   - Python CSP now jointly enforces exact duration-budget, density and
+#     entropy constraints; reported deviations are measured from final score
+#     values rather than approximate operation ratios.
+#   - Fixed drop timing: a skipped event is replaced by one silent slot, not
+#     silently doubled by a second event-length gap.
+#   - Multichannel input analysis now uses the strongest real channel instead
+#     of a phase-cancelling mono average; output remains intentionally mono.
+#   - Added user Seed control (0 = new realization; positive = reproducible).
+#   - Python stdout/stderr is captured and shown in the Praat Info window.
+#   - Reconstructed event edges receive short symmetric anti-click fades.
+#   - Output peak handling is attenuation-only; quiet presets are not boosted.
+#   - Visualization compares source analysis channel and output on one
+#     symmetric amplitude scale.
 #
 # Changelog v3.2:
 #   - Fixed stereo crash: the analysis/PSOLA path used mono-only
@@ -110,19 +125,22 @@ endif
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
-eventsCSV$   = tempDir$ + "temp_rvf_events.csv"
-scoreCSV$    = tempDir$ + "temp_rvf_score.csv"
-statsFile$   = tempDir$ + "temp_rvf_stats.txt"
-probePy$     = tempDir$ + "temp_rvf_probe.py"
-probeMarker$ = tempDir$ + "temp_rvf_probe.ok"
+tempTag$      = string$(origSound)
+eventsCSV$    = tempDir$ + "temp_rvf_events_" + tempTag$ + ".csv"
+scoreCSV$     = tempDir$ + "temp_rvf_score_" + tempTag$ + ".csv"
+statsFile$    = tempDir$ + "temp_rvf_stats_" + tempTag$ + ".txt"
+pythonLogFile$ = tempDir$ + "temp_rvf_python_" + tempTag$ + ".log"
+probePy$      = tempDir$ + "temp_rvf_probe_" + tempTag$ + ".py"
+probeMarker$  = tempDir$ + "temp_rvf_probe_" + tempTag$ + ".ok"
 
 # Enforce forward slashes for all temporary paths passed to python
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 eventsCSVJ$    = replace_regex$(eventsCSV$, "\\", "/", 0)
 scoreCSVJ$     = replace_regex$(scoreCSV$, "\\", "/", 0)
-statsFileJ$    = replace_regex$(statsFile$, "\\", "/", 0)
-probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
-probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+statsFileJ$     = replace_regex$(statsFile$, "\\", "/", 0)
+pythonLogFileJ$ = replace_regex$(pythonLogFile$, "\\", "/", 0)
+probePyJ$       = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$   = replace_regex$(probeMarker$, "\\", "/", 0)
 
 # ---- CLEANUP PROCEDURE ----
 procedure cleanUpTempFiles
@@ -135,6 +153,9 @@ procedure cleanUpTempFiles
     if fileReadable(statsFile$)
         deleteFile: statsFile$
     endif
+    if fileReadable(pythonLogFile$)
+        deleteFile: pythonLogFile$
+    endif
     if fileReadable(probePy$)
         deleteFile: probePy$
     endif
@@ -146,7 +167,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Rhythmic Voice Flattener v3.2
+form Rhythmic Voice Flattener v3.3
     comment — Preset (overrides arrangement / arc / rhythm / sparsity) —
     optionmenu Preset: 1
         option none
@@ -159,7 +180,7 @@ form Rhythmic Voice Flattener v3.2
         option ritual
         option stutter_loop
         option ghost
-    comment — Manual controls (ignored when a preset is active) —
+    comment — Structure controls below are overridden by presets —
     optionmenu Arrangement: 2
         option original
         option spectral
@@ -184,9 +205,17 @@ form Rhythmic Voice Flattener v3.2
     real Sparsity 0.5
     real Target_pitch_hz 0
     boolean Allow_repetition 1
+    comment — Seed: 0 = new realization; positive = reproducible —
+    integer Seed 42
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Clamp free numeric controls to the engine contract.
+sparsity = max(0, min(1, sparsity))
+if seed < 0
+    seed = 0
+endif
 
 # Hardcoded analysis constants
 silThr       = -30
@@ -258,13 +287,14 @@ else
 endif
 
 clearinfo
-writeInfoLine:  "=== Rhythmic Voice Flattener v3.2 ==="
+writeInfoLine:  "=== Rhythmic Voice Flattener v3.3 ==="
 appendInfoLine: "Source:      ", origName$
 appendInfoLine: "Preset:      ", presetStr$
 appendInfoLine: "Arrangement: ", arrangStr$
 appendInfoLine: "Arc:         ", arcStr$
 appendInfoLine: "Rhythm:      ", rhythmStr$
 appendInfoLine: "Sparsity:    ", fixed$(sparsity, 2)
+appendInfoLine: "Seed:        ", seed, "  (0 = new realization)"
 appendInfoLine: ""
 
 # ---- BASIC SOUND INFO ----
@@ -273,15 +303,29 @@ totalDur  = Get total duration
 sr        = Get sampling frequency
 nChannels = Get number of channels
 
-# Voice flattening is inherently mono (PSOLA/To Manipulation and the
-# mono silence assembly require it); fold a stereo input down once and
-# run all analysis + extraction on that copy.
+# Voice flattening is intentionally mono, but never create a fictitious
+# phase-cancelling average. Analyse/resynthesise the strongest real channel.
+analysisChannel = 1
 if nChannels > 1
+    bestRms = -1
+    for ch from 1 to nChannels
+        selectObject: origSound
+        testCh = Extract one channel: ch
+        chRms = Get root-mean-square: 0, 0
+        if chRms > bestRms
+            bestRms = chRms
+            analysisChannel = ch
+        endif
+        removeObject: testCh
+    endfor
     selectObject: origSound
-    workSound = Convert to mono
+    workSound = Extract one channel: analysisChannel
+    appendInfoLine: "Analysis channel: ", analysisChannel, "/", nChannels,
+        ... " (strongest RMS real channel)"
 else
     selectObject: origSound
     workSound = Copy: "rvf_work_mono"
+    appendInfoLine: "Analysis channel: mono"
 endif
 
 # ===========================================================================
@@ -460,15 +504,43 @@ pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " --allow_rep "     + string$(allow_repetition)
     ... + " --sparsity "      + fixed$(sparsity, 4)
     ... + " --preset "        + presetStr$
+    ... + " --seed "          + string$(seed)
+    ... + " > """ + pythonLogFileJ$ + """ 2>&1"
 
 runSystem_nocheck: pythonCall$
 
 if not fileReadable(scoreCSV$)
+    appendInfoLine: ""
+    appendInfoLine: "--- Python engine log ---"
+    if fileReadable(pythonLogFile$)
+        Read Strings from raw text file: pythonLogFile$
+        pyLogStrings = selected("Strings")
+        nPyLog = Get number of strings
+        for iPy from 1 to nPyLog
+            selectObject: pyLogStrings
+            pyLine$ = Get string: iPy
+            appendInfoLine: pyLine$
+        endfor
+        removeObject: pyLogStrings
+    else
+        appendInfoLine: "(no Python log was created)"
+    endif
     @cleanUpTempFiles
-    exitScript: "Python engine failed - score CSV not found." + newline$ + "Check the terminal for Python error messages."
+    exitScript: "Python engine failed - score CSV not found. See Info window for the Python log."
 endif
 
 appendInfoLine: "  Engine complete."
+if fileReadable(pythonLogFile$)
+    Read Strings from raw text file: pythonLogFile$
+    pyLogStrings = selected("Strings")
+    nPyLog = Get number of strings
+    for iPy from 1 to nPyLog
+        selectObject: pyLogStrings
+        pyLine$ = Get string: iPy
+        appendInfoLine: "    ", pyLine$
+    endfor
+    removeObject: pyLogStrings
+endif
 
 # ============================================================
 # Stage 3 - Read score and reconstruct
@@ -495,6 +567,10 @@ statPreset$   = presetStr$
 statBudgetDev$ = "?"
 statDensityDev$ = "?"
 statEntropyDev$ = "?"
+statRelaxed$    = "?"
+statUnsatisfied$ = "?"
+statSeed$       = string$(seed)
+statGlobalAmp$  = "0.00"
 
 if fileReadable(statsFile$)
     statsText$ = readFile$(statsFile$)
@@ -515,6 +591,14 @@ if fileReadable(statsFile$)
     statDensityDev$ = parseStatLine.result$
     @parseStatLine: statsText$, "csp_entropy_dev="
     statEntropyDev$ = parseStatLine.result$
+    @parseStatLine: statsText$, "csp_relaxed_gestures="
+    statRelaxed$ = parseStatLine.result$
+    @parseStatLine: statsText$, "csp_unsatisfied_gestures="
+    statUnsatisfied$ = parseStatLine.result$
+    @parseStatLine: statsText$, "seed="
+    statSeed$ = parseStatLine.result$
+    @parseStatLine: statsText$, "global_amp_offset_db="
+    statGlobalAmp$ = parseStatLine.result$
 endif
 
 effectiveArcStr$    = arcStr$
@@ -589,10 +673,8 @@ elsif effectiveArcStr$ = "pulse"
     effectiveArcInt = 8
 endif
 
-xfSec   = 0.005
 nSounds = 0
 nOk     = 0
-prevWasSound = 0
 
 for row from 1 to nScore
     selectObject: scoreTable
@@ -618,7 +700,6 @@ for row from 1 to nScore
         silSnd = Create Sound from formula: "sil", 1, 0, skipDur, sr, "0"
         nSounds = nSounds + 1
         score_snd_'nSounds' = silSnd
-        prevWasSound = 0
     else
         if srcStart < 0
             srcStart = 0
@@ -631,18 +712,6 @@ for row from 1 to nScore
         if segDur >= 0.005
             selectObject: workSound
             segSnd = Extract part: srcStart, srcEnd, "rectangular", 1, "no"
-
-            if prevWasSound = 1
-                selectObject: segSnd
-                nSegSamples = Get number of samples
-                fadeSamples = round(xfSec * sr)
-                if fadeSamples > 1 and fadeSamples < nSegSamples / 4
-                    selectObject: segSnd
-                    fadeEnd = fadeSamples / sr
-                    Formula (part): 0, fadeEnd, 1, 1,
-                        ... "self * (x / " + string$(fadeEnd) + ")"
-                endif
-            endif
 
             safetyFloor = (3.0 / segDur) + 1
             if tgtF0 > 50
@@ -720,10 +789,21 @@ for row from 1 to nScore
                 Formula: "self * " + fixed$(ampScale, 6)
             endif
 
+            # Short symmetric anti-click fade on every rendered event.
+            selectObject: segSnd
+            renderedDur = Get total duration
+            edgeFade = min(0.003, renderedDur * 0.08)
+            if edgeFade > 0.0005 and renderedDur > edgeFade * 2
+                Formula (part): 0, edgeFade, 1, 1,
+                    ... "self * (x / " + string$(edgeFade) + ")"
+                fadeOutStart = renderedDur - edgeFade
+                Formula (part): fadeOutStart, renderedDur, 1, 1,
+                    ... "self * ((" + string$(renderedDur) + " - x) / " + string$(edgeFade) + ")"
+            endif
+
             nSounds = nSounds + 1
             score_snd_'nSounds' = segSnd
             nOk = nOk + 1
-            prevWasSound = 1
 
             if silAfter = undefined
                 silAfter = 0
@@ -732,13 +812,10 @@ for row from 1 to nScore
                 silSnd = Create Sound from formula: "sil", 1, 0, silAfter, sr, "0"
                 nSounds = nSounds + 1
                 score_snd_'nSounds' = silSnd
-                prevWasSound = 0
             endif
         endif
     endif
 endfor
-
-removeObject: workSound
 
 appendInfoLine: "  Assembled: ", nOk, "/", nScore, " events"
 
@@ -755,6 +832,13 @@ endif
 
 if nSounds = 1
     selectObject: score_snd_1
+    preSafetyPeak = Get absolute extremum: 0, 0, "Sinc70"
+    if preSafetyPeak > 0.92
+        Scale peak: 0.92
+        appendInfoLine: "  Safety attenuation: peak ", fixed$(preSafetyPeak, 3), " -> 0.920"
+    else
+        appendInfoLine: "  Safety: no upward normalization (peak ", fixed$(preSafetyPeak, 3), ")"
+    endif
     Rename: outName$
     resultSound = selected("Sound")
 else
@@ -764,7 +848,13 @@ else
     endfor
     Concatenate
     resultSound = selected("Sound")
-    Scale peak: 0.92
+    preSafetyPeak = Get absolute extremum: 0, 0, "Sinc70"
+    if preSafetyPeak > 0.92
+        Scale peak: 0.92
+        appendInfoLine: "  Safety attenuation: peak ", fixed$(preSafetyPeak, 3), " -> 0.920"
+    else
+        appendInfoLine: "  Safety: no upward normalization (peak ", fixed$(preSafetyPeak, 3), ")"
+    endif
     Rename: outName$
     for s to nSounds
         removeObject: score_snd_'s'
@@ -791,14 +881,14 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Rhythmic Voice Flattener v3.2##"
+    Text: 0.5, "centre", 0.5, "half", "##Rhythmic Voice Flattener v3.3##"
 
     # === Subtitle (separate band) ===
     Select outer viewport: 0, 8, 0.33, 0.5
     Axes: 0, 1, 0, 1
     Font size: 8
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", 0.5, "half",
+    Text: 0.5, "centre", 1.5, "half",
         ... "preset: " + statPreset$
         ... + "  | " + effectiveArrangStr$
         ... + "  | arc: " + effectiveArcStr$
@@ -806,16 +896,27 @@ if draw_visualization
         ... + "  | F0: " + fixed$(tgtF0global, 0) + " Hz"
         ... + "  | dur: " + fixed$(outDur, 1) + " s"
 
+    # Shared waveform range for a truthful before/after comparison.
+    selectObject: workSound
+    inputVizPeak = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: resultSound
+    outputVizPeak = Get absolute extremum: 0, 0, "Sinc70"
+    vizPeak = max(inputVizPeak, outputVizPeak)
+    if vizPeak < 0.05
+        vizPeak = 0.05
+    endif
+    vizPeak = vizPeak * 1.08
+
     # === Original waveform ===
     Select outer viewport: 0, 8, 0.55, 1.45
     Select inner viewport: 0.6, 7.7, 0.60, 1.40
-    selectObject: origSound
+    selectObject: workSound
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -vizPeak, vizPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Original"
+    Text left: "yes", "Source Ch" + string$(analysisChannel)
     Text top: "no", fixed$(totalDur, 2) + " s"
 
     # === Composed waveform ===
@@ -823,7 +924,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 1.55, 2.35
     selectObject: resultSound
     Colour: "{0.15, 0.58, 0.62}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -vizPeak, vizPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -918,6 +1019,7 @@ if draw_visualization
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.02, "left", 0.76, "half",
         ... "Source: " + origName$
+        ... + "  | analysis Ch: " + string$(analysisChannel)
         ... + "  | Events: " + statEvents$
         ... + "  | Gestures: " + statGestures$
     Text: 0.02, "left", 0.60, "half",
@@ -936,6 +1038,7 @@ if draw_visualization
         ... "CSP dev — budget: " + statBudgetDev$
         ... + "  density: " + statDensityDev$
         ... + "  entropy: " + statEntropyDev$
+        ... + "  | relaxed/unsat: " + statRelaxed$ + "/" + statUnsatisfied$
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
@@ -944,6 +1047,9 @@ if draw_visualization
 else
     appendInfoLine: "[4/4] Visualization skipped."
 endif
+
+# Remove analysis copy after visualization has used it.
+removeObject: workSound
 
 # ============================================================
 # Cleanup temp files
@@ -962,9 +1068,13 @@ appendInfoLine: "Gestures:  ", statGestures$
 appendInfoLine: "Target F0: ", statTgtF0$, " Hz"
 appendInfoLine: "Tempo:     ", statBPM$, " BPM"
 appendInfoLine: "Preset:    ", statPreset$
+appendInfoLine: "Seed used: ", statSeed$
+appendInfoLine: "Global level offset: ", statGlobalAmp$, " dB"
 appendInfoLine: "CSP dev — budget: ", statBudgetDev$,
     ... "  density: ", statDensityDev$,
     ... "  entropy: ", statEntropyDev$
+appendInfoLine: "CSP relaxed gestures: ", statRelaxed$,
+    ... "  | unsatisfied: ", statUnsatisfied$
 
 selectObject: resultSound
 

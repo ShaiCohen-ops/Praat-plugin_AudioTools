@@ -3,7 +3,7 @@ self_attention_latent.py — Self-Attention Latent Navigation Engine
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.3 (2026)
+Version: 1.4 (2026)
 
 Called by SelfAttentionLatent.praat — not run directly.
 
@@ -26,6 +26,20 @@ Pipeline:
 
 No PyTorch. No TensorFlow. No sklearn. No external plan file.
 Dependencies: numpy, soundfile (scipy optional, unused here)
+
+Changelog v1.4:
+    - Corrected VAE reparameterisation / KL gradients and latent-size scaling.
+    - Replaced independent random Q/K projections with a shared orthogonal
+      projection so attention is driven by latent similarity, not arbitrary
+      random bilinear geometry.
+    - Attention is now indexed by the current latent context event, and return
+      anchors are selected at execution time from attention-related drift states.
+    - Fixed overlap crossfade: the old tail and new head are now actually mixed.
+    - Varispeed now uses FFT resampling at every ratio; pitch-preserve always uses
+      the phase vocoder. Legacy preserve_f0/preserve_spectral_envelope aliases map
+      to preserve_pitch.
+    - Preserves source channel count; analysis uses strongest-RMS source channel.
+    - Writes FLOAT WAV, reports effective head count and attention QC metrics.
 
 Changelog v1.3:
     Wired three exposed knobs that had no audible effect (audio change):
@@ -193,30 +207,46 @@ class _VAE:
 
     def step(self, X, lr, beta):
         import numpy as np
-        B  = X.shape[0]
+        B = X.shape[0]
         Xn = X + 0.3 * self.rng.randn(*X.shape)
         mu, lv = self.encode(Xn)
-        std = np.exp(0.5 * np.clip(lv, -4, 4))
-        Z   = mu + std * self.rng.randn(*std.shape)
+        zdim = max(1, mu.shape[1])
+
+        # Stable reparameterisation.  The same clipped log-variance is used in
+        # sampling and KL so the forward objective and backward pass agree.
+        lv_c = np.clip(lv, -8.0, 8.0)
+        lv_mask = ((lv >= -8.0) & (lv <= 8.0)).astype(np.float64)
+        exp_lv = np.exp(lv_c)
+        std = np.sqrt(exp_lv)
+        eps_z = self.rng.randn(*std.shape)
+        Z = mu + std * eps_z
+
         h2  = self._relu(Z.dot(self.Wd) + self.bd)
         rec = h2.dot(self.Wo) + self.bo
         diff = rec - X
-        rl   = np.mean(diff ** 2)
-        kl   = 0.5 * np.mean(mu**2 + np.exp(lv) - lv - 1.0)
+        rl = np.mean(diff ** 2)
+        kl = 0.5 * np.mean(mu**2 + exp_lv - lv_c - 1.0)
         loss = rl + beta * kl
+
         # backward
         dout = 2 * diff / (B * self.in_dim)
         dWo  = h2.T.dot(dout);             dbo = np.sum(dout, 0)
         dh2  = dout.dot(self.Wo.T) * (h2 > 0)
-        dWd  = Z.T.dot(dh2);              dbd = np.sum(dh2, 0)
+        dWd  = Z.T.dot(dh2);               dbd = np.sum(dh2, 0)
         dZ   = dh2.dot(self.Wd.T)
-        dmu  = dZ + beta * mu / B
-        dlv  = dZ * std * 0.5 + beta * 0.5 * (np.exp(lv) - 1) / B
-        dWm  = self._h.T.dot(dmu);        dbm = np.sum(dmu, 0)
-        dWv  = self._h.T.dot(dlv);        dbv = np.sum(dlv, 0)
+
+        # KL is a mean over batch AND latent dimensions.  Reparameterisation
+        # derivative dZ/dlv = 0.5 * std * eps_z.
+        dmu = dZ + beta * mu / (B * zdim)
+        dlv = (dZ * std * eps_z * 0.5 +
+               beta * 0.5 * (exp_lv - 1.0) / (B * zdim)) * lv_mask
+
+        dWm  = self._h.T.dot(dmu);         dbm = np.sum(dmu, 0)
+        dWv  = self._h.T.dot(dlv);         dbv = np.sum(dlv, 0)
         dh1  = (dmu.dot(self.Wm.T) + dlv.dot(self.Wv.T)) * (self._h > 0)
-        dWe  = Xn.T.dot(dh1);             dbe = np.sum(dh1, 0)
+        dWe  = Xn.T.dot(dh1);              dbe = np.sum(dh1, 0)
         grads = [dWe, dbe, dWm, dbm, dWv, dbv, dWd, dbd, dWo, dbo]
+
         self.t += 1
         b1, b2, eps = 0.9, 0.999, 1e-8
         for i, (p, g) in enumerate(zip(self.params, grads)):
@@ -226,6 +256,9 @@ class _VAE:
             vh = self.v[i] / (1 - b2**self.t)
             p -= lr * mh / (np.sqrt(vh) + eps)
         return loss
+
+
+
 
 
 def train_vae(patches, z_dim, n_iter, seed):
@@ -257,51 +290,59 @@ def encode(model, patches):
 # Stage 2 — Self-Attention Matrix (pure NumPy)
 # ═══════════════════════════════════════════════════════════════════════════
 
+def effective_head_count(d, requested):
+    """Clamp requested heads to the largest <= requested that divides d."""
+    h = max(1, min(int(requested), int(d)))
+    while d % h != 0 and h > 1:
+        h -= 1
+    return h
+
+
 def build_attention(Z, n_heads=4, seed=42):
     """
-    Multi-head self-attention over N latent vectors.
-    Returns A (N×N, rows sum to 1) and mean row entropy (nats).
+    Parameter-free multi-head self-attention over latent vectors.
 
-    Architecture (spec Stage 2):
-      • Layer-norm + residual on inputs
-      • Fixed He-init projections Wq, Wk  (seeded, not trained)
-      • Scaled dot-product per head, softmax, average across heads
+    A shared seeded orthogonal projection is used for Q and K.  Sharing the
+    projection is crucial: attention then measures latent similarity rather
+    than an arbitrary bilinear relation produced by independent random Wq/Wk.
+    The orthogonal rotation keeps the full-space inner-product geometry while
+    the head split provides multiple latent subspace views.
+
+    Returns (A, mean_entropy_nats, effective_heads).
     """
     import numpy as np
     N, d = Z.shape
-    rng  = np.random.RandomState(seed)
-
-    # Clamp heads to clean divisor of d
-    n_heads = max(1, min(n_heads, d))
-    while d % n_heads != 0 and n_heads > 1:
-        n_heads -= 1
+    n_heads = effective_head_count(d, n_heads)
     dh = d // n_heads
 
-    # Layer-norm + residual
     mu_z  = Z.mean(0, keepdims=True)
-    sig_z = Z.std(0,  keepdims=True) + 1e-8
-    Zn    = (Z - mu_z) / sig_z
-    Zr    = Zn + Z / (np.abs(Z).max() + 1e-8)
+    sig_z = Z.std(0, keepdims=True) + 1e-8
+    Zn = (Z - mu_z) / sig_z
+    Zr = Zn + Z / (np.max(np.abs(Z)) + 1e-8)
 
-    sc = np.sqrt(2.0 / (d + dh))
-    Wq = rng.randn(d, d) * sc
-    Wk = rng.randn(d, d) * sc
-    Q  = Zr.dot(Wq)
-    K  = Zr.dot(Wk)
+    # Shared orthogonal projection: Q == K in the rotated latent space.
+    rng = np.random.RandomState(seed)
+    R = rng.randn(d, d)
+    W, _ = np.linalg.qr(R)
+    P = Zr.dot(W)
 
     A_sum = np.zeros((N, N), dtype=np.float64)
-    inv   = 1.0 / np.sqrt(dh)
+    inv = 1.0 / np.sqrt(dh)
     for h in range(n_heads):
-        s, e   = h * dh, (h + 1) * dh
-        scores = Q[:, s:e].dot(K[:, s:e].T) * inv
+        s, e = h * dh, (h + 1) * dh
+        H = P[:, s:e]
+        scores = H.dot(H.T) * inv
         scores -= scores.max(1, keepdims=True)
-        exp_s  = np.exp(scores)
+        exp_s = np.exp(scores)
         A_sum += exp_s / (exp_s.sum(1, keepdims=True) + 1e-12)
 
     A = A_sum / n_heads
     A = A / (A.sum(1, keepdims=True) + 1e-12)
-    H = float(-np.sum(A * np.log(A + 1e-12), axis=1).mean())
-    return A, H
+    entropy = float(-np.sum(A * np.log(A + 1e-12), axis=1).mean())
+    return A, entropy, n_heads
+
+
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -372,18 +413,9 @@ def generate_plan(Z, A, n_steps=72, seed=42,
             tsz, ttmp, tk = lerp(0.30,0.10,t), lerp(0.20,0.10,t), int(round(lerp(4,2,t)))
             alpha  = lerp(0.20, 0.35, t)
             r_str  = lerp(0.50, 0.80, t)
-            # Attention-guided anchor: drift step whose A-row best matches A[i%N]
-            if drift_idxs and N > 1:
-                q = A[i % N]
-                best_j, best_cos = drift_idxs[0], -2.0
-                for dj in drift_idxs:
-                    c  = A[dj % N]
-                    cs = float(np.dot(q, c) / (np.linalg.norm(q) * np.linalg.norm(c) + 1e-12))
-                    if cs > best_cos:
-                        best_cos, best_j = cs, dj
-                anchor = best_j
-            else:
-                anchor = -1
+            # Runtime attention anchor: execution selects the previously visited
+            # drift state most related to the CURRENT latent context.
+            anchor = -2
 
         else:
             ph = "settle"
@@ -400,9 +432,9 @@ def generate_plan(Z, A, n_steps=72, seed=42,
 
         # ── Per-step jitter ─────────────────────────────────────────────────
         sdur = float(np.clip(dur_scale * (1 + rng.uniform(-dur_jitter, dur_jitter)
-                                          if dur_jitter > 0 else 1), 0.85, 1.15))
+                                          if dur_jitter > 0 else 1), 0.50, 1.50))
         seng = float(np.clip(eng_scale * (1 + rng.uniform(-eng_jitter, eng_jitter)
-                                          if eng_jitter > 0 else 1), 0.80, 1.20))
+                                          if eng_jitter > 0 else 1), 0.50, 1.50))
 
         plan.append({
             "step_index":             i,
@@ -467,33 +499,13 @@ def _sinc_resample(clip, target_len):
 
 
 def _resample(clip, target_len):
-    """
-    Dispatch to the best resampler based on stretch ratio:
-      ratio 0.9–1.1  → pad/trim only (imperceptible difference)
-      ratio 0.7–1.4  → sinc FFT resample (fast, high quality)
-      outside        → phase vocoder (slow but accurate for large stretches)
-    """
-    import numpy as np
-    n = len(clip)
-    if n == target_len:
-        return clip.copy().astype(np.float32)
-    ratio = target_len / max(n, 1)
-    if 0.90 <= ratio <= 1.10:
-        # pad or trim with short crossfade
-        if n > target_len:
-            fl  = min(64, target_len // 4)
-            out = clip[:target_len].copy().astype(np.float32)
-            if fl > 0:
-                out[-fl:] *= np.cos(np.linspace(0, np.pi/2, fl)).astype(np.float32)
-            return out
-        else:
-            out = np.zeros(target_len, dtype=np.float32)
-            out[:n] = clip.astype(np.float32)
-            return out
-    elif 0.70 <= ratio <= 1.40:
-        return _sinc_resample(clip, target_len)
-    else:
-        return _pvoc_stretch(clip, target_len)
+    """True varispeed resampling at every ratio (pitch follows speed)."""
+    if len(clip) == target_len:
+        return clip.copy().astype("float32")
+    return _sinc_resample(clip, target_len)
+
+
+
 
 
 def _pvoc_stretch(clip, target_len):
@@ -579,233 +591,219 @@ def _pvoc_stretch(clip, target_len):
 
 
 def _resize(clip, target_len, pitch_mode):
-    """Length-change dispatcher honouring pitch_mode.
+    """Length-change dispatcher.
 
-        off                        -> _resample  (varispeed: pitch tracks
-                                       speed, the classic tape-stretch sound)
-        preserve_f0 /              -> _pvoc_stretch (phase-vocoder time-stretch:
-        preserve_spectral_envelope    pitch is preserved)
-
-    In this time-stretch-only pipeline the two 'preserve_*' modes both resolve
-    to the phase vocoder, which preserves pitch AND the spectral envelope; they
-    are kept as distinct choices for a future pitch-shifting path.
+    varispeed / legacy off -> FFT resampling (pitch follows speed)
+    preserve_pitch / legacy preserve_f0 / preserve_spectral_envelope
+        -> phase-vocoder time stretch (pitch preserved)
     """
-    if pitch_mode == "off":
+    if pitch_mode in ("off", "varispeed"):
         return _resample(clip, target_len)
     return _pvoc_stretch(clip, target_len)
 
 
+
+
+
 def _mix_weights(query, neighbor_positions, attn_row, alpha, p=2.0, q=1.0):
-    """
-    Spec formula: w_j ∝ (1/dist_j^p) * (A[i,j]^q)
+    """Return (weights, attention_reweight_TV).
 
-    alpha controls the balance between geometry and attention
-    by adjusting effective p and q:
-        p_eff = p * alpha          (high alpha → geometry dominates)
-        q_eff = q * (1 - alpha)    (low alpha  → attention dominates)
-
-    When alpha=1.0 this reduces to pure inverse-distance (original).
-    When alpha=0.0 this reduces to pure attention power.
+    attention_reweight_TV is total-variation distance between the final
+    weights and the geometry-only weights with the same geometry exponent.
+    It is 0 when attention has no effect and approaches 1 for strong reweighting.
     """
     import numpy as np
     dists = np.sqrt(np.sum((neighbor_positions - query) ** 2, axis=1))
     dists = np.maximum(dists, 1e-8)
     p_eff = p * max(alpha, 1e-3)
     q_eff = q * max(1.0 - alpha, 1e-3)
-    geom  = 1.0 / (dists ** p_eff)
-    attn  = np.maximum(np.asarray(attn_row, dtype=np.float64), 0.0) ** q_eff
-    w     = geom * attn
-    s     = w.sum()
+    geom = 1.0 / (dists ** p_eff)
+    geom_n = geom / (geom.sum() + 1e-12)
+    attn = np.maximum(np.asarray(attn_row, dtype=np.float64), 0.0) ** q_eff
+    w = geom * attn
+    s = w.sum()
     if s < 1e-12:
-        return geom / (geom.sum() + 1e-12)
-    return w / s
+        return geom_n, 0.0
+    w = w / s
+    tv = 0.5 * float(np.sum(np.abs(w - geom_n)))
+    return w, tv
+
+
+
 
 
 def execute_plan(plan, Z, A, clips, sr, target_samples, seed,
-                 pitch_mode="off"):
-    """
-    Execute the navigation plan. For every step:
-      1. Advance latent position (drift/mutate/return/settle)
-      2. Find K nearest neighbors in Z
-      3. Compute mixing weights: w_j ∝ (1/dist_j^p) * (A[i,j]^q)
-      4. Mix clips (with optional pitch preservation)
-      5. Crossfade and append
-
-    After all steps: time-normalize full stream to target_samples.
-    Returns (stereo float32 array, step_stats list).
-    """
+                 pitch_mode="varispeed"):
+    """Execute latent navigation with context-indexed self-attention."""
     import numpy as np
 
-    rng      = np.random.RandomState(seed)
-    N_ev, d  = Z.shape
-    xfade    = max(4, int(XFADE_SEC * sr))
-    angle    = np.linspace(0, np.pi / 2, xfade, dtype=np.float32)
-    fade_in  = np.sin(angle)    # 0 → 1
-    fade_out = np.cos(angle)    # 1 → 0
+    rng = np.random.RandomState(seed)
+    N_ev, d = Z.shape
+    xfade = max(4, int(XFADE_SEC * sr))
+    angle = np.linspace(0, np.pi / 2, xfade, dtype=np.float32)
+    fade_in = np.sin(angle)
+    fade_out = np.cos(angle)
 
-    center   = Z.mean(0)
-    pos      = center.copy()
-    vel      = np.zeros(d)
-    anchors  = {}
+    center = Z.mean(0)
+    pos = center.copy()
+    vel = np.zeros(d)
+    drift_anchors = []   # (step_index, position, context_event)
 
-    # Detect channel count from clips
-    n_ch     = clips[0].shape[1] if clips[0].ndim == 2 else 1
-    mean_cl  = int(np.mean([c.shape[0] for c in clips]))
-    buf_shape = (mean_cl * (len(plan) + 4), n_ch) if n_ch > 1 else (mean_cl * (len(plan) + 4),)
-    buf      = np.zeros(buf_shape, dtype=np.float32)
-    ptr      = 0
-    stats    = []
+    n_ch = clips[0].shape[1] if clips[0].ndim == 2 else 1
+    mean_cl = max(4, int(np.mean([c.shape[0] for c in clips])))
+    buf_shape = ((mean_cl * (len(plan) + 4), n_ch)
+                 if n_ch > 1 else (mean_cl * (len(plan) + 4),))
+    buf = np.zeros(buf_shape, dtype=np.float32)
+    ptr = 0
+    stats = []
 
     for si, step in enumerate(plan):
-        mode   = step["mode"]
-        sz     = step["step_size"]
-        tmp    = step["temperature"]
-        K      = min(step["k_neighbors"], N_ev)
-        anch   = step["return_anchor_step"]
-        rstr   = step["return_strength"]
-        dsca   = step["segment_duration_scale"]
-        esca   = step["segment_energy_scale"]
-        alpha  = float(step.get("_alpha", 1.0))
+        mode  = step["mode"]
+        sz    = step["step_size"]
+        tmp   = step["temperature"]
+        K     = min(step["k_neighbors"], N_ev)
+        rstr  = step["return_strength"]
+        dsca  = step["segment_duration_scale"]
+        esca  = step["segment_energy_scale"]
+        alpha = float(step.get("_alpha", 1.0))
 
-        # ── 1. Latent displacement ──────────────────────────────────────────
+        prev_pos = pos.copy()
+        pre_d = np.sqrt(np.sum((Z - pos) ** 2, axis=1))
+        pre_context = int(np.argmin(pre_d))
+        used_anchor = -1
+
+        # 1. Latent displacement
         if mode in ("drift", "settle"):
-            td  = vel / (np.linalg.norm(vel) + 1e-8)
+            td = vel / (np.linalg.norm(vel) + 1e-8)
             pos = pos + td * sz + rng.randn(d) * tmp * sz
 
         elif mode == "mutate":
-            noise = rng.randn(d); noise /= (np.linalg.norm(noise) + 1e-8)
-            pos   = pos + noise * sz + rng.randn(d) * tmp
+            noise = rng.randn(d)
+            noise /= (np.linalg.norm(noise) + 1e-8)
+            pos = pos + noise * sz + rng.randn(d) * tmp
 
         elif mode == "return":
-            if anch == -1:
-                ap = center
-            elif anch in anchors:
-                ap = anchors[anch]
+            if drift_anchors:
+                # Choose the earlier drift state whose CONTEXT EVENT receives
+                # the strongest attention from the current context event.
+                rel = np.array([A[pre_context, ctx] for _, _, ctx in drift_anchors])
+                ai = int(np.argmax(rel))
+                used_anchor, ap, _ = drift_anchors[ai]
             else:
                 ap = center
             pull = ap - pos
-            pos  = pos + rstr * pull * sz + rng.randn(d) * tmp * sz
-
+            pos = pos + rstr * pull * sz + rng.randn(d) * tmp * sz
         else:
             pos = pos + rng.randn(d) * tmp * sz
 
-        anchors[si] = pos.copy()
-        vel = 0.7 * vel + 0.3 * (pos - (anchors.get(si - 1, pos)))
+        delta = pos - prev_pos
+        vel = 0.7 * vel + 0.3 * delta
 
-        # ── 2. K nearest neighbors ──────────────────────────────────────────
+        # 2. K nearest neighbors and the current latent context
         dists_all = np.sqrt(np.sum((Z - pos) ** 2, axis=1))
-        nn_idx    = np.argsort(dists_all)[:K]
-        nn_pos    = Z[nn_idx]
+        context_idx = int(np.argmin(dists_all))
+        nn_idx = np.argsort(dists_all)[:K]
+        nn_pos = Z[nn_idx]
+        if mode == "drift":
+            drift_anchors.append((si, pos.copy(), context_idx))
 
-        # ── 3. Mixing weights (spec formula) ────────────────────────────────
-        attn_row = A[si % N_ev][nn_idx]
-        weights  = _mix_weights(pos, nn_pos, attn_row, alpha)
+        # 3. Attention is indexed by the CURRENT context event, not step modulo N.
+        attn_row = A[context_idx][nn_idx]
+        weights, attn_tv = _mix_weights(pos, nn_pos, attn_row, alpha)
 
-        # ── 4. Mix clips ────────────────────────────────────────────────────
-        tgt_len = max(4, int(round(
-            sum(w * c.shape[0] for w, c in zip(weights, [clips[i] for i in nn_idx])))))
-
+        # 4. Mix clips
+        tgt_len = max(4, int(round(sum(
+            w * clips[i].shape[0] for w, i in zip(weights, nn_idx)))))
         mixed = np.zeros((tgt_len, n_ch) if n_ch > 1 else (tgt_len,), dtype=np.float32)
         for w, ev_idx in zip(weights, nn_idx):
             c = clips[ev_idx].astype(np.float32)
-            clen = c.shape[0]
-            if clen == tgt_len:
-                pass  # exact match — use as-is
-            elif abs(clen - tgt_len) <= max(4, int(tgt_len * 0.10)):
-                # within 10% — pad or trim cleanly, no resampling
-                if clen > tgt_len:
-                    fl = min(64, tgt_len // 4)
-                    c  = c[:tgt_len].copy()
-                    if fl > 0:
-                        c[-fl:] = (c[-fl:].T * np.cos(np.linspace(0, np.pi/2, fl)).astype(np.float32)).T
-                else:
-                    pad_shape = (tgt_len - clen, n_ch) if n_ch > 1 else (tgt_len - clen,)
-                    c = np.concatenate([c, np.zeros(pad_shape, dtype=np.float32)])
-            else:
-                # Length-change honouring pitch_mode (off=varispeed, else pvoc)
+            if c.shape[0] != tgt_len:
                 if n_ch > 1:
-                    c = np.stack([_resize(c[:, ch], tgt_len, pitch_mode) for ch in range(n_ch)], axis=1)
+                    c = np.stack([_resize(c[:, ch], tgt_len, pitch_mode)
+                                  for ch in range(n_ch)], axis=1)
                 else:
                     c = _resize(c, tgt_len, pitch_mode)
             mixed += w * c
 
-        # Duration + energy scaling
         if abs(dsca - 1.0) > 0.01:
             nl = max(4, int(round(mixed.shape[0] * dsca)))
             if n_ch > 1:
-                mixed = np.stack([_resize(mixed[:, ch], nl, pitch_mode) for ch in range(n_ch)], axis=1)
+                mixed = np.stack([_resize(mixed[:, ch], nl, pitch_mode)
+                                  for ch in range(n_ch)], axis=1)
             else:
                 mixed = _resize(mixed, nl, pitch_mode)
         mixed = (mixed * esca).astype(np.float32)
 
-        # ── 5. Crossfade and append ─────────────────────────────────────────
-        cl  = mixed.shape[0]
-        do_xfade = ptr > 0 and cl >= xfade * 3
+        # 5. True overlap crossfade: old tail + new head are summed.
+        cl = mixed.shape[0]
+        do_xfade = ptr >= xfade and cl >= xfade * 3
         if do_xfade:
-            # fade-out the tail already written in buf
-            tail_start = ptr - xfade
-            if tail_start >= 0:
-                if n_ch > 1:
-                    buf[tail_start:ptr] = (buf[tail_start:ptr].T * fade_out).T
-                else:
-                    buf[tail_start:ptr] *= fade_out
-            # fade-in the new clip (replace, not add)
+            ov0 = ptr - xfade
             if n_ch > 1:
-                mixed[:xfade] = (mixed[:xfade].T * fade_in).T
+                old_tail = (buf[ov0:ptr].T * fade_out).T
+                new_head = (mixed[:xfade].T * fade_in).T
             else:
-                mixed[:xfade] *= fade_in
-            # write from the crossfade start — replace, don't accumulate
-            write_ptr = ptr - xfade
+                old_tail = buf[ov0:ptr] * fade_out
+                new_head = mixed[:xfade] * fade_in
+            buf[ov0:ptr] = old_tail + new_head
+            rest = mixed[xfade:]
+            end = ptr + rest.shape[0]
+            if end > buf.shape[0]:
+                pad_shape = ((end - buf.shape[0] + mean_cl, n_ch)
+                             if n_ch > 1 else (end - buf.shape[0] + mean_cl,))
+                buf = np.concatenate([buf, np.zeros(pad_shape, dtype=np.float32)])
+            buf[ptr:end] = rest
+            ptr = end
         else:
-            write_ptr = ptr
+            end = ptr + cl
+            if end > buf.shape[0]:
+                pad_shape = ((end - buf.shape[0] + mean_cl, n_ch)
+                             if n_ch > 1 else (end - buf.shape[0] + mean_cl,))
+                buf = np.concatenate([buf, np.zeros(pad_shape, dtype=np.float32)])
+            buf[ptr:end] = mixed
+            ptr = end
 
-        end = write_ptr + cl
-        if end > buf.shape[0]:
-            pad_shape = (end - buf.shape[0] + mean_cl, n_ch) if n_ch > 1 else (end - buf.shape[0] + mean_cl,)
-            buf = np.concatenate([buf, np.zeros(pad_shape, dtype=np.float32)])
-        buf[write_ptr:end] = mixed   # overwrite, not accumulate
-        ptr = end
-
+        dom = int(nn_idx[int(np.argmax(weights))])
         stats.append({"step": si, "mode": mode, "k": K,
-                       "nn": nn_idx.tolist(), "w": [round(float(x),4) for x in weights]})
+                      "context": context_idx, "dominant": dom,
+                      "anchor": used_anchor,
+                      "attn_tv": float(attn_tv),
+                      "max_weight": float(np.max(weights)),
+                      "nn": nn_idx.tolist(),
+                      "w": [round(float(x), 4) for x in weights]})
 
-    # ── Time-normalize to target_samples ────────────────────────────────────
+    # Time-normalize to target_samples
     raw = buf[:max(1, ptr)]
     if raw.shape[0] != target_samples:
         if n_ch > 1:
-            mono = np.stack([_resize(raw[:, ch], target_samples, pitch_mode) for ch in range(n_ch)], axis=1)
+            rendered = np.stack([_resize(raw[:, ch], target_samples, pitch_mode)
+                                 for ch in range(n_ch)], axis=1)
         else:
-            mono = _resize(raw, target_samples, pitch_mode)
+            rendered = _resize(raw, target_samples, pitch_mode)
     else:
-        mono = raw.copy().astype(np.float32)
+        rendered = raw.copy().astype(np.float32)
 
-    # Build stereo output
-    if n_ch >= 2:
-        # Already multichannel — use first two channels directly
-        stereo = mono[:, :2].copy()
-    else:
-        # Mono source — duplicate to stereo, no delay
-        stereo = np.stack([mono, mono], axis=1)
-
-    peak = np.max(np.abs(stereo))
+    peak = float(np.max(np.abs(rendered))) if rendered.size else 0.0
     if peak > 0.99:
-        stereo *= 0.99 / peak
+        rendered *= 0.99 / peak
+    return rendered, stats
 
-    return stereo, stats
+
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 5 — Output, compensation, cleanup
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _rms_compensate(stereo, ref_rms, mode):
+def _rms_compensate(audio_out, ref_rms, mode):
     """
     mode: none | peak | rms
     Safety ceiling: -1 dBFS (0.891)
     """
     import numpy as np
     CEIL = 0.891
-    out  = stereo.astype(np.float32)
+    out  = audio_out.astype(np.float32)
     peak = np.max(np.abs(out))
     if peak < 1e-9:
         return out
@@ -825,30 +823,43 @@ def _rms_compensate(stereo, ref_rms, mode):
 
 def write_stats(path, events, plan, losses, stats,
                 sr, out_dur, attn_heads, attn_entropy,
-                pitch_mode, norm_mode, ref_rms, out_rms, warnings):
+                pitch_mode, norm_mode, ref_rms, out_rms, warnings,
+                analysis_channel, input_channels, output_channels):
     import numpy as np
     mode_counts = {}
-    for s in stats:
-        mode_counts[s["mode"]] = mode_counts.get(s["mode"], 0) + 1
+    for st in stats:
+        mode_counts[st["mode"]] = mode_counts.get(st["mode"], 0) + 1
+    H_norm = (attn_entropy / np.log(max(2, len(events)))) if len(events) > 1 else 0.0
+    unique_dom = len(set(st.get("dominant", -1) for st in stats)) if stats else 0
+    mean_attn_tv = float(np.mean([st.get("attn_tv", 0.0) for st in stats])) if stats else 0.0
+    mean_max_w = float(np.mean([st.get("max_weight", 0.0) for st in stats])) if stats else 0.0
+
     with open(path, "w") as f:
-        f.write("n_events=%d\n"         % len(events))
-        f.write("n_plan_steps=%d\n"     % len(plan))
-        f.write("n_executed=%d\n"       % len(stats))
-        f.write("output_duration=%.3f\n"% out_dur)
-        f.write("attn_heads=%d\n"       % attn_heads)
-        f.write("attn_entropy=%.4f\n"   % attn_entropy)
-        f.write("pitch_mode=%s\n"       % pitch_mode)
-        f.write("normalize_mode=%s\n"   % norm_mode)
-        f.write("rms_input=%.6f\n"      % ref_rms)
-        f.write("rms_output=%.6f\n"     % out_rms)
-        f.write("vae_loss_initial=%.6f\n" % (losses[0]  if losses else 0))
+        f.write("n_events=%d\n"          % len(events))
+        f.write("n_plan_steps=%d\n"      % len(plan))
+        f.write("n_executed=%d\n"        % len(stats))
+        f.write("output_duration=%.3f\n" % out_dur)
+        f.write("attn_heads=%d\n"        % attn_heads)
+        f.write("attn_entropy=%.4f\n"    % attn_entropy)
+        f.write("attn_entropy_norm=%.4f\n" % H_norm)
+        f.write("mean_attention_reweight=%.4f\n" % mean_attn_tv)
+        f.write("mean_max_mix_weight=%.4f\n" % mean_max_w)
+        f.write("unique_dominant_events=%d\n" % unique_dom)
+        f.write("analysis_channel=%d\n"  % analysis_channel)
+        f.write("input_channels=%d\n"    % input_channels)
+        f.write("output_channels=%d\n"   % output_channels)
+        f.write("pitch_mode=%s\n"        % pitch_mode)
+        f.write("normalize_mode=%s\n"    % norm_mode)
+        f.write("rms_input=%.6f\n"       % ref_rms)
+        f.write("rms_output=%.6f\n"      % out_rms)
+        f.write("vae_loss_initial=%.6f\n" % (losses[0] if losses else 0))
         f.write("vae_loss_final=%.6f\n"   % (losses[-1] if losses else 0))
-        for m, c in sorted(mode_counts.items()):
-            f.write("mode_%s=%d\n"      % (m, c))
+        for md, c in sorted(mode_counts.items()):
+            f.write("mode_%s=%d\n" % (md, c))
         dur_arr = [float(e["end_time"]) - float(e["start_time"]) for e in events]
         f.write("mean_event_dur=%.3f\n" % float(np.mean(dur_arr)))
         for w in warnings:
-            f.write("warning=%s\n"      % w)
+            f.write("warning=%s\n" % w)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -887,8 +898,8 @@ def main():
 
     # Audio
     parser.add_argument("--pitch_mode",
-        choices=["off", "preserve_f0", "preserve_spectral_envelope"],
-        default="off")
+        choices=["varispeed", "preserve_pitch", "off", "preserve_f0", "preserve_spectral_envelope"],
+        default="varispeed")
     parser.add_argument("--normalize_mode",
         choices=["none", "peak", "rms"],
         default="rms")
@@ -899,6 +910,17 @@ def main():
 
     args = parser.parse_args()
     check_deps()
+
+    # Canonicalise legacy pitch-mode aliases and clamp direct-CLI values.
+    if args.pitch_mode == "off":
+        args.pitch_mode = "varispeed"
+    elif args.pitch_mode in ("preserve_f0", "preserve_spectral_envelope"):
+        args.pitch_mode = "preserve_pitch"
+    args.plan_steps = max(8, min(500, args.plan_steps))
+    args.plan_dur_scale = max(0.25, min(4.0, args.plan_dur_scale))
+    args.plan_eng_scale = max(0.0, min(4.0, args.plan_eng_scale))
+    args.plan_dur_jitter = max(0.0, min(0.50, args.plan_dur_jitter))
+    args.plan_eng_jitter = max(0.0, min(0.50, args.plan_eng_jitter))
 
     np.random.seed(args.seed)
     warnings_list = []
@@ -915,16 +937,29 @@ def main():
     tgt_samp = int(tgt_dur * sr)
 
     print("    Audio: %.2fs  SR=%d  Events=%d" % (orig_dur, sr, len(events)))
+    if len(events) < 2:
+        print("ERROR: at least two events are required for latent navigation.", file=sys.stderr)
+        sys.exit(1)
     if len(events) < 3:
         warnings_list.append("too_few_events_%d" % len(events))
 
-    # Input RMS for loudness compensation
-    mono_ref = audio if audio.ndim == 1 else audio.mean(1)
-    ref_rms  = float(np.sqrt(np.mean(mono_ref.astype(np.float64) ** 2)))
+    # Input level uses all channels without phase-cancelling fold-down.  Latent
+    # analysis uses one real, representative channel: the strongest-RMS channel.
+    if audio.ndim == 1:
+        input_channels = 1
+        analysis_idx = 0
+        audio_mono = audio
+    else:
+        input_channels = audio.shape[1]
+        ch_rms = np.sqrt(np.mean(audio.astype(np.float64) ** 2, axis=0))
+        analysis_idx = int(np.argmax(ch_rms))
+        audio_mono = audio[:, analysis_idx]
+    analysis_channel = analysis_idx + 1
+    ref_rms = float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
+    print("    Analysis channel: %d/%d (strongest RMS)" % (analysis_channel, input_channels))
 
     # Mel patches
-    audio_mono = audio if audio.ndim == 1 else audio[:, 0]
-    patches    = extract_patches(audio_mono.astype(np.float64), sr, events)
+    patches = extract_patches(audio_mono.astype(np.float64), sr, events)
     print("    Patches: %s" % str(patches.shape))
 
     # VAE
@@ -933,7 +968,7 @@ def main():
     print("  [SAL 1/5] Training VAE (%d iters, z=%d)..." % (n_iter, z_dim))
     model, losses = train_vae(patches, z_dim, n_iter, args.seed)
     lr = losses[-1] / (losses[0] + 1e-12) if losses else 1.0
-    print("    Loss: %.6f → %.6f (%.1f%% reduction)" % (
+    print("    Loss: %.6f -> %.6f (%.1f%% reduction)" % (
         losses[0], losses[-1], (1 - lr) * 100))
     if lr > 0.95:
         warnings_list.append("vae_did_not_converge")
@@ -942,10 +977,12 @@ def main():
     print("    Z: %s  range [%.3f, %.3f]" % (str(Z.shape), Z.min(), Z.max()))
 
     # ── Stage 2: Self-attention ────────────────────────────────────────────
-    heads = max(1, min(args.attn_heads, z_dim))
-    print("  [SAL 2/5] Building attention matrix (%d heads)..." % heads)
-    A, H_mean = build_attention(Z, n_heads=heads, seed=args.seed)
-    print("    A: %s  entropy=%.4f nats" % (str(A.shape), H_mean))
+    heads_req = max(1, min(args.attn_heads, z_dim))
+    A, H_mean, heads = build_attention(Z, n_heads=heads_req, seed=args.seed)
+    print("  [SAL 2/5] Building attention matrix (%d heads%s)..." %
+          (heads, " (requested %d)" % heads_req if heads != heads_req else ""))
+    print("    A: %s  entropy=%.4f nats (norm %.3f)" %
+          (str(A.shape), H_mean, H_mean / np.log(max(2, len(events)))))
 
     # ── Stage 3: Plan generation ───────────────────────────────────────────
     print("  [SAL 3/5] Generating navigation plan (%d steps)..." % args.plan_steps)
@@ -994,14 +1031,17 @@ def main():
         if peak > 0.99:
             output = output * (0.99 / peak)
     out_rms = float(np.sqrt(np.mean(output.astype(np.float64) ** 2)))
-    print("    %s: RMS %.4f → %.4f (ref %.4f)  eng_scale=%.2f" % (
-        args.normalize_mode, pre_rms, out_rms, ref_rms, args.plan_eng_scale))
+    output_channels = 1 if output.ndim == 1 else output.shape[1]
+    print("    %s: RMS %.4f -> %.4f (ref %.4f)  eng_scale=%.2f  ch=%d" % (
+        args.normalize_mode, pre_rms, out_rms, ref_rms, args.plan_eng_scale, output_channels))
 
-    sf.write(args.output_wav, output, sr)
+    # FLOAT avoids a second PCM16 quantisation on the Python -> Praat bridge.
+    sf.write(args.output_wav, output, sr, subtype="FLOAT")
     write_stats(args.stats_txt, events, plan, losses, step_stats,
                 sr, output.shape[0] / sr,
                 heads, H_mean, args.pitch_mode, args.normalize_mode,
-                ref_rms, out_rms, warnings_list)
+                ref_rms, out_rms, warnings_list,
+                analysis_channel, input_channels, output_channels)
 
     # Cleanup: delete Praat-created temp files only
     if args.cleanup:

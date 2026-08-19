@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026) - Unified Cross-Platform Version
+# Version: 2.2 (2026) - Duration/quality corrected
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -82,7 +82,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Paulstretch v2.1
+form Paulstretch v2.2
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -95,6 +95,8 @@ form Paulstretch v2.1
     positive Stretch 8.0
     positive Window_seconds 0.25
     comment === Output ===
+    integer Random_seed 0
+    comment 0 = new random realization; non-zero = reproducible
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -126,7 +128,7 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Paulstretch v2.1 ==="
+writeInfoLine:  "=== Paulstretch v2.2 ==="
 appendInfoLine: "Input: ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -152,12 +154,12 @@ appendInfoLine: ""
 # ===========================================================================
 appendInfoLine: "[1/4] Detecting Python dependencies..."
 
-probeCmd$ = pythonCmd$ + " -c ""import numpy, scipy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
+probeCmd$ = pythonCmd$ + " -c ""import numpy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
 runSystem_nocheck: probeCmd$
 
 if not fileReadable(probeMarker$)
     @cleanUpTempFiles
-    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy soundfile"
 endif
 
 deleteFile: probeMarker$
@@ -179,8 +181,12 @@ appendInfoLine: "[3/4] Running Paulstretch (this may take a while)..."
 pythonCall$ = pythonCmd$ + " """ + pythonScript$ + """"
     ... + " """ + tempInput$ + """"
     ... + " """ + tempOutput$ + """"
-    ... + " " + fixed$(stretch, 4)
-    ... + " " + fixed$(window_seconds, 4)
+    ... + " " + fixed$(stretch, 6)
+    ... + " " + fixed$(window_seconds, 6)
+
+if random_seed <> 0
+    pythonCall$ = pythonCall$ + " " + string$(random_seed)
+endif
 
 runSystem_nocheck: pythonCall$
 
@@ -203,8 +209,14 @@ resultSound = selected("Sound")
 selectObject: resultSound
 durOut = Get total duration
 rms_out = Get root-mean-square: 0, 0
+actualStretch = durOut / dur
+durationError = abs(durOut - expectedDur)
 
-appendInfoLine: "Actual output: ", fixed$(durOut, 2), " s"
+appendInfoLine: "Actual output: ", fixed$(durOut, 6), " s"
+appendInfoLine: "Measured ratio: ", fixed$(actualStretch, 6), "x"
+if durationError > max(0.002, 2 / sr)
+    appendInfoLine: "WARNING: duration differs from target by ", fixed$(durationError, 6), " s"
+endif
 
 ###############################################################################
 # VISUALIZATION
@@ -217,14 +229,14 @@ if draw_visualization
     Select outer viewport: 0, 8, 0, 8
 
     # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Select outer viewport: 0, 8, 0, 0.55
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Paulstretch — Spectral Time Stretch##"
+    Text: 0.5, "centre", 0.72, "half", "##Paulstretch — Spectral Time Stretch##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + fixed$(stretch, 1) + "x | Window: " + fixed$(window_seconds, 3) + " s"
+    Text: 0.5, "centre", -0.9, "half", soundName$ + " | " + presetName$ + " | " + fixed$(stretch, 1) + "x | Window: " + fixed$(window_seconds, 3) + " s"
 
     # === Input Waveform ===
     Select outer viewport: 0, 8, 0.6, 1.4
@@ -302,7 +314,7 @@ if draw_visualization
 
     removeObject: specOut, tmpOut
 
-    # === Spectral Centroid Comparison ===
+    # === Intensity Envelope Comparison ===
     Select outer viewport: 0, 8, 5.4, 6.8
     Select inner viewport: 0.6, 7.7, 5.55, 6.7
 
@@ -374,8 +386,8 @@ if draw_visualization
     Text: 0.05, "left", 0.75, "half", "Paulstretch Parameters:"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.05, "left", 0.5, "half", "Stretch: " + fixed$(stretch, 1) + "x | Window: " + fixed$(window_seconds, 3) + " s"
-    Text: 0.05, "left", 0.25, "half", "RMS original: " + fixed$(rms_orig, 4) + " | RMS stretched: " + fixed$(rms_out, 4)
+    Text: 0.05, "left", 0.5, "half", "Requested: " + fixed$(stretch, 2) + "x | Measured: " + fixed$(actualStretch, 4) + "x | Window: " + fixed$(window_seconds, 3) + " s"
+    Text: 0.05, "left", 0.25, "half", "RMS original: " + fixed$(rms_orig, 4) + " | RMS stretched: " + fixed$(rms_out, 4) + " | Seed: " + string$(random_seed)
 
     Font size: 7
     Colour: "Black"
@@ -401,7 +413,7 @@ appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output: ", soundName$, "_stretched"
 appendInfoLine: "Preset: ", presetName$
-appendInfoLine: "Duration: ", fixed$(dur, 2), " s → ", fixed$(durOut, 2), " s (", fixed$(stretch, 1), "x)"
+appendInfoLine: "Duration: ", fixed$(dur, 2), " s → ", fixed$(durOut, 6), " s | requested ", fixed$(stretch, 2), "x | measured ", fixed$(actualStretch, 6), "x"
 appendInfoLine: "RMS original:  ", fixed$(rms_orig, 6)
 appendInfoLine: "RMS stretched: ", fixed$(rms_out, 6)
 

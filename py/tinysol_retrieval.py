@@ -2,7 +2,7 @@
 tinysol_retrieval.py — TinySOL Orchestration Retrieval Backend
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.7
+Version: 1.9
 
 Usage (called by Praat via TinySOL_Retrieval.praat, not directly):
     python tinysol_retrieval.py  target.wav  params.txt  output.wav  results.txt
@@ -22,6 +22,47 @@ params.txt is a simple key=value file written by Praat:
                                blend      = top-3, rank-weighted (1/rank)
                                top2/3/4   = equal mix of N layers
     render_gain=0.8
+    envelope_follow=0.85
+
+Changes in v1.9 (macro-envelope transfer):
+    - Optional envelope_follow (0..1, default 0.85) transfers the target's
+      smoothed RMS macro-envelope onto the rendered orchestral result.  The
+      envelope is compared on a normalised 0..1 time axis, so TinySOL samples
+      of different durations inherit the target gesture without time-stretching
+      or pitch-shifting the corpus audio.
+    - Envelope transfer uses power across real channels (no phase-cancelling
+      fold-down), a 100 ms macro smoother, a -30 dB denominator floor and a
+      +12 dB boost ceiling to avoid unstable pumping.  envelope_follow=0 is
+      exactly v1.8 audio.
+    - Frame-based mode also applies the same macro stage after OLA; its existing
+      per-frame RMS matching remains intact, while the new stage corrects only
+      slower attack/release shape.
+    - Results report envelope correlation before/after transfer.
+
+Changes in v1.8 (correctness + corpus coverage):
+    - Replaced the old F0 autocorrelation/octave heuristic with overlap-energy-
+      normalized FFT autocorrelation and first-strong-period selection.  The old
+      detector systematically octave-divided clean tones (e.g. 440 Hz -> 220.5 Hz)
+      and hard-capped detection at 600 Hz; v1.8 is reliable across TinySOL's
+      practical note range, including the high violin register.
+    - Frame-mode F0 smoothing now requires a voiced majority in the local window;
+      isolated voiced detections no longer smear pitch gates across silence/noise.
+    - Silent target frames are explicitly unmatched/rendered as silence.  v1.7
+      left corpus grains at full amplitude when target_rms == 0.
+    - silence_threshold now applies in frame mode too; threshold >= 2.0 is an
+      explicit disabled gate, matching the UI/default intent.
+    - Whole-file variant deduplication moved AFTER scoring, so the acoustically
+      best string/instance variant is retained instead of choosing by filename
+      length before hearing its descriptor distance.
+    - Speech mode disables both harmonic scoring and legacy pitch penalties/gates.
+    - Target multichannel analysis uses the strongest real RMS channel instead of
+      phase-cancellable channel averaging.
+    - TinySOL family is inferred first from the official corpus path; Keyboards
+      (Accordion) and wind instruments not present in the old prefix table are no
+      longer silently classified as Unknown.
+    - Corpus sample-rate conversion uses scipy.signal.resample_poly instead of
+      linear interpolation.
+    - Output WAV is written as 32-bit float.
 
 Changes in v1.7 (performance):
     - _compute_mfcc(): mel filterbank construction is now fully vectorised
@@ -135,6 +176,9 @@ FAMILY_MAP = {
     "Ob": "Winds",   "TpC": "Brass",   "Tbn": "Brass",
     "BTb": "Brass",  "Va": "Strings",  "Vc": "Strings",
     "Vn": "Strings",
+    "Acc": "Keyboards",
+    "ASax": "Winds",
+    "SaxA": "Winds",
 }
 
 # MIDI note name → number
@@ -220,6 +264,7 @@ def parse_params(params_path):
         "n_results":           "8",
         "render_mode":         "best",
         "render_gain":         "0.8",
+        "envelope_follow":      "0.85",
         "stereo_output":       "1",
         "analysis_mode":       "whole_file",
         "frame_size_ms":       "150",
@@ -244,6 +289,7 @@ def parse_params(params_path):
     params["_max_layers"] = int(params["max_layers"])
     params["_n_results"]  = int(params["n_results"])
     params["_render_gain"]    = float(params["render_gain"])
+    params["_envelope_follow"] = max(0.0, min(1.0, float(params["envelope_follow"])))
     params["_stereo_output"]  = params["stereo_output"].strip() not in ("0", "false", "no", "")
     params["_analysis_mode"]  = params["analysis_mode"].strip().lower()
     params["_frame_size_ms"]  = float(params["frame_size_ms"])
@@ -279,6 +325,11 @@ def parse_params(params_path):
             "harmonic": 0.00,
         }
         print("  [PARAMS] speech_mode=1: descriptor weights overridden for speech input.")
+
+    # Distances are internally normalized by the sum of active weights, so the
+    # user need not make them sum to 1.  But at least one must be positive.
+    if sum(max(0.0, float(v)) for v in params["_descriptor_weights"].values()) <= 0.0:
+        raise ValueError("At least one descriptor weight must be > 0")
 
     return params
 
@@ -482,11 +533,42 @@ def _family_for_instrument(inst):
     # Fall back: try to infer from first letters
     if inst.startswith(("Vn", "Va", "Vc", "Cb")):
         return "Strings"
-    if inst.startswith(("Fl", "Ob", "Cl", "Bn")):
+    if inst.startswith(("Fl", "Ob", "Cl", "Bn", "ASax", "Sax")):
         return "Winds"
     if inst.startswith(("Hn", "Tp", "Tbn", "BTb")):
         return "Brass"
+    if inst.startswith(("Acc", "Acd")):
+        return "Keyboards"
     return "Unknown"
+
+
+def _family_from_path(path):
+    """Return the canonical TinySOL family from a corpus path, if present."""
+    canonical = {
+        "brass": "Brass",
+        "strings": "Strings",
+        "winds": "Winds",
+        "keyboards": "Keyboards",
+    }
+    parts = [x for x in re.split(r"[\\/]+", str(path)) if x]
+    for part in parts:
+        fam = canonical.get(part.strip().lower())
+        if fam is not None:
+            return fam
+    return None
+
+
+def _instrument_name_from_path(path):
+    """Return TinySOL's full instrument folder name when using official layout."""
+    parts = [x for x in re.split(r"[\\/]+", str(path)) if x]
+    for i, part in enumerate(parts):
+        if part.strip().lower() == "ordinario" and i > 0:
+            return parts[i - 1].strip()
+    return ""
+
+
+def _norm_label(text):
+    return re.sub(r"[^a-z0-9]+", "", str(text).lower())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -495,13 +577,15 @@ def _family_for_instrument(inst):
 
 class TinySolEntry:
     """One sample from the TinySOL corpus."""
-    __slots__ = ("abs_path", "norm_path", "inst", "tech", "note",
-                 "dyn", "variant", "midi", "family", "descriptors")
+    __slots__ = ("abs_path", "norm_path", "inst", "instrument_name",
+                 "tech", "note", "dyn", "variant", "midi", "family",
+                 "descriptors")
 
     def __init__(self, abs_path, meta):
         self.abs_path   = abs_path
         self.norm_path  = _normalise_path(abs_path)
         self.inst       = meta["inst"]
+        self.instrument_name = _instrument_name_from_path(abs_path) or self.inst
         self.tech       = meta["tech"]
         self.note       = meta["note"]
         self.dyn        = meta["dyn"]
@@ -547,6 +631,13 @@ def build_index(corpus_root, db_store, params):
                 n_nometa += 1
                 continue
 
+            # TinySOL's official directory layout contains the authoritative
+            # family name.  Prefer it over abbreviation heuristics so Accordion
+            # (Keyboards), Alto Saxophone, and future corpus variants are covered.
+            path_family = _family_from_path(abs_path)
+            if path_family is not None:
+                meta["family"] = path_family
+
             entry = TinySolEntry(abs_path, meta)
             entry.populate_descriptors(db_store)
 
@@ -579,6 +670,22 @@ def build_index(corpus_root, db_store, params):
 # Stage 5 — Target audio analysis
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _analysis_mono(audio):
+    """Return a real source channel for analysis, avoiding phase cancellation.
+
+    Returns (mono, channel_index_0_based).  Mono input reports channel 0.
+    """
+    import numpy as np
+    x = np.asarray(audio)
+    if x.ndim == 1:
+        return x, 0
+    if x.shape[1] == 1:
+        return x[:, 0], 0
+    rms = np.sqrt(np.mean(x.astype(np.float64) ** 2, axis=0))
+    ch = int(np.argmax(rms))
+    return x[:, ch], ch
+
+
 def analyse_target(audio_path):
     """
     Compute the same descriptors that are stored in the .db files
@@ -596,8 +703,7 @@ def analyse_target(audio_path):
 
     audio, sr = sf.read(audio_path, always_2d=False)
     audio = np.asarray(audio, dtype=np.float32)
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)  # mix to mono
+    audio, analysis_ch = _analysis_mono(audio)
 
     # Work in float64 for precision
     x = audio.astype(np.float64)
@@ -632,7 +738,7 @@ def analyse_target(audio_path):
     # ── Pitch detection (median F0 across analysis frames) ───────────
     # Use overlapping frames for robust F0 estimation
     pitch_frame_size = min(4096, len(x))
-    pitch_hop = pitch_frame_size // 2
+    pitch_hop = max(1, pitch_frame_size // 2)
     f0_values = []
     n_pitch_frames = max(1, (len(x) - pitch_frame_size) // pitch_hop + 1)
 
@@ -704,6 +810,8 @@ def analyse_target(audio_path):
         "partials_amp": partials_amp,
         "n_voiced":     n_voiced,
         "n_frames":     n_pitch_frames,
+        "analysis_channel": analysis_ch + 1,
+        "target_rms": float(np.sqrt(np.mean(x ** 2))) if len(x) else 0.0,
     }
 
     return result, sr, len(audio), pitch_info
@@ -1039,7 +1147,7 @@ def harmonic_contribution_distance(target_partials_hz, target_partials_amp,
 
 
 def score_entry(entry, target_descs, weights, preferred_dyns, min_midi, max_midi,
-                target_midi=None, target_partials=None):
+                target_midi=None, target_partials=None, speech_mode=False):
     """
     Compute a weighted distance score for one corpus entry vs target.
     Lower = better match.
@@ -1115,7 +1223,7 @@ def score_entry(entry, target_descs, weights, preferred_dyns, min_midi, max_midi
     # Legacy pitch proximity penalty (only when harmonic weight is absent
     # or zero, and target_midi is available)
     harmonic_w = weights.get("harmonic", 0)
-    if target_midi is not None and harmonic_w <= 0:
+    if target_midi is not None and harmonic_w <= 0 and not speech_mode:
         pitch_dist = abs(entry.midi - target_midi)
         penalty += 0.05 * pitch_dist
         dist_parts["_pitch_dist_st"] = pitch_dist
@@ -1147,7 +1255,7 @@ def build_candidate_domain(entries, params):
     Returns: filtered list of TinySolEntry (the legal domain).
     """
     allowed_fam  = set(params["_allowed_families"])
-    allowed_inst = set(params["_allowed_instruments"])
+    allowed_inst = {_norm_label(x) for x in params["_allowed_instruments"] if x}
     min_midi     = params["_min_midi"]
     max_midi     = params["_max_midi"]
 
@@ -1161,9 +1269,11 @@ def build_candidate_domain(entries, params):
         if allowed_fam and e.family not in allowed_fam:
             n_fam_reject += 1
             continue
-        if allowed_inst and e.inst not in allowed_inst:
-            n_inst_reject += 1
-            continue
+        if allowed_inst:
+            entry_labels = {_norm_label(e.inst), _norm_label(e.instrument_name)}
+            if not (allowed_inst & entry_labels):
+                n_inst_reject += 1
+                continue
         if e.midi < min_midi or e.midi > max_midi:
             n_midi_reject += 1
             continue
@@ -1193,39 +1303,36 @@ def retrieve(entries, target_descs, params, target_midi=None,
     # ── Stage A: Hard-constraint filtering (Orchidea domain build) ───────
     domain = build_candidate_domain(entries, params)
 
-    # ── Stage B: Deduplicate variants — keep one per (inst, note, dyn) ───
-    # Prefer the variant with the most descriptor coverage; break ties by
-    # shortest variant string (i.e. the "plain" version over "2c" etc.).
-    seen = {}
-    for e in domain:
-        key = (e.inst, e.note, e.dyn)
-        existing = seen.get(key)
-        if existing is None:
-            seen[key] = e
-        else:
-            if (len(e.descriptors) > len(existing.descriptors) or
-                    (len(e.descriptors) == len(existing.descriptors)
-                     and len(e.variant) < len(existing.variant))):
-                seen[key] = e
-    deduped = list(seen.values())
-
-    # ── Stage C: Score all legal, deduplicated candidates ─────────────────
+    # ── Stage B: Score every legal variant first ───────────────────────────
+    # TinySOL contains alternate takes/string positions whose timbres differ.
+    # Choosing a variant by filename/coverage before scoring can discard the
+    # acoustically closest take.  Score first, then keep the best variant per
+    # (instrument, note, dynamic) key to preserve the prior diversity policy.
     pref_dyns = set(params["_preferred_dynamics"])
     min_midi  = params["_min_midi"]
     max_midi  = params["_max_midi"]
     weights   = params["_descriptor_weights"]
 
-    scored = []
-    for entry in deduped:
+    all_scored = []
+    for entry in domain:
         score, detail = score_entry(entry, target_descs, weights,
                                     pref_dyns, min_midi, max_midi,
                                     target_midi=target_midi,
-                                    target_partials=target_partials)
+                                    target_partials=target_partials,
+                                    speech_mode=params["_speech_mode"])
         if score is None:
             continue
-        scored.append((score, entry, detail))
+        all_scored.append((score, entry, detail))
 
-    scored.sort(key=lambda t: t[0])
+    best_by_key = {}
+    for item in all_scored:
+        score, entry, _detail = item
+        key = (entry.inst, entry.note, entry.dyn)
+        prev = best_by_key.get(key)
+        if prev is None or score < prev[0]:
+            best_by_key[key] = item
+
+    scored = sorted(best_by_key.values(), key=lambda t: t[0])
     return scored
 
 
@@ -1234,27 +1341,28 @@ def retrieve(entries, target_descs, params, target_midi=None,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_audio(path, target_sr=None):
-    """Load WAV as mono float32 numpy array.  Resample if needed."""
+    """Load WAV as mono float32, using the strongest real channel.
+
+    TinySOL itself is mono, but this also keeps target/custom-corpus stereo
+    material from cancelling when L and R are out of phase.
+    """
     import numpy as np
     import soundfile as sf
 
     audio, sr = sf.read(path, always_2d=False)
     audio = np.asarray(audio, dtype=np.float32)
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
+    audio, _ = _analysis_mono(audio)
 
     if target_sr is not None and sr != target_sr:
-        # Simple linear resampling (no scipy needed for basic case)
-        ratio     = target_sr / sr
-        new_len   = int(len(audio) * ratio)
-        indices   = np.linspace(0, len(audio) - 1, new_len)
-        idx_lo    = np.floor(indices).astype(int)
-        idx_hi    = np.minimum(idx_lo + 1, len(audio) - 1)
-        frac      = indices - idx_lo
-        audio     = audio[idx_lo] * (1 - frac) + audio[idx_hi] * frac
-        sr        = target_sr
+        from scipy.signal import resample_poly
+        from math import gcd
+        g = gcd(int(target_sr), int(sr))
+        up = int(target_sr) // g
+        down = int(sr) // g
+        audio = resample_poly(audio, up, down).astype(np.float32)
+        sr = int(target_sr)
 
-    return audio, sr
+    return np.asarray(audio, dtype=np.float32), int(sr)
 
 
 def blend_samples(entries_and_scores, target_len_samples, sr, render_mode, gain,
@@ -1375,12 +1483,132 @@ def blend_samples(entries_and_scores, target_len_samples, sr, render_mode, gain,
         return out.astype(np.float32)
 
 
+
+def _envelope_power_trace(audio):
+    """Per-sample power trace without phase-cancelling channel fold-down."""
+    import numpy as np
+    x = np.asarray(audio, dtype=np.float64)
+    if x.ndim == 1:
+        return x * x
+    return np.mean(x * x, axis=1)
+
+
+def _macro_rms_envelope(audio, sr, smooth_ms=100.0):
+    """Slow RMS envelope used for gesture transfer, one value per sample."""
+    import numpy as np
+    from scipy.ndimage import gaussian_filter1d
+    p = _envelope_power_trace(audio)
+    if p.size == 0:
+        return np.zeros(0, dtype=np.float64)
+    # Treat smooth_ms as approximate FWHM of the Gaussian smoother.
+    sigma = max(1.0, (smooth_ms * 0.001 * sr) / 2.355)
+    sm = gaussian_filter1d(p, sigma=sigma, mode="nearest")
+    return np.sqrt(np.maximum(sm, 0.0))
+
+
+def _norm_envelope(env):
+    """Robust 0..1 envelope normalization; silence remains exactly zero."""
+    import numpy as np
+    env = np.asarray(env, dtype=np.float64)
+    if env.size == 0:
+        return env
+    ref = float(np.percentile(env, 95.0))
+    if ref <= 1e-12:
+        ref = float(np.max(env))
+    if ref <= 1e-12:
+        return np.zeros_like(env)
+    return np.clip(env / ref, 0.0, 1.5)
+
+
+def _envelope_correlation(a, b):
+    import numpy as np
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    if len(a) != len(b) or len(a) < 2:
+        return 0.0
+    if np.std(a) < 1e-10 or np.std(b) < 1e-10:
+        return 1.0 if np.allclose(a, b, atol=1e-8) else 0.0
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def apply_target_macro_envelope(output, target_audio, sr, amount,
+                                smooth_ms=100.0, boost_limit_db=12.0):
+    """Transfer the target's *macro* RMS gesture to an already-rendered output.
+
+    The target envelope is resampled on a normalized 0..1 time axis, so corpus
+    samples may keep their natural duration.  No time stretch, pitch shift, or
+    spectral processing is introduced.  amount=0 is an exact identity.
+
+    Returns (audio, stats_dict).
+    """
+    import numpy as np
+    x = np.asarray(output, dtype=np.float64)
+    amount = float(np.clip(amount, 0.0, 1.0))
+    if x.size == 0 or amount <= 0.0:
+        return np.asarray(output).copy(), {
+            "envelope_follow": amount,
+            "envelope_corr_before": 0.0,
+            "envelope_corr_after": 0.0,
+        }
+
+    target_env = _norm_envelope(_macro_rms_envelope(target_audio, sr, smooth_ms))
+    out_env    = _norm_envelope(_macro_rms_envelope(x, sr, smooth_ms))
+    n = x.shape[0]
+    if len(target_env) == 0 or len(out_env) == 0:
+        return np.asarray(output).copy(), {
+            "envelope_follow": amount,
+            "envelope_corr_before": 0.0,
+            "envelope_corr_after": 0.0,
+        }
+
+    # Map target gesture to output duration rather than changing audio duration.
+    if len(target_env) != n:
+        target_env = np.interp(np.linspace(0.0, 1.0, n),
+                               np.linspace(0.0, 1.0, len(target_env)),
+                               target_env)
+    if len(out_env) != n:
+        out_env = np.interp(np.linspace(0.0, 1.0, n),
+                            np.linspace(0.0, 1.0, len(out_env)), out_env)
+
+    corr_before = _envelope_correlation(target_env, out_env)
+
+    # Ratio follower with a denominator floor and bounded boost.  Deep target
+    # silences can still attenuate all the way to zero; the ceiling only limits
+    # upward gain where the rendered sample itself is weak.
+    denom_floor = 10.0 ** (-30.0 / 20.0)
+    boost_limit = 10.0 ** (boost_limit_db / 20.0)
+    ratio = target_env / np.maximum(out_env, denom_floor)
+    ratio = np.clip(ratio, 0.0, boost_limit)
+    gain_curve = (1.0 - amount) + amount * ratio
+
+    if x.ndim == 1:
+        y = x * gain_curve
+    else:
+        y = x * gain_curve[:, None]
+
+    # Preserve the pre-transfer global peak so Render_gain keeps its old meaning.
+    peak_before = float(np.max(np.abs(x))) if x.size else 0.0
+    peak_after  = float(np.max(np.abs(y))) if y.size else 0.0
+    if peak_before > 1e-12 and peak_after > 1e-12:
+        y *= peak_before / peak_after
+
+    after_env = _norm_envelope(_macro_rms_envelope(y, sr, smooth_ms))
+    corr_after = _envelope_correlation(target_env, after_env)
+    stats = {
+        "envelope_follow": amount,
+        "envelope_corr_before": corr_before,
+        "envelope_corr_after": corr_after,
+    }
+    return y.astype(np.float32), stats
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 8 — Write results text file
 # ─────────────────────────────────────────────────────────────────────────────
 
 def write_results(out_path, scored, params, target_sr, target_len,
-                  render_mode, chosen_count, render_silence=False):
+                  render_mode, chosen_count, render_silence=False,
+                  silence_reason="", envelope_stats=None):
+
     """Write a human-readable + Praat-parseable results file."""
 
     n_results = min(params["_n_results"], len(scored))
@@ -1395,6 +1623,11 @@ def write_results(out_path, scored, params, target_sr, target_len,
         f.write("n_candidates=%d\n"  % len(scored))
         f.write("n_results=%d\n"     % n_results)
         f.write("silence_rendered=%d\n" % (1 if render_silence else 0))
+        f.write("silence_reason=%s\n" % (silence_reason if render_silence else ""))
+        if envelope_stats is not None:
+            f.write("envelope_follow=%.3f\n" % envelope_stats.get("envelope_follow", 0.0))
+            f.write("envelope_corr_before=%.4f\n" % envelope_stats.get("envelope_corr_before", 0.0))
+            f.write("envelope_corr_after=%.4f\n" % envelope_stats.get("envelope_corr_after", 0.0))
         f.write("\n")
         f.write("rank,score,family,instrument,note,midi,dynamic,variant,"
                 "technique,abs_path\n")
@@ -1417,74 +1650,87 @@ def write_results(out_path, scored, params, target_sr, target_len,
             f.write("%s=%.3f\n" % (name, w))
         if render_silence:
             f.write("\n=== NOTE ===\n")
-            f.write("Output is silence: best score (%.4f) exceeded "
-                    "silence_threshold (%.2f).\n"
-                    % (scored[0][0] if scored else 0.0,
-                       params["_silence_threshold"]))
+            if silence_reason == "silent_target":
+                f.write("Output is silence: target RMS is effectively zero.\n")
+            else:
+                f.write("Output is silence: best score (%.4f) exceeded "
+                        "silence_threshold (%.2f).\n"
+                        % (scored[0][0] if scored else 0.0,
+                           params["_silence_threshold"]))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Frame-based (concatenative) synthesis — Stages A–D
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _detect_f0(frame, sr, min_hz=50.0, max_hz=600.0, voiced_thresh=0.35):
-    """
-    Autocorrelation-based F0 detection on a single audio frame.
-    Returns frequency in Hz, or None when the frame is unvoiced / too quiet.
+def _detect_f0(frame, sr, min_hz=40.0, max_hz=3000.0, voiced_thresh=0.35):
+    """Normalized-autocorrelation F0 detector for TinySOL-range material.
 
-    Algorithm:
-      1. Find the strongest autocorrelation peak in [min_hz, max_hz]
-      2. Octave check: if there's a peak at ~2× the lag (half the freq)
-         that's at least 85% as strong, prefer it — that's likely the
-         true fundamental (the shorter-lag peak was a harmonic)
-      3. max_hz capped at 600 Hz to prevent harmonic false positives
+    The v1.7 detector normalized only by lag-0 energy and then preferred a
+    second autocorrelation peak near 2x the lag.  A periodic tone has strong
+    peaks at every integer period, so that rule systematically octave-divided
+    clean tones.  Here each lag is normalized by the actual overlap energy,
+    then the earliest strong periodic maximum is selected.
     """
     import numpy as np
 
-    n = len(frame)
-    if n < 4:
+    x = np.asarray(frame, dtype=np.float64)
+    n = len(x)
+    if n < 16:
         return None
 
-    w = np.hanning(n)
-    x = frame * w
-
-    # Normalised autocorrelation
-    r = np.correlate(x, x, mode="full")[n - 1:]
-    if r[0] < 1e-10:
+    x = x - float(np.mean(x))
+    x *= np.hanning(n)
+    if float(np.dot(x, x)) < 1e-12:
         return None
-    r = r / r[0]
 
+    max_hz = min(float(max_hz), sr * 0.45)
+    min_hz = max(20.0, float(min_hz))
     min_lag = max(1, int(sr / max_hz))
-    max_lag = min(len(r) - 1, int(sr / min_hz))
+    max_lag = min(n - 3, int(sr / min_hz))
     if min_lag >= max_lag:
         return None
 
-    r_sub    = r[min_lag:max_lag + 1]
-    peak_idx = int(np.argmax(r_sub))
-    peak_val = float(r_sub[peak_idx])
+    # FFT autocorrelation, then exact overlap-energy normalization per lag.
+    nfft = 1 << int(math.ceil(math.log2(2 * n - 1)))
+    X = np.fft.rfft(x, n=nfft)
+    ac = np.fft.irfft(X * np.conj(X), n=nfft)[:n]
 
-    if peak_val < voiced_thresh:
+    sq = x * x
+    cs = np.concatenate([[0.0], np.cumsum(sq)])
+    lags = np.arange(min_lag, max_lag + 1)
+    e_left  = cs[n - lags]
+    e_right = cs[n] - cs[lags]
+    denom = np.sqrt(np.maximum(e_left * e_right, 1e-24))
+    corr = ac[lags] / denom
+
+    if len(corr) < 3:
         return None
+    local = np.where((corr[1:-1] >= corr[:-2]) &
+                     (corr[1:-1] >  corr[2:]))[0] + 1
+    if len(local) == 0:
+        j = int(np.argmax(corr))
+        if corr[j] < voiced_thresh:
+            return None
+    else:
+        peak_vals = corr[local]
+        strongest = float(np.max(peak_vals))
+        candidates = local[peak_vals >= max(voiced_thresh, 0.88 * strongest)]
+        if len(candidates) == 0:
+            return None
+        j = int(candidates[0])   # first strong period = highest valid fundamental
 
-    best_lag = peak_idx + min_lag
+    lag = float(lags[j])
+    # Parabolic interpolation around the correlation maximum for sub-sample lag.
+    if 0 < j < len(corr) - 1:
+        y0, y1, y2 = float(corr[j - 1]), float(corr[j]), float(corr[j + 1])
+        den = y0 - 2.0 * y1 + y2
+        if abs(den) > 1e-12:
+            delta = 0.5 * (y0 - y2) / den
+            if abs(delta) <= 1.0:
+                lag += delta
 
-    # Octave check: look for a peak at ~2× the lag (one octave lower).
-    # If it's strong enough relative to the found peak, prefer it —
-    # the original peak was likely a harmonic, not the fundamental.
-    double_lag = best_lag * 2
-    if double_lag <= max_lag:
-        # Search in a ±10% window around the expected octave-below lag
-        search_lo = max(min_lag, int(double_lag * 0.9)) - min_lag
-        search_hi = min(len(r_sub) - 1, int(double_lag * 1.1)) - min_lag
-        if search_lo < search_hi:
-            oct_region = r_sub[search_lo:search_hi + 1]
-            oct_peak_idx = int(np.argmax(oct_region))
-            oct_peak_val = float(oct_region[oct_peak_idx])
-            # Accept octave-below if it's at least 85% as strong
-            if oct_peak_val >= peak_val * 0.85:
-                best_lag = search_lo + oct_peak_idx + min_lag
-
-    return float(sr) / best_lag
+    return float(sr) / max(lag, 1e-12)
 
 
 def _analyse_frame(frame, sr, n_fft):
@@ -1520,8 +1766,7 @@ def analyse_frames(audio_path, frame_size_ms, hop_size_ms):
 
     audio, sr = sf.read(audio_path, always_2d=False)
     audio = np.asarray(audio, dtype=np.float32)
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
+    audio, analysis_ch = _analysis_mono(audio)
     x = audio.astype(np.float64)
 
     frame_size = max(64, int(round(frame_size_ms * sr / 1000.0)))
@@ -1552,28 +1797,35 @@ def analyse_frames(audio_path, frame_size_ms, hop_size_ms):
             "rms":    rms,
             "f0_hz":  f0_hz,
             "midi":   None,   # filled after smoothing
+            "silent": False,
+            "analysis_channel": analysis_ch + 1,
         })
         raw_f0.append(f0_hz)
         idx += 1
 
-    # Pass 2: median-smooth the F0 contour (5-frame window)
-    # This eliminates single-frame voiced/unvoiced flickers that cause
-    # the pitch gate to switch corpus entries erratically.
+    # Pass 2: silence gate + median smoothing of the F0 contour.
+    # A voiced MAJORITY is required in the local window; one stray pitch
+    # detection no longer propagates into neighbouring unvoiced frames.
+    max_rms = max([fi["rms"] for fi in frames_info] + [0.0])
+    silence_floor = max(1e-10, max_rms * (10.0 ** (-70.0 / 20.0)))
+    for i, fi in enumerate(frames_info):
+        fi["silent"] = fi["rms"] <= silence_floor
+        if fi["silent"]:
+            raw_f0[i] = None
+
     smooth_radius = 2   # 5-frame median window
     for i in range(len(frames_info)):
         lo = max(0, i - smooth_radius)
         hi = min(len(raw_f0), i + smooth_radius + 1)
-        neighbourhood = [f for f in raw_f0[lo:hi] if f is not None]
-        if len(neighbourhood) >= 2:
-            # Majority voiced in window → use median F0
+        window_vals = raw_f0[lo:hi]
+        neighbourhood = [f for f in window_vals if f is not None]
+        majority = (len(window_vals) // 2) + 1
+        if (not frames_info[i]["silent"] and
+                len(neighbourhood) >= majority):
             smoothed_f0 = float(np.median(neighbourhood))
             frames_info[i]["f0_hz"] = smoothed_f0
             frames_info[i]["midi"]  = _hz_to_midi(smoothed_f0)
-        elif len(neighbourhood) == 1:
-            frames_info[i]["f0_hz"] = neighbourhood[0]
-            frames_info[i]["midi"]  = _hz_to_midi(neighbourhood[0])
         else:
-            # All neighbours unvoiced — keep as unvoiced
             frames_info[i]["f0_hz"] = None
             frames_info[i]["midi"]  = None
 
@@ -1620,6 +1872,9 @@ def retrieve_frame(domain, frame_info, params, whole_file_descs,
     frame_midi    = frame_info["midi"]
     frame_f0      = frame_info["f0_hz"]
 
+    if frame_info.get("silent", False):
+        return None
+
     # ── Per-frame timbral descriptors ─────────────────────────────────────
     # Compute from the actual audio slice so scores vary frame-to-frame.
     # Fall back to whole-file descriptors if audio is not supplied.
@@ -1638,7 +1893,7 @@ def retrieve_frame(domain, frame_info, params, whole_file_descs,
         frame_partials = []
         for h in range(1, n_harm + 1):
             fh = frame_f0 * h
-            if fh >= 22050:
+            if fh >= 0.48 * frame_sr:
                 break
             frame_partials.append((fh, 1.0 / h))
 
@@ -1647,7 +1902,10 @@ def retrieve_frame(domain, frame_info, params, whole_file_descs,
     # causing the UI control to be silently ignored.  Now pitch_tolerance
     # is always respected; harmonic_contribution_distance() handles fine
     # pitch discrimination within the gate window.
-    if frame_midi is not None:
+    if params["_speech_mode"]:
+        gate_midi = None
+        gate_tol  = pitch_tol
+    elif frame_midi is not None:
         gate_midi = frame_midi
         gate_tol  = pitch_tol
     elif last_voiced_midi is not None:
@@ -1669,7 +1927,8 @@ def retrieve_frame(domain, frame_info, params, whole_file_descs,
 
         score, detail = score_entry(entry, frame_descs, weights,
                                     pref_dyns, min_midi, max_midi,
-                                    target_partials=frame_partials)
+                                    target_partials=frame_partials,
+                                    speech_mode=params["_speech_mode"])
         if score is None:
             continue
         scored.append((score, entry, detail))
@@ -1677,6 +1936,10 @@ def retrieve_frame(domain, frame_info, params, whole_file_descs,
     if not scored:
         return None
     scored.sort(key=lambda t: t[0])
+    # Threshold >= 2.0 is the explicit disabled state.
+    thresh = params["_silence_threshold"]
+    if thresh < 2.0 and scored[0][0] > thresh:
+        return None
     return scored[0]
 
 
@@ -1779,8 +2042,12 @@ def render_frame_matches(frame_matches, frame_size, hop_size,
         grain *= hann_seg
         target_rms = fi["rms"]
         grain_rms  = float(np.sqrt(np.mean(grain ** 2)))
-        if grain_rms > 1e-9 and target_rms > 1e-9:
+        if target_rms <= 1e-10:
+            grain[:] = 0.0
+        elif grain_rms > 1e-9:
             grain *= target_rms / grain_rms
+        else:
+            grain[:] = 0.0
 
         # Accumulate
         if stereo:
@@ -1821,30 +2088,33 @@ def render_frame_matches(frame_matches, frame_size, hop_size,
     return result.astype(np.float32)
 
 
-def write_frame_results(out_path, frame_matches, params, target_sr, target_len):
+def write_frame_results(out_path, frame_matches, params, target_sr, target_len, envelope_stats=None):
     """
     Write a Praat-parseable results file for frame-based mode.
     Ranks corpus entries by how many frames they were chosen for.
     """
     from collections import Counter
+    import numpy as np
 
     n_frames  = len(frame_matches)
     n_matched = sum(1 for fm in frame_matches if fm["match"] is not None)
 
-    # Tally usage and best score per (family, inst, note, dyn) key
-    usage    = Counter()
-    best_sc  = {}
-    entry_of = {}
+    # Tally usage and MEAN selected score per (family, inst, note, dyn) key.
+    # v1.7 reported the single best frame score, which made a frequently poor
+    # match look deceptively excellent if it happened to fit one frame well.
+    usage     = Counter()
+    score_sum = Counter()
+    entry_of  = {}
     for fm in frame_matches:
         if fm["match"] is None:
             continue
         score, entry, _ = fm["match"]
         key = (entry.family, entry.inst, entry.note, entry.dyn)
         usage[key] += 1
-        if key not in best_sc or score < best_sc[key]:
-            best_sc[key]  = score
-            entry_of[key] = entry
+        score_sum[key] += float(score)
+        entry_of[key] = entry
 
+    mean_sc = {k: score_sum[k] / max(1, usage[k]) for k in usage}
     n_results = min(params["_n_results"], len(usage))
     ranked    = [k for k, _ in usage.most_common(n_results)]
 
@@ -1853,17 +2123,23 @@ def write_frame_results(out_path, frame_matches, params, target_sr, target_len):
         f.write("=== TinySOL Retrieval Results ===\n")
         f.write("render_mode=frame_based\n")
         f.write("chosen_count=%d\n"  % n_matched)
+        if envelope_stats is not None:
+            f.write("envelope_follow=%.3f\n" % envelope_stats.get("envelope_follow", 0.0))
+            f.write("envelope_corr_before=%.4f\n" % envelope_stats.get("envelope_corr_before", 0.0))
+            f.write("envelope_corr_after=%.4f\n" % envelope_stats.get("envelope_corr_after", 0.0))
         f.write("target_sr=%d\n"     % target_sr)
         f.write("target_len=%.3f\n"  % (target_len / max(1, target_sr)))
         f.write("n_candidates=%d\n"  % n_frames)
         f.write("n_results=%d\n"     % n_results)
+        f.write("silence_rendered=%d\n" % (1 if n_matched == 0 else 0))
+        f.write("silence_reason=%s\n" % ("frame_unmatched" if n_matched == 0 else ""))
         f.write("\n")
         f.write("rank,score,family,instrument,note,midi,dynamic,variant,"
                 "technique,abs_path\n")
         for rank, key in enumerate(ranked, 1):
             e = entry_of[key]
             f.write("%d,%.6f,%s,%s,%s,%d,%s,%s,%s,%s\n" % (
-                rank, best_sc[key],
+                rank, mean_sc[key],
                 e.family, e.inst, e.note, e.midi,
                 e.dyn, e.variant, e.tech, e.abs_path,
             ))
@@ -1871,6 +2147,10 @@ def write_frame_results(out_path, frame_matches, params, target_sr, target_len):
         f.write("=== Frame Stats ===\n")
         f.write("total_frames=%d\n"      % n_frames)
         f.write("matched_frames=%d\n"    % n_matched)
+        f.write("silent_frames=%d\n"     % sum(1 for fm in frame_matches if fm["frame"].get("silent", False)))
+        matched_scores = [float(fm["match"][0]) for fm in frame_matches if fm["match"] is not None]
+        f.write("mean_match_score=%.6f\n" % (float(np.mean(matched_scores)) if matched_scores else 0.0))
+        f.write("silence_threshold=%.3f\n" % params["_silence_threshold"])
         f.write("frame_size_ms=%.1f\n"   % params["_frame_size_ms"])
         f.write("hop_size_ms=%.1f\n"     % params["_hop_size_ms"])
         f.write("pitch_tolerance=%d\n"   % params["_pitch_tolerance"])
@@ -1893,6 +2173,14 @@ def main():
         )
         sys.exit(1)
 
+    # Windows Praat may launch Python with a legacy code page.  Status text
+    # must never be able to abort the DSP/retrieval pipeline.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
     check_dependencies()
 
     import numpy as np
@@ -1904,25 +2192,51 @@ def main():
     results_txt = sys.argv[4]
     done_file   = sys.argv[5] if len(sys.argv) > 5 else None
 
+    import io
+    import traceback
+
+    class _TeeErr:
+        def __init__(self, primary, capture):
+            self.primary = primary
+            self.capture = capture
+        def write(self, text):
+            try:
+                self.primary.write(text)
+            except Exception:
+                pass
+            self.capture.write(text)
+            return len(text)
+        def flush(self):
+            try:
+                self.primary.flush()
+            except Exception:
+                pass
+
+    _err_capture = io.StringIO()
+    _orig_err = sys.stderr
+    sys.stderr = _TeeErr(_orig_err, _err_capture)
     try:
         _run_pipeline(target_wav, params_file, out_wav, results_txt)
-        # Write success status
         if done_file:
-            with open(done_file, "w") as f:
+            with open(done_file, "w", encoding="utf-8") as f:
                 f.write("OK\n")
     except SystemExit:
-        # Propagate sys.exit calls but write error status first
         if done_file:
-            with open(done_file, "w") as f:
-                f.write("ERROR: Python exited with error. Check console.\n")
+            detail = _err_capture.getvalue().strip()
+            with open(done_file, "w", encoding="utf-8") as f:
+                f.write("ERROR: Python exited with error.\n")
+                if detail:
+                    f.write(detail + "\n")
         raise
     except Exception as exc:
-        # Write error details to done file before re-raising
+        tb = traceback.format_exc()
         if done_file:
-            with open(done_file, "w") as f:
-                f.write("ERROR: %s\n" % str(exc))
-        print("ERROR: %s" % exc, file=sys.stderr)
+            with open(done_file, "w", encoding="utf-8") as f:
+                f.write("ERROR: %s\n%s" % (str(exc), tb))
+        print("ERROR: %s" % exc, file=_orig_err)
         sys.exit(1)
+    finally:
+        sys.stderr = _orig_err
 
 
 def _run_pipeline(target_wav, params_file, out_wav, results_txt):
@@ -1957,6 +2271,7 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
                  params["_pitch_tolerance"]))
     else:
         print("  render_mode:   %s  max_layers: %d" % (render_mode, params["_max_layers"]))
+    print("  envelope:      %.2f (macro RMS follow)" % params["_envelope_follow"])
 
     # ── Stage 2: Load .db files ──────────────────────────────────────────
     print("[2/8] Loading .db descriptor files ...")
@@ -1985,10 +2300,13 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
                            params["_frame_size_ms"],
                            params["_hop_size_ms"])
         n_voiced = sum(1 for fi in frames_info if fi["midi"] is not None)
-        print("  %d frames  (%.0f ms / %.0f ms)  voiced: %d  unvoiced: %d"
+        n_silent = sum(1 for fi in frames_info if fi.get("silent", False))
+        analysis_ch = frames_info[0].get("analysis_channel", 1) if frames_info else 1
+        print("  %d frames  (%.0f ms / %.0f ms)  voiced: %d  unvoiced: %d  silent: %d"
               % (len(frames_info),
                  params["_frame_size_ms"], params["_hop_size_ms"],
-                 n_voiced, len(frames_info) - n_voiced))
+                 n_voiced, len(frames_info) - n_voiced, n_silent))
+        print("  Analysis channel: %d" % analysis_ch)
 
         # ── Stage 4b: Whole-file target descriptors ───────────────────────
         # The .db files store whole-note averages; per-frame descriptors live
@@ -2032,8 +2350,18 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
         prev_entry_path  = None    # track previous winning entry
         persist_count    = 0       # how many consecutive frames it won
         persist_bonus    = 0.015   # score reduction per consecutive frame
+        unvoiced_run     = 0       # expire pitch extrapolation after brief gaps
 
         for fi in frames_info:
+            if fi.get("silent", False):
+                last_voiced_midi = None
+                unvoiced_run = 0
+            elif fi["midi"] is None:
+                unvoiced_run += 1
+                if unvoiced_run > 2:
+                    last_voiced_midi = None
+            else:
+                unvoiced_run = 0
             # Slice the raw audio for this frame so retrieve_frame can compute
             # per-frame descriptors (captures timbre variation across the target)
             f_start = fi["start"]
@@ -2079,6 +2407,10 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
                 prev_entry_path = _entry.abs_path
                 persist_count = 1
 
+            if match is None:
+                prev_entry_path = None
+                persist_count = 0
+
             frame_matches.append({"frame": fi, "match": match})
             if match is not None:
                 n_matched += 1
@@ -2106,10 +2438,15 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
             stereo=params["_stereo_output"],
             pitch_pan=params["_pitch_pan_stereo"],
         )
+        output_audio, envelope_stats = apply_target_macro_envelope(
+            output_audio, _raw_audio, target_sr, params["_envelope_follow"])
+        print("  Envelope corr: %.3f -> %.3f" % (
+            envelope_stats["envelope_corr_before"],
+            envelope_stats["envelope_corr_after"]))
 
         # ── Stage 7: Write WAV ────────────────────────────────────────────
         print("[7/8] Writing output WAV ...")
-        sf.write(out_wav, output_audio, target_sr)
+        sf.write(out_wav, output_audio, target_sr, subtype="FLOAT")
         out_dur = len(output_audio) / target_sr
         peak    = float(np.max(np.abs(output_audio)))
         print("  Written: %.2f s  |  peak=%.4f" % (out_dur, peak))
@@ -2117,7 +2454,7 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
         # ── Stage 8: Write results ────────────────────────────────────────
         print("[8/8] Writing results file ...")
         write_frame_results(results_txt, frame_matches, params,
-                            target_sr, target_len)
+                            target_sr, target_len, envelope_stats=envelope_stats)
 
         print("OK: done.")
         if top_keys:
@@ -2126,10 +2463,11 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
                               if fm["match"] and
                               (fm["match"][1].family, fm["match"][1].inst,
                                fm["match"][1].note, fm["match"][1].dyn) == best_key)
-            best_score_val = next(fm["match"][0] for fm in frame_matches
-                                  if fm["match"] and
-                                  (fm["match"][1].family, fm["match"][1].inst,
-                                   fm["match"][1].note, fm["match"][1].dyn) == best_key)
+            _best_scores = [float(fm["match"][0]) for fm in frame_matches
+                            if fm["match"] and
+                            (fm["match"][1].family, fm["match"][1].inst,
+                             fm["match"][1].note, fm["match"][1].dyn) == best_key]
+            best_score_val = float(np.mean(_best_scores)) if _best_scores else 0.0
             print("best_match=%s %s %s %s score=%.6f" % (
                 best_entry.family, best_entry.inst,
                 best_entry.note, best_entry.dyn, best_score_val))
@@ -2143,6 +2481,7 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
         print("[4/8] Analysing target WAV ...")
         target_descs, target_sr, target_len, pitch_info = analyse_target(target_wav)
         print("  Descriptors computed: %s" % list(target_descs.keys()))
+        print("  Analysis channel: %d" % pitch_info.get("analysis_channel", 1))
 
         target_midi = pitch_info["midi"]
         # Build target partials for harmonic contribution scoring.
@@ -2223,9 +2562,16 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
         # element" concept from orchids-master production logic.
         silence_thresh = params["_silence_threshold"]
         best_score_val = scored[0][0]
-        render_silence = best_score_val > silence_thresh
+        target_is_silent = pitch_info.get("target_rms", 0.0) <= 1e-8
+        gate_reject = (silence_thresh < 2.0 and
+                       best_score_val > silence_thresh)
+        render_silence = target_is_silent or gate_reject
+        silence_reason = "silent_target" if target_is_silent else (
+            "score_threshold" if gate_reject else "")
 
-        if render_silence:
+        if target_is_silent:
+            print("  Target is effectively silent; rendering silence.")
+        elif gate_reject:
             print("  WARNING: best score %.4f exceeds silence threshold %.2f"
                   % (best_score_val, silence_thresh))
             print("  Rendering silence (no corpus entry is a good match).")
@@ -2246,16 +2592,28 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
                 output_audio = np.zeros((target_len, 2), dtype=np.float32)
             else:
                 output_audio = np.zeros(target_len, dtype=np.float32)
+            envelope_stats = {
+                "envelope_follow": params["_envelope_follow"],
+                "envelope_corr_before": 0.0,
+                "envelope_corr_after": 0.0,
+            }
         else:
             output_audio = blend_samples(
                 scored, target_len, target_sr,
                 render_mode, params["_render_gain"],
                 stereo=params["_stereo_output"]
             )
+            target_audio_env, _ = load_audio(target_wav, target_sr=target_sr)
+            output_audio, envelope_stats = apply_target_macro_envelope(
+                output_audio, target_audio_env, target_sr,
+                params["_envelope_follow"])
+            print("  Envelope corr: %.3f -> %.3f" % (
+                envelope_stats["envelope_corr_before"],
+                envelope_stats["envelope_corr_after"]))
 
         # ── Stage 8: Write WAV ────────────────────────────────────────────
         print("[7/8] Writing output WAV ...")
-        sf.write(out_wav, output_audio, target_sr)
+        sf.write(out_wav, output_audio, target_sr, subtype="FLOAT")
         out_dur = len(output_audio) / target_sr
         peak    = float(np.max(np.abs(output_audio)))
         print("  Written: %.2f s  |  peak=%.4f" % (out_dur, peak))
@@ -2264,10 +2622,12 @@ def _run_pipeline(target_wav, params_file, out_wav, results_txt):
         print("[8/8] Writing results file ...")
         write_results(results_txt, scored, params, target_sr, target_len,
                       render_mode, n_blend,
-                      render_silence=render_silence)
+                      render_silence=render_silence,
+                      silence_reason=silence_reason,
+                      envelope_stats=envelope_stats)
 
         print("OK: done.")
-        silence_flag = "SILENCE (score > threshold)" if render_silence else ""
+        silence_flag = ("SILENCE (%s)" % silence_reason) if render_silence else ""
         print("best_match=%s %s %s %s score=%.6f %s" % (
             scored[0][1].family,
             scored[0][1].inst,

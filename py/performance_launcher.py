@@ -3,7 +3,7 @@
 # Praat AudioTools Plugin
 # Script:      performance_launcher.py
 # Author:      Shai Cohen
-# Version:     1.4 (2026) — ASIO auto-enable + host-API device labels
+# Version:     1.5 (2026) — live-safety, routing guards, persistent config
 # License:     MIT License
 #
 # Description:
@@ -11,10 +11,29 @@
 #   Accepts a manifest JSON from PerformanceLauncher.praat, loads
 #   each cue into memory, and provides a keyboard-triggered GUI
 #   for firing cues to any output channel configuration with
-#   per-cue gain, fade-in/out, pan offset, and progress display.
+#   per-cue gain, fade-in/out, output-channel offset, and progress display.
 #
 # Usage (called by PerformanceLauncher.praat):
 #   python performance_launcher.py <manifest.json>
+#
+# Changelog v1.5:
+#   - Fixed config persistence: config is no longer deleted at shutdown.
+#   - Cue settings are matched by cue name when selection order changes,
+#     preventing old cue-index settings from being applied to a new sound.
+#   - Restores audio devices by name + host API before falling back to index.
+#   - Keyboard cue triggers/master shortcuts are suppressed while editing GUI
+#     fields, preventing accidental cue fires while typing gain/channel values.
+#   - Prevents implicit modulo fold-down when a cue has more channels than the
+#     open output stream; playback is blocked with a clear status message.
+#   - Fade lengths are clamped to cue duration, so short cues do not start
+#     pre-attenuated when fade-out exceeds file length.
+#   - Natural and triggered stop fades now combine without gain jumps, reach
+#     exact zero, and the final stop-fade block is mixed before removal.
+#   - Gain/channel/fade spinboxes now update on typed edits as well as arrows;
+#     fade-in/out are exposed in the cue row and persisted in config.
+#   - Loaded WAV sample rate and channel count are validated against the project.
+#   - PortAudio callback status flags are surfaced in the GUI without file I/O
+#     from the real-time callback.
 #
 # Changelog v1.4:
 #   - ASIO auto-enabled on Windows (SD_ENABLE_ASIO set before sounddevice is
@@ -76,7 +95,6 @@
 import sys
 import os
 import json
-import math
 import time
 import traceback
 import threading
@@ -172,7 +190,7 @@ class Cue:
         self.fade_out = float(data.get('fade_out', 0.1))
         self.key_assignment = data.get('default_key', '')
         self.mode = data.get('playback_mode', 'restart') 
-        self.output_offset = 0
+        self.output_offset = int(data.get('output_offset', 0))
         self.mono_to_stereo = True if self.channels == 1 else False
         
         self.audio_data = None 
@@ -184,9 +202,14 @@ class CueInstance:
         self.current_frame = 0
         self.gain_linear = 10.0 ** (cue.gain_db / 20.0)
         self.is_stopping = False
-        # Guard against zero-frame divisions on near-zero fades
-        self.fade_in_frames = max(1, int(cue.fade_in * sample_rate)) if cue.fade_in > 0 else 0
-        self.fade_out_frames = max(1, int(cue.fade_out * sample_rate)) if cue.fade_out > 0 else 0
+        # Guard against zero-frame divisions and clamp fades to cue length.
+        # A fade longer than the cue should span the whole cue, not make the
+        # first sample start part-way through an overlong fade.
+        total_frames = cue.audio_data.shape[0] if cue.audio_data is not None else 0
+        fi = max(1, int(cue.fade_in * sample_rate)) if cue.fade_in > 0 else 0
+        fo = max(1, int(cue.fade_out * sample_rate)) if cue.fade_out > 0 else 0
+        self.fade_in_frames = min(fi, total_frames) if total_frames > 0 else fi
+        self.fade_out_frames = min(fo, total_frames) if total_frames > 0 else fo
         self.stop_frame_elapsed = 0
         self.state = 'PLAYING'
 
@@ -207,6 +230,8 @@ class AudioEngine:
         self.master_gain_linear = 1.0
         self.exclusive_mode = False
         self.audio_status_errs = []
+        self.last_callback_status = ''
+        self.callback_status_count = 0
 
     def log_event(self, text):
         t_stamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -221,7 +246,19 @@ class AudioEngine:
 
     def open_stream(self, device_index, num_channels):
         self.output_channels = num_channels
+        api_name = ''
         try:
+            dev = sd.query_devices(device_index)
+            max_out = int(dev['max_output_channels'])
+            try:
+                api_name = sd.query_hostapis(dev['hostapi'])['name']
+            except Exception:
+                api_name = ''
+            if num_channels < 1:
+                raise ValueError("output channel count must be >= 1")
+            if num_channels > max_out:
+                raise ValueError(
+                    f"requested {num_channels} output channels, but device provides {max_out}")
             self.stream = sd.OutputStream(
                 samplerate=self.sample_rate,
                 channels=self.output_channels,
@@ -231,13 +268,18 @@ class AudioEngine:
                 callback=self._audio_callback
             )
             self.stream.start()
-            self.log_event(f"Audio stream opened: {self.output_channels}ch @ {self.sample_rate} Hz")
+            self.log_event(
+                f"Audio stream opened: {self.output_channels}ch @ {self.sample_rate} Hz"
+                + (f" [{api_name}]" if api_name else ''))
             return True
         except Exception as e:
-            err = (f"Failed to open audio stream: {e}  "
-                   f"(check the interface is set to {self.sample_rate} Hz \u2014 "
-                   f"ASIO does not resample \u2014 and is not already in use by "
-                   f"another app; ASIO is exclusive)")
+            if 'ASIO' in api_name.upper():
+                hint = (f"check the interface is set to {self.sample_rate} Hz "
+                        f"(ASIO does not resample) and is not already in use")
+            else:
+                hint = (f"check that the device supports {self.sample_rate} Hz / "
+                        f"{num_channels} output channel(s) and is not already in use")
+            err = f"Failed to open audio stream: {e}  ({hint})"
             self.audio_status_errs.append(err)
             self.log_event(err)
             return False
@@ -252,8 +294,21 @@ class AudioEngine:
             self.stream = None
         self.log_event("Audio stream closed.")
 
+    def clear_playback(self):
+        """Immediately clear active cues/test tones (used for device changes)."""
+        with self.lock:
+            for inst in self.active_cues:
+                inst.cue.status = "READY"
+            self.active_cues.clear()
+            self.test_signals.clear()
+
     def _audio_callback(self, outdata, frames, time_info, status):
         outdata.fill(0)
+        # Never print/write files in the real-time callback. Keep only a small
+        # status snapshot for the GUI polling thread to surface later.
+        if status:
+            self.last_callback_status = str(status)
+            self.callback_status_count += 1
         with self.lock:
             finished = []
 
@@ -295,49 +350,60 @@ class AudioEngine:
                 chunk_len = min(frames, remaining)
                 chunk = audio[inst.current_frame: inst.current_frame + chunk_len].copy()
 
-                # Apply fade-in
+                # Apply fade-in. Linear law is retained, but the ramp now
+                # reaches unity on the final fade sample.
                 if inst.fade_in_frames > 0 and inst.current_frame < inst.fade_in_frames:
-                    fi_start = inst.current_frame
-                    fi_end   = min(inst.current_frame + chunk_len, inst.fade_in_frames)
-                    ramp = np.linspace(fi_start / inst.fade_in_frames,
-                                       fi_end   / inst.fade_in_frames,
-                                       fi_end - fi_start, endpoint=False)
-                    chunk[:fi_end - fi_start] *= ramp[:, np.newaxis] if chunk.ndim > 1 else ramp
+                    fi_end = min(inst.current_frame + chunk_len, inst.fade_in_frames)
+                    n = fi_end - inst.current_frame
+                    if inst.fade_in_frames <= 1:
+                        ramp = np.ones(n, dtype=np.float32)
+                    else:
+                        idx = np.arange(inst.current_frame, fi_end, dtype=np.float32)
+                        ramp = idx / float(inst.fade_in_frames - 1)
+                    chunk[:n] *= ramp[:, np.newaxis] if chunk.ndim > 1 else ramp
 
-                # Apply fade-out (either triggered stop or natural end)
-                if inst.is_stopping:
-                    fo_len = min(chunk_len, inst.fade_out_frames - inst.stop_frame_elapsed)
-                    if fo_len > 0:
-                        ramp = np.linspace(1.0 - inst.stop_frame_elapsed / inst.fade_out_frames,
-                                           1.0 - (inst.stop_frame_elapsed + fo_len) / inst.fade_out_frames,
-                                           fo_len, endpoint=False)
-                        chunk[:fo_len] *= ramp[:, np.newaxis] if chunk.ndim > 1 else ramp
-                        chunk[fo_len:] = 0
-                    inst.stop_frame_elapsed += fo_len
-                    if inst.stop_frame_elapsed >= inst.fade_out_frames:
-                        inst.state = 'DONE'
-                        finished.append(inst)
-                        continue
-                elif inst.fade_out_frames > 0:
+                # Natural end fade is always applied, including while a
+                # triggered stop is in progress. This prevents a stop command
+                # during the natural tail from jumping the gain back toward 1.
+                if inst.fade_out_frames > 0:
                     fo_start_frame = total_frames - inst.fade_out_frames
                     abs_start = inst.current_frame
-                    abs_end   = inst.current_frame + chunk_len
+                    abs_end = inst.current_frame + chunk_len
                     if abs_end > fo_start_frame:
-                        # v1.2: vectorized natural fade-out. v1.1 ran a
-                        # per-sample Python `for` loop here, inside the
-                        # real-time audio callback -- up to blocksize
-                        # iterations per cue per callback, risking xruns
-                        # under load. numpy gives identical math with no
-                        # Python-level loop (matches the np.linspace used
-                        # in the triggered-stop fade-out above).
                         ofs = max(0, fo_start_frame - abs_start)
-                        idx = np.arange(ofs, chunk_len)
-                        pos_in_fade = (abs_start + idx) - fo_start_frame
-                        ramp = np.maximum(0.0, 1.0 - pos_in_fade / inst.fade_out_frames)
+                        abs_idx = np.arange(abs_start + ofs, abs_end, dtype=np.float32)
+                        pos = abs_idx - fo_start_frame
+                        if inst.fade_out_frames <= 1:
+                            ramp = np.zeros(len(pos), dtype=np.float32)
+                        else:
+                            ramp = 1.0 - pos / float(inst.fade_out_frames - 1)
+                            ramp = np.clip(ramp, 0.0, 1.0)
                         if chunk.ndim > 1:
                             chunk[ofs:] *= ramp[:, np.newaxis]
                         else:
                             chunk[ofs:] *= ramp
+
+                # Triggered stop fade is multiplicative with the natural fade.
+                if inst.is_stopping:
+                    remaining_stop = inst.fade_out_frames - inst.stop_frame_elapsed
+                    fo_len = min(chunk_len, max(0, remaining_stop))
+                    if fo_len > 0:
+                        if inst.fade_out_frames <= 1:
+                            ramp = np.zeros(fo_len, dtype=np.float32)
+                        else:
+                            idx = np.arange(inst.stop_frame_elapsed,
+                                            inst.stop_frame_elapsed + fo_len,
+                                            dtype=np.float32)
+                            ramp = 1.0 - idx / float(inst.fade_out_frames - 1)
+                            ramp = np.clip(ramp, 0.0, 1.0)
+                        chunk[:fo_len] *= ramp[:, np.newaxis] if chunk.ndim > 1 else ramp
+                    chunk[fo_len:] = 0
+                    inst.stop_frame_elapsed += fo_len
+                    if inst.fade_out_frames == 0 or inst.stop_frame_elapsed >= inst.fade_out_frames:
+                        # Mark done, but still mix this final faded block.
+                        # Continuing here would discard the whole block and turn
+                        # short stop-fades into an abrupt mute.
+                        inst.state = 'DONE'
 
                 # Apply gain
                 chunk *= inst.gain_linear * self.master_gain_linear
@@ -360,7 +426,7 @@ class AudioEngine:
                     outdata[:chunk_len, dest] += chunk[:, c]
 
                 inst.current_frame += chunk_len
-                if inst.current_frame >= total_frames:
+                if inst.state == 'DONE' or inst.current_frame >= total_frames:
                     inst.state = 'DONE'
                     finished.append(inst)
 
@@ -370,6 +436,22 @@ class AudioEngine:
                     inst.cue.status = "READY"
 
     def play_cue(self, cue):
+        if self.stream is None:
+            msg = "Audio stream is not open; cue was not fired."
+            self.log_event(f"CUE BLOCKED: [{cue.id}] {cue.name} — {msg}")
+            return False, msg
+        if cue.audio_data is None:
+            msg = "Cue audio is not loaded."
+            self.log_event(f"CUE BLOCKED: [{cue.id}] {cue.name} — {msg}")
+            return False, msg
+
+        cue_channels = 1 if cue.audio_data.ndim == 1 else cue.audio_data.shape[1]
+        if cue_channels > self.output_channels:
+            msg = (f"Cue needs {cue_channels} output channels, but the stream has "
+                   f"{self.output_channels}. Change the output channel count/device.")
+            self.log_event(f"CUE BLOCKED: [{cue.id}] {cue.name} — {msg}")
+            return False, msg
+
         with self.lock:
             if self.exclusive_mode:
                 # Stop everything else with fade-out
@@ -387,6 +469,7 @@ class AudioEngine:
             self.active_cues.append(new_inst)
             cue.status = "PLAYING"
         self.log_event(f"CUE PLAY: [{cue.id}] {cue.name}")
+        return True, ''
 
     def stop_cue(self, cue):
         with self.lock:
@@ -438,7 +521,12 @@ def load_config(path):
         return {}
 
 def save_config(path, data):
+    if not path:
+        return
     try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
     except Exception:
@@ -455,6 +543,7 @@ class PerformanceLauncherApp:
         self.config_file = manifest.get('config_file', '')
 
         cfg = load_config(self.config_file)
+        self.config = cfg
 
         # Build cues from manifest clips
         self.cues = []
@@ -465,18 +554,42 @@ class PerformanceLauncherApp:
                 cue.key_assignment = DEFAULT_KEYS[i]
             self.cues.append(cue)
 
-        # Restore saved key assignments / gain from config
+        # Restore saved cue settings. Numeric cue IDs depend on selection
+        # order, so prefer an exact ID+name match and otherwise a unique name
+        # match. This prevents settings for an old cue 1 being applied to a
+        # different sound that happens to become cue 1 on the next run.
         saved_cues = cfg.get('cues', {})
+        by_name = {}
+        duplicate_names = set()
+        for sc in saved_cues.values():
+            name = sc.get('name', '')
+            if not name:
+                continue
+            if name in by_name:
+                duplicate_names.add(name)
+            else:
+                by_name[name] = sc
+        for name in duplicate_names:
+            by_name.pop(name, None)
+
         for cue in self.cues:
             key = str(cue.id)
-            if key in saved_cues:
-                sc = saved_cues[key]
+            sc = saved_cues.get(key)
+            if sc and sc.get('name') and sc.get('name') != cue.name:
+                sc = None
+            if sc is None:
+                sc = by_name.get(cue.name)
+            if sc:
                 cue.key_assignment = sc.get('key_assignment', cue.key_assignment)
                 cue.gain_db        = float(sc.get('gain_db', cue.gain_db))
                 cue.output_offset  = int(sc.get('output_offset', cue.output_offset))
+                cue.fade_in        = max(0.0, float(sc.get('fade_in', cue.fade_in)))
+                cue.fade_out       = max(0.0, float(sc.get('fade_out', cue.fade_out)))
                 cue.mode           = sc.get('mode', cue.mode)
 
         self.selected_device    = tk.IntVar(value=cfg.get('device_index', -1))
+        self.saved_device_name  = cfg.get('device_name', '')
+        self.saved_hostapi_name = cfg.get('hostapi_name', '')
         self.output_ch_count    = tk.IntVar(value=cfg.get('output_channels', max(2, manifest.get('project_max_channels', 2))))
         self.master_gain_var    = tk.DoubleVar(value=cfg.get('master_gain_db', 0.0))
         self.exclusive_var      = tk.BooleanVar(value=cfg.get('exclusive_mode', False))
@@ -484,14 +597,30 @@ class PerformanceLauncherApp:
         self.cue_buttons     = {}   # cue.id -> button widget
         self.cue_pbars       = {}   # cue.id -> ttk.Progressbar
         self.cue_time_labels = {}   # cue.id -> time Label
+        self.cue_gain_vars   = {}   # keep Tk variables alive + editable
+        self.cue_offset_vars = {}
+        self.cue_fade_in_vars = {}
+        self.cue_fade_out_vars = {}
         self.key_map         = {}   # key char -> cue
         self._status_msg   = tk.StringVar(value="Ready.")
+        self._seen_callback_status_count = 0
 
         # Pre-load audio
         load_errors = []
         for cue in self.cues:
             try:
-                data, _ = sf.read(cue.filename, dtype='float32', always_2d=False)
+                data, actual_sr = sf.read(cue.filename, dtype='float32', always_2d=False)
+                if int(actual_sr) != self.engine.sample_rate:
+                    raise ValueError(
+                        f"sample-rate mismatch: file={actual_sr} Hz, project={self.engine.sample_rate} Hz")
+                actual_channels = 1 if data.ndim == 1 else int(data.shape[1])
+                if actual_channels != cue.channels:
+                    self.engine.log_event(
+                        f"Cue [{cue.id}] channel metadata corrected: "
+                        f"manifest={cue.channels}, file={actual_channels}")
+                    cue.channels = actual_channels
+                    cue.mono_to_stereo = (actual_channels == 1)
+                cue.duration = data.shape[0] / actual_sr
                 cue.audio_data = data
             except Exception as e:
                 cue.status = "ERROR"
@@ -558,11 +687,15 @@ class PerformanceLauncherApp:
         self.device_combo.bind('<<ComboboxSelected>>', self._on_device_changed)
 
         tk.Label(dev_frame, text="Channels:", bg=BG, fg=LABEL_FG).pack(side='left', padx=(12, 2))
-        tk.Spinbox(dev_frame, from_=1, to=32, width=4,
-                   textvariable=self.output_ch_count,
-                   command=self._on_device_changed,
-                   bg=BUTTON_BG, fg=TEXT_FG, insertbackground=TEXT_FG,
-                   buttonbackground=BUTTON_BG).pack(side='left')
+        self.output_ch_spin = tk.Spinbox(
+            dev_frame, from_=1, to=32, width=4,
+            textvariable=self.output_ch_count,
+            command=self._on_device_changed,
+            bg=BUTTON_BG, fg=TEXT_FG, insertbackground=TEXT_FG,
+            buttonbackground=BUTTON_BG)
+        self.output_ch_spin.pack(side='left')
+        self.output_ch_spin.bind('<Return>', self._on_device_changed)
+        self.output_ch_spin.bind('<FocusOut>', self._on_device_changed)
 
         # ── Cue grid ──
         grid_outer = tk.Frame(self.root, bg=BG)
@@ -655,25 +788,47 @@ class PerformanceLauncherApp:
 
         # Gain spinbox
         gain_var = tk.DoubleVar(value=cue.gain_db)
+        self.cue_gain_vars[cue.id] = gain_var
+        gain_var.trace_add('write', lambda *_args, c=cue, v=gain_var: self._set_cue_gain(c, v))
         tk.Label(row, text="dB:", bg=BUTTON_BG, fg=LABEL_FG,
                  font=("Helvetica", 8)).pack(side='left')
-        sp = tk.Spinbox(row, from_=-40, to=12, increment=0.5, width=5,
-                        textvariable=gain_var, format="%.1f",
-                        bg=PANEL_BG, fg=TEXT_FG, insertbackground=TEXT_FG,
-                        buttonbackground=BUTTON_BG,
-                        command=lambda c=cue, v=gain_var: self._set_cue_gain(c, v))
-        sp.pack(side='left', padx=2)
+        tk.Spinbox(row, from_=-40, to=12, increment=0.5, width=5,
+                   textvariable=gain_var, format="%.1f",
+                   bg=PANEL_BG, fg=TEXT_FG, insertbackground=TEXT_FG,
+                   buttonbackground=BUTTON_BG).pack(side='left', padx=2)
 
-        # Channel offset
+        # Channel offset (cyclic rotation when the cue fits the stream).
         tk.Label(row, text="Ch+:", bg=BUTTON_BG, fg=LABEL_FG,
                  font=("Helvetica", 8)).pack(side='left')
         off_var = tk.IntVar(value=cue.output_offset)
+        self.cue_offset_vars[cue.id] = off_var
+        off_var.trace_add('write', lambda *_args, c=cue, v=off_var: self._set_cue_offset(c, v))
         tk.Spinbox(row, from_=0, to=31, width=3,
                    textvariable=off_var,
                    bg=PANEL_BG, fg=TEXT_FG, insertbackground=TEXT_FG,
-                   buttonbackground=BUTTON_BG,
-                   command=lambda c=cue, v=off_var: setattr(c, 'output_offset', v.get())
-                   ).pack(side='left', padx=2)
+                   buttonbackground=BUTTON_BG).pack(side='left', padx=2)
+
+        # Musically meaningful cue fades. Values are seconds and apply to new
+        # triggers; gain edits, unlike fades, are also applied live.
+        tk.Label(row, text="In:", bg=BUTTON_BG, fg=LABEL_FG,
+                 font=("Helvetica", 8)).pack(side='left', padx=(4, 0))
+        fi_var = tk.DoubleVar(value=cue.fade_in)
+        self.cue_fade_in_vars[cue.id] = fi_var
+        fi_var.trace_add('write', lambda *_args, c=cue, v=fi_var: self._set_cue_fade(c, 'in', v))
+        tk.Spinbox(row, from_=0.0, to=60.0, increment=0.05, width=5,
+                   textvariable=fi_var, format="%.2f",
+                   bg=PANEL_BG, fg=TEXT_FG, insertbackground=TEXT_FG,
+                   buttonbackground=BUTTON_BG).pack(side='left', padx=2)
+
+        tk.Label(row, text="Out:", bg=BUTTON_BG, fg=LABEL_FG,
+                 font=("Helvetica", 8)).pack(side='left')
+        fo_var = tk.DoubleVar(value=cue.fade_out)
+        self.cue_fade_out_vars[cue.id] = fo_var
+        fo_var.trace_add('write', lambda *_args, c=cue, v=fo_var: self._set_cue_fade(c, 'out', v))
+        tk.Spinbox(row, from_=0.0, to=60.0, increment=0.05, width=5,
+                   textvariable=fo_var, format="%.2f",
+                   bg=PANEL_BG, fg=TEXT_FG, insertbackground=TEXT_FG,
+                   buttonbackground=BUTTON_BG).pack(side='left', padx=2)
 
         # Stop button
         tk.Button(row, text="■", bg=ERROR_COLOR, fg=TEXT_FG, relief='flat',
@@ -689,23 +844,42 @@ class PerformanceLauncherApp:
         apis = sd.query_hostapis()
         entries = []
         idx_map = []
+        meta = []
         for i, d in enumerate(devs):
             if d['max_output_channels'] > 0:
                 api = apis[d['hostapi']]['name']
                 entries.append(f"{i}: {d['name']}  ({d['max_output_channels']}ch) [{api}]")
                 idx_map.append(i)
+                meta.append({
+                    'index': i,
+                    'name': d['name'],
+                    'hostapi': api,
+                    'max_output_channels': int(d['max_output_channels']),
+                })
         self._device_indices = idx_map
+        self._device_meta = meta
         self.device_combo['values'] = entries
-        # Select saved or default
+
+        # Device indices can change after reboot/driver changes. Prefer the
+        # persisted hardware identity (name + host API), then index, then default.
+        chosen = -1
+        if self.saved_device_name and self.saved_hostapi_name:
+            for pos, m in enumerate(meta):
+                if m['name'] == self.saved_device_name and m['hostapi'] == self.saved_hostapi_name:
+                    chosen = pos
+                    break
         saved_idx = self.selected_device.get()
-        if saved_idx >= 0 and saved_idx in idx_map:
-            self.device_combo.current(idx_map.index(saved_idx))
-        elif idx_map:
+        if chosen < 0 and saved_idx >= 0 and saved_idx in idx_map:
+            chosen = idx_map.index(saved_idx)
+        if chosen < 0 and idx_map:
             default_out = sd.default.device[1] if isinstance(sd.default.device, (list, tuple)) else sd.default.device
             if default_out in idx_map:
-                self.device_combo.current(idx_map.index(default_out))
+                chosen = idx_map.index(default_out)
             else:
-                self.device_combo.current(0)
+                chosen = 0
+        if chosen >= 0:
+            self.device_combo.current(chosen)
+            self.selected_device.set(idx_map[chosen])
 
     def _on_device_changed(self, *_):
         sel = self.device_combo.current()
@@ -713,6 +887,9 @@ class PerformanceLauncherApp:
             return
         idx = self._device_indices[sel]
         self.selected_device.set(idx)
+        # Changing stream topology while cues are active can otherwise resume
+        # an old multichannel cue into a smaller new stream. Stop immediately.
+        self.engine.clear_playback()
         self.engine.close_stream()
         self._try_open_stream()
 
@@ -721,8 +898,12 @@ class PerformanceLauncherApp:
         if sel < 0 or not hasattr(self, '_device_indices') or sel >= len(self._device_indices):
             self._status_msg.set("No output device selected.")
             return
-        dev_idx  = self._device_indices[sel]
-        num_chs  = max(1, self.output_ch_count.get())
+        dev_idx = self._device_indices[sel]
+        try:
+            num_chs = max(1, int(self.output_ch_count.get()))
+        except (ValueError, tk.TclError):
+            self._status_msg.set("Invalid output channel count.")
+            return
         ok = self.engine.open_stream(dev_idx, num_chs)
         if ok:
             self._status_msg.set(f"Stream open: device {dev_idx}, {num_chs}ch @ {self.engine.sample_rate} Hz")
@@ -735,13 +916,41 @@ class PerformanceLauncherApp:
         if cue.status == "ERROR":
             self._status_msg.set(f"Cue [{cue.id}] could not be loaded — skipping.")
             return
-        self.engine.play_cue(cue)
-        self._status_msg.set(f"Playing: {cue.name}")
+        ok, msg = self.engine.play_cue(cue)
+        if ok:
+            self._status_msg.set(f"Playing: {cue.name}")
+        else:
+            self._status_msg.set(f"Cue blocked: {msg}")
 
     def _set_cue_gain(self, cue, var):
         try:
             cue.gain_db = float(var.get())
-        except ValueError:
+            new_linear = 10.0 ** (cue.gain_db / 20.0)
+            # Gain edits are musically useful during long cues; update any
+            # currently-active instances of this cue as well as future triggers.
+            with self.engine.lock:
+                for inst in self.engine.active_cues:
+                    if inst.cue is cue:
+                        inst.gain_linear = new_linear
+        except (ValueError, tk.TclError):
+            pass
+
+    def _set_cue_offset(self, cue, var):
+        try:
+            value = int(var.get())
+            if value >= 0:
+                cue.output_offset = value
+        except (ValueError, tk.TclError):
+            pass
+
+    def _set_cue_fade(self, cue, which, var):
+        try:
+            value = max(0.0, float(var.get()))
+            if which == 'in':
+                cue.fade_in = value
+            else:
+                cue.fade_out = value
+        except (ValueError, tk.TclError):
             pass
 
     def _apply_master_gain(self):
@@ -773,6 +982,19 @@ class PerformanceLauncherApp:
         if k == 'escape':
             self.engine.stop_all()
             return
+
+        # Do not fire cues or global master shortcuts while the performer is
+        # typing/editing a control. Without this guard, typing "1" into a gain
+        # Spinbox can also trigger the cue assigned to key 1.
+        try:
+            widget_class = event.widget.winfo_class()
+        except Exception:
+            widget_class = ''
+        if widget_class in {
+                'Entry', 'TEntry', 'Spinbox', 'TSpinbox', 'TCombobox',
+                'Text', 'Scale', 'TScale'}:
+            return
+
         # Arrow keys ride the master gain: Up/Down coarse (±1 dB),
         # Right/Left fine (±0.1 dB). These keysyms are never cue triggers
         # (DEFAULT_KEYS is digits + letters), so there is no collision.
@@ -824,6 +1046,11 @@ class PerformanceLauncherApp:
                 if tlbl:
                     tlbl.configure(text="")
 
+        if self.engine.callback_status_count != self._seen_callback_status_count:
+            self._seen_callback_status_count = self.engine.callback_status_count
+            self._status_msg.set(
+                f"Audio callback warning: {self.engine.last_callback_status}")
+
         self.root.after(100, self._poll_status)
 
     # ── Shutdown ──────────────────────────────────────────────────────
@@ -840,8 +1067,6 @@ class PerformanceLauncherApp:
         removed, failed = [], []
         targets = [cue.filename for cue in self.cues]
         targets.append(self.manifest.get('_manifest_path', ''))
-        targets.append(self.manifest.get('log_file', ''))
-        targets.append(self.manifest.get('config_file', ''))
         targets.append(self.manifest.get('error_file', ''))   # set in main()
         for path in targets:
             if not path:
@@ -861,13 +1086,25 @@ class PerformanceLauncherApp:
         cue_data = {}
         for cue in self.cues:
             cue_data[str(cue.id)] = {
+                'name':           cue.name,
                 'key_assignment': cue.key_assignment,
                 'gain_db':        cue.gain_db,
                 'output_offset':  cue.output_offset,
+                'fade_in':        cue.fade_in,
+                'fade_out':       cue.fade_out,
                 'mode':           cue.mode,
             }
+        device_name = ''
+        hostapi_name = ''
+        sel = self.device_combo.current()
+        if hasattr(self, '_device_meta') and 0 <= sel < len(self._device_meta):
+            device_name = self._device_meta[sel]['name']
+            hostapi_name = self._device_meta[sel]['hostapi']
+
         cfg = {
             'device_index':    self.selected_device.get(),
+            'device_name':     device_name,
+            'hostapi_name':    hostapi_name,
             'output_channels': self.output_ch_count.get(),
             'master_gain_db':  self.master_gain_var.get(),
             'exclusive_mode':  self.exclusive_var.get(),

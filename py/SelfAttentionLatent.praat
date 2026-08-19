@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Wired pitch_mode, Duration_scale, Energy_scale
+# Version: 1.4 (2026) - Correct latent/attention geometry, segmentation and crossfade
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,19 @@
 #
 # No plan.csv is ever written.
 # Only output.wav persists after execution.
+#
+# Changelog v1.4:
+#   - TRUE Equal_intervals segmentation; final interval is no longer omitted.
+#   - Python dependency probe matches backend (numpy + soundfile; scipy removed).
+#   - Unique temp paths per Sound and captured Python log/error diagnostics.
+#   - Pitch modes simplified to varispeed / preserve_pitch (legacy aliases stay
+#     accepted by the backend); presets that used the duplicate third mode now
+#     map to preserve_pitch with the same intended pitch-preserved behavior.
+#   - Visualization compares representative source/output channels on one
+#     symmetric waveform scale and reports attention QC / effective head count.
+#   - Backend v1.4: corrected VAE gradients, latent-similarity attention,
+#     context-indexed attention/return anchors, true overlap crossfade, honest
+#     duration/energy jitter, source channel-count preservation and FLOAT WAV.
 #
 # Changelog v1.3:
 #   Backend: three exposed knobs made audible (see .py header):
@@ -135,12 +148,15 @@ endif
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
-tempWav$     = tempDir$ + "temp_sal_input.wav"
-eventsCSV$   = tempDir$ + "temp_sal_events.csv"
-output_wav$  = tempDir$ + "temp_sal_output.wav"
-stats_txt$   = tempDir$ + "temp_sal_stats.txt"
-probePy$     = tempDir$ + "temp_sal_probe.py"
-probeMarker$ = tempDir$ + "temp_sal_probe.ok"
+tempTag$     = string$(sound)
+tempBase$    = tempDir$ + "temp_sal_" + tempTag$ + "_"
+tempWav$     = tempBase$ + "input.wav"
+eventsCSV$   = tempBase$ + "events.csv"
+output_wav$  = tempBase$ + "output.wav"
+stats_txt$   = tempBase$ + "stats.txt"
+pythonLog$   = tempBase$ + "python.log"
+probePy$     = tempBase$ + "probe.py"
+probeMarker$ = tempBase$ + "probe.ok"
 
 # Enforce forward slashes for all temporary paths passed to python
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
@@ -148,6 +164,7 @@ tempWavJ$      = replace_regex$(tempWav$, "\\", "/", 0)
 eventsCSVJ$    = replace_regex$(eventsCSV$, "\\", "/", 0)
 output_wavJ$   = replace_regex$(output_wav$, "\\", "/", 0)
 stats_txtJ$    = replace_regex$(stats_txt$, "\\", "/", 0)
+pythonLogJ$    = replace_regex$(pythonLog$, "\\", "/", 0)
 probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
 probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
 
@@ -165,6 +182,9 @@ procedure cleanUpTempFiles
     if fileReadable(stats_txt$)
         deleteFile: stats_txt$
     endif
+    if fileReadable(pythonLog$)
+        deleteFile: pythonLog$
+    endif
     if fileReadable(probePy$)
         deleteFile: probePy$
     endif
@@ -176,7 +196,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Self-Attention Latent Navigation v1.3
+form Self-Attention Latent Navigation v1.4
     optionmenu Preset: 1
         option Custom
         option Gentle drift
@@ -203,9 +223,8 @@ form Self-Attention Latent Navigation v1.3
     real Energy_jitter 0.0
     real Target_duration_(s) 0.0
     optionmenu Pitch_mode: 2
-        option off
-        option preserve_f0
-        option preserve_spectral_envelope
+        option varispeed
+        option preserve_pitch
     optionmenu Normalize_mode: 3
         option none
         option peak
@@ -277,7 +296,7 @@ elsif preset = 5
     duration_jitter      = 0.15
     energy_scale         = 1.1
     energy_jitter        = 0.1
-    pitch_mode           = 3
+    pitch_mode           = 2
     normalize_mode       = 3
     presetName$          = "DeepMutation"
 elsif preset = 6
@@ -309,7 +328,7 @@ elsif preset = 7
     duration_jitter      = 0.2
     energy_scale         = 0.9
     energy_jitter        = 0.1
-    pitch_mode           = 3
+    pitch_mode           = 2
     normalize_mode       = 3
     presetName$          = "SpectralSmear"
 elsif preset = 8
@@ -334,11 +353,9 @@ endif
 
 # ── pitch mode string ──────────────────────────────────────────────────────
 if pitch_mode = 1
-    pitchStr$ = "off"
-elsif pitch_mode = 2
-    pitchStr$ = "preserve_f0"
+    pitchStr$ = "varispeed"
 else
-    pitchStr$ = "preserve_spectral_envelope"
+    pitchStr$ = "preserve_pitch"
 endif
 
 # ── normalize mode string ─────────────────────────────────────────────────
@@ -371,7 +388,7 @@ endif
 # Stage 0 — Early Python Dependency Probe
 # ═════════════════════════════════════════════════════════════════════════════
 clearinfo
-appendInfoLine: "=== Self-Attention Latent Navigation v1.3 ==="
+appendInfoLine: "=== Self-Attention Latent Navigation v1.4 ==="
 appendInfoLine: "Input:  ", soundName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -379,7 +396,7 @@ appendInfoLine: "[0/4] Detecting Python dependencies..."
 
 writeFileLine: probePy$, "import sys"
 appendFileLine: probePy$, "try:"
-appendFileLine: probePy$, "    import numpy, scipy, soundfile"
+appendFileLine: probePy$, "    import numpy, soundfile"
 appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
 appendFileLine: probePy$, "except ImportError:"
 appendFileLine: probePy$, "    sys.exit(1)"
@@ -437,7 +454,7 @@ deleteFile: probePy$
 
 if pythonCmd$ = ""
     @cleanUpTempFiles
-    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy scipy soundfile"
+    exitScript: "Cannot find Python 3 installation with required packages." + newline$ + "Tried: python3, python, py" + newline$ + "Please install: pip install numpy soundfile"
 endif
 
 appendInfoLine: "  Python found: ", pythonCmd$
@@ -459,57 +476,71 @@ Save as WAV file: tempWav$
 # Stage 2 — Segmentation → events.csv
 # ═════════════════════════════════════════════════════════════════════════════
 appendInfoLine: "[2/4] Segmenting audio..."
-
-selectObject: sound
-tg = To TextGrid (silences): 100, 0, -silence_threshold, min_silence_duration, min_event_duration, "silent", "sounding"
-
-selectObject: tg
-nInt = Get number of intervals: 1
-
-# Write events CSV
 writeFileLine: eventsCSV$, "start_time,end_time,label,duration"
-
 n_events = 0
-for i from 1 to nInt
-    selectObject: tg
-    lab$ = Get label of interval: 1, i
-    if segmentation_method = 1
-        # Silences method: keep "sounding" intervals
-        isEvent = (lab$ = "sounding")
-    else
-        # Equal intervals: keep everything above min duration
-        isEvent = 1
-    endif
 
-    if isEvent
-        st = Get start time of interval: 1, i
-        en = Get end time of interval: 1, i
-        evDur = en - st
+if segmentation_method = 2
+    # TRUE equal-interval segmentation. v1.3 incorrectly still traversed the
+    # silence TextGrid and merely kept all of its intervals.
+    eqSize = interval_size
+    t = 0
+    while t < dur
+        en = min(t + eqSize, dur)
+        evDur = en - t
         if evDur >= min_event_duration
-            appendFileLine: eventsCSV$, fixed$(st, 6), ",",
-                ... fixed$(en, 6), ",", lab$, ",", fixed$(evDur, 6)
+            appendFileLine: eventsCSV$, fixed$(t, 6), ",", fixed$(en, 6), ",interval,", fixed$(evDur, 6)
             n_events = n_events + 1
         endif
-    endif
-endfor
-
-removeObject: tg
-
-if n_events < 2
-    # Fall back to equal intervals
-    appendInfoLine: "  Warning: too few events from silence detection, using equal intervals"
-    writeFileLine: eventsCSV$, "start_time,end_time,label,duration"
-    n_events = 0
-    t = 0
-    while t < dur - interval_size
-        en = min(t + interval_size, dur)
-        appendFileLine: eventsCSV$, fixed$(t, 6), ",", fixed$(en, 6), ",", "interval", ",", fixed$(en-t, 6)
-        n_events = n_events + 1
-        t = t + interval_size
+        t = en
     endwhile
+    appendInfoLine: "  Equal intervals: ", fixed$(eqSize, 3), " s"
+else
+    selectObject: sound
+    tg = To TextGrid (silences): 100, 0, -silence_threshold, min_silence_duration, min_event_duration, "silent", "sounding"
+    selectObject: tg
+    nInt = Get number of intervals: 1
+    for i from 1 to nInt
+        selectObject: tg
+        lab$ = Get label of interval: 1, i
+        if lab$ = "sounding"
+            st = Get start time of interval: 1, i
+            en = Get end time of interval: 1, i
+            evDur = en - st
+            if evDur >= min_event_duration
+                appendFileLine: eventsCSV$, fixed$(st, 6), ",", fixed$(en, 6), ",", lab$, ",", fixed$(evDur, 6)
+                n_events = n_events + 1
+            endif
+        endif
+    endfor
+    removeObject: tg
+
+    if n_events < 2
+        # Dense/continuous material may contain no useful silence boundaries.
+        appendInfoLine: "  Warning: too few silence events; falling back to equal intervals"
+        writeFileLine: eventsCSV$, "start_time,end_time,label,duration"
+        n_events = 0
+        eqSize = interval_size
+        if eqSize > dur / 2
+            eqSize = dur / 2
+        endif
+        t = 0
+        while t < dur
+            en = min(t + eqSize, dur)
+            evDur = en - t
+            if evDur >= min_event_duration
+                appendFileLine: eventsCSV$, fixed$(t, 6), ",", fixed$(en, 6), ",interval,", fixed$(evDur, 6)
+                n_events = n_events + 1
+            endif
+            t = en
+        endwhile
+    endif
 endif
 
 appendInfoLine: "  Events: " + string$(n_events)
+if n_events < 2
+    @cleanUpTempFiles
+    exitScript: "Only " + string$(n_events) + " event detected. Latent navigation needs at least two events." + newline$ + "Use a smaller Interval size or shorter Min event duration."
+endif
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Stage 3 — Call Python
@@ -538,12 +569,22 @@ cmd$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " --normalize_mode " + normStr$
     ... + targetDurArg$
     ... + " --cleanup"
+    ... + " > """ + pythonLogJ$ + """ 2>&1"
 
 runSystem_nocheck: cmd$
 
 if not fileReadable(stats_txt$)
+    errText$ = "Python engine failed."
+    if fileReadable(pythonLog$)
+        errText$ = errText$ + newline$ + readFile$(pythonLog$)
+    endif
     @cleanUpTempFiles
-    exitScript: "Python engine failed. Check terminal for error details."
+    exitScript: errText$
+endif
+
+if fileReadable(pythonLog$)
+    pyText$ = readFile$(pythonLog$)
+    appendInfoLine: pyText$
 endif
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -574,6 +615,12 @@ nExecStat$      = "?"
 outDurStat$     = "?"
 attnHeadsStat$  = "?"
 attnEntropyStat$ = "?"
+attnEntropyNormStat$ = "?"
+attnReweightStat$ = "?"
+uniqueDomStat$ = "?"
+analysisChannelStat$ = "1"
+inputChannelsStat$ = "?"
+outputChannelsStat$ = "?"
 pitchModeStat$  = "?"
 normModeStat$   = "?"
 rmsInputStat$   = "?"
@@ -599,6 +646,18 @@ if fileReadable(stats_txt$)
     attnHeadsStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "attn_entropy="
     attnEntropyStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "attn_entropy_norm="
+    attnEntropyNormStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_attention_reweight="
+    attnReweightStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "unique_dominant_events="
+    uniqueDomStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "analysis_channel="
+    analysisChannelStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "input_channels="
+    inputChannelsStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "output_channels="
+    outputChannelsStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "pitch_mode="
     pitchModeStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "normalize_mode="
@@ -662,7 +721,7 @@ if show_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##SELF-ATTENTION LATENT NAVIGATION##"
+    Text: 0.5, "centre", 0.68, "half", "##SELF-ATTENTION LATENT NAVIGATION v1.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -749,15 +808,59 @@ if show_visualization
     Font size: 6
     Text left: "yes", "Phases"
 
+    # Prepare representative channels once for waveform + spectrogram panels.
+    analysisCh = number(analysisChannelStat$)
+    if analysisCh = undefined or analysisCh < 1
+        analysisCh = 1
+    endif
+    if analysisCh > nChannels
+        analysisCh = nChannels
+    endif
+
+    selectObject: sound
+    if nChannels > 1
+        Extract one channel: analysisCh
+        vizOrig = selected("Sound")
+    else
+        Copy: "sal_viz_orig"
+        vizOrig = selected("Sound")
+    endif
+    selectObject: vizOrig
+    origMax = Get maximum: 0, 0, "Sinc70"
+    origMin = Get minimum: 0, 0, "Sinc70"
+    wavePeak = max(abs(origMax), abs(origMin))
+
+    vizOut = 0
+    if haveOutput
+        selectObject: outSound
+        outChansViz = Get number of channels
+        outAnalysisCh = min(analysisCh, outChansViz)
+        if outChansViz > 1
+            Extract one channel: outAnalysisCh
+            vizOut = selected("Sound")
+        else
+            Copy: "sal_viz_out"
+            vizOut = selected("Sound")
+        endif
+        selectObject: vizOut
+        outMax = Get maximum: 0, 0, "Sinc70"
+        outMin = Get minimum: 0, 0, "Sinc70"
+        wavePeak = max(wavePeak, max(abs(outMax), abs(outMin)))
+    endif
+    if wavePeak < 0.001
+        wavePeak = 1
+    endif
+    wavePeak = wavePeak * 1.05
+
     # ----------------------------------------------------------
     # PANEL B (left): ORIGINAL WAVEFORM
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 2.05, 3.10
     Select inner viewport: 0.55, 4.00, 2.20, 3.00
 
-    selectObject: sound
+    selectObject: vizOrig
     Colour: "{0.55, 0.55, 0.60}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Line width: 1
     Draw inner box
@@ -773,9 +876,9 @@ if show_visualization
     Select inner viewport: 4.55, 7.75, 2.20, 3.00
 
     if haveOutput
-        selectObject: outSound
+        selectObject: vizOut
         Colour: "{0.30, 0.60, 0.50}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     endif
     Colour: "Black"
     Line width: 1
@@ -791,14 +894,7 @@ if show_visualization
     Select outer viewport: 0, 4.2, 3.20, 5.40
     Select inner viewport: 0.55, 4.00, 3.35, 5.25
 
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrig = selected("Sound")
-    else
-        Copy: "tmpOrig"
-        tmpOrig = selected("Sound")
-    endif
+    selectObject: vizOrig
     To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
     specOrig = selected("Spectrogram")
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
@@ -810,7 +906,7 @@ if show_visualization
     Font size: 6
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
-    removeObject: specOrig, tmpOrig
+    removeObject: specOrig
 
     # ----------------------------------------------------------
     # PANEL E (right): OUTPUT SPECTROGRAM
@@ -819,22 +915,14 @@ if show_visualization
     Select inner viewport: 4.55, 7.75, 3.35, 5.25
 
     if haveOutput
-        selectObject: outSound
-        outChans = Get number of channels
-        if outChans > 1
-            Extract one channel: 1
-            tmpOut = selected("Sound")
-        else
-            Copy: "tmpOut"
-            tmpOut = selected("Sound")
-        endif
+        selectObject: vizOut
         To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
         specOut = selected("Spectrogram")
         Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
         Colour: "Black"
         Line width: 1
         Draw inner box
-        removeObject: specOut, tmpOut
+        removeObject: specOut
     else
         Colour: "Black"
         Line width: 1
@@ -862,7 +950,8 @@ if show_visualization
         ... + "  Events: " + nEventsStat$
         ... + "  |  Plan: " + nStepsStat$ + " steps / " + nExecStat$ + " executed"
         ... + "  |  Output dur: " + outDurStat$ + " s"
-        ... + "  |  Attention heads: " + attnHeadsStat$ + ", entropy: " + attnEntropyStat$ + " nats"
+        ... + "  |  Attention: " + attnHeadsStat$ + " heads, Hnorm=" + attnEntropyNormStat$
+        ... + ", reweight=" + attnReweightStat$
 
     Text: 0.02, "left", 0.50, "half",
         ... "Pitch: " + pitchModeStat$
@@ -870,15 +959,23 @@ if show_visualization
         ... + "  |  VAE loss final: " + vaeLossStat$
         ... + "  |  RMS: " + rmsInputStat$ + " -> " + rmsOutputStat$
         ... + "  |  z=" + string$(latent_size)
+        ... + "  |  dominant=" + uniqueDomStat$ + "/" + nEventsStat$
+        ... + "  |  analysis ch=" + analysisChannelStat$
 
     # v1.2: ASCII formula -- v1.1 used `proportional-to` and middle-dot
     # which render unpredictably on some Praat installs.
     Text: 0.02, "left", 0.18, "half",
         ... "Output: " + compositeName$
-        ... + "  |  w_j ~ (1/dist_j^p) * (A[i,j]^q)  (pure NumPy, no external models)"
+        ... + "  |  w_j ~ (1/dist_j^p) * (A[context,j]^q)  (pure NumPy, no external models)"
 
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
+
+    if haveOutput
+        removeObject: vizOrig, vizOut
+    else
+        removeObject: vizOrig
+    endif
 
     Font size: 10
     Colour: "Black"
@@ -901,7 +998,9 @@ appendInfoLine: "Events:      ", nEventsStat$
 appendInfoLine: "Plan:        ", nStepsStat$, " steps  (", nExecStat$, " executed)"
 appendInfoLine: "Phases:      drift=", driftStat$, "  mutate=", mutateStat$,
     ... "  return=", returnStat$, "  settle=", settleStat$
-appendInfoLine: "Attention:   heads=", attnHeadsStat$, "  entropy=", attnEntropyStat$, " nats"
+appendInfoLine: "Attention:   heads=", attnHeadsStat$, "  entropy=", attnEntropyStat$, " nats  Hnorm=", attnEntropyNormStat$
+appendInfoLine: "Attention effect: reweight=", attnReweightStat$, "  dominant events=", uniqueDomStat$, "/", nEventsStat$
+appendInfoLine: "Channels:    input=", inputChannelsStat$, "  analysis=", analysisChannelStat$, "  output=", outputChannelsStat$
 appendInfoLine: "VAE loss:    ", vaeLossStat$
 appendInfoLine: "Output dur:  ", outDurStat$, " s"
 appendInfoLine: "Pitch mode:  ", pitchModeStat$

@@ -3,8 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Fixed weight-preset dimension mismatch, true crossfade,
-#                        composed-path visualization, unified stereo downmix
+# Version: 1.4 (2026) - Stable temperature mapping, correct weight metric,
+#                        representative-channel analysis, weighted projection
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -107,7 +107,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Phase-Space Composer v1.3
+form Phase-Space Composer v1.4
     comment === Attractor ===
     optionmenu Attractor_type: 2
         option LimitCycle (Hopf)
@@ -129,6 +129,7 @@ form Phase-Space Composer v1.3
         option Transient focus
     comment === Composition ===
     integer Num_events_output 300
+    comment Tabu_length: 0 = off; higher values prevent recent-event reuse
     integer Tabu_length 12
     real Temperature 0.15
     integer Seed 1234
@@ -215,8 +216,8 @@ endif
 if num_events_output > 2000
     num_events_output = 2000
 endif
-if tabu_length < 1
-    tabu_length = 1
+if tabu_length < 0
+    tabu_length = 0
 endif
 if tabu_length > 500
     tabu_length = 500
@@ -248,7 +249,7 @@ endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Phase-Space Composer v1.3 ==="
+writeInfoLine:  "=== Phase-Space Composer v1.4 ==="
 appendInfoLine: "Input:     ", soundName$
 appendInfoLine: "Attractor: ", attractorStr$, " | State: ", stateDimStr$, " | Weights: ", weightName$
 appendInfoLine: "Output:    ", num_events_output, " events | Tabu: ", tabu_length, " | Temp: ", fixed$(temperature, 3), " | Seed: ", seed
@@ -297,20 +298,34 @@ appendInfoLine: "  Python found: ", pythonCmd$
 # ===========================================================================
 appendInfoLine: "[2/5] Segmenting sound into events..."
 
-# Downmix policy: segmentation and Python feature extraction must agree
-# on how stereo is analysed, or event boundaries and the features
-# computed on them come from two different signals. Python averages
-# channels (audio.mean(axis=1)), so segmentation does the same here via
-# "Convert to mono" (equal-weight channel average) rather than using
-# channel 1 alone.
-selectObject: sound
+# Representative-channel policy: never average stereo/multichannel channels
+# for analysis, because anti-phase material can cancel and create a fictitious
+# "silent" analysis signal.  Choose the whole-file strongest-RMS real channel
+# and pass that exact 1-based channel number to Python, so segmentation and
+# feature extraction operate on the same physical channel.
+analysisChannel = 1
 if nChannels > 1
-    Convert to mono
+    bestChannelRms = -1
+    for ch from 1 to nChannels
+        selectObject: sound
+        Extract one channel: ch
+        probeCh = selected("Sound")
+        chRms = Get root-mean-square: 0, 0
+        if chRms > bestChannelRms
+            bestChannelRms = chRms
+            analysisChannel = ch
+        endif
+        removeObject: probeCh
+    endfor
+    selectObject: sound
+    Extract one channel: analysisChannel
     analysisMono = selected("Sound")
 else
     Copy: "phsp_analysisMono"
     analysisMono = selected("Sound")
 endif
+
+appendInfoLine: "  Analysis channel: ", analysisChannel, " (strongest RMS real channel)"
 
 selectObject: analysisMono
 To Intensity: 100, 0.01, "yes"
@@ -387,6 +402,7 @@ pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " --temperature " + fixed$(temperature, 4)
     ... + " --seed "        + string$(seed)
     ... + " --min_event_dur_ms " + fixed$(min_event_duration_ms, 1)
+    ... + " --analysis_channel " + string$(analysisChannel)
     ... + " --dim_weights """ + dimWeights$ + """"
     ... + " --weight_preset_name """ + weightName$ + """"
     ... + " --velocity_weight " + fixed$(velocity_weight, 4)
@@ -532,6 +548,8 @@ tempStatVal$        = "?"
 weightPresetStat$   = "?"
 velocityWeightStat$ = "?"
 couplingStat$       = "?"
+meanMapDistStat$    = "?"
+meanVelAlignStat$   = "?"
 
 nPEvPts = 0
 nPTrajPts = 0
@@ -566,6 +584,10 @@ if fileReadable(tempStats$)
     velocityWeightStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "coupling="
     couplingStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_mapping_distance="
+    meanMapDistStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_velocity_alignment="
+    meanVelAlignStat$ = parseStatLine.result$
 
     @parseStatLine: statsText$, "proj_axis0="
     projAxis0$ = parseStatLine.result$
@@ -657,17 +679,25 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Phase-Space Composition##"
-    Font size: 9
+    Text: 0.5, "centre", 0.72, "half", "##Phase-Space Composition##"
+    Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + attractorStr$ + " | " + stateDimStr$ + " | W=" + weightName$ + " | Vel=" + fixed$(velocity_weight, 2) + " | Cpl=" + fixed$(coupling, 2) + " | T=" + fixed$(temperature, 2) + " | Seed=" + string$(seed)
+    Text: 0.5, "centre", 0.18, "half", soundName$ + " | " + attractorStr$ + " | " + stateDimStr$ + " | W=" + weightName$ + " | Vel=" + fixed$(velocity_weight, 2) + " | Cpl=" + fixed$(coupling, 2) + " | T=" + fixed$(temperature, 2) + " | Seed=" + string$(seed)
 
     # === Input Waveform + Event Boundaries ===
     Select outer viewport: 0, 8, 0.6, 1.5
     Select inner viewport: 0.6, 7.7, 0.65, 1.45
     selectObject: sound
+    if nChannels > 1
+        Extract one channel: analysisChannel
+        tmpOrigWav = selected("Sound")
+    else
+        Copy: "tmpOrigWav"
+        tmpOrigWav = selected("Sound")
+    endif
     Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -1, 1, "no", "Curve"
+    removeObject: tmpOrigWav
 
     Colour: "{0.8, 0.25, 0.25}"
     Line width: 1
@@ -681,6 +711,8 @@ if draw_visualization
     Line width: 1
     Colour: "Black"
     Draw inner box
+    Select inner viewport: 0.6, 7.7, 0.65, 1.45
+    Axes: 0, dur, -1, 1
     Font size: 7
     Text left: "yes", "Original"
     Text top: "no", string$(nEvents) + " events  | " + fixed$(dur, 2) + " s"
@@ -690,18 +722,24 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 1.55, 2.35
     selectObject: resultSound
     if outChans > 1
-        Extract one channel: 1
+        visOutChannel = analysisChannel
+        if visOutChannel > outChans
+            visOutChannel = 1
+        endif
+        Extract one channel: visOutChannel
         tmpOutWav = selected("Sound")
         Colour: "{0.2, 0.5, 0.75}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        Draw: 0, 0, -1, 1, "no", "Curve"
         removeObject: tmpOutWav
     else
         selectObject: resultSound
         Colour: "{0.2, 0.5, 0.75}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
+        Draw: 0, 0, -1, 1, "no", "Curve"
     endif
     Colour: "Black"
     Draw inner box
+    Select inner viewport: 0.6, 7.7, 1.55, 2.35
+    Axes: 0, durOut, -1, 1
     Font size: 7
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
@@ -711,7 +749,7 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 2.55, 3.60
     selectObject: sound
     if nChannels > 1
-        Extract one channel: 1
+        Extract one channel: analysisChannel
         tmpOrigSpec = selected("Sound")
     else
         Copy: "tmpOrigSpec"
@@ -722,6 +760,8 @@ if draw_visualization
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
+    Select inner viewport: 0.6, 7.7, 2.55, 3.60
+    Axes: 0, dur, 0, 5000
     Font size: 6
     Text left: "yes", "Hz"
     Text top: "no", "Original spectrogram"
@@ -732,7 +772,11 @@ if draw_visualization
     Select inner viewport: 0.6, 7.7, 3.70, 4.75
     selectObject: resultSound
     if outChans > 1
-        Extract one channel: 1
+        visOutChannel = analysisChannel
+        if visOutChannel > outChans
+            visOutChannel = 1
+        endif
+        Extract one channel: visOutChannel
         tmpOutSpec = selected("Sound")
     else
         Copy: "tmpOutSpec"
@@ -743,6 +787,8 @@ if draw_visualization
     Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
+    Select inner viewport: 0.6, 7.7, 3.70, 4.75
+    Axes: 0, durOut, 0, 5000
     Font size: 6
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
@@ -807,6 +853,30 @@ if draw_visualization
                 endif
             endif
         endfor
+        for iB from 0 to nPSelPts - 1
+            bx = psel_'iB'_x
+            by = psel_'iB'_y
+            if gotBounds = 0
+                axMinX = bx
+                axMaxX = bx
+                axMinY = by
+                axMaxY = by
+                gotBounds = 1
+            else
+                if bx < axMinX
+                    axMinX = bx
+                endif
+                if bx > axMaxX
+                    axMaxX = bx
+                endif
+                if by < axMinY
+                    axMinY = by
+                endif
+                if by > axMaxY
+                    axMaxY = by
+                endif
+            endif
+        endfor
 
         rangeX = axMaxX - axMinX
         rangeY = axMaxY - axMinY
@@ -828,6 +898,8 @@ if draw_visualization
             Paint circle (mm): "{0.75, 0.75, 0.75}", pep_'iEP'_x, pep_'iEP'_y, 1.2
         endfor
 
+        Select inner viewport: 0.6, 7.7, 4.90, 6.20
+        Axes: axMinX, axMaxX, axMinY, axMaxY
         Colour: "{0.25, 0.45, 0.75}"
         Line width: 1.5
         for iTP from 1 to nPTrajPts - 1
@@ -841,6 +913,9 @@ if draw_visualization
             iLast = nPTrajPts - 1
             Paint circle (mm): "{0.8, 0.2, 0.2}", ptp_'iLast'_x, ptp_'iLast'_y, 2.0
         endif
+
+        Select inner viewport: 0.6, 7.7, 4.90, 6.20
+        Axes: axMinX, axMaxX, axMinY, axMaxY
 
         # === Composed path: trajectory point -> selected event -> next selected event ===
         # This is the sequence actually heard, in plan order — distinct from the
@@ -860,12 +935,16 @@ if draw_visualization
             Paint circle (mm): "{0.6, 0.25, 0.6}", psel_'iSPLast'_x, psel_'iSPLast'_y, 1.5
         endif
 
+        Select inner viewport: 0.6, 7.7, 4.90, 6.20
+        Axes: axMinX, axMaxX, axMinY, axMaxY
         Colour: "Black"
         Draw inner box
+        Select inner viewport: 0.6, 7.7, 4.90, 6.20
+        Axes: axMinX, axMaxX, axMinY, axMaxY
         Font size: 6
         Text left: "yes", projAxis1$
         Text bottom: "yes", projAxis0$
-        Text top: "no", attractorStr$ + " (" + stateDimStr$ + ") — grey=corpus  blue=attractor  ##orange=composed path##"
+        Text top: "no", attractorStr$ + " (" + stateDimStr$ + ") — weighted projection: " + projAxis0$ + " / " + projAxis1$ + " | grey=corpus blue=attractor ##orange=composed path##"
     else
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.97, 0.97, 0.99}", 0, 1, 0, 1
@@ -890,8 +969,8 @@ if draw_visualization
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
     Text: 0.02, "left", 0.73, "half", attractorStat$ + " " + stateDimsStat$ + "D | Events=" + nSourceEvStat$ + "->" + string$(nPlanSteps) + " | Uniq=" + uniqueUsedStat$ + " Rep=" + repRateStat$ + " | Speed=" + trajSpeedStat$
-    Text: 0.02, "left", 0.53, "half", "Vel=" + velocityWeightStat$ + " Cpl=" + couplingStat$ + " W=" + weightPresetStat$ + " | Tabu=" + tabuStat$ + " T=" + tempStatVal$ + " | Xfade=" + fixed$(xfEff * 1000, 1) + "ms (set " + fixed$(crossfade_ms, 0) + "ms)"
-    Text: 0.02, "left", 0.33, "half", "RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | " + fixed$(dur, 2) + "s->" + fixed$(durOut, 2) + "s | Seed=" + string$(seed)
+    Text: 0.02, "left", 0.53, "half", "Vel=" + velocityWeightStat$ + " Cpl=" + couplingStat$ + " W=" + weightPresetStat$ + " | Tabu=" + tabuStat$ + " T=" + tempStatVal$ + " | MapDist=" + meanMapDistStat$
+    Text: 0.02, "left", 0.33, "half", "RMS: " + fixed$(rms_orig, 4) + "->" + fixed$(rms_out, 4) + " | " + fixed$(dur, 2) + "s->" + fixed$(durOut, 2) + "s | Ch=" + string$(analysisChannel) + " | Xfade=" + fixed$(xfEff * 1000, 1) + "ms | Seed=" + string$(seed)
 
     Colour: "{0.35, 0.35, 0.35}"
     if attractor_type = 1
@@ -928,6 +1007,7 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:  ", soundName$, "_phaseSpace_", attractorStr$
 appendInfoLine: ""
 appendInfoLine: "Attractor:        ", attractorStat$
+appendInfoLine: "Analysis channel: ", analysisChannel
 appendInfoLine: "State dims:       ", stateDimsStat$, "D"
 appendInfoLine: "Source events:    ", nSourceEvStat$
 appendInfoLine: "Output events:    ", nOutputEvStat$

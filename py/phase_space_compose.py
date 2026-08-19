@@ -1,5 +1,12 @@
 """
-phase_space_compose.py — Phase-Space Composition Engine  v1.3
+phase_space_compose.py — Phase-Space Composition Engine  v1.4
+    v1.4: mapping-distance weighting now follows the documented w*d^2 law,
+    position and velocity distances share a 0..1 scale, low-temperature
+    stochastic selection uses a numerically stable log-softmax, analysis can
+    be pinned to a representative channel, source event IDs survive any
+    filtering, and visualization projects the two most strongly weighted
+    active dimensions.
+
     v1.3: --dim_weights is now resolved onto the active feature columns
     BY NAME (see CANONICAL_FEATURE_ORDER / resolve_dim_weights), fixing
     a bug where weight presets were silently mismatched to the wrong
@@ -23,6 +30,7 @@ Usage (called by Praat — not directly):
         --temperature 0.15
         --seed        1234
         --min_event_dur_ms 30
+        --analysis_channel 1         # 1-based; 0 = auto strongest-RMS channel
         --dim_weights "1.0,1.0,1.0,1.0,1.0"  # ALWAYS canonical order:
                                               # centroid,flatness,entropy,flux,rms
                                               # — resolved by name onto whatever
@@ -147,17 +155,36 @@ def load_events(csv_path, min_dur_s):
 # B — Per-event feature extraction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _mono_slice(audio, start_s, end_s, sr):
-    """Return float64 mono slice of audio."""
+def choose_analysis_channel(audio, requested_channel=0):
+    """Return a zero-based representative analysis channel.
+
+    requested_channel is 1-based when >0 (matching Praat/user-facing channel
+    numbering).  With 0, choose the channel with the largest whole-file RMS.
+    This avoids phase-cancelling stereo fold-downs while keeping segmentation
+    and feature extraction tied to one real signal channel.
+    """
+    import numpy as np
+    n_ch = int(audio.shape[1])
+    if requested_channel > 0:
+        if requested_channel > n_ch:
+            raise ValueError("analysis_channel %d exceeds channel count %d" %
+                             (requested_channel, n_ch))
+        return int(requested_channel - 1)
+    rms = np.sqrt(np.mean(np.asarray(audio, dtype="float64") ** 2, axis=0) + 1e-20)
+    return int(np.argmax(rms))
+
+
+def _analysis_slice(audio, start_s, end_s, sr, analysis_ch):
+    """Return a float64 slice from the selected representative channel."""
     import numpy as np
     s = max(0, int(start_s * sr))
     e = min(audio.shape[0], int(end_s * sr))
     if e <= s:
         return np.zeros(256, dtype="float64")
-    return audio[s:e].mean(axis=1).astype("float64")
+    return audio[s:e, analysis_ch].astype("float64")
 
 
-def extract_features(audio, events, sr):
+def extract_features(audio, events, sr, analysis_ch=0):
     """
     Compute 5 spectral/energy features per event.
 
@@ -169,7 +196,8 @@ def extract_features(audio, events, sr):
       flux      — mean frame-to-frame spectral change (onset / transientness proxy)
       rms       — root mean square energy
 
-    All computed on the mono mix of each event.
+    All computed on one representative real channel (normally the strongest-
+    RMS channel selected by Praat).  This avoids destructive stereo fold-down.
     FFT window is halved for very short events.
     """
     import numpy as np
@@ -182,7 +210,7 @@ def extract_features(audio, events, sr):
     rms      = np.zeros(n_ev)
 
     for i, ev in enumerate(events):
-        x = _mono_slice(audio, ev["start"], ev["end"], sr)
+        x = _analysis_slice(audio, ev["start"], ev["end"], sr, analysis_ch)
         n_samp = len(x)
 
         # RMS — robust even for 1 sample
@@ -201,7 +229,7 @@ def extract_features(audio, events, sr):
         if n_samp >= nf:
             _, _, Zxx = scipy_stft(x, fs=sr, window="hann",
                                    nperseg=nf, noverlap=nf - hop_cur,
-                                   nfft=nf, boundary="zeros", padded=True)
+                                   nfft=nf, boundary=None, padded=False)
             mags = np.abs(Zxx) + 1e-12  # (half, n_frames)
         else:
             # Pad single frame
@@ -537,49 +565,21 @@ def generate_trajectory(attractor, D, n_steps, seed):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def map_to_events(traj, X_norm, n_output, tabu_len, temperature, seed,
-                  dim_weights=None, velocity_weight=0.0, coupling=0.0):
+                  dim_weights=None, velocity_weight=0.0, coupling=0.0,
+                  return_trace=False):
     """
     Map n_output trajectory steps to event indices.
 
-    Three complementary mechanisms operate together:
+    Position distance uses the documented weighted RMS metric:
+        d_pos = sqrt(sum_d(w[d] * delta[d]^2) / sum_d(w[d]))
+    Because all normalized coordinates lie in [0,1], d_pos also lies in [0,1].
+    This keeps it on the same scale as d_vel=(1-cosine)/2, so velocity_weight
+    has the same meaning in 2D through 5D.
 
-    1. Weighted Euclidean distance
-       ─────────────────────────────
-       Each feature dimension is multiplied by a user-supplied weight before
-       computing distance.  This lets the composer emphasise one acoustic
-       quality (e.g. brightness, noisiness) over others without changing the
-       normalised feature space itself.
-
-           d_pos[i] = sqrt( sum_d( w[d] * (X[i,d] - target[d])^2 ) )
-
-    2. Velocity / direction alignment  (velocity_weight > 0)
-       ─────────────────────────────────────────────────────
-       The trajectory has a direction at each step:
-           v_traj = traj[k] - traj[k-1]
-       For each candidate event i we compute the expected feature delta from
-       the previously chosen event:
-           delta_i = X[i] - X[prev_chosen]
-       We measure cosine similarity between v_traj and delta_i.
-       Good alignment (sim ≈ 1) = the event moves the corpus in the same
-       direction the attractor is moving.  This makes attractor structure
-       audible as directed acoustic motion.
-
-           d_vel[i]  = (1 - cos_sim[i]) / 2        ∈ [0, 1]
-           d_final   = (1 - vel_w) * d_pos + vel_w * d_vel
-
-    3. Feedback coupling  (coupling > 0)
-       ──────────────────────────────────
-       After each selection the "working position" is pulled slightly toward
-       the chosen event's state vector:
-           working_pos = traj[k] + coupling * (X[chosen] - traj[k])
-       This makes the trajectory follow the corpus rather than running
-       independently, creating true data–dynamics interaction.
-
-    Anti-repetition + stochastic selection
-       tabu_len  — last N chosen indices are forbidden (unless pool is empty)
-       temperature = 0  → always choose the closest candidate (greedy)
-       temperature > 0  → softmax over top K=ceil(temp*20) candidates with
-                          weights ∝ (1/dist)^(1/temp); deterministic via seed.
+    Temperature > 0 uses the historical inverse-distance distribution, but in
+    log space for numerical stability:
+        p(i) proportional to exp(-log(distance_i + eps) / temperature)
+    which is algebraically equivalent to (1/distance)^(1/temperature).
     """
     import numpy as np
 
@@ -589,6 +589,7 @@ def map_to_events(traj, X_norm, n_output, tabu_len, temperature, seed,
     n_traj = traj.shape[0]
     tabu   = deque(maxlen=tabu_len)
     plan   = []
+    trace  = []
 
     # ---- Dimension weights ----
     if dim_weights is None or len(dim_weights) == 0:
@@ -597,42 +598,44 @@ def map_to_events(traj, X_norm, n_output, tabu_len, temperature, seed,
         W = np.array(dim_weights[:D], dtype="float64")
         if len(W) < D:
             W = np.concatenate([W, np.ones(D - len(W))])
-    # Normalise so weights don't change the overall scale
-    W = W / (np.mean(W) + 1e-12)
+    W = np.where(np.isfinite(W), W, 0.0)
+    W = np.maximum(W, 0.0)
+    if float(W.sum()) <= 1e-12:
+        W = np.ones(D, dtype="float64")
+    W_sum = float(W.sum())
 
     prev_chosen = None
-    # Working position accumulates coupling drift on top of the raw trajectory
-    working_pos = traj[0].copy()
 
     for k in range(n_output):
         raw_pos = traj[k % n_traj]
 
-        # ---- Feedback coupling: blend attractor with last selected event ----
+        # ---- Feedback coupling: causal pull toward the previous event ----
         if coupling > 1e-6 and prev_chosen is not None:
-            working_pos = raw_pos + coupling * (X_norm[prev_chosen] - raw_pos)
+            target = raw_pos + coupling * (X_norm[prev_chosen] - raw_pos)
         else:
-            working_pos = raw_pos
+            target = raw_pos.copy()
 
-        target = working_pos
+        # ---- Weighted position distance, normalized to [0,1] ----
+        diff  = X_norm - target
+        d_pos = np.sqrt(np.sum(W * (diff ** 2), axis=1) / W_sum)
 
-        # ---- Weighted position distance ----
-        diff     = (X_norm - target) * W          # (n_ev, D)
-        d_pos    = np.sqrt(np.sum(diff ** 2, axis=1))
-
+        d_vel = None
         # ---- Velocity alignment (only from step 1 onwards) ----
         if velocity_weight > 1e-6 and k > 0 and prev_chosen is not None:
-            # Trajectory velocity vector
-            v_traj      = traj[k % n_traj] - traj[(k - 1) % n_traj]
+            v_traj = traj[k % n_traj] - traj[(k - 1) % n_traj]
             v_norm_scalar = float(np.linalg.norm(v_traj))
 
             if v_norm_scalar > 1e-8:
-                # Per-event feature delta from previous chosen event
-                ev_deltas   = X_norm - X_norm[prev_chosen]        # (n_ev, D)
-                delta_norms = np.sqrt(np.sum(ev_deltas ** 2, axis=1)) + 1e-8
-                cos_sim     = np.dot(ev_deltas, v_traj) / (delta_norms * v_norm_scalar)
+                ev_deltas   = X_norm - X_norm[prev_chosen]
+                delta_norms = np.sqrt(np.sum(ev_deltas ** 2, axis=1))
+                valid       = delta_norms > 1e-8
+                cos_sim     = np.zeros(n_ev, dtype="float64")
+                cos_sim[valid] = (np.dot(ev_deltas[valid], v_traj) /
+                                  (delta_norms[valid] * v_norm_scalar))
                 cos_sim     = np.clip(cos_sim, -1.0, 1.0)
-                d_vel       = (1.0 - cos_sim) / 2.0               # [0, 1]
-                dists       = (1.0 - velocity_weight) * d_pos + velocity_weight * d_vel
+                d_vel       = (1.0 - cos_sim) / 2.0
+                dists       = ((1.0 - velocity_weight) * d_pos +
+                               velocity_weight * d_vel)
             else:
                 dists = d_pos
         else:
@@ -643,46 +646,69 @@ def map_to_events(traj, X_norm, n_output, tabu_len, temperature, seed,
         # ---- Tabu filter ----
         tabu_set   = set(tabu)
         candidates = [i for i in sorted_idx if i not in tabu_set]
-        if not candidates:          # safety fallback
+        if not candidates:
             candidates = sorted_idx
 
         # ---- Deterministic or stochastic selection ----
         if temperature < 1e-6:
-            chosen = candidates[0]
+            chosen = int(candidates[0])
         else:
-            K        = max(1, min(int(temperature * 20) + 1, len(candidates)))
-            top_idx  = candidates[:K]
-            top_dist = dists[top_idx]
-            inv_d    = 1.0 / (top_dist + 1e-7)
-            power    = 1.0 / max(temperature, 1e-4)
-            weights  = inv_d ** power
-            weights  = weights / weights.sum()
-            chosen   = int(rng.choice(top_idx, p=weights))
+            K       = max(1, min(int(temperature * 20) + 1, len(candidates)))
+            top_idx = np.asarray(candidates[:K], dtype=int)
+            if K == 1:
+                chosen = int(top_idx[0])
+            else:
+                top_dist = np.asarray(dists[top_idx], dtype="float64")
+                log_w    = -np.log(top_dist + 1e-7) / max(temperature, 1e-6)
+                log_w   -= float(np.max(log_w))
+                probs    = np.exp(log_w)
+                p_sum    = float(np.sum(probs))
+                if (not np.isfinite(p_sum)) or p_sum <= 0.0:
+                    chosen = int(top_idx[0])
+                else:
+                    probs  /= p_sum
+                    chosen  = int(rng.choice(top_idx, p=probs))
+
+        if return_trace:
+            dv = float(d_vel[chosen]) if d_vel is not None else float("nan")
+            trace.append({
+                "target": np.asarray(target, dtype="float64").copy(),
+                "raw_pos": np.asarray(raw_pos, dtype="float64").copy(),
+                "d_pos": float(d_pos[chosen]),
+                "d_vel": dv,
+                "d_final": float(dists[chosen]),
+            })
 
         plan.append(chosen)
         tabu.append(chosen)
         prev_chosen = chosen
 
-    return plan
+    return (plan, trace) if return_trace else plan
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # F — Output
 # ─────────────────────────────────────────────────────────────────────────────
 
-def write_plan(path, plan):
-    """Write plan CSV: step, event_index (0-based), gain."""
+def write_plan(path, plan, events):
+    """Write plan CSV using original Praat event IDs (0-based in the file).
+
+    Internal plan indices address the filtered Python event list.  Writing the
+    original source ID prevents an index shift if a CSV row is filtered out.
+    """
     with open(path, "w") as f:
         f.write("step,event_index,gain\n")
         for i, idx in enumerate(plan):
-            f.write("%d,%d,1.0000\n" % (i + 1, idx))
+            source_idx_0 = max(0, int(events[idx]["idx"]) - 1)
+            f.write("%d,%d,1.0000\n" % (i + 1, source_idx_0))
 
 
 def write_stats(path, events, plan, attractor, state_dims,
                 n_output, tabu_len, temperature, seed,
                 mean_speed, col_names,
                 weight_preset="Uniform", velocity_weight=0.0, coupling=0.0,
-                X_norm=None, traj=None):
+                X_norm=None, traj=None, resolved_weights=None, mapping_trace=None,
+                analysis_channel=1):
     """Write key=value stats file for Praat info panel."""
     import numpy as np
 
@@ -698,14 +724,24 @@ def write_stats(path, events, plan, attractor, state_dims,
         seen.add(idx)
     rep_rate = repits / max(1, n_out)
 
-    # ── 2D projections for visualization ──────────────────────────────
-    # Use first 2 dims of the normalized state space (already [0,1])
+    # ── 2D projection for visualization ───────────────────────────────
+    # Show the two most strongly weighted ACTIVE dimensions.  Uniform weights
+    # naturally fall back to the first two dimensions.  This makes presets such
+    # as Transient or Energy visible instead of always plotting centroid/flatness.
     ev_x, ev_y, tr_x, tr_y = [], [], [], []
+    proj0, proj1 = 0, 1 if len(col_names) > 1 else 0
+    if resolved_weights is not None and len(resolved_weights) == len(col_names):
+        order = sorted(range(len(col_names)),
+                       key=lambda i: (-float(resolved_weights[i]), i))
+        if order:
+            proj0 = order[0]
+        if len(order) > 1:
+            proj1 = order[1]
     if X_norm is not None and traj is not None:
-        ev_x = X_norm[:, 0].tolist()
-        ev_y = X_norm[:, 1].tolist() if X_norm.shape[1] > 1 else [0.0] * len(ev_x)
-        tr_x = traj[:, 0].tolist()
-        tr_y = traj[:, 1].tolist() if traj.shape[1] > 1 else [0.0] * len(tr_x)
+        ev_x = X_norm[:, proj0].tolist()
+        ev_y = X_norm[:, proj1].tolist() if X_norm.shape[1] > 1 else [0.0] * len(ev_x)
+        tr_x = traj[:, proj0].tolist()
+        tr_y = traj[:, proj1].tolist() if traj.shape[1] > 1 else [0.0] * len(tr_x)
 
     with open(path, "w") as f:
         f.write("attractor=%s\n"            % attractor)
@@ -722,26 +758,45 @@ def write_stats(path, events, plan, attractor, state_dims,
         f.write("weight_preset=%s\n"        % weight_preset)
         f.write("velocity_weight=%.4f\n"    % velocity_weight)
         f.write("coupling=%.4f\n"           % coupling)
+        f.write("analysis_channel=%d\n"    % analysis_channel)
+        if mapping_trace:
+            pos_vals = [r["d_pos"] for r in mapping_trace]
+            fin_vals = [r["d_final"] for r in mapping_trace]
+            vel_vals = [r["d_vel"] for r in mapping_trace if np.isfinite(r["d_vel"])]
+            f.write("mean_mapping_distance=%.6f\n" % float(np.mean(pos_vals)))
+            f.write("mean_final_distance=%.6f\n"   % float(np.mean(fin_vals)))
+            if vel_vals:
+                mean_align = float(np.mean([1.0 - 2.0 * v for v in vel_vals]))
+                f.write("mean_velocity_alignment=%.6f\n" % mean_align)
+            else:
+                f.write("mean_velocity_alignment=na\n")
 
         # ── Trajectory + event positions ──────────────────────────────
-        # Axis labels for 2D projection
-        ax0 = col_names[0] if len(col_names) > 0 else "dim0"
-        ax1 = col_names[1] if len(col_names) > 1 else "dim1"
+        # Axis labels for the weighted 2D projection
+        ax0 = col_names[proj0] if len(col_names) > 0 else "dim0"
+        ax1 = col_names[proj1] if len(col_names) > 1 else "dim1"
         f.write("proj_axis0=%s\n" % ax0)
         f.write("proj_axis1=%s\n" % ax1)
 
-        n_pts = min(len(ev_x), 200)
-        f.write("n_ev_pts=%d\n" % n_pts)
-        for i in range(n_pts):
-            f.write("pev_%d=%.4f,%.4f\n" % (i, ev_x[i], ev_y[i]))
+        # Evenly sample large clouds/paths so the visualization represents the
+        # WHOLE run instead of silently truncating to its first 200 points.
+        if len(ev_x) > 0:
+            ev_sampled = np.linspace(0, len(ev_x) - 1,
+                                     min(len(ev_x), 200), dtype=int).tolist()
+            ev_sampled = list(dict.fromkeys(ev_sampled))
+        else:
+            ev_sampled = []
+        f.write("n_ev_pts=%d\n" % len(ev_sampled))
+        for oi, si in enumerate(ev_sampled):
+            f.write("pev_%d=%.4f,%.4f\n" % (oi, ev_x[si], ev_y[si]))
 
         n_tr = len(tr_x)
-        stride = max(1, n_tr // 200)
-        sampled = list(range(0, n_tr, stride))
-        if n_tr > 0 and n_tr - 1 not in sampled:
-            sampled.append(n_tr - 1)
-        n_out_tr = len(sampled)
-        f.write("n_traj_pts=%d\n" % n_out_tr)
+        if n_tr > 0:
+            sampled = np.linspace(0, n_tr - 1, min(n_tr, 200), dtype=int).tolist()
+            sampled = list(dict.fromkeys(sampled))
+        else:
+            sampled = []
+        f.write("n_traj_pts=%d\n" % len(sampled))
         for ti, si in enumerate(sampled):
             f.write("ptr_%d=%.4f,%.4f\n" % (ti, tr_x[si], tr_y[si]))
 
@@ -754,13 +809,12 @@ def write_stats(path, events, plan, attractor, state_dims,
         # in plan order (order-preserving, not sorted by feature value)
         # and let Praat draw it as its own path.
         if X_norm is not None and len(plan) > 0:
-            n_plan_pts  = len(plan)
-            stride_sel  = max(1, n_plan_pts // 200)
-            sel_steps   = list(range(0, n_plan_pts, stride_sel))
-            if n_plan_pts - 1 not in sel_steps:
-                sel_steps.append(n_plan_pts - 1)
-            sel_x = [float(X_norm[plan[i], 0]) for i in sel_steps]
-            sel_y = [float(X_norm[plan[i], 1]) if X_norm.shape[1] > 1 else 0.0
+            n_plan_pts = len(plan)
+            sel_steps  = np.linspace(0, n_plan_pts - 1,
+                                     min(n_plan_pts, 200), dtype=int).tolist()
+            sel_steps  = list(dict.fromkeys(sel_steps))
+            sel_x = [float(X_norm[plan[i], proj0]) for i in sel_steps]
+            sel_y = [float(X_norm[plan[i], proj1]) if X_norm.shape[1] > 1 else 0.0
                      for i in sel_steps]
         else:
             sel_x, sel_y = [], []
@@ -771,19 +825,26 @@ def write_stats(path, events, plan, attractor, state_dims,
             f.write("psel_%d=%.4f,%.4f\n" % (i, sel_x[i], sel_y[i]))
 
 
-def write_debug_log(path, events, plan, traj, X_norm):
-    """Optional verbose log of chosen indices and distances."""
+def write_debug_log(path, events, plan, traj, X_norm, mapping_trace=None):
+    """Verbose log of the ACTUAL mapping target and distances."""
     import numpy as np
     with open(path, "w") as f:
         f.write("step,event_index,event_start,event_end,"
-                "dist_to_target,traj_x0,traj_x1\n")
+                "position_distance,velocity_distance,final_distance,target_x0,target_x1\n")
         n_traj = traj.shape[0]
         for i, idx in enumerate(plan):
-            target = traj[i % n_traj]
-            d = float(np.sqrt(np.sum((X_norm[idx] - target) ** 2)))
             ev = events[idx]
-            f.write("%d,%d,%.4f,%.4f,%.6f,%.4f,%.4f\n" % (
-                i + 1, idx, ev["start"], ev["end"], d,
+            if mapping_trace is not None and i < len(mapping_trace):
+                r = mapping_trace[i]
+                target = r["target"]
+                dp, dv, df = r["d_pos"], r["d_vel"], r["d_final"]
+            else:
+                target = traj[i % n_traj]
+                dp = float(np.sqrt(np.mean((X_norm[idx] - target) ** 2)))
+                dv, df = float("nan"), dp
+            f.write("%d,%d,%.4f,%.4f,%.6f,%s,%.6f,%.4f,%.4f\n" % (
+                i + 1, int(events[idx]["idx"]), ev["start"], ev["end"], dp,
+                ("%.6f" % dv) if np.isfinite(dv) else "na", df,
                 float(target[0]),
                 float(target[1]) if len(target) > 1 else 0.0))
 
@@ -817,6 +878,8 @@ def main():
     parser.add_argument("--seed",         type=int,   default=1234)
     parser.add_argument("--min_event_dur_ms", type=float, default=30.0,
                         help="Minimum event duration in milliseconds")
+    parser.add_argument("--analysis_channel", type=int, default=0,
+                        help="1-based representative channel; 0=auto strongest RMS")
     parser.add_argument("--dim_weights",    type=str, default="",
                         help="Comma-separated distance weights, always given "
                              "in canonical order (centroid,flatness,entropy,"
@@ -841,7 +904,7 @@ def main():
 
     # ── Clamp parameters ──────────────────────────────────────────────────
     args.n_output       = max(10, min(2000, args.n_output))
-    args.tabu           = max(1,  min(500,  args.tabu))
+    args.tabu           = max(0,  min(500,  args.tabu))
     args.temperature    = max(0.0, min(1.0, args.temperature))
     args.state_dims     = max(2, min(5, args.state_dims))
     args.velocity_weight = max(0.0, min(1.0, args.velocity_weight))
@@ -871,12 +934,18 @@ def main():
         sys.exit(1)
 
     audio, sr = load_audio(args.wav)
+    try:
+        analysis_ch = choose_analysis_channel(audio, args.analysis_channel)
+    except ValueError as e:
+        print("ERROR: %s" % e, file=sys.stderr)
+        sys.exit(1)
     min_dur_s = args.min_event_dur_ms / 1000.0
     events    = load_events(args.events, min_dur_s)
 
     n_ev = len(events)
     print("    Audio: %.2fs  SR=%d  Ch=%d  |  Events: %d (≥%.0f ms)" % (
         audio.shape[0] / sr, sr, audio.shape[1], n_ev, args.min_event_dur_ms))
+    print("    Analysis channel: %d (representative real channel)" % (analysis_ch + 1))
 
     if n_ev < 3:
         print("ERROR: Need at least 3 valid events (found %d)." % n_ev,
@@ -886,14 +955,14 @@ def main():
         sys.exit(1)
 
     # Clamp tabu so it is always < n_ev (otherwise tabu empties the pool)
-    tabu_eff = min(args.tabu, max(1, n_ev - 1))
+    tabu_eff = min(args.tabu, max(0, n_ev - 1))
     if tabu_eff != args.tabu:
         print("    Tabu clamped to %d (= n_events - 1)" % tabu_eff)
 
     # ── B: Feature extraction ──────────────────────────────────────────────
     print("  [Py 2/5] Extracting %dD features per event..." % args.state_dims)
 
-    feats        = extract_features(audio, events, sr)
+    feats        = extract_features(audio, events, sr, analysis_ch=analysis_ch)
     X_raw, names = build_state_matrix(feats, args.state_dims)
     X_norm       = robust_normalize_01(X_raw)
 
@@ -937,11 +1006,12 @@ def main():
           "(tabu=%d, temp=%.3f, vel=%.2f, cpl=%.2f)..." % (
           tabu_eff, args.temperature, args.velocity_weight, args.coupling))
 
-    plan = map_to_events(traj, X_norm, args.n_output,
+    plan, mapping_trace = map_to_events(
+                         traj, X_norm, args.n_output,
                          tabu_eff, args.temperature, args.seed,
                          dim_weights=resolved_weights,
                          velocity_weight=args.velocity_weight,
-                         coupling=args.coupling)
+                         coupling=args.coupling, return_trace=True)
 
     used = set(plan)
     rep_rate = sum(1 for i, idx in enumerate(plan)
@@ -953,7 +1023,7 @@ def main():
     # ── E: Write outputs ────────────────────────────────────────────────────
     print("  [Py 5/5] Writing plan + stats...")
 
-    write_plan(args.out_plan, plan)
+    write_plan(args.out_plan, plan, events)
     weight_preset_display = (args.weight_preset_name.strip()
                               or args.dim_weights.strip()
                               or "Uniform")
@@ -963,11 +1033,16 @@ def main():
                 weight_preset=weight_preset_display,
                 velocity_weight=args.velocity_weight,
                 coupling=args.coupling,
-                X_norm=X_norm, traj=traj)
+                X_norm=X_norm, traj=traj,
+                resolved_weights=resolved_weights, mapping_trace=mapping_trace,
+                analysis_channel=analysis_ch + 1)
 
     if args.debug:
-        debug_path = args.out_stats.replace("_stats.txt", "_debug.csv")
-        write_debug_log(debug_path, events, plan, traj, X_norm)
+        if args.out_stats.endswith("_stats.txt"):
+            debug_path = args.out_stats[:-10] + "_debug.csv"
+        else:
+            debug_path = os.path.splitext(args.out_stats)[0] + "_debug.csv"
+        write_debug_log(debug_path, events, plan, traj, X_norm, mapping_trace)
         print("    Debug log → %s" % debug_path)
 
     print("OK: plan → %s" % args.out_plan)

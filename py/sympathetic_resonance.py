@@ -1,11 +1,26 @@
 """
-sympathetic_resonance.py  --  Sympathetic Resonance  v1.0
+sympathetic_resonance.py  --  Sympathetic Resonance  v1.2
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
 Email: shai.cohen@biu.ac.il
 
 Called by SympatheticResonance.praat -- not run directly.
+
+Version 1.2 (2026) — review repairs:
+  * Energy-gated spectral flatness: silence no longer reads as white noise.
+  * Latent pitch discovery keeps only measured peaks; N_strings is the maximum
+    total resonator count, filled by measured-pitch harmonic partials rather
+    than invented geometric-midpoint pitches.
+  * Higher-resolution interpolated pseudo-CQT grid for more accurate pitches.
+  * Strongest-RMS real channel drives analysis/excitation; stereo dry path is
+    preserved (or the two strongest channels for >2ch input).
+  * Blocked FFT-domain response evaluation: audio-equivalent to the v1.0 full
+    response matrix, with bounded memory for long tails / large banks.
+  * Wet_dry=1 is exact dry audio; mixed wet-level matching uses source-region
+    multichannel RMS rather than phase-cancellable mono fold-down.
+  * FLOAT output and richer QC/stats for analysis channel, base pitches, active
+    resonators, effective decay and output routing.
 
 Usage:
     python sympathetic_resonance.py \\
@@ -20,11 +35,11 @@ Usage:
         --wet_dry     0.0
 
 Architecture:
-    A -- Load and normalise audio to mono float32
+    A -- Load audio; choose strongest real channel for analysis/excitation
     B -- Compute STFT and build log-frequency (pseudo-CQT) representation
     C -- Measure spectral flatness as a global control signal
-    D -- Discover latent pitch collection via spectral peak detection
-         and clustering in log-pitch space
+    D -- Discover measured spectral peaks in log-frequency space
+         (optional Cloud fill is an explicit AudioTools extension)
     E -- Build resonator bank: per-string pole radius r computed from
          decay_s and character bandwidth; gain shaped by brightness curve
          and spectral flatness; stiffness inharmonicity for metallic
@@ -32,7 +47,7 @@ Architecture:
          using second-order IIR filters (scipy.signal.sosfilt)
     G -- Apply sympathetic coupling: Gaussian blur across the
          frequency axis of the output matrix
-    H -- Character spectral shaping, soft-limit, blend, write output
+    H -- Character spectral shaping, wet/dry blend, soft-limit, write FLOAT output
     I -- Write stats.txt and resonances.csv
 
 Physical model notes:
@@ -141,55 +156,94 @@ CHAR_PRESETS = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_audio(path):
-    audio, sr = sf.read(path, always_2d=False)
-    audio = audio.astype(np.float32)
-    if audio.ndim == 2:
-        audio = audio.mean(axis=1)
-    peak = np.max(np.abs(audio))
-    if peak > 1e-8:
-        audio = audio / peak * 0.98
-    return audio, int(sr)
+    """Load input without level normalisation.
+
+    Returns
+    -------
+    analysis : float32 mono
+        Strongest-RMS *real* input channel. This avoids phase-cancelling
+        fold-downs while keeping the resonator model single-excitation.
+    dry_stereo : float32 (n, 2)
+        Mono is duplicated; stereo is preserved exactly; >2ch uses the two
+        strongest real channels (kept in source channel order).
+    sr : int
+    analysis_channel : int (1-based)
+    dry_channels : tuple of 1-based source channel indices
+    input_channels : int
+    """
+    audio, sr = sf.read(path, always_2d=True, dtype="float32")
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.shape[0] < 1:
+        raise ValueError("input audio is empty")
+
+    rms = np.sqrt(np.mean(audio.astype(np.float64) ** 2, axis=0) + 1e-30)
+    analysis_idx = int(np.argmax(rms))
+    analysis = audio[:, analysis_idx].copy()
+
+    n_ch = int(audio.shape[1])
+    if n_ch == 1:
+        dry_stereo = np.repeat(audio, 2, axis=1)
+        dry_indices = (0, 0)
+    elif n_ch == 2:
+        dry_stereo = audio[:, :2].copy()
+        dry_indices = (0, 1)
+    else:
+        top2 = np.argsort(rms)[-2:]
+        top2 = np.sort(top2)
+        dry_stereo = audio[:, top2].copy()
+        dry_indices = (int(top2[0]), int(top2[1]))
+
+    return (analysis, dry_stereo, int(sr), analysis_idx + 1,
+            tuple(i + 1 for i in dry_indices), n_ch)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # B -- Log-frequency (pseudo-CQT) representation
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_log_spectrum(audio, sr, n_fft=4096, hop=512, n_bins=120,
+def compute_log_spectrum(audio, sr, n_fft=4096, hop=512, n_bins=480,
                          f_min=32.7, f_max=5000.0):
+    """Interpolated log-frequency magnitude representation.
+
+    v1.2 increases the grid density and linearly interpolates the linear-FFT
+    magnitudes at log-spaced target frequencies. The old nearest-bin 120-bin
+    grid had ~73-cent spacing and could quantise a 440-Hz tone near 431/450 Hz.
     """
-    Log-frequency spectrum via STFT with log-spaced frequency averaging.
-    Each output bin maps to the nearest linear FFT bin, giving approximately
-    constant resolution in log-frequency space.
-    Returns (mag [n_bins, n_frames], freqs [n_bins]).
-    """
-    n_fft_fb = min(n_fft, len(audio))
+    n = len(audio)
+    if n < 1:
+        raise ValueError("cannot analyse empty audio")
+    n_fft_fb = min(n_fft, max(n, 256))
     n_fft_fb = max(256, 2 ** int(np.floor(np.log2(n_fft_fb))))
     win      = np.hanning(n_fft_fb).astype(np.float32)
     freqs_fb = np.fft.rfftfreq(n_fft_fb, 1.0 / sr)
 
-    # Build STFT frames
     frames = []
-    pos    = 0
-    while pos + n_fft_fb <= len(audio):
-        frames.append(np.abs(np.fft.rfft(audio[pos:pos + n_fft_fb] * win)))
-        pos += hop
-    if not frames:
-        frames.append(np.zeros(n_fft_fb // 2 + 1, dtype=np.float32))
-    stft_fb = np.array(frames, dtype=np.float32).T  # (freq_bins, n_frames)
+    if n < n_fft_fb:
+        frame = np.zeros(n_fft_fb, dtype=np.float32)
+        frame[:n] = audio
+        frames.append(np.abs(np.fft.rfft(frame * win)))
+    else:
+        pos = 0
+        while pos + n_fft_fb <= n:
+            frames.append(np.abs(np.fft.rfft(audio[pos:pos + n_fft_fb] * win)))
+            pos += hop
+    stft_fb = np.array(frames, dtype=np.float32).T
 
-    # Log-spaced target frequencies
     f_min_eff = max(f_min, freqs_fb[1])
     f_max_eff = min(f_max, freqs_fb[-1])
     log_freqs = np.logspace(np.log10(f_min_eff), np.log10(f_max_eff), n_bins)
 
-    # Map each log-frequency bin to nearest linear STFT bin (vectorised)
-    idx = np.argmin(np.abs(freqs_fb[:, None] - log_freqs[None, :]), axis=0)
-    log_mag = stft_fb[idx]  # (n_bins, n_frames)
+    # Vectorised linear interpolation along the linear-frequency FFT grid.
+    hi = np.searchsorted(freqs_fb, log_freqs, side="left")
+    hi = np.clip(hi, 1, len(freqs_fb) - 1)
+    lo = hi - 1
+    den = np.maximum(freqs_fb[hi] - freqs_fb[lo], 1e-12)
+    frac = ((log_freqs - freqs_fb[lo]) / den).astype(np.float32)
+    log_mag = ((1.0 - frac[:, None]) * stft_fb[lo, :]
+               + frac[:, None] * stft_fb[hi, :])
 
     print("    Log-spectrum: %d bins  |  %d frames  |  %.1f-%.1f Hz"
           % (n_bins, log_mag.shape[1], log_freqs[0], log_freqs[-1]))
-
     return log_mag.astype(np.float32), log_freqs.astype(np.float32)
 
 
@@ -198,122 +252,128 @@ def compute_log_spectrum(audio, sr, n_fft=4096, hop=512, n_bins=120,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def compute_spectral_flatness(audio, sr, n_fft=2048, hop=512):
+    """Energy-gated spectral flatness, 0=tonal and 1=white-noise-like.
+
+    Silent Hann frames have geometric mean == arithmetic mean at the epsilon
+    floor and therefore read as flatness=1. v1.2 excludes frames more than
+    60 dB below the strongest frame so leading/trailing silence cannot turn a
+    tonal source into a nominally noisy one.
+    Returns (flatness, active_frames, total_frames).
     """
-    Zwicker / Fastl spectral flatness measure (geometric/arithmetic mean).
-    0 = pure tone, 1 = white noise.
-    """
-    n     = len(audio)
+    n = len(audio)
+    if n < 8:
+        return 0.0, 0, 0
     n_fft = min(n_fft, n)
     win   = np.hanning(n_fft).astype(np.float32)
-    vals  = []
-    pos   = 0
+    vals, rms_vals = [], []
+    pos = 0
     while pos + n_fft <= n:
-        spec = np.abs(np.fft.rfft(audio[pos:pos + n_fft] * win)) ** 2 + 1e-12
+        frame = audio[pos:pos + n_fft]
+        rms = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2) + 1e-30))
+        spec = np.abs(np.fft.rfft(frame * win)) ** 2 + 1e-20
         geo  = float(np.exp(np.mean(np.log(spec))))
         arith = float(np.mean(spec))
-        vals.append(geo / arith)
+        vals.append(geo / max(arith, 1e-30))
+        rms_vals.append(rms)
         pos += hop
-    return float(np.mean(vals)) if vals else 0.5
+    if not vals:
+        return 0.0, 0, 0
+    rms_arr = np.asarray(rms_vals)
+    mx = float(rms_arr.max())
+    if mx <= 1e-12:
+        return 0.0, 0, len(vals)
+    active = rms_arr >= mx * 1e-3
+    if not np.any(active):
+        active[np.argmax(rms_arr)] = True
+    flat = float(np.mean(np.asarray(vals)[active]))
+    return float(np.clip(flat, 0.0, 1.0)), int(active.sum()), len(vals)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # D -- Latent pitch discovery
 # ─────────────────────────────────────────────────────────────────────────────
 
-def discover_latent_pitches(log_stft, log_freqs, n_pitches):
+def discover_latent_pitches(log_stft, log_freqs, max_pitches, pitch_mode="measured"):
+    """Return only spectral peaks actually supported by the source.
+
+    v1.0 filled a short peak list to N_strings with geometric midpoints and
+    octave extensions. A single 440-Hz tone could therefore become dozens of
+    invented microtonal "latent pitches". v1.2 keeps measured peaks only;
+    harmonic expansion is responsible for populating the resonator bank.
     """
-    Discovers the latent pitch collection embedded in the source.
+    salience = np.power(np.maximum(log_stft, 0.0), 1.5).mean(axis=1)
+    if len(salience) < 3 or float(salience.max()) <= 1e-15:
+        mid = math.sqrt(float(log_freqs[0]) * float(log_freqs[-1]))
+        return np.array([mid], dtype=np.float64)
 
-    Steps:
-    1. Time-average the log-frequency spectrum to get a salience profile
-    2. Detect prominent spectral peaks
-    3. Cluster nearby peaks (within a semitone) -- keep the centroid
-    4. Select the N most salient pitches
-    5. If fewer peaks than needed, fill with intra-cluster interpolations
-       then octave extensions, staying within the original freq range
-
-    Returns np.ndarray of frequencies in Hz, sorted ascending.
-    """
-    salience = np.power(log_stft, 1.5).mean(axis=1)
-
-    min_dist  = max(1, int(n_pitches * 0.2))
-    threshold = salience.std() * 0.25
-    peaks, props = find_peaks(salience,
-                              prominence=threshold,
-                              distance=max(1, min_dist // 2))
-
+    bin_cents = 1200.0 * math.log(float(log_freqs[1] / log_freqs[0]), 2.0)
+    min_sep_bins = max(1, int(round(70.0 / max(bin_cents, 1e-6))))
+    prominence = max(float(salience.std()) * 0.20,
+                     float(salience.max()) * 0.015, 1e-15)
+    peaks, props = find_peaks(salience, prominence=prominence,
+                              distance=min_sep_bins)
     if len(peaks) == 0:
-        peaks, _ = find_peaks(salience, distance=1)
-    if len(peaks) == 0:
-        return np.logspace(np.log10(log_freqs[0]),
-                           np.log10(log_freqs[-1]),
-                           n_pitches)
-
-    # Sort by prominence
-    if "prominences" in props:
-        order     = np.argsort(props["prominences"])[::-1]
-        peaks_ord = peaks[order]
+        peaks = np.array([int(np.argmax(salience))], dtype=int)
+        prom = np.array([float(salience[peaks[0]])])
     else:
-        peaks_ord = peaks
+        prom = props.get("prominences", salience[peaks])
 
-    # Cluster peaks within 2 bins of each other
-    clusters = []
-    used     = set()
-    for pk in peaks_ord:
-        if pk in used:
-            continue
-        group = [pk]
-        for pk2 in peaks_ord:
-            if pk2 not in used and abs(pk2 - pk) <= 2 and pk2 != pk:
-                group.append(pk2)
-                used.add(pk2)
-        used.add(pk)
-        clusters.append(group)
-
-    # Centroid frequency of each cluster, weighted by salience
-    cluster_freqs = []
-    cluster_sal   = []
-    for grp in clusters:
-        weights = salience[grp]
-        centroid = float(np.average(log_freqs[grp], weights=weights))
-        cluster_freqs.append(centroid)
-        cluster_sal.append(float(weights.sum()))
-
-    cluster_freqs = np.array(cluster_freqs)
-    cluster_sal   = np.array(cluster_sal)
-
-    # Take top-N by salience
-    top_n  = min(len(cluster_freqs), n_pitches)
-    top_ix = np.argsort(cluster_sal)[::-1][:top_n]
-    chosen = np.sort(cluster_freqs[top_ix])
-
-    # Fill to n_pitches if needed
-    f_lo, f_hi = log_freqs[0], log_freqs[-1]
-    attempts   = 0
-    while len(chosen) < n_pitches and attempts < n_pitches * 4:
-        attempts += 1
-        # Try geometric midpoint between adjacent pairs
-        gaps = np.diff(np.log(chosen)) if len(chosen) > 1 else np.array([1.0])
-        widest = int(np.argmax(gaps))
-        if len(chosen) > 1:
-            f_new = math.sqrt(chosen[widest] * chosen[widest + 1])
+    # Refine each peak by a 3-point parabola in log-frequency coordinates.
+    refined = []
+    for pk, pr in zip(peaks, prom):
+        pk = int(pk)
+        delta = 0.0
+        if 0 < pk < len(salience) - 1:
+            y0 = math.log(float(salience[pk - 1]) + 1e-30)
+            y1 = math.log(float(salience[pk])     + 1e-30)
+            y2 = math.log(float(salience[pk + 1]) + 1e-30)
+            den = y0 - 2.0 * y1 + y2
+            if abs(den) > 1e-12:
+                delta = float(np.clip(0.5 * (y0 - y2) / den, -0.5, 0.5))
+        if pk < len(log_freqs) - 1:
+            step = math.log(float(log_freqs[pk + 1] / log_freqs[pk]))
         else:
-            f_new = chosen[0] * 2.0
-        if f_lo <= f_new <= f_hi:
-            chosen = np.sort(np.append(chosen, f_new))
-        else:
-            # octave extension downward then upward
-            candidate = chosen[0] * 0.5
-            if candidate >= f_lo:
-                chosen = np.sort(np.append(chosen, candidate))
+            step = math.log(float(log_freqs[pk] / log_freqs[pk - 1]))
+        freq = math.exp(math.log(float(log_freqs[pk])) + delta * step)
+        refined.append((freq, float(pr)))
+
+    # Keep strongest measured peaks, capped so harmonics still participate in
+    # the final n_strings-sized bank. No synthetic midpoint pitches are added.
+    max_base = max(1, min(int(max_pitches), 24))
+    refined.sort(key=lambda x: x[1], reverse=True)
+    chosen = np.asarray(sorted(f for f, _ in refined[:max_base]), dtype=np.float64)
+
+    if pitch_mode == "cloud":
+        # Preserve the musically useful AudioTools cloud behavior, but label it
+        # honestly as synthetic filling rather than measured latent pitches.
+        f_lo, f_hi = float(log_freqs[0]), float(log_freqs[-1])
+        attempts = 0
+        while len(chosen) < max_pitches and attempts < max_pitches * 6:
+            attempts += 1
+            if len(chosen) > 1:
+                gaps = np.diff(np.log(chosen))
+                widest = int(np.argmax(gaps))
+                f_new = math.sqrt(chosen[widest] * chosen[widest + 1])
             else:
-                candidate = chosen[-1] * 2.0
-                if candidate <= f_hi:
-                    chosen = np.sort(np.append(chosen, candidate))
+                # With one measured pitch, build an octave-related scaffold
+                # before subdividing it; this is more musically legible than
+                # repeatedly crowding one side of the peak.
+                up = chosen[-1] * 2.0
+                dn = chosen[0] * 0.5
+                if up <= f_hi:
+                    f_new = up
+                elif dn >= f_lo:
+                    f_new = dn
                 else:
                     break
+            if not (f_lo <= f_new <= f_hi):
+                break
+            if np.min(np.abs(1200.0 * np.log2(chosen / f_new))) < 1.0:
+                break
+            chosen = np.sort(np.append(chosen, f_new))
+        return chosen[:max_pitches]
 
-    return chosen[:n_pitches]
+    return chosen
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -363,6 +423,7 @@ def build_resonator_bank(pitches, sr, character, decay_s, spectral_flatness,
 
     resonators = []
     n           = max(len(pitches), 1)
+    f0_ref      = pitches[0] if len(pitches) > 0 else 220.0
 
     for i, f0 in enumerate(pitches):
         # Optional inharmonic stretch (metallic stiffness)
@@ -552,6 +613,16 @@ def _shelf_freq_response(sos, n_fft):
     return (b0 + b1 * z_inv + b2 * z_inv2) / (1.0 + a1 * z_inv + a2 * z_inv2)
 
 
+def _shelf_freq_response_bins(sos, n_fft, k):
+    """Shelf response for an arbitrary rfft-bin index vector."""
+    if sos is None:
+        return np.ones(len(k), dtype=np.complex128)
+    z_inv = np.exp(-2j * np.pi * k / n_fft)
+    z2 = z_inv * z_inv
+    b0, b1, b2, _, a1, a2 = sos[0]
+    return (b0 + b1 * z_inv + b2 * z2) / (1.0 + a1 * z_inv + a2 * z2)
+
+
 def compute_pan_gains(n_res):
     """
     Equal-power stereo pan spread with guaranteed energy balance.
@@ -585,125 +656,147 @@ def soft_limit(signal, threshold=0.85):
     return sign * abs_s
 
 
-def render_fft(signal, resonators, sr, coupling, character, wet_dry):
-    """
-    FFT-domain stereo render. Replaces the sosfilt loop entirely.
+def render_fft(signal, dry_stereo, resonators, sr, coupling, character,
+               wet_dry, response_block_bins=8192):
+    """Blocked FFT-domain stereo render.
 
-    Steps:
-    1. Pad signal to n_fft = next power of 2 >= len(signal) + max_ir_len
-       (max_ir_len ~ T60 * sr for the longest-decaying resonator)
-    2. Forward rfft of padded signal -> X [n_fft//2+1]
-    3. Build resonator frequency responses H_i analytically [n_res, n_fft//2+1]
-    4. Gaussian coupling: blur H_i across resonator axis
-    5. Weight by L/R pan gains -> H_L, H_R [n_fft//2+1]
-    6. Apply shelf EQ in frequency domain -> H_L *= H_shelf, same for R
-    7. Multiply X * H_L, X * H_R -> irfft -> trim to output length
-    8. Wet/dry blend, soft-limit, normalise
+    The resonator transfer formula and v1.0 coupling law are intentionally
+    preserved. Only the frequency-bin dimension is processed in blocks, so the
+    result is numerically equivalent without allocating n_res x n_bins complex
+    matrices for the full FFT at once.
     """
-    n_sig   = len(signal)
-    sig64   = signal.astype(np.float64)
-    n_res   = len(resonators)
+    n_sig = len(signal)
+    sig64 = signal.astype(np.float64)
+    dry_stereo = np.asarray(dry_stereo, dtype=np.float64)
+    n_res = len(resonators)
+    if n_res < 1:
+        raise ValueError("resonator bank is empty")
 
-    # Output length: signal + tail from longest decay
-    r_max    = max(res.r for res in resonators)
-    # T60 in samples = -6.908 / log(r_max)
+    wet_dry = float(np.clip(wet_dry, 0.0, 1.0))
+    if wet_dry >= 1.0 - 1e-12:
+        # "100% dry original" means exactly that: no limiter, no normalisation,
+        # no synthetic resonance tail. Mono has already been duplicated to L/R.
+        return dry_stereo.astype(np.float32), {
+            "fft_size": 0, "tail_samples": 0, "response_block_bins": 0,
+            "wet_match_scale": 0.0,
+        }
+
+    r_max = max(res.r for res in resonators)
     tail_smp = int(min(-6.908 / max(math.log(r_max), -30.0), sr * 60.0))
-    n_out    = n_sig + tail_smp
-    # Next power of 2 for FFT efficiency
-    n_fft    = 1
+    n_out = n_sig + tail_smp
+    n_fft = 1
     while n_fft < n_out:
         n_fft <<= 1
+    print("    FFT size: %d  (signal %d + tail %d)" % (n_fft, n_sig, tail_smp))
 
-    print("    FFT size: %d  (signal %d + tail %d)"
-          % (n_fft, n_sig, tail_smp))
-
-    # Step 2: forward FFT
-    X = np.fft.rfft(sig64, n=n_fft)           # complex128, shape (n_fft//2+1,)
+    X = np.fft.rfft(sig64, n=n_fft)
     n_bins = len(X)
+    H_L = np.zeros(n_bins, dtype=np.complex128)
+    H_R = np.zeros(n_bins, dtype=np.complex128)
 
-    # Step 3: resonator frequency responses, vectorised across all bins
-    # H_i(omega_k) = b0 / (1 + a1*z^-1 + a2*z^-2)  where z = e^(j*2pi*k/n_fft)
-    k       = np.arange(n_bins, dtype=np.float64)
-    z_inv   = np.exp(-2j * np.pi * k / n_fft)     # (n_bins,)
-    z_inv2  = z_inv * z_inv
-
-    # Collect SOS coefficients for all resonators at once
-    b0_arr = np.array([res.sos[0, 0] for res in resonators])   # (n_res,)
-    a1_arr = np.array([res.sos[0, 4] for res in resonators])
-    a2_arr = np.array([res.sos[0, 5] for res in resonators])
-
-    # H shape: (n_res, n_bins)  -- outer product via broadcasting
-    denom = 1.0 + a1_arr[:, None] * z_inv[None, :]                 + a2_arr[:, None] * z_inv2[None, :]
-    H = b0_arr[:, None] / denom                               # (n_res, n_bins)
-
-    # Step 4: Gaussian coupling across resonator axis
-    coup_scale = CHAR_PRESETS[character]["coupling_scale"]
-    eff_coup   = float(np.clip(coupling * coup_scale, 0.0, 3.0))
-    if eff_coup > 0.001 and n_res >= 3:
-        sigma   = max(0.5, eff_coup * 2.5)
-        # Blur magnitude, keep phase from original H
-        H_mag   = gaussian_filter1d(np.abs(H), sigma=sigma, axis=0)
-        H_phase = np.angle(H)
-        H_coupled = H_mag * np.exp(1j * H_phase) + eff_coup * gaussian_filter1d(H, sigma=sigma, axis=0).real
-        H = H + eff_coup * (H_coupled - H)
-    
-    # Step 5: pan gains -> weighted sum to L and R
-    lg, rg  = compute_pan_gains(n_res)
-    H_L     = (lg[:, None] * H).sum(axis=0)   # (n_bins,)
-    H_R     = (rg[:, None] * H).sum(axis=0)
-
-    # Step 6: apply shelf EQ in frequency domain
+    b0_arr = np.array([res.sos[0, 0] for res in resonators], dtype=np.float64)
+    a1_arr = np.array([res.sos[0, 4] for res in resonators], dtype=np.float64)
+    a2_arr = np.array([res.sos[0, 5] for res in resonators], dtype=np.float64)
+    lg, rg = compute_pan_gains(n_res)
     shelf_sos = _shelf_sos(sr, character)
-    H_shelf   = _shelf_freq_response(shelf_sos, n_fft)
-    H_L      *= H_shelf
-    H_R      *= H_shelf
 
-    # Step 7: multiply and IFFT
-    left  = np.fft.irfft(X * H_L, n=n_fft)[:n_out]
+    coup_scale = CHAR_PRESETS[character]["coupling_scale"]
+    eff_coup = float(np.clip(coupling * coup_scale, 0.0, 3.0))
+    block = max(256, int(response_block_bins))
+
+    for lo in range(0, n_bins, block):
+        hi = min(n_bins, lo + block)
+        k = np.arange(lo, hi, dtype=np.float64)
+        z_inv = np.exp(-2j * np.pi * k / n_fft)
+        z_inv2 = z_inv * z_inv
+        denom = (1.0 + a1_arr[:, None] * z_inv[None, :]
+                 + a2_arr[:, None] * z_inv2[None, :])
+        H = b0_arr[:, None] / denom
+
+        if eff_coup > 0.001 and n_res >= 3:
+            sigma = max(0.5, eff_coup * 2.5)
+            H_mag = gaussian_filter1d(np.abs(H), sigma=sigma, axis=0)
+            H_phase = np.angle(H)
+            H_coupled = (H_mag * np.exp(1j * H_phase)
+                         + eff_coup * gaussian_filter1d(H, sigma=sigma,
+                                                        axis=0).real)
+            H = H + eff_coup * (H_coupled - H)
+
+        shelf = _shelf_freq_response_bins(shelf_sos, n_fft, k)
+        H_L[lo:hi] = (lg[:, None] * H).sum(axis=0) * shelf
+        H_R[lo:hi] = (rg[:, None] * H).sum(axis=0) * shelf
+
+    left = np.fft.irfft(X * H_L, n=n_fft)[:n_out]
     right = np.fft.irfft(X * H_R, n=n_fft)[:n_out]
 
-    # Step 8: wet/dry blend
-    wet_dry = float(np.clip(wet_dry, 0.0, 1.0))
+    wet_match_scale = 1.0
     if wet_dry > 0.0:
-        dry64   = np.zeros(n_out, dtype=np.float64)
-        dry64[:n_sig] = sig64
-        wet_rms = max(float(np.sqrt(np.mean(((left + right) / 2.0) ** 2))), 1e-10)
-        dry_rms = max(float(np.sqrt(np.mean(dry64 ** 2))), 1e-10)
-        scale   = dry_rms / wet_rms
-        left    = (1.0 - wet_dry) * left  * scale + wet_dry * dry64
-        right   = (1.0 - wet_dry) * right * scale + wet_dry * dry64
+        dry64 = np.zeros((n_out, 2), dtype=np.float64)
+        dry64[:n_sig, :] = dry_stereo[:n_sig, :]
+        # Match level over the source region, not over the long zero-padded dry
+        # tail, and do not mono-fold stereo (which could phase-cancel).
+        wet_rms = max(float(np.sqrt(np.mean(
+            0.5 * (left[:n_sig] ** 2 + right[:n_sig] ** 2)))), 1e-10)
+        dry_rms = max(float(np.sqrt(np.mean(dry_stereo[:n_sig, :] ** 2))), 1e-10)
+        wet_match_scale = dry_rms / wet_rms
+        left = ((1.0 - wet_dry) * left * wet_match_scale
+                + wet_dry * dry64[:, 0])
+        right = ((1.0 - wet_dry) * right * wet_match_scale
+                 + wet_dry * dry64[:, 1])
 
-    left  = soft_limit(left)
+    left = soft_limit(left)
     right = soft_limit(right)
-    peak  = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
+    peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
     if peak > 1e-8:
-        left  = left  / peak * 0.92
+        left = left / peak * 0.92
         right = right / peak * 0.92
 
-    return np.column_stack([left, right]).astype(np.float32)
+    return np.column_stack([left, right]).astype(np.float32), {
+        "fft_size": int(n_fft),
+        "tail_samples": int(tail_smp),
+        "response_block_bins": int(block),
+        "wet_match_scale": float(wet_match_scale),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # I -- Writers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def write_stats(path, resonators, spectral_flatness, character, decay_s,
-                coupling, wet_dry, sr, n_top=8):
-    # Build comma-separated top pitch list (up to n_top)
-    freqs    = sorted([r.freq for r in resonators])
-    top_step = max(1, len(freqs) // n_top)
-    top_hz   = freqs[::top_step][:n_top]
-    pitches_str = ",".join("%.1f" % f for f in top_hz)
+def write_stats(path, resonators, base_pitches, spectral_flatness, character,
+                decay_s, coupling, wet_dry, sr, analysis_channel, dry_channels,
+                input_channels, flat_active, flat_total, render_qc, pitch_mode, n_top=12):
+    freqs = sorted([r.freq for r in resonators])
+    base = sorted(float(f) for f in base_pitches)
+    top_base = base[:n_top]
+    pitches_str = ",".join("%.1f" % f for f in top_base)
+    if resonators:
+        t60s = [-6.908 / (math.log(r.r) * sr) for r in resonators]
+        t60_min, t60_max = min(t60s), max(t60s)
+    else:
+        t60_min = t60_max = 0.0
 
     with open(path, "w", encoding="utf-8") as f:
-        f.write("n_strings=%d\n"         % len(resonators))
-        f.write("character=%s\n"         % character)
+        f.write("n_strings=%d\n" % len(resonators))
+        f.write("base_pitch_count=%d\n" % len(base))
+        f.write("character=%s\n" % character)
+        f.write("pitch_mode=%s\n" % pitch_mode)
         f.write("spectral_flatness=%.4f\n" % spectral_flatness)
-        f.write("decay_s=%.3f\n"         % decay_s)
-        f.write("coupling=%.4f\n"        % coupling)
-        f.write("wet_dry=%.4f\n"         % wet_dry)
-        f.write("sr=%d\n"                % sr)
-        f.write("top_pitches=%s\n"       % pitches_str)
+        f.write("flatness_active_frames=%d\n" % flat_active)
+        f.write("flatness_total_frames=%d\n" % flat_total)
+        f.write("decay_s=%.3f\n" % decay_s)
+        f.write("effective_t60_min_s=%.3f\n" % t60_min)
+        f.write("effective_t60_max_s=%.3f\n" % t60_max)
+        f.write("coupling=%.4f\n" % coupling)
+        f.write("wet_dry=%.4f\n" % wet_dry)
+        f.write("sr=%d\n" % sr)
+        f.write("input_channels=%d\n" % input_channels)
+        f.write("analysis_channel=%d\n" % analysis_channel)
+        f.write("dry_channels=%s\n" % ",".join(str(x) for x in dry_channels))
+        f.write("top_pitches=%s\n" % pitches_str)
+        f.write("fft_size=%d\n" % int(render_qc.get("fft_size", 0)))
+        f.write("tail_s=%.3f\n" % (render_qc.get("tail_samples", 0) / float(sr)))
+        f.write("response_block_bins=%d\n" % int(render_qc.get("response_block_bins", 0)))
 
 
 def write_resonances_csv(path, resonators):
@@ -737,6 +830,8 @@ def main():
     parser.add_argument("--coupling",    type=float, default=0.30)
     parser.add_argument("--wet_dry",     type=float, default=0.0,
         help="0=100%% wet resonance, 1=100%% dry original")
+    parser.add_argument("--pitch_mode", choices=["measured", "cloud"], default="measured",
+        help="measured=only source-supported peaks; cloud=synthetic geometric fill")
     args = parser.parse_args()
 
     args.n_strings = max(4,   min(96,   args.n_strings))
@@ -746,8 +841,11 @@ def main():
 
     # ── A: Load ───────────────────────────────────────────────────────────
     print("[Py 1/6] Loading audio...")
-    audio, sr = load_audio(args.input)
-    print("    %d samples  |  %d Hz  |  %.2f s" % (len(audio), sr, len(audio) / sr))
+    audio, dry_stereo, sr, analysis_channel, dry_channels, input_channels = load_audio(args.input)
+    print("    %d samples  |  %d Hz  |  %.2f s  |  input %dch  |  analysis ch%d"
+          % (len(audio), sr, len(audio) / sr, input_channels, analysis_channel))
+    print("    Dry routing: source channel(s) %s -> stereo"
+          % (",".join(str(x) for x in dry_channels)))
 
     # ── B: Log-frequency spectrum ──────────────────────────────────────────
     print("[Py 2/6] Computing log-frequency spectrum...")
@@ -758,14 +856,15 @@ def main():
 
     # ── C: Spectral flatness ───────────────────────────────────────────────
     print("[Py 3/6] Measuring spectral flatness...")
-    spectral_flatness = compute_spectral_flatness(audio, sr)
-    print("    Flatness: %.4f  (0=tonal  1=noise)" % spectral_flatness)
+    spectral_flatness, flat_active, flat_total = compute_spectral_flatness(audio, sr)
+    print("    Flatness: %.4f  (0=tonal  1=noise)  |  active frames %d/%d"
+          % (spectral_flatness, flat_active, flat_total))
 
     # ── D: Discover latent pitches ─────────────────────────────────────────
     print("[Py 4/6] Discovering latent pitch collection...")
-    pitches = discover_latent_pitches(log_stft, log_freqs, args.n_strings)
-    print("    Discovered %d pitches  |  range %.1f - %.1f Hz"
-          % (len(pitches), pitches[0], pitches[-1]))
+    pitches = discover_latent_pitches(log_stft, log_freqs, args.n_strings, args.pitch_mode)
+    print("    Pitch basis: %s  |  base pitches: %d  |  range %.1f - %.1f Hz"
+          % (args.pitch_mode, len(pitches), pitches[0], pitches[-1]))
 
     # ── E: Build resonators ────────────────────────────────────────────────
     print("[Py 5/6] Building resonator bank (%s)..." % args.character)
@@ -790,19 +889,21 @@ def main():
     print("    DEBUG input: peak=%.4f  RMS=%.6f"
           % (float(np.max(np.abs(audio))), float(np.sqrt(np.mean(audio**2)))))
 
-    result = render_fft(audio, resonators, sr,
-                         args.coupling, args.character, args.wet_dry)
+    result, render_qc = render_fft(audio, dry_stereo, resonators, sr,
+                                   args.coupling, args.character, args.wet_dry)
     print("    Output: peak=%.4f  RMS=%.6f  shape=%s"
           % (float(np.max(np.abs(result))),
              float(np.sqrt(np.mean(result ** 2))),
              str(result.shape)))
 
     # Write output WAV
-    sf.write(args.output, result, sr, subtype="PCM_24")
+    sf.write(args.output, result, sr, subtype="FLOAT")
 
     # Write stats and resonances
-    write_stats(args.stats, resonators, spectral_flatness,
-                args.character, args.decay_s, args.coupling, args.wet_dry, sr)
+    write_stats(args.stats, resonators, pitches, spectral_flatness,
+                args.character, args.decay_s, args.coupling, args.wet_dry, sr,
+                analysis_channel, dry_channels, input_channels,
+                flat_active, flat_total, render_qc, args.pitch_mode)
     write_resonances_csv(args.resonances, resonators)
 
     print("OK: %s" % args.output)

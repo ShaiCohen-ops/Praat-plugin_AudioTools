@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.4 (2026) - expanded preset library + clearer preset semantics
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,8 +14,8 @@
 #   (Pbind syntax) into Praat’s analysis–resynthesis workflow.
 #
 #   The system enables users to define event-based control structures
-#   (Pseq, Prand, Pwrand, Pwhite, Pexprand, Pstutter, etc.) using a
-#   compact one-line Pbind expression. These patterns are interpreted
+#   (Pseq, Prand, Pwrand, Pwhite, Pexprand, Pbrown, Pstutter, etc.) using a
+#   compact single- or multi-line Pbind expression. These patterns are interpreted
 #   by a Python engine and compiled into time-aligned PitchTier and
 #   IntensityTier control curves.
 #
@@ -29,7 +29,7 @@
 #     - amp      (linear amplitude)
 #     - legato   (segment scaling for articulation)
 #
-#   PraatPbind functions as an offline, deterministic pattern engine
+#   PraatPbind functions as an offline pattern engine with reproducible or fresh randomness
 #   for algorithmic acoustic transformation and experimental composition.
 #
 # Citation:
@@ -105,52 +105,80 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form EventGen — Pbind Resynthesis v1.1
-    optionmenu Preset: 2
-        option Custom
-        option MajorUp
-        option RandomWalk
-        option Pulses
-        option MidiMelody
-        option RawFreq
-        option LegatoPhrase
-        option WeightedChord
-        option Stutter
-    text Pbind Pbind(degree=Pseq([0,1,2,4,7],inf), dur=0.25, amp=Pwhite(0.1,0.5,inf))
-    positive BaseHz 220
-    integer Seed 42
-    boolean Draw_visualization 1
-    boolean Play_result 1
+form: "EventGen — Pbind Resynthesis v1.4"
+    optionmenu: "Preset", 2
+        option: "Custom"
+        option: "MajorUp"
+        option: "RandomWalk"
+        option: "Pulses"
+        option: "MidiMelody"
+        option: "RawFreq"
+        option: "StaccatoPhrase"
+        option: "WeightedTriad"
+        option: "Stutter"
+        option: "RandomArp"
+        option: "ExpRhythm"
+        option: "MicrotonalCloud"
+        option: "SparseConstellation"
+        option: "WeightedRhythm"
+    comment: "Preset replaces the editor text unless Custom is selected."
+    comment: "Pbind editor (6 lines; line breaks are allowed inside the expression):"
+    text: 6, "Pbind", "Pbind(degree=Pseq([0,1,2,4,7],inf), dur=0.25, amp=0.45)"
+    positive: "BaseHz", "220"
+    comment: "Seed: 0 = new realization every run; nonzero = reproducible"
+    integer: "Seed", "0"
+    boolean: "Draw visualization", 1
+    boolean: "Play result", 1
 endform
 
 # ---- PRESET OVERRIDE ----
 if preset = 2
-    pbind$ = "Pbind(degree=Pseq([0,1,2,4,7],inf), dur=0.25, amp=Pwhite(0.1,0.5,inf))"
+    pbind$ = "Pbind(degree=Pseq([0,1,2,4,7],inf), dur=0.25, amp=0.45)"
     presetName$ = "MajorUp"
 elsif preset = 3
-    pbind$ = "Pbind(degree=Pseq([0,1,2,3,4,5,6],inf), dur=0.15, amp=Pwhite(0.2,0.6,inf))"
+    pbind$ = "Pbind(degree=Pbrown(-7,7,2,inf), dur=Pwhite(0.12,0.28,inf), amp=Pwhite(0.2,0.6,inf))"
     presetName$ = "RandomWalk"
 elsif preset = 4
     pbind$ = "Pbind(degree=Pseq([0,0,7,0,0,4],inf), dur=0.10, amp=Pwhite(0.05,0.9,inf))"
     presetName$ = "Pulses"
 elsif preset = 5
-    pbind$ = "Pbind(midinote=Pseq([60,62,64,65,67,69],inf), dur=0.2, amp=Pwhite(0.3,0.7,inf))"
+    pbind$ = "Pbind(midinote=Pseq([60,62,64,65,67,69],inf), dur=0.2, amp=0.45)"
     presetName$ = "MidiMelody"
 elsif preset = 6
     pbind$ = "Pbind(freq=Pwhite(200,800,inf), dur=0.1, amp=0.4)"
     presetName$ = "RawFreq"
 elsif preset = 7
-    pbind$ = "Pbind(degree=Pseq([0,2,4,7],inf), dur=0.3, amp=Pwhite(0.3,0.7,inf), legato=0.6)"
-    presetName$ = "LegatoPhrase"
+    pbind$ = "Pbind(degree=Pseq([0,2,4,7],inf), dur=0.3, amp=Pseq([0.35,0.55,0.7,0.45],inf), legato=0.55)"
+    presetName$ = "StaccatoPhrase"
 elsif preset = 8
     pbind$ = "Pbind(degree=Pwrand([0,4,7],[0.5,0.3,0.2],inf), dur=0.2, amp=Pwhite(0.2,0.6,inf))"
-    presetName$ = "WeightedChord"
+    presetName$ = "WeightedTriad"
 elsif preset = 9
-    pbind$ = "Pbind(degree=Pstutter(Pseq([0,4,7],inf),3), dur=0.1, amp=Pwhite(0.2,0.7,inf))"
+    pbind$ = "Pbind(degree=Pstutter(Pseq([0,4,7],inf),3), dur=0.1, amp=Pseq([0.65,0.4,0.25],inf))"
     presetName$ = "Stutter"
+elsif preset = 10
+    pbind$ = "Pbind(degree=Prand([-7,0,2,4,7,9,11,14],inf), dur=Pwrand([0.08,0.16,0.32],[0.45,0.4,0.15],inf), amp=Pwhite(0.18,0.65,inf), legato=0.8)"
+    presetName$ = "RandomArp"
+elsif preset = 11
+    pbind$ = "Pbind(degree=Pseq([0,2,4,7,9,4],inf), dur=Pexprand(0.06,0.65,inf), amp=Pwhite(0.18,0.65,inf), legato=0.72)"
+    presetName$ = "ExpRhythm"
+elsif preset = 12
+    pbind$ = "Pbind(midinote=Pwhite(48,84,inf), dur=Pwhite(0.07,0.22,inf), amp=Pwhite(0.08,0.4,inf), legato=0.45)"
+    presetName$ = "MicrotonalCloud"
+elsif preset = 13
+    pbind$ = "Pbind(freq=Pexprand(90,3200,inf), dur=Pexprand(0.12,0.9,inf), amp=Pwhite(0.05,0.35,inf), legato=0.22)"
+    presetName$ = "SparseConstellation"
+elsif preset = 14
+    pbind$ = "Pbind(degree=Pseq([0,4,2,7,5,9],inf), dur=Pwrand([0.1,0.2,0.4,0.8],[0.45,0.3,0.2,0.05],inf), amp=Pwrand([0.18,0.35,0.7],[0.45,0.4,0.15],inf), legato=0.7)"
+    presetName$ = "WeightedRhythm"
 else
     pbind$ = pbind$
     presetName$ = "Custom"
+endif
+if seed = 0
+    seedLabel$ = "auto (new each run)"
+else
+    seedLabel$ = string$(seed)
 endif
 
 # ---- ORIGINAL STATS ----
@@ -160,12 +188,12 @@ sr  = Get sampling frequency
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== EventGen — Pbind Resynthesis v1.1 ==="
+writeInfoLine:  "=== EventGen — Pbind Resynthesis v1.4 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: "Pbind:   ", pbind$
 appendInfoLine: "BaseHz:  ", baseHz
-appendInfoLine: "Seed:    ", seed
+appendInfoLine: "Seed:    ", seedLabel$
 appendInfoLine: ""
 appendInfoLine: "Duration: ", fixed$(dur, 3), " s | SR: ", sr, " Hz"
 appendInfoLine: ""
@@ -334,11 +362,15 @@ for iLine from 2 to nIntLines
                 nStoredInt = nStoredInt + 1
                 itTime_'nStoredInt' = ptTime
                 itDb_'nStoredInt'   = ptDb
-                if ptDb < dbMin
-                    dbMin = ptDb
-                endif
-                if ptDb > dbMax
-                    dbMax = ptDb
+                # Python writes the first nStoredPitch intensity points as
+                # event pairs; any later points are silence helpers for staccato.
+                if nStoredInt <= nStoredPitch
+                    if ptDb < dbMin
+                        dbMin = ptDb
+                    endif
+                    if ptDb > dbMax
+                        dbMax = ptDb
+                    endif
                 endif
             endif
         endif
@@ -406,7 +438,7 @@ if draw_visualization
     Text: 0.5, "centre", 0.6, "half", "##EventGen — Pbind Resynthesis##"
     Font size: 8
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + "  |  " + presetName$ + "  |  BaseHz=" + fixed$(baseHz,1) + "  |  Seed=" + string$(seed)
+    Text: 0.5, "centre", -1.2, "half", soundName$ + "  |  " + presetName$ + "  |  BaseHz=" + fixed$(baseHz,1) + "  |  Seed=" + seedLabel$
 
     # ── Original waveform with event markers ────────────────────────────────
     Select outer viewport: 0, 8, 0.6, 1.5
@@ -541,7 +573,7 @@ if draw_visualization
     Draw line: 0, meanDb, dur, meanDb
 
     iI = 1
-    while iI <= nStoredInt - 1
+    while iI <= nStoredPitch - 1
         iI2 = iI + 1
         t1  = itTime_'iI'
         t2  = itTime_'iI2'
@@ -577,7 +609,7 @@ if draw_visualization
     Text: 0.02, "left", 0.90, "half", "Summary:"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.68, "half", "Preset: " + presetName$ + "  |  BaseHz=" + fixed$(baseHz,1) + " Hz  |  Seed=" + string$(seed)
+    Text: 0.02, "left", 0.68, "half", "Preset: " + presetName$ + "  |  BaseHz=" + fixed$(baseHz,1) + " Hz  |  Seed=" + seedLabel$
     Text: 0.02, "left", 0.46, "half", "Events: " + string$(nEvents) + "  |  Duration: " + fixed$(dur,2) + " s  |  MIDI range: " + string$(floor(midiMin)) + "-" + string$(ceiling(midiMax))
     Text: 0.02, "left", 0.24, "half", "dB range: " + fixed$(dbMin,1) + "-" + fixed$(dbMax,1) + "  |  Points: " + string$(nStoredPitch) + " pitch  /  " + string$(nStoredInt) + " intensity"
     Font size: 5
@@ -606,7 +638,7 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output: ", soundName$, "_eventgen"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Pbind:  ", pbind$
-appendInfoLine: "BaseHz: ", baseHz, " Hz | Seed: ", seed
+appendInfoLine: "BaseHz: ", baseHz, " Hz | Seed: ", seedLabel$
 appendInfoLine: "Events: ", nStoredPitch / 2, " | Pitch pts: ", nStoredPitch, " | Intensity pts: ", nStoredInt
 
 selectObject: resultSound

@@ -3,7 +3,64 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.4 (2026) - SSM reliability + analysis-channel + visualization QA
+#   v1.4: strongest-RMS analysis channel (no anti-phase fold cancellation);
+#   Python feature/metric fixes; neutral transform parameters are exact identity;
+#   teleports obey tabu; SSM panels use one fixed 0..1 display scale;
+#   waveform panels use the same representative channel and Y range;
+#   unused matplotlib PNG generation removed; SSM matrices exported only when
+#   their panels are actually requested; summary/viewports repaired.
+#
+# Version: 1.3.1 (2026) - Short form for small screens (layout only)
+#   v1.3.1: the single form showed ~20 fields at once and no longer fit a
+#   laptop screen. The form now asks only Preset + the output toggles;
+#   right after it, Custom runs get a short beginPause dialog (four small
+#   screens) with everything else, and named presets skip it (they already
+#   supply all values). No field was removed and no default changed - this
+#   is the same layout pattern as Corpus_Concatenative_Codec v1.9.
+# Version: 1.3 (2026)
+#
+# Changelog v1.2 (2026) -- external-review repairs:
+#   - The visualization shows the ENGINE'S REAL matrices (exported
+#     as matrix text): the old display rebuilt a different
+#     MFCC-based SSM, always cosine, and labeled an unmodified
+#     COPY "SSM after transform" -- no transformation was ever
+#     shown.
+#   - True overlapped crossfades (Concatenate with overlap,
+#     clamped to the shortest chunk): the old fade+Concatenate
+#     made faded butt joints, not crossfades.
+#   - Original (identity) mode + Transformation_amount 0..1
+#     (graded blend engine-side) -- proper A/B and ablations.
+#   - Preserve_event_durations removed (never used anywhere).
+#   - Unique per-run temp names (parallel runs no longer collide);
+#     python stderr captured to a log and echoed on failure;
+#     pythonCmd$ properly reset before the dependency probe.
+#   - Sharpen relabeled "similarity contrast" (engine analysis:
+#     with visit penalty off it is largely redundant with low
+#     temperature).
+#   - Summary shows the new engine metrics (Frobenius change,
+#     path similarity on both matrices, coverage, teleport rate,
+#     chronological jump/runs).
+#   - Title strip on house geometry.
+#
+# Changelog v1.3 (2026) -- third-round review repairs:
+#   - Transformation parameters exposed (Blur sigma, Sharpen
+#     gamma, Diffusion alpha/steps, Motif boost, Warp amplitude)
+#     and a separate Transformation_seed distinct from the
+#     Navigation seed -- reshape the topology without moving the
+#     path, or vice versa.
+#   - Multichannel (not only stereo): analysis + patches use a
+#     mono mixdown for any nChannels > 1; reconstruction still
+#     cuts from the original sound, preserving channel count and
+#     spatial image.
+#   - The reported output duration is now MEASURED from the
+#     crossfaded result (Get total duration), not the engine's
+#     planned sum-of-events (which ignores the overlaps).
+#   - Doc fixes: header no longer says Sharpen "reinforces
+#     motifs"; the mislabeled "Similarity contrast" preset (which ran
+#     Sharpen) renamed "Similarity contrast"; the mode list
+#     description corrected.
+#   - Cleanup removes the SSM PNGs too.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,7 +77,7 @@
 #
 #   SSM transformation modes:
 #     Blur         — smooth structural boundaries (ambient)
-#     Sharpen      — reinforce motifs (repetitive)
+#     Sharpen      — monotone similarity-contrast reshaping (repetitive)
 #     Diffusion    — spread similarity across structure (evolving)
 #     MotifAmplify — amplify diagonal bands (loop-like)
 #     StructureWarp — warp SSM coordinates (folded time)
@@ -44,7 +101,7 @@ endif
 origSound = selected("Sound")
 origName$ = selected$("Sound")
 nChannels = Get number of channels
-isStereo  = (nChannels = 2)
+isMultichannel = (nChannels > 1)
 
 # ---- OS-SPECIFIC PYTHON DISCOVERY ----
 if macintosh
@@ -78,14 +135,21 @@ endif
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
-eventsCSV$   = tempDir$ + "temp_ssm_events.csv"
-planCSV$     = tempDir$ + "temp_ssm_plan.csv"
-statsTxt$    = tempDir$ + "temp_ssm_stats.txt"
+# v1.2: unique per-run names -- parallel Praat instances no
+# longer overwrite each other's temp files
+uid$ = string$(randomInteger(100000, 999999))
+eventsCSV$   = tempDir$ + "temp_ssm_" + uid$ + "_events.csv"
+planCSV$     = tempDir$ + "temp_ssm_" + uid$ + "_plan.csv"
+statsTxt$    = tempDir$ + "temp_ssm_" + uid$ + "_stats.txt"
 patchDir$    = tempDir$
-ssmOrigPng$  = tempDir$ + "temp_ssm_original.png"
-ssmModPng$   = tempDir$ + "temp_ssm_modified.png"
-probePy$     = tempDir$ + "temp_ssm_probe.py"
-probeMarker$ = tempDir$ + "temp_ssm_probe.ok"
+patchPrefix$ = "patch_" + uid$ + "_"
+ssmOrigPng$  = tempDir$ + "temp_ssm_" + uid$ + "_original.png"
+ssmModPng$   = tempDir$ + "temp_ssm_" + uid$ + "_modified.png"
+ssmOrigTxt$  = tempDir$ + "temp_ssm_" + uid$ + "_orig.txt"
+ssmModTxt$   = tempDir$ + "temp_ssm_" + uid$ + "_mod.txt"
+runLog$      = tempDir$ + "temp_ssm_" + uid$ + "_runlog.txt"
+probePy$     = tempDir$ + "temp_ssm_" + uid$ + "_probe.py"
+probeMarker$ = tempDir$ + "temp_ssm_" + uid$ + "_probe.ok"
 
 # Enforce forward slashes for all temporary paths passed to python
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
@@ -95,6 +159,9 @@ statsTxtJ$     = replace_regex$(statsTxt$, "\\", "/", 0)
 patchDirJ$     = replace_regex$(patchDir$, "\\", "/", 0)
 ssmOrigPngJ$   = replace_regex$(ssmOrigPng$, "\\", "/", 0)
 ssmModPngJ$    = replace_regex$(ssmModPng$, "\\", "/", 0)
+ssmOrigTxtJ$   = replace_regex$(ssmOrigTxt$, "\\", "/", 0)
+ssmModTxtJ$    = replace_regex$(ssmModTxt$, "\\", "/", 0)
+runLogJ$       = replace_regex$(runLog$, "\\", "/", 0)
 probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
 probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
 
@@ -115,8 +182,23 @@ procedure cleanUpTempFiles
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
+    if fileReadable(ssmOrigPng$)
+        deleteFile: ssmOrigPng$
+    endif
+    if fileReadable(ssmModPng$)
+        deleteFile: ssmModPng$
+    endif
+    if fileReadable(ssmOrigTxt$)
+        deleteFile: ssmOrigTxt$
+    endif
+    if fileReadable(ssmModTxt$)
+        deleteFile: ssmModTxt$
+    endif
+    if fileReadable(runLog$)
+        deleteFile: runLog$
+    endif
     for .iEv from 0 to 9999
-        .patchPath$ = patchDir$ + "patch_" + string$(.iEv) + ".wav"
+        .patchPath$ = patchDir$ + patchPrefix$ + string$(.iEv) + ".wav"
         if fileReadable(.patchPath$)
             deleteFile: .patchPath$
         else
@@ -127,52 +209,56 @@ endproc
 
 @cleanUpTempFiles
 
-# ---- FORM ----
-form SSM Morph Composer v1.1
-    comment ── Preset ───────────────────────────────────────────────────
+# ---- FORM (v1.3.1) ----
+# Short form: only Preset + the output toggles every run needs. Everything
+# else is defaulted in code below, then - for Custom only - a beginPause
+# dialog shows the parameters grouped by section. Choosing a named preset
+# skips the dialog entirely (the preset supplies all values), so the whole
+# thing fits a laptop screen. No field was removed and no default changed;
+# this is a layout change only (the Corpus_Concatenative_Codec v1.9 pattern).
+form SSM Morph Composer v1.4
+    comment ── Preset (choose Custom to edit all parameters) ──
     optionmenu Preset: 1
         option Custom
         option Ambient blur
-        option Motif mirror
+        option Similarity contrast
         option Diffuse field
         option Loop engine
         option Folded time
         option Frozen texture
         option Spectral labyrinth
-
-    comment ── SSM Mode ──────────────────────────────────────────────────
-    optionmenu SSM_mode: 1
-        option Blur
-        option Sharpen
-        option Diffusion
-        option MotifAmplify
-        option StructureWarp
-
-    comment ── Structural controls ──────────────────────────────────────
-    integer Output_events 300
-    optionmenu Similarity_metric: 1
-        option cosine
-        option euclidean
-    real Temperature 0.3
-    integer Tabu_length 10
-    real Teleport_probability 0.02
-    real Visit_penalty 0.3
-    integer Seed 1234
-
-    comment ── Segmentation ──────────────────────────────────────────────
-    real Silence_threshold_dB -25
-    real Min_silent_interval_s 0.08
-    real Min_sounding_interval_s 0.03
-
-    comment ── Reconstruction ────────────────────────────────────────────
-    real Crossfade_ms 10
-    boolean Preserve_event_durations 1
-
-    comment ── Output ────────────────────────────────────────────────────
+    comment ── Output ──
     boolean Draw_SSM 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+clearinfo
+
+# ---- PARAMETER DEFAULTS (match the old v1.3 form defaults exactly) ----
+# A named preset overwrites the relevant ones in the preset block below;
+# for Custom, the beginPause dialog (also below) overwrites them from the
+# user's input. Everything starts here so no code path sees an unset value.
+sSM_mode             = 1
+transform_amount     = 1.0
+blur_sigma           = 2.5
+sharpen_gamma        = 3.0
+diffusion_alpha      = 0.85
+diffusion_steps      = 4
+motif_boost          = 2.0
+warp_amplitude       = 0.15
+transformation_seed  = -1
+output_events        = 300
+similarity_metric    = 1
+temperature          = 0.3
+tabu_length          = 10
+teleport_probability = 0.02
+visit_penalty        = 0.3
+seed                 = 1234
+silence_threshold_dB   = -25
+min_silent_interval_s  = 0.08
+min_sounding_interval_s = 0.03
+crossfade_ms         = 10
 
 # ---- PRESETS ----
 if preset = 2
@@ -188,7 +274,14 @@ if preset = 2
     min_silent_interval_s   = 0.08
     min_sounding_interval_s = 0.03
     crossfade_ms            = 30
-    preserve_event_durations = 1
+    transform_amount        = 1.0
+    blur_sigma = 3.5
+    diffusion_alpha = 0.85
+    diffusion_steps = 4
+    motif_boost = 2.0
+    warp_amplitude = 0.15
+    sharpen_gamma = 3.0
+    transformation_seed = -1
     presetName$             = "AmbientBlur"
 elsif preset = 3
     sSM_mode                = 2
@@ -203,8 +296,15 @@ elsif preset = 3
     min_silent_interval_s   = 0.05
     min_sounding_interval_s = 0.03
     crossfade_ms            = 5
-    preserve_event_durations = 1
-    presetName$             = "MotifMirror"
+    transform_amount        = 1.0
+    blur_sigma = 2.5
+    diffusion_alpha = 0.85
+    diffusion_steps = 4
+    motif_boost = 2.0
+    warp_amplitude = 0.15
+    sharpen_gamma = 3.0
+    transformation_seed = -1
+    presetName$             = "SimilarityContrast"
 elsif preset = 4
     sSM_mode                = 3
     output_events           = 300
@@ -218,7 +318,14 @@ elsif preset = 4
     min_silent_interval_s   = 0.08
     min_sounding_interval_s = 0.03
     crossfade_ms            = 15
-    preserve_event_durations = 1
+    transform_amount        = 1.0
+    blur_sigma = 2.5
+    diffusion_alpha = 0.9
+    diffusion_steps = 6
+    motif_boost = 2.0
+    warp_amplitude = 0.15
+    sharpen_gamma = 3.0
+    transformation_seed = -1
     presetName$             = "DiffuseField"
 elsif preset = 5
     sSM_mode                = 4
@@ -233,7 +340,14 @@ elsif preset = 5
     min_silent_interval_s   = 0.05
     min_sounding_interval_s = 0.02
     crossfade_ms            = 8
-    preserve_event_durations = 1
+    transform_amount        = 1.0
+    blur_sigma = 2.5
+    diffusion_alpha = 0.85
+    diffusion_steps = 4
+    motif_boost = 2.5
+    warp_amplitude = 0.15
+    sharpen_gamma = 3.0
+    transformation_seed = -1
     presetName$             = "LoopEngine"
 elsif preset = 6
     sSM_mode                = 5
@@ -248,7 +362,14 @@ elsif preset = 6
     min_silent_interval_s   = 0.08
     min_sounding_interval_s = 0.03
     crossfade_ms            = 20
-    preserve_event_durations = 1
+    transform_amount        = 1.0
+    blur_sigma = 2.5
+    diffusion_alpha = 0.85
+    diffusion_steps = 4
+    motif_boost = 2.0
+    warp_amplitude = 0.25
+    sharpen_gamma = 3.0
+    transformation_seed = -1
     presetName$             = "FoldedTime"
 elsif preset = 7
     sSM_mode                = 1
@@ -263,7 +384,14 @@ elsif preset = 7
     min_silent_interval_s   = 0.1
     min_sounding_interval_s = 0.05
     crossfade_ms            = 50
-    preserve_event_durations = 1
+    transform_amount        = 1.0
+    blur_sigma = 4.0
+    diffusion_alpha = 0.85
+    diffusion_steps = 4
+    motif_boost = 2.0
+    warp_amplitude = 0.15
+    sharpen_gamma = 3.0
+    transformation_seed = -1
     presetName$             = "FrozenTexture"
 elsif preset = 8
     sSM_mode                = 3
@@ -278,10 +406,73 @@ elsif preset = 8
     min_silent_interval_s   = 0.05
     min_sounding_interval_s = 0.02
     crossfade_ms            = 10
-    preserve_event_durations = 0
+    transform_amount        = 1.0
+    blur_sigma = 2.5
+    diffusion_alpha = 0.88
+    diffusion_steps = 5
+    motif_boost = 2.0
+    warp_amplitude = 0.3
+    sharpen_gamma = 3.0
+    transformation_seed = -1
     presetName$             = "SpectralLabyrinth"
 else
     presetName$ = "Custom"
+endif
+
+# ---- CUSTOM PARAMETERS (v1.3.1) ----
+# For Custom only: show the parameters the slim form no longer carries,
+# grouped into short screens that each fit a laptop display. A named preset
+# supplied every value already, so it skips this entirely. beginPause field
+# names mangle to variables exactly like form fields (e.g. "Blur sigma" ->
+# blur_sigma), so these overwrite the defaults set above.
+if preset = 1
+    beginPause: "SSM Morph (1/4): transformation"
+        comment: "Which structural transformation to apply to the similarity matrix:"
+        optionMenu: "SSM mode", 1
+            option: "Blur"
+            option: "Sharpen (similarity contrast)"
+            option: "Diffusion"
+            option: "MotifAmplify"
+            option: "StructureWarp"
+            option: "Original (identity baseline)"
+        comment: "Transform amount: 0 = original matrix, 1 = fully transformed:"
+        real: "Transform amount", transform_amount
+    endPause: "Continue", 1
+
+    beginPause: "SSM Morph (2/4): transform parameters"
+        comment: "Only the parameter for the SSM mode chosen above has any effect:"
+        positive: "Blur sigma", blur_sigma
+        positive: "Sharpen gamma", sharpen_gamma
+        real: "Diffusion alpha", diffusion_alpha
+        natural: "Diffusion steps", diffusion_steps
+        real: "Motif boost", motif_boost
+        real: "Warp amplitude", warp_amplitude
+        comment: "Transformation seed shapes the StructureWarp field only"
+        comment: "(-1 = reuse the navigation Seed on screen 3):"
+        integer: "Transformation seed", transformation_seed
+    endPause: "Continue", 1
+
+    beginPause: "SSM Morph (3/4): navigation"
+        comment: "How the walk traverses the (possibly transformed) matrix:"
+        integer: "Output events", output_events
+        optionMenu: "Similarity metric", 1
+            option: "cosine"
+            option: "euclidean"
+        real: "Temperature", temperature
+        integer: "Tabu length", tabu_length
+        real: "Teleport probability", teleport_probability
+        real: "Visit penalty", visit_penalty
+        integer: "Seed", seed
+    endPause: "Continue", 1
+
+    beginPause: "SSM Morph (4/4): segmentation + reconstruction"
+        comment: "How the source is cut into events:"
+        real: "Silence threshold dB", silence_threshold_dB
+        real: "Min silent interval s", min_silent_interval_s
+        real: "Min sounding interval s", min_sounding_interval_s
+        comment: "Overlap between reassembled events:"
+        real: "Crossfade ms", crossfade_ms
+    endPause: "Continue", 1
 endif
 
 # ---- MAP OPTION MENUS TO STRINGS ----
@@ -293,8 +484,40 @@ elsif sSM_mode = 3
     modeStr$ = "Diffusion"
 elsif sSM_mode = 4
     modeStr$ = "MotifAmplify"
-else
+elsif sSM_mode = 5
     modeStr$ = "StructureWarp"
+else
+    modeStr$ = "Original"
+endif
+if transform_amount < 0
+    transform_amount = 0
+elsif transform_amount > 1
+    transform_amount = 1
+endif
+if blur_sigma < 0
+    blur_sigma = 0
+endif
+if sharpen_gamma <= 0
+    sharpen_gamma = 0.000001
+endif
+if diffusion_alpha < 0
+    diffusion_alpha = 0
+elsif diffusion_alpha > 1
+    diffusion_alpha = 1
+endif
+if diffusion_steps < 0
+    diffusion_steps = 0
+elsif diffusion_steps > 100
+    diffusion_steps = 100
+endif
+if motif_boost < 0
+    motif_boost = 0
+endif
+if warp_amplitude < 0
+    warp_amplitude = 0
+endif
+if crossfade_ms < 0
+    crossfade_ms = 0
 endif
 
 if similarity_metric = 1
@@ -310,7 +533,7 @@ sr  = Get sampling frequency
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== SSM Morph Composer v1.1 ==="
+writeInfoLine:  "=== SSM Morph Composer v1.4 ==="
 appendInfoLine: "Input:   ", origName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: "Mode:    ", modeStr$
@@ -344,6 +567,17 @@ else
     candidate3$ = "py"
     candidate4$ = ""
 endif
+
+# v1.3: transformation seed -- -1 means "same as navigation seed"
+if transformation_seed < 0
+    effTransformSeed = seed
+else
+    effTransformSeed = transformation_seed
+endif
+
+# v1.2: reset before probing -- the OS-discovery guess must not
+# survive if every candidate fails the dependency probe
+pythonCmd$ = ""
 
 for iCand from 1 to nCandidates
     if iCand = 1
@@ -383,15 +617,35 @@ appendInfoLine: "  Python found: ", pythonCmd$
 # ===========================================================================
 appendInfoLine: "[1/5] Segmenting events..."
 
-selectObject: origSound
-if isStereo
-    monoSound = Convert to mono
+# v1.4: choose one real representative channel for analysis. A mono average can
+# cancel anti-phase stereo and can make both segmentation and SSM features see
+# silence where the multichannel source is actually strong.
+analysisChannel = 1
+analysisChannelRms = 0
+if isMultichannel
+    bestRms = -1
+    for iCh from 1 to nChannels
+        selectObject: origSound
+        chProbe = Extract one channel: iCh
+        chRms = Get root-mean-square: 0, 0
+        if chRms > bestRms
+            bestRms = chRms
+            analysisChannel = iCh
+            analysisChannelRms = chRms
+        endif
+        removeObject: chProbe
+    endfor
+    selectObject: origSound
+    analysisSound = Extract one channel: analysisChannel
 else
-    Copy: "ssm_mono"
-    monoSound = selected("Sound")
+    selectObject: origSound
+    Copy: "ssm_analysis"
+    analysisSound = selected("Sound")
+    analysisChannelRms = Get root-mean-square: 0, 0
 endif
+appendInfoLine: "  Analysis channel: ", analysisChannel, " (RMS ", fixed$(analysisChannelRms, 5), ")"
 
-selectObject: monoSound
+selectObject: analysisSound
 tg = To TextGrid (silences): 100, 0, silence_threshold_dB,
     ... min_silent_interval_s, min_sounding_interval_s, "silent", "sounding"
 
@@ -412,19 +666,21 @@ for iInt from 1 to nInt
     endif
 endfor
 
-removeObject: tg, monoSound
+removeObject: tg
 appendInfoLine: "  Events: ", nEvents
 
 if nEvents < 4
-    appendInfoLine: "  Warning: fewer than 4 events — using 0.25 s grid"
-    nEvents = 0
-    t = 0
-    while t + 0.25 <= dur
-        nEvents = nEvents + 1
-        evStart_'nEvents' = t
-        evEnd_'nEvents'   = t + 0.25
-        t = t + 0.25
-    endwhile
+    # v1.3: guarantee exactly four proportional events -- the old
+    # 0.25 s grid returned 0 events for inputs under 0.25 s and
+    # still fewer than four for inputs under 1 s, defeating the
+    # fallback's own purpose. A four-part split makes every
+    # positive-duration sound navigable.
+    appendInfoLine: "  Warning: fewer than 4 events — four-part fallback grid"
+    nEvents = 4
+    for iEv from 1 to 4
+        evStart_'iEv' = (iEv - 1) * dur / 4
+        evEnd_'iEv'   = iEv * dur / 4
+    endfor
     appendInfoLine: "  Grid events: ", nEvents
 endif
 
@@ -448,29 +704,26 @@ endfor
 for iEv from 1 to nEvents
     t1 = evStart_'iEv'
     t2 = evEnd_'iEv'
-    selectObject: origSound
+    selectObject: analysisSound
     patch = Extract part: t1, t2, "rectangular", 1, "no"
-    if isStereo
-        selectObject: patch
-        patchMono = Convert to mono
-        removeObject: patch
-        patch = patchMono
-    endif
     selectObject: patch
-    Save as WAV file: patchDir$ + "patch_" + string$(iEv - 1) + ".wav"
+    Save as WAV file: patchDir$ + patchPrefix$ + string$(iEv - 1) + ".wav"
     removeObject: patch
 endfor
+removeObject: analysisSound
 
-appendInfoLine: "  Wrote: ", nEvents, " events + patches"
+appendInfoLine: "  Wrote: ", nEvents, " events + patches from channel ", analysisChannel
 
 # ===========================================================================
 # Stage 3 — Run Python engine
 # ===========================================================================
 appendInfoLine: "[3/5] Running Python SSM engine..."
 
-drawSsmFlag$ = "0"
-if draw_SSM
-    drawSsmFlag$ = "1"
+needSsmPanels = draw_SSM and draw_visualization
+ssmTextArgs$ = ""
+if needSsmPanels
+    ssmTextArgs$ = " --ssm_orig_txt """ + ssmOrigTxtJ$ + """" +
+        ... " --ssm_mod_txt """ + ssmModTxtJ$ + """"
 endif
 
 pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
@@ -486,15 +739,29 @@ pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " --seed "           + string$(seed)
     ... + " --teleport_prob "  + fixed$(teleport_probability, 4)
     ... + " --visit_lambda "   + fixed$(visit_penalty, 4)
-    ... + " --draw_ssm "       + drawSsmFlag$
-    ... + " --ssm_orig_png """ + ssmOrigPngJ$ + """"
-    ... + " --ssm_mod_png """  + ssmModPngJ$ + """"
+    ... + " --transform_amount " + fixed$(transform_amount, 4)
+    ... + " --blur_sigma "     + fixed$(blur_sigma, 4)
+    ... + " --sharpen_gamma "  + fixed$(sharpen_gamma, 4)
+    ... + " --diffusion_alpha " + fixed$(diffusion_alpha, 4)
+    ... + " --diffusion_steps " + string$(diffusion_steps)
+    ... + " --motif_boost "    + fixed$(motif_boost, 4)
+    ... + " --warp_amplitude " + fixed$(warp_amplitude, 4)
+    ... + " --transform_seed " + string$(effTransformSeed)
+    ... + " --patch_prefix "   + patchPrefix$ + ssmTextArgs$
 
-runSystem_nocheck: pythonCall$
+# v1.2: capture stdout+stderr -- on failure the tail is shown
+runSystem_nocheck: pythonCall$ + " > """ + runLogJ$ + """ 2>&1"
 
 if not fileReadable(planCSV$)
+    errTail$ = ""
+    if fileReadable(runLog$)
+        errTail$ = readFile$(runLog$)
+        if length(errTail$) > 1200
+            errTail$ = "..." + right$(errTail$, 1200)
+        endif
+    endif
     @cleanUpTempFiles
-    exitScript: "Python engine failed — plan CSV not found. Check terminal for error details."
+    exitScript: "Python engine failed — plan CSV not found." + newline$ + newline$ + "Engine output:" + newline$ + errTail$
 endif
 
 appendInfoLine: "  Engine complete."
@@ -527,6 +794,7 @@ appendInfoLine: "  Plan: ", nPlan, " steps"
 crossfade_s  = crossfade_ms / 1000
 output_name$ = origName$ + "_SSMComposer"
 chunkIds#    = zero#(nPlan)
+minChunkDur  = 1e9
 
 for iRow from 1 to nPlan
     evIdx = planArr[iRow]
@@ -541,20 +809,32 @@ for iRow from 1 to nPlan
     selectObject: origSound
     chunk    = Extract part: t1, t2, "rectangular", 1, "no"
     chunkDur = Get total duration
-    if chunkDur > crossfade_s * 2.5
-        Fade in:  0, 0,                      crossfade_s, "yes"
-        Fade out: 0, chunkDur - crossfade_s, crossfade_s, "yes"
+    if chunkDur < minChunkDur
+        minChunkDur = chunkDur
     endif
     chunkIds#[iRow] = chunk
 endfor
 
+# v1.2: TRUE overlapped crossfades. The old per-chunk fade +
+# plain Concatenate produced faded butt joints -- the events
+# never actually overlapped. Overlap is clamped to 45% of the
+# shortest chunk so no event is consumed entirely by its fades.
+xfadeEff = min(crossfade_s, 0.45 * minChunkDur)
 selectObject: chunkIds#[1]
 for iRow from 2 to nPlan
     plusObject: chunkIds#[iRow]
 endfor
-Concatenate
+if nPlan > 1 and xfadeEff > 0.0005
+    Concatenate with overlap: xfadeEff
+else
+    Concatenate
+endif
 resultSound = selected("Sound")
 Rename: output_name$
+# v1.3: the engine's planned_event_duration ignores the overlaps;
+# report the real length of the crossfaded audio
+selectObject: resultSound
+actualOutputDur = Get total duration
 
 for iRow from 1 to nPlan
     removeObject: chunkIds#[iRow]
@@ -582,11 +862,24 @@ metricStat$ = "?"
 tempStat$   = "?"
 tabuStat$   = "?"
 nPlanStat$  = "?"
-outDurStat$ = "?"
+plannedDurStat$ = "?"
 entrStat$   = "?"
 diagStat$   = "?"
 uniqueStat$ = "?"
 repStat$    = "?"
+froStat$    = "?"
+psOrigStat$ = "?"
+psModStat$  = "?"
+covStat$    = "?"
+telStat$    = "?"
+chronoStat$ = "?"
+runStat$    = "?"
+normEntrStat$ = "?"
+featDimsStat$ = "?"
+motifOrigStat$ = "?"
+motifModStat$ = "?"
+motifContrastOrigStat$ = "?"
+motifContrastModStat$ = "?"
 
 if fileReadable(statsTxt$)
     statsText$ = readFile$(statsTxt$)
@@ -602,8 +895,8 @@ if fileReadable(statsTxt$)
     tabuStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "plan_length="
     nPlanStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "output_duration="
-    outDurStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "planned_event_duration="
+    plannedDurStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "path_entropy="
     entrStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "diag_energy="
@@ -612,6 +905,32 @@ if fileReadable(statsTxt$)
     uniqueStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "repetition_rate="
     repStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "frobenius_change="
+    froStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "path_sim_orig="
+    psOrigStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "path_sim_mod="
+    psModStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "coverage="
+    covStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "teleport_rate="
+    telStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_chrono_jump="
+    chronoStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "mean_run_length="
+    runStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "normalized_path_entropy="
+    normEntrStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "effective_feature_dims="
+    featDimsStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "motif_band_peak_orig="
+    motifOrigStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "motif_band_peak_mod="
+    motifModStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "motif_band_contrast_orig="
+    motifContrastOrigStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "motif_band_contrast_mod="
+    motifContrastModStat$ = parseStatLine.result$
 endif
 
 ###############################################################################
@@ -622,208 +941,152 @@ if draw_visualization
     appendInfoLine: "[5/5] Drawing visualization..."
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    if needSsmPanels
+        Select outer viewport: 0, 8, 0, 9.1
+    else
+        Select outer viewport: 0, 8, 0, 8
+    endif
 
-    # === Title ===
+    # === Title (v1.2: house geometry) ===
     Select outer viewport: 0, 8, 0, 0.5
+    Select inner viewport: 0, 8, 0, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##SSM Morph Composer##"
-    Font size: 9
+    Text: 0.5, "centre", 0.72, "half", "##SSM Morph Composer v1.4##"
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half",
+    Text: 0.5, "centre", 0.24, "half",
         ... origName$ + " | " + presetName$ + " | " + modeStr$ + " | " + metricStr$
         ... + " | events=" + nEvStat$ + " | plan=" + nPlanStat$
 
-    # === SSM matrices — drawn inline using Paint cells ===
-    if draw_SSM and nEvents > 1
+    # === SSM matrices — the ENGINE'S REAL matrices (v1.2) ===
+    # The old display rebuilt a different MFCC-based SSM (always
+    # cosine) and painted an unmodified COPY as "after transform".
+    # Both panels now read the matrices the engine actually used.
+    if needSsmPanels and fileReadable(ssmOrigTxt$) and fileReadable(ssmModTxt$)
 
-        # Build MFCC feature matrix from mono mix
-        selectObject: origSound
-        if nChannels > 1
-            ssmMono = Convert to mono
-        else
-            Copy: "ssm_drawmono"
-            ssmMono = selected("Sound")
-        endif
-        selectObject: ssmMono
-        ssmMfcc = To MFCC: 12, 0.025, 0.01, 100, 100, 0
-        mfccFrames = Get number of frames
-
-        # Build one feature vector per event (mean MFCC over frames)
-        nF = 12
-        for iEv from 1 to nEvents
-            t1 = evStart_'iEv'
-            t2 = evEnd_'iEv'
-            for c from 1 to nF
-                acc_'iEv'_'c' = 0
-            endfor
-            cnt_'iEv' = 0
-            for fr from 1 to mfccFrames
-                selectObject: ssmMfcc
-                ft = Get time from frame: fr
-                if ft >= t1 and ft <= t2
-                    for c from 1 to nF
-                        v = Get value in frame: fr, c
-                        if v = undefined
-                            v = 0
-                        endif
-                        acc_'iEv'_'c' = acc_'iEv'_'c' + v
-                    endfor
-                    cnt_'iEv' = cnt_'iEv' + 1
-                endif
-            endfor
-            if cnt_'iEv' > 0
-                for c from 1 to nF
-                    acc_'iEv'_'c' = acc_'iEv'_'c' / cnt_'iEv'
-                endfor
-            endif
-            norm_'iEv' = 0
-            for c from 1 to nF
-                norm_'iEv' = norm_'iEv' + acc_'iEv'_'c' * acc_'iEv'_'c'
-            endfor
-            norm_'iEv' = sqrt(norm_'iEv') + 1e-9
-        endfor
-        removeObject: ssmMfcc, ssmMono
-
-        # Build SSM matrix using cosine similarity
-        Create simple Matrix: "SSM_orig", nEvents, nEvents, "0"
+        Read Matrix from raw text file: ssmOrigTxt$
         ssmMatOrig = selected("Matrix")
-        for i from 1 to nEvents
-            for j from 1 to nEvents
-                dot = 0
-                for c from 1 to nF
-                    dot = dot + acc_'i'_'c' * acc_'j'_'c'
-                endfor
-                sim = (dot / (norm_'i' * norm_'j') + 1) / 2
-                Set value: i, j, sim
-            endfor
-        endfor
+        Read Matrix from raw text file: ssmModTxt$
+        ssmMatMod = selected("Matrix")
 
-        # Auto-contrast stretch + gamma lift original SSM for display
-        selectObject: ssmMatOrig
-        ssmDispOrig = Copy: "SSM_disp_orig"
-        selectObject: ssmDispOrig
-        minV = Get minimum
-        maxV = Get maximum
-        if maxV > minV
-            Formula: "(self - " + string$(minV) + ") / " + string$(maxV - minV)
-        endif
-        Formula: "self ^ 0.3"
-
-        # Auto-contrast stretch + gamma lift modified SSM for display
-        selectObject: ssmMatOrig
-        ssmMatMod = Copy: "SSM_mod"
-        selectObject: ssmMatMod
-        ssmDispMod = Copy: "SSM_disp_mod"
-        selectObject: ssmDispMod
-        minV2 = Get minimum
-        maxV2 = Get maximum
-        if maxV2 > minV2
-            Formula: "(self - " + string$(minV2) + ") / " + string$(maxV2 - minV2)
-        endif
-        Formula: "self ^ 0.3"
-
-        # Draw side-by-side SSMs
+        # v1.4: one fixed display mapping for before/after. Independent min-max
+        # stretches made a small transform look as strong as a large one.
         Select outer viewport: 0, 4, 0.6, 2.5
-        selectObject: ssmDispOrig
+        selectObject: ssmMatOrig
         Paint cells: 0, 0, 0, 0, 0, 1
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text top: "no", "SSM original (" + metricStr$ + ")"
+        Text top: "no", "SSM original (" + metricStr$ + ") [0..1 engine scale]"
         Text bottom: "yes", "Event"
         Text left: "yes", "Event"
 
         Select outer viewport: 4, 8, 0.6, 2.5
-        selectObject: ssmDispMod
+        selectObject: ssmMatMod
         Paint cells: 0, 0, 0, 0, 0, 1
         Colour: "Black"
         Draw inner box
         Font size: 7
-        Text top: "no", "SSM after " + modeStr$
+        Text top: "no", "SSM after " + modeStr$ + " (amount " + fixed$(transform_amount, 2) + ") [same 0..1 scale]"
         Text bottom: "yes", "Event"
 
-        removeObject: ssmMatOrig, ssmMatMod, ssmDispOrig, ssmDispMod
+        removeObject: ssmMatOrig, ssmMatMod
 
         ssmShift = 2.0
     else
         ssmShift = 0.0
     endif
 
+    # Representative real channel for comparable waveform/spectrogram panels.
+    selectObject: origSound
+    if nChannels > 1
+        vizOrig = Extract one channel: analysisChannel
+    else
+        Copy: "ssm_viz_orig"
+        vizOrig = selected("Sound")
+    endif
+    selectObject: resultSound
+    if nChannels > 1
+        vizOut = Extract one channel: analysisChannel
+    else
+        Copy: "ssm_viz_out"
+        vizOut = selected("Sound")
+    endif
+    selectObject: vizOrig
+    peakOrig = Get absolute extremum: 0, 0, "none"
+    selectObject: vizOut
+    peakOut = Get absolute extremum: 0, 0, "none"
+    wavePeak = 1.05 * max(peakOrig, peakOut)
+    if wavePeak < 0.000001
+        wavePeak = 1
+    endif
+    specCeil = min(8000, sr / 2)
+
     # === Original waveform + event boundaries ===
     Select outer viewport: 0, 8, 0.6 + ssmShift, 1.45 + ssmShift
     Select inner viewport: 0.6, 7.7, 0.65 + ssmShift, 1.40 + ssmShift
-    selectObject: origSound
+    selectObject: vizOrig
     Colour: "{0.5, 0.5, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    Axes: 0, dur, -1, 1
+    Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
+    Axes: 0, dur, -wavePeak, wavePeak
     Colour: "{0.75, 0.35, 0.35}"
     Line width: 1
     for iEv from 1 to nEvents
         evT = evStart_'iEv'
         if evT > 0 and evT < dur
-            Draw line: evT, -0.85, evT, 0.85
+            Draw line: evT, -0.9 * wavePeak, evT, 0.9 * wavePeak
         endif
     endfor
     Line width: 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Original"
+    Text left: "yes", "Original ch" + string$(analysisChannel)
     Text top: "no", fixed$(dur, 2) + " s  |  " + string$(nEvents) + " events"
 
     # === Output waveform ===
     Select outer viewport: 0, 8, 1.45 + ssmShift, 2.3 + ssmShift
     Select inner viewport: 0.6, 7.7, 1.50 + ssmShift, 2.25 + ssmShift
-    selectObject: resultSound
+    selectObject: vizOut
     Colour: "{0.2, 0.5, 0.75}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Text left: "yes", "Output ch" + string$(analysisChannel)
     Text bottom: "yes", "Time (s)"
-    Text top: "no", outDurStat$ + " s  |  " + nPlanStat$ + " events  (" + modeStr$ + ")"
+    Text top: "no", fixed$(actualOutputDur, 2) + " s (audio)  |  " + nPlanStat$ + " events  (" + modeStr$ + ")"
 
     # === Original spectrogram ===
     Select outer viewport: 0, 8, 2.4 + ssmShift, 3.6 + ssmShift
     Select inner viewport: 0.6, 7.7, 2.50 + ssmShift, 3.50 + ssmShift
-    selectObject: origSound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrig = selected("Sound")
-    else
-        Copy: "tmpOrig"
-        tmpOrig = selected("Sound")
-    endif
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    selectObject: vizOrig
+    To Spectrogram: 0.005, specCeil, 0.002, 20, "Gaussian"
     specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Freq (Hz)"
-    Text top: "no", "Original spectrogram"
-    removeObject: specOrig, tmpOrig
+    Text top: "no", "Original spectrogram ch" + string$(analysisChannel) + " (auto-levelled)"
+    removeObject: specOrig
 
     # === Output spectrogram ===
     Select outer viewport: 0, 8, 3.6 + ssmShift, 4.8 + ssmShift
     Select inner viewport: 0.6, 7.7, 3.70 + ssmShift, 4.70 + ssmShift
-    selectObject: resultSound
-    Copy: "tmpOut"
-    tmpOut = selected("Sound")
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    selectObject: vizOut
+    To Spectrogram: 0.005, specCeil, 0.002, 20, "Gaussian"
     specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Freq (Hz)"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Output spectrogram"
-    removeObject: specOut, tmpOut
+    Text top: "no", "Output spectrogram ch" + string$(analysisChannel) + " (auto-levelled)"
+    removeObject: specOut
 
     # === Event path line ===
     Select outer viewport: 0, 8, 4.9 + ssmShift, 5.9 + ssmShift
@@ -841,7 +1104,7 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Event"
     Text bottom: "yes", "Step"
-    Text top: "no", "Event path  (entropy=" + entrStat$ + "  |  diag energy=" + diagStat$ + ")"
+    Text top: "no", "Event path  (entropy=" + entrStat$ + ", norm=" + normEntrStat$ + " | motif contrast " + motifContrastOrigStat$ + "->" + motifContrastModStat$ + ")"
 
     # === Summary panel ===
     Select outer viewport: 0, 8, 6.0 + ssmShift, 7.0 + ssmShift
@@ -850,26 +1113,25 @@ if draw_visualization
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.85, "half", "##Run statistics##"
+    Text: 0.02, "left", 0.86, "half", "##Run statistics##"
     Font size: 6
     Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.02, "left", 0.62, "half",
-        ... "Events: " + nEvStat$ +
-        ... " | Mode: " + modeStat$ +
-        ... " | Metric: " + metricStat$ +
-        ... " | Temp: " + tempStat$ +
-        ... " | Tabu: " + tabuStat$
-    Text: 0.02, "left", 0.38, "half",
-        ... "Plan: " + nPlanStat$ + " steps" +
-        ... " | Output: " + outDurStat$ + " s" +
-        ... " | Unique: " + uniqueStat$ +
-        ... " | Rep: " + repStat$
-    Text: 0.02, "left", 0.15, "half",
-        ... "Entropy: " + entrStat$ + " | Diag: " + diagStat$
-    Text: 0.02, "left", -0.08, "half",
-        ... "Input: " + origName$ + "   Output: " + output_name$
+    Text: 0.02, "left", 0.64, "half",
+        ... "Events: " + nEvStat$ + " | Features: " + featDimsStat$ + "/5 | Analysis ch: " + string$(analysisChannel) +
+        ... " | Mode: " + modeStat$ + " | Metric: " + metricStat$ + " | Temp: " + tempStat$
+    Text: 0.02, "left", 0.43, "half",
+        ... "Plan: " + nPlanStat$ + " | Output: " + fixed$(actualOutputDur, 2) + " s (planned " + plannedDurStat$ + ")" +
+        ... " | Unique: " + uniqueStat$ + " | Coverage: " + covStat$
+    Text: 0.02, "left", 0.22, "half",
+        ... "Entropy: " + entrStat$ + " (norm " + normEntrStat$ + ") | Frobenius: " + froStat$ +
+        ... " | Path sim orig/mod: " + psOrigStat$ + "/" + psModStat$
+    Text: 0.02, "left", 0.04, "half",
+        ... "Motif contrast: " + motifContrastOrigStat$ + "->" + motifContrastModStat$ + " | Teleports: " + telStat$ +
+        ... " | Chrono jump: " + chronoStat$ + " | Runs: " + runStat$
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
+
+    removeObject: vizOrig, vizOut
 
     Font size: 10
     Colour: "Black"
@@ -886,13 +1148,17 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:       ", output_name$
 appendInfoLine: "Preset:       ", presetName$
 appendInfoLine: "Mode:         ", modeStat$
-appendInfoLine: "Events:       ", nEvStat$
+appendInfoLine: "Events:       ", nEvStat$, " | Analysis ch: ", analysisChannel, " | Features: ", featDimsStat$, "/5"
 appendInfoLine: "Plan:         ", nPlanStat$, " steps"
-appendInfoLine: "Output dur:   ", outDurStat$, " s"
-appendInfoLine: "Path entropy: ", entrStat$
-appendInfoLine: "Diag energy:  ", diagStat$
+appendInfoLine: "Output dur:   ", fixed$(actualOutputDur, 2), " s (audio; planned ", plannedDurStat$, " s)"
+appendInfoLine: "Path entropy: ", entrStat$, " (normalized ", normEntrStat$, ")"
+appendInfoLine: "Local diag:   ", diagStat$ + " | Motif contrast: " + motifContrastOrigStat$ + " -> " + motifContrastModStat$
 appendInfoLine: "Unique evts:  ", uniqueStat$
 appendInfoLine: "Repetition:   ", repStat$
+appendInfoLine: "Frobenius Δ:  ", froStat$
+appendInfoLine: "Path sim:     ", psOrigStat$, " (orig) / ", psModStat$, " (mod)"
+appendInfoLine: "Coverage:     ", covStat$, " | Teleports: ", telStat$
+appendInfoLine: "Chrono jump:  ", chronoStat$, " | Mean run: ", runStat$
 
 selectObject: resultSound
 

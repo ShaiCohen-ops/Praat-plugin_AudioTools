@@ -4,7 +4,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 6.2 (2026) — Latent Spectral Diffusion (Temperature + Mag_smear knobs made live/consistent)
+# Version: 6.3 (2026) — DSP correctness + transient/AE projection reliability
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -45,6 +45,31 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v6.3:
+#   DSP correctness / reliability update (Python backend + front-end sync):
+#     - Preserve_transients now uses true TEMPORAL frame-to-frame spectral
+#       flux. v6.2 accidentally measured adjacent FFT-bin differences.
+#     - Protected transient frames also retain more of their original phase,
+#       not only more of their magnitude structure.
+#     - AE mel-band error -> FFT-bin mapping is coverage-normalised; flat
+#       profiles map to a neutral weight instead of filterbank geometry.
+#     - Latent decoded mel envelope uses the same coverage-normalised mapping.
+#     - AR(1) fit now uses true adjacent frame pairs when long files are
+#       subsampled for efficiency.
+#     - Silence / identical latent vectors and very short files no longer
+#       crash K-means/event analysis.
+#     - SciPy dependency removed; onset thresholding is NumPy-only.
+#     - Spectral blur is edge-preserving and safely capped for extreme values.
+#     - Multichannel analysis uses the strongest-RMS channel instead of always
+#       channel 1; all channels are still processed independently.
+#     - DC/Nyquist phase bins are preserved; latent exponentiation guarded
+#       against overflow.
+#   Praat:
+#     - Custom odd Window_size is rounded up to even, matching the backend.
+#     - Hop_size clamp now stays integer.
+#     - Dependency message corrected to numpy + soundfile.
+#     - Visualization mechanism text updated to describe the active model.
 #
 # Changelog v6.2:
 #   Secondary knobs made live/consistent (audio change; see
@@ -217,7 +242,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Latent Spectral Diffusion v6.2
+form Latent Spectral Diffusion v6.3
     optionmenu Preset: 1
         option Custom
         option Veil
@@ -416,11 +441,15 @@ endif
 if window_size < 256
     window_size = 256
 endif
+# Backend keeps an explicit Nyquist bin; round custom odd windows up to even.
+if window_size <> 2 * floor(window_size / 2)
+    window_size = window_size + 1
+endif
 if hop_size < 1
     hop_size = 1
 endif
-if hop_size > window_size / 2
-    hop_size = window_size / 2
+if hop_size > floor(window_size / 2)
+    hop_size = floor(window_size / 2)
 endif
 if latent_size < 2
     latent_size = 2
@@ -486,7 +515,7 @@ endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Latent Spectral Diffusion v6.2 ==="
+writeInfoLine:  "=== Latent Spectral Diffusion v6.3 ==="
 appendInfoLine: "Input:    ", inputName$
 appendInfoLine: "Preset:   ", presetName$
 appendInfoLine: "Model:    ", modelLabel$
@@ -498,7 +527,7 @@ appendInfoLine: "  diffusion_steps  : ", diffusion_steps, "  (latent: gradient s
 appendInfoLine: "  window_size      : ", window_size, " smp (", fixed$(winMs, 1), " ms)"
 appendInfoLine: "  hop_size         : ", hop_size, " smp"
 appendInfoLine: "  mag_smear        : ", fixed$(mag_smear, 2), "  (spectral blur, all models)"
-appendInfoLine: "  preserve_transients: ", transStr$
+appendInfoLine: "  preserve_transients: ", transStr$, "  (temporal spectral-flux protection)"
 appendInfoLine: "-- Autoencoder -----------------------------------------"
 appendInfoLine: "  latent_size : ", latent_size
 appendInfoLine: "  train_steps : ", train_steps
@@ -530,7 +559,7 @@ runSystem_nocheck: probeCmd$
 
 if not fileReadable(probeMarker$)
     @cleanUpTempFiles
-    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy scipy soundfile"
+    exitScript: "Python not found or dependencies missing." + newline$ + "Please install: pip install numpy soundfile"
 endif
 
 deleteFile: probeMarker$
@@ -549,7 +578,7 @@ Save as WAV file: tempInput$
 # Stage 3 — Call Python Engine
 # ===========================================================================
 appendInfoLine: ""
-appendInfoLine: "[3/4] Running Latent Spectral Diffusion v6.2..."
+appendInfoLine: "[3/4] Running Latent Spectral Diffusion v6.3..."
 
 pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " """ + tempInputJ$  + """"
@@ -856,22 +885,34 @@ if draw_visualization
             ... "##Latent model active##"
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.38, "half",
-            ... "Clusters: " + string$(n_clusters) + "  |  T=" + fixed$(temperature, 2)
+            ... "Z -> T-weighted cluster walk -> decode"
         Text: 0.05, "left", 0.26, "half",
-            ... "Gradient steps/event: " + string$(diffusion_steps)
+            ... "Clusters: " + string$(n_clusters) + "  |  T=" + fixed$(temperature, 2)
+            ... + "  |  steps=" + string$(diffusion_steps)
         Text: 0.05, "left", 0.10, "half",
-            ... "Each event Z walked to centroid -> decoded -> mag envelope"
+            ... "Decoded mel energy -> coverage-normalised spectral envelope"
+    elsif model = 2
+        Colour: "{0.55, 0.25, 0.45}"
+        Text: 0.05, "left", 0.50, "half",
+            ... "##AR Smear + AE coherence##"
+        Colour: "{0.30, 0.30, 0.30}"
+        Text: 0.05, "left", 0.38, "half",
+            ... "a(f)=sum M[t]M[t+1] / sum M[t]^2"
+        Text: 0.05, "left", 0.26, "half",
+            ... "decay = a(f) * AE-coherence * amount"
+        Text: 0.05, "left", 0.10, "half",
+            ... "True adjacent frame pairs; temporal-flux transient protection"
     else
         Colour: "{0.30, 0.40, 0.55}"
         Text: 0.05, "left", 0.50, "half",
-            ... "##Per-bin AE coherence (v6.1 raw-space)##"
+            ... "##AE-Weighted coherence (v6.3)##"
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.38, "half",
-            ... "Per-mel-band MSE -> " + string$(window_size / 2 + 1) + " FFT bins"
+            ... "Raw per-mel-band MSE -> coverage-normalised FFT weights"
         Text: 0.05, "left", 0.26, "half",
-            ... "Tonal bands (low MSE) -> more diffusion"
+            ... "Low MSE -> coherent/tonal -> stronger wet attenuation"
         Text: 0.05, "left", 0.10, "half",
-            ... "Noisy bands (high MSE) -> protected"
+            ... "High MSE -> less attenuation; transients protected in time"
     endif
 
     Colour: "Black"

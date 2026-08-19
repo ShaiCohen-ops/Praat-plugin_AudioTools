@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2.1 (2026) - Windows console compatibility hotfix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -45,7 +45,7 @@ else
     pythonCmd$ = "python3"
 endif
 
-# ---- PATHS & UNIFIED CROSS-PLATFORM FIX ----
+# ---- PATHS ----
 pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 
@@ -59,22 +59,28 @@ endif
 
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+runToken$ = string$(sound) + "_" + string$(randomInteger(100000, 999999))
+tempBase$ = "temp_te_" + runToken$
+patchPrefix$ = tempBase$ + "_patch_"
 
-eventsCSV$    = tempDir$ + "temp_te_events.csv"
-durationsCSV$ = tempDir$ + "temp_te_durations.csv"
-statsTxt$     = tempDir$ + "temp_te_stats.txt"
-probePy$      = tempDir$ + "temp_te_probe.py"
-probeMarker$  = tempDir$ + "temp_te_probe.ok"
+eventsCSV$    = tempDir$ + tempBase$ + "_events.csv"
+durationsCSV$ = tempDir$ + tempBase$ + "_durations.csv"
+statsTxt$     = tempDir$ + tempBase$ + "_stats.txt"
+probePy$      = tempDir$ + tempBase$ + "_probe.py"
+probeMarker$  = tempDir$ + tempBase$ + "_probe.ok"
+logTxt$       = tempDir$ + tempBase$ + "_python.log"
 
-# Enforce forward slashes for all temporary paths passed to python
-pythonScriptJ$  = replace_regex$(pythonScript$, "\\", "/", 0)
-eventsCSVJ$     = replace_regex$(eventsCSV$, "\\", "/", 0)
-durationsCSVJ$  = replace_regex$(durationsCSV$, "\\", "/", 0)
-statsTxtJ$      = replace_regex$(statsTxt$, "\\", "/", 0)
-probePyJ$       = replace_regex$(probePy$, "\\", "/", 0)
-probeMarkerJ$   = replace_regex$(probeMarker$, "\\", "/", 0)
+pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
+eventsCSVJ$    = replace_regex$(eventsCSV$, "\\", "/", 0)
+durationsCSVJ$ = replace_regex$(durationsCSV$, "\\", "/", 0)
+statsTxtJ$     = replace_regex$(statsTxt$, "\\", "/", 0)
+probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
+probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+logTxtJ$       = replace_regex$(logTxt$, "\\", "/", 0)
+tempDirJ$      = replace_regex$(tempDir$, "\\", "/", 0)
 
-# ---- CLEANUP PROCEDURE ----
+nEvents = 0
+
 procedure cleanUpTempFiles
     if fileReadable(eventsCSV$)
         deleteFile: eventsCSV$
@@ -91,12 +97,23 @@ procedure cleanUpTempFiles
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
+    if fileReadable(logTxt$)
+        deleteFile: logTxt$
+    endif
+    if nEvents > 0
+        for .iPatch from 0 to nEvents - 1
+            .patchPath$ = tempDir$ + patchPrefix$ + string$(.iPatch) + ".wav"
+            if fileReadable(.patchPath$)
+                deleteFile: .patchPath$
+            endif
+        endfor
+    endif
 endproc
 
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Temporal Elasticity v1.1
+form Temporal Elasticity v1.2.1
     comment ── Preset ───────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom
@@ -129,7 +146,7 @@ form Temporal Elasticity v1.1
         option turbulence
         option gradient
         option relativistic
-    positive Amplitude 0.8
+    real Amplitude 0.8
     positive Sigma 1.0
     integer Clusters 3
 
@@ -277,6 +294,13 @@ else
     presetName$ = "Custom"
 endif
 
+# ---- VALIDATE USER CONTROLS ----
+latent_dimensions = max(2, min(16, latent_dimensions))
+training_iterations = max(20, min(400, training_iterations))
+amplitude = max(0, min(3, amplitude))
+sigma = max(0.1, min(5, sigma))
+clusters = max(1, min(8, clusters))
+
 # ---- MAP OPTION MENUS TO STRINGS ----
 if field_mode = 1
     modeStr$ = "gravitational"
@@ -316,7 +340,7 @@ nChannels = Get number of channels
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Temporal Elasticity v1.1 ==="
+writeInfoLine:  "=== Temporal Elasticity v1.2.1 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "Preset:  ", presetName$
 appendInfoLine: "Mode:    ", modeStr$, "  Method: ", methodStr$
@@ -389,16 +413,33 @@ appendInfoLine: "  Python found: ", pythonCmd$
 # ===========================================================================
 appendInfoLine: "[1/5] Segmenting events..."
 
-selectObject: sound
+# Use the strongest REAL channel for segmentation. Arithmetic fold-down can
+# cancel anti-phase stereo and create false silence boundaries.
+analysisChannel = 1
+bestChannelRms = -1
 if nChannels > 1
-    Extract one channel: 1
-    monoSound = selected("Sound")
+    for iCh from 1 to nChannels
+        selectObject: sound
+        chTmp = Extract one channel: iCh
+        selectObject: chTmp
+        chRms = Get root-mean-square: 0, 0
+        if chRms > bestChannelRms
+            bestChannelRms = chRms
+            analysisChannel = iCh
+        endif
+        removeObject: chTmp
+    endfor
+    selectObject: sound
+    Extract one channel: analysisChannel
+    analysisSound = selected("Sound")
 else
-    Copy: "te_mono"
-    monoSound = selected("Sound")
+    selectObject: sound
+    Copy: "te_analysis"
+    analysisSound = selected("Sound")
 endif
+appendInfoLine: "  Analysis channel: ", analysisChannel
 
-selectObject: monoSound
+selectObject: analysisSound
 tg = To TextGrid (silences): 100, 0, -silence_threshold, min_silence_duration,
     ... min_event_duration, "silent", "sounding"
 
@@ -419,19 +460,27 @@ for iInt from 1 to nInt
     endif
 endfor
 
-removeObject: tg, monoSound
+removeObject: tg
 appendInfoLine: "  Events: ", nEvents
 
 if nEvents < 2
-    appendInfoLine: "  Warning: fewer than 2 events — using 0.25 s grid"
+    appendInfoLine: "  Warning: fewer than 2 events — using 0.25 s fallback grid"
     nEvents = 0
     t = 0
-    while t + 0.25 <= dur
-        nEvents = nEvents + 1
-        evStart_'nEvents' = t
-        evEnd_'nEvents'   = t + 0.25
+    while t < dur - 0.001
+        tEnd = min(t + 0.25, dur)
+        if tEnd - t >= 0.02
+            nEvents = nEvents + 1
+            evStart_'nEvents' = t
+            evEnd_'nEvents'   = tEnd
+        endif
         t = t + 0.25
     endwhile
+endif
+if nEvents < 1
+    removeObject: analysisSound
+    @cleanUpTempFiles
+    exitScript: "No usable events were found in the selected Sound."
 endif
 
 # ===========================================================================
@@ -440,19 +489,34 @@ endif
 appendInfoLine: "[2/5] Extracting features..."
 
 writeFileLine: eventsCSV$,
-    ... "event_index,start_time,end_time,duration,rms,spectral_centroid,patch_file"
+    ... "event_index,start_time,end_time,duration,rms,spectral_centroid,spectral_flatness,zero_crossing_rate,patch_file"
 
 for iEv from 1 to nEvents
     t1 = evStart_'iEv'
     t2 = evEnd_'iEv'
+    patchFile$ = patchPrefix$ + string$(iEv - 1) + ".wav"
+    patchPath$ = tempDir$ + patchFile$
 
+    # Export the ORIGINAL multichannel event. Python chooses the strongest
+    # event channel for its 24-D analysis, preserving anti-phase material.
     selectObject: sound
-    part = Extract part: t1, t2, "rectangular", 1, "no"
+    patchPart = Extract part: t1, t2, "rectangular", 1, "no"
+    selectObject: patchPart
+    Save as WAV file: patchPath$
+    removeObject: patchPart
+    if not fileReadable(patchPath$)
+        removeObject: analysisSound
+        @cleanUpTempFiles
+        exitScript: "Could not export analysis patch: " + patchPath$
+    endif
 
+    # Lightweight CSV fallback descriptors come from the same representative
+    # channel used for segmentation. Full features are extracted from patches.
+    selectObject: analysisSound
+    part = Extract part: t1, t2, "rectangular", 1, "no"
     selectObject: part
     rmsVal = Get root-mean-square: 0, 0
-
-    spec     = To Spectrum: "yes"
+    spec = To Spectrum: "yes"
     centroid = Get centre of gravity: 2
     if centroid = undefined
         centroid = 0
@@ -465,10 +529,12 @@ for iEv from 1 to nEvents
         ... fixed$(t2, 6) + "," +
         ... fixed$(t2 - t1, 6) + "," +
         ... fixed$(rmsVal, 6) + "," +
-        ... fixed$(centroid / (sr / 2 + 1), 6) + ","
+        ... fixed$(centroid / (sr / 2 + 1), 6) + ",0.5,0," + patchFile$
 endfor
+removeObject: analysisSound
 
 appendInfoLine: "  Wrote: ", eventsCSV$
+appendInfoLine: "  Audio patches: ", nEvents
 
 # ===========================================================================
 # Stage 3 — Call Python engine
@@ -488,13 +554,17 @@ pythonCall$ = pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " --sigma "         + string$(sigma)
     ... + " --n_clusters "    + string$(clusters)
     ... + " --extra_rules "   + rulesStr$
-    ... + " --cleanup"
+    ... + " --patch_dir """ + tempDirJ$ + """"
 
-runSystem_nocheck: pythonCall$
+runSystem_nocheck: pythonCall$ + " > """ + logTxtJ$ + """ 2>&1"
 
 if not fileReadable(durationsCSV$)
+    errMsg$ = "Python engine failed — durations CSV not found."
+    if fileReadable(logTxt$)
+        errMsg$ = errMsg$ + newline$ + newline$ + readFile$(logTxt$)
+    endif
     @cleanUpTempFiles
-    exitScript: "Python engine failed — durations CSV not found. Check terminal for error details."
+    exitScript: errMsg$
 endif
 
 # ===========================================================================
@@ -560,15 +630,14 @@ elsif reconstruction_method = 2
         nd = newDurArr[i]
         selectObject: sound
         part     = Extract part: st, st + od, "rectangular", 1, "no"
-        # Resample to a shifted SR so playback at original SR gives new duration
-        warpSr   = max(1000, min(192000, sr * od / (nd + 1e-9)))
+        # Varispeed reconstruction: reinterpret the existing samples at a
+        # shifted sampling frequency (this changes duration/pitch), THEN
+        # sinc-resample to the original SR while preserving that new duration.
+        warpSr = max(1000, min(192000, sr * od / (nd + 1e-9)))
         selectObject: part
-        warped   = Resample: warpSr, 50
-        removeObject: part
-        # Resample back to original SR so all parts match for Concatenate
-        selectObject: warped
+        Override sampling frequency: warpSr
         normalized = Resample: sr, 50
-        removeObject: warped
+        removeObject: part
         nParts = nParts + 1
         partArr[nParts] = normalized
     endfor
@@ -583,24 +652,21 @@ elsif reconstruction_method = 2
     endfor
 
 else
-    # Placement only — events placed at new durations, gaps filled with silence
+    # Placement only: preserve event samples (no stretch). Each event occupies
+    # exactly its requested temporal slot: truncate if the slot is shorter, or
+    # append multichannel silence if it is longer.
     nParts = 0
     for i from 1 to nRows
+        od = origDurArr[i]
+        nd = newDurArr[i]
+        keepDur = min(od, nd)
         selectObject: sound
-        part = Extract part: startArr[i], startArr[i] + origDurArr[i], "rectangular", 1, "no"
-        # Convert to mono so all parts and silences match
-        if nChannels > 1
-            selectObject: part
-            partMono = Convert to mono
-            removeObject: part
-            part = partMono
-        endif
+        part = Extract part: startArr[i], startArr[i] + keepDur, "rectangular", 1, "no"
         nParts = nParts + 1
         partArr[nParts] = part
-        # If new duration is longer than original, append a silence gap
-        gap = newDurArr[i] - origDurArr[i]
+        gap = nd - keepDur
         if gap > 0.001
-            silence = Create Sound from formula: "gap", 1, 0, gap, sr, "0"
+            silence = Create Sound from formula: "te_gap", nChannels, 0, gap, sr, "0"
             nParts = nParts + 1
             partArr[nParts] = silence
         endif
@@ -615,6 +681,11 @@ else
         removeObject: partArr[i]
     endfor
 endif
+
+# Measure what Praat actually rendered (PSOLA can differ slightly from the
+# purely planned sum; placement and varispeed should match closely).
+selectObject: outputSound
+measuredOutputDur = Get total duration
 
 # ---- Read stats ----
 procedure parseStatLine: .text$, .key$
@@ -633,6 +704,7 @@ procedure parseStatLine: .text$, .key$
 endproc
 
 nEvStat$       = "?"
+zDimStat$      = "?"
 methodStat$    = "?"
 modeStat$      = "?"
 rulesStat$     = "?"
@@ -650,15 +722,17 @@ if fileReadable(statsTxt$)
     statsText$ = readFile$(statsTxt$)
     @parseStatLine: statsText$, "n_events="
     nEvStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "z_dim="
+    zDimStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "latent_method="
     methodStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "field_mode="
     modeStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "extra_rules="
     rulesStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "vae_loss_initial="
+    @parseStatLine: statsText$, "latent_loss_initial="
     lossInitStat$ = parseStatLine.result$
-    @parseStatLine: statsText$, "vae_loss_final="
+    @parseStatLine: statsText$, "latent_loss_final="
     lossFinalStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "compression_ratio="
     comprStat$ = parseStatLine.result$
@@ -683,6 +757,47 @@ endif
 if draw_visualization
     appendInfoLine: "[5/5] Drawing visualization..."
 
+    # Representative real channels for fair before/after comparison.
+    selectObject: sound
+    if nChannels > 1
+        Extract one channel: analysisChannel
+        vizOrig = selected("Sound")
+    else
+        Copy: "te_viz_orig"
+        vizOrig = selected("Sound")
+    endif
+
+    selectObject: outputSound
+    nOutChannels = Get number of channels
+    outAnalysisChannel = 1
+    if nOutChannels > 1
+        outBestRms = -1
+        for iCh from 1 to nOutChannels
+            selectObject: outputSound
+            outChTmp = Extract one channel: iCh
+            selectObject: outChTmp
+            outChRms = Get root-mean-square: 0, 0
+            if outChRms > outBestRms
+                outBestRms = outChRms
+                outAnalysisChannel = iCh
+            endif
+            removeObject: outChTmp
+        endfor
+        selectObject: outputSound
+        Extract one channel: outAnalysisChannel
+        vizOut = selected("Sound")
+    else
+        selectObject: outputSound
+        Copy: "te_viz_out"
+        vizOut = selected("Sound")
+    endif
+
+    selectObject: vizOrig
+    origVizPeak = Get absolute extremum: 0, 0, "Sinc70"
+    selectObject: vizOut
+    outVizPeak = Get absolute extremum: 0, 0, "Sinc70"
+    sharedVizPeak = max(origVizPeak, outVizPeak) * 1.05 + 1e-6
+
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
@@ -694,14 +809,14 @@ if draw_visualization
     Text: 0.5, "centre", 0.6, "half", "##Temporal Elasticity — Latent Time Warping##"
     Font size: 9
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -1.2, "half", soundName$ + " | " + presetName$ + " | " + modeStr$ + " | " + methodStr$ + " | z=" + string$(latent_dimensions)
+    Text: 0.5, "centre", -1.16, "half", soundName$ + " | " + presetName$ + " | " + modeStr$ + " | " + methodStat$ + " | z=" + zDimStat$
 
     # === Original waveform ===
     Select outer viewport: 0, 8, 0.6, 1.4
     Select inner viewport: 0.6, 7.7, 0.65, 1.35
-    selectObject: sound
+    selectObject: vizOrig
     Colour: "{0.5, 0.5, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -sharedVizPeak, sharedVizPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -711,53 +826,83 @@ if draw_visualization
     # === Output waveform ===
     Select outer viewport: 0, 8, 1.4, 2.2
     Select inner viewport: 0.6, 7.7, 1.45, 2.15
-    selectObject: outputSound
+    selectObject: vizOut
     Colour: "{0.3, 0.6, 0.5}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -sharedVizPeak, sharedVizPeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Warped"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", newDurStat$ + " s  (ratio: " + comprStat$ + ")"
+    Text top: "no", fixed$(measuredOutputDur, 2) + " s measured  (planned event sum: " + newDurStat$ + " s)"
 
-    # === Original spectrogram ===
+    # === Latent map (actual mechanism) ===
     Select outer viewport: 0, 8, 2.3, 3.65
     Select inner viewport: 0.6, 7.7, 2.4, 3.55
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        tmpOrig = selected("Sound")
-    else
-        Copy: "tmpOrig"
-        tmpOrig = selected("Sound")
+    z0min = z0Arr[1]
+    z0max = z0Arr[1]
+    z1min = z1Arr[1]
+    z1max = z1Arr[1]
+    for i from 2 to nRows
+        z0min = min(z0min, z0Arr[i])
+        z0max = max(z0max, z0Arr[i])
+        z1min = min(z1min, z1Arr[i])
+        z1max = max(z1max, z1Arr[i])
+    endfor
+    z0range = z0max - z0min
+    z1range = z1max - z1min
+    if z0range < 1e-6
+        z0range = 1
     endif
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
-    specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    if z1range < 1e-6
+        z1range = 1
+    endif
+    z0lo = z0min - 0.10 * z0range
+    z0hi = z0max + 0.10 * z0range
+    z1lo = z1min - 0.12 * z1range
+    z1hi = z1max + 0.12 * z1range
+    Axes: z0lo, z0hi, z1lo, z1hi
+    Paint rectangle: "{0.96, 0.96, 0.98}", z0lo, z0hi, z1lo, z1hi
+    Colour: "{0.70, 0.70, 0.76}"
+    for i from 1 to nRows - 1
+        Draw line: z0Arr[i], z1Arr[i], z0Arr[i + 1], z1Arr[i + 1]
+    endfor
+    for i from 1 to nRows
+        Select inner viewport: 0.6, 7.7, 2.4, 3.55
+        Axes: z0lo, z0hi, z1lo, z1hi
+        if scaleArr[i] < 0.98
+            pointCol$ = "{0.20,0.42,0.88}"
+        elsif scaleArr[i] > 1.02
+            pointCol$ = "{0.88,0.30,0.22}"
+        else
+            pointCol$ = "{0.45,0.45,0.50}"
+        endif
+        Paint circle: pointCol$, z0Arr[i], z1Arr[i], 0.11
+    endfor
+    Select inner viewport: 0.6, 7.7, 2.4, 3.55
+    Axes: z0lo, z0hi, z1lo, z1hi
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Freq (Hz)"
-    Text top: "no", "Original spectrogram"
-    removeObject: specOrig, tmpOrig
+    Text left: "yes", "latent z1"
+    Text bottom: "yes", "latent z0"
+    Text top: "no", "Latent trajectory — effective scale: blue compress · red stretch"
 
     # === Output spectrogram ===
     Select outer viewport: 0, 8, 3.65, 5.0
     Select inner viewport: 0.6, 7.7, 3.75, 4.90
-    selectObject: outputSound
-    Copy: "tmpOut"
-    tmpOut = selected("Sound")
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    vizFmax = min(8000, sr / 2 - 1)
+    selectObject: vizOut
+    To Spectrogram: 0.005, vizFmax, 0.002, 20, "Gaussian"
     specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizFmax, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Freq (Hz)"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Warped spectrogram"
-    removeObject: specOut, tmpOut
+    Text top: "no", "Warped spectrogram (auto-levelled; representative output channel)"
+    removeObject: specOut
 
     # === Scale per event bar chart ===
     Select outer viewport: 0, 8, 5.1, 6.4
@@ -774,20 +919,18 @@ if draw_visualization
         endif
     endfor
 
-    Axes: 0, nRows + 1, 0, smax * 1.15 + 0.05
-    Paint rectangle: "{0.96, 0.96, 0.98}", 0, nRows + 1, 0, smax * 1.15 + 0.05
+    scaleTop = max(1.10, smax * 1.15 + 0.05)
+    Axes: 0, nRows + 1, 0, scaleTop
+    Paint rectangle: "{0.96, 0.96, 0.98}", 0, nRows + 1, 0, scaleTop
     for i from 1 to nRows
-        t = (scaleArr[i] - smin) / (smax - smin + 1e-9)
-        if t < 0.5
-            r_c = t * 2
-            g_c = t * 2
-            b_c = 1
+        if scaleArr[i] < 0.98
+            barCol$ = "{0.20,0.42,0.88}"
+        elsif scaleArr[i] > 1.02
+            barCol$ = "{0.88,0.30,0.22}"
         else
-            r_c = 1
-            g_c = 2 * (1 - t)
-            b_c = 2 * (1 - t)
+            barCol$ = "{0.45,0.45,0.50}"
         endif
-        Paint rectangle: "{" + string$(r_c) + "," + string$(g_c) + "," + string$(b_c) + "}", i - 0.4, i + 0.4, 0, scaleArr[i]
+        Paint rectangle: barCol$, i - 0.4, i + 0.4, 0, scaleArr[i]
     endfor
     Line width: 2
     Colour: "{0.8, 0.2, 0.2}"
@@ -812,14 +955,14 @@ if draw_visualization
     Colour: "{0.3, 0.3, 0.3}"
     Text: 0.02, "left", 0.60, "half",
         ... "Events: " + nEvStat$ +
-        ... " | Latent: " + methodStat$ + " z=" + string$(latent_dimensions) +
+        ... " | Latent: " + methodStat$ + " z=" + zDimStat$ +
         ... " | Loss: " + lossInitStat$ + " → " + lossFinalStat$
     Text: 0.02, "left", 0.38, "half",
         ... "Field: " + modeStat$ +
         ... " | Rules: " + rulesStat$ +
         ... " | Scale: [" + scaleMinStat$ + ", " + scaleMaxStat$ + "]  mean=" + scaleMeanStat$
     Text: 0.02, "left", 0.16, "half",
-        ... "Duration: " + origDurStat$ + " s → " + newDurStat$ + " s" +
+        ... "Event-sum: " + origDurStat$ + " s → " + newDurStat$ + " s | Rendered: " + fixed$(measuredOutputDur, 2) + " s" +
         ... " | Ratio: " + comprStat$ +
         ... " | Entropy: " + entrStat$
     Colour: "Black"
@@ -827,6 +970,7 @@ if draw_visualization
 
     Font size: 10
     Colour: "Black"
+    removeObject: vizOrig, vizOut
 else
     appendInfoLine: "[5/5] Visualization skipped."
 endif
@@ -839,10 +983,10 @@ appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:    ", output_name$
 appendInfoLine: "Preset:    ", presetName$
-appendInfoLine: "Events:    ", nEvStat$
+appendInfoLine: "Events:    ", nEvStat$, " | Latent: ", methodStat$, " z=", zDimStat$
 appendInfoLine: "Field:     ", modeStat$, " | Rules: ", rulesStat$
 appendInfoLine: "Loss:      ", lossInitStat$, " → ", lossFinalStat$
-appendInfoLine: "Duration:  ", origDurStat$, " s → ", newDurStat$, " s  (ratio: ", comprStat$, ")"
+appendInfoLine: "Duration:  event sum ", origDurStat$, " s → ", newDurStat$, " s; rendered ", fixed$(measuredOutputDur, 3), " s"
 appendInfoLine: "Scale:     [", scaleMinStat$, ", ", scaleMaxStat$, "]  mean=", scaleMeanStat$
 
 selectObject: outputSound

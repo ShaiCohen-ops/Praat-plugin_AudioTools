@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2026) - Probe robustness + portability cleanups
+# Version: 1.9 (2026) - Target macro-envelope transfer
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,6 +21,26 @@
 #     5. Optionally blends 2-4 samples for a richer texture.
 #     6. Returns a rendered WAV + a ranked results text file.
 #   Praat then imports the WAV and displays the results summary.
+#
+# Changelog v1.9 (2026):
+#   - MUSICAL: optional Envelope_follow transfers the target's smoothed macro-RMS
+#     gesture onto the retrieved result. This reduces duration/envelope mismatch
+#     between heterogeneous TinySOL samples without time-stretching or pitch shift.
+#   - Envelope_follow=0 is exact v1.8 rendering; default 0.85. Backend reports
+#     target-envelope correlation before/after transfer.
+#
+# Changelog v1.8 (2026):
+#   - Python v1.8 backend: corrected F0/pitch-gate logic, silent-frame handling,
+#     frame-mode silence gate, variant selection, speech pitch neutrality,
+#     polyphase resampling, and strongest-channel target analysis.
+#   - CORPUS: All families now includes official TinySOL Keyboards/Accordion;
+#     added Keyboards-only filter. Family detection is path-based in Python.
+#   - UI: All dynamics now means no dynamic preference penalty (previously it
+#     still preferred pp/p/mf/ff and penalised f).
+#   - UI: descriptor weights are relative; they are normalized internally and
+#     need not sum to 1. At least one must be positive.
+#   - VIS: representative strongest channels + shared waveform scale; 10 kHz
+#     spectrogram ceiling where supported; title/subtitle viewport repaired.
 #
 # Changelog v1.5 (2026):
 #   - FIX: The probe loop's "if pythonCmd$ = """ post-check at the
@@ -76,7 +96,7 @@ endif
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
-runTag$    = replace_regex$(soundName$, "[^A-Za-z0-9_]", "_", 0) + "_" + replace_regex$(date$(), "[ :]", "_", 0)
+runTag$    = replace_regex$(soundName$, "[^A-Za-z0-9_]", "_", 0) + "_" + string$(sound) + "_" + replace_regex$(date$(), "[ :]", "_", 0)
 runTag$    = replace_regex$(runTag$, "__+", "_", 0)
 
 tempInput$   = tempDir$ + "tmp_" + runTag$ + "_input.wav"
@@ -125,7 +145,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form TinySOL Orchestration Retrieval v1.5
+form TinySOL Orchestration Retrieval v1.9
     # ── Preset  ───────────────────────────────────────────────────────
     optionmenu Preset: 1
         option Custom  (use fields as-is)
@@ -147,6 +167,7 @@ form TinySOL Orchestration Retrieval v1.5
         option Brass + Strings
         option Brass + Winds
         option Strings + Winds
+        option Keyboards only
 
     sentence Specific_instruments 
 
@@ -185,8 +206,9 @@ form TinySOL Orchestration Retrieval v1.5
         option top4              (top-4 equal mix)
 
     real Render_gain 0.8
+    real Envelope_follow 0.85
 
-    # ── Descriptor weights  (must sum to ~1.0) ───────────────────────
+    # ── Descriptor weights  (relative; normalized internally) ─────────
     real MFCC_weight    0.25
     real Specenv_weight 0.20
     real Moments_weight 0.05
@@ -303,6 +325,12 @@ endif
 if render_gain > 2
     render_gain = 2
 endif
+if envelope_follow < 0
+    envelope_follow = 0
+endif
+if envelope_follow > 1
+    envelope_follow = 1
+endif
 if mFCC_weight < 0
     mFCC_weight = 0
 endif
@@ -354,7 +382,7 @@ endif
 
 # ---- Resolve instrument families string ----
 if instrument_families = 1
-    familyStr$ = "Brass,Strings,Winds"
+    familyStr$ = "Brass,Strings,Winds,Keyboards"
 elsif instrument_families = 2
     familyStr$ = "Brass"
 elsif instrument_families = 3
@@ -365,8 +393,10 @@ elsif instrument_families = 5
     familyStr$ = "Brass,Strings"
 elsif instrument_families = 6
     familyStr$ = "Brass,Winds"
-else
+elsif instrument_families = 7
     familyStr$ = "Strings,Winds"
+else
+    familyStr$ = "Keyboards"
 endif
 
 # ---- Resolve dynamics string ----
@@ -383,7 +413,13 @@ elsif preferred_dynamics = 5
 elsif preferred_dynamics = 6
     dynStr$ = "mf,ff"
 else
-    dynStr$ = "pp,p,mf,ff"
+    # Empty list = no dynamic preference penalty: truly "All dynamics".
+    dynStr$ = ""
+endif
+
+dynDisplay$ = dynStr$
+if preferred_dynamics = 7
+    dynDisplay$ = "All"
 endif
 
 # ---- Resolve render mode string ----
@@ -399,9 +435,25 @@ else
     renderStr$ = "top4"
 endif
 
+# Speech mode uses the backend's speech-optimised profile and disables
+# harmonic/pitch scoring there. Mirror the weights here so the Info panel is honest.
+if speech_mode
+    mFCC_weight      = 0.45
+    specenv_weight   = 0.30
+    moments_weight   = 0.10
+    specpeaks_weight = 0.15
+    harmonic_weight  = 0.00
+endif
+
+weightSum = mFCC_weight + specenv_weight + moments_weight + specpeaks_weight + harmonic_weight
+if weightSum <= 0
+    @cleanUpTempFiles
+    exitScript: "At least one descriptor weight must be greater than zero."
+endif
+
 # ---- INFO header ----
 clearinfo
-writeInfoLine:  "=== TinySOL Orchestration Retrieval v1.5 ==="
+writeInfoLine:  "=== TinySOL Orchestration Retrieval v1.9 ==="
 appendInfoLine: "Input:   ", soundName$
 appendInfoLine: "DB dir:  ", dB_directory$
 appendInfoLine: "Corpus:  ", corpus_root$
@@ -416,13 +468,13 @@ elsif preset = 5
 endif
 appendInfoLine: ""
 appendInfoLine: "Families:   ", familyStr$
-appendInfoLine: "Dynamics:   ", dynStr$
+appendInfoLine: "Dynamics:   ", dynDisplay$
 appendInfoLine: "MIDI range: ", min_MIDI_pitch, " — ", max_MIDI_pitch
 appendInfoLine: "Analysis:   ", analysisStr$
 if analysis_mode = 2
     appendInfoLine: "Frame/hop:  ", frame_size_ms, " ms / ", hop_size_ms, " ms  pitch_tol: ±", pitch_tolerance_semitones, " st"
 endif
-appendInfoLine: "Render:     ", renderStr$, "  gain=", fixed$(render_gain, 2), "  stereo=", stereo_output, "  silence_threshold=", fixed$(silence_threshold, 2)
+appendInfoLine: "Render:     ", renderStr$, "  gain=", fixed$(render_gain, 2), "  stereo=", stereo_output, "  envelope=", fixed$(envelope_follow, 2), "  silence_threshold=", fixed$(silence_threshold, 2)
 appendInfoLine: "Weights:    mfcc=", fixed$(mFCC_weight, 2),
     ... "  specenv=", fixed$(specenv_weight, 2),
     ... "  moments=", fixed$(moments_weight, 2),
@@ -548,6 +600,7 @@ appendFileLine: tempParams$, "descriptor_weights=" + descWeightStr$
 appendFileLine: tempParams$, "n_results=" + string$(number_of_results)
 appendFileLine: tempParams$, "render_mode=" + renderStr$
 appendFileLine: tempParams$, "render_gain=" + string$(render_gain)
+appendFileLine: tempParams$, "envelope_follow=" + string$(envelope_follow)
 appendFileLine: tempParams$, "stereo_output=" + string$(stereo_output)
 appendFileLine: tempParams$, "analysis_mode=" + analysisStr$
 appendFileLine: tempParams$, "frame_size_ms=" + string$(frame_size_ms)
@@ -627,8 +680,17 @@ if fileReadable(tempResults$)
     chosenCount$ = parseStatLine.result$
 
     @parseStatLine: resultText$, "silence_rendered="
-    if parseStatLine.result$ = "1"
-        silenceFlag$ = "  [SILENCE — score > threshold]"
+    silenceRendered$ = parseStatLine.result$
+    @parseStatLine: resultText$, "silence_reason="
+    silenceReason$ = parseStatLine.result$
+    if silenceRendered$ = "1"
+        if silenceReason$ = "silent_target"
+            silenceFlag$ = "  [SILENCE - silent target]"
+        elsif silenceReason$ = "frame_unmatched"
+            silenceFlag$ = "  [SILENCE - no frame matches]"
+        else
+            silenceFlag$ = "  [SILENCE - score > threshold]"
+        endif
     endif
 
     # Parse top-ranked match from the CSV section
@@ -699,6 +761,61 @@ endif
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
 
+    # Representative real input channel: strongest RMS channel, avoiding
+    # phase-cancelling mono fold-down.  Use the strongest result channel too.
+    analysisChannel = 1
+    bestVizRms = -1
+    for ch from 1 to nChannels
+        selectObject: sound
+        chObj = Extract one channel: ch
+        chRms = Get root-mean-square: 0, 0
+        if chRms > bestVizRms
+            bestVizRms = chRms
+            analysisChannel = ch
+        endif
+        removeObject: chObj
+    endfor
+
+    selectObject: sound
+    if nChannels > 1
+        vizIn = Extract one channel: analysisChannel
+    else
+        Copy: "tinysol_viz_input"
+        vizIn = selected("Sound")
+    endif
+
+    selectObject: resultSound
+    nChRes = Get number of channels
+    resultChannel = 1
+    bestOutRms = -1
+    for ch from 1 to nChRes
+        selectObject: resultSound
+        chObj = Extract one channel: ch
+        chRms = Get root-mean-square: 0, 0
+        if chRms > bestOutRms
+            bestOutRms = chRms
+            resultChannel = ch
+        endif
+        removeObject: chObj
+    endfor
+    selectObject: resultSound
+    if nChRes > 1
+        vizOut = Extract one channel: resultChannel
+    else
+        Copy: "tinysol_viz_output"
+        vizOut = selected("Sound")
+    endif
+
+    selectObject: vizIn
+    inPeak = Get absolute extremum: 0, 0, "none"
+    selectObject: vizOut
+    outPeak = Get absolute extremum: 0, 0, "none"
+    wavePeak = 1.05 * max(inPeak, outPeak)
+    if wavePeak < 0.000001
+        wavePeak = 1
+    endif
+    specCeil = min(10000, sr / 2)
+
     Erase all
     Select outer viewport: 0, 8, 0, 8
 
@@ -709,177 +826,148 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##TinySOL Orchestration Retrieval v1.5##"
+    Text: 0.5, "centre", 0.68, "half", "##TinySOL Orchestration Retrieval v1.9##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
+    Text: 0.5, "centre", -1.22, "half",
         ... soundName$ + "  |  " + analysisStr$
         ... + "  |  " + renderStr$
         ... + "  |  " + familyStr$
 
     # ----------------------------------------------------------
-    # Input waveform
+    # Input waveform — explicit shared scale
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0.52, 1.32
-    Select inner viewport: 0.55, 7.65, 0.57, 1.27
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        vizIn = selected("Sound")
-    else
-        Copy: "vizIn"
-        vizIn = selected("Sound")
-    endif
+    Select outer viewport: 0, 8, 0.70, 1.55
+    Select inner viewport: 0.55, 7.65, 0.75, 1.50
+    selectObject: vizIn
     Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
-    removeObject: vizIn
+    Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Input"
+    Text left: "yes", "Input ch" + string$(analysisChannel)
+    Text top: "no", "Target waveform  [shared amplitude scale]"
 
     # ----------------------------------------------------------
-    # Output waveform
+    # Output waveform — same scale
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 1.36, 2.16
-    Select inner viewport: 0.55, 7.65, 1.41, 2.11
-    selectObject: resultSound
-    nChRes = Get number of channels
-    if nChRes > 1
-        Extract one channel: 1
-        vizOutL = selected("Sound")
-        Colour: "{0.15, 0.50, 0.35}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        selectObject: resultSound
-        Extract one channel: 2
-        vizOutR = selected("Sound")
-        Colour: "{0.35, 0.55, 0.15}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-        removeObject: vizOutL, vizOutR
-    else
-        selectObject: resultSound
-        Colour: "{0.15, 0.50, 0.35}"
-        Draw: 0, 0, 0, 0, "no", "Curve"
-    endif
+    Select outer viewport: 0, 8, 1.55, 2.40
+    Select inner viewport: 0.55, 7.65, 1.60, 2.35
+    selectObject: vizOut
+    Colour: "{0.15, 0.50, 0.35}"
+    Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Text left: "yes", "Output ch" + string$(resultChannel)
     Text bottom: "yes", "Time (s)"
+    Text top: "no", "Retrieved render  [same amplitude scale]"
 
     # ----------------------------------------------------------
     # Input spectrogram
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.1, 2.24, 3.64
-    Select inner viewport: 0.55, 3.85, 2.34, 3.54
-    selectObject: sound
-    if nChannels > 1
-        Extract one channel: 1
-        vizSpecIn = selected("Sound")
-    else
-        Copy: "vizSpecIn"
-        vizSpecIn = selected("Sound")
-    endif
-    To Spectrogram: 0.02, 5000, 0.005, 20, "Gaussian"
+    Select outer viewport: 0, 4.1, 2.50, 3.90
+    Select inner viewport: 0.55, 3.85, 2.60, 3.80
+    selectObject: vizIn
+    To Spectrogram: 0.02, specCeil, 0.005, 20, "Gaussian"
     specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    removeObject: specOrig, vizSpecIn
+    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Target spectrogram"
+    Text top: "no", "Target spectrogram ch" + string$(analysisChannel) + " (auto-levelled)"
+    removeObject: specOrig
 
     # ----------------------------------------------------------
     # Output spectrogram
     # ----------------------------------------------------------
-    Select outer viewport: 4.1, 8, 2.24, 3.64
-    Select inner viewport: 4.40, 7.65, 2.34, 3.54
-    selectObject: resultSound
-    if nChRes > 1
-        Extract one channel: 1
-        vizSpecOut = selected("Sound")
-    else
-        Copy: "vizSpecOut"
-        vizSpecOut = selected("Sound")
-    endif
-    To Spectrogram: 0.02, 5000, 0.005, 20, "Gaussian"
+    Select outer viewport: 4.1, 8, 2.50, 3.90
+    Select inner viewport: 4.40, 7.65, 2.60, 3.80
+    selectObject: vizOut
+    To Spectrogram: 0.02, specCeil, 0.005, 20, "Gaussian"
     specRes = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
-    removeObject: specRes, vizSpecOut
+    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Hz"
     Text bottom: "yes", "Time (s)"
-    Text top: "no", "Orchestrated spectrogram"
+    Text top: "no", "Retrieved spectrogram ch" + string$(resultChannel) + " (auto-levelled)"
+    removeObject: specRes
 
     # ----------------------------------------------------------
     # Retrieval results panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 3.74, 5.04
-    Select inner viewport: 0.55, 7.65, 3.80, 4.98
+    Select outer viewport: 0, 8, 4.02, 5.42
+    Select inner viewport: 0.55, 7.65, 4.08, 5.36
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.96}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.90, "half", "##Retrieval Results##"
-
+    Text: 0.02, "left", 0.91, "half", "##Retrieval Results##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.72, "half",
+    Text: 0.02, "left", 0.74, "half",
         ... "Best match:  " + bestMatch$ + "   score=" + bestScore$ + silenceFlag$
 
     if analysis_mode = 2
-        Text: 0.02, "left", 0.54, "half",
+        Text: 0.02, "left", 0.57, "half",
             ... "Frames: " + nCandidates$
             ... + "  |  Matched: " + chosenCount$
-            ... + "  |  Mode: frame_based"
-            ... + "  |  Gain: " + fixed$(render_gain, 2)
+            ... + "  |  pitch tol: " + string$(pitch_tolerance_semitones) + " st"
+            ... + "  |  Gain: " + fixed$(render_gain, 2) + "  |  Env: " + fixed$(envelope_follow, 2)
     else
-        Text: 0.02, "left", 0.54, "half",
+        Text: 0.02, "left", 0.57, "half",
             ... "Candidates: " + nCandidates$
             ... + "  |  Layers: " + chosenCount$
             ... + "  |  Mode: " + renderMode$
-            ... + "  |  Gain: " + fixed$(render_gain, 2)
+            ... + "  |  Gain: " + fixed$(render_gain, 2) + "  |  Env: " + fixed$(envelope_follow, 2)
     endif
 
-    Text: 0.02, "left", 0.36, "half",
+    Text: 0.02, "left", 0.40, "half",
         ... "Families: " + familyStr$
-        ... + "  |  Dynamics: " + dynStr$
-        ... + "  |  MIDI: " + string$(min_MIDI_pitch) + "–" + string$(max_MIDI_pitch)
+        ... + "  |  Dynamics: " + dynDisplay$
+        ... + "  |  MIDI: " + string$(min_MIDI_pitch) + "-" + string$(max_MIDI_pitch)
 
-    Text: 0.02, "left", 0.18, "half",
-        ... "Weights:  mfcc=" + fixed$(mFCC_weight, 2)
-        ... + "  specenv=" + fixed$(specenv_weight, 2)
-        ... + "  moments=" + fixed$(moments_weight, 2)
-        ... + "  specpeaks=" + fixed$(specpeaks_weight, 2)
-        ... + "  harmonic=" + fixed$(harmonic_weight, 2)
+    Text: 0.02, "left", 0.23, "half",
+        ... "Weights: mfcc=" + fixed$(mFCC_weight, 2)
+        ... + " specenv=" + fixed$(specenv_weight, 2)
+        ... + " moments=" + fixed$(moments_weight, 2)
+        ... + " specpeaks=" + fixed$(specpeaks_weight, 2)
+        ... + " harmonic=" + fixed$(harmonic_weight, 2)
 
+    Text: 0.02, "left", 0.08, "half",
+        ... "Flow: target descriptors -> hard candidate domain -> weighted distance -> rank -> render"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.14, 5.74
-    Select inner viewport: 0.55, 7.65, 5.20, 5.68
+    Select outer viewport: 0, 8, 5.52, 6.22
+    Select inner viewport: 0.55, 7.65, 5.58, 6.16
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.78, "half", "##Summary##"
+    Text: 0.02, "left", 0.80, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.32, "half",
+    Text: 0.02, "left", 0.47, "half",
         ... "Target: " + fixed$(dur, 2) + "s  RMS=" + fixed$(rms_orig, 4)
         ... + "  |  Output: " + fixed$(dur_out, 2) + "s  RMS=" + fixed$(rms_out, 4)
-        ... + "  |  " + analysisStr$
-        ... + "  |  " + renderStr$
+    Text: 0.02, "left", 0.20, "half",
+        ... "Analysis ch " + string$(analysisChannel)
+        ... + " -> display output ch " + string$(resultChannel)
+        ... + "  |  silence threshold=" + fixed$(silence_threshold, 2)
+        ... + " (2=disabled)"
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
+
+    removeObject: vizIn, vizOut
 
     Font size: 10
     Colour: "Black"

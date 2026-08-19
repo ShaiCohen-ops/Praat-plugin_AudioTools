@@ -1,11 +1,11 @@
 """
-void_mosaic_engine.py — Latent Void Mosaic Engine v1.5
+void_mosaic_engine.py - Latent Void Mosaic Engine v1.5.3
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.5 (2026) - Grain schedule covers target (no silent tail); register
-         folded to nearest-source octave + honest 8-col pitch CSV; KD-tree void
-         search (memory-safe on large corpora); path-safe file counting.
-         (1.4: exact length, pan fix, clamps, validation)
+Version: 1.5.3 (2026) - Stable-I/O build with lightweight visualization data.
+         DSP/selection logic from v1.5.2 is unchanged. Adds only bounded
+         corpus/void map export and output-time stamps in the grain CSV so
+         Praat can visualize the actual selection/mutation mechanism safely.
 License: MIT
 """
 
@@ -17,12 +17,20 @@ import os
 import sys
 import time
 import warnings
+from collections import OrderedDict
 import numpy as np
 from scipy import spatial
 import soundfile as sf
 import librosa
 
 warnings.filterwarnings('ignore')
+
+# Keep redirected console output safe on Windows code pages (Praat 7 included).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except Exception:
+        pass
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Latent Void Mosaic Engine")
@@ -227,7 +235,7 @@ def main():
         
     corpus_vectors = []
     corpus_metadata = []
-    corpus_audio_data = []
+    corpus_file_paths = []
     
     stft_hop = 512
     for f_path in audio_files:
@@ -236,8 +244,8 @@ def main():
             if len(y) < grain_samples:
                 continue
             
-            corpus_audio_data.append(y)
-            file_idx = len(corpus_audio_data) - 1
+            corpus_file_paths.append(f_path)
+            file_idx = len(corpus_file_paths) - 1
             
             # Vectorized: compute all feature grids for the whole file once.
             rms_f, cen_f, fl_f, ro_f, zc_f, f0_f, stft_hop = \
@@ -299,7 +307,9 @@ def main():
     # (~9.6 GB at 30k grains); the tree query is O(P log N) in time and memory.
     corpus_tree = spatial.cKDTree(corpus_z)
     try:
-        min_distances, _ = corpus_tree.query(probes_z, k=1, workers=-1)
+        # Use one worker. Other AudioTools corpus engines avoid leaving a large
+        # native worker pool alive at the exact point control returns to Praat.
+        min_distances, _ = corpus_tree.query(probes_z, k=1, workers=1)
     except TypeError:
         min_distances, _ = corpus_tree.query(probes_z, k=1)
     sorted_probe_indices = np.argsort(min_distances)[::-1]
@@ -342,17 +352,31 @@ def main():
     selected_voids_physical[:, 4] = np.clip(selected_voids_physical[:, 4], 0.0, 1.0)     # zcr
     selected_voids_physical[:, 5] = np.clip(selected_voids_physical[:, 5], 0.0, args.max_pitch)  # f0
 
-    # Map Export
+    # Lightweight visualization map only. This does not participate in DSP.
+    # Keep the file bounded so Praat Picture never has to paint thousands of
+    # points. Evenly spaced deterministic sampling avoids consuming RNG state.
     if args.out_map:
         try:
+            max_corpus_points = 240
+            max_void_points = 80
             with open(args.out_map, 'w', newline='', encoding='utf-8') as mf:
                 w = csv.writer(mf)
                 w.writerow(["type", "centroid", "rolloff"])
-                # Log a subset of corpus to avoid massive UI hang in Praat
-                subset_corpus = corpus_matrix[:2000]
-                for row in subset_corpus:
+                n_c = len(corpus_matrix)
+                if n_c <= max_corpus_points:
+                    corpus_idx = np.arange(n_c, dtype=int)
+                else:
+                    corpus_idx = np.linspace(0, n_c - 1, max_corpus_points, dtype=int)
+                for ci in corpus_idx:
+                    row = corpus_matrix[ci]
                     w.writerow(["C", round(float(row[1]), 3), round(float(row[3]), 3)])
-                for row in selected_voids_physical:
+                n_v = len(selected_voids_physical)
+                if n_v <= max_void_points:
+                    void_idx = np.arange(n_v, dtype=int)
+                else:
+                    void_idx = np.linspace(0, n_v - 1, max_void_points, dtype=int)
+                for vi in void_idx:
+                    row = selected_voids_physical[vi]
                     w.writerow(["V", round(float(row[1]), 3), round(float(row[3]), 3)])
         except Exception:
             pass
@@ -393,6 +417,26 @@ def main():
     centroid_min = float(np.min(corpus_matrix[:, 1]))
     centroid_max = float(np.max(corpus_matrix[:, 1]))
 
+    # Match the lifecycle used by the stable corpus-based AudioTools engines:
+    # keep descriptors/metadata resident, but load source audio only when a
+    # selected grain needs it. Bound the cache so a large corpus cannot leave
+    # hundreds of decoded files resident while Praat waits for Python to exit.
+    audio_cache = OrderedDict()
+    audio_cache_limit = 4
+
+    def get_source_audio(file_idx):
+        if file_idx in audio_cache:
+            y_cached = audio_cache.pop(file_idx)
+            audio_cache[file_idx] = y_cached
+            return y_cached
+        f_path = corpus_file_paths[file_idx]
+        y_loaded, _ = librosa.load(f_path, sr=target_sr, mono=True)
+        y_loaded = np.asarray(y_loaded, dtype=np.float32)
+        audio_cache[file_idx] = y_loaded
+        while len(audio_cache) > audio_cache_limit:
+            audio_cache.popitem(last=False)
+        return y_loaded
+
     current_sample = 0
     for i in range(num_voids):
         void_z = selected_voids_z[i]
@@ -407,7 +451,8 @@ def main():
             grain_records.append([
                 f"Rest_{i}", "(silence)",
                 round(current_sample / target_sr, 3),
-                0.0, 0.0, 0.0, 0.0, 0.0
+                0.0, 0.0, 0.0, 0.0, 0.0,
+                round(current_sample / target_sr, 6)
             ])
             current_sample += h_len
             continue
@@ -427,7 +472,7 @@ def main():
         used_grain_keys.add((meta['file_idx'], meta['start_sample']))
         c_phys = corpus_matrix[best_idx]
 
-        y_full = corpus_audio_data[meta['file_idx']]
+        y_full = get_source_audio(meta['file_idx'])
         start_samp = meta['start_sample']
         y_grain = y_full[start_samp:start_samp + g_len]
 
@@ -491,7 +536,8 @@ def main():
             round(float(void_phys[5]), 2),   # raw void F0 coordinate
             round(float(folded_target), 2),  # target after register folding
             round(float(reachable_f0), 2),   # actual output F0 after (clipped) shift
-            round(float(c_phys[5]), 2)       # source grain F0
+            round(float(c_phys[5]), 2),      # source grain F0
+            round(current_sample / target_sr, 6)  # output placement time
         ])
 
         current_sample += h_len
@@ -544,12 +590,13 @@ def main():
             out_audio[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
             out_audio[-fade_samples:] *= np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
         
-    sf.write(args.out_wav, out_audio, target_sr)
+    sf.write(args.out_wav, out_audio, target_sr, subtype="FLOAT")
     
     with open(args.out_csv, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         writer.writerow(["void_id", "corpus_victim", "source_time_sec", "applied_shift_st",
-                         "raw_void_f0_hz", "folded_target_f0_hz", "reachable_output_f0_hz", "source_f0_hz"])
+                         "raw_void_f0_hz", "folded_target_f0_hz", "reachable_output_f0_hz", "source_f0_hz",
+                         "output_time_sec"])
         writer.writerows(grain_records)
         
     total_time = round(time.time() - start_time, 3)
@@ -564,6 +611,8 @@ def main():
         distinct_files = len(set(fi for fi, _ in used_grain_keys))
         f.write(f"Corpus files found: {len(audio_files)}\n")
         f.write(f"Corpus files analyzed: {files_contributing}\n")
+        f.write(f"Audio cache limit: {audio_cache_limit} files\n")
+        f.write("KD-tree workers: 1\n")
         f.write(f"Acoustic grains mutated: {num_voids - rests_generated}\n")
         f.write(f"Rests injected: {rests_generated}\n")
         f.write(f"Distinct source grains: {len(used_grain_keys)}\n")

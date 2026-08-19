@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,8 +13,9 @@
 #   Reads a source recording, cuts it into overlapping grains, and
 #   describes each grain with a 17-dimensional timbre vector (RMS,
 #   spectral centroid, spectral flatness, zero-crossing rate, MFCCs
-#   1-13). Analysis uses a cancellation-safe mono fold, while the chosen
-#   grain indices are applied to ALL source channels during resynthesis.
+#   1-13). Multichannel analysis uses the strongest-RMS real channel,
+#   while the chosen grain indices are applied to ALL source channels
+#   during resynthesis.
 #
 #   A multi-target Random Forest models local feature-state transitions
 #   X_t -> X_{t+k}. Its prediction is blended with a synthetic target
@@ -29,6 +30,13 @@
 #   The engine is a Python script (rf_engine.py). The front end discovers
 #   Python automatically, uses a compatible installed engine when present,
 #   and otherwise writes its embedded copy to a unique temporary file.
+#
+# v0.4:
+#   - Makes Repeat_penalty effective with overlapping grain pools by calibrating
+#     it to corpus-scale pairwise distance instead of near-zero NN distance.
+#   - Applies final edge fades after exact duration trim/pad.
+#   - Uses strongest-RMS real channel for multichannel analysis.
+#   - Adds repeat-scale / immediate-repeat diagnostics and shared-scale waveform QA.
 #
 # v0.3:
 #   - Removes Python path, external-engine and temp-file runtime controls from the form.
@@ -278,7 +286,7 @@ endproc
 # ===========================================================================
 
 clearinfo
-writeInfoLine:  "=== RF_Concatenative v0.3 ==="
+writeInfoLine:  "=== RF_Concatenative v0.4 ==="
 appendInfoLine: "Input object: ", inputName$
 appendInfoLine: "Preset:       ", presetName$
 appendInfoLine: ""
@@ -332,12 +340,12 @@ if not fileReadable(externalPath$)
 endif
 if fileReadable(externalPath$)
     externalText$ = readFile$(externalPath$)
-    if index(externalText$, "# Version: 0.3 (2026)") > 0
+    if index(externalText$, "# Version: 0.4 (2026)") > 0
         enginePath$ = externalPath$
         useExternal = 1
         appendInfoLine: "  Using compatible installed rf_engine.py"
     else
-        appendInfoLine: "  Installed rf_engine.py is not v0.3; using embedded engine."
+        appendInfoLine: "  Installed rf_engine.py is not v0.4; using embedded engine."
     endif
 endif
 
@@ -433,6 +441,7 @@ srStat$        = "?"
 inputChStat$   = "?"
 outputChStat$  = "?"
 analysisStat$  = "?"
+analysisChannelStat$ = "?"
 frameSamp$     = "?"
 hopSamp$       = "?"
 overlapStat$   = "?"
@@ -447,6 +456,8 @@ distinctStat$  = "?"
 distinctPct$   = "?"
 meanDistStat$  = "?"
 nnDistStat$    = "?"
+repeatScaleStat$ = "?"
+immediateRepeatStat$ = "?"
 inputRmsStat$   = "?"
 rmsBeforeStat$ = "?"
 rmsAfterMatchStat$ = "?"
@@ -474,6 +485,8 @@ if fileReadable(tempStats$)
     outputChStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "analysis_source="
     analysisStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "analysis_channel="
+    analysisChannelStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "frame_samples="
     frameSamp$ = parseStatLine.result$
     @parseStatLine: statsText$, "hop_samples="
@@ -502,6 +515,10 @@ if fileReadable(tempStats$)
     meanDistStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "median_nn_dist="
     nnDistStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "repeat_distance_scale="
+    repeatScaleStat$ = parseStatLine.result$
+    @parseStatLine: statsText$, "immediate_repeat_pct="
+    immediateRepeatStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "source_rms="
     inputRmsStat$ = parseStatLine.result$
     @parseStatLine: statsText$, "rms_before_match="
@@ -608,6 +625,42 @@ endif
 ###############################################################################
 
 if draw_visualization
+    analysisChannelViz = 1
+    if analysisChannelStat$ <> "?"
+        analysisChannelViz = round(number(analysisChannelStat$))
+    endif
+
+    # Same real channel and same amplitude scale for input/output comparison.
+    selectObject: inputSound
+    inputVizChCount = Get number of channels
+    if analysisChannelViz < 1 or analysisChannelViz > inputVizChCount
+        analysisChannelViz = 1
+    endif
+    if inputVizChCount > 1
+        Extract one channel: analysisChannelViz
+        vizInputSound = selected("Sound")
+    else
+        Copy: "rf_viz_input"
+        vizInputSound = selected("Sound")
+    endif
+    inAbsViz = Get absolute extremum: 0, 0, "none"
+
+    selectObject: resultSound
+    outputVizChCount = Get number of channels
+    outputAnalysisCh = min(analysisChannelViz, outputVizChCount)
+    if outputVizChCount > 1
+        Extract one channel: outputAnalysisCh
+        vizOutputSound = selected("Sound")
+    else
+        Copy: "rf_viz_output"
+        vizOutputSound = selected("Sound")
+    endif
+    outAbsViz = Get absolute extremum: 0, 0, "none"
+    sharedWaveAmp = max(inAbsViz, outAbsViz)
+    if sharedWaveAmp < 0.001
+        sharedWaveAmp = 0.001
+    endif
+    sharedWaveAmp = sharedWaveAmp * 1.05
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
@@ -625,7 +678,7 @@ if draw_visualization
     Text: 0.5, "centre", 0.68, "half", "##Random Forest Concatenative Synthesis##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
+    Text: 0.5, "centre", -1.18, "half",
         ... inputName$ + "  |  " + presetName$ + "  |  " + trajectory$
         ... + "  |  grain " + fixed$(frame_length_ms, 0) + " / hop "
         ... + fixed$(hop_length_ms, 0) + " ms  |  "
@@ -634,26 +687,26 @@ if draw_visualization
     # ---- INPUT WAVEFORM ----
     Select outer viewport: 0, 4.15, 0.78, 2.15
     Select inner viewport: 0.55, 3.95, 0.96, 2.05
-    selectObject: inputSound
+    selectObject: vizInputSound
     Colour: "{0.55, 0.55, 0.55}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -sharedWaveAmp, sharedWaveAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "Input"
+    Text top: "no", "Input  (analysis ch " + string$(analysisChannelViz) + ")"
     Font size: 6
     Text left: "yes", "Amp"
 
     # ---- OUTPUT WAVEFORM ----
     Select outer viewport: 4.15, 8, 0.78, 2.15
     Select inner viewport: 4.50, 7.75, 0.96, 2.05
-    selectObject: resultSound
+    selectObject: vizOutputSound
     Colour: "{0.22, 0.46, 0.82}"
-    Draw: 0, 0, 0, 0, "no", "Curve"
+    Draw: 0, 0, -sharedWaveAmp, sharedWaveAmp, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text top: "no", "Output"
+    Text top: "no", "Output  (same scale)"
     Font size: 6
     Text left: "yes", "Amp"
 
@@ -763,15 +816,9 @@ if draw_visualization
         # ---- INPUT SPECTROGRAM ----
         Select outer viewport: 0, 4.15, 5.62, 6.72
         Select inner viewport: 0.55, 3.95, 5.76, 6.62
-        selectObject: inputSound
-        srcChViz = Get number of channels
-        if srcChViz > 1
-            Extract one channel: 1
-            specSrcSound = selected("Sound")
-        else
-            Copy: "rf_spec_src"
-            specSrcSound = selected("Sound")
-        endif
+        selectObject: vizInputSound
+        Copy: "rf_spec_in"
+        specSrcSound = selected("Sound")
         To Spectrogram: 0.03, maxSpecF, 0.002, 20, "Gaussian"
         specSrc = selected("Spectrogram")
         Paint: 0, 0, 0, maxSpecF, 100, "yes", 50, 6, 0, "no"
@@ -786,15 +833,9 @@ if draw_visualization
         # ---- OUTPUT SPECTROGRAM ----
         Select outer viewport: 4.15, 8, 5.62, 6.72
         Select inner viewport: 4.50, 7.75, 5.76, 6.62
-        selectObject: resultSound
-        outChViz = Get number of channels
-        if outChViz > 1
-            Extract one channel: 1
-            specOutSound = selected("Sound")
-        else
-            Copy: "rf_spec_out"
-            specOutSound = selected("Sound")
-        endif
+        selectObject: vizOutputSound
+        Copy: "rf_spec_out"
+        specOutSound = selected("Sound")
         To Spectrogram: 0.03, maxSpecF, 0.002, 20, "Gaussian"
         specOut = selected("Spectrogram")
         Paint: 0, 0, 0, maxSpecF, 100, "yes", 50, 6, 0, "no"
@@ -827,6 +868,7 @@ if draw_visualization
         ... "RF: " + string$(trees) + " trees  |  k " + string$(lookahead_k)
         ... + "  |  OOB R2 " + oobStat$ + "  |  skill vs persistence " + oobSkillStat$
         ... + "  |  distinct " + distinctPct$ + "%"
+        ... + "  |  immediate repeats " + immediateRepeatStat$ + "%"
     Text: 0.02, "left", 0.18, "half",
         ... "trajectory " + trajStat$ + "  |  weight " + fixed$(trajectory_weight, 2)
         ... + "  |  RMS gain " + rmsGainDbStat$ + " dB"
@@ -839,6 +881,8 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    removeObject: vizInputSound, vizOutputSound
 endif
 
 # ===========================================================================
@@ -861,6 +905,7 @@ appendInfoLine: "  Grain pool:      ", nPoolStat$, " grains of ", frameSamp$,
 appendInfoLine: "  Feature space:   ", featDimStat$, " dimensions, standardised"
 appendInfoLine: "  Source duration: ", inDurStat$, " s at ", srStat$, " Hz; ", inputChStat$, " ch"
 appendInfoLine: "  Analysis source: ", analysisStat$
+appendInfoLine: "  Analysis channel:", " ", analysisChannelStat$
 appendInfoLine: ""
 appendInfoLine: "Random forest:"
 appendInfoLine: "  Trained on:      ", trainRows$, " transition pairs (k = ",
@@ -875,6 +920,8 @@ appendInfoLine: "  Output grains:   ", nOutGrains$
 appendInfoLine: "  Distinct grains: ", distinctStat$, " (", distinctPct$, "%)"
 appendInfoLine: "  Mean match L2:   ", meanDistStat$,
     ... "   (median neighbour distance = ", nnDistStat$, ")"
+appendInfoLine: "  Repeat scale:    ", repeatScaleStat$,
+    ... "   | immediate repeats: ", immediateRepeatStat$, "%"
 appendInfoLine: ""
 appendInfoLine: "Output:"
 appendInfoLine: "  Duration:        ", fixed$(outDur, 2), " s at ", outSr, " Hz; ", outputChStat$, " ch"
@@ -920,8 +967,8 @@ procedure parseStatLine: .text$, .key$
 endproc
 
 # ---------------------------------------------------------------------------
-# writeEngine - streams the standalone v0.3 engine to a unique temp file.
-# The embedded block is generated from rf_engine_v0.3_fixed.py and the
+# writeEngine - streams the standalone v0.4 engine to a unique temp file.
+# The embedded block is generated from rf_engine_v0.4.py and the
 # regression test verifies that it is byte-identical apart from newline EOF.
 # ---------------------------------------------------------------------------
 procedure writeEngine
@@ -932,9 +979,15 @@ procedure writeEngine
     appendFileLine: enginePath$, "# Part of Praat AudioTools plugin"
     appendFileLine: enginePath$, "# Author: Shai Cohen, Department of Music, Bar-Ilan University, Israel"
     appendFileLine: enginePath$, "# Email: shai.cohen@biu.ac.il"
-    appendFileLine: enginePath$, "# Version: 0.3 (2026)"
+    appendFileLine: enginePath$, "# Version: 0.4 (2026)"
     appendFileLine: enginePath$, "# License: MIT"
     appendFileLine: enginePath$, "# Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools"
+    appendFileLine: enginePath$, "#"
+    appendFileLine: enginePath$, "# v0.4:"
+    appendFileLine: enginePath$, "#   - Calibrates Repeat penalty to corpus-scale pairwise distance so it remains effective with heavily overlapping grains."
+    appendFileLine: enginePath$, "#   - Applies edge fades after final length trimming so arbitrary target durations end cleanly."
+    appendFileLine: enginePath$, "#   - Uses the strongest real source channel for multichannel analysis instead of fold-down."
+    appendFileLine: enginePath$, "#   - Reports repeat-scale and immediate-repeat diagnostics."
     appendFileLine: enginePath$, "#"
     appendFileLine: enginePath$, "# v0.3:"
     appendFileLine: enginePath$, "#   - Adds optional global RMS level matching to the source after OLA and before Safety."
@@ -963,7 +1016,7 @@ procedure writeEngine
     appendFileLine: enginePath$, "#"
     appendFileLine: enginePath$, "# Architecture:"
     appendFileLine: enginePath$, "#   Stage 1 - Load source audio at native sample rate, preserve all channels,"
-    appendFileLine: enginePath$, "#             and build a mono analysis fold with cancellation fallback."
+    appendFileLine: enginePath$, "#             and analyse the strongest-RMS real channel."
     appendFileLine: enginePath$, "#   Stage 2 - Window into overlapping grains and extract a 17-dimensional"
     appendFileLine: enginePath$, "#             feature vector per grain:"
     appendFileLine: enginePath$, "#               [0] RMS energy"
@@ -1080,27 +1133,24 @@ procedure writeEngine
     appendFileLine: enginePath$, "    n_channels, n_samples = audio.shape"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    if n_channels == 1:"
+    appendFileLine: enginePath$, "        analysis_channel = 0"
     appendFileLine: enginePath$, "        analysis = audio[0].copy()"
-    appendFileLine: enginePath$, "        analysis_source = ""mono input"""
+    appendFileLine: enginePath$, "        analysis_source = ""channel 1 (mono input)"""
     appendFileLine: enginePath$, "    else:"
-    appendFileLine: enginePath$, "        fold = np.mean(audio, axis=0)"
+    appendFileLine: enginePath$, "        # Analyse one real channel rather than an arithmetic fold. A fold can"
+    appendFileLine: enginePath$, "        # cancel or spectrally reshape correlated multichannel material. The"
+    appendFileLine: enginePath$, "        # strongest-RMS channel is a stable representative while resynthesis"
+    appendFileLine: enginePath$, "        # still applies every selected grain index to every source channel."
     appendFileLine: enginePath$, "        ch_rms = np.sqrt(np.mean(audio * audio, axis=1))"
-    appendFileLine: enginePath$, "        best = int(np.argmax(ch_rms))"
-    appendFileLine: enginePath$, "        fold_rms = float(np.sqrt(np.mean(fold * fold)))"
-    appendFileLine: enginePath$, "        best_rms = float(ch_rms[best])"
-    appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "        if best_rms > 0.0 and fold_rms < 0.10 * best_rms:"
-    appendFileLine: enginePath$, "            analysis = audio[best].copy()"
-    appendFileLine: enginePath$, "            analysis_source = ""channel %d (fold-down cancellation fallback)"" % (best + 1)"
-    appendFileLine: enginePath$, "        else:"
-    appendFileLine: enginePath$, "            analysis = fold"
-    appendFileLine: enginePath$, "            analysis_source = ""mono fold-down"""
+    appendFileLine: enginePath$, "        analysis_channel = int(np.argmax(ch_rms))"
+    appendFileLine: enginePath$, "        analysis = audio[analysis_channel].copy()"
+    appendFileLine: enginePath$, "        analysis_source = ""channel %d (strongest RMS)"" % (analysis_channel + 1)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    log(""    Loaded %.2f s at %d Hz, %d channel%s (%d samples/channel)"""
     appendFileLine: enginePath$, "        % (n_samples / float(sr), sr, n_channels,"
     appendFileLine: enginePath$, "           """" if n_channels == 1 else ""s"", n_samples))"
     appendFileLine: enginePath$, "    log(""    Analysis source: %s"" % analysis_source)"
-    appendFileLine: enginePath$, "    return audio, analysis, sr, analysis_source"
+    appendFileLine: enginePath$, "    return audio, analysis, sr, analysis_source, analysis_channel + 1"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "# =========================================================================="
@@ -1296,6 +1346,23 @@ procedure writeEngine
     appendFileLine: enginePath$, "    return float(np.median(D.min(axis=1)))"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "def median_pair_distance(Z, seed, sample=400):"
+    appendFileLine: enginePath$, "    # Repeat cost needs a corpus-scale distance, not nearest-neighbour distance."
+    appendFileLine: enginePath$, "    # With overlapping grains the nearest neighbour can be almost identical,"
+    appendFileLine: enginePath$, "    # collapsing the old repeat penalty to nearly zero."
+    appendFileLine: enginePath$, "    import numpy as np"
+    appendFileLine: enginePath$, "    from scipy.spatial.distance import cdist"
+    appendFileLine: enginePath$, "    rng = np.random.RandomState(seed + 17)"
+    appendFileLine: enginePath$, "    n = Z.shape[0]"
+    appendFileLine: enginePath$, "    idx = rng.choice(n, size=min(sample, n), replace=False)"
+    appendFileLine: enginePath$, "    D = cdist(Z[idx], Z[idx])"
+    appendFileLine: enginePath$, "    tri = D[np.triu_indices(idx.size, 1)]"
+    appendFileLine: enginePath$, "    tri = tri[np.isfinite(tri) & (tri > 1e-9)]"
+    appendFileLine: enginePath$, "    if tri.size == 0:"
+    appendFileLine: enginePath$, "        return 1.0"
+    appendFileLine: enginePath$, "    return float(np.median(tri))"
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "def walk_pool(rf, Z, T, traj_weight, repeat_penalty, seed, log):"
     appendFileLine: enginePath$, "    import numpy as np"
     appendFileLine: enginePath$, "    from scipy.spatial.distance import cdist"
@@ -1304,12 +1371,18 @@ procedure writeEngine
     appendFileLine: enginePath$, "    n_steps = T.shape[0]"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    nn_scale = median_nn_distance(Z, seed)"
-    appendFileLine: enginePath$, "    if not np.isfinite(nn_scale) or nn_scale <= 0:"
-    appendFileLine: enginePath$, "        nn_scale = 1.0"
+    appendFileLine: enginePath$, "    if not np.isfinite(nn_scale) or nn_scale < 0:"
+    appendFileLine: enginePath$, "        nn_scale = 0.0"
     appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "    # Penalty is expressed in units of the median nearest-neighbour distance,"
-    appendFileLine: enginePath$, "    # so a given repeat_penalty means the same thing on any corpus."
-    appendFileLine: enginePath$, "    hit_cost = repeat_penalty * nn_scale * 8.0"
+    appendFileLine: enginePath$, "    repeat_scale = median_pair_distance(Z, seed)"
+    appendFileLine: enginePath$, "    if not np.isfinite(repeat_scale) or repeat_scale <= 0:"
+    appendFileLine: enginePath$, "        repeat_scale = 1.0"
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    # Penalty is expressed in units of the median pairwise corpus distance."
+    appendFileLine: enginePath$, "    # This stays meaningful even when overlap makes adjacent grains almost"
+    appendFileLine: enginePath$, "    # identical. Only the exact grain is penalised, so natural j -> j+1 source"
+    appendFileLine: enginePath$, "    # continuity remains available to the forest."
+    appendFileLine: enginePath$, "    hit_cost = repeat_penalty * repeat_scale"
     appendFileLine: enginePath$, "    decay    = 0.5"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    penalty = np.zeros(n_pool)"
@@ -1334,8 +1407,14 @@ procedure writeEngine
     appendFileLine: enginePath$, "        penalty[j] += hit_cost"
     appendFileLine: enginePath$, "        state = Z[j]"
     appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    chosen = np.asarray(chosen, dtype=int)"
+    appendFileLine: enginePath$, "    dists = np.asarray(dists)"
+    appendFileLine: enginePath$, "    immediate_repeat_pct = (100.0 * float(np.mean(chosen[1:] == chosen[:-1]))"
+    appendFileLine: enginePath$, "                            if chosen.size > 1 else 0.0)"
     appendFileLine: enginePath$, "    log(""    Walked %d steps in %.1f s"" % (n_steps, time.time() - t0))"
-    appendFileLine: enginePath$, "    return np.asarray(chosen, dtype=int), np.asarray(dists), nn_scale"
+    appendFileLine: enginePath$, "    log(""    Repeat scale %.4f; immediate repeats %.1f%%"""
+    appendFileLine: enginePath$, "        % (repeat_scale, immediate_repeat_pct))"
+    appendFileLine: enginePath$, "    return chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "# =========================================================================="
@@ -1367,12 +1446,14 @@ procedure writeEngine
     appendFileLine: enginePath$, "    floor = 0.05 * float(env.max()) if env.max() > 0 else 1.0"
     appendFileLine: enginePath$, "    out = buf / np.maximum(env[None, :], floor)"
     appendFileLine: enginePath$, ""
-    appendFileLine: enginePath$, "    out = apply_edge_fades(out, frame_len)"
-    appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    if out.shape[1] >= out_samples:"
     appendFileLine: enginePath$, "        out = out[:, :out_samples]"
     appendFileLine: enginePath$, "    else:"
     appendFileLine: enginePath$, "        out = np.pad(out, ((0, 0), (0, out_samples - out.shape[1])))"
+    appendFileLine: enginePath$, ""
+    appendFileLine: enginePath$, "    # Fade the FINAL buffer. Fading before trimming can cut off the end of the"
+    appendFileLine: enginePath$, "    # fade whenever target duration is not aligned to the hop grid."
+    appendFileLine: enginePath$, "    out = apply_edge_fades(out, frame_len)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    input_rms = float(np.sqrt(np.mean(audio * audio))) if audio.size else 0.0"
     appendFileLine: enginePath$, "    rms_before_match = float(np.sqrt(np.mean(out * out))) if out.size else 0.0"
@@ -1434,11 +1515,11 @@ procedure writeEngine
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "def write_stats(path, args, sr, n_source_samples, n_channels,"
-    appendFileLine: enginePath$, "                analysis_source, F_rows, chosen, dists, out,"
+    appendFileLine: enginePath$, "                analysis_source, analysis_channel, F_rows, chosen, dists, out,"
     appendFileLine: enginePath$, "                peak_before, peak_after, input_rms, rms_before_match,"
     appendFileLine: enginePath$, "                rms_after_match, output_rms, rms_gain, rms_limited,"
-    appendFileLine: enginePath$, "                train_rows, oob, oob_skill, nn_scale, hop_len, frame_len,"
-    appendFileLine: enginePath$, "                elapsed, warnings):"
+    appendFileLine: enginePath$, "                train_rows, oob, oob_skill, nn_scale, repeat_scale,"
+    appendFileLine: enginePath$, "                immediate_repeat_pct, hop_len, frame_len, elapsed, warnings):"
     appendFileLine: enginePath$, "    import numpy as np"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    distinct = int(np.unique(chosen).size)"
@@ -1459,6 +1540,7 @@ procedure writeEngine
     appendFileLine: enginePath$, "        p(""input_channels=%d""    % n_channels)"
     appendFileLine: enginePath$, "        p(""output_channels=%d""   % (1 if out.ndim == 1 else out.shape[1]))"
     appendFileLine: enginePath$, "        p(""analysis_source=%s""   % analysis_source)"
+    appendFileLine: enginePath$, "        p(""analysis_channel=%d""  % analysis_channel)"
     appendFileLine: enginePath$, "        p(""frame_samples=%d""     % frame_len)"
     appendFileLine: enginePath$, "        p(""hop_samples=%d""       % hop_len)"
     appendFileLine: enginePath$, "        p(""overlap_pct=%.1f""     % (100.0 * (1.0 - hop_len / float(frame_len))))"
@@ -1475,6 +1557,8 @@ procedure writeEngine
     appendFileLine: enginePath$, "        p(""distinct_pct=%.1f""    % (100.0 * distinct / max(1, chosen.size)))"
     appendFileLine: enginePath$, "        p(""mean_match_dist=%.4f"" % float(np.mean(dists)))"
     appendFileLine: enginePath$, "        p(""median_nn_dist=%.4f""  % nn_scale)"
+    appendFileLine: enginePath$, "        p(""repeat_distance_scale=%.4f"" % repeat_scale)"
+    appendFileLine: enginePath$, "        p(""immediate_repeat_pct=%.1f"" % immediate_repeat_pct)"
     appendFileLine: enginePath$, "        p(""match_input_rms=%d""   % int(bool(args.match_input_rms)))"
     appendFileLine: enginePath$, "        p(""source_rms=%.6f""       % input_rms)"
     appendFileLine: enginePath$, "        p(""rms_before_match=%.6f"" % rms_before_match)"
@@ -1551,7 +1635,7 @@ procedure writeEngine
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    log(""=== rf_engine.py -- Random Forest Concatenative Synthesis ==="")"
     appendFileLine: enginePath$, "    log(""  [Py 1/6] Loading audio..."")"
-    appendFileLine: enginePath$, "    audio, y, sr, analysis_source = load_audio(args.input, log)"
+    appendFileLine: enginePath$, "    audio, y, sr, analysis_source, analysis_channel = load_audio(args.input, log)"
     appendFileLine: enginePath$, "    n_channels, n_source_samples = audio.shape"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    frame_len = int(round(args.frame_ms * 0.001 * sr))"
@@ -1606,7 +1690,7 @@ procedure writeEngine
     appendFileLine: enginePath$, "    T = make_trajectory(args.trajectory, n_steps, args.seed, log)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    log(""  [Py 5/6] Matching trajectory against the grain pool..."")"
-    appendFileLine: enginePath$, "    chosen, dists, nn_scale = walk_pool("
+    appendFileLine: enginePath$, "    chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct = walk_pool("
     appendFileLine: enginePath$, "        rf, Z, T, args.traj_weight, args.repeat_penalty, args.seed, log)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    distinct_pct = 100.0 * np.unique(chosen).size / float(chosen.size)"
@@ -1615,6 +1699,9 @@ procedure writeEngine
     appendFileLine: enginePath$, "    if distinct_pct < 10.0:"
     appendFileLine: enginePath$, "        warnings.append(""only %.0f%% of the selected grains are distinct; """
     appendFileLine: enginePath$, "                        ""raise Repeat penalty to reduce stuttering"" % distinct_pct)"
+    appendFileLine: enginePath$, "    if args.repeat_penalty > 0 and immediate_repeat_pct > 25.0:"
+    appendFileLine: enginePath$, "        warnings.append(""%.0f%% immediate grain repeats remain; raise Repeat penalty """
+    appendFileLine: enginePath$, "                        ""for more variation"" % immediate_repeat_pct)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    log(""  [Py 6/6] Overlap-add resynthesis..."")"
     appendFileLine: enginePath$, "    (out, peak_before, peak_after, input_rms, rms_before_match,"
@@ -1628,11 +1715,11 @@ procedure writeEngine
     appendFileLine: enginePath$, "    elapsed = time.time() - t_start"
     appendFileLine: enginePath$, "    if args.stats:"
     appendFileLine: enginePath$, "        write_stats(args.stats, args, sr, n_source_samples, n_channels,"
-    appendFileLine: enginePath$, "                    analysis_source, F.shape[0], chosen, dists, out,"
+    appendFileLine: enginePath$, "                    analysis_source, analysis_channel, F.shape[0], chosen, dists, out,"
     appendFileLine: enginePath$, "                    peak_before, peak_after, input_rms, rms_before_match,"
     appendFileLine: enginePath$, "                    rms_after_match, output_rms, rms_gain, rms_limited,"
-    appendFileLine: enginePath$, "                    train_rows, oob, oob_skill, nn_scale, hop_len, frame_len,"
-    appendFileLine: enginePath$, "                    elapsed, warnings)"
+    appendFileLine: enginePath$, "                    train_rows, oob, oob_skill, nn_scale, repeat_scale,"
+    appendFileLine: enginePath$, "                    immediate_repeat_pct, hop_len, frame_len, elapsed, warnings)"
     appendFileLine: enginePath$, ""
     appendFileLine: enginePath$, "    for w in warnings:"
     appendFileLine: enginePath$, "        log(""    WARNING: "" + w)"

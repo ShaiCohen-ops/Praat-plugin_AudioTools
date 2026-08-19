@@ -5,9 +5,15 @@
 # Part of Praat AudioTools plugin
 # Author: Shai Cohen, Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026)
 # License: MIT
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# v0.4:
+#   - Calibrates Repeat penalty to corpus-scale pairwise distance so it remains effective with heavily overlapping grains.
+#   - Applies edge fades after final length trimming so arbitrary target durations end cleanly.
+#   - Uses the strongest real source channel for multichannel analysis instead of fold-down.
+#   - Reports repeat-scale and immediate-repeat diagnostics.
 #
 # v0.3:
 #   - Adds optional global RMS level matching to the source after OLA and before Safety.
@@ -36,7 +42,7 @@
 #
 # Architecture:
 #   Stage 1 - Load source audio at native sample rate, preserve all channels,
-#             and build a mono analysis fold with cancellation fallback.
+#             and analyse the strongest-RMS real channel.
 #   Stage 2 - Window into overlapping grains and extract a 17-dimensional
 #             feature vector per grain:
 #               [0] RMS energy
@@ -153,27 +159,24 @@ def load_audio(path, log):
     n_channels, n_samples = audio.shape
 
     if n_channels == 1:
+        analysis_channel = 0
         analysis = audio[0].copy()
-        analysis_source = "mono input"
+        analysis_source = "channel 1 (mono input)"
     else:
-        fold = np.mean(audio, axis=0)
+        # Analyse one real channel rather than an arithmetic fold. A fold can
+        # cancel or spectrally reshape correlated multichannel material. The
+        # strongest-RMS channel is a stable representative while resynthesis
+        # still applies every selected grain index to every source channel.
         ch_rms = np.sqrt(np.mean(audio * audio, axis=1))
-        best = int(np.argmax(ch_rms))
-        fold_rms = float(np.sqrt(np.mean(fold * fold)))
-        best_rms = float(ch_rms[best])
-
-        if best_rms > 0.0 and fold_rms < 0.10 * best_rms:
-            analysis = audio[best].copy()
-            analysis_source = "channel %d (fold-down cancellation fallback)" % (best + 1)
-        else:
-            analysis = fold
-            analysis_source = "mono fold-down"
+        analysis_channel = int(np.argmax(ch_rms))
+        analysis = audio[analysis_channel].copy()
+        analysis_source = "channel %d (strongest RMS)" % (analysis_channel + 1)
 
     log("    Loaded %.2f s at %d Hz, %d channel%s (%d samples/channel)"
         % (n_samples / float(sr), sr, n_channels,
            "" if n_channels == 1 else "s", n_samples))
     log("    Analysis source: %s" % analysis_source)
-    return audio, analysis, sr, analysis_source
+    return audio, analysis, sr, analysis_source, analysis_channel + 1
 
 
 # ==========================================================================
@@ -369,6 +372,23 @@ def median_nn_distance(Z, seed, sample=800):
     return float(np.median(D.min(axis=1)))
 
 
+def median_pair_distance(Z, seed, sample=400):
+    # Repeat cost needs a corpus-scale distance, not nearest-neighbour distance.
+    # With overlapping grains the nearest neighbour can be almost identical,
+    # collapsing the old repeat penalty to nearly zero.
+    import numpy as np
+    from scipy.spatial.distance import cdist
+    rng = np.random.RandomState(seed + 17)
+    n = Z.shape[0]
+    idx = rng.choice(n, size=min(sample, n), replace=False)
+    D = cdist(Z[idx], Z[idx])
+    tri = D[np.triu_indices(idx.size, 1)]
+    tri = tri[np.isfinite(tri) & (tri > 1e-9)]
+    if tri.size == 0:
+        return 1.0
+    return float(np.median(tri))
+
+
 def walk_pool(rf, Z, T, traj_weight, repeat_penalty, seed, log):
     import numpy as np
     from scipy.spatial.distance import cdist
@@ -377,12 +397,18 @@ def walk_pool(rf, Z, T, traj_weight, repeat_penalty, seed, log):
     n_steps = T.shape[0]
 
     nn_scale = median_nn_distance(Z, seed)
-    if not np.isfinite(nn_scale) or nn_scale <= 0:
-        nn_scale = 1.0
+    if not np.isfinite(nn_scale) or nn_scale < 0:
+        nn_scale = 0.0
 
-    # Penalty is expressed in units of the median nearest-neighbour distance,
-    # so a given repeat_penalty means the same thing on any corpus.
-    hit_cost = repeat_penalty * nn_scale * 8.0
+    repeat_scale = median_pair_distance(Z, seed)
+    if not np.isfinite(repeat_scale) or repeat_scale <= 0:
+        repeat_scale = 1.0
+
+    # Penalty is expressed in units of the median pairwise corpus distance.
+    # This stays meaningful even when overlap makes adjacent grains almost
+    # identical. Only the exact grain is penalised, so natural j -> j+1 source
+    # continuity remains available to the forest.
+    hit_cost = repeat_penalty * repeat_scale
     decay    = 0.5
 
     penalty = np.zeros(n_pool)
@@ -407,8 +433,14 @@ def walk_pool(rf, Z, T, traj_weight, repeat_penalty, seed, log):
         penalty[j] += hit_cost
         state = Z[j]
 
+    chosen = np.asarray(chosen, dtype=int)
+    dists = np.asarray(dists)
+    immediate_repeat_pct = (100.0 * float(np.mean(chosen[1:] == chosen[:-1]))
+                            if chosen.size > 1 else 0.0)
     log("    Walked %d steps in %.1f s" % (n_steps, time.time() - t0))
-    return np.asarray(chosen, dtype=int), np.asarray(dists), nn_scale
+    log("    Repeat scale %.4f; immediate repeats %.1f%%"
+        % (repeat_scale, immediate_repeat_pct))
+    return chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct
 
 
 # ==========================================================================
@@ -440,12 +472,14 @@ def resynthesise(audio, chosen, frame_len, hop_len, out_samples,
     floor = 0.05 * float(env.max()) if env.max() > 0 else 1.0
     out = buf / np.maximum(env[None, :], floor)
 
-    out = apply_edge_fades(out, frame_len)
-
     if out.shape[1] >= out_samples:
         out = out[:, :out_samples]
     else:
         out = np.pad(out, ((0, 0), (0, out_samples - out.shape[1])))
+
+    # Fade the FINAL buffer. Fading before trimming can cut off the end of the
+    # fade whenever target duration is not aligned to the hop grid.
+    out = apply_edge_fades(out, frame_len)
 
     input_rms = float(np.sqrt(np.mean(audio * audio))) if audio.size else 0.0
     rms_before_match = float(np.sqrt(np.mean(out * out))) if out.size else 0.0
@@ -507,11 +541,11 @@ def subsample(a, cap):
 
 
 def write_stats(path, args, sr, n_source_samples, n_channels,
-                analysis_source, F_rows, chosen, dists, out,
+                analysis_source, analysis_channel, F_rows, chosen, dists, out,
                 peak_before, peak_after, input_rms, rms_before_match,
                 rms_after_match, output_rms, rms_gain, rms_limited,
-                train_rows, oob, oob_skill, nn_scale, hop_len, frame_len,
-                elapsed, warnings):
+                train_rows, oob, oob_skill, nn_scale, repeat_scale,
+                immediate_repeat_pct, hop_len, frame_len, elapsed, warnings):
     import numpy as np
 
     distinct = int(np.unique(chosen).size)
@@ -532,6 +566,7 @@ def write_stats(path, args, sr, n_source_samples, n_channels,
         p("input_channels=%d"    % n_channels)
         p("output_channels=%d"   % (1 if out.ndim == 1 else out.shape[1]))
         p("analysis_source=%s"   % analysis_source)
+        p("analysis_channel=%d"  % analysis_channel)
         p("frame_samples=%d"     % frame_len)
         p("hop_samples=%d"       % hop_len)
         p("overlap_pct=%.1f"     % (100.0 * (1.0 - hop_len / float(frame_len))))
@@ -548,6 +583,8 @@ def write_stats(path, args, sr, n_source_samples, n_channels,
         p("distinct_pct=%.1f"    % (100.0 * distinct / max(1, chosen.size)))
         p("mean_match_dist=%.4f" % float(np.mean(dists)))
         p("median_nn_dist=%.4f"  % nn_scale)
+        p("repeat_distance_scale=%.4f" % repeat_scale)
+        p("immediate_repeat_pct=%.1f" % immediate_repeat_pct)
         p("match_input_rms=%d"   % int(bool(args.match_input_rms)))
         p("source_rms=%.6f"       % input_rms)
         p("rms_before_match=%.6f" % rms_before_match)
@@ -624,7 +661,7 @@ def main():
 
     log("=== rf_engine.py -- Random Forest Concatenative Synthesis ===")
     log("  [Py 1/6] Loading audio...")
-    audio, y, sr, analysis_source = load_audio(args.input, log)
+    audio, y, sr, analysis_source, analysis_channel = load_audio(args.input, log)
     n_channels, n_source_samples = audio.shape
 
     frame_len = int(round(args.frame_ms * 0.001 * sr))
@@ -679,7 +716,7 @@ def main():
     T = make_trajectory(args.trajectory, n_steps, args.seed, log)
 
     log("  [Py 5/6] Matching trajectory against the grain pool...")
-    chosen, dists, nn_scale = walk_pool(
+    chosen, dists, nn_scale, repeat_scale, immediate_repeat_pct = walk_pool(
         rf, Z, T, args.traj_weight, args.repeat_penalty, args.seed, log)
 
     distinct_pct = 100.0 * np.unique(chosen).size / float(chosen.size)
@@ -688,6 +725,9 @@ def main():
     if distinct_pct < 10.0:
         warnings.append("only %.0f%% of the selected grains are distinct; "
                         "raise Repeat penalty to reduce stuttering" % distinct_pct)
+    if args.repeat_penalty > 0 and immediate_repeat_pct > 25.0:
+        warnings.append("%.0f%% immediate grain repeats remain; raise Repeat penalty "
+                        "for more variation" % immediate_repeat_pct)
 
     log("  [Py 6/6] Overlap-add resynthesis...")
     (out, peak_before, peak_after, input_rms, rms_before_match,
@@ -701,11 +741,11 @@ def main():
     elapsed = time.time() - t_start
     if args.stats:
         write_stats(args.stats, args, sr, n_source_samples, n_channels,
-                    analysis_source, F.shape[0], chosen, dists, out,
+                    analysis_source, analysis_channel, F.shape[0], chosen, dists, out,
                     peak_before, peak_after, input_rms, rms_before_match,
                     rms_after_match, output_rms, rms_gain, rms_limited,
-                    train_rows, oob, oob_skill, nn_scale, hop_len, frame_len,
-                    elapsed, warnings)
+                    train_rows, oob, oob_skill, nn_scale, repeat_scale,
+                    immediate_repeat_pct, hop_len, frame_len, elapsed, warnings)
 
     for w in warnings:
         log("    WARNING: " + w)

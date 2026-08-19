@@ -3,7 +3,7 @@ spectral_morph.py  -  CDP-style spectral morphing via phase vocoder
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 5.4 (2026)
+Version: 5.5 (2026)
 
 Usage:
     python spectral_morph.py soundA.wav soundB.wav output.wav
@@ -20,6 +20,17 @@ Usage:
                   3 = linear time-stretch shorter to match longer
                       (v4.x legacy; pitches the shorter input)
     debug       : 0 = off, 1 = write per-frame CSV next to output WAV
+
+Changelog v5.5:
+    - Silence guard is now tied to ARTIFICIAL silence-padding boundaries,
+      not threshold-detected end-of-content. Natural trailing silence in a
+      same-duration source is therefore preserved as musical content.
+    - Debug CSV now reports the actual differential blend weights used by
+      the audio path and follows the strongest combined A/B channel.
+    - Peak safety is applied once, globally across all output channels,
+      preserving multichannel balance when attenuation is required.
+    - Output WAV is FLOAT to avoid an unnecessary second PCM16 quantisation.
+    - Runtime log reports requested and effective power-of-two FFT window.
 
 Changelog v5.4:
     AUDIO FIX (Python backend): shifted silence-factor ramp.
@@ -166,26 +177,6 @@ def spectral_envelope(mag, order=60):
 
 # ---------------------------------------------------------------- main morph -
 
-def find_end_of_content(signal, threshold=1e-5):
-    """
-    Return the sample index just past the last sample with |x| > threshold.
-
-    v5.3: used by the time-position-based silence factor. The signal's
-    "end of content" boundary is computed once per channel (the last
-    non-silent sample). Per-frame silence factor is then the fraction
-    of the analysis window that's past that boundary — a deterministic,
-    smooth ramp over the window width regardless of spectral content.
-    Earlier (v5.2) attempt used mean FFT magnitude per frame, which for
-    sparse spectra drops near-binary through the silence-pad boundary
-    instead of ramping continuously.
-    """
-    import numpy as np
-    nonzero = np.where(np.abs(signal) > threshold)[0]
-    if len(nonzero) == 0:
-        return 0
-    return int(nonzero[-1]) + 1
-
-
 def align_lengths(a, b, length_mode):
     """
     Make a and b the same length according to length_mode.
@@ -264,6 +255,12 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
     wsize = max(wsize, 64)
     hop = wsize // 4
 
+    # v5.5: preserve original lengths before any alignment.  The silence
+    # guard must respond only to artificial zero-padding, not to naturally
+    # quiet/trailing-silent musical content inside either source.
+    orig_len_a = len(a)
+    orig_len_b = len(b)
+
     # v5.0: length alignment dispatched to align_lengths() with mode select
     a, b = align_lengths(a, b, length_mode)
     len_out = len(a)
@@ -271,12 +268,15 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
     win = hann(wsize)
     win_sq = win ** 2
 
-    # v5.3: precompute end-of-content boundaries for the time-position-
-    # based silence factor. boundary_a / boundary_b are sample indices
-    # into the unpadded a / b (just past the last non-silent sample).
-    # In a_pad / b_pad these shift by +wsize//2 because of left padding.
-    boundary_a = find_end_of_content(a)
-    boundary_b = find_end_of_content(b)
+    # v5.5: silence factors are tied to ARTIFICIAL padding boundaries.
+    # For trim/time-stretch there is no artificial silence boundary, so both
+    # boundaries equal len_out and the differential guard remains inactive.
+    if length_mode == 1:
+        boundary_a = min(orig_len_a, len_out)
+        boundary_b = min(orig_len_b, len_out)
+    else:
+        boundary_a = len_out
+        boundary_b = len_out
     boundary_a_pad = boundary_a + wsize // 2
     boundary_b_pad = boundary_b + wsize // 2
 
@@ -460,10 +460,10 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
                 "mag_out_peak": float(mag_out.max()) if mag_out.size > 0 else 0.0,
             }
             if morph_mode == 1 or morph_mode == 3:
-                # Blend weights only exist in modes 1 and 3
-                row["w_morph"] = (1 - a_sil) * (1 - b_sil)
-                row["w_a_direct"] = (1 - a_sil) * b_sil
-                row["w_b_direct"] = a_sil * (1 - b_sil)
+                # v5.5: report the ACTUAL differential weights used above.
+                row["w_morph"] = w_morph
+                row["w_a_direct"] = w_a_direct
+                row["w_b_direct"] = w_b_direct
                 row["mag_morph_mean"] = (
                     float(mag_morph.mean()) if "mag_morph" in locals() else 0.0
                 )
@@ -493,21 +493,17 @@ def spectral_morph_channel(a, b, sr, window_s, start_morph_s, end_morph_s,
     # Trim
     y = y[wsize // 2:wsize // 2 + len_out]
 
-    # Normalise peak
-    peak = np.max(np.abs(y))
-    if peak > 0:
-        y /= max(1.0, peak * 1.01)
-
-    return y
+    # v5.5: no per-channel peak scaling here.  Multichannel peak safety is
+    # applied once after channels are stacked, preserving their level balance.
+    return y.astype(np.float32)
 
 
 def spectral_morph(audio_a, audio_b, sr, window_s, start_morph_s,
                    end_morph_s, morph_mode, curve_type, mix_amount=0.5,
                    length_mode=1, debug_log=None):
-    """Handle mono or stereo (process each channel).
-    If debug_log is provided, the FIRST channel's per-frame state is
-    captured into it (subsequent channels are processed without debug
-    to avoid duplicating rows)."""
+    """Handle mono or multichannel audio (process each channel).
+    If debug_log is provided, capture the strongest combined A/B channel
+    so diagnostics remain meaningful even when channel 1 is weak or silent."""
     import numpy as np
 
     def to_mono_channels(x):
@@ -525,12 +521,20 @@ def spectral_morph(audio_a, audio_b, sr, window_s, start_morph_s,
     while len(chs_b) < n_ch:
         chs_b.append(chs_b[-1])
 
+    debug_ch = 0
+    if debug_log is not None and n_ch > 1:
+        combined_rms = []
+        for ch in range(n_ch):
+            ra = float(np.sqrt(np.mean(chs_a[ch].astype(np.float64) ** 2)))
+            rb = float(np.sqrt(np.mean(chs_b[ch].astype(np.float64) ** 2)))
+            combined_rms.append(ra + rb)
+        debug_ch = int(np.argmax(combined_rms))
+
     out_chs = []
     for ch in range(n_ch):
         print(f"  Processing channel {ch + 1}/{n_ch}...")
-        # Only capture debug for first channel; stereo log would be
-        # twice as long for little extra information.
-        log_for_this_ch = debug_log if ch == 0 else None
+        log_for_this_ch = debug_log if ch == debug_ch else None
+        before_rows = len(debug_log) if log_for_this_ch is not None else 0
         out_chs.append(spectral_morph_channel(
             chs_a[ch].astype(np.float32),
             chs_b[ch].astype(np.float32),
@@ -538,14 +542,24 @@ def spectral_morph(audio_a, audio_b, sr, window_s, start_morph_s,
             morph_mode, curve_type, mix_amount, length_mode,
             log_for_this_ch,
         ))
+        if log_for_this_ch is not None:
+            for row in debug_log[before_rows:]:
+                row["channel"] = debug_ch + 1
 
     if n_ch == 1:
-        return out_chs[0]
+        result = out_chs[0].astype(np.float32, copy=False)
+    else:
+        max_len = max(len(c) for c in out_chs)
+        result = np.zeros((max_len, n_ch), dtype=np.float32)
+        for i, c in enumerate(out_chs):
+            result[:len(c), i] = c
 
-    max_len = max(len(c) for c in out_chs)
-    result = np.zeros((max_len, n_ch), dtype=np.float32)
-    for i, c in enumerate(out_chs):
-        result[:len(c), i] = c
+    # v5.5: attenuation-only GLOBAL peak safety.  One scalar preserves
+    # inter-channel balance; quiet material is never normalised upward.
+    peak = float(np.max(np.abs(result))) if result.size else 0.0
+    if peak > 0.99:
+        result = (result * (0.99 / peak)).astype(np.float32)
+
     return result
 
 
@@ -646,9 +660,12 @@ def main():
     curve_names = {1: "linear", 2: "cosine", 3: f"full-mix({mix_amount:.2f})"}
     length_names = {1: "silence-pad", 2: "trim-to-shorter",
                     3: "time-stretch (v4.x legacy)"}
+    effective_wsize = max(next_pow2(int(window_s * sr_a)), 64)
+    effective_ms = 1000.0 * effective_wsize / sr_a
     print(f"  Mode: {mode_names.get(morph_mode, '?')} | "
           f"Curve: {curve_names.get(curve_type, '?')} | "
-          f"Window: {window_s*1000:.0f}ms")
+          f"Window requested: {window_s*1000:.1f} ms | "
+          f"FFT: {effective_wsize} samples ({effective_ms:.1f} ms)")
     print(f"  Length handling: {length_names.get(length_mode, '?')}")
 
     debug_log = [] if debug_on else None
@@ -658,7 +675,7 @@ def main():
                          morph_mode, curve_type, mix_amount, length_mode,
                          debug_log=debug_log)
 
-    sf.write(out_wav, out, sr_a)
+    sf.write(out_wav, out, sr_a, subtype="FLOAT")
     dur_out = len(out) / sr_a if out.ndim == 1 else len(out) / sr_a
     print(f"OK: wrote {out_wav}  ({dur_out:.2f}s)")
 
@@ -675,7 +692,8 @@ def main():
         wsize_dbg = next_pow2(int(window_s * sr_a))
         wsize_dbg = max(wsize_dbg, 64)
         hop_dbg = wsize_dbg // 4
-        out_mono = out if out.ndim == 1 else out[:, 0]
+        debug_ch = int(debug_log[0].get("channel", 1)) - 1
+        out_mono = out if out.ndim == 1 else out[:, min(debug_ch, out.shape[1] - 1)]
         for row in debug_log:
             center_smp = int(row["time_s"] * sr_a)
             lo = max(0, center_smp - hop_dbg // 2)
@@ -688,7 +706,7 @@ def main():
                 row["out_rms"] = 0.0
                 row["out_peak"] = 0.0
 
-        fieldnames = ["frame", "time_s", "m",
+        fieldnames = ["frame", "channel", "time_s", "m",
                       "a_rms_td", "b_rms_td",
                       "a_mag_mean", "b_mag_mean",
                       "a_sil", "b_sil",

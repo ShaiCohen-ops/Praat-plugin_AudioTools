@@ -1,10 +1,37 @@
 """
-eventgen_pbind_ui.py — SuperCollider-style Pbind Event Generator
+PraatPbind.py — SuperCollider-style Pbind Event Generator
+Version: 1.4 (2026)
 Part of Praat AudioTools plugin
 
+v1.4:
+  - Expanded the Praat preset library from 8 to 13 named presets.
+  - Added presets that explicitly exercise Prand and Pexprand, plus weighted
+    rhythm, continuous-MIDI microtonality, and sparse exponential frequency.
+  - Renamed misleading LegatoPhrase -> StaccatoPhrase (legato 0.55) and
+    WeightedChord -> WeightedTriad (the engine is monophonic).
+  - Structural reference presets (MajorUp, MidiMelody, StaccatoPhrase,
+    Stutter) are deterministic; random presets remain seed-sensitive.
+  - No grammar/DSP change: presets compile through the existing validated
+    pattern engine.
+
+v1.3:
+  - Added Pbrown(lo, hi, step, length): bounded Brownian-motion pattern.
+  - RandomWalk preset now uses Pbrown instead of a fixed ascending Pseq.
+  - Seed=0 means a fresh system-random realization on every run; any nonzero
+    seed remains exactly reproducible.
+
+v1.2.1:
+  - Praat form-only compatibility fix: numeric defaults are quoted strings.
+
+v1.2:
+  - Multiline Pbind input (paired with the 6-line Praat editor).
+  - True staccato silence for legato < 1; monophonic connected legato for >= 1.
+  - Chronological PitchTier points for all legato values.
+  - Stronger parser validation for empty/random patterns and weights.
+
 Usage:
-    python3 eventgen_pbind_ui.py analysis.csv pbind.txt out_pitch.csv out_intensity.csv
-            --baseHz 220 --seed 42 [--trace trace.csv]
+    python3 PraatPbind.py analysis.csv pbind.txt out_pitch.csv out_intensity.csv
+            --baseHz 220 --seed 0 [--trace trace.csv]
 
 Constraints: stdlib only (csv, re, math, random, argparse, sys, pathlib)
 
@@ -24,8 +51,9 @@ Other keys:
   dur=<pattern>       → event spacing in seconds
   amp=<pattern>       → linear amplitude [0..1]
   legato=<pattern>    → tier segment = dur * legato  (default 1.0)
-                        values < 1 give staccato phrasing
-                        values > 1 give legato overlap
+                        values < 1 give true staccato silence gaps
+                        values >= 1 stay connected to the next onset
+                        (Praat PitchTier is monophonic; no polyphonic overlap)
 
 Patterns:
   Pseq([0,1,2,...], inf|N)           cycle list; finite N stops early
@@ -33,6 +61,7 @@ Patterns:
   Pwrand([v,...], [w,...], inf|N)    weighted random pick (weights normalised)
   Pwhite(lo, hi, inf|N)              uniform random float
   Pexprand(lo, hi, inf|N)            exponentially distributed random float
+  Pbrown(lo, hi, step, inf|N)        bounded Brownian-motion random walk
   Pstutter(<pattern>, <count>)       repeat each value of inner pattern N times
   <number>                           constant
 
@@ -44,7 +73,7 @@ Stopping rule:
 EXAMPLES
 ─────────────────────────────────────────────────────────────
 Degree / scale:
-  Pbind(degree=Pseq([0,1,2,4,7],inf), dur=0.25, amp=Pwhite(0.1,0.5,inf))
+  Pbind(degree=Pseq([0,1,2,4,7],inf), dur=0.25, amp=0.45)
 
 MIDI note:
   Pbind(midinote=Pseq([60,62,64,65,67],inf), dur=0.2, amp=0.4)
@@ -52,14 +81,17 @@ MIDI note:
 Raw frequency:
   Pbind(freq=Pwhite(200,800,inf), dur=0.1, amp=0.3)
 
-Legato phrasing:
-  Pbind(degree=Pseq([0,2,4,7],inf), dur=0.3, amp=0.5, legato=0.6)
+Staccato phrasing:
+  Pbind(degree=Pseq([0,2,4,7],inf), dur=0.3, amp=0.5, legato=0.55)
 
 Weighted random:
   Pbind(degree=Pwrand([0,4,7],[0.5,0.3,0.2],inf), dur=0.2, amp=0.4)
 
 Stutter:
   Pbind(degree=Pstutter(Pseq([0,4,7],inf),3), dur=0.1, amp=0.4)
+
+Brownian random walk:
+  Pbind(degree=Pbrown(-7,7,2,inf), dur=0.15, amp=Pwhite(0.2,0.6,inf))
 
 Exponential random rhythm:
   Pbind(degree=Pseq([0,2,4],inf), dur=Pexprand(0.05,0.5,inf), amp=0.4)
@@ -73,7 +105,7 @@ import argparse
 import sys
 from pathlib import Path
 
-EXAMPLE_PBIND = "Pbind(degree=Pseq([0,1,2,4,7],inf), dur=0.25, amp=Pwhite(0.1,0.5,inf))"
+EXAMPLE_PBIND = "Pbind(degree=Pseq([0,1,2,4,7],inf), dur=0.25, amp=0.45)"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Argument parsing
@@ -86,11 +118,12 @@ def parse_args():
         epilog=f"Default example:\n  {EXAMPLE_PBIND}"
     )
     p.add_argument("analysis_csv",      help="CSV with duration_seconds,sampling_rate")
-    p.add_argument("pbind_txt",         help="Text file containing one Pbind(...) line")
+    p.add_argument("pbind_txt",         help="Text file containing one Pbind(...) expression (may span lines)")
     p.add_argument("out_pitch_csv",     help="Output pitch tier CSV (time,hz)")
     p.add_argument("out_intensity_csv", help="Output intensity tier CSV (time,db)")
     p.add_argument("--baseHz", type=float, default=220.0)
-    p.add_argument("--seed",   type=int,   default=42)
+    p.add_argument("--seed",   type=int,   default=0,
+                   help="0=fresh random realization; nonzero=reproducible seed")
     p.add_argument("--trace",  default=None,
                    help="Optional: write event trace CSV (t,dur,degree,amp,hz,db)")
     return p.parse_args()
@@ -159,9 +192,12 @@ def parse_repeat(s):
     if s == "inf":
         return float("inf")
     try:
-        return int(s)
+        value = int(s)
     except ValueError:
         raise ParseError(f"Expected 'inf' or integer, got: {s!r}")
+    if value < 0:
+        raise ParseError(f"Repeat/count must be >= 0, got: {value}")
+    return value
 
 
 def split_top_level_commas(s):
@@ -182,20 +218,26 @@ def split_top_level_commas(s):
 def parse_pattern(s):
     """
     Parse a pattern expression. Returns a descriptor dict with 'type' key.
-    Supported types: const, pseq, prand, pwrand, pwhite, pexprand, pstutter
+    Supported types: const, pseq, prand, pwrand, pwhite, pexprand, pbrown, pstutter
     """
     s = _s(s)
 
     # ── Pseq ──────────────────────────────────────────────────────────────
     m = re.fullmatch(r"Pseq\s*\(\s*(\[[^\]]*\])\s*,\s*([^)]+)\s*\)", s)
     if m:
-        return {"type": "pseq", "list": parse_int_list(m.group(1)),
+        vals = parse_int_list(m.group(1))
+        if not vals:
+            raise ParseError("Pseq: list must not be empty")
+        return {"type": "pseq", "list": vals,
                 "repeats": parse_repeat(_s(m.group(2)))}
 
     # ── Prand ─────────────────────────────────────────────────────────────
     m = re.fullmatch(r"Prand\s*\(\s*(\[[^\]]*\])\s*,\s*([^)]+)\s*\)", s)
     if m:
-        return {"type": "prand", "list": parse_int_list(m.group(1)),
+        vals = parse_int_list(m.group(1))
+        if not vals:
+            raise ParseError("Prand: list must not be empty")
+        return {"type": "prand", "list": vals,
                 "count": parse_repeat(_s(m.group(2)))}
 
     # ── Pwrand ────────────────────────────────────────────────────────────
@@ -205,11 +247,15 @@ def parse_pattern(s):
     if m:
         vals    = parse_int_list(m.group(1))
         weights = parse_float_list(m.group(2))
+        if not vals:
+            raise ParseError("Pwrand: value/weight lists must not be empty")
         if len(vals) != len(weights):
             raise ParseError(
                 f"Pwrand: values and weights must have the same length.\n"
                 f"  values={vals}\n  weights={weights}"
             )
+        if any(w < 0 for w in weights):
+            raise ParseError(f"Pwrand: weights must be >= 0, got {weights}")
         total = sum(weights)
         if total <= 0:
             raise ParseError(f"Pwrand: weights must sum to > 0, got {weights}")
@@ -220,8 +266,11 @@ def parse_pattern(s):
     # ── Pwhite ────────────────────────────────────────────────────────────
     m = re.fullmatch(r"Pwhite\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)", s)
     if m:
-        return {"type": "pwhite",
-                "lo": parse_number(m.group(1)), "hi": parse_number(m.group(2)),
+        lo = parse_number(m.group(1))
+        hi = parse_number(m.group(2))
+        if hi < lo:
+            raise ParseError(f"Pwhite: hi must be >= lo, got ({lo}, {hi})")
+        return {"type": "pwhite", "lo": lo, "hi": hi,
                 "count": parse_repeat(_s(m.group(3)))}
 
     # ── Pexprand ──────────────────────────────────────────────────────────
@@ -231,8 +280,26 @@ def parse_pattern(s):
         hi = parse_number(m.group(2))
         if lo <= 0 or hi <= 0:
             raise ParseError(f"Pexprand: lo and hi must be > 0, got ({lo}, {hi})")
+        if hi < lo:
+            raise ParseError(f"Pexprand: hi must be >= lo, got ({lo}, {hi})")
         return {"type": "pexprand", "lo": lo, "hi": hi,
                 "count": parse_repeat(_s(m.group(3)))}
+
+    # ── Pbrown ────────────────────────────────────────────────────────────
+    # SuperCollider-style Brownian motion: Pbrown(lo, hi, step, length).
+    # `step` is the maximum absolute change per generated value.
+    m = re.fullmatch(
+        r"Pbrown\s*\(\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^,]+)\s*,\s*([^)]+)\s*\)", s)
+    if m:
+        lo   = parse_number(m.group(1))
+        hi   = parse_number(m.group(2))
+        step = parse_number(m.group(3))
+        if hi < lo:
+            raise ParseError(f"Pbrown: hi must be >= lo, got ({lo}, {hi})")
+        if step < 0:
+            raise ParseError(f"Pbrown: step must be >= 0, got {step}")
+        return {"type": "pbrown", "lo": lo, "hi": hi, "step": step,
+                "count": parse_repeat(_s(m.group(4)))}
 
     # ── Pstutter ──────────────────────────────────────────────────────────
     # Pstutter(<inner_pattern>, <count_int>)
@@ -246,7 +313,10 @@ def parse_pattern(s):
                 f"Got: {s!r}"
             )
         inner_pat = parse_pattern(_s(parts[0]))
-        count     = int(parse_number(_s(parts[1])))
+        count_raw = parse_number(_s(parts[1]))
+        if not float(count_raw).is_integer():
+            raise ParseError(f"Pstutter count must be an integer, got {count_raw}")
+        count = int(count_raw)
         if count < 1:
             raise ParseError(f"Pstutter count must be >= 1, got {count}")
         return {"type": "pstutter", "inner": inner_pat, "count": count}
@@ -259,7 +329,7 @@ def parse_pattern(s):
 
     raise ParseError(
         f"Unrecognised pattern expression: {s!r}\n"
-        f"Supported: Pseq  Prand  Pwrand  Pwhite  Pexprand  Pstutter  <number>\n"
+        f"Supported: Pseq  Prand  Pwrand  Pwhite  Pexprand  Pbrown  Pstutter  <number>\n"
         f"Example: {EXAMPLE_PBIND}"
     )
 
@@ -292,6 +362,14 @@ def parse_pbind(line):
         key = _s(pair[:eq])
         val = _s(pair[eq + 1:])
         result[key] = parse_pattern(val)
+
+    allowed_keys = {"degree", "midinote", "freq", "dur", "amp", "legato"}
+    unknown = [k for k in result if k not in allowed_keys]
+    if unknown:
+        raise ParseError(
+            f"Unknown Pbind key(s): {unknown}. Supported keys: "
+            "degree/midinote/freq, dur, amp, legato"
+        )
 
     # Validate pitch key
     pitch_keys = [k for k in ("degree", "midinote", "freq") if k in result]
@@ -404,6 +482,35 @@ def make_iterator(pat, rng):
             return math.exp(rng.uniform(log_lo, log_hi))
         return pexprand
 
+    elif pat["type"] == "pbrown":
+        lo      = pat["lo"]
+        hi      = pat["hi"]
+        step    = pat["step"]
+        max_n   = float("inf") if pat["count"] == float("inf") else int(pat["count"])
+        # Start inside the allowed interval. Subsequent values perform an
+        # arithmetic Brownian walk; overshoots are reflected back into range
+        # (folding rather than hard clipping avoids sticky boundary values).
+        state = {"n": 0, "cur": rng.uniform(lo, hi) if hi > lo else lo}
+        span = hi - lo
+
+        def _fold(v):
+            if span <= 0:
+                return lo
+            period = 2.0 * span
+            x = (v - lo) % period
+            if x > span:
+                x = period - x
+            return lo + x
+
+        def pbrown():
+            if state["n"] >= max_n:
+                raise PatternExhausted
+            if state["n"] > 0 and step > 0:
+                state["cur"] = _fold(state["cur"] + rng.uniform(-step, step))
+            state["n"] += 1
+            return state["cur"]
+        return pbrown
+
     elif pat["type"] == "pstutter":
         inner_iter = make_iterator(pat["inner"], rng)
         count      = pat["count"]
@@ -480,8 +587,17 @@ def generate_events(pbind_dict, duration_seconds, base_hz, rng):
                   file=sys.stderr)
             break
 
+        if not all(math.isfinite(float(v)) for v in (pitch_val, dur, amp, legato)):
+            print("  [stop] non-finite pattern value encountered — stopping.", file=sys.stderr)
+            break
+        dur = float(dur)
+        amp = float(amp)
+        legato = float(legato)
         if dur <= 0:
             print(f"  [stop] dur={dur} <= 0 — stopping.", file=sys.stderr)
+            break
+        if len(events) >= MAX_EVENTS:
+            print(f"  [stop] safety limit of {MAX_EVENTS} events reached.", file=sys.stderr)
             break
 
         # Pitch → Hz
@@ -517,37 +633,59 @@ def generate_events(pbind_dict, duration_seconds, base_hz, rng):
 # ═══════════════════════════════════════════════════════════════════════════
 
 EPS = 1e-6
+SILENCE_DB = -120.0
+MAX_EVENTS = 100000
 
 
 def events_to_tier_points(events, duration_seconds):
+    """Build chronological monophonic control tiers.
+
+    Pitch points stay stepwise and chronological. ``legato < 1`` shortens the
+    sounding part of an event and inserts a true near-silent intensity gap.
+    Because Praat Manipulation uses one monophonic PitchTier, ``legato >= 1``
+    is represented as connected legato up to the next onset (not polyphonic
+    overlap).
+
+    The first 2*len(events) intensity points mirror the event pairs; any extra
+    points that create silence gaps are appended afterwards. Praat sorts tier
+    points by time when they are added, while this ordering keeps the existing
+    visualization's event-pair bookkeeping stable.
     """
-    Stepwise tier: each event occupies [t, t + segment_dur - eps].
-    segment_dur = dur * legato, so legato < 1 creates gaps (staccato),
-    legato > 1 creates overlaps.
-    Appends a closing point at exactly duration_seconds to ensure full coverage.
-    """
-    pitch_pts     = []
-    intensity_pts = []
+    pitch_pts = []
+    event_intensity_pts = []
+    silence_pts = []
 
-    for ev in events:
-        t     = max(0.0, min(ev["t"],                            duration_seconds))
-        t_end = max(0.0, min(ev["t"] + ev["segment_dur"] - EPS,  duration_seconds))
+    n_events = len(events)
+    for i, ev in enumerate(events):
+        t = max(0.0, min(float(ev["t"]), duration_seconds))
+        next_t = (max(t, min(float(events[i + 1]["t"]), duration_seconds))
+                  if i + 1 < n_events else duration_seconds)
 
-        pitch_pts.append((t,     ev["hz"]))
-        pitch_pts.append((t_end, ev["hz"]))
+        requested_end = float(ev["t"]) + max(float(ev["segment_dur"]), EPS)
+        # A single PitchTier cannot represent overlapping notes.  Cap at the
+        # next onset; legato > 1 therefore means connected monophonic legato.
+        active_end = min(duration_seconds, requested_end, next_t)
+        active_end = max(t, active_end)
 
-        intensity_pts.append((t,     ev["db"]))
-        intensity_pts.append((t_end, ev["db"]))
+        # Keep the constant segment alive until just before the next control
+        # point, but never move before its onset for extremely short events.
+        pair_end = active_end
+        if pair_end > t + EPS:
+            pair_end -= EPS
 
-    # Ensure coverage through xmax
-    if events:
-        last_hz = events[-1]["hz"]
-        last_db = events[-1]["db"]
-        if pitch_pts and pitch_pts[-1][0] < duration_seconds - EPS:
-            pitch_pts.append((duration_seconds, last_hz))
-            intensity_pts.append((duration_seconds, last_db))
+        pitch_pts.append((t, ev["hz"]))
+        pitch_pts.append((pair_end, ev["hz"]))
+        event_intensity_pts.append((t, ev["db"]))
+        event_intensity_pts.append((pair_end, ev["db"]))
 
-    return pitch_pts, intensity_pts
+        # Staccato / early finite-pattern ending: add a real silent plateau.
+        gap_start = active_end
+        gap_end = next_t
+        if gap_end - gap_start > 2 * EPS:
+            silence_pts.append((gap_start + EPS, SILENCE_DB))
+            silence_pts.append((gap_end - EPS, SILENCE_DB))
+
+    return pitch_pts, event_intensity_pts + silence_pts
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -618,6 +756,10 @@ def describe_pattern(key, pat):
         rep    = "inf" if pat["count"] == float("inf") else pat["count"]
         finite = "" if pat["count"] == float("inf") else f"  [FINITE → stops at {int(pat['count'])} values]"
         return f"Pexprand({pat['lo']}, {pat['hi']}, {rep}){finite}"
+    elif t == "pbrown":
+        rep    = "inf" if pat["count"] == float("inf") else pat["count"]
+        finite = "" if pat["count"] == float("inf") else f"  [FINITE → stops at {int(pat['count'])} values]"
+        return f"Pbrown({pat['lo']}, {pat['hi']}, step={pat['step']}, {rep}){finite}"
     elif t == "pstutter":
         return f"Pstutter({describe_pattern('inner', pat['inner'])}, {pat['count']})"
     return str(pat)
@@ -638,8 +780,14 @@ def main():
         print("  Error: duration_seconds must be > 0", file=sys.stderr)
         sys.exit(1)
 
-    # ---- Read Pbind line ----
-    pbind_line = Path(args.pbind_txt).read_text().strip().splitlines()[0].strip()
+    # ---- Read Pbind text (multiline editor supported) ----
+    pbind_text = Path(args.pbind_txt).read_text(encoding="utf-8").strip()
+    # Newlines are formatting whitespace for the supported grammar. Collapsing
+    # them makes logs readable and preserves the one-expression parser.
+    pbind_line = " ".join(line.strip() for line in pbind_text.splitlines() if line.strip())
+    if not pbind_line:
+        print("ERROR: Pbind input is empty", file=sys.stderr)
+        sys.exit(1)
     print(f"  Pbind: {pbind_line}")
 
     # ---- Parse ----
@@ -655,9 +803,17 @@ def main():
 
     # ---- Config ----
     base_hz = args.baseHz
-    seed    = args.seed
-    rng     = random.Random(seed)
-    print(f"  BaseHz: {base_hz:.2f} Hz | Seed: {seed}")
+    requested_seed = args.seed
+    # Seed 0 is the musical/default mode: new realization every invocation.
+    # A nonzero seed preserves deterministic, reproducible research behavior.
+    if requested_seed == 0:
+        seed = random.SystemRandom().randrange(1, 2**31)
+        seed_mode = "auto"
+    else:
+        seed = requested_seed
+        seed_mode = "fixed"
+    rng = random.Random(seed)
+    print(f"  BaseHz: {base_hz:.2f} Hz | Seed: {seed} ({seed_mode}; requested={requested_seed})")
 
     # ---- Generate ----
     events = generate_events(pbind_dict, duration_seconds, base_hz, rng)

@@ -2,7 +2,7 @@
 # Praat AudioTools - SelfReflectiveFeedback.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2 (2026) - metric/loop reliability update
 #
 # Description:
 #   Single-stage self-reflective feedback loop.
@@ -14,13 +14,17 @@
 #   Supported stages:
 #     1. MDS Space Navigator
 #     2. Spectral Freeze & Glitch
+#     3. Crystalline Cascade
+#     4. 4-Channel Canon
 #
 #   Python parameters file format (params_out.txt):
-#     MDS  (lines 1-6):  stop_flag, silence_threshold,
-#                        min_sounding_interval, silence_between_words,
-#                        n_dimensions, similarity_threshold
+#     MDS    (lines 1-4): stop_flag, silence_threshold,
+#                         min_sounding_interval, silence_between_words
 #     Freeze (lines 1-4): stop_flag, freeze_points,
 #                         freeze_repeat_divisor, artifact_amplitude
+#     Cascade(lines 1-4): stop_flag, modulation_depth,
+#                         convolution_mix, wet_dry_percent
+#     Canon  (lines 1-8): stop_flag, four pitch shifts, delays 2-4
 #
 # Dependencies:
 #   pip install numpy scipy soundfile
@@ -65,15 +69,16 @@ endif
 
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
+runTag$ = string$(inputSound)
 
-paramsInFile$  = tempDir$ + "temp_refl_params_in.json"
-paramsOutJson$ = tempDir$ + "temp_refl_params_out.json"
-paramsOutTxt$  = tempDir$ + "temp_refl_params_out.txt"
-statusFile$    = tempDir$ + "temp_refl_status.ok"
-errorFile$     = tempDir$ + "temp_refl_error.txt"
-logFile$       = tempDir$ + "temp_refl_log.txt"
-probePy$       = tempDir$ + "temp_refl_probe.py"
-probeMarker$   = tempDir$ + "temp_refl_probe.ok"
+paramsInFile$  = tempDir$ + "temp_refl_" + runTag$ + "_params_in.json"
+paramsOutJson$ = tempDir$ + "temp_refl_" + runTag$ + "_params_out.json"
+paramsOutTxt$  = tempDir$ + "temp_refl_" + runTag$ + "_params_out.txt"
+statusFile$    = tempDir$ + "temp_refl_" + runTag$ + "_status.ok"
+errorFile$     = tempDir$ + "temp_refl_" + runTag$ + "_error.txt"
+logFile$       = tempDir$ + "temp_refl_" + runTag$ + "_log.txt"
+probePy$       = tempDir$ + "temp_refl_" + runTag$ + "_probe.py"
+probeMarker$   = tempDir$ + "temp_refl_" + runTag$ + "_probe.ok"
 
 pythonScriptJ$  = replace_regex$(pythonScript$, "\\", "/", 0)
 paramsInFileJ$  = replace_regex$(paramsInFile$, "\\", "/", 0)
@@ -112,8 +117,8 @@ procedure cleanUpTempFiles
         deleteFile: probeMarker$
     endif
     for .i from 1 to 50
-        .w$ = tempDir$ + "temp_refl_preview_" + string$(.i) + ".wav"
-        .m$ = tempDir$ + "temp_refl_metrics_" + string$(.i) + ".json"
+        .w$ = tempDir$ + "temp_refl_" + runTag$ + "_preview_" + string$(.i) + ".wav"
+        .m$ = tempDir$ + "temp_refl_" + runTag$ + "_metrics_" + string$(.i) + ".json"
         if fileReadable(.w$)
             deleteFile: .w$
         endif
@@ -126,7 +131,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Self-Reflective Feedback v1.1
+form Self-Reflective Feedback v1.2
     comment ── Stage ──────────────────────────────────────────────────
     optionmenu Stage: 1
         option MDS Space Navigator
@@ -142,6 +147,11 @@ form Self-Reflective Feedback v1.1
     boolean Play_after_each_iter 0
     boolean Debug 0
 endform
+
+# ---- INPUT CLAMPS ----
+max_iter = max(1, min(20, max_iter))
+default_iter = max(1, min(max_iter, default_iter))
+tolerance = max(0.005, min(0.20, tolerance))
 
 # ---- STAGE SETUP ----
 if stage = 1
@@ -183,7 +193,7 @@ endif
 
 # ---- INFO HEADER ----
 clearinfo
-writeInfoLine:  "=== Self-Reflective Feedback v1.1 ==="
+writeInfoLine:  "=== Self-Reflective Feedback v1.2 ==="
 appendInfoLine: "Input:      ", inputName$
 appendInfoLine: "Stage:      ", stageLabel$
 appendInfoLine: "Max iter:   ", max_iter, "  |  Default iter: ", default_iter
@@ -270,6 +280,13 @@ elsif stage = 2
     p_freeze_dur_div       = 25.0
     p_freeze_len_min       = 0.5
     p_freeze_len_max       = 1.5
+    # Spectral Freeze & Glitch v0.6 compatibility controls (fixed here;
+    # reflective loop only changes points/repeat/artifact).
+    p_smooth_loop_wraps    = 1
+    p_smoothing_ms         = 2.0
+    p_avoid_silence        = 1
+    p_silence_rms_factor   = 0.15
+    p_max_position_attempts = 20
     p_scale_peak           = 0.91
     p_draw_visualization   = 0
     p_play_result_freeze   = 0
@@ -307,6 +324,8 @@ endif
 
 # ---- MAIN REFLECTIVE LOOP ----
 stopFlag       = 0
+stopSource$    = ""
+autoContinue   = 0
 iter           = 0
 hasPrevSound   = 0
 prevIterSound  = 0
@@ -340,6 +359,11 @@ while iter < max_iter and stopFlag = 0
             ... p_freeze_len_max,
             ... p_freeze_rep_div,
             ... p_artifact_amp,
+            ... p_smooth_loop_wraps,
+            ... p_smoothing_ms,
+            ... p_avoid_silence,
+            ... p_silence_rms_factor,
+            ... p_max_position_attempts,
             ... p_scale_peak,
             ... p_draw_visualization,
             ... p_play_result_freeze
@@ -391,11 +415,11 @@ while iter < max_iter and stopFlag = 0
     appendInfoLine: "      Output: ", selected$("Sound")
 
     # ── Export preview WAV ─────────────────────────────────────────────
-    previewWav$  = tempDir$ + "temp_refl_preview_" + string$(iter) + ".wav"
-    metricsFile$ = tempDir$ + "temp_refl_metrics_" + string$(iter) + ".json"
+    previewWav$  = tempDir$ + "temp_refl_" + runTag$ + "_preview_" + string$(iter) + ".wav"
+    metricsFile$ = tempDir$ + "temp_refl_" + runTag$ + "_metrics_" + string$(iter) + ".json"
     prevMetricsFile$ = ""
     if iter > 1
-        prevMetricsFile$ = tempDir$ + "temp_refl_metrics_" + string$(iter - 1) + ".json"
+        prevMetricsFile$ = tempDir$ + "temp_refl_" + runTag$ + "_metrics_" + string$(iter - 1) + ".json"
     endif
 
     previewWavJ$  = replace_regex$(previewWav$, "\\", "/", 0)
@@ -527,7 +551,9 @@ while iter < max_iter and stopFlag = 0
             deleteFile: errorFile$
         endif
         appendInfoLine: "  WARNING: Python analysis failed: ", errMsg$
-        appendInfoLine: "  Continuing with unchanged parameters."
+        appendInfoLine: "  Stopping reflection and keeping the current render."
+        stopFlag = 1
+        stopSource$ = "analysis_failed"
     else
         deleteFile: statusFile$
 
@@ -589,6 +615,9 @@ while iter < max_iter and stopFlag = 0
                     ... fixed$(p_delay3,2), "/", fixed$(p_delay4,2)
             endif
             appendInfoLine: "      stop_flag=", stopFlag
+            if stopFlag = 1
+                stopSource$ = "metrics_stabilised"
+            endif
         endif
     endif
 
@@ -603,18 +632,21 @@ while iter < max_iter and stopFlag = 0
     prevIterSound = newSound
     hasPrevSound  = 1
 
-    if iter >= default_iter and stopFlag = 0 and iter < max_iter
+    if iter >= default_iter and stopFlag = 0 and iter < max_iter and autoContinue = 0
         beginPause: "Iteration " + string$(iter) + "/" + string$(max_iter) + " complete"
             comment: "Parameters updated. Choose next action:"
-            comment: "(press Enter / OK to continue automatically)"
             choice: "Next_action", 1
-                option: "Continue automatically"
-                option: "Iterate once more"
+                option: "Continue automatically (no more pauses)"
+                option: "Iterate once more (pause again)"
                 option: "Stop — keep current result"
         endPause: "OK", 1
 
-        if next_action = 3
+        if next_action = 1
+            autoContinue = 1
+            appendInfoLine: "  Continuing automatically."
+        elsif next_action = 3
             stopFlag = 1
+            stopSource$ = "user_stop"
             appendInfoLine: "  User stopped at iteration ", iter, "."
         endif
     endif
@@ -628,10 +660,8 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output:     ", selected$("Sound")
 appendInfoLine: "Iterations: ", iter
 
-if stopFlag = 1 and iter < max_iter
-    stopReason$ = "metrics_stabilised (auto)"
-elsif stopFlag = 1 and iter >= max_iter
-    stopReason$ = "user_stop"
+if stopSource$ <> ""
+    stopReason$ = stopSource$
 else
     stopReason$ = "max_iter_reached"
 endif

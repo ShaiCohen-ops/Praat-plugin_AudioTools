@@ -3,7 +3,7 @@
 # Script:      Spatial_Panner.praat
 # Author:      Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version:     2.0 (2026) - Unified Cross-Platform Version
+# Version:     2.3 (2026) - Unified Cross-Platform Version
 # License:     MIT License
 # Repository:  https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -41,10 +41,12 @@ if not fileReadable(pythonScript$)
         ... + "or next to this script."
 endif
 
-tempInput$    = tempDir$ + "temp_spatial_input.wav"
-tempOutput$   = tempDir$ + "temp_spatial_output.wav"
-probePy$      = tempDir$ + "temp_spatial_probe.py"
-probeMarker$  = tempDir$ + "temp_spatial_probe.ok"
+runTag$       = string$(inputSound)
+tempInput$    = tempDir$ + "temp_spatial_input_" + runTag$ + ".wav"
+tempOutput$   = tempDir$ + "temp_spatial_output_" + runTag$ + ".wav"
+probePy$      = tempDir$ + "temp_spatial_probe_" + runTag$ + ".py"
+probeMarker$  = tempDir$ + "temp_spatial_probe_" + runTag$ + ".ok"
+pyLog$        = tempDir$ + "temp_spatial_log_" + runTag$ + ".txt"
 
 # Escape paths for system calls (quoted)
 pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
@@ -52,6 +54,7 @@ tempInputJ$    = replace_regex$(tempInput$, "\\", "/", 0)
 tempOutputJ$   = replace_regex$(tempOutput$, "\\", "/", 0)
 probePyJ$      = replace_regex$(probePy$, "\\", "/", 0)
 probeMarkerJ$  = replace_regex$(probeMarker$, "\\", "/", 0)
+pyLogJ$        = replace_regex$(pyLog$, "\\", "/", 0)
 
 # ---- CLEANUP PROCEDURE ----
 procedure cleanUpFiles
@@ -67,6 +70,9 @@ procedure cleanUpFiles
     if fileReadable(probeMarker$)
         deleteFile: probeMarker$
     endif
+    if fileReadable(pyLog$)
+        deleteFile: pyLog$
+    endif
 endproc
 
 @cleanUpFiles
@@ -76,9 +82,10 @@ endproc
 # ===========================================================================
 writeFileLine: probePy$, "import sys"
 appendFileLine: probePy$, "try:"
-appendFileLine: probePy$, "    import numpy, scipy, soundfile"
-appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
-appendFileLine: probePy$, "except ImportError:"
+appendFileLine: probePy$, "    import numpy, scipy, soundfile, tkinter"
+appendFileLine: probePy$, "    if sys.version_info < (3, 8): sys.exit(1)"
+appendFileLine: probePy$, "    with open(sys.argv[1], 'w', encoding='utf-8') as f: f.write('ok')"
+appendFileLine: probePy$, "except Exception:"
 appendFileLine: probePy$, "    sys.exit(1)"
 
 pythonCmd$ = ""
@@ -112,7 +119,7 @@ for iCand from 1 to nCandidates
     endif
 
     # Run the probe script
-    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """"
+    runSystem_nocheck: tryCmd$ + " """ + probePyJ$ + """ """ + probeMarkerJ$ + """"
 
     if fileReadable(probeMarker$)
         pythonCmd$ = tryCmd$
@@ -125,14 +132,14 @@ deleteFile: probePy$
 
 if pythonCmd$ = ""
     @cleanUpFiles
-    exitScript: "Cannot find Python 3 with required packages (numpy, scipy, soundfile)."
+    exitScript: "Cannot find Python 3.8+ with required packages (numpy, scipy, soundfile, tkinter)."
 endif
 
 # ===========================================================================
 # Stage 1 — Execution
 # ===========================================================================
 clearinfo
-appendInfoLine: "=== Spatial Panner v2.0 ==="
+appendInfoLine: "=== Spatial Panner v2.3 ==="
 appendInfoLine: "Input:  ", inputName$
 appendInfoLine: "Python: ", pythonCmd$
 appendInfoLine: ""
@@ -142,16 +149,29 @@ selectObject: inputSound
 Save as WAV file: tempInput$
 
 appendInfoLine: "Opening spatial trajectory editor..."
+appendInfoLine: "Audition device selection is available in the GUI when Python sounddevice is installed."
 appendInfoLine: "(Waiting for GUI to close)"
 
-# Execute Python GUI
-runSystem: pythonCmd$ + " """ + pythonScriptJ$ + """ """ + tempInputJ$ + """ """ + tempOutputJ$ + """"
+# Execute Python GUI and capture diagnostics. Use nocheck so Praat can show
+# the Python traceback instead of aborting before cleanup.
+runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """ """ + tempInputJ$ + """ """ + tempOutputJ$ + """ > """ + pyLogJ$ + """ 2>&1"
 
-# Check if user saved a result or cancelled
+# Check if user saved a result or cancelled/failed
 if not fileReadable(tempOutput$)
+    pyLogText$ = ""
+    if fileReadable(pyLog$)
+        pyLogText$ = readFile$: pyLog$
+    endif
+    if index(pyLogText$, "Cancelled.") > 0
+        @cleanUpFiles
+        appendInfoLine: "Cancelled by user."
+        exitScript: "Spatial Panner cancelled."
+    endif
     @cleanUpFiles
-    appendInfoLine: "Cancelled by user."
-    exitScript: "Spatial Panner cancelled."
+    if pyLogText$ = ""
+        pyLogText$ = "(no Python diagnostic output was captured)"
+    endif
+    exitScript: "Spatial Panner Python engine failed." + newline$ + newline$ + pyLogText$
 endif
 
 # Import and label the result

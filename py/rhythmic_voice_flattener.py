@@ -1,5 +1,5 @@
 """
-rhythmic_voice_flattener.py  —  Rhythmic Voice Flattener  v3.2
+rhythmic_voice_flattener.py  —  Rhythmic Voice Flattener  v3.3
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
@@ -20,6 +20,18 @@ Usage:
         --preset      none \\
         --sparsity    0.5 \\
         --seed        42
+
+v3.3 corrections:
+    • CSP now enforces duration, density, and entropy jointly during search,
+      using the exact event-specific metric durations that will be rendered.
+    • Paired long_short / short_long tails are modelled explicitly and count
+      toward the parent operation for entropy rather than inventing new classes.
+    • CSP statistics are measured from final duration_ratio / skip values,
+      including soft-rhythm scaling, so reported deviations match the score CSV.
+    • Dropped events no longer receive a second automatic event-length gap;
+      skip replaces the source event with silence once, and silence_after_s is
+      reserved for genuinely additional rests.
+    • Custom sparsity is clamped to [0,1].
 
 Architecture (v3):
     A — Parse event CSV from Praat (seg_id, start_s, end_s, voiced,
@@ -182,7 +194,7 @@ PRESETS = {
         "arrangement": "original", "arc": "falling", "rhythm": "free",
         "sparsity": 0.9, "allow_rep": 0,
         "_silence_scale": 2.8, "_op_bias": "drop",
-        "_amp_ceiling": 1.5,
+        "_amp_ceiling": 1.5, "_global_amp_offset": -6.0,
         "_tempo_shape": "ritardando", "_tempo_intensity": 0.9,
     },
 }
@@ -563,17 +575,15 @@ def assign_gesture_silences(gestures, tension, silence_scale=1.0):
 #
 # Search algorithm
 # ────────────────
-#   forward_assign() — greedy forward assignment with arc-consistency.
-#     Iterates events left-to-right; for each event it selects the operation
-#     from the candidate set that keeps the remaining-budget window feasible,
-#     the density window reachable, and the entropy window achievable.
-#     Uses a lightweight "remaining capacity" test rather than full
-#     look-ahead: fast enough for gestures of typical length (2–30 events).
+#   forward_assign() — bounded backtracking over exact event-specific ratios.
+#     Duration, density and entropy all participate in feasibility pruning.
+#     Paired long_short / short_long operations consume two event slots and
+#     are evaluated with the same ratios later written to the score.
 #
-#   If forward_assign() fails to satisfy all constraints within MAX_BACKTRACKS,
-#   soft_relax() widens the constraint windows by RELAX_FACTOR and retries
-#   once.  A deviation score (how far outside each window the final solution
-#   sits) is recorded for stats output.
+#   If forward_assign() cannot satisfy all constraints within the search-node
+#   cap, soft_relax() widens the windows by RELAX_FACTOR and retries once.
+#   Final deviation is always measured from the rendered event state against
+#   the original, unrelaxed design targets.
 #
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -598,7 +608,7 @@ _BIAS_BOOSTS = {
     "varied":  {},
 }
 
-MAX_BACKTRACKS = 120
+MAX_BACKTRACKS = 10000   # v3.3 exact-CSP search-node cap
 RELAX_FACTOR   = 0.25   # widen each constraint window by this fraction on relax
 
 
@@ -795,64 +805,126 @@ def _gesture_constraints(tension_val, sparsity, rhythm):
     return (budget_lo, budget_hi, density_lo, density_hi, entropy_lo, entropy_hi)
 
 
+def _canonical_op_tag(op):
+    """Map internal pair-tail tags back to their musical operation class."""
+    if op == "long_short_tail":
+        return "long_short"
+    if op == "short_long_tail":
+        return "short_long"
+    return op
+
+
 def _entropy_of_ops(op_list):
-    """Normalised Shannon entropy of an op-tag list; returns value in [0,1]."""
+    """Normalised Shannon entropy of musical op classes; returns [0,1]."""
     if not op_list:
         return 0.0
-    counts = Counter(op_list)
-    n = len(op_list)
+    canonical = [_canonical_op_tag(op) for op in op_list]
+    counts = Counter(canonical)
+    n = len(canonical)
     probs = [c / n for c in counts.values()]
     raw = -sum(p * math.log2(p) for p in probs if p > 0)
     max_ent = math.log2(len(_OPS))
-    return raw / max_ent if max_ent > 0 else 0.0
+    return float(np.clip(raw / max_ent if max_ent > 0 else 0.0, 0.0, 1.0))
 
 
-def _check_constraints(ops_assigned, orig_durs, budget_lo, budget_hi,
-                       density_lo, density_hi, entropy_lo, entropy_hi):
-    """
-    Return (ok, budget_val, density_val, entropy_val, violations).
-    ok is True if all constraints satisfied.
-    """
-    n = len(ops_assigned)
-    if n == 0:
-        return True, 1.0, 1.0, 0.0, []
-
-    total_orig = sum(orig_durs)
-    total_played = 0.0
-    n_kept = 0
-    for op, dur in zip(ops_assigned, orig_durs):
-        if op == "drop":
-            pass   # contributes 0 played duration
+def _constraint_deviation(values, limits):
+    """Raw per-constraint deviation outside (budget,density,entropy) windows."""
+    out = []
+    for v, lo, hi in zip(values, limits[::2], limits[1::2]):
+        if v < lo:
+            out.append(lo - v)
+        elif v > hi:
+            out.append(v - hi)
         else:
-            # approximate ratio
-            if op == "sustain":
-                r = 1.6
-            elif op == "compress":
-                r = 0.55
-            elif op in ("burst", "stutter"):
-                r = 0.35
-            elif op == "long_short":
-                r = 1.4
-            elif op == "short_long":
-                r = 0.55
-            else:
-                r = 1.0   # grid / free
-            total_played += dur * r
-            n_kept += 1
+            out.append(0.0)
+    return tuple(out)
 
-    budget_val  = total_played / total_orig if total_orig > 0 else 1.0
-    density_val = n_kept / n if n > 0 else 1.0
-    entropy_val = _entropy_of_ops(ops_assigned)
 
-    violations = []
-    if not (budget_lo <= budget_val <= budget_hi):
-        violations.append("budget")
-    if not (density_lo <= density_val <= density_hi):
-        violations.append("density")
-    if not (entropy_lo <= entropy_val <= entropy_hi):
-        violations.append("entropy")
+def _metrics_from_events(events):
+    """Measure the constraints from the exact final event state."""
+    if not events:
+        return (1.0, 1.0, 0.0)
+    total_orig = sum(e.orig_dur for e in events)
+    total_played = sum(
+        0.0 if e.skip else e.orig_dur * e.duration_ratio for e in events)
+    density = sum(0 if e.skip else 1 for e in events) / float(len(events))
+    entropy = _entropy_of_ops([e.op_tag for e in events])
+    budget = total_played / total_orig if total_orig > 0 else 1.0
+    return float(budget), float(density), float(entropy)
 
-    return len(violations) == 0, budget_val, density_val, entropy_val, violations
+
+def _soften_ratio(ratio, op, rhythm, skip=False):
+    """Mirror the post-operation soft-rhythm transform used by the renderer."""
+    if rhythm == "soft" and not skip and op not in ("burst", "stutter"):
+        return 1.0 + 0.45 * (ratio - 1.0)
+    return ratio
+
+
+def _pair_tail_ratio(parent_op, next_event, bpm_frameworks):
+    """Exact ratio applied to the second event of a paired operation."""
+    if next_event is None:
+        return None
+    if parent_op == "long_short":
+        target = nearest_beat_dur(next_event.orig_dur * 0.5, bpm_frameworks)
+        target = max(target, 0.030)
+    elif parent_op == "short_long":
+        target = nearest_beat_dur(next_event.orig_dur * 1.5, bpm_frameworks)
+    else:
+        return None
+    return float(np.clip(target / next_event.orig_dur, 0.50, 4.0))
+
+
+def _solver_candidate(events, i, op, bpm_frameworks, rhythm):
+    """
+    Return exact assignments for one CSP choice.
+    Each tuple is (index, tag, duration_ratio, skip).
+    Paired ops consume the following event and tag it as an internal tail.
+    """
+    event = events[i]
+    ratio, skip, tag = _op_duration_ratio(op, event, bpm_frameworks)
+    ratio = _soften_ratio(ratio, op, rhythm, skip)
+    assignments = [(i, tag, float(ratio), bool(skip))]
+
+    if op in ("long_short", "short_long") and i + 1 < len(events):
+        tail_ratio = _pair_tail_ratio(op, events[i + 1], bpm_frameworks)
+        tail_tag = op + "_tail"
+        assignments.append((i + 1, tail_tag, float(tail_ratio), False))
+    return assignments
+
+
+def _entropy_bounds(counts, remaining):
+    """
+    Conservative achievable entropy bounds after `remaining` event slots.
+    Minimum: put all remaining slots into the dominant class.
+    Maximum: distribute them greedily among the least-used of the 8 classes.
+    """
+    classes = list(_OPS)
+    base = {op: int(counts.get(op, 0)) for op in classes}
+
+    cmin = dict(base)
+    if remaining > 0:
+        dominant = max(classes, key=lambda op: cmin[op])
+        cmin[dominant] += remaining
+    vals_min = [v for v in cmin.values() if v > 0]
+    nmin = sum(vals_min)
+    if nmin:
+        pmin = [v / nmin for v in vals_min]
+        hmin = -sum(p * math.log2(p) for p in pmin) / math.log2(len(_OPS))
+    else:
+        hmin = 0.0
+
+    cmax = dict(base)
+    for _ in range(remaining):
+        least = min(classes, key=lambda op: cmax[op])
+        cmax[least] += 1
+    vals_max = [v for v in cmax.values() if v > 0]
+    nmax = sum(vals_max)
+    if nmax:
+        pmax = [v / nmax for v in vals_max]
+        hmax = -sum(p * math.log2(p) for p in pmax) / math.log2(len(_OPS))
+    else:
+        hmax = 0.0
+    return float(hmin), float(hmax)
 
 
 def _forward_assign(events, bpm_frameworks, tension_val, bias, sparsity,
@@ -860,109 +932,114 @@ def _forward_assign(events, bpm_frameworks, tension_val, bias, sparsity,
                     budget_lo, budget_hi, density_lo, density_hi,
                     entropy_lo, entropy_hi):
     """
-    Greedy forward assignment with arc-consistency lookahead.
+    Backtracking CSP over exact event-specific operation durations.
 
-    Returns (ops_list, success).  Uses O(1) incremental accumulators for
-    the feasibility check — no O(n) recomputation per candidate.
+    Duration, density, and entropy are all active constraints. Paired operations
+    consume two event slots. If the search cap is reached, return the best
+    complete assignment encountered so soft relaxation can decide what to do.
     """
     n = len(events)
     if n == 0:
         return [], True
 
-    ops             = [None] * n
-    tried           = [0]    * n
-    candidate_orders = [None] * n
+    total_orig = sum(e.orig_dur for e in events)
+    candidate_orders = [
+        _candidate_order(tension_val, bias, sparsity, rng, rhythm)
+        for _ in range(n)
+    ]
 
-    # Precompute totals that don't change
-    total_orig   = sum(e.orig_dur for e in events)
-    # max_remaining[i] = sum of (orig_dur * 1.8) for events[i:]
-    max_rem_from = [0.0] * (n + 1)
+    # Maximum physically allowed future duration (all ratios clamp at 4).
+    suffix_orig = [0.0] * (n + 1)
     for j in range(n - 1, -1, -1):
-        max_rem_from[j] = max_rem_from[j + 1] + events[j].orig_dur * 1.8
+        suffix_orig[j] = suffix_orig[j + 1] + events[j].orig_dur
 
-    # Running accumulator: total played duration assigned so far
-    played_so_far = 0.0
+    max_nodes = max(MAX_BACKTRACKS, 120)
+    nodes = 0
+    best_ops = None
+    best_score = float("inf")
 
-    # Ratio lookup (same approximation as before, avoids repeated string compare)
-    _ratio = {"sustain": 1.6, "compress": 0.55, "short_long": 0.55,
-              "burst": 0.35, "stutter": 0.35, "long_short": 1.4,
-              "drop": 0.0, "grid": 1.0, "free": 1.0,
-              "long_short_tail": 1.0, "short_long_tail": 0.55}
+    def evaluate_complete(ops, played, kept, counts):
+        nonlocal best_ops, best_score
+        budget = played / total_orig if total_orig > 0 else 1.0
+        density = kept / float(n)
+        entropy = _entropy_of_ops(ops)
+        vals = (budget, density, entropy)
+        limits = (budget_lo, budget_hi, density_lo, density_hi,
+                  entropy_lo, entropy_hi)
+        dev = _constraint_deviation(vals, limits)
 
-    def get_order(i):
-        if candidate_orders[i] is None:
-            candidate_orders[i] = _candidate_order(
-                tension_val, bias, sparsity, rng, rhythm)
-        return candidate_orders[i]
+        # Balance unlike units by each constraint window's natural range.
+        widths = (max(budget_hi - budget_lo, 0.10),
+                  max(density_hi - density_lo, 0.10),
+                  max(entropy_hi - entropy_lo, 0.10))
+        score = sum(d / w for d, w in zip(dev, widths))
+        if score < best_score:
+            best_score = score
+            best_ops = list(ops)
+        return max(dev) <= 1e-12
 
-    n_backtracks = 0
-    i = 0
+    def dfs(i, ops, played, kept, counts):
+        nonlocal nodes
+        nodes += 1
+        if nodes > max_nodes:
+            return None
 
-    while i < n:
-        if n_backtracks > MAX_BACKTRACKS:
-            return ops, False
+        if i >= n:
+            return list(ops) if evaluate_complete(ops, played, kept, counts) else None
 
-        # Tail positions are pre-filled by the paired op — just advance
-        if ops[i] is not None and ops[i].endswith("_tail"):
-            played_so_far += events[i].orig_dur * _ratio.get(ops[i], 1.0)
-            i += 1
-            continue
+        for op in candidate_orders[i]:
+            assignments = _solver_candidate(events, i, op, bpm_frameworks, rhythm)
+            next_i = assignments[-1][0] + 1
 
-        order = get_order(i)
-        found = False
+            new_ops = list(ops)
+            new_played = played
+            new_kept = kept
+            new_counts = Counter(counts)
 
-        while tried[i] < len(order):
-            op = order[tried[i]]
-            tried[i] += 1
+            for idx, tag, ratio, skip in assignments:
+                new_ops[idx] = tag
+                if not skip:
+                    new_played += events[idx].orig_dur * ratio
+                    new_kept += 1
+                new_counts[_canonical_op_tag(tag)] += 1
 
-            # Tentatively assign
-            ops[i] = op
-            contrib = events[i].orig_dur * _ratio.get(op, 1.0)
+            remaining = n - next_i
 
-            # Pre-set paired tail
-            if op == "long_short" and i + 1 < n:
-                ops[i + 1] = "long_short_tail"
-            elif op == "short_long" and i + 1 < n:
-                ops[i + 1] = "short_long_tail"
-
-            # Arc-consistency: O(1) — use precomputed max_rem_from
-            new_played = played_so_far + contrib
-            feasible_lo = new_played / total_orig <= budget_hi
-            feasible_hi = (new_played + max_rem_from[i + 1]) / total_orig >= budget_lo
-
-            if not (feasible_lo and feasible_hi) and (i < n - 1):
-                # Undo tail
-                if op in ("long_short", "short_long") and i + 1 < n:
-                    ops[i + 1] = None
-                ops[i] = None
+            # Budget feasibility: future events can range from all-dropped to
+            # the global 4x ratio clamp.
+            if new_played > budget_hi * total_orig + 1e-12:
+                continue
+            max_future = 4.0 * suffix_orig[next_i]
+            if new_played + max_future < budget_lo * total_orig - 1e-12:
                 continue
 
-            found = True
-            played_so_far = new_played
-            break
+            # Density feasibility.
+            if new_kept > density_hi * n + 1e-12:
+                continue
+            if new_kept + remaining < density_lo * n - 1e-12:
+                continue
 
-        if found:
-            i += 1
-        else:
-            # Backtrack: undo current position
-            ops[i] = None
-            tried[i] = 0
-            candidate_orders[i] = None
-            if i > 0:
-                i -= 1
-                # Undo the accumulator contribution of position i
-                prev_op = ops[i]
-                if prev_op is not None:
-                    played_so_far -= events[i].orig_dur * _ratio.get(prev_op, 1.0)
-                # Undo paired tail that position i may have set
-                if prev_op in ("long_short", "short_long") and i + 1 < n:
-                    ops[i + 1] = None
-                ops[i] = None
-                n_backtracks += 1
-            else:
-                return ops, False
+            # Entropy feasibility.
+            hmin, hmax = _entropy_bounds(new_counts, remaining)
+            if hmax < entropy_lo - 1e-12 or hmin > entropy_hi + 1e-12:
+                continue
 
-    return ops, True
+            found = dfs(next_i, new_ops, new_played, new_kept, new_counts)
+            if found is not None:
+                return found
+
+        return None
+
+    initial_ops = [None] * n
+    found = dfs(0, initial_ops, 0.0, 0, Counter())
+    if found is not None:
+        return found, True
+    if best_ops is not None:
+        return best_ops, False
+
+    # Search cap can theoretically be reached before any complete solution.
+    # Fall back to grid so the engine always terminates deterministically.
+    return ["grid"] * n, False
 
 
 def _relax_constraints(budget_lo, budget_hi, density_lo, density_hi,
@@ -988,43 +1065,44 @@ _csp_stats = {"budget_dev": 0.0, "density_dev": 0.0, "entropy_dev": 0.0,
 
 def assign_duration_ratios(gestures, rhythm, sparsity, op_bias, rng, amp_ceiling=6.0):
     """
-    v3: CSP-based per-gesture rhythmic operation assignment.
+    v3.3: exact CSP rhythmic assignment.
 
-    For each gesture, derive constraint targets from tension + rhythm + sparsity,
-    run forward_assign() with arc-consistency, relax on failure, then apply
-    the resulting op assignments to event objects.
+    Search uses the same event-specific duration ratios that will be written to
+    the score. Duration, density, and entropy are jointly enforced. A single
+    soft-relaxation retry is allowed; final deviations are always measured
+    against the original (unrelaxed) design constraints.
     """
     global _csp_stats
-    _csp_stats = {"budget_dev": 0.0, "density_dev": 0.0, "entropy_dev": 0.0,
-                  "n_gestures": 0}
+    _csp_stats = {
+        "budget_dev": 0.0, "density_dev": 0.0, "entropy_dev": 0.0,
+        "n_gestures": 0, "relaxed_gestures": 0, "unsatisfied_gestures": 0,
+    }
 
     for g in gestures:
         tension = getattr(g, "_tension_val", 0.5)
         bpm_fw  = g.bpm_frameworks
         n       = len(g.events)
 
-        (b_lo, b_hi, d_lo, d_hi, e_lo, e_hi) = _gesture_constraints(
-            tension, sparsity, rhythm)
+        limits = _gesture_constraints(tension, sparsity, rhythm)
+        (b_lo, b_hi, d_lo, d_hi, e_lo, e_hi) = limits
 
-        # Attempt constrained assignment
         ops, ok = _forward_assign(
             g.events, bpm_fw, tension, op_bias, sparsity, rhythm, rng,
             amp_ceiling, b_lo, b_hi, d_lo, d_hi, e_lo, e_hi)
 
         if not ok:
-            # Soft relaxation: widen constraints and retry once
-            rb_lo, rb_hi, rd_lo, rd_hi, re_lo, re_hi = _relax_constraints(
-                b_lo, b_hi, d_lo, d_hi, e_lo, e_hi)
+            _csp_stats["relaxed_gestures"] += 1
+            relaxed = _relax_constraints(*limits)
             ops, _ = _forward_assign(
                 g.events, bpm_fw, tension, op_bias, sparsity, rhythm, rng,
-                amp_ceiling, rb_lo, rb_hi, rd_lo, rd_hi, re_lo, re_hi)
+                amp_ceiling, *relaxed)
 
-        # Apply the op assignments to events
+        # Apply the selected exact operation assignment.
         for i, e in enumerate(g.events):
             op = ops[i] if ops[i] is not None else "grid"
 
             if op in ("long_short_tail", "short_long_tail"):
-                # Already set by paired op; do nothing
+                # The parent pair already writes this event's exact ratio/tag.
                 continue
 
             next_ev = g.events[i + 1] if i < n - 1 else None
@@ -1033,23 +1111,17 @@ def assign_duration_ratios(gestures, rhythm, sparsity, op_bias, rng, amp_ceiling
             if rhythm == "soft" and not e.skip and e.op_tag not in ("burst", "stutter"):
                 e.duration_ratio = 1.0 + 0.45 * (e.duration_ratio - 1.0)
 
-        # Check final constraint satisfaction and record deviation
-        final_ops = [e.op_tag for e in g.events]
-        orig_durs = [e.orig_dur for e in g.events]
-        _, bv, dv, ev, violations = _check_constraints(
-            final_ops, orig_durs, b_lo, b_hi, d_lo, d_hi, e_lo, e_hi)
+        # Measure what will actually be rendered, not approximate op ratios.
+        values = _metrics_from_events(g.events)
+        dev = _constraint_deviation(values, limits)
+        if max(dev) > 1e-9:
+            _csp_stats["unsatisfied_gestures"] += 1
 
-        def _dev(v, lo, hi):
-            if v < lo: return lo - v
-            if v > hi: return v - hi
-            return 0.0
-
-        _csp_stats["budget_dev"]  += _dev(bv, b_lo, b_hi)
-        _csp_stats["density_dev"] += _dev(dv, d_lo, d_hi)
-        _csp_stats["entropy_dev"] += _dev(ev, e_lo, e_hi)
+        _csp_stats["budget_dev"]  += dev[0]
+        _csp_stats["density_dev"] += dev[1]
+        _csp_stats["entropy_dev"] += dev[2]
         _csp_stats["n_gestures"]  += 1
 
-        # Clamp amplitude ceiling
         for e in g.events:
             e.amplitude_db_offset = float(
                 np.clip(e.amplitude_db_offset, -4.0, amp_ceiling))
@@ -1078,10 +1150,10 @@ def inject_intra_gesture_rests(gestures, sparsity, rng):
                 continue
 
             if e.skip:
-                e.silence_after_s = float(
-                    np.clip(e.orig_dur * e.duration_ratio
-                            if e.duration_ratio > 0 else e.orig_dur,
-                            0.020, 2.0))
+                # Praat replaces the skipped source event itself with a silent
+                # slot of its original duration. silence_after_s is therefore
+                # reserved for *additional* rest and must not duplicate it.
+                e.silence_after_s = 0.0
                 continue
 
             p_rest = 0.12 + 0.30 * tension * sparsity
@@ -1263,8 +1335,11 @@ def _extract_motif(gesture, n=3):
 
 
 def _make_motif_gesture(events, amp_delta, silence_after, gesture_id,
-                        invert_durations=False):
+                        source_gesture=None, invert_durations=False):
     g = Gesture(gesture_id)
+    if source_gesture is not None:
+        g.bpm = source_gesture.bpm
+        g.bpm_frameworks = list(source_gesture.bpm_frameworks)
     for e in events:
         clone = Segment.__new__(Segment)
         for slot in Segment.__slots__:
@@ -1308,6 +1383,7 @@ def add_repetition(arranged, tension, rng, arc_type):
                 motif, amp_delta=amp_delta,
                 silence_after=float(np.clip(base_sil, 0.04, 2.0)),
                 gesture_id=20000 + k,
+                source_gesture=peak_gest,
                 invert_durations=(invert and k % 2 == 1))
             result.insert(pos + k, mg)
 
@@ -1386,7 +1462,8 @@ def write_score(score_path, arranged_gestures, target_f0):
                     ])
 
 
-def write_stats(stats_path, segments, gestures, target_f0, bpm, preset):
+def write_stats(stats_path, segments, gestures, target_f0, bpm, preset,
+                seed_used, global_amp_offset):
     ng = _csp_stats["n_gestures"]
     if ng > 0:
         b_dev = _csp_stats["budget_dev"]  / ng
@@ -1401,9 +1478,13 @@ def write_stats(stats_path, segments, gestures, target_f0, bpm, preset):
         f.write("n_gestures=%d\n"        % len(gestures))
         f.write("bpm=%.1f\n"             % bpm)
         f.write("preset=%s\n"            % preset)
+        f.write("seed=%d\n"              % seed_used)
+        f.write("global_amp_offset_db=%.2f\n" % global_amp_offset)
         f.write("csp_budget_dev=%.4f\n"  % b_dev)
         f.write("csp_density_dev=%.4f\n" % d_dev)
         f.write("csp_entropy_dev=%.4f\n" % e_dev)
+        f.write("csp_relaxed_gestures=%d\n" % _csp_stats.get("relaxed_gestures", 0))
+        f.write("csp_unsatisfied_gestures=%d\n" % _csp_stats.get("unsatisfied_gestures", 0))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1427,7 +1508,7 @@ def apply_preset(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Rhythmic Voice Flattener v3 — CSP compositional voice transformer")
+        description="Rhythmic Voice Flattener v3.3 — CSP compositional voice transformer")
     parser.add_argument("--events",      required=True)
     parser.add_argument("--score",       required=True)
     parser.add_argument("--stats",       required=True)
@@ -1449,18 +1530,27 @@ def main():
     parser.add_argument("--seed",        type=int,   default=42)
     args = parser.parse_args()
 
-    rng = np.random.default_rng(args.seed)
+    args.sparsity = float(np.clip(args.sparsity, 0.0, 1.0))
+    args.allow_rep = 1 if args.allow_rep else 0
+    args.seed = max(0, int(args.seed))
+    if args.seed == 0:
+        seed_used = int(np.random.SeedSequence().generate_state(1, dtype=np.uint32)[0])
+    else:
+        seed_used = args.seed
+    rng = np.random.default_rng(seed_used)
 
     extra = apply_preset(args)
-    silence_scale  = extra.get("_silence_scale",   1.0)
-    op_bias        = extra.get("_op_bias",          "varied")
-    amp_ceiling    = extra.get("_amp_ceiling",      6.0)
-    tempo_shape    = extra.get("_tempo_shape",      "linear")
-    tempo_intensity = extra.get("_tempo_intensity", 0.3)
+    silence_scale   = extra.get("_silence_scale",    1.0)
+    op_bias         = extra.get("_op_bias",           "varied")
+    amp_ceiling     = extra.get("_amp_ceiling",       6.0)
+    global_amp_offset = extra.get("_global_amp_offset", 0.0)
+    tempo_shape     = extra.get("_tempo_shape",       "linear")
+    tempo_intensity = extra.get("_tempo_intensity",   0.3)
 
     print("[Py] Preset: %s | Arrangement: %s | Arc: %s | Rhythm: %s | Sparsity: %.2f"
           % (args.preset, args.arrangement, args.arc, args.rhythm, args.sparsity))
-    print("[Py] Tempo shape: %s | Intensity: %.2f" % (tempo_shape, tempo_intensity))
+    print("[Py] Tempo shape: %s | Intensity: %.2f | Seed: %d"
+          % (tempo_shape, tempo_intensity, seed_used))
 
     # ── A: Parse ──────────────────────────────────────────────────────────
     print("[Py 1/7] Parsing events...")
@@ -1500,6 +1590,16 @@ def main():
               % (_csp_stats["budget_dev"] / ng,
                  _csp_stats["density_dev"] / ng,
                  _csp_stats["entropy_dev"] / ng))
+        print("    CSP relaxation: %d/%d gestures | unsatisfied after render: %d"
+              % (_csp_stats.get("relaxed_gestures", 0), ng,
+                 _csp_stats.get("unsatisfied_gestures", 0)))
+
+    if global_amp_offset != 0.0:
+        for g in gestures:
+            for e in g.events:
+                if not e.skip:
+                    e.amplitude_db_offset += float(global_amp_offset)
+        print("    Global level offset: %+.1f dB" % global_amp_offset)
 
     # ── F2: Intra-gesture rests ───────────────────────────────────────────
     print("[Py 5/7] Intra-gesture rest injection...")
@@ -1523,7 +1623,8 @@ def main():
 
     # ── I: Write ──────────────────────────────────────────────────────────
     write_score(args.score, arranged, target_f0)
-    write_stats(args.stats, segments, gestures, target_f0, global_bpm, args.preset)
+    write_stats(args.stats, segments, gestures, target_f0, global_bpm, args.preset,
+                seed_used, global_amp_offset)
 
     n_out  = sum(len(g.events) for g in arranged)
     n_skip = sum(1 for g in arranged for e in g.events if e.skip)

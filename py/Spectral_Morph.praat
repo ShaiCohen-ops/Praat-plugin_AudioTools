@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 5.4 (2026)
+# Version: 5.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -27,6 +27,19 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v5.5:
+#   AUDIO:
+#   - Silence guard is now tied only to artificial length-padding boundaries.
+#     Natural trailing silence is preserved as part of the target sound.
+#   - Python applies peak safety globally across channels and writes FLOAT WAV.
+#   DIAGNOSTICS:
+#   - Debug CSV reports the actual v5.4+ differential blend weights.
+#   - UI reports requested and effective power-of-two FFT window duration.
+#   PRAAT/QA:
+#   - Explicit Swap A/B control because selected Sound indices are object-list order.
+#   - Unique temp/log/debug paths per selected Sound pair; Python errors captured.
+#   - Visualisation uses strongest-RMS real channels and a shared safe frequency range.
 #
 # Changelog v5.4:
 #
@@ -211,15 +224,19 @@ pythonScriptJ$ = replace_regex$(pythonScript$, "\\", "/", 0)
 tempDirRaw$ = temporaryDirectory$ + "/"
 tempDir$ = replace_regex$(tempDirRaw$, "\\", "/", 0)
 
-tempA$       = tempDir$ + "morph_A.wav"
-tempB$       = tempDir$ + "morph_B.wav"
-tempOutput$  = tempDir$ + "morph_output.wav"
-probePy$     = tempDir$ + "morph_probe.py"
-probeMarker$ = tempDir$ + "morph_probe.ok"
+pairTag$      = string$(soundA) + "_" + string$(soundB)
+tempA$        = tempDir$ + "morph_" + pairTag$ + "_A.wav"
+tempB$        = tempDir$ + "morph_" + pairTag$ + "_B.wav"
+tempOutput$   = tempDir$ + "morph_" + pairTag$ + "_output.wav"
+tempLog$      = tempDir$ + "morph_" + pairTag$ + "_python.log"
+probePy$      = tempDir$ + "morph_" + pairTag$ + "_probe.py"
+probeMarker$  = tempDir$ + "morph_" + pairTag$ + "_probe.ok"
+debugSrc$     = tempDir$ + "morph_" + pairTag$ + "_output_debug.csv"
 
 tempAJ$       = replace_regex$(tempA$,       "\\", "/", 0)
 tempBJ$       = replace_regex$(tempB$,       "\\", "/", 0)
 tempOutputJ$  = replace_regex$(tempOutput$,  "\\", "/", 0)
+tempLogJ$     = replace_regex$(tempLog$,     "\\", "/", 0)
 probePyJ$     = replace_regex$(probePy$,     "\\", "/", 0)
 probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
 
@@ -233,6 +250,12 @@ procedure cleanUpTempFiles
     endif
     if fileReadable(tempOutput$)
         deleteFile: tempOutput$
+    endif
+    if fileReadable(tempLog$)
+        deleteFile: tempLog$
+    endif
+    if fileReadable(debugSrc$)
+        deleteFile: debugSrc$
     endif
     if fileReadable(probePy$)
         deleteFile: probePy$
@@ -314,7 +337,9 @@ if pythonCmd$ = ""
 endif
 
 # ---- FORM ----
-form Spectral Morph v5.4
+form Spectral Morph v5.5
+    comment A = top selected Sound; B = lower selected Sound (Swap if needed)
+    boolean Swap_A_and_B 0
     optionmenu Preset: 1
         option Custom
         option Tonal Sustained (instruments, pads)
@@ -342,6 +367,28 @@ form Spectral Morph v5.4
     boolean Play_output 1
     boolean Debug 0
 endform
+
+# ---- EXPLICIT A/B DIRECTION ----
+# selected("Sound", 1/2) is object-list order, not click history.
+if swap_A_and_B
+    tmpSound = soundA
+    soundA = soundB
+    soundB = tmpSound
+    tmpName$ = nameA$
+    nameA$ = nameB$
+    nameB$ = tmpName$
+endif
+
+# Re-read stats after optional swap.
+selectObject: soundA
+durA = Get total duration
+srA  = Get sampling frequency
+nchA = Get number of channels
+
+selectObject: soundB
+durB = Get total duration
+srB  = Get sampling frequency
+nchB = Get number of channels
 
 # ---- PRESETS ----
 if preset = 2
@@ -374,6 +421,15 @@ else
 endif
 
 window_s = window_ms / 1000
+
+# Python preserves the v5.x power-of-two FFT behavior. Report the effective
+# analysis window honestly rather than implying that requested ms is exact.
+requestedSamples = floor(window_s * srA)
+fftSamples = 64
+while fftSamples < requestedSamples
+    fftSamples = fftSamples * 2
+endwhile
+effectiveWindowMs = 1000 * fftSamples / srA
 
 # v5.0: commonDuration depends on length_handling mode:
 #   silence-pad (1) and time-stretch (3) both produce output at
@@ -426,13 +482,13 @@ endif
 
 # ---- INFO ----
 clearinfo
-writeInfoLine:  "=== Spectral Morph v5.4 ==="
+writeInfoLine:  "=== Spectral Morph v5.5 ==="
 appendInfoLine: "A:        ", nameA$, "  (", fixed$(durA, 2), " s,  SR ", srA, ")"
 appendInfoLine: "B:        ", nameB$, "  (", fixed$(durB, 2), " s,  SR ", srB, ")"
 appendInfoLine: "Preset:   ", presetName$
 appendInfoLine: "Mode:     ", modeLabel$
 appendInfoLine: "Curve:    ", curveLabel$
-appendInfoLine: "Window:   ", fixed$(window_ms, 0), " ms"
+appendInfoLine: "Window:   requested ", fixed$(window_ms, 1), " ms  |  FFT ", fftSamples, " samples = ", fixed$(effectiveWindowMs, 1), " ms"
 appendInfoLine: "Length:   ", lengthLabel$
 appendInfoLine: "Region:   ", fixed$(start_morph_s, 2), " - ", fixed$(end_morph_s, 2), " s"
 appendInfoLine: "OutDur:   ", fixed$(commonDuration, 2), " s"
@@ -469,17 +525,21 @@ runSystem_nocheck: pythonCmd$ + " """ + pythonScriptJ$ + """"
     ... + " " + fixed$(mix_amount, 4)
     ... + " " + string$(length_handling)
     ... + " " + string$(debug)
+    ... + " > """ + tempLogJ$ + """ 2>&1"
 
 # ===========================================================================
 # STAGE 3 — Verify & Import
 # ===========================================================================
 if not fileReadable(tempOutput$)
+    pyErr$ = ""
+    if fileReadable(tempLog$)
+        pyErr$ = readFile$(tempLog$)
+    endif
+    if pyErr$ = ""
+        pyErr$ = "(no Python output captured)"
+    endif
     @cleanUpTempFiles
-    exitScript: "Python spectral morph failed." + newline$
-        ... + "Possible causes:" + newline$
-        ... + "  - numpy, scipy or soundfile not installed" + newline$
-        ... + "  - Python not found in PATH" + newline$
-        ... + "Check the terminal/console for Python error messages."
+    exitScript: "Python spectral morph failed." + newline$ + newline$ + pyErr$
 endif
 
 appendInfoLine: "[3/4] Importing result..."
@@ -500,8 +560,7 @@ appendInfoLine: "  Output: ", fixed$(outputDuration, 2), " s"
 # stable name and print the full path in the info window. Without
 # this the v5.3 debug feature was effectively invisible.
 if debug
-    debugSrc$ = tempDir$ + "morph_output_debug.csv"
-    debugDst$ = homeDirectory$ + "/spectral_morph_debug.csv"
+    debugDst$ = homeDirectory$ + "/spectral_morph_debug_" + pairTag$ + ".csv"
     appendInfoLine: ""
     appendInfoLine: "-- Debug CSV ---------------------------------------------"
     if fileReadable(debugSrc$)
@@ -514,7 +573,8 @@ if debug
         appendInfoLine: "    m        = morph factor 0-1 (per curve_type)"
         appendInfoLine: "    a_rms_td = windowed time-domain RMS of A frame"
         appendInfoLine: "    b_rms_td = same for B"
-        appendInfoLine: "    a_sil    = v5.3 time-position silence factor for A"
+        appendInfoLine: "    channel  = representative strongest A/B channel"
+        appendInfoLine: "    a_sil    = artificial-padding proximity factor for A"
         appendInfoLine: "    b_sil    = same for B"
         appendInfoLine: "    w_morph  = weight on standard morph output"
         appendInfoLine: "    w_a_dir  = weight on direct mag_a (blend toward A)"
@@ -540,18 +600,89 @@ endif
 if draw_visualization
     appendInfoLine: "[4/4] Creating visualization..."
 
-    selectObject: soundA
+    # Use real strongest-RMS channels, never phase-cancelling fold-down.
     if nchA > 1
-        monoA_viz = Convert to mono
+        bestARms = -1
+        monoA_viz = 0
+        for ch from 1 to nchA
+            selectObject: soundA
+            Extract one channel: ch
+            cand = selected("Sound")
+            candRms = Get root-mean-square: 0, 0
+            if candRms > bestARms
+                if monoA_viz <> 0
+                    removeObject: monoA_viz
+                endif
+                monoA_viz = cand
+                bestARms = candRms
+            else
+                removeObject: cand
+            endif
+        endfor
     else
-        monoA_viz = Copy: "monoA_viz"
+        selectObject: soundA
+        Copy: "monoA_viz"
+        monoA_viz = selected("Sound")
     endif
 
-    selectObject: soundB
     if nchB > 1
-        monoB_viz = Convert to mono
+        bestBRms = -1
+        monoB_viz = 0
+        for ch from 1 to nchB
+            selectObject: soundB
+            Extract one channel: ch
+            cand = selected("Sound")
+            candRms = Get root-mean-square: 0, 0
+            if candRms > bestBRms
+                if monoB_viz <> 0
+                    removeObject: monoB_viz
+                endif
+                monoB_viz = cand
+                bestBRms = candRms
+            else
+                removeObject: cand
+            endif
+        endfor
     else
-        monoB_viz = Copy: "monoB_viz"
+        selectObject: soundB
+        Copy: "monoB_viz"
+        monoB_viz = selected("Sound")
+    endif
+
+    selectObject: finalOutput
+    nchOut = Get number of channels
+    srOut = Get sampling frequency
+    if nchOut > 1
+        bestOutRms = -1
+        monoOut_viz = 0
+        for ch from 1 to nchOut
+            selectObject: finalOutput
+            Extract one channel: ch
+            cand = selected("Sound")
+            candRms = Get root-mean-square: 0, 0
+            if candRms > bestOutRms
+                if monoOut_viz <> 0
+                    removeObject: monoOut_viz
+                endif
+                monoOut_viz = cand
+                bestOutRms = candRms
+            else
+                removeObject: cand
+            endif
+        endfor
+    else
+        selectObject: finalOutput
+        Copy: "monoOut_viz"
+        monoOut_viz = selected("Sound")
+    endif
+
+    vizMinSr = srA
+    if srB < vizMinSr
+        vizMinSr = srB
+    endif
+    vizMaxHz = vizMinSr / 2
+    if vizMaxHz > 8000
+        vizMaxHz = 8000
     endif
 
     Erase all
@@ -569,7 +700,7 @@ if draw_visualization
     Text: 0.5, "centre", 0.68, "half", "##SPECTRAL MORPH##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
+    Text: 0.5, "centre", -1.20, "half",
         ... nameA$ + " -> " + nameB$
         ... + "  |  " + presetName$
         ... + "  |  " + modeLabel$
@@ -585,9 +716,9 @@ if draw_visualization
 
     selectObject: monoA_viz
     # v5.0: time_step 0.002 -> 0.01 (5x faster, still sharp at panel scale)
-    To Spectrogram: 0.005, 8000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.005, vizMaxHz, 0.01, 20, "Gaussian"
     specgramA = selected("Spectrogram")
-    Paint: 0, 0, 0, 8000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Line width: 1
     Draw inner box
@@ -603,9 +734,9 @@ if draw_visualization
     Select inner viewport: 4.55, 7.75, 0.95, 4.40
 
     selectObject: monoB_viz
-    To Spectrogram: 0.005, 8000, 0.01, 20, "Gaussian"
+    To Spectrogram: 0.005, vizMaxHz, 0.01, 20, "Gaussian"
     specgramB = selected("Spectrogram")
-    Paint: 0, 0, 0, 8000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Line width: 1
     Draw inner box
@@ -718,10 +849,10 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.62, 6.55
     Select inner viewport: 0.55, 7.72, 5.69, 6.48
 
-    selectObject: finalOutput
-    To Spectrogram: 0.005, 8000, 0.01, 20, "Gaussian"
+    selectObject: monoOut_viz
+    To Spectrogram: 0.005, vizMaxHz, 0.01, 20, "Gaussian"
     specgramOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 8000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizMaxHz, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Line width: 1
     Draw inner box
@@ -746,7 +877,7 @@ if draw_visualization
         ... + "  " + nameA$ + " -> " + nameB$
         ... + "  |  Mode: " + modeLabel$
         ... + "  |  Curve: " + curveLabel$
-        ... + "  |  Window: " + fixed$(window_ms, 0) + " ms"
+        ... + "  |  FFT window: " + fixed$(effectiveWindowMs, 1) + " ms"
 
     Text: 0.02, "left", 0.50, "half",
         ... "Length handling: " + lengthLabel$
@@ -766,7 +897,7 @@ if draw_visualization
     Colour: "Black"
     Line width: 1
 
-    removeObject: monoA_viz, monoB_viz
+    removeObject: monoA_viz, monoB_viz, monoOut_viz
 else
     appendInfoLine: "[4/4] Visualization skipped."
 endif

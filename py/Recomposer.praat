@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.2.2 (2026) - adaptive segmentation + duration-corrected morphology
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,8 +11,9 @@
 #   CNN Event Recomposer — Morphological Compositional Engine
 #
 #   An event-based acoustic recomposition system for Praat.
-#   The script automatically segments a selected Sound into
-#   events, extracts feature trajectories, and sends them to
+#   The script adaptively segments a selected Sound into
+#   events using a short-window Intensity threshold ladder, extracts
+#   feature trajectories, and sends them to
 #   a self-supervised CNN engine in Python.
 #
 #   The CNN learns a latent morphology space of events,
@@ -34,7 +35,7 @@
 #
 # ============================================================
 
-form Recomposer — CNN Event Recomposition
+form Recomposer — CNN Event Recomposition v1.2.3
     optionmenu Compositional_form: 1
         option sorted
         option braid
@@ -42,6 +43,8 @@ form Recomposer — CNN Event Recomposition
         option walk
     real Silence_threshold_db -25
     real Min_event_dur_s 0.03
+    real Min_silence_dur_s 0.03
+    real Min_sound_dur_s 0.03
     real Pitch_floor_hz 60
     real Pitch_ceiling_hz 600
     real Fade_ms 5
@@ -52,16 +55,37 @@ endform
 # CONFIGURATION — fixed defaults
 # ============================================================
 
-frame_step_s        = 0.01
-min_silence_dur_s   = 0.08
-min_sound_dur_s     = 0.04
+frame_step_s            = 0.01
+intensity_min_pitch_hz = 250   ; ~13 ms Intensity window; independent of F0 floor
 
 # Map form variables to internal names
 silence_threshold_db  = silence_threshold_db
 min_event_dur_s       = min_event_dur_s
+min_silence_dur_s     = min_silence_dur_s
+min_sound_dur_s       = min_sound_dur_s
 pitch_floor_hz        = pitch_floor_hz
 pitch_ceiling_hz      = pitch_ceiling_hz
 fade_ms               = fade_ms
+
+if min_event_dur_s <= 0
+    exitScript: "Min_event_dur_s must be > 0."
+endif
+if min_silence_dur_s <= 0 or min_sound_dur_s <= 0
+    exitScript: "Min_silence_dur_s and Min_sound_dur_s must be > 0."
+endif
+
+# Keep Min_event_dur meaningful: the silence segmenter must not discard
+# sounding intervals before the explicit event-duration filter sees them.
+effective_min_sound_dur_s = min_sound_dur_s
+if effective_min_sound_dur_s > min_event_dur_s
+    effective_min_sound_dur_s = min_event_dur_s
+endif
+if pitch_floor_hz <= 0 or pitch_ceiling_hz <= pitch_floor_hz
+    exitScript: "Pitch ceiling must be greater than pitch floor, and both must be positive."
+endif
+if fade_ms < 0
+    exitScript: "Fade_ms must be >= 0."
+endif
 
 if compositional_form = 1
     compositional_form$ = "sorted"
@@ -138,12 +162,13 @@ endif
 origSound    = selected("Sound")
 origName$    = selected$("Sound")
 nChannels    = Get number of channels
-isStereo     = (nChannels = 2)
+analysisSoundOwned = 0
+analysisChannel = 1
 
 clearinfo
-writeInfoLine:  "=== Recomposer — CNN Event Recomposition ==="
-appendInfoLine: "Sound:   ", origName$
-appendInfoLine: "Stereo:  ", string$(isStereo)
+writeInfoLine:  "=== Recomposer — CNN Event Recomposition v1.2 ==="
+appendInfoLine: "Sound:    ", origName$
+appendInfoLine: "Channels: ", nChannels
 appendInfoLine: ""
 
 # ============================================================
@@ -152,6 +177,7 @@ appendInfoLine: ""
 appendInfoLine: "--- Stage 0: Detecting Python Environment ---"
 
 writeFileLine: probePy$, "import sys"
+appendFileLine: probePy$, "if sys.version_info[0] < 3: sys.exit(1)"
 appendFileLine: probePy$, "try:"
 appendFileLine: probePy$, "    import numpy, sklearn"
 appendFileLine: probePy$, "    with open(r'" + probeMarkerJ$ + "', 'w') as f: f.write('ok')"
@@ -206,16 +232,33 @@ if detectedCmd$ = ""
 endif
 
 # ============================================================
-# MONO MIX FOR ANALYSIS ONLY
+# REPRESENTATIVE CHANNEL FOR ANALYSIS ONLY
 # ============================================================
-
+# Do not average channels: anti-phase multichannel material can cancel.
+# Analyse the channel with the highest RMS and preserve all original channels
+# for the final montage.
 selectObject: origSound
-if isStereo
-    monoSound = Convert to mono
-    appendInfoLine: ""
-    appendInfoLine: "Created mono mix for analysis."
+if nChannels > 1
+    bestRms = -1
+    bestChannel = 1
+    for iCh from 1 to nChannels
+        selectObject: origSound
+        chSound = Extract one channel: iCh
+        chRms = Get root-mean-square: 0, 0
+        if chRms > bestRms
+            bestRms = chRms
+            bestChannel = iCh
+        endif
+        removeObject: chSound
+    endfor
+    selectObject: origSound
+    monoSound = Extract one channel: bestChannel
+    analysisSoundOwned = 1
+    analysisChannel = bestChannel
+    appendInfoLine: "Analysis channel: ", bestChannel, " (highest RMS)"
 else
     monoSound = origSound
+    appendInfoLine: "Analysis channel: 1 (mono)"
 endif
 
 selectObject: monoSound
@@ -231,29 +274,83 @@ appendInfoLine: ""
 appendInfoLine: "--- Stage 1: Segmentation ---"
 
 selectObject: monoSound
-intensityObj = To Intensity: pitch_floor_hz, frame_step_s, "yes"
-appendInfoLine: "Intensity computed."
+intensityObj = To Intensity: intensity_min_pitch_hz, frame_step_s, "yes"
+appendInfoLine: "Intensity computed (segmentation window floor: ", intensity_min_pitch_hz, " Hz)."
+if effective_min_sound_dur_s <> min_sound_dur_s
+    appendInfoLine: "  Min_sound_dur_s clamped to Min_event_dur_s: ", fixed$(effective_min_sound_dur_s, 3), " s"
+endif
 
+# A fixed dB-below-peak threshold is fragile on dense electroacoustic material.
+# Build an adaptive candidate from the Intensity distribution, then try a short
+# ladder.  We stop as soon as a candidate yields >= 6 usable events; otherwise
+# we retain whichever candidate produced the largest event count.
 selectObject: intensityObj
-tgSilences = To TextGrid (silences): silence_threshold_db,
-    ... min_silence_dur_s, min_sound_dur_s, "silent", "sounding"
-appendInfoLine: "Silence TextGrid created."
+intMax = Get maximum: 0, 0, "Parabolic"
+intQ25 = Get quantile: 0, 0, 0.25
+adaptiveThresh = -(intMax - intQ25)
+if adaptiveThresh < -30
+    adaptiveThresh = -30
+endif
+if adaptiveThresh > -3
+    adaptiveThresh = -3
+endif
 
-# Rename the tier to "events" (Praat names it differently by default)
+tryThresh# = zero# (5)
+tryThresh# [1] = silence_threshold_db
+tryThresh# [2] = adaptiveThresh
+tryThresh# [3] = -6
+tryThresh# [4] = -4
+tryThresh# [5] = -3
+
+bestEventCount = -1
+usedThresh = silence_threshold_db
+for iTry from 1 to 5
+    thisThresh = tryThresh# [iTry]
+    selectObject: intensityObj
+    tgTry = To TextGrid (silences): thisThresh,
+        ... min_silence_dur_s, effective_min_sound_dur_s, "silent", "sounding"
+    selectObject: tgTry
+    nTryIntervals = Get number of intervals: 1
+    nTryEvents = 0
+    for iInt from 1 to nTryIntervals
+        label$ = Get label of interval: 1, iInt
+        if label$ = "sounding"
+            iStart = Get start time of interval: 1, iInt
+            iEnd   = Get end time of interval: 1, iInt
+            if iEnd - iStart >= min_event_dur_s
+                nTryEvents = nTryEvents + 1
+            endif
+        endif
+    endfor
+    appendInfoLine: "  Segmentation try ", iTry, ": threshold ", fixed$(thisThresh, 1), " dB -> ", nTryEvents, " events"
+    if nTryEvents > bestEventCount
+        bestEventCount = nTryEvents
+        usedThresh = thisThresh
+    endif
+    removeObject: tgTry
+    if nTryEvents >= 6
+        usedThresh = thisThresh
+        bestEventCount = nTryEvents
+        iTry = 5
+    endif
+endfor
+
+# Recreate the winning segmentation and collect the final event boundaries.
+selectObject: intensityObj
+tgSilences = To TextGrid (silences): usedThresh,
+    ... min_silence_dur_s, effective_min_sound_dur_s, "silent", "sounding"
 selectObject: tgSilences
 Set tier name: 1, "events"
 
-# Collect sounding intervals
 nIntervals = Get number of intervals: 1
-nEvents    = 0
-event_start#  = zero# (200)
-event_end#    = zero# (200)
-
+nEvents = 0
+event_start# = zero# (nIntervals)
+event_end#   = zero# (nIntervals)
 for iInt from 1 to nIntervals
     label$ = Get label of interval: 1, iInt
     if label$ = "sounding"
         iStart = Get start time of interval: 1, iInt
-        iEnd   = Get end time of interval:   1, iInt
+        iEnd   = Get end time of interval: 1, iInt
         evDur  = iEnd - iStart
         if evDur >= min_event_dur_s
             nEvents = nEvents + 1
@@ -263,15 +360,19 @@ for iInt from 1 to nIntervals
     endif
 endfor
 
-appendInfoLine: "Events found: ", nEvents
+appendInfoLine: "Segmentation: threshold ", fixed$(usedThresh, 1), " dB -> ", nEvents, " events"
 
-if nEvents = 0
+if nEvents < 2
     removeObject: intensityObj, tgSilences
-    if isStereo
+    if analysisSoundOwned
         removeObject: monoSound
     endif
     @cleanUpTempFiles
-    exitScript: "No sound events detected. Try lowering silence_threshold_db."
+    exitScript: "Only " + string$(nEvents) + " event detected — nothing to recompose." + newline$
+        ... + "Raise Silence_threshold_db toward -6/-3, lower Min_silence_dur_s, or use material with clearer event boundaries."
+endif
+if nEvents < 6
+    appendInfoLine: "WARNING: only ", nEvents, " events; form differences may be limited."
 endif
 
 # ============================================================
@@ -301,8 +402,9 @@ for iEv from 1 to nEvents
     evEnd   = event_end#   [iEv]
     evDur   = evEnd - evStart
 
-    # Number of frames for this event
-    nFrames = floor(evDur / frame_step_s)
+    # Number of analysis frames. Sample at frame centres so the first
+    # spectrum does not straddle the preceding silence/event boundary.
+    nFrames = ceiling(evDur / frame_step_s)
     if nFrames < 2
         nFrames = 2
     endif
@@ -317,11 +419,14 @@ for iEv from 1 to nEvents
     zcr_seq$         = ""
 
     for iFrame from 1 to nFrames
-        t = evStart + (iFrame - 1) * frame_step_s
+        t = evStart + (iFrame - 0.5) * frame_step_s
 
-        # Clamp to event bounds
+        # Clamp to the interior of the event.
         if t > evEnd
             t = evEnd
+        endif
+        if t < evStart
+            t = evStart
         endif
 
         # Pitch
@@ -354,11 +459,11 @@ for iEv from 1 to nEvents
         # Spectral centroid (centre of gravity)
         tWin1 = t - frame_step_s / 2
         tWin2 = t + frame_step_s / 2
-        if tWin1 < 0
-            tWin1 = 0
+        if tWin1 < evStart
+            tWin1 = evStart
         endif
-        if tWin2 > dur
-            tWin2 = dur
+        if tWin2 > evEnd
+            tWin2 = evEnd
         endif
         centroid = 0
         sp_spread = 0
@@ -374,30 +479,20 @@ for iEv from 1 to nEvents
             if sp_spread = undefined
                 sp_spread = 0
             endif
-            removeObject: snippetSound, snippetSpec
         endif
 
-        # Zero crossing rate: count sign changes across snippet frames
+        # Exact zero-crossing rate from the already-extracted mono frame.
+        # Count both rising and falling zeroes, then normalise by sample intervals.
         zcr_val = 0
         if tWin2 > tWin1 + 0.001
-            nZcrFrames = 8
-            prevSample = 0
-            nCrossings = 0
-            for iZ from 1 to nZcrFrames
-                tZ = tWin1 + (iZ - 1) * (tWin2 - tWin1) / nZcrFrames
-                selectObject: monoSound
-                sZ = Get value at time: 1, tZ, "Sinc70"
-                if sZ = undefined
-                    sZ = 0
-                endif
-                if iZ > 1
-                    if (prevSample > 0 and sZ < 0) or (prevSample < 0 and sZ > 0)
-                        nCrossings = nCrossings + 1
-                    endif
-                endif
-                prevSample = sZ
-            endfor
-            zcr_val = nCrossings / nZcrFrames
+            selectObject: snippetSound
+            nSnippetSamples = Get number of samples
+            zeroPP = To PointProcess (zeroes): 1, "yes", "yes"
+            nCrossings = Get number of points
+            if nSnippetSamples > 1
+                zcr_val = nCrossings / (nSnippetSamples - 1)
+            endif
+            removeObject: zeroPP, snippetSound, snippetSpec
         endif
 
         # Append to sequences (semicolon-separated)
@@ -458,8 +553,23 @@ pythonCall$ = detectedCmd$ + " """ + pythonScriptJ$ + """"
 runSystem_nocheck: pythonCall$
 
 if not fileReadable(outputPlanCsv$)
+    appendInfoLine: ""
+    appendInfoLine: "--- Python error log ---"
+    if fileReadable(pythonLogFile$)
+        Read Strings from raw text file: pythonLogFile$
+        errStrings = selected("Strings")
+        nErr = Get number of strings
+        for iErr from 1 to nErr
+            selectObject: errStrings
+            errLine$ = Get string: iErr
+            appendInfoLine: "  ", errLine$
+        endfor
+        removeObject: errStrings
+    else
+        appendInfoLine: "(no Python log was written)"
+    endif
     @cleanUpTempFiles
-    exitScript: "Python engine failed — output_plan.csv not found." + newline$ + "Check terminal or permissions."
+    exitScript: "Python engine failed. See the Info window for details."
 endif
 
 appendInfoLine: "  Python engine completed."
@@ -488,15 +598,19 @@ Read Strings from raw text file: outputPlanCsv$
 planStrings = selected("Strings")
 nPlanLines  = Get number of strings
 
-# Store plan rows
+# Store plan rows. Capacity follows the CSV, not an arbitrary 500-row cap.
 nPlan = 0
-plan_newIdx#    = zero# (500)
-plan_evId#      = zero# (500)
-plan_start#     = zero# (500)
-plan_end#       = zero# (500)
-plan_cluster#   = zero# (500)
-plan_morph#     = zero# (500)
-plan_embNorm#   = zero# (500)
+planCapacity = nPlanLines - 1
+if planCapacity < 1
+    planCapacity = 1
+endif
+plan_newIdx#    = zero# (planCapacity)
+plan_evId#      = zero# (planCapacity)
+plan_start#     = zero# (planCapacity)
+plan_end#       = zero# (planCapacity)
+plan_cluster#   = zero# (planCapacity)
+plan_morph#     = zero# (planCapacity)
+plan_clustDist# = zero# (planCapacity)
 
 for iLine from 2 to nPlanLines
     selectObject: planStrings
@@ -504,7 +618,7 @@ for iLine from 2 to nPlanLines
     rowStr$ = replace$(rowStr$, " ", "", 0)
     if rowStr$ <> ""
         # Parse CSV: new_index,orig_event_id,orig_start,orig_end,
-        #            cluster_id,morph_score,emb_norm
+        #            cluster_id,morph_score,cluster_distance
         # Extract fields by successive comma finds
         remain$ = rowStr$
 
@@ -545,12 +659,16 @@ for iLine from 2 to nPlanLines
         plan_end#     [nPlan] = number(f4$)
         plan_cluster# [nPlan] = number(f5$)
         plan_morph#   [nPlan] = number(f6$)
-        plan_embNorm# [nPlan] = number(f7$)
+        plan_clustDist# [nPlan] = number(f7$)
     endif
 endfor
 removeObject: planStrings
 
 appendInfoLine: "  Montage plan: ", nPlan, " events"
+if nPlan < 2
+    @cleanUpTempFiles
+    exitScript: "Montage plan contains fewer than 2 events — refusing passthrough masquerading as recomposition."
+endif
 
 # ============================================================
 # STAGE 5: Assemble recomposed sound
@@ -559,46 +677,44 @@ appendInfoLine: "  Montage plan: ", nPlan, " events"
 appendInfoLine: ""
 appendInfoLine: "--- Stage 5: Assembling recomposed sound ---"
 
-fade_s = fade_ms / 1000
+fade_s = max(0, fade_ms / 1000)
 
-# Extract and store all chunks; preserve stereo
+# Choose a safe global crossfade. Praat's Concatenate with overlap performs
+# complementary raised-cosine fades, avoiding the zero-level dip produced by
+# fading each chunk separately and then concatenating.
+minChunkDur = plan_end# [1] - plan_start# [1]
+for iRow from 2 to nPlan
+    thisDur = plan_end# [iRow] - plan_start# [iRow]
+    if thisDur < minChunkDur
+        minChunkDur = thisDur
+    endif
+endfor
+overlap_s = fade_s
+if overlap_s > minChunkDur * 0.45
+    overlap_s = minChunkDur * 0.45
+endif
+# Extract and store all chunks; preserve every original channel.
 chunkIds# = zero# (nPlan)
-
 for iRow from 1 to nPlan
-    chunkStart = plan_start# [iRow]
-    chunkEnd   = plan_end#   [iRow]
-
-    # Safety clamp
-    if chunkStart < 0
-        chunkStart = 0
-    endif
-    if chunkEnd > dur
-        chunkEnd = dur
-    endif
+    chunkStart = max(0, plan_start# [iRow])
+    chunkEnd   = min(dur, plan_end# [iRow])
     if chunkEnd <= chunkStart
-        chunkEnd = chunkStart + 0.001
+        chunkEnd = min(dur, chunkStart + 0.001)
     endif
-
-    # Extract from original sound (stereo-safe)
     selectObject: origSound
     chunk = Extract part: chunkStart, chunkEnd, "rectangular", 1, "no"
-    chunkDur = Get total duration
-
-    # Fade in / out
-    if chunkDur > fade_s * 2.5
-        Fade in:  0, 0,                  fade_s, "yes"
-        Fade out: 0, chunkDur - fade_s,  fade_s, "yes"
-    endif
-
     chunkIds# [iRow] = chunk
 endfor
 
-# Concatenate all chunks
 selectObject: chunkIds# [1]
 for iRow from 2 to nPlan
     plusObject: chunkIds# [iRow]
 endfor
-Concatenate
+if overlap_s > 0
+    Concatenate with overlap: overlap_s
+else
+    Concatenate
+endif
 
 recomposedSound = selected("Sound")
 Rename: origName$ + "_recomposed_CNN"
@@ -625,38 +741,25 @@ recompDur = Get total duration
 Create TextGrid: 0, recompDur, "clusters", ""
 recompTG = selected("TextGrid")
 
-# Fill cluster tier with boundaries
-cursorTime = 0
+# Fill cluster tier. During each crossfade the label handover occurs at
+# the midpoint of the overlap, so the TextGrid remains a valid non-overlapping tier.
+audioStart = 0
 for iRow from 1 to nPlan
-    chunkStart  = plan_start#   [iRow]
-    chunkEnd    = plan_end#     [iRow]
-    chunkDur    = chunkEnd - chunkStart
-    clustId     = round(plan_cluster# [iRow])
-    morphScore  = plan_morph# [iRow]
-
-    endTime = cursorTime + chunkDur
-    if endTime > recompDur
-        endTime = recompDur
-    endif
-
+    chunkDur = plan_end# [iRow] - plan_start# [iRow]
+    clustId  = round(plan_cluster# [iRow])
     selectObject: recompTG
     if iRow < nPlan
-        Insert boundary: 1, endTime
-    endif
-
-    # Label interval with cluster ID
-    selectObject: recompTG
-    nBounds = Get number of intervals: 1
-    for iBound from 1 to nBounds
-        bStart = Get start time of interval: 1, iBound
-        bEnd   = Get end time of interval:   1, iBound
-        bMid   = (bStart + bEnd) / 2
-        if bMid >= cursorTime and bMid < endTime
-            Set interval text: 1, iBound, "C" + string$(clustId)
+        nextAudioStart = audioStart + chunkDur - overlap_s
+        boundaryTime = nextAudioStart + overlap_s / 2
+        if boundaryTime > 0 and boundaryTime < recompDur
+            Insert boundary: 1, boundaryTime
         endif
-    endfor
-
-    cursorTime = endTime
+        audioStart = nextAudioStart
+    endif
+endfor
+selectObject: recompTG
+for iRow from 1 to nPlan
+    Set interval text: 1, iRow, "C" + string$(round(plan_cluster# [iRow]))
 endfor
 
 appendInfoLine: "  Cluster TextGrid created."
@@ -664,7 +767,7 @@ appendInfoLine: "  Cluster TextGrid created."
 # ── B. Summary Table ──────────────────────────────────────────────────────────
 
 Create Table with column names: "recomposer_summary", nPlan,
-    ... "new_index orig_event_id cluster_id morphology_score embedding_norm"
+    ... "new_index orig_event_id cluster_id morphology_score cluster_distance"
 summaryTable = selected("Table")
 
 for iRow from 1 to nPlan
@@ -672,7 +775,7 @@ for iRow from 1 to nPlan
     Set numeric value: iRow, "orig_event_id",      plan_evId#    [iRow]
     Set numeric value: iRow, "cluster_id",         plan_cluster# [iRow]
     Set numeric value: iRow, "morphology_score",   plan_morph#   [iRow]
-    Set numeric value: iRow, "embedding_norm",     plan_embNorm# [iRow]
+    Set numeric value: iRow, "cluster_distance",  plan_clustDist# [iRow]
 endfor
 
 appendInfoLine: "  Summary Table created."
@@ -690,27 +793,37 @@ Colour: "Black"
 Text: 0.5, "centre", 0.6, "half", "##Recomposer — CNN Event Recomposition##"
 Font size: 8
 Colour: "{0.35, 0.35, 0.45}"
-Text: 0.5, "centre", -1.2, "half", origName$ + "  |  events: " + string$(nEvents)
-    ... + "  |  clusters: " + string$(round(plan_cluster# [nPlan]) + 1)
+Text: 0.5, "centre", -1.18, "half", origName$ + "  |  form: " + compositional_form$ + "  |  events: " + string$(nEvents)
+
+# Shared symmetric waveform scale for a meaningful before/after comparison
+selectObject: origSound
+origPeak = Get absolute extremum: 0, 0, "Sinc70"
+selectObject: recomposedSound
+recompPeak = Get absolute extremum: 0, 0, "Sinc70"
+wavePeak = max(origPeak, recompPeak)
+if wavePeak < 0.001
+    wavePeak = 1
+endif
 
 # Original waveform with event boundaries
 Select outer viewport: 0, 8, 0.55, 1.55
 Select inner viewport: 0.6, 7.7, 0.60, 1.50
 selectObject: origSound
 Colour: "{0.50, 0.50, 0.55}"
-Draw: 0, 0, 0, 0, "no", "Curve"
+Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
 Colour: "Black"
 Draw inner box
 Font size: 7
 Text left: "yes", "Original"
 Text top:  "no", "Original sound  +  event boundaries"
-Axes: 0, dur, -1, 1
+Select inner viewport: 0.6, 7.7, 0.60, 1.50
+Axes: 0, dur, -wavePeak, wavePeak
 Colour: "{0.75, 0.35, 0.35}"
 Line width: 1
 for iEv from 1 to nEvents
     evT = event_start# [iEv]
     if evT > 0 and evT < dur
-        Draw line: evT, -0.85, evT, 0.85
+        Draw line: evT, -wavePeak * 0.85, evT, wavePeak * 0.85
     endif
 endfor
 Line width: 1
@@ -720,7 +833,7 @@ Select outer viewport: 0, 8, 1.60, 2.60
 Select inner viewport: 0.6, 7.7, 1.65, 2.55
 selectObject: recomposedSound
 Colour: "{0.20, 0.45, 0.75}"
-Draw: 0, 0, 0, 0, "no", "Curve"
+Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
 Colour: "Black"
 Draw inner box
 Font size: 7
@@ -749,46 +862,60 @@ clustR# = { 0.85, 0.25, 0.15, 0.55, 0.75, 0.45 }
 clustG# = { 0.35, 0.65, 0.70, 0.20, 0.65, 0.45 }
 clustB# = { 0.20, 0.30, 0.80, 0.75, 0.25, 0.80 }
 
-cursorTime = 0
+segmentStart = 0
+audioStart = 0
 for iRow from 1 to nPlan
-    chunkStart = plan_start#   [iRow]
-    chunkEnd   = plan_end#     [iRow]
-    chunkDur   = chunkEnd - chunkStart
-    cid        = round(plan_cluster# [iRow]) + 1
+    chunkDur = plan_end# [iRow] - plan_start# [iRow]
+    cid = round(plan_cluster# [iRow]) + 1
     if cid < 1
         cid = 1
     endif
     if cid > 6
         cid = 6
     endif
-    endTime = cursorTime + chunkDur
+    if iRow < nPlan
+        nextAudioStart = audioStart + chunkDur - overlap_s
+        segmentEnd = nextAudioStart + overlap_s / 2
+    else
+        segmentEnd = recompDur
+    endif
     colStr$ = "{" + string$(clustR# [cid]) + "," + string$(clustG# [cid]) + "," + string$(clustB# [cid]) + "}"
-    Paint rectangle: colStr$, cursorTime, endTime, 0.05, 0.95
-    cursorTime = endTime
+    Paint rectangle: colStr$, segmentStart, segmentEnd, 0.05, 0.95
+    segmentStart = segmentEnd
+    if iRow < nPlan
+        audioStart = nextAudioStart
+    endif
 endfor
 
 # Cluster labels in the bar
 Font size: 7
-cursorTime = 0
+segmentStart = 0
+audioStart = 0
 for iRow from 1 to nPlan
-    chunkStart = plan_start#   [iRow]
-    chunkEnd   = plan_end#     [iRow]
-    chunkDur   = chunkEnd - chunkStart
-    cid        = round(plan_cluster# [iRow])
-    endTime    = cursorTime + chunkDur
-    midTime    = (cursorTime + endTime) / 2
-    if chunkDur > recompDur * 0.04
+    chunkDur = plan_end# [iRow] - plan_start# [iRow]
+    cid = round(plan_cluster# [iRow])
+    if iRow < nPlan
+        nextAudioStart = audioStart + chunkDur - overlap_s
+        segmentEnd = nextAudioStart + overlap_s / 2
+    else
+        segmentEnd = recompDur
+    endif
+    midTime = (segmentStart + segmentEnd) / 2
+    if segmentEnd - segmentStart > recompDur * 0.04
         Colour: "White"
         Text: midTime, "centre", 0.5, "half", "C" + string$(cid)
     endif
-    cursorTime = endTime
+    segmentStart = segmentEnd
+    if iRow < nPlan
+        audioStart = nextAudioStart
+    endif
 endfor
 Colour: "Black"
 Draw inner box
 Font size: 7
 Text left:   "yes", "Cluster"
 Text bottom: "yes", "Recomposed time (s)"
-Text top:    "no",  "Cluster timeline  (sorted by morphology score)"
+Text top:    "no",  "Cluster timeline — " + compositional_form$ + " form"
 
 # Morphology score bar chart (one bar per cluster)
 Select outer viewport: 0, 8, 3.65, 4.90
@@ -798,6 +925,8 @@ Axes: -0.5, nClusters - 0.5, 0, 1.15
 Paint rectangle: "{0.96, 0.96, 0.98}", -0.5, nClusters - 0.5, 0, 1.15
 
 for cid from 0 to nClusters - 1
+    Select inner viewport: 0.6, 7.7, 3.75, 4.80
+    Axes: -0.5, nClusters - 0.5, 0, 1.15
     # Find morphology score for this cluster
     morphVal = 0
     for iRow from 1 to nPlan
@@ -821,27 +950,29 @@ for cid from 0 to nClusters - 1
     Text: cid, "centre", -0.08, "half", "C" + string$(cid)
 endfor
 
+Select inner viewport: 0.6, 7.7, 3.75, 4.80
+Axes: -0.5, nClusters - 0.5, 0, 1.15
 Colour: "Black"
 Line width: 1
 Draw inner box
 Font size: 7
 Text left:   "yes", "Score"
-Text top:    "no",  "Cluster morphology scores  (CNN-derived)"
+Text top:    "no",  "Corpus cluster morphology  (form-independent)"
 Text bottom: "yes", "Cluster"
 
-# Embedding norm scatter (event index vs norm, coloured by cluster)
+# Cluster-distance scatter (event distance to its learned centroid)
 Select outer viewport: 0, 8, 5.00, 6.15
 Select inner viewport: 0.6, 7.7, 5.10, 6.05
 
 # Find norm range
-normMin = plan_embNorm# [1]
-normMax = plan_embNorm# [1]
+normMin = plan_clustDist# [1]
+normMax = plan_clustDist# [1]
 for iRow from 1 to nPlan
-    if plan_embNorm# [iRow] < normMin
-        normMin = plan_embNorm# [iRow]
+    if plan_clustDist# [iRow] < normMin
+        normMin = plan_clustDist# [iRow]
     endif
-    if plan_embNorm# [iRow] > normMax
-        normMax = plan_embNorm# [iRow]
+    if plan_clustDist# [iRow] > normMax
+        normMax = plan_clustDist# [iRow]
     endif
 endfor
 normRange = normMax - normMin
@@ -853,6 +984,8 @@ Axes: 0, nPlan + 1, normMin - normRange * 0.1, normMax + normRange * 0.15
 Paint rectangle: "{0.96, 0.96, 0.98}", 0, nPlan + 1, normMin - normRange * 0.1, normMax + normRange * 0.15
 
 for iRow from 1 to nPlan
+    Select inner viewport: 0.6, 7.7, 5.10, 6.05
+    Axes: 0, nPlan + 1, normMin - normRange * 0.1, normMax + normRange * 0.15
     cid    = round(plan_cluster# [iRow]) + 1
     if cid < 1
         cid = 1
@@ -860,17 +993,19 @@ for iRow from 1 to nPlan
     if cid > 6
         cid = 6
     endif
-    normV  = plan_embNorm# [iRow]
+    normV  = plan_clustDist# [iRow]
     colStr$ = "{" + string$(clustR# [cid]) + "," + string$(clustG# [cid]) + "," + string$(clustB# [cid]) + "}"
     Paint circle: colStr$, iRow, normV, 0.12
 endfor
 
+Select inner viewport: 0.6, 7.7, 5.10, 6.05
+Axes: 0, nPlan + 1, normMin - normRange * 0.1, normMax + normRange * 0.15
 Colour: "Black"
 Draw inner box
 Font size: 7
-Text left:   "yes", "‖emb‖"
+Text left:   "yes", "d(cluster)"
 Text bottom: "yes", "Montage position"
-Text top:    "no",  "Embedding norm per event  (montage order, coloured by cluster)"
+Text top:    "no",  "Distance to learned cluster centroid  (lower = more central)"
 
 # Summary panel
 Select outer viewport: 0, 8, 6.25, 7.0
@@ -888,10 +1023,10 @@ Text: 0.02, "left", 0.65, "half",
 Text: 0.02, "left", 0.42, "half",
     ... "Frame step: " + fixed$(frame_step_s * 1000, 0) + " ms"
     ... + "  |  Pitch: " + string$(pitch_floor_hz) + "-" + string$(pitch_ceiling_hz) + " Hz"
-    ... + "  |  Fade: " + string$(fade_ms) + " ms"
+    ... + "  |  Crossfade: " + fixed$(overlap_s * 1000, 1) + " ms"
 Text: 0.02, "left", 0.20, "half",
-    ... "CNN: multi-scale conv (k=9,21)  T=128  D=32"
-    ... + "  |  Contrastive training  |  K-means k=" + string$(nClusters)
+    ... "CNN: multi-scale conv (k=9,21)  T=128  F=8  D=32"
+    ... + "  |  unit embeddings  |  K-means k=" + string$(nClusters)
 Colour: "Black"
 Draw rectangle: 0, 1, 0, 1
 Font size: 10
@@ -906,7 +1041,7 @@ appendInfoLine: "  Visualization complete."
 
 removeObject: intensityObj, pitchObj, hnrObj, tgSilences
 removeObject: recompTG, summaryTable
-if isStereo
+if analysisSoundOwned
     removeObject: monoSound
 endif
 

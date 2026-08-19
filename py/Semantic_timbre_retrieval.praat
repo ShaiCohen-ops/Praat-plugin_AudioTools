@@ -2,7 +2,7 @@
 # Praat AudioTools - semantic_timbre_retrieval.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.0 (2026)
+# Version: 1.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,8 +26,23 @@
 #   Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
+# v1.1.1 review:
+#   - Added a Corpus_folder text field: type a path directly (including Windows
+#     paths with spaces/backslashes), or leave blank to use the folder dialog.
+#
+# v1.1 review:
+#   - Robust prompt-file handoff; per-run temp names.
+#   - Python uses strongest-channel analysis, voicing-aware pitch confidence,
+#     improved roughness/spatiality proxies, corrected prompt modifiers, and
+#     stereo-preserving preview with attenuation-only safety.
+#   - Visualization now compares parsed prompt targets with measured retrievals.
+# ============================================================
 
-form "Semantic Timbre Retrieval"
+form "Semantic Timbre Retrieval v1.1.1"
+    comment === Corpus Folder ===
+    comment (Type a folder path, or leave blank to choose with a dialog)
+    sentence Corpus_folder
+    comment === Search Prompt ===
     sentence Prompt dark airy swelling scrape
     optionmenu Preset_prompt: 1
         option — type your own above —
@@ -120,7 +135,7 @@ form "Semantic Timbre Retrieval"
     optionmenu Retrieval_mode: 2
         option files
         option segments
-    positive Top_matches 8
+    natural Top_matches 8
     boolean Build_preview_montage 1
     positive Crossfade_ms 30
     real Min_segment_sec 0.25
@@ -152,9 +167,17 @@ if preset_prompt > 1
     endif
 endif
 
-corpusDir$ = chooseDirectory$("Select Corpus Folder (WAV/FLAC/AIFF/MP3)")
+# Corpus folder: use the typed path when supplied; otherwise open the dialog.
+# Keep internal spaces and Windows backslashes unchanged. Only trim whitespace
+# around the whole field so paths such as D:\old D\waves\flute\flute_10 work.
+corpusDir$ = replace_regex$(corpus_folder$, "^[ \t]*|[ \t]*$", "", 0)
+
 if corpusDir$ == ""
-    exitScript: "Operation cancelled."
+    corpusDir$ = chooseDirectory$("Select Corpus Folder (WAV/FLAC/AIFF/MP3)")
+endif
+
+if corpusDir$ == ""
+    exitScript: "Operation cancelled. Type a Corpus_folder path or choose a folder."
 endif
 
 if prompt$ == ""
@@ -208,13 +231,17 @@ if not fileReadable(lexiconJson$)
     exitScript: "Cannot find semantic_prompt_lexicon.json." + newline$ + "Expected at: " + pluginDir$ + "py/"
 endif
 
-tempPreview$     = temporaryDirectory$ + "/temp_str_preview.wav"
-tempRetrieval$   = temporaryDirectory$ + "/temp_str_retrieval.csv"
-tempSegments$    = temporaryDirectory$ + "/temp_str_segments.csv"
-tempManifest$    = temporaryDirectory$ + "/temp_str_manifest.csv"
-tempStats$       = temporaryDirectory$ + "/temp_str_stats.txt"
-pyLog$           = temporaryDirectory$ + "/temp_str_error.log"
-probeMarker$     = temporaryDirectory$ + "/temp_str_probe.ok"
+# Use a per-run token so two retrieval windows cannot overwrite each other's files.
+runToken = randomInteger(100000, 999999)
+runToken$ = string$(runToken)
+tempPreview$     = temporaryDirectory$ + "/temp_str_" + runToken$ + "_preview.wav"
+tempRetrieval$   = temporaryDirectory$ + "/temp_str_" + runToken$ + "_retrieval.csv"
+tempSegments$    = temporaryDirectory$ + "/temp_str_" + runToken$ + "_segments.csv"
+tempManifest$    = temporaryDirectory$ + "/temp_str_" + runToken$ + "_manifest.csv"
+tempStats$       = temporaryDirectory$ + "/temp_str_" + runToken$ + "_stats.txt"
+tempPrompt$      = temporaryDirectory$ + "/temp_str_" + runToken$ + "_prompt.txt"
+pyLog$           = temporaryDirectory$ + "/temp_str_" + runToken$ + "_engine.log"
+probeMarker$     = temporaryDirectory$ + "/temp_str_" + runToken$ + "_probe.ok"
 
 # Replace backslashes for the Python inline probe to prevent escape crashes on Windows
 probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
@@ -237,6 +264,9 @@ procedure cleanUpTempFiles
     endif
     if fileReadable(tempStats$)
         deleteFile: tempStats$
+    endif
+    if fileReadable(tempPrompt$)
+        deleteFile: tempPrompt$
     endif
     if fileReadable(pyLog$)
         deleteFile: pyLog$
@@ -273,6 +303,10 @@ appendInfoLine: "  Python found: ", pythonCmd$
 # ============================================================
 appendInfoLine: "[2/4] Running retrieval engine..."
 
+# Pass free text through a UTF-8 file rather than shell quoting. This keeps
+# apostrophes, punctuation and other user text out of the command-line parser.
+writeFile: tempPrompt$, prompt$
+
 # Resolve mode string from optionmenu
 if retrieval_mode = 1
     modeStr$ = "files"
@@ -287,7 +321,7 @@ endif
 
 pyCmd$ = pythonCmd$ + " """ + pythonScript$ + """"
 pyCmd$ = pyCmd$ + " --corpus """ + corpusDir$ + """"
-pyCmd$ = pyCmd$ + " --prompt """ + prompt$ + """"
+pyCmd$ = pyCmd$ + " --prompt_file """ + tempPrompt$ + """"
 pyCmd$ = pyCmd$ + " --mode " + modeStr$
 pyCmd$ = pyCmd$ + " --top_n " + string$(top_matches)
 pyCmd$ = pyCmd$ + " --rules_json """ + rulesJson$ + """"
@@ -304,7 +338,7 @@ pyCmd$ = pyCmd$ + " --w_tag " + fixed$(weight_tag, 3)
 pyCmd$ = pyCmd$ + " --w_keyword " + fixed$(weight_keyword, 3)
 pyCmd$ = pyCmd$ + " --diversity_penalty " + fixed$(diversity_penalty, 3)
 pyCmd$ = pyCmd$ + " " + previewFlag$
-pyCmd$ = pyCmd$ + " 2> """ + pyLog$ + """"
+pyCmd$ = pyCmd$ + " > """ + pyLog$ + """ 2>&1"
 
 runSystem_nocheck: pyCmd$
 
@@ -376,10 +410,18 @@ endfor
 statCorpusFiles$ = "0"
 statFilesUsed$   = "0"
 statItems$       = "0"
+statSilentSkipped$ = "0"
 statMode$        = modeStr$
 statPromptToks$  = "0"
 statTopReturned$ = "0"
+statPreviewChannels$ = "0"
 statTime$        = "0.00"
+promptTarget# = zero#(8)
+promptWeight# = zero#(8)
+for d from 1 to 8
+    promptTarget# [d] = 0.5
+    promptWeight# [d] = 0
+endfor
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
@@ -389,12 +431,31 @@ if fileReadable(tempStats$)
     statFilesUsed$ = parseStatLine.result$
     @parseStatLine: statsText$, "Items indexed: "
     statItems$ = parseStatLine.result$
+    @parseStatLine: statsText$, "Silent items skipped: "
+    statSilentSkipped$ = parseStatLine.result$
     @parseStatLine: statsText$, "Prompt tokens resolved: "
     statPromptToks$ = parseStatLine.result$
     @parseStatLine: statsText$, "Top N returned: "
     statTopReturned$ = parseStatLine.result$
+    @parseStatLine: statsText$, "Preview channels: "
+    statPreviewChannels$ = parseStatLine.result$
     @parseStatLine: statsText$, "Render time: "
     statTime$ = parseStatLine.result$
+
+    # Parsed semantic target from Python.  Unmentioned dimensions carry weight 0
+    # and are not drawn as target marks in the mechanism panel.
+    statDimNames$# = {"brightness", "noisiness", "tonalness", "stability",
+        ... "impulsiveness", "sustain", "roughness", "spatiality"}
+    promptTarget# = zero#(8)
+    promptWeight# = zero#(8)
+    for d from 1 to 8
+        keyT$ = "Prompt target " + statDimNames$# [d] + ": "
+        @parseStatLine: statsText$, keyT$
+        promptTarget# [d] = number(parseStatLine.result$)
+        keyW$ = "Prompt weight " + statDimNames$# [d] + ": "
+        @parseStatLine: statsText$, keyW$
+        promptWeight# [d] = number(parseStatLine.result$)
+    endfor
 endif
 
 # ============================================================
@@ -421,17 +482,16 @@ if draw_visualization
     if length(promptDisp$) > 90
         promptDisp$ = left$(promptDisp$, 87) + "..."
     endif
-    Text: 0.5, "centre", -1.20, "half",
+    Text: -1.5, "centre", 0.18, "half",
         ... "prompt: " + promptDisp$
         ... + "   |   mode=" + modeStr$
         ... + "   |   top " + string$(nRanks)
 
     # ---------------------------------------------------------
-    # Target dim bar chart (top, from the best pick's position in dim-space
-    # as reconstructed via segments.csv)
+    # Prompt target vs retrieved-profile mechanism panel.
+    # Bars = measured mean of top-ranked items; black ticks = dimensions that
+    # the prompt parser actually targeted. This shows the retrieval claim directly.
     # ---------------------------------------------------------
-    # We derive the target profile by averaging the top-3 picks'
-    # dims from segments.csv. This gives a visual "what it found".
     segmentsTable = 0
     if fileReadable(tempSegments$)
         segmentsTable = Read Table from comma-separated file: tempSegments$
@@ -469,7 +529,7 @@ if draw_visualization
         endfor
     endif
 
-    # Target-profile bar chart: average of top-3 picks across dims
+    # Prompt-target vs retrieved-mean chart
     Select outer viewport: 0, 8, 0.55, 1.60
     Select inner viewport: 0.6, 7.7, 0.65, 1.55
     Axes: 0, nDim, 0, 1
@@ -482,6 +542,7 @@ if draw_visualization
     if avgTop < 1
         avgTop = 1
     endif
+    retrievedMean# = zero#(nDim)
     for d from 1 to nDim
         sumv = 0
         for r from 1 to avgTop
@@ -489,10 +550,25 @@ if draw_visualization
             sumv = sumv + dimGrid# [idx]
         endfor
         meanv = sumv / avgTop
+        retrievedMean# [d] = meanv
         Paint rectangle: "{0.22, 0.50, 0.82}", d - 0.85, d - 0.15, 0, meanv
     endfor
+    # Target marks are drawn only for dimensions mentioned by the prompt.
+    Colour: "Black"
+    Line width: 1.5
+    for d from 1 to nDim
+        if promptWeight# [d] > 0
+            targetV = promptTarget# [d]
+            Draw line: d - 0.88, targetV, d - 0.12, targetV
+        endif
+    endfor
+    Line width: 1
     Colour: "Black"
     Draw inner box
+    # Re-select the data viewport after box/text operations before any future
+    # world-coordinate drawing in this panel.
+    Select inner viewport: 0.6, 7.7, 0.65, 1.55
+    Axes: 0, nDim, 0, 1
     Font size: 6
     for d from 1 to nDim
         lbl$ = dimNames$# [d]
@@ -500,7 +576,7 @@ if draw_visualization
     endfor
     Font size: 7
     Text left: "yes", "0..1"
-    Text top: "no", "Retrieved profile (mean of top-" + string$(avgTop) + ")"
+    Text top: "no", "Prompt target (black tick) vs retrieved mean (blue, top-" + string$(avgTop) + ")"
 
     # ---------------------------------------------------------
     # Top matches list + score bars
@@ -637,9 +713,11 @@ if draw_visualization
         ... + "  |  Corpus files: " + statCorpusFiles$
         ... + "  |  Files analysed: " + statFilesUsed$
         ... + "  |  Items indexed: " + statItems$
+        ... + "  |  Silent skipped: " + statSilentSkipped$
     Text: 0.02, "left", 0.44, "half",
         ... "Prompt tokens resolved: " + statPromptToks$
         ... + "  |  Top returned: " + statTopReturned$
+        ... + "  |  Preview ch: " + statPreviewChannels$
         ... + "  |  Render time: " + statTime$
     Text: 0.02, "left", 0.22, "half",
         ... "W_sem: " + fixed$(weight_semantic, 2)
@@ -666,8 +744,10 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Corpus files scanned: ", statCorpusFiles$
 appendInfoLine: "Files analysed:       ", statFilesUsed$
 appendInfoLine: "Items indexed:        ", statItems$
+appendInfoLine: "Silent items skipped: ", statSilentSkipped$
 appendInfoLine: "Prompt tokens:        ", statPromptToks$
 appendInfoLine: "Top returned:         ", statTopReturned$
+appendInfoLine: "Preview channels:     ", statPreviewChannels$
 appendInfoLine: "Render time:          ", statTime$
 
 # Remove retrieval table object (data already reported)
