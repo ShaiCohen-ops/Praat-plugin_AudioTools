@@ -3,12 +3,12 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - Unified Cross-Platform Version
+# Version: 1.6 (2026) - VST3 discovery list + cached plugin selector
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
-#   VST3 Effect — Praat -> Python GUI host -> VST3 -> Praat
+#   VST3 Effect - Praat -> Python host -> native VST3 editor/audition -> Praat
 #
 #   This script serves as a bridge between Praat and a Python-based 
 #   GUI host for VST3 plugins. It allows users to process Praat 
@@ -59,12 +59,20 @@ endif
 pluginDirRaw$ = preferencesDirectory$ + "/plugin_AudioTools/"
 pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 
-pythonScript$ = pluginDir$ + "py/host_vst.py"
+# Prefer the versioned host so an older installed host_vst.py cannot silently
+# shadow a newly downloaded fix. Fall back to the legacy filename for compatibility.
+pythonScript$ = pluginDir$ + "py/host_vst_v1_6.py"
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/host_vst_v1_6.py"
+endif
+if not fileReadable(pythonScript$)
+    pythonScript$ = pluginDir$ + "py/host_vst.py"
+endif
 if not fileReadable(pythonScript$)
     pythonScript$ = defaultDirectory$ + "/host_vst.py"
 endif
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python script: host_vst.py" + newline$ + "Expected at: " + pluginDir$ + "py/ or next to this script."
+    exitScript: "Cannot find Python VST host." + newline$ + "Expected host_vst_v1_6.py (preferred) or host_vst.py in: " + pluginDir$ + "py/ or the current Praat directory."
 endif
 
 tempDirRaw$ = temporaryDirectory$ + "/"
@@ -197,8 +205,8 @@ endif
 # Settings form  (lightweight – most settings are in the GUI)
 # ============================================================
 
-beginPause: "VST3 Effect — Launch GUI v1.1"
-    comment: "Adjust detailed settings in the Python window that will open."
+beginPause: "VST3 Effect - Launch Host v1.6"
+    comment: "Python host includes Open Plugin UI (native VST3 editor) and Audition 8 s."
     if defaultPlugin$ <> ""
         comment: "Last plugin: " + defaultPlugin$
     else
@@ -221,6 +229,13 @@ curParams$ = parameters$
 curPlay    = play_result
 curSave    = save_as_default_plugin
 
+# The Python GUI knows which VST the user actually selects. When requested,
+# give it the preference file so it can persist that exact selection on success.
+prefsOutJ$ = ""
+if curSave
+    prefsOutJ$ = prefsFileJ$
+endif
+
 # ============================================================
 # Write input WAV
 # ============================================================
@@ -241,6 +256,7 @@ pyArgs$ = " --gui"
     ... + " " + curBuf$
     ... + " " + q$ + curParams$ + q$
     ... + " " + q$ + tempDoneJ$ + q$
+    ... + " " + q$ + prefsOutJ$ + q$
 
 # Launch Python detached so Praat is NOT blocked
 if windows
@@ -254,12 +270,13 @@ else
 endif
 
 clearinfo
-writeInfoLine:  "=== Praat -> Python GUI -> VST3 ==="
+writeInfoLine:  "=== Praat -> Python host -> native VST3 -> Praat ==="
 appendInfoLine: "Input sound:   ", soundName$
 appendInfoLine: "Platform:      ", platform$
 appendInfoLine: "Python:        ", pythonCmd$
+appendInfoLine: "VST host:      ", pythonScript$
 appendInfoLine: ""
-appendInfoLine: "Launching GUI (Praat stays responsive)…"
+appendInfoLine: "Launching host GUI with native plugin editor and audition..."
 
 runSystem_nocheck: cmd$
 
@@ -269,14 +286,16 @@ runSystem_nocheck: cmd$
 # Timeout after ~10 minutes (600 × 1 s pauses).
 # ============================================================
 
-appendInfoLine: "Waiting for Python GUI to finish…"
+appendInfoLine: "Waiting for Python host to finish..."
 
-maxWait   = 600
+# Poll without a modal pause window. sleep() is the standard Praat scripting
+# mechanism for a short timed wait; 6000 x 0.1 s = 10 minutes.
+maxWait   = 6000
 waited    = 0
 gotResult = 0
 
 repeat
-    pauseScript: "Waiting for VST GUI to close. Do not click Continue here.", "Continue", 1
+    sleep(0.1)
     waited += 1
     if fileReadable(tempDone$)
         gotResult = 1
@@ -309,9 +328,8 @@ elsif fileReadable(tempOutput$)
     
     appendInfoLine: "Done. Created: ", soundName$ + "_vst"
 
-    if curSave and defaultPlugin$ <> ""
-        writeFileLine: prefsFile$, defaultPlugin$
-    endif
+    # Default VST persistence is handled by the Python GUI so the plugin
+    # selected from the new VST list is the one remembered next time.
 
     @cleanUpTempFiles
 
