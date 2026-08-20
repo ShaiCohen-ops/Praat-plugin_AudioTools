@@ -2,7 +2,8 @@
 # Praat AudioTools - VoidMosaic.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.5.3 (2026) - Stable Praat-7 I/O plus bounded mechanism visualization
+# Version: 1.5.4 (2026) - Stable Praat-7 I/O, 44100 Hz delivery, corrected
+#          Picture frame handling in the panel legends
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,10 +20,15 @@
 #   selection, not mutation; the Matter Map plots the selected void targets,
 #   not re-measured post-mutation grains.
 #
+#   Analysis and synthesis run at 22050 Hz; the engine resamples the finished
+#   signal once to 44100 Hz before writing it, so the imported Sound is a
+#   standard-rate file. The 11.025 kHz analysis ceiling is unchanged -- the
+#   resample is a delivery-format step, not added bandwidth.
+#
 # Python engine: void_mosaic_engine.py
 # ============================================================
 
-form "Latent Void Mosaic v1.5.3"
+form "Latent Void Mosaic v1.5.4"
     comment ── Corpus Configuration ──
     comment (Leave blank to pick a folder with a dialog)
     sentence Corpus_folder 
@@ -275,7 +281,7 @@ endproc
 
 # ---- Dependency probe: same synchronous runSystem_nocheck pattern used elsewhere ----
 clearinfo
-writeInfoLine: "=== Latent Void Mosaic v1.5.3 ==="
+writeInfoLine: "=== Latent Void Mosaic v1.5.4 ==="
 appendInfoLine: "Corpus:        ", corpusDir$
 appendInfoLine: "Preset:        ", presetName$
 appendInfoLine: "Target Length: ", target_Duration_s, " seconds"
@@ -346,6 +352,7 @@ selectObject: resultSound
 outDur = Get total duration
 outRms = Get root-mean-square: 0, 0
 nChannels = Get number of channels
+outSampleRate = Get sampling frequency
 
 # ---- LIGHTWEIGHT MECHANISM VISUALIZATION ----
 # Important: this uses the stable in-memory Sound plus bounded CSV/map files.
@@ -388,7 +395,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Latent Void Mosaic v1.5.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Latent Void Mosaic v1.5.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.48}"
     Text: 0.5, "centre", -1.22, "half", presetName$ + "  |  register=" + registerName$ + "  |  output ch" + string$(vizChannel)
@@ -396,12 +403,21 @@ if draw_visualization
     # Panel 1: actual output waveform
     Select outer viewport: 0, 8, 0.68, 2.05
     Select inner viewport: 0.62, 7.65, 0.76, 1.96
+    Axes: 0, outDur, -wavePeak, wavePeak
     selectObject: vizSound
     Colour: "{0.18, 0.36, 0.58}"
     Draw: 0, 0, -wavePeak, wavePeak, "no", "Curve"
     Colour: "Black"
     Draw inner box
+    # Restore before the label group: Draw inner box moved the frame to the
+    # outer viewport, and this panel has wide margins, so "Time (s)" was landing
+    # below the outer viewport and colliding with the row underneath.
+    @restoreWaveFrame
     Font size: 7
+    @niceStep: outDur
+    Marks bottom every: 1, niceStep.step, "yes", "yes", "no"
+    @niceStep: 2 * wavePeak
+    Marks left every: 1, niceStep.step, "yes", "yes", "no"
     Text left: "yes", "Amplitude"
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Rendered mosaic waveform  [strongest real channel]"
@@ -416,22 +432,23 @@ if draw_visualization
         cMax = -1e30
         rMin = 1e30
         rMax = -1e30
+        # Range scan. The selected-grain endpoints are included too: they are
+        # real corpus grains that the decimated "C" sample may not contain, and
+        # a connector running off the panel edge would be misleading.
         for mr from 1 to nMapRows
             selectObject: mapTable
             cx = Get value: mr, "centroid"
             ry = Get value: mr, "rolloff"
-            if cx < cMin
-                cMin = cx
+            sx = Get value: mr, "src_centroid"
+            sy = Get value: mr, "src_rolloff"
+            if sx <= 0 or sy <= 0
+                sx = cx
+                sy = ry
             endif
-            if cx > cMax
-                cMax = cx
-            endif
-            if ry < rMin
-                rMin = ry
-            endif
-            if ry > rMax
-                rMax = ry
-            endif
+            cMin = min(cMin, cx, sx)
+            cMax = max(cMax, cx, sx)
+            rMin = min(rMin, ry, sy)
+            rMax = max(rMax, ry, sy)
         endfor
         if cMax - cMin < 1
             cMax = cMin + 1
@@ -444,9 +461,33 @@ if draw_visualization
         mapX0 = cMin - cPad
         mapX1 = cMax + cPad
         mapY0 = rMin - rPad
-        mapY1 = rMax + rPad
+        # Extra headroom at the top so the legend strip is empty by
+        # construction: void targets often cluster at an extreme of this
+        # projection, and a legend printed over them is unreadable.
+        mapY1 = rMax + rPad + 0.14 * (rMax - rMin + 2 * rPad)
         Axes: mapX0, mapX1, mapY0, mapY1
         Paint rectangle: "{0.97, 0.97, 0.98}", mapX0, mapX1, mapY0, mapY1
+
+        # Connectors first, so the dots sit on top of them. Each line joins the
+        # void target to the real corpus grain that was actually selected for
+        # it: the line IS the nudge the engine performed, in these two axes.
+        Colour: "{0.78, 0.70, 0.80}"
+        Line width: 1
+        for mr from 1 to nMapRows
+            selectObject: mapTable
+            typ$ = Get value: mr, "type"
+            if typ$ = "V"
+                cx = Get value: mr, "centroid"
+                ry = Get value: mr, "rolloff"
+                sx = Get value: mr, "src_centroid"
+                sy = Get value: mr, "src_rolloff"
+                if sx > 0 and sy > 0
+                    Draw line: sx, sy, cx, ry
+                endif
+            endif
+        endfor
+        @restoreMapFrame
+
         # Corpus first, then void targets. Fixed mm sizes avoid scale-dependent dots.
         for mr from 1 to nMapRows
             selectObject: mapTable
@@ -467,19 +508,26 @@ if draw_visualization
             endif
         endfor
         removeObject: mapTable
+
         # Paint circle can leave Picture on the outer viewport; restore explicitly.
-        Select outer viewport: 0, 4.10, 2.18, 5.15
-        Select inner viewport: 0.62, 3.86, 2.30, 5.02
-        Axes: mapX0, mapX1, mapY0, mapY1
+        @restoreMapFrame
         Colour: "Black"
-        Draw inner box
         Font size: 7
+        @niceStep: mapX1 - mapX0
+        Marks bottom every: 1, niceStep.step, "yes", "yes", "no"
+        @niceStep: mapY1 - mapY0
+        Marks left every: 1, niceStep.step, "yes", "yes", "no"
+        Draw inner box
         Text left: "yes", "Rolloff (Hz)"
         Text bottom: "yes", "Spectral centroid (Hz)"
         Text top: "no", "Void geometry: 6-D search projected to centroid / rolloff"
+        # Draw inner box / Text left / Text top leave the drawing frame on the
+        # OUTER viewport, and Axes alone does not restore it -- a world-coordinate
+        # Text placed here without re-selecting lands outside the panel.
+        @restoreMapFrame
         Font size: 6
         Colour: "{0.35, 0.35, 0.35}"
-        Text: mapX0 + 0.03 * (mapX1 - mapX0), "left", mapY1 - 0.07 * (mapY1 - mapY0), "half", "grey corpus   purple selected void targets"
+        Text: mapX0 + 0.03 * (mapX1 - mapX0), "left", mapY1 - 0.06 * (mapY1 - mapY0), "half", "grey corpus   purple void targets   line = grain -> void nudge"
     endif
 
     # Panel 3: measured pitch-mutation trace from the actual grain schedule.
@@ -489,10 +537,26 @@ if draw_visualization
     pitchY1 = 108
     Axes: 0, outDur, pitchY0, pitchY1
     Paint rectangle: "{0.97, 0.97, 0.98}", 0, outDur, pitchY0, pitchY1
+
+    # Target register as a shaded band. This is what makes the "register is a
+    # preference bounded by Max Pitch Shift" claim checkable: every black
+    # (reachable) dot lying OUTSIDE the band is a grain the shift ceiling
+    # stopped short of the requested register.
+    regLoMidi = 69 + 12 * ln(minPitchHz / 440) / ln(2)
+    regHiMidi = 69 + 12 * ln(maxPitchHz / 440) / ln(2)
+    regLoMidi = max(regLoMidi, pitchY0)
+    regHiMidi = min(regHiMidi, pitchY1)
+    if regHiMidi > regLoMidi
+        Paint rectangle: "{0.90, 0.94, 0.90}", 0, outDur, regLoMidi, regHiMidi
+    endif
+
     if fileReadable(tempCsv$)
         grainTable = Read Table from comma-separated file: tempCsv$
         nGrainRows = Get number of rows
-        maxPitchPoints = 120
+        # Measured on this machine: 4000 Paint circle (mm) calls cost ~24 ms and
+        # 4000 rows of Table queries ~53 ms, against a Python render measured in
+        # seconds. Decimating to 120 points bought nothing and threw away detail.
+        maxPitchPoints = 600
         stepRows = round(nGrainRows / maxPitchPoints)
         if stepRows < 1
             stepRows = 1
@@ -522,19 +586,23 @@ if draw_visualization
         endfor
         removeObject: grainTable
     endif
-    Select outer viewport: 4.10, 8, 2.18, 5.15
-    Select inner viewport: 4.42, 7.65, 2.30, 5.02
-    Axes: 0, outDur, pitchY0, pitchY1
+    @restorePitchFrame
     Colour: "Black"
-    Draw inner box
     Font size: 7
-    Marks left: 5, "yes", "yes", "no"
+    # Marks left: 5 put ticks at 24 / 45 / 66 / 87 / 108 -- arithmetic, but not
+    # musical. Every 12 semitones gives octaves, which is what this axis means.
+    Marks left every: 1, 12, "yes", "yes", "no"
+    @niceStep: outDur
+    Marks bottom every: 1, niceStep.step, "yes", "yes", "no"
+    Draw inner box
     Text left: "yes", "MIDI"
     Text bottom: "yes", "Output time (s)"
     Text top: "no", "Pitch mutation trace"
+    # Same frame caveat as the map panel: restore before any world-coordinate Text.
+    @restorePitchFrame
     Font size: 6
     Colour: "{0.35, 0.35, 0.35}"
-    Text: 0.03 * outDur, "left", 104, "half", "grey source   purple folded target   black reachable output"
+    Text: 0.03 * outDur, "left", 102, "half", "grey source   purple folded target   black reachable output   green band = target register"
 
     # Panel 4: mechanism + QC summary
     Select outer viewport: 0, 8, 5.30, 7.45
@@ -556,8 +624,14 @@ if draw_visualization
     spaced$ = parseStatLine.result$
     @parseStatLine: statsText$, "Total computation time: "
     timeUsed$ = parseStatLine.result$
-    Text: 0.03, "left", 0.28, "half", "QC: grains=" + numGrains$ + "   source files=" + filesUsed$ + "   spaced voids=" + spaced$ + "   render=" + timeUsed$ + " s"
-    Text: 0.03, "left", 0.10, "half", "Map is a 2-D projection only; pitch trace shows the scheduled source / target / reachable relation actually rendered."
+    @parseStatLine: statsText$, "Grains at max shift: "
+    clipped$ = parseStatLine.result$
+    @parseStatLine: statsText$, "Analysis rate: "
+    aRate$ = parseStatLine.result$
+    @parseStatLine: statsText$, "Output rate: "
+    oRate$ = parseStatLine.result$
+    Text: 0.03, "left", 0.28, "half", "QC: grains=" + numGrains$ + "   source files=" + filesUsed$ + "   spaced voids=" + spaced$ + "   grains at shift ceiling=" + clipped$ + "   render=" + timeUsed$ + " s"
+    Text: 0.03, "left", 0.10, "half", "Built at " + aRate$ + " Hz, delivered at " + oRate$ + " Hz (no added bandwidth). Map is a 2-D projection; the pitch trace is the schedule actually rendered."
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
@@ -566,9 +640,15 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.5, "centre", 0.55, "half", "dur=" + fixed$(outDur, 2) + "s  |  RMS=" + fixed$(outRms, 4) + "  |  overlap=" + fixed$(overlap_percent, 1) + "%  |  jitter=" + fixed$(length_Jitter_percent, 1) + "%  |  width=" + fixed$(stereo_width, 2)
+    # A bare "%" is italic markup in Picture text: it is swallowed and the run
+    # after it is italicised. "\%" prints a literal percent sign.
+    Text: 0.5, "centre", 0.55, "half", "dur=" + fixed$(outDur, 2) + "s  |  " + string$(outSampleRate) + " Hz  |  RMS=" + fixed$(outRms, 4) + "  |  overlap=" + fixed$(overlap_percent, 1) + "\%  |  jitter=" + fixed$(length_Jitter_percent, 1) + "\%  |  width=" + fixed$(stereo_width, 2)
 
     removeObject: vizSound
+    # Leave the Picture selection on the whole canvas. Save as PNG / PDF and
+    # Copy export the CURRENT viewport selection, so ending on the summary bar
+    # would export a 0.45-inch strip instead of the figure.
+    Select outer viewport: 0, 8, 0, 8
     Font size: 10
     Colour: "Black"
     Line width: 1
@@ -579,6 +659,7 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output: Void_Mosaic"
 appendInfoLine: "Duration: ", fixed$(outDur, 3), " s"
 appendInfoLine: "Channels: ", nChannels
+appendInfoLine: "Sample rate: ", outSampleRate, " Hz (built at 22050 Hz, resampled once on output)"
 appendInfoLine: "RMS: ", fixed$(outRms, 6)
 appendInfoLine: ""
 appendInfoLine: statsText$
@@ -591,6 +672,49 @@ selectObject: resultSound
 if play_result
     Play
 endif
+
+# Draw inner box, Marks and Text left/bottom/top all leave the drawing frame on
+# the OUTER viewport, and a following "Axes:" does not restore it. Measured at
+# 300 dpi: a point drawn without restoring lands ~0.14 x 0.09 inch outside the
+# panel. Any world-coordinate Text after those commands needs a full restore.
+procedure restoreWaveFrame
+    Select outer viewport: 0, 8, 0.68, 2.05
+    Select inner viewport: 0.62, 7.65, 0.76, 1.96
+    Axes: 0, outDur, -wavePeak, wavePeak
+endproc
+
+procedure restoreMapFrame
+    Select outer viewport: 0, 4.10, 2.18, 5.15
+    Select inner viewport: 0.62, 3.86, 2.30, 5.02
+    Axes: mapX0, mapX1, mapY0, mapY1
+endproc
+
+procedure restorePitchFrame
+    Select outer viewport: 4.10, 8, 2.18, 5.15
+    Select inner viewport: 4.42, 7.65, 2.30, 5.02
+    Axes: 0, outDur, pitchY0, pitchY1
+endproc
+
+# Round tick spacing (1 / 2 / 5 x 10^n) for a given axis span, aiming at about
+# five marks. "Marks left: N" would instead place ticks at the data-derived
+# extremes and print values like 3184.7.
+procedure niceStep: .span
+    .step = 1
+    if .span > 0
+        .raw = .span / 5
+        .mag = 10 ^ floor(log10(.raw))
+        .norm = .raw / .mag
+        if .norm < 1.5
+            .step = .mag
+        elsif .norm < 3
+            .step = 2 * .mag
+        elsif .norm < 7
+            .step = 5 * .mag
+        else
+            .step = 10 * .mag
+        endif
+    endif
+endproc
 
 procedure parseStatLine: .text$, .key$
     .result$ = "?"

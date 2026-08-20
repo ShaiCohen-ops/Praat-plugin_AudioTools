@@ -1,11 +1,18 @@
 """
-void_mosaic_engine.py - Latent Void Mosaic Engine v1.5.3
+void_mosaic_engine.py - Latent Void Mosaic Engine v1.5.4
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
-Version: 1.5.3 (2026) - Stable-I/O build with lightweight visualization data.
-         DSP/selection logic from v1.5.2 is unchanged. Adds only bounded
-         corpus/void map export and output-time stamps in the grain CSV so
-         Praat can visualize the actual selection/mutation mechanism safely.
+Version: 1.5.4 (2026) - Analysis and synthesis stay at 22050 Hz (unchanged cost
+         and unchanged void geometry); the finished signal is resampled ONCE to
+         44100 Hz immediately before it is written, so the deliverable is a
+         standard-rate file. Peak normalization and the edge fades now happen
+         AFTER the resample, because polyphase interpolation can overshoot the
+         pre-resample peak. The map CSV additionally carries the void ->
+         selected-grain pairing, and the stats file reports how many grains hit
+         the Max Pitch Shift ceiling.
+         (1.5.3: stable-I/O build with lightweight visualization data; DSP and
+         selection logic from v1.5.2 unchanged; bounded corpus/void map export
+         and output-time stamps in the grain CSV.)
 License: MIT
 """
 
@@ -20,6 +27,7 @@ import warnings
 from collections import OrderedDict
 import numpy as np
 from scipy import spatial
+from scipy.signal import resample_poly
 import soundfile as sf
 import librosa
 
@@ -181,7 +189,16 @@ def main():
     args.pan_mode = args.pan_mode if args.pan_mode in (1, 2, 3) else 1
     args.stereo = 1 if args.stereo == 1 else 0
 
+    # Analysis/synthesis rate. Everything upstream of the final write -- corpus
+    # loading, the STFT feature grids, yin, grain scheduling, pitch_shift and
+    # the overlap-add -- runs here. Halving the rate roughly halves the cost of
+    # all of it, which is why the mosaic is built at 22050.
     target_sr = 22050
+    # Delivery rate. The finished signal is resampled once, at the very end,
+    # so the file Praat reads is a standard-rate 44100 Hz WAV. This adds no
+    # bandwidth (the 11.025 kHz analysis ceiling is still the real ceiling);
+    # it only removes the odd sample rate from the deliverable.
+    output_sr = 44100
     grain_samples = int((args.grain_dur / 1000.0) * target_sr)
     hop_samples = int(grain_samples * (1.0 - (args.overlap / 100.0)))
     hop_samples = max(1, hop_samples)
@@ -352,34 +369,10 @@ def main():
     selected_voids_physical[:, 4] = np.clip(selected_voids_physical[:, 4], 0.0, 1.0)     # zcr
     selected_voids_physical[:, 5] = np.clip(selected_voids_physical[:, 5], 0.0, args.max_pitch)  # f0
 
-    # Lightweight visualization map only. This does not participate in DSP.
-    # Keep the file bounded so Praat Picture never has to paint thousands of
-    # points. Evenly spaced deterministic sampling avoids consuming RNG state.
-    if args.out_map:
-        try:
-            max_corpus_points = 240
-            max_void_points = 80
-            with open(args.out_map, 'w', newline='', encoding='utf-8') as mf:
-                w = csv.writer(mf)
-                w.writerow(["type", "centroid", "rolloff"])
-                n_c = len(corpus_matrix)
-                if n_c <= max_corpus_points:
-                    corpus_idx = np.arange(n_c, dtype=int)
-                else:
-                    corpus_idx = np.linspace(0, n_c - 1, max_corpus_points, dtype=int)
-                for ci in corpus_idx:
-                    row = corpus_matrix[ci]
-                    w.writerow(["C", round(float(row[1]), 3), round(float(row[3]), 3)])
-                n_v = len(selected_voids_physical)
-                if n_v <= max_void_points:
-                    void_idx = np.arange(n_v, dtype=int)
-                else:
-                    void_idx = np.linspace(0, n_v - 1, max_void_points, dtype=int)
-                for vi in void_idx:
-                    row = selected_voids_physical[vi]
-                    w.writerow(["V", round(float(row[1]), 3), round(float(row[3]), 3)])
-        except Exception:
-            pass
+    # The visualization map is written AFTER synthesis (see below), because a
+    # void is only half the picture: the informative pair is the void target
+    # and the real corpus grain that was actually selected for it, and that
+    # pairing is not known until the nearest-grain search has run.
 
     # ── 3. Mutation and Synthesis ──
     # Grain lengths/hops were scheduled up front (see the coverage loop) so the
@@ -403,6 +396,8 @@ def main():
 
     grain_records = []
     rests_generated = 0
+    grains_clipped = 0        # grains whose required shift hit the max_shift ceiling
+    void_pairs = []           # (void_centroid, void_rolloff, grain_centroid, grain_rolloff)
     used_grain_keys = set()   # (file_idx, start_sample) -> genuinely distinct grains
 
     # Reuse penalty: corpus grains used recently are temporarily pushed away
@@ -487,6 +482,17 @@ def main():
             min_pitch=args.min_pitch, max_pitch=args.max_pitch
         )
 
+        # Did the register request get clipped by the Max Pitch Shift ceiling?
+        # This is the honest read on "register is a preference, not a guarantee".
+        if args.max_shift > 0 and abs(shift_applied) >= args.max_shift - 1e-6:
+            grains_clipped += 1
+
+        # Void target and the real grain chosen for it, in the two map axes.
+        void_pairs.append((
+            float(void_phys[1]), float(void_phys[3]),
+            float(c_phys[1]), float(c_phys[3])
+        ))
+
         # pitch_shift can change length slightly; refit to g_len
         if len(y_mutated) < g_len:
             y_mutated = np.pad(y_mutated, (0, g_len - len(y_mutated)))
@@ -562,35 +568,82 @@ def main():
         wsum_R = _fit(wsum_R)
         out_L = out_L * np.minimum(1.0 / np.maximum(wsum_L, window_sum_floor), 4.0)
         out_R = out_R * np.minimum(1.0 / np.maximum(wsum_R, window_sum_floor), 4.0)
-        # joint peak normalize (preserve the L/R balance / image)
-        peak = float(max(np.abs(out_L).max(), np.abs(out_R).max()))
-        if peak > 0.001:
-            scale = 0.95 / peak
-            out_L *= scale
-            out_R *= scale
-        fade_samples = min(int(0.015 * target_sr), len(out_L) // 2)
-        if fade_samples > 1:
-            fin = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
-            fout = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
-            out_L[:fade_samples] *= fin
-            out_R[:fade_samples] *= fin
-            out_L[-fade_samples:] *= fout
-            out_R[-fade_samples:] *= fout
         out_audio = np.stack([out_L, out_R], axis=1)  # (n, 2) for soundfile
     else:
         out_audio = _fit(out_audio)
         window_sum = _fit(window_sum)
         gain = np.minimum(1.0 / np.maximum(window_sum, window_sum_floor), 4.0)
         out_audio = out_audio * gain
-        peak = float(np.abs(out_audio).max())
-        if peak > 0.001:
-            out_audio = (out_audio / peak * 0.95).astype(np.float32)
-        fade_samples = min(int(0.015 * target_sr), len(out_audio) // 2)
-        if fade_samples > 1:
-            out_audio[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
-            out_audio[-fade_samples:] *= np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
-        
-    sf.write(args.out_wav, out_audio, target_sr, subtype="FLOAT")
+
+    # ── Deliver at 44100 Hz ──
+    # One polyphase resample of the finished signal, at the very end. 22050 ->
+    # 44100 is an exact 2:1 ratio, so resample_poly needs up=2, down=1 and a
+    # single FIR pass; nothing upstream changes and the duration is preserved
+    # exactly (target_samples * 2). Multi-channel input is resampled along the
+    # time axis, which keeps L and R sample-aligned (the Haas-style decorrelation
+    # offset scales with them, so the stereo image is unaffected).
+    if output_sr != target_sr:
+        gcd = math.gcd(int(output_sr), int(target_sr))
+        out_audio = resample_poly(
+            out_audio, int(output_sr) // gcd, int(target_sr) // gcd, axis=0
+        ).astype(np.float32)
+    final_sr = output_sr
+
+    # Peak normalization and the edge fades run AFTER the resample on purpose:
+    # the interpolation filter rings slightly and can push the peak above what
+    # it was at 22050, so normalizing first would let the delivered file exceed
+    # the intended ceiling. Fading here also guarantees the fade lands on the
+    # true first/last samples of the file that is actually written.
+    peak = float(np.abs(out_audio).max())
+    if peak > 0.001:
+        out_audio = (out_audio * (0.95 / peak)).astype(np.float32)
+
+    fade_samples = min(int(0.015 * final_sr), len(out_audio) // 2)
+    if fade_samples > 1:
+        fin = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+        fout = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+        if out_audio.ndim == 2:
+            # Same envelope on both channels: fading per channel would move the
+            # constant-power balance around during the fade.
+            out_audio[:fade_samples, :] *= fin[:, None]
+            out_audio[-fade_samples:, :] *= fout[:, None]
+        else:
+            out_audio[:fade_samples] *= fin
+            out_audio[-fade_samples:] *= fout
+
+    sf.write(args.out_wav, out_audio, final_sr, subtype="FLOAT")
+
+    # ── Visualization map: void targets paired with the grains chosen for them ──
+    # Bounded on purpose so the Praat Picture window never paints thousands of
+    # points. Evenly spaced deterministic sampling avoids consuming RNG state.
+    # Corpus rows carry zeros in the src_* columns; only void rows are paired.
+    if args.out_map:
+        try:
+            max_corpus_points = 240
+            max_void_points = 80
+            with open(args.out_map, 'w', newline='', encoding='utf-8') as mf:
+                w = csv.writer(mf)
+                w.writerow(["type", "centroid", "rolloff", "src_centroid", "src_rolloff"])
+                n_c = len(corpus_matrix)
+                if n_c <= max_corpus_points:
+                    corpus_idx = np.arange(n_c, dtype=int)
+                else:
+                    corpus_idx = np.linspace(0, n_c - 1, max_corpus_points, dtype=int)
+                for ci in corpus_idx:
+                    row = corpus_matrix[ci]
+                    w.writerow(["C", round(float(row[1]), 3), round(float(row[3]), 3), 0.0, 0.0])
+                n_v = len(void_pairs)
+                if n_v:
+                    if n_v <= max_void_points:
+                        void_idx = np.arange(n_v, dtype=int)
+                    else:
+                        void_idx = np.linspace(0, n_v - 1, max_void_points, dtype=int)
+                    for vi in void_idx:
+                        vc, vr, sc, sr_ = void_pairs[int(vi)]
+                        w.writerow(["V", round(vc, 3), round(vr, 3),
+                                    round(sc, 3), round(sr_, 3)])
+        except Exception:
+            pass
     
     with open(args.out_csv, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
@@ -600,7 +653,7 @@ def main():
         writer.writerows(grain_records)
         
     total_time = round(time.time() - start_time, 3)
-    audio_length = round(len(out_audio) / target_sr, 2)
+    audio_length = round(len(out_audio) / final_sr, 2)
     
     with open(args.out_stats, 'w', encoding='utf-8') as f:
         f.write(f"Status: Success\n")
@@ -611,6 +664,8 @@ def main():
         distinct_files = len(set(fi for fi, _ in used_grain_keys))
         f.write(f"Corpus files found: {len(audio_files)}\n")
         f.write(f"Corpus files analyzed: {files_contributing}\n")
+        f.write(f"Analysis rate: {target_sr}\n")
+        f.write(f"Output rate: {final_sr}\n")
         f.write(f"Audio cache limit: {audio_cache_limit} files\n")
         f.write("KD-tree workers: 1\n")
         f.write(f"Acoustic grains mutated: {num_voids - rests_generated}\n")
@@ -618,6 +673,7 @@ def main():
         f.write(f"Distinct source grains: {len(used_grain_keys)}\n")
         f.write(f"Distinct source files: {distinct_files}\n")
         f.write(f"Voids meeting spacing: {voids_spaced} of {num_voids}\n")
+        f.write(f"Grains at max shift: {grains_clipped}\n")
         if voids_fallback > 0:
             f.write(f"Voids backfilled (spacing not guaranteed): {voids_fallback}\n")
 
