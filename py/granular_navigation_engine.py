@@ -1,11 +1,23 @@
 """
-granular_navigation_engine.py — Granular Navigation Engine  v1.6.6
+granular_navigation_engine.py — Granular Navigation Engine  v1.7.1
 
 Part of Praat AudioTools plugin
 Author: Shai Cohen, Department of Music, Bar-Ilan University
 Email: shai.cohen@biu.ac.il
 
 Called by GranularNavigationEngine.praat — not run directly.
+
+Changelog v1.7.1:
+    - Wrapper companion release for musical spatial presets. The Python engine
+      has no DSP, feature, training, PCA, cache, transition or navigation changes
+      from v1.7.0; whole-corpus PCA-X metadata is written exactly as before.
+
+Changelog v1.7.0:
+    - Added whole-corpus PCA-X bounds to every path CSV row for the Praat
+      stereo renderer. This is metadata only: feature extraction, autoencoder,
+      PCA coordinates, transition scores, navigation decisions and caching are
+      unchanged.
+    - Retains Windows-safe redirected console handling from the stable build.
 
 Changelog v1.6.6:
     - Production-stable companion release for the Praat v1.6.6 wrapper.
@@ -762,11 +774,16 @@ def generate_path(emb, X_norm, mode, n_path, seed, sq_norm=None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def write_path_csv(path_out, rows, grains, path_indices, emb, sq_norm, emb_2d):
+    # Whole-corpus PCA-X reference frame for the Praat stereo renderer. Repeating
+    # two scalars in each row keeps the path CSV self-contained and lets Praat
+    # reconstruct spatial position before it reads the stats file.
+    corpus_emb_x_min = float(np.min(emb_2d[:, 0])) if len(emb_2d) else 0.0
+    corpus_emb_x_max = float(np.max(emb_2d[:, 0])) if len(emb_2d) else 0.0
     with open(path_out, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["step", "filename", "analysis_channel", "start_s", "end_s",
                          "next_grain", "transition_score",
-                         "emb_x", "emb_y"])
+                         "emb_x", "emb_y", "corpus_emb_x_min", "corpus_emb_x_max"])
         n = len(path_indices)
         for step, gi in enumerate(path_indices):
             g       = grains[gi]
@@ -782,6 +799,8 @@ def write_path_csv(path_out, rows, grains, path_indices, emb, sq_norm, emb_2d):
                 "%.6f" % _transition_score_pair(emb, sq_norm, gi, next_gi),
                 "%.6f" % float(emb_2d[gi, 0]),
                 "%.6f" % float(emb_2d[gi, 1]),
+                "%.6f" % corpus_emb_x_min,
+                "%.6f" % corpus_emb_x_max,
             ])
 
 

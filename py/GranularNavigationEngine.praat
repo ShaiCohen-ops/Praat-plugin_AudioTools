@@ -3,9 +3,37 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.6.6 (2026) - production stable build; DSP/navigation unchanged
+# Version: 1.7.1 (2026) - musical spatial presets for latent panorama; navigation unchanged
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.7.1:
+#   - Added musical Spatial_preset choices that set Spatial_width and
+#     Spatial_inertia together: Latent Walk, Subtle Drift, Wide Flow,
+#     Active Roam, Maximum Motion, Slow Panorama, plus Custom.
+#   - Presets affect only the existing latent-stereo rendering layer. Analysis,
+#     autoencoder, PCA, transition scoring, navigation, reconstruction order and
+#     Praat-7 lifecycle checkpoint boundaries are unchanged.
+#   - Custom preserves direct access to the original 0..1 width and 0..0.98
+#     inertia controls. The Info window reports the active preset and effective
+#     values so saved settings remain auditable.
+#
+# Changelog v1.7.0:
+#   - NEW MUSICAL FEATURE: optional stereo rendering maps the latent PCA X
+#     trajectory to panoramic position. The mapping uses the X bounds of the
+#     ENTIRE corpus embedding (written by the Python engine), not merely the
+#     selected path. PCA zero stays acoustic centre; the larger absolute corpus
+#     X extent defines the symmetric L/R scale, so outliers cannot shove a local
+#     trajectory against the opposite loudspeaker.
+#   - Equal-power panning preserves constant inter-speaker power. Spatial_width
+#     scales the excursion around centre; Spatial_inertia applies one-pole path
+#     smoothing so abrupt latent jumps do not become distracting ping-pong.
+#   - Stereo is a RENDERING layer only: source analysis remains phase-safe mono /
+#     representative-channel analysis, and feature extraction, autoencoder,
+#     embedding, transition scoring and navigation decisions are unchanged.
+#   - Mono mode remains available and follows the v1.6.6 reconstruction path.
+#   - All v1.6.6 Praat-7 lifecycle checkpoint writes are retained at their
+#     proven-stable boundaries; extra checkpoints bracket the new stereo combine.
 #
 # Changelog v1.6.6:
 #   - PRODUCTION STABLE: promotes the v1.6.5 crash-isolation lifecycle to the
@@ -149,7 +177,7 @@ tempPath$    = temporaryDirectory$ + "/temp_gne_path.csv"
 tempStats$   = temporaryDirectory$ + "/temp_gne_stats.txt"
 pyLog$       = temporaryDirectory$ + "/temp_gne_error.log"
 crashMarker$ = preferencesDirectory$ + "/GNE_last_stage.txt"
-writeFileLine: crashMarker$, "v1.6.6 wrapper_start"
+writeFileLine: crashMarker$, "v1.7.1 wrapper_start"
 
 # ---- Cleanup Procedure ----
 procedure cleanUpTempFiles
@@ -167,7 +195,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Granular Navigation Engine v1.6.6
+form Granular Navigation Engine v1.7.1
     comment === Audio Folder ===
     comment (Leave blank to pick a folder with a dialog)
     sentence Folder 
@@ -183,9 +211,57 @@ form Granular Navigation Engine v1.6.6
         option Sparser
     positive Grain_ms 150
     integer Path_length 60
+    comment === Spatial rendering ===
+    boolean Stereo_output 1
+    optionmenu Spatial_preset: 1
+        option Latent Walk
+        option Subtle Drift
+        option Wide Flow
+        option Active Roam
+        option Maximum Motion
+        option Slow Panorama
+        option Custom
+    comment (Manual Width/Inertia are used only with Custom)
+    real Spatial_width 0.85
+    real Spatial_inertia 0.35
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Spatial presets are intentionally musical rather than technical. They only
+# choose effective values for the existing latent-pan renderer; Custom exposes
+# the original controls. Width 0..1 maps centre -> full L/R excursion. Inertia
+# 0 follows each latent point immediately; values toward 1 increasingly retain
+# the previous panoramic position.
+if spatial_preset = 1
+    spatialPresetName$ = "Latent Walk"
+    spatial_width = 0.85
+    spatial_inertia = 0.35
+elsif spatial_preset = 2
+    spatialPresetName$ = "Subtle Drift"
+    spatial_width = 0.45
+    spatial_inertia = 0.60
+elsif spatial_preset = 3
+    spatialPresetName$ = "Wide Flow"
+    spatial_width = 1.00
+    spatial_inertia = 0.55
+elsif spatial_preset = 4
+    spatialPresetName$ = "Active Roam"
+    spatial_width = 1.00
+    spatial_inertia = 0.20
+elsif spatial_preset = 5
+    spatialPresetName$ = "Maximum Motion"
+    spatial_width = 1.00
+    spatial_inertia = 0.00
+elsif spatial_preset = 6
+    spatialPresetName$ = "Slow Panorama"
+    spatial_width = 1.00
+    spatial_inertia = 0.85
+else
+    spatialPresetName$ = "Custom"
+endif
+spatial_width = min(max(spatial_width, 0.0), 1.0)
+spatial_inertia = min(max(spatial_inertia, 0.0), 0.98)
 
 # ---- FOLDER DISCOVERY ----
 # Mirrors VoidMosaic: use the typed path, or fall back to a dialog when
@@ -237,11 +313,16 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Granular Navigation Engine v1.6.6 ==="
+writeInfoLine: "=== Granular Navigation Engine v1.7.1 ==="
 appendInfoLine: "Folder: ", folderJ$
 appendInfoLine: "Mode:   ", modeStr$
 appendInfoLine: "Grain:  ", grain_ms, " ms"
 appendInfoLine: "Path:   ", path_length, " grains"
+if stereo_output
+    appendInfoLine: "Space:  ", spatialPresetName$, " | width=", fixed$(spatial_width, 2), " | inertia=", fixed$(spatial_inertia, 2)
+else
+    appendInfoLine: "Space:  mono"
+endif
 appendInfoLine: "Praat:  ", appVersion$()
 appendInfoLine: "Python: ", pythonCmd$
 appendInfoLine: "Engine: ", pythonScript$
@@ -310,6 +391,44 @@ endif
 
 appendInfoLine: "  Path: ", nPath, " grains"
 
+# Spatial reference frame. v1.7 Python repeats whole-corpus PCA-X bounds in the
+# path CSV. PCA is zero-centred, so use the larger absolute X extent as a
+# symmetric scale around 0: latent origin = acoustic centre.
+# Fallback to selected-path bounds keeps the wrapper tolerant of an older engine.
+hasEmbX = 0
+hasCorpusXBounds = 0
+selectObject: pathTable
+nPathCols = Get number of columns
+for c to nPathCols
+    cn$ = Get column label: c
+    if cn$ = "emb_x"
+        hasEmbX = 1
+    elsif cn$ = "corpus_emb_x_min"
+        hasCorpusXBounds = hasCorpusXBounds + 1
+    elsif cn$ = "corpus_emb_x_max"
+        hasCorpusXBounds = hasCorpusXBounds + 1
+    endif
+endfor
+
+corpusExMin = 0
+corpusExMax = 0
+if hasEmbX = 1
+    if hasCorpusXBounds = 2
+        corpusExMin = Get value: 1, "corpus_emb_x_min"
+        corpusExMax = Get value: 1, "corpus_emb_x_max"
+    endif
+    if hasCorpusXBounds <> 2 or corpusExMin = undefined or corpusExMax = undefined or corpusExMax <= corpusExMin
+        corpusExMin = Get minimum: "emb_x"
+        corpusExMax = Get maximum: "emb_x"
+    endif
+endif
+corpusExSpan = corpusExMax - corpusExMin
+corpusExAbsMax = max(abs(corpusExMin), abs(corpusExMax))
+
+if stereo_output and (hasEmbX = 0 or corpusExAbsMax <= 1e-12)
+    appendInfoLine: "  Spatial note: no usable PCA-X extent; stereo will remain centred."
+endif
+
 grainSec = grain_ms / 1000
 xfSec    = min(0.012, grainSec * 0.40)
 
@@ -321,6 +440,8 @@ xfSec    = min(0.012, grainSec * 0.40)
 targetSR    = 0
 nOk         = 0
 resultSound = 0
+havePan     = 0
+prevPan     = 0.0
 writeFileLine: crashMarker$, "reconstruction_start nPath=", nPath
 
 for g to nPath
@@ -331,6 +452,10 @@ for g to nPath
     analysisCh = Get value: g, "analysis_channel"
     if analysisCh = undefined
         analysisCh = 0
+    endif
+    embX = undefined
+    if hasEmbX = 1
+        embX = Get value: g, "emb_x"
     endif
 
     if fn$ = "" or ts = undefined or te = undefined
@@ -379,6 +504,57 @@ for g to nPath
                 removeObject: lSnd
                 lSnd = 0
 
+                # ------------------------------------------------------------
+                # Latent trajectory -> panoramic trajectory (rendering only)
+                # ------------------------------------------------------------
+                # Map PCA X in the whole-corpus reference frame. Because PCA
+                # is zero-centred, 0 maps to acoustic centre; the largest
+                # absolute corpus X coordinate defines symmetric full scale.
+                if stereo_output
+                    panTarget = 0.0
+                    if embX <> undefined and corpusExAbsMax > 1e-12
+                        panTarget = embX / corpusExAbsMax
+                        panTarget = min(max(panTarget, -1.0), 1.0)
+                    endif
+                    panTarget = panTarget * spatial_width
+
+                    # First grain starts exactly at its latent target. Later
+                    # grains use one-pole inertia; 0 = direct, toward 1 = smoother.
+                    if havePan = 0
+                        panPos = panTarget
+                        havePan = 1
+                    else
+                        panPos = spatial_inertia * prevPan + (1.0 - spatial_inertia) * panTarget
+                    endif
+                    prevPan = panPos
+
+                    # Equal-power law: position -1..+1 -> angle 0..pi/2.
+                    panAngle = (panPos + 1.0) * pi / 4.0
+                    panGainL = cos(panAngle)
+                    panGainR = sin(panAngle)
+
+                    writeFileLine: crashMarker$, "before_stereo_pan grain=", g, " pan=", fixed$(panPos, 4)
+
+                    # Use the extracted mono/representative grain as L and one
+                    # copy as R. Formula modifies samples in place; Combine to
+                    # stereo preserves the channel order of these two objects.
+                    selectObject: gSnd
+                    rSnd = Copy: "GNE_pan_R"
+                    selectObject: gSnd
+                    Formula: ~ self * panGainL
+                    selectObject: rSnd
+                    Formula: ~ self * panGainR
+                    selectObject: gSnd
+                    plusObject: rSnd
+                    Combine to stereo
+                    stSnd = selected("Sound")
+                    removeObject: gSnd
+                    removeObject: rSnd
+                    gSnd = stSnd
+
+                    writeFileLine: crashMarker$, "after_stereo_pan grain=", g, " pan=", fixed$(panPos, 4)
+                endif
+
                 nOk = nOk + 1
                 if nOk = 1
                     resultSound = gSnd
@@ -419,7 +595,11 @@ selectObject: resultSound
 writeFileLine: crashMarker$, "before_scale_peak"
 Scale peak: 0.92
 writeFileLine: crashMarker$, "after_scale_peak"
-outName$ = "GNE_" + modeStr$ + "_" + string$(nOk) + "gr"
+if stereo_output
+    outName$ = "GNE_" + modeStr$ + "_" + string$(nOk) + "gr_stereo"
+else
+    outName$ = "GNE_" + modeStr$ + "_" + string$(nOk) + "gr"
+endif
 Rename: outName$
 outDur = Get total duration
 
@@ -500,6 +680,7 @@ if draw_visualization
         ... + "  |  Grains: " + string$(nOk)
         ... + "  |  Duration: " + fixed$(outDur, 1) + " s"
         ... + "  |  Seed: " + string$(seed)
+        ... + if stereo_output then "  |  latent stereo" else "  |  mono" fi
 
     # 8-colour palette for source files
     cr# = zero#(8)
@@ -713,7 +894,7 @@ if draw_visualization
         Draw inner box
         Font size: 7
         Text left: "yes", "PCA dim 2"
-        Text bottom: "yes", "PCA dim 1  (green=start  red=end)"
+        Text bottom: "yes", "PCA dim 1 -> panorama  (green=start  red=end)"
     endif
 
     # — Mode strip —
@@ -766,7 +947,7 @@ if draw_visualization
     Text: 0.02, "left", 0.20, "half",
         ... "Grain: " + fixed$(grain_ms, 0) + " ms  |  Hop: 50%"
         ... + "  |  Crossfade: " + fixed$(xfSec * 1000, 1) + " ms"
-        ... + "  |  Seed: " + string$(seed)
+        ... + if stereo_output then "  |  " + spatialPresetName$ + " W=" + fixed$(spatial_width, 2) + " I=" + fixed$(spatial_inertia, 2) else "  |  Mono" fi
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
@@ -794,6 +975,11 @@ appendInfoLine: "Mode:     ", statMode$
 appendInfoLine: "Latent:   ", statLatent$
 appendInfoLine: "Epochs:   ", statEpochs$
 appendInfoLine: "Path:     ", statPath$
+if stereo_output
+    appendInfoLine: "Spatial:  ", spatialPresetName$, " | width=", fixed$(spatial_width, 2), " | inertia=", fixed$(spatial_inertia, 2)
+else
+    appendInfoLine: "Spatial:  mono"
+endif
 
 selectObject: resultSound
 writeFileLine: crashMarker$, "before_remove_path_table"
