@@ -3,9 +3,87 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2026) - Folder field with blank-to-dialog fallback
+# Version: 1.6.6 (2026) - production stable build; DSP/navigation unchanged
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.6.6:
+#   - PRODUCTION STABLE: promotes the v1.6.5 crash-isolation lifecycle to the
+#     normal wrapper after successful Praat 7 tests with visualization and Play
+#     both enabled and disabled. The persistent stage writes are intentionally
+#     retained at the same boundaries because removing them would change the
+#     only configuration demonstrated stable after v1.6.3/v1.6.4 still crashed.
+#   - Restored normal defaults: Draw_visualization=1 and Play_result=1.
+#   - Keeps bounded-memory reconstruction, combined > log 2>&1 redirection,
+#     Windows-safe Python logging, and the persistent GNE_last_stage.txt marker.
+#   - No feature extraction, training, embedding, transition, navigation,
+#     reconstruction, or visualization algorithm changed.
+#
+# Changelog v1.6.5:
+#   - DIAGNOSTIC/STABILITY ISOLATION: writes a persistent last-stage marker to
+#     preferencesDirectory$/GNE_last_stage.txt before/after every risky boundary
+#     (Python return, CSV read, source read, grain extraction, concatenation,
+#     normalization, visualization, cleanup and playback). A hard Praat crash can
+#     therefore be localized without relying on the Info window surviving.
+#   - Safe defaults: Draw_visualization=0 and Play_result=0. Re-enable only after
+#     the core analysis/reconstruction run completes.
+#   - Keeps v1.6.4 bounded-memory reconstruction and v1.6.3 > log 2>&1.
+#   - No Python feature/training/embedding/navigation math changed.
+#
+# Changelog v1.6.4:
+#   - STABILITY FIX: Praat reconstruction is now streaming/bounded-memory.
+#     The wrapper no longer keeps every source Sound and every extracted grain
+#     resident until the end. It holds only the current source, current grain,
+#     and growing output accumulator, then releases intermediates immediately.
+#   - Keeps v1.6.3 stable-I/O redirection (> log 2>&1).
+#   - Python analysis/training/navigation math and visualization are unchanged.
+#
+# Changelog v1.6.3:
+#   - STABILITY FIX ONLY: redirect BOTH Python stdout and stderr to the same
+#     log (`> log 2>&1`) before returning control to Praat. This prevents
+#     verbose Python/PyTorch stdout from remaining attached to Praat's process pipe.
+#   - Added Praat/Python/engine path stamps for crash diagnostics.
+#   - Reconstruction, cache, training, navigation and visualization are unchanged.
+#
+# Changelog v1.6.2:
+#   - Compatibility fix: Praat no longer passes --cache_dir explicitly.
+#     New Python engines still use their automatic persistent cache; older
+#     engines no longer fail on an unknown argument.
+#   - Visualization block unchanged from v1.6.1.
+#
+# Changelog v1.6.1:
+#   - VISUALIZATION RESTORE ONLY: restored the complete embedding-scatter
+#     block exactly to the known-working pre-v1.5.1 implementation.
+#     Removes all later Paint circle (mm)/viewport experiments that caused
+#     oversized markers. Runtime/cache/stereo/navigation code is unchanged.
+#
+# Changelog v1.6.0:
+#   - Runtime: persistent two-level Python cache under plugin_AudioTools/cache/.
+#     Unchanged corpus + Grain_ms reuses analysis; unchanged epochs/seed also
+#     reuses the trained embedding + PCA. Navigation_mode / Path_length changes
+#     therefore skip audio decode, FFT, 80-epoch training, and PCA.
+#   - Runtime: removed the separate dependency-probe Python process entirely;
+#     the engine itself reports missing packages, avoiding a second process launch.
+#   - Visualization code is unchanged from the corrected v1.5.3 mm-marker version.
+#
+# Changelog v1.5.3:
+#   - FIXED embedding visualization robustly: Praat has separate Paint circle
+#     (world-coordinate radius) and Paint circle (mm) commands. The scatter now
+#     uses Paint circle (mm) explicitly, so marker size cannot explode when the
+#     PCA X/Y ranges differ. The inner viewport and Axes are reselected after
+#     every painted marker because Picture drawing commands can alter viewport
+#     state. No DSP/navigation changes.
+#
+# Changelog v1.5.2:
+#   - Attempted visualization fix; superseded by v1.5.3.
+#
+# Changelog v1.5.1:
+#   - Python no longer allocates a full N x N transition matrix; navigation
+#     uses the identical score formula on demand, reducing corpus-size memory.
+#   - Phase-cancelling stereo analysis is handled only when needed. The Python
+#     path CSV records a representative channel for such files, and Praat uses
+#     that same channel during reconstruction; normal stereo keeps the legacy
+#     mono mean.
 #
 # Changelog v1.5:
 #   - Added a "Folder" form field (mirrors VoidMosaic): type a path, or
@@ -69,11 +147,9 @@ endif
 
 tempPath$    = temporaryDirectory$ + "/temp_gne_path.csv"
 tempStats$   = temporaryDirectory$ + "/temp_gne_stats.txt"
-probeMarker$ = temporaryDirectory$ + "/temp_gne_probe.ok"
 pyLog$       = temporaryDirectory$ + "/temp_gne_error.log"
-
-# Replace backslashes for the Python inline probe
-probeMarkerJ$ = replace_regex$(probeMarker$, "\\", "/", 0)
+crashMarker$ = preferencesDirectory$ + "/GNE_last_stage.txt"
+writeFileLine: crashMarker$, "v1.6.6 wrapper_start"
 
 # ---- Cleanup Procedure ----
 procedure cleanUpTempFiles
@@ -83,9 +159,6 @@ procedure cleanUpTempFiles
     if fileReadable(tempStats$)
         deleteFile: tempStats$
     endif
-    if fileReadable(probeMarker$)
-        deleteFile: probeMarker$
-    endif
     if fileReadable(pyLog$)
         deleteFile: pyLog$
     endif
@@ -94,7 +167,7 @@ endproc
 @cleanUpTempFiles
 
 # ---- FORM ----
-form Granular Navigation Engine v1.5
+form Granular Navigation Engine v1.6.6
     comment === Audio Folder ===
     comment (Leave blank to pick a folder with a dialog)
     sentence Folder 
@@ -164,33 +237,21 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Granular Navigation Engine v1.5 ==="
+writeInfoLine: "=== Granular Navigation Engine v1.6.6 ==="
 appendInfoLine: "Folder: ", folderJ$
 appendInfoLine: "Mode:   ", modeStr$
 appendInfoLine: "Grain:  ", grain_ms, " ms"
 appendInfoLine: "Path:   ", path_length, " grains"
+appendInfoLine: "Praat:  ", appVersion$()
+appendInfoLine: "Python: ", pythonCmd$
+appendInfoLine: "Engine: ", pythonScript$
+appendInfoLine: "Stability marker: ", crashMarker$
 appendInfoLine: ""
 
 # ============================================================
-# Stage 1 — Detect Python Dependencies
+# Stage 1 — Run Python engine
 # ============================================================
-appendInfoLine: "[1/3] Detecting Python dependencies..."
-
-probeCmd$ = pythonCmd$ + " -c ""import torch, numpy, soundfile; open('""" + probeMarkerJ$ + """', 'w').write('ok')"""
-runSystem_nocheck: probeCmd$
-
-if not fileReadable(probeMarker$)
-    @cleanUpTempFiles
-    exitScript: "Cannot find Python with required packages." + newline$ + "  pip install torch numpy soundfile"
-endif
-deleteFile: probeMarker$
-
-appendInfoLine: "  Python found: ", pythonCmd$
-
-# ============================================================
-# Stage 2 — Run Python engine
-# ============================================================
-appendInfoLine: "[2/3] Running Python engine..."
+appendInfoLine: "[1/2] Running Python engine..."
 
 grainMsStr$    = fixed$(grain_ms, 0)
 pathLengthStr$ = string$(path_length)
@@ -207,13 +268,14 @@ pyCmd$ = pyCmd$ + " --path_length " + pathLengthStr$
 pyCmd$ = pyCmd$ + " --epochs "      + epochsStr$
 pyCmd$ = pyCmd$ + " --seed "        + seedStr$
 
-if windows
-    pyCmd$ = pyCmd$ + " 2> """ + pyLog$ + """"
-else
-    pyCmd$ = pyCmd$ + " 2> """ + pyLog$ + """"
-endif
+# Praat 7 stability rule: never leave Python stdout attached to Praat.
+# Capture stdout and stderr together so print(), warnings and tracebacks all
+# land in one diagnostic file and the child cannot block on an unread pipe.
+pyCmd$ = pyCmd$ + " > """ + pyLog$ + """ 2>&1"
 
+writeFileLine: crashMarker$, "before_python_runSystem"
 runSystem_nocheck: pyCmd$
+writeFileLine: crashMarker$, "after_python_runSystem"
 
 if not fileReadable(tempPath$)
     errMsg$ = ""
@@ -230,11 +292,13 @@ endif
 appendInfoLine: "  Engine complete."
 
 # ============================================================
-# Stage 3 — Read path and reconstruct
+# Stage 2 — Read path and reconstruct
 # ============================================================
-appendInfoLine: "[3/3] Reconstructing..."
+appendInfoLine: "[2/2] Reconstructing..."
 
+writeFileLine: crashMarker$, "before_path_csv_read"
 pathTable = Read Table from comma-separated file: tempPath$
+writeFileLine: crashMarker$, "after_path_csv_read"
 selectObject: pathTable
 nPath = Get number of rows
 
@@ -249,107 +313,115 @@ appendInfoLine: "  Path: ", nPath, " grains"
 grainSec = grain_ms / 1000
 xfSec    = min(0.012, grainSec * 0.40)
 
-# Source file cache
-maxSrc   = 500
-nSrc     = 0
-targetSR = 0
-for q to maxSrc
-    srcId[q] = 0
-endfor
-nOk = 0
+# Bounded-memory reconstruction.
+# The old implementation cached every source Sound and retained every grain
+# object until one final Concatenate with overlap. Large/long corpora could
+# therefore leave hundreds of decoded Sounds resident inside Praat at once.
+# Keep only: current source + current grain + growing accumulator.
+targetSR    = 0
+nOk         = 0
+resultSound = 0
+writeFileLine: crashMarker$, "reconstruction_start nPath=", nPath
 
 for g to nPath
     selectObject: pathTable
     fn$ = Get value: g, "filename"
     ts  = Get value: g, "start_s"
     te  = Get value: g, "end_s"
+    analysisCh = Get value: g, "analysis_channel"
+    if analysisCh = undefined
+        analysisCh = 0
+    endif
 
     if fn$ = "" or ts = undefined or te = undefined
-        appendInfoLine: "  row ", g, ": missing data — skip"
+        appendInfoLine: "  row ", g, ": missing data - skip"
     else
-        srcSlot = 0
-        for q to nSrc
-            if srcFn_'q'$ = fn$
-                srcSlot = q
-            endif
-        endfor
-        if srcSlot = 0
-            fp$ = folderJ$ + fn$
-            if fileReadable(fp$)
-                lSnd = Read from file: fp$
-                selectObject: lSnd
-                nc2 = Get number of channels
-                if nc2 > 1
+        fp$ = folderJ$ + fn$
+        if fileReadable(fp$)
+            writeFileLine: crashMarker$, "before_source_read grain=", g, " file=", fn$
+            lSnd = Read from file: fp$
+            writeFileLine: crashMarker$, "after_source_read grain=", g, " file=", fn$
+            selectObject: lSnd
+            nc2 = Get number of channels
+            if nc2 > 1
+                if analysisCh >= 1 and analysisCh <= nc2
+                    mSnd = Extract one channel: round(analysisCh)
+                else
                     mSnd = Convert to mono
-                    removeObject: lSnd
-                    lSnd = mSnd
                 endif
-                # --- sample-rate normalisation ---
-                selectObject: lSnd
-                lSR = Get sampling frequency
-                if targetSR = 0
-                    targetSR = lSR
-                elsif lSR <> targetSR
-                    rSnd = Resample: targetSR, 50
-                    removeObject: lSnd
-                    lSnd = rSnd
-                    appendInfo: "~"
-                endif
-                # ----------------------------------
-                nSrc = nSrc + 1
-                srcFn_'nSrc'$ = fn$
-                srcId[nSrc]   = lSnd
-                srcSlot = nSrc
-                appendInfo: "+"
+                removeObject: lSnd
+                lSnd = mSnd
             endif
-        endif
 
-        if srcSlot > 0
-            sid  = srcId[srcSlot]
-            selectObject: sid
+            # Sample-rate normalisation while only one source is resident.
+            selectObject: lSnd
+            lSR = Get sampling frequency
+            if targetSR = 0
+                targetSR = lSR
+            elsif lSR <> targetSR
+                writeFileLine: crashMarker$, "before_resample grain=", g, " from=", lSR, " to=", targetSR
+                rSnd = Resample: targetSR, 50
+                writeFileLine: crashMarker$, "after_resample grain=", g
+                removeObject: lSnd
+                lSnd = rSnd
+            endif
+
+            selectObject: lSnd
             sDur = Get total duration
             tsCl = max(ts, 0.0)
             teCl = min(te, sDur)
+
             if teCl - tsCl >= 0.005
-                selectObject: sid
+                writeFileLine: crashMarker$, "before_extract grain=", g, " ts=", tsCl, " te=", teCl
                 gSnd = Extract part: tsCl, teCl, "rectangular", 1, "yes"
-                nOk  = nOk + 1
-                Rename: "GNE_g_" + string$(nOk)
-                gne_g_'nOk' = selected("Sound")
+                writeFileLine: crashMarker$, "after_extract grain=", g
+                # The full source is no longer needed once its grain exists.
+                removeObject: lSnd
+                lSnd = 0
+
+                nOk = nOk + 1
+                if nOk = 1
+                    resultSound = gSnd
+                    selectObject: resultSound
+                    Rename: "GNE_acc"
+                else
+                    oldResult = resultSound
+                    selectObject: oldResult
+                    plusObject: gSnd
+                    writeFileLine: crashMarker$, "before_concatenate grain=", g, " assembled=", nOk
+                    Concatenate with overlap: xfSec
+                    writeFileLine: crashMarker$, "after_concatenate grain=", g, " assembled=", nOk
+                    newResult = selected("Sound")
+                    removeObject: oldResult
+                    removeObject: gSnd
+                    resultSound = newResult
+                endif
+            else
+                removeObject: lSnd
             endif
+        else
+            appendInfoLine: "  row ", g, ": source unreadable - skip"
         endif
     endif
 endfor
 
 appendInfoLine: ""
+writeFileLine: crashMarker$, "reconstruction_loop_complete nOk=", nOk
 appendInfoLine: "  Grains assembled: ", nOk, "/", nPath
 
 if nOk = 0
-    for q to nSrc
-        removeObject: srcId[q]
-    endfor
     removeObject: pathTable
     @cleanUpTempFiles
     exitScript: "No grains assembled."
 endif
 
-selectObject: gne_g_1
-for g from 2 to nOk
-    plusObject: gne_g_'g'
-endfor
-Concatenate with overlap: xfSec
-resultSound = selected("Sound")
+selectObject: resultSound
+writeFileLine: crashMarker$, "before_scale_peak"
 Scale peak: 0.92
+writeFileLine: crashMarker$, "after_scale_peak"
 outName$ = "GNE_" + modeStr$ + "_" + string$(nOk) + "gr"
 Rename: outName$
 outDur = Get total duration
-
-for g to nOk
-    removeObject: gne_g_'g'
-endfor
-for q to nSrc
-    removeObject: srcId[q]
-endfor
 
 # ============================================================
 # Read stats
@@ -360,6 +432,13 @@ statLatent$  = "?"
 statPath$    = "?"
 statMode$    = "?"
 statSources$ = "?"
+statPhaseSafe$ = "0"
+statAnalysisCache$ = "0"
+statEmbeddingCache$ = "0"
+statExtractTime$ = "?"
+statTrainTime$ = "?"
+statNavigateTime$ = "?"
+statTotalTime$ = "?"
 
 if fileReadable(tempStats$)
     statsText$ = readFile$(tempStats$)
@@ -375,13 +454,33 @@ if fileReadable(tempStats$)
     statMode$ = parseStatLine.result$
     @parseStatLine: statsText$, "n_sources="
     statSources$ = parseStatLine.result$
+    @parseStatLine: statsText$, "phase_safe_fallback_files="
+    statPhaseSafe$ = parseStatLine.result$
+    @parseStatLine: statsText$, "analysis_cache_hit="
+    statAnalysisCache$ = parseStatLine.result$
+    @parseStatLine: statsText$, "embedding_cache_hit="
+    statEmbeddingCache$ = parseStatLine.result$
+    @parseStatLine: statsText$, "timing_extract_s="
+    statExtractTime$ = parseStatLine.result$
+    @parseStatLine: statsText$, "timing_train_s="
+    statTrainTime$ = parseStatLine.result$
+    @parseStatLine: statsText$, "timing_navigate_s="
+    statNavigateTime$ = parseStatLine.result$
+    @parseStatLine: statsText$, "timing_total_s="
+    statTotalTime$ = parseStatLine.result$
 endif
+
+appendInfoLine: "  Cache: analysis=", statAnalysisCache$, " embedding=", statEmbeddingCache$
+appendInfoLine: "  Python timing: analysis ", statExtractTime$, "s | train ", statTrainTime$, "s | navigate ", statNavigateTime$, "s | total ", statTotalTime$, "s"
+
+writeFileLine: crashMarker$, "stats_complete"
 
 ###############################################################################
 # VISUALIZATION
 ###############################################################################
 
 if draw_visualization
+    writeFileLine: crashMarker$, "before_visualization"
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
@@ -659,9 +758,11 @@ if draw_visualization
     Text: 0.02, "left", 0.65, "half",
         ... "Grains: " + statGrains$ + "  |  Sources: " + statSources$
         ... + "  |  Mode: " + statMode$
+        ... + "  |  phase-safe files: " + statPhaseSafe$
     Text: 0.02, "left", 0.42, "half",
         ... "Latent dim: " + statLatent$ + "  |  Epochs: " + statEpochs$
         ... + "  |  Path: " + statPath$ + " grains"
+        ... + "  |  Python: " + statTotalTime$ + " s"
     Text: 0.02, "left", 0.20, "half",
         ... "Grain: " + fixed$(grain_ms, 0) + " ms  |  Hop: 50%"
         ... + "  |  Crossfade: " + fixed$(xfSec * 1000, 1) + " ms"
@@ -671,12 +772,17 @@ if draw_visualization
 
     Font size: 10
     Colour: "Black"
+    writeFileLine: crashMarker$, "after_visualization"
+else
+    writeFileLine: crashMarker$, "visualization_skipped"
 endif
 
 # ============================================================
 # Final info + cleanup
 # ============================================================
+writeFileLine: crashMarker$, "before_final_cleanup"
 @cleanUpTempFiles
+writeFileLine: crashMarker$, "after_final_cleanup"
 
 appendInfoLine: ""
 appendInfoLine: "=== COMPLETE ==="
@@ -690,10 +796,16 @@ appendInfoLine: "Epochs:   ", statEpochs$
 appendInfoLine: "Path:     ", statPath$
 
 selectObject: resultSound
+writeFileLine: crashMarker$, "before_remove_path_table"
 removeObject: pathTable
+writeFileLine: crashMarker$, "after_remove_path_table"
 
 if play_result
+    writeFileLine: crashMarker$, "before_play"
     Play
+    writeFileLine: crashMarker$, "after_play"
+else
+    writeFileLine: crashMarker$, "play_skipped_complete"
 endif
 
 # ============================================================
