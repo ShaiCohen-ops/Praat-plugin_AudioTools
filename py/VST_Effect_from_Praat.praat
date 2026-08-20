@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.6 (2026) - VST3 discovery list + cached plugin selector
+# Version: 1.7 (2026) - Toolbar host GUI; the Praat form no longer duplicates
+#          the settings that live in the host window
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -61,7 +62,13 @@ pluginDir$ = replace_regex$(pluginDirRaw$, "\\", "/", 0)
 
 # Prefer the versioned host so an older installed host_vst.py cannot silently
 # shadow a newly downloaded fix. Fall back to the legacy filename for compatibility.
-pythonScript$ = pluginDir$ + "py/host_vst_v1_6.py"
+pythonScript$ = pluginDir$ + "py/host_vst_v1_7.py"
+if not fileReadable(pythonScript$)
+    pythonScript$ = defaultDirectory$ + "/host_vst_v1_7.py"
+endif
+if not fileReadable(pythonScript$)
+    pythonScript$ = pluginDir$ + "py/host_vst_v1_6.py"
+endif
 if not fileReadable(pythonScript$)
     pythonScript$ = defaultDirectory$ + "/host_vst_v1_6.py"
 endif
@@ -72,7 +79,7 @@ if not fileReadable(pythonScript$)
     pythonScript$ = defaultDirectory$ + "/host_vst.py"
 endif
 if not fileReadable(pythonScript$)
-    exitScript: "Cannot find Python VST host." + newline$ + "Expected host_vst_v1_6.py (preferred) or host_vst.py in: " + pluginDir$ + "py/ or the current Praat directory."
+    exitScript: "Cannot find Python VST host." + newline$ + "Expected host_vst_v1_7.py (preferred), host_vst_v1_6.py or host_vst.py in: " + pluginDir$ + "py/ or the current Praat directory."
 endif
 
 tempDirRaw$ = temporaryDirectory$ + "/"
@@ -158,6 +165,13 @@ else
     candidate4$ = ""
 endif
 
+# The probe result must be able to say "nothing worked". In v1.6 pythonCmd$ was
+# pre-seeded with an OS default and only overwritten on success, so the
+# "cannot find Python" branch below was unreachable: a machine without the
+# packages launched a broken command and the user waited out the full 10-minute
+# timeout instead of reading the one-line explanation.
+pythonCmd$ = ""
+
 for iCand from 1 to nCandidates
     if iCand = 1
         tryCmd$ = candidate1$
@@ -205,36 +219,34 @@ endif
 # Settings form  (lightweight – most settings are in the GUI)
 # ============================================================
 
-beginPause: "VST3 Effect - Launch Host v1.6"
-    comment: "Python host includes Open Plugin UI (native VST3 editor) and Audition 8 s."
+# The host window owns tail / buffer / parameters / plugin choice and persists
+# them itself, so asking for them here made the user answer the same questions
+# twice before seeing a single plugin. Only the genuinely Praat-side decision
+# is left.
+beginPause: "VST3 Effect - Launch Host v1.7"
+    comment: "The host window handles plugin choice, the native VST3 editor and audition."
     if defaultPlugin$ <> ""
         comment: "Last plugin: " + defaultPlugin$
     else
-        comment: "No last-used plugin found (will open blank GUI)."
+        comment: "No last-used plugin yet - the host will scan for installed VST3s."
     endif
-    real:    "Tail seconds",  1.0
-    natural: "Buffer size",   8192
-    sentence: "Parameters",  ""
-    boolean: "Play result",   1
-    boolean: "Save as default plugin", 1
-clicked = endPause: "Cancel", "Open GUI", 2
+    boolean: "Play result", 1
+clicked = endPause: "Cancel", "Open host", 2
 
 if clicked = 1
     exitScript: "Cancelled."
 endif
 
-curTail$   = fixed$(tail_seconds, 3)
-curBuf$    = string$(buffer_size)
-curParams$ = parameters$
-curPlay    = play_result
-curSave    = save_as_default_plugin
+curPlay = play_result
 
-# The Python GUI knows which VST the user actually selects. When requested,
-# give it the preference file so it can persist that exact selection on success.
-prefsOutJ$ = ""
-if curSave
-    prefsOutJ$ = prefsFileJ$
-endif
+# Empty strings tell the host "use your saved settings" (v1.7 treats an empty
+# argument and an absent argument identically).
+curTail$   = ""
+curBuf$    = ""
+curParams$ = ""
+
+# The host writes the plugin the user actually picked, once a render succeeds.
+prefsOutJ$ = prefsFileJ$
 
 # ============================================================
 # Write input WAV
@@ -248,12 +260,16 @@ Save as WAV file: tempInput$
 # Python will write tempDone$ when it exits (success or cancel).
 # ============================================================
 
+# Every argument is quoted, including the ones that may now be empty. An
+# unquoted empty string collapses to nothing on the command line and silently
+# shifts every later positional argument -- which would hand the host the
+# sentinel path as its parameter string and leave Praat polling forever.
 pyArgs$ = " --gui"
     ... + " " + q$ + tempInputJ$ + q$
     ... + " " + q$ + tempOutputJ$ + q$
     ... + " " + q$ + defaultPlugin$ + q$
-    ... + " " + curTail$
-    ... + " " + curBuf$
+    ... + " " + q$ + curTail$ + q$
+    ... + " " + q$ + curBuf$ + q$
     ... + " " + q$ + curParams$ + q$
     ... + " " + q$ + tempDoneJ$ + q$
     ... + " " + q$ + prefsOutJ$ + q$

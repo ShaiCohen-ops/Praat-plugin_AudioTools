@@ -1,16 +1,20 @@
 """
-host_vst.py  –  Praat → Python → VST3 native-editor host v1.6
+host_vst.py  -  Praat -> Python -> VST3 native-editor host v1.7
 ========================================================
 CLI (legacy / Praat-driven):
     py host_vst.py input.wav output.wav plugin.vst3 [tail] [buf] [params] [dump]
 
-GUI (launched by the new Praat script or manually):
-    py host_vst.py --gui input.wav output.wav [plugin.vst3] [tail] [buf] [params]
+GUI (launched by the Praat script or manually):
+    py host_vst.py --gui input.wav output.wav [plugin.vst3] [tail] [buf]
+                         [params] [sentinel] [prefs_output]
 
-When --gui is present the Tkinter window opens pre-populated from the remaining
-arguments and from the last-used JSON config. The user can open the VST3's
-native editor, audition an 8-second rendered preview, then click Process (or
-Cancel). No file-pickers for input/output WAVs are shown.
+v1.7 reshapes the GUI from a control panel into a toolbar. The premise is that
+the plugin's OWN editor is where parameter work belongs, so the host shows only
+what the host is actually for: pick a plugin, open its editor, audition, render.
+Tail / buffer / text parameters / presets / parameter dump moved behind an
+"Advanced" disclosure, and the log behind a "Log" disclosure that opens itself
+when something fails. Duplicated controls were removed: one editor button that
+toggles Open/Close, one cancel path, no read-only temp-path card.
 """
 
 from __future__ import annotations
@@ -396,9 +400,9 @@ class VSTHostApp(tk.Tk):
         in_wav: str,
         out_wav: str,
         plugin_path: str = "",
-        tail_seconds: float = 1.0,
-        buffer_size: int = 8192,
-        param_string: str = "",
+        tail_seconds: Optional[float] = None,
+        buffer_size: Optional[int] = None,
+        param_string: Optional[str] = None,
         prefs_output_path: str = "",
     ) -> None:
         super().__init__()
@@ -434,23 +438,31 @@ class VSTHostApp(tk.Tk):
         self._editor_state_out = None
         self._editor_force_job = None
 
-        # ── Load saved config and merge with CLI args ──────────────────────
+        # Disclosure state (see _build_ui).
+        self._adv_open = False
+        self._log_open = False
+
+        # ── Load saved config and merge with caller arguments ───────────────
+        # None means "caller said nothing" -> fall back to the saved config.
+        # v1.6 used the DEFAULT VALUE as that signal ("tail != 1.0"), so a user
+        # who genuinely wanted 1.0 s of tail silently got whatever the config
+        # held, and an empty parameter string could never clear a saved one.
         cfg = _load_config()
-        self._plugin_path = plugin_path  or cfg.get("plugin_path", "")
-        self._tail        = tail_seconds if tail_seconds != 1.0 else float(cfg.get("tail_seconds", 1.0))
-        self._buf         = buffer_size  if buffer_size  != 8192 else int(cfg.get("buffer_size",  8192))
-        self._params      = param_string or cfg.get("param_string", "")
+        self._plugin_path = plugin_path if plugin_path else cfg.get("plugin_path", "")
+        self._tail   = float(cfg.get("tail_seconds", 1.0)) if tail_seconds is None else float(tail_seconds)
+        self._buf    = int(cfg.get("buffer_size", 8192))   if buffer_size  is None else int(buffer_size)
+        self._params = cfg.get("param_string", "")         if param_string is None else param_string
 
         # ── Window ──────────────────────────────────────────────────────────
-        self.title("VST Host v1.6")
+        self.title("VST Host v1.7")
         self.configure(bg=_DARK)
         self.resizable(True, True)
-        self.minsize(600, 500)
+        self.minsize(560, 200)
 
         self._build_style()
         self._build_ui()
         self._populate_vst_choices(self._vst_paths, self._plugin_path)
-        self._center_window(780, 700)
+        self._center_window(700, None)
 
         # First run: discover plugins automatically. Later runs use the cache
         # immediately; Scan VSTs refreshes it on demand after installations.
@@ -484,8 +496,19 @@ class VSTHostApp(tk.Tk):
                      lightcolor=_BORDER, darkcolor=_BORDER, font=_FONT_BODY)
         s.configure("TCombobox",
                      fieldbackground=_CARD, foreground=_TEXT,
-                     bordercolor=_BORDER, arrowcolor=_MUTED, font=_FONT_BODY)
-        s.map("TCombobox", fieldbackground=[("readonly", _CARD)])
+                     background=_PANEL, bordercolor=_BORDER,
+                     lightcolor=_BORDER, darkcolor=_BORDER,
+                     arrowcolor=_MUTED, font=_FONT_BODY)
+        # A readonly combobox picks up the platform's entry colours unless every
+        # readonly-state colour is mapped explicitly; without this it renders as
+        # a white box in the middle of a dark window.
+        s.map("TCombobox",
+              fieldbackground=[("readonly", _CARD), ("disabled", _PANEL)],
+              background=[("readonly", _CARD), ("disabled", _PANEL)],
+              foreground=[("readonly", _TEXT), ("disabled", _MUTED)],
+              selectbackground=[("readonly", _CARD)],
+              selectforeground=[("readonly", _TEXT)],
+              arrowcolor=[("disabled", _BORDER)])
         s.configure("TButton",
                      background=_PANEL, foreground=_TEXT,
                      bordercolor=_BORDER, padding=(10, 5),
@@ -505,192 +528,259 @@ class VSTHostApp(tk.Tk):
         s.configure("TSeparator", background=_BORDER)
         s.configure("TSpinbox",
                      fieldbackground=_CARD, foreground=_TEXT,
-                     bordercolor=_BORDER, arrowcolor=_MUTED, font=_FONT_BODY)
+                     background=_PANEL, bordercolor=_BORDER,
+                     lightcolor=_BORDER, darkcolor=_BORDER,
+                     arrowcolor=_MUTED, font=_FONT_BODY)
+        # Disclosure triangles: flat, quiet, clearly not primary actions.
+        s.configure("Disclosure.TButton",
+                     background=_DARK, foreground=_MUTED,
+                     bordercolor=_DARK, relief="flat", padding=(2, 2),
+                     font=_FONT_BODY)
+        s.map("Disclosure.TButton",
+              background=[("active", _DARK), ("pressed", _DARK)],
+              foreground=[("active", _TEXT)])
+        s.configure("Editor.TButton",
+                     background=_PANEL, foreground=_TEXT,
+                     bordercolor=_BORDER, padding=(12, 6), font=_FONT_HEAD)
+        s.map("Editor.TButton",
+              background=[("active", _CARD), ("pressed", _BORDER)])
 
     # ── UI ──────────────────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
-        root = ttk.Frame(self, padding=16)
+        """Toolbar layout.
+
+        Everything visible when the window opens is something the user needs on
+        every single run: which plugin, open its editor, hear it, render it.
+        Anything used occasionally lives behind a disclosure so it costs one
+        click instead of permanent screen space and permanent reading.
+        """
+        root = ttk.Frame(self, padding=14)
         root.pack(fill="both", expand=True)
         root.columnconfigure(0, weight=1)
 
-        # Title row
+        # ── Title row ────────────────────────────────────────────────────────
         title_row = ttk.Frame(root)
-        title_row.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        title_row.grid(row=0, column=0, sticky="ew")
         ttk.Label(title_row, text="VST  HOST", style="Title.TLabel").pack(side="left")
+        ttk.Label(title_row, text="OFFLINE", style="Accent.TLabel").pack(side="right")
 
-        # Keep a close control at the TOP of the window so it remains reachable
-        # even when the bottom action row is obscured by a small screen/taskbar.
-        ttk.Button(title_row, text="Close", style="Cancel.TButton",
-                   command=self._on_cancel).pack(side="right")
-        self._close_editor_top_btn = ttk.Button(
-            title_row, text="CLOSE VST", style="Process.TButton",
-            command=self._close_native_editor)
-        self._close_editor_top_btn.pack(side="right", padx=(0, 8))
-        self._close_editor_top_btn.state(["disabled"])
-        lbl_mode = ttk.Label(title_row, text="OFFLINE", style="Accent.TLabel")
-        lbl_mode.pack(side="right", padx=(0, 10))
+        ttk.Separator(root, orient="horizontal").grid(
+            row=1, column=0, sticky="ew", pady=(8, 12))
 
-        ttk.Separator(root, orient="horizontal").grid(row=1, column=0, sticky="ew", pady=(0, 12))
-
-        # ── I/O info (read-only) ─────────────────────────────────────────────
-        io_card = ttk.Frame(root, style="Card.TFrame", padding=10)
-        io_card.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        io_card.columnconfigure(1, weight=1)
-
-        ttk.Label(io_card, text="Input WAV",  style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 12))
-        ttk.Label(io_card, text=self._in_wav,  foreground=_TEXT,
-                  background=_CARD, font=_FONT_MONO, wraplength=500,
-                  anchor="w").grid(row=0, column=1, sticky="ew")
-
-        ttk.Label(io_card, text="Output WAV", style="Muted.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 12))
-        ttk.Label(io_card, text=self._out_wav, foreground=_TEXT,
-                  background=_CARD, font=_FONT_MONO, wraplength=500,
-                  anchor="w").grid(row=1, column=1, sticky="ew")
-
-        # ── Plugin selection ─────────────────────────────────────────────────
-        ttk.Label(root, text="VST3 Plugin", style="Head.TLabel").grid(
-            row=3, column=0, sticky="w", pady=(8, 2))
-
+        # ── Plugin chooser ───────────────────────────────────────────────────
         plugin_row = ttk.Frame(root)
-        plugin_row.grid(row=4, column=0, sticky="ew")
+        plugin_row.grid(row=2, column=0, sticky="ew")
         plugin_row.columnconfigure(0, weight=1)
 
-        # _plugin_var always stores the real full path. The combobox displays a
-        # compact friendly label, so the rest of the host can keep using paths.
+        # _plugin_var always holds the real full path; the combobox shows a
+        # compact friendly label, so the rest of the host keeps using paths.
         self._plugin_var = tk.StringVar(value=self._plugin_path)
         self._plugin_choice_var = tk.StringVar()
         self._plugin_combo = ttk.Combobox(
-            plugin_row,
-            textvariable=self._plugin_choice_var,
-            values=[],
-            state="readonly",
-            width=48,
-        )
+            plugin_row, textvariable=self._plugin_choice_var,
+            values=[], state="readonly")
         self._plugin_combo.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         self._plugin_combo.bind("<<ComboboxSelected>>", self._on_plugin_selected)
 
-        self._scan_vsts_btn = ttk.Button(plugin_row, text="Scan VSTs",
-                                         command=self._scan_vsts)
-        self._scan_vsts_btn.grid(row=0, column=1)
         self._browse_btn = ttk.Button(plugin_row, text="Browse...",
                                       command=self._browse_plugin)
-        self._browse_btn.grid(row=0, column=2, padx=(4, 0))
+        self._browse_btn.grid(row=0, column=1)
+        self._scan_vsts_btn = ttk.Button(plugin_row, text="Rescan",
+                                         command=self._scan_vsts, width=8)
+        self._scan_vsts_btn.grid(row=0, column=2, padx=(4, 0))
 
-        plugin_actions = ttk.Frame(plugin_row)
-        plugin_actions.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(5, 0))
-        ttk.Button(plugin_actions, text="Scan Params",
-                   command=self._scan_params).pack(side="left")
-        self._open_editor_btn = ttk.Button(plugin_actions, text="Open Plugin UI",
-                                           command=self._open_native_editor)
-        self._open_editor_btn.pack(side="left", padx=(4, 0))
-        self._close_editor_btn = ttk.Button(plugin_actions, text="Close VST UI",
-                                            style="Cancel.TButton",
-                                            command=self._close_native_editor)
-        self._close_editor_btn.pack(side="left", padx=(4, 0))
-        self._close_editor_btn.state(["disabled"])
-
-        self._plugin_path_display_var = tk.StringVar(value=self._plugin_path or "No plugin selected")
+        self._plugin_path_display_var = tk.StringVar(
+            value=self._plugin_path or "No plugin selected")
         ttk.Label(plugin_row, textvariable=self._plugin_path_display_var,
-                  style="Muted.TLabel", font=_FONT_MONO, wraplength=690,
-                  anchor="w").grid(row=2, column=0, columnspan=3,
-                                   sticky="ew", pady=(4, 0))
+                  style="Muted.TLabel", font=_FONT_MONO, wraplength=640,
+                  anchor="w", justify="left").grid(
+            row=1, column=0, columnspan=3, sticky="ew", pady=(5, 0))
 
-        # ── Tail / Buffer ────────────────────────────────────────────────────
-        num_row = ttk.Frame(root)
-        num_row.grid(row=5, column=0, sticky="ew", pady=(10, 0))
-        num_row.columnconfigure(1, weight=1)
-        num_row.columnconfigure(3, weight=1)
+        # ── Primary actions ──────────────────────────────────────────────────
+        # One editor button that toggles. v1.6 had three controls bound to two
+        # actions (CLOSE VST in the title bar, Close VST UI in the plugin row,
+        # Open Plugin UI beside it), which is what made the window feel busy.
+        action_row = ttk.Frame(root)
+        action_row.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        # Grid, not pack: a left group packed against a right group collides at
+        # narrow widths and silently clips the rightmost label. The spacer column
+        # absorbs the slack instead.
+        action_row.columnconfigure(3, weight=1)
 
-        ttk.Label(num_row, text="Tail Seconds", style="Head.TLabel").grid(
-            row=0, column=0, sticky="w", padx=(0, 8))
+        self._editor_btn = ttk.Button(action_row, text="Open Plugin Editor",
+                                      style="Editor.TButton",
+                                      command=self._toggle_native_editor)
+        self._editor_btn.grid(row=0, column=0, sticky="w")
+
+        self._audition_btn = ttk.Button(action_row, text="Audition 8 s",
+                                        command=self._on_audition)
+        self._audition_btn.grid(row=0, column=1, sticky="w", padx=(6, 0))
+        self._stop_btn = ttk.Button(action_row, text="Stop",
+                                    command=self._stop_audition, width=6)
+        self._stop_btn.grid(row=0, column=2, sticky="w", padx=(4, 0))
+
+        ttk.Frame(action_row).grid(row=0, column=3, sticky="ew")
+
+        self._cancel_btn = ttk.Button(action_row, text="Cancel",
+                                      style="Cancel.TButton",
+                                      command=self._on_cancel)
+        self._cancel_btn.grid(row=0, column=4, sticky="e", padx=(12, 8))
+        self._process_btn = ttk.Button(action_row, text="Process",
+                                       style="Process.TButton",
+                                       command=self._on_process)
+        self._process_btn.grid(row=0, column=5, sticky="e")
+
+        # ── Status line ──────────────────────────────────────────────────────
+        self._status_var = tk.StringVar(value="Ready")
+        self._status_lbl = ttk.Label(root, textvariable=self._status_var,
+                                     style="Muted.TLabel", wraplength=640,
+                                     anchor="w", justify="left")
+        self._status_lbl.grid(row=4, column=0, sticky="ew", pady=(12, 0))
+
+        # ── Disclosures ──────────────────────────────────────────────────────
+        disc_row = ttk.Frame(root)
+        disc_row.grid(row=5, column=0, sticky="ew", pady=(10, 0))
+        self._adv_btn = ttk.Button(disc_row, text="\u25b8 Advanced",
+                                   style="Disclosure.TButton",
+                                   command=self._toggle_advanced)
+        self._adv_btn.pack(side="left")
+        self._log_btn = ttk.Button(disc_row, text="\u25b8 Log",
+                                   style="Disclosure.TButton",
+                                   command=self._toggle_log)
+        self._log_btn.pack(side="left", padx=(14, 0))
+
+        # ── Advanced panel (hidden by default) ───────────────────────────────
+        self._adv_frame = ttk.Frame(root, style="Card.TFrame", padding=12)
+        self._adv_frame.columnconfigure(1, weight=1)
+        self._adv_frame.columnconfigure(3, weight=1)
+
+        ttk.Label(self._adv_frame, text="Tail seconds", style="Muted.TLabel",
+                  background=_CARD).grid(row=0, column=0, sticky="w", padx=(0, 8))
         self._tail_var = tk.DoubleVar(value=self._tail)
-        tail_spin = ttk.Spinbox(num_row, from_=0.0, to=30.0, increment=0.1,
-                                textvariable=self._tail_var, width=8, format="%.2f")
-        tail_spin.grid(row=0, column=1, sticky="w")
+        ttk.Spinbox(self._adv_frame, from_=0.0, to=30.0, increment=0.1,
+                    textvariable=self._tail_var, width=8, format="%.2f").grid(
+            row=0, column=1, sticky="w")
 
-        ttk.Label(num_row, text="Buffer Size", style="Head.TLabel").grid(
-            row=0, column=2, sticky="w", padx=(20, 8))
+        # Buffer size changes nothing audible in an offline render; it is a
+        # latency/CPU knob. Kept reachable for edge cases, out of the way otherwise.
+        ttk.Label(self._adv_frame, text="Buffer size", style="Muted.TLabel",
+                  background=_CARD).grid(row=0, column=2, sticky="w", padx=(18, 8))
         self._buf_var = tk.IntVar(value=self._buf)
-        buf_combo = ttk.Combobox(num_row, textvariable=self._buf_var,
-                                 values=[256, 512, 1024, 2048, 4096, 8192, 16384, 32768],
-                                 width=8, state="normal")
-        buf_combo.grid(row=0, column=3, sticky="w")
+        ttk.Combobox(self._adv_frame, textvariable=self._buf_var,
+                     values=[256, 512, 1024, 2048, 4096, 8192, 16384, 32768],
+                     width=8, state="normal").grid(row=0, column=3, sticky="w")
 
-        # ── Parameters ───────────────────────────────────────────────────────
-        ttk.Label(root, text="Plugin Parameters", style="Head.TLabel").grid(
-            row=6, column=0, sticky="w", pady=(10, 2))
-        ttk.Label(root,
-                  text="name=value, name=value  (leave blank for plugin defaults)",
-                  style="Muted.TLabel").grid(row=7, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(self._adv_frame,
+                  text="Text parameters   name=value, name=value "
+                       "(the plugin editor is usually the better route)",
+                  style="Muted.TLabel", background=_CARD).grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(12, 4))
         self._params_var = tk.StringVar(value=self._params)
         self._params_var.trace_add("write", self._on_text_params_changed)
-        ttk.Entry(root, textvariable=self._params_var, font=_FONT_MONO).grid(
-            row=8, column=0, sticky="ew")
+        ttk.Entry(self._adv_frame, textvariable=self._params_var,
+                  font=_FONT_MONO).grid(row=2, column=0, columnspan=4, sticky="ew")
 
-        # Audition is render-then-play, not background VST processing: the VST
-        # itself is processed on this main thread, then only the finished audio
-        # buffer is handed to a playback thread.
-        audition_row = ttk.Frame(root)
-        audition_row.grid(row=9, column=0, sticky="ew", pady=(8, 0))
-        ttk.Label(audition_row, text="Native editor state is kept for audition/process.",
-                  style="Muted.TLabel").pack(side="left")
-        self._stop_btn = ttk.Button(audition_row, text="Stop", command=self._stop_audition)
-        self._stop_btn.pack(side="right")
-        self._audition_btn = ttk.Button(audition_row, text="Audition 8 s",
-                                        command=self._on_audition)
-        self._audition_btn.pack(side="right", padx=(0, 6))
+        adv_actions = ttk.Frame(self._adv_frame, style="Card.TFrame")
+        adv_actions.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        ttk.Button(adv_actions, text="List parameters",
+                   command=self._scan_params).pack(side="left")
 
-        # ── Presets ───────────────────────────────────────────────────────────
-        preset_row = ttk.Frame(root)
-        preset_row.grid(row=10, column=0, sticky="ew", pady=(8, 0))
-
-        ttk.Label(preset_row, text="Preset:", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+        ttk.Label(adv_actions, text="Preset:", style="Muted.TLabel",
+                  background=_CARD).pack(side="left", padx=(18, 6))
         self._preset_var = tk.StringVar()
-        self._preset_cb  = ttk.Combobox(preset_row, textvariable=self._preset_var,
-                                         values=_list_presets(), width=22)
+        self._preset_cb = ttk.Combobox(adv_actions, textvariable=self._preset_var,
+                                       values=_list_presets(), width=18)
         self._preset_cb.pack(side="left")
-        ttk.Button(preset_row, text="Load",  command=self._load_preset).pack(side="left", padx=(4, 0))
-        ttk.Button(preset_row, text="Save...", command=self._save_preset).pack(side="left", padx=(4, 0))
+        ttk.Button(adv_actions, text="Load",
+                   command=self._load_preset).pack(side="left", padx=(4, 0))
+        ttk.Button(adv_actions, text="Save...",
+                   command=self._save_preset).pack(side="left", padx=(4, 0))
 
-        # ── Log ───────────────────────────────────────────────────────────────
-        ttk.Label(root, text="Log", style="Head.TLabel").grid(
-            row=11, column=0, sticky="w", pady=(12, 2))
+        # ── Log panel (hidden by default, auto-opens on failure) ─────────────
+        self._log_frame = ttk.Frame(root)
+        self._log_frame.columnconfigure(0, weight=1)
+        self._log_frame.rowconfigure(0, weight=1)
         self._log = scrolledtext.ScrolledText(
-            root, height=8, font=_FONT_MONO,
+            self._log_frame, height=8, font=_FONT_MONO,
             bg=_PANEL, fg=_TEXT, insertbackground=_TEXT,
             selectbackground=_ACCENT, selectforeground=_DARK,
             relief="flat", borderwidth=1,
             highlightbackground=_BORDER, highlightthickness=1,
             state="disabled")
-        self._log.grid(row=12, column=0, sticky="nsew", pady=(0, 10))
-        root.rowconfigure(12, weight=1)
+        self._log.grid(row=0, column=0, sticky="nsew")
 
-        # ── Status bar ───────────────────────────────────────────────────────
-        self._status_var = tk.StringVar(value="Ready")
-        self._status_lbl = ttk.Label(root, textvariable=self._status_var,
-                                     style="Muted.TLabel")
-        self._status_lbl.grid(row=13, column=0, sticky="w")
+        # The I/O paths are Praat's temp files: the user did not choose them and
+        # cannot act on them. They belong in the log, not in the window.
+        self._log_append(f"Input:  {self._in_wav}")
+        self._log_append(f"Output: {self._out_wav}")
 
-        # ── Action buttons ────────────────────────────────────────────────────
-        btn_row = ttk.Frame(root)
-        btn_row.grid(row=14, column=0, sticky="e", pady=(10, 0))
+    # ── Disclosure handling ──────────────────────────────────────────────────
 
-        self._cancel_btn = ttk.Button(btn_row, text="Cancel",
-                                      style="Cancel.TButton",
-                                      command=self._on_cancel)
-        self._cancel_btn.pack(side="left", padx=(0, 8))
+    def _toggle_advanced(self) -> None:
+        self._show_advanced(not self._adv_open)
 
-        self._process_btn = ttk.Button(btn_row, text="Process",
-                                       style="Process.TButton",
-                                       command=self._on_process)
-        self._process_btn.pack(side="left")
+    def _show_advanced(self, show: bool) -> None:
+        self._adv_open = show
+        if show:
+            self._adv_frame.grid(row=6, column=0, sticky="ew", pady=(6, 0))
+            self._adv_btn.configure(text="\u25be Advanced")
+        else:
+            self._adv_frame.grid_forget()
+            self._adv_btn.configure(text="\u25b8 Advanced")
+        self._refit()
+
+    def _toggle_log(self) -> None:
+        self._show_log(not self._log_open)
+
+    def _show_log(self, show: bool) -> None:
+        self._log_open = show
+        if show:
+            self._log_frame.grid(row=7, column=0, sticky="nsew", pady=(6, 0))
+            self.rowconfigure(0, weight=1)
+            self._log_btn.configure(text="\u25be Log")
+            self._log.see("end")
+        else:
+            self._log_frame.grid_forget()
+            self._log_btn.configure(text="\u25b8 Log")
+        self._refit()
+
+    def _reveal_log(self) -> None:
+        """Open the log without toggling it shut if it is already open."""
+        if not self._log_open:
+            self._show_log(True)
+
+    def _refit(self) -> None:
+        """Resize to the natural height after a disclosure opens or closes.
+
+        Expanding both panels on a short screen would otherwise push the window
+        past the bottom edge, which is exactly the failure v1.6 tried to work
+        around by duplicating a Close button into the title bar.
+        """
+        self.update_idletasks()
+        screen_h = self.winfo_screenheight()
+        want_w = max(self.winfo_width(), self.winfo_reqwidth())
+        want_h = min(self.winfo_reqheight(), screen_h - 80)
+        x, y = self.winfo_x(), self.winfo_y()
+        # Growing downward off the bottom of the screen is the one failure mode
+        # a disclosure UI can introduce, so move the window up instead.
+        if y + want_h > screen_h - 40:
+            y = max(0, screen_h - 40 - want_h)
+        self.geometry(f"{want_w}x{want_h}+{x}+{y}")
 
     # ── Helpers ──────────────────────────────────────────────────────────────
 
-    def _center_window(self, w: int, h: int) -> None:
-        """Center the host inside the usable desktop area, never off-screen."""
+    def _center_window(self, w: Optional[int] = None, h: Optional[int] = None) -> None:
+        """Center the host inside the usable desktop area, never off-screen.
+
+        With no explicit size the window takes its natural requested size, so a
+        collapsed toolbar does not open with a band of empty space under it.
+        """
         self.update_idletasks()
+        if w is None:
+            w = self.winfo_reqwidth()
+        if h is None:
+            h = self.winfo_reqheight()
 
         left = top = 0
         work_w = int(self.winfo_screenwidth())
@@ -723,7 +813,7 @@ class VSTHostApp(tk.Tk):
 
         margin = 24
         fit_w = max(560, min(int(w), max(560, work_w - 2 * margin)))
-        fit_h = max(460, min(int(h), max(460, work_h - 2 * margin)))
+        fit_h = max(190, min(int(h), max(190, work_h - 2 * margin)))
         x = left + max(margin, (work_w - fit_w) // 2)
         y = top + max(margin, (work_h - fit_h) // 2)
         self.geometry(f"{fit_w}x{fit_h}+{x}+{y}")
@@ -886,6 +976,7 @@ class VSTHostApp(tk.Tk):
         if error:
             self._set_status("VST scan failed.", _RED)
             self._log_append(f"ERROR scanning VST3 plugins: {error}")
+            self._reveal_log()
             return
 
         # Keep an explicitly selected custom plugin even if its folder could not
@@ -944,21 +1035,26 @@ class VSTHostApp(tk.Tk):
         return self._editor_proc is not None and self._editor_proc.poll() is None
 
     def _set_editor_buttons(self, is_open: bool) -> None:
+        """One button, two labels. While the editor is open the plugin cannot be
+        swapped underneath it, so the chooser is disabled rather than duplicated."""
         if is_open:
-            self._open_editor_btn.state(["disabled"])
-            self._close_editor_btn.state(["!disabled"])
-            self._close_editor_top_btn.state(["!disabled"])
+            self._editor_btn.configure(text="Close Plugin Editor")
             self._plugin_combo.state(["disabled"])
             self._scan_vsts_btn.state(["disabled"])
             self._browse_btn.state(["disabled"])
         else:
-            self._open_editor_btn.state(["!disabled"])
-            self._close_editor_btn.state(["disabled"])
-            self._close_editor_top_btn.state(["disabled"])
+            self._editor_btn.configure(text="Open Plugin Editor")
             self._plugin_combo.configure(state="readonly")
             if not (self._vst_scan_thread is not None and self._vst_scan_thread.is_alive()):
                 self._scan_vsts_btn.state(["!disabled"])
             self._browse_btn.state(["!disabled"])
+        self._editor_btn.state(["!disabled"])
+
+    def _toggle_native_editor(self) -> None:
+        if self._editor_is_open():
+            self._close_native_editor()
+        else:
+            self._open_native_editor()
 
     def _open_native_editor(self) -> None:
         """Open the native VST UI in a child process.
@@ -1018,13 +1114,14 @@ class VSTHostApp(tk.Tk):
             self._editor_state_out = state_out
             self._editor_close_file = close_file
             self._set_editor_buttons(True)
-            self._set_status("VST editor open. Use CLOSE VST in this window to close it.", _ACCENT2)
+            self._set_status("Plugin editor open. Close it from this window or from the plugin itself.", _ACCENT2)
             self._log_append("Native VST editor opened in isolated worker process.")
             self.after(100, self._poll_editor_process)
         except Exception as exc:
             self._set_editor_buttons(False)
             self._set_status("Could not open plugin editor.", _RED)
             self._log_append(f"ERROR opening native editor: {exc}")
+            self._reveal_log()
             messagebox.showerror("Plugin UI", str(exc))
 
     def _close_native_editor(self) -> None:
@@ -1152,6 +1249,7 @@ class VSTHostApp(tk.Tk):
         except Exception as exc:
             self._set_status("Audition failed.", _RED)
             self._log_append(f"ERROR audition: {exc}")
+            self._reveal_log()
             messagebox.showerror("Audition Failed", str(exc))
 
     def _start_preview_playback(self, audio, sample_rate: float) -> None:
@@ -1200,6 +1298,7 @@ class VSTHostApp(tk.Tk):
         self._audition_btn.state(["!disabled"])
         self._set_status("Playback failed.", _RED)
         self._log_append(f"ERROR playback: {msg}")
+        self._reveal_log()
 
     # ── Scan params ──────────────────────────────────────────────────────────
 
@@ -1242,6 +1341,8 @@ class VSTHostApp(tk.Tk):
         else:
             self._log_append(result or "")
             self._set_status("Scan complete.", _GREEN)
+        # Both outcomes are only useful if the user can see them.
+        self._reveal_log()
 
     # ── Presets ───────────────────────────────────────────────────────────────
 
@@ -1372,6 +1473,7 @@ class VSTHostApp(tk.Tk):
         self._cancel_btn.state(["!disabled"])
         self._set_status(f"Failed: {msg}", _RED)
         self._log_append(f"ERROR: {msg}")
+        self._reveal_log()
         self._exit_code = 1
         messagebox.showerror("Processing Failed", msg)
 
@@ -1467,18 +1569,32 @@ def _run_gui(args: list[str]) -> int:
     # args: input.wav output.wav [plugin.vst3 [tail [buf [params [sentinel [prefs_output]]]]]]
     if len(args) < 2:
         _fail("GUI mode requires at least: --gui input.wav output.wav")
+    def _opt(index: int) -> Optional[str]:
+        """An omitted OR empty argument means 'use the saved config'."""
+        if len(args) <= index:
+            return None
+        value = args[index]
+        return value if value.strip() != "" else None
+
     in_wav    = args[0]
     out_wav   = args[1]
     plugin    = args[2] if len(args) >= 3 else ""
-    tail      = float(args[3]) if len(args) >= 4 else 1.0
-    buf       = int(args[4])   if len(args) >= 5 else 8192
-    params    = args[5]        if len(args) >= 6 else ""
-    sentinel  = args[6]        if len(args) >= 7 else ""
+    tail_arg  = _opt(3)
+    buf_arg   = _opt(4)
+    params    = _opt(5)
+    sentinel  = args[6] if len(args) >= 7 else ""
+    prefs_out = args[7] if len(args) >= 8 else ""
+
+    tail = float(tail_arg) if tail_arg is not None else None
+    buf  = int(buf_arg)    if buf_arg  is not None else None
 
     app = VSTHostApp(
         in_wav=in_wav, out_wav=out_wav,
         plugin_path=plugin, tail_seconds=tail,
         buffer_size=buf, param_string=params,
+        # v1.6 parsed the sentinel but dropped this 8th argument on the floor,
+        # so Praat's "save as default plugin" request was silently ignored.
+        prefs_output_path=prefs_out,
     )
     app.mainloop()
     # Always write sentinel on exit (Process, Cancel, or window close)
