@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4b (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -39,6 +39,17 @@
 #   4.4%, 0.5 gives 28.9%, 1.0 gives 37.2%, and all of them come out
 #   at the same peak. Input_reference 2 normalizes first so the
 #   drive setting means the same thing across sources.
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4b:
 #   - FIXED (the inert claim was wrong): Output_level was described as
@@ -148,7 +159,7 @@
 #   - Added info output
 # ============================================================
 
-form Tanh Soft Clipping v0.4b
+form Tanh Soft Clipping v0.5
     comment Select a Sound object first
 
     comment === Preset ===
@@ -272,7 +283,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Tanh Soft Clipping v0.4b ==="
+writeInfoLine: "=== Tanh Soft Clipping v0.5 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", nChannels, " ch, ", fixed$(xminOrig, 3), "-", fixed$(xmaxOrig, 3), " s, peak ", fixed$(srcPeak, 4), ")"
 appendInfoLine: "Sample rate: ", fixed$(sr, 0), " Hz (Nyquist ", fixed$(sr / 2, 1), " Hz)"
 appendInfoLine: "Preset: ", presetName$
@@ -453,6 +464,20 @@ appendInfoLine: ""
 # ============================================================
 
 if draw_visualization
+    pageHeight = 6.65
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(originalName$, "_", "\_ ", 0)
+
+    if output_mode = 1
+        outputModeDesc$ = "normalize to target"
+    elsif output_mode = 2
+        outputModeDesc$ = "preserve formula level"
+    else
+        outputModeDesc$ = "normalize only above target"
+    endif
+
     # What the nominal curve does NOT include, stated on the panel itself.
     panelNote$ = "excludes: "
     if dry_Wet < 1
@@ -499,26 +524,30 @@ if draw_visualization
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Tanh Soft Clipping: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.68, "half", "##Tanh Soft Clipping v0.5##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | drive " + fixed$(drive_amount, 2) + " | dry/wet " + fixed$(dry_Wet, 2) + " | oversample " + string$(oversample) + "x"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    Select inner viewport: 0.60, 7.70, 0.7, 1.4
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # Result waveform
     Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    Select inner viewport: 0.60, 7.70, 1.7, 2.4
     selectObject: result
     Colour: "{0.7, 0.6, 0.5}"
     Draw: 0, 0, 0, 0, "no", "Curve"
@@ -535,7 +564,7 @@ if draw_visualization
     zoomEnd = xminOrig + zoomDur
     
     Select outer viewport: 0, 4, 2.7, 3.8
-    Select inner viewport: 0.6, 3.8, 2.8, 3.7
+    Select inner viewport: 0.60, 3.85, 2.8, 3.7
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: zoomStart, zoomEnd, 0, 0, "no", "Curve"
@@ -545,7 +574,7 @@ if draw_visualization
     Text left: "yes", "Orig (zoom)"
     
     Select outer viewport: 4, 8, 2.7, 3.8
-    Select inner viewport: 4.4, 7.6, 2.8, 3.7
+    Select inner viewport: 4.45, 7.70, 2.8, 3.7
     selectObject: result
     Colour: "{0.7, 0.6, 0.5}"
     Draw: zoomStart, zoomEnd, 0, 0, "no", "Curve"
@@ -557,7 +586,7 @@ if draw_visualization
     
     # Transfer function
     Select outer viewport: 0, 4, 4.0, 5.4
-    Select inner viewport: 0.6, 3.8, 4.1, 5.3
+    Select inner viewport: 0.60, 3.85, 4.1, 5.3
 
     nPoints = 200
     curveDrive = drive_amount * inRefGain
@@ -572,7 +601,7 @@ if draw_visualization
     endfor
 
     Axes: -1.2, 1.2, -yLimT, yLimT
-    Paint rectangle: "{0.95, 0.95, 0.95}", -1.2, 1.2, -yLimT, yLimT
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, -yLimT, yLimT
     
     # Grid
     Colour: "{0.85, 0.85, 0.85}"
@@ -625,23 +654,23 @@ if draw_visualization
 
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Text left: "yes", "Output"
     Text bottom: "yes", "Input"
     Text: 0, "centre", yLimT * 0.93, "half", curveTitle$
-    Font size: 4
+    Font size: 6
     Colour: "{0.45, 0.45, 0.45}"
     Text: 0, "centre", -yLimT * 0.80, "half", "wet half-slope at |x| = " + fixed$(satPoint, 3)
     Text: 0, "centre", -yLimT * 0.92, "half", panelNote$
-    Font size: 5
+    Font size: 6
     Colour: "Black"
 
     # Drive comparison
     Select outer viewport: 4, 8, 4.0, 5.4
-    Select inner viewport: 4.4, 7.6, 4.1, 5.3
+    Select inner viewport: 4.45, 7.70, 4.1, 5.3
     
     Axes: -1.2, 1.2, -1.2, 1.2
-    Paint rectangle: "{0.95, 0.95, 0.95}", -1.2, 1.2, -1.2, 1.2
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, -1.2, 1.2
     
     # Grid
     Colour: "{0.85, 0.85, 0.85}"
@@ -690,13 +719,13 @@ if draw_visualization
     
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Text left: "yes", "Output"
     Text bottom: "yes", "Input"
     Text: 0, "centre", 1.35, "half", "Drive Comparison (bare tanh; no level controls)"
     
     # Legend
-    Font size: 4
+    Font size: 6
     Colour: "{0.6, 0.8, 0.6}"
     Text: -1.0, "left", -0.9, "half", "Drive 2"
     Colour: "{0.6, 0.6, 0.8}"
@@ -704,8 +733,31 @@ if draw_visualization
     Colour: "{0.8, 0.6, 0.6}"
     Text: -1.0, "left", -1.2, "half", "Drive 15"
     
+    Font size: 7
+    Colour: "Black"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.55, 6.60
+    Select inner viewport: 0.60, 7.70, 5.63, 6.52
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  " + vizName$ + " | " + fixed$(duration, 2) + " s | " + string$(nChannels) + " ch | source peak " + fixed$(srcPeak, 3) + " | preset " + presetName$
+    summary2$ = "##Waveshaper##  y=tanh(kx) | drive " + fixed$(drive_amount, 2) + " | wet level " + fixed$(wet_level, 2) + " | dry/wet " + fixed$(dry_Wet, 2) + " | oversample " + string$(oversample) + "x"
+    summary3$ = "##Output##  " + outputModeDesc$ + " | output gain " + fixed$(output_gain, 2) + " | final peak " + fixed$(finalPeak, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

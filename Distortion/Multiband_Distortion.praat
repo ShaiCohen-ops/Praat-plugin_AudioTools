@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5b (2026) - deterministic presets, validation, output policy
+# Version: 0.7 (2026) - Compact main form + advanced settings
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,6 +32,32 @@
 #   sine hard-clipped showed a strong alias near 14.1 kHz without it, and
 #   far below that at 4x), but "alias-reduced" is the accurate term - the
 #   processing is not alias-free.
+#
+# Changelog v0.7 (2026):
+#   - UI/FORM ONLY; audio/DSP, presets, crossover logic, oversampling,
+#     drive normalization/compensation, output policy and visualization
+#     are unchanged from v0.6.
+#   - Compact main form now keeps the musically central controls visible:
+#     preset, crossovers, per-band drive/type, master mix/output gain, and
+#     Draw/Play. Technical and secondary mix controls move to an optional
+#     Advanced settings pause dialog.
+#   - Advanced defaults are exactly the previous v0.6 form defaults:
+#     Normalize_drive=1, band gains=1, Output_mode=1,
+#     Drive_compensation=0, Oversample=4, Visualization_max_Hz=8000.
+#   - Manual users can still edit Low/Mid/High gain in Advanced settings;
+#     named presets continue to overwrite all eleven band parameters exactly
+#     as in v0.6.
+#
+# Changelog v0.6 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.5b:
 #   Both code fixes are v0.5 regressions.
@@ -171,9 +197,9 @@
 # ============================================================
 
 # === Form ===
-form Multiband Distortion v0.5b
+form Multiband Distortion v0.7
     comment Select a Sound object first
-    
+
     comment === Preset ===
     optionmenu Preset 1
         option Manual (use settings below)
@@ -187,48 +213,28 @@ form Multiband Distortion v0.5b
     real Low_Split_Hz 200
     real High_Split_Hz 2500
 
-    comment === Drive normalizes into the waveshaper (off = legacy level-dependent) ===
-    boolean Normalize_drive 1
-
-    comment === Low Band ===
+    comment === Low / Mid / High shaping ===
     real Low_Drive 1.0
     optionmenu Low_Type 1
         option Soft Clip (Tanh)
         option Hard Clip
         option Sine Waveshaper
-    real Low_Gain 1.0
-
-    comment === Mid Band ===
     real Mid_Drive 1.0
     optionmenu Mid_Type 1
         option Soft Clip (Tanh)
         option Hard Clip
         option Sine Waveshaper
-    real Mid_Gain 1.0
-
-    comment === High Band ===
     real High_Drive 1.0
     optionmenu High_Type 1
         option Soft Clip (Tanh)
         option Hard Clip
         option Sine Waveshaper
-    real High_Gain 1.0
 
     comment === Master ===
     real Mix_0_to_1 1.0
     real Output_Gain 0.9
-    optionmenu Output_mode: 1
-        option Normalize to 0.95, then output gain (v0.3/v0.4)
-        option Preserve level (output gain only)
-        option Output gain, normalize if peak exceeds 0.95
-    boolean Drive_compensation 0
-    comment (on: drive changes shape only, not band level)
 
-    comment === Anti-aliasing (oversample factor; 1 = off) ===
-    integer Oversample 4
-
-    comment === Output ===
-    positive Visualization_max_Hz 8000
+    boolean Advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -246,6 +252,40 @@ xmin = Get start time
 xmax = Get end time
 duration = Get total duration
 sr = Get sampling frequency
+
+# === Advanced defaults (identical to the v0.6 main-form defaults) ===
+normalize_drive = 1
+low_Gain = 1.0
+mid_Gain = 1.0
+high_Gain = 1.0
+output_mode = 1
+drive_compensation = 0
+oversample = 4
+visualization_max_Hz = 8000
+
+# Praat permits only one form...endform block. Optional secondary controls
+# therefore use beginPause/endPause and appear only when requested.
+if advanced_settings
+    beginPause: "Multiband Distortion v0.7 - Advanced settings"
+        comment: "=== Band level / drive behaviour ==="
+        boolean: "Normalize_drive", 1
+        comment: "(off = legacy level-dependent waveshaping)"
+        real: "Low_Gain", "1.0"
+        real: "Mid_Gain", "1.0"
+        real: "High_Gain", "1.0"
+        boolean: "Drive_compensation", 0
+        comment: "(on: drive changes shape only, not band level)"
+
+        comment: "=== Output / anti-aliasing / display ==="
+        optionmenu: "Output_mode", 1
+            option: "Normalize to 0.95, then output gain (v0.3/v0.4)"
+            option: "Preserve level (output gain only)"
+            option: "Output gain, normalize if peak exceeds 0.95"
+        integer: "Oversample", "4"
+        comment: "(1 = off; 2 is refused by this script)"
+        positive: "Visualization_max_Hz", "8000"
+    clicked = endPause: "Continue", 1
+endif
 
 # === Handle Presets ===
 # v0.5 CRITICAL: v0.4's presets set only SOME of the band parameters and left
@@ -429,7 +469,7 @@ selectObject: original
 srcPeak = Get absolute extremum: 0, 0, "None"
 inputChannels = Get number of channels
 
-writeInfoLine: "=== Multiband Distortion v0.5b ==="
+writeInfoLine: "=== Multiband Distortion v0.7 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(duration, 2), " s, ", inputChannels, " ch, starts at ", fixed$(xmin, 3), " s, peak ", fixed$(srcPeak, 4), ")"
 appendInfoLine: "Preset: ", presetName$
 if osNote$ <> ""
@@ -660,29 +700,39 @@ endif
 # VISUALIZATION
 # ============================================================
 if draw_visualization
+    pageHeight = 6.95
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(origName$, "_", "\_ ", 0)
     Erase all
     
     # === Title ===
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 11
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 7
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Multiband Distortion: " + origName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.68, "half", "##Multiband Distortion v0.7##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | splits " + fixed$(low_Split_Hz, 0) + "/" + fixed$(high_Split_Hz, 0) + " Hz | oversample " + string$(oversample) + "x"
     
     # === Original Waveform ===
     Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    Select inner viewport: 0.60, 7.70, 0.7, 1.4
     
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # === Result Waveform ===
     Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    Select inner viewport: 0.60, 7.70, 1.7, 2.4
     
     selectObject: result
     Colour: "{0.8, 0.4, 0.4}"
@@ -694,7 +744,7 @@ if draw_visualization
     
     # === Spectral Analysis ===
     Select outer viewport: 0, 8, 2.7, 4.3
-    Select inner viewport: 0.6, 7.6, 2.8, 4.2
+    Select inner viewport: 0.60, 7.70, 2.8, 4.2
     
     # Get spectra
     selectObject: original
@@ -715,7 +765,7 @@ if draw_visualization
     endif
     
     Axes: 0, freqMax, minDB, maxDB
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, freqMax, minDB, maxDB
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, freqMax, minDB, maxDB
     
     # Shade band regions
     Paint rectangle: "{0.9, 0.85, 0.85}", 0, low_Split_Hz, minDB, maxDB
@@ -771,10 +821,10 @@ if draw_visualization
     
     # === Band Settings Display ===
     Select outer viewport: 0, 8, 4.5, 5.3
-    Select inner viewport: 0.6, 7.6, 4.6, 5.2
+    Select inner viewport: 0.60, 7.70, 4.6, 5.2
     
     Axes: 0, 3, 0, 2
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 3, 0, 2
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 3, 0, 2
     
     # Low band info
     Paint rectangle: "{0.9, 0.85, 0.85}", 0, 1, 0, 2
@@ -810,8 +860,31 @@ if draw_visualization
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Mix: " + fixed$(mix_0_to_1 * 100, 0) + "% | Output Gain: " + fixed$(output_Gain, 2)
     
+    Font size: 7
+    Colour: "Black"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.85, 6.90
+    Select inner viewport: 0.60, 7.70, 5.93, 6.82
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  " + vizName$ + " | " + fixed$(duration, 2) + " s | " + string$(inputChannels) + " ch | preset " + presetName$
+    summary2$ = "##Bands##  low <" + fixed$(low_Split_Hz, 0) + " Hz " + lowTypeName$ + " @ " + fixed$(low_Drive, 1) + "x | mid " + midTypeName$ + " @ " + fixed$(mid_Drive, 1) + "x | high >" + fixed$(high_Split_Hz, 0) + " Hz " + highTypeName$ + " @ " + fixed$(high_Drive, 1) + "x"
+    summary3$ = "##Output##  mix " + fixed$(mix_0_to_1 * 100, 0) + "\% | oversample " + string$(oversample) + "x | " + outModeDesc$ + " | gain " + fixed$(output_Gain, 2) + " | peak " + fixed$(finalPeak, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Finalize ===

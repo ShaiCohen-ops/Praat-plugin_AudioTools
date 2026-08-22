@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -82,6 +82,17 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4b (2026):
 #   All three blockers below are v0.4 regressions.
@@ -191,7 +202,7 @@
 #     native mono/stereo handling via per-channel Formula.
 # ============================================================
 
-form Van der Pol Tube Distortion v0.4b
+form Van der Pol Tube Distortion v0.5
     comment Select a Preset (overrides sliders below)
     optionmenu Preset: 1
         option Manual (Use settings below)
@@ -351,7 +362,7 @@ if cubic_amount <= 0
 endif
 
 # === Info ===
-writeInfoLine: "=== Van der Pol Tube Distortion v0.4b ==="
+writeInfoLine: "=== Van der Pol Tube Distortion v0.5 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(inputDur, 2), " s, ", inputCh, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Sample rate: ", fixed$(sr, 0), " Hz  |  Oversampling: ", oversample, "x"
@@ -572,21 +583,26 @@ appendInfoLine: ""
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(originalName$, "_", "\_ ", 0)
     Erase all
 
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
     Select inner viewport: 0, 8, 0, 0.65
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##VAN DER POL CUBIC WAVESHAPER v0.4b##"
+    Text: 0.5, "centre", 0.68, "half", "##Van der Pol Tube Distortion v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.26, "half",
-        ... originalName$
+        ... vizName$
         ... + "  |  " + presetName$
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Cubic: " + fixed$(cubic_amount, 2)
@@ -596,11 +612,11 @@ if draw_visualization
     # PANEL A: TRANSFER FUNCTION  (left, headline)
     # The defining diagnostic for any waveshaper.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
 
     Axes: -1.5, 1.5, -1.5, 1.5
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.5, 1.5, -1.5, 1.5
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.5, 1.5, -1.5, 1.5
 
     # Grid: zero axes
     Colour: "{0.85, 0.85, 0.88}"
@@ -613,7 +629,7 @@ if draw_visualization
     Colour: "{0.65, 0.65, 0.70}"
     Draw line: -1.5, -1.5, 1.5, 1.5
     Solid line
-    Font size: 5
+    Font size: 6
     Text: -1.45, "left", -1.40, "half", "y = x"
 
     # Digital ceiling (final hard clamp at +/- 0.999)
@@ -622,7 +638,7 @@ if draw_visualization
     Draw line: -1.5, 1, 1.5, 1
     Draw line: -1.5, -1, 1.5, -1
     Solid line
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.30, 0.55}"
     Text: -1.45, "left", 1, "bottom", " ceiling"
     Text: -1.45, "left", -1, "top", " -ceiling"
@@ -640,7 +656,7 @@ if draw_visualization
         Draw line: -1.5, safetyY, 1.5, safetyY
         Draw line: -1.5, -safetyY, 1.5, -safetyY
         Solid line
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.55, 0.30}"
         Text: -1.45, "left", safetyY, "bottom", " tanh safety"
         Text: -1.45, "left", -safetyY, "top", " -tanh safety"
@@ -715,18 +731,18 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL B: PARAMETER REPORT  (right, headline-height)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
 
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
 
     # Section: Waveshaping
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.93, "half", "Waveshaping parameters:"
 
-    Font size: 11
+    Font size: 7
     Colour: "{0.30, 0.45, 0.78}"
     Text: 0.10, "left", 0.84, "half", "Drive:    " + fixed$(drive, 2)
     Text: 0.10, "left", 0.76, "half", "Cubic amt: " + fixed$(cubic_amount, 2)
@@ -736,11 +752,11 @@ if draw_visualization
     # including when Limiter was set to hard-clamp-only and when Character
     # was Monotonic - where the tanh branch does not exist in the formula at
     # all. Shown only when it is actually in the signal path.
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.65, "half", "Limiting:"
 
-    Font size: 11
+    Font size: 7
     Colour: "{0.40, 0.55, 0.78}"
     if limiter = 1 and character = 1
         Text: 0.10, "left", 0.56, "half", "tanh above " + fixed$(safetyThreshold, 1) + ", then clamp"
@@ -753,11 +769,11 @@ if draw_visualization
     Text: 0.10, "left", 0.48, "half", "(" + character$ + ")"
 
     # Section: Output
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.36, "half", "Output:"
 
-    Font size: 11
+    Font size: 7
     Colour: "{0.40, 0.65, 0.40}"
     Text: 0.10, "left", 0.27, "half", "Gain:     " + fixed$(output_Gain, 2)
 
@@ -784,7 +800,7 @@ if draw_visualization
     # PANEL C: OUTPUT WAVEFORM
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select inner viewport: 0.60, 7.70, 4.75, 5.68
 
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
@@ -837,7 +853,7 @@ if draw_visualization
     # PANEL D: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select inner viewport: 0.60, 7.70, 5.88, 6.52
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
@@ -845,7 +861,7 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + originalName$
+        ... + "  " + vizName$
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Cubic: " + fixed$(cubic_amount, 2)
         ... + "  |  Out gain: " + fixed$(output_Gain, 2)
@@ -858,9 +874,16 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
+    Font size: 7
+    Colour: "Black"
+    Line width: 1
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # === Final ===

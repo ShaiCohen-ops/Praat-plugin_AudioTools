@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - knee range guard, peak reporting, derived plot axes
+# Version: 0.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -34,6 +34,16 @@
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis–Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; clipping law, knee mapping,
+#     oversampling, output policy and spectral analysis are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, standard title/subtitle, suite typography,
+#     neutral panel backgrounds, a three-line summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the defining transfer curve and matched/absolute LTAS
+#     comparison while aligning the waveform and diagnostic panels.
 #
 # Changelog v0.3:
 #   - FIXED (the knee could invert polarity): nothing prevented
@@ -91,7 +101,7 @@
 # ============================================================
 
 # === Form ===
-form Hard Clip (Variable Knee) v0.3
+form Hard Clip (Variable Knee) v0.4
     comment Select a Preset (overrides sliders below)
     optionmenu Preset: 1
         option Manual (Use settings below)
@@ -367,7 +377,7 @@ finalDur = Get total duration
 # v0.3 (item 9): v0.2's entire report was two lines - the file name and
 # the preset. For a distortion tool the numbers below are what let you
 # verify a preset or reproduce a result.
-writeInfoLine: "=== Hard Clip (Variable Knee) v0.3 ==="
+writeInfoLine: "=== Hard Clip (Variable Knee) v0.4 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(xmax - xmin, 2), " s, ", inputChannels, " ch, peak ", fixed$(srcPeak, 4), ")"
 appendInfoLine: "Preset: ", presetName$
 if clampNotes$ <> ""
@@ -412,29 +422,38 @@ appendInfoLine: ""
 
 # === Visualization ===
 if draw_visualization
+    pageHeight = 8.45
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(origName$, "_", "\_ ", 0)
     Erase all
     
     # 1. Title
-    Select outer viewport: 0, 8, 0.1, 0.5
-    Axes: 0, 8, 0, 1
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 4, "centre", 0.5, "half", "Hard Clip (Knee): " + origName$
+    Text: 0.5, "centre", 0.68, "half", "##Hard Clip (Variable Knee) v0.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | drive " + fixed$(drive, 2) + " | threshold " + fixed$(threshold, 3) + " | knee +/-" + fixed$(knee_half_width, 3)
     
     # 2. Original Waveform
     Select outer viewport: 0, 8, 0.6, 1.6
-    Select inner viewport: 0.6, 7.6, 0.7, 1.5
+    Select inner viewport: 0.60, 7.70, 0.7, 1.5
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # 3. Distorted Waveform
     Select outer viewport: 0, 8, 1.7, 2.7
-    Select inner viewport: 0.6, 7.6, 1.8, 2.6
+    Select inner viewport: 0.60, 7.70, 1.8, 2.6
     selectObject: result
     Colour: "{0.8, 0.4, 0.4}"
     Draw: 0, 0, 0, 0, "no", "Curve"
@@ -445,7 +464,7 @@ if draw_visualization
     
     # 4. Transfer Function (Knee Visualizer)
     Select outer viewport: 0, 8, 2.9, 5.0
-    Select inner viewport: 0.6, 7.6, 3.1, 4.8
+    Select inner viewport: 0.60, 7.70, 3.1, 4.8
     
     # Determine axes
     # v0.3 (item 4): v0.2 used one limit, threshold * 1.5 (floored at 1),
@@ -472,7 +491,7 @@ if draw_visualization
     endif
     
     Axes: -xLimit, xLimit, -yLimit, yLimit
-    Paint rectangle: "{0.95, 0.95, 0.95}", -xLimit, xLimit, -yLimit, yLimit
+    Paint rectangle: "{0.97, 0.97, 0.97}", -xLimit, xLimit, -yLimit, yLimit
     
     # Reference Grid
     Colour: "{0.8, 0.8, 0.8}"
@@ -559,7 +578,7 @@ if draw_visualization
     Line width: 1
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text bottom: "yes", "Input Amplitude"
     Text left: "yes", "Output Amplitude"
     # v0.3 (item 5): with oversampling, the final samples also pass
@@ -571,7 +590,7 @@ if draw_visualization
     
     # 5. Spectrum (harmonic generation: original vs clipped)
     Select outer viewport: 0, 8, 5.1, 6.8
-    Select inner viewport: 0.6, 7.6, 5.3, 6.6
+    Select inner viewport: 0.60, 7.70, 5.3, 6.6
 
     specMaxFreq = sampling_rate / 2
     if specMaxFreq > 12000
@@ -634,26 +653,34 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Marks bottom: 5, "yes", "yes", "no"
-    Font size: 8
+    Font size: 7
     Text bottom: "yes", "Frequency (Hz)  -  grey: original, red: clipped  (" + specRefLabel$ + ")"
     Text left: "yes", "dB"
 
     removeObject: ltasOrig, ltasClip
 
-    # 6. Stats
-    Select outer viewport: 0, 8, 6.85, 7.15
-    Axes: 0, 8, 0, 1
-    Font size: 8
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 4, "centre", 0.5, "half", "Preset: " + presetName$
-    Select outer viewport: 0, 8, 7.15, 7.45
-    Axes: 0, 8, 0, 1
-    Text: 4, "centre", 0.5, "half", "Thresh: " + fixed$(threshold, 3) + " | Knee: +/-" + fixed$(knee_half_width, 3)
-        ... + " | Drive: " + fixed$(drive, 2) + " | Gain: " + fixed$(output_Gain, 2)
-        ... + " | " + string$(oversample) + "x OS | peak " + fixed$(finalPeak, 3)
-    
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 6.95, 8.38
+    Select inner viewport: 0.60, 7.70, 7.05, 8.28
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  " + vizName$ + " | " + fixed$(finalDur, 2) + " s | " + string$(inputChannels) + " ch | preset " + presetName$
+    summary2$ = "##Shaping##  drive " + fixed$(drive, 2) + " | threshold " + fixed$(threshold, 3) + " | knee +/-" + fixed$(knee_half_width, 3) + " | output gain " + fixed$(output_Gain, 2) + " | oversample " + string$(oversample) + "x"
+    summary3$ = "##Output##  " + levelDesc$ + " | target " + fixed$(peak_target, 2) + " | measured peak " + fixed$(finalPeak, 3) + " | spectrum " + specRefLabel$
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Finalize ===

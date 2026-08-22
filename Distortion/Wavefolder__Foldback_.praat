@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,6 +13,17 @@
 #   threshold, creating rich harmonics. Features asymmetric
 #   thresholds, multiple iterations, bipolar/unipolar modes,
 #   and smoothing. Classic Buchla/Serge synthesizer effect.
+#
+# Changelog v0.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.3:
 #   - FIX: "Asymmetric Fold" preset was unipolar, so its asymmetry
@@ -28,7 +39,7 @@
 #   - Added info output
 # ============================================================
 
-form Wavefolder (Foldback)
+form Wavefolder (Foldback) v0.4
     comment Select a Sound object first
     
     comment === Preset ===
@@ -181,7 +192,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Wavefolder (Foldback) ==="
+writeInfoLine: "=== Wavefolder (Foldback) v0.4 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -271,28 +282,38 @@ endif
 # ============================================================
 
 if draw_visualization
+    pageHeight = 6.75
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(name$, "_", "\_ ", 0)
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Wavefolder: " + name$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.68, "half", "##Wavefolder (Foldback) v0.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | threshold " + fixed$(threshold, 2) + " | " + string$(fold_iterations) + " folds | input gain " + fixed$(input_gain_dB, 1) + " dB"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    Select inner viewport: 0.60, 7.70, 0.7, 1.4
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # Result waveform
     Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    Select inner viewport: 0.60, 7.70, 1.7, 2.4
     selectObject: result
     Colour: "{0.7, 0.5, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
@@ -305,7 +326,7 @@ if draw_visualization
     zoomDur = min(0.02, duration)
     
     Select outer viewport: 0, 4, 2.7, 3.8
-    Select inner viewport: 0.6, 3.8, 2.8, 3.7
+    Select inner viewport: 0.60, 3.85, 2.8, 3.7
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, zoomDur, 0, 0, "no", "Curve"
@@ -315,7 +336,7 @@ if draw_visualization
     Text left: "yes", "Orig (zoom)"
     
     Select outer viewport: 4, 8, 2.7, 3.8
-    Select inner viewport: 4.4, 7.6, 2.8, 3.7
+    Select inner viewport: 4.45, 7.70, 2.8, 3.7
     selectObject: result
     Colour: "{0.7, 0.5, 0.6}"
     Draw: 0, zoomDur, 0, 0, "no", "Curve"
@@ -327,36 +348,74 @@ if draw_visualization
     
     # Transfer function (folding curve)
     Select outer viewport: 0, 4, 4.0, 5.5
-    Select inner viewport: 0.6, 3.8, 4.1, 5.4
-    
-    Axes: -1.5, 1.5, -1.5, 1.5
-    Paint rectangle: "{0.95, 0.95, 0.95}", -1.5, 1.5, -1.5, 1.5
-    
+    Select inner viewport: 0.60, 3.85, 4.1, 5.4
+
+    # Measure the actual static shaping range before drawing it. The audio
+    # does not clamp the folded value to +/-1.4, so the visualization must
+    # not invent a plateau when a high-drive fold overshoots that range.
+    nPoints = 300
+    transferYLim = 1.5
+    for p from 1 to nPoints
+        tx = -1.2 + (p - 1) / (nPoints - 1) * 2.4
+        ty = tx * input_gain_linear
+        for iter from 1 to fold_iterations
+            if bipolar_folding
+                if ty > threshold_pos
+                    ty = threshold_pos - (ty - threshold_pos) * fold_depth
+                endif
+                if ty < -threshold_neg
+                    ty = -threshold_neg + (abs(ty) - threshold_neg) * fold_depth
+                endif
+            else
+                if abs(ty) > threshold
+                    if ty > 0
+                        ty = threshold - (ty - threshold) * fold_depth
+                    else
+                        ty = -threshold + (abs(ty) - threshold) * fold_depth
+                    endif
+                endif
+            endif
+        endfor
+        if smoothing > 0
+            smooth_amount_viz = smoothing * 2
+            if abs(ty) > (1 - smooth_amount_viz)
+                ty = ty / (1 + abs(ty) * smooth_amount_viz)
+            endif
+        endif
+        ty = ty * output_gain_linear
+        if abs(ty) * 1.10 > transferYLim
+            transferYLim = abs(ty) * 1.10
+        endif
+    endfor
+
+    Axes: -1.5, 1.5, -transferYLim, transferYLim
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.5, 1.5, -transferYLim, transferYLim
+
     # Grid
     Colour: "{0.85, 0.85, 0.85}"
     Draw line: -1.5, 0, 1.5, 0
-    Draw line: 0, -1.5, 0, 1.5
+    Draw line: 0, -transferYLim, 0, transferYLim
     Dotted line
     Draw line: -1.2, -1.2, 1.2, 1.2
     Solid line
-    
+
     # Threshold lines
     Colour: "{0.8, 0.7, 0.7}"
     Dotted line
     if bipolar_folding
-        Draw line: threshold_pos, -1.5, threshold_pos, 1.5
-        Draw line: -threshold_neg, -1.5, -threshold_neg, 1.5
+        Draw line: threshold_pos, -transferYLim, threshold_pos, transferYLim
+        Draw line: -threshold_neg, -transferYLim, -threshold_neg, transferYLim
     else
-        Draw line: threshold, -1.5, threshold, 1.5
-        Draw line: -threshold, -1.5, -threshold, 1.5
+        Draw line: threshold, -transferYLim, threshold, transferYLim
+        Draw line: -threshold, -transferYLim, -threshold, transferYLim
     endif
     Solid line
-    
-    # Draw folding transfer function
-    Colour: "{0.7, 0.5, 0.6}"
+
+    # Draw the same static chain used by the audio before DC removal and
+    # the final peak limiter: input gain -> folds -> smoothing -> output gain.
+    Colour: "{0.65, 0.35, 0.60}"
     Line width: 2
-    nPoints = 300
-    
+
     for p from 2 to nPoints
         x1 = -1.2 + (p - 2) / nPoints * 2.4
         x2 = -1.2 + (p - 1) / nPoints * 2.4
@@ -403,39 +462,39 @@ if draw_visualization
             endif
         endfor
         
-        # Apply output gain
+        # Apply smoothing exactly as in the audio path.
+        if smoothing > 0
+            smooth_amount_viz = smoothing * 2
+            if abs(y1) > (1 - smooth_amount_viz)
+                y1 = y1 / (1 + abs(y1) * smooth_amount_viz)
+            endif
+            if abs(y2) > (1 - smooth_amount_viz)
+                y2 = y2 / (1 + abs(y2) * smooth_amount_viz)
+            endif
+        endif
+
+        # Apply output gain. DC removal and the final peak limiter are
+        # file-dependent stages and therefore are not part of this x-only curve.
         y1 = y1 * output_gain_linear
         y2 = y2 * output_gain_linear
-        
-        # Clamp for display
-        if y1 > 1.4
-            y1 = 1.4
-        elsif y1 < -1.4
-            y1 = -1.4
-        endif
-        if y2 > 1.4
-            y2 = 1.4
-        elsif y2 < -1.4
-            y2 = -1.4
-        endif
-        
+
         Draw line: x1, y1, x2, y2
     endfor
     Line width: 1
     
     Colour: "Black"
     Draw inner box
-    Font size: 5
-    Text left: "yes", "Output"
+    Font size: 6
+    Text left: "yes", "Output (+/-" + fixed$(transferYLim, 2) + ")"
     Text bottom: "yes", "Input"
-    Text: 0, "centre", 1.6, "half", "Fold Transfer (" + string$(fold_iterations) + " iter)"
+    Text top: "no", "Static fold chain | before DC removal / final peak limiting"
     
     # Parameters
     Select outer viewport: 4, 8, 4.0, 5.5
-    Select inner viewport: 4.4, 7.6, 4.1, 5.4
+    Select inner viewport: 4.45, 7.70, 4.1, 5.4
     
     Axes: 0, 4, 0, 8
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 4, 0, 8
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 4, 0, 8
     
     Font size: 6
     Colour: "{0.4, 0.4, 0.4}"
@@ -453,8 +512,31 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     
+    Font size: 7
+    Colour: "Black"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.65, 6.70
+    Select inner viewport: 0.60, 7.70, 5.73, 6.62
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  " + vizName$ + " | " + fixed$(duration, 2) + " s | " + string$(numChannels) + " ch | preset " + presetName$
+    summary2$ = "##Folding##  threshold " + fixed$(threshold, 2) + " | pos/neg " + fixed$(threshold_pos, 2) + "/" + fixed$(threshold_neg, 2) + " | depth " + fixed$(fold_depth, 2) + " | asymmetry " + fixed$(asymmetry, 2) + " | iterations " + string$(fold_iterations)
+    summary3$ = "##Output##  input gain " + fixed$(input_gain_dB, 1) + " dB | output gain " + fixed$(output_gain_dB, 1) + " dB | smoothing " + fixed$(smoothing, 2) + " | measured pre-limit peak " + fixed$(peak, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

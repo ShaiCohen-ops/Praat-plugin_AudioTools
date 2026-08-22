@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4b (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -45,6 +45,17 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4b:
 #   All five items below are v0.4 regressions, found by a second
@@ -219,7 +230,7 @@
 #   - Added info output
 # ============================================================
 
-form Math Operations Between Sounds v0.4b
+form Math Operations Between Sounds v0.5
     comment Select exactly 2 Sound objects first
     
     comment === Preset ===
@@ -491,7 +502,7 @@ if advanced_operation = 8
 endif
 
 # === Info ===
-writeInfoLine: "=== Math Operations v0.4b ==="
+writeInfoLine: "=== Math Operations v0.5 ==="
 appendInfoLine: "Sound 1: ", name1$, " (", fixed$(dur1, 2), " s, ", n_ch_1, " ch)"
 appendInfoLine: "Sound 2: ", name2$, " (", fixed$(dur2, 2), " s, ", n_ch_2, " ch)"
 appendInfoLine: "Using duration: ", fixed$(min_dur, 2), " s"
@@ -929,19 +940,24 @@ endif
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
     Erase all
     
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##MATH OPERATIONS BETWEEN SOUNDS##"
+    Text: 0.5, "centre", 0.68, "half", "##Math Operations Between Sounds v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
+    Text: 0.5, "centre", 0.22, "half",
         ... name1$ + "  o  " + name2$
         ... + "  |  " + presetName$
         ... + "  |  Tier: " + ranTier$
@@ -952,16 +968,16 @@ if draw_visualization
     # PANEL A: OPERATION DIAGRAM  (left, headline)
     # S1 + S2 -> [operation] -> Out
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     Axes: 0, 4, 0, 4
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 4, 0, 4
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 4, 0, 4
     
     # Sound 1 box (top left)
     Paint rectangle: "{0.65, 0.85, 0.65}", 0.30, 1.30, 2.50, 3.30
     Colour: "Black"
-    Font size: 9
+    Font size: 7
     Text: 0.80, "centre", 2.95, "half", "Sound 1"
     Font size: 6
     Colour: "{0.20, 0.40, 0.20}"
@@ -971,7 +987,7 @@ if draw_visualization
     # Sound 2 box (bottom left)
     Paint rectangle: "{0.65, 0.65, 0.85}", 0.30, 1.30, 0.70, 1.50
     Colour: "Black"
-    Font size: 9
+    Font size: 7
     Text: 0.80, "centre", 1.20, "half", "Sound 2"
     Font size: 6
     Colour: "{0.15, 0.20, 0.45}"
@@ -981,18 +997,18 @@ if draw_visualization
     # Operation box (center)
     Paint rectangle: "{0.85, 0.75, 0.80}", 1.65, 2.65, 1.50, 2.50
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 2.15, "centre", 2.20, "half", presetName$
     Font size: 6
     Colour: "{0.45, 0.20, 0.30}"
     Text: 2.15, "centre", 2.05, "half", "[" + ranTier$ + "]"
-    Font size: 5
+    Font size: 6
     Text: 2.15, "centre", 1.85, "half", ranLabel$
     
     # Result box (right)
     Paint rectangle: "{0.85, 0.65, 0.55}", 3.00, 4.00, 1.50, 2.50
     Colour: "Black"
-    Font size: 9
+    Font size: 7
     Text: 3.50, "centre", 2.20, "half", "Result"
     Font size: 6
     Colour: "{0.40, 0.20, 0.10}"
@@ -1013,18 +1029,18 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL B: PARAMETER REPORT  (right, headline-height)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
     # Section: Operation
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.93, "half", "Operation tier:"
     
-    Font size: 11
+    Font size: 7
     if ranTier$ = "Advanced"
         Colour: "{0.78, 0.30, 0.40}"
     elsif ranTier$ = "Nonlinear"
@@ -1036,16 +1052,16 @@ if draw_visualization
     endif
     Text: 0.10, "left", 0.84, "half", ranTier$
     
-    Font size: 8
+    Font size: 7
     Colour: "{0.45, 0.45, 0.45}"
     Text: 0.10, "left", 0.76, "half", ranLabel$
     
     # Section: Parameters (relevant to this tier)
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.65, "half", "Parameters:"
     
-    Font size: 10
+    Font size: 7
     Colour: "{0.30, 0.45, 0.78}"
     if ranTier$ = "Modulation"
         Text: 0.10, "left", 0.57, "half", "Mod depth:    " + fixed$(modulation_depth, 2)
@@ -1058,11 +1074,11 @@ if draw_visualization
     Text: 0.10, "left", 0.41, "half", "Normalize:    " + normStr$
     
     # Section: Duration / Channels
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.30, "half", "Duration alignment:"
     
-    Font size: 8
+    Font size: 7
     Colour: "{0.55, 0.55, 0.55}"
     Text: 0.10, "left", 0.22, "half", "S1: " + fixed$(dur1, 2) + " s, " + string$(n_ch_1) + " ch"
     Text: 0.10, "left", 0.14, "half", "S2: " + fixed$(dur2, 2) + " s, " + string$(n_ch_2) + " ch"
@@ -1089,7 +1105,7 @@ if draw_visualization
     # PANEL C: INPUT WAVEFORMS  (S1 left half, S2 right half)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4, 4.68, 5.55
-    Select inner viewport: 0.55, 3.85, 4.75, 5.48
+    Select inner viewport: 0.60, 3.85, 4.75, 5.48
     
     selectObject: sound1_part
     s1Peak = Get absolute extremum: 0, 0, "None"
@@ -1117,7 +1133,7 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     
     Select outer viewport: 4, 8, 4.68, 5.55
-    Select inner viewport: 4.20, 7.65, 4.75, 5.48
+    Select inner viewport: 4.45, 7.70, 4.75, 5.48
     
     selectObject: sound2_part
     s2Peak = Get absolute extremum: 0, 0, "None"
@@ -1147,7 +1163,7 @@ if draw_visualization
     # PANEL D: RESULT WAVEFORM (full width)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
@@ -1200,7 +1216,7 @@ if draw_visualization
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select inner viewport: 0.60, 7.70, 6.68, 7.24
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -1222,9 +1238,16 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Font size: 7
+    Colour: "Black"
+    Line width: 1
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

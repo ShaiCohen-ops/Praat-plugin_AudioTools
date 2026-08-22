@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4b (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,6 +38,17 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4b:
 #   - FIXED: Response_Speed_Hz was validated unconditionally, so a
@@ -155,7 +166,7 @@
 # ============================================================
 
 # === Form ===
-form Dynamic Distortion v0.4b
+form Dynamic Distortion v0.5
     comment Select a Sound object first
     
     comment === Preset ===
@@ -286,7 +297,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Dynamic Distortion v0.4b ==="
+writeInfoLine: "=== Dynamic Distortion v0.5 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -506,20 +517,26 @@ appendInfoLine: "Drive range: ", fixed$(driveMin_calc, 3), " to ", fixed$(driveM
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(origName$, "_", "\_ ", 0)
     Erase all
     
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##DYNAMIC DISTORTION (envelope follower)##"
+    Text: 0.5, "centre", 0.68, "half", "##Dynamic Distortion v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... origName$
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$
         ... + "  |  " + presetName$
         ... + "  |  Base: " + fixed$(base_Drive, 2)
         ... + "  |  Sens: " + fixed$(sensitivity, 2)
@@ -532,8 +549,8 @@ if draw_visualization
     # Two tanh curves overlaid: quiet (low drive, gray) vs loud
     # (high drive, red). Shows the touch-sensitive character.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     # Compute representative drives for "quiet" and "loud" using
     # actual envelope min/max scaled by sensitivity
@@ -566,7 +583,7 @@ if draw_visualization
     endfor
     
     Axes: -1.2, 1.2, -yLimT, yLimT
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, -yLimT, yLimT
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, -yLimT, yLimT
     
     # Grid + identity reference
     Colour: "{0.85, 0.85, 0.88}"
@@ -607,7 +624,7 @@ if draw_visualization
     Line width: 1
     
     # Legend
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.55, 0.55}"
     Text: -1.15, "left", yLimT * 0.92, "half", "gray = quiet (drive " + fixed$(driveLow_disp, 1) + ")"
     Colour: "{0.80, 0.30, 0.30}"
@@ -624,8 +641,8 @@ if draw_visualization
     # Top half: envelope (rectified + low-passed input)
     # Bottom half: computed drive value at each sample
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     # We split the panel vertically: top 50% = envelope, bottom 50% = drive
     # Use a single Axes call covering [-1, +1] vertically with envelope
@@ -633,8 +650,8 @@ if draw_visualization
     # Simpler: use two sequential Select inner viewport calls.
     
     # ---- Sub-panel B1: Envelope (top half) ----
-    Select outer viewport: 4.2, 8, 0.75, 2.65
-    Select inner viewport: 4.55, 7.75, 0.95, 2.55
+    Select outer viewport: 4, 8, 0.75, 2.65
+    Select inner viewport: 4.45, 7.70, 0.95, 2.55
     
     selectObject: envelopeID
     envViz_max = envMax * 1.15
@@ -643,7 +660,7 @@ if draw_visualization
     endif
     
     Axes: xminOrig, xmaxOrig, 0, envViz_max
-    Paint rectangle: "{0.96, 0.96, 0.96}", xminOrig, xmaxOrig, 0, envViz_max
+    Paint rectangle: "{0.97, 0.97, 0.97}", xminOrig, xmaxOrig, 0, envViz_max
     
     Colour: "{0.30, 0.65, 0.40}"
     Line width: 1.3
@@ -656,7 +673,7 @@ if draw_visualization
     Draw line: xminOrig, envMax, xmaxOrig, envMax
     Draw line: xminOrig, envMin, xmaxOrig, envMin
     Solid line
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.30, 0.55}"
     Text: xminOrig + duration * 0.99, "right", envMax, "bottom", " max " + fixed$(envMax, 3)
     Text: xminOrig + duration * 0.99, "right", envMin, "top", " min " + fixed$(envMin, 3)
@@ -667,8 +684,8 @@ if draw_visualization
     Text left: "yes", "Envelope"
     
     # ---- Sub-panel B2: Computed Drive (bottom half) ----
-    Select outer viewport: 4.2, 8, 2.70, 4.60
-    Select inner viewport: 4.55, 7.75, 2.85, 4.40
+    Select outer viewport: 4, 8, 2.70, 4.60
+    Select inner viewport: 4.45, 7.70, 2.85, 4.40
     
     # Compute drive range with padding for display
     drivePad = (driveMax_calc - driveMin_calc) * 0.10
@@ -679,7 +696,7 @@ if draw_visualization
     yHi_drive = driveMax_calc + drivePad
     
     Axes: xminOrig, xmaxOrig, yLo_drive, yHi_drive
-    Paint rectangle: "{0.96, 0.96, 0.96}", xminOrig, xmaxOrig, yLo_drive, yHi_drive
+    Paint rectangle: "{0.97, 0.97, 0.97}", xminOrig, xmaxOrig, yLo_drive, yHi_drive
     
     # Zero line if visible
     if yLo_drive < 0 and yHi_drive > 0
@@ -695,7 +712,7 @@ if draw_visualization
         Dotted line
         Draw line: xminOrig, base_Drive, xmaxOrig, base_Drive
         Solid line
-        Font size: 5
+        Font size: 6
         Colour: "{0.55, 0.30, 0.55}"
         Text: xminOrig + duration * 0.01, "left", base_Drive, "bottom", " base " + fixed$(base_Drive, 2)
     endif
@@ -735,7 +752,7 @@ if draw_visualization
     # PANEL C: ORIGINAL VS RESULT (overlay)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     selectObject: original
     origPeak = Get absolute extremum: 0, 0, "None"
@@ -788,7 +805,7 @@ if draw_visualization
     # PANEL D: OUTPUT WAVEFORM (full file, mono)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
@@ -824,7 +841,7 @@ if draw_visualization
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select inner viewport: 0.60, 7.70, 6.68, 7.24
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -832,7 +849,7 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + origName$
+        ... + "  " + vizName$
         ... + "  |  Base: " + fixed$(base_Drive, 2)
         ... + "  |  Sens: " + fixed$(sensitivity, 2)
         ... + "  |  Env: " + envShort$
@@ -848,9 +865,16 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Font size: 7
+    Colour: "Black"
+    Line width: 1
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

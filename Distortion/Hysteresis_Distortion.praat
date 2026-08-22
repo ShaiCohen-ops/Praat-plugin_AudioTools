@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -52,6 +52,17 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4:
 #   - FIXED (the central mismatch): Hysteresis_Memory is a
@@ -149,7 +160,7 @@
 # ============================================================
 
 # === Form ===
-form Hysteresis Distortion v0.4
+form Hysteresis Distortion v0.5
     comment Select a Sound object first
     
     comment === Preset ===
@@ -315,7 +326,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Hysteresis Distortion v0.4 ==="
+writeInfoLine: "=== Hysteresis Distortion v0.5 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 if memNotes$ <> ""
@@ -447,6 +458,11 @@ appendInfoLine: ""
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(origName$, "_", "\_ ", 0)
     Erase all
     
     # ----------------------------------------------------------
@@ -512,15 +528,16 @@ if draw_visualization
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##HYSTERESIS DISTORTION##"
+    Text: 0.5, "centre", 0.68, "half", "##Hysteresis Distortion v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... origName$
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$
         ... + "  |  " + presetName$
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Memory: " + fixed$(hysteresis_Memory, 2)
@@ -532,11 +549,11 @@ if draw_visualization
     # The defining diagnostic for this script — ascending vs
     # descending input paths diverge due to memory.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     Axes: -1.2, 1.2, -1.2, 1.2
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, -1.2, 1.2
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, -1.2, 1.2
     
     # Grid
     Colour: "{0.85, 0.85, 0.88}"
@@ -622,12 +639,12 @@ if draw_visualization
     Line width: 1
     
     # Legend
-    Font size: 5
+    Font size: 6
     Colour: "{0.30, 0.45, 0.78}"
     Text: -1.15, "left", 1.10, "half", "blue = ascending"
     Colour: "{0.78, 0.40, 0.40}"
     Text: -1.15, "left", 1.00, "half", "red = descending"
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.55, 0.55}"
     if hysteresis_Memory < 0.05
         Text: 1.15, "right", 1.10, "half", "no loop (mem~0)"
@@ -643,11 +660,11 @@ if draw_visualization
     # PANEL B: STATIC TRANSFER FUNCTION  (right, headline)
     # The non-recursive tanh curve, for reference.
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     Axes: -1.2, 1.2, -1.2, 1.2
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, -1.2, 1.2
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, -1.2, 1.2
     
     # Grid
     Colour: "{0.85, 0.85, 0.88}"
@@ -677,7 +694,7 @@ if draw_visualization
             Dotted line
             Draw line: biasLine, -1.2, biasLine, 1.2
             Solid line
-            Font size: 5
+            Font size: 6
             Colour: "{0.30, 0.55, 0.30}"
             Text: biasLine, "left", -1.10, "half", " bias"
         endif
@@ -723,7 +740,7 @@ if draw_visualization
     # OR SPECTRUM if Show_spectrum is ON.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     if show_spectrum
         # ==== SPECTRUM COMPARISON ====
@@ -733,7 +750,7 @@ if draw_visualization
         endif
         
         Axes: 0, maxFreqDisplay, 0, 80
-        Paint rectangle: "{0.96, 0.96, 0.96}", 0, maxFreqDisplay, 0, 80
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, maxFreqDisplay, 0, 80
         
         # Light frequency gridlines
         Colour: "{0.88, 0.88, 0.92}"
@@ -741,7 +758,7 @@ if draw_visualization
         gridF = 1000
         while gridF < maxFreqDisplay
             Draw line: gridF, 0, gridF, 80
-            Font size: 5
+            Font size: 6
             Colour: "{0.55, 0.55, 0.55}"
             if gridF < 1000
                 Text: gridF, "centre", 3, "half", string$(gridF)
@@ -766,7 +783,7 @@ if draw_visualization
         Line width: 1
         
         # Legend
-        Font size: 5
+        Font size: 6
         Colour: "{0.65, 0.65, 0.65}"
         Text: maxFreqDisplay * 0.99, "right", 73, "half", "gray = original "
         Colour: "{0.78, 0.40, 0.40}"
@@ -848,7 +865,7 @@ if draw_visualization
     # PANEL D: OUTPUT WAVEFORM (full file)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
@@ -901,7 +918,7 @@ if draw_visualization
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select inner viewport: 0.60, 7.70, 6.68, 7.24
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -915,7 +932,7 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + origName$
+        ... + "  " + vizName$
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Memory: " + fixed$(hysteresis_Memory, 3)
         ... + "  |  Bias: " + fixed$(asymmetry_Bias, 3)
@@ -928,7 +945,7 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
-    Font size: 10
+    Font size: 7
     Colour: "Black"
     Line width: 1
     
@@ -936,6 +953,13 @@ if draw_visualization
     if show_spectrum
         removeObject: specOrigID, specResID
     endif
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

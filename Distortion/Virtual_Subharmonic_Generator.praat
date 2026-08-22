@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2025)
+# Version: 0.6 (2026) - Compact main form
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -51,6 +51,28 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.6 (2026):
+#   - FORM COMPACTION ONLY; audio/DSP, presets, parameter mapping,
+#     analysis, rendering and the v0.5 visualization are unchanged.
+#   - Main form now exposes only the musically central controls:
+#     preset, bass band, drive, harmonic addition level, M/S widening
+#     and stereo width, plus Draw/Play.
+#   - Technical controls moved to an optional Advanced settings pause:
+#     high-pass and harmonic-lowpass filters, bass-reference mode/peak,
+#     Side low-cut, output policy/target and near-silence threshold.
+#   - Advanced defaults are exactly the former v0.5 main-form defaults.
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4 (QA fixes):
 #   - FIXED (blocker): visualization used hardcoded 0-based time
@@ -176,9 +198,9 @@
 #   - Added visualization
 # ============================================================
 
-form Virtual Subharmonic Generator v0.4
+form Virtual Subharmonic Generator v0.6
     comment Select a Sound object first
-    
+
     comment === Preset ===
     optionmenu Preset: 1
         option Custom (use settings below)
@@ -187,43 +209,18 @@ form Virtual Subharmonic Generator v0.4
         option Aggressive MaxxBass
         option Mono-Safe Narrowing
         option Wide Stereo
-    
+
     comment === Phantom Bass ===
     positive Bass_low_freq 30
     positive Bass_high_freq 120
     positive Drive 3.0
-    comment (higher = more harmonics)
     real Harmonic_level 0.6
-    comment (addition gain onto the high-passed source; not dry/wet -- 0 still high-passes)
-    positive Highpass_freq 100
-    positive Harmonic_lowpass 800
-    
-    comment === Bass Reference (keeps Drive consistent across input levels) ===
-    optionmenu Bass_reference_mode: 1
-        option Preserve bass level (Drive scales with input loudness)
-        option Normalize bass before waveshaping (Drive is level-independent)
-    positive Bass_reference_peak 0.5
-    
-    comment === Mid-Side Width ===
+
+    comment === Stereo ===
     boolean Apply_MS_widening 1
     real Stereo_width 0.5
-    comment (1 = identity, <1 narrows, >1 widens; default 0.5 narrows)
-    
-    comment === Side Channel ===
-    boolean Mono_bass_side_lowcut 1
-    comment (removes low-frequency content from the Side channel only; L'+R' mono sum is unaffected either way)
-    
-    comment === Output Level ===
-    optionmenu Output_mode: 2
-        option Preserve input level
-        option Normalize to target
-        option Normalize only if it exceeds target
-        option Legacy (always normalize to 0.95)
-    real Normalize_target 0.95
-    real Near_silence_dB -80
-    comment (below this peak level, normalization is skipped and reported instead of applied)
-    
-    comment === Output ===
+
+    boolean Advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
@@ -243,6 +240,46 @@ numChannels = Get number of channels
 xminOrig = Get start time
 xmaxOrig = Get end time
 nyquist = sr / 2
+
+# === Advanced defaults (identical to the v0.5 main-form defaults) ===
+highpass_freq = 100
+harmonic_lowpass = 800
+bass_reference_mode = 1
+bass_reference_peak = 0.5
+mono_bass_side_lowcut = 1
+output_mode = 2
+normalize_target = 0.95
+near_silence_dB = -80
+
+# Praat permits only one form...endform block. Optional secondary controls
+# therefore use beginPause/endPause and appear only when requested.
+if advanced_settings
+    beginPause: "Virtual Subharmonic Generator v0.6 - Advanced settings"
+        comment: "=== Harmonic branch filtering ==="
+        positive: "Highpass_freq", "100"
+        positive: "Harmonic_lowpass", "800"
+
+        comment: "=== Bass reference ==="
+        optionmenu: "Bass_reference_mode", 1
+            option: "Preserve bass level (Drive scales with input loudness)"
+            option: "Normalize bass before waveshaping (Drive is level-independent)"
+        positive: "Bass_reference_peak", "0.5"
+
+        comment: "=== Side channel ==="
+        boolean: "Mono_bass_side_lowcut", 1
+        comment: "(removes low-frequency content from Side only)"
+
+        comment: "=== Output level ==="
+        optionmenu: "Output_mode", 2
+            option: "Preserve input level"
+            option: "Normalize to target"
+            option: "Normalize only if it exceeds target"
+            option: "Legacy (always normalize to 0.95)"
+        real: "Normalize_target", "0.95"
+        real: "Near_silence_dB", "-80"
+        comment: "(below this peak level, normalization is skipped)"
+    clicked = endPause: "Continue", 1
+endif
 
 # === Apply Presets ===
 # Bass band is now part of every preset definition, so a preset's
@@ -359,7 +396,7 @@ endif
 nearSilenceLin = 10 ^ (near_silence_dB / 20)
 
 # === Info ===
-writeInfoLine: "=== Virtual Subharmonic Generator v0.4 ==="
+writeInfoLine: "=== Virtual Subharmonic Generator v0.6 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", numChannels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Output is always stereo, regardless of input channel count."
@@ -641,20 +678,26 @@ nResultCh = Get number of channels
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(originalName$, "_", "\_ ", 0)
     Erase all
     
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##VIRTUAL SUBHARMONIC GENERATOR##"
+    Text: 0.5, "centre", 0.68, "half", "##Virtual Subharmonic Generator v0.6##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... originalName$
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$
         ... + "  |  " + presetName$
         ... + "  |  Bass " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
         ... + "  |  Drive: " + fixed$(drive, 2)
@@ -668,18 +711,18 @@ if draw_visualization
     # M/S Width, Output; style matching Chaos Distortion v0.3 and
     # Distortion+BitCrusher v0.3 for visual consistency)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     Axes: 0, 1, 0, 6
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 6
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 6
     
     # Stage 1: Input
     yTop = 5.6
     yBot = 5.0
     Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "INPUT"
     Font size: 7
     Colour: "{0.45, 0.45, 0.45}"
@@ -693,7 +736,7 @@ if draw_visualization
     yBot = 4.0
     Paint rectangle: "{0.85, 0.70, 0.55}", 0.10, 0.90, yBot, yTop
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "BASS -> HARMONICS"
     Font size: 7
     Colour: "{0.40, 0.20, 0.10}"
@@ -709,7 +752,7 @@ if draw_visualization
     yBot = 3.0
     Paint rectangle: "{0.65, 0.85, 0.65}", 0.10, 0.90, yBot, yTop
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "HP + MIX"
     Font size: 7
     Colour: "{0.15, 0.40, 0.15}"
@@ -729,7 +772,7 @@ if draw_visualization
         Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
     endif
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "M/S WIDTH"
     Font size: 7
     if apply_MS_widening
@@ -749,7 +792,7 @@ if draw_visualization
     yBot = 1.0
     Paint rectangle: "{0.65, 0.85, 0.75}", 0.10, 0.90, yBot, yTop
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "OUTPUT"
     Font size: 7
     Colour: "{0.15, 0.40, 0.30}"
@@ -757,7 +800,7 @@ if draw_visualization
     
     # Side low-cut badge
     if mono_bass_side_lowcut
-        Font size: 5
+        Font size: 6
         Colour: "{0.55, 0.30, 0.30}"
         Text: 0.50, "centre", 0.50, "half", "[side HP @ 200 Hz]"
     endif
@@ -768,36 +811,36 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL B: PARAMETER REPORT  (right, headline-height)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.95, "half", "Phantom Bass:"
     
-    Font size: 11
+    Font size: 7
     Colour: "{0.85, 0.55, 0.20}"
     Text: 0.10, "left", 0.87, "half", "Bass:    " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
     Text: 0.10, "left", 0.79, "half", "Drive:   " + fixed$(drive, 2)
     Text: 0.10, "left", 0.71, "half", "Harm gain: " + fixed$(harmonic_level, 2)
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.61, "half", "Filtering:"
     
-    Font size: 10
+    Font size: 7
     Colour: "{0.30, 0.55, 0.30}"
     Text: 0.10, "left", 0.53, "half", "HP cut:  " + fixed$(highpass_freq, 0) + " Hz"
     Text: 0.10, "left", 0.45, "half", "Harm LP: " + fixed$(harmonic_lowpass, 0) + " Hz"
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.34, "half", "Stereo:"
     
-    Font size: 10
+    Font size: 7
     if apply_MS_widening
         Colour: "{0.30, 0.30, 0.78}"
         Text: 0.10, "left", 0.26, "half", "M/S:     ON, S x " + fixed$(stereo_width, 2)
@@ -817,7 +860,7 @@ if draw_visualization
         Text: 0.10, "left", 0.26, "half", "M/S:     OFF"
     endif
     
-    Font size: 8
+    Font size: 7
     if mono_bass_side_lowcut
         Colour: "{0.55, 0.30, 0.30}"
         Text: 0.10, "left", 0.08, "half", "Side low-cut: ON (200 Hz)"
@@ -849,7 +892,7 @@ if draw_visualization
     # bass-band peaks of the original.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     # v0.4 FIX (blocker): v0.3 zoomed into the hardcoded range
     # 0-0.03 s, which crashed ("value undefined" on Axes) whenever
@@ -919,7 +962,7 @@ if draw_visualization
     # PANEL D: OUTPUT WAVEFORM (full file)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     # v0.4 FIX: axes were drawn as 0-finalDur while `result` actually
     # occupies the source's original time domain (e.g. 2.5-3.5 s),
@@ -966,7 +1009,7 @@ if draw_visualization
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select inner viewport: 0.60, 7.70, 6.68, 7.24
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -974,7 +1017,7 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + originalName$
+        ... + "  " + vizName$
         ... + "  |  Bass: " + fixed$(bass_low_freq, 0) + "-" + fixed$(bass_high_freq, 0) + " Hz"
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Harm gain: " + fixed$(harmonic_level, 2)
@@ -988,9 +1031,16 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Font size: 7
+    Colour: "Black"
+    Line width: 1
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

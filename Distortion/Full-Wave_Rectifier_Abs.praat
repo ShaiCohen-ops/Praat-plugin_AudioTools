@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4b (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -36,6 +36,17 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4b:
 #   - FIXED (ordering): Scale_peak was validated BEFORE the presets
@@ -139,7 +150,7 @@
 #   - Added info output
 # ============================================================
 
-form Full-Wave Rectifier v0.4b
+form Full-Wave Rectifier v0.5
     comment Select a Sound object first
     
     comment === Preset ===
@@ -224,7 +235,7 @@ if output_level <> 1
 endif
 
 # === Info ===
-writeInfoLine: "=== Full-Wave Rectifier v0.4b ==="
+writeInfoLine: "=== Full-Wave Rectifier v0.5 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -381,6 +392,11 @@ endif
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(originalName$, "_", "\_ ", 0)
     Erase all
     
     # ----------------------------------------------------------
@@ -451,15 +467,16 @@ if draw_visualization
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##FULL-WAVE RECTIFIER##"
+    Text: 0.5, "centre", 0.68, "half", "##Full-Wave Rectifier v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... originalName$
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$
         ... + "  |  " + presetName$
         ... + "  |  Level: " + levelDesc$
         ... + "  |  DC: " + dcDesc$
@@ -470,11 +487,11 @@ if draw_visualization
     # PANEL A: TRANSFER FUNCTION  (left, headline)
     # The defining diagnostic. y = |x| is a V-shape.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     Axes: -1.2, 1.2, yLoV, yHiV
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, yLoV, yHiV
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, yLoV, yHiV
     
     # Grid
     Colour: "{0.85, 0.85, 0.88}"
@@ -504,13 +521,13 @@ if draw_visualization
     Line width: 1
     
     # Annotations
-    Font size: 5
+    Font size: 6
     Colour: "{0.30, 0.55, 0.30}"
     Text: -0.5, "centre", (0.5 - curveShift) * levelScale, "half", " |x| "
     Text: 0.5, "centre", (0.5 - curveShift) * levelScale, "half", " x "
     
     # Identity reference label
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.55, 0.55}"
     Text: -0.95, "left", -0.20, "half", "(dotted = identity)"
     
@@ -524,8 +541,8 @@ if draw_visualization
     # PANEL B: SPECTRUM COMPARISON or PARAMETER REPORT  (right)
     # Conditional on Show_spectrum form toggle.
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     if show_spectrum
         # ==== SPECTRUM COMPARISON ====
@@ -535,7 +552,7 @@ if draw_visualization
         endif
         
         Axes: 0, maxFreqDisplay, 0, 80
-        Paint rectangle: "{0.96, 0.96, 0.96}", 0, maxFreqDisplay, 0, 80
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, maxFreqDisplay, 0, 80
         
         # Light frequency gridlines (every 1 kHz)
         Colour: "{0.88, 0.88, 0.92}"
@@ -543,7 +560,7 @@ if draw_visualization
         gridF = 1000
         while gridF < maxFreqDisplay
             Draw line: gridF, 0, gridF, 80
-            Font size: 5
+            Font size: 6
             Colour: "{0.55, 0.55, 0.55}"
             if gridF < 1000
                 Text: gridF, "centre", 3, "half", string$(gridF)
@@ -568,7 +585,7 @@ if draw_visualization
         Line width: 1
         
         # Legend
-        Font size: 5
+        Font size: 6
         Colour: "{0.55, 0.55, 0.55}"
         Text: maxFreqDisplay * 0.99, "right", 73, "half", "gray = original "
         Colour: "{0.40, 0.65, 0.45}"
@@ -582,35 +599,35 @@ if draw_visualization
     else
         # ==== PARAMETER REPORT ====
         Axes: 0, 1, 0, 1
-        Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
         
-        Font size: 9
+        Font size: 7
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.92, "half", "Operation:"
         
-        Font size: 13
+        Font size: 7
         Colour: "{0.40, 0.65, 0.45}"
         Text: 0.10, "left", 0.82, "half", "y = |x|"
         
-        Font size: 8
+        Font size: 7
         Colour: "{0.55, 0.55, 0.55}"
         Text: 0.10, "left", 0.74, "half", "(absolute value, sample-by-sample)"
         
-        Font size: 9
+        Font size: 7
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.62, "half", "Output:"
         
-        Font size: 11
+        Font size: 7
         Colour: "{0.30, 0.45, 0.78}"
         Text: 0.10, "left", 0.54, "half", "Peak:    " + fixed$(finalPeak, 3) + " (target " + fixed$(scale_peak, 2) + ")"
         Text: 0.10, "left", 0.46, "half", "Channels: " + string$(nResultCh)
         Text: 0.10, "left", 0.38, "half", "Duration: " + fixed$(finalDur, 2) + " s"
         
-        Font size: 9
+        Font size: 7
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.27, "half", "Spectral effect:"
         
-        Font size: 8
+        Font size: 7
         Colour: "{0.55, 0.55, 0.55}"
         Text: 0.10, "left", 0.19, "half", "Symmetric periodic in: 2x rate,"
         Text: 0.10, "left", 0.12, "half", "DC + even harmonics"
@@ -647,7 +664,7 @@ if draw_visualization
     # below-zero portion of the original is reflected upward.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     # v0.4 (item 3): this queried and drew 0..zoomDur, i.e. it assumed
     # the time domain starts at 0. On a Sound extracted with times
@@ -719,7 +736,7 @@ if draw_visualization
     # PANEL D: OUTPUT WAVEFORM (full file)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
@@ -772,7 +789,7 @@ if draw_visualization
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select inner viewport: 0.60, 7.70, 6.68, 7.24
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -786,7 +803,7 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + originalName$
+        ... + "  " + vizName$
         ... + "  |  Operation: y = |x|"
         ... + "  |  Level: " + levelDesc$
         ... + "  |  DC: " + dcDesc$
@@ -800,7 +817,7 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
-    Font size: 10
+    Font size: 7
     Colour: "Black"
     Line width: 1
     
@@ -808,6 +825,13 @@ if draw_visualization
     if show_spectrum
         removeObject: specOrigID, specRectID
     endif
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # v0.4: the pre-level-stage copy used for the spectrum comparison is

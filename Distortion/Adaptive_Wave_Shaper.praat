@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7 (2026)
+# Version: 0.8 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -37,6 +37,17 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.8 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.7:
 #   - FIXED: the transfer function curve was clamped to +/-1.4 in
@@ -141,7 +152,7 @@
 #   - Added transfer function display
 # ============================================================
 
-form Adaptive Wave Shaper v0.7
+form Adaptive Wave Shaper v0.8
     comment Select a Sound object first
     
     comment === Preset ===
@@ -263,7 +274,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Adaptive Wave Shaper v0.7 ==="
+writeInfoLine: "=== Adaptive Wave Shaper v0.8 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Saturation: ", satName$
@@ -502,20 +513,26 @@ nResultCh = Get number of channels
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(original_name$, "_", "\_ ", 0)
     Erase all
     
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##VOICE-CALIBRATED WAVE SHAPER##"
+    Text: 0.5, "centre", 0.68, "half", "##Adaptive Wave Shaper v0.8##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... original_name$
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$
         ... + "  |  " + presetName$
         ... + "  |  Drive: " + fixed$(adaptive_drive, 2)
         ... + "  |  Folds: " + string$(adaptive_fold)
@@ -527,8 +544,8 @@ if draw_visualization
     # PANEL A: TRANSFER FUNCTION  (left, headline)
     # The defining diagnostic for a wave shaper.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     # v0.7: the curve used to be clamped to +/-1.4 in VALUE, which is not
     # something the audio engine does - so whenever the shaper produced
@@ -563,7 +580,7 @@ if draw_visualization
     endfor
     
     Axes: -1.5, 1.5, -yLim, yLim
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.5, 1.5, -yLim, yLim
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.5, 1.5, -yLim, yLim
     
     # Grid
     Colour: "{0.85, 0.85, 0.88}"
@@ -583,7 +600,7 @@ if draw_visualization
     Draw line: -1.5, fold_threshold, 1.5, fold_threshold
     Draw line: -1.5, -fold_threshold, 1.5, -fold_threshold
     Solid line
-    Font size: 5
+    Font size: 6
     Text: -1.4, "left", fold_threshold, "bottom", " thresh"
     Text: -1.4, "left", -fold_threshold, "top", " -thresh"
     
@@ -652,18 +669,18 @@ if draw_visualization
     # Compact text panel showing the analysis-derived parameters.
     # Replaces the LTAS panel (which was too slow on every run).
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
     # Section: Voice quality
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.92, "half", "Voice quality (analyzed):"
     
-    Font size: 11
+    Font size: 7
     Colour: "{0.30, 0.45, 0.78}"
     Text: 0.10, "left", 0.83, "half", "Jitter:  " + fixed$(jitter_percent, 2) + " %"
     Text: 0.10, "left", 0.75, "half", "Shimmer: " + fixed$(shimmer_percent, 2) + " %"
@@ -681,22 +698,22 @@ if draw_visualization
     endif
     
     # Section: Calibrated parameters
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.58, "half", "Calibrated parameters:"
     
-    Font size: 11
+    Font size: 7
     Colour: "{0.80, 0.40, 0.40}"
     Text: 0.10, "left", 0.49, "half", "Drive:   " + fixed$(adaptive_drive, 2) + " x"
     Colour: "{0.40, 0.65, 0.40}"
     Text: 0.10, "left", 0.41, "half", "Folds:   " + string$(adaptive_fold)
     
     # Section: Sensitivities
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.27, "half", "Sensitivities:"
     
-    Font size: 8
+    Font size: 7
     Colour: "{0.55, 0.55, 0.55}"
     Text: 0.10, "left", 0.18, "half", "Jitter sens:  " + fixed$(jitter_sensitivity, 2)
     Text: 0.10, "left", 0.10, "half", "Shimmer sens: " + fixed$(shimmer_sensitivity, 2)
@@ -720,7 +737,7 @@ if draw_visualization
     # PANEL C: OUTPUT WAVEFORM
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select inner viewport: 0.60, 7.70, 4.75, 5.68
     
     selectObject: result
     outPeak = Get absolute extremum: 0, 0, "None"
@@ -773,7 +790,7 @@ if draw_visualization
     # PANEL D: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select inner viewport: 0.60, 7.70, 5.88, 6.52
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -781,7 +798,7 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + original_name$
+        ... + "  " + vizName$
         ... + "  |  Jitter: " + fixed$(jitter_percent, 2) + "%"
         ... + "  |  Shimmer: " + fixed$(shimmer_percent, 2) + "%"
         ... + "  |  Drive: " + fixed$(adaptive_drive, 2)
@@ -798,9 +815,16 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Font size: 7
+    Colour: "Black"
+    Line width: 1
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

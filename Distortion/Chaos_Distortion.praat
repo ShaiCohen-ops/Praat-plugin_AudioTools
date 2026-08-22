@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4b (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,6 +24,17 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4b:
 #   - FIXED: sample & hold reported the REQUESTED rate, not the one
@@ -149,7 +160,7 @@
 #   - Added info output
 # ============================================================
 
-form Chaos Distortion v0.4b
+form Chaos Distortion v0.5
     comment Select a Sound object first
     
     comment === Preset ===
@@ -394,7 +405,7 @@ if add_noise
 endif
 
 # === Info ===
-writeInfoLine: "=== Chaos Distortion v0.4b ==="
+writeInfoLine: "=== Chaos Distortion v0.5 ==="
 if rateWarning$ <> ""
     appendInfoLine: rateWarning$
 endif
@@ -618,20 +629,26 @@ nResultCh = Get number of channels
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(original_name$, "_", "\_ ", 0)
     Erase all
     
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##CHAOS DISTORTION##"
+    Text: 0.5, "centre", 0.68, "half", "##Chaos Distortion v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... original_name$
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$
         ... + "  |  " + presetName$
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Folds: " + string$(fold_count)
@@ -643,8 +660,8 @@ if draw_visualization
     # PANEL A: TRANSFER FUNCTION  (left, headline)
     # Composite of drive + fold + bit-crush.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     levels_disp = 2 ^ bit_crush
     nPoints = 200
@@ -680,7 +697,7 @@ if draw_visualization
     
     
     Axes: -1.2, 1.2, -yLim, yLim
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, -yLim, yLim
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, -yLim, yLim
     
     # Grid
     Colour: "{0.85, 0.85, 0.88}"
@@ -700,7 +717,7 @@ if draw_visualization
     Draw line: -1.2, fold_threshold, 1.2, fold_threshold
     Draw line: -1.2, -fold_threshold, 1.2, -fold_threshold
     Solid line
-    Font size: 5
+    Font size: 6
     Colour: "{0.30, 0.55, 0.30}"
     Text: -1.15, "left", fold_threshold, "bottom", " ±" + fixed$(fold_threshold, 2) + " fold"
     
@@ -782,11 +799,11 @@ if draw_visualization
     # The five-stage pipeline shown explicitly with current values.
     # Preserved from v0.2 — it's the script's most distinctive viz.
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     Axes: 0, 1, 0, 6
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 6
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 6
     
     # Five vertical boxes representing the pipeline stages
     # Each at y range [stage*1.0, stage*1.0+0.7] for stages 5..1 (top to bottom)
@@ -796,9 +813,9 @@ if draw_visualization
     yBot = 5.0
     Paint rectangle: "{0.85, 0.70, 0.55}", 0.10, 0.90, yBot, yTop
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "1. DRIVE"
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.20, 0.10}"
     Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", fixed$(drive, 2) + " x"
     
@@ -815,9 +832,9 @@ if draw_visualization
         Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
     endif
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "2. FOLD"
-    Font size: 9
+    Font size: 7
     if fold_count > 0
         Colour: "{0.20, 0.40, 0.15}"
         Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", string$(fold_count) + " x"
@@ -835,9 +852,9 @@ if draw_visualization
     yBot = 3.0
     Paint rectangle: "{0.60, 0.70, 0.85}", 0.10, 0.90, yBot, yTop
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "3. CRUSH"
-    Font size: 9
+    Font size: 7
     Colour: "{0.10, 0.20, 0.40}"
     Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", string$(bit_crush) + " bits"
     
@@ -854,9 +871,9 @@ if draw_visualization
         Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
     endif
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "4. SR REDUCE"
-    Font size: 9
+    Font size: 7
     if srReduce
         Colour: "{0.10, 0.40, 0.30}"
         Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", fixed$(effectivePercent, 0) + "%"
@@ -878,9 +895,9 @@ if draw_visualization
         Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
     endif
     Colour: "Black"
-    Font size: 8
+    Font size: 7
     Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "5. NOISE"
-    Font size: 9
+    Font size: 7
     if add_noise
         Colour: "{0.40, 0.15, 0.10}"
         Text: 0.50, "centre", (yTop + yBot) / 2 - 0.13, "half", "+/- " + fixed$(noise_amount, 3)
@@ -911,7 +928,7 @@ if draw_visualization
     # full-file waveform can't show.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     zoomDur = 0.05
     if zoomDur > duration
@@ -978,7 +995,7 @@ if draw_visualization
     # PANEL D: OUTPUT WAVEFORM (full file)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
@@ -1031,7 +1048,7 @@ if draw_visualization
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select inner viewport: 0.60, 7.70, 6.68, 7.24
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -1039,7 +1056,7 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + original_name$
+        ... + "  " + vizName$
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Folds: " + string$(fold_count)
         ... + "  |  Crush: " + string$(bit_crush) + " bits (" + quantName$ + ")"
@@ -1053,9 +1070,16 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Font size: 7
+    Colour: "Black"
+    Line width: 1
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

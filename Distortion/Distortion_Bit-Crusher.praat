@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4b (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -34,6 +34,17 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.4b:
 #   - FIXED: the four Bit Crush presets are named "step 1/N" but set
@@ -157,7 +168,7 @@
 #   - Added detailed info output
 # ============================================================
 
-form Distortion and Bit-Crusher Suite v0.4b
+form Distortion and Bit-Crusher Suite v0.5
     comment Select a Sound object first
     
     comment === Preset ===
@@ -387,7 +398,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Distortion & Bit-Crusher Suite v0.4b ==="
+writeInfoLine: "=== Distortion & Bit-Crusher Suite v0.5 ==="
 appendInfoLine: "Source: ", original_name$, " (", fixed$(duration, 2), " s, ", input_n_channels, " ch, starts at ", fixed$(xminOrig, 3), " s)"
 appendInfoLine: "Mode: ", modeNameDisplay$
 appendInfoLine: "Preset: ", presetName$
@@ -560,27 +571,33 @@ nResultCh = Get number of channels
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(original_name$, "_", "\_ ", 0)
     Erase all
     
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##DISTORTION & BIT-CRUSHER SUITE##"
+    Text: 0.5, "centre", 0.68, "half", "##Distortion & Bit-Crusher Suite v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if effect_type = 1
-        Text: 0.5, "centre", -0.22, "half",
-            ... original_name$
+        Text: 0.5, "centre", 0.22, "half",
+            ... vizName$
             ... + "  |  " + modeNameDisplay$
             ... + "  |  " + presetName$
             ... + "  |  " + quantSummary$
     else
-        Text: 0.5, "centre", -0.22, "half",
-            ... original_name$
+        Text: 0.5, "centre", 0.22, "half",
+            ... vizName$
             ... + "  |  " + modeNameDisplay$
             ... + "  |  " + presetName$
             ... + "  |  Base+Mod: " + fixed$(base_amplitude, 2) + "+" + fixed$(mod_amplitude, 2)
@@ -594,8 +611,8 @@ if draw_visualization
     # Bit Crusher: staircase transfer function
     # Harsh Distortion: component pipeline diagram
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     if effect_type = 1
         # ==== BIT CRUSHER STAIRCASE ====
@@ -607,7 +624,7 @@ if draw_visualization
         endif
         
         Axes: -1.2, 1.2, -yLimQ, yLimQ
-        Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, -yLimQ, yLimQ
+        Paint rectangle: "{0.97, 0.97, 0.97}", -1.2, 1.2, -yLimQ, yLimQ
         
         # Grid
         Colour: "{0.85, 0.85, 0.88}"
@@ -698,7 +715,7 @@ if draw_visualization
     else
         # ==== HARSH DISTORTION COMPONENT DIAGRAM ====
         Axes: 0, 1, 0, 6
-        Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 6
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 6
         
         # Five vertical stages (input -> sign -> mod -> gate -> output)
         # Stage 1: Input
@@ -706,7 +723,7 @@ if draw_visualization
         yBot = 5.0
         Paint rectangle: "{0.85, 0.85, 0.88}", 0.10, 0.90, yBot, yTop
         Colour: "Black"
-        Font size: 8
+        Font size: 7
         Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "INPUT"
         Font size: 7
         Colour: "{0.45, 0.45, 0.45}"
@@ -720,7 +737,7 @@ if draw_visualization
         yBot = 4.0
         Paint rectangle: "{0.85, 0.65, 0.65}", 0.10, 0.90, yBot, yTop
         Colour: "Black"
-        Font size: 8
+        Font size: 7
         Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "SIGN(x)"
         Font size: 7
         Colour: "{0.40, 0.15, 0.15}"
@@ -734,7 +751,7 @@ if draw_visualization
         yBot = 3.0
         Paint rectangle: "{0.65, 0.85, 0.65}", 0.10, 0.90, yBot, yTop
         Colour: "Black"
-        Font size: 8
+        Font size: 7
         Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "AM"
         Font size: 7
         Colour: "{0.15, 0.40, 0.15}"
@@ -750,7 +767,7 @@ if draw_visualization
         yBot = 2.0
         Paint rectangle: "{0.65, 0.65, 0.85}", 0.10, 0.90, yBot, yTop
         Colour: "Black"
-        Font size: 8
+        Font size: 7
         Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "GATE"
         Font size: 7
         Colour: "{0.15, 0.15, 0.40}"
@@ -767,7 +784,7 @@ if draw_visualization
         yBot = 1.0
         Paint rectangle: "{0.65, 0.85, 0.75}", 0.10, 0.90, yBot, yTop
         Colour: "Black"
-        Font size: 8
+        Font size: 7
         Text: 0.50, "centre", (yTop + yBot) / 2 + 0.10, "half", "OUTPUT"
         Font size: 7
         Colour: "{0.15, 0.40, 0.30}"
@@ -785,29 +802,29 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL B: PARAMETER REPORT  (right, headline-height)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
     if effect_type = 1
         # ==== BIT CRUSHER PARAMS ====
-        Font size: 9
+        Font size: 7
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.92, "half", "Mode: Bit Crusher"
         
-        Font size: 11
+        Font size: 7
         Colour: "{0.30, 0.45, 0.78}"
         Text: 0.10, "left", 0.82, "half", "Steps:   " + string$(quantization_steps)
         Text: 0.10, "left", 0.74, "half", "Levels:  " + string$(actualLevels)
         
         # Character guide
-        Font size: 9
+        Font size: 7
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.60, "half", "Character guide:"
         
-        Font size: 8
+        Font size: 7
         Colour: "{0.55, 0.55, 0.55}"
         Text: 0.10, "left", 0.51, "half", "2-3 levels:  extreme square"
         Text: 0.10, "left", 0.43, "half", "5-9 levels:  heavy lo-fi"
@@ -832,37 +849,37 @@ if draw_visualization
         endif
     else
         # ==== HARSH DISTORTION PARAMS ====
-        Font size: 9
+        Font size: 7
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.92, "half", "Mode: Harsh Distortion"
         
-        Font size: 9
+        Font size: 7
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.82, "half", "Amplitude:"
         
-        Font size: 11
+        Font size: 7
         Colour: "{0.30, 0.45, 0.78}"
         Text: 0.10, "left", 0.74, "half", "Base:    " + fixed$(base_amplitude, 2)
         Text: 0.10, "left", 0.66, "half", "Mod:     " + fixed$(mod_amplitude, 2)
         
-        Font size: 9
+        Font size: 7
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.55, "half", "Modulator:"
         
-        Font size: 11
+        Font size: 7
         Colour: "{0.78, 0.50, 0.30}"
         Text: 0.10, "left", 0.47, "half", "Freq:    " + fixed$(mod_frequency_Hz, 0) + " Hz"
         
-        Font size: 9
+        Font size: 7
         Colour: "{0.30, 0.30, 0.30}"
         Text: 0.05, "left", 0.36, "half", "Gate:"
         
-        Font size: 11
+        Font size: 7
         Colour: "{0.40, 0.65, 0.40}"
         Text: 0.10, "left", 0.28, "half", "Period:  " + fixed$(gate_period_s * 1000, 1) + " ms"
         Text: 0.10, "left", 0.20, "half", "Open:    " + fixed$(gate_duty_cycle_s * 1000, 1) + " ms"
         
-        Font size: 8
+        Font size: 7
         Colour: "{0.55, 0.55, 0.55}"
         Text: 0.10, "left", 0.10, "half", "(" + fixed$(gate_duty_cycle_s / gate_period_s * 100, 0) + "% duty cycle)"
     endif
@@ -893,7 +910,7 @@ if draw_visualization
     # that the full-file waveform can't show clearly.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     # v0.4b (item 4): the panel queried and drew 0..zoomDur, i.e. it
     # assumed the Sound's time domain starts at 0. Phase_origin exists
@@ -974,7 +991,7 @@ if draw_visualization
     # Only the first two channels are drawn; see the legend note below.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
@@ -1031,7 +1048,7 @@ if draw_visualization
     # PANEL E: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select inner viewport: 0.60, 7.70, 6.68, 7.24
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -1040,7 +1057,7 @@ if draw_visualization
     if effect_type = 1
         Text: 0.02, "left", 0.75, "half",
             ... "##" + presetName$ + "##"
-            ... + "  " + original_name$
+            ... + "  " + vizName$
             ... + "  |  Mode: Bit Crusher"
             ... + "  |  " + quantSummary$
         
@@ -1050,7 +1067,7 @@ if draw_visualization
     else
         Text: 0.02, "left", 0.75, "half",
             ... "##" + presetName$ + "##"
-            ... + "  " + original_name$
+            ... + "  " + vizName$
             ... + "  |  Mode: Harsh Distortion"
             ... + "  |  Base: " + fixed$(base_amplitude, 2)
             ... + "  |  Mod: " + fixed$(mod_amplitude, 2) + " @ " + fixed$(mod_frequency_Hz, 0) + " Hz"
@@ -1066,9 +1083,16 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Font size: 7
+    Colour: "Black"
+    Line width: 1
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

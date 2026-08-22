@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4c (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -47,6 +47,17 @@
 #     time, so it produces spectral spread across the iteration axis
 #     rather than analog wander during playback. "Slow Evolution" does
 #     not move the resonance slowly along the time axis.
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.2:
 #   - Fixed form placement (before analysis)
@@ -128,7 +139,7 @@
 #     iteration counts, where a broadband seed has not yet been filtered out).
 # ============================================================
 
-form Sidechain Feedback VCA v0.4c (1/2) - Circuit & Resonance
+form Sidechain Feedback VCA v0.5 (1/2) - Circuit & Resonance
     comment Select a Sound object - it CONTROLS the feedback circuit
     comment (use Dry/Wet below to blend the original sound back in)
 
@@ -181,7 +192,7 @@ original = selected("Sound")
 input_Name$ = selected$("Sound")
 
 # === Second dialog (Spatial, Output & Debug) ===
-beginPause: "Sidechain Feedback VCA v0.4c (2/2) - Spatial, Output & Debug"
+beginPause: "Sidechain Feedback VCA v0.5 (2/2) - Spatial, Output & Debug"
     comment: "=== Spatial Mode ==="
     optionmenu: "Spatial_Mode", 2
         option: "Mono"
@@ -360,7 +371,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Sidechain Feedback VCA v0.4c ==="
+writeInfoLine: "=== Sidechain Feedback VCA v0.5 ==="
 appendInfoLine: "Controller: ", input_Name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -999,29 +1010,38 @@ endif
 # behaved identically. Restored from v0.3 unchanged, other than the parameter
 # line now naming the envelope mapping and the seed.
 if draw_visualization
+    pageHeight = 6.05
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(input_Name$, "_", "\_ ", 0)
     Erase all
     
     # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Sidechain Feedback VCA: " + input_Name$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.68, "half", "##Sidechain Feedback VCA v0.5##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | feedback " + fixed$(base_Feedback, 2) + " | iterations " + string$(iterations) + " | dry/wet " + fixed$(dry_Wet, 2)
     
     # Controller input waveform
     Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    Select inner viewport: 0.60, 7.70, 0.7, 1.4
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Controller"
     
     # Output waveform
     Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    Select inner viewport: 0.60, 7.70, 1.7, 2.4
     selectObject: result
     Colour: "{0.6, 0.5, 0.7}"
     Draw: 0, 0, 0, 0, "no", "Curve"
@@ -1032,12 +1052,12 @@ if draw_visualization
     
     # Signal flow diagram
     Select outer viewport: 0, 8, 2.7, 4.2
-    Select inner viewport: 0.6, 7.6, 2.8, 4.1
+    Select inner viewport: 0.60, 7.70, 2.8, 4.1
     
     Axes: 0, 10, 0, 4
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 10, 0, 4
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 10, 0, 4
     
-    Font size: 5
+    Font size: 6
     
     # Input analysis
     Paint rectangle: "{0.7, 0.7, 0.7}", 0.2, 1.5, 2.8, 3.6
@@ -1086,7 +1106,7 @@ if draw_visualization
     # Control arrows
     Colour: "{0.5, 0.7, 0.5}"
     Draw arrow: 3.2, 3.5, 4.8, 3.0
-    Font size: 4
+    Font size: 6
     Text: 4.0, "centre", 3.4, "half", "freq"
     
     Colour: "{0.7, 0.5, 0.5}"
@@ -1109,8 +1129,31 @@ if draw_visualization
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Feedback: " + fixed$(base_Feedback, 2) + " | Sensitivity: " + fixed$(input_Sensitivity, 2) + " | Damping: " + fixed$(damping_Factor, 2) + " | Iterations: " + string$(iterations) + " | Bandwidth: " + fixed$(bandwidth_Hz, 0) + " Hz"
     
+    Font size: 7
+    Colour: "Black"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 4.95, 6.00
+    Select inner viewport: 0.60, 7.70, 5.03, 5.92
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  controller " + vizName$ + " | " + fixed$(duration, 2) + " s | source peak " + fixed$(srcPeak, 3) + " | preset " + presetName$
+    summary2$ = "##Circuit##  feedback " + fixed$(base_Feedback, 2) + " | sensitivity " + fixed$(input_Sensitivity, 2) + " | damping " + fixed$(damping_Factor, 2) + " | iterations " + string$(iterations) + " | bandwidth " + fixed$(bandwidth_Hz, 0) + " Hz"
+    summary3$ = "##Output##  dry/wet " + fixed$(dry_Wet, 2) + " | exciter " + fixed$(high_Freq_Add, 2) + " | " + string$(finalCh) + " ch | peak " + fixed$(finalPeak, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 appendInfoLine: ""

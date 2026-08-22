@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,6 +26,17 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio/DSP, analysis,
+#     parameter mapping and rendering logic are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with
+#     explicit inner viewports, standard title/subtitle, suite
+#     typography, neutral panel backgrounds, summary strip and
+#     full-page Picture export viewport.
+#   - Preserved the script-specific nonlinear/diagnostic panels;
+#     the visualization remains a direct explanation of the
+#     transformation rather than a generic replacement plot.
 #
 # Changelog v0.3:
 #   - NEW Bias_mode. Bias did not only shape the curve; it turned
@@ -96,7 +107,7 @@
 #     across older Praat versions. 5 presets.
 # ============================================================
 
-form Asymmetric Soft Clipping v0.3
+form Asymmetric Soft Clipping v0.4
     comment Select a Preset (overrides sliders below)
     optionmenu Preset: 1
         option Manual (Use settings below)
@@ -184,7 +195,7 @@ selectObject: original
 inputDur = Get total duration
 inputCh = Get number of channels
 
-writeInfoLine: "=== Asymmetric Soft Clipping v0.3 ==="
+writeInfoLine: "=== Asymmetric Soft Clipping v0.4 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(inputDur, 2), " s, ", inputCh, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -325,20 +336,26 @@ nResultCh = Get number of channels
 # ============================================================
 
 if draw_visualization
+    pageHeight = 8.0
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    vizName$ = replace$(origName$, "_", "\_ ", 0)
     Erase all
     
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##ASYMMETRIC SOFT CLIPPING (TUBE)##"
+    Text: 0.5, "centre", 0.68, "half", "##Asymmetric Soft Clipping v0.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... origName$
+    Text: 0.5, "centre", 0.22, "half",
+        ... vizName$
         ... + "  |  " + presetName$
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Bias: " + fixed$(bias, 2)
@@ -349,8 +366,8 @@ if draw_visualization
     # PANEL A: TRANSFER FUNCTION  (left, headline)
     # The defining diagnostic for any clipper.
     # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select outer viewport: 0, 4, 0.75, 4.60
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     # v0.3 (item 4): the curve used to be clamped to +/-1.4 in VALUE,
     # which the audio does not do. Output_Gain is a `real` with no upper
@@ -383,7 +400,7 @@ if draw_visualization
     endfor
     
     Axes: -1.5, 1.5, -yLim, yLim
-    Paint rectangle: "{0.96, 0.96, 0.96}", -1.5, 1.5, -yLim, yLim
+    Paint rectangle: "{0.97, 0.97, 0.97}", -1.5, 1.5, -yLim, yLim
     
     # Grid: zero axes
     Colour: "{0.85, 0.85, 0.88}"
@@ -396,7 +413,7 @@ if draw_visualization
     Colour: "{0.65, 0.65, 0.70}"
     Draw line: -1.5, -1.5, 1.5, 1.5
     Solid line
-    Font size: 5
+    Font size: 6
     Text: -1.45, "left", -yLim * 0.93, "half", "y = x"
     
     # v0.3 (item 7): these were labelled "output ceiling/floor", but the
@@ -410,7 +427,7 @@ if draw_visualization
     Draw line: -1.5, 1, 1.5, 1
     Draw line: -1.5, -1, 1.5, -1
     Solid line
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.30, 0.55}"
     Text: -1.45, "left", 1, "bottom", " +1 full scale"
     Text: -1.45, "left", -1, "top", " -1 full scale"
@@ -423,7 +440,7 @@ if draw_visualization
         Draw line: -1.5, engineCeil, 1.5, engineCeil
         Draw line: -1.5, -engineCeil, 1.5, -engineCeil
         Solid line
-        Font size: 5
+        Font size: 6
         Colour: "{0.60, 0.45, 0.20}"
         Text: 1.45, "right", engineCeil, "bottom", "ceiling "
     endif
@@ -437,7 +454,7 @@ if draw_visualization
             Dotted line
             Draw line: zeroIn, -yLim, zeroIn, yLim
             Solid line
-            Font size: 5
+            Font size: 6
             Colour: "{0.30, 0.55, 0.30}"
             Text: zeroIn, "left", -yLim * 0.93, "half", " sign flip"
         endif
@@ -489,28 +506,28 @@ if draw_visualization
     # ----------------------------------------------------------
     # PANEL B: PARAMETER REPORT  (right, headline-height)
     # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select outer viewport: 4, 8, 0.75, 4.60
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
     # Section: Transfer
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.93, "half", "Transfer parameters:"
     
-    Font size: 11
+    Font size: 7
     Colour: "{0.30, 0.45, 0.78}"
     Text: 0.10, "left", 0.84, "half", "Drive:    " + fixed$(drive, 2)
     Text: 0.10, "left", 0.76, "half", "Bias:     " + fixed$(bias, 3)
     
     # Section: Asymmetry
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.65, "half", "Asymmetric shapes:"
     
-    Font size: 11
+    Font size: 7
     Colour: "{0.80, 0.40, 0.40}"
     Text: 0.10, "left", 0.56, "half", "Pos:      " + fixed$(pos_Shape, 2)
     Colour: "{0.40, 0.55, 0.78}"
@@ -534,11 +551,11 @@ if draw_visualization
     Text: 0.10, "left", 0.40, "half", "(" + asymStr$ + ")"
     
     # Section: Output
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.28, "half", "Output:"
     
-    Font size: 11
+    Font size: 7
     Colour: "{0.40, 0.65, 0.40}"
     Text: 0.10, "left", 0.19, "half", "Gain:     " + fixed$(output_Gain, 2)
     
@@ -566,7 +583,7 @@ if draw_visualization
     # PANEL C: OUTPUT WAVEFORM
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
+    Select inner viewport: 0.60, 7.70, 4.75, 5.68
     
     selectObject: result
     outPeakViz = Get absolute extremum: 0, 0, "None"
@@ -619,7 +636,7 @@ if draw_visualization
     # PANEL D: SUMMARY BAR
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Select inner viewport: 0.60, 7.70, 5.88, 6.52
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -627,7 +644,7 @@ if draw_visualization
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.02, "left", 0.75, "half",
         ... "##" + presetName$ + "##"
-        ... + "  " + origName$
+        ... + "  " + vizName$
         ... + "  |  Drive: " + fixed$(drive, 2)
         ... + "  |  Bias: " + fixed$(bias, 3)
         ... + "  |  Pos: " + fixed$(pos_Shape, 2)
@@ -643,15 +660,22 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     
+    Font size: 7
+    Colour: "Black"
+    Line width: 1
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # === Final ===
 selectObject: result
 
-writeInfoLine: "=== Asymmetric Soft Clipping v0.2 ==="
+writeInfoLine: "=== Asymmetric Soft Clipping v0.4 ==="
 appendInfoLine: "Source: ", origName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Drive: ", fixed$(drive, 2), " | Bias: ", fixed$(bias, 3)
