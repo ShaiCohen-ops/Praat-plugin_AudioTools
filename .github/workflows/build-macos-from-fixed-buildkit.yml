@@ -1,0 +1,205 @@
+name: Build macOS v1.36.1 from fixed BuildKit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-macos-from-fixed-buildkit.yml'
+      - 'Max-MSP/Praat_AudioTools_CI/Praat_AudioTools_macOS_BuildKit_v1.36.1_FIXED.zip'
+
+env:
+  KIT_ZIP: Max-MSP/Praat_AudioTools_CI/Praat_AudioTools_macOS_BuildKit_v1.36.1_FIXED.zip
+  SOURCE_SHA256: f7a5de4a7b5223b8451a527b075d4ccbaf90873605d590e9dff89dd87c5d3895
+  PRAAT_VERSION: 7.0.01
+  PRAAT_DMG_URL: https://github.com/praat/praat.github.io/releases/download/v7.0.01/praat7001_mac.dmg
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract and verify fixed BuildKit
+        id: kit
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -f "$KIT_ZIP"
+          DEST="$RUNNER_TEMP/buildkit"
+          rm -rf "$DEST"
+          mkdir -p "$DEST"
+          ditto -x -k "$KIT_ZIP" "$DEST"
+          KIT="$DEST/Praat_AudioTools_macOS_BuildKit_v1.36.1"
+          SRC="$KIT/source_project/source/AudioTools.praat~/AudioTools.praat~.cpp"
+          test -f "$KIT/source_project/CMakeLists.txt"
+          test -f "$SRC"
+          test -f "$KIT/package_template/praat/patchers/praat.maxpat"
+          test -f "$KIT/tests/Mac_Smoke_Generator.praat"
+          echo "$SOURCE_SHA256  $SRC" | shasum -a 256 -c -
+          grep -F -q 'project(AudioToolsPraat VERSION 1.36.1' "$KIT/source_project/CMakeLists.txt"
+          grep -F -q 'AudioTools.praat~ v1.36.1' "$SRC"
+          echo "kit=$KIT" >> "$GITHUB_OUTPUT"
+
+      - name: Configure Universal2 external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake \
+            -S "${{ steps.kit.outputs.kit }}/source_project" \
+            -B "$RUNNER_TEMP/praat-build" \
+            -G Xcode \
+            -DCMAKE_OSX_ARCHITECTURES="x86_64;arm64" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DMAX_SDK_PACKAGE_OUT_OF_TREE=ON
+
+      - name: Build Release external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cmake --build "$RUNNER_TEMP/praat-build" --config Release --parallel 3
+
+      - name: Locate verify and sign v1.36.1 external
+        id: external
+        shell: bash
+        run: |
+          set -euxo pipefail
+          MXO="$(find "$RUNNER_TEMP/praat-build" -type d -name 'AudioTools.praat~.mxo' -print -quit)"
+          test -n "$MXO"
+          BIN="$MXO/Contents/MacOS/AudioTools.praat~"
+          test -f "$BIN"
+          ARCHS="$(lipo -archs "$BIN")"
+          echo "External architectures: $ARCHS"
+          echo "$ARCHS" | grep -q 'x86_64'
+          echo "$ARCHS" | grep -q 'arm64'
+          strings "$BIN" | grep -F -q 'AudioTools.praat~ v1.36.1'
+          codesign --force --deep --sign - "$MXO"
+          codesign --verify --deep --strict --verbose=2 "$MXO"
+          file "$BIN"
+          otool -L "$BIN"
+          echo "mxo=$MXO" >> "$GITHUB_OUTPUT"
+          echo "archs=$ARCHS" >> "$GITHUB_OUTPUT"
+
+      - name: Stage macOS package and repository library
+        id: package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          STAGE="$RUNNER_TEMP/stage"
+          PKG="$STAGE/Praat_AudioTools"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          ditto "${{ steps.kit.outputs.kit }}/package_template/praat" "$PKG"
+          mkdir -p "$PKG/externals" "$PKG/misc/plugin_AudioTools" "$PKG/examples/Mac_CI_Smoke_Tests"
+          ditto "${{ steps.external.outputs.mxo }}" "$PKG/externals/AudioTools.praat~.mxo"
+          rm -rf "$PKG/misc/plugin_AudioTools"
+          mkdir -p "$PKG/misc/plugin_AudioTools"
+          rsync -a \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude 'Max-MSP/' \
+            --exclude '.DS_Store' \
+            --exclude '*.zip' \
+            ./ "$PKG/misc/plugin_AudioTools/"
+          cp "${{ steps.kit.outputs.kit }}/tests/"*.praat "$PKG/examples/Mac_CI_Smoke_Tests/"
+          SCRIPT_COUNT="$(find "$PKG/misc/plugin_AudioTools" -type f -name '*.praat' | wc -l | tr -d ' ')"
+          echo "Bundled .praat files: $SCRIPT_COUNT"
+          echo "pkg=$PKG" >> "$GITHUB_OUTPUT"
+          echo "script_count=$SCRIPT_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Download and bundle official Praat
+        id: praat
+        shell: bash
+        run: |
+          set -euxo pipefail
+          DMG="$RUNNER_TEMP/praat.dmg"
+          curl --fail --location --retry 3 --retry-delay 3 "$PRAAT_DMG_URL" --output "$DMG"
+          ATTACH_LOG="$RUNNER_TEMP/hdiutil-attach.txt"
+          hdiutil attach -nobrowse -readonly "$DMG" | tee "$ATTACH_LOG"
+          MOUNT="$(awk -F '\t' '/\/Volumes\// {print $NF; exit}' "$ATTACH_LOG")"
+          test -n "$MOUNT"
+          PRAAT_APP="$(find "$MOUNT" -maxdepth 2 -type d -name 'Praat.app' -print -quit)"
+          test -n "$PRAAT_APP"
+          ditto "$PRAAT_APP" "${{ steps.package.outputs.pkg }}/externals/Praat.app"
+          hdiutil detach "$MOUNT"
+          PRAAT_BIN="${{ steps.package.outputs.pkg }}/externals/Praat.app/Contents/MacOS/Praat"
+          test -x "$PRAAT_BIN"
+          PRAAT_ARCHS="$(lipo -archs "$PRAAT_BIN")"
+          echo "Praat architectures: $PRAAT_ARCHS"
+          echo "$PRAAT_ARCHS" | grep -q 'x86_64'
+          echo "$PRAAT_ARCHS" | grep -q 'arm64'
+          codesign --verify --deep --strict --verbose=2 "${{ steps.package.outputs.pkg }}/externals/Praat.app"
+          echo "bin=$PRAAT_BIN" >> "$GITHUB_OUTPUT"
+          echo "archs=$PRAAT_ARCHS" >> "$GITHUB_OUTPUT"
+
+      - name: Headless Praat smoke test
+        shell: bash
+        run: |
+          set -euxo pipefail
+          TEST_SCRIPT="$RUNNER_TEMP/praat_ci_smoke.praat"
+          cat > "$TEST_SCRIPT" <<'EOF'
+          writeInfoLine: "PRAAT_CI_SMOKE_OK"
+          EOF
+          "${{ steps.praat.outputs.bin }}" --no-pref-files --run "$TEST_SCRIPT" > "$RUNNER_TEMP/praat-smoke.log" 2>&1
+          cat "$RUNNER_TEMP/praat-smoke.log"
+          grep -q 'PRAAT_CI_SMOKE_OK' "$RUNNER_TEMP/praat-smoke.log"
+
+      - name: Verify assembled package
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PKG="${{ steps.package.outputs.pkg }}"
+          test -f "$PKG/package-info.json"
+          test -f "$PKG/patchers/praat.maxpat"
+          test -f "$PKG/javascript/AudioTools.praat.library.js"
+          test -f "$PKG/javascript/AudioTools.praat.ui.js"
+          test -f "$PKG/javascript/AudioTools.praat.info.js"
+          test -d "$PKG/externals/AudioTools.praat~.mxo"
+          test -d "$PKG/externals/Praat.app"
+          test -d "$PKG/misc/plugin_AudioTools"
+          python3 -m json.tool "$PKG/package-info.json" >/dev/null
+          strings "$PKG/externals/AudioTools.praat~.mxo/Contents/MacOS/AudioTools.praat~" | grep -F -q 'AudioTools.praat~ v1.36.1'
+          codesign --verify --deep --strict "$PKG/externals/AudioTools.praat~.mxo"
+          codesign --verify --deep --strict "$PKG/externals/Praat.app"
+
+      - name: Write build report
+        shell: bash
+        run: |
+          set -euxo pipefail
+          PKG="${{ steps.package.outputs.pkg }}"
+          cat > "$PKG/MACOS_CI_BUILD_INFO.txt" <<EOF
+          Praat AudioTools macOS CI build
+          Date (UTC): $(date -u '+%Y-%m-%d %H:%M:%S')
+          Package version: 1.0.0
+          AudioTools.praat~: 1.36.1
+          External architectures: ${{ steps.external.outputs.archs }}
+          Bundled Praat: $PRAAT_VERSION
+          Praat architectures: ${{ steps.praat.outputs.archs }}
+          Bundled .praat scripts: ${{ steps.package.outputs.script_count }}
+          Minimum macOS target: 11.0
+          Source SHA256: $SOURCE_SHA256
+          EOF
+
+      - name: Create distributable ZIP
+        shell: bash
+        run: |
+          set -euxo pipefail
+          OUT="$GITHUB_WORKSPACE/Praat_AudioTools_1.0.0_macOS_Universal2.zip"
+          rm -f "$OUT"
+          cd "$(dirname '${{ steps.package.outputs.pkg }}')"
+          ditto -c -k --sequesterRsrc --keepParent "$(basename '${{ steps.package.outputs.pkg }}')" "$OUT"
+          shasum -a 256 "$OUT" | tee "$GITHUB_WORKSPACE/Praat_AudioTools_1.0.0_macOS_Universal2.sha256"
+          ls -lh "$OUT"
+
+      - name: Upload macOS package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Praat_AudioTools-1.0.0-macOS-Universal2-v1.36.1
+          path: |
+            Praat_AudioTools_1.0.0_macOS_Universal2.zip
+            Praat_AudioTools_1.0.0_macOS_Universal2.sha256
+          if-no-files-found: error
+          retention-days: 30
