@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.2 (2026)
+# Version: 3.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,7 +14,17 @@
 #   and Sinc70 True Peak Safety Ceiling.
 # ============================================================
 
-form Dynamic True-Peak Limiter v3.2
+# Changelog v3.3 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
+#
+form Dynamic True-Peak Limiter v3.3
     optionmenu Preset 1
         option Custom
         option -1 dBTP Transparent Limiter
@@ -130,7 +140,7 @@ lookahead_sec = lookahead_ms / 1000
 # === INFO HEADER ===
 clearinfo
 appendInfoLine: "=============================================="
-appendInfoLine: "  DYNAMIC TRUE-PEAK LIMITER v3.2"
+appendInfoLine: "  DYNAMIC TRUE-PEAK LIMITER v3.3"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", sound_name$, " (", fixed$(dur, 2), "s, ", nChannels, " ch)"
@@ -286,14 +296,19 @@ if visualize
     appendInfoLine: "Rendering visual analytics..."
     
     Erase all
-    
-    # Header Title
-    Select outer viewport: 0, 8, 0, 0.4
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Font size: 11
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Dynamic True-Peak Limiter v3.2## | " + presetName$ + " | Ceiling: " + fixed$(ceiling_dBTP, 1) + " dBTP"
-    
+    Text: 0.5, "centre", 0.68, "half", "##Dynamic True-Peak Limiter v3.3##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | ceiling " + fixed$(ceiling_dBTP, 1) + " dBTP"
+
     # Input Waveform
     Select outer viewport: 0, 8, 0.4, 1.9
     Select inner viewport: 0.8, 7.6, 0.5, 1.8
@@ -354,13 +369,15 @@ if visualize
     Select outer viewport: 0.15, 4.2, 3.6, 5.8
     Text left: "yes", "Gain Target (0..1)"
     
-    # Stats Panel
+    # Summary panel
     Select outer viewport: 4.3, 8, 3.6, 5.8
+    Select inner viewport: 4.45, 7.70, 3.78, 5.62
     Axes: 0, 1, 0, 1
-    Font size: 8
-    Colour: "{0.2, 0.2, 0.2}"
-    Text: 0.5, "centre", 0.95, "half", "##Limiter Performance Summary##"
-    Font size: 6.5
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "{0.20, 0.20, 0.25}"
+    Text: 0.5, "centre", 0.95, "half", "##Summary##"
+    Font size: 6
     Text: 0.05, "left", 0.75, "half", "Input True Peak (Sinc70):"
     Text: 0.80, "left", 0.75, "half", fixed$(inPeak_dB, 2) + " dBTP"
     Text: 0.05, "left", 0.60, "half", "Output True Peak (Sinc70):"
@@ -374,6 +391,14 @@ if visualize
     
     Font size: 10
     Colour: "Black"
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.20
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # Clean up envelope object

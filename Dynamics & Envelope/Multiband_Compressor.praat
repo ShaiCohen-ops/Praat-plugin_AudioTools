@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.0 (2026) - Production Release
+# Version: 3.2 (2026) - Production Release
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -39,7 +39,28 @@
 #   Select a Sound object in Praat and run this script.
 # ============================================================
 
-form Multiband Compressor v3.0
+# Changelog v3.2 (2026):
+#   - FIXED OUTPUT TIME BASE: the rendered Sound is now always a
+#     copy of the original input container, with the processed band
+#     samples written into it. This guarantees that sampling
+#     frequency, xmin/xmax, channel count and sample grid come from
+#     the source rather than from a filtered band object.
+#   - Added an explicit sampling-frequency guard before output stats
+#     and playback.
+#   - Restored the Custom-form High_ratio default to 3.0; v3.1 had
+#     accidentally changed it to 3.1 while incrementing the version.
+#
+# Changelog v3.1 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
+#
+form Multiband Compressor v3.2
     optionmenu Preset 1
         option Custom
         option Master Bus (gentle glue)
@@ -224,7 +245,7 @@ endif
 # === INFO HEADER ===
 clearinfo
 appendInfoLine: "=============================================="
-appendInfoLine: "  MULTIBAND COMPRESSOR v3.0"
+appendInfoLine: "  MULTIBAND COMPRESSOR v3.2"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", sound_name$, " (", fixed$(dur, 3), "s, ", sr, " Hz, ", nChannels, " ch)"
@@ -396,20 +417,34 @@ appendInfoLine: "  HIGH: Peak after compression: ", fixed$(getPeakdBFS.peak_dBFS
 appendInfoLine: ""
 appendInfoLine: "Recombining bands..."
 
+# Always build the output in a copy of the ORIGINAL Sound.
+# This preserves the exact source sample grid and time domain even if a
+# filtered band carries different metadata on a particular Praat build.
+selectObject: sound
 if solo = 1
-    selectObject: lowBand
     result = Copy: sound_name$ + "_multiband"
     selectObject: result
-    Formula: ~ self + object[midBand] + object[highBand]
+    Formula: ~ object[lowBand] + object[midBand] + object[highBand]
 elsif solo = 2
-    selectObject: lowBand
     result = Copy: sound_name$ + "_LOW_solo"
+    selectObject: result
+    Formula: ~ object[lowBand]
 elsif solo = 3
-    selectObject: midBand
     result = Copy: sound_name$ + "_MID_solo"
+    selectObject: result
+    Formula: ~ object[midBand]
 else
-    selectObject: highBand
     result = Copy: sound_name$ + "_HIGH_solo"
+    selectObject: result
+    Formula: ~ object[highBand]
+endif
+
+# Defensive time-base guard for playback / host integration.
+selectObject: result
+outSrBefore = Get sampling frequency
+if abs(outSrBefore - sr) > 0.01
+    appendInfoLine: "  Correcting output sampling frequency from ", fixed$(outSrBefore, 3), " to ", fixed$(sr, 3), " Hz"
+    Override sampling frequency: sr
 endif
 
 # Peak Normalization (Optional)
@@ -439,13 +474,19 @@ if visualize
     appendInfoLine: "Generating visualization..."
     
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0, 0.4
-    Font size: 11
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Multiband Compressor v3.0## | " + presetName$ + " | " + string$(low_mid_crossover_Hz) + "/" + string$(mid_high_crossover_Hz) + " Hz"
-    
+    Text: 0.5, "centre", 0.68, "half", "##Multiband Compressor v3.2##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | crossovers " + string$(low_mid_crossover_Hz) + "/" + string$(mid_high_crossover_Hz) + " Hz"
+
     # Input Waveform
     Select outer viewport: 0, 8, 0.5, 1.5
     Select inner viewport: 0.8, 7.6, 0.6, 1.3
@@ -507,28 +548,42 @@ if visualize
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
     
-    # Band Info Panel
-    Select outer viewport: 0, 8, 5.4, 6.0
+    # Labels used only by the summary strip.
+    if solo = 1
+        soloName$ = "full mix"
+    elsif solo = 2
+        soloName$ = "LOW"
+    elsif solo = 3
+        soloName$ = "MID"
+    else
+        soloName$ = "HIGH"
+    endif
+    if peak_normalize_output
+        normalizeName$ = "on"
+    else
+        normalizeName$ = "off"
+    endif
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.42, 6.72
+    Select inner viewport: 0.60, 7.70, 5.50, 6.64
     Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 6
-    
-    Colour: "{0.8, 0.3, 0.3}"
-    Paint rectangle: "{0.8, 0.3, 0.3}", 0.02, 0.05, 0.3, 0.7
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.07, "left", 0.5, "half", "LOW <" + string$(low_mid_crossover_Hz) + "Hz: " + fixed$(low_ratio, 1) + ":1 @ " + fixed$(low_threshold_dBFS, 1) + "dBFS"
-    
-    Colour: "{0.3, 0.7, 0.3}"
-    Paint rectangle: "{0.3, 0.7, 0.3}", 0.35, 0.38, 0.3, 0.7
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.40, "left", 0.5, "half", "MID: " + fixed$(mid_ratio, 1) + ":1 @ " + fixed$(mid_threshold_dBFS, 1) + "dBFS"
-    
-    Colour: "{0.3, 0.5, 0.8}"
-    Paint rectangle: "{0.3, 0.5, 0.8}", 0.68, 0.71, 0.3, 0.7
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.73, "left", 0.5, "half", "HIGH >" + string$(mid_high_crossover_Hz) + "Hz: " + fixed$(high_ratio, 1) + ":1 @ " + fixed$(high_threshold_dBFS, 1) + "dBFS"
-    
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.78, "half", "##Bands##  LOW <" + string$(low_mid_crossover_Hz) + " Hz: " + fixed$(low_ratio, 1) + ":1 @ " + fixed$(low_threshold_dBFS, 1) + " dBFS | MID: " + fixed$(mid_ratio, 1) + ":1 @ " + fixed$(mid_threshold_dBFS, 1) + " dBFS | HIGH >" + string$(mid_high_crossover_Hz) + " Hz: " + fixed$(high_ratio, 1) + ":1 @ " + fixed$(high_threshold_dBFS, 1) + " dBFS"
+    Text: 0.02, "left", 0.50, "half", "##Dynamics##  attack " + fixed$(attack_ms, 1) + " ms | release " + fixed$(release_ms, 1) + " ms | makeup L/M/H " + fixed$(low_makeup_dB, 1) + "/" + fixed$(mid_makeup_dB, 1) + "/" + fixed$(high_makeup_dB, 1) + " dB | solo " + soloName$ 
+    Text: 0.02, "left", 0.22, "half", "##Output##  peak " + fixed$(outPeak_dB, 2) + " dBFS | RMS " + fixed$(outRMS_dB, 2) + " dBFS | peak normalize " + normalizeName$
+    Colour: "Black"
+    Draw inner box
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.90
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -104,7 +104,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Studio Dynamic Compressor (Hybrid)
+form Studio Dynamic Compressor v1.3
     optionmenu Preset 1
         option Custom
         option Vocal Leveler (Smooth)
@@ -117,32 +117,44 @@ form Studio Dynamic Compressor (Hybrid)
     real Threshold_dB -20.0
     positive Ratio 4.0
     real Knee_dB 6.0
-    comment === Time Constants (ms) ===
     positive Attack_ms 10
     positive Release_ms 100
-    comment === Detector (RMS analysis window) ===
-    positive Rms_window_ms 8.0
-    positive Detector_update_ms 2.0
-    comment === Sidechain Filter (zero-phase, offline) ===
-    optionmenu Sidechain_filter 1
-        option Off
-        option Highpass 80Hz (reduce bass pumping)
-        option Highpass 150Hz (vocal focus)
-        option Lowpass 8kHz (reduce HF content, not true de-essing)
     comment === Output ===
     real Makeup_gain_dB 0.0
     boolean Auto_makeup 1
-    optionmenu Output_mode 2
-        option Preserve level (no final scaling)
-        option Limiter (scale down only if needed)
-        option Normalize to target (old v1.0 behaviour)
-    positive Scale_peak 0.99
-    comment === Options ===
+    boolean Advanced_settings 0
     boolean Draw_result 1
-    boolean Show_stats 1
     boolean Play_result 1
-    boolean Keep_original 1
 endform
+# === Advanced defaults (identical to the v1.2 main-form defaults) ===
+rms_window_ms = 8.0
+detector_update_ms = 2.0
+sidechain_filter = 1
+output_mode = 2
+scale_peak = 0.99
+show_stats = 1
+keep_original = 1
+
+if advanced_settings
+    beginPause: "Studio Dynamic Compressor v1.3 - Advanced settings"
+        comment: "=== Detector ==="
+        positive: "Rms_window_ms", "8.0"
+        positive: "Detector_update_ms", "2.0"
+        optionmenu: "Sidechain_filter", 1
+            option: "Off"
+            option: "Highpass 80Hz (reduce bass pumping)"
+            option: "Highpass 150Hz (vocal focus)"
+            option: "Lowpass 8kHz (reduce HF content, not true de-essing)"
+        comment: "=== Output policy ==="
+        optionmenu: "Output_mode", 2
+            option: "Preserve level (no final scaling)"
+            option: "Limiter (scale down only if needed)"
+            option: "Normalize to target (old v1.0 behaviour)"
+        positive: "Scale_peak", "0.99"
+        boolean: "Show_stats", 1
+        boolean: "Keep_original", 1
+    clicked = endPause: "Continue", 1
+endif
 
 # === APPLY PRESETS ===
 suf$ = "_Comp"
@@ -273,7 +285,7 @@ in_rms_dB = 20 * log10(in_rms + 1e-10)
 
 # === INFO HEADER ===
 writeInfoLine: "============================================"
-appendInfoLine: "STUDIO COMPRESSOR HYBRID  (v1.2)"
+appendInfoLine: "STUDIO COMPRESSOR HYBRID  (v1.3)"
 appendInfoLine: "============================================"
 appendInfoLine: ""
 appendInfoLine: "Input: ", original_name$
@@ -554,24 +566,19 @@ if draw_result
     appendInfoLine: "Creating visualization..."
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
-
-    # ----------------------------------------------------------
-    # Title
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    vizName$ = replace$(original_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.85, "half", "##Studio Dynamic Compressor##"
+    Text: 0.5, "centre", 0.68, "half", "##Studio Dynamic Compressor v1.3##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
-        ... original_name$ + "  |  Ratio " + fixed$(ratio, 1) + ":1"
-        ... + "  |  Thresh " + fixed$(threshold_dB, 0) + " dB"
-        ... + "  |  A=" + fixed$(attack_ms, 0) + " R=" + fixed$(release_ms, 0) + " ms"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | ratio " + fixed$(ratio, 1) + ":1 | threshold " + fixed$(threshold_dB, 0) + " dB | A " + fixed$(attack_ms, 0) + " ms | R " + fixed$(release_ms, 0) + " ms"
 
-    # ----------------------------------------------------------
     # Transfer curve (left half)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.1, 0.52, 3.52
@@ -693,7 +700,7 @@ if draw_result
     Select outer viewport: 4.1, 8, 2.18, 3.52
     Select inner viewport: 4.40, 7.65, 2.26, 3.42
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
@@ -817,6 +824,14 @@ if draw_result
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.20
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # === CLEANUP ===

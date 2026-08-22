@@ -3,11 +3,21 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026)
+# Version: 1.5 (2026)
 #
 # Description:
 #   Multi-mode intensity envelope processor with power shaping,
 #   tremolo, gating, time manipulation, and envelope inversion.
+#
+# Changelog v1.5 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog v1.4 (code-review fixes):
 #   - The v1.3 "fine grid" guard had its comparison backwards (it silently
@@ -87,7 +97,7 @@
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Intensity Envelope Processor v1.4
+form Intensity Envelope Processor v1.5
     optionmenu Preset 1
         option Custom
         option Soft Compression
@@ -107,33 +117,54 @@ form Intensity Envelope Processor v1.4
         option Time Scaling (tape speed)
         option Envelope Inversion
         option Random Modulation
-    comment Power: exponent (<1 compress, >1 expand)
-    real Exponent 2.0
-    comment Tremolo: rate Hz, depth, center, phase deg
-    positive Tremolo_rate_Hz 5.0
-    real Tremolo_depth 0.5
-    real Tremolo_center 0.5
-    real Tremolo_phase 0
-    comment Gate: rate Hz, duty %, max, min, smooth ms
-    positive Gate_rate_Hz 4.0
-    real Gate_duty_percent 50
-    real Gate_max 1.0
-    real Gate_min 0.0
-    positive Gate_smoothing_ms 5
-    comment Time: shift s, scale (0.5=2x speed, 2=half)
-    real Shift_seconds 0.1
-    positive Scale_factor 1.5
-    comment Random: rate Hz, depth, seed (0=random)
-    positive Random_rate_Hz 8
-    real Random_depth 0.3
-    integer Random_seed 0
-    comment Safety: gain cap for Power Shaping compression / Envelope Inversion
-    positive Max_gain 20
-    comment Output: normalize / visualize / play
     boolean Normalize 1
+    boolean Advanced_settings 0
     boolean Visualize 1
     boolean Play 1
 endform
+# === Advanced defaults (identical to the v1.4 main-form defaults) ===
+exponent = 2.0
+tremolo_rate_Hz = 5.0
+tremolo_depth = 0.5
+tremolo_center = 0.5
+tremolo_phase = 0
+gate_rate_Hz = 4.0
+gate_duty_percent = 50
+gate_max = 1.0
+gate_min = 0.0
+gate_smoothing_ms = 5
+shift_seconds = 0.1
+scale_factor = 1.5
+random_rate_Hz = 8
+random_depth = 0.3
+random_seed = 0
+max_gain = 20
+
+if advanced_settings
+    beginPause: "Intensity Envelope Processor v1.5 - Advanced settings"
+        comment: "=== Power shaping ==="
+        real: "Exponent", "2.0"
+        comment: "=== Tremolo ==="
+        positive: "Tremolo_rate_Hz", "5.0"
+        real: "Tremolo_depth", "0.5"
+        real: "Tremolo_center", "0.5"
+        real: "Tremolo_phase", "0"
+        comment: "=== Rhythmic gate ==="
+        positive: "Gate_rate_Hz", "4.0"
+        real: "Gate_duty_percent", "50"
+        real: "Gate_max", "1.0"
+        real: "Gate_min", "0.0"
+        positive: "Gate_smoothing_ms", "5"
+        comment: "=== Time / random modes ==="
+        real: "Shift_seconds", "0.1"
+        positive: "Scale_factor", "1.5"
+        positive: "Random_rate_Hz", "8"
+        real: "Random_depth", "0.3"
+        integer: "Random_seed", "0"
+        comment: "=== Safety ==="
+        positive: "Max_gain", "20"
+    clicked = endPause: "Continue", 1
+endif
 
 # === INPUT VALIDATION ===
 if numberOfSelected("Sound") <> 1
@@ -259,7 +290,7 @@ endif
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  INTENSITY ENVELOPE PROCESSOR v1.4"
+writeInfoLine: "  INTENSITY ENVELOPE PROCESSOR v1.5"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Input: ", source_name$, " (", fixed$(dur, 3), "s, starts at ", fixed$(sourceStart, 3), "s)"
@@ -605,13 +636,18 @@ if visualize
     appendInfoLine: "Creating visualization..."
 
     Erase all
-    Font size: 10
-
-    # === TITLE ===
-    Select outer viewport: 1, 8, 0, 0.4
-    Font size: 11
+    vizName$ = replace$(source_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Intensity Processor## | " + modeName$ + " | " + presetName$
+    Text: 0.5, "centre", 0.68, "half", "##Intensity Envelope Processor v1.5##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + modeName$ + " | " + presetName$
 
     if mode = 4 or mode = 5
         # --- TIME MANIPULATION MODES ---
@@ -624,7 +660,7 @@ if visualize
         Draw: 0, 0, 0, 0, "no", "Curve"
         Colour: "Black"
         Draw inner box
-        Font size: 8
+        Font size: 7
         Select outer viewport: 0.15, 8, 0.5, 2.2
         Text left: "yes", "Original"
 
@@ -636,7 +672,7 @@ if visualize
         Draw: 0, 0, 0, 0, "no", "Curve"
         Colour: "Black"
         Draw inner box
-        Font size: 8
+        Font size: 7
         Select outer viewport: 0.15, 8, 2.3, 4.0
         Text left: "yes", "Result"
         Text bottom: "yes", "Time (s)"
@@ -696,26 +732,61 @@ if visualize
         Text left: "yes", "Result"
         Text bottom: "yes", "Time (s)"
 
-        # Parameters
-        Select outer viewport: 0, 8, 4.4, 4.8
-        Font size: 6
-        Colour: "{0.4, 0.4, 0.4}"
-
-        if mode = 1
-            Text: 0.5, "centre", 0.5, "half", "Exponent: " + fixed$(exponent, 2)
-        elsif mode = 2
-            Text: 0.5, "centre", 0.5, "half", "Rate: " + fixed$(tremolo_rate_Hz, 1) + "Hz | Depth: " + fixed$(safeDepth * 100, 0) + "% | Center: " + fixed$(tremolo_center, 2)
-        elsif mode = 3
-            Text: 0.5, "centre", 0.5, "half", "Rate: " + fixed$(gate_rate_Hz, 1) + "Hz | Duty: " + fixed$(gate_duty_percent, 0) + "% | Smooth: " + fixed$(gate_smoothing_ms, 0) + "ms"
-        elsif mode = 7
-            Text: 0.5, "centre", 0.5, "half", "Rate: ~" + fixed$(random_rate_Hz, 1) + "Hz | Depth: " + fixed$(random_depth * 100, 0) + "%"
-        endif
-
         removeObject: vis_modulator_id
     endif
 
+    # === Summary strip ===
+    selectObject: result_id
+    resultVizDur = Get total duration
+    resultVizPeak = Get absolute extremum: 0, 0, "None"
+
+    if normalize
+        normalizeViz$ = "on"
+    else
+        normalizeViz$ = "off"
+    endif
+
+    if mode = 1
+        modeDetail$ = "exponent " + fixed$(exponent, 2) + " | gain cap " + fixed$(max_gain, 1) + "x"
+    elsif mode = 2
+        modeDetail$ = "rate " + fixed$(tremolo_rate_Hz, 2) + " Hz | depth " + fixed$(safeDepth * 100, 0) + "\% | center " + fixed$(tremolo_center, 2)
+    elsif mode = 3
+        modeDetail$ = "rate " + fixed$(gate_rate_Hz, 2) + " Hz | duty " + fixed$(gate_duty_percent, 0) + "\% | levels " + fixed$(gate_min, 2) + "-" + fixed$(gate_max, 2) + " | smooth " + fixed$(gate_smoothing_ms, 1) + " ms"
+    elsif mode = 4
+        modeDetail$ = "requested shift " + fixed$(shift_seconds, 3) + " s"
+    elsif mode = 5
+        modeDetail$ = "time scale " + fixed$(scale_factor, 3) + "x | intermediate SR " + fixed$(resultingSR, 0) + " Hz"
+    elsif mode = 6
+        modeDetail$ = "inverse intensity gain | gain cap " + fixed$(max_gain, 1) + "x"
+    else
+        if random_seed = 0
+            seedViz$ = "random"
+        else
+            seedViz$ = string$(random_seed)
+        endif
+        modeDetail$ = "rate ~" + fixed$(random_rate_Hz, 2) + " Hz | depth " + fixed$(random_depth * 100, 0) + "\% | seed " + seedViz$
+    endif
+
+    Select outer viewport: 0, 8, 4.48, 5.86
+    Select inner viewport: 0.60, 7.70, 4.58, 5.76
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.78, "half", "##Input##  " + vizName$ + " | " + fixed$(dur, 3) + " s | " + fixed$(orig_sr, 0) + " Hz | time domain " + fixed$(sourceStart, 3) + "-" + fixed$(sourceEnd, 3) + " s"
+    Text: 0.02, "left", 0.50, "half", "##Processing##  " + modeName$ + " | " + modeDetail$
+    Text: 0.02, "left", 0.22, "half", "##Output##  preset " + presetName$ + " | normalize " + normalizeViz$ + " | " + fixed$(resultVizDur, 3) + " s | peak " + fixed$(resultVizPeak, 3)
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.10
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

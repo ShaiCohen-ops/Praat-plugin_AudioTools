@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,6 +19,16 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.3 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog v1.2 (structural audio-engine rewrite):
 #
@@ -221,7 +231,7 @@
 #     dynamic envelopes, variable overlap, visualization, presets
 # ============================================================
 
-form Advanced Concatenate with Crossfade v1.2
+form Advanced Concatenate with Crossfade v1.3
     optionmenu Preset: 1
         option Custom (use settings below)
         option Simple Crossfade (25%)
@@ -457,7 +467,7 @@ endif
 # appendInfoLine. v1.0 called writeInfoLine 7 times in this block and
 # 6 more in the settings block, with each call clearing the info window,
 # wiping the header before the user could see it.
-writeInfoLine: "=== ADVANCED CONCATENATE WITH CROSSFADE v1.2 ==="
+writeInfoLine: "=== ADVANCED CONCATENATE WITH CROSSFADE v1.3 ==="
 appendInfoLine: ""
 appendInfoLine: "Input sounds:    ", n
 appendInfoLine: "Preset:          ", presetName$
@@ -1016,28 +1026,18 @@ if draw_visualization
     appendInfoLine: "Creating visualization..."
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
-    Black
-    Plain line
-
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##CONCATENATE WITH CROSSFADE##"
+    Text: 0.5, "centre", 0.68, "half", "##Concatenate with Crossfade v1.3##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... presetName$
-        ... + "  |  " + string$(n) + " files, " + string$(totalChunks) + " chunks"
-        ... + "  |  " + chunkModeName$
-        ... + "  |  " + crossfadeTypeName$ + " crossfade"
-        ... + "  |  " + dynamicsName$ + " dynamics"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", presetName$ + " | " + string$(n) + " files | " + string$(totalChunks) + " chunks | " + crossfadeTypeName$ + " | " + dynamicsName$
 
-    # ----------------------------------------------------------
     # PANEL A: RESULT WAVEFORM + SEGMENT DIVIDERS  (full width)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.75, 3.10
@@ -1115,8 +1115,8 @@ if draw_visualization
     Select outer viewport: 0, 8, 4.18, 5.30
     Select inner viewport: 0.55, 7.72, 4.30, 5.20
 
-    Axes: 0, finalDuration, 0, 1.2
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDuration, 0, 1.2
+    Axes: 0, finalDuration, 0, 1.3
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDuration, 0, 1.3
 
     # Unity reference dashed
     Colour: "{0.65, 0.65, 0.70}"
@@ -1282,6 +1282,14 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 7.25
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

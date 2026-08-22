@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2025)
+# Version: 1.2 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,16 @@
 #   Stereo Amplitude Modulator / Dynamic Tremolo
 #   Applies periodic or envelope-shaped amplitude modulations
 #   with flexible stereo modes for spatial movement.
+#
+# Changelog v1.2 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog v1.1:
 #   - Fixed Info window: was 13 consecutive writeInfoLine calls
@@ -37,7 +47,7 @@
 #   - Play is now optional
 # ============================================================
 
-form Stereo Amplitude Modulator v1.1
+form Stereo Amplitude Modulator v1.2
     comment === Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -222,7 +232,7 @@ endif
 
 # === Info Output (single writeInfoLine, then appendInfoLine) ===
 writeInfoLine: "=============================================="
-appendInfoLine: "  STEREO AMPLITUDE MODULATOR v1.1"
+appendInfoLine: "  STEREO AMPLITUDE MODULATOR v1.2"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", soundName$, " (", fixed$(dur, 2), " s, ", nChannels, " ch)"
@@ -456,14 +466,19 @@ if draw_visualization
     appendInfoLine: "Creating visualization..."
     
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0, 0.5
+    vizName$ = replace$(soundName$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Font size: 11
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Stereo Amplitude Modulator## | " + soundName$ + " | " + presetName$
-    
+    Text: 0.5, "centre", 0.68, "half", "##Stereo Amplitude Modulator v1.2##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + shapeName$ + " | " + stereoName$
+
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
     Select inner viewport: 0.8, 7.6, 0.7, 1.4
@@ -509,15 +524,33 @@ if draw_visualization
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
     
-    # Parameters
-    Select outer viewport: 0, 8, 3.6, 4.1
+    # === Summary strip ===
+    selectObject: result
+    outPeakViz = Get absolute extremum: 0, 0, "None"
+    if normalize_output
+        normViz$ = "on (0.95 peak)"
+    else
+        normViz$ = "off"
+    endif
+    Select outer viewport: 0, 8, 3.62, 4.72
+    Select inner viewport: 0.60, 7.70, 3.70, 4.64
     Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 6
-    Colour: "{0.4, 0.4, 0.45}"
-    Text: 0.5, "centre", 0.5, "half", "Shape: " + shapeName$ + " | Rate: " + fixed$(swell_rate_Hz, 2) + " Hz | Depth: " + fixed$(depth_percent, 0) + "% | Stereo: " + stereoName$
-    
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.78, "half", "##Input##  " + vizName$ + " | " + fixed$(dur, 3) + " s | " + fixed$(sr, 0) + " Hz | " + string$(nChannels) + " ch"
+    Text: 0.02, "left", 0.50, "half", "##Modulation##  " + shapeName$ + " | rate " + fixed$(swell_rate_Hz, 2) + " Hz | depth " + fixed$(depth_percent, 0) + "\% | " + stereoName$
+    Text: 0.02, "left", 0.22, "half", "##Output##  normalization " + normViz$ + " | peak " + fixed$(outPeakViz, 3) + " | pulse width " + fixed$(pulse_width_percent, 0) + "\% | random smoothness " + fixed$(random_smoothness, 1)
+    Colour: "Black"
+    Draw inner box
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.20
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

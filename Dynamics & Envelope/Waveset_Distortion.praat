@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2026)
+# Version: 1.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -99,7 +99,17 @@
 #   Waveset processing is mono: see Multichannel_handling.
 # ============================================================
 
-form Waveset Distortion v1.5
+# Changelog v1.6 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
+#
+form Waveset Distortion v1.6
     optionmenu Preset: 1
         option Custom
         option Waveset Repeat (stutter)
@@ -312,7 +322,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Waveset Distortion v1.5 ==="
+writeInfoLine: "=== Waveset Distortion v1.6 ==="
 appendInfoLine: "Input: ", soundName$, " (", fixed$(original_duration, 2), " s, ",
     ... sampling_rate, " Hz)"
 appendInfoLine: "Preset: ", presetName$
@@ -1173,25 +1183,26 @@ if draw_visualization
     appendInfoLine: "[3/3] Drawing..."
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
-
-    Select outer viewport: 0, 8, 0, 0.65
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Waveset Distortion##"
-    Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
+    pageHeight = 5.15
+    Select outer viewport: 0, 8, 0, pageHeight
+    vizName$ = replace$(soundName$, "_", "\_ ", 0)
     if usesAmount
         titleAmount$ = " x" + fixed$(amount, 1)
     else
         titleAmount$ = ""
     endif
-    Text: 0.5, "centre", -0.25, "half",
-        ... soundName$ + "  |  " + presetName$
-        ... + "  |  " + typeName$ + titleAmount$
 
-    Select outer viewport: 0, 8, 0.52, 1.52
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Waveset Distortion v1.6##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + typeName$ + titleAmount$
+
+    Select outer viewport: 0, 8, 0.52, 1.62
     Select inner viewport: 0.55, 7.65, 0.57, 1.47
     selectObject: sound
     if numChannels > 1
@@ -1213,7 +1224,7 @@ if draw_visualization
         ... channelNote$ + ")"
     endif
 
-    Select outer viewport: 0, 8, 1.56, 2.56
+    Select outer viewport: 0, 8, 1.66, 2.56
     Select inner viewport: 0.55, 7.65, 1.61, 2.51
     selectObject: resultID
     Colour: "{0.25, 0.50, 0.82}"
@@ -1304,6 +1315,14 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 8.15
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

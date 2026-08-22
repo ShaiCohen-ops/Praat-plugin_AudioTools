@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,16 @@
 #   Finds the first-to-last "sounding" span of a Sound and extracts it,
 #   with safe padding, outward-only quiet-point alignment, and short
 #   edge fades.
+#
+# Changelog v0.6 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog vs 0.4:
 #   - Boundary alignment no longer uses "nearest zero crossing" (which
@@ -47,7 +57,7 @@
 # Changelog vs 0.3: see v0.4 header history in the project repository.
 # ============================================================
 
-form Auto-Trim Silence
+form Auto-Trim Silence v0.6
     optionmenu Detection_mode: 2
         option Speech-band (Praat built-in)
         option Full-band RMS (music-safe)
@@ -60,6 +70,7 @@ form Auto-Trim Silence
     real Trailing_padding_ms 100
     real Edge_fade_ms 5
     real Zero_crossing_search_ms 10
+    boolean Draw_visualization 1
     boolean Play_result 0
 endform
 
@@ -339,7 +350,7 @@ endif
 # ------------------------------------------------------------
 # Report
 # ------------------------------------------------------------
-writeInfoLine: "=== Auto-Trim Silence Report ==="
+writeInfoLine: "=== Auto-Trim Silence v0.6 Report ==="
 appendInfoLine: "Detection mode: ", detection_mode$
 appendInfoLine: "Threshold: ", threshold_dB_below_peak, " dB below analysis peak"
 appendInfoLine: "Original duration: ", fixed$(originalDuration, 3), " s"
@@ -357,6 +368,123 @@ else
 endif
 appendInfoLine: "Output duration: ", fixed$(outDur, 3), " s"
 appendInfoLine: "Output object: ", soundName$, "_trimmed"
+
+# ------------------------------------------------------------
+# Visualization
+# ------------------------------------------------------------
+if draw_visualization = 1
+    appendInfoLine: ""
+    appendInfoLine: "Drawing visualization..."
+
+    vizName$ = replace$(soundName$, "_", "\_ ", 0)
+
+    selectObject: originalSound
+    srcPeakViz = Get absolute extremum: 0, 0, "None"
+    selectObject: trimmedSound
+    outPeakViz = Get absolute extremum: 0, 0, "None"
+    ampViz = srcPeakViz
+    if outPeakViz > ampViz
+        ampViz = outPeakViz
+    endif
+    if ampViz < 0.001
+        ampViz = 0.001
+    endif
+    ampViz = ampViz * 1.15
+
+    pageHeight = 5.85
+    Erase all
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Auto-Trim Silence v0.6##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + detection_mode$ + " | threshold " + fixed$(threshold_dB_below_peak, 1) + " dB below analysis peak"
+
+    # === Detection and final trim boundaries ===
+    Select outer viewport: 0, 8, 0.72, 2.72
+    Select inner viewport: 0.60, 7.70, 1.00, 2.48
+    Axes: soundXmin, soundXmax, -ampViz, ampViz
+    Paint rectangle: "{0.97, 0.97, 0.97}", soundXmin, soundXmax, -ampViz, ampViz
+
+    # Removed material.
+    if trimStart > soundXmin
+        Paint rectangle: "{0.94, 0.86, 0.86}", soundXmin, trimStart, -ampViz, ampViz
+    endif
+    if trimEnd < soundXmax
+        Paint rectangle: "{0.94, 0.86, 0.86}", trimEnd, soundXmax, -ampViz, ampViz
+    endif
+
+    # Detected sounding span: dashed blue.
+    Colour: "{0.25, 0.45, 0.75}"
+    Dashed line
+    Draw line: startTime, -ampViz, startTime, ampViz
+    Draw line: endTime, -ampViz, endTime, ampViz
+    Solid line
+
+    # Final outward-safe trim points: solid amber.
+    Colour: "{0.80, 0.55, 0.20}"
+    Line width: 2
+    Draw line: trimStart, -ampViz, trimStart, ampViz
+    Draw line: trimEnd, -ampViz, trimEnd, ampViz
+    Line width: 1
+
+    selectObject: originalSound
+    Colour: "{0.50, 0.50, 0.50}"
+    Draw: soundXmin, soundXmax, -ampViz, ampViz, "no", "Curve"
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amp"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Trim Decision | red = removed | blue dashed = detected sounding | amber = final safe cut"
+
+    # === Trimmed result ===
+    Select outer viewport: 0, 8, 2.94, 4.08
+    Select inner viewport: 0.60, 7.70, 3.16, 3.84
+    Axes: 0, outDur, -ampViz, ampViz
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outDur, -ampViz, ampViz
+    Colour: "{0.80, 0.80, 0.80}"
+    Draw line: 0, 0, outDur, 0
+    selectObject: trimmedSound
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw: 0, outDur, -ampViz, ampViz, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amp"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Trimmed Result | edge fade " + fixed$(effectiveFadeSec * 1000, 2) + " ms"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 4.30, 5.80
+    Select inner viewport: 0.60, 7.70, 4.40, 5.70
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.78, "half", "##Detection##  first sounding " + fixed$(startTime, 3) + " s | last sounding " + fixed$(endTime, 3) + " s | minimum silence " + fixed$(min_silence_duration_sec, 3) + " s | minimum sounding " + fixed$(min_sounding_duration_sec, 3) + " s"
+    Text: 0.02, "left", 0.50, "half", "##Boundary rule##  padding " + fixed$(leading_padding_ms, 1) + "/" + fixed$(trailing_padding_ms, 1) + " ms | outward quiet-point search <= " + fixed$(zero_crossing_search_ms, 1) + " ms | final " + fixed$(trimStart, 4) + " -> " + fixed$(trimEnd, 4) + " s"
+    Text: 0.02, "left", 0.22, "half", "##Output##  " + fixed$(originalDuration, 3) + " s -> " + fixed$(outDur, 3) + " s | removed lead " + fixed$(trimStart - soundXmin, 3) + " s | removed tail " + fixed$(soundXmax - trimEnd, 3) + " s | peak " + fixed$(outPeakViz, 3)
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+endif
 
 # ------------------------------------------------------------
 # Keep the new trimmed sound selected; play only if requested

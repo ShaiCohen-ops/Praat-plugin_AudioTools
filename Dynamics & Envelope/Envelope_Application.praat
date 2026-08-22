@@ -3,13 +3,23 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Advanced Envelope Application with multiple envelope types,
 #   curve shapes, modifiers, and comprehensive visualization.
+#
+# Changelog v1.3 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog v1.2:
 #
@@ -147,7 +157,7 @@
 #   - Enhanced visualization with stage labels
 # ============================================================
 
-form Envelope Application v1.2
+form Envelope Application v1.3
     optionmenu Preset 1
         option Custom
         option Fade In
@@ -386,7 +396,7 @@ endif
 # v1.1: writeInfoLine clears the Info window on EVERY call --
 # the old header (eight writeInfoLine calls) erased itself.
 writeInfoLine: "=============================================="
-appendInfoLine: "  ENVELOPE APPLICATION v1.2"
+appendInfoLine: "  ENVELOPE APPLICATION v1.3"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", sound_name$, " (", fixed$(duration, 3), "s)"
@@ -807,13 +817,19 @@ if visualize
     appendInfoLine: "Creating visualization..."
     
     Erase all
-    
-    # Title
-    Select outer viewport: 1, 8, 0, 0.4
-    Font size: 11
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Envelope Application## | " + envName$ + " | " + presetName$
-    
+    Text: 0.5, "centre", 0.68, "half", "##Envelope Application v1.3##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + envName$ + " | " + presetName$
+
     # Original
     Select outer viewport: 0, 8, 0.5, 1.8
     Select inner viewport: 0.6, 7.6, 0.6, 1.6
@@ -860,7 +876,7 @@ if visualize
         Colour: "{0.6, 0.3, 0.3}"
         Text: attack + decay + visualSustain + release / 2, "centre", 1.05, "half", "R"
     else
-        Paint rectangle: "{0.95, 0.95, 0.95}", 0, duration, 0, 1.1
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1.1
     endif
     
     selectObject: envelope_sound
@@ -886,23 +902,42 @@ if visualize
     Text left: "yes", "Result"
     Text bottom: "yes", "Time (s)"
     
-    # Parameters
-    Select outer viewport: 0, 8, 4.7, 5.1
-    Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    
-    if envelope_type = 10
-        Text: 0.5, "centre", 0.5, "half", "A:" + fixed$(attack*1000, 0) + "ms D:" + fixed$(decay*1000, 0) + "ms S:" + fixed$(sustain_level*100, 0) + "% R:" + fixed$(release*1000, 0) + "ms"
-    elsif envelope_type = 9 or envelope_type = 8
-        Text: 0.5, "centre", 0.5, "half", "Attack:" + fixed$(attack*1000, 0) + "ms Release:" + fixed$(release*1000, 0) + "ms Curve:" + fixed$(curve_amount, 1)
-    elsif envelope_type = 11
-        Text: 0.5, "centre", 0.5, "half", "Rate:" + fixed$(tremolo_rate_Hz, 1) + "Hz Depth:" + fixed$(tremolo_depth*100, 0) + "%"
+    # === Summary strip ===
+    selectObject: sound
+    inChViz = Get number of channels
+    selectObject: result
+    outPeakViz = Get absolute extremum: 0, 0, "None"
+    if peak_normalize_output
+        normViz$ = "on (0.95 peak)"
     else
-        Text: 0.5, "centre", 0.5, "half", "Start:" + fixed$(start_level, 2) + " End:" + fixed$(end_level, 2) + " Peak:" + fixed$(peak_level, 2)
+        normViz$ = "off"
     endif
-    
+    if envelope_type = 10
+        envDetail$ = "A " + fixed$(attack*1000, 0) + " ms | D " + fixed$(decay*1000, 0) + " ms | S " + fixed$(sustain_level*100, 0) + "\% | R " + fixed$(release*1000, 0) + " ms"
+    elsif envelope_type = 11
+        envDetail$ = "rate " + fixed$(tremolo_rate_Hz, 1) + " Hz | depth " + fixed$(tremolo_depth*100, 0) + "\%"
+    else
+        envDetail$ = "start " + fixed$(start_level, 2) + " | end " + fixed$(end_level, 2) + " | peak " + fixed$(peak_level, 2) + " | curve " + fixed$(curve_amount, 1)
+    endif
+    Select outer viewport: 0, 8, 4.72, 5.88
+    Select inner viewport: 0.60, 7.70, 4.80, 5.80
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.78, "half", "##Input##  " + vizName$ + " | " + fixed$(duration, 3) + " s | " + fixed$(sr, 0) + " Hz | " + string$(inChViz) + " ch"
+    Text: 0.02, "left", 0.50, "half", "##Envelope##  " + envName$ + " | " + presetName$ + " | " + envDetail$ + " | invert " + if invert then "on" else "off" fi + " | mirror " + if mirror then "on" else "off" fi
+    Text: 0.02, "left", 0.22, "half", "##Output##  normalization " + normViz$ + " | smoothing " + string$(smoothing) + " passes | peak " + fixed$(outPeakViz, 3)
+    Colour: "Black"
+    Draw inner box
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.20
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

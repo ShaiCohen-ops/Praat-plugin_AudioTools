@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.1 (2026) - Bugfix Release for Parselmouth/Praat Formula Scope
+# Version: 4.2 (2026) - Bugfix Release for Parselmouth/Praat Formula Scope
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,7 +14,17 @@
 #   Safe Target Gain, Dynamic Peak Limiting with Iterative Convergence, and Post-Processing Re-measurement.
 # ============================================================
 
-form LUFS Tool v4.1
+# Changelog v4.2 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
+#
+form LUFS Tool v4.2
     optionmenu Preset 1
         option Custom
         option Spotify (-14 LUFS / -1 dBTP)
@@ -123,15 +133,18 @@ if channel_Layout = 2 and nChannels = 6
     chWeight[1] = 1.0
     chWeight[2] = 1.0
     chWeight[3] = 1.0
-    chWeight[4] = 0.0  ; LFE channel ignored
-    chWeight[5] = 1.41 ; +1.5 dB surround weighting
-    chWeight[6] = 1.41 ; +1.5 dB surround weighting
+    # LFE channel ignored
+    chWeight[4] = 0.0
+    # +1.5 dB surround weighting
+    chWeight[5] = 1.41
+    # +1.5 dB surround weighting
+    chWeight[6] = 1.41
 endif
 
 # === INFO HEADER ===
 clearinfo
 appendInfoLine: "=============================================="
-appendInfoLine: "  LUFS TOOL v4.1 (BS.1770-5 / EBU R128)"
+appendInfoLine: "  LUFS TOOL v4.2 (BS.1770-5 / EBU R128)"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", input$, " (", fixed$(duration, 2), "s, ", sr, " Hz, ", nChannels, " ch)"
@@ -326,7 +339,8 @@ procedure analyzeLoudness: .soundObj, .pStart, .pEnd, .srVal, .nCh
     .stHop = 0.1
     
     if .durVal < .stWin
-        .out_LRA = -999.0 ; Flag as unavailable for files < 3s
+        # Flag as unavailable for files < 3 s
+        .out_LRA = -999.0
         .maxShortTerm = -999.0
         .numWindows = 0
     else
@@ -618,13 +632,19 @@ if visualize
     appendInfoLine: "Generating analytics display..."
     
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0, 0.4
-    Font size: 11
+    vizName$ = replace$(input$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##LUFS Tool v4.1## | Preset: " + presetName$ + " | Target: " + fixed$(target_LUFS, 1) + " LUFS"
-    
+    Text: 0.5, "centre", 0.68, "half", "##LUFS Tool v4.2##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | target " + fixed$(target_LUFS, 1) + " LUFS"
+
     # Loudness Meter Bar
     Select outer viewport: 0, 2.5, 0.5, 5.2
     Select inner viewport: 0.6, 2.1, 0.7, 5.0
@@ -655,7 +675,7 @@ if visualize
     endwhile
     Draw inner box
     
-    Font size: 8
+    Font size: 7
     Select outer viewport: 0.1, 2.5, 0.5, 5.2
     Text left: "yes", "LUFS"
     
@@ -675,7 +695,7 @@ if visualize
     Select outer viewport: 2.6, 8, 2.1, 3.6
     Select inner viewport: 3.0, 7.6, 2.2, 3.5
     Axes: sourceStart, sourceEnd, -50, 0
-    Paint rectangle: "{0.95, 0.95, 0.95}", sourceStart, sourceEnd, -50, 0
+    Paint rectangle: "{0.97, 0.97, 0.97}", sourceStart, sourceEnd, -50, 0
     
     Colour: "{0.8, 0.3, 0.3}"
     Dashed line
@@ -707,7 +727,7 @@ if visualize
             endfor
         endif
     else
-        Font size: 8
+        Font size: 7
         Colour: "Red"
         Text: (sourceStart + sourceEnd) / 2, "centre", -25, "half", "Short-Term / LRA Unavailable (< 3s duration)"
     endif
@@ -732,11 +752,15 @@ if visualize
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
     
-    # Metrics Panel
-    Select outer viewport: 0, 8, 5.3, 6.2
+    # Summary strip
+    Select outer viewport: 0, 8, 5.3, 6.35
+    Select inner viewport: 0.60, 7.70, 5.38, 6.27
     Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
-    Colour: "{0.2, 0.2, 0.2}"
+    Colour: "{0.20, 0.20, 0.25}"
+    Text: 0.02, "left", 0.90, "half", "##Summary##"
+    Font size: 6
     
     if inLRA >= 0
         lraInStr$ = fixed$(inLRA, 1) + " LU"
@@ -750,10 +774,18 @@ if visualize
         lraOutStr$ = "N/A"
     endif
 
-    Text: 0.05, "left", 0.75, "half", "Input:  " + fixed$(inIntegrated_LUFS, 1) + " LUFS | " + fixed$(inPeak_dB, 1) + " dBTP | LRA: " + lraInStr$
-    Text: 0.05, "left", 0.35, "half", "Output: " + fixed$(outIntegrated_LUFS, 1) + " LUFS | " + fixed$(outPeak_dB, 1) + " dBTP | LRA: " + lraOutStr$
+    Text: 0.05, "left", 0.62, "half", "Input:  " + fixed$(inIntegrated_LUFS, 1) + " LUFS | " + fixed$(inPeak_dB, 1) + " dBTP | LRA: " + lraInStr$
+    Text: 0.05, "left", 0.28, "half", "Output: " + fixed$(outIntegrated_LUFS, 1) + " LUFS | " + fixed$(outPeak_dB, 1) + " dBTP | LRA: " + lraOutStr$
     Font size: 10
     Colour: "Black"
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.50
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

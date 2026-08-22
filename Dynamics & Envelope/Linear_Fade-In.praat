@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.0 (2025)
+# Version: 1.1 (2025)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -41,7 +41,17 @@ srcSr  = Get sampling frequency
 # FORM
 # ============================================================
 
-form Fade-In v1.0
+# Changelog v1.1 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
+#
+form Fade-In v1.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -221,7 +231,7 @@ Scale peak: 0.99
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Fade-In v1.0"
+writeInfoLine:  "  Fade-In v1.1"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Preset   : ", presetName$
@@ -261,19 +271,18 @@ if draw_visualization = 1
     ampMax = ampMax * 1.15
 
     Erase all
-
-    # --- TITLE ---
-    Select outer viewport: 0, 8, 0, 0.5
+    vizName$ = replace$(srcName$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Font size: 13
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Fade-In v1.0##"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.2, "half",
-        ... "[" + presetName$ + "]  " + srcName$
-        ... + "  |  " + curveName$
-        ... + "  |  fade: 0 -> " + fixed$(fadeEnd, 2) + " s"
+    Text: 0.5, "centre", 0.68, "half", "##Fade-In v1.1##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + curveName$ + " | fade 0 -> " + fixed$(fadeEnd, 2) + " s"
 
     # --- PANEL 1: Original waveform ---
     Select outer viewport: 0, 8, 0.55, 1.55
@@ -336,7 +345,7 @@ if draw_visualization = 1
                 e1 = sin(pp1 * (pi/2))
             endif
         else
-            e1 = 1.0
+            e1 = 1.1
         endif
 
         if t2 <= fadeEnd
@@ -361,7 +370,7 @@ if draw_visualization = 1
                 e2 = sin(pp2 * (pi/2))
             endif
         else
-            e2 = 1.0
+            e2 = 1.1
         endif
 
         Draw line: t1, e1, t2, e2
@@ -399,14 +408,14 @@ if draw_visualization = 1
     Text top: "no", "Processed waveform"
     Text bottom: "yes", "Time (s)"
 
-    # --- STATS ---
+    # --- Summary strip ---
     Select outer viewport: 0, 8, 3.55, 4.25
     Select inner viewport: 0.5, 7.8, 3.60, 4.20
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.85, "half", "##Fade-In v1.0##"
+    Text: 0.02, "left", 0.85, "half", "##Summary##  Fade-In v1.1##"
     Font size: 6
     Colour: "{0.35, 0.35, 0.40}"
     Text: 0.02, "left", 0.62, "half",
@@ -426,6 +435,14 @@ if draw_visualization = 1
     Font size: 10
     Line width: 1
     Colour: "Black"
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.20
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,6 +21,16 @@
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.4 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog v1.1:
 #   - Replaced non-ASCII box-drawing/dash characters with ASCII for
@@ -103,53 +113,56 @@
 #   Follower" describes the chain more exactly than "RMS".
 # ============================================================
 
-form Time-domain RMS Envelope Follower
-    # --- Mode & Selection ---
+form Time-domain RMS Envelope Follower v1.4
     optionmenu Mode: 2
         option Extract (envelope only)
         option Gate / Expand
         option Reverse (swell/ghost)
         option Duck (inverse)
         option Transfer (from donor)
-        
-    # --- Presets (New!) ---
     optionmenu Preset: 1
         option Custom (use settings below)
         option Snappy (Percussion)
         option Smooth (Vocals/Speech)
         option Sustain (Pads/Texture)
         option Crunch (Aggressive)
-    
-    comment -------------------------------------------------------------------
     comment Transfer: Select 2 sounds (1=Donor, 2=Recipient). Others: Select 1.
-    
-    # --- Envelope Timing ---
-    optionmenu Detector_mode: 1
-        option Causal attack/release
-        option Zero-phase smoothing (legacy v1.1)
+    comment === Musical timing / shaping ===
     positive Attack_time_ms 5
     positive Release_time_ms 50
-    comment (POWER-domain time constants; in amplitude the attack 10%-90%
-    comment  is about 1.65x and the release 90%-10% about 4.39x these values)
-    boolean Apply_attack_at_file_start 0
-    
-    # --- Threshold & Shaping ---
     real Threshold_dB -40
-    positive Input_span_above_threshold_dB 60
-    comment (input span over which the envelope rises 0 -> 1)
-    boolean Normalize_envelope_to_detected_peak 0
-    comment (v1.2 behaviour: maps the loudest point in this file to gain 1)
     positive Curve_exponent 1.0
-    
-    # --- Performance & Output ---
-    boolean Use_downsampling 1
-    positive Processing_sample_rate 16000
     boolean Peak_normalize_output 0
-    positive Normalization_peak 0.99
+    boolean Advanced_settings 0
     boolean Show_visualization 1
-    boolean Show_statistics 1
     boolean Play_after_processing 1
 endform
+# === Advanced defaults (identical to the v1.3 main-form defaults) ===
+detector_mode = 1
+apply_attack_at_file_start = 0
+input_span_above_threshold_dB = 60
+normalize_envelope_to_detected_peak = 0
+use_downsampling = 1
+processing_sample_rate = 16000
+normalization_peak = 0.99
+show_statistics = 1
+
+if advanced_settings
+    beginPause: "Time-domain RMS Envelope Follower v1.4 - Advanced settings"
+        comment: "=== Detector behaviour ==="
+        optionmenu: "Detector_mode", 1
+            option: "Causal attack/release"
+            option: "Zero-phase smoothing (legacy v1.1)"
+        boolean: "Apply_attack_at_file_start", 0
+        positive: "Input_span_above_threshold_dB", "60"
+        boolean: "Normalize_envelope_to_detected_peak", 0
+        comment: "=== Performance / output ==="
+        boolean: "Use_downsampling", 1
+        positive: "Processing_sample_rate", "16000"
+        positive: "Normalization_peak", "0.99"
+        boolean: "Show_statistics", 1
+    clicked = endPause: "Continue", 1
+endif
 
 # ============================================================
 # 0. PRESET LOGIC (New!)
@@ -571,20 +584,18 @@ if show_visualization
     vis_source_id = Copy: "vis_source"
 
     Erase all
-
-    # ---- Title ----
-    Select outer viewport: 0, 8, 0, 0.50
+    vizName$ = replace$(source_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##Envelope Follower##"
-    Font size: 8
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.15, "half",
-        ... source_name$ + "  |  " + mode$ + "  |  " + preset$
-        ... + "  |  " + detector$
-        ... + "  |  thr: " + fixed$(threshold_dB, 0) + " dB"
-        ... + "  span: " + fixed$(input_span_above_threshold_dB, 0) + " dB"
+    Text: 0.5, "centre", 0.68, "half", "##Time-domain RMS Envelope Follower v1.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + mode$ + " | " + preset$ + " | " + detector$ + " | threshold " + fixed$(threshold_dB, 0) + " dB"
 
     # ---- PANEL 1: mapping curve, or applied gain for the modes that
     #      have no memoryless mapping ----
@@ -606,7 +617,7 @@ if show_visualization
         gain_top = gain_top * 1.10
 
         Axes: vis_env_start, vis_env_end, -0.02, gain_top
-        Paint rectangle: "{0.96, 0.96, 0.98}", vis_env_start, vis_env_end, -0.02, gain_top
+        Paint rectangle: "{0.97, 0.97, 0.97}", vis_env_start, vis_env_end, -0.02, gain_top
 
         selectObject: vis_env_id
         Colour: "{0.20, 0.60, 0.35}"
@@ -623,7 +634,7 @@ if show_visualization
         Marks left every: 1, 0.25, "yes", "yes", "no"
     else
         Axes: -60, 0, -60, 0
-        Paint rectangle: "{0.96, 0.96, 0.98}", -60, 0, -60, 0
+        Paint rectangle: "{0.97, 0.97, 0.97}", -60, 0, -60, 0
 
         Colour: "{0.75, 0.75, 0.75}"
         Line width: 1
@@ -828,6 +839,14 @@ if show_visualization
     Colour: "Black"
 
     removeObject: vis_env_id, vis_source_id
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.45
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

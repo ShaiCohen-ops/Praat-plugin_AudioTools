@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3.0 (2026) - Visualization bug-fix pass:
+# Version: 1.3.1 (2026) - Visualization bug-fix pass:
 #   - Root-mode Panel A now uses "Create Polynomial from real zeros"
 #     (was incorrectly using "from product terms", which does not
 #     interpret its arguments as real roots)
@@ -27,7 +27,17 @@
 #   mapped directly to the audio object's time domain [t_start, t_end].
 # ============================================================
 
-form Polynomial Sound Shaper v1.3.0
+# Changelog v1.3.1 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
+#
+form Polynomial Sound Shaper v1.3.1
     optionmenu Preset: 1
         option Custom
         option Fade In (linear)
@@ -221,7 +231,7 @@ endif
 
 clearinfo
 writeInfoLine: "============================================"
-appendInfoLine: "  POLYNOMIAL SOUND SHAPER v1.3.0"
+appendInfoLine: "  POLYNOMIAL SOUND SHAPER v1.3.1"
 appendInfoLine: "============================================"
 appendInfoLine: ""
 appendInfoLine: "Input:  ", sound_name$, " (", fixed$(dur, 3), " s)"
@@ -365,25 +375,19 @@ finalPeak = Get absolute extremum: t_start, t_end, "None"
 
 if draw_visualization
     Erase all
-    
-    if perceptual_weight = 1.0
-        weightDescr$ = "linear"
-    elsif perceptual_weight >= 1.8 and perceptual_weight <= 3.5
-        weightDescr$ = "perceived loudness"
-    else
-        weightDescr$ = "custom power"
-    endif
-    
-    # Title Bar
-    Select outer viewport: 0, 8, 0, 0.65
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##POLYNOMIAL SOUND SHAPER v1.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Polynomial Sound Shaper v1.3.1##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half", sound_name$ + " | Preset: " + presetName$ + " | " + typeName$ + " | Domain: [" + fixed$(start_x, 2) + ", " + fixed$(end_x, 2) + "] | Weight: " + fixed$(perceptual_weight, 2)
-    
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + typeName$ + " | domain [" + fixed$(start_x, 2) + ", " + fixed$(end_x, 2) + "]"
+
     # Panel A: Polynomial Curve
     Select inner viewport: 0.55, 4.00, 0.95, 4.40
     
@@ -397,7 +401,7 @@ if draw_visualization
     pYpad = pYrange * 0.10
     
     Axes: start_x, end_x, pYmin - pYpad, pYmax + pYpad
-    Paint rectangle: "{0.96, 0.96, 0.96}", start_x, end_x, pYmin - pYpad, pYmax + pYpad
+    Paint rectangle: "{0.97, 0.97, 0.97}", start_x, end_x, pYmin - pYpad, pYmax + pYpad
     
     if pYmin - pYpad < 0 and pYmax + pYpad > 0
         Colour: "{0.55, 0.55, 0.55}"
@@ -439,7 +443,7 @@ if draw_visualization
     endif
     
     Axes: t_start, t_end, yLo, yHi
-    Paint rectangle: "{0.96, 0.96, 0.96}", t_start, t_end, yLo, yHi
+    Paint rectangle: "{0.97, 0.97, 0.97}", t_start, t_end, yLo, yHi
     
     Colour: "{0.78, 0.65, 0.78}"
     Dotted line
@@ -508,7 +512,7 @@ if draw_visualization
     endfor
     
     Axes: histMin, histMax, 0, histPeak * 1.15
-    Paint rectangle: "{0.96, 0.96, 0.96}", histMin, histMax, 0, histPeak * 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", histMin, histMax, 0, histPeak * 1.15
     
     for b to nBins
         if bins#[b] > 0
@@ -561,6 +565,14 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.20
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

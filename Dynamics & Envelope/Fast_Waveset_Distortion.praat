@@ -5,7 +5,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.9 (2026)
+# Version: 1.10 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -38,6 +38,16 @@
 #   - Assembly now selects the full ordered chunk/repeat sequence
 #     once and calls Concatenate (with overlap) a single time,
 #     which is O(N) rather than the old per-chunk Concatenate loop.
+#
+# Changelog v1.10 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog v1.9:
 #   - FIXED: Random Shuffle didn't actually shuffle. Concatenate (and
@@ -198,7 +208,7 @@
 #   Select a Sound object and run this script.
 # ============================================================
 
-form Fast Chunk Distortion v1.9
+form Fast Chunk Distortion v1.10
     optionmenu Preset: 1
         option Custom
         option Glitch Stutter
@@ -427,7 +437,7 @@ elsif mode = 10
     modeDesc$ = "Per-chunk tremolo at 2 + amount*3 Hz, depth min(0.9, amount*0.15)"
 endif
 
-writeInfoLine: "=== Fast Chunk Distortion v1.9 ==="
+writeInfoLine: "=== Fast Chunk Distortion v1.10 ==="
 appendInfoLine: "Input: ", name$, " | ", fixed$(dur, 2), "s | ", n_channels, " ch"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode: ", mode$
@@ -717,28 +727,19 @@ final_dur = Get total duration
 if show_visualization
     
     Erase all
-    Black
-    Plain line
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    vizName$ = replace$(name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##FAST CHUNK DISTORTION##"
+    Text: 0.5, "centre", 0.68, "half", "##Fast Chunk Distortion v1.10##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... name$
-        ... + "  |  " + presetName$
-        ... + "  |  " + modeShort$
-        ... + "  |  " + string$(n_chunks_disp) + " chunks x " + fixed$(chunk_ms, 0) + " ms"
-        ... + "  |  amount " + fixed$(amount, 1)
-        ... + "  |  spread " + fixed$(stereo_spread, 2)
-    
-    # ----------------------------------------------------------
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + modeShort$ + " | " + string$(n_chunks_disp) + " chunks | amount " + fixed$(amount, 1)
+
     # PANEL A: SOURCE + CHUNK GRID OVERLAY  (left, headline)
     # Shows the source waveform with vertical dotted lines at
     # chunk boundaries — visualises what is being chopped up.
@@ -798,13 +799,13 @@ if show_visualization
     Select inner viewport: 4.55, 7.75, 0.95, 4.40
     
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
     Font size: 9
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.93, "half", "Mode:"
     
-    Font size: 11
+    Font size: 9
     Colour: "{0.65, 0.35, 0.70}"
     Text: 0.10, "left", 0.84, "half", "##" + modeShort$ + "##"
     
@@ -1028,6 +1029,14 @@ if show_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 8.15
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # original was a t=0-shifted working copy, not the user's own object

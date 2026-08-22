@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,16 @@
 #   "Earthquake Tremor", "Heartbeat Pulse") rather than for a
 #   distinct underlying physical system - all presets run the same
 #   fall-and-bounce equations with different parameters.
+#
+# Changelog v1.4 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog v1.0:
 #   - Single unified form interface
@@ -147,7 +157,7 @@
 #     has coarsened below 2 ms.
 # ============================================================
 
-form Kinematic Physics Envelope v1.3
+form Kinematic Physics Envelope v1.4
     optionmenu Preset 1
         option Custom
         option Bouncy Rubber Ball
@@ -400,7 +410,7 @@ endif
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  KINEMATIC PHYSICS ENVELOPE v1.3"
+writeInfoLine: "  KINEMATIC PHYSICS ENVELOPE v1.4"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Input: ", sound_name$, " (", fixed$(duration, 3), "s)"
@@ -886,12 +896,18 @@ if visualize
     appendInfoLine: "Creating visualization..."
 
     Erase all
-
-    # === TITLE ===
-    Select outer viewport: 1, 8, 0, 0.4
-    Font size: 11
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Kinematic Physics Envelope v1.3## | " + presetName$ + " | " + mappingName$ + " | " + timeMapName$
+    Text: 0.5, "centre", 0.68, "half", "##Kinematic Physics Envelope v1.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + mappingName$ + " | " + timeMapName$
 
     # === PHYSICS TRAJECTORY ===
     Select outer viewport: 0, 8, 0.5, 2.0
@@ -1030,14 +1046,28 @@ if visualize
     Text left: "yes", "Result"
     Text bottom: "yes", "Time (s)"
 
-    # === PARAMETERS ===
-    Select outer viewport: 0, 8, 5.6, 6.0
+    # === Summary strip ===
+    selectObject: result
+    outPeakViz = Get absolute extremum: 0, 0, "None"
+    Select outer viewport: 0, 8, 5.62, 6.82
+    Select inner viewport: 0.60, 7.70, 5.70, 6.74
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 1.5, "centre", 0.5, "half", "h₀=" + fixed$(initial_height_m, 1) + "m | v₀=" + fixed$(initial_velocity_m_s, 1) + "m/s | g=" + fixed$(gravity_m_s2, 1) + "m/s² | bounce=" + fixed$(bounce_coefficient, 2) + " | drag=" + fixed$(drag_coefficient, 2) + " | rebounds=" + string$(reboundsDone)
-
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.78, "half", "##Physics##  h0 " + fixed$(initial_height_m, 2) + " m | v0 " + fixed$(initial_velocity_m_s, 2) + " m/s | g " + fixed$(gravity_m_s2, 2) + " m/s2 | bounce " + fixed$(bounce_coefficient, 2) + " | drag " + fixed$(drag_coefficient, 2)
+    Text: 0.02, "left", 0.50, "half", "##Mapping##  " + mappingName$ + " | " + timeMapName$ + " | rebounds " + string$(reboundsDone) + " | envelope bounce markers " + string$(numEnvBounces) + " | reverse " + if reverse_envelope then "on" else "off" fi
+    Text: 0.02, "left", 0.22, "half", "##Output##  audio " + fixed$(duration, 3) + " s | physics " + fixed$(physDur, 3) + " s | smoothing " + string$(smoothing_passes) + " passes | peak " + fixed$(outPeakViz, 3)
+    Colour: "Black"
+    Draw inner box
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 7.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

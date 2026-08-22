@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026) - Production Release
+# Version: 2.4 (2026) - Production Release
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,7 +16,17 @@
 #   Select a Sound object in Praat and run this script.
 # ============================================================
 
-form Noise Gate v2.3
+# Changelog v2.4 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
+#
+form Noise Gate v2.4
     optionmenu Preset 1
         option Custom
         option Gentle (speech)
@@ -150,7 +160,7 @@ endif
 # === INFO HEADER ===
 clearinfo
 appendInfoLine: "=============================================="
-appendInfoLine: "  NOISE GATE v2.3 (Production Release)"
+appendInfoLine: "  NOISE GATE v2.4 (Production Release)"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input:  ", sound_name$, " (", fixed$(dur, 3), "s, ", fixed$(sr, 0), " Hz, ", nChannels, " ch)"
@@ -447,11 +457,18 @@ if visualize
     appendInfoLine: ""
     appendInfoLine: "Generating visualization..."
     Erase all
-
-    Select outer viewport: 1, 8, 0, 0.4
-    Font size: 11
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Noise Gate v2.3## | " + presetName$ + " | Thresh: " + fixed$(threshold_dBFS, 1) + " dBFS"
+    Text: 0.5, "centre", 0.68, "half", "##Noise Gate v2.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | threshold " + fixed$(threshold_dBFS, 1) + " dBFS"
 
     # Input Waveform
     Select outer viewport: 0, 8, 0.5, 1.8
@@ -499,14 +516,28 @@ if visualize
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
 
-    # Info Panel
-    Select outer viewport: 0, 8, 4.5, 5.0
+    # === Summary strip ===
+    selectObject: result
+    outPeakViz = Get absolute extremum: 0, 0, "None"
+    Select outer viewport: 0, 8, 4.52, 5.72
+    Select inner viewport: 0.60, 7.70, 4.60, 5.64
     Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 6
-    Colour: "{0.4, 0.4, 0.4}"
-    Text: 0.5, "centre", 0.5, "half", "Attack: " + fixed$(attack_ms, 1) + " ms | Hold: " + fixed$(hold_ms, 0) + " ms | Release: " + fixed$(release_ms, 0) + " ms | Range: " + fixed$(range_dB, 0) + " dB"
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.78, "half", "##Gate##  " + presetName$ + " | threshold " + fixed$(threshold_dBFS, 1) + " dBFS | range " + fixed$(range_dB, 1) + " dB | attack " + fixed$(attack_ms, 1) + " ms | hold " + fixed$(hold_ms, 1) + " ms | release " + fixed$(release_ms, 1) + " ms"
+    Text: 0.02, "left", 0.50, "half", "##Activity##  average openness " + fixed$(avgOpenness, 1) + "\% | signal above threshold " + fixed$(binaryOpenPercent, 1) + "\% | " + if is_ducker then "ducking mode" else "gate mode" fi
+    Text: 0.02, "left", 0.22, "half", "##Output##  " + fixed$(dur, 3) + " s | " + string$(nChannels) + " ch | peak " + fixed$(outPeakViz, 3)
+    Colour: "Black"
+    Draw inner box
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.20
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 # ============================================================

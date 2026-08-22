@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -29,6 +29,16 @@
 #     Assembly is incremental: one copy in RAM at a time.
 #     Envelope is a single vectorised Formula: call.
 #     No sample-by-sample loops.
+#
+# Changelog v1.3 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog:
 #   1.2 (2026) -- Repetitions is now a natural number. It was `positive`,
@@ -75,7 +85,7 @@ srcSound = selected("Sound")
 srcName$ = selected$("Sound")
 
 # === Form ===
-form Sound Duplicator
+form Sound Duplicator v1.3
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -248,7 +258,7 @@ predictedDur = n * srcDur - (n - 1) * xfSec
 
 # === Info ===
 clearinfo
-writeInfoLine:  "=== Sound Duplicator v1.2 ==="
+writeInfoLine:  "=== Sound Duplicator v1.3 ==="
 appendInfoLine: "Source:          ", srcName$
 appendInfoLine: "Source duration: ", fixed$(srcDur, 4), " s"
 appendInfoLine: "Sample rate:     ", srcSR, " Hz"
@@ -449,21 +459,18 @@ if draw_visualization = 1
     appendInfoLine: "Drawing visualization..."
 
     Erase all
-    Select outer viewport: 0, 8, 0, 7.5
-
-    # ---- Title ----
-    Select outer viewport: 0, 8, 0, 0.50
+    vizName$ = replace$(srcName$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##Sound Duplicator##"
-    Font size: 8
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.15, "half",
-        ... srcName$ + "  x" + string$(n)
-        ... + "  |  xfade: " + fixed$(crossfade_duration_ms, 1) + " ms"
-        ... + "  |  env: " + envStr$
-        ... + "  |  out: " + fixed$(finalDur, 2) + " s"
+    Text: 0.5, "centre", 0.68, "half", "##Sound Duplicator v1.3##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " x" + string$(n) + " | xfade " + fixed$(crossfade_duration_ms, 1) + " ms | " + envStr$ + " | out " + fixed$(finalDur, 2) + " s"
 
     # ---- Source waveform ----
     Select outer viewport: 0, 8, 0.55, 1.80
@@ -516,7 +523,7 @@ if draw_visualization = 1
         envTop = envTop * normGain
     endif
     Axes: 0, finalDur, -0.05, envTop
-    Paint rectangle: "{0.96, 0.96, 0.98}", 0, finalDur, -0.05, envTop
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -0.05, envTop
 
     # Same expression string that was applied to the audio, sampled at
     # 500 Hz and drawn with one C-level call. If normalization ran, the
@@ -561,7 +568,7 @@ if draw_visualization = 1
     Select outer viewport: 0, 8, 4.25, 5.35
     Select inner viewport: 0.6, 7.7, 4.32, 5.28
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.93, 0.93, 0.93}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
     Text: 0.02, "left", 0.87, "half", "##Summary##"
@@ -595,6 +602,14 @@ if draw_visualization = 1
 
     Font size: 10
     Colour: "Black"
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.20
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 selectObject: resultSound

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -11,6 +11,16 @@
 #   Sample-and-hold processor with multiple control modes
 #   including binary gating, intensity-based, AM, pitch-gated,
 #   custom patterns, and spectral centroid gating.
+#
+# Changelog v1.4 (2026):
+#   - VISUALIZATION / UI STANDARDIZATION ONLY. Audio analysis,
+#     DSP, scheduling and rendering are unchanged from the
+#     previous version.
+#   - Adopted the Praat AudioTools 8-inch visualization header,
+#     suite typography, neutral panel backgrounds, summary-style
+#     reporting and full-page Picture export restoration.
+#   - Preserved the script-specific diagnostic / transformation
+#     views rather than replacing them with generic plots.
 #
 # Changelog v1.0:
 #   - Added presets, smoothing, play, improved info output
@@ -65,7 +75,7 @@
 #     implies that 5.3 ms is generally usable.
 # ============================================================
 
-form Sample-and-Hold Processor v1.3
+form Sample-and-Hold Processor v1.4
     optionmenu Preset 1
         option Custom
         option Rhythmic Chop (binary)
@@ -264,7 +274,7 @@ endif
 # === INFO HEADER ===
 clearinfo
 appendInfoLine: "=============================================="
-appendInfoLine: "  SAMPLE-AND-HOLD PROCESSOR v1.3"
+appendInfoLine: "  SAMPLE-AND-HOLD PROCESSOR v1.4"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", sound_name$, " (", fixed$(dur, 2), "s)"
@@ -684,13 +694,18 @@ if visualize
     appendInfoLine: "Creating visualization..."
 
     Erase all
-
-    # === TITLE ===
-    Select outer viewport: 1, 8, 0, 0.4
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+    pageWidth = 8
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Font size: 11
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Sample-and-Hold## | " + presetName$ + " | " + modeName$
+    Text: 0.5, "centre", 0.68, "half", "##Sample-and-Hold Processor v1.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + modeName$
 
     # === ORIGINAL ===
     Select outer viewport: 0, 8, 0.5, 2.0
@@ -721,7 +736,7 @@ if visualize
 
     # Background
     Axes: sourceStart, sourceEnd, envLo, envHi
-    Paint rectangle: "{0.95, 0.95, 0.95}", sourceStart, sourceEnd, envLo, envHi
+    Paint rectangle: "{0.97, 0.97, 0.97}", sourceStart, sourceEnd, envLo, envHi
 
     # Unity reference
     Colour: "{0.70, 0.70, 0.70}"
@@ -757,36 +772,42 @@ if visualize
     Text left: "yes", "Output"
     Text bottom: "yes", "Time (s)"
 
-    # === PARAMETERS ===
-    Select outer viewport: 0, 8, 5.1, 5.5
-    Axes: 0, 1, 0, 1
-    Font size: 6
-    Colour: "{0.40, 0.40, 0.40}"
-
+    # === Summary strip ===
     if workingMode = 2
-        paramText$ = "Threshold: " + fixed$(workingIntensityThresh, 0) + " dB"
+        paramText$ = "threshold " + fixed$(workingIntensityThresh, 0) + " dB"
     elsif workingMode = 3
-        paramText$ = "Freq: " + fixed$(workingAMFreq, 1) + " Hz | Depth: " + fixed$(workingAMDepth, 2)
+        paramText$ = "AM " + fixed$(workingAMFreq, 1) + " Hz | depth " + fixed$(workingAMDepth, 2)
     elsif workingMode = 4
-        paramText$ = "Pitch threshold: " + fixed$(workingPitchThresh, 0) + " Hz"
+        paramText$ = "pitch threshold " + fixed$(workingPitchThresh, 0) + " Hz"
     elsif workingMode = 6
-        paramText$ = "Centroid threshold: " + fixed$(workingCentroidThresh, 0) + " Hz"
+        paramText$ = "centroid threshold " + fixed$(workingCentroidThresh, 0) + " Hz"
     else
-        paramText$ = "Period: " + fixed$(workingPeriod * 1000, 1) + " ms"
+        paramText$ = "period " + fixed$(workingPeriod * 1000, 1) + " ms"
     endif
-
-    paramText$ = paramText$ + " | Mute: " + fixed$(mute_level, 2)
-    paramText$ = paramText$ + " | Smoothing: " + fixed$(workingSmooth_ms, 2) + " ms (" + smoothName$ + ")"
     if peak_normalize_output
-        paramText$ = paramText$ + " | Norm: x" + fixed$(normGain, 3)
+        normViz$ = "x" + fixed$(normGain, 3)
     else
-        paramText$ = paramText$ + " | Norm: off"
+        normViz$ = "off"
     endif
-
-    Text: 0.5, "centre", 0.5, "half", paramText$
-
+    Select outer viewport: 0, 8, 5.12, 6.30
+    Select inner viewport: 0.60, 7.70, 5.20, 6.22
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.78, "half", "##Control##  " + presetName$ + " | " + modeName$ + " | " + paramText$
+    Text: 0.02, "left", 0.50, "half", "##Gate character##  mute " + fixed$(mute_level, 2) + " | smoothing " + fixed$(workingSmooth_ms, 2) + " ms (" + smoothName$ + ") | sample period " + fixed$(workingPeriod * 1000, 2) + " ms"
+    Text: 0.02, "left", 0.22, "half", "##Output##  " + fixed$(dur, 3) + " s | " + string$(nChannels) + " ch | peak " + fixed$(outPeak, 3) + " | normalization " + normViz$
+    Colour: "Black"
+    Draw inner box
+    # Restore complete page for Picture export / clipboard.
+    pageHeight = 6.50
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
+
 endif
 
 removeObject: gainEnvDraw
