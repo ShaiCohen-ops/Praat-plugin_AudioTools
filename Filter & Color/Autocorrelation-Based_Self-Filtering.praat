@@ -3,9 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026) - Spatial Stereo Widening & Parameter Decorrelation
+# Version: 1.3 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.3 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Description:
 #   Self-filtering using time-varying frame autocorrelation kernels.
@@ -21,7 +28,7 @@ endif
 sound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Autocorrelation-Based Self-Filtering v1.2
+form Autocorrelation-Based Self-Filtering v1.3
     optionmenu Preset: 1
         option Manual
         option Tight/Metallic
@@ -92,7 +99,7 @@ endif
 # Setup & Parameter Validation
 # ============================================================
 clearinfo
-writeInfoLine: "=== Autocorrelation Self-Filtering v1.2 (Stereo Spatialization) ==="
+writeInfoLine: "=== Autocorrelation Self-Filtering v1.3 (Stereo Spatialization) ==="
 appendInfoLine: "Preset:          ", presetName$
 appendInfoLine: "Input:           ", originalName$
 appendInfoLine: ""
@@ -397,6 +404,8 @@ endfor
 # ============================================================
 procedure drawVisualization
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     
     # 1. Measure Individual Sound Peaks
     selectObject: sound
@@ -416,12 +425,17 @@ procedure drawVisualization
     endif
     
     # 2. Main Title
-    Select outer viewport: 0, 8, 0, 0.4
-    Font size: 11
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Autocorrelation Self-Filtering (v1.2): " + originalName$ + " [" + presetName$ + "]"
-    
-    # 3. Original Waveform
+    Text: 0.5, "centre", 0.68, "half", "##Autocorrelation-Based Self-Filtering v1.3##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
+
     Select outer viewport: 0, 8, 0.5, 1.7
     Select inner viewport: 0.8, 7.6, 0.65, 1.6
     selectObject: sound
@@ -429,7 +443,7 @@ procedure drawVisualization
     Draw: origXmin, origXmax, -origAbs, origAbs, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original (pk:" + fixed$(origAbs / 1.1, 2) + ")"
     
     # 4. Output Waveform
@@ -440,7 +454,7 @@ procedure drawVisualization
     Draw: origXmin, origXmax, -outAbs, outAbs, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Output (pk:" + fixed$(outAbs / 1.1, 2) + ")"
     Text bottom: "yes", "Time (s)"
     
@@ -467,7 +481,7 @@ procedure drawVisualization
         
         Colour: "Black"
         Draw inner box
-        Font size: 8
+        Font size: 7
         Text left: "yes", "IR Gain"
         Text bottom: "yes", "Lag (s)"
         Text top: "no", "Example Color Kernel"
@@ -480,7 +494,7 @@ procedure drawVisualization
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
-    Font size: 8
+    Font size: 7
     Colour: "{0.2, 0.2, 0.2}"
     Text: 0.08, "left", 0.84, "half", "Window duration: " + fixed$(window_duration * 1000, 0) + " ms"
     Text: 0.08, "left", 0.70, "half", "Max lag limit:    " + fixed$(max_lag * 1000, 1) + " ms"
@@ -492,6 +506,12 @@ procedure drawVisualization
     Colour: "Black"
     Draw inner box
     Font size: 10
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endproc
 
 if draw_visualization

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.2 (2026)
+# Version: 2.3 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -30,6 +30,13 @@
 # Citation:
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.3 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v2.2:
 #   - Locally refines Intensity onset candidates with short RMS windows.
@@ -71,7 +78,7 @@
 #   preset, and random seed state.
 # ============================================================
 
-form Onset-Based Oscillator Bank v2.2
+form Onset-Based Oscillator Bank v2.3
     optionmenu Preset: 1
         option Custom
         option Gentle Resonance
@@ -245,7 +252,7 @@ elsif dry_wet_mix > 1
     dry_wet_mix = 1
 endif
 
-writeInfoLine: "=== Onset-Based Oscillator Bank v2.2 ==="
+writeInfoLine: "=== Onset-Based Oscillator Bank v2.3 ==="
 appendInfoLine: "Input:    ", name$
 appendInfoLine: "Preset:   ", presetName$
 appendInfoLine: "Speed:    ", speedStr$
@@ -617,30 +624,25 @@ if draw_visualization
     endfor
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Black
     Plain line
 
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(origName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Onset-Based Oscillator Bank v2.2##"
+    Text: 0.5, "centre", 0.68, "half", "##Onset-Based Oscillator Bank v2.3##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... name$
-        ... + "  |  " + presetName$
-        ... + "  |  " + speedStr$
-        ... + "  |  " + string$(validOnsets) + " / " + string$(numOnsets) + " valid onsets"
-        ... + "  |  " + string$(num_partials) + " partials"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # ----------------------------------------------------------
-    # PANEL A: ORIGINAL WAVEFORM + ONSET MARKERS  (left, headline)
-    # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
     Select inner viewport: 0.55, 4.00, 0.95, 4.40
 
@@ -808,6 +810,12 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

@@ -1,5 +1,6 @@
 # ============================================================
 # Praat AudioTools - Dynamic Formant Sweeper v1.0
+# Version: 1.1 (2026) - Suite-standard visualization
 # Spectral-envelope LFO processor
 #
 # Architecture:
@@ -25,7 +26,7 @@ endif
 inputSound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Dynamic Formant Sweeper v1.0
+form Dynamic Formant Sweeper v1.1
     optionmenu Preset: 1
         option Manual
         option Gentle Vowel Morph
@@ -35,7 +36,7 @@ form Dynamic Formant Sweeper v1.0
         option Alien Speech
         option Fast Wobble
         option Slow Sweep
-    comment === LFO Parameters ===
+    comment === Sweep ===
     real Rate_Hz 1.0
     positive Min_freq_Hz 500
     positive Max_freq_Hz 3500
@@ -45,35 +46,45 @@ form Dynamic Formant Sweeper v1.0
         option Square (Chopper)
         option Sawtooth
         option Reverse Sawtooth
-    comment === Spectral Envelope ===
     positive Envelope_width_Hz 360
     positive Sweep_strength_dB 14
     boolean Preserve_frame_energy 1
-    comment === Analysis ===
-    optionmenu Analysis_source: 2
-        option Channel 1
-        option Loudest channel
-        option Mono sum (cancels anti-phase)
-    positive Formant_time_step_ms 10
-    positive Formant_window_ms 30
-    positive Formant_ceiling_Hz 5500
-    comment === Processing ===
     real Dry_wet_mix 1.0
     boolean Apply_high_cut 0
     positive High_cut_Hz 8000
-    boolean Apply_fades 0
-    positive Fade_ms 10
-    comment === Output ===
-    optionmenu Output_level_mode: 2
-        option None (natural level)
-        option Match input RMS + safety ceiling
-        option Safety ceiling (attenuate only if above)
-        option Peak normalize (always scale to ceiling)
-    positive Ceiling_peak 0.95
+    boolean Advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
+# Advanced defaults preserve the original v1.0 behavior.
+analysis_source = 2
+formant_time_step_ms = 10
+formant_window_ms = 30
+formant_ceiling_Hz = 5500
+apply_fades = 0
+fade_ms = 10
+output_level_mode = 2
+ceiling_peak = 0.95
+if advanced_settings
+    form Dynamic Formant Sweeper - Advanced settings
+        optionmenu Analysis_source: 2
+            option Channel 1
+            option Loudest channel
+            option Mono sum (cancels anti-phase)
+        positive Formant_time_step_ms 10
+        positive Formant_window_ms 30
+        positive Formant_ceiling_Hz 5500
+        boolean Apply_fades 0
+        positive Fade_ms 10
+        optionmenu Output_level_mode: 2
+            option None (natural level)
+            option Match input RMS + safety ceiling
+            option Safety ceiling (attenuate only if above)
+            option Peak normalize (always scale to ceiling)
+        positive Ceiling_peak 0.95
+    endform
+endif
 # ------------------------------------------------------------
 # Presets
 # ------------------------------------------------------------
@@ -207,7 +218,7 @@ if dry_wet_mix = 0
 endif
 
 clearinfo
-writeInfoLine: "=== Dynamic Formant Sweeper v1.0 ==="
+writeInfoLine: "=== Dynamic Formant Sweeper v1.1 ==="
 appendInfoLine: "Method: moving spectral envelope, magnitude only, original phase."
 appendInfoLine: "No LPC resynthesis, inverse filtering, or FormantGrid filtering."
 appendInfoLine: "Input: ", originalName$, " | ", fixed$(duration, 2), " s | ", nChannels,
@@ -628,21 +639,24 @@ if draw_visualization
     specCeil = min(5000, nyquist)
 
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
-    Select outer viewport: 0, 8, 0.1, 0.5
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Dynamic Formant Sweeper##"
+    Text: 0.5, "centre", 0.68, "half", "##Dynamic Formant Sweeper v1.1##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.0, "half", originalName$ + "  |  " + presetName$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # LFO panel
     Select outer viewport: 0, 8, 0.6, 1.8
     Select inner viewport: 0.6, 7.6, 0.7, 1.7
     Axes: vizStart, vizEnd, min_freq_Hz - 100, max_freq_Hz + 100
-    Paint rectangle: "{0.95, 0.95, 0.95}", vizStart, vizEnd,
+    Paint rectangle: "{0.97, 0.97, 0.97}", vizStart, vizEnd,
         ... min_freq_Hz - 100, max_freq_Hz + 100
     Colour: "{0.80, 0.50, 0.20}"
     Line width: 2
@@ -764,6 +778,12 @@ if draw_visualization
         ... + "  |  " + levelAction$
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ------------------------------------------------------------

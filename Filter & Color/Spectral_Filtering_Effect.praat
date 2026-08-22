@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -25,6 +25,13 @@
 #   adaptive corrections and not copies of proprietary DAW preset curves.
 #   Each instrument preset combines HP/LP, shelves, and raised-cosine bell
 #   bands in one spectral transfer curve (one FFT/iFFT per channel).
+#
+# Changelog v1.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v1.3:
 #   - Added eight multi-band Instrument EQ starting-point presets:
@@ -69,7 +76,7 @@ if numSamples < 2
     exitScript: "Sound is too short."
 endif
 
-form Spectral Filtering Effect v1.3
+form Spectral Filtering Effect v1.4
     optionmenu Preset: 1
         option Manual
         option Bright & Airy
@@ -428,7 +435,7 @@ highTransSpan = highTransEnd - highEdge
 # ============================================================
 
 clearinfo
-writeInfoLine: "=== Spectral Filtering Effect v1.3 ==="
+writeInfoLine: "=== Spectral Filtering Effect v1.4 ==="
 appendInfoLine: "Input: ", soundName$, "   ", fixed$(duration, 3), " s   ", numChannels, " ch"
 appendInfoLine: "Sample rate: ", fixed$(sampleRate, 0), " Hz   start ", fixed$(xmin, 6), " s"
 appendInfoLine: "Preset: ", presetName$
@@ -638,18 +645,21 @@ if draw_visualization
     vizDuration = min(duration, 10)
 
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(soundName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.74, "half", "##Spectral Filtering Effect##"
+    Text: 0.5, "centre", 0.68, "half", "##Spectral Filtering Effect v1.4##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.24, "half", soundName$ + " | " + presetName$ + " | " + filterDesc$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # Input waveform
     Select outer viewport: 0, 8, 0.72, 1.42
     Select inner viewport: 0.55, 7.75, 0.78, 1.36
     selectObject: vizInID
@@ -944,6 +954,12 @@ if draw_visualization
     Colour: "Black"
     Line width: 1
     appendInfoLine: "Visualization complete."
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

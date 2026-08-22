@@ -3,9 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026) - verified adaptive bandpass + boundary-safe OLA
+# Version: 1.2 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.2 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Description:
 #   Pitch-tracked adaptive bandpass filter.
@@ -52,7 +59,7 @@ if duration < 0.05
 endif
 
 # === USER PARAMETERS ===
-form Intelligent EQ: Adaptive Bandpass v1.1
+form Intelligent EQ: Adaptive Bandpass v1.2
     comment === Preset ===
     optionmenu Preset 1
         option Custom
@@ -208,7 +215,7 @@ hopDur = hopSamples / sampleRate
 
 # === SETUP / INFO ===
 clearinfo
-writeInfoLine: "=== Intelligent EQ: Adaptive Bandpass v1.1 ==="
+writeInfoLine: "=== Intelligent EQ: Adaptive Bandpass v1.2 ==="
 appendInfoLine: "Input: ", originalName$, "  |  ", fixed$(duration, 2), " s  |  ", sampleRate, " Hz  |  ", numChannels, " ch"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Target: F0 x ", fixed$(f0_multiplier, 2), " + ", fixed$(f0_offset, 1), " Hz"
@@ -421,7 +428,8 @@ if show_visualization
     appendInfoLine: "[4/4] Creating AudioTools visualization..."
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     vizDuration = min(duration, 12)
     vizMaxHz = min(8000, nyquist)
@@ -448,19 +456,17 @@ if show_visualization
     # ----------------------------------------------------------
     # Title
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Intelligent EQ: Adaptive Bandpass##"
+    Text: 0.5, "centre", 0.68, "half", "##Intelligent EQ: Adaptive Bandpass v1.2##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
-        ... originalName$ + "  |  " + presetName$ + "  |  " + qualityName$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # ----------------------------------------------------------
-    # Input waveform
-    # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.52, 1.32
     Select inner viewport: 0.55, 7.65, 0.57, 1.27
     selectObject: vizInput
@@ -637,6 +643,12 @@ if show_visualization
     removeObject: vizInput, vizOutput
 else
     appendInfoLine: "[4/4] Visualization disabled."
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

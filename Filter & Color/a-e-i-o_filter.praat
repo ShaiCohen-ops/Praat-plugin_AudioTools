@@ -3,13 +3,20 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - Stereo-safe (mono copy for LPC Filter)
+# Version: 0.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Vowel Formant Filter - Applies vocal tract resonances
 #   of vowels (a, e, i, o, u) to shape the input sound's timbre.
+#
+# Changelog v0.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v0.2:
 #   - Fixed old syntax (select, exit)
@@ -27,7 +34,7 @@ endif
 sound = selected("Sound")
 origName$ = selected$("Sound")
 
-form Vowel Formant Filter v0.3
+form Vowel Formant Filter v0.4
     comment === Preset ===
     optionmenu Preset: 1
         option All Vowels (a-e-i-o-u)
@@ -129,7 +136,7 @@ endif
 # Setup
 # ============================================================
 clearinfo
-writeInfoLine: "=== Vowel Formant Filter v0.3 ==="
+writeInfoLine: "=== Vowel Formant Filter v0.4 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Input: ", origName$
 appendInfoLine: ""
@@ -352,14 +359,21 @@ if draw_visualization
     appendInfoLine: "Drawing visualization..."
     
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     
     # Title
-    Select outer viewport: 0, 8, 0, 0.5
+    suiteVizName$ = replace$(origName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Vowel Formant Filter: " + origName$ + " [" + presetName$ + "]"
-    
-    # Original waveform
+    Text: 0.5, "centre", 0.68, "half", "##Vowel Formant Filter v0.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
+
     Select outer viewport: 0, 8, 0.6, 1.8
     Select inner viewport: 0.6, 7.6, 0.75, 1.7
     selectObject: sound
@@ -367,7 +381,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # Filtered outputs
@@ -406,7 +420,7 @@ if draw_visualization
         Draw: 0, 0, 0, 0, "no", "Curve"
         Colour: "Black"
         Draw inner box
-        Font size: 8
+        Font size: 7
         Text left: "yes", vowelLabel$
         
         currentTop = currentTop + panelHeight
@@ -422,12 +436,32 @@ if draw_visualization
         Draw: 0, 0, 0, 0, "no", "Curve"
         Colour: "Black"
         Draw inner box
-        Font size: 8
+        Font size: 7
         Text left: "yes", "Output"
         Text bottom: "yes", "Time (s)"
+        currentTop = currentTop + 1.3
     endif
+
+    # === SUMMARY STRIP ===
+    pageHeight = currentTop + 1.05
+    Select outer viewport: 0, 8, currentTop + 0.15, currentTop + 0.95
+    Select inner viewport: 0.60, 7.70, currentTop + 0.23, currentTop + 0.87
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.70, "half", "##Vowels##  " + presetName$ + " | rendered " + string$(outputCount) + " filter targets"
+    Text: 0.02, "left", 0.30, "half", "##Output##  concatenate " + if concatenate_results then "yes" else "no" fi + " | source " + suiteVizName$
+    Colour: "Black"
+    Draw inner box
     
     Font size: 10
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

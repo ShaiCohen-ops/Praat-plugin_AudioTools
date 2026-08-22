@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,6 +23,13 @@
 #   - Medium shifts (50-300 Hz): metallic, bell-like, robotic
 #   - Large shifts (>500 Hz): alien, unintelligible speech
 #   - Negative shifts: darker, subharmonic content
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v0.3 - reviewed by running the script under Parselmouth,
 # so the figures below are measurements. v0.2 was not a working SSB
@@ -107,7 +114,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Frequency Shifter v0.4
+form Frequency Shifter v0.5
     optionmenu Preset: 1
         option Custom
         option Subtle Detune (15 Hz)
@@ -230,7 +237,7 @@ endif
 omega = 2 * pi * shift_hz
 aliasEdge = nyquist - abs(shift_hz)
 
-writeInfoLine: "Frequency Shifter v0.4"
+writeInfoLine: "Frequency Shifter v0.5"
 appendInfoLine: "======================"
 appendInfoLine: "Input: ", originalName$, " (", fixed$(duration, 2), " s, ", numChannels,
     ... " ch, ", sampleRate, " Hz)"
@@ -564,6 +571,8 @@ outPeak = Get absolute extremum: 0, 0, "None"
 # ============================================================
 if draw_visualization
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     specTop = min(5000, nyquist)
 
@@ -613,21 +622,17 @@ if draw_visualization
     endif
 
     # --- Title ---
-    Select outer viewport: 0, 8, 0, 0.5
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Frequency Shifter##"
+    Text: 0.5, "centre", 0.68, "half", "##Frequency Shifter v0.5##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.30, "half",
-        ... originalName$
-        ... + "  |  shift " + fixed$(shift_hz, 1) + " Hz"
-        ... + "  |  mix " + fixed$(dry_wet_mix * 100, 0) + "% wet"
-        ... + "  |  " + string$(numChannels) + " ch"
-        ... + "  |  channel " + string$(vizCh) + " shown"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + preset$
 
-    # --- Original spectrogram ---
     Select outer viewport: 0, 8, 0.6, 3.2
     Select inner viewport: 0.6, 7.7, 0.7, 3.1
     selectObject: origSpec
@@ -690,6 +695,12 @@ if draw_visualization
     Colour: "Black"
 
     removeObject: origMono, resultMono, origSpec, resultSpec
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

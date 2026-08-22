@@ -1,7 +1,7 @@
 # ============================================================
 # Praat AudioTools - Jitter-Shimmer Formant Mapping
 # Author: Shai Cohen
-# Version: 3.0 (2026) - Spectral-Envelope Landmark Edition
+# Version: 3.1.1 (2026) - Visualization variable fix
 # License: MIT License
 #
 # Concept:
@@ -22,8 +22,7 @@ if numberOfSelected("Sound") = 0
     exitScript: "Please select one or more Sound objects first."
 endif
 
-form Jitter Shimmer Formant Mapping v3.0
-    comment === PRESETS ===
+form Jitter Shimmer Formant Mapping v3.1.1
     optionmenu Preset 1
         option Modal (Subtle)
         option Breathy (Brighter)
@@ -31,38 +30,43 @@ form Jitter Shimmer Formant Mapping v3.0
         option Tense (Sharp)
         option Relaxed (Smooth)
         option Custom
-
-    comment === MAPPING INTENSITY ===
+    comment === Mapping ===
     positive Global_intensity 1.0
-
-    comment === CUSTOM WEIGHTS (0 for no effect) ===
     real Shimmer_to_F1F2 0.3
     real Jitter_to_F3F5 0.3
-
-    comment === PITCH CONTROL ===
     boolean Auto_detect_pitch_range 1
-    positive Manual_pitch_floor_Hz 75
-    positive Manual_pitch_ceiling_Hz 600
     boolean Apply_pitch_shift 0
-
-    comment === OUTPUT / VISUALIZATION ===
+    real Dry_wet_mix 1.0
+    boolean Advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_result 1
-    boolean Keep_intermediates 0
-
-    comment === SPECTRAL-ENVELOPE ENGINE ===
-    positive Max_formant_hz 5500
-    positive Envelope_width_scale 1.0
-    positive Envelope_strength_dB 15
-    real Dry_wet_mix 1.0
-    boolean Require_formant_confidence 1
-    optionmenu Output_level_mode 1
-        option Natural level
-        option Safety ceiling
-        option Peak normalize
-    positive Ceiling_peak 0.95
 endform
 
+manual_pitch_floor_Hz = 75
+manual_pitch_ceiling_Hz = 600
+keep_intermediates = 0
+max_formant_hz = 5500
+envelope_width_scale = 1.0
+envelope_strength_dB = 15
+require_formant_confidence = 1
+output_level_mode = 1
+ceiling_peak = 0.95
+if advanced_settings
+    form Jitter Shimmer Formant Mapping - Advanced settings
+        positive Manual_pitch_floor_Hz 75
+        positive Manual_pitch_ceiling_Hz 600
+        boolean Keep_intermediates 0
+        positive Max_formant_hz 5500
+        positive Envelope_width_scale 1.0
+        positive Envelope_strength_dB 15
+        boolean Require_formant_confidence 1
+        optionmenu Output_level_mode 1
+            option Natural level
+            option Safety ceiling
+            option Peak normalize
+        positive Ceiling_peak 0.95
+    endform
+endif
 # ------------------------------------------------------------
 # Validate / clamp user parameters
 # ------------------------------------------------------------
@@ -155,7 +159,7 @@ for fn from 1 to 5
 endfor
 
 clearinfo
-writeInfoLine: "=== Jitter-Shimmer Formant Mapping v3.0 ==="
+writeInfoLine: "=== Jitter-Shimmer Formant Mapping v3.1.1 ==="
 appendInfoLine: "Engine: static spectral-envelope warp; original phase preserved"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Selected sounds: ", numSounds
@@ -545,9 +549,11 @@ endfor
 if draw_visualization and numSounds > 0 and resultSounds#[1] <> 0
     appendInfoLine: "Drawing visualization..."
     selectObject: sounds#[1]
+    vizOriginalName$ = selected$("Sound")
     vizOrigDur = Get total duration
     vizOrigXmin = Get start time
     vizOrigSR = Get sampling frequency
+    maxVizFreq = min(max_formant_hz, 0.49 * vizOrigSR)
     vizEnd = min(vizOrigXmin + 5, vizOrigXmin + vizOrigDur)
 
     selectObject: sounds#[1]
@@ -579,16 +585,18 @@ if draw_visualization and numSounds > 0 and resultSounds#[1] <> 0
     endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 0.55
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
+    suiteVizName$ = replace$(vizOriginalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "Jitter-Shimmer Formant Mapping v3.0"
+    Text: 0.5, "centre", 0.68, "half", "##Jitter Shimmer Formant Mapping v3.1.1##"
     Font size: 7
-    Colour: "{0.4,0.4,0.4}"
-    Text: 0.5, "centre", 0.20, "half", presetName$ + " | spectral-envelope landmarks"
-
-    maxVizFreq = min(5000, vizOrigSR / 2 - 50)
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
     Select outer viewport: 0, 4, 0.7, 2.6
     Select inner viewport: 0.55, 3.75, 0.85, 2.45
@@ -635,7 +643,9 @@ if draw_visualization and numSounds > 0 and resultSounds#[1] <> 0
     Text left: "yes", "Frequency (Hz)"
     Text top: "no", "Formant landmarks: grey = measured, blue = target"
 
+    # === SUMMARY STRIP ===
     Select outer viewport: 0, 8, 4.7, 5.45
+    Select inner viewport: 0.60, 7.70, 4.78, 5.37
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94,0.94,0.94}", 0, 1, 0, 1
     Colour: "Black"
@@ -645,6 +655,12 @@ if draw_visualization and numSounds > 0 and resultSounds#[1] <> 0
     Text: 0.5, "centre", 0.30, "half", "Static FFT per channel | original phase preserved | confidence " + string$(vizConfidence)
 
     removeObject: originalViz, resultViz
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # Final selection: all results.

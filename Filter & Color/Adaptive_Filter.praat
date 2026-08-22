@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -32,6 +32,13 @@
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.3 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v1.1:
 #   - Weighted overlap-add with padding. v1.0 used
@@ -137,7 +144,7 @@ endif
 sound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Adaptive Filter v1.2
+form Adaptive Filter v1.3
     optionmenu Preset: 1
         option Custom
         option Rising Lowpass (dark to bright)
@@ -342,7 +349,7 @@ endif
 # SETUP
 # ============================================================
 clearinfo
-writeInfoLine: "=== Adaptive Filter v1.2 ==="
+writeInfoLine: "=== Adaptive Filter v1.3 ==="
 appendInfoLine: "Preset: ", preset$
 appendInfoLine: "Filter: ", filterType$, " | Curve: ", curve$, " | Window: ", quality$
 
@@ -577,20 +584,21 @@ appendInfoLine: ""
 # ============================================================
 if draw_visualization
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.5
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Adaptive Filter##"
+    Text: 0.5, "centre", 0.68, "half", "##Adaptive Filter v1.3##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.30, "half",
-        ... originalName$ + "  |  " + preset$ + "  |  " + filterType$
-        ... + "  |  " + curve$ + "  |  " + quality$ + " window"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + preset$
 
-    # === FILTER SWEEP DISPLAY ===
     Select outer viewport: 0, 8, 0.6, 3.9
     Select inner viewport: 0.6, 7.7, 0.7, 3.7
 
@@ -756,6 +764,12 @@ if draw_visualization
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
     Colour: "Black"
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

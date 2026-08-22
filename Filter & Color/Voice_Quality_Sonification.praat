@@ -2,7 +2,7 @@
 # Praat AudioTools - Voice_Quality_Sonification.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026)
+# Version: 1.2 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,13 @@
 #   4. Filter the full source at each control point and linearly
 #      crossfade adjacent filter states for click-free time variation.
 #
+# Changelog v1.2 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
+#
 # Changelog v1.1:
 #   - FIX: analysis no longer uses a Hamming taper, which artificially
 #     inflated shimmer and jitter.
@@ -34,7 +41,7 @@
 #   - NEW: AudioTools house-style visualization.
 # ============================================================
 
-form Voice Quality Sonification v1.1
+form Voice Quality Sonification v1.2
     optionmenu Preset: 1
         option Custom
         option Subtle Variation
@@ -186,7 +193,7 @@ endif
 # REPORT HEADER
 # ============================================================
 clearinfo
-writeInfoLine: "=== Voice Quality Sonification v1.1 ==="
+writeInfoLine: "=== Voice Quality Sonification v1.2 ==="
 appendInfoLine: "Input: ", originalName$, "   ", fixed$(duration, 3), " s   ", numChannels, " ch   ", fixed$(sampleRate, 0), " Hz"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Analysis source: ", analysisSourceLabel$
@@ -495,6 +502,8 @@ outputPeak = Get absolute extremum: 0, 0, "None"
 # ============================================================
 if draw_analysis
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Helvetica
     Line width: 1
 
@@ -505,16 +514,17 @@ if draw_analysis
     colLabel$ = "{0.35,0.35,0.52}"
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Voice Quality Sonification##"
+    Text: 0.5, "centre", 0.68, "half", "##Voice Quality Sonification v1.2##"
     Font size: 7
-    Colour: colLabel$
-    Text: 0.5, "centre", -1.22, "half", originalName$ + " | " + presetName$ + " | " + mappingName$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # Normalized metrics
     Select outer viewport: 0, 8, 0.72, 2.00
     Select inner viewport: 0.65, 7.7, 0.84, 1.92
     Axes: 0, duration, 0, 1
@@ -645,6 +655,12 @@ if draw_analysis
     Font size: 10
     Colour: "Black"
     Line width: 1
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

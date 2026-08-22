@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -17,6 +17,13 @@
 #   This is creative whisper resynthesis, not a physiological whisper model.
 #   The LPC filter preserves a time-varying vocal-tract spectral envelope;
 #   the periodic excitation is replaced partly or fully by noise.
+#
+# Changelog v1.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v1.3:
 #   - Dry path is now the unmodified source; LPC analysis no longer normalizes it.
@@ -32,7 +39,7 @@
 #   - Visualization updated to the AudioTools house style.
 # ============================================================
 
-form Whisper Morph v1.3
+form Whisper Morph v1.4
     optionmenu Preset: 1
         option Custom
         option Gentle Whisper
@@ -189,7 +196,7 @@ endif
 lpcOrder = round((2 + sampleRate / 1000) * lPC_order_factor)
 lpcOrder = max(10, min(50, lpcOrder))
 
-writeInfoLine: "=== Whisper Morph v1.3 ==="
+writeInfoLine: "=== Whisper Morph v1.4 ==="
 appendInfoLine: "Input: ", originalName$, " | ", numChannels, " ch | ", fixed$(sampleRate, 0), " Hz"
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s | start ", fixed$(xminOriginal, 3), " s"
 appendInfoLine: "Preset: ", presetName$
@@ -367,19 +374,21 @@ if draw_visualization
     endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Whisper Morph##"
+    Text: 0.5, "centre", 0.68, "half", "##Whisper Morph v1.4##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.25, "half", originalName$ + " | " + presetName$ + " | " + morphType$ + " | " + curve$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # Input waveform
     Select outer viewport: 0, 8, 0.72, 1.48
     Select inner viewport: 0.55, 7.7, 0.80, 1.42
     selectObject: vizIn
@@ -511,6 +520,12 @@ if draw_visualization
     Line width: 1
 
     removeObject: vizIn, vizOut, specIn, specOut
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

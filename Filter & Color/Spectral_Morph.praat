@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.1 (2026)
+# Version: 3.2 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -28,6 +28,13 @@
 #   - Equal channel counts: channels are morphed pairwise.
 #   - Mono + multichannel: the mono source is reused for every output channel.
 #   - Other channel-count mismatches are rejected explicitly.
+#
+# Changelog v3.2 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v3.1:
 #   - Fixed endpoint OLA distortion and truncated tail with padded,
@@ -54,7 +61,7 @@ soundB = selected("Sound", 2)
 nameA$ = selected$("Sound", 1)
 nameB$ = selected$("Sound", 2)
 
-form Spectral Morph v3.1
+form Spectral Morph v3.2
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -220,7 +227,7 @@ endif
 # ============================================================
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  SPECTRAL MORPH v3.1"
+writeInfoLine: "  SPECTRAL MORPH v3.2"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "A: ", nameA$, " | ", fixed$(durA, 3), " s | ", chA, " ch | ", fixed$(srA, 0), " Hz | start ", fixed$(xminA, 3)
@@ -528,19 +535,20 @@ if draw_visualization
     endif
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.65
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Spectral Morph##"
+    Text: 0.5, "centre", 0.68, "half", "##Spectral Morph v3.2##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.20, "half", nameA$ + " -> " + nameB$ + " | " + presetName$ + " | " + modeLabel$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", presetName$
 
-    # A waveform
     Select outer viewport: 0, 8, 0.72, 1.35
     Select inner viewport: 0.55, 7.75, 0.78, 1.30
     selectObject: vizA
@@ -616,7 +624,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 5.62, 6.70
     Select inner viewport: 0.55, 7.75, 5.72, 6.63
     Axes: 0, commonDuration, 0, 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, commonDuration, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, commonDuration, 0, 1
     Colour: "{0.35, 0.42, 0.68}"
     Line width: 1.5
     prevT = 0
@@ -667,6 +675,12 @@ if draw_visualization
 
     removeObject: vizA, vizB, vizOut
     appendInfoLine: "  Visualization complete."
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

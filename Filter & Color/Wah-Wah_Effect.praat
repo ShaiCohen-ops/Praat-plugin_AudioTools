@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -21,6 +21,13 @@
 #       distributed from 0 to Stereo_offset cycles across channels
 #     - Envelope Follower uses the same envelope-derived center on all channels
 #
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
+#
 # Changelog v0.4:
 #   - Replaced hard segment processing with continuous sqrt-Hann STFT/OLA.
 #   - Added real Envelope Follower mode; Auto-Wah now follows source level.
@@ -31,7 +38,7 @@
 #   - Renamed misleading Talk Box / Crying Baby style labels.
 # ============================================================
 
-form Wah-Wah Effect v0.4
+form Wah-Wah Effect v0.5
     optionmenu Preset: 1
         option Custom
         option Classic Wah (slow)
@@ -334,7 +341,7 @@ endif
 # ============================================================
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  WAH-WAH EFFECT v0.4"
+writeInfoLine: "  WAH-WAH EFFECT v0.5"
 writeInfoLine: "=============================================="
 appendInfoLine: "Input: ", originalName$, " | ", fixed$(totalDuration, 3), " s | ", numChannels, " ch | ", fixed$(sampleRate, 0), " Hz | start ", fixed$(xmin0, 3)
 appendInfoLine: "Output channels: ", channelNote$
@@ -524,19 +531,21 @@ if draw_response
     resultMono = Convert to mono
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##Wah-Wah Effect##"
+    Text: 0.5, "centre", 0.68, "half", "##Wah-Wah Effect v0.5##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.22, "half", originalName$ + " | " + presetName$ + " | " + modulationName$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # Input waveform
     Select outer viewport: 0, 8, 0.72, 1.52
     Select inner viewport: 0.55, 7.75, 0.80, 1.46
     selectObject: origMono
@@ -567,7 +576,7 @@ if draw_response
         yMax = min(nyquist, min_frequency + 1000)
     endif
     Axes: 0, totalDuration, 0, yMax
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, totalDuration, 0, yMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, totalDuration, 0, yMax
     Colour: "{0.85, 0.85, 0.85}"
     Draw line: 0, min_frequency, totalDuration, min_frequency
     Draw line: 0, max_frequency, totalDuration, max_frequency
@@ -633,7 +642,7 @@ if draw_response
     repResWidth = max(binWidth, bandwidth * 0.18)
     respMax = max(1.2, resonance_peak * 1.1)
     Axes: 0, min(nyquist, max_frequency + 2*bandwidth), 0, respMax
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, min(nyquist, max_frequency + 2*bandwidth), 0, respMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, min(nyquist, max_frequency + 2*bandwidth), 0, respMax
     nResp = 260
     prevX = 0
     prevY = 0
@@ -684,6 +693,12 @@ if draw_response
     Colour: "Black"
     Line width: 1
     removeObject: origMono, resultMono
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

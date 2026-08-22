@@ -3,9 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Description:
 #   Resonant comb-cascade effect. A single recursive feedback comb
@@ -34,7 +41,7 @@ endif
 soundID = selected("Sound")
 soundName$ = selected$("Sound")
 
-form Resonant Comb Cascade v1.3
+form Resonant Comb Cascade v1.4
     optionmenu Preset: 1
         option Custom
         option Light Echo (5-stage cascade)
@@ -199,7 +206,7 @@ delayMs = delay / sampleRate * 1000
 maxDelayMs = delay_samples / sampleRate * 1000
 
 clearinfo
-writeInfoLine: "=== Resonant Comb Cascade v1.3 ==="
+writeInfoLine: "=== Resonant Comb Cascade v1.4 ==="
 appendInfoLine: "Input: ", soundName$, "   ", fixed$(duration, 3), " s   ", numChannels, " ch   ", round(sampleRate), " Hz"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Cascade stages: ", cascade_stages, "  (stages, not repeat count)"
@@ -310,6 +317,8 @@ if draw_visualization
     endif
 
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Helvetica
     Line width: 1
 
@@ -320,21 +329,17 @@ if draw_visualization
     colGrid$ = "{0.86, 0.86, 0.88}"
 
     # TITLE
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(soundName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Resonant Comb Cascade v1.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Resonant Comb Cascade v1.4##"
     Font size: 7
-    Colour: colAccent$
-    Text: 0.5, "centre", -0.22, "half",
-        ... soundName$ + " | " + presetName$
-        ... + " | " + string$(cascade_stages) + " stages"
-        ... + " | fb " + fixed$(feedback_amount * 100, 0) + "%"
-        ... + " | D " + string$(delay) + " samp (" + fixed$(delayMs, 2) + " ms)"
-        ... + " | wet " + fixed$(dry_wet_mix * 100, 0) + "%"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # PANEL A: ACTUAL CASCADE IMPULSE COEFFICIENTS
     Select outer viewport: 0, 4.1, 0.75, 3.55
     Select inner viewport: 0.65, 3.90, 0.95, 3.40
 
@@ -396,7 +401,7 @@ if draw_visualization
     Paint rectangle: colGrey$, 0, 1, 0, 1
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Colour: "{0.25, 0.25, 0.30}"
     Text: 0.05, "left", 0.91, "half", "##Algorithm##"
     Font size: 7
@@ -504,6 +509,12 @@ if draw_visualization
         removeObject: origSpecID, resSpecID
     endif
     removeObject: vizInID, vizOutID
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

@@ -3,7 +3,14 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.8 (2026)
+# Version: 0.9 (2026) - Suite-standard visualization
+#
+# Changelog v0.9 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v0.8 (2026):
 #   - Rebuilt the Picture-window visualization to match the established
@@ -74,7 +81,7 @@ endif
 sound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Amplitude-Varying Ring Modulation v0.8
+form Amplitude-Varying Ring Modulation v0.9
     comment Ring modulation with frequency chirp and amplitude tremolo.
     optionmenu Preset: 1
         option Manual
@@ -231,7 +238,7 @@ ampMax = amplitude_center + amplitude_depth
 #=============================================================================
 
 clearinfo
-writeInfoLine: "=== Amplitude-Varying Ring Modulation v0.8 ==="
+writeInfoLine: "=== Amplitude-Varying Ring Modulation v0.9 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -287,7 +294,8 @@ appendInfoLine: ""
 
 procedure drawModulation
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # Smart time ticks
     if duration > 30
@@ -305,25 +313,17 @@ procedure drawModulation
     # ----------------------------------------------------------
     # TITLE
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0.00, 0.58
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##Amplitude-Varying Ring Modulation##"
+    Text: 0.5, "centre", 0.68, "half", "##Amplitude-Varying Ring Modulation v0.9##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.10, "half",
-        ... "[" + presetName$ + "]  " + originalName$
-        ... + "  |  " + fixed$(duration, 2) + " s"
-        ... + "  |  C@1s " + fixed$(carrier_frequency, 0) + " Hz"
-        ... + "  |  E " + fixed$(sweep_exponent, 2)
-        ... + "  |  AM " + fixed$(amplitude_rate, 1) + " Hz"
-        ... + "  |  " + string$(numChannels) + " ch"
-
-    # ----------------------------------------------------------
-    # PANEL A — CARRIER-FREQUENCY TRAJECTORY
-    # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.76, 3.55
     Select inner viewport: 0.78, 7.72, 1.00, 3.31
 
@@ -404,7 +404,7 @@ procedure drawModulation
     Line width: 1
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text top: "no", "A  Carrier-frequency trajectory"
     Font size: 7
     Text bottom: "yes", "Time from sound start (s)"
@@ -468,7 +468,7 @@ procedure drawModulation
     Line width: 1
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text top: "no", "B  Post-ring-modulation amplitude envelope"
     Font size: 7
     Text bottom: "yes", "Time from sound start (s)"
@@ -487,6 +487,12 @@ procedure drawModulation
     Font size: 10
     Colour: "Black"
     Line width: 1
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endproc
 
 if draw_modulation
@@ -536,7 +542,7 @@ if draw_modulation
     Select outer viewport: 0, 8, 6.67, 7.70
     Select inner viewport: 0.55, 7.72, 6.72, 7.65
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
 
     # Column separators.
     Colour: "{0.78, 0.78, 0.78}"

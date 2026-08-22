@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2025)
+# Version: 0.4.1 (2026) - IIR visualization summary hotfix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,6 +24,21 @@
 # Usage:
 #   Select a Sound object in Praat and run this script.
 #
+# Changelog v0.4.1 (2026):
+#   - VISUALIZATION HOTFIX ONLY: removed an invalid Dry/Wet field
+#     from the summary strip. This filter has no dry_wet_mix
+#     parameter; the reference was introduced by the visualization
+#     standardization pass and caused an Unknown variable error.
+#   - IIR design, SOS coefficients, plotting procedures and audio
+#     rendering are unchanged from v0.4.
+#
+# Changelog v0.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
+#
 # Changelog v0.3:
 #   - Custom IIR: replaced per-sample Get/Set with a matrix->vector
 #     preload + fast indexed recurrence (output identical, much faster).
@@ -35,7 +50,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form Classic IIR Filter Bank
+form Classic IIR Filter Bank v0.4.1
     optionmenu Preset: 1
         option Custom
         option Speech Lowpass (3.5 kHz)
@@ -339,14 +354,43 @@ endif
 # ============================================================
 if plot_responses or plot_zplane
     Erase all
-    
+    pageHeight = 8.70
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Classic IIR Filter Bank v0.4.1##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", originalName$ + " | " + filterTypeName$ + " " + filterModeName$ + " | order " + string$(order)
+
     if plot_responses
         @plotFrequencyResponse
     endif
-    
     if plot_zplane
         @plotZPlane
     endif
+
+    Select outer viewport: 0, 8, 7.88, 8.60
+    Select inner viewport: 0.60, 7.70, 7.96, 8.52
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.70, "half", "##Filter##  " + filterTypeName$ + " | " + filterModeName$ + " | order " + string$(order) + " | cutoff " + fixed$(cutoff_frequency, 1) + " Hz"
+    Text: 0.02, "left", 0.30, "half", "##Render##  " + modeNote$ + " | target peak " + fixed$(scale_peak, 2) + " | " + fixed$(sampleRate, 0) + " Hz"
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================
@@ -518,11 +562,11 @@ procedure plotFrequencyResponse
     
     # PANEL 1: Magnitude
     if plot_zplane
-        Select outer viewport: 0, 6, 0, 2.2
-        Select inner viewport: 0.7, 5.8, 0.3, 2.0
+        Select outer viewport: 0, 8, 0.72, 2.55
+        Select inner viewport: 0.60, 7.70, 0.90, 2.38
     else
-        Select outer viewport: 0, 6, 0, 3
-        Select inner viewport: 0.7, 5.8, 0.4, 2.7
+        Select outer viewport: 0, 8, 0.72, 3.30
+        Select inner viewport: 0.60, 7.70, 0.95, 3.10
     endif
     
     Axes: 0, nyquist, -80, 10
@@ -569,11 +613,11 @@ procedure plotFrequencyResponse
     
     # PANEL 2: Phase
     if plot_zplane
-        Select outer viewport: 0, 6, 2.2, 4.4
-        Select inner viewport: 0.7, 5.8, 2.5, 4.2
+        Select outer viewport: 0, 8, 2.65, 4.48
+        Select inner viewport: 0.60, 7.70, 2.83, 4.30
     else
-        Select outer viewport: 0, 6, 3, 6
-        Select inner viewport: 0.7, 5.8, 3.4, 5.7
+        Select outer viewport: 0, 8, 3.42, 6.35
+        Select inner viewport: 0.60, 7.70, 3.65, 6.15
     endif
     
     Axes: 0, nyquist, -180, 180
@@ -665,8 +709,8 @@ procedure plotZPlane
         endif
     endfor
     
-    Select outer viewport: 1, 5, 4.5, 8.5
-    Select inner viewport: 1.3, 4.7, 4.8, 8.2
+    Select outer viewport: 0, 8, 4.62, 7.72
+    Select inner viewport: 1.65, 6.35, 4.88, 7.48
     
     Axes: -1.5, 1.5, -1.5, 1.5
     

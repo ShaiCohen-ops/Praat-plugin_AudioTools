@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026)
+# Version: 2.2 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -45,6 +45,13 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.2 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v2.1:
 #   - FIX: processing is normalized to a 0-based time domain, then output is
@@ -103,7 +110,7 @@
 # FORM  (single compact form, all params directly visible)
 # ============================================================
 
-form LPC Excitation Lab v2.1
+form LPC Excitation Lab v2.2
     optionmenu Preset: 1
         option Custom
         option Voiced Sweep
@@ -376,7 +383,7 @@ intensity_tier = Down to IntensityTier
 # ============================================================
 
 clearinfo
-writeInfoLine: "=== LPC Excitation Lab v2.1 ==="
+writeInfoLine: "=== LPC Excitation Lab v2.2 ==="
 appendInfoLine: "Source 1: ", sourceName$, " (", fixed$(d1, 3), " s)"
 if cross_synth_mode <> 1
     appendInfoLine: "Source 2: ", secondName$, " (", fixed$(d2, 3), " s)"
@@ -797,73 +804,25 @@ appendInfoLine: "  Output: ", selected$("Sound"), " (", fixed$(finalDur, 3), " s
 if draw_visualization
     
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Helvetica
     Line width: 1
     
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(sourceName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Font size: 13
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##LPC EXCITATION LAB v2.1##"
+    Text: 0.5, "centre", 0.68, "half", "##LPC Excitation Lab v2.2##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    
-    # Build a compact summary of active modulations
-    modStr$ = ""
-    if excitation_method = 1
-        if vibrato_depth_cents > 0
-            modStr$ = modStr$ + " vib " + fixed$(vibrato_rate_hz, 1) + "Hz/" + fixed$(vibrato_depth_cents, 0) + "ct"
-        endif
-        if pitch_jitter_cents > 0
-            modStr$ = modStr$ + " jit " + fixed$(pitch_jitter_cents, 0) + "ct"
-        endif
-    elsif excitation_method = 2
-        if pulse_jitter_pct > 0
-            modStr$ = modStr$ + " jit " + fixed$(pulse_jitter_pct, 0) + "%"
-        endif
-        if pulse_shimmer_pct > 0
-            modStr$ = modStr$ + " shim " + fixed$(pulse_shimmer_pct, 0) + "%"
-        endif
-    elsif excitation_method = 3
-        if noise_am_depth > 0
-            modStr$ = modStr$ + " AM " + fixed$(noise_am_rate_hz, 1) + "Hz/" + fixed$(noise_am_depth, 2)
-        endif
-    elsif excitation_method = 4
-        if chirp_layers > 1
-            modStr$ = modStr$ + " x" + string$(chirp_layers) + " layers"
-        endif
-    elsif excitation_method = 5
-        if grain_density_start <> grain_density_end
-            modStr$ = modStr$ + " AM " + fixed$(grain_density_start, 2) + "->" + fixed$(grain_density_end, 2)
-        endif
-        if grain_size_modulation_pct > 0
-            modStr$ = modStr$ + " size+/-" + fixed$(grain_size_modulation_pct, 0) + "%"
-        endif
-    endif
-    
-    # Source label includes cross-synth mode
-    if cross_synth_mode = 1
-        srcLabel$ = sourceName$
-    elsif cross_synth_mode = 2
-        srcLabel$ = sourceName$ + " <- " + secondName$ + " (S2-as-exc)"
-    else
-        srcLabel$ = sourceName$ + " thru " + secondName$ + " (synth-thru-S2)"
-    endif
-    
-    Text: 0.5, "centre", -0.15, "half",
-        ... srcLabel$
-        ... + "  |  " + methodName$
-        ... + "  |  " + presetName$
-        ... + modStr$
-        ... + "  |  LPC " + string$(lpc_order)
-        ... + "  |  " + fixed$(finalDur, 2) + " s"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # ----------------------------------------------------------
-    # PANEL A: EXCITATION WAVEFORM  (left upper)
-    # ----------------------------------------------------------
     Select outer viewport: 0, 4.1, 0.75, 3.00
     Select inner viewport: 0.55, 3.90, 0.95, 2.85
     
@@ -876,7 +835,7 @@ if draw_visualization
     excit_dur = Get total duration
     
     Axes: 0, excit_dur, -excit_amp, excit_amp
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, excit_dur, -excit_amp, excit_amp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, excit_dur, -excit_amp, excit_amp
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, excit_dur, 0
     
@@ -906,7 +865,7 @@ if draw_visualization
     res_dur = Get total duration
     
     Axes: 0, res_dur, -res_amp, res_amp
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, res_dur, -res_amp, res_amp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, res_dur, -res_amp, res_amp
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, res_dur, 0
     
@@ -951,7 +910,7 @@ if draw_visualization
     out_dur = Get total duration
     
     Axes: 0, out_dur, -out_amp, out_amp
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, out_dur, -out_amp, out_amp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, out_dur, -out_amp, out_amp
     Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, out_dur, 0
     
@@ -1002,7 +961,7 @@ if draw_visualization
     maxF_disp = 8000
     Axes: 0, maxF_disp, -60, 0
     
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, maxF_disp, -60, 0
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, maxF_disp, -60, 0
     
     Colour: "{0.88, 0.88, 0.92}"
     Line width: 1
@@ -1077,6 +1036,12 @@ if draw_visualization
     Colour: "Black"
     Line width: 1
 
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

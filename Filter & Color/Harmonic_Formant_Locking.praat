@@ -2,7 +2,7 @@
 # Praat AudioTools - Harmonic_Formant_Locking.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 3.0 (2026)
+# Version: 3.1 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -40,7 +40,7 @@ endif
 sound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Harmonic Formant Locking v3.0
+form Harmonic Formant Locking v3.1
     optionmenu Preset: 2
         option Custom
         option Safe Start (20%)
@@ -168,7 +168,7 @@ if ceiling_peak <= 0 or ceiling_peak > 1
 endif
 
 clearinfo
-writeInfoLine: "=== Harmonic Formant Locking v3.0 ==="
+writeInfoLine: "=== Harmonic Formant Locking v3.1 ==="
 appendInfoLine: "Spectral-envelope landmarks -> exact harmonic targets (n x F0)."
 appendInfoLine: "No LPC resynthesis, no FormantGrid filtering, original complex phase preserved."
 appendInfoLine: ""
@@ -905,6 +905,8 @@ outRms = Get root-mean-square: 0, 0
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     vizAmp = max(inputPeak, outPeak)
     if vizAmp < 0.001
@@ -919,17 +921,16 @@ if draw_visualization
         trackStr$ = "Stable note"
     endif
 
-    Select outer viewport: 0, 8, 0, 0.5
-    Select inner viewport: 0, 8, 0, 0.5
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.62, "half", "##Harmonic Formant Locking v3.0##"
+    Text: 0.5, "centre", 0.68, "half", "##Harmonic Formant Locking v3.1##"
     Font size: 7
-    Colour: "{0.40,0.40,0.50}"
-    Text: 0.5, "centre", -0.30, "half",
-        ... originalName$ + " | " + presetName$ + " | " + trackStr$ +
-        ... " | exact n x F0 targets | phase preserved"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
     Select outer viewport: 0, 4, 0.6, 2.0
     Select inner viewport: 0.6, 3.75, 0.7, 1.95
@@ -1037,6 +1038,12 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

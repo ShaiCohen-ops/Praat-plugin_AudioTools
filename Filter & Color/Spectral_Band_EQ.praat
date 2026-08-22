@@ -3,9 +3,20 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2.1 (2026) - Visualization runtime fix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.2.1 (2026):
+#   - Fixed visualization waveform window using undefined vizDur; the defined
+#     source duration originalDur is now used directly. DSP is unchanged.
+#
+# Changelog v1.2 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Description:
 #   Spectral Band EQ - zero-phase frequency-domain shaping with
@@ -53,7 +64,7 @@ endif
 # ============================================================
 # FORM
 # ============================================================
-form Spectral Band EQ v1.1
+form Spectral Band EQ v1.2.1
     optionmenu Preset: 1
         option Custom
         option Telephone Bandpass (300-3400 Hz)
@@ -345,6 +356,8 @@ peakIn = Get absolute extremum: 0, 0, "None"
 # ============================================================
 if draw_response
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     colIn$ = "{0.48, 0.48, 0.52}"
     colOut$ = "{0.20, 0.42, 0.82}"
     colAcc$ = "{0.42, 0.34, 0.72}"
@@ -352,24 +365,23 @@ if draw_response
     colGrid$ = "{0.86, 0.86, 0.88}"
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.55
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.75, "half", "##Spectral Band EQ v1.1##"
+    Text: 0.5, "centre", 0.68, "half", "##Spectral Band EQ v1.2.1##"
     Font size: 7
-    Colour: colAcc$
-    Text: 0.5, "centre", 0.22, "half", originalName$ + " | " + modeName$ + " | " + presetName$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    vizDur = min(originalDur, 8)
-
-    # Input waveform
     Select outer viewport: 0, 4, 0.65, 1.95
     Select inner viewport: 0.55, 3.85, 0.78, 1.88
     selectObject: originalID
     monoIn = Convert to mono
     Colour: colIn$
-    Draw: originalStart, originalStart + vizDur, 0, 0, "no", "Curve"
+    Draw: originalStart, originalStart + originalDur, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -382,7 +394,7 @@ if draw_response
     selectObject: outputID
     monoOut = Convert to mono
     Colour: colOut$
-    Draw: originalStart, originalStart + vizDur, 0, 0, "no", "Curve"
+    Draw: originalStart, originalStart + originalDur, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
@@ -527,13 +539,19 @@ if draw_response
     Font size: 10
     Colour: "Black"
     Line width: 1
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================
 # INFO
 # ============================================================
 clearinfo
-writeInfoLine: "=== Spectral Band EQ v1.1 ==="
+writeInfoLine: "=== Spectral Band EQ v1.2.1 ==="
 appendInfoLine: "Source: ", originalName$, "   ", fixed$(originalDur, 3), " s   ", nChannels, " ch   ", round(sampleRate), " Hz"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Mode: ", modeName$

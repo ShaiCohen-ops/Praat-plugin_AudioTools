@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026)
+# Version: 0.7 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,13 @@
 #   Reconstructs target audio using segments from source audio.
 #   Matching runs on a mono fold-down; synthesis is per-channel
 #   so the source's stereo image is preserved.
+#
+# Changelog v0.7 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v0.6:
 #   - MATCH PATH NO LONGER LOCKS ON THE LAST SNIPPET. This was a
@@ -156,7 +163,7 @@ endif
 source = selected("Sound", 1)
 target = selected("Sound", 2)
 
-form Band-Based Concatenative Synthesis v0.6
+form Band-Based Concatenative Synthesis v0.7
     optionmenu Preset: 1
         option Manual
         option Subtle Morph
@@ -409,7 +416,7 @@ localityRange = max(1, round(locality_window / snippetHop))
 # Convert to mono for analysis
 # ============================================================
 clearinfo
-writeInfoLine: "=== Band-Based Concatenative Synthesis v0.6 ==="
+writeInfoLine: "=== Band-Based Concatenative Synthesis v0.7 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Source: ", sourceName$, " (", fixed$(sourceDur, 2), " s)"
 appendInfoLine: "Target: ", targetName$, " (", fixed$(targetDur, 2), " s)"
@@ -1018,7 +1025,8 @@ removeObject: sourceMono, targetMono, srcWork, tgtWork
 ###############################################################################
 procedure drawVisualization
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Black
     Plain line
     
@@ -1035,23 +1043,17 @@ procedure drawVisualization
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(sourceName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##BAND-BASED CONCATENATIVE SYNTHESIS##"
+    Text: 0.5, "centre", 0.68, "half", "##Band-Based Concatenative Synthesis v0.7##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... sourceName$ + " -> " + targetName$
-        ... + "  |  " + presetName$
-        ... + "  |  " + string$(numBands) + " bands"
-        ... + "  |  win " + fixed$(window_length * 1000, 0) + " ms / hop " + fixed$(hop_size * 1000, 0) + " ms"
-        ... + "  |  " + string$(targetFrames) + " frames"
-    
-    # ----------------------------------------------------------
-    # PANEL A: MATCH TRAJECTORY  (full width, signature)
-    # ----------------------------------------------------------
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
+
     Select outer viewport: 0, 8, 0.75, 3.05
     Select inner viewport: 0.70, 7.72, 0.95, 2.90
     
@@ -1248,6 +1250,12 @@ procedure drawVisualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endproc
 
 if draw_visualization

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -15,6 +15,13 @@
 #   Multichannel input is intentionally downmixed to mono before spectral
 #   panning; the output is always stereo. Existing stereo imaging is not
 #   preserved by this effect.
+#
+# Changelog v0.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v0.3:
 #   - Replaced constant-sum low/high reconstruction with direct equal-power
@@ -31,7 +38,7 @@
 #     equal-power channel gains used by the processor.
 # ============================================================
 
-form Spectral Panner v0.3
+form Spectral Panner v0.4
     optionmenu Preset: 1
         option Custom
         option Subtle Split (800 Hz)
@@ -212,27 +219,29 @@ peakOut = Get absolute extremum: 0, 0, "None"
 # ============================================================
 if draw_response
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Helvetica
     Line width: 1
 
     colLeft$ = "{0.20, 0.40, 0.80}"
     colRight$ = "{0.52, 0.34, 0.72}"
-    colGrey$ = "{0.95, 0.95, 0.95}"
+    colGrey$ = "{0.97, 0.97, 0.97}"
     colGrid$ = "{0.84, 0.84, 0.84}"
     colText$ = "{0.35, 0.35, 0.50}"
 
     # ---- Header ----
-    Select outer viewport: 0, 8, 0, 0.70
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.76, "half", "##Spectral Panner v0.3##"
+    Text: 0.5, "centre", 0.68, "half", "##Spectral Panner v0.4##"
     Font size: 7
-    Colour: colText$
-    Text: 0.5, "centre", 0.27, "half",
-        ... originalName$ + " | " + presetName$ + " | equal-power | " + direction$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # ---- Actual channel gain response ----
     Select outer viewport: 0, 8, 0.75, 4.65
     Select inner viewport: 0.75, 7.70, 0.95, 4.45
     Axes: 0, nyquist, 0, 1.08
@@ -340,6 +349,12 @@ if draw_response
     Font size: 10
     Colour: "Black"
     Line width: 1
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================
@@ -352,7 +367,7 @@ removeObject: soundLeftFull, soundRightFull, leftChan, rightChan
 # INFO
 # ============================================================
 clearinfo
-writeInfoLine: "=== Spectral Panner v0.3 ==="
+writeInfoLine: "=== Spectral Panner v0.4 ==="
 appendInfoLine: "Input: ", originalName$, "  (", numChan, " ch -> mono analysis, ", fixed$(sampleRate, 0), " Hz)"
 appendInfoLine: "Output: stereo  |  start ", fixed$(xminOriginal, 3), " s  |  duration ", fixed$(originalDur, 3), " s"
 appendInfoLine: "Preset: ", presetName$

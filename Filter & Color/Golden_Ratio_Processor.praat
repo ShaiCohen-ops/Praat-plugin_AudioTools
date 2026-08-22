@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 3.0 (2026)
+# Version: 3.1.1 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -29,6 +29,13 @@
 #                    measured L/R correlation is 0.99 / 0.95 / 0.85 for
 #                    the three presets, with Side 22.0 / 15.6 /
 #                    10.5 dB below Mid.
+#
+# Changelog v3.1 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v2.4 - reviewed by running the script under Parselmouth,
 # so the figures below are measurements.
@@ -96,7 +103,7 @@
 #   Select a Sound object and run.
 # ============================================================
 
-form Golden Ratio Processor v3.0
+form Golden Ratio Processor v3.1.1
     optionmenu Preset: 1
         option Subtle (gentle phi influence)
         option Standard (moderate phi scaling)
@@ -198,7 +205,7 @@ endif
 # v2.3 used writeInfoLine five times in a row here; each call CLEARS
 # the window, so only the last line ever survived.
 clearinfo
-writeInfoLine: "=== Golden Ratio Processor v3.0 ==="
+writeInfoLine: "=== Golden Ratio Processor v3.1.1 ==="
 appendInfoLine: "phi = ", fixed$(phi, 6)
 appendInfoLine: "Input: ", orig_name$, " (", fixed$(input_duration, 3), " s, ",
     ... n_channels, " ch, ", sample_rate, " Hz)"
@@ -746,6 +753,8 @@ out_channels = Get number of channels
 # ============================================================
 if draw_visualization
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     if apply_golden_panning
         panStr$ = "auto-pan to " + fixed$(max_width_pct, 0) + "%"
@@ -761,20 +770,17 @@ if draw_visualization
     endif
 
     # --- Title ---
-    Select outer viewport: 0, 8, 0, 0.5
+    suiteVizName$ = replace$(orig_name$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Golden Ratio Processor##"
+    Text: 0.5, "centre", 0.68, "half", "##Golden Ratio Processor v3.1.1##"
     Font size: 7
-    Colour: "{0.40, 0.40, 0.50}"
-    Text: 0.5, "centre", -0.30, "half",
-        ... orig_name$ + "  |  " + presetName$
-        ... + "  |  " + specStr$
-        ... + "  |  " + panStr$
-        ... + "  |  " + string$(n_channels) + " ch in, " + string$(out_channels) + " out"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # --- Input waveform (the work copy, all channels) ---
     Select outer viewport: 0, 4, 0.6, 2.0
     Select inner viewport: 0.6, 3.75, 0.7, 1.95
     selectObject: work_sound
@@ -845,7 +851,7 @@ if draw_visualization
         Colour: "{0.75, 0.75, 0.75}"
         Draw line: 0, 0.5, total_duration, 0.5
     else
-        Font size: 8
+        Font size: 7
         Colour: "{0.50, 0.50, 0.50}"
         Text: total_duration / 2, "centre", 0.5, "half", "(Panning off)"
     endif
@@ -905,6 +911,12 @@ if draw_visualization
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
     Colour: "Black"
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

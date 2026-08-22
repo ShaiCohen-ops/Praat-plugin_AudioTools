@@ -3,9 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026) - validated control mappings, timing, cleanup, house-style visualization
+# Version: 2.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Description:
 #   MFCC-derived control-mapping toolkit. MFCC coefficients are used as
@@ -13,7 +20,7 @@
 #   not reconstruct or directly edit the MFCC spectral envelope.
 # ============================================================
 
-form MFCC Transformer v2.3
+form MFCC Transformer v2.4
     comment ======== PRESETS ========
     optionmenu Preset 1
         option Custom
@@ -260,7 +267,7 @@ elsif algo = 5
     algo_name$ = "_MFCCControlScramble"
 endif
 
-writeInfoLine: "=== MFCC Transformer v2.3 ==="
+writeInfoLine: "=== MFCC Transformer v2.4 ==="
 appendInfoLine: "Processing: ", soundName$
 appendInfoLine: "Speed: ", speedStr$
 appendInfoLine: "Algorithm: ", algo_name$
@@ -841,14 +848,21 @@ if draw_visualization
     appendInfoLine: "Drawing visualization..."
     
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     
     # Title
-    Select outer viewport: 0, 8, 0, 0.5
-    Font size: 14
+    suiteVizName$ = replace$(soundName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##MFCC TRANSFORMER v2.3##"
-    
-    # Original vs Processed Waveforms
+    Text: 0.5, "centre", 0.68, "half", "##MFCC Transformer v2.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + preset$
+
     Select outer viewport: 0, 4, 0.6, 1.6
     Select inner viewport: 0.5, 3.7, 0.7, 1.5
     selectObject: sound
@@ -856,7 +870,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text top: "no", "Original"
     Text left: "yes", "Amp"
     
@@ -867,7 +881,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text top: "no", "Transformed"
     Text left: "yes", "Amp"
     
@@ -1088,21 +1102,27 @@ if draw_visualization
         Text bottom: "yes", "Time (s)"
     endif
     
-    # Info panel
+    # Summary strip
     Select outer viewport: 0, 8, 4.8, 5.3
     Select inner viewport: 0.5, 7.7, 4.85, 5.25
     
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     
-    Font size: 8
-    Colour: "{0.3, 0.3, 0.3}"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
     Text: 0.02, "left", 0.5, "half", speedStr$ + " | Time: " + fixed$(processingTime, 2) + "s | Frames: " + string$(numFrames) + " | " + preset$
     
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
     
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # Cleanup analysis and helper tiers regardless of whether visualization ran.
@@ -1129,4 +1149,3 @@ if play_result
 endif
 
 selectObject: result
-

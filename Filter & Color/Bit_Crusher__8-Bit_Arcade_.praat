@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,6 +16,13 @@
 #   frequency range - it quantizes neither magnitude nor phase nor
 #   any spectral word length. It is a stepped filter, and it is
 #   named one.
+#
+# Changelog v0.6 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v0.2:
 #   - Fixed preset/mode comparison (number not string)
@@ -120,7 +127,7 @@ endif
 originalSound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Bit Crusher v0.5
+form Bit Crusher v0.6
     optionmenu Preset: 1
         option Manual
         option Classic 8-bit
@@ -324,7 +331,7 @@ endif
 # Info
 # ============================================================
 clearinfo
-writeInfoLine: "=== Bit Crusher v0.5 ==="
+writeInfoLine: "=== Bit Crusher v0.6 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Input: ", originalName$, " (", fixed$(duration, 3), " s, ",
     ... numChannels, " ch, ", sampleRate, " Hz)"
@@ -536,6 +543,8 @@ out_peak = Get absolute extremum: 0, 0, "None"
 # ============================================================
 if draw_visualization
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # Shared Y range, so a level change between the two panels is
     # visible rather than being auto-scaled away by Draw: 0,0,0,0.
@@ -548,27 +557,17 @@ if draw_visualization
     vizAmp = vizMax * 1.15
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.5
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Bit Crusher##"
+    Text: 0.5, "centre", 0.68, "half", "##Bit Crusher v0.6##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    if mode = 1
-        Text: 0.5, "centre", -0.30, "half",
-            ... originalName$ + "  |  " + presetName$
-            ... + "  |  " + string$(bitDepth) + "-bit (" + string$(quantLevels) + " levels)"
-            ... + "  |  " + string$(reductionFactor) + "x hold"
-    else
-        Text: 0.5, "centre", -0.30, "half",
-            ... originalName$ + "  |  " + presetName$
-            ... + "  |  stepped spectral " + string$(round(lower_frequency)) + "-"
-            ... + string$(round(upper_frequency)) + " Hz"
-            ... + "  |  " + string$(quantization_steps + 1) + " gain levels"
-    endif
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # Original waveform
     Select outer viewport: 0, 8, 0.6, 2.0
     Select inner viewport: 0.6, 7.7, 0.75, 1.9
     selectObject: workSound
@@ -659,6 +658,12 @@ if draw_visualization
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
     Colour: "Black"
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

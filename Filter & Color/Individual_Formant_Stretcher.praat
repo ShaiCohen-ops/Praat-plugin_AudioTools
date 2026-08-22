@@ -1,5 +1,34 @@
 # ============================================================
-# Praat AudioTools - Individual Formant Stretcher v2.0
+# Praat AudioTools - Individual Formant Stretcher v2.3
+# Version: 2.3 (2026) - Bypass paths now reach the visualization
+# Changelog v2.3:
+#   - ROOT CAUSE of "no visualization": four exitScript paths sat
+#     BEFORE the drawing block, so a bypassed run quit the script
+#     entirely. With the stock form defaults (Preset Custom, all
+#     semitone fields 0) the neutral test at the top always fired,
+#     and exitScript: "" quit silently - no picture, no Info text.
+#   - Control flow rebuilt around a bypassReason$ string instead of
+#     early exits. Every non-fatal path now falls through to output
+#     measurement, visualization and the Info report.
+#   - Landmark variables are pre-initialised to undefined so the
+#     drawing code is safe on paths that never ran formant analysis.
+#   - clearinfo / writeInfoLine moved above the first bypass test, so
+#     every run reports what it did and why.
+#   - The Draw_visualization snapshot from v2.2 is kept but was never
+#     the fault; the flag always read correctly.
+#   Visualization uniformity fixes in the same pass:
+#   - Landmark panel: all lines drawn first, then inner viewport and
+#     Axes re-issued before the Text labels (Text leaves the drawing
+#     frame on the OUTER viewport, so F2..F5 were being displaced).
+#   - Summary box: inner viewport re-issued before Draw inner box,
+#     which was otherwise drawn oversized for the same reason.
+#   - Text bottom / Text left FAR flag set to "no" on panels that
+#     draw no marks, so labels stop landing on the panel below.
+#   - Marks left every with a round step instead of Marks left: 5,
+#     which was labelling the data-derived axis extremes.
+#   - Full-width inner viewports normalised to 0.60 / 7.70, half-width
+#     to 0.60-3.75 and 4.45-7.70; summary grey set to 0.94.
+#   DSP unchanged.
 # Spectral-envelope landmark edition
 #
 # FormantPath is used only to estimate robust spectral landmarks.
@@ -15,7 +44,7 @@ endif
 sound = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Individual Formant Stretcher v2.0
+form Individual Formant Stretcher v2.3
     optionmenu Preset: 1
         option Custom
         option Natural (no change)
@@ -60,6 +89,8 @@ form Individual Formant Stretcher v2.0
     boolean Draw_visualization 1
     boolean Play_after_processing 1
 endform
+
+doVisualization = draw_visualization
 
 # ------------------------------------------------------------
 # Presets - retain the musical maps from v1.1
@@ -220,6 +251,18 @@ region_floor_3 = 360
 region_floor_4 = 450
 region_floor_5 = 550
 
+# Landmark state is initialised up front so that any path which
+# skips formant analysis can still be drawn without touching an
+# unknown variable.
+for fn from 1 to max_formants
+    formant_'fn' = undefined
+    old_'fn' = undefined
+    target_'fn' = undefined
+    active_'fn' = 0
+endfor
+validFormants = 0
+analysisSource$ = "not analysed"
+
 # ------------------------------------------------------------
 # Input and validation
 # ------------------------------------------------------------
@@ -253,28 +296,13 @@ if max_formant_hz < 1000
     exitScript: "Sample rate is too low for useful formant analysis."
 endif
 
-# Exact bypass: no transformation at all, or zero wet.
-neutral = 1
-if abs(global_transpose_semitones) > 0.000001 or abs(f1_transpose_semitones) > 0.000001 or abs(f2_transpose_semitones) > 0.000001 or abs(f3_transpose_semitones) > 0.000001 or abs(f4_transpose_semitones) > 0.000001 or abs(f5_transpose_semitones) > 0.000001
-    neutral = 0
-endif
-if dry_wet_mix = 0 or neutral = 1
-    selectObject: sound
-    finalOutput = Copy: originalName$ + "_FormantStretch_Bypass"
-    selectObject: finalOutput
-    if play_after_processing
-        Play
-    endif
-    exitScript: ""
-endif
-
 clearinfo
-writeInfoLine: "=== Individual Formant Stretcher v2.0 ==="
+writeInfoLine: "=== Individual Formant Stretcher v2.3 ==="
 appendInfoLine: "Method: static spectral-envelope landmark remapping; original complex phase preserved."
 appendInfoLine: "No LPC inverse filtering and no FormantGrid resynthesis."
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Input: ", originalName$, " | ", fixed$(duration, 3), " s | ", numChannels, " ch | ", sampleRate, " Hz"
-appendInfoLine: "Bandwidth_scale now controls ENVELOPE REGION WIDTH, not LPC pole bandwidth."
+appendInfoLine: "Bandwidth_scale controls ENVELOPE REGION WIDTH, not LPC pole bandwidth."
 
 # ------------------------------------------------------------
 # Work at zero time
@@ -283,171 +311,191 @@ selectObject: sound
 workSound = Copy: "ifs_work"
 Shift times to: "start time", 0
 
-# Analysis source only. Audio channels are never folded for processing.
-if numChannels = 1
-    selectObject: workSound
-    analysisSound = Copy: "ifs_analysis"
-    analysisSource$ = "single channel"
-elsif analysis_source = 1
-    selectObject: workSound
-    analysisSound = Extract one channel: 1
-    analysisSource$ = "channel 1"
-elsif analysis_source = 3
-    selectObject: workSound
-    analysisSound = Convert to mono
-    analysisSource$ = "mono sum"
-else
-    bestRms = -1
-    pickCh = 1
-    for ch from 1 to numChannels
-        selectObject: workSound
-        probe = Extract one channel: ch
-        r = Get root-mean-square: 0, 0
-        removeObject: probe
-        if r > bestRms
-            bestRms = r
-            pickCh = ch
-        endif
-    endfor
-    selectObject: workSound
-    analysisSound = Extract one channel: pickCh
-    analysisSource$ = "loudest channel " + string$(pickCh)
-endif
+# ------------------------------------------------------------
+# Bypass test 1: nothing to do
+# A bypass is no longer an exit. It sets a reason, skips the DSP,
+# and still produces output, a picture and an Info report.
+# ------------------------------------------------------------
+bypassReason$ = ""
 
-selectObject: analysisSound
-analysisRMS = Get root-mean-square: 0, 0
-if analysisRMS = undefined or analysisRMS < 0.0000001
-    removeObject: analysisSound, workSound
-    exitScript: "The selected analysis source is silent."
+neutral = 1
+if abs(global_transpose_semitones) > 0.000001 or abs(f1_transpose_semitones) > 0.000001 or abs(f2_transpose_semitones) > 0.000001 or abs(f3_transpose_semitones) > 0.000001 or abs(f4_transpose_semitones) > 0.000001 or abs(f5_transpose_semitones) > 0.000001
+    neutral = 0
 endif
-appendInfoLine: "Analysis source: ", analysisSource$
+if neutral = 1
+    bypassReason$ = "all six transpose fields are 0, so no envelope move was requested"
+elsif dry_wet_mix = 0
+    bypassReason$ = "Dry_wet_mix is 0, so the output is fully dry"
+endif
 
 # ------------------------------------------------------------
 # Robust static landmarks
 # ------------------------------------------------------------
-selectObject: analysisSound
-formantPath = To FormantPath (burg): time_step_s, max_formants, max_formant_hz,
-    ... window_length_s, pre_emphasis, 0.05, 4
-formantObj = Extract Formant
+if bypassReason$ = ""
+    if numChannels = 1
+        selectObject: workSound
+        analysisSound = Copy: "ifs_analysis"
+        analysisSource$ = "single channel"
+    elsif analysis_source = 1
+        selectObject: workSound
+        analysisSound = Extract one channel: 1
+        analysisSource$ = "channel 1"
+    elsif analysis_source = 3
+        selectObject: workSound
+        analysisSound = Convert to mono
+        analysisSource$ = "mono sum"
+    else
+        bestRms = -1
+        pickCh = 1
+        for ch from 1 to numChannels
+            selectObject: workSound
+            probe = Extract one channel: ch
+            r = Get root-mean-square: 0, 0
+            removeObject: probe
+            if r > bestRms
+                bestRms = r
+                pickCh = ch
+            endif
+        endfor
+        selectObject: workSound
+        analysisSound = Extract one channel: pickCh
+        analysisSource$ = "loudest channel " + string$(pickCh)
+    endif
 
-for fn from 1 to max_formants
-    selectObject: formantObj
-    formant_'fn' = Get quantile: fn, 0, 0, "Hertz", 0.5
-endfor
+    selectObject: analysisSound
+    analysisRMS = Get root-mean-square: 0, 0
+    if analysisRMS = undefined or analysisRMS < 0.0000001
+        removeObject: analysisSound, workSound
+        exitScript: "The selected analysis source is silent."
+    endif
+    appendInfoLine: "Analysis source: ", analysisSource$
 
-removeObject: formantPath, formantObj, analysisSound
+    selectObject: analysisSound
+    formantPath = To FormantPath (burg): time_step_s, max_formants, max_formant_hz,
+        ... window_length_s, pre_emphasis, 0.05, 4
+    formantObj = Extract Formant
 
-validFormants = 0
-firstLandmark = undefined
-lastLandmark = undefined
-for fn from 1 to max_formants
-    if formant_'fn' <> undefined and formant_'fn' > 0
-        validFormants = validFormants + 1
-        if firstLandmark = undefined
-            firstLandmark = formant_'fn'
+    for fn from 1 to max_formants
+        selectObject: formantObj
+        formant_'fn' = Get quantile: fn, 0, 0, "Hertz", 0.5
+    endfor
+
+    removeObject: formantPath, formantObj, analysisSound
+
+    firstLandmark = undefined
+    lastLandmark = undefined
+    for fn from 1 to max_formants
+        if formant_'fn' <> undefined and formant_'fn' > 0
+            validFormants = validFormants + 1
+            if firstLandmark = undefined
+                firstLandmark = formant_'fn'
+            endif
+            lastLandmark = formant_'fn'
+            appendInfoLine: "  F", fn, " landmark = ", fixed$(formant_'fn', 1), " Hz"
         endif
-        lastLandmark = formant_'fn'
-        appendInfoLine: "  F", fn, " landmark = ", fixed$(formant_'fn', 1), " Hz"
-    endif
-endfor
+    endfor
 
-confidenceOK = 1
-if validFormants < 2
-    confidenceOK = 0
-elsif lastLandmark - firstLandmark < 600
-    # Narrow spectral-line clusters (e.g. a pure sine) are not a
-    # plausible multi-region formant envelope. Do not invent a tract.
-    confidenceOK = 0
-endif
-
-if require_formant_confidence and confidenceOK = 0
-    appendInfoLine: "Formant confidence gate: landmarks are not a broad spectral envelope; bypassing."
-    removeObject: workSound
-    selectObject: sound
-    finalOutput = Copy: originalName$ + "_FormantStretch_LowConfidenceBypass"
-    selectObject: finalOutput
-    if play_after_processing
-        Play
+    confidenceOK = 1
+    if validFormants < 2
+        confidenceOK = 0
+    elsif lastLandmark - firstLandmark < 600
+        # Narrow spectral-line clusters (e.g. a pure sine) are not a
+        # plausible multi-region formant envelope. Do not invent a tract.
+        confidenceOK = 0
     endif
-    exitScript: ""
-endif
-if validFormants < 1
-    removeObject: workSound
-    exitScript: "No usable formant landmarks were found."
+
+    if validFormants < 1
+        removeObject: workSound
+        exitScript: "No usable formant landmarks were found."
+    endif
+
+    if require_formant_confidence and confidenceOK = 0
+        bypassReason$ = "confidence gate: the landmarks are not a broad spectral envelope"
+    endif
 endif
 
 # ------------------------------------------------------------
 # Targets
 # ------------------------------------------------------------
-globalFactor = 2 ^ (global_transpose_semitones / 12)
-factor_1 = globalFactor * 2 ^ (f1_transpose_semitones / 12)
-factor_2 = globalFactor * 2 ^ (f2_transpose_semitones / 12)
-factor_3 = globalFactor * 2 ^ (f3_transpose_semitones / 12)
-factor_4 = globalFactor * 2 ^ (f4_transpose_semitones / 12)
-factor_5 = globalFactor * 2 ^ (f5_transpose_semitones / 12)
+if bypassReason$ = ""
+    globalFactor = 2 ^ (global_transpose_semitones / 12)
+    factor_1 = globalFactor * 2 ^ (f1_transpose_semitones / 12)
+    factor_2 = globalFactor * 2 ^ (f2_transpose_semitones / 12)
+    factor_3 = globalFactor * 2 ^ (f3_transpose_semitones / 12)
+    factor_4 = globalFactor * 2 ^ (f4_transpose_semitones / 12)
+    factor_5 = globalFactor * 2 ^ (f5_transpose_semitones / 12)
 
-for fn from 1 to max_formants
-    old_'fn' = formant_'fn'
-    target_'fn' = formant_'fn'
-    active_'fn' = 0
-    if formant_'fn' <> undefined and formant_'fn' > 0
-        target_'fn' = formant_'fn' * factor_'fn'
-        if target_'fn' < 80
-            target_'fn' = 80
+    for fn from 1 to max_formants
+        old_'fn' = formant_'fn'
+        target_'fn' = formant_'fn'
+        active_'fn' = 0
+        if formant_'fn' <> undefined and formant_'fn' > 0
+            target_'fn' = formant_'fn' * factor_'fn'
+            if target_'fn' < 80
+                target_'fn' = 80
+            endif
+            if target_'fn' > nyquist - 80
+                target_'fn' = nyquist - 80
+            endif
+            if abs(target_'fn' - old_'fn') > 0.5
+                active_'fn' = 1
+            endif
         endif
-        if target_'fn' > nyquist - 80
-            target_'fn' = nyquist - 80
-        endif
-        if abs(target_'fn' - old_'fn') > 0.5
-            active_'fn' = 1
-        endif
-    endif
-endfor
+    endfor
 
-appendInfoLine: "Targets:"
-for fn from 1 to max_formants
-    if old_'fn' <> undefined
-        appendInfoLine: "  F", fn, ": ", fixed$(old_'fn', 1), " -> ", fixed$(target_'fn', 1), " Hz"
-    endif
-endfor
+    appendInfoLine: "Targets:"
+    for fn from 1 to max_formants
+        if old_'fn' <> undefined
+            appendInfoLine: "  F", fn, ": ", fixed$(old_'fn', 1), " -> ", fixed$(target_'fn', 1), " Hz"
+        endif
+    endfor
+else
+    # Keep whatever landmarks were measured so the map panel can still
+    # show them, with target = measured.
+    for fn from 1 to max_formants
+        old_'fn' = formant_'fn'
+        target_'fn' = formant_'fn'
+        active_'fn' = 0
+    endfor
+endif
 
 # ------------------------------------------------------------
 # One static smooth gain curve
 # ------------------------------------------------------------
 expr$ = ""
 terms = 0
-for fn from 1 to max_formants
-    if active_'fn' = 1
-        if fn = 1
-            floorW = region_floor_1
-        elsif fn = 2
-            floorW = region_floor_2
-        elsif fn = 3
-            floorW = region_floor_3
-        elsif fn = 4
-            floorW = region_floor_4
-        else
-            floorW = region_floor_5
-        endif
-        width = max(floorW, old_'fn' * region_fraction) * bandwidth_scale
-        width = max(90, min(1400, width))
+if bypassReason$ = ""
+    for fn from 1 to max_formants
+        if active_'fn' = 1
+            if fn = 1
+                floorW = region_floor_1
+            elsif fn = 2
+                floorW = region_floor_2
+            elsif fn = 3
+                floorW = region_floor_3
+            elsif fn = 4
+                floorW = region_floor_4
+            else
+                floorW = region_floor_5
+            endif
+            width = max(floorW, old_'fn' * region_fraction) * bandwidth_scale
+            width = max(90, min(1400, width))
 
-        if terms > 0
-            expr$ = expr$ + " + "
+            if terms > 0
+                expr$ = expr$ + " + "
+            endif
+            expr$ = expr$ + fixed$(strength_db, 4) + " * (exp(-0.5*((x-" +
+                ... fixed$(target_'fn', 3) + ")/" + fixed$(width, 3) + ")^2) - exp(-0.5*((x-" +
+                ... fixed$(old_'fn', 3) + ")/" + fixed$(width, 3) + ")^2))"
+            terms = terms + 1
         endif
-        expr$ = expr$ + fixed$(strength_db, 4) + " * (exp(-0.5*((x-" +
-            ... fixed$(target_'fn', 3) + ")/" + fixed$(width, 3) + ")^2) - exp(-0.5*((x-" +
-            ... fixed$(old_'fn', 3) + ")/" + fixed$(width, 3) + ")^2))"
-        terms = terms + 1
+    endfor
+
+    if terms = 0
+        bypassReason$ = "every target landed within 0.5 Hz of its measured landmark"
     endif
-endfor
-
-if terms = 0
-    removeObject: workSound
-    selectObject: sound
-    finalOutput = Copy: originalName$ + "_FormantStretch_Bypass"
-    exitScript: ""
 endif
+
 shapeLimit$ = fixed$(strength_db, 4)
 
 procedure process_channel: .inputSound
@@ -465,57 +513,69 @@ procedure process_channel: .inputSound
 endproc
 
 # ------------------------------------------------------------
-# Process each channel independently with the same envelope map
+# Process each channel independently with the same envelope map,
+# or produce the untouched bypass copy.
 # ------------------------------------------------------------
-for ch from 1 to numChannels
-    if numChannels = 1
-        selectObject: workSound
-        dryCh[ch] = Copy: "ifs_dry"
-    else
-        selectObject: workSound
-        dryCh[ch] = Extract one channel: ch
-    endif
-
-    @process_channel: dryCh[ch]
-    wetCh[ch] = selected("Sound")
-
-    if dry_wet_mix < 1
-        selectObject: wetCh[ch]
-        Formula: "self*" + string$(dry_wet_mix) + " + object[" + string$(dryCh[ch]) + ",1,col]*" + string$(1-dry_wet_mix)
-    endif
-endfor
-
-if numChannels = 1
-    selectObject: wetCh[1]
+if bypassReason$ <> ""
+    appendInfoLine: "BYPASS: ", bypassReason$, "."
+    appendInfoLine: "Audio is passed through unchanged. The picture is still drawn."
+    selectObject: workSound
     finalOutput = Copy: "ifs_output"
-    removeObject: wetCh[1]
+    outSuffix$ = "_FormantStretch_Bypass"
 else
-    selectObject: wetCh[1]
-    outDur = Get total duration
-    Create Sound from formula: "ifs_output", numChannels, 0, outDur, sampleRate, "0"
-    finalOutput = selected("Sound")
+    outSuffix$ = "_FormantStretch_" + presetName$
     for ch from 1 to numChannels
-        selectObject: finalOutput
-        Formula (part): 0, outDur, ch, ch, "object[" + string$(wetCh[ch]) + ",1,col]"
+        if numChannels = 1
+            selectObject: workSound
+            dryCh[ch] = Copy: "ifs_dry"
+        else
+            selectObject: workSound
+            dryCh[ch] = Extract one channel: ch
+        endif
+
+        @process_channel: dryCh[ch]
+        wetCh[ch] = selected("Sound")
+
+        if dry_wet_mix < 1
+            selectObject: wetCh[ch]
+            Formula: "self*" + string$(dry_wet_mix) + " + object[" + string$(dryCh[ch]) + ",1,col]*" + string$(1-dry_wet_mix)
+        endif
     endfor
+
+    if numChannels = 1
+        selectObject: wetCh[1]
+        finalOutput = Copy: "ifs_output"
+        removeObject: wetCh[1]
+    else
+        selectObject: wetCh[1]
+        outDur = Get total duration
+        Create Sound from formula: "ifs_output", numChannels, 0, outDur, sampleRate, "0"
+        finalOutput = selected("Sound")
+        for ch from 1 to numChannels
+            selectObject: finalOutput
+            Formula (part): 0, outDur, ch, ch, "object[" + string$(wetCh[ch]) + ",1,col]"
+        endfor
+        for ch from 1 to numChannels
+            removeObject: wetCh[ch]
+        endfor
+    endif
     for ch from 1 to numChannels
-        removeObject: wetCh[ch]
+        removeObject: dryCh[ch]
     endfor
 endif
-for ch from 1 to numChannels
-    removeObject: dryCh[ch]
-endfor
 
 # Output level is explicit; Natural means no hidden scaling.
 selectObject: finalOutput
 prePeak = Get absolute extremum: 0, 0, "None"
-if output_level_mode = 2
-    if prePeak > ceiling_peak
-        Scale peak: ceiling_peak
-    endif
-elsif output_level_mode = 3
-    if prePeak > 0
-        Scale peak: ceiling_peak
+if bypassReason$ = ""
+    if output_level_mode = 2
+        if prePeak > ceiling_peak
+            Scale peak: ceiling_peak
+        endif
+    elsif output_level_mode = 3
+        if prePeak > 0
+            Scale peak: ceiling_peak
+        endif
     endif
 endif
 selectObject: finalOutput
@@ -524,154 +584,10 @@ outRMS = Get root-mean-square: 0, 0
 outChannels = Get number of channels
 
 # ------------------------------------------------------------
-# Visualization
+# Visualization - now reachable from every non-fatal path
 # ------------------------------------------------------------
-if draw_visualization
-    vizMaxSeconds = 8
-    vizStart = 0
-    vizEnd = duration
-    if duration > vizMaxSeconds
-        vizStart = (duration - vizMaxSeconds) / 2
-        vizEnd = vizStart + vizMaxSeconds
-    endif
-
-    selectObject: workSound
-    if numChannels > 1
-        vizOrigFull = Extract one channel: 1
-    else
-        vizOrigFull = Copy: "ifs_viz_orig_full"
-    endif
-    selectObject: finalOutput
-    if outChannels > 1
-        vizProcFull = Extract one channel: 1
-    else
-        vizProcFull = Copy: "ifs_viz_proc_full"
-    endif
-
-    if duration > vizMaxSeconds
-        selectObject: vizOrigFull
-        vizOrig = Extract part: vizStart, vizEnd, "rectangular", 1, "no"
-        removeObject: vizOrigFull
-        selectObject: vizProcFull
-        vizProc = Extract part: vizStart, vizEnd, "rectangular", 1, "no"
-        removeObject: vizProcFull
-    else
-        vizOrig = vizOrigFull
-        vizProc = vizProcFull
-    endif
-
-    selectObject: vizOrig
-    p1 = Get absolute extremum: 0, 0, "None"
-    selectObject: vizProc
-    p2 = Get absolute extremum: 0, 0, "None"
-    amp = max(0.001, max(p1,p2) * 1.15)
-
-    drawMax = 3500
-    for fn from 1 to max_formants
-        if old_'fn' <> undefined
-            drawMax = max(drawMax, old_'fn')
-            drawMax = max(drawMax, target_'fn')
-        endif
-    endfor
-    drawMax = min(nyquist, drawMax * 1.08)
-    specCeil = min(nyquist, max(5000, max_formant_hz))
-
-    Erase all
-    Select outer viewport: 0, 8, 0.0, 0.55
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.7, "half", "##Individual Formant Stretcher v2.0##"
-    Font size: 7
-    Colour: "{0.35,0.35,0.5}"
-    Text: 0.5, "centre", 0.2, "half", presetName$ + " | spectral-envelope landmarks"
-
-    # Waveforms
-    Select outer viewport: 0, 4, 0.65, 1.8
-    Select inner viewport: 0.55, 3.75, 0.75, 1.72
-    selectObject: vizOrig
-    Colour: "{0.55,0.55,0.55}"
-    Draw: 0, 0, -amp, amp, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Original"
-
-    Select outer viewport: 4, 8, 0.65, 1.8
-    Select inner viewport: 4.45, 7.7, 0.75, 1.72
-    selectObject: vizProc
-    Colour: "{0.25,0.65,0.45}"
-    Draw: 0, 0, -amp, amp, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Processed"
-
-    # Landmark map: old -> target
-    Select outer viewport: 0, 8, 1.95, 3.25
-    Select inner viewport: 0.65, 7.6, 2.05, 3.15
-    Axes: 0, 1, 0, drawMax
-    Paint rectangle: "{0.97,0.97,0.97}", 0, 1, 0, drawMax
-    for fn from 1 to max_formants
-        if old_'fn' <> undefined
-            Colour: "{0.55,0.55,0.55}"
-            Draw line: 0.15, old_'fn', 0.40, old_'fn'
-            Colour: "{0.20,0.55,0.85}"
-            Draw line: 0.60, target_'fn', 0.85, target_'fn'
-            Colour: "{0.75,0.45,0.20}"
-            Draw arrow: 0.40, old_'fn', 0.60, target_'fn'
-            Colour: "Black"
-            Font size: 6
-            Text: 0.10, "right", old_'fn', "half", "F" + string$(fn)
-            Text: 0.90, "left", target_'fn', "half", fixed$(target_'fn',0)
-        endif
-    endfor
-    Colour: "Black"
-    Draw inner box
-    Marks left: 5, "yes", "yes", "no"
-    Text left: "yes", "Frequency (Hz)"
-    Text bottom: "yes", "grey = measured landmark     blue = target"
-
-    # Spectrograms
-    Select outer viewport: 0, 4, 3.4, 5.65
-    Select inner viewport: 0.55, 3.75, 3.5, 5.55
-    selectObject: vizOrig
-    s1 = To Spectrogram: 0.005, specCeil, 0.002, 20, "Gaussian"
-    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
-    removeObject: s1
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Original spectrogram"
-    Text left: "yes", "Hz"
-
-    Select outer viewport: 4, 8, 3.4, 5.65
-    Select inner viewport: 4.45, 7.7, 3.5, 5.55
-    selectObject: vizProc
-    s2 = To Spectrogram: 0.005, specCeil, 0.002, 20, "Gaussian"
-    Paint: 0, 0, 0, specCeil, 100, "yes", 50, 6, 0, "no"
-    removeObject: s2
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text top: "no", "Processed spectrogram"
-    Text bottom: "yes", "Time (s)"
-
-    Select outer viewport: 0, 8, 5.8, 6.65
-    Select inner viewport: 0.6, 7.6, 5.9, 6.55
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95,0.95,0.95}", 0, 1, 0, 1
-    Colour: "Black"
-    Font size: 7
-    Text: 0.02, "left", 0.76, "half", "##Summary##"
-    Font size: 6
-    Colour: "{0.3,0.3,0.3}"
-    Text: 0.02, "left", 0.47, "half", "Global " + fixed$(global_transpose_semitones,1) + " st | F1 " + fixed$(f1_transpose_semitones,1) + " | F2 " + fixed$(f2_transpose_semitones,1) + " | F3 " + fixed$(f3_transpose_semitones,1) + " | F4 " + fixed$(f4_transpose_semitones,1) + " | F5 " + fixed$(f5_transpose_semitones,1)
-    Text: 0.02, "left", 0.20, "half", "Width x" + fixed$(bandwidth_scale,2) + " | Strength " + fixed$(strength_db,1) + " dB | Mix " + fixed$(dry_wet_mix*100,0) + "% | Peak " + fixed$(inputPeak,3) + " -> " + fixed$(outPeak,3)
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-
-    removeObject: vizOrig, vizProc
+if doVisualization
+    @drawViz
 endif
 
 # Restore original time domain only after visualization.
@@ -679,7 +595,7 @@ selectObject: finalOutput
 if originalXmin <> 0
     Shift times to: "start time", originalXmin
 endif
-Rename: originalName$ + "_FormantStretch_" + presetName$
+Rename: originalName$ + outSuffix$
 finalName$ = selected$("Sound")
 removeObject: workSound
 
@@ -688,7 +604,7 @@ appendInfoLine: "=== COMPLETE ==="
 appendInfoLine: "Output: ", finalName$
 appendInfoLine: "Peak: ", fixed$(inputPeak,4), " -> ", fixed$(outPeak,4), " | RMS out: ", fixed$(outRMS,5)
 appendInfoLine: "Channels preserved: ", numChannels, " -> ", outChannels
-if output_level_mode = 1 and outPeak > 1
+if bypassReason$ = "" and output_level_mode = 1 and outPeak > 1
     appendInfoLine: "WARNING: Natural level peak exceeds 1.0."
 endif
 
@@ -706,3 +622,262 @@ if play_after_processing
 endif
 
 selectObject: finalOutput
+
+# ============================================================
+# Visualization procedure
+# ============================================================
+procedure drawViz
+    .vizMaxSeconds = 8
+    .vizStart = 0
+    .vizEnd = duration
+    if duration > .vizMaxSeconds
+        .vizStart = (duration - .vizMaxSeconds) / 2
+        .vizEnd = .vizStart + .vizMaxSeconds
+    endif
+
+    selectObject: workSound
+    if numChannels > 1
+        .origFull = Extract one channel: 1
+    else
+        .origFull = Copy: "ifs_viz_orig_full"
+    endif
+    selectObject: finalOutput
+    if outChannels > 1
+        .procFull = Extract one channel: 1
+    else
+        .procFull = Copy: "ifs_viz_proc_full"
+    endif
+
+    if duration > .vizMaxSeconds
+        selectObject: .origFull
+        .orig = Extract part: .vizStart, .vizEnd, "rectangular", 1, "no"
+        removeObject: .origFull
+        selectObject: .procFull
+        .proc = Extract part: .vizStart, .vizEnd, "rectangular", 1, "no"
+        removeObject: .procFull
+    else
+        .orig = .origFull
+        .proc = .procFull
+    endif
+
+    selectObject: .orig
+    .p1 = Get absolute extremum: 0, 0, "None"
+    selectObject: .proc
+    .p2 = Get absolute extremum: 0, 0, "None"
+    .amp = max(0.001, max(.p1, .p2) * 1.15)
+
+    .drawMax = 3500
+    .haveLandmarks = 0
+    for fn from 1 to max_formants
+        if old_'fn' <> undefined
+            .haveLandmarks = 1
+            .drawMax = max(.drawMax, old_'fn')
+            .drawMax = max(.drawMax, target_'fn')
+        endif
+    endfor
+    .drawMax = min(nyquist, .drawMax * 1.08)
+    if .drawMax <= 4000
+        .markStep = 500
+    elsif .drawMax <= 9000
+        .markStep = 1000
+    else
+        .markStep = 2000
+    endif
+    .specCeil = min(nyquist, max(5000, max_formant_hz))
+
+    if bypassReason$ = ""
+        .procLabel$ = "Processed"
+        .statusLine$ = "Processed with " + string$(terms) + " active envelope region(s)."
+    else
+        .procLabel$ = "Output (bypassed, unchanged)"
+        .statusLine$ = "BYPASS - " + bypassReason$ + "."
+    endif
+
+    Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
+    .vizName$ = replace$(originalName$, "_", "\_ ", 0)
+
+    # --- Title strip ---
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Individual Formant Stretcher v2.3##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", .vizName$ + " | " + presetName$
+
+    # --- Waveforms ---
+    Select outer viewport: 0, 4, 0.65, 1.80
+    Select inner viewport: 0.60, 3.75, 0.75, 1.72
+    selectObject: .orig
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, 0, -.amp, .amp, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Original"
+
+    Select outer viewport: 4, 8, 0.65, 1.80
+    Select inner viewport: 4.45, 7.70, 0.75, 1.72
+    selectObject: .proc
+    if bypassReason$ = ""
+        Colour: "{0.25, 0.65, 0.45}"
+    else
+        Colour: "{0.55, 0.55, 0.55}"
+    endif
+    Draw: 0, 0, -.amp, .amp, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", .procLabel$
+
+    # --- Landmark map: old -> target ---
+    Select outer viewport: 0, 8, 1.95, 3.25
+    Select inner viewport: 0.60, 7.70, 2.05, 3.15
+    Axes: 0, 1, 0, .drawMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, .drawMax
+
+    # Lines first. Any Text call leaves the drawing frame on the outer
+    # viewport, so mixing text into this loop displaced F2..F5.
+    for fn from 1 to max_formants
+        if old_'fn' <> undefined
+            Colour: "{0.55, 0.55, 0.55}"
+            Draw line: 0.15, old_'fn', 0.40, old_'fn'
+            Colour: "{0.20, 0.55, 0.85}"
+            Draw line: 0.60, target_'fn', 0.85, target_'fn'
+            if active_'fn' = 1
+                Colour: "{0.75, 0.45, 0.20}"
+                Draw arrow: 0.40, old_'fn', 0.60, target_'fn'
+            endif
+        endif
+    endfor
+
+    Select inner viewport: 0.60, 7.70, 2.05, 3.15
+    Axes: 0, 1, 0, .drawMax
+    Colour: "Black"
+    Font size: 6
+    if .haveLandmarks
+        # Landmarks can cluster (that is exactly what the confidence gate
+        # rejects), so label rows are pushed apart when they would overprint.
+        # One 6-point line is ~0.105 of the axis span on this 1.10-inch panel.
+        .gap = .drawMax * 0.105
+
+        # Measured landmarks are ascending by construction.
+        .lastL = -1000000
+        for fn from 1 to max_formants
+            if old_'fn' <> undefined
+                .yl = old_'fn'
+                if .yl - .lastL < .gap
+                    .yl = .lastL + .gap
+                endif
+                .lastL = .yl
+                Text: 0.10, "right", .yl, "half", "F" + string$(fn)
+            endif
+        endfor
+
+        # Targets are NOT ascending: per-landmark transposition can put F4
+        # below F3, so they are sorted by value before de-collision or the
+        # labels come out in the wrong vertical order.
+        .n = 0
+        tv[0] = -1000000
+        for fn from 1 to max_formants
+            if old_'fn' <> undefined
+                .n = .n + 1
+                tv[.n] = target_'fn'
+            endif
+        endfor
+        for .i from 2 to .n
+            .key = tv[.i]
+            .j = .i - 1
+            while tv[.j] > .key
+                tv[.j+1] = tv[.j]
+                .j = .j - 1
+            endwhile
+            tv[.j+1] = .key
+        endfor
+        .lastR = -1000000
+        for .i from 1 to .n
+            .yr = tv[.i]
+            if .yr - .lastR < .gap
+                .yr = .lastR + .gap
+            endif
+            .lastR = .yr
+            Text: 0.90, "left", .yr, "half", fixed$(tv[.i], 0)
+        endfor
+    else
+        Font size: 7
+        Colour: "{0.45, 0.45, 0.45}"
+        Text: 0.5, "centre", .drawMax / 2, "half", "no landmark analysis on this path"
+    endif
+
+    Select inner viewport: 0.60, 7.70, 2.05, 3.15
+    Axes: 0, 1, 0, .drawMax
+    Colour: "Black"
+    Draw inner box
+    Marks left every: 1, .markStep, "yes", "yes", "no"
+    Font size: 6
+    Text left: "yes", "Frequency (Hz)"
+    if .haveLandmarks
+        Text bottom: "no", "grey = measured landmark     blue = target"
+    endif
+
+    # --- Spectrograms ---
+    Select outer viewport: 0, 4, 3.40, 5.65
+    Select inner viewport: 0.60, 3.75, 3.50, 5.55
+    selectObject: .orig
+    .s1 = To Spectrogram: 0.005, .specCeil, 0.002, 20, "Gaussian"
+    Paint: 0, 0, 0, .specCeil, 100, "yes", 50, 6, 0, "no"
+    removeObject: .s1
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Original spectrogram"
+    Text left: "no", "Hz"
+
+    Select outer viewport: 4, 8, 3.40, 5.65
+    Select inner viewport: 4.45, 7.70, 3.50, 5.55
+    selectObject: .proc
+    .s2 = To Spectrogram: 0.005, .specCeil, 0.002, 20, "Gaussian"
+    Paint: 0, 0, 0, .specCeil, 100, "yes", 50, 6, 0, "no"
+    removeObject: .s2
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text top: "no", "Output spectrogram"
+    Text bottom: "no", "Time (s)"
+
+    # --- Summary ---
+    Select outer viewport: 0, 8, 5.80, 6.85
+    Select inner viewport: 0.60, 7.70, 5.90, 6.75
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.30, 0.30, 0.30}"
+    Text: 0.02, "left", 0.58, "half", "Global " + fixed$(global_transpose_semitones,1) + " st | F1 " + fixed$(f1_transpose_semitones,1) + " | F2 " + fixed$(f2_transpose_semitones,1) + " | F3 " + fixed$(f3_transpose_semitones,1) + " | F4 " + fixed$(f4_transpose_semitones,1) + " | F5 " + fixed$(f5_transpose_semitones,1)
+    Text: 0.02, "left", 0.34, "half", "Width x" + fixed$(bandwidth_scale,2) + " | Strength " + fixed$(strength_db,1) + " dB | Mix " + fixed$(dry_wet_mix*100,0) + "\%  | Peak " + fixed$(inputPeak,3) + " -> " + fixed$(outPeak,3)
+    if bypassReason$ = ""
+        Colour: "{0.20, 0.45, 0.25}"
+    else
+        Colour: "{0.70, 0.35, 0.10}"
+    endif
+    Text: 0.02, "left", 0.10, "half", .statusLine$
+    Select inner viewport: 0.60, 7.70, 5.90, 6.75
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
+    removeObject: .orig, .proc
+
+    # Restore the complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+endproc

@@ -1,5 +1,6 @@
 # ============================================================
 # Praat AudioTools - Creative Formant Manipulations v2.2
+# Version: 2.3 (2026) - Suite-standard visualization
 # Spectral-envelope landmark processor
 #
 # No LPC resynthesis. No FormantGrid filtering.
@@ -17,7 +18,7 @@ endif
 sound = selected("Sound")
 original_name$ = selected$("Sound")
 
-form Creative Formant Manipulations v2.2
+form Creative Formant Manipulations v2.3
     optionmenu preset 1
         option Manual
         option Vocal Lift
@@ -173,7 +174,7 @@ if dry_wet_mix = 0 or neutral = 1
 endif
 
 clearinfo
-writeInfoLine: "=== Creative Formant Manipulations v2.2 ==="
+writeInfoLine: "=== Creative Formant Manipulations v2.3 ==="
 appendInfoLine: "Method: spectral-envelope landmarks, magnitude only, original phase."
 appendInfoLine: "No LPC resynthesis and no FormantGrid filtering."
 appendInfoLine: "Optimized static engine: native formant medians + one FFT per channel."
@@ -526,29 +527,21 @@ if draw_visualization
     proc_spec = selected("Spectrogram")
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # TITLE
-    Select outer viewport: 0, 8, 0, 0.55
+    suiteVizName$ = replace$(original_name$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##Creative Formant Manipulations##"
+    Text: 0.5, "centre", 0.68, "half", "##Creative Formant Manipulations v1.0##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", 0.06, "half",
-        ... original_name$ + "  |  " + preset_name$ + "  |  " + manipulation_name$
-        ... + "  |  strength " + fixed$(strength_db, 1) + " dB"
-        ... + "  |  mix " + fixed$(dry_wet_mix, 2)
-        ... + "  |  " + string$(num_channels) + " ch"
-    if viz_excerpt
-        Font size: 6
-        Colour: "{0.45, 0.45, 0.55}"
-        Text: 0.5, "centre", -0.25, "half",
-            ... "Visualization: central " + fixed$(viz_max_seconds, 1) + " s excerpt (processing used the full Sound)"
-    endif
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$
 
-    # A — ORIGINAL WAVEFORM
     Select outer viewport: 0, 4, 0.65, 1.95
     Select inner viewport: 0.55, 3.75, 0.78, 1.88
     selectObject: viz_orig
@@ -637,11 +630,11 @@ if draw_visualization
     Text top: "no", "E  Processed spectrogram"
     Text bottom: "yes", "Time (s)"
 
-    # RESULT / ENGINE STRIP
+    # SUMMARY STRIP
     Select outer viewport: 0, 8, 6.10, 7.45
     Select inner viewport: 0.55, 7.72, 6.20, 7.35
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     Colour: "{0.80, 0.80, 0.82}"
     Draw line: 0.50, 0.08, 0.50, 0.92
 
@@ -671,6 +664,12 @@ if draw_visualization
     Colour: "Black"
 
     removeObject: orig_spec, proc_spec, viz_orig, viz_proc
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # Restore the source time domain only after the picture has been drawn at t=0.

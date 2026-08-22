@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.4 (2026)
+# Version: 1.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -20,6 +20,13 @@
 #   to 3675 Hz (44 cents flat); at 16 kHz it lands on 4000 Hz (103
 #   cents sharp). The per-band tuning error is reported. Exact tuning
 #   would need fractional-delay interpolation.
+#
+# Changelog v1.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v1.4:
 #   - Natural level is now truly natural: removed the internal wet-bus
@@ -89,7 +96,7 @@
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 # ============================================================
 
-form GRM-Style Resonator v1.4
+form GRM-Style Resonator v1.5
     optionmenu Preset: 1
         option Custom
         option Harmonic (organ-like)
@@ -368,7 +375,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== GRM-Style Resonator v1.4 ==="
+writeInfoLine: "=== GRM-Style Resonator v1.5 ==="
 appendInfoLine: "Input: ", originalName$, " (", fixed$(inputDuration, 3), " s, ",
     ... numChannels, " ch, ", samplingRate, " Hz)"
 appendInfoLine: "Preset: ", presetName$, " | Bands: ", actualNumBands, " | ", resStr$
@@ -690,6 +697,8 @@ outDuration = Get total duration
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     selectObject: workSound
     vizInPeak = Get absolute extremum: 0, 0, "None"
@@ -706,21 +715,17 @@ if draw_visualization
     endif
 
     # --- TITLE ---
-    Select outer viewport: 0, 8, 0, 0.6
-    Select inner viewport: 0, 8, 0, 0.6
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##GRM-Style Resonator##"
+    Text: 0.5, "centre", 0.68, "half", "##GRM-Style Resonator v1.5##"
     Font size: 7
-    Colour: "{0.40, 0.40, 0.50}"
-    Text: 0.5, "centre", 0.22, "half",
-        ... originalName$ + " [" + presetName$ + "]"
-        ... + "  |  " + resStr$
-        ... + "  |  frequency-tuned integer delays"
-        ... + "  |  " + panningStr$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # --- 1. INPUT ---
     Select outer viewport: 0, 4, 0.7, 2.0
     Select inner viewport: 0.6, 3.75, 0.8, 1.9
     selectObject: workSound
@@ -759,7 +764,7 @@ if draw_visualization
     endif
 
     Axes: 0, actualNumBands + 1, plotMinFreq, plotMaxFreq
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, actualNumBands + 1, plotMinFreq, plotMaxFreq
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, actualNumBands + 1, plotMinFreq, plotMaxFreq
 
     for i from 1 to actualNumBands
         if gain_Profile = 1
@@ -793,7 +798,7 @@ if draw_visualization
     Select outer viewport: 0, 8, 2.1, 3.5
     Select inner viewport: 0.6, 7.7, 2.2, 3.4
     Axes: 0, actualNumBands + 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, actualNumBands + 1, 0, 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, actualNumBands + 1, 0, 1
     for i from 1 to actualNumBands
         Paint rectangle: "{0.90, 0.70, 0.30}", i - 0.35, i, 0.5, 0.5 + pL[i] * 0.45
         Paint rectangle: "{0.30, 0.60, 0.80}", i, i + 0.35, 0.5, 0.5 - pR[i] * 0.45
@@ -830,7 +835,7 @@ if draw_visualization
         gainTop = 1
     endif
     Axes: 0, actualNumBands + 1, 0, gainTop
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, actualNumBands + 1, 0, gainTop
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, actualNumBands + 1, 0, gainTop
     Colour: "{0.70, 0.30, 0.70}"
     Line width: 3
     for i from 1 to actualNumBands - 1
@@ -847,14 +852,14 @@ if draw_visualization
     Text top: "no", "Tilt by frequency: " + gainProfileStr$
     Text bottom: "yes", "Band number"
 
-    # --- 6. INFO ---
+    # --- 6. SUMMARY STRIP ---
     Select outer viewport: 4, 8, 5.0, 6.2
     Select inner viewport: 4.55, 7.7, 5.1, 6.1
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.05, "left", 0.90, "half", "##Parameters##"
+    Text: 0.05, "left", 0.90, "half", "##Summary##"
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
     Text: 0.05, "left", 0.76, "half", "Bands: " + string$(actualNumBands) + "  |  " + tuningStr$
@@ -872,6 +877,12 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
     Font size: 10
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # --- CLEANUP AND FINISH ---

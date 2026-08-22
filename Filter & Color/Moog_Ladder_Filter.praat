@@ -3,9 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Description:
 #   Moog-style 4-pole resonant lowpass based on the linearized
@@ -30,7 +37,7 @@ endif
 soundID = selected("Sound")
 soundName$ = selected$("Sound")
 
-form Moog-Style TPT Ladder Filter v0.4
+form Moog-Style TPT Ladder Filter v0.5
     optionmenu Preset: 1
         option Custom
         option Bass Filter (300 Hz, res 0.3)
@@ -194,7 +201,7 @@ trimGain = 10 ^ (output_trim_dB / 20)
 # REPORT HEADER
 # ============================================================
 clearinfo
-writeInfoLine: "=== Moog-Style TPT Ladder Filter v0.4 ==="
+writeInfoLine: "=== Moog-Style TPT Ladder Filter v0.5 ==="
 appendInfoLine: "Input: ", soundName$, "  |  ", fixed$(duration, 3), " s  |  ", numberOfChannels, " ch"
 appendInfoLine: "Sample rate: ", fixed$(samplingFrequency, 0), " Hz"
 appendInfoLine: "Preset: ", presetName$
@@ -357,7 +364,8 @@ endif
 if draw_visualization
     appendInfoLine: "Creating AudioTools visualization..."
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     selectObject: soundID
     if numberOfChannels > 1
@@ -373,21 +381,17 @@ if draw_visualization
     endif
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(soundName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Moog-Style TPT Ladder Filter##"
+    Text: 0.5, "centre", 0.68, "half", "##Moog-Style TPT Ladder Filter v0.5##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    if use_automation
-        subtitle$ = soundName$ + "  |  " + presetName$ + "  |  cutoff " + fixed$(start_cutoff, 0) + "->" + fixed$(end_cutoff, 0) + " Hz  |  res " + fixed$(start_resonance, 2) + "->" + fixed$(end_resonance, 2)
-    else
-        subtitle$ = soundName$ + "  |  " + presetName$ + "  |  cutoff " + fixed$(cutoff_frequency, 0) + " Hz  |  res " + fixed$(resonance, 2)
-    endif
-    Text: 0.5, "centre", -0.25, "half", subtitle$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # Input waveform
     Select outer viewport: 0, 8, 0.52, 1.32
     Select inner viewport: 0.55, 7.65, 0.57, 1.27
     selectObject: vizIn
@@ -554,6 +558,12 @@ if draw_visualization
 
     removeObject: vizIn, vizOut
     appendInfoLine: "Visualization complete."
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

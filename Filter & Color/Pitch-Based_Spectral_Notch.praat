@@ -2,9 +2,16 @@
 # Praat AudioTools - Pitch-Based_Spectral_Notch.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026)
+# Version: 1.2 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.2 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Description:
 #   Static pitch-based spectral notch filter.
@@ -27,7 +34,7 @@
 #   it never boosts quieter material.
 # ============================================================
 
-form Pitch-Based Spectral Notch v1.1
+form Pitch-Based Spectral Notch v1.2
     comment === PRESETS ===
     optionmenu Preset 1
         option Custom
@@ -131,7 +138,7 @@ endif
 # Pitch analysis / notch geometry
 # ============================================================
 clearinfo
-writeInfoLine: "=== Pitch-Based Spectral Notch v1.1 ==="
+writeInfoLine: "=== Pitch-Based Spectral Notch v1.2 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Input: ", originalName$, "  (", numChannels, " ch, ",
     ... fixed$(sampleRate, 0), " Hz)"
@@ -417,6 +424,8 @@ if draw_visualization
     appendInfoLine: "Step 3: Drawing visualization..."
 
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Helvetica
     Line width: 1
 
@@ -434,23 +443,17 @@ if draw_visualization
     endif
 
     # --- Title ---------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.45
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.78, "half", "##Pitch-Based Spectral Notch##"
+    Text: 0.5, "centre", 0.68, "half", "##Pitch-Based Spectral Notch v1.2##"
     Font size: 7
-    Colour: colText$
-    if meanPitch <> undefined
-        subtitle$ = originalName$ + " | " + presetName$
-            ... + " | mean F0 " + fixed$(meanPitch, 1) + " Hz"
-            ... + " | target " + fixed$(notchCenter, 1) + " Hz"
-    else
-        subtitle$ = originalName$ + " | exact dry bypass"
-    endif
-    Text: 0.5, "centre", -1.18, "half", subtitle$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # --- Waveforms -----------------------------------------------------
     Select outer viewport: 0, 4, 0.55, 1.70
     Select inner viewport: 0.55, 3.80, 0.65, 1.62
     selectObject: vizOrigMono
@@ -639,6 +642,12 @@ if draw_visualization
 
     removeObject: vizOrigMono, vizOrigSpectrum, vizResultMono, vizResultSpectrum
     appendInfoLine: "  Visualization complete."
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

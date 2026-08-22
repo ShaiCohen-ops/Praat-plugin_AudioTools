@@ -3,9 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.3 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Description:
 #   Harmonic Remover — selectively removes the fundamental
@@ -59,7 +66,7 @@ endif
 # FORM
 # ============================================================
 
-form Harmonic Remover v1.2
+form Harmonic Remover v1.3
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -269,7 +276,7 @@ endif
 # ============================================================
 
 clearinfo
-writeInfoLine: "=== Harmonic Remover v1.2 ==="
+writeInfoLine: "=== Harmonic Remover v1.3 ==="
 appendInfoLine: "Source: ", soundName$, " (", fixed$(duration, 2), " s, ",
     ... sampleRate, " Hz, ", numChannels, " ch)"
 appendInfoLine: "Preset: ", presetName$
@@ -616,25 +623,23 @@ if draw_visualization
     appendInfoLine: "[3/4] Creating visualization..."
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # ----------------------------------------------------------
     # Title
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(soundName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Harmonic Remover##"
+    Text: 0.5, "centre", 0.68, "half", "##Harmonic Remover v1.3##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
-        ... soundName$ + "  |  " + presetName$
-        ... + "  |  " + modeName$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # ----------------------------------------------------------
-    # Input waveform
-    # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.52, 1.32
     Select inner viewport: 0.55, 7.65, 0.57, 1.27
     selectObject: monoWork
@@ -701,7 +706,7 @@ if draw_visualization
 
     vizMaxFreq = min(medianF0 * (vizHarmonics + 1), sampleRate / 2)
     Axes: 0, vizMaxFreq, -0.05, 1.15
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, vizMaxFreq, -0.05, 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, vizMaxFreq, -0.05, 1.15
 
     # Unity gain line
     Colour: "{0.82, 0.82, 0.82}"
@@ -753,12 +758,12 @@ if draw_visualization
                 # Vertical centre line
                 Colour: "{0.80, 0.25, 0.25}"
                 Draw line: fh, 0, fh, 1.0
-                Font size: 5
+                Font size: 6
                 Text: fh, "centre", 1.08, "half", "×" + string$(hn)
             else
                 # Green kept marker
                 Paint circle (mm): "{0.25, 0.65, 0.30}", fh, 1.0, 1.0
-                Font size: 5
+                Font size: 6
                 Colour: "{0.25, 0.55, 0.25}"
                 Text: fh, "centre", 1.08, "half", string$(hn)
             endif
@@ -814,6 +819,12 @@ if draw_visualization
     Line width: 1
 else
     appendInfoLine: "[3/4] Visualization skipped."
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

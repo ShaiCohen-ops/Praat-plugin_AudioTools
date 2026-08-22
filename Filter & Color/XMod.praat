@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -24,6 +24,13 @@
 #     trimmed to the carrier duration.
 #   - Safety_peak attenuates only when needed; it never boosts.
 #
+# Changelog v1.2 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
+#
 # Changelog v1.1:
 #   - Fixed AM depth=0 so it is an exact dry bypass (v1.0 was -6 dB).
 #   - Removed unconditional Scale peak normalization.
@@ -38,7 +45,7 @@
 #   - Updated visualization to AudioTools house style.
 # ============================================================
 
-form XMod - Cross Modulation v1.1
+form XMod - Cross Modulation v1.2
     optionmenu Preset: 1
         option Custom
         option Ring Mod - Metallic
@@ -211,7 +218,7 @@ releaseSec = release / 1000
 attackAlpha = exp(-1 / max(attackSec * sampleRate, 1e-12))
 releaseAlpha = exp(-1 / max(releaseSec * sampleRate, 1e-12))
 
-writeInfoLine: "=== XMod - Cross Modulation v1.1 ==="
+writeInfoLine: "=== XMod - Cross Modulation v1.2 ==="
 appendInfoLine: "Carrier: ", originalName$
 appendInfoLine: "Duration: ", fixed$(duration, 3), " s   Start: ", fixed$(carrierXmin, 3), " s"
 appendInfoLine: "Channels: ", numChannels, "   SR: ", round(sampleRate), " Hz"
@@ -379,18 +386,21 @@ if draw_visualization
     endif
 
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##XMod##"
+    Text: 0.5, "centre", 0.68, "half", "##XMod - Cross Modulation v1.2##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -1.25, "half", originalName$ + " | " + presetName$ + " | " + modTypeNames$[mod_type] + " | " + modSourceNames$[mod_source]
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # Input waveform
     Select outer viewport: 0, 8, 0.72, 1.48
     Select inner viewport: 0.55, 7.70, 0.80, 1.40
     selectObject: vizIn
@@ -488,6 +498,12 @@ if draw_visualization
     Line width: 1
 
     removeObject: vizIn, vizOut
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

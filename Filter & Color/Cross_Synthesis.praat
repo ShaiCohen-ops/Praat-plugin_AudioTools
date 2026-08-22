@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,6 +23,13 @@
 #   Processes every channel.
 #
 # Category: Spectral
+#
+# Changelog v1.3 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v1.2 - Parselmouth-verified again. Everything v1.1 changed
 # passed: the emphasis removal, mismatched time domains, xmin restore,
@@ -134,7 +141,7 @@ endif
 sourceSound = selected("Sound", 1)
 filterSound = selected("Sound", 2)
 
-form Cross Synthesis v1.2
+form Cross Synthesis v1.3
     comment === Preset ===
     optionmenu Preset: 1
         option Manual
@@ -383,7 +390,7 @@ endproc
 # ============================================================
 clearinfo
 writeInfoLine: "=============================================="
-appendInfoLine: "  Cross Synthesis v1.2"
+appendInfoLine: "  Cross Synthesis v1.3"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Source: ", sourceName$, " (excitation) | ", fixed$(sourceDur, 2), " s, ",
@@ -700,6 +707,8 @@ if draw_visualization
     appendInfoLine: "Drawing visualization..."
 
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     vizDuration = finalDur
     if vizDuration > 12
@@ -708,19 +717,17 @@ if draw_visualization
     maxFreqDisplay = min(5000, targetSR / 2)
 
     # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.5
+    suiteVizName$ = replace$(sourceName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Cross Synthesis##"
+    Text: 0.5, "centre", 0.68, "half", "##Cross Synthesis v1.3##"
     Font size: 7
-    Colour: "{0.40, 0.40, 0.50}"
-    Text: 0.5, "centre", -0.6, "half",
-        ... sourceName$ + " (excite) x " + filterName$ + " (env)  |  " + presetName$
-        ... + "  |  transfer " + fixed$(envelope_transfer * 100, 0) + "%"
-        ... + "  |  " + string$(maxChannels) + " ch"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # === SOURCE WAVEFORM (the work copy, i.e. what was analysed) ===
     Select outer viewport: 0, 4, 0.6, 1.5
     Select inner viewport: 0.6, 3.7, 0.7, 1.4
     selectObject: sourceMono
@@ -878,6 +885,12 @@ if draw_visualization
 
     Font size: 10
     Colour: "Black"
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

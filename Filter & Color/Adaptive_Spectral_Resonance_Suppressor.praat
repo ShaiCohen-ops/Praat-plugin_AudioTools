@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2026)
+# Version: 1.6 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -45,6 +45,15 @@
 #     Selectivity -> threshold_dB (how prominent a peak must be)
 #     Attack      -> attack_ms (how fast suppression engages)
 #     Release     -> release_ms (how fast suppression releases)
+#
+# Changelog v1.6 (2026):
+#   - The main form is compacted; technical analysis/render controls
+#     moved to an optional Advanced settings dialog with identical defaults.
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v1.5 (from v1.4) — reviewed by running the script under
 # Parselmouth, so these are measurements. Identity reconstruction now
@@ -233,7 +242,7 @@ endif
 # ============================================================
 # FORM
 # ============================================================
-form Spectral Soothe v1.5
+form Spectral Soothe v1.6
     optionmenu Preset: 1
         option Custom
         option Gentle
@@ -241,13 +250,7 @@ form Spectral Soothe v1.5
         option Aggressive
         option Vocal Clarity
         option De-Harsh
-    positive Window_length_s 0.030
-    positive Time_step_s 0.010
-    optionmenu Smoothing_span: 1
-        option Hz (Smoothing_bandwidth_Hz below)
-        option Octaves (Smoothing_width_octaves below)
-    positive Smoothing_bandwidth_Hz 400
-    positive Smoothing_width_octaves 1.0
+    comment === Musical controls ===
     positive Threshold_dB 3.0
     positive Max_reduction_dB 6.0
     real Sharpness 0.5
@@ -255,17 +258,40 @@ form Spectral Soothe v1.5
     positive Release_ms 80
     positive Protect_Hz 150
     real Protect_amount 0.7
-    positive HF_soft_Hz 10000
-    integer Number_of_bands 24
-    positive Min_band_Hz 60
-    positive Max_frequency_Hz 16000
     real Mix 1.0
     real Output_gain_dB 0.0
-    boolean Show_spectrum 1
+    boolean Advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
 
+# Advanced defaults are identical to the original v1.5 form.
+window_length_s = 0.030
+time_step_s = 0.010
+smoothing_span = 1
+smoothing_bandwidth_Hz = 400
+smoothing_width_octaves = 1.0
+hF_soft_Hz = 10000
+number_of_bands = 24
+min_band_Hz = 60
+max_frequency_Hz = 16000
+show_spectrum = 1
+if advanced_settings
+    form Spectral Soothe - Advanced settings
+        positive Window_length_s 0.030
+        positive Time_step_s 0.010
+        optionmenu Smoothing_span: 1
+            option Hz (Smoothing_bandwidth_Hz below)
+            option Octaves (Smoothing_width_octaves below)
+        positive Smoothing_bandwidth_Hz 400
+        positive Smoothing_width_octaves 1.0
+        positive HF_soft_Hz 10000
+        integer Number_of_bands 24
+        positive Min_band_Hz 60
+        positive Max_frequency_Hz 16000
+        boolean Show_spectrum 1
+    endform
+endif
 # ============================================================
 # PRESETS
 # ============================================================
@@ -614,7 +640,7 @@ envOffset = round(envXmin * sampleRate)
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: "  SPECTRAL SOOTHE v1.5"
+writeInfoLine: "  SPECTRAL SOOTHE v1.6"
 writeInfoLine: "  Resonance suppression pipeline"
 writeInfoLine: "=================================================="
 appendInfoLine: ""
@@ -1145,33 +1171,25 @@ if draw_visualization
     endif
 
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Black
     Plain line
 
     # ----------------------------------------------------------
     # TITLE BAR
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##ADAPTIVE SPECTRAL RESONANCE SUPPRESSOR##"
+    Text: 0.5, "centre", 0.68, "half", "##Spectral Soothe v1.6##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... originalName$
-        ... + "  |  " + presetName$
-        ... + "  |  " + string$(numBands) + " bands"
-        ... + "  |  depth " + fixed$(max_reduction_dB, 1) + " dB"
-        ... + "  |  sharp " + fixed$(sharpness, 2)
-        ... + "  |  thresh " + fixed$(threshold_dB, 1) + " dB"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # ----------------------------------------------------------
-    # PANEL A: SPECTRUM COMPARISON  (left, headline)
-    # Original (blue) vs Processed (green) — the spectral
-    # processor's signature output. When Show_spectrum = OFF,
-    # show a parameter report instead.
-    # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
     Select inner viewport: 0.55, 4.00, 0.95, 4.40
 
@@ -1210,7 +1228,7 @@ if draw_visualization
         Line width: 1
 
         # Inline legend
-        Font size: 5
+        Font size: 6
         Colour: "{0.30, 0.45, 0.78}"
         Text: specMaxF * 0.02, "left", 6, "half", "original"
         Colour: "{0.20, 0.65, 0.30}"
@@ -1225,7 +1243,7 @@ if draw_visualization
     else
         # Parameter report panel when spectrum is disabled
         Axes: 0, 1, 0, 1
-        Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
 
         Font size: 9
         Colour: "{0.30, 0.30, 0.30}"
@@ -1432,6 +1450,12 @@ if draw_visualization
     if show_spectrum
         removeObject: specOrig, specProc
     endif
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

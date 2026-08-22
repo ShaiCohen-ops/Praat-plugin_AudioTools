@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026)
+# Version: 0.7 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -31,6 +31,13 @@
 #   Cohen, S. (2026). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.7 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v0.6 - Parselmouth-verified again. The v0.5 architecture
 # passed: split-band confirmed (a 200 Hz tone measured 0.1000000 /
@@ -121,7 +128,7 @@
 #     detector.
 # ============================================================
 
-form HF-Ratio De-Esser v0.6
+form HF-Ratio De-Esser v0.7
     optionmenu Preset: 1
         option Custom
         option Light De-Essing
@@ -284,7 +291,7 @@ else
     suffix$ = "_sibilants"
 endif
 
-writeInfoLine: "HF-Ratio De-Esser v0.6"
+writeInfoLine: "HF-Ratio De-Esser v0.7"
 appendInfoLine: "===================="
 appendInfoLine: "Input: ", originalName$, " (", fixed$(duration, 2), " s, ", numChannels,
     ... " ch, ", sampleRate, " Hz)"
@@ -623,6 +630,8 @@ if draw_visualization
     endif
 
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
     Black
     Plain line
 
@@ -639,22 +648,17 @@ if draw_visualization
     endif
 
     # ---- TITLE ----
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##HF-Ratio De-Esser##"
+    Text: 0.5, "centre", 0.68, "half", "##HF-Ratio De-Esser v0.7##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.22, "half",
-        ... originalName$
-        ... + "  |  " + presetName$
-        ... + "  |  HF " + fixed$(hf_low_hz, 0) + "-" + fixed$(hf_high_hz, 0) + " Hz (split band)"
-        ... + "  |  thresh " + fixed$(threshold, 2)
-        ... + "  |  max -" + fixed$(max_reduction_db, 1) + " dB"
-        ... + "  |  reduced " + fixed$(reducedPct, 1) + "% of frames"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # ---- PANEL A: waveform + gain reduction ----
     Select outer viewport: 0, 4.2, 0.75, 4.60
     Select inner viewport: 0.55, 4.00, 0.95, 4.40
 
@@ -743,7 +747,7 @@ if draw_visualization
     endfor
     Line width: 1
 
-    Font size: 5
+    Font size: 6
     Colour: "{0.85, 0.25, 0.25}"
     Text: duration * 0.02, "left", threshold + 0.04, "half", "thresh " + fixed$(threshold, 2)
 
@@ -828,8 +832,8 @@ if draw_visualization
         Text bottom: "yes", "Time (s)"
     else
         Axes: 0, 1, 0, 1
-        Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
-        Font size: 8
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
+        Font size: 7
         Colour: "{0.50, 0.50, 0.50}"
         Text: 0.5, "centre", 0.5, "half", "Result spectrogram disabled (Show_spectrogram = OFF)"
         Colour: "Black"
@@ -882,6 +886,12 @@ if draw_visualization
     if show_spectrogram
         removeObject: resultSpec, specSource
     endif
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

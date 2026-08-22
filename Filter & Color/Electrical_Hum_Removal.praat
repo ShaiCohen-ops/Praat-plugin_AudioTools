@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.3 (2026)
+# Version: 2.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -18,6 +18,13 @@
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools: An Offline Analysis-Resynthesis
 #   Toolkit for Experimental Composition.
+#
+# Changelog v2.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v2.3 - Parselmouth-verified again. The v2.2 gating worked:
 # every control - pure tones at 100, 115, 120, 230, 240, 345, 400, 440,
@@ -172,7 +179,7 @@ endif
 originalID = selected("Sound")
 originalName$ = selected$("Sound")
 
-form Electrical Hum Removal v2.3
+form Electrical Hum Removal v2.4
     optionmenu Preset: 1
         option Custom
         option Auto-detect (mild)
@@ -303,7 +310,7 @@ endif
 dummyTimer = stopwatch
 
 clearinfo
-writeInfoLine: "=== Electrical Hum Removal v2.3 ==="
+writeInfoLine: "=== Electrical Hum Removal v2.4 ==="
 appendInfoLine: "Input: ", originalName$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -943,6 +950,8 @@ if draw_visualization
     appendInfoLine: "Drawing visualization..."
 
     Erase all
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     maxFreqDisplay = min(1000, nyquist)
     # 2 Hz bins, not 100: a notch a few Hz wide is invisible at 100 Hz
@@ -974,27 +983,17 @@ if draw_visualization
     endif
 
     # Title
-    Select outer viewport: 0, 8, 0, 0.5
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "##Electrical Hum Removal##"
-    Font size: 8
-    Colour: "{0.35, 0.35, 0.52}"
-    if detection_mode = 1
-        if humFound
-            detStr$ = "auto " + fixed$(baseFreq, 2) + " Hz (score " +
-                ... fixed$(combScore, 1) + " dB)"
-        else
-            detStr$ = "auto: NO HUM FOUND (score " + fixed$(combScore, 1) + " dB)"
-        endif
-    else
-        detStr$ = "fixed " + fixed$(baseFreq, 0) + " Hz"
-    endif
-    Text: 0.5, "centre", -0.5, "half",
-        ... originalName$ + "  |  " + presetName$ + "  |  " + detStr$
+    Text: 0.5, "centre", 0.68, "half", "##Electrical Hum Removal v2.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + presetName$
 
-    # === ORIGINAL SPECTRUM ===
     Select outer viewport: 0, 4, 0.6, 3.0
     Select inner viewport: 0.6, 3.75, 0.8, 2.8
 
@@ -1026,7 +1025,7 @@ if draw_visualization
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text top: "no", "Original + notch bands (dark = stop, pale = transition)"
     Text left: "yes", "dB"
     Text bottom: "yes", "Frequency (Hz)"
@@ -1054,7 +1053,7 @@ if draw_visualization
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text top: "no", "Processed, measured BEFORE the output stage (same dB axis)"
     Text left: "yes", "dB"
     Text bottom: "yes", "Frequency (Hz)"
@@ -1128,7 +1127,7 @@ if draw_visualization
     Colour: "Black"
     Draw rectangle: 0, 1, 0, 1
 
-    # === INFO PANEL ===
+    # === SUMMARY STRIP ===
     Select outer viewport: 0, 8, 5.6, 6.1
     Select inner viewport: 0.6, 7.7, 5.65, 6.05
     Axes: 0, 1, 0, 1
@@ -1149,6 +1148,12 @@ if draw_visualization
     Colour: "Black"
 
     removeObject: origLtasID, procLtasID, vizProcID
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 # ============================================================

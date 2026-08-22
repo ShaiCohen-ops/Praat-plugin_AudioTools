@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026)
+# Version: 0.7 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,6 +23,13 @@
 # Citation:
 #   Cohen, S. (2025). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.7 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; audio processing, analysis,
+#     synthesis, object-management and output behavior are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention, standard
+#     title/subtitle, suite typography, neutral diagnostic panels,
+#     summary strip and full-page Picture export.
 #
 # Changelog v0.6:
 #   - Visualization redesigned to match the Praat AudioTools house style:
@@ -50,7 +57,7 @@
 #     can't break the formula on other Praat builds.
 # ============================================================
 
-form Hilbert Transform Envelope
+form Hilbert Transform Envelope v0.7
     optionmenu Preset: 1
         option Custom
         option Drum Punch (transient enhance)
@@ -415,7 +422,8 @@ if draw_visualization
     appendInfoLine: "Creating AudioTools visualization..."
 
     Erase all
-    Select outer viewport: 0, 8, 0, 8
+    pageHeight = 8.00
+    Select outer viewport: 0, 8, 0, pageHeight
 
     # Visualization uses mono display copies only; processing output is untouched.
     selectObject: sound
@@ -446,19 +454,17 @@ if draw_visualization
     # ----------------------------------------------------------
     # Title
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
+    suiteVizName$ = replace$(originalName$, "_", "\_ ", 0)
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Hilbert Transform for Drums##"
+    Text: 0.5, "centre", 0.68, "half", "##Hilbert Transform Envelope v0.7##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", -0.25, "half",
-        ... originalName$ + "  |  " + preset$ + "  |  " + modeLabel$
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", suiteVizName$ + " | " + preset$
 
-    # ----------------------------------------------------------
-    # Input waveform
-    # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.52, 1.32
     Select inner viewport: 0.55, 7.65, 0.57, 1.27
     selectObject: origMono
@@ -598,6 +604,12 @@ if draw_visualization
     Line width: 1
 
     removeObject: origMono, resultMono
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 endif
 
 selectObject: finalOutput
