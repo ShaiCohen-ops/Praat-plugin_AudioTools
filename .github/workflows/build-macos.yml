@@ -42,7 +42,38 @@ jobs:
           set -euxo pipefail
           PART_DIR="Max-MSP/Praat_AudioTools_CI/payload"
           test -d "$PART_DIR"
-          cat "$PART_DIR"/ci_payload.tar.gz.b64.part* | tr -d '[:space:]' | base64 -D > "$RUNNER_TEMP/ci_payload.tar.gz"
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+          import os
+
+          part_dir = Path("Max-MSP/Praat_AudioTools_CI/payload")
+          parts = sorted(part_dir.glob("ci_payload.tar.gz.b64.part*"))
+          if not parts:
+              raise SystemExit("No payload parts found")
+
+          raw = b"".join(p.read_bytes() for p in parts)
+          whitespace = set(b" \t\r\n\v\f")
+          alphabet = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=")
+          invalid = [(i, b) for i, b in enumerate(raw) if b not in alphabet and b not in whitespace]
+
+          print(f"Payload parts: {len(parts)}")
+          print(f"Raw payload bytes: {len(raw)}")
+          print(f"Non-Base64/non-whitespace bytes: {len(invalid)}")
+          if invalid:
+              preview = ", ".join(f"offset {i}: 0x{b:02x}" for i, b in invalid[:40])
+              print(f"Invalid-byte preview: {preview}")
+
+          clean = bytes(b for b in raw if b in alphabet)
+          print(f"Base64 characters after cleanup: {len(clean)} (mod 4 = {len(clean) % 4})")
+          if len(clean) % 4:
+              raise SystemExit("Cleaned Base64 length is not divisible by 4")
+
+          decoded = base64.b64decode(clean, validate=True)
+          out = Path(os.environ["RUNNER_TEMP"]) / "ci_payload.tar.gz"
+          out.write_bytes(decoded)
+          print(f"Decoded payload bytes: {len(decoded)}")
+          PY
           echo "$PAYLOAD_SHA256  $RUNNER_TEMP/ci_payload.tar.gz" | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/praat-ci"
           tar -xzf "$RUNNER_TEMP/ci_payload.tar.gz" -C "$RUNNER_TEMP/praat-ci"
