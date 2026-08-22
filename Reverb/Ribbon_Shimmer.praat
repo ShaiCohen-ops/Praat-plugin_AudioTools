@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - Tap-bank/mix/geometry repair
+# Version: 0.5.1 (2026) - Tap-bank/mix/geometry repair
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -400,6 +401,11 @@ endif
 
 if draw_visualization
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Select outer viewport: 0, 8, 0, 8
 
     selectObject: result
@@ -408,16 +414,16 @@ if draw_visualization
     # === TITLE ===
     Select outer viewport: 0, 8, 0.0, 0.6
     Axes: 0, 1, 0, 1
-    Font size: 14
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.66, "half", "##Ribbon Shimmer##  |  " + presetName$
-    Font size: 8
+    Text: 0.5, "centre", 0.66, "half", "##Ribbon Shimmer##  |  " + presetName$ + " | v0.5.1"
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -1.24, "half", originalName$ + "   |   " + string$(effectiveDelays) + " delays   |   wet/dry " + fixed$(wet_dry_percent, 0) + "%"
 
     # === DRY WAVEFORM ===
     Select outer viewport: 0, 8, 0.7, 2.5
-    Select inner viewport: 0.6, 7.6, 0.8, 2.4
+    Select inner viewport: 0.60, 7.70, 0.8, 2.4
     selectObject: original
     Axes: 0, resultDur, -1, 1
     Colour: "{0.55, 0.55, 0.6}"
@@ -430,13 +436,17 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Marks left: 3, "yes", "yes", "no"
-    Text left: "yes", "Dry"
-    Font size: 9
+    Select inner viewport: 0.20, 0.48, 0.8, 2.4
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.8, 2.4
+    Axes: 0, resultDur, -1, 1
+    Font size: 7
     Text top: "no", "##Original (dry) — ends before the tail##"
 
     # === RESULT WAVEFORM (full length, including shimmer tail) ===
     Select outer viewport: 0, 8, 2.6, 4.4
-    Select inner viewport: 0.6, 7.6, 2.7, 4.3
+    Select inner viewport: 0.60, 7.70, 2.7, 4.3
     selectObject: result
     Axes: 0, resultDur, -1, 1
     Colour: "{0.55, 0.45, 0.7}"
@@ -445,14 +455,18 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Marks left: 3, "yes", "yes", "no"
-    Text left: "yes", "Shimmer " + fixed$(wet_dry_percent, 0) + "%"
+    Select inner viewport: 0.20, 0.48, 2.7, 4.3
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Shimmer " + fixed$(wet_dry_percent, 0) + "\%  "
+    Select inner viewport: 0.60, 7.70, 2.7, 4.3
+    Axes: 0, resultDur, -1, 1
     Text bottom: "yes", "Time (s)"
-    Font size: 9
+    Font size: 7
     Text top: "no", "##Shimmered Output (full length with tail)##"
 
     # === DELAY / ECHO PATTERN ===
     Select outer viewport: 0, 8, 4.5, 6.9
-    Select inner viewport: 0.6, 7.6, 4.6, 6.8
+    Select inner viewport: 0.60, 7.70, 4.6, 6.8
     maxDelayMs = maxDelayEff * 1000 * 1.1
     maxAmp = max(0.05, baseAmpEff * 1.2)
     Axes: 0, maxDelayMs, -maxAmp, maxAmp
@@ -493,29 +507,47 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Marks left: 3, "yes", "yes", "no"
-    Text left: "yes", "Amplitude"
+    Select inner viewport: 0.20, 0.48, 4.6, 6.8
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amplitude"
+    Select inner viewport: 0.60, 7.70, 4.6, 6.8
+    Axes: 0, maxDelayMs, -maxAmp, maxAmp
     Text bottom: "yes", "Delay (ms) — exponential spacing"
-    Font size: 9
+    Font size: 7
     Text top: "no", "##Echo Tap Pattern (blue +, red −)##"
 
     # === GREY SUMMARY PANEL ===
-    Select outer viewport: 0, 8, 7.0, 8.0
-    Select inner viewport: 0.6, 7.6, 7.05, 7.95
+    Select outer viewport: 0, 8, 7.05, 8.05
+    Select inner viewport: 0.60, 7.70, 7.12, 7.98
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    Font size: 9
+    Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.70, "half", "##Shimmer Parameters##"
-    Font size: 8
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 7
     Colour: "{0.25, 0.25, 0.25}"
-    Text: 0.02, "left", 0.40, "half", "Delays: " + string$(effectiveDelays) + "    Range: " + fixed$(minDelayEff * 1000, 0) + "–" + fixed$(maxDelayEff * 1000, 0) + " ms    Decay: " + fixed$(decayEff, 3) + "    Sparkle: " + fixed$(sparkleEff, 2)
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "Delays: " + string$(effectiveDelays) + "    Range: " + fixed$(minDelayEff * 1000, 0) + "–" + fixed$(maxDelayEff * 1000, 0) + " ms    Decay: " + fixed$(decayEff, 3) + "    Sparkle: " + fixed$(sparkleEff, 2)
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.02, "left", 0.12, "half", "Output: " + fixed$(resultDur, 2) + " s  (original " + fixed$(originalDur, 2) + " s + " + fixed$(tailEff, 2) + " s tail)    Wet/dry: " + fixed$(wet_dry_percent, 0) + "%"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "Output: " + fixed$(resultDur, 2) + " s  (original " + fixed$(originalDur, 2) + " s + " + fixed$(tailEff, 2) + " s tail)    Wet/dry: " + fixed$(wet_dry_percent, 0) + "\%  "
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+
+    Select inner viewport: 0.60, 7.70, 7.12, 7.98
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 8.15
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

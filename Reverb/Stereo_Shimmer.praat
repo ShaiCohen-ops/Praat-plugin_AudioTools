@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 reviewed (2026)
+# Version: 1.2.1 reviewed (2026)
+# v1.2.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -516,12 +517,17 @@ processingTime = stopwatch - startTime
 if draw_visualization
     Erase all
 
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
+
     # Main title.
     Select outer viewport: 0, 8, 0.05, 0.38
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.58, "half", "Stereo Shimmer | " + presetName$
+    Text: 0.5, "centre", 0.58, "half", "Stereo Shimmer | " + presetName$ + " | v1.2.1"
 
     # Metadata line.
     Select outer viewport: 0, 8, 0.36, 0.58
@@ -532,37 +538,45 @@ if draw_visualization
 
     # Dry waveform, on the full output time axis.
     Select outer viewport: 0, 8, 0.65, 1.35
-    Select inner viewport: 0.65, 7.65, 0.72, 1.28
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
     selectObject: original
     Colour: "{0.65, 0.65, 0.65}"
     Draw: originalStart, originalStart + resultDur, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.72, 1.28
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
+    Axes: 0, 1, 0, 1
 
     # Output waveform including the full tail.
     Select outer viewport: 0, 8, 1.42, 2.12
-    Select inner viewport: 0.65, 7.65, 1.49, 2.05
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
     selectObject: result
     Colour: "{0.58, 0.50, 0.72}"
     Draw: 0, resultDur, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Output"
+    Select inner viewport: 0.20, 0.48, 1.49, 2.05
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Output"
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     # Tap-field title.
     Select outer viewport: 0, 8, 2.24, 2.48
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Independent stereo tap field"
 
     # Actual delays and signed amplitudes used by DSP.
     Select outer viewport: 0, 8, 2.45, 3.84
-    Select inner viewport: 0.65, 7.65, 2.60, 3.69
+    Select inner viewport: 0.60, 7.70, 2.60, 3.69
 
     maxDelayMs = maxActualDelay * 1000 * 1.05
     maxAmp = base_amplitude * 1.15
@@ -598,26 +612,49 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Signed amplitude"
+    Select inner viewport: 0.20, 0.48, 2.60, 3.69
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Signed amplitude"
+    Select inner viewport: 0.60, 7.70, 2.60, 3.69
+    Axes: 0, maxDelayMs, -maxAmp, maxAmp
     Text bottom: "yes", "Delay (ms)"
 
-    Font size: 5
+    Font size: 6
     Colour: "{0.42, 0.58, 0.76}"
     Text: maxDelayMs * 0.96, "right", maxAmp * 0.88, "half", "LEFT"
     Colour: "{0.76, 0.47, 0.52}"
     Text: maxDelayMs * 0.96, "right", maxAmp * 0.68, "half", "RIGHT"
 
     # Summary panel.
-    Select outer viewport: 0.35, 7.65, 3.95, 4.48
+    Select outer viewport: 0, 8, 3.99, 4.99
+    Select inner viewport: 0.60, 7.70, 4.06, 4.92
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.35}"
     Font size: 6
-    Text: 0.5, "centre", 0.68, "half", "Delay " + fixed$(min_delay_s * 1000, 0) + "-" + fixed$(max_delay_s * 1000, 0) + " ms | Decay " + fixed$(decay_factor, 3) + " | Jitter +/-" + fixed$(effectiveJitterL * 1000, 1) + " ms"
-    Text: 0.5, "centre", 0.30, "half", "HF " + fixed$(hF_enhancement, 2) + " | Tail " + fixed$(effectiveTail, 2) + " s | Wet path " + fixed$(targetSR / 1000, 2) + " kHz | Process " + fixed$(processingTime, 2) + " s"
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "Delay " + fixed$(min_delay_s * 1000, 0) + "-" + fixed$(max_delay_s * 1000, 0) + " ms | Decay " + fixed$(decay_factor, 3) + " | Jitter +/-" + fixed$(effectiveJitterL * 1000, 1) + " ms"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "HF " + fixed$(hF_enhancement, 2) + " | Tail " + fixed$(effectiveTail, 2) + " s | Wet path " + fixed$(targetSR / 1000, 2) + " kHz | Process " + fixed$(processingTime, 2) + " s"
+
+    Select inner viewport: 0.60, 7.70, 4.06, 4.92
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 5.09
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

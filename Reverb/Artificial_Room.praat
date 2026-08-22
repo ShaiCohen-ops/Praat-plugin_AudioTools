@@ -3,7 +3,9 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.2 (2026)
+# v0.5.2 (2026): Compact main form; Custom/technical room details moved to an optional Advanced dialog. DSP/analysis unchanged.
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -280,105 +282,121 @@ high[6] = 4000 * sqrtTwo
 # 2) User Interface
 # ==============================================================================
 
-form Artificial Room Reverb v0.3
+form Artificial Room Reverb v0.5.2
     comment Select a Sound object first
-    
-    comment === Room Preset ===
+
+    comment === Room Character ===
     choice Room_preset 1
         option SmallBooth (very dry)
         option Office (medium)
         option Classroom (larger)
         option LiveRoom (wood floor)
-        option Custom (use settings below)
-    
-    comment === Custom Dimensions (only if Custom) ===
-    positive Custom_length_m 5.0
-    positive Custom_width_m 4.0
-    positive Custom_height_m 2.8
-    
-    comment === Custom Materials (only if Custom) ===
-    optionmenu Floor_material 4
-        option BrickPainted
-        option Concrete
-        option WoodFloor
-        option CarpetConcrete
-        option CurtainLight
-        option CurtainHeavy
-        option GypsumBoard
-        option GlassWindow
-        option AcousticFoam25mm
-        option AcousticFoam50mm
-        option Audience
-        option WoodPanel
-        option PlasterWall
-        option PlywoodPanel
-        option MineralWool50mm
-        option MineralWool100mm
-        option CarpetOnFelt
-        option Linoleum
-        option OpenWindow
-        option AcousticCeilingTile
-    optionmenu Ceiling_material 20
-        option BrickPainted
-        option Concrete
-        option WoodFloor
-        option CarpetConcrete
-        option CurtainLight
-        option CurtainHeavy
-        option GypsumBoard
-        option GlassWindow
-        option AcousticFoam25mm
-        option AcousticFoam50mm
-        option Audience
-        option WoodPanel
-        option PlasterWall
-        option PlywoodPanel
-        option MineralWool50mm
-        option MineralWool100mm
-        option CarpetOnFelt
-        option Linoleum
-        option OpenWindow
-        option AcousticCeilingTile
-    optionmenu Wall_material 7
-        option BrickPainted
-        option Concrete
-        option WoodFloor
-        option CarpetConcrete
-        option CurtainLight
-        option CurtainHeavy
-        option GypsumBoard
-        option GlassWindow
-        option AcousticFoam25mm
-        option AcousticFoam50mm
-        option Audience
-        option WoodPanel
-        option PlasterWall
-        option PlywoodPanel
-        option MineralWool50mm
-        option MineralWool100mm
-        option CarpetOnFelt
-        option Linoleum
-        option OpenWindow
-        option AcousticCeilingTile
-    positive Audience_area_m2 0.1
-    
-    comment === IR Settings ===
+        option Custom (opens room details)
+
+    comment === Reverb ===
+    real Wet_dry_percent 70
     positive IR_predelay_ms 12.0
     real IR_early_gain_dB -6.0
-    positive IR_length_factor 2.0
     natural Early_reflections_count 8
-    
-    comment === Mix Control ===
-    real Wet_dry_percent 70
-    comment (0 = dry only, 100 = wet only)
     boolean Preserve_tail 1
-    comment (extends output to let the reverb tail decay fully)
-    
+
     comment === Output ===
-    boolean Keep_IR 0
+    boolean Advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Defaults for settings moved out of the main form. These are identical to
+# the v0.5.1 public-form defaults, so a normal preset run is unchanged.
+custom_length_m = 5.0
+custom_width_m = 4.0
+custom_height_m = 2.8
+floor_material = 4
+ceiling_material = 20
+wall_material = 7
+audience_area_m2 = 0.1
+iR_length_factor = 2.0
+keep_IR = 0
+
+# Custom always exposes its room definition. For presets, the same dialog is
+# optional and contains only secondary / technical controls.
+if advanced_settings or room_preset = 5
+    beginPause: "Artificial Room - Room details / Advanced"
+        comment: "Custom room definition (used only when Room preset = Custom)"
+        positive: "Custom_length_m", 5.0
+        positive: "Custom_width_m", 4.0
+        positive: "Custom_height_m", 2.8
+
+        optionmenu: "Floor_material", 4
+            option: "BrickPainted"
+            option: "Concrete"
+            option: "WoodFloor"
+            option: "CarpetConcrete"
+            option: "CurtainLight"
+            option: "CurtainHeavy"
+            option: "GypsumBoard"
+            option: "GlassWindow"
+            option: "AcousticFoam25mm"
+            option: "AcousticFoam50mm"
+            option: "Audience"
+            option: "WoodPanel"
+            option: "PlasterWall"
+            option: "PlywoodPanel"
+            option: "MineralWool50mm"
+            option: "MineralWool100mm"
+            option: "CarpetOnFelt"
+            option: "Linoleum"
+            option: "OpenWindow"
+            option: "AcousticCeilingTile"
+        optionmenu: "Ceiling_material", 20
+            option: "BrickPainted"
+            option: "Concrete"
+            option: "WoodFloor"
+            option: "CarpetConcrete"
+            option: "CurtainLight"
+            option: "CurtainHeavy"
+            option: "GypsumBoard"
+            option: "GlassWindow"
+            option: "AcousticFoam25mm"
+            option: "AcousticFoam50mm"
+            option: "Audience"
+            option: "WoodPanel"
+            option: "PlasterWall"
+            option: "PlywoodPanel"
+            option: "MineralWool50mm"
+            option: "MineralWool100mm"
+            option: "CarpetOnFelt"
+            option: "Linoleum"
+            option: "OpenWindow"
+            option: "AcousticCeilingTile"
+        optionmenu: "Wall_material", 7
+            option: "BrickPainted"
+            option: "Concrete"
+            option: "WoodFloor"
+            option: "CarpetConcrete"
+            option: "CurtainLight"
+            option: "CurtainHeavy"
+            option: "GypsumBoard"
+            option: "GlassWindow"
+            option: "AcousticFoam25mm"
+            option: "AcousticFoam50mm"
+            option: "Audience"
+            option: "WoodPanel"
+            option: "PlasterWall"
+            option: "PlywoodPanel"
+            option: "MineralWool50mm"
+            option: "MineralWool100mm"
+            option: "CarpetOnFelt"
+            option: "Linoleum"
+            option: "OpenWindow"
+            option: "AcousticCeilingTile"
+        positive: "Audience_area_m2", 0.1
+
+        comment: "IR / render details"
+        positive: "IR_length_factor", 2.0
+        boolean: "Keep_IR", 0
+    endPause: "Run", 1
+endif
 
 # Clamp wet/dry
 if wet_dry_percent < 0
@@ -890,6 +908,11 @@ result = selected("Sound")
 
 if draw_visualization
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Select outer viewport: 0, 8, 0, 8
 
     # ----------------------------------------------------------
@@ -899,7 +922,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.95, "half", "##Artificial Room v0.3##"
+    Text: 0.5, "centre", 0.95, "half", "##Artificial Room v0.5.2##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -912,35 +935,43 @@ if draw_visualization
     # Input waveform
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.52, 1.42
-    Select inner viewport: 0.55, 7.65, 0.57, 1.37
+    Select inner viewport: 0.60, 7.70, 0.57, 1.37
     selectObject: inputID
     Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.57, 1.37
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.57, 1.37
+    Axes: 0, 1, 0, 1
     Text top: "no", "Input: " + inputName$
 
     # ----------------------------------------------------------
     # Output waveform
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 1.46, 2.36
-    Select inner viewport: 0.55, 7.65, 1.51, 2.31
+    Select inner viewport: 0.60, 7.70, 1.51, 2.31
     selectObject: result
     Colour: "{0.45, 0.58, 0.70}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Wet " + fixed$(wet_dry_percent, 0) + "%"
+    Select inner viewport: 0.20, 0.48, 1.51, 2.31
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Wet " + fixed$(wet_dry_percent, 0) + "\%  "
+    Select inner viewport: 0.60, 7.70, 1.51, 2.31
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # RT60 bar chart (left half)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.1, 2.44, 3.94
-    Select inner viewport: 0.55, 3.85, 2.54, 3.84
+    Select inner viewport: 0.60, 3.85, 2.54, 3.84
 
     maxRT = 0
     for b from 1 to 6
@@ -967,7 +998,7 @@ if draw_visualization
         barCol$ = "{" + fixed$(cR, 2) + ", " + fixed$(cG, 2) + ", " + fixed$(cB, 2) + "}"
         Paint rectangle: barCol$, b - 0.35, b + 0.35, 0, t60[b]
         Colour: "{0.35, 0.35, 0.35}"
-        Font size: 5
+        Font size: 6
         Text: b, "centre", -maxRT * 0.07, "half", bandLabels$[b]
         Text: b, "centre", t60[b] + maxRT * 0.04, "half", fixed$(t60[b], 2)
     endfor
@@ -975,7 +1006,11 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "RT60 (s)"
+    Select inner viewport: 0.20, 0.48, 2.54, 3.84
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "RT60 (s)"
+    Select inner viewport: 0.60, 3.85, 2.54, 3.84
+    Axes: 0.3, 6.7, 0, maxRT
     Text bottom: "yes", "Hz"
     Text top: "no", "RT60 per octave band  (Eyring)"
 
@@ -983,14 +1018,18 @@ if draw_visualization
     # IR waveform (right half)
     # ----------------------------------------------------------
     Select outer viewport: 4.1, 8, 2.44, 3.94
-    Select inner viewport: 4.40, 7.65, 2.54, 3.84
+    Select inner viewport: 4.45, 7.70, 2.54, 3.84
     selectObject: irFinal
     Colour: "{0.58, 0.70, 0.45}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "IR"
+    Select inner viewport: 4.05, 4.33, 2.54, 3.84
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "IR"
+    Select inner viewport: 4.45, 7.70, 2.54, 3.84
+    Axes: 0.3, 6.7, 0, maxRT
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Impulse response  (" + fixed$(ir_length, 2) + " s)"
 
@@ -1000,7 +1039,7 @@ if draw_visualization
     # than lows because their RT60 is shorter.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.00, 5.20
-    Select inner viewport: 0.55, 7.65, 4.10, 5.13
+    Select inner viewport: 0.60, 7.70, 4.10, 5.13
 
     selectObject: irFinal
     specMaxHz = min(5000, safeNyquistHz)
@@ -1012,7 +1051,11 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Hz"
+    Select inner viewport: 0.20, 0.48, 4.10, 5.13
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Hz"
+    Select inner viewport: 0.60, 7.70, 4.10, 5.13
+    Axes: 0.3, 6.7, 0, maxRT
     Text bottom: "yes", "Time (s)"
     Text top: "no",
         ... "IR spectrogram — frequency-dependent decay"
@@ -1020,16 +1063,18 @@ if draw_visualization
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.26, 6.16
-    Select inner viewport: 0.55, 7.65, 5.32, 6.10
+    Select outer viewport: 0, 8, 5.35, 6.35
+    Select inner viewport: 0.60, 7.70, 5.42, 6.28
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.55, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", 
         ... "Room: " + fixed$(roomL, 1) + "×" + fixed$(roomW, 1)
         ... + "×" + fixed$(roomH, 1) + "m"
         ... + "  |  Vol: " + fixed$(v, 0) + " m³"
@@ -1042,20 +1087,32 @@ if draw_visualization
     else
         tailStr$ = "truncated"
     endif
-    Text: 0.02, "left", 0.22, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", 
         ... "RT60 @1kHz: " + fixed$(t60_4, 2) + " s"
         ... + "  |  IR: " + fixed$(ir_length, 2) + " s"
         ... + "  |  Predelay: " + fixed$(iR_predelay_ms, 0) + " ms"
         ... + "  |  Early refl: " + string$(nPlacedTaps)
         ... + "/" + string$(early_reflections_count)
-        ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "\%  "
         ... + "  |  Tail: " + tailStr$
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+
+    Select inner viewport: 0.60, 7.70, 5.42, 6.28
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 6.45
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ==============================================================================

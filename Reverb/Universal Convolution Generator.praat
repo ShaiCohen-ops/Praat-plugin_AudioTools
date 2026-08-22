@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 reviewed (2026)
+# Version: 0.4.1 reviewed (2026)
+# v0.4.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -755,12 +756,17 @@ endif
 if draw_visualization
     Erase all
 
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
+
     # Title.
     Select outer viewport: 0, 8, 0.05, 0.38
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.58, "half", "Universal Convolution Generator | " + algorithm$
+    Text: 0.5, "centre", 0.58, "half", "Universal Convolution Generator | " + algorithm$ + " | v0.4.1"
 
     # Metadata.
     Select outer viewport: 0, 8, 0.36, 0.58
@@ -771,37 +777,45 @@ if draw_visualization
 
     # Dry waveform on the complete result timeline.
     Select outer viewport: 0, 8, 0.65, 1.35
-    Select inner viewport: 0.65, 7.65, 0.72, 1.28
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
     selectObject: originalID
     Colour: "{0.65, 0.65, 0.65}"
     Draw: timelineStart, timelineEnd, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.72, 1.28
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
+    Axes: 0, 1, 0, 1
 
     # Output waveform.
     Select outer viewport: 0, 8, 1.42, 2.12
-    Select inner viewport: 0.65, 7.65, 1.49, 2.05
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
     selectObject: result
     Colour: "{0.48, 0.60, 0.76}"
     Draw: timelineStart, timelineEnd, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Output"
+    Select inner viewport: 0.20, 0.48, 1.49, 2.05
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Output"
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     # Actual tap-pattern title.
     Select outer viewport: 0, 8, 2.24, 2.48
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Actual impulse pattern used by the DSP"
 
     # Actual tap pattern.
     Select outer viewport: 0, 8, 2.45, 3.82
-    Select inner viewport: 0.65, 7.65, 2.60, 3.68
+    Select inner viewport: 0.60, 7.70, 2.60, 3.68
 
     if isStereo = 0
         Axes: 0, duration_seconds, 0, 1.08
@@ -820,7 +834,11 @@ if draw_visualization
         Colour: "Black"
         Draw inner box
         Font size: 6
-        Text left: "yes", "Impulse"
+        Select inner viewport: 0.20, 0.48, 2.60, 3.68
+        Axes: 0, 1, 0, 1
+        Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Impulse"
+        Select inner viewport: 0.60, 7.70, 2.60, 3.68
+        Axes: 0, duration_seconds, 0, 1.08
         Text bottom: "yes", "IR time (s)"
 
     else
@@ -847,10 +865,14 @@ if draw_visualization
         Colour: "Black"
         Draw inner box
         Font size: 6
-        Text left: "yes", "L / R"
+        Select inner viewport: 0.20, 0.48, 2.60, 3.68
+        Axes: 0, 1, 0, 1
+        Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "L / R"
+        Select inner viewport: 0.60, 7.70, 2.60, 3.68
+        Axes: 0, duration_seconds, -1.10, 1.10
         Text bottom: "yes", "IR time (s)"
 
-        Font size: 5
+        Font size: 6
         Colour: "{0.42, 0.58, 0.76}"
         Text: duration_seconds * 0.98, "right", 0.95, "half", "LEFT " + string$(nLeft)
         Colour: "{0.78, 0.48, 0.42}"
@@ -858,17 +880,36 @@ if draw_visualization
     endif
 
     # Summary panel.
-    Select outer viewport: 0.35, 7.65, 3.92, 4.50
+    Select outer viewport: 0, 8, 3.97, 4.97
+    Select inner viewport: 0.60, 7.70, 4.04, 4.90
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Colour: "{0.35, 0.35, 0.35}"
-    Font size: 5
-    Text: 0.5, "centre", 0.68, "half", algoParams$
-    Text: 0.5, "centre", 0.30, "half", tapSummary$ + " | " + seedLabel$ + " | IR energy-normalized | Output " + fixed$(resultDur, 2) + " s / " + string$(resultChannels) + " ch"
+    Font size: 6
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", algoParams$
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", tapSummary$ + " | " + seedLabel$ + " | IR energy-normalized | Output " + fixed$(resultDur, 2) + " s / " + string$(resultChannels) + " ch"
+
+    Select inner viewport: 0.60, 7.70, 4.04, 4.90
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 5.07
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ---------------------------------------------------------------------------

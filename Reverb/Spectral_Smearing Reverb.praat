@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3.1 reviewed (2026)
+# Version: 0.3.3 reviewed (2026)
+# v0.3.3 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -412,6 +413,11 @@ endif
 
 if draw_visualization
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Select outer viewport: 0, 8, 0, 8
 
     selectObject: result
@@ -420,16 +426,16 @@ if draw_visualization
     # === TITLE ===
     Select outer viewport: 0, 8, 0.0, 0.6
     Axes: 0, 1, 0, 1
-    Font size: 14
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.66, "half", "##Spectral Smearing Reverb##  |  " + presetName$
-    Font size: 8
+    Text: 0.5, "centre", 0.66, "half", "##Spectral Smearing Reverb##  |  " + presetName$ + " | v0.3.3"
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", -1.12, "half", originalName$ + "   |   " + string$(frequency_bands) + " bands   |   wet/dry " + fixed$(wet_dry_percent, 0) + "%"
 
     # === DRY WAVEFORM ===
     Select outer viewport: 0, 8, 0.7, 2.3
-    Select inner viewport: 0.6, 7.6, 0.8, 2.2
+    Select inner viewport: 0.60, 7.70, 0.8, 2.2
     Axes: 0, resultDur, -1, 1
     selectObject: original
     Colour: "{0.55, 0.55, 0.60}"
@@ -442,13 +448,17 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Marks left: 3, "yes", "yes", "no"
-    Text left: "yes", "Dry"
-    Font size: 9
+    Select inner viewport: 0.20, 0.48, 0.8, 2.2
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.8, 2.2
+    Axes: 0, resultDur, -1, 1
+    Font size: 7
     Text top: "no", "##Original (dry)##"
 
     # === SMEARED OUTPUT (full length including tail) ===
     Select outer viewport: 0, 8, 2.4, 4.0
-    Select inner viewport: 0.6, 7.6, 2.5, 3.9
+    Select inner viewport: 0.60, 7.70, 2.5, 3.9
     Axes: 0, resultDur, -1, 1
     selectObject: result
     Colour: "{0.58, 0.48, 0.70}"
@@ -457,14 +467,18 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Marks left: 3, "yes", "yes", "no"
-    Text left: "yes", "Smear " + fixed$(wet_dry_percent, 0) + "%"
+    Select inner viewport: 0.20, 0.48, 2.5, 3.9
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Smear " + fixed$(wet_dry_percent, 0) + "\%  "
+    Select inner viewport: 0.60, 7.70, 2.5, 3.9
+    Axes: 0, resultDur, -1, 1
     Text bottom: "yes", "Time (s)"
-    Font size: 9
+    Font size: 7
     Text top: "no", "##Smearing Output (full length with tail)##"
 
     # === FILTER-BANK DISPERSION ===
     Select outer viewport: 0, 4, 4.25, 6.8
-    Select inner viewport: 0.60, 3.70, 4.50, 6.55
+    Select inner viewport: 0.60, 3.85, 4.50, 6.55
 
     maxDelay = time_stretch * 1.1
     Axes: 0, nyquist / 1000, 0, maxDelay * 1000
@@ -490,14 +504,18 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Delay (ms)"
+    Select inner viewport: 0.20, 0.48, 4.50, 6.55
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Delay (ms)"
+    Select inner viewport: 0.60, 3.85, 4.50, 6.55
+    Axes: 0, nyquist / 1000, 0, maxDelay * 1000
     Text bottom: "yes", "Frequency (kHz)"
-    Font size: 9
+    Font size: 7
     Text top: "no", "##Filter-bank dispersion##"
 
     # === LORENTZIAN WEIGHTING ===
     Select outer viewport: 4, 8, 4.25, 6.8
-    Select inner viewport: 4.50, 7.70, 4.50, 6.55
+    Select inner viewport: 4.45, 7.70, 4.50, 6.55
 
     Axes: 0, nyquist / 1000, 0, 1.2
     Paint rectangle: "{0.98, 0.96, 0.97}", 0, nyquist / 1000, 0, 1.2
@@ -527,29 +545,47 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Gain"
+    Select inner viewport: 4.05, 4.33, 4.50, 6.55
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Gain"
+    Select inner viewport: 4.45, 7.70, 4.50, 6.55
+    Axes: 0, nyquist / 1000, 0, 1.2
     Text bottom: "yes", "Frequency (kHz)"
-    Font size: 9
+    Font size: 7
     Text top: "no", "##Lorentzian weighting##  |  peak " + fixed$(effectivePeak, 0) + " Hz"
 
     # === SUMMARY PANEL ===
-    Select outer viewport: 0, 8, 7.0, 8.0
-    Select inner viewport: 0.6, 7.6, 7.05, 7.95
+    Select outer viewport: 0, 8, 7.00, 8.00
+    Select inner viewport: 0.60, 7.70, 7.07, 7.93
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.94, 0.94, 0.95}", 0, 1, 0, 1
-    Font size: 9
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.70, "half", "##Smearing Parameters##"
-    Font size: 8
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 7
     Colour: "{0.25, 0.25, 0.25}"
-    Text: 0.02, "left", 0.40, "half", "Bands: " + string$(frequency_bands) + "    Range: " + fixed$(baseFreq, 0) + "-" + fixed$(maxCenter, 0) + " Hz    Stretch: " + fixed$(time_stretch, 2) + " s    Peak: " + fixed$(effectivePeak, 0) + " Hz"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "Bands: " + string$(frequency_bands) + "    Range: " + fixed$(baseFreq, 0) + "-" + fixed$(maxCenter, 0) + " Hz    Stretch: " + fixed$(time_stretch, 2) + " s    Peak: " + fixed$(effectivePeak, 0) + " Hz"
     Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.02, "left", 0.12, "half", "Output: " + fixed$(resultDur, 2) + " s  (original " + fixed$(originalDur, 2) + " s + " + fixed$(tail_duration_s, 2) + " s tail)    Response width: " + fixed$(response_width_Hz, 0) + " Hz"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "Output: " + fixed$(resultDur, 2) + " s  (original " + fixed$(originalDur, 2) + " s + " + fixed$(tail_duration_s, 2) + " s tail)    Response width: " + fixed$(response_width_Hz, 0) + " Hz"
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+
+    Select inner viewport: 0.60, 7.70, 7.07, 7.93
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 8.10
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

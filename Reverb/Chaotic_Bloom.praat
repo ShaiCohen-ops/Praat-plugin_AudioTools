@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.1 (2026)
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -90,7 +91,7 @@
 #   - Added info output
 # ============================================================
 
-form Chaotic Bloom v0.3
+form Chaotic Bloom v0.5.1
     optionmenu Preset: 1
         option Default (balanced)
         option Dense Bloom
@@ -431,6 +432,11 @@ if draw_visualization
     appendInfoLine: "Drawing visualization..."
     
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Black
     Plain line
     
@@ -470,7 +476,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##CHAOTIC BLOOM##"
+    Text: 0.5, "centre", 0.68, "half", "##CHAOTIC BLOOM##" + " | v0.5.1"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -488,7 +494,7 @@ if draw_visualization
     # visual showing chirp-modulated Poisson cloud.
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     irDispDur = 3
     if irDispDur > irDuration
@@ -516,19 +522,23 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text left: "yes", "IR amp"
+    Select inner viewport: 0.20, 0.48, 0.95, 4.40
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "IR amp"
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
+    Axes: 0, irDispDur, -ir_amp, ir_amp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL B: PARAMETER REPORT  (right, headline)
     # ----------------------------------------------------------
     Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.94, "half", "Algorithm:"
     
@@ -538,11 +548,11 @@ if draw_visualization
     Text: 0.10, "left", 0.83, "half", "  sin^2 fade \\.c exp decay \\.c chirp shimmer"
     Text: 0.10, "left", 0.78, "half", "then Convolve with input."
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.70, "half", "IR parameters:"
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.55, 0.35, 0.78}"
     Text: 0.10, "left", 0.63, "half", "Density: " + fixed$(poisson_density, 0) + " imp/s"
     Text: 0.10, "left", 0.56, "half", "Pulse:   w " + fixed$(pulse_width, 3) + " | T " + fixed$(pulse_period, 0)
@@ -559,11 +569,11 @@ if draw_visualization
         Text: 0.10, "left", 0.42, "half", "Chirp: 0 -> " + fixed$(chirpEndL, 0) + " Hz over IR"
     endif
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.30, "half", "Mix:"
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.70, 0.45, 0.20}"
     Text: 0.10, "left", 0.23, "half", "Conv mix: " + fixed$(convolution_mix, 2)
     Text: 0.10, "left", 0.16, "half", "Wet/Dry:  " + fixed$(wet_dry_percent, 0) + "% wet"
@@ -590,7 +600,7 @@ if draw_visualization
     # ALIGNED PANEL TITLES
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
+    Select inner viewport: 0.60, 7.70, 0, 8
     Axes: 0, 8, 0, 8
     
     Font size: 7
@@ -604,7 +614,7 @@ if draw_visualization
     # Gray = original, purple = processed.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     zoomDur = 0.5
     if zoomDur > originalDur
@@ -649,14 +659,18 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Zoom: first " + fixed$(zoomDur * 1000, 0) + " ms  (gray = original, purple = processed)"
-    Text left: "yes", "Amp"
+    Select inner viewport: 0.20, 0.48, 4.75, 5.48
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amp"
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
+    Axes: 0, zoomDur, -z_amp, z_amp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL D: FULL WAVEFORM COMPARISON  (overlaid, SHARED y-axis)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     Axes: 0, finalDur, -sharedAmp, sharedAmp
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -sharedAmp, sharedAmp
@@ -670,7 +684,7 @@ if draw_visualization
         Dotted line
         Draw line: originalDur, -sharedAmp, originalDur, sharedAmp
         Solid line
-        Font size: 5
+        Font size: 6
         Text: originalDur, "left", sharedAmp * 0.85, "half", "  tail"
     endif
     
@@ -691,14 +705,18 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Full output (gray = original, purple = processed, shared y-axis)"
-    Text left: "yes", "Amp"
+    Select inner viewport: 0.20, 0.48, 5.69, 6.48
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amp"
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
+    Axes: 0, finalDur, -sharedAmp, sharedAmp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR  (suite standard — light grey)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select outer viewport: 0, 8, 6.70, 7.70
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -712,7 +730,12 @@ if draw_visualization
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", 
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Poisson: " + fixed$(poisson_density, 0) + "/s"
@@ -720,22 +743,34 @@ if draw_visualization
         ... + "  |  IR: " + fixed$(irDuration, 1) + " s"
         ... + "  |  Tail: " + fixed$(tail_duration_s, 2) + " s"
     
-    Text: 0.02, "left", 0.28, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", 
         ... "Conv mix: " + fixed$(convolution_mix, 2)
-        ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "\%  "
         ... + "  |  Mode: " + stereoStr$
         ... + "  |  In: " + fixed$(originalDur, 2) + " s"
         ... + "  |  Out: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
     
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
     
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
     Font size: 10
     Colour: "Black"
     Line width: 1
     
     # Cleanup viz objects
     removeObject: vizOrig, vizProc, irForViz
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 7.80
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # If no visualization, still cleanup IR

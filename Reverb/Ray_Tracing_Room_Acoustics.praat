@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.1 (2026)
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -83,7 +84,7 @@
 #   - Professional multi-panel visualization
 # ============================================================
 
-form Ray Tracing Room Acoustics v0.3
+form Ray Tracing Room Acoustics v0.5.1
     optionmenu Preset: 4
         option Custom (use parameters below)
         option Small Living Room
@@ -671,6 +672,11 @@ if draw_visualization
     appendInfoLine: "Drawing visualization..."
     
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Black
     Plain line
     
@@ -717,7 +723,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##RAY TRACING ROOM ACOUSTICS##"
+    Text: 0.5, "centre", 0.68, "half", "##RAY TRACING ROOM ACOUSTICS##" + " | v0.5.1"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -733,7 +739,7 @@ if draw_visualization
     # PRESERVED v0.2 CAD-style dark aesthetic
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     # Dark background (slight padding outside the room)
     Axes: -room_width_m * 0.05, room_width_m * 1.05, -room_depth_m * 0.05, room_depth_m * 1.05
@@ -824,7 +830,7 @@ if draw_visualization
     # PRESERVED v0.2 CAD-style dark aesthetic
     # ----------------------------------------------------------
     Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     # Dark background
     Axes: -room_depth_m * 0.05, room_depth_m * 1.05, -room_height_m * 0.05, room_height_m * 1.05
@@ -896,7 +902,7 @@ if draw_visualization
     # ALIGNED PANEL TITLES
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
+    Select inner viewport: 0.60, 7.70, 0, 8
     Axes: 0, 8, 0, 8
     
     Font size: 7
@@ -908,7 +914,7 @@ if draw_visualization
     # PANEL C: IMPULSE RESPONSE WAVEFORM
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     # IR needs absolute peak for y-axis
     selectObject: irSound
@@ -946,7 +952,7 @@ if draw_visualization
     Line width: 1
     
     # Inline labels
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.45, 0.15}"
     Text: direct_delay + ir_duration * 0.01, "left", irAmp * 0.85, "half", "direct"
     if rt60Marker < ir_duration
@@ -959,14 +965,18 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Impulse response  (orange = direct, gray dashed = RT60)"
-    Text left: "yes", "Amp"
+    Select inner viewport: 0.20, 0.48, 4.75, 5.48
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amp"
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
+    Axes: 0, ir_duration, -irAmp, irAmp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL D: FULL WAVEFORM COMPARISON  (SHARED y-axis)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     if resultDur > originalDur
         dispDur = resultDur
@@ -986,7 +996,7 @@ if draw_visualization
         Dotted line
         Draw line: originalDur, -sharedAmp, originalDur, sharedAmp
         Solid line
-        Font size: 5
+        Font size: 6
         Text: originalDur, "left", sharedAmp * 0.85, "half", "  reverb tail"
     endif
     
@@ -1007,20 +1017,29 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Full waveform  (gray = original, blue = result, shared y-axis)"
-    Text left: "yes", "Amp"
+    Select inner viewport: 0.20, 0.48, 5.69, 6.48
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amp"
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
+    Axes: 0, dispDur, -sharedAmp, sharedAmp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR  (suite standard — light grey)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select outer viewport: 0, 8, 6.70, 7.70
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", 
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Room: " + fixed$(room_width_m, 1) + " x " + fixed$(room_depth_m, 1) + " x " + fixed$(room_height_m, 1) + " m  (" + fixed$(volume, 0) + " m^3)"
@@ -1028,23 +1047,35 @@ if draw_visualization
         ... + "  |  Wall abs: " + fixed$(wallAbsEff, 2)
         ... + "  |  Air abs: " + fixed$(airAbsEff, 4)
     
-    Text: 0.02, "left", 0.28, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", 
         ... "Rays: " + string$(effectiveRays) + " x " + string$(effectiveReflections)
         ... + "  |  Hits: " + string$(reflection_count)
         ... + "  |  Direct: " + fixed$(direct_delay * 1000, 1) + " ms (amp " + fixed$(direct_amplitude, 3) + ")"
-        ... + "  |  Wet: " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "  |  Wet: " + fixed$(wet_dry_percent, 0) + "\%  "
         ... + "  |  In: " + fixed$(originalDur, 2) + " s"
         ... + "  |  Out: " + fixed$(resultDur, 2) + " s, peak " + fixed$(finalPeak, 3)
     
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
     
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
     Font size: 10
     Colour: "Black"
     Line width: 1
     
     # Cleanup viz objects
     removeObject: vizOrig, vizResult
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 7.80
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3.1 (2026 review)
+# Version: 0.3.3 (2026 review)
+# v0.3.3 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -433,38 +434,51 @@ endif
 if draw_visualization
     Erase all
 
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
+
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Spectral Decay Reverb: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Spectral Decay Reverb: " + originalName$ + " (" + presetName$ + ")" + " | v0.3.3"
 
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    Select inner viewport: 0.60, 7.70, 0.7, 1.3
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.7, 1.3
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.7, 1.3
+    Axes: 0, 1, 0, 1
 
     # Result waveform including tail
     Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    Select inner viewport: 0.60, 7.70, 1.6, 2.2
     selectObject: result
     Colour: "{0.5, 0.6, 0.7}"
     Draw: 0, totalDur, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Spectral " + fixed$(wet_dry_percent, 0) + "%"
+    Select inner viewport: 0.20, 0.48, 1.6, 2.2
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Spectral " + fixed$(wet_dry_percent, 0) + "\%  "
+    Select inner viewport: 0.60, 7.70, 1.6, 2.2
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     # Bandpass filter shape
     Select outer viewport: 0, 4, 2.5, 4.0
-    Select inner viewport: 0.6, 3.7, 2.7, 3.85
+    Select inner viewport: 0.60, 3.85, 2.7, 3.85
 
     Axes: 0, sr / 2 / 1000, 0, 1.2
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, sr / 2 / 1000, 0, 1.2
@@ -488,16 +502,20 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Gain"
+    Select inner viewport: 0.20, 0.48, 2.7, 3.85
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Gain"
+    Select inner viewport: 0.60, 3.85, 2.7, 3.85
+    Axes: 0, sr / 2 / 1000, 0, 1.2
     Text bottom: "yes", "Frequency (kHz)"
 
-    Font size: 8
+    Font size: 7
     Select outer viewport: 0, 4, 2.35, 2.55
     Text: 0.5, "centre", 0.5, "half", "BANDPASS FILTER"
 
     # Decay envelope with the corrected linear chirp modulation
     Select outer viewport: 4, 8, 2.5, 4.0
-    Select inner viewport: 4.5, 7.7, 2.7, 3.85
+    Select inner viewport: 4.45, 7.70, 2.7, 3.85
 
     Axes: 0, impulse_duration_s, -1.2, 1.2
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, impulse_duration_s, -1.2, 1.2
@@ -545,10 +563,14 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Amp"
+    Select inner viewport: 4.05, 4.33, 2.7, 3.85
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amp"
+    Select inner viewport: 4.45, 7.70, 2.7, 3.85
+    Axes: 0, impulse_duration_s, -1.2, 1.2
     Text bottom: "yes", "Time (s)"
 
-    Font size: 8
+    Font size: 7
     Select outer viewport: 4, 8, 2.35, 2.55
     Text: 0.5, "centre", 0.5, "half", "IR ENVELOPE (linear chirp modulated)"
 
@@ -560,6 +582,35 @@ if draw_visualization
 
     Font size: 10
     Colour: "Black"
+
+    # Summary strip - compact house spacing.
+    Select outer viewport: 0, 8, 4.60, 5.60
+    Select inner viewport: 0.60, 7.70, 4.67, 5.53
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "Bandpass shape and decay law define the spectral reverb tail"
+    Colour: "{0.25, 0.25, 0.35}"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "Dry/reference remains neutral; spectral processing uses semantic accents"
+
+    # Restore full-page viewport before leaving visualization.
+    Select inner viewport: 0.60, 7.70, 4.67, 5.53
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
+    Select outer viewport: 0, 8, 0, 5.70
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 reviewed (2026)
+# Version: 0.4.1 reviewed (2026)
+# v0.4.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -429,12 +430,17 @@ resultDur = Get total duration
 if draw_visualization
     Erase all
 
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
+
     # Main title.
     Select outer viewport: 0, 8, 0.05, 0.38
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.58, "half", "Temporal Erosion | " + presetName$
+    Text: 0.5, "centre", 0.58, "half", "Temporal Erosion | " + presetName$ + " | v0.4.1"
 
     # Metadata.
     Select outer viewport: 0, 8, 0.36, 0.58
@@ -445,30 +451,38 @@ if draw_visualization
 
     # Dry waveform.
     Select outer viewport: 0, 8, 0.65, 1.35
-    Select inner viewport: 0.65, 7.65, 0.72, 1.28
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
     selectObject: original
     Colour: "{0.65, 0.65, 0.65}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.72, 1.28
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
+    Axes: 0, 1, 0, 1
 
     # Output waveform including the complete tail.
     Select outer viewport: 0, 8, 1.42, 2.12
-    Select inner viewport: 0.65, 7.65, 1.49, 2.05
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
     selectObject: result
     Colour: "{0.68, 0.48, 0.48}"
     Draw: 0, resultDur, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Output"
+    Select inner viewport: 0.20, 0.48, 1.49, 2.05
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Output"
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     # ---- Left analysis panel: logarithmic decay ----
     Select outer viewport: 0.15, 3.95, 2.35, 3.88
-    Select inner viewport: 0.65, 3.68, 2.62, 3.68
+    Select inner viewport: 0.60, 3.85, 2.62, 3.68
     Axes: 0, 1, 0, 1.12
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1.12
 
@@ -488,18 +502,22 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Amplitude"
+    Select inner viewport: 0.20, 0.48, 2.62, 3.68
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amplitude"
+    Select inner viewport: 0.60, 3.85, 2.62, 3.68
+    Axes: 0, 1, 0, 1.12
     Text bottom: "yes", "Normalized IR time"
 
     Select outer viewport: 0.15, 3.95, 2.24, 2.48
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Logarithmic decay envelope"
 
     # ---- Right analysis panel: effective Hann bands ----
     Select outer viewport: 4.05, 7.85, 2.35, 3.88
-    Select inner viewport: 4.48, 7.62, 2.62, 3.68
+    Select inner viewport: 4.45, 7.70, 2.62, 3.68
     Axes: 0, nyquist / 1000, 0, 1.12
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, nyquist / 1000, 0, 1.12
 
@@ -534,26 +552,49 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Gain"
+    Select inner viewport: 4.05, 4.33, 2.62, 3.68
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Gain"
+    Select inner viewport: 4.45, 7.70, 2.62, 3.68
+    Axes: 0, nyquist / 1000, 0, 1.12
     Text bottom: "yes", "Frequency (kHz)"
 
     Select outer viewport: 4.05, 7.85, 2.24, 2.48
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "IR spectral window"
 
     # Summary panel.
-    Select outer viewport: 0.35, 7.65, 3.98, 4.50
+    Select outer viewport: 0, 8, 3.98, 4.98
+    Select inner viewport: 0.60, 7.70, 4.05, 4.91
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.35}"
     Font size: 6
-    Text: 0.5, "centre", 0.68, "half", "IR " + fixed$(impulse_duration_s, 1) + " s | Tail " + fixed$(tail_duration_s, 1) + " s | Density " + fixed$(poisson_density, 0) + "/s | Erosion sigma " + fixed$(erosion_randomness, 2)
-    Text: 0.5, "centre", 0.30, "half", "Band " + fixed$(effectiveLow, 0) + "-" + fixed$(effectiveHigh, 0) + " Hz | Fade " + fixed$(fadeDuration, 1) + " s | Output " + fixed$(resultDur, 2) + " s"
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "IR " + fixed$(impulse_duration_s, 1) + " s | Tail " + fixed$(tail_duration_s, 1) + " s | Density " + fixed$(poisson_density, 0) + "/s | Erosion sigma " + fixed$(erosion_randomness, 2)
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "Band " + fixed$(effectiveLow, 0) + "-" + fixed$(effectiveHigh, 0) + " Hz | Fade " + fixed$(fadeDuration, 1) + " s | Output " + fixed$(resultDur, 2) + " s"
+
+    Select inner viewport: 0.60, 7.70, 4.05, 4.91
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 5.08
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

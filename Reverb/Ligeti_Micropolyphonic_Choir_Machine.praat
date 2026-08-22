@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 (2026)
+# Version: 1.3.1 (2026)
+# v1.3.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -53,7 +54,7 @@
 #     skip the resample entirely.
 # ============================================================
 
-form Ligeti Micropolyphonic Choir v1.1
+form Ligeti Micropolyphonic Choir v1.3.1
     comment === Behavioral Preset ===
     optionmenu Preset 1
         option Custom (use settings below)
@@ -597,6 +598,11 @@ processingTime = stopwatch - startTime
 # VISUALIZATION
 if draw_visualization
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Select outer viewport: 0, 8, 0, 8
 
     # ----------------------------------------------------------
@@ -606,7 +612,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Ligeti Micropolyphonic Choir##"
+    Text: 0.5, "centre", 0.65, "half", "##Ligeti Micropolyphonic Choir##" + " | v1.3.1"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -620,21 +626,25 @@ if draw_visualization
     # Input waveform
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.52, 1.32
-    Select inner viewport: 0.55, 7.65, 0.57, 1.27
+    Select inner viewport: 0.60, 7.70, 0.57, 1.27
     selectObject: original
     Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Input"
+    Select inner viewport: 0.20, 0.48, 0.57, 1.27
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Input"
+    Select inner viewport: 0.60, 7.70, 0.57, 1.27
+    Axes: 0, 1, 0, 1
     Text top: "no", "Source: " + originalName$
 
     # ----------------------------------------------------------
     # Output waveform (L blue, R orange)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 1.36, 2.16
-    Select inner viewport: 0.55, 7.65, 1.41, 2.11
+    Select inner viewport: 0.60, 7.70, 1.41, 2.11
     selectObject: result
     nChResult = Get number of channels
     if nChResult > 1
@@ -656,14 +666,18 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Choir"
+    Select inner viewport: 0.20, 0.48, 1.41, 2.11
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Choir"
+    Select inner viewport: 0.60, 7.70, 1.41, 2.11
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     # ----------------------------------------------------------
     # Output spectrogram (shows the dense micropolyphonic mass)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 2.22, 3.42
-    Select inner viewport: 0.55, 7.65, 2.28, 3.36
+    Select inner viewport: 0.60, 7.70, 2.28, 3.36
     selectObject: result
     if nChResult > 1
         Extract one channel: 1
@@ -679,7 +693,11 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Hz"
+    Select inner viewport: 0.20, 0.48, 2.28, 3.36
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Hz"
+    Select inner viewport: 0.60, 7.70, 2.28, 3.36
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
     Text top: "no", "Choir spectrogram  (micropolyphonic texture)"
 
@@ -687,7 +705,7 @@ if draw_visualization
     # Voice scatter: Pitch vs Time Offset (left half)
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.1, 3.50, 4.90
-    Select inner viewport: 0.55, 3.85, 3.58, 4.82
+    Select inner viewport: 0.60, 3.85, 3.58, 4.82
 
     Axes: -time_range, time_range, -pitch_max * 1.2, pitch_max * 1.2
     Paint rectangle: "{0.96, 0.96, 0.96}", -time_range, time_range, -pitch_max * 1.2, pitch_max * 1.2
@@ -709,7 +727,11 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Pitch (cents)"
+    Select inner viewport: 0.20, 0.48, 3.58, 4.82
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Pitch (cents)"
+    Select inner viewport: 0.60, 3.85, 3.58, 4.82
+    Axes: -time_range, time_range, -pitch_max * 1.2, pitch_max * 1.2
     Text bottom: "yes", "Time offset (s)"
     Text top: "no", "Voice cloud  (colour = pan)"
 
@@ -717,7 +739,7 @@ if draw_visualization
     # Voice scatter: Pan vs Pitch (right half)
     # ----------------------------------------------------------
     Select outer viewport: 4.1, 8, 3.50, 4.90
-    Select inner viewport: 4.40, 7.65, 3.58, 4.82
+    Select inner viewport: 4.45, 7.70, 3.58, 4.82
 
     Axes: -1.2, 1.2, -pitch_max * 1.2, pitch_max * 1.2
     Paint rectangle: "{0.96, 0.96, 0.96}", -1.2, 1.2, -pitch_max * 1.2, pitch_max * 1.2
@@ -739,40 +761,58 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Pitch (cents)"
+    Select inner viewport: 4.05, 4.33, 3.58, 4.82
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Pitch (cents)"
+    Select inner viewport: 4.45, 7.70, 3.58, 4.82
+    Axes: -1.2, 1.2, -pitch_max * 1.2, pitch_max * 1.2
     Text bottom: "yes", "Pan (L ← → R)"
     Text top: "no", "Stereo field"
 
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.00, 5.70
-    Select inner viewport: 0.55, 7.65, 5.06, 5.64
+    Select outer viewport: 0, 8, 5.05, 6.05
+    Select inner viewport: 0.60, 7.70, 5.12, 5.98
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.78, "half", "##Summary##"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.48, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", 
         ... "Preset: " + presetName$
         ... + "  |  Structure: " + structure$
         ... + "  |  Voices: " + string$(n_voices)
         ... + "  |  Pitch: ±" + fixed$(pitch_max, 0) + " ct"
         ... + "  |  Time: ±" + fixed$(time_range, 2) + " s"
-    Text: 0.02, "left", 0.16, "half",
-        ... "Wet/Dry: " + string$(wet_dry_percent) + "%"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", 
+        ... "Wet/Dry: " + string$(wet_dry_percent) + "\%  "
         ... + "  |  Gain: " + fixed$(gain, 2)
         ... + "  |  Fade: " + string$(fade) + " ms"
         ... + "  |  " + speedStr$
         ... + "  |  Render: " + fixed$(processingTime, 1) + " s"
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+
+    Select inner viewport: 0.60, 7.70, 5.12, 5.98
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 6.15
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # Final Info

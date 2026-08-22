@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 FastIR WetMix (2026)
+# Version: 2.2.1 FastIR WetMix (2026)
+# v2.2.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -91,7 +92,7 @@
 #   - Added ray statistics to info output
 # ============================================================
 
-form Gravitational Lens Reverb v1.0
+form Gravitational Lens Reverb v2.2.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -610,6 +611,11 @@ if draw_visualization
     appendInfoLine: "Creating visualization..."
     
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Select outer viewport: 0, 8, 0, 8
 
     # ----------------------------------------------------------
@@ -619,7 +625,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.85, "half", "##Gravitational Lens Reverb##"
+    Text: 0.5, "centre", 0.85, "half", "##Gravitational Lens Reverb##" + " | v2.2.1"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -632,20 +638,24 @@ if draw_visualization
     # Input waveform
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.52, 1.32
-    Select inner viewport: 0.55, 7.65, 0.57, 1.27
+    Select inner viewport: 0.60, 7.70, 0.57, 1.27
     selectObject: original
     Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Input"
+    Select inner viewport: 0.20, 0.48, 0.57, 1.27
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Input"
+    Select inner viewport: 0.60, 7.70, 0.57, 1.27
+    Axes: 0, 1, 0, 1
 
     # ----------------------------------------------------------
     # Output waveform
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 1.36, 2.16
-    Select inner viewport: 0.55, 7.65, 1.41, 2.11
+    Select inner viewport: 0.60, 7.70, 1.41, 2.11
     selectObject: result
     Colour: "{0.38, 0.50, 0.72}"
     Draw: 0, totalDur, 0, 0, "no", "Curve"
@@ -659,14 +669,18 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Output"
+    Select inner viewport: 0.20, 0.48, 1.41, 2.11
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Output"
+    Select inner viewport: 0.60, 7.70, 1.41, 2.11
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)  — dotted = original end"
 
     # ----------------------------------------------------------
     # Spacetime diagram
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 2.24, 4.34
-    Select inner viewport: 0.55, 7.65, 2.32, 4.24
+    Select inner viewport: 0.60, 7.70, 2.32, 4.24
 
     maxDelay = ray_delay_start_s + rays_per_mass * ray_delay_increment_s * 2.5
     if maxDelay < 0.5
@@ -767,58 +781,76 @@ if draw_visualization
 
     Font size: 7
     Colour: "{0.70, 0.70, 0.70}"
-    Text left: "yes", "Mass #"
+    Select inner viewport: 0.20, 0.48, 2.32, 4.24
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Mass #"
+    Select inner viewport: 0.60, 7.70, 2.32, 4.24
+    Axes: 0, maxDelay, 0, mass_points + 1
     Text bottom: "yes", "Delay (s)"
     Text top: "no", "Spacetime diagram  (dilation field + bent rays + mass points)"
 
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.42, 5.32
-    Select inner viewport: 0.55, 7.65, 4.48, 5.26
+    Select outer viewport: 0, 8, 4.49, 5.49
+    Select inner viewport: 0.60, 7.70, 4.56, 5.42
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.55, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", 
         ... "Masses: " + string$(mass_points)
         ... + "  |  Rays/mass: " + string$(rays_per_mass)
         ... + "  |  Total rays: " + string$(totalRays)
         ... + "  |  Curvature: " + fixed$(space_curvature, 2)
         ... + "  |  Dilation: " + fixed$(time_dilation_factor, 2)
         ... + "  |  Decay: " + fixed$(decay_rate, 2)
-    Text: 0.02, "left", 0.22, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", 
         ... "Tail: " + fixed$(tail_duration_s, 1) + " s"
         ... + "  |  Early refl: " + string$(early_reflections)
         ... + "  |  Fadeout: " + fixed$(effectiveFadeoutDuration, 1) + " s"
-        ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "  |  Wet/Dry: " + fixed$(wet_dry_percent, 0) + "\%  "
 
     # Legend symbols inline
     Colour: "{0.95, 0.75, 0.30}"
     Paint circle (mm): "{0.95, 0.75, 0.30}", 0.72, 0.82, 1.2
-    Font size: 5
+    Font size: 6
     Colour: "{0.45, 0.45, 0.45}"
     Text: 0.74, "left", 0.82, "half", "= mass"
     Colour: "{0.35, 0.55, 0.85}"
     Line width: 2
     Draw line: 0.85, 0.82, 0.89, 0.82
     Line width: 1
-    Font size: 5
+    Font size: 6
     Colour: "{0.45, 0.45, 0.45}"
     Text: 0.90, "left", 0.82, "half", "= ray"
 
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+
+    Select inner viewport: 0.60, 7.70, 4.56, 5.42
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
     Line width: 1
 
     appendInfoLine: "  Visualization complete"
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 5.59
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

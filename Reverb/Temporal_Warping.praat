@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.2 reviewed (2026)
+# Version: 1.3.1 reviewed (2026)
+# v1.3.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -370,12 +371,17 @@ resultDuration = Get total duration
 if show_visualization
     Erase all
 
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
+
     # Main title.
     Select outer viewport: 0, 8, 0.05, 0.38
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.58, "half", "Temporal Warping | " + presetName$
+    Text: 0.5, "centre", 0.58, "half", "Temporal Warping | " + presetName$ + " | v1.3.1"
 
     # Metadata line.
     Select outer viewport: 0, 8, 0.36, 0.58
@@ -386,30 +392,38 @@ if show_visualization
 
     # Dry waveform on the full output time axis.
     Select outer viewport: 0, 8, 0.65, 1.35
-    Select inner viewport: 0.65, 7.65, 0.72, 1.28
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
     selectObject: originalSound
     Colour: "{0.65, 0.65, 0.65}"
     Draw: originalStart, originalStart + resultDuration, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.72, 1.28
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
+    Axes: 0, 1, 0, 1
 
     # Warped output waveform.
     Select outer viewport: 0, 8, 1.42, 2.12
-    Select inner viewport: 0.65, 7.65, 1.49, 2.05
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
     selectObject: resultSound
     Colour: "{0.48, 0.64, 0.52}"
     Draw: 0, resultDuration, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Output"
+    Select inner viewport: 0.20, 0.48, 1.49, 2.05
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Output"
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     # ---- Left analysis panel: actual per-stage displacement ----
     Select outer viewport: 0.15, 3.95, 2.35, 3.88
-    Select inner viewport: 0.65, 3.68, 2.62, 3.68
+    Select inner viewport: 0.60, 3.85, 2.62, 3.68
 
     maxStageDelay = 0
     for stage from 1 to number_of_warp_stages
@@ -438,18 +452,22 @@ if show_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Delay (ms)"
+    Select inner viewport: 0.20, 0.48, 2.62, 3.68
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Delay (ms)"
+    Select inner viewport: 0.60, 3.85, 2.62, 3.68
+    Axes: 0.5, number_of_warp_stages + 0.5, 0, maxStageDelay * 1150
     Text bottom: "yes", "Warp path"
 
     Select outer viewport: 0.15, 3.95, 2.24, 2.48
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Warp-path endpoint delay"
 
     # ---- Right analysis panel: actual curvature parameters ----
     Select outer viewport: 4.05, 7.85, 2.35, 3.88
-    Select inner viewport: 4.48, 7.62, 2.62, 3.68
+    Select inner viewport: 4.45, 7.70, 2.62, 3.68
     Axes: 0.5, number_of_warp_stages + 0.5, -0.40, 0.40
     Paint rectangle: "{0.96, 0.96, 0.96}", 0.5, number_of_warp_stages + 0.5, -0.40, 0.40
 
@@ -469,36 +487,59 @@ if show_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Bend"
+    Select inner viewport: 4.05, 4.33, 2.62, 3.68
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Bend"
+    Select inner viewport: 4.45, 7.70, 2.62, 3.68
+    Axes: 0.5, number_of_warp_stages + 0.5, -0.40, 0.40
     Text bottom: "yes", "Warp path"
 
     Select outer viewport: 4.05, 7.85, 2.24, 2.48
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Stereo path curvature"
 
     # Small legend between analysis panels and summary.
     Select outer viewport: 0, 8, 3.86, 4.02
     Axes: 0, 1, 0, 1
-    Font size: 5
+    Font size: 6
     Colour: "{0.42, 0.58, 0.76}"
     Text: 0.46, "right", 0.5, "half", "LEFT"
     Colour: "{0.78, 0.48, 0.42}"
     Text: 0.54, "left", 0.5, "half", "RIGHT"
 
     # Summary panel.
-    Select outer viewport: 0.35, 7.65, 4.05, 4.55
+    Select outer viewport: 0, 8, 4.12, 5.12
+    Select inner viewport: 0.60, 7.70, 4.19, 5.05
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.35}"
     Font size: 6
-    Text: 0.5, "centre", 0.68, "half", "Factor " + fixed$(effectiveFactor, 3) + " | Max path delay " + fixed$(maxDisplacement * 1000, 0) + " ms | Dry/Warp " + fixed$(dryGain, 2) + "/" + fixed$(wetGain, 2)
-    Text: 0.5, "centre", 0.30, "half", "Tail " + fixed$(effectiveTail, 2) + " s | Fade " + fixed$(fadeDuration, 2) + " s | Output " + fixed$(resultDuration, 2) + " s"
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "Factor " + fixed$(effectiveFactor, 3) + " | Max path delay " + fixed$(maxDisplacement * 1000, 0) + " ms | Dry/Warp " + fixed$(dryGain, 2) + "/" + fixed$(wetGain, 2)
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "Tail " + fixed$(effectiveTail, 2) + " s | Fade " + fixed$(fadeDuration, 2) + " s | Output " + fixed$(resultDuration, 2) + " s"
+
+    Select inner viewport: 0.60, 7.70, 4.19, 5.05
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Line width: 1
     Colour: "Black"
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 5.22
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

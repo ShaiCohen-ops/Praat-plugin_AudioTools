@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.1 (2026)
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -60,7 +61,7 @@
 # Usage: select a Sound object, then run.
 # ============================================================
 
-form CA Convolution Reverb v0.3
+form CA Convolution Reverb v0.5.1
     optionmenu Preset: 1
         option Chaotic Room (rule 30, natural)
         option Sierpinski Plate (rule 90, metallic comb)
@@ -341,15 +342,20 @@ appendInfoLine: "Convolution complete: ", dryName$, "_CAreverb_", presetName$,
 # =============================================================
 if draw_visualization
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Select outer viewport: 0, 8, 0, 7
 
     # --- Title strip (explicit inner viewport pattern) ---
     Select outer viewport: 0, 8, 0, 0.6
-    Select inner viewport: 0, 8, 0, 0.6
+    Select inner viewport: 0.60, 7.70, 0, 0.6
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##CA Reverb IR v0.3##"
+    Text: 0.5, "centre", 0.72, "half", "##CA Reverb IR v0.5.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.26, "half",
@@ -360,19 +366,23 @@ if draw_visualization
 
     # --- Panel A: the automaton itself ---
     Select outer viewport: 0, 4.1, 0.68, 3.3
-    Select inner viewport: 0.55, 3.85, 0.83, 3.2
+    Select inner viewport: 0.60, 3.85, 0.83, 3.2
     selectObject: caID
     Paint image: 0, 0, 0, 0, 0, 0
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text top: "no", "Cellular automaton (rule " + string$(rule) + ")"
-    Text left: "yes", "generation"
+    Select inner viewport: 0.20, 0.48, 0.83, 3.2
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "generation"
+    Select inner viewport: 0.60, 3.85, 0.83, 3.2
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "cell"
 
     # --- Panel B: IR waveform ---
     Select outer viewport: 4.1, 8, 0.68, 2.0
-    Select inner viewport: 4.45, 7.65, 0.83, 1.92
+    Select inner viewport: 4.45, 7.70, 0.83, 1.92
     selectObject: irID
     Colour: "{0.35, 0.58, 0.72}"
     Draw: 0, 0, 0, 0, "no", "Curve"
@@ -380,11 +390,15 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Impulse response"
-    Text left: "yes", "amp"
+    Select inner viewport: 4.05, 4.33, 0.83, 1.92
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "amp"
+    Select inner viewport: 4.45, 7.70, 0.83, 1.92
+    Axes: 0, 1, 0, 1
 
     # --- Panel C: IR spectrum ---
     Select outer viewport: 4.1, 8, 2.0, 3.3
-    Select inner viewport: 4.45, 7.65, 2.13, 3.2
+    Select inner viewport: 4.45, 7.70, 2.13, 3.2
     selectObject: irID
     vizIrSpec = To Spectrum: "yes"
     vizMaxHz = min(10000, sampleRate / 2)
@@ -395,11 +409,15 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "IR spectrum (to " + fixed$(vizMaxHz / 1000, 1) + " kHz)"
-    Text left: "yes", "dB"
+    Select inner viewport: 4.05, 4.33, 2.13, 3.2
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "dB"
+    Select inner viewport: 4.45, 7.70, 2.13, 3.2
+    Axes: 0, 1, 0, 1
 
     # --- Panel D: wet output waveform ---
     Select outer viewport: 0, 8, 3.38, 5.0
-    Select inner viewport: 0.55, 7.65, 3.53, 4.92
+    Select inner viewport: 0.60, 7.70, 3.53, 4.92
     selectObject: wetID
     if wetCh > 1
         vizWet = Extract one channel: 1
@@ -412,33 +430,51 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Wet"
+    Select inner viewport: 0.20, 0.48, 3.53, 4.92
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Wet"
+    Select inner viewport: 0.60, 7.70, 3.53, 4.92
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     # --- Summary strip ---
-    Select outer viewport: 0, 8, 5.1, 5.9
-    Select inner viewport: 0.55, 7.65, 5.18, 5.84
+    Select outer viewport: 0, 8, 5.15, 6.15
+    Select inner viewport: 0.60, 7.70, 5.22, 6.08
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.76, "half", "##Summary##"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.46, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", 
         ... "Rule " + string$(rule) + "   Width " + string$(width)
         ... + "   Generations " + string$(numGenerations)
         ... + "   Seed: " + if seed_mode = 1 then "centre" else "random (" + string$(random_seed) + ")" fi
         ... + "   IR " + fixed$(actualDuration, 2) + " s   Decay " + fixed$(decay_time, 2) + " s"
-    Text: 0.02, "left", 0.18, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", 
         ... "Decorrelation: " + if frame_decorrelation then "ON (room)" else "OFF (comb " + fixed$(sampleRate / width, 0) + " Hz)" fi
-        ... + "   Wet/Dry " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "   Wet/Dry " + fixed$(wet_dry_percent, 0) + "\%  "
         ... + "   Output " + fixed$(wetDur, 2) + " s / " + string$(wetCh) + " ch"
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+
+    Select inner viewport: 0.60, 7.70, 5.22, 6.08
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Line width: 1
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 6.25
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # =============================================================

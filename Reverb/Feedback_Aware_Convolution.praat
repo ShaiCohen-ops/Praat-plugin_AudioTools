@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.1 (2026)
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -408,40 +409,53 @@ Rename: originalName$ + "_feedback_" + presetName$
 
 if draw_visualization
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Feedback-Aware Convolution: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Feedback-Aware Convolution: " + originalName$ + " (" + presetName$ + ")" + " | v0.5.1"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    Select inner viewport: 0.60, 7.70, 0.7, 1.3
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.7, 1.3
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.7, 1.3
+    Axes: 0, 1, 0, 1
     
     # Result waveform
     Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    Select inner viewport: 0.60, 7.70, 1.6, 2.2
     selectObject: result
     Colour: "{0.5, 0.7, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Result " + fixed$(wet_dry_percent, 0) + "%"
+    Select inner viewport: 0.20, 0.48, 1.6, 2.2
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Result " + fixed$(wet_dry_percent, 0) + "\%  "
+    Select inner viewport: 0.60, 7.70, 1.6, 2.2
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
     
     # Impulse positions
     Select outer viewport: 0, 8, 2.5, 3.5
-    Select inner viewport: 0.6, 7.6, 2.6, 3.4
+    Select inner viewport: 0.60, 7.70, 2.6, 3.4
     
     Axes: 0, originalDur, 0, 1.2
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, originalDur, 0, 1.2
@@ -486,7 +500,11 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Impulses (" + string$(impulse_count) + ")"
+    Select inner viewport: 0.20, 0.48, 2.6, 3.4
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Impulses (" + string$(impulse_count) + ")"
+    Select inner viewport: 0.60, 7.70, 2.6, 3.4
+    Axes: 0, originalDur, 0, 1.2
     Text bottom: "yes", "Time (s)"
     
     # Parameters
@@ -498,6 +516,35 @@ if draw_visualization
     
     Font size: 10
     Colour: "Black"
+
+    # Summary strip - compact house spacing.
+    Select outer viewport: 0, 8, 4.10, 5.10
+    Select inner viewport: 0.60, 7.70, 4.17, 5.03
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "Feedback-aware IR structure is shown before the rendered output"
+    Colour: "{0.25, 0.25, 0.35}"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "Reference path remains neutral; effect accents indicate the active feedback field"
+
+    # Restore full-page viewport before leaving visualization.
+    Select inner viewport: 0.60, 7.70, 4.17, 5.03
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
+    Select outer viewport: 0, 8, 0, 5.20
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

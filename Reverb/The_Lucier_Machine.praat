@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 reviewed (2026)
+# Version: 0.5.1 reviewed (2026)
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -805,6 +806,11 @@ if draw_visualization
     # Canvas
     # --------------------------------------------------------
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Solid line
     Line width: 1
 
@@ -815,7 +821,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.78, "half", "##THE LUCIER MACHINE##"
+    Text: 0.5, "centre", 0.78, "half", "##THE LUCIER MACHINE##" + " | v0.5.1"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", 0.20, "half",
@@ -846,7 +852,11 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Original"
+    Select inner viewport: 0.20, 0.48, 0.66, 1.18
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Original"
+    Select inner viewport: 0.60, 7.70, 0.66, 1.18
+    Axes: 0, 1, 0, 1
 
     Select inner viewport: 0.60, 7.70, 1.28, 1.80
     selectObject: vizFinalMono
@@ -855,12 +865,16 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Pass " + string$(number_of_iterations)
+    Select inner viewport: 0.20, 0.48, 1.28, 1.80
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Pass " + string$(number_of_iterations)
+    Select inner viewport: 0.60, 7.70, 1.28, 1.80
+    Axes: 0, 1, 0, 1
     # Peak figures live in the summary bar rather than as corner text:
     # after Draw the world frame is seconds by amplitude, and mixing that
     # with fractional placement is how labels end up outside the box.
     Axes: 0, originalDur, 0, 1
-    Font size: 5
+    Font size: 6
     Colour: "Black"
     Marks bottom: 5, "yes", "yes", "no"
     Font size: 6
@@ -873,7 +887,7 @@ if draw_visualization
     # --------------------------------------------------------
     Select inner viewport: 0.60, 7.70, 2.12, 2.30
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "##SPECTRUM BEFORE AND AFTER##"
 
@@ -915,7 +929,7 @@ if draw_visualization
     # outside the panel, and a box drawn after them comes out oversized.
     # Hence also the re-select of the inner viewport before each box.
     Line width: 1
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.55, 0.55}"
     Text: logHi - 0.035 * (logHi - logLo), "right", specHi - 0.13 * (specHi - specLo),
         ... "half", "original"
@@ -951,12 +965,16 @@ if draw_visualization
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 5
+    Font size: 6
     @niceMarksLeft: specLo, specHi
     @logMarks: 1
     Font size: 6
     Text bottom: "yes", "Frequency (Hz)"
-    Text left: "yes", "Level (dB, mean removed)"
+    Select inner viewport: 0.20, 0.48, 2.46, 3.60
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Level (dB, mean removed)"
+    Select inner viewport: 0.60, 7.70, 2.46, 3.60
+    Axes: logLo, logHi, specLo, specHi
 
     # --------------------------------------------------------
     # Lower pair: the room's own shape, and the emphasis it produces
@@ -964,13 +982,13 @@ if draw_visualization
     # --------------------------------------------------------
     Select inner viewport: 0.60, 3.98, 3.94, 4.12
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "##ROOM FINGERPRINT H(f)##"
 
     Select inner viewport: 4.32, 7.70, 3.94, 4.12
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "##EMPHASIS PER PASS##"
 
@@ -995,7 +1013,7 @@ if draw_visualization
     Paint rectangle: "{0.97, 0.97, 0.99}", logLo, logHi, hLo, hHi
 
     Line width: 1
-    Font size: 5
+    Font size: 6
     Colour: "{0.45, 0.45, 0.52}"
     Text: logLo + 0.06 * (logHi - logLo), "left", hLo + 0.14 * (hHi - hLo), "half",
         ... "ripple raised to the power " + string$(number_of_iterations)
@@ -1016,12 +1034,16 @@ if draw_visualization
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 5
+    Font size: 6
     @niceMarksLeft: hLo, hHi
     @logMarks: 0
     Font size: 6
     Text bottom: "yes", "Frequency (Hz)"
-    Text left: "yes", "dB"
+    Select inner viewport: 0.20, 0.48, 4.28, 5.22
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "dB"
+    Select inner viewport: 0.60, 3.98, 4.28, 5.22
+    Axes: logLo, logHi, hLo, hHi
 
     eMin = 1e30
     eMax = -1e30
@@ -1052,7 +1074,7 @@ if draw_visualization
     Paint rectangle: "{0.97, 0.97, 0.99}", logLo, logHi, eLo, eHi
 
     Line width: 1
-    Font size: 5
+    Font size: 6
     Colour: "{0.46, 0.60, 0.74}"
     Text: logLo + 0.03 * (logHi - logLo), "left", eHi - 0.10 * (eHi - eLo), "half",
         ... "ideal  H(f)"
@@ -1086,12 +1108,16 @@ if draw_visualization
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 5
+    Font size: 6
     @niceMarksLeft: eLo, eHi
     @logMarks: 0
     Font size: 6
     Text bottom: "yes", "Frequency (Hz)"
-    Text left: "yes", "dB per pass"
+    Select inner viewport: 3.92, 4.20, 4.28, 5.22
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "dB per pass"
+    Select inner viewport: 4.32, 7.70, 4.28, 5.22
+    Axes: logLo, logHi, eLo, eHi
 
     # --------------------------------------------------------
     # Process diagram
@@ -1143,7 +1169,7 @@ if draw_visualization
     Colour: "{0.25, 0.25, 0.25}"
     Text: 0.5, "centre", 0.28, "half", "X_N(f)  =  g_N \.c X_0(f) \.c H(f)^N"
 
-    Font size: 5
+    Font size: 6
     Colour: "{0.42, 0.42, 0.42}"
     Text: 0.5, "centre", 0.11, "half",
         ... "The level stabilizer g is a single scalar, so it cannot change spectral "
@@ -1155,34 +1181,46 @@ if draw_visualization
     # --------------------------------------------------------
     # Summary bar
     # --------------------------------------------------------
-    Select inner viewport: 0.60, 7.70, 6.60, 7.32
+    Select outer viewport: 0, 8, 6.53, 7.53
+    Select inner viewport: 0.60, 7.70, 6.60, 7.46
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "Black"
     Line width: 1
-    Draw rectangle: 0, 1, 0, 1
 
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.79, "half",
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.84, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.60, "half", 
         ... "Room:  IR " + fixed$(iR_duration_s, 2) + " s  |  RT60 "
         ... + fixed$(rT60_s, 2) + " s  |  " + string$(number_of_reflections)
         ... + " reflections  |  pre-delay " + fixed$(pre_delay_s * 1000, 1)
         ... + " ms  |  direct " + fixed$(100 * directEnergyShare, 0)
         ... + "\%  / room " + fixed$(100 * reflectionEnergyShare, 0) + "\%  energy"
-    Text: 0.02, "left", 0.50, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.37, "half", 
         ... "Process:  " + string$(number_of_iterations)
         ... + " passes  |  per-pass peak target " + fixed$(per_pass_peak_target, 2)
         ... + "  |  peak " + fixed$(srcPeak, 3) + " in, " + fixed$(finPeak, 3)
         ... + " out  |  mean gain compensation " + fixed$(meanGainDb, 2)
         ... + " dB (range " + fixed$(minGainDb, 2) + " to "
         ... + fixed$(maxGainDb, 2) + " dB)"
-    Text: 0.02, "left", 0.21, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.13, "half", 
         ... "Resonances reinforced:  " + peakList$
         ... + "     |     measured / ideal emphasis " + emphasisRatio$
         ... + "     |     display " + fixed$(vizFreqLo, 0) + " Hz to "
         ... + fixed$(vizFreqHi / 1000, 1) + " kHz, logarithmic, "
         ... + string$(nBands) + " bands"
+
+    Select inner viewport: 0.60, 7.70, 6.60, 7.46
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
@@ -1194,6 +1232,13 @@ if draw_visualization
     appendInfoLine: "  Room resonances detected: ", peakList$
     appendInfoLine: "  Measured / ideal emphasis: ", emphasisRatio$
     appendInfoLine: ""
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 7.63
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

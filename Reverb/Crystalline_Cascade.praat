@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.2 (2025)
+# Version: 0.3.1 (2025)
+# v0.3.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -391,39 +392,52 @@ endif
 
 if draw_visualization
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     
     # Title
     Select outer viewport: 0, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Crystalline Cascade: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Crystalline Cascade: " + originalName$ + " (" + presetName$ + ")" + " | v0.3.1"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    Select inner viewport: 0.60, 7.70, 0.7, 1.3
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.7, 1.3
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.7, 1.3
+    Axes: 0, 1, 0, 1
     
     # Result waveform
     Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    Select inner viewport: 0.60, 7.70, 1.6, 2.2
     selectObject: result
     Colour: "{0.6, 0.5, 0.7}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Cascade " + fixed$(wet_dry_percent, 0) + "%"
+    Select inner viewport: 0.20, 0.48, 1.6, 2.2
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Cascade " + fixed$(wet_dry_percent, 0) + "\%  "
+    Select inner viewport: 0.60, 7.70, 1.6, 2.2
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
     
     # IR envelope (reverse exponential)
     Select outer viewport: 0, 4, 2.5, 3.8
-    Select inner viewport: 0.6, 3.8, 2.6, 3.7
+    Select inner viewport: 0.60, 3.85, 2.6, 3.7
     
     Axes: 0, irDuration, 0, 1.2
     Paint rectangle: "{0.95, 0.95, 0.95}", 0, irDuration, 0, 1.2
@@ -463,11 +477,15 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Envelope"
+    Select inner viewport: 0.20, 0.48, 2.6, 3.7
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Envelope"
+    Select inner viewport: 0.60, 3.85, 2.6, 3.7
+    Axes: 0, irDuration, 0, 1.2
     Text bottom: "yes", "Time (s)"
     
     # Legend
-    Font size: 5
+    Font size: 6
     Colour: "{0.6, 0.5, 0.7}"
     Text: irDuration * 0.75, "centre", 1.1, "half", "Reverse (builds up)"
     Colour: "{0.7, 0.7, 0.7}"
@@ -475,14 +493,18 @@ if draw_visualization
     
     # IR waveform
     Select outer viewport: 4, 8, 2.5, 3.8
-    Select inner viewport: 4.4, 7.6, 2.6, 3.7
+    Select inner viewport: 4.45, 7.70, 2.6, 3.7
     selectObject: irForViz
     Colour: "{0.5, 0.7, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "IR"
+    Select inner viewport: 4.05, 4.33, 2.6, 3.7
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "IR"
+    Select inner viewport: 4.45, 7.70, 2.6, 3.7
+    Axes: 0, irDuration, 0, 1.2
     Text bottom: "yes", "Time (s)"
     
     # Parameters
@@ -496,6 +518,35 @@ if draw_visualization
     
     # Cleanup IR
     removeObject: irForViz
+
+    # Summary strip - compact house spacing.
+    Select outer viewport: 0, 8, 4.40, 5.40
+    Select inner viewport: 0.60, 7.70, 4.47, 5.33
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "Cascade map shows the realized crystalline delay structure"
+    Colour: "{0.25, 0.25, 0.35}"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "Dry/reference remains neutral; coloured structure denotes the processed field"
+
+    # Restore full-page viewport before leaving visualization.
+    Select inner viewport: 0.60, 7.70, 4.47, 5.33
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
+    Select outer viewport: 0, 8, 0, 5.50
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # If no visualization, still cleanup IR

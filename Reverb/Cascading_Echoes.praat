@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.1 (2026)
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -83,7 +84,7 @@
 #   - Added visualization
 # ============================================================
 
-form Cascading Echoes v0.3
+form Cascading Echoes v0.5.1
     optionmenu Preset: 1
         option Default (balanced)
         option Short and Tight
@@ -446,6 +447,11 @@ if draw_visualization
     appendInfoLine: "Drawing visualization..."
     
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Black
     Plain line
     
@@ -501,7 +507,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##CASCADING ECHOES##"
+    Text: 0.5, "centre", 0.68, "half", "##CASCADING ECHOES##" + " | v0.5.1"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -519,7 +525,7 @@ if draw_visualization
     # + dots, dry gray dot at origin.
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     Axes: 0, maxDelayMs, 0, 1.15
     Paint rectangle: "{0.96, 0.96, 0.97}", 0, maxDelayMs, 0, 1.15
@@ -558,7 +564,7 @@ if draw_visualization
     Line width: 1
     
     # Inline legend
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.55, 0.55}"
     Text: maxDelayMs * 0.02, "left", 1.10, "half", "dry"
     Colour: "{0.30, 0.65, 0.35}"
@@ -570,19 +576,23 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text left: "yes", "Amplitude (decay^k)"
+    Select inner viewport: 0.20, 0.48, 0.95, 4.40
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amplitude (decay^k)"
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
+    Axes: 0, maxDelayMs, 0, 1.15
     Text bottom: "yes", "Delay (ms)"
     
     # ----------------------------------------------------------
     # PANEL B: PARAMETER REPORT + TAP LIST  (right, headline)
     # ----------------------------------------------------------
     Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, 1, 0, 1
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.95, "half", "Algorithm:"
     
@@ -591,11 +601,11 @@ if draw_visualization
     Text: 0.10, "left", 0.89, "half", "Multi-tap FIR delay (parallel, not cascading)"
     Text: 0.10, "left", 0.84, "half", "wet = dry + sum_k (decay^k) \\.c dry[col - delay_k]"
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.77, "half", "Settings:"
     
-    Font size: 8
+    Font size: 7
     Colour: "{0.30, 0.65, 0.35}"
     Text: 0.10, "left", 0.71, "half", "Decay L: " + fixed$(decay_left, 3) + "  |  Range: " + fixed$(delay_min_ms, 0) + "-" + fixed$(delay_max_ms, 0) + " ms"
     Colour: "{0.30, 0.45, 0.78}"
@@ -604,7 +614,7 @@ if draw_visualization
     Text: 0.10, "left", 0.59, "half", "Iterations: " + string$(iterations) + "  |  Tail: " + fixed$(tail_duration_s, 2) + " s"
     Text: 0.10, "left", 0.53, "half", "Wet/Dry:    " + fixed$(wet_dry_percent, 0) + "% wet"
     
-    Font size: 9
+    Font size: 7
     Colour: "{0.30, 0.30, 0.30}"
     Text: 0.05, "left", 0.46, "half", "Taps:"
     
@@ -655,7 +665,7 @@ if draw_visualization
     # ALIGNED PANEL TITLES
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
+    Select inner viewport: 0.60, 7.70, 0, 8
     Axes: 0, 8, 0, 8
     
     Font size: 7
@@ -668,7 +678,7 @@ if draw_visualization
     # Gray = original, blue = processed.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     zoomDur = 0.5
     if zoomDur > originalDur
@@ -713,7 +723,11 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Zoom: first " + fixed$(zoomDur * 1000, 0) + " ms  (gray = original, blue = processed)"
-    Text left: "yes", "Amp"
+    Select inner viewport: 0.20, 0.48, 4.75, 5.48
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amp"
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
+    Axes: 0, zoomDur, -z_amp, z_amp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
@@ -721,7 +735,7 @@ if draw_visualization
     # Fixes v0.2's independent auto-scaling.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     Axes: 0, finalDur, -sharedAmp, sharedAmp
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -sharedAmp, sharedAmp
@@ -735,7 +749,7 @@ if draw_visualization
         Dotted line
         Draw line: originalDur, -sharedAmp, originalDur, sharedAmp
         Solid line
-        Font size: 5
+        Font size: 6
         Text: originalDur, "left", sharedAmp * 0.85, "half", "  tail"
     endif
     
@@ -756,14 +770,18 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Full output  (gray = original, blue = processed, shared y-axis)"
-    Text left: "yes", "Amp"
+    Select inner viewport: 0.20, 0.48, 5.69, 6.48
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amp"
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
+    Axes: 0, finalDur, -sharedAmp, sharedAmp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR  (suite standard — light grey)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select outer viewport: 0, 8, 6.70, 7.70
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
@@ -777,7 +795,12 @@ if draw_visualization
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", 
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  " + string$(iterations) + " iterations"
@@ -786,22 +809,34 @@ if draw_visualization
         ... + "  |  L range: " + fixed$(delay_min_ms, 0) + "-" + fixed$(delay_max_ms, 0) + " ms"
         ... + "  |  R range: " + fixed$(stereo_delay_min_ms, 0) + "-" + fixed$(stereo_delay_max_ms, 0) + " ms"
     
-    Text: 0.02, "left", 0.28, "half",
-        ... "Wet/Dry: " + fixed$(wet_dry_percent, 0) + "%"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", 
+        ... "Wet/Dry: " + fixed$(wet_dry_percent, 0) + "\%  "
         ... + "  |  Tail: " + fixed$(tail_duration_s, 2) + " s"
         ... + "  |  Mode: " + stereoStr$
         ... + "  |  In: " + fixed$(originalDur, 2) + " s"
         ... + "  |  Out: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
     
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
     
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
     Font size: 10
     Colour: "Black"
     Line width: 1
     
     # Cleanup viz objects
     removeObject: vizOrig, vizProc
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 7.80
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 removeObject: workSource

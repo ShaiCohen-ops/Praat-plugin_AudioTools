@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - Stereo/mix/geometry repair
+# Version: 0.5.1 (2026) - Stereo/mix/geometry repair
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -450,34 +451,47 @@ endif
 if draw_visualization
     Erase all
 
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
+
     Select outer viewport: 0, 8, 0.1, 0.5
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Ping-Pong Field: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Ping-Pong Field: " + originalName$ + " (" + presetName$ + ")" + " | v0.5.1"
 
     Select outer viewport: 0, 8, 0.6, 1.4
-    Select inner viewport: 0.6, 7.6, 0.7, 1.3
+    Select inner viewport: 0.60, 7.70, 0.7, 1.3
     selectObject: original
     Colour: "{0.6, 0.6, 0.6}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.7, 1.3
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.7, 1.3
+    Axes: 0, 1, 0, 1
 
     Select outer viewport: 0, 8, 1.5, 2.3
-    Select inner viewport: 0.6, 7.6, 1.6, 2.2
+    Select inner viewport: 0.60, 7.70, 1.6, 2.2
     selectObject: result
     Colour: "{0.5, 0.6, 0.7}"
     Draw: 0, originalDur, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "PP " + fixed$(wet_dry_percent, 0) + "%"
+    Select inner viewport: 0.20, 0.48, 1.6, 2.2
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "PP " + fixed$(wet_dry_percent, 0) + "\%  "
+    Select inner viewport: 0.60, 7.70, 1.6, 2.2
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     Select outer viewport: 0, 8, 2.5, 4.0
-    Select inner viewport: 0.6, 7.6, 2.6, 3.9
+    Select inner viewport: 0.60, 7.70, 2.6, 3.9
 
     maxDelay = maxDelayEff * 1.1
     Axes: 0, maxDelay * 1000, -1.2, 1.2
@@ -514,10 +528,14 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "L <-> R"
+    Select inner viewport: 0.20, 0.48, 2.6, 3.9
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "L <-> R"
+    Select inner viewport: 0.60, 7.70, 2.6, 3.9
+    Axes: 0, maxDelay * 1000, -1.2, 1.2
     Text bottom: "yes", "Delay (ms)"
 
-    Font size: 5
+    Font size: 6
     Colour: "{0.5, 0.6, 0.8}"
     Text: maxDelay * 900, "centre", 1.0, "half", "Even echoes (R)"
     Colour: "{0.8, 0.5, 0.5}"
@@ -530,6 +548,35 @@ if draw_visualization
 
     Font size: 10
     Colour: "Black"
+
+    # Summary strip - compact house spacing.
+    Select outer viewport: 0, 8, 4.60, 5.60
+    Select inner viewport: 0.60, 7.70, 4.67, 5.53
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.35, 0.35, 0.50}"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "Stereo field shows alternating left/right delay trajectories"
+    Colour: "{0.25, 0.25, 0.35}"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "The spatial alternation is the processing law; dry/reference remains neutral"
+
+    # Restore full-page viewport before leaving visualization.
+    Select inner viewport: 0.60, 7.70, 4.67, 5.53
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
+    Select outer viewport: 0, 8, 0, 5.70
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

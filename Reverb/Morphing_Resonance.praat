@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.1 (2026)
+# v0.5.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -94,7 +95,7 @@
 #   - Added visualization
 # ============================================================
 
-form Morphing Resonance v0.3
+form Morphing Resonance v0.5.1
     optionmenu Preset: 1
         option Custom (use settings below)
         option Subtle Morphing
@@ -501,6 +502,11 @@ if draw_visualization
     appendInfoLine: "Drawing visualization..."
     
     Erase all
+
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
     Black
     Plain line
     
@@ -511,7 +517,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##MORPHING RESONANCE##"
+    Text: 0.5, "centre", 0.68, "half", "##MORPHING RESONANCE##" + " | v0.5.1"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -530,7 +536,7 @@ if draw_visualization
     # secondary curve.
     # ----------------------------------------------------------
     Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
     
     Axes: 0, irDuration, 0, fEndActual * 1.1
     Paint rectangle: "{0.97, 0.97, 0.99}", 0, irDuration, 0, fEndActual * 1.1
@@ -575,7 +581,7 @@ if draw_visualization
     Solid line
     
     # Endpoint labels
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.35, 0.78}"
     Text: 0, "left", frequency_start_Hz + fEndActual * 0.04, "half",
         ... "  start " + fixed$(frequency_start_Hz, 0) + " Hz"
@@ -586,7 +592,11 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text left: "yes", "Inst. freq (Hz)"
+    Select inner viewport: 0.20, 0.48, 0.95, 4.40
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Inst. freq (Hz)"
+    Select inner viewport: 0.60, 3.85, 0.95, 4.40
+    Axes: 0, irDuration, 0, fEndActual * 1.1
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
@@ -595,7 +605,7 @@ if draw_visualization
     # and amplitude-decay behaviour the formula produces.
     # ----------------------------------------------------------
     Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
     
     irDispDur = min(2, irDuration)
     
@@ -620,14 +630,18 @@ if draw_visualization
     Line width: 1
     Draw inner box
     Font size: 6
-    Text left: "yes", "IR amp"
+    Select inner viewport: 4.05, 4.33, 0.95, 4.40
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "IR amp"
+    Select inner viewport: 4.45, 7.70, 0.95, 4.40
+    Axes: 0, irDispDur, -ir_amp, ir_amp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # ALIGNED PANEL TITLES
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
+    Select inner viewport: 0.60, 7.70, 0, 8
     Axes: 0, 8, 0, 8
     
     Font size: 7
@@ -642,7 +656,7 @@ if draw_visualization
     # Gray = original, purple = result.
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
     
     zoomDur = 0.2
     if zoomDur > originalDur
@@ -708,14 +722,18 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Zoom: first " + fixed$(zoomDur * 1000, 0) + " ms  (gray = original, purple = result)"
-    Text left: "yes", "Amp"
+    Select inner viewport: 0.20, 0.48, 4.75, 5.48
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amp"
+    Select inner viewport: 0.60, 7.70, 4.75, 5.48
+    Axes: 0, zoomDur, -z_amp, z_amp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL D: RESULT WAVEFORM (FULL FILE)
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
     
     selectObject: result
     if numChannels > 1
@@ -746,7 +764,7 @@ if draw_visualization
         Dotted line
         Draw line: fade_start_pos, -out_amp, fade_start_pos, out_amp
         Solid line
-        Font size: 5
+        Font size: 6
         Text: fade_start_pos, "left", out_amp * 0.85, "half", "  fadeout"
     endif
     
@@ -762,20 +780,29 @@ if draw_visualization
     Draw inner box
     Font size: 7
     Text top: "no", "Result (full file)  — true dry/effect mix of chirp-modulated reverb + chorus"
-    Text left: "yes", "Amp"
+    Select inner viewport: 0.20, 0.48, 5.69, 6.48
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Amp"
+    Select inner viewport: 0.60, 7.70, 5.69, 6.48
+    Axes: 0, finalDur, -out_amp, out_amp
     Text bottom: "yes", "Time (s)"
     
     # ----------------------------------------------------------
     # PANEL E: SUMMARY BAR  (suite standard — light grey)
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Select outer viewport: 0, 8, 6.70, 7.70
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     
     Font size: 6
     Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", 
         ... "##" + presetName$ + "##"
         ... + "  " + originalName$
         ... + "  |  Chirp: " + fixed$(frequency_start_Hz, 0) + "-" + fixed$(fEndActual, 0) + " Hz"
@@ -783,23 +810,35 @@ if draw_visualization
         ... + "  |  Poisson density: " + fixed$(poisson_density, 0) + "/s"
         ... + "  |  Exp base: " + fixed$(exponential_base, 0)
     
-    Text: 0.02, "left", 0.28, "half",
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", 
         ... "Conv mix: " + fixed$(convolution_mix, 2)
         ... + "  |  Chorus: " + fixed$(chorus_mix, 2) + " @ " + fixed$(chorus_delay_ms, 0) + " ms"
-        ... + "  |  Wet: " + fixed$(wet_dry_percent, 0) + "%"
+        ... + "  |  Wet: " + fixed$(wet_dry_percent, 0) + "\%  "
         ... + "  |  Fade: " + fixed$(effectiveFadeout, 2) + " s"
         ... + "  |  Out: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
         ... + "  |  " + string$(numChannels) + " ch"
     
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
     
+    Select inner viewport: 0.60, 7.70, 6.77, 7.63
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
+
     Font size: 10
     Colour: "Black"
     Line width: 1
     
     # Cleanup IR
     removeObject: irForViz
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 7.80
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # If no visualization, still cleanup IR

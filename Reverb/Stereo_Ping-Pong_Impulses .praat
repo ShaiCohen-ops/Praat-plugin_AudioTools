@@ -3,7 +3,8 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 reviewed (2026)
+# Version: 0.4.1 reviewed (2026)
+# v0.4.1 (2026): Shared left panel-label rails and user-approved Summary geometry; DSP/analysis unchanged.
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -366,12 +367,17 @@ resultEnd = resultStart + resultDur
 if draw_visualization
     Erase all
 
+    # Shared left panel-label rail.
+    labelX = -0.035
+    labelFont = 7
+
+
     # Main title.
     Select outer viewport: 0, 8, 0.05, 0.38
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.58, "half", "Stereo Ping-Pong Impulses | " + presetName$
+    Text: 0.5, "centre", 0.58, "half", "Stereo Ping-Pong Impulses | " + presetName$ + " | v0.4.1"
 
     # Compact metadata line.
     Select outer viewport: 0, 8, 0.36, 0.58
@@ -382,37 +388,45 @@ if draw_visualization
 
     # Dry waveform.
     Select outer viewport: 0, 8, 0.65, 1.35
-    Select inner viewport: 0.65, 7.65, 0.72, 1.28
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
     selectObject: original
     Colour: "{0.65, 0.65, 0.65}"
     Draw: origStart, resultEnd, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Dry"
+    Select inner viewport: 0.20, 0.48, 0.72, 1.28
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Dry"
+    Select inner viewport: 0.60, 7.70, 0.72, 1.28
+    Axes: 0, 1, 0, 1
 
     # Output waveform.
     Select outer viewport: 0, 8, 1.42, 2.12
-    Select inner viewport: 0.65, 7.65, 1.49, 2.05
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
     selectObject: result
     Colour: "{0.48, 0.60, 0.76}"
     Draw: resultStart, resultEnd, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "Output"
+    Select inner viewport: 0.20, 0.48, 1.49, 2.05
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "Output"
+    Select inner viewport: 0.60, 7.70, 1.49, 2.05
+    Axes: 0, 1, 0, 1
     Text bottom: "yes", "Time (s)"
 
     # Impulse-pattern panel title.
     Select outer viewport: 0, 8, 2.24, 2.48
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half", "Alternating impulse pattern"
 
     # Actual jittered impulse pattern used by the DSP.
     Select outer viewport: 0, 8, 2.45, 3.82
-    Select inner viewport: 0.65, 7.65, 2.60, 3.68
+    Select inner viewport: 0.60, 7.70, 2.60, 3.68
     Axes: 0, impulse_train_duration_s, -1.2, 1.2
     Paint rectangle: "{0.96, 0.96, 0.96}", 0, impulse_train_duration_s, -1.2, 1.2
 
@@ -438,26 +452,49 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 6
-    Text left: "yes", "L / R"
+    Select inner viewport: 0.20, 0.48, 2.60, 3.68
+    Axes: 0, 1, 0, 1
+    Text special: 0.5, "centre", 0.5, "bottom", "Helvetica", labelFont, "90", "L / R"
+    Select inner viewport: 0.60, 7.70, 2.60, 3.68
+    Axes: 0, impulse_train_duration_s, -1.2, 1.2
     Text bottom: "yes", "Impulse time (s)"
 
-    Font size: 5
+    Font size: 6
     Colour: "{0.42, 0.58, 0.76}"
     Text: impulse_train_duration_s * 0.96, "right", 0.98, "half", "LEFT  " + string$(numLeftImp)
     Colour: "{0.78, 0.48, 0.42}"
     Text: impulse_train_duration_s * 0.96, "right", -0.98, "half", "RIGHT  " + string$(numRightImp)
 
     # Summary panel.
-    Select outer viewport: 0.35, 7.65, 3.92, 4.48
+    Select outer viewport: 0, 8, 3.97, 4.97
+    Select inner viewport: 0.60, 7.70, 4.04, 4.90
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Colour: "{0.35, 0.35, 0.35}"
     Font size: 6
-    Text: 0.5, "centre", 0.68, "half", "IR span " + fixed$(impulse_train_duration_s, 2) + " s | Step " + fixed$(step_interval_s * 1000, 0) + " ms | Initial " + fixed$(initial_delay_s * 1000, 0) + " ms"
-    Text: 0.5, "centre", 0.30, "half", "Jitter ±" + fixed$(effectiveJitter * 1000, 1) + " ms | Sinc depth " + string$(sinc_interpolation_depth) + " | Output " + fixed$(resultDur, 2) + " s"
+    Font size: 7
+    Colour: "Black"
+    Font size: 7
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Text: 0.02, "left", 0.48, "half", "IR span " + fixed$(impulse_train_duration_s, 2) + " s | Step " + fixed$(step_interval_s * 1000, 0) + " ms | Initial " + fixed$(initial_delay_s * 1000, 0) + " ms"
+    Font size: 6
+    Text: 0.02, "left", 0.24, "half", "Jitter ±" + fixed$(effectiveJitter * 1000, 1) + " ms | Sinc depth " + string$(sinc_interpolation_depth) + " | Output " + fixed$(resultDur, 2) + " s"
+
+    Select inner viewport: 0.60, 7.70, 4.04, 4.90
+    Axes: 0, 1, 0, 1
+    Colour: "Black"
+    Draw inner box
 
     Font size: 10
     Colour: "Black"
+
+    # Restore full-page viewport before leaving visualization.
+    Select outer viewport: 0, 8, 0, 5.07
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================
