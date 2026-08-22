@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026)
+# Version: 0.7.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -23,7 +23,9 @@
 #   presets cover distinct compositional aesthetics.  The
 #   seeded LCG ensures full reproducibility from seed.
 #
-# Changelog v0.6:
+# Changelog v0.7.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.7: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.7:
 #   - baseLoudness and loudnessVariation now affect the AUDIO, not only
 #     visualization. The PSOLA result is scaled to baseLoudness, then a
 #     phrase-level relative-dB IntensityTier applies the generated dynamics.
@@ -58,7 +60,7 @@
 
 # Bimodal Contour Grammar: Sound Processing + Visual Presentation
 
-form Bimodal Contour Generator v0.6
+form Bimodal Contour Generator v0.7.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -190,7 +192,7 @@ duration = Get total duration
 startTime = Get start time
 endTime = Get end time
 
-writeInfoLine: "Bimodal Contour Grammar Generator v0.6"
+writeInfoLine: "Bimodal Contour Grammar Generator v0.7.1"
 appendInfoLine: "========================================================"
 appendInfoLine: "Sound: ", name$
 appendInfoLine: "Duration: ", fixed$ (duration, 3), " seconds"
@@ -276,7 +278,7 @@ if showGrid
    
     # Note labels
     if showNoteLabels
-        Font size: 8
+        Font size: 7
         Colour: "{0.5, 0.5, 0.5}"
         
         for midiLine from currentMidiMin to currentMidiMax
@@ -388,11 +390,11 @@ Colour: "Black"
 Line width: 1
 Font size: 12
 
-Text top: "yes", "Bimodal Grammar: " + name$ + "  [" + presetName$ + "]  (S → Phrase + S)"
+Text top: "yes", "Bimodal Grammar v0.7.1: " + name$ + "  [" + presetName$ + "]  (S → Phrase + S)"
 Text bottom: "yes", "Time (s)"
 Text left: "yes", "MIDI Note (Hz mapped)"
 
-Font size: 8
+Font size: 7
 Select outer viewport: 0, image_width/100, 0, image_height/100
 Text: endTime, "right", currentMidiMax, "top", colorScheme$
 if lineStyle = 3
@@ -465,7 +467,7 @@ for i from 1 to phrase_count
     Line width: 0.6
     Draw line: phrase_start_'i', 0, phrase_start_'i', 1
 
-    Font size: 5
+    Font size: 6
     Colour: "White"
 
     segW = onset_end_'i' - phrase_start_'i'
@@ -884,6 +886,30 @@ procedure coda
     @addPoint: current_time, current_pitch
 endproc
 
+
+# ----------------------------------------------------------
+# Summary strip
+# ----------------------------------------------------------
+Select outer viewport: 0, 8, imgH + 4.20, imgH + 4.76
+Select inner viewport: 0.60, 7.70, imgH + 4.20 + 0.04, imgH + 4.76 - 0.04
+Axes: 0, 1, 0, 1
+Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+Font size: 7
+Colour: "Black"
+Text: 0.02, "left", 0.72, "half", "##Summary##"
+Font size: 6
+Colour: "{0.25, 0.25, 0.35}"
+Text: 0.02, "left", 0.45, "half", "Grammar contour • phrase structure • intensity dynamics"
+Text: 0.02, "left", 0.20, "half", "Bimodal Contour Grammar • run parameters are reported in the Info window"
+Colour: "Black"
+Draw rectangle: 0, 1, 0, 1
+
+pageHeight = imgH + 4.86
+Select outer viewport: 0, 8, 0, pageHeight
+Font size: 10
+Colour: "Black"
+Line width: 1
+Solid line
 # ========================================================================================
 # HELPER FUNCTIONS (from visualization script)
 # ========================================================================================

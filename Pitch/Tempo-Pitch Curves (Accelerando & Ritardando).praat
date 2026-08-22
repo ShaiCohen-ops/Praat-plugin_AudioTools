@@ -3,14 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026) - Visualized
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   Tempo Curves (Accelerando & Ritardando) with Visualization.
 # ============================================================
-# Changelog v0.3:
+# Changelog v0.4.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.4: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.4:
 #   - Tempo and pitch now follow the same LOCAL curve in Pitch+Duration mode.
 #   - Target duration is built directly into the DurationTier; no post-process
 #     Change gender stage is used.
@@ -24,7 +26,7 @@
 #   - Visualization layout/style preserved; title/stats coordinate bugs corrected.
 # ============================================================
 
-form Tempo Curves (Accelerando & Ritardando) v0.3
+form Tempo Curves (Accelerando & Ritardando) v0.4.1
     comment Apply tempo variations to the selected sound
     comment 
     optionmenu Pattern_type 1
@@ -216,7 +218,7 @@ for i from 1 to numPoints
 endfor
 representedDurationRatio = integral / originalDuration
 
-writeInfoLine: "=== Tempo-Pitch Curves v0.3 ==="
+writeInfoLine: "=== Tempo-Pitch Curves v0.4.1 ==="
 appendInfoLine: "Source: ", soundName$, " (", fixed$(originalDuration, 3), " s, ", numberOfChannels, " ch)"
 appendInfoLine: "Pattern: ", patternName$
 appendInfoLine: "Strength: ", strength
@@ -453,7 +455,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Tempo-Pitch: " + soundName$ + " (" + patternName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Tempo-Pitch Curves v0.4.1: " + soundName$ + " (" + patternName$ + ")"
     
     # --- 2. Original Waveform ---
     Select outer viewport: 0, 8, 0.6, 1.6
@@ -463,7 +465,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # --- 3. Result Waveform ---
@@ -529,6 +531,30 @@ if draw_visualization
     
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.12, 5.68
+    Select inner viewport: 0.60, 7.70, 5.12 + 0.04, 5.68 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Tempo curve • linked pitch trajectory • rendered output"
+    Text: 0.02, "left", 0.20, "half", "Tempo-Pitch Curves • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 5.78
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 ##############################################################################

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,7 +13,9 @@
 #   and ring modulation. Creates evolving textures from subtle
 #   to chaotic while preserving the source channel count.
 #
-# Changelog v0.4:
+# Changelog v0.5.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.5: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.5:
 #   - Preserves the original number of channels.
 #   - Preserves the original Sound time domain (xmin/xmax).
 #   - AM depth now has literal 0..1 meaning:
@@ -48,7 +50,7 @@ sampling_rate = Get sampling frequency
 numChan = Get number of channels
 
 # === Form ===
-form Formula Audio Manipulation v0.4
+form Formula Audio Manipulation v0.5.1
     comment Select a Sound object first
 
     comment === Preset ===
@@ -203,7 +205,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Formula Audio Manipulation v0.4 ==="
+writeInfoLine: "=== Formula Audio Manipulation v0.5.1 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels preserved: ", numChan
@@ -473,7 +475,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Formula Audio Manipulation: " + sound_name$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Formula Audio Manipulation v0.5.1: " + sound_name$ + " (" + presetName$ + ")"
 
     # Original waveform (mono visualization view)
     Select outer viewport: 0, 8, 0.6, 1.6
@@ -483,7 +485,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
 
     # AM envelope
@@ -556,6 +558,30 @@ if draw_visualization
     Colour: "Black"
 
     removeObject: vizOriginalMono, vizResultMono
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.92, 6.48
+    Select inner viewport: 0.60, 7.70, 5.92 + 0.04, 6.48 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Formula control law • pitch/time mapping • rendered output"
+    Text: 0.02, "left", 0.20, "half", "Formula Audio Manipulation • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.58
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

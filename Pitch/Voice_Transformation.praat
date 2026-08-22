@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026) - Multichannel-safe voice transformation
+# Version: 0.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,7 +13,9 @@
 #   Includes presets for common voice effects like chipmunk,
 #   robot, telephone, and radio voice.
 #
-# Changelog v0.4:
+# Changelog v0.5.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.5: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.5:
 #   - Corrected Change gender pitch-range factor: formant shifting now uses
 #     pitch-range factor 1.0 instead of 0 (which monotonized the pitch contour).
 #   - Full xmin/xmax-safe DurationTier and PitchTier handling.
@@ -47,7 +49,7 @@ origName$ = selected$("Sound")
 # created later only when needed; audio processing is performed per channel.
 
 # === Form ===
-form Voice Transformation v0.4
+form Voice Transformation v0.5.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -207,7 +209,7 @@ if duration_factor <= 0 or duration_factor > 4
 endif
 
 # === Info ===
-writeInfoLine: "=== Voice Transformation v0.4 ==="
+writeInfoLine: "=== Voice Transformation v0.5.1 ==="
 appendInfoLine: "Source: ", origName$, " (", fixed$(dur, 2), " s, ", nChannels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -387,7 +389,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Voice Transformation: " + origName$ + " -> " + presetName$
+    Text: 0.5, "centre", 0.5, "half", "Voice Transformation v0.5.1: " + origName$ + " -> " + presetName$
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.8
@@ -397,7 +399,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # Result waveform
@@ -522,6 +524,30 @@ if draw_visualization
     
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.32, 6.88
+    Select inner viewport: 0.60, 7.70, 6.32 + 0.04, 6.88 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Voice pitch/formant mapping • transformed output • diagnostics"
+    Text: 0.02, "left", 0.20, "half", "Voice Transformation • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.98
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

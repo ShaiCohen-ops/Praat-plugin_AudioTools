@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.5 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,7 +13,12 @@
 #   The generated terrain is applied as a time-varying transposition
 #   of the source F0 contour, preserving the source melody/intonation.
 #
-# Changelog v0.3:
+# Changelog v0.5:
+#   - Compacts the main form around macro musical terrain controls.
+#   - Moves secondary fractal-shaping and pitch-analysis controls to an optional Advanced settings dialog.
+#   - Preserves all previous defaults and DSP/analysis behavior.
+# Changelog v0.4: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.4:
 #   - Preserves the detected source F0 contour instead of replacing it
 #     with a terrain around one median pitch.
 #   - Preserves the original number of channels.
@@ -47,10 +52,10 @@ dur = xmax - xmin
 nChannels = Get number of channels
 
 # === Form ===
-form Fractal Pitch Terrain v0.3
+form Fractal Pitch Terrain v0.5
     comment Select a Sound object first
 
-    comment === Preset ===
+    comment === Terrain ===
     optionmenu Preset 1
         option Manual (configure below)
         option Gentle Fractal
@@ -61,40 +66,47 @@ form Fractal Pitch Terrain v0.3
         option Evolving Landscape
         option Extreme Chaos
 
-    comment === Fractal Parameters ===
     natural Iterations 6
     positive Base_frequency 1.5
-    positive Amplitude_decay 0.55
     positive Chaos_factor 0.3
-
-    comment === Wave Mixing ===
-    positive Sine_mix 0.7
-    positive Square_mix 0.3
-
-    comment === Frequency Progression ===
-    positive Frequency_multiplier 2.618
-    comment (golden ratio squared)
-    positive Phase_increment 0.33
-
-    comment === Pitch Scaling ===
     positive Pitch_depth 15
     positive Drift_amplitude 2
     positive Drift_frequency 0.7
-    boolean Normalize_depth 1
-
-    comment === Time Evolution ===
-    positive Time_evolution_power 2
     positive Time_evolution_strength 0.5
 
-    comment === Pitch Analysis ===
-    positive Time_step 0.005
-    positive Minimum_pitch 50
-    positive Maximum_pitch 900
-
-    comment === Output ===
+    boolean Advanced_settings 0
     boolean Draw_visualization 1
     boolean Play_result 1
 endform
+
+# Advanced defaults: identical to the previous main-form defaults.
+amplitude_decay = 0.55
+sine_mix = 0.7
+square_mix = 0.3
+frequency_multiplier = 2.618
+phase_increment = 0.33
+normalize_depth = 1
+time_evolution_power = 2
+time_step = 0.005
+minimum_pitch = 50
+maximum_pitch = 900
+
+if advanced_settings
+    beginPause: "Fractal Pitch Terrain v0.5 - Advanced settings"
+        comment: "=== Fractal shaping ==="
+        positive: "Amplitude_decay", "0.55"
+        positive: "Sine_mix", "0.7"
+        positive: "Square_mix", "0.3"
+        positive: "Frequency_multiplier", "2.618"
+        positive: "Phase_increment", "0.33"
+        boolean: "Normalize_depth", 1
+        positive: "Time_evolution_power", "2"
+        comment: "=== Pitch analysis ==="
+        positive: "Time_step", "0.005"
+        positive: "Minimum_pitch", "50"
+        positive: "Maximum_pitch", "900"
+    clicked = endPause: "Continue", 1
+endif
 
 # === Apply Presets ===
 if preset = 2
@@ -286,7 +298,7 @@ endif
 maxTimeFactor = 1 + time_evolution_strength
 
 # === Info ===
-writeInfoLine: "=== Fractal Pitch Terrain v0.3 ==="
+writeInfoLine: "=== Fractal Pitch Terrain v0.5 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(dur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels preserved: ", nChannels
@@ -507,12 +519,12 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Fractal Pitch Terrain##"
+    Text: 0.5, "centre", 0.5, "half", "##Fractal Pitch Terrain v0.5##"
 
     # --- Subtitle ---
     Select outer viewport: 0, 8, 0.33, 0.5
     Axes: 0, 1, 0, 1
-    Font size: 9
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.5, "half", originalName$ + " | " + presetName$
 
@@ -524,7 +536,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
 
     # Result waveform
@@ -647,7 +659,7 @@ if draw_visualization
     Font size: 7
     Text left: "yes", "Layers"
 
-    Font size: 5
+    Font size: 6
     for ly from 1 to numVizLayers
         Colour: layerColors$#[ly]
         xPos = xmin + (xmax - xmin) * (0.02 + (ly - 1) * 0.12)
@@ -673,6 +685,30 @@ if draw_visualization
 
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.02, 6.58
+    Select inner viewport: 0.60, 7.70, 6.02 + 0.04, 6.58 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Fractal control terrain • pitch trajectory • rendered output"
+    Text: 0.02, "left", 0.20, "half", "Fractal Pitch Terrain • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.68
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

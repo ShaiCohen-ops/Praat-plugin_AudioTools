@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,7 +12,9 @@
 #   falls using exponential curves. Steepness controls how
 #   quickly the pitch change occurs.
 #
-# Changelog v0.3:
+# Changelog v0.4.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.4: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.4:
 #   - Preserves the original pitch contour: the exponential curve is now a
 #     time-varying transposition of the detected source F0, not a replacement
 #     contour built around one median pitch.
@@ -51,7 +53,7 @@ fs = Get sampling frequency
 nChannels = Get number of channels
 
 # === Form ===
-form Exponential Pitch Glide v0.3
+form Exponential Pitch Glide v0.4.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -367,12 +369,12 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Exponential Pitch Glide##"
+    Text: 0.5, "centre", 0.5, "half", "##Exponential Pitch Glide v0.4.1##"
     
     # --- Subtitle ---
     Select outer viewport: 0, 8, 0.33, 0.5
     Axes: 0, 1, 0, 1
-    Font size: 9
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.5, "half", originalName$ + " | " + presetName$ + " | " + dirName$
     
@@ -384,7 +386,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # Result waveform
@@ -509,6 +511,30 @@ if draw_visualization
     
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.50, 6.06
+    Select inner viewport: 0.60, 7.70, 5.50 + 0.04, 6.06 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Exponential glide law • pitch trajectory • rendered output"
+    Text: 0.02, "left", 0.20, "half", "Exponential Glide • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.16
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

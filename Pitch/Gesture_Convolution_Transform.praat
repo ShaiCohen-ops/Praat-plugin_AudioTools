@@ -51,7 +51,8 @@
 #   1.0 - Initial prosodic-convolution prototype.
 # ============================================================
 
-form Gesture Convolution Transform
+# Changelog v1.6: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+form Gesture Convolution Transform v1.6
     comment === Preset ===
     optionmenu Preset: 2
         option Subtle
@@ -230,7 +231,7 @@ if pitch_ceiling >= workSR / 2
 endif
 
 clearinfo
-appendInfoLine: "=== Gesture Convolution Transform v1.5a ==="
+appendInfoLine: "=== Gesture Convolution Transform v1.6 ==="
 appendInfoLine: "Input: ", origName$, "  (", fixed$(totalDur, 3), " s)"
 appendInfoLine: "Channels preserved: ", nChan
 appendInfoLine: "Time domain: ", fixed$(startTime, 6), " ... ", fixed$(endTime, 6), " s"
@@ -1009,9 +1010,9 @@ if draw_visualization
     # ---- TITLE BAND  (0,8,0,0.6 ; single centred line) ----
     Select outer viewport: 0, 8, 0, 0.6
     Axes: 0, 1, 0, 1
-    Font size: 13
+    Font size: 12
     Text: 0.5, "centre", 0.5, "half",
-        ... "##Gesture Convolution Transform##  -  " + presetName$ +
+        ... "##Gesture Convolution Transform v1.6##  -  " + presetName$ +
         ... ",  wet " + fixed$(effect_amount, 2)
 
     # ---- PANEL 1: pitch contour (orig grey vs transformed red) ----
@@ -1043,11 +1044,11 @@ if draw_visualization
     endfor
     Black
     Line width: 1
-    Font size: 8
+    Font size: 7
     Marks left: 4, "yes", "yes", "no"
     Text left: "yes", "semitones"
     Draw inner box
-    Font size: 9
+    Font size: 7
     Text top: "no", "##Pitch contour##   (grey = original, red = transformed)"
 
     # ---- PANEL 2: local duration factor ----
@@ -1070,11 +1071,11 @@ if draw_visualization
     endfor
     Black
     Line width: 1
-    Font size: 8
+    Font size: 7
     Marks left: 3, "yes", "yes", "no"
     Text left: "yes", "dur factor"
     Draw inner box
-    Font size: 9
+    Font size: 7
     Text top: "no", "##Local duration factor##   (>1 = stretch, <1 = compress)"
 
     # ---- PANEL 3: intensity + accent ----
@@ -1108,18 +1109,18 @@ if draw_visualization
     endfor
     Black
     Line width: 1
-    Font size: 8
+    Font size: 7
     Marks left: 3, "yes", "yes", "no"
     Text left: "yes", "dB"
     Text bottom: "yes", "time (s)"
     Draw inner box
-    Font size: 9
+    Font size: 7
     Text top: "no", "##Intensity## (blue) ##+ accent## (orange, scaled)"
 
     # ---- LEGEND BAND (single row of swatches + labels) ----
     Select outer viewport: 0, 8, 4.1, 4.6
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Paint rectangle: "{0.6, 0.6, 0.6}", 0.02, 0.05, 0.40, 0.62
     Text: 0.07, "left", 0.5, "half", "original pitch"
     Paint rectangle: "{0.75, 0.20, 0.20}", 0.24, 0.27, 0.40, 0.62
@@ -1152,6 +1153,13 @@ if draw_visualization
         ... "    dur " + fixed$(min_duration_factor, 2) + "-" +
         ... fixed$(max_duration_factor, 2)
     Font size: 10
+
+    pageHeight = 5.90
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

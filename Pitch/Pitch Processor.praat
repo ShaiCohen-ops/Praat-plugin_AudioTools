@@ -2,7 +2,7 @@
 # Praat AudioTools - Pitch_Processor.praat
 # Author: Shai Cohen (Enhanced by Praat AudioTools)
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.1 (2026) - Enhanced Edition
+# Version: 1.2.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -16,7 +16,7 @@
 #   - Resample back to target rate
 #   - Positive semitones raise pitch; negative semitones lower pitch
 #
-# Improvements in v1.1:
+# Improvements in v1.2:
 #   - Corrected detune direction: positive semitones now raise the right channel.
 #   - Converts the processing source to a zero-based mono working copy, so
 #     non-zero input xmin/xmax and multichannel inputs are handled consistently.
@@ -40,7 +40,9 @@
 #   - Educational explanation of technique
 # ============================================================
 
-form Pitch Processor v1.1
+# Changelog v1.2.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v1.2: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+form Pitch Processor v1.2.1
     comment === Operation Mode ===
     choice Mode 1
         button Stereo Pitch Detune
@@ -148,7 +150,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Pitch Processor v1.1 ==="
+writeInfoLine: "=== Pitch Processor v1.2.1 ==="
 if mode = 1
     appendInfoLine: "Mode: Stereo Pitch Detune"
 else
@@ -416,12 +418,12 @@ if draw_visualization
     Colour: "Black"
     if mode = 1
         Text: 0.5, "centre", 0.6, "half", "Stereo Pitch Detune"
-        Font size: 8
+        Font size: 7
         Colour: "{0.4, 0.4, 0.5}"
         Text: 0.5, "centre", 0.1, "half", orig$ + " | Detune: " + fixed$(stereo_detune_semitones, 2) + " ST"
     else
-        Text: 0.5, "centre", 0.6, "half", "Time-Delayed Canon: " + presetName$
-        Font size: 8
+        Text: 0.5, "centre", 0.6, "half", "Pitch Processor v1.2.1 — Time-Delayed Canon: " + presetName$
+        Font size: 7
         Colour: "{0.4, 0.4, 0.5}"
         Text: 0.5, "centre", 0.1, "half", orig$ + " | " + string$(number_of_voices) + " voices"
     endif
@@ -528,7 +530,7 @@ if draw_visualization
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
         
-        Font size: 8
+        Font size: 7
         Colour: "Black"
         Text: 0.5, "centre", 0.9, "half", "Pitch Shift Diagram"
         
@@ -604,7 +606,7 @@ if draw_visualization
     Select inner viewport: 4.4, 7.7, 4.8, 6.4
     
     Axes: 0, 1, 0, 1
-    Font size: 8
+    Font size: 7
     Colour: "Black"
     Text: 0.5, "centre", 0.95, "half", "Technique Explanation"
     
@@ -655,6 +657,30 @@ if draw_visualization
     endif
     
     Font size: 10
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 7.32, 7.88
+    Select inner viewport: 0.60, 7.70, 7.32 + 0.04, 7.88 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Pitch analysis • transformation law • resynthesized output"
+    Text: 0.02, "left", 0.20, "half", "Pitch Processor • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 7.98
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 selectObject: id_final_output

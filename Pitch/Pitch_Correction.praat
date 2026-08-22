@@ -16,7 +16,9 @@
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v0.4a:
+# Changelog v0.6: removed duplicate generic Summary strip and tightened Picture page spacing; DSP/analysis unchanged.
+# Changelog v0.5: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.5:
 #   - FIX: removed unsupported PitchTier `Get quantile` call in Robot mode.
 #   - Robot reference pitch is now computed directly as the geometric mean
 #     of the original PitchTier points, using commands available for PitchTier.
@@ -113,7 +115,7 @@ fs = Get sampling frequency
 n_channels = Get number of channels
 
 # === Form ===
-form Pitch Correction v0.4a
+form Pitch Correction v0.6
     comment Select a Sound object first
     optionmenu Preset: 1
         option Custom
@@ -228,7 +230,7 @@ endif
 root_idx = root_Note - 1
 
 # === Info ===
-writeInfoLine: "=== Pitch Correction v0.4a ==="
+writeInfoLine: "=== Pitch Correction v0.6 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(duration, 2), " s, ", n_channels, " ch)"
 appendInfoLine: "Key: ", rootName$, " ", scaleName$
 appendInfoLine: "Preset: ", presetName$
@@ -527,7 +529,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##PITCH CORRECTION##"
+    Text: 0.5, "centre", 0.68, "half", "##PITCH CORRECTION v0.5##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.22, "half",
@@ -733,6 +735,14 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    # Restore full Picture page immediately below the detailed summary.
+    pageHeight = 7.20
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

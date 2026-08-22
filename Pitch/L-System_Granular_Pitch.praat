@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,7 +13,9 @@
 #   pitch control. Symbols: G=grain, S=skip, U=pitch up,
 #   D=pitch down, N=neutral. Creates self-similar structures.
 #
-# Changelog v0.5:
+# Changelog v0.6.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.6: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.6:
 #   - Preserves the original number of channels.
 #   - U/D now affect their OWN grain rather than the following grain.
 #   - Grain schedule uses ceiling(), so the final partial grain reaches end_t.
@@ -56,7 +58,7 @@ end_t = Get end time
 n_ch = Get number of channels
 
 # === Form ===
-form L-System Granular Pitch
+form L-System Granular Pitch v0.6.1
     comment Select a Sound object first
 
     comment === Preset ===
@@ -243,7 +245,7 @@ elsif basePitchShift_semitones < -maxPitchShift_semitones
 endif
 
 # === Info ===
-writeInfoLine: "=== L-System Granular Pitch v0.5 ==="
+writeInfoLine: "=== L-System Granular Pitch v0.6.1 ==="
 appendInfoLine: "Source: ", name$, " (", fixed$(dur, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Channels preserved: ", n_ch
@@ -596,7 +598,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "L-System Granular: " + name$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "L-System Granular Pitch v0.6.1: " + name$ + " (" + presetName$ + ")"
 
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
@@ -606,7 +608,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
 
     # Result waveform
@@ -657,7 +659,7 @@ if draw_visualization
     Text left: "yes", "Pattern"
 
     # Legend
-    Font size: 5
+    Font size: 6
     Colour: "{0.5, 0.7, 0.5}"
     Text: 0.02 * maxVizGrains, "left", 1.3, "half", "G=grain"
     Colour: "{0.7, 0.5, 0.5}"
@@ -720,6 +722,30 @@ if draw_visualization
 
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.82, 6.38
+    Select inner viewport: 0.60, 7.70, 5.82 + 0.04, 6.38 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "L-system structure • grain pitch map • reconstructed output"
+    Text: 0.02, "left", 0.20, "half", "L-System Granular Pitch • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.48
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

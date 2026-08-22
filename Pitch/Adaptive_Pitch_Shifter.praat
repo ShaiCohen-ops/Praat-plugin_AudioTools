@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,7 +12,9 @@
 #   by amplitude, pitch contour, LFO, or combined sources.
 #   Creates effects from subtle vibrato to extreme warping.
 #
-# Changelog v0.3:
+# Changelog v0.4.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.4: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.4:
 #   - Corrected modulation smoothing (smooths modulation state, not modified pitch)
 #   - Centered modulation sources around zero so Base_pitch_shift is the centre
 #   - Made amplitude and pitch-contour normalization adaptive to the input
@@ -35,7 +37,7 @@ sampleRate = Get sampling frequency
 originalName$ = selected$("Sound")
 
 # === Form ===
-form Adaptive Pitch Shifter
+form Adaptive Pitch Shifter v0.4.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -401,7 +403,7 @@ if draw_visualization and storedPoints > 0
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half", "##Adaptive Pitch Shifter##"
+    Text: 0.5, "centre", 0.65, "half", "##Adaptive Pitch Shifter v0.4.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     Text: 0.5, "centre", -0.25, "half",
@@ -588,16 +590,16 @@ if draw_visualization and storedPoints > 0
     # ----------------------------------------------------------
     # Summary panel
     # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.90, 5.68
-    Select inner viewport: 0.55, 7.65, 4.96, 5.62
+    Select outer viewport: 0, 8, 4.90, 5.46
+    Select inner viewport: 0.55, 7.65, 4.90 + 0.04, 5.46 - 0.04
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
     Font size: 7
     Colour: "Black"
-    Text: 0.02, "left", 0.82, "half", "##Summary##"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
     Font size: 6
     Colour: "{0.30, 0.30, 0.30}"
-    Text: 0.02, "left", 0.52, "half",
+    Text: 0.02, "left", 0.45, "half",
         ... "Preset: " + presetName$
         ... + "  |  Base shift: " + fixed$(base_pitch_shift, 2) + "x"
         ... + "  |  Mod source: " + modSourceName$
@@ -620,7 +622,7 @@ if draw_visualization and storedPoints > 0
         stereoStr$ = "OFF"
     endif
 
-    Text: 0.02, "left", 0.18, "half",
+    Text: 0.02, "left", 0.20, "half",
         ... "Pitch points: " + string$(numPoints)
         ... + "  |  Resynthesis: " + formStr$
         ... + "  |  Stereo width: " + stereoStr$
@@ -631,6 +633,13 @@ if draw_visualization and storedPoints > 0
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    pageHeight = 5.56
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

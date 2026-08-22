@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,7 +12,9 @@
 #   user-defined pitch waypoints with elastic curves, overshoot,
 #   tension, and vibrato. Creates expressive pitch sequences.
 #
-# Changelog v0.3:
+# Changelog v0.4.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.4: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.4:
 #   - Robust target parser: requires at least 2 finite numeric targets.
 #   - Overshoot, tension, and vibrato amount can be set to 0.
 #   - Tension is now a bounded semitone offset, not a multiplier.
@@ -49,7 +51,7 @@ dur = xmax - xmin
 n_channels = Get number of channels
 
 # === Form ===
-form Pitch Morphing Between Targets
+form Pitch Morphing Between Targets v0.4.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -213,7 +215,7 @@ for tIdx from 1 to n_targets
 endfor
 
 # === Info ===
-writeInfoLine: "=== Pitch Morphing Between Targets v0.3 ==="
+writeInfoLine: "=== Pitch Morphing Between Targets v0.4.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(dur, 2), " s, ", n_channels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -422,7 +424,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Pitch Morphing: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Pitch Morphing Between Targets v0.4.1: " + originalName$ + " (" + presetName$ + ")"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.5
@@ -432,7 +434,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # Result waveform
@@ -549,7 +551,7 @@ if draw_visualization
         endif
         
         Colour: "Black"
-        Font size: 5
+        Font size: 6
         Text: tgt, "centre", textY, "half", fixed$(tgtPitch, 1)
     endfor
     
@@ -567,6 +569,30 @@ if draw_visualization
     
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.82, 6.38
+    Select inner viewport: 0.60, 7.70, 5.82 + 0.04, 6.38 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Target interpolation • morph trajectory • resynthesized output"
+    Text: 0.02, "left", 0.20, "half", "Pitch Morphing Between Targets • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.48
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

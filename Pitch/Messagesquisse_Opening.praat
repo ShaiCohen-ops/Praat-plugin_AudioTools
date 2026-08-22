@@ -1,9 +1,9 @@
 # ============================================================
-# Praat AudioTools - Messagesquisse_Opening.praat (v4.7a)
+# Praat AudioTools - Messagesquisse_Opening.praat (v4.8)
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 4.7a (2026)
+# Version: 4.8.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,6 +12,8 @@
 #   Transforms a single cello tone into a six-layer hexachordal
 #   field using the SACHER pitch set and Morse-derived timing.
 #
+# Changelog v4.8.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v4.8: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
 # Changelog v4.7a (2026):
 #   - FIX: removed a premature report reference to safetyApplied.
 #     The variable is only defined after final stereo peak analysis.
@@ -171,7 +173,7 @@ auto_unit  = originalDuration / totalUnits
 # FORM
 # ============================================================
 
-form Messagesquisse Opening v4.7a
+form Messagesquisse Opening v4.8.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -448,7 +450,7 @@ endfor
 
 clearinfo
 appendInfoLine: "==================================================="
-appendInfoLine: "  Messagesquisse Opening v4.7a"
+appendInfoLine: "  Messagesquisse Opening v4.8.1"
 appendInfoLine: "==================================================="
 appendInfoLine: "Source   : ", soundName$, "  (", fixed$(originalDuration, 3), " s)"
 appendInfoLine: "Target reg: MIDI ", midiNote, "  (", noteName$, " = ", fixed$(baseFreq, 2), " Hz)"
@@ -854,10 +856,10 @@ if draw_visualization = 1
     # ----------------------------------------------------------
     Select outer viewport: 0, 8, 0.0, 0.55
     Axes: 0, 1, 0, 1
-    Font size: 13
+    Font size: 12
     Colour: "Black"
     Text: 0.5, "centre", 0.5, "half",
-    ... "Messagesquisse Opening   [" + soundName$ + "]   MIDI " +
+    ... "Messagesquisse Opening v4.8.1   [" + soundName$ + "]   MIDI " +
     ... string$(midiNote) + " (" + noteName$ + ")   preset: " + preset_name$
 
     # ----------------------------------------------------------
@@ -1077,7 +1079,7 @@ if draw_visualization = 1
     Font size: 7
     Colour: "Black"
     Text: 0.01, "left", 0.82, "half",
-    ... "##Messagesquisse Opening v4.7a  | SACHER Hexachord  |  Morse Temporal Structure##"
+    ... "##Messagesquisse Opening v4.8.1  | SACHER Hexachord  |  Morse Temporal Structure##"
     Colour: "{0.35, 0.35, 0.60}"
     Text: 0.80, "left", 0.82, "half", "Preset: " + preset_name$
     Font size: 6
@@ -1108,6 +1110,30 @@ if draw_visualization = 1
     Colour: "Black"
     Line width: 1
 
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.32, 6.88
+    Select inner viewport: 0.60, 7.70, 6.32 + 0.04, 6.88 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Pitch-field opening • structural events • transformed output"
+    Text: 0.02, "left", 0.20, "half", "Messagesquisse Opening • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.98
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

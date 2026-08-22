@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3 (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,7 +12,9 @@
 #   harmonic ratios. Pitch "tunnels" between quantum levels with
 #   configurable probability, glitch events, and uncertainty.
 #
-# Changelog v0.3:
+# Changelog v0.4.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.4: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.4:
 #   - Jump/Glitch probabilities are now time-consistent: each value is
 #     interpreted as the event probability per 100 ms, independent of file length.
 #   - Jump_probability and Glitch_probability can be 0 and are validated 0..1.
@@ -54,7 +56,7 @@ dur = xmax - xmin
 n_channels = Get number of channels
 
 # === Form ===
-form Quantum Pitch Jumps v0.3
+form Quantum Pitch Jumps v0.4.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -224,7 +226,7 @@ ratios# = {1, 16/15, 9/8, 6/5, 5/4, 4/3, 7/5, 3/2, 8/5, 5/3, 16/9, 15/8}
 nRatios = size(ratios#)
 
 # === Info ===
-writeInfoLine: "=== Quantum Pitch Jumps v0.3 ==="
+writeInfoLine: "=== Quantum Pitch Jumps v0.4.1 ==="
 appendInfoLine: "Source: ", originalName$, " (", fixed$(dur, 2), " s, ", n_channels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -484,7 +486,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Quantum Pitch Jumps: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Quantum Pitch Jumps v0.4.1: " + originalName$ + " (" + presetName$ + ")"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.4
@@ -494,7 +496,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # Result waveform
@@ -578,7 +580,7 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     
     # Legend
-    Font size: 5
+    Font size: 6
     legendX = xmin + 0.03 * dur
     legendY = maxP + 0.55 * pMargin
     Colour: "{0.8, 0.5, 0.5}"
@@ -623,7 +625,7 @@ if draw_visualization
     
     Colour: "Black"
     Draw inner box
-    Font size: 5
+    Font size: 6
     Text left: "yes", "Ratios"
     
     # Stats
@@ -635,6 +637,30 @@ if draw_visualization
     
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.02, 6.58
+    Select inner viewport: 0.60, 7.70, 6.02 + 0.04, 6.58 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Quantized pitch states • jump sequence • rendered output"
+    Text: 0.02, "left", 0.20, "half", "Quantum Pitch Jumps • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.68
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

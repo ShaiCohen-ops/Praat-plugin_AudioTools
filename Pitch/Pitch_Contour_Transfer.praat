@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.5 (2026)
+# Version: 0.6.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -14,7 +14,9 @@
 #   applied to B. Register choice keeps B's own pitch level or moves it
 #   to A's; Blend strength interpolates between B's own contour and A's.
 #
-# Changelog v0.5:
+# Changelog v0.6.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.6: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.6:
 #   - Separates pitch-analysis limits from synthesis safety limits.
 #     Transferred contours are no longer clipped to the A/B analysis ceilings.
 #   - Validates time step, pitch ranges, blend range, and voiced-pitch presence.
@@ -62,7 +64,7 @@ sr_b = Get sampling frequency
 channels_b = Get number of channels
 
 # === Form ===
-form Pitch Contour Transfer
+form Pitch Contour Transfer v0.6.1
     comment Select 2 Sounds: A (source style), B (target to shift)
     
     comment === Analysis ===
@@ -137,7 +139,7 @@ else
 endif
 
 # === Info ===
-writeInfoLine: "=== Pitch Contour Transfer v0.5 ==="
+writeInfoLine: "=== Pitch Contour Transfer v0.6.1 ==="
 appendInfoLine: "Source (A): ", name_a$, " (", fixed$(dur_a, 2), " s)"
 appendInfoLine: "Target (B): ", name_b$, " (", fixed$(dur_b, 2), " s; ", channels_b, " ch)"
 appendInfoLine: "Blend: ", blend_strength
@@ -390,12 +392,12 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Pitch Contour Transfer##"
+    Text: 0.5, "centre", 0.5, "half", "##Pitch Contour Transfer v0.6.1##"
     
     # --- Subtitle ---
     Select outer viewport: 0, 8, 0.33, 0.5
     Axes: 0, 1, 0, 1
-    Font size: 9
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.5, "half", name_a$ + " → " + name_b$ + " | " + regName$ + " | blend " + fixed$(blend_strength, 2)
     
@@ -429,7 +431,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Result"
     Text bottom: "yes", "Time (s)"
     
@@ -562,6 +564,30 @@ if draw_visualization
     
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.72, 6.28
+    Select inner viewport: 0.60, 7.70, 5.72 + 0.04, 6.28 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Source contour • target mapping • transferred pitch result"
+    Text: 0.02, "left", 0.20, "half", "Pitch Contour Transfer • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.38
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.1 (2026)
+# Version: 1.2.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -19,7 +19,9 @@
 #   never metrically fixed. The spiral is both a formal structure
 #   and a perceptual metaphor: expansion, return, displacement.
 #
-# Changelog v1.1:
+# Changelog v1.2.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v1.2: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v1.2:
 #   - Full xmin/xmax-safe segmentation and tier domains.
 #   - Preserves the exact source channel count; mono is used for analysis only.
 #   - Pitch analysis uses an adaptive 40..min(1200, 0.45*SR) range.
@@ -47,7 +49,7 @@ sound = selected("Sound")
 name$ = selected$("Sound")
 
 # === USER PARAMETERS ===
-form Spiral Segmentation v1.1
+form Spiral Segmentation v1.2.1
     comment === Preset ===
     optionmenu Preset 1
         option Custom (manual settings)
@@ -229,7 +231,7 @@ endif
 # === SETUP / VALIDATION ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  SPIRAL SEGMENTATION v1.1"
+writeInfoLine: "  SPIRAL SEGMENTATION v1.2.1"
 writeInfoLine: "=============================================="
 appendInfoLine: ""
 
@@ -573,12 +575,12 @@ if show_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Spiral Segmentation##"
+    Text: 0.5, "centre", 0.5, "half", "##Spiral Segmentation v1.2.1##"
     
     # --- Subtitle ---
     Select outer viewport: 0, 8, 0.33, 0.5
     Axes: 0, 1, 0, 1
-    Font size: 9
+    Font size: 7
     Colour: "{0.4, 0.4, 0.5}"
     Text: 0.5, "centre", 0.5, "half", name$ + " | " + presetName$
     
@@ -603,7 +605,7 @@ if show_visualization
     Line width: 0.5
     Draw inner box
     
-    Font size: 8
+    Font size: 7
     Select outer viewport: 0, 0.8, 0.6, 1.8
     Axes: 0, 1, 0, 1
     Colour: "{0.3, 0.4, 0.6}"
@@ -621,7 +623,7 @@ if show_visualization
     Line width: 0.5
     Draw inner box
     
-    Font size: 8
+    Font size: 7
     Select outer viewport: 0, 0.8, 1.9, 3.1
     Axes: 0, 1, 0, 1
     Colour: "{0.4, 0.6, 0.35}"
@@ -780,7 +782,7 @@ if show_visualization
             Draw rectangle: xPos - markerSize, xPos + markerSize, yPos - markerSize, yPos + markerSize
             
             # Label
-            Font size: 5
+            Font size: 6
             Colour: "{0.3, 0.3, 0.4}"
             Text: xPos + 0.18, "left", yPos, "half", string$(i)
         endif
@@ -849,6 +851,30 @@ if show_visualization
     Font size: 10
     Line width: 1
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 7.02, 7.58
+    Select inner viewport: 0.60, 7.70, 7.02 + 0.04, 7.58 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Segment map • spiral pitch assignment • assembled output"
+    Text: 0.02, "left", 0.20, "half", "Spiral Segmentation • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 7.68
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === CLEANUP ===

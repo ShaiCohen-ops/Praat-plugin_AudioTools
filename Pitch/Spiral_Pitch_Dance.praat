@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4 (2026)
+# Version: 0.5.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -12,7 +12,9 @@
 #   movement. The spiral speeds up over time, creating a Doppler-
 #   like flyby effect. Great for transitions and buildups.
 #
-# Changelog v0.4:
+# Changelog v0.5.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.5: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.5:
 #   - Spiral modulation is now source-relative: the original pitch contour
 #     is multiplied by the spiral ratio instead of being replaced by a
 #     contour around one median F0.
@@ -57,7 +59,7 @@ sampling = Get sampling frequency
 n_channels = Get number of channels
 
 # === Form ===
-form Spiral Pitch Dance v0.4
+form Spiral Pitch Dance v0.5.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -162,7 +164,7 @@ if semitone_range = 0
 endif
 
 # === Info ===
-writeInfoLine: "=== Spiral Pitch Dance v0.4 ==="
+writeInfoLine: "=== Spiral Pitch Dance v0.5.1 ==="
 appendInfoLine: "Source: ", orig$, " (", fixed$(dur, 2), " s, ", n_channels, " ch)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -366,7 +368,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Spiral Pitch Dance: " + orig$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Spiral Pitch Dance v0.5.1: " + orig$ + " (" + presetName$ + ")"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.4
@@ -376,7 +378,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # Result waveform
@@ -486,6 +488,30 @@ if draw_visualization
     
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.52, 6.08
+    Select inner viewport: 0.60, 7.70, 5.52 + 0.04, 6.08 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Spiral pitch law • trajectory • rendered output"
+    Text: 0.02, "left", 0.20, "half", "Spiral Pitch Dance • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.18
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

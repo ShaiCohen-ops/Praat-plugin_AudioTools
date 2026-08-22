@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.3a (2026)
+# Version: 0.4.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -22,7 +22,9 @@
 #   Harmony is source-derived, not score-imposed.
 #
 #
-# Changelog v0.3a (2026):
+# Changelog v0.4.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.4: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.4 (2026):
 #   - VISUAL CONSISTENCY: restored the v0.2 visualization language so this
 #     tool remains visually consistent with the rest of the AudioTools library.
 #     Engine/audio fixes from v0.3 are unchanged.
@@ -76,7 +78,7 @@ n_channels  = Get number of channels
 #                5=31-TET  6=Harmonic Series  7=Septimal  8=User
 # Placement: 1=Align-start  2=Align-centre  3=Stretch-to-fit
 # ============================================================
-form Microtonal_Harmonic_Field_Engine v0.3a
+form Microtonal_Harmonic_Field_Engine v0.4.1
     comment === ENGINE PRESET ===
     optionmenu Preset_mode 1
         option Just Bloom
@@ -316,7 +318,7 @@ source_sr  = Get sampling frequency
 # INFO HEADER
 # ============================================================
 clearinfo
-writeInfoLine: "=== Microtonal Harmonic Field Engine v0.3a ==="
+writeInfoLine: "=== Microtonal Harmonic Field Engine v0.4.1 ==="
 appendInfoLine: "Source: ", src_name$, "  (", fixed$ (source_dur, 3), " s)"
 appendInfoLine: "Sample rate: ", source_sr, " Hz"
 appendInfoLine: "Source domain: ", fixed$(source_xmin, 6), " ... ", fixed$(source_xmax, 6), " s; internal: 0 ... ", fixed$(source_dur, 6), " s"
@@ -943,9 +945,9 @@ if visualize
 
     Select outer viewport: 0, 8, 0.0, 0.42
     Black
-    Font size: 11
+    Font size: 12
     Text: 0.5, "centre", 0.5, "half",
-    ...    "Microtonal Harmonic Field Engine: " + src_name$
+    ...    "Microtonal Harmonic Field Engine v0.4.1: " + src_name$
 
     vp_top = 0.45
 
@@ -1068,7 +1070,7 @@ if visualize
         Line width: 1
         Black
         Draw inner box
-        Font size: 8
+        Font size: 7
         Text left: "yes", "F0 (Hz)   Grey=source  Coloured=targets"
         Text bottom: "yes", "Time (s)"
 
@@ -1116,6 +1118,37 @@ if visualize
 
     Black
     Font size: 10
+
+    if draw_comma_graph and n_phrases >= 2
+        summaryTop = vp_bot + 0.10
+    else
+        summaryTop = vp_top + 0.10
+    endif
+    summaryBottom = summaryTop + 0.56
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, summaryTop, summaryBottom
+    Select inner viewport: 0.60, 7.70, summaryTop + 0.04, summaryBottom - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Zone map • microtonal target voices • comma trajectory"
+    Text: 0.02, "left", 0.20, "half", "Microtonal Harmonic Field Engine • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = summaryBottom + 0.10
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

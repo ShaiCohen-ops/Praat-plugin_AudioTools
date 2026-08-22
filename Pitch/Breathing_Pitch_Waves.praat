@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.4b (2026)
+# Version: 0.6.1 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -13,7 +13,10 @@
 #   fundamentals, harmonics, flutter, tremor, and gasp effects.
 #   Emotional intensity builds over time.
 #
-# Changelog v0.4b:
+# Changelog v0.6.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v0.6: normalized vertical Picture spacing to 0.10-inch block gaps and compact 0.70-inch Summary; DSP/analysis unchanged.
+# Changelog v0.5: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v0.5:
 #   - Praat syntax fix: Get number of channels cannot be embedded directly
 #     inside appendInfoLine. The value is queried first, then printed.
 # Changelog v0.4a:
@@ -66,7 +69,7 @@ xmax = Get end time
 dur = xmax - xmin
 
 # === Form ===
-form Breathing Pitch Waves v0.4b
+form Breathing Pitch Waves v0.6.1
     comment Select a Sound object first
     
     comment === Preset ===
@@ -382,7 +385,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Breathing Pitch Waves: " + originalName$ + " (" + presetName$ + ")"
+    Text: 0.5, "centre", 0.5, "half", "Breathing Pitch Waves v0.6.1: " + originalName$ + " (" + presetName$ + ")"
     
     # Original waveform
     Select outer viewport: 0, 8, 0.6, 1.7
@@ -392,7 +395,7 @@ if draw_visualization
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
     
     # Result waveform
@@ -407,8 +410,8 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     
     # Breathing curve (pitch shift over time)
-    Select outer viewport: 0, 8, 3.1, 4.7
-    Select inner viewport: 0.6, 7.6, 3.3, 4.6
+    Select outer viewport: 0, 8, 3.0, 4.6
+    Select inner viewport: 0.6, 7.6, 3.2, 4.5
     
     # Find range over populated visualization points.
     minShift = pitch_depth_semitones
@@ -455,14 +458,14 @@ if draw_visualization
     Text bottom: "yes", "Time (s)"
     
     # Breathing components illustration
-    Select outer viewport: 0, 8, 4.9, 5.3
+    Select outer viewport: 0, 8, 4.7, 5.1
     Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
     Text: 0.5, "centre", 0.5, "half", "Components: centred breath + flutter + tremor + gasps -> emotional drive -> bounded tanh controller"
     
     # Stats
-    Select outer viewport: 0, 8, 5.4, 5.7
+    Select outer viewport: 0, 8, 5.2, 5.5
     Axes: 0, 1, 0, 1
     Font size: 7
     Colour: "{0.4, 0.4, 0.4}"
@@ -470,6 +473,30 @@ if draw_visualization
     
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.60, 6.16
+    Select inner viewport: 0.60, 7.70, 5.60 + 0.04, 6.16 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Breathing contour • pitch-wave modulation • resynthesized output"
+    Text: 0.02, "left", 0.20, "half", "Breathing Pitch Waves • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 6.26
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # === Cleanup ===

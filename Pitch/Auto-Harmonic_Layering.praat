@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.9.2 (2026)
+# Version: 1.9.4 (2026)
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -26,7 +26,9 @@
 #   Cohen, S. (2026). Praat AudioTools.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
-# Changelog v1.9.2:
+# Changelog v1.9.4: removed duplicate generic Summary strip and tightened Picture page spacing; DSP/analysis unchanged.
+# Changelog v1.9.3: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v1.9.3:
 #   - FIXED runtime error in Table cell reads. `Get value:` is not
 #     a valid Table query command, so Praat parsed `Get` as a formula
 #     symbol. Reads now use documented direct Table access:
@@ -69,7 +71,7 @@
 #     was drawn in the loop map when no Draw command actually existed.
 # ============================================================
 
-form Auto-Harmonic Layering v1.9.2
+form Auto-Harmonic Layering v1.9.4
     optionmenu Preset: 1
         option Subtle (Conservative harmonies)
         option Rich (Full chords, smooth)
@@ -174,7 +176,7 @@ numChannels = Get number of channels
 rms_orig = Get root-mean-square: 0, 0
 
 if numChannels < 1 or numChannels > 2
-    exitScript: "Auto-Harmonic Layering v1.9.1 supports mono or stereo Sound objects."
+    exitScript: "Auto-Harmonic Layering v1.9.4 supports mono or stereo Sound objects."
 endif
 
 # Use a mono analysis/harmony source. Preserve the original channels for dry mix.
@@ -186,7 +188,7 @@ else
     Rename: "AHL_analysisMono"
 endif
 
-writeInfoLine: "=== AUTO-HARMONIC LAYERING v1.9.2 ==="
+writeInfoLine: "=== AUTO-HARMONIC LAYERING v1.9.4 ==="
 appendInfoLine: ""
 appendInfoLine: "Source: ", originalName$, " (", fixed$(totalDuration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
@@ -822,7 +824,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##AUTO-HARMONIC LAYERING##"
+    Text: 0.5, "centre", 0.68, "half", "##AUTO-HARMONIC LAYERING v1.9.4##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.52}"
     if harmony_style = 1
@@ -896,7 +898,7 @@ if draw_visualization
         # Chord label (large, centered)
         midT = (loopStart#[i] + loopEnd#[i]) / 2
         Colour: "Black"
-        Font size: 9
+        Font size: 7
         Text: midT, "centre", 1.20, "half", chordName$#[i]
 
         # Pitch label (smaller, below chord)
@@ -980,6 +982,14 @@ if draw_visualization
     Font size: 10
     Colour: "Black"
     Line width: 1
+
+    # Restore full Picture page immediately below the detailed summary.
+    pageHeight = 6.30
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ===================================================================

@@ -2,7 +2,7 @@
 # Praat AudioTools - Undertone Field.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 3.3 (2026)
+# Version: 3.4.1 (2026)
 # License: MIT License
 #
 # Description:
@@ -31,7 +31,9 @@
 #   Gaussian    -- peak at middle partial
 #   Inverse     -- deeper = louder (spectralist bass build)
 #
-# Changelog v3.3:
+# Changelog v3.4.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v3.4: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v3.4:
 #   - Fixed micro-delay ordering: silence is now truly prepended before
 #     each delayed partial (Praat concatenates selected Sounds by object order).
 #   - Geometric mode is now genuinely microtonal: at stretch=0 denominators
@@ -70,7 +72,7 @@ endif
 # FORM
 # ============================================================
 
-form Undertone SR Reinterpretation v3.3
+form Undertone SR Reinterpretation v3.4.1
     comment === Preset ===
     optionmenu Preset: 1
         option Custom
@@ -335,7 +337,7 @@ endif
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Undertone SR Reinterpretation v3.3"
+writeInfoLine:  "  Undertone SR Reinterpretation v3.4.1"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source    : ", srcName$, "  (", fixed$(origDur, 3), " s  ", nCh, "ch)"
@@ -699,9 +701,9 @@ if draw_visualization = 1
     # === TITLE ===
     Select outer viewport: 0, 8, 0, 0.46
     Axes: 0, 1, 0, 1
-    Font size: 11
+    Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.73, "half", "##Undertone SR Reinterpretation v3.3  — Stereo##"
+    Text: 0.5, "centre", 0.73, "half", "##Undertone SR Reinterpretation v3.4.1  — Stereo##"
     Font size: 7.5
     Colour: "{0.35, 0.35, 0.45}"
     Text: 0.5, "centre", -0.08, "half",
@@ -755,7 +757,7 @@ if draw_visualization = 1
         Dashed line
         Draw line: origDur, -ampMax, origDur, ampMax
         Solid line
-        Font size: 5
+        Font size: 6
         Text: origDur, "left", ampMax * 0.85, "half", " tail"
     endif
     Colour: "Black"
@@ -815,7 +817,7 @@ if draw_visualization = 1
 
     # Original (amber, centre)
     Paint rectangle: "{0.90, 0.65, 0.15}", 0.15, 0.85, 0, 1.0
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.38, 0.00}"
     Text: 0.5, "centre", 1.06, "half", "orig"
     Text: 0.5, "centre", -0.05, "half", "C"
@@ -831,7 +833,7 @@ if draw_visualization = 1
         Paint rectangle: "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}",
             ... n + 0.10, n + 0.90, 0, pf
 
-        Font size: 5
+        Font size: 6
         Colour: "{" + fixed$(cR * 0.55, 2) + "," + fixed$(cG * 0.55, 2) + "," + fixed$(cB * 0.55, 2) + "}"
         Text: n + 0.5, "centre", pf + 0.04, "half",
             ... "1/" + fixed$(effectiveDenom#[n], 2)
@@ -848,7 +850,7 @@ if draw_visualization = 1
     endfor
 
     # Pitch ratio reference labels on right
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.55, 0.60}"
     Text: number_of_undertones + 1.3, "right", 1.00, "half", "P"
     Text: number_of_undertones + 1.3, "right", 0.50, "half", "-8ve"
@@ -894,7 +896,7 @@ if draw_visualization = 1
 
     # Original at centre top
     Paint circle (mm): "{0.90, 0.65, 0.15}", 0.0, 1.0, 2.2
-    Font size: 5
+    Font size: 6
     Colour: "{0.55, 0.38, 0.00}"
     Text: 0.0, "centre", 1.12, "half", "orig"
 
@@ -923,7 +925,7 @@ if draw_visualization = 1
         Paint circle (mm): "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}",
             ... xp, yp, dotR
 
-        Font size: 5
+        Font size: 6
         Colour: "{" + fixed$(cR * 0.55, 2) + "," + fixed$(cG * 0.55, 2) + "," + fixed$(cB * 0.55, 2) + "}"
         Text: xp, "centre", yp + 0.10, "half", string$(n)
     endfor
@@ -939,6 +941,30 @@ if draw_visualization = 1
     Colour: "Black"
     Line width: 1
 
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 5.12, 5.68
+    Select inner viewport: 0.60, 7.70, 5.12 + 0.04, 5.68 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Undertone mapping • reinterpretation field • reconstructed output"
+    Text: 0.02, "left", 0.20, "half", "Undertone Field • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 5.78
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================================

@@ -3,14 +3,16 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026)
+# Version: 1.4.1 (2026)
 # License: MIT License
 #
 # Description:
 #   Simulates a physical Doppler effect (moving source, stationary listener).
 #   Includes Presets and Visualization.
 #
-# Changelog v1.3:
+# Changelog v1.4.1: compact Summary typography/spacing; collision-safe gap after bottom-axis labels; DSP/analysis unchanged.
+# Changelog v1.4: visualization standardization only - unified typography, summary/full-page Picture framing; DSP/analysis unchanged.
+# Changelog v1.4:
 #   - Preserves the original channel count. Doppler pitch is analysed once
 #     from a mono reference, then the same target PitchTier is resynthesized
 #     independently on every source channel and recombined in channel order.
@@ -55,7 +57,7 @@ nChannels = Get number of channels
 #  2. USER FORM & PRESETS
 # ==============================================================================
 
-form Doppler Effect Simulator v1.3
+form Doppler Effect Simulator v1.4.1
     comment Select a Preset or use Custom settings
     optionmenu Preset 1
         option Custom
@@ -157,7 +159,7 @@ t_c = startTime + t_c_offset
 # === INFO HEADER ===
 clearinfo
 writeInfoLine: "=============================================="
-writeInfoLine: "  DOPPLER EFFECT SIMULATOR v1.3"
+writeInfoLine: "  DOPPLER EFFECT SIMULATOR v1.4.1"
 writeInfoLine: "=============================================="
 writeInfoLine: ""
 writeInfoLine: "Input: ", originalName$, " (", fixed$(totalDuration, 2), "s)"
@@ -412,7 +414,7 @@ if visualize
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "##Doppler Effect## | " + presetName$ + " | " + fixed$(v, 0) + " m/s @ " + fixed$(d, 1) + "m"
+    Text: 0.5, "centre", 0.5, "half", "##Doppler Effect Simulator v1.4.1## | " + presetName$ + " | " + fixed$(v, 0) + " m/s @ " + fixed$(d, 1) + "m"
     Font size: 10
     
     # --- A. Spatial Schematic (Top) ---
@@ -553,6 +555,30 @@ if visualize
     
     Font size: 10
     Colour: "Black"
+
+    # ----------------------------------------------------------
+    # Summary strip
+    # ----------------------------------------------------------
+    Select outer viewport: 0, 8, 6.92, 7.48
+    Select inner viewport: 0.60, 7.70, 6.92 + 0.04, 7.48 - 0.04
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+    Font size: 7
+    Colour: "Black"
+    Text: 0.02, "left", 0.72, "half", "##Summary##"
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    Text: 0.02, "left", 0.45, "half", "Motion law • Doppler pitch ratio • rendered trajectory"
+    Text: 0.02, "left", 0.20, "half", "Doppler Effect Simulator • run parameters are reported in the Info window"
+    Colour: "Black"
+    Draw rectangle: 0, 1, 0, 1
+
+    pageHeight = 7.58
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 
