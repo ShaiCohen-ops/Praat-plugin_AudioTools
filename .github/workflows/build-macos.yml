@@ -2,6 +2,11 @@ name: Build macOS Universal2 Package
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/build-macos.yml'
+      - 'Max-MSP/Praat_AudioTools_CI/payload/**'
 
 permissions:
   contents: read
