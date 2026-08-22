@@ -3,9 +3,22 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Bounded morph, safe scheduling cap, seeded
+# Version: 1.4 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v1.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; feature analysis, bounded
+#     morph-state control, attractor interpolation, grain scheduling,
+#     source-position logic and overlap-add rendering are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, standard title/subtitle, suite typography,
+#     neutral panel backgrounds, summary strip and full-page export.
+#   - Preserved the script-specific views: source/output waveforms,
+#     morph plus grain-size trajectory, density plus jitter, acoustic
+#     feature trajectories and the output-to-source grain read map.
+#   - Moved the dense legend/report text into aligned captions and a
+#     compact Input / Attractors / Morph & Output summary.
 #
 # Changelog v1.3 (2026):
 #
@@ -142,7 +155,7 @@ src_name$ = selected$("Sound")
 # FORM
 # ============================================================
 
-form Morphic Form v1.3  (Grain Placement Engine)
+form Morphic Form v1.4  (Grain Placement Engine)
     optionmenu Preset 1
         option Custom
         option Slow Bloom  (gentle A->B, large grains)
@@ -330,7 +343,7 @@ time_ratio = src_dur / out_dur
 
 clearinfo
 writeInfoLine: "=================================================="
-writeInfoLine: "  MORPHIC FORM v1.3  |  Grain Placement Engine"
+writeInfoLine: "  MORPHIC FORM v1.4  |  Grain Placement Engine"
 writeInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source  : ", src_name$
@@ -859,56 +872,65 @@ if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
 
-    Erase all
+    selectObject: result_id
+    vizPeak = Get absolute extremum: 0, 0, "None"
 
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0.0, 0.5
+    vizName$ = replace$(src_name$, "_", "\_ ", 0)
+
+    if sched_shortfall > 0.01
+        scheduleText$ = "shortfall " + fixed$(sched_shortfall, 3) + " s"
+    else
+        scheduleText$ = "full timeline scheduled"
+    endif
+
+    pageHeight = 7.55
+    Erase all
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.65, "half",
-        ... "##Morphic Form v1.3##"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.3, "half",
-        ... preset_name$ + " | morph="
-        ... + fixed$(morph_intensity, 2)
-        ... + " | " + pacing_curve$
-        ... + " | ratio=" + fixed$(output_duration_ratio, 2)
-        ... + "x | " + string$(grain_count) + " grains"
+    Text: 0.5, "centre", 0.68, "half", "##Morphic Form v1.4##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + preset_name$ + " | morph " + fixed$(morph_intensity, 2) + " | " + pacing_curve$ + " | " + string$(grain_count) + " grains"
 
-    # === PANEL 1: Original waveform ===
-    Select outer viewport: 0, 4, 0.6, 1.5
-    Select inner viewport: 0.6, 3.7, 0.65, 1.45
+    # === Original waveform ===
+    Select outer viewport: 0, 4, 0.68, 1.62
+    Select inner viewport: 0.60, 3.85, 0.82, 1.44
     selectObject: src_id
-    Colour: "{0.5, 0.5, 0.5}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Amp"
-    Text top: "no", "Original (" + fixed$(src_dur, 2) + " s)"
+    Text top: "no", "Original | " + fixed$(src_dur, 2) + " s"
 
-    # === PANEL 2: Output waveform ===
-    Select outer viewport: 4, 8, 0.6, 1.5
-    Select inner viewport: 4.4, 7.7, 0.65, 1.45
+    # === Output waveform ===
+    Select outer viewport: 4, 8, 0.68, 1.62
+    Select inner viewport: 4.45, 7.70, 0.82, 1.44
     selectObject: result_id
-    Colour: "{0.2, 0.45, 0.82}"
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Amp"
-    Text top: "no", "Morphic (" + fixed$(final_dur, 2) + " s)"
+    Text top: "no", "Morphic Output | " + fixed$(final_dur, 2) + " s | peak " + fixed$(vizPeak, 3)
 
-    # === PANEL 3: Morphic curve + grain size ===
-    Select outer viewport: 0, 4, 1.6, 2.7
-    Select inner viewport: 0.6, 3.7, 1.65, 2.65
-
+    # === Morph state and grain size ===
+    Select outer viewport: 0, 4, 1.84, 3.28
+    Select inner viewport: 0.60, 3.85, 2.08, 3.04
     Axes: 0, out_dur, 0, 1.05
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, out_dur, 0, 1.05
 
-    # Filled morph area
     for i to n_af
         t_l = af_time#[i] - af_hop_s * 0.5
         t_r = af_time#[i] + af_hop_s * 0.5
@@ -918,23 +940,21 @@ if draw_visualization
         if t_r > out_dur
             t_r = out_dur
         endif
-        Paint rectangle: "{0.82, 0.88, 1.0}", t_l, t_r, 0, morph_curve#[i]
+        Paint rectangle: "{0.90, 0.92, 0.97}", t_l, t_r, 0, morph_curve#[i]
     endfor
 
-    # Morph curve line
-    Colour: "{0.82, 0.28, 0.28}"
+    Colour: "{0.75, 0.25, 0.25}"
     Line width: 2
     for i from 1 to n_af - 1
-        Draw line: af_time#[i], morph_curve#[i],
-            ... af_time#[i + 1], morph_curve#[i + 1]
+        Draw line: af_time#[i], morph_curve#[i], af_time#[i + 1], morph_curve#[i + 1]
     endfor
 
-    # Grain size normalized (A=1, B=0)
     gn_range = att_a_grain_ms - att_b_grain_ms
     if gn_range < 0.001
         gn_range = 0.001
     endif
-    Colour: "{0.28, 0.62, 0.32}"
+
+    Colour: "{0.25, 0.55, 0.25}"
     Line width: 1.5
     for i from 1 to n_af - 1
         v1 = (pf_grain_ms#[i] - att_b_grain_ms) / gn_range
@@ -946,53 +966,60 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "[0..1]"
-    Text top: "no", "Morph Curve + Grain Size"
+    Text left: "yes", "Normalized"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Morph / Grain Size | red morph state | green normalized grain size"
 
-    # === PANEL 4: Density + Jitter ===
-    Select outer viewport: 4, 8, 1.6, 2.7
-    Select inner viewport: 4.4, 7.7, 1.65, 2.65
+    # === Density and jitter ===
+    Select outer viewport: 4, 8, 1.84, 3.28
+    Select inner viewport: 4.45, 7.70, 2.08, 3.04
 
     max_d_axis = att_b_density * 1.12
+    if att_a_density > att_b_density
+        max_d_axis = att_a_density * 1.12
+    endif
+    if max_d_axis < 1
+        max_d_axis = 1
+    endif
+
     Axes: 0, out_dur, 0, max_d_axis
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, out_dur, 0, max_d_axis
 
-    # Density
-    Colour: "{0.18, 0.40, 0.82}"
+    Colour: "{0.25, 0.45, 0.75}"
     Line width: 2
     for i from 1 to n_af - 1
-        Draw line: af_time#[i], pf_density#[i],
-            ... af_time#[i + 1], pf_density#[i + 1]
+        Draw line: af_time#[i], pf_density#[i], af_time#[i + 1], pf_density#[i + 1]
     endfor
 
-    # Jitter (scaled to axis)
-    max_jit_ax = att_b_jitter_ms
+    max_jit_ax = att_a_jitter_ms
+    if att_b_jitter_ms > max_jit_ax
+        max_jit_ax = att_b_jitter_ms
+    endif
     if max_jit_ax < 1.0
         max_jit_ax = 1.0
     endif
     jit_scale = max_d_axis / max_jit_ax
-    Colour: "{0.85, 0.50, 0.15}"
+
+    Colour: "{0.80, 0.55, 0.20}"
     Line width: 1.5
     for i from 1 to n_af - 1
-        Draw line: af_time#[i], pf_jitter#[i] * jit_scale,
-            ... af_time#[i + 1], pf_jitter#[i + 1] * jit_scale
+        Draw line: af_time#[i], pf_jitter#[i] * jit_scale, af_time#[i + 1], pf_jitter#[i + 1] * jit_scale
     endfor
 
     Line width: 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "g/s"
-    Text top: "no", "Density + Jitter"
+    Text left: "yes", "Grains/s"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Density / Jitter | blue density | amber jitter scaled to axis"
 
-    # === PANEL 5: Feature trajectories ===
-    Select outer viewport: 0, 8, 2.8, 3.8
-    Select inner viewport: 0.6, 7.7, 2.85, 3.75
-
+    # === Acoustic feature trajectories ===
+    Select outer viewport: 0, 8, 3.50, 4.72
+    Select inner viewport: 0.60, 7.70, 3.72, 4.50
     Axes: 0, out_dur, 0, 1.0
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, out_dur, 0, 1.0
 
-    # Voicing regions shaded
     for i to n_af
         if af_voiced#[i] = 1
             t_l = af_time#[i] - af_hop_s * 0.5
@@ -1003,57 +1030,49 @@ if draw_visualization
             if t_r > out_dur
                 t_r = out_dur
             endif
-            Paint rectangle: "{0.86, 0.86, 0.94}", t_l, t_r, 0, 1.0
+            Paint rectangle: "{0.92, 0.94, 0.97}", t_l, t_r, 0, 1.0
         endif
     endfor
 
-    # Grid midline
-    Colour: "{0.88, 0.88, 0.88}"
+    Colour: "{0.80, 0.80, 0.80}"
+    Dashed line
     Draw line: 0, 0.5, out_dur, 0.5
+    Solid line
 
-    # Intensity
-    Colour: "{0.22, 0.48, 0.82}"
+    Colour: "{0.25, 0.45, 0.75}"
     Line width: 1.8
     for i from 1 to n_af - 1
-        Draw line: af_time#[i], norm_int#[i],
-            ... af_time#[i + 1], norm_int#[i + 1]
+        Draw line: af_time#[i], norm_int#[i], af_time#[i + 1], norm_int#[i + 1]
     endfor
 
-    # Activity
-    Colour: "{0.82, 0.28, 0.28}"
+    Colour: "{0.75, 0.25, 0.25}"
     Line width: 1.3
     for i from 1 to n_af - 1
-        Draw line: af_time#[i], af_activity#[i],
-            ... af_time#[i + 1], af_activity#[i + 1]
+        Draw line: af_time#[i], af_activity#[i], af_time#[i + 1], af_activity#[i + 1]
     endfor
 
-    # Voicing
-    Colour: "{0.28, 0.65, 0.32}"
+    Colour: "{0.25, 0.55, 0.25}"
     Line width: 1.2
     for i from 1 to n_af - 1
-        Draw line: af_time#[i], af_voiced#[i] * 0.92,
-            ... af_time#[i + 1], af_voiced#[i + 1] * 0.92
+        Draw line: af_time#[i], af_voiced#[i] * 0.92, af_time#[i + 1], af_voiced#[i + 1] * 0.92
     endfor
 
     Line width: 1
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Norm"
-    Text top: "no", "Features (voiced regions shaded)"
-    Text bottom: "yes", "Time (s)"
+    Text left: "yes", "Normalized"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Acoustic Features | blue intensity | red activity | green voiced flag | shaded = voiced"
 
-    # === PANEL 6: Grain read scatter map ===
-    Select outer viewport: 0, 8, 3.9, 5.3
-    Select inner viewport: 0.6, 7.7, 3.95, 5.25
-
+    # === Grain read map ===
+    Select outer viewport: 0, 8, 4.94, 6.36
+    Select inner viewport: 0.60, 7.70, 5.18, 6.12
     Axes: 0, out_dur, 0, src_dur
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, out_dur, 0, src_dur
 
-    # Reference line: proportional read (diagonal if ratio=1)
-    Colour: "{0.78, 0.78, 0.78}"
-    Line width: 1
-    # Draw proportional reference
+    Colour: "{0.75, 0.75, 0.75}"
+    Dashed line
     nRefPts = 50
     for ri from 1 to nRefPts
         riPrev = ri - 1
@@ -1061,14 +1080,14 @@ if draw_visualization
         t2 = ri / nRefPts * out_dur
         s1 = t1 * time_ratio
         s2 = t2 * time_ratio
-        # Wrap
+
         while s1 >= src_dur
             s1 = s1 - src_dur
         endwhile
         while s2 >= src_dur
             s2 = s2 - src_dur
         endwhile
-        # Only draw if not wrapping across boundary
+
         sDiff = s2 - s1
         if sDiff < 0
             sDiff = -sDiff
@@ -1077,8 +1096,8 @@ if draw_visualization
             Draw line: t1, s1, t2, s2
         endif
     endfor
+    Solid line
 
-    # Grain positions
     step_viz = 1
     if n_viz_grains > 400
         step_viz = floor(n_viz_grains / 400)
@@ -1093,9 +1112,9 @@ if draw_visualization
             vt_out = viz_out_t#[vi]
             vt_src = viz_src_t#[vi]
             norm_pos = vt_out / out_dur
-            rv = 0.22 + norm_pos * 0.60
-            gv = 0.45 - norm_pos * 0.20
-            bv = 0.82 - norm_pos * 0.50
+            rv = 0.25 + norm_pos * 0.50
+            gv = 0.50 - norm_pos * 0.20
+            bv = 0.75 - norm_pos * 0.35
             if rv > 1.0
                 rv = 1.0
             endif
@@ -1105,110 +1124,45 @@ if draw_visualization
             if bv < 0.18
                 bv = 0.18
             endif
-            rstr$ = fixed$(rv, 2)
-            gstr$ = fixed$(gv, 2)
-            bstr$ = fixed$(bv, 2)
+            rstr$ = fixed$(rv, 3)
+            gstr$ = fixed$(gv, 3)
+            bstr$ = fixed$(bv, 3)
             dot_col$ = "{" + rstr$ + ", " + gstr$ + ", " + bstr$ + "}"
-            Paint circle (mm): dot_col$, vt_out, vt_src, 0.5
+            Paint circle (mm): dot_col$, vt_out, vt_src, 0.55
         endif
     endfor
 
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Source (s)"
-    Text bottom: "yes", "Output time (s)"
-    Text top: "no", "Grain Read Map (ref line = proportional read)"
+    Text left: "yes", "Source time (s)"
+    Text bottom: "no", "Output time (s)"
+    Text top: "no", "Grain Read Map | dashed = proportional read | points = scheduled source positions"
 
-    # === STATS PANEL ===
-    Select outer viewport: 0, 8, 5.4, 6.15
-    Select inner viewport: 0.5, 7.8, 5.45, 6.1
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 6.58, 7.50
+    Select inner viewport: 0.60, 7.70, 6.66, 7.42
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.85, "half", "##Morphic Summary##"
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
     Font size: 6
-    Colour: "{0.3, 0.3, 0.35}"
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  " + vizName$ + " | " + fixed$(src_dur, 2) + " s | " + string$(src_sr) + " Hz | " + string$(src_ch) + " ch | output ratio " + fixed$(output_duration_ratio, 2) + "x | seed " + seed_label$
+    summary2$ = "##Attractors##  A grain " + fixed$(att_a_grain_ms, 0) + " ms, density " + fixed$(att_a_density, 1) + " g/s, jitter " + fixed$(att_a_jitter_ms, 1) + " ms | B grain " + fixed$(att_b_grain_ms, 0) + " ms, density " + fixed$(att_b_density, 1) + " g/s, jitter " + fixed$(att_b_jitter_ms, 1) + " ms"
+    summary3$ = "##Morph & output##  intensity " + fixed$(morph_intensity, 2) + " | " + pacing_curve$ + " | local weight " + fixed$(local_weight, 2) + " | " + string$(grain_count) + " grains | " + scheduleText$ + " | " + fixed$(final_dur, 2) + " s"
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
 
-    Text: 0.02, "left", 0.62, "half",
-        ... "Source: " + src_name$
-        ... + " (" + fixed$(src_dur, 2) + " s)"
-        ... + " | Output: " + fixed$(final_dur, 2) + " s"
-        ... + " (ratio " + fixed$(output_duration_ratio, 2) + "x)"
-        ... + " | Grains: " + string$(grain_count)
-        ... + " | Preset: " + preset_name$
-    Text: 0.02, "left", 0.38, "half",
-        ... "A: grain=" + fixed$(att_a_grain_ms, 0)
-        ... + "ms dens=" + fixed$(att_a_density, 0)
-        ... + "g/s jit=" + fixed$(att_a_jitter_ms, 1)
-        ... + "ms bt=" + fixed$(att_a_bt_prob, 2)
-        ... + " rep=" + fixed$(att_a_rep_prob, 2)
-        ... + " sil=" + fixed$(att_a_sil_prob, 2)
-        ... + "  |  B: grain=" + fixed$(att_b_grain_ms, 0)
-        ... + "ms dens=" + fixed$(att_b_density, 0)
-        ... + "g/s jit=" + fixed$(att_b_jitter_ms, 1)
-        ... + "ms"
-    Text: 0.02, "left", 0.14, "half",
-        ... "Morph: " + fixed$(morph_intensity, 2)
-        ... + " | Pacing: " + pacing_curve$
-        ... + " | GD lr: " + fixed$(gd_lr, 2)
-        ... + " | Local weight: " + fixed$(local_weight, 2)
-        ... + " | Base grain: " + fixed$(base_grain_ms, 0)
-        ... + " ms | Base density: " + fixed$(base_density_gps, 0)
-        ... + " g/s"
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Draw inner box
 
-    # === LEGEND ===
-    Select outer viewport: 0, 8, 6.2, 6.5
-    Axes: 0, 1, 0, 1
-    Font size: 6
-
-    Colour: "{0.82, 0.28, 0.28}"
-    Line width: 2
-    Draw line: 0.02, 0.5, 0.06, 0.5
-    Line width: 1
-    Colour: "Black"
-    Text: 0.07, "left", 0.5, "half", "Morph"
-
-    Colour: "{0.28, 0.62, 0.32}"
-    Draw line: 0.14, 0.5, 0.18, 0.5
-    Colour: "Black"
-    Text: 0.19, "left", 0.5, "half", "Grain sz"
-
-    Colour: "{0.18, 0.40, 0.82}"
-    Draw line: 0.28, 0.5, 0.32, 0.5
-    Colour: "Black"
-    Text: 0.33, "left", 0.5, "half", "Density"
-
-    Colour: "{0.85, 0.50, 0.15}"
-    Draw line: 0.42, 0.5, 0.46, 0.5
-    Colour: "Black"
-    Text: 0.47, "left", 0.5, "half", "Jitter"
-
-    Colour: "{0.22, 0.48, 0.82}"
-    Draw line: 0.55, 0.5, 0.59, 0.5
-    Colour: "Black"
-    Text: 0.60, "left", 0.5, "half", "Intensity"
-
-    Colour: "{0.82, 0.28, 0.28}"
-    Line width: 1
-    Draw line: 0.69, 0.5, 0.73, 0.5
-    Colour: "Black"
-    Text: 0.74, "left", 0.5, "half", "Activity"
-
-    Colour: "{0.28, 0.65, 0.32}"
-    Draw line: 0.83, 0.5, 0.87, 0.5
-    Colour: "Black"
-    Text: 0.88, "left", 0.5, "half", "Voiced"
-
-    Paint rectangle: "{0.86, 0.86, 0.94}", 0.95, 0.98, 0.3, 0.7
-    Text: 0.99, "left", 0.5, "half", "V"
-
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 
     appendInfoLine: "  Visualization complete."
 endif

@@ -3,13 +3,19 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7 (2026) - Suite-standard visualization
+# Version: 0.8 (2026) - Cleanup fix
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
 # Description:
 #   NMF Spectral Resynthesizer - Decomposes spectrogram via
 #   Non-negative Matrix Factorization for creative resynthesis.
+#
+# Changelog v0.8:
+#   - FIXED cleanup leak: NMF_H_raw and NMF_H_left are now removed
+#     after visualization/output construction; NMF_H_right is removed
+#     conditionally when stereo output created it.
+#   - DSP, NMF processing and visualization are otherwise unchanged.
 #
 # Changelog v0.7:
 #   - VISUALIZATION STANDARDIZATION ONLY; NMF decomposition, component
@@ -168,7 +174,7 @@ name_original$ = selected$("Sound")
 #
 # ============================================================
 
-form NMF Spectral Resynthesizer v0.7
+form NMF Spectral Resynthesizer v0.8
     optionmenu Preset: 1
         option Manual
         option Fast Preview
@@ -281,7 +287,7 @@ endif
 # ============================================
 
 clearinfo
-writeInfoLine: "=== NMF Spectral Resynthesizer v0.7 ==="
+writeInfoLine: "=== NMF Spectral Resynthesizer v0.8 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Window: ", window_ms, " ms | Step: ", step_ms, " ms"
 appendInfoLine: "Components: ", n_components, " | Iterations: ", n_iterations
@@ -913,7 +919,7 @@ if draw_visualization
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.68, "half", "##NMF Spectral Resynthesizer v0.7##"
+    Text: 0.5, "centre", 0.68, "half", "##NMF Spectral Resynthesizer v0.8##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
     Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + string$(n_components) + " components | " + string$(n_iterations) + " iterations"
@@ -1079,7 +1085,11 @@ endif
 # CLEANUP
 # ============================================
 
-removeObject: spectrogram, matV, matW, matH, matRecon, id_mono
+# H working copies are real Matrix objects and must be cleaned explicitly.
+removeObject: spectrogram, matV, matW, matH, matRecon, id_mono, matH_raw, matH_left
+if stereo_output
+    removeObject: matH_right
+endif
 
 # ============================================
 # OUTPUT

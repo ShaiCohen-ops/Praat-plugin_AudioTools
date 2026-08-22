@@ -3,9 +3,25 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.1 (2026) - Short form; canonical atoms, fixed-hop timeline
+# Version: 2.2 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.2 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; canonical-atom construction,
+#     feature extraction, normalization, nearest-neighbour/top-k
+#     selection, additive repetition penalty, fixed-hop assembly,
+#     polyphonic voice generation, panning and final rendering are
+#     unchanged from v2.1.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, standard title/subtitle, suite typography,
+#     neutral panel backgrounds, summary strip and full-page export.
+#   - Kept the transformation law central: reference segment -> chosen
+#     dictionary gesture. Voice 1 remains the hard-quantized leader;
+#     stochastic voices are overlaid as smaller offset markers so the
+#     polyphonic extension is visible without obscuring the leader map.
+#   - Preserved per-voice distance and pan diagnostics with a shared
+#     voice palette and explicit role legend.
 #
 # Changelog v2.1:
 #   - Form reduced from 33 rows to 15. v2.0 added three fields and
@@ -143,7 +159,7 @@
 # FORM
 # ============================================================
 
-form Gesture Quantization v2.1
+form Gesture Quantization v2.2
     optionmenu Preset: 2
         option Maximum Variety   (k=10, 4 voices)
         option Balanced          (k=7,  2 voices)
@@ -864,7 +880,7 @@ endproc
 
 if verbose_output
     appendInfoLine: "════════════════════════════════════════════════════════"
-    appendInfoLine: "  Gesture-Based Hard Quantization v2.1"
+    appendInfoLine: "  Gesture-Based Hard Quantization v2.2"
     appendInfoLine: "════════════════════════════════════════════════════════"
     appendInfoLine: ""
     appendInfoLine: "Preset:   ", presetName$
@@ -1485,120 +1501,51 @@ endif
 if draw_visualization
     @log: "Drawing visualization..."
 
+    # Display-only mono output copy so the waveform panel has one common axis.
+    selectObject: outputSound
+    vizOutCh = Get number of channels
+    vizOutPeak = Get absolute extremum: 0, 0, "None"
+    if vizOutCh > 1
+        vizOutput = Convert to mono
+    else
+        vizOutput = Copy: "gq_viz_output"
+    endif
+
     selectObject: refSound
     refPeak = Get absolute extremum: 0, 0, "None"
-    if refPeak < 0.001
-        refPeak = 0.001
+
+    sharedPeak = refPeak
+    if vizOutPeak > sharedPeak
+        sharedPeak = vizOutPeak
     endif
-    ampMax = refPeak * 1.15
+    if sharedPeak < 0.001
+        sharedPeak = 0.001
+    endif
+    ampMax = sharedPeak * 1.15
 
-    Erase all
+    vizRefName$ = replace$(soundName_1$, "_", "\_ ", 0)
 
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.48
-    Axes: 0, 1, 0, 1
-    Font size: 12
-    Colour: "Black"
-    Text: 0.5, "centre", 0.70, "half", "##Gesture-Based Hard Quantization v2.1##"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.15, "half",
-        ... "[" + presetName$ + "]  " + soundName_1$
-        ... + "  |  " + string$(num_voices) + " voice(s)"
-        ... + "  |  k=" + string$(k_best_matches)
-        ... + "  |  " + string$(nDictSounds) + " gestures"
-        ... + "  |  " + string$(number_of_segments) + " seg"
-
-    # === PANEL 1: Reference waveform ===
-    Select outer viewport: 0, 8, 0.52, 1.35
-    Select inner viewport: 0.60, 7.65, 0.57, 1.30
-    Axes: 0, refDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, refDur, -ampMax, ampMax
-    Colour: "{0.80, 0.80, 0.80}"
-    Draw line: 0, 0, refDur, 0
-    # Segment boundary lines
-    for segIdx to segmentsToGenerate - 1
-        bTime = refStart + segIdx * segmentDur
-        Colour: "{0.72, 0.78, 0.88}"
-        Dotted line
-        Draw line: bTime, -ampMax, bTime, ampMax
-        Solid line
-    endfor
-    selectObject: refSound
-    Colour: "{0.45, 0.50, 0.58}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Reference"
-    Text top: "no", "Input  (dotted = segment boundaries)"
-
-    # === PANEL 2: Output waveform ===
-    Select outer viewport: 0, 8, 1.38, 2.20
-    Select inner viewport: 0.60, 7.65, 1.43, 2.15
-    Axes: 0, outputDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outputDur, -ampMax, ampMax
-    Colour: "{0.80, 0.80, 0.80}"
-    Draw line: 0, 0, outputDur, 0
-    selectObject: outputSound
-    Colour: "{0.25, 0.55, 0.45}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Output"
-    Text top: "no", "Quantized output  (" + string$(num_voices) + " voice(s))"
-    Text bottom: "yes", "Time (s)"
-
-    # === PANEL 3: Segment → Gesture mapping (voice 1) ===
-    Select outer viewport: 0, 8, 2.28, 3.32
-    Select inner viewport: 0.60, 7.65, 2.33, 3.27
-    Axes: 0, segmentsToGenerate, 0, nDictSounds + 1
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, segmentsToGenerate, 0, nDictSounds + 1
-
-    # Horizontal grid lines per gesture
-    for dictIdx to nDictSounds
-        Colour: "{0.88, 0.88, 0.88}"
-        Draw line: 0, dictIdx, segmentsToGenerate, dictIdx
-    endfor
-
-    # v2.0 fix 14: this panel is titled "Segment -> Gesture mapping" and
-    # now actually plots the chosen gesture index on y. v1.4 plotted
-    # normalized distance there, so the y axis was labelled with a
-    # dictionary range it never used.
-    for segIdx to segmentsToGenerate
-        dist     = voiceDist_1_'segIdx'
-        distNorm = (dist - statMinDist) / (statMaxDist - statMinDist + 0.001)
-        cR = 0.35 + distNorm * 0.45
-        cG = 0.72 - distNorm * 0.32
-        cB = 0.35
-        cRs$ = fixed$(cR, 2)
-        cGs$ = fixed$(cG, 2)
-        cBs$ = fixed$(cB, 2)
-        yPos = voiceMatch_1_'segIdx'
-        Paint rectangle: "{" + cRs$ + "," + cGs$ + "," + cBs$ + "}",
-            ... segIdx - 1, segIdx, yPos - 0.4, yPos + 0.4
-    endfor
-
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Gesture #"
-    Text bottom: "yes", "Segment"
-    Text top: "no", "Voice 1 segment -> gesture  (green=close match  orange=far)"
-
-    # === PANEL 4: Per-voice distance comparison (if >1 voice) ===
-    Select outer viewport: 0, 4, 3.40, 4.45
-    Select inner viewport: 0.55, 3.75, 3.45, 4.40
-
-    if statMaxDist < 0.001
-        statMaxDist = 1
+    if vizOutCh = 1
+        outputMode$ = "mono"
+    else
+        outputMode$ = "stereo"
     endif
 
-    # v2.0 fix 14: scale to the largest distance across ALL voices.
-    # v1.4 used Voice 1's maximum, but Voice 1 is the nearest-neighbour
-    # leader and therefore has the SMALLEST distances by construction,
-    # so every top-k voice was clipped at the top of the panel.
+    # Voice palette shared by distance, map overlays and pan.
+    vc_1R = 0.25
+    vc_1G = 0.45
+    vc_1B = 0.75
+    vc_2R = 0.80
+    vc_2G = 0.45
+    vc_2B = 0.20
+    vc_3R = 0.25
+    vc_3G = 0.60
+    vc_3B = 0.35
+    vc_4R = 0.60
+    vc_4G = 0.30
+    vc_4B = 0.65
+
+    # Shared distance ceiling across all voices.
     allMaxDist = statMaxDist
     for vv to num_voices
         for segIdx to segmentsToGenerate
@@ -1612,140 +1559,236 @@ if draw_visualization
         allMaxDist = 1
     endif
 
-    Axes: 0, segmentsToGenerate + 1, 0, allMaxDist * 1.2
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, segmentsToGenerate + 1, 0, allMaxDist * 1.2
+    # Sparse horizontal guide spacing when the dictionary is large.
+    gestureGridStep = ceiling(nDictSounds / 12)
+    if gestureGridStep < 1
+        gestureGridStep = 1
+    endif
 
-    # Mean line
+    pageHeight = 7.75
+    Erase all
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Gesture-Based Hard Quantization v2.2##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizRefName$ + " | " + presetName$ + " | " + string$(segmentsToGenerate) + " segments | " + string$(nDictSounds) + " gestures | " + string$(num_voices) + " voice(s)"
+
+    # === Reference waveform ===
+    Select outer viewport: 0, 4, 0.72, 1.68
+    Select inner viewport: 0.60, 3.85, 0.88, 1.48
+    Axes: 0, refDur, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, refDur, -ampMax, ampMax
     Colour: "{0.80, 0.80, 0.80}"
-    Dotted line
+    Draw line: 0, 0, refDur, 0
+
+    for segIdx to segmentsToGenerate - 1
+        bTime = refStart + segIdx * segmentDur
+        Colour: "{0.78, 0.82, 0.88}"
+        Dashed line
+        Draw line: bTime, -ampMax, bTime, ampMax
+    endfor
+    Solid line
+
+    selectObject: refSound
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amp"
+    Text top: "no", "Reference | dashed = segment boundaries"
+
+    # === Output waveform ===
+    Select outer viewport: 4, 8, 0.72, 1.68
+    Select inner viewport: 4.45, 7.70, 0.88, 1.48
+    Axes: 0, outputDur, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, outputDur, -ampMax, ampMax
+    Colour: "{0.80, 0.80, 0.80}"
+    Draw line: 0, 0, outputDur, 0
+
+    selectObject: vizOutput
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amp"
+    Text top: "no", "Quantized Output | " + outputMode$ + " | " + fixed$(outputDur, 2) + " s"
+
+    # === Central transformation law: segment -> gesture ===
+    Select outer viewport: 0, 8, 1.90, 3.62
+    Select inner viewport: 0.60, 7.70, 2.16, 3.38
+    Axes: 0, segmentsToGenerate, 0.5, nDictSounds + 0.5
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, segmentsToGenerate, 0.5, nDictSounds + 0.5
+
+    Colour: "{0.86, 0.86, 0.86}"
+    Dashed line
+    dictGuide = gestureGridStep
+    while dictGuide <= nDictSounds
+        Draw line: 0, dictGuide, segmentsToGenerate, dictGuide
+        dictGuide = dictGuide + gestureGridStep
+    endwhile
+    Solid line
+
+    # Voice 1 cells embody the hard quantization.
+    for segIdx to segmentsToGenerate
+        dist = voiceDist_1_'segIdx'
+        distNorm = dist / allMaxDist
+        if distNorm > 1
+            distNorm = 1
+        endif
+        cR = 0.28 + distNorm * 0.52
+        cG = 0.68 - distNorm * 0.28
+        cB = 0.32
+        cRs$ = fixed$(cR, 3)
+        cGs$ = fixed$(cG, 3)
+        cBs$ = fixed$(cB, 3)
+        yPos = voiceMatch_1_'segIdx'
+        Paint rectangle: "{" + cRs$ + ", " + cGs$ + ", " + cBs$ + "}", segIdx - 1, segIdx, yPos - 0.34, yPos + 0.34
+    endfor
+
+    # Voices 2-4 are stochastic layers, shown as offset markers.
+    if num_voices > 1
+        for vv from 2 to num_voices
+            cR$ = fixed$(vc_'vv'R, 3)
+            cG$ = fixed$(vc_'vv'G, 3)
+            cB$ = fixed$(vc_'vv'B, 3)
+            markerColor$ = "{" + cR$ + ", " + cG$ + ", " + cB$ + "}"
+            xOffset = (vv - 2.5) * 0.10
+            for segIdx to segmentsToGenerate
+                yPos = voiceMatch_'vv'_'segIdx'
+                xPos = segIdx - 0.5 + xOffset
+                Paint circle (mm): markerColor$, xPos, yPos, 0.62
+            endfor
+        endfor
+    endif
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Dictionary gesture"
+    Text bottom: "no", "Reference segment"
+    Text top: "no", "Quantization Map | Leader cells: segment -> nearest gesture | circles: stochastic polyphonic layers"
+
+    # === Per-voice match distances ===
+    Select outer viewport: 0, 4, 3.84, 5.12
+    Select inner viewport: 0.60, 3.85, 4.08, 4.88
+    Axes: 0, segmentsToGenerate + 1, 0, allMaxDist * 1.15
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, segmentsToGenerate + 1, 0, allMaxDist * 1.15
+
+    Colour: "{0.80, 0.80, 0.80}"
+    Dashed line
     Draw line: 0, meanDist, segmentsToGenerate + 1, meanDist
     Solid line
 
-    # Voice colors
-    vc_1R = 0.25
-    vc_1G = 0.50
-    vc_1B = 0.75
-    vc_2R = 0.80
-    vc_2G = 0.40
-    vc_2B = 0.20
-    vc_3R = 0.25
-    vc_3G = 0.65
-    vc_3B = 0.40
-    vc_4R = 0.65
-    vc_4G = 0.25
-    vc_4B = 0.65
-
     for vv to num_voices
-        cR$ = fixed$(vc_'vv'R, 2)
-        cG$ = fixed$(vc_'vv'G, 2)
-        cB$ = fixed$(vc_'vv'B, 2)
-        Colour: "{" + cR$ + "," + cG$ + "," + cB$ + "}"
-        Line width: 1.2
+        cR$ = fixed$(vc_'vv'R, 3)
+        cG$ = fixed$(vc_'vv'G, 3)
+        cB$ = fixed$(vc_'vv'B, 3)
+        Colour: "{" + cR$ + ", " + cG$ + ", " + cB$ + "}"
+        if vv = 1
+            Line width: 1.8
+        else
+            Line width: 1.2
+        endif
         for segIdx from 2 to segmentsToGenerate
             prevIdx = segIdx - 1
             d1 = voiceDist_'vv'_'prevIdx'
             d2 = voiceDist_'vv'_'segIdx'
             Draw line: prevIdx, d1, segIdx, d2
         endfor
-        Line width: 1
     endfor
+    Line width: 1
 
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Distance"
-    Text bottom: "yes", "Segment"
-    Text top: "no", "Match distances by voice"
+    Text bottom: "no", "Segment"
+    Text top: "no", "Match Distance by Voice | dashed = Voice 1 mean"
 
-    # Legend
-    if num_voices > 1
-        Font size: 5
-        xLeg = segmentsToGenerate * 0.65
-        yLeg = allMaxDist * 1.15
-        yStep = allMaxDist * 0.10
-        for vv to num_voices
-            cR$ = fixed$(vc_'vv'R, 2)
-            cG$ = fixed$(vc_'vv'G, 2)
-            cB$ = fixed$(vc_'vv'B, 2)
-            Colour: "{" + cR$ + "," + cG$ + "," + cB$ + "}"
-            Text: xLeg, "left", yLeg - (vv - 1) * yStep, "half", "V" + string$(vv)
-        endfor
-    endif
-
-    # === PANEL 5: Pan positions (if >1 voice) ===
-    if num_voices > 1
-    Select outer viewport: 4, 8, 3.40, 4.45
-    Select inner viewport: 4.20, 7.65, 3.45, 4.40
+    # === Voice pan positions ===
+    Select outer viewport: 4, 8, 3.84, 5.12
+    Select inner viewport: 4.45, 7.70, 4.08, 4.88
     Axes: 0, num_voices + 1, -1.1, 1.1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, num_voices + 1, -1.1, 1.1
 
-    # Center line
-    Colour: "{0.85, 0.85, 0.85}"
+    Colour: "{0.82, 0.82, 0.82}"
     Draw line: 0, 0, num_voices + 1, 0
-    # L/R labels
-    Font size: 6
-    Colour: "{0.65, 0.65, 0.65}"
-    Text: 0.15, "left", -0.95, "half", "L"
-    Text: 0.15, "left",  0.95, "half", "R"
 
     for vv to num_voices
         panP = panPos_'vv'
-        cR$ = fixed$(vc_'vv'R, 2)
-        cG$ = fixed$(vc_'vv'G, 2)
-        cB$ = fixed$(vc_'vv'B, 2)
-        Paint rectangle: "{" + cR$ + "," + cG$ + "," + cB$ + "}",
-            ... vv - 0.35, vv + 0.35, 0, panP
-        Font size: 6
-        Colour: "Black"
-        if panP >= 0
-            labelY = panP + 0.08
-        else
-            labelY = panP - 0.08
-        endif
-        Text: vv, "centre", labelY, "half", fixed$(panP, 2)
+        cR$ = fixed$(vc_'vv'R, 3)
+        cG$ = fixed$(vc_'vv'G, 3)
+        cB$ = fixed$(vc_'vv'B, 3)
+        Paint rectangle: "{" + cR$ + ", " + cG$ + ", " + cB$ + "}", vv - 0.32, vv + 0.32, 0, panP
     endfor
 
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Pan"
-    Text bottom: "yes", "Voice"
-    Text top: "no", "Voice pan positions (L=-1  R=+1)"
-    endif
+    Text bottom: "no", "Voice"
+    Text top: "no", "Voice Pan | -1 left | 0 centre | +1 right"
 
-    # === PANEL 6: Statistics ===
-    Select outer viewport: 0, 8, 4.52, 5.20
-    Select inner viewport: 0.40, 7.75, 4.57, 5.15
+    # === Shared voice legend ===
+    Select outer viewport: 0, 8, 5.24, 5.66
+    Select inner viewport: 0.60, 7.70, 5.30, 5.60
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.87, "half", "##Gesture-Based Hard Quantization v2.1##"
     Font size: 6
-    Colour: "{0.35, 0.35, 0.40}"
-    Text: 0.02, "left", 0.65, "half",
-        ... "Reference: " + soundName_1$
-        ... + "  |  Preset: " + presetName$
-        ... + "  |  Voices: " + string$(num_voices)
-        ... + "  |  Dict: " + string$(nDictSounds) + " gestures"
-    Text: 0.02, "left", 0.44, "half",
-        ... "Segments: " + string$(number_of_segments)
-        ... + "  |  Seg dur: " + fixed$(segmentDur * 1000, 0) + " ms"
-        ... + "  |  K-best: " + string$(k_best_matches)
-        ... + "  |  Penalty: " + fixed$(repetition_penalty, 2)
-    Text: 0.02, "left", 0.23, "half",
-        ... "V1 dist: mean=" + fixed$(meanDist, 3)
-        ... + "  std=" + fixed$(stdDist, 3)
-        ... + "  min=" + fixed$(statMinDist, 3)
-        ... + "  max=" + fixed$(statMaxDist, 3)
-        ... + "  |  Output: " + outputName$
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
 
+    legendX# = {0.02, 0.28, 0.54, 0.78}
+    for vv to num_voices
+        x0 = legendX#[vv]
+        cR$ = fixed$(vc_'vv'R, 3)
+        cG$ = fixed$(vc_'vv'G, 3)
+        cB$ = fixed$(vc_'vv'B, 3)
+        Colour: "{" + cR$ + ", " + cG$ + ", " + cB$ + "}"
+        Line width: 2
+        Draw line: x0, 0.50, x0 + 0.025, 0.50
+        Colour: "Black"
+        Line width: 1
+        Text: x0 + 0.035, "left", 0.50, "half", "V" + string$(vv) + " " + voiceRole_'vv'$
+    endfor
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.86, 7.70
+    Select inner viewport: 0.60, 7.70, 5.96, 7.60
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Material##  reference " + vizRefName$ + " | dictionary " + string$(nDictSounds) + " gestures | " + string$(segmentsToGenerate) + " segments x " + fixed$(segmentDur * 1000, 1) + " ms | crossfade " + fixed$(xfadeSec * 1000, 1) + " ms"
+    summary2$ = "##Selection##  V1 nearest-neighbour | k-best " + string$(k_best_matches) + " for stochastic layers | repetition penalty " + fixed$(repetition_penalty, 2) + " | V1 distance " + fixed$(meanDist, 3) + " +/- " + fixed$(stdDist, 3) + " | seed " + seedLabel$
+    summary3$ = "##Output##  " + string$(num_voices) + " voice(s) | V1 used " + string$(uniqueCount) + "/" + string$(nDictSounds) + " gestures | max reuse " + string$(maxUsage) + " | " + outputMode$ + " | " + fixed$(outputDur, 2) + " s | peak " + fixed$(vizOutPeak, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 
+    removeObject: vizOutput
     @log: "  Visualization complete."
 endif
 

@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026)
+# Version: 0.8 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -84,6 +84,18 @@ sound = selected("Sound")
 sound_name$ = selected$("Sound")
 
 # ============================================================
+# Changelog v0.8 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; per-file FFNet distillation,
+#     class weighting, PitchTier harmonization, wet/dry synthesis and
+#     stereo rendering are unchanged from v0.7.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, suite-standard title/subtitle, typography, neutral
+#     panel backgrounds, summary strip and full-page export viewport.
+#   - Preserved the original visual content: source waveform, output
+#     waveform and smoothed phonetic-class weights.
+#   - Consolidated interval/level settings, class distribution,
+#     voiced-consonant reach, wet/dry and stereo information in the summary.
+#
 # Changelog v0.7 (2026):
 #
 #   AUDIO CHANGES everywhere. Two of these are structural.
@@ -164,7 +176,7 @@ sound_name$ = selected$("Sound")
 #
 # ============================================================
 
-form Phonetic Harmonizer v0.7  (per-file FFNet class distillation)
+form Phonetic Harmonizer v0.8  (per-file FFNet class distillation)
     optionmenu Preset: 1
         option Manual
         option Octave Chorus
@@ -338,7 +350,7 @@ if duration < 0.1
 endif
 
 clearinfo
-writeInfoLine: "=== Phonetic Harmonizer v0.7 ==="
+writeInfoLine: "=== Phonetic Harmonizer v0.8 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Vowel: ", vowel_interval_1, " / ", vowel_interval_2, " st"
 appendInfoLine: "Consonant: ", consonant_interval, " st | Other: ", other_interval, " st"
@@ -1331,84 +1343,120 @@ removeObject: workSnd, wet_mix
 
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
-    
+
+    selectObject: finalOut
+    outDurDisplay = Get total duration
+    outPeakDisplay = Get absolute extremum: 0, 0, "None"
+    outChannelsDisplay = Get number of channels
+
+    pageHeight = 5.85
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    vizSoundName$ = replace$(sound_name$, "_", "\_ ", 0)
+
+    if stereo_output
+        stereoDesc$ = "stereo width " + fixed$(stereo_width, 2)
+    else
+        stereoDesc$ = "mono output"
+    endif
+
+    if nConsTotal > 0
+        consReach$ = fixed$(100 * nConsVoiced / nConsTotal, 1) + "\% voiced"
+    else
+        consReach$ = "no consonant frames"
+    endif
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "Phonetic Harmonizer v0.7: " + sound_name$ + " [" + presetName$ + "]"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.5
-    Select inner viewport: 0.6, 7.6, 0.7, 1.4
+    Text: 0.5, "centre", 0.68, "half", "##Phonetic Harmonizer v0.8##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizSoundName$ + " | " + presetName$ + " | per-file FFNet class distillation | temperature " + fixed$(temperature, 2)
+
+    # === Original waveform ===
+    Select outer viewport: 0, 8, 0.66, 1.48
+    Select inner viewport: 0.60, 7.70, 0.78, 1.32
     selectObject: sound
-    Colour: "{0.5, 0.5, 0.5}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
-    
-    # Output waveform
-    Select outer viewport: 0, 8, 1.6, 2.5
-    Select inner viewport: 0.6, 7.6, 1.7, 2.4
+    Text top: "no", "Source Sound | " + fixed$(duration, 2) + " s"
+
+    # === Output waveform ===
+    Select outer viewport: 0, 8, 1.62, 2.44
+    Select inner viewport: 0.60, 7.70, 1.74, 2.28
     selectObject: finalOut
-    Colour: "{0.4, 0.6, 0.3}"
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
+    Font size: 7
     Text left: "yes", "Output"
-    Text bottom: "yes", "Time (s)"
-    
-    # Phonetic weights
-    Select outer viewport: 0, 8, 2.7, 4.2
-    Select inner viewport: 0.6, 7.6, 2.9, 4.1
-    
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Harmonized Output | " + string$(outChannelsDisplay) + " ch | peak " + fixed$(outPeakDisplay, 3)
+
+    # === Smoothed phonetic weights ===
+    Select outer viewport: 0, 8, 2.64, 4.28
+    Select inner viewport: 0.60, 7.70, 2.84, 4.06
     Axes: 0, duration, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1
-    
-    # Vowel weights
-    Colour: "{0.8, 0.3, 0.3}"
+
+    Colour: "{0.75, 0.25, 0.25}"
     for i from 2 to nFrames
         t1 = (i - 2) * frame_step_sec
         t2 = (i - 1) * frame_step_sec
         Draw line: t1, weight_vowel_smooth#[i-1], t2, weight_vowel_smooth#[i]
     endfor
-    
-    # Consonant weights
-    Colour: "{0.3, 0.5, 0.8}"
+
+    Colour: "{0.25, 0.35, 0.75}"
     for i from 2 to nFrames
         t1 = (i - 2) * frame_step_sec
         t2 = (i - 1) * frame_step_sec
         Draw line: t1, weight_consonant_smooth#[i-1], t2, weight_consonant_smooth#[i]
     endfor
-    
-    # Other weights
-    Colour: "{0.5, 0.7, 0.3}"
+
+    Colour: "{0.25, 0.55, 0.25}"
     for i from 2 to nFrames
         t1 = (i - 2) * frame_step_sec
         t2 = (i - 1) * frame_step_sec
         Draw line: t1, weight_other_smooth#[i-1], t2, weight_other_smooth#[i]
     endfor
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Weight"
-    Text bottom: "yes", "Time (s)"
-    
-    # Legend
-    Select outer viewport: 0, 8, 4.3, 4.7
-    Font size: 8
-    Colour: "{0.8, 0.3, 0.3}"
-    Text: 0.2, "centre", 0.5, "half", "— Vowel (" + fixed$(vowel_interval_1, 1) + "/" + fixed$(vowel_interval_2, 1) + " st)"
-    Colour: "{0.3, 0.5, 0.8}"
-    Text: 0.5, "centre", 0.5, "half", "— Consonant (" + fixed$(consonant_interval, 1) + " st)"
-    Colour: "{0.5, 0.7, 0.3}"
-    Text: 0.8, "centre", 0.5, "half", "— Other (" + fixed$(other_interval, 1) + " st)"
-    
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Smoothed Phonetic Weights | vowel red | consonant blue | other green"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 4.50, 5.80
+    Select inner viewport: 0.60, 7.70, 4.58, 5.72
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Classes##  vowel " + fixed$(100 * nVowelFr / nFrames, 1) + "\% | consonant " + fixed$(100 * nConsFr / nFrames, 1) + "\% (" + consReach$ + ") | other " + fixed$(100 * nOtherFr / nFrames, 1) + "\% | silence " + fixed$(100 * nSilFr / nFrames, 1) + "\% "
+    summary2$ = "##Harmony##  vowel " + fixed$(vowel_interval_1, 1) + "/" + fixed$(vowel_interval_2, 1) + " st @ " + fixed$(vowel_level, 2) + " | consonant " + fixed$(consonant_interval, 1) + " st @ " + fixed$(consonant_level, 2) + " | other " + fixed$(other_interval, 1) + " st @ " + fixed$(other_level, 2)
+    summary3$ = "##Mix & output##  wet " + fixed$(100 * wet_dry_mix, 0) + "\% | " + stereoDesc$ + " | smoothing " + fixed$(smoothing_ms, 0) + " ms | " + fixed$(outDurDisplay, 2) + " s | unvoiced consonants pass unshifted"
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
 endif

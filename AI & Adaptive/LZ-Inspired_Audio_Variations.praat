@@ -3,9 +3,23 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026) - Correct window mapping, single envelope, exact duration
+# Version: 0.7 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v0.7 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; feature extraction, similarity
+#     dictionary construction, temporal-separation rule, Random/Chain/
+#     Hybrid selection, variation processing and audio rendering are
+#     unchanged from v0.6.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, standard title/subtitle, suite typography,
+#     neutral panel backgrounds, summary strip and full-page export.
+#   - Preserved the defining visual structure: output-to-source
+#     dictionary usage, per-window feature distribution, neighbor-count
+#     histogram and rendered output waveform.
+#   - Clarified the chain-link display as feature-similarity navigation,
+#     not Lempel-Ziv compression.
 #
 # Changelog v0.6 (2026):
 #
@@ -171,7 +185,7 @@ endif
 original_sound = selected("Sound")
 sound_name$ = selected$("Sound")
 
-form Feature-Similarity Audio Variations v0.6
+form Feature-Similarity Audio Variations v0.7
     optionmenu Preset: 1
         option Custom
         option Subtle Texture
@@ -365,7 +379,7 @@ endif
 
 # === Info ===
 clearinfo
-writeInfoLine: "=== Feature-Similarity Audio Variations v0.6 ==="
+writeInfoLine: "=== Feature-Similarity Audio Variations v0.7 ==="
 appendInfoLine: "Source: ", sound_name$, " (", fixed$(total_duration, 2), " s)"
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: ""
@@ -1160,47 +1174,67 @@ final_peak = Get absolute extremum: 0, 0, "None"
 random_initializeSafelyAndUnpredictably ()
 
 # ============================================================
-# VISUALIZATION  (8 x 8 canvas — suite standard)
+# VISUALIZATION
 # ============================================================
 
 if draw_visualization
+    appendInfoLine: "Drawing visualization..."
+
+    selectObject: output
+    nResultCh = Get number of channels
+    outPeakViz = Get absolute extremum: 0, 0, "None"
+    if outPeakViz < 0.001
+        outPeakViz = 0.001
+    endif
+    ampViz = outPeakViz * 1.15
+
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+
+    if distance_metric = 1
+        distanceName$ = "Euclidean"
+    elsif distance_metric = 2
+        distanceName$ = "mean relative difference"
+    else
+        distanceName$ = "mean magnitude-ratio difference"
+    endif
+
+    if nResultCh = 1
+        channelDesc$ = "mono"
+    else
+        channelDesc$ = string$(nResultCh) + " ch"
+    endif
+
+    neighborDen = maxNeighbors
+    if neighborDen < 1
+        neighborDen = 1
+    endif
+
+    pageHeight = 7.25
     Erase all
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
-    Select inner viewport: 0, 8, 0, 0.65
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##FEATURE-SIMILARITY AUDIO VARIATIONS##"
+    Text: 0.5, "centre", 0.68, "half", "##Feature-Similarity Audio Variations v0.7##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", 0.26, "half",
-        ... sound_name$
-        ... + "  |  " + presetName$
-        ... + "  |  Analysis: " + analysis_name$
-        ... + "  |  " + string$(num_pairs) + " pairs"
-        ... + "  |  " + variation_name$
-        ... + "  |  " + output_mode_name$
-    
-    # ----------------------------------------------------------
-    # PANEL A: DICTIONARY USAGE  (left, headline)
-    # X = output window position (chronological)
-    # Y = source window index (where each output came from)
-    # Color: chain-vs-jump indicator if mode = chain/hybrid
-    # Reveals the recurrence pattern of the output.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-    
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + analysis_name$ + " analysis | " + output_mode_name$ + " | " + variation_name$
+
+    # === Dictionary usage map ===
+    Select outer viewport: 0, 4, 0.72, 4.08
+    Select inner viewport: 0.60, 3.85, 1.02, 3.84
     Axes: 0, num_output_windows + 1, 0, num_windows + 1
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, num_output_windows + 1, 0, num_windows + 1
-    
-    # Light grid every ~num_windows/8
-    Colour: "{0.88, 0.88, 0.92}"
-    Line width: 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, num_output_windows + 1, 0, num_windows + 1
+
+    Colour: "{0.82, 0.82, 0.82}"
+    Dotted line
     grid_step = round(num_windows / 8)
     if grid_step < 1
         grid_step = 1
@@ -1210,11 +1244,11 @@ if draw_visualization
         Draw line: 0, yg, num_output_windows + 1, yg
         yg = yg + grid_step
     endwhile
-    
-    # Connecting lines between consecutive output windows (shows chain structure)
+    Solid line
+
+    # Chain-link structure.
     if output_mode = 2 or output_mode = 3
-        Colour: "{0.85, 0.78, 0.55}"
-        Line width: 1
+        Colour: "{0.78, 0.70, 0.45}"
         for o from 2 to num_output_windows
             prev = used_windows#[o - 1]
             curr = used_windows#[o]
@@ -1223,40 +1257,41 @@ if draw_visualization
             endif
         endfor
     endif
-    
-    # Source window markers
+
+    # Selected source windows.
     for i to num_output_windows
         srcWin = used_windows#[i]
         if srcWin > 0
-            colorVal = srcWin / num_windows
-            cR = 0.30 + colorVal * 0.55
-            cG = 0.40 - abs(colorVal - 0.5) * 0.20
-            cB = 0.85 - colorVal * 0.55
+            if num_windows > 1
+                colorVal = (srcWin - 1) / (num_windows - 1)
+            else
+                colorVal = 0
+            endif
+            cR = 0.25 + colorVal * 0.50
+            cG = 0.55 - colorVal * 0.25
+            cB = 0.75 - colorVal * 0.35
             if cG < 0
                 cG = 0
             endif
             if cB < 0
                 cB = 0
             endif
-            rgb$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
-            Paint circle (mm): rgb$, i, srcWin, 1.4
+            rgb$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
+            Paint circle (mm): rgb$, i, srcWin, 1.25
         endif
     endfor
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
-    Font size: 6
+    Font size: 7
     Text left: "yes", "Source window"
-    Text bottom: "yes", "Output window  (line = chain link)"
-    
-    # ----------------------------------------------------------
-    # PANEL B: FEATURE DISTRIBUTION  (right, upper)
-    # Per-window feature1 values, with similar-pairs marked.
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 3.00
-    Select inner viewport: 4.55, 7.75, 0.95, 2.85
-    
+    Text bottom: "no", "Output window"
+    Text top: "no", "Dictionary Usage | points = chosen source windows | lines = similarity-chain links"
+
+    # === Feature distribution ===
+    Select outer viewport: 4, 8, 0.72, 2.56
+    Select inner viewport: 4.45, 7.70, 1.02, 2.32
+
     minF1 = undefined
     maxF1 = undefined
     for i to num_windows
@@ -1274,7 +1309,7 @@ if draw_visualization
             endif
         endif
     endfor
-    
+
     if minF1 = undefined
         minF1 = 0
         maxF1 = 1
@@ -1282,16 +1317,13 @@ if draw_visualization
     if minF1 = maxF1
         maxF1 = minF1 + 1
     endif
-    
+
     fPad = (maxF1 - minF1) * 0.08
-    
     Axes: 0, num_windows + 1, minF1 - fPad, maxF1 + fPad
-    Paint rectangle: "{0.96, 0.96, 0.96}", 0, num_windows + 1, minF1 - fPad, maxF1 + fPad
-    
-    # Plot pairs as light lines connecting the pair partners
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, num_windows + 1, minF1 - fPad, maxF1 + fPad
+
     if num_pairs > 0 and num_pairs < 200
-        Colour: "{0.85, 0.85, 0.55}"
-        Line width: 1
+        Colour: "{0.78, 0.78, 0.55}"
         for p to num_pairs
             pL = pairLeft#[p]
             pR = pairRight#[p]
@@ -1302,41 +1334,34 @@ if draw_visualization
             endif
         endfor
     endif
-    
-    # Per-window feature dots, sized by neighbor count (busier = bigger)
+
     for i to num_windows
         if feature1#[i] <> undefined
             nC = windowNeighborCount#[i]
-            mm = 1.0 + nC / max(1, maxNeighbors) * 2.0
-            # Color: hot windows (many neighbors) = red, cold = blue
-            ratio = nC / max(1, maxNeighbors)
-            cR = 0.30 + ratio * 0.55
-            cG = 0.40
-            cB = 0.78 - ratio * 0.55
+            ratio = nC / neighborDen
+            mm = 1.0 + ratio * 2.0
+            cR = 0.25 + ratio * 0.50
+            cG = 0.45
+            cB = 0.75 - ratio * 0.45
             if cB < 0
                 cB = 0
             endif
-            rgb$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
+            rgb$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
             Paint circle (mm): rgb$, i, feature1#[i], mm
         endif
     endfor
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
-    Font size: 6
+    Font size: 7
     Text left: "yes", analysis_name$
-    Text bottom: "yes", "Window  (size = #neighbors)"
-    
-    # ----------------------------------------------------------
-    # PANEL C: NEIGHBOR-COUNT HISTOGRAM  (right, lower)
-    # Distribution of "how many similar windows does this one have"
-    # — characterizes the dictionary's connectivity.
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 3.05, 4.60
-    Select inner viewport: 4.55, 7.75, 3.20, 4.50
-    
-    # Build histogram of windowNeighborCount values
+    Text bottom: "no", "Source window"
+    Text top: "no", "Feature Distribution | point size and color encode neighbor count"
+
+    # === Neighbor-count histogram ===
+    Select outer viewport: 4, 8, 2.76, 4.08
+    Select inner viewport: 4.45, 7.70, 2.98, 3.84
+
     histMaxBin = maxNeighbors
     if histMaxBin < 4
         histMaxBin = 4
@@ -1344,6 +1369,7 @@ if draw_visualization
     if histMaxBin > 32
         histMaxBin = 32
     endif
+
     histN# = zero# (histMaxBin + 1)
     for w to num_windows
         nC = windowNeighborCount#[w]
@@ -1352,133 +1378,104 @@ if draw_visualization
         endif
         histN#[nC + 1] = histN#[nC + 1] + 1
     endfor
-    
+
     histPeak = 1
     for b to histMaxBin + 1
         if histN#[b] > histPeak
             histPeak = histN#[b]
         endif
     endfor
-    
+
     Axes: -0.5, histMaxBin + 0.5, 0, histPeak * 1.15
-    Paint rectangle: "{0.96, 0.96, 0.96}", -0.5, histMaxBin + 0.5, 0, histPeak * 1.15
-    
-    # Bars
+    Paint rectangle: "{0.97, 0.97, 0.97}", -0.5, histMaxBin + 0.5, 0, histPeak * 1.15
+
     for b to histMaxBin + 1
         nC = b - 1
         if histN#[b] > 0
-            ratio = nC / max(1, maxNeighbors)
-            cR = 0.30 + ratio * 0.55
-            cG = 0.40
-            cB = 0.78 - ratio * 0.55
+            ratio = nC / neighborDen
+            if ratio > 1
+                ratio = 1
+            endif
+            cR = 0.25 + ratio * 0.50
+            cG = 0.45
+            cB = 0.75 - ratio * 0.45
             if cB < 0
                 cB = 0
             endif
-            rgb$ = "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}"
+            rgb$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
             Paint rectangle: rgb$, nC - 0.4, nC + 0.4, 0, histN#[b]
         endif
     endfor
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 6
-    Text left: "yes", "Count"
-    Text bottom: "yes", "# neighbors per window"
-    
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
-    
     Font size: 7
-    Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "Dictionary usage  (which output came from which source)"
-    Text: 6.10, "centre", 7.30, "half", "Feature distribution (upper) & neighbor histogram (lower)"
-    
-    # ----------------------------------------------------------
-    # PANEL D: OUTPUT WAVEFORM
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.75
-    Select inner viewport: 0.55, 7.72, 4.75, 5.68
-    
-    selectObject: output
-    nResultCh = Get number of channels
-    outPeakViz = Get absolute extremum: 0, 0, "None"
-    if outPeakViz < 0.001
-        outPeakViz = 0.001
-    endif
-    ampViz = outPeakViz * 1.15
-    
+    Text left: "yes", "Windows"
+    Text bottom: "no", "Similar neighbors"
+    Text top: "no", "Dictionary Connectivity | neighbor-count histogram"
+
+    # === Output waveform ===
+    Select outer viewport: 0, 8, 4.30, 5.54
+    Select inner viewport: 0.60, 7.70, 4.50, 5.30
     Axes: 0, final_duration, -ampViz, ampViz
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, final_duration, -ampViz, ampViz
-    Colour: "{0.82, 0.82, 0.82}"
+    Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, final_duration, 0
-    
+
     selectObject: output
     if nResultCh = 1
-        Colour: "{0.20, 0.55, 0.55}"
-        Line width: 1
+        Colour: "{0.25, 0.45, 0.75}"
         Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
     else
         Extract one channel: 1
         vCh1 = selected("Sound")
-        Colour: "{0.25, 0.50, 0.82}"
-        Line width: 1
+        Colour: "{0.25, 0.45, 0.75}"
         Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
         removeObject: vCh1
-        
+
         selectObject: output
         Extract one channel: 2
         vCh2 = selected("Sound")
-        Colour: "{0.82, 0.45, 0.25}"
+        Colour: "{0.75, 0.45, 0.25}"
         Draw: 0, 0, -ampViz, ampViz, "no", "Curve"
         removeObject: vCh2
     endif
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 7
-    if nResultCh > 1
-        Text top: "no", "Output  (blue=L  orange=R)"
-    else
-        Text top: "no", "Output (mono)"
-    endif
     Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.82, 6.58
-    Select inner viewport: 0.55, 7.72, 5.88, 6.52
+    Text bottom: "no", "Time (s)"
+    if nResultCh > 1
+        Text top: "no", "Rendered Output | blue L | amber R | " + fixed$(final_duration, 2) + " s"
+    else
+        Text top: "no", "Rendered Output | mono | " + fixed$(final_duration, 2) + " s"
+    endif
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.76, 7.20
+    Select inner viewport: 0.60, 7.70, 5.86, 7.10
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
+
     Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + sound_name$
-        ... + "  |  Windows: " + string$(num_windows)
-        ... + "  |  Pairs: " + string$(num_pairs)
-        ... + "  |  Threshold: " + fixed$(similarity_threshold, 2)
-        ... + "  |  Pruning: " + fixed$(speedup, 1) + "x"
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "Window: " + fixed$(window_size_s, 3) + "s, " + fixed$(overlap * 100, 0) + "% overlap"
-        ... + "  |  Variation: " + variation_name$ + " (" + fixed$(variation_amount, 2) + ")"
-        ... + "  |  Output mode: " + output_mode_name$
-        ... + "  |  Out: " + fixed$(final_duration, 2) + " s, peak " + fixed$(final_peak, 3)
-    
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Dictionary##  " + string$(num_windows) + " windows | " + string$(num_pairs) + " similar pairs | threshold " + fixed$(similarity_threshold, 2) + " | separation " + fixed$(1000 * min_separation_s, 1) + " ms | pruning " + fixed$(speedup, 1) + "x"
+    summary2$ = "##Analysis & navigation##  " + analysis_name$ + " | " + distanceName$ + " | window " + fixed$(window_size_s, 3) + " s | overlap " + fixed$(100 * overlap, 0) + "\% | " + output_mode_name$ + " | seed " + seedLabel$
+    summary3$ = "##Variation & output##  " + variation_name$ + " amount " + fixed$(variation_amount, 2) + " | " + string$(num_output_windows) + " output segments | " + channelDesc$ + " | " + fixed$(final_duration, 2) + " s | peak " + fixed$(final_peak, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # === Final Info ===

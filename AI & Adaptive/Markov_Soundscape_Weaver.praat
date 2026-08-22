@@ -4,7 +4,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.7 (2026) - Real stereo control, exact duration, no empty states
+# Version: 0.8 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -162,6 +162,20 @@
 #         (gray = original, blue = result, shared y-axis)
 #       Panel E: light-grey summary stats bar (suite standard)
 #
+# Changelog v0.8 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; k-means analysis, first- and
+#     second-order Markov modeling, state-conditioned grain selection,
+#     randomness, varispeed, OLA normalization and stereo decorrelation
+#     are unchanged from v0.7.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, standard title/subtitle, suite typography,
+#     aligned 4/4 headline panels, summary strip and full-page export.
+#   - Preserved the defining visual structure: generated state trajectory,
+#     transition-matrix heatmap, state population and input/output
+#     waveform comparison.
+#   - Removed 5-point labels and moved state/matrix identification into
+#     panel captions and the summary.
+#
 # Changelog v0.4:
 #   - Fixed preset comparison (number not string)
 #   - Fixed Formula object references
@@ -179,7 +193,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Markov Soundscape Weaver v0.7
+form Markov Soundscape Weaver v0.8
     optionmenu Preset: 1
         option Manual
         option Ambient Flow
@@ -408,7 +422,7 @@ else
 endif
 
 clearinfo
-writeInfoLine: "=== Markov Soundscape Weaver v0.7 ==="
+writeInfoLine: "=== Markov Soundscape Weaver v0.8 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Grain: ", grain_size_ms, " ms | States: ", number_of_states
 appendInfoLine: "Markov: ", markovOrderName$
@@ -1373,21 +1387,12 @@ finalChannels = Get number of channels
 removeObject: workSnd
 
 # ============================================================
-# VISUALIZATION  (8 x 8 canvas — suite standard)
-# Panel A: state trajectory of the generated output
-# Panel B: transition matrix heatmap (first-order projection)
-# Panel C: state distribution histogram
-# Panel D: input + output waveform comparison
-# Panel E: light-grey summary
+# VISUALIZATION
 # ============================================================
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
-    
-    Erase all
-    Black
-    Plain line
-    
-    # Mono copies for waveform panels
+
+    # Mono copies for waveform comparison.
     selectObject: snd
     nChIn = Get number of channels
     if nChIn > 1
@@ -1395,15 +1400,15 @@ if draw_visualization
     else
         vizOriginal = Copy: "viz_original"
     endif
-    
+
     selectObject: finalOut
     if finalChannels > 1
         vizResult = Convert to mono
     else
         vizResult = Copy: "viz_result"
     endif
-    
-    # Shared y-axis from both waveforms
+
+    # Shared waveform axis.
     selectObject: vizOriginal
     oPeak = Get absolute extremum: 0, 0, "None"
     selectObject: vizResult
@@ -1416,109 +1421,98 @@ if draw_visualization
         sharedPeak = 0.01
     endif
     sharedAmp = sharedPeak * 1.15
-    
-    # State color palette function: for state s in [1, k],
-    # produce (r, g, b) varying with s/k. Use the same scheme
-    # as v0.4 for visual continuity.
-    # Computed inline below per panel; helpers via vars.
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
-    Select inner viewport: 0, 8, 0, 0.65
+
+    if stereo_output
+        stereoStr$ = "stereo decorrelation " + fixed$(stereo_decorrelation, 2)
+    else
+        stereoStr$ = "mono"
+    endif
+
+    if markov_order = 1
+        matrixDesc$ = "actual first-order transition matrix"
+    else
+        matrixDesc$ = "first-order projection; synthesis uses second-order"
+    endif
+
+    vizName$ = replace$(sndName$, "_", "\_ ", 0)
+    pageHeight = 7.55
+
+    Erase all
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##MARKOV SOUNDSCAPE WEAVER##"
+    Text: 0.5, "centre", 0.68, "half", "##Markov Soundscape Weaver v0.8##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", 0.26, "half",
-        ... sndName$
-        ... + "  |  " + presetName$
-        ... + "  |  " + string$(nGrains) + " grains analyzed"
-        ... + "  |  " + string$(k) + " states"
-        ... + "  |  " + markovOrderName$
-        ... + "  |  rnd " + fixed$(randomness * 100, 0) + "%"
-        ... + "  |  out " + fixed$(output_duration_sec, 1) + " s"
-    
-    # ----------------------------------------------------------
-    # PANEL A: STATE TRAJECTORY  (left, headline)
-    # Generated state sequence over output time. Color encodes
-    # the destination state.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-    
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + markovOrderName$ + " | " + string$(k) + " states | " + string$(nGrains) + " analysis grains"
+
+    # === State trajectory ===
+    Select outer viewport: 0, 4, 0.72, 3.68
+    Select inner viewport: 0.60, 3.85, 1.02, 3.44
     Axes: 0, output_duration_sec, 0.5, k + 0.5
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, output_duration_sec, 0.5, k + 0.5
-    
-    # Horizontal grid at each state level
-    Colour: "{0.88, 0.88, 0.92}"
-    Line width: 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, output_duration_sec, 0.5, k + 0.5
+
+    Colour: "{0.82, 0.82, 0.82}"
     Dotted line
     for s from 1 to k
         Draw line: 0, s, output_duration_sec, s
     endfor
     Solid line
-    
-    # Draw the trajectory
+
     Line width: 1.5
     for g from 2 to grains_needed
         t1 = (g - 2) * synth_step
         t2 = (g - 1) * synth_step
         s1 = state_history#[g-1]
         s2 = state_history#[g]
-        
-        colorVal = s2 / k
-        rVal$ = fixed$(0.3 + colorVal * 0.5, 2)
-        gVal$ = fixed$(0.5 - colorVal * 0.2, 2)
-        bVal$ = fixed$(0.7 - colorVal * 0.4, 2)
+
+        if k > 1
+            colorVal = (s2 - 1) / (k - 1)
+        else
+            colorVal = 0
+        endif
+        rVal$ = fixed$(0.25 + colorVal * 0.50, 3)
+        gVal$ = fixed$(0.55 - colorVal * 0.25, 3)
+        bVal$ = fixed$(0.75 - colorVal * 0.35, 3)
         Colour: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}"
         Draw line: t1, s1, t2, s2
     endfor
     Line width: 1
-    
-    # State labels on left axis
-    Font size: 5
-    Colour: "{0.40, 0.40, 0.45}"
-    for s from 1 to k
-        Text: output_duration_sec * 0.005, "left", s, "half", "s" + string$(s)
-    endfor
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
-    Font size: 6
+    Font size: 7
     Text left: "yes", "State"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL B: TRANSITION MATRIX HEATMAP  (right, headline)
-    # First-order matrix. For markov_order=1, the actual trans#
-    # used in synthesis. For markov_order=2, first-order
-    # projection from state_seq# (synthesis still uses trans2#).
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
-    
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Generated State Trajectory | destination-state color"
+
+    # === Transition matrix ===
+    Select outer viewport: 4, 8, 0.72, 3.68
+    Select inner viewport: 4.45, 7.70, 1.02, 3.44
     Axes: 0, k, 0, k
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, k, 0, k
-    
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, k, 0, k
+
     for r from 1 to k
         for c from 1 to k
             idx = (r - 1) * k + c
             prob = viz_trans#[idx]
             intensity = prob
-            rVal$ = fixed$(1 - intensity * 0.7, 2)
-            gVal$ = fixed$(1 - intensity * 0.3, 2)
-            bVal$ = fixed$(1 - intensity * 0.8, 2)
+            rVal$ = fixed$(1 - intensity * 0.70, 3)
+            gVal$ = fixed$(1 - intensity * 0.30, 3)
+            bVal$ = fixed$(1 - intensity * 0.80, 3)
             Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", c - 1, c, k - r, k - r + 1
         endfor
     endfor
-    
-    # Cell grid
-    Colour: "{0.85, 0.85, 0.90}"
+
+    Colour: "{0.82, 0.82, 0.82}"
     Line width: 0.5
     for r from 0 to k
         Draw line: 0, r, k, r
@@ -1526,179 +1520,110 @@ if draw_visualization
     for c from 0 to k
         Draw line: c, 0, c, k
     endfor
-    
-    # Row/col labels (state indices)
-    Font size: 5
-    Colour: "{0.40, 0.40, 0.45}"
-    for r from 1 to k
-        Text: -0.05, "right", k - r + 0.5, "half", "s" + string$(r)
-    endfor
-    for c from 1 to k
-        Text: c - 0.5, "centre", -0.20, "half", "s" + string$(c)
-    endfor
-    
+
     Colour: "Black"
     Line width: 1
     Draw inner box
-    Font size: 6
-    Text left: "yes", "From state"
-    Text bottom: "yes", "To state"
-    
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
-    
     Font size: 7
-    Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half", "State trajectory of the generated output"
-    if markov_order = 1
-        Text: 6.10, "centre", 7.30, "half", "Transition matrix (first-order)"
-    else
-        Text: 6.10, "centre", 7.30, "half", "Transition matrix (first-order projection; synthesis uses second-order)"
-    endif
-    
-    # ----------------------------------------------------------
-    # PANEL C: STATE DISTRIBUTION HISTOGRAM
-    # Bars colored by state index (matching trajectory + matrix).
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
-    
+    Text left: "yes", "From state"
+    Text bottom: "no", "To state"
+    Text top: "no", "Transition Matrix | " + matrixDesc$
+
+    # === State population ===
+    Select outer viewport: 0, 8, 3.90, 4.98
+    Select inner viewport: 0.60, 7.70, 4.10, 4.76
+
     maxCount = 1
     for s from 1 to k
         if state_count#[s] > maxCount
             maxCount = state_count#[s]
         endif
     endfor
-    
+
     Axes: 0.4, k + 0.6, 0, maxCount * 1.15
     Paint rectangle: "{0.97, 0.97, 0.97}", 0.4, k + 0.6, 0, maxCount * 1.15
-    
-    # Light gridline at top of tallest bar
-    Colour: "{0.88, 0.88, 0.92}"
-    Line width: 1
-    Dotted line
-    Draw line: 0.4, maxCount, k + 0.6, maxCount
-    Solid line
-    
+
     for s from 1 to k
-        colorVal = s / k
-        rVal$ = fixed$(0.3 + colorVal * 0.5, 2)
-        gVal$ = fixed$(0.5 - colorVal * 0.2, 2)
-        bVal$ = fixed$(0.7 - colorVal * 0.4, 2)
+        if k > 1
+            colorVal = (s - 1) / (k - 1)
+        else
+            colorVal = 0
+        endif
+        rVal$ = fixed$(0.25 + colorVal * 0.50, 3)
+        gVal$ = fixed$(0.55 - colorVal * 0.25, 3)
+        bVal$ = fixed$(0.75 - colorVal * 0.35, 3)
         Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", s - 0.35, s + 0.35, 0, state_count#[s]
-        
-        # Count label inside or above the bar
-        Font size: 5
-        Colour: "{0.30, 0.30, 0.35}"
-        labelY = state_count#[s] + maxCount * 0.04
-        Text: s, "centre", labelY, "half", string$(state_count#[s])
-        
-        # State label below the bar
-        Font size: 5
-        Colour: "{0.40, 0.40, 0.45}"
-        Text: s, "centre", -maxCount * 0.05, "half", "s" + string$(s)
     endfor
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "State distribution (analysis grains per state)"
+    Text top: "no", "State Population | analysis grains assigned by k-means"
     Text left: "yes", "Grains"
-    Text bottom: "yes", "State"
-    
-    # ----------------------------------------------------------
-    # PANEL D: INPUT + OUTPUT WAVEFORM COMPARISON
-    # Different time scales (input duration vs output duration).
-    # Use the longer as common axis; gray = original (capped at
-    # its own duration), blue = result.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
-    
+    Text bottom: "no", "State"
+
+    # === Input / output waveform comparison ===
+    Select outer viewport: 0, 8, 5.20, 6.34
+    Select inner viewport: 0.60, 7.70, 5.40, 6.10
+
     if finalDuration > dur
         dispDur = finalDuration
     else
         dispDur = dur
     endif
-    
+
     Axes: 0, dispDur, -sharedAmp, sharedAmp
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, dispDur, -sharedAmp, sharedAmp
-    Colour: "{0.82, 0.82, 0.82}"
+    Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, dispDur, 0
-    
-    # Mark where input ends if shorter than output
+
     if dur < finalDuration
-        Colour: "{0.85, 0.50, 0.20}"
-        Line width: 1
-        Dotted line
+        Colour: "{0.80, 0.55, 0.25}"
+        Dashed line
         Draw line: dur, -sharedAmp, dur, sharedAmp
         Solid line
-        Font size: 5
-        Text: dur + dispDur * 0.005, "left", sharedAmp * 0.85, "half", "input ends"
     endif
-    
-    # Original behind
+
     selectObject: vizOriginal
-    Colour: "{0.62, 0.62, 0.62}"
-    Line width: 1
+    Colour: "{0.60, 0.60, 0.60}"
     Draw: 0, dur, -sharedAmp, sharedAmp, "no", "Curve"
-    
-    # Result on top
+
     selectObject: vizResult
     Colour: "{0.25, 0.45, 0.75}"
-    Line width: 1
     Draw: 0, finalDuration, -sharedAmp, sharedAmp, "no", "Curve"
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Input vs result waveform  (gray = original, blue = result)"
+    Text top: "no", "Input / Result Waveform | grey input | blue result | dashed = input end"
     Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR  (suite standard light grey)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Text bottom: "no", "Time (s)"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 6.56, 7.50
+    Select inner viewport: 0.60, 7.70, 6.64, 7.42
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
-    if stereo_output
-        stereoStr$ = "stereo (decorr " + fixed$(stereo_decorrelation * 100, 0) + "%)"
-    else
-        stereoStr$ = "mono"
-    endif
-    
+
     Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + sndName$
-        ... + "  |  Grains: " + string$(nGrains) + " analyzed (size " + fixed$(grain_size_ms, 0) + " ms, overlap " + fixed$(analysis_overlap * 100, 0) + "%)"
-        ... + "  |  States: " + string$(k) + " (k-means)"
-        ... + "  |  Markov: " + markovOrderName$
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "Randomness: " + fixed$(randomness * 100, 0) + "%"
-        ... + "  |  Pitch scatter: " + fixed$(pitch_scatter_semitones, 1) + " st"
-        ... + "  |  Pos jitter: " + fixed$(position_jitter, 2)
-        ... + "  |  Crossfade: " + fixed$(crossfade_ms, 1) + " ms"
-        ... + "  |  Output: " + stereoStr$ + ", " + fixed$(finalDuration, 2) + " s, peak " + fixed$(finalPeak, 3)
-    
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Analysis##  grain " + fixed$(grain_size_ms, 1) + " ms | overlap " + fixed$(100 * analysis_overlap, 0) + "\% | " + string$(nGrains) + " grains | " + string$(k) + " k-means states | " + markovOrderName$
+    summary2$ = "##Generation##  randomness " + fixed$(100 * randomness, 0) + "\% | synth overlap " + fixed$(100 * synthesis_overlap, 0) + "\% | position jitter " + fixed$(position_jitter, 2) + " | density variation " + fixed$(density_variation, 2) + " | pitch scatter +/-" + fixed$(pitch_scatter_semitones, 2) + " st"
+    summary3$ = "##Output##  " + stereoStr$ + " | " + string$(grains_needed) + " scheduled events | requested " + fixed$(output_duration_sec, 2) + " s | rendered " + fixed$(finalDuration, 2) + " s | peak " + fixed$(finalPeak, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
-    
+    Solid line
+
     removeObject: vizOriginal, vizResult
 endif
 

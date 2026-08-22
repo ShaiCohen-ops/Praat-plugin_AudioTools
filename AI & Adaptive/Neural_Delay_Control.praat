@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.3 (2026) - Analysis time clamped inside the Sound
+# Version: 1.4 (2026) - Suite-standard visualization
 #
 # Changelog v1.3 (2026):
 #
@@ -208,6 +208,19 @@
 #   Toolkit for Experimental Composition.
 #   https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
+# Changelog v1.4 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; the 30-8-2 MLP, feature
+#     extraction, continuous control envelopes, multi-tap delay,
+#     filtering, tail rendering and limiter are unchanged from v1.3.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, standard header/subtitle, 4/4 top-panel grid,
+#     suite typography, neutral backgrounds and full-page export.
+#   - Preserved the distinctive four-part visualization: MLP controls,
+#     source features, source/output zoom comparison and full delay-tail
+#     output waveform.
+#   - Moved legends out of plotted data, removed 5-point labels and
+#     expanded the summary to Input / Network & controls / Output.
+#
 # Changelog v1.1 (2026):
 #   - FIX (structural): the MLP's SECOND output was decorative.
 #     ctrl_fb# was computed, smoothed, plotted and reported -- but
@@ -268,7 +281,7 @@ endif
 original_sound = selected("Sound")
 original_name$ = selected$("Sound")
 
-form Neural Delay Control v1.3
+form Neural Delay Control v1.4
     optionmenu Preset: 1
         option Manual
         option Clean Digital
@@ -420,7 +433,7 @@ duration = Get total duration
 fs = Get sampling frequency
 
 clearinfo
-writeInfoLine: "=== Neural Delay Control v1.3 ==="
+writeInfoLine: "=== Neural Delay Control v1.4 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Delay: ", delay_time_ms, " ms | Tap decay: ", fixed$(tap_decay_base, 2)
 appendInfoLine: "Echo level: ", fixed$(echo_level, 2), " | Repeats: ", number_of_repeats
@@ -943,178 +956,149 @@ endfor
 voicedPct = voicedFrames / nFrames * 100
 
 # ============================================================
-# VISUALIZATION  (8 x 8 canvas — suite standard)
+# VISUALIZATION
 # ============================================================
 
 if draw_visualization
-
     appendInfoLine: "Drawing visualization..."
-    
+
+    pageHeight = 7.75
     Erase all
-    Black
-    Plain line
-    
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    vizName$ = replace$(original_name$, "_", "\_ ", 0)
+
     if enable_filter
         filterStr$ = "LP " + fixed$(filter_cutoff_hz, 0) + " Hz"
     else
         filterStr$ = "no filter"
     endif
-    
-    # ----------------------------------------------------------
-    # TITLE BAR
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 0.65
-    Select inner viewport: 0, 8, 0, 0.65
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.72, "half", "##NEURAL DELAY CONTROL  -  30-8-2 MLP##"
+    Text: 0.5, "centre", 0.68, "half", "##Neural Delay Control v1.4##"
     Font size: 7
-    Colour: "{0.35, 0.35, 0.52}"
-    Text: 0.5, "centre", 0.26, "half",
-        ... original_name$
-        ... + "  |  " + presetName$
-        ... + "  |  delay " + fixed$(delay_time_ms, 0) + " ms x " + string$(number_of_repeats)
-        ... + "  |  tap decay " + fixed$(tap_decay_base, 2)
-        ... + "  |  echo level " + fixed$(mix_base, 2)
-        ... + "  |  " + filterStr$
-    
-    # ----------------------------------------------------------
-    # PANEL A: MLP CONTROL OUTPUT  (left, headline)
-    # Mix and Feedback curves produced by the neural network.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 4.2, 0.75, 4.60
-    Select inner viewport: 0.55, 4.00, 0.95, 4.40
-    
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | 30-8-2 MLP | delay " + fixed$(delay_time_ms, 0) + " ms x " + string$(number_of_repeats) + " | " + filterStr$
+
+    # === MLP control output ===
+    Select outer viewport: 0, 4, 0.72, 3.48
+    Select inner viewport: 0.60, 3.85, 1.02, 3.23
     Axes: 0, duration, 0, 1
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, duration, 0, 1
-    
-    Colour: "{0.88, 0.88, 0.92}"
-    Line width: 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1
+
+    Colour: "{0.80, 0.80, 0.80}"
     Dotted line
     Draw line: 0, 0.25, duration, 0.25
     Draw line: 0, 0.50, duration, 0.50
     Draw line: 0, 0.75, duration, 0.75
     Solid line
-    
-    # Reference lines for the user's base values (so you can see
-    # the modulation around them)
+
+    # Base-value references.
     Colour: "{0.85, 0.65, 0.65}"
-    Line width: 1
     Dashed line
     Draw line: 0, mix_base, duration, mix_base
-    Colour: "{0.65, 0.85, 0.65}"
+    Colour: "{0.65, 0.80, 0.65}"
     Draw line: 0, feedback_base, duration, feedback_base
     Solid line
-    
-    # Mix control (red)
-    Colour: "{0.82, 0.30, 0.30}"
-    Line width: 1.8
+
+    # Neural controls.
+    Colour: "{0.75, 0.25, 0.25}"
+    Line width: 2
     for i from 2 to nFrames
         t1 = (i - 2) * frame_step_sec
         t2 = (i - 1) * frame_step_sec
         Draw line: t1, ctrl_mix_smooth#[i-1], t2, ctrl_mix_smooth#[i]
     endfor
-    
-    # Feedback control (green)
-    Colour: "{0.30, 0.62, 0.30}"
-    Line width: 1.8
+
+    Colour: "{0.25, 0.55, 0.25}"
     for i from 2 to nFrames
         t1 = (i - 2) * frame_step_sec
         t2 = (i - 1) * frame_step_sec
         Draw line: t1, ctrl_fb_smooth#[i-1], t2, ctrl_fb_smooth#[i]
     endfor
     Line width: 1
-    
-    # Inline legend
-    Font size: 5
-    Colour: "{0.82, 0.30, 0.30}"
-    Text: duration * 0.02, "left", 0.96, "half", "mix"
-    Colour: "{0.30, 0.62, 0.30}"
-    Text: duration * 0.10, "left", 0.96, "half", "feedback"
-    Colour: "{0.65, 0.65, 0.65}"
-    Text: duration * 0.22, "left", 0.96, "half", "(dashed = base)"
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
-    Font size: 6
+    Font size: 7
     Text left: "yes", "Gain (0-1)"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL B: SOURCE FEATURES  (right, headline)
-    # HNR + voicing — the perceptual features feeding the network.
-    # ----------------------------------------------------------
-    Select outer viewport: 4.2, 8, 0.75, 4.60
-    Select inner viewport: 4.55, 7.75, 0.95, 4.40
-    
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "MLP Control Output"
+
+    # Dedicated legend strip for left panel.
+    Select outer viewport: 0, 4, 0.72, 3.48
+    Select inner viewport: 0.60, 3.85, 0.76, 0.98
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.75, 0.25, 0.25}"
+    Text: 0.02, "left", 0.50, "half", "mix"
+    Colour: "{0.25, 0.55, 0.25}"
+    Text: 0.26, "left", 0.50, "half", "feedback"
+    Colour: "{0.45, 0.45, 0.50}"
+    Text: 0.58, "left", 0.50, "half", "dashed = base"
+
+    # === Source features ===
+    Select outer viewport: 4, 8, 0.72, 3.48
+    Select inner viewport: 4.45, 7.70, 1.02, 3.23
     Axes: 0, duration, 0, 1.15
-    Paint rectangle: "{0.97, 0.97, 0.99}", 0, duration, 0, 1.15
-    
-    Colour: "{0.88, 0.88, 0.92}"
-    Line width: 1
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, duration, 0, 1.15
+
+    Colour: "{0.80, 0.80, 0.80}"
     Dotted line
     Draw line: 0, 0.25, duration, 0.25
     Draw line: 0, 0.50, duration, 0.50
     Draw line: 0, 0.75, duration, 0.75
     Solid line
-    
-    Colour: "{0.75, 0.75, 0.80}"
+
+    Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 1.0, duration, 1.0
-    
-    # HNR curve (purple)
+
     Colour: "{0.55, 0.30, 0.70}"
-    Line width: 1.8
+    Line width: 2
     for i from 2 to nFrames
         t1 = (i - 2) * frame_step_sec
         t2 = (i - 1) * frame_step_sec
         Draw line: t1, feat_hnr#[i-1], t2, feat_hnr#[i]
     endfor
     Line width: 1
-    
-    # Voicing markers (orange dots) at y=1.075
-    Colour: "{0.90, 0.55, 0.20}"
+
+    # Voicing markers.
     for i from 1 to nFrames
         t = (i - 0.5) * frame_step_sec
         if feat_pitch#[i] > 0.5
-            Paint circle (mm): "{0.90, 0.55, 0.20}", t, 1.075, 0.7
+            Paint circle (mm): "{0.85, 0.50, 0.20}", t, 1.075, 0.65
         endif
     endfor
-    
-    Font size: 5
-    Colour: "{0.55, 0.30, 0.70}"
-    Text: duration * 0.02, "left", 0.96, "half", "HNR"
-    Colour: "{0.90, 0.55, 0.20}"
-    Text: duration * 0.10, "left", 1.075, "half", "voiced"
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
-    Font size: 6
-    Text left: "yes", "HNR / voicing"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # ALIGNED PANEL TITLES
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 0, 8
-    Select inner viewport: 0, 8, 0, 8
-    Axes: 0, 8, 0, 8
-    
     Font size: 7
-    Colour: "Black"
-    Text: 2.10, "centre", 7.30, "half",
-        ... "MLP control output (red = mix, green = feedback; dashed = user base)"
-    Text: 6.10, "centre", 7.30, "half",
-        ... "Source features (purple = HNR, orange dots = voiced)"
-    
-    # ----------------------------------------------------------
-    # PANEL C: ZOOM OVERLAY  (first 500 ms)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 4.68, 5.55
-    Select inner viewport: 0.55, 7.72, 4.75, 5.48
-    
+    Text left: "yes", "Feature value"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Source Features"
+
+    # Dedicated legend strip for right panel.
+    Select outer viewport: 4, 8, 0.72, 3.48
+    Select inner viewport: 4.45, 7.70, 0.76, 0.98
+    Axes: 0, 1, 0, 1
+    Font size: 6
+    Colour: "{0.55, 0.30, 0.70}"
+    Text: 0.02, "left", 0.50, "half", "HNR"
+    Colour: "{0.85, 0.50, 0.20}"
+    Text: 0.30, "left", 0.50, "half", "voiced frames"
+
+    # === Zoom comparison ===
+    Select outer viewport: 0, 8, 3.68, 4.82
+    Select inner viewport: 0.60, 7.70, 3.88, 4.58
+
     zoomDur = 0.5
     if zoomDur > duration
         zoomDur = duration
@@ -1122,7 +1106,7 @@ if draw_visualization
     if zoomDur > finalDur
         zoomDur = finalDur
     endif
-    
+
     selectObject: original_sound
     origNumCh = Get number of channels
     if origNumCh > 1
@@ -1132,7 +1116,7 @@ if draw_visualization
         Copy: "zoom_orig"
         zoomOrig = selected("Sound")
     endif
-    
+
     selectObject: zoomOrig
     z_peak1 = Get absolute extremum: 0, zoomDur, "None"
     selectObject: outS
@@ -1145,104 +1129,87 @@ if draw_visualization
         z_max = 0.001
     endif
     z_amp = z_max * 1.15
-    
+
     Axes: 0, zoomDur, -z_amp, z_amp
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, zoomDur, -z_amp, z_amp
-    Colour: "{0.82, 0.82, 0.82}"
+    Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, zoomDur, 0
-    
+
     selectObject: zoomOrig
-    Colour: "{0.65, 0.65, 0.65}"
-    Line width: 1
+    Colour: "{0.60, 0.60, 0.60}"
     Draw: 0, zoomDur, -z_amp, z_amp, "no", "Curve"
-    
+
     selectObject: outS
-    Colour: "{0.25, 0.50, 0.82}"
-    Line width: 1
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, zoomDur, -z_amp, z_amp, "no", "Curve"
-    
+
     removeObject: zoomOrig
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Zoom: first " + fixed$(zoomDur * 1000, 0) + " ms  (gray = original, blue = output)"
+    Text top: "no", "Source / Output Zoom | first " + fixed$(zoomDur * 1000, 0) + " ms | grey source, blue output"
     Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL D: OUTPUT WAVEFORM (FULL FILE)
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 5.62, 6.55
-    Select inner viewport: 0.55, 7.72, 5.69, 6.48
-    
+    Text bottom: "no", "Time (s)"
+
+    # === Full output with delay tail ===
+    Select outer viewport: 0, 8, 5.02, 6.18
+    Select inner viewport: 0.60, 7.70, 5.22, 5.94
+
     selectObject: outS
     out_peak_v = Get absolute extremum: 0, 0, "None"
     if out_peak_v < 0.001
         out_peak_v = 0.001
     endif
     out_amp = out_peak_v * 1.15
-    
+
     Axes: 0, finalDur, -out_amp, out_amp
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, finalDur, -out_amp, out_amp
-    Colour: "{0.82, 0.82, 0.82}"
+    Colour: "{0.80, 0.80, 0.80}"
     Draw line: 0, 0, finalDur, 0
-    
+
     if duration < finalDur
-        Colour: "{0.85, 0.50, 0.20}"
-        Line width: 1
-        Dotted line
+        Colour: "{0.80, 0.55, 0.25}"
+        Dashed line
         Draw line: duration, -out_amp, duration, out_amp
         Solid line
-        Font size: 5
-        Text: duration, "left", out_amp * 0.85, "half", "  tail"
     endif
-    
+
     selectObject: outS
-    Colour: "{0.20, 0.50, 0.80}"
-    Line width: 1
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, finalDur, -out_amp, out_amp, "no", "Curve"
-    
+
     Colour: "Black"
-    Line width: 1
     Draw inner box
     Font size: 7
-    Text top: "no", "Output (full file with delay tail)"
+    Text top: "no", "Full Output with Delay Tail | dashed line = source end"
     Text left: "yes", "Amp"
-    Text bottom: "yes", "Time (s)"
-    
-    # ----------------------------------------------------------
-    # PANEL E: SUMMARY BAR  (suite standard — light grey)
-    # Mentions the MLP architecture explicitly.
-    # ----------------------------------------------------------
-    Select outer viewport: 0, 8, 6.62, 7.30
-    Select inner viewport: 0.55, 7.72, 6.68, 7.24
+    Text bottom: "no", "Time (s)"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 6.38, 7.70
+    Select inner viewport: 0.60, 7.70, 6.46, 7.62
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
-    
+
     Font size: 6
-    Colour: "{0.28, 0.28, 0.28}"
-    Text: 0.02, "left", 0.75, "half",
-        ... "##" + presetName$ + "##"
-        ... + "  " + original_name$
-        ... + "  |  Network: 30-8-2 MLP, ReLU + tanh, 266 params (hand-designed)"
-        ... + "  |  Features: MFCC(13) + |dMFCC|(13) + HNR + voicing + intensity + transient"
-    
-    Text: 0.02, "left", 0.28, "half",
-        ... "Delay: " + fixed$(delay_time_ms, 0) + " ms x " + string$(number_of_repeats)
-        ... + "  |  " + filterStr$
-        ... + "  |  Mix range: " + fixed$(mix_min, 2) + "-" + fixed$(mix_max, 2)
-        ... + "  |  Fb range: " + fixed$(fb_min, 2) + "-" + fixed$(fb_max, 2)
-        ... + "  |  Voiced: " + fixed$(voicedPct, 1) + "%"
-        ... + "  |  Out: " + fixed$(finalDur, 2) + " s, peak " + fixed$(finalPeak, 3)
-    
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input##  " + vizName$ + " | " + fixed$(duration, 2) + " s | frame step " + fixed$(frame_step_ms, 1) + " ms | smoothing " + fixed$(smooth_ms, 1) + " ms"
+    summary2$ = "##Network & controls##  30-8-2 MLP, 266 hand-designed params | mix " + fixed$(mix_min, 2) + "-" + fixed$(mix_max, 2) + " | feedback " + fixed$(fb_min, 2) + "-" + fixed$(fb_max, 2) + " | voiced " + fixed$(voicedPct, 1) + "\% "
+    summary3$ = "##Output##  delay " + fixed$(delay_time_ms, 0) + " ms x " + string$(number_of_repeats) + " | echo " + fixed$(mix_base, 2) + " | tap decay " + fixed$(feedback_base, 2) + " | " + filterStr$ + " | " + fixed$(finalDur, 2) + " s | peak " + fixed$(finalPeak, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
     Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 endif
 
 # ============================================

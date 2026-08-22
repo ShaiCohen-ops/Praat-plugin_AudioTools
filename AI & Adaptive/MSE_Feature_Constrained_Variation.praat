@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 1.5 (2026) - Clamped probabilities, exact duration, RNG reset
+# Version: 1.6 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -63,6 +63,19 @@
 #     steady tone's zero spectral flux is meaningful, and excluding it
 #     makes the metric blind to a transformation that introduces flux.
 #     That blind spot is the accepted cost of stable normalisation.
+#
+# Changelog v1.6 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; feature extraction, stochastic
+#     transformation search, z-score-normalized distance metric,
+#     transform probabilities/intensities and audio rendering are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, suite-standard title/subtitle, typography, neutral
+#     panel backgrounds, summary strip and full-page export viewport.
+#   - Preserved the six analytical views: original/output waveforms,
+#     original/output spectrograms, stochastic distance trace and
+#     per-dimension feature-difference bars.
+#   - Clarified that the iteration plot is a stochastic search trace,
+#     not a monotonic convergence/descent curve.
 #
 # Changelog v1.4 (2026):
 #
@@ -260,7 +273,7 @@ endif
 # ============================================================
 # FORM
 # ============================================================
-form MSE Feature-Constrained Variation v1.5
+form MSE Feature-Constrained Variation v1.6
     optionmenu Preset: 2
         option Subtle (spectral drift only)
         option Standard (balanced)
@@ -563,7 +576,7 @@ endif
 
 clearinfo
 writeInfoLine: "=============================================="
-appendInfoLine: "  MSE Feature-Constrained Variation v1.5"
+appendInfoLine: "  MSE Feature-Constrained Variation v1.6"
 appendInfoLine: "=============================================="
 appendInfoLine: ""
 appendInfoLine: "Input: ", originalName$,
@@ -1643,15 +1656,16 @@ appendInfoLine: "[4/4] Visualization..."
 
 if show_visualization = 1
 
-    # Re-extract transformed stats from final output for comparison
+    # Re-extract transformed stats from final output for comparison.
     selectObject: finalOutput
     finalCh = Get number of channels
+    vizOutPeak = Get absolute extremum: 0, 0, "None"
     if finalCh > 1
         finalVizMono = Convert to mono
     else
         finalVizMono = Copy: "final_viz"
     endif
-    
+
     selectObject: finalVizMono
     To MelSpectrogram: 0.025, 0.01, 24, 100, melMax
     vizMelSpec = selected("MelSpectrogram")
@@ -1659,23 +1673,23 @@ if show_visualization = 1
     vizMfcc = selected("MFCC")
     selectObject: vizMfcc
     vizNframes = Get number of frames
-    
+
     selectObject: finalVizMono
     To Harmonicity (cc): 0.01, 75, 0.1, 1.0
     vizHarm = selected("Harmonicity")
-    
+
     selectObject: finalVizMono
     vizDur = Get total duration
-    
+
     for d from 1 to nFeatPerFrame
         vizDimSum_'d' = 0
     endfor
-    
+
     vizPrevEnergy = 0
-    
+
     for af from 1 to nAnalysisFrames
         frameTime = vizDur * af / (nAnalysisFrames + 1)
-        
+
         mfccFrame = round(af / nAnalysisFrames * vizNframes)
         if mfccFrame < 1
             mfccFrame = 1
@@ -1683,7 +1697,7 @@ if show_visualization = 1
         if mfccFrame > vizNframes
             mfccFrame = vizNframes
         endif
-        
+
         for c from 1 to nMfccCoeffs
             selectObject: vizMfcc
             val = Get value in frame: mfccFrame, c
@@ -1692,14 +1706,14 @@ if show_visualization = 1
             endif
             vizDimSum_'c' = vizDimSum_'c' + val
         endfor
-        
+
         selectObject: vizHarm
         hval = Get value at time: frameTime, "Cubic"
         if hval = undefined
             hval = 0
         endif
         vizDimSum_13 = vizDimSum_13 + hval
-        
+
         segStart = frameTime - analysisWindowDur / 2
         segEnd = frameTime + analysisWindowDur / 2
         if segStart < 0
@@ -1711,27 +1725,27 @@ if show_visualization = 1
         if segEnd - segStart < 0.01
             segEnd = segStart + 0.01
         endif
-        
+
         selectObject: finalVizMono
         Extract part: segStart, segEnd, "Hanning", 1, "no"
         vizSeg = selected("Sound")
         To Spectrum: "yes"
         vizSpec = selected("Spectrum")
-        
+
         e1 = Get band energy: band1lo, band1hi
         e2 = Get band energy: band2lo, band2hi
         e3 = Get band energy: band3lo, band3hi
         e4 = Get band energy: band4lo, band4hi
-        
+
         vizDimSum_14 = vizDimSum_14 + e1
         vizDimSum_15 = vizDimSum_15 + e2
         vizDimSum_16 = vizDimSum_16 + e3
         vizDimSum_17 = vizDimSum_17 + e4
-        
+
         totalE = e1 + e2 + e3 + e4 + 1e-10
         centroid = (band1center * e1 + band2center * e2 + band3center * e3 + band4center * e4) / totalE
         vizDimSum_18 = vizDimSum_18 + centroid
-        
+
         if af > 1
             flux = totalE - vizPrevEnergy
             if flux < 0
@@ -1742,62 +1756,75 @@ if show_visualization = 1
         endif
         vizDimSum_19 = vizDimSum_19 + flux
         vizPrevEnergy = totalE
-        
+
         removeObject: vizSeg, vizSpec
     endfor
-    
+
     for d from 1 to nFeatPerFrame
         vizMean_'d' = vizDimSum_'d' / nAnalysisFrames
     endfor
-    
+
     removeObject: vizMelSpec, vizMfcc, vizHarm, finalVizMono
-    
-    # =============================================
-    # DRAW
-    # =============================================
+
+    if converged
+        convergeTxt$ = "yes, iteration " + string$(nIterationsRun)
+    else
+        convergeTxt$ = "no; best of " + string$(nIterationsRun)
+    endif
+
+    if intensityPinned
+        intensityTxt$ = fixed$(currentIntensity, 3) + " (pinned)"
+    else
+        intensityTxt$ = fixed$(currentIntensity, 3)
+    endif
+
+    vizName$ = replace$(originalName$, "_", "\_ ", 0)
+    pageHeight = 7.45
+    vizSpecMax = min(5000, sampleRate * 0.49)
+
     Erase all
-    
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.5
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half",
-        ... "##MSE Feature-Constrained Variation v1.5##"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.6, "half",
-        ... originalName$ + " | " + presetName$
-        ... + " | Target: " + fixed$(targetDistance, 3)
-        ... + " | Final distance: " + fixed$(bestMse, 4)
-    
-    # === ORIGINAL WAVEFORM ===
-    Select outer viewport: 0, 4, 0.6, 1.5
-    Select inner viewport: 0.6, 3.7, 0.7, 1.4
+    Text: 0.5, "centre", 0.68, "half", "##MSE Feature-Constrained Variation v1.6##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | target " + fixed$(targetDistance, 3) + " +/- " + fixed$(tolerance, 3) + " | final " + fixed$(bestMse, 4)
+
+    # === Waveforms: 4/4 grid ===
+    Select outer viewport: 0, 4, 0.68, 1.62
+    Select inner viewport: 0.60, 3.85, 0.82, 1.44
     selectObject: originalSound
-    Colour: "{0.3, 0.5, 0.8}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Amp"
-    Text top: "no", "Original: " + originalName$
-    
-    # === OUTPUT WAVEFORM ===
-    Select outer viewport: 4, 8, 0.6, 1.5
-    Select inner viewport: 4.4, 7.7, 0.7, 1.4
+    Text top: "no", "Original"
+
+    Select outer viewport: 4, 8, 0.68, 1.62
+    Select inner viewport: 4.45, 7.70, 0.82, 1.44
     selectObject: finalOutput
-    Colour: "{0.4, 0.6, 0.4}"
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Amp"
-    Text top: "no", "Experimental"
-    
-    # === ORIGINAL SPECTROGRAM ===
-    Select outer viewport: 0, 4, 1.6, 2.9
-    Select inner viewport: 0.6, 3.7, 1.7, 2.8
+    Text top: "no", "Experimental | " + fixed$(finalDur, 2) + " s | peak " + fixed$(vizOutPeak, 3)
+
+    # === Spectrograms: 4/4 grid ===
+    Select outer viewport: 0, 4, 1.82, 3.20
+    Select inner viewport: 0.60, 3.85, 2.02, 2.98
     selectObject: originalSound
     if numChannels > 1
         origViz = Convert to mono
@@ -1805,19 +1832,18 @@ if show_visualization = 1
         origViz = Copy: "orig_viz"
     endif
     selectObject: origViz
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.005, vizSpecMax, 0.002, 20, "Gaussian"
     specOrig = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizSpecMax, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Hz"
     Text top: "no", "Original Spectrogram"
     removeObject: specOrig, origViz
-    
-    # === OUTPUT SPECTROGRAM ===
-    Select outer viewport: 4, 8, 1.6, 2.9
-    Select inner viewport: 4.4, 7.7, 1.7, 2.8
+
+    Select outer viewport: 4, 8, 1.82, 3.20
+    Select inner viewport: 4.45, 7.70, 2.02, 2.98
     selectObject: finalOutput
     if finalCh > 1
         outViz = Convert to mono
@@ -1825,20 +1851,20 @@ if show_visualization = 1
         outViz = Copy: "out_viz"
     endif
     selectObject: outViz
-    To Spectrogram: 0.005, 5000, 0.002, 20, "Gaussian"
+    To Spectrogram: 0.005, vizSpecMax, 0.002, 20, "Gaussian"
     specOut = selected("Spectrogram")
-    Paint: 0, 0, 0, 5000, 100, "yes", 50, 6, 0, "no"
+    Paint: 0, 0, 0, vizSpecMax, 100, "yes", 50, 6, 0, "no"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Hz"
     Text top: "no", "Experimental Spectrogram"
     removeObject: specOut, outViz
-    
-    # === MSE CONVERGENCE CURVE ===
-    Select outer viewport: 0, 4, 3.0, 4.5
-    Select inner viewport: 0.6, 3.7, 3.1, 4.4
-    
+
+    # === Stochastic distance-search trace ===
+    Select outer viewport: 0, 4, 3.42, 5.02
+    Select inner viewport: 0.60, 3.85, 3.66, 4.78
+
     if nIterationsRun > 0
         minMse = 9999
         maxMse = 0
@@ -1851,37 +1877,32 @@ if show_visualization = 1
                 maxMse = val
             endif
         endfor
-        
+
         if loBound < minMse
             minMse = loBound
         endif
         if hiBound > maxMse
             maxMse = hiBound
         endif
-        
+
         mseRange = maxMse - minMse
         if mseRange < 0.01
             mseRange = 0.01
         endif
         plotLo = minMse - mseRange * 0.15
         plotHi = maxMse + mseRange * 0.15
-        
+
         Axes: 0.5, nIterationsRun + 0.5, plotLo, plotHi
-        Paint rectangle: "{0.97, 0.97, 0.97}",
-            ... 0.5, nIterationsRun + 0.5, plotLo, plotHi
-        
-        # Target band
-        Paint rectangle: "{0.85, 0.95, 0.85}",
-            ... 0.5, nIterationsRun + 0.5, loBound, hiBound
-        
-        # Target + bounds
-        Colour: "{0.6, 0.8, 0.6}"
-        Dotted line
+        Paint rectangle: "{0.97, 0.97, 0.97}", 0.5, nIterationsRun + 0.5, plotLo, plotHi
+
+        Paint rectangle: "{0.90, 0.95, 0.90}", 0.5, nIterationsRun + 0.5, loBound, hiBound
+
+        Colour: "{0.55, 0.65, 0.55}"
+        Dashed line
         Draw line: 0.5, targetDistance, nIterationsRun + 0.5, targetDistance
         Solid line
-        
-        # MSE curve
-        Colour: "{0.8, 0.3, 0.3}"
+
+        Colour: "{0.75, 0.25, 0.25}"
         Line width: 2
         for ci from 1 to nIterationsRun
             val = mseHistory_'ci'
@@ -1890,26 +1911,25 @@ if show_visualization = 1
                 prev = mseHistory_'ciPrev'
                 Draw line: ciPrev, prev, ci, val
             endif
-            Paint circle (mm): "{0.8, 0.3, 0.3}", ci, val, 1.2
+            Paint circle (mm): "{0.75, 0.25, 0.25}", ci, val, 1.0
         endfor
         Line width: 1
     else
         Axes: 0, 1, 0, 1
         Paint rectangle: "{0.97, 0.97, 0.97}", 0, 1, 0, 1
     endif
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Distance"
-    Text bottom: "yes", "Iteration"
-    Text top: "no", "Distance Convergence (z-score normalized)"
-    
-    # === PER-DIMENSION COMPARISON (orig vs transformed means) ===
-    Select outer viewport: 4, 8, 3.0, 4.5
-    Select inner viewport: 4.4, 7.7, 3.1, 4.4
-    
-    # Compute per-dim absolute difference for bar height
+    Text bottom: "no", "Iteration"
+    Text top: "no", "Stochastic Search Trace | green band = accepted target range"
+
+    # === Per-dimension mean difference ===
+    Select outer viewport: 4, 8, 3.42, 5.02
+    Select inner viewport: 4.45, 7.70, 3.66, 4.78
+
     maxDimDiff = 0
     for d from 1 to nFeatPerFrame
         dimDiff_'d' = origMean_'d' - vizMean_'d'
@@ -1923,122 +1943,92 @@ if show_visualization = 1
     if maxDimDiff < 0.01
         maxDimDiff = 0.01
     endif
-    
+
     Axes: 0.5, nFeatPerFrame + 0.5, 0, maxDimDiff * 1.15
-    Paint rectangle: "{0.97, 0.97, 0.97}",
-        ... 0.5, nFeatPerFrame + 0.5, 0, maxDimDiff * 1.15
-    
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0.5, nFeatPerFrame + 0.5, 0, maxDimDiff * 1.15
+
     for d from 1 to nFeatPerFrame
-        # Colour by feature type
         if d <= 12
-            barColor$ = "{0.3, 0.5, 0.8}"
+            barColor$ = "{0.25, 0.45, 0.75}"
         elsif d = 13
-            barColor$ = "{0.6, 0.3, 0.7}"
+            barColor$ = "{0.55, 0.30, 0.70}"
         elsif d <= 17
-            barColor$ = "{0.9, 0.6, 0.2}"
+            barColor$ = "{0.80, 0.55, 0.20}"
         elsif d = 18
-            barColor$ = "{0.2, 0.7, 0.6}"
+            barColor$ = "{0.25, 0.60, 0.60}"
         else
-            barColor$ = "{0.8, 0.3, 0.3}"
+            barColor$ = "{0.75, 0.25, 0.25}"
         endif
-        Paint rectangle: barColor$, d - 0.4, d + 0.4, 0, dimDiff_'d'
+        Paint rectangle: barColor$, d - 0.38, d + 0.38, 0, dimDiff_'d'
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "|Diff|"
-    Text bottom: "yes", "1-12:MFCC  13:Harm  14-17:Band  18:Cent  19:Flux"
-    Text top: "no", "Per-Dimension Mean Difference"
-    
-    # === STATS PANEL ===
-    Select outer viewport: 0, 8, 4.6, 5.5
-    Select inner viewport: 0.6, 7.7, 4.7, 5.45
-    Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.02, "left", 0.88, "half", "##Variation Summary##"
-    Font size: 6
-    Colour: "{0.3, 0.3, 0.35}"
-    
-    if converged
-        convergeTxt$ = "YES (iter " + string$(nIterationsRun) + ")"
-    else
-        convergeTxt$ = "NO (best of " + string$(nIterationsRun) + ")"
-    endif
-    
-    Text: 0.02, "left", 0.68, "half",
-        ... "Input: " + originalName$ + " | "
-        ... + fixed$(totalDur, 2) + "s | "
-        ... + string$(sampleRate) + " Hz | Preset: " + presetName$
-    Text: 0.02, "left", 0.48, "half",
-        ... "Distance: " + fixed$(bestMse, 4)
-        ... + " | Target: " + fixed$(targetDistance, 3)
-        ... + " +/- " + fixed$(tolerance, 3)
-        ... + " | Converged: " + convergeTxt$
-    Text: 0.02, "left", 0.28, "half",
-        ... "Tilt: " + fixed$(tiltScale, 1)
-        ... + " | SegEmph: " + fixed$(segEmphScale, 1)
-        ... + " | Noise: " + fixed$(noiseLevel, 3)
-        ... + " | AM: " + fixed$(amDepthMax, 2)
-        ... + " | Intensity: " + fixed$(currentIntensity, 3)
-    Text: 0.02, "left", 0.08, "half",
-        ... "Centroid: " + fixed$(origMean_18, 0)
-        ... + " -> " + fixed$(vizMean_18, 0) + " Hz"
-        ... + " | Harm: " + fixed$(origMean_13, 1)
-        ... + " -> " + fixed$(vizMean_13, 1) + " dB"
-        ... + " | Flux: " + fixed$(origMean_19, 3)
-        ... + " -> " + fixed$(vizMean_19, 3)
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
-    
-    # === LEGEND ===
-    Select outer viewport: 0, 8, 5.55, 5.85
+    Text left: "yes", "|Difference|"
+    Text bottom: "no", "Feature dimension"
+    Text top: "no", "Per-Dimension Mean Difference | raw feature units"
+
+    # === Feature legend ===
+    Select outer viewport: 0, 8, 5.18, 5.54
+    Select inner viewport: 0.60, 7.70, 5.23, 5.49
     Axes: 0, 1, 0, 1
     Font size: 6
-    
-    Colour: "{0.3, 0.5, 0.8}"
-    Draw line: 0.02, 0.5, 0.06, 0.5
+
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw line: 0.02, 0.50, 0.055, 0.50
     Colour: "Black"
-    Text: 0.07, "left", 0.5, "half", "Original/MFCC"
-    
-    Colour: "{0.4, 0.6, 0.4}"
-    Draw line: 0.20, 0.5, 0.24, 0.5
+    Text: 0.065, "left", 0.50, "half", "1-12 MFCC"
+
+    Colour: "{0.55, 0.30, 0.70}"
+    Draw line: 0.23, 0.50, 0.265, 0.50
     Colour: "Black"
-    Text: 0.25, "left", 0.5, "half", "Experimental"
-    
-    Colour: "{0.8, 0.3, 0.3}"
-    Line width: 2
-    Draw line: 0.38, 0.5, 0.42, 0.5
-    Line width: 1
+    Text: 0.275, "left", 0.50, "half", "13 Harmonicity"
+
+    Colour: "{0.80, 0.55, 0.20}"
+    Draw line: 0.45, 0.50, 0.485, 0.50
     Colour: "Black"
-    Text: 0.43, "left", 0.5, "half", "Distance/Flux"
-    
-    Colour: "{0.6, 0.3, 0.7}"
-    Draw line: 0.54, 0.5, 0.58, 0.5
+    Text: 0.495, "left", 0.50, "half", "14-17 Bands"
+
+    Colour: "{0.25, 0.60, 0.60}"
+    Draw line: 0.66, 0.50, 0.695, 0.50
     Colour: "Black"
-    Text: 0.59, "left", 0.5, "half", "Harm"
-    
-    Colour: "{0.9, 0.6, 0.2}"
-    Draw line: 0.67, 0.5, 0.71, 0.5
+    Text: 0.705, "left", 0.50, "half", "18 Centroid"
+
+    Colour: "{0.75, 0.25, 0.25}"
+    Draw line: 0.84, 0.50, 0.875, 0.50
     Colour: "Black"
-    Text: 0.72, "left", 0.5, "half", "Bands"
-    
-    Colour: "{0.2, 0.7, 0.6}"
-    Draw line: 0.80, 0.5, 0.84, 0.5
+    Text: 0.885, "left", 0.50, "half", "19 Flux"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.72, 7.40
+    Select inner viewport: 0.60, 7.70, 5.82, 7.30
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Input & metric##  " + vizName$ + " | " + fixed$(totalDur, 2) + " s | " + string$(sampleRate) + " Hz | bag-of-frames mean+variance | " + string$(nDeadDims) + " dead dimensions excluded"
+    summary2$ = "##Search##  target " + fixed$(targetDistance, 3) + " +/- " + fixed$(tolerance, 3) + " | best " + fixed$(bestMse, 4) + " | converged " + convergeTxt$ + " | intensity " + intensityTxt$ + " | seed " + seedLabel$
+    summary3$ = "##Output##  centroid " + fixed$(origMean_18, 0) + " -> " + fixed$(vizMean_18, 0) + " Hz | harmonicity " + fixed$(origMean_13, 1) + " -> " + fixed$(vizMean_13, 1) + " dB | flux " + fixed$(origMean_19, 3) + " -> " + fixed$(vizMean_19, 3) + " | mono"
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
     Colour: "Black"
-    Text: 0.85, "left", 0.5, "half", "Centroid"
-    
-    Paint rectangle: "{0.85, 0.95, 0.85}", 0.93, 0.96, 0.3, 0.7
-    Text: 0.97, "left", 0.5, "half", "Target"
-    
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
+    Line width: 1
+    Solid line
 
 else
     appendInfoLine: "  (Visualization skipped)"
 endif
+
 # ============================================================
 # Final
 # ============================================================

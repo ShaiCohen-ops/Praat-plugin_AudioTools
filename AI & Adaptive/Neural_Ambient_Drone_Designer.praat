@@ -3,7 +3,7 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.9 (2026) - Honest cluster count, ordered seeding, smooth tiles
+# Version: 1.0 (2026) - Suite-standard visualization
 #
 # Changelog v0.9 (2026):
 #
@@ -47,6 +47,21 @@
 #     and the Shimmer_intervals option "Full harmonic series" renamed
 #     Extended interval set: it is a mixed set of up and down
 #     transpositions, not a harmonic series.
+#
+# Changelog v1.0 (2026):
+#
+#   VISUALIZATION STANDARDIZATION ONLY; k-means feature clustering,
+#   highest-HNR cluster selection, layer generation, shimmer tiling,
+#   true grain crossfades, stereo synthesis and final normalization are
+#   unchanged from v0.9.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, suite-standard title/subtitle, typography,
+#     neutral panel backgrounds, summary strip and full-page export.
+#   - Preserved the script-specific visualization: source waveform,
+#     HNR-over-time cluster map with the selected cluster emphasized,
+#     and final drone waveform.
+#   - Replaced the in-plot legend and single-line info box with a
+#     three-line Input / Clustering / Output summary.
 #
 # Version: 0.8 (2026) - Aligned grid, tiled shimmer, real cluster count
 # License: MIT License
@@ -234,7 +249,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form Cluster-Based Ambient Drone Designer v0.9
+form Cluster-Based Ambient Drone Designer v1.0
     optionmenu Preset: 1
         option Manual
         option Dark Ambient
@@ -447,7 +462,7 @@ if fade < crossfadeSec - 1e-9
 endif
 
 clearinfo
-writeInfoLine: "=== Cluster-Based Ambient Drone Designer v0.9 ==="
+writeInfoLine: "=== Cluster-Based Ambient Drone Designer v1.0 ==="
 appendInfoLine: "Seed: ", seedStr$
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Duration: ", output_duration_sec, " s | Layers: ", layer_density
@@ -1163,34 +1178,67 @@ endfor
 appendInfoLine: ""
 appendInfoLine: "Creating visualization..."
 
-Erase all
+selectObject: finalOut
+vizOutDur = Get total duration
+vizOutPeak = Get absolute extremum: 0, 0, "None"
+vizOutChannels = Get number of channels
 
-# === TITLE ===
-Select outer viewport: 1, 8, 0, 0.5
+vizSndName$ = replace$(sndName$, "_", "\_ ", 0)
+
+if shimmer_intervals = 1
+    shimmerMode$ = "octaves"
+elsif shimmer_intervals = 2
+    shimmerMode$ = "octaves + fifths"
+else
+    shimmerMode$ = "extended interval set"
+endif
+
+if add_octave_shimmer
+    shimmerDesc$ = fixed$(100 * shimmer_probability, 0) + "\% " + shimmerMode$
+else
+    shimmerDesc$ = "off"
+endif
+
+if stereo_output
+    stereoDesc$ = "stereo width " + fixed$(stereo_width, 2)
+else
+    stereoDesc$ = "mono output"
+endif
+
+pageHeight = 6.75
+Erase all
+Line width: 1
+Colour: "Black"
+Solid line
+Select outer viewport: 0, 8, 0, pageHeight
+
+# === Header ===
+Select outer viewport: 0, 8, 0, 0.52
+Select inner viewport: 0.60, 7.70, 0.02, 0.50
 Axes: 0, 1, 0, 1
 Font size: 12
 Colour: "Black"
-Text: 0.5, "centre", 0.5, "half", "##Cluster-Based Ambient Drone## | " + presetName$ + " | " + string$(nLayers) + " layers"
+Text: 0.5, "centre", 0.68, "half", "##Cluster-Based Ambient Drone Designer v1.0##"
+Font size: 7
+Colour: "{0.35, 0.35, 0.50}"
+Text: 0.5, "centre", 0.22, "half", vizSndName$ + " | " + presetName$ + " | " + string$(nLayers) + " layers | " + string$(nActiveClusters) + "/" + string$(number_of_clusters) + " active clusters"
 
-# === SOURCE WAVEFORM ===
-Select outer viewport: 0, 8, 0.6, 2.0
-Select inner viewport: 0.8, 7.6, 0.8, 1.8
-
+# === Source waveform ===
+Select outer viewport: 0, 8, 0.68, 1.62
+Select inner viewport: 0.60, 7.70, 0.82, 1.44
 selectObject: snd
-Colour: "{0.5, 0.5, 0.5}"
+Colour: "{0.55, 0.55, 0.55}"
 Draw: 0, 0, 0, 0, "no", "Curve"
-
 Colour: "Black"
 Draw inner box
 Font size: 7
-Select outer viewport: 0.15, 8, 0.6, 2.0
 Text left: "yes", "Source"
+Text top: "no", "Source Sound | " + fixed$(dur, 2) + " s"
 
-# === CLUSTER ANALYSIS (HNR over time with cluster coloring) ===
-Select outer viewport: 0, 8, 2.1, 3.8
-Select inner viewport: 0.8, 7.6, 2.3, 3.6
+# === HNR cluster analysis ===
+Select outer viewport: 0, 8, 1.84, 4.34
+Select inner viewport: 0.60, 7.70, 2.10, 4.10
 
-# Find HNR range
 hnr_min = 1e9
 hnr_max = -1e9
 for i from 1 to nGrains
@@ -1207,72 +1255,80 @@ if hnr_range < 1
     hnr_range = 1
 endif
 
-Axes: 0, dur, hnr_min - 2, hnr_max + 2
+plotHnrLo = hnr_min - max(2, hnr_range * 0.08)
+plotHnrHi = hnr_max + max(2, hnr_range * 0.08)
+Axes: 0, dur, plotHnrLo, plotHnrHi
+Paint rectangle: "{0.97, 0.97, 0.97}", 0, dur, plotHnrLo, plotHnrHi
 
-# Background
-Paint rectangle: "{0.95, 0.95, 0.95}", 0, dur, hnr_min - 2, hnr_max + 2
-
-# Draw grains colored by cluster
+# Draw all grains; selected highest-HNR cluster gets one consistent green.
 for i from 1 to nGrains
     t = grain_time#[i]
     h = feat_hnr#[i]
     cluster = assigns#[i]
-    
-    # Color by cluster - put color directly in Paint command
+
     if cluster = best_cluster
-        Paint circle (mm): "{0.2, 0.7, 0.3}", t, h, 1.0
-    elsif cluster = 1
-        Paint circle (mm): "{0.7, 0.3, 0.3}", t, h, 1.0
-    elsif cluster = 2
-        Paint circle (mm): "{0.3, 0.3, 0.7}", t, h, 1.0
-    elsif cluster = 3
-        Paint circle (mm): "{0.7, 0.5, 0.2}", t, h, 1.0
+        pointColor$ = "{0.25, 0.65, 0.35}"
+        pointSize = 1.15
     else
-        Paint circle (mm): "{0.5, 0.5, 0.5}", t, h, 1.0
+        if number_of_clusters > 1
+            colorFrac = (cluster - 1) / (number_of_clusters - 1)
+        else
+            colorFrac = 0
+        endif
+        cR = 0.35 + 0.35 * colorFrac
+        cG = 0.40 - 0.10 * colorFrac
+        cB = 0.70 - 0.20 * colorFrac
+        pointColor$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
+        pointSize = 0.85
     endif
+
+    Paint circle (mm): pointColor$, t, h, pointSize
 endfor
 
-# Mark selected cluster
-Colour: "Black"
-Font size: 6
-Text: dur * 0.02, "left", hnr_max, "top", "Green = Selected (Cluster " + string$(best_cluster) + ")"
-
 Colour: "Black"
 Draw inner box
 Font size: 7
-Select outer viewport: 0.15, 8, 2.1, 3.8
 Text left: "yes", "HNR (dB)"
+Text bottom: "no", "Time (s)"
+Text top: "no", "Cluster Analysis | green = selected highest-HNR cluster " + string$(best_cluster)
 
-# === OUTPUT WAVEFORM ===
-Select outer viewport: 0, 8, 3.9, 5.5
-Select inner viewport: 0.8, 7.6, 4.1, 5.3
-
+# === Output waveform ===
+Select outer viewport: 0, 8, 4.56, 5.68
+Select inner viewport: 0.60, 7.70, 4.74, 5.46
 selectObject: finalOut
-Colour: "{0.3, 0.5, 0.7}"
+Colour: "{0.25, 0.45, 0.75}"
 Draw: 0, 0, 0, 0, "no", "Curve"
-
 Colour: "Black"
 Draw inner box
 Font size: 7
-Select outer viewport: 0.15, 8, 3.9, 5.5
 Text left: "yes", "Output"
-Text bottom: "yes", "Time (s)"
+Text bottom: "no", "Time (s)"
+Text top: "no", "Ambient Drone Output | " + fixed$(vizOutDur, 2) + " s | " + string$(vizOutChannels) + " ch | peak " + fixed$(vizOutPeak, 3)
 
-# === INFO BOX ===
-Select outer viewport: 0, 8, 5.6, 6.1
+# === Summary strip ===
+Select outer viewport: 0, 8, 5.90, 6.70
+Select inner viewport: 0.60, 7.70, 5.98, 6.62
 Axes: 0, 1, 0, 1
+Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
 Font size: 6
-Colour: "{0.4, 0.4, 0.4}"
+Colour: "{0.25, 0.25, 0.35}"
+summary1$ = "##Input##  " + vizSndName$ + " | " + fixed$(dur, 2) + " s | grain " + fixed$(grain_size_ms, 1) + " ms | crossfade " + fixed$(fade * 1000, 1) + " ms | " + string$(nGrains) + " analysis grains"
+summary2$ = "##Clustering##  k-means " + string$(kmeans_iterations) + " iterations | " + string$(nActiveClusters) + "/" + string$(number_of_clusters) + " active | selected cluster " + string$(best_cluster) + " | selected grains " + string$(tonal_count) + "/" + string$(nGrains)
+summary3$ = "##Output##  " + string$(nLayers) + " layers | shimmer " + shimmerDesc$ + " | " + stereoDesc$ + " | requested " + fixed$(output_duration_sec, 2) + " s | rendered " + fixed$(vizOutDur, 2) + " s"
+Text: 0.02, "left", 0.78, "half", summary1$
+Text: 0.02, "left", 0.50, "half", summary2$
+Text: 0.02, "left", 0.22, "half", summary3$
 
-shimmerText$ = ""
-if add_octave_shimmer
-    shimmerText$ = " | Shimmer: " + fixed$(shimmer_probability * 100, 0) + "%"
-endif
+Colour: "Black"
+Draw inner box
 
-Text: 0.5, "centre", 0.5, "half", "Grain: " + string$(grain_size_ms) + "ms | Clusters: " + string$(nActiveClusters) + " active of " + string$(number_of_clusters) + " | Selected grains: " + string$(tonal_count) + "/" + string$(nGrains) + shimmerText$
-
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
 Font size: 10
 Colour: "Black"
+Line width: 1
+Solid line
 
 # ============================================
 # CLEANUP & FINISH

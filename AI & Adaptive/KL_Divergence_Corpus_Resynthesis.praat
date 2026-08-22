@@ -3,9 +3,24 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 2.0 (2026) - Unified hop, normalised OLA, corrected KL denominator
+# Version: 2.1 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.1 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; corpus loading, feature
+#     extraction, histogram construction, greedy KL-driven selection,
+#     candidate sampling, normalized Hann overlap-add and final rendering
+#     are unchanged from v2.0.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, standard title/subtitle, suite typography,
+#     neutral panel backgrounds, summary strip and full-page export.
+#   - Preserved the defining visualization: reference distribution P
+#     versus achieved output distribution Q for the most informative
+#     feature dimension.
+#   - Added a rendered-output waveform panel and clarified in the summary
+#     that the reported KL is the mean of per-dimension marginals, not a
+#     joint multidimensional KL.
 #
 # Changelog v2.0:
 #
@@ -135,7 +150,7 @@
 # Category: Concatenative / Information-Theoretic Synthesis
 # ========================================================================================
 
-form KL Divergence Corpus Resynthesis v2.0
+form KL Divergence Corpus Resynthesis v2.1
     sentence Corpus_A_folder
     sentence Corpus_B_folder
     optionmenu Preset: 1
@@ -259,7 +274,7 @@ if frame_length < 0.005
 endif
 
 clearinfo
-writeInfoLine: "=== KL Divergence Corpus Resynthesis v2.0 ==="
+writeInfoLine: "=== KL Divergence Corpus Resynthesis v2.1 ==="
 appendInfoLine: ""
 if warnLines$ <> ""
     appendInfoLine: "Adjustments:"
@@ -1171,15 +1186,13 @@ appendInfoLine: ""
 appendInfoLine: "Result Sound: KL_Divergence_Corpus_Resynthesis (kept open)"
 
 # ========================================================================================
-# VISUALIZATION: reference P vs achieved Q for one feature dimension
-#   (shows how closely the mosaic's distribution matched the target).
+# VISUALIZATION
 # ========================================================================================
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing distribution match..."
 
-    # choose the dimension to show: the one with the largest P spread
-    # (most informative). featDim columns; pick max range of P over bins.
+    # Choose the dimension to show: the one with the largest P spread.
     vizDim = colCEN
     bestSpread = -1
     for d to featDim
@@ -1201,12 +1214,13 @@ if draw_visualization
         endif
     endfor
 
-    # normalise achieved Q for the chosen dim
+    # Normalize achieved Q for the chosen dimension.
     b0 = (vizDim - 1) * nBins
     qsum = 0
     for b to nBins
         qsum = qsum + qVec#[b0 + b] + eps
     endfor
+
     pMax = 0
     for b to nBins
         pv = pVec#[b0 + b]
@@ -1226,53 +1240,111 @@ if draw_visualization
     if vizDim = colINT
         dimName$ = "Intensity (dB, frame centre)"
     elsif vizDim = colCEN
-        dimName$ = "spectral centroid"
+        dimName$ = "Spectral centroid"
     elsif vizDim = colSPR
-        dimName$ = "spectral spread"
+        dimName$ = "Spectral spread"
     endif
 
+    selectObject: resultID
+    vizOutPeak = Get absolute extremum: 0, 0, "None"
+    vizOutCh = Get number of channels
+
+    if candidate_pool = 0
+        poolDesc$ = "all Corpus B grains"
+    else
+        poolDesc$ = string$(candidate_pool) + " candidates/step"
+    endif
+
+    pageHeight = 6.65
     Erase all
-    # title band: ONE line (preset folded in), like Bayesian_Drone_Weaver
-    Select outer viewport: 0, 8, 0, 0.6
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
-    Black
-    Font size: 13
-    Text: 0.5, "centre", 0.5, "half",
-        ... "##KL Corpus Resynthesis##  -  " + presetName$ + ",  " + dimName$
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##KL Divergence Corpus Resynthesis v2.1##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", presetName$ + " | " + mode$ + " | " + dimName$ + " | KL " + fixed$(klInitial, 4) + " -> " + fixed$(klFinal, 4)
 
-    # panel
-    Select outer viewport: 0, 8, 0.8, 3.6
-    Select inner viewport: 0.9, 7.7, 1.0, 3.4
-    Axes: 0, nBins, 0, pMax * 1.1
-    Paint rectangle: "{0.97, 0.97, 0.98}", 0, nBins, 0, pMax * 1.1
-    Marks bottom: 5, "yes", "yes", "no"
-    Marks left: 5, "yes", "yes", "no"
-    Text bottom: "yes", "histogram bin"
-    Text left: "yes", "probability"
+    # === Reference P vs achieved Q ===
+    Select outer viewport: 0, 8, 0.72, 3.72
+    Select inner viewport: 0.60, 7.70, 1.02, 3.48
+    Axes: 0, nBins, 0, pMax * 1.12
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, nBins, 0, pMax * 1.12
 
-    # P bars (reference, light blue) ; Q bars (achieved, red, narrower)
     for b to nBins
         pv = pVec#[b0 + b]
         qv = (qVec#[b0 + b] + eps) / qsum
         Paint rectangle: "{0.78, 0.84, 0.95}", b - 0.92, b - 0.08, 0, pv
-        Paint rectangle: "{0.75, 0.20, 0.20}", b - 0.66, b - 0.34, 0, qv
+        Paint rectangle: "{0.75, 0.25, 0.25}", b - 0.66, b - 0.34, 0, qv
     endfor
-    Colour: "{0, 0, 0}"
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Probability"
+    Text bottom: "no", "Histogram bin"
+    Text top: "no", "Distribution Match | blue P reference (Corpus A) | red Q output from Corpus B"
+
+    # === Legend strip ===
+    Select outer viewport: 0, 8, 3.80, 4.16
+    Select inner viewport: 0.60, 7.70, 3.86, 4.10
+    Axes: 0, 1, 0, 1
+    Font size: 6
+
+    Paint rectangle: "{0.78, 0.84, 0.95}", 0.02, 0.045, 0.35, 0.65
+    Colour: "Black"
+    Text: 0.055, "left", 0.50, "half", "P reference"
+    Paint rectangle: "{0.75, 0.25, 0.25}", 0.23, 0.255, 0.35, 0.65
+    Text: 0.265, "left", 0.50, "half", "Q achieved"
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.48, "left", 0.50, "half", "Shown dimension = largest P histogram spread"
+
+    # === Rendered output waveform ===
+    Select outer viewport: 0, 8, 4.34, 5.34
+    Select inner viewport: 0.60, 7.70, 4.52, 5.14
+    selectObject: resultID
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw: 0, 0, 0, 0, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amp"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Rendered Mosaic | " + fixed$(finalDur, 2) + " s | " + string$(vizOutCh) + " ch | peak " + fixed$(vizOutPeak, 3)
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.54, 6.60
+    Select inner viewport: 0.60, 7.70, 5.62, 6.52
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Corpora##  A " + string$(nAFiles) + " files | B " + string$(nBFiles) + " files, " + string$(nBGrains) + " grains | selected " + string$(nSel) + " | " + string$(featDim) + " feature dimensions | " + string$(nBins) + " bins"
+    summary2$ = "##KL selection##  " + mode$ + " | mean of per-dimension marginals, not joint KL | " + poolDesc$ + " | seed " + seedLabel$ + " | " + fixed$(klInitial, 5) + " -> " + fixed$(klFinal, 5)
+    summary3$ = "##Time base & output##  frame " + fixed$(frame_length * 1000, 1) + " ms | hop " + fixed$(hop_size * 1000, 1) + " ms | overlap 1:" + string$(hopDiv) + " | normalized Hann OLA | mono output | " + fixed$(finalDur, 2) + " s"
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
     Draw inner box
 
-    # legend band: ONE row of swatches + labels + stats, all left-aligned
-    Select outer viewport: 0, 8, 3.7, 4.3
-    Axes: 0, 1, 0, 1
-    Font size: 8
-    Paint rectangle: "{0.78, 0.84, 0.95}", 0.02, 0.05, 0.40, 0.62
-    Text: 0.07, "left", 0.5, "half", "P reference (A)"
-    Paint rectangle: "{0.75, 0.20, 0.20}", 0.30, 0.32, 0.40, 0.62
-    Text: 0.34, "left", 0.5, "half", "Q output (B)"
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.60, "left", 0.5, "half",
-        ... mode$ + "  |  bins " + string$(nBins) +
-        ... "  |  KL " + fixed$(klInitial, 3) + " -> " + fixed$(klFinal, 3)
-    Black
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
+    Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
+
     appendInfoLine: "  Visualization complete (dimension: ", dimName$, ")."
 endif
 

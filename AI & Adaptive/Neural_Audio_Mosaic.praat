@@ -80,7 +80,21 @@
 #     - Both inputs are downmixed to mono; the stereo output is
 #       synthesised by choosing a different source grain per channel.
 #
-# Version: 0.8 (2026) - Last grain placed where it was analysed
+# Version: 0.9 (2026) - Suite-standard visualization
+#
+# Changelog v0.9 (2026):
+#
+#   VISUALIZATION STANDARDIZATION ONLY; feature extraction, weighted
+#   nearest-neighbour search, stochastic/exhaustive matching, exact
+#   window-sum OLA, end-grain placement and stereo variation are
+#   unchanged from v0.8.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, suite-standard title/subtitle, typography,
+#     neutral panel backgrounds, summary strip and full-page export.
+#   - Preserved the script-specific visual idea: Source waveform ->
+#     target/source grain trajectory map -> Mosaic output.
+#   - Replaced the dark stats bar with the shared three-line summary and
+#     added draw-safe Target/Source names plus search/output details.
 #
 # Changelog v0.8 (2026):
 #
@@ -175,7 +189,7 @@ endif
 id1 = selected("Sound", 1)
 id2 = selected("Sound", 2)
 
-form Feature-Matched Audio Mosaic v0.8
+form Feature-Matched Audio Mosaic v0.9
     comment Top selected Sound = Target, lower one = Source (list order)
     optionmenu Preset: 1
         option Manual
@@ -345,7 +359,7 @@ if durTarget < grainSec or durSource < grainSec
 endif
 
 clearinfo
-writeInfoLine: "=== Feature-Matched Audio Mosaic v0.8 ==="
+writeInfoLine: "=== Feature-Matched Audio Mosaic v0.9 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Target: ", targetName$, " (", fixed$(durTarget, 2), " s)"
 appendInfoLine: "Source: ", sourceName$, " (", fixed$(durSource, 2), " s)"
@@ -1054,61 +1068,67 @@ if normalize_volume
 endif
 
 # ============================================================
-# VISUALIZATION (Creative & Colorful AudioTools Style)
+# VISUALIZATION
 # ============================================================
+
+selectObject: finalOut
+vizOutDur = Get total duration
+vizOutPeak = Get absolute extremum: 0, 0, "None"
+vizOutChannels = Get number of channels
+
+if search_mode = 1
+    searchDesc$ = "stochastic, " + string$(search_probes) + " probes"
+else
+    searchDesc$ = "exhaustive"
+endif
+
+if stereo_output
+    outputDesc$ = "stereo variation " + fixed$(stereo_variation, 2)
+else
+    outputDesc$ = "mono"
+endif
+
+targetVizName$ = replace$(targetName$, "_", "\_ ", 0)
+sourceVizName$ = replace$(sourceName$, "_", "\_ ", 0)
+
+pageHeight = 7.15
 Erase all
-
-# Setup base font and styling
-Helvetica
 Line width: 1
+Colour: "Black"
+Solid line
+Select outer viewport: 0, 8, 0, pageHeight
 
-# === GLOBAL HEADER ===
-Select outer viewport: 0, 8, 0, 0.6
-Select inner viewport: 0.8, 7.6, 0.1, 0.5
+# === Header ===
+Select outer viewport: 0, 8, 0, 0.52
+Select inner viewport: 0.60, 7.70, 0.02, 0.50
 Axes: 0, 1, 0, 1
-
-# Title and Subtitle
-Font size: 14
+Font size: 12
 Colour: "Black"
-Text: 0.5, "centre", 0.6, "half", "FEATURE-MATCHED AUDIO MOSAIC"
-Font size: 9
-Colour: "{0.5, 0.5, 0.5}"
-Text: 0.5, "centre", 0.1, "half", "Concatenative Synthesis Reconstruction Map"
+Text: 0.5, "centre", 0.68, "half", "##Feature-Matched Audio Mosaic v0.9##"
+Font size: 7
+Colour: "{0.35, 0.35, 0.50}"
+Text: 0.5, "centre", 0.22, "half", "Target " + targetVizName$ + " | Source " + sourceVizName$ + " | " + presetName$ + " | " + searchDesc$
 
-# Divider Line
-Line width: 2
-Colour: "{0.2, 0.2, 0.2}"
-Draw line: 0, -0.2, 1, -0.2
-Line width: 1
-
-# === PANEL 1: SOURCE WAVEFORM ===
-Select outer viewport: 0, 8, 0.7, 2.0
-Select inner viewport: 0.8, 7.6, 0.7, 1.9
-
+# === Source waveform ===
+Select outer viewport: 0, 8, 0.68, 1.60
+Select inner viewport: 0.60, 7.70, 0.82, 1.42
 selectObject: id2
-# Cool Slate Blue
-Colour: "{0.4, 0.5, 0.6}"
+Colour: "{0.55, 0.55, 0.55}"
 Draw: 0, 0, 0, 0, "no", "Curve"
-
 Colour: "Black"
 Draw inner box
-Font size: 8
-Select outer viewport: 0.15, 8, 0.7, 2.0
+Font size: 7
 Text left: "yes", "Source"
+Text top: "no", "Source Corpus | " + sourceVizName$ + " | " + fixed$(durSource, 2) + " s"
 
-# === PANEL 2: CREATIVE GRAIN TRAJECTORY MAP ===
-Select outer viewport: 0, 8, 2.1, 4.5
-Select inner viewport: 0.8, 7.6, 2.1, 4.3
-
+# === Target -> source grain trajectory map ===
+Select outer viewport: 0, 8, 1.82, 4.56
+Select inner viewport: 0.60, 7.70, 2.08, 4.32
 Axes: 0, durTarget, 0, durSource
-Colour: "Black"
-Draw inner box
-Font size: 8
-Text left: "yes", "Source Time"
-Text bottom: "no", "Target Time"
+Paint rectangle: "{0.97, 0.97, 0.97}", 0, durTarget, 0, durSource
 
-# 1. Draw the "Playhead Trajectory" (connecting lines)
-Colour: "{0.85, 0.85, 0.85}"
+# Connecting trajectory.
+Colour: "{0.80, 0.80, 0.80}"
 Line width: 1
 for g from 2 to nTarget
     x1 = tTime#[g-1]
@@ -1118,67 +1138,77 @@ for g from 2 to nTarget
     Draw line: x1, y1, x2, y2
 endfor
 
-# 2. Draw mapping dots with dynamic color gradient
+# Mapping points; colour encodes source position.
 for g from 1 to nTarget
-    x_pos = tTime#[g] 
+    x_pos = tTime#[g]
     src_idx = matchIdx#[g]
-    y_pos = sTime#[src_idx] 
-    
-    # Color morphs dynamically from Magenta (start) to Cyan (end)
-    pos_ratio = y_pos / durSource
-    cR = 0.8 - (0.7 * pos_ratio)
-    cG = 0.2 + (0.6 * pos_ratio)
-    cB = 0.6 + (0.3 * pos_ratio)
-    
-    color$ = "{" + fixed$(cR, 3) + "," + fixed$(cG, 3) + "," + fixed$(cB, 3) + "}"
-    
-    # Outer colored glow
-    Paint circle (mm): color$, x_pos, y_pos, 1.6
-    # Inner white core
-    Paint circle (mm): "White", x_pos, y_pos, 0.5
+    y_pos = sTime#[src_idx]
+
+    if durSource > 0
+        pos_ratio = y_pos / durSource
+    else
+        pos_ratio = 0
+    endif
+    if pos_ratio < 0
+        pos_ratio = 0
+    endif
+    if pos_ratio > 1
+        pos_ratio = 1
+    endif
+
+    cR = 0.75 - 0.45 * pos_ratio
+    cG = 0.30 + 0.30 * pos_ratio
+    cB = 0.60 + 0.20 * pos_ratio
+    color$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
+
+    Paint circle (mm): color$, x_pos, y_pos, 1.35
+    Paint circle (mm): "White", x_pos, y_pos, 0.40
 endfor
-
-# === PANEL 3: MOSAIC OUTPUT WAVEFORM ===
-Select outer viewport: 0, 8, 4.6, 6.0
-Select inner viewport: 0.8, 7.6, 4.6, 5.9
-
-selectObject: finalOut
-# Vibrant Teal
-Colour: "{0.1, 0.7, 0.6}"
-Draw: 0, 0, 0, 0, "no", "Curve"
 
 Colour: "Black"
 Draw inner box
-Font size: 8
-Select outer viewport: 0.15, 8, 4.6, 6.0
-Text left: "yes", "Mosaic"
-Text bottom: "yes", "Time (s)"
+Font size: 7
+Text left: "yes", "Source time (s)"
+Text bottom: "no", "Target time (s)"
+Text top: "no", "Grain Reconstruction Map | each point: target grain -> matched source grain"
 
-# === PANEL 4: STYLIZED DARK-MODE STATS BAR ===
-Select outer viewport: 0, 8, 6.3, 6.8
-Select inner viewport: 0.8, 7.6, 6.3, 6.7
-
-Axes: 0, 1, 0, 1
-# Dark slate background
-Paint rectangle: "{0.15, 0.15, 0.18}", 0, 1, 0, 1
+# === Mosaic output waveform ===
+Select outer viewport: 0, 8, 4.78, 5.84
+Select inner viewport: 0.60, 7.70, 4.94, 5.64
+selectObject: finalOut
+Colour: "{0.25, 0.45, 0.75}"
+Draw: 0, 0, 0, 0, "no", "Curve"
 Colour: "Black"
-Draw rectangle: 0, 1, 0, 1
+Draw inner box
+Font size: 7
+Text left: "yes", "Mosaic"
+Text bottom: "no", "Time (s)"
+Text top: "no", "Reconstructed Target | " + fixed$(vizOutDur, 2) + " s | " + string$(vizOutChannels) + " ch | peak " + fixed$(vizOutPeak, 3)
 
-Font size: 8
-Colour: "{0.9, 0.9, 0.9}"
-Text: 0.02, "left", 0.5, "half", "GRAIN: " + string$(grain_size_ms) + "ms   |   OVERLAP: " + fixed$(overlap_ratio * 100, 0) + "%"
+# === Summary strip ===
+Select outer viewport: 0, 8, 6.05, 7.10
+Select inner viewport: 0.60, 7.70, 6.13, 7.02
+Axes: 0, 1, 0, 1
+Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
-# Colored weights info
-Colour: "{0.5, 0.8, 0.9}"
-Text: 0.50, "centre", 0.5, "half", "Weights [ Pitch: " + fixed$(pitch_weight, 1) + " | Spectral: " + fixed$(spectral_weight, 1) + " ]"
+Font size: 6
+Colour: "{0.25, 0.25, 0.35}"
+summary1$ = "##Material##  target " + fixed$(durTarget, 2) + " s | source " + fixed$(durSource, 2) + " s | grain " + fixed$(grain_size_ms, 1) + " ms | overlap " + fixed$(100 * overlap_ratio, 0) + "\% | " + string$(nTarget) + " target grains"
+summary2$ = "##Matching##  " + searchDesc$ + " | spectral " + fixed$(spectral_weight, 2) + " | pitch " + fixed$(pitch_weight, 2) + " | energy " + fixed$(energy_weight, 2) + " | exact target/source analysis grid"
+summary3$ = "##Output##  " + outputDesc$ + " | no-distinct-second " + string$(nNoSecond) + "/" + string$(nTarget) + " | exact window-sum OLA | normalize peak " + string$(normalize_peak) + " | " + fixed$(vizOutDur, 2) + " s"
+Text: 0.02, "left", 0.78, "half", summary1$
+Text: 0.02, "left", 0.50, "half", summary2$
+Text: 0.02, "left", 0.22, "half", summary3$
 
-Colour: "{0.9, 0.9, 0.9}"
-Text: 0.98, "right", 0.5, "half", "GRAINS MAPPED: " + string$(nTarget)
+Colour: "Black"
+Draw inner box
 
-# Reset for safety
+# Restore complete page for Picture export / clipboard.
+Select outer viewport: 0, 8, 0, pageHeight
 Font size: 10
 Colour: "Black"
 Line width: 1
+Solid line
 
 # ============================================
 # CLEANUP

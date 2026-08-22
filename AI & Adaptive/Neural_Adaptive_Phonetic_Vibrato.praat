@@ -2,7 +2,7 @@
 # Praat AudioTools - Neural_Adaptive_Phonetic_Vibrato.praat
 # Author: Shai Cohen 
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 1.4 (2026) - Mask scaled to Effect_strength (audible effect)
+# Version: 1.5 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
 #
@@ -205,7 +205,20 @@ sound_name$ = selected$("Sound")
 #
 # ============================================================
 
-form Neural Phonetic Vibrato v1.4
+# Changelog v1.5 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; feature extraction, heuristic
+#     frame labels, per-file FFNet distillation, category mapping,
+#     adaptive vowel mask, stereo vibrato and final limiting are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, suite-standard title/subtitle, typography, neutral
+#     panel backgrounds, summary strip and full-page export viewport.
+#   - Preserved all six visual ideas: source, stereo result, predicted
+#     category timeline, adaptive wet/dry mask, F1/F2 feature space and
+#     temperature-shaped category weights.
+#   - Corrected visual terminology: ActivationList-derived category
+#     weights are not presented as calibrated softmax probabilities.
+#
+form Neural Phonetic Vibrato v1.5
     optionmenu Preset 1
         option Manual
         option Lush Chorus
@@ -313,7 +326,7 @@ Rename: "Analysis_Copy"
 sound_work = selected("Sound")
 
 clearinfo
-writeInfoLine: "=== Neural Phonetic Vibrato v1.4 ==="
+writeInfoLine: "=== Neural Phonetic Vibrato v1.5 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Sound: ", sound_name$
 appendInfoLine: ""
@@ -1197,173 +1210,208 @@ viz_right = ch_R
 
 if draw_visualization
     appendInfoLine: "Step 6: Drawing visualization..."
-    
+
+    selectObject: final_stereo
+    vizOutDur = Get total duration
+    vizOutPeak = Get absolute extremum: 0, 0, "None"
+    vizOutChannels = Get number of channels
+
+    vizSoundName$ = replace$(sound_name$, "_", "\_ ", 0)
+
+    if idxVowel > 0
+        vowelOutputState$ = "vowel output present"
+    else
+        vowelOutputState$ = "no vowel output - dry bypass"
+    endif
+
+    pageHeight = 8.55
     Erase all
-    
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.5
-    Select inner viewport: 0, 8, 0, 0.5
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # Category palette shared across timeline, feature space and weights.
+    cat_colors$# = {"", "", "", ""}
+    # Vowel
+    cat_colors$#[1] = "{0.25, 0.65, 0.35}"
+    # Fricative
+    cat_colors$#[2] = "{0.85, 0.50, 0.20}"
+    # Silence
+    cat_colors$#[3] = "{0.60, 0.60, 0.60}"
+    # Other
+    cat_colors$#[4] = "{0.35, 0.45, 0.75}"
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.6, "half", "Neural Phonetic Vibrato"
-    Font size: 8
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", 0.1, "half", sound_name$ + " | " + presetName$ + " | FFNet: 18->24->N (one output per category present)"
-    
-    # === ORIGINAL WAVEFORM ===
-    Select outer viewport: 0, 8, 0.6, 1.2
-    Select inner viewport: 0.6, 7.7, 0.7, 1.15
+    Text: 0.5, "centre", 0.68, "half", "##Neural Phonetic Vibrato v1.5##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizSoundName$ + " | " + presetName$ + " | FFNet 18-24-" + string$(nOutputs) + " | per-file rule distillation"
+
+    # === Original waveform ===
+    Select outer viewport: 0, 8, 0.66, 1.42
+    Select inner viewport: 0.60, 7.70, 0.78, 1.26
     selectObject: original
-    Colour: "{0.6, 0.6, 0.6}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Original"
-    
-    # === RESULT WAVEFORMS (STEREO) ===
-    # Left channel
-    Select outer viewport: 0, 4, 1.3, 1.9
-    Select inner viewport: 0.6, 3.7, 1.4, 1.85
+    Text top: "no", "Source Sound | " + fixed$(duration, 2) + " s"
+
+    # === Stereo result waveforms ===
+    Select outer viewport: 0, 4, 1.58, 2.42
+    Select inner viewport: 0.60, 3.85, 1.72, 2.24
     selectObject: viz_left
-    Colour: "{0.3, 0.5, 0.8}"
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Result L"
-    
-    # Right channel
-    Select outer viewport: 4, 8, 1.3, 1.9
-    Select inner viewport: 4.4, 7.7, 1.4, 1.85
+    Text top: "no", "Left vibrato path"
+
+    Select outer viewport: 4, 8, 1.58, 2.42
+    Select inner viewport: 4.45, 7.70, 1.72, 2.24
     selectObject: viz_right
-    Colour: "{0.8, 0.5, 0.3}"
+    Colour: "{0.75, 0.45, 0.25}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Result R"
-    Text bottom: "yes", "Time (s)"
-    
-    # === NEURAL NETWORK PREDICTIONS (Timeline) ===
-    Select outer viewport: 0, 8, 2.0, 3.2
-    Select inner viewport: 0.6, 7.7, 2.1, 3.1
-    
-    # Calculate max time for axis
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Right vibrato path"
+
+    # === FFNet predicted-category timeline ===
     max_time = duration
-    
+    Select outer viewport: 0, 8, 2.62, 3.88
+    Select inner viewport: 0.80, 7.70, 2.84, 3.66
     Axes: 0, max_time, 0.5, 4.5
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time, 0.5, 4.5
-    
-    # Define category colors
-    cat_colors$# = {"", "", "", ""}
-    cat_colors$#[1] = "{0.3, 0.7, 0.3}"  
-	# Vowel - green
-    cat_colors$#[2] = "{0.9, 0.5, 0.3}"  
-	# Fricative - orange
-    cat_colors$#[3] = "{0.5, 0.5, 0.5}"  
-	# Silence - grey
-    cat_colors$#[4] = "{0.6, 0.6, 0.9}"  
-	# Other - blue
-    
-    # Draw predicted categories
+
     for i from 1 to rows_target
         t = viz_time#[i]
         cat = viz_predicted_category#[i]
         y_pos = cat
-        
-        Colour: cat_colors$#[cat]
-        Paint rectangle: cat_colors$#[cat], t - frame_step_seconds/2, t + frame_step_seconds/2, y_pos - 0.35, y_pos + 0.35
+        Paint rectangle: cat_colors$#[cat], t - frame_step_seconds/2, t + frame_step_seconds/2, y_pos - 0.34, y_pos + 0.34
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Category"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Neural Network Predictions"
-    
-    # Y-axis labels
-    Font size: 6
-    Text: -0.5, "right", 1, "half", "Vowel"
-    Text: -0.5, "right", 2, "half", "Fricative"
-    Text: -0.5, "right", 3, "half", "Silence"
-    Text: -0.5, "right", 4, "half", "Other"
-    
-    # === MIXING MASKS (Vibrato vs Dry) ===
-    Select outer viewport: 0, 8, 3.3, 4.8
-    Select inner viewport: 0.6, 7.7, 3.4, 4.7
-    
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "FFNet Predicted Categories | 1 vowel | 2 fricative | 3 silence | 4 other"
+
+    # === Adaptive wet/dry mask ===
+    Select outer viewport: 0, 8, 4.08, 5.36
+    Select inner viewport: 0.60, 7.70, 4.30, 5.14
     Axes: 0, max_time, 0, 1.1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time, 0, 1.1
-    
-    # Draw vibrato weight (red)
-    Colour: "{0.9, 0.3, 0.3}"
+
+    Colour: "{0.80, 0.80, 0.80}"
+    Dashed line
+    Draw line: 0, effect_strength, max_time, effect_strength
+    Solid line
+
+    Colour: "{0.75, 0.25, 0.25}"
     Line width: 2
     for i from 1 to rows_target - 1
         Draw line: viz_time#[i], viz_w_vowel#[i], viz_time#[i+1], viz_w_vowel#[i+1]
     endfor
-    
-    # Draw dry weight (blue)
-    Colour: "{0.3, 0.5, 0.8}"
-    Line width: 2
+
+    Colour: "{0.25, 0.45, 0.75}"
     for i from 1 to rows_target - 1
         Draw line: viz_time#[i], viz_w_dry#[i], viz_time#[i+1], viz_w_dry#[i+1]
     endfor
     Line width: 1
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "Weight"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Mixing Masks (Adaptive)"
-    
-    # === FEATURE SPACE (F1 vs F2) ===
-    Select outer viewport: 0, 4, 4.9, 6.7
-    Select inner viewport: 0.6, 3.7, 5.0, 6.6
-    
-    # Find min/max for axes
-    min_f1 = 200
-    max_f1 = 1200
-    min_f2 = 500
-    max_f2 = 3000
-    
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Adaptive Mixing Mask | red vibrato | blue dry | dashed effect-strength ceiling"
+
+    # === Feature space and category weights: 4/4 grid ===
+    # Feature-space ranges from values actually plotted.
+    min_f1 = 1e9
+    max_f1 = -1e9
+    min_f2 = 1e9
+    max_f2 = -1e9
+    for i from 1 to rows_target
+        f1 = viz_f1#[i]
+        f2 = viz_f2#[i]
+        if f1 > 0 and f2 > 0
+            if f1 < min_f1
+                min_f1 = f1
+            endif
+            if f1 > max_f1
+                max_f1 = f1
+            endif
+            if f2 < min_f2
+                min_f2 = f2
+            endif
+            if f2 > max_f2
+                max_f2 = f2
+            endif
+        endif
+    endfor
+
+    if max_f1 <= min_f1
+        min_f1 = 200
+        max_f1 = 1200
+    else
+        f1pad = (max_f1 - min_f1) * 0.08
+        min_f1 = max(0, min_f1 - f1pad)
+        max_f1 = max_f1 + f1pad
+    endif
+    if max_f2 <= min_f2
+        min_f2 = 500
+        max_f2 = 3000
+    else
+        f2pad = (max_f2 - min_f2) * 0.08
+        min_f2 = max(0, min_f2 - f2pad)
+        max_f2 = max_f2 + f2pad
+    endif
+
+    Select outer viewport: 0, 4, 5.58, 7.18
+    Select inner viewport: 0.60, 3.85, 5.84, 6.94
     Axes: min_f1, max_f1, min_f2, max_f2
     Paint rectangle: "{0.97, 0.97, 0.97}", min_f1, max_f1, min_f2, max_f2
-    
-    # Draw data points (subsample for clarity)
+
     step = max(1, floor(rows_target / 400))
     for i from 1 to rows_target
         if i mod step = 0
             cat = viz_predicted_category#[i]
             f1 = viz_f1#[i]
             f2 = viz_f2#[i]
-            
             if f1 >= min_f1 and f1 <= max_f1 and f2 >= min_f2 and f2 <= max_f2
-                Colour: cat_colors$#[cat]
-                Paint circle (mm): cat_colors$#[cat], f1, f2, 0.4
+                Paint circle (mm): cat_colors$#[cat], f1, f2, 0.42
             endif
         endif
     endfor
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
     Text left: "yes", "F2 (Hz)"
-    Text bottom: "yes", "F1 (Hz)"
-    Text top: "no", "Feature Space (Predicted)"
-    
-    # === SOFTMAX PROBABILITIES ===
-    Select outer viewport: 4, 8, 4.9, 6.7
-    Select inner viewport: 4.4, 7.7, 5.0, 6.6
-    
+    Text bottom: "no", "F1 (Hz)"
+    Text top: "no", "F1 / F2 Feature Space | coloured by predicted category"
+
+    # ActivationList-derived, temperature-shaped category weights.
+    Select outer viewport: 4, 8, 5.58, 7.18
+    Select inner viewport: 4.45, 7.70, 5.84, 6.94
     Axes: 0, max_time, 0, 1.05
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time, 0, 1.05
-    
-    # Draw softmax probabilities as overlaid lines
-    # Vowel probability
+
     Colour: cat_colors$#[1]
     Line width: 1.5
     for i from 1 to rows_target - 1
@@ -1371,24 +1419,21 @@ if draw_visualization
         p_next = viz_softmax#[i*4 + 1]
         Draw line: viz_time#[i], p, viz_time#[i+1], p_next
     endfor
-    
-    # Fricative probability
+
     Colour: cat_colors$#[2]
     for i from 1 to rows_target - 1
         p = viz_softmax#[(i-1)*4 + 2]
         p_next = viz_softmax#[i*4 + 2]
         Draw line: viz_time#[i], p, viz_time#[i+1], p_next
     endfor
-    
-    # Silence probability
+
     Colour: cat_colors$#[3]
     for i from 1 to rows_target - 1
         p = viz_softmax#[(i-1)*4 + 3]
         p_next = viz_softmax#[i*4 + 3]
         Draw line: viz_time#[i], p, viz_time#[i+1], p_next
     endfor
-    
-    # Other probability
+
     Colour: cat_colors$#[4]
     for i from 1 to rows_target - 1
         p = viz_softmax#[(i-1)*4 + 4]
@@ -1396,60 +1441,54 @@ if draw_visualization
         Draw line: viz_time#[i], p, viz_time#[i+1], p_next
     endfor
     Line width: 1
-    
+
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Probability"
-    Text bottom: "yes", "Time (s)"
-    Text top: "no", "Softmax Confidence"
-    
-    # === LEGEND ===
-    Select outer viewport: 0, 8, 6.8, 7.5
-    Select inner viewport: 0, 8, 6.8, 7.5
+    Text left: "yes", "Weight"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Temperature-Shaped Category Weights | not calibrated probabilities"
+
+    # === Shared legend ===
+    Select outer viewport: 0, 8, 7.28, 7.68
+    Select inner viewport: 0.60, 7.70, 7.34, 7.62
     Axes: 0, 1, 0, 1
-    Font size: 7
-    
-    Colour: "Black"
-    Text: 0.02, "left", 0.75, "half", "Categories:"
-    
-    # Category legend
-    x_pos = 0.15
-    Paint rectangle: cat_colors$#[1], x_pos, x_pos + 0.03, 0.65, 0.85
-    Text: x_pos + 0.04, "left", 0.75, "half", "Vowel"
-    x_pos += 0.12
-    
-    Paint rectangle: cat_colors$#[2], x_pos, x_pos + 0.03, 0.65, 0.85
-    Text: x_pos + 0.04, "left", 0.75, "half", "Fricative"
-    x_pos += 0.14
-    
-    Paint rectangle: cat_colors$#[3], x_pos, x_pos + 0.03, 0.65, 0.85
-    Text: x_pos + 0.04, "left", 0.75, "half", "Silence"
-    x_pos += 0.12
-    
-    Paint rectangle: cat_colors$#[4], x_pos, x_pos + 0.03, 0.65, 0.85
-    Text: x_pos + 0.04, "left", 0.75, "half", "Other"
-    
-    # Mixing legend
-    Text: 0.52, "left", 0.75, "half", "Mixing:"
-    x_pos = 0.62
-    
-    Colour: "{0.9, 0.3, 0.3}"
-    Draw line: x_pos, 0.75, x_pos + 0.03, 0.75
-    Colour: "Black"
-    Text: x_pos + 0.04, "left", 0.75, "half", "Vibrato"
-    x_pos += 0.13
-    
-    Colour: "{0.3, 0.5, 0.8}"
-    Draw line: x_pos, 0.75, x_pos + 0.03, 0.75
-    Colour: "Black"
-    Text: x_pos + 0.04, "left", 0.75, "half", "Dry"
-    
-    # Bottom text
     Font size: 6
-    Text: 0.02, "left", 0.25, "half", "Per-file FFNet distils the rule labels into a smooth vowel mask → applies stereo vibrato adaptively"
-    
+
+    Paint rectangle: cat_colors$#[1], 0.02, 0.045, 0.38, 0.62
+    Colour: "Black"
+    Text: 0.055, "left", 0.50, "half", "Vowel"
+    Paint rectangle: cat_colors$#[2], 0.20, 0.225, 0.38, 0.62
+    Text: 0.235, "left", 0.50, "half", "Fricative"
+    Paint rectangle: cat_colors$#[3], 0.42, 0.445, 0.38, 0.62
+    Text: 0.455, "left", 0.50, "half", "Silence"
+    Paint rectangle: cat_colors$#[4], 0.62, 0.645, 0.38, 0.62
+    Text: 0.655, "left", 0.50, "half", "Other"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 7.82, 8.50
+    Select inner viewport: 0.60, 7.70, 7.88, 8.44
+    Axes: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Labels##  vowel " + fixed$(100 * count_vowel / rows_target, 1) + "\% | fricative " + fixed$(100 * count_fricative / rows_target, 1) + "\% | silence " + fixed$(100 * count_silence / rows_target, 1) + "\% | other " + fixed$(100 * count_other / rows_target, 1) + "\% | formants valid " + fixed$(100 * nValidF / rows_target, 1) + "\% "
+    summary2$ = "##Control##  rate " + fixed$(vibrato_rate_hz, 2) + " Hz | depth " + fixed$(vibrato_depth_ms, 2) + " ms | threshold " + fixed$(confidence_threshold, 2) + " | temperature " + fixed$(temperature, 2) + " | effect strength " + fixed$(effect_strength, 2)
+    summary3$ = "##Output##  raw mask peak " + fixed$(rawPeak, 3) + " | scale " + fixed$(maskScale, 3) + " | " + vowelOutputState$ + " | stereo width " + fixed$(stereo_width, 2) + " | " + fixed$(vizOutDur, 2) + " s | peak " + fixed$(vizOutPeak, 3)
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
+    Colour: "Black"
+    Line width: 1
+    Solid line
 endif
 
 # ============================================

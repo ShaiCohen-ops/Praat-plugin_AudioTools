@@ -2,8 +2,25 @@
 # Praat AudioTools - Granular_Attention_Resynth.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 2.0 (2026) - True Hann OLA, gated softmax, live time jitter
+# Version: 2.1 (2026) - Suite-standard visualization
 # License: MIT License
+#
+# Changelog v2.1 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; candidate analysis, ReLU
+#     gating, active-grain softmax, recency penalty, varispeed jitter,
+#     time-jittered placement, normalized Hann OLA and wet/dry rendering
+#     are unchanged from v2.0.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, standard title/subtitle, suite typography,
+#     neutral panel backgrounds, summary strip and full-page export.
+#   - Replaced the abstract grain-index x hop display with a direct
+#     resynthesis map: actual jittered output onset versus selected
+#     source-grain time. A visualization-only placement log is recorded
+#     after the synthesis position is already finalized; it does not
+#     feed back into rendering.
+#   - Preserved the attention landscape and usage histogram, but made
+#     the ReLU floor, active/rejected candidates, softmax probability
+#     and actual grain usage visually distinct.
 #
 # Changelog v2.0:
 #
@@ -161,7 +178,7 @@ endif
 # FORM
 # ============================================================
 
-form Granular Attention Re-synthesis v2.0
+form Granular Attention Re-synthesis v2.1
     optionmenu Preset: 1
         option Custom
         option Self-Remix      (gentle, textural, most grains used)
@@ -417,7 +434,7 @@ endif
 
 clearinfo
 writeInfoLine:  "=================================================="
-writeInfoLine:  "  Granular Attention Re-synthesis v2.0"
+writeInfoLine:  "  Granular Attention Re-synthesis v2.1"
 writeInfoLine:  "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Source   : ", srcName$, "  (", fixed$(srcDur, 3), " s)"
@@ -757,6 +774,7 @@ lastGrain3 = 0
 
 # Per-hop logs for visualization
 chosenGrain# = zero#(nOutputHops)
+placedTime# = zero#(nOutputHops)
 
 appendInfoLine: "  Hops: ", nOutputHops,
     ... "  grain: ", fixed$(grainDur * 1000, 1), " ms",
@@ -822,6 +840,8 @@ for hop from 1 to nOutputHops
     if pos < 0
         pos = 0
     endif
+
+    placedTime#[hop] = pos
 
     # --- overlap-add into the buffers ---
     selectObject: grainCopy
@@ -992,70 +1012,35 @@ appendInfoLine: "Most-used grain    : #", maxUsageIdx,
 # ============================================================
 
 if draw_visualization = 1
+    appendInfoLine: ""
+    appendInfoLine: "Drawing visualization..."
 
+    # Mono display copy of the source, matching the analysis/resynthesis path.
     selectObject: srcID
-    srcPeak = Get absolute extremum: 0, 0, "None"
-    if srcPeak < 0.001
-        srcPeak = 0.001
+    if srcCh > 1
+        vizSource = Convert to mono
+    else
+        vizSource = Copy: "gar_viz_source"
     endif
-    ampMax = srcPeak * 1.15
 
-    Erase all
+    selectObject: vizSource
+    srcPeak = Get absolute extremum: 0, 0, "None"
 
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.46
-    Axes: 0, 1, 0, 1
-    Font size: 11
-    Colour: "Black"
-    Text: 0.5, "centre", 0.73, "half", "##Granular Attention Re-synthesis v2.0##"
-    Font size: 7.5
-    Colour: "{0.4, 0.4, 0.5}"
-    Text: 0.5, "centre", -0.08, "half",
-        ... "[" + presetName$ + "]  " + srcName$
-        ... + "  |  α=" + fixed$(temperature, 1)
-        ... + "  floor=mean+" + fixed$(floor_dB, 0) + "dB"
-        ... + "  grain=" + fixed$(grain_size_ms, 0) + "ms"
-        ... + "  hop=" + fixed$(synthesis_hop_ms, 0) + "ms"
-        ... + "  unique=" + string$(usedGrains) + "/" + string$(nCandGrains)
-
-    # === Panel 1: Input waveform ===
-    Select outer viewport: 0, 8, 0.50, 1.33
-    Select inner viewport: 0.58, 7.65, 0.55, 1.28
-    Axes: 0, srcDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -ampMax, ampMax
-    Colour: "{0.80, 0.80, 0.80}"
-    Draw line: 0, 0, srcDur, 0
-    selectObject: srcID
-    Colour: "{0.45, 0.50, 0.58}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Input"
-    Text top: "no", "Original waveform"
-
-    # === Panel 2: Output waveform ===
-    Select outer viewport: 0, 8, 1.36, 2.18
-    Select inner viewport: 0.58, 7.65, 1.41, 2.13
-    Axes: 0, resultDur, -ampMax, ampMax
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -ampMax, ampMax
-    Colour: "{0.80, 0.80, 0.80}"
-    Draw line: 0, 0, resultDur, 0
     selectObject: resultID
-    Colour: "{0.22, 0.50, 0.68}"
-    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
-    Colour: "Black"
-    Draw inner box
-    Font size: 7
-    Text left: "yes", "Output"
-    Text top: "no", outputName$
-    Text bottom: "yes", "Time (s)"
+    resultPeak = Get absolute extremum: 0, 0, "None"
 
-    # === Panel 3: Grain score landscape + probability ===
-    Select outer viewport: 0, 8, 2.25, 3.22
-    Select inner viewport: 0.58, 7.65, 2.30, 3.17
+    ampPeak = srcPeak
+    if resultPeak > ampPeak
+        ampPeak = resultPeak
+    endif
+    if ampPeak < 0.001
+        ampPeak = 0.001
+    endif
+    ampMax = ampPeak * 1.15
 
-    # Normalise scores for display
+    vizName$ = replace$(srcName$, "_", "\_ ", 0)
+
+    # Normalize scores for display.
     maxRawScore = rawScore#[1]
     minRawScore = rawScore#[1]
     for ii from 2 to nCandGrains
@@ -1081,10 +1066,6 @@ if draw_visualization = 1
         maxProb = 1e-10
     endif
 
-    Axes: 0, srcDur, -0.08, 1.30
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -0.08, 1.30
-
-    # Floor line
     floorNorm = (floorValue - minRawScore) / rawRange
     if floorNorm < 0
         floorNorm = 0
@@ -1092,101 +1073,182 @@ if draw_visualization = 1
     if floorNorm > 1
         floorNorm = 1
     endif
-    Colour: "{0.88, 0.55, 0.18}"
-    Dotted line
-    Draw line: 0, floorNorm, srcDur, floorNorm
-    Solid line
-    Font size: 5
-    Text: srcDur * 0.01, "left", floorNorm + 0.04, "half",
-        ... "ReLU floor"
 
-    # Score bars (grey)
+    activePct = 100 * nActive / nCandGrains
+    usedPct = 100 * usedGrains / nCandGrains
+
+    pageHeight = 7.85
+    Erase all
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
+    Axes: 0, 1, 0, 1
+    Font size: 12
+    Colour: "Black"
+    Text: 0.5, "centre", 0.68, "half", "##Granular Attention Re-synthesis v2.1##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | " + scoreLabel$ + " | alpha " + fixed$(temperature, 2) + " | " + string$(usedGrains) + "/" + string$(nCandGrains) + " grains used"
+
+    # === Source waveform ===
+    Select outer viewport: 0, 4, 0.72, 1.72
+    Select inner viewport: 0.60, 3.85, 0.88, 1.52
+    Axes: 0, srcDur, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -ampMax, ampMax
+    Colour: "{0.80, 0.80, 0.80}"
+    Draw line: 0, 0, srcDur, 0
+    selectObject: vizSource
+    Colour: "{0.55, 0.55, 0.55}"
+    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amp"
+    Text top: "no", "Source | mono analysis path"
+
+    # === Output waveform ===
+    Select outer viewport: 4, 8, 0.72, 1.72
+    Select inner viewport: 4.45, 7.70, 0.88, 1.52
+    Axes: 0, resultDur, -ampMax, ampMax
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, -ampMax, ampMax
+    Colour: "{0.80, 0.80, 0.80}"
+    Draw line: 0, 0, resultDur, 0
+    selectObject: resultID
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw: 0, 0, -ampMax, ampMax, "no", "Curve"
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amp"
+    Text top: "no", "Output | mono | " + fixed$(resultDur, 2) + " s"
+
+    # === Attention landscape ===
+    Select outer viewport: 0, 8, 1.94, 3.34
+    Select inner viewport: 0.60, 7.70, 2.18, 3.10
+    Axes: 0, srcDur, -0.05, 1.08
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, srcDur, -0.05, 1.08
+
+    # Candidate scores. Rejected candidates stay neutral; active ones are darker.
     for ii from 1 to nCandGrains
         x = grainStartTime#[ii]
         h = (rawScore#[ii] - minRawScore) / rawRange
-        Colour: "{0.78, 0.78, 0.84}"
+        if active#[ii] = 1
+            Colour: "{0.48, 0.54, 0.64}"
+        else
+            Colour: "{0.82, 0.82, 0.82}"
+        endif
         Draw line: x, 0, x, h
     endfor
 
-    # Probability overlay (blue, scaled to same axis)
-    Colour: "{0.20, 0.48, 0.75}"
-    Line width: 1.5
+    # ReLU floor.
+    Colour: "{0.80, 0.55, 0.20}"
+    Dashed line
+    Draw line: 0, floorNorm, srcDur, floorNorm
+    Solid line
+
+    # Softmax probability among active grains, normalized only for display.
+    Colour: "{0.25, 0.45, 0.75}"
+    Line width: 1.7
     for ii from 2 to nCandGrains
         x1 = grainStartTime#[ii - 1]
         x2 = grainStartTime#[ii]
         y1 = prob#[ii - 1] / maxProb
-        y2 = prob#[ii]     / maxProb
+        y2 = prob#[ii] / maxProb
         Draw line: x1, y1, x2, y2
     endfor
     Line width: 1
 
-    # Usage count: size of circle = how often this grain was chosen
+    # Actual usage: circle size is selection count.
     if maxUsage > 0
         for ii from 1 to nCandGrains
             c = usageCount_'ii'
             if c > 0
                 x = grainStartTime#[ii]
-                r = c / maxUsage * 1.4 + 0.3
-                Colour: "{0.85, 0.38, 0.18}"
-                Paint circle (mm): "{0.85, 0.38, 0.18}", x, prob#[ii] / maxProb, r
+                r = c / maxUsage * 1.3 + 0.3
+                Paint circle (mm): "{0.75, 0.35, 0.22}", x, prob#[ii] / maxProb, r
             endif
         endfor
     endif
 
-    Font size: 5
-    Colour: "{0.78, 0.78, 0.84}"
-    Text: srcDur * 0.79, "left", 1.22, "half", "score"
-    Colour: "{0.20, 0.48, 0.75}"
-    Text: srcDur * 0.79, "left", 1.10, "half", "probability"
-    Colour: "{0.85, 0.38, 0.18}"
-    Text: srcDur * 0.79, "left", 0.98, "half", "usage (size)"
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Score"
-    Text top: "no", "Grain score / probability / usage   (orange dot = chosen, size = frequency)"
+    Text left: "yes", "Normalized display"
+    Text bottom: "no", "Source time (s)"
+    Text top: "no", "Attention Landscape | dark score = active | blue = probability | amber = ReLU floor | orange size = usage"
 
-    # === Panel 4: Grain selection sequence ===
-    Select outer viewport: 0, 8, 3.28, 4.22
-    Select inner viewport: 0.58, 7.65, 3.33, 4.17
+    # === Actual output-to-source read map ===
+    Select outer viewport: 0, 8, 3.56, 5.02
+    Select inner viewport: 0.60, 7.70, 3.82, 4.78
+    Axes: 0, resultDur, 0, srcDur
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, resultDur, 0, srcDur
 
-    dispHops = nOutputHops
-    if dispHops > 200
-        dispHops = 200
+    # Identity/proportional read reference.
+    refEnd = resultDur
+    if srcDur < refEnd
+        refEnd = srcDur
+    endif
+    Colour: "{0.78, 0.78, 0.78}"
+    Dashed line
+    Draw line: 0, 0, refEnd, refEnd
+    Solid line
+
+    # Plot at most roughly 600 events for a readable map.
+    plotStep = ceiling(nOutputHops / 600)
+    if plotStep < 1
+        plotStep = 1
     endif
 
-    Axes: 0, dispHops + 1, 0, nCandGrains + 1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dispHops + 1, 0, nCandGrains + 1
-
-    # Color by score value
-    for hop from 1 to dispHops
-        idx = chosenGrain#[hop]
-        if idx >= 1 and idx <= nCandGrains
-            scoreFrac = (rawScore#[idx] - minRawScore) / rawRange
-            cR = 0.15 + scoreFrac * 0.65
-            cG = 0.45 + scoreFrac * 0.15
-            cB = 0.80 - scoreFrac * 0.58
-            Paint rectangle: "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}",
-                ... hop - 0.48, hop + 0.48, idx - 0.48, idx + 0.48
+    for hop from 1 to nOutputHops
+        hopRem = hop - floor(hop / plotStep) * plotStep
+        if hopRem = 0 or hop = 1
+            idx = chosenGrain#[hop]
+            if idx >= 1 and idx <= nCandGrains
+                x = placedTime#[hop]
+                y = grainStartTime#[idx]
+                scoreFrac = (rawScore#[idx] - minRawScore) / rawRange
+                cR = 0.25 + scoreFrac * 0.50
+                cG = 0.55 - scoreFrac * 0.20
+                cB = 0.75 - scoreFrac * 0.45
+                if cG < 0
+                    cG = 0
+                endif
+                if cB < 0
+                    cB = 0
+                endif
+                dotColor$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
+                Paint circle (mm): dotColor$, x, y, 0.52
+            endif
         endif
     endfor
 
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Grain #"
-    Text bottom: "yes", "Output hop"
-    Text top: "no", "Grain selection sequence  (blue=low score  orange=high score)"
+    Text left: "yes", "Selected source time (s)"
+    Text bottom: "no", "Actual output onset (s)"
+    Text top: "no", "Attention Resynthesis Map | actual jittered OLA onset -> selected source grain | dashed = identity read"
 
-    # === Panel 5: Usage histogram ===
-    Select outer viewport: 0, 4, 4.28, 5.10
-    Select inner viewport: 0.55, 3.75, 4.33, 5.05
-    Axes: 0, nCandGrains + 1, 0, maxUsage * 1.15
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, nCandGrains + 1, 0, maxUsage * 1.15
+    # === Usage histogram ===
+    Select outer viewport: 0, 8, 5.24, 6.30
+    Select inner viewport: 0.60, 7.70, 5.44, 6.06
+
+    histHi = maxUsage * 1.15
+    if histHi < 1
+        histHi = 1
+    endif
+
+    Axes: 0, nCandGrains + 1, 0, histHi
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, nCandGrains + 1, 0, histHi
 
     meanUsage = nOutputHops / nCandGrains
-    Colour: "{0.85, 0.85, 0.85}"
-    Dotted line
+    Colour: "{0.80, 0.80, 0.80}"
+    Dashed line
     Draw line: 0, meanUsage, nCandGrains + 1, meanUsage
     Solid line
 
@@ -1194,53 +1256,53 @@ if draw_visualization = 1
         c = usageCount_'ii'
         if c > 0
             scoreFrac = (rawScore#[ii] - minRawScore) / rawRange
-            cR = 0.15 + scoreFrac * 0.65
-            cG = 0.45 + scoreFrac * 0.15
-            cB = 0.80 - scoreFrac * 0.58
-            Paint rectangle: "{" + fixed$(cR, 2) + "," + fixed$(cG, 2) + "," + fixed$(cB, 2) + "}",
-                ... ii - 0.45, ii + 0.45, 0, c
+            cR = 0.25 + scoreFrac * 0.50
+            cG = 0.55 - scoreFrac * 0.20
+            cB = 0.75 - scoreFrac * 0.45
+            if cG < 0
+                cG = 0
+            endif
+            if cB < 0
+                cB = 0
+            endif
+            barColor$ = "{" + fixed$(cR, 3) + ", " + fixed$(cG, 3) + ", " + fixed$(cB, 3) + "}"
+            Paint rectangle: barColor$, ii - 0.45, ii + 0.45, 0, c
         endif
     endfor
 
     Colour: "Black"
     Draw inner box
     Font size: 7
-    Text left: "yes", "Count"
-    Text bottom: "yes", "Grain #"
-    Text top: "no", "Usage histogram  (dashed = uniform mean)"
+    Text left: "yes", "Selections"
+    Text bottom: "no", "Candidate grain"
+    Text top: "no", "Usage Distribution | color follows attention score | dashed = uniform-use mean"
 
-    # === Panel 6: Stats ===
-    Select outer viewport: 4, 8, 4.28, 5.10
-    Select inner viewport: 4.18, 7.65, 4.33, 5.05
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 6.52, 7.80
+    Select inner viewport: 0.60, 7.70, 6.62, 7.70
     Axes: 0, 1, 0, 1
-    Paint rectangle: "{0.95, 0.95, 0.95}", 0, 1, 0, 1
-    Font size: 7
-    Colour: "Black"
-    Text: 0.04, "left", 0.90, "half", "##Granular Attention Re-synthesis v2.0##"
-    Font size: 6
-    Colour: "{0.30, 0.30, 0.38}"
-    Text: 0.04, "left", 0.71, "half",
-        ... "Preset: " + presetName$
-        ... + "  |  α=" + fixed$(temperature, 1)
-        ... + "  floor=mean+" + fixed$(floor_dB, 0) + "dB"
-    Text: 0.04, "left", 0.53, "half",
-        ... "Grain=" + fixed$(grain_size_ms, 0) + "ms"
-        ... + "  hop=" + fixed$(synthesis_hop_ms, 0) + "ms"
-        ... + "  cand=" + string$(nCandGrains)
-        ... + "  active=" + string$(nActive)
-    Text: 0.04, "left", 0.35, "half",
-        ... "Unique used: " + string$(usedGrains) + "/" + string$(nCandGrains)
-        ... + "  (" + fixed$(100 * usedGrains / nCandGrains, 0) + "%)"
-    Text: 0.04, "left", 0.17, "half",
-        ... "Top grain: #" + string$(maxUsageIdx)
-        ... + "  t=" + fixed$(grainStartTime#[maxUsageIdx], 2) + "s"
-        ... + "  used " + string$(maxUsage) + "×"
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Candidates##  source " + fixed$(srcDur, 2) + " s, " + string$(srcCh) + " ch -> mono | grain " + fixed$(grainDur * 1000, 1) + " ms | candidate hop " + fixed$(candHop * 1000, 1) + " ms | " + string$(nCandGrains) + " candidates"
+    summary2$ = "##Attention##  " + scoreLabel$ + " | alpha " + fixed$(temperature, 2) + " | floor mean+" + fixed$(floor_dB, 1) + " dB | active " + string$(nActive) + "/" + string$(nCandGrains) + " (" + fixed$(activePct, 1) + "\% ) | recency penalty " + fixed$(recency_penalty, 2)
+    summary3$ = "##Resynthesis##  hop " + fixed$(synthHop * 1000, 1) + " ms | time jitter +/-" + fixed$(timeJitter * 1000, 1) + " ms | varispeed +/-" + fixed$(pitch_jitter_semitones, 2) + " st | wet " + fixed$(wet_percent, 0) + "\% | used " + fixed$(usedPct, 1) + "\% | normalized Hann OLA"
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
+
+    removeObject: vizSource
 endif
 
 # ============================================================

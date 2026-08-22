@@ -2,9 +2,25 @@
 # Praat AudioTools - HMM_Timbre_Sequencing.praat
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
-# Version: 2.0 (2026) - Unified time base, OLA synthesis, real emissions
+# Version: 2.1 (2026) - Suite-standard visualization
 # License: MIT License
 # Repository: https://github.com/ShaiCohen-ops/Praat-plugin_AudioTools
+#
+# Changelog v2.1 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; feature extraction, k-means
+#     initialization, hard-EM/Viterbi training, Gaussian emissions,
+#     state sampling, frame selection and normalized Hann OLA synthesis
+#     are unchanged from v2.0.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, standard title/subtitle, suite typography,
+#     neutral panel backgrounds, summary strip and full-page export.
+#   - Corrected the visualization to represent the actual 5D observation
+#     model: intensity, log2 pitch, voiced fraction, spectral centroid
+#     and spectral balance. The previous v2.0 drawing still showed only
+#     four dimensions and labelled the model 4D.
+#   - Preserved the defining HMM views: decoded input path, generated
+#     state path, feature trajectories, transition matrix and Gaussian
+#     emissions, and added an input/output waveform comparison.
 #
 # Changelog v2.0:
 #
@@ -151,7 +167,7 @@ sound_name$ = selected$("Sound")
 # FORM
 ####################################################################
 
-form HMM Timbre Sequencer v2.0
+form HMM Timbre Sequencer v2.1
     optionmenu Preset 1
         option Custom
         option Fine Grain (subtle, 12 states)
@@ -269,7 +285,7 @@ endif
 
 clearinfo
 writeInfoLine: "=================================================="
-appendInfoLine: "  HMM TIMBRE SEQUENCER v2.0"
+appendInfoLine: "  HMM TIMBRE SEQUENCER v2.1"
 appendInfoLine: "=================================================="
 appendInfoLine: ""
 appendInfoLine: "Preset: ", presetName$
@@ -1137,48 +1153,102 @@ appendInfoLine: "Generated ", output_sequence_length, " frames"
 if draw_visualization
     appendInfoLine: ""
     appendInfoLine: "Drawing visualization..."
-    
-    Erase all
-    
-    # Color palette for states (up to 24 states)
-    state_colors$# = {
-    ... "{0.2, 0.4, 0.8}", "{0.8, 0.2, 0.4}", "{0.2, 0.8, 0.4}", "{0.8, 0.6, 0.2}",
-    ... "{0.6, 0.2, 0.8}", "{0.2, 0.8, 0.8}", "{0.8, 0.8, 0.2}", "{0.8, 0.4, 0.6}",
-    ... "{0.4, 0.8, 0.6}", "{0.6, 0.4, 0.8}", "{0.3, 0.6, 0.3}", "{0.6, 0.3, 0.6}",
-    ... "{0.5, 0.5, 0.2}", "{0.2, 0.5, 0.5}", "{0.5, 0.2, 0.5}", "{0.7, 0.5, 0.3}",
-    ... "{0.3, 0.7, 0.5}", "{0.5, 0.3, 0.7}", "{0.4, 0.4, 0.4}", "{0.6, 0.6, 0.6}",
-    ... "{0.3, 0.3, 0.8}", "{0.8, 0.3, 0.3}", "{0.3, 0.8, 0.3}", "{0.7, 0.7, 0.3}"
-    ... }
-    
-    # v1.3: layout converted to the library-standard 8-wide canvas
-    # (outer+inner viewports, 0.6/7.7 margins, ##Bold## title,
-    # font 6-7 labels, summary strip at the bottom).
 
-    # State-axis mark step (avoid clutter at high K)
+    # Output display copy.
+    selectObject: output_sound
+    vizOutCh = Get number of channels
+    vizOutDur = Get total duration
+    vizOutPeak = Get absolute extremum: 0, 0, "None"
+    if vizOutCh > 1
+        vizOut = Convert to mono
+    else
+        vizOut = Copy: "viz_hmm_output"
+    endif
+
+    # Shared waveform scale.
+    selectObject: sound_mono
+    vizInPeak = Get absolute extremum: 0, 0, "None"
+    sharedPeak = vizInPeak
+    if vizOutPeak > sharedPeak
+        sharedPeak = vizOutPeak
+    endif
+    if sharedPeak < 0.01
+        sharedPeak = 0.01
+    endif
+    sharedAmp = sharedPeak * 1.15
+
+    vizName$ = replace$(sound_name$, "_", "\_ ", 0)
+
+    if frame_selection = 1
+        frameChoice$ = "Gaussian observation -> nearest frame in state"
+    else
+        frameChoice$ = "uniform frame within state"
+    endif
+
+    if stereo_output
+        stereoDesc$ = "synthetic stereo"
+    else
+        stereoDesc$ = "mono"
+    endif
+
+    if hmmConverged
+        hmmStatus$ = "converged in " + string$(hmmIter) + " iterations"
+    else
+        hmmStatus$ = "stopped after " + string$(hmmIter) + " iterations"
+    endif
+
+    # State palette, up to the supported 24-state preset.
+    state_colors$# = {
+    ... "{0.25, 0.45, 0.75}", "{0.75, 0.25, 0.35}", "{0.25, 0.60, 0.35}", "{0.80, 0.55, 0.20}",
+    ... "{0.55, 0.30, 0.70}", "{0.25, 0.60, 0.65}", "{0.70, 0.65, 0.25}", "{0.70, 0.35, 0.55}",
+    ... "{0.35, 0.65, 0.55}", "{0.55, 0.40, 0.70}", "{0.35, 0.55, 0.35}", "{0.60, 0.35, 0.60}",
+    ... "{0.55, 0.55, 0.25}", "{0.30, 0.55, 0.55}", "{0.55, 0.30, 0.55}", "{0.70, 0.50, 0.30}",
+    ... "{0.30, 0.65, 0.50}", "{0.50, 0.35, 0.70}", "{0.45, 0.45, 0.45}", "{0.62, 0.62, 0.62}",
+    ... "{0.35, 0.40, 0.75}", "{0.75, 0.35, 0.35}", "{0.35, 0.70, 0.35}", "{0.68, 0.65, 0.30}"
+    ... }
+
+    # Five actual HMM observation dimensions.
+    feature_colors$# = {
+    ... "{0.25, 0.45, 0.75}",
+    ... "{0.75, 0.25, 0.25}",
+    ... "{0.25, 0.55, 0.25}",
+    ... "{0.55, 0.30, 0.70}",
+    ... "{0.80, 0.55, 0.20}"
+    ... }
+    feature_names$# = {
+    ... "Intensity",
+    ... "Pitch (log2)",
+    ... "Voiced",
+    ... "Centroid",
+    ... "Balance"
+    ... }
+
     markStep = ceiling(k / 12)
     if markStep < 1
         markStep = 1
     endif
 
-    # === TITLE ===
-    Select outer viewport: 0, 8, 0, 0.45
+    pageHeight = 9.20
+    Erase all
+    Line width: 1
+    Colour: "Black"
+    Solid line
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", -1.7, "half",
-        ... "##HMM Timbre Sequencer v2.0##"
+    Text: 0.5, "centre", 0.68, "half", "##HMM Timbre Sequencer v2.1##"
     Font size: 7
     Colour: "{0.35, 0.35, 0.50}"
-    Text: 0.5, "centre", 0.20, "half",
-        ... sound_name$ + " | " + presetName$
-        ... + " | K=" + string$(k)
-        ... + " | " + string$(num_frames) + " -> " + string$(output_sequence_length) + " frames"
-        ... + " | frame " + string$(frame_size_ms) + " ms"
+    Text: 0.5, "centre", 0.22, "half", vizName$ + " | " + presetName$ + " | K=" + string$(k) + " | 5D diagonal-Gaussian HMM | " + frameChoice$
 
-    # === PANEL: INPUT STATE SEQUENCE (VITERBI PATH) ===
-    Select outer viewport: 0, 4, 0.50, 2.00
-    Select inner viewport: 0.6, 3.85, 0.60, 1.95
-
+    # === Input Viterbi path ===
+    Select outer viewport: 0, 4, 0.72, 2.22
+    Select inner viewport: 0.60, 3.85, 0.98, 1.98
     max_time_input = duration_s
     Axes: 0, max_time_input, 0.5, k + 0.5
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time_input, 0.5, k + 0.5
@@ -1200,24 +1270,30 @@ if draw_visualization
     Marks left every: 1, markStep, "yes", "yes", "no"
     Font size: 7
     Text left: "yes", "State"
-    Text top: "no", "Input states (Viterbi path)"
-    Text bottom: "yes", "Time (s)"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Decoded Input States | final Viterbi path"
 
-    # === PANEL: OUTPUT STATE SEQUENCE ===
-    Select outer viewport: 4, 8, 0.50, 2.00
-    Select inner viewport: 4.2, 7.7, 0.60, 1.95
-
-    # Output frames advance by (frame_size - crossfade)
-    max_time_output = output_sequence_length * advance_s + (frame_size_s - advance_s)
-    Axes: 0, max_time_output, 0.5, k + 0.5
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time_output, 0.5, k + 0.5
+    # === Generated HMM path ===
+    Select outer viewport: 4, 8, 0.72, 2.22
+    Select inner viewport: 4.45, 7.70, 0.98, 1.98
+    Axes: 0, vizOutDur, 0.5, k + 0.5
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, vizOutDur, 0.5, k + 0.5
 
     for i to output_sequence_length
         s = output_state#[i]
         t_start = (i - 1) * advance_s
-        t_end = i * advance_s
-        color_idx = ((s - 1) mod 24) + 1
-        Paint rectangle: state_colors$#[color_idx], t_start, t_end, s - 0.4, s + 0.4
+        if i < output_sequence_length
+            t_end = i * advance_s
+        else
+            t_end = vizOutDur
+        endif
+        if t_start < vizOutDur
+            if t_end > vizOutDur
+                t_end = vizOutDur
+            endif
+            color_idx = ((s - 1) mod 24) + 1
+            Paint rectangle: state_colors$#[color_idx], t_start, t_end, s - 0.4, s + 0.4
+        endif
     endfor
 
     Colour: "Black"
@@ -1225,72 +1301,67 @@ if draw_visualization
     Marks left every: 1, markStep, "yes", "yes", "no"
     Font size: 7
     Text left: "yes", "State"
-    Text top: "no", "Generated states (HMM sampling)"
-    Text bottom: "yes", "Time (s)"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Generated States | transition-matrix sampling"
 
-    # === PANEL: FEATURE TRAJECTORIES ===
-    Select outer viewport: 0, 8, 2.05, 3.85
-    Select inner viewport: 0.6, 7.7, 2.15, 3.80
-
+    # === Five-dimensional feature trajectories ===
+    Select outer viewport: 0, 8, 2.44, 3.78
+    Select inner viewport: 0.60, 7.70, 2.68, 3.54
     Axes: 0, max_time_input, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, max_time_input, 0, 1
 
-    Colour: "{0.9, 0.9, 0.9}"
-    level = 0.25
-    while level <= 0.75
-        Draw line: 0, level, max_time_input, level
-        level = level + 0.25
-    endwhile
+    Colour: "{0.82, 0.82, 0.82}"
+    Dashed line
+    Draw line: 0, 0.25, max_time_input, 0.25
+    Draw line: 0, 0.50, max_time_input, 0.50
+    Draw line: 0, 0.75, max_time_input, 0.75
+    Solid line
 
-    feature_colors$# = {"{0.2, 0.4, 0.8}", "{0.8, 0.2, 0.4}", "{0.2, 0.8, 0.4}", "{0.8, 0.6, 0.2}"}
-    feature_names$# = {"Intensity", "Pitch", "Centroid", "Slope"}
-
-    Colour: feature_colors$#[1]
-    Line width: 1.5
-    for i from 1 to num_frames - 1
-        Draw line: frame_start#[i], norm_int#[i], frame_start#[i + 1], norm_int#[i + 1]
+    for d to nDims
+        Colour: feature_colors$#[d]
+        if d = 1
+            Line width: 1.7
+        else
+            Line width: 1.2
+        endif
+        for i from 1 to num_frames - 1
+            v1 = norm_'d'_'i'
+            i2 = i + 1
+            v2 = norm_'d'_'i2'
+            Draw line: frame_start#[i], v1, frame_start#[i2], v2
+        endfor
     endfor
-
-    Colour: feature_colors$#[2]
-    for i from 1 to num_frames - 1
-        Draw line: frame_start#[i], norm_pitch#[i], frame_start#[i + 1], norm_pitch#[i + 1]
-    endfor
-
-    Colour: feature_colors$#[3]
-    for i from 1 to num_frames - 1
-        Draw line: frame_start#[i], norm_cent#[i], frame_start#[i + 1], norm_cent#[i + 1]
-    endfor
-
-    Colour: feature_colors$#[4]
-    for i from 1 to num_frames - 1
-        Draw line: frame_start#[i], norm_slope#[i], frame_start#[i + 1], norm_slope#[i + 1]
-    endfor
-
     Line width: 1
+
     Colour: "Black"
     Draw inner box
-    Marks left every: 1, 0.5, "yes", "yes", "no"
     Font size: 7
     Text left: "yes", "Normalized"
-    Text top: "no", "Feature trajectories (4D observations)"
-    Text bottom: "yes", "Time (s)"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Observation Trajectories | all five HMM dimensions"
 
+    # === Feature legend ===
+    Select outer viewport: 0, 8, 3.84, 4.16
+    Select inner viewport: 0.60, 7.70, 3.89, 4.11
+    Axes: 0, 1, 0, 1
     Font size: 6
-    x_legend = max_time_input * 0.02
-    Colour: feature_colors$#[1]
-    Text: x_legend, "left", 0.95, "half", feature_names$#[1]
-    Colour: feature_colors$#[2]
-    Text: x_legend, "left", 0.86, "half", feature_names$#[2]
-    Colour: feature_colors$#[3]
-    Text: x_legend, "left", 0.77, "half", feature_names$#[3]
-    Colour: feature_colors$#[4]
-    Text: x_legend, "left", 0.68, "half", feature_names$#[4]
 
-    # === PANEL: TRANSITION MATRIX HEATMAP ===
-    Select outer viewport: 0, 4, 3.90, 6.10
-    Select inner viewport: 0.8, 3.7, 4.00, 6.00
+    legendX# = {0.02, 0.20, 0.40, 0.57, 0.76}
+    for d to nDims
+        x0 = legendX#[d]
+        Colour: feature_colors$#[d]
+        Line width: 2
+        Draw line: x0, 0.5, x0 + 0.035, 0.5
+        Colour: "Black"
+        Line width: 1
+        Text: x0 + 0.045, "left", 0.5, "half", feature_names$#[d]
+    endfor
 
+    # === Transition matrix ===
+    Select outer viewport: 0, 4, 4.32, 6.40
+    Select inner viewport: 0.60, 3.85, 4.60, 6.14
     Axes: 0.5, k + 0.5, 0.5, k + 0.5
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0.5, k + 0.5, 0.5, k + 0.5
 
     for s1 to k
         for s2 to k
@@ -1303,7 +1374,8 @@ if draw_visualization
             if gray_level > 1
                 gray_level = 1
             endif
-            color$ = "{" + string$(gray_level) + ", " + string$(gray_level) + ", " + string$(gray_level) + "}"
+            gray$ = fixed$(gray_level, 3)
+            color$ = "{" + gray$ + ", " + gray$ + ", " + gray$ + "}"
             Paint rectangle: color$, s2 - 0.5, s2 + 0.5, k - s1 + 0.5, k - s1 + 1.5
         endfor
     endfor
@@ -1311,9 +1383,6 @@ if draw_visualization
     Colour: "Black"
     Draw inner box
     Marks bottom every: 1, markStep, "yes", "yes", "no"
-    # v2.0 fix 13: rows are painted in reverse (state 1 at the top), so
-    # the default left marks labelled every row with the wrong state.
-    # Drawn explicitly to match the paint order.
     Font size: 6
     for s1 to k
         if (s1 - 1) mod markStep = 0
@@ -1321,92 +1390,103 @@ if draw_visualization
         endif
     endfor
     Font size: 7
-    Text bottom: "yes", "To state"
+    Text bottom: "no", "To state"
     Text left: "yes", "From state"
-    Text top: "no", "Transitions (darker = higher p)"
+    Text top: "no", "Learned Transitions | darker = higher probability"
 
-    # === PANEL: EMISSION DISTRIBUTIONS ===
-    Select outer viewport: 4, 8, 3.90, 6.10
-    Select inner viewport: 4.35, 7.7, 4.00, 6.00
-
+    # === Five-dimensional Gaussian emissions ===
+    Select outer viewport: 4, 8, 4.32, 6.40
+    Select inner viewport: 4.45, 7.70, 4.60, 6.14
     Axes: 0.5, k + 0.5, 0, 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0.5, k + 0.5, 0, 1
 
-    bar_width = 0.15
-    feature_offset# = {-0.3, -0.1, 0.1, 0.3}
+    bar_width = 0.11
+    feature_offset# = {-0.28, -0.14, 0, 0.14, 0.28}
 
     for s to k
-        mean_val = emit_mean_int#[s]
-        std_val = emit_std_int#[s]
-        x_pos = s + feature_offset#[1]
-        Colour: feature_colors$#[1]
-        Paint rectangle: feature_colors$#[1], x_pos - bar_width/2, x_pos + bar_width/2, 0, mean_val
-        Draw line: x_pos, max(0, mean_val - std_val), x_pos, min(1, mean_val + std_val)
+        for d to nDims
+            mean_val = emitMean_'d'_'s'
+            std_val = emitStd_'d'_'s'
+            x_pos = s + feature_offset#[d]
 
-        mean_val = emit_mean_pitch#[s]
-        std_val = emit_std_pitch#[s]
-        x_pos = s + feature_offset#[2]
-        Colour: feature_colors$#[2]
-        Paint rectangle: feature_colors$#[2], x_pos - bar_width/2, x_pos + bar_width/2, 0, mean_val
-        Draw line: x_pos, max(0, mean_val - std_val), x_pos, min(1, mean_val + std_val)
+            Colour: feature_colors$#[d]
+            Paint rectangle: feature_colors$#[d], x_pos - bar_width/2, x_pos + bar_width/2, 0, mean_val
 
-        mean_val = emit_mean_cent#[s]
-        std_val = emit_std_cent#[s]
-        x_pos = s + feature_offset#[3]
-        Colour: feature_colors$#[3]
-        Paint rectangle: feature_colors$#[3], x_pos - bar_width/2, x_pos + bar_width/2, 0, mean_val
-        Draw line: x_pos, max(0, mean_val - std_val), x_pos, min(1, mean_val + std_val)
-
-        mean_val = emit_mean_slope#[s]
-        std_val = emit_std_slope#[s]
-        x_pos = s + feature_offset#[4]
-        Colour: feature_colors$#[4]
-        Paint rectangle: feature_colors$#[4], x_pos - bar_width/2, x_pos + bar_width/2, 0, mean_val
-        Draw line: x_pos, max(0, mean_val - std_val), x_pos, min(1, mean_val + std_val)
+            low_val = mean_val - std_val
+            high_val = mean_val + std_val
+            if low_val < 0
+                low_val = 0
+            endif
+            if high_val > 1
+                high_val = 1
+            endif
+            Draw line: x_pos, low_val, x_pos, high_val
+        endfor
     endfor
 
     Colour: "Black"
     Draw inner box
     Marks bottom every: 1, markStep, "yes", "yes", "no"
-    Marks left every: 1, 0.5, "yes", "yes", "no"
     Font size: 7
-    Text bottom: "yes", "State"
-    Text left: "yes", "Mean +- std"
-    Text top: "no", "Emissions (Gaussian per state)"
+    Text bottom: "no", "State"
+    Text left: "yes", "Mean +/- std"
+    Text top: "no", "Diagonal-Gaussian Emissions | five dimensions per state"
 
-    # === SUMMARY STRIP ===
-    Select outer viewport: 0, 8, 6.20, 6.90
-    Select inner viewport: 0.6, 7.7, 6.25, 6.85
+    # === Input / output waveform comparison ===
+    Select outer viewport: 0, 8, 6.62, 7.66
+    Select inner viewport: 0.60, 7.70, 6.82, 7.44
+
+    dispDur = duration_s
+    if vizOutDur > dispDur
+        dispDur = vizOutDur
+    endif
+
+    Axes: 0, dispDur, -sharedAmp, sharedAmp
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, dispDur, -sharedAmp, sharedAmp
+    Colour: "{0.80, 0.80, 0.80}"
+    Draw line: 0, 0, dispDur, 0
+
+    selectObject: sound_mono
+    Colour: "{0.60, 0.60, 0.60}"
+    Draw: 0, duration_s, -sharedAmp, sharedAmp, "no", "Curve"
+
+    selectObject: vizOut
+    Colour: "{0.25, 0.45, 0.75}"
+    Draw: 0, vizOutDur, -sharedAmp, sharedAmp, "no", "Curve"
+
+    Colour: "Black"
+    Draw inner box
+    Font size: 7
+    Text left: "yes", "Amp"
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Input / Output Waveform | grey source | blue HMM resynthesis"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 7.88, 9.15
+    Select inner viewport: 0.60, 7.70, 7.98, 9.05
     Axes: 0, 1, 0, 1
     Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
 
-    selectObject: output_sound
-    vizOutDur = Get total duration
-    vizOutCh = Get number of channels
-
     Font size: 6
     Colour: "{0.25, 0.25, 0.35}"
-    Text: 0.02, "left", 0.78, "half",
-        ... "##Model##  K=" + string$(k)
-        ... + "  frames " + string$(num_frames) + " -> " + string$(output_sequence_length)
-        ... + "  k-means " + string$(iterationsUsed) + " iter"
-        ... + "  Viterbi changed " + string$(nChangedV) + "/" + string$(num_frames)
-    Text: 0.02, "left", 0.48, "half",
-        ... "##Frames##  size=" + string$(frame_size_ms) + " ms"
-        ... + "  hop=" + string$(frame_hop_ms) + " ms"
-        ... + "  advance=" + fixed$(advance_s * 1000, 0) + " ms"
-        ... + "  overlap=" + fixed$(overlap_s * 1000, 1) + " ms"
-    Text: 0.02, "left", 0.18, "half",
-        ... "##Output##  " + fixed$(vizOutDur, 2) + " s"
-        ... + "  " + string$(vizOutCh) + " ch"
-        ... + "  preset=" + presetName$
-    Colour: "Black"
-    Draw rectangle: 0, 1, 0, 1
+    summary1$ = "##Model##  K=" + string$(k) + " (" + string$(nActiveStates) + " active) | 5D observations | k-means " + string$(iterationsUsed) + " iterations | hard-EM " + hmmStatus$
+    summary2$ = "##Time & generation##  frame " + fixed$(frame_size_ms, 1) + " ms | hop/state " + fixed$(frame_hop_ms, 1) + " ms | overlap " + fixed$(overlap_s * 1000, 1) + " ms | " + frameChoice$ + " | seed " + seedLabel$
+    summary3$ = "##Output##  " + string$(num_frames) + " input frames -> " + string$(output_sequence_length) + " generated states | " + stereoDesc$ + " | " + fixed$(vizOutDur, 2) + " s | peak " + fixed$(vizOutPeak, 3) + " | normalized Hann OLA"
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
 
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
     Line width: 1
+    Solid line
 
+    removeObject: vizOut
     appendInfoLine: "  Visualization complete!"
 endif
 

@@ -3,7 +3,19 @@
 # Author: Shai Cohen
 # Affiliation: Department of Music, Bar-Ilan University, Israel
 # Email: shai.cohen@biu.ac.il
-# Version: 0.6 (2026) - Stereo_spread wired, unified grid, true OLA
+# Version: 0.8 (2026) - Suite-standard visualization
+#
+# Changelog v0.8 (2026):
+#   - VISUALIZATION STANDARDIZATION ONLY; K-means analysis, event-list
+#     generation, morph traversal, pitch/position/density variation,
+#     true overlap-add normalization and stereo rendering are unchanged.
+#   - Adopted the Praat AudioTools 8-inch page convention with explicit
+#     inner viewports, suite-standard title/subtitle, typography, neutral
+#     panel backgrounds, summary strip and full-page export viewport.
+#   - Preserved the source/output waveforms, real-onset cluster trajectory
+#     and cluster population display; the old text-only stats panel has
+#     been consolidated into the summary strip.
+#   - Added draw-safe source names and measured output information.
 #
 # Changelog v0.6 (2026):
 #
@@ -132,7 +144,7 @@ endif
 snd = selected("Sound")
 sndName$ = selected$("Sound")
 
-form K-means Granular Texture Morpher v0.6
+form K-means Granular Texture Morpher v0.8
     optionmenu Preset: 1
         option Manual
         option Slow Evolution
@@ -290,7 +302,7 @@ dur = Get total duration
 fs = Get sampling frequency
 
 clearinfo
-writeInfoLine: "=== K-means Granular Texture Morpher v0.6 ==="
+writeInfoLine: "=== K-means Granular Texture Morpher v0.8 ==="
 appendInfoLine: "Preset: ", presetName$
 appendInfoLine: "Grain: ", grain_size_ms, " ms | Overlap: ", fixed$(overlap_ratio * 100, 0), "%"
 appendInfoLine: "Clusters: ", number_of_clusters, " | Morph: ", morph_speed_hz, " Hz"
@@ -1279,130 +1291,168 @@ removeObject: workSnd
 
 if draw_visualization
     appendInfoLine: "Drawing visualization..."
-    
+
+    selectObject: finalOut
+    outDurDisplay = Get total duration
+    outPeakDisplay = Get absolute extremum: 0, 0, "None"
+    outChannelsDisplay = Get number of channels
+
+    pageHeight = 6.95
     Erase all
-    
-    # Title
-    Select outer viewport: 0, 8, 0.1, 0.5
+    Select outer viewport: 0, 8, 0, pageHeight
+
+    vizSndName$ = replace$(sndName$, "_", "\_ ", 0)
+
+    if stereo_output
+        stereoDesc$ = "stereo spread " + fixed$(stereo_spread, 2)
+    else
+        stereoDesc$ = "mono output"
+    endif
+
+    # === Header ===
+    Select outer viewport: 0, 8, 0, 0.52
+    Select inner viewport: 0.60, 7.70, 0.02, 0.50
     Axes: 0, 1, 0, 1
     Font size: 12
     Colour: "Black"
-    Text: 0.5, "centre", 0.5, "half", "K-means Granular Texture Morpher: " + sndName$ + " [" + presetName$ + "]"
-    
-    # Original waveform
-    Select outer viewport: 0, 8, 0.6, 1.6
-    Select inner viewport: 0.6, 7.6, 0.7, 1.5
+    Text: 0.5, "centre", 0.68, "half", "##K-means Granular Texture Morpher v0.8##"
+    Font size: 7
+    Colour: "{0.35, 0.35, 0.50}"
+    Text: 0.5, "centre", 0.22, "half", vizSndName$ + " | " + presetName$ + " | " + morphModeName$ + " | " + string$(nActive) + "/" + string$(k) + " active clusters"
+
+    # === Original waveform ===
+    Select outer viewport: 0, 8, 0.66, 1.48
+    Select inner viewport: 0.60, 7.70, 0.78, 1.32
     selectObject: snd
-    Colour: "{0.5, 0.5, 0.5}"
+    Colour: "{0.55, 0.55, 0.55}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Original"
-    
-    # Output waveform
-    Select outer viewport: 0, 8, 1.7, 2.7
-    Select inner viewport: 0.6, 7.6, 1.8, 2.6
+    Text top: "no", "Source Sound"
+
+    # === Output waveform ===
+    Select outer viewport: 0, 8, 1.62, 2.44
+    Select inner viewport: 0.60, 7.70, 1.74, 2.28
     selectObject: finalOut
-    Colour: "{0.2, 0.6, 0.4}"
+    Colour: "{0.25, 0.45, 0.75}"
     Draw: 0, 0, 0, 0, "no", "Curve"
     Colour: "Black"
     Draw inner box
+    Font size: 7
     Text left: "yes", "Output"
-    Text bottom: "yes", "Time (s)"
-    
-    # Cluster trajectory
-    Select outer viewport: 0, 8, 2.9, 4.2
-    Select inner viewport: 0.6, 7.6, 3.1, 4.1
-    
+    Text bottom: "no", "Time (s)"
+    Text top: "no", "Granular Morph Output | " + fixed$(outDurDisplay, 2) + " s | " + string$(outChannelsDisplay) + " ch | peak " + fixed$(outPeakDisplay, 3)
+
+    # === Cluster trajectory ===
+    Select outer viewport: 0, 8, 2.64, 4.26
+    Select inner viewport: 0.60, 7.70, 2.84, 4.04
+
     traj_tmax = (grains_needed - 1) * stepSec
     if traj_tmax <= 0
         traj_tmax = output_duration_sec
     endif
     Axes: 0, traj_tmax, 0, k + 1
     Paint rectangle: "{0.97, 0.97, 0.97}", 0, traj_tmax, 0, k + 1
-    
-    # Left channel trajectory (solid)
+
+    # Left trajectory: actual jittered event onsets.
     Line width: 1
-    # v0.7: plot the REAL onsets, including density jitter. v0.6 drew
-    # the nominal grid, so the picture did not match the audio whenever
-    # Density_variation was non-zero.
     for g from 2 to grains_needed
         t1 = ev_tout#[g-1]
         t2 = ev_tout#[g]
         c1 = cluster_history#[g-1]
         c2 = cluster_history#[g]
-        colorVal = c2 / k
-        rVal$ = fixed$(0.2 + colorVal * 0.6, 2)
-        gVal$ = fixed$(0.5 - colorVal * 0.3, 2)
-        bVal$ = fixed$(0.8 - colorVal * 0.5, 2)
+        if k > 1
+            colorVal = (c2 - 1) / (k - 1)
+        else
+            colorVal = 0
+        endif
+        rVal$ = fixed$(0.25 + colorVal * 0.50, 3)
+        gVal$ = fixed$(0.55 - colorVal * 0.25, 3)
+        bVal$ = fixed$(0.75 - colorVal * 0.35, 3)
         Colour: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}"
         Draw line: t1, c1, t2, c2
     endfor
-    
-    # Right channel trajectory (dashed, grey) when stereo
+
+    # Right trajectory: dashed neutral overlay when stereo.
     if stereo_output
-        Line width: 1
         Colour: "{0.55, 0.55, 0.55}"
+        Dashed line
         for g from 2 to grains_needed
             if cluster_history_R#[g-1] > 0 and cluster_history_R#[g] > 0
                 t1 = evR_tout#[g-1]
                 t2 = evR_tout#[g]
-                Dashed line
                 Draw line: t1, cluster_history_R#[g-1], t2, cluster_history_R#[g]
             endif
         endfor
         Solid line
     endif
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 8
+    Font size: 7
     Text left: "yes", "Cluster"
-    Text bottom: "yes", "Time (s)"
+    Text bottom: "no", "Time (s)"
     if stereo_output
-        Font size: 7
-        Text top: "no", "solid = L, dashed = R"
+        Text top: "no", "Cluster Trajectory | actual jittered onsets | solid L, dashed R"
+    else
+        Text top: "no", "Cluster Trajectory | actual jittered event onsets"
     endif
-    
-    # Cluster distribution
-    Select outer viewport: 0, 4, 4.4, 5.6
-    Select inner viewport: 0.6, 3.8, 4.6, 5.5
-    
+
+    # === Cluster population ===
+    Select outer viewport: 0, 8, 4.46, 5.66
+    Select inner viewport: 0.60, 7.70, 4.66, 5.44
+
     maxCount = 1
     for c from 1 to k
         if cluster_count#[c] > maxCount
             maxCount = cluster_count#[c]
         endif
     endfor
-    
-    Axes: 0, k + 1, 0, maxCount * 1.1
-    Paint rectangle: "{0.97, 0.97, 0.97}", 0, k + 1, 0, maxCount * 1.1
-    
+
+    Axes: 0, k + 1, 0, maxCount * 1.12
+    Paint rectangle: "{0.97, 0.97, 0.97}", 0, k + 1, 0, maxCount * 1.12
+
     for c from 1 to k
-        colorVal = c / k
-        rVal$ = fixed$(0.2 + colorVal * 0.6, 2)
-        gVal$ = fixed$(0.5 - colorVal * 0.3, 2)
-        bVal$ = fixed$(0.8 - colorVal * 0.5, 2)
-        Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", c - 0.4, c + 0.4, 0, cluster_count#[c]
+        if k > 1
+            colorVal = (c - 1) / (k - 1)
+        else
+            colorVal = 0
+        endif
+        rVal$ = fixed$(0.25 + colorVal * 0.50, 3)
+        gVal$ = fixed$(0.55 - colorVal * 0.25, 3)
+        bVal$ = fixed$(0.75 - colorVal * 0.35, 3)
+        Paint rectangle: "{" + rVal$ + ", " + gVal$ + ", " + bVal$ + "}", c - 0.38, c + 0.38, 0, cluster_count#[c]
     endfor
-    
+
     Colour: "Black"
     Draw inner box
-    Font size: 8
-    Text left: "yes", "Grains"
-    Text bottom: "yes", "Cluster"
-    
-    # Stats
-    Select outer viewport: 4, 8, 4.4, 5.6
+    Font size: 7
+    Text left: "yes", "Analysis grains"
+    Text bottom: "no", "Cluster"
+    Text top: "no", "Cluster Population | " + string$(nActive) + " active of " + string$(k) + " requested"
+
+    # === Summary strip ===
+    Select outer viewport: 0, 8, 5.88, 6.90
+    Select inner viewport: 0.60, 7.70, 5.96, 6.82
     Axes: 0, 1, 0, 1
-    Font size: 9
-    Colour: "{0.3, 0.3, 0.3}"
-    Text: 0.5, "centre", 0.85, "half", "Mode: " + morphModeName$
-    Text: 0.5, "centre", 0.65, "half", "Morph: " + fixed$(morph_speed_hz, 2) + " Hz"
-    Text: 0.5, "centre", 0.45, "half", "Grains: " + string$(nGrains) + " | Clusters: " + string$(k)
-    Text: 0.5, "centre", 0.25, "half", "Grain: " + string$(grain_size_ms) + " ms"
-    
+    Paint rectangle: "{0.94, 0.94, 0.94}", 0, 1, 0, 1
+
+    Font size: 6
+    Colour: "{0.25, 0.25, 0.35}"
+    summary1$ = "##Analysis##  grain " + fixed$(grain_size_ms, 1) + " ms | overlap " + fixed$(100 * overlap_ratio, 0) + "\% | " + string$(nGrains) + " source grains | " + string$(nActive) + "/" + string$(k) + " active clusters"
+    summary2$ = "##Morph##  " + morphModeName$ + " | transition rate " + fixed$(state_transition_rate_hz, 2) + " Hz | position randomness " + fixed$(position_randomness, 2) + " | density variation " + fixed$(density_variation, 2)
+    summary3$ = "##Output##  " + string$(grains_needed) + " events | pitch scatter +/-" + fixed$(pitch_scatter_semitones, 2) + " st | " + stereoDesc$ + " | " + fixed$(outDurDisplay, 2) + " s | true OLA normalization"
+    Text: 0.02, "left", 0.78, "half", summary1$
+    Text: 0.02, "left", 0.50, "half", summary2$
+    Text: 0.02, "left", 0.22, "half", summary3$
+
+    Colour: "Black"
+    Draw inner box
+
+    # Restore complete page for Picture export / clipboard.
+    Select outer viewport: 0, 8, 0, pageHeight
     Font size: 10
     Colour: "Black"
 endif
