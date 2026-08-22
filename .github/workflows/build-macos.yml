@@ -42,7 +42,7 @@ jobs:
           set -euxo pipefail
           PART_DIR="Max-MSP/Praat_AudioTools_CI/payload"
           test -d "$PART_DIR"
-          cat "$PART_DIR"/ci_payload.tar.gz.b64.part* | base64 -D > "$RUNNER_TEMP/ci_payload.tar.gz"
+          cat "$PART_DIR"/ci_payload.tar.gz.b64.part* | tr -d '[:space:]' | base64 -D > "$RUNNER_TEMP/ci_payload.tar.gz"
           echo "$PAYLOAD_SHA256  $RUNNER_TEMP/ci_payload.tar.gz" | shasum -a 256 -c -
           mkdir -p "$RUNNER_TEMP/praat-ci"
           tar -xzf "$RUNNER_TEMP/ci_payload.tar.gz" -C "$RUNNER_TEMP/praat-ci"
